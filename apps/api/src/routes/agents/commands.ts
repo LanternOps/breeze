@@ -29,6 +29,7 @@ import { claimPendingCommandsForDevice } from '../../services/commandDispatch';
 import { decryptClaimedCommandsForDelivery } from '../../services/commandDelivery';
 import { redactResultAgainstCommandSecrets } from '../../services/commandSecretRedaction';
 import { terminalPayloadErasureSet } from '../../services/sensitiveCommandPayload';
+import { applyCommandAutomationTerminal } from '../../services/automationTerminalEvidence';
 import { applyVaultSyncCommandResult } from '../../services/vaultSyncPersistence';
 import { processBackupVerificationResult } from '../backup/verificationService';
 import { updateRestoreJobByCommandId } from '../../services/restoreResultPersistence';
@@ -41,9 +42,20 @@ import {
 } from '../../services/softwareDeploymentResult';
 
 import {
+  ACCEPTED_COMMAND_RESULT_STATUSES,
   commandAcceptsAgentResult,
   commandAcceptsAgentResultCondition,
 } from '../../services/commandResultAcceptance';
+import {
+  pamAgentResultV2Schema,
+  type PamActuationResultClassification,
+} from '../../services/pamActuationResult';
+import { consumePamReconciliationRateLimit } from '../../services/pamReconciliationRateLimit';
+
+export type PamResultAcknowledgement = {
+  protocolVersion: 1;
+  classification: PamActuationResultClassification;
+};
 
 export const commandsRoutes = new Hono();
 
@@ -78,7 +90,12 @@ const REGISTRY_DISPATCHED_COMMAND_TYPES = new Set([
   'mssql_backup',
   'snmp_poll',
   'script',
+  'peripheral_policy_sync_v2',
+  'pam_apply_v2',
+  'pam_cleanup_v2',
 ]);
+
+const PAM_COMMAND_TYPES = new Set(['pam_apply_v2', 'pam_cleanup_v2']);
 
 function commandResultToStdout(data: z.infer<typeof commandResultSchema>): string | undefined {
   return data.stdout ??
@@ -178,26 +195,60 @@ commandsRoutes.get('/:id/commands', async (c) => {
     return c.json({ error: 'Agent context not found' }, 401);
   }
 
-  const commands = await runOutsideDbContext(() =>
-    withSystemDbAccessContext(() =>
-      claimPendingCommandsForDevice(
-        agent.deviceId,
-        10,
-        agent.role,
-        // #2774 — offboarding drain: only self_uninstall is deliverable.
-        agent.tenantDraining ? ['self_uninstall'] : undefined
-      )
-    )
-  );
-
   // #2414 — decrypt just-in-time; a command whose payload fails decryption is
   // released back to `pending` (not stranded as `sent`) while its siblings
   // still deliver.
-  return c.json({
-    commands: await decryptClaimedCommandsForDelivery(commands),
-  });
+  //
+  // Both the claim AND the delivery pass run inside the SAME system context.
+  // This route is self-managed-context (agentAuth leaves no ambient context
+  // behind on the REST paths), and since #3409 PR4c-2 the delivery pass is no
+  // longer pure CPU: `decryptClaimedCommandsForDelivery` first runs the
+  // secret-delivery claim gate, which reads `devices` (RLS-scoped) and drives
+  // offending `device_commands` / `script_executions` rows terminal. Called
+  // outside the closure those would be contextless bare-pool queries (#1375).
+  // Unlike the heartbeat there is no capability report on this path, so the
+  // gate reads the stored column.
+  const deliverableCommands = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(async () => {
+      const commands = await claimPendingCommandsForDevice(
+        agent.deviceId,
+        10,
+        agent.role,
+        // #2774 / #3986 — drain narrowing (tenant offboarding OR device
+        // remove). Derived ONCE in agentAuthMiddleware; `undefined` here means
+        // "not draining, claim anything", which is also this parameter's
+        // default — so read the context value, never restate the literal.
+        agent.claimTypeAllowlist
+      );
+      return decryptClaimedCommandsForDelivery(commands);
+    })
+  );
+
+  return c.json({ commands: deliverableCommands });
 });
 
+// #2774 / #3986 — drain narrowing for the result endpoint below. This prose
+// lives ABOVE the route declaration on purpose: the site-scope route scanner
+// (apps/api/src/__tests__/helpers/routeScan.ts) reads a fixed
+// HANDLER_SLICE_BYTES window from the route declaration, comments included, and
+// a handler whose device-table condition falls past that window silently reads
+// as "touches no device data" — dropping it out of the scan and marking its
+// SITE_SCOPE_INPUT_EXEMPT entry stale. Keeping the explanation outside the
+// window keeps the handler visible to the scanner. See #4019.
+//
+// The endpoint accepts results ONLY for the command types the claim allowlist
+// permits while the agent sits on a narrowed drain surface. Being on the drain
+// ROUTE allowlist is not the same as being harmless: this route has a second,
+// id-shaped entrance.
+//
+// A NON-UUID commandId short-circuits into the `sw-install-…` branch, which
+// writes deployment history via `applySoftwareInstallResult` with NO
+// `device_commands` row to consult — its only gate is that the device UUID
+// embedded in the caller-supplied id matches the authenticated device. A
+// command-type allowlist cannot see that path at all, so a draining agent could
+// keep stamping deployment_results rows for its org. Refuse the whole shape
+// while draining; the drain only ever delivers real, UUID-keyed
+// `device_commands` rows.
 commandsRoutes.post(
   '/:id/commands/:commandId/result',
   zValidator('param', commandResultParamSchema),
@@ -212,6 +263,11 @@ commandsRoutes.post(
     }
 
     const deviceId = agent.deviceId;
+
+    const drainClaimAllowlist = agent.claimTypeAllowlist;
+    if (drainClaimAllowlist && !uuidRegex.test(commandId)) {
+      return c.json({ error: 'drain_restricted' }, 403);
+    }
 
     // Commands dispatched directly over WebSocket can use non-UUID IDs and
     // intentionally have no device_commands row.
@@ -274,15 +330,68 @@ commandsRoutes.post(
       return c.json({ error: 'Command not found' }, 404);
     }
 
+    // The type half of the drain narrowing (the id-shape half ran above). The
+    // claim allowlist already stops a draining agent from being HANDED anything
+    // but `self_uninstall`, but a row it claimed before the drain started — or
+    // one pushed over some other path — must not be ackable either: the result
+    // handlers below are a large fan-out (security findings, filesystem
+    // analysis, vault sync, backup verification, restore jobs, CIS, software
+    // remediation) that all write tenant data.
+    if (drainClaimAllowlist && !drainClaimAllowlist.includes(command.type)) {
+      return c.json({ error: 'drain_restricted' }, 403);
+    }
+
     const commandTargetRole = command.targetRole === 'watchdog' ? 'watchdog' : 'agent';
     if (commandTargetRole !== agent.role) {
       return c.json({ error: 'Command role mismatch' }, 403);
     }
 
+    // Supplemental PAM evidence for every terminal command state, including a
+    // server-side timeout, enters only the frozen PAM result transaction. It
+    // must never use #3607's timeout exception to rewrite the command row.
+    const isTerminalPamCommand = PAM_COMMAND_TYPES.has(command.type)
+      && !(ACCEPTED_COMMAND_RESULT_STATUSES as readonly string[]).includes(command.status);
+    const parsedTerminalPamResult = isTerminalPamCommand
+      ? pamAgentResultV2Schema.safeParse(data.result)
+      : null;
+    if (parsedTerminalPamResult?.success) {
+      const rate = await consumePamReconciliationRateLimit(deviceId);
+      if (!rate.allowed) {
+        return c.json({
+          error: 'Rate limit exceeded',
+          resetAt: rate.resetAt.toISOString(),
+        }, 429);
+      }
+
+      const { commandResultHandlers } = await import('../../services/commandResultHandlers');
+      const handler = commandResultHandlers[command.type];
+      if (!handler) {
+        throw new Error(`Missing PAM result handler for ${command.type}`);
+      }
+      const outcome = await handler({
+        agentId: agent.agentId ?? agentId,
+        command,
+        commandId,
+        result: { ...data, result: parsedTerminalPamResult.data },
+        resolvedDeviceId: command.deviceId,
+        stdout: commandResultToStdout({ ...data, result: parsedTerminalPamResult.data }),
+      });
+      if (!outcome || outcome.kind !== 'pam') {
+        throw new Error(`PAM result handler returned no acknowledgement for ${command.type}`);
+      }
+      return c.json<PamResultAcknowledgement>({
+        protocolVersion: 1,
+        classification: outcome.classification,
+      });
+    }
+    if (isTerminalPamCommand) {
+      return c.json({ success: true });
+    }
+
     // #3607: a row terminalized by a SERVER-SIDE timeout (`result.status ===
     // 'timeout'`, written by the wait deadline in commandQueue or by the stale
-    // reaper) is still allowed through — the agent's real output is the whole
-    // point. Any other terminal state short-circuits exactly as before.
+    // reaper) remains acceptable for non-PAM commands. Every other terminal
+    // result preserves the historical short circuit.
     if (!commandAcceptsAgentResult(command.status, command.result)) {
       return c.json({ success: true });
     }
@@ -305,8 +414,9 @@ commandsRoutes.post(
     // secrets THIS command carried, before the device_commands write below and
     // before the per-type handlers persist anything. Unlike the heuristic above
     // this DOES touch stdout, because a script that echoes a credential is
-    // exactly the case it exists for. Inert until PR4c — no command carries an
-    // envelope yet, so both bindings are the originals unchanged.
+    // exactly the case it exists for. Live since PR4c-2: scriptDispatch sets
+    // `secretEnv` for `tenantSecret` parameters, so a script command can carry
+    // a sealed envelope whose values this pass strips from both bindings.
     const { result: normalizedData, stdout } = redactResultAgainstCommandSecrets(
       { id: commandId, type: command.type, deviceId, payload: command.payload },
       heuristicallyRedacted,
@@ -329,6 +439,7 @@ commandsRoutes.post(
     // should be RARER than the WS twin because the terminal pre-read above
     // usually short-circuits first — which is itself a useful signal.
     let updated: unknown;
+    const terminalCompletedAt = new Date();
     const updatedRows = await runOutsideDbContext(async () => withSystemDbAccessContext(async () =>
       dbWriteExpectingRows(
         'device_commands.rest_result_terminal_cas',
@@ -337,7 +448,7 @@ commandsRoutes.post(
             .update(deviceCommands)
             .set({
               status: normalizedData.status === 'completed' ? 'completed' : 'failed',
-              completedAt: new Date(),
+              completedAt: terminalCompletedAt,
               result: buildStoredCommandResult(command.type, normalizedData, stdout),
               // Credentials ride the payload for some command types (FileVault
               // rotation, and the #3409 script secret envelope); strip them
@@ -369,6 +480,17 @@ commandsRoutes.post(
     if (updatedRows.length === 0) {
       return c.json({ success: true });
     }
+
+    // The guarded command transition is the authority. Reconcile before the
+    // validation-error return so malformed terminal frames cannot strand an
+    // automation action after the command itself became terminal.
+    await applyCommandAutomationTerminal({
+      commandId,
+      result: normalizedData,
+      output: stdout ?? null,
+      error: normalizedData.error ?? normalizedData.stderr ?? null,
+      completedAt: terminalCompletedAt,
+    });
 
     if (validationError) {
       console.warn(`[agents] ${validationError}`);
@@ -594,6 +716,7 @@ commandsRoutes.post(
     // `withDbAccessContext` returns `fn()` unchanged when a context is already
     // on the async-local store, and opening a second real transaction is the
     // #1105 double-hold this route was explicitly cleaned up to avoid.
+    let pamAcknowledgement: PamResultAcknowledgement | undefined;
     if (REGISTRY_DISPATCHED_COMMAND_TYPES.has(command.type)) {
       // Imported dynamically, like the DR handler below: the registry pulls in
       // the discovery and SNMP workers, and through them the Drizzle schema
@@ -603,7 +726,7 @@ commandsRoutes.post(
       const handler = commandResultHandlers[command.type];
       if (handler) {
         try {
-          await handler({
+          const outcome = await handler({
             // Handlers use this for log lines and one audit `actorId`, never a
             // lookup. Prefer the authenticated agent record over the path
             // param, matching this route's own writeAuditEvent actor below.
@@ -616,9 +739,19 @@ commandsRoutes.post(
             resolvedDeviceId: command.deviceId,
             stdout,
           });
+          if (PAM_COMMAND_TYPES.has(command.type)) {
+            if (!outcome || outcome.kind !== 'pam') {
+              throw new Error(`PAM result handler returned no acknowledgement for ${command.type}`);
+            }
+            pamAcknowledgement = {
+              protocolVersion: 1,
+              classification: outcome.classification,
+            };
+          }
         } catch (err) {
           console.error(`[agents] shared ${command.type} result handler failed for ${commandId}:`, err);
           captureException(err);
+          if (PAM_COMMAND_TYPES.has(command.type)) throw err;
         }
       }
     }
@@ -638,6 +771,6 @@ commandsRoutes.post(
       result: normalizedData.status === 'completed' ? 'success' : 'failure',
     });
 
-    return c.json({ success: true });
+    return c.json(pamAcknowledgement ?? { success: true });
   }
 );

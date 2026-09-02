@@ -129,6 +129,54 @@
       "hybridPlan": "Piano ibrido"
     }
   },
+  "partnerAiProvider": {
+    "title": "Provider IA",
+    "subtitle": "Esegui l'IA di Breeze con la tua chiave API Anthropic invece della chiave della piattaforma.",
+    "platformKey": "Chiave della piattaforma",
+    "platformKeyDescription": "Le funzionalità di IA usano la chiave Anthropic di Breeze e vengono addebitate come crediti IA di Breeze.",
+    "yourKey": "La tua chiave •••• {{last4}}",
+    "verifiedAt": "Verificata il {{date}}",
+    "notVerifiedYet": "Non ancora verificata",
+    "defaultModelValue": "Modello predefinito: {{model}}",
+    "platformDefault": "Predefinito della piattaforma",
+    "keyErrorTitle": "La tua chiave Anthropic non funziona",
+    "reconnectHint": "Le funzionalità di IA non sono disponibili per le tue organizzazioni finché non salvi una chiave funzionante qui sotto.",
+    "connectKeyTitle": "Collega la tua chiave Anthropic",
+    "replaceKeyTitle": "Sostituisci la tua chiave Anthropic",
+    "keyLabel": "Chiave API Anthropic",
+    "writeOnlyHint": "La chiave viene verificata al salvataggio e non viene mai più mostrata.",
+    "saveKey": "Salva chiave",
+    "keySaved": "Chiave Anthropic salvata e verificata.",
+    "keySaveFailed": "Impossibile salvare la chiave Anthropic.",
+    "defaultModelLabel": "Modello predefinito",
+    "defaultModelHint": "Usato per le nuove sessioni di IA in tutte le tue organizzazioni.",
+    "modelUpdated": "Modello predefinito aggiornato.",
+    "modelUpdateFailed": "Impossibile aggiornare il modello predefinito.",
+    "disconnectTitle": "Torna alla chiave della piattaforma",
+    "disconnectDescription": "Rimuove la tua chiave Anthropic. L'utilizzo dell'IA torna a essere addebitato come crediti IA di Breeze.",
+    "disconnect": "Disconnetti",
+    "disconnectConfirm": "Disconnettere la tua chiave Anthropic? Le funzionalità di IA torneranno alla chiave della piattaforma e ai crediti IA di Breeze.",
+    "disconnected": "Chiave Anthropic rimossa. Le funzionalità di IA ora usano la chiave della piattaforma.",
+    "disconnectFailed": "Impossibile disconnettere la chiave Anthropic.",
+    "permissionDenied": "La gestione del provider IA richiede autorizzazioni di fatturazione e l'accesso a tutte le organizzazioni.",
+    "loadFailed": "Impossibile caricare la configurazione del provider IA.",
+    "workspaceDisclosure": "L'arricchimento dei contenuti di Workspace utilizza il provider IA configurato e appare nel tuo utilizzo IA.",
+    "endpointCardTitle": "Endpoint",
+    "endpointCardSubtitle": "Scegli dove viene inviato il tuo traffico IA. Breeze verifica ogni opzione prima che appaia qui.",
+    "directOptionLabel": "Anthropic (diretto)",
+    "verifiedModelsLabel": "Modelli verificati: {{models}}",
+    "noVerifiedModels": "Nessun modello verificato ancora",
+    "viewDataNote": "Visualizza la nota sul trattamento dei dati",
+    "hideDataNote": "Nascondi la nota sul trattamento dei dati",
+    "confirmDialogTitle": "Passare a {{name}}?",
+    "confirmDialogMessageWithNote": "Prima che il tuo traffico IA passi attraverso {{name}}, verifica come vengono trattati i tuoi dati:",
+    "confirmDialogMessageNoNote": "Passare il tuo traffico IA a {{name}}?",
+    "consentCheckboxLabel": "Capisco che il mio traffico IA e i miei contenuti saranno elaborati da {{name}}",
+    "endpointUpdated": "Endpoint IA aggiornato.",
+    "endpointUpdateFailed": "Impossibile aggiornare l'endpoint IA.",
+    "endpointDelistedBanner": "Questo endpoint è stato rimosso da Breeze — l'IA è in pausa finché non ne scegli un altro",
+    "endpointModelUnverifiedBanner": "Il modello {{model}} non è verificato su questo endpoint. Scegli un modello o un endpoint diverso per riprendere l'IA."
+  },
   "partnerDefaults": {
     "notSet": "Non impostato — le org si configurano singolarmente",
     "updatePolicy": "Criterio di aggiornamento agent",
@@ -418,6 +466,10 @@
         "label": "Budget AI",
         "description": "Limiti di spesa AI"
       },
+      "aiProvider": {
+        "label": "Provider IA",
+        "description": "Usa la tua chiave Anthropic"
+      },
       "branding": {
         "label": "Branding",
         "description": "Logo e colori"
@@ -453,7 +505,7 @@
     "loadFailed": "Impossibile caricare il branding attuale — ricarica la pagina prima di salvare, altrimenti potresti sovrascrivere impostazioni esistenti.",
     "logoUrl": "URL logo",
     "logoPlaceholder": "https://cdn.example.com/logo.png",
-    "logoHelp": "Un URL <code>https://</code> al tuo logo. Lascia vuoto per non usare un logo.",
+    "logoHelp": "SVG o PNG. I loghi larghi funzionano meglio: il portale lo mostra ad altezza fissa, quindi punta a circa 4:1 e almeno 320px di larghezza.",
     "accentColor": "Colore principale",
     "colorPicker": "Selettore colore principale",
     "colorHelp": "Un colore esadecimale <code>#rrggbb</code>.",
@@ -536,7 +588,7 @@
     },
     "loading": "Caricamento chiavi di registrazione...",
     "title": "Chiavi di registrazione",
-    "description": "Crea e gestisci le chiavi per la registrazione degli agent. Usa queste chiavi con breeze-agent enroll <key>",
+    "description": "Crea e gestisci le chiavi per la registrazione degli agent. Usa queste chiavi con <code>breeze-agent enroll <key/></code>",
     "createKey": "Crea chiave",
     "saveNow": "Salva subito questa chiave di registrazione. Non verrà mostrata di nuovo.",
     "copied": "Copiato",
@@ -568,7 +620,7 @@
     "retrySites": "Riprova",
     "createASite": "Crea un sito",
     "maxUsage": "Utilizzo massimo (opzionale)",
-    "unlimited": "Illimitato",
+    "defaultDeviceLimit": "50 (predefinito)",
     "maxUsageHelp": "Numero massimo di agent che possono registrarsi con questa chiave.",
     "expiresAt": "Scade il (opzionale)",
     "creating": "Creazione in corso...",
@@ -1083,8 +1135,7 @@
     "deadline": "Scadenza",
     "createAccessReview": "Crea revisione accessi",
     "startANewAccessReviewToAuditUserPermissionsThisWillGener": "Avvia una nuova revisione accessi per verificare le autorizzazioni degli utenti. Verranno generati elementi di revisione per tutti gli utenti nell'ambito.",
-    "step": "Passaggio",
-    "of": "di",
+    "stepSummary": "Passaggio {{current}} di {{total}}",
     "reviewName": "Nome revisione",
     "q12024AccessReview": "Revisione accessi Q1 2024",
     "descriptionOptional": "Descrizione (opzionale)",
@@ -1121,8 +1172,7 @@
     "pending": "In sospeso",
     "inProgress": "In corso",
     "completed": "Completata",
-    "of": "di",
-    "reviews": "revisioni",
+    "countSummary": "{{shown}} di {{total}} revisioni",
     "name": "Nome",
     "status": "Stato",
     "reviewer": "Revisore",
@@ -1153,23 +1203,21 @@
     "completed": "Completata",
     "reviewer": "Revisore",
     "dueDate": "Data scadenza",
+    "dueOn": "Scadenza {{date}}",
     "actions": "Azioni",
     "view": "Visualizza",
     "noCompletedAccessReviewCampaignsYet": "Nessuna campagna di revisione accessi completata finora.",
     "usersToReview": "utenti da rivedere",
-    "due": "Scadenza",
+    "reviewedSummary": "{{reviewed}} di {{total}} rivisti",
+    "showingSummary": "Visualizzazione di {{shown}} di {{total}} utenti",
     "close": "Chiudi",
     "progress": "Avanzamento",
-    "of": "di",
-    "reviewed": "rivisti",
     "deadline": "Scadenza",
     "filter": "Filtro",
     "allDecisions": "Tutte le decisioni",
     "pending": "In sospeso",
     "approved": "Approvato",
     "revoked": "Revocato",
-    "showing": "Visualizzazione",
-    "users": "utenti",
     "reasonForBulkActionOptional": "Motivo dell'azione massiva (opzionale)",
     "approveSelected": "Approva selezionati",
     "revokeSelected": "Revoca selezionati",
@@ -1272,7 +1320,391 @@
     "aIProposesAMultiStepPlanUserApprovesTheWholePlanAtOnceTh": "L'AI propone un piano in più passaggi. L'utente approva l'intero piano in una volta, poi i passaggi vengono eseguiti automaticamente.",
     "tier2ToolsAutoExecuteWithAuditLoggingTier3ToolsStillRequ": "Gli strumenti Tier 2 vengono eseguiti automaticamente con registrazione di audit. Gli strumenti Tier 3 richiedono ancora approvazione.",
     "likeActionPlanPlusLiveScreenshotsBetweenStepsAndAPersist": "Come Piano d'azione, più screenshot live tra i passaggi e un pulsante Interrompi persistente.",
-    "untitled": "Senza titolo"
+    "untitled": "Senza titolo",
+    "billedToPartnerKey": "Addebitato sulla tua chiave: l'utilizzo dell'IA va sul tuo account Anthropic, non sui crediti IA di Breeze",
+    "billedToPartnerKeyViaEndpoint": "Addebitato sulla tua chiave tramite {{name}}: l'utilizzo dell'IA va sul tuo account Anthropic, non sui crediti IA di Breeze"
+  },
+  "aiAgentsPage": {
+    "schedules": {
+      "title": "Scansioni pianificate",
+      "description": "Pianificazioni cron che eseguono la scansione della flotta di questo agente. I partner definiscono la baseline; le organizzazioni possono solo restringerla.",
+      "partnerOnly": "Le pianificazioni di scansione possono essere collegate solo a un agente valido per tutto il partner.",
+      "loading": "Caricamento delle pianificazioni…",
+      "loadFailed": "Impossibile caricare le pianificazioni di scansione.",
+      "empty": "Nessuna pianificazione di scansione.",
+      "add": "Aggiungi pianificazione",
+      "edit": "Modifica",
+      "save": "Salva pianificazione",
+      "cancel": "Annulla",
+      "delete": "Elimina pianificazione",
+      "deleteOverride": "Rimuovi eccezione",
+      "confirmDelete": "Conferma eliminazione",
+      "cron": "Espressione cron",
+      "cronHint": "Cinque campi: minuto ora giorno-del-mese mese giorno-della-settimana. Ad esempio, 0 3 * * * viene eseguito ogni giorno alle 03:00.",
+      "cronInvalid": "Inserisci un'espressione cron valida a cinque campi prima di salvare.",
+      "timezone": "Fuso orario",
+      "kinds": {
+        "sweep": "Scansione",
+        "narrative": "Report settimanale"
+      },
+      "kindsLabel": "Controlli da eseguire",
+      "kind": "Tipo di pianificazione",
+      "weeklyOnlyHint": "Un report settimanale viene attivato esattamente una volta a settimana: minuto e ora letterali, * per giorno-del-mese e mese e un solo giorno della settimana da 0 a 6. Ad esempio, 0 7 * * 1 viene eseguito ogni lunedì alle 07:00.",
+      "kindsRequired": "Seleziona almeno un controllo.",
+      "enabled": "Abilitato",
+      "override": "Personalizza per questa organizzazione",
+      "editOverride": "Modifica l'eccezione di questa organizzazione",
+      "overrideHint": "L'eccezione di questa organizzazione rispetto alla baseline del partner. Segue sempre la cadenza della baseline.",
+      "overrideSummary": "Questa organizzazione: {{state}} · {{kinds}}",
+      "overrideSummaryNarrative": "Questa organizzazione: {{state}}",
+      "tightenOnly": "Un'eccezione può solo restringere la baseline: può disattivare la scansione o rimuovere controlli, mai aggiungerne.",
+      "noKinds": "Nessun controllo",
+      "lastRun": "Ultima esecuzione {{at}} · {{admitted}} organizzazioni su {{total}} analizzate, {{skipped}} saltate.",
+      "kindLabels": {
+        "disk_pressure": "Pressione sul disco",
+        "stale_agents": "Agenti non aggiornati",
+        "pending_reboots": "Riavvii in sospeso",
+        "failed_backups": "Backup non riusciti",
+        "service_down": "Servizio non attivo",
+        "unpatched_critical": "Vulnerabilità critiche non corrette"
+      },
+      "toasts": {
+        "saved": "Pianificazione salvata",
+        "saveFailed": "Impossibile salvare la pianificazione.",
+        "deleted": "Pianificazione eliminata",
+        "deleteFailed": "Impossibile eliminare la pianificazione."
+      },
+      "errors": {
+        "invalidCron": "Questa espressione cron non è valida. Usa cinque campi, ad esempio 0 3 * * *.",
+        "invalidTimezone": "Questo non è un fuso orario IANA valido.",
+        "kindsNotSubset": "Un'eccezione può solo restringere la baseline. Rimuovi i controlli che la baseline del partner non esegue.",
+        "overrideExists": "Questa organizzazione ha già un'eccezione per quella baseline. Modifica quella esistente.",
+        "baselineWrongPartner": "Quella baseline appartiene a un altro partner.",
+        "baselineIsOverride": "Quella pianificazione è già un'eccezione. Le eccezioni non possono essere concatenate.",
+        "baselineNotPartnerRow": "Quella baseline non ha un proprietario e non può essere personalizzata.",
+        "baselineAgentMismatch": "Quella baseline appartiene a un altro agente.",
+        "agentNotPartnerWide": "Le pianificazioni di scansione richiedono un agente valido per tutto il partner.",
+        "agentKindNotTriage": "Solo un agente di triage può essere pianificato.",
+        "kindsNotEmpty": "Una pianificazione di report settimanale non esegue controlli. Rimuovi i controlli selezionati prima di salvare.",
+        "invalidCronForKind": "Un report settimanale deve essere attivato esattamente una volta a settimana. Usa minuto e ora letterali, * per giorno-del-mese e mese e un solo giorno della settimana."
+      }
+    },
+    "title": "Agenti AI",
+    "description": "Lavoratori AI con un nome e una policy. I partner definiscono la linea di base; le organizzazioni possono soltanto restringerla.",
+    "empty": "Nessun agente per ora.",
+    "allOrgs": "Tutte le organizzazioni",
+    "allOrgsHint": "A livello di partner: vale per ogni organizzazione, salvo che un’organizzazione la restringa.",
+    "stateEnabled": "Attivo",
+    "stateDisabled": "Disattivato",
+    "errors": {
+      "load": "Impossibile caricare gli agenti.",
+      "kindExists": "Esiste già un agente di questo tipo per questo proprietario. Modifica quello esistente o disattivalo prima.",
+      "modeNotSupported": "Questa modalità non è ancora disponibile. Per ora gli agenti possono indagare e proporre, ma non agire.",
+      "actPrerequisitesNotMet": "Questo agente non è ancora pronto per la modalità Agire.",
+      "actMissingRecipient": "Aggiungi almeno un destinatario di notifica prima di attivare la modalità Agire.",
+      "actMissingTool": "Consenti almeno uno strumento idoneo per la modalità Agire, oppure autorizza uno script, prima di attivarla.",
+      "invalidSupervisedActionKeys": "Una o più azioni selezionate non possono essere autorizzate dalla policy.",
+      "supervisedKeyRejected": "{{key}}: {{reason}}"
+    },
+    "actions": {
+      "add": "Nuovo agente",
+      "edit": "Modifica",
+      "save": "Salva",
+      "cancel": "Annulla",
+      "disable": "Disattiva",
+      "confirmDisable": "Conferma disattivazione"
+    },
+    "toasts": {
+      "saved": "Agente salvato",
+      "saveFailed": "Impossibile salvare l’agente.",
+      "disabled": "Agente disattivato",
+      "disableFailed": "Impossibile disattivare l’agente."
+    },
+    "issues": {
+      "name": "Assegna un nome all’agente.",
+      "severities": "Seleziona almeno una gravità di avviso.",
+      "org": "Seleziona un’organizzazione prima di creare un agente di proprietà dell’organizzazione.",
+      "allKindsTaken": "Ogni tipo di agente ha già un agente per questo proprietario. Modifica invece un agente esistente."
+    },
+    "editor": {
+      "newTitle": "Nuovo agente",
+      "editTitle": "Modifica agente",
+      "scopeLegend": "Si applica a",
+      "allOrgs": "Tutte le organizzazioni",
+      "allOrgsHint": "(linea di base a livello di partner)",
+      "thisOrg": "Solo questa organizzazione"
+    },
+    "sections": {
+      "scope": "Quando viene eseguito",
+      "permissions": "Autorizzazioni",
+      "policyDecide": "Autorizzazione della policy non presidiata",
+      "limits": "Limiti",
+      "notifications": "Notifiche",
+      "instructions": "Istruzioni"
+    },
+    "kinds": {
+      "triage": "Triage degli avvisi",
+      "patch": "Gestione delle patch",
+      "helpdesk": "Assistenza"
+    },
+    "modes": {
+      "off": "Disattivato",
+      "shadow": "Osservazione — solo indagare e proporre",
+      "act": "Agire — esegue le operazioni corrispondenti senza supervisione, con verifica"
+    },
+    "actWarning": {
+      "title": "La modalità Agire viene eseguita senza che una persona clicchi su approva",
+      "unattended": "Le operazioni corrispondenti ed equivalenti a una regola vengono eseguite senza supervisione una volta rivalidate: nessuno le approva al momento.",
+      "verification": "La verifica può comunque fallire anche dopo un'esecuzione pulita. Controlla le notifiche dopo ogni esecuzione.",
+      "noRollback": "Non esiste un rollback automatico. Se qualcosa deve essere annullato, lo fa una persona.",
+      "singleDevice": "Ogni esecuzione agisce su un solo dispositivo.",
+      "actionCap": "Un'esecuzione smette di agire una volta raggiunto il limite di azioni configurato.",
+      "ack": "Capisco che la modalità Agire viene eseguita senza supervisione, che la verifica può fallire e che non esiste un rollback."
+    },
+    "severities": {
+      "critical": "Critica",
+      "high": "Alta",
+      "medium": "Media",
+      "low": "Bassa",
+      "info": "Informativa"
+    },
+    "fields": {
+      "kind": "Tipo",
+      "kindImmutable": "Il tipo di un agente non può essere modificato dopo la creazione.",
+      "name": "Nome",
+      "mode": "Modalità",
+      "enabled": "Attivo",
+      "respectMaintenanceWindows": "Rispetta le finestre di manutenzione",
+      "toolAllowlist": "Strumenti consentiti",
+      "toolAllowlistHint": "Gli strumenti di sola lettura sono sempre disponibili. Elenca gli strumenti che modificano e che questo agente può proporre, uno per riga.",
+      "protectedHint": "Mai toccati, qualunque cosa proponga l’agente. Una voce per riga.",
+      "protectedServices": "Servizi protetti",
+      "protectedPaths": "Percorsi protetti",
+      "protectedRegistryKeys": "Chiavi di registro protette",
+      "maxDevicesPerRun": "Dispositivi max per esecuzione",
+      "maxRunsPerHour": "Esecuzioni max per ora",
+      "maxBudgetCentsPerDay": "Budget giornaliero (centesimi)",
+      "wallClockSeconds": "Durata max dell’esecuzione (secondi)",
+      "maxFleetPercentPerDay": "Quota max del parco al giorno (%)",
+      "cooldownSeconds": "Attesa per dispositivo (secondi)",
+      "recipientRolesHint": "Ruoli avvisati quando questo agente propone qualcosa.",
+      "recipientRolesEmpty": "Nessun ruolo disponibile.",
+      "instructionsHint": "Solo indicazioni — tono, cosa controllare per primo, convenzioni interne. Non concede mai autorizzazioni.",
+      "charactersLeft": "{{count}} caratteri rimasti",
+      "recipientRolesFailed": "Impossibile caricare i ruoli: al momento i destinatari delle notifiche non possono essere modificati.",
+      "supervisedActionKeysHint": "Operazioni che questo agente può eseguire SENZA che un essere umano clicchi su approva, quando esiste una policy corrispondente e il limite di esposizione dell'organizzazione ha margine. Ognuna passa comunque attraverso le protezioni live, l'interruttore di emergenza e i limiti per organizzazione al momento dell'esecuzione.",
+      "supervisedActionKeysEmpty": "Nessuna azione decidibile tramite policy è registrata.",
+      "supervisedActionKeysFailed": "Impossibile caricare l'elenco delle azioni decidibili tramite policy, quindi l'autorizzazione non presidiata non può essere modificata al momento.",
+      "ticketAutonomousWrites": "Scritture autonome dei ticket",
+      "ticketAutonomousWritesHint": "Solo override a livello di organizzazione — le scritture autonome dei ticket richiedono la modalità azione e questa attivazione a livello di organizzazione"
+    },
+    "loading": "Caricamento degli agenti…",
+    "runs": {
+      "title": "Esecuzioni degli agenti",
+      "description": "Tutte le esecuzioni nelle organizzazioni a cui hai accesso, più recenti per prime.",
+      "filters": {
+        "agent": "Agente",
+        "allAgents": "Tutti gli agenti",
+        "status": "Stato",
+        "allStatuses": "Tutti gli stati"
+      },
+      "columns": {
+        "agent": "Agente",
+        "status": "Stato",
+        "trigger": "Trigger",
+        "verdict": "Esito",
+        "queued": "In coda",
+        "finished": "Terminata",
+        "cost": "Costo"
+      },
+      "statuses": {
+        "queued": "In coda",
+        "running": "In esecuzione",
+        "awaiting_approval": "In attesa di approvazione",
+        "completed": "Completata",
+        "failed": "Non riuscita",
+        "cancelled": "Annullata",
+        "expired": "Scaduta",
+        "skipped": "Saltata"
+      },
+      "verdicts": {
+        "remediated": "Risolto",
+        "needs_attention": "Richiede attenzione",
+        "partial": "Parziale",
+        "no_action": "Nessuna azione necessaria",
+        "pending": "In sospeso"
+      },
+      "triggers": {
+        "alert": "Avviso",
+        "manual": "Manuale",
+        "schedule": "Pianificato",
+        "ticket": "Ticket",
+        "anomaly": "Anomalia"
+      },
+      "profile": {
+        "sweep": "Scansione",
+        "narrative": "Report settimanale",
+        "triage": "Triage dei ticket"
+      },
+      "sweep": {
+        "title": "Rilevazioni della scansione",
+        "kindsLabel": "Controlli: {{kinds}}",
+        "empty": "Nessuna rilevazione segnalata.",
+        "evidenceTruncated": "Le evidenze sono state troncate: non tutte le righe corrispondenti sono state mostrate all’agente.",
+        "proposalCreated": "Approvazione richiesta",
+        "columns": {
+          "kind": "Controllo",
+          "severity": "Gravità",
+          "device": "Dispositivo",
+          "title": "Rilevazione",
+          "detail": "Dettaglio",
+          "proposal": "Proposta"
+        },
+        "kinds": {
+          "disk_pressure": "Pressione del disco",
+          "stale_agents": "Agenti inattivi",
+          "pending_reboots": "Riavvii in sospeso",
+          "failed_backups": "Backup non riusciti",
+          "service_down": "Servizio non attivo",
+          "unpatched_critical": "Vulnerabilità critiche non corrette"
+        },
+        "severities": {
+          "critical": "Critica",
+          "high": "Alta",
+          "medium": "Media",
+          "low": "Bassa",
+          "info": "Informazione"
+        },
+        "reasons": {
+          "device_not_in_evidence": "Dispositivo assente nelle evidenze della scansione",
+          "device_not_in_org": "Il dispositivo non appartiene a questa organizzazione",
+          "not_allowlisted": "Strumento non consentito per questo agente",
+          "no_eligible_approvers": "Nessun approvatore idoneo",
+          "intent_error": "Impossibile creare l’approvazione",
+          "max_actions_per_run": "Limite di azioni raggiunto per questa esecuzione"
+        }
+      },
+      "narrative": {
+        "title": "Sintesi settimanale",
+        "period": "Copre dal {{start}} al {{end}}",
+        "truncatedNote": "Il contesto dell'agente è stato troncato: questa sintesi non ha visto l'intera settimana.",
+        "openReport": "Apri il report",
+        "download": "Scarica il PDF",
+        "downloadFailed": "Impossibile scaricare il PDF."
+      },
+      "noAgent": "Agente sconosciuto",
+      "loading": "Caricamento delle esecuzioni…",
+      "empty": "Nessuna esecuzione ancora.",
+      "emptyFiltered": "Nessuna esecuzione corrisponde a questi filtri.",
+      "loadMore": "Carica altro",
+      "retry": "Riprova",
+      "errors": {
+        "load": "Impossibile caricare le esecuzioni.",
+        "loadMore": "Impossibile caricare altre esecuzioni."
+      },
+      "detail": {
+        "title": "Dettaglio esecuzione",
+        "back": "Torna alle esecuzioni",
+        "notFound": "Esecuzione non trovata.",
+        "loading": "Caricamento dell'esecuzione…",
+        "errors": {
+          "load": "Impossibile caricare questa esecuzione.",
+          "notFound": "Esecuzione non trovata."
+        },
+        "labels": {
+          "agent": "Agente",
+          "device": "Dispositivo",
+          "noDevice": "Nessun dispositivo",
+          "status": "Stato",
+          "verdict": "Esito",
+          "cost": "Costo",
+          "duration": "Durata",
+          "trigger": "Trigger",
+          "queuedAt": "In coda",
+          "startedAt": "Avviata",
+          "finishedAt": "Terminata",
+          "turnCount": "Turni",
+          "summary": "Riepilogo"
+        },
+        "flags": {
+          "budgetExceeded": "Budget superato",
+          "wallClockExceeded": "Ha superato il limite di tempo",
+          "maxTurnsExceeded": "Ha raggiunto il limite di turni"
+        },
+        "trace": {
+          "title": "Traccia di esecuzione",
+          "empty": "Nessuna voce di traccia registrata.",
+          "kinds": {
+            "executed": "Eseguita",
+            "proposed": "Proposta",
+            "denied": "Negata"
+          },
+          "result": {
+            "ok": "OK",
+            "failed": "Non riuscita"
+          },
+          "execution": {
+            "succeeded": "Riuscita",
+            "failed": "Non riuscita",
+            "timeout": "Timeout",
+            "unknown": "Sconosciuto"
+          },
+          "verification": {
+            "passed": "Verificata",
+            "failed": "Verifica non riuscita",
+            "inconclusive": "Verifica non concludente",
+            "skipped": "Verifica saltata"
+          },
+          "viewApproval": "Rivedi in Approvazioni"
+        },
+        "ledger": {
+          "title": "Esecuzioni degli strumenti",
+          "empty": "Nessuna esecuzione di strumenti registrata.",
+          "columns": {
+            "tool": "Strumento",
+            "status": "Stato",
+            "duration": "Durata",
+            "started": "Avviata",
+            "error": "Errore"
+          }
+        },
+        "intents": {
+          "title": "Approvazioni collegate",
+          "empty": "Nessuna approvazione collegata.",
+          "viewAll": "Rivedi in Approvazioni"
+        },
+        "anomalyLink": "Apri anomalie dispositivo",
+        "budget": {
+          "title": "Budget di esposizione",
+          "caption": "Esposizione registrata — ultime {{hours}} ore",
+          "devices": "{{count}} di {{allowance}} dispositivi",
+          "decisionsToday": "{{count}} di {{max}} decisioni di policy oggi",
+          "partialNote": "Contabilizzazione parziale finché l'autorizzazione delle policy non presidiate è disattivata — l'esposizione reale potrebbe essere sottostimata.",
+          "unavailable": "Nessuna policy agente attiva per l'organizzazione di questa esecuzione.",
+          "loading": "Caricamento del budget…"
+        }
+      },
+      "triage": {
+        "title": "Triage dei ticket",
+        "fieldsTitle": "Campi proposti",
+        "fields": {
+          "categoryIdLabel": "ID categoria",
+          "priority": "Priorità"
+        },
+        "confidence": "{{value}}% di confidenza",
+        "device": "Dispositivo corrispondente: {{value}}",
+        "draftReplyTitle": "Bozza di risposta",
+        "draftResolutionTitle": "Bozza della nota di risoluzione",
+        "notesTitle": "Note",
+        "intentsTitle": "Modifiche al ticket proposte",
+        "intentUnknown": "Stato non disponibile",
+        "draftsWrittenTitle": "Bozze create",
+        "draftKinds": {
+          "reply": "Bozza di risposta",
+          "resolutionNote": "Bozza della nota di risoluzione"
+        }
+      }
+    }
   },
   "apiKeyForm": {
     "devicesRead": "Dispositivi: lettura",
@@ -1328,8 +1760,8 @@
   },
   "apiKeyList": {
     "aPIKeys": "Chiavi API",
-    "of": "di",
-    "keys": "chiavi",
+    "countSummary": "{{shown}} di {{total}} chiavi",
+    "pageSummary": "Pagina {{current}} di {{total}}",
     "searchByName": "Cerca per nome",
     "name": "Nome",
     "keyPrefix": "Prefisso chiave",
@@ -1344,7 +1776,6 @@
     "view": "Visualizza",
     "rotate": "Ruota",
     "revoke": "Revoca",
-    "page": "Pagina",
     "previous": "Precedente",
     "next": "Successivo",
     "allStatuses": "Tutti gli stati",
@@ -1410,6 +1841,7 @@
     "cancel": "Annulla",
     "rename": "Rinomina",
     "revoke": "Revoca",
+    "revokeConfirmTitle": "Revocare {{device}}?",
     "registerThisBrowser": "Registra questo browser",
     "optionalYourPhoneIsAlreadyAnApproverOnceYouSignInToTheMo": "Opzionale — il telefono è già un approvatore dopo l'accesso all'app mobile. Registra anche questo browser e ti verrà richiesto Windows Hello, Touch ID o la biometria del dispositivo.",
     "deviceName": "Nome dispositivo",
@@ -1582,8 +2014,7 @@
     "onInvoice": "in fattura",
     "componentCost": "Costo componente",
     "bundleMargin": "Margine bundle",
-    "showingTheFirst": "Visualizzazione dei primi",
-    "itemsUseSearchToNarrowTheList": "elementi. Usa la ricerca per restringere l'elenco.",
+    "capNote": "Visualizzazione dei primi {{limit}} elementi. Usa la ricerca per restringere l'elenco.",
     "archiveItem": "Archivia elemento",
     "rowActions": "Azioni riga",
     "edit": "Modifica",
@@ -1690,10 +2121,15 @@
     "disable": "Disabilita",
     "enable": "Abilita",
     "sMSCodes": "Codici SMS",
-    "phoneVerified": "(telefono verificato: ...",
+    "phoneVerifiedLast4": "(telefono verificato: ...{{last4}})",
     "recoveryCodes": "Codici di recupero",
     "useTheseCodesToAccessYourAccountIfYouLoseYourAuthenticat": "Usa questi codici per accedere al tuo account se perdi l'accesso all'app authenticator.",
-    "viewCodes": "Visualizza codici",
+    "recoveryCodesAreShownOnceAndCannotBeDisplayedAgain": "I codici di recupero vengono mostrati una sola volta e non possono essere visualizzati di nuovo.",
+    "regenerateRecoveryCodes": "Rigenera i codici di recupero",
+    "existingCodesCannotBeDisplayedAgainRegeneratingIssuesA": "I codici esistenti non possono essere visualizzati di nuovo. La rigenerazione emette una nuova serie e invalida immediatamente quella precedente.",
+    "regenerateRecoveryCodesQuestion": "Rigenerare i codici di recupero?",
+    "regeneratingImmediatelyInvalidatesEveryRecoveryCodeYou": "La rigenerazione invalida immediatamente tutti i codici di recupero che hai salvato, comprese le copie stampate. I nuovi codici vengono mostrati una sola volta, subito dopo la generazione.",
+    "thatCodeWasNotAcceptedYourQRCodeIsStillValidWaitForThe": "Il codice non è stato accettato. Il tuo codice QR è ancora valido: attendi il codice successivo dell’app authenticator e riprova.",
     "confirmYourPassword": "Conferma la password",
     "reEnterYourAccountPasswordToStartSettingUpAnAuthenticato": "Reinserisci la password dell'account per iniziare a configurare un'app authenticator.",
     "setUpAuthenticator": "Configura authenticator",
@@ -1705,7 +2141,8 @@
     "reEnterYourAccountPasswordToConfirmThisChange": "Reinserisci la password dell'account per confermare questa modifica.",
     "saveTheseCodesInASafePlaceYouCanUseThemToAccessYourAccou": "Salva questi codici in un luogo sicuro. Puoi usarli per accedere al tuo account se perdi il dispositivo authenticator.",
     "copyCodes": "Copia codici",
-    "clickTheButtonBelowToViewOrGenerateNewRecoveryCodes": "Fai clic sul pulsante qui sotto per visualizzare o generare nuovi codici di recupero.",
+    "copiedCodes": "Copiato",
+    "copyCodesFailed": "Impossibile copiare negli appunti. Seleziona i codici qui sopra e copiali manualmente.",
     "eachCodeCanOnlyBeUsedOnceGeneratingNewCodesWillInvalidat": "Ogni codice può essere usato una sola volta. Generare nuovi codici invaliderà quelli creati in precedenza.",
     "back": "Indietro",
     "smsSentToPhone": "Codici SMS inviati al telefono che termina con {{last4}}.",
@@ -1729,7 +2166,10 @@
     "disabling": "Disabilitazione...",
     "generating": "Generazione...",
     "regenerateCodes": "Rigenera codici",
-    "showRecoveryCodes": "Mostra codici di recupero"
+    "verifyYourIdentity": "Verifica la tua identità",
+    "thisAccountSignsInThroughAnIdentityProviderAndHasNoPassw": "Questo account accede tramite un provider di identità e non ha una password. Verificati nuovamente presso il tuo provider per iniziare a configurare un'app di autenticazione.",
+    "verifyWithYourIdentityProvider": "Verifica con il tuo provider di identità",
+    "ssoReauthProofExpired": "La verifica tramite il provider di identità è scaduta. Eseguila di nuovo per completare la configurazione dell'app di autenticazione."
   },
   "pax8CatalogDrawer": {
     "importFromPax8": "Importa da Pax8",
@@ -1737,6 +2177,7 @@
     "close": "Chiudi",
     "imported": "\"{{name}}\" importato nel catalogo",
     "importedWithoutCleanup": "\"{{name}}\" importato — pulizia IA non disponibile, mantenuto il nome originale.",
+    "importedPricePreserved": "\"{{name}}\" importato — il prezzo esistente in {{currencies}} è stato mantenuto; solo il costo è stato aggiornato da Pax8.",
     "couldNotImportThePax8Product": "Impossibile importare il prodotto Pax8."
   },
   "profilePage": {
@@ -1757,7 +2198,7 @@
     "passkeys": "Passkey",
     "managePasskeysThatCanBeUsedAsMultiFactorAuthenticationFo": "Gestisci le passkey utilizzabili come autenticazione a più fattori per il tuo account.",
     "loadingPasskeys": "Caricamento passkey...",
-    "lastUsed": "Ultimo utilizzo:",
+    "lastUsedAt": "Ultimo utilizzo: {{date}}",
     "rename": "Rinomina",
     "noPasskeysAreRegisteredForThisAccount": "Nessuna passkey è registrata per questo account.",
     "addPasskey": "Aggiungi passkey",
@@ -1815,7 +2256,22 @@
     "failedToEnableMfaHttp": "Abilitazione MFA non riuscita (HTTP {{status}})",
     "failedToDisableMfaHttp": "Disabilitazione MFA non riuscita (HTTP {{status}})",
     "failedToStartPasskeyHttp": "Avvio configurazione passkey non riuscito (HTTP {{status}})",
-    "failedToSavePasskeyHttp": "Salvataggio passkey non riuscito (HTTP {{status}})"
+    "failedToSavePasskeyHttp": "Salvataggio passkey non riuscito (HTTP {{status}})",
+    "ssoReauthNotFresh": "Il tuo provider di identità non ha verificato nuovamente il tuo accesso. Riprova oppure chiedi all'amministratore di consentire le richieste di riautenticazione.",
+    "ssoReauthIdentityMismatch": "Quell'account del provider di identità non è quello collegato a questo profilo. Accedi con il tuo account e riprova.",
+    "ssoReauthSessionInvalid": "La tua sessione è cambiata durante la verifica. Accedi di nuovo, quindi riprova.",
+    "ssoReauthPasswordSet": "Questo account ora ha una password. Usala per configurare l'autenticazione a più fattori.",
+    "ssoReauthUnavailable": "La verifica tramite il provider di identità non è temporaneamente disponibile. Riprova tra poco.",
+    "ssoReauthProviderInactive": "L'accesso Single Sign-On non è più disponibile per questo account. Rivolgiti all'amministratore e riprova.",
+    "ssoReauthConfigChanged": "Le impostazioni di Single Sign-On sono cambiate durante la verifica. Avvia di nuovo la verifica.",
+    "ssoReauthEmailUnverified": "Il tuo provider di identità segnala che il tuo indirizzo e-mail non è verificato. Verificalo lì, quindi riprova.",
+    "ssoReauthProofExpired": "La verifica tramite il provider di identità è scaduta. Eseguila di nuovo per completare la configurazione dell'autenticazione a più fattori.",
+    "thisAccountSignsInThroughAnIdentityProviderVerifyBeforeAddingAPasskey": "Questo account accede tramite un provider di identità e non ha una password. Esegui di nuovo la verifica presso il provider prima di aggiungere una passkey.",
+    "yourIdentityIsVerifiedNameThisPasskeyAndContinue": "La tua identità è stata verificata. Assegna un nome a questa passkey e continua.",
+    "verifyWithYourIdentityProvider": "Verifica con il tuo provider di identità",
+    "passkeyIdpVerificationRequired": "Verifica con il tuo provider di identità prima di aggiungere una passkey.",
+    "ssoReauthFailed": "Non è stato possibile verificare con il tuo provider di identità. Riprova.",
+    "couldNotStartIdentityProviderVerification": "Non è stato possibile avviare la verifica tramite il provider di identità."
   },
   "roleManager": {
     "roles": "Ruoli",
@@ -1837,7 +2293,7 @@
     "clone": "Clona",
     "edit": "Modifica",
     "delete": "Elimina",
-    "permissionsFor": "Autorizzazioni per",
+    "permissionsForRole": "Autorizzazioni per {{role}}",
     "loadingPermissions": "Caricamento autorizzazioni...",
     "retry": "Riprova",
     "resource": "Risorsa",
@@ -1980,6 +2436,8 @@
     "securitySettings": "Impostazioni sicurezza",
     "enforceSSOOnlyLogin": "Imponi accesso solo SSO",
     "usersMustUseSSOToSignInPasswordLoginWillBeDisabled": "Gli utenti devono usare SSO per accedere. L'accesso con password verrà disabilitato.",
+    "trustThisProvidersMFA": "Considera attendibile l'MFA di questo provider",
+    "trustThisProvidersMFAHelperText": "Quando il tuo provider di identità segnala che è stata usata l'autenticazione a più fattori (`amr: mfa`), l'MFA viene considerata soddisfatta in Breeze. Il tuo IdP deve includere il claim `amr` nel suo token ID — la maggior parte richiede che questo sia abilitato esplicitamente. Disattivato per impostazione predefinita.",
     "warningSSOEnforcementEnabled": "Avviso: imposizione SSO abilitata",
     "usersWillNotBeAbleToSignInWithPasswordsMakeSureYourSSOCo": "Gli utenti non potranno accedere con password. Assicurati che la configurazione SSO funzioni correttamente prima di abilitare questa opzione. Valuta di mantenere almeno un account amministratore che possa bypassare SSO per accesso di emergenza.",
     "testing": "Test in corso...",
@@ -1992,8 +2450,7 @@
     "inactive": "Inattivo",
     "testing": "Test in corso",
     "sSOProviders": "Provider SSO",
-    "of": "di",
-    "providers": "provider",
+    "countSummary": "{{shown}} di {{total}} provider",
     "searchProviders": "Cerca provider",
     "name": "Nome",
     "type": "Tipo",
@@ -2053,7 +2510,21 @@
     "unableToConnectToTheIdentityProvider": "Impossibile connettersi al provider di identità.",
     "testFailed": "Test non riuscito",
     "createProvider": "Crea provider",
-    "saveChanges": "Salva modifiche"
+    "saveChanges": "Salva modifiche",
+    "enforceLockoutTitle": "Alcuni utenti verranno bloccati",
+    "enforceLockoutSummary": "{{unlinked}} di {{total}} utenti attivi non hanno collegato l'SSO e non potranno più accedere una volta attivata l'applicazione obbligatoria dell'SSO:",
+    "enforceLockoutSelfBadge": "il tuo account",
+    "enforceLockoutHasPasskey": "ha una passkey",
+    "enforceLockoutTruncated": "…e altri non mostrati.",
+    "enforceLockoutSelfWarning": "Il tuo account non è collegato — bloccheresti te stesso.",
+    "enforceLockoutAcknowledge": "Comprendo che questi utenti non potranno accedere finché non collegheranno l'SSO",
+    "enforceLockoutConfirm": "Abilita applicazione obbligatoria",
+    "enforceLockoutConfirmationNeeded": "Conferma l'avviso di blocco per abilitare l'applicazione obbligatoria dell'SSO.",
+    "providerCreated": "Provider creato",
+    "providerUpdated": "Provider aggiornato",
+    "providerDeleted": "Provider eliminato",
+    "providerEnabled": "Provider abilitato",
+    "providerDisabled": "Provider disabilitato"
   },
   "tdSynnexCatalogPanel": {
     "marginUnavailableCostIn": "Costo in {{currency}} — margine non disponibile",
@@ -2135,7 +2606,7 @@
     "password": "Password",
     "enabled": "Abilitato",
     "sYNNEXSKUOrMfgPart": "SKU SYNNEX o codice produttore #",
-    "sYNNEXSKU": "SKU SYNNEX",
+    "synnexSku": "SKU SYNNEX {{sku}}",
     "yourCost": "Il tuo costo",
     "mSRP": "MSRP",
     "totalAvailable": "Totale disponibile",
@@ -2267,7 +2738,7 @@
     "responseSLAMinutes": "SLA risposta (minuti)",
     "resolutionSLAMinutes": "SLA risoluzione (minuti)",
     "billableByDefault": "Fatturabile per impostazione predefinita",
-    "defaultHourlyRate": "Tariffa oraria predefinita",
+    "defaultHourlyRate": "Tariffa oraria predefinita ({{currency}})",
     "save": "Salva",
     "cancel": "Annulla",
     "responseMinutes": "{{count}}m risposta",
@@ -2343,7 +2814,9 @@
     "categories": "Categorie",
     "export": "Esporta",
     "inboundEmail": "Email in ingresso",
-    "cannedResponses": "Risposte predefinite"
+    "cannedResponses": "Risposte predefinite",
+    "checkingAccess": "Verifica dell’accesso in corso...",
+    "timeTracking": "Tracciamento tempo"
   },
   "ticketFormsCard": {
     "heading": "Moduli di raccolta",
@@ -2503,6 +2976,12 @@
     "noOrganization": {
       "title": "Nessuna organizzazione selezionata",
       "description": "Seleziona un'organizzazione dal selettore nell'header per visualizzare le impostazioni."
+    },
+    "archived": {
+      "banner": "Questa organizzazione è archiviata ed è di sola lettura. Ripristinala per apportare modifiche.",
+      "bannerWithDate": "Questa organizzazione è archiviata: l'eliminazione è prevista per il {{date}}. Ripristinala per apportare modifiche.",
+      "restoreLink": "Ripristina questa organizzazione",
+      "saveBlocked": "Questa organizzazione è archiviata e non può essere modificata. Ripristinala prima."
     },
     "actions": {
       "save": "Salva",
@@ -2768,7 +3247,8 @@
     "billing": {
       "title": "Valori predefiniti fatturazione",
       "description": "Impostazioni di fatturazione predefinite per le voci di tempo sui ticket di questa organizzazione.",
-      "hourlyRate": "Tariffa oraria predefinita",
+      "hourlyRate": "Tariffa oraria predefinita ({{currency}})",
+      "currencyNudge": "Questa organizzazione fattura in {{orgCurrency}}, non nella valuta predefinita del tuo partner, {{partnerCurrency}}. Le tariffe inserite qui vengono salvate in {{orgCurrency}} e non vengono mai convertite.",
       "billable": "Fatturabile predefinito",
       "inherit": "Eredita",
       "billableOption": "Fatturabile",
@@ -2822,7 +3302,10 @@
       "trial": "Prova",
       "suspended": "Sospesa",
       "churned": "Persa",
-      "offboarding": "In dismissione"
+      "offboarding": "In dismissione",
+      "merging": "Fusione in corso",
+      "archived": "Archiviata",
+      "purging": "Eliminazione in corso"
     },
     "columns": {
       "devices": "Dispositivi"
@@ -2898,7 +3381,7 @@
       "addOrganization": "Aggiungi organizzazione",
       "tryAgain": "Riprova",
       "editOrganization": "Modifica organizzazione",
-      "deleteOrganization": "Elimina organizzazione",
+      "archiveOrganization": "Archivia organizzazione",
       "deleting": "Eliminazione..."
     },
     "errors": {
@@ -2906,7 +3389,6 @@
       "generic": "Si è verificato un errore",
       "saveOrder": "Impossibile salvare l'ordine delle organizzazioni",
       "saveOrganization": "Impossibile salvare l'organizzazione",
-      "deleteOrganization": "Impossibile eliminare l'organizzazione",
       "saveSite": "Impossibile salvare il sito ({{status}})",
       "deleteSite": "Impossibile eliminare il sito"
     },
@@ -2915,7 +3397,10 @@
       "trial": "Prova",
       "suspended": "Sospesa",
       "churned": "Persa",
-      "offboarding": "In dismissione"
+      "offboarding": "In dismissione",
+      "merging": "Fusione in corso",
+      "archived": "Archiviata",
+      "purging": "Eliminazione in corso"
     },
     "deviceCount": "{{count}} dispositivi",
     "list": {
@@ -2937,11 +3422,6 @@
       "description": "Crea una nuova organizzazione con i dettagli qui sotto.",
       "submit": "Crea organizzazione"
     },
-    "delete": {
-      "title": "Elimina organizzazione",
-      "messagePrefix": "Vuoi davvero eliminare",
-      "messageSuffix": " Questa azione non può essere annullata."
-    },
     "siteModal": {
       "editTitle": "Modifica sito",
       "editDescription": "Aggiorna i dettagli del sito qui sotto.",
@@ -2958,6 +3438,104 @@
       "title": "Elimina sito",
       "messagePrefix": "Vuoi davvero eliminare",
       "messageSuffix": " Questa azione non può essere annullata."
+    },
+    "merge": {
+      "openButton": "Unisci a un'altra organizzazione",
+      "title": "Unisci organizzazione",
+      "description": "Sposta i dati di {{name}} in un'organizzazione superstite. {{name}} viene quindi ritirata permanentemente e non può essere recuperata.",
+      "survivorLabel": "Unisci a",
+      "survivorPlaceholder": "Seleziona un'organizzazione superstite...",
+      "noEligibleSurvivors": "Nessuna organizzazione idonea a cui unire.",
+      "previewLoading": "Calcolo di ciò che verrebbe spostato...",
+      "totalMovableRows": "Verranno spostate {{count}} righe",
+      "tablesHeading": "Tabelle interessate",
+      "tableRowSummary": "{{table}}: {{loserRows}} riga/e, {{wouldDrop}} verrebbero scartate",
+      "warningsHeading": "Avvisi",
+      "tooLarge": "Questa unione sposterebbe troppe righe per essere eseguita automaticamente. Contatta l'assistenza per pianificare un'unione manuale.",
+      "confirmLabel": "Digita \"{{name}}\" per confermare",
+      "cancel": "Annulla",
+      "confirmButton": "Unisci organizzazione",
+      "merging": "Unione in corso...",
+      "progressTitle": "Unione in corso",
+      "progressDescription": "L'operazione può richiedere alcuni minuti.",
+      "doneTitle": "Unione completata",
+      "resultSummary": "{{moved}} riga/e spostate, {{dropped}} riga/e scartate",
+      "close": "Chiudi",
+      "failedTitle": "Unione non riuscita",
+      "retry": "Riprova unione",
+      "retrying": "Nuovo tentativo...",
+      "errors": {
+        "preview": "Anteprima dell'unione non riuscita",
+        "merge": "Impossibile avviare l'unione",
+        "missingResult": "L'unione è terminata ma non ha restituito dati di risultato. Riprova.",
+        "mfaRequired": "L'unione delle organizzazioni richiede l'autenticazione a più fattori. Attiva l'MFA nelle impostazioni di sicurezza del tuo profilo e riprova."
+      }
+    },
+    "archive": {
+      "title": "Archivia organizzazione",
+      "description": "Archiviando {{name}} la nascondi dal tuo elenco attivo senza eliminare nulla. Potrai ripristinarla in seguito.",
+      "consequencesHeading": "Cosa succede quando archivi:",
+      "consequences": {
+        "hidden": "Nascosta dall'elenco delle organizzazioni e dalla ricerca",
+        "readOnly": "I dati esistenti restano intatti e in sola lettura",
+        "agentsUninstalled": "Gli agenti vengono disinstallati dai suoi dispositivi",
+        "billingStops": "La fatturazione per questa organizzazione si interrompe",
+        "purgeScheduled": "Eliminata definitivamente dopo il periodo di conservazione, a meno che tu non la ripristini prima",
+        "purgeNever": "Conservata finché non la elimini — mai eliminata automaticamente"
+      },
+      "restoreNote": "Ripristinare {{name}} annulla questa azione ed è possibile in qualsiasi momento prima dell'eliminazione definitiva.",
+      "retentionLabel": "Conserva i dati archiviati per",
+      "retentionOptions": {
+        "days30": "30 giorni",
+        "days90": "90 giorni (consigliato)",
+        "days365": "365 giorni",
+        "never": "Mai — conserva indefinitamente",
+        "custom": "Personalizzato"
+      },
+      "customDaysLabel": "Numero di giorni (1–3650)",
+      "customError": "Inserisci un numero di giorni compreso tra 1 e 3650.",
+      "cancel": "Annulla",
+      "confirmButton": "Archivia organizzazione",
+      "archiving": "Archiviazione...",
+      "doneOffboardingTitle": "Archiviazione avviata",
+      "doneOffboardingDescription": "{{name}} è in fase di archiviazione — i suoi agenti vengono disinstallati ora. Il processo si completa automaticamente in pochi minuti.",
+      "doneArchivedTitle": "Organizzazione archiviata",
+      "doneArchivedDescription": "{{name}} è stata archiviata.",
+      "donePurgeScheduled": "Sarà eliminata definitivamente il {{date}}.",
+      "donePurgeNever": "I suoi dati saranno conservati finché non li elimini.",
+      "close": "Chiudi",
+      "errors": {
+        "archive": "Impossibile archiviare l'organizzazione",
+        "mfaRequired": "L'archiviazione delle organizzazioni richiede l'autenticazione a più fattori. Abilita l'MFA nelle impostazioni di sicurezza del tuo profilo, quindi riprova."
+      }
+    },
+    "archived": {
+      "sectionTitle": "Archiviate",
+      "loading": "Caricamento delle organizzazioni archiviate...",
+      "empty": "Nessuna organizzazione archiviata.",
+      "noMatches": "Nessuna organizzazione archiviata corrisponde alla ricerca.",
+      "badge": "Archiviata",
+      "keptIndefinitely": "Conservata indefinitamente",
+      "purgeToday": "Eliminata definitivamente oggi",
+      "purgeCountdown_one": "Eliminata definitivamente tra {{count}} giorno",
+      "purgeCountdown_other": "Eliminata definitivamente tra {{count}} giorni",
+      "truncatedNote": "Vengono mostrate le prime {{count}} organizzazioni archiviate. Cerca per restringere l'elenco.",
+      "readOnlyNotice": "Questa organizzazione è archiviata ed è in sola lettura. Ripristinala per riprendere l'accesso normale.",
+      "errors": {
+        "fetch": "Impossibile caricare le organizzazioni archiviate"
+      }
+    },
+    "restore": {
+      "action": "Ripristina",
+      "restoring": "Ripristino in corso...",
+      "success": "{{name}} ripristinata — stato: {{status}}.",
+      "recreateRequiredNote": "Prima che sia di nuovo pienamente utilizzabile: {{items}}",
+      "suspendedNote": "Era sospesa prima dell'archiviazione, quindi è stata ripristinata come sospesa — risolvi questo aspetto prima che riprenda l'accesso normale.",
+      "errors": {
+        "restore": "Impossibile ripristinare l'organizzazione",
+        "mfaRequired": "Il ripristino delle organizzazioni richiede l'autenticazione a più fattori. Abilita l'MFA nelle impostazioni di sicurezza del tuo profilo, quindi riprova.",
+        "purging": "Questa organizzazione è già in fase di eliminazione definitiva e non può più essere ripristinata."
+      }
     }
   },
   "siteDetailPage": {
@@ -3390,5 +3968,17 @@
     "confirmBody": "Questo disconnette {{name}} dal componente aggiuntivo tecnico di Outlook su ogni dispositivo. Potrà associarsi di nuovo effettuando l'accesso.",
     "cancel": "Annulla",
     "confirmRevoke": "Revoca associazione"
+  },
+  "timeTrackingSettingsCard": {
+    "heading": "Voci di tempo suggerite",
+    "subheading": "Quando una sessione remota termina, viene proposta nell’app mobile Breeze come voce di tempo con un solo tocco. Nulla viene registrato senza quel tocco. Il foglio ore web non mostra alcun elenco di suggerimenti.",
+    "enabledLabel": "Suggerisci voci di tempo dalle sessioni remote",
+    "minSessionLabel": "Durata minima della sessione (secondi)",
+    "mergeGapLabel": "Intervallo di unione (minuti)",
+    "save": "Salva",
+    "saved": "Impostazioni di tracciamento tempo salvate",
+    "saveFailed": "Impossibile salvare le impostazioni di tracciamento tempo",
+    "minSessionRange": "La durata minima della sessione deve essere compresa tra {{min}} e {{max}} secondi",
+    "mergeGapRange": "L’intervallo di unione deve essere compreso tra {{min}} e {{max}} minuti"
   }
 }

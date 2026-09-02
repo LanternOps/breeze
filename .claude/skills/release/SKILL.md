@@ -41,6 +41,43 @@ If migrations are listed, you're committing prod to those migrations the moment 
 
 **Smoke-test privileged migrations as a NON-SUPERUSER role (learned the hard way, v0.95.0→v0.95.1).** CI and the local docker-compose test DB both migrate as the Postgres **superuser** (`POSTGRES_USER=breeze`), which silently passes statements a least-privilege role would be *denied*. Prod is DO-managed **`doadmin` — NOT a superuser**, so a migration that only a superuser can run passes every test and then **crash-loops the API on deploy** (this is exactly what took EU down on v0.95.0: `ALTER FUNCTION ... OWNER TO <role>` requires the *new owner* to hold `CREATE` on the schema; a superuser bypasses that check, doadmin does not → `permission denied for schema public`). So: any migration in the range that does `CREATE ROLE`, `ALTER ... OWNER TO`, `GRANT`/`REVOKE` on a schema, `CREATE EXTENSION`, or a `SECURITY DEFINER` function — **run it against a non-superuser role before tagging.** Two ways: pipe the migration to a real managed DB (or a droplet's `doadmin`) inside `BEGIN; ...; ROLLBACK;` with `ON_ERROR_STOP=1`, or `SET ROLE <nosuperuser-createrole-role>` on a local DB that already has the full schema. If it only works as a superuser, fix it forward (grant the owning role the privilege for the one statement, then revoke) **before** it reaches prod.
 
+## Step 0.4 — Author the in-app "What's New" entry (BEFORE tagging)
+
+The post-upgrade splash (`WhatsNewSplash`, shown on dashboard load) renders an entry from
+`WHATS_NEW_ENTRIES` in `apps/web/src/lib/whatsNew.ts` — a list **bundled into the web image
+at build time**. No entry for the release = no splash after the upgrade, regardless of what
+the server version says. This got skipped for 0.106.0 and 0.107.x, so the splash never fired
+in prod even though the feature shipped in 0.105.0.
+
+Ordering is the whole point: this is the **one comms artifact that is pre-tag**. The entry
+must be merged to `main` before the tag is pushed, or the build won't contain it. Everything
+else (release body, marketing notes, docs, Discord) happens after.
+
+Add a new entry at the **top** of `WHATS_NEW_ENTRIES` (newest-first):
+
+```ts
+{
+  version: '0.X.Y',   // bare semver — must equal the tag minus the 'v'
+  date: 'YYYY-MM-DD', // release date
+  title: '<one-line theme — same theme as the release body>',
+  highlights: [
+    // 2–5 short, user-facing bullets. Technician/MSP language, not commit
+    // subjects. Same audience as the marketing notes, tighter than both.
+  ],
+  learnMoreUrl: 'https://breezermm.com/release-notes',
+},
+```
+
+- Source the bullets from the same `$PREV..HEAD` sweep as Step 1 — the 2–5 things a
+  technician would actually notice in the UI. Skip infra, deps, internal refactors. A
+  mostly-internal release can honestly say "hardening and reliability" — or skip the entry
+  entirely (skipping is a valid choice, just a deliberate one).
+- Sanity-check: `cd apps/web && npx vitest run src/lib/whatsNewState.test.ts src/components/whatsNew/WhatsNewSplash.test.tsx`
+- **Already tagged without an entry? Do NOT backdate.** Users' `lastSeenVersion` floor in
+  localStorage is already baselined at the version they're running, so an entry versioned at
+  or below the shipped release will never auto-show for them. Version the entry as the *next*
+  release and fold the missed highlights into it.
+
 ## Step 0.5 — After tagging: WAIT for the build, confirm ALL artifacts exist
 
 Pushing the tag kicks off `release.yml`, which is a **long, multi-job build** (~20–40 min): api/web/portal GHCR images, agent binaries for every platform, the **signed** Windows MSI, the **notarized** macOS agent/viewer/helper, watchdog + user-helper, and the signed `release-artifact-manifest.json` (+ `.ed25519`/`.minisig`) and `checksums.txt`. The GitHub Release is created by the **final** job — you cannot `gh release edit` the body until then, and **you must not roll out until every artifact is present**.
@@ -58,11 +95,28 @@ gh release view $PREV --repo lanternops/breeze --json assets -q '.assets | lengt
 gh release view $NEW  --repo lanternops/breeze --json assets -q '.assets[].name' | sort
 ```
 
-Before proceeding, verify the new release has the **same asset families** as the prior one — in particular the signed `breeze-agent.msi`, the macOS `.pkg`/`.dmg`/`.app.tar.gz`, the viewer/helper installers, and `release-artifact-manifest.json` + `.ed25519` + `.minisig` + `checksums.txt`. A short asset list = signing or notarization failed midway.
+Before proceeding, verify the new release has the **same asset families** as the prior one — the macOS `.pkg`/`.dmg`/`.app.tar.gz`, the viewer/helper installers, the `-unsigned` BYO-signing inputs, and `release-artifact-manifest.json` + `.ed25519` + `.minisig` + `checksums.txt`. A short asset list = signing or notarization failed midway.
 
 - **If the run failed**, re-run just the failed jobs (`gh run rerun "$RUN" --failed`) and re-watch. Don't hand-publish a release off a red build, and don't roll out.
 - **`gh run watch` can exit non-zero while the run is still in progress** (seen 2026-07-02) — before treating a watch failure as a build failure, check `gh run view $RUN --json status`: `in_progress` means keep waiting (a `status`-polling loop is more reliable than `gh run watch`).
 - You *can* draft the release body and the Discord message (Steps 1–5) while the build runs — just don't **publish** the body or **deploy** until this gate is green.
+
+## Step 0.6 — Abuse-asset gate + hosted signing lane (fork-era releases, ≥ v0.105.0)
+
+Since the installer-trust fork, the public release must contain **nothing abuse-usable**, and the signed hosted agent build comes from a separate private lane. Both are release-blocking; the tag lands as a **draft** (`RELEASE_DRAFT_FIRST=true`) and stays one until the hosted cutover completes.
+
+**1. Verify the public draft's assets — bytes and manifest, not job color:**
+
+- Every agent-family Windows exe and the MSI must be **unsigned** (`edition=self-host` in `release-artifact-manifest.json`; zero `edition=hosted` entries). Check the actual bytes: PE security-directory size 0 on the exe, no `DigitalSignature` stream in the MSI, and the `-unsigned` asset byte-identical (`cmp`) to its non-suffixed twin.
+- Only Viewer/Helper installers are Authenticode-signed (currently an OV cert — SmartScreen reputation warnings after a cert change are expected, not a failure).
+- Spot-check `checksums.txt` against downloaded assets.
+
+**2. Dispatch the private hosted signing lane.** Repo name, dispatch command, edition choice (gap vs strict), and token gotchas live in `internal/ops/release-infra.md` ("Hosted signing lane") — read it, don't reconstruct. Key facts:
+
+- The lane verifies the signed official manifest + tag↔sourceCommit binding before building, rebuilds the agent family as the **hosted** edition (control-plane allowlist baked in), signs with the production provider, and publishes only a **private** GHCR image — never public assets.
+- It runs against the **draft** release, so its verify job needs the cross-repo PAT described in the infra doc (draft releases are invisible to read-only credentials — the PAT needs contents **read and write** on the public repo).
+- Signing consumes production signing quota: get Todd's explicit go for the dispatch, per run.
+- Order (fork runbook): public build green → asset gate above → hosted lane green → **droplet flip** → only then publish the draft → fleet promote. Each arrow is a separate explicit go from Todd — approval for one step never carries to the next.
 
 ## Step 1 — Source the content (PRs + git only)
 
@@ -362,7 +416,10 @@ and per-severity clocks: `internal/security-disclosure-policy.md`.
 - [ ] **Advisory-debt pre-flight run** (`gh api ... select(.state=="draft")`) — any draft whose patched version already rolled out is **published before this release proceeds**
 - [ ] `docs/release-notes/next-release-draft.md` read and folded into the body — then cleared
 - [ ] `git diff $PREV..HEAD --stat` + migrations reviewed — blast radius understood
+- [ ] In-app What's New entry added to `WHATS_NEW_ENTRIES` (`apps/web/src/lib/whatsNew.ts`) and **merged to main BEFORE the tag** — version = bare semver of this release (or deliberately skipped for an internal-only release)
 - [ ] Tag pushed (off main for full release / off $PREV for surgical hotfix)
+- [ ] **Abuse-asset gate** (Step 0.6): agent-family exes/MSI verified unsigned at the byte level, manifest all `edition=self-host`, checksums spot-checked
+- [ ] **Hosted signing lane dispatched and green** (private repo — see `internal/ops/release-infra.md`), with Todd's explicit go; draft stays unpublished until the droplet flip completes
 - [ ] **Build finished green + ALL artifacts present** (signed MSI, notarized macOS, manifest+sigs, checksums) — asset count matches prior release; do not publish/roll out before this
 - [ ] GitHub Release body written — Summary/Added/Improved/Fixed/Security + **Self-Hosting/Upgrade Notes** (env vars, migrations, behavior changes, breaking changes), appended above auto "What's Changed"
 - [ ] `/update-breeze-release-notes` (marketing site) — published via the site's deploy script, not just committed

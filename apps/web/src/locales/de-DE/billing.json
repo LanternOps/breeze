@@ -96,6 +96,7 @@
           "cancel": "Vertrag gekündigt"
         },
         "invoiceGenerated": "Rechnung erstellt",
+        "priceBookGaps": "{{count}} Katalogposition(en) zum Vertrags-Snapshot abgerechnet — kein {{currency}}-Preis im Katalog: {{lines}}",
         "draftDeleted": "Entwurf gelöscht"
       },
       "cancelConfirm": {
@@ -201,7 +202,11 @@
         "lineTotal": "Positionssumme: {{total}}",
         "addLine": "Position hinzufügen",
         "noPriceInCurrency": "Kein Preis in {{currency}} für dieses Element — legen Sie einen im Katalog an oder heben Sie die Katalogverknüpfung auf und erfassen Sie eine manuelle Position.",
-        "priceFromCatalog": "Stückpreis (aus dem Katalog, in {{currency}})"
+        "priceFromCatalog": "Stückpreis (aus dem Katalog, in {{currency}})",
+        "resolvingPrice": "{{currency}}-Preis wird ermittelt…",
+        "priceLookupFailed": "Der {{currency}}-Preis konnte nicht ermittelt werden.",
+        "priceNotRepresentable": "Der gespeicherte {{currency}}-Preis dieses Artikels ist in {{currency}} ungültig — korrigieren Sie ihn im Katalog oder heben Sie die Katalogverknüpfung auf und erfassen Sie eine manuelle Position.",
+        "priceSourceOrgOverride": "Organisationsspezifischer Preis für {{org}}"
       },
       "estimate": {
         "title": "Geschätzter Zeitraum",
@@ -318,7 +323,65 @@
     "tabs": {
       "contracts": "Verträge",
       "templates": "Vorlagen",
-      "documents": "Dokumente"
+      "documents": "Dokumente",
+      "currencyMismatches": "Währungsabweichungen"
+    },
+    "currencyMismatches": {
+      "title": "Währungsabweichungen",
+      "description": "Verträge, die noch in einer Währung erfasst sind, in der ihre Organisation nicht mehr abrechnet. Öffnen Sie einen Vertrag zur Prüfung — hier wird nichts in Sammelaktionen geändert.",
+      "loading": "Wird geladen…",
+      "loadError": "Der Bericht zu Währungsabweichungen konnte nicht geladen werden.",
+      "loadMore": "Mehr laden",
+      "emptyTitle": "Keine Währungsabweichungen",
+      "emptyBody": "Jeder Vertrag ist in der Abrechnungswährung seiner Organisation erfasst.",
+      "eligible": "Bereit zur Neuerfassung",
+      "currencyPair": "{{contractCurrency}} → {{orgCurrency}}",
+      "blockingDrafts": "{{count}} Rechnungsentwürfe",
+      "blockingDrafts_one": "{{count}} Rechnungsentwurf",
+      "columns": {
+        "contract": "Vertrag",
+        "organization": "Organisation",
+        "status": "Status",
+        "currencies": "Vertrag → Organisation",
+        "nextBilling": "Nächste Abrechnung",
+        "eligibility": "Neuerfassung möglich"
+      },
+      "reason": {
+        "STATUS_NOT_ACTIVE": "Nicht aktiv — nur aktive Verträge können neu erfasst werden",
+        "ORPHANED_CONTRACT_SOURCE": "Vertragsbezogene Rechnungspositionen können nicht zugeordnet werden",
+        "ORPHANED_BILLING_PERIOD": "Ein Abrechnungszeitraum hat keine erreichbare Rechnung",
+        "BROKEN_CONTRACT_LINEAGE": "Prüfung der Rechnungsherkunft fehlgeschlagen",
+        "UNBILLED_MONETARY_ROWS": "Rechnungsentwürfe enthalten noch Beträge aus diesem Vertrag"
+      }
+    },
+    "currency": {
+      "actions": {
+        "change": "Währung ändern"
+      },
+      "dialog": {
+        "title": "Vertragswährung ändern",
+        "description": "Dieser Vertrag wird in {{currency}} abgerechnet. Die Neustempelung betrifft nur künftige Rechnungen — bereits ausgestellte Rechnungen und vergangene Abrechnungszeiträume werden nie geändert.",
+        "currencyLabel": "Neue Währung",
+        "modeLegend": "Was mit den Vertragspositionen geschieht",
+        "modeClear": "Alle Vertragspositionen entfernen",
+        "modeClearHint": "Die Positionen werden gelöscht und in der neuen Währung von Hand neu erfasst. Erforderlich, sobald eine Position manuell ist.",
+        "modeReprice": "Katalogpositionen neu bepreisen",
+        "modeRepriceHint": "Jede Katalogposition wird aus der Preisliste der neuen Währung aufgelöst. Nur möglich, wenn alle Positionen aus dem Katalog stammen.",
+        "confirm": "Mir ist bewusst, dass dies einen aktiven Vertrag neu stempelt und nicht in großem Umfang rückgängig gemacht werden kann.",
+        "submit": "Währung ändern"
+      },
+      "blockers": {
+        "UNBILLED_MONETARY_ROWS": "Stellen Sie diese Rechnungsentwürfe zuerst aus oder löschen Sie sie — sie enthalten noch Beträge aus diesem Vertrag:",
+        "ORPHANED_BILLING_PERIOD": "Diese Abrechnungszeiträume haben keine erreichbare Rechnung. Klären Sie sie vor der Neustempelung:",
+        "ORPHANED_CONTRACT_SOURCE": "Diese aus Verträgen stammenden Rechnungspositionen lassen sich keinem Vertrag zuordnen. Klären Sie sie vor der Neustempelung:",
+        "BROKEN_CONTRACT_LINEAGE": "Die Prüfung der Rechnungsherkunft ist für diese Rechnungen fehlgeschlagen. Klären Sie sie vor der Neustempelung:"
+      },
+      "toast": {
+        "changed": "Vertragswährung auf {{currency}} geändert."
+      },
+      "errors": {
+        "change": "Die Vertragswährung konnte nicht geändert werden."
+      }
     },
     "templatesTab": {
       "title": "Vertragsvorlagen",
@@ -631,7 +694,8 @@
         "updateLine": "Die Position konnte nicht aktualisiert werden.",
         "updateSection": "Der Abschnitt konnte nicht aktualisiert werden.",
         "uploadImage": "Das Bild konnte nicht hochgeladen werden.",
-        "noPriceForCurrency": "Kein Preis in {{currency}} für dieses Element. Legen Sie einen im Katalog an oder erfassen Sie eine manuelle Position."
+        "noPriceForCurrency": "Kein Preis in {{currency}} für dieses Element. Legen Sie einen im Katalog an oder erfassen Sie eine manuelle Position.",
+        "sectionAddedListStale": "Abschnitt hinzugefügt, aber die Liste konnte nicht aktualisiert werden. Laden Sie die Seite neu, um ihn zu sehen."
       },
       "image": {
         "alt": "Angebotsbild",
@@ -857,6 +921,11 @@
       "cloneError": "Das Angebot konnte nicht dupliziert werden.",
       "cloneQuote": "Angebot duplizieren",
       "cloneSavingTitle": "Warten Sie vor dem Duplizieren, bis die Änderungen gespeichert sind.",
+      "reviseQuote": "Angebot überarbeiten",
+      "revising": "Überarbeitung wird erstellt…",
+      "reviseSuccess": "Überarbeitung erstellt.",
+      "reviseError": "Überarbeitung konnte nicht erstellt werden.",
+      "reviseInProgress": "Eine Überarbeitung läuft bereits – sie wird geöffnet.",
       "cloneSuccess": "Angebot dupliziert.",
       "cloning": "Wird dupliziert…",
       "deleteConfirm": {
@@ -892,7 +961,8 @@
         "toPlaceholder": "Empfänger hinzufügen…",
         "tooManyRecipients": "Verwenden Sie höchstens {{max}} Adressen.",
         "zeroTotalWarning": "Dieses Angebot beträgt {{zero}} — prüfen Sie vor dem Senden, ob die Positionen bepreist sind.",
-        "noBillingContactHint": "Für diese Organisation ist kein Rechnungskontakt hinterlegt – geben Sie eine E-Mail-Adresse ein oder ergänzen Sie eine in den <orgLink>Organisationseinstellungen</orgLink>."
+        "noBillingContactHint": "Für diese Organisation ist kein Rechnungskontakt hinterlegt – geben Sie eine E-Mail-Adresse ein oder ergänzen Sie eine in den <orgLink>Organisationseinstellungen</orgLink>.",
+        "revisionWarning": "Durch das Senden wird {{number}} ersetzt und der bereits vorhandene Kundenlink deaktiviert."
       },
       "sendEmailWarning": {
         "noBillingContact": "Vorschlag als Gesendet markiert, aber es wurde keine E-Mail zugestellt — {{orgName}} hat keine Rechnungskontakt-E-Mail. Fügen Sie eine in den Organisationseinstellungen hinzu und senden Sie dann erneut.",
@@ -936,7 +1006,8 @@
       "resendNewLinkOriginalDead": "Angebot erneut gesendet — jedoch mit einem NEUEN Link. Der bisherige Link lässt sich nicht mehr öffnen; wer ihn hat, muss den neuen verwenden.",
       "shareLinkNewLinkOriginalLive": "NEUEN Link kopiert. Dieses Angebot stammt aus der Zeit vor der Linkverfolgung, daher konnte der bisherige Link des Kunden nicht wiederverwendet werden; er funktioniert weiterhin parallel zu diesem.",
       "shareLinkNewLinkOriginalDead": "NEUEN Link kopiert. Der bisherige Link lässt sich nicht mehr öffnen; wer ihn hat, muss diesen verwenden.",
-      "currencyMismatch": "Dieses Angebot lautet auf {{documentCurrency}}, Ihr Stripe-Konto rechnet jedoch in {{accountCurrency}} ab. Stripe zeigt dem Kunden {{documentCurrency}} an und rechnet bei der Auszahlung um – Wechselkursspanne und etwaige Umrechnungsgebühren tragen Sie."
+      "currencyMismatch": "Dieses Angebot lautet auf {{documentCurrency}}, Ihr Stripe-Konto rechnet jedoch in {{accountCurrency}} ab. Stripe zeigt dem Kunden {{documentCurrency}} an und rechnet bei der Auszahlung um – Wechselkursspanne und etwaige Umrechnungsgebühren tragen Sie.",
+      "currencyUnknown": "Die Abrechnungswährung Ihres Stripe-Kontos ist noch nicht zwischengespeichert, daher konnte sie nicht mit diesem Angebot in {{documentCurrency}} abgeglichen werden. Aktualisieren Sie die Stripe-Kontodaten unter Einstellungen → Integrationen, um die Prüfung zu aktivieren."
     },
     "detail": {
       "addContentInEditor": "Fügen Sie Inhalte im Editor hinzu",
@@ -1055,10 +1126,17 @@
         "reasonLabel": "Anmerkung des Kunden:",
         "revise": "Duplizieren & überarbeiten",
         "revising": "Wird dupliziert…"
+      },
+      "lineage": {
+        "supersededTitle": "Dieses Angebot wurde ersetzt durch",
+        "inProgressTitle": "Eine Überarbeitung dieses Angebots wird erstellt – beim Senden wird dieses Angebot ersetzt und der Kundenlink deaktiviert:",
+        "revisionOfTitle": "Überarbeitung von",
+        "untitled": "eine neuere Version"
       }
     },
     "distributorLookup": {
-      "marginUnavailableCostIn": "Kosten in {{currency}} — Marge nicht verfügbar",
+      "feedPriceCurrencyUnknown": "Währung des Feed-Preises unbekannt — bitte einen Preis in {{currency}} eingeben",
+      "feedPriceIn": "Feed-Preis in {{feedCurrency}} — bitte einen Preis in {{currency}} eingeben",
       "available": "{{count}} verfügbar",
       "cost": "kostet {{currency}} {{amount}}",
       "endOfLife": "Auslaufmodell",
@@ -1226,7 +1304,8 @@
       "tryAgain": "Versuchen Sie es erneut"
     },
     "pax8ProductLookup": {
-      "marginUnavailableCostIn": "Kosten in {{currency}} — Marge nicht verfügbar",
+      "feedPriceCurrencyUnknown": "Währung des Feed-Preises unbekannt — bitte einen Preis in {{currency}} eingeben",
+      "feedPriceIn": "Feed-Preis in {{feedCurrency}} — bitte einen Preis in {{currency}} eingeben",
       "cost": "kostet {{currency}} {{amount}}",
       "importAndAdd": "Importieren und hinzufügen",
       "option": "Option {{number}}",
@@ -1248,7 +1327,8 @@
       "accepted": "Akzeptiert",
       "declined": "Abgelehnt",
       "expired": "Abgelaufen",
-      "converted": "Konvertiert"
+      "converted": "Konvertiert",
+      "superseded": "Ersetzt"
     },
     "workspace": {
       "backLabel": "Angebote",
@@ -1265,7 +1345,8 @@
         "preview": "Vorschau",
         "detail": "Detailansicht"
       },
-      "loading": "Angebot wird geladen…"
+      "loading": "Angebot wird geladen…",
+      "revisionBanner": "Dies ist eine Überarbeitung von {{number}}. Beim Senden wird das Original ersetzt und der bereits vorhandene Kundenlink deaktiviert."
     }
   },
   "billingUi": {
@@ -1540,7 +1621,8 @@
       "shareLinkPrompt": "Teilen Sie diesen Zahlungslink mit Ihrem Kunden:",
       "stripeNudge": "Verbinden Sie Stripe, um Online-Kartenzahlungen zu akzeptieren.",
       "title": "Zahlungen",
-      "viaStripe": "über Stripe"
+      "viaStripe": "über Stripe",
+      "currencyUnknown": "Die Abrechnungswährung Ihres Stripe-Kontos ist noch nicht zwischengespeichert, daher konnte sie nicht mit dieser Rechnung in {{documentCurrency}} abgeglichen werden. Aktualisieren Sie die Stripe-Kontodaten unter Einstellungen → Integrationen, um die Prüfung zu aktivieren."
     },
     "requestPayment": {
       "invoiceSent": "Rechnung verschickt",
@@ -1654,16 +1736,21 @@
       "unpaid": "Anzahlung unbezahlt"
     },
     "dialog": {
+      "allBlockedByCurrency": "Alle nicht abgerechneten Arbeiten in diesem Zeitraum sind in einer anderen Währung bepreist, daher konnte nichts zusammengestellt werden. Erstellen Sie stattdessen einen Entwurf in dieser Währung:",
       "allSites": "Alle Seiten",
       "assemble": "Zusammenbauen",
       "assembleError": "Für diesen Bereich konnte keine Rechnung erstellt werden.",
       "assembleFromWork": "Von der Arbeit zusammenbauen",
+      "assembleIn": "In {{code}} zusammenstellen ({{count}} Positionen, {{amount}})",
       "assembleSuccess": "Rechnungsentwurf zusammengestellt",
       "blankInvoice": "Leere Rechnung",
+      "blockedByCurrency": "{{count}} nicht abgerechnete Positionen in {{code}} wurden ausgelassen — erstellen Sie einen separaten Entwurf in {{code}}, um sie abzurechnen.",
       "createDraft": "Entwurf erstellen",
       "createError": "Es konnte kein Rechnungsentwurf erstellt werden.",
       "createGenericError": "Die Rechnung konnte nicht erstellt werden.",
       "createSuccess": "Rechnungsentwurf erstellt",
+      "currency": "Währung",
+      "currencyOrgDefault": "Standard der Organisation",
       "description": "Fassen Sie nicht abgerechnete Arbeiten in einem Entwurf zusammen oder erstellen Sie eine leere Rechnung.",
       "from": "Von",
       "selectOrganization": "Wählen Sie eine Organisation aus…",
@@ -1731,6 +1818,44 @@
       "emailPlaceholder": "billing@customer.example",
       "name": "Kontaktname",
       "title": "Rechnungskontakt"
+    },
+    "currency": {
+      "title": "Währung",
+      "description": "Neue Angebote, Rechnungen, Verträge, Zeiteinträge und Teile dieser Organisation werden mit dieser Währung gestempelt. Bereits Vorhandenes wird nicht geändert.",
+      "label": "Abrechnungswährung",
+      "loading": "Auswirkungen einer Änderung auf {{currency}} werden geprüft…",
+      "error": "Die Zusammenfassung der Währungsänderung konnte nicht geladen werden.",
+      "panelTitle": "Abrechnungswährung auf {{currency}} ändern?",
+      "none": "In dieser Organisation ist nichts in einer anderen Währung gestempelt.",
+      "groupTitle": "Gestempelt in {{currency}}",
+      "counts": {
+        "draftInvoices": "Rechnungsentwürfe",
+        "draftQuotes": "Angebotsentwürfe",
+        "sentQuotes": "Gesendete Angebote",
+        "viewedQuotes": "Angesehene Angebote",
+        "draftContracts": "Vertragsentwürfe",
+        "activeContracts": "Aktive Verträge",
+        "pausedContracts": "Pausierte Verträge",
+        "timeEntries": "Nicht abgerechnete Zeiteinträge",
+        "parts": "Nicht abgerechnete Teile"
+      },
+      "timeDetail": "{{ready}} abrechnungsbereit, {{running}} laufend, {{nonBillable}} nicht abrechenbar, {{missingRate}} ohne Satz",
+      "partsDetail": "{{ready}} abrechnungsbereit, {{nonBillable}} nicht abrechenbar",
+      "amounts": "Arbeit {{labor}} · Teile {{parts}}",
+      "warningsTitle": "Konfiguration, die nicht mehr greift",
+      "warningRate": "Der Standard-Stundensatz der Organisation ist in {{currency}} hinterlegt und gilt für neue Zeiteinträge nicht mehr.",
+      "warningCategories": "{{count}} Ticket-Kategoriensätze in einer anderen Währung werden übersprungen.",
+      "warningOverrides": "{{count}} Katalog-Preisüberschreibungen der Organisation in einer anderen Währung werden übersprungen.",
+      "recovery": "Um die oben genannten {{currency}}-Positionen abzurechnen, erstellen Sie einen Entwurf in {{currency}}.",
+      "rateLess": "{{count}} nicht abgerechnete Zeiteinträge haben Stunden, aber keinen Stundensatz. Legen Sie einen Satz fest – eine Währungsänderung wirkt sich nicht auf sie aus.",
+      "retention": "Nur zukünftige Dokumente, Zeiteinträge und Teile ändern sich. Kein Betrag wird jemals umgerechnet, und bestehende Entwürfe, Verträge und nicht abgerechnete Positionen behalten ihre gestempelte Währung.",
+      "advisory": "Diese Zahlen sind eine Vorschau, keine Zusage — alles, was danach entsteht, ist nicht enthalten.",
+      "stale": "Die Abrechnungswährung wurde während der Prüfung auf {{currency}} geändert. Prüfen Sie die aktualisierte Zusammenfassung und bestätigen Sie erneut.",
+      "confirm": "Währung ändern",
+      "changing": "Wird geändert…",
+      "cancel": "Abbrechen",
+      "changeError": "Die Abrechnungswährung der Organisation konnte nicht geändert werden.",
+      "changeSuccess": "Abrechnungswährung der Organisation aktualisiert"
     },
     "loadError": "Die Abrechnungseinstellungen konnten nicht geladen werden.",
     "loading": "Abrechnungseinstellungen werden geladen…",

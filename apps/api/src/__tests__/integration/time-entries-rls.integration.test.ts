@@ -96,6 +96,7 @@ async function seedFixture(): Promise<Fixture> {
       name: `TE-RLS Cat A ${unique}`,
       defaultBillable: true,
       defaultHourlyRate: '125.00',
+      rateCurrency: 'USD',
     })
     .returning();
 
@@ -250,6 +251,7 @@ describe('time_entries RLS isolation (partner-axis, Shape 3)', () => {
       startedAt: new Date(Date.now() - 60_000),
       endedAt: new Date(),
       durationMinutes: 1,
+      currencyCode: 'USD',
     });
 
     // Under partnerA's RLS context (breeze_app), only partnerA rows are visible.
@@ -293,6 +295,7 @@ describe('ticket_parts RLS isolation (org-axis, Shape 1)', () => {
           orgId: orgB.id, // wrong org — RLS must reject
           description: 'forged part',
           quantity: '1.00',
+          currencyCode: 'USD',
         })
       )
     ).rejects.toMatchObject({ cause: { code: '42501' } });
@@ -567,6 +570,7 @@ describe('moveOrg org_id rewrite — real driver (spec §6)', () => {
       startedAt: new Date(Date.now() - 60_000),
       endedAt: new Date(),
       durationMinutes: 1,
+      currencyCode: 'USD',
     }).returning();
 
     // ticket_parts row: org-axis RLS.
@@ -576,6 +580,7 @@ describe('moveOrg org_id rewrite — real driver (spec §6)', () => {
       description: `Test part ${unique}`,
       quantity: '1.00',
       unitPrice: '9.99',
+      currencyCode: 'USD',
     }).returning();
 
     // ── Verify pre-move state ───────────────────────────────────────────

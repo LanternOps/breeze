@@ -1,4 +1,4 @@
-import { eq, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { users } from '../db/schema';
 import { refreshTokenFamilies } from '../db/schema/refreshTokenFamilies';
@@ -14,6 +14,13 @@ interface EpochRow {
   mfaEpoch: number;
   emailEpoch: number;
   passwordResetEpoch: number;
+}
+
+export class EpochAdvancePreconditionError extends Error {
+  constructor() {
+    super('User epoch precondition no longer matches');
+    this.name = 'EpochAdvancePreconditionError';
+  }
 }
 
 /**
@@ -48,6 +55,7 @@ export async function advanceUserEpochs(
   tx: Tx,
   userId: string,
   fields: { auth?: boolean; mfa?: boolean; email?: boolean; passwordReset?: boolean },
+  expected?: { authEpoch?: number; mfaEpoch?: number; mfaEnabled?: boolean; status?: 'active' },
 ): Promise<EpochRow> {
   const set: Record<string, unknown> = { updatedAt: new Date() };
   if (fields.auth) set.authEpoch = sql`${users.authEpoch} + 1`;
@@ -55,22 +63,52 @@ export async function advanceUserEpochs(
   if (fields.email) set.emailEpoch = sql`${users.emailEpoch} + 1`;
   if (fields.passwordReset) set.passwordResetEpoch = sql`${users.passwordResetEpoch} + 1`;
 
+  const conditions = [eq(users.id, userId)];
+  if (expected?.authEpoch !== undefined) conditions.push(eq(users.authEpoch, expected.authEpoch));
+  if (expected?.mfaEpoch !== undefined) conditions.push(eq(users.mfaEpoch, expected.mfaEpoch));
+  if (expected?.mfaEnabled !== undefined) conditions.push(eq(users.mfaEnabled, expected.mfaEnabled));
+  if (expected?.status !== undefined) conditions.push(eq(users.status, expected.status));
+
   const [row] = await tx
     .update(users)
     .set(set)
-    .where(eq(users.id, userId))
+    .where(and(...conditions))
     .returning({
       authEpoch: users.authEpoch,
       mfaEpoch: users.mfaEpoch,
       emailEpoch: users.emailEpoch,
       passwordResetEpoch: users.passwordResetEpoch,
     });
+  if (!row && expected) throw new EpochAdvancePreconditionError();
   if (!row) throw new Error(`advanceUserEpochs: user ${userId} not found`);
   return row;
 }
 
 function truncateReason(reason: string): string {
   return reason.length > 64 ? reason.slice(0, 64) : reason;
+}
+
+/**
+ * Lock active refresh families in the global family_id order before a caller
+ * performs a bulk revocation. The caller must already own the relevant user
+ * row lock(s), preserving transition -> users -> families ordering.
+ */
+export async function lockActiveRefreshFamiliesForUsers(
+  tx: Tx,
+  userIds: readonly string[],
+): Promise<void> {
+  const sortedUserIds = [...new Set(userIds)].sort();
+  if (sortedUserIds.length === 0) return;
+
+  await tx
+    .select({ familyId: refreshTokenFamilies.familyId })
+    .from(refreshTokenFamilies)
+    .where(and(
+      inArray(refreshTokenFamilies.userId, sortedUserIds),
+      isNull(refreshTokenFamilies.revokedAt),
+    ))
+    .orderBy(refreshTokenFamilies.familyId)
+    .for('update');
 }
 
 /** Durably revoke every active refresh family for a user inside `tx`. */

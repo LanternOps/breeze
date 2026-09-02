@@ -97,6 +97,14 @@ vi.mock('../../services/ticketFormService', () => ({
   listTicketFormsForOrg: listTicketFormsForOrgMock
 }));
 
+const { openBytesMock } = vi.hoisted(() => ({ openBytesMock: vi.fn() }));
+vi.mock('../../services/ticketAttachmentStorage', async () => {
+  const actual = await vi.importActual<typeof import('../../services/ticketAttachmentStorage')>(
+    '../../services/ticketAttachmentStorage',
+  );
+  return { ...actual, openBytes: openBytesMock };
+});
+
 vi.mock('./helpers', () => ({
   applyPortalCacheHeaders: vi.fn(),
   buildWeakEtag: vi.fn(() => '"etag-1"'),
@@ -174,15 +182,23 @@ describe('GET /tickets/:id — portal internal-note isolation', () => {
           from: vi.fn(() => ({ leftJoin }))
         };
       }
-      // Comments lookup — route does .from().where().orderBy(); capture the where args
+      if (callCount === 2) {
+        // Comments lookup — route does .from().where().orderBy(); capture the where args
+        return {
+          from: vi.fn(() => ({
+            where: vi.fn((...args: unknown[]) => {
+              capturedWhereArgs = args;
+              return {
+                orderBy: vi.fn(() => Promise.resolve(commentsRows))
+              };
+            })
+          }))
+        };
+      }
+      // W08 #3902 — attachment metadata lookup, awaited directly off .where().
       return {
         from: vi.fn(() => ({
-          where: vi.fn((...args: unknown[]) => {
-            capturedWhereArgs = args;
-            return {
-              orderBy: vi.fn(() => Promise.resolve(commentsRows))
-            };
-          })
+          where: vi.fn(() => Promise.resolve([]))
         }))
       };
     });
@@ -1063,5 +1079,236 @@ describe('portalTicketsEnabledMiddleware — enable_tickets gate (#2345)', () =>
     app.route('/', ticketRoutes);
     const res = await app.request('/tickets');
     expect(res.status).toBe(401);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// W08 #3902 — portal attachment read path. The leak cases come first because
+// they are the point of the task.
+// ---------------------------------------------------------------------------
+describe('portal ticket attachments (W08 #3902)', () => {
+  const ATT_ID = 'aaaabbbb-cccc-4ddd-8eee-ffff00001111';
+  const SHA = 'e'.repeat(64);
+  let app: ReturnType<typeof buildApp>;
+  let attachmentWhereArgs: unknown[] = [];
+  let ticketWhereArgs: unknown[] = [];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    attachmentWhereArgs = [];
+    ticketWhereArgs = [];
+    app = buildApp();
+    openBytesMock.mockResolvedValue({ body: Buffer.from('bytes'), contentLength: 5 });
+  });
+
+  /** Detail: ticket lookup (leftJoin) -> comments -> attachments. */
+  function rigDetail(commentsRows: object[], attachmentRows: object[]) {
+    let n = 0;
+    dbSelectMock.mockImplementation(() => {
+      n++;
+      if (n === 1) {
+        return { from: vi.fn(() => ({ leftJoin: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(() => Promise.resolve([TICKET_ROW])) })) })) })) };
+      }
+      if (n === 2) {
+        return { from: vi.fn(() => ({ where: vi.fn(() => ({ orderBy: vi.fn(() => Promise.resolve(commentsRows)) })) })) };
+      }
+      return {
+        from: vi.fn(() => ({
+          where: vi.fn((...args: unknown[]) => {
+            attachmentWhereArgs = args;
+            return Promise.resolve(attachmentRows);
+          }),
+        })),
+      };
+    });
+  }
+
+  /** Content: ticket lookup -> attachment+comment innerJoin lookup. */
+  function rigContent(ticketRows: object[], joinRows: object[]) {
+    let n = 0;
+    dbSelectMock.mockImplementation(() => {
+      n++;
+      if (n === 1) {
+        return {
+          from: vi.fn(() => ({
+            where: vi.fn((...args: unknown[]) => {
+              ticketWhereArgs = args;
+              return { limit: vi.fn(() => Promise.resolve(ticketRows)) };
+            }),
+          })),
+        };
+      }
+      return {
+        from: vi.fn(() => ({
+          innerJoin: vi.fn(() => ({
+            where: vi.fn((...args: unknown[]) => {
+              attachmentWhereArgs = args;
+              return { limit: vi.fn(() => Promise.resolve(joinRows)) };
+            }),
+          })),
+        })),
+      };
+    });
+  }
+
+  /** Pull the bound parameter values out of a drizzle SQL tree (no JSON.stringify:
+   *  drizzle column objects are circular). */
+  function collectSqlParamValues(node: unknown, out: unknown[] = []): unknown[] {
+    if (node === null || typeof node !== 'object') return out;
+    if (Array.isArray(node)) {
+      for (const item of node) collectSqlParamValues(item, out);
+      return out;
+    }
+    const rec = node as Record<string, unknown>;
+    if ('value' in rec && !('table' in rec)) out.push(rec.value);
+    if (Array.isArray(rec.queryChunks)) collectSqlParamValues(rec.queryChunks, out);
+    return out;
+  }
+
+  /**
+   * Render a drizzle predicate back to text so the authz ladder itself can be
+   * asserted.
+   *
+   * The rig resolves its fixture rows unconditionally — no mocked WHERE can
+   * change what comes back — so a 404 test proves only that the fixture was
+   * empty. This route has no JS branch to exercise either: every rung of the
+   * ladder is a SQL condition. Asserting the predicate is therefore the only
+   * thing that discriminates; without it, deleting `isPublic` from the route
+   * leaves the whole suite green.
+   *
+   * The schema mock above gives each column a plain string ('orgId'), so a
+   * mocked column lands in the tree as a BOUND VALUE rather than a column
+   * reference — hence the column-name checks below go through
+   * collectSqlParamValues, and only structural text (' is null') is matched
+   * here.
+   */
+  function renderPredicate(node: unknown): string {
+    if (node === null || node === undefined || typeof node !== 'object') return '';
+    if (Array.isArray(node)) return node.map(renderPredicate).join('');
+    const rec = node as Record<string, unknown>;
+    if (Array.isArray(rec.queryChunks)) return renderPredicate(rec.queryChunks);
+    // StringChunk: the literal SQL fragments (' = ', ' is null', ' and ').
+    if (Array.isArray(rec.value) && rec.value.every((v) => typeof v === 'string')) {
+      return (rec.value as string[]).join('');
+    }
+    // Column: has a name and belongs to a table.
+    if (typeof rec.name === 'string' && 'table' in rec) return String(rec.name);
+    if ('value' in rec) return `<${String(rec.value)}>`; // bound parameter
+    return '';
+  }
+
+  const attRow = (over: Record<string, unknown> = {}) => ({
+    id: ATT_ID, ticketId: TICKET_ID, commentId: 'c-1', contentType: 'image/png',
+    byteSize: 5, originalFilename: 'photo.png', sha256: SHA, storageBackend: 'db',
+    storageKey: null, data: Buffer.from('bytes'), createdAt: new Date(), ...over,
+  });
+
+  it('never lists an attachment whose parent comment is internal', async () => {
+    // The comments query already filters isPublic/deletedAt; the attachment
+    // query is keyed on THOSE ids, so an internal comment's attachment has no
+    // comment id to hang off.
+    rigDetail(
+      [{ id: 'c-1', authorName: 'Tech', authorType: 'internal', content: 'public', createdAt: new Date() }],
+      [{ id: ATT_ID, commentId: 'c-1', contentType: 'image/png', byteSize: 5, originalFilename: 'p.png', createdAt: new Date() }],
+    );
+    const res = await app.request(`/tickets/${TICKET_ID}`, { headers: { Authorization: 'Bearer t' } });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.ticket.comments[0].attachments).toHaveLength(1);
+    // The id set handed to the attachment query is exactly the public comments'
+    // ids — nothing internal or soft-deleted can appear there.
+    expect(collectSqlParamValues(attachmentWhereArgs)).toContain('c-1');
+  });
+
+  it('skips the attachment query entirely when there are no public comments', async () => {
+    rigDetail([], []);
+    const res = await app.request(`/tickets/${TICKET_ID}`, { headers: { Authorization: 'Bearer t' } });
+    expect(res.status).toBe(200);
+    expect((await res.json()).ticket.comments).toEqual([]);
+    expect(attachmentWhereArgs).toEqual([]);
+  });
+
+  // NOTE: the three 404 cases below prove the ROUTE returns 404 for an empty
+  // result set, not that the WHERE clause produces one — this rig resolves its
+  // fixture rows unconditionally, and the schema mock above renders mocked
+  // columns as plain strings that vanish from the SQL tree, so the org /
+  // submitter / is_public / deleted_at rungs are NOT assertable here. They are
+  // proven end-to-end against real Postgres in
+  // src/__tests__/integration/ticketAttachmentsRls.integration.test.ts
+  // ("portal attachment read path (REAL route, real Postgres)"), which drives
+  // this handler itself (W08A review).
+  it('404s the content route for a ticket the session did not submit', async () => {
+    rigContent([], []);
+    const res = await app.request(`/tickets/${TICKET_ID}/attachments/${ATT_ID}/content`, {
+      headers: { Authorization: 'Bearer t' },
+    });
+    expect(res.status).toBe(404);
+    expect(openBytesMock).not.toHaveBeenCalled();
+  });
+
+  it('404s the content route when the attachment is on an internal or deleted comment', async () => {
+    // The inner join + is_public/deleted_at filters yield no row.
+    rigContent([TICKET_ROW], []);
+    const res = await app.request(`/tickets/${TICKET_ID}/attachments/${ATT_ID}/content`, {
+      headers: { Authorization: 'Bearer t' },
+    });
+    expect(res.status).toBe(404);
+    expect(openBytesMock).not.toHaveBeenCalled();
+  });
+
+  it('serves a public-comment attachment with the D7 headers and nosniff', async () => {
+    rigContent([TICKET_ROW], [{ attachment: attRow() }]);
+    const res = await app.request(`/tickets/${TICKET_ID}/attachments/${ATT_ID}/content`, {
+      headers: { Authorization: 'Bearer t' },
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('X-Content-Type-Options')).toBe('nosniff');
+    expect(res.headers.get('Content-Type')).toBe('image/png');
+    expect(res.headers.get('ETag')).toBe(`"${SHA}"`);
+    expect(res.headers.get('Content-Disposition')).toBe(`inline; filename="photo.png"; filename*=UTF-8''photo.png`);
+  });
+
+  it('304s on a matching If-None-Match without fetching the bytes', async () => {
+    rigContent([TICKET_ROW], [{ attachment: attRow() }]);
+    const res = await app.request(`/tickets/${TICKET_ID}/attachments/${ATT_ID}/content`, {
+      headers: { Authorization: 'Bearer t', 'If-None-Match': `"${SHA}"` },
+    });
+    expect(res.status).toBe(304);
+    expect(openBytesMock).not.toHaveBeenCalled();
+  });
+
+  it('keys the content route attachment lookup on THIS ticket, not the id alone', async () => {
+    rigContent([TICKET_ROW], [{ attachment: attRow() }]);
+    await app.request(`/tickets/${TICKET_ID}/attachments/${ATT_ID}/content`, {
+      headers: { Authorization: 'Bearer t' },
+    });
+    // Without the ticket_id rung the route is an IDOR across every ticket in
+    // the org: any attachment id reachable through any ticket the session did
+    // submit. Both operands here are REAL ticketAttachments columns, so they
+    // survive into the SQL tree and this assertion actually discriminates.
+    const values = collectSqlParamValues(attachmentWhereArgs);
+    expect(values).toContain(ATT_ID);
+    expect(values).toContain(TICKET_ID);
+    // A structural sanity check on the comment join's non-deleted rung.
+    expect(renderPredicate(attachmentWhereArgs)).toMatch(/is null/);
+  });
+
+  it('503s (not 500s) when the object store faults, matching the technician route', async () => {
+    rigContent([TICKET_ROW], [{ attachment: attRow({ storageBackend: 's3', storageKey: 'k', data: null }) }]);
+    openBytesMock.mockRejectedValueOnce(new Error('s3 unreachable'));
+    const res = await app.request(`/tickets/${TICKET_ID}/attachments/${ATT_ID}/content`, {
+      headers: { Authorization: 'Bearer t' },
+    });
+    // A transport fault is retryable; an unhandled throw would surface to the
+    // customer as a generic 500 and never reach Sentry from this route.
+    expect(res.status).toBe(503);
+  });
+
+  it('the portal has no tickets:manage escape hatch — there is no override branch', async () => {
+    rigContent([TICKET_ROW], []);
+    const res = await app.request(`/tickets/${TICKET_ID}/attachments/${ATT_ID}/content`, {
+      headers: { Authorization: 'Bearer t', 'X-Breeze-Permissions': 'tickets:manage' },
+    });
+    expect(res.status).toBe(404);
   });
 });

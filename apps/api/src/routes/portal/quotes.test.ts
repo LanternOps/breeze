@@ -1,14 +1,17 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
+import type { SQL } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 // DB mock: select().from().where().limit()/orderBy() resolves to the next queued
 // row set, consumed FIFO in call order. Mirrors the pattern in
 // routes/portal/invoices.test.ts and services/invoiceCheckout.test.ts.
-const { dbResults } = vi.hoisted(() => ({ dbResults: [] as unknown[][] }));
+const { dbResults, whereCalls } = vi.hoisted(() => ({ dbResults: [] as unknown[][], whereCalls: [] as unknown[] }));
 vi.mock('../../db', () => {
   const makeChain = () => {
     const chain: Record<string, unknown> = {};
-    for (const m of ['select', 'from', 'where', 'orderBy', 'limit']) chain[m] = vi.fn(() => chain);
+    for (const m of ['select', 'from', 'orderBy', 'limit']) chain[m] = vi.fn(() => chain);
+    chain.where = vi.fn((predicate: unknown) => { whereCalls.push(predicate); return chain; });
     (chain as { then: unknown }).then = (resolve: (v: unknown) => unknown) => {
       const rows = dbResults.shift() ?? [];
       return Promise.resolve(rows).then(resolve);
@@ -63,6 +66,7 @@ import { PdfMergeError } from '../../services/pdfMerge';
 
 const ORG_ID = '22222222-2222-2222-2222-222222222222';
 const QUOTE_ID = '11111111-1111-1111-1111-111111111111';
+const SUCCESSOR_ID = '99999999-9999-9999-9999-999999999999';
 const PARTNER_ID = '33333333-3333-3333-3333-333333333333';
 const TEMPLATE_ID = '44444444-4444-4444-4444-444444444444';
 const VERSION_ID = '55555555-5555-5555-5555-555555555555';
@@ -85,6 +89,64 @@ describe('portal quotes GET /quotes/:id', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     dbResults.length = 0;
+    whereCalls.length = 0;
+  });
+
+  /** Compile a captured predicate to SQL text + params, so assertions see the
+   *  OPERATORS (and/or, =/<>) and not merely a bag of bound values. */
+  const compilePredicate = (node: unknown) => {
+    const q = new PgDialect().sqlToQuery(node as SQL);
+    return { sql: q.sql, params: q.params as unknown[] };
+  };
+
+  /** Queue every read the detail handler issues, up to the successor lookup. */
+  const queueDetailReads = (over: Record<string, unknown> = {}) => {
+    dbResults.push([{
+      id: QUOTE_ID, orgId: ORG_ID, partnerId: PARTNER_ID, status: 'sent',
+      quoteNumber: 'Q-1', currencyCode: 'USD', taxRate: null,
+      depositType: 'none', depositPercent: null, ...over,
+    }]); // quote SELECT
+    dbResults.push([]); // quoteBlocks
+    dbResults.push([]); // quoteLines
+    dbResults.push([]); // markQuoteViewed's own quotes SELECT
+    dbResults.push([{ name: 'Lantern IT' }]); // partners
+    dbResults.push([]); // portalBranding
+  };
+
+  it('exposes the sent successor as supersededByQuoteId so the portal can link the replacement', async () => {
+    queueDetailReads({ status: 'superseded' });
+    dbResults.push([{ id: SUCCESSOR_ID }]); // successor SELECT
+
+    const res = await app().request(`/quotes/${QUOTE_ID}`, { method: 'GET' });
+    expect(res.status).toBe(200);
+    expect((await res.json()).data.quote.supersededByQuoteId).toBe(SUCCESSOR_ID);
+  });
+
+  it('reports no successor when the lookup finds none', async () => {
+    queueDetailReads();
+    dbResults.push([]); // successor SELECT — nothing
+
+    const res = await app().request(`/quotes/${QUOTE_ID}`, { method: 'GET' });
+    expect((await res.json()).data.quote.supersededByQuoteId).toBeNull();
+  });
+
+  it('never reveals a DRAFT successor — a customer must not learn a revision is being prepared', async () => {
+    queueDetailReads();
+    dbResults.push([]); // successor SELECT
+
+    await app().request(`/quotes/${QUOTE_ID}`, { method: 'GET' });
+
+    // The privacy guard lives in the predicate, and the mock would happily hand
+    // back a draft row, so assert the SQL itself. Exact string: dropping the
+    // status filter, or flipping `<>` to `=`, or `and` to `or`, must all fail.
+    const successorPredicate = whereCalls
+      .map(compilePredicate)
+      .find((p) => p.sql.includes('"revision_of_quote_id"'));
+    expect(successorPredicate).toBeDefined();
+    expect(successorPredicate!.sql).toBe(
+      '("quotes"."revision_of_quote_id" = $1 and "quotes"."status" <> $2)',
+    );
+    expect(successorPredicate!.params).toEqual([QUOTE_ID, 'draft']);
   });
 
   it('sanitizes a legacy dirty rich_text block (script tag) before it leaves the API', async () => {
@@ -129,7 +191,7 @@ describe('portal quotes GET /quotes/:id', () => {
     dbResults.push([]); // quoteLines SELECT
     dbResults.push([]); // markQuoteViewed's own quotes SELECT
     dbResults.push([{ name: 'Lantern IT' }]); // partners SELECT (system ctx)
-    dbResults.push([{ logoUrl: 'https://cdn.example.test/logo.png', primaryColor: '#123456' }]); // portalBranding SELECT
+    dbResults.push([{ logoUrl: 'https://cdn.example.test/logo.png', primaryColor: '#123456', supportEmail: 'help@lantern.test', supportPhone: '+1 555 0100' }]); // portalBranding SELECT
 
     const res = await app().request(`/quotes/${QUOTE_ID}`, { method: 'GET' });
     expect(res.status).toBe(200);
@@ -138,6 +200,10 @@ describe('portal quotes GET /quotes/:id', () => {
       partnerName: 'Lantern IT',
       logoUrl: 'https://cdn.example.test/logo.png',
       primaryColor: '#123456',
+      // Support contact rides along so the public proposal page can offer a
+      // prospect a way to reach the company asking them to sign.
+      supportEmail: 'help@lantern.test',
+      supportPhone: '+1 555 0100',
       theme: 'classic',
       pageSize: 'a4',
     });
@@ -179,7 +245,7 @@ describe('portal quotes GET /quotes/:id', () => {
     const res = await app().request(`/quotes/${QUOTE_ID}`, { method: 'GET' });
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.data.branding).toEqual({ partnerName: 'Proposal', logoUrl: null, primaryColor: null, theme: 'classic', pageSize: 'a4' });
+    expect(body.data.branding).toEqual({ partnerName: 'Proposal', logoUrl: null, primaryColor: null, supportEmail: null, supportPhone: null, theme: 'classic', pageSize: 'a4' });
   });
 
   it('serializes an authored contract block with renderedHtml containing the substituted client name; no raw {{ tokens }} anywhere in the payload', async () => {

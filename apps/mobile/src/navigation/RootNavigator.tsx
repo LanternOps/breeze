@@ -12,7 +12,7 @@ import {
   setApproverRegistration,
   clearAuthenticatorRegisterGrant,
 } from '../store/authSlice';
-import { getStoredToken, getStoredUser, clearAuthData, SecureWipeError } from '../services/auth';
+import { getStoredToken, getStoredUser } from '../services/auth';
 import { getCurrentUser, onDeviceBlocked } from '../services/api';
 import { resetTruncationTracking } from '../services/truncationReporting';
 import { spacing, type } from '../theme';
@@ -25,30 +25,12 @@ import { ensureApproverDevice } from '../services/approverDevice';
 import { AuthNavigator } from './AuthNavigator';
 import { MainNavigator } from './MainNavigator';
 import { ApprovalGate } from './ApprovalGate';
+import { PushTapRouter } from './PushTapRouter';
+import { flushPendingNavigation, navigationRef } from './navigationRef';
 import { OnboardingScreen } from '../screens/onboarding/OnboardingScreen';
 import { Spinner } from '../components/Spinner';
 import { palette } from '../theme';
-
-/**
- * Clear local auth state, tolerating a partial secure-wipe failure.
- *
- * A `SecureWipeError` is already reported to Sentry inside `clearAuthData`, so
- * we swallow only that specific error here — it must not abort the redux logout
- * that follows. Any *other* throw (a genuinely novel failure) is re-reported and
- * re-thrown rather than silently dropped, so we don't reintroduce a silent
- * failure of an unrelated kind (the exact trap #1625 fixed).
- */
-async function clearAuthDataTolerant(): Promise<void> {
-  try {
-    await clearAuthData();
-  } catch (err) {
-    if (err instanceof SecureWipeError || (err as { name?: string } | null)?.name === 'SecureWipeError') {
-      return; // already reported to Sentry inside clearAuthData
-    }
-    Sentry.captureException(err, { tags: { area: 'auth-teardown-nav' } });
-    throw err;
-  }
-}
+import { MfaEnrollmentRequiredScreen } from '../screens/auth/MfaEnrollmentRequiredScreen';
 
 /**
  * Upper bound on how long the native splash may stay up waiting for boot.
@@ -60,7 +42,7 @@ const SPLASH_MAX_HOLD_MS = 4000;
 
 export function RootNavigator() {
   const dispatch = useAppDispatch();
-  const { token, user } = useAppSelector((state) => state.auth);
+  const { token, user, mfaEnrollmentRequired } = useAppSelector((state) => state.auth);
   const [isCheckingAuth, setIsCheckingAuth] = useState(true);
   const [blockedReason, setBlockedReason] = useState<string | null>(null);
   const blockedHandledRef = useRef(false);
@@ -73,7 +55,9 @@ export function RootNavigator() {
       if (blockedHandledRef.current) return;
       blockedHandledRef.current = true;
       setBlockedReason(reason);
-      void dispatch(logoutAsync());
+      // A blocked device is an INVOLUNTARY invalidation: the unsent
+      // time-entry backlog is kept (services/auth.ts).
+      void dispatch(logoutAsync({ deliberate: false }));
     });
     return off;
   }, [dispatch]);
@@ -115,7 +99,7 @@ export function RootNavigator() {
   // call started for user A can resolve after A signed out and B signed in,
   // writing A's outcome into B's session.
   useEffect(() => {
-    if (!token || !user) return;
+    if (!token || !user || mfaEnrollmentRequired) return;
     let active = true;
     // #2707 read-and-clear: take the login-minted grant OUT of Redux before the
     // async attempt. The grant is deliberately NOT in this effect's deps — the
@@ -145,7 +129,7 @@ export function RootNavigator() {
     return () => {
       active = false;
     };
-  }, [token, user, dispatch]);
+  }, [token, user, mfaEnrollmentRequired, dispatch]);
 
   useEffect(() => {
     /**
@@ -161,12 +145,8 @@ export function RootNavigator() {
       } catch (err) {
         const status = (err as { statusCode?: number } | null)?.statusCode;
         if (status === 401 || status === 403) {
-          // A failed secure wipe (SecureWipeError) is already reported to
-          // Sentry inside clearAuthData; clearAuthDataTolerant swallows only
-          // that so it can't abort the redux logout. Other failures still
-          // surface — but this runs detached, so catch them here rather than
-          // leaving an unhandled rejection.
-          await clearAuthDataTolerant().catch(() => {});
+          // The synchronous logout action advances generation and enqueues the
+          // complete secure wipe before publishing signed-out Redux state.
           dispatch(logout());
         }
         // Other failures (network down, 5xx) intentionally leave the
@@ -200,7 +180,6 @@ export function RootNavigator() {
         void revalidate(storedToken);
       } catch (error) {
         console.error('Error checking auth:', error);
-        await clearAuthDataTolerant();
         dispatch(logout());
       } finally {
         setIsCheckingAuth(false);
@@ -323,12 +302,27 @@ export function RootNavigator() {
   }
 
   return (
-    <NavigationContainer theme={navigationTheme}>
-      {token ? (
+    <NavigationContainer theme={navigationTheme} ref={navigationRef} onReady={flushPendingNavigation}>
+      {/* Mandatory MFA enrollment outranks everything, ticket taps included:
+          PushTapRouter is not mounted in that branch, so a buffered tap waits
+          rather than navigating past the gate. */}
+      {mfaEnrollmentRequired ? (
+        <MfaEnrollmentRequiredScreen />
+      ) : token ? (
         hasOnboarded ? (
-          <ApprovalGate>
-            <MainNavigator />
-          </ApprovalGate>
+          // PushTapRouter is a SIBLING of ApprovalGate, never a child (#4336).
+          // ApprovalGate renders <ApprovalScreen /> INSTEAD of its children
+          // while an approval is focused, so nesting the router would tear its
+          // notification subscriptions down for the whole approval lifecycle
+          // and silently stop routing ticket taps. It stays inside the
+          // authenticated + onboarded branch so a tap never navigates a
+          // signed-out container.
+          <>
+            <PushTapRouter />
+            <ApprovalGate>
+              <MainNavigator />
+            </ApprovalGate>
+          </>
         ) : (
           <OnboardingScreen onComplete={handleOnboardingComplete} />
         )

@@ -19,6 +19,10 @@
       "create": "Tetikleyiciler, koşullar ve eylemlerle otomatik bir iş akışı oluşturun.",
       "edit": "Otomasyon yapılandırmasını değiştirin."
     },
+    "managed": {
+      "title": "Yapay zeka aracısı tarafından yönetiliyor",
+      "description": "Bu otomasyon, kendi yapay zeka aracısı tarafından yönetilir. Bunun yerine aracıyı yapılandırın."
+    },
     "actions": {
       "create": "Otomasyon Oluşturun",
       "saveChanges": "Değişiklikleri Kaydet"
@@ -215,6 +219,8 @@
     "empty": "Otomasyon bulunamadı. Aramanızı veya filtrelerinizi ayarlamayı deneyin.",
     "partnerWideTitle": "İş ortağı çapında otomasyon — her kuruluş için geçerlidir",
     "allOrgs": "İş ortağı çapında",
+    "managedByAgent": "Yapay zeka aracısı tarafından yönetiliyor",
+    "managedByAgentHint": "Bu otomasyon, kendi yapay zeka aracısı tarafından yönetilir. Bunun yerine aracıyı yapılandırın.",
     "never": "Hiçbir zaman",
     "actions": {
       "viewHistory": "Geçmişi görüntüle",
@@ -806,6 +812,8 @@
       "advancedFilters": "Gelişmiş Filtreler",
       "executing": "Yürütülüyor...",
       "started": "Başladı!",
+      "queued": "Kuyruğa alındı",
+      "reviewResult": "Sonucu incele",
       "confirmExecute": "Yürütmeyi Onayla",
       "execute": "Yürüt"
     },
@@ -819,12 +827,23 @@
     },
     "matchCount": "{{count}} eşleşmesi",
     "empty": {
-      "noCompatibleDevices": "Uyumlu cihaz bulunamadı. Bu komut dosyası {{os}} gerektirir."
+      "noCompatibleDevices": "Uyumlu cihaz bulunamadı. Bu komut dosyası {{os}} gerektirir.",
+      "offlineFiltered_one": "Hiçbir {{status}} cihaz eşleşmiyor. {{count}} uyumlu cihaz durum filtresi tarafından gizleniyor — dahil etmek için tüm cihazları göster.",
+      "offlineFiltered_other": "Hiçbir {{status}} cihaz eşleşmiyor. {{count}} uyumlu cihaz durum filtresi tarafından gizleniyor — dahil etmek için tüm cihazları göster.",
+      "showAllDevices": "Tüm cihazları göster"
     },
     "orSeparator": "veya ",
     "progress": {
       "submitting": "{{count}} cihazlara gönderiliyor...",
-      "submitted": "{{count}} cihazlara gönderildi"
+      "submitted": "{{count}} cihazlara gönderildi",
+      "admitted": "{{count}} cihazdan {{admitted}} tanesi kuyruğa kabul edildi",
+      "submittingTarget": "Gönderiliyor"
+    },
+    "admission": {
+      "allAdmitted": "Seçilen tüm cihazlar kabul edildi ve kuyruğa alındı.",
+      "partiallyAdmitted": "Bazı cihazlar kabul edildi ve kuyruğa alındı. Kalan hedefleri inceleyin.",
+      "rejected": "Hiçbir cihaz kabul edilmedi. Aşağıdaki nedenleri inceleyin.",
+      "queued": "Kuyruğa alındı"
     },
     "confirm": {
       "title": "Yürütmeyi Onayla",
@@ -842,6 +861,9 @@
       "macos": "macOS",
       "linux": "Linux"
     }
+  },
+  "secretParameters": {
+    "requiresSystemContext": "Bu komut dosyası gizli değişkenler kullanır; bunlar yalnızca hedef oturum seçilmeyen, sistem bağlamındaki çalıştırmalara iletilir. \"Oturum açmış kullanıcı\" seçiliyken veya belirli bir oturum hedeflendiğinde cihazlar \"çalıştırılmadı\" hatasıyla başarısız olur."
   },
   "scriptExecutionsPage": {
     "errors": {
@@ -952,13 +974,17 @@
       "builtinLabel": "Özellik",
       "chooseTitle": "Bir değişken seçin",
       "secretRejected": "\"{{key}}\" bir gizli bilgidir — kaydetme reddedilir. Gizli olmayan bir değişken seçin.",
+      "notSecret": "\"{{key}}\" gizli değil. Gizli bir değişken seçin veya kaynağı \"Bir değişkenden\" olarak değiştirin.",
+      "notSecretRow": "Gizli değil — \"Bir değişkenden\" kullanın",
+      "secretHint": "Yalnızca {{env}} ortam değişkeni olarak iletilir; komut dosyasına asla yazılmaz. Sistem bağlamında çalıştırma ve güvenli gizli bilgi iletimini destekleyen bir aracı gerektirir.",
       "hint": "Komut dosyası çalıştığında her hedef cihaz için çözülür; kimseden istenmez."
     },
     "parameterSources": {
       "runtime": "Çalışma anında sorulur",
       "tenantVariable": "Bir değişkenden",
       "deviceCustomField": "Cihaz özel alanından",
-      "builtin": "Cihaz özelliğinden"
+      "builtin": "Cihaz özelliğinden",
+      "tenantSecret": "Gizli bir değişkenden (ortam değişkeni)"
     },
     "execution": {
       "timeoutHint": "Komut dosyası bu sürenin sonunda sonlandırılır. Varsayılan 300 saniye (5 dakika) çoğu görev için uygundur. Maksimum 3600s (1 saat).",
@@ -1014,7 +1040,7 @@
       "button": "Değişkenler",
       "insertTitle": "Bir değişken ekleyin",
       "empty": "Henüz değişken yok.",
-      "secretUnavailable": "Secret — daha sonraki bir sürüm bunu bir ortam değişkeni olarak sunar.",
+      "secretUnavailable": "Gizli — kaynağı \"Gizli bir değişkenden\" olan bir parametre üzerinden bağlayın.",
       "unknown": "{{keys}} için değişken yok — hedeflenen cihazlar siz onu oluşturana kadar başarısız olacaktır."
     }
   },
@@ -1077,7 +1103,8 @@
     "suppliedBy": {
       "tenantVariable": "{{key}} değişkeninden otomatik sağlanır",
       "deviceCustomField": "{{key}} cihaz özel alanından otomatik sağlanır",
-      "builtin": "{{key}} değerinden otomatik sağlanır"
+      "builtin": "{{key}} değerinden otomatik sağlanır",
+      "tenantSecret": "{{key}} gizli değişkeninden ortam değişkeni olarak güvenli biçimde sağlanır"
     }
   },
   "scriptTagManager": {

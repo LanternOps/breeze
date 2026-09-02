@@ -21,6 +21,13 @@ vi.mock('../services/auditEvents', () => ({
   writeRouteAudit: vi.fn()
 }));
 
+const { schedulePeripheralPolicyDevice } = vi.hoisted(() => ({
+  schedulePeripheralPolicyDevice: vi.fn().mockResolvedValue('job-id'),
+}));
+vi.mock('../jobs/peripheralJobs', () => ({
+  schedulePeripheralPolicyDevice,
+}));
+
 vi.mock('../services/filterEngine', () => ({
   evaluateFilterWithPreview: vi.fn().mockResolvedValue({
     totalCount: 1,
@@ -217,6 +224,10 @@ describe('groups routes', () => {
           })
         })
       } as any);
+      vi.mocked(pruneGroupMembershipsOutsideSite).mockResolvedValueOnce({
+        removed: 1,
+        deviceIds: [DEVICE_ID],
+      });
       // getDeviceCountForGroup
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
@@ -373,7 +384,12 @@ describe('groups routes', () => {
         GROUP_ID,
         SITE_ID,
         ORG_ID,
-        expect.anything()
+        expect.anything(),
+        { deferPeripheralReconciliation: true },
+      );
+      expect(schedulePeripheralPolicyDevice).toHaveBeenCalledWith(
+        DEVICE_ID,
+        'dynamic_membership_changed',
       );
       expect(evaluateGroupMembership).toHaveBeenCalledWith(GROUP_ID);
     });
@@ -471,6 +487,15 @@ describe('groups routes', () => {
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockResolvedValue([{ count: 0 }])
           })
+        } as any)
+        // Capture affected devices before deleting memberships.
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([
+              { deviceId: DEVICE_ID },
+              { deviceId: DEVICE_ID_2 },
+            ])
+          })
         } as any);
 
       // Three deletes: memberships, membership log (#3313), then the group.
@@ -498,6 +523,10 @@ describe('groups routes', () => {
       expect(deletedTables.indexOf(schema.groupMembershipLog)).toBeLessThan(
         deletedTables.indexOf(schema.deviceGroups)
       );
+      expect(schedulePeripheralPolicyDevice.mock.calls).toEqual([
+        [DEVICE_ID, 'group_deleted'],
+        [DEVICE_ID_2, 'group_deleted'],
+      ]);
     });
 
     it('should return 404 when deleting non-existent group', async () => {

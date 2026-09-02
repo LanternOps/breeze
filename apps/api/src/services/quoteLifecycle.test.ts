@@ -213,6 +213,7 @@ describe('sendQuote deposit validation', () => {
 
   it('throws 409 DEPOSIT_INVALID when a deposit is configured but there are zero one-time lines', async () => {
     // getQuote (called internally): select quote, select blocks, select lines.
+    queueResult([{ id: 'q1' }]); // sendQuote: child row lock
     queueResult([{
       id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft',
       taxRate: null, depositType: 'percent', depositPercent: '30.00',
@@ -220,6 +221,7 @@ describe('sendQuote deposit validation', () => {
     queueResult([]); // blocks
     queueResult([]); // lines — none at all, so dueOnAcceptanceTotal is $0
     queueResult([]); // no staged Pax8 order
+    queueResult([]); // no successor revision
     queueResult([]); // getQuote: listQuoteOrders — order headers
     queueResult([]); // getQuote: listQuoteOrders — order lines
 
@@ -227,6 +229,7 @@ describe('sendQuote deposit validation', () => {
   });
 
   it('throws 409 DEPOSIT_INVALID when the deposit config is otherwise unsatisfiable (e.g. percent >= 100)', async () => {
+    queueResult([{ id: 'q1' }]); // sendQuote: child row lock
     queueResult([{
       id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft',
       taxRate: null, depositType: 'percent', depositPercent: '100.00',
@@ -234,6 +237,7 @@ describe('sendQuote deposit validation', () => {
     queueResult([]); // blocks
     queueResult([{ quantity: '1', unitPrice: '1000.00', taxable: true, customerVisible: true, recurrence: 'one_time', depositEligible: false }]);
     queueResult([]); // no staged Pax8 order
+    queueResult([]); // no successor revision
     queueResult([]); // getQuote: listQuoteOrders — order headers
     queueResult([]); // getQuote: listQuoteOrders — order lines
 
@@ -245,6 +249,7 @@ describe('sendQuote deposit validation', () => {
     // lines are removed/unflagged after the deposit was set — the send gate must
     // hard-stop it (DEPOSIT_NO_ELIGIBLE_LINES, surfaced as DEPOSIT_INVALID) rather
     // than send a quote whose deposit computes to nothing.
+    queueResult([{ id: 'q1' }]); // sendQuote: child row lock
     queueResult([{
       id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft',
       taxRate: null, depositType: 'selected_lines', depositPercent: null,
@@ -253,6 +258,7 @@ describe('sendQuote deposit validation', () => {
     // A one-time line exists (so dueOnAcceptance > 0) but NONE are depositEligible.
     queueResult([{ quantity: '1', unitPrice: '1000.00', taxable: true, customerVisible: true, recurrence: 'one_time', depositEligible: false }]);
     queueResult([]); // no staged Pax8 order
+    queueResult([]); // no successor revision
     queueResult([]); // getQuote: listQuoteOrders — order headers
     queueResult([]); // getQuote: listQuoteOrders — order lines
 
@@ -260,6 +266,7 @@ describe('sendQuote deposit validation', () => {
   });
 
   it('does NOT gate a quote with no deposit configured (depositType none)', async () => {
+    queueResult([{ id: 'q1' }]); // sendQuote: child row lock
     queueResult([{
       id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent', // non-draft -> INVALID_STATE, not DEPOSIT_INVALID
       taxRate: null, depositType: 'none', depositPercent: null,
@@ -267,6 +274,7 @@ describe('sendQuote deposit validation', () => {
     queueResult([]); // blocks
     queueResult([]); // lines
     queueResult([]); // no staged Pax8 order
+    queueResult([]); // no successor revision
     queueResult([]); // getQuote: listQuoteOrders — order headers
     queueResult([]); // getQuote: listQuoteOrders — order lines
 
@@ -307,6 +315,7 @@ describe('sendQuote customer-facing PDF', () => {
     };
 
     // getQuote: select quote, select blocks, select lines (unfiltered — matches prod).
+    queueResult([{ id: 'q1' }]); // sendQuote: child row lock
     queueResult([{
       id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft',
       taxRate: null, depositType: 'none', depositPercent: null,
@@ -317,6 +326,7 @@ describe('sendQuote customer-facing PDF', () => {
     queueResult([]); // blocks
     queueResult([visibleLine, internalLine]); // lines
     queueResult([]); // no staged Pax8 order
+    queueResult([]); // no successor revision
     queueResult([]); // getQuote: listQuoteOrders — order headers
     queueResult([]); // getQuote: listQuoteOrders — order lines
     queueResult([{ name: 'Customer Co', taxId: null, billingAddressLine1: null, billingAddressLine2: null, billingAddressCity: null, billingAddressRegion: null, billingAddressPostalCode: null, billingAddressCountry: null }]); // getQuote's own draft billTo org lookup
@@ -373,10 +383,12 @@ describe('sendQuote email delivery status', () => {
 
   /** getQuote (quote/blocks/lines/pax8/billTo-org) + partnerRow + org + claim. */
   function queueThroughClaim(org: Record<string, unknown>, partner: Record<string, unknown> = {}) {
+    queueResult([{ id: 'q1' }]); // sendQuote: child row lock
     queueResult([quoteRow]);
     queueResult([]); // blocks
     queueResult([lineRow]); // lines
     queueResult([]); // no staged Pax8 order
+    queueResult([]); // no successor revision
     queueResult([]); // getQuote: listQuoteOrders — order headers
     queueResult([]); // getQuote: listQuoteOrders — order lines
     queueResult([org]); // getQuote's draft billTo org lookup
@@ -580,10 +592,12 @@ describe('sendQuote bill-to snapshot', () => {
 
   /** Queue getQuote (quote/blocks/lines) + partnerRow + org + claim + email-path reads. */
   function queueSendPath(quote: Record<string, unknown>, org: Record<string, unknown>) {
+    queueResult([{ id: 'q1' }]); // sendQuote: child row lock
     queueResult([quote]); // getQuote: quote
     queueResult([]);       // getQuote: blocks
     queueResult([{ quantity: '1', unitPrice: '100.00', taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false, lineTotal: '100.00' }]); // getQuote: lines
     queueResult([]);       // getQuote: no staged Pax8 order
+    queueResult([]);       // getQuote: no successor revision
     queueResult([]); // getQuote: listQuoteOrders — order headers
     queueResult([]); // getQuote: listQuoteOrders — order lines
     queueResult([org]);    // getQuote's own draft billTo org lookup (status is 'draft' for every quote sent through this helper)
@@ -722,10 +736,12 @@ describe('sendQuote presentation snapshot', () => {
 
   /** Queue getQuote (quote/blocks/lines) + partnerRow + org + claim + email-path reads. */
   function queueSendPath(quote: Record<string, unknown>, partnerRow: Record<string, unknown>) {
+    queueResult([{ id: 'q1' }]); // sendQuote: child row lock
     queueResult([quote]); // getQuote: quote
     queueResult([]);       // getQuote: blocks
     queueResult([{ quantity: '1', unitPrice: '100.00', taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false, lineTotal: '100.00' }]); // getQuote: lines
     queueResult([]);       // getQuote: no staged Pax8 order
+    queueResult([]);       // getQuote: no successor revision
     queueResult([]); // getQuote: listQuoteOrders — order headers
     queueResult([]); // getQuote: listQuoteOrders — order lines
     queueResult([{ name: 'Customer Co', taxId: null, billingAddressLine1: null, billingAddressLine2: null, billingAddressCity: null, billingAddressRegion: null, billingAddressPostalCode: null, billingAddressCountry: null }]); // getQuote's own draft billTo org lookup
@@ -806,10 +822,12 @@ describe('sendQuote document_locale stamp', () => {
   });
 
   function queueSendPath(quote: Record<string, unknown>, partnerRow: Record<string, unknown>) {
+    queueResult([{ id: 'q1' }]); // sendQuote: child row lock
     queueResult([quote]); // getQuote: quote
     queueResult([]);       // getQuote: blocks
     queueResult([{ quantity: '1', unitPrice: '100.00', taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false, lineTotal: '100.00' }]); // getQuote: lines
     queueResult([]);       // getQuote: no staged Pax8 order
+    queueResult([]);       // getQuote: no successor revision
     queueResult([]); // getQuote: listQuoteOrders — order headers
     queueResult([]); // getQuote: listQuoteOrders — order lines
     queueResult([{ name: 'Customer Co', taxId: null, billingAddressLine1: null, billingAddressLine2: null, billingAddressCity: null, billingAddressRegion: null, billingAddressPostalCode: null, billingAddressCountry: null }]); // getQuote's own draft billTo org lookup
@@ -934,10 +952,12 @@ describe('sendQuote contract-variable gate', () => {
   };
 
   it('blocks send with the unresolved (manual) variable name when a contract block variable is unfilled', async () => {
+    queueResult([{ id: 'q1' }]);             // sendQuote: child row lock
     queueResult([baseQuote]);              // getQuote: quote
     queueResult([contractBlock({})]);       // getQuote: blocks — governing_state left blank
     queueResult([]);                        // getQuote: lines
     queueResult([]);                        // getQuote: no staged Pax8 order
+    queueResult([]);                        // getQuote: no successor revision
     queueResult([]); // getQuote: listQuoteOrders — order headers
     queueResult([]); // getQuote: listQuoteOrders — order lines
     queueResult([org]);                     // getQuote's own draft billTo org lookup
@@ -954,10 +974,12 @@ describe('sendQuote contract-variable gate', () => {
   it('does not gate on an auto variable — it is always resolved from the quote itself', async () => {
     // declaredVariables includes 'client.name' (kind: auto); only the manual
     // 'governing_state' should ever appear in the unresolved list.
+    queueResult([{ id: 'q1' }]); // sendQuote: child row lock
     queueResult([baseQuote]);
     queueResult([contractBlock({})]);
     queueResult([]);
     queueResult([]); // getQuote: no staged Pax8 order
+    queueResult([]); // getQuote: no successor revision
     queueResult([]); // getQuote: listQuoteOrders — order headers
     queueResult([]); // getQuote: listQuoteOrders — order lines
     queueResult([org]);
@@ -971,10 +993,12 @@ describe('sendQuote contract-variable gate', () => {
   });
 
   it('sends successfully once every manual variable is filled in', async () => {
+    queueResult([{ id: 'q1' }]);                              // sendQuote: child row lock
     queueResult([baseQuote]);                                   // getQuote: quote
     queueResult([contractBlock({ governing_state: 'Texas' })]); // getQuote: blocks — filled in
     queueResult([{ quantity: '1', unitPrice: '100.00', taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false, lineTotal: '100.00' }]); // getQuote: lines
     queueResult([]);                        // getQuote: no staged Pax8 order
+    queueResult([]);                        // getQuote: no successor revision
     queueResult([]); // getQuote: listQuoteOrders — order headers
     queueResult([]); // getQuote: listQuoteOrders — order lines
     queueResult([org]);                     // getQuote's own draft billTo org lookup
@@ -1011,10 +1035,12 @@ describe('sendQuote contract-variable gate', () => {
     };
     const draftNullBillTo = { ...baseQuote, billToName: null, billToAddress: null, sellerSnapshot: null };
 
+    queueResult([{ id: 'q1' }]);             // sendQuote: child row lock
     queueResult([draftNullBillTo]);          // getQuote: quote (NULL billTo)
     queueResult([contractBlock({})]);        // getQuote: blocks
     queueResult([{ quantity: '1', unitPrice: '100.00', taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false, lineTotal: '100.00' }]); // getQuote: lines
     queueResult([]);                         // getQuote: no staged Pax8 order
+    queueResult([]);                         // getQuote: no successor revision
     queueResult([]); // getQuote: listQuoteOrders — order headers
     queueResult([]); // getQuote: listQuoteOrders — order lines
     queueResult([org]);                      // getQuote's own draft billTo org lookup
@@ -1069,8 +1095,10 @@ describe('resendQuote', () => {
     queueResult([]); // blocks
     queueResult([{ quantity: '1', unitPrice: '1000.00', taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false }]);
     queueResult([]); // no staged Pax8 order
+    queueResult([]); // no successor revision
     queueResult([]); // listQuoteOrders — headers
     queueResult([]); // listQuoteOrders — lines
+    queueResult([{ status: quote.status }]); // resendQuote: fresh status row lock
   }
 
   beforeEach(() => {
@@ -1179,6 +1207,12 @@ describe('resendQuote', () => {
 
   it.each(['draft', 'accepted', 'declined', 'converted'])('refuses to re-send a %s quote', async (status) => {
     queueGetQuote({ ...OPEN_QUOTE, status });
+    // resendQuote's fresh locked status read now 404s on zero rows instead of
+    // falling back to the stale snapshot, so the row must be queued for it.
+    // A draft consumes one read more than the settled statuses inside
+    // queueGetQuote, which would otherwise leave this read empty; queueing it
+    // here keeps every status on the intended 409 path rather than a 404.
+    queueResult([{ status }]);
     await expect(resendQuote('q1', actor)).rejects.toMatchObject({ status: 409, code: 'INVALID_STATE' });
   });
 
@@ -1231,8 +1265,10 @@ describe('getQuoteShareLink', () => {
     queueResult([]);
     queueResult([]);
     queueResult([]);
+    queueResult([]); // no successor revision
     queueResult([]);
     queueResult([]);
+    queueResult([{ status: quote.status }]); // getQuoteShareLink: fresh status row lock
   }
 
   beforeEach(() => {
@@ -1256,6 +1292,10 @@ describe('getQuoteShareLink', () => {
 
   it('refuses a draft — there is no link until the quote is sent', async () => {
     queueGetQuote({ ...SENT, status: 'draft' });
+    // Same reason as the resend draft case: the fresh locked read now 404s on
+    // zero rows rather than reusing the stale snapshot, and a draft consumes an
+    // extra read inside queueGetQuote. Queue the row so this stays a 409.
+    queueResult([{ status: 'draft' }]);
     await expect(getQuoteShareLink('q1', actor)).rejects.toMatchObject({ status: 409, code: 'INVALID_STATE' });
   });
 

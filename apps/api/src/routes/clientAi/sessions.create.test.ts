@@ -19,6 +19,7 @@ const {
   checkBillingCreditsMock, rateLimiterMock,
   resolveToolResultMock, failPendingMock,
   applyDlpMock,
+  resolveClientLlmConfigMock,
 } = vi.hoisted(() => ({
   CLIENT_USER_ID: 'beefbeef-1111-4222-8333-444455556666',
   ORG_ID: '0c0c0c0c-1111-4222-8333-444455556666',
@@ -43,6 +44,7 @@ const {
   resolveToolResultMock: vi.fn(() => true),
   failPendingMock: vi.fn(() => 0),
   applyDlpMock: vi.fn(),
+  resolveClientLlmConfigMock: vi.fn(),
 }));
 
 vi.mock('../../services/aiAgentSdk', () => ({
@@ -83,6 +85,10 @@ vi.mock('../../services/clientAiToolBridge', () => ({
   failPendingForSession: failPendingMock,
 }));
 vi.mock('../../services/clientAiDlp', () => ({ applyDlp: applyDlpMock }));
+vi.mock('../../services/clientAiSessions', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../services/clientAiSessions')>()),
+  resolveClientLlmConfig: (...args: unknown[]) => resolveClientLlmConfigMock(...args),
+}));
 
 import { clientAiSessionRoutes } from './sessions';
 import { defaultClientAiPolicy } from '../../services/clientAiPolicy';
@@ -122,6 +128,14 @@ beforeEach(() => {
   checkClientBudgetMock.mockResolvedValue(null);
   checkBillingCreditsMock.mockResolvedValue(null);
   rateLimiterMock.mockResolvedValue({ allowed: true, remaining: 9, resetAt: new Date() });
+  resolveClientLlmConfigMock.mockResolvedValue({
+    source: 'partner',
+    partnerId: 'partner-from-org',
+    apiKey: 'partner-key',
+    model: 'claude-opus-4-6',
+    configId: 'config-1',
+    configVersion: 1,
+  });
   policyState.policy = { ...defaultClientAiPolicy(ORG_ID), enabled: true };
   dbSelectMock.mockImplementation(() => selectChain([EXCEL_SESSION_ROW]));
   dbInsertMock.mockImplementation(() => ({
@@ -141,7 +155,13 @@ describe('POST /client-ai/sessions (create) — host routing', () => {
       method: 'POST', body: JSON.stringify({}), headers: AUTHED,
     });
     expect(res.status).toBe(201);
-    expect(valuesSpy).toHaveBeenCalledWith(expect.objectContaining({ type: 'excel_client' }));
+    expect(valuesSpy).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'excel_client',
+      model: 'claude-opus-4-6',
+      billingSource: 'partner_key',
+    }));
+    expect(resolveClientLlmConfigMock).toHaveBeenCalledWith(ORG_ID);
+    expect(checkBillingCreditsMock).toHaveBeenCalledWith(ORG_ID, 'partner_key');
     // The create audit records the resolved host.
     expect(writeAuditEventMock).toHaveBeenCalledWith(
       expect.anything(),
@@ -150,6 +170,44 @@ describe('POST /client-ai/sessions (create) — host routing', () => {
         details: expect.objectContaining({ host: 'excel' }),
       }),
     );
+  });
+
+  it('runs the rate limit before provider resolution', async () => {
+    rateLimiterMock.mockResolvedValueOnce({ allowed: false, remaining: 0, resetAt: new Date() });
+
+    const res = await buildApp().request('/client-ai/sessions', {
+      method: 'POST', body: JSON.stringify({}), headers: AUTHED,
+    });
+
+    expect(res.status).toBe(429);
+    expect(resolveClientLlmConfigMock).not.toHaveBeenCalled();
+    expect(dbInsertMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a request-supplied partner id before provider resolution', async () => {
+    const res = await buildApp().request('/client-ai/sessions', {
+      method: 'POST', body: JSON.stringify({ partnerId: 'attacker-partner' }), headers: AUTHED,
+    });
+
+    expect(res.status).toBe(400);
+    expect(resolveClientLlmConfigMock).not.toHaveBeenCalled();
+    expect(dbInsertMock).not.toHaveBeenCalled();
+  });
+
+  it('returns ai_unavailable as 503 before inserting a session', async () => {
+    resolveClientLlmConfigMock.mockResolvedValue({
+      source: 'unavailable',
+      partnerId: 'partner-from-org',
+      reason: 'key_error',
+    });
+
+    const res = await buildApp().request('/client-ai/sessions', {
+      method: 'POST', body: JSON.stringify({}), headers: AUTHED,
+    });
+
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'ai_unavailable' });
+    expect(dbInsertMock).not.toHaveBeenCalled();
   });
 
   it('creates an excel_client session when host:"excel" is explicit', async () => {
@@ -247,6 +305,19 @@ describe('POST /client-ai/sessions (create) — host routing', () => {
 });
 
 describe('use-path host guard (ensureActiveClientSession)', () => {
+  it('rate limits a turn before resolving its provider or checking an unsupported stored host', async () => {
+    dbSelectMock.mockImplementation(() => selectChain([{ ...EXCEL_SESSION_ROW, type: 'keynote_client' }]));
+    rateLimiterMock.mockResolvedValueOnce({ allowed: false, remaining: 0, resetAt: new Date() });
+
+    const res = await buildApp().request(`/client-ai/sessions/${SESSION_ID}/messages`, {
+      method: 'POST', headers: AUTHED, body: JSON.stringify({ content: 'hi' }),
+    });
+
+    expect(res.status).toBe(429);
+    expect(resolveClientLlmConfigMock).not.toHaveBeenCalled();
+    expect(managerMock.getOrCreate).not.toHaveBeenCalled();
+  });
+
   it('refuses to start a stored keynote_client session (400 on /messages)', async () => {
     // Every REAL Office host (excel/word/powerpoint/outlook) is now fully
     // supported, so the fail-loud baton moves to a SYNTHETIC keynote_client row:

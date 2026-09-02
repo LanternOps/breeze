@@ -19,6 +19,10 @@
       "create": "Build an automated workflow with triggers, conditions, and actions.",
       "edit": "Modify the automation configuration."
     },
+    "managed": {
+      "title": "Managed by AI agent",
+      "description": "This automation is maintained by its AI agent. Configure the agent instead."
+    },
     "actions": {
       "create": "Create Automation",
       "saveChanges": "Save Changes"
@@ -215,6 +219,8 @@
     "empty": "No automations found. Try adjusting your search or filters.",
     "partnerWideTitle": "Partner-wide automation — applies to every organization",
     "allOrgs": "Partner-wide",
+    "managedByAgent": "Managed by AI agent",
+    "managedByAgentHint": "This automation is maintained by its AI agent. Configure the agent instead.",
     "never": "Never",
     "actions": {
       "viewHistory": "View history",
@@ -806,6 +812,8 @@
       "advancedFilters": "Advanced Filters",
       "executing": "Executing...",
       "started": "Started!",
+      "queued": "Queued",
+      "reviewResult": "Review result",
       "confirmExecute": "Confirm Execute",
       "execute": "Execute"
     },
@@ -819,12 +827,23 @@
     },
     "matchCount": "{{count}} match",
     "empty": {
-      "noCompatibleDevices": "No compatible devices found. This script requires {{os}}."
+      "noCompatibleDevices": "No compatible devices found. This script requires {{os}}.",
+      "offlineFiltered_one": "No {{status}} devices match. {{count}} compatible device is hidden by the status filter — show all devices to include it.",
+      "offlineFiltered_other": "No {{status}} devices match. {{count}} compatible devices are hidden by the status filter — show all devices to include them.",
+      "showAllDevices": "Show all devices"
     },
     "orSeparator": " or ",
     "progress": {
       "submitting": "Submitting to {{count}} devices...",
-      "submitted": "Submitted to {{count}} devices"
+      "submitted": "Submitted to {{count}} devices",
+      "admitted": "{{admitted}} of {{count}} devices admitted to the queue",
+      "submittingTarget": "Submitting"
+    },
+    "admission": {
+      "allAdmitted": "All selected devices were admitted and queued.",
+      "partiallyAdmitted": "Some devices were admitted and queued. Review the remaining targets.",
+      "rejected": "No devices were admitted. Review the reasons below.",
+      "queued": "Queued"
     },
     "confirm": {
       "title": "Confirm Execution",
@@ -842,6 +861,9 @@
       "macos": "macOS",
       "linux": "Linux"
     }
+  },
+  "secretParameters": {
+    "requiresSystemContext": "This script uses secret variables, which are only delivered to system-context runs with no session target. Devices will fail with \"not executed\" under Run as user, or when a specific session is targeted."
   },
   "scriptExecutionsPage": {
     "errors": {
@@ -998,14 +1020,15 @@
       "button": "Variables",
       "insertTitle": "Insert a variable",
       "empty": "No variables yet.",
-      "secretUnavailable": "Secret — a later release delivers it as an environment variable.",
+      "secretUnavailable": "Secret — bind it through a parameter with source \"From a secret variable\".",
       "unknown": "No variable exists for {{keys}} — targeted devices will fail until you create it."
     },
     "parameterSources": {
       "runtime": "Asked at run time",
       "tenantVariable": "From a variable",
       "deviceCustomField": "From a device custom field",
-      "builtin": "From a device property"
+      "builtin": "From a device property",
+      "tenantSecret": "From a secret variable (environment variable)"
     },
     "parameterBinding": {
       "variableLabel": "Variable key",
@@ -1015,6 +1038,9 @@
       "builtinLabel": "Property",
       "chooseTitle": "Choose a variable",
       "secretRejected": "\"{{key}}\" is a secret — the save will be rejected. Choose a variable that is not a secret.",
+      "notSecret": "\"{{key}}\" is not a secret. Choose a secret variable, or switch the source to \"From a variable\".",
+      "notSecretRow": "Not a secret — use \"From a variable\"",
+      "secretHint": "Delivered only as the environment variable {{env}} — never written into the script. Requires system-context execution and an agent that supports secure secret delivery.",
       "hint": "Resolved for every target device when the script runs — nobody is asked for it."
     }
   },
@@ -1077,7 +1103,8 @@
     "suppliedBy": {
       "tenantVariable": "Supplied automatically from variable {{key}}",
       "deviceCustomField": "Supplied automatically from device custom field {{key}}",
-      "builtin": "Supplied automatically from {{key}}"
+      "builtin": "Supplied automatically from {{key}}",
+      "tenantSecret": "Supplied securely from secret variable {{key}} as an environment variable"
     }
   },
   "scriptTagManager": {

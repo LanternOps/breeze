@@ -43,13 +43,14 @@ import * as dbModule from '../db';
 import { captureException } from '../services/sentry';
 import { getBullMQConnection } from '../services/redis';
 import { cleanupExpiredOauthLifecycleRows, cleanupStaleOauthClients } from '../oauth/provider';
+import { jobSchedule } from './scheduleRegistry';
 
 const QUEUE_NAME = 'oauth-stale-clients-cleanup';
 const JOB_NAME = 'oauth-stale-clients-cleanup';
 const REPEAT_JOB_ID = 'oauth-stale-clients-cleanup';
 // Daily at 03:00 UTC — off-peak for both US and EU traffic patterns, and
 // low contention with the other 02:00 cron jobs (reliabilityWorker).
-const DAILY_CRON = '0 3 * * *';
+const DAILY_CRON = jobSchedule('oauth-cleanup');
 
 function isCleanupEnabled(): boolean {
   const raw = process.env.OAUTH_CLEANUP_ENABLED;

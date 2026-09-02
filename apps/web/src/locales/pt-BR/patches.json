@@ -37,7 +37,8 @@
       "selectedOrganization": "a organização selecionada",
       "messageOne": "Aprovar patch em {{count}} dispositivo em {{org}}?",
       "messageMany": "Aprovar patch em {{count}} dispositivos em {{org}}?"
-    }
+    },
+    "checkingAccess": "Verificando seu acesso..."
   },
   "patchComplianceView": {
     "unknownDevice": "Desconhecido",

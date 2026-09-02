@@ -170,6 +170,20 @@ describe('ScriptParametersForm rendering', () => {
     );
   });
 
+  it('renders a secret parameter as a locked chip with no input (#3409 PR4c-2)', () => {
+    const params: ScriptParameter[] = [
+      { name: 'api_token', source: 'tenantSecret', variableKey: 'vendor_password' },
+    ];
+    render(<ScriptParametersForm parameters={params} values={{}} onChange={vi.fn()} />);
+
+    const chip = screen.getByTestId('script-bound-parameter-api_token');
+    expect(chip).toHaveTextContent(
+      'Supplied securely from secret variable vendor_password as an environment variable'
+    );
+    expect(chip.querySelector('input')).toBeNull();
+    expect(screen.getByTestId('script-parameters-all-supplied')).toBeInTheDocument();
+  });
+
   it('still shows the section when every parameter is bound — the operator must see what gets injected', () => {
     const { container } = render(
       <ScriptParametersForm parameters={[boundVariable]} values={{}} onChange={vi.fn()} />

@@ -57,7 +57,6 @@ vi.mock('./workerObservability', () => ({
 import {
   __testOnly,
   createMlOutputRetentionWorker,
-  extractMlOutputRetentionRowCount,
   initializeMlOutputRetention,
   shutdownMlOutputRetention,
 } from './mlOutputRetention';
@@ -79,13 +78,6 @@ describe('ML output retention worker', () => {
     await shutdownMlOutputRetention();
   });
 
-  it('extracts row counts from supported driver result shapes', () => {
-    expect(extractMlOutputRetentionRowCount({ rowCount: 4, count: 2 })).toBe(4);
-    expect(extractMlOutputRetentionRowCount({ count: 3 })).toBe(3);
-    expect(extractMlOutputRetentionRowCount([{}, {}])).toBe(2);
-    expect(extractMlOutputRetentionRowCount({})).toBe(0);
-  });
-
   it('registers a repeatable pruning job with a stable jobId', async () => {
     await initializeMlOutputRetention();
 
@@ -99,7 +91,8 @@ describe('ML output retention worker', () => {
       }),
       expect.objectContaining({
         jobId: __testOnly.REPEAT_JOB_ID,
-        repeat: { every: __testOnly.RETENTION_INTERVAL_MS },
+        // Staggered daily slot, not an epoch-anchored interval (scheduleRegistry.ts).
+        repeat: { pattern: '23 8 * * *' },
       }),
     );
   });
@@ -161,5 +154,26 @@ describe('ML output retention worker', () => {
         { table: 'metric_anomaly_candidates', deleted: 0, batches: 1, hasMore: false },
       ],
     });
+  });
+
+  // #4343: the only prior signal was a `+` appended inside an info-level detail
+  // string — far too easy to miss for a table that never catches up.
+  it('warns loudly, and only for the capped table, when a backlog remains', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    dbExecuteMock
+      .mockResolvedValueOnce({ rowCount: 4 })
+      .mockResolvedValueOnce({ rowCount: 4 })
+      .mockResolvedValueOnce({ rowCount: 1 })
+      .mockResolvedValueOnce({ rowCount: 0 });
+    createMlOutputRetentionWorker();
+
+    await capturedWorkerProcessor.current!({
+      data: { retentionDays: 30, batchSize: 4, maxBatches: 2 },
+    });
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]?.[0])).toContain('remediation_suggestions');
+    warn.mockRestore();
   });
 });

@@ -4,12 +4,24 @@ import { ClientRouter } from 'astro:transitions';
 import { loadPortalBranding } from '../lib/server';
 import { buildPortalNavItems } from '../lib/navItems';
 import { stripBase, withBase } from '../lib/basePath';
+import { buildDocAccentCss } from '../lib/docAccent';
 
 interface Props {
   title: string;
+  /** Partner brand accent for a document rendered on this page (proposal or
+   *  invoice), emitted below as a nonced <style> element (lib/docAccent.ts). */
+  docAccent?: string | null;
 }
 
-const { title } = Astro.props;
+// Design contract (The Guest Ledger) — a frontmatter comment so it stays out of
+// the HTML customers receive; apps/portal/DESIGN.md is the full record.
+// THESIS: the MSP as concierge; refuses the category default (white sidebar
+// shell, boxed tables, blue accents, pill badges). OWN-WORLD: warm plaster
+// ground, linen cards, deep service-green ink, hairline-ruled ledgers, Literata
+// for titles and money, Hanken Grotesk elsewhere, statuses as a dot plus
+// uppercase tracked text, 12px surfaces. FIRST VIEWPORT: quiet left rail with
+// the firm's name; serif page title + one line of service copy; the ledger.
+const { title, docAccent } = Astro.props;
 // Astro.url.pathname includes the base (e.g. /c/devices); strip it so the
 // active-nav comparison below stays base-agnostic.
 const pathname = stripBase(Astro.url.pathname);
@@ -18,6 +30,9 @@ const branding = await loadPortalBranding(Astro.request);
 // Fail-open when the flag is absent (shared-domain portals get no branding row);
 // the API's 403 gate on /portal/tickets/* is the real enforcement.
 const navItems = buildPortalNavItems(branding);
+
+const accentCss = buildDocAccentCss(docAccent ?? branding.primaryColor);
+const cspNonce = Astro.locals.cspNonce;
 
 const isActive = (href: string) => {
   if (href === '/') return pathname === '/';
@@ -30,49 +45,71 @@ const isActive = (href: string) => {
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="description" content="Customer Portal" />
+    <meta name="description" content="Your proposals, invoices, devices and support — in one place." />
     <link rel="icon" type="image/svg+xml" href={withBase('/favicon.svg')} />
-    <title>{title} | Customer Portal</title>
+    <title>{title} | {branding.name || 'Customer Portal'}</title>
+    {branding.faviconUrl && <link rel="icon" href={branding.faviconUrl} />}
+    {accentCss && <style nonce={cspNonce} set:html={accentCss}></style>}
     <ClientRouter />
   </head>
   <body class="min-h-screen bg-background antialiased">
-    <div class="flex h-screen overflow-hidden">
-      <aside class="hidden w-64 flex-col border-r bg-card lg:flex">
-        <div class="flex h-16 items-center border-b px-6">
+    <a
+      href="#portal-main"
+      class="sr-only rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-50"
+    >
+      Skip to main content
+    </a>
+    {/* Was `h-screen overflow-hidden`: a fixed 100vh that clips under the iOS
+        Safari URL bar. dvh tracks the visible viewport instead. */}
+    <div class="flex min-h-dvh">
+      <aside class="hidden w-64 flex-col border-r border-border/70 lg:flex">
+        <div class="flex h-20 items-center px-7">
           {branding.logoUrl ? (
             <img src={branding.logoUrl} alt={branding.name || 'Customer Portal'} class="h-8 w-auto" />
           ) : (
-            <span class="font-semibold">{branding.name || 'Customer Portal'}</span>
+            <span class="font-display text-xl font-semibold tracking-tight text-foreground">
+              {branding.name || 'Customer Portal'}
+            </span>
           )}
         </div>
 
-        <nav class="flex-1 space-y-1 p-4">
+        <nav class="flex-1 space-y-0.5 px-4 pt-2">
           {navItems.map((item) => (
             <a
               href={withBase(item.href)}
+              aria-current={isActive(item.href) ? 'page' : undefined}
               class:list={[
-                'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
+                'group relative flex items-center rounded-md px-3 py-2 text-sm transition-colors duration-150',
                 isActive(item.href)
-                  ? 'bg-primary text-primary-foreground'
-                  : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'
+                  ? 'font-semibold text-foreground'
+                  : 'font-medium text-muted-foreground hover:bg-accent/60 hover:text-foreground'
               ]}
             >
+              {/* The register mark: active entries carry a short ink rule where
+                  a filled pill used to shout. */}
+              <span
+                aria-hidden="true"
+                class:list={[
+                  'mr-3 h-4 w-0.5 rounded-full transition-colors duration-150',
+                  isActive(item.href) ? 'bg-primary' : 'bg-transparent group-hover:bg-border'
+                ]}
+              ></span>
               {item.label}
             </a>
           ))}
         </nav>
 
-        <div class="border-t p-4">
-          <div class="rounded-md bg-muted p-4 text-xs text-muted-foreground">
-            <div class="text-sm font-medium text-foreground">Need Help?</div>
-            <p class="mt-1">Contact support for assistance.</p>
+        <div class="px-6 pb-7">
+          <div class="border-t border-border/70 pt-5 text-sm">
+            <p class="font-medium text-foreground">We're here to help.</p>
+            <p class="mt-1 text-muted-foreground">Reach your IT team any time.</p>
             {branding.supportEmail && (
-              <a href={`mailto:${branding.supportEmail}`} class="mt-2 block text-primary hover:underline">
+              <a href={`mailto:${branding.supportEmail}`} class="mt-3 block font-medium text-primary-on-tint underline-offset-4 hover:underline">
                 {branding.supportEmail}
               </a>
             )}
             {branding.supportPhone && (
-              <a href={`tel:${branding.supportPhone}`} class="mt-1 block text-primary hover:underline">
+              <a href={`tel:${branding.supportPhone}`} class="mt-1 block font-medium text-primary-on-tint underline-offset-4 hover:underline">
                 {branding.supportPhone}
               </a>
             )}
@@ -80,22 +117,22 @@ const isActive = (href: string) => {
         </div>
       </aside>
 
-      <div class="flex flex-1 flex-col overflow-hidden">
-        <header class="flex h-16 items-center justify-between border-b bg-card px-6">
-          <div class="flex items-center gap-3">
-            <details class="relative lg:hidden">
-              <summary class="cursor-pointer list-none rounded-md border px-3 py-2 text-sm text-muted-foreground hover:bg-accent">
+      <div class="flex min-w-0 flex-1 flex-col">
+        <header class="flex h-16 items-center justify-between gap-3 px-4 sm:h-20 sm:px-8">
+          <div class="flex min-w-0 items-center gap-3">
+            <details class="relative shrink-0 lg:hidden">
+              <summary class="cursor-pointer list-none rounded-md border border-border bg-card px-3 py-2 text-sm font-medium text-foreground transition-colors hover:bg-accent">
                 Menu
               </summary>
-              <nav class="absolute left-0 top-12 z-30 w-56 rounded-md border bg-card p-2 shadow-lg">
+              <nav class="absolute left-0 top-12 z-30 w-56 rounded-lg border border-border bg-card p-2 shadow-lg shadow-foreground/5">
                 {navItems.map((item) => (
                   <a
                     href={withBase(item.href)}
                     class:list={[
-                      'block rounded-md px-3 py-2 text-sm',
+                      'block rounded-md px-3 py-2 text-sm transition-colors',
                       isActive(item.href)
-                        ? 'bg-primary text-primary-foreground'
-                        : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'
+                        ? 'bg-accent font-semibold text-foreground'
+                        : 'font-medium text-muted-foreground hover:bg-accent/60 hover:text-foreground'
                     ]}
                   >
                     {item.label}
@@ -103,26 +140,66 @@ const isActive = (href: string) => {
                 ))}
               </nav>
             </details>
-            <h1 class="text-lg font-semibold text-foreground">{branding.name || 'Customer Portal'}</h1>
+            {/* Phones get the partner's logo too, not just the rail. */}
+            {branding.logoUrl ? (
+              <img src={branding.logoUrl} alt={branding.name || 'Customer Portal'} class="h-7 w-auto max-w-[150px] lg:hidden" />
+            ) : (
+              <span class="truncate font-display text-xl font-semibold tracking-tight text-foreground lg:hidden">
+                {branding.name || 'Customer Portal'}
+              </span>
+            )}
           </div>
 
-          <div class="flex items-center gap-2">
-            <a href={withBase('/profile')} class="rounded-md px-3 py-2 text-sm text-muted-foreground hover:bg-accent hover:text-foreground">
+          <div class="flex items-center gap-1">
+            {/* The one quick action a customer reaches for from anywhere:
+                start a ticket. Gated like the nav entry (#2345): hidden only
+                when branding explicitly disables ticketing. */}
+            {branding.enableTickets !== false && (
+              <a
+                href={withBase('/tickets/new')}
+                data-testid="quick-new-ticket"
+                aria-label="New ticket"
+                class="mr-1 inline-flex items-center gap-2 whitespace-nowrap rounded-md bg-primary px-2.5 py-2 text-sm font-semibold text-primary-foreground transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background sm:mr-2 sm:px-3.5"
+              >
+                <svg aria-hidden="true" viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+                {/* Icon-only on phones so the brand keeps its room. */}
+                <span class="hidden sm:inline">New ticket</span>
+              </a>
+            )}
+            <a href={withBase('/profile')} class="hidden whitespace-nowrap rounded-md px-3 py-2 text-sm font-medium text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground lg:inline-flex">
               Profile
             </a>
             <button
               type="button"
               data-portal-logout
               data-login-path={withBase('/login')}
-              class="rounded-md px-3 py-2 text-sm text-destructive hover:bg-accent"
+              class="whitespace-nowrap rounded-md px-3 py-2 text-sm font-medium text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
             >
-              Sign Out
+              Sign out
             </button>
           </div>
         </header>
 
-        <main class="flex-1 overflow-y-auto p-6">
+        <main id="portal-main" class="settle-in mx-auto w-full max-w-5xl flex-1 px-5 pb-16 pt-2 sm:px-8">
           <slot />
+
+          {/* The support contact used to live only in the desktop sidebar, and
+              the mobile menu carries nav links only, so on a phone a customer
+              had no way to reach their MSP from inside the portal. */}
+          <aside class="mt-12 border-t border-border/70 pt-5 text-sm lg:hidden">
+            <p class="font-medium text-foreground">We're here to help.</p>
+            <p class="mt-1 text-muted-foreground">Reach your IT team any time.</p>
+            {branding.supportEmail && (
+              <a href={`mailto:${branding.supportEmail}`} class="mt-3 block font-medium text-primary-on-tint underline-offset-4 hover:underline">
+                {branding.supportEmail}
+              </a>
+            )}
+            {branding.supportPhone && (
+              <a href={`tel:${branding.supportPhone}`} class="mt-1 block font-medium text-primary-on-tint underline-offset-4 hover:underline">
+                {branding.supportPhone}
+              </a>
+            )}
+          </aside>
         </main>
       </div>
     </div>

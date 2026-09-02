@@ -143,6 +143,7 @@
       "archived2": "Arquivada",
       "features": "Recursos",
       "noPoliciesFoundTryAdjustingYourSearch": "Nenhuma política encontrada. Tente ajustar sua pesquisa.",
+      "noPoliciesYet": "Ainda não há políticas de configuração. Crie uma e depois atribua-a a organizações, locais ou dispositivos.",
       "partnerWidePolicyAppliesToEveryOrganization": "Política de todo o parceiro — aplica-se a todas as organizações",
       "allOrgs": "Todo o parceiro",
       "page": "Página",
@@ -252,7 +253,9 @@
         "thisRuleUsesUnsupportedMetrics": "Esta regra usa uma métrica que o mecanismo de alertas não consegue avaliar ({{metrics}}). Escolha uma métrica compatível — ou remova a condição — antes de salvar; o servidor rejeita regras que a contenham.",
         "thisConditionUsesAnUnsupportedMetric": "A métrica \"{{metric}}\" não é avaliada pelo mecanismo de alertas, portanto esta condição é exibida somente para leitura.",
         "valueCount": "Valor (contagem)",
-        "metricNotSet": "não definida"
+        "metricNotSet": "não definida",
+        "testRule": "Testar regra",
+        "testRuleHint": "Avalie estas condições em um dispositivo agora, incluindo alterações não salvas."
       },
       "automationTab": {
         "schedule": "Agendamento",
@@ -735,6 +738,8 @@
         "recurrence": "Recorrência",
         "startDateTime": "Data/hora de início",
         "theSpecificDateAndTimeForThis": "A data e a hora específicas desta janela de manutenção única.",
+        "startTime": "Hora de início",
+        "theTimeOfDayEachWindowOpensIn": "A hora do dia em que cada janela de manutenção é aberta, no fuso horário selecionado. O padrão é meia-noite (00:00).",
         "durationHours": "Duração (horas)",
         "timezone": "Fuso horário",
         "notifyBeforeMinutes": "Notificar antes (minutos)",
@@ -884,7 +889,7 @@
         "windowsUpdateSource": "Origem do Windows Update",
         "manageWindowsUpdateExclusivelyThroughBreeze": "Gerenciar o Windows Update exclusivamente pelo Breeze",
         "suppressesTheEndpointSNativeWindowsUpdate": "Suprime o canal nativo de instalação automática do Windows Update no endpoint, para que as atualizações sejam distribuídas somente pelos anéis de aprovação do Breeze — evitando reinicializações inesperadas e patches fora do seu agendamento. Somente para Windows; o fluxo de verificação, aprovação e instalação do próprio Breeze não é afetado. A configuração é revertida de forma segura quando desativada (uma Política de Grupo administrativa preexistente permanece inalterada).",
-        "times": "&times;",
+        "times": "×",
         "os": "os",
         "thirdParty": "third_party",
         "apps": "apps",

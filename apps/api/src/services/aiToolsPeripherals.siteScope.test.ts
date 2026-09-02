@@ -7,7 +7,10 @@ vi.mock('../db', () => ({
   db: { select: vi.fn(), insert: vi.fn(), update: vi.fn(), delete: vi.fn() },
 }));
 vi.mock('./eventBus', () => ({ publishEvent: vi.fn(async () => {}) }));
-vi.mock('../jobs/peripheralJobs', () => ({ schedulePeripheralPolicyDistribution: vi.fn(async () => {}) }));
+vi.mock('../jobs/peripheralJobs', () => ({
+  resolvePeripheralPolicyDeviceIds: vi.fn(async () => ['device-1']),
+  schedulePeripheralPolicyDevices: vi.fn(async () => ['job-1']),
+}));
 
 import { db } from '../db';
 import { registerPeripheralTools } from './aiToolsPeripherals';
@@ -20,6 +23,11 @@ function handlerFor(name: string): AiTool['handler'] {
   const reg = new Map<string, AiTool>();
   registerPeripheralTools(reg);
   return reg.get(name)!.handler;
+}
+function toolFor(name: string): AiTool {
+  const reg = new Map<string, AiTool>();
+  registerPeripheralTools(reg);
+  return reg.get(name)!;
 }
 function makeAuth(allowedSiteIds?: string[]): AuthContext {
   return {
@@ -68,5 +76,26 @@ describe('get_peripheral_activity — site narrowing (cross-site enumeration)', 
     const r = await handlerFor('get_peripheral_activity')({}, makeAuth(undefined));
     const parsed = JSON.parse(r);
     expect(parsed.summary.count).toBe(1);
+  });
+});
+
+describe('manage_peripheral_policy — priority contract', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('advertises priority in the direct AI tool schema', () => {
+    expect(toolFor('manage_peripheral_policy').definition.input_schema.properties).toHaveProperty('priority');
+  });
+
+  it.each([-1, 1001, 1.5, Number.MAX_SAFE_INTEGER + 1])('rejects unsafe priority %s before writing', async (priority) => {
+    const result = JSON.parse(await handlerFor('manage_peripheral_policy')({
+      action: 'create',
+      name: 'Block USB Storage',
+      device_class: 'storage',
+      policy_action: 'block',
+      target_type: 'organization',
+      priority,
+    }, makeAuth()));
+
+    expect(result.error).toContain('priority');
   });
 });

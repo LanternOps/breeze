@@ -165,7 +165,8 @@ describe('setBundleComponentsSchema', () => {
     const r = setBundleComponentsSchema.safeParse({
       components: [
         { componentItemId: '11111111-1111-1111-1111-111111111111', quantity: 2, showOnInvoice: true, revenueAllocation: 10 }
-      ]
+      ],
+      allocationCurrency: 'USD'
     });
     expect(r.success).toBe(true);
   });
@@ -376,5 +377,37 @@ describe('createCatalogItemSchema attributes.enrichment shape', () => {
       itemType: 'service', name: 'Onsite hour', unitPrice: 150,
     });
     expect(r.attributes).toEqual({});
+  });
+});
+
+describe('setBundleComponentsSchema — allocationCurrency (#3775 review #7)', () => {
+  const id = '11111111-1111-1111-1111-111111111111';
+  it('requires allocationCurrency when any component carries a revenueAllocation', () => {
+    const r = setBundleComponentsSchema.safeParse({
+      components: [{ componentItemId: id, quantity: 1, revenueAllocation: 10 }]
+    });
+    expect(r.success).toBe(false);
+    expect(r.success ? '' : JSON.stringify(r.error.issues)).toContain('allocationCurrency');
+  });
+  it('accepts allocations with a supported allocationCurrency (normalized to uppercase)', () => {
+    const r = setBundleComponentsSchema.safeParse({
+      components: [{ componentItemId: id, quantity: 1, revenueAllocation: 10 }],
+      allocationCurrency: 'eur'
+    });
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.allocationCurrency).toBe('EUR');
+  });
+  it('rejects an unsupported allocationCurrency', () => {
+    const r = setBundleComponentsSchema.safeParse({
+      components: [{ componentItemId: id, quantity: 1, revenueAllocation: 10 }],
+      allocationCurrency: 'XXX'
+    });
+    expect(r.success).toBe(false);
+  });
+  it('does not require allocationCurrency when no component carries an allocation', () => {
+    const r = setBundleComponentsSchema.safeParse({
+      components: [{ componentItemId: id, quantity: 1 }, { componentItemId: '22222222-2222-2222-2222-222222222222', quantity: 1, revenueAllocation: null }]
+    });
+    expect(r.success).toBe(true);
   });
 });

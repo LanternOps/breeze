@@ -45,6 +45,8 @@ Per-device and per-seat lines can be scoped to a specific **site** so you bill o
 
 ## Creating a Contract
 
+A contract is priced in the customer organization's billing currency, which the organization inherits from your partner currency when it is created. Every line must be in that currency, and the invoices the contract generates inherit it.
+
 <Steps>
 1. Go to **Contracts** and click **New contract**.
 2. Select the customer organization, name the contract, and set the billing timing, interval, and start date.
@@ -107,12 +109,43 @@ Select contracts using the checkboxes in the contract list to reveal a bulk acti
 
 Actions run per-item in isolation, so partial success is possible.
 
+## Contract Templates
+
+Separate from the recurring-billing contracts above, Breeze keeps a library of **contract templates** -- the legal-document text (or an uploaded PDF) you attach to a quote for the customer to review and effectively sign as part of accepting a proposal. Open **Contracts → Templates** to manage the library.
+
+A template is owned either by your whole partner (usable on any customer's quotes) or by a single organization, chosen when you create it.
+
+### Creating a Template
+
+<Steps>
+1. Go to **Contracts → Templates** and click **New template**.
+2. Name it and choose its owner: your **partner** (available to every organization) or one **organization** (available only there).
+3. Add a version -- either **author** the document as rich text directly in Breeze, or **upload a PDF** (up to 10MB). An uploaded file must be a readable, unencrypted PDF.
+4. **Publish** the version once it's ready to use on quotes.
+</Steps>
+
+### Versions
+
+Each template can have multiple versions. A new version starts as a **draft** you can keep editing; **publishing** it locks the content and assigns it a version number -- published versions are immutable, so a template already attached to a quote never changes underneath the customer. To revise a published template, add another version and publish that one; existing quotes stay pinned to whichever version they were attached with (see [Contract blocks](/features/quotes/#contract-blocks) in the quote editor).
+
+**Archive** a template to stop it from being used on new quotes. Archiving doesn't touch versions already attached to existing quotes or the executed documents generated from them.
+
+### Variables
+
+An authored template can include `{{variable}}` placeholders that Breeze fills in per quote when the block is rendered or sent. Each placeholder is either:
+
+- **Auto** -- filled automatically from the quote, with no data entry required. The built-in auto variables are the customer's name and address, your organization's (seller) name, the quote number and title, the one-time/monthly/annual/total amounts, and the effective and expiry dates.
+- **Manual** -- anything else. The technician attaching the template to a quote fills these in by hand (for example, a scope note or a specific term).
+
+Publishing a version scans its body for `{{variable}}` tokens and classifies each one automatically -- a name that matches a built-in auto variable is treated as auto, everything else as manual.
+
 ## Permissions
 
-Contract access is governed by role permissions: viewing requires contract read access, creating and editing requires contract write access, and lifecycle actions (activate, pause, resume, cancel) require contract management access. Assign these through **Settings → Users & Roles**.
+Contract access is governed by role permissions: viewing requires contract read access, creating and editing requires contract write access, and lifecycle actions (activate, pause, resume, cancel) require contract management access. The same permissions gate the contract template library. Assign these through **Settings → Users & Roles**.
 
 ## Related
 
 - [Invoices](/features/invoices/) -- where generated invoices land
 - [Product Catalog](/features/product-catalog/) -- link contract lines to catalog items
 - [Online Payments](/features/online-payments/) -- let customers pay generated invoices online
+- [Quotes → Contract blocks](/features/quotes/#contract-blocks) -- attach a contract template to a quote

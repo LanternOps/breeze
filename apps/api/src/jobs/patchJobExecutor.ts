@@ -123,6 +123,64 @@ function getPatchJobCompletionId(patchJobId: string): string {
   return `patch-job-completion-${patchJobId}`;
 }
 
+/**
+ * A stale queue entry that could not be cleared, so re-adding its stable jobId
+ * would be a silent no-op. Named (rather than a bare Error) so it survives
+ * Sentry's scrubber — `scrubEvent` deletes the message but keeps the exception
+ * type. See resolveActiveQueueJob for why this matters.
+ */
+export class StaleQueueJobRemovalError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = 'StaleQueueJobRemovalError';
+  }
+}
+
+/**
+ * One or more devices of an already-`running` patch job could not be handed to
+ * the per-device queue. Named for the same reason as the class above: Sentry's
+ * `scrubEvent` deletes the message, so the exception type is the only thing
+ * that distinguishes this from every other blank event.
+ */
+export class PatchDeviceDispatchError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = 'PatchDeviceDispatchError';
+  }
+}
+
+/**
+ * The 35-minute completion check for an already-`running` patch job could not
+ * be scheduled on its stable id (fallback used) or at all (no backstop left).
+ */
+export class PatchCompletionCheckError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = 'PatchCompletionCheckError';
+  }
+}
+
+/**
+ * Return the reusable queue job for one of `candidateIds`, clearing any
+ * terminal leftover so the caller can re-add on the same stable jobId.
+ *
+ * The clearing is load-bearing, not housekeeping: `queue.add(..., { jobId })` is
+ * a SILENT NO-OP in BullMQ when a job hash with that id already exists — it
+ * returns the existing job and queues nothing. So an "absent" answer from this
+ * helper is a promise that the id is free. Two holes broke that promise:
+ *
+ *   - a `remove()` rejection was swallowed into console.error and the helper
+ *     still answered "absent", handing the caller an add that did nothing while
+ *     reporting success;
+ *   - `getState()` also answers `'unknown'` for a job hash that is in no list,
+ *     which matched neither branch and fell through to the same no-op add.
+ *
+ * Either one strands a `patch_jobs` row in `status='scheduled'` with no queue
+ * job forever: the #1733 reconcile sweep then "recovers" the same row on every
+ * 60s scan, incrementing its counter and emitting one more identical Sentry
+ * event, while nothing actually runs (BREEZE-1A). Failing loudly is the point —
+ * the caller reports a lost run as page-worthy.
+ */
 async function resolveActiveQueueJob(queue: Queue, candidateIds: string[]) {
   for (const candidateId of candidateIds) {
     const existing = await queue.getJob(candidateId);
@@ -131,10 +189,21 @@ async function resolveActiveQueueJob(queue: Queue, candidateIds: string[]) {
     if (isReusableState(state)) {
       return existing;
     }
-    if (state === 'completed' || state === 'failed') {
-      await existing.remove().catch((error) => {
-        console.error(`[PatchJobExecutor] Failed to remove stale job ${candidateId}:`, error);
-      });
+    try {
+      await existing.remove();
+    } catch (error) {
+      // A terminal job can race back into the queue between getState() and
+      // remove() (BullMQ refuses to remove a locked/active job). That outcome is
+      // correct — reuse it rather than reporting a fault.
+      const recheck = await existing.getState().catch(() => 'unknown');
+      if (isReusableState(recheck)) {
+        return existing;
+      }
+      throw new StaleQueueJobRemovalError(
+        `[PatchJobExecutor] Could not remove stale job ${candidateId} (state=${state}); `
+        + 're-enqueuing this id would be a silent no-op',
+        { cause: error },
+      );
     }
   }
 
@@ -291,6 +360,25 @@ export async function selectStaleScheduledJobIds(now: Date = new Date()): Promis
 }
 
 /**
+ * Patch job ids already reported as wedged, so the report fires once per
+ * episode rather than once per sweep (BREEZE-1A, second time).
+ *
+ * A wedged id is persistent BY DEFINITION: `resolveActiveQueueJob` threw
+ * precisely because it could not clear the job hash, and nothing else clears
+ * it. The scheduler sweeps every 60s and `selectStaleScheduledJobIds` keeps
+ * selecting the row for RECONCILE_MAX_AGE_MS (45 days), so an undeduplicated
+ * report is up to ~64,800 error-level events for ONE stuck job — all collapsing
+ * into a single issue, because `scrubEvent` deletes the message. That is
+ * exactly the 342-event issue this whole change set exists to stop, rebuilt at
+ * two orders of magnitude.
+ *
+ * Cleared as soon as the id resolves cleanly again (recovered or genuinely
+ * present), which both ends the episode and bounds the set: it only ever holds
+ * ids that are currently wedged.
+ */
+const reportedWedgedJobIds = new Set<string>();
+
+/**
  * Of the given `scheduled` jobs, return those with no active execute-patch-job
  * queue entry — i.e. the rows whose enqueue was lost (#1733). Pure Redis reads;
  * run this outside the DB access context. Carries `scheduledAt` through so the
@@ -302,7 +390,47 @@ export async function filterOrphanedJobIds(jobs: StaleScheduledJob[]): Promise<S
   const orphaned: StaleScheduledJob[] = [];
   for (const job of jobs) {
     const stableJobId = getPatchJobExecutionId(job.id);
-    const existing = await resolveActiveQueueJob(queue, [stableJobId]);
+    let existing: Awaited<ReturnType<typeof resolveActiveQueueJob>>;
+    try {
+      existing = await resolveActiveQueueJob(queue, [stableJobId]);
+    } catch (error) {
+      // One wedged id must not cost every OTHER orphan its recovery for as long
+      // as it stays wedged — a lost patch run staying lost is the hazard this
+      // sweep exists to prevent. Report it and carry on; it is deliberately NOT
+      // reported as orphaned, because re-adding onto an id we could not clear
+      // would be the silent no-op resolveActiveQueueJob just refused to hide.
+      //
+      // Reported ONCE per episode (see reportedWedgedJobIds) — the condition
+      // does not clear itself, so a per-sweep report is pure volume. The
+      // console line still fires every sweep, so the state stays visible in
+      // logs; only the Sentry event is gated.
+      const detail = error instanceof Error ? error.message : error;
+      if (reportedWedgedJobIds.has(job.id)) {
+        console.error(
+          `[PatchJobExecutor] Patch job ${job.id} still wedged (already reported):`,
+          detail,
+        );
+        continue;
+      }
+      reportedWedgedJobIds.add(job.id);
+      console.error(
+        `[PatchJobExecutor] Skipping reconcile of patch job ${job.id}:`,
+        detail,
+      );
+      captureException(
+        error instanceof Error
+          ? error
+          : new StaleQueueJobRemovalError(
+            `[PatchJobExecutor] Skipping reconcile of patch job ${job.id}`,
+          ),
+        undefined,
+        { patch_reconcile_stage: 'wedged' },
+      );
+      continue;
+    }
+    // Resolved cleanly — whatever wedged it is gone, so the next wedge is a new
+    // episode and reports again.
+    reportedWedgedJobIds.delete(job.id);
     if (!existing) {
       orphaned.push(job);
     }
@@ -379,41 +507,185 @@ async function processExecutePatchJob(data: ExecutePatchJobData): Promise<unknow
     return { completed: true, reason: 'No target devices' };
   }
 
-  // Fan out to per-device queue
+  // Fan out to per-device queue.
+  //
+  // Every device is dispatched inside its own try/catch, and a failure costs
+  // ONLY that device. This runs AFTER the claim UPDATE above has already
+  // flipped the row to `running`, which makes an escaping throw unrecoverable:
+  // the orchestration queue sets no `attempts` (BullMQ defaults to no retry),
+  // a manual retry re-runs the claim UPDATE against `status='scheduled'` and
+  // matches 0 rows, and the #1733 reconcile sweep only scans `scheduled` rows.
+  // So one rejected Redis call on device 7 of 200 would strand the whole run
+  // in `running` forever, with devices 8-200 never enqueued and no completion
+  // checker — invisible, because the row never fails either.
   const deviceQueue = getPatchJobDeviceQueue();
+  const dispatchFailures: { deviceId: string; error: unknown }[] = [];
   for (const deviceId of deviceIds) {
     const stableJobId = getPatchJobDeviceExecutionId(patchJobId, deviceId);
-    const existing = await resolveActiveQueueJob(deviceQueue, [stableJobId]);
-    if (!existing) {
-      await deviceQueue.add(
-        'execute-patch-job-device',
-        {
-          type: 'execute-patch-job-device',
-          patchJobId,
-          deviceId,
-          orgId: patchJob.orgId,
-        } satisfies ExecutePatchJobDeviceData,
-        {
-          ...PATCH_JOB_RETENTION,
-          jobId: stableJobId,
-        }
+    try {
+      const existing = await resolveActiveQueueJob(deviceQueue, [stableJobId]);
+      if (!existing) {
+        await deviceQueue.add(
+          'execute-patch-job-device',
+          {
+            type: 'execute-patch-job-device',
+            patchJobId,
+            deviceId,
+            orgId: patchJob.orgId,
+          } satisfies ExecutePatchJobDeviceData,
+          {
+            ...PATCH_JOB_RETENTION,
+            jobId: stableJobId,
+          }
+        );
+      }
+    } catch (error) {
+      console.error(
+        `[PatchJobExecutor] Failed to dispatch device ${deviceId} of patch job ${patchJobId}:`,
+        error instanceof Error ? error.message : error,
+      );
+      dispatchFailures.push({ deviceId, error });
+    }
+  }
+
+  // Settle the devices we could not dispatch. Without this their
+  // `devicesPending` slots never drain, so the run could only ever be finished
+  // by the 35-minute completion checker — and only if that checker was itself
+  // enqueued. Recording them as failed keeps the counters exact and lets the
+  // normal `devicesPending === 0` finalization close the job out on its own.
+  for (const failure of dispatchFailures) {
+    try {
+      await markDeviceDispatchFailed(patchJobId, failure.deviceId, failure.error);
+    } catch (error) {
+      console.error(
+        `[PatchJobExecutor] Failed to record dispatch failure for device ${failure.deviceId} `
+        + `of patch job ${patchJobId}:`,
+        error instanceof Error ? error.message : error,
       );
     }
   }
 
-  // Enqueue completion checker (35 min delay)
-  const queue = getPatchJobQueue();
-  const completionJobId = getPatchJobCompletionId(patchJobId);
-  const existingCompletion = await resolveActiveQueueJob(queue, [completionJobId]);
-  if (!existingCompletion) {
-    await queue.add(
-      'check-completion',
-      { type: 'check-completion', patchJobId } satisfies CheckCompletionData,
-      { ...PATCH_JOB_COMPLETION_RETENTION, delay: 35 * 60 * 1000, jobId: completionJobId }
+  if (dispatchFailures.length > 0) {
+    const message =
+      `[PatchJobExecutor] Patch job ${patchJobId} could not dispatch `
+      + `${dispatchFailures.length} of ${deviceIds.length} device(s); they are recorded as failed`;
+    captureException(
+      new PatchDeviceDispatchError(message, { cause: dispatchFailures[0]?.error }),
+      undefined,
+      { patch_reconcile_stage: 'device_dispatch_failed' },
     );
   }
 
-  return { dispatched: deviceIds.length };
+  // Enqueue completion checker (35 min delay). This is the backstop that fails
+  // a run whose devices never report, so losing it is what turns a wedged
+  // dispatch into a row that sits in `running` forever. A wedged stable id
+  // therefore falls back to a fresh, unique id rather than giving up:
+  // processCheckCompletion re-reads the row and no-ops unless it is still
+  // `running`, so a duplicate checker is harmless, while no checker is not.
+  await enqueueCompletionCheck(patchJobId);
+
+  return {
+    dispatched: deviceIds.length - dispatchFailures.length,
+    dispatchFailed: dispatchFailures.length,
+  };
+}
+
+/**
+ * Schedule the 35-minute completion check, tolerating a queue id we cannot
+ * clear. Never throws: it is called after the row is already `running`, where
+ * an escaping error is unrecoverable (see the fan-out comment above).
+ */
+async function enqueueCompletionCheck(patchJobId: string): Promise<void> {
+  const queue = getPatchJobQueue();
+  const completionJobId = getPatchJobCompletionId(patchJobId);
+  const completionOptions = {
+    ...PATCH_JOB_COMPLETION_RETENTION,
+    delay: 35 * 60 * 1000,
+  };
+
+  try {
+    const existingCompletion = await resolveActiveQueueJob(queue, [completionJobId]);
+    if (!existingCompletion) {
+      await queue.add(
+        'check-completion',
+        { type: 'check-completion', patchJobId } satisfies CheckCompletionData,
+        { ...completionOptions, jobId: completionJobId }
+      );
+    }
+    return;
+  } catch (error) {
+    console.error(
+      `[PatchJobExecutor] Could not schedule the completion check for patch job ${patchJobId} `
+      + 'on its stable id; retrying under a unique id:',
+      error instanceof Error ? error.message : error,
+    );
+  }
+
+  // Fallback: the stable id is occupied by something we could not remove, so
+  // re-adding it would be a silent no-op. A unique id is not idempotent, but a
+  // second checker only re-reads the row, and the alternative is a `running`
+  // row that nothing will ever finalize.
+  const fallbackJobId = `${completionJobId}-retry-${Date.now()}`;
+  try {
+    await queue.add(
+      'check-completion',
+      { type: 'check-completion', patchJobId } satisfies CheckCompletionData,
+      { ...completionOptions, jobId: fallbackJobId }
+    );
+    captureException(
+      new PatchCompletionCheckError(
+        `[PatchJobExecutor] Completion check for patch job ${patchJobId} was scheduled under a `
+        + 'fallback id because its stable queue id could not be cleared',
+      ),
+      undefined,
+      { patch_reconcile_stage: 'completion_check_fallback' },
+    );
+  } catch (error) {
+    // Both ids failed — the row will stay `running` with no backstop until an
+    // operator intervenes. Page-worthy, and the only remaining signal.
+    const message =
+      `[PatchJobExecutor] Patch job ${patchJobId} is running with NO completion check scheduled; `
+      + 'it cannot time out on its own';
+    console.error(`${message}:`, error instanceof Error ? error.message : error);
+    captureException(
+      new PatchCompletionCheckError(message, { cause: error }),
+      undefined,
+      { patch_reconcile_stage: 'completion_check_lost' },
+    );
+  }
+}
+
+/**
+ * Record a device we could never hand to the per-device queue as a failed
+ * result, mirroring markDeviceSkipped but counting toward `devicesFailed` —
+ * a device that was never dispatched did not succeed, and calling it "skipped"
+ * (which counts as completed) would let the run finish green.
+ */
+async function markDeviceDispatchFailed(
+  patchJobId: string,
+  deviceId: string,
+  error: unknown,
+): Promise<void> {
+  await db.insert(patchJobResults).values({
+    jobId: patchJobId,
+    deviceId,
+    patchId: '00000000-0000-0000-0000-000000000000',
+    status: 'failed',
+    startedAt: new Date(),
+    completedAt: new Date(),
+    errorMessage: `dispatch_failed: ${error instanceof Error ? error.message : String(error)}`,
+    rebootRequired: false,
+  });
+
+  await db
+    .update(patchJobs)
+    .set({
+      devicesFailed: sql`${patchJobs.devicesFailed} + 1`,
+      devicesPending: sql`${patchJobs.devicesPending} - 1`,
+    })
+    .where(eq(patchJobs.id, patchJobId));
+
+  await checkAndFinalizeJob(patchJobId);
 }
 
 async function processCheckCompletion(data: CheckCompletionData): Promise<unknown> {
@@ -848,6 +1120,8 @@ async function recordDeviceExecution(
       patchId?: string;
       externalId?: string;
       success?: boolean;
+      /** Agent's per-patch outcome: 'installed' | 'failed' | 'rolled_back'. */
+      status?: string;
       error?: string;
       rebootRequired?: boolean;
     }>;
@@ -856,11 +1130,26 @@ async function recordDeviceExecution(
     failedCount?: number;
   } | null = null;
 
+  // A well-formed agent ALWAYS emits the install summary as JSON
+  // (`executePatchInstallCommand` marshals it on both the success and the
+  // failure return), so unparsable stdout is an anomaly, not a shrug. It also
+  // became load-bearing with #4228: the reboot decision is now read out of this
+  // payload, so a parse failure is the one way a genuine partial success can
+  // still look like "nothing installed". It must leave a trail.
+  let resultUnparsable = false;
   if (commandResult?.stdout) {
     try {
       parsedResult = JSON.parse(commandResult.stdout);
-    } catch {
-      // Non-JSON stdout
+    } catch (err) {
+      resultUnparsable = true;
+      console.warn(
+        `[PatchJobExecutor] unparsable patch result stdout for job ${patchJobId} device ${deviceId}: ${String(err)}`
+      );
+      captureException(
+        new Error(
+          `[PatchJobExecutor] unparsable patch install result for job ${patchJobId} device ${deviceId}`
+        )
+      );
     }
   }
 
@@ -868,8 +1157,31 @@ async function recordDeviceExecution(
     (parsedResult?.success ?? true) &&
     (typeof commandResult?.exitCode !== 'number' || commandResult.exitCode === 0);
 
+  // Did the run actually change anything on the device? Deliberately NOT
+  // `overallSuccess`: the agent returns Status "failed" / exit 1 the moment ONE
+  // patch in the batch fails, while the other twelve are installed and pending a
+  // reboot (#4228). `installedCount` is the agent's own count of successful
+  // installs/rollbacks; the per-patch array is the fallback for a payload that
+  // omits it. A total failure, or a command that never came back, leaves both
+  // empty.
+  const installedCount = parsedResult?.installedCount;
+  const anyPatchInstalled =
+    (typeof installedCount === 'number' && installedCount > 0) ||
+    (parsedResult?.results?.some(
+      (r) => r.success === true || r.status === 'installed' || r.status === 'rolled_back',
+    ) ?? false);
+
+  // The agent ORs `rebootRequired` across every SUCCESSFUL install, so a partial
+  // failure still carries an accurate value — use it verbatim, including a
+  // reported `false`.
+  //
+  // The fallback only covers a result we could not parse at all (non-JSON
+  // stdout, or no stdout). Reading the static `requiresReboot` flags off the
+  // approved set assumes every one of them installed, which is only sound for a
+  // success-shaped run: on a failed or timed-out command we have no idea which
+  // patches landed, so those flags must not manufacture a reboot.
   const anyRebootRequired = parsedResult?.rebootRequired ??
-    approvedPatches.some((p) => p.requiresReboot);
+    (overallSuccess ? approvedPatches.some((p) => p.requiresReboot) : false);
 
   // 6. Insert patchJobResults per patch
   for (const patch of approvedPatches) {
@@ -898,16 +1210,51 @@ async function recordDeviceExecution(
   }
 
   // 7. Evaluate reboot policy
+  //
+  // This used to sit inside `if (overallSuccess)`. A 13-patch job with a single
+  // failed patch reports `success: false` / exit 1 from the agent, so the policy
+  // was never consulted at all and the reboot the other twelve installs needed
+  // was dropped — silently, with not one log line to explain the
+  // `Reboot Required: Yes` the UI kept showing (#4228). Whether a reboot is
+  // needed is a property of what actually installed, not of the job's aggregate
+  // status, so the policy is now evaluated whenever at least one patch landed.
+  //
+  // A run that installed NOTHING still skips: there is nothing to finalize, and
+  // an `always` policy would otherwise reboot a device the job never changed.
+  //
+  // Every branch below logs. The pre-#4228 silence is what made this bug
+  // invisible in production, so "no reboot" must be as traceable as a dispatch.
   const rebootPolicy = targets?.deployment?.rebootPolicy ?? 'if_required';
-  if (overallSuccess) {
+  const rebootLog = `[PatchJobExecutor] job ${patchJobId} device ${deviceId} reboot policy "${rebootPolicy}"`;
+
+  if (!overallSuccess && !anyPatchInstalled) {
+    // Say which of the two it is. "No patch installed" is a fact when the agent
+    // told us so; when its output was unparsable it is an assumption, and an
+    // operator chasing a device that did not reboot needs to tell them apart.
+    console.log(
+      `${rebootLog}: not evaluated — ${resultUnparsable
+        ? 'result unparsable, cannot confirm any install (see prior warning)'
+        : 'no patch installed successfully'} (rebootRequired=${anyRebootRequired})`
+    );
+  } else {
     const rebootEval = await evaluateRebootPolicy(deviceId, rebootPolicy, anyRebootRequired);
-    if (rebootEval.shouldReboot) {
+    if (!rebootEval.shouldReboot) {
+      console.log(
+        `${rebootLog}: no reboot — ${rebootEval.reason}${rebootEval.deferred ? ' (deferred)' : ''}`
+      );
+    } else {
       // No delay passed: executeReboot resolves it from the device's effective
       // patch policy (#3197). It used to default to 5 minutes, which reached
       // none of the agent's warning thresholds, so the user got no notice.
       const rebootResult = await executeReboot(deviceId, rebootEval.reason, {
         expectedOrgId: orgId,
       });
+      // A partially failed job that still reboots is the #4228 path — name it in
+      // the log so an operator reading "the job failed but the box rebooted" can
+      // tell intent from accident.
+      const partialSuffix = overallSuccess
+        ? ''
+        : ' (job partially failed; successfully installed patches still require a reboot)';
       if (!rebootResult.success) {
         // captureException, not just a console line: this is the post-patch
         // reboot — the path #3197 is about — and a failure here leaves the device
@@ -924,7 +1271,7 @@ async function recordDeviceExecution(
         );
       } else {
         console.log(
-          `[PatchJobExecutor] scheduled reboot for device ${deviceId} in ${rebootResult.delayMinutes}m`
+          `${rebootLog}: scheduled reboot in ${rebootResult.delayMinutes}m — ${rebootEval.reason}${partialSuffix}`
         );
       }
     }
@@ -1045,3 +1392,13 @@ export async function shutdownPatchJobWorkers(): Promise<void> {
   patchJobQueue = null;
   patchJobDeviceQueue = null;
 }
+
+/**
+ * Module-level state that the reconcile dedup depends on. Exposed so suites can
+ * start each case from a clean slate — the executor is a process singleton.
+ */
+export const __testOnly = {
+  resetWedgedJobReporting(): void {
+    reportedWedgedJobIds.clear();
+  },
+};

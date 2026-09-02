@@ -9,8 +9,27 @@ process.env.APP_ENCRYPTION_KEYRING = JSON.stringify({ current: 'current-key-mate
 const selectMock = vi.fn();
 const updateMock = vi.fn();
 const runOutsideDbContextMock = vi.fn((fn: () => unknown) => fn());
+// Tracks whether we are currently INSIDE the route's explicit system context.
+// This route is self-managed-context (middleware/agentAuth leaves none behind
+// on the REST paths), so anything touching the DB must run inside it.
+let insideSystemDbContext = false;
+const withSystemDbAccessContextMock = vi.fn(async (fn: () => any) => {
+  const prior = insideSystemDbContext;
+  insideSystemDbContext = true;
+  try {
+    return await fn();
+  } finally {
+    insideSystemDbContext = prior;
+  }
+});
 const updateRestoreJobByCommandIdMock = vi.fn().mockResolvedValue(true);
 const claimPendingCommandsForDeviceMock = vi.fn();
+const applyCommandAutomationTerminalMock = vi.fn().mockResolvedValue(true);
+const consumePamReconciliationRateLimitMock = vi.fn().mockResolvedValue({
+  allowed: true,
+  remaining: 119,
+  resetAt: new Date('2026-08-26T12:01:00.000Z'),
+});
 
 function chainMock(resolvedValue: unknown = []) {
   const chain: Record<string, any> = {};
@@ -26,7 +45,8 @@ vi.mock('../../db', () => ({
     update: (...args: unknown[]) => updateMock(...(args as [])),
   },
   runOutsideDbContext: (...args: unknown[]) => runOutsideDbContextMock(...(args as [any])),
-  withSystemDbAccessContext: vi.fn(async (fn: () => any) => fn()),
+  withSystemDbAccessContext: (...args: unknown[]) =>
+    withSystemDbAccessContextMock(...(args as [any])),
 }));
 
 vi.mock('../../db/schema', () => ({
@@ -66,10 +86,41 @@ vi.mock('../../services/commandQueue', () => ({
 
 vi.mock('../../services/commandDispatch', () => ({
   claimPendingCommandsForDevice: (...args: unknown[]) => claimPendingCommandsForDeviceMock(...(args as [])),
+  releaseClaimedCommandDelivery: vi.fn(async () => undefined),
+}));
+
+// #3409 PR4c-2 — the secret-delivery claim gate. `services/commandDelivery`
+// itself runs for real here (that is the point of the route-level test); only
+// the gate's DB work is stubbed. The stub records the context it was called
+// in, and models a capability-0 device by withholding envelope-bearing script
+// commands — its real terminal-write behavior has its own suite in
+// services/scriptSecretDelivery.test.ts.
+const secretGateContexts: boolean[] = [];
+let secretGateWithholds = false;
+const failClaimedSecretCommandsMock = vi.fn(async (claimed: any[]) => {
+  secretGateContexts.push(insideSystemDbContext);
+  return secretGateWithholds
+    ? claimed.filter(
+        (cmd) => !(cmd.type === 'script' && typeof cmd.payload?.secretEnvEnvelope === 'string'),
+      )
+    : claimed;
+});
+vi.mock('../../services/scriptSecretDelivery', () => ({
+  failClaimedSecretCommandsForUnsupportedAgent: (...args: unknown[]) =>
+    failClaimedSecretCommandsMock(...(args as [any])),
 }));
 
 vi.mock('../../services/vaultSyncPersistence', () => ({
   applyVaultSyncCommandResult: vi.fn(),
+}));
+
+vi.mock('../../services/automationTerminalEvidence', () => ({
+  applyCommandAutomationTerminal: (...args: unknown[]) =>
+    applyCommandAutomationTerminalMock(...(args as [])),
+}));
+
+vi.mock('../../services/automationActionResults', () => ({
+  applyAutomationActionTerminal: vi.fn().mockResolvedValue(true),
 }));
 
 vi.mock('./helpers', () => ({
@@ -90,12 +141,22 @@ vi.mock('../../services/auditBaselineService', () => ({
 // mock existing proves the route skips the registry by intent rather than
 // because the handler happened to be missing.
 const scriptRegistryHandlerMock = vi.fn().mockResolvedValue(undefined);
+const peripheralV2RegistryHandlerMock = vi.fn().mockResolvedValue(undefined);
+const pamRegistryHandlerMock = vi.fn().mockResolvedValue({ kind: 'pam', classification: 'applied' });
 const cisRegistryHandlerMock = vi.fn().mockResolvedValue(undefined);
 vi.mock('../../services/commandResultHandlers', () => ({
   commandResultHandlers: {
     script: (...args: unknown[]) => scriptRegistryHandlerMock(...(args as [])),
+    peripheral_policy_sync_v2: (...args: unknown[]) => peripheralV2RegistryHandlerMock(...(args as [])),
+    pam_apply_v2: (...args: unknown[]) => pamRegistryHandlerMock(...(args as [])),
+    pam_cleanup_v2: (...args: unknown[]) => pamRegistryHandlerMock(...(args as [])),
     cis_benchmark: (...args: unknown[]) => cisRegistryHandlerMock(...(args as [])),
   },
+}));
+
+vi.mock('../../services/pamReconciliationRateLimit', () => ({
+  consumePamReconciliationRateLimit: (...args: unknown[]) =>
+    consumePamReconciliationRateLimitMock(...(args as [])),
 }));
 
 vi.mock('../../services/sentry', () => ({
@@ -123,6 +184,9 @@ describe('agent commands routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    secretGateContexts.length = 0;
+    secretGateWithholds = false;
+    insideSystemDbContext = false;
     app = new Hono();
     app.use('*', async (c, next) => {
       c.set('agent', {
@@ -221,6 +285,275 @@ describe('agent commands routes', () => {
       resolvedDeviceId: 'device-1',
       stdout: 'hello from the script',
     });
+    expect(applyCommandAutomationTerminalMock).toHaveBeenCalledWith(expect.objectContaining({
+      commandId,
+      result: expect.objectContaining({ status: 'completed', exitCode: 0 }),
+      output: 'hello from the script',
+    }));
+  });
+
+  it('dispatches a peripheral v2 result to the shared handler over the HTTP path', async () => {
+    const command = {
+      id: commandId,
+      deviceId: 'device-1',
+      type: 'peripheral_policy_sync_v2',
+      status: 'sent',
+      payload: {},
+    };
+    selectMock.mockReturnValueOnce(chainMock([command]));
+    updateMock.mockReturnValueOnce(chainMock([{ id: commandId }]));
+
+    const protocolResult = {
+      schemaVersion: 2,
+      phase: 'clear_legacy',
+      revision: 1,
+      digest: `sha256:${'a'.repeat(64)}`,
+      outcome: 'applied',
+    };
+    const res = await app.request(`/agents/${agentId}/commands/${commandId}/result`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ commandId, status: 'completed', result: protocolResult }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(peripheralV2RegistryHandlerMock).toHaveBeenCalledWith(expect.objectContaining({
+      command,
+      commandId,
+      resolvedDeviceId: 'device-1',
+      result: expect.objectContaining({ result: protocolResult }),
+    }));
+  });
+
+  it.each(['pam_apply_v2', 'pam_cleanup_v2'])(
+    'dispatches %s results to the shared handler over the HTTP path',
+    async (commandType) => {
+      const command = { id: commandId, deviceId: 'device-1', type: commandType, status: 'sent', payload: {} };
+      selectMock.mockReturnValueOnce(chainMock([command]));
+      updateMock.mockReturnValueOnce(chainMock([{ id: commandId }]));
+      const protocolResult = {
+        protocolVersion: 2,
+        observationId: '11111111-1111-4111-8111-111111111111',
+        actuationId: '22222222-2222-4222-8222-222222222222',
+        generation: 2,
+        state: 'received',
+        observedAt: '2026-08-25T12:00:00.000Z',
+        evidence: { bootId: 'boot-1' },
+      };
+      const res = await app.request(`/agents/${agentId}/commands/${commandId}/result`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ commandId, status: 'completed', result: protocolResult }),
+      });
+      expect(res.status).toBe(200);
+      await expect(res.json()).resolves.toEqual({ protocolVersion: 1, classification: 'applied' });
+      expect(updateMock).toHaveBeenCalledTimes(1);
+      expect(pamRegistryHandlerMock).toHaveBeenCalledWith(expect.objectContaining({
+        command, commandId, resolvedDeviceId: 'device-1',
+        result: expect.objectContaining({ result: protocolResult }),
+      }));
+      expect(consumePamReconciliationRateLimitMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['pam_apply_v2', 'pam_cleanup_v2'])(
+    'accepts a valid supplemental %s result for a terminal row without rewriting it',
+    async (commandType) => {
+      const command = {
+        id: commandId,
+        deviceId: 'device-1',
+        type: commandType,
+        status: 'completed',
+        targetRole: 'agent',
+        payload: null,
+        result: { status: 'completed', result: { retained: true } },
+        completedAt: new Date('2026-08-25T12:00:00.000Z'),
+      };
+      const before = structuredClone(command);
+      selectMock.mockReturnValueOnce(chainMock([command]));
+      const protocolResult = {
+        protocolVersion: 2,
+        observationId: '11111111-1111-4111-8111-111111111111',
+        actuationId: '22222222-2222-4222-8222-222222222222',
+        generation: 2,
+        state: commandType === 'pam_apply_v2' ? 'verified_active' : 'cleaned',
+        observedAt: '2026-08-25T12:00:00.000Z',
+        evidence: { bootId: 'boot-1' },
+      };
+
+      const res = await app.request(`/agents/${agentId}/commands/${commandId}/result`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ commandId, status: 'completed', result: protocolResult }),
+      });
+
+      expect(res.status).toBe(200);
+      await expect(res.json()).resolves.toEqual({ protocolVersion: 1, classification: 'applied' });
+      expect(consumePamReconciliationRateLimitMock).toHaveBeenCalledWith('device-1');
+      expect(pamRegistryHandlerMock).toHaveBeenCalledTimes(1);
+      expect(pamRegistryHandlerMock).toHaveBeenCalledWith(expect.objectContaining({
+        command,
+        commandId,
+        resolvedDeviceId: 'device-1',
+        result: expect.objectContaining({ result: protocolResult }),
+      }));
+      expect(updateMock).not.toHaveBeenCalled();
+      expect(command).toEqual(before);
+    },
+  );
+
+  it('preserves the terminal short circuit for malformed PAM results', async () => {
+    selectMock.mockReturnValueOnce(chainMock([{
+      id: commandId,
+      deviceId: 'device-1',
+      type: 'pam_apply_v2',
+      status: 'completed',
+      targetRole: 'agent',
+      payload: { retained: true },
+      result: { status: 'completed' },
+    }]));
+
+    const res = await app.request(`/agents/${agentId}/commands/${commandId}/result`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ commandId, status: 'completed', result: { protocolVersion: 2 } }),
+    });
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({ success: true });
+    expect(consumePamReconciliationRateLimitMock).not.toHaveBeenCalled();
+    expect(pamRegistryHandlerMock).not.toHaveBeenCalled();
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it('rate-limits valid supplemental terminal PAM results by authenticated device', async () => {
+    consumePamReconciliationRateLimitMock.mockResolvedValueOnce({
+      allowed: false,
+      remaining: 0,
+      resetAt: new Date('2026-08-26T12:01:00.000Z'),
+    });
+    selectMock.mockReturnValueOnce(chainMock([{
+      id: commandId,
+      deviceId: 'device-1',
+      type: 'pam_apply_v2',
+      status: 'completed',
+      targetRole: 'agent',
+      payload: {},
+      result: { status: 'completed' },
+    }]));
+    const protocolResult = {
+      protocolVersion: 2,
+      observationId: '11111111-1111-4111-8111-111111111111',
+      actuationId: '22222222-2222-4222-8222-222222222222',
+      generation: 2,
+      state: 'verified_active',
+      observedAt: '2026-08-25T12:00:00.000Z',
+      evidence: { bootId: 'boot-1' },
+    };
+
+    const res = await app.request(`/agents/${agentId}/commands/${commandId}/result`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ commandId, status: 'completed', result: protocolResult }),
+    });
+
+    expect(res.status).toBe(429);
+    expect(consumePamReconciliationRateLimitMock).toHaveBeenCalledWith('device-1');
+    expect(pamRegistryHandlerMock).not.toHaveBeenCalled();
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it('treats a server-timeout PAM row as terminal supplemental evidence without rewriting it', async () => {
+    const command = {
+      id: commandId,
+      deviceId: 'device-1',
+      type: 'pam_apply_v2',
+      status: 'failed',
+      targetRole: 'agent',
+      payload: { retained: true },
+      result: { status: 'timeout', retained: true },
+      completedAt: new Date('2026-08-25T12:00:00.000Z'),
+    };
+    selectMock.mockReturnValueOnce(chainMock([command]));
+    const protocolResult = {
+      protocolVersion: 2,
+      observationId: '11111111-1111-4111-8111-111111111111',
+      actuationId: '22222222-2222-4222-8222-222222222222',
+      generation: 2,
+      state: 'verified_active',
+      observedAt: '2026-08-25T12:00:00.000Z',
+      evidence: { bootId: 'boot-1' },
+    };
+
+    const res = await app.request(`/agents/${agentId}/commands/${commandId}/result`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ commandId, status: 'completed', result: protocolResult }),
+    });
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({ protocolVersion: 1, classification: 'applied' });
+    expect(consumePamReconciliationRateLimitMock).toHaveBeenCalledWith('device-1');
+    expect(pamRegistryHandlerMock).toHaveBeenCalledTimes(1);
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it('preserves the terminal short circuit for non-PAM commands', async () => {
+    selectMock.mockReturnValueOnce(chainMock([{
+      id: commandId,
+      deviceId: 'device-1',
+      type: 'script',
+      status: 'completed',
+      targetRole: 'agent',
+      payload: {},
+      result: { status: 'completed' },
+    }]));
+
+    const res = await app.request(`/agents/${agentId}/commands/${commandId}/result`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ commandId, status: 'completed', stdout: 'late' }),
+    });
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({ success: true });
+    expect(consumePamReconciliationRateLimitMock).not.toHaveBeenCalled();
+    expect(scriptRegistryHandlerMock).not.toHaveBeenCalled();
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it('returns no acknowledgement when terminal PAM persistence throws', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    pamRegistryHandlerMock.mockRejectedValueOnce(new Error('PAM persistence unavailable'));
+    selectMock.mockReturnValueOnce(chainMock([{
+      id: commandId,
+      deviceId: 'device-1',
+      type: 'pam_apply_v2',
+      status: 'completed',
+      targetRole: 'agent',
+      payload: {},
+      result: { status: 'completed' },
+    }]));
+    const protocolResult = {
+      protocolVersion: 2,
+      observationId: '11111111-1111-4111-8111-111111111111',
+      actuationId: '22222222-2222-4222-8222-222222222222',
+      generation: 2,
+      state: 'verified_active',
+      observedAt: '2026-08-25T12:00:00.000Z',
+      evidence: { bootId: 'boot-1' },
+    };
+
+    const res = await app.request(`/agents/${agentId}/commands/${commandId}/result`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ commandId, status: 'completed', result: protocolResult }),
+    });
+
+    expect(res.status).toBe(500);
+    expect(await res.text()).not.toContain('"protocolVersion":1');
+    expect(updateMock).not.toHaveBeenCalled();
+    errorSpy.mockRestore();
   });
 
   // The other half of the contract: types this route already post-processes
@@ -290,6 +623,10 @@ describe('agent commands routes', () => {
         siteId: 'site-1',
         role: 'agent',
         tenantDraining: true,
+        // #3986 — derived ONCE by agentAuthMiddleware; every claim site reads
+        // it instead of restating the literal, so the harness must mirror the
+        // real context shape.
+        claimTypeAllowlist: ['self_uninstall'] as const,
       });
       await next();
     });
@@ -304,6 +641,47 @@ describe('agent commands routes', () => {
       'agent',
       ['self_uninstall']
     );
+  });
+
+  // #3409 PR4c-2 — the claim gate reads `devices` (RLS) and drives offending
+  // device_commands/script_executions rows terminal, so it MUST run inside the
+  // route's own system context. Calling it after the claim closure returned
+  // would make those contextless bare-pool queries (#1375).
+  it('runs the secret-delivery claim gate inside the route system db context', async () => {
+    claimPendingCommandsForDeviceMock.mockResolvedValueOnce([
+      { id: commandId, type: 'run_script', deviceId: 'device-1', payload: { scriptId: 'script-1' } },
+    ]);
+
+    const res = await app.request(`/agents/${agentId}/commands`, { method: 'GET' });
+
+    expect(res.status).toBe(200);
+    expect(withSystemDbAccessContextMock).toHaveBeenCalledTimes(1);
+    expect(failClaimedSecretCommandsMock).toHaveBeenCalledTimes(1);
+    expect(secretGateContexts).toEqual([true]);
+    // …and the whole thing still ran outside any inherited request context.
+    expect(runOutsideDbContextMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('withholds an envelope-bearing command from the poll response when the agent cannot open it', async () => {
+    secretGateWithholds = true;
+    claimPendingCommandsForDeviceMock.mockResolvedValueOnce([
+      {
+        id: commandId,
+        type: 'script',
+        deviceId: 'device-1',
+        payload: { scriptId: 'script-1', executionId: 'exec-1', secretEnvEnvelope: 'enc:v3:key-1:ciphertext' },
+      },
+      { id: 'cmd-sibling', type: 'run_script', deviceId: 'device-1', payload: { scriptId: 'script-2' } },
+    ]);
+
+    const res = await app.request(`/agents/${agentId}/commands`, { method: 'GET' });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { commands: Array<{ id: string }> };
+    // The secret-bearing command is gone; its sibling still delivers.
+    expect(body.commands.map((cmd) => cmd.id)).toEqual(['cmd-sibling']);
+    expect(JSON.stringify(body)).not.toContain('secretEnvEnvelope');
+    expect(secretGateContexts).toEqual([true]);
   });
 
   // A complete, well-formed PEM private-key block (header + base64 body +
@@ -903,8 +1281,8 @@ describe('agent commands routes', () => {
 
       expect(captureMessage).toHaveBeenCalledTimes(1);
       const call = vi.mocked(captureMessage).mock.calls[0]!;
-      expect(call[1]).toBe('warning');
-      expect(call[3]).toEqual({
+      expect(call[1]?.eventCode).toBe('db_write_expecting_rows_zero');
+      expect(call[1]?.tags).toEqual({
         cas_label: 'device_commands.rest_result_terminal_cas',
         prior_status: 'failed:server-timeout',
       });
@@ -922,5 +1300,251 @@ describe('agent commands routes', () => {
       // Only the pre-read: the diagnostic read must stay on the 0-row branch.
       expect(selectMock).toHaveBeenCalledTimes(1);
     });
+  });
+});
+
+// #3986 Layer 4 — the RESULT endpoint while the agent is on a narrowed drain
+// surface. Being on the drain ROUTE allowlist is not the same as being
+// harmless: this route has two entrances, and only one of them ever looks at a
+// device_commands row.
+describe('POST /agents/:id/commands/:commandId/result — drain narrowing (#3986)', () => {
+  const agentId = 'ab3c20eddb470acffd33bbe00f25e0348e89298ab80cece542bb1fbf921e5776';
+  const commandId = '22222222-2222-4222-8222-222222222222';
+  const deploymentUuid = '11111111-1111-4111-8111-111111111111';
+  const deviceUuid = '33333333-3333-4333-8333-333333333333';
+
+  /**
+   * `drain` mirrors the three contexts agentAuthMiddleware can hand this route:
+   *   'none'   — healthy device on a healthy tenant; no allowlist.
+   *   'device' — #3986 device-remove drain.
+   *   'tenant' — #2774 offboarding drain. The device itself is healthy, but the
+   *              middleware derives the SAME `claimTypeAllowlist`.
+   *
+   * The tenant case exists because this route's gates are deliberately driven
+   * by `claimTypeAllowlist` — the ONE derived value — and not by
+   * `deviceUninstallDraining`. That is a real behaviour change to the shipped
+   * #2774 path (see the LOW-2 section of the task-9 report): a `sw-install-…`
+   * result and a non-self_uninstall ack from an offboarding tenant's still-live
+   * machine are now refused too. It is intentional — a second, divergent notion
+   * of "draining" at this layer is exactly the drift the single derived value
+   * exists to prevent — so it is pinned by tests rather than left as prose.
+   */
+  function buildApp(opts: { drain: 'none' | 'device' | 'tenant'; deviceId?: string }): Hono {
+    const drainContext =
+      opts.drain === 'device'
+        ? { deviceUninstallDraining: true, claimTypeAllowlist: ['self_uninstall'] as const }
+        : opts.drain === 'tenant'
+          ? { tenantDraining: true, claimTypeAllowlist: ['self_uninstall'] as const }
+          : {};
+
+    const app = new Hono();
+    app.use('*', async (c, next) => {
+      c.set('agent', {
+        deviceId: opts.deviceId ?? 'device-1',
+        agentId: 'agent-1',
+        orgId: 'org-1',
+        siteId: 'site-1',
+        role: 'agent',
+        ...drainContext,
+      });
+      await next();
+    });
+    app.route('/agents', commandsRoutes);
+    return app;
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // mockReset, not just clearAllMocks: `clearAllMocks` leaves UNCONSUMED
+    // `mockReturnValueOnce` entries queued, and the suite above ends with one
+    // deliberately unconsumed (the diagnostic re-read that must not happen).
+    // Inheriting it would shift every queued row in this block by one — which
+    // is exactly how a drain assertion could pass against the wrong fixture.
+    selectMock.mockReset();
+    updateMock.mockReset();
+    secretGateContexts.length = 0;
+    secretGateWithholds = false;
+    insideSystemDbContext = false;
+  });
+
+  function postResult(app: Hono, id: string) {
+    return app.request(`/agents/${agentId}/commands/${id}/result`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ commandId: id, status: 'completed', exitCode: 0, stdout: 'ok' }),
+    });
+  }
+
+  it('rejects a non-UUID command result while draining', async () => {
+    // `sw-install-<deployment>-<device>` has NO device_commands row: the
+    // handler writes deployment_results gated only on the embedded device UUID
+    // matching the authenticated device, so a command-TYPE allowlist cannot
+    // see it at all. A removed machine must not keep stamping deployment
+    // history for the org.
+    const swCommandId = `sw-install-${deploymentUuid}-${deviceUuid}`;
+    const updateChain = chainMock([]);
+    updateMock.mockReturnValue(updateChain);
+
+    const res = await postResult(buildApp({ drain: 'device', deviceId: deviceUuid }), swCommandId);
+
+    expect(res.status).toBe(403);
+    await expect(res.json()).resolves.toEqual({ error: 'drain_restricted' });
+    // The real assertion: nothing was written to deployment_results.
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it('the SAME sw-install result still lands when NOT draining (proves the refusal is the drain gate)', async () => {
+    const swCommandId = `sw-install-${deploymentUuid}-${deviceUuid}`;
+    const updateChain = chainMock([]);
+    updateMock.mockReturnValue(updateChain);
+
+    const res = await postResult(buildApp({ drain: 'none', deviceId: deviceUuid }), swCommandId);
+
+    expect(res.status).toBe(200);
+    expect(updateMock).toHaveBeenCalled();
+  });
+
+  it('rejects a result for a non-self_uninstall command while draining', async () => {
+    // A UUID-keyed row of some other type — claimed before the drain opened,
+    // or pushed over another path. The result handlers below this check are a
+    // wide fan-out (security findings, filesystem analysis, vault sync, backup
+    // verification, restore jobs, CIS, software remediation) that all write
+    // tenant data, so the ack must be refused too, not just the claim.
+    selectMock.mockReturnValueOnce(
+      chainMock([
+        {
+          id: commandId,
+          deviceId: 'device-1',
+          type: 'script',
+          status: 'sent',
+          targetRole: 'agent',
+          payload: {},
+        },
+      ])
+    );
+
+    const res = await postResult(buildApp({ drain: 'device' }), commandId);
+
+    expect(res.status).toBe(403);
+    await expect(res.json()).resolves.toEqual({ error: 'drain_restricted' });
+    // Refused BEFORE any terminalizing write to device_commands.
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it('ACCEPTS the self_uninstall result while draining — the ack the window exists for', async () => {
+    selectMock.mockReturnValueOnce(
+      chainMock([
+        {
+          id: commandId,
+          deviceId: 'device-1',
+          type: 'self_uninstall',
+          status: 'sent',
+          targetRole: 'agent',
+          payload: { removeConfig: true },
+        },
+      ])
+    );
+    updateMock.mockReturnValue(chainMock([{ id: commandId }]));
+
+    const res = await postResult(buildApp({ drain: 'device' }), commandId);
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({ success: true });
+    expect(updateMock).toHaveBeenCalled();
+  });
+
+  it('leaves a non-draining agent free to ack any command type', async () => {
+    selectMock.mockReturnValueOnce(
+      chainMock([
+        {
+          id: commandId,
+          deviceId: 'device-1',
+          type: 'script',
+          status: 'sent',
+          targetRole: 'agent',
+          payload: {},
+        },
+      ])
+    );
+    updateMock.mockReturnValue(chainMock([{ id: commandId }]));
+
+    const res = await postResult(buildApp({ drain: 'none' }), commandId);
+
+    expect(res.status).toBe(200);
+  });
+
+  // ---- LOW-2: the gates key on `claimTypeAllowlist`, so they fire for a TENANT
+  // drain as well. Without these two cases the decision is a one-line revert
+  // away (`agent.deviceUninstallDraining && …`) with zero test failures.
+
+  it('rejects a non-UUID (sw-install) command result during a TENANT drain too', async () => {
+    // #2774's machines are still live, but the `sw-install-…` branch is the same
+    // hole on the same route: it writes deployment_results with no
+    // device_commands row to consult, gated only on the embedded device UUID.
+    // An offboarding customer's fleet must stop feeding that too.
+    const swCommandId = `sw-install-${deploymentUuid}-${deviceUuid}`;
+    const updateChain = chainMock([]);
+    updateMock.mockReturnValue(updateChain);
+
+    const res = await postResult(buildApp({ drain: 'tenant', deviceId: deviceUuid }), swCommandId);
+
+    expect(res.status).toBe(403);
+    await expect(res.json()).resolves.toEqual({ error: 'drain_restricted' });
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a result for a non-self_uninstall command during a TENANT drain too', async () => {
+    selectMock.mockReturnValueOnce(
+      chainMock([
+        {
+          id: commandId,
+          deviceId: 'device-1',
+          type: 'script',
+          status: 'sent',
+          targetRole: 'agent',
+          payload: {},
+        },
+      ])
+    );
+
+    const res = await postResult(buildApp({ drain: 'tenant' }), commandId);
+
+    expect(res.status).toBe(403);
+    await expect(res.json()).resolves.toEqual({ error: 'drain_restricted' });
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it('ACCEPTS the self_uninstall result during a TENANT drain (the narrowing is by TYPE, not a blanket refusal)', async () => {
+    selectMock.mockReturnValueOnce(
+      chainMock([
+        {
+          id: commandId,
+          deviceId: 'device-1',
+          type: 'self_uninstall',
+          status: 'sent',
+          targetRole: 'agent',
+          payload: { removeConfig: true },
+        },
+      ])
+    );
+    updateMock.mockReturnValue(chainMock([{ id: commandId }]));
+
+    const res = await postResult(buildApp({ drain: 'tenant' }), commandId);
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({ success: true });
+  });
+
+  it('narrows the GET poll claim for a DEVICE drain too, not just a tenant drain', async () => {
+    claimPendingCommandsForDeviceMock.mockResolvedValueOnce([]);
+
+    const res = await buildApp({ drain: 'device' }).request(`/agents/${agentId}/commands`, {
+      method: 'GET',
+    });
+
+    expect(res.status).toBe(200);
+    expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith('device-1', 10, 'agent', [
+      'self_uninstall',
+    ]);
   });
 });

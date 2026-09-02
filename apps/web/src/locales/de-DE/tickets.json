@@ -116,7 +116,15 @@
     "internalPlaceholder": "Eine interne Notiz hinzufügen…",
     "sending": "Senden",
     "sendReply": "Antwort senden",
-    "addInternalNote": "Interne Notiz hinzufügen"
+    "addInternalNote": "Interne Notiz hinzufügen",
+    "attachments": {
+      "attach": "Anhängen",
+      "uploading": "Wird hochgeladen…",
+      "retry": "Erneut versuchen",
+      "remove": "Datei entfernen",
+      "tooMany": "Sie können höchstens {{max}} Dateien an einen Kommentar anhängen.",
+      "tooLarge": "{{name}} ist größer als 10 MB."
+    }
   },
   "ticketFeed": {
     "empty": "Noch keine Aktivität.",
@@ -149,6 +157,11 @@
     "deleteDialog": {
       "title": "Kommentar löschen",
       "message": "Sind Sie sicher, dass Sie diesen Kommentar löschen möchten? Diese Aktion kann nicht rückgängig gemacht werden."
+    },
+    "attachments": {
+      "broken": "{{name}} konnte nicht geladen werden",
+      "open": "Anhang öffnen",
+      "remove": "Anhang entfernen"
     }
   },
   "ticketPartsCard": {
@@ -184,6 +197,7 @@
     "totalTime": "Gesamtzeit",
     "billable": "Abrechnungsfähig",
     "timeAmount": "Zeitbetrag",
+    "noAmount": "—",
     "partsCount": "Teile ({{count}})",
     "partsCount_one": "Teile ({{count}})",
     "partsCount_other": "Teile ({{count}})",
@@ -397,14 +411,25 @@
       "create": "Rechnung erstellen",
       "creating": "Erstellen…",
       "createFailed": "Aus diesem Ticket konnte keine Rechnung erstellt werden.",
-      "created": "Rechnungsentwurf erstellt"
+      "created": "Rechnungsentwurf erstellt",
+      "allBlockedByCurrency": "Alle abrechenbaren Arbeiten an diesem Ticket sind in einer anderen Währung bepreist als der, in der die Organisation abrechnet. Erstellen Sie stattdessen einen Entwurf in dieser Währung:",
+      "assembleIn": "In {{code}} zusammenstellen ({{count}} Positionen, {{amount}})",
+      "partialLeftOut": "Ein Rechnungsentwurf wurde erstellt, aber ein Teil der abrechenbaren Arbeit an diesem Ticket wurde ausgelassen und ist weiterhin nicht abgerechnet.",
+      "openDraft": "Entwurf öffnen",
+      "allMissingRate": "Es konnte nichts abgerechnet werden: Bei jedem abrechenbaren Zeiteintrag dieses Tickets fehlt der Stundensatz.",
+      "missingRateHeading": "Zeiteinträge ohne Stundensatz (nicht abgerechnet — Satz festlegen und Rechnung erneut erstellen):",
+      "missingRateEntry": "{{description}} — {{hours}} h",
+      "setRate": "Satz im Stundenzettel festlegen"
     },
     "move": {
       "open": "In eine andere Organisation verschieben …",
       "label": "In Organisation verschieben",
       "selectOrganization": "Organisation auswählen…",
       "confirm": "Verschieben",
-      "failed": "Verschieben fehlgeschlagen. Erneut versuchen."
+      "failed": "Verschieben fehlgeschlagen. Erneut versuchen.",
+      "blockedCurrency": "Dieses Ticket hat {{timeCount}} nicht abgerechnete Zeiteinträge und {{partCount}} nicht abgerechnete Teile in {{sourceCurrency}}, aber {{targetOrg}} rechnet in {{targetCurrency}} ab. Rechnen Sie sie zuerst ab oder verschieben Sie trotzdem — die Beträge bleiben in {{sourceCurrency}} und können nur auf einem Entwurf in {{sourceCurrency}} in Rechnung gestellt werden.",
+      "acceptCurrency": "Ich verstehe, dass diese Beträge in {{sourceCurrency}} bleiben und nicht umgerechnet werden.",
+      "moveAnyway": "Trotzdem verschieben"
     },
     "triage": {
       "title": "Empfohlene Triage",
@@ -419,6 +444,17 @@
       "applied": "Ticket-Triage-Vorschlag angewendet",
       "feedbackFailed": "Ticket-Triage-Feedback konnte nicht gespeichert werden.",
       "feedbackSaved": "Ticket-Triage-Feedback gespeichert"
+    },
+    "aiDraft": {
+      "kindReply": "KI-Antwortentwurf",
+      "kindResolutionNote": "KI-Entwurf des Lösungsvermerks",
+      "sendAsMe": "Als ich senden",
+      "sending": "Wird gesendet…",
+      "discard": "Verwerfen",
+      "sendFailed": "KI-Entwurf konnte nicht gesendet werden.",
+      "sent": "Entwurf gesendet",
+      "discardFailed": "KI-Entwurf konnte nicht verworfen werden.",
+      "discarded": "Entwurf verworfen"
     },
     "resolve": {
       "noteLabel": "Lösungsvermerk (sichtbar für den Antragsteller)",
@@ -457,7 +493,8 @@
       "categoryUpdateFailed": "Die Kategorieaktualisierung ist fehlgeschlagen. Wiederholen.",
       "assigned": "Zugewiesen",
       "unassigned": "Nicht zugewiesen",
-      "assignFailed": "Zuweisung fehlgeschlagen. Wiederholen."
+      "assignFailed": "Zuweisung fehlgeschlagen. Wiederholen.",
+      "attachmentFailed": "Der Anhang konnte nicht hochgeladen werden."
     },
     "delete": {
       "failed": "Das Löschen ist fehlgeschlagen. Wiederholen.",

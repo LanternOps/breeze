@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import {
   actionIntentOriginPrincipalKindEnum,
   type ActionIntentOriginPrincipalKind,
+  actionIntentSourceEnum,
+  type ActionIntentSource,
 } from '../../db/schema/actionIntents';
 import { isInteractiveUserSession, type PrincipalKind } from '../../middleware/auth';
 
@@ -14,16 +16,16 @@ import { isInteractiveUserSession, type PrincipalKind } from '../../middleware/a
 
 describe('action_intents origin principal', () => {
   it('covers every AuthContext principal kind, plus unknown', () => {
-    // If a new PrincipalKind is added to AuthContext without being added here,
-    // intentService's `originPrincipalKind: auth.principal.kind` would write a
-    // value the CHECK constraint rejects — a runtime INSERT failure. This
-    // assignment makes that a compile error instead.
+    // Wave 3: 'ai_agent' is now a first-class origin. The CHECK constraint
+    // (2026-09-05-a-agent-originated-intents.sql) admits it, and an agent
+    // intent records it alongside a NULL requester and a requesting_agent_run_id.
     const everyRuntimeKind: ReadonlyArray<PrincipalKind['kind']> = [
       'user_session',
       'client_user',
       'api_key',
       'oauth_grant',
       'agent',
+      'ai_agent',
       'helper',
       'system',
       'unknown',
@@ -35,12 +37,14 @@ describe('action_intents origin principal', () => {
     }
 
     expect(actionIntentOriginPrincipalKindEnum).toContain('unknown');
+    expect(actionIntentOriginPrincipalKindEnum).toContain('ai_agent');
   });
 
   it('enumerates exactly the runtime kinds plus unknown — no extras', () => {
     expect([...actionIntentOriginPrincipalKindEnum].sort()).toEqual(
       [
         'agent',
+        'ai_agent',
         'api_key',
         'client_user',
         'helper',
@@ -70,5 +74,14 @@ describe('action_intents origin principal', () => {
     expect(unknownPrincipal.kind).not.toBe(systemPrincipal.kind);
     expect(isInteractiveUserSession({ principal: unknownPrincipal })).toBe(false);
     expect(isInteractiveUserSession({ principal: systemPrincipal })).toBe(false);
+  });
+
+  it('admits ai_agent as an intent source', () => {
+    // An agent proposal must be distinguishable from a human chat turn at the
+    // source level, not only via origin_principal_kind — expiry
+    // (computeExpiresAt) and metrics branch on `source` today, and PR 3b's
+    // notification gate will too.
+    const agentSource: ActionIntentSource = 'ai_agent';
+    expect(actionIntentSourceEnum).toContain(agentSource);
   });
 });

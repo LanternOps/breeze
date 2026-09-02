@@ -19,6 +19,7 @@ const { authRef, grantedRef, state, tables, dbMock } = vi.hoisted(() => {
     alertRules: { id: 'alertRules.id' },
     alertNotifications: { id: 'alertNotifications.id', alertId: 'alertNotifications.alertId', channelId: 'alertNotifications.channelId', status: 'alertNotifications.status', sentAt: 'alertNotifications.sentAt', errorMessage: 'alertNotifications.errorMessage', createdAt: 'alertNotifications.createdAt' },
     notificationChannels: { id: 'notificationChannels.id', name: 'notificationChannels.name', type: 'notificationChannels.type' },
+    users: { id: 'users.id', name: 'users.name' },
   };
 
   type Predicate = { op: string; col?: unknown; val?: unknown; vals?: unknown[]; args?: Predicate[] } | undefined;
@@ -35,6 +36,7 @@ const { authRef, grantedRef, state, tables, dbMock } = vi.hoisted(() => {
   const state = {
     alerts: [] as Array<Record<string, any>>,
     devices: [] as Array<Record<string, any>>,
+    users: [] as Array<Record<string, any>>,
   };
 
   class SelectQuery {
@@ -51,6 +53,7 @@ const { authRef, grantedRef, state, tables, dbMock } = vi.hoisted(() => {
       let source: Array<Record<string, unknown>> = [];
       if (this.table === tables.alerts) source = state.alerts;
       else if (this.table === tables.devices) source = state.devices;
+      else if (this.table === tables.users) source = state.users;
       else source = [];
       const filtered = source.filter((row) => evalPredicate(row, this.predicate));
       if (!this.projection) return filtered;
@@ -149,7 +152,7 @@ vi.mock('../../db/schema', () => ({
   alertRules: tables.alertRules, alertTemplates: {}, alerts: tables.alerts,
   notificationChannels: tables.notificationChannels,
   alertNotifications: tables.alertNotifications, devices: tables.devices, tickets: {}, ticketAlertLinks: {},
-  organizations: {}, partners: {}, escalationPolicies: {},
+  organizations: {}, partners: {}, escalationPolicies: {}, users: tables.users,
 }));
 vi.mock('../../services/alertCooldown', () => ({
   setCooldown: vi.fn(), markConfigPolicyRuleCooldown: vi.fn(),
@@ -163,6 +166,17 @@ vi.mock('../../services/mlFeedbackEmitters', () => ({
 vi.mock('../../services/ticketService', () => ({
   createTicketFromAlert: vi.fn(),
   TicketServiceError: class TicketServiceError extends Error { status = 400; },
+}));
+// Phase 2 wave P2-1 (alert verdicts), Task 14 — `alerts.ts` now imports
+// `latestVerdictsForAlerts`/`projectAlertAiVerdictSummary`. Unmocked, the
+// real module drags in `createActionIntent` (services/actionIntents/
+// intentService.ts) and its own transitive graph (aiTools/aiToolSchemas,
+// commandQueue, …), which this file's other partial mocks were never built
+// to cover. Mocked here purely to sever that transitive chain — this suite
+// doesn't exercise aiVerdict at all.
+vi.mock('../../services/aiAgents/alertVerdicts', () => ({
+  latestVerdictsForAlerts: vi.fn(async () => new Map()),
+  projectAlertAiVerdictSummary: vi.fn(),
 }));
 vi.mock('../../services/notificationSenders', () => ({
   validateEmailConfig: vi.fn(() => ({ errors: [] })),
@@ -189,6 +203,8 @@ const ALERT_A = 'a1a1a1a1-1111-4111-8111-111111111111'; // SITE_A device
 const ALERT_B = 'a2a2a2a2-2222-4222-8222-222222222222'; // SITE_B device
 const ALERT_ORGWIDE = 'a3a3a3a3-3333-4333-8333-333333333333'; // deviceless
 const ALERT_RESOLVED = 'a4a4a4a4-4444-4444-8444-444444444444'; // deviceless, already resolved
+const ACK_USER = '9cea2f85-2da1-445d-88cc-7c404d7504c4';
+const RESOLVE_USER = '1f0e3f2c-9a2b-4c7d-9f10-8f6a2b3c4d5e';
 const ALERTS_WRITE = 'alerts:write';
 const ALERTS_ACKNOWLEDGE = 'alerts:acknowledge';
 
@@ -197,6 +213,7 @@ function resetState() {
     { id: DEVICE_A, siteId: SITE_A, orgId: ORG },
     { id: DEVICE_B, siteId: SITE_B, orgId: ORG },
   ];
+  state.users = [{ id: ACK_USER, name: 'Breeze Admin' }];
   state.alerts = [
     { id: ALERT_A, orgId: ORG, deviceId: DEVICE_A, status: 'active', ruleId: null, title: 'A' },
     { id: ALERT_B, orgId: ORG, deviceId: DEVICE_B, status: 'active', ruleId: null, title: 'B' },
@@ -227,6 +244,30 @@ describe('alert by-id site-axis scope (T9, #1051)', () => {
       restrictToSiteA();
       const res = await makeApp().request(`/alerts/${ALERT_B}`);
       expect(res.status).toBe(404);
+    });
+
+    it('returns the acknowledging user’s display name, not just the id (#3966)', async () => {
+      state.users.push({ id: RESOLVE_USER, name: 'Dana Tech' });
+      state.alerts[2]!.acknowledgedBy = ACK_USER;
+      state.alerts[2]!.resolvedBy = RESOLVE_USER;
+      const res = await makeApp().request(`/alerts/${ALERT_ORGWIDE}`);
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.acknowledgedBy).toBe(ACK_USER);
+      expect(body.acknowledgedByName).toBe('Breeze Admin');
+      expect(body.resolvedBy).toBe(RESOLVE_USER);
+      expect(body.resolvedByName).toBe('Dana Tech');
+    });
+
+    it('returns a null name when the acknowledging user no longer exists (#3966)', async () => {
+      // A deleted technician must degrade to a null name so the UI shows a
+      // generic label — never a bare UUID.
+      state.users = [];
+      state.alerts[2]!.acknowledgedBy = ACK_USER;
+      const res = await makeApp().request(`/alerts/${ALERT_ORGWIDE}`);
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.acknowledgedByName).toBeNull();
     });
 
     it('200 on an in-site alert for a SITE_A-restricted user', async () => {

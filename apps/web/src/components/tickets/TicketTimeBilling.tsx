@@ -5,13 +5,19 @@ import { fetchWithAuth } from '../../stores/auth';
 import { runAction, handleActionError } from '../../lib/runAction';
 import { startTimerAction, onTimerChanged, onBillingChanged, broadcastBillingChanged } from '../../lib/timerActions';
 import { formatMinutes } from '../../lib/timeFormat';
-import { formatMoney } from '@/components/billing/shared/format';
+import { sourceBadgeLabelKey } from '../time/timeEntrySource';
+import { formatMoney } from '../billing/shared/format';
+import { ApproximateMoneyLine } from '../billing/shared/ApproximateMoneyLine';
+
+/** Mirrors the API's `CurrencyAmount` — money is reported per currency, never summed across. */
+interface CurrencyAmount {
+  currencyCode: string;
+  amount: string;
+}
 
 interface BillingSummary {
-  time: { totalMinutes: number; billableMinutes: number; billableAmount: string };
-  parts: { partsCount: number; billableTotal: string };
-  /** Ticket org currency (INTERIM #3777: wave 4 snapshots replace the org read). */
-  currencyCode?: string;
+  time: { totalMinutes: number; billableMinutes: number; billableAmounts: CurrencyAmount[] };
+  parts: { partsCount: number; billableTotals: CurrencyAmount[] };
 }
 
 interface EntryRow {
@@ -21,6 +27,30 @@ interface EntryRow {
   isBillable: boolean;
   userName: string | null;
   endedAt: string | null;
+  /** W06 (#3900) server-stamped provenance; absent on an older API. */
+  source?: string | null;
+}
+
+/** One chip per currency; an empty list renders a dash rather than a zero in
+ *  some assumed currency (spec §2: never label an amount with a currency it
+ *  was not stamped in). */
+function CurrencyAmounts({ amounts, testIdPrefix, empty }: { amounts: CurrencyAmount[]; testIdPrefix: string; empty: string }) {
+  if (amounts.length === 0) return <>{empty}</>;
+  return (
+    <span className="flex flex-wrap justify-end gap-x-2">
+      {amounts.map((a) => (
+        <span key={a.currencyCode} data-testid={`${testIdPrefix}-${a.currencyCode}`}>
+          {formatMoney(a.amount, a.currencyCode)}
+        </span>
+      ))}
+    </span>
+  );
+}
+
+/** `CurrencyAmount` (API shape) → the `{ code, amount }` shape every reporting
+ *  helper consumes. Mapped explicitly rather than widening either type. */
+function toReportingGroups(amounts: CurrencyAmount[]): { code: string; amount: string }[] {
+  return amounts.map((a) => ({ code: a.currencyCode, amount: a.amount }));
 }
 
 export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
@@ -125,11 +155,21 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
           </div>
           <div className="flex justify-between text-xs">
             <dt className="text-muted-foreground">{t('ticketTimeBilling.timeAmount')}</dt>
-            <dd data-testid="ticket-billing-amount">{formatMoney(summary.time.billableAmount, summary.currencyCode)}</dd>
+            <dd data-testid="ticket-billing-amount">
+              <CurrencyAmounts amounts={summary.time.billableAmounts ?? []} testIdPrefix="ticket-billing-amount" empty={t('ticketTimeBilling.noAmount')} />
+            </dd>
+          </div>
+          <div className="flex justify-end">
+            <ApproximateMoneyLine byCurrency={toReportingGroups(summary.time.billableAmounts ?? [])} testId="ticket-labor-approx" />
           </div>
           <div className="flex justify-between text-xs">
             <dt className="text-muted-foreground">{t('ticketTimeBilling.partsCount', { count: summary.parts.partsCount })}</dt>
-            <dd data-testid="ticket-billing-parts-total">{formatMoney(summary.parts.billableTotal, summary.currencyCode)}</dd>
+            <dd data-testid="ticket-billing-parts-total">
+              <CurrencyAmounts amounts={summary.parts.billableTotals ?? []} testIdPrefix="ticket-billing-parts-total" empty={t('ticketTimeBilling.noAmount')} />
+            </dd>
+          </div>
+          <div className="flex justify-end">
+            <ApproximateMoneyLine byCurrency={toReportingGroups(summary.parts.billableTotals ?? [])} testId="ticket-parts-approx" />
           </div>
         </dl>
       )}
@@ -204,6 +244,14 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
               <span className="min-w-0 truncate text-muted-foreground">
                 {entry.userName ?? t('ticketTimeBilling.techFallback')}
                 {entry.description ? ` — ${entry.description}` : ''}
+                {sourceBadgeLabelKey(entry.source) && (
+                  <span
+                    data-testid={`time-entry-source-${entry.id}`}
+                    className="ml-1 rounded-full bg-muted px-1.5 py-0.5 text-[10px]"
+                  >
+                    {t(/* i18n-dynamic */ `common:${sourceBadgeLabelKey(entry.source)!}`)}
+                  </span>
+                )}
               </span>
               <span className="shrink-0">
                 {entry.endedAt == null ? t('ticketTimeBilling.running') : formatMinutes(entry.durationMinutes)}

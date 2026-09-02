@@ -8,11 +8,13 @@ import {
   sendBulkWakeCommand,
   sendDeviceCommand,
   sendWakeCommand,
+  summarizeBulkCommandFailures,
   summarizeBulkWakeFailures,
   toggleMaintenanceMode,
   watchWakeOutcome,
   WakeCommandError,
   wakeFriendlyErrorMessage,
+  type BulkCommandFailed,
   type BulkWakeFailed
 } from '../deviceActions';
 
@@ -160,11 +162,12 @@ describe('deviceActions service', () => {
   describe('executeScript', () => {
     it('executes script with parameters', async () => {
       const execution = {
-        batchId: 'batch-1',
-        scriptId: 'script-1',
-        devicesTargeted: 2,
-        executions: [],
-        status: 'queued'
+        requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        status: 'partially_queued',
+        targets: [
+          { requestedDeviceId: 'dev-1', admission: 'admitted', executionId: 'execution-1', batchId: 'batch-1' },
+          { requestedDeviceId: 'dev-2', admission: 'denied', reasonCode: 'site_access_denied' },
+        ],
       };
 
       fetchWithAuthMock.mockResolvedValue(makeResponse(execution));
@@ -180,11 +183,9 @@ describe('deviceActions service', () => {
 
     it('executes script with runAs override', async () => {
       const execution = {
-        batchId: 'batch-2',
-        scriptId: 'script-2',
-        devicesTargeted: 1,
-        executions: [],
-        status: 'queued'
+        requestId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        status: 'queued',
+        targets: [{ requestedDeviceId: 'dev-9', admission: 'admitted', executionId: 'execution-2', batchId: 'batch-2' }],
       };
 
       fetchWithAuthMock.mockResolvedValue(makeResponse(execution));
@@ -374,16 +375,32 @@ describe('deviceActions service', () => {
   });
 
   describe('bulkDecommissionDevices', () => {
-    it('counts succeeded and failed deletions', async () => {
+    it('counts succeeded deletions and collects id + hostname for each failure', async () => {
       fetchWithAuthMock
         .mockResolvedValueOnce(makeResponse({ data: { success: true } }))
         .mockResolvedValueOnce(makeResponse({ error: 'not found' }, false, 404))
         .mockResolvedValueOnce(makeResponse({ data: { success: true } }));
 
-      const result = await bulkDecommissionDevices(['dev-1', 'dev-2', 'dev-3']);
+      const result = await bulkDecommissionDevices([
+        { id: 'dev-1', hostname: 'host-1' },
+        { id: 'dev-2', hostname: 'host-2' },
+        { id: 'dev-3', hostname: 'host-3' },
+      ]);
 
-      expect(result).toEqual({ succeeded: 2, failed: 1 });
+      // The real bug this guards: previously `catch { failed++; }` discarded
+      // which device failed — a partial-failure toast could only say "1
+      // failed", never name it.
+      expect(result.succeeded).toBe(2);
+      expect(result.failed).toEqual([{ id: 'dev-2', hostname: 'host-2' }]);
       expect(fetchWithAuthMock).toHaveBeenCalledTimes(3);
+    });
+
+    it('falls back to id when hostname is empty', async () => {
+      fetchWithAuthMock.mockResolvedValueOnce(makeResponse({ error: 'gone' }, false, 404));
+
+      const result = await bulkDecommissionDevices([{ id: 'dev-1', hostname: '' }]);
+
+      expect(result.failed).toEqual([{ id: 'dev-1', hostname: 'dev-1' }]);
     });
   });
 
@@ -461,7 +478,7 @@ describe('deviceActions service', () => {
       const out = summarizeBulkWakeFailures(failed);
       expect(out).toMatch(/3 with no online peer at their site/);
       expect(out).toMatch(/1 with no MAC on file/);
-      expect(out).toMatch(/1 decommissioned/);
+      expect(out).toMatch(/1 removed/);
     });
 
     it('collapses IPv6_ONLY and NO_SUBNET into one bucket', () => {
@@ -472,6 +489,30 @@ describe('deviceActions service', () => {
       const out = summarizeBulkWakeFailures(failed);
       // Both map to the same label "with no usable IPv4 history" → one bucket of 2
       expect(out).toBe('2 with no usable IPv4 history');
+    });
+  });
+
+  // Mirrors the summarizeBulkWakeFailures suite above: bulkCommandFailureLabel's
+  // DECOMMISSIONED case had no test at all, even though its sibling
+  // bulkWakeFailureLabel does.
+  describe('summarizeBulkCommandFailures', () => {
+    it('returns empty string when nothing failed', () => {
+      expect(summarizeBulkCommandFailures([])).toBe('');
+    });
+
+    it('groups failures by code with human-readable phrasing, including DECOMMISSIONED', () => {
+      const failed: BulkCommandFailed[] = [
+        { deviceId: '1', code: 'TARGET_NOT_FOUND', message: '' },
+        { deviceId: '2', code: 'SITE_ACCESS_DENIED', message: '' },
+        { deviceId: '3', code: 'DECOMMISSIONED', message: '' },
+        { deviceId: '4', code: 'DECOMMISSIONED', message: '' },
+        { deviceId: '5', code: 'INSERT_FAILED', message: '' },
+      ];
+      const out = summarizeBulkCommandFailures(failed);
+      expect(out).toMatch(/1 not found or access denied/);
+      expect(out).toMatch(/1 in a site you cannot access/);
+      expect(out).toMatch(/2 removed/);
+      expect(out).toMatch(/1 could not be queued \(server error\)/);
     });
   });
 });

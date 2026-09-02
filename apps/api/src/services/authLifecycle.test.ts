@@ -14,6 +14,7 @@ vi.mock('./sentry', () => ({ captureException: vi.fn() }));
 
 import {
   advanceUserEpochs,
+  lockActiveRefreshFamiliesForUsers,
   revokeAllRefreshFamilies,
   revokeRefreshFamilyById,
   runPostCommitCleanup,
@@ -83,6 +84,12 @@ function extractParamValues(v: unknown): unknown[] {
   return out;
 }
 
+function sqlContainsChunk(v: unknown, target: unknown): boolean {
+  if (v === target) return true;
+  if (!(v instanceof SQL)) return false;
+  return v.queryChunks.some((chunk) => sqlContainsChunk(chunk, target));
+}
+
 describe('advanceUserEpochs', () => {
   it('increments only requested epochs and returns the new row', async () => {
     const { tx, setCalls } = makeTx();
@@ -100,6 +107,25 @@ describe('advanceUserEpochs', () => {
 });
 
 describe('revokeAllRefreshFamilies', () => {
+  it('locks active families in family_id order before a caller bulk-revokes them', async () => {
+    const forUpdate = vi.fn(async () => [{ familyId: 'family-a' }, { familyId: 'family-b' }]);
+    const orderBy = vi.fn(() => ({ for: forUpdate }));
+    const where = vi.fn((_predicate: unknown) => ({ orderBy }));
+    const from = vi.fn(() => ({ where }));
+    const select = vi.fn(() => ({ from }));
+    const tx = { select } as never;
+
+    await lockActiveRefreshFamiliesForUsers(tx, ['user-b', 'user-a', 'user-b']);
+
+    expect(select).toHaveBeenCalledOnce();
+    expect(from).toHaveBeenCalledWith(refreshTokenFamilies);
+    const predicate = where.mock.calls[0]![0];
+    expect(sqlContainsChunk(predicate, refreshTokenFamilies.userId)).toBe(true);
+    expect(sqlContainsChunk(predicate, refreshTokenFamilies.revokedAt)).toBe(true);
+    expect(orderBy).toHaveBeenCalledWith(refreshTokenFamilies.familyId);
+    expect(forUpdate).toHaveBeenCalledWith('update');
+  });
+
   it('stamps revokedAt/revokedReason via COALESCE on refreshTokenFamilies WHERE userId', async () => {
     const { tx, setCalls, whereCalls, updateTables } = makeTx();
     await revokeAllRefreshFamilies(tx, 'user-1', 'password_changed');

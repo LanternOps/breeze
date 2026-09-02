@@ -103,6 +103,15 @@ export async function acceptQuote(
   ) {
     throw new QuoteServiceError('This link is invalid or has expired', 401, 'RESPONSE_CONSUMED');
   }
+  // A replaced quote is gone, not merely in a wrong state: 410 tells the
+  // customer (and the portal) that this specific document is permanently
+  // retired rather than temporarily unacceptable. Checked BEFORE the generic
+  // status guard so a superseded quote never reports as a plain 409.
+  // publicLinkRevokedAt remains a forward-compatibility guard for any future
+  // standalone link revoke that does not also change the quote status.
+  if (quote.status === 'superseded' || quote.publicLinkRevokedAt != null) {
+    throw new QuoteServiceError('This quote has been replaced by a newer version', 410, 'QUOTE_SUPERSEDED');
+  }
   if (quote.status !== 'sent' && quote.status !== 'viewed') {
     throw new QuoteServiceError(`Cannot accept a quote in status ${quote.status}`, 409, 'INVALID_STATE');
   }
@@ -137,7 +146,21 @@ export async function acceptQuote(
   // so a later template republish or manual-variable edit invalidates the signature.
   assertContractRenderDataComplete(blocks, params.contractRenderData);
   const contractRenderData = params.contractRenderData ?? [];
-  const contractParts = buildContractHashParts(blocks, contractRenderData, quote, effectiveDate);
+  // Partner row (language setting + invoice numbering), read ONCE: the render
+  // locale below and the invoice issue fields further down must agree on it.
+  const [partner] = await db
+    .select({ prefix: partners.invoiceNumberPrefix, termsDays: partners.invoiceTermsDays, settings: partners.settings })
+    .from(partners).where(eq(partners.id, quote.partnerId)).limit(1);
+  // Render locale for the contract parts + executed PDF: the quote's send-time
+  // snapshot (every non-draft quote carries one since 2026-09-01-b), falling
+  // back to the PARTNER's language for an unstamped row — the same fallback the
+  // portal/public render, the quote branding and the invoice stamp below use.
+  // A bare 'en' fallback here would hash and PDF in English a document the
+  // customer was shown in the partner's language. Legacy acceptances do not
+  // depend on this: 2026-09-01-b stamped render_locale on every historical row,
+  // so verification reads the persisted value (acceptanceRenderLocale).
+  const renderLocale = quote.documentLocale ?? resolvePartnerDocumentLocale(partner);
+  const contractParts = buildContractHashParts(blocks, contractRenderData, quote, effectiveDate, renderLocale);
 
   const quoteSha256 = computeQuoteSha256(quote as any, blocks as any, lines as any, contractParts);
   const captured = await getAcceptanceProvider().capture({
@@ -164,6 +187,7 @@ export async function acceptQuote(
       userAgent: params.userAgent ?? null,
       quoteSha256,
       acceptanceTokenJti: params.acceptanceTokenJti ?? null,
+      renderLocale,
     })
     .returning({ id: quoteAcceptances.id });
 
@@ -246,9 +270,6 @@ export async function acceptQuote(
     updatedAt: now,
   };
   if (oneTime.length > 0) {
-    const [partner] = await db
-      .select({ prefix: partners.invoiceNumberPrefix, termsDays: partners.invoiceTermsDays, settings: partners.settings })
-      .from(partners).where(eq(partners.id, quote.partnerId)).limit(1);
     const year = now.getUTCFullYear();
     const counterRows = await db.execute(sql`
       INSERT INTO partner_invoice_sequences (partner_id, year, counter)
@@ -274,8 +295,10 @@ export async function acceptQuote(
     // This IS the invoice's issue moment (it never goes through issueInvoice),
     // so stamp its render locale here (#3777). The accepted quote's own stamp
     // is the natural value — the same rule sellerSnapshot follows above — with
-    // the partner's language only as a fallback for an unstamped quote.
-    issueFields.documentLocale = quote.documentLocale ?? resolvePartnerDocumentLocale(partner);
+    // the partner's language only as a fallback for an unstamped quote. Same
+    // expression as `renderLocale` above, so the executed contract and the
+    // invoice it issues can never be rendered in two different languages.
+    issueFields.documentLocale = renderLocale;
     issueFields.termsAndConditions = quote.termsAndConditions ?? null;
     issueFields.terms = quote.terms ?? null;
     // Deposit terms travel from the signed quote onto the issued invoice.
@@ -377,6 +400,7 @@ export async function acceptQuote(
     contractRenderData,
     blocks,
     effectiveDate,
+    renderLocale,
   );
 
   // Phase 5: stage any Pax8-backed fulfillment in this exact transaction,

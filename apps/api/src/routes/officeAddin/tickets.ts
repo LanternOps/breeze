@@ -4,7 +4,6 @@ import { db } from '../../db';
 import { partners, tickets } from '../../db/schema';
 import { zValidator } from '../../lib/validation';
 import { officeAddinTechAuthMiddleware, requireAddinCapability } from '../../middleware/officeAddinTechAuth';
-import { resolveDefaultModel } from '../../services/aiAgent';
 import { recordUsage } from '../../services/aiCostTracker';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { applyDlp } from '../../services/clientAiDlp';
@@ -13,6 +12,11 @@ import { ticketThreadAnchor } from '../../services/inboundEmail/outboundThreadin
 import { insertEmailAuthoredComment } from '../../services/inboundEmail/emailComments';
 import { createConfirmedContact, findPortalUserByEmail } from '../../services/officeAddin/addinContacts';
 import { draftTicketFromEmail, EmailDraftFailedError } from '../../services/officeAddin/aiEmailDraft';
+import {
+  getAnthropicClientForPartner,
+  LlmUnavailableError,
+  resolveWireModel,
+} from '../../services/llm/llmConfigResolver';
 import { claimMessageLink, findLinkByMessageId, normalizeMessageId } from '../../services/ticketEmailLinks';
 import {
   addTicketComment,
@@ -280,7 +284,7 @@ async function partnerAiEnabled(partnerId: string): Promise<boolean> {
  * timeout / model error, and the DLP block's 422 is one of them too), and ANY
  * non-200 makes the pane fall back to a deterministic (non-AI) prefill.
  *
- * Check order is entitlement -> API key -> DLP -> model: the cheapest and most
+ * Check order is entitlement -> LLM config -> DLP -> model: the cheapest and most
  * authoritative "you may not do this at all" answer first, so an unentitled
  * partner never reaches DLP evaluation or the model.
  */
@@ -303,9 +307,19 @@ officeAddinTicketRoutes.post(
       return c.json({ error: 'ai_not_enabled' }, 403);
     }
 
-    if (!process.env.ANTHROPIC_API_KEY) {
-      return c.json({ error: 'ai_unavailable' }, 503);
+    let llm: Awaited<ReturnType<typeof getAnthropicClientForPartner>>;
+    try {
+      llm = await getAnthropicClientForPartner(auth.partnerId, {
+        surface: 'one_shot_email_draft',
+        orgId: input.orgId,
+      });
+    } catch (err) {
+      if (err instanceof LlmUnavailableError) {
+        return c.json({ error: 'ai_unavailable' }, 503);
+      }
+      throw err;
     }
+    const { client, resolved: llmConfig } = llm;
 
     const policy = await getOrgPolicy(input.orgId);
     const dlpResult = await applyDlp({ text: input.bodyText, dlpConfig: policy?.dlpConfig, orgId: input.orgId });
@@ -313,13 +327,28 @@ officeAddinTicketRoutes.post(
       return c.json({ error: 'dlp_blocked' }, 422);
     }
 
-    const model = resolveDefaultModel();
+    // `model` stays the platform-logical id for metering/budgets; `wire.model`
+    // is what the resolved endpoint speaks (a catalog endpoint 404s on the
+    // platform id), and `wire.catalogPricing` is what meters catalog traffic.
+    const model = llmConfig.model;
+    let wire;
+    try {
+      wire = resolveWireModel(llmConfig, model);
+    } catch (err) {
+      if (err instanceof LlmUnavailableError) {
+        return c.json({ error: 'ai_unavailable' }, 503);
+      }
+      throw err;
+    }
     try {
       const draft = await withTimeout(
         draftTicketFromEmail({
           subject: input.subject,
           bodyText: dlpResult.text ?? input.bodyText,
-          model,
+          model: wire.model,
+          partnerId: auth.partnerId,
+          orgId: input.orgId,
+          client,
         }),
         DRAFT_TIMEOUT_MS
       );
@@ -331,7 +360,16 @@ officeAddinTicketRoutes.post(
       // failed-then-recovered attempt 1 is metered too. Best-effort: a
       // metering failure must never turn a good draft into a 503 for the pane.
       try {
-        await recordUsage(null, input.orgId, model, draft.inputTokens, draft.outputTokens, false);
+        await recordUsage(
+          null,
+          input.orgId,
+          model,
+          draft.inputTokens,
+          draft.outputTokens,
+          false,
+          llmConfig.source === 'partner' ? 'partner_key' : 'platform',
+          wire.catalogPricing,
+        );
       } catch (err) {
         console.error('[office-addin] draft usage accounting failed', err);
       }
@@ -345,7 +383,16 @@ officeAddinTicketRoutes.post(
       // rejects with a plain Error before token counts exist.
       if (err instanceof EmailDraftFailedError && (err.inputTokens > 0 || err.outputTokens > 0)) {
         try {
-          await recordUsage(null, input.orgId, model, err.inputTokens, err.outputTokens, false);
+          await recordUsage(
+            null,
+            input.orgId,
+            model,
+            err.inputTokens,
+            err.outputTokens,
+            false,
+            llmConfig.source === 'partner' ? 'partner_key' : 'platform',
+            wire.catalogPricing,
+          );
         } catch (meterErr) {
           console.error('[office-addin] draft usage accounting failed', meterErr);
         }

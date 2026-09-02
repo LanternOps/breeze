@@ -13,6 +13,11 @@ import {
   registryKeyBodySchema,
   registryKeyQuerySchema
 } from './schemas';
+import {
+  isCommandFailure,
+  buildCommandFailureResponse,
+  auditErrorMessage,
+} from './fileBrowserHelpers';
 import type { RegistryKey, RegistryValue } from './types';
 
 function parseNumericLike(value: string): number | null {
@@ -200,8 +205,9 @@ registryRoutes.get(
       path
     }, { userId: auth.user?.id, timeoutMs: 30000 });
 
-    if (result.status === 'failed') {
-      return c.json({ error: result.error || 'Failed to load registry keys' }, 500);
+    if (isCommandFailure(result)) {
+      const failure = buildCommandFailureResponse(result, 'Failed to load registry keys');
+      return c.json(failure.body, failure.status);
     }
 
     try {
@@ -212,7 +218,9 @@ registryRoutes.get(
       return c.json({ data: keys });
     } catch (error) {
       console.error('Failed to parse agent response for registry keys:', error);
-      return c.json({ error: 'Failed to parse agent response for registry keys' }, 502);
+      // 500, not 502: Cloudflare replaces an origin 502 body with its own
+      // branded page, blanking this message on hosted deployments.
+      return c.json({ error: 'Failed to parse agent response for registry keys', code: 'invalid_agent_response' }, 500);
     }
   }
 );
@@ -242,8 +250,9 @@ registryRoutes.get(
       path
     }, { userId: auth.user?.id, timeoutMs: 30000 });
 
-    if (result.status === 'failed') {
-      return c.json({ error: result.error || 'Failed to load registry values' }, 500);
+    if (isCommandFailure(result)) {
+      const failure = buildCommandFailureResponse(result, 'Failed to load registry values');
+      return c.json(failure.body, failure.status);
     }
 
     try {
@@ -254,7 +263,9 @@ registryRoutes.get(
       return c.json({ data: values });
     } catch (error) {
       console.error('Failed to parse agent response for registry values:', error);
-      return c.json({ error: 'Failed to parse agent response for registry values' }, 502);
+      // 500, not 502: Cloudflare replaces an origin 502 body with its own
+      // branded page, blanking this message on hosted deployments.
+      return c.json({ error: 'Failed to parse agent response for registry values', code: 'invalid_agent_response' }, 500);
     }
   }
 );
@@ -285,16 +296,18 @@ registryRoutes.get(
       name: normalizeRegistryValueName(name)
     }, { userId: auth.user?.id, timeoutMs: 30000 });
 
-    if (result.status === 'failed') {
-      const error = result.error || 'Failed to get registry value';
-      return c.json({ error }, error.toLowerCase().includes('not found') ? 404 : 500);
+    if (isCommandFailure(result)) {
+      const failure = buildCommandFailureResponse(result, 'Failed to get registry value');
+      return c.json(failure.body, failure.status);
     }
 
     try {
       const payload = JSON.parse(result.stdout || '{}');
       const value = mapRegistryValueFromAgent(payload);
       if (!value) {
-        return c.json({ error: 'Invalid registry value payload from agent' }, 502);
+        // 500, not 502: Cloudflare replaces an origin 502 body with its own
+        // branded page, blanking this message on hosted deployments.
+        return c.json({ error: 'Invalid registry value payload from agent', code: 'invalid_agent_response' }, 500);
       }
 
       const fullPath = value.name === '(Default)'
@@ -309,7 +322,9 @@ registryRoutes.get(
       });
     } catch (error) {
       console.error('Failed to parse agent response for registry value:', error);
-      return c.json({ error: 'Failed to parse agent response for registry value' }, 502);
+      // 500, not 502: Cloudflare replaces an origin 502 body with its own
+      // branded page, blanking this message on hosted deployments.
+      return c.json({ error: 'Failed to parse agent response for registry value', code: 'invalid_agent_response' }, 500);
     }
   }
 );
@@ -360,13 +375,13 @@ registryRoutes.put(
         data: commandData.substring(0, 200)
       },
       ipAddress: getTrustedClientIpOrUndefined(c),
-      result: result.status === 'completed' ? 'success' : 'failure',
-      errorMessage: result.error
+      result: isCommandFailure(result) ? 'failure' : 'success',
+      errorMessage: auditErrorMessage(result)
     });
 
-    if (result.status === 'failed') {
-      const error = result.error || 'Failed to set registry value';
-      return c.json({ error }, error.toLowerCase().includes('not found') ? 404 : 500);
+    if (isCommandFailure(result)) {
+      const failure = buildCommandFailureResponse(result, 'Failed to set registry value', { mutating: true });
+      return c.json(failure.body, failure.status);
     }
 
     return c.json({
@@ -424,13 +439,13 @@ registryRoutes.delete(
         name: normalizedName
       },
       ipAddress: getTrustedClientIpOrUndefined(c),
-      result: result.status === 'completed' ? 'success' : 'failure',
-      errorMessage: result.error
+      result: isCommandFailure(result) ? 'failure' : 'success',
+      errorMessage: auditErrorMessage(result)
     });
 
-    if (result.status === 'failed') {
-      const error = result.error || 'Failed to delete registry value';
-      return c.json({ error }, error.toLowerCase().includes('not found') ? 404 : 500);
+    if (isCommandFailure(result)) {
+      const failure = buildCommandFailureResponse(result, 'Failed to delete registry value', { mutating: true });
+      return c.json(failure.body, failure.status);
     }
 
     return c.json({
@@ -483,13 +498,13 @@ registryRoutes.post(
         path: normalizedPath
       },
       ipAddress: getTrustedClientIpOrUndefined(c),
-      result: result.status === 'completed' ? 'success' : 'failure',
-      errorMessage: result.error
+      result: isCommandFailure(result) ? 'failure' : 'success',
+      errorMessage: auditErrorMessage(result)
     });
 
-    if (result.status === 'failed') {
-      const error = result.error || 'Failed to create registry key';
-      return c.json({ error }, error.toLowerCase().includes('not found') ? 404 : 500);
+    if (isCommandFailure(result)) {
+      const failure = buildCommandFailureResponse(result, 'Failed to create registry key', { mutating: true });
+      return c.json(failure.body, failure.status);
     }
 
     return c.json({
@@ -542,13 +557,13 @@ registryRoutes.delete(
         path: normalizedPath
       },
       ipAddress: getTrustedClientIpOrUndefined(c),
-      result: result.status === 'completed' ? 'success' : 'failure',
-      errorMessage: result.error
+      result: isCommandFailure(result) ? 'failure' : 'success',
+      errorMessage: auditErrorMessage(result)
     });
 
-    if (result.status === 'failed') {
-      const error = result.error || 'Failed to delete registry key';
-      return c.json({ error }, error.toLowerCase().includes('not found') ? 404 : 500);
+    if (isCommandFailure(result)) {
+      const failure = buildCommandFailureResponse(result, 'Failed to delete registry key', { mutating: true });
+      return c.json(failure.body, failure.status);
     }
 
     return c.json({

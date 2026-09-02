@@ -22,6 +22,7 @@ import { eq, inArray } from 'drizzle-orm';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
 import { deviceCommands, devices, peripheralPolicies, sites } from '../../db/schema';
 import { processPolicyDistribution } from '../../jobs/peripheralJobs';
+import { loadAndResolveEffectivePeripheralPolicySet } from '../../services/peripheralEffectivePolicy';
 import { createOrganization, createPartner } from './db-utils';
 
 const createdPolicies: string[] = [];
@@ -171,6 +172,30 @@ describe('peripheral_policies RLS — dual-axis (2026-07-01 migration)', () => {
     expect(visible.map((r) => r.id)).toContain(inserted[0]?.id);
   });
 
+  it('persists the v2 priority default on both ownership axes', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const partnerId = await seedPartnerPolicy(partner.id);
+
+    const [orgPolicy] = await withDbAccessContext(orgContext(org.id), () =>
+      db.insert(peripheralPolicies).values({
+        ...BASE_POLICY,
+        name: 'Org policy with default priority',
+        orgId: org.id,
+        partnerId: null,
+      }).returning(),
+    );
+    createdPolicies.push(orgPolicy!.id);
+
+    const rows = await withDbAccessContext(SYSTEM_CTX, () =>
+      db.select({ id: peripheralPolicies.id, priority: peripheralPolicies.priority })
+        .from(peripheralPolicies)
+        .where(inArray(peripheralPolicies.id, [partnerId, orgPolicy!.id])),
+    );
+    expect(rows).toHaveLength(2);
+    expect(rows.every((row) => row.priority === 100)).toBe(true);
+  });
+
   it('the one-owner CHECK rejects a policy that sets BOTH axes and one that sets NEITHER', async () => {
     const partner = await createPartner();
     const org = await createOrganization({ partnerId: partner.id });
@@ -241,6 +266,7 @@ describe('processPolicyDistribution — partner-wide policy fan-out (#2131)', ()
           osVersion: '10.0',
           architecture: 'x64',
           agentVersion: '1.0.0',
+          peripheralPolicyProtocolVersion: 2,
         })
         .returning(),
     );
@@ -250,9 +276,12 @@ describe('processPolicyDistribution — partner-wide policy fan-out (#2131)', ()
 
   function payloadPolicyIds(payload: unknown): string[] {
     if (!payload || typeof payload !== 'object') return [];
-    const policies = (payload as { policies?: Array<{ id?: string }> }).policies;
+    const policies = (payload as { effectivePolicies?: Array<{ policyId?: string }> })
+      .effectivePolicies;
     if (!Array.isArray(policies)) return [];
-    return policies.map((p) => p.id).filter((id): id is string => typeof id === 'string');
+    return policies
+      .map((policy) => policy.policyId)
+      .filter((id): id is string => typeof id === 'string');
   }
 
   it("a member org's distribution payload includes its partner's partner-wide policy but NOT a foreign partner's", async () => {
@@ -268,12 +297,19 @@ describe('processPolicyDistribution — partner-wide policy fan-out (#2131)', ()
     const [orgPolicy] = await withDbAccessContext(orgContext(orgA.id), () =>
       db
         .insert(peripheralPolicies)
-        .values({ ...BASE_POLICY, name: 'Org-owned USB block', orgId: orgA.id, partnerId: null })
+        .values({
+          ...BASE_POLICY,
+          name: 'Org-owned Bluetooth block',
+          deviceClass: 'bluetooth',
+          orgId: orgA.id,
+          partnerId: null,
+        })
         .returning(),
     );
     createdPolicies.push(orgPolicy!.id);
 
     // The distribution worker runs under system context — mirror that.
+    const scheduledDeviceIds: string[] = [];
     const result = await withDbAccessContext(SYSTEM_CTX, () =>
       processPolicyDistribution({
         type: 'policy-distribution',
@@ -281,19 +317,18 @@ describe('processPolicyDistribution — partner-wide policy fan-out (#2131)', ()
         changedPolicyIds: [partnerWideA],
         reason: 'integration-test',
         queuedAt: new Date().toISOString(),
+      }, {
+        scheduleDevice: async (deviceId) => {
+          scheduledDeviceIds.push(deviceId);
+          return deviceId;
+        },
       }),
     );
     expect(result.queued).toBe(1);
+    expect(scheduledDeviceIds).toEqual([deviceA]);
 
-    const commands = await withDbAccessContext(SYSTEM_CTX, () =>
-      db
-        .select({ payload: deviceCommands.payload })
-        .from(deviceCommands)
-        .where(eq(deviceCommands.deviceId, deviceA)),
-    );
-    expect(commands.length).toBeGreaterThan(0);
-
-    const distributedIds = payloadPolicyIds(commands[commands.length - 1]!.payload);
+    const resolved = await loadAndResolveEffectivePeripheralPolicySet(deviceA);
+    const distributedIds = payloadPolicyIds(resolved);
     expect(distributedIds).toContain(partnerWideA); // partner-wide policy reaches the member org's devices
     expect(distributedIds).toContain(orgPolicy!.id); // org-owned policy still distributed
     expect(distributedIds).not.toContain(partnerWideB); // another partner's policy NEVER leaks in

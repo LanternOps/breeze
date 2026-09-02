@@ -14,7 +14,7 @@ import { Dialog } from '../shared/Dialog';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { fetchWithAuth } from '../../stores/auth';
 import { useTranslation } from 'react-i18next';
-import { asList } from '@/lib/asList';
+import { useDeviceOptions } from '../../hooks/useDeviceOptions';
 import '../../lib/i18n';
 
 type Device = { id: string; hostname?: string | null; displayName?: string | null };
@@ -97,35 +97,32 @@ export default function DRExecutionView({
 }: DRExecutionViewProps) {
   const { t } = useTranslation('backup');
   const [execution, setExecution] = useState<ExecutionRecord | null>(null);
-  const [devices, setDevices] = useState<Record<string, Device>>({});
   const [loading, setLoading] = useState(false);
   const [aborting, setAborting] = useState(false);
   const [confirmAbort, setConfirmAbort] = useState(false);
   const [error, setError] = useState<string>();
+  const executionDeviceIds = useMemo(
+    () => [...new Set((execution?.groups ?? []).flatMap((group) => group.devices))],
+    [execution?.groups]
+  );
+  const deviceOptions = useDeviceOptions({
+    includeIds: executionDeviceIds,
+    enabled: open && executionDeviceIds.length > 0,
+  });
+  const devices = useMemo(
+    () => Object.fromEntries(deviceOptions.options.map((device) => [device.id, device])) as Record<string, Device>,
+    [deviceOptions.options]
+  );
 
   const fetchExecution = useCallback(async () => {
     if (!executionId) return;
     try {
       setLoading(true);
       setError(undefined);
-      const [executionResponse, devicesResponse] = await Promise.all([
-        fetchWithAuth(`/dr/executions/${executionId}`),
-        fetchWithAuth('/devices?limit=500'),
-      ]);
+      const executionResponse = await fetchWithAuth(`/dr/executions/${executionId}`);
       if (!executionResponse.ok) throw new Error('Failed to load execution details');
       const executionPayload = await executionResponse.json();
       setExecution((executionPayload?.data ?? executionPayload) as ExecutionRecord);
-
-      if (devicesResponse.ok) {
-        const devicesPayload = await devicesResponse.json();
-        const nextDevices = (asList(devicesPayload, 'devices')) as Device[];
-        setDevices(
-          nextDevices.reduce<Record<string, Device>>((accumulator, device) => {
-            accumulator[device.id] = device;
-            return accumulator;
-          }, {})
-        );
-      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load execution details');
     } finally {

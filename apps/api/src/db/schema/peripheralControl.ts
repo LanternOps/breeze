@@ -12,7 +12,10 @@
  */
 import {
   boolean,
+  check,
+  foreignKey,
   index,
+  integer,
   jsonb,
   pgEnum,
   pgTable,
@@ -89,6 +92,7 @@ export const peripheralPolicies = pgTable('peripheral_policies', {
   deviceClass: peripheralDeviceClassEnum('device_class').notNull(),
   action: peripheralPolicyActionEnum('action').notNull(),
   targetType: peripheralPolicyTargetTypeEnum('target_type').notNull(),
+  priority: integer('priority').notNull().default(100),
   targetIds: jsonb('target_ids').$type<PeripheralPolicyTargetIds>().default({}),
   exceptions: jsonb('exceptions').$type<PeripheralExceptionRule[]>().default([]),
   isActive: boolean('is_active').notNull().default(true),
@@ -99,6 +103,66 @@ export const peripheralPolicies = pgTable('peripheral_policies', {
   orgActiveIdx: index('peripheral_policy_org_active_idx').on(table.orgId, table.isActive),
   orgClassIdx: index('peripheral_policy_org_class_idx').on(table.orgId, table.deviceClass),
   partnerIdx: index('peripheral_policy_partner_idx').on(table.partnerId),
+  priorityCheck: check('peripheral_policies_priority_chk', sql`${table.priority} BETWEEN 0 AND 1000`),
+}));
+
+export type PeripheralPolicyV2Phase = 'clear_legacy' | 'enforce';
+export type PeripheralPolicyDeliveryStatus = 'pending' | 'applied' | 'rejected';
+export type PeripheralPolicyDeliveryEventKind = 'requested' | 'result';
+export type PeripheralPolicyDeliveryOutcome = 'applied' | 'rejected';
+
+export const peripheralPolicyDeviceStates = pgTable('peripheral_policy_device_states', {
+  deviceId: uuid('device_id').primaryKey(),
+  orgId: uuid('org_id').notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  desiredPhase: varchar('desired_phase', { length: 16 }).$type<PeripheralPolicyV2Phase>().notNull(),
+  desiredRevision: integer('desired_revision').notNull(),
+  desiredDigest: varchar('desired_digest', { length: 71 }).notNull(),
+  desiredEnvelope: jsonb('desired_envelope').$type<Record<string, unknown>>().notNull(),
+  deliveryStatus: varchar('delivery_status', { length: 16 }).$type<PeripheralPolicyDeliveryStatus>().notNull(),
+  appliedPhase: varchar('applied_phase', { length: 16 }).$type<PeripheralPolicyV2Phase>(),
+  appliedRevision: integer('applied_revision'),
+  appliedDigest: varchar('applied_digest', { length: 71 }),
+  lastErrorCode: varchar('last_error_code', { length: 64 }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (table) => ({
+  deviceOrgFk: foreignKey({
+    name: 'peripheral_policy_device_states_device_org_fk',
+    columns: [table.deviceId, table.orgId],
+    foreignColumns: [devices.id, devices.orgId],
+  }).onDelete('cascade'),
+  orgIdx: index('peripheral_policy_device_states_org_idx').on(table.orgId),
+  pendingIdx: index('peripheral_policy_device_states_pending_idx')
+    .on(table.updatedAt, table.deviceId)
+    .where(sql`${table.deliveryStatus} = 'pending'`),
+}));
+
+export const peripheralPolicyDeliveryEvents = pgTable('peripheral_policy_delivery_events', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  orgId: uuid('org_id').notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  deviceId: uuid('device_id').notNull(),
+  commandId: uuid('command_id').notNull(),
+  eventKind: varchar('event_kind', { length: 16 }).$type<PeripheralPolicyDeliveryEventKind>().notNull(),
+  phase: varchar('phase', { length: 16 }).$type<PeripheralPolicyV2Phase>().notNull(),
+  revision: integer('revision').notNull(),
+  digest: varchar('digest', { length: 71 }).notNull(),
+  outcome: varchar('outcome', { length: 16 }).$type<PeripheralPolicyDeliveryOutcome>(),
+  reasonCode: varchar('reason_code', { length: 64 }),
+  evidence: jsonb('evidence').$type<Record<string, unknown>>().notNull().default({}),
+  occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (table) => ({
+  deviceOrgFk: foreignKey({
+    name: 'peripheral_policy_delivery_events_device_org_fk',
+    columns: [table.deviceId, table.orgId],
+    foreignColumns: [devices.id, devices.orgId],
+  }).onDelete('cascade'),
+  commandKindUq: uniqueIndex('peripheral_policy_delivery_events_command_kind_uq')
+    .on(table.deviceId, table.commandId, table.eventKind),
+  orgTimeIdx: index('peripheral_policy_delivery_events_org_time_idx')
+    .on(table.orgId, table.occurredAt, table.id),
+  deviceTimeIdx: index('peripheral_policy_delivery_events_device_time_idx')
+    .on(table.deviceId, table.occurredAt, table.id),
 }));
 
 export const peripheralEvents = pgTable('peripheral_events', {

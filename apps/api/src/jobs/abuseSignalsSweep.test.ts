@@ -89,12 +89,12 @@ describe('scheduleAbuseSignalsJobs', () => {
     expect(queueAdd).toHaveBeenCalledWith(
       'abuse-sweep',
       expect.anything(),
-      expect.objectContaining({ jobId: 'abuse-sweep-repeat', repeat: { every: 60 * 60 * 1000 } }),
+      expect.objectContaining({ jobId: 'abuse-sweep-repeat', repeat: { pattern: '22 * * * *' } }),
     );
     expect(queueAdd).toHaveBeenCalledWith(
       'abuse-digest',
       expect.anything(),
-      expect.objectContaining({ jobId: 'abuse-digest-repeat', repeat: { pattern: '0 9 * * 1' } }),
+      expect.objectContaining({ jobId: 'abuse-digest-repeat', repeat: { pattern: '18 9 * * 1' } }),
     );
   });
 });

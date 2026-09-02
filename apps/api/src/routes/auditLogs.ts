@@ -8,6 +8,7 @@ import { authMiddleware, requireMfa, requirePermission } from '../middleware/aut
 import { writeRouteAudit } from '../services/auditEvents';
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../services/permissions';
 import { csvRow } from '../services/spreadsheetExport';
+import type { ActorType, AuditResult } from '@breeze/shared';
 
 export const auditLogRoutes = new Hono();
 const requireAuditLogRead = requirePermission(
@@ -185,6 +186,16 @@ export function resolveActorName(row: DbRow, details?: Record<string, unknown> |
     return rawActorId ? `Agent ${rawActorId.slice(0, 8)}` : 'Agent';
   }
 
+  if (row.log.actorType === 'ai_agent') {
+    // AI-agent-originated actions (wave 3, #3824): a distinct principal from
+    // actorType 'agent' (the Go device agent). Agent-event callers of
+    // recordActionIntentEvent (services/actionIntents/metrics.ts) supply the
+    // acting agent's id as details.agentId — wired in PR 3b; until then real
+    // ai_agent rows render the generic label below.
+    const agentId = typeof details?.agentId === 'string' ? details.agentId : null;
+    return agentId ? `AI Agent ${agentId.slice(0, 8)}` : 'AI Agent';
+  }
+
   if (row.log.actorEmail) {
     return row.log.actorEmail;
   }
@@ -355,7 +366,7 @@ interface LateralAuditRow extends Record<string, unknown> {
   id: string;
   org_id: string | null;
   timestamp: Date | string;
-  actor_type: 'user' | 'api_key' | 'agent' | 'system';
+  actor_type: ActorType;
   actor_id: string;
   actor_email: string | null;
   action: string;
@@ -365,7 +376,7 @@ interface LateralAuditRow extends Record<string, unknown> {
   details: unknown;
   ip_address: string | null;
   user_agent: string | null;
-  result: 'success' | 'failure' | 'denied';
+  result: AuditResult;
   error_message: string | null;
   checksum: string | null;
   initiated_by: string | null;

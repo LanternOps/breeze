@@ -4,8 +4,15 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-COMPOSE_FILE="${REPO_ROOT}/docker/docker-compose.prod.yml"
 ENV_FILE="${BREEZE_ENV_FILE:-${REPO_ROOT}/.env.prod}"
+# Grafana is defined in the monitoring overlay (docker-compose.monitoring.yml),
+# which pins container_name: breeze-grafana. We exec into it by container
+# name rather than via `docker compose -f deploy/docker-compose.prod.yml -f
+# docker-compose.monitoring.yml`: that combination is not a valid compose
+# project — the monitoring overlay's postgres-exporter service depends on a
+# `postgres` service that only exists in the root docker-compose.yml (dev),
+# not in the managed-Postgres prod stack. See #4278.
+GRAFANA_CONTAINER="${GRAFANA_CONTAINER:-breeze-grafana}"
 
 if [[ $# -ge 1 ]]; then
   ENV_FILE="$1"
@@ -18,10 +25,6 @@ fi
 
 # shellcheck disable=SC1090
 set -a; source "${ENV_FILE}"; set +a
-
-compose() {
-  docker compose -f "${COMPOSE_FILE}" --env-file "${ENV_FILE}" "$@"
-}
 
 echo "[verify] Checking local monitoring endpoints"
 curl -fsS "http://127.0.0.1:${PROMETHEUS_PORT:-9090}/-/healthy" >/dev/null
@@ -37,8 +40,8 @@ if ! grep -q '"status":"success"' <<<"${response}"; then
 fi
 
 echo "[verify] Checking Grafana datasource provisioning"
-if ! compose exec -T grafana test -f /etc/grafana/provisioning/datasources/datasources.yml; then
-  echo "[verify] Grafana datasource file missing" >&2
+if ! docker exec "${GRAFANA_CONTAINER}" test -f /etc/grafana/provisioning/datasources/datasources.yml; then
+  echo "[verify] Grafana datasource file missing (or container ${GRAFANA_CONTAINER} not running)" >&2
   exit 1
 fi
 

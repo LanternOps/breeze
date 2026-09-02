@@ -141,9 +141,93 @@ export function parameterBindingKey(parameter: ScriptParameter): string | null {
       return parameter.fieldKey || null;
     case 'builtin':
       return parameter.builtinKey || null;
+    // A secret parameter names the variable it binds, exactly like the plain
+    // `tenantVariable` arm — the KEY is not sensitive, only the value is, and
+    // the run surfaces have to be able to say what will be injected.
+    case 'tenantSecret':
+      return parameter.variableKey || null;
     default:
       return null;
   }
+}
+
+/**
+ * Is this parameter delivered as a SECRET environment variable (#3409 PR4c-2)?
+ *
+ * Secrets ride `BREEZE_VAR_<NAME>` in the sealed envelope, which the user-context
+ * helper IPC cannot carry — so run surfaces have to know a script contains one
+ * before the operator picks a run context.
+ */
+export function isSecretParameter(parameter: ScriptParameter): boolean {
+  return parameterSource(parameter) === 'tenantSecret';
+}
+
+/** Does this parameter list contain at least one secret-backed parameter? */
+export function hasSecretParameters(parameters: readonly ScriptParameter[] | undefined): boolean {
+  return (parameters ?? []).some(isSecretParameter);
+}
+
+/**
+ * Would the server refuse to deliver a secret for a run with this context
+ * (#3409 PR4c-2)?
+ *
+ * The ONE web-side mirror of `runAsSupportsSecretEnv`
+ * (`apps/api/src/services/scriptSecretDelivery.ts`), which itself mirrors the
+ * agent's `runAsSupportsSecrets`: the secret rides an environment variable in
+ * the sealed command envelope, and a user-context run OR a run aimed at a
+ * specific session is executed through the helper IPC, which carries no
+ * environment. `elevated` and an unset run-as both run under the service, so
+ * both are fine.
+ *
+ * Both halves matter, and a surface that states only the run-as half tells the
+ * operator a half-truth — hence one shared predicate rather than a per-modal
+ * `runAs === 'user'` check that a surface gaining a session picker would
+ * silently inherit.
+ *
+ * ADVISORY ONLY. The server gate is authoritative; no run surface may block on
+ * this.
+ */
+export function secretsBlockedForRun(run: {
+  runAs?: 'system' | 'user' | 'elevated' | null;
+  targetSessionId?: number | null;
+}): boolean {
+  // `!= null` on purpose: session 0 is a real Windows session id, so a
+  // truthiness check would silently allow the one case the server refuses.
+  if (run.targetSessionId != null) return true;
+  return run.runAs === 'user';
+}
+
+/**
+ * Drop the fields a `tenantSecret` row may not carry, and force the two the
+ * schema pins (#3409 PR4c-2).
+ *
+ * The authoring form seeds every new parameter row with `defaultValue: ''` and
+ * `options: ''`, and RHF keeps a field's value when its input unmounts. An
+ * empty string is a PRESENT value, and the secret arm rejects a present
+ * `defaultValue`/`options` outright ("A secret parameter cannot carry a default
+ * value") — so a row switched to `tenantSecret` would fail validation on data
+ * the user never typed and can no longer see. Sanitizing on the way INTO the
+ * resolver fixes both halves at once: validation sees the real contract, and
+ * the sanitized object is what `handleSubmit` hands the caller, so no empty
+ * string reaches the API either.
+ *
+ * Deliberately not a schema `.transform()`: the same normalization has to apply
+ * before the union picks an arm, and a transform runs after.
+ */
+export function stripSecretParameterValueFields<T>(values: T): T {
+  const record = values as { parameters?: unknown } | null;
+  const parameters = record?.parameters;
+  if (!Array.isArray(parameters)) return values;
+  let changed = false;
+  const next = parameters.map(parameter => {
+    const row = parameter as Record<string, unknown> | null;
+    if (!row || row.source !== 'tenantSecret') return parameter;
+    changed = true;
+    const { defaultValue: _default, options: _options, ...rest } = row;
+    return { ...rest, type: 'string', required: true };
+  });
+  if (!changed) return values;
+  return { ...(record as object), parameters: next } as T;
 }
 
 // Wire shape sent to / received from the API. Form-side editing keeps an

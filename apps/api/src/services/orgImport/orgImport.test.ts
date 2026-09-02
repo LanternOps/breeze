@@ -116,6 +116,16 @@ describe('normalizeOrgName', () => {
 });
 
 describe('previewOrgImport', () => {
+  // #3967 — the reserved-slug set is compared against a lowercase candidate,
+  // so an existing mixed-case slug must still count as taken; otherwise the
+  // generated slug collides with organizations_partner_slug_uniq at insert.
+  it('treats an existing mixed-case slug as taken when resolving a new one', async () => {
+    // Name deliberately unrelated so this is a plain `create`, not a name-match.
+    stubState([{ id: 'org-1', name: 'Zeta Holdings', slug: 'Acme-Co' }], []);
+    const rows = await previewOrgImport([{ organization: 'Acme Co', site: 'HQ' }], 'p1');
+    expect(rows[0]).toMatchObject({ annotation: 'create', slug: 'acme-co-2' });
+  });
+
   it('annotates a fresh row as create with a resolved slug', async () => {
     stubState([], []);
     const rows = await previewOrgImport([{ organization: 'Acme Co', site: 'HQ' }], 'p1');

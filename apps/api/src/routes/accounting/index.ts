@@ -1,4 +1,4 @@
-import { Hono, type MiddlewareHandler } from 'hono';
+import { Hono, type Env, type MiddlewareHandler } from 'hono';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
@@ -12,16 +12,28 @@ import { QBO_CLIENT_ID, QBO_CLIENT_SECRET, QBO_ENVIRONMENT, QBO_REDIRECT_URI } f
 import {
   deleteConnection,
   getConnection,
+  isHomeCurrencyCasAbort,
+  updateHomeCurrency,
   upsertConnection,
 } from '../../services/accounting/accountingConnectionService';
+import type { AccountingConnection } from '../../services/accounting/accountingConnectionService';
 import {
   importQuickbooksCustomers,
   listQuickbooksCustomersAnnotated,
   QbImportError,
 } from '../../services/accounting/quickbooksCustomerImport';
+import {
+  AccountingMappingError,
+  listMappingProposals,
+  listRemoteIncomeAccountsForPartner,
+  saveMappingDecision,
+  syncMappedEntity,
+  type MappingDecision,
+  type MappingEntityType,
+} from '../../services/accounting/accountingMappingService';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { getAccountingProvider } from '../../services/accounting/providerRegistry';
-import { captureException } from '../../services/sentry';
+import { captureException, captureMessage } from '../../services/sentry';
 import type { AccountingProviderId } from '../../services/accounting/types';
 
 export const accountingRoutes = new Hono();
@@ -81,11 +93,100 @@ const importCustomersSchema = z.object({
   customerIds: z.array(z.string().min(1)).min(1).max(500),
 });
 
+const mappingEntityQuerySchema = partnerQuerySchema.extend({
+  entityType: z.enum(['org', 'catalog_item']),
+});
+const mappingDecisionSchema = z.object({
+  breezeEntityType: z.enum(['org', 'catalog_item']),
+  breezeEntityId: z.string().guid(),
+  decision: z.enum(['confirmed', 'create_new', 'unlinked']),
+  remoteEntityId: z.string().min(1).max(255).optional(),
+}).superRefine((value, ctx) => {
+  if (value.decision === 'confirmed' && !value.remoteEntityId) {
+    ctx.addIssue({ code: 'custom', path: ['remoteEntityId'], message: 'remoteEntityId is required when confirming a match' });
+  }
+  if (value.decision !== 'confirmed' && value.remoteEntityId) {
+    ctx.addIssue({ code: 'custom', path: ['remoteEntityId'], message: 'remoteEntityId is only valid for confirmed matches' });
+  }
+});
+const mappingSyncSchema = z.object({
+  breezeEntityType: z.enum(['org', 'catalog_item']),
+  breezeEntityId: z.string().guid(),
+});
+
 function handleImportError(c: { json: (b: unknown, s: number) => Response }, err: unknown): Response {
   // QbImportError.status is a narrowed literal union (400|404|409|502), so no cast.
   if (err instanceof QbImportError) return c.json({ error: err.message, code: err.code }, err.status);
   throw err;
 }
+
+function handleMappingError(c: { json: (b: unknown, s: number) => Response }, err: unknown): Response {
+  // AccountingMappingError.status is a narrowed literal union (404|409|502), so
+  // no cast, and every current/future code (including item_price_required)
+  // flows through generically — the route never re-enumerates codes.
+  if (err instanceof AccountingMappingError) return c.json({ error: err.message, code: err.code }, err.status);
+  throw err;
+}
+
+/**
+ * Curated response for a mapping row — mirrors PATCH /:provider/settings
+ * above, which explicitly `.returning({ ... })`s a safe subset rather than
+ * echoing the raw row. `saveMappingDecision`/`syncMappedEntity` return the
+ * full `accounting_entity_mappings` row (internal `id`, `integrationId`,
+ * `partnerId`, `remoteSyncToken`, `createdAt`, `updatedAt` included), so the
+ * route — not the service — is responsible for narrowing it before it goes
+ * over the wire. None of those omitted fields are secrets, but they are
+ * internal plumbing (tenancy/connection ids, QuickBooks' own optimistic-
+ * concurrency token) the client has no use for.
+ */
+function toMappingResponse(mapping: {
+  breezeEntityType: string;
+  breezeEntityId: string;
+  remoteEntityType: string;
+  remoteEntityId: string | null;
+  linkStatus: string;
+  syncStatus: string;
+  lastSyncedAt: Date | null;
+  lastError: string | null;
+}) {
+  return {
+    breezeEntityType: mapping.breezeEntityType,
+    breezeEntityId: mapping.breezeEntityId,
+    remoteEntityType: mapping.remoteEntityType,
+    remoteEntityId: mapping.remoteEntityId,
+    linkStatus: mapping.linkStatus,
+    syncStatus: mapping.syncStatus,
+    lastSyncedAt: mapping.lastSyncedAt,
+    lastError: mapping.lastError,
+  };
+}
+
+// Post-`zValidator('json', ...)` entity-aware write guard for the two mapping
+// mutation routes: ORGS_WRITE for an org decision, CATALOG_WRITE for a
+// catalog_item decision. System scope bypasses the role lookup, matching
+// `partnerScopedPermission` above (requirePermission resolves a role from
+// auth.partnerId/orgId, which a system-scope token never carries).
+const requireCustomerMappingWrite = requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action);
+const requireItemMappingWrite = requirePermission(PERMISSIONS.CATALOG_WRITE.resource, PERMISSIONS.CATALOG_WRITE.action);
+
+// Typed against the validated `json` env — matching `optionalJsonValidator`'s
+// idiom (lib/validation.ts) for a standalone middleware that reads
+// `c.req.valid('json')` — rather than a bare `MiddlewareHandler` (which
+// erases the `zValidator('json', ...)` typing upstream and makes
+// `c.req.valid('json')` resolve to `never`). Shared by both mutation routes
+// (`mappingDecisionSchema` and `mappingSyncSchema`), so it is typed against
+// only the field both schemas' outputs share.
+type MappingWriteJsonInput = { breezeEntityType: MappingEntityType };
+const requireMappingWrite: MiddlewareHandler<
+  Env,
+  string,
+  { in: { json: MappingWriteJsonInput }; out: { json: MappingWriteJsonInput } }
+> = async (c, next) => {
+  if (c.get('auth')?.scope === 'system') return next();
+  const body = c.req.valid('json');
+  const guard = body.breezeEntityType === 'org' ? requireCustomerMappingWrite : requireItemMappingWrite;
+  return guard(c, next);
+};
 
 // CSRF binding cookie: the OAuth callback must complete in the SAME browser
 // that initiated /connect. Without it, an attacker who captures a victim into
@@ -239,14 +340,40 @@ accountingRoutes.get('/:provider/callback', zValidator('param', providerParamSch
   // partnerId taken from the verified state. Guard the persist: a failure
   // after a successful exchange leaves a live-but-unrecorded grant, so surface
   // it rather than 500-ing on a raw page.
+  // Does this reconnect change realms? A DIFFERENT realm's home currency must
+  // never persist, but blanking it on a SAME-realm reconnect degrades a healthy
+  // connection: capture below is non-fatal and there is no retry, no refresh
+  // route and no job, so a transient Preferences failure would strand the row at
+  // NULL until someone completes another full OAuth round-trip that succeeds.
+  // Read failure falls back to the fail-closed answer (null) rather than losing
+  // the freshly-exchanged grant.
+  let priorRealmId: string | null = null;
+  let priorRealmKnown = false;
   try {
-    await withSystemDbAccessContext(() => upsertConnection(db, state.partnerId, provider, {
+    const existing = await withSystemDbAccessContext(() => getConnection(db, state.partnerId, provider));
+    priorRealmId = existing?.realmId ?? null;
+    priorRealmKnown = true;
+  } catch (err) {
+    captureException(err instanceof Error ? err : new Error(String(err)), c);
+    console.warn('[accounting] QuickBooks pre-reconnect realm read failed; clearing home currency', { partnerId: state.partnerId, provider });
+  }
+  const sameRealm = priorRealmKnown && priorRealmId !== null && priorRealmId === tokens.realmId;
+
+  let connection: AccountingConnection;
+  try {
+    connection = await withSystemDbAccessContext(() => upsertConnection(db, state.partnerId, provider, {
       realmId: tokens.realmId,
       accessToken: tokens.accessToken,
       refreshToken: tokens.refreshToken,
       accessTokenExpiresAt: tokens.accessTokenExpiresAt,
       refreshTokenExpiresAt: tokens.refreshTokenExpiresAt,
       environment: QBO_ENVIRONMENT as 'sandbox' | 'production',
+      // Explicit null on a realm CHANGE, not omission: upsertConnection's
+      // conflict set strips undefined, so omitting it would carry a PREVIOUS
+      // realm's home currency across a reconnect. Unknown must fail closed at
+      // push time instead (multi-currency §11). On a same-realm reconnect the
+      // undefined is deliberate — it leaves an already-captured currency intact.
+      homeCurrency: sameRealm ? undefined : null,
       status: 'connected',
       lastError: null,
       connectedBy: state.userId,
@@ -256,6 +383,53 @@ accountingRoutes.get('/:provider/callback', zValidator('param', providerParamSch
     console.error('[accounting] QuickBooks connection persist failed', { partnerId: state.partnerId, provider });
     deleteCookie(c, ACCOUNTING_STATE_COOKIE, { path: '/' });
     return c.redirect('/integrations?accounting=quickbooks&error=persist_failed#accounting');
+  }
+
+  // Capture the realm's home currency (multi-currency §11). NON-FATAL by design:
+  // the connection is already live and usable for customer import, and the
+  // invoice-push guard fails closed on a NULL home currency, so a Preferences
+  // outage must never turn a successful OAuth grant into a connect error.
+  // The QBO call runs with no ambient DB context; the write is a short
+  // compare-and-set on the row we just persisted.
+  try {
+    const homeCurrency = await runOutsideDbContext(() => providerClient.fetchHomeCurrency(connection));
+    if (homeCurrency && connection.updatedAt) {
+      // The generation this capture belongs to: the row as we just wrote it
+      // (updatedAt) AND the realm we just exchanged for. A reconnect to another
+      // realm in between — even inside the same millisecond — aborts the write.
+      await withSystemDbAccessContext(() => updateHomeCurrency(
+        db,
+        connection.id,
+        state.partnerId,
+        { updatedAt: connection.updatedAt as Date, realmId: tokens.realmId },
+        homeCurrency,
+      ));
+    } else if (!homeCurrency) {
+      // The realm reported nothing — an ordinary external condition. Push-time
+      // fails closed on NULL, so a warning is the whole response.
+      console.warn('[accounting] QuickBooks home currency unavailable', { partnerId: state.partnerId, provider });
+    } else {
+      // A GOOD capture we cannot anchor: the row we just upserted came back with
+      // no updatedAt, so the compare-and-set has no generation to target. That is
+      // an unexpected row shape, not an external outage — report it instead of
+      // discarding the value under an "unavailable" warning.
+      captureException(new Error('Accounting home currency captured but the persisted connection carried no updatedAt to compare-and-set against'), c);
+      console.error('[accounting] QuickBooks home currency captured but the persisted row has no updatedAt', { partnerId: state.partnerId, provider });
+    }
+  } catch (err) {
+    // A lost compare-and-set is an EXPECTED race (double connect, concurrent
+    // reconnect), not a defect: the winning capture already wrote a currency for
+    // the generation that survived. Report it as a warning so it stops filing
+    // Sentry issues on a normal user action; genuine failures stay exceptions.
+    if (isHomeCurrencyCasAbort(err)) {
+      captureMessage('[accounting] QuickBooks home currency capture lost the compare-and-set', {
+        eventCode: 'accounting_home_currency_cas_lost',
+      });
+      console.warn('[accounting] QuickBooks home currency capture lost the compare-and-set', { partnerId: state.partnerId, provider });
+    } else {
+      captureException(err instanceof Error ? err : new Error(String(err)), c);
+      console.warn('[accounting] QuickBooks home currency capture failed', { partnerId: state.partnerId, provider });
+    }
   }
 
   deleteCookie(c, ACCOUNTING_STATE_COOKIE, { path: '/' });
@@ -283,6 +457,7 @@ accountingRoutes.get('/:provider', authMiddleware, partnerScopes, zValidator('pa
       pushMode: 'auto',
       connectedAt: null,
       lastError: null,
+      homeCurrency: null,
     });
   }
   return c.json({
@@ -293,6 +468,10 @@ accountingRoutes.get('/:provider', authMiddleware, partnerScopes, zValidator('pa
     lastError: connection.lastError,
     defaultIncomeAccountRef: connection.defaultIncomeAccountRef,
     defaultTaxCodeRef: connection.defaultTaxCodeRef,
+    // A captured external fact, exposed so an operator can see whether connect-time
+    // capture succeeded. Deliberately absent from settingsSchema — PATCH must never
+    // accept it.
+    homeCurrency: connection.homeCurrency,
   });
 });
 
@@ -380,4 +559,124 @@ accountingRoutes.patch('/:provider/settings', authMiddleware, partnerScopes, req
 
   if (!updated) return c.json({ error: 'Accounting connection not found' }, 404);
   return c.json(updated);
+});
+
+// Mapping proposals (reconciliation) — read-only, so partner/system scope is
+// the whole gate, same as GET /:provider/customers above. The service performs
+// QuickBooks HTTP inside, so this route is registered in
+// SELF_MANAGED_DB_CONTEXT_ROUTES (middleware/selfManagedDbContextRoutes.ts).
+accountingRoutes.get('/:provider/mappings', authMiddleware, partnerScopes, zValidator('param', providerParamSchema), zValidator('query', mappingEntityQuerySchema), async (c) => {
+  const { provider } = c.req.valid('param');
+  const configError = validateProviderConfig(provider);
+  if (configError) return c.json({ error: configError }, 400);
+  const partner = resolvePartnerId(c.get('auth'), c.req.valid('query').partnerId);
+  if ('error' in partner) return c.json({ error: partner.error }, partner.status);
+  const { entityType } = c.req.valid('query');
+
+  try {
+    const data = await listMappingProposals({ partnerId: partner.partnerId, provider, entityType });
+    return c.json({ data });
+  } catch (err) {
+    return handleMappingError(c, err);
+  }
+});
+
+// Remote income account selector for item mapping — read-only. Also QBO-HTTP
+// backed, so it carries the same SELF_MANAGED_DB_CONTEXT_ROUTES registration.
+accountingRoutes.get('/:provider/income-accounts', authMiddleware, partnerScopes, zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), async (c) => {
+  const { provider } = c.req.valid('param');
+  const configError = validateProviderConfig(provider);
+  if (configError) return c.json({ error: configError }, 400);
+  const partner = resolvePartnerId(c.get('auth'), c.req.valid('query').partnerId);
+  if ('error' in partner) return c.json({ error: partner.error }, partner.status);
+
+  try {
+    const data = await listRemoteIncomeAccountsForPartner({ partnerId: partner.partnerId, provider });
+    return c.json({ data });
+  } catch (err) {
+    return handleMappingError(c, err);
+  }
+});
+
+// Confirm/create/unlink a single mapping. Write + MFA-gated, entity-aware
+// permission (ORGS_WRITE for org, CATALOG_WRITE for catalog_item) — the
+// `confirmed` path calls the provider list to verify the remote entity, so
+// this route also carries the SELF_MANAGED_DB_CONTEXT_ROUTES registration.
+accountingRoutes.put('/:provider/mappings', authMiddleware, partnerScopes, requireMfa(), zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), zValidator('json', mappingDecisionSchema), requireMappingWrite, async (c) => {
+  const { provider } = c.req.valid('param');
+  const configError = validateProviderConfig(provider);
+  if (configError) return c.json({ error: configError }, 400);
+  const partner = resolvePartnerId(c.get('auth'), c.req.valid('query').partnerId);
+  if ('error' in partner) return c.json({ error: partner.error }, partner.status);
+  const body = c.req.valid('json');
+
+  let mapping;
+  try {
+    mapping = await saveMappingDecision({
+      partnerId: partner.partnerId,
+      provider,
+      breezeEntityType: body.breezeEntityType,
+      breezeEntityId: body.breezeEntityId,
+      decision: body.decision as MappingDecision,
+      remoteEntityId: body.remoteEntityId,
+    });
+  } catch (err) {
+    return handleMappingError(c, err);
+  }
+
+  writeRouteAudit(c, {
+    orgId: body.breezeEntityType === 'org' ? body.breezeEntityId : null,
+    action: 'accounting.mapping.update',
+    resourceType: 'accounting_mapping',
+    resourceId: mapping.id,
+    details: {
+      breezeEntityType: body.breezeEntityType,
+      breezeEntityId: body.breezeEntityId,
+      decision: body.decision,
+      remoteEntityType: mapping.remoteEntityType,
+      resultStatus: mapping.syncStatus,
+    },
+  });
+
+  return c.json({ data: toMappingResponse(mapping) });
+});
+
+// Push a confirmed/create_new mapping to QuickBooks. Write + MFA-gated, same
+// entity-aware permission guard as PUT above, and the same
+// SELF_MANAGED_DB_CONTEXT_ROUTES registration (the provider upsert call is
+// real QuickBooks HTTP).
+accountingRoutes.post('/:provider/mappings/sync', authMiddleware, partnerScopes, requireMfa(), zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), zValidator('json', mappingSyncSchema), requireMappingWrite, async (c) => {
+  const { provider } = c.req.valid('param');
+  const configError = validateProviderConfig(provider);
+  if (configError) return c.json({ error: configError }, 400);
+  const partner = resolvePartnerId(c.get('auth'), c.req.valid('query').partnerId);
+  if ('error' in partner) return c.json({ error: partner.error }, partner.status);
+  const body = c.req.valid('json');
+
+  let mapping;
+  try {
+    mapping = await syncMappedEntity({
+      partnerId: partner.partnerId,
+      provider,
+      breezeEntityType: body.breezeEntityType,
+      breezeEntityId: body.breezeEntityId,
+    });
+  } catch (err) {
+    return handleMappingError(c, err);
+  }
+
+  writeRouteAudit(c, {
+    orgId: body.breezeEntityType === 'org' ? body.breezeEntityId : null,
+    action: 'accounting.entity.sync',
+    resourceType: 'accounting_mapping',
+    resourceId: mapping.id,
+    details: {
+      breezeEntityType: body.breezeEntityType,
+      breezeEntityId: body.breezeEntityId,
+      remoteEntityType: mapping.remoteEntityType,
+      resultStatus: mapping.syncStatus,
+    },
+  });
+
+  return c.json({ data: toMappingResponse(mapping) });
 });

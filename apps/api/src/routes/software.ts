@@ -55,6 +55,7 @@ import {
   deriveSoftwareFileTypeFromUrl,
 } from '@breeze/shared';
 import { terminalPayloadErasureSet } from '../services/sensitiveCommandPayload';
+import { applyAutomationActionTerminal } from '../services/automationActionResults';
 import {
   ALLOWED_EXTENSIONS,
   MAX_UPLOAD_SIZE,
@@ -977,16 +978,8 @@ softwareRoutes.post(
     // URL serving a real EXE is legitimate, and rejecting would break existing
     // scripted clients.
     if (payload.downloadUrl && fileType === null) {
-      captureMessage('software version created with undetermined installer type', 'warning', {
-        // Dual-axis (#2135): a partner-wide package has org_id NULL, so log both
-        // axes — orgId alone would attribute those rows to nothing at all.
-        orgId: catalogItem.orgId,
-        partnerId: catalogItem.partnerId,
-        catalogId: id,
-        version: payload.version,
-        // Host only — a managed-software URL can carry a presigned capability
-        // query string that must never reach a log.
-        downloadUrlHost: safeUrlHost(payload.downloadUrl),
+      captureMessage('software version created with undetermined installer type', {
+        eventCode: 'software_version_installer_type_unknown',
       });
     }
 
@@ -1134,9 +1127,8 @@ softwareRoutes.post(
           // Malformed supportedOs silently dropped the OS-targeting field on the
           // created version. Don't fail the upload (matches prior behavior), but
           // make the discard visible rather than fully silent.
-          captureMessage('software upload: discarded malformed supportedOs', 'warning', {
-            orgId,
-            catalogId,
+          captureMessage('software upload: discarded malformed supportedOs', {
+            eventCode: 'software_upload_malformed_supported_os',
           });
         }
       }
@@ -2042,13 +2034,26 @@ softwareRoutes.post(
     // Update pending results to cancelled. `.returning()` surfaces which rows
     // carried a queued device_commands link (offline-queue fallback) so the
     // not-yet-delivered commands can be purged below.
+    const cancellationCompletedAt = new Date();
     const flipped = await db.update(deploymentResults)
-      .set({ status: 'cancelled', completedAt: new Date() })
+      .set({ status: 'cancelled', completedAt: cancellationCompletedAt })
       .where(and(
         eq(deploymentResults.deploymentId, id),
         eq(deploymentResults.status, 'pending')
       ))
-      .returning({ deviceCommandId: deploymentResults.deviceCommandId });
+      .returning({
+        id: deploymentResults.id,
+        deviceCommandId: deploymentResults.deviceCommandId,
+      });
+
+    for (const result of flipped) {
+      await applyAutomationActionTerminal({
+        source: 'cancellation',
+        deploymentResultId: result.id,
+        terminalStatus: 'cancelled',
+        completedAt: cancellationCompletedAt,
+      });
+    }
 
     // Honest cancel: a queued-offline install must not execute when the agent
     // eventually reconnects. Cancel the linked device_commands rows that are

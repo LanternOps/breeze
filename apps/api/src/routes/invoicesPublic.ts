@@ -19,6 +19,7 @@ import { resolveThemeId, resolvePageSize } from '../services/documentThemes';
 import { portalBase } from '../services/portalUrl';
 import { getRedis } from '../services/redis';
 import { rateLimiter } from '../services/rate-limit';
+import { resolveOrgLinkGate, PUBLIC_LINK_ORG_UNAVAILABLE } from '../services/publicLinkOrgGate';
 
 /**
  * Unauthenticated, token-gated PUBLIC INVOICE surface — the customer's durable
@@ -83,6 +84,17 @@ async function resolve(token: string): Promise<ResolvedInvoice | null> {
   return runOutsideDbContext(() => withSystemDbAccessContext(() => resolveInvoiceByLinkToken(token)));
 }
 
+/**
+ * Org-lifecycle gate (Wave 4): this durable bearer link outlives an archive, so
+ * every handler re-checks the CURRENT owning tenant with ONE system-context
+ * read before serving or writing. `inv.orgId` is already the post-merge org, so
+ * a merged-away invoice gates on its survivor. Reads gate too — an archived
+ * tenant's invoice must read as gone, not as a payable document.
+ */
+async function orgLinkGone(inv: { orgId: string }): Promise<boolean> {
+  return (await resolveOrgLinkGate(inv.orgId)).blocked;
+}
+
 export const invoicesPublicRoutes = new Hono();
 
 // GET /:token — the customer view. One generic 401 for unknown/expired/draft
@@ -91,6 +103,7 @@ invoicesPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) =
   applyPublicLinkHeaders(c);
   const inv = await resolve(c.req.valid('param').token);
   if (!inv) return c.json(invalidLink, 401);
+  if (await orgLinkGone(inv)) return c.json(PUBLIC_LINK_ORG_UNAVAILABLE, 410);
 
   const data = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
     const [partner] = await db.select({
@@ -159,6 +172,7 @@ invoicesPublicRoutes.get('/:token/pdf', zValidator('param', tokenParam), async (
   applyPublicLinkHeaders(c);
   const inv = await resolve(c.req.valid('param').token);
   if (!inv) return c.json(invalidLink, 401);
+  if (await orgLinkGone(inv)) return c.json(PUBLIC_LINK_ORG_UNAVAILABLE, 410);
   if (inv.status === 'void') return c.json({ error: 'This invoice is no longer available' }, 409);
   if (await overPublicOpLimit('pdf', inv.id, 10)) return c.json({ error: 'Too many requests' }, 429);
 
@@ -201,16 +215,23 @@ invoicesPublicRoutes.post('/:token/pay', zValidator('param', tokenParam), async 
   }
   const inv = await resolve(c.req.valid('param').token);
   if (!inv) return c.json(invalidLink, 401);
+  if (await orgLinkGone(inv)) return c.json(PUBLIC_LINK_ORG_UNAVAILABLE, 410);
   if (await overPublicOpLimit('pay', inv.id, 10)) return c.json({ error: 'Too many requests' }, 429);
 
   const returnBase = `${portalBase()}/invoice/return`;
   try {
-    const link = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
+    // #1448 — NOT wrapped in withSystemDbAccessContext: createInvoicePayLink opens
+    // its own short system contexts around each DB step and runs
+    // checkout.sessions.create outside any transaction. An enclosing context here
+    // pinned a pooled connection idle-in-transaction across the Stripe
+    // round-trip (#3777 review F2). runOutsideDbContext is kept only so a
+    // stray ambient context can never be inherited.
+    const link = await runOutsideDbContext(() =>
       createInvoicePayLink(inv.id, { userId: null, partnerId: null, accessibleOrgIds: [inv.orgId] }, {
         successUrl: `${returnBase}?session_id={CHECKOUT_SESSION_ID}`,
         cancelUrl: `${returnBase}?canceled=1&session_id={CHECKOUT_SESSION_ID}`,
         idempotencySuffix: '_pub',
-      })));
+      }));
     return c.json({ data: { url: link.url } });
   } catch (err) {
     if (err instanceof InvoiceServiceError) {
@@ -253,6 +274,12 @@ invoicesPublicRoutes.post('/settle-return', zValidator('json', settleReturnSchem
 
     const [inv] = await db.select().from(invoices).where(eq(invoices.id, mapping.invoiceId)).limit(1);
     if (!inv) return null;
+
+    // Org-lifecycle gate, checked BEFORE settling: this handler has no token,
+    // so the invoice row is the only thing that names the tenant. The gate
+    // reuses THIS system transaction (resolveOrgLinkGate escalates only from a
+    // narrower ambient context), so no second connection is pinned across it.
+    if ((await resolveOrgLinkGate(inv.orgId)).blocked) return 'org_gone' as const;
 
     // Only an actual SUCCESS is "settled" — a failed/refunded mapping is also
     // not-pending, and reporting settled:true for those would paint a
@@ -297,6 +324,7 @@ invoicesPublicRoutes.post('/settle-return', zValidator('json', settleReturnSchem
     return { settled, publicUrl };
   }));
 
+  if (result === 'org_gone') return c.json(PUBLIC_LINK_ORG_UNAVAILABLE, 410);
   if (!result) return c.json({ error: 'Unknown payment session' }, 404);
   return c.json({ data: result });
 });

@@ -20,20 +20,26 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // every other test here observes console.warn, which is untouched.
 const capturedMessages: Array<{
   message: string;
-  extra?: Record<string, unknown>;
+  eventCode?: string;
   tags?: Record<string, string>;
 }> = [];
 vi.mock('../../services/sentry', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../services/sentry')>();
   return {
     ...actual,
+    // BREEZE-18: captureMessage takes an options object, not four positionals.
+    // `vi.mock`'s factory return is not checked against the real module's
+    // types, so an adapter left on the old shape does NOT fail tsc — it fails
+    // at assertion time, and only in the integration shard that owns this file.
     captureMessage: (
       message: string,
-      _level?: unknown,
-      extra?: Record<string, unknown>,
-      tags?: Record<string, string>,
+      options?: { eventCode?: string; tags?: Record<string, string> },
     ) => {
-      capturedMessages.push({ message, extra, tags });
+      capturedMessages.push({
+        message,
+        eventCode: options?.eventCode,
+        tags: options?.tags,
+      });
     },
   };
 });
@@ -149,11 +155,15 @@ describe('#1105 DB-context tripwires', () => {
       expect(heldWarns()).toHaveLength(1);
       expect(capturedMessages).toHaveLength(1);
 
-      const extra = capturedMessages[0]!.extra;
-      expect(typeof extra?.openedAt).toBe('string');
-      // The opener's own frame must be present. Before the fix this field did
-      // not exist and `stack` contained only the await trampoline.
-      expect(String(extra?.openedAt)).toContain('theCulpritThatHoldsTheConnection');
+      // BREEZE-18: this used to read `extra.openedAt`, a field that never left
+      // the process — captureMessage never attached it and scrubEvent deleted
+      // it. The opener attribution now rides the allowlisted `dbContextOpener`
+      // TAG, which actually reaches Sentry, and the precise file:line stays on
+      // the console line. Both are asserted, so neither can rot silently.
+      expect(capturedMessages[0]!.tags?.dbContextOpener)
+        .toContain('theCulpritThatHoldsTheConnection');
+      expect(String(heldWarns()[0]?.[0]))
+        .toContain('theCulpritThatHoldsTheConnection');
     });
 
     it('emits the context label as a Sentry TAG and in the message (BREEZE-A triage fix)', async () => {
@@ -176,6 +186,11 @@ describe('#1105 DB-context tripwires', () => {
       );
 
       expect(capturedMessages).toHaveLength(1);
+      // BREEZE-18: every captureMessage carries a required, registered event
+      // code, applied by captureMessage itself. Asserted against a real held
+      // context (not a unit double) because this is the path that produced the
+      // contentless events in the first place.
+      expect(capturedMessages[0]!.eventCode).toBe('db_context_held_too_long');
       // The TAG is the load-bearing part: extras are only visible inside a
       // single event, so an unfilterable bucket (BREEZE-A, ~7k events) stays
       // unfilterable if the label only lands in `extra`.
@@ -187,6 +202,26 @@ describe('#1105 DB-context tripwires', () => {
       // stay EXPLICIT-only so existing Sentry queries keep their meaning — the
       // derived opener goes in its own key, never widening this one.
       expect(capturedMessages[0]!.tags?.dbContextOpener).toEqual(expect.stringContaining('dbContextTripwire'));
+    });
+
+    it('withSystemDbAccessContext(fn, label) carries the label through to the tag and message (#4276)', async () => {
+      // The two-argument form is the new surface #4276 adds — the metric
+      // rollup workers pass e.g. 'metricRollups.raw.device_metrics' through it.
+      // The unit tests only assert the label string is handed to a MOCK; this
+      // proves the real plumbing (systemDbAccessContext -> withDbAccessContext
+      // -> formatHeldContextWarning) lands it in the allowlisted tag against a
+      // real held connection.
+      process.env.DB_CONTEXT_HELD_WARN_MS = '50';
+      process.env.DB_CONTEXT_HELD_CAPTURE_THROTTLE_MS = '0';
+      __resetHeldContextCaptureThrottleForTests();
+
+      await withSystemDbAccessContext(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 90));
+      }, 'metricRollups.raw.device_metrics');
+
+      expect(capturedMessages).toHaveLength(1);
+      expect(capturedMessages[0]!.tags?.dbContextLabel).toBe('metricRollups.raw.device_metrics');
+      expect(capturedMessages[0]!.message).toContain('[metricRollups.raw.device_metrics]');
     });
 
     it('derives a grouping label from the opener when the context is unlabelled (#3218)', async () => {
@@ -217,9 +252,11 @@ describe('#1105 DB-context tripwires', () => {
       expect(event.message).toContain('[');
       expect(event.message).toContain('anUnlabelledCallerThatHolds');
       // ...but the precise file:line must NOT, or every edit above the call site
-      // forks the Sentry issue. It belongs to the console line and the extra.
+      // forks the Sentry issue. It belongs to the console line alone.
       expect(event.message).not.toMatch(/\.ts:\d+/);
-      expect(String(event.extra?.openedAtFrame)).toMatch(/dbContextTripwire.*:\d+:\d+/);
+      expect(String(heldWarns()[0]?.[0])).toMatch(/dbContextTripwire.*:\d+:\d+/);
+      // The TAG must stay free of the file:line for the same grouping reason.
+      expect(event.tags?.dbContextOpener).not.toMatch(/:\d+/);
     });
 
     it('attributes a caller that uses a bare `return` instead of `await` (#3218)', async () => {

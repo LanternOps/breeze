@@ -309,6 +309,90 @@ describe('InvoicesPage', () => {
     await waitFor(() => expect(navigateTo).toHaveBeenCalledWith('/billing/invoices/inv-new'));
   });
 
+  // Multi-currency wave 4 (#3776): an org whose currency changed leaves its
+  // unbilled work stamped in the OLD currency. Assembly partitions those into
+  // blockedByCurrency; when NOTHING is assemblable the API answers 409
+  // ALL_BLOCKED_BY_CURRENCY and the dialog must offer "assemble in <old
+  // currency>" instead of silently closing.
+  describe('assemble blocked-by-currency recovery', () => {
+    function wireAssemble(handler: (opts?: RequestInit) => Response) {
+      fetchMock.mockImplementation(async (input: string, opts?: RequestInit) => {
+        if (input.startsWith('/orgs/organizations')) return json({ data: ORGS });
+        if (input.startsWith('/orgs/sites')) return json({ data: [] });
+        if (input.includes('/invoices/assemble') && opts?.method === 'POST') return handler(opts);
+        if (input.startsWith('/invoices')) return json({ data: INVOICES });
+        return json({}, false, 404);
+      });
+    }
+    async function openAndFill() {
+      render(<InvoicesPage />);
+      await waitFor(() => expect(screen.getByTestId('invoices-table')).toBeInTheDocument());
+      fireEvent.click(screen.getByTestId('invoices-assemble-open'));
+      await waitFor(() => expect(screen.getByTestId('invoices-assemble-dialog')).toBeInTheDocument());
+      fireEvent.change(screen.getByTestId('invoices-assemble-org'), { target: { value: 'org-1' } });
+      fireEvent.change(screen.getByTestId('invoices-assemble-from'), { target: { value: '2026-05-01' } });
+      fireEvent.change(screen.getByTestId('invoices-assemble-to'), { target: { value: '2026-05-31' } });
+    }
+    const assembleBodies = () =>
+      fetchMock.mock.calls
+        .filter(([url, init]) => String(url).includes('/invoices/assemble') && init?.method === 'POST')
+        .map(([, init]) => JSON.parse(String(init?.body)) as Record<string, unknown>);
+
+    it('sends no currencyCode by default (organization default) and the override when chosen', async () => {
+      wireAssemble(() => json({ data: { invoice: { id: 'inv-new' }, lines: [], blockedByCurrency: [] } }));
+      await openAndFill();
+      const select = screen.getByTestId('invoices-assemble-currency');
+      expect(select).toHaveValue('');
+      fireEvent.click(screen.getByTestId('invoices-assemble-submit'));
+      await waitFor(() => expect(assembleBodies()).toHaveLength(1));
+      expect(assembleBodies()[0]).not.toHaveProperty('currencyCode');
+      expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'warning' }));
+    });
+
+    it('on 409 ALL_BLOCKED_BY_CURRENCY keeps the dialog open and offers to assemble in the blocked currency', async () => {
+      let calls = 0;
+      wireAssemble(() => {
+        calls += 1;
+        if (calls === 1) {
+          return json({
+            error: 'All unbilled work is in EUR; this draft is in USD',
+            code: 'ALL_BLOCKED_BY_CURRENCY',
+            details: { blockedByCurrency: [{ currencyCode: 'EUR', count: 2, amount: '250.00' }] },
+          }, false, 409);
+        }
+        return json({ data: { invoice: { id: 'inv-eur' }, lines: [], blockedByCurrency: [] } });
+      });
+      await openAndFill();
+      fireEvent.click(screen.getByTestId('invoices-assemble-submit'));
+
+      const panel = await screen.findByTestId('invoices-assemble-blocked');
+      expect(panel).toHaveTextContent('EUR');
+      // The server's explanation was toasted by runAction; the dialog stays mounted.
+      expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+      expect(screen.getByTestId('invoices-assemble-dialog')).toBeInTheDocument();
+      expect(navigateTo).not.toHaveBeenCalled();
+
+      fireEvent.click(screen.getByTestId('invoices-assemble-in-EUR'));
+      await waitFor(() => expect(navigateTo).toHaveBeenCalledWith('/billing/invoices/inv-eur'));
+      const bodies = assembleBodies();
+      expect(bodies).toHaveLength(2);
+      expect(bodies[0]).not.toHaveProperty('currencyCode');
+      expect(bodies[1]).toMatchObject({ currencyCode: 'EUR', from: '2026-05-01', to: '2026-05-31' });
+    });
+
+    it('warns about partially blocked groups before navigating on success', async () => {
+      wireAssemble(() => json({
+        data: { invoice: { id: 'inv-new' }, lines: [], blockedByCurrency: [{ currencyCode: 'EUR', count: 3, amount: '90.00' }] },
+      }));
+      await openAndFill();
+      fireEvent.click(screen.getByTestId('invoices-assemble-submit'));
+      await waitFor(() => expect(navigateTo).toHaveBeenCalledWith('/billing/invoices/inv-new'));
+      expect(showToast).toHaveBeenCalledWith(expect.objectContaining({
+        type: 'warning', message: expect.stringContaining('EUR'),
+      }));
+    });
+  });
+
   it('renders the access-denied state (not the retryable error) on a 403', async () => {
     fetchMock.mockImplementation(async (input: string) => {
       if (input.startsWith('/orgs/organizations')) return json({ data: ORGS });

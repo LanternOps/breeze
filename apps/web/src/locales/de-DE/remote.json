@@ -246,6 +246,7 @@
       "copy": "Kopieren fehlgeschlagen",
       "delete": "Fehler beim Löschen",
       "download": "Download fehlgeschlagen",
+      "downloadTooLarge": "Zu groß für den Download ({{size}}). Der Dateibrowser überträgt Dateien bis {{max}}.",
       "loadDirectory": "Das Verzeichnis konnte nicht geladen werden",
       "move": "Fehler beim Verschieben",
       "readFile": "Datei konnte nicht gelesen werden",
@@ -442,7 +443,7 @@
     "title": "Titel"
   },
   "remoteTerminal": {
-    "connectedBang": "Verbundener Knall",
+    "connectedBang": "Verbunden!",
     "connectingTo": "Verbinden mit {{hostname}}...",
     "copySelection": "Auswahl kopieren",
     "disconnect": "Trennen",

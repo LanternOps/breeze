@@ -30,6 +30,9 @@ const { authRef, mockDb, hoisted } = vi.hoisted(() => ({
     applyDlp: vi.fn(),
     draftTicketFromEmail: vi.fn(),
     recordUsage: vi.fn(),
+    getAnthropicClientForPartner: vi.fn(),
+    resolveWireModel: vi.fn<(resolved: unknown, model: string) => { model: string; catalogPricing?: unknown }>((_resolved: unknown, model: string) => ({ model })),
+    anthropicClient: { messages: { create: vi.fn() } },
   },
 }));
 
@@ -150,8 +153,20 @@ vi.mock('../../services/aiAgent', () => ({
   resolveDefaultModel: () => 'claude-x',
 }));
 
+vi.mock('../../services/llm/llmConfigResolver', () => ({
+  LlmUnavailableError: class LlmUnavailableError extends Error {
+    constructor() {
+      super('AI is unavailable for this partner.');
+      this.name = 'LlmUnavailableError';
+    }
+  },
+  getAnthropicClientForPartner: hoisted.getAnthropicClientForPartner,
+  resolveWireModel: hoisted.resolveWireModel,
+}));
+
 import { officeAddinTicketRoutes } from './tickets';
 import { EmailDraftFailedError } from '../../services/officeAddin/aiEmailDraft';
+import { LlmUnavailableError } from '../../services/llm/llmConfigResolver';
 
 // --- db chain mock -----------------------------------------------------------
 // `select(...).from(tickets).where(...).limit(1)` drains a queue of canned rows;
@@ -270,6 +285,17 @@ beforeEach(() => {
   hoisted.insertEmailAuthoredComment.mockResolvedValue({ commentId: 'comment-1' });
   hoisted.addTicketComment.mockResolvedValue({ comment: { id: 'comment-1' }, firstResponseStamped: false });
   process.env.ANTHROPIC_API_KEY = 'test-key';
+  hoisted.getAnthropicClientForPartner.mockImplementation(async () => {
+    if (!process.env.ANTHROPIC_API_KEY) throw new LlmUnavailableError();
+    return {
+      client: hoisted.anthropicClient,
+      resolved: {
+        source: 'platform',
+        apiKey: process.env.ANTHROPIC_API_KEY,
+        model: 'claude-x',
+      },
+    };
+  });
   hoisted.getOrgPolicy.mockResolvedValue({ dlpConfig: {} });
   hoisted.applyDlp.mockResolvedValue({ action: 'allow', text: 'redacted body', redactions: [] });
   hoisted.draftTicketFromEmail.mockResolvedValue({
@@ -279,6 +305,7 @@ beforeEach(() => {
     inputTokens: 100,
     outputTokens: 50,
   });
+  hoisted.recordUsage.mockResolvedValue(undefined);
 });
 
 describe('POST /tickets/from-email', () => {
@@ -742,10 +769,75 @@ describe('POST /tickets/draft', () => {
       outputTokens: 50,
     });
     expect(hoisted.draftTicketFromEmail).toHaveBeenCalledWith(
-      expect.objectContaining({ subject: draftBody.subject, bodyText: 'redacted body', model: 'claude-x' })
+      expect.objectContaining({
+        subject: draftBody.subject,
+        bodyText: 'redacted body',
+        model: 'claude-x',
+        partnerId: PARTNER_ID,
+        client: hoisted.anthropicClient,
+      })
     );
+    expect(hoisted.getAnthropicClientForPartner).toHaveBeenCalledTimes(1);
     // Usage accounting: sessionless (null session id), org-scoped, real token counts.
-    expect(hoisted.recordUsage).toHaveBeenCalledWith(null, ORG_A, 'claude-x', 100, 50, false);
+    expect(hoisted.recordUsage).toHaveBeenCalledWith(
+      null,
+      ORG_A,
+      'claude-x',
+      100,
+      50,
+      false,
+      'platform',
+      undefined,
+    );
+  });
+
+  it('sends the WIRE model to the drafter and meters catalog traffic at revision rates', async () => {
+    const CATALOG_PRICING = {
+      catalogEntryId: 'entry-1',
+      revisionId: 'rev-1',
+      inputCentsPerM: 300,
+      outputCentsPerM: 1500,
+      cacheReadCentsPerM: 30,
+      cacheWriteCentsPerM: 375,
+    };
+    // A catalog endpoint speaks its own model ids; the platform-logical id
+    // 404s at the provider and the SDK's list pricing must be ignored.
+    hoisted.resolveWireModel.mockReturnValueOnce({
+      model: 'anthropic/claude-x',
+      catalogPricing: CATALOG_PRICING,
+    });
+
+    const res = await postDraft(draftBody);
+
+    expect(res.status).toBe(200);
+    expect(hoisted.resolveWireModel).toHaveBeenCalledWith(expect.anything(), 'claude-x');
+    expect(hoisted.draftTicketFromEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ model: 'anthropic/claude-x' }),
+    );
+    expect(hoisted.recordUsage).toHaveBeenCalledWith(
+      null, ORG_A, 'claude-x', 100, 50, false, 'platform', CATALOG_PRICING,
+    );
+  });
+
+  /**
+   * The SECOND fail-closed gate on this route (#3922 W3 review round 2). The
+   * client resolving fine says nothing about the MODEL: a pinned revision that
+   * dropped (or never verified) the partner's default model makes
+   * `resolveWireModel` throw, and without this branch the request would 500 —
+   * or, worse in an earlier shape, reach the provider with an untranslated id.
+   */
+  it('503s when the pinned revision has no verified mapping for the model', async () => {
+    hoisted.resolveWireModel.mockImplementationOnce(() => {
+      throw new LlmUnavailableError();
+    });
+
+    const res = await postDraft(draftBody);
+
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'ai_unavailable' });
+    // Fail CLOSED: nothing is sent to the provider and nothing is metered.
+    expect(hoisted.draftTicketFromEmail).not.toHaveBeenCalled();
+    expect(hoisted.recordUsage).not.toHaveBeenCalled();
   });
 
   it('403s when the partner has no AI-for-Office entitlement, before the key/DLP/model', async () => {
@@ -774,7 +866,7 @@ describe('POST /tickets/draft', () => {
     expect(hoisted.draftTicketFromEmail).not.toHaveBeenCalled();
   });
 
-  it('503s when ANTHROPIC_API_KEY is not configured, without calling DLP or the model', async () => {
+  it('503s when the platform config has no API key, without calling DLP or the model', async () => {
     delete process.env.ANTHROPIC_API_KEY;
     const res = await postDraft(draftBody);
     expect(res.status).toBe(503);
@@ -782,6 +874,59 @@ describe('POST /tickets/draft', () => {
     expect(body).toEqual({ error: 'ai_unavailable' });
     expect(hoisted.applyDlp).not.toHaveBeenCalled();
     expect(hoisted.draftTicketFromEmail).not.toHaveBeenCalled();
+  });
+
+  it('proceeds with a partner BYOK config when no platform API key exists', async () => {
+    delete process.env.ANTHROPIC_API_KEY;
+    hoisted.getAnthropicClientForPartner.mockResolvedValueOnce({
+      client: hoisted.anthropicClient,
+      resolved: {
+        source: 'partner',
+        partnerId: PARTNER_ID,
+        apiKey: 'partner-key',
+        model: 'claude-partner-model',
+        configId: 'config-1',
+        configVersion: 1,
+      },
+    });
+
+    const res = await postDraft(draftBody);
+
+    expect(res.status).toBe(200);
+    expect(hoisted.draftTicketFromEmail).toHaveBeenCalledWith(expect.objectContaining({
+      partnerId: PARTNER_ID,
+      model: 'claude-partner-model',
+      client: hoisted.anthropicClient,
+    }));
+    expect(hoisted.getAnthropicClientForPartner).toHaveBeenCalledTimes(1);
+  });
+
+  it('503s before DLP when the partner LLM config is unavailable', async () => {
+    hoisted.getAnthropicClientForPartner.mockRejectedValueOnce(new LlmUnavailableError());
+
+    const res = await postDraft(draftBody);
+
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'ai_unavailable' });
+    expect(hoisted.applyDlp).not.toHaveBeenCalled();
+    expect(hoisted.draftTicketFromEmail).not.toHaveBeenCalled();
+  });
+
+  it('keeps the platform-key draft path unchanged when the platform key is configured', async () => {
+    const res = await postDraft(draftBody);
+
+    expect(res.status).toBe(200);
+    expect(hoisted.getAnthropicClientForPartner).toHaveBeenCalledTimes(1);
+    expect(hoisted.getAnthropicClientForPartner).toHaveBeenCalledWith(PARTNER_ID, {
+      surface: 'one_shot_email_draft',
+      orgId: ORG_A,
+    });
+    expect(hoisted.draftTicketFromEmail).toHaveBeenCalledWith(expect.objectContaining({
+      partnerId: PARTNER_ID,
+      orgId: ORG_A,
+      model: 'claude-x',
+      client: hoisted.anthropicClient,
+    }));
   });
 
   it('422s when DLP blocks the body, and never calls the model', async () => {
@@ -813,7 +958,50 @@ describe('POST /tickets/draft', () => {
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const res = await postDraft(draftBody);
     expect(res.status).toBe(503);
-    expect(hoisted.recordUsage).toHaveBeenCalledWith(null, ORG_A, 'claude-x', 180, 90, false);
+    expect(hoisted.recordUsage).toHaveBeenCalledWith(
+      null,
+      ORG_A,
+      'claude-x',
+      180,
+      90,
+      false,
+      'platform',
+      undefined,
+    );
+    errSpy.mockRestore();
+  });
+
+  it('meters failed BYOK draft spend against the exact client source', async () => {
+    hoisted.getAnthropicClientForPartner.mockResolvedValueOnce({
+      client: hoisted.anthropicClient,
+      resolved: {
+        source: 'partner',
+        partnerId: PARTNER_ID,
+        apiKey: 'partner-key',
+        model: 'claude-partner-model',
+        configId: 'config-1',
+        configVersion: 1,
+      },
+    });
+    hoisted.draftTicketFromEmail.mockRejectedValue(
+      new EmailDraftFailedError('Failed to draft ticket from email: attempt 1: nope', 18, 9),
+    );
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const res = await postDraft(draftBody);
+
+    expect(res.status).toBe(503);
+    expect(hoisted.getAnthropicClientForPartner).toHaveBeenCalledTimes(1);
+    expect(hoisted.recordUsage).toHaveBeenCalledWith(
+      null,
+      ORG_A,
+      'claude-partner-model',
+      18,
+      9,
+      false,
+      'partner_key',
+      undefined,
+    );
     errSpy.mockRestore();
   });
 

@@ -17,7 +17,8 @@ import {
   CheckCircle,
   XCircle,
   AlertTriangle,
-  MoreHorizontal} from 'lucide-react';
+  MoreHorizontal,
+  Bot} from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 export type TriggerType = 'schedule' | 'event' | 'webhook' | 'manual';
@@ -52,6 +53,10 @@ export type Automation = {
   recentRuns?: AutomationRun[];
   createdAt: string;
   updatedAt: string;
+  // Non-null when this automation is seeded and owned by an AI agent (#3824).
+  // Managed rows are read-only here: the API 409s on edit, delete, toggle and
+  // manual trigger, so the UI must not offer any of the four.
+  managedByAgentId?: string | null;
 };
 
 type AutomationListProps = {
@@ -234,6 +239,7 @@ export default function AutomationList({
                 const TriggerIcon = triggerConfig[automation.triggerType].icon;
                 const lastStatus = (automation.lastRunStatus ?? 'idle') as StatusKey;
                 const StatusIcon = statusConfig[lastStatus].icon;
+                const isManaged = typeof automation.managedByAgentId === 'string';
 
                 return (
                   <tr key={automation.id} className="transition hover:bg-muted/40">
@@ -249,6 +255,16 @@ export default function AutomationList({
                             >
                               <Layers className="h-3 w-3" />
                               {t('automationList.allOrgs')}
+                            </span>
+                          )}
+                          {isManaged && (
+                            <span
+                              className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-200"
+                              title={t('automationList.managedByAgentHint')}
+                              data-testid="automation-managed-by-agent-badge"
+                            >
+                              <Bot className="h-3 w-3" />
+                              {t('automationList.managedByAgent')}
                             </span>
                           )}
                         </div>
@@ -298,11 +314,16 @@ export default function AutomationList({
                       )}
                     </td>
                     <td className="px-4 py-3">
-                      <label className="relative inline-flex cursor-pointer items-center">
+                      <label
+                        className={cn('relative inline-flex items-center', isManaged ? 'cursor-not-allowed opacity-50' : 'cursor-pointer')}
+                        title={isManaged ? t('automationList.managedByAgentHint') : undefined}
+                      >
                         <input
                           type="checkbox"
                           checked={automation.enabled}
                           onChange={e => onToggle?.(automation, e.target.checked)}
+                          disabled={isManaged}
+                          data-testid={`automation-toggle-${automation.id}`}
                           className="peer sr-only"
                         />
                         <div className="h-6 w-11 rounded-full bg-muted peer-checked:bg-primary peer-focus:ring-2 peer-focus:ring-ring after:absolute after:u-left-px-2 after:u-top-px-2 after:h-5 after:w-5 after:rounded-full after:bg-white after:transition-all peer-checked:after:translate-x-full" />
@@ -313,17 +334,20 @@ export default function AutomationList({
                         <button
                           type="button"
                           onClick={() => onRun?.(automation)}
-                          disabled={!automation.enabled}
+                          disabled={!automation.enabled || isManaged}
                           className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed"
-                          title={t('automationList.actions.runNow')}
+                          title={isManaged ? t('automationList.managedByAgentHint') : t('automationList.actions.runNow')}
+                          data-testid={`automation-run-${automation.id}`}
                         >
                           <Play className="h-4 w-4" />
                         </button>
                         <button
                           type="button"
                           onClick={() => onEdit?.(automation)}
-                          className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted"
-                          title={t('common:actions.edit')}
+                          disabled={isManaged}
+                          className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed"
+                          title={isManaged ? t('automationList.managedByAgentHint') : t('common:actions.edit')}
+                          data-testid={`automation-edit-${automation.id}`}
                         >
                           <Pencil className="h-4 w-4" />
                         </button>
@@ -332,6 +356,7 @@ export default function AutomationList({
                             type="button"
                             onClick={() => setMenuOpenId(menuOpenId === automation.id ? null : automation.id)}
                             className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted"
+                            data-testid={`automation-menu-${automation.id}`}
                           >
                             <MoreHorizontal className="h-4 w-4" />
                           </button>
@@ -350,11 +375,14 @@ export default function AutomationList({
                               </button>
                               <button
                                 type="button"
+                                disabled={isManaged}
+                                title={isManaged ? t('automationList.managedByAgentHint') : undefined}
+                                data-testid={`automation-delete-${automation.id}`}
                                 onClick={() => {
                                   onDelete?.(automation);
                                   setMenuOpenId(null);
                                 }}
-                                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-destructive hover:bg-muted"
+                                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-destructive hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed"
                               >
                                 <Trash2 className="h-4 w-4" />
                                 {t('common:actions.delete')}

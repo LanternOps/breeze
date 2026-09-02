@@ -6,12 +6,14 @@ import {
   ChevronDown,
   ChevronRight,
   AlertTriangle,
+  FlaskConical,
 } from "lucide-react";
 import type { FeatureTabProps } from "./types";
 import { FEATURE_META } from "./types";
 import { useFeatureLink } from "./useFeatureLink";
 import { handleToggleKeyDown } from "./disclosureKeyboard";
 import FeatureTabShell from "./FeatureTabShell";
+import AlertRuleTestModal from "./AlertRuleTestModal";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
 // The exact metric-name domain the API threshold evaluator resolves
@@ -51,7 +53,9 @@ type AlertSeverity = "critical" | "high" | "medium" | "low" | "info";
 // REJECTS them on save, so the rule carrying one cannot be saved at all until
 // the offending condition is removed. That is why they get an amber banner
 // rather than being quietly round-tripped.
-type Condition = {
+// Exported for AlertRuleTestModal, which forwards a draft's conditions to the
+// test endpoint. Type-only, so the import back into the child erases entirely.
+export type Condition = {
   type: string;
   metric?: string;
   operator?: string;
@@ -462,6 +466,11 @@ export default function AlertRuleTab({
     loadItems(effectiveLink),
   );
   const [expandedIndex, setExpandedIndex] = useState<number | null>(null);
+  // Index of the rule whose Test modal is open, or null. The modal reads the
+  // LIVE draft out of `items`, so an edit made before opening it is what gets
+  // evaluated — which is the whole point of testing here rather than against a
+  // saved row (#3988).
+  const [testingIndex, setTestingIndex] = useState<number | null>(null);
   const nameInputRef = useRef<HTMLInputElement>(null);
   // Stable per-instance prefix for the expanded-panel ids each card header
   // points at via aria-controls.
@@ -550,6 +559,12 @@ export default function AlertRuleTab({
     if (expandedIndex === index) setExpandedIndex(null);
     else if (expandedIndex !== null && expandedIndex > index)
       setExpandedIndex(expandedIndex - 1);
+    // A verdict is attributed to a specific rule. Deleting a rule out from under
+    // an open Test modal would leave that verdict pointing at whichever rule
+    // slid into the index — close it rather than re-aim it.
+    if (testingIndex === index) setTestingIndex(null);
+    else if (testingIndex !== null && testingIndex > index)
+      setTestingIndex(testingIndex - 1);
   };
   const handleSave = async () => {
     clearError();
@@ -1245,12 +1260,50 @@ export default function AlertRuleTab({
                       </label>
                     </div>
                   </div>
+
+                  {/* Test against a real device. Disabled while the rule holds a
+                      condition the write schema rejects: the server would refuse
+                      the test body for the same reason it refuses the save, and
+                      the amber banner above already says what to fix. */}
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-t pt-3">
+                    <p className="text-xs text-muted-foreground">
+                      {i18n.t(
+                        "policies:configurationPolicies.featureTabs.alertRuleTab.testRuleHint",
+                      )}
+                    </p>
+                    <button
+                      type="button"
+                      data-testid={`alert-rule-test-${index}`}
+                      onClick={() => setTestingIndex(index)}
+                      disabled={hasUnsupported}
+                      className="inline-flex items-center gap-1 rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      <FlaskConical className="h-4 w-4" />
+                      {i18n.t(
+                        "policies:configurationPolicies.featureTabs.alertRuleTab.testRule",
+                      )}
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
           );
         })}
       </div>
+
+      {testingIndex !== null && items[testingIndex] && (
+        <AlertRuleTestModal
+          policyId={policyId}
+          ruleName={
+            items[testingIndex].name
+            || i18n.t(
+              "policies:configurationPolicies.featureTabs.alertRuleTab.untitledRule",
+            )
+          }
+          conditions={items[testingIndex].conditions}
+          onClose={() => setTestingIndex(null)}
+        />
+      )}
     </FeatureTabShell>
   );
 }

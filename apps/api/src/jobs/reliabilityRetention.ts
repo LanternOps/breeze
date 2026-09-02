@@ -9,8 +9,12 @@ import { Job, Queue, Worker } from 'bullmq';
 import { sql } from 'drizzle-orm';
 
 import * as dbModule from '../db';
+import { extractRowCount } from '../db/rowCount';
 import { getBullMQConnection } from '../services/redis';
+import { recordRetentionRun } from '../services/retentionMetrics';
 import { captureException } from '../services/sentry';
+import { jobSchedule } from './scheduleRegistry';
+import { warnOnRetentionBacklog } from './retentionBatch';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -35,13 +39,6 @@ type RetentionJobData = {
 
 let retentionQueue: Queue<RetentionJobData> | null = null;
 let retentionWorker: Worker<RetentionJobData> | null = null;
-
-export function extractReliabilityRetentionRowCount(result: unknown): number {
-  const raw = result as { rowCount?: number; count?: number };
-  if (typeof raw.rowCount === 'number') return raw.rowCount;
-  if (typeof raw.count === 'number') return raw.count;
-  return Array.isArray(result) ? result.length : 0;
-}
 
 export async function pruneReliabilityHistory(options: {
   retentionDays: number;
@@ -68,7 +65,7 @@ export async function pruneReliabilityHistory(options: {
         LIMIT ${batchSize}
       )
     `);
-    lastBatchDeleted = extractReliabilityRetentionRowCount(result);
+    lastBatchDeleted = extractRowCount(result);
     deleted += lastBatchDeleted;
     batches += 1;
     if (lastBatchDeleted < batchSize) break;
@@ -108,6 +105,12 @@ export function createReliabilityRetentionWorker(): Worker<RetentionJobData> {
         console.log(
           `[ReliabilityRetention] Pruned ${result.deleted} reliability history rows older than ${result.retentionDays} days (batches=${result.batches}, hasMore=${result.hasMore}) in ${result.durationMs}ms`
         );
+        // `hasMore=true` buried in an info line is not an alert (#4343).
+        warnOnRetentionBacklog('[ReliabilityRetention]', 'device_reliability_history', result);
+        recordRetentionRun('reliability_retention', {
+          rowsDeleted: result.deleted,
+          incomplete: result.hasMore,
+        });
         return result;
       });
     },
@@ -141,7 +144,10 @@ export async function initializeReliabilityRetention(): Promise<void> {
       { retentionDays: DEFAULT_RETENTION_DAYS, batchSize: BATCH_SIZE, maxBatches: MAX_BATCHES },
       {
         jobId: REPEAT_JOB_ID,
-        repeat: { every: 24 * 60 * 60 * 1000 },
+        // Daily at a registry-allocated slot. NOT `every: 24h` — BullMQ anchors
+        // `every` to the Unix epoch, so every 24h job fires at 00:00:00.000 UTC
+        // together (see jobs/scheduleRegistry.ts).
+        repeat: { pattern: jobSchedule('reliability-history-retention') },
         removeOnComplete: { count: 5 },
         removeOnFail: { count: 10 }
       }

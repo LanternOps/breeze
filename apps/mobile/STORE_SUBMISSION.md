@@ -6,7 +6,7 @@
 - Android application ID: `com.breeze.rmm`
 - Store version: `1.0.0`
 - First local build numbers: iOS `1`; Android `1`
-- The release path uses the local Xcode project; no Expo/EAS account is required.
+- The release path uses the local Xcode project; no Expo/EAS account is required. A committed `eas.json` exists so build-time config has a named home, but no EAS build has ever been run for this app.
 - Apple Team ID: `D8W6N2JYMA` (LanternOps LLC)
 
 ## Push notifications — server side is already live
@@ -74,11 +74,81 @@ Likely declarations to validate:
 
 No IDFA or cross-app tracking is implemented, so App Tracking Transparency is not expected.
 
-## Sentry symbolication
+## Sentry — telemetry (the DSN)
 
-Project: **olivetech-ks / breeze-mobile**. The DSN lives in `.env`
-(`EXPO_PUBLIC_SENTRY_DSN`) and is a write-only client key, so it is fine that it
-ships inside the IPA.
+⚠️ **History: the `breeze-mobile` Sentry project recorded zero events in 90
+days.** Nothing was broken; every shipped build was simply archived without
+`EXPO_PUBLIC_SENTRY_DSN`, and `Sentry.init({ enabled: false })` neither throws
+nor logs. A guard existed (`scripts/preflight.mjs`) and was correct — it was
+just never *run*, because the release path is a human pressing **Product →
+Archive** in Xcode and preflight is a manual `pnpm preflight` step. Nothing in
+the repo invoked it: no `eas.json`, no mobile build workflow, no Fastlane, no
+archive script.
+
+**A release build with no DSN now fails the build.** `app.config.js` calls
+`resolveSentryDsn()` from `src/config/sentryDsn.js`, and that throws when it
+sees a release build with a missing or placeholder DSN. That location is the
+point: `expo-constants` installs an Xcode script build phase
+(`:before_compile`, `always_out_of_date`) that runs `expo config` — i.e.
+evaluates `app.config.js` — on **every** build, ⌘B and Archive alike. `expo
+prebuild` and every Metro bundle evaluate it too. There is no path to an IPA
+that skips it.
+
+What counts as a release build: Xcode `CONFIGURATION` matching `Release`, any
+EAS profile other than `development`, or `NODE_ENV=production`. Plain local dev,
+`expo start`, a Debug build, a bare `expo prebuild`, and CI (`test-mobile` runs
+vitest + `tsc` with no DSN anywhere) are all untouched.
+
+⚠️ **`expo start --no-dev` does require a DSN.** Expo sets `NODE_ENV=production`
+for it and it genuinely produces a `__DEV__ === false` bundle, which is the
+whole point of the gesture — so the guard treats it as a release. Use
+`BREEZE_MOBILE_DEV=1` for a throwaway one.
+
+Two escape hatches, both taking the **literal string `1`** and nothing else (the
+same spelling `scripts/preflight.mjs` uses; a near-miss like `=true` fails safe
+by leaving the guard on). Both print a warning to stderr when they actually
+suppress something:
+
+| Flag | Effect |
+|---|---|
+| `BREEZE_MOBILE_ALLOW_NO_SENTRY=1` | Build a release deliberately without telemetry. Succeeds, warns. |
+| `BREEZE_MOBILE_DEV=1` | **Disables the release check entirely** — a genuine Archive is treated as a dev build, so an IPA with no crash reporting can be produced. Warns whenever it suppresses a real release signal, but nothing stops that IPA being uploaded. **Never leave it in `apps/mobile/.env`**, which the Xcode build phase loads on every build. |
+
+Where the DSN comes from:
+
+| Build path | Source of truth | Notes |
+|---|---|---|
+| Local Xcode Archive (**current release path**) | `apps/mobile/.env` — gitignored, see `.env.example` | Must be in the **file**. Xcode build phases do not inherit your shell, so `export` in `.zshrc` + Archive does **not** work. |
+| EAS Build (not currently used) | the EAS environment of the same name as the profile, referenced by `eas.json` | `eas env:create --environment <profile> --name EXPO_PUBLIC_SENTRY_DSN --value <dsn> --visibility sensitive` |
+
+Every profile other than `development` is treated as a release, so
+`eas build --profile preview` needs the DSN in the **`preview`** environment —
+configuring `production` will not cover it. The failure message names the
+environment matching the profile being built.
+
+`eas.json` is committed and declares `development` / `preview` / `production`
+profiles. It deliberately does **not** carry a DSN value: `env` in `eas.json`
+outranks the EAS-stored environment variable, so a placeholder there would
+shadow the real value on every build. Non-secret public config
+(`EXPO_PUBLIC_API_URL`, `EXPO_PUBLIC_POSTHOG_HOST`) is inline; the DSN is
+referenced by environment name only. Note that EAS is not the release path
+today — `eas.json` exists so the DSN has a committed, named home if it becomes
+one.
+
+The DSN is a write-only client key and ships inside the IPA either way, so it is
+not a secret — but it is a live ingest endpoint, and per the repo's own rule
+real environment values stay out of the public tree. Get it from
+Sentry → **olivetech-ks / breeze-mobile** → Settings → Client Keys (DSN).
+Placeholder-shaped values (`REPLACE_ME`, `changeme`, `example.com`, `TODO`, …)
+are rejected, so a half-configured build fails loudly rather than posting events
+to a host that does not exist.
+
+At runtime the app reads the DSN from `EXPO_PUBLIC_SENTRY_DSN` **or**
+`expoConfig.extra.sentryDsn`, which `app.config.js` writes. The two are produced
+by different build phases (Metro transform vs. the expo-constants phase), so the
+fallback guarantees the value the guard verified is the value that ships.
+
+## Sentry — symbolication (source maps and dSYMs)
 
 A DSN alone only makes events *arrive*. Making them *readable* needs two uploads,
 both wired by the `@sentry/react-native/expo` plugin now that `app.json` passes
@@ -89,6 +159,13 @@ both wired by the `@sentry/react-native/expo` plugin now that `app.json` passes
 | JS source maps | "Bundle React Native code and images" (wrapped by `sentry-xcode.sh`) | every JS frame is a minified bundle offset |
 | Native dSYMs | "Upload Debug Symbols to Sentry" | native crashes have no symbols |
 
+`metro.config.js` uses `getSentryExpoConfig` (not `getDefaultConfig`), which
+adds Sentry's asset-serialization plugin so the bundle and its source map carry
+matching **Debug IDs**. Without them an uploaded map cannot be paired with the
+bundle a crash came from, so frames stay minified even though the upload
+reported success. This is the same class of failure as shipping without a DSN:
+it looks like it worked.
+
 Both need `SENTRY_AUTH_TOKEN`, which is a **genuine secret** (unlike the DSN).
 Put it in `.env.sentry-build-plugin` — gitignored, and the officially-supported
 location because **Xcode build phases do not inherit your shell environment**, so
@@ -98,10 +175,16 @@ exporting it in `.zshrc` and pressing Archive in Xcode.app does not work. Copy
 
 ⚠️ **A missing or invalid token fails the Archive** — `sentry-xcode.sh` emits
 `error: sentry-cli` and returns non-zero. That is the correct default (a silent
-skip means unreadable traces nobody notices until the first crash), and
-`pnpm preflight` now catches it before you start an archive. To deliberately
-build without symbolication, set `SENTRY_ALLOW_FAILURE=true` (try, warn on
-failure) or `SENTRY_DISABLE_AUTO_UPLOAD=true` (skip entirely).
+skip means unreadable traces nobody notices until the first crash). To
+deliberately build without symbolication, set `SENTRY_ALLOW_FAILURE=true` (try,
+warn on failure) or `SENTRY_DISABLE_AUTO_UPLOAD=true` (skip entirely).
+
+Note the asymmetry that produced the 90-day telemetry gap: the auth token
+self-enforced, because a missing one fails a build phase. The **DSN** — the
+variable that actually decides whether events exist at all — had no build-phase
+enforcement, only the optional `pnpm preflight`. The check that existed was
+built for the failure mode that was already loud. That is what the
+`app.config.js` guard above fixes.
 
 `ios/sentry.properties` and `sentry.options.json` are generated during prebuild
 and are both gitignored — do not hand-edit them, change `app.json` instead.
@@ -182,8 +265,8 @@ Four constraints worth recording:
 ## Build, screenshots, and submission sequence
 
 1. Regenerate the native project when app configuration changes: `npx expo prebuild --platform ios`. This carries the microphone and speech-recognition usage descriptions in `app.json` into the Xcode `Info.plist`, embeds the Geist fonts, and generates the splash screen and Associated Domains entitlement.
-2. Configure `EXPO_PUBLIC_SENTRY_DSN`, `EXPO_PUBLIC_POSTHOG_KEY`, and `EXPO_PUBLIC_POSTHOG_HOST` in the local Xcode release build environment only when their corresponding services are approved for release. See `.env.example` for what each one does when left unset.
-3. Run `npx pnpm@10.33.4 --filter=breeze-mobile preflight`. It fails the build when `EXPO_PUBLIC_SENTRY_DSN` is missing, `EXPO_PUBLIC_API_URL` is unreachable from a device, or `SENTRY_AUTH_TOKEN` is absent. The first two are silent in the running app — a release build without a DSN reports nothing at all, which is how a TestFlight build shipped with zero telemetry. The third is not silent but fails deep inside an Xcode build phase, so catching it here saves an archive cycle.
+2. Put `EXPO_PUBLIC_SENTRY_DSN`, `EXPO_PUBLIC_API_URL`, and (when approved) `EXPO_PUBLIC_POSTHOG_KEY` / `EXPO_PUBLIC_POSTHOG_HOST` in **`apps/mobile/.env`** — the file, not your shell, because Xcode build phases do not inherit it. See `.env.example` for what each one does when left unset. Neither `EXPO_PUBLIC_SENTRY_DSN` nor `EXPO_PUBLIC_API_URL` is optional for a release build: the Archive fails without either (see "Sentry — telemetry" above and `src/config/apiUrl.js`). The API URL check also rejects `localhost`, a private-network address, and plaintext `http` to a public host. A genuinely LAN-hosted self-hosted build sets `BREEZE_MOBILE_ALLOW_PRIVATE_API_URL=1`, which accepts a private host (plaintext included) and warns on every build that it did; loopback, placeholders, and plaintext to a *public* host still fail.
+3. Run `npx pnpm@10.33.4 --filter=breeze-mobile preflight`. **This is an optional convenience, not a gate** — nothing in the repo invokes it, and Xcode will never run it for you. It is worth running anyway for the one thing it still catches that the build-time guards do not: a missing `SENTRY_AUTH_TOKEN` (not silent, but it fails ten minutes into an archive instead of instantly here). Its DSN and API-URL checks are now echoes of the `app.config.js` guards, which cannot be skipped — the API-URL one literally calls the same rule function, so the two can never disagree.
 4. Run `npx pnpm@10.33.4 --filter=breeze-mobile typecheck` and `npx pnpm@10.33.4 --filter=breeze-mobile test`.
 5. In Xcode, run the `BreezeRMM` scheme on a current iPhone and iPad simulator. Capture the reviewed production UI in the simulator, not the development error or debug overlay.
 6. Save iPhone screenshots at the App Store Connect-required 6.5-inch size (1242 × 2688 or 1284 × 2778) and the iPad screenshots for the supported iPad display-size family. In Simulator, use **File → Save Screen** for each approved screen.

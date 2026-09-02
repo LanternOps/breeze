@@ -9,8 +9,11 @@ import { Job, Queue, Worker } from 'bullmq';
 import { sql } from 'drizzle-orm';
 
 import * as dbModule from '../db';
+import { extractRowCount } from '../db/rowCount';
 import { getBullMQConnection } from '../services/redis';
+import { recordRetentionRun } from '../services/retentionMetrics';
 import { captureException } from '../services/sentry';
+import { jobSchedule } from './scheduleRegistry';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -25,21 +28,6 @@ const BATCH_SIZE = 10000;
 const DEFAULT_RETENTION_DAYS = Math.min(14, Math.max(1, parseInt(process.env.PROCESS_SAMPLE_RETENTION_DAYS || '7', 10)));
 
 type RetentionJobData = { retentionDays?: number };
-
-/**
- * postgres-js / drizzle row-count extraction. The result may expose `.count`
- * (postgres-js DELETE), `.rowCount`, or — when the driver returns rows as an
- * array — fall back to `.length`. Mirrors `auditRetention.extractRowCount`
- * (and the inline `.count ?? .length` check in `ipHistoryRetention`) so we never
- * report 0 when rows were actually deleted — which would prematurely end the
- * batched-delete loop and silently leave old rows.
- */
-export function extractRowCount(result: unknown): number {
-  const raw = result as { rowCount?: number; count?: number };
-  if (typeof raw.rowCount === 'number') return raw.rowCount;
-  if (typeof raw.count === 'number') return raw.count;
-  return Array.isArray(result) ? (result as unknown[]).length : 0;
-}
 
 let retentionQueue: Queue<RetentionJobData> | null = null;
 let retentionWorker: Worker<RetentionJobData> | null = null;
@@ -78,6 +66,7 @@ export function createProcessSampleRetentionWorker(): Worker<RetentionJobData> {
 
         const durationMs = Date.now() - startedAt;
         console.log(`[ProcessSampleRetention] Pruned ${deleted} process samples older than ${retentionDays} days in ${durationMs}ms`);
+        recordRetentionRun('process_sample_retention', { rowsDeleted: deleted });
         return { retentionDays, deleted, durationMs };
       });
     },
@@ -106,7 +95,14 @@ export async function initializeProcessSampleRetention(): Promise<void> {
     await queue.add(
       'cleanup',
       { retentionDays: DEFAULT_RETENTION_DAYS },
-      { repeat: { every: 24 * 60 * 60 * 1000 }, removeOnComplete: { count: 5 }, removeOnFail: { count: 10 } }
+      // Daily at a registry-allocated slot. NOT `every: 24h` — BullMQ anchors
+      // `every` to the Unix epoch, so every 24h job fires at 00:00:00.000 UTC
+      // together (see jobs/scheduleRegistry.ts).
+      {
+        repeat: { pattern: jobSchedule('process-sample-retention') },
+        removeOnComplete: { count: 5 },
+        removeOnFail: { count: 10 }
+      }
     );
 
     console.log('[ProcessSampleRetention] Retention worker initialized');

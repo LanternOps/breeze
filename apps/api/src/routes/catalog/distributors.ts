@@ -4,6 +4,10 @@ import { z } from 'zod';
 import { currencyCodeSchema, optionalQueryBoolean } from '@breeze/shared';
 import { requireMfa, requirePermission, requireScope, dbAccessContextFromAuth, type AuthContext } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
+import {
+  canManagePartnerWidePolicies,
+  PARTNER_WIDE_WRITE_DENIED_MESSAGE,
+} from '../../services/partnerWideAccess';
 import { checkSsrfSafe } from '../../services/ssrfGuard';
 import { CatalogServiceError } from '../../services/catalogService';
 import { catalogActorFrom } from './catalog';
@@ -47,6 +51,17 @@ export const catalogDistributorRoutes = new Hono();
 const scopes = requireScope('partner', 'system');
 const readPerm = requirePermission(PERMISSIONS.CATALOG_READ.resource, PERMISSIONS.CATALOG_READ.action);
 const writePerm = requirePermission(PERMISSIONS.CATALOG_WRITE.resource, PERMISSIONS.CATALOG_WRITE.action);
+
+// Distributor CREDENTIALS (API keys, SFTP passwords) are partner-wide state:
+// saving or exercising them affects every org under the MSP, so the config/
+// test/sync handlers require full partner org access on top of catalog write
+// (#2135 pattern; catalog DATA import stays on the catalog permission set).
+const partnerWideGate = async (c: any, next: any) => {
+  if (!canManagePartnerWidePolicies(c.get('auth') as AuthContext)) {
+    return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+  }
+  return next();
+};
 
 // #2190 — the three import routes below opt out of the auth middleware's
 // ambient request transaction (SELF_MANAGED_DB_CONTEXT_ROUTES) so the best-effort
@@ -179,6 +194,7 @@ catalogDistributorRoutes.put(
   '/distributors/td-synnex/config',
   scopes,
   writePerm,
+  partnerWideGate,
   requireMfa(),
   zValidator('json', configSchema),
   async (c) => {
@@ -191,7 +207,7 @@ catalogDistributorRoutes.put(
   }
 );
 
-catalogDistributorRoutes.post('/distributors/td-synnex/test', scopes, writePerm, requireMfa(), async (c) => {
+catalogDistributorRoutes.post('/distributors/td-synnex/test', scopes, writePerm, partnerWideGate, requireMfa(), async (c) => {
   try {
     const data = await testTdSynnexDigitalBridgeConnection(catalogActorFrom(c));
     return c.json({ data });
@@ -318,11 +334,11 @@ catalogDistributorRoutes.get('/distributors/td-synnex-ec/status', scopes, readPe
   try { return c.json({ data: await getEcExpressStatus(catalogActorFrom(c)) }); } catch (err) { return handleEcError(c, err); }
 });
 
-catalogDistributorRoutes.put('/distributors/td-synnex-ec/config', scopes, writePerm, requireMfa(), zValidator('json', ecConfigSchema), async (c) => {
+catalogDistributorRoutes.put('/distributors/td-synnex-ec/config', scopes, writePerm, partnerWideGate, requireMfa(), zValidator('json', ecConfigSchema), async (c) => {
   try { return c.json({ data: await saveEcExpressConfig(c.req.valid('json'), catalogActorFrom(c)) }); } catch (err) { return handleEcError(c, err); }
 });
 
-catalogDistributorRoutes.post('/distributors/td-synnex-ec/test', scopes, writePerm, requireMfa(), async (c) => {
+catalogDistributorRoutes.post('/distributors/td-synnex-ec/test', scopes, writePerm, partnerWideGate, requireMfa(), async (c) => {
   try { return c.json({ data: await testEcExpressConnection(catalogActorFrom(c)) }); } catch (err) { return handleEcError(c, err); }
 });
 
@@ -367,13 +383,13 @@ catalogDistributorRoutes.get('/distributors/td-synnex-sftp/status', scopes, read
   try { return c.json({ data: await getSftpStatus(catalogActorFrom(c)) }); } catch (err) { return handleSftpError(c, err); }
 });
 
-catalogDistributorRoutes.put('/distributors/td-synnex-sftp/config', scopes, writePerm, requireMfa(), zValidator('json', sftpConfigSchema), async (c) => {
+catalogDistributorRoutes.put('/distributors/td-synnex-sftp/config', scopes, writePerm, partnerWideGate, requireMfa(), zValidator('json', sftpConfigSchema), async (c) => {
   try { return c.json({ data: await saveSftpConfig(catalogActorFrom(c), c.req.valid('json')) }); } catch (err) { return handleSftpError(c, err); }
 });
 
 // Registered in SELF_MANAGED_DB_CONTEXT_ROUTES: no ambient transaction is open
 // for this handler, so the SSH handshake never pins a pooled connection (#1448).
-catalogDistributorRoutes.post('/distributors/td-synnex-sftp/test', scopes, writePerm, requireMfa(), async (c) => {
+catalogDistributorRoutes.post('/distributors/td-synnex-sftp/test', scopes, writePerm, partnerWideGate, requireMfa(), async (c) => {
   try {
     return c.json({ data: await testSftpConnection(catalogActorFrom(c), catalogDbContextFrom(c)) });
   } catch (err) { return handleSftpError(c, err); }
@@ -381,7 +397,7 @@ catalogDistributorRoutes.post('/distributors/td-synnex-sftp/test', scopes, write
 
 // Manual "sync now". Enqueues rather than running inline: the download+parse can
 // take minutes and must not hold the request's DB connection open (#1105).
-catalogDistributorRoutes.post('/distributors/td-synnex-sftp/sync', scopes, writePerm, requireMfa(), async (c) => {
+catalogDistributorRoutes.post('/distributors/td-synnex-sftp/sync', scopes, writePerm, partnerWideGate, requireMfa(), async (c) => {
   try {
     const integrationId = await getSftpIntegrationId(catalogActorFrom(c));
     const jobId = await enqueueTdSynnexSftpSync(integrationId);

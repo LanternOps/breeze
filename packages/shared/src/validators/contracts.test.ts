@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { createContractSchema, contractLineInputSchema, updateContractSchema } from './contracts';
+import { createContractSchema, contractLineInputSchema, updateContractSchema, changeContractCurrencySchema } from './contracts';
 
 describe('createContractSchema', () => {
   it('accepts a valid monthly advance contract', () => {
@@ -109,5 +109,53 @@ describe('contractLineInputSchema — catalog lines omit unitPrice', () => {
     expect(contractLineInputSchema.safeParse({
       lineType: 'per_seat', description: 'Seats', unitPrice: '12.00', taxable: true
     }).success).toBe(true);
+  });
+});
+
+// Post-merge review #1: the editor omits `taxable` for a catalog line (the
+// server resolves it from the item, ignoring any client value) and JSON drops
+// the undefined key — so the schema must not require it there. Non-catalog
+// lines still stamp the client's taxable verbatim, so it stays required.
+describe('contractLineInputSchema — catalog lines omit taxable', () => {
+  it('accepts a catalog line with neither unitPrice nor taxable (the editor payload)', () => {
+    expect(contractLineInputSchema.safeParse({
+      lineType: 'flat', description: 'Managed services',
+      catalogItemId: '33333333-3333-3333-3333-333333333333'
+    }).success).toBe(true);
+  });
+  it('rejects a non-catalog line without taxable', () => {
+    const r = contractLineInputSchema.safeParse({
+      lineType: 'flat', description: 'Managed services', unitPrice: '500.00'
+    });
+    expect(r.success).toBe(false);
+    if (!r.success) {
+      const issue = r.error.issues.find((i) => i.path.join('.') === 'taxable');
+      expect(issue?.message).toBe('taxable is required unless catalogItemId is set');
+    }
+  });
+});
+
+describe('changeContractCurrencySchema (#3778)', () => {
+  it('defaults confirmActiveChange to false — an ACTIVE restamp is never implicit', () => {
+    const parsed = changeContractCurrencySchema.parse({ currencyCode: 'eur' });
+    expect(parsed).toEqual({ currencyCode: 'EUR', clearLines: false, reprice: false, confirmActiveChange: false });
+  });
+
+  it('accepts confirmActiveChange alongside clearLines', () => {
+    expect(changeContractCurrencySchema.parse({ currencyCode: 'EUR', clearLines: true, confirmActiveChange: true }))
+      .toMatchObject({ clearLines: true, confirmActiveChange: true });
+  });
+
+  it('keeps clearLines and reprice mutually exclusive', () => {
+    expect(changeContractCurrencySchema.safeParse({ currencyCode: 'EUR', clearLines: true, reprice: true }).success).toBe(false);
+  });
+
+  it('is strict — a mis-keyed field is a parse error, never a silent default', () => {
+    expect(changeContractCurrencySchema.safeParse({ currencyCode: 'EUR', convert: true }).success).toBe(false);
+    expect(changeContractCurrencySchema.safeParse({ currencyCode: 'EUR', confirmActive: true }).success).toBe(false);
+  });
+
+  it('rejects an unsupported currency code', () => {
+    expect(changeContractCurrencySchema.safeParse({ currencyCode: 'XXX' }).success).toBe(false);
   });
 });

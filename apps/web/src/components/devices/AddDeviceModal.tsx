@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { Download, Copy, Loader2, Check, Link } from "lucide-react";
 import { Dialog } from "../shared/Dialog";
 import { showToast } from "../shared/Toast";
-import { fetchWithAuth } from "../../stores/auth";
+import { fetchWithAuth, useAuthStore } from "../../stores/auth";
 import { useOrgStore } from "../../stores/orgStore";
 import { formatDateTime } from "@/lib/dateTimeFormat";
 import {
@@ -103,6 +103,17 @@ export default function AddDeviceModal({
 }: AddDeviceModalProps) {
   const { t } = useTranslation("devices");
   const userOS = detectUserOS();
+  // #4018: the MFA_REQUIRED copy below tells the user to set MFA up in their
+  // profile and sign in again. For an SSO-provisioned account that is a dead
+  // end — it has no password, and the profile enrollment flow demands one — so
+  // those users get copy that names the road they can actually take.
+  //
+  // `hasPassword` is populated by GET /users/me (routes/users.ts), which is
+  // what the auth store hydrates from on the SSO bootstrap and on every login
+  // refresh. Compared with `=== false` on purpose: absent means UNKNOWN (a
+  // session persisted before the field existed), and unknown must keep the
+  // original copy rather than assume passwordless.
+  const isSsoOnlyAccount = useAuthStore((s) => s.user?.hasPassword) === false;
   // Sites are fetched lazily now (the switcher no longer preloads them), so the
   // modal has to distinguish "still loading", "load failed", and "genuinely no
   // sites" — otherwise a failed fetch looks identical to an unconfigured org and
@@ -957,15 +968,24 @@ export default function AddDeviceModal({
 
                 {/* Link errors */}
                 {linkError === "MFA_REQUIRED" && (
-                  <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-700">
-                    {t("addDeviceModal.multiFactorAuthenticationIsRequiredTo")}{" "}
-                    <a
-                      href="/settings/profile"
-                      className="font-medium underline hover:no-underline"
-                    >
-                      {t("addDeviceModal.setUpMfaInYourProfile")}{" "}
-                    </a>{" "}
-                    {t("addDeviceModal.andSignInAgainThenRetry")}{" "}
+                  <div
+                    className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-700"
+                    data-testid="link-mfa-required"
+                  >
+                    {isSsoOnlyAccount ? (
+                      t("addDeviceModal.mfaRequiredSsoLinks")
+                    ) : (
+                      <>
+                        {t("addDeviceModal.multiFactorAuthenticationIsRequiredTo")}{" "}
+                        <a
+                          href="/settings/profile"
+                          className="font-medium underline hover:no-underline"
+                        >
+                          {t("addDeviceModal.setUpMfaInYourProfile")}{" "}
+                        </a>{" "}
+                        {t("addDeviceModal.andSignInAgainThenRetry")}{" "}
+                      </>
+                    )}
                   </div>
                 )}
 
@@ -984,15 +1004,24 @@ export default function AddDeviceModal({
 
                 {/* MFA error */}
                 {downloadError === "MFA_REQUIRED" && (
-                  <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-700">
-                    {t("addDeviceModal.multiFactorAuthenticationIsRequiredTo2")}{" "}
-                    <a
-                      href="/settings/profile"
-                      className="font-medium underline hover:no-underline"
-                    >
-                      {t("addDeviceModal.setUpMfaInYourProfile")}{" "}
-                    </a>{" "}
-                    {t("addDeviceModal.andSignInAgainThenRetry")}{" "}
+                  <div
+                    className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-700"
+                    data-testid="download-mfa-required"
+                  >
+                    {isSsoOnlyAccount ? (
+                      t("addDeviceModal.mfaRequiredSsoInstallers")
+                    ) : (
+                      <>
+                        {t("addDeviceModal.multiFactorAuthenticationIsRequiredTo2")}{" "}
+                        <a
+                          href="/settings/profile"
+                          className="font-medium underline hover:no-underline"
+                        >
+                          {t("addDeviceModal.setUpMfaInYourProfile")}{" "}
+                        </a>{" "}
+                        {t("addDeviceModal.andSignInAgainThenRetry")}{" "}
+                      </>
+                    )}
                   </div>
                 )}
 
@@ -1062,15 +1091,24 @@ export default function AddDeviceModal({
                     </span>
                   </div>
                 ) : tokenError === "MFA_REQUIRED" ? (
-                  <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-700">
-                    {t("addDeviceModal.multiFactorAuthenticationIsRequiredTo3")}{" "}
-                    <a
-                      href="/settings/profile"
-                      className="font-medium underline hover:no-underline"
-                    >
-                      {t("addDeviceModal.setUpMfaInYourProfile")}{" "}
-                    </a>{" "}
-                    {t("addDeviceModal.andSignInAgainThenRetry")}{" "}
+                  <div
+                    className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-700"
+                    data-testid="token-mfa-required"
+                  >
+                    {isSsoOnlyAccount ? (
+                      t("addDeviceModal.mfaRequiredSsoTokens")
+                    ) : (
+                      <>
+                        {t("addDeviceModal.multiFactorAuthenticationIsRequiredTo3")}{" "}
+                        <a
+                          href="/settings/profile"
+                          className="font-medium underline hover:no-underline"
+                        >
+                          {t("addDeviceModal.setUpMfaInYourProfile")}{" "}
+                        </a>{" "}
+                        {t("addDeviceModal.andSignInAgainThenRetry")}{" "}
+                      </>
+                    )}
                   </div>
                 ) : tokenError ? (
                   <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
@@ -1173,9 +1211,6 @@ export default function AddDeviceModal({
               const commands = buildInstallCommands({
                 apiUrl:
                   import.meta.env.PUBLIC_API_URL || window.location.origin,
-                ghBase:
-                  import.meta.env.PUBLIC_AGENT_DOWNLOAD_URL ||
-                  "https://github.com/lanternops/breeze/releases/latest/download",
                 token: onboardingToken || "<TOKEN>",
                 enrollmentSecret: enrollmentSecret || undefined,
               });

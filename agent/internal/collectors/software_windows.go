@@ -3,7 +3,8 @@
 package collectors
 
 import (
-	"fmt"
+	"errors"
+	"log/slog"
 	"regexp"
 	"strings"
 	"time"
@@ -13,56 +14,40 @@ import (
 
 // Registry paths for installed software
 var softwareRegistryPaths = []struct {
-	root registry.Key
-	path string
+	source   string
+	root     registry.Key
+	path     string
+	optional bool
 }{
 	// 64-bit applications
-	{registry.LOCAL_MACHINE, `SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall`},
+	{SoftwareSourceWindowsHKLM64, registry.LOCAL_MACHINE, `SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall`, false},
 	// 32-bit applications on 64-bit Windows
-	{registry.LOCAL_MACHINE, `SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall`},
+	{SoftwareSourceWindowsHKLM32, registry.LOCAL_MACHINE, `SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall`, true},
 	// Per-user applications
-	{registry.CURRENT_USER, `SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall`},
+	{SoftwareSourceWindowsHKCU, registry.CURRENT_USER, `SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall`, true},
 }
 
-// Collect retrieves installed software from Windows registry
-func (c *SoftwareCollector) Collect() ([]SoftwareItem, error) {
-	var software []SoftwareItem
-	seen := make(map[string]bool)
-	var pathErrs []string
+var softwareRegistryCollect = collectFromRegistry
 
+// CollectObservation retrieves installed software and accounts for each applicable registry root.
+func (c *SoftwareCollector) CollectObservation() (SoftwareInventoryObservationV2, error) {
+	if c.collectObservation != nil {
+		return c.collectObservation()
+	}
+	results := make([]softwareSourceResult, 0, len(softwareRegistryPaths))
 	for _, regPath := range softwareRegistryPaths {
-		items, err := collectFromRegistry(regPath.root, regPath.path)
+		items, err := softwareRegistryCollect(regPath.root, regPath.path)
 		if err != nil {
-			// Continue on error - some paths may not exist or be accessible.
-			// A single unreadable hive is normal (WOW6432Node is absent on
-			// 32-bit Windows; HKCU under the SYSTEM service is the SYSTEM
-			// profile), so it must not fail the whole collection — but record
-			// it so a total failure below can be distinguished from a genuinely
-			// empty machine.
-			pathErrs = append(pathErrs, fmt.Sprintf("%s: %v", regPath.path, err))
+			if regPath.optional && errors.Is(err, registry.ErrNotExist) {
+				continue
+			}
+			slog.Warn("software inventory source failed", "source", regPath.source, "error", err.Error())
+			results = append(results, softwareSourceResult{Source: regPath.source, FailureCode: SoftwareFailureRegistryReadFailed})
 			continue
 		}
-
-		for _, item := range items {
-			// Deduplicate by name+version
-			key := fmt.Sprintf("%s|%s", item.Name, item.Version)
-			if !seen[key] {
-				seen[key] = true
-				software = append(software, item)
-			}
-		}
+		results = append(results, softwareSourceResult{Source: regPath.source, Items: items})
 	}
-
-	// Every registry path failed: this is "we could not look", not "nothing is
-	// installed". Returning (nil, nil) here would let callers that treat an
-	// empty list as ground truth — notably the uninstall post-condition check in
-	// remote/tools — conclude that software is absent without ever having read
-	// the registry (#3592).
-	if len(pathErrs) == len(softwareRegistryPaths) {
-		return nil, fmt.Errorf("no installed-software registry path could be read: %s", strings.Join(pathErrs, "; "))
-	}
-
-	return software, nil
+	return buildSoftwareObservation(c.collectorVersion, results, c.now, c.newObservationID), nil
 }
 
 func collectFromRegistry(rootKey registry.Key, path string) ([]SoftwareItem, error) {
@@ -105,7 +90,7 @@ func collectFromRegistry(rootKey registry.Key, path string) ([]SoftwareItem, err
 			continue
 		}
 
-		software = append(software, item)
+		software = append(software, sanitizeSoftwareInventoryItem(item))
 	}
 
 	return software, nil

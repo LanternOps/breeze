@@ -58,12 +58,13 @@ import { incidents, type IncidentTimelineEntry } from '../db/schema/incidentResp
 import { captureException } from '../services/sentry';
 import { publishEvent } from '../services/eventBus';
 import { getBullMQConnection } from '../services/redis';
+import { jobSchedule } from './scheduleRegistry';
 
 const QUEUE_NAME = 'audit-chain-verify';
 const JOB_NAME = 'audit-chain-verify';
 const REPEAT_JOB_ID = 'audit-chain-verify';
 // Daily at 04:15 UTC — after retention (03:30) and oauthCleanup (03:00).
-const DAILY_CRON = '15 4 * * *';
+const DAILY_CRON = jobSchedule('audit-chain-verify');
 // Small breather between per-org verifies so a large fleet doesn't hammer the
 // primary during the sweep. Daily job — latency is irrelevant.
 const INTER_ORG_DELAY_MS = 50;

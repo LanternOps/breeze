@@ -218,7 +218,8 @@
     {
       "pattern": "docker-compose*.yml",
       "docs": [
-        "deploy/production.mdx"
+        "deploy/production.mdx",
+        "getting-started/prerequisites.mdx"
       ]
     },
     {
@@ -2260,6 +2261,155 @@
         "deploy/upgrades.mdx",
         "backup/overview.mdx",
         "deploy/binaries.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/tenantVariables.ts",
+      "docs": [
+        "features/scripts.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/tenantVariableResolution.ts",
+      "docs": [
+        "features/scripts.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/officeAddin/**",
+      "docs": [
+        "features/ai-for-office.mdx",
+        "features/ticketing.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/outlook-addin/**",
+      "docs": [
+        "features/ai-for-office.mdx"
+      ]
+    },
+    {
+      "pattern": "packages/shared/src/utils/currency.ts",
+      "docs": [
+        "features/invoices.mdx",
+        "features/quotes.mdx",
+        "features/contracts.mdx",
+        "reference/regional-settings.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/invoiceLinkToken.ts",
+      "docs": [
+        "features/online-payments.mdx",
+        "features/invoices.mdx",
+        "features/portal.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/snmppoll/**",
+      "docs": [
+        "features/snmp.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/metrics.ts",
+      "docs": [
+        "monitoring/stack.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/mobile/**",
+      "docs": [
+        "features/mobile.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/aiAgents.ts",
+      "docs": [
+        "features/ai-agents.mdx",
+        "reference/users-and-roles.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/aiAgents/**",
+      "docs": [
+        "features/ai-agents.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/approvals.ts",
+      "docs": [
+        "features/ai-agents.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/db/schema/aiAgents.ts",
+      "docs": [
+        "features/ai-agents.mdx",
+        "reference/schema.mdx"
+      ]
+    },
+    {
+      "pattern": "packages/shared/src/types/aiAgents.ts",
+      "docs": [
+        "features/ai-agents.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/contractTemplateService.ts",
+      "docs": [
+        "features/contracts.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/contractTemplateRender.ts",
+      "docs": [
+        "features/contracts.mdx",
+        "features/quotes.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/contractDocumentService.ts",
+      "docs": [
+        "features/contracts.mdx",
+        "features/quotes.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/db/schema/contractDocuments.ts",
+      "docs": [
+        "features/contracts.mdx",
+        "reference/schema.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/contracts/templates.ts",
+      "docs": [
+        "features/contracts.mdx"
+      ]
+    },
+    {
+      "pattern": "packages/shared/src/validators/contractTemplates.ts",
+      "docs": [
+        "features/contracts.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/contracts/TemplatesTab.tsx",
+      "docs": [
+        "features/contracts.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/billing/quotes/QuoteContractBlockEditor.tsx",
+      "docs": [
+        "features/quotes.mdx"
+      ]
+    },
+    {
+      "pattern": "scripts/guided-setup.sh",
+      "docs": [
+        "getting-started/prerequisites.mdx"
       ]
     }
   ]

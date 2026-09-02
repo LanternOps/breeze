@@ -25,6 +25,8 @@ import {
   normalizeMetricAnomalyContext,
   type MetricAnomalyAlertContext,
 } from './alertMlContext';
+import type { AlertAiVerdictSummaryDto } from '@breeze/shared';
+import AlertVerdictBadge, { submitVerdictFeedback } from './AlertVerdictBadge';
 
 type Alert = {
   id: string;
@@ -39,11 +41,18 @@ type Alert = {
   triggeredAt: string;
   acknowledgedAt?: string;
   acknowledgedBy?: string;
+  // Server-resolved display name for the actor ids (#3966); null when the id no
+  // longer resolves to a user.
+  acknowledgedByName?: string | null;
   resolvedAt?: string;
   resolvedBy?: string;
+  resolvedByName?: string | null;
   context?: Record<string, unknown>;
   contextData?: Record<string, unknown>;
   anomalyContext?: MetricAnomalyAlertContext | null;
+  // Phase 2 wave P2-1 (alert verdicts), Task 15. Null when the alert has no
+  // verdict yet (or the org has AI agents disabled).
+  aiVerdict?: AlertAiVerdictSummaryDto | null;
 };
 
 type LinkedTicket = {
@@ -180,6 +189,20 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
       await fetchAlert();
     } catch (err) {
       handleActionError(err, t('alertDetailPage.failedToResolveAlert'));
+      // 409 = another technician (or the auto-resolve sweep) won the
+      // compare-and-swap; the alert IS resolved, this request just didn't do it
+      // (#4094). runAction already toasted the server's reason, so a persistent
+      // red banner on top of it would frame a benign race as a broken page.
+      // Re-fetch instead, so the header shows the resolved state.
+      if (err instanceof ActionError && err.status === 409) {
+        // `fetchAlert` sets its own error state on failure, but a rejection here
+        // would escape this catch entirely (nothing wraps the recovery path) and
+        // become an unhandled rejection with no feedback for the second failure.
+        await fetchAlert().catch(() => {
+          setError(t('alertDetailPage.failedToFetchAlert'));
+        });
+        return;
+      }
       if (!(err instanceof ActionError && err.status === 401)) {
         setError(err instanceof Error ? err.message : t('alertDetailPage.failedToResolveAlert'));
       }
@@ -266,7 +289,25 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
                   <StatusIcon className="h-3 w-3" />
                   {t(/* i18n-dynamic */ `alertDetailPage.status.${alert.status}`)}
                 </span>
+                {alert.aiVerdict && (
+                  <AlertVerdictBadge
+                    verdict={alert.aiVerdict}
+                    onFeedback={value => submitVerdictFeedback(alert.aiVerdict!.id, value)}
+                  />
+                )}
               </div>
+              {alert.aiVerdict && (
+                <p className="mt-2 max-w-2xl text-sm text-muted-foreground">{alert.aiVerdict.rationale}</p>
+              )}
+              {alert.aiVerdict?.suggestedIntentId && (
+                <a
+                  href="/approvals"
+                  className="mt-1 inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline"
+                >
+                  {t('alertVerdict.suggestionPending')}
+                  <ExternalLink className="h-3 w-3" />
+                </a>
+              )}
             </div>
           </div>
 
@@ -430,9 +471,12 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
                   <p className="text-sm">
                     {formatDateTime(alert.acknowledgedAt)}
                     {alert.acknowledgedBy && (
-                      <span className="text-muted-foreground flex items-center gap-1 mt-0.5">
+                      <span
+                        className="text-muted-foreground flex items-center gap-1 mt-0.5"
+                        title={alert.acknowledgedBy}
+                      >
                         <User className="h-3 w-3" />
-                        {alert.acknowledgedBy}
+                        {alert.acknowledgedByName || t('alertDetailPage.unknownUser')}
                       </span>
                     )}
                   </p>
@@ -447,9 +491,12 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
                   <p className="text-sm">
                     {formatDateTime(alert.resolvedAt)}
                     {alert.resolvedBy && (
-                      <span className="text-muted-foreground flex items-center gap-1 mt-0.5">
+                      <span
+                        className="text-muted-foreground flex items-center gap-1 mt-0.5"
+                        title={alert.resolvedBy}
+                      >
                         <User className="h-3 w-3" />
-                        {alert.resolvedBy}
+                        {alert.resolvedByName || t('alertDetailPage.unknownUser')}
                       </span>
                     )}
                   </p>

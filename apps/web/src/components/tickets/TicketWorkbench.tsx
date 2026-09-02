@@ -17,7 +17,29 @@ import SlaChip from './SlaChip';
 import { SlaTimers } from './SlaTimers';
 import TicketTimeBilling from './TicketTimeBilling';
 import TicketPartsCard from './TicketPartsCard';
+import { formatMoney } from '../billing/shared/format';
 import { statusConfig, priorityConfig, slaState, type TicketDetail, type TicketStatus, type TicketPriority } from './ticketConfig';
+
+/** Mirrors the API's BlockedCurrencySummary (invoiceService.ts, #3776). */
+interface BlockedCurrencyGroup { currencyCode: string; count: number; amount: string }
+/** Mirrors MissingRateEntry (invoiceService.ts, #3776 review #1): a billable time
+ *  entry with no hourly rate. Never billed at zero — set a rate and assemble again. */
+interface MissingRateEntry { timeEntryId: string; ticketId: string | null; description: string; hours: string }
+/** POST /tickets/:id/invoice success body. `blockedByCurrency` / `missingRate`
+ *  are non-empty on a PARTIAL success: the draft exists but those rows were
+ *  left out of it (review #3). */
+interface AssembleInvoiceResponse {
+  data: { invoice: { id: string }; blockedByCurrency?: BlockedCurrencyGroup[]; missingRate?: MissingRateEntry[] };
+}
+/** Mirrors MoveCurrencyGuardDetails (ticketMoveCurrencyGuard.ts, #3776). */
+interface MoveBlockedDetails {
+  sourceCurrency: string;
+  targetCurrency: string;
+  unbilledTimeEntries: number;
+  unbilledParts: number;
+  /** Real per-snapshot groups (rows whose currency ≠ target); optional for older API builds. */
+  blockedByCurrency?: Array<{ currencyCode: string; timeEntries: number; parts: number }>;
+}
 import { fetchTicketConfig, activeStatusesByCore, type TicketConfig } from '../../lib/ticketConfigApi';
 import { onTimerChanged, onBillingChanged } from '../../lib/timerActions';
 import { formatDateTime } from '@/lib/dateTimeFormat';
@@ -119,6 +141,15 @@ type TicketTriageSuggestion = {
   reasons: string[];
 };
 
+// P2-4 (#4191), Task 11 — mirrors ActiveTicketDraftRow (ticketService.ts).
+type TicketAiDraft = {
+  id: string;
+  kind: 'reply' | 'resolution_note';
+  content: string;
+  createdAt: string;
+  runId: string | null;
+};
+
 export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, expanded, resolveRequestToken, refreshToken, assignees: assigneesProp, categories = [] }: Props) {
   const { t } = useTranslation('tickets');
   const [ticket, setTicket] = useState<TicketDetail | null>(null);
@@ -134,8 +165,21 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
   const [pendingStatusId, setPendingStatusId] = useState<string | null>(null);
   const [railOpen] = useState(true);
   const [creatingInvoice, setCreatingInvoice] = useState(false);
+  // Multi-currency (#3776): 409 ALL_BLOCKED_BY_CURRENCY groups from the last
+  // create-invoice attempt — each becomes an "assemble in <code>" shortcut.
+  const [invoiceBlocked, setInvoiceBlocked] = useState<BlockedCurrencyGroup[]>([]);
+  const [invoiceMissingRate, setInvoiceMissingRate] = useState<MissingRateEntry[]>([]);
+  // Set on a partial success: the draft that WAS created while rows were left
+  // out. We stay on the ticket so the left-out rows are visible; this links to it.
+  const [partialInvoiceId, setPartialInvoiceId] = useState<string | null>(null);
   const [moveOrgOpen, setMoveOrgOpen] = useState(false);
   const [moveOrgTargetId, setMoveOrgTargetId] = useState('');
+  // 409 TICKET_MOVE_CURRENCY_BLOCKED details from the last move attempt; the
+  // form stays mounted so this can render, and "move anyway" is gated on an
+  // explicit checkbox (spec §7: bill first, or deliberately accept).
+  const [moveBlocked, setMoveBlocked] = useState<MoveBlockedDetails | null>(null);
+  const [acceptCurrency, setAcceptCurrency] = useState(false);
+  const [moving, setMoving] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   // Soft-delete is tickets:manage-gated (server re-enforces). UX-only gate.
@@ -160,6 +204,24 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
   const [triageLoading, setTriageLoading] = useState(false);
   const [applyingTriage, setApplyingTriage] = useState(false);
   const [rejectingTriage, setRejectingTriage] = useState(false);
+
+  // P2-4 (#4191), Task 11 — active AI drafts (at most one `reply` + one
+  // `resolution_note`, per ticket_drafts_active_uq). `draftContent` holds the
+  // per-draft editable textarea value, seeded from the fetched content and
+  // diverging only when the technician edits before sending.
+  const [aiDrafts, setAiDrafts] = useState<TicketAiDraft[]>([]);
+  const [draftContent, setDraftContent] = useState<Record<string, string>>({});
+  const [sendingDraftId, setSendingDraftId] = useState<string | null>(null);
+  const [discardingDraftId, setDiscardingDraftId] = useState<string | null>(null);
+  // Read by openResolveForm via a ref (not a direct closure/dependency) so
+  // that helper's identity stays stable across ai-drafts refetches — see the
+  // comment above openResolveForm for why that stability matters.
+  const aiDraftsRef = useRef<TicketAiDraft[]>([]);
+  useEffect(() => { aiDraftsRef.current = aiDrafts; }, [aiDrafts]);
+  // The resolution_note draft (if any) prefilled into the currently-open
+  // resolve form; sent back as `aiDraftId` so the server consumes it in the
+  // same transaction as the resolve CAS.
+  const [resolveDraftId, setResolveDraftId] = useState<string | null>(null);
 
   // Partner canned responses for the reply composer. Best-effort: an empty list
   // (or a failed/forbidden load) simply hides the picker.
@@ -259,6 +321,49 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
     return () => { cancelled = true; };
   }, [ticket, ticketId]);
 
+  // Loads the (fresh) active-draft list for `forTicketId` from the server —
+  // the shared loader behind both the mount/ticket-change effect below AND
+  // the post-conflict recovery calls in sendAiDraft/discardAiDraft/
+  // submitResolve. Guarded against a ticket switch racing an in-flight fetch
+  // via `ticketIdRef` rather than an effect-local `cancelled` flag, since
+  // this is also called imperatively outside any effect.
+  const ticketIdRef = useRef(ticketId);
+  useEffect(() => { ticketIdRef.current = ticketId; }, [ticketId]);
+
+  const refetchAiDrafts = useCallback(async (forTicketId: string) => {
+    try {
+      const res = await fetchWithAuth(`/tickets/${forTicketId}/ai-drafts`);
+      if (!res.ok) return;
+      const body = await res.json();
+      if (ticketIdRef.current !== forTicketId) return; // ticket switched mid-flight
+      const drafts: TicketAiDraft[] = Array.isArray(body?.data) ? body.data : [];
+      setAiDrafts(drafts);
+      setDraftContent((prev) => {
+        const next = { ...prev };
+        for (const draft of drafts) {
+          if (!(draft.id in next)) next[draft.id] = draft.content;
+        }
+        return next;
+      });
+    } catch {
+      // Best-effort — leave the existing (possibly stale) list rather than
+      // clearing it out from under an in-progress edit on a network blip.
+    }
+  }, []);
+
+  // P2-4 (#4191), Task 11 — active AI drafts, fetched alongside the triage
+  // suggestion above. A draft the API stops returning (sent/discarded/
+  // consumed elsewhere) simply drops out of `aiDrafts` on the next fetch,
+  // which is the only thing the card list renders from.
+  useEffect(() => {
+    if (!ticket) {
+      setAiDrafts([]);
+      setDraftContent({});
+      return;
+    }
+    void refetchAiDrafts(ticketId);
+  }, [ticket, ticketId, refetchAiDrafts]);
+
   // Bulk actions in the queue mutate tickets behind the pane's back; the parent
   // bumps refreshToken after a bulk apply so the detail can't go stale. The ref
   // guard makes the effect fire only on an actual token bump — without it, a
@@ -284,13 +389,37 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
     setPendingOpen(null);
     setPendingReason('');
     setPendingStatusId(null);
+    setResolveDraftId(null);
     setDeleteOpen(false);
+    // I2 (#4191 final review): without this, ticket A's AI-draft cards (and
+    // any in-progress per-draft edits) stayed visible until the new
+    // ticket's `refetchAiDrafts` call resolved — a stale card could even be
+    // sent/discarded against the wrong ticket. Clear both eagerly here
+    // rather than waiting on the `[ticket, ticketId]` refetch effect.
+    setAiDrafts([]);
+    setDraftContent({});
   }, [ticketId]);
+
+  // Opens the resolve form and, when an active `resolution_note` AI draft
+  // exists, prefills the note field from it and remembers its id so
+  // submitResolve can pass `aiDraftId`. Reads aiDraftsRef rather than
+  // depending on `aiDrafts` directly so this callback's identity stays
+  // stable across ai-drafts refetches (background reconciles re-fetch
+  // drafts on every ticket change) — otherwise the resolveRequestToken
+  // effect below would re-fire and reopen the form on every refetch.
+  const openResolveForm = useCallback(() => {
+    setResolveOpen(true);
+    const draft = aiDraftsRef.current.find((d) => d.kind === 'resolution_note');
+    setResolveDraftId(draft ? draft.id : null);
+    if (draft) {
+      setResolutionNote((prev) => (prev.trim() ? prev : draft.content));
+    }
+  }, []);
 
   // Page-level `e` shortcut: open the inline resolve form (UI brief: `e` opens the resolution-note form)
   useEffect(() => {
-    if (resolveRequestToken) setResolveOpen(true);
-  }, [resolveRequestToken]);
+    if (resolveRequestToken) openResolveForm();
+  }, [resolveRequestToken, openResolveForm]);
 
   // Fetch assignees once; degrade gracefully if the endpoint is unavailable.
   // Skipped entirely when the host already supplies the list via the prop.
@@ -399,31 +528,84 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
   }, [ticketId, afterMutation]);
 
   // Assemble a draft invoice from this ticket's billable work, then jump to it.
-  const createInvoice = useCallback(async () => {
+  // `currencyCode` is the explicit old-currency path (#3776): the endpoint is
+  // body-less, so the override travels as a query param.
+  const createInvoice = useCallback(async (currencyCode?: string) => {
     if (creatingInvoice) return;
     setCreatingInvoice(true);
+    setInvoiceBlocked([]);
+    setInvoiceMissingRate([]);
+    setPartialInvoiceId(null);
+    const path = currencyCode
+      ? `/tickets/${ticketId}/invoice?currencyCode=${encodeURIComponent(currencyCode)}`
+      : `/tickets/${ticketId}/invoice`;
     try {
-      const result = await runAction<{ data: { invoice: { id: string } } }>({
-        request: () => fetchWithAuth(`/tickets/${ticketId}/invoice`, { method: 'POST' }),
+      const result = await runAction<AssembleInvoiceResponse>({
+        request: () => fetchWithAuth(path, { method: 'POST' }),
         errorFallback: t('ticketWorkbench.invoice.createFailed'),
         successMessage: t('ticketWorkbench.invoice.created'),
         onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
       });
       const newId = result?.data?.invoice?.id;
-      if (newId) void navigateTo(`/billing/invoices/${newId}`);
+      const blocked = result?.data?.blockedByCurrency ?? [];
+      const missing = result?.data?.missingRate ?? [];
+      if (blocked.length === 0 && missing.length === 0) {
+        if (newId) void navigateTo(`/billing/invoices/${newId}`);
+        return;
+      }
+      // Partial success (review #3): the draft exists, but rows in another
+      // currency and/or without a rate were left out. Navigating now would hide
+      // that — stay here, show the same recovery controls as the all-blocked
+      // path, and link to the draft instead.
+      setInvoiceBlocked(blocked);
+      setInvoiceMissingRate(missing);
+      setPartialInvoiceId(newId ?? null);
     } catch (err) {
       if (!(err instanceof ActionError)) throw err;
+      // Already toasted by runAction; offer the per-currency shortcuts and
+      // list the rate-less entries. ALL_BLOCKED_BY_CURRENCY details also carry
+      // missingRate; ALL_MISSING_RATE carries only missingRate.
+      if (err.code === 'ALL_BLOCKED_BY_CURRENCY' || err.code === 'ALL_MISSING_RATE') {
+        const details = (err.body as { details?: { blockedByCurrency?: BlockedCurrencyGroup[]; missingRate?: MissingRateEntry[] } } | undefined)?.details;
+        setInvoiceBlocked(details?.blockedByCurrency ?? []);
+        setInvoiceMissingRate(details?.missingRate ?? []);
+      }
     } finally {
       setCreatingInvoice(false);
     }
   }, [ticketId, creatingInvoice, t]);
 
-  const handleMoveOrg = useCallback((targetOrgId: string) => {
-    void runAction({
-      request: () => fetchWithAuth(`/tickets/${ticketId}/move-org`, { method: 'POST', body: JSON.stringify({ orgId: targetOrgId }) }),
-      errorFallback: t('ticketWorkbench.move.failed'),
-      onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
-    }).then(() => void load({ background: true })).catch((err) => { if (!(err instanceof ActionError)) throw err; });
+  // Returns true on success so the caller decides whether to close the form.
+  // A 409 TICKET_MOVE_CURRENCY_BLOCKED keeps it open with guidance; every other
+  // ActionError was already toasted by runAction.
+  const handleMoveOrg = useCallback(async (
+    targetOrgId: string,
+    opts: { acceptCurrencyMismatch?: boolean } = {}
+  ): Promise<boolean> => {
+    setMoving(true);
+    try {
+      await runAction({
+        request: () => fetchWithAuth(`/tickets/${ticketId}/move-org`, {
+          method: 'POST',
+          body: JSON.stringify({ orgId: targetOrgId, ...(opts.acceptCurrencyMismatch ? { acceptCurrencyMismatch: true } : {}) })
+        }),
+        errorFallback: t('ticketWorkbench.move.failed'),
+        onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
+      });
+      setMoveBlocked(null);
+      setAcceptCurrency(false);
+      void load({ background: true });
+      return true;
+    } catch (err) {
+      if (!(err instanceof ActionError)) throw err;
+      if (err.code === 'TICKET_MOVE_CURRENCY_BLOCKED') {
+        const details = (err.body as { details?: MoveBlockedDetails } | undefined)?.details;
+        if (details) setMoveBlocked(details);
+      }
+      return false;
+    } finally {
+      setMoving(false);
+    }
   }, [ticketId, load, t]);
 
   // Soft-delete this ticket (tickets:manage). Confirm-gated by the ConfirmDialog
@@ -499,14 +681,75 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
     }
   }, [rejectingTriage, ticketId, triageSuggestion, t]);
 
+  // "Send as me" — posts the (possibly technician-edited) draft content as a
+  // PUBLIC comment under the calling technician's own identity. Reply drafts
+  // only; the API 409s a resolution_note draft here (it's consumed only via
+  // the resolve flow's aiDraftId, below).
+  const sendAiDraft = useCallback(async (draft: TicketAiDraft) => {
+    if (sendingDraftId || discardingDraftId) return;
+    const content = (draftContent[draft.id] ?? draft.content).trim();
+    if (!content) return;
+    setSendingDraftId(draft.id);
+    try {
+      await runAction({
+        request: () => fetchWithAuth(`/tickets/${ticketId}/ai-drafts/${draft.id}/send`, {
+          method: 'POST',
+          body: JSON.stringify({ content }),
+        }),
+        errorFallback: t('ticketWorkbench.aiDraft.sendFailed'),
+        successMessage: t('ticketWorkbench.aiDraft.sent'),
+        onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
+      });
+      setAiDrafts((prev) => prev.filter((d) => d.id !== draft.id));
+      // The send created a new public comment — refresh the feed.
+      afterMutation();
+    } catch (err) {
+      if (!(err instanceof ActionError)) throw err;
+      // A non-401 failure (typically a 409 — someone else already sent or
+      // discarded this exact draft) would otherwise leave the card mounted
+      // and interactive on stale local state, looping the same 409 on every
+      // retry. Refetch the real active-draft list so a now-gone draft's
+      // card actually disappears.
+      if (err.status !== 401) void refetchAiDrafts(ticketId);
+    } finally {
+      setSendingDraftId(null);
+    }
+  }, [afterMutation, discardingDraftId, draftContent, refetchAiDrafts, sendingDraftId, ticketId, t]);
+
+  // Discards a draft (either kind) without acting on it.
+  const discardAiDraft = useCallback(async (draft: TicketAiDraft) => {
+    if (sendingDraftId || discardingDraftId) return;
+    setDiscardingDraftId(draft.id);
+    try {
+      await runAction({
+        request: () => fetchWithAuth(`/tickets/${ticketId}/ai-drafts/${draft.id}/discard`, { method: 'POST' }),
+        errorFallback: t('ticketWorkbench.aiDraft.discardFailed'),
+        successMessage: t('ticketWorkbench.aiDraft.discarded'),
+        onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
+      });
+      setAiDrafts((prev) => prev.filter((d) => d.id !== draft.id));
+      if (resolveDraftId === draft.id) setResolveDraftId(null);
+    } catch (err) {
+      if (!(err instanceof ActionError)) throw err;
+      // Same stale-card recovery as sendAiDraft — a non-401 failure here is
+      // typically a 409 (already sent/discarded/consumed elsewhere).
+      if (err.status !== 401) {
+        void refetchAiDrafts(ticketId);
+        if (resolveDraftId === draft.id) setResolveDraftId(null);
+      }
+    } finally {
+      setDiscardingDraftId(null);
+    }
+  }, [discardingDraftId, refetchAiDrafts, resolveDraftId, sendingDraftId, ticketId, t]);
+
   // Fallback path: option values are the six core enums; POST {status}.
   const onStatusChange = useCallback(async (status: TicketStatus) => {
     setPendingStatusId(null);
-    if (status === 'resolved') { setResolveOpen(true); return; }
+    if (status === 'resolved') { openResolveForm(); return; }
     if (status === 'pending' || status === 'on_hold') { setPendingOpen(status); return; }
     // Core path clears any custom-status decoration the row may have carried.
     await mutate('/status', { status }, t('ticketWorkbench.toast.statusUpdated'), t('ticketWorkbench.toast.statusUpdateFailed'), { status, statusName: null, statusColor: null });
-  }, [mutate, t]);
+  }, [mutate, openResolveForm, t]);
 
   // Config path: option values are custom-status row ids; the chosen row's
   // coreStatus drives the same resolve/pending forms, and the POST sends
@@ -514,7 +757,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
   const onCustomStatusChange = useCallback(async (statusId: string) => {
     const row = config?.statuses.find((s) => s.id === statusId);
     if (!row) return;
-    if (row.coreStatus === 'resolved') { setPendingStatusId(statusId); setResolveOpen(true); return; }
+    if (row.coreStatus === 'resolved') { setPendingStatusId(statusId); openResolveForm(); return; }
     if (row.coreStatus === 'pending' || row.coreStatus === 'on_hold') {
       setPendingStatusId(statusId);
       setPendingOpen(row.coreStatus);
@@ -522,18 +765,47 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
     }
     setPendingStatusId(null);
     await mutate('/status', { statusId }, t('ticketWorkbench.toast.statusUpdated'), t('ticketWorkbench.toast.statusUpdateFailed'), { status: row.coreStatus, statusName: row.name, statusColor: row.color ?? null });
-  }, [config, mutate, t]);
+  }, [config, mutate, openResolveForm, t]);
 
+  // Not routed through the shared `mutate` helper (unlike onStatusChange/
+  // onCustomStatusChange/submitPending) because it needs the thrown
+  // ActionError's status to tell a draft-related 409 apart from any other
+  // resolve failure — `mutate` swallows that down to a bare boolean.
   const submitResolve = useCallback(async () => {
     if (!resolutionNote.trim()) return;
     const target = pendingStatusId ? { statusId: pendingStatusId } : { status: 'resolved' as const };
     const note = resolutionNote.trim();
-    const ok = await mutate('/status', { ...target, resolutionNote: note }, t('ticketWorkbench.toast.ticketResolved'), t('ticketWorkbench.toast.resolveFailed'), { status: 'resolved', resolutionNote: note });
-    if (!ok) return; // keep the form open and the typed note intact on failure
+    const body = { ...target, resolutionNote: note, ...(resolveDraftId ? { aiDraftId: resolveDraftId } : {}) };
+    try {
+      await runAction({
+        request: () => fetchWithAuth(`/tickets/${ticketId}/status`, { method: 'POST', body: JSON.stringify(body) }),
+        errorFallback: t('ticketWorkbench.toast.resolveFailed'),
+        successMessage: t('ticketWorkbench.toast.ticketResolved'),
+        onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
+      });
+    } catch (err) {
+      if (!(err instanceof ActionError)) throw err;
+      // A non-401 failure while an aiDraftId was attached means the
+      // resolution-note draft is no longer valid — consumed/discarded
+      // elsewhere (409), OR its id is stale after a ticket switch reset it
+      // out from under this submit (404, I1 #4191 final review: matches the
+      // sibling send/discard recovery condition below, not just 409, so a
+      // 404 doesn't loop forever). Drop the now-dead id (and refetch the
+      // draft list, so its card disappears too) so the technician's next
+      // submit — the typed note stays put — POSTs without it.
+      if (err.status !== 401 && resolveDraftId) {
+        setResolveDraftId(null);
+        void refetchAiDrafts(ticketId);
+      }
+      return; // keep the form open and the typed note intact on failure
+    }
+    afterMutation({ status: 'resolved', resolutionNote: note });
+    if (resolveDraftId) setAiDrafts((prev) => prev.filter((d) => d.id !== resolveDraftId));
     setResolveOpen(false);
     setResolutionNote('');
     setPendingStatusId(null);
-  }, [mutate, resolutionNote, pendingStatusId, t]);
+    setResolveDraftId(null);
+  }, [afterMutation, pendingStatusId, refetchAiDrafts, resolutionNote, resolveDraftId, t, ticketId]);
 
   const submitPending = useCallback(async () => {
     if (!pendingOpen) return;
@@ -546,9 +818,28 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
     setPendingStatusId(null);
   }, [mutate, pendingOpen, pendingReason, pendingStatusId, t]);
 
-  const sendComment = useCallback(async (content: string, isPublic: boolean) => {
+  /**
+   * W08 #3902 — one file per call. The body is FormData, so fetchWithAuth
+   * deliberately leaves Content-Type unset and the browser supplies the
+   * multipart boundary. runAction surfaces 413/415/429/503 as a toast; the
+   * composer turns the rejection into a retryable chip.
+   */
+  const uploadAttachment = useCallback(async (file: File): Promise<{ id: string }> => {
+    const form = new FormData();
+    form.append('file', file);
+    const res = await runAction({
+      request: () => fetchWithAuth(`/tickets/${ticketId}/attachments`, { method: 'POST', body: form }),
+      errorFallback: t('ticketWorkbench.toast.attachmentFailed'),
+      onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
+    });
+    const id = (res as { data?: { id?: string } } | undefined)?.data?.id;
+    if (!id) throw new Error('upload returned no attachment id');
+    return { id };
+  }, [ticketId, t]);
+
+  const sendComment = useCallback(async (content: string, isPublic: boolean, attachmentIds: string[] = []) => {
     await runAction({
-      request: () => fetchWithAuth(`/tickets/${ticketId}/comments`, { method: 'POST', body: JSON.stringify({ content, isPublic }) }),
+      request: () => fetchWithAuth(`/tickets/${ticketId}/comments`, { method: 'POST', body: JSON.stringify({ content, isPublic, attachmentIds }) }),
       errorFallback: t('ticketWorkbench.toast.replyFailed'),
       onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
     });
@@ -831,6 +1122,53 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
             </button>
           )}
         </div>
+        {(invoiceBlocked.length > 0 || invoiceMissingRate.length > 0) && (
+          <div className="mt-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-2 text-xs" data-testid="ticket-invoice-blocked" role="status">
+            {partialInvoiceId ? (
+              <p>
+                {t('ticketWorkbench.invoice.partialLeftOut')}{' '}
+                <a href={`/billing/invoices/${partialInvoiceId}`} className="font-medium underline" data-testid="ticket-invoice-open-draft">
+                  {t('ticketWorkbench.invoice.openDraft')}
+                </a>
+              </p>
+            ) : invoiceBlocked.length > 0 ? (
+              <p>{t('ticketWorkbench.invoice.allBlockedByCurrency')}</p>
+            ) : (
+              <p>{t('ticketWorkbench.invoice.allMissingRate')}</p>
+            )}
+            {invoiceBlocked.length > 0 && (
+              <div className="mt-1.5 flex flex-wrap gap-2">
+                {invoiceBlocked.map((g) => (
+                  <button
+                    key={g.currencyCode}
+                    type="button"
+                    disabled={creatingInvoice}
+                    onClick={() => void createInvoice(g.currencyCode)}
+                    data-testid={`ticket-assemble-in-${g.currencyCode}`}
+                    className="rounded-md border bg-background px-2 py-1 text-xs font-medium hover:bg-muted disabled:opacity-50"
+                  >
+                    {t('ticketWorkbench.invoice.assembleIn', { code: g.currencyCode, count: g.count, amount: formatMoney(g.amount, g.currencyCode) })}
+                  </button>
+                ))}
+              </div>
+            )}
+            {invoiceMissingRate.length > 0 && (
+              <div className="mt-1.5" data-testid="ticket-invoice-missing-rate">
+                <p className="font-medium">{t('ticketWorkbench.invoice.missingRateHeading')}</p>
+                <ul className="mt-1 list-disc pl-4">
+                  {invoiceMissingRate.map((m) => (
+                    <li key={m.timeEntryId} data-testid={`ticket-invoice-missing-rate-${m.timeEntryId}`}>
+                      {t('ticketWorkbench.invoice.missingRateEntry', { description: m.description, hours: m.hours })}
+                    </li>
+                  ))}
+                </ul>
+                <a href="/timesheet" className="mt-1 inline-block font-medium underline" data-testid="ticket-invoice-set-rate">
+                  {t('ticketWorkbench.invoice.setRate')}
+                </a>
+              </div>
+            )}
+          </div>
+        )}
         {moveOrgOpen && (
           <div className="mt-2 rounded-md border bg-muted/30 p-2" data-testid="ticket-workbench-move-org-form">
             <label className="text-xs font-medium" htmlFor="move-org-select">{t('ticketWorkbench.move.label')}</label>
@@ -838,7 +1176,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
               id="move-org-select"
               data-testid="ticket-workbench-move-org-select"
               value={moveOrgTargetId}
-              onChange={(e) => setMoveOrgTargetId(e.target.value)}
+              onChange={(e) => { setMoveOrgTargetId(e.target.value); setMoveBlocked(null); setAcceptCurrency(false); }}
               className="mt-1 w-full rounded-md border bg-background px-2 py-1 text-xs"
             >
               <option value="">{t('ticketWorkbench.move.selectOrganization')}</option>
@@ -846,11 +1184,34 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
                 <option key={o.id} value={o.id}>{o.name}</option>
               ))}
             </select>
+            {moveBlocked && (
+              <div className="mt-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-2 text-xs" role="status">
+                <p data-testid="ticket-move-blocked-currency">
+                  {t('ticketWorkbench.move.blockedCurrency', {
+                    timeCount: moveBlocked.unbilledTimeEntries,
+                    partCount: moveBlocked.unbilledParts,
+                    sourceCurrency: moveBlocked.sourceCurrency,
+                    targetCurrency: moveBlocked.targetCurrency,
+                    targetOrg: orgs.find((o) => o.id === moveOrgTargetId)?.name ?? moveOrgTargetId,
+                  })}
+                </p>
+                <label className="mt-1.5 flex items-start gap-2">
+                  <input
+                    type="checkbox"
+                    data-testid="ticket-move-accept-currency"
+                    checked={acceptCurrency}
+                    onChange={(e) => setAcceptCurrency(e.target.checked)}
+                    className="mt-0.5"
+                  />
+                  <span>{t('ticketWorkbench.move.acceptCurrency', { sourceCurrency: moveBlocked.sourceCurrency })}</span>
+                </label>
+              </div>
+            )}
             <div className="mt-1.5 flex justify-end gap-2">
               <button
                 type="button"
                 data-testid="ticket-workbench-move-org-cancel"
-                onClick={() => setMoveOrgOpen(false)}
+                onClick={() => { setMoveOrgOpen(false); setMoveBlocked(null); setAcceptCurrency(false); }}
                 className="rounded-md border px-2 py-1 text-xs hover:bg-muted"
               >
                 {t('common:actions.cancel')}
@@ -858,12 +1219,30 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
               <button
                 type="button"
                 data-testid="ticket-workbench-move-org-confirm"
-                disabled={!moveOrgTargetId}
-                onClick={() => { if (moveOrgTargetId) { handleMoveOrg(moveOrgTargetId); setMoveOrgOpen(false); } }}
+                disabled={!moveOrgTargetId || moving}
+                onClick={() => {
+                  if (!moveOrgTargetId) return;
+                  // Close only on success — the 409 guidance renders inside this form.
+                  void handleMoveOrg(moveOrgTargetId).then((ok) => { if (ok) setMoveOrgOpen(false); });
+                }}
                 className="rounded-md bg-primary px-2 py-1 text-xs font-medium text-white disabled:opacity-50"
               >
                 {t('ticketWorkbench.move.confirm')}
               </button>
+              {moveBlocked && (
+                <button
+                  type="button"
+                  data-testid="ticket-workbench-move-org-accept"
+                  disabled={!acceptCurrency || moving || !moveOrgTargetId}
+                  onClick={() => {
+                    if (!moveOrgTargetId) return;
+                    void handleMoveOrg(moveOrgTargetId, { acceptCurrencyMismatch: true }).then((ok) => { if (ok) setMoveOrgOpen(false); });
+                  }}
+                  className="rounded-md bg-destructive px-2 py-1 text-xs font-medium text-white disabled:opacity-50"
+                >
+                  {t('ticketWorkbench.move.moveAnyway')}
+                </button>
+              )}
             </div>
           </div>
         )}
@@ -924,6 +1303,46 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
             </div>
           </div>
         )}
+        {aiDrafts.map((draft) => (
+          // At most one `reply` + one `resolution_note` draft can be active
+          // at once (ticket_drafts_active_uq) — testids are keyed per kind
+          // (not per draft id) so both cards are independently addressable.
+          <div key={draft.id} className="mt-2 rounded-md border bg-muted/30 p-2" data-testid={`ticket-ai-draft-${draft.kind}`}>
+            <div className="flex items-center gap-1.5 text-xs font-medium">
+              <Sparkles className="h-3.5 w-3.5 text-primary" />
+              {draft.kind === 'reply' ? t('ticketWorkbench.aiDraft.kindReply') : t('ticketWorkbench.aiDraft.kindResolutionNote')}
+            </div>
+            <textarea
+              value={draftContent[draft.id] ?? draft.content}
+              onChange={(e) => setDraftContent((prev) => ({ ...prev, [draft.id]: e.target.value }))}
+              rows={3}
+              className="mt-1 w-full rounded-md border bg-background px-2 py-1.5 text-sm"
+              data-testid={`ticket-ai-draft-${draft.kind}-content`}
+            />
+            <div className="mt-1.5 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => void discardAiDraft(draft)}
+                disabled={sendingDraftId === draft.id || discardingDraftId === draft.id}
+                className="rounded-md border px-2 py-1 text-xs hover:bg-muted disabled:opacity-50"
+                data-testid={`ticket-ai-draft-${draft.kind}-discard`}
+              >
+                {discardingDraftId === draft.id ? t('common:states.saving') : t('ticketWorkbench.aiDraft.discard')}
+              </button>
+              {draft.kind === 'reply' && (
+                <button
+                  type="button"
+                  onClick={() => void sendAiDraft(draft)}
+                  disabled={sendingDraftId === draft.id || discardingDraftId === draft.id || !(draftContent[draft.id] ?? draft.content).trim()}
+                  className="rounded-md bg-primary px-2 py-1 text-xs font-medium text-white disabled:opacity-50"
+                  data-testid={`ticket-ai-draft-${draft.kind}-send`}
+                >
+                  {sendingDraftId === draft.id ? t('ticketWorkbench.aiDraft.sending') : t('ticketWorkbench.aiDraft.sendAsMe')}
+                </button>
+              )}
+            </div>
+          </div>
+        ))}
         {resolveOpen && (
           <div className="mt-2 rounded-md border bg-muted/30 p-2" data-testid="ticket-workbench-resolve-form">
             <label className="text-xs font-medium" htmlFor="resolve-note">{t('ticketWorkbench.resolve.noteLabel')}</label>
@@ -1033,6 +1452,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
               )}
             </div>
             <TicketFeed
+              ticketId={ticket.id}
               comments={ticket.comments}
               onEditComment={handleEditComment}
               onDeleteComment={handleDeleteComment}
@@ -1042,6 +1462,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
           <TicketComposer
             requesterName={ticket.submitterName}
             onSend={sendComment}
+            onUploadAttachment={uploadAttachment}
             templates={cannedTemplates}
             templateVars={templateVars}
           />

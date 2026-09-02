@@ -522,6 +522,421 @@ describe('TicketWorkbench ML triage suggestions', () => {
   });
 });
 
+describe('TicketWorkbench AI drafts (#4191, Task 11)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  /** Sets up fetchWithAuth: ticket GET, triage-suggestion GET (disabled), and
+   *  a stubbed ai-drafts GET returning `drafts`. Mutations return {success:true}
+   *  unless overridden by `extra`. */
+  function mockDraftsApi(drafts: unknown[], extra?: (url: string, init?: RequestInit) => Response | null) {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (extra) {
+        const res = extra(url, init);
+        if (res) return res;
+      }
+      if (url === '/tickets/tk-1' && (!init?.method || init.method === 'GET')) {
+        return makeJsonResponse({ data: makeTicket({ id: 'tk-1' }) });
+      }
+      if (url === '/tickets/tk-1/triage-suggestion' && (!init?.method || init.method === 'GET')) {
+        return makeJsonResponse({ enabled: false, flagSource: 'default', suggestion: null });
+      }
+      if (url === '/tickets/tk-1/ai-drafts' && (!init?.method || init.method === 'GET')) {
+        return makeJsonResponse({ data: drafts });
+      }
+      return makeJsonResponse({ success: true });
+    });
+  }
+
+  const replyDraft = {
+    id: 'draft-reply-1',
+    kind: 'reply',
+    content: 'Thanks for reaching out — please try rebooting the printer.',
+    createdAt: '2026-08-01T12:00:00.000Z',
+    runId: 'run-1',
+  };
+
+  const resolutionDraft = {
+    id: 'draft-note-1',
+    kind: 'resolution_note',
+    content: 'Replaced the fuser assembly; printer now prints cleanly.',
+    createdAt: '2026-08-01T12:00:00.000Z',
+    runId: 'run-2',
+  };
+
+  it('renders an AI draft card with the kind label and editable content', async () => {
+    mockDraftsApi([replyDraft]);
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    const card = await screen.findByTestId('ticket-ai-draft-reply');
+    expect(card).toBeInTheDocument();
+    const textarea = screen.getByTestId('ticket-ai-draft-reply-content') as HTMLTextAreaElement;
+    expect(textarea.value).toBe(replyDraft.content);
+    expect(screen.getByTestId('ticket-ai-draft-reply-send')).toBeInTheDocument();
+    expect(screen.getByTestId('ticket-ai-draft-reply-discard')).toBeInTheDocument();
+  });
+
+  it('renders a reply and a resolution_note draft simultaneously with per-kind testids', async () => {
+    mockDraftsApi([replyDraft, resolutionDraft]);
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ticket-ai-draft-reply');
+    await screen.findByTestId('ticket-ai-draft-resolution_note');
+
+    expect(screen.getByTestId('ticket-ai-draft-reply-content')).toHaveValue(replyDraft.content);
+    expect(screen.getByTestId('ticket-ai-draft-resolution_note-content')).toHaveValue(resolutionDraft.content);
+    expect(screen.getByTestId('ticket-ai-draft-reply-send')).toBeInTheDocument();
+    // Send is reply-only — the API 409s a send on a resolution_note draft.
+    expect(screen.queryByTestId('ticket-ai-draft-resolution_note-send')).toBeNull();
+    expect(screen.getByTestId('ticket-ai-draft-reply-discard')).toBeInTheDocument();
+    expect(screen.getByTestId('ticket-ai-draft-resolution_note-discard')).toBeInTheDocument();
+  });
+
+  it('sends the (edited) draft content via runAction and removes the card', async () => {
+    mockDraftsApi([replyDraft]);
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    const textarea = await screen.findByTestId('ticket-ai-draft-reply-content');
+    fireEvent.change(textarea, { target: { value: 'Edited: please reboot the printer twice.' } });
+    fireEvent.click(screen.getByTestId('ticket-ai-draft-reply-send'));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/tickets/tk-1/ai-drafts/draft-reply-1/send',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ content: 'Edited: please reboot the printer twice.' }),
+        }),
+      );
+    });
+    await waitFor(() => {
+      expect(screen.queryByTestId('ticket-ai-draft-reply')).toBeNull();
+    });
+  });
+
+  it('discards a draft via runAction without sending, and removes the card', async () => {
+    mockDraftsApi([replyDraft]);
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ticket-ai-draft-reply');
+    fireEvent.click(screen.getByTestId('ticket-ai-draft-reply-discard'));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/tickets/tk-1/ai-drafts/draft-reply-1/discard',
+        expect.objectContaining({ method: 'POST' }),
+      );
+    });
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      '/tickets/tk-1/ai-drafts/draft-reply-1/send',
+      expect.anything(),
+    );
+    await waitFor(() => {
+      expect(screen.queryByTestId('ticket-ai-draft-reply')).toBeNull();
+    });
+  });
+
+  it('on a 409 send conflict (already sent/discarded elsewhere), refetches and drops the stale card', async () => {
+    // Keyed on an explicit "consumed" flag (flipped only by the conflicting
+    // POST) rather than a raw GET call counter — the initial mount can
+    // legitimately re-fetch ai-drafts more than once before the user ever
+    // clicks Send, and a call-count-based fixture would flake on that.
+    let consumed = false;
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url === '/tickets/tk-1' && (!init?.method || init.method === 'GET')) {
+        return makeJsonResponse({ data: makeTicket({ id: 'tk-1' }) });
+      }
+      if (url === '/tickets/tk-1/triage-suggestion' && (!init?.method || init.method === 'GET')) {
+        return makeJsonResponse({ enabled: false, flagSource: 'default', suggestion: null });
+      }
+      if (url === '/tickets/tk-1/ai-drafts' && (!init?.method || init.method === 'GET')) {
+        return makeJsonResponse({ data: consumed ? [] : [replyDraft] });
+      }
+      if (url === '/tickets/tk-1/ai-drafts/draft-reply-1/send' && init?.method === 'POST') {
+        consumed = true;
+        return makeJsonResponse({ error: 'Draft is no longer active' }, false, 409);
+      }
+      return makeJsonResponse({ success: true });
+    });
+
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ticket-ai-draft-reply');
+    fireEvent.click(screen.getByTestId('ticket-ai-draft-reply-send'));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/tickets/tk-1/ai-drafts/draft-reply-1/send',
+        expect.objectContaining({ method: 'POST' }),
+      );
+    });
+
+    // The card can only disappear here via a refetch landing after `consumed`
+    // flipped true (there is no successful-send optimistic-removal path on
+    // this failing request) — so this proves the post-conflict refetch fired.
+    await waitFor(() => {
+      expect(screen.queryByTestId('ticket-ai-draft-reply')).toBeNull();
+    });
+  });
+
+  it('prefills the resolve note from an active resolution_note draft and sends aiDraftId on resolve', async () => {
+    mockDraftsApi([resolutionDraft]);
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ticket-workbench');
+    // Wait for the resolution_note draft CARD to render — proof that aiDrafts
+    // (and the aiDraftsRef it syncs to) has actually committed, not just that
+    // the ai-drafts fetch was called. openResolveForm() reads the ref
+    // synchronously inside the status-change handler below, so this is load-
+    // bearing, not decorative.
+    await screen.findByTestId('ticket-ai-draft-resolution_note');
+
+    fireEvent.change(screen.getByTestId('ticket-workbench-status'), { target: { value: 'resolved' } });
+
+    const note = screen.getByTestId('ticket-workbench-resolve-note') as HTMLTextAreaElement;
+    expect(note.value).toBe(resolutionDraft.content);
+
+    fireEvent.click(screen.getByTestId('ticket-workbench-resolve-submit'));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/tickets/tk-1/status',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ status: 'resolved', resolutionNote: resolutionDraft.content, aiDraftId: 'draft-note-1' }),
+        }),
+      );
+    });
+  });
+
+  // C1 (#4191 final review): the technician editing the prefilled note before
+  // submitting must NOT be silently replaced by the draft's original content.
+  // Non-uniform fixture — the edited text is deliberately different from
+  // resolutionDraft.content — so a regression that resends the draft's
+  // content instead of the edited value fails loudly.
+  it('C1: submits the technician-edited note (not the draft content) alongside aiDraftId', async () => {
+    mockDraftsApi([resolutionDraft]);
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ticket-workbench');
+    await screen.findByTestId('ticket-ai-draft-resolution_note');
+
+    fireEvent.change(screen.getByTestId('ticket-workbench-status'), { target: { value: 'resolved' } });
+
+    const note = screen.getByTestId('ticket-workbench-resolve-note') as HTMLTextAreaElement;
+    expect(note.value).toBe(resolutionDraft.content);
+    fireEvent.change(note, { target: { value: 'Technician-edited resolution note' } });
+
+    fireEvent.click(screen.getByTestId('ticket-workbench-resolve-submit'));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/tickets/tk-1/status',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ status: 'resolved', resolutionNote: 'Technician-edited resolution note', aiDraftId: 'draft-note-1' }),
+        }),
+      );
+    });
+  });
+
+  // I1 (#4191 final review): a 404 (stale draft id after a ticket switch,
+  // e.g. resolveDraftId survived from a prior ticket's aiDrafts state) used
+  // to fall through the `err.status === 409` check and loop forever. The
+  // recovery must match the sibling send/discard handlers (any non-401).
+  it('I1: on a 404 resolve conflict from a stale aiDraftId, drops it and retries without it (not just 409)', async () => {
+    let resolveAttempts = 0;
+    let consumed = false;
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url === '/tickets/tk-1' && (!init?.method || init.method === 'GET')) {
+        return makeJsonResponse({ data: makeTicket({ id: 'tk-1' }) });
+      }
+      if (url === '/tickets/tk-1/triage-suggestion' && (!init?.method || init.method === 'GET')) {
+        return makeJsonResponse({ enabled: false, flagSource: 'default', suggestion: null });
+      }
+      if (url === '/tickets/tk-1/ai-drafts' && (!init?.method || init.method === 'GET')) {
+        return makeJsonResponse({ data: consumed ? [] : [resolutionDraft] });
+      }
+      if (url === '/tickets/tk-1/status' && init?.method === 'POST') {
+        resolveAttempts += 1;
+        if (resolveAttempts === 1) {
+          consumed = true;
+          return makeJsonResponse({ error: 'Draft not found' }, false, 404);
+        }
+        return makeJsonResponse({ data: makeTicket({ id: 'tk-1', status: 'resolved' }) });
+      }
+      return makeJsonResponse({ success: true });
+    });
+
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ticket-workbench');
+    await screen.findByTestId('ticket-ai-draft-resolution_note');
+
+    fireEvent.change(screen.getByTestId('ticket-workbench-status'), { target: { value: 'resolved' } });
+    const note = screen.getByTestId('ticket-workbench-resolve-note') as HTMLTextAreaElement;
+    expect(note.value).toBe(resolutionDraft.content);
+
+    fireEvent.click(screen.getByTestId('ticket-workbench-resolve-submit'));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/tickets/tk-1/status',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ status: 'resolved', resolutionNote: resolutionDraft.content, aiDraftId: 'draft-note-1' }),
+        }),
+      );
+    });
+
+    expect(screen.getByTestId('ticket-workbench-resolve-form')).toBeInTheDocument();
+    expect(note.value).toBe(resolutionDraft.content);
+
+    fireEvent.click(screen.getByTestId('ticket-workbench-resolve-submit'));
+
+    // The second submit must NOT loop the same 404 forever — it posts without
+    // the now-dropped aiDraftId.
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/tickets/tk-1/status',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ status: 'resolved', resolutionNote: resolutionDraft.content }),
+        }),
+      );
+    });
+  });
+
+  it('on a 409 resolve conflict from a stale aiDraftId, keeps the typed note and retries without it', async () => {
+    let resolveAttempts = 0;
+    // Same rationale as the send-409 test above: an explicit "consumed" flag
+    // (flipped by the first failing /status POST), not a raw GET call count.
+    let consumed = false;
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url === '/tickets/tk-1' && (!init?.method || init.method === 'GET')) {
+        return makeJsonResponse({ data: makeTicket({ id: 'tk-1' }) });
+      }
+      if (url === '/tickets/tk-1/triage-suggestion' && (!init?.method || init.method === 'GET')) {
+        return makeJsonResponse({ enabled: false, flagSource: 'default', suggestion: null });
+      }
+      if (url === '/tickets/tk-1/ai-drafts' && (!init?.method || init.method === 'GET')) {
+        return makeJsonResponse({ data: consumed ? [] : [resolutionDraft] });
+      }
+      if (url === '/tickets/tk-1/status' && init?.method === 'POST') {
+        resolveAttempts += 1;
+        if (resolveAttempts === 1) {
+          // Someone else already consumed/discarded the draft between the
+          // form opening and this submit.
+          consumed = true;
+          return makeJsonResponse({ error: 'Draft is no longer active' }, false, 409);
+        }
+        return makeJsonResponse({ data: makeTicket({ id: 'tk-1', status: 'resolved' }) });
+      }
+      return makeJsonResponse({ success: true });
+    });
+
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ticket-workbench');
+    // Same rationale as the prefill test above: wait for the card, not just
+    // the fetch call.
+    await screen.findByTestId('ticket-ai-draft-resolution_note');
+
+    fireEvent.change(screen.getByTestId('ticket-workbench-status'), { target: { value: 'resolved' } });
+    const note = screen.getByTestId('ticket-workbench-resolve-note') as HTMLTextAreaElement;
+    expect(note.value).toBe(resolutionDraft.content);
+
+    fireEvent.click(screen.getByTestId('ticket-workbench-resolve-submit'));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/tickets/tk-1/status',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ status: 'resolved', resolutionNote: resolutionDraft.content, aiDraftId: 'draft-note-1' }),
+        }),
+      );
+    });
+
+    // The 409 keeps the form open with the typed note untouched, and drops
+    // the now-dead aiDraftId.
+    expect(screen.getByTestId('ticket-workbench-resolve-form')).toBeInTheDocument();
+    expect(note.value).toBe(resolutionDraft.content);
+
+    fireEvent.click(screen.getByTestId('ticket-workbench-resolve-submit'));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/tickets/tk-1/status',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ status: 'resolved', resolutionNote: resolutionDraft.content }),
+        }),
+      );
+    });
+  });
+
+  it('never renders a card for a draft the ai-drafts endpoint does not return (consumed/discarded)', async () => {
+    mockDraftsApi([]);
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ticket-workbench');
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/tickets/tk-1/ai-drafts'));
+    expect(screen.queryByTestId('ticket-ai-draft-reply')).toBeNull();
+    expect(screen.queryByTestId('ticket-ai-draft-resolution_note')).toBeNull();
+  });
+
+  // I2 (#4191 final review): ticket A's AI-draft card must clear as soon as
+  // ticketId switches — not linger until ticket B's ai-drafts fetch resolves.
+  // The new ticket's GET is held open (never resolved during the assertion)
+  // so a regression that only clears on refetch-complete would still show
+  // ticket A's stale card at the point we check.
+  it('I2: clears stale AI-draft cards immediately on ticket switch, before the new fetch resolves', async () => {
+    let resolveTk2Drafts!: (value: Response) => void;
+    const tk2DraftsPromise = new Promise<Response>((resolve) => { resolveTk2Drafts = resolve; });
+
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url === '/tickets/tk-1' && (!init?.method || init.method === 'GET')) {
+        return makeJsonResponse({ data: makeTicket({ id: 'tk-1', internalNumber: 'T-2026-0001' }) });
+      }
+      if (url === '/tickets/tk-2' && (!init?.method || init.method === 'GET')) {
+        return makeJsonResponse({ data: makeTicket({ id: 'tk-2', internalNumber: 'T-2026-0002' }) });
+      }
+      if (url === '/tickets/tk-1/triage-suggestion' || url === '/tickets/tk-2/triage-suggestion') {
+        return makeJsonResponse({ enabled: false, flagSource: 'default', suggestion: null });
+      }
+      if (url === '/tickets/tk-1/ai-drafts' && (!init?.method || init.method === 'GET')) {
+        return makeJsonResponse({ data: [replyDraft] });
+      }
+      if (url === '/tickets/tk-2/ai-drafts' && (!init?.method || init.method === 'GET')) {
+        return tk2DraftsPromise; // held open deliberately
+      }
+      return makeJsonResponse({ success: true });
+    });
+
+    const { rerender } = render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+    await screen.findByTestId('ticket-ai-draft-reply');
+
+    rerender(<TicketWorkbench ticketId="tk-2" assignees={[]} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('ticket-workbench-number')).toHaveTextContent('T-2026-0002');
+    });
+    // Ticket A's card is gone even though ticket B's ai-drafts fetch is still
+    // unresolved at this point.
+    expect(screen.queryByTestId('ticket-ai-draft-reply')).toBeNull();
+
+    resolveTk2Drafts(makeJsonResponse({ data: [resolutionDraft] }));
+    await screen.findByTestId('ticket-ai-draft-resolution_note');
+  });
+});
+
 describe('TicketWorkbench pending/on_hold prompt', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -1731,6 +2146,100 @@ describe('TicketWorkbench move-org action', () => {
     expect(options).toContain('org-2');
   });
 
+  // Multi-currency wave 4 (#3776): a cross-currency move with unbilled monetary
+  // rows answers 409 TICKET_MOVE_CURRENCY_BLOCKED. The dialog must stay mounted
+  // so the guidance has somewhere to render, and "move anyway" is a deliberate
+  // two-step (checkbox + button) that re-POSTs acceptCurrencyMismatch: true.
+  const BLOCKED_409 = {
+    error: 'Ticket has unbilled EUR work; Globex Inc bills in USD',
+    code: 'TICKET_MOVE_CURRENCY_BLOCKED',
+    details: { sourceCurrency: 'EUR', targetCurrency: 'USD', unbilledTimeEntries: 2, unbilledParts: 1, accepted: false },
+  };
+  const moveCalls = () =>
+    fetchMock.mock.calls.filter(([url, init]) => init?.method === 'POST' && String(url).includes('/move-org'));
+  const ticketGets = () =>
+    fetchMock.mock.calls.filter(([url, init]) => (!init?.method || init.method === 'GET') && String(url) === '/tickets/tk-1');
+
+  /** Like mockTicketApiWithOrgs, but the FIRST move-org POST answers 409 blocked. */
+  function mockBlockedMove(ticket: TicketDetail) {
+    let moves = 0;
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.startsWith('/orgs/organizations')) {
+        return makeJsonResponse({ data: [{ id: 'org-1', name: 'Acme Corp' }, { id: 'org-2', name: 'Globex Inc' }] });
+      }
+      if (!init?.method || init.method === 'GET') {
+        const match = url.match(/^\/tickets\/([^/]+)$/);
+        if (match && match[1] === ticket.id) return makeJsonResponse({ data: ticket });
+      }
+      if (init?.method === 'POST' && url.includes('/move-org')) {
+        moves += 1;
+        if (moves === 1) return makeJsonResponse(BLOCKED_409, false, 409);
+      }
+      return makeJsonResponse({ success: true });
+    });
+  }
+
+  it('a successful first move closes the form', async () => {
+    const ticket = makeTicket({ id: 'tk-1', orgId: 'org-1', orgName: 'Acme Corp' });
+    mockTicketApiWithOrgs(ticket);
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+    await screen.findByTestId('ticket-workbench');
+    fireEvent.click(screen.getByTestId('ticket-workbench-move-org'));
+    fireEvent.change(await screen.findByTestId('ticket-workbench-move-org-select'), { target: { value: 'org-2' } });
+    fireEvent.click(screen.getByTestId('ticket-workbench-move-org-confirm'));
+    await waitFor(() => expect(screen.queryByTestId('ticket-workbench-move-org-form')).toBeNull());
+    expect(moveCalls()).toHaveLength(1);
+  });
+
+  it('on 409 TICKET_MOVE_CURRENCY_BLOCKED the form stays open with guidance and a gated "move anyway"', async () => {
+    const ticket = makeTicket({ id: 'tk-1', orgId: 'org-1', orgName: 'Acme Corp' });
+    mockBlockedMove(ticket);
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+    await screen.findByTestId('ticket-workbench');
+    fireEvent.click(screen.getByTestId('ticket-workbench-move-org'));
+    fireEvent.change(await screen.findByTestId('ticket-workbench-move-org-select'), { target: { value: 'org-2' } });
+    fireEvent.click(screen.getByTestId('ticket-workbench-move-org-confirm'));
+
+    const guidance = await screen.findByTestId('ticket-move-blocked-currency');
+    expect(screen.getByTestId('ticket-workbench-move-org-confirm')).toBeInTheDocument();
+    expect(guidance).toHaveTextContent('EUR');
+    expect(guidance).toHaveTextContent('USD');
+    expect(guidance).toHaveTextContent('Globex Inc');
+    // The server message was toasted by runAction (bill first, or explicitly accept).
+    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', message: BLOCKED_409.error }));
+
+    const accept = screen.getByTestId('ticket-workbench-move-org-accept');
+    expect(accept).toBeDisabled();
+    fireEvent.click(screen.getByTestId('ticket-move-accept-currency'));
+    expect(accept).not.toBeDisabled();
+
+    const getsBefore = ticketGets().length;
+    fireEvent.click(accept);
+    await waitFor(() => expect(moveCalls()).toHaveLength(2));
+    expect(JSON.parse(String(moveCalls()[1][1]?.body))).toEqual({ orgId: 'org-2', acceptCurrencyMismatch: true });
+    await waitFor(() => expect(screen.queryByTestId('ticket-workbench-move-org-form')).toBeNull());
+    await waitFor(() => expect(ticketGets().length).toBeGreaterThan(getsBefore));
+  });
+
+  it('changing the target org after a block resets the acceptance checkbox', async () => {
+    const ticket = makeTicket({ id: 'tk-1', orgId: 'org-1', orgName: 'Acme Corp' });
+    mockBlockedMove(ticket);
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+    await screen.findByTestId('ticket-workbench');
+    fireEvent.click(screen.getByTestId('ticket-workbench-move-org'));
+    const picker = await screen.findByTestId('ticket-workbench-move-org-select');
+    fireEvent.change(picker, { target: { value: 'org-2' } });
+    fireEvent.click(screen.getByTestId('ticket-workbench-move-org-confirm'));
+    await screen.findByTestId('ticket-move-blocked-currency');
+    fireEvent.click(screen.getByTestId('ticket-move-accept-currency'));
+    expect(screen.getByTestId('ticket-workbench-move-org-accept')).not.toBeDisabled();
+
+    fireEvent.change(picker, { target: { value: '' } });
+    expect(screen.queryByTestId('ticket-move-blocked-currency')).toBeNull();
+    expect(screen.queryByTestId('ticket-workbench-move-org-accept')).toBeNull();
+  });
+
   it('cancel button closes the move-org form without POSTing', async () => {
     const ticket = makeTicket({ id: 'tk-1', orgId: 'org-1', orgName: 'Acme Corp' });
     mockTicketApiWithOrgs(ticket);
@@ -1748,6 +2257,181 @@ describe('TicketWorkbench move-org action', () => {
     expect(
       fetchMock.mock.calls.filter(([url, init]) => init?.method === 'POST' && String(url).includes('/move-org'))
     ).toHaveLength(0);
+  });
+});
+
+describe('TicketWorkbench create-invoice blocked by currency (#3776)', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  const invoiceCalls = () =>
+    fetchMock.mock.calls.filter(([url, init]) => init?.method === 'POST' && String(url).includes('/invoice'));
+
+  it('on 409 ALL_BLOCKED_BY_CURRENCY offers to assemble in the blocked currency via ?currencyCode=', async () => {
+    const ticket = makeTicket({ id: 'tk-1' });
+    let posts = 0;
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (!init?.method || init.method === 'GET') {
+        if (url === '/tickets/tk-1') return makeJsonResponse({ data: ticket });
+      }
+      if (init?.method === 'POST' && url.startsWith('/tickets/tk-1/invoice')) {
+        posts += 1;
+        if (posts === 1) {
+          return makeJsonResponse({
+            error: 'All unbilled work is in EUR; this draft is in USD',
+            code: 'ALL_BLOCKED_BY_CURRENCY',
+            details: { blockedByCurrency: [{ currencyCode: 'EUR', count: 2, amount: '250.00' }] },
+          }, false, 409);
+        }
+        return makeJsonResponse({ data: { invoice: { id: 'inv-eur' }, lines: [], blockedByCurrency: [] } });
+      }
+      return makeJsonResponse({ success: true });
+    });
+    render(<TicketWorkbench ticketId="tk-1" />);
+    await screen.findByTestId('ticket-workbench');
+
+    fireEvent.click(screen.getByTestId('ticket-workbench-create-invoice'));
+    const btn = await screen.findByTestId('ticket-assemble-in-EUR');
+    expect(navigateTo).not.toHaveBeenCalled();
+    expect(invoiceCalls()[0][0]).toBe('/tickets/tk-1/invoice');
+
+    fireEvent.click(btn);
+    await waitFor(() => expect(navigateTo).toHaveBeenCalledWith('/billing/invoices/inv-eur'));
+    expect(invoiceCalls()).toHaveLength(2);
+    expect(invoiceCalls()[1][0]).toBe('/tickets/tk-1/invoice?currencyCode=EUR');
+  });
+
+  // Review #3 (#3776): a partial success carries BOTH the draft and the rows it
+  // left out. Navigating straight to the draft would hide them — the draft
+  // itself gives no hint that EUR work is still unbilled.
+  it('on partial success keeps the user here, offers the per-currency shortcut and an "open draft" link', async () => {
+    const ticket = makeTicket({ id: 'tk-1' });
+    let posts = 0;
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (!init?.method || init.method === 'GET') {
+        if (url === '/tickets/tk-1') return makeJsonResponse({ data: ticket });
+      }
+      if (init?.method === 'POST' && url.startsWith('/tickets/tk-1/invoice')) {
+        posts += 1;
+        if (posts === 1) {
+          return makeJsonResponse({
+            data: {
+              invoice: { id: 'inv-usd' }, lines: [],
+              blockedByCurrency: [{ currencyCode: 'EUR', count: 3, amount: '410.00' }],
+              missingRate: [],
+            },
+          });
+        }
+        return makeJsonResponse({ data: { invoice: { id: 'inv-eur' }, lines: [], blockedByCurrency: [], missingRate: [] } });
+      }
+      return makeJsonResponse({ success: true });
+    });
+    render(<TicketWorkbench ticketId="tk-1" />);
+    await screen.findByTestId('ticket-workbench');
+
+    fireEvent.click(screen.getByTestId('ticket-workbench-create-invoice'));
+    const panel = await screen.findByTestId('ticket-invoice-blocked');
+    expect(navigateTo).not.toHaveBeenCalled();
+    expect(panel.textContent).toContain('EUR');
+    expect(screen.getByTestId('ticket-invoice-open-draft').getAttribute('href')).toBe('/billing/invoices/inv-usd');
+
+    fireEvent.click(screen.getByTestId('ticket-assemble-in-EUR'));
+    await waitFor(() => expect(navigateTo).toHaveBeenCalledWith('/billing/invoices/inv-eur'));
+    expect(invoiceCalls()[1][0]).toBe('/tickets/tk-1/invoice?currencyCode=EUR');
+  });
+
+  it('navigates straight to the draft when nothing was left out', async () => {
+    const ticket = makeTicket({ id: 'tk-1' });
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if ((!init?.method || init.method === 'GET') && url === '/tickets/tk-1') return makeJsonResponse({ data: ticket });
+      if (init?.method === 'POST' && url === '/tickets/tk-1/invoice') {
+        return makeJsonResponse({ data: { invoice: { id: 'inv-1' }, lines: [], blockedByCurrency: [], missingRate: [] } });
+      }
+      return makeJsonResponse({ success: true });
+    });
+    render(<TicketWorkbench ticketId="tk-1" />);
+    await screen.findByTestId('ticket-workbench');
+    fireEvent.click(screen.getByTestId('ticket-workbench-create-invoice'));
+    await waitFor(() => expect(navigateTo).toHaveBeenCalledWith('/billing/invoices/inv-1'));
+    expect(screen.queryByTestId('ticket-invoice-blocked')).toBeNull();
+  });
+
+  // Review #1 (#3776): rate-less entries are never billed at zero; the response
+  // lists them under missingRate so the tech can set a rate and try again.
+  it('lists missingRate entries from a partial success with a link to set a rate', async () => {
+    const ticket = makeTicket({ id: 'tk-1' });
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if ((!init?.method || init.method === 'GET') && url === '/tickets/tk-1') return makeJsonResponse({ data: ticket });
+      if (init?.method === 'POST' && url === '/tickets/tk-1/invoice') {
+        return makeJsonResponse({
+          data: {
+            invoice: { id: 'inv-1' }, lines: [], blockedByCurrency: [],
+            missingRate: [{ timeEntryId: 'te-9', ticketId: 'tk-1', description: 'Unrated work', hours: '1.50' }],
+          },
+        });
+      }
+      return makeJsonResponse({ success: true });
+    });
+    render(<TicketWorkbench ticketId="tk-1" />);
+    await screen.findByTestId('ticket-workbench');
+    fireEvent.click(screen.getByTestId('ticket-workbench-create-invoice'));
+    const row = await screen.findByTestId('ticket-invoice-missing-rate-te-9');
+    expect(row.textContent).toContain('Unrated work');
+    expect(row.textContent).toContain('1.50');
+    expect(navigateTo).not.toHaveBeenCalled();
+    expect(screen.getByTestId('ticket-invoice-set-rate').getAttribute('href')).toBe('/timesheet');
+    expect(screen.getByTestId('ticket-invoice-open-draft').getAttribute('href')).toBe('/billing/invoices/inv-1');
+  });
+
+  it('on 409 ALL_MISSING_RATE lists the entries with the set-rate link and no draft link', async () => {
+    const ticket = makeTicket({ id: 'tk-1' });
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if ((!init?.method || init.method === 'GET') && url === '/tickets/tk-1') return makeJsonResponse({ data: ticket });
+      if (init?.method === 'POST' && url === '/tickets/tk-1/invoice') {
+        return makeJsonResponse({
+          error: '1 billable time entry has no hourly rate in USD',
+          code: 'ALL_MISSING_RATE',
+          details: { missingRate: [{ timeEntryId: 'te-9', ticketId: 'tk-1', description: 'Unrated work', hours: '0.25' }] },
+        }, false, 409);
+      }
+      return makeJsonResponse({ success: true });
+    });
+    render(<TicketWorkbench ticketId="tk-1" />);
+    await screen.findByTestId('ticket-workbench');
+    fireEvent.click(screen.getByTestId('ticket-workbench-create-invoice'));
+    await screen.findByTestId('ticket-invoice-missing-rate-te-9');
+    expect(screen.getByTestId('ticket-invoice-set-rate')).toBeTruthy();
+    expect(screen.queryByTestId('ticket-invoice-open-draft')).toBeNull();
+    expect(screen.queryByTestId(/^ticket-assemble-in-/)).toBeNull();
+    expect(navigateTo).not.toHaveBeenCalled();
+  });
+
+  it('on 409 ALL_BLOCKED_BY_CURRENCY also lists the missingRate entries carried in details', async () => {
+    const ticket = makeTicket({ id: 'tk-1' });
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if ((!init?.method || init.method === 'GET') && url === '/tickets/tk-1') return makeJsonResponse({ data: ticket });
+      if (init?.method === 'POST' && url === '/tickets/tk-1/invoice') {
+        return makeJsonResponse({
+          error: 'All unbilled work is in EUR',
+          code: 'ALL_BLOCKED_BY_CURRENCY',
+          details: {
+            blockedByCurrency: [{ currencyCode: 'EUR', count: 1, amount: '100.00' }],
+            missingRate: [{ timeEntryId: 'te-9', ticketId: 'tk-1', description: 'Unrated work', hours: '0.25' }],
+          },
+        }, false, 409);
+      }
+      return makeJsonResponse({ success: true });
+    });
+    render(<TicketWorkbench ticketId="tk-1" />);
+    await screen.findByTestId('ticket-workbench');
+    fireEvent.click(screen.getByTestId('ticket-workbench-create-invoice'));
+    await screen.findByTestId('ticket-assemble-in-EUR');
+    expect(screen.getByTestId('ticket-invoice-missing-rate-te-9')).toBeTruthy();
   });
 });
 

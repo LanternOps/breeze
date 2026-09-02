@@ -58,3 +58,34 @@ describe('portalApi.getTicketForms request path', () => {
     expect(result.data).toEqual([]);
   });
 });
+
+
+describe('publicApiPath (rendered into HTML)', () => {
+  it('is same-origin relative on the server even with INTERNAL_API_URL set', async () => {
+    vi.stubEnv('INTERNAL_API_URL', 'http://api:3001');
+    const { publicApiPath, buildPortalApiUrl } = await import('./api');
+    expect(publicApiPath('/portal/quotes/q1/pdf')).toBe('/api/v1/portal/quotes/q1/pdf');
+    // The contrast that matters: the fetch URL may carry the internal host, the
+    // rendered path never does.
+    expect(buildPortalApiUrl('/portal/quotes/q1/pdf')).toMatch(/^http:\/\/api:3001\/api\/v1\/portal\/quotes\/q1\/pdf$/);
+    vi.unstubAllEnvs();
+  });
+
+  it('normalises a leading /api/ and a missing slash', async () => {
+    const { publicApiPath } = await import('./api');
+    expect(publicApiPath('portal/x')).toBe('/api/v1/portal/x');
+    expect(publicApiPath('/api/portal/x')).toBe('/api/v1/portal/x');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// W08 #3902
+// ---------------------------------------------------------------------------
+describe('portalAttachmentContentPath', () => {
+  it('is a same-origin /api/v1 path — the SSR-internal host must never reach customer HTML', async () => {
+    const { portalAttachmentContentPath } = await import('./api');
+    const path = portalAttachmentContentPath('t-1', 'a-1');
+    expect(path).toBe('/api/v1/portal/tickets/t-1/attachments/a-1/content');
+    expect(path.startsWith('http')).toBe(false);
+  });
+});

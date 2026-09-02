@@ -116,7 +116,15 @@
     "internalPlaceholder": "Aggiungi una nota interna...",
     "sending": "Invio",
     "sendReply": "Invia risposta",
-    "addInternalNote": "Aggiungi nota interna"
+    "addInternalNote": "Aggiungi nota interna",
+    "attachments": {
+      "attach": "Allega",
+      "uploading": "Caricamento…",
+      "retry": "Riprova",
+      "remove": "Rimuovi file",
+      "tooMany": "Puoi allegare al massimo {{max}} file a un commento.",
+      "tooLarge": "{{name}} supera i 10 MB."
+    }
   },
   "ticketFeed": {
     "empty": "Ancora nessuna attività.",
@@ -149,6 +157,11 @@
     "deleteDialog": {
       "title": "Elimina commento",
       "message": "Vuoi davvero eliminare questo commento? Questa azione non può essere annullata."
+    },
+    "attachments": {
+      "broken": "Impossibile caricare {{name}}",
+      "open": "Apri allegato",
+      "remove": "Rimuovi allegato"
     }
   },
   "ticketPartsCard": {
@@ -184,6 +197,7 @@
     "totalTime": "Tempo totale",
     "billable": "Fatturabile",
     "timeAmount": "Quantità di tempo",
+    "noAmount": "—",
     "partsCount": "Parti ({{count}})",
     "partsCount_one": "Parti ({{count}})",
     "partsCount_other": "Parti ({{count}})",
@@ -397,14 +411,25 @@
       "create": "Crea fattura",
       "creating": "Creazione...",
       "createFailed": "Impossibile creare una fattura da questo ticket.",
-      "created": "Bozza di fattura creata"
+      "created": "Bozza di fattura creata",
+      "allBlockedByCurrency": "Tutto il lavoro fatturabile di questo ticket è valorizzato in una valuta diversa da quella in cui fattura l’organizzazione. Componi invece una bozza in quella valuta:",
+      "assembleIn": "Componi in {{code}} ({{count}} voci, {{amount}})",
+      "partialLeftOut": "È stata creata una bozza di fattura, ma parte del lavoro fatturabile di questo ticket è stata esclusa e risulta ancora non fatturata.",
+      "openDraft": "Apri la bozza",
+      "allMissingRate": "Non è stato possibile fatturare nulla: a ogni voce di tempo fatturabile di questo ticket manca la tariffa oraria.",
+      "missingRateHeading": "Voci di tempo senza tariffa oraria (non fatturate — imposta una tariffa e crea di nuovo la fattura):",
+      "missingRateEntry": "{{description}} — {{hours}} h",
+      "setRate": "Imposta una tariffa nel foglio ore"
     },
     "move": {
       "open": "Sposta in un'altra org...",
       "label": "Sposta in organizzazione",
       "selectOrganization": "Seleziona organizzazione...",
       "confirm": "Sposta",
-      "failed": "Spostamento non riuscito. Riprova."
+      "failed": "Spostamento non riuscito. Riprova.",
+      "blockedCurrency": "Questo ticket ha {{timeCount}} registrazioni di tempo non fatturate e {{partCount}} parti non fatturate valorizzate in {{sourceCurrency}}, ma {{targetOrg}} fattura in {{targetCurrency}}. Fatturale prima, oppure sposta comunque: gli importi restano in {{sourceCurrency}} e possono essere fatturati solo su una bozza in {{sourceCurrency}}.",
+      "acceptCurrency": "Capisco che questi importi restano in {{sourceCurrency}} e non vengono convertiti.",
+      "moveAnyway": "Sposta comunque"
     },
     "triage": {
       "title": "Triage suggerito",
@@ -419,6 +444,17 @@
       "applied": "Suggerimento di triage del ticket applicato",
       "feedbackFailed": "Impossibile salvare il feedback sul triage del ticket.",
       "feedbackSaved": "Feedback sul triage del ticket salvato"
+    },
+    "aiDraft": {
+      "kindReply": "Risposta redatta dall’IA",
+      "kindResolutionNote": "Nota di risoluzione redatta dall’IA",
+      "sendAsMe": "Invia come me",
+      "sending": "Invio in corso…",
+      "discard": "Scarta",
+      "sendFailed": "Impossibile inviare la bozza dell’IA.",
+      "sent": "Bozza inviata",
+      "discardFailed": "Impossibile scartare la bozza dell’IA.",
+      "discarded": "Bozza scartata"
     },
     "resolve": {
       "noteLabel": "Nota di risoluzione (visibile al richiedente)",
@@ -457,7 +493,8 @@
       "categoryUpdateFailed": "Aggiornamento della categoria non riuscito. Riprova.",
       "assigned": "Assegnato",
       "unassigned": "Non assegnato",
-      "assignFailed": "Assegnazione non riuscita. Riprova."
+      "assignFailed": "Assegnazione non riuscita. Riprova.",
+      "attachmentFailed": "Impossibile caricare l'allegato."
     },
     "delete": {
       "failed": "Eliminazione non riuscita. Riprova.",

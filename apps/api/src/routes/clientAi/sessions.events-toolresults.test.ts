@@ -60,6 +60,11 @@ vi.mock('../../db', () => ({
   db: { select: dbSelectMock, insert: dbInsertMock, update: dbUpdateMock },
   withDbAccessContext: vi.fn((_ctx: unknown, fn: () => unknown) => fn()),
 }));
+vi.mock('../../services/clientAiSessions', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../services/clientAiSessions')>()),
+  resolveClientLlmConfig: vi.fn(() =>
+    Promise.resolve({ source: 'platform', apiKey: 'test-platform-key', model: 'claude-sonnet-4-6' })),
+}));
 vi.mock('../../services/streamingSessionManager', () => ({ streamingSessionManager: managerMock }));
 vi.mock('../../services/auditEvents', () => ({ writeAuditEvent: writeAuditEventMock }));
 vi.mock('../../services/clientAiUsage', () => ({
@@ -193,12 +198,12 @@ describe('GET /client-ai/sessions/:id/events', () => {
     const res = await buildApp().request(`/client-ai/sessions/${SESSION_ID}/events`, { headers: AUTHED });
     expect(res.status).toBe(200);
     expect(managerMock.getOrCreate).toHaveBeenCalled();
-    // 9th positional arg pins the client loop config
+    // 10th positional arg pins the client loop config
     const args = managerMock.getOrCreate.mock.calls[0]!;
-    expect(args[8]).toEqual({ injectApprovalModeInstructions: false });
+    expect(args[9]).toEqual({ injectApprovalModeInstructions: false });
     // SDK toolset is the write-mode-filtered client allowlist
-    expect(args[6]).toEqual(expect.arrayContaining(['mcp__excel__read_range']));
-    expect(args[6]).not.toEqual(expect.arrayContaining(['mcp__breeze__query_devices']));
+    expect(args[7]).toEqual(expect.arrayContaining(['mcp__excel__read_range']));
+    expect(args[7]).not.toEqual(expect.arrayContaining(['mcp__breeze__query_devices']));
 
     await new Promise((r) => setTimeout(r, 20));
     (active.eventBus as TestEventBus).closeAll();

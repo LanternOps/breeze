@@ -8,7 +8,10 @@ vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
 import TicketTimeBilling from './TicketTimeBilling';
 import { BILLING_CHANGED_EVENT } from '../../lib/timerActions';
 
-const summary = { time: { totalMinutes: 90, billableMinutes: 60, billableAmount: '150.00' }, parts: { partsCount: 2, billableTotal: '49.98' } };
+const summary = {
+  time: { totalMinutes: 90, billableMinutes: 60, billableAmounts: [{ currencyCode: 'EUR', amount: '150.00' }] },
+  parts: { partsCount: 2, billableTotals: [{ currencyCode: 'EUR', amount: '49.98' }, { currencyCode: 'USD', amount: '12.00' }] },
+};
 const entries = [{ id: 'te-1', startedAt: '2026-06-12T09:00:00Z', endedAt: '2026-06-12T09:45:00Z', durationMinutes: 45, description: 'diag', isBillable: true, userName: 'Todd', ticketNumber: null, ticketSubject: null, ticketId: 'tk-1', isApproved: false }];
 const route = (url: string) => {
   if (url.startsWith('/tickets/tk-1/billing-summary')) return { ok: true, status: 200, json: async () => ({ data: summary }) } as Response;
@@ -22,20 +25,48 @@ describe('TicketTimeBilling', () => {
   it('renders totals from the billing summary', async () => {
     render(<TicketTimeBilling ticketId="tk-1" />);
     expect((await screen.findByTestId('ticket-billing-time-total')).textContent).toContain('1h 30m');
-    expect(screen.getByTestId('ticket-billing-amount').textContent).toContain('$150.00');
-    expect(screen.getByTestId('ticket-billing-parts-total').textContent).toContain('$49.98');
+    expect(screen.getByTestId('ticket-billing-amount').textContent).toContain('€150.00');
+    expect(screen.getByTestId('ticket-billing-amount').textContent).not.toContain('$');
+    expect(screen.getByTestId('ticket-billing-amount-EUR').textContent).toContain('€150.00');
+    // Parts span two currencies → one chip per currency, never a summed total.
+    const parts = screen.getByTestId('ticket-billing-parts-total');
+    expect(parts.textContent).toContain('€49.98');
+    expect(parts.textContent).toContain('$12.00');
+    expect(parts.textContent).not.toContain('61.98');
+    expect(screen.getByTestId('ticket-billing-parts-total-EUR').textContent).toBe('€49.98');
+    expect(screen.getByTestId('ticket-billing-parts-total-USD').textContent).toBe('$12.00');
   });
 
-  it('formats the totals in the currency the summary carries (INTERIM #3777 org currency)', async () => {
+  // W06 (#3900): the SAME badge the timesheet renders, from the same helper, so
+  // the two surfaces cannot disagree about what a provenance value is called.
+  it('shows a provenance badge in the rail for a non-manual entry and none for manual', async () => {
     fetchWithAuth.mockImplementation(async (url: string) => {
-      if (url.startsWith('/tickets/tk-1/billing-summary')) {
-        return { ok: true, status: 200, json: async () => ({ data: { ...summary, currencyCode: 'EUR' } }) } as Response;
+      if (url.startsWith('/tickets/tk-1/time-entries')) {
+        return { ok: true, status: 200, json: async () => ({ data: [
+          { ...entries[0], id: 'e1', source: 'support_session' },
+          { ...entries[0], id: 'e2', source: 'manual' },
+          { ...entries[0], id: 'e3' },
+        ], total: 3 }) } as Response;
       }
       return route(url);
     });
     render(<TicketTimeBilling ticketId="tk-1" />);
-    expect((await screen.findByTestId('ticket-billing-amount')).textContent).toContain('€150.00');
-    expect(screen.getByTestId('ticket-billing-parts-total').textContent).toContain('€49.98');
+    expect((await screen.findByTestId('time-entry-source-e1')).textContent).toBe('From Quick Support');
+    expect(screen.queryByTestId('time-entry-source-e2')).toBeNull();
+    expect(screen.queryByTestId('time-entry-source-e3')).toBeNull();
+  });
+
+  it('renders a dash (not $0.00) when a summary carries no money', async () => {
+    fetchWithAuth.mockImplementation(async (url: string) => {
+      if (url.startsWith('/tickets/tk-1/billing-summary')) {
+        return { ok: true, status: 200, json: async () => ({ data: { time: { totalMinutes: 30, billableMinutes: 0, billableAmounts: [] }, parts: { partsCount: 0, billableTotals: [] } } }) } as Response;
+      }
+      return route(url);
+    });
+    render(<TicketTimeBilling ticketId="tk-1" />);
+    expect((await screen.findByTestId('ticket-billing-amount')).textContent).toBe('—');
+    expect(screen.getByTestId('ticket-billing-parts-total').textContent).toBe('—');
+    expect(screen.getByTestId('ticket-time-billing').textContent).not.toContain('$');
   });
 
   it('starts a timer scoped to the ticket', async () => {

@@ -9,6 +9,10 @@ import {
   canManagePartnerWidePolicies,
   PARTNER_WIDE_WRITE_DENIED_MESSAGE,
 } from '../../services/partnerWideAccess';
+import {
+  MANAGED_AUTOMATION_ERROR_CODE,
+  isManagedAutomation,
+} from '../../services/aiAgents/managedAutomation';
 import { evaluatePolicy, resolvePolicyRemediationAutomationId } from '../../services/policyEvaluationService';
 import { AuthContext, policyIdSchema } from './schemas';
 import { getPolicyWithOrgCheck, normalizePolicyResponse } from './helpers';
@@ -233,6 +237,13 @@ actionRoutes.post(
 
     if (!automation) {
       return c.json({ error: 'Remediation automation not found for this organization' }, 404);
+    }
+
+    // This route enqueues with no target argument, so the runtime resolves the
+    // automation's full configured target set. Pointing remediation at the
+    // managed row would therefore be a literal fleet fan-out.
+    if (isManagedAutomation(automation)) {
+      return c.json({ error: MANAGED_AUTOMATION_ERROR_CODE, agentId: automation.managedByAgentId }, 409);
     }
 
     if (!automation.enabled) {

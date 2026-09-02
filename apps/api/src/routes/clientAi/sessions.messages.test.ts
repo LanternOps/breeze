@@ -11,6 +11,7 @@ const {
   checkBillingCreditsMock, rateLimiterMock,
   resolveToolResultMock, failPendingMock,
   applyDlpMock,
+  resolveClientLlmConfigMock,
 } = vi.hoisted(() => ({
   CLIENT_USER_ID: 'beefbeef-1111-4222-8333-444455556666',
   ORG_ID: '0c0c0c0c-1111-4222-8333-444455556666',
@@ -35,6 +36,7 @@ const {
   resolveToolResultMock: vi.fn(() => true),
   failPendingMock: vi.fn(() => 0),
   applyDlpMock: vi.fn(),
+  resolveClientLlmConfigMock: vi.fn(),
 }));
 
 vi.mock('../../services/aiAgentSdk', () => ({
@@ -75,6 +77,10 @@ vi.mock('../../services/clientAiToolBridge', () => ({
   failPendingForSession: failPendingMock,
 }));
 vi.mock('../../services/clientAiDlp', () => ({ applyDlp: applyDlpMock }));
+vi.mock('../../services/clientAiSessions', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../services/clientAiSessions')>()),
+  resolveClientLlmConfig: (...args: unknown[]) => resolveClientLlmConfigMock(...args),
+}));
 
 import { clientAiSessionRoutes } from './sessions';
 import { defaultClientAiPolicy } from '../../services/clientAiPolicy';
@@ -108,6 +114,14 @@ beforeEach(() => {
   checkClientBudgetMock.mockResolvedValue(null);
   checkBillingCreditsMock.mockResolvedValue(null);
   rateLimiterMock.mockResolvedValue({ allowed: true, remaining: 9, resetAt: new Date() });
+  resolveClientLlmConfigMock.mockResolvedValue({
+    source: 'partner',
+    partnerId: 'partner-from-org',
+    apiKey: 'partner-key',
+    model: 'claude-opus-4-6',
+    configId: 'config-1',
+    configVersion: 2,
+  });
   policyState.policy = { ...defaultClientAiPolicy(ORG_ID), enabled: true };
   dbSelectMock.mockImplementation(() => selectChain([SESSION_ROW]));
   dbInsertMock.mockImplementation(() => ({
@@ -166,6 +180,20 @@ describe('POST /client-ai/sessions/:id/messages', () => {
     expect((await postMessage({ content: 'hi' })).status).toBe(410);
   });
 
+  it('returns ai_unavailable as 503 before touching the SDK manager', async () => {
+    resolveClientLlmConfigMock.mockResolvedValue({
+      source: 'unavailable',
+      partnerId: 'partner-from-org',
+      reason: 'key_error',
+    });
+
+    const res = await postMessage({ content: 'hi' });
+
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'ai_unavailable' });
+    expect(managerMock.getOrCreate).not.toHaveBeenCalled();
+  });
+
   it('402s on budget exhaustion, 429s on rate limit (preflight per message)', async () => {
     checkClientBudgetMock.mockResolvedValueOnce('Daily AI budget for your organization has been reached ($5.00).');
     expect((await postMessage({ content: 'hi' })).status).toBe(402);
@@ -189,6 +217,19 @@ describe('POST /client-ai/sessions/:id/messages', () => {
     expect((activeSession.inputController as { pushMessage: ReturnType<typeof vi.fn> }).pushMessage)
       .toHaveBeenCalledWith('sum column B please');
     expect(managerMock.startTurnTimeout).toHaveBeenCalledWith(activeSession);
+    expect(resolveClientLlmConfigMock).toHaveBeenCalledWith(ORG_ID);
+    expect(managerMock.getOrCreate).toHaveBeenCalledWith(
+      SESSION_ID,
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      undefined,
+      expect.objectContaining({ source: 'partner', configId: 'config-1', configVersion: 2 }),
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+    );
     expect(writeAuditEventMock).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({

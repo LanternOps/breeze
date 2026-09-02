@@ -48,43 +48,42 @@ function seqSelect(results: Array<unknown[]>) {
 
 const PLAN = { id: 'p1', orgId: 'org-1', name: 'Plan 1', status: 'active' };
 
-describe('execute_dr_plan — cross-site device authorization', () => {
+describe('execute_dr_plan — durable authorization subject handoff', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('denies execution when any group device is outside the caller\'s site scope', async () => {
+  it('passes the complete caller context to the durable execution service', async () => {
+    const auth = makeAuth(['site-A']);
     seqSelect([
       [PLAN],                                            // loadPlanWithAccess
       [{ id: 'g1', name: 'G1', sequence: 0, devices: ['dev-A', 'dev-B'], restoreConfig: {}, estimatedDurationMinutes: null }], // groups
-      [{ id: 'dev-A', siteId: 'site-A' }, { id: 'dev-B', siteId: 'site-B' }], // resolveSiteDevicePartition (org devices)
     ]);
-    const result = await handlerFor('execute_dr_plan')({ planId: 'p1', executionType: 'failover' }, makeAuth(['site-A']));
-    expect(result).toContain('outside your site access');
-    expect(mockEnqueue).not.toHaveBeenCalled();
+    const result = await handlerFor('execute_dr_plan')({ planId: 'p1', executionType: 'failover' }, auth);
+    expect(JSON.parse(result).success).toBe(true);
+    expect(mockEnqueue).toHaveBeenCalledWith(expect.objectContaining({ auth }));
   });
 
-  it('allows execution when all group devices are in scope, pinning the authorized set', async () => {
+  it('does not persist a mutable device-list snapshot as authority', async () => {
     seqSelect([
       [PLAN],
       [{ id: 'g1', name: 'G1', sequence: 0, devices: ['dev-A'], restoreConfig: {}, estimatedDurationMinutes: null }],
-      [{ id: 'dev-A', siteId: 'site-A' }, { id: 'dev-B', siteId: 'site-B' }],
     ]);
     const result = await handlerFor('execute_dr_plan')({ planId: 'p1', executionType: 'failover' }, makeAuth(['site-A']));
     const parsed = JSON.parse(result);
     expect(parsed.success).toBe(true);
     expect(mockEnqueue).toHaveBeenCalledTimes(1);
-    expect(mockEnqueue.mock.calls[0]![0].authorizedDeviceIds).toEqual(['dev-A']);
+    expect(mockEnqueue.mock.calls[0]![0]).not.toHaveProperty('authorizedDeviceIds');
   });
 
-  it('unrestricted caller executes with no authorization pin (authorizedDeviceIds null)', async () => {
+  it('also passes an unrestricted caller as a durable subject input', async () => {
+    const auth = makeAuth(undefined);
     seqSelect([
       [PLAN],
       [{ id: 'g1', name: 'G1', sequence: 0, devices: ['dev-A', 'dev-B'], restoreConfig: {}, estimatedDurationMinutes: null }],
-      // no partition select — resolveSiteDevicePartition short-circuits for unrestricted callers
     ]);
-    const result = await handlerFor('execute_dr_plan')({ planId: 'p1', executionType: 'failover' }, makeAuth(undefined));
+    const result = await handlerFor('execute_dr_plan')({ planId: 'p1', executionType: 'failover' }, auth);
     const parsed = JSON.parse(result);
     expect(parsed.success).toBe(true);
-    expect(mockEnqueue.mock.calls[0]![0].authorizedDeviceIds).toBeNull();
+    expect(mockEnqueue.mock.calls[0]![0].auth).toBe(auth);
   });
 });
 

@@ -536,7 +536,7 @@ export default function CatalogItemsTab({ reloadKey = 0 }: { reloadKey?: number 
 
       {capHit && (
         <p className="text-xs text-muted-foreground" data-testid="catalog-cap-note">
-          {t('catalogItemsTab.showingTheFirst')}{CATALOG_PAGE_LIMIT} {t('catalogItemsTab.itemsUseSearchToNarrowTheList')}</p>
+          {t('catalogItemsTab.capNote', { limit: CATALOG_PAGE_LIMIT })}</p>
       )}
 
       <CatalogItemEditorDrawer

@@ -5,6 +5,8 @@
  * Documentation is served via Swagger UI at /api/v1/docs
  */
 
+import { ACTOR_TYPES, AUDIT_RESULTS } from '@breeze/shared';
+
 export const openApiSpec = {
   openapi: '3.0.3',
   info: {
@@ -415,8 +417,18 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
           triggeredAt: { type: 'string', format: 'date-time' },
           acknowledgedAt: { type: 'string', format: 'date-time', nullable: true },
           acknowledgedBy: { type: 'string', format: 'uuid', nullable: true },
+          acknowledgedByName: {
+            type: 'string',
+            nullable: true,
+            description: 'Display name for acknowledgedBy. Null when the id no longer resolves to a user.'
+          },
           resolvedAt: { type: 'string', format: 'date-time', nullable: true },
           resolvedBy: { type: 'string', format: 'uuid', nullable: true },
+          resolvedByName: {
+            type: 'string',
+            nullable: true,
+            description: 'Display name for resolvedBy. Null when the id no longer resolves to a user.'
+          },
           resolutionNote: { type: 'string', nullable: true },
           suppressedUntil: { type: 'string', format: 'date-time', nullable: true }
         }
@@ -468,6 +480,32 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
             }
           },
           total: { type: 'integer' }
+        }
+      },
+      ScriptAdmissionTarget: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['requestedDeviceId', 'admission'],
+        properties: {
+          requestedDeviceId: { type: 'string', format: 'uuid' },
+          admission: { type: 'string', enum: ['admitted', 'excluded', 'suppressed', 'denied'] },
+          reasonCode: { type: 'string' },
+          executionId: { type: 'string', format: 'uuid' },
+          commandId: { type: 'string', format: 'uuid' },
+          batchId: { type: 'string', format: 'uuid' }
+        }
+      },
+      ScriptAdmissionResult: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['requestId', 'status', 'targets'],
+        properties: {
+          requestId: { type: 'string', format: 'uuid' },
+          status: { type: 'string', enum: ['queued', 'partially_queued', 'rejected'] },
+          targets: {
+            type: 'array',
+            items: { $ref: '#/components/schemas/ScriptAdmissionTarget' }
+          }
         }
       },
 
@@ -730,7 +768,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         properties: {
           id: { type: 'string', format: 'uuid' },
           timestamp: { type: 'string', format: 'date-time' },
-          actorType: { type: 'string', enum: ['user', 'system', 'agent'] },
+          actorType: { type: 'string', enum: [...ACTOR_TYPES] },
           actorId: { type: 'string', format: 'uuid' },
           actorEmail: { type: 'string' },
           action: { type: 'string' },
@@ -740,7 +778,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
           details: { type: 'object' },
           ipAddress: { type: 'string' },
           userAgent: { type: 'string' },
-          result: { type: 'string', enum: ['success', 'failure'] }
+          result: { type: 'string', enum: [...AUDIT_RESULTS] }
         }
       }
     },
@@ -2562,8 +2600,8 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
       post: {
         operationId: 'executeScript',
         tags: ['Scripts'],
-        summary: 'Execute script',
-        description: 'Execute script on one or more devices. Creates a batch if multiple devices. Commands are delivered via WebSocket for immediate execution. Requires MFA.',
+        summary: 'Queue script execution',
+        description: 'Authorize and admit a script for one or more devices. A 201 response reports queue admission per distinct requested target and is not evidence of terminal execution success. Requires MFA.',
         parameters: [{ $ref: '#/components/parameters/idParam' }],
         requestBody: {
           required: true,
@@ -2588,19 +2626,10 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         },
         responses: {
           '201': {
-            description: 'Execution started',
+            description: 'Per-target queue admission result',
             content: {
               'application/json': {
-                schema: {
-                  type: 'object',
-                  properties: {
-                    batchId: { type: 'string', format: 'uuid', nullable: true },
-                    scriptId: { type: 'string', format: 'uuid' },
-                    devicesTargeted: { type: 'integer' },
-                    executions: { type: 'array', items: { type: 'object' } },
-                    status: { type: 'string' }
-                  }
-                }
+                schema: { $ref: '#/components/schemas/ScriptAdmissionResult' }
               }
             }
           }
@@ -2792,6 +2821,27 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
             content: {
               'application/json': {
                 schema: { $ref: '#/components/schemas/Alert' }
+              }
+            }
+          },
+          '400': {
+            description: 'Alert is dismissed and cannot be resolved',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/Error' }
+              }
+            }
+          },
+          '409': {
+            description:
+              'The alert already reached a terminal status (resolved or dismissed) — ' +
+              'either before this request, or because a concurrent caller won the ' +
+              'compare-and-swap in between. This request did not perform the transition, ' +
+              'so no alert.resolved event was published on its behalf. Re-read the alert ' +
+              'to see which terminal status it landed in.',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/Error' }
               }
             }
           }
@@ -4202,13 +4252,13 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
           { $ref: '#/components/parameters/pageParam' },
           { $ref: '#/components/parameters/limitParam' },
           { name: 'actorId', in: 'query', schema: { type: 'string', format: 'uuid' } },
-          { name: 'actorType', in: 'query', schema: { type: 'string', enum: ['user', 'system', 'agent'] } },
+          { name: 'actorType', in: 'query', schema: { type: 'string', enum: [...ACTOR_TYPES] } },
           { name: 'action', in: 'query', schema: { type: 'string' } },
           { name: 'resourceType', in: 'query', schema: { type: 'string' } },
           { name: 'resourceId', in: 'query', schema: { type: 'string', format: 'uuid' } },
           { name: 'from', in: 'query', schema: { type: 'string', format: 'date-time' } },
           { name: 'to', in: 'query', schema: { type: 'string', format: 'date-time' } },
-          { name: 'result', in: 'query', schema: { type: 'string', enum: ['success', 'failure'] } }
+          { name: 'result', in: 'query', schema: { type: 'string', enum: [...AUDIT_RESULTS] } }
         ],
         responses: {
           '200': {

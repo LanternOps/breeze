@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   CheckCircle,
   ChevronRight,
@@ -16,6 +16,8 @@ import { showToast } from "../shared/Toast";
 import ProgressBar from "../shared/ProgressBar";
 import type { DeploymentTargetConfig } from "@breeze/shared";
 import { DeviceTargetSelector } from "../filters/DeviceTargetSelector";
+import { DeviceOptionPicker } from "../filters/DeviceOptionPicker";
+import { useDeviceOptions } from "../../hooks/useDeviceOptions";
 import { ScopeBadge } from "../shared/ScopeBadge";
 import { useOrgScope } from "../../hooks/useOrgScope";
 import { useTranslation } from "react-i18next";
@@ -89,12 +91,6 @@ export function usesManagerPath(item: SoftwareOption | undefined): boolean {
   if (!item) return false;
   return item.versions.length === 0 && enabledMethodsOf(item).length > 0;
 }
-type TargetNode = {
-  id: string;
-  name: string;
-  type: "org" | "site" | "group" | "device";
-  children?: TargetNode[];
-};
 /**
  * A deploy POST returns HTTP 200 even when the server fails the deployment up front
  * (built-in EDR packages: target org unmapped / integration disconnected). runAction's
@@ -163,11 +159,6 @@ const createScheduleOptions = () => [
     ),
   },
 ];
-function collectDeviceIds(node: TargetNode): string[] {
-  if (node.type === "device") return [node.id];
-  if (!node.children) return [];
-  return node.children.flatMap((child) => collectDeviceIds(child));
-}
 function normalizeVersion(
   raw: Record<string, unknown>,
   index: number,
@@ -304,7 +295,7 @@ export default function DeploymentWizard({
   const [deploymentCount, setDeploymentCount] = useState(1);
   const [query, setQuery] = useState("");
   const [softwareOptions, setSoftwareOptions] = useState<SoftwareOption[]>([]);
-  const [targetTree, setTargetTree] = useState<TargetNode[]>([]);
+  const [deviceSearch, setDeviceSearch] = useState("");
   const [selectedSoftwareId, setSelectedSoftwareId] = useState<string>("");
   const [selectedVersionId, setSelectedVersionId] = useState<string>("");
   // Package-manager deploys pin either the manager's latest, or an exact
@@ -313,9 +304,6 @@ export default function DeploymentWizard({
   const [requestedVersion, setRequestedVersion] = useState("");
   // deviceId → osType, used by the manager OS-coverage callout on the targets
   // step (the target tree only carries ids/names).
-  const [deviceOsById, setDeviceOsById] = useState<Map<string, string>>(
-    () => new Map(),
-  );
   // Seeded from a device-list bulk selection (#2866) so the targets step shows
   // the carried-over devices pre-checked in the default tree mode.
   const [selectedDevices, setSelectedDevices] = useState<Set<string>>(
@@ -337,17 +325,21 @@ export default function DeploymentWizard({
       deviceIds: initialDeviceIds ? [...initialDeviceIds] : [],
     }),
   );
+  const [advancedTargetsReady, setAdvancedTargetsReady] = useState(false);
+  const deviceOptions = useDeviceOptions({
+    search: deviceSearch,
+    orgId: orgScope.scope === "org" ? orgScope.orgId : undefined,
+    includeIds: Array.from(selectedDevices),
+  });
+  const deviceOsById = useMemo(
+    () => new Map(deviceOptions.options.map((device) => [device.id, device.osType])),
+    [deviceOptions.options],
+  );
   const fetchData = useCallback(async () => {
     try {
       setLoading(true);
       setError(undefined);
-      const [catalogResponse, devicesResponse, sitesResponse, groupsResponse] =
-        await Promise.all([
-          fetchWithAuth("/software/catalog"),
-          fetchWithAuth("/devices"),
-          fetchWithAuth("/orgs/sites"),
-          fetchWithAuth("/device-groups"),
-        ]);
+      const catalogResponse = await fetchWithAuth("/software/catalog");
       let normalizedCatalog: SoftwareOption[] = [];
       if (catalogResponse.ok) {
         const catalogPayload = await catalogResponse.json();
@@ -414,108 +406,6 @@ export default function DeploymentWizard({
         );
         setSoftwareOptions(normalizedCatalog);
       }
-      const tree: TargetNode[] = [];
-      const sitesMap = new Map<string, TargetNode>();
-      const groupsMap = new Map<string, TargetNode>();
-      if (sitesResponse.ok) {
-        const sitesPayload = await sitesResponse.json();
-        const rawSites =
-          asList(sitesPayload, 'sites');
-        if (Array.isArray(rawSites)) {
-          for (const site of rawSites) {
-            const siteRecord = site as Record<string, unknown>;
-            const siteNode: TargetNode = {
-              id: String(siteRecord.id),
-              name: String(siteRecord.name ?? "Unknown Site"),
-              type: "site",
-              children: [],
-            };
-            sitesMap.set(String(siteRecord.id), siteNode);
-            tree.push(siteNode);
-          }
-        }
-      }
-      if (groupsResponse.ok) {
-        const groupsPayload = await groupsResponse.json();
-        const rawGroups =
-          asList(groupsPayload, 'groups');
-        if (Array.isArray(rawGroups)) {
-          for (const group of rawGroups) {
-            const groupRecord = group as Record<string, unknown>;
-            const groupNode: TargetNode = {
-              id: String(groupRecord.id),
-              name: String(groupRecord.name ?? "Unknown Group"),
-              type: "group",
-              children: [],
-            };
-            groupsMap.set(String(groupRecord.id), groupNode);
-            const siteId = String(groupRecord.siteId ?? "");
-            const parentSite = sitesMap.get(siteId);
-            if (parentSite) {
-              parentSite.children?.push(groupNode);
-            } else {
-              tree.push(groupNode);
-            }
-          }
-        }
-      }
-      let deviceRows: Array<Record<string, unknown>> = [];
-      if (devicesResponse.ok) {
-        const devicesPayload = await devicesResponse.json();
-        const rawDevices =
-          asList(devicesPayload, 'devices');
-        if (Array.isArray(rawDevices)) {
-          deviceRows = rawDevices as Array<Record<string, unknown>>;
-          const osMap = new Map<string, string>();
-          for (const deviceRecord of deviceRows) {
-            osMap.set(
-              String(deviceRecord.id),
-              String(deviceRecord.osType ?? deviceRecord.os_type ?? ""),
-            );
-          }
-          setDeviceOsById(osMap);
-          for (const deviceRecord of deviceRows) {
-            const deviceNode: TargetNode = {
-              id: String(deviceRecord.id),
-              name: String(
-                deviceRecord.hostname ??
-                  deviceRecord.displayName ??
-                  deviceRecord.name ??
-                  "Unknown",
-              ),
-              type: "device",
-            };
-            const groupId = String(
-              deviceRecord.groupId ?? deviceRecord.deviceGroupId ?? "",
-            );
-            const siteId = String(deviceRecord.siteId ?? "");
-            const parentGroup = groupsMap.get(groupId);
-            const parentSite = sitesMap.get(siteId);
-            if (parentGroup) {
-              parentGroup.children?.push(deviceNode);
-            } else if (parentSite) {
-              parentSite.children?.push(deviceNode);
-            } else {
-              tree.push(deviceNode);
-            }
-          }
-        }
-      }
-      if (tree.length === 0 && deviceRows.length > 0) {
-        tree.push({
-          id: "all-devices",
-          name: "All Devices",
-          type: "org",
-          children: deviceRows.map((device) => ({
-            id: String(device.id),
-            name: String(
-              device.hostname ?? device.displayName ?? device.name ?? "Unknown",
-            ),
-            type: "device" as const,
-          })),
-        });
-      }
-      setTargetTree(tree);
       if (normalizedCatalog.length > 0 && !selectedSoftwareId) {
         // Preselect the package the user launched from (per-card Deploy), falling
         // back to the first deployable one when none was passed or it has no version.
@@ -679,21 +569,23 @@ export default function DeploymentWizard({
     }
     if (activeStep === "targets") {
       if (targetMode === "advanced") {
-        if (targetConfig.type === "all") return true;
+        if (targetConfig.type === "all") return advancedTargetsReady;
         if (targetConfig.type === "devices")
-          return (targetConfig.deviceIds?.length ?? 0) > 0;
+          return advancedTargetsReady && (targetConfig.deviceIds?.length ?? 0) > 0;
         if (targetConfig.type === "groups")
           return (targetConfig.groupIds?.length ?? 0) > 0;
         if (targetConfig.type === "filter") return Boolean(targetConfig.filter);
         return false;
       }
-      return selectedDevices.size > 0;
+      return deviceOptions.canSubmit && selectedDevices.size > 0;
     }
     if (activeStep === "configure")
       return scheduleType !== "scheduled" || Boolean(scheduledAt);
     return true;
   }, [
     activeStep,
+    advancedTargetsReady,
+    deviceOptions.canSubmit,
     isManagerDeploy,
     requestedVersion,
     scheduleType,
@@ -705,19 +597,6 @@ export default function DeploymentWizard({
     targetMode,
     versionMode,
   ]);
-  const toggleDevices = (deviceIds: string[], select: boolean) => {
-    setSelectedDevices((prev) => {
-      const next = new Set(prev);
-      deviceIds.forEach((id) => {
-        if (select) {
-          next.add(id);
-        } else {
-          next.delete(id);
-        }
-      });
-      return next;
-    });
-  };
   const handleDeploy = async () => {
     try {
       if (!selectedVersionId && !isManagerDeploy) {
@@ -1207,57 +1086,12 @@ export default function DeploymentWizard({
               modes={["all", "manual", "groups", "filter"]}
               showPreview={true}
               showSavedFilters={true}
+              orgId={orgScope.scope === "org" ? orgScope.orgId : undefined}
+              onCanSubmitChange={setAdvancedTargetsReady}
             />
           </div>
         );
       }
-      const TreeItem = ({
-        node,
-        level,
-      }: {
-        node: TargetNode;
-        level: number;
-      }) => {
-        const checkboxRef = useRef<HTMLInputElement | null>(null);
-        const deviceIds = collectDeviceIds(node);
-        const allSelected =
-          deviceIds.length > 0 &&
-          deviceIds.every((id) => selectedDevices.has(id));
-        const someSelected = deviceIds.some((id) => selectedDevices.has(id));
-        useEffect(() => {
-          if (checkboxRef.current) {
-            checkboxRef.current.indeterminate = !allSelected && someSelected;
-          }
-        }, [allSelected, someSelected]);
-        return (
-          <div className={cn("space-y-2", level > 0 && "ml-6")}>
-            <label className="flex items-center gap-2 text-sm">
-              <input
-                ref={checkboxRef}
-                type="checkbox"
-                checked={
-                  node.type === "device"
-                    ? selectedDevices.has(node.id)
-                    : allSelected
-                }
-                onChange={() => {
-                  if (node.type === "device") {
-                    toggleDevices([node.id], !selectedDevices.has(node.id));
-                  } else {
-                    toggleDevices(deviceIds, !allSelected);
-                  }
-                }}
-                className="h-4 w-4 rounded border"
-              />
-              <span className="font-medium">{node.name}</span>
-              <span className="text-xs text-muted-foreground">{node.type}</span>
-            </label>
-            {node.children?.map((child) => (
-              <TreeItem key={child.id} node={child} level={level + 1} />
-            ))}
-          </div>
-        );
-      };
       return (
         <div>
           {targetModeToggle}
@@ -1274,19 +1108,15 @@ export default function DeploymentWizard({
                   "policies:software.deploymentWizard.selectGroupsOrDevicesForDeployment",
                 )}
               </p>
-              <div className="mt-4 space-y-4">
-                {targetTree.length === 0 ? (
-                  <p className="py-8 text-center text-sm text-muted-foreground">
-                    {i18n.t(
-                      "policies:software.deploymentWizard.noTargetsAvailable",
-                    )}
-                  </p>
-                ) : (
-                  targetTree.map((node) => (
-                    <TreeItem key={node.id} node={node} level={0} />
-                  ))
-                )}
-              </div>
+              <DeviceOptionPicker
+                className="mt-4"
+                result={deviceOptions}
+                selectedIds={Array.from(selectedDevices)}
+                onSelectedIdsChange={(ids) => setSelectedDevices(new Set(ids))}
+                search={deviceSearch}
+                onSearchChange={setDeviceSearch}
+                showSelectAll
+              />
             </div>
             <div className="space-y-4">
               <div className="rounded-lg border bg-card p-5 shadow-xs">

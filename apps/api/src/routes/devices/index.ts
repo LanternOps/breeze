@@ -29,6 +29,9 @@ import { customFieldValuesRoutes } from './customFieldValues';
 import { linksRoutes } from './links';
 import { statsRoutes } from './stats';
 import { postureRoutes } from './posture';
+import { optionsRoutes } from './options';
+import { healthRoutes } from './health';
+import { agentRollbackRoutes } from '../agentRollback';
 
 export const deviceRoutes = new Hono();
 
@@ -39,6 +42,12 @@ export const deviceRoutes = new Hono();
 // JWT-only `authMiddleware` and resurrect the 401. Mounting first keeps them
 // clear of every later wildcard auth middleware.
 deviceRoutes.route('/', customFieldValuesRoutes);
+
+// Mount the server-backed selector before coreRoutes so the static `/options`
+// path cannot be consumed by core's `GET /:id` matcher.
+deviceRoutes.route('/', optionsRoutes);
+
+deviceRoutes.route('/', healthRoutes);
 
 // Mount provision routes FIRST — `/provision` is a static path under /devices
 // that must NOT be eaten by the `/:id` matcher in coreRoutes.
@@ -74,6 +83,9 @@ deviceRoutes.route('/', statsRoutes);
 // `/management-posture/*` paths must not be eaten by the `/:id` matcher
 // (which would read `management-posture` as a device id).
 deviceRoutes.route('/', postureRoutes);
+
+// Mount the high-power literal sub-resource before core's /:id routes.
+deviceRoutes.route('/', agentRollbackRoutes);
 
 // Mount core routes (/, /:id, PATCH /:id, DELETE /:id)
 deviceRoutes.route('/', coreRoutes);

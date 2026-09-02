@@ -33,15 +33,27 @@ vi.mock('../../stores/orgStore', () => {
 });
 
 // Mutable JWT scope so individual tests can simulate partner vs. org-scoped sessions.
+// Every test here models a session whose access token has already landed, so
+// `resolved` is true throughout — the not-yet-resolved cold-load window that
+// #4010 turns on is covered by PatchesPage.scopeResolution.test.tsx, which drives
+// the real useJwtClaims against a live auth store instead of mocking it.
 const jwtScope = vi.hoisted(() => ({ scope: 'partner' as 'partner' | 'system' | 'organization' | null }));
 
-vi.mock('../../lib/authScope', () => ({
-  getJwtClaims: () => ({
+vi.mock('../../lib/authScope', () => {
+  const claims = () => ({
     scope: jwtScope.scope,
     partnerId: jwtScope.scope !== 'organization' ? 'p1' : null,
     orgId: jwtScope.scope === 'organization' ? 'org-1' : null,
-  }),
-}));
+  });
+  return {
+    getJwtClaims: claims,
+    // NOTE: `status` is hard-wired to 'resolved' and is deliberately NOT derived
+    // from `jwtScope` — flipping `jwtScope.scope` to null here models an org-ish
+    // user with no claims, NOT the pre-token window. There is no way to reach
+    // 'unresolved' from this file; use PatchesPage.scopeResolution.test.tsx.
+    useJwtClaims: () => ({ status: 'resolved' as const, claims: claims() }),
+  };
+});
 
 const fetchMock = vi.mocked(fetchWithAuth);
 

@@ -257,6 +257,39 @@ describe('EnrollmentKeyManager — create form site selector', () => {
     expect(post?.body?.orgId).toBe('org-1');
   });
 
+  it('leaving the device-limit field blank sends the 50-device default, not a single-use maxUsage (#4126 paper cut #31)', async () => {
+    seedOrgState({
+      currentOrgId: 'org-1',
+      organizations: [makeOrg('org-1', 'Org One')],
+    });
+    const calls = routeFetch([], [makeSite({ id: 'site-a', name: 'Site A' })]);
+    render(<EnrollmentKeyManager />);
+    await screen.findByText(EMPTY);
+
+    fireEvent.click(screen.getByText('Create Key'));
+    fireEvent.change(screen.getByPlaceholderText('e.g., Production servers'), {
+      target: { value: 'CI key' },
+    });
+
+    const siteSelect = screen.getByTestId('enrollment-key-site-select');
+    await waitFor(() => {
+      expect(siteSelect).toBeEnabled();
+      expect(siteSelect).toHaveValue('site-a');
+    });
+
+    // The max-uses field is left untouched (blank) — the placeholder promises
+    // a sane default, not a single-use key.
+    const submit = document.querySelector('form button[type="submit"]') as HTMLButtonElement;
+    expect(submit.disabled).toBe(false);
+    fireEvent.click(submit);
+
+    await waitFor(() => {
+      expect(calls.some((c) => c.url === '/enrollment-keys' && c.method === 'POST')).toBe(true);
+    });
+    const post = calls.find((c) => c.url === '/enrollment-keys' && c.method === 'POST');
+    expect(post?.body?.maxUsage).toBe(50);
+  });
+
   it('blocks submit and hides the site dropdown when the org has no sites', async () => {
     seedOrgState({
       currentOrgId: 'org-1',
@@ -522,5 +555,31 @@ describe('EnrollmentKeyManager — create form site selector', () => {
         screen.getByTestId('key-installer-usage-k-legacy-status').textContent,
       ).toContain('2 / 7');
     });
+  });
+});
+
+// #3964: the subtitle goes through <Trans>, whose markup parser used to escape
+// the literal `<key>` in the locale value into the visible text "&lt;key>".
+// Its `components={{ code }}` map was dead at the same time, because no locale
+// variant carried a <code> tag for it to bind to.
+describe('EnrollmentKeyManager — subtitle (#3964)', () => {
+  it('renders the CLI placeholder as literal angle brackets, not an escaped entity', async () => {
+    routeFetch([]);
+    render(<EnrollmentKeyManager />);
+
+    const subtitle = await screen.findByText(/Create and manage keys for agent enrollment/);
+    expect(subtitle.textContent).toContain('breeze-agent enroll <key>');
+    expect(subtitle.textContent).not.toContain('&lt;');
+    expect(subtitle.textContent).not.toContain('&amp;');
+  });
+
+  it('binds the command to the styled <code> wrapper the components map provides', async () => {
+    routeFetch([]);
+    render(<EnrollmentKeyManager />);
+
+    const subtitle = await screen.findByText(/Create and manage keys for agent enrollment/);
+    const code = subtitle.querySelector('code');
+    expect(code, 'the components={{ code }} map must actually bind').toBeTruthy();
+    expect(code?.textContent).toBe('breeze-agent enroll <key>');
   });
 });

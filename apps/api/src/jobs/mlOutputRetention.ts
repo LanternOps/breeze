@@ -9,8 +9,12 @@ import { Job, Queue, Worker } from 'bullmq';
 import { sql } from 'drizzle-orm';
 
 import * as dbModule from '../db';
+import { extractRowCount } from '../db/rowCount';
 import { getBullMQConnection } from '../services/redis';
+import { recordRetentionRun } from '../services/retentionMetrics';
 import { attachWorkerObservability } from './workerObservability';
+import { cronFromEnv } from './scheduleRegistry';
+import { warnOnRetentionBacklog } from './retentionBatch';
 
 const { db } = dbModule;
 
@@ -20,7 +24,13 @@ const REPEAT_JOB_ID = 'ml-output-retention';
 const DEFAULT_RETENTION_DAYS = Math.max(30, parsePositiveIntEnv('ML_OUTPUT_RETENTION_DAYS', 365));
 const BATCH_SIZE = parsePositiveIntEnv('ML_OUTPUT_RETENTION_BATCH_SIZE', 5000);
 const MAX_BATCHES = parsePositiveIntEnv('ML_OUTPUT_RETENTION_MAX_BATCHES', 50);
-const RETENTION_INTERVAL_MS = parsePositiveIntEnv('ML_OUTPUT_RETENTION_INTERVAL_MS', 24 * 60 * 60 * 1000);
+// Daily cron slot, not an interval: `every: 24h` is epoch-anchored and piles
+// every daily job onto 00:00:00.000 UTC (see jobs/scheduleRegistry.ts).
+const RETENTION_CRON = cronFromEnv(
+  'ML_OUTPUT_RETENTION_CRON',
+  'ml-output-retention',
+  'ML_OUTPUT_RETENTION_INTERVAL_MS',
+);
 
 type RetentionJobData = {
   retentionDays?: number;
@@ -56,13 +66,6 @@ const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
   return dbModule.withSystemDbAccessContext(fn);
 };
 
-export function extractMlOutputRetentionRowCount(result: unknown): number {
-  const raw = result as { rowCount?: number; count?: number };
-  if (typeof raw.rowCount === 'number') return raw.rowCount;
-  if (typeof raw.count === 'number') return raw.count;
-  return Array.isArray(result) ? result.length : 0;
-}
-
 async function pruneRemediationSuggestions(cutoff: string, batchSize: number, maxBatches: number): Promise<PrunedTable> {
   let deleted = 0;
   let batches = 0;
@@ -78,7 +81,7 @@ async function pruneRemediationSuggestions(cutoff: string, batchSize: number, ma
         LIMIT ${batchSize}
       )
     `);
-    lastBatchDeleted = extractMlOutputRetentionRowCount(result);
+    lastBatchDeleted = extractRowCount(result);
     deleted += lastBatchDeleted;
     batches += 1;
     if (lastBatchDeleted < batchSize) break;
@@ -107,7 +110,7 @@ async function pruneMetricAnomalies(cutoff: string, batchSize: number, maxBatche
         LIMIT ${batchSize}
       )
     `);
-    lastBatchDeleted = extractMlOutputRetentionRowCount(result);
+    lastBatchDeleted = extractRowCount(result);
     deleted += lastBatchDeleted;
     batches += 1;
     if (lastBatchDeleted < batchSize) break;
@@ -136,7 +139,7 @@ async function pruneMetricAnomalyCandidates(cutoff: string, batchSize: number, m
         LIMIT ${batchSize}
       )
     `);
-    lastBatchDeleted = extractMlOutputRetentionRowCount(result);
+    lastBatchDeleted = extractRowCount(result);
     deleted += lastBatchDeleted;
     batches += 1;
     if (lastBatchDeleted < batchSize) break;
@@ -205,6 +208,16 @@ export function createMlOutputRetentionWorker(): Worker<RetentionJobData> {
         console.log(
           `[MlOutputRetention] Pruned ${result.deleted} ML output rows older than ${result.retentionDays} days (${detail}) in ${result.durationMs}ms`,
         );
+        // A capped sweep that reports hasMore and says nothing is how a table
+        // grows unbounded while its retention job reports success every night
+        // (#4343). The `+` marker in `detail` above is far too easy to miss.
+        for (const table of result.tables) {
+          warnOnRetentionBacklog('[MlOutputRetention]', table.table, table);
+        }
+        recordRetentionRun('ml_output_retention', {
+          rowsDeleted: result.deleted,
+          incomplete: result.hasMore,
+        });
         return result;
       });
     },
@@ -238,7 +251,7 @@ export async function initializeMlOutputRetention(): Promise<void> {
     { retentionDays: DEFAULT_RETENTION_DAYS, batchSize: BATCH_SIZE, maxBatches: MAX_BATCHES },
     {
       jobId: REPEAT_JOB_ID,
-      repeat: { every: RETENTION_INTERVAL_MS },
+      repeat: { pattern: RETENTION_CRON },
       removeOnComplete: { count: 5 },
       removeOnFail: { count: 20 },
     },
@@ -265,5 +278,5 @@ export const __testOnly = {
   DEFAULT_RETENTION_DAYS,
   BATCH_SIZE,
   MAX_BATCHES,
-  RETENTION_INTERVAL_MS,
+  RETENTION_CRON,
 };

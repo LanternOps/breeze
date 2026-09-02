@@ -31,6 +31,7 @@ const statusMembers: Record<QuoteStatus, true> = {
   declined: true,
   expired: true,
   converted: true,
+  superseded: true,
 };
 
 describe('quoteTypes unions ↔ shared Zod schema parity', () => {

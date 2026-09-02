@@ -1,160 +1,118 @@
 import { withBase } from '@/lib/basePath';
 import React from 'react';
-import { Ticket, Plus, AlertCircle } from 'lucide-react';
-import { type TicketSummary, type TicketPriority, type TicketStatus } from '@/lib/api';
+import { Ticket, Plus } from 'lucide-react';
+import { type TicketSummary } from '@/lib/api';
 import { formatRelativeTime } from '@/lib/utils';
 import { cn } from '@/lib/utils';
+import { ROW, CELL, TH, BTN_PRIMARY, PageHeader, StatusMark, EmptyState, ErrorNotice } from './ui';
+import { isTicketOpen, ticketStatusLabel, ticketStatusTone } from './ticketMarks';
 
 interface TicketListProps {
   tickets: TicketSummary[];
   error?: string | null;
 }
 
+
 export function TicketList({ tickets, error }: TicketListProps) {
-  const getPriorityColor = (priority: TicketPriority) => {
-    switch (priority) {
-      case 'urgent':
-        return 'bg-destructive text-destructive-foreground';
-      case 'high':
-        return 'bg-warning text-warning-foreground';
-      case 'normal':
-        return 'bg-primary text-primary-foreground';
-      case 'low':
-        return 'bg-muted text-muted-foreground';
-    }
-  };
-
-  const getStatusColor = (status: TicketStatus) => {
-    switch (status) {
-      case 'open':
-        return 'bg-primary/10 text-primary';
-      case 'in_progress':
-        return 'bg-warning/10 text-warning';
-      case 'resolved':
-        return 'bg-success/10 text-success';
-      case 'closed':
-        return 'bg-muted text-muted-foreground';
-    }
-  };
-
-  const getStatusLabel = (status: TicketStatus) => {
-    switch (status) {
-      case 'open':
-        return 'Open';
-      case 'in_progress':
-        return 'In Progress';
-      case 'resolved':
-        return 'Resolved';
-      case 'closed':
-        return 'Closed';
-    }
-  };
-
   if (error) {
-    return (
-      <div className="rounded-md bg-destructive/10 p-4 text-center text-destructive">
-        <AlertCircle className="mx-auto h-8 w-8" />
-        <p className="mt-2">{error}</p>
-      </div>
-    );
+    return <ErrorNotice>{error}</ErrorNotice>;
   }
 
+  const openCount = tickets.filter((t) => isTicketOpen(t.status)).length;
+
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold">Support Tickets</h2>
-        <a
-          href={withBase("/tickets/new")}
-          className={cn(
-            'flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground',
-            'hover:bg-primary/90'
-          )}
-        >
-          <Plus className="h-4 w-4" />
-          New Ticket
-        </a>
-      </div>
+    <div>
+      {/* No page-level "New ticket" here: the header quick action is on every
+          page, and two identical primary buttons on one screen read as noise. */}
+      <PageHeader title="Support" lede="Tell us what you need — we'll take it from there." />
 
       {tickets.length === 0 ? (
-        <div className="rounded-md border border-dashed p-8 text-center">
-          <Ticket className="mx-auto h-12 w-12 text-muted-foreground" />
-          <h3 className="mt-4 text-lg font-medium">No tickets</h3>
+        <EmptyState icon={<Ticket className="h-10 w-10" strokeWidth={1.5} />} title="No tickets">
           <p className="mt-1 text-sm text-muted-foreground">
-            You haven't submitted any support tickets yet.
+            Nothing here yet. When you need a hand, this is where it starts.
           </p>
-          <a
-            href={withBase("/tickets/new")}
-            className={cn(
-              'mt-4 inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground',
-              'hover:bg-primary/90'
-            )}
-          >
+          <a href={withBase('/tickets/new')} className={cn(BTN_PRIMARY, 'mt-5')}>
             <Plus className="h-4 w-4" />
             Create your first ticket
           </a>
-        </div>
+        </EmptyState>
       ) : (
-        <div className="overflow-hidden rounded-lg border">
-          <table className="w-full">
-            <thead className="bg-muted/50">
+        <div className="overflow-x-auto">
+          <table className="block w-full sm:table sm:min-w-[36rem]">
+            <thead className="hidden border-b border-border sm:table-header-group">
               <tr>
-                <th className="px-4 py-3 text-left text-sm font-medium text-muted-foreground">
+                <th scope="col" className={cn(TH, 'text-left')}>
                   Title
                 </th>
-                <th className="px-4 py-3 text-left text-sm font-medium text-muted-foreground">
+                <th scope="col" className={cn(TH, 'text-left')}>
                   Status
                 </th>
-                <th className="px-4 py-3 text-left text-sm font-medium text-muted-foreground">
+                <th scope="col" className={cn(TH, 'text-left')}>
                   Priority
                 </th>
-                <th className="px-4 py-3 text-left text-sm font-medium text-muted-foreground">
+                <th scope="col" className={cn(TH, 'text-left')}>
                   Updated
                 </th>
               </tr>
             </thead>
-            <tbody className="divide-y">
-              {tickets.map((ticket) => (
-                <tr
-                  key={ticket.id}
-                  className="hover:bg-muted/50"
-                >
-                  <td className="px-4 py-3">
-                    <div>
-                      <a className="font-medium hover:underline" href={withBase(`/tickets/${ticket.id}`)}>
-                        {ticket.subject}
-                      </a>
-                      <p className="text-sm text-muted-foreground">
-                        #{ticket.ticketNumber}
-                      </p>
-                    </div>
-                  </td>
-                  <td className="px-4 py-3">
-                    <span
-                      className={cn(
-                        'inline-flex rounded-full px-2 py-1 text-xs font-medium',
-                        getStatusColor(ticket.status)
-                      )}
-                    >
-                      {getStatusLabel(ticket.status)}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3">
-                    <span
-                      className={cn(
-                        'inline-flex rounded-full px-2 py-1 text-xs font-medium capitalize',
-                        getPriorityColor(ticket.priority)
-                      )}
-                    >
-                      {ticket.priority}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3 text-sm text-muted-foreground">
-                    {formatRelativeTime(ticket.updatedAt)}
-                  </td>
-                </tr>
-              ))}
+            <tbody className="block divide-y divide-border/70 sm:table-row-group">
+              {tickets.map((ticket) => {
+                const tone = ticketStatusTone(ticket.status);
+                return (
+                  <tr key={ticket.id} className={ROW}>
+                    {/* order-* reorders the card: subject and status share the
+                        first line, priority and the update time trail below. */}
+                    <td className={cn(CELL, 'order-1 grow')}>
+                      <div>
+                        <a className="font-semibold text-foreground underline-offset-4 hover:underline" href={withBase(`/tickets/${ticket.id}`)}>
+                          {ticket.subject}
+                        </a>
+                        <p className="text-figures text-sm text-muted-foreground">
+                          #{ticket.ticketNumber}
+                        </p>
+                      </div>
+                    </td>
+                    <td className={cn(CELL, 'order-2 shrink-0')}>
+                      <StatusMark tone={tone}>
+                        {ticketStatusLabel(ticket.status)}
+                      </StatusMark>
+                    </td>
+                    <td className={cn(CELL, 'order-3')}>
+                      {/* Priority is context, not state: plain text so the row
+                          keeps ONE mark (status). Urgent and high keep their
+                          tinted text; routine priorities stay muted. */}
+                      <span
+                        className={cn(
+                          'text-xs font-medium',
+                          ticket.priority === 'urgent'
+                            ? 'text-destructive-on-tint'
+                            : ticket.priority === 'high'
+                              ? 'text-warning-on-tint'
+                              : 'text-muted-foreground'
+                        )}
+                      >
+                        {ticket.priority.charAt(0).toUpperCase() + ticket.priority.slice(1)} priority
+                      </span>
+                    </td>
+                    <td className={cn(CELL, 'order-4 text-xs text-muted-foreground sm:text-sm')}>
+                      <span className="sm:hidden">Updated </span>
+                      {formatRelativeTime(ticket.updatedAt)}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
+          <div
+            className="border-t border-border px-4 pt-3.5 text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground"
+            data-testid="ticket-ledger-foot"
+          >
+            {openCount === 0
+              ? 'No open requests'
+              : openCount === 1
+                ? '1 open request'
+                : `${openCount} open requests`}
+          </div>
         </div>
       )}
     </div>

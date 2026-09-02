@@ -67,8 +67,15 @@ with anything.
 `breeze_migrations` records a SHA-256 of each applied file, and the API refuses
 to boot on a mismatch — so *any* content change (even a comment) bricks every
 database that already applied it, while CI stays green migrating from empty.
-`scripts/check-migration-immutability.sh` enforces this against the latest
-release tag. Fix forward with a new migration.
+`scripts/check-migration-immutability.sh` enforces this against the highest
+semantic-version release tag reachable from the checked commit. Higher tags on
+other lineages must have reviewed provenance: exact registered candidates stay
+frozen on their candidate lineage, while applicable stable side-branch releases
+are checked as additional baselines. A higher tag already reachable from
+`origin/main` means the checked branch is behind main and fails closed. Automatic
+resolution requires full history and tags; pass an explicit base ref only when
+you deliberately need a deterministic one-baseline comparison. Fix forward with
+a new migration.
 
 **Renaming counts as editing**, and it has a second blast radius: integration
 suites replay migrations **by path**
@@ -87,3 +94,59 @@ so the unit job catches it first — but only if you run it.
    lists in the root `CLAUDE.md` — they are separate contracts and the missed
    one is always a cascade list.
 5. `pnpm --filter @breeze/api test src/db/autoMigrate.test.ts`.
+
+## Rule 3 — a new migration must sort AFTER every committed one
+
+`autoMigrate` applies files in `localeCompare` order. The only property a new
+filename must have is that it sorts after everything already shipped. A file
+that sorts into the middle replays before migrations it may depend on: it
+passes on your already-migrated database and fails on a fresh one.
+
+**Do not assume today's date gives you that.** It does not, and has not since
+around 2026-06-12.
+
+Filenames drifted ahead of real time in a compounding ratchet. Each author who
+needed sort-last picked one day past the highest existing filename rather than
+today's date; that raised the ceiling, so the next author had to go further
+still. The September-dated block is perfectly sequential (`09-01`, `09-02`, …
+`09-10`), which is the signature. As of 2026-08-26:
+
+- 169 of 466 dated migrations are named ahead of the day they were committed
+- the furthest is +16 days (`2026-09-10-device-command-uninstall-provenance.sql`,
+  committed 2026-08-25)
+- the drift began at +1 day (`2026-04-12-drop-policy-compliance.sql`)
+
+Shipped migrations are content-hash immutable and keyed on filename in
+`breeze_migrations`, so they cannot be renamed back — a rename makes every
+already-migrated database re-apply the file under its new name. The ceiling
+therefore stands until real time catches up with it, and shrinks on its own
+as it does.
+
+So: **compare against the files, not the calendar.**
+
+```bash
+git ls-tree --name-only HEAD apps/api/migrations/ | sed 's#.*/##' \
+  | grep -E '^[0-9]{4}-.*\.sql$' \
+  | node -e 'const n=require("fs").readFileSync(0,"utf8").split("\n").filter(Boolean);
+             console.log(n.sort((a,b)=>a.localeCompare(b)).pop())'
+```
+
+`scripts/check-migration-naming.sh --staged` enforces this at commit time (and
+in CI). It compares with `localeCompare` via `node`, not shell `sort`, because
+the runner uses `localeCompare` and shell collation disagrees with it on
+exactly the punctuation these filenames are full of — a guard that ordered
+differently from the runner would bless files that then replay in a different
+order than it checked.
+
+### Preferred format for new migrations
+
+`YYYY-MM-DD-HHMMSS-<slug>.sql`. The time component orders same-day migrations
+natively, which removes the need for the hand-assigned `-a-`/`-b-` infix — the
+convention whose "take the next free letter" reading produced the closed-block
+incidents three separate times. Plain `YYYY-MM-DD-<slug>.sql` stays valid.
+
+**A Unix-epoch prefix does not work here.** `1787000000-foo.sql` sorts *before*
+every `2026-…` filename under `localeCompare` (`"1" < "2"`), so it would replay
+ahead of the entire history including `0001-baseline.sql`'s successors. Any
+scheme has to keep the `YYYY-` prefix to interleave correctly with the 466
+files already shipped.

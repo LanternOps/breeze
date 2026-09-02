@@ -55,6 +55,20 @@ describe('SuppressAlertDialog', () => {
     expect(onConfirm).not.toHaveBeenCalled();
   });
 
+  // #3964: the single-alert prompt wrapped the title in the locale values
+  // "&ldquo;"/"&rdquo;". React text-escapes the leading `&`, so those reached
+  // the user as the literal strings rather than curly quotes.
+  it('quotes the alert title with real curly quotes, not HTML entities', () => {
+    renderDialog();
+    const prompt = screen.getByText(/stay suppressed\?/);
+
+    expect(prompt.textContent).toBe(
+      'How long should \u201cWarranty expires in 5 days: MacBook-Pro-3\u201d stay suppressed?',
+    );
+    expect(prompt.textContent).not.toContain('&ldquo;');
+    expect(prompt.textContent).not.toContain('&rdquo;');
+  });
+
   it('shows bulk copy when a count > 1 is given', () => {
     render(<SuppressAlertDialog count={5} onConfirm={onConfirm} onCancel={onCancel} />);
     expect(screen.getByText(/these 5 alerts stay suppressed/i)).toBeInTheDocument();

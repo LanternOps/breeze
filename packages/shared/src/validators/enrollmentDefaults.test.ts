@@ -46,8 +46,8 @@ describe('resolveEnrollmentDefaults', () => {
 
   it('falls back to product defaults when neither level sets anything', () => {
     const r = resolveEnrollmentDefaults({}, {});
-    expect(r.ttlMinutes).toBe(1440);
-    expect(r.deviceCount).toBe(1);
+    expect(r.ttlMinutes).toBe(43200);
+    expect(r.deviceCount).toBe(50);
     expect(r.maxTtlMinutes).toBe(525600);
   });
 

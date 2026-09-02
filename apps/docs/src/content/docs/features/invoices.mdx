@@ -32,8 +32,21 @@ The list shows every invoice with its number, organization, status, issue and du
 1. Go to **Billing → Invoices** and click **New invoice**.
 2. Choose **Assemble from work** to pull in tracked time and parts, or **Blank invoice** to start empty.
 3. Select the customer organization the invoice is for.
-4. The invoice opens as a **draft** for editing.
+4. When assembling from work, choose the draft's **Currency**. **Organization default** uses the currency the organization bills in today; pick an explicit currency only when you need to bill work that was priced in a currency the organization no longer uses.
+5. The invoice opens as a **draft** for editing.
 </Steps>
+
+### Where the currency comes from
+
+Every invoice is stamped with the **customer organization's billing currency**. An organization inherits that from your partner currency (**Settings → Billing**) when it is created, and the stamp then travels with the document -- clones and reissues keep it, and issuing never rewrites it.
+
+The stamped currency can't be changed from the console. Changing a draft's currency is an API-only operation (`POST /invoices/:id/currency`) that first clears the draft's lines or reprices catalog-sourced lines into the new currency; nothing is ever converted at an exchange rate. Retargeting a draft to an organization that bills in a different currency is refused rather than silently re-priced.
+
+### Assembling across currencies
+
+Tracked time and parts keep the currency they were priced in when they were logged. Assembling only pulls in work whose currency matches the draft's currency; nothing is ever converted. If some unbilled work in the range is priced in another currency, the draft is still created and a notice tells you how many items were left out and in which currency -- assemble a separate draft in that currency to bill them. If *all* the unbilled work is in another currency, nothing is assembled and the dialog offers an **Assemble in …** button for each currency found (with the item count and total); clicking it creates a draft in that currency containing exactly those items. The same **Assemble in** shortcut appears on a ticket's **Create invoice** action when its unbilled work is in a different currency than the organization now bills in.
+
+Once an invoice is issued, the time entries and parts it billed are locked: their hours, rates, quantities, and prices can no longer be edited (descriptions and notes still can). Void and reissue the invoice if an amount needs to change.
 
 ### Adding Line Items
 
@@ -55,7 +68,11 @@ Line items can come from several sources: catalog items, bundles, tracked time e
 3. Click **Send** to email it to the customer.
 </Steps>
 
-The issued-invoice view puts the **balance due** front and center, shows recorded payments, and offers a one-click **PDF download**.
+**Send** opens a composer prefilled from the organization's billing contact: recipients, Cc, subject, a personal message, and whether to attach the PDF. The email and the PDF both carry a **Pay online** link.
+
+An invoice that has already been issued can be **re-sent** without changing anything about it -- its number, dates, amounts, and "sent" timestamp all stay as they were, so a reminder never looks like a second invoice. A paid invoice can be re-sent too, as a receipt. Drafts and voided invoices can't be sent this way.
+
+The issued-invoice view puts the **balance due** front and center, shows recorded payments, and offers a one-click **PDF download**, plus **Copy invoice link** and **Reset customer link** -- see [Online Payments](/features/online-payments/#the-customer-invoice-link).
 
 ## Recording Payments
 
@@ -67,6 +84,8 @@ When a customer pays offline, record it against the invoice so the balance and s
 3. Choose the method -- cash, check, bank transfer, card, or other -- and enter the amount, date, and an optional reference.
 4. Save. The invoice moves to **partially paid** or **paid** automatically based on the remaining balance.
 </Steps>
+
+A payment amount has to be expressible in the invoice's currency: an invoice in a currency with no minor unit (such as Japanese yen) won't accept `100.50`.
 
 You can void a manually recorded payment if it was entered in error. Payments collected online through Stripe are reconciled from Stripe and can't be voided by hand.
 

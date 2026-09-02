@@ -20,6 +20,10 @@ import { users } from './users';
 import { configPolicyFeatureLinks, backupModeEnum } from './configurationPolicies';
 import { storageEncryptionKeys } from './storageEncryption';
 import { BACKUP_SNAPSHOT_ID_MAX_LENGTH } from './backupConstants';
+import {
+  recoveryAuthorizationSubjectChecks,
+  recoveryAuthorizationSubjectColumns,
+} from './recoveryAuthorizationSubject';
 
 export const backupProviderEnum = pgEnum('backup_provider', [
   'local',
@@ -373,13 +377,18 @@ export const restoreJobs = pgTable(
     commandId: uuid('command_id').references(() => deviceCommands.id),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
+    ...recoveryAuthorizationSubjectColumns(),
   },
   (table) => ({
     orgIdIdx: index('restore_jobs_org_id_idx').on(table.orgId),
     snapshotIdIdx: index('restore_jobs_snapshot_id_idx').on(table.snapshotId),
     deviceIdIdx: index('restore_jobs_device_id_idx').on(table.deviceId),
     statusIdx: index('restore_jobs_status_idx').on(table.status),
+    authorizationClaimIdx: index('restore_jobs_authorization_claim_idx')
+      .on(table.status, table.authorizationState)
+      .where(sql`${table.status} IN ('pending', 'running')`),
     commandIdIdx: index('restore_jobs_command_id_idx').on(table.commandId),
     recoveryTokenUniqueIdx: uniqueIndex('restore_jobs_recovery_token_id_uniq').on(table.recoveryTokenId),
+    ...recoveryAuthorizationSubjectChecks('restore_jobs', table),
   })
 );

@@ -11,6 +11,8 @@ vi.mock('bullmq', () => ({
   Job: class {},
 }));
 
+const insertMock = vi.fn(() => ({ values: vi.fn(async () => undefined) }));
+
 vi.mock('../db', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../db')>();
   return {
@@ -19,6 +21,11 @@ vi.mock('../db', async (importOriginal) => {
       ...actual.db,
       execute: (...args: unknown[]) => executeMock(...(args as [])),
       update: (...args: unknown[]) => updateMock(...(args as [])),
+      // Was NOT stubbed before wave 2, so `db.insert` fell through to the real
+      // Drizzle insert. Every reaper test was quietly issuing a real INSERT that
+      // failed and was swallowed by the old best-effort catch, which is exactly
+      // why the new intent_expired write looked covered and was not.
+      insert: (...args: unknown[]) => insertMock(...(args as [])),
     },
     withSystemDbAccessContext: async <T>(fn: () => Promise<T>) => fn(),
   };
@@ -136,6 +143,53 @@ describe('intentExpiryReaper.reapExpiredIntents', () => {
     expect(reaped).toBe(0);
     expect(updateMock).not.toHaveBeenCalled();
     expect(recordActionIntentEvent).not.toHaveBeenCalled();
+  });
+
+  it('writes one intent_expired outbox row per expired intent, ids only', async () => {
+    // Untested before: db.insert was unstubbed, so this line ran for real,
+    // failed, and was swallowed. Nothing an expiry does is visible to the
+    // requester without this row.
+    executeMock.mockResolvedValueOnce({
+      rows: [
+        { id: 'i-1', org_id: 'org-1', action_name: 'run_script', argument_digest: 'd1', source: 'chat', requested_by_user_id: 'u-1', expires_at: new Date() },
+        { id: 'i-2', org_id: 'org-2', action_name: 'run_script', argument_digest: 'd2', source: 'chat', requested_by_user_id: 'u-2', expires_at: new Date() },
+      ],
+    });
+    updateMock.mockReturnValue({ set: makeUpdateChain([]).set });
+
+    await reapExpiredIntents();
+
+    expect(insertMock).toHaveBeenCalledTimes(1);
+    const values = insertMock.mock.results[0]!.value.values as ReturnType<typeof vi.fn>;
+    const rows = values.mock.calls[0]![0] as Array<Record<string, unknown>>;
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toEqual({
+      intentId: 'i-1',
+      eventType: 'intent_expired',
+      payload: { intentId: 'i-1', orgId: 'org-1' },
+    });
+    // Ids only — no action name, no digest, no arguments.
+    const serialized = JSON.stringify(rows);
+    expect(serialized).not.toContain('run_script');
+    expect(serialized).not.toContain('d1');
+  });
+
+  it('PROPAGATES an outbox failure so the expiry rolls back with it', async () => {
+    // The whole pass is ONE transaction: catching a DB error in JS does not
+    // un-abort it, so a swallowed failure discarded the expiry too while the
+    // caller still reported success and the audit log recorded an expiry that
+    // never committed.
+    executeMock.mockResolvedValueOnce({
+      rows: [
+        { id: 'i-1', org_id: 'org-1', action_name: 'run_script', argument_digest: 'd1', source: 'chat', requested_by_user_id: 'u-1', expires_at: new Date() },
+      ],
+    });
+    updateMock.mockReturnValue({ set: makeUpdateChain([]).set });
+    insertMock.mockReturnValueOnce({
+      values: vi.fn(async () => { throw new Error('constraint violation'); }),
+    } as never);
+
+    await expect(reapExpiredIntents()).rejects.toThrow('constraint violation');
   });
 
   it('transitions both pending_approval and approved intents in one pass', async () => {

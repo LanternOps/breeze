@@ -69,6 +69,7 @@ describe('getRouteScope', () => {
     expect(getRouteScope('/integrations')).toBe('partner-settings');
     expect(getRouteScope('/remote/terminal/dev-1')).toBe('device');
     expect(getRouteScope('/settings/profile')).toBe('self');
+    expect(getRouteScope('/approvals')).toBe('self');
     expect(getRouteScope('/admin/quarantined')).toBe('platform');
     expect(getRouteScope('/login')).toBe('auth');
   });

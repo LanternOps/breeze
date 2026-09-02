@@ -15,8 +15,22 @@ import { getRedis } from './redis';
 import { rateLimiter } from './rate-limit';
 import type { ClientAiOrgPolicy } from './clientAiPolicy';
 import type { ClientHost } from './clientAiHosts';
+import {
+  LlmOrgResolutionError,
+  resolveLlmConfigForOrg,
+  type ResolvedLlmConfig,
+} from './llm/llmConfigResolver';
 
-export const DEFAULT_CLIENT_AI_MODEL = 'claude-sonnet-4-5-20250929';
+export async function resolveClientLlmConfig(orgId: string): Promise<ResolvedLlmConfig> {
+  try {
+    return await resolveLlmConfigForOrg(orgId);
+  } catch (error) {
+    if (error instanceof LlmOrgResolutionError) {
+      console.error('[client-ai] failed to resolve organization LLM config', { orgId, error });
+    }
+    throw error;
+  }
+}
 
 /**
  * The Excel-assistant system prompt (spec §5/§11; pinned in the plan).

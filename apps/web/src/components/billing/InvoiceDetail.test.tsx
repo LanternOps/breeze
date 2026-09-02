@@ -307,6 +307,30 @@ describe('InvoiceDetail — Stripe currency-mismatch warning (#3777)', () => {
     expect(screen.getByTestId('invoice-pay-link')).not.toBeDisabled();
   });
 
+  it('renders the "currency not cached — refresh" warning for STRIPE_ACCOUNT_CURRENCY_UNKNOWN (review F6)', async () => {
+    render(
+      <InvoiceDetail
+        detail={{
+          ...issued,
+          stripeConnected: true,
+          stripeAccountCurrency: null,
+          currencyWarning: {
+            code: 'STRIPE_ACCOUNT_CURRENCY_UNKNOWN',
+            documentCurrency: 'EUR',
+            accountCurrency: null,
+            message: 'server copy',
+          },
+        }}
+        onChanged={vi.fn()}
+      />,
+    );
+    await waitFor(() => expect(screen.getByTestId('invoice-detail')).toBeInTheDocument());
+    const warning = screen.getByTestId('invoice-stripe-currency-warning');
+    expect(warning.textContent).toMatch(/not (been )?cached|refresh/i);
+    expect(warning.textContent).not.toContain('null');
+    expect(screen.getByTestId('invoice-pay-link')).not.toBeDisabled();
+  });
+
   it('renders nothing when the currencies match (warning null)', async () => {
     render(
       <InvoiceDetail

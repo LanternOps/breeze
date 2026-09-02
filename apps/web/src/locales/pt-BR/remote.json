@@ -246,6 +246,7 @@
       "copy": "Falha ao copiar",
       "delete": "Falha ao excluir",
       "download": "Falha ao baixar",
+      "downloadTooLarge": "Muito grande para baixar ({{size}}). O navegador de arquivos transfere arquivos de até {{max}}.",
       "loadDirectory": "Falha ao carregar a pasta",
       "move": "Falha ao mover",
       "readFile": "Falha ao ler o arquivo",

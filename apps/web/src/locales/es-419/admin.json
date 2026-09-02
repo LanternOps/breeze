@@ -391,6 +391,127 @@
         "blocking": "Bloqueando…",
         "blockDevice": "Dispositivo de bloqueo"
       }
+    },
+    "llmProviderCatalog": {
+      "title": "Catálogo de proveedores de LLM",
+      "description": "Endpoints verificados por la plataforma a los que los socios pueden enrutar su tráfico de IA.",
+      "totalEntries": "Total de entradas:",
+      "refresh": "Actualizar",
+      "addEntry": "Agregar proveedor",
+      "loading": "Cargando catálogo…",
+      "empty": "Aún no hay entradas en el catálogo.",
+      "dismiss": "Descartar",
+      "platformAdmin": {
+        "title": "Se requiere acceso de administrador de plataforma",
+        "prefix": "El catálogo de proveedores de LLM lo gestionan los administradores de la plataforma Breeze. Su cuenta",
+        "role": "un administrador de organización/socio",
+        "suffix": "no puede verlo ni editarlo directamente."
+      },
+      "errors": {
+        "load": "No se pudo cargar el catálogo",
+        "generic": "Ocurrió un error",
+        "createEntry": "No se pudo crear el proveedor",
+        "createRevision": "No se pudo crear la revisión",
+        "activate": "No se pudo activar la revisión",
+        "setStatus": "No se pudo actualizar el estado",
+        "verify": "La solicitud de verificación falló"
+      },
+      "notice": {
+        "entryCreated": "Proveedor \"{{name}}\" creado.",
+        "revisionCreated": "Nueva revisión creada para \"{{name}}\".",
+        "activated": "Revisión activada.",
+        "statusUpdated": "Estado actualizado a {{status}}."
+      },
+      "status": {
+        "draft": "Borrador",
+        "listed": "Listado",
+        "delisted": "Retirado"
+      },
+      "table": {
+        "slug": "Slug",
+        "name": "Nombre",
+        "status": "Estado",
+        "activeRevision": "Revisión activa",
+        "revisions": "Revisiones",
+        "actions": "Acciones"
+      },
+      "actions": {
+        "expand": "Mostrar revisiones",
+        "collapse": "Ocultar revisiones",
+        "addRevision": "Agregar revisión",
+        "activate": "Activar",
+        "list": "Listar",
+        "delist": "Retirar",
+        "verify": "Ejecutar verificación"
+      },
+      "confirmDelist": "¿Retirar \"{{name}}\"? Los socios que ya lo usan siguen funcionando, pero desaparece de la selección para nuevas configuraciones.",
+      "revision": {
+        "baseUrl": "URL base",
+        "authMode": "Modo de autenticación",
+        "dataNote": "Nota sobre el manejo de datos",
+        "createdAt": "Creado",
+        "notVerified": "No verificado",
+        "verified": "Verificado",
+        "activateBlocked": "Cada modelo asignado necesita una verificación aprobada antes de poder activar esta revisión.",
+        "listBlocked": "Cada modelo asignado de la revisión activa necesita una verificación aprobada antes de poder listar este proveedor."
+      },
+      "authModeOptions": {
+        "x-api-key": "Encabezado de clave de API",
+        "bearer": "Token portador"
+      },
+      "entryForm": {
+        "title": "Agregar proveedor",
+        "fields": {
+          "slug": "Slug",
+          "name": "Nombre",
+          "notes": "Notas"
+        },
+        "placeholders": {
+          "slug": "openrouter",
+          "name": "OpenRouter",
+          "notes": "Notas internas sobre este proveedor…"
+        },
+        "submit": "Crear proveedor",
+        "cancel": "Cancelar"
+      },
+      "revisionForm": {
+        "title": "Agregar revisión para \"{{name}}\"",
+        "fields": {
+          "baseUrl": "URL base",
+          "authMode": "Modo de autenticación",
+          "dataNote": "Nota sobre el manejo de datos"
+        },
+        "placeholders": {
+          "baseUrl": "https://openrouter.ai/api/anthropic",
+          "dataNote": "Qué hace este endpoint con los datos de la solicitud…"
+        },
+        "modelMap": {
+          "title": "Asignación de modelos y precios",
+          "description": "Solo los modelos asignados son seleccionables por los socios. Precios en centavos por millón de tokens.",
+          "included": "Incluir este modelo",
+          "providerModel": "ID de modelo del proveedor",
+          "inputPrice": "Entrada",
+          "outputPrice": "Salida",
+          "cacheReadPrice": "Lectura de caché",
+          "cacheWritePrice": "Escritura de caché"
+        },
+        "submit": "Crear revisión",
+        "cancel": "Cancelar",
+        "errors": {
+          "noModelsMapped": "Asigne al menos un modelo antes de crear una revisión."
+        }
+      },
+      "verifyForm": {
+        "title": "Ejecutar verificación — {{model}}",
+        "description": "La clave se usa solo para esta solicitud y nunca se almacena.",
+        "apiKeyLabel": "Clave de API de prueba",
+        "apiKeyPlaceholder": "Pegue una clave de prueba temporal",
+        "submit": "Ejecutar",
+        "cancel": "Cancelar",
+        "running": "Ejecutando…",
+        "passed": "Aprobado",
+        "failed": "Fallido"
+      }
     }
   },
   "audit": {

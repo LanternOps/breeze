@@ -405,13 +405,26 @@ export default function AutomationTab({
           const isExpanded = expandedIndex === index;
           return (
             <div key={index} className="rounded-md border bg-muted/10">
-              {/* Collapsed header */}
-              <button
-                type="button"
-                onClick={() => setExpandedIndex(isExpanded ? null : index)}
-                className="flex w-full items-center justify-between px-4 py-3 text-left"
-              >
-                <div className="flex items-center gap-3">
+              {/* Collapsed header.
+                  The expand control and the delete control are SIBLINGS inside
+                  a plain <div>, not nested. A <button> inside a <button> is
+                  invalid HTML that React flags as a hydration hazard, and it
+                  made a click on delete bubble to the expand handler — so
+                  deleting a row also toggled it. The `e.stopPropagation()` that
+                  used to hide that was load-bearing: remove it and the bug
+                  reappears. Siblings mean there is nothing to stop. */}
+              <div className="flex w-full items-center justify-between pr-4">
+                {/* The padding lives on the BUTTON, not the wrapper. Putting it
+                    on the inert wrapper shrinks the disclosure hit target to
+                    the text height and leaves the surrounding padding dead —
+                    the old markup had a full-row target and this must keep it.
+                    `self-stretch` gives it the full header height. */}
+                <button
+                  type="button"
+                  onClick={() => setExpandedIndex(isExpanded ? null : index)}
+                  aria-expanded={isExpanded}
+                  className="flex flex-1 items-center gap-3 self-stretch py-3 pl-4 text-left"
+                >
                   {isExpanded ? (
                     <ChevronDown className="h-4 w-4 text-muted-foreground" />
                   ) : (
@@ -440,18 +453,24 @@ export default function AutomationTab({
                       {i18n.t("common:states.disabled")}
                     </span>
                   )}
-                </div>
+                </button>
                 <button
                   type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    deleteItem(index);
-                  }}
-                  className="flex h-7 w-7 items-center justify-center rounded-md text-destructive hover:bg-destructive/10"
+                  onClick={() => deleteItem(index)}
+                  // Row-qualified, matching ConfigPolicyList: a bare "Delete"
+                  // leaves every row's button identical in a screen-reader
+                  // button list.
+                  aria-label={`${i18n.t("common:actions.delete")}: ${
+                    item.name ||
+                    i18n.t(
+                      "policies:configurationPolicies.featureTabs.automationTab.untitledAutomation",
+                    )
+                  }`}
+                  className="ml-2 flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-destructive hover:bg-destructive/10"
                 >
                   <Trash2 className="h-3.5 w-3.5" />
                 </button>
-              </button>
+              </div>
 
               {/* Expanded form */}
               {isExpanded && (

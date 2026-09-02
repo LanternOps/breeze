@@ -77,8 +77,10 @@ describe('sentry service', () => {
     const { initSentry, captureMessage } = await import('./sentry');
     initSentry();
 
-    captureMessage('held a pooled connection', 'warning', { heldMs: 12000 }, {
-      dbContextLabel: 'agentWs.heartbeat',
+    captureMessage('held a pooled connection', {
+      eventCode: 'db_context_held_too_long',
+      level: 'warning',
+      tags: { dbContextLabel: 'agentWs.heartbeat' },
     });
 
     expect(captureMessageMock).toHaveBeenCalledWith('held a pooled connection');
@@ -92,7 +94,10 @@ describe('sentry service', () => {
     const { initSentry, captureMessage } = await import('./sentry');
     initSentry();
 
-    captureMessage('database warning', 'warning', undefined, {
+    captureMessage('database warning', {
+      eventCode: 'db_contextless_write',
+      level: 'warning',
+      tags: {
       pg_code: '42501',
       org_id: '00000000-0000-4000-8000-000000000001',
       // #3517: without these the body-limit 413 event arrives contentless —
@@ -102,6 +107,7 @@ describe('sentry service', () => {
       path: '/quotes/raw-capability',
       route_template: '/quotes/:token',
       partner_id: 'x'.repeat(129),
+      },
     });
 
     expect(setTagMock).toHaveBeenCalledWith('pg_code', '42501');
@@ -125,9 +131,13 @@ describe('sentry service', () => {
     const { initSentry, captureMessage } = await import('./sentry');
     initSentry();
 
-    captureMessage('Expected-rows write affected 0 rows', 'warning', undefined, {
-      cas_label: 'device_commands.ws_result_terminal_cas',
-      prior_status: 'failed:server-timeout',
+    captureMessage('Expected-rows write affected 0 rows', {
+      eventCode: 'db_write_expecting_rows_zero',
+      level: 'warning',
+      tags: {
+        cas_label: 'device_commands.ws_result_terminal_cas',
+        prior_status: 'failed:server-timeout',
+      },
     });
 
     expect(setTagMock).toHaveBeenCalledWith(
@@ -193,15 +203,53 @@ describe('sentry service', () => {
     expect(setTagMock).not.toHaveBeenCalledWith('connect_timeout_cause', expect.anything());
   });
 
-  it('captureMessage sets no tags when none are passed (existing callers unaffected)', async () => {
+  // BREEZE-18: this used to assert that a bare captureMessage set NO tags —
+  // which was exactly the defect. `scrubEvent` deletes message/logentry/extra,
+  // so a tagless event ships completely empty and Sentry folds every one of
+  // them into a single 11k-occurrence issue. The required `eventCode` is now
+  // applied by captureMessage itself, so the floor is one tag, never zero.
+  it('captureMessage always tags event_code even when the caller passes nothing else', async () => {
     process.env.SENTRY_DSN = 'https://abc@o1.ingest.us.sentry.io/2';
     const { initSentry, captureMessage } = await import('./sentry');
     initSentry();
 
-    captureMessage('plain warning');
+    captureMessage('plain warning', { eventCode: 'db_contextless_write' });
 
     expect(captureMessageMock).toHaveBeenCalledWith('plain warning');
-    expect(setTagMock).not.toHaveBeenCalled();
+    expect(setTagMock).toHaveBeenCalledWith('event_code', 'db_contextless_write');
+    expect(setTagMock).toHaveBeenCalledTimes(1);
+    expect(setLevelMock).toHaveBeenCalledWith('warning');
+  });
+
+  it('captureMessage will not let a caller tag bag override the call site event code', async () => {
+    process.env.SENTRY_DSN = 'https://abc@o1.ingest.us.sentry.io/2';
+    const { initSentry, captureMessage } = await import('./sentry');
+    initSentry();
+
+    captureMessage('plain warning', {
+      eventCode: 'db_contextless_write',
+      // A caller could plausibly reach for the tag name directly; the call
+      // site's own code has to win, or two conditions merge back into one
+      // untriageable bucket.
+      tags: { event_code: 'something_else' },
+    });
+
+    expect(setTagMock).toHaveBeenLastCalledWith('event_code', 'db_contextless_write');
+  });
+
+  it('captureMessage degrades an unregistered event code to a named sentinel', async () => {
+    process.env.SENTRY_DSN = 'https://abc@o1.ingest.us.sentry.io/2';
+    const { initSentry, captureMessage } = await import('./sentry');
+    initSentry();
+
+    // Reachable from compiled JS, an `any`-typed test double or an ee/
+    // extension, none of which tsc checked. A bogus value must not become an
+    // unbounded tag — but it must still leave the event groupable.
+    captureMessage('plain warning', {
+      eventCode: 'totally-made-up' as never,
+    });
+
+    expect(setTagMock).toHaveBeenCalledWith('event_code', 'unregistered_event_code');
   });
 
   it('does not initialize the SDK when no DSN is configured', async () => {
@@ -410,6 +458,17 @@ describe('scrubEvent', () => {
         connect_timeout_cause: 'event-loop-starvation',
         event_loop_lag_bucket: 'over-10s',
         db_pool_health_verdict: 'pool-degraded',
+        event_code: 'db_write_expecting_rows_zero',
+        binary_component: 'agent',
+        release_asset_name: 'breeze-agent-darwin-arm64',
+        manifest_refusal_reason: 'not-distributable',
+        release_sync_failure_reason: 'ssrf-blocked',
+        release_sync_context: 'stale-volume-fallback',
+        worker: 'patchScheduler',
+        worker_failure_reason: 'desktop_stop_pending',
+        patch_reconcile_stage: 'enqueue_failed',
+        patch_reconcile_repeat: '2-4',
+        jobId: 'bull-job-918273',
         path: '/public/quotes/raw-capability',
         arbitrary: 'raw-capability',
       },
@@ -467,6 +526,36 @@ describe('scrubEvent', () => {
       // and it is the field that decides whether the operator restarts the API.
       // Dropped here, the watchdog's alerts arrive as contentless blanks.
       db_pool_health_verdict: 'pool-degraded',
+      // BREEZE-18: the tag that makes a captureMessage event groupable at all.
+      // captureMessage sets it on every call, so if the scrubber dropped it
+      // here EVERY message event would go back to arriving contentless — the
+      // 11,466-occurrence single-issue bucket this whole mechanism removes.
+      event_code: 'db_write_expecting_rows_zero',
+      // BREEZE-1Z: the three tags that make a refused release artifact
+      // identifiable. Without them the operator cannot tell the intended
+      // unsigned-darwin refusal from a real trust regression.
+      binary_component: 'agent',
+      release_asset_name: 'breeze-agent-darwin-arm64',
+      manifest_refusal_reason: 'not-distributable',
+      // #4262: binarySync's SSRF-guard refusals fail OPEN by design, so the
+      // Sentry event is the only durable record that one happened. Dropped
+      // here, the capture arrives as a contentless blank and an operator
+      // cannot tell a guard refusal from an ordinary GitHub outage.
+      release_sync_failure_reason: 'ssrf-blocked',
+      release_sync_context: 'stale-volume-fallback',
+      // #1379/BREEZE-9: attachWorkerObservability sets this on every worker,
+      // and the allowlist introduced two days later (a50769487) has discarded
+      // it ever since, which is why ~12k held-context events carry an empty
+      // `worker`. Dropped here, no worker-attributed triage is possible.
+      worker: 'patchScheduler',
+      // #3912's tags. Inert until that PR lands, but asserted now so a future
+      // edit to ALLOWED_TAG_NAMES cannot quietly un-allowlist them.
+      worker_failure_reason: 'desktop_stop_pending',
+      patch_reconcile_stage: 'enqueue_failed',
+      patch_reconcile_repeat: '2-4',
+      // NB: `jobId` was in the input bag and is deliberately absent here — a
+      // BullMQ per-job counter is unbounded by construction, so allowlisting it
+      // would inflate Sentry's tag index without making anything triageable.
     });
     expect(out.exception).toEqual({
       values: [{

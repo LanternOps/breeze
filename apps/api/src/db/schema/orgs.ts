@@ -1,4 +1,5 @@
 import { pgTable, uuid, varchar, text, timestamp, jsonb, pgEnum, integer, boolean, numeric, char, uniqueIndex } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 
 export const partnerTypeEnum = pgEnum('partner_type', ['msp', 'enterprise', 'internal']);
 // `offboarding` (#2774) is the terminal-intent drain state: users locked out
@@ -13,7 +14,7 @@ export const planTypeEnum = pgEnum('plan_type', ['free', 'starter', 'community',
 // accessibleOrgIds so RLS lets techs reach their own support sessions, but it
 // is excluded from every user-facing org enumeration and device/billing count.
 export const orgTypeEnum = pgEnum('org_type', ['customer', 'internal', 'quick_support']);
-export const orgStatusEnum = pgEnum('org_status', ['active', 'suspended', 'trial', 'churned', 'offboarding']);
+export const orgStatusEnum = pgEnum('org_status', ['active', 'suspended', 'trial', 'churned', 'offboarding', 'merging', 'archived', 'purging']);
 
 export const partners = pgTable('partners', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -112,6 +113,19 @@ export const partners = pgTable('partners', {
   offboardingStartedAt: timestamp('offboarding_started_at', { withTimezone: true }),
 });
 
+/**
+ * Name of the per-partner, case-insensitive, lifetime slug uniqueness index
+ * (#3967 — migrations/2026-09-08-organizations-partner-slug-unique.sql).
+ *
+ * Exported and used by the `uniqueIndex()` call below so there is exactly ONE
+ * place this string is written: every handler that maps its 23505 to a 409 has
+ * to name the index EXACTLY (an unconstrained "any 23505 is a slug conflict"
+ * check misdiagnoses every other unique violation raised by the same statement
+ * — #3982), and a name that only matched by copy-paste is a silent way for
+ * that mapping to stop firing.
+ */
+export const ORG_SLUG_UNIQUE_INDEX = 'organizations_partner_slug_uniq';
+
 export const organizations = pgTable('organizations', {
   id: uuid('id').primaryKey().defaultRandom(),
   partnerId: uuid('partner_id').notNull().references(() => partners.id),
@@ -145,9 +159,22 @@ export const organizations = pgTable('organizations', {
   // #2774 — NULL = not offboarding. Set on drain entry, cleared on
   // abort/finalize. Drain deadline = this + OFFBOARDING_DRAIN_WINDOW_HOURS.
   offboardingStartedAt: timestamp('offboarding_started_at', { withTimezone: true }),
+  // Org lifecycle (spec 2026-08-26): NULL until archived; purgeAt NULL = keep forever.
+  archivedAt: timestamp('archived_at', { withTimezone: true }),
+  purgeAt: timestamp('purge_at', { withTimezone: true }),
+  // Which terminal status finalizeOrganizationOffboarding lands on.
+  offboardingTarget: varchar('offboarding_target', { length: 16 }).notNull().default('churn'),
   deletedAt: timestamp('deleted_at')
 }, (table) => ({
   orgPartnerUnique: uniqueIndex('organizations_id_partner_id_unique').on(table.id, table.partnerId),
+  // #3967 — slug uniqueness is PER PARTNER, case-insensitive, and lifetime
+  // (soft-deleted rows still hold their slug). Rationale and the evidence for
+  // each of those three choices live in
+  // migrations/2026-09-08-organizations-partner-slug-unique.sql. Do NOT
+  // downgrade this to a bare `.unique()` on the column: that would mean a
+  // GLOBAL namespace and would stop two unrelated MSPs both onboarding an
+  // "acme".
+  partnerSlugUnique: uniqueIndex(ORG_SLUG_UNIQUE_INDEX).on(table.partnerId, sql`lower(${table.slug})`),
 }));
 
 export const sites = pgTable('sites', {
@@ -187,4 +214,17 @@ export const enrollmentKeys = pgTable('enrollment_keys', {
   // Plain uuid — the FK lives in SQL to avoid a circular import with
   // supportSessions.ts (which imports organizations from this file).
   supportSessionId: uuid('support_session_id'),
+});
+
+// Durable "loser merged into survivor" record (spec 2026-08-26). loser_org_id
+// deliberately has no FK — the loser org row is erased after the merge.
+export const orgMergeEvents = pgTable('org_merge_events', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  partnerId: uuid('partner_id').notNull().references(() => partners.id, { onDelete: 'cascade' }),
+  loserOrgId: uuid('loser_org_id').notNull(),
+  loserOrgName: varchar('loser_org_name', { length: 255 }).notNull(),
+  survivorOrgId: uuid('survivor_org_id').notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  actorUserId: uuid('actor_user_id'),
+  summary: jsonb('summary').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 });

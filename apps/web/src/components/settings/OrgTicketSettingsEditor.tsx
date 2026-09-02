@@ -21,7 +21,21 @@ type OrgTicketSettings = {
   slaOverrides: Partial<Record<TicketPriority, SlaOverride>>;
   defaultHourlyRate: string | null;
   defaultBillable: boolean | null;
+  /** Currency the stored rate was stamped in (null until a rate is set). */
+  rateCurrency: string | null;
+  /** Both come from the ticket-settings GET itself so the editor works for
+   *  partner- AND system-scope users (`/orgs/partners/me` 403s for system). */
+  orgCurrency: string;
+  partnerCurrency: string;
 };
+
+/** Normalize a rate for change detection: '100' and '100.00' are the same
+ *  value; blank / null both mean "no rate". Returned as a string so the
+ *  comparison is a plain `!==`. */
+function normalizeRate(value: string | null | undefined): string {
+  const trimmed = (value ?? '').trim();
+  return trimmed === '' ? 'null' : String(Number(trimmed));
+}
 
 type DraftSlaRow = {
   responseMinutes: string;
@@ -116,14 +130,22 @@ export default function OrgTicketSettingsEditor({ orgId, onDirty, onSave }: OrgT
         }
       }
 
-      const rateStr = hourlyRate.trim();
-      const defaultHourlyRate = rateStr !== '' ? Number(rateStr) : null;
       const defaultBillable = billable === 'true' ? true : billable === 'false' ? false : null;
+      const patch: Record<string, unknown> = { slaOverrides, defaultBillable };
+
+      // Dirty-field rule (#3776): only carry the rate when it actually changed.
+      // The server restamps `rate_currency` only when the stored rate value
+      // changes, but an SLA-only save must not even resend the rate — belt
+      // and braces against an accidental restamp after an org currency change.
+      const rateStr = hourlyRate.trim();
+      if (normalizeRate(rateStr) !== normalizeRate(settings.defaultHourlyRate)) {
+        patch.defaultHourlyRate = rateStr !== '' ? Number(rateStr) : null;
+      }
 
       await runAction({
         request: () => fetchWithAuth(`/orgs/organizations/${orgId}/ticket-settings`, {
           method: 'PATCH',
-          body: JSON.stringify({ slaOverrides, defaultHourlyRate, defaultBillable })
+          body: JSON.stringify(patch)
         }),
         errorFallback: t('orgTicketSettingsEditor.errors.save'),
         successMessage: t('orgTicketSettingsEditor.toasts.saved'),
@@ -220,7 +242,20 @@ export default function OrgTicketSettingsEditor({ orgId, onDirty, onSave }: OrgT
         </p>
         <div className="mt-4 grid gap-4 sm:grid-cols-2">
           <div>
-            <label className="text-sm font-medium" htmlFor="org-ticket-rate">{t('orgTicketSettingsEditor.billing.hourlyRate')}</label>
+            <label className="text-sm font-medium" htmlFor="org-ticket-rate">
+              {t('orgTicketSettingsEditor.billing.hourlyRate', { currency: settings.orgCurrency })}
+            </label>
+            {settings.orgCurrency !== settings.partnerCurrency && (
+              <p
+                data-testid="org-ticket-currency-nudge"
+                className="mt-2 rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-900"
+              >
+                {t('orgTicketSettingsEditor.billing.currencyNudge', {
+                  orgCurrency: settings.orgCurrency,
+                  partnerCurrency: settings.partnerCurrency
+                })}
+              </p>
+            )}
             <input
               id="org-ticket-rate"
               type="number"

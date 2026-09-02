@@ -32,6 +32,29 @@ vi.mock("../db", () => ({
     transaction: dbMocks.transaction,
     select: dbMocks.select,
   },
+  // urlSafety's safeFetch calls this (#1105 tripwire); the real `../db` is
+  // mocked away, so the named export has to exist or the import fails.
+  assertOutsideHeldDbContext: vi.fn(),
+}));
+
+// binarySync's outbound calls now go through the SSRF-guarded
+// `safeFetchFollowingRedirects` (#4262), which dials Node's http/https directly
+// so it can DNS-resolve and IP-pin each hop — it never touches global `fetch`.
+// Without this bridge every `vi.stubGlobal("fetch", …)` below would stop
+// intercepting and these cases would make REAL network calls (that is exactly
+// how PR #4255's installerBuilder cases went unhooked). Route the helper back
+// to the stubbed global; the guard's real redirect/SSRF semantics are covered
+// by `binarySync.redirect.test.ts` and `urlSafety.test.ts`, and that binarySync
+// actually adopts it by the source scan in `binarySync.redirect.test.ts`.
+vi.mock("./urlSafety", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./urlSafety")>()),
+  // Typed against SafeFetchInit (not RequestInit) so a call site's `maxBytes` /
+  // `timeoutMs` survive the bridge instead of being silently dropped, and a
+  // vi.fn() so a suite CAN assert on what binarySync passed the helper.
+  safeFetchFollowingRedirects: vi.fn(
+    (url: string, init?: import("./urlSafety").SafeFetchInit) =>
+      globalThis.fetch(url, init as RequestInit),
+  ),
 }));
 
 // Capture eq/and so a test can inspect the WHERE built for the per-component
@@ -77,7 +100,13 @@ const manifestSigningMocks = vi.hoisted(() => ({
 
 vi.mock("./manifestSigning", () => manifestSigningMocks);
 
-import { syncBinaries, syncFromGitHub } from "./binarySync";
+vi.mock("./sentry", () => ({ captureException: vi.fn() }));
+
+import {
+  __resetRefusedManifestAssetWarnCache,
+  syncBinaries,
+  syncFromGitHub,
+} from "./binarySync";
 import { requiredPlatformTrustFor } from "./releaseAssetTrust";
 
 function fixturePlatformTrust(name: string): string {
@@ -203,6 +232,9 @@ describe("binarySync", () => {
     delete process.env.BINARY_GITHUB_REPOSITORY;
     delete process.env.GITHUB_REPO;
     vi.clearAllMocks();
+    // Clear the per-(component/assetName) refused-manifest-asset capture
+    // dedup so a prior test's Sentry assertion doesn't suppress this one's.
+    __resetRefusedManifestAssetWarnCache();
   });
 
   afterEach(() => {
@@ -1300,8 +1332,38 @@ describe("binarySync", () => {
       return createHash("sha256").update("local agent bytes").digest("hex");
     }
 
+    // NOTE (Task 2, #3836): this helper configures RELEASE_ARTIFACT_MANIFEST_
+    // PUBLIC_KEYS to an arbitrary freshly-generated key and signs with the
+    // SAME key, then the tests below assert the row gets stamped
+    // signingKeyId="release-artifact-manifest-ed25519". That only proves
+    // registration correctly identifies "signed by whatever this test run
+    // configured as official" — it does NOT, on its own, prove the
+    // server-side download-path binding (that an official-ID stamp can
+    // ONLY ever be satisfied by that same official key, never by a
+    // DB-provisioned per-deployment key). This file mocks db/manifestSigning
+    // too heavily to reach the real validateReleaseManifest for that
+    // property cheaply — the exact-binding assertions live instead in:
+    //   - apps/api/src/routes/agentVersions.test.ts, describe
+    //     "validateReleaseManifest — key-ID-aware dispatch (Task 2, #3836)"
+    //     (unit-level, both directions: official-ID-vs-deploy-key and
+    //     deploy-ID-vs-official-key)
+    //   - apps/api/src/routes/agentVersionsLocalModeRoundtrip.test.ts,
+    //     describe "Task 2 — key-ID-aware verification rejects an
+    //     official-ID row not actually signed by the official key" (a real
+    //     registerFromOfficialManifest row fed into the real
+    //     validateReleaseManifest, proving the negative case end-to-end).
     function makeOfficialLocalManifest(
-      assets: { name: string; sha256: string; size: number; edition?: string }[],
+      assets: {
+        name: string;
+        sha256: string;
+        size: number;
+        edition?: string;
+        // Override for tests that need a platformTrust label that
+        // deliberately contradicts what the asset name requires (D4, #3836:
+        // the distributability-policy-refused branch). Defaults to the
+        // name-derived value, same as before this field existed.
+        platformTrust?: string;
+      }[],
     ) {
       const { publicKey, privateKey } = generateKeyPairSync("ed25519");
       const publicDer = publicKey.export({ format: "der", type: "spki" }) as Buffer;
@@ -1315,7 +1377,7 @@ describe("binarySync", () => {
             name: a.name,
             sha256: a.sha256,
             size: a.size,
-            platformTrust: fixturePlatformTrust(a.name),
+            platformTrust: a.platformTrust ?? fixturePlatformTrust(a.name),
             ...(a.edition ? { edition: a.edition } : {}),
           })),
         }),
@@ -1365,6 +1427,10 @@ describe("binarySync", () => {
 
       await syncBinaries();
 
+      // This asserts REGISTRATION stamping only (unchanged by Task 2 — see
+      // the NOTE above makeOfficialLocalManifest for where the download-path
+      // exact-binding property this used to be conflated with is actually
+      // proven).
       expect(dbMocks.insertValues).toHaveBeenCalledWith(
         expect.objectContaining({
           signingKeyId: "release-artifact-manifest-ed25519",
@@ -1397,29 +1463,42 @@ describe("binarySync", () => {
       expect(manifestSigningMocks.signManifest).toHaveBeenCalled();
     });
 
-    it("falls back to per-deployment re-signing when the local checksum disagrees with the manifest", async () => {
+    // D4 (#3836): a checksum mismatch between the local file and the
+    // manifest's claim for it used to fall through to registerLocalBinaries
+    // (deploy-key re-sign), which has no distributability gate at all —
+    // silently serving whatever bytes are on disk under a signature that
+    // vouches for a DIFFERENT (manifest-claimed) checksum. That must fail
+    // closed instead: excluded from both the official path and the
+    // per-deployment fallback. See the "no silent policy-bypass fallback"
+    // describe block below for the sibling policy-refused case and the
+    // shared fail-closed assertions.
+    it("checksum mismatch is excluded from BOTH the official path and the local fallback (fail closed), not silently re-signed", async () => {
       setLocalScanEnv();
       const official = makeOfficialLocalManifest([
         {
           name: "breeze-agent-linux-amd64",
-          sha256: "b".repeat(64), // deliberately wrong
+          sha256: "b".repeat(64), // deliberately wrong vs the local file's real checksum
           size: 18,
         },
       ]);
       process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = official.publicKey;
       mockReadFileWithOfficialManifest("0.65.9", official.manifest, official.signature);
       const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      const { captureException } = await import("./sentry");
 
       await syncBinaries();
 
-      expect(dbMocks.insertValues).toHaveBeenCalledWith(
-        expect.objectContaining({ signingKeyId: "deploy-test-aaaaaaaa" }),
-      );
+      // Never registered via the official path, and never falls through to
+      // registerLocalBinaries either.
+      expect(dbMocks.insertValues).not.toHaveBeenCalled();
+      expect(manifestSigningMocks.signManifest).not.toHaveBeenCalled();
       expect(
         errorSpy.mock.calls.some((args) =>
-          String(args[0] ?? "").includes("Checksum mismatch"),
+          String(args[0] ?? "").includes("Checksum mismatch") &&
+          String(args[0] ?? "").includes("breeze-agent-linux-amd64"),
         ),
       ).toBe(true);
+      expect(vi.mocked(captureException)).toHaveBeenCalledTimes(1);
       errorSpy.mockRestore();
     });
 
@@ -1475,6 +1554,138 @@ describe("binarySync", () => {
       expect(dbMocks.insertValues).toHaveBeenCalledWith(
         expect.objectContaining({ signingKeyId: "deploy-test-aaaaaaaa" }),
       );
+    });
+  });
+
+  // D4 (#3836): registerFromOfficialManifest's per-binary catch used to treat
+  // EVERY verifyReleaseArtifactManifestAsset failure as "manifest doesn't
+  // cover this file" and fall through to registerLocalBinaries — which
+  // deploy-key re-signs and registers the binary with NO distributability
+  // gate at all. That is exactly how unsigned darwin binaries (manifest-
+  // labeled release-workflow-produced, refused by assertDistributableReleaseAsset
+  // which requires macos-developer-id-notarization-required for darwin
+  // Mach-Os) shipped to production macOS devices with the trust policy
+  // silently bypassed. The checksum-mismatch sibling case lives in the
+  // "official manifest from local dir" describe block above (it needed the
+  // same helpers); this block covers the distributability-policy-refusal
+  // branch plus propagation to a second component (watchdog).
+  describe("no silent policy-bypass fallback in local binary registration (D4, #3836)", () => {
+    function setLocalScanEnvDarwinAgent() {
+      process.env.BINARY_SOURCE = "local";
+      process.env.AGENT_BINARY_DIR = "/data/binaries/agent";
+      process.env.BINARY_VERSION_FILE = "/fake/version";
+      delete process.env.BREEZE_VERSION;
+      fsMocks.readdir.mockResolvedValue(["breeze-agent-darwin-amd64"] as any);
+      fsMocks.stat.mockResolvedValue({ isFile: () => true, size: 1234 } as any);
+    }
+
+    function setLocalScanEnvLinuxAgent() {
+      process.env.BINARY_SOURCE = "local";
+      process.env.AGENT_BINARY_DIR = "/data/binaries/agent";
+      process.env.BINARY_VERSION_FILE = "/fake/version";
+      delete process.env.BREEZE_VERSION;
+      fsMocks.readdir.mockResolvedValue(["breeze-agent-linux-amd64"] as any);
+      fsMocks.stat.mockResolvedValue({ isFile: () => true, size: 1234 } as any);
+    }
+
+    function makeSignedOfficialManifest(
+      assets: { name: string; sha256: string; size: number; edition?: string; platformTrust?: string }[],
+    ) {
+      const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+      const publicDer = publicKey.export({ format: "der", type: "spki" }) as Buffer;
+      const rawPublicKey = publicDer.subarray(publicDer.length - 32).toString("base64");
+      const manifest = Buffer.from(
+        JSON.stringify({
+          schemaVersion: 1,
+          repository: "LanternOps/breeze",
+          release: "v1.2.3",
+          assets: assets.map((a) => ({
+            name: a.name,
+            sha256: a.sha256,
+            size: a.size,
+            platformTrust: a.platformTrust ?? fixturePlatformTrust(a.name),
+            ...(a.edition ? { edition: a.edition } : {}),
+          })),
+        }),
+      );
+      const signature = Buffer.from(sign(null, manifest, privateKey).toString("base64"));
+      return { manifest, signature, publicKey: rawPublicKey };
+    }
+
+    function mockReadFileWithManifest(
+      versionFileContent: string,
+      manifest: Buffer,
+      signature: Buffer,
+    ) {
+      fsMocks.readFile.mockImplementation((path: unknown) => {
+        if (typeof path === "string" && path.endsWith("release-artifact-manifest.json.ed25519")) {
+          return Promise.resolve(signature);
+        }
+        if (typeof path === "string" && path.endsWith("release-artifact-manifest.json")) {
+          return Promise.resolve(manifest);
+        }
+        return Promise.resolve(versionFileContent);
+      });
+    }
+
+    it("a policy-refused asset present in the manifest (unsigned darwin) is excluded from BOTH the official path and the local-resign fallback, and reports once via console.error + captureException", async () => {
+      setLocalScanEnvDarwinAgent();
+      const checksum = createHash("sha256").update("local agent bytes").digest("hex");
+      const official = makeSignedOfficialManifest([
+        {
+          name: "breeze-agent-darwin-amd64",
+          sha256: checksum,
+          size: 18, // Buffer.byteLength("local agent bytes")
+          edition: "self-host",
+          // Deliberately wrong: darwin Mach-O binaries require
+          // macos-developer-id-notarization-required. Today's actual hosted
+          // release manifests label these release-workflow-produced (unsigned) —
+          // this fixture reproduces that exact shape.
+          platformTrust: "release-workflow-produced",
+        },
+      ]);
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = official.publicKey;
+      mockReadFileWithManifest("0.65.9", official.manifest, official.signature);
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      const { captureException } = await import("./sentry");
+
+      await syncBinaries();
+
+      // Never registered via the official path...
+      expect(dbMocks.insertValues).not.toHaveBeenCalled();
+      // ...and never falls through to registerLocalBinaries either — that
+      // path has no distributability gate and would silently serve the
+      // policy-refused binary deploy-signed.
+      expect(manifestSigningMocks.signManifest).not.toHaveBeenCalled();
+      expect(
+        errorSpy.mock.calls.some((args) =>
+          String(args[0] ?? "").includes("breeze-agent-darwin-amd64"),
+        ),
+      ).toBe(true);
+      expect(vi.mocked(captureException)).toHaveBeenCalledTimes(1);
+      errorSpy.mockRestore();
+    });
+
+    it("the absent case is unaffected: an asset the manifest genuinely does not cover still falls back to per-deployment re-signing", async () => {
+      setLocalScanEnvLinuxAgent();
+      const official = makeSignedOfficialManifest([
+        {
+          name: "breeze-agent-windows-amd64.exe", // does not match the scanned linux binary
+          sha256: "a".repeat(64),
+          size: 999,
+        },
+      ]);
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = official.publicKey;
+      mockReadFileWithManifest("0.65.9", official.manifest, official.signature);
+      const { captureException } = await import("./sentry");
+
+      await syncBinaries();
+
+      expect(dbMocks.insertValues).toHaveBeenCalledWith(
+        expect.objectContaining({ signingKeyId: "deploy-test-aaaaaaaa" }),
+      );
+      expect(manifestSigningMocks.signManifest).toHaveBeenCalled();
+      expect(captureException).not.toHaveBeenCalled();
     });
   });
 
@@ -2393,8 +2604,14 @@ describe("unpublished pinned release is loud, not a /releases/latest fallback (#
 
     await expect(syncBinaries()).rejects.toThrow(/GitHub API error: 404/);
 
+    // The remedy wording changed with #3499: a failed sync no longer leaves the
+    // download redirect disagreeing with agent_versions (the redirect follows
+    // the promoted row now), so the hint says the fleet simply will not advance
+    // rather than promising that setting BINARY_VERSION realigns the redirect.
+    // It must still name BINARY_VERSION as the lever and still refuse the
+    // /releases/latest fallback.
     expect(errorSpy).toHaveBeenCalledWith(
-      expect.stringMatching(/pinned release v0\.106\.0 FAILED.*set BINARY_VERSION to the last PUBLISHED release/s),
+      expect.stringMatching(/pinned release v0\.106\.0 FAILED.*set BINARY_VERSION to a PUBLISHED release/s),
     );
     expect(fetchSpy).not.toHaveBeenCalledWith(
       `${apiBase}/releases/latest`,

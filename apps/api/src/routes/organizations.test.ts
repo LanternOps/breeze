@@ -315,6 +315,15 @@ describe('organization routes', () => {
             where: vi.fn().mockResolvedValue([{ count: 1 }])
           })
         } as any)
+        // partner-settings read for the preferred org order — runs BEFORE the
+        // page query since #4004, because it supplies the leading ORDER BY term
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([])
+            })
+          })
+        } as any)
         .mockReturnValueOnce({
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockReturnValue({
@@ -323,14 +332,6 @@ describe('organization routes', () => {
                   orderBy: vi.fn().mockResolvedValue(organizations)
                 })
               })
-            })
-          })
-        } as any)
-        // partner-settings read for the preferred org order
-        .mockReturnValueOnce({
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([])
             })
           })
         } as any)
@@ -355,13 +356,25 @@ describe('organization routes', () => {
     });
 
     it('should create an organization', async () => {
-      vi.mocked(db.select).mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([{ currencyCode: 'CAD' }])
+      vi.mocked(db.select)
+        // 1) partner currency lookup
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ currencyCode: 'CAD' }])
+            })
           })
-        })
-      } as any);
+        } as any)
+        // 2) #3967 slug-clash probe — queued explicitly rather than left to the
+        // factory default, which the previous test's persistent mockReturnValue
+        // would otherwise shadow with a chain that has no .limit().
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([])
+            })
+          })
+        } as any);
       const values = vi.fn().mockReturnValue({
         returning: vi.fn().mockResolvedValue([
           { id: 'org-1', name: 'Org One', slug: 'org-one' }
@@ -387,17 +400,20 @@ describe('organization routes', () => {
     });
 
     it('should fetch an organization by id', async () => {
+      // UUID-shaped: GET /organizations/:id rejects a malformed id with a 404
+      // before any lookup (it would otherwise reach a uuid column as 22P02).
+      const orgId = '11111111-1111-1111-1111-111111111111';
       vi.mocked(db.select).mockReturnValue({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
             limit: vi.fn().mockResolvedValue([
-              { id: 'org-1', name: 'Org One', slug: 'org-one' }
+              { id: orgId, name: 'Org One', slug: 'org-one' }
             ])
           })
         })
       } as any);
 
-      const res = await app.request('/orgs/organizations/org-1', {
+      const res = await app.request(`/orgs/organizations/${orgId}`, {
         method: 'GET',
         headers: { Authorization: 'Bearer token' }
       });

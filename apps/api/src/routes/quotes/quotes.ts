@@ -9,10 +9,10 @@ import {
   updateQuoteLineSchema, quoteBlockInputSchema, listQuotesQuerySchema,
   reorderBlocksSchema, reorderLinesSchema, moveQuoteLineSchema, type CloneQuoteInput,
   createQuoteOrderSchema, updateQuoteOrderSchema, updateQuoteOrderLineSchema,
-  changeCurrencySchema,
+  changeCurrencySchema, buildStripeCurrencyWarning,
 } from '@breeze/shared';
 import {
-  createQuote, cloneQuote, getQuote, listQuotes, updateQuote, deleteDraftQuote,
+  createQuote, cloneQuote, reviseQuote, getQuote, listQuotes, updateQuote, deleteDraftQuote,
   addManualLine, addCatalogLine, updateLine, removeLine, addBlock, updateBlock, deleteBlock,
   reorderBlocks, reorderLines, moveLineToBlock, changeQuoteCurrency,
 } from '../../services/quoteService';
@@ -24,6 +24,7 @@ import { readCatalogItemImage } from '../../services/catalogImageStorage';
 import { safeContentDispositionFilename } from '../../utils/httpHeaders';
 import { resolveQuoteBranding } from '../../services/quoteBranding';
 import { getQuoteRecipients } from '../../services/quoteLifecycle';
+import { getConnection } from '../../services/stripeConnectService';
 import {
   renderContractBlocksForClient,
   loadContractPdfInputs,
@@ -53,7 +54,9 @@ export function quoteActorFrom(c: { get: (k: string) => unknown }): QuoteActor {
   return { userId: auth.user.id, partnerId: auth.partnerId ?? null, accessibleOrgIds: auth.accessibleOrgIds, allowedSiteIds: auth.allowedSiteIds };
 }
 export function handleServiceError(c: { json: (b: unknown, s: number) => Response }, err: unknown): Response {
-  if (err instanceof QuoteServiceError) return c.json({ error: err.message, code: err.code }, err.status);
+  if (err instanceof QuoteServiceError) {
+    return c.json(err.meta ? { error: err.message, code: err.code, meta: err.meta } : { error: err.message, code: err.code }, err.status);
+  }
   if (err instanceof ContractTemplateServiceError) return c.json({ error: err.message, code: err.code }, err.status);
   // An unloadable/encrypted uploaded contract PDF surfaces as a 4xx (typed) here
   // rather than an uncaught 500 — uploads are validated at write time, so this is
@@ -90,6 +93,27 @@ quoteCrudRoutes.post('/:id/clone', scopes, writePerm, zValidator('param', idPara
   try { return c.json({ data: await cloneQuote(c.req.valid('param').id, quoteActorFrom(c), input) }); }
   catch (err) { return handleServiceError(c, err); }
 });
+// POST /:id/revise — create a linked draft revision of an issued quote. The
+// parent stays live; superseding it on send belongs to a later wave documented
+// in docs/superpowers/plans/2026-08-17-quote-revisions.md.
+// quotes:write like clone; the send itself will require quotes:send.
+quoteCrudRoutes.post('/:id/revise', scopes, writePerm, zValidator('param', idParam), async (c) => {
+  const id = c.req.valid('param').id;
+  try {
+    const actor = quoteActorFrom(c);
+    const { quote: parent } = await getQuote(id, actor);
+    const revision = await reviseQuote(id, actor);
+    writeRouteAudit(c, {
+      orgId: revision.orgId,
+      action: 'quote.revised',
+      resourceType: 'quote',
+      resourceId: revision.id,
+      result: 'success',
+      details: { parentQuoteId: id, revisionNumber: revision.revisionNumber, parentStatus: parent.status },
+    });
+    return c.json({ data: revision });
+  } catch (err) { return handleServiceError(c, err); }
+});
 quoteCrudRoutes.get('/:id', scopes, readPerm, zValidator('param', idParam), async (c) => {
   const id = c.req.valid('param').id;
   try {
@@ -122,6 +146,20 @@ quoteCrudRoutes.get('/:id', scopes, readPerm, zValidator('param', idParam), asyn
     // had no way to see the addresses. Empty on drafts and on legacy sends that
     // predate quote_recipients.
     const recipients = await getQuoteRecipients(id);
+    // Multi-currency (#3777, spec §10 / review F5): Stripe connection status +
+    // the warn-don't-block currency warning are precomputed HERE, from the
+    // partner's cached connection row (same shape as getInvoice). `quotes:send`
+    // is grantable without `billing:manage`, so the send composer must never
+    // learn this from the BILLING_MANAGE-only /partner/stripe-connect endpoint —
+    // a sender without billing admin got a silent 403 and no FX-spread warning.
+    // Cached columns only, no Stripe call. A lookup FAILURE is reported as
+    // `null` (unknown) rather than `false`: "disconnected" would show the
+    // deposit-can't-be-paid warning on a connected account.
+    let conn: Awaited<ReturnType<typeof getConnection>> | undefined;
+    try { conn = await getConnection(detail.quote.partnerId); } catch { conn = undefined; }
+    const stripeConnected: boolean | null = conn === undefined ? null : conn?.status === 'connected';
+    const stripeAccountCurrency = stripeConnected ? conn?.defaultCurrency ?? null : null;
+    const currencyWarning = stripeConnected ? buildStripeCurrencyWarning(detail.quote.currencyCode, conn?.defaultCurrency) : null;
     // Strip the accept-token identity before it leaves the API. getQuote reads
     // the whole `quotes` row, but these four columns are classified
     // excludedSensitive in CORE_TENANT_EXPORT_POLICY (they are the material
@@ -137,7 +175,10 @@ quoteCrudRoutes.get('/:id', scopes, readPerm, zValidator('param', idParam), asyn
     // explicitly so web doesn't have to depend on QuoteBranding growing new
     // fields to pick up theme/pageSize (Task 12).
     const presentation = { theme: branding.theme, pageSize: branding.pageSize };
-    return c.json({ data: { ...detail, quote: quoteForClient, blocks: blocksForEditor, branding, presentation, recipients } });
+    return c.json({ data: {
+      ...detail, quote: quoteForClient, blocks: blocksForEditor, branding, presentation, recipients,
+      stripeConnected, stripeAccountCurrency, currencyWarning,
+    } });
   } catch (err) { return handleServiceError(c, err); }
 });
 quoteCrudRoutes.patch('/:id', scopes, writePerm, zValidator('param', idParam), zValidator('json', updateQuoteSchema), async (c) => {

@@ -10,6 +10,7 @@ import { enforceAgentCertificateBinding, readAgentCertificateAssertion } from '.
 import { createAuditLogAsync } from '../services/auditService';
 import { getTrustedClientIp, rateLimitIpKey } from '../services/clientIp';
 import { getAgentTenantState } from '../services/tenantStatus';
+import { isDeviceUninstallDraining } from '../services/deviceUninstallDrain';
 import {
   AGENT_ORG_RATE_WINDOW_SECONDS,
   computeReservedIngestLimit,
@@ -43,6 +44,33 @@ export interface AgentAuthContext {
    * commands additionally narrow the claim to `self_uninstall` only.
    */
   tenantDraining?: boolean;
+  /**
+   * #3986 — true when THIS DEVICE (not its tenant) is inside the device-remove
+   * uninstall drain window: `status='decommissioned'` AND a non-terminal
+   * `self_uninstall` carrying the `device_remove` reason AND an unexpired
+   * `device_remove_expires_at`. The single source of that predicate is
+   * `services/deviceUninstallDrain.isDeviceUninstallDraining` — never re-derive
+   * it, and never widen it to "decommissioned + any pending self_uninstall":
+   * abuse-suspension queues `self_uninstall` onto already-decommissioned rows
+   * with no reason and no deadline, and admitting those would resurrect a
+   * suspended partner's agent channel.
+   *
+   * Distinct from `tenantDraining` on purpose. Both narrow the ROUTE surface
+   * and the claim allowlist identically, but only this one means "the machine
+   * itself is being removed", which is what the heartbeat's minimal drain
+   * branch keys on.
+   */
+  deviceUninstallDraining?: boolean;
+  /**
+   * The ONE derived command-type allowlist for every `device_commands` claim
+   * site on this request. `undefined` means unrestricted — which is also
+   * `claimPendingCommandsForDevice`'s default for a missing `typeAllowlist`,
+   * so a claim site that forgets to consult a drain flag silently claims
+   * EVERYTHING. Deriving the value once here and passing it through is what
+   * removes that trap: the only thing a claim site has to remember is to pass
+   * `agent.claimTypeAllowlist`.
+   */
+  claimTypeAllowlist?: readonly string[];
 }
 
 export type AgentCredentialRole = 'agent' | 'watchdog';
@@ -249,9 +277,11 @@ export async function suspendAgentToken(deviceId: string, reason: AgentTokenSusp
 }
 
 /**
- * Final path segment of routes that open their own withDbAccessContext around
- * their DB work instead of relying on the request-long wrap in
- * agentAuthMiddleware. See the #1105 note at the wrap site. Auth still runs in
+ * Action segment of the CORE `/api/v1/agents/<agentId>/<action>` routes that
+ * open their own withDbAccessContext around their DB work instead of relying
+ * on the request-long wrap in agentAuthMiddleware. Matched through
+ * `isCoreAgentPath`, so a same-named segment anywhere else (an extension
+ * gateway route, a nested sub-path) does NOT opt out. See the #1105 note at the wrap site. Auth still runs in
  * full for these routes — only the org-context transaction wrap is skipped.
  *
  * `commands` (the GET command poll) is here because its handler claims commands
@@ -266,56 +296,171 @@ export async function suspendAgentToken(deviceId: string, reason: AgentTokenSusp
  */
 const SELF_MANAGED_DB_CONTEXT_ACTIONS = new Set(['heartbeat', 'reliability', 'commands']);
 
-/** Single-segment actions allowed during a drain: `/agents/<agentId>/<action>`. */
-const DRAIN_ALLOWED_ACTIONS = new Set(['heartbeat', 'commands', 'logs', 'rotate-token']);
+/**
+ * Single-segment actions allowed during a TENANT (`offboarding`) drain:
+ * `/api/v1/agents/<agentId>/<action>`. #2774's original set.
+ */
+const TENANT_DRAIN_ALLOWED_ACTIONS = new Set(['heartbeat', 'commands', 'logs', 'rotate-token']);
 
 /**
- * #2774 — the narrowed agent surface during an `offboarding` drain window.
+ * #3986 — the DEVICE-remove drain's set, which is deliberately NARROWER than
+ * the tenant one: `rotate-token` is dropped.
+ *
+ * `routes/agents/token.ts` has no independent `devices.status` guard, and the
+ * credentials it mints OUTLIVE the drain window — nothing revokes a staged or
+ * promoted rotation when the deadline passes, and `POST /devices/:id/restore`
+ * does not touch a single token hash. So a stolen agent token on a removed
+ * device could be rotated into a fresh agent + watchdog + helper credential
+ * set that lies dormant through the 403 after expiry and becomes the LIVE
+ * credential the moment an operator restores the device — which this very
+ * feature supports. Rotation also DEMOTES the legitimate token, so a thief can
+ * deny the real machine the uninstall the window exists to deliver.
+ *
+ * Dropping it costs nothing. A staged-but-unconfirmed rotation still
+ * authenticates as `role: 'agent'` through `matchRoleScopedAgentTokenHash`, so
+ * an agent mid-rotation passes the Layer 1b role gate and can heartbeat and
+ * collect its uninstall without ever calling `rotate-token`. #2774's
+ * "don't strand a mid-stage rotation" rationale covers the CONFIRM half (the
+ * machines there are legitimately alive and must stay manageable); it never
+ * justified the MINT half for a machine we are actively uninstalling.
+ *
+ * `rotate-token/confirm` is NOT in this set because it never was in either set
+ * — it is matched by its own two-segment branch below, and stays allowed for
+ * both drain kinds so an agent that already persisted a staged credential can
+ * finish and avoid being locked out mid-drain.
+ */
+const DEVICE_UNINSTALL_DRAIN_ALLOWED_ACTIONS = new Set(['heartbeat', 'commands', 'logs']);
+
+/**
+ * Both drains at once (a removed device inside an offboarding tenant): the
+ * INTERSECTION of the two sets, never either one whole.
+ *
+ * Two independent narrowing gates compose by intersection, full stop. The
+ * earlier "whichever drain is the tenant one wins" form composed by union in
+ * the only case that mattered: it handed `rotate-token` back to exactly the
+ * device the DEVICE drain had just taken it away from, silently reopening
+ * HIGH-1 (a stolen token on a removed machine minting a durable agent +
+ * watchdog + helper credential set that outlives the window and goes live on
+ * restore, while demoting the legitimate token and denying the real machine
+ * its uninstall). A tenant drain is not evidence that a removed device is
+ * safer; it is a second, independent reason to trust it less.
+ *
+ * Computed once at module load — this is a fixed set, not per-request state.
+ */
+const BOTH_DRAINS_ALLOWED_ACTIONS = new Set(
+  [...DEVICE_UNINSTALL_DRAIN_ALLOWED_ACTIONS].filter((action) =>
+    TENANT_DRAIN_ALLOWED_ACTIONS.has(action),
+  ),
+);
+
+/**
+ * The ONLY command type a drained agent — tenant-offboarding (#2774) or
+ * device-remove (#3986) — may claim, ack, or have delivered.
+ *
+ * Exported so no handler has to restate the literal. `claimPendingCommandsForDevice`'s
+ * `typeAllowlist` parameter is OPTIONAL and defaults to unrestricted, so every
+ * restatement is a place a future edit can silently drop the narrowing and
+ * hand a departing (or removed) machine the full command surface. There is
+ * exactly one definition, surfaced on the agent context as `claimTypeAllowlist`.
+ */
+export const DRAIN_CLAIM_TYPE_ALLOWLIST = ['self_uninstall'] as const;
+
+/**
+ * The CORE agent mount, as absolute leading path segments.
+ *
+ * `index.ts` mounts `app.route('/api/v1', api)` and `api.route('/agents', agentRoutes)`,
+ * so every core agent route is exactly `/api/v1/agents/<agentId>/...`.
+ * `agentAuth.test.ts` pins this against those two mount lines in `index.ts`, so
+ * a mount move is caught by a unit test rather than by drain mode silently
+ * refusing the whole fleet.
+ */
+const CORE_AGENT_MOUNT_SEGMENTS = ['api', 'v1', 'agents'] as const;
+
+/**
+ * True when `pathSegments` is EXACTLY `/api/v1/agents/<agentId>/…` with
+ * `expectedLength` segments in total.
+ *
+ * ABSOLUTE anchoring — indexed from the FRONT, with an exact length. The
+ * previous implementation indexed from the END (`at(3) === 'agents'`), which
+ * matched any path whose TAIL happened to look like `agents/<id>/<action>`.
+ * That was a real hole with a false comment on it: this middleware also serves
+ * the extension gateway, which mounts agent routes at `<prefix>/agent/<id>/*`
+ * (singular) and at `/api/v1/<routeNamespace>/agent/<id>/*`, and extension
+ * route paths are copied verbatim with no validation
+ * (extensions/contributionRegistry.ts). A crafted request such as
+ *
+ *   /api/v1/ext/acme/agent/<id>/agents/<id>/rotate-token
+ *
+ * has a matching tail and would have joined the drain surface. Nothing shipped
+ * registers such a route today, but the AGENT supplies the tail, so it needed
+ * no extension-author complicity — and the old comment claiming "no extension
+ * route can join the drain surface" is exactly what would have licensed
+ * someone to write one.
+ *
+ * Fails CLOSED in both directions: an unrecognised shape is refused during a
+ * drain, and if the core mount ever moves, drain mode blocks rather than
+ * admits.
+ */
+function isCoreAgentPath(
+  pathSegments: string[],
+  agentId: string,
+  expectedLength: number,
+): boolean {
+  if (pathSegments.length !== expectedLength) return false;
+  for (const [index, segment] of CORE_AGENT_MOUNT_SEGMENTS.entries()) {
+    if (pathSegments[index] !== segment) return false;
+  }
+  return pathSegments[CORE_AGENT_MOUNT_SEGMENTS.length] === agentId;
+}
+
+/** Index of the `<action>` segment in `/api/v1/agents/<agentId>/<action>`. */
+const CORE_AGENT_ACTION_INDEX = CORE_AGENT_MOUNT_SEGMENTS.length + 1;
+
+/**
+ * #2774 / #3986 — the narrowed agent surface during a drain window.
  * Only what self_uninstall delivery needs survives:
  * - heartbeat: the primary command carrier (claims device_commands) + liveness
  * - commands / commands/:id/result: the poll + ack pair
- * - rotate-token (+ confirm): auth maintenance — blocking a mid-stage rotation
- *   could strand the very credential the drain depends on
+ * - rotate-token/confirm: lets an agent that already persisted a staged
+ *   credential finish, so a mid-stage rotation can't lock it out mid-drain.
+ *   The MINT half (`rotate-token`) is allowed for a TENANT drain only — see
+ *   DEVICE_UNINSTALL_DRAIN_ALLOWED_ACTIONS for why a removed device must not
+ *   be able to mint credentials that outlive its window.
  * - logs: post-mortem evidence for devices that never drain
  * Everything else (inventory, patches, WS-adjacent, extension gateway) is
- * refused with an explicit 403 so a departing customer's machines don't keep
- * feeding a fully-capable RMM channel. The WS upgrade is refused outright in
- * agentWs.validateAgentToken — its push path bypasses device_commands.
+ * refused with an explicit 403 so a departing customer's — or a removed
+ * machine's — agent doesn't keep feeding a fully-capable RMM channel. The WS
+ * upgrade is refused outright in agentWs.validateAgentToken; its push path
+ * bypasses device_commands, so no type allowlist can see it.
  *
- * Every match is ANCHORED on the exact `agents/<agentId>/<action>` shape,
- * mirroring `shouldSkipAgentAuth` (routes/agents/index.ts). A
- * trailing-segment-only match would be a hole, not a shortcut: this
- * middleware also serves the extension gateway, which mounts agent routes at
- * `<prefix>/agent/<id>/*` (singular — see extensions/gateway.ts). Anchoring on
- * the core `/agents` mount segment means no extension route can join the drain
- * surface whatever it names its endpoints, and a nested path under a real
- * route (`.../winget-bootstrap/file/heartbeat`) can't either. Fails closed: if
- * the core mount ever moves, drain mode blocks rather than admits.
+ * `allowedActions` is the drain-KIND-specific single-segment set. The two
+ * multi-segment shapes below are identical for both kinds.
  */
-const AGENTS_MOUNT_SEGMENT = 'agents';
-
-function isDrainAllowedAgentPath(pathSegments: string[], agentId: string): boolean {
-  const at = (fromEnd: number) => pathSegments[pathSegments.length - fromEnd] ?? '';
-  const last = at(1);
-  // agents/<agentId>/<action>
-  if (at(3) === AGENTS_MOUNT_SEGMENT && at(2) === agentId && DRAIN_ALLOWED_ACTIONS.has(last)) {
-    return true;
-  }
-  // agents/<agentId>/rotate-token/confirm
+function isDrainAllowedAgentPath(
+  pathSegments: string[],
+  agentId: string,
+  allowedActions: ReadonlySet<string>,
+): boolean {
+  // /api/v1/agents/<agentId>/<action>
   if (
-    last === 'confirm'
-    && at(2) === 'rotate-token'
-    && at(3) === agentId
-    && at(4) === AGENTS_MOUNT_SEGMENT
+    isCoreAgentPath(pathSegments, agentId, CORE_AGENT_ACTION_INDEX + 1)
+    && allowedActions.has(pathSegments[CORE_AGENT_ACTION_INDEX] ?? '')
   ) {
     return true;
   }
-  // agents/<agentId>/commands/<commandId>/result
+  // /api/v1/agents/<agentId>/rotate-token/confirm
   if (
-    last === 'result'
-    && at(3) === 'commands'
-    && at(4) === agentId
-    && at(5) === AGENTS_MOUNT_SEGMENT
+    isCoreAgentPath(pathSegments, agentId, CORE_AGENT_ACTION_INDEX + 2)
+    && pathSegments[CORE_AGENT_ACTION_INDEX] === 'rotate-token'
+    && pathSegments[CORE_AGENT_ACTION_INDEX + 1] === 'confirm'
+  ) {
+    return true;
+  }
+  // /api/v1/agents/<agentId>/commands/<commandId>/result
+  if (
+    isCoreAgentPath(pathSegments, agentId, CORE_AGENT_ACTION_INDEX + 3)
+    && pathSegments[CORE_AGENT_ACTION_INDEX] === 'commands'
+    && pathSegments[CORE_AGENT_ACTION_INDEX + 2] === 'result'
   ) {
     return true;
   }
@@ -416,8 +561,48 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
     throw new HTTPException(401, { message: 'Invalid agent credentials' });
   }
 
+  // #3986 Layer 1 — a removed device is STILL denied by default. The single
+  // exception is the device-remove uninstall drain: `self_uninstall` was queued
+  // by DELETE /devices/:id with `uninstallAgent:true`, the deadline has not
+  // passed, and the agent has to be able to reach us to collect it. Without
+  // this window that command is undeliverable by construction (no heartbeat, no
+  // command poll, no result post), which is the whole reason the window exists.
+  //
+  // Everything else about `decommissioned` is unchanged, and deliberately so:
+  //   - `uninstallAgent:false` (no queued uninstall)  -> today's 403
+  //   - deadline expired                              -> today's 403
+  //   - abuse-suspension's reason-less self_uninstall -> today's 403
+  // The reason + deadline clauses live in `isDeviceUninstallDraining`; do not
+  // re-derive or relax them here (see its module doc for the incident they
+  // prevent).
+  //
+  // Layer 1b — ONLY the main-agent credential. The watchdog heartbeat branch
+  // (routes/agents/heartbeat.ts) writes device state WITHOUT the terminal-status
+  // guard the main branch has, and `self_uninstall` is `targetRole='agent'`
+  // anyway, so a watchdog has nothing to collect here. Checked BEFORE the
+  // predicate query so a watchdog credential costs no extra round trip.
+  //
+  // System DB context is REQUIRED, not decorative: the predicate joins `devices`,
+  // which is RLS-scoped, and a contextless read defaults to scope 'none' — it
+  // would return zero rows and silently report "not draining" for every device,
+  // making the uninstall permanently undeliverable. No context is active here
+  // (the request-long wrap is opened much further down), so this establishes
+  // system scope rather than inheriting a narrower one.
+  //
+  // Runs before the rate limiters, exactly where the old unconditional throw
+  // was, so a non-draining removed device sees byte-for-byte today's response.
+  // The extra query is reached only by a VALID token on a decommissioned
+  // device, and the unconditional device lookup above already costs one query
+  // per request, so this adds no meaningful amplification.
+  let deviceUninstallDraining = false;
   if (device.status === 'decommissioned') {
-    throw new HTTPException(403, { message: 'Device has been decommissioned' });
+    deviceUninstallDraining =
+      match.role === 'agent'
+      && (await withSystemDbAccessContext(() => isDeviceUninstallDraining(device.id)));
+
+    if (!deviceUninstallDraining) {
+      throw new HTTPException(403, { message: 'Device has been decommissioned' });
+    }
   }
 
   if (device.status === 'quarantined') {
@@ -491,6 +676,14 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
     // updated value. Note: we update even on the first request (when
     // lastSeenIp is NULL) so the first IP-change comparison has something
     // to compare to.
+    //
+    // #3986 — this runs BEFORE the drain route gate below, so a device inside
+    // the device-remove uninstall drain does update `last_seen_ip`. Kept
+    // deliberately: the column means "the last source IP we saw this token
+    // used from", and that stays literally true (and forensically useful) for
+    // a machine collecting its own uninstall. It is NOT a liveness signal —
+    // `last_seen_at` is, and that one is guarded on terminal status in the
+    // heartbeat handler, so the device still reads as Removed in the UI.
     if (device.lastSeenIp !== sourceIp) {
       void withSystemDbAccessContext(async () => {
         await db
@@ -592,8 +785,44 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
   }
 
   const pathSegments = (c.req.path ?? '').split('/').filter(Boolean);
-  if (tenantState === 'draining' && !isDrainAllowedAgentPath(pathSegments, agentId)) {
-    return c.json({ error: 'tenant_offboarding' }, 403);
+  // #3986 Layer 2 — a DEVICE drain narrows the route surface exactly as a
+  // TENANT drain does. This is the layer that does the real containment work:
+  // Layer 1 only decided the credential still authenticates, and without this
+  // a removed machine would keep the whole authenticated agent surface —
+  // inventory push, BitLocker/FileVault recovery-key ingest
+  // (PUT /:id/security/recovery-keys), PAM elevation requests
+  // (POST /:id/elevation-requests), patch/event-log/peripheral ingest, and
+  // every third-party extension's `<prefix>/agent/:id/*` namespace
+  // (extensions/gateway.ts routes those through THIS middleware). A
+  // command-type allowlist alone cannot see any of that.
+  //
+  // Distinct error codes so the agent (and an operator reading logs) can tell
+  // "my tenant is leaving" from "this machine was removed"; tenant drain keeps
+  // its established `tenant_offboarding` code when both apply.
+  //
+  // The two drain kinds do NOT share one action set. A tenant drain keeps
+  // #2774's original surface; a DEVICE drain additionally drops `rotate-token`,
+  // because the credentials that route mints outlive the drain window and
+  // would become live again on restore (see
+  // DEVICE_UNINSTALL_DRAIN_ALLOWED_ACTIONS). When BOTH apply they compose by
+  // INTERSECTION (BOTH_DRAINS_ALLOWED_ACTIONS) — two narrowing gates can only
+  // ever narrow further. Letting the tenant set win instead handed
+  // `rotate-token` straight back to a removed device, which is the one case
+  // the device set exists to cover.
+  //
+  // The error CODE still reports the tenant drain when both apply: it is the
+  // agent-visible, longer-lived condition, and #2774's clients already parse
+  // it. Only the action SET intersects.
+  const tenantDraining = tenantState === 'draining';
+  const drainNarrowed = tenantDraining || deviceUninstallDraining;
+  const drainAllowedActions = tenantDraining
+    ? (deviceUninstallDraining ? BOTH_DRAINS_ALLOWED_ACTIONS : TENANT_DRAIN_ALLOWED_ACTIONS)
+    : DEVICE_UNINSTALL_DRAIN_ALLOWED_ACTIONS;
+  if (drainNarrowed && !isDrainAllowedAgentPath(pathSegments, agentId, drainAllowedActions)) {
+    return c.json(
+      { error: tenantState === 'draining' ? 'tenant_offboarding' : 'device_uninstall_draining' },
+      403,
+    );
   }
 
   // Security remediation Wave 5, Task 6 — shared certificate/device binding
@@ -635,6 +864,14 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
     // that mint credentials only ever see the current-token hash here.
     authTokenHash: tokenHash,
     tenantDraining: tenantState === 'draining',
+    deviceUninstallDraining,
+    // #3986 Layer 3 — derived ONCE, here. Three handlers used to each restate
+    // `agent.tenantDraining ? ['self_uninstall'] : undefined` at their claim
+    // call; a fourth claim site that forgot would have silently claimed every
+    // command type, because `claimPendingCommandsForDevice`'s `typeAllowlist`
+    // defaults to unrestricted. `undefined` here still means unrestricted, but
+    // now there is exactly one place that decides it.
+    claimTypeAllowlist: drainNarrowed ? DRAIN_CLAIM_TYPE_ALLOWLIST : undefined,
   });
 
   // #1105 — high-frequency, high-concurrency routes that self-manage their DB
@@ -643,8 +880,22 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
   // self-deadlocks the pool under a mass agent reconnect). These routes MUST
   // open withDbAccessContext themselves around their DB work. Everything else
   // keeps the convenient request-long wrap below.
-  const action = pathSegments[pathSegments.length - 1] ?? '';
-  if (SELF_MANAGED_DB_CONTEXT_ACTIONS.has(action)) {
+  //
+  // ABSOLUTELY anchored, for the same reason as isDrainAllowedAgentPath above:
+  // this used to match on the trailing segment alone, so ANY path ending in
+  // `heartbeat` / `reliability` / `commands` — including an extension gateway
+  // route at `<prefix>/agent/<id>/…` — silently opted out of the request-long
+  // org context. Benign today (no shipped extension route does DB work that
+  // depends on the ambient context), but it is the same shape as the real hole
+  // fixed above, and the failure mode is the worse direction: a handler that
+  // ASSUMED the ambient context would run contextless, which under RLS means a
+  // silent zero-row read rather than an error. Now only the three core routes
+  // that genuinely self-manage their context opt out; everything else,
+  // extension routes included, keeps the wrap.
+  if (
+    isCoreAgentPath(pathSegments, agentId, CORE_AGENT_ACTION_INDEX + 1)
+    && SELF_MANAGED_DB_CONTEXT_ACTIONS.has(pathSegments[CORE_AGENT_ACTION_INDEX] ?? '')
+  ) {
     await next();
     return;
   }

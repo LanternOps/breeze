@@ -28,9 +28,10 @@ function reportUnresolvedDeviceId(source: 'signed-claim' | 'header'): void {
   }
   captureMessage(
     'mobile device id resolved to no mobile_devices row — block enforcement is inert for this caller',
-    'warning',
-    undefined,
-    { area: 'mobile-device-blocked', source }
+    {
+      eventCode: 'mobile_device_unresolved',
+      tags: { mobile_device_id_source: source },
+    }
   );
 }
 

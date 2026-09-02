@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 const publishEventMock = vi.fn(async (..._args: any[]) => 'event-id');
 const resolveAllBackupAssignedDevicesMock = vi.fn(async (..._args: any[]) => [] as any[]);
+const captureRecoveryAuthorizationSubjectMock = vi.fn();
+const authorizeQueuedRecoveryWorkMock = vi.fn();
 
 vi.mock('../../services/eventBus', () => ({
   publishEvent: (...args: any[]) => publishEventMock(...args),
@@ -22,7 +24,12 @@ vi.mock('../../services/backupMetrics', () => ({
   setLowReadinessDevices: vi.fn(),
 }));
 
-import { recomputeRecoveryReadinessForDevice, runBackupVerification, processBackupVerificationResult, timeoutStaleVerifications, listRecoveryReadiness, getBackupHealthSummary } from './verificationService';
+vi.mock('../../services/recoveryAuthorizationSubject', () => ({
+  captureRecoveryAuthorizationSubject: (...args: unknown[]) => captureRecoveryAuthorizationSubjectMock(...args),
+  authorizeQueuedRecoveryWork: (...args: unknown[]) => authorizeQueuedRecoveryWorkMock(...args),
+}));
+
+import { recomputeRecoveryReadinessForDevice, runBackupVerification, runScheduledBackupVerification, processBackupVerificationResult, timeoutStaleVerifications, listRecoveryReadiness, getBackupHealthSummary } from './verificationService';
 import { backupJobs, backupVerifications, jobOrgById, verificationOrgById } from './store';
 import { queueCommandForExecution } from '../../services/commandQueue';
 
@@ -32,6 +39,25 @@ describe('backup verification service', () => {
     resolveAllBackupAssignedDevicesMock.mockReset();
     resolveAllBackupAssignedDevicesMock.mockResolvedValue([]);
     vi.mocked(queueCommandForExecution).mockReset();
+    captureRecoveryAuthorizationSubjectMock.mockReset();
+    captureRecoveryAuthorizationSubjectMock.mockResolvedValue({
+      authorizationPrincipalKind: 'system',
+      authorizationPrincipalId: 'backup-verification-scheduler',
+      authorizationGrantRevision: 'system-recovery-v1',
+      authorizationState: 'pending',
+      authorizationDenialCode: null,
+      authorizationCheckedAt: null,
+    });
+    authorizeQueuedRecoveryWorkMock.mockReset();
+    authorizeQueuedRecoveryWorkMock.mockResolvedValue({
+      subject: {},
+      resources: {
+        resources: [
+          { kind: 'device', id: 'dev-001', role: 'target', orgId: 'org-123', deviceId: 'dev-001', siteId: 'site-1' },
+          { kind: 'snapshot', id: 'snap-001', role: 'source', orgId: 'org-123', deviceId: 'dev-001', siteId: 'site-1' },
+        ],
+      },
+    });
   });
 
   it('rejects backupJobId/deviceId mismatches', async () => {
@@ -324,6 +350,77 @@ describe('backup verification service', () => {
     })).rejects.toThrow('Device is offline, cannot execute command');
 
     expect(backupVerifications.length).toBe(priorCount);
+  });
+
+  it('does not let a manual source string select scheduled system authority', async () => {
+    vi.mocked(queueCommandForExecution).mockResolvedValueOnce({
+      command: { id: 'cmd-manual-source', status: 'sent' } as any,
+    });
+
+    const { verification } = await runBackupVerification({
+      orgId: 'org-123',
+      deviceId: 'dev-001',
+      backupJobId: 'job-001',
+      verificationType: 'integrity',
+      source: 'post-backup-integrity-check',
+    });
+
+    expect(captureRecoveryAuthorizationSubjectMock).not.toHaveBeenCalled();
+    expect(authorizeQueuedRecoveryWorkMock).not.toHaveBeenCalled();
+    const index = backupVerifications.findIndex((row) => row.id === verification.id);
+    if (index >= 0) backupVerifications.splice(index, 1);
+    verificationOrgById.delete(verification.id);
+  });
+
+  it('captures fixed scheduler authority and gates current device/snapshot lineage before dispatch', async () => {
+    vi.mocked(queueCommandForExecution).mockResolvedValueOnce({
+      command: { id: 'cmd-scheduled', status: 'sent' } as any,
+    });
+
+    const { verification } = await runScheduledBackupVerification({
+      orgId: 'org-123',
+      deviceId: 'dev-001',
+      backupJobId: 'job-001',
+      verificationType: 'integrity',
+      source: 'post-backup-integrity-check',
+    });
+
+    expect(captureRecoveryAuthorizationSubjectMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        principal: { kind: 'system', reason: 'backup-verification-scheduler' },
+      }),
+      'org-123',
+      'verify',
+    );
+    expect(authorizeQueuedRecoveryWorkMock).toHaveBeenCalledWith(
+      expect.objectContaining({ authorizationPrincipalId: 'backup-verification-scheduler' }),
+      'org-123',
+      [
+        { kind: 'device', id: 'dev-001', role: 'target' },
+        { kind: 'snapshot', id: 'snap-001', role: 'source' },
+      ],
+      'verify',
+    );
+    expect(queueCommandForExecution).toHaveBeenCalledOnce();
+    const index = backupVerifications.findIndex((row) => row.id === verification.id);
+    if (index >= 0) backupVerifications.splice(index, 1);
+    verificationOrgById.delete(verification.id);
+  });
+
+  it('performs zero command or verification writes when scheduled authority is denied', async () => {
+    const before = backupVerifications.length;
+    authorizeQueuedRecoveryWorkMock.mockRejectedValueOnce(new Error('site_access_denied'));
+
+    await expect(runScheduledBackupVerification({
+      orgId: 'org-123',
+      deviceId: 'dev-001',
+      backupJobId: 'job-001',
+      verificationType: 'test_restore',
+      source: 'weekly-test-restore',
+    })).rejects.toThrow('site_access_denied');
+
+    expect(queueCommandForExecution).not.toHaveBeenCalled();
+    expect(backupVerifications).toHaveLength(before);
   });
 });
 

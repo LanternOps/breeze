@@ -42,6 +42,7 @@ vi.mock('../db/schema', () => ({
     quantity: 'cbc.quantity',
     showOnInvoice: 'cbc.show_on_invoice',
     revenueAllocation: 'cbc.revenue_allocation',
+    allocationCurrency: 'cbc.allocation_currency',
     bundleItemId: 'cbc.bundle_item_id',
     partnerId: 'cbc.partner_id',
   },

@@ -195,7 +195,7 @@ export function AppLockGate({ children }: Props) {
           onUnlock={attemptUnlock}
           onSignOut={() => {
             send({ type: 'signOutRequested', now: Date.now() });
-            void dispatch(logoutAsync());
+            void dispatch(logoutAsync({ deliberate: true }));
           }}
         />
       ) : lock.obscured || (lock.phase === 'booting' && Boolean(token)) ? (

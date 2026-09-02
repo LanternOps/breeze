@@ -6,7 +6,24 @@ export interface ContractActor {
   userId: string;
   partnerId: string | null;
   accessibleOrgIds: string[] | null;
+  /**
+   * Verified permission evidence from the authenticated context, as
+   * `"<resource>:<action>"` strings (e.g. `"contracts:manage"`). Populated by
+   * `contractActorFrom()` from the request's resolved permissions.
+   *
+   * FAIL-CLOSED BY CONSTRUCTION: a caller that cannot prove a permission passes
+   * nothing and is DENIED — never defaulted to allow. System/background callers
+   * (contractWorker, generateDueInvoice) therefore can never reach the
+   * ACTIVE-contract currency restamp (#3778).
+   */
+  permissions?: ReadonlySet<string>;
 }
+
+/** True only when the actor carries verified evidence of `<resource>:<action>`. */
+export const actorCan = (
+  a: ContractActor,
+  p: { resource: string; action: string }
+): boolean => a.permissions?.has(`${p.resource}:${p.action}`) === true;
 
 export interface Period {
   periodStart: string; // ISO YYYY-MM-DD (inclusive)
@@ -15,6 +32,10 @@ export interface Period {
 
 export type ContractServiceErrorCode =
   | 'ORG_DENIED'
+  // #3778 (finding 1): the organization is gone at the locking read that opens
+  // every creation transaction. Distinct from CONTRACT_NOT_FOUND — the contract
+  // was never created because its ORG does not exist / is invisible.
+  | 'ORG_NOT_FOUND'
   | 'CONTRACT_NOT_FOUND'
   | 'CONTRACT_CREATE_FAILED'
   | 'CONTRACT_LINE_CREATE_FAILED'
@@ -27,17 +48,41 @@ export type ContractServiceErrorCode =
   // Mapped 409 from CatalogServiceError — never converted; add a non-catalog
   // line or fill the price book.
   | 'NO_PRICE_FOR_CURRENCY'
+  | 'PRICE_NOT_REPRESENTABLE'
   | 'NO_LINES'
   | 'INVALID_STATE'
   | 'LINE_NOT_FOUND'
   | 'ALREADY_BILLED'
-  | 'NOTHING_DUE';
+  | 'NOTHING_DUE'
+  // ---- Multi-currency wave 6 (#3778): ACTIVE-contract currency restamp ----
+  // The caller did not pass confirmActiveChange on a non-draft contract.
+  | 'ACTIVE_CHANGE_CONFIRMATION_REQUIRED'
+  // The actor lacks contracts:manage (the same gate manual generation uses).
+  | 'ACTIVE_CHANGE_FORBIDDEN'
+  // The contract owns draft invoices / draft contract-source lines it would
+  // strand in the old currency. `details` carries the offending ids.
+  | 'UNBILLED_MONETARY_ROWS'
+  // A contract_billing_periods row has no invoice, or points at a missing one.
+  | 'ORPHANED_BILLING_PERIOD'
+  // A source_type='contract' invoice line the service cannot attribute to any
+  // contract (NULL source_contract_id AND a dangling source_id). Conservative
+  // org-wide blocker — refuse rather than guess.
+  | 'ORPHANED_CONTRACT_SOURCE'
+  // A billing period's invoice fails the explicit lineage check (cross-tenant,
+  // unattributable, or a cyclic/over-deep replaces_invoice_id ancestry).
+  | 'BROKEN_CONTRACT_LINEAGE';
 
 export class ContractServiceError extends Error {
   constructor(
     message: string,
     public status: 400 | 403 | 404 | 409 | 500 = 400,
-    public code?: ContractServiceErrorCode
+    public code?: ContractServiceErrorCode,
+    /**
+     * Structured, non-secret payload returned verbatim by handleContractError.
+     * Wave 6 (#3778) uses it to name the exact rows blocking a restamp so the
+     * operator can act on them instead of guessing.
+     */
+    public details?: Record<string, unknown>
   ) {
     super(message);
     this.name = 'ContractServiceError';

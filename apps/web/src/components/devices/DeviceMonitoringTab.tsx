@@ -3,6 +3,7 @@ import { Activity, RefreshCw } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
 import { formatNumber, formatPercent } from '@/lib/i18n/format';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 
 type WatchResult = {
   id: string;
@@ -38,9 +39,7 @@ const STATUS_LABELS: Record<string, string> = {
 };
 
 function formatTimestamp(value: string, timezone?: string): string {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString([], timezone ? { timeZone: timezone } : undefined);
+  return formatDateTime(value, { timeZone: timezone });
 }
 
 export default function DeviceMonitoringTab({ deviceId, timezone }: DeviceMonitoringTabProps) {

@@ -538,6 +538,7 @@ export default function NotificationChannelsPage() {
         onEdit={handleEdit}
         onDelete={handleDelete}
         onTest={handleTest}
+        onCreate={handleCreate}
       />
 
       {/* Routing Rules Section */}

@@ -3,6 +3,7 @@ import { Hono } from 'hono';
 
 const queueCommandForExecutionMock = vi.fn();
 const queueBackupStopCommandMock = vi.fn();
+const authorizeResilienceResourcesMock = vi.fn();
 const runOutsideDbContextMock = vi.fn((fn: () => unknown) => fn());
 const authzState = vi.hoisted(() => ({
   allowedPermissions: new Set<string>(['*:*']),
@@ -114,7 +115,16 @@ vi.mock('../../services/backupMetrics', () => ({
   recordBackupDispatchFailure: vi.fn(),
 }));
 
+vi.mock('../../services/resilienceSiteAuthorization', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/resilienceSiteAuthorization')>();
+  return {
+    ...actual,
+    authorizeResilienceResources: (...args: unknown[]) => authorizeResilienceResourcesMock(...args),
+  };
+});
+
 import { restoreRoutes } from './restore';
+import { ResilienceAuthorizationError } from '../../services/resilienceSiteAuthorization';
 
 describe('restore routes', () => {
   let app: Hono;
@@ -132,6 +142,7 @@ describe('restore routes', () => {
     permissionsState = undefined;
     authzState.allowedPermissions.clear();
     authzState.allowedPermissions.add('*:*');
+    authorizeResilienceResourcesMock.mockResolvedValue({ resources: [] });
     app = new Hono();
     app.use('*', async (c, next) => {
       c.set('auth', {
@@ -153,6 +164,39 @@ describe('restore routes', () => {
     app.route('/', restoreRoutes);
   });
 
+  it('denies a source-site restore before reading snapshot metadata or creating side effects', async () => {
+    authorizeResilienceResourcesMock.mockRejectedValueOnce(
+      new ResilienceAuthorizationError(403, 'site_access_denied')
+    );
+
+    const res = await app.request('/restore', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ snapshotId: 'snap-db-1', deviceId: 'device-1', restoreType: 'full' }),
+    });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'site_access_denied' });
+    expect(selectMock).not.toHaveBeenCalled();
+    expect(insertMock).not.toHaveBeenCalled();
+    expect(queueCommandForExecutionMock).not.toHaveBeenCalled();
+  });
+
+  it('authorizes cancel from restore-job lineage before reading or mutating the job', async () => {
+    authorizeResilienceResourcesMock.mockRejectedValueOnce(
+      new ResilienceAuthorizationError(403, 'site_access_denied')
+    );
+
+    const res = await app.request('/restore/restore-1/cancel', { method: 'POST' });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'site_access_denied' });
+    expect(selectMock).not.toHaveBeenCalled();
+    expect(updateMock).not.toHaveBeenCalled();
+    expect(deleteMock).not.toHaveBeenCalled();
+    expect(queueBackupStopCommandMock).not.toHaveBeenCalled();
+  });
+
   it('denies an explicit out-of-scope restore device filter for site-restricted users', async () => {
     permissionsState = { allowedSiteIds: [SITE_A] };
     selectMock.mockReturnValueOnce(chainMock([
@@ -162,7 +206,7 @@ describe('restore routes', () => {
     const res = await app.request('/restore?deviceId=device-out');
 
     expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: 'Device not found or access denied' });
+    expect(await res.json()).toEqual({ error: 'site_access_denied' });
     expect(selectMock).toHaveBeenCalledTimes(1);
   });
 

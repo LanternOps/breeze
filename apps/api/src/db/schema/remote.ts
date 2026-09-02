@@ -1,4 +1,5 @@
-import { pgTable, uuid, text, timestamp, jsonb, pgEnum, integer, bigint } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
+import { pgTable, uuid, text, timestamp, jsonb, pgEnum, integer, bigint, index } from 'drizzle-orm/pg-core';
 import { devices } from './devices';
 import { users } from './users';
 import { organizations } from './orgs';
@@ -23,4 +24,11 @@ export const remoteSessions = pgTable('remote_sessions', {
   recordingUrl: text('recording_url'),
   errorMessage: text('error_message'),
   createdAt: timestamp('created_at').defaultNow().notNull()
-});
+}, (t) => [
+  // W06 (#3900): one user's ended sessions for a day window; partial so the
+  // long tail of never-ended rows costs nothing. DOCUMENTS the index created by
+  // migration 2026-09-25-time-entry-source-and-suggestion-decisions.sql — this
+  // declaration does not create it (same situation as the note on
+  // notifications.ts:57-64).
+  index('remote_sessions_user_ended_idx').on(t.userId, t.endedAt).where(sql`${t.endedAt} IS NOT NULL`)
+]);

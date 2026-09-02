@@ -18,6 +18,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import type { OSType } from './DeviceList';
 import PatchInstallHistory from '../patches/PatchInstallHistory';
 import { widthPercentClass } from '@/lib/utils';
+import { formatDateTime as formatDateTimeCentral } from '@/lib/dateTimeFormat';
 import { runAction, ActionError } from '@/lib/runAction';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 
@@ -383,10 +384,8 @@ function formatDate(value?: string, timezone?: string, fallback = 'Not reported'
 
 function formatDateTime(value?: string | null, timezone?: string, fallback = 'Never') {
   if (!value) return fallback;
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString([], {
-    ...(timezone ? { timeZone: timezone } : {}),
+  return formatDateTimeCentral(value, {
+    timeZone: timezone,
     dateStyle: 'medium',
     timeStyle: 'short',
   });

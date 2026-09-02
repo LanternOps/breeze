@@ -151,6 +151,12 @@ export default defineConfig({
       // list). NOT the same file as the co-located mocked unit suite
       // `mfaStepUpGrant.test.ts`, which stays on this runner.
       'src/services/mfaStepUpGrant.integration.test.ts',
+      // Track D real-PostgreSQL suites. These import the shared integration
+      // setup and are owned by vitest.integration.config.ts.
+      'src/services/peripheralEffectivePolicy.integration.test.ts',
+      'src/services/peripheralPolicyState.integration.test.ts',
+      'src/services/agentRollback.integration.test.ts',
+      'src/services/agentRollbackResult.integration.test.ts',
       // Enrollment-key cleanup sweep real-DB test (#2775 live-bootstrap-token
       // exemption): imports `__tests__/integration/setup` (real postgres pool
       // + autoMigrate) and lives in src/jobs/ outside the
@@ -171,6 +177,16 @@ export default defineConfig({
       // `src/__tests__/integration/**` glob, so the no-DB unit runner would
       // fail it on connect. Belongs to vitest.integration.config.ts.
       'src/routes/enrollmentKeysExpiredFilter.integration.test.ts',
+      // Real-DB suites owned by vitest.integration.config.ts (#3778).
+      'src/services/invoiceService.issue.integration.test.ts',
+      'src/services/invoicePdf.integration.test.ts',
+      // Canary for issue #4046: asserts the process observes a non-UTC
+      // offset. It must ONLY run under the pinned non-UTC pass
+      // (vitest.config.tz.ts, TZ=America/Denver), where it belongs — it is
+      // excluded here deliberately, not because it doesn't apply to the
+      // unit runner: it WOULD fail on this (UTC) runner, since that is
+      // exactly the point of the check.
+      'src/__tests__/tzPinCanary.test.ts',
     ],
     setupFiles: ['src/__tests__/setup.ts'],
     coverage: {

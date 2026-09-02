@@ -5,6 +5,14 @@ import { quoteStatusSchema, type QuoteDepositValidation } from '@breeze/shared';
 // schema (validators/quotes.ts); infer the type here rather than re-declaring it.
 export type QuoteStatus = z.infer<typeof quoteStatusSchema>;
 
+export const REVISABLE_STATUSES = ['sent', 'viewed', 'declined', 'expired'] as const satisfies readonly QuoteStatus[];
+
+export type SupersedableStatus = (typeof REVISABLE_STATUSES)[number];
+
+export function isSupersedable(status: QuoteStatus): status is SupersedableStatus {
+  return (REVISABLE_STATUSES as readonly QuoteStatus[]).includes(status);
+}
+
 export interface QuoteActor {
   /** The user who initiated the action, or null for system/background actors. */
   userId: string | null;
@@ -42,6 +50,9 @@ export type QuoteServiceErrorCode =
   // partner). Any violation collapses to this single 422 code.
   | 'INVALID_CONTRACT_TEMPLATE'
   | 'INVALID_STATE'
+  | 'PARENT_CONVERTED'
+  | 'ALREADY_SUPERSEDED'
+  | 'REVISION_IN_PROGRESS'
   // Multi-currency wave 2 (#3774): a cross-org retarget (cloneQuote input.orgId,
   // updateQuote org move) whose target org is billed in a different currency
   // than the document's stamp. Blocked outright — a quote's amounts are never
@@ -55,12 +66,17 @@ export type QuoteServiceErrorCode =
   // from CatalogServiceError — never another currency's number, never converted;
   // the caller adds a manual line or fills the price book.
   | 'NO_PRICE_FOR_CURRENCY'
+  | 'PRICE_NOT_REPRESENTABLE'
   // Durable single-use replay backstop (#2875, quoteAcceptService): the public
   // response token's jti was already consumed on the quote row (2026-08-06-c
   // columns) — a replayed link, rejected 401 even when the Redis revocation
   // marker has been lost.
   | 'RESPONSE_CONSUMED'
   | 'QUOTE_EXPIRED'
+  // A quote replaced by a newer revision. Its prices are withdrawn, so the
+  // public serializer refuses it (publicQuoteDto) and the public route turns
+  // this into a 410 rather than rendering a stale document.
+  | 'QUOTE_SUPERSEDED'
   // Share-link resolution lost a race and could not reproduce the winner's
   // token either (quoteLifecycle.resolveAcceptUrl). Retryable: returning an
   // unrecorded credential instead would leave a live link nobody can revoke.
@@ -105,11 +121,22 @@ export type QuoteServiceErrorCode =
   // status. Reject it explicitly instead.
   | 'QUOTE_ORDER_LINE_CANCELLED';
 
+export type QuoteServiceErrorMeta = {
+  successorQuoteId?: string;
+  revisionQuoteId?: string;
+};
+
 export class QuoteServiceError extends Error {
   constructor(
     message: string,
     public status: 400 | 401 | 403 | 404 | 409 | 410 | 422 | 500 = 400,
-    public code?: QuoteServiceErrorCode
+    public code?: QuoteServiceErrorCode,
+    /**
+     * Optional machine-readable context for typed conflict recovery. This is
+     * spliced verbatim into HTTP response bodies by handleServiceError; never
+     * include data the caller is not already authorized to see.
+     */
+    public meta?: QuoteServiceErrorMeta,
   ) {
     super(message);
     this.name = 'QuoteServiceError';

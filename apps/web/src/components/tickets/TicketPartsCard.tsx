@@ -3,10 +3,10 @@ import '@/lib/i18n';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, handleActionError } from '../../lib/runAction';
-import { formatMoney } from '@/components/billing/shared/format';
 import { broadcastBillingChanged } from '../../lib/timerActions';
 import CatalogItemPicker from '../catalog/CatalogItemPicker';
 import { listCatalog, priceFor, type CatalogItem } from '../../lib/api/catalog';
+import { formatMoney } from '../billing/shared/format';
 
 interface PartRow {
   id: string;
@@ -16,8 +16,12 @@ interface PartRow {
   costBasis: string | null;
   isBillable: boolean;
   catalogItemId: string | null;
-  /** Ticket org currency (INTERIM #3777: wave 4's ticket_parts.currency_code replaces it). */
-  currencyCode?: string;
+  /** `billed` locks quantity/unitPrice/costBasis/isBillable/catalogItemId server-side
+   *  (409 PART_BILLED if any is PRESENT in a PATCH) — only description, vendor,
+   *  part number and notes may change. */
+  billingStatus?: 'not_billed' | 'billed' | 'no_charge' | 'contract';
+  /** Stamped at creation from the ticket's org; the server never lets the client set it. */
+  currencyCode: string;
 }
 
 interface Props {
@@ -34,6 +38,9 @@ export default function TicketPartsCard({ ticketId, currencyCode }: Props) {
   const [parts, setParts] = useState<PartRow[]>([]);
   const [formOpen, setFormOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
+  // The part being edited is already invoiced: the pricing fields are locked
+  // (disabled in the form, omitted from the PATCH body) — #3776 review #5.
+  const [editingBilled, setEditingBilled] = useState(false);
   const [description, setDescription] = useState('');
   const [quantity, setQuantity] = useState('');
   const [unitPrice, setUnitPrice] = useState('');
@@ -83,6 +90,7 @@ export default function TicketPartsCard({ ticketId, currencyCode }: Props) {
   useEffect(() => {
     setFormOpen(false);
     setEditingId(null);
+    setEditingBilled(false);
     setDescription('');
     setQuantity('');
     setUnitPrice('');
@@ -107,6 +115,7 @@ export default function TicketPartsCard({ ticketId, currencyCode }: Props) {
 
   const openEdit = (part: PartRow) => {
     setEditingId(part.id);
+    setEditingBilled(part.billingStatus === 'billed');
     setDescription(part.description);
     setQuantity(String(Number(part.quantity)));
     setUnitPrice(String(Number(part.unitPrice)));
@@ -118,23 +127,26 @@ export default function TicketPartsCard({ ticketId, currencyCode }: Props) {
 
   const submitForm = async () => {
     if (!description.trim()) return;
+    const locked = Boolean(editingId) && editingBilled;
     const qty = Number(quantity);
     const price = Number(unitPrice);
-    if (!Number.isFinite(qty) || qty <= 0) return;
-    if (!Number.isFinite(price) || price < 0) return;
+    if (!locked && (!Number.isFinite(qty) || qty <= 0)) return;
+    if (!locked && (!Number.isFinite(price) || price < 0)) return;
 
-    const body: Record<string, unknown> = {
-      description: description.trim(),
-      quantity: qty,
-      unitPrice: price,
-      isBillable: billable,
-      catalogItemId,
-    };
+    // A billed part: the API 409s when ANY locked field is present, so the
+    // body carries only what may still change.
+    const body: Record<string, unknown> = locked
+      ? { description: description.trim() }
+      : {
+          description: description.trim(),
+          quantity: qty,
+          unitPrice: price,
+          isBillable: billable,
+          catalogItemId,
+        };
     const cb = costBasis.trim();
-    if (cb !== '') {
-      body.costBasis = Number(cb);
-    } else {
-      body.costBasis = null;
+    if (!locked) {
+      body.costBasis = cb !== '' ? Number(cb) : null;
     }
 
     setBusy(true);
@@ -294,7 +306,7 @@ export default function TicketPartsCard({ ticketId, currencyCode }: Props) {
       {formOpen && (
         <div className="mt-2 space-y-1.5 rounded-md border bg-muted/30 p-2" data-testid="ticket-parts-form">
           {/* Optional: pull a part from the catalog to prefill + link it (#1368). */}
-          {catalog.length > 0 && (
+          {catalog.length > 0 && !(editingId != null && editingBilled) && (
             linkedItem ? (
               <div className="flex items-center justify-between gap-2 rounded-md border bg-background px-2 py-1 text-xs" data-testid="ticket-parts-form-linked">
                 <span className="min-w-0 truncate">
@@ -339,6 +351,7 @@ export default function TicketPartsCard({ ticketId, currencyCode }: Props) {
             placeholder={t('ticketPartsCard.quantity')}
             aria-label={t('ticketPartsCard.quantity')}
             className="w-full rounded-md border bg-background px-2 py-1 text-xs"
+            disabled={editingId != null && editingBilled}
             data-testid="ticket-parts-form-quantity"
           />
           <input
@@ -350,6 +363,7 @@ export default function TicketPartsCard({ ticketId, currencyCode }: Props) {
             placeholder={t('ticketPartsCard.unitPrice')}
             aria-label={t('ticketPartsCard.unitPrice')}
             className="w-full rounded-md border bg-background px-2 py-1 text-xs"
+            disabled={editingId != null && editingBilled}
             data-testid="ticket-parts-form-unit-price"
           />
           <input
@@ -361,6 +375,7 @@ export default function TicketPartsCard({ ticketId, currencyCode }: Props) {
             placeholder={t('ticketPartsCard.costPlaceholder')}
             aria-label={t('ticketPartsCard.cost')}
             className="w-full rounded-md border bg-background px-2 py-1 text-xs"
+            disabled={editingId != null && editingBilled}
             data-testid="ticket-parts-form-cost-basis"
           />
           <label className="flex items-center gap-1.5 text-xs">
@@ -368,7 +383,8 @@ export default function TicketPartsCard({ ticketId, currencyCode }: Props) {
               type="checkbox"
               checked={billable}
               onChange={(e) => setBillable(e.target.checked)}
-              data-testid="ticket-parts-form-billable"
+              disabled={editingId != null && editingBilled}
+            data-testid="ticket-parts-form-billable"
             />
             {t('ticketPartsCard.billable')}
           </label>

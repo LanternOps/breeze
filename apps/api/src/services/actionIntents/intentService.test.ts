@@ -7,7 +7,7 @@ import type { EffectDigestOutcome } from './effectDigest';
 // Hoisted shared mock state
 // ---------------------------------------------------------------------------
 
-const { schema, dbState, authMock, guardrailMock, aiToolsState, permState, pushState, metricsMock, intentApproversState, effectDigestState } = vi.hoisted(() => {
+const { schema, dbState, authMock, guardrailMock, aiToolsState, permState, pushState, notifyState, metricsMock, intentApproversState, effectDigestState, envMock, policyDecideMock } = vi.hoisted(() => {
   const col = (name: string) => ({ name });
   const actionIntentsTbl = {
     id: col('id'),
@@ -28,9 +28,20 @@ const { schema, dbState, authMock, guardrailMock, aiToolsState, permState, pushS
   // requesterApprovalRequestId assertion below passes vacuously.
   const approvalRequestsTbl = { id: col('id'), intentId: col('intent_id'), userId: col('user_id') };
   const intentOutboxTbl = { id: col('id'), intentId: col('intent_id') };
+  // Agent-branch (wave 3b) tables: loaded system-scoped inside
+  // createActionIntent to verify the run and rebuild the guardrail policy.
+  const aiAgentRunsTbl = {
+    id: col('id'),
+    agentId: col('agent_id'),
+    orgId: col('org_id'),
+    deviceId: col('device_id'),
+    policySnapshot: col('policy_snapshot'),
+  };
+  const aiAgentsTbl = { id: col('id'), name: col('name') };
+  const devicesTbl = { id: col('id'), siteId: col('site_id') };
 
   return {
-    schema: { actionIntentsTbl, approvalRequestsTbl, intentOutboxTbl },
+    schema: { actionIntentsTbl, approvalRequestsTbl, intentOutboxTbl, aiAgentRunsTbl, aiAgentsTbl, devicesTbl },
     dbState: {
       // Most entries are a plain queued row array (existing convention). A
       // few new scope/deadline tests instead queue a FUNCTION that receives
@@ -48,6 +59,9 @@ const { schema, dbState, authMock, guardrailMock, aiToolsState, permState, pushS
       insertedOutboxValues: [] as Record<string, unknown>[],
       updateActionIntentsSets: [] as Record<string, unknown>[],
       updateActionIntentsWheres: [] as unknown[],
+      selectAgentRunsResults: [] as unknown[][],
+      selectAgentsResults: [] as unknown[][],
+      selectDevicesResults: [] as unknown[][],
     },
     authMock: { dbAccessContextFromAuth: vi.fn((auth: { scope: string; orgId: string | null; accessibleOrgIds: string[] | null; user: { id: string } }) => ({
       scope: auth.scope,
@@ -55,7 +69,7 @@ const { schema, dbState, authMock, guardrailMock, aiToolsState, permState, pushS
       accessibleOrgIds: auth.accessibleOrgIds,
       userId: auth.user.id,
     })) },
-    guardrailMock: { checkGuardrails: vi.fn() },
+    guardrailMock: { checkGuardrails: vi.fn(), checkAgentGuardrails: vi.fn() },
     aiToolsState: {
       tools: new Map<string, { definition: { description?: string } }>(),
       resolveWritableToolOrgId: vi.fn(),
@@ -68,12 +82,19 @@ const { schema, dbState, authMock, guardrailMock, aiToolsState, permState, pushS
       getUserPushTokens: vi.fn(async () => []),
       dispatchApprovalPushToTokens: vi.fn(async () => ({ tokensFound: 0, dispatched: 0, errors: 0 })),
     },
+    notifyState: {
+      createNotification: vi.fn(async () => 'notif-1'),
+    },
     metricsMock: { recordActionIntentEvent: vi.fn() },
     // CRITICAL-2: approver resolution is now a single opaque resolver call
     // (org + partner axis) instead of an organization_users select + N
     // getUserPermissions round-trips, so it's mocked wholesale here rather
     // than reconstructed from db-table mocks.
-    intentApproversState: { resolveIntentApprovers: vi.fn(async () => [] as string[]) },
+    intentApproversState: {
+      resolveIntentApprovers: vi.fn(async () => [] as string[]),
+      resolveAgentIntentApprovers: vi.fn(async () => [] as string[]),
+      resolveIntentTargetScope: vi.fn(async () => ({ kind: 'indirect' }) as unknown),
+    },
     // Task 7 (effect-digest pinning): effectDigest.ts has its own dedicated
     // unit suite (effectDigest.test.ts) covering the resolver map itself —
     // mocked wholesale here so this file stays a test of createActionIntent's
@@ -84,6 +105,15 @@ const { schema, dbState, authMock, guardrailMock, aiToolsState, permState, pushS
     effectDigestState: {
       computeEffectDigestOutcome: vi.fn(async () => ({ kind: 'not_applicable' }) as EffectDigestOutcome),
     },
+    // Wave 5 Part B (#3827): defaults OFF, matching the real flag's default —
+    // most of this suite must stay behaviorally identical whether or not
+    // policyDecideEnabled is even imported, proving flag-off inertness.
+    envMock: { policyDecideEnabled: vi.fn(() => false) },
+    // The dynamic import() inside triggerPolicyDecisionAttempt resolves
+    // through this mock exactly like a static import would — vi.mock
+    // intercepts both. A no-op async fn by default so a triggered attempt
+    // never rejects unhandled in a test that doesn't care about it.
+    policyDecideMock: { attemptPolicyDecision: vi.fn(async () => {}) },
   };
 });
 
@@ -134,6 +164,15 @@ vi.mock('../../db', () => ({
           if (table === schema.approvalRequestsTbl) {
             return resultBox(() => dbState.selectApprovalRequestsResults.shift() ?? []);
           }
+          if (table === schema.aiAgentRunsTbl) {
+            return resultBox(() => dbState.selectAgentRunsResults.shift() ?? []);
+          }
+          if (table === schema.aiAgentsTbl) {
+            return resultBox(() => dbState.selectAgentsResults.shift() ?? []);
+          }
+          if (table === schema.devicesTbl) {
+            return resultBox(() => dbState.selectDevicesResults.shift() ?? []);
+          }
           throw new Error('unexpected select table in mock');
         }),
       })),
@@ -155,6 +194,7 @@ vi.mock('../../db', () => ({
   },
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  runOutsideDbContext: vi.fn(<T,>(fn: () => T): T => fn()),
 }));
 
 vi.mock('../../db/schema/actionIntents', () => ({
@@ -168,6 +208,8 @@ vi.mock('../../db/schema/approvals', () => ({
 
 vi.mock('./intentApprovers', () => ({
   resolveIntentApprovers: intentApproversState.resolveIntentApprovers,
+  resolveAgentIntentApprovers: intentApproversState.resolveAgentIntentApprovers,
+  resolveIntentTargetScope: intentApproversState.resolveIntentTargetScope,
 }));
 
 vi.mock('../../middleware/auth', () => ({
@@ -181,6 +223,16 @@ vi.mock('../aiTools', () => ({
 
 vi.mock('../aiGuardrails', () => ({
   checkGuardrails: guardrailMock.checkGuardrails,
+  checkAgentGuardrails: guardrailMock.checkAgentGuardrails,
+}));
+
+vi.mock('../../db/schema/aiAgents', () => ({
+  aiAgents: schema.aiAgentsTbl,
+  aiAgentRuns: schema.aiAgentRunsTbl,
+}));
+
+vi.mock('../../db/schema/devices', () => ({
+  devices: schema.devicesTbl,
 }));
 
 vi.mock('../permissions', () => ({
@@ -193,12 +245,24 @@ vi.mock('../expoPush', () => ({
   dispatchApprovalPushToTokens: pushState.dispatchApprovalPushToTokens,
 }));
 
+vi.mock('../userNotifications', () => ({
+  createNotification: notifyState.createNotification,
+}));
+
 vi.mock('./metrics', () => ({
   recordActionIntentEvent: metricsMock.recordActionIntentEvent,
 }));
 
 vi.mock('./effectDigest', () => ({
   computeEffectDigestOutcome: effectDigestState.computeEffectDigestOutcome,
+}));
+
+vi.mock('../../config/env', () => ({
+  policyDecideEnabled: envMock.policyDecideEnabled,
+}));
+
+vi.mock('./policyDecide', () => ({
+  attemptPolicyDecision: policyDecideMock.attemptPolicyDecision,
 }));
 
 vi.mock('drizzle-orm', () => ({
@@ -228,6 +292,8 @@ import {
   cancelActionIntent,
   transitionIntent,
   waitForIntentDecision,
+  runDeferredHumanFanout,
+  ActionIntentError,
   ActionIntentTierError,
   ActionIntentNotFoundError,
   ActionIntentAuthorizationError,
@@ -245,6 +311,11 @@ const REQUESTER_ID = '22222222-2222-4222-8222-222222222222';
 const APPROVER_1 = '33333333-3333-4333-8333-333333333333';
 const APPROVER_2 = '44444444-4444-4444-8444-444444444444';
 const PARTNER_ID = '55555555-5555-4555-8555-555555555555';
+const AGENT_ID = '66666666-6666-4666-8666-666666666666';
+const RUN_ID = '77777777-7777-4777-8777-777777777777';
+const RUN_ID_2 = '88888888-8888-4888-8888-888888888888';
+const DEVICE_ID = '99999999-9999-4999-8999-999999999999';
+const SITE_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 
 function makeAuth(overrides?: { partnerId?: string | null; principal?: unknown }) {
   return {
@@ -277,6 +348,9 @@ function resetDbState() {
   dbState.insertedOutboxValues.length = 0;
   dbState.updateActionIntentsSets.length = 0;
   dbState.updateActionIntentsWheres.length = 0;
+  dbState.selectAgentRunsResults.length = 0;
+  dbState.selectAgentsResults.length = 0;
+  dbState.selectDevicesResults.length = 0;
 }
 
 function makeIntentRow(overrides?: Record<string, unknown>) {
@@ -340,6 +414,90 @@ function msUntil(date: Date): number {
   return date.getTime() - Date.now();
 }
 
+// ---------------------------------------------------------------------------
+// ai_agent branch fixtures (wave 3b)
+// ---------------------------------------------------------------------------
+
+function makeAgentAuth(runId: string = RUN_ID) {
+  return {
+    principal: { kind: 'ai_agent', agentId: AGENT_ID, runId },
+    // Attribution-only synthetic user (buildAgentAuthContext): id is the
+    // AGENT id — the requester-less write path must never stamp it into
+    // requestedByUserId nor derive the default idempotency key from it.
+    user: { id: AGENT_ID, email: `agent+${AGENT_ID}@breeze.internal`, name: 'Patch agent' },
+    orgId: ORG_ID,
+    partnerId: PARTNER_ID,
+    scope: 'organization' as const,
+    accessibleOrgIds: [ORG_ID],
+  } as unknown as Parameters<typeof createActionIntent>[0];
+}
+
+function agentInput(overrides?: Partial<CreateActionIntentInput>): CreateActionIntentInput {
+  return {
+    toolName: 'manage_services',
+    input: { deviceId: DEVICE_ID, action: 'restart', serviceName: 'spooler' },
+    source: 'ai_agent',
+    ...overrides,
+  };
+}
+
+function makeRunRow(overrides?: Record<string, unknown>) {
+  return {
+    id: RUN_ID,
+    agentId: AGENT_ID,
+    orgId: ORG_ID,
+    deviceId: DEVICE_ID,
+    policySnapshot: {
+      schemaVersion: 1,
+      agentId: AGENT_ID,
+      kind: 'patch',
+      effective: {
+        enabled: true,
+        mode: 'shadow',
+        toolAllowlist: ['manage_services'],
+        protectedResources: { services: [], paths: [], registryKeys: [], deviceTags: [] },
+      },
+      provenance: {},
+      resolvedAt: new Date().toISOString(),
+    },
+    ...overrides,
+  };
+}
+
+function makeAgentRow(overrides?: Record<string, unknown>) {
+  return { id: AGENT_ID, orgId: ORG_ID, partnerId: null, name: 'Patch agent', kind: 'patch', ...overrides };
+}
+
+/** Queues the run → agent → device system-context loads the agent branch performs. */
+function queueAgentContext(opts?: { run?: Record<string, unknown>; agent?: Record<string, unknown> }) {
+  const run = makeRunRow(opts?.run);
+  dbState.selectAgentRunsResults.push([run]);
+  dbState.selectAgentsResults.push([makeAgentRow(opts?.agent)]);
+  if (run.deviceId) {
+    dbState.selectDevicesResults.push([{ id: run.deviceId, siteId: SITE_ID }]);
+  }
+}
+
+/**
+ * A full run row (same shape `makeRunRow` returns) with the policy snapshot's
+ * `effective.mode` overridden. `makeRunRow`'s own `overrides` param is a
+ * shallow spread, so passing `{ policySnapshot: {...} }` there would REPLACE
+ * the whole snapshot rather than patch one field — this deep-clones instead.
+ * Used by the Wave 5 Part B (#3827) mode-gate tests below, which need
+ * `effective.mode` to actually be `'act'` — `makeRunRow`'s own default is
+ * `'shadow'` (the wave-3b baseline every OTHER test in this file relies on).
+ */
+function agentRunRowWithMode(mode: string, overrides?: Record<string, unknown>) {
+  const base = makeRunRow(overrides);
+  return {
+    ...base,
+    policySnapshot: {
+      ...base.policySnapshot,
+      effective: { ...base.policySnapshot.effective, mode },
+    },
+  };
+}
+
 beforeEach(() => {
   resetDbState();
   vi.clearAllMocks();
@@ -351,14 +509,29 @@ beforeEach(() => {
     requiresApproval: true,
     description: 'Run a script on one or more devices',
   });
+  // Agent-branch defaults: 'propose' (the shadow-mode verdict createActionIntent
+  // accepts); deny is opted into per test. Target scope resolves to the run
+  // device's site; eligibility resolves to nobody unless a test opts in.
+  guardrailMock.checkAgentGuardrails.mockReturnValue({
+    tier: 3,
+    allowed: false,
+    requiresApproval: false,
+    disposition: 'propose',
+    description: 'Manage services on a device',
+  });
+  intentApproversState.resolveAgentIntentApprovers.mockResolvedValue([]);
+  intentApproversState.resolveIntentTargetScope.mockResolvedValue({ kind: 'devices', siteIds: [SITE_ID] });
   permState.getUserPermissions.mockResolvedValue(null);
   permState.userCanDecideApprovals.mockImplementation((perms: { canDecide?: boolean } | null) => !!perms?.canDecide);
   pushState.getUserPushTokens.mockResolvedValue([]);
   pushState.dispatchApprovalPushToTokens.mockResolvedValue({ tokensFound: 0, dispatched: 0, errors: 0 });
+  notifyState.createNotification.mockResolvedValue('notif-1');
   // No eligible approvers by default — tests that need a fan-out opt in via
   // mockResolvedValueOnce.
   intentApproversState.resolveIntentApprovers.mockResolvedValue([]);
   effectDigestState.computeEffectDigestOutcome.mockResolvedValue({ kind: 'not_applicable' });
+  envMock.policyDecideEnabled.mockReturnValue(false);
+  policyDecideMock.attemptPolicyDecision.mockResolvedValue(undefined);
 });
 
 // ---------------------------------------------------------------------------
@@ -392,6 +565,336 @@ describe('createActionIntent — tier gating', () => {
 // ---------------------------------------------------------------------------
 // Digest stability
 // ---------------------------------------------------------------------------
+
+describe('createActionIntent — ai_agent branch (wave 3b)', () => {
+  // Wave 3a's inert guard (agent_origin_unsupported) is gone: an ai_agent
+  // principal now takes the requester-less branch. What replaces the guard is
+  // the mutual source/principal pairing below plus in-service re-verification
+  // of the run and its guardrail verdict — the caller is never trusted.
+
+  function supervisedGuardrail() {
+    guardrailMock.checkGuardrails.mockReturnValue({
+      tier: 3,
+      allowed: true,
+      requiresApproval: true,
+      description: 'Manage services on a device',
+      approvalScope: 'supervised',
+    });
+  }
+
+  it('creates a requester-less intent for an ai_agent principal', async () => {
+    supervisedGuardrail();
+    queueAgentContext();
+    intentApproversState.resolveAgentIntentApprovers.mockResolvedValueOnce([APPROVER_1]);
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'intent-agent' }));
+    dbState.insertApprovalRequestsResults.push([{ id: 'approval-agent-1' }]);
+
+    const snap = await createActionIntent(makeAgentAuth(), agentInput());
+
+    const inserted = dbState.insertedActionIntentValues[0]!;
+    expect(inserted.requestedByUserId).toBeNull();
+    expect(inserted.requestingAgentRunId).toBe(RUN_ID);
+    expect(inserted.originPrincipalKind).toBe('ai_agent');
+    expect(inserted.originPrincipalId).toBe(AGENT_ID);
+    expect(inserted.source).toBe('ai_agent');
+    // No requestingClientLabel in the input → the agent's display name.
+    expect(inserted.requestingClientLabel).toBe('Patch agent');
+    expect(snap.status).toBe('pending_approval');
+    // There is no requester, so there is never a requester-owned row.
+    expect(snap.requesterApprovalRequestId).toBeNull();
+  });
+
+  it('re-verifies the guardrail verdict in-service from the run snapshot (device pins from the RUN row)', async () => {
+    supervisedGuardrail();
+    queueAgentContext();
+    intentApproversState.resolveAgentIntentApprovers.mockResolvedValueOnce([APPROVER_1]);
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'intent-agent-verify' }));
+    dbState.insertApprovalRequestsResults.push([{ id: 'approval-agent-verify' }]);
+
+    await createActionIntent(makeAgentAuth(), agentInput());
+
+    expect(guardrailMock.checkAgentGuardrails).toHaveBeenCalledWith(
+      'manage_services',
+      expect.objectContaining({ action: 'restart' }),
+      expect.objectContaining({
+        enabled: true,
+        mode: 'shadow',
+        toolAllowlist: ['manage_services'],
+        // Task 3 contract: deviceId/deviceSiteId come from the RUN row, never
+        // from tool input; an absent deviceId fails validation and denies.
+        deviceId: DEVICE_ID,
+        deviceSiteId: SITE_ID,
+      }),
+    );
+  });
+
+  it('rejects an ai_agent principal whose source is not ai_agent', async () => {
+    await expect(
+      createActionIntent(makeAgentAuth(), agentInput({ source: 'chat' })),
+    ).rejects.toMatchObject({ code: 'agent_source_mismatch' });
+    expect(dbState.insertedActionIntentValues).toHaveLength(0);
+  });
+
+  it('rejects a human principal claiming source ai_agent', async () => {
+    await expect(
+      createActionIntent(makeAuth(), baseInput({ source: 'ai_agent' })),
+    ).rejects.toMatchObject({ code: 'agent_source_mismatch' });
+    expect(dbState.insertedActionIntentValues).toHaveLength(0);
+  });
+
+  it('rejects when the run does not belong to the principal', async () => {
+    supervisedGuardrail();
+    dbState.selectAgentRunsResults.push([
+      makeRunRow({ agentId: '00000000-0000-4000-8000-00000000dead' }),
+    ]);
+    await expect(createActionIntent(makeAgentAuth(), agentInput())).rejects.toMatchObject({
+      code: 'agent_run_invalid',
+    });
+    expect(dbState.insertedActionIntentValues).toHaveLength(0);
+  });
+
+  it('rejects a missing run and a cross-org run alike', async () => {
+    supervisedGuardrail();
+    dbState.selectAgentRunsResults.push([]);
+    await expect(createActionIntent(makeAgentAuth(), agentInput())).rejects.toMatchObject({
+      code: 'agent_run_invalid',
+    });
+    dbState.selectAgentRunsResults.push([
+      makeRunRow({ orgId: '00000000-0000-4000-8000-0000000000bb' }),
+    ]);
+    await expect(createActionIntent(makeAgentAuth(), agentInput())).rejects.toMatchObject({
+      code: 'agent_run_invalid',
+    });
+    expect(dbState.insertedActionIntentValues).toHaveLength(0);
+  });
+
+  it('rejects when the guardrail verdict is deny', async () => {
+    supervisedGuardrail();
+    queueAgentContext();
+    guardrailMock.checkAgentGuardrails.mockReturnValue({
+      tier: 3,
+      allowed: false,
+      requiresApproval: false,
+      disposition: 'deny',
+      reason: 'Tool "manage_services" is not in the agent allowlist',
+    });
+    await expect(createActionIntent(makeAgentAuth(), agentInput())).rejects.toMatchObject({
+      code: 'agent_policy_denied',
+    });
+    expect(dbState.insertedActionIntentValues).toHaveLength(0);
+  });
+
+  it('gives ai_agent intents the explicit 24h agent expiry', async () => {
+    supervisedGuardrail();
+    queueAgentContext();
+    intentApproversState.resolveAgentIntentApprovers.mockResolvedValueOnce([APPROVER_1]);
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'intent-agent-expiry' }));
+    dbState.insertApprovalRequestsResults.push([{ id: 'approval-agent-expiry' }]);
+
+    const snap = await createActionIntent(makeAgentAuth(), agentInput());
+
+    expect(msUntil(snap.expiresAt)).toBeCloseTo(24 * 60 * 60 * 1000, -4);
+    expect(msUntil(snap.approvalExpiresAt!)).toBeCloseTo(24 * 60 * 60 * 1000, -4);
+  });
+
+  it('fans a supervised agent intent out to action-and-target-eligible humans', async () => {
+    supervisedGuardrail();
+    queueAgentContext();
+    intentApproversState.resolveAgentIntentApprovers.mockResolvedValueOnce([APPROVER_1, APPROVER_2]);
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'intent-agent-fanout' }));
+    dbState.insertApprovalRequestsResults.push([{ id: 'approval-af-1' }, { id: 'approval-af-2' }]);
+
+    const snap = await createActionIntent(makeAgentAuth(), agentInput());
+
+    expect(intentApproversState.resolveIntentTargetScope).toHaveBeenCalledWith(
+      'manage_services',
+      expect.objectContaining({ action: 'restart' }),
+      expect.objectContaining({ deviceId: DEVICE_ID }),
+      // The intent org MUST be threaded through so the device resolution is
+      // org-pinned (review finding 1).
+      ORG_ID,
+    );
+    expect(intentApproversState.resolveAgentIntentApprovers).toHaveBeenCalledWith({
+      orgId: ORG_ID,
+      toolName: 'manage_services',
+      input: expect.objectContaining({ action: 'restart' }),
+      targetScope: { kind: 'devices', siteIds: [SITE_ID] },
+    });
+    const inserted = dbState.insertedApprovalRequestsValues[0] as Array<{ userId: string }>;
+    expect(inserted.map((r) => r.userId)).toEqual([APPROVER_1, APPROVER_2]);
+    expect(snap.fanOutUserIds).toEqual([APPROVER_1, APPROVER_2]);
+    expect(snap.requesterApprovalRequestId).toBeNull();
+  });
+
+  it('cancels no_eligible_approvers when nobody is eligible', async () => {
+    supervisedGuardrail();
+    queueAgentContext();
+    intentApproversState.resolveAgentIntentApprovers.mockResolvedValueOnce([]);
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'intent-agent-none' }));
+    dbState.updateActionIntentsResults.push([
+      makeIntentRow({
+        id: 'intent-agent-none',
+        source: 'ai_agent',
+        status: 'cancelled',
+        errorCode: 'no_eligible_approvers',
+      }),
+    ]);
+
+    const snap = await createActionIntent(makeAgentAuth(), agentInput());
+
+    expect(snap.status).toBe('cancelled');
+    expect(snap.errorCode).toBe('no_eligible_approvers');
+    expect(dbState.insertedApprovalRequestsValues).toHaveLength(0);
+    // A cancelled agent intent notifies nobody, widened gate or not.
+    expect(notifyState.createNotification).not.toHaveBeenCalled();
+    expect(pushState.dispatchApprovalPushToTokens).not.toHaveBeenCalled();
+  });
+
+  it('two runs of the same agent with identical args get DISTINCT intents (run-scoped idempotency key)', async () => {
+    supervisedGuardrail();
+    intentApproversState.resolveAgentIntentApprovers.mockResolvedValue([APPROVER_1]);
+
+    queueAgentContext();
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'intent-run-a' }));
+    dbState.insertApprovalRequestsResults.push([{ id: 'approval-run-a' }]);
+    await createActionIntent(makeAgentAuth(RUN_ID), agentInput());
+
+    queueAgentContext({ run: { id: RUN_ID_2 } });
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'intent-run-b' }));
+    dbState.insertApprovalRequestsResults.push([{ id: 'approval-run-b' }]);
+    await createActionIntent(makeAgentAuth(RUN_ID_2), agentInput());
+
+    const [first, second] = dbState.insertedActionIntentValues;
+    expect(first!.idempotencyKey).toBeTruthy();
+    expect(second!.idempotencyKey).toBeTruthy();
+    expect(first!.idempotencyKey).not.toBe(second!.idempotencyKey);
+    expect(first!.requestingAgentRunId).toBe(RUN_ID);
+    expect(second!.requestingAgentRunId).toBe(RUN_ID_2);
+  });
+
+  it('a replay hit that mismatches source/run/digest throws idempotency_conflict', async () => {
+    supervisedGuardrail();
+    queueAgentContext();
+    // Conflict on (org_id, idempotency_key)…
+    dbState.insertActionIntentsResults.push([]);
+    // …but the live row belongs to ANOTHER run (identical args, so the digest
+    // matches — only the run attribution differs). Returning it would hand
+    // run A an intent immutably attributed to run B, whose policy snapshot
+    // the release path would then evaluate.
+    dbState.selectActionIntentsResults.push([
+      makeIntentRow({
+        id: 'foreign-run-intent',
+        source: 'ai_agent',
+        requestedByUserId: null,
+        requestingAgentRunId: RUN_ID_2,
+        argumentDigest: computeArgumentDigest(canonicalizeArguments(agentInput().input)),
+      }),
+    ]);
+
+    await expect(
+      createActionIntent(makeAgentAuth(), agentInput({ idempotencyKey: 'collide-key' })),
+    ).rejects.toMatchObject({ code: 'idempotency_conflict' });
+  });
+
+  it('a replay hit matching source/run/digest converges on the existing intent', async () => {
+    supervisedGuardrail();
+    queueAgentContext();
+    dbState.insertActionIntentsResults.push([]);
+    dbState.selectActionIntentsResults.push([
+      makeIntentRow({
+        id: 'same-run-intent',
+        source: 'ai_agent',
+        actionName: 'manage_services',
+        requestedByUserId: null,
+        requestingAgentRunId: RUN_ID,
+        argumentDigest: computeArgumentDigest(canonicalizeArguments(agentInput().input)),
+      }),
+    ]);
+    dbState.selectApprovalRequestsResults.push([{ id: 'approval-existing', userId: APPROVER_1 }]);
+
+    const snap = await createActionIntent(
+      makeAgentAuth(),
+      agentInput({ idempotencyKey: 'replay-key' }),
+    );
+
+    expect(snap.id).toBe('same-run-intent');
+    expect(snap.requesterApprovalRequestId).toBeNull();
+    expect(dbState.insertedApprovalRequestsValues).toHaveLength(0);
+    expect(metricsMock.recordActionIntentEvent).not.toHaveBeenCalled();
+  });
+
+  it('a replay hit for a DIFFERENT tool under the same explicit key throws idempotency_conflict', async () => {
+    // Review finding 2: the replay check must bind the key to the action
+    // name. With an explicit caller-supplied key, two different tools can
+    // collide with byte-identical canonical arguments (the default key embeds
+    // actionName, an explicit one need not) — same source, same run, same
+    // digest, different tool. Treating tool B as a replay of tool A would
+    // silently drop proposal B: no second intent, no fan-out, no error.
+    supervisedGuardrail();
+    queueAgentContext();
+    dbState.insertActionIntentsResults.push([]);
+    dbState.selectActionIntentsResults.push([
+      makeIntentRow({
+        id: 'other-tool-intent',
+        source: 'ai_agent',
+        actionName: 'execute_command', // ≠ agentInput().toolName ('manage_services')
+        requestedByUserId: null,
+        requestingAgentRunId: RUN_ID,
+        argumentDigest: computeArgumentDigest(canonicalizeArguments(agentInput().input)),
+      }),
+    ]);
+
+    await expect(
+      createActionIntent(makeAgentAuth(), agentInput({ idempotencyKey: 'shared-key' })),
+    ).rejects.toMatchObject({ code: 'idempotency_conflict' });
+    expect(dbState.insertedApprovalRequestsValues).toHaveLength(0);
+  });
+
+  it('audits agent creation as ai_agent with run details', async () => {
+    supervisedGuardrail();
+    queueAgentContext();
+    intentApproversState.resolveAgentIntentApprovers.mockResolvedValueOnce([APPROVER_1]);
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'intent-agent-audit' }));
+    dbState.insertApprovalRequestsResults.push([{ id: 'approval-agent-audit' }]);
+
+    await createActionIntent(makeAgentAuth(), agentInput());
+
+    expect(metricsMock.recordActionIntentEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        outcome: 'created',
+        actorType: 'ai_agent',
+        details: expect.objectContaining({ agentId: AGENT_ID, agentRunId: RUN_ID }),
+      }),
+    );
+    const createdCall = metricsMock.recordActionIntentEvent.mock.calls.find(
+      (call) => (call[0] as { outcome: string }).outcome === 'created',
+    )![0] as { actorId?: string };
+    expect(createdCall.actorId).toBeUndefined();
+  });
+
+  it('notifies supervised agent-intent approvers (gate widened past four_eyes)', async () => {
+    supervisedGuardrail();
+    queueAgentContext();
+    intentApproversState.resolveAgentIntentApprovers.mockResolvedValueOnce([APPROVER_1]);
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'intent-agent-notify' }));
+    dbState.insertApprovalRequestsResults.push([{ id: 'approval-agent-notify' }]);
+
+    await createActionIntent(makeAgentAuth(), agentInput());
+
+    expect(notifyState.createNotification).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: APPROVER_1,
+        type: 'approval',
+        link: '/approvals',
+        message: expect.stringContaining('Patch agent'),
+        dedupeKey: 'intent-approval:intent-agent-notify',
+      }),
+    );
+    // Push is attempted for agent approvers too (headless: nobody is watching
+    // a chat pane that would surface the proposal).
+    expect(pushState.dispatchApprovalPushToTokens).toHaveBeenCalled();
+  });
+});
 
 describe('createActionIntent — digest stability', () => {
   it('records the ORIGIN principal kind on the intent, not a derivation of it', async () => {
@@ -613,6 +1116,324 @@ describe('createActionIntent — approver fan-out', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Wave 5 Part A (#3827) — policy_decision_state stamping. resolvePolicyDecisionState
+// is a PR-A stub that always returns 'human_required'; these tests pin that the
+// column lands correctly on the INSERT itself (not a follow-up UPDATE) and that
+// an idempotent replay never touches an existing row's state. Every fan-out
+// behavior test above/below this block passing UNCHANGED is the inertness proof
+// for the runHumanFanout extraction — this block only covers the new column.
+// ---------------------------------------------------------------------------
+
+describe('createActionIntent — policy decision state (Wave 5 Part A, inert)', () => {
+  it('stamps policyDecisionState human_required as part of the INSERT values on a new intent', async () => {
+    dbState.insertActionIntentsResults.push([makeIntentRow()]);
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([REQUESTER_ID]);
+    dbState.insertApprovalRequestsResults.push([{ id: 'approval-solo' }]);
+
+    await createActionIntent(makeAuth(), baseInput());
+
+    expect(dbState.insertedActionIntentValues).toHaveLength(1);
+    expect(dbState.insertedActionIntentValues[0]?.policyDecisionState).toBe('human_required');
+  });
+
+  it('still fans out to approvers (unconditional today — the stub always defers to human_required)', async () => {
+    dbState.insertActionIntentsResults.push([makeIntentRow()]);
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([REQUESTER_ID, APPROVER_1]);
+    dbState.insertApprovalRequestsResults.push([{ id: 'approval-1' }]);
+
+    const snapshot = await createActionIntent(makeAuth(), baseInput());
+
+    expect(snapshot.status).toBe('pending_approval');
+    expect(dbState.insertedApprovalRequestsValues).toHaveLength(1);
+  });
+
+  it('does not touch policyDecisionState on an idempotent replay — no second insert, no update', async () => {
+    // onConflictDoNothing().returning() → [] signals a conflict; the existing
+    // row (with whatever state it was originally stamped with) is returned
+    // as-is. This is the only path resolvePolicyDecisionState's output never
+    // reaches — proving the computed value from THIS call is simply discarded.
+    dbState.insertActionIntentsResults.push([]);
+    const existing = makeIntentRow({ id: 'existing-intent', status: 'approved' });
+    dbState.selectActionIntentsResults.push([existing]);
+    dbState.selectApprovalRequestsResults.push([{ id: 'approval-existing', userId: REQUESTER_ID }]);
+
+    const snapshot = await createActionIntent(makeAuth(), baseInput({ idempotencyKey: 'fixed-key' }));
+
+    expect(snapshot.id).toBe('existing-intent');
+    // The INSERT attempt still carries the computed value in its `.values()`
+    // call (Postgres discards it on conflict) — but no UPDATE ever runs, and
+    // no second insert happens.
+    expect(dbState.insertedActionIntentValues).toHaveLength(1);
+    expect(dbState.updateActionIntentsSets).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Wave 5 Part B (#3827) — the REAL resolvePolicyDecisionState + post-commit
+// trigger. The suite above (Part A, inert) covers flag-OFF byte-identical
+// behavior implicitly (envMock.policyDecideEnabled defaults false in
+// beforeEach) — these tests cover flag-ON.
+// ---------------------------------------------------------------------------
+
+describe('createActionIntent — resolvePolicyDecisionState (Wave 5 Part B, real)', () => {
+  it('flag on + agent-originated + supervised -> unattempted, skips fan-out, still writes outbox, triggers the attempt post-commit', async () => {
+    envMock.policyDecideEnabled.mockReturnValue(true);
+    guardrailMock.checkGuardrails.mockReturnValue({
+      tier: 3,
+      allowed: true,
+      requiresApproval: true,
+      description: 'Manage services on a device',
+      approvalScope: 'supervised',
+    });
+    // Task 5 (#3827): policy-decide requires the run's OWN policy snapshot to
+    // read mode 'act' — makeRunRow's default ('shadow') is deliberately used
+    // by every other test in this file, so this is the one case that opts in.
+    queueAgentContext({ run: agentRunRowWithMode('act') });
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'intent-unattempted' }));
+
+    const snap = await createActionIntent(makeAgentAuth(), agentInput());
+
+    expect(dbState.insertedActionIntentValues[0]?.policyDecisionState).toBe('unattempted');
+    expect(snap.status).toBe('pending_approval');
+    // No human fan-out: resolveAgentIntentApprovers/resolveIntentTargetScope
+    // are never even consulted for the fan-out decision when the state is
+    // 'unattempted' (they ARE still called upstream for target validation —
+    // see intentService.ts — but no approval_requests rows are inserted).
+    expect(dbState.insertedApprovalRequestsValues).toHaveLength(0);
+    // Outbox intent_created is unconditional regardless of decisionState.
+    expect(dbState.insertedOutboxValues).toHaveLength(1);
+    expect(dbState.insertedOutboxValues[0]).toMatchObject({ intentId: 'intent-unattempted' });
+
+    await vi.waitFor(() => {
+      expect(policyDecideMock.attemptPolicyDecision).toHaveBeenCalledWith('intent-unattempted');
+    });
+  });
+
+  it('flag on + agent-originated + four_eyes -> human_required, ordinary fan-out runs, no attempt triggered', async () => {
+    envMock.policyDecideEnabled.mockReturnValue(true);
+    guardrailMock.checkGuardrails.mockReturnValue({
+      tier: 3,
+      allowed: true,
+      requiresApproval: true,
+      description: 'Manage services on a device',
+      approvalScope: 'four_eyes',
+    });
+    queueAgentContext();
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([APPROVER_1]);
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'intent-fe-agent' }));
+    dbState.insertApprovalRequestsResults.push([{ id: 'approval-fe-agent' }]);
+
+    const snap = await createActionIntent(makeAgentAuth(), agentInput());
+
+    expect(dbState.insertedActionIntentValues[0]?.policyDecisionState).toBe('human_required');
+    expect(snap.status).toBe('pending_approval');
+    expect(dbState.insertedApprovalRequestsValues).toHaveLength(1);
+    expect(policyDecideMock.attemptPolicyDecision).not.toHaveBeenCalled();
+  });
+
+  it("flag on + agent-originated + supervised + run's mode is 'shadow' (not 'act') -> human_required, ordinary fan-out runs, no attempt triggered (locked quorum decision, Task 5 #3827)", async () => {
+    // The primary enforcement point is policyDecide.ts's own live re-check
+    // (defense in depth, since the operator can flip act->shadow AFTER
+    // creation); this is the creation-time half — an intent whose run was
+    // never even in act mode must never reach 'unattempted' in the first
+    // place. makeRunRow's default mode is 'shadow', so this needs no override.
+    envMock.policyDecideEnabled.mockReturnValue(true);
+    guardrailMock.checkGuardrails.mockReturnValue({
+      tier: 3,
+      allowed: true,
+      requiresApproval: true,
+      description: 'Manage services on a device',
+      approvalScope: 'supervised',
+    });
+    queueAgentContext();
+    intentApproversState.resolveAgentIntentApprovers.mockResolvedValueOnce([APPROVER_1]);
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'intent-shadow-mode' }));
+    dbState.insertApprovalRequestsResults.push([{ id: 'approval-shadow-mode' }]);
+
+    const snap = await createActionIntent(makeAgentAuth(), agentInput());
+
+    expect(dbState.insertedActionIntentValues[0]?.policyDecisionState).toBe('human_required');
+    expect(snap.status).toBe('pending_approval');
+    expect(dbState.insertedApprovalRequestsValues).toHaveLength(1);
+    expect(policyDecideMock.attemptPolicyDecision).not.toHaveBeenCalled();
+  });
+
+  it('flag on + human-originated (chat) + supervised -> human_required (agent-origination is required, not just scope)', async () => {
+    envMock.policyDecideEnabled.mockReturnValue(true);
+    guardrailMock.checkGuardrails.mockReturnValue({
+      tier: 3,
+      allowed: true,
+      requiresApproval: true,
+      description: 'Run a script on one or more devices',
+      approvalScope: 'supervised',
+    });
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([]);
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'intent-human-sv' }));
+    dbState.insertApprovalRequestsResults.push([{ id: 'approval-human-sv' }]);
+
+    await createActionIntent(makeAuth(), baseInput());
+
+    expect(dbState.insertedActionIntentValues[0]?.policyDecisionState).toBe('human_required');
+    expect(policyDecideMock.attemptPolicyDecision).not.toHaveBeenCalled();
+  });
+
+  it('flag off + agent-originated + supervised -> human_required, byte-identical to Part A (attempt never triggered)', async () => {
+    envMock.policyDecideEnabled.mockReturnValue(false);
+    guardrailMock.checkGuardrails.mockReturnValue({
+      tier: 3,
+      allowed: true,
+      requiresApproval: true,
+      description: 'Manage services on a device',
+      approvalScope: 'supervised',
+    });
+    queueAgentContext();
+    intentApproversState.resolveAgentIntentApprovers.mockResolvedValueOnce([APPROVER_1]);
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'intent-flag-off' }));
+    dbState.insertApprovalRequestsResults.push([{ id: 'approval-flag-off' }]);
+
+    await createActionIntent(makeAgentAuth(), agentInput());
+
+    expect(dbState.insertedActionIntentValues[0]?.policyDecisionState).toBe('human_required');
+    expect(dbState.insertedApprovalRequestsValues).toHaveLength(1);
+    expect(policyDecideMock.attemptPolicyDecision).not.toHaveBeenCalled();
+  });
+
+  it('does not trigger an attempt on an idempotent replay, even with the flag on', async () => {
+    envMock.policyDecideEnabled.mockReturnValue(true);
+    guardrailMock.checkGuardrails.mockReturnValue({
+      tier: 3,
+      allowed: true,
+      requiresApproval: true,
+      description: 'Manage services on a device',
+      approvalScope: 'supervised',
+    });
+    dbState.insertActionIntentsResults.push([]);
+    const agentArgs = { deviceId: DEVICE_ID, action: 'restart', serviceName: 'spooler' };
+    const existing = makeIntentRow({
+      id: 'existing-unattempted',
+      source: 'ai_agent',
+      requestedByUserId: null,
+      requestingAgentRunId: RUN_ID,
+      actionName: 'manage_services',
+      arguments: agentArgs,
+      argumentDigest: computeArgumentDigest(canonicalizeArguments(agentArgs)),
+      approvalScope: 'supervised',
+      policyDecisionState: 'unattempted',
+    });
+    dbState.selectActionIntentsResults.push([existing]);
+    dbState.selectApprovalRequestsResults.push([]);
+    queueAgentContext();
+
+    const snap = await createActionIntent(makeAgentAuth(), agentInput({ idempotencyKey: 'fixed-agent-key' }));
+
+    expect(snap.id).toBe('existing-unattempted');
+    expect(policyDecideMock.attemptPolicyDecision).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Wave 5 Part B (#3827) — runDeferredHumanFanout, the unattempted ->
+// human_required degrade path attemptPolicyDecision (policyDecide.ts) calls
+// for every deterministic refusal. Unit-tested directly here (not only
+// through createActionIntent) since it is its own exported entry point with
+// its own CAS/idempotence contract.
+// ---------------------------------------------------------------------------
+
+describe('runDeferredHumanFanout', () => {
+  function queuedDeferredIntent(overrides?: Record<string, unknown>) {
+    return makeIntentRow({
+      id: 'intent-deferred',
+      source: 'ai_agent',
+      requestedByUserId: null,
+      requestingAgentRunId: RUN_ID,
+      approvalScope: 'supervised',
+      policyDecisionState: 'unattempted',
+      requestingClientLabel: 'Patch agent',
+      ...overrides,
+    });
+  }
+
+  it('CASes unattempted -> human_required and fans out to action-and-target-eligible humans', async () => {
+    dbState.selectActionIntentsResults.push([queuedDeferredIntent()]);
+    dbState.selectAgentRunsResults.push([makeRunRow()]);
+    intentApproversState.resolveIntentTargetScope.mockResolvedValueOnce({ kind: 'devices', siteIds: [SITE_ID] });
+    intentApproversState.resolveAgentIntentApprovers.mockResolvedValueOnce([APPROVER_1, APPROVER_2]);
+    dbState.updateActionIntentsResults.push([
+      queuedDeferredIntent({ policyDecisionState: 'human_required' }),
+    ]);
+    dbState.insertApprovalRequestsResults.push([{ id: 'approval-d1' }, { id: 'approval-d2' }]);
+
+    await runDeferredHumanFanout('intent-deferred');
+
+    expect(dbState.updateActionIntentsSets[0]).toEqual({ policyDecisionState: 'human_required' });
+    const insertedRows = dbState.insertedApprovalRequestsValues[0] as Array<{ userId: string }>;
+    expect(insertedRows.map((r) => r.userId)).toEqual([APPROVER_1, APPROVER_2]);
+    expect(notifyState.createNotification).toHaveBeenCalledTimes(2);
+    expect(metricsMock.recordActionIntentEvent).not.toHaveBeenCalled();
+  });
+
+  it('cancels no_eligible_approvers when nobody is eligible, and notifies nobody', async () => {
+    dbState.selectActionIntentsResults.push([queuedDeferredIntent()]);
+    dbState.selectAgentRunsResults.push([makeRunRow()]);
+    intentApproversState.resolveIntentTargetScope.mockResolvedValueOnce({ kind: 'devices', siteIds: [SITE_ID] });
+    intentApproversState.resolveAgentIntentApprovers.mockResolvedValueOnce([]);
+    dbState.updateActionIntentsResults.push([
+      queuedDeferredIntent({ policyDecisionState: 'human_required' }),
+    ]);
+    dbState.updateActionIntentsResults.push([
+      queuedDeferredIntent({ status: 'cancelled', errorCode: 'no_eligible_approvers' }),
+    ]);
+
+    await runDeferredHumanFanout('intent-deferred');
+
+    expect(dbState.insertedApprovalRequestsValues).toHaveLength(0);
+    expect(notifyState.createNotification).not.toHaveBeenCalled();
+    expect(metricsMock.recordActionIntentEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        outcome: 'cancelled',
+        actorType: 'ai_agent',
+        details: expect.objectContaining({ errorCode: 'no_eligible_approvers' }),
+      }),
+    );
+  });
+
+  it('double-attempt idempotence: a lost CAS writes nothing and notifies nobody', async () => {
+    dbState.selectActionIntentsResults.push([queuedDeferredIntent()]);
+    dbState.selectAgentRunsResults.push([makeRunRow()]);
+    intentApproversState.resolveIntentTargetScope.mockResolvedValueOnce({ kind: 'devices', siteIds: [SITE_ID] });
+    intentApproversState.resolveAgentIntentApprovers.mockResolvedValueOnce([APPROVER_1]);
+    // Empty .returning() — a concurrent caller already won the CAS.
+    dbState.updateActionIntentsResults.push([]);
+
+    await runDeferredHumanFanout('intent-deferred');
+
+    expect(dbState.insertedApprovalRequestsValues).toHaveLength(0);
+    expect(notifyState.createNotification).not.toHaveBeenCalled();
+    expect(metricsMock.recordActionIntentEvent).not.toHaveBeenCalled();
+  });
+
+  it('no-ops when the intent no longer exists', async () => {
+    dbState.selectActionIntentsResults.push([]);
+
+    await runDeferredHumanFanout('intent-gone');
+
+    expect(dbState.updateActionIntentsSets).toHaveLength(0);
+    expect(dbState.insertedApprovalRequestsValues).toHaveLength(0);
+  });
+
+  it('no-ops on a non-agent-originated intent (structural guard)', async () => {
+    dbState.selectActionIntentsResults.push([
+      queuedDeferredIntent({ requestingAgentRunId: null, requestedByUserId: REQUESTER_ID }),
+    ]);
+
+    await runDeferredHumanFanout('intent-deferred');
+
+    expect(dbState.updateActionIntentsSets).toHaveLength(0);
+    expect(dbState.insertedApprovalRequestsValues).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Tier3 supervised/four_eyes split — scope-aware creation, fan-out, deadlines
 // (spec docs/superpowers/specs/ai-mcp/2026-08-05-tier3-supervised-four-eyes-split-design.md)
 // ---------------------------------------------------------------------------
@@ -706,6 +1527,104 @@ describe('createActionIntent — supervised/four_eyes scope', () => {
 
     expect(msUntil(fe.approvalExpiresAt!)).toBeCloseTo(60 * 60 * 1000, -4);
     expect(msUntil(sv.approvalExpiresAt!)).toBeCloseTo(5 * 60 * 1000, -4);
+  });
+
+  it('THE FIX: an approver with NO phone is still notified in-app', async () => {
+    // Before wave 2 the only approver channel was mobile push, and
+    // getUserPushTokens reads mobile_devices exclusively — so an approver who
+    // had never enrolled a phone was notified by NOTHING, with the push
+    // failure swallowed to console.error. That is the bug this wave fixes.
+    guardrailMock.checkGuardrails.mockReturnValue({
+      tier: 3,
+      allowed: true,
+      requiresApproval: true,
+      description: 'Run a script on one or more devices',
+      approvalScope: 'four_eyes',
+    });
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce(['approver-1']);
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'intent-fe-notify' }));
+    dbState.insertApprovalRequestsResults.push([{ id: 'approval-fe-notify' }]);
+    // No enrolled device: zero tokens, exactly the phoneless approver's case.
+    pushState.getUserPushTokens.mockResolvedValueOnce([]);
+
+    await createActionIntent(makeAuth(), baseInput({ idempotencyKey: 'key-fe-notify' }));
+
+    expect(notifyState.createNotification).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: 'approver-1',
+        type: 'approval',
+        link: '/approvals',
+        // Idempotent across outbox/BullMQ redelivery.
+        dedupeKey: 'intent-approval:intent-fe-notify',
+      }),
+    );
+  });
+
+  it('notifies in-app even when the push dispatch throws', async () => {
+    // The in-app row must not be downstream of the phone lookup — that is what
+    // made the old path fail silently for the people it most affected.
+    guardrailMock.checkGuardrails.mockReturnValue({
+      tier: 3,
+      allowed: true,
+      requiresApproval: true,
+      description: 'Run a script on one or more devices',
+      approvalScope: 'four_eyes',
+    });
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce(['approver-1']);
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'intent-fe-pushfail' }));
+    dbState.insertApprovalRequestsResults.push([{ id: 'approval-fe-pushfail' }]);
+    pushState.getUserPushTokens.mockRejectedValueOnce(new Error('mobile_devices unreachable'));
+
+    await expect(
+      createActionIntent(makeAuth(), baseInput({ idempotencyKey: 'key-fe-pushfail' })),
+    ).resolves.toBeTruthy();
+
+    expect(notifyState.createNotification).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 'approver-1', type: 'approval' }),
+    );
+  });
+
+  it('a failed in-app notification never fails intent creation', async () => {
+    guardrailMock.checkGuardrails.mockReturnValue({
+      tier: 3,
+      allowed: true,
+      requiresApproval: true,
+      description: 'Run a script on one or more devices',
+      approvalScope: 'four_eyes',
+    });
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce(['approver-1']);
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'intent-fe-notiffail' }));
+    dbState.insertApprovalRequestsResults.push([{ id: 'approval-fe-notiffail' }]);
+    notifyState.createNotification.mockRejectedValueOnce(new Error('notify boom'));
+
+    const snapshot = await createActionIntent(
+      makeAuth(),
+      baseInput({ idempotencyKey: 'key-fe-notiffail' }),
+    );
+
+    expect(snapshot.status).toBe('pending_approval');
+    // Push still attempted — one channel failing must not suppress the other.
+    expect(pushState.dispatchApprovalPushToTokens).toHaveBeenCalled();
+  });
+
+  it('supervised intents notify NOBODY in-app, same as push', async () => {
+    // The sole row belongs to the requester, who is already watching the chat
+    // response that created it.
+    guardrailMock.checkGuardrails.mockReturnValue({
+      tier: 3,
+      allowed: true,
+      requiresApproval: true,
+      description: 'Run a script on one or more devices',
+      approvalScope: 'supervised',
+    });
+    intentApproversState.resolveIntentApprovers.mockResolvedValueOnce([]);
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'intent-sv-nonotify' }));
+    dbState.insertApprovalRequestsResults.push([{ id: 'approval-sv-nonotify' }]);
+
+    await createActionIntent(makeAuth(), baseInput({ idempotencyKey: 'key-sv-nonotify' }));
+
+    expect(notifyState.createNotification).not.toHaveBeenCalled();
+    expect(pushState.dispatchApprovalPushToTokens).not.toHaveBeenCalled();
   });
 
   it('four_eyes with no other active approver keeps sole-operator fallback', async () => {
@@ -1163,6 +2082,40 @@ describe('cancelActionIntent', () => {
     dbState.updateActionIntentsResults.push([{ id: 'intent-1' }]);
     const result = await cancelActionIntent(makeAuth(), 'intent-1');
     expect(result).toEqual({ ok: true, status: 'cancelled' });
+  });
+
+  it('lets an approvals:decide holder cancel an agent-originated intent', async () => {
+    // Owner decision 2026-08-23 (wave 3b): an agent intent has NO requester,
+    // so "requester or approver" deliberately collapses to "any
+    // approvals:decide holder in the org" — a human can dismiss an agent
+    // proposal without approving it.
+    dbState.selectActionIntentsResults.push([
+      makeIntentRow({
+        id: 'intent-1',
+        requestedByUserId: null,
+        source: 'ai_agent',
+        requestingAgentRunId: RUN_ID,
+        approvalScope: 'supervised',
+      }),
+    ]);
+    permState.getUserPermissions.mockResolvedValue({ canDecide: true });
+    dbState.updateActionIntentsResults.push([{ id: 'intent-1' }]);
+    const result = await cancelActionIntent(makeAuth(), 'intent-1');
+    expect(result).toEqual({ ok: true, status: 'cancelled' });
+  });
+
+  it('denies cancel to a user with neither requester identity nor approvals:decide', async () => {
+    dbState.selectActionIntentsResults.push([
+      makeIntentRow({
+        id: 'intent-1',
+        requestedByUserId: null,
+        source: 'ai_agent',
+        requestingAgentRunId: RUN_ID,
+        approvalScope: 'supervised',
+      }),
+    ]);
+    permState.getUserPermissions.mockResolvedValue(null);
+    await expect(cancelActionIntent(makeAuth(), 'intent-1')).rejects.toBeInstanceOf(ActionIntentAuthorizationError);
   });
 
   it('reports the lost race with the current status when the CAS affects zero rows', async () => {

@@ -1,13 +1,37 @@
-import { and, desc, eq, inArray } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../db';
-import { contracts, contractLines, contractBillingPeriods, organizations } from '../db/schema';
-import { ContractServiceError, type ContractActor } from './contractTypes';
+import { contracts, contractLines, contractBillingPeriods, organizations, catalogItemPrices, catalogItemOrgPricing } from '../db/schema';
+import { ContractServiceError, actorCan, type ContractActor } from './contractTypes';
 import type { ContractLineInput, UpdateContractInput } from '@breeze/shared';
+import { isRepresentableInCurrency, minorUnitExponent, roundToCurrency, PERMISSION_GRANTS } from '@breeze/shared';
 import type { NewContractSpec } from './quoteToContract';
-import { periodIndexFor, nextBillingDate, computePeriod, isExpired } from './contractMath';
+import { periodIndexFor, nextBillingDate, computePeriod, isExpired, duePeriodStartFor } from './contractMath';
 import { emitContractEvent } from './contractEvents';
+import { readOrgStampingDefaults, OrgCurrencyServiceError, type DbExecutor as OrgLockExecutor } from './orgCurrencyCore';
+
+/**
+ * Boundary mapping for the org SHARE barrier (#3778, review finding 1).
+ * `orgCurrencyCore` is domain-neutral by design and throws its own
+ * `OrgCurrencyServiceError`; this service's route boundary rethrows anything it
+ * does not recognise, so an unmapped ORG_NOT_FOUND would surface as a 500
+ * instead of the 404 this path returned before the barrier existed. Only
+ * ORG_NOT_FOUND is translated — a serialization failure, a deadlock or a
+ * genuine helper bug must keep its own identity.
+ */
+async function lockOrgStampingDefaults(tx: OrgLockExecutor, orgId: string): Promise<{ currencyCode: string }> {
+  try {
+    return await readOrgStampingDefaults(tx, orgId);
+  } catch (err) {
+    if (err instanceof OrgCurrencyServiceError && err.code === 'ORG_NOT_FOUND') {
+      throw new ContractServiceError('Organization not found', 404, 'ORG_NOT_FOUND');
+    }
+    throw err;
+  }
+}
+
 import { createManualInvoice, addContractLine, deleteDraftInvoice } from './invoiceService';
 import { resolvePrice, CatalogServiceError } from './catalogService';
+import { resolvePriceFrom, isPriceGap } from './catalogPricing';
 import { countContractDevices, countContractSeats } from './contractQuantities';
 import type { InvoiceActor } from './invoiceTypes';
 
@@ -48,10 +72,23 @@ type DbExecutor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0
  * a writer's read of the contract and its line write — no JPY-stamped
  * contract silently keeping a line priced under the old currency, and no
  * line phantom-inserting past the restamp's "no lines" check.
+ *
+ * Wave 6 (#3778) splits the helper in two. `lockContractRow` is the bare
+ * SELECT ... FOR UPDATE + 404 and is what the SYSTEM producers use
+ * (generateDueInvoice has no ContractActor to construct — it takes no actor at
+ * all — and used to open with a plain unlocked SELECT, which is what made
+ * ACTIVE-contract eligibility racy). `lockContract` is `lockContractRow` +
+ * requireOrgAccess, so every user-facing path keeps its authorization check
+ * byte-for-byte unchanged.
  */
-async function lockContract(tx: DbExecutor, contractId: string, actor: ContractActor) {
+export async function lockContractRow(tx: DbExecutor, contractId: string) {
   const [c] = await tx.select().from(contracts).where(eq(contracts.id, contractId)).limit(1).for('update');
   if (!c) throw new ContractServiceError('Contract not found', 404, 'CONTRACT_NOT_FOUND');
+  return c;
+}
+
+async function lockContract(tx: DbExecutor, contractId: string, actor: ContractActor) {
+  const c = await lockContractRow(tx, contractId);
   requireOrgAccess(actor, c.orgId);
   return c;
 }
@@ -64,18 +101,25 @@ export async function createContract(input: {
   requireOrgAccess(actor, input.orgId);
   if (actor.partnerId === null) throw new ContractServiceError('Partner scope required', 403, 'ORG_DENIED');
   // Derive partnerId from the org row — never trust actor.partnerId for the contract's FK.
-  const [org] = await db.select({ partnerId: organizations.partnerId, currencyCode: organizations.currencyCode })
+  // Creation barrier (#3778): org SHARE lock first, held to commit, so a
+  // concurrent changeOrgCurrency cannot let a default-derived stamp land unseen.
+  const [row] = await db.transaction(async (tx) => {
+  const locked = await lockOrgStampingDefaults(tx, input.orgId);
+  const [org] = await tx.select({ partnerId: organizations.partnerId })
     .from(organizations).where(eq(organizations.id, input.orgId)).limit(1);
-  if (!org) throw new ContractServiceError('Organization not found', 404, 'CONTRACT_NOT_FOUND');
-  const [row] = await db.insert(contracts).values({
+  // Unreachable while the barrier above holds the org SHARE lock, but keep the
+  // same code the barrier maps to rather than the misleading CONTRACT_NOT_FOUND.
+  if (!org) throw new ContractServiceError('Organization not found', 404, 'ORG_NOT_FOUND');
+  return tx.insert(contracts).values({
     partnerId: org.partnerId, orgId: input.orgId, name: input.name, status: 'draft',
     billingTiming: input.billingTiming, intervalMonths: input.intervalMonths,
     startDate: input.startDate, endDate: input.endDate ?? null,
-    autoIssue: input.autoIssue ?? false, currencyCode: input.currencyCode ?? org.currencyCode,
+    autoIssue: input.autoIssue ?? false, currencyCode: input.currencyCode ?? locked.currencyCode,
     notes: input.notes ?? null, terms: input.terms ?? null, createdBy: actor.userId,
     autoRenew: input.autoRenew ?? false, renewalTermMonths: input.renewalTermMonths ?? null,
     renewalNoticeDays: input.renewalNoticeDays ?? null,
   }).returning();
+  });
   return row!;
 }
 
@@ -173,6 +217,176 @@ export async function computeContractEstimate(contractId: string, actor: Contrac
   return { currencyCode: contract.currencyCode, periodTotal: total.toFixed(2), lines: out };
 }
 
+// ---- per-currency MRR rollup (multi-currency wave 7, #3779) ----------------
+
+export interface OrgCurrencyMrr { currencyCode: string; amount: string }
+
+/** `${catalogItemId}|${currencyCode}|${orgId}` */
+type PriceKey = string;
+function priceKey(itemId: string, currencyCode: string, orgId: string): PriceKey {
+  return `${itemId}|${currencyCode}|${orgId}`;
+}
+
+/**
+ * Batched, read-only price-book inputs for every catalog line in the rollup:
+ * org overrides for the orgs in play and price-book rows for the currencies in
+ * play, in two queries total rather than three per line.
+ */
+async function loadCatalogPriceInputs(
+  itemIds: string[], orgIds: string[], currencyCodes: string[],
+): Promise<{
+  overrides: Map<string, { unitPrice: string; currencyCode: string }>;
+  bookRows: Map<string, { unitPrice: string }>;
+}> {
+  const overrideRows = await db.select({
+    itemId: catalogItemOrgPricing.catalogItemId,
+    orgId: catalogItemOrgPricing.orgId,
+    currencyCode: catalogItemOrgPricing.currencyCode,
+    unitPrice: catalogItemOrgPricing.unitPrice,
+  }).from(catalogItemOrgPricing)
+    .where(and(inArray(catalogItemOrgPricing.catalogItemId, itemIds), inArray(catalogItemOrgPricing.orgId, orgIds)));
+  const bookPriceRows = await db.select({
+    itemId: catalogItemPrices.itemId,
+    currencyCode: catalogItemPrices.currencyCode,
+    unitPrice: catalogItemPrices.unitPrice,
+  }).from(catalogItemPrices)
+    .where(and(inArray(catalogItemPrices.itemId, itemIds), inArray(catalogItemPrices.currencyCode, currencyCodes)));
+
+  const overrides = new Map<string, { unitPrice: string; currencyCode: string }>();
+  for (const r of overrideRows) overrides.set(`${r.itemId}|${r.orgId}`, { unitPrice: r.unitPrice, currencyCode: r.currencyCode });
+  const bookRows = new Map<string, { unitPrice: string }>();
+  for (const r of bookPriceRows) bookRows.set(`${r.itemId}|${r.currencyCode}`, { unitPrice: r.unitPrice });
+  return { overrides, bookRows };
+}
+
+/**
+ * Estimated monthly recurring revenue per org, GROUPED BY the contract's own
+ * stamped currency (multi-currency spec §8: honest per-currency segmentation,
+ * never a cross-currency sum). One org can legitimately hold active contracts
+ * in several currencies after an org-default change — history keeps its stamp.
+ *
+ * "Estimated" because per_device/per_seat quantities are resolved live; the
+ * figure is never persisted. No FX happens here: converting to a single
+ * reporting currency is the CALLER's optional, explicitly-approximate step.
+ *
+ * Catalog-backed lines are priced through the SAME resolver recurring billing
+ * uses (`resolvePriceFrom`, spec §6: org override in the contract's currency →
+ * price-book row for that currency → the line's stamped snapshot on a gap), so
+ * the dashboard agrees with the invoices it predicts. Never converts and never
+ * falls through to another currency's price.
+ */
+/**
+ * The billing sites' expiry test, evaluated against the period the sweep is
+ * NEXT going to bill (`duePeriodStartFor`, exactly as generateDueInvoice does).
+ * A contract with no pointer can never produce another invoice, so it is judged
+ * against today instead. Open-ended (endDate null) is never past its end.
+ */
+function isPastEndForReporting(
+  c: { endDate: string | null; nextBillingAt: string | null; billingTiming: 'advance' | 'arrears'; intervalMonths: number },
+  asOfISO: string,
+): boolean {
+  if (c.endDate === null || c.endDate === undefined) return false;
+  const periodStart = c.nextBillingAt
+    ? duePeriodStartFor(c.billingTiming, c.nextBillingAt, c.intervalMonths > 0 ? c.intervalMonths : 1)
+    : asOfISO;
+  return isExpired({ endDate: c.endDate, periodStart });
+}
+
+export async function summarizeActiveContractMrrByOrg(
+  orgIds: readonly string[],
+  asOf: Date = new Date(),
+): Promise<Map<string, OrgCurrencyMrr[]>> {
+  const out = new Map<string, OrgCurrencyMrr[]>();
+  if (orgIds.length === 0) return out;
+
+  const active = await db.select().from(contracts)
+    .where(and(inArray(contracts.orgId, [...orgIds]), eq(contracts.status, 'active' as never)));
+  // `status = 'active'` alone is NOT "still running": a contract is flipped to
+  // 'expired' LAZILY inside generateDueInvoice / renewal, at its next billing
+  // date — there is no expiry reaper — so an ended annual contract keeps the
+  // 'active' stamp for up to a whole interval. Billing already skips it via
+  // isExpired, so reporting it here would break this rollup's contract that the
+  // dashboard agrees with the invoices it predicts. Same guard, same inputs.
+  const rows = active.filter((c) => !isPastEndForReporting(c, todayISO(asOf)));
+  if (rows.length === 0) return out;
+
+  const allLines = await db.select().from(contractLines)
+    .where(inArray(contractLines.contractId, rows.map((r) => r.id)));
+  const byContract = new Map<string, typeof allLines>();
+  for (const l of allLines) {
+    const list = byContract.get(l.contractId);
+    if (list) list.push(l); else byContract.set(l.contractId, [l]);
+  }
+
+  // Price-book inputs, loaded once for the whole dashboard.
+  const catalogItemIds = [...new Set(allLines.map((l) => l.catalogItemId).filter((v): v is string => !!v))];
+  let overrides = new Map<string, { unitPrice: string; currencyCode: string }>();
+  let bookRows = new Map<string, { unitPrice: string }>();
+  if (catalogItemIds.length > 0) {
+    const contractsWithCatalog = rows.filter((c) => (byContract.get(c.id) ?? []).some((l) => l.catalogItemId));
+    const loaded = await loadCatalogPriceInputs(
+      catalogItemIds,
+      [...new Set(contractsWithCatalog.map((c) => c.orgId))],
+      [...new Set(contractsWithCatalog.map((c) => c.currencyCode))],
+    );
+    overrides = loaded.overrides;
+    bookRows = loaded.bookRows;
+  }
+  // Resolve once per distinct (itemId, currencyCode, orgId), like the device and
+  // seat caches below.
+  const priceCache = new Map<PriceKey, string | null>();
+  function resolvedUnitPrice(itemId: string, currencyCode: string, orgId: string): string | null {
+    const key = priceKey(itemId, currencyCode, orgId);
+    if (priceCache.has(key)) return priceCache.get(key)!;
+    // The rollup consumes only the unit price; candidate selection and
+    // representability depend solely on the override/book rows and the target
+    // currency, never on the item's cost snapshot — so the cost fields are
+    // stubbed rather than loading every catalog item for a figure that ignores
+    // them. A gap (either kind) is a null here: the caller bills the stamped
+    // snapshot, exactly as addContractLine does.
+    const resolved = resolvePriceFrom(
+      { costBasis: null, costCurrency: currencyCode, taxable: false, taxCategory: null },
+      overrides.get(`${itemId}|${orgId}`) ?? null,
+      bookRows.get(`${itemId}|${currencyCode}`) ?? null,
+      currencyCode,
+    );
+    const price = isPriceGap(resolved) ? null : resolved.unitPrice;
+    priceCache.set(key, price);
+    return price;
+  }
+
+  // Shared across ALL orgs in this call, so a distinct (org, site) device count
+  // and a distinct org seat count each run exactly once for the whole dashboard.
+  const dc: DeviceCache = new Map();
+  const sc: SeatCache = new Map();
+  const totals = new Map<string, Map<string, number>>(); // orgId -> currency -> monthly
+
+  for (const c of rows) {
+    let periodValue = 0;
+    for (const l of byContract.get(c.id) ?? []) {
+      const { quantity } = await resolveLineQty(c.orgId, l, dc, sc);
+      const unitPrice = l.catalogItemId
+        ? (resolvedUnitPrice(l.catalogItemId, c.currencyCode, c.orgId) ?? l.unitPrice)
+        : l.unitPrice;
+      periodValue += Number(unitPrice) * quantity;
+    }
+    const months = c.intervalMonths > 0 ? c.intervalMonths : 1;
+    // Round each contract in ITS OWN currency before grouping — a JPY contract
+    // must never contribute a fractional yen.
+    const monthly = Number(roundToCurrency(periodValue / months, c.currencyCode));
+    const perOrg = totals.get(c.orgId) ?? new Map<string, number>();
+    perOrg.set(c.currencyCode, (perOrg.get(c.currencyCode) ?? 0) + monthly);
+    totals.set(c.orgId, perOrg);
+  }
+
+  for (const [orgId, perCurrency] of totals) {
+    out.set(orgId, [...perCurrency.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([currencyCode, amount]) => ({ currencyCode, amount: roundToCurrency(amount, currencyCode) })));
+  }
+  return out;
+}
+
 export async function updateContract(contractId: string, patch: UpdateContractInput, actor: ContractActor) {
   const c = await getOwnedContractOr404(contractId, actor);
   assertEditable(c);
@@ -220,6 +434,259 @@ export async function deleteDraftContract(contractId: string, actor: ContractAct
   await db.delete(contracts).where(eq(contracts.id, contractId)); // lines cascade
 }
 
+// ---------------------------------------------------------------------------
+// ACTIVE-contract currency eligibility (multi-currency wave 6, #3778, Task 14)
+// ---------------------------------------------------------------------------
+
+/**
+ * The five blockers that make an ACTIVE contract ineligible for the
+ * owner-approved currency restamp. `eligible` is true only when EVERY id list
+ * is empty — eligibility is row EXISTENCE, never `SUM(line_total) > 0`, so a
+ * zero-value line still blocks.
+ */
+export interface ContractCurrencyEligibility {
+  eligible: boolean;
+  /** Draft invoices reachable from this contract (period rows, their reissue
+   *  descendants, and direct source_contract_id lines). */
+  draftInvoiceIds: string[];
+  /** contract_billing_periods rows with no invoice, or a missing/invisible one. */
+  orphanedBillingPeriodIds: string[];
+  /** Org-wide source_type='contract' lines on DRAFT invoices this service cannot attribute. */
+  orphanedContractSourceLineIds: string[];
+  /** Period invoices failing the explicit lineage check (c)/(d)/(e). */
+  brokenLineageInvoiceIds: string[];
+}
+
+/** Depth cap for both replaces_invoice_id walks. A malformed or cyclic ancestry
+ *  must terminate, never spin — the path array also rejects revisits. */
+const LINEAGE_DEPTH_CAP = 32;
+
+/**
+ * Single source of truth for the ACTIVE-contract escape hatch, the wave-6
+ * mismatch report and their tests — so the report can never disagree with the
+ * mutation. MUST be called on a transaction that already holds the contract row
+ * FOR UPDATE (lockContract / lockContractRow); it deliberately locks NOTHING
+ * else, because reaching for an invoice lock here would invert the established
+ * `invoice -> contract` order.
+ *
+ * "Unbilled monetary rows" is concrete in THIS schema: time_entries and
+ * ticket_parts carry no contract_id (billing_status='contract' is a terminal
+ * disposition marker, not a relation), so contract-qualified time/parts are not
+ * a queryable relation at all — those rows belong to the ORG preflight, not
+ * here. What is queryable is: contract_billing_periods.invoice_id, its reissue
+ * descendants, and invoice_lines.source_contract_id (the durable column added by
+ * migration 2026-09-02-a — NOT a current contract_lines membership join, which
+ * removeContractLine can erase on an ACTIVE contract).
+ */
+export interface InspectContractCurrencyOptions {
+  /**
+   * READ-ONLY REPORT USE ONLY. Memo for blocker (4), whose scan is ORG-scoped,
+   * not contract-scoped, and therefore identical for every contract of the same
+   * org. Keyed by orgId. The mismatch report walks up to MAX_LIMIT rows and
+   * without this re-ran the same org-wide invoice_lines scan once per row —
+   * the connection-hold shape this repo has been bitten by before.
+   *
+   * The MUTATION never passes one: changeContractCurrency must re-read blocker
+   * (4) fresh under the contract's own FOR UPDATE, and a memo would let a stale
+   * verdict authorize a restamp. The report is explicitly advisory-at-this-
+   * instant already (it holds no lock), so sharing one snapshot across its rows
+   * costs it nothing it had.
+   */
+  orphanScanCache?: Map<string, string[]>;
+}
+
+export async function inspectContractCurrencyEligibility(
+  tx: DbExecutor, contractId: string, opts: InspectContractCurrencyOptions = {}
+): Promise<ContractCurrencyEligibility> {
+  const [c] = await tx.select({ id: contracts.id, orgId: contracts.orgId, partnerId: contracts.partnerId })
+    .from(contracts).where(eq(contracts.id, contractId)).limit(1);
+  if (!c) throw new ContractServiceError('Contract not found', 404, 'CONTRACT_NOT_FOUND');
+
+  // (1)+(2) Period invoices and every reissue DESCENDANT reachable through
+  // invoices.replaces_invoice_id. The path array makes a cyclic chain terminate
+  // (a revisited id is never re-expanded) and the depth cap bounds a long one.
+  const reachable = await tx.execute<{ id: string; status: string }>(sql`
+    WITH RECURSIVE seed AS (
+      SELECT i.id, ARRAY[i.id] AS path, 0 AS depth
+        FROM contract_billing_periods cbp
+        JOIN invoices i ON i.id = cbp.invoice_id
+       WHERE cbp.contract_id = ${contractId}
+    ), walk AS (
+      SELECT id, path, depth FROM seed
+      UNION ALL
+      SELECT child.id, w.path || child.id, w.depth + 1
+        FROM walk w
+        JOIN invoices child ON child.replaces_invoice_id = w.id
+       WHERE w.depth < ${LINEAGE_DEPTH_CAP} AND NOT (child.id = ANY(w.path))
+    )
+    SELECT DISTINCT w.id AS id, i.status::text AS status
+      FROM walk w JOIN invoices i ON i.id = w.id
+  `);
+
+  // (3) Direct contract-source lines sitting on ANY draft invoice — the escape
+  // codex found: the contract_lines row can be deleted, this column cannot.
+  // The second branch is defence in depth (wave-6 review round): a line whose
+  // durable lineage is NULL but whose polymorphic source_id still resolves to a
+  // LIVE contract_lines row of THIS contract is attributable, and must block the
+  // restamp too. Without it such a line falls through (4) as well, because (4)
+  // only fires when the source_id resolves to nothing.
+  const directDrafts = await tx.execute<{ id: string }>(sql`
+    SELECT DISTINCT i.id AS id
+      FROM invoice_lines il
+      JOIN invoices i ON i.id = il.invoice_id
+     WHERE i.status = 'draft'
+       AND (
+         il.source_contract_id = ${contractId}
+         OR (
+           il.source_contract_id IS NULL
+           AND EXISTS (
+             SELECT 1 FROM contract_lines cl
+              WHERE cl.id = il.source_id AND cl.contract_id = ${contractId}
+           )
+         )
+       )
+  `);
+
+  // (4) Conservative ORG-WIDE blocker: a source_type='contract' line the service
+  // cannot attribute to any contract (NULL lineage AND a source_id resolving to
+  // no live contract_lines row, NULL source_id included). Refuse, never guess.
+  //
+  // SCOPED TO DRAFT, exactly as blocker (3) is. The blocker exists to stop a
+  // restamp while money that MIGHT belong to this contract is still unbilled and
+  // re-priceable; a line on an issued/paid/void invoice is already billed and
+  // carries the invoice's own immutable currency snapshot, so no restamp can
+  // strand it. Without the status filter the blocker was unsatisfiable: migration
+  // 2026-09-02-a RAISEs a warning for precisely these legacy rows (a
+  // contract_lines row deleted before the durable column existed), they sit on
+  // invoices that can never be edited or deleted, and ONE of them 409'd EVERY
+  // active contract in the org forever — locking the pre-wave-2 legacy orgs out
+  // of the escape hatch that was built for them.
+  const cachedOrphans = opts.orphanScanCache?.get(c.orgId);
+  let orphanedContractSourceLineIds: string[];
+  if (cachedOrphans) {
+    orphanedContractSourceLineIds = cachedOrphans;
+  } else {
+    const orphanSources = await tx.execute<{ id: string }>(sql`
+      SELECT il.id AS id
+        FROM invoice_lines il
+        JOIN invoices i ON i.id = il.invoice_id
+       WHERE il.org_id = ${c.orgId}
+         AND i.status = 'draft'
+         AND il.source_type = 'contract'
+         AND il.source_contract_id IS NULL
+         AND NOT EXISTS (SELECT 1 FROM contract_lines cl WHERE cl.id = il.source_id)
+       ORDER BY il.id
+    `);
+    orphanedContractSourceLineIds = orphanSources.map((r) => r.id);
+    opts.orphanScanCache?.set(c.orgId, orphanedContractSourceLineIds);
+  }
+
+  // (5) Explicit per-period lineage proof. (a)/(b) -> ORPHANED_BILLING_PERIOD;
+  // (c)/(d)/(e) -> BROKEN_CONTRACT_LINEAGE. The ANCESTRY walk runs upward
+  // through replaces_invoice_id with the same path/depth protection.
+  const periods = await tx.execute<{
+    period_id: string; invoice_id: string | null; invoice_exists: boolean;
+    same_tenant: boolean; attributable: boolean; ancestry_ok: boolean;
+  }>(sql`
+    WITH RECURSIVE seed AS (
+      SELECT cbp.id AS period_id, i.id AS inv_id, i.replaces_invoice_id AS parent,
+             ARRAY[i.id] AS path, 0 AS depth,
+             (i.org_id = ${c.orgId} AND i.partner_id = ${c.partnerId}) AS ok
+        FROM contract_billing_periods cbp
+        JOIN invoices i ON i.id = cbp.invoice_id
+       WHERE cbp.contract_id = ${contractId}
+    ), up AS (
+      SELECT * FROM seed
+      UNION ALL
+      SELECT u.period_id, p.id, p.replaces_invoice_id, u.path || p.id, u.depth + 1,
+             (p.org_id = ${c.orgId} AND p.partner_id = ${c.partnerId}) AS ok
+        FROM up u
+        JOIN invoices p ON p.id = u.parent
+       WHERE u.depth < ${LINEAGE_DEPTH_CAP} AND NOT (p.id = ANY(u.path))
+    ), ancestry AS (
+      SELECT period_id,
+             bool_and(ok) AS all_same_tenant,
+             -- terminated cleanly: no unfollowed parent left dangling because of
+             -- a revisit (cycle) or the depth cap.
+             bool_and(parent IS NULL
+                      OR (depth < ${LINEAGE_DEPTH_CAP} AND NOT (parent = ANY(path)))) AS terminates
+        FROM up GROUP BY period_id
+    )
+    SELECT cbp.id AS period_id,
+           cbp.invoice_id AS invoice_id,
+           (i.id IS NOT NULL) AS invoice_exists,
+           COALESCE(a.all_same_tenant, false) AS same_tenant,
+           COALESCE(
+             EXISTS (SELECT 1 FROM invoice_lines il
+                      WHERE il.invoice_id = cbp.invoice_id AND il.source_contract_id = ${contractId})
+             OR NOT EXISTS (SELECT 1 FROM contract_billing_periods o
+                             WHERE o.invoice_id = cbp.invoice_id AND o.contract_id <> ${contractId}),
+             false) AS attributable,
+           COALESCE(a.terminates, false) AS ancestry_ok
+      FROM contract_billing_periods cbp
+      LEFT JOIN invoices i ON i.id = cbp.invoice_id
+      LEFT JOIN ancestry a ON a.period_id = cbp.id
+     WHERE cbp.contract_id = ${contractId}
+     ORDER BY cbp.id
+  `);
+
+  const draftInvoiceIds = [...new Set([
+    ...reachable.filter((r) => r.status === 'draft').map((r) => r.id),
+    ...directDrafts.map((r) => r.id),
+  ])].sort();
+
+  const orphanedBillingPeriodIds: string[] = [];
+  const brokenLineageInvoiceIds: string[] = [];
+  for (const p of periods) {
+    // (a) no invoice at all, or (b) the invoice row is missing/invisible.
+    if (p.invoice_id === null || !p.invoice_exists) { orphanedBillingPeriodIds.push(p.period_id); continue; }
+    if (!p.same_tenant || !p.attributable || !p.ancestry_ok) brokenLineageInvoiceIds.push(p.invoice_id);
+  }
+
+  return {
+    eligible: draftInvoiceIds.length === 0
+      && orphanedBillingPeriodIds.length === 0
+      && orphanedContractSourceLineIds.length === 0
+      && brokenLineageInvoiceIds.length === 0,
+    draftInvoiceIds,
+    orphanedBillingPeriodIds,
+    orphanedContractSourceLineIds,
+    brokenLineageInvoiceIds: [...new Set(brokenLineageInvoiceIds)],
+  };
+}
+
+/**
+ * Gate for the ACTIVE branch of changeContractCurrency. Throws the most
+ * specific blocker, each carrying the offending ids in `details` so the
+ * operator can act on the exact rows instead of guessing.
+ */
+function assertActiveContractEligible(e: ContractCurrencyEligibility): void {
+  if (e.orphanedContractSourceLineIds.length > 0) {
+    throw new ContractServiceError(
+      `${e.orphanedContractSourceLineIds.length} contract-sourced invoice line(s) in this organization cannot be attributed to a contract — resolve them before restamping`,
+      409, 'ORPHANED_CONTRACT_SOURCE', { lineIds: e.orphanedContractSourceLineIds }
+    );
+  }
+  if (e.orphanedBillingPeriodIds.length > 0) {
+    throw new ContractServiceError(
+      `${e.orphanedBillingPeriodIds.length} billing period(s) on this contract have no reachable invoice`,
+      409, 'ORPHANED_BILLING_PERIOD', { billingPeriodIds: e.orphanedBillingPeriodIds }
+    );
+  }
+  if (e.brokenLineageInvoiceIds.length > 0) {
+    throw new ContractServiceError(
+      `${e.brokenLineageInvoiceIds.length} invoice(s) linked to this contract fail the lineage check`,
+      409, 'BROKEN_CONTRACT_LINEAGE', { invoiceIds: e.brokenLineageInvoiceIds }
+    );
+  }
+  if (e.draftInvoiceIds.length > 0) {
+    throw new ContractServiceError(
+      `${e.draftInvoiceIds.length} draft invoice(s) still hold money billed under this contract — issue, void or delete them first`,
+      409, 'UNBILLED_MONETARY_ROWS', { draftInvoiceIds: e.draftInvoiceIds }
+    );
+  }
+}
+
 /**
  * Draft-only atomic change-currency operation (multi-currency wave 2, #3774).
  * A draft's stamped currency is immutable through every other mutation path —
@@ -234,15 +701,34 @@ export async function deleteDraftContract(contractId: string, actor: ContractAct
  */
 export async function changeContractCurrency(
   contractId: string,
-  input: { currencyCode: string; clearLines?: boolean; reprice?: boolean },
+  input: { currencyCode: string; clearLines?: boolean; reprice?: boolean; confirmActiveChange?: boolean },
   actor: ContractActor
 ) {
   return db.transaction(async (tx) => {
-    // Contract row lock FIRST (document → lines). The line writers and
-    // activateContract take the same lock via lockContract, so a concurrent
-    // activate or line write serializes against the restamp.
+    // Contract row lock FIRST (document → lines). The line writers,
+    // activateContract and (since wave 6) generateDueInvoice take the same lock,
+    // so a concurrent activate, line write or billing run serializes against the
+    // restamp — which is what makes the eligibility check below race-safe.
     const c = await lockContract(tx, contractId, actor);
-    assertDraft(c);
+    if (c.status !== 'draft') {
+      // Wave 6 (#3778), owner-approved escape hatch. ONLY 'active' opens; every
+      // other status keeps the wave-2 rejection byte-for-byte.
+      if ((c.status as string) !== 'active') assertDraft(c);
+      if (!actorCan(actor, PERMISSION_GRANTS.CONTRACTS_MANAGE)) {
+        throw new ContractServiceError(
+          'Restamping an active contract requires the contracts:manage permission',
+          403, 'ACTIVE_CHANGE_FORBIDDEN'
+        );
+      }
+      if (input.confirmActiveChange !== true) {
+        throw new ContractServiceError(
+          'Restamping an active contract requires confirmActiveChange',
+          400, 'ACTIVE_CHANGE_CONFIRMATION_REQUIRED'
+        );
+      }
+      // Re-checked HERE, under the FOR UPDATE taken above — never before it.
+      assertActiveContractEligible(await inspectContractCurrencyEligibility(tx, contractId));
+    }
     if (c.currencyCode === input.currencyCode) return c; // no-op restamp
 
     const lineRows = await tx.select({ id: contractLines.id, catalogItemId: contractLines.catalogItemId })
@@ -257,7 +743,7 @@ export async function changeContractCurrency(
         const repriceable = lineRows.filter((l) => l.catalogItemId !== null);
         const rest = lineRows.length - repriceable.length;
         if (rest > 0) {
-          throw new ContractServiceError(`${rest} non-catalog line(s) cannot be repriced — pass clearLines instead`, 409, 'CURRENCY_LOCKED');
+          throw new ContractServiceError(`${rest} non-catalog line(s) have no price in the new currency — remove all lines first, or keep the current currency`, 409, 'CURRENCY_LOCKED');
         }
         const catalogActor = { userId: actor.userId, partnerId: c.partnerId, accessibleOrgIds: actor.accessibleOrgIds };
         for (const line of repriceable) {
@@ -265,8 +751,8 @@ export async function changeContractCurrency(
           try {
             resolved = await resolvePrice(line.catalogItemId!, input.currencyCode, c.orgId, catalogActor, tx);
           } catch (err) {
-            if (err instanceof CatalogServiceError && err.code === 'NO_PRICE_FOR_CURRENCY') {
-              throw new ContractServiceError(err.message, 409, 'NO_PRICE_FOR_CURRENCY');
+            if (err instanceof CatalogServiceError && (err.code === 'NO_PRICE_FOR_CURRENCY' || err.code === 'PRICE_NOT_REPRESENTABLE')) {
+                throw new ContractServiceError(err.message, 409, err.code);
             }
             throw err;
           }
@@ -298,6 +784,22 @@ export async function changeContractCurrency(
  * price adds a non-catalog line, which still requires and stamps the client
  * unitPrice/taxable verbatim. A price-book gap is a typed 409.
  */
+/**
+ * Wave-6 release gate (W6-G3-1): a hand-entered non-catalog contract line price
+ * must be representable in the CONTRACT's stamped currency. A contract line is
+ * the template for every future generated invoice snapshot, so an unrepresentable
+ * ¥100.50 here propagates to every invoice the sweep produces. Never rounded
+ * silently (owner-fixed: no conversion).
+ */
+function assertRepresentable(value: string, currencyCode: string): void {
+  if (!isRepresentableInCurrency(value, currencyCode)) {
+    throw new ContractServiceError(
+      `${value} is not representable in ${currencyCode} — this currency has ${minorUnitExponent(currencyCode)} decimal place(s)`,
+      400, 'PRICE_NOT_REPRESENTABLE'
+    );
+  }
+}
+
 export async function addContractLineToContract(contractId: string, input: ContractLineInput, actor: ContractActor) {
   return db.transaction(async (tx) => {
     const c = await lockContract(tx, contractId, actor);
@@ -314,8 +816,8 @@ export async function addContractLineToContract(contractId: string, input: Contr
           tx
         );
       } catch (err) {
-        if (err instanceof CatalogServiceError && err.code === 'NO_PRICE_FOR_CURRENCY') {
-          throw new ContractServiceError(err.message, 409, 'NO_PRICE_FOR_CURRENCY');
+        if (err instanceof CatalogServiceError && (err.code === 'NO_PRICE_FOR_CURRENCY' || err.code === 'PRICE_NOT_REPRESENTABLE')) {
+            throw new ContractServiceError(err.message, 409, err.code);
         }
         throw err;
       }
@@ -324,10 +826,11 @@ export async function addContractLineToContract(contractId: string, input: Contr
     } else {
       // The shared validator already requires unitPrice here; this is the
       // service-level backstop for internal callers.
-      if (input.unitPrice === undefined) {
-        throw new ContractServiceError('unitPrice is required unless catalogItemId is set', 400, 'INVALID_STATE');
+      if (input.unitPrice === undefined || input.taxable === undefined) {
+        throw new ContractServiceError('unitPrice and taxable are required unless catalogItemId is set', 400, 'INVALID_STATE');
       }
       unitPrice = input.unitPrice;
+      assertRepresentable(unitPrice, c.currencyCode);
       taxable = input.taxable;
     }
     const [row] = await tx.insert(contractLines).values({
@@ -478,8 +981,14 @@ export interface GenerateResult {
  * in the wave-3 plan's Self-Review (a).
  */
 export async function generateDueInvoice(contractId: string, asOf: Date = new Date()): Promise<GenerateResult> {
-  const [c] = await db.select().from(contracts).where(eq(contracts.id, contractId)).limit(1);
-  if (!c) throw new ContractServiceError('Contract not found', 404, 'CONTRACT_NOT_FOUND');
+  // PRODUCER SERIALIZATION (#3778): lock the contract row as the FIRST statement
+  // of the caller-supplied transaction. Until wave 6 this opened with a plain
+  // unlocked SELECT while every other contract writer locked — so a billing run
+  // could read the OLD stamp, and an ACTIVE-contract restamp could pass its
+  // eligibility check, concurrently. lockContractRow (not lockContract) because
+  // this is a SYSTEM path with no ContractActor to construct; org access is the
+  // caller's (worker / route) responsibility and is unchanged.
+  const c = await lockContractRow(db, contractId);
   // Cast the enum to a string for comparison — postgres.js returns the enum as a
   // plain string but drizzle types it as the narrow union; `as never` keeps tsc happy
   // while the runtime check stays a simple string compare (mirrors listContracts).
@@ -558,7 +1067,10 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
     }
     const { pricedFrom } = await addContractLine(inv.id, {
       description: l.description, quantity, unitPrice: l.unitPrice, taxable: l.taxable,
-      catalogItemId: l.catalogItemId, sourceId: l.id
+      catalogItemId: l.catalogItemId, sourceId: l.id,
+      // Durable lineage (#3778): the CONTRACT id, not just the contract_line id.
+      // Survives removeContractLine, which is permitted on active contracts.
+      contractId
     }, actor);
     // A non-catalog line is always its own snapshot — only a CATALOG line billed
     // at the snapshot is a price-book gap.
@@ -643,6 +1155,9 @@ export async function createContractWithLinesDetailed(
   const createdLines: CreatedContractWithLines['lines'] = [];
   for (let i = 0; i < spec.lines.length; i++) {
     const l = spec.lines[i]!;
+    // Same guard as addContractLineToContract — the quote→contract conversion
+    // path must not be a way around it (W6-G3-1).
+    assertRepresentable(l.unitPrice, spec.currencyCode);
     const [insertedLine] = await db.insert(contractLines).values({
       contractId: contract.id,
       orgId: spec.orgId,

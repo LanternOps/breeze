@@ -1,0 +1,45 @@
+{
+  "title": "Approvals",
+  "description": "Review high-impact actions waiting for your decision.",
+  "loading": "Loading approvals…",
+  "loadError": "Approvals could not be loaded. Try again.",
+  "retry": "Retry",
+  "empty": {
+    "title": "No approvals waiting",
+    "description": "New requests will appear here when your decision is needed."
+  },
+  "requestedBy": "Requested by {{client}}",
+  "proposedByAgent": "Proposed by {{agent}} (AI agent)",
+  "targetDevice": "Target device: {{hostname}}",
+  "batch": {
+    "approveAll": "Approve all ({{count}})",
+    "declineAll": "Decline all ({{count}})",
+    "groupTitle": "{{count}} similar requests · {{tool}}"
+  },
+  "risk": {
+    "low": "Low risk",
+    "medium": "Medium risk",
+    "high": "High risk",
+    "critical": "Critical risk"
+  },
+  "denyPrompt": "Why are you denying this request? A reason is optional.",
+  "denyReasonPlaceholder": "Optional — shared with the requester",
+  "confirmDeny": "Confirm denial",
+  "cancel": "Cancel",
+  "deny": "Deny",
+  "approve": "Approve",
+  "deciding": "Submitting…",
+  "expiresIn": "Expires in {{minutes}} min",
+  "expiresSoon": "Expires in under a minute",
+  "errors": {
+    "noApproverDevice": "Register an approver device in your profile, then try again.",
+    "notSoleApprover": "Another eligible approver must decide this request.",
+    "verificationFailed": "Verification was canceled or failed. Try again.",
+    "alreadyDecided": "This request was already decided.",
+    "expired": "This request expired before it could be decided.",
+    "decisionFailed": "The decision could not be submitted. Try again.",
+    "batchStepUp": "This batch needs a stronger sign-in. Approve the requests one at a time.",
+    "batchNotHomogeneous": "These requests can no longer be decided together."
+  },
+  "registerDevice": "Register device"
+}

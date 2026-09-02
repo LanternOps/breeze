@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
 import {
   queueCommand,
   waitForCommandResult,
@@ -11,6 +12,7 @@ import {
   CommandTypes,
   queueCommandForExecution,
   rearmIdempotentCommandForDelivery,
+  resolveCommandCreatedBy,
 } from './commandQueue';
 import { db } from '../db';
 import { sendCommandToAgent, isAgentConnected } from '../routes/agentWs';
@@ -129,6 +131,16 @@ describe('command queue service', () => {
         returning: vi.fn().mockResolvedValue([queued])
       })
     } as any);
+    // The created_by users probe (#3978) runs before the insert. Mock it
+    // explicitly rather than inheriting whatever db.select impl a previous test
+    // left behind — vi.clearAllMocks() resets calls, not implementations.
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{ id: 'user-1' }]),
+        }),
+      }),
+    } as any);
 
     const result = await queueCommand('dev-1', 'list_processes', { filter: 'chrome' }, 'user-1');
 
@@ -159,31 +171,51 @@ describe('command queue service', () => {
       result: null,
     };
 
-    // Order tracker: prove that both the devices SELECT and the audit INSERT
-    // fire INSIDE the withSystemDbAccessContext callback. If a future edit
-    // hoists the lookup back outside the wrapper, these calls will land
-    // before 'enter-system' and the assertions below will fail.
+    // Order tracker: prove that the created_by users probe, the devices SELECT
+    // and the audit INSERT each fire INSIDE a runOutsideDbContext +
+    // withSystemDbAccessContext pair. If a future edit hoists any of them back
+    // outside the wrapper, these calls will land before 'enter-system' and the
+    // assertions below will fail.
+    //
+    // queueCommand opens THREE wrapped blocks: the created_by probe (#3978),
+    // then the device_commands insert, then the fire-and-forget audit block.
+    // All three need a context — the probe reads RLS-protected `users`, the
+    // audit block reads RLS-protected `devices`, and the insert itself must not
+    // be a contextless bare-pool write (#1375). A BullMQ worker has no request
+    // context for any of them. Only the probe and the audit block additionally
+    // need to ESCAPE a caller context, so only those two use runOutsideDbContext.
     const callOrder: string[] = [];
-    // mockImplementationOnce queues a single-use impl so the default
-    // passthrough mock from vi.mock('../db', ...) is restored after this
-    // test's one call — other tests using runOutsideDbContext /
-    // withSystemDbAccessContext via runOutsideDbContextSafe keep working.
-    vi.mocked(dbModule.runOutsideDbContext).mockImplementationOnce(async (fn: () => unknown) => {
+    // mockImplementationOnce queues single-use impls so the default passthrough
+    // mock from vi.mock('../db', ...) is restored after this test's calls —
+    // other tests using runOutsideDbContext / withSystemDbAccessContext via
+    // runOutsideDbContextSafe keep working. Two are queued per wrapper, one per
+    // block.
+    const trackOutside = async (fn: () => unknown) => {
       callOrder.push('enter-outside');
       const result = await fn();
       callOrder.push('exit-outside');
       return result;
-    });
-    vi.mocked(dbModule.withSystemDbAccessContext).mockImplementationOnce(async (fn: () => unknown) => {
+    };
+    const trackSystem = async (fn: () => unknown) => {
       callOrder.push('enter-system');
       const result = await fn();
       callOrder.push('exit-system');
       return result;
-    });
+    };
+    vi.mocked(dbModule.runOutsideDbContext)
+      .mockImplementationOnce(trackOutside)
+      .mockImplementationOnce(trackOutside);
+    vi.mocked(dbModule.withSystemDbAccessContext)
+      .mockImplementationOnce(trackSystem)
+      .mockImplementationOnce(trackSystem)
+      .mockImplementationOnce(trackSystem);
 
     const commandInsertChain = {
       values: vi.fn().mockReturnValue({
-        returning: vi.fn().mockResolvedValue([queued]),
+        returning: vi.fn().mockImplementation(() => {
+          callOrder.push('command-insert');
+          return Promise.resolve([queued]);
+        }),
       }),
     };
     const auditInsertValues = vi.fn().mockImplementation(() => {
@@ -196,29 +228,58 @@ describe('command queue service', () => {
       .mockReturnValueOnce(commandInsertChain as any)
       .mockReturnValueOnce(auditInsertChain as any);
 
-    vi.mocked(db.select).mockReturnValue({
-      from: vi.fn().mockReturnValue({
-        where: vi.fn().mockReturnValue({
-          limit: vi.fn().mockImplementation(() => {
-            callOrder.push('devices-select');
-            return Promise.resolve([{ orgId: 'org-42', hostname: 'host-1' }]);
+    // Route the two SELECTs by the table they target: the created_by probe hits
+    // `users`, the audit block hits `devices`. Discriminating on the real table
+    // object (rather than call order) keeps the labels honest if the sequence
+    // ever changes.
+    const schema = await import('../db/schema');
+    vi.mocked(db.select).mockImplementation((() => ({
+      from: vi.fn((table: unknown) => {
+        const isDevices = table === schema.devices;
+        return {
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockImplementation(() => {
+              callOrder.push(isDevices ? 'devices-select' : 'users-probe');
+              return Promise.resolve(
+                isDevices
+                  ? [{ orgId: 'org-42', hostname: 'host-1' }]
+                  : [{ id: 'user-1' }],
+              );
+            }),
           }),
-        }),
+        };
       }),
-    } as any);
+    })) as any);
 
     await queueCommand('dev-1', CommandTypes.KILL_PROCESS, { pid: 1234 }, 'user-1');
-    // Audit block is fire-and-forget; drain microtasks so the inner chain runs.
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
+    // The audit block is fire-and-forget, so it settles AFTER queueCommand
+    // resolves. Poll for the full sequence instead of draining a fixed number
+    // of microtasks: this test queues two single-use impls per wrapper (probe +
+    // audit block), and a fixed drain that returns early would both fail here
+    // and leak the unconsumed mockImplementationOnce entries into later tests
+    // in this file.
+    await vi.waitFor(() => expect(callOrder).toHaveLength(14));
 
-    expect(dbModule.runOutsideDbContext).toHaveBeenCalledTimes(1);
-    expect(dbModule.withSystemDbAccessContext).toHaveBeenCalledTimes(1);
-    // Both the devices lookup and the audit insert must happen between
-    // enter-system and exit-system — this is the contract that guards the
-    // worker-path regression.
+    // Two context ESCAPES (probe, audit block) and three system contexts
+    // (probe, insert, audit block).
+    expect(dbModule.runOutsideDbContext).toHaveBeenCalledTimes(2);
+    expect(dbModule.withSystemDbAccessContext).toHaveBeenCalledTimes(3);
+    // The users probe, the devices lookup and the audit insert must each happen
+    // between an enter-system and its exit-system — this is the contract that
+    // guards the worker-path regression.
     expect(callOrder).toEqual([
+      // 1. created_by probe: escapes the caller context, then system scope.
+      'enter-outside',
+      'enter-system',
+      'users-probe',
+      'exit-system',
+      'exit-outside',
+      // 2. the device_commands insert: system scope, no escape (it belongs on
+      //    the caller's transaction when there is one).
+      'enter-system',
+      'command-insert',
+      'exit-system',
+      // 3. fire-and-forget audit block: escapes, then system scope.
       'enter-outside',
       'enter-system',
       'devices-select',
@@ -419,6 +480,78 @@ describe('command queue service', () => {
     // executeCommand attaches the device_commands row id so callers can
     // reference the persisted result (#2401).
     expect(result).toEqual({ ...completed.result, commandId: completed.id });
+  });
+
+  // Wave 3b (#3824): device_commands.created_by FK-references users(id), but
+  // synthetic principals (ai_agent auth carries the agent's ai_agents id as
+  // auth.user.id) reach executeCommand through the same tool handlers as
+  // humans. The chokepoint probes users once and degrades a non-user id to
+  // created_by NULL instead of aborting the dispatch with a 23503 AFTER the
+  // human approval already happened.
+  it('keeps created_by when the caller userId resolves to a real users row', async () => {
+    const device = { id: 'dev-2', status: 'online', orgId: 'org-1', hostname: 'host-a', agentId: null };
+    const completed = { id: 'cmd-user', status: 'completed', result: { status: 'completed' } };
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([device]) })
+        })
+      } as any)
+      // users existence probe — the id IS a users row.
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ id: 'user-1' }]) })
+        })
+      } as any)
+      .mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([completed]) })
+        })
+      } as any);
+
+    const insertValues = vi.fn().mockReturnValue({
+      returning: vi.fn().mockResolvedValue([{ id: 'cmd-user' }])
+    });
+    vi.mocked(db.insert).mockReturnValue({ values: insertValues } as any);
+
+    const result = await executeCommand('dev-2', 'list_services', {}, { userId: 'user-1' });
+
+    expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({ createdBy: 'user-1' }));
+    expect(result.status).toBe('completed');
+  });
+
+  it('nulls created_by when the caller userId is not a users row (synthetic ai_agent id)', async () => {
+    const device = { id: 'dev-2', status: 'online', orgId: 'org-1', hostname: 'host-a', agentId: null };
+    const completed = { id: 'cmd-agent', status: 'completed', result: { status: 'completed' } };
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([device]) })
+        })
+      } as any)
+      // users existence probe — no row: the id is an ai_agents id, not a user.
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) })
+        })
+      } as any)
+      .mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([completed]) })
+        })
+      } as any);
+
+    const insertValues = vi.fn().mockReturnValue({
+      returning: vi.fn().mockResolvedValue([{ id: 'cmd-agent' }])
+    });
+    vi.mocked(db.insert).mockReturnValue({ values: insertValues } as any);
+
+    const result = await executeCommand('dev-2', 'list_services', {}, { userId: 'agent-synthetic-1' });
+
+    expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({ createdBy: null }));
+    expect(result.status).toBe('completed');
   });
 
   // #3112: the agent's helper-IPC path bounded its own wait with a hardcoded
@@ -946,6 +1079,291 @@ describe('command queue service', () => {
     });
   });
 
+  // ============================================================
+  // #4093 — artifact-edition gate on agent-binary update dispatch
+  // ============================================================
+  //
+  // #4072/#4091 taught the HEARTBEAT offer path to withhold an update from a
+  // build that would refuse the served artifact edition after download. The
+  // manual/AI dispatch door (`trigger_agent_upgrade` -> executeCommand with
+  // type 'update_agent') bypassed it entirely — the same failure class as
+  // "manual Remediate ignores enforceMode" (#3381).
+  //
+  // The gate lives here, at executeCommand, because that is the single point
+  // every agent-binary update dispatch funnels through; gating at the one
+  // known caller is how a third caller silently ships ungated.
+  describe('agent-binary update edition gate (#4093)', () => {
+    const ORIGINAL_EDITION = process.env.BINARY_EDITION;
+
+    function mockDevice(device: Record<string, unknown>) {
+      let pollCall = 0;
+      vi.mocked(db.select).mockImplementation(() => ({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockImplementation(() => {
+              pollCall += 1;
+              if (pollCall === 1) return Promise.resolve([device]);
+              return Promise.resolve([
+                { id: 'cmd-e', status: 'completed', result: { status: 'completed' } },
+              ]);
+            }),
+          }),
+        }),
+      }) as any);
+      const insertValues = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: 'cmd-e', type: 'update_agent' }]),
+        execute: vi.fn().mockResolvedValue(undefined),
+      });
+      vi.mocked(db.insert).mockReturnValue({ values: insertValues } as any);
+      return insertValues;
+    }
+
+    // A device stranded in the 0.105.0-0.106.x band: it carries the client-side
+    // edition check but is a self-host build, and it predates edition
+    // reporting, so agent_edition is NULL.
+    const strandedDevice = {
+      id: 'dev-stranded',
+      status: 'online',
+      agentId: 'agent-stranded',
+      orgId: 'org-1',
+      hostname: 'stranded-pc',
+      watchdogLastSeen: new Date(),
+      agentEdition: null,
+      agentVersion: '0.105.1',
+      watchdogVersion: '0.105.1',
+    };
+
+    beforeEach(() => {
+      vi.clearAllMocks();
+      process.env.BINARY_EDITION = 'hosted';
+    });
+
+    afterEach(() => {
+      if (ORIGINAL_EDITION === undefined) delete process.env.BINARY_EDITION;
+      else process.env.BINARY_EDITION = ORIGINAL_EDITION;
+    });
+
+    it('refuses update_agent for a build that would reject the served edition', async () => {
+      const insertValues = mockDevice(strandedDevice);
+
+      const result = await executeCommand(
+        'dev-stranded',
+        'update_agent',
+        { version: '0.108.0' },
+        { userId: 'user-1', targetRole: 'watchdog' },
+      );
+
+      expect(result.status).toBe('failed');
+      expect(result.error).toMatch(/edition/i);
+      // The command row must never be written — a dispatched command whose
+      // artifact the device refuses is a wasted one-shot the operator has to
+      // decode from a raw updater error.
+      expect(insertValues).not.toHaveBeenCalled();
+    });
+
+    // The refusal is the operator's only correlation signal when the dispatch
+    // came from an automated caller, so it must reach the logs, not just the
+    // return value.
+    it('logs the refusal with the device id so ops can correlate it', async () => {
+      mockDevice(strandedDevice);
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      await executeCommand(
+        'dev-stranded',
+        'update_agent',
+        { version: '0.108.0' },
+        { userId: 'user-1', targetRole: 'watchdog' },
+      );
+
+      const logged = warn.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(logged).toContain('dev-stranded');
+      expect(logged).toContain('#4093');
+      warn.mockRestore();
+    });
+
+    // Ordering contract: the edition gate must be evaluated BEFORE the
+    // watchdog-liveness gate. An edition mismatch is a permanent property of
+    // the installed build; reporting the transient "watchdog is not reporting"
+    // instead would send the operator back to retry a dispatch that can never
+    // succeed. Swap the two blocks in executeCommand and this fails.
+    it('reports the permanent edition reason ahead of a stale-watchdog reason', async () => {
+      const insertValues = mockDevice({
+        ...strandedDevice,
+        watchdogLastSeen: new Date(Date.now() - 60 * 60 * 1000), // an hour stale
+      });
+
+      const result = await executeCommand(
+        'dev-stranded',
+        'update_agent',
+        { version: '0.108.0' },
+        { userId: 'user-1', targetRole: 'watchdog' },
+      );
+
+      expect(result.status).toBe('failed');
+      expect(result.error).toMatch(/edition/i);
+      expect(result.error).not.toMatch(/not reporting/i);
+      expect(insertValues).not.toHaveBeenCalled();
+    });
+
+    it('refuses update_watchdog on the same grounds', async () => {
+      const insertValues = mockDevice(strandedDevice);
+
+      const result = await executeCommand(
+        'dev-stranded',
+        'update_watchdog',
+        { version: '0.108.0' },
+        { userId: 'user-1', targetRole: 'watchdog' },
+      );
+
+      expect(result.status).toBe('failed');
+      expect(result.error).toMatch(/edition/i);
+      expect(insertValues).not.toHaveBeenCalled();
+    });
+
+    it('allows update_agent when the device reports its edition (transition-capable build)', async () => {
+      const insertValues = mockDevice({ ...strandedDevice, agentEdition: 'self-host', agentVersion: '0.108.0', watchdogVersion: '0.108.0' });
+
+      const result = await executeCommand(
+        'dev-stranded',
+        'update_agent',
+        { version: '0.109.0' },
+        { userId: 'user-1', targetRole: 'watchdog' },
+      );
+
+      expect(result.status).toBe('completed');
+      expect(insertValues).toHaveBeenCalled();
+    });
+
+    it('allows update_agent for a pre-check build (< 0.105.0) with no reported edition', async () => {
+      const insertValues = mockDevice({ ...strandedDevice, agentVersion: '0.104.0', watchdogVersion: '0.104.0' });
+
+      const result = await executeCommand(
+        'dev-stranded',
+        'update_agent',
+        { version: '0.108.0' },
+        { userId: 'user-1', targetRole: 'watchdog' },
+      );
+
+      expect(result.status).toBe('completed');
+      expect(insertValues).toHaveBeenCalled();
+    });
+
+    // The WATCHDOG performs the download for a targetRole:'watchdog' command
+    // (agent/cmd/breeze-watchdog handleFailoverCommand -> doUpdateAgent), so
+    // the band inference must key on the watchdog's version, not the main
+    // agent's. Same reasoning as heartbeat.ts's failover branch.
+    it('keys the version band on the WATCHDOG version for watchdog-targeted dispatch', async () => {
+      const insertValues = mockDevice({
+        ...strandedDevice,
+        agentVersion: '0.104.0', // main agent predates the check
+        watchdogVersion: '0.105.1', // but the downloading watchdog does not
+      });
+
+      const result = await executeCommand(
+        'dev-stranded',
+        'update_agent',
+        { version: '0.108.0' },
+        { userId: 'user-1', targetRole: 'watchdog' },
+      );
+
+      expect(result.status).toBe('failed');
+      expect(result.error).toMatch(/edition/i);
+      expect(insertValues).not.toHaveBeenCalled();
+    });
+
+    it('allows a watchdog older than the check band even when the main agent is inside it', async () => {
+      // The watchdog is the downloader; a pre-0.105.0 watchdog has no edition
+      // check and applies the artifact fine, whatever the wedged main agent is.
+      const insertValues = mockDevice({
+        ...strandedDevice,
+        agentVersion: '0.105.1',
+        watchdogVersion: '0.104.0',
+      });
+
+      const result = await executeCommand(
+        'dev-stranded',
+        'update_agent',
+        { version: '0.108.0' },
+        { userId: 'user-1', targetRole: 'watchdog' },
+      );
+
+      expect(result.status).toBe('completed');
+      expect(insertValues).toHaveBeenCalled();
+    });
+
+    // The main agent has no handler for update_agent/update_watchdog: an
+    // agent-targeted row is sent to the agent WebSocket and never picked up,
+    // so it is a dead command, not merely an ungated one.
+    it('refuses an agent-targeted agent-binary update outright', async () => {
+      const insertValues = mockDevice({
+        ...strandedDevice,
+        agentEdition: 'hosted',
+        agentVersion: '0.108.0',
+        watchdogVersion: '0.108.0',
+      });
+
+      const result = await executeCommand(
+        'dev-stranded',
+        'update_agent',
+        { version: '0.109.0' },
+        { userId: 'user-1' }, // default targetRole: 'agent'
+      );
+
+      expect(result.status).toBe('failed');
+      expect(result.error).toMatch(/targetRole 'watchdog'/);
+      expect(insertValues).not.toHaveBeenCalled();
+    });
+
+    // A hosted build hard-refuses a self-host artifact by design (that
+    // direction would strip the host-policy allowlist), so a self-host server
+    // must not push one at a hosted-edition agent either.
+    it('refuses pushing a self-host artifact at a hosted-edition build', async () => {
+      process.env.BINARY_EDITION = 'self-host';
+      const insertValues = mockDevice({ ...strandedDevice, agentEdition: 'hosted', agentVersion: '0.108.0', watchdogVersion: '0.108.0' });
+
+      const result = await executeCommand(
+        'dev-stranded',
+        'update_agent',
+        { version: '0.108.0' },
+        { userId: 'user-1', targetRole: 'watchdog' },
+      );
+
+      expect(result.status).toBe('failed');
+      expect(result.error).toMatch(/edition/i);
+      expect(insertValues).not.toHaveBeenCalled();
+    });
+
+    // The gate is scoped to agent-binary update types only. A watchdog RESTART
+    // downloads nothing, so an edition-incompatible build must still be able
+    // to receive it — that is the recovery path for the very devices the gate
+    // withholds updates from.
+    it('does not gate non-update commands (restart_agent still dispatches)', async () => {
+      const insertValues = mockDevice(strandedDevice);
+
+      const result = await executeCommand(
+        'dev-stranded',
+        'restart_agent',
+        {},
+        { userId: 'user-1', targetRole: 'watchdog' },
+      );
+
+      expect(result.status).toBe('completed');
+      expect(insertValues).toHaveBeenCalled();
+    });
+
+    // queueCommand is the SIBLING device_commands insert site. It has no
+    // device row (BullMQ workers call it with no DB context), so it cannot
+    // evaluate the gate — it must refuse these types outright rather than
+    // become an ungated back door.
+    it('queueCommand refuses agent-binary update types outright', async () => {
+      await expect(queueCommand('dev-stranded', 'update_agent', { version: '0.108.0' }))
+        .rejects.toThrow(/executeCommand/i);
+      await expect(queueCommand('dev-stranded', 'update_watchdog', { version: '0.108.0' }))
+        .rejects.toThrow(/executeCommand/i);
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+  });
+
   describe('queueCommandForExecution expectedOrgId guard', () => {
     function mockDeviceLookup(device: unknown) {
       vi.mocked(db.select).mockReturnValue({
@@ -1001,5 +1419,180 @@ describe('command queue service', () => {
 
       expect(result.error).toBe('Device is offline, cannot execute command');
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// created_by FK guard (#3978)
+// ---------------------------------------------------------------------------
+// device_commands.created_by carries a FK to users(id). queueCommand used to
+// stamp the caller's id verbatim, so an `ai_agent` principal (auth.user.id is
+// an ai_agents id) or a helper session (auth.user.id IS the device id) blew up
+// with SQLSTATE 23503 — after a human had already approved the intent.
+//
+// The 23503 itself is proved against real Postgres in
+// src/__tests__/integration/commandQueueCreatedBy.integration.test.ts; a mocked
+// suite has no FK to violate. These tests instead pin the resolution CONTRACT
+// in the fast unit job: what lands in the insert, that the probe predicate is
+// real, and that the probe escapes the caller's DB context.
+describe('created_by FK guard (#3978)', () => {
+  const DEVICE_ID = '44444444-4444-4444-8444-444444444444';
+  const HUMAN_ID = '55555555-5555-4555-8555-555555555555';
+  const AGENT_ID = '66666666-6666-4666-8666-666666666666';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  /**
+   * Capture the object actually handed to `.values()` so assertions read the
+   * real insert payload rather than a hand-shaped fixture the driver would
+   * never produce.
+   */
+  function captureCommandInsert(): Record<string, unknown>[] {
+    const captured: Record<string, unknown>[] = [];
+    vi.mocked(db.insert).mockReturnValue({
+      values: vi.fn((values: Record<string, unknown>) => {
+        captured.push(values);
+        return { returning: vi.fn().mockResolvedValue([{ id: 'cmd-guard', ...values }]) };
+      }),
+    } as any);
+    return captured;
+  }
+
+  /** The single captured insert payload, or a hard failure if none was made. */
+  function onlyInsert(captured: Record<string, unknown>[]): Record<string, unknown> {
+    expect(captured).toHaveLength(1);
+    const values = captured[0];
+    if (!values) {
+      throw new Error('queueCommand made no insert');
+    }
+    return values;
+  }
+
+  /**
+   * Stand in for the `users` existence probe. Resolves a row only for ids in
+   * `existingUserIds`, decided by COMPILING the real `.where()` argument and
+   * reading its bound params — so a helper that probed a constant, or dropped
+   * the predicate, cannot pass.
+   */
+  function mockUsersProbe(existingUserIds: string[]): { wheres: unknown[] } {
+    const wheres: unknown[] = [];
+    vi.mocked(db.select).mockImplementation((() => ({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn((condition: unknown) => {
+          wheres.push(condition);
+          const { params } = new PgDialect().sqlToQuery(condition as never);
+          const probedId = params.find((p): p is string => typeof p === 'string');
+          return {
+            limit: vi.fn().mockResolvedValue(
+              probedId && existingUserIds.includes(probedId) ? [{ id: probedId }] : [],
+            ),
+          };
+        }),
+      }),
+    })) as any);
+    return { wheres };
+  }
+
+  it('stamps created_by NULL for an ai_agent id that is not a users row', async () => {
+    mockUsersProbe([]); // no matching users row — the agent case
+    const inserted = captureCommandInsert();
+
+    await queueCommand(DEVICE_ID, CommandTypes.LIST_PROCESSES, {}, AGENT_ID);
+
+    const values = onlyInsert(inserted);
+    expect(values.createdBy).toBeNull();
+    // Never the raw agent id — that is the value that violated the FK.
+    expect(values.createdBy).not.toBe(AGENT_ID);
+  });
+
+  it('probes users for the caller id itself, as a real bound predicate', async () => {
+    const probe = mockUsersProbe([HUMAN_ID]);
+    captureCommandInsert();
+
+    await queueCommand(DEVICE_ID, CommandTypes.LIST_PROCESSES, {}, HUMAN_ID);
+
+    expect(probe.wheres).toHaveLength(1);
+    const { sql: sqlText, params } = new PgDialect().sqlToQuery(probe.wheres[0] as never);
+    // Real column identifier + the caller id as a bound param: proves the probe
+    // asks "is THIS id a users row", not something incidental.
+    expect(sqlText).toContain('"users"."id"');
+    expect(params).toContain(HUMAN_ID);
+  });
+
+  it('preserves a real human id — attribution must survive the guard', async () => {
+    mockUsersProbe([HUMAN_ID]);
+    const inserted = captureCommandInsert();
+
+    await queueCommand(DEVICE_ID, CommandTypes.LIST_PROCESSES, {}, HUMAN_ID);
+
+    expect(onlyInsert(inserted).createdBy).toBe(HUMAN_ID);
+  });
+
+  it('short-circuits a helper session (userId === deviceId) without probing', async () => {
+    const probe = mockUsersProbe([]);
+    const inserted = captureCommandInsert();
+
+    await queueCommand(DEVICE_ID, CommandTypes.LIST_PROCESSES, {}, DEVICE_ID);
+
+    expect(onlyInsert(inserted).createdBy).toBeNull();
+    // The device id can never be a users row, so the DB round-trip is skipped.
+    expect(probe.wheres).toHaveLength(0);
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('short-circuits an absent userId without probing', async () => {
+    const probe = mockUsersProbe([]);
+    const inserted = captureCommandInsert();
+
+    await queueCommand(DEVICE_ID, CommandTypes.LIST_PROCESSES, {});
+
+    expect(onlyInsert(inserted).createdBy).toBeNull();
+    expect(probe.wheres).toHaveLength(0);
+  });
+
+  it('runs the probe OUTSIDE the caller DB context, in a system context', async () => {
+    // The load-bearing part of the fix. `users` is RLS-protected and
+    // withSystemDbAccessContext is a no-op when a caller context is already
+    // open, so the probe must first exit that context via runOutsideDbContext.
+    // Without this, an org-scoped worker dispatch would read zero rows and
+    // degrade a REAL human to created_by NULL.
+    const dbModule = await import('../db');
+    const order: string[] = [];
+    vi.mocked(dbModule.runOutsideDbContext).mockImplementationOnce(async (fn: () => unknown) => {
+      order.push('enter-outside');
+      const result = await fn();
+      order.push('exit-outside');
+      return result;
+    });
+    vi.mocked(dbModule.withSystemDbAccessContext).mockImplementationOnce(async (fn: () => unknown) => {
+      order.push('enter-system');
+      const result = await fn();
+      order.push('exit-system');
+      return result;
+    });
+    vi.mocked(db.select).mockImplementation((() => ({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockImplementation(() => {
+            order.push('users-probe');
+            return Promise.resolve([{ id: HUMAN_ID }]);
+          }),
+        }),
+      }),
+    })) as any);
+
+    await expect(resolveCommandCreatedBy(DEVICE_ID, HUMAN_ID)).resolves.toBe(HUMAN_ID);
+
+    // Nesting matters: outside must open before system, and the read must land
+    // between them.
+    expect(order).toEqual([
+      'enter-outside',
+      'enter-system',
+      'users-probe',
+      'exit-system',
+      'exit-outside',
+    ]);
   });
 });

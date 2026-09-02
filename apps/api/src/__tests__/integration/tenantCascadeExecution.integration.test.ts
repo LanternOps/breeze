@@ -29,6 +29,11 @@ interface SeedHandles {
   userId: string;
   siteIdErased: string;
   siteIdControl: string;
+  accountingConnectionId: string;
+  catalogItemId: string;
+  webhookIdErased: string;
+  webhookIdControl: string;
+  webhookDeliveryIdErased: string;
 }
 
 async function seed(): Promise<SeedHandles> {
@@ -107,6 +112,67 @@ async function seed(): Promise<SeedHandles> {
     VALUES (${orgIdControl}, 'user', ${userId}, 'test.seed', 'test', 'success', now())
   `);
 
+  // QuickBooks entity mappings (Phase B). The table is partner-axis with a
+  // POLYMORPHIC (breeze_entity_type, breeze_entity_id) Breeze side — no org_id
+  // column, no FK — so it is invisible to the cascade contract test's org_id
+  // enumeration and is cleared by an explicit ASSOCIATED_SYSTEM_SCOPED_TABLES
+  // pre-clear instead. Three rows: the erased org's mapping (must go), the
+  // control org's (must survive), and a partner-scoped catalog_item mapping
+  // (must survive — it belongs to no org at all).
+  const [connection] = (await testDb.execute(sql`
+    INSERT INTO accounting_connections (partner_id, provider, environment, status, home_currency)
+    VALUES (${partnerId}, 'quickbooks', 'sandbox', 'connected', 'USD')
+    RETURNING id
+  `)) as unknown as Array<{ id: string }>;
+  const accountingConnectionId = connection!.id;
+
+  const [catalogItem] = (await testDb.execute(sql`
+    INSERT INTO catalog_items (partner_id, item_type, name, unit_price, cost_currency)
+    VALUES (${partnerId}, 'service', 'Managed Service', 100.00, 'USD')
+    RETURNING id
+  `)) as unknown as Array<{ id: string }>;
+  const catalogItemId = catalogItem!.id;
+
+  await testDb.execute(sql`
+    INSERT INTO accounting_entity_mappings
+      (integration_id, partner_id, breeze_entity_type, breeze_entity_id, remote_entity_type, remote_entity_id, link_status, sync_status)
+    VALUES
+      (${accountingConnectionId}, ${partnerId}, 'org', ${orgIdToErase}, 'Customer', 'qbo-cust-erased', 'confirmed', 'synced'),
+      (${accountingConnectionId}, ${partnerId}, 'org', ${orgIdControl}, 'Customer', 'qbo-cust-control', 'confirmed', 'synced'),
+      (${accountingConnectionId}, ${partnerId}, 'catalog_item', ${catalogItemId}, 'Item', 'qbo-item-1', 'confirmed', 'synced')
+  `);
+
+  // Regression fixture for #4100: webhooks IS in CORE_ORG_CASCADE_DELETE_ORDER,
+  // but webhook_deliveries has no org_id column (invisible to the cascade
+  // contract test's org_id auto-discovery) and formerly had no ON DELETE
+  // action on its webhook_id FK — so a populated delivery row made the plain
+  // `DELETE FROM webhooks WHERE org_id = ...` below raise 23503 and abort the
+  // whole erasure. One webhook + delivery per org, mirroring the
+  // erased/control shape used throughout this fixture.
+  const [webhookErased] = (await testDb.execute(sql`
+    INSERT INTO webhooks (org_id, name, url, events)
+    VALUES (${orgIdToErase}, 'Erase Webhook', 'https://example.com/erase', ARRAY['ticket.created'])
+    RETURNING id
+  `)) as unknown as Array<{ id: string }>;
+  const [webhookControl] = (await testDb.execute(sql`
+    INSERT INTO webhooks (org_id, name, url, events)
+    VALUES (${orgIdControl}, 'Control Webhook', 'https://example.com/control', ARRAY['ticket.created'])
+    RETURNING id
+  `)) as unknown as Array<{ id: string }>;
+  const webhookIdErased = webhookErased!.id;
+  const webhookIdControl = webhookControl!.id;
+
+  const [deliveryErased] = (await testDb.execute(sql`
+    INSERT INTO webhook_deliveries (webhook_id, event_type, event_id, payload)
+    VALUES (${webhookIdErased}, 'ticket.created', 'evt-erased-1', '{}'::jsonb)
+    RETURNING id
+  `)) as unknown as Array<{ id: string }>;
+  await testDb.execute(sql`
+    INSERT INTO webhook_deliveries (webhook_id, event_type, event_id, payload)
+    VALUES (${webhookIdControl}, 'ticket.created', 'evt-control-1', '{}'::jsonb)
+  `);
+  const webhookDeliveryIdErased = deliveryErased!.id;
+
   return {
     partnerId,
     orgIdToErase,
@@ -114,6 +180,11 @@ async function seed(): Promise<SeedHandles> {
     userId,
     siteIdErased,
     siteIdControl,
+    accountingConnectionId,
+    catalogItemId,
+    webhookIdErased,
+    webhookIdControl,
+    webhookDeliveryIdErased,
   };
 }
 
@@ -179,6 +250,34 @@ describe('cascadeDeleteOrg — end-to-end', () => {
     expect(controlAlertTemplateRows.length).toBe(1);
   });
 
+  it('erases the QuickBooks entity mapping that names the erased org and keeps the others', async () => {
+    const testDb = getTestDb();
+    const stats = await cascadeDeleteOrg(handles.orgIdToErase, handles.userId);
+
+    expect(stats.tablesDeleted.accounting_entity_mappings).toBe(1);
+
+    const survivors = (await testDb.execute(sql`
+      SELECT breeze_entity_type, breeze_entity_id, remote_entity_id
+        FROM accounting_entity_mappings
+       WHERE integration_id = ${handles.accountingConnectionId}
+       ORDER BY remote_entity_id
+    `)) as unknown as Array<{
+      breeze_entity_type: string;
+      breeze_entity_id: string;
+      remote_entity_id: string;
+    }>;
+
+    // The erased org's UUID and the QuickBooks Customer id it was billed under
+    // are BOTH gone — that pairing is exactly what erasure exists to remove.
+    expect(survivors.map((r) => r.remote_entity_id)).toEqual(['qbo-cust-control', 'qbo-item-1']);
+    expect(survivors.some((r) => r.breeze_entity_id === handles.orgIdToErase)).toBe(false);
+    // The partner's catalog_item mapping belongs to no org and must not be
+    // collateral damage.
+    expect(survivors).toContainEqual(
+      expect.objectContaining({ breeze_entity_type: 'catalog_item', breeze_entity_id: handles.catalogItemId }),
+    );
+  });
+
   it('writes tenant.erasure.started and tenant.erasure.completed events with org_id = NULL', async () => {
     const testDb = getTestDb();
     await cascadeDeleteOrg(handles.orgIdToErase, handles.userId);
@@ -214,5 +313,41 @@ describe('cascadeDeleteOrg — end-to-end', () => {
     const stats = await cascadeDeleteOrg(handles.orgIdToErase, handles.userId);
     // Org was already erased; every cascade-list table matches zero rows.
     expect(stats.totalRowsDeleted).toBe(0);
+  });
+
+  // Regression test for #4100.
+  it('erases an org with a populated webhook_deliveries row instead of aborting on FK violation', async () => {
+    const testDb = getTestDb();
+
+    // Before the fix, this threw a 23503 FK violation (webhook_deliveries.
+    // webhook_id had no ON DELETE action) and the erasure aborted entirely —
+    // the assertion that matters here is that this does NOT throw.
+    const stats = await cascadeDeleteOrg(handles.orgIdToErase, handles.userId);
+
+    expect(stats.tablesDeleted.webhooks).toBe(1);
+
+    const erasedWebhookRows = (await testDb.execute(
+      sql`SELECT id FROM webhooks WHERE id = ${handles.webhookIdErased}`,
+    )) as unknown as unknown[];
+    expect(erasedWebhookRows.length).toBe(0);
+
+    // The delivery row has no org_id of its own — it is gone because
+    // ON DELETE CASCADE removed it when its parent webhook was deleted, not
+    // because the cascade loop targeted webhook_deliveries directly.
+    const erasedDeliveryRows = (await testDb.execute(
+      sql`SELECT id FROM webhook_deliveries WHERE id = ${handles.webhookDeliveryIdErased}`,
+    )) as unknown as unknown[];
+    expect(erasedDeliveryRows.length).toBe(0);
+
+    // Control org's webhook + delivery are untouched.
+    const controlWebhookRows = (await testDb.execute(
+      sql`SELECT id FROM webhooks WHERE id = ${handles.webhookIdControl}`,
+    )) as unknown as unknown[];
+    expect(controlWebhookRows.length).toBe(1);
+
+    const controlDeliveryRows = (await testDb.execute(
+      sql`SELECT id FROM webhook_deliveries WHERE webhook_id = ${handles.webhookIdControl}`,
+    )) as unknown as unknown[];
+    expect(controlDeliveryRows.length).toBe(1);
   });
 });

@@ -87,10 +87,11 @@ const baseParams = {
  *   1. select quotes ... for('update')      -> [quote]
  *   2. select quoteBlocks                    -> []
  *   3. select quoteLines                     -> [line]
- *   4. insert quoteAcceptances .returning()  -> [{id}]
- *   5. insert invoices .returning()          -> [{id}]
- *   6. insert invoiceLines (1x, unused)      -> []
- *   7. select partners (prefix/termsDays)    -> [{...}]
+ *   4. select partners (prefix/termsDays/settings) -> [{...}]  (read BEFORE the
+ *      hash: the render locale falls back to the partner language)
+ *   5. insert quoteAcceptances .returning()  -> [{id}]
+ *   6. insert invoices .returning()          -> [{id}]
+ *   7. insert invoiceLines (1x, unused)      -> []
  *   8. execute (counter upsert)              -> [{counter}]
  *   9. update invoices .set(issueFields)     -> [] (unused)
  *  10. update quotes .set(converted)         -> [] (unused)
@@ -120,10 +121,10 @@ function queueAcceptHappyPath(
   queueResult([quote]);                              // 1
   queueResult([]);                                    // 2 blocks
   queueResult([line]);                                // 3 lines
-  queueResult([{ id: 'acc1' }]);                       // 4 quote_acceptances insert
-  queueResult([{ id: 'inv1' }]);                       // 5 invoices insert
-  queueResult([]);                                    // 6 invoiceLines insert
-  queueResult([{ prefix: 'INV', termsDays: 30, settings: {}, ...partnerOverrides }]); // 7 partners select
+  queueResult([{ prefix: 'INV', termsDays: 30, settings: {}, ...partnerOverrides }]); // 4 partners select
+  queueResult([{ id: 'acc1' }]);                       // 5 quote_acceptances insert
+  queueResult([{ id: 'inv1' }]);                       // 6 invoices insert
+  queueResult([]);                                    // 7 invoiceLines insert
   queueResult([{ counter: 1 }]);                       // 8 counter upsert
   queueResult([]);                                    // 9 invoices update
   queueResult([]);                                    // 10 quotes update
@@ -148,6 +149,17 @@ describe('acceptQuote deposit snapshot', () => {
     // calls[0] is the invoices update (issueFields); calls[1] is the quotes
     // status->converted update. See queueAcceptHappyPath's call-order doc above.
     expect(setMock.mock.calls[0]![0]).toMatchObject({ depositDue: '300.00' });
+  });
+
+  // #3777 review finding 1: the auto-issued invoice and the acceptance hash
+  // share ONE render locale — the quote stamp, else the partner language.
+  it('stamps the auto-issued invoice with the partner language when the quote is unstamped', async () => {
+    queueAcceptHappyPath({}, {}, { settings: { language: 'de-DE' } });
+
+    await acceptQuote(baseParams);
+
+    const setMock = (db as unknown as Chain).set;
+    expect(setMock.mock.calls[0]![0]).toMatchObject({ documentLocale: 'de-DE' });
   });
 
   it('leaves depositDue unset on the invoice when the quote has no deposit configured', async () => {
@@ -401,10 +413,11 @@ describe('acceptQuote quote-line -> invoice-line label mapping (#3319)', () => {
     // keep the two fields separate instead. Both must preserve the title. A
     // monthly-only
     // quote has no one-time lines, so the invoice is never issued — the call
-    // sequence skips the invoice_lines insert, the partners select and the
-    // counter upsert:
-    //   1 quote FOR UPDATE, 2 blocks, 3 lines, 4 acceptances insert,
-    //   5 invoices insert, 6 invoices update, 7 quotes update, 8 re-select.
+    // sequence skips the invoice_lines insert and the counter upsert (the
+    // partners select still runs: it feeds the render-locale fallback):
+    //   1 quote FOR UPDATE, 2 blocks, 3 lines, 4 partners select,
+    //   5 acceptances insert, 6 invoices insert, 7 invoices update,
+    //   8 quotes update, 9 re-select.
     const quote = {
       id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'sent',
       expiryDate: null, quoteNumber: 'Q-2026-0003', taxRate: null,
@@ -418,6 +431,7 @@ describe('acceptQuote quote-line -> invoice-line label mapping (#3319)', () => {
       taxable: false, quantity: '1', unitPrice: '99.00', catalogItemId: null,
       name: 'Managed EDR', description: '24/7 monitoring', termMonths: null, sortOrder: 0,
     }]);
+    queueResult([{ prefix: 'INV', termsDays: 30, settings: {} }]);
     queueResult([{ id: 'acc1' }]);
     queueResult([{ id: 'inv1' }]);
     queueResult([]);
@@ -441,11 +455,12 @@ describe('acceptQuote quote-line -> invoice-line label mapping (#3319)', () => {
  *   1. select quotes ... for('update')      -> [quote]
  *   2. select quoteBlocks                    -> [contractBlock]
  *   3. select quoteLines                     -> [monthlyLine]
- *   4. insert quoteAcceptances .returning()  -> [{id:'acc1'}]
- *   5. insert invoices .returning()          -> [{id:'inv1'}]
- *   6. update invoices .set(issueFields)     -> [] (unused)   (no one-time lines)
- *   7. update quotes .set(converted)         -> [] (unused)
- *   8. select quotes (final re-select)       -> [updated quote]
+ *   4. select partners (settings)            -> [{...}]  (render-locale fallback)
+ *   5. insert quoteAcceptances .returning()  -> [{id:'acc1'}]
+ *   6. insert invoices .returning()          -> [{id:'inv1'}]
+ *   7. update invoices .set(issueFields)     -> [] (unused)   (no one-time lines)
+ *   8. update quotes .set(converted)         -> [] (unused)
+ *   9. select quotes (final re-select)       -> [updated quote]
  */
 const contractBlock = { id: 'cb1', blockType: 'contract', content: { templateId: 't1', templateVersionId: 'v1', variableValues: {} } };
 const monthlyLine = {
@@ -469,15 +484,16 @@ const renderData: ContractBlockRenderData[] = [{
   versionSha256: 'a'.repeat(64), declaredVariables: [], templateName: 'MSA', versionNumber: 1,
 }];
 
-function queueContractAcceptPath() {
+function queueContractAcceptPath(partnerSettings: Record<string, unknown> = {}) {
   queueResult([contractQuote]);              // 1 select quote FOR UPDATE
   queueResult([contractBlock]);              // 2 blocks
   queueResult([monthlyLine]);                // 3 lines
-  queueResult([{ id: 'acc1' }]);             // 4 quote_acceptances insert
-  queueResult([{ id: 'inv1' }]);             // 5 invoices insert
-  queueResult([]);                           // 6 invoices update (issueFields)
-  queueResult([]);                           // 7 quotes update -> converted
-  queueResult([{ ...contractQuote, status: 'converted' }]); // 8 final re-select
+  queueResult([{ prefix: 'INV', termsDays: 30, settings: partnerSettings }]); // 4 partners select
+  queueResult([{ id: 'acc1' }]);             // 5 quote_acceptances insert
+  queueResult([{ id: 'inv1' }]);             // 6 invoices insert
+  queueResult([]);                           // 7 invoices update (issueFields)
+  queueResult([]);                           // 8 quotes update -> converted
+  queueResult([{ ...contractQuote, status: 'converted' }]); // 9 final re-select
 }
 
 describe('acceptQuote contract document snapshot', () => {
@@ -516,12 +532,42 @@ describe('acceptQuote contract document snapshot', () => {
     const effectiveDate = new Date().toISOString().slice(0, 10);
     const expected = computeQuoteSha256(
       contractQuote as any, [contractBlock] as any, [monthlyLine] as any,
-      buildContractHashParts([contractBlock], renderData, contractQuote as any, effectiveDate),
+      buildContractHashParts([contractBlock], renderData, contractQuote as any, effectiveDate, 'en'),
     );
     expect(acceptanceValues.quoteSha256).toBe(expected);
+    // The locale the hash was computed under travels with it (#3777 follow-up):
+    // an unstamped quote falls back to the partner language, 'en' here.
+    expect((acceptanceValues as { renderLocale?: string }).renderLocale).toBe('en');
+    expect(snapshotArgs[6]).toBe('en'); // createExecutedDocuments renders under the same locale
     // And that hash genuinely differs from the no-contract hash (proves folding).
     const withoutContracts = computeQuoteSha256(contractQuote as any, [contractBlock] as any, [monthlyLine] as any, []);
     expect(acceptanceValues.quoteSha256).not.toBe(withoutContracts);
+  });
+
+  // #3777 post-merge review, finding 1: an UNSTAMPED quote is rendered to the
+  // customer in the PARTNER's language (portal/public render, quote branding),
+  // so the accept-time hash and the executed PDF must use that same locale — a
+  // bare 'en' fallback would hash and PDF in English what the signer read in
+  // German. Historical acceptances are unaffected: 2026-09-01-b persisted
+  // render_locale on every one of them.
+  it('hashes an unstamped quote under the PARTNER language, not en, and persists that locale', async () => {
+    queueContractAcceptPath({ language: 'de-DE' });
+
+    await acceptQuote({ ...baseParams, contractRenderData: renderData });
+
+    const acceptanceValues = (db as unknown as Chain).values.mock.calls[0]![0] as { quoteSha256: string; renderLocale?: string };
+    const effectiveDate = new Date().toISOString().slice(0, 10);
+    const underDe = computeQuoteSha256(
+      contractQuote as any, [contractBlock] as any, [monthlyLine] as any,
+      buildContractHashParts([contractBlock], renderData, contractQuote as any, effectiveDate, 'de-DE'),
+    );
+    expect(acceptanceValues.quoteSha256).toBe(underDe);
+    expect(acceptanceValues.renderLocale).toBe('de-DE');
+    // createExecutedDocuments renders the signed PDF under the same locale.
+    expect(createExecutedDocumentsMock.mock.calls[0]![6]).toBe('de-DE');
+    // The invoice this accept creates is stamped with the same locale.
+    const invoiceSet = (db as unknown as Chain).set.mock.calls[0]![0] as Record<string, unknown>;
+    expect(invoiceSet.documentLocale).toBeUndefined(); // recurring-only: invoice stays draft, stamped at issue
   });
 
   it('throws CONTRACT_RENDER_DATA_MISSING and writes NOTHING when a contract block has no render data', async () => {
@@ -538,5 +584,60 @@ describe('acceptQuote contract document snapshot', () => {
     expect((db as unknown as Chain).insert.mock.calls).toHaveLength(0);
     expect(createContractMock).not.toHaveBeenCalled();
     expect(createExecutedDocumentsMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('acceptQuote superseded public-link guard', () => {
+  beforeEach(() => {
+    results.length = 0;
+    vi.clearAllMocks();
+    stagePax8OrderFromQuoteMock.mockResolvedValue({ orderId: null, lineCount: 0 });
+  });
+
+  function queueGuardQuote(overrides: Record<string, unknown>) {
+    queueResult([{
+      id: 'q1',
+      orgId: 'org1',
+      partnerId: 'p1',
+      quoteNumber: 'Q-2026-0001',
+      currencyCode: 'USD',
+      expiryDate: null,
+      publicResponseConsumedAt: null,
+      publicResponseJti: null,
+      publicTokenVersion: 0,
+      ...overrides,
+    }]);
+  }
+
+  it('rejects a superseded quote with 410 QUOTE_SUPERSEDED', async () => {
+    queueGuardQuote({ status: 'superseded', publicLinkRevokedAt: null });
+
+    await expect(acceptQuote(baseParams)).rejects.toMatchObject({
+      status: 410,
+      code: 'QUOTE_SUPERSEDED',
+    });
+  });
+
+  it('rejects a sent quote whose publicLinkRevokedAt is set with 410 QUOTE_SUPERSEDED', async () => {
+    queueGuardQuote({ status: 'sent', publicLinkRevokedAt: new Date('2026-08-23T12:00:00.000Z') });
+
+    await expect(acceptQuote(baseParams)).rejects.toMatchObject({
+      status: 410,
+      code: 'QUOTE_SUPERSEDED',
+    });
+  });
+
+  it('reports QUOTE_SUPERSEDED before the generic non-sent INVALID_STATE guard', async () => {
+    queueGuardQuote({ status: 'superseded', publicLinkRevokedAt: new Date('2026-08-23T12:00:00.000Z') });
+
+    let thrown: unknown;
+    try {
+      await acceptQuote(baseParams);
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toMatchObject({ status: 410, code: 'QUOTE_SUPERSEDED' });
+    expect(thrown).not.toMatchObject({ status: 409, code: 'INVALID_STATE' });
   });
 });

@@ -91,6 +91,20 @@ describe('ticket validators', () => {
     }
   });
 
+  // P2-4 (#4191), Task A10: aiDraftId relaxes the resolutionNote requirement —
+  // the draft supplies the text server-side.
+  it('changeTicketStatusSchema: status=resolved with aiDraftId (no resolutionNote) → valid', () => {
+    const r = changeTicketStatusSchema.safeParse({
+      status: 'resolved',
+      aiDraftId: '3f2f1d8e-1111-4222-8333-444455556666',
+    });
+    expect(r.success).toBe(true);
+  });
+
+  it('changeTicketStatusSchema: aiDraftId must be a uuid', () => {
+    expect(changeTicketStatusSchema.safeParse({ status: 'resolved', aiDraftId: 'not-a-uuid' }).success).toBe(false);
+  });
+
   it('assign accepts a uuid or null (unassign)', () => {
     expect(assignTicketSchema.safeParse({ assigneeId: null }).success).toBe(true);
     expect(assignTicketSchema.safeParse({ assigneeId: '3f2f1d8e-1111-4222-8333-444455556666' }).success).toBe(true);
@@ -180,6 +194,11 @@ describe('ticket validators', () => {
     expect(ticketCategoryInputSchema.safeParse({ name: 'Hardware', color: 'teal' }).success).toBe(false);
   });
 
+  it('category strips client-supplied rateCurrency', () => {
+    const parsed = ticketCategoryInputSchema.parse({ name: 'a', rateCurrency: 'EUR' });
+    expect(parsed).not.toHaveProperty('rateCurrency');
+  });
+
   describe('bulkTicketActionSchema', () => {
     const ID = '3f2f1d8e-1111-4222-8333-444455556666';
     const ASSIGNEE = '5a6b7c8d-1234-4321-abcd-000011112222';
@@ -245,6 +264,15 @@ describe('ticket validators', () => {
     it('rejects a non-uuid orgId', () => {
       expect(moveTicketOrgSchema.safeParse({ orgId: 'nope' }).success).toBe(false);
     });
+    it('leaves acceptCurrencyMismatch undefined when omitted', () => {
+      const id = '11111111-1111-1111-1111-111111111111';
+      expect(moveTicketOrgSchema.parse({ orgId: id }).acceptCurrencyMismatch).toBeUndefined();
+    });
+    it('accepts a boolean acceptCurrencyMismatch and rejects a non-boolean', () => {
+      const id = '11111111-1111-1111-1111-111111111111';
+      expect(moveTicketOrgSchema.parse({ orgId: id, acceptCurrencyMismatch: true })).toEqual({ orgId: id, acceptCurrencyMismatch: true });
+      expect(moveTicketOrgSchema.safeParse({ orgId: id, acceptCurrencyMismatch: 'yes' }).success).toBe(false);
+    });
   });
 });
 
@@ -268,5 +296,24 @@ describe('createTicketFromChatSchema', () => {
   it('rejects negative timeMinutes and empty subject', () => {
     expect(createTicketFromChatSchema.safeParse({ ...base, timeMinutes: -1 }).success).toBe(false);
     expect(createTicketFromChatSchema.safeParse({ ...base, subject: '' }).success).toBe(false);
+  });
+});
+
+describe('addTicketCommentSchema attachmentIds (W08)', () => {
+  const uuid = (n: number) => `00000000-0000-4000-8000-00000000000${n}`;
+
+  it('defaults attachmentIds to [] and still requires content when empty', () => {
+    expect(addTicketCommentSchema.parse({ content: 'hi' })).toMatchObject({ attachmentIds: [] });
+    expect(addTicketCommentSchema.safeParse({ content: '' }).success).toBe(false);
+  });
+
+  it('allows empty content when at least one attachment id is present', () => {
+    const r = addTicketCommentSchema.safeParse({ content: '', attachmentIds: [uuid(1)] });
+    expect(r.success).toBe(true);
+  });
+
+  it('caps attachmentIds at 5 and rejects non-uuids', () => {
+    expect(addTicketCommentSchema.safeParse({ content: 'x', attachmentIds: [1, 2, 3, 4, 5, 6].map(uuid) }).success).toBe(false);
+    expect(addTicketCommentSchema.safeParse({ content: 'x', attachmentIds: ['nope'] }).success).toBe(false);
   });
 });

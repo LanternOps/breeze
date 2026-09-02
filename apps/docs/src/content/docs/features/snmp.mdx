@@ -456,5 +456,8 @@ This is expected behavior. The SNMP retention worker prunes metrics older than t
 **Built-in template cannot be modified.**
 Built-in templates are read-only. To customize a built-in template, create a new custom template with the desired OIDs. You can use the OID browser (`GET /snmp/oids/browse`) to find and copy OIDs from existing templates.
 
+**A metric value reads as a run of hex digits.**
+Some devices answer bridge, forwarding-table, or LLDP OIDs with a raw MAC address or another binary payload rather than readable text. Breeze stores those as a lowercase hex string (for example `788a20c3d4e1`) so the reading is kept rather than mangled. On agents older than v0.107.0 a single such value could fail the whole poll batch for that device -- the device looked like it had simply stopped reporting. If a device's SNMP metrics went blank and never came back, upgrade its agent.
+
 **OID validation returns warnings but no errors.**
 A warning that an OID is "not found in catalog/templates" is informational, not a blocker. The OID format is valid (dotted numeric notation), but it is not recognized in the built-in catalog or any existing template. The OID may still work correctly on your target device. Only entries with `errors` indicate actual problems (invalid format, duplicates).

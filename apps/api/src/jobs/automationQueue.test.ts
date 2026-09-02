@@ -92,6 +92,40 @@ describe('enqueueAutomationRun', () => {
     expect(result).toEqual({ enqueued: true, jobId: 'queue-job-1' });
   });
 
+  it('omits triggerContext entirely when the run is not event-bound', async () => {
+    await enqueueAutomationRun('run-1', ['device-1']);
+
+    const jobData = addMock.mock.calls[0]?.[1];
+    expect(jobData).toEqual({
+      type: 'execute-run',
+      runId: 'run-1',
+      targetDeviceIds: ['device-1'],
+    });
+    expect('triggerContext' in jobData).toBe(false);
+  });
+
+  it('carries triggerContext into the execute-run job when the run is event-bound', async () => {
+    const triggerContext = {
+      alertId: 'alert-1',
+      eventId: 'evt-1',
+      severity: 'high' as const,
+      ruleId: 'rule-1',
+    };
+
+    await enqueueAutomationRun('run-1', ['device-1'], triggerContext);
+
+    expect(addMock).toHaveBeenCalledWith(
+      'execute-run',
+      {
+        type: 'execute-run',
+        runId: 'run-1',
+        targetDeviceIds: ['device-1'],
+        triggerContext,
+      },
+      expect.objectContaining({ jobId: 'automation-run-run-1' }),
+    );
+  });
+
   it('reuses an active automation run job for the same run id', async () => {
     getJobMock.mockResolvedValue({
       id: 'existing-job',

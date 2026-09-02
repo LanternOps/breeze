@@ -5,6 +5,7 @@ import { tdSynnexEcExpressIntegrations } from '../db/schema';
 import { encryptSecret, decryptForColumn } from './secretCrypto';
 import { safeFetch } from './urlSafety';
 import { createCatalogItem, type CatalogActor } from './catalogService';
+import { importedCost } from './catalogPricing';
 import { enrichDistributorListing } from './catalogEnrichmentService';
 import type { CreateCatalogItemInput, EnrichmentProvenance } from '@breeze/shared';
 
@@ -537,6 +538,7 @@ export async function importEcExpressCatalogItem(input: EcImportInput, actor: Ca
     const enriched = await enrichDistributorListing(query, 'hardware', {
       userId: actor.userId,
       orgId: actor.accessibleOrgIds?.[0] ?? null,
+      partnerId: actor.partnerId,
     });
     if (enriched) {
       name = enriched.name;
@@ -557,14 +559,13 @@ export async function importEcExpressCatalogItem(input: EcImportInput, actor: Ca
     ...(item.sellCurrency
       ? { prices: [{ currencyCode: item.sellCurrency, unitPrice: item.unitPrice }] }
       : { unitPrice: item.unitPrice }),
-    // product.cost is numeric (numOrNull) — but guard a non-finite value out of
-    // the catalog payload so it can never reach createCatalogItem as NaN.
-    costBasis: item.costBasis ?? (Number.isFinite(product.cost as number) ? (product.cost as number) : undefined),
     // B4 (#3775): the feed's currency is the COST currency — stored as a real
     // column so margin math can refuse to compare CAD cost against USD sell.
-    // The jsonb copy below stays for traceability. Null feed currency → omit
-    // (createCatalogItem defaults to the partner currency).
-    costCurrency: product.currency ? product.currency.trim().toUpperCase() : undefined,
+    // The jsonb copy below stays for traceability. A feed with no currency
+    // leaves the cost NULL (a gap) rather than relabelling it as the partner
+    // currency (#3775 review #2); importedCost also guards a non-finite
+    // product.cost out of the payload so NaN never reaches createCatalogItem.
+    ...importedCost(item.costBasis ?? product.cost, product.currency),
     markupPercent: item.markupPercent ?? undefined,
     unitOfMeasure: 'each',
     taxable: item.taxable ?? true,

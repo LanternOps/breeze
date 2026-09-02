@@ -9,8 +9,13 @@ This document covers backup and restore procedures for a Breeze RMM deployment.
 | Database | `--db` | `pg_dump` / `pg_restore` | All PostgreSQL data: devices, users, orgs, alerts, audit logs, etc. |
 | Object storage | `--storage` | `aws s3 sync` or `mc mirror` | Scripts, agent binaries, report exports, attachments mirrored from MinIO/S3 into a directory |
 | Configuration | `--config` | `tar` + `openssl` | `.env`, `.env.production`, `certs/`, `docker/` -- encrypted at rest |
+| `api_data` volume | None | `docker run` + `tar` | Patch compliance report CSVs at `/data/patch-reports`. Not covered by any script flag |
 
-Use `--all` with the backup script to back up all three components at once.
+Use `--all` with the backup script to back up the first three components at once. **`--all` does not cover the `api_data` volume** -- that is a separate manual command.
+
+The `redis_data` volume is deliberately not backed up. Preserve the volume across upgrades, but never restore it from a snapshot: Redis and PostgreSQL have no consistent-snapshot mechanism, so a stale Redis re-injects job state that PostgreSQL already recorded as complete.
+
+Full rationale and the exact commands for both volumes: [Backup & Restore](https://docs.breezermm.com/security/backup/).
 
 ## Prerequisites
 

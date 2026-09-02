@@ -47,7 +47,10 @@ export const contracts = pgTable('contracts', {
   index('contracts_org_status_idx').on(t.orgId, t.status),
   index('contracts_partner_status_idx').on(t.partnerId, t.status),
   // Real partial index (status='active') created in SQL; drizzle-kit only needs the column for drift.
-  index('contracts_next_billing_idx').on(t.nextBillingAt)
+  index('contracts_next_billing_idx').on(t.nextBillingAt),
+  // Composite-FK target for invoice_lines(source_contract_id, org_id) (#3778).
+  // Created in SQL migration 2026-09-02-a; declared here so db:check-drift stays clean.
+  uniqueIndex('contracts_id_org_uq').on(t.id, t.orgId)
 ]);
 
 export const contractLines = pgTable('contract_lines', {

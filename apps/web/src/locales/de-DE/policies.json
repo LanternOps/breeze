@@ -143,6 +143,7 @@
       "archived2": "Archiviert",
       "features": "Funktionen",
       "noPoliciesFoundTryAdjustingYourSearch": "Keine Richtlinien gefunden. Versuchen Sie, Ihre Suche anzupassen.",
+      "noPoliciesYet": "Noch keine Konfigurationsrichtlinien. Erstellen Sie eine und weisen Sie sie dann Organisationen, Standorten oder Geräten zu.",
       "partnerWidePolicyAppliesToEveryOrganization": "Partnerweite Richtlinie – gilt für jede Organisation",
       "allOrgs": "Partnerweit",
       "page": "Seite",
@@ -252,7 +253,9 @@
         "thisRuleUsesUnsupportedMetrics": "Diese Regel verwendet eine Metrik, die die Alarm-Engine nicht auswerten kann ({{metrics}}). Wählen Sie vor dem Speichern eine unterstützte Metrik – oder entfernen Sie die Bedingung; der Server weist Regeln damit zurück.",
         "thisConditionUsesAnUnsupportedMetric": "Die Metrik „{{metric}}“ wird von der Alarm-Engine nicht ausgewertet, daher wird diese Bedingung schreibgeschützt angezeigt.",
         "valueCount": "Wert (Anzahl)",
-        "metricNotSet": "nicht festgelegt"
+        "metricNotSet": "nicht festgelegt",
+        "testRule": "Regel testen",
+        "testRuleHint": "Diese Bedingungen jetzt an einem Gerät auswerten, einschließlich nicht gespeicherter Änderungen."
       },
       "automationTab": {
         "schedule": "Zeitplan",
@@ -735,6 +738,8 @@
         "recurrence": "Wiederholung",
         "startDateTime": "Startdatum/-uhrzeit",
         "theSpecificDateAndTimeForThis": "Das spezifische Datum und die Uhrzeit für dieses einmalige Wartungsfenster.",
+        "startTime": "Startzeit",
+        "theTimeOfDayEachWindowOpensIn": "Die Uhrzeit, zu der jedes Wartungsfenster in der ausgewählten Zeitzone beginnt. Standard ist Mitternacht (00:00).",
         "durationHours": "Dauer (Stunden)",
         "timezone": "Zeitzone",
         "notifyBeforeMinutes": "Benachrichtigen vor (Minuten)",

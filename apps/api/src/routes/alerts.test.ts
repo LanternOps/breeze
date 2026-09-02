@@ -98,6 +98,20 @@ vi.mock('../db', () => ({
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => any) => fn())
 }));
 
+// Phase 2 wave P2-1 (alert verdicts), Task 14 — `alerts.ts` and
+// `correlations.ts` (both mounted under `alertRoutes`, ./alerts/index.ts)
+// now import from `services/aiAgents/alertVerdicts`. Unmocked, the real
+// module drags in `createActionIntent` (services/actionIntents/
+// intentService.ts) and its own transitive graph (aiTools/aiToolSchemas,
+// commandQueue, …), which this file's other partial mocks were never built
+// to cover. Mocked here purely to sever that transitive chain — this suite
+// doesn't exercise aiVerdict at all.
+vi.mock('../services/aiAgents/alertVerdicts', () => ({
+  latestVerdictsForAlerts: vi.fn(async () => new Map()),
+  latestVerdictForGroup: vi.fn(async () => null),
+  projectAlertAiVerdictSummary: vi.fn(),
+}));
+
 vi.mock('../db/schema', () => ({
   alertCorrelationGroups: {
     id: 'alertCorrelationGroups.id',
@@ -123,7 +137,11 @@ vi.mock('../db/schema', () => ({
     hostname: 'devices.hostname',
   },
   organizations: {},
-  partners: {}
+  partners: {},
+  users: {
+    id: 'users.id',
+    name: 'users.name',
+  }
 }));
 
 vi.mock('../middleware/auth', async () => ({
@@ -327,6 +345,150 @@ describe('alert routes', () => {
       // The organizations join surfaces orgName for the fleet-view org column.
       expect(body.data[0].orgName).toBe('Acme Corp');
       expect(body.pagination.total).toBe(1);
+    });
+
+    it('resolves acknowledgedBy/resolvedBy to display names (#3966)', async () => {
+      // The drawer used to print the raw user UUID because the list response
+      // carried only the id. The list must now carry a name alongside it, and
+      // the users lookup must run under system scope — `users` RLS hides
+      // partner-level staff (org_id NULL) from org-scoped callers.
+      const dbModule = await import('../db');
+      const withSystemSpy = vi.mocked(dbModule.withSystemDbAccessContext);
+      withSystemSpy.mockClear();
+
+      const ackUserId = '9cea2f85-2da1-445d-88cc-7c404d7504c4';
+      const resolveUserId = '1f0e3f2c-9a2b-4c7d-9f10-8f6a2b3c4d5e';
+      let usersWhere: any;
+
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ count: 1 }])
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            leftJoin: vi.fn().mockReturnValue({
+              leftJoin: vi.fn().mockReturnValue({
+                leftJoin: vi.fn().mockImplementation(function (this: unknown) { return this; }),
+                where: vi.fn().mockReturnValue({
+                  orderBy: vi.fn().mockReturnValue({
+                    limit: vi.fn().mockReturnValue({
+                      offset: vi.fn().mockResolvedValue([
+                        {
+                          id: 'alert-1',
+                          status: 'resolved',
+                          severity: 'high',
+                          title: 'CPU usage high',
+                          acknowledgedBy: ackUserId,
+                          resolvedBy: resolveUserId,
+                          deviceHostname: 'device-1'
+                        }
+                      ])
+                    })
+                  })
+                })
+              })
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockImplementation((where: unknown) => {
+              usersWhere = where;
+              return Promise.resolve([
+                { id: ackUserId, name: 'Breeze Admin' },
+                { id: resolveUserId, name: 'Dana Tech' }
+              ]);
+            })
+          })
+        } as any);
+
+      const res = await app.request('/alerts', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data[0]).toEqual(expect.objectContaining({
+        acknowledgedBy: ackUserId,
+        acknowledgedByName: 'Breeze Admin',
+        resolvedBy: resolveUserId,
+        resolvedByName: 'Dana Tech'
+      }));
+      // Both ids go out in ONE batched lookup, not per-row. This file stubs
+      // db/schema with plain strings, so the column renders as a bind param —
+      // the `"users"."id" in (...)` column assertion lives in
+      // routes/alerts/actorNames.test.ts, which uses the real schema.
+      const compiled = new PgDialect().sqlToQuery(usersWhere);
+      expect(compiled.sql).toMatch(/in \(/);
+      expect(compiled.params).toEqual(expect.arrayContaining([ackUserId, resolveUserId]));
+      expect(withSystemSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('omits the actor-name lookup entirely when no alert has an actor id', async () => {
+      // A page of untouched alerts must not pay for a users round trip.
+      const usersSelect = vi.fn();
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ count: 1 }])
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            leftJoin: vi.fn().mockReturnValue({
+              leftJoin: vi.fn().mockReturnValue({
+                leftJoin: vi.fn().mockImplementation(function (this: unknown) { return this; }),
+                where: vi.fn().mockReturnValue({
+                  orderBy: vi.fn().mockReturnValue({
+                    limit: vi.fn().mockReturnValue({
+                      offset: vi.fn().mockResolvedValue([
+                        {
+                          id: 'alert-1',
+                          status: 'active',
+                          severity: 'low',
+                          title: 'Disk warning',
+                          acknowledgedBy: null,
+                          resolvedBy: null
+                        }
+                      ])
+                    })
+                  })
+                })
+              })
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([])
+            })
+          })
+        } as any)
+        .mockImplementationOnce(usersSelect as any);
+
+      const res = await app.request('/alerts', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(usersSelect).not.toHaveBeenCalled();
+      expect(body.data[0]).toEqual(expect.objectContaining({
+        acknowledgedByName: null,
+        resolvedByName: null
+      }));
     });
 
     it('should filter alerts by status and severity', async () => {

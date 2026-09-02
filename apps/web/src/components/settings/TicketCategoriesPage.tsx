@@ -5,10 +5,10 @@ import { fetchWithAuth } from '../../stores/auth';
 import { runAction, ActionError } from '../../lib/runAction';
 import { showToast } from '../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
-import { loginPathWithNext } from '../../lib/authScope';
+import { getJwtClaims, loginPathWithNext } from '../../lib/authScope';
 import { priorityConfig, type TicketPriority } from '../tickets/ticketConfig';
 import { formatMoney } from '@/components/billing/shared/format';
-import { usePartnerCurrencyOrDefault } from '../../lib/usePartnerCurrency';
+import { formatNumber } from '@/lib/i18n/format';
 
 interface Category {
   id: string;
@@ -20,6 +20,9 @@ interface Category {
   resolutionSlaMinutes: number | null;
   defaultBillable: boolean;
   defaultHourlyRate: string | null;
+  /** Currency the rate was stamped in — always set when `defaultHourlyRate` is
+   *  set (DB CHECK); null for unrated rows. */
+  rateCurrency: string | null;
   sortOrder: number;
   isActive: boolean;
 }
@@ -82,12 +85,29 @@ export function moveWithinSiblings(cats: Category[], id: string, dir: -1 | 1): s
   return order;
 }
 
-function defaultsSummary(c: Category, currencyCode: string): string {
+/** Hourly rate for the summary cell. Until the partner currency is KNOWN the
+ *  rate renders as a bare number with no currency label — never a USD guess
+ *  (#3777 review F8): a EUR partner must not see `$150.00/h` because the
+ *  lookup is slow or failed. */
+function hourlyRateLabel(rate: string, currencyCode: string | null): string {
+  if (currencyCode) return formatMoney(rate, currencyCode);
+  const n = Number(rate);
+  return Number.isFinite(n) ? formatNumber(n, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : rate;
+}
+
+function defaultsSummary(c: Category, partnerCurrency: string | null): string {
   const parts: string[] = [];
   if (c.defaultPriority) parts.push(priorityConfig[c.defaultPriority as TicketPriority]?.label ?? c.defaultPriority);
   if (c.responseSlaMinutes != null) parts.push(i18n.t('settings:ticketCategoriesPage.responseMinutes', { count: c.responseSlaMinutes }));
   if (c.resolutionSlaMinutes != null) parts.push(i18n.t('settings:ticketCategoriesPage.resolveMinutes', { count: c.resolutionSlaMinutes }));
-  if (c.defaultHourlyRate) parts.push(i18n.t('settings:ticketCategoriesPage.hourlyRate', { rate: formatMoney(c.defaultHourlyRate, currencyCode) }));
+  // A rated row carries its own stamped currency (wave 4); the partner value
+  // only covers legacy/unrated rows — never a conversion. Until a currency is
+  // KNOWN the rate renders unlabelled rather than guessing USD (#3777 F8).
+  if (c.defaultHourlyRate) {
+    parts.push(i18n.t('settings:ticketCategoriesPage.hourlyRate', {
+      rate: hourlyRateLabel(c.defaultHourlyRate, c.rateCurrency ?? partnerCurrency),
+    }));
+  }
   if (c.defaultBillable) parts.push('billable');
   else if (parts.length > 0) parts.push('non-billable');
   return parts.length > 0 ? parts.join(' · ') : '—';
@@ -97,11 +117,13 @@ const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true 
 
 export default function TicketCategoriesPage() {
   const { t } = useTranslation('settings');
-  // INTERIM (#3777): replaced by wave-4 rate currencies on ticket categories.
-  const currencyCode = usePartnerCurrencyOrDefault();
   const [categories, setCategories] = useState<Category[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
+  // Partner currency labels the rate input; category rates themselves display
+  // in their own stamped `rateCurrency`. Null when unknown (non-partner session
+  // or the lookup failed) — never toasted, the page is fully usable without it.
+  const [partnerCurrency, setPartnerCurrency] = useState<string | null>(null);
 
   // Create form state
   const [name, setName] = useState('');
@@ -129,6 +151,26 @@ export default function TicketCategoriesPage() {
   }, []);
 
   useEffect(() => { void load(); }, [load]);
+
+  useEffect(() => {
+    // `/orgs/partners/me` is requireScope('partner') — skip it outright for
+    // org/system sessions instead of eating a 403.
+    if (getJwtClaims().scope !== 'partner') return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetchWithAuth('/orgs/partners/me');
+        if (!res.ok) return;
+        const data = (await res.json()) as { currencyCode?: unknown };
+        if (!cancelled && typeof data?.currencyCode === 'string' && data.currencyCode) {
+          setPartnerCurrency(data.currencyCode);
+        }
+      } catch {
+        /* best-effort; label falls back to no currency */
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   const create = useCallback(async () => {
     if (!name.trim()) return;
@@ -318,7 +360,7 @@ export default function TicketCategoriesPage() {
                   <span className="mr-1.5 inline-block h-3 w-3 rounded-sm align-middle" style={{ backgroundColor: c.color }} />
                   {c.name}
                 </td>
-                <td className="px-4 py-2 text-sm text-muted-foreground">{defaultsSummary(c, currencyCode)}</td>
+                <td className="px-4 py-2 text-sm text-muted-foreground">{defaultsSummary(c, partnerCurrency)}</td>
                 <td className="px-4 py-2 text-sm">{c.isActive ? t('ticketCategoriesPage.active') : t('ticketCategoriesPage.inactive')}</td>
                 <td className="px-4 py-2 text-right space-x-2">
                   <button
@@ -448,7 +490,7 @@ export default function TicketCategoriesPage() {
                         <label htmlFor={`billable-${c.id}`} className="text-xs font-medium">{t('ticketCategoriesPage.billableByDefault')}</label>
                       </div>
                       <div>
-                        <label className="text-xs font-medium" htmlFor="edit-rate">{t('ticketCategoriesPage.defaultHourlyRate')}</label>
+                        <label className="text-xs font-medium" htmlFor="edit-rate">{t('ticketCategoriesPage.defaultHourlyRate', { currency: partnerCurrency ?? '' })}</label>
                         <input
                           type="number"
                           min={0}

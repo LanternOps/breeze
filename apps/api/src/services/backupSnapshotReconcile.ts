@@ -951,7 +951,7 @@ export async function reconcileOrphanedBackupSnapshots(params: {
       `bucket, so time-window matching is disabled. These snapshots stay stranded until their jobs carry a ` +
       `snapshot id.`;
     console.warn(message);
-    captureMessage(message, 'warning');
+    captureMessage(message, { eventCode: 'backup_snapshot_ambiguous_destination' });
   }
 
   return {

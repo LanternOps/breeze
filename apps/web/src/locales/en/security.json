@@ -587,6 +587,7 @@
     "startScan": "Start scan",
     "startScansWatchProgressAndReviewScan": "Start scans, watch progress, and review scan history across devices.",
     "started": "Started {{time}}",
+    "startedColumn": "Started",
     "status": "Status: {{status}}",
     "status2": "Status",
     "type": "Type"
@@ -1139,7 +1140,7 @@
       "noPolicy": "No policy (manual config)",
       "deviceIds": "Device IDs",
       "deviceIdsHelp": "One UUID per line, or comma-separated.",
-      "deviceIdsPlaceholder": "device-uuid-1&#10;device-uuid-2",
+      "deviceIdsPlaceholder": "device-uuid-1\ndevice-uuid-2",
       "detectionClasses": "Detection Classes"
     },
     "actions": {

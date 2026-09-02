@@ -16,6 +16,7 @@ import {
   deviceGroupMemberships,
 } from '../db/schema';
 import { eq, and, inArray, isNotNull, or, sql } from 'drizzle-orm';
+import { buildResolveAlertCas } from './alertService';
 import { publishEvent } from './eventBus';
 
 interface WarrantyAlertSettings {
@@ -326,15 +327,28 @@ async function autoResolveWarrantyAlerts(deviceId: string): Promise<void> {
       )
     );
 
+  let lost = 0;
+
   for (const alert of openAlerts) {
-    await db
+    // Winner-takes-all (#4094): the status predicate, not the read above, decides
+    // whether this evaluator performed the transition. Updating by id alone let a
+    // technician's resolve and this sweep both publish `alert.resolved` for one
+    // real transition.
+    const resolvedAt = new Date();
+    const written = await db
       .update(alerts)
       .set({
         status: 'resolved',
-        resolvedAt: new Date(),
+        resolvedAt,
         resolutionNote: 'Auto-resolved: warranty no longer expiring within threshold',
       })
-      .where(eq(alerts.id, alert.id));
+      .where(buildResolveAlertCas(alert.id))
+      .returning({ id: alerts.id });
+
+    if (written.length === 0) {
+      lost += 1;
+      continue;
+    }
 
     await publishEvent(
       'alert.resolved',
@@ -343,8 +357,25 @@ async function autoResolveWarrantyAlerts(deviceId: string): Promise<void> {
         alertId: alert.id,
         deviceId,
         resolutionNote: 'Auto-resolved: warranty no longer expiring within threshold',
+        resolvedAt: resolvedAt.toISOString(),
+        resolvedBy: null,
+        triggeredAt: alert.triggeredAt.toISOString(),
       },
       'warranty-alert-evaluator'
+    );
+  }
+
+  // Losing an individual CAS is normal — a technician got there first — so this
+  // deliberately does NOT log per loss. Losing EVERY candidate is different: this
+  // sweep is the only routine resolver of warranty_expiry alerts, so a total
+  // shortfall is the shape an RLS write-policy divergence would take, and under
+  // `breeze_app` such a write raises no error at all. One aggregate line per
+  // invocation gives that failure somewhere to show up instead of looking
+  // identical to "nothing needed resolving".
+  if (lost > 0 && lost === openAlerts.length) {
+    console.warn(
+      `[WarrantyAlertEvaluator] auto-resolve transitioned 0 of ${openAlerts.length} open ` +
+      `warranty alert(s) for device ${deviceId}; every compare-and-swap matched no rows.`
     );
   }
 }

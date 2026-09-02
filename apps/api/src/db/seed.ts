@@ -101,19 +101,23 @@ export function resolveBootstrapAdminConfig(
 // asserts every resource:action referenced by SYSTEM_ROLES below exists here.
 // This is intentionally a subset of PERMISSION_GRANTS (the shared registry):
 // the registry may define permissions no system role grants yet (e.g.
-// time_entries:*, automations:*) without those needing a seeded row — only
-// permissions a system role actually references must be seeded, or seedRoles
-// silently drops the grant.
+// automations:*) without those needing a seeded row — only permissions a
+// system role actually references must be seeded, or seedRoles silently drops
+// the grant. time_entries:* moved INTO this list with #4251, when the
+// technician roles started granting them.
 export const DEFAULT_PERMISSIONS = [
   // Backup / recovery
   { resource: 'backup', action: 'read', description: 'View backup and recovery resources' },
   { resource: 'backup', action: 'write', description: 'Create and manage backup and recovery resources' },
+  { resource: 'backup', action: 'cross_site_restore', description: 'Restore backup data across sites' },
 
   // Devices
   { resource: 'devices', action: 'read', description: 'View devices and their details' },
   { resource: 'devices', action: 'write', description: 'Create and update devices' },
   { resource: 'devices', action: 'delete', description: 'Delete/decommission devices' },
   { resource: 'devices', action: 'execute', description: 'Execute commands on devices' },
+
+  { resource: 'agent_rollback', action: 'create', description: 'Authorize a signed agent rollback' },
 
   // Network topology (discovery topology view + saved layout)
   { resource: 'topology', action: 'read', description: 'View network topology and saved layout' },
@@ -138,6 +142,12 @@ export const DEFAULT_PERMISSIONS = [
   { resource: 'tickets', action: 'read', description: 'View tickets, comments, and categories' },
   { resource: 'tickets', action: 'write', description: 'Create and update tickets, comments, and categories' },
   { resource: 'tickets', action: 'manage', description: 'Edit or delete any comment and reassign ticket organization' },
+
+  // Time entries (#4251). Seeded because Partner Technician grants them: the
+  // mobile start/stop timer (#3206 W05) calls routes gated on
+  // time_entries:write, and an unseeded grant is dropped silently by seedRoles.
+  { resource: 'time_entries', action: 'read', description: 'View time entries and timesheets' },
+  { resource: 'time_entries', action: 'write', description: 'Log and edit time entries' },
 
   // Microsoft 365 partner-global ticket mailbox administration
   { resource: 'ticket_mailbox', action: 'read', description: 'View Microsoft 365 ticket mailbox connection status' },
@@ -204,6 +214,12 @@ export const DEFAULT_PERMISSIONS = [
   { resource: 'ai_sessions', action: 'read_all',
     description: "View all users' AI session history (admin audit dashboard)" },
 
+  // AI agents (#3821)
+  { resource: 'ai_agents', action: 'read',
+    description: 'View AI agent policies' },
+  { resource: 'ai_agents', action: 'write',
+    description: 'Create, edit and disable AI agent policies' },
+
   // Action intents / durable approvals
   { resource: 'approvals', action: 'decide',
     description: 'Decide (approve/deny) pending action-intent approvals' },
@@ -230,7 +246,11 @@ export const SYSTEM_ROLES = [
       'devices:read', 'devices:execute',
       'scripts:read', 'scripts:execute',
       'alerts:read', 'alerts:acknowledge',
-      'tickets:read',
+      // #4251: a technician works tickets — comments, status, assignment — and
+      // logs time against them from the mobile timer (#3206 W05). tickets:manage
+      // (reassign org, edit any author's comment) stays an admin action.
+      'tickets:read', 'tickets:write',
+      'time_entries:read', 'time_entries:write',
       'ticket_mailbox:read',
       'reports:read', 'reports:write',
       'sites:read',
@@ -280,7 +300,7 @@ export const SYSTEM_ROLES = [
     scope: 'organization' as const,
     description: 'Full access within organization',
     permissions: [
-      'backup:read', 'backup:write',
+      'backup:read', 'backup:write', 'backup:cross_site_restore',
       'devices:read', 'devices:write', 'devices:delete', 'devices:execute',
       'scripts:read', 'scripts:write', 'scripts:delete', 'scripts:execute',
       'alerts:read', 'alerts:write', 'alerts:acknowledge',
@@ -293,7 +313,13 @@ export const SYSTEM_ROLES = [
       'audit:read',
       'vulnerabilities:accept_risk',
       'ai_sessions:read_all',
+      // An org admin may tighten their own org's agent policy. Creating a
+      // PARTNER-WIDE baseline additionally requires partner scope with
+      // org_access='all' (canManagePartnerWidePolicies), so this grant cannot
+      // reach across orgs.
+      'ai_agents:read', 'ai_agents:write',
       'approvals:decide',
+      'agent_rollback:create',
       // Tenant variables (#3409): managing the definitions is an admin task;
       // running a script that USES one only needs scripts:execute.
       'variables:read', 'variables:manage'

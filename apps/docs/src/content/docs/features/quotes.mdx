@@ -108,7 +108,7 @@ When a customer accepts a quote that has a deposit, Breeze issues the invoice wi
 
 When a customer accepts a quote, Breeze turns it into the documents that bill it:
 
-- **One-time lines** become an **invoice** (with the deposit due first, if one was set).
+- **One-time lines** become an **invoice** (with the deposit due first, if one was set). The customer is taken straight to that invoice's own view-and-pay page, and unless you turn it off in **Settings → Billing**, Breeze emails them the invoice with the same link right away.
 - **Recurring lines** become one or more **draft contracts** -- monthly and annual lines split into separate drafts, one billing cadence each -- that you review and activate. See [Recurring Contracts → From an Accepted Quote](/features/contracts/#from-an-accepted-quote).
 
 If the accepted quote contains **Pax8-backed** catalog items, acceptance also **stages a Pax8 order** for those items alongside the invoice and contracts. Acceptance doesn't submit anything to Pax8; you complete the commitment and provisioning details and submit it afterward. See [Distributor Integrations → Complete an order staged from a quote](/features/distributor-integrations/#complete-an-order-staged-from-a-quote).
@@ -151,6 +151,14 @@ A sent quote can be **re-sent** without rebuilding it — useful when a contact 
 
 **Copy share link** puts the customer-facing link on your clipboard, for when you would rather paste it into an existing email thread or a chat than send from Breeze.
 
+### Declined quotes
+
+A customer can decline from the quote page and leave a short note explaining why. Breeze emails the technician who created the quote (falling back to your billing address), and the quote detail shows a **Declined** banner with the date and the customer's own words -- so the reason lives with the quote instead of in someone's inbox. From there, **Duplicate & revise** builds a follow-up proposal from the declined quote. A quote you decline yourself on the customer's behalf is attributed to your team and sends no email.
+
+### Quotes and currency
+
+A quote is priced in the customer organization's billing currency, which it inherits from your partner currency when the organization is created. Retargeting a draft or a clone to an organization that bills in a different currency is refused rather than silently re-pricing the lines -- build the quote in the right organization instead.
+
 ## Document themes and content blocks
 
 Quotes and contracts render as branded documents. Under **Settings → Partner → Branding** you choose a **document theme** — fonts, colors, and cover treatment — and every quote, contract, and PDF you generate uses it. Set it once and customer-facing documents stay consistent.
@@ -162,12 +170,33 @@ Beyond priced line items, a quote body can contain content blocks that turn it i
 | **Rich text** | Scope, assumptions, terms — formatted paragraphs, lists, and headings |
 | **Table** | Comparison grids, schedules, responsibility matrices |
 | **Callout** | Pulling out a caveat, an inclusion, or a deadline |
+| **Contract** | Attaching a template from your [contract template library](/features/contracts/#contract-templates) for the customer to review as part of the proposal |
 
 Tables and callouts are edited **in place** on the quote itself, so what you see while editing is what the customer receives — no round trip through a PDF to check the result.
 
 <Aside>
   Rich text is sanitized before it is stored. If you paste markup Breeze does not allow, it tells you what was stripped rather than silently discarding it.
 </Aside>
+
+### Contract blocks
+
+A **Contract** block attaches a document from your [contract template library](/features/contracts/#contract-templates) to a quote, so the customer reviews (and, by accepting the quote, effectively agrees to) that document alongside the priced lines.
+
+<Steps>
+1. Add a **Contract** block and choose a **template**. Breeze attaches its **latest published version** -- there's no separate version picker, and a template with no published version yet can't be attached.
+2. Optionally give the block a **label** (shown instead of the template's name).
+3. If the template declares any **manual variables**, fill them in -- Breeze won't let you add the block with one left blank.
+</Steps>
+
+The block pins to **whichever published version was latest at attach time** -- it doesn't automatically follow later edits to the template. If a newer version of the same template is published afterward, the block shows an **Update to vN** button so you can re-pin it to that newer version deliberately; nothing changes until you click it.
+
+**Variables** are resolved when the block renders: auto variables (customer name/address, your organization's name, quote number/title, totals, dates) come from the quote automatically; manual variables use whatever you entered when you attached (or last edited) the block. An uploaded-PDF template has no variables -- it's attached as-is.
+
+<Aside type="caution">
+  **Send is blocked while any contract block has an unresolved variable.** If a manual variable is left blank -- for example, after switching a block to a newer template version that added one -- Breeze refuses to send the quote until every declared variable on every contract block has a value. The block editor lists which ones are still missing.
+</Aside>
+
+When the customer **accepts** a quote with contract blocks, Breeze freezes each block's rendered content (an authored template's substituted text, or an uploaded PDF as-is) into a permanent, standalone **contract document** -- the record of exactly what the customer saw and agreed to at that moment, unaffected by any later edits to the template. Executed contract documents can be downloaded as PDF from the **Contracts → Documents** tab, or from the related recurring contract's own detail page if one was linked.
 
 ## Cloning a Quote
 
@@ -197,4 +226,5 @@ Quote access is governed by role permissions: viewing requires quote read access
 - [Product Catalog](/features/product-catalog/) -- the price list quotes pull from
 - [Invoices](/features/invoices/) -- where an accepted quote's one-time charges land, deposit first
 - [Recurring Contracts](/features/contracts/) -- where an accepted quote's recurring lines become agreements
+- [Recurring Contracts → Contract Templates](/features/contracts/#contract-templates) -- manage the document library contract blocks attach
 - [Online Payments](/features/online-payments/) -- let customers pay the deposit and balance by card

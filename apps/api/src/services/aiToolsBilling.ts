@@ -65,9 +65,12 @@ function actorFromAuth(auth: AuthContext): InvoiceActor {
   };
 }
 
+/** Same shape as the HTTP invoice error handler (routes/invoices/invoices.ts):
+ *  `details` rides along when present so structured recovery data (e.g. the
+ *  ALL_BLOCKED_BY_CURRENCY per-currency groups, #3776) reaches the model. */
 function serviceErrorToJson(err: unknown): string | null {
   if (err instanceof InvoiceServiceError) {
-    return JSON.stringify({ error: err.message, code: err.code });
+    return JSON.stringify({ error: err.message, code: err.code, ...(err.details ? { details: err.details } : {}) });
   }
   return null;
 }
@@ -203,7 +206,9 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
       description:
         'Create and manage invoices for orgs the caller can access: build drafts, add/edit/remove lines, ' +
         'issue (finalize), void, record or void payments, and create a Stripe pay link. Issue/void/payment ' +
-        'actions finalize financial state and require approval.' +
+        'actions finalize financial state and require approval. Assembly responses carry `blockedByCurrency` ' +
+        'listing unbilled work in other currencies — assemble a separate draft with `currencyCode` set; never ' +
+        'sum across currencies.' +
         ' Money inputs (line unitPrice, payment amount) are in the invoice\'s currencyCode. create_pay_link may return a `warning` (code CURRENCY_DIFFERS_FROM_STRIPE_ACCOUNT) when the invoice currency differs from the partner\'s Stripe account currency — relay it to the user; it does not block the link.' +
         ' Catalog/bundle lines are priced from the ' +
         'catalog price book in the INVOICE\'s currency — never converted: add_catalog_line fails with ' +
@@ -241,6 +246,7 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
           reissue: { type: 'boolean' },
           from: { type: 'string', description: 'ISO date (assemble_from_org)' },
           to: { type: 'string', description: 'ISO date (assemble_from_org)' },
+          currencyCode: { type: 'string', description: 'Header currency override for assemble_from_org / assemble_from_ticket (ISO 4217). Defaults to the org currency; set it to assemble a separate draft for work snapshotted in another currency' },
           line: { type: 'object', description: 'Manual line fields for add_manual_line' },
           patch: { type: 'object', description: 'Line or header patch fields' },
           payment: { type: 'object', description: 'Payment fields (amount in the invoice\'s currencyCode, method, ...)' },
@@ -305,6 +311,8 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
               taxable: line.taxable,
               catalogItemId: line.catalogItemId,
               sourceId: line.id,
+              // Durable contract lineage (#3778).
+              contractId,
             }, actor));
           }
           case 'update_line':
@@ -332,11 +340,11 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
             return JSON.stringify({ ok: true });
           case 'assemble_from_org':
             return JSON.stringify(await assembleDraftFromOrg(
-              { orgId: String(input.orgId), siteId: s('siteId'), from: String(input.from), to: String(input.to) },
+              { orgId: String(input.orgId), siteId: s('siteId'), from: String(input.from), to: String(input.to), currencyCode: s('currencyCode') },
               actor
             ));
           case 'assemble_from_ticket':
-            return JSON.stringify(await assembleDraftFromTicket(String(input.ticketId), actor));
+            return JSON.stringify(await assembleDraftFromTicket(String(input.ticketId), actor, { currencyCode: s('currencyCode') }));
           case 'issue':
             return JSON.stringify(await issueInvoice(String(input.invoiceId), actor));
           case 'void':

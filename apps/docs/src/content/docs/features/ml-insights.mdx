@@ -122,6 +122,8 @@ If Remediation Suggestions is enabled, each open anomaly also shows a **Suggeste
   When the **Anomalies** tab shows "Anomaly detection is disabled for this organization," the `ml.anomalies.enabled` flag is off for that organization. Enable it as described in [Availability and enabling](#availability-and-enabling).
 </Aside>
 
+A newly opened anomaly incident can also wake an AI triage agent. This is off unless that organization's triage agent is explicitly opted in. Anomaly-triggered runs are forced into Shadow mode, so they only observe and report. See [AI Agents](/features/ai-agents/#anomaly-lane) for the opt-in procedure and agent requirements.
+
 ---
 
 ## Alert Correlation and Root Cause Analysis

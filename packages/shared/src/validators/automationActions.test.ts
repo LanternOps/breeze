@@ -53,3 +53,24 @@ describe('createAutomationSchema.actions wiring', () => {
     expect(parsed.success).toBe(false);
   });
 });
+
+describe('automationActionSchema - ai_triage', () => {
+  it('accepts the bare ai_triage action', () => {
+    const parsed = automationActionSchema.safeParse({ type: 'ai_triage' });
+    expect(parsed.success).toBe(true);
+  });
+
+  it('rejects ai_triage with an agentId because the arm is strict', () => {
+    const parsed = automationActionSchema.safeParse({ type: 'ai_triage', agentId: 'x' });
+    expect(parsed.success).toBe(false);
+  });
+
+  it('accepts an ai_triage action through the real create path', () => {
+    const parsed = createAutomationSchema.safeParse({
+      name: 'A',
+      trigger: { type: 'schedule', cron: '0 0 * * *' },
+      actions: [{ type: 'ai_triage' }],
+    });
+    expect(parsed.success).toBe(true);
+  });
+});

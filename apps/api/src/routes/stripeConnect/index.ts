@@ -2,14 +2,16 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '../../lib/validation';
 import { HTTPException } from 'hono/http-exception';
-import { runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { authMiddleware, requireMfa, requirePermission } from '../../middleware/auth';
+import {
+  canManagePartnerWidePolicies,
+  PARTNER_WIDE_WRITE_DENIED_MESSAGE,
+} from '../../services/partnerWideAccess';
 import { PERMISSIONS } from '../../services/permissions';
 import { writeRouteAudit } from '../../services/auditEvents';
 import {
   savePartnerStripeKey,
-  getPartnerStripeStatus,
-  getStripeAccountCurrency,
+  getPartnerStripeAccountSnapshot,
   refreshPartnerStripeAccount,
   disconnectPartnerStripe,
   PartnerStripeError,
@@ -37,6 +39,7 @@ stripeConnectRoutes.post(
   async (c) => {
     const auth = c.get('auth');
     if (!auth?.partnerId) throw new HTTPException(403, { message: 'Partner context required' });
+    if (!canManagePartnerWidePolicies(auth)) throw new HTTPException(403, { message: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
     const { apiKey } = c.req.valid('json');
     try {
       const result = await savePartnerStripeKey({
@@ -77,20 +80,26 @@ stripeConnectRoutes.get(
   async (c) => {
     const auth = c.get('auth');
     if (!auth?.partnerId) throw new HTTPException(403, { message: 'Partner context required' });
-    const partnerId = auth.partnerId;
-    const status = await runOutsideDbContext(() =>
-      withSystemDbAccessContext(() => getPartnerStripeStatus(partnerId))
-    );
-    if (!status.connected) return c.json({ status: 'disconnected', last4: status.last4 });
-    const account = await getStripeAccountCurrency(partnerId);
+    if (!canManagePartnerWidePolicies(auth)) throw new HTTPException(403, { message: 'Viewing the partner Stripe configuration requires full partner org access (orgAccess must be "all")' });
+    // ONE snapshot: status, display fields and cached account facts come from
+    // the same row read (or the same RETURNING'd refresh) — never a status read
+    // combined with a separate cache read (review F9). The cache state is part
+    // of the contract: `stale` = Stripe unreachable, cached value shown;
+    // `reconnect_required` = the stored key no longer works and the partner
+    // must paste a new one — reported as such, never as "connected" (review F4).
+    const snap = await getPartnerStripeAccountSnapshot(auth.partnerId);
+    if (!snap.connected) return c.json({ status: 'disconnected', last4: snap.last4 });
     return c.json({
-      status: 'connected',
-      stripeAccountId: status.stripeAccountId,
-      livemode: status.livemode,
-      last4: status.last4,
-      defaultCurrency: account.defaultCurrency,
-      accountCountry: account.accountCountry,
-      accountRefreshedAt: account.accountRefreshedAt?.toISOString() ?? null,
+      status: snap.cacheState === 'reconnect_required' ? 'reconnect_required' : 'connected',
+      stripeAccountId: snap.stripeAccountId,
+      livemode: snap.livemode,
+      last4: snap.last4,
+      defaultCurrency: snap.defaultCurrency,
+      accountCountry: snap.accountCountry,
+      accountRefreshedAt: snap.accountRefreshedAt?.toISOString() ?? null,
+      cacheState: snap.cacheState,
+      stale: snap.cacheState !== 'fresh',
+      error: snap.error,
     });
   }
 );
@@ -101,6 +110,7 @@ stripeConnectRoutes.post(
   async (c) => {
     const auth = c.get('auth');
     if (!auth?.partnerId) throw new HTTPException(403, { message: 'Partner context required' });
+    if (!canManagePartnerWidePolicies(auth)) throw new HTTPException(403, { message: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
     try {
       const result = await refreshPartnerStripeAccount(auth.partnerId);
       writeRouteAudit(c, {
@@ -115,9 +125,15 @@ stripeConnectRoutes.post(
       });
       return c.json({
         status: 'connected',
+        stripeAccountId: result.stripeAccountId,
+        livemode: result.livemode,
+        last4: result.last4,
         defaultCurrency: result.defaultCurrency,
         accountCountry: result.accountCountry,
         accountRefreshedAt: result.accountRefreshedAt.toISOString(),
+        cacheState: 'fresh',
+        stale: false,
+        error: null,
       });
     } catch (err) {
       if (err instanceof PartnerStripeError) {
@@ -135,6 +151,7 @@ stripeConnectRoutes.delete(
   async (c) => {
     const auth = c.get('auth');
     if (!auth?.partnerId) throw new HTTPException(403, { message: 'Partner context required' });
+    if (!canManagePartnerWidePolicies(auth)) throw new HTTPException(403, { message: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
     await disconnectPartnerStripe(auth.partnerId);
     writeRouteAudit(c, {
       orgId: null,

@@ -18,8 +18,8 @@ import { runAction, ActionError } from '../../lib/runAction';
 import { normalizeMetricAnomalyContext } from './alertMlContext';
 import { useMlFeatureFlags } from '../../hooks/useMlFeatureFlags';
 import { asList } from '@/lib/asList';
-
-type Device = { id: string; name: string };
+import { useDeviceOptions } from '../../hooks/useDeviceOptions';
+import { useHashState } from '@/lib/useHashState';
 
 // Past-tense verbs for bulk-action success toasts. Without this, `${action}d`
 // produces "suppressd".
@@ -29,6 +29,16 @@ const BULK_PAST_TENSE_KEY: Record<string, string> = {
   suppress: 'suppressed',
   dismiss: 'dismissed',
 };
+
+// Hash layout (hash-based UI state per CLAUDE.md): the bare token
+// `#hideAiNoise` when the AI-noise filter is on, empty otherwise. Pure: takes
+// the raw hash (leading `#` already stripped by useHashState, #2421).
+// Anything else (including empty) falls back to useHashState's `false`
+// default, so this page currently owns the whole hash — a future second
+// hash-state consumer on this page would need to combine into one segment.
+function hideAiNoiseFromHash(hash: string): boolean | undefined {
+  return hash === 'hideAiNoise' ? true : undefined;
+}
 
 function normalizeAlertRows(rows: Record<string, unknown>[], unknownDevice: string): Alert[] {
   return rows.map((row) => {
@@ -51,14 +61,12 @@ export default function AlertsPage() {
   const { t } = useTranslation('alerts');
   const mlFlags = useMlFeatureFlags();
   const [alerts, setAlerts] = useState<Alert[]>([]);
-  const [devices, setDevices] = useState<Device[]>([]);
   // Tracked separately from `loading` (which only follows the alerts fetch):
   // fetchDevices runs in parallel, so the empty state must not make ANY health
   // claim until the device list resolves. 'success' with zero devices is the
   // only state that shows the enrollment prompt; while 'loading' we show a
   // neutral spinner (no false "healthy" flash), and 'error' falls through to
   // the neutral all-clear rather than fabricating a zero-device claim.
-  const [deviceStatus, setDeviceStatus] = useState<'loading' | 'success' | 'error'>('loading');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [detailOpen, setDetailOpen] = useState(false);
@@ -75,6 +83,10 @@ export default function AlertsPage() {
   // Bulk suppress needs a duration picker (the endpoint requires `until`), so it
   // can't go through the simple Confirm bar like bulk ack/resolve.
   const [bulkSuppressTarget, setBulkSuppressTarget] = useState<Alert[] | null>(null);
+  // Phase 2 wave P2-1 (alert verdicts), Task 15. SSR-safe hash adoption +
+  // hashchange subscription live in the hook (#2421); the write happens in
+  // handleHideAiNoiseChange below, per CLAUDE.md's URL-state rule.
+  const [hideAiNoise, setHideAiNoiseState] = useHashState<boolean>(false, hideAiNoiseFromHash);
 
   // Honor the global Current/All-orgs scope toggle: when it flips (or the
   // current org changes), re-run the fetches so the list reflects the new
@@ -83,6 +95,13 @@ export default function AlertsPage() {
   // the previous scope.
   const currentOrgId = useOrgStore((s) => s.currentOrgId);
   const allOrgs = useOrgStore((s) => s.allOrgs);
+  const fleetDeviceOptions = useDeviceOptions({ orgId: currentOrgId ?? undefined });
+  const deviceStatus = fleetDeviceOptions.state === 'error'
+    ? 'error'
+    : fleetDeviceOptions.state === 'loading' || fleetDeviceOptions.state === 'stale'
+      ? 'loading'
+      : 'success';
+  const deviceCount = fleetDeviceOptions.page?.total ?? fleetDeviceOptions.options.length;
   // Fleet (All-organizations) view — the list shows an Organization column so
   // cross-org rows stay legible (mirrors the Devices list).
   const isFleetView = !currentOrgId && allOrgs;
@@ -96,7 +115,6 @@ export default function AlertsPage() {
   // newer state (which would leak a previous org's device names into this scope
   // and mis-drive the empty state).
   const alertsFetchId = useRef(0);
-  const devicesFetchId = useRef(0);
 
   const fetchAlerts = useCallback(async () => {
     const fetchId = ++alertsFetchId.current;
@@ -107,7 +125,17 @@ export default function AlertsPage() {
       // dismissed alerts, but this page's status dropdown includes a "Dismissed"
       // option — filtering happens client-side in AlertList, whose "All Status"
       // view excludes dismissed so they only show when explicitly selected.
-      const response = await fetchWithAuth('/alerts?status=active,acknowledged,resolved,suppressed,dismissed');
+      // hideAiNoise, unlike every other filter on this page, is NOT applied
+      // client-side — "AI noise" is a server-side classification judgment
+      // (Task 14) this component has no basis to reproduce. Appended as a
+      // literal query segment rather than via URLSearchParams so the existing
+      // comma-separated `status` value keeps going out unencoded (URLSearchParams
+      // would %2C-escape the commas — harmless server-side, but an unrelated
+      // wire-shape change this task has no reason to make).
+      const hideAiNoiseParam = hideAiNoise ? '&hideAiNoise=true' : '';
+      const response = await fetchWithAuth(
+        `/alerts?status=active,acknowledged,resolved,suppressed,dismissed${hideAiNoiseParam}`
+      );
       if (fetchId !== alertsFetchId.current) return; // superseded by a newer fetch; drop
       if (!response.ok) {
         if (response.status === 401) {
@@ -126,37 +154,7 @@ export default function AlertsPage() {
     } finally {
       if (fetchId === alertsFetchId.current) setLoading(false);
     }
-  }, [currentOrgId, t]);
-
-  const fetchDevices = useCallback(async () => {
-    const fetchId = ++devicesFetchId.current;
-    // Reset on every (re)fetch — e.g. an org switch — so a stale device list
-    // from the previous scope can't drive the empty-state classification.
-    setDeviceStatus('loading');
-    try {
-      const response = await fetchWithAuth('/devices');
-      if (fetchId !== devicesFetchId.current) return; // superseded by a newer fetch; drop
-      if (response.ok) {
-        const data = await response.json();
-        if (fetchId !== devicesFetchId.current) return;
-        const raw: Record<string, unknown>[] = asList(data, 'devices');
-        setDevices(
-          raw.map((d) => ({
-            id: String(d.id ?? ''),
-            name: String(d.displayName ?? d.hostname ?? d.name ?? t('alertsPage.unknownDevice')),
-          }))
-        );
-        setDeviceStatus('success');
-      } else {
-        // A non-OK devices response must NOT let us claim "no devices".
-        setDeviceStatus('error');
-      }
-    } catch (err) {
-      if (fetchId !== devicesFetchId.current) return;
-      console.error('Failed to fetch devices:', err);
-      setDeviceStatus('error');
-    }
-  }, [currentOrgId, t]);
+  }, [currentOrgId, hideAiNoise, t]);
 
   const fetchAlertDetails = useCallback(async (alertId: string) => {
     try {
@@ -172,12 +170,11 @@ export default function AlertsPage() {
   }, []);
 
   useEffect(() => {
-    // fetchAlerts/fetchDevices change identity when currentOrgId changes, so
+    // fetchAlerts changes identity when currentOrgId changes, so
     // this re-runs on org switch; each fetch's monotonic token drops any
     // superseded in-flight response.
     fetchAlerts();
-    fetchDevices();
-  }, [fetchAlerts, fetchDevices]);
+  }, [fetchAlerts]);
 
   useEffect(() => {
     if (!deviceFilter || deviceFilter.conditions.length === 0) {
@@ -213,6 +210,15 @@ export default function AlertsPage() {
       return deviceId ? deviceFilterIds.has(deviceId) : true;
     });
   }, [alerts, deviceFilterIds]);
+
+  // Phase 2 wave P2-1 (alert verdicts), Task 15. Writing the hash stays with
+  // the caller per CLAUDE.md's URL-state rule — useHashState only owns the
+  // read. fetchAlerts depends on hideAiNoise, so the effect below re-fires
+  // and refetches with hideAiNoise=true/omitted as soon as this state lands.
+  const handleHideAiNoiseChange = (value: boolean) => {
+    window.location.hash = value ? 'hideAiNoise' : '';
+    setHideAiNoiseState(value);
+  };
 
   const handleSelect = async (alert: Alert) => {
     setSelectedAlert(alert);
@@ -288,6 +294,16 @@ export default function AlertsPage() {
     } catch (err) {
       if (!(err instanceof ActionError)) {
         showToast({ message: t('alertsPage.failedToResolveAlert'), type: 'error' });
+        return;
+      }
+      // 409 = another technician (or the auto-resolve sweep) won the
+      // compare-and-swap; the alert IS resolved, this request just didn't do it
+      // (#4094). runAction already toasted the server's reason. Refresh so the
+      // row stops showing a stale open status — otherwise the list keeps
+      // offering Resolve on an alert that is already finished.
+      if (err.status === 409) {
+        handleCloseDetail();
+        fetchAlerts();
       }
     } finally {
       setSubmitting(false);
@@ -543,7 +559,7 @@ export default function AlertsPage() {
         </div>
       )}
 
-      {alerts.length === 0 && deviceStatus === 'success' && devices.length === 0 ? (
+      {alerts.length === 0 && deviceStatus === 'success' && deviceCount === 0 ? (
         // No devices are enrolled yet, so "all clear" would be a false health
         // signal. Point the user at enrolling their first device instead.
         <div className="flex flex-col items-center justify-center py-16 text-center">
@@ -601,7 +617,6 @@ export default function AlertsPage() {
       ) : (
         <AlertList
           alerts={filteredAlerts}
-          devices={devices}
           onSelect={handleSelect}
           onAcknowledge={handleAcknowledge}
           onResolve={alert => {
@@ -614,6 +629,8 @@ export default function AlertsPage() {
           submittingId={submittingId}
           alertCorrelationDisabled={alertCorrelationDisabled}
           showOrgColumn={isFleetView}
+          hideAiNoise={hideAiNoise}
+          onHideAiNoiseChange={handleHideAiNoiseChange}
         />
       )}
 

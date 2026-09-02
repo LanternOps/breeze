@@ -62,3 +62,16 @@ export function marginGuard(feedCurrency: string | null, partnerCurrency: string
   if (feed === null) return true;
   return feed === partnerCurrency.trim().toUpperCase();
 }
+
+/**
+ * Strict same-currency check for the QUOTE editor lookups: a distributor feed
+ * number (suggested retail, MSRP, cost) may only be prefilled into — or
+ * compared against — a sell price in `targetCurrency` when the feed carries an
+ * explicit, equal ISO code. A feed with no currency is UNKNOWN, never assumed:
+ * copying a foreign or unknown-currency number into a field the caller then
+ * stamps with the quote currency would silently relabel it (review #3).
+ */
+export function feedMatchesCurrency(feedCurrency: string | null | undefined, targetCurrency: string): boolean {
+  const feed = feedCurrencyCode(feedCurrency);
+  return feed !== null && feed === feedCurrencyCode(targetCurrency);
+}

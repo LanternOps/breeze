@@ -99,6 +99,15 @@ export function cloneQuote(id: string, body?: { orgId?: string; title?: string }
   });
 }
 
+/** Create a linked draft revision of a sent quote. Unlike `cloneQuote` (which
+ *  starts an unrelated quote), the draft this returns is bound to its parent:
+ *  sending it retires the original and revokes the customer's link. Refuses
+ *  with 409 `REVISION_IN_PROGRESS` + `meta.revisionQuoteId` when one already
+ *  exists — only one open revision per quote. */
+export function reviseQuote(id: string): Promise<Response> {
+  return fetchWithAuth(`/quotes/${id}/revise`, { method: 'POST' });
+}
+
 export function updateQuote(id: string, body: UpdateQuoteInput): Promise<Response> {
   return fetchWithAuth(`/quotes/${id}`, {
     method: 'PATCH',

@@ -61,11 +61,10 @@ describe('contextless-write guard on proxiedDb (#1375/#1379)', () => {
     expect(captureMessage).toHaveBeenCalledTimes(1);
 
     const firstCall = (captureMessage as ReturnType<typeof vi.fn>).mock.calls[0]!;
-    const [message, level, extra] = firstCall;
+    const [message, options] = firstCall;
     expect(message).toContain('.update()');
     expect(message).toContain('#1375');
-    expect(level).toBe('warning');
-    expect(extra).toHaveProperty('stack');
+    expect(options.eventCode).toBe('db_contextless_write');
   });
 
   it('warns + reports for .insert and .delete too', () => {

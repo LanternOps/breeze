@@ -13,7 +13,9 @@ import {
 } from 'lucide-react';
 import { cn, formatNumber, formatRelativeTime } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
-import { formatCurrency, formatNumber as formatLocaleNumber } from '@/lib/i18n/format';
+import { formatNumber as formatLocaleNumber } from '@/lib/i18n/format';
+import { ApproximateMoneyLine } from '@/components/billing/shared/ApproximateMoneyLine';
+import { formatMoney, sumByCurrency } from '@/components/billing/shared/format';
 
 type Device = {
   id?: string | number;
@@ -28,6 +30,14 @@ type Device = {
   lastSeen?: string | number | Date;
   customerId?: string;
   customerName?: string;
+};
+
+/** One org's recurring revenue in ONE stamped currency, exactly as
+ *  `GET /partner/dashboard` returns it. Amounts cross the boundary as exact
+ *  decimal STRINGS; they are never summed across currencies. */
+type OrgCurrencyMrr = {
+  currencyCode: string;
+  amount: string;
 };
 
 type Customer = {
@@ -53,9 +63,13 @@ type Customer = {
   };
   compliancePercent?: number;
   compliance?: number;
+  /** @deprecated wave 7 (#3779) — the API keeps sending a hardcoded 0 for one
+   *  release so an already-loaded bundle can't break mid-deploy. NEVER read it. */
   mrr?: number;
+  mrrByCurrency?: OrgCurrencyMrr[];
   billing?: {
     mrr?: number;
+    mrrByCurrency?: OrgCurrencyMrr[];
   };
 };
 
@@ -71,7 +85,10 @@ type CustomerOverview = {
   deviceCount: number;
   alertCount: number;
   compliance: number;
-  mrr: number;
+  /** Per-currency, first-seen order — the shape `sumByCurrency` produces and
+   *  `formatMoney` consumes. An empty list means "no MRR", rendered as a dash;
+   *  it is NEVER rendered as zero in some assumed currency. */
+  mrrByCurrency: { code: string; amount: number }[];
   devices: Device[];
 };
 
@@ -204,8 +221,20 @@ function resolveCompliance(customer: Customer): number {
   return normalizePercent(customer.compliancePercent ?? customer.compliance);
 }
 
-function resolveMrr(customer: Customer): number {
-  return parseNumber(customer.mrr) ?? parseNumber(customer.billing?.mrr) ?? 0;
+/** Read the per-currency MRR groups off either payload shape. The deprecated
+ *  scalar `mrr` is deliberately NOT a fallback: it is a hardcoded 0 that would
+ *  render as a confident "$0" under a currency the org never used. */
+function resolveMrrByCurrency(customer: Customer): { code: string; amount: number }[] {
+  const raw = customer.mrrByCurrency ?? customer.billing?.mrrByCurrency ?? [];
+  if (!Array.isArray(raw)) return [];
+  const entries: { amount: number; currencyCode: string }[] = [];
+  for (const group of raw) {
+    const code = typeof group?.currencyCode === 'string' ? group.currencyCode.trim().toUpperCase() : '';
+    const amount = parseNumber(group?.amount);
+    if (!code || amount === null) continue;
+    entries.push({ amount, currencyCode: code });
+  }
+  return sumByCurrency(entries);
 }
 
 function normalizeDeviceStatus(device: Device): DeviceStatus {
@@ -236,7 +265,7 @@ function normalizeCustomerData(customers: Customer[], fallbackCustomerName: (ind
     const deviceCount = resolveDeviceCount(customer, devices);
     const alertCount = resolveAlertCount(customer);
     const compliance = resolveCompliance(customer);
-    const mrr = resolveMrr(customer);
+    const mrrByCurrency = resolveMrrByCurrency(customer);
 
     return {
       id,
@@ -246,10 +275,17 @@ function normalizeCustomerData(customers: Customer[], fallbackCustomerName: (ind
       deviceCount,
       alertCount,
       compliance,
-      mrr,
+      mrrByCurrency,
       devices
     };
   });
+}
+
+/** '$12,300.00 + €4,100.00' across currencies; a dash for an empty book. The
+ *  join string matches every other money rollup in the app. */
+function renderByCurrency(groups: { code: string; amount: number }[]): string {
+  if (groups.length === 0) return '—';
+  return groups.map((group) => formatMoney(group.amount, group.code)).join(' + ');
 }
 
 function normalizeDeviceData(customers: CustomerOverview[], fallbackDeviceName: (index: number) => string, unknownLabel: string): DeviceOverview[] {
@@ -349,9 +385,16 @@ export default function PartnerDashboard() {
     [enrichedCustomers, t]
   );
 
-  const totalMrr = useMemo(() => {
-    return enrichedCustomers.reduce((sum, customer) => sum + customer.mrr, 0);
-  }, [enrichedCustomers]);
+  // Portfolio MRR, segmented by the currency each contract was stamped in.
+  // A partner billing in USD and EUR gets '$12,300.00 + €4,100.00' — never one
+  // summed figure wearing a single (wrong) currency label.
+  const portfolioByCurrency = useMemo(
+    () => sumByCurrency(
+      enrichedCustomers.flatMap((customer) => customer.mrrByCurrency
+        .map((group) => ({ amount: group.amount, currencyCode: group.code }))),
+    ),
+    [enrichedCustomers],
+  );
 
   if (loading) {
     return (
@@ -569,8 +612,11 @@ export default function PartnerDashboard() {
                           <span className="text-sm font-medium text-foreground">{customer.name}</span>
                         </div>
                       </td>
-                      <td className="px-3 py-2 text-right text-sm font-semibold text-foreground">
-                        {formatCurrency(customer.mrr, 'USD', { maximumFractionDigits: 0 })}
+                      <td
+                        className="px-3 py-2 text-right text-sm font-semibold text-foreground"
+                        data-testid={`partner-dashboard-mrr-${customer.id}`}
+                      >
+                        {renderByCurrency(customer.mrrByCurrency)}
                       </td>
                     </tr>
                   ))}
@@ -578,11 +624,20 @@ export default function PartnerDashboard() {
               </table>
             </div>
 
-            <div className="mt-4 flex items-center justify-between text-sm">
+            <div className="mt-4 flex items-start justify-between text-sm">
               <span className="text-muted-foreground">{t('longTail.partner.PartnerDashboard.totalMrr')}</span>
-              <span className="font-semibold text-foreground">
-                {formatCurrency(totalMrr, 'USD', { maximumFractionDigits: 0 })}
-              </span>
+              <div className="text-right">
+                <span className="font-semibold text-foreground" data-testid="partner-dashboard-total-mrr">
+                  {renderByCurrency(portfolioByCurrency)}
+                </span>
+                {/* Reporting-only companion line: it never replaces the
+                    segmentation above, and hides itself entirely when any leg
+                    is missing or stale (multi-currency spec §8). */}
+                <ApproximateMoneyLine
+                  byCurrency={portfolioByCurrency}
+                  testId="partner-dashboard-mrr-approx"
+                />
+              </div>
             </div>
           </div>
 

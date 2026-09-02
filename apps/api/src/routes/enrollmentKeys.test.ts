@@ -319,9 +319,9 @@ describe("POST /enrollment-keys/:id/installer-link", () => {
     expect(insertValues).not.toHaveBeenCalled();
   });
 
-  it("child key gets a 24h TTL when parent has enough remaining life", async () => {
+  it("child key gets a 30-day TTL when parent has enough remaining life", async () => {
     // Parent has 1h remaining (plenty) — child insert should fire with a
-    // fresh ~24h expiresAt, independent of parent.
+    // fresh ~30-day expiresAt, independent of parent.
     const parentRow = makeKeyRow({
       expiresAt: new Date(Date.now() + 60 * 60 * 1000), // 1h
     });
@@ -361,10 +361,10 @@ describe("POST /enrollment-keys/:id/installer-link", () => {
     const firstCall = insertValues.mock.calls[0]!;
     const insertedRow = firstCall[0] as { expiresAt: Date };
     const childExpiryMs = insertedRow.expiresAt.getTime();
-    // Child TTL must be at least 23 hours past "before" (well above parent's 1h)
-    expect(childExpiryMs).toBeGreaterThan(before + 23 * 60 * 60 * 1000);
-    // And no more than 25 hours past "after" (guards against runaway values)
-    expect(childExpiryMs).toBeLessThan(after + 25 * 60 * 60 * 1000);
+    // Child TTL must be at least 29 days past "before" (well above parent's 1h)
+    expect(childExpiryMs).toBeGreaterThan(before + 29 * 24 * 60 * 60 * 1000);
+    // And no more than 31 days past "after" (guards against runaway values)
+    expect(childExpiryMs).toBeLessThan(after + 31 * 24 * 60 * 60 * 1000);
     // Explicitly NOT the parent's expiresAt
     expect(childExpiryMs).not.toBe(parentRow.expiresAt.getTime());
   });
@@ -541,7 +541,7 @@ describe("POST /enrollment-keys/:id/installer-link", () => {
   // #2776 final wave — the SEVENTH uncapped mint path. assertTtlWithinCap
   // returns null for `undefined` by design, so OMITTING ttlMinutes used to
   // hand the child key the uncapped CHILD_ENROLLMENT_KEY_TTL_MINUTES server
-  // constant (1440) — 24x a 60-minute partner cap, on one of the two
+  // constant (43200) — 720x a 60-minute partner cap, on one of the two
   // most-used download routes.
   it("clamps the CHILD_ENROLLMENT_KEY_TTL_MINUTES fallback to the partner cap when ttlMinutes is omitted (#2776)", async () => {
     mockEnrollmentDefaults({ maxTtlMinutes: 60 });
@@ -582,8 +582,8 @@ describe("POST /enrollment-keys/:id/installer-link", () => {
 
     expect(res.status).toBe(200);
     // The uncapped server constant is what gets handed to the clamp...
-    expect(clampTtlToCapMock).toHaveBeenCalledWith(ORG_ID, 1440);
-    // ...and the key that actually lands is the 60-minute cap, not 24h.
+    expect(clampTtlToCapMock).toHaveBeenCalledWith(ORG_ID, 43200);
+    // ...and the key that actually lands is the 60-minute cap, not 30 days.
     expect(capturedChildValues).not.toBeNull();
     const expiresAt = (capturedChildValues as unknown as { expiresAt: Date }).expiresAt;
     expect(expiresAt.getTime()).toBeGreaterThanOrEqual(before + 59 * 60 * 1000);
@@ -714,7 +714,7 @@ describe("GET /s/:code", () => {
   });
 
   // Fix round 3 (#2776): this route mints its own download child key via
-  // CHILD_ENROLLMENT_KEY_TTL_MINUTES (default 1440) with no interactive
+  // CHILD_ENROLLMENT_KEY_TTL_MINUTES (default 43200) with no interactive
   // caller (it's the public short-link redemption), so a partner cap below
   // that default must clamp the minted lifetime down, never reject.
   it("clamps the download child key's TTL down when the partner cap is below the default", async () => {
@@ -749,10 +749,10 @@ describe("GET /s/:code", () => {
     expect(res.status).toBe(200);
     expect(insertValues).toHaveBeenCalledTimes(1);
     const insertedRow = insertValues.mock.calls[0]![0] as { expiresAt: Date };
-    // Clamped to the 60-minute cap, NOT the 1440-minute (24h) default.
+    // Clamped to the 60-minute cap, NOT the 43200-minute (30-day) default.
     expect(insertedRow.expiresAt.getTime()).toBeGreaterThanOrEqual(before + 59 * 60 * 1000);
     expect(insertedRow.expiresAt.getTime()).toBeLessThanOrEqual(after + 60 * 60 * 1000 + 5_000);
-    expect(clampTtlToCapMock).toHaveBeenCalledWith(ORG_ID, 1440);
+    expect(clampTtlToCapMock).toHaveBeenCalledWith(ORG_ID, 43200);
   });
 
   it("does not shorten the download child key's TTL when the partner cap is above the default (no-op clamp)", async () => {
@@ -786,9 +786,9 @@ describe("GET /s/:code", () => {
 
     expect(res.status).toBe(200);
     const insertedRow = insertValues.mock.calls[0]![0] as { expiresAt: Date };
-    // Unchanged: still the full 1440-minute (24h) default.
-    expect(insertedRow.expiresAt.getTime()).toBeGreaterThanOrEqual(before + 1439 * 60 * 1000);
-    expect(insertedRow.expiresAt.getTime()).toBeLessThanOrEqual(after + 1441 * 60 * 1000);
+    // Unchanged: still the full 43200-minute (30-day) default.
+    expect(insertedRow.expiresAt.getTime()).toBeGreaterThanOrEqual(before + 43199 * 60 * 1000);
+    expect(insertedRow.expiresAt.getTime()).toBeLessThanOrEqual(after + 43201 * 60 * 1000);
   });
 
   // #3038: the Windows bootstrap token minted on a short-link download must
@@ -2244,7 +2244,7 @@ describe("GET /:id/installer/macos — app-bundle path", () => {
     const after = Date.now();
 
     expect(res.status).toBe(200);
-    expect(clampTtlToCapMock).toHaveBeenCalledWith(ORG_ID, 1440);
+    expect(clampTtlToCapMock).toHaveBeenCalledWith(ORG_ID, 43200);
     expect(capturedChildValues).not.toBeNull();
     const expiresAt = (capturedChildValues as unknown as { expiresAt: Date }).expiresAt;
     expect(expiresAt.getTime()).toBeGreaterThanOrEqual(before + 59 * 60 * 1000);

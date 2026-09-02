@@ -11,7 +11,9 @@ import * as dbModule from '../db';
 import { playbookExecutions } from '../db/schema';
 import { and, eq, lt, inArray } from 'drizzle-orm';
 import { getBullMQConnection } from '../services/redis';
+import { recordRetentionRun } from '../services/retentionMetrics';
 import { captureException } from '../services/sentry';
+import { jobSchedule } from './scheduleRegistry';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -97,6 +99,13 @@ export function createPlaybookRetentionWorker(): Worker<RetentionJobData> {
         const durationMs = Date.now() - startTime;
         console.log(`[PlaybookRetention] Completed in ${durationMs}ms`);
 
+        // Both operations discard their row counts, so no rows-deleted signal.
+        // Reached only when at least one of the two halves succeeded (the
+        // both-failed case throws above) — so `incomplete` is what distinguishes
+        // a fully healthy run from the half-broken one that still returns here.
+        recordRetentionRun('playbook_retention', {
+          incomplete: Boolean(pruneError || staleError),
+        });
         return { durationMs };
       });
     },
@@ -131,14 +140,15 @@ export async function initializePlaybookRetention(): Promise<void> {
       await queue.removeRepeatableByKey(job.key);
     }
 
-    // Schedule daily cleanup
+    // Daily at a registry-allocated slot (jobs/scheduleRegistry.ts).
     await queue.add(
       'cleanup',
       {},
       {
-        repeat: {
-          every: 24 * 60 * 60 * 1000 // Every 24 hours
-        },
+        // Daily at a registry-allocated slot. NOT `every: 24h` — BullMQ anchors
+        // `every` to the Unix epoch, so every 24h job fires at 00:00:00.000 UTC
+        // together (see jobs/scheduleRegistry.ts).
+        repeat: { pattern: jobSchedule('playbook-execution-retention') },
         removeOnComplete: { count: 5 },
         removeOnFail: { count: 10 }
       }

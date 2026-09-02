@@ -8,7 +8,9 @@ import {
   RELEASE_SOURCE_REPOSITORY_SHAPE,
   isValidReleaseSourceRepository,
 } from '../services/releaseSource';
+import { EVENT_SUBSCRIBER_IDS, isSubscriberId } from '../services/eventSubscriberIds';
 import {
+  canonicalCfAccessTeamDomain,
   decodePartnerApiCursorSigningKey,
   isRecognizedSelfHostSignal,
   parseEventPermissionEpochMode,
@@ -593,12 +595,41 @@ const envObjectSchema = z
     // is caught at boot instead of silently parsing to a surprising default.
     AGENT_AUTO_PROMOTE: z.string().optional(),
 
+    // Automatic agent edition migration (#4072). Default false; read at
+    // runtime by editionAutoMigrateEnabled() (services/agentEditionAutoMigrate.ts)
+    // via envFlag(). Validated here for boolean format only, same class as
+    // AGENT_AUTO_PROMOTE above — a typo must fail boot, not silently read as
+    // "off" for an operator who believed they enabled auto-remediation.
+    AGENT_EDITION_AUTO_MIGRATE_ENABLED: z.string().optional(),
+
     // Signup-abuse detection kill switch / opt-in (services/abuseSignals).
     // Defaults to IS_HOSTED; read at runtime by abuseSignalsEnabled() in
     // env.ts. Validated here for boolean format only, for the same reason as
     // AGENT_AUTO_PROMOTE above — see the superRefine rule for why a typo here
     // is worse than a typo on most flags.
     ABUSE_SIGNALS_ENABLED: z.string().optional(),
+
+    // Durable event dispatch (wave 3.5c, #4085). off = today's in-process
+    // delivery only; shadow = mirror routing plans into receipts without
+    // executing via the queue; enforce = the EVENT_DISPATCH_QUEUE_SUBSCRIBERS
+    // cohort delivers via BullMQ only. Read at runtime by eventDispatchMode()
+    // / eventDispatchQueueSubscribers() in env.ts. Validated here for
+    // vocabulary/membership — see the superRefine rule below.
+    EVENT_DISPATCH_MODE: z.string().optional(),
+    EVENT_DISPATCH_QUEUE_SUBSCRIBERS: z.string().optional(),
+
+    // Wave 5 Part B (#3827) sub-flag of BREEZE_AI_AGENTS_ENABLED. Gates
+    // attemptPolicyDecision — read at runtime by policyDecideEnabled() in
+    // env.ts. Validated here for boolean format only, same class as
+    // AGENT_AUTO_PROMOTE above.
+    BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED: z.string().optional(),
+
+    // Process role for the 3.5d socket/worker split (wave 3.5b, #4084). all
+    // (default) = today's all-in-one process. Read at runtime by
+    // breezeRole() in env.ts. Validated here for format only — absence means
+    // 'all', and this is NOT required-in-production in this wave (that lands
+    // with 3.5d once the split is actually exercised in prod topology).
+    BREEZE_ROLE: z.string().optional(),
 
     // M365 Tier-3 write-action AI tools (m365_disable_user, m365_reset_password)
     // and the action-intents release worker's headless dispatch. Dark by
@@ -704,6 +735,8 @@ const envObjectSchema = z
     CF_ACCESS_TEAM_DOMAIN: z.string().optional(),
     CF_ACCESS_AUD: z.string().optional(),
     CF_ACCESS_TRUSTS_MFA: z.string().optional(),
+    AUTH_BROWSER_TRANSITIONS_ENFORCED: z.string().optional(),
+    AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED: z.string().optional(),
 
     // -- Native APNs push (replaces the Expo push relay) ---------------------
     // All optional at boot: push is an optional feature. If ANY APNS_* is set,
@@ -766,6 +799,16 @@ const envObjectSchema = z
     // `.optional()` string) so a typo boot-refuses instead of silently
     // staying on the safe default — see docs/operations/agent-network-and-manifest-rollout.md.
     AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID: z.enum(['true', 'false']).default('false'),
+
+    // Phase 2 of per-partner LLM BYOK (#3922), Task 3.1 — gates catalog-mode
+    // routing (partner_llm_configs.catalog_entry_id). Off by default so a
+    // rolling deploy or rollback never exposes catalog selection ahead of
+    // the resolver/route wiring that consumes it (Tasks 3.2+). When false,
+    // selection-write routes 404 and existing catalog configs resolve as
+    // unavailable('catalog_disabled') — fail-loud, never a silent fallback
+    // to direct Anthropic. Strict two-value enum so a typo boot-refuses
+    // instead of silently staying on the safe default.
+    LLM_PROVIDER_CATALOG_ENABLED: z.enum(['true', 'false']).default('false'),
 
     // Security remediation Wave 6, Task 9 (approved plan deviation D1) — the
     // managed-software destination gate (services/managedSoftwareDispatchPolicy.ts).
@@ -1560,7 +1603,7 @@ const envSchema = envObjectSchema
             'CF_ACCESS_TRUST_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set.',
         });
       } else {
-        const teamDomain = (data.CF_ACCESS_TEAM_DOMAIN ?? '').trim();
+        const teamDomain = data.CF_ACCESS_TEAM_DOMAIN ?? '';
         if (!teamDomain) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
@@ -1568,12 +1611,12 @@ const envSchema = envObjectSchema
             message:
               'CF_ACCESS_TEAM_DOMAIN is required when CF_ACCESS_TRUST_ENABLED is true (e.g. example.cloudflareaccess.com, no scheme).',
           });
-        } else if (teamDomain.includes('://')) {
+        } else if (!canonicalCfAccessTeamDomain(teamDomain)) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
             path: ['CF_ACCESS_TEAM_DOMAIN'],
             message:
-              'CF_ACCESS_TEAM_DOMAIN must not include a scheme. Use the bare hostname (e.g. example.cloudflareaccess.com).',
+              'CF_ACCESS_TEAM_DOMAIN must be the canonical lowercase bare Cloudflare team hostname (e.g. example.cloudflareaccess.com), with no credentials, port, path, query, or fragment.',
           });
         }
         const aud = (data.CF_ACCESS_AUD ?? '').trim();
@@ -1598,6 +1641,35 @@ const envSchema = envObjectSchema
       }
     }
 
+    const authTransitionFlagValues = new Set([
+      'true', 'false', '1', '0', 'yes', 'no', 'on', 'off',
+    ]);
+    const transitionsRaw = (data.AUTH_BROWSER_TRANSITIONS_ENFORCED ?? '').trim().toLowerCase();
+    const terminalPreparationRaw = (
+      data.AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED ?? ''
+    ).trim().toLowerCase();
+    for (const [name, value] of [
+      ['AUTH_BROWSER_TRANSITIONS_ENFORCED', transitionsRaw],
+      ['AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED', terminalPreparationRaw],
+    ] as const) {
+      if (value && !authTransitionFlagValues.has(value)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [name],
+          message: `${name} must be a boolean (true/false, 1/0, yes/no, on/off) when set.`,
+        });
+      }
+    }
+    const flagEnabled = (value: string) => ['true', '1', 'yes', 'on'].includes(value);
+    if (flagEnabled(terminalPreparationRaw) && !flagEnabled(transitionsRaw)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED'],
+        message:
+          'AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED=true requires AUTH_BROWSER_TRANSITIONS_ENFORCED=true.',
+      });
+    }
+
     // AGENT_AUTO_PROMOTE (controlled fleet rollout). Independent of NODE_ENV —
     // the value silently governs whether a sync promotes the fleet, so a typo
     // (e.g. AGENT_AUTO_PROMOTE=falze, which parses as truthy → still
@@ -1612,6 +1684,19 @@ const envSchema = envObjectSchema
         path: ['AGENT_AUTO_PROMOTE'],
         message:
           'AGENT_AUTO_PROMOTE must be a boolean (true/false, 1/0, yes/no, on/off) when set. Defaults to true (sync immediately becomes the fleet upgrade target). Set false to require explicit promotion via POST /agent-versions/promote.',
+      });
+    }
+
+    // AGENT_EDITION_AUTO_MIGRATE_ENABLED (auto edition migration, #4072).
+    // Same treatment and reasoning as AGENT_AUTO_PROMOTE above.
+    const autoMigrateRaw = (data.AGENT_EDITION_AUTO_MIGRATE_ENABLED ?? '').trim().toLowerCase();
+    if (autoMigrateRaw && !boolValues.has(autoMigrateRaw)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['AGENT_EDITION_AUTO_MIGRATE_ENABLED'],
+        message:
+          'AGENT_EDITION_AUTO_MIGRATE_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. ' +
+          'Defaults to false (no automatic edition-migration dispatch).',
       });
     }
 
@@ -1634,6 +1719,62 @@ const envSchema = envObjectSchema
         path: ['ABUSE_SIGNALS_ENABLED'],
         message:
           'ABUSE_SIGNALS_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. Defaults to the value of IS_HOSTED — signup-abuse detection is ON for a hosted deployment and OFF for a self-hosted one. Set true to opt a self-hosted multi-tenant service in, or false to switch a hosted deployment off.',
+      });
+    }
+
+    // EVENT_DISPATCH_MODE / EVENT_DISPATCH_QUEUE_SUBSCRIBERS (durable event
+    // dispatch, wave 3.5c, #4085). Unlike ABUSE_SIGNALS_ENABLED above, an
+    // unrecognized mode is a HARD error here, not a warning-and-fallback: boot
+    // refusal beats a silent fallback in prod, because eventDispatchMode()'s
+    // fallback-to-off is the reader's last line of defense for a process that
+    // skipped this validator, not a substitute for catching the typo here.
+    const eventDispatchModeRaw = (data.EVENT_DISPATCH_MODE ?? '').trim().toLowerCase();
+    const eventDispatchModeValues = new Set(['', 'off', 'shadow', 'enforce']);
+    if (!eventDispatchModeValues.has(eventDispatchModeRaw)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['EVENT_DISPATCH_MODE'],
+        message:
+          'EVENT_DISPATCH_MODE must be one of off, shadow, enforce (or unset, which defaults to off) — see eventDispatchMode() in env.ts.',
+      });
+    }
+    const eventDispatchSubscribersRaw = (data.EVENT_DISPATCH_QUEUE_SUBSCRIBERS ?? '').trim();
+    const eventDispatchSubscriberIds = eventDispatchSubscribersRaw
+      .split(',')
+      .map((p) => p.trim())
+      .filter(Boolean);
+    for (const id of eventDispatchSubscriberIds) {
+      if (!isSubscriberId(id)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['EVENT_DISPATCH_QUEUE_SUBSCRIBERS'],
+          message: `EVENT_DISPATCH_QUEUE_SUBSCRIBERS contains unknown subscriber id "${id}" — known ids: ${EVENT_SUBSCRIBER_IDS.join(', ')}.`,
+        });
+      }
+    }
+    // enforce with an empty cohort is not an error — it degenerates to
+    // "everyone stays local", same as off — but is very likely a
+    // misconfiguration (the operator meant to enforce SOMETHING), so warn.
+    if (eventDispatchModeRaw === 'enforce' && eventDispatchSubscriberIds.length === 0) {
+      console.warn(
+        '[config] EVENT_DISPATCH_MODE=enforce but EVENT_DISPATCH_QUEUE_SUBSCRIBERS is empty — no subscriber will deliver via the queue.',
+      );
+    }
+
+    // BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED (wave 5 Part B, #3827). Sub-flag
+    // of BREEZE_AI_AGENTS_ENABLED gating attemptPolicyDecision — unattended
+    // policy-decided authorization of a supervised-scope action-intent, no
+    // human fanout. Same treatment as AGENT_AUTO_PROMOTE/ABUSE_SIGNALS_ENABLED
+    // above: a typo must be caught at boot rather than silently reading as
+    // off at the envFlag reader. Empty/unset is allowed (defaults to false —
+    // dark-ship). Mirrors policyDecideEnabled() in env.ts.
+    const policyDecideRaw = (data.BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED ?? '').trim().toLowerCase();
+    if (policyDecideRaw && !boolValues.has(policyDecideRaw)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED'],
+        message:
+          'BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. Defaults to false (unattended policy-decided authorization is dark).',
       });
     }
 
@@ -1680,6 +1821,29 @@ const envSchema = envObjectSchema
         path: ['APP_ENCRYPTION_KEY_ID'],
         message:
           'APP_ENCRYPTION_KEY_ID is required when M365_GRAPH_ACTIONS_TOOLS_ENABLED=true (write-action reveal credentials are sealed with AAD-bound v3 ciphertext).',
+      });
+    }
+
+    // BREEZE_ROLE ↔ APP_ENCRYPTION_KEY_ID pairing (wave 3.5b, #4084). Once a
+    // process is split into 'api' or 'worker', cross-process agent command
+    // dispatch goes through agentCommandRelay.ts, which seals every relay job
+    // with AAD-bound v3 ciphertext and REFUSES to seal without a configured
+    // key id (sealRelayCommand throws rather than silently degrading to the
+    // AAD-ignoring v1 fallback). Without this check, a 'api'/'worker' split
+    // deployment boots clean and then fails every single relay dispatch at
+    // runtime with zero boot-time signal — turn that into a boot refusal, same
+    // shape as the M365 pairing rule above. 'all' (default) is unaffected: it
+    // never takes the relay branch for a locally-connected agent.
+    const breezeRoleRaw = (data.BREEZE_ROLE ?? '').trim().toLowerCase();
+    if (
+      (breezeRoleRaw === 'api' || breezeRoleRaw === 'worker')
+      && !data.APP_ENCRYPTION_KEY_ID?.trim()
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['APP_ENCRYPTION_KEY_ID'],
+        message:
+          'APP_ENCRYPTION_KEY_ID is required when BREEZE_ROLE is "api" or "worker" (the cross-process agent command relay envelope requires AAD-bound v3 ciphertext).',
       });
     }
 

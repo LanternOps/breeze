@@ -12,14 +12,24 @@ import { Steps, Aside } from '@astrojs/starlight/components';
 
 <Steps>
 
-1. **Update the version in `.env`**
+1. **Back up the database**
+
+   ```bash
+   ./scripts/backup.sh --db
+   ```
+
+   Database migrations are forward-only. Rolling the container tag back does not roll the schema back. See [Backup & Restore](/security/backup/).
+
+2. **Update the version in `.env`**
 
    ```bash
    # Set to the version you want (e.g. 0.11.3)
    BREEZE_VERSION=0.11.3
    ```
 
-2. **Pull and restart**
+   This also selects the agent release your fleet is offered, so set it to a version that is **published** on GitHub, not one that has only been tagged. See [Binary Distribution](/deploy/binaries/#github-mode-default).
+
+3. **Pull and restart**
 
    ```bash
    docker compose pull
@@ -31,7 +41,7 @@ import { Steps, Aside } from '@astrojs/starlight/components';
 
    **Expected downtime**: Typically **5--15 seconds** while containers restart. If the new version includes database migrations, the API container will take additional time to apply them before accepting traffic -- usually under 60 seconds for routine schema changes, but potentially several minutes for large data migrations. Agents continue running independently during this window and reconnect automatically.
 
-3. **Verify**
+4. **Verify**
 
    ```bash
    # Check API health

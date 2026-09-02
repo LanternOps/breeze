@@ -81,4 +81,18 @@ describe('mfaStepUpSchema operation field', () => {
       mfaStepUpSchema.parse({ method: 'totp', code: '123456', operation: 'admin_takeover' })
     ).toThrow();
   });
+
+  // #4018: enroll_first_factor is a REAL StepUpOperation, so the `satisfies`
+  // constraint on STEP_UP_OPERATIONS would happily accept it being added to
+  // the client-requestable list — nothing in the type system stops that. But
+  // it is minted ONLY by the SSO re-auth callback, after a forced IdP
+  // round-trip proves identity for a passwordless account. If a client could
+  // request it here, anyone who can already satisfy step-up could mint one
+  // without ever re-authenticating. This test is the guard the type system
+  // does not provide.
+  it('rejects enroll_first_factor — SSO-reauth-mint only, never client-requestable', () => {
+    expect(() =>
+      mfaStepUpSchema.parse({ method: 'totp', code: '123456', operation: 'enroll_first_factor' })
+    ).toThrow();
+  });
 });

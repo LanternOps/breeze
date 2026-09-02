@@ -116,7 +116,15 @@
     "internalPlaceholder": "Dahili bir not ekleyin…",
     "sending": "Gönderiliyor",
     "sendReply": "Yanıt gönder",
-    "addInternalNote": "Dahili not ekle"
+    "addInternalNote": "Dahili not ekle",
+    "attachments": {
+      "attach": "Ekle",
+      "uploading": "Yükleniyor…",
+      "retry": "Yeniden dene",
+      "remove": "Dosyayı kaldır",
+      "tooMany": "Bir yoruma en fazla {{max}} dosya ekleyebilirsiniz.",
+      "tooLarge": "{{name}} 10 MB sınırını aşıyor."
+    }
   },
   "ticketFeed": {
     "empty": "Henüz etkinlik yok.",
@@ -149,6 +157,11 @@
     "deleteDialog": {
       "title": "Yorumu sil",
       "message": "Bu yorumu silmek istediğinizden emin misiniz? Bu eylem geri alınamaz."
+    },
+    "attachments": {
+      "broken": "{{name}} yüklenemedi",
+      "open": "Eki aç",
+      "remove": "Eki kaldır"
     }
   },
   "ticketPartsCard": {
@@ -184,6 +197,7 @@
     "totalTime": "Toplam süre",
     "billable": "Faturalandırılabilir",
     "timeAmount": "Süre miktarı",
+    "noAmount": "—",
     "partsCount": "Parçalar ({{count}})",
     "partsCount_one": "Parçalar ({{count}})",
     "partsCount_other": "Parçalar ({{count}})",
@@ -397,14 +411,25 @@
       "create": "Fatura oluştur",
       "creating": "Oluşturuluyor…",
       "createFailed": "Bu biletten fatura oluşturulamadı.",
-      "created": "Taslak fatura oluşturuldu"
+      "created": "Taslak fatura oluşturuldu",
+      "allBlockedByCurrency": "Bu biletteki tüm faturalanabilir iş, kuruluşun faturalandırdığı para biriminden farklı bir para biriminde fiyatlandırılmış. Bunun yerine o para biriminde bir taslak oluşturun:",
+      "assembleIn": "{{code}} olarak oluştur ({{count}} öğe, {{amount}})",
+      "partialLeftOut": "Bir taslak fatura oluşturuldu, ancak bu biletteki faturalanabilir işin bir kısmı dışarıda bırakıldı ve hâlâ faturalanmadı.",
+      "openDraft": "Taslağı aç",
+      "allMissingRate": "Hiçbir şey faturalanamadı: bu biletteki her faturalanabilir zaman kaydının saatlik ücreti eksik.",
+      "missingRateHeading": "Saatlik ücreti olmayan zaman kayıtları (faturalanmadı — bir ücret belirleyip faturayı yeniden oluşturun):",
+      "missingRateEntry": "{{description}} — {{hours}} sa",
+      "setRate": "Zaman çizelgesinde bir ücret belirle"
     },
     "move": {
       "open": "Başka bir kuruluşa taşıyın…",
       "label": "Kuruluşa taşı",
       "selectOrganization": "Kuruluşu seçin…",
       "confirm": "Taşı",
-      "failed": "Taşıma işlemi başarısız oldu. Tekrar dene."
+      "failed": "Taşıma işlemi başarısız oldu. Tekrar dene.",
+      "blockedCurrency": "Bu bilette {{sourceCurrency}} ile fiyatlandırılmış {{timeCount}} faturalanmamış zaman kaydı ve {{partCount}} faturalanmamış parça var, ancak {{targetOrg}} {{targetCurrency}} ile faturalandırıyor. Önce bunları faturalandırın ya da yine de taşıyın: tutarlar {{sourceCurrency}} olarak kalır ve yalnızca {{sourceCurrency}} taslağında faturalandırılabilir.",
+      "acceptCurrency": "Bu tutarların {{sourceCurrency}} olarak kalacağını ve dönüştürülmeyeceğini anlıyorum.",
+      "moveAnyway": "Yine de taşı"
     },
     "triage": {
       "title": "Önerilen önceliklendirme",
@@ -419,6 +444,17 @@
       "applied": "Bilet önceliklendirme önerisi uygulandı",
       "feedbackFailed": "Bilet önceliklendirme geri bildirimi kaydedilemedi.",
       "feedbackSaved": "Bilet önceliklendirme geri bildirimi kaydedildi"
+    },
+    "aiDraft": {
+      "kindReply": "Yapay zeka tarafından hazırlanan yanıt",
+      "kindResolutionNote": "Yapay zeka tarafından hazırlanan çözüm notu",
+      "sendAsMe": "Benim adıma gönder",
+      "sending": "Gönderiliyor…",
+      "discard": "Vazgeç",
+      "sendFailed": "Yapay zeka taslağı gönderilemedi.",
+      "sent": "Taslak gönderildi",
+      "discardFailed": "Yapay zeka taslağı silinemedi.",
+      "discarded": "Taslak silindi"
     },
     "resolve": {
       "noteLabel": "Çözüm notu (talep sahibi tarafından görülebilir)",
@@ -457,7 +493,8 @@
       "categoryUpdateFailed": "Kategori güncellemesi başarısız oldu. Tekrar dene.",
       "assigned": "Atandı",
       "unassigned": "Atanmamış",
-      "assignFailed": "Atama başarısız oldu. Tekrar dene."
+      "assignFailed": "Atama başarısız oldu. Tekrar dene.",
+      "attachmentFailed": "Ek yüklenemedi."
     },
     "delete": {
       "failed": "Silinemedi. Tekrar dene.",

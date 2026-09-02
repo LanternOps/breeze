@@ -30,6 +30,7 @@ import {
   type TaggedPushToken,
 } from '../../services/expoPush';
 import type { RiskTier } from '@breeze/shared';
+import { createPamDecisionIntent } from '../../services/pamActuationLifecycle';
 
 // PAM Track 3: agent-side endpoint that records UAC consent.exe observations
 // as `elevation_requests` rows with flow_type='uac_intercept'. Auth is the
@@ -498,8 +499,11 @@ elevationRequestsRoutes.post(
           : 'pending';
 
     try {
-      const inserted = await db
-        .insert(elevationRequests)
+      const row = await db.transaction(async (tx) => {
+        const expiresAt = decision.kind === 'auto_approved'
+          ? new Date(now.getTime() + decision.durationMinutes * 60_000)
+          : null;
+        const inserted = await tx.insert(elevationRequests)
         .values({
           orgId: device.orgId,
           siteId: device.siteId ?? null,
@@ -514,10 +518,7 @@ elevationRequestsRoutes.post(
           status,
           requestedAt: observedAt,
           approvedAt: decision.kind === 'auto_approved' ? now : null,
-          expiresAt:
-            decision.kind === 'auto_approved'
-              ? new Date(now.getTime() + decision.durationMinutes * 60_000)
-              : null,
+          expiresAt,
           denialReason:
             decision.kind === 'denied'
               ? decision.source === 'policy'
@@ -541,22 +542,20 @@ elevationRequestsRoutes.post(
               : {}),
           },
         })
-        .returning({ id: elevationRequests.id, status: elevationRequests.status });
+        .returning({
+          id: elevationRequests.id,
+          status: elevationRequests.status,
+          revision: elevationRequests.revision,
+        });
 
-      const row = inserted[0];
-      if (!row) {
-        return c.json({ error: 'Insert returned no row' }, 500);
-      }
+        const insertedRow = inserted[0];
+        if (!insertedRow) throw new Error('Insert returned no row');
 
-      // PAM-specific audit chain: one 'requested' row always, plus the
-      // auto-decision row when policy/rule decided, plus evidence rows for
-      // audit-mode policy hits. Best-effort: the request row is committed;
-      // an audit-chain insert failure must not 500 the agent.
-      try {
+        // Request, audit chain, desired state, and outbox are one atomic write.
         const auditRows: (typeof elevationAudit.$inferInsert)[] = [
           {
             orgId: device.orgId,
-            elevationRequestId: row.id,
+            elevationRequestId: insertedRow.id,
             eventType: 'requested',
             actor: 'end_user',
             details: {
@@ -569,7 +568,7 @@ elevationRequestsRoutes.post(
         if (decision.kind === 'auto_approved' || decision.kind === 'denied') {
           auditRows.push({
             orgId: device.orgId,
-            elevationRequestId: row.id,
+            elevationRequestId: insertedRow.id,
             eventType: decision.kind === 'auto_approved' ? 'auto_approved' : 'denied',
             actor: 'policy',
             details:
@@ -587,7 +586,7 @@ elevationRequestsRoutes.post(
         for (const evidence of bridgeVerdict?.auditMatches ?? []) {
           auditRows.push({
             orgId: device.orgId,
-            elevationRequestId: row.id,
+            elevationRequestId: insertedRow.id,
             eventType: 'evidence_attached',
             actor: 'policy',
             details: {
@@ -598,13 +597,29 @@ elevationRequestsRoutes.post(
             occurredAt: now,
           });
         }
-        await db.insert(elevationAudit).values(auditRows);
-      } catch (auditErr) {
-        console.error(
-          `[ElevationRequests] elevation_audit write failed for request=${row.id}:`,
-          auditErr,
-        );
-      }
+        await tx.insert(elevationAudit).values(auditRows);
+
+        let enforcementStatus: 'pending_dispatch' | 'cleanup_pending' | null = null;
+        if (decision.kind === 'auto_approved' || decision.kind === 'denied') {
+          const actuation = await createPamDecisionIntent(tx, {
+            request: {
+              id: insertedRow.id,
+              orgId: device.orgId,
+              deviceId: device.id,
+              targetExecutablePath: payload.target_executable_path,
+              targetExecutableHash: payload.target_executable_hash ?? null,
+              subjectUsername: payload.subject_username,
+            },
+            requestRevision: insertedRow.revision,
+            decision: decision.kind,
+            expiresAt,
+          });
+          enforcementStatus = actuation.desiredState === 'active'
+            ? 'pending_dispatch'
+            : 'cleanup_pending';
+        }
+        return { ...insertedRow, enforcementStatus };
+      });
 
       writeAuditEvent(c, {
         orgId: agent?.orgId ?? device.orgId,
@@ -665,7 +680,11 @@ elevationRequestsRoutes.post(
         }
       }
 
-      return c.json({ id: row.id, status: row.status }, 201);
+      return c.json({
+        id: row.id,
+        status: row.status,
+        ...(row.enforcementStatus ? { enforcementStatus: row.enforcementStatus } : {}),
+      }, 201);
     } catch (err) {
       console.error(
         `[ElevationRequests] Failed to insert for device=${device.id} org=${device.orgId}:`,

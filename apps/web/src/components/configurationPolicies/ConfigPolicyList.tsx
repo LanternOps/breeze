@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Layers,
   Search,
@@ -100,12 +100,43 @@ export default function ConfigPolicyList({
       return matchesQuery && matchesStatus;
     });
   }, [policies, query, statusFilter]);
-  const totalPages = Math.ceil(filteredPolicies.length / pageSize);
-  const startIndex = (currentPage - 1) * pageSize;
+  // "No results" and "nothing exists yet" are different states and need
+  // different copy. Keyed off the UNFILTERED list plus the search and status
+  // controls being at rest, so a search that happens to match nothing still
+  // gets the adjust-your-search message.
+  //
+  // Deliberately NOT a claim that the tenant is new: the list can be
+  // org-scoped, and a malformed HTTP 200 is coerced to [] upstream. It only
+  // distinguishes "the list is empty and the filters are untouched".
+  const hasNoPoliciesAtAll =
+    policies.length === 0 && query.trim().length === 0 && statusFilter === "all";
+  // Floor of 1 so an empty list reads as Page 1 of 1 rather than Page 1 of 0,
+  // and `safePage` below cannot land on 0. (The negative `startIndex` that a
+  // page of 0 produces is harmless against an empty array — it is the page
+  // COUNT that would be wrong, and it is what the pager renders.)
+  const totalPages = Math.max(1, Math.ceil(filteredPolicies.length / pageSize));
+  // Render from a clamped page rather than trusting the stored one. Search and
+  // status changes reset the page, but nothing reconciled it with the row
+  // count, so deleting the only row on the last page (the page refetches and
+  // hands down a shorter array) left the user on a page that no longer exists:
+  // no rows, the adjust-your-search copy over an untouched search box, and —
+  // because `totalPages` had dropped below the stored page — no pager to get
+  // back (#4008). Clamping during render rather than in an effect means the
+  // dead page never paints.
+  const safePage = Math.min(currentPage, totalPages);
+  const startIndex = (safePage - 1) * pageSize;
   const paginatedPolicies = filteredPolicies.slice(
     startIndex,
     startIndex + pageSize,
   );
+  // Retire the out-of-range value so it cannot come back. Without this the
+  // clamp above is purely cosmetic: a later create + refetch that grows the
+  // list past the stored page would teleport the user forward to a page they
+  // had already been bounced off. Renders the same output either way, so it
+  // costs a state write and no visible frame.
+  useEffect(() => {
+    if (currentPage !== safePage) setCurrentPage(safePage);
+  }, [currentPage, safePage]);
   return (
     <div className="rounded-lg border bg-card p-6 shadow-xs">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
@@ -194,8 +225,32 @@ export default function ConfigPolicyList({
                   colSpan={5}
                   className="px-4 py-6 text-center text-sm text-muted-foreground"
                 >
-                  {i18n.t(
-                    "policies:configurationPolicies.configPolicyList.noPoliciesFoundTryAdjustingYourSearch",
+                  {hasNoPoliciesAtAll ? (
+                    // Nothing to adjust: the list is empty and the search and
+                    // status controls are untouched, so telling the user to
+                    // change a search they never made is unhelpful. This does
+                    // NOT establish that the tenant has no policies — the list
+                    // can be org-scoped, and a malformed HTTP 200 is coerced to
+                    // [] upstream — so the copy stays a suggestion, not a claim.
+                    <>
+                      <p>
+                        {i18n.t(
+                          "policies:configurationPolicies.configPolicyList.noPoliciesYet",
+                        )}
+                      </p>
+                      <a
+                        href="/configuration-policies/new"
+                        className="mt-3 inline-flex items-center rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
+                      >
+                        {i18n.t(
+                          "policies:configurationPolicies.configurationPoliciesPage.newPolicy",
+                        )}
+                      </a>
+                    </>
+                  ) : (
+                    i18n.t(
+                      "policies:configurationPolicies.configPolicyList.noPoliciesFoundTryAdjustingYourSearch",
+                    )
                   )}
                 </td>
               </tr>
@@ -326,15 +381,15 @@ export default function ConfigPolicyList({
         <div className="mt-4 flex items-center justify-between text-sm text-muted-foreground">
           <span>
             {i18n.t("policies:configurationPolicies.configPolicyList.page")}
-            {currentPage}
+            {safePage}
             {i18n.t("policies:configurationPolicies.configPolicyList.of2")}
             {totalPages}
           </span>
           <div className="flex items-center gap-2">
             <button
               type="button"
-              onClick={() => setCurrentPage((prev) => Math.max(prev - 1, 1))}
-              disabled={currentPage === 1}
+              onClick={() => setCurrentPage(Math.max(safePage - 1, 1))}
+              disabled={safePage === 1}
               className="inline-flex h-8 w-8 items-center justify-center rounded-md border disabled:opacity-50"
               title={previousPageLabel}
               aria-label={previousPageLabel}
@@ -344,10 +399,8 @@ export default function ConfigPolicyList({
             </button>
             <button
               type="button"
-              onClick={() =>
-                setCurrentPage((prev) => Math.min(prev + 1, totalPages))
-              }
-              disabled={currentPage === totalPages}
+              onClick={() => setCurrentPage(Math.min(safePage + 1, totalPages))}
+              disabled={safePage === totalPages}
               className="inline-flex h-8 w-8 items-center justify-center rounded-md border disabled:opacity-50"
               title={nextPageLabel}
               aria-label={nextPageLabel}

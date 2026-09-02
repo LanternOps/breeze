@@ -55,9 +55,13 @@ vi.mock('./invoiceService', () => ({
 import { createInvoicePayLink } from './invoiceCheckout';
 import { InvoiceServiceError } from './invoiceTypes';
 
+// Default fixture: a cached USD account (matches the USD invoices below, so no
+// warning). Currency tests override defaultCurrency explicitly — `null` now
+// means an explicit STRIPE_ACCOUNT_CURRENCY_UNKNOWN warning (review F6).
 const partnerClient = (stripeAccountId = 'acct_9') => ({
   stripe: { checkout: { sessions: { create: sessionsCreateMock } } },
   stripeAccountId,
+  defaultCurrency: 'USD' as string | null,
 });
 
 const INV_ID = '11111111-1111-1111-1111-111111111111';
@@ -223,6 +227,28 @@ describe('createInvoicePayLink', () => {
       }),
       expect.anything(),
     );
+  });
+
+  it('account currency not cached (null): returns an explicit STRIPE_ACCOUNT_CURRENCY_UNKNOWN warning and still mints the session (review F6)', async () => {
+    dbResults.push([{
+      id: INV_ID, orgId: ORG_ID, partnerId: 'p1', status: 'sent',
+      balance: '100.00', depositDue: null, amountPaid: '0.00',
+      currencyCode: 'EUR', invoiceNumber: 'INV-EUR',
+    }]);
+    getPartnerStripeClientMock.mockResolvedValue({ ...partnerClient(), defaultCurrency: null });
+    sessionsCreateMock.mockResolvedValue({ id: 'cs_unk', url: 'https://checkout.stripe.com/c/cs_unk', payment_intent: 'pi_unk' });
+
+    const result = await createInvoicePayLink(INV_ID, actor);
+    expect(result).toEqual({
+      url: 'https://checkout.stripe.com/c/cs_unk',
+      warning: {
+        code: 'STRIPE_ACCOUNT_CURRENCY_UNKNOWN',
+        documentCurrency: 'EUR',
+        accountCurrency: null,
+        message: expect.stringMatching(/refresh/i),
+      },
+    });
+    expect(sessionsCreateMock).toHaveBeenCalledTimes(1);
   });
 
   it('omits the warning key entirely when the account currency matches', async () => {

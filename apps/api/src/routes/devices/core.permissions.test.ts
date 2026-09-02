@@ -83,6 +83,13 @@ vi.mock('../../services/auditEvents', () => ({
   writeRouteAudit: vi.fn(),
 }));
 
+const { schedulePeripheralPolicyDevice } = vi.hoisted(() => ({
+  schedulePeripheralPolicyDevice: vi.fn().mockResolvedValue('job-id'),
+}));
+vi.mock('../../jobs/peripheralJobs', () => ({
+  schedulePeripheralPolicyDevice,
+}));
+
 vi.mock('../../services/sentry', () => ({
   captureException: vi.fn(),
 }));
@@ -693,6 +700,10 @@ describe('Device routes — permission / site / MFA gates (security-launch-fixes
       expect(res.status).toBe(200);
       // Site changes run inside db.transaction (device flip + site_id propagation).
       expect(db.transaction).toHaveBeenCalled();
+      expect(schedulePeripheralPolicyDevice).toHaveBeenCalledWith(
+        ACCESSIBLE_DEVICE.id,
+        'device_site_changed',
+      );
     });
 
     it('allows a site-restricted caller to move WITHIN their allowlist (siteA → siteA2 both allowed)', async () => {

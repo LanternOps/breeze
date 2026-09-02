@@ -1,5 +1,5 @@
-import { configure, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import InvoiceWorkspace from './InvoiceWorkspace';
 import { _resetShowMarginMemoryForTests } from './billingUi';
@@ -48,33 +48,34 @@ function invoice(over: Record<string, unknown>) {
   };
 }
 
+// #3277 — this file ran on a raised Testing Library `asyncUtilTimeout` (5000ms,
+// added by #3284) inside a raised per-test ceiling (15000ms, added by #3956).
+// Both are gone, and deliberately so: the diagnosis they were built on was wrong.
+//
+// The theory was that the queued-Issue tests assert the end of a multi-hop
+// propagation chain (PATCH settles → editor reports → workspace clears
+// `savePending` → header un-gates → queued Issue fires) and that under CI load
+// the chain simply outran the 1000ms default. It does not. The chain never
+// STARTED: a deferred prop-sync `useEffect` in InvoiceEditor flushed after the
+// `fireEvent.change` it never saw, restored the pre-edit notes value and cleared
+// `notesDirty`, so the following blur short-circuited and dispatched no PATCH at
+// all. `savePending` never went true, so `invoice-issue-saving-hint` could never
+// render — no timeout is large enough for a condition that never becomes true,
+// which is why enlarging the budget twice — #3284 raised the `waitFor` timeout,
+// #3956 added the per-test ceiling above it — never held, and the flake came
+// back as #3980 and #4033.
+//
+// With the race removed at source the hint is present SYNCHRONOUSLY inside the
+// blur's own act() flush, for a reason you can check by reading the code rather
+// than trusting this comment: `runScoped` marks the key pending BEFORE it awaits
+// the request, and `fetchWithAuth` is a bare `vi.fn()` here, so nothing suspends
+// before the commit. (That is also what a 200-iteration loaded-CPU harness
+// measured while the fix was being developed; the counts are recorded in PR
+// #4294 rather than asserted here, since the harness was not committed.)
+// The default budget is therefore not merely sufficient, it is unused, and
+// keeping the inflation would only buy a slower, less legible failure for every
+// genuine future breakage in this file.
 describe('InvoiceWorkspace', () => {
-  // #3219 — the queued-Issue tests assert the END of a multi-hop propagation
-  // chain: the PATCH promise settles → the editor reports saved/failed → the
-  // workspace clears `savePending` → the header un-gates → the queued Issue
-  // fires a fetch. Every hop is promise/render scheduling, so under CI load the
-  // whole chain can outrun Testing Library's 1000ms default `waitFor` timeout.
-  //
-  // That is exactly what the three recorded sightings look like: #2925, this
-  // issue, and #3277 all failed at ~1038ms, i.e. a fraction over the default,
-  // and all passed on a same-commit rerun and locally.
-  //
-  // Fake timers are the wrong instrument here despite being the usual reflex —
-  // nothing in this chain is timer-driven. The delay is promise microtasks plus
-  // React render scheduling, which fake timers do not advance, so they would add
-  // machinery without touching the cause.
-  //
-  // Raised file-wide rather than per-assertion so a future test in this file
-  // inherits the headroom instead of re-discovering the flake. Restored
-  // afterwards because Testing Library's `configure` is process-global.
-  const DEFAULT_ASYNC_UTIL_TIMEOUT_MS = 1000;
-  beforeAll(() => {
-    configure({ asyncUtilTimeout: 5000 });
-  });
-  afterAll(() => {
-    configure({ asyncUtilTimeout: DEFAULT_ASYNC_UTIL_TIMEOUT_MS });
-  });
-
   beforeEach(() => {
     vi.clearAllMocks();
     // The margin preference persists to localStorage plus an in-memory mirror
@@ -198,6 +199,13 @@ describe('InvoiceWorkspace', () => {
     // saving hint. (Typing alone is not "saving": nothing has been sent yet.)
     fireEvent.change(screen.getByTestId('invoice-notes'), { target: { value: 'Edited' } });
     fireEvent.blur(screen.getByTestId('invoice-notes'));
+    // Assert the two PRECONDITIONS the rest of this test rests on, before the
+    // wait that depends on them (#3277). Both are synchronous, so a regression
+    // reports "the edit was discarded" or "no PATCH was sent" by name and
+    // instantly, instead of exhausting a `waitFor` on a hint that could never
+    // have rendered — which is the failure mode that took five issues to read.
+    expect(screen.getByTestId('invoice-notes')).toHaveValue('Edited');
+    expect(fetchMock.mock.calls.some((c) => (c[1] as RequestInit)?.method === 'PATCH')).toBe(true);
     await waitFor(() => expect(screen.getByTestId('invoice-issue-saving-hint')).toBeInTheDocument());
 
     // Clicking Issue queues (nothing fires while the save is pending)…
@@ -231,6 +239,9 @@ describe('InvoiceWorkspace', () => {
 
     fireEvent.change(screen.getByTestId('invoice-notes'), { target: { value: 'Edited' } });
     fireEvent.blur(screen.getByTestId('invoice-notes'));
+    // Same two preconditions as the sibling case above — see #3277.
+    expect(screen.getByTestId('invoice-notes')).toHaveValue('Edited');
+    expect(fetchMock.mock.calls.some((c) => (c[1] as RequestInit)?.method === 'PATCH')).toBe(true);
     await waitFor(() => expect(screen.getByTestId('invoice-issue-saving-hint')).toBeInTheDocument());
 
     fireEvent.click(screen.getByTestId('invoice-issue'));

@@ -1,4 +1,5 @@
 import type { PublicQuoteCoverPage, PublicQuoteHeader, PublicQuoteSellerSnapshot, QuotePresentation } from '@breeze/shared';
+import { QuoteServiceError } from './quoteTypes';
 import type { quotes } from '../db/schema/quotes';
 import type { QuoteTotals } from './quoteMath';
 import type { DocumentThemeId, DocumentPageSize } from './documentThemes';
@@ -52,6 +53,23 @@ function toPublicCoverPage(value: unknown): PublicQuoteCoverPage | null {
 function toPublicStatus(status: QuoteRow['status']): PublicQuoteHeader['status'] {
   if (status === 'draft') {
     throw new Error('Draft quotes cannot be serialized for public access');
+  }
+  // A superseded quote has been replaced by a newer revision. Serving its
+  // content would hand the customer prices we have already withdrawn, so this
+  // serializer refuses rather than rendering a body.
+  //
+  // Kept OUT of PublicQuoteHeader['status'] deliberately: the type is the
+  // contract, and this throw is what enforces it. Typed (not a bare Error) so
+  // the public route turns it into a 410 the customer can act on instead of a
+  // generic 500 — see quotesPublic.ts. The branded "this proposal has been
+  // replaced" page, and revoking the link at supersede time, land in later
+  // waves of the quote-revisions plan; this is the fail-closed floor until then.
+  if (status === 'superseded') {
+    throw new QuoteServiceError(
+      'This proposal has been replaced by an updated version',
+      410,
+      'QUOTE_SUPERSEDED',
+    );
   }
   return status === 'sent' ? 'viewed' : status;
 }

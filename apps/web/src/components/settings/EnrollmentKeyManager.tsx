@@ -10,6 +10,7 @@ import { runAction, ActionError } from '../../lib/runAction';
 import { Trans, useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import { formatDate } from '@/lib/dateTimeFormat';
+import { PRODUCT_DEFAULT_ENROLLMENT_DEVICE_COUNT } from '@breeze/shared';
 
 interface EnrollmentKey {
   id: string;
@@ -245,9 +246,17 @@ export default function EnrollmentKeyManager() {
         body.orgId = keys[0].orgId;
       }
 
-      if (formMaxUsage) {
-        body.maxUsage = parseInt(formMaxUsage, 10);
-      }
+      // A blank field must NOT fall through to the API's own `?? 1` default:
+      // that default exists for the Add Device installer flow, where max_usage
+      // on the parent key is deliberately left at 1 (the device budget lives on
+      // the installer's bootstrap token instead — see AddDeviceModal's
+      // handleDownload comment, #2992). This standalone Create Key form has no
+      // such bootstrap token, so an unset field here IS the enrollment budget,
+      // and the "Unlimited"-styled placeholder must resolve to the product
+      // default device count (#4126), not a single-use key.
+      body.maxUsage = formMaxUsage
+        ? parseInt(formMaxUsage, 10)
+        : PRODUCT_DEFAULT_ENROLLMENT_DEVICE_COUNT;
       if (formExpiresAt) {
         body.expiresAt = new Date(formExpiresAt).toISOString();
       }
@@ -494,7 +503,21 @@ export default function EnrollmentKeyManager() {
         <div>
           <h1 className="text-xl font-semibold tracking-tight">{t('enrollmentKeys.title')}</h1>
           <p className="text-muted-foreground">
-            <Trans i18nKey="enrollmentKeys.description" t={t} components={{ code: <code className="rounded bg-muted px-1.5 py-0.5 text-xs font-mono" /> }} />
+            {/* `key` maps the literal CLI placeholder `<key/>`. Authored as a
+                tag rather than plain `<key>` because <Trans> parses the value
+                as markup: an unmapped `<key>` is escaped and reaches the user
+                as the text "&lt;key>". HTML entities are no help either:
+                <Trans> unescapes only under `shouldUnescape`, which this app
+                never enables, so `&lt;key&gt;` would render verbatim too.
+                See #3964. */}
+            <Trans
+              i18nKey="enrollmentKeys.description"
+              t={t}
+              components={{
+                code: <code className="rounded bg-muted px-1.5 py-0.5 text-xs font-mono" />,
+                key: <>{'<key>'}</>,
+              }}
+            />
           </p>
         </div>
         <button
@@ -881,7 +904,7 @@ export default function EnrollmentKeyManager() {
                   type="number"
                   value={formMaxUsage}
                   onChange={(e) => setFormMaxUsage(e.target.value)}
-                  placeholder={t('enrollmentKeys.unlimited')}
+                  placeholder={t('enrollmentKeys.defaultDeviceLimit')}
                   min={1}
                   className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-primary"
                 />

@@ -6,6 +6,13 @@ describe('computeLineTotal', () => {
     expect(computeLineTotal('1.5', '150')).toBe('225.00');
     expect(computeLineTotal('3', '0.335')).toBe('1.01'); // 1.005 -> half-up 1.01
   });
+  it('rounds exact decimal ties half-up even when the double sits below the tie (review #2)', () => {
+    // 1 minute at $7.25/h: 0.02 × 7.25 = 0.145 → 0.15; the double is 0.14499999999999999.
+    expect(computeLineTotal('0.02', '7.25', 'USD')).toBe('0.15');
+    expect(computeLineTotal('0.05', '0.70', 'USD')).toBe('0.04');
+    // Zero-decimal half-unit boundary.
+    expect(computeLineTotal('0.5', '5', 'JPY')).toBe('3.00');
+  });
   it('handles zero', () => {
     expect(computeLineTotal('0', '99.99')).toBe('0.00');
   });

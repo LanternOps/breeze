@@ -1,4 +1,5 @@
 import { releaseClaimedCommandDelivery } from './commandDispatch';
+import { failClaimedSecretCommandsForUnsupportedAgent } from './scriptSecretDelivery';
 import {
   decryptCommandsForDelivery,
   type DeliverableCommand,
@@ -39,24 +40,59 @@ export type ClaimedCommand = {
  * Successfully decrypted siblings in the same batch are always returned — one
  * bad payload never sinks the batch (and a release failure never throws out of
  * the delivery path).
+ *
+ * #3409 PR4c-2 — the secret-delivery claim gate runs FIRST, before anything is
+ * decrypted: a `script` command carrying a sealed `secretEnvEnvelope` must
+ * never be opened for an agent that cannot export the env var, because that
+ * agent would run the script with the credential silently unset. The gate
+ * withholds such a command from the batch — driving it TERMINAL (`failed`,
+ * payload erased) when the device row actually reports an unsupported
+ * version, or leaving it `sent` for the stale reaper when the device row
+ * could not be read at all (that refusal has to stay reversible; see
+ * scriptSecretDelivery.ts). Either way, and unlike the #2414 decrypt-failure
+ * path below, a withheld command is deliberately NOT released back to
+ * `pending` — an incapable agent would immediately re-claim it. Withheld ids
+ * therefore never reach the release loop, which only ever sees the gate's
+ * survivors.
+ *
+ * The gate throws only on a caller contract violation (a single agent's
+ * reported capability handed to a multi-device batch); that must surface, not
+ * be swallowed into a delivery.
+ *
+ * The gate needs the DB (a capability read plus terminal writes), so this
+ * function must be called inside a DB access context — the heartbeat's
+ * ambient org context on the heartbeat paths, an explicit system context on
+ * the self-managed-context REST poll (routes/agents/commands.ts).
+ *
+ * `opts.reportedScriptSecretEnvVersion` lets a caller that just received the
+ * agent's own capability report (the heartbeat) hand it to the gate as
+ * authoritative, avoiding both the extra select and the race against the
+ * heartbeat's own non-sticky device write.
  */
 export async function decryptClaimedCommandsForDelivery(
   claimed: ClaimedCommand[],
+  opts?: { reportedScriptSecretEnvVersion?: number },
 ): Promise<DeliverableCommand[]> {
+  const deliverable = await failClaimedSecretCommandsForUnsupportedAgent(claimed, {
+    ...(typeof opts?.reportedScriptSecretEnvVersion === 'number'
+      ? { reportedVersion: opts.reportedScriptSecretEnvVersion }
+      : {}),
+  });
+
   const delivered = decryptCommandsForDelivery(
-    claimed.map((cmd) => ({
+    deliverable.map((cmd) => ({
       id: cmd.id,
       type: cmd.type,
       deviceId: cmd.deviceId,
       payload: cmd.payload,
     })),
   );
-  if (delivered.length === claimed.length) {
+  if (delivered.length === deliverable.length) {
     return delivered;
   }
 
   const deliveredIds = new Set(delivered.map((cmd) => cmd.id));
-  for (const cmd of claimed) {
+  for (const cmd of deliverable) {
     if (deliveredIds.has(cmd.id)) continue;
     try {
       if (!cmd.executedAt) {

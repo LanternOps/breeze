@@ -25,9 +25,7 @@ describe('dbWriteExpectingRows', () => {
     expect(out).toEqual([]);
     expect(captureMessage).toHaveBeenCalledWith(
       expect.stringContaining('users.last_login_at'),
-      'warning',
-      expect.any(Object),
-      expect.any(Object),
+      expect.objectContaining({ eventCode: 'db_write_expecting_rows_zero' }),
     );
   });
 
@@ -52,9 +50,9 @@ describe('dbWriteExpectingRows', () => {
     await dbWriteExpectingRows('users.last_login_at', async () => []);
     expect(captureMessage).toHaveBeenCalledWith(
       expect.any(String),
-      'warning',
-      expect.any(Object),
-      expect.objectContaining({ cas_label: 'users.last_login_at' }),
+      expect.objectContaining({
+        tags: expect.objectContaining({ cas_label: 'users.last_login_at' }),
+      }),
     );
   });
 
@@ -66,12 +64,12 @@ describe('dbWriteExpectingRows', () => {
     );
     expect(captureMessage).toHaveBeenCalledWith(
       expect.any(String),
-      'warning',
-      expect.any(Object),
-      {
-        cas_label: 'device_commands.ws_result_terminal_cas',
-        prior_status: 'failed:server-timeout',
-      },
+      expect.objectContaining({
+        tags: {
+          cas_label: 'device_commands.ws_result_terminal_cas',
+          prior_status: 'failed:server-timeout',
+        },
+      }),
     );
   });
 
@@ -99,9 +97,9 @@ describe('dbWriteExpectingRows', () => {
     expect(out).toEqual([]);
     expect(captureMessage).toHaveBeenCalledWith(
       expect.any(String),
-      'warning',
-      expect.any(Object),
-      { cas_label: 'device_commands.ws_result_terminal_cas' },
+      expect.objectContaining({
+        tags: { cas_label: 'device_commands.ws_result_terminal_cas' },
+      }),
     );
   });
 

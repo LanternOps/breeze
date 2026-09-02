@@ -80,17 +80,17 @@ export async function handleDrCommandResult(params: HandleDrCommandResultParams)
           ),
           new_device as (
             select jsonb_build_object(
-              'deviceId', ${params.deviceId},
-              'commandId', ${params.commandId},
-              'commandType', ${params.commandType},
-              'status', ${params.status},
-              'completedAt', ${completedAtIso}
+              'deviceId', ${params.deviceId}::text,
+              'commandId', ${params.commandId}::text,
+              'commandType', ${params.commandType}::text,
+              'status', ${params.status}::text,
+              'completedAt', ${completedAtIso}::text
             ) as doc
           ),
           existing_group as (
             select value as doc
             from jsonb_array_elements(coalesce((select doc->'groupResults' from current_results), '[]'::jsonb)) as value
-            where value->>'groupId' = ${drGroupId}
+            where value->>'groupId' = ${drGroupId}::text
             limit 1
           ),
           merged_group as (
@@ -98,7 +98,7 @@ export async function handleDrCommandResult(params: HandleDrCommandResultParams)
               when exists(select 1 from existing_group) then (
                 select jsonb_set(
                   case
-                    when ${groupName} is not null then jsonb_set(existing_group.doc, '{groupName}', to_jsonb(${groupName}::text), true)
+                    when ${groupName}::text is not null then jsonb_set(existing_group.doc, '{groupName}', to_jsonb(${groupName}::text), true)
                     else existing_group.doc
                   end,
                   '{devices}',
@@ -106,12 +106,12 @@ export async function handleDrCommandResult(params: HandleDrCommandResultParams)
                     when exists(
                       select 1
                       from jsonb_array_elements(coalesce(existing_group.doc->'devices', '[]'::jsonb)) as device
-                      where coalesce(device->>'deviceId', device->>'id') = ${params.deviceId}
+                      where coalesce(device->>'deviceId', device->>'id') = ${params.deviceId}::text
                     ) then (
                       select coalesce(
                         jsonb_agg(
                           case
-                            when coalesce(device->>'deviceId', device->>'id') = ${params.deviceId}
+                            when coalesce(device->>'deviceId', device->>'id') = ${params.deviceId}::text
                               then (select doc from new_device)
                             else device
                           end
@@ -127,8 +127,8 @@ export async function handleDrCommandResult(params: HandleDrCommandResultParams)
                 from existing_group
               )
               else jsonb_build_object(
-                'groupId', ${drGroupId},
-                'groupName', ${groupName},
+                'groupId', ${drGroupId}::text,
+                'groupName', ${groupName}::text,
                 'devices', jsonb_build_array((select doc from new_device))
               )
             end as doc
@@ -141,7 +141,7 @@ export async function handleDrCommandResult(params: HandleDrCommandResultParams)
                 select coalesce(
                   jsonb_agg(
                     case
-                      when value->>'groupId' = ${drGroupId} then (select doc from merged_group)
+                      when value->>'groupId' = ${drGroupId}::text then (select doc from merged_group)
                       else value
                     end
                   ),

@@ -1,0 +1,34 @@
+{
+  "canonicalJson": "{\"effectivePolicies\":[{\"action\":\"block\",\"configuredClass\":\"storage\",\"effectiveClass\":\"storage\",\"exceptions\":[{\"allow\":true,\"serialNumber\":\"ABC\"}],\"policyId\":\"60000000-0000-4000-8000-000000000001\",\"priority\":10,\"source\":\"organization\"}],\"identity\":{\"deviceId\":\"00000000-0000-4000-8000-000000000004\",\"groupIds\":[\"00000000-0000-4000-8000-000000000005\",\"00000000-0000-4000-8000-000000000006\"],\"orgId\":\"00000000-0000-4000-8000-000000000001\",\"siteId\":\"00000000-0000-4000-8000-000000000003\"},\"phase\":\"enforce\",\"revision\":7,\"schemaVersion\":2}",
+  "digest": "sha256:291f14487aa7ad424503438d142833468dd8ef18b969b0e16544bc354c80ff49",
+  "envelope": {
+    "schemaVersion": 2,
+    "phase": "enforce",
+    "identity": {
+      "deviceId": "00000000-0000-4000-8000-000000000004",
+      "orgId": "00000000-0000-4000-8000-000000000001",
+      "siteId": "00000000-0000-4000-8000-000000000003",
+      "groupIds": [
+        "00000000-0000-4000-8000-000000000006",
+        "00000000-0000-4000-8000-000000000005"
+      ]
+    },
+    "revision": 7,
+    "effectivePolicies": [
+      {
+        "policyId": "60000000-0000-4000-8000-000000000001",
+        "source": "organization",
+        "effectiveClass": "storage",
+        "configuredClass": "storage",
+        "action": "block",
+        "priority": 10,
+        "exceptions": [
+          {
+            "serialNumber": "ABC",
+            "allow": true
+          }
+        ]
+      }
+    ]
+  }
+}

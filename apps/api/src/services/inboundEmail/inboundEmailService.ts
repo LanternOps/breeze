@@ -307,8 +307,9 @@ export async function processInboundEmail(
       if (gap) {
         captureMessage(
           'Inbound email quarantined: no usable provider sender-auth verdict on a signature-verified webhook',
-          'warning',
-          { provider: n.provider, recipient: n.to, diagnostic: gap, providerMessageId: n.providerMessageId }
+          {
+            eventCode: 'inbound_email_sender_auth_unverified',
+          }
         );
       }
       const reason = gap
@@ -667,15 +668,8 @@ function warnLostClaim(
 ): void {
   captureMessage(
     'Inbound email lost the message-id claim race: duplicate ticket/comment written',
-    'warning',
     {
-      path,
-      partnerId,
-      provider: n.provider,
-      providerMessageId: n.providerMessageId,
-      messageId: n.messageId,
-      ourTicketId,
-      winnerTicketId,
+      eventCode: 'inbound_email_claim_race_lost',
     }
   );
 }

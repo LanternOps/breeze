@@ -1,4 +1,5 @@
 import { render, screen, fireEvent } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import DeviceActions from './DeviceActions';
@@ -237,6 +238,74 @@ describe('DeviceActions — offline gating (issue #2013)', () => {
       expect(connect).toBeDisabled();
       expect(connect).toHaveAttribute('title', 'Device is in maintenance mode');
       expect(screen.queryByRole('button', { name: /^wake$/i })).toBeNull();
+    });
+  });
+
+  // #3987: the overflow menu never branched on device status, so an
+  // already-decommissioned device still offered the (destructive, API-rejected)
+  // decommission action, and a decommissioned device never offered permanent
+  // delete from this menu at all. Asserted against data-testid + the onAction
+  // callback rather than label text — Task 2 renames the underlying locale
+  // values, and these testids are stable across that rename.
+  describe('menu parity on removed devices (#3987)', () => {
+    const decommissionedDevice: Device = { ...baseDevice, status: 'decommissioned' };
+
+    it('offers Restore and Delete permanently — not Remove — on a removed device', async () => {
+      const user = userEvent.setup();
+      const onAction = vi.fn();
+      render(<DeviceActions device={decommissionedDevice} onAction={onAction} />);
+
+      await user.click(screen.getByTestId('device-actions-menu'));
+
+      expect(screen.queryByTestId('device-action-remove')).not.toBeInTheDocument();
+      expect(screen.getByTestId('device-action-restore')).toBeInTheDocument();
+      expect(screen.getByTestId('device-action-permanent-delete')).toBeInTheDocument();
+
+      await user.click(screen.getByTestId('device-action-restore'));
+      expect(onAction).toHaveBeenCalledWith('restore', expect.objectContaining({ status: 'decommissioned' }));
+    });
+
+    it('permanent delete dispatches the permanent-delete action', async () => {
+      const user = userEvent.setup();
+      const onAction = vi.fn();
+      render(<DeviceActions device={decommissionedDevice} onAction={onAction} />);
+
+      await user.click(screen.getByTestId('device-actions-menu'));
+      await user.click(screen.getByTestId('device-action-permanent-delete'));
+
+      expect(onAction).toHaveBeenCalledWith('permanent-delete', expect.objectContaining({ status: 'decommissioned' }));
+    });
+
+    it('offers Remove — not Restore or Delete permanently — on a live device', async () => {
+      const user = userEvent.setup();
+      const onAction = vi.fn();
+      render(<DeviceActions device={onlineDevice} onAction={onAction} />);
+
+      await user.click(screen.getByTestId('device-actions-menu'));
+
+      expect(screen.getByTestId('device-action-remove')).toBeInTheDocument();
+      expect(screen.queryByTestId('device-action-restore')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('device-action-permanent-delete')).not.toBeInTheDocument();
+
+      await user.click(screen.getByTestId('device-action-remove'));
+      expect(onAction).not.toHaveBeenCalled();
+      expect(await screen.findByText('Remove Device')).toBeInTheDocument();
+    });
+
+    // The compact variant is currently unused in production — the sole
+    // production call site (DeviceDetails.tsx) never passes `compact` — but
+    // it duplicates the same menu markup, so this test guards it against
+    // regressions if/when a future fleet view adopts it.
+    it('compact variant: offers Restore and Delete permanently — not Remove — on a removed device', async () => {
+      const user = userEvent.setup();
+      const onAction = vi.fn();
+      render(<DeviceActions device={decommissionedDevice} onAction={onAction} compact />);
+
+      await user.click(screen.getByTestId('device-actions-menu'));
+
+      expect(screen.queryByTestId('device-action-remove')).not.toBeInTheDocument();
+      expect(screen.getByTestId('device-action-restore')).toBeInTheDocument();
+      expect(screen.getByTestId('device-action-permanent-delete')).toBeInTheDocument();
     });
   });
 });

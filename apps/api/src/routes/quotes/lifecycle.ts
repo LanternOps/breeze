@@ -7,6 +7,7 @@ import { requireScope, requirePermission } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import { sendQuote, resendQuote, getQuoteShareLink } from '../../services/quoteLifecycle';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { supersededAuditEvent } from '../../services/quoteSupersedeAudit';
 import { scheduleQuoteSend, cancelQuoteSend } from '../../jobs/quoteSendQueue';
 import { getQuote } from '../../services/quoteService';
 import { writeQuoteImage, readQuoteImage, sniffImageMime, MAX_QUOTE_IMAGE_SIZE_BYTES, fetchRemoteImage, RemoteImageError, type RemoteImageFailureReason } from '../../services/quoteImageStorage';
@@ -45,13 +46,30 @@ quoteLifecycleRoutes.post('/:id/send', scopes, sendPerm, zValidator('param', idP
   if (!body.ok) return c.json({ error: body.error }, 400);
   const emailOpts = body.data;
   try {
-    return c.json({ data: await sendQuote(c.req.valid('param').id, quoteActorFrom(c), {
+    const id = c.req.valid('param').id;
+    const result = await sendQuote(id, quoteActorFrom(c), {
       message: emailOpts.message || undefined,
       to: emailOpts.to,
       cc: emailOpts.cc,
       subject: emailOpts.subject || undefined,
       includePdf: emailOpts.includePdf,
-    }) });
+    });
+    // Retiring a quote the customer could previously accept is a separate,
+    // independently-auditable act from sending the revision — record it against
+    // the PARENT, which is the row whose status actually changed.
+    if (result.superseded) {
+      // writeRouteAudit (not writeAuditEvent) so the acting tech is attributed;
+      // the payload itself is shared with the worker/bulk/AI paths.
+      writeRouteAudit(c, supersededAuditEvent({
+        childQuoteId: id,
+        orgId: result.quote.orgId,
+        parentQuoteId: result.superseded.parentQuoteId,
+        previousStatus: result.superseded.previousStatus,
+        revisionNumber: result.quote.revisionNumber,
+        emailed: result.emailed,
+      }));
+    }
+    return c.json({ data: result });
   } catch (err) { return handleServiceError(c, err); }
 });
 

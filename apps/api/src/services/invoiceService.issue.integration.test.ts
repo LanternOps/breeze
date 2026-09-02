@@ -12,8 +12,13 @@ vi.mock('./invoiceEvents', () => ({ emitInvoiceEvent: vi.fn().mockResolvedValue(
 // can hang under NOAUTH). The render itself is covered by invoicePdf.integration.test.ts.
 vi.mock('../jobs/invoiceWorker', () => ({ enqueueInvoicePdfRender: vi.fn().mockResolvedValue(undefined) }));
 
+// Catalog writes (used by the addBundleLine allocation test) emit BullMQ
+// lifecycle events the same way — stub them for the same reason.
+vi.mock('./catalogEvents', () => ({ emitCatalogEvent: vi.fn().mockResolvedValue(undefined) }));
+
 import { db, withSystemDbAccessContext, withDbAccessContext, type DbAccessContext } from '../db';
 import { partners, organizations, users, timeEntries, invoices, invoiceLines } from '../db/schema';
+import { createCatalogItem, setBundleComponents } from './catalogService';
 import { eq } from 'drizzle-orm';
 import * as svc from './invoiceService';
 import type { InvoiceActor } from './invoiceTypes';
@@ -61,7 +66,8 @@ async function seedFixture(opts?: {
         partnerId, orgId, userId, startedAt: now, endedAt: now,
         durationMinutes: e.durationMinutes, description: 'Work', isBillable: true,
         hourlyRate: e.hourlyRate, billingStatus: e.billed ? 'billed' : 'not_billed',
-        isApproved: e.isApproved ?? true
+        isApproved: e.isApproved ?? true,
+        currencyCode: 'USD'
       }).returning({ id: timeEntries.id });
       timeEntryIds.push(te!.id);
     }
@@ -250,5 +256,44 @@ describe.runIf(RUN)('voidInvoice + runOverdueSweep', () => {
     const cur = await withDbAccessContext(ctx(f), () => svc.getInvoice(issued.id, actor(f)));
     expect(cur.invoice.status).toBe('overdue');
     expect(cur.invoice.markedOverdueAt).not.toBeNull();
+  });
+});
+
+describe.runIf(RUN)('addBundleLine allocation currency (#3775 review #7)', () => {
+  it('copies a component revenueAllocation onto the invoice line ONLY when authored in the invoice currency', async () => {
+    const f = await seedFixture({ entries: [] });
+    const catActor = { userId: f.userId, partnerId: f.partnerId, accessibleOrgIds: null };
+    const mk = (name: string, isBundle: boolean) => withDbAccessContext(ctx(f), () =>
+      createCatalogItem(
+        { itemType: 'service', name, billingType: 'one_time', prices: [{ currencyCode: 'USD', unitPrice: 100 }, { currencyCode: 'EUR', unitPrice: 100 }], unitOfMeasure: 'each', taxable: true, isBundle, attributes: {} },
+        catActor
+      ));
+    const bundle = await mk('Alloc bundle', true);
+    const compA = await mk('Alloc A', false);
+    const compB = await mk('Alloc B', false);
+    await withDbAccessContext(ctx(f), () =>
+      setBundleComponents(bundle.id, [
+        { componentItemId: compA.id, quantity: 1, showOnInvoice: true, revenueAllocation: 60 },
+        { componentItemId: compB.id, quantity: 1, showOnInvoice: true, revenueAllocation: 40 },
+      ], catActor, 'USD'));
+
+    const draft = async (currencyCode: string) => withSystemDbAccessContext(async () => {
+      const [d] = await db.insert(invoices).values({ partnerId: f.partnerId, orgId: f.orgId, status: 'draft', currencyCode }).returning({ id: invoices.id });
+      return d!.id;
+    });
+    const childAllocations = async (invoiceId: string) => {
+      const lines = await withSystemDbAccessContext(() => db.select().from(invoiceLines).where(eq(invoiceLines.invoiceId, invoiceId)));
+      return lines.filter((l) => l.parentLineId !== null).map((l) => l.revenueAllocation).sort();
+    };
+
+    const usdInvoice = await draft('USD');
+    await withDbAccessContext(ctx(f), () => svc.addBundleLine(usdInvoice, bundle.id, 1, actor(f)));
+    expect(await childAllocations(usdInvoice)).toEqual(['40.00', '60.00']);
+
+    // Same bundle on an EUR invoice: the USD split is unavailable — null on every
+    // child line, never EUR 60.00 / EUR 40.00.
+    const eurInvoice = await draft('EUR');
+    await withDbAccessContext(ctx(f), () => svc.addBundleLine(eurInvoice, bundle.id, 1, actor(f)));
+    expect(await childAllocations(eurInvoice)).toEqual([null, null]);
   });
 });

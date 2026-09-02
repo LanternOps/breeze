@@ -35,6 +35,8 @@ import { getRedis, rateLimiter } from '../../services';
 import { createSessionPreToolUse, createSessionPostToolUse, settleBlockedTurnForNewMessage } from '../../services/aiAgentSdk';
 import { helperAuth, type HelperDevice } from '../../middleware/helperAuth';
 import type { ActiveSession } from '../../services/streamingSessionManager';
+import { LlmUnavailableError, resolveLlmConfig, type UsableLlmConfig } from '../../services/llm/llmConfigResolver';
+import { captureException } from '../../services/sentry';
 
 const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const HELPER_RATE_LIMIT = 30;
@@ -62,8 +64,9 @@ async function runHelperPreFlight(
   sessionId: string,
   content: string,
   device: HelperDevice,
+  partnerId: string | null,
 ): Promise<
-  | { ok: true; session: typeof aiSessions.$inferSelect; sanitizedContent: string; systemPrompt: string; maxBudgetUsd: number | undefined; allowedTools: string[]; clientTools: ClientToolDeclaration[] }
+  | { ok: true; session: typeof aiSessions.$inferSelect; sanitizedContent: string; systemPrompt: string; maxBudgetUsd: number | undefined; allowedTools: string[]; clientTools: ClientToolDeclaration[]; resolved: UsableLlmConfig }
   | { ok: false; error: string; status: number }
 > {
   // Fetch session
@@ -95,6 +98,17 @@ async function runHelperPreFlight(
     return { ok: false, error: `Session turn limit reached (${session.maxTurns})`, status: 400 };
   }
 
+  let resolved;
+  try {
+    resolved = await resolveLlmConfig(partnerId);
+  } catch (error) {
+    captureException(error, undefined, { service: 'helperRoutes', orgId: device.orgId });
+    return { ok: false, error: 'AI configuration could not be loaded. Try again.', status: 503 };
+  }
+  if (resolved.source === 'unavailable') {
+    return { ok: false, error: 'ai_unavailable', status: 503 };
+  }
+
   // Rate limit per device
   const redis = getRedis();
   if (redis) {
@@ -107,7 +121,10 @@ async function runHelperPreFlight(
 
   // Budget check
   try {
-    const budgetError = await checkBudget(device.orgId);
+    const budgetError = await checkBudget(
+      device.orgId,
+      resolved.source === 'partner' ? 'partner_key' : 'platform',
+    );
     if (budgetError) return { ok: false, error: budgetError, status: 402 };
   } catch (err) {
     console.error('[Helper] Budget check failed:', err);
@@ -151,7 +168,7 @@ async function runHelperPreFlight(
     // Non-fatal
   }
 
-  return { ok: true, session, sanitizedContent, systemPrompt, maxBudgetUsd, allowedTools, clientTools };
+  return { ok: true, session, sanitizedContent, systemPrompt, maxBudgetUsd, allowedTools, clientTools, resolved };
 }
 
 // ============================================
@@ -178,7 +195,18 @@ helperRoutes.post(
   }).optional()),
   async (c) => {
     const device = c.get('helperDevice');
+    const auth = c.get('auth');
     const body = c.req.valid('json') ?? {};
+    let resolved;
+    try {
+      resolved = await resolveLlmConfig(auth.helperDevicePartnerId ?? null);
+    } catch (error) {
+      captureException(error, c, { service: 'helperRoutes', orgId: device.orgId });
+      return c.json({ error: 'AI configuration could not be loaded. Try again.' }, 503);
+    }
+    if (resolved.source === 'unavailable') {
+      return c.json({ error: 'ai_unavailable' }, 503);
+    }
     const permissionLevel: HelperPermissionLevel = await resolveHelperPermissionLevelForDevice(
       device.id,
       DEFAULT_PERMISSION_LEVEL,
@@ -204,7 +232,7 @@ helperRoutes.post(
         orgId: device.orgId,
         userId: null,
         deviceId: device.id,
-        model: 'claude-sonnet-4-5-20250929',
+        model: resolved.model,
         systemPrompt,
         contextSnapshot: {
           permissionLevel,
@@ -242,12 +270,17 @@ helperRoutes.post(
     const { content } = c.req.valid('json');
 
     // Pre-flight checks
-    const preflight = await runHelperPreFlight(sessionId, content, device);
+    const preflight = await runHelperPreFlight(
+      sessionId,
+      content,
+      device,
+      auth.helperDevicePartnerId ?? null,
+    );
     if (!preflight.ok) {
       return c.json({ error: preflight.error }, preflight.status as 400);
     }
 
-    const { session: dbSession, sanitizedContent, systemPrompt, maxBudgetUsd, allowedTools, clientTools } = preflight;
+    const { session: dbSession, sanitizedContent, systemPrompt, maxBudgetUsd, allowedTools, clientTools, resolved } = preflight;
 
     // When the session declared client tools, build the generic client-declared
     // MCP server: each model tool call publishes `client_tool_request` and parks
@@ -269,24 +302,37 @@ helperRoutes.post(
         })
       : undefined;
 
-    // Get or create streaming session
-    const activeSession = await streamingSessionManager.getOrCreate(
-      sessionId,
-      {
-        orgId: dbSession.orgId,
-        sdkSessionId: dbSession.sdkSessionId,
-        model: dbSession.model,
-        maxTurns: dbSession.maxTurns,
-        turnCount: dbSession.turnCount,
-        systemPrompt: dbSession.systemPrompt,
-      },
-      auth,
-      c,
-      systemPrompt,
-      maxBudgetUsd,
-      allowedTools,
-      mcpServerFactory as Parameters<typeof streamingSessionManager.getOrCreate>[7],
-    );
+    // Get or create streaming session.
+    //
+    // The `resolveLlmConfig` check earlier in this handler already 503s an
+    // unavailable partner config, but it cannot see this one: `getOrCreate`
+    // resolves the WIRE model inside the manager, so a catalog revision with no
+    // verified mapping for THIS session's model fails closed only here. Same
+    // catch shape as ai.ts — otherwise it reaches `app.onError` as a 500.
+    let activeSession;
+    try {
+      activeSession = await streamingSessionManager.getOrCreate(
+        sessionId,
+        {
+          orgId: dbSession.orgId,
+          sdkSessionId: dbSession.sdkSessionId,
+          model: dbSession.model,
+          maxTurns: dbSession.maxTurns,
+          turnCount: dbSession.turnCount,
+          systemPrompt: dbSession.systemPrompt,
+        },
+        auth,
+        c,
+        systemPrompt,
+        maxBudgetUsd,
+        resolved,
+        allowedTools,
+        mcpServerFactory as Parameters<typeof streamingSessionManager.getOrCreate>[8],
+      );
+    } catch (err) {
+      if (err instanceof LlmUnavailableError) return c.json({ error: 'ai_unavailable' }, 503);
+      throw err;
+    }
 
     // Concurrent message guard. If the turn is blocked only on pending
     // approval waits (PAM-gated helper tools), settle them so the assistant

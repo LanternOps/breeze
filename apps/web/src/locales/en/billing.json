@@ -96,6 +96,7 @@
           "cancel": "Contract cancelled"
         },
         "invoiceGenerated": "Invoice generated",
+        "priceBookGaps": "{{count}} catalog line(s) billed at the contract snapshot — no {{currency}} price in the catalog: {{lines}}",
         "draftDeleted": "Draft deleted"
       },
       "cancelConfirm": {
@@ -201,7 +202,11 @@
         "lineTotal": "Line total: {{total}}",
         "addLine": "Add line",
         "noPriceInCurrency": "No {{currency}} price for this item — add one in the catalog, or clear the catalog link and enter a manual line.",
-        "priceFromCatalog": "Unit price (from the catalog, in {{currency}})"
+        "priceFromCatalog": "Unit price (from the catalog, in {{currency}})",
+        "resolvingPrice": "Looking up the {{currency}} price…",
+        "priceLookupFailed": "Could not look up the {{currency}} price.",
+        "priceNotRepresentable": "The saved {{currency}} price for this item is not valid in {{currency}} — correct it in the catalog, or clear the catalog link and enter a manual line.",
+        "priceSourceOrgOverride": "Organization-specific price for {{org}}"
       },
       "estimate": {
         "title": "Estimated this period",
@@ -318,7 +323,65 @@
     "tabs": {
       "contracts": "Contracts",
       "templates": "Templates",
-      "documents": "Documents"
+      "documents": "Documents",
+      "currencyMismatches": "Currency mismatches"
+    },
+    "currencyMismatches": {
+      "title": "Currency mismatches",
+      "description": "Contracts still stamped in a currency their organization no longer bills in. Open a contract to review it — nothing is changed in bulk from here.",
+      "loading": "Loading…",
+      "loadError": "Could not load the currency mismatch report.",
+      "loadMore": "Load more",
+      "emptyTitle": "No currency mismatches",
+      "emptyBody": "Every contract is stamped in its organization's billing currency.",
+      "eligible": "Ready to restamp",
+      "currencyPair": "{{contractCurrency}} → {{orgCurrency}}",
+      "blockingDrafts": "{{count}} draft invoices",
+      "blockingDrafts_one": "{{count}} draft invoice",
+      "columns": {
+        "contract": "Contract",
+        "organization": "Organization",
+        "status": "Status",
+        "currencies": "Contract → organization",
+        "nextBilling": "Next billing",
+        "eligibility": "Restamp eligibility"
+      },
+      "reason": {
+        "STATUS_NOT_ACTIVE": "Not active — only active contracts can be restamped",
+        "ORPHANED_CONTRACT_SOURCE": "Contract-sourced invoice lines cannot be attributed",
+        "ORPHANED_BILLING_PERIOD": "A billing period has no reachable invoice",
+        "BROKEN_CONTRACT_LINEAGE": "Invoice lineage check failed",
+        "UNBILLED_MONETARY_ROWS": "Draft invoices still hold money billed under this contract"
+      }
+    },
+    "currency": {
+      "actions": {
+        "change": "Change currency"
+      },
+      "dialog": {
+        "title": "Change contract currency",
+        "description": "This contract bills in {{currency}}. Restamping affects future invoices only — invoices already issued and past billing periods are never changed.",
+        "currencyLabel": "New currency",
+        "modeLegend": "What happens to the contract lines",
+        "modeClear": "Remove all contract lines",
+        "modeClearHint": "Lines are deleted and re-added by hand in the new currency. Required when any line is manual.",
+        "modeReprice": "Reprice catalog lines",
+        "modeRepriceHint": "Every catalog line is resolved from the price book of the new currency. Only possible when all lines come from the catalog.",
+        "confirm": "I understand this restamps an active contract and cannot be undone in bulk.",
+        "submit": "Change currency"
+      },
+      "blockers": {
+        "UNBILLED_MONETARY_ROWS": "Issue or delete these draft invoices first — they still carry amounts from this contract:",
+        "ORPHANED_BILLING_PERIOD": "These billing periods have no reachable invoice. Resolve them before restamping:",
+        "ORPHANED_CONTRACT_SOURCE": "These contract-sourced invoice lines cannot be attributed to a contract. Resolve them before restamping:",
+        "BROKEN_CONTRACT_LINEAGE": "The invoice lineage check failed for these invoices. Resolve them before restamping:"
+      },
+      "toast": {
+        "changed": "Contract currency changed to {{currency}}."
+      },
+      "errors": {
+        "change": "Could not change the contract currency."
+      }
     },
     "templatesTab": {
       "title": "Contract templates",
@@ -631,7 +694,8 @@
         "updateLine": "Could not update the line.",
         "updateSection": "Could not update the section.",
         "uploadImage": "Could not upload the image.",
-        "noPriceForCurrency": "No {{currency}} price for this item. Add one in the catalog or enter a manual line."
+        "noPriceForCurrency": "No {{currency}} price for this item. Add one in the catalog or enter a manual line.",
+        "sectionAddedListStale": "Section added, but the list could not refresh. Reload the page to see it."
       },
       "image": {
         "alt": "Quote image",
@@ -857,6 +921,11 @@
       "cloneError": "Could not clone the quote.",
       "cloneQuote": "Clone quote",
       "cloneSavingTitle": "Wait for changes to finish saving before cloning.",
+      "reviseQuote": "Revise quote",
+      "revising": "Creating revision…",
+      "reviseSuccess": "Revision created.",
+      "reviseError": "Could not create a revision.",
+      "reviseInProgress": "A revision is already in progress — opening it.",
       "cloneSuccess": "Quote cloned.",
       "cloning": "Cloning…",
       "deleteConfirm": {
@@ -892,7 +961,8 @@
         "toPlaceholder": "Add recipient…",
         "tooManyRecipients": "Use at most {{max}} addresses.",
         "zeroTotalWarning": "This quote totals {{zero}} — check that its items are priced before sending.",
-        "noBillingContactHint": "No billing contact is saved for this organization — enter an email, or add one in the <orgLink>organization settings</orgLink>."
+        "noBillingContactHint": "No billing contact is saved for this organization — enter an email, or add one in the <orgLink>organization settings</orgLink>.",
+        "revisionWarning": "Sending this replaces {{number}} and disables the link the customer already has."
       },
       "sendEmailWarning": {
         "noBillingContact": "Proposal marked Sent, but no email was delivered — {{orgName}} has no billing contact email. Add one in the organization settings, then resend.",
@@ -936,7 +1006,8 @@
       "resendNewLinkOriginalDead": "Proposal re-sent — but with a NEW link. The previous link can no longer be opened, so anyone holding it must use the new one.",
       "shareLinkNewLinkOriginalLive": "Copied a NEW link. This proposal predates link tracking, so the link the customer already had could not be reused; it still works alongside this one.",
       "shareLinkNewLinkOriginalDead": "Copied a NEW link. The previous link can no longer be opened, so anyone holding it must use this one.",
-      "currencyMismatch": "This quote is in {{documentCurrency}} but your Stripe account settles in {{accountCurrency}}. Stripe will present {{documentCurrency}} to the customer and convert it on settlement — you bear the FX spread and any conversion fee."
+      "currencyMismatch": "This quote is in {{documentCurrency}} but your Stripe account settles in {{accountCurrency}}. Stripe will present {{documentCurrency}} to the customer and convert it on settlement — you bear the FX spread and any conversion fee.",
+      "currencyUnknown": "Your Stripe account's settlement currency hasn't been cached, so it couldn't be checked against this {{documentCurrency}} quote. Refresh your Stripe account details under Settings → Integrations to enable the mismatch check."
     },
     "detail": {
       "addContentInEditor": "Add content in the Editor",
@@ -1055,10 +1126,17 @@
         "reasonLabel": "Customer's note:",
         "revise": "Duplicate & revise",
         "revising": "Duplicating…"
+      },
+      "lineage": {
+        "supersededTitle": "This quote was replaced by",
+        "inProgressTitle": "A revision of this quote is being drafted — sending it will replace this quote and disable the customer’s link:",
+        "revisionOfTitle": "Revision of",
+        "untitled": "a newer version"
       }
     },
     "distributorLookup": {
-      "marginUnavailableCostIn": "Cost in {{currency}} — margin unavailable",
+      "feedPriceCurrencyUnknown": "Feed price currency unknown — enter a {{currency}} price",
+      "feedPriceIn": "Feed price is {{feedCurrency}} — enter a {{currency}} price",
       "available": "{{count}} avail",
       "cost": "cost {{currency}} {{amount}}",
       "endOfLife": "End of life",
@@ -1226,7 +1304,8 @@
       "tryAgain": "Try again"
     },
     "pax8ProductLookup": {
-      "marginUnavailableCostIn": "Cost in {{currency}} — margin unavailable",
+      "feedPriceCurrencyUnknown": "Feed price currency unknown — enter a {{currency}} price",
+      "feedPriceIn": "Feed price is {{feedCurrency}} — enter a {{currency}} price",
       "cost": "cost {{currency}} {{amount}}",
       "importAndAdd": "Import & add",
       "option": "Option {{number}}",
@@ -1248,7 +1327,8 @@
       "accepted": "Accepted",
       "declined": "Declined",
       "expired": "Expired",
-      "converted": "Converted"
+      "converted": "Converted",
+      "superseded": "Superseded"
     },
     "workspace": {
       "backLabel": "Quotes",
@@ -1265,7 +1345,8 @@
         "preview": "Preview",
         "detail": "Details"
       },
-      "loading": "Loading quote…"
+      "loading": "Loading quote…",
+      "revisionBanner": "This is a revision of {{number}}. Sending it will replace the original and disable the link the customer already has."
     }
   },
   "billingUi": {
@@ -1540,7 +1621,8 @@
       "shareLinkPrompt": "Share this payment link with your customer:",
       "stripeNudge": "Connect Stripe to accept online card payments.",
       "title": "Payments",
-      "viaStripe": "via Stripe"
+      "viaStripe": "via Stripe",
+      "currencyUnknown": "Your Stripe account's settlement currency hasn't been cached, so it couldn't be checked against this {{documentCurrency}} invoice. Refresh your Stripe account details under Settings → Integrations to enable the mismatch check."
     },
     "requestPayment": {
       "invoiceSent": "Invoice sent",
@@ -1654,16 +1736,21 @@
       "unpaid": "Deposit unpaid"
     },
     "dialog": {
+      "allBlockedByCurrency": "All unbilled work in this range is priced in another currency, so nothing could be assembled. Assemble a draft in that currency instead:",
       "allSites": "All sites",
       "assemble": "Assemble",
       "assembleError": "Could not assemble an invoice for that range.",
       "assembleFromWork": "Assemble from work",
+      "assembleIn": "Assemble in {{code}} ({{count}} items, {{amount}})",
       "assembleSuccess": "Draft invoice assembled",
       "blankInvoice": "Blank invoice",
+      "blockedByCurrency": "{{count}} unbilled items priced in {{code}} were left out — assemble a separate draft in {{code}} to bill them.",
       "createDraft": "Create draft",
       "createError": "Could not create a draft invoice.",
       "createGenericError": "Could not create the invoice.",
       "createSuccess": "Draft invoice created",
+      "currency": "Currency",
+      "currencyOrgDefault": "Organization default",
       "description": "Assemble unbilled work into a draft, or start a blank invoice.",
       "from": "From",
       "selectOrganization": "Select an organization…",
@@ -1731,6 +1818,44 @@
       "emailPlaceholder": "billing@customer.example",
       "name": "Contact name",
       "title": "Billing contact"
+    },
+    "currency": {
+      "title": "Currency",
+      "description": "New quotes, invoices, contracts, time entries and parts for this organization are stamped with this currency. Nothing that already exists is changed.",
+      "label": "Billing currency",
+      "loading": "Checking what a change to {{currency}} would affect…",
+      "error": "The currency change summary could not be loaded.",
+      "panelTitle": "Change the billing currency to {{currency}}?",
+      "none": "Nothing in this organization is stamped in another currency.",
+      "groupTitle": "Stamped in {{currency}}",
+      "counts": {
+        "draftInvoices": "Draft invoices",
+        "draftQuotes": "Draft quotes",
+        "sentQuotes": "Sent quotes",
+        "viewedQuotes": "Viewed quotes",
+        "draftContracts": "Draft contracts",
+        "activeContracts": "Active contracts",
+        "pausedContracts": "Paused contracts",
+        "timeEntries": "Unbilled time entries",
+        "parts": "Unbilled parts"
+      },
+      "timeDetail": "{{ready}} ready to bill, {{running}} still running, {{nonBillable}} not billable, {{missingRate}} with no rate",
+      "partsDetail": "{{ready}} ready to bill, {{nonBillable}} not billable",
+      "amounts": "Labor {{labor}} · Parts {{parts}}",
+      "warningsTitle": "Configuration that will stop applying",
+      "warningRate": "The organization default hourly rate is set in {{currency}} and will no longer apply to new time entries.",
+      "warningCategories": "{{count}} ticket category rates in another currency will be skipped.",
+      "warningOverrides": "{{count}} organization catalog price overrides in another currency will be skipped.",
+      "recovery": "To bill the {{currency}} items above, assemble a draft in {{currency}}.",
+      "rateLess": "{{count}} unbilled time entries have hours but no hourly rate. Set a rate on them — a currency change does not affect them.",
+      "retention": "Only future documents, time entries and parts change. No amount is ever converted, and existing drafts, contracts and unbilled items keep the currency they were stamped with.",
+      "advisory": "These counts are a preview, not a promise — anything created after this preview is not included.",
+      "stale": "The billing currency changed to {{currency}} while you were reviewing. Check the refreshed summary and confirm again.",
+      "confirm": "Change currency",
+      "changing": "Changing…",
+      "cancel": "Cancel",
+      "changeError": "Failed to change the organization billing currency.",
+      "changeSuccess": "Organization billing currency updated"
     },
     "loadError": "Billing settings failed to load.",
     "loading": "Loading billing settings…",

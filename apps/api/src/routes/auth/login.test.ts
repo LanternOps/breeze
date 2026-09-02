@@ -42,18 +42,58 @@ vi.mock('../../db/schema', () => ({
   },
 }));
 
-vi.mock('../../services', () => ({
-  createTokenPair: vi.fn(async () => ({
+vi.mock('../../services', () => {
+  const createTokenPair = vi.fn(async (_payload?: unknown, _options?: unknown) => ({
     accessToken: 'access-token',
     refreshToken: 'refresh-token',
     refreshJti: 'refresh-jti',
     expiresInSeconds: 900,
-  })),
+  }));
+  const mintRefreshTokenFamily = vi.fn(async () => 'family-id');
+  const getUserEpochs = vi.fn(async (_userId?: string) => ({ authEpoch: 1, mfaEpoch: 1 }));
+  const bindRefreshJtiToFamily = vi.fn(async (_jti?: string, _familyId?: string) => undefined);
+  const legacyIssuer = vi.fn(async (identity: any) => {
+    const familyId = identity.legacyFamilyId ?? await mintRefreshTokenFamily();
+    const epochs = await getUserEpochs(identity.userId);
+    if (!epochs) throw new Error('Cannot issue session for missing user');
+    const tokens = await createTokenPair({
+        sub: identity.userId,
+        email: identity.email,
+        roleId: identity.roleId,
+        orgId: identity.orgId,
+        partnerId: identity.partnerId,
+        scope: identity.scope,
+        mfa: identity.mfa,
+        aep: epochs?.authEpoch,
+        mep: epochs?.mfaEpoch,
+        mdid: identity.mobileDeviceId,
+      }, { refreshFam: familyId });
+    await bindRefreshJtiToFamily(tokens.refreshJti, familyId);
+    return {
+      ...tokens,
+      familyId,
+    };
+  });
+  class AuthBindingRotationRequiredError extends Error {
+    status = 428;
+    constructor(readonly replacement: unknown) { super('rotation required'); }
+  }
+  class AuthBindingUnavailableError extends Error {}
+  class AuthIssuanceConflictError extends Error {}
+  class AuthIssuanceCapabilityError extends Error {}
+  class RefreshTokenCurrentnessError extends Error {}
+  return {
+  createTokenPair,
   verifyToken: vi.fn(async () => null),
   verifyPassword: vi.fn(async () => true),
   hashPassword: vi.fn(async () => 'dummy-hash'),
   rateLimiter: vi.fn(async () => ({ allowed: true, resetAt: new Date(Date.now() + 60_000) })),
   loginLimiter: { limit: 5, windowSeconds: 300 },
+  // #3696: per-family refresh rate limit getters — read at call time by
+  // login.ts's POST /refresh handler. Defaults mirror the real fallbacks
+  // (60/60); the rate-limiting describe block below overrides per test.
+  getRefreshRateLimit: vi.fn(() => 60),
+  getRefreshRateWindowSeconds: vi.fn(() => 60),
   getRedis: vi.fn(() => ({
     setex: vi.fn(async () => 'OK'),
   })),
@@ -66,15 +106,38 @@ vi.mock('../../services', () => ({
   isFamilyRevoked: vi.fn(async () => false),
   touchFamilyLastUsed: vi.fn(async () => undefined),
   isTokenIssuedBeforePasswordChange: vi.fn(() => false),
-  mintRefreshTokenFamily: vi.fn(async () => 'family-id'),
-  bindRefreshJtiToFamily: vi.fn(async () => undefined),
+  mintRefreshTokenFamily,
+  bindRefreshJtiToFamily,
   recordAccountFailure: vi.fn(async () => ({ count: 1, newlyLocked: false })),
   clearAccountFailures: vi.fn(async () => undefined),
   isAccountLocked: vi.fn(async () => false),
   getAccountLockoutWindowSeconds: vi.fn(() => 900),
-  getUserEpochs: vi.fn(async () => ({ authEpoch: 1, mfaEpoch: 1 })),
+  getUserEpochs,
   getRefreshFamily: vi.fn(async () => ({ revokedAt: null, absoluteExpiresAt: new Date(Date.now() + 86_400_000) })),
-}));
+  beginAuthIssuance: vi.fn(async () => ({ transitionId: 'transition-1', generation: 1 })),
+  finishAuthIssuance: vi.fn(async (_capability: unknown, callback: (tx: unknown) => Promise<unknown>) => callback({})),
+  cancelAuthIssuance: vi.fn(async () => undefined),
+  assertAuthIssuanceCapability: vi.fn(async () => undefined),
+  AuthBindingRotationRequiredError,
+  AuthBindingUnavailableError,
+  AuthIssuanceConflictError,
+  AuthIssuanceCapabilityError,
+  RefreshTokenCurrentnessError,
+  issueUserSession: vi.fn(async () => ({
+    accessToken: 'guarded-access-token',
+    refreshToken: 'guarded-refresh-token',
+    refreshJti: 'guarded-refresh-jti',
+    expiresInSeconds: 900,
+    familyId: 'guarded-family-id',
+    transitionId: 'transition-1',
+    generation: 1,
+  })),
+  issueUserSessionLegacyDuringTransition: legacyIssuer,
+  bindIssuedUserSession: vi.fn(async () => undefined),
+  authBrowserTransitionsEnforced: vi.fn(() => process.env.AUTH_BROWSER_TRANSITIONS_ENFORCED === 'true'),
+  recordAuthTransitionLegacyIssuer: vi.fn(),
+  };
+});
 
 vi.mock('../../services/email', () => ({
   getEmailService: vi.fn(() => null),
@@ -82,6 +145,20 @@ vi.mock('../../services/email', () => ({
 
 vi.mock('../../services/auditService', () => ({
   createAuditLogAsync: vi.fn(),
+}));
+
+const terminalLogoutState = vi.hoisted(() => ({
+  error: null as Error | null,
+  calls: [] as Array<Record<string, unknown>>,
+  replacement: { kind: 'browser' as const, value: 'c2-binding' },
+}));
+
+vi.mock('../../services/terminalLogout', () => ({
+  performOrdinaryTerminalLogout: vi.fn(async (input: Record<string, unknown>) => {
+    terminalLogoutState.calls.push(input);
+    if (terminalLogoutState.error) throw terminalLogoutState.error;
+    return { replacement: terminalLogoutState.replacement, cleanupOk: true };
+  }),
 }));
 
 vi.mock('../../services/anomalyMetrics', () => ({
@@ -124,7 +201,7 @@ vi.mock('../../middleware/auth', () => ({
       partnerId: null,
       orgId: 'org-1',
       user: { id: 'user-1', email: 'user@example.test', name: 'Sample User' },
-      token: { sid: 'family-1' },
+      token: { sid: 'family-1', aep: 4, mep: 7 },
     });
     return next();
   }),
@@ -231,6 +308,7 @@ import {
   isRefreshTokenJtiRevoked,
   revokeFamily,
   revokeRefreshTokenJti,
+  markRefreshTokenJtiRotated,
   revokeAllUserTokens,
   bindRefreshJtiToFamily,
   isTokenIssuedBeforePasswordChange,
@@ -240,6 +318,19 @@ import {
   getUserEpochs,
   getRefreshFamily,
   getRedis,
+  rateLimiter,
+  getRefreshRateLimit,
+  getRefreshRateWindowSeconds,
+  beginAuthIssuance,
+  finishAuthIssuance,
+  issueUserSession,
+  issueUserSessionLegacyDuringTransition,
+  bindIssuedUserSession,
+  recordAuthTransitionLegacyIssuer,
+  AuthBindingRotationRequiredError,
+  AuthIssuanceConflictError,
+  AuthIssuanceCapabilityError,
+  RefreshTokenCurrentnessError,
 } from '../../services';
 import { revokeRefreshFamilyById } from '../../services/authLifecycle';
 import { authMiddleware } from '../../middleware/auth';
@@ -256,6 +347,7 @@ import {
   clearRefreshTokenCookie,
   revokeCurrentRefreshTokenJti,
   auditUserLoginFailure,
+  userHasUsablePasskey,
 } from './helpers';
 
 function selectChain(rows: unknown[]) {
@@ -326,6 +418,85 @@ describe('POST /login — IP allowlist', () => {
     expect(res.status).toBe(401);
     expect(await res.json()).toMatchObject({ error: 'Invalid email or password' });
     expect(createTokenPair).not.toHaveBeenCalled();
+  });
+
+  it('uses guarded issuance for a transition-v1 password client', async () => {
+    const tx = { update: vi.fn(() => updateChain()) };
+    vi.mocked(finishAuthIssuance).mockImplementationOnce(async (_capability, callback) => callback(tx as any));
+
+    const res = await postLogin(
+      { email: 'admin@msp.com', password: 'correct-horse' },
+      { 'x-breeze-auth-transition': 'v1' },
+    );
+
+    expect(res.status).toBe(200);
+    expect(beginAuthIssuance).toHaveBeenCalledTimes(1);
+    expect(issueUserSession).toHaveBeenCalledTimes(1);
+    expect(issueUserSessionLegacyDuringTransition).not.toHaveBeenCalled();
+    expect(bindIssuedUserSession).toHaveBeenCalledTimes(1);
+    expect(res.headers.get('set-cookie')).toContain('breeze_refresh_token=');
+  });
+
+  it.each([
+    ['web', {}],
+    ['native', { 'x-breeze-mobile-device-id': 'install-1' }],
+  ] as const)(
+    'keeps enforcement-false %s clients on the measured legacy seam',
+    async (clientClass, headers) => {
+      const res = await postLogin(
+        { email: 'admin@msp.com', password: 'correct-horse' },
+        headers,
+      );
+
+      expect(res.status).toBe(200);
+      expect(issueUserSessionLegacyDuringTransition).toHaveBeenCalledTimes(1);
+      expect(recordAuthTransitionLegacyIssuer).toHaveBeenCalledWith('password', clientClass);
+      expect(beginAuthIssuance).not.toHaveBeenCalled();
+      expect(issueUserSession).not.toHaveBeenCalled();
+    },
+  );
+
+  it('returns 428 with a replacement binding before guarded issuance', async () => {
+    vi.mocked(beginAuthIssuance).mockRejectedValueOnce(new AuthBindingRotationRequiredError({
+      kind: 'browser',
+      value: 'a'.repeat(64),
+    }, 'invalid'));
+
+    const res = await postLogin(
+      { email: 'admin@msp.com', password: 'correct-horse' },
+      { 'x-breeze-auth-transition': 'v1' },
+    );
+
+    expect(res.status).toBe(428);
+    expect(res.headers.get('set-cookie')).toContain('breeze_auth_binding=');
+    expect(issueUserSession).not.toHaveBeenCalled();
+    expect(issueUserSessionLegacyDuringTransition).not.toHaveBeenCalled();
+  });
+
+  it('rejects logout-pending after admission without irreversible login effects', async () => {
+    vi.mocked(finishAuthIssuance).mockRejectedValueOnce(new AuthIssuanceCapabilityError());
+
+    const res = await postLogin(
+      { email: 'admin@msp.com', password: 'correct-horse' },
+      { 'x-breeze-auth-transition': 'v1' },
+    );
+
+    expect(res.status).toBe(409);
+    expect(issueUserSession).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
+    expect(createAuditLogAsync).not.toHaveBeenCalled();
+    expect(res.headers.get('set-cookie')).toBeNull();
+  });
+
+  it('returns 426 without invoking the legacy seam once enforcement is enabled', async () => {
+    process.env.AUTH_BROWSER_TRANSITIONS_ENFORCED = 'true';
+
+    const res = await postLogin({ email: 'admin@msp.com', password: 'correct-horse' });
+
+    expect(res.status).toBe(426);
+    await expect(res.json()).resolves.toMatchObject({ reason: 'auth_client_upgrade_required' });
+    expect(issueUserSessionLegacyDuringTransition).not.toHaveBeenCalled();
+    delete process.env.AUTH_BROWSER_TRANSITIONS_ENFORCED;
   });
 
   // The web auth store is seeded from THIS payload on password login; the
@@ -656,6 +827,7 @@ describe('POST /login — writes epoch/status-bound pending MFA record (SR2-06)'
       mfaEnabled: true,
       mfaSecret: 'secret',
       mfaMethod: 'totp',
+      mfaRecoveryCodes: ['scrypt$v1$hash-1'],
       phoneNumber: null,
       avatarUrl: null,
     }]) as any);
@@ -676,7 +848,7 @@ describe('POST /login — writes epoch/status-bound pending MFA record (SR2-06)'
     enable2faState.value = false;
   });
 
-  it('writes the live epochs, status, and effective allowed methods onto the pending record', async () => {
+  it('writes the enrolled-and-policy intersection plus recovery availability onto the pending record and response', async () => {
     const setexMock = vi.fn(async (_key: string, _ttlSeconds: number, _value: string) => 'OK');
     vi.mocked(getRedis).mockReturnValue({ setex: setexMock } as any);
 
@@ -699,10 +871,96 @@ describe('POST /login — writes epoch/status-bound pending MFA record (SR2-06)'
       authEpoch: 3,
       mfaEpoch: 5,
       statusExpectation: 'active',
-      allowedMethods: { totp: true, sms: false, passkey: true },
+      allowedMethods: { totp: true, sms: false, passkey: false },
+      recoveryAvailable: true,
     });
     expect(typeof written.expiresAt).toBe('number');
     expect(written.expiresAt as number).toBeGreaterThan(Date.now());
+    expect(body).toMatchObject({
+      mfaRequired: true,
+      mfaMethod: 'totp',
+      allowedMethods: { totp: true, sms: false, passkey: false },
+      recoveryAvailable: true,
+      passkeyAvailable: false,
+      user: null,
+      tokens: null,
+    });
+  });
+
+  it('offers a registered passkey as an allowed alternate only when live policy permits it', async () => {
+    vi.mocked(userHasUsablePasskey).mockResolvedValue(true);
+    const setexMock = vi.fn(async () => 'OK');
+    vi.mocked(getRedis).mockReturnValue({ setex: setexMock } as any);
+
+    const res = await postLogin({ email: 'admin@msp.com', password: 'correct-horse' });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      allowedMethods: { totp: true, sms: false, passkey: true },
+      passkeyAvailable: true,
+    });
+
+    vi.mocked(getEffectiveMfaPolicy).mockResolvedValue({
+      required: false,
+      allowedMethods: { totp: true, sms: false, passkey: false },
+      source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: false },
+    });
+    const denied = await postLogin({ email: 'admin@msp.com', password: 'correct-horse' });
+    expect(await denied.json()).toMatchObject({
+      allowedMethods: { totp: true, sms: false, passkey: false },
+      // Compatibility alias mirrors the authoritative policy intersection so
+      // strict legacy adapters cannot disagree with allowedMethods.
+      passkeyAvailable: false,
+    });
+  });
+
+  it('issues a recovery-only challenge for a new client when the primary is disallowed', async () => {
+    vi.mocked(getEffectiveMfaPolicy).mockResolvedValue({
+      required: false,
+      allowedMethods: { totp: false, sms: false, passkey: false },
+      source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: false },
+    });
+    vi.mocked(getRedis).mockReturnValue({ setex: vi.fn(async () => 'OK') } as any);
+
+    const res = await postLogin({ email: 'admin@msp.com', password: 'correct-horse' });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      mfaRequired: true,
+      mfaMethod: 'totp',
+      allowedMethods: { totp: false, sms: false, passkey: false },
+      recoveryAvailable: true,
+    });
+  });
+
+  it('fails closed without writing a pending record when no challenge method is usable', async () => {
+    vi.mocked(db.select).mockReturnValue(selectChain([{
+      id: 'user-1',
+      email: 'admin@msp.com',
+      name: 'Admin User',
+      passwordHash: 'password-hash',
+      status: 'active',
+      mfaEnabled: true,
+      mfaSecret: 'secret',
+      mfaMethod: 'totp',
+      mfaRecoveryCodes: [],
+      phoneNumber: null,
+      avatarUrl: null,
+    }]) as any);
+    vi.mocked(getEffectiveMfaPolicy).mockResolvedValue({
+      required: false,
+      allowedMethods: { totp: false, sms: false, passkey: false },
+      source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: false },
+    });
+    const setexMock = vi.fn(async () => 'OK');
+    vi.mocked(getRedis).mockReturnValue({ setex: setexMock } as any);
+
+    const res = await postLogin({ email: 'admin@msp.com', password: 'correct-horse' });
+
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Invalid email or password' });
+    expect(setexMock).not.toHaveBeenCalled();
+    expect(createTokenPair).not.toHaveBeenCalled();
   });
 
   it('fails closed with a generic 401 and mints nothing when the epoch read returns null', async () => {
@@ -743,6 +1001,7 @@ describe('POST /refresh — hard-reject fam-less legacy tokens (#917 L-1)', () =
     }]) as any);
     vi.mocked(isRefreshTokenJtiRevoked).mockResolvedValue(false);
     vi.mocked(revokeRefreshTokenJti).mockResolvedValue(true);
+    vi.mocked(getUserEpochs).mockResolvedValue({ authEpoch: 1, mfaEpoch: 1 });
     vi.mocked(resolveCurrentUserTokenContext).mockResolvedValue({
       roleId: 'role-1',
       partnerId: 'partner-1',
@@ -818,6 +1077,7 @@ describe('POST /refresh — epoch and absolute-expiry gates', () => {
     }]) as any);
     vi.mocked(isRefreshTokenJtiRevoked).mockResolvedValue(false);
     vi.mocked(revokeRefreshTokenJti).mockResolvedValue(true);
+    vi.mocked(getUserEpochs).mockResolvedValue({ authEpoch: 3, mfaEpoch: 1 });
     vi.mocked(resolveCurrentUserTokenContext).mockResolvedValue({
       roleId: 'role-1',
       partnerId: 'partner-1',
@@ -847,6 +1107,99 @@ describe('POST /refresh — epoch and absolute-expiry gates', () => {
       expect.objectContaining({ aep: 3, mep: 1 }),
       { refreshFam: 'family-42' }
     );
+  });
+
+  it('does not count a legacy issuer when the Redis rotation claim loses', async () => {
+    vi.mocked(revokeRefreshTokenJti).mockResolvedValueOnce(false);
+
+    const res = await postRefresh();
+
+    expect(res.status).toBe(401);
+    await expect(res.json()).resolves.toMatchObject({ reason: 'refresh_raced' });
+    expect(recordAuthTransitionLegacyIssuer).not.toHaveBeenCalled();
+    expect(issueUserSessionLegacyDuringTransition).not.toHaveBeenCalled();
+  });
+
+  it('returns refresh_raced without clearing a winning sibling cookie when durable CAS loses', async () => {
+    vi.mocked(finishAuthIssuance).mockRejectedValueOnce(new RefreshTokenCurrentnessError());
+
+    const res = await loginRoutes.request('/refresh', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-breeze-auth-transition': 'v1',
+      },
+    });
+
+    expect(res.status).toBe(401);
+    await expect(res.json()).resolves.toMatchObject({ reason: 'refresh_raced' });
+    expect(clearRefreshTokenCookie).not.toHaveBeenCalled();
+    expect(revokeRefreshTokenJti).not.toHaveBeenCalled();
+    expect(bindIssuedUserSession).not.toHaveBeenCalled();
+  });
+
+  // #4097's per-binding issuance lease rejects the LOSER of two concurrent
+  // refreshes with a RETRYABLE AuthIssuanceConflictError. Flattening that to a
+  // bare 409 throws the retryability away and reads as a terminal auth failure:
+  // an org switch (full reload, whose bootstrap refresh races the pre-reload
+  // one the unload aborted client-side but the server is still executing)
+  // logged the user out every time. On /refresh this is the same benign race
+  // the route already answers with 401 refresh_raced — say so on the wire.
+  it('answers a lost issuance lease with refresh_raced rather than a bare 409 (admission)', async () => {
+    vi.mocked(beginAuthIssuance).mockRejectedValueOnce(new AuthIssuanceConflictError());
+
+    const res = await loginRoutes.request('/refresh', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-breeze-auth-transition': 'v1',
+      },
+    });
+
+    expect(res.status).toBe(401);
+    await expect(res.json()).resolves.toMatchObject({ reason: 'refresh_raced' });
+    // The winner's rotated cookie must survive — the loser just retries.
+    expect(clearRefreshTokenCookie).not.toHaveBeenCalled();
+    expect(revokeRefreshTokenJti).not.toHaveBeenCalled();
+    expect(issueUserSession).not.toHaveBeenCalled();
+  });
+
+  it('answers a lost issuance lease with refresh_raced rather than a bare 409 (finalization)', async () => {
+    vi.mocked(finishAuthIssuance).mockRejectedValueOnce(new AuthIssuanceConflictError());
+
+    const res = await loginRoutes.request('/refresh', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-breeze-auth-transition': 'v1',
+      },
+    });
+
+    expect(res.status).toBe(401);
+    await expect(res.json()).resolves.toMatchObject({ reason: 'refresh_raced' });
+    expect(clearRefreshTokenCookie).not.toHaveBeenCalled();
+    expect(revokeRefreshTokenJti).not.toHaveBeenCalled();
+    expect(bindIssuedUserSession).not.toHaveBeenCalled();
+  });
+
+  it('does not rotate Redis state or install a cookie when logout wins refresh finalization', async () => {
+    vi.mocked(finishAuthIssuance).mockRejectedValueOnce(new AuthIssuanceCapabilityError());
+
+    const res = await loginRoutes.request('/refresh', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-breeze-auth-transition': 'v1',
+      },
+    });
+
+    expect(res.status).toBe(409);
+    expect(issueUserSession).not.toHaveBeenCalled();
+    expect(markRefreshTokenJtiRotated).not.toHaveBeenCalled();
+    expect(revokeRefreshTokenJti).not.toHaveBeenCalled();
+    expect(bindIssuedUserSession).not.toHaveBeenCalled();
+    expect(clearRefreshTokenCookie).not.toHaveBeenCalled();
+    expect(res.headers.get('set-cookie')).toBeNull();
   });
 
   it('rejects with 401 and clears the cookie when the refresh aep no longer matches the live user row (global sign-out)', async () => {
@@ -927,6 +1280,174 @@ describe('POST /refresh — epoch and absolute-expiry gates', () => {
   });
 });
 
+// #3696: per-refresh-token-FAMILY rate limiting. Every other describe block
+// in this file sets E2E_MODE=true, which skips this branch entirely — this
+// suite must turn it off so the code under test actually runs.
+describe('POST /refresh — per-family rate limiting (#3696)', () => {
+  function postRefresh() {
+    return loginRoutes.request('/refresh', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+    });
+  }
+
+  let originalE2eMode: string | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.NODE_ENV = 'test';
+    originalE2eMode = process.env.E2E_MODE;
+    delete process.env.E2E_MODE;
+
+    vi.mocked(resolveRefreshToken).mockReturnValue('refresh-token');
+    vi.mocked(validateCookieCsrfRequest).mockReturnValue(null);
+    vi.mocked(db.select).mockReturnValue(selectChain([{
+      id: 'user-1',
+      email: 'admin@msp.com',
+      status: 'active',
+      authEpoch: 1,
+      mfaEpoch: 1,
+    }]) as any);
+    vi.mocked(isRefreshTokenJtiRevoked).mockResolvedValue(false);
+    vi.mocked(revokeRefreshTokenJti).mockResolvedValue(true);
+    vi.mocked(resolveCurrentUserTokenContext).mockResolvedValue({
+      roleId: 'role-1',
+      partnerId: 'partner-1',
+      orgId: null,
+      scope: 'partner',
+    } as any);
+    vi.mocked(getRefreshFamily).mockResolvedValue({
+      revokedAt: null,
+      absoluteExpiresAt: new Date(Date.now() + 86_400_000),
+    });
+    vi.mocked(verifyToken).mockResolvedValue({
+      sub: 'user-1',
+      email: 'admin@msp.com',
+      type: 'refresh',
+      jti: 'jti-current',
+      fam: 'family-77',
+      aep: 1,
+      mep: 1,
+    } as any);
+    // Defaults re-primed after vi.clearAllMocks() wipes the module-mock
+    // implementations set at file scope.
+    vi.mocked(getRefreshRateLimit).mockReturnValue(60);
+    vi.mocked(getRefreshRateWindowSeconds).mockReturnValue(60);
+    vi.mocked(rateLimiter).mockResolvedValue({
+      allowed: true,
+      remaining: 59,
+      resetAt: new Date(Date.now() + 60_000),
+    });
+  });
+
+  afterEach(() => {
+    if (originalE2eMode === undefined) delete process.env.E2E_MODE;
+    else process.env.E2E_MODE = originalE2eMode;
+  });
+
+  it('keys the limiter on the refresh token family, not the user id', async () => {
+    const res = await postRefresh();
+
+    expect(res.status).toBe(200);
+    expect(rateLimiter).toHaveBeenCalledTimes(1);
+    const [, key] = vi.mocked(rateLimiter).mock.calls[0]!;
+    expect(key).toBe('refresh:fam:family-77');
+  });
+
+  it('passes the limit/window from the getters, and honours operator overrides', async () => {
+    vi.mocked(getRefreshRateLimit).mockReturnValue(120);
+    vi.mocked(getRefreshRateWindowSeconds).mockReturnValue(30);
+
+    await postRefresh();
+
+    expect(rateLimiter).toHaveBeenCalledWith(
+      expect.anything(),
+      'refresh:fam:family-77',
+      120,
+      30,
+      1,
+      { refundOnReject: true },
+    );
+  });
+
+  it('passes { refundOnReject: true } and a cost of 1', async () => {
+    await postRefresh();
+
+    expect(rateLimiter).toHaveBeenCalledWith(
+      expect.anything(),
+      'refresh:fam:family-77',
+      60,
+      60,
+      1,
+      { refundOnReject: true },
+    );
+  });
+
+  it('returns 429 with a retryAfter body field and matching Retry-After header on rejection', async () => {
+    vi.mocked(rateLimiter).mockResolvedValue({
+      allowed: false,
+      remaining: 0,
+      resetAt: new Date(Date.now() + 5_000),
+    });
+
+    const res = await postRefresh();
+
+    expect(res.status).toBe(429);
+    const body = await res.json();
+    expect(body).toMatchObject({
+      error: 'Too many refresh attempts. Please try again later.',
+      retryAfter: expect.any(Number),
+    });
+    expect(res.headers.get('retry-after')).toBe(String(body.retryAfter));
+    expect(body.retryAfter).toBeGreaterThanOrEqual(4);
+    expect(body.retryAfter).toBeLessThanOrEqual(6);
+    // Rejected before any rotation/minting work.
+    expect(createTokenPair).not.toHaveBeenCalled();
+  });
+
+  it('clamps retryAfter to at least 1 when resetAt is in the past (never advertises Retry-After: 0)', async () => {
+    vi.mocked(rateLimiter).mockResolvedValue({
+      allowed: false,
+      remaining: 0,
+      resetAt: new Date(Date.now() - 10_000),
+    });
+
+    const res = await postRefresh();
+
+    expect(res.status).toBe(429);
+    const body = await res.json();
+    expect(body.retryAfter).toBe(1);
+    expect(res.headers.get('retry-after')).toBe('1');
+  });
+
+  it('clamps retryAfter to at least 1 when resetAt equals now', async () => {
+    const now = Date.now();
+    vi.spyOn(Date, 'now').mockReturnValue(now);
+    vi.mocked(rateLimiter).mockResolvedValue({
+      allowed: false,
+      remaining: 0,
+      resetAt: new Date(now),
+    });
+
+    const res = await postRefresh();
+
+    expect(res.status).toBe(429);
+    const body = await res.json();
+    expect(body.retryAfter).toBe(1);
+    expect(res.headers.get('retry-after')).toBe('1');
+
+    vi.mocked(Date.now).mockRestore();
+  });
+
+  it('a non-throttled refresh still succeeds and mints a new pair (non-regression)', async () => {
+    const res = await postRefresh();
+
+    expect(res.status).toBe(200);
+    expect(createTokenPair).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(createTokenPair).mock.calls[0]?.[1]).toEqual({ refreshFam: 'family-77' });
+  });
+});
+
 // Task 10 — truthful logout (SR2-04): a copied refresh token used to survive
 // up to 7 days if Redis was down, because logout only ever did Redis cleanup
 // inside a try/catch that swallowed errors and always returned {success:
@@ -934,125 +1455,70 @@ describe('POST /refresh — epoch and absolute-expiry gates', () => {
 // the DB FIRST, then do the same Redis cleanup it always did, and only report
 // success when the durable revoke actually committed.
 describe('POST /logout', () => {
-  async function postLogout() {
-    return loginRoutes.request('/logout', { method: 'POST' });
+  async function postLogout(headers: Record<string, string> = {}) {
+    return loginRoutes.request('/logout', {
+      method: 'POST',
+      headers: {
+        cookie: 'breeze_csrf_token=csrf-token; breeze_auth_binding=c1',
+        'x-breeze-csrf': 'csrf-token',
+        origin: 'http://localhost',
+        'sec-fetch-site': 'same-origin',
+        ...headers,
+      },
+    });
   }
 
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(revokeRefreshFamilyById).mockResolvedValue(undefined);
-    vi.mocked(revokeAllUserTokens).mockResolvedValue(undefined);
-    vi.mocked(revokeCurrentRefreshTokenJti).mockResolvedValue(undefined);
+    terminalLogoutState.error = null;
+    terminalLogoutState.calls = [];
     vi.mocked(resolveRefreshToken).mockReturnValue(null);
   });
 
-  it('durably revokes the sid family, runs Redis cleanup, clears the cookie, and returns 200', async () => {
-    const res = await postLogout();
-    const body = await res.json();
-
-    expect(res.status).toBe(200);
-    expect(body).toEqual({ success: true });
-
-    // Durable revoke happens inside db.transaction, keyed on the access
-    // token's sid (set to 'family-1' by the authMiddleware mock above) —
-    // NOT a bare fire-and-forget call outside a transaction.
-    expect(db.transaction).toHaveBeenCalledTimes(1);
-    expect(revokeRefreshFamilyById).toHaveBeenCalledWith(expect.anything(), 'family-1', 'logout');
-
-    // Same Redis cleanup logout always did — scoped to this session, never
-    // runPostCommitCleanup's user-wide MCP OAuth grant sweep.
-    expect(revokeAllUserTokens).toHaveBeenCalledWith('user-1');
-    expect(revokeCurrentRefreshTokenJti).toHaveBeenCalledWith(expect.anything(), 'user-1');
-
-    // ORDER matters: the durable DB revoke must land BEFORE the best-effort
-    // Redis cleanup — reordering the blocks would reintroduce SR2-04 (Redis
-    // succeeds, DB revoke silently skipped/failed, token survives 7 days).
-    const durableOrder = vi.mocked(revokeRefreshFamilyById).mock.invocationCallOrder[0];
-    const txOrder = vi.mocked(db.transaction).mock.invocationCallOrder[0];
-    const redisOrder = vi.mocked(revokeAllUserTokens).mock.invocationCallOrder[0];
-    expect(durableOrder).toBeDefined();
-    expect(redisOrder).toBeDefined();
-    expect(txOrder).toBeLessThan(redisOrder!);
-    expect(durableOrder!).toBeLessThan(redisOrder!);
-
-    expect(clearRefreshTokenCookie).toHaveBeenCalled();
-    expect(createAuditLogAsync).toHaveBeenCalledWith(
-      expect.objectContaining({ action: 'user.logout', result: 'success' }),
-    );
+  it('requires strict cookie/header CSRF before invoking terminal logout', async () => {
+    const res = await postLogout({ cookie: '', 'x-breeze-csrf': '' });
+    expect(res.status).toBe(403);
+    expect(terminalLogoutState.calls).toEqual([]);
   });
 
-  it('returns 500 with a failure audit when the durable revoke throws, but still clears the cookie', async () => {
-    vi.mocked(db.transaction).mockRejectedValueOnce(new Error('connection lost'));
-
-    const res = await postLogout();
-    const body = await res.json();
-
-    expect(res.status).toBe(500);
-    expect(body).not.toEqual({ success: true });
-
-    expect(clearRefreshTokenCookie).toHaveBeenCalled();
-    expect(createAuditLogAsync).toHaveBeenCalledWith(
-      expect.objectContaining({
-        action: 'user.logout',
-        result: 'failure',
-        details: { reason: 'durable_revocation_failed', familyId: 'family-1' },
-      }),
-    );
-
-    // The failure audit must never carry raw token/session material — only
-    // the family id (an opaque UUID, not a bearer credential) and a reason.
-    const auditCall = vi.mocked(createAuditLogAsync).mock.calls[0]?.[0] as { details?: unknown };
-    expect(JSON.stringify(auditCall.details)).not.toMatch(/eyJ|Bearer|refresh_token/i);
-  });
-
-  it('still reports success and clears the cookie when Redis cleanup fails after the durable revoke already committed', async () => {
-    vi.mocked(revokeAllUserTokens).mockRejectedValueOnce(new Error('redis down'));
-
-    const res = await postLogout();
-    const body = await res.json();
-
-    // The durable revocation already committed — Redis is best-effort cleanup
-    // layered on top, so its failure must not flip the reported outcome.
-    expect(res.status).toBe(200);
-    expect(body).toEqual({ success: true });
-    expect(revokeRefreshFamilyById).toHaveBeenCalledWith(expect.anything(), 'family-1', 'logout');
-    expect(clearRefreshTokenCookie).toHaveBeenCalled();
-    expect(createAuditLogAsync).toHaveBeenCalledWith(
-      expect.objectContaining({ action: 'user.logout', result: 'success' }),
-    );
-  });
-
-  it('skips the durable revoke for a legacy sid-less token with no refresh cookie, but still runs Redis cleanup and succeeds', async () => {
-    // Legacy access token minted before the sid rollout + no refresh cookie:
-    // there is no family to resolve, so the durable block is skipped entirely
-    // (nothing to revoke ≠ a failure) while everything else behaves as before.
-    vi.mocked(authMiddleware).mockImplementationOnce(async (c: any, next: () => Promise<void>) => {
-      c.set('auth', {
-        scope: 'organization',
-        partnerId: null,
-        orgId: 'org-1',
-        user: { id: 'user-1', email: 'user@example.test', name: 'Sample User' },
-        token: {}, // no sid
-      });
-      await next();
+  it('rejects sentinel cookie/header equality despite valid Origin and fetch-site', async () => {
+    const res = await postLogout({
+      cookie: 'breeze_csrf_token=1; breeze_auth_binding=c1',
+      'x-breeze-csrf': '1',
     });
-    vi.mocked(resolveRefreshToken).mockReturnValue(null);
+    expect(res.status).toBe(403);
+    expect(terminalLogoutState.calls).toEqual([]);
+  });
 
+  it('passes revalidated access claims, refresh cookie, and C1 to terminal logout', async () => {
+    vi.mocked(resolveRefreshToken).mockReturnValue('refresh-cookie');
+    const res = await postLogout();
+    expect(res.status).toBe(200);
+    expect(terminalLogoutState.calls).toEqual([expect.objectContaining({
+      access: { userId: 'user-1', authEpoch: 4, mfaEpoch: 7, familyId: 'family-1' },
+      refreshToken: 'refresh-cookie',
+      binding: expect.objectContaining({ kind: 'browser' }),
+    })]);
+    expect(clearRefreshTokenCookie).toHaveBeenCalled();
+  });
+
+  it('returns 500 without claiming durable completion when PostgreSQL rolls back', async () => {
+    const secret = 'secret-binding-token-nonce-ticket';
+    terminalLogoutState.error = Object.assign(new Error(`connection lost ${secret}`), {
+      replacement: { kind: 'browser', value: secret }, nonce: secret, ticket: secret,
+    });
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const res = await postLogout();
     const body = await res.json();
-
-    expect(res.status).toBe(200);
-    expect(body).toEqual({ success: true });
-
-    expect(db.transaction).not.toHaveBeenCalled();
-    expect(revokeRefreshFamilyById).not.toHaveBeenCalled();
-
-    expect(revokeAllUserTokens).toHaveBeenCalledWith('user-1');
-    expect(revokeCurrentRefreshTokenJti).toHaveBeenCalledWith(expect.anything(), 'user-1');
+    expect(res.status).toBe(500);
+    expect(body).toEqual({ error: 'Logout could not be fully completed. Please try again.' });
     expect(clearRefreshTokenCookie).toHaveBeenCalled();
-    expect(createAuditLogAsync).toHaveBeenCalledWith(
-      expect.objectContaining({ action: 'user.logout', result: 'success' }),
+    expect(JSON.stringify(errSpy.mock.calls)).not.toContain(secret);
+    expect(errSpy).toHaveBeenCalledWith(
+      '[auth] Durable terminal logout failed',
+      { name: 'TerminalLogoutError', reason: 'durable_revocation_failed' },
     );
+    errSpy.mockRestore();
   });
 });
 

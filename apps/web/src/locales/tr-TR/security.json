@@ -587,6 +587,7 @@
     "startScan": "Taramayı başlat",
     "startScansWatchProgressAndReviewScan": "Cihazlar arasında taramaları başlatın, ilerlemeyi izleyin ve tarama geçmişini inceleyin.",
     "started": "Başlatıldı {{time}}",
+    "startedColumn": "Başlatıldı",
     "status": "Durum: {{status}}",
     "status2": "Durum",
     "type": "Tür"

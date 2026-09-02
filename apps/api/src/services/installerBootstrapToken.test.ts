@@ -51,8 +51,8 @@ describe('bootstrapTokenExpiresAt', () => {
 
   const minutesOut = (d: Date) => Math.round((d.getTime() - Date.now()) / 60_000);
 
-  it('defaults to 24 hours when the env var is unset', () => {
-    expect(minutesOut(bootstrapTokenExpiresAt())).toBe(1440);
+  it('defaults to 30 days when the env var is unset', () => {
+    expect(minutesOut(bootstrapTokenExpiresAt())).toBe(43200);
   });
 
   // #2776 regression. docker-compose threads this var in as
@@ -62,16 +62,16 @@ describe('bootstrapTokenExpiresAt', () => {
   // `Number(process.env.X ?? 24 * 60)` read gave 0 there (`??` doesn't fire
   // on '', Number('') === 0), so EVERY bootstrap token was minted already
   // expired and agent enrollment stopped working on upgrade.
-  it('falls back to 24 hours when the env var is the EMPTY STRING, not 0 (#2776)', () => {
+  it('falls back to 30 days when the env var is the EMPTY STRING, not 0 (#2776)', () => {
     vi.stubEnv('INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES', '');
     const expiresAt = bootstrapTokenExpiresAt();
-    expect(minutesOut(expiresAt)).toBe(1440);
+    expect(minutesOut(expiresAt)).toBe(43200);
     expect(expiresAt.getTime()).toBeGreaterThan(Date.now());
   });
 
-  it('falls back to 24 hours for a non-numeric value', () => {
+  it('falls back to 30 days for a non-numeric value', () => {
     vi.stubEnv('INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES', 'forever');
-    expect(minutesOut(bootstrapTokenExpiresAt())).toBe(1440);
+    expect(minutesOut(bootstrapTokenExpiresAt())).toBe(43200);
   });
 
   it('honours an explicit override', () => {

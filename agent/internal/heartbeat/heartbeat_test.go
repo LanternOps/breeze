@@ -4,13 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/health"
 	"github.com/breeze-rmm/agent/internal/ipc"
+	"github.com/breeze-rmm/agent/internal/pamlifetime"
 	"github.com/breeze-rmm/agent/internal/sessionbroker"
 )
 
@@ -308,5 +311,315 @@ func TestHeartbeatPayloadSecurityCapabilitiesJSON(t *testing.T) {
 	}
 	if got, want := zeroVersion, float64(0); got != want {
 		t.Fatalf("zero-value scriptSecretEnvVersion = %v, want %v", got, want)
+	}
+}
+
+func TestHeartbeatPayloadHealthStatusUsesTypedImmutableV1WireKey(t *testing.T) {
+	metricsAvailable := true
+	monitor := health.NewMonitor()
+	monitor.Update("metrics", health.Degraded, "disk pressure")
+	snapshot := monitor.Snapshot(health.SnapshotMetadata{
+		DeviceID:         "550e8400-e29b-41d4-a716-446655440000",
+		AgentVersion:     "1.2.3",
+		MetricsAvailable: &metricsAvailable,
+		ObservedAt:       time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC),
+	})
+	payload := HeartbeatPayload{
+		Status:       "ok",
+		AgentVersion: "1.2.3",
+		HealthStatus: &snapshot,
+	}
+
+	body, err := json.Marshal(&payload)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	healthStatus, ok := decoded["healthStatus"].(map[string]any)
+	if !ok {
+		t.Fatalf("healthStatus missing or wrong shape: %s", body)
+	}
+	if _, exists := decoded["health_status"]; exists {
+		t.Fatalf("snake_case health key must not be emitted: %s", body)
+	}
+	if _, exists := healthStatus["userHelpers"]; exists {
+		t.Fatalf("unrelated userHelpers data leaked into typed health: %s", body)
+	}
+	if healthStatus["schemaVersion"] != float64(1) || healthStatus["overall"] != "warning" {
+		t.Fatalf("healthStatus = %#v, want v1 warning", healthStatus)
+	}
+}
+
+func TestHeartbeatPayloadOmitsHealthStatusWhenNoMainAgentSnapshotExists(t *testing.T) {
+	body, err := json.Marshal(&HeartbeatPayload{Status: "ok", AgentVersion: "1.2.3"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if _, exists := decoded["healthStatus"]; exists {
+		t.Fatalf("healthStatus emitted without a main-agent snapshot: %s", body)
+	}
+}
+
+func TestSecurityCapabilitiesControlProtocolJSON(t *testing.T) {
+	tests := []struct {
+		name                string
+		capabilities        SecurityCapabilities
+		wantPeripheralValue any
+		wantRollbackValue   any
+		wantPeripheralKey   bool
+		wantRollbackKey     bool
+		wantPamValue        any
+		wantPamKey          bool
+	}{
+		{
+			name: "reports exact supported versions",
+			capabilities: SecurityCapabilities{
+				PeripheralPolicyProtocolVersion: 2,
+				RollbackProtocolVersion:         1,
+				PamLifetimeProtocolVersion:      2,
+				PamReconciliation: &PamReconciliationStatus{
+					UnresolvedCount:                 1,
+					QuarantinedCount:                2,
+					AwaitingAcknowledgementCount:    3,
+					ReceivedObservationPendingCount: 1,
+					BlockingReason:                  pamReconciliationReasonQuarantined,
+				},
+			},
+			wantPeripheralValue: float64(2),
+			wantRollbackValue:   float64(1),
+			wantPeripheralKey:   true,
+			wantRollbackKey:     true,
+			wantPamValue:        float64(2),
+			wantPamKey:          true,
+		},
+		{name: "omits unsupported zero values"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body, err := json.Marshal(tt.capabilities)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+
+			var decoded map[string]any
+			if err := json.Unmarshal(body, &decoded); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+
+			peripheralValue, peripheralPresent := decoded["peripheralPolicyProtocolVersion"]
+			if peripheralPresent != tt.wantPeripheralKey {
+				t.Fatalf("peripheralPolicyProtocolVersion present = %v, want %v; payload=%s", peripheralPresent, tt.wantPeripheralKey, body)
+			}
+			if peripheralPresent && peripheralValue != tt.wantPeripheralValue {
+				t.Fatalf("peripheralPolicyProtocolVersion = %v, want %v", peripheralValue, tt.wantPeripheralValue)
+			}
+
+			rollbackValue, rollbackPresent := decoded["rollbackProtocolVersion"]
+			if rollbackPresent != tt.wantRollbackKey {
+				t.Fatalf("rollbackProtocolVersion present = %v, want %v; payload=%s", rollbackPresent, tt.wantRollbackKey, body)
+			}
+			if rollbackPresent && rollbackValue != tt.wantRollbackValue {
+				t.Fatalf("rollbackProtocolVersion = %v, want %v", rollbackValue, tt.wantRollbackValue)
+			}
+
+			pamValue, pamPresent := decoded["pamLifetimeProtocolVersion"]
+			if pamPresent != tt.wantPamKey {
+				t.Fatalf("pamLifetimeProtocolVersion present = %v, want %v; payload=%s", pamPresent, tt.wantPamKey, body)
+			}
+			if pamPresent && pamValue != tt.wantPamValue {
+				t.Fatalf("pamLifetimeProtocolVersion = %v, want %v", pamValue, tt.wantPamValue)
+			}
+			if tt.capabilities.PamReconciliation != nil {
+				got, ok := decoded["pamReconciliation"].(map[string]any)
+				if !ok {
+					t.Fatalf("pamReconciliation missing/not an object: %s", body)
+				}
+				if got["unresolvedCount"] != float64(1) || got["quarantinedCount"] != float64(2) ||
+					got["awaitingAcknowledgementCount"] != float64(3) || got["receivedObservationPendingCount"] != float64(1) ||
+					got["blockingReason"] != pamReconciliationReasonQuarantined {
+					t.Fatalf("pamReconciliation = %+v", got)
+				}
+			} else if _, present := decoded["pamReconciliation"]; present {
+				t.Fatalf("zero-value pamReconciliation unexpectedly present: %s", body)
+			}
+		})
+	}
+}
+
+func TestPamReconciliationStatusReceivedObservationTransport(t *testing.T) {
+	h := newPamControllerTestHeartbeat(t, &fakePamLifetimeManager{available: true})
+	received := deterministicTestPamObservation(t)
+	received.State = pamlifetime.ResultReceived
+	ordinary := received
+	ordinary.ObservationID = "40000000-0000-4000-8000-000000000004"
+	ordinary.State = pamlifetime.ResultFailed
+	quarantined := ordinary
+	quarantined.ObservationID = "40000000-0000-4000-8000-000000000005"
+	if err := h.pamReconciliationOutbox.Enqueue(testPamCommandID, received); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.pamReconciliationOutbox.Enqueue(testPamNewCommandID, ordinary); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.pamReconciliationOutbox.Enqueue("10000000-0000-4000-8000-000000000003", quarantined); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.pamReconciliationOutbox.Quarantine("10000000-0000-4000-8000-000000000003", quarantined.ObservationID, "same_command_rejected"); err != nil {
+		t.Fatal(err)
+	}
+	h.pamReconciliationMu.Lock()
+	h.pamReconciliationAcknowledgementUnavailable = true
+	h.pamReconciliationMu.Unlock()
+
+	status := h.pamReconciliationStatus()
+	if status.UnresolvedCount != 0 || status.QuarantinedCount != 1 || status.AwaitingAcknowledgementCount != 2 || status.ReceivedObservationPendingCount != 1 || status.BlockingReason != pamReconciliationReasonReceivedObservationTransport {
+		t.Fatalf("status = %+v", status)
+	}
+}
+
+func TestPamReconciliationStatusExactCountsAndReasonPriority(t *testing.T) {
+	h := newPamControllerTestHeartbeat(t, &fakePamLifetimeManager{available: true})
+	first := deterministicTestPamObservation(t)
+	second := first
+	second.ObservationID = "40000000-0000-4000-8000-000000000002"
+	second.ActuationID = "50000000-0000-4000-8000-000000000002"
+	h.pamReconciliationMu.Lock()
+	h.pamReconciliationStaged[first.ObservationID] = first
+	h.pamReconciliationStaged[second.ObservationID] = second
+	h.pamReconciliationStagedReasons[first.ObservationID] = pamReconciliationReasonResolverUnavailable
+	h.pamReconciliationStagedReasons[second.ObservationID] = pamReconciliationReasonEnqueueFailed
+	h.pamReconciliationMu.Unlock()
+	if err := h.pamReconciliationOutbox.Enqueue(testPamCommandID, first); err != nil {
+		t.Fatal(err)
+	}
+	quarantined := second
+	quarantined.ObservationID = "40000000-0000-4000-8000-000000000003"
+	if err := h.pamReconciliationOutbox.Enqueue(testPamNewCommandID, quarantined); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.pamReconciliationOutbox.Quarantine(testPamNewCommandID, quarantined.ObservationID, "same_command_rejected"); err != nil {
+		t.Fatal(err)
+	}
+
+	status := h.pamReconciliationStatus()
+	if status.UnresolvedCount != 2 || status.QuarantinedCount != 1 || status.AwaitingAcknowledgementCount != 1 {
+		t.Fatalf("status counts = %+v", status)
+	}
+	if status.BlockingReason != pamReconciliationReasonResolverUnavailable {
+		t.Fatalf("blocking reason = %q, want resolver priority", status.BlockingReason)
+	}
+}
+
+func TestPamReconciliationStatusCapabilityGating(t *testing.T) {
+	for _, test := range []struct {
+		name            string
+		reason          string
+		quarantine      bool
+		pendingOnly     bool
+		wantProtocol    int
+		wantAwaiting    int
+		wantBlockReason string
+	}{
+		{name: "binding unresolved", reason: pamReconciliationReasonBindingUnresolved},
+		{name: "enqueue failed", reason: pamReconciliationReasonEnqueueFailed},
+		{name: "quarantined", quarantine: true, wantBlockReason: pamReconciliationReasonQuarantined},
+		{name: "awaiting acknowledgement", pendingOnly: true, wantProtocol: 2, wantAwaiting: 1, wantBlockReason: pamReconciliationReasonAcknowledgementUnavailable},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			h := newPamControllerTestHeartbeat(t, &fakePamLifetimeManager{available: true})
+			h.pamVerificationAvailable.Store(true)
+			h.setPamReconciliationManagerAvailable(true)
+			observation := deterministicTestPamObservation(t)
+			if test.pendingOnly || test.quarantine {
+				if err := h.pamReconciliationOutbox.Enqueue(testPamCommandID, observation); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.quarantine {
+				if err := h.pamReconciliationOutbox.Quarantine(testPamCommandID, observation.ObservationID, "same_command_rejected"); err != nil {
+					t.Fatal(err)
+				}
+			} else if test.reason != "" {
+				h.pamReconciliationMu.Lock()
+				h.pamReconciliationStaged[observation.ObservationID] = observation
+				h.pamReconciliationStagedReasons[observation.ObservationID] = test.reason
+				h.pamReconciliationMu.Unlock()
+			}
+			if test.pendingOnly {
+				h.pamReconciliationMu.Lock()
+				h.pamReconciliationAcknowledgementUnavailable = true
+				h.pamReconciliationMu.Unlock()
+			}
+			h.recomputePamReconciliationReadiness()
+			if got := h.pamLifetimeProtocolVersion(); got != test.wantProtocol {
+				t.Fatalf("protocol = %d, want %d", got, test.wantProtocol)
+			}
+			status := h.pamReconciliationStatus()
+			if status.AwaitingAcknowledgementCount != test.wantAwaiting {
+				t.Fatalf("awaiting = %d, want %d", status.AwaitingAcknowledgementCount, test.wantAwaiting)
+			}
+			wantReason := test.wantBlockReason
+			if wantReason == "" {
+				wantReason = test.reason
+			}
+			if status.BlockingReason != wantReason {
+				t.Fatalf("reason = %q, want %q", status.BlockingReason, wantReason)
+			}
+		})
+	}
+}
+
+func TestPamReconciliationStatusLogsOnlyChangedSignature(t *testing.T) {
+	h := newPamControllerTestHeartbeat(t, &fakePamLifetimeManager{available: true})
+	var logged []PamReconciliationStatus
+	var loggedPath string
+	var loggedSample pamReconciliationLogSample
+	h.pamReconciliationLogFn = func(status PamReconciliationStatus, path string, sample pamReconciliationLogSample) {
+		logged = append(logged, status)
+		loggedPath = path
+		loggedSample = sample
+	}
+
+	h.pamReconciliationStatus()
+	h.pamReconciliationStatus()
+	if len(logged) != 1 {
+		t.Fatalf("unchanged status logged %d times, want 1", len(logged))
+	}
+	observation := deterministicTestPamObservation(t)
+	h.pamReconciliationMu.Lock()
+	h.pamReconciliationStaged[observation.ObservationID] = observation
+	h.pamReconciliationStagedReasons[observation.ObservationID] = pamReconciliationReasonBindingUnresolved
+	h.pamReconciliationMu.Unlock()
+	h.pamReconciliationStatus()
+	h.pamReconciliationStatus()
+	if len(logged) != 2 || logged[1].BlockingReason != pamReconciliationReasonBindingUnresolved {
+		t.Fatalf("transition logs = %+v", logged)
+	}
+	if loggedPath != h.pamReconciliationOutbox.root || loggedSample.ActuationID != observation.ActuationID ||
+		loggedSample.Generation != observation.Generation || loggedSample.ObservationID != observation.ObservationID {
+		t.Fatalf("safe structured log fields path=%q sample=%+v", loggedPath, loggedSample)
+	}
+}
+
+func TestPamReconciliationStatusReportsUnreadableOutbox(t *testing.T) {
+	h := newPamControllerTestHeartbeat(t, &fakePamLifetimeManager{available: true})
+	if err := os.MkdirAll(h.pamReconciliationOutbox.pendingDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	path := h.pamReconciliationOutbox.entryPath(pamReconciliationStatePending, testPamCommandID, testPamObservationID)
+	if err := os.WriteFile(path, []byte("not-json"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	status := h.pamReconciliationStatus()
+	if status.BlockingReason != pamReconciliationReasonReceivedObservationTransport {
+		t.Fatalf("blocking reason = %q, want received_observation_transport", status.BlockingReason)
 	}
 }

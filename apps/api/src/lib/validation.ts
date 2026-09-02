@@ -109,6 +109,37 @@ export function formatZodError(error: ZodErrorLike): ValidationErrorBody {
   };
 }
 
+/**
+ * Does this Content-Type name a JSON body, exactly as Hono's own validator
+ * decides it?
+ *
+ * Copied deliberately from `hono/dist/validator/validator.js` (`jsonRegex`,
+ * Hono 4.13.2) rather than re-derived. A route that hand-parses its body
+ * instead of using {@link zValidator} has to reproduce this verdict or it
+ * silently changes what the endpoint accepts — and an approximation gets it
+ * wrong in BOTH directions. A hand-rolled `^application\/(\w+\+)?json\b`
+ * looks equivalent and is not: `\b` matches before a hyphen so it ACCEPTS
+ * `application/json-bogus`, which Hono rejects, and `\w` excludes `.` and `-`
+ * so it REJECTS `application/vnd.api+json` and `application/merge-patch+json`,
+ * which Hono accepts. Verified against the installed Hono, not reasoned.
+ *
+ * Anchored end-to-end, so the parameter list is part of the match: that is what
+ * makes `; charset=utf-8` legal and `json-bogus` not.
+ *
+ * DO NOT `.trim()` the header before testing it. The anchors are the point, and
+ * trimming widens the predicate past Hono: `@hono/node-server` normalises only
+ * HTTP whitespace (SP, HTAB, CR, LF), so a NON-BREAKING space survives into the
+ * header value — `application/json\u00a0` is rejected by Hono and was accepted
+ * here while this trimmed. Verified against the installed Hono, not reasoned.
+ */
+export const JSON_CONTENT_TYPE_RE =
+  /^application\/([a-z-\.]+\+)?json(;\s*[a-zA-Z0-9\-]+\=([^;]+))*$/i;
+
+/** True when `header` is a JSON media type by Hono's rule. */
+export function isJsonContentType(header: string | undefined | null): boolean {
+  return JSON_CONTENT_TYPE_RE.test(header ?? '');
+}
+
 type ValidatorHook<
   T extends z.ZodType,
   E extends Env,
@@ -150,7 +181,12 @@ export const zValidator = <
     }
   );
 
-const JSON_CONTENT_TYPE = /^application\/([a-z\-.]+\+)?json(;\s*[a-zA-Z0-9\-]+=([^;]+))*$/i;
+// Was a SECOND hand-maintained copy of Hono's jsonRegex — semantically
+// equivalent to JSON_CONTENT_TYPE_RE above (the literal spelling differed:
+// `[a-z\-.]` vs `[a-z-\.]`, `=` vs `\=`) but written out separately. Two
+// copies of the same rule is one more than can be kept in step. Aliased so
+// there is a single definition to fix when Hono changes.
+const JSON_CONTENT_TYPE = JSON_CONTENT_TYPE_RE;
 
 /**
  * `zValidator('json', schema)` for routes whose body is genuinely OPTIONAL.

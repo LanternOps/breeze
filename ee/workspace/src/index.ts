@@ -1,6 +1,10 @@
 import { Hono } from 'hono';
-import Anthropic from '@anthropic-ai/sdk';
-import { asWorkspaceDatabase, type BreezeExtensionV1, type WorkspaceDatabase } from './hostTypes';
+import {
+  asWorkspaceDatabase,
+  type BreezeExtensionV1,
+  type ExtensionAiContext,
+  type WorkspaceDatabase,
+} from './hostTypes';
 import { createAgentRoutes } from './routes/agent';
 import { createContentRoutes } from './routes/content';
 import { createDashboardRoutes } from './routes/dashboard';
@@ -15,7 +19,7 @@ import { createContentIngestService } from './services/contentIngestService';
 import { createContentSearchService } from './services/contentSearchService';
 import { createCrosswalkService } from './services/crosswalkService';
 import { createDashboardService } from './services/dashboardService';
-import { createEnrichmentService, type AnthropicLike } from './services/enrichmentService';
+import { createEnrichmentService } from './services/enrichmentService';
 import { createFilingService } from './services/filingService';
 import { createCrawlRunsService } from './services/crawlRunsService';
 import { createCredentialService } from './services/credentialService';
@@ -27,18 +31,18 @@ import { createSourcesService } from './services/sourcesService';
 import { getOrgSettings } from './services/orgSettingsService';
 
 /**
- * Enrichment needs an Anthropic key; construct lazily and only when the
- * content layer could ever serve it. Absent key → routes answer 503 rather
- * than crashing registration. Import stays dynamic-free: the SDK reads
- * ANTHROPIC_API_KEY from the environment at construction.
+ * Enrichment needs the host's metered `context.ai` capability; construct only
+ * when the host provides one. Absent capability (older host) → routes answer
+ * 503 rather than crashing registration — same no-op shape as the pre-BYOK
+ * missing-ANTHROPIC_API_KEY case this replaces. The host resolves BYOK vs
+ * platform key, meters, and records usage; the extension never sees a key.
  */
 function buildEnrichmentService(
   db: WorkspaceDatabase,
+  ai: ExtensionAiContext | undefined,
 ): ReturnType<typeof createEnrichmentService> | undefined {
-  if (!process.env.ANTHROPIC_API_KEY) return undefined;
-  return createEnrichmentService(db, {
-    client: new Anthropic() as unknown as AnthropicLike,
-  });
+  if (!ai) return undefined;
+  return createEnrichmentService(db, { invoke: ai.invoke });
 }
 
 const workspaceExtension: BreezeExtensionV1 = {
@@ -74,8 +78,8 @@ const workspaceExtension: BreezeExtensionV1 = {
       // the ingest phase exactly the same either way.
       embedder: buildEmbedder(),
     });
-    const enrichmentService = buildEnrichmentService(db);
-    // Enrichment-absent (no ANTHROPIC_API_KEY) must still let the runner
+    const enrichmentService = buildEnrichmentService(db, context.ai);
+    // Enrichment-absent (no context.ai capability) must still let the runner
     // construct and drive a job through: this no-op stand-in reports the
     // enrich phase already drained, so the pipeline advances straight to
     // crosswalk instead of the runner failing to construct at all. The admin

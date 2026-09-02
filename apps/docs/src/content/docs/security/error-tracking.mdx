@@ -43,6 +43,10 @@ Set in `.env`:
 ```bash
 # API
 SENTRY_DSN=https://<key>@<org>.ingest.sentry.io/<project>
+# Multi-region: use a region-qualified value (production-us, production-eu).
+# A bare `production` on every region makes them indistinguishable in Sentry —
+# `server_name` is a per-deploy container hash, so no other field can attribute
+# an error to a region.
 SENTRY_ENVIRONMENT=production
 SENTRY_RELEASE=0.62.23
 SENTRY_TRACES_SAMPLE_RATE=0.1

@@ -10,12 +10,33 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import type { RouteProp } from '@react-navigation/native';
-import { useRoute } from '@react-navigation/native';
+import type { NavigationProp, RouteProp } from '@react-navigation/native';
+import { useNavigation, useRoute } from '@react-navigation/native';
 
 import { palette, radii, spacing, type } from '../../theme';
-import { useAppDispatch } from '../../store';
+import { useAppDispatch, useAppSelector } from '../../store';
 import { applyStatusChange, syncTicketFromDetail } from '../../store/ticketsSlice';
+import {
+  needsAttentionChanged,
+  pendingWritesChanged,
+  runningTimerAdopted,
+  stoppedTimer,
+  timeAccessDenied,
+} from '../../store/timeSlice';
+import { startTimer, stopTimer } from '../../services/timeEntries';
+import {
+  enqueue,
+  parkNeedsAttention,
+  readNeedsAttention,
+  readQueue,
+} from '../../services/timeEntryQueue';
+import {
+  clearLocalTimer,
+  readLocalTimer,
+  stampNow,
+  writeLocalTimer,
+} from '../../services/localTimer';
+import { useNetworkConnected } from '../../lib/useNetworkConnected';
 import {
   addTicketComment,
   allowedQuickStatuses,
@@ -26,12 +47,40 @@ import {
   type TicketDetail,
   type TicketStatus,
 } from '../../services/tickets';
+import {
+  openAttachmentExternally,
+  pickDocument,
+  pickFromCamera,
+  pickFromLibrary,
+  prepareImage,
+  toAttachmentError,
+  uploadTicketAttachment,
+  type PickOutcome,
+  type TicketAttachmentMeta,
+} from '../../services/ticketAttachments';
 import type { TicketsStackParamList } from '../../navigation/MainNavigator';
+import { AttachmentChip } from '../../components/AttachmentChip';
 import { Toast } from '../../components/Toast';
 import { relativeTime } from '../../lib/relativeTime';
 import { reportInternalError } from '../../lib/errorReporting';
 
 import { priorityColor, priorityLabel, statusLabel, ticketRef } from './ticketCopy';
+import { startForTicket, stopRunningTimer } from './timerActions';
+import { startOutcomeEffects, stopOutcomeEffects } from './timerOutcomeEffects';
+import { CommentAttachments } from './CommentAttachments';
+import {
+  addPickedFiles,
+  attachDisabledReason,
+  canSend,
+  claimableIds,
+  markFailed,
+  markUploaded,
+  markUploading,
+  remainingSlots,
+  removeChip,
+  sendButtonLabel,
+  type AttachmentChip as Chip,
+} from './attachmentComposer';
 
 type DetailRoute = RouteProp<TicketsStackParamList, 'TicketDetail'>;
 
@@ -43,8 +92,29 @@ type DetailRoute = RouteProp<TicketsStackParamList, 'TicketDetail'>;
  */
 const QUICK_STATUS_CANDIDATES: readonly TicketStatus[] = ['open', 'pending', 'resolved'];
 
+/**
+ * The three attach sources, rendered as a visible row rather than hidden behind
+ * an action sheet.
+ *
+ * The plan called for an action sheet; a row is what actually works on both
+ * platforms without a new dependency. `ActionSheetIOS` is iOS-only, and
+ * `Alert.alert` — the cross-platform stand-in — silently degrades past three
+ * buttons on Android, which is exactly the count this needs plus Cancel. The
+ * row also costs one tap instead of two.
+ */
+const ATTACH_ACTIONS: readonly {
+  key: string;
+  label: string;
+  pick: (remaining: number) => Promise<PickOutcome>;
+}[] = [
+  { key: 'camera', label: 'Camera', pick: () => pickFromCamera() },
+  { key: 'library', label: 'Library', pick: (remaining) => pickFromLibrary(remaining) },
+  { key: 'file', label: 'File', pick: () => pickDocument() },
+];
+
 export function TicketDetailScreen() {
   const route = useRoute<DetailRoute>();
+  const navigation = useNavigation<NavigationProp<TicketsStackParamList>>();
   const { ticketId } = route.params;
   const dispatch = useAppDispatch();
 
@@ -56,6 +126,31 @@ export function TicketDetailScreen() {
   const [pendingStatus, setPendingStatus] = useState<TicketStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
+  const [timerNotice, setTimerNotice] = useState<string | null>(null);
+  const [timerBusy, setTimerBusy] = useState(false);
+  const [chips, setChips] = useState<Chip[]>([]);
+  /**
+   * Mirror of `chips` readable synchronously.
+   *
+   * Same reason as `inFlight` below: `chips` is render-captured, so two picks
+   * dispatched before React commits would both compute their free slots from
+   * the same stale array and overrun the five-per-comment cap. Every write goes
+   * through `applyChips`, which keeps the two in step.
+   */
+  const chipsRef = useRef<Chip[]>([]);
+  const applyChips = useCallback((next: (prev: Chip[]) => Chip[]): Chip[] => {
+    const value = next(chipsRef.current);
+    chipsRef.current = value;
+    setChips(value);
+    return value;
+  }, []);
+
+  const connected = useNetworkConnected();
+  const running = useAppSelector((state) => state.time.running);
+  // Sticky for the session: once the server has refused this account the
+  // control is withdrawn rather than re-offered and failing (see timeSlice).
+  const timeDenial = useAppSelector((state) => state.time.denial);
+  const timerInFlight = useRef(false);
 
   // `busy` is render-captured, so two taps before React commits can both see
   // false and fire duplicate requests. This ref is the synchronous lock.
@@ -115,14 +210,114 @@ export function TicketDetailScreen() {
     void load();
   }, [load]);
 
+  /**
+   * Prepare and upload ONE chip's file.
+   *
+   * `prepareImage` runs here rather than at pick time so a Retry re-derives
+   * from the ORIGINAL local file: a resized temp file can be purged from the
+   * cache between the failure and the retry, and re-manipulating is cheap
+   * next to losing the photo.
+   */
+  const uploadChip = useCallback(
+    async (chip: Chip) => {
+      try {
+        const prepared = await prepareImage(chip.file);
+        const meta = await uploadTicketAttachment(ticketId, prepared);
+        if (mounted.current) applyChips((prev) => markUploaded(prev, chip.localId, meta.id));
+      } catch (err: unknown) {
+        reportInternalError(err, 'ticket-attachment-upload');
+        const failure = toAttachmentError(err);
+        if (mounted.current) {
+          applyChips((prev) => markFailed(prev, chip.localId, failure.message, failure.retryable));
+        }
+      }
+    },
+    [ticketId, applyChips]
+  );
+
+  const handlePick = useCallback(
+    async (pick: () => Promise<PickOutcome>) => {
+      // Total by contract — `runPicker` converts a native throw into a
+      // `failed` outcome, so this never rejects into the `void` at the tap site.
+      const outcome = await pick();
+      if (!outcome.ok) {
+        if (!mounted.current) return;
+        // A cancel is the user's own choice and gets no toast; the other two
+        // are failures they cannot otherwise see.
+        if (outcome.reason === 'permission-denied') {
+          setToast({
+            kind: 'error',
+            text: 'Breeze needs permission to use that. Enable it in Settings.',
+          });
+        } else if (outcome.reason === 'failed') {
+          setToast({ kind: 'error', text: outcome.message });
+        }
+        return;
+      }
+      if (!mounted.current) return;
+
+      const before = chipsRef.current.length;
+      const added = addPickedFiles(chipsRef.current, outcome.files);
+      applyChips(() => added.chips);
+      const started = added.chips.slice(before);
+
+      if (added.rejected > 0) {
+        setToast({
+          kind: 'error',
+          text: `Only 5 files per comment — ${added.rejected} not added.`,
+        });
+      }
+      // Sequential, not Promise.all: the server rate-limits uploads at 30/min
+      // per user and a phone's uplink is the bottleneck anyway.
+      for (const chip of started) await uploadChip(chip);
+    },
+    [uploadChip, applyChips]
+  );
+
+  const retryChip = useCallback(
+    (localId: string) => {
+      const target = chipsRef.current.find((c) => c.localId === localId);
+      if (!target) return;
+      applyChips((prev) => markUploading(prev, localId));
+      void uploadChip(target);
+    },
+    [uploadChip, applyChips]
+  );
+
+  const openAttachment = useCallback(
+    async (attachment: TicketAttachmentMeta) => {
+      try {
+        await openAttachmentExternally(
+          ticketId,
+          attachment.id,
+          attachment.originalFilename,
+          attachment.contentType
+        );
+      } catch (err: unknown) {
+        reportInternalError(err, 'ticket-attachment-open');
+        const failure = toAttachmentError(err);
+        if (mounted.current) setToast({ kind: 'error', text: failure.message });
+      }
+    },
+    [ticketId]
+  );
+
   const submitComment = useCallback(async () => {
     const trimmed = comment.trim();
-    if (!trimmed || inFlight.current) return;
+    const attachmentIds = claimableIds(chips);
+    // Not `!trimmed`: the API accepts a comment carrying only attachments
+    // (`addTicketCommentSchema` refines "text OR at least one attachment"), so
+    // gating on text alone would block a photo-only reply.
+    if ((!trimmed && attachmentIds.length === 0) || inFlight.current) return;
     inFlight.current = true;
     setBusy(true);
     try {
-      const created = await addTicketComment(ticketId, trimmed, true);
+      const created = await addTicketComment(ticketId, trimmed, true, attachmentIds);
       setComment('');
+      // Only clear once the claim succeeded — a failed POST leaves the pending
+      // rows claimable, and dropping the chips would strand them until the
+      // server's 24h reaper runs.
+      applyChips(() => []);
       const refreshed = await load();
       if (!refreshed) {
         // The POST succeeded but the re-read did not. Append the comment the
@@ -134,16 +329,23 @@ export function TicketDetailScreen() {
         setToast({ kind: 'success', text: 'Comment added' });
       }
     } catch (err: unknown) {
-      const apiError = err as { message?: string };
       reportInternalError(err, 'ticket-comment');
       if (mounted.current) {
-        setToast({ kind: 'error', text: apiError.message || 'Could not add comment.' });
+        // A failed claim (ATTACHMENT_NOT_CLAIMABLE) has its own copy; anything
+        // else falls back to the server's message. The chips are deliberately
+        // NOT cleared here — the pending rows are still claimable, so a retry
+        // can still post them.
+        const code = (err as { code?: unknown } | null)?.code;
+        const text = code === 'ATTACHMENT_NOT_CLAIMABLE'
+          ? toAttachmentError(err).message
+          : (err as { message?: string }).message || 'Could not add comment.';
+        setToast({ kind: 'error', text });
       }
     } finally {
       inFlight.current = false;
       if (mounted.current) setBusy(false);
     }
-  }, [comment, ticketId, load]);
+  }, [comment, chips, ticketId, load]);
 
   const submitStatus = useCallback(
     async (status: TicketStatus) => {
@@ -208,6 +410,96 @@ export function TicketDetailScreen() {
     [resolutionNote, ticketId, dispatch, load]
   );
 
+  /**
+   * The queue is the source of truth for "how much is unsent", so the depth is
+   * re-read from storage rather than incremented locally. On a storage failure
+   * the previous depth is kept: reporting zero pending writes would tell a
+   * technician their billable minutes are safe when they may not be.
+   */
+  const refreshQueueDepth = useCallback(async () => {
+    try {
+      const queued = await readQueue();
+      if (mounted.current) dispatch(pendingWritesChanged(queued.length));
+    } catch {
+      // QueueStorageError — leave the last known depth in place.
+    }
+  }, [dispatch]);
+
+  const onStartTimer = useCallback(async () => {
+    if (timerInFlight.current) return;
+    timerInFlight.current = true;
+    setTimerBusy(true);
+    setTimerNotice(null);
+    try {
+      const outcome = await startForTicket(ticketId, {
+        startTimer,
+        writeLocalTimer,
+        clearLocalTimer,
+        isConnected: () => connected,
+        stamp: stampNow,
+      });
+      if (!mounted.current) return;
+      // One decision table, shared with the TimerBar — see timerOutcomeEffects.ts.
+      const effects = startOutcomeEffects(outcome);
+      // `startRunning` may carry a null id: a timer started offline exists only
+      // on this device until its span is created, and it still has to tick.
+      if (effects.startRunning !== null) dispatch(runningTimerAdopted(effects.startRunning));
+      if (effects.accountDenial !== null) dispatch(timeAccessDenied(effects.accountDenial));
+      if (effects.refreshQueueDepth) await refreshQueueDepth();
+      if (!mounted.current) return;
+      setTimerNotice(effects.notice);
+      setToast(effects.toast);
+    } finally {
+      timerInFlight.current = false;
+      if (mounted.current) setTimerBusy(false);
+    }
+  }, [ticketId, connected, dispatch, refreshQueueDepth]);
+
+  const onStopTimer = useCallback(async () => {
+    if (timerInFlight.current) return;
+    timerInFlight.current = true;
+    setTimerBusy(true);
+    setTimerNotice(null);
+    try {
+      const outcome = await stopRunningTimer(
+        { running },
+        {
+          stopTimer,
+          enqueue,
+          readLocalTimer,
+          clearLocalTimer,
+          parkNeedsAttention,
+          isConnected: () => connected,
+          stamp: stampNow,
+        }
+      );
+      if (!mounted.current) return;
+      const effects = stopOutcomeEffects(outcome);
+      // A QUEUED stop clears the local timer too: the technician has said the
+      // timer is over and the queued write is what makes the server agree.
+      if (effects.clearRunning) dispatch(stoppedTimer());
+      if (effects.accountDenial !== null) dispatch(timeAccessDenied(effects.accountDenial));
+      if (effects.reload) {
+        // The stop writes a time-entry activity comment server-side, so the
+        // activity list below is stale until this lands.
+        void load();
+      }
+      if (effects.refreshQueueDepth) await refreshQueueDepth();
+      // A stop whose clock ran backwards parks a row from THIS screen, so the
+      // standing count has to be updated here — not at the next reconnect.
+      if (effects.refreshNeedsAttention) {
+        const parked = await readNeedsAttention().catch(() => null);
+        if (parked !== null && mounted.current) dispatch(needsAttentionChanged(parked.length));
+      }
+      if (!mounted.current) return;
+      setTimerNotice(effects.notice);
+      setToast(effects.toast);
+    } finally {
+      timerInFlight.current = false;
+      if (mounted.current) setTimerBusy(false);
+    }
+  }, [connected, dispatch, refreshQueueDepth, load, running]);
+
   if (loading && !ticket) {
     return (
       <View style={styles.centered}>
@@ -234,6 +526,8 @@ export function TicketDetailScreen() {
   // `changeTicketStatus` discards the note on non-resolving moves, so rendering
   // the input then produces a field whose contents can never be submitted.
   const showResolutionInput = pendingStatus === 'resolved';
+  const attachBlocked = attachDisabledReason({ connected, chips });
+  const sendable = canSend({ chips, text: comment, busy });
   const quickStatuses = allowedQuickStatuses(ticket.status, QUICK_STATUS_CANDIDATES);
   // Only person-authored entries are "comments"; the rest of the array is
   // activity (status changes, assignments, time entries).
@@ -304,6 +598,49 @@ export function TicketDetailScreen() {
           />
         ) : null}
 
+        <Text style={styles.sectionHeader}>TIME</Text>
+        {timeDenial ? (
+          // Not a generic failure: the technician is told which wall they hit
+          // and whether an administrator can move it.
+          <Text style={styles.timeDenied} accessibilityRole="text">
+            {timeDenial.message}
+          </Text>
+        ) : (
+          <>
+            <Pressable
+              onPress={() => (running ? void onStopTimer() : void onStartTimer())}
+              disabled={timerBusy}
+              accessibilityRole="button"
+              accessibilityLabel={running ? 'Stop timer' : 'Start timer on this ticket'}
+              accessibilityState={{ disabled: timerBusy }}
+              style={[styles.timerButton, timerBusy && styles.submitDisabled]}
+            >
+              <Text style={styles.timerButtonText}>
+                {timerBusy ? 'Working…' : running ? 'Stop timer' : 'Start timer'}
+              </Text>
+            </Pressable>
+            {running && running.ticketId !== ticketId ? (
+              // `startTimer` auto-stops the caller's previous timer before
+              // inserting (timeEntryService.ts), so starting here silently
+              // closes the other ticket's entry. Say so before the tap.
+              <Text style={styles.metaDim}>
+                A timer is running on another ticket. Starting here stops that one.
+              </Text>
+            ) : null}
+            {running && running.ticketId === ticketId ? (
+              <Text style={styles.metaDim}>
+                {running.id === null
+                  ? 'Timer running on this ticket — not yet synced.'
+                  : 'Timer running on this ticket.'}
+              </Text>
+            ) : null}
+            {!connected ? (
+              <Text style={styles.metaDim}>Offline — time is saved and synced later.</Text>
+            ) : null}
+            {timerNotice ? <Text style={styles.timerNotice}>{timerNotice}</Text> : null}
+          </>
+        )}
+
         <Text style={styles.sectionHeader}>
           ACTIVITY{commentCount ? ` (${commentCount})` : ''}
         </Text>
@@ -336,7 +673,22 @@ export function TicketDetailScreen() {
               ) : (
                 <>
                   {!c.isPublic ? <Text style={styles.internal}>INTERNAL</Text> : null}
-                  <Text style={styles.body}>{c.content}</Text>
+                  {/* An attachment-only comment arrives with empty content; the
+                      Text renders nothing rather than an empty line. */}
+                  {c.content ? <Text style={styles.body}>{c.content}</Text> : null}
+                  <CommentAttachments
+                    ticketId={ticketId}
+                    attachments={c.attachments}
+                    onOpenImage={(attachment) =>
+                      navigation.navigate('AttachmentViewer', {
+                        ticketId,
+                        attachmentId: attachment.id,
+                        contentType: attachment.contentType,
+                        filename: attachment.originalFilename,
+                      })
+                    }
+                    onOpenDocument={(attachment) => void openAttachment(attachment)}
+                  />
                 </>
               )}
             </View>
@@ -353,14 +705,43 @@ export function TicketDetailScreen() {
           style={styles.input}
           accessibilityLabel="Add a comment"
         />
+
+        <View style={styles.attachRow}>
+          {ATTACH_ACTIONS.map(({ key, label, pick }) => (
+            <Pressable
+              key={key}
+              onPress={() => void handlePick(() => pick(remainingSlots(chips)))}
+              disabled={attachBlocked !== null}
+              accessibilityRole="button"
+              accessibilityLabel={label}
+              accessibilityState={{ disabled: attachBlocked !== null }}
+              style={[styles.attachButton, attachBlocked !== null && styles.submitDisabled]}
+            >
+              <Text style={styles.attachButtonText}>{label}</Text>
+            </Pressable>
+          ))}
+        </View>
+        {/* Says WHY, not just that it is unavailable — "Attachments need a
+            connection" is actionable, a greyed button is not. */}
+        {attachBlocked ? <Text style={styles.metaDim}>{attachBlocked}</Text> : null}
+
+        {chips.map((chip) => (
+          <AttachmentChip
+            key={chip.localId}
+            chip={chip}
+            onRetry={retryChip}
+            onRemove={(localId) => applyChips((prev) => removeChip(prev, localId))}
+          />
+        ))}
+
         <Pressable
           onPress={() => void submitComment()}
-          disabled={busy || !comment.trim()}
+          disabled={!sendable}
           accessibilityRole="button"
-          accessibilityState={{ disabled: busy || !comment.trim() }}
-          style={[styles.submit, (busy || !comment.trim()) && styles.submitDisabled]}
+          accessibilityState={{ disabled: !sendable }}
+          style={[styles.submit, !sendable && styles.submitDisabled]}
         >
-          <Text style={styles.submitText}>{busy ? 'Working…' : 'Post comment'}</Text>
+          <Text style={styles.submitText}>{sendButtonLabel({ chips, busy })}</Text>
         </Pressable>
       </ScrollView>
 
@@ -451,6 +832,29 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   submitDisabled: { opacity: 0.5 },
+  attachRow: { flexDirection: 'row', gap: spacing['2'], marginTop: spacing['2'] },
+  attachButton: {
+    flex: 1,
+    paddingVertical: spacing['2'],
+    borderRadius: radii.md,
+    borderWidth: 1,
+    borderColor: palette.dark.border,
+    backgroundColor: palette.dark.bg1,
+    alignItems: 'center',
+  },
+  attachButtonText: { ...type.meta, color: palette.dark.textMd },
+  timerButton: {
+    marginTop: spacing['2'],
+    paddingVertical: spacing['3'],
+    borderRadius: radii.md,
+    borderWidth: 1,
+    borderColor: palette.brand.base,
+    backgroundColor: palette.brand.deep,
+    alignItems: 'center',
+  },
+  timerButtonText: { ...type.bodyMd, color: palette.dark.textHi },
+  timerNotice: { ...type.meta, color: palette.deny.base, marginTop: spacing['2'] },
+  timeDenied: { ...type.meta, color: palette.warning.base, marginTop: spacing['1'] },
   submitText: { ...type.bodyMd, color: palette.dark.textHi },
   error: { ...type.body, color: palette.deny.base, textAlign: 'center' },
   retry: {

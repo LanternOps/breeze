@@ -84,7 +84,7 @@ export default function SsoProviderList({
         <div>
           <h2 className="text-lg font-semibold">{t('ssoProviderList.sSOProviders')}</h2>
           <p className="text-sm text-muted-foreground">
-            {filteredProviders.length} {t('ssoProviderList.of')}{providers.length} {t('ssoProviderList.providers')}</p>
+            {t('ssoProviderList.countSummary', { shown: filteredProviders.length, total: providers.length })}</p>
         </div>
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
           <input

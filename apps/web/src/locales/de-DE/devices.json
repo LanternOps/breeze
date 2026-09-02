@@ -111,7 +111,10 @@
     "expiryMinutes_one": "in etwa {{count}} Minute",
     "expiryMinutes_other": "in etwa {{count}} Minuten",
     "expiryHours_one": "in etwa {{count}} Stunde",
-    "expiryHours_other": "in etwa {{count}} Stunden"
+    "expiryHours_other": "in etwa {{count}} Stunden",
+    "mfaRequiredSsoLinks": "Zum Generieren von Links ist eine Multi-Faktor-Authentifizierung erforderlich. Ihre Organisation meldet Sie über einen Identitätsanbieter an – bitten Sie Ihren Administrator, MFA-Vertrauen dafür zu aktivieren, oder registrieren Sie einen Faktor in Ihren Profileinstellungen.",
+    "mfaRequiredSsoInstallers": "Zum Generieren von Installationsprogrammen ist eine Multi-Faktor-Authentifizierung erforderlich. Ihre Organisation meldet Sie über einen Identitätsanbieter an – bitten Sie Ihren Administrator, MFA-Vertrauen dafür zu aktivieren, oder registrieren Sie einen Faktor in Ihren Profileinstellungen.",
+    "mfaRequiredSsoTokens": "Zum Generieren von Installationstoken ist eine Multi-Faktor-Authentifizierung erforderlich. Ihre Organisation meldet Sie über einen Identitätsanbieter an – bitten Sie Ihren Administrator, MFA-Vertrauen dafür zu aktivieren, oder registrieren Sie einen Faktor in Ihren Profileinstellungen."
   },
   "changeSiteModal": {
     "failedToLoadSites": "Standorte konnten nicht geladen werden",
@@ -142,11 +145,15 @@
     "creating": "Wird erstellt...",
     "createGroup": "Gruppe erstellen"
   },
+  "decommissionedHiddenHint": {
+    "label": "{{count}} Entfernte ausgeblendet",
+    "show": "anzeigen"
+  },
   "deviceActions": {
     "unavailable": {
       "offline": "Gerät ist offline",
       "maintenance": "Gerät befindet sich im Wartungsmodus",
-      "decommissioned": "Gerät wurde außer Betrieb genommen",
+      "decommissioned": "Gerät ist entfernt",
       "quarantined": "Gerät befindet sich in Quarantäne",
       "updating": "Gerät wird aktualisiert",
       "pending": "Geräteregistrierung steht aus",
@@ -183,9 +190,9 @@
         "confirm": "Wartungsmodus aktivieren"
       },
       "decommission": {
-        "title": "Gerät außer Betrieb nehmen",
-        "message": "Soll {{hostname}} wirklich außer Betrieb genommen werden? Dadurch wird das Gerät dauerhaft aus der Geräteflotte entfernt. Der Agent stellt die Berichterstattung ein und das Gerät wird nicht mehr überwacht.",
-        "confirm": "Außer Betrieb nehmen"
+        "title": "Gerät entfernen",
+        "message": "{{hostname}} entfernen? Das Gerät wird aus Ihrer aktiven Flotte genommen und nicht mehr überwacht. Der Verlauf bleibt erhalten, und Sie können es später wiederherstellen.",
+        "confirm": "Entfernen"
       },
       "clearSessions": {
         "title": "Sitzungen beenden",
@@ -210,7 +217,9 @@
     "changeSite": "Standort ändern",
     "exitMaintenance": "Wartungsmodus beenden",
     "enterMaintenance": "Wartungsmodus aktivieren",
-    "decommission": "Außer Betrieb nehmen",
+    "decommission": "Entfernen",
+    "restore": "Wiederherstellen",
+    "permanentlyDelete": "Endgültig löschen",
     "sendAWakeOnLanPacket": "Wake-on-LAN-Paket über einen online verfügbaren Peer-Agent im LAN des Geräts senden",
     "power": "Energie",
     "shutdown": "Herunterfahren",
@@ -333,7 +342,8 @@
     "reboot": "Neustart",
     "settings": "Einstellungen",
     "restore": "Wiederherstellen",
-    "decommission": "Außer Betrieb nehmen",
+    "decommission": "Entfernen",
+    "permanentlyDelete": "Endgültig löschen",
     "loadingTrend": "Trend wird geladen...",
     "trendUnavailable": "Trend nicht verfügbar",
     "noTrendData": "Keine Trenddaten",
@@ -432,7 +442,7 @@
       "online": "Online",
       "offline": "Offline",
       "maintenance": "Wartung",
-      "decommissioned": "Außer Dienst gestellt",
+      "decommissioned": "Entfernt",
       "quarantined": "Unter Quarantäne gestellt",
       "updating": "Aktualisierung",
       "pending": "Ausstehend"
@@ -497,7 +507,7 @@
     "takenOutOf": "herausgenommen",
     "putInto": "in den Wartungsmodus versetzt",
     "s": "s",
-    "decommissionCancelled": "Stilllegung abgesagt",
+    "decommissionCancelled": "Entfernen abgebrochen",
     "permanentDeleteCancelled": "Permanentes Löschen abgebrochen",
     "failedToQueueScript": "Das Skript konnte nicht in die Warteschlange gestellt werden",
     "loadingDevice": "Gerät wird geladen...",
@@ -993,7 +1003,7 @@
         "online": "Auf",
         "offline": "Runter",
         "maintenance": "Wartung",
-        "decommissioned": "Dekom",
+        "decommissioned": "Entfernt",
         "quarantined": "Quar",
         "updating": "Aktualisierung",
         "pending": "Ausstehend"
@@ -1002,7 +1012,7 @@
         "online": "Online",
         "offline": "Offline",
         "maintenance": "Wartung",
-        "decommissioned": "Außer Dienst gestellt",
+        "decommissioned": "Entfernt",
         "quarantined": "Unter Quarantäne gestellt",
         "updating": "Aktualisierung",
         "pending": "Ausstehend"
@@ -1073,7 +1083,7 @@
     "wakeSelected": "Ausgewählte Geräte aufwecken",
     "compareSelected": "Ausgewählte vergleichen",
     "linkAsMultiBoot": "Link als Multiboot",
-    "decommissionSelected": "Ausgewählte Geräte außer Betrieb nehmen",
+    "decommissionSelected": "Auswahl entfernen",
     "clearSelection": "Auswahl aufheben",
     "selectAllDevicesOnThisPage": "Wählen Sie auf dieser Seite alle Geräte aus",
     "actions": "Aktionen",
@@ -1087,7 +1097,8 @@
     "wake": "Aufwecken",
     "settings": "Einstellungen",
     "restore": "Wiederherstellen",
-    "decommission": "Außer Betrieb nehmen",
+    "decommission": "Entfernen",
+    "permanentlyDelete": "Endgültig löschen",
     "inactive": "· inaktiv",
     "expectedOffline": "Offline erwartet",
     "lastSeen": "Zuletzt gesehen",
@@ -1538,10 +1549,10 @@
   "deviceSettingsModal": {
     "addTagPlaceholder": "Tag hinzufügen...",
     "dangerZone": "Gefahrenzone",
-    "decommissionDevice": "Gerät außer Betrieb nehmen",
-    "decommissionWarning": "Durch die Außerbetriebnahme wird dieses Gerät aus Ihrer aktiven Flotte entfernt.",
-    "decommissionedDescription": "Dieses Gerät ist außer Betrieb. Sie können es wiederherstellen oder dauerhaft löschen.",
-    "decommissionedTitle": "Stillgelegtes Gerät",
+    "decommissionDevice": "Gerät entfernen",
+    "decommissionWarning": "Beim Entfernen wird dieses Gerät aus Ihrer aktiven Flotte genommen. Der Verlauf bleibt erhalten, und Sie können es später wiederherstellen.",
+    "decommissionedDescription": "Dieses Gerät wurde entfernt. Sie können es wiederherstellen oder dauerhaft löschen.",
+    "decommissionedTitle": "Entferntes Gerät",
     "displayName": "Anzeigename",
     "errors": {
       "loadSites": "Die Standorte konnten nicht geladen werden",
@@ -1752,8 +1763,9 @@
       "bulkActionFailed": "Massenaktion fehlgeschlagen",
       "bulkCommandPartialFailed": "Massenbefehl ist teilweise fehlgeschlagen",
       "bulkCommandSent": "Massenbefehl gesendet",
-      "bulkDecommissionFailed": "Massenstilllegung fehlgeschlagen",
-      "bulkDecommissioned": "Geräte außer Betrieb genommen",
+      "bulkDecommissionAllFailed": "Entfernen für alle {{count}} Geräte fehlgeschlagen: {{devices}}",
+      "bulkDecommissionFailed": "{{succeeded}} Gerät(e) entfernt; bei {{failed}} fehlgeschlagen: {{devices}}",
+      "bulkDecommissioned": "{{count}} Gerät(e) entfernt",
       "bulkMaintenanceAllFailed": "Der Wartungsmodus konnte für alle {{count}} Geräte nicht aktualisiert werden: {{devices}}",
       "bulkMaintenanceSomeFailed": "Wartungsmodus für {{succeeded}} Gerät(e) {{verb}}; bei {{failed}} fehlgeschlagen: {{devices}}",
       "bulkMaintenanceSuccess": "Wartungsmodus für {{count}} Geräte {{verb}}",
@@ -1762,10 +1774,10 @@
       "bulkWakeSomeFailed": "Aufwecken einiger Geräte fehlgeschlagen",
       "commandQueued": "{{action}} eingereiht — wird ausgeführt, wenn {{hostname}} wieder verbunden ist",
       "commandSent": "{{action}} an {{hostname}} gesendet",
-      "decommissionCancelled": "Stilllegung abgesagt",
-      "decommissionFailed": "Außerbetriebnahme fehlgeschlagen",
-      "decommissioned": "Außer Dienst gestellt",
-      "decommissioning": "Stilllegung",
+      "decommissionCancelled": "Entfernen abgebrochen",
+      "decommissionFailed": "Entfernen fehlgeschlagen",
+      "decommissioned": "Entfernt",
+      "decommissioning": "Wird entfernt",
       "deleteFailed": "Löschen fehlgeschlagen",
       "deviceError": "Gerätefehler",
       "deviceOnline": "Gerät online",
@@ -1789,7 +1801,7 @@
       "unknownBulkAction": "Unbekannte Massenaktion",
       "wakeSentWatching": "Aufweckbefehl gesendet; Status wird überwacht",
       "wakeTimeout": "Zeitüberschreitung beim Aufwecken",
-      "bulkAllDecommissioned": "Alle {{total}} ausgewählten Gerät(e) sind stillgelegt – sie haben keinen Agenten mehr, der dies ausführt."
+      "bulkAllDecommissioned": "Alle {{total}} ausgewählten Geräte sind bereits entfernt."
     },
     "tryAgain": "Versuchen Sie es erneut",
     "unknownDevice": "Unbekannt",
@@ -1797,8 +1809,8 @@
     "unknownSite": "Unbekannte Standort",
     "viewInstallationGuide": "Installationsanleitung ansehen",
     "confirmDecommissionedSkip": {
-      "message": "{{skipped}} von {{total}} ausgewählten Geräten sind stillgelegt und werden übersprungen – sie haben keinen Agenten mehr. Mit den verbleibenden {{eligible}} Gerät(en) fortfahren? Geräte, die offline sind, führen dies bei der nächsten Anmeldung aus.",
-      "title": "Einige ausgewählte Geräte sind stillgelegt"
+      "message": "{{skipped}} von {{total}} ausgewählten Geräten sind entfernt und werden übersprungen – sie haben keinen verwalteten Agenten mehr. Mit den verbleibenden {{eligible}} Gerät(en) fortfahren? Geräte, die offline sind, führen dies bei der nächsten Anmeldung aus.",
+      "title": "Einige ausgewählte Geräte sind entfernt"
     }
   },
   "filterAddDropdown": {
@@ -2267,11 +2279,11 @@
     "cancel": "Abbrechen"
   },
   "possibleReplacementBanner": {
-    "decommissionFailed": "Das alte Gerät konnte nicht außer Betrieb genommen werden",
-    "decommissionOldDevice": "Altes Gerät außer Betrieb nehmen",
-    "decommissionSucceeded": "Altes Gerät außer Betrieb genommen",
-    "message": "Dieses Gerät ersetzt möglicherweise {{hostname}} – prüfen Sie den alten Eintrag und nehmen Sie ihn außer Betrieb.",
-    "oldDeviceDecommissioned": "Altes Gerät außer Betrieb genommen – nichts mehr zu prüfen.",
+    "decommissionFailed": "Das alte Gerät konnte nicht entfernt werden",
+    "decommissionOldDevice": "Altes Gerät entfernen",
+    "decommissionSucceeded": "Altes Gerät entfernt",
+    "message": "Dieses Gerät ersetzt möglicherweise {{hostname}} – prüfen Sie den alten Eintrag und entfernen Sie ihn.",
+    "oldDeviceDecommissioned": "Altes Gerät entfernt – nichts mehr zu prüfen.",
     "oldDeviceUnavailable": "Der alte Geräteeintrag ist nicht mehr verfügbar.",
     "title": "Mögliche doppelte Registrierung",
     "unknownDevice": "das vorherige Gerät",

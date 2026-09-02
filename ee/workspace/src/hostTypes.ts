@@ -25,7 +25,10 @@ export type {
   BreezeExtensionV1,
   ExtensionRegistrar,
   ExtensionRuntimeContext,
+  ExtensionAiContext,
+  ExtensionAiInvokeResult,
 } from '@breeze/extension-sdk';
+export { ExtensionAiError } from '@breeze/extension-sdk';
 
 /**
  * The Drizzle handle every Workspace service actually queries through.

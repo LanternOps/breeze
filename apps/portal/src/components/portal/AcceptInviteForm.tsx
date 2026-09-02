@@ -6,6 +6,10 @@ import { z } from 'zod';
 import { Loader2, AlertCircle, CheckCircle } from 'lucide-react';
 import { buildPortalApiUrl } from '@/lib/api';
 import { cn } from '@/lib/utils';
+import { usePortalAuth } from '@/lib/auth';
+import { navigateTo } from '@/lib/navigation';
+import { safeNextPath } from '@/lib/nextPath';
+import { BTN_PRIMARY, INPUT } from './ui';
 
 const acceptInviteSchema = z
   .object({
@@ -37,6 +41,12 @@ export default function AcceptInviteForm({ token }: AcceptInviteFormProps) {
   // submit that would serialize the password fields into the URL (#2868).
   const [hydrated, setHydrated] = useState(false);
 
+  const { login } = usePortalAuth();
+  const nextParam =
+    typeof window !== 'undefined'
+      ? new URLSearchParams(window.location.search).get('next')
+      : null;
+
   useEffect(() => {
     setHydrated(true);
   }, []);
@@ -64,14 +74,29 @@ export default function AcceptInviteForm({ token }: AcceptInviteFormProps) {
       const result = await response.json();
 
       if (!response.ok) {
-        setError(result.error || 'Failed to accept invite');
+        setError(result.error || 'We couldn\'t finish setting up your account. Try the link again, or ask your IT team to resend it.');
         return;
       }
 
+      // The API has ALREADY signed this customer in: /portal/auth/accept-invite
+      // calls setPortalSessionCookies and returns the user + tokens, and this
+      // fetch uses credentials:'include', so the session cookie is in the
+      // browser by now. The old success screen threw that away and sent them to
+      // /login to retype the password they created seconds earlier, at the
+      // single highest-drop-off moment in the product. Hydrate the store and
+      // take them where they were going.
+      if (result.user && result.tokens) {
+        login(result.user, result.tokens);
+        await navigateTo(safeNextPath(nextParam) ?? '/quotes', { replace: true });
+        return;
+      }
+
+      // No user payload (an older API build): fall back to the manual sign-in
+      // screen rather than stranding them on a spinner.
       setSuccess(true);
     } catch (err) {
       console.error('[AcceptInviteForm] Request failed:', err);
-      setError('Network error');
+      setError('We couldn\'t reach the server. Check your connection and try again.');
     } finally {
       setIsLoading(false);
     }
@@ -79,18 +104,11 @@ export default function AcceptInviteForm({ token }: AcceptInviteFormProps) {
 
   if (!token) {
     return (
-      <div className="space-y-6">
-        <div className="flex flex-col items-center gap-4 text-center">
-          <div className="flex h-12 w-12 items-center justify-center rounded-full bg-destructive/10">
-            <AlertCircle className="h-6 w-6 text-destructive" />
-          </div>
-          <div>
-            <h3 className="text-lg font-medium">Invalid invite link</h3>
-            <p className="mt-1 text-sm text-muted-foreground">
-              This invite link is invalid or has expired.
-            </p>
-          </div>
-        </div>
+      <div className="border-y border-border/70 py-12 text-center">
+        <h3 className="font-display text-lg font-semibold text-foreground">This invite has expired</h3>
+        <p className="mx-auto mt-1 max-w-[38ch] text-sm text-muted-foreground">
+          Invite links only work once. Ask your IT team to send a fresh one.
+        </p>
       </div>
     );
   }
@@ -98,25 +116,17 @@ export default function AcceptInviteForm({ token }: AcceptInviteFormProps) {
   if (success) {
     return (
       <div className="space-y-6">
-        <div className="flex flex-col items-center gap-4 text-center">
-          <div className="flex h-12 w-12 items-center justify-center rounded-full bg-success/10">
-            <CheckCircle className="h-6 w-6 text-success" />
-          </div>
-          <div>
-            <h3 className="text-lg font-medium">Account activated</h3>
-            <p className="mt-1 text-sm text-muted-foreground">
-              Your password has been set and your account is now active. You can
-              now sign in.
-            </p>
-          </div>
+        <div role="status" className="border-y border-border/70 py-12 text-center">
+          <h3 className="font-display text-lg font-semibold text-foreground">You're in</h3>
+          <p className="mx-auto mt-1 max-w-[38ch] text-sm text-muted-foreground">
+            Your account is active. Sign in to see what your IT team keeps for
+            you.
+          </p>
         </div>
 
         <a
           href={withBase("/login")}
-          className={cn(
-            'flex w-full items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground',
-            'hover:bg-primary/90 focus:outline-hidden focus:ring-2 focus:ring-primary focus:ring-offset-2'
-          )}
+          className={cn(BTN_PRIMARY, 'w-full')}
         >
           Sign in
         </a>
@@ -132,12 +142,12 @@ export default function AcceptInviteForm({ token }: AcceptInviteFormProps) {
     <form method="post" onSubmit={handleSubmit(onSubmit)} className="space-y-6">
       <div className="text-center">
         <p className="text-sm text-muted-foreground">
-          Set your password to activate your account.
+          Choose a password and you're in.
         </p>
       </div>
 
       {error && (
-        <div className="flex items-center gap-2 rounded-md bg-destructive/10 p-3 text-sm text-destructive">
+        <div role="alert" className="flex items-center gap-2 rounded-md bg-destructive/10 p-3 text-sm text-destructive-on-tint">
           <AlertCircle className="h-4 w-4" />
           {error}
         </div>
@@ -154,15 +164,15 @@ export default function AcceptInviteForm({ token }: AcceptInviteFormProps) {
           id="password"
           type="password"
           autoComplete="new-password"
+          aria-describedby="password-rules"
           {...register('password')}
-          className={cn(
-            'mt-1 block w-full rounded-md border bg-background px-3 py-2 text-sm shadow-xs',
-            'focus:border-primary focus:outline-hidden focus:ring-1 focus:ring-primary',
-            errors.password && 'border-destructive'
-          )}
+          className={cn(INPUT, errors.password && 'border-destructive')}
         />
+        <p id="password-rules" className="mt-1 text-xs text-muted-foreground">
+          8+ characters, with a capital letter, a lowercase letter, and a number.
+        </p>
         {errors.password && (
-          <p className="mt-1 text-sm text-destructive">
+          <p className="mt-1 text-sm text-destructive-on-tint">
             {errors.password.message}
           </p>
         )}
@@ -180,42 +190,24 @@ export default function AcceptInviteForm({ token }: AcceptInviteFormProps) {
           type="password"
           autoComplete="new-password"
           {...register('confirmPassword')}
-          className={cn(
-            'mt-1 block w-full rounded-md border bg-background px-3 py-2 text-sm shadow-xs',
-            'focus:border-primary focus:outline-hidden focus:ring-1 focus:ring-primary',
-            errors.confirmPassword && 'border-destructive'
-          )}
+          className={cn(INPUT, errors.confirmPassword && 'border-destructive')}
         />
         {errors.confirmPassword && (
-          <p className="mt-1 text-sm text-destructive">
+          <p className="mt-1 text-sm text-destructive-on-tint">
             {errors.confirmPassword.message}
           </p>
         )}
       </div>
 
-      <div className="rounded-md bg-muted p-3">
-        <p className="text-xs text-muted-foreground">Password requirements:</p>
-        <ul className="mt-1 list-inside list-disc text-xs text-muted-foreground">
-          <li>At least 8 characters</li>
-          <li>At least one uppercase letter</li>
-          <li>At least one lowercase letter</li>
-          <li>At least one number</li>
-        </ul>
-      </div>
-
       <button
         type="submit"
         disabled={!hydrated || isLoading}
-        className={cn(
-          'flex w-full items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground',
-          'hover:bg-primary/90 focus:outline-hidden focus:ring-2 focus:ring-primary focus:ring-offset-2',
-          'disabled:cursor-not-allowed disabled:opacity-50'
-        )}
+        className={cn(BTN_PRIMARY, 'w-full')}
       >
         {isLoading ? (
           <>
-            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-            Setting up account...
+            <Loader2 className="h-4 w-4 animate-spin" />
+            Setting up
           </>
         ) : (
           'Set password & activate'

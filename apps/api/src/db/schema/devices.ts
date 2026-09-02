@@ -162,11 +162,23 @@ export const devices = pgTable('devices', {
   // `secretEnv` would run the script with the credential UNSET, which is why
   // this gates on a declared capability rather than on agentVersion.
   scriptSecretEnvVersion: integer('script_secret_env_version').notNull().default(0),
+  // Explicit device-control protocol capabilities. These are rewritten from
+  // the current heartbeat rather than accumulated, so old agents and agent
+  // downgrades clear stale claims back to zero.
+  peripheralPolicyProtocolVersion: integer('peripheral_policy_protocol_version').notNull().default(0),
+  rollbackProtocolVersion: integer('rollback_protocol_version').notNull().default(0),
+  pamLifetimeProtocolVersion: integer('pam_lifetime_protocol_version').notNull().default(0),
+  rollbackComponentVersions: jsonb('rollback_component_versions').$type<Record<string, string> | null>(),
   // Agent-reported build edition + migration-needed flag (heartbeat telemetry).
   // Non-sensitive; drives the self-hosted migration banner. Written unconditionally
   // every heartbeat (self-healing), so a resolved condition clears next beat.
   agentEdition: varchar('agent_edition', { length: 20 }),
   migrationRequired: boolean('migration_required').notNull().default(false),
+  // #4072 auto edition migration: once-per-device dispatch claim. Stamped
+  // atomically (WHERE ... IS NULL) before the migration script is dispatched;
+  // never cleared on a dispatched-but-failed dance so a broken device is
+  // handled by an operator, not an uninstall/reinstall retry loop.
+  editionMigrationDispatchedAt: timestamp('edition_migration_dispatched_at', { withTimezone: true }),
   // Enrollment idempotency (#2764): uninstall intent stamped by the agent's
   // graceful-uninstall notify path (Task 5/6); reaper decommissions once past
   // grace with no re-enrollment heartbeat. possibleReplacementOfDeviceId links
@@ -463,7 +475,13 @@ export const deviceCommands = pgTable('device_commands', {
   createdAt: timestamp('created_at').defaultNow().notNull(),
   executedAt: timestamp('executed_at'),
   completedAt: timestamp('completed_at'),
-  result: jsonb('result')
+  result: jsonb('result'),
+  // Provenance for self_uninstall commands: WHY this uninstall was queued.
+  // NULL on existing rows and on commands queued by callers that don't set
+  // it -- NULL means "no exemption, no widened auth", fail-closed by
+  // construction. See 2026-09-10-device-command-uninstall-provenance.sql.
+  uninstallReasons: text('uninstall_reasons').array(),
+  deviceRemoveExpiresAt: timestamp('device_remove_expires_at', { withTimezone: true })
 });
 
 export const connectionProtocolEnum = pgEnum('connection_protocol', ['tcp', 'tcp6', 'udp', 'udp6']);

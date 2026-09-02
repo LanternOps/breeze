@@ -27,6 +27,7 @@ export type ToolCategory =
   | 'Monitoring & Analytics'
   | 'Remote Access & Control'
   | 'Integrations'
+  | 'Ticketing'
   | 'Other';
 
 export interface ToolEntry {
@@ -183,6 +184,11 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_groups (add_devices/remove_devices)', description: 'Manage group membership', category: 'Fleet Operations' },
       { name: 'manage_automations (enable/disable)', description: 'Toggle automation status', category: 'Fleet Operations' },
       { name: 'generate_report (create/update/delete/generate)', description: 'Report management', category: 'Fleet Operations' },
+      // Ticketing (P2-4, #4191) — pre-existing gap, manage_tickets had zero
+      // entries here before. move_org is listed separately under Tier 3.
+      { name: 'manage_tickets (create/comment/assign/update_status/update_fields/link_alert/unlink_alert/create_from_alert/edit_comment/delete_comment)', description: 'Create and update support tickets', category: 'Ticketing' },
+      { name: 'manage_tickets (log_time_entry/start_timer/stop_timer)', description: 'Track time against tickets', category: 'Ticketing' },
+      { name: 'manage_tickets (link_device/draft)', description: 'AI ticket triage: link a device or store a reply/resolution-note draft', category: 'Ticketing' },
     ],
   },
   {
@@ -233,6 +239,8 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_patches (install/rollback)', description: 'Install or rollback patches', category: 'Fleet Operations' },
       { name: 'manage_groups (create/update/delete)', description: 'Create, update, or delete device groups', category: 'Fleet Operations' },
       { name: 'manage_automations (run)', description: 'Run an automation on demand', category: 'Fleet Operations' },
+      // Ticketing (P2-4, #4191)
+      { name: 'manage_tickets (move_org)', description: 'Move a ticket to a different organization', category: 'Ticketing' },
     ],
   },
   {

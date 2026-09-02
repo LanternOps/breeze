@@ -1,0 +1,45 @@
+{
+  "title": "Onaylar",
+  "description": "Kararınızı bekleyen yüksek etkili işlemleri inceleyin.",
+  "loading": "Onaylar yükleniyor…",
+  "loadError": "Onaylar yüklenemedi. Yeniden deneyin.",
+  "retry": "Yeniden dene",
+  "empty": {
+    "title": "Bekleyen onay yok",
+    "description": "Kararınız gerektiğinde yeni istekler burada görünür."
+  },
+  "requestedBy": "İsteyen: {{client}}",
+  "proposedByAgent": "{{agent}} tarafından önerildi (yapay zeka temsilcisi)",
+  "targetDevice": "Hedef cihaz: {{hostname}}",
+  "batch": {
+    "approveAll": "Tümünü onayla ({{count}})",
+    "declineAll": "Tümünü reddet ({{count}})",
+    "groupTitle": "{{count}} benzer istek · {{tool}}"
+  },
+  "risk": {
+    "low": "Düşük risk",
+    "medium": "Orta risk",
+    "high": "Yüksek risk",
+    "critical": "Kritik risk"
+  },
+  "denyPrompt": "Bu isteği neden reddediyorsunuz? Gerekçe isteğe bağlıdır.",
+  "denyReasonPlaceholder": "İsteğe bağlı — isteği yapan kişiyle paylaşılır",
+  "confirmDeny": "Reddi onayla",
+  "cancel": "Vazgeç",
+  "deny": "Reddet",
+  "approve": "Onayla",
+  "deciding": "Gönderiliyor…",
+  "expiresIn": "{{minutes}} dk içinde sona erer",
+  "expiresSoon": "Bir dakikadan kısa sürede sona erer",
+  "errors": {
+    "noApproverDevice": "Profilinizde bir onay cihazı kaydedip yeniden deneyin.",
+    "notSoleApprover": "Bu isteğe başka bir yetkili onaylayıcı karar vermelidir.",
+    "verificationFailed": "Doğrulama iptal edildi veya başarısız oldu. Yeniden deneyin.",
+    "alreadyDecided": "Bu isteğe zaten karar verildi.",
+    "expired": "Bu istek, karar verilmeden önce sona erdi.",
+    "decisionFailed": "Karar gönderilemedi. Yeniden deneyin.",
+    "batchStepUp": "Bu toplu işlem için daha güçlü bir oturum açma gerekiyor. İstekleri tek tek onaylayın.",
+    "batchNotHomogeneous": "Bu isteklere artık birlikte karar verilemez."
+  },
+  "registerDevice": "Cihazı kaydet"
+}

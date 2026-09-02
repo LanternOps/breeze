@@ -19,6 +19,10 @@
       "create": "Crea un workflow automatizzato con trigger, condizioni e azioni.",
       "edit": "Modifica la configurazione dell'automazione."
     },
+    "managed": {
+      "title": "Gestita da un agente AI",
+      "description": "Questa automazione è gestita dal suo agente AI. Configura l’agente anziché questa automazione."
+    },
     "actions": {
       "create": "Crea automazione",
       "saveChanges": "Salva modifiche"
@@ -215,6 +219,8 @@
     "empty": "Nessuna automazione trovata. Prova a modificare la ricerca o i filtri.",
     "partnerWideTitle": "Automazione a livello di partner - si applica a ogni organizzazione",
     "allOrgs": "A livello di partner",
+    "managedByAgent": "Gestita da un agente AI",
+    "managedByAgentHint": "Questa automazione è gestita dal suo agente AI. Configura l’agente anziché questa automazione.",
     "never": "Mai",
     "actions": {
       "viewHistory": "Visualizza cronologia",
@@ -806,6 +812,8 @@
       "advancedFilters": "Filtri avanzati",
       "executing": "Esecuzione...",
       "started": "Avviato!",
+      "queued": "In coda",
+      "reviewResult": "Rivedi risultato",
       "confirmExecute": "Conferma esecuzione",
       "execute": "Esegui"
     },
@@ -819,12 +827,23 @@
     },
     "matchCount": "{{count}} corrispondenza",
     "empty": {
-      "noCompatibleDevices": "Nessun dispositivo compatibile trovato. Questo script richiede {{os}}."
+      "noCompatibleDevices": "Nessun dispositivo compatibile trovato. Questo script richiede {{os}}.",
+      "offlineFiltered_one": "Nessun dispositivo {{status}} corrisponde. {{count}} dispositivo compatibile è nascosto dal filtro di stato — mostra tutti i dispositivi per includerlo.",
+      "offlineFiltered_other": "Nessun dispositivo {{status}} corrisponde. {{count}} dispositivi compatibili sono nascosti dal filtro di stato — mostra tutti i dispositivi per includerli.",
+      "showAllDevices": "Mostra tutti i dispositivi"
     },
     "orSeparator": " oppure ",
     "progress": {
       "submitting": "Invio a {{count}} dispositivi...",
-      "submitted": "Inviato a {{count}} dispositivi"
+      "submitted": "Inviato a {{count}} dispositivi",
+      "admitted": "{{admitted}} dispositivi su {{count}} ammessi alla coda",
+      "submittingTarget": "Invio in corso"
+    },
+    "admission": {
+      "allAdmitted": "Tutti i dispositivi selezionati sono stati ammessi e messi in coda.",
+      "partiallyAdmitted": "Alcuni dispositivi sono stati ammessi e messi in coda. Esamina le destinazioni rimanenti.",
+      "rejected": "Nessun dispositivo è stato ammesso. Esamina i motivi qui sotto.",
+      "queued": "In coda"
     },
     "confirm": {
       "title": "Conferma esecuzione",
@@ -842,6 +861,9 @@
       "macos": "macOS",
       "linux": "Linux"
     }
+  },
+  "secretParameters": {
+    "requiresSystemContext": "Questo script usa variabili segrete, consegnate solo alle esecuzioni nel contesto di sistema senza sessione di destinazione. Con \"Utente connesso\", o quando si sceglie una sessione specifica, i dispositivi falliranno con \"non eseguito\"."
   },
   "scriptExecutionsPage": {
     "errors": {
@@ -998,14 +1020,15 @@
       "button": "Variabili",
       "insertTitle": "Inserisci una variabile",
       "empty": "Ancora nessuna variabile.",
-      "secretUnavailable": "Segreto: una versione futura lo passerà come variabile d'ambiente.",
+      "secretUnavailable": "Segreto: collegalo tramite un parametro con origine \"Da una variabile segreta\".",
       "unknown": "Non esiste alcuna variabile per {{keys}}: i dispositivi selezionati falliranno finché non la crei."
     },
     "parameterSources": {
       "runtime": "Richiesto all’esecuzione",
       "tenantVariable": "Da una variabile",
       "deviceCustomField": "Da un campo personalizzato del dispositivo",
-      "builtin": "Da una proprietà del dispositivo"
+      "builtin": "Da una proprietà del dispositivo",
+      "tenantSecret": "Da una variabile segreta (variabile d’ambiente)"
     },
     "parameterBinding": {
       "variableLabel": "Chiave della variabile",
@@ -1015,6 +1038,9 @@
       "builtinLabel": "Proprietà",
       "chooseTitle": "Scegli una variabile",
       "secretRejected": "\"{{key}}\" è segreta: il salvataggio verrà rifiutato. Scegli una variabile non segreta.",
+      "notSecret": "\"{{key}}\" non è segreta. Scegli una variabile segreta oppure cambia l’origine in \"Da una variabile\".",
+      "notSecretRow": "Non è segreta: usa \"Da una variabile\"",
+      "secretHint": "Consegnata solo come variabile d’ambiente {{env}}: non viene mai scritta nello script. Richiede l’esecuzione nel contesto di sistema e un agent che supporti la consegna sicura dei segreti.",
       "hint": "Viene risolto per ogni dispositivo di destinazione all’esecuzione dello script: nessuno deve indicarlo."
     }
   },
@@ -1077,7 +1103,8 @@
     "suppliedBy": {
       "tenantVariable": "Fornito automaticamente dalla variabile {{key}}",
       "deviceCustomField": "Fornito automaticamente dal campo personalizzato del dispositivo {{key}}",
-      "builtin": "Fornito automaticamente da {{key}}"
+      "builtin": "Fornito automaticamente da {{key}}",
+      "tenantSecret": "Fornito in modo sicuro dalla variabile segreta {{key}} come variabile d’ambiente"
     }
   },
   "scriptTagManager": {

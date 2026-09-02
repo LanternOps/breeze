@@ -116,7 +116,15 @@
     "internalPlaceholder": "Agregue una nota interna...",
     "sending": "Enviando",
     "sendReply": "Enviar respuesta",
-    "addInternalNote": "Agregar nota interna"
+    "addInternalNote": "Agregar nota interna",
+    "attachments": {
+      "attach": "Adjuntar",
+      "uploading": "Subiendo…",
+      "retry": "Reintentar",
+      "remove": "Quitar archivo",
+      "tooMany": "Puedes adjuntar como máximo {{max}} archivos a un comentario.",
+      "tooLarge": "{{name}} supera los 10 MB."
+    }
   },
   "ticketFeed": {
     "empty": "Aún no hay actividad.",
@@ -149,6 +157,11 @@
     "deleteDialog": {
       "title": "Eliminar comentario",
       "message": "¿Está seguro de que desea eliminar este comentario? Esta acción no se puede deshacer."
+    },
+    "attachments": {
+      "broken": "No se pudo cargar {{name}}",
+      "open": "Abrir adjunto",
+      "remove": "Quitar adjunto"
     }
   },
   "ticketPartsCard": {
@@ -184,6 +197,7 @@
     "totalTime": "tiempo total",
     "billable": "facturable",
     "timeAmount": "Cantidad de tiempo",
+    "noAmount": "—",
     "partsCount": "Piezas ({{count}})",
     "partsCount_one": "Piezas ({{count}})",
     "partsCount_other": "Piezas ({{count}})",
@@ -397,14 +411,25 @@
       "create": "Crear factura",
       "creating": "Creando…",
       "createFailed": "No se pudo crear una factura a partir de este ticket.",
-      "created": "Borrador de factura creado"
+      "created": "Borrador de factura creado",
+      "allBlockedByCurrency": "Todo el trabajo facturable de este ticket está valorado en una moneda distinta de la que factura la organización. Arma un borrador en esa moneda en su lugar:",
+      "assembleIn": "Armar en {{code}} ({{count}} elementos, {{amount}})",
+      "partialLeftOut": "Se creó un borrador de factura, pero parte del trabajo facturable de este ticket quedó fuera y sigue sin facturar.",
+      "openDraft": "Abrir el borrador",
+      "allMissingRate": "No se pudo facturar nada: a todas las entradas de tiempo facturables de este ticket les falta la tarifa por hora.",
+      "missingRateHeading": "Entradas de tiempo sin tarifa por hora (no facturadas; defina una tarifa y vuelva a crear la factura):",
+      "missingRateEntry": "{{description}} — {{hours}} h",
+      "setRate": "Definir una tarifa en la hoja de horas"
     },
     "move": {
       "open": "Mover a otra organización...",
       "label": "Mover a la organización",
       "selectOrganization": "Seleccionar organización…",
       "confirm": "Mover",
-      "failed": "El movimiento falló. Reintentar."
+      "failed": "El movimiento falló. Reintentar.",
+      "blockedCurrency": "Este ticket tiene {{timeCount}} entradas de tiempo sin facturar y {{partCount}} partes sin facturar valoradas en {{sourceCurrency}}, pero {{targetOrg}} factura en {{targetCurrency}}. Factúralas primero o mueve de todos modos: los montos permanecen en {{sourceCurrency}} y solo pueden facturarse en un borrador en {{sourceCurrency}}.",
+      "acceptCurrency": "Entiendo que estos montos permanecen en {{sourceCurrency}} y no se convierten.",
+      "moveAnyway": "Mover de todos modos"
     },
     "triage": {
       "title": "Triaje sugerido",
@@ -419,6 +444,17 @@
       "applied": "Se aplicó la sugerencia de clasificación de tickets",
       "feedbackFailed": "No se pudieron guardar los comentarios sobre la clasificación de tickets.",
       "feedbackSaved": "Comentarios sobre la clasificación de tickets guardados"
+    },
+    "aiDraft": {
+      "kindReply": "Respuesta generada por IA",
+      "kindResolutionNote": "Nota de resolución generada por IA",
+      "sendAsMe": "Enviar como yo",
+      "sending": "Enviando…",
+      "discard": "Descartar",
+      "sendFailed": "No se pudo enviar el borrador de la IA.",
+      "sent": "Borrador enviado",
+      "discardFailed": "No se pudo descartar el borrador de la IA.",
+      "discarded": "Borrador descartado"
     },
     "resolve": {
       "noteLabel": "Nota de resolución (visible para el solicitante)",
@@ -457,7 +493,8 @@
       "categoryUpdateFailed": "Error al actualizar la categoría. Reintentar.",
       "assigned": "Asignado",
       "unassigned": "No asignado",
-      "assignFailed": "La asignación falló. Reintentar."
+      "assignFailed": "La asignación falló. Reintentar.",
+      "attachmentFailed": "No se pudo subir el adjunto."
     },
     "delete": {
       "failed": "Error al eliminar. Reintentar.",

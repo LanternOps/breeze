@@ -310,6 +310,12 @@ actuateElevationRoutes.post(
         status: command.status,
         elevationRequestId: data.elevationRequestId,
         createdAt: command.createdAt,
+        enforcementStatus: 'legacy_untracked',
+        enforcementGeneration: null,
+        enforcementReason: 'legacy_v1_actuator',
+        endpointObservedAt: null,
+        cleanupReceivedAt: null,
+        manualRemediationDisposition: 'blocked_manual_remediation',
       },
       201,
     );

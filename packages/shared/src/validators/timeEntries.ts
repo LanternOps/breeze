@@ -7,6 +7,11 @@ export type BillingStatus = z.infer<typeof billingStatusSchema>;
 const CLOCK_SKEW_MS = 5 * 60_000;
 const notFarFuture = (d: Date) => d.getTime() <= Date.now() + CLOCK_SKEW_MS;
 
+// Currency is never accepted from the client on entries or parts: the server
+// stamps `currency_code` once (ticket org currency at creation / first attach,
+// partner currency when a standalone entry first carries a rate) and never
+// restamps it (multi-currency spec §7). Editing hourlyRate/unitPrice does not
+// change the snapshot; billed rows reject monetary edits (ENTRY_BILLED / PART_BILLED).
 export const createTimeEntrySchema = z.object({
   ticketId: z.string().guid().optional(),
   startedAt: z.coerce.date().refine(notFarFuture, { message: 'startedAt cannot be in the future' }),
@@ -66,6 +71,7 @@ export const timesheetQuerySchema = z.object({
   weekStart: z.coerce.date()
 });
 
+// No currency field by design — see the note above createTimeEntrySchema.
 export const ticketPartSchema = z.object({
   description: z.string().min(1).max(2_000),
   partNumber: z.string().max(100).optional(),
@@ -101,3 +107,53 @@ export const billablesExportQuerySchema = z.object({
 export type CreateTimeEntryInput = z.infer<typeof createTimeEntrySchema>;
 export type UpdateTimeEntryInput = z.infer<typeof updateTimeEntrySchema>;
 export type TicketPartInput = z.infer<typeof ticketPartSchema>;
+
+// ── W06 (#3900): provenance vocabulary + suggestion routes ──────────────────
+// `source` is READ-side only in this wave. It is never accepted on any
+// create/update schema: provenance is stamped by the server (spec D5).
+export const TIME_ENTRY_SOURCES = ['manual', 'timer', 'location', 'remote_session', 'support_session'] as const;
+export const timeEntrySourceSchema = z.enum(TIME_ENTRY_SOURCES);
+export type TimeEntrySource = z.infer<typeof timeEntrySourceSchema>;
+
+export const timeSuggestionSignalSchema = z.object({
+  kind: z.literal('remote_session'),
+  id: z.string().guid()
+}).strict();
+export type SuggestionSignal = z.infer<typeof timeSuggestionSignalSchema>;
+
+const signalsField = z.array(timeSuggestionSignalSchema).min(1).max(20)
+  .refine((s) => new Set(s.map((x) => `${x.kind}:${x.id}`)).size === s.length, { message: 'signals must be unique' });
+
+/**
+ * `.strict()` is deliberate (a typo'd param must 400, never silently widen the
+ * day). Web callers therefore MUST pass `skipOrgIdInjection` to `fetchWithAuth`
+ * — it appends `?orgId=<uuid>` to every request otherwise, which this schema
+ * rejects. Suggestions are user-scoped, never org-scoped, so there is no
+ * `orgId` to honour.
+ */
+export const suggestionsQuerySchema = z.object({
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'date must be YYYY-MM-DD'),
+  // IANA zone; validated with Intl in the service (400 INVALID_TZ) so the
+  // shared package stays runtime-agnostic.
+  tz: z.string().min(1).max(64).optional(),
+  userId: z.string().guid().optional()
+}).strict();
+
+export const confirmSuggestionSchema = z.object({
+  signals: signalsField,
+  ticketId: z.string().guid().nullable().optional(),
+  startedAt: z.coerce.date(),
+  // Optional: the server fills the signal envelope end. Mandatory when any
+  // member signal is 'unreliable' (400 ENDED_AT_REQUIRED).
+  endedAt: z.coerce.date().optional(),
+  description: z.string().max(10_000).optional(),
+  isBillable: z.boolean().optional(),
+  hourlyRate: z.number().nonnegative().multipleOf(0.01).nullable().optional()
+}).strict().refine((v) => v.endedAt === undefined || v.endedAt.getTime() > v.startedAt.getTime(), {
+  message: 'endedAt must be after startedAt',
+  path: ['endedAt']
+});
+export type ConfirmSuggestionInput = z.infer<typeof confirmSuggestionSchema>;
+
+export const suggestionSignalsSchema = z.object({ signals: signalsField }).strict();
+export type SuggestionSignalsInput = z.infer<typeof suggestionSignalsSchema>;

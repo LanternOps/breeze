@@ -73,25 +73,57 @@ export default function QuoteWorkspace({ id }: Props) {
     pendingDeleteFlushRef.current?.();
   }, []);
 
+  // Monotonic request/apply sequence. Quiet reloads overlap routinely — a slow
+  // multi-megabyte image upload finishes while an earlier edit's refetch is
+  // still open — and without this the OLDER response can resolve last and
+  // re-render the editor from pre-mutation data, hiding a block that was just
+  // created (#3519). Only a response at least as new as the last applied one
+  // may call setDetail. Scope note: this guards the SUCCESS path only. The
+  // 404/error paths don't advance the sequence, but they only ever setError on
+  // a non-quiet load, and there is exactly one of those (the initial mount), so
+  // they have no stale response to lose a race to.
+  const fetchSeq = useRef(0);
+  const appliedSeq = useRef(0);
+
   // A `quiet` reload (after an inline edit) refetches without flipping `loading`,
   // so the editor stays mounted — a full-page loading state would remount the
   // form and discard the user's in-progress local state and cursor position.
   // Only the initial load shows the skeleton / replaces the view on error.
-  const fetchDetail = useCallback(async (quiet = false) => {
-    if (!id) { setError(t('quotes.workspace.errors.missingId')); setLoading(false); return; }
+  //
+  // Returns whether the view now reflects fresh server data — with one
+  // deliberate exception, the 401 branch, which reports success because the
+  // redirect it fires makes staleness moot (see below). Callers rely on this:
+  // an inline mutation whose only success signal is "the result appears"
+  // (an added block, a repriced line) has no signal at all when the reload
+  // fails, and MUST say so instead of leaving the user staring at a stale
+  // canvas. A quiet failure still stays silent HERE — reporting it is the
+  // caller's job, since only the caller knows what the user was promised.
+  const fetchDetail = useCallback(async (quiet = false): Promise<boolean> => {
+    if (!id) { setError(t('quotes.workspace.errors.missingId')); setLoading(false); return false; }
+    const seq = ++fetchSeq.current;
     try {
       if (!quiet) setLoading(true);
       setError(undefined);
       const res = await fetchWithAuth(`/quotes/${id}`);
-      if (res.status === 401) return UNAUTHORIZED();
-      if (res.status === 404) { if (!quiet) setError(t('quotes.workspace.errors.notFound')); return; }
+      // The redirect to /login IS the feedback for an expired session (same
+      // contract runAction follows), so this counts as handled, not as a stale
+      // view the caller should warn about on top of a navigation.
+      if (res.status === 401) { UNAUTHORIZED(); return true; }
+      if (res.status === 404) { if (!quiet) setError(t('quotes.workspace.errors.notFound')); return false; }
       if (!res.ok) throw new Error(t('quotes.workspace.errors.loadFailed'));
       const body = (await res.json()) as { data: QuoteDetailData };
+      // Superseded by a newer refetch that already landed: dropping this stale
+      // payload is the correct outcome, and the view IS fresh — the newer
+      // response made it so — so report success rather than a false alarm.
+      if (seq < appliedSeq.current) return true;
+      appliedSeq.current = seq;
       setDetail(body.data);
+      return true;
     } catch (err) {
-      // A failed quiet reload leaves the editor intact; the inline action's own
-      // runAction toast already surfaced the failure.
+      // A failed quiet reload leaves the editor intact and mounted; the caller
+      // decides whether the user needs to hear about the stale view.
       if (!quiet) setError(err instanceof Error ? err.message : t('quotes.workspace.errors.loadFailed'));
+      return false;
     } finally {
       if (!quiet) setLoading(false);
     }
@@ -235,6 +267,19 @@ export default function QuoteWorkspace({ id }: Props) {
           />
         </div>
       )}
+      {/* A revision draft looks exactly like any other draft in the editor, and
+          the consequence of sending it — the original is retired and the link
+          the customer already has stops working — is invisible until the send
+          dialog. Drafts open on the Editor tab, so this rides above every tab
+          rather than living in QuoteDetail. */}
+      {detail.revisionOf && detail.quote.status === 'draft' && (
+        <div
+          className="mb-4 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm"
+          data-testid="quote-workspace-revision-banner"
+        >
+          {t('quotes.workspace.revisionBanner', { number: detail.revisionOf.quoteNumber ?? '' })}
+        </div>
+      )}
       {/* The editor stays MOUNTED across tab switches (hidden, not unmounted):
           unmounting discarded any half-typed add-line/add-section input the
           moment a tech flipped to Preview "just to check" — brutal mid-flow
@@ -242,7 +287,9 @@ export default function QuoteWorkspace({ id }: Props) {
           while previewing. */}
       {isDraft && (
         <div className={activeTab === 'editor' ? '' : 'hidden'}>
-          <QuoteEditor detail={detail} onChanged={() => void reload()} onPendingEditsChange={setEditorSavePending} onSaveFailure={reportSaveFailure} onUnsavedEditsChange={setEditorUnsavedField} onRegisterPendingDeleteFlush={registerPendingDeleteFlush} showInternal={showInternal} onToggleInternal={toggleShowInternal} />
+          {/* `reload` is passed unwrapped so the editor can await it and learn
+              whether the canvas actually caught up — see QuoteEditorProps.onChanged. */}
+          <QuoteEditor detail={detail} onChanged={reload} onPendingEditsChange={setEditorSavePending} onSaveFailure={reportSaveFailure} onUnsavedEditsChange={setEditorUnsavedField} onRegisterPendingDeleteFlush={registerPendingDeleteFlush} showInternal={showInternal} onToggleInternal={toggleShowInternal} />
         </div>
       )}
       {activeTab === 'preview' && (

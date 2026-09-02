@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ComponentRef } from 'react';
+import { useEffect, useMemo, useRef, useState, type ComponentRef } from 'react';
 import {
   KeyboardAvoidingView,
   Platform,
@@ -17,6 +17,13 @@ import { sendMfaSms } from '../../services/api';
 import { useApprovalTheme, palette, radii, spacing, type } from '../../theme';
 import { Spinner } from '../../components/Spinner';
 import { haptic } from '../../lib/motion';
+import {
+  getInitialNativeMfaMethod,
+  getSupportedNativeMfaMethods,
+  normalizeNativeMfaInput,
+  normalizeNativeMfaSubmission,
+  type NativeMfaMethod,
+} from './mfaChallengePresentation';
 
 const RESEND_COOLDOWN_SECONDS = 30;
 
@@ -29,9 +36,24 @@ export function MfaChallengeScreen() {
   const [smsSent, setSmsSent] = useState(false);
   const [smsError, setSmsError] = useState<string | null>(null);
   const [cooldown, setCooldown] = useState(0);
+  const supportedMethods = useMemo(
+    () => getSupportedNativeMfaMethods(mfaChallenge),
+    [mfaChallenge],
+  );
+  const initialMethod = mfaChallenge
+    ? getInitialNativeMfaMethod(mfaChallenge, supportedMethods) ?? 'totp'
+    : 'totp';
+  const [selectedMethod, setSelectedMethod] = useState<NativeMfaMethod>(initialMethod);
   const inputRef = useRef<ComponentRef<typeof TextInput>>(null);
 
-  const isSms = mfaChallenge?.mfaMethod === 'sms';
+  const isSms = selectedMethod === 'sms';
+  const isRecovery = selectedMethod === 'recovery';
+
+  useEffect(() => {
+    if (!mfaChallenge) return;
+    const next = getInitialNativeMfaMethod(mfaChallenge, supportedMethods);
+    if (next) setSelectedMethod(next);
+  }, [mfaChallenge, supportedMethods]);
 
   useEffect(() => {
     if (!isSms || !mfaChallenge?.tempToken || smsSent) return;
@@ -59,15 +81,31 @@ export function MfaChallengeScreen() {
     return null;
   }
 
+  if (supportedMethods.length === 0) {
+    return (
+      <SafeAreaView style={[styles.container, { backgroundColor: theme.bg0 }]}>
+        <View style={styles.scrollContent}>
+          <Text style={[type.title, { color: theme.textHi, textAlign: 'center' }]}>Continue on the web</Text>
+          <Text style={[type.body, { color: theme.textMd, textAlign: 'center', marginTop: spacing[3] }]}>
+            This account requires a passkey, which this version of the mobile app cannot complete. Restart sign-in in a web browser.
+          </Text>
+          <Pressable onPress={handleCancel} style={styles.secondaryButton}>
+            <Text style={[type.bodyMd, { color: theme.textHi }]}>Sign in with a different account</Text>
+          </Pressable>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
   function handleChangeCode(value: string) {
-    const digits = value.replace(/\D/g, '').slice(0, 6);
-    setCode(digits);
+    setCode(normalizeNativeMfaInput(selectedMethod, value));
   }
 
   async function handleVerify() {
-    if (!mfaChallenge || code.length !== 6) return;
+    const submittedCode = normalizeNativeMfaSubmission(selectedMethod, code);
+    if (!mfaChallenge || (isRecovery ? submittedCode.length === 0 : submittedCode.length !== 6)) return;
     haptic.tap();
-    dispatch(verifyMfaAsync({ code, tempToken: mfaChallenge.tempToken }));
+    dispatch(verifyMfaAsync({ code: submittedCode, tempToken: mfaChallenge.tempToken, method: selectedMethod }));
   }
 
   async function handleResend() {
@@ -89,8 +127,10 @@ export function MfaChallengeScreen() {
     dispatch(clearMfaChallenge());
   }
 
-  const canSubmit = code.length === 6 && !isLoading;
-  const subtitle = isSms
+  const canSubmit = (isRecovery ? code.trim().length > 0 : code.length === 6) && !isLoading;
+  const subtitle = isRecovery
+    ? 'Enter one of your recovery codes.'
+    : isSms
     ? mfaChallenge.phoneLast4
       ? `We sent a 6-digit code to the phone ending in ${mfaChallenge.phoneLast4}.`
       : 'We sent a 6-digit code to your phone.'
@@ -133,8 +173,30 @@ export function MfaChallengeScreen() {
               { backgroundColor: theme.bg1, borderColor: theme.border },
             ]}
           >
+            {supportedMethods.length > 1 ? (
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: spacing[2], marginBottom: spacing[4] }}>
+                {supportedMethods.map((method) => (
+                  <Pressable
+                    key={method}
+                    testID={`mfa-method-${method}`}
+                    onPress={() => { setSelectedMethod(method); setCode(''); setSmsError(null); }}
+                    style={{
+                      borderWidth: 1,
+                      borderColor: selectedMethod === method ? theme.brand : theme.border,
+                      borderRadius: radii.md,
+                      paddingHorizontal: spacing[3],
+                      paddingVertical: spacing[2],
+                    }}
+                  >
+                    <Text style={[type.meta, { color: theme.textHi }]}>
+                      {{ totp: 'Authenticator', sms: 'Text message', recovery: 'Recovery code' }[method]}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+            ) : null}
             <Text style={[type.metaCaps, { color: theme.textLo }]}>
-              VERIFICATION CODE
+              {isRecovery ? 'RECOVERY CODE' : 'VERIFICATION CODE'}
             </Text>
             <View
               style={[
@@ -146,11 +208,11 @@ export function MfaChallengeScreen() {
                 ref={inputRef}
                 value={code}
                 onChangeText={handleChangeCode}
-                keyboardType="number-pad"
+                keyboardType={isRecovery ? 'default' : 'number-pad'}
                 autoComplete="one-time-code"
                 textContentType="oneTimeCode"
-                maxLength={6}
-                placeholder="123456"
+                maxLength={isRecovery ? 64 : 6}
+                placeholder={isRecovery ? 'ABCD-1234' : '123456'}
                 placeholderTextColor={theme.textLo}
                 onSubmitEditing={handleVerify}
                 returnKeyType="go"
@@ -162,7 +224,7 @@ export function MfaChallengeScreen() {
                     minHeight: 48,
                     flex: 1,
                     fontSize: 22,
-                    letterSpacing: 6,
+                    letterSpacing: isRecovery ? 1 : 6,
                     textAlign: 'center',
                   },
                 ]}

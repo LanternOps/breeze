@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import { UNINSTALL_REASON_DEVICE_REMOVE } from '../services/deviceUninstallDrain';
 
-const { selectMock, updateMock, deviceCommandsTable, restoreJobsTable, backupJobsTable, devicesTable, softwareDeploymentsTable, deploymentResultsTable, scriptExecutionsTable, scriptExecutionBatchesTable, queueBackupStopCommandMock } = vi.hoisted(() => ({
+const { selectMock, updateMock, deviceCommandsTable, restoreJobsTable, backupJobsTable, devicesTable, softwareDeploymentsTable, deploymentResultsTable, scriptExecutionsTable, scriptExecutionBatchesTable, queueBackupStopCommandMock, applyAutomationActionTerminalMock } = vi.hoisted(() => ({
   selectMock: vi.fn(),
   updateMock: vi.fn(),
   deviceCommandsTable: {
@@ -12,6 +14,9 @@ const { selectMock, updateMock, deviceCommandsTable, restoreJobsTable, backupJob
     executedAt: 'device_commands.executed_at',
     completedAt: 'device_commands.completed_at',
     result: 'device_commands.result',
+    deviceId: 'device_commands.device_id',
+    uninstallReasons: 'device_commands.uninstall_reasons',
+    deviceRemoveExpiresAt: 'device_commands.device_remove_expires_at',
   },
   restoreJobsTable: {
     id: 'restore_jobs.id',
@@ -67,6 +72,7 @@ const { selectMock, updateMock, deviceCommandsTable, restoreJobsTable, backupJob
     completedAt: 'script_execution_batches.completed_at',
   },
   queueBackupStopCommandMock: vi.fn(),
+  applyAutomationActionTerminalMock: vi.fn().mockResolvedValue(true),
 }));
 
 vi.mock('bullmq', () => ({
@@ -110,6 +116,11 @@ vi.mock('../services/redis', () => ({
 
 vi.mock('../services/sentry', () => ({
   captureException: vi.fn(),
+}));
+
+vi.mock('../services/automationActionResults', () => ({
+  applyAutomationActionTerminal: (...args: unknown[]) =>
+    applyAutomationActionTerminalMock(...(args as [])),
 }));
 
 vi.mock('../services/commandQueue', async (importOriginal) => {
@@ -244,6 +255,12 @@ describe('stale command reaper', () => {
     expect(reaped).toBe(4);
     expect(deviceCommandReturning).toHaveBeenCalledTimes(4);
     expect(restoreWhere).toHaveBeenCalledTimes(4);
+    expect(applyAutomationActionTerminalMock).toHaveBeenCalledTimes(4);
+    expect(applyAutomationActionTerminalMock).toHaveBeenCalledWith(expect.objectContaining({
+      source: 'reaper',
+      commandId: 'cmd-restore',
+      terminalStatus: 'timed_out',
+    }));
   });
 
   // #2774 — a drain-window self_uninstall must outlive the 30-min timeout
@@ -270,6 +287,144 @@ describe('stale command reaper', () => {
     };
     expect(containsString(whereArg, 'self_uninstall')).toBe(true);
     expect(containsString(whereArg, 'offboarding')).toBe(true);
+  });
+
+  // #3986 Task 10 — the device-remove drain gets its OWN arm inside the same
+  // NOT(...) wrapper, independent of the #2774 offboarding arm above (which
+  // stays untouched — see module comment on why it is NOT reused/widened).
+  //
+  // These compile the actual `.where()` argument to real parameterized SQL
+  // via `PgDialect().sqlToQuery(...)` and assert on both `.sql` and
+  // `.params` — the documented history here is that a bare `toContain(...)`
+  // substring check passes identically whether the code wrote `and()` or
+  // `or()`, or whether a clause got dropped, so structure (not just
+  // presence) is what's under test. The mocked schema's columns compile to
+  // BOUND PARAMETERS rather than real identifiers (they're plain strings,
+  // not Drizzle Column instances), which is exactly what lets us assert
+  // precise param adjacency below.
+  describe('the device_remove drain arm (#3986)', () => {
+    function compileWhere() {
+      const chain = selectChain([]);
+      selectMock.mockReturnValueOnce(chain);
+      return reapStaleDeviceCommands().then(() => {
+        const whereArg = chain.where.mock.calls[0]?.[0];
+        return new PgDialect().sqlToQuery(whereArg as never);
+      });
+    }
+
+    it('does not reap a device_remove uninstall inside its deadline: the exemption arm is a 3-way AND (self_uninstall type + the device_remove reason + an unexpired deadline), joined to the offboarding arm by OR inside the same NOT(...)', async () => {
+      const { sql: sqlText, params } = await compileWhere();
+
+      // The arm itself, verbatim — proves it's a conjunction (a row must
+      // satisfy type AND reason AND deadline together to be exempted), and
+      // that it sits as an OR-alternative to the offboarding arm rather than
+      // replacing/widening it.
+      expect(sqlText).toContain(
+        "OR (\n        $15 = 'self_uninstall'\n        AND $16 @> ARRAY[$17]::text[]\n        AND $18 > now()\n      )",
+      );
+
+      // The reason bound to the containment check is the exported constant,
+      // never a hardcoded literal re-typed in the reaper — and it sits
+      // immediately between the uninstall_reasons column and the deadline
+      // column, i.e. it can only be reached via this exact clause shape.
+      const reasonIdx = params.indexOf(UNINSTALL_REASON_DEVICE_REMOVE);
+      expect(reasonIdx).toBeGreaterThan(0);
+      expect(params[reasonIdx - 1]).toBe('device_commands.uninstall_reasons');
+      expect(params[reasonIdx + 1]).toBe('device_commands.device_remove_expires_at');
+    });
+
+    it('reaps it once device_remove_expires_at has passed: the deadline is compared with a strict `>` against Postgres\'s own now(), never `>=` and never a JS-computed timestamp bound as a param', async () => {
+      const { sql: sqlText, params } = await compileWhere();
+
+      expect(sqlText).toContain('$18 > now()');
+      expect(sqlText).not.toMatch(/>=\s*now\(\)/);
+
+      // now() is evaluated by Postgres itself on every poll. The only bound
+      // Date in the whole WHERE is the unrelated SQL pre-filter cutoff
+      // (`createdAt < now - SHORTEST_TIMEOUT_MS`, computed once per reaper
+      // run) — nothing stands in for "now" in the deadline arm itself,
+      // which would otherwise freeze it at reaper-start time instead of
+      // re-evaluating it fresh on every row, every poll.
+      const dateParams = params.filter((p) => p instanceof Date);
+      expect(dateParams).toHaveLength(1);
+    });
+
+    // The regression guard: this is the test that must go RED if the reason
+    // clause is ever relaxed (e.g. dropped so the arm keys on
+    // self_uninstall + deadline alone, or widened to key on devices.status).
+    // routes/admin/abuse.ts queues self_uninstall onto every device under a
+    // suspended partner with NO status filter — including already-
+    // decommissioned devices — and never sets uninstallReasons or
+    // deviceRemoveExpiresAt. Such a row satisfies neither arm here, so it is
+    // never excluded from the SELECT and keeps expiring at the normal
+    // 30-minute self_uninstall timeout (MEDIUM_TIMEOUT_TYPES in
+    // commandTimeouts.ts) — proven behaviorally below, once the structural
+    // proof establishes the row survives the WHERE.
+    //
+    // "Satisfies neither arm" only holds because of the NULL guard pinned by
+    // the test that follows this one. Both halves of the device-remove arm
+    // evaluate to NULL (not false) for such a row, and an unguarded NULL
+    // propagates out through NOT(...) and silently drops the row from the
+    // candidate set instead. Nothing in THIS test can see that: the compiled
+    // clause shape is identical either way.
+    it('still reaps an abuse-queued self_uninstall on an already-decommissioned device at 30 minutes', async () => {
+      const { sql: sqlText, params } = await compileWhere();
+
+      // Structural: devices.status never appears anywhere in the compiled
+      // predicate — decommissioned status can never itself satisfy either
+      // exemption arm. (The offboarding arm keys on organizations/partners
+      // status, not devices.status, and this arm doesn't touch devices at
+      // all.)
+      expect(sqlText).not.toContain('devices.status');
+      expect(params).not.toContain('devices.status');
+
+      // Structural: the ONLY appearance of the device_remove literal is
+      // paired with uninstall_reasons — there is no second, looser route
+      // (e.g. a bare `type = 'self_uninstall'` OR-branch) to the exemption.
+      const reasonOccurrences = params.filter((p) => p === UNINSTALL_REASON_DEVICE_REMOVE).length;
+      expect(reasonOccurrences).toBe(1);
+
+      // Behavioral: an abuse-queued row that reaches the reaper's JS loop
+      // (i.e. survived the WHERE, which the structural proof above
+      // establishes for a row with no device_remove reason) on an
+      // already-decommissioned device is reaped at the ordinary 30-minute
+      // self_uninstall timeout, exactly like any other command.
+      const staleCreatedAt = new Date(Date.now() - 31 * 60 * 1000);
+      selectMock.mockReturnValueOnce(selectChain([
+        {
+          id: 'cmd-abuse',
+          type: 'self_uninstall',
+          status: 'pending',
+          payload: null,
+          createdAt: staleCreatedAt,
+          executedAt: null,
+        },
+      ]));
+      const returning = vi.fn().mockResolvedValueOnce([{ id: 'cmd-abuse' }]);
+      updateMock.mockReturnValueOnce({
+        set: vi.fn(() => ({ where: vi.fn(() => ({ returning })) })),
+      });
+
+      const reaped = await reapStaleDeviceCommands();
+
+      expect(reaped).toBe(1);
+      expect(returning).toHaveBeenCalledTimes(1);
+    });
+
+    // Cheap structural backstop for a defect only a live database can
+    // actually demonstrate (deviceUninstallDrain.integration.test.ts's
+    // incident guard). `NULL @> ARRAY['device_remove']` and `NULL > now()`
+    // are both NULL, so for a reason-less row the exemption disjunction is
+    // NULL and `NOT NULL` is NULL — which does NOT match, silently dropping
+    // every abuse-queued self_uninstall out of the reaper's candidate set and
+    // making it immortal. COALESCE(..., FALSE) is what keeps the NOT boolean.
+    it('wraps the exemption disjunction in COALESCE(..., FALSE) so a NULL uninstall_reasons / deadline cannot void the whole NOT(...)', async () => {
+      const { sql: sqlText } = await compileWhere();
+
+      expect(sqlText).toContain('NOT COALESCE(');
+      expect(sqlText).toContain('), FALSE)');
+      expect(sqlText).not.toMatch(/NOT \(\n\s+\(\n\s+\$\d+ = 'self_uninstall'/);
+    });
   });
 });
 
@@ -821,6 +976,12 @@ describe('reapStaleSoftwareDeploymentResults', () => {
     );
     // Delivered rows never touch device_commands
     expect(commandSet).not.toHaveBeenCalled();
+    expect(applyAutomationActionTerminalMock).toHaveBeenCalledTimes(3);
+    expect(applyAutomationActionTerminalMock).toHaveBeenCalledWith(expect.objectContaining({
+      source: 'reaper',
+      deploymentResultId: 'reaped',
+      terminalStatus: 'timed_out',
+    }));
   });
 
   it('tier 1: leaves a delivered row alone before the 55-min timeout', async () => {
@@ -981,6 +1142,11 @@ describe('reapStaleScriptExecutions per-script timeout (#3190)', () => {
 
     expect(reaped).toBe(1);
     expect(execSet).toHaveBeenCalledTimes(1);
+    expect(applyAutomationActionTerminalMock).toHaveBeenCalledWith(expect.objectContaining({
+      source: 'reaper',
+      scriptExecutionId: 'exec-1',
+      terminalStatus: 'timed_out',
+    }));
   });
 
   // Pins the `running` reference-time branch, which had no coverage anywhere in

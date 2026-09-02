@@ -9,8 +9,7 @@ import {
   type EcProduct,
   type SftpProduct,
 } from '../../../lib/api/distributors';
-import { computeMarginBreakdown, formatMarginSummary, feedCurrencyCode, marginGuard } from '../../settings/marginMath';
-import { usePartnerCurrency } from '../../../lib/usePartnerCurrency';
+import { computeMarginBreakdown, formatMarginSummary, feedCurrencyCode, feedMatchesCurrency } from '../../settings/marginMath';
 import { formatNumber } from '@/lib/i18n/format';
 import {
   freshnessOf,
@@ -49,15 +48,15 @@ interface Result {
 interface DistributorLookupProps {
   blockId: string;
   busy: boolean;
+  /** The QUOTE's currency — the sell price typed here is stamped with it by
+   *  the caller, so MSRP/cost are only prefilled/compared when the feed row is
+   *  priced in the same currency (no conversion, ever). */
+  currencyCode: string;
   onImportAdd: (product: EcProduct, sellPrice: number) => void;
 }
 
-export default function DistributorLookup({ blockId, busy, onImportAdd }: DistributorLookupProps) {
+export default function DistributorLookup({ blockId, busy, currencyCode, onImportAdd }: DistributorLookupProps) {
   const { t } = useTranslation('billing');
-  // Partner billing currency gates the margin preview — a cost in another
-  // currency is never compared against the sell price (no conversion). No
-  // 'USD' fallback; while unknown the preview is simply not rendered.
-  const { currency: partnerCurrency } = usePartnerCurrency();
   const [source, setSource] = useState<LookupSource>('ec_express');
   const [query, setQuery] = useState('');
   const [inStockOnly, setInStockOnly] = useState(false);
@@ -70,10 +69,32 @@ export default function DistributorLookup({ blockId, busy, onImportAdd }: Distri
   // results of a later keystroke (the nightly search fires on every debounce).
   const requestId = useRef(0);
 
+  // Quote-currency gate: a row priced in another (or an unknown) currency never
+  // seeds the sell field — the operator must type a price in the quote
+  // currency. Never a 'USD' fallback.
+  const prefillFor = useCallback((rows: Result[]): Record<string, string> =>
+    Object.fromEntries(rows.map((r) => [
+      r.product.synnexSku,
+      feedMatchesCurrency(r.product.currency, currencyCode) ? sellPriceDefault(r.product) : '',
+    ])), [currencyCode]);
+
   const applyResults = useCallback((next: Result[]) => {
     setResults(next);
-    setPrices(Object.fromEntries(next.map((r) => [r.product.synnexSku, sellPriceDefault(r.product)])));
-  }, []);
+    setPrices(prefillFor(next));
+  }, [prefillFor]);
+
+  // The gate has to survive a currency change made AFTER the search (#3775
+  // review #4). sameCurrency and the note recompute every render, but `prices`
+  // was seeded once in applyResults — so switching the quote currency with
+  // results on screen left the foreign-currency number sitting in the field,
+  // and Import & add then stamped it with the NEW currency. Re-derive on an
+  // actual change only, so a hand-typed price survives ordinary re-renders.
+  const prevCurrency = useRef(currencyCode);
+  useEffect(() => {
+    if (prevCurrency.current === currencyCode) return;
+    prevCurrency.current = currencyCode;
+    setPrices(prefillFor(results));
+  }, [currencyCode, results, prefillFor]);
 
   const runSearch = useCallback(async (term: string, mode: LookupSource, stockOnly: boolean) => {
     const q = term.trim();
@@ -232,7 +253,9 @@ export default function DistributorLookup({ blockId, busy, onImportAdd }: Distri
       {results.map(({ product: p, nightly: row }) => {
         const priceVal = prices[p.synnexSku] ?? '';
         const parsed = toMoney(priceVal);
-        const margin = computeMarginBreakdown(p.cost ?? null, parsed);
+        const sameCurrency = feedMatchesCurrency(p.currency, currencyCode);
+        const margin = sameCurrency ? computeMarginBreakdown(p.cost ?? null, parsed) : null;
+        const feedCurrency = feedCurrencyCode(p.currency);
         const lifecycle = row ? lifecycleOf(row) : null;
         const outOfStock = row ? (p.totalQty ?? 0) === 0 : false;
         const warehouses = row ? warehouseSummary(row.warehouses) : '';
@@ -266,7 +289,7 @@ export default function DistributorLookup({ blockId, busy, onImportAdd }: Distri
               {p.mfgPartNo ? ` · ${t('quotes.distributorLookup.mfgPart', { part: p.mfgPartNo })}` : ''}
               {manufacturer ? ` · ${manufacturer}` : ''}
               {!row && p.status ? ` · ${p.status}` : ''}
-              {p.cost != null ? ` · ${t('quotes.distributorLookup.cost', { currency: p.currency ?? 'USD', amount: formatNumber(p.cost, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) })}` : ''}
+              {p.cost != null ? ` · ${t('quotes.distributorLookup.cost', { currency: feedCurrency ?? '?', amount: formatNumber(p.cost, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) })}` : ''}
               {p.msrp != null ? ` · ${t('quotes.distributorLookup.msrp', { amount: formatNumber(p.msrp, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) })}` : ''}
               {p.totalQty != null ? ` · ${t('quotes.distributorLookup.available', { count: p.totalQty })}` : ''}
             </div>
@@ -302,18 +325,21 @@ export default function DistributorLookup({ blockId, busy, onImportAdd }: Distri
                 {t('quotes.distributorLookup.importAndAdd')}
               </button>
             </div>
-            {margin && partnerCurrency !== null && (marginGuard(p.currency, partnerCurrency) ? (
+            {!sameCurrency && (
+              <p className="mt-1.5 text-xs text-muted-foreground" data-testid={`quote-distributor-currency-note-${p.synnexSku}`}>
+                {feedCurrency
+                  ? t('quotes.distributorLookup.feedPriceIn', { feedCurrency, currency: currencyCode })
+                  : t('quotes.distributorLookup.feedPriceCurrencyUnknown', { currency: currencyCode })}
+              </p>
+            )}
+            {margin && (
               <p
                 className={`mt-1.5 text-xs tabular-nums ${margin.profit < 0 ? 'text-destructive' : 'text-muted-foreground'}`}
                 data-testid={`quote-distributor-margin-${p.synnexSku}`}
               >
-                {formatMarginSummary(margin, partnerCurrency)}
+                {formatMarginSummary(margin, currencyCode)}
               </p>
-            ) : (
-              <p className="mt-1.5 text-xs text-muted-foreground" data-testid={`quote-distributor-margin-unavailable-${p.synnexSku}`}>
-                {t('quotes.distributorLookup.marginUnavailableCostIn', { currency: feedCurrencyCode(p.currency) })}
-              </p>
-            ))}
+            )}
           </div>
         );
       })}

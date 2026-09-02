@@ -1,0 +1,45 @@
+{
+  "title": "Approvazioni",
+  "description": "Esamina le azioni ad alto impatto in attesa della tua decisione.",
+  "loading": "Caricamento delle approvazioni…",
+  "loadError": "Impossibile caricare le approvazioni. Riprova.",
+  "retry": "Riprova",
+  "empty": {
+    "title": "Nessuna approvazione in attesa",
+    "description": "Le nuove richieste appariranno qui quando servirà la tua decisione."
+  },
+  "requestedBy": "Richiesto da {{client}}",
+  "proposedByAgent": "Proposto da {{agent}} (agente IA)",
+  "targetDevice": "Dispositivo di destinazione: {{hostname}}",
+  "batch": {
+    "approveAll": "Approva tutto ({{count}})",
+    "declineAll": "Rifiuta tutto ({{count}})",
+    "groupTitle": "{{count}} richieste simili · {{tool}}"
+  },
+  "risk": {
+    "low": "Rischio basso",
+    "medium": "Rischio medio",
+    "high": "Rischio alto",
+    "critical": "Rischio critico"
+  },
+  "denyPrompt": "Perché rifiuti questa richiesta? Il motivo è facoltativo.",
+  "denyReasonPlaceholder": "Facoltativo: viene condiviso con chi ha inviato la richiesta",
+  "confirmDeny": "Conferma il rifiuto",
+  "cancel": "Annulla",
+  "deny": "Rifiuta",
+  "approve": "Approva",
+  "deciding": "Invio in corso…",
+  "expiresIn": "Scade tra {{minutes}} min",
+  "expiresSoon": "Scade tra meno di un minuto",
+  "errors": {
+    "noApproverDevice": "Registra un dispositivo di approvazione nel profilo e riprova.",
+    "notSoleApprover": "Un’altra persona autorizzata deve decidere su questa richiesta.",
+    "verificationFailed": "La verifica è stata annullata o non è riuscita. Riprova.",
+    "alreadyDecided": "Questa richiesta è già stata decisa.",
+    "expired": "Questa richiesta è scaduta prima che si potesse decidere.",
+    "decisionFailed": "Impossibile inviare la decisione. Riprova.",
+    "batchStepUp": "Questo gruppo richiede un accesso più sicuro. Approva le richieste una alla volta.",
+    "batchNotHomogeneous": "Non è più possibile decidere queste richieste insieme."
+  },
+  "registerDevice": "Registra dispositivo"
+}

@@ -24,6 +24,8 @@ import {
  *   - `canAccessDeviceSite`           per-file helper convention
  *   - `getDeviceWithOrgAndSiteCheck`  canonical helper (`routes/devices/helpers.ts`)
  *   - `canAccessSite`                 underlying primitive (`services/permissions.ts`)
+ *   - `authorizeRouteResilienceResources` shared recovery lineage gate
+ *   - `resolveRouteAuthorizedDeviceIds` shared recovery list narrowing
  *
  * The allowlist below captures the set of routes that were known to be
  * missing the gate as of the SP2 sweep that added this test (PR #864/#868
@@ -144,13 +146,15 @@ const SITE_SCOPE_INPUT_EXEMPT: ReadonlySet<string> = new Set<string>([
   'routes/agents/bootPerformance.ts:POST /:id/boot-performance',
   'routes/agents/changes.ts:PUT /:id/changes',
   'routes/agents/commands.ts:POST /:id/commands/:commandId/result',
+  // Primary agent-token path: command lookup is pinned to the authenticated
+  // device ID plus exact command ID/type/target role; no user site scope exists.
+  'routes/agents/pamObservations.ts:POST /:id/commands/:commandId/pam-observations',
   'routes/agents/connections.ts:PUT /:id/connections',
   'routes/agents/elevationRequests.ts:POST /:id/elevation-requests',
   'routes/agents/enrollment.ts:POST /enroll',
   'routes/agents/inventory.ts:PUT /:id/disks',
   'routes/agents/inventory.ts:PUT /:id/hardware',
   'routes/agents/inventory.ts:PUT /:id/network',
-  'routes/agents/inventory.ts:PUT /:id/software',
   'routes/agents/inventory.ts:PUT /:id/warranty-info',
   // Agent-token mTLS renewal confirm (Wave 5 Task 4/6). The atomic
   // activate+demote writes device_mtls_certificates and devices.mtls_cert_*
@@ -220,6 +224,21 @@ const SITE_SCOPE_INPUT_EXEMPT: ReadonlySet<string> = new Set<string>([
   // lookup is constrained (inArray) to the device ids listStatusRows already
   // resolved, so it discloses no device beyond the caller's accessible orgs.
   'routes/security/compliance.ts:GET /encryption',
+  // ---- AI agent RUN reads (wave 6.1, #3828/#4157): org-wide reads that take
+  // NO device-selection input. Flagged only because the run row carries an
+  // `aiAgentRuns.deviceId` column, which is display metadata on an ORG-owned
+  // run row — never a caller-supplied device selector.
+  // Fleet runs list: query is cursor/limit/agentId/status/orgId only; rows are
+  // constrained by auth.orgCondition(aiAgentRuns.orgId) (the routes/devices/
+  // core.ts fleet-list pattern) and an optional orgId filter 403s unless
+  // auth.canAccessOrg, with RLS beneath.
+  'routes/aiAgents.ts:GET /runs',
+  // Run detail: path param is a RUN uuid, not a device; the row is org-scoped
+  // by the same orgCondition predicate + RLS, and 404s when out of scope.
+  'routes/aiAgents.ts:GET /runs/:runId',
+  // Agent-scoped runs list: path param is an AGENT uuid resolved through
+  // getAgent(auth, id) (404 unless accessible); query is `limit` only.
+  'routes/aiAgents.ts:GET /:id/runs',
 ]);
 
 // SITE_SCOPE_INPUT_EXEMPT entries that ARE reached via the user `authMiddleware`
@@ -262,6 +281,16 @@ const SITE_SCOPE_INPUT_EXEMPT_USER_SESSION_OK: ReadonlySet<string> = new Set<str
   // via user auth (requireScope) but exempt because the escrow enrichment is
   // constrained to the org-scoped device set listStatusRows already resolved.
   'routes/security/compliance.ts:GET /encryption',
+  // AI agent run reads (wave 6.1, #3828/#4157). Reached via plain user auth
+  // (requireAiRead), so they carry a `permissions` context and must be listed
+  // here — but they are exempt for the no-device-input reason, not the
+  // non-user-auth one: every query is constrained to the caller's accessible
+  // orgs (auth.orgCondition / getAgent / canAccessOrg) with RLS beneath, no
+  // parameter selects a device, and `deviceId` is display metadata on an
+  // org-owned run row. See the matching note in SITE_SCOPE_INPUT_EXEMPT.
+  'routes/aiAgents.ts:GET /runs',
+  'routes/aiAgents.ts:GET /runs/:runId',
+  'routes/aiAgents.ts:GET /:id/runs',
 ]);
 
 // BASELINE RATCHET — pre-existing handlers flagged at the time this detector

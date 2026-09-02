@@ -37,4 +37,17 @@ describe('manual policy remediation dispatches the run it creates (#3416)', () =
     // target set, so the runtime must resolve targets from the automation
     expect(src).not.toMatch(/enqueueAutomationRun\(run\.id,\s*\[/);
   });
+
+  it('rejects a managed automation after resolving it and before creating a run', async () => {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const src = await readFile(join(here, 'actions.ts'), 'utf8');
+
+    const notFoundIdx = src.indexOf('Remediation automation not found for this organization');
+    const managedGuardIdx = src.indexOf('isManagedAutomation(automation)');
+    const insertIdx = src.indexOf('.insert(automationRuns)', notFoundIdx);
+
+    expect(notFoundIdx).toBeGreaterThan(-1);
+    expect(managedGuardIdx).toBeGreaterThan(notFoundIdx);
+    expect(insertIdx).toBeGreaterThan(managedGuardIdx);
+  });
 });

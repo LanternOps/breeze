@@ -30,6 +30,14 @@ vi.mock("../db", () => ({
   },
 }));
 
+// #3499: the component=backup rewrite guard asks this resolver what the
+// versionless download route will actually serve. Default to "no promoted
+// row", which makes the guard fall back to comparing against the env version —
+// the behavior every pre-existing test in this file was written against.
+vi.mock("../services/promotedAgentVersion", () => ({
+  getPromotedComponentVersion: vi.fn(async () => null),
+}));
+
 vi.mock("../services/manifestSigning", () => ({
   // Simulate no DB-provisioned deployment keys by default so tests that
   // don't set env vars still get a soft-pass (no env + no DB = empty keyset).
@@ -39,6 +47,15 @@ vi.mock("../services/manifestSigning", () => ({
   signManifest: vi.fn().mockResolvedValue("test-signature"),
 }));
 
+// #4262: the sync-github route now classifies SSRF-guard refusals. Mock the
+// service so the route's error branches can be driven directly, and the Sentry
+// capture so it can be asserted without a DSN.
+vi.mock("../services/binarySync", () => ({
+  syncFromGitHub: vi.fn(),
+}));
+vi.mock("../services/sentry", () => ({
+  captureException: vi.fn(),
+}));
 vi.mock("../services/auditEvents", () => ({
   writeRouteAudit: vi.fn(),
 }));
@@ -70,11 +87,16 @@ import {
   agentVersionRoutes,
   validateReleaseManifest,
   verifyEd25519ManifestSignature,
+  canonicalReleaseAssetName,
 } from "./agentVersions";
 import { db } from "../db";
 import { agentVersions } from "../db/schema";
 import * as manifestSigning from "../services/manifestSigning";
 import { writeRouteAudit } from "../services/auditEvents";
+import { syncFromGitHub } from "../services/binarySync";
+import { captureException } from "../services/sentry";
+import { ResponseTooLargeError, SsrfBlockedError } from "../services/urlSafety";
+import { getPromotedComponentVersion } from "../services/promotedAgentVersion";
 import { requiredPlatformTrustFor } from "../services/releaseAssetTrust";
 
 // Recursively searches an and()/eq() spy tree (see drizzleSpies above) for an
@@ -207,6 +229,11 @@ describe("agentVersions routes", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // clearAllMocks clears calls but KEEPS implementations, so a
+    // mockResolvedValue set by one backup-guard test would leak into every
+    // later one and silently stop it exercising the branch its name claims.
+    vi.mocked(getPromotedComponentVersion).mockReset();
+    vi.mocked(getPromotedComponentVersion).mockResolvedValue(null);
     platformAdminState.allow = true;
     delete process.env.AGENT_UPDATE_MANIFEST_PUBLIC_KEYS;
     delete process.env.BREEZE_UPDATE_MANIFEST_PUBLIC_KEYS;
@@ -243,6 +270,72 @@ describe("agentVersions routes", () => {
       }),
     };
   }
+
+  describe("POST /agent-versions/sync-github — guard-refusal classification (#4262)", () => {
+    it("answers 502 and does NOT leak the resolved internal address", async () => {
+      // The refusal message and .resolvedIps both name internal addresses.
+      // Pre-#4262 the raw err.message was echoed straight into the body; the
+      // route must now return a fixed operator-facing string instead. This is
+      // the assertion most at risk of being silently refactored away, because
+      // "just echo the error" reads like an improvement.
+      vi.mocked(syncFromGitHub).mockRejectedValue(
+        new SsrfBlockedError(
+          "all resolved IPs for api.github.com are private/loopback/link-local",
+          { hostname: "api.github.com", resolvedIps: ["10.1.2.3", "169.254.169.254"] },
+        ),
+      );
+
+      const res = await app.request("/agent-versions/sync-github", {
+        method: "POST",
+      });
+
+      expect(res.status).toBe(502);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toMatch(/private or link-local/i);
+      // The whole point: no internal address reaches the client.
+      expect(body.error).not.toMatch(/10\.1\.2\.3|169\.254\.169\.254/);
+      // …but it IS escalated server-side, since the catch otherwise loses it.
+      expect(vi.mocked(captureException)).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(captureException).mock.calls[0]?.[2]).toMatchObject({
+        release_sync_failure_reason: "ssrf-blocked",
+      });
+    });
+
+    it("answers 502 on a body-ceiling abort", async () => {
+      vi.mocked(syncFromGitHub).mockRejectedValue(
+        new ResponseTooLargeError(1024 * 1024),
+      );
+
+      const res = await app.request("/agent-versions/sync-github", {
+        method: "POST",
+      });
+
+      expect(res.status).toBe(502);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toMatch(/1048576-byte limit/);
+      expect(vi.mocked(captureException).mock.calls[0]?.[2]).toMatchObject({
+        release_sync_failure_reason: "response-too-large",
+      });
+    });
+
+    it("leaves the pre-existing generic classification alone", async () => {
+      // Guards against over-reach: a plain failure must still take the original
+      // 422 path, not be swept into the new 502 branches.
+      vi.mocked(syncFromGitHub).mockRejectedValue(
+        new Error("something mundane broke"),
+      );
+
+      const res = await app.request("/agent-versions/sync-github", {
+        method: "POST",
+      });
+
+      expect(res.status).toBe(422);
+      expect((await res.json() as { error: string }).error).toBe(
+        "something mundane broke",
+      );
+      expect(vi.mocked(captureException)).not.toHaveBeenCalled();
+    });
+  });
 
   describe("GET /agent-versions (platform-admin list)", () => {
     it("non-platform-admin → 403", async () => {
@@ -660,21 +753,26 @@ describe("agentVersions routes", () => {
 
   describe("GET /agent-versions/latest", () => {
     it("should return latest version for platform/arch", async () => {
+      const rows = [
+        {
+          version: "1.2.0",
+          downloadUrl: "https://s3.example.com/agent-1.2.0-linux-amd64",
+          checksum: "a".repeat(64),
+          releaseManifest: null,
+          manifestSignature: null,
+          signingKeyId: null,
+          fileSize: BigInt(45000000),
+          releaseNotes: "Bug fixes",
+        },
+      ];
       vi.mocked(db.select).mockReturnValue({
         from: vi.fn().mockReturnValue({
+          // .orderBy() is the created_at tiebreak that keeps this endpoint in
+          // lockstep with services/promotedAgentVersion.ts (#3499).
           where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([
-              {
-                version: "1.2.0",
-                downloadUrl: "https://s3.example.com/agent-1.2.0-linux-amd64",
-                checksum: "a".repeat(64),
-                releaseManifest: null,
-                manifestSignature: null,
-                signingKeyId: null,
-                fileSize: BigInt(45000000),
-                releaseNotes: "Bug fixes",
-              },
-            ]),
+            orderBy: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue(rows),
+            }),
           }),
         }),
       } as any);
@@ -692,11 +790,35 @@ describe("agentVersions routes", () => {
       expect(body.releaseNotes).toBe("Bug fixes");
     });
 
+    it("orders by created_at DESC, matching the resolver that serves the bytes (#3499)", async () => {
+      // This endpoint hands out the checksum; services/promotedAgentVersion.ts
+      // resolves the bytes it is verified against. Nothing in the schema
+      // enforces one isLatest row per (component, platform, arch, edition) —
+      // the invariant is demote-then-insert, not a unique constraint. If only
+      // one of the two ordered, a duplicate promoted row would make them
+      // select DIFFERENT rows: a checksum for a release the download route
+      // does not serve, silently. That is #3499 again.
+      const orderByMock = vi.fn().mockReturnValue({
+        limit: vi.fn().mockResolvedValue([]),
+      });
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ orderBy: orderByMock }),
+        }),
+      } as any);
+
+      await app.request("/agent-versions/latest?platform=linux&arch=amd64");
+
+      expect(orderByMock).toHaveBeenCalledTimes(1);
+    });
+
     it("should return 404 when no version exists", async () => {
       vi.mocked(db.select).mockReturnValue({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([]),
+            orderBy: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([]),
+            }),
           }),
         }),
       } as any);
@@ -710,7 +832,9 @@ describe("agentVersions routes", () => {
 
     it("scopes the lookup to this server's own edition (default self-host)", async () => {
       const whereMock = vi.fn().mockReturnValue({
-        limit: vi.fn().mockResolvedValue([]),
+        orderBy: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([]),
+        }),
       });
       vi.mocked(db.select).mockReturnValue({
         from: vi.fn().mockReturnValue({ where: whereMock }),
@@ -725,7 +849,9 @@ describe("agentVersions routes", () => {
 
     it("scopes the lookup to BINARY_EDITION=hosted when configured", async () => {
       const whereMock = vi.fn().mockReturnValue({
-        limit: vi.fn().mockResolvedValue([]),
+        orderBy: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([]),
+        }),
       });
       vi.mocked(db.select).mockReturnValue({
         from: vi.fn().mockReturnValue({ where: whereMock }),
@@ -1235,14 +1361,17 @@ describe("agentVersions routes", () => {
       }
     });
 
-    // AGENT_AUTO_PROMOTE=false means isLatest can point at a fleet version
-    // that is NOT what the server currently serves at the versionless route
-    // (deploy-to-promote window). isLatest must never be treated as
-    // sufficient on its own — only an exact match against the server's
-    // pinned current version (getGithubReleaseVersion) may trigger the
-    // rewrite. See the invariant comment on
-    // backupVersionIsServableByVersionlessRoute in agentVersions.ts.
-    it("does NOT rewrite component=backup when the row is isLatest but not the server's current version — returns the stored immutable URL untouched", async () => {
+    // #3499 inverted this case. The versionless /download/backup/:os/:arch
+    // route used to serve the server's env version (BINARY_VERSION), so a
+    // promoted row that the env had moved past was NOT servable by it and the
+    // rewrite had to be withheld — the guard tested the env version and
+    // isLatest was explicitly not sufficient. The route now serves the
+    // promoted row, so this row IS exactly what it serves and the rewrite is
+    // correct. This is the deploy-to-promote window (AGENT_AUTO_PROMOTE=false,
+    // server on 1.1.0, fleet still promoted to 1.0.0) that used to hand out
+    // mismatched bytes. The guard no longer restates either rule: it asks the
+    // route's own resolver what will be served and compares.
+    it("rewrites component=backup when the row IS the promoted isLatest row, even though the server's env version has moved ahead (#3499)", async () => {
       const canonical =
         "https://github.com/LanternOps/breeze/releases/download/v1.0.0/breeze-backup-linux-amd64";
       const checksum = "f".repeat(64);
@@ -1270,17 +1399,21 @@ describe("agentVersions routes", () => {
                 releaseManifest: signed.manifest,
                 manifestSignature: signed.signature,
                 signingKeyId: "test-key",
-                // isLatest in the DB, but the server has already deployed a
-                // newer version and is pinned to it (AGENT_AUTO_PROMOTE=false
-                // means the fleet-wide promotion of 1.0.0 hasn't happened
-                // yet). The versionless route would serve 1.1.0's bytes, not
-                // this row's — must NOT rewrite.
+                // Promoted in the DB even though the server has already
+                // deployed a newer version (AGENT_AUTO_PROMOTE=false, so
+                // 1.1.0 is not the fleet target yet). Since #3499 the
+                // versionless route resolves this promoted row, so it serves
+                // exactly these bytes — rewrite is correct.
                 isLatest: true,
               },
             ]),
           }),
         }),
       } as any);
+
+      // The versionless route resolves the promoted row — this one — even
+      // though the server's own env version has moved ahead to 1.1.0.
+      vi.mocked(getPromotedComponentVersion).mockResolvedValue("1.0.0");
 
       process.env.PUBLIC_API_URL = "https://us.example.com";
       process.env.BINARY_VERSION = "1.1.0";
@@ -1290,9 +1423,11 @@ describe("agentVersions routes", () => {
         );
         expect(res.status).toBe(200);
         const body = await res.json();
-        // Stored canonical (immutable GitHub asset) URL, NOT the
-        // server-relative versionless route.
-        expect(body.url).toBe(canonical);
+        // Server-relative versionless route: it now resolves this same
+        // promoted row, so the bytes it serves match this row's checksum.
+        expect(body.url).toBe(
+          "https://us.example.com/api/v1/agents/download/backup/linux/amd64",
+        );
         expect(body.checksum).toBe(checksum);
       } finally {
         delete process.env.PUBLIC_API_URL;
@@ -1302,14 +1437,14 @@ describe("agentVersions routes", () => {
 
     // Design: breeze-backup's version is slaved to the agent's, and agents
     // request it by EXACT version. buildServerRelativeAgentDownloadUrl points
-    // at the versionless /download/backup/:os/:arch route, which can only
-    // ever serve whatever the server currently considers latest. Rewriting a
-    // non-latest, non-current backup version to that route would silently
-    // hand the agent NEWER bytes than the version it pinned — the updater's
+    // at the versionless /download/backup/:os/:arch route, which can only ever
+    // serve ONE release — since #3499, the promoted (isLatest) row. Rewriting
+    // a non-promoted backup version to that route would silently hand the
+    // agent DIFFERENT bytes than the version it pinned — the updater's
     // checksum/manifest check then (correctly) rejects them, and the agent
     // can never heal. So the rewrite must be gated to rows the versionless
     // route would actually serve.
-    it("does NOT rewrite component=backup when the row is neither latest nor the server's current version — returns the stored immutable URL untouched", async () => {
+    it("does NOT rewrite component=backup when the row is neither promoted nor the server's current version — returns the stored immutable URL untouched", async () => {
       const canonical =
         "https://github.com/LanternOps/breeze/releases/download/v0.90.0/breeze-backup-linux-amd64";
       const checksum = "d".repeat(64);
@@ -1365,7 +1500,14 @@ describe("agentVersions routes", () => {
       }
     });
 
-    it("rewrites component=backup when the requested version matches the server's pinned current version, even though isLatest is false", async () => {
+    // The other half of the #3499 change. Once a row IS promoted, matching the
+    // server's env version no longer makes a different row servable by the
+    // versionless route — that route serves the promoted one. So a
+    // non-promoted row keeps the stored immutable URL: the agent's
+    // host-equality check refuses the canonical github URL and simply does not
+    // heal, rather than downloading the promoted version's bytes against this
+    // row's checksum.
+    it("does NOT rewrite component=backup when the row merely matches the server's env version but another row is promoted (#3499)", async () => {
       const canonical =
         "https://github.com/LanternOps/breeze/releases/download/v1.0.0/breeze-backup-linux-amd64";
       const checksum = "e".repeat(64);
@@ -1393,16 +1535,86 @@ describe("agentVersions routes", () => {
                 releaseManifest: signed.manifest,
                 manifestSignature: signed.signature,
                 signingKeyId: "test-key",
-                // Not (yet) flagged isLatest in the DB, but it's the version
-                // BINARY_VERSION pins the server to — the versionless route
-                // would serve exactly this.
+                // Matches BINARY_VERSION, but is NOT the promoted row — since
+                // #3499 the versionless route serves whatever is promoted, not
+                // this. Must NOT rewrite.
                 isLatest: false,
+
               },
             ]),
           }),
         }),
       } as any);
 
+      // 1.1.0 is promoted, so that — not this row — is what the versionless
+      // route serves, even though this row matches BINARY_VERSION.
+      vi.mocked(getPromotedComponentVersion).mockResolvedValue("1.1.0");
+
+      process.env.PUBLIC_API_URL = "https://us.example.com";
+      process.env.BINARY_VERSION = "1.0.0";
+      try {
+        const res = await app.request(
+          "/agent-versions/1.0.0/download?platform=linux&arch=amd64&component=backup",
+        );
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        // Stored canonical (immutable GitHub asset) URL, NOT the
+        // server-relative versionless route.
+        expect(body.url).toBe(canonical);
+        expect(body.checksum).toBe(checksum);
+      } finally {
+        delete process.env.PUBLIC_API_URL;
+        delete process.env.BINARY_VERSION;
+      }
+    });
+
+    // The guard must mirror the download route's BINARY_SOURCE branch, not
+    // just its github half. In local mode that route streams ONE unversioned
+    // file from disk/S3 whose version is the binaries-volume build — the env
+    // version — and never consults the promoted row. Deriving the promoted row
+    // here would withhold the rewrite (and cost a pointless query) whenever the
+    // promoted row differs from the disk build, e.g. AGENT_AUTO_PROMOTE=false
+    // or after a rollback via POST /agent-versions/promote, silently ending
+    // backup self-heal for those deployments.
+    it("compares against the env version in local mode, without consulting the promoted row", async () => {
+      const canonical =
+        "https://github.com/LanternOps/breeze/releases/download/v1.0.0/breeze-backup-linux-amd64";
+      const checksum = "c".repeat(64);
+      const signed = makeSignedReleaseManifest({
+        component: "backup",
+        platform: "linux",
+        arch: "amd64",
+        url: canonical,
+        checksum,
+        size: 2048,
+      });
+
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([
+              {
+                version: "1.0.0",
+                platform: "linux",
+                architecture: "amd64",
+                component: "backup",
+                downloadUrl: canonical,
+                checksum,
+                fileSize: BigInt(2048),
+                releaseManifest: signed.manifest,
+                manifestSignature: signed.signature,
+                signingKeyId: "test-key",
+                // Not promoted — 1.1.0 is. In github mode that would withhold
+                // the rewrite; in local mode the disk build is what matters.
+                isLatest: false,
+              },
+            ]),
+          }),
+        }),
+      } as any);
+      vi.mocked(getPromotedComponentVersion).mockResolvedValue("1.1.0");
+
+      process.env.BINARY_SOURCE = "local";
       process.env.PUBLIC_API_URL = "https://us.example.com";
       process.env.BINARY_VERSION = "1.0.0";
       try {
@@ -1414,8 +1626,9 @@ describe("agentVersions routes", () => {
         expect(body.url).toBe(
           "https://us.example.com/api/v1/agents/download/backup/linux/amd64",
         );
-        expect(body.checksum).toBe(checksum);
+        expect(getPromotedComponentVersion).not.toHaveBeenCalled();
       } finally {
+        delete process.env.BINARY_SOURCE;
         delete process.env.PUBLIC_API_URL;
         delete process.env.BINARY_VERSION;
       }
@@ -1629,21 +1842,41 @@ describe("agentVersions routes", () => {
   // requests it that way (updater.downloadBinary). These three cases are the
   // per-component coverage those two route names were describing.
   describe("GET /agent-versions/:version/download — signingKeyId passthrough", () => {
+    // Task 2 (#3836): the download path is now key-ID-aware, so each case
+    // must configure trust that actually matches its claimed signingKeyId
+    // (official ID -> RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS, deploy-* ->
+    // the matching manifest_signing_keys row) for the manifest to verify —
+    // exactly the binding this suite exists to prove is enforced.
     const cases = [
       {
         component: "agent",
         assetName: "breeze-agent-linux-amd64",
         signingKeyId: "release-artifact-manifest-ed25519",
+        configureTrust: (signed: { publicKey: string }) => {
+          process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+        },
       },
       {
         component: "helper",
         assetName: "breeze-helper-linux.AppImage",
         signingKeyId: "deploy-2026-07-23-helper",
+        configureTrust: (signed: { publicKey: string }) => {
+          vi.spyOn(manifestSigning, "getActiveTrustKeyset").mockResolvedValue([
+            {
+              keyId: "deploy-2026-07-23-helper",
+              publicKeyB64: signed.publicKey,
+              validFrom: new Date().toISOString(),
+            },
+          ]);
+        },
       },
       {
         component: "watchdog",
         assetName: "breeze-watchdog-linux-amd64",
         signingKeyId: "release-artifact-manifest-ed25519",
+        configureTrust: (signed: { publicKey: string }) => {
+          process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+        },
       },
     ];
 
@@ -1659,6 +1892,7 @@ describe("agentVersions routes", () => {
           checksum,
           size: 4096,
         });
+        tc.configureTrust(signed);
 
         vi.mocked(db.select).mockReturnValue({
           from: vi.fn().mockReturnValue({
@@ -2173,5 +2407,491 @@ describe("verifyEd25519ManifestSignature — empty-keyset opt-in (#643)", () => 
       { allowEmptyKeysetSoftPass: true },
     );
     expect(result).toBe(false);
+  });
+});
+
+// D1 (#3836): canonicalReleaseAssetName must reproduce EXACTLY the filenames
+// binarySync.ts's scanBinaryDir/parseBinaryFilename (agent/watchdog/backup)
+// and USER_HELPER_TARGETS (user-helper) produce — every case below is
+// cross-checked against those sources, not invented independently.
+// component="helper" is deliberately always null: its real registration is
+// HELPER_TARGETS (binarySync.ts ~line 59), a per-OS (not per-arch) asset
+// name (windows -> breeze-helper-windows.msi, darwin (both arches, same
+// file) -> breeze-helper-macos.dmg, linux -> breeze-helper-linux.AppImage) —
+// see the controller-review regression test below for why an earlier
+// version of this function (returning "breeze-desktop-helper-darwin-<arch>"
+// for helper/macos) was WRONG and would have 409'd real
+// BINARY_SOURCE=github helper rows.
+describe("canonicalReleaseAssetName (D1, #3836)", () => {
+  const cases: Array<[string, string, string, string | null]> = [
+    // agent — windows/linux/darwin, both arches. Also proves "macos" (the DB
+    // platform value) and "darwin" (the wire/manifest value some callers use)
+    // both resolve to the same on-disk name.
+    ["agent", "windows", "amd64", "breeze-agent-windows-amd64.exe"],
+    ["agent", "windows", "arm64", "breeze-agent-windows-arm64.exe"],
+    ["agent", "linux", "amd64", "breeze-agent-linux-amd64"],
+    ["agent", "linux", "arm64", "breeze-agent-linux-arm64"],
+    ["agent", "macos", "amd64", "breeze-agent-darwin-amd64"],
+    ["agent", "macos", "arm64", "breeze-agent-darwin-arm64"],
+    ["agent", "darwin", "amd64", "breeze-agent-darwin-amd64"],
+
+    // watchdog — same shape as agent (WATCHDOG_TARGETS = AGENT_TARGETS).
+    ["watchdog", "windows", "amd64", "breeze-watchdog-windows-amd64.exe"],
+    ["watchdog", "linux", "amd64", "breeze-watchdog-linux-amd64"],
+    ["watchdog", "linux", "arm64", "breeze-watchdog-linux-arm64"],
+    ["watchdog", "macos", "amd64", "breeze-watchdog-darwin-amd64"],
+    ["watchdog", "macos", "arm64", "breeze-watchdog-darwin-arm64"],
+
+    // backup — same shape as agent (BACKUP_TARGETS = AGENT_TARGETS).
+    ["backup", "windows", "amd64", "breeze-backup-windows-amd64.exe"],
+    ["backup", "linux", "amd64", "breeze-backup-linux-amd64"],
+    ["backup", "linux", "arm64", "breeze-backup-linux-arm64"],
+    ["backup", "macos", "amd64", "breeze-backup-darwin-amd64"],
+    ["backup", "macos", "arm64", "breeze-backup-darwin-arm64"],
+
+    // user-helper — Windows only (USER_HELPER_TARGETS).
+    ["user-helper", "windows", "amd64", "breeze-user-helper-windows-amd64.exe"],
+    ["user-helper", "windows", "arm64", "breeze-user-helper-windows-arm64.exe"],
+    ["user-helper", "macos", "amd64", null],
+    ["user-helper", "linux", "amd64", null],
+
+    // helper — always null (see the describe-block comment above): the real
+    // asset name (breeze-helper-macos.dmg / -windows.msi / -linux.AppImage)
+    // is per-OS, not per-arch, so it must resolve via the URL-basename
+    // fallback instead.
+    ["helper", "macos", "amd64", null],
+    ["helper", "macos", "arm64", null],
+    ["helper", "windows", "amd64", null],
+    ["helper", "linux", "amd64", null],
+
+    // Unknown component/platform/arch — every unrecognized shape falls back
+    // to the caller's assetNameFromDownloadUrl, never fabricates a name.
+    ["viewer", "windows", "amd64", null],
+    ["not-a-real-component", "linux", "amd64", null],
+    ["agent", "solaris", "amd64", null],
+    ["agent", "linux", "mips", null],
+  ];
+
+  it.each(cases)(
+    "component=%s platform=%s arch=%s -> %s",
+    (component, platform, arch, expected) => {
+      expect(canonicalReleaseAssetName(component, platform, arch)).toBe(expected);
+    },
+  );
+});
+
+// D3 (#3836): the schema-v1 catch in validateReleaseManifest used to
+// collapse EVERY throw from verifyReleaseArtifactManifestAsset into
+// invalid_release_manifest_signature. These tests pin the split to typed
+// errors exported from releaseArtifactManifest.ts.
+describe("validateReleaseManifest — schema-v1 reason split (D3, #3836)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    delete process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS;
+    delete process.env.BREEZE_RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS;
+  });
+
+  function makeSignedSchemaV1Manifest(
+    assets: Array<{
+      name: string;
+      sha256: string;
+      size: number;
+      platformTrust?: string;
+      edition?: string;
+    }>,
+    release = "v1.0.0",
+  ) {
+    const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+    const publicDer = publicKey.export({ format: "der", type: "spki" }) as Buffer;
+    const rawPublicKey = publicDer.subarray(publicDer.length - 32);
+    const manifest = JSON.stringify({
+      schemaVersion: 1,
+      repository: "LanternOps/breeze",
+      release,
+      assets,
+    });
+    return {
+      manifest,
+      signature: sign(null, Buffer.from(manifest, "utf8"), privateKey).toString(
+        "base64",
+      ),
+      publicKey: rawPublicKey.toString("base64"),
+    };
+  }
+
+  it("returns release_manifest_asset_lookup_failed when the canonical asset is absent from a validly-signed manifest", async () => {
+    const signed = makeSignedSchemaV1Manifest([
+      {
+        name: "breeze-agent-windows-amd64.exe",
+        sha256: "a".repeat(64),
+        size: 10,
+        platformTrust: requiredPlatformTrustFor("breeze-agent-windows-amd64.exe") ?? undefined,
+      },
+    ]);
+    process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+
+    const result = await validateReleaseManifest({
+      manifest: signed.manifest,
+      signature: signed.signature,
+      version: "1.0.0",
+      platform: "linux",
+      arch: "amd64",
+      component: "agent",
+      // Deliberately irrelevant: D1 makes the canonical (component, platform,
+      // arch) shape win over the URL basename, so this URL is never consulted.
+      downloadUrl: "https://s3.example.com/agent-1.0.0",
+      checksum: "b".repeat(64),
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      reason: "release_manifest_asset_lookup_failed",
+    });
+  });
+
+  it("returns release_asset_not_distributable when the asset entry fails the platform-trust policy check", async () => {
+    const assetName = "breeze-agent-windows-amd64.exe";
+    const checksum = "c".repeat(64);
+    const signed = makeSignedSchemaV1Manifest([
+      // Windows .exe requires "windows-authenticode-required"; "none" with no
+      // edition claim is refused by assertDistributableReleaseAsset.
+      { name: assetName, sha256: checksum, size: 10, platformTrust: "none" },
+    ]);
+    process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+
+    const result = await validateReleaseManifest({
+      manifest: signed.manifest,
+      signature: signed.signature,
+      version: "1.0.0",
+      platform: "windows",
+      arch: "amd64",
+      component: "agent",
+      downloadUrl: "https://s3.example.com/agent-1.0.0",
+      checksum,
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      reason: "release_asset_not_distributable",
+    });
+  });
+
+  it("#641 — a forged signature still returns invalid_release_manifest_signature even though the asset would otherwise fail lookup", async () => {
+    // The manifest is well-formed but does NOT include the asset a valid
+    // signature would need to cover — if signature verification were skipped
+    // or ran second, this would leak release_manifest_asset_lookup_failed to
+    // an attacker who never held the signing key. It must not: verify
+    // ReleaseArtifactManifestAsset checks the signature before ever
+    // attempting the lookup.
+    const attacker = generateKeyPairSync("ed25519");
+    const trusted = generateKeyPairSync("ed25519");
+    const manifest = JSON.stringify({
+      schemaVersion: 1,
+      repository: "LanternOps/breeze",
+      release: "v1.0.0",
+      assets: [{ name: "breeze-agent-windows-amd64.exe", sha256: "a".repeat(64), size: 10 }],
+    });
+    const forgedSignature = sign(
+      null,
+      Buffer.from(manifest, "utf8"),
+      attacker.privateKey,
+    ).toString("base64");
+    const trustedPublicDer = trusted.publicKey.export({
+      format: "der",
+      type: "spki",
+    }) as Buffer;
+    process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = trustedPublicDer
+      .subarray(trustedPublicDer.length - 32)
+      .toString("base64");
+
+    const result = await validateReleaseManifest({
+      manifest,
+      signature: forgedSignature,
+      version: "1.0.0",
+      platform: "linux", // resolves to breeze-agent-linux-amd64 — not in `assets` above
+      arch: "amd64",
+      component: "agent",
+      downloadUrl: "https://s3.example.com/agent-1.0.0",
+      checksum: "b".repeat(64),
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      reason: "invalid_release_manifest_signature",
+    });
+  });
+});
+
+// Task 2 (#3836): key-ID-aware dispatch for validateReleaseManifest.
+// Mirrors the agent's exact-ID semantics (agent/internal/updater/
+// updater.go verifyManifestSignature, ~line 769): an explicit signingKeyId
+// binds verification to that ONE key — never a fallback across the whole
+// trusted set. Before this, the legacy (non schema-v1) branch checked a
+// row's signature against the UNION of env keys and every DB deployment
+// key regardless of what signingKeyId claimed, so a row stamped with the
+// official key ID but actually signed by a per-deployment key (or
+// vice-versa) passed the server even though a real agent's exact-ID
+// lookup would reject it.
+describe("validateReleaseManifest — key-ID-aware dispatch (Task 2, #3836)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    delete process.env.AGENT_UPDATE_MANIFEST_PUBLIC_KEYS;
+    delete process.env.BREEZE_UPDATE_MANIFEST_PUBLIC_KEYS;
+    delete process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS;
+    delete process.env.BREEZE_RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS;
+    vi.spyOn(manifestSigning, "getActiveTrustKeyset").mockResolvedValue([]);
+  });
+
+  function rawPub(publicKey: { export: (opts: { format: "der"; type: "spki" }) => Buffer }): Buffer {
+    const der = publicKey.export({ format: "der", type: "spki" });
+    return der.subarray(der.length - 32);
+  }
+
+  function legacyManifest() {
+    return JSON.stringify({
+      version: "1.0.0",
+      component: "agent",
+      platform: "linux",
+      arch: "amd64",
+      url: "https://s3.example.com/agent-1.0.0",
+      checksum: "b".repeat(64),
+      size: 45000000,
+    });
+  }
+
+  const legacyArgsBase = {
+    version: "1.0.0",
+    platform: "linux",
+    arch: "amd64",
+    component: "agent",
+    downloadUrl: "https://s3.example.com/agent-1.0.0",
+    checksum: "b".repeat(64),
+    fileSize: 45000000,
+  };
+
+  it("REJECTS a row stamped with the official key ID but signed by a DB-trusted deployment key (the exact bug this task closes)", async () => {
+    const deployKey = generateKeyPairSync("ed25519");
+    const manifest = legacyManifest();
+    const signature = sign(null, Buffer.from(manifest, "utf8"), deployKey.privateKey).toString("base64");
+
+    // The deploy key IS otherwise trusted (present in manifest_signing_keys)
+    // — that's the point: a legitimately-trusted key must still be rejected
+    // when it isn't the ONE key the claimed ID names.
+    vi.spyOn(manifestSigning, "getActiveTrustKeyset").mockResolvedValue([
+      {
+        keyId: "deploy-2026-08-01-aaaa",
+        publicKeyB64: rawPub(deployKey.publicKey).toString("base64"),
+        validFrom: new Date().toISOString(),
+      },
+    ]);
+
+    const result = await validateReleaseManifest({
+      ...legacyArgsBase,
+      manifest,
+      signature,
+      signingKeyId: "release-artifact-manifest-ed25519",
+    });
+
+    expect(result).toEqual({ ok: false, reason: "invalid_release_manifest_signature" });
+  });
+
+  it("ACCEPTS a row stamped with the official key ID when signed by a genuinely official (RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS) key", async () => {
+    const official = generateKeyPairSync("ed25519");
+    process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = rawPub(official.publicKey).toString("base64");
+    const manifest = legacyManifest();
+    const signature = sign(null, Buffer.from(manifest, "utf8"), official.privateKey).toString("base64");
+
+    const result = await validateReleaseManifest({
+      ...legacyArgsBase,
+      manifest,
+      signature,
+      signingKeyId: "release-artifact-manifest-ed25519",
+    });
+
+    expect(result).toEqual({ ok: true });
+  });
+
+  it("REJECTS a row stamped with the official key ID when no official key is configured, even with DB deployment keys present", async () => {
+    const deployKey = generateKeyPairSync("ed25519");
+    const manifest = legacyManifest();
+    const signature = sign(null, Buffer.from(manifest, "utf8"), deployKey.privateKey).toString("base64");
+    vi.spyOn(manifestSigning, "getActiveTrustKeyset").mockResolvedValue([
+      {
+        keyId: "deploy-2026-08-01-aaaa",
+        publicKeyB64: rawPub(deployKey.publicKey).toString("base64"),
+        validFrom: new Date().toISOString(),
+      },
+    ]);
+
+    const result = await validateReleaseManifest({
+      ...legacyArgsBase,
+      manifest,
+      signature,
+      signingKeyId: "release-artifact-manifest-ed25519",
+    });
+
+    expect(result).toEqual({ ok: false, reason: "invalid_release_manifest_signature" });
+  });
+
+  it("REJECTS a row stamped with a deploy-* key ID when signed by the OFFICIAL key instead of that DB key row (vice-versa case)", async () => {
+    const official = generateKeyPairSync("ed25519");
+    process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = rawPub(official.publicKey).toString("base64");
+    const manifest = legacyManifest();
+    const signature = sign(null, Buffer.from(manifest, "utf8"), official.privateKey).toString("base64");
+
+    // A DIFFERENT deploy key row exists under the claimed ID — its actual
+    // public key never signed this manifest.
+    const otherDeployKey = generateKeyPairSync("ed25519");
+    vi.spyOn(manifestSigning, "getActiveTrustKeyset").mockResolvedValue([
+      {
+        keyId: "deploy-2026-08-01-aaaa",
+        publicKeyB64: rawPub(otherDeployKey.publicKey).toString("base64"),
+        validFrom: new Date().toISOString(),
+      },
+    ]);
+
+    const result = await validateReleaseManifest({
+      ...legacyArgsBase,
+      manifest,
+      signature,
+      signingKeyId: "deploy-2026-08-01-aaaa",
+    });
+
+    expect(result).toEqual({ ok: false, reason: "invalid_release_manifest_signature" });
+  });
+
+  it("ACCEPTS a row stamped with a deploy-* key ID when signed by exactly that DB key row", async () => {
+    const deployKey = generateKeyPairSync("ed25519");
+    const manifest = legacyManifest();
+    const signature = sign(null, Buffer.from(manifest, "utf8"), deployKey.privateKey).toString("base64");
+    vi.spyOn(manifestSigning, "getActiveTrustKeyset").mockResolvedValue([
+      {
+        keyId: "deploy-2026-08-01-aaaa",
+        publicKeyB64: rawPub(deployKey.publicKey).toString("base64"),
+        validFrom: new Date().toISOString(),
+      },
+    ]);
+
+    const result = await validateReleaseManifest({
+      ...legacyArgsBase,
+      manifest,
+      signature,
+      signingKeyId: "deploy-2026-08-01-aaaa",
+    });
+
+    expect(result).toEqual({ ok: true });
+  });
+
+  it("REJECTS a deploy-* key ID with no matching manifest_signing_keys row (rotated out / never existed)", async () => {
+    const deployKey = generateKeyPairSync("ed25519");
+    const manifest = legacyManifest();
+    const signature = sign(null, Buffer.from(manifest, "utf8"), deployKey.privateKey).toString("base64");
+    vi.spyOn(manifestSigning, "getActiveTrustKeyset").mockResolvedValue([]);
+
+    const result = await validateReleaseManifest({
+      ...legacyArgsBase,
+      manifest,
+      signature,
+      signingKeyId: "deploy-2026-08-01-aaaa",
+    });
+
+    expect(result).toEqual({ ok: false, reason: "invalid_release_manifest_signature" });
+  });
+
+  it("REJECTS a deploy-* key ID when getActiveTrustKeyset (manifest_signing_keys lookup) fails outright", async () => {
+    // Fix round 1 review finding: the try/catch around getActiveTrustKeyset
+    // in verifyManifestSignatureForSigningKeyId's deploy-* branch had no
+    // test. A transient DB failure while resolving the ONE key a deploy-*
+    // signingKeyId names must fail closed, not silently fall through to a
+    // wider trust set.
+    const deployKey = generateKeyPairSync("ed25519");
+    const manifest = legacyManifest();
+    const signature = sign(null, Buffer.from(manifest, "utf8"), deployKey.privateKey).toString("base64");
+    vi.spyOn(manifestSigning, "getActiveTrustKeyset").mockRejectedValue(
+      new Error("connection refused"),
+    );
+
+    const result = await validateReleaseManifest({
+      ...legacyArgsBase,
+      manifest,
+      signature,
+      signingKeyId: "deploy-2026-08-01-aaaa",
+    });
+
+    expect(result).toEqual({ ok: false, reason: "invalid_release_manifest_signature" });
+  });
+
+  it("REJECTS a deploy-* key ID whose matched manifest_signing_keys row decodes to a non-32-byte key (corrupted row)", async () => {
+    // Optional coverage (fix round 1 review): the rawKey.length !== 32 guard
+    // in verifyEd25519SignatureAgainstSingleRawKey.
+    const deployKey = generateKeyPairSync("ed25519");
+    const manifest = legacyManifest();
+    const signature = sign(null, Buffer.from(manifest, "utf8"), deployKey.privateKey).toString("base64");
+    vi.spyOn(manifestSigning, "getActiveTrustKeyset").mockResolvedValue([
+      {
+        keyId: "deploy-2026-08-01-aaaa",
+        publicKeyB64: Buffer.from("too-short").toString("base64"),
+        validFrom: new Date().toISOString(),
+      },
+    ]);
+
+    const result = await validateReleaseManifest({
+      ...legacyArgsBase,
+      manifest,
+      signature,
+      signingKeyId: "deploy-2026-08-01-aaaa",
+    });
+
+    expect(result).toEqual({ ok: false, reason: "invalid_release_manifest_signature" });
+  });
+
+  it("keeps the legacy whole-set behavior unchanged for absent/unrecognized signingKeyId (no ID narrowing applies)", async () => {
+    const trusted = generateKeyPairSync("ed25519");
+    process.env.AGENT_UPDATE_MANIFEST_PUBLIC_KEYS = rawPub(trusted.publicKey).toString("base64");
+    const manifest = legacyManifest();
+    const signature = sign(null, Buffer.from(manifest, "utf8"), trusted.privateKey).toString("base64");
+
+    const result = await validateReleaseManifest({
+      ...legacyArgsBase,
+      manifest,
+      signature,
+      // no signingKeyId at all
+    });
+
+    expect(result).toEqual({ ok: true });
+  });
+
+  it("rejects a schema-v1 row whose stamped key ID is NOT the official ID, even though the signature verifies under the official key (schema-v1 can only ever prove official provenance)", async () => {
+    const official = generateKeyPairSync("ed25519");
+    process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = rawPub(official.publicKey).toString("base64");
+
+    const manifest = JSON.stringify({
+      schemaVersion: 1,
+      repository: "LanternOps/breeze",
+      release: "v1.0.0",
+      assets: [
+        {
+          name: "breeze-agent-linux-amd64",
+          sha256: "a".repeat(64),
+          size: 10,
+          platformTrust: requiredPlatformTrustFor("breeze-agent-linux-amd64") ?? undefined,
+        },
+      ],
+    });
+    const signature = sign(null, Buffer.from(manifest, "utf8"), official.privateKey).toString("base64");
+
+    const result = await validateReleaseManifest({
+      manifest,
+      signature,
+      signingKeyId: "deploy-2026-08-01-aaaa",
+      version: "1.0.0",
+      platform: "linux",
+      arch: "amd64",
+      component: "agent",
+      downloadUrl: "https://s3.example.com/agent-1.0.0",
+      checksum: "a".repeat(64),
+    });
+
+    expect(result).toEqual({ ok: false, reason: "invalid_release_manifest_signature" });
   });
 });

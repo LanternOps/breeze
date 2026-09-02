@@ -359,7 +359,7 @@
     "recoveryBootstrap": "Recovery Bootstrap",
     "createInspectAuthenticateAndRevokeRecoveryTokensFor": "Create, inspect, authenticate, and revoke recovery tokens for manual recovery workflows. This tab bootstraps manual recovery environments and can stage downloadable recovery bundles.",
     "cliTemplate": "CLI template",
-    "breezeBackupBmrRecoverTokenLtTokenGt": "breeze-backup bmr-recover --token &lt;token&gt; --server &lt;api-server&gt;",
+    "breezeBackupBmrRecoverTokenLtTokenGt": "breeze-backup bmr-recover --token <token> --server <api-server>",
     "createRecoveryToken": "Create recovery token",
     "generateANewTokenForASpecificBackup": "Generate a new token for a specific backup snapshot and recovery profile.",
     "snapshot": "Snapshot",

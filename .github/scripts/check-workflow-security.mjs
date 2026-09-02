@@ -210,7 +210,7 @@ function flowMappingEntries(text) {
     .filter(Boolean);
 }
 
-function activeLines(text) {
+export function activeLines(text) {
   const lines = [];
   let blockScalarIndent = null;
 
@@ -681,7 +681,7 @@ function runStepHeadRefs(lines) {
   return lines.filter(({ line }) => violatingLineNumbers.has(line));
 }
 
-function workflowJobs(lines) {
+export function workflowJobs(lines) {
   const jobs = [];
 
   for (const [index, line] of lines.entries()) {
@@ -818,7 +818,7 @@ function hasVersionTagPushTrigger(lines) {
   return false;
 }
 
-function topLevelLogicalParts(value, operator) {
+export function topLevelLogicalParts(value, operator) {
   const parts = [];
   let start = 0;
   let quote = null;

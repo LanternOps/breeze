@@ -53,6 +53,9 @@ vi.mock('../db/schema', () => ({
     id: 'organizations.id',
     partnerId: 'organizations.partner_id',
     type: 'organizations.type',
+    // #3967 — the failure branch probes for whoever holds the slug.
+    name: 'organizations.name',
+    slug: 'organizations.slug',
   },
   sites: {
     _tableName: 'sites',
@@ -134,10 +137,29 @@ describe('getOrCreateQuickSupportOrg', () => {
     queueSelect([]); // lookup misses
     queueSelect([{ currencyCode: 'CAD' }]); // partner currency lookup
     queueSelect([]); // re-select still misses
+    queueSelect([]); // #3967 slug-holder probe finds nobody -> generic message
     insertReturns.push([]);
 
     await expect(getOrCreateQuickSupportOrg(PARTNER_ID)).rejects.toThrow(
       /quick support org provisioning failed/i,
+    );
+  });
+
+  // #3967 — with organizations_partner_slug_uniq in place, an unconditional
+  // onConflictDoNothing can now be absorbing a SLUG conflict rather than the
+  // quick-support partial index. That wedges Quick Support for the partner
+  // until a human renames the squatter, so the throw has to say who it is.
+  it('names the organization squatting the slug when that is what blocked provisioning', async () => {
+    queueSelect([]); // lookup misses
+    queueSelect([{ currencyCode: 'CAD' }]); // partner currency lookup
+    queueSelect([]); // re-select still misses
+    queueSelect([{ id: 'org-squatter', name: 'Totally Legit Co' }]); // slug holder
+    insertReturns.push([]);
+
+    await expect(getOrCreateQuickSupportOrg(PARTNER_ID)).rejects.toThrow(
+      new RegExp(
+        `slug quick-support-${PARTNER_ID} is already held by organization org-squatter \\("Totally Legit Co"\\)`,
+      ),
     );
   });
 

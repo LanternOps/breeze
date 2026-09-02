@@ -1,0 +1,45 @@
+{
+  "title": "Aprovações",
+  "description": "Analise as ações de alto impacto que aguardam sua decisão.",
+  "loading": "Carregando aprovações…",
+  "loadError": "Não foi possível carregar as aprovações. Tente novamente.",
+  "retry": "Tentar novamente",
+  "empty": {
+    "title": "Nenhuma aprovação pendente",
+    "description": "Novas solicitações aparecerão aqui quando sua decisão for necessária."
+  },
+  "requestedBy": "Solicitado por {{client}}",
+  "proposedByAgent": "Proposto por {{agent}} (agente de IA)",
+  "targetDevice": "Dispositivo de destino: {{hostname}}",
+  "batch": {
+    "approveAll": "Aprovar tudo ({{count}})",
+    "declineAll": "Recusar tudo ({{count}})",
+    "groupTitle": "{{count}} solicitações semelhantes · {{tool}}"
+  },
+  "risk": {
+    "low": "Risco baixo",
+    "medium": "Risco médio",
+    "high": "Risco alto",
+    "critical": "Risco crítico"
+  },
+  "denyPrompt": "Por que você está recusando esta solicitação? O motivo é opcional.",
+  "denyReasonPlaceholder": "Opcional — compartilhado com quem solicitou",
+  "confirmDeny": "Confirmar recusa",
+  "cancel": "Cancelar",
+  "deny": "Recusar",
+  "approve": "Aprovar",
+  "deciding": "Enviando…",
+  "expiresIn": "Expira em {{minutes}} min",
+  "expiresSoon": "Expira em menos de um minuto",
+  "errors": {
+    "noApproverDevice": "Registre um dispositivo aprovador no seu perfil e tente novamente.",
+    "notSoleApprover": "Outra pessoa autorizada precisa decidir esta solicitação.",
+    "verificationFailed": "A verificação foi cancelada ou falhou. Tente novamente.",
+    "alreadyDecided": "Esta solicitação já foi decidida.",
+    "expired": "Esta solicitação expirou antes que fosse possível decidir.",
+    "decisionFailed": "Não foi possível enviar a decisão. Tente novamente.",
+    "batchStepUp": "Este lote exige um login mais seguro. Aprove as solicitações uma de cada vez.",
+    "batchNotHomogeneous": "Estas solicitações não podem mais ser decididas em conjunto."
+  },
+  "registerDevice": "Registrar dispositivo"
+}

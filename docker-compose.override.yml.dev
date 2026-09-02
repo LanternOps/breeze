@@ -14,6 +14,13 @@ services:
   caddy:
     # Uses canonical docker/Caddyfile.prod mounted by the base compose.
     # No command override needed — Caddy reads the volume-mounted config.
+    environment:
+      # Enables the @portalDevAssets matcher (#3906) so unprefixed Astro/Vite
+      # dev module URLs for portal islands (/src/*, /@fs/*, /@vite/*,
+      # /node_modules/.vite/*) route to the dev portal service instead of
+      # 404ing against web:4321. Unset in production — see the matcher's
+      # comment in docker/Caddyfile.prod.
+      CADDY_PORTAL_DEV_ASSETS: "1"
 
   binaries-init:
     image: alpine:3.19
@@ -33,6 +40,10 @@ services:
       - ./apps/api/migrations:/app/apps/api/migrations:ro
       - ./packages/shared/src:/app/packages/shared/src:cached
       - ./ee/workspace/src:/app/ee/workspace/src:cached
+      # ee/workspace imports @breeze/extension-sdk (main: ./src/index.ts). Mount it
+      # too, or a mounted workspace hot-reloads against a baked, stale SDK
+      # (SyntaxError: does not provide an export named …) until --rebuild.
+      - ./packages/extension-sdk/src:/app/packages/extension-sdk/src:cached
       - ./ee/workspace/migrations:/app/ee/workspace/migrations:ro
       # The manifest is BAKED into the image, so without this mount a local edit
       # to its tenancy / orgExportColumns is invisible to the running container

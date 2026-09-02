@@ -111,7 +111,10 @@
     "expiryMinutes_one": "yaklaşık {{count}} dakika içinde",
     "expiryMinutes_other": "yaklaşık {{count}} dakika içinde",
     "expiryHours_one": "yaklaşık {{count}} saat içinde",
-    "expiryHours_other": "yaklaşık {{count}} saat içinde"
+    "expiryHours_other": "yaklaşık {{count}} saat içinde",
+    "mfaRequiredSsoLinks": "Bağlantı oluşturmak için çok faktörlü kimlik doğrulama gereklidir. Kuruluşunuz sizi bir kimlik sağlayıcısı üzerinden oturuma alıyor — yöneticinizden bunun için MFA güvenini etkinleştirmesini isteyin ya da profil ayarlarınızdan bir faktör kaydedin.",
+    "mfaRequiredSsoInstallers": "Yükleyici oluşturmak için çok faktörlü kimlik doğrulama gereklidir. Kuruluşunuz sizi bir kimlik sağlayıcısı üzerinden oturuma alıyor — yöneticinizden bunun için MFA güvenini etkinleştirmesini isteyin ya da profil ayarlarınızdan bir faktör kaydedin.",
+    "mfaRequiredSsoTokens": "Kurulum belirteci oluşturmak için çok faktörlü kimlik doğrulama gereklidir. Kuruluşunuz sizi bir kimlik sağlayıcısı üzerinden oturuma alıyor — yöneticinizden bunun için MFA güvenini etkinleştirmesini isteyin ya da profil ayarlarınızdan bir faktör kaydedin."
   },
   "changeSiteModal": {
     "failedToLoadSites": "Siteler yüklenemedi",
@@ -142,11 +145,15 @@
     "creating": "Oluşturuluyor...",
     "createGroup": "Grup Oluştur"
   },
+  "decommissionedHiddenHint": {
+    "label": "{{count}} çıkarılan gizlendi",
+    "show": "göster"
+  },
   "deviceActions": {
     "unavailable": {
       "offline": "Cihaz çevrimdışı",
       "maintenance": "Cihaz bakım modunda",
-      "decommissioned": "Cihaz kullanımdan kaldırıldı",
+      "decommissioned": "Cihaz çıkarıldı",
       "quarantined": "Cihaz karantinaya alındı",
       "updating": "Cihaz güncelleniyor",
       "pending": "Cihaz kaydedilmeyi bekliyor",
@@ -183,9 +190,9 @@
         "confirm": "Bakıma Girin"
       },
       "decommission": {
-        "title": "Hizmetten Çıkarma Cihazı",
-        "message": "{{hostname}} hizmetini kaldırmak istediğinizden emin misiniz? Bu, cihazı filonuzdan kalıcı olarak kaldıracaktır. Temsilci raporlamayı durduracak ve cihaz artık izlenmeyecektir.",
-        "confirm": "Hizmetten Çıkarma"
+        "title": "Cihazı Çıkar",
+        "message": "{{hostname}}'yi çıkarmak istediğinizden emin misiniz? Cihaz etkin filonuzdan çıkarılacak ve izlenmeyecektir. Geçmiş korunur ve daha sonra geri yükleyebilirsiniz.",
+        "confirm": "Çıkar"
       },
       "clearSessions": {
         "title": "Oturumları Temizle",
@@ -210,7 +217,9 @@
     "changeSite": "Siteyi Değiştir",
     "exitMaintenance": "Bakımdan Çık",
     "enterMaintenance": "Bakıma Girin",
-    "decommission": "Hizmetten Çıkarma",
+    "decommission": "Çıkar",
+    "restore": "Geri Yükle",
+    "permanentlyDelete": "Kalıcı Olarak Sil",
     "sendAWakeOnLanPacket": "Cihazın LAN'ındaki çevrimiçi eş aracı aracılığıyla LAN'da Uyandırma paketi gönderin",
     "power": "Güç",
     "shutdown": "Kapatma",
@@ -333,7 +342,8 @@
     "reboot": "Yeniden başlat",
     "settings": "Ayarlar",
     "restore": "Geri Yükle",
-    "decommission": "Hizmetten Çıkarma",
+    "decommission": "Çıkar",
+    "permanentlyDelete": "Kalıcı Olarak Sil",
     "loadingTrend": "Trend yükleniyor...",
     "trendUnavailable": "Trend kullanılamıyor",
     "noTrendData": "Trend verisi yok",
@@ -432,7 +442,7 @@
       "online": "Çevrimiçi",
       "offline": "Çevrimdışı",
       "maintenance": "Bakım",
-      "decommissioned": "Kullanımdan kaldırıldı",
+      "decommissioned": "Çıkarıldı",
       "quarantined": "Karantinaya alındı",
       "updating": "Güncelleniyor",
       "pending": "Beklemede"
@@ -497,7 +507,7 @@
     "takenOutOf": "çıkarıldı",
     "putInto": "yerleştirdim",
     "s": "s",
-    "decommissionCancelled": "Hizmetten çıkarma iptal edildi",
+    "decommissionCancelled": "Çıkarma iptal edildi",
     "permanentDeleteCancelled": "Kalıcı silme işlemi iptal edildi",
     "failedToQueueScript": "Komut dosyası sıraya alınamadı",
     "loadingDevice": "Cihaz yükleniyor...",
@@ -993,7 +1003,7 @@
         "online": "Yukarı",
         "offline": "Aşağı",
         "maintenance": "Bakım",
-        "decommissioned": "Dekom",
+        "decommissioned": "Çıkarıldı",
         "quarantined": "Quar",
         "updating": "Güncelleniyor",
         "pending": "Beklemede"
@@ -1002,7 +1012,7 @@
         "online": "Çevrimiçi",
         "offline": "Çevrimdışı",
         "maintenance": "Bakım",
-        "decommissioned": "Kullanımdan kaldırıldı",
+        "decommissioned": "Çıkarıldı",
         "quarantined": "Karantinaya alındı",
         "updating": "Güncelleniyor",
         "pending": "Beklemede"
@@ -1073,7 +1083,7 @@
     "wakeSelected": "Uyandırma Seçilen",
     "compareSelected": "Seçilenleri Karşılaştır",
     "linkAsMultiBoot": "Çoklu önyükleme olarak bağlantı",
-    "decommissionSelected": "Hizmetten Çıkarma Seçildi",
+    "decommissionSelected": "Seçilenleri Çıkar",
     "clearSelection": "Seçimi temizle",
     "selectAllDevicesOnThisPage": "Bu sayfadaki tüm cihazları seçin",
     "actions": "Eylemler",
@@ -1087,7 +1097,8 @@
     "wake": "Uyan",
     "settings": "Ayarlar",
     "restore": "Geri Yükle",
-    "decommission": "Hizmetten Çıkarma",
+    "decommission": "Çıkar",
+    "permanentlyDelete": "Kalıcı Olarak Sil",
     "inactive": "· etkin değil",
     "expectedOffline": "Çevrimdışı bekleniyor",
     "lastSeen": "Son görülme",
@@ -1538,10 +1549,10 @@
   "deviceSettingsModal": {
     "addTagPlaceholder": "Bir etiket ekleyin...",
     "dangerZone": "Tehlikeli Bölge",
-    "decommissionDevice": "Hizmetten Çıkarma Cihazı",
-    "decommissionWarning": "Kullanımdan kaldırıldığında bu cihaz aktif filonuzdan kaldırılacaktır.",
-    "decommissionedDescription": "Bu cihaz kullanımdan kaldırıldı. Geri yükleyebilir veya kalıcı olarak silebilirsiniz.",
-    "decommissionedTitle": "Hizmetten Çıkarılmış Cihaz",
+    "decommissionDevice": "Cihazı Çıkar",
+    "decommissionWarning": "Çıkarma işlemi bu cihazı etkin filonuzdan çıkarır. Geçmiş korunur ve daha sonra geri yükleyebilirsiniz.",
+    "decommissionedDescription": "Bu cihaz çıkarıldı. Geri yükleyebilir veya kalıcı olarak silebilirsiniz.",
+    "decommissionedTitle": "Çıkarılmış Cihaz",
     "displayName": "Görünen Ad",
     "errors": {
       "loadSites": "Siteler yüklenemedi",
@@ -1729,8 +1740,8 @@
     },
     "addDevice": "Cihaz Ekle",
     "confirmDecommissionedSkip": {
-      "message": "{{total}} seçilen cihazlardan {{skipped}} kullanım dışı bırakıldı ve atlanacak; artık bir aracıları yok. Kalan {{eligible}} cihaz(lar)la devam edilsin mi? Çevrimdışı olan herkes bir sonraki check-in işleminde bunu çalıştıracaktır.",
-      "title": "Seçilen bazı cihazlar kullanımdan kaldırıldı"
+      "message": "Seçilen {{total}} cihazdan {{skipped}} tanesi çıkarıldı ve atlanacak — artık yönetilen bir aracıları yok. Kalan {{eligible}} cihazla devam edilsin mi? Çevrimdışı olanlar bir sonraki bağlantıda bunu çalıştıracaktır.",
+      "title": "Seçilen bazı cihazlar çıkarıldı"
     },
     "confirmRunAction": "Çalıştır {{script}}",
     "confirmScriptRun": "Komut dosyasının çalıştırılmasını onaylayın",
@@ -1754,11 +1765,12 @@
       "agentOnlyAction": "Bu eylem yalnızca aracı cihazlar için geçerlidir. Ağ cihazlarının aracısı yoktur ve atlanmıştır.",
       "alreadyPendingTail": "Zaten Bekleyen Kuyruk",
       "bulkActionFailed": "Toplu İşlem Başarısız Oldu",
-      "bulkAllDecommissioned": "Seçilen tüm {{total}} cihaz(lar) hizmet dışı bırakıldı — artık bunu çalıştıracak bir aracıları yok.",
+      "bulkAllDecommissioned": "Seçilen tüm {{total}} cihaz zaten çıkarılmış.",
       "bulkCommandPartialFailed": "Toplu Komut Kısmi Başarısız",
       "bulkCommandSent": "Toplu Komut Gönderildi",
-      "bulkDecommissionFailed": "Toplu Kullanımdan Kaldırma Başarısız Oldu",
-      "bulkDecommissioned": "Toplu Kullanımdan Kaldırıldı",
+      "bulkDecommissionAllFailed": "Tüm {{count}} cihaz çıkarılamadı: {{devices}}",
+      "bulkDecommissionFailed": "{{succeeded}} cihaz çıkarıldı; {{failed}} başarısız: {{devices}}",
+      "bulkDecommissioned": "{{count}} cihaz çıkarıldı",
       "bulkMaintenanceAllFailed": "Tüm {{count}} cihazları için bakım modu güncellenemedi: {{devices}}",
       "bulkMaintenanceSomeFailed": "{{succeeded}} cihaz(lar) {{verb}} bakım modu; {{failed}} başarısız oldu: {{devices}}",
       "bulkMaintenanceSuccess": "{{count}} cihazlar {{verb}} bakım modu",
@@ -1767,10 +1779,10 @@
       "bulkWakeSomeFailed": "Toplu Uyandırma Bazıları Başarısız Oldu",
       "commandQueued": "{{action}} sıraya alındı — {{hostname}} yeniden bağlandığında çalışacak",
       "commandSent": "{{action}}, {{hostname}} adlı kişiye gönderildi",
-      "decommissionCancelled": "Hizmetten Çıkarma İptal Edildi",
-      "decommissionFailed": "Hizmetten Çıkarma Başarısız",
-      "decommissioned": "Kullanımdan kaldırıldı",
-      "decommissioning": "Hizmetten Çıkarma",
+      "decommissionCancelled": "Çıkarma İptal Edildi",
+      "decommissionFailed": "Çıkarma Başarısız",
+      "decommissioned": "Çıkarıldı",
+      "decommissioning": "Çıkarılıyor",
       "deleteFailed": "Silme Başarısız",
       "deviceError": "Cihaz Hatası",
       "deviceOnline": "Cihaz Çevrimiçi",
@@ -2267,11 +2279,11 @@
     "cancel": "İptal"
   },
   "possibleReplacementBanner": {
-    "decommissionFailed": "Eski cihazın kullanımdan kaldırılması başarısız oldu",
-    "decommissionOldDevice": "Eski cihazın hizmet dışı bırakılması",
-    "decommissionSucceeded": "Eski cihaz hizmet dışı bırakıldı",
-    "message": "Bu cihaz {{hostname}} yerini alabilir — eski satırı inceleyebilir ve kullanımdan kaldırabilir.",
-    "oldDeviceDecommissioned": "Eski cihaz kullanımdan kaldırıldı — incelenecek bir şey kalmadı.",
+    "decommissionFailed": "Eski cihaz çıkarılamadı",
+    "decommissionOldDevice": "Eski cihazı çıkar",
+    "decommissionSucceeded": "Eski cihaz çıkarıldı",
+    "message": "Bu cihaz {{hostname}} yerini alabilir — eski satırı inceleyip çıkarabilirsiniz.",
+    "oldDeviceDecommissioned": "Eski cihaz çıkarıldı — incelenecek bir şey kalmadı.",
     "oldDeviceUnavailable": "Eski cihaz kaydı artık mevcut değil.",
     "title": "Olası mükerrer kayıt",
     "unknownDevice": "önceki cihaz",

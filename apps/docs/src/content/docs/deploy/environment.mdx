@@ -170,7 +170,7 @@ Push notifications to the iOS app go directly through Apple's push service (APNs
 | `HELPER_BINARY_DIR` | `./agent/bin` | | Local directory containing helper binaries. The bundled Docker Compose sets this to `/data/binaries/helper`. |
 | `GITHUB_REPO` | — | | **Deprecated** alias for `BINARY_GITHUB_REPOSITORY`, kept so a deployment that set it before the release-source unification does not silently revert to the official repo on upgrade. It is honoured only when `BINARY_GITHUB_REPOSITORY` is unset, logs a deprecation warning, and counts as an override for the production key requirement below. Migrate to `BINARY_GITHUB_REPOSITORY`. |
 | `BINARY_VERSION_FILE` | — | | Path to `VERSION` file for local mode DB registration (set automatically in Docker Compose) |
-| `BINARY_VERSION` | — | | Release tag for GitHub redirect mode (falls back to `BREEZE_VERSION`, then `latest`) |
+| `BINARY_VERSION` | — | | Release tag used for both the download redirect **and** boot-time GitHub sync (falls back to `BREEZE_VERSION`, then `latest`). Point it at the newest release that is actually **published** on GitHub — a pin to a tag with no published release registers no agent binaries at all, and does not fall back to `latest`. |
 | `RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS` | `yzx8ftmcls6uBetFC5SYnZhBo+cbur3IX50TbBthTso=` (official releases) | Yes (prod) | Comma-separated raw base64 Ed25519 public keys that sign release manifests. Use the published default for official Breeze releases (it is a public key, safe to commit); only change it if you sign your own binaries. When `BINARY_GITHUB_REPOSITORY` points at your own signing repository, this **must** be your own manifest key (the workflow run summary prints it). The API refuses to start in production without it. `BREEZE_RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS` is accepted as an alias. |
 | `AGENT_AUTO_PROMOTE` | `true` | | Controls whether a newly registered/synced agent release immediately becomes the fleet upgrade target. `true` (default): syncing a release promotes it to the fleet at once. Boot-time sync is pinned to the release matching your own `BREEZE_VERSION` (or `BINARY_VERSION`), so a newly published GitHub release does not move your fleet until you upgrade your server images. `false`: new binaries stay downloadable but the fleet only advances when you explicitly promote a version (platform admin + MFA) — see [Controlled agent fleet rollout](/deploy/upgrades/#controlled-agent-fleet-rollout). |
 
@@ -195,9 +195,9 @@ The Breeze stack includes a [coturn](https://github.com/coturn/coturn) TURN serv
 
 | Variable | Default | Required | Description |
 |---|---|---|---|
-| `TURN_HOST` | — | Yes (prod) | Public IP or hostname of the TURN server. Must be reachable by agents and viewers. |
+| `TURN_HOST` | — | Only with the `turn` profile | Public IP or hostname of the TURN server. Must be reachable by agents and viewers. |
 | `TURN_PORT` | `3478` | | TURN listening port (UDP and TCP) |
-| `TURN_SECRET` | — | Yes (prod) | Shared secret for TURN credential generation. Generate: `openssl rand -hex 32` |
+| `TURN_SECRET` | — | Only with the `turn` profile | Shared secret for TURN credential generation. Generate: `openssl rand -hex 32`. Not needed to bring the stack up: the bundled Compose file only starts coturn under the `turn` profile, and when it is enabled coturn refuses to start on an empty secret rather than running as an open relay. The value is mounted as a file rather than passed on the command line. |
 | `TURN_REALM` | `breeze.local` | | TURN authentication realm |
 
 <Aside type="tip">
@@ -321,7 +321,7 @@ Both API and web Sentry integrations are off by default. Leave the DSN variables
 | Variable | Default | Description |
 |---|---|---|
 | `SENTRY_DSN` | — | API Sentry DSN. Leave blank to disable server-side error tracking. |
-| `SENTRY_ENVIRONMENT` | `production` | Sentry environment tag |
+| `SENTRY_ENVIRONMENT` | `production` | Sentry environment tag. In a **multi-region** deployment use a region-qualified value (`production-us`, `production-eu`) — a bare `production` on every region makes them indistinguishable in Sentry, and `server_name` is a per-deploy container hash, so nothing else can attribute an error to a region. |
 | `SENTRY_RELEASE` | — | Sentry release tag (e.g. git SHA) |
 | `SENTRY_TRACES_SAMPLE_RATE` | `0.1` | Sentry performance trace sample rate (0.0-1.0) |
 | `SENTRY_PROFILES_SAMPLE_RATE` | — | API performance-profiling sample rate (0.0-1.0). Leave blank to disable profiling. |
@@ -390,6 +390,8 @@ with its own rollout gate. See [Rollout Modes](/deploy/rollout-modes/).
 | Variable | Default | Description |
 |---|---|---|
 | `ENABLE_REGISTRATION` | `true` | Allow new user registration |
+| `PENDING_ACCOUNT_MEETING_URL` | — | Optional absolute `http(s)` URL to a scheduling page. When set, a partner whose account is still **pending** sees it as a secondary link beside the billing call-to-action on the account-inactive screen, so a partner who cannot complete payment is not left at a dead end. Values that are not `http`/`https` are ignored. |
+| `PENDING_ACCOUNT_MEETING_LABEL` | `Book a call with us` | Optional link text for the pending-account booking link above. |
 | `ENABLE_2FA` | `true` | Enable two-factor authentication |
 | `ENABLE_API_DOCS_UI` | on outside production, off in production | Serve the interactive Swagger UI and OpenAPI spec at `/api/v1/docs`. The UI loads its scripts and styles from unpkg, which is why it defaults off in production. (The former `ENABLE_API_DOCS` variable was never read and has been removed.) |
 | `USE_AGENT_SDK` | — | Use Claude Agent SDK for AI chat |
@@ -397,6 +399,7 @@ with its own rollout gate. See [Rollout Modes](/deploy/rollout-modes/).
 | `PUBLIC_ENABLE_EDR_INTEGRATIONS` | `false` | Surface the EDR UI: the `/security/edr` fleet page, the device Security-tab EDR panel, and the Security dashboard summary cards. Set `true` at web image build time to enable. |
 | `PUBLIC_ENABLE_NETWORK_DEVICES_IN_LIST` | `false` | Surface network-discovered assets alongside agent endpoints in the Devices list view. Set `true` at web image build time to enable. |
 | `BREEZE_WORKSPACE_ENABLED` | `false` in the production compose files (`true` in the dev override) | Load the built-in **AI Workspace** extension. Off by default — leave it unset unless you want Workspace. **Requires a PostgreSQL image that provides the `pgvector` extension** (see the aside below). |
+| `BREEZE_AI_AGENTS_ENABLED` | `false` | Surface **AI Agents** (Settings → AI Agents). Off by default — no agent exists, runs, or appears in the UI until this is `true`. Even when enabled, agents only observe and propose in this release; nothing runs unattended. Must also be mapped in the `api` service's `environment:` block, not just set in `.env`. |
 
 <Aside>
   Variables prefixed with `PUBLIC_` are **web build-time flags** — they are baked into the web bundle when the image is built and cannot be changed at runtime by editing `.env`. To toggle them, set the value in your build environment and rebuild the web image.
@@ -409,6 +412,17 @@ with its own rollout gate. See [Rollout Modes](/deploy/rollout-modes/).
 
   If you do not want Workspace, leave `BREEZE_WORKSPACE_ENABLED` unset — no extension is needed and nothing else changes.
 </Aside>
+
+## Durable event dispatch
+
+Event dispatch settings select how a subscriber receives events. They do not enable or disable the feature behind that subscriber. For example, the ticket-helpdesk and anomaly agent lanes still run in-process with the default `off` mode. See [AI Agents](/features/ai-agents/) for lane requirements and durable trigger guidance.
+
+| Variable | Default | Description |
+|---|---|---|
+| `EVENT_DISPATCH_MODE` | `off` | Accepts `off`, `shadow`, or `enforce`. `off` uses in-process delivery only. `shadow` also mirrors routing plans into delivery receipts for observability but executes nothing through the queue. `enforce` sends each named subscriber through the BullMQ queue only, skips its in-process delivery, and leaves unnamed subscribers in-process. |
+| `EVENT_DISPATCH_QUEUE_SUBSCRIBERS` | — | Comma-separated subscriber IDs used only when the mode is `enforce`: `ai-agent-alert-verdict`, `ai-agent-anomaly`, `ai-agent-ticket-helpdesk`, `automation-worker`, `dns-threat-alerts`, `notification-dispatcher`, `policy-alert-bridge`, `webhook-delivery`. An empty list is accepted but leaves everything in-process and produces a boot warning. The variable is ignored in other modes. |
+
+Both variables are validated when the API starts. An invalid mode or an unknown subscriber ID stops the API from starting and identifies the invalid value. As with other API settings, map each variable in the `api` service's `environment:` block of your compose file as well as setting it in `.env`.
 
 ## MCP Server
 

@@ -284,10 +284,11 @@ export async function createRefreshToken(payload: Omit<TokenPayload, 'type'>): P
  * token. Used by `createTokenPair` for the family-aware path.
  */
 export async function createRefreshTokenWithJti(
-  payload: Omit<TokenPayload, 'type'>
+  payload: Omit<TokenPayload, 'type'>,
+  options: { jti?: string } = {}
 ): Promise<{ token: string; jti: string }> {
   const { key, kid } = getSignKey();
-  const jti = randomUUID();
+  const jti = options.jti ?? randomUUID();
 
   const token = await new SignJWT({ ...payload, type: 'refresh' })
     .setProtectedHeader(buildHeader(kid))
@@ -488,6 +489,8 @@ export interface CreateTokenPairOptions {
    * backwards-compat per-jti revocation path on /refresh.
    */
   refreshFam?: string;
+  /** Pre-generated durable successor JTI used by the guarded session issuer. */
+  refreshJti?: string;
 }
 
 export async function createTokenPair(
@@ -508,7 +511,7 @@ export async function createTokenPair(
 
   const [accessToken, refresh] = await Promise.all([
     createAccessToken(accessPayload),
-    createRefreshTokenWithJti(refreshPayload)
+    createRefreshTokenWithJti(refreshPayload, { jti: options.refreshJti })
   ]);
 
   return {

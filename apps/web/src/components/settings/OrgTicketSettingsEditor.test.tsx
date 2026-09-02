@@ -26,7 +26,10 @@ const SETTINGS = {
     high: { responseMinutes: 60, resolutionMinutes: 240 }
   },
   defaultHourlyRate: '125.00',
-  defaultBillable: true
+  defaultBillable: true,
+  rateCurrency: 'USD',
+  orgCurrency: 'USD',
+  partnerCurrency: 'USD'
 };
 
 const PARTNER_CONFIG = {
@@ -181,9 +184,23 @@ describe('OrgTicketSettingsEditor', () => {
     await waitFor(() => expect(onSave).toHaveBeenCalled());
     const patchCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'PATCH');
     const body = JSON.parse(String(patchCall![1]!.body));
-    expect(body.defaultHourlyRate).toBeNull();
+    // Rate unchanged (null → blank) — the dirty-field rule omits it entirely
+    expect('defaultHourlyRate' in body).toBe(false);
     expect(body.defaultBillable).toBeNull();
     expect(body.slaOverrides).toEqual({});
+  });
+
+  it('clears the rate (sends null) when a loaded rate is blanked out', async () => {
+    mockApi();
+    render(<OrgTicketSettingsEditor orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);
+    await waitFor(() => expect(screen.getByTestId('org-ticket-save')).toBeInTheDocument());
+    fireEvent.change(screen.getByTestId('org-ticket-rate'), { target: { value: '' } });
+    fireEvent.click(screen.getByTestId('org-ticket-save'));
+    await waitFor(() => expect(onSave).toHaveBeenCalled());
+    const patchCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'PATCH');
+    const body = JSON.parse(String(patchCall![1]!.body));
+    expect('defaultHourlyRate' in body).toBe(true);
+    expect(body.defaultHourlyRate).toBeNull();
   });
 
   it('sends empty slaOverrides object when all cells are blank (clears all overrides)', async () => {
@@ -260,5 +277,63 @@ describe('OrgTicketSettingsEditor', () => {
     // Resolve so the component doesn't linger
     resolvePatch(makeJsonResponse({ data: SETTINGS }));
     await waitFor(() => expect(onSave).toHaveBeenCalled());
+  });
+
+  describe('multi-currency (#3776)', () => {
+    it('renders the currency nudge when the org currency differs from the partner currency', async () => {
+      mockApi({ ...SETTINGS, rateCurrency: 'EUR', orgCurrency: 'EUR', partnerCurrency: 'USD' });
+      render(<OrgTicketSettingsEditor orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);
+      await waitFor(() => expect(screen.getByTestId('org-ticket-settings')).toBeInTheDocument());
+      const nudge = screen.getByTestId('org-ticket-currency-nudge');
+      expect(nudge.textContent).toContain('EUR');
+      expect(nudge.textContent).toContain('USD');
+      // The rate label names the org currency, never the partner's
+      expect(screen.getByText(/Default hourly rate \(EUR\)/)).toBeInTheDocument();
+    });
+
+    it('does not render the nudge when org and partner currencies match', async () => {
+      mockApi();
+      render(<OrgTicketSettingsEditor orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);
+      await waitFor(() => expect(screen.getByTestId('org-ticket-settings')).toBeInTheDocument());
+      expect(screen.queryByTestId('org-ticket-currency-nudge')).toBeNull();
+      expect(screen.getByText(/Default hourly rate \(USD\)/)).toBeInTheDocument();
+    });
+
+    it('omits defaultHourlyRate from the PATCH when only an SLA field changed', async () => {
+      mockApi({ ...SETTINGS, defaultHourlyRate: '100.00' });
+      render(<OrgTicketSettingsEditor orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);
+      await waitFor(() => expect(screen.getByTestId('org-ticket-save')).toBeInTheDocument());
+      fireEvent.change(screen.getByTestId('org-ticket-sla-normal-response'), { target: { value: '240' } });
+      fireEvent.click(screen.getByTestId('org-ticket-save'));
+      await waitFor(() => expect(onSave).toHaveBeenCalled());
+      const patchCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'PATCH');
+      const body = JSON.parse(String(patchCall![1]!.body));
+      expect('defaultHourlyRate' in body).toBe(false);
+      expect(body.slaOverrides.normal).toEqual({ responseMinutes: 240 });
+    });
+
+    it('omits defaultHourlyRate when the same value is re-entered in a different textual form', async () => {
+      mockApi({ ...SETTINGS, defaultHourlyRate: '100.00' });
+      render(<OrgTicketSettingsEditor orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);
+      await waitFor(() => expect(screen.getByTestId('org-ticket-save')).toBeInTheDocument());
+      fireEvent.change(screen.getByTestId('org-ticket-rate'), { target: { value: '100' } });
+      fireEvent.click(screen.getByTestId('org-ticket-save'));
+      await waitFor(() => expect(onSave).toHaveBeenCalled());
+      const patchCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'PATCH');
+      const body = JSON.parse(String(patchCall![1]!.body));
+      expect('defaultHourlyRate' in body).toBe(false);
+    });
+
+    it('includes defaultHourlyRate in the PATCH when the rate actually changed', async () => {
+      mockApi({ ...SETTINGS, defaultHourlyRate: '100.00' });
+      render(<OrgTicketSettingsEditor orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);
+      await waitFor(() => expect(screen.getByTestId('org-ticket-save')).toBeInTheDocument());
+      fireEvent.change(screen.getByTestId('org-ticket-rate'), { target: { value: '120' } });
+      fireEvent.click(screen.getByTestId('org-ticket-save'));
+      await waitFor(() => expect(onSave).toHaveBeenCalled());
+      const patchCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'PATCH');
+      const body = JSON.parse(String(patchCall![1]!.body));
+      expect(body.defaultHourlyRate).toBe(120);
+    });
   });
 });

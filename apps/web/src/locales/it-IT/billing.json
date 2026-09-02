@@ -96,6 +96,7 @@
           "cancel": "Contratto annullato"
         },
         "invoiceGenerated": "Fattura generata",
+        "priceBookGaps": "{{count}} riga/righe di catalogo fatturate al prezzo salvato nel contratto — nessun prezzo in {{currency}} nel catalogo: {{lines}}",
         "draftDeleted": "Bozza eliminata"
       },
       "cancelConfirm": {
@@ -201,7 +202,11 @@
         "lineTotal": "Totale riga: {{total}}",
         "addLine": "Aggiungi riga",
         "noPriceInCurrency": "Nessun prezzo in {{currency}} per questo elemento: aggiungine uno nel catalogo oppure cancella il collegamento al catalogo e inserisci una riga manuale.",
-        "priceFromCatalog": "Prezzo unitario (dal catalogo, in {{currency}})"
+        "priceFromCatalog": "Prezzo unitario (dal catalogo, in {{currency}})",
+        "resolvingPrice": "Ricerca del prezzo in {{currency}}…",
+        "priceLookupFailed": "Impossibile recuperare il prezzo in {{currency}}.",
+        "priceNotRepresentable": "Il prezzo in {{currency}} salvato per questo articolo non è valido in {{currency}}: correggilo nel catalogo oppure rimuovi il collegamento al catalogo e inserisci una riga manuale.",
+        "priceSourceOrgOverride": "Prezzo specifico per l’organizzazione {{org}}"
       },
       "estimate": {
         "title": "Stimato per questo periodo",
@@ -318,7 +323,65 @@
     "tabs": {
       "contracts": "Contratti",
       "templates": "Template",
-      "documents": "Documenti"
+      "documents": "Documenti",
+      "currencyMismatches": "Discrepanze di valuta"
+    },
+    "currencyMismatches": {
+      "title": "Discrepanze di valuta",
+      "description": "Contratti ancora registrati in una valuta che la loro organizzazione non fattura più. Apri un contratto per esaminarlo: qui non viene modificato nulla in blocco.",
+      "loading": "Caricamento…",
+      "loadError": "Impossibile caricare il report delle discrepanze di valuta.",
+      "loadMore": "Carica altro",
+      "emptyTitle": "Nessuna discrepanza di valuta",
+      "emptyBody": "Ogni contratto è registrato nella valuta di fatturazione della sua organizzazione.",
+      "eligible": "Pronto per la ri-registrazione",
+      "currencyPair": "{{contractCurrency}} → {{orgCurrency}}",
+      "blockingDrafts": "{{count}} fatture in bozza",
+      "blockingDrafts_one": "{{count}} fattura in bozza",
+      "columns": {
+        "contract": "Contratto",
+        "organization": "Organizzazione",
+        "status": "Stato",
+        "currencies": "Contratto → organizzazione",
+        "nextBilling": "Prossima fatturazione",
+        "eligibility": "Idoneità alla ri-registrazione"
+      },
+      "reason": {
+        "STATUS_NOT_ACTIVE": "Non attivo: solo i contratti attivi possono essere ri-registrati",
+        "ORPHANED_CONTRACT_SOURCE": "Le righe fattura originate da contratti non possono essere attribuite",
+        "ORPHANED_BILLING_PERIOD": "Un periodo di fatturazione non ha una fattura raggiungibile",
+        "BROKEN_CONTRACT_LINEAGE": "Il controllo della provenienza della fattura non è riuscito",
+        "UNBILLED_MONETARY_ROWS": "Le fatture in bozza contengono ancora importi di questo contratto"
+      }
+    },
+    "currency": {
+      "actions": {
+        "change": "Cambia valuta"
+      },
+      "dialog": {
+        "title": "Cambia la valuta del contratto",
+        "description": "Questo contratto viene fatturato in {{currency}}. La rimarcatura riguarda solo le fatture future: le fatture già emesse e i periodi di fatturazione passati non vengono mai modificati.",
+        "currencyLabel": "Nuova valuta",
+        "modeLegend": "Cosa accade alle righe del contratto",
+        "modeClear": "Rimuovi tutte le righe del contratto",
+        "modeClearHint": "Le righe vengono eliminate e reinserite a mano nella nuova valuta. Obbligatorio quando una riga è manuale.",
+        "modeReprice": "Riprezza le righe di catalogo",
+        "modeRepriceHint": "Ogni riga di catalogo viene risolta dal listino della nuova valuta. Possibile solo se tutte le righe provengono dal catalogo.",
+        "confirm": "Comprendo che questa operazione rimarca un contratto attivo e non può essere annullata in blocco.",
+        "submit": "Cambia valuta"
+      },
+      "blockers": {
+        "UNBILLED_MONETARY_ROWS": "Emetti o elimina prima queste bozze di fattura: contengono ancora importi di questo contratto:",
+        "ORPHANED_BILLING_PERIOD": "Questi periodi di fatturazione non hanno una fattura raggiungibile. Risolvili prima di rimarcare:",
+        "ORPHANED_CONTRACT_SOURCE": "Queste righe di fattura di origine contrattuale non sono attribuibili a un contratto. Risolvile prima di rimarcare:",
+        "BROKEN_CONTRACT_LINEAGE": "Il controllo della discendenza è fallito per queste fatture. Risolvile prima di rimarcare:"
+      },
+      "toast": {
+        "changed": "Valuta del contratto cambiata in {{currency}}."
+      },
+      "errors": {
+        "change": "Impossibile cambiare la valuta del contratto."
+      }
     },
     "templatesTab": {
       "title": "Template di contratto",
@@ -611,7 +674,8 @@
         "updateLine": "Impossibile aggiornare la riga.",
         "updateSection": "Impossibile aggiornare la sezione.",
         "uploadImage": "Impossibile caricare l'immagine.",
-        "noPriceForCurrency": "Nessun prezzo in {{currency}} per questo elemento. Aggiungine uno nel catalogo o inserisci una riga manuale."
+        "noPriceForCurrency": "Nessun prezzo in {{currency}} per questo elemento. Aggiungine uno nel catalogo o inserisci una riga manuale.",
+        "sectionAddedListStale": "Sezione aggiunta, ma non è stato possibile aggiornare l'elenco. Ricarica la pagina per vederla."
       },
       "image": {
         "alt": "Immagine del preventivo",
@@ -857,6 +921,11 @@
       "cloneError": "Impossibile clonare il preventivo.",
       "cloneQuote": "Clona preventivo",
       "cloneSavingTitle": "Attendi il salvataggio delle modifiche prima di clonare.",
+      "reviseQuote": "Rivedi preventivo",
+      "revising": "Creazione revisione…",
+      "reviseSuccess": "Revisione creata.",
+      "reviseError": "Impossibile creare una revisione.",
+      "reviseInProgress": "Una revisione è già in corso: verrà aperta.",
       "cloneSuccess": "Preventivo clonato.",
       "cloning": "Clonazione…",
       "deleteConfirm": {
@@ -892,7 +961,8 @@
         "toPlaceholder": "Aggiungi destinatario…",
         "tooManyRecipients": "Usa al massimo {{max}} indirizzi.",
         "zeroTotalWarning": "Il totale di questo preventivo è {{zero}}: verifica che gli elementi abbiano un prezzo prima dell'invio.",
-        "noBillingContactHint": "Nessun contatto di fatturazione è salvato per questa organizzazione — inserisci un'email oppure aggiungine uno nelle <orgLink>impostazioni dell'organizzazione</orgLink>."
+        "noBillingContactHint": "Nessun contatto di fatturazione è salvato per questa organizzazione — inserisci un'email oppure aggiungine uno nelle <orgLink>impostazioni dell'organizzazione</orgLink>.",
+        "revisionWarning": "L’invio sostituisce {{number}} e disattiva il link che il cliente possiede già."
       },
       "sendEmailWarning": {
         "noBillingContact": "Proposta contrassegnata come Inviata, ma nessuna email è stata consegnata: {{orgName}} non ha un'email di contatto per la fatturazione. Aggiungine una nelle impostazioni dell'organizzazione, poi invia di nuovo.",
@@ -936,7 +1006,8 @@
       "resendNewLinkOriginalDead": "Proposta inviata di nuovo, ma con un link NUOVO. Il link precedente non può più essere aperto: chi lo possiede deve usare quello nuovo.",
       "shareLinkNewLinkOriginalLive": "Copiato un link NUOVO. Questa proposta precede il tracciamento dei link, quindi non è stato possibile riutilizzare quello che il cliente aveva già; continua a funzionare insieme a questo.",
       "shareLinkNewLinkOriginalDead": "Copiato un link NUOVO. Il link precedente non può più essere aperto: chi lo possiede deve usare questo.",
-      "currencyMismatch": "Questo preventivo è in {{documentCurrency}}, ma il tuo account Stripe regola in {{accountCurrency}}. Stripe presenterà {{documentCurrency}} al cliente e convertirà al momento del regolamento: lo spread di cambio ed eventuali commissioni di conversione sono a tuo carico."
+      "currencyMismatch": "Questo preventivo è in {{documentCurrency}}, ma il tuo account Stripe regola in {{accountCurrency}}. Stripe presenterà {{documentCurrency}} al cliente e convertirà al momento del regolamento: lo spread di cambio ed eventuali commissioni di conversione sono a tuo carico.",
+      "currencyUnknown": "La valuta di regolamento del tuo account Stripe non è ancora in cache, quindi non è stato possibile confrontarla con questo preventivo in {{documentCurrency}}. Aggiorna i dettagli dell'account Stripe in Impostazioni → Integrazioni per abilitare il controllo."
     },
     "detail": {
       "addContentInEditor": "Aggiungi contenuto nell'Editor",
@@ -1055,10 +1126,17 @@
         "reasonLabel": "Nota del cliente:",
         "revise": "Duplica e rivedi",
         "revising": "Duplicazione…"
+      },
+      "lineage": {
+        "supersededTitle": "Questo preventivo è stato sostituito da",
+        "inProgressTitle": "È in preparazione una revisione di questo preventivo: inviarla sostituirà questo preventivo e disattiverà il link del cliente:",
+        "revisionOfTitle": "Revisione di",
+        "untitled": "una versione più recente"
       }
     },
     "distributorLookup": {
-      "marginUnavailableCostIn": "Costo in {{currency}} — margine non disponibile",
+      "feedPriceCurrencyUnknown": "Valuta del prezzo del feed sconosciuta — inserisci un prezzo in {{currency}}",
+      "feedPriceIn": "Il prezzo del feed è in {{feedCurrency}} — inserisci un prezzo in {{currency}}",
       "available": "{{count}} disp.",
       "cost": "costo {{currency}} {{amount}}",
       "endOfLife": "Fine vita",
@@ -1226,7 +1304,8 @@
       "tryAgain": "Riprova"
     },
     "pax8ProductLookup": {
-      "marginUnavailableCostIn": "Costo in {{currency}} — margine non disponibile",
+      "feedPriceCurrencyUnknown": "Valuta del prezzo del feed sconosciuta — inserisci un prezzo in {{currency}}",
+      "feedPriceIn": "Il prezzo del feed è in {{feedCurrency}} — inserisci un prezzo in {{currency}}",
       "cost": "costo {{currency}} {{amount}}",
       "importAndAdd": "Importa e aggiungi",
       "option": "Opzione {{number}}",
@@ -1248,7 +1327,8 @@
       "accepted": "Accettato",
       "declined": "Rifiutato",
       "expired": "Scaduto",
-      "converted": "Convertito"
+      "converted": "Convertito",
+      "superseded": "Sostituito"
     },
     "workspace": {
       "backLabel": "Preventivi",
@@ -1265,7 +1345,8 @@
         "preview": "Anteprima",
         "detail": "Dettaglio"
       },
-      "loading": "Caricamento del preventivo…"
+      "loading": "Caricamento del preventivo…",
+      "revisionBanner": "Questa è una revisione di {{number}}. Inviarla sostituirà l’originale e disattiverà il link che il cliente possiede già."
     }
   },
   "billingUi": {
@@ -1540,7 +1621,8 @@
       "shareLinkPrompt": "Condividi questo link di pagamento con il cliente:",
       "stripeNudge": "Collega Stripe per accettare pagamenti online con carta.",
       "title": "Pagamenti",
-      "viaStripe": "tramite Stripe"
+      "viaStripe": "tramite Stripe",
+      "currencyUnknown": "La valuta di regolamento del tuo account Stripe non è ancora in cache, quindi non è stato possibile confrontarla con questa fattura in {{documentCurrency}}. Aggiorna i dettagli dell'account Stripe in Impostazioni → Integrazioni per abilitare il controllo."
     },
     "requestPayment": {
       "invoiceSent": "Fattura inviata",
@@ -1654,16 +1736,21 @@
       "unpaid": "Acconto non pagato"
     },
     "dialog": {
+      "allBlockedByCurrency": "Tutto il lavoro non fatturato in questo intervallo è valorizzato in un’altra valuta, quindi non è stato possibile comporre nulla. Componi invece una bozza in quella valuta:",
       "allSites": "Tutti i siti",
       "assemble": "Componi",
       "assembleError": "Impossibile comporre una fattura per quell'intervallo.",
       "assembleFromWork": "Componi da lavoro",
+      "assembleIn": "Componi in {{code}} ({{count}} voci, {{amount}})",
       "assembleSuccess": "Bozza di fattura composta",
       "blankInvoice": "Fattura vuota",
+      "blockedByCurrency": "{{count}} voci non fatturate valorizzate in {{code}} sono state escluse: componi una bozza separata in {{code}} per fatturarle.",
       "createDraft": "Crea bozza",
       "createError": "Impossibile creare una bozza di fattura.",
       "createGenericError": "Impossibile creare la fattura.",
       "createSuccess": "Bozza di fattura creata",
+      "currency": "Valuta",
+      "currencyOrgDefault": "Predefinita dell’organizzazione",
       "description": "Componi il lavoro non fatturato in una bozza oppure parti da una fattura vuota.",
       "from": "Da",
       "selectOrganization": "Seleziona un'organizzazione…",
@@ -1731,6 +1818,44 @@
       "emailPlaceholder": "billing@customer.example",
       "name": "Nome contatto",
       "title": "Contatto di fatturazione"
+    },
+    "currency": {
+      "title": "Valuta",
+      "description": "I nuovi preventivi, fatture, contratti, voci di tempo e ricambi di questa organizzazione vengono marcati con questa valuta. Nulla di già esistente viene modificato.",
+      "label": "Valuta di fatturazione",
+      "loading": "Verifica di cosa comporterebbe il passaggio a {{currency}}…",
+      "error": "Impossibile caricare il riepilogo del cambio valuta.",
+      "panelTitle": "Cambiare la valuta di fatturazione in {{currency}}?",
+      "none": "Nulla in questa organizzazione è marcato in un'altra valuta.",
+      "groupTitle": "Marcato in {{currency}}",
+      "counts": {
+        "draftInvoices": "Fatture in bozza",
+        "draftQuotes": "Preventivi in bozza",
+        "sentQuotes": "Preventivi inviati",
+        "viewedQuotes": "Preventivi visualizzati",
+        "draftContracts": "Contratti in bozza",
+        "activeContracts": "Contratti attivi",
+        "pausedContracts": "Contratti in pausa",
+        "timeEntries": "Voci di tempo non fatturate",
+        "parts": "Ricambi non fatturati"
+      },
+      "timeDetail": "{{ready}} pronte da fatturare, {{running}} in corso, {{nonBillable}} non fatturabili, {{missingRate}} senza tariffa",
+      "partsDetail": "{{ready}} pronti da fatturare, {{nonBillable}} non fatturabili",
+      "amounts": "Manodopera {{labor}} · Ricambi {{parts}}",
+      "warningsTitle": "Configurazioni che smetteranno di applicarsi",
+      "warningRate": "La tariffa oraria predefinita dell'organizzazione è in {{currency}} e non si applicherà più alle nuove voci di tempo.",
+      "warningCategories": "{{count}} tariffe di categoria ticket in un'altra valuta verranno ignorate.",
+      "warningOverrides": "{{count}} override di prezzo a catalogo dell'organizzazione in un'altra valuta verranno ignorati.",
+      "recovery": "Per fatturare gli elementi in {{currency}} qui sopra, componi una bozza in {{currency}}.",
+      "rateLess": "{{count}} voci di tempo non fatturate hanno ore ma nessuna tariffa oraria. Imposta una tariffa: un cambio di valuta non le riguarda.",
+      "retention": "Cambiano solo documenti, voci di tempo e ricambi futuri. Nessun importo viene mai convertito e bozze, contratti ed elementi non fatturati esistenti mantengono la valuta con cui sono stati marcati.",
+      "advisory": "Questi conteggi sono un'anteprima, non una promessa: non includono nulla di creato successivamente.",
+      "stale": "La valuta di fatturazione è passata a {{currency}} durante la revisione. Controlla il riepilogo aggiornato e conferma di nuovo.",
+      "confirm": "Cambia valuta",
+      "changing": "Modifica in corso…",
+      "cancel": "Annulla",
+      "changeError": "Impossibile cambiare la valuta di fatturazione dell'organizzazione.",
+      "changeSuccess": "Valuta di fatturazione dell'organizzazione aggiornata"
     },
     "loadError": "Impossibile caricare le impostazioni di fatturazione.",
     "loading": "Caricamento impostazioni di fatturazione…",

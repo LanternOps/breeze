@@ -37,7 +37,8 @@
       "selectedOrganization": "seçilen kuruluş",
       "messageOne": "{{count}} cihazındaki yamayı {{org}}'de onaylasın mı?",
       "messageMany": "{{count}} cihazlarda {{org}} içindeki yama onaylansın mı?"
-    }
+    },
+    "checkingAccess": "Erişiminiz kontrol ediliyor..."
   },
   "patchComplianceView": {
     "unknownDevice": "Bilinmiyor",

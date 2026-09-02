@@ -12,6 +12,7 @@ permissionsCatalogRoutes.use('*', authMiddleware);
 const RESOURCE_LABELS: Record<string, string> = {
   backup: 'Backup & Recovery',
   devices: 'Devices',
+  agent_rollback: 'Agent Rollback',
   scripts: 'Scripts',
   alerts: 'Alerts',
   tickets: 'Tickets',
@@ -33,6 +34,7 @@ const RESOURCE_LABELS: Record<string, string> = {
   topology: 'Network Topology',
   vulnerabilities: 'Vulnerabilities',
   ai_sessions: 'AI Sessions',
+  ai_agents: 'AI Agents',
   approvals: 'Approvals',
   variables: 'Variables'
 };
@@ -40,6 +42,7 @@ const RESOURCE_LABELS: Record<string, string> = {
 const ACTION_LABELS: Record<string, string> = {
   read: 'Read',
   write: 'Write',
+  cross_site_restore: 'Cross-Site Restore',
   delete: 'Delete',
   execute: 'Execute',
   acknowledge: 'Acknowledge',
@@ -52,7 +55,8 @@ const ACTION_LABELS: Record<string, string> = {
   admin: 'Administer',
   accept_risk: 'Accept Risk',
   read_all: 'Read All',
-  decide: 'Decide'
+  decide: 'Decide',
+  create: 'Create'
 };
 
 // GET /permissions/catalog - Returns the authoritative list of assignable

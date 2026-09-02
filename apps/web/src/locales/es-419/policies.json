@@ -143,6 +143,7 @@
       "archived2": "Archivado",
       "features": "Características",
       "noPoliciesFoundTryAdjustingYourSearch": "No se encontraron políticas. Intente ajustar su búsqueda.",
+      "noPoliciesYet": "Aún no hay políticas de configuración. Cree una y luego asígnela a organizaciones, sitios o dispositivos.",
       "partnerWidePolicyAppliesToEveryOrganization": "Política en todo el socio: se aplica a todas las organizaciones",
       "allOrgs": "En todo el socio",
       "page": "Página",
@@ -252,7 +253,9 @@
         "thisRuleUsesUnsupportedMetrics": "Esta regla usa una métrica que el motor de alertas no puede evaluar ({{metrics}}). Elija una métrica compatible —o elimine la condición— antes de guardar; el servidor rechaza las reglas que la contienen.",
         "thisConditionUsesAnUnsupportedMetric": "El motor de alertas no evalúa la métrica «{{metric}}», por lo que esta condición se muestra solo de lectura.",
         "valueCount": "Valor (cantidad)",
-        "metricNotSet": "sin definir"
+        "metricNotSet": "sin definir",
+        "testRule": "Probar regla",
+        "testRuleHint": "Evalúa estas condiciones en un dispositivo ahora, incluidos los cambios sin guardar."
       },
       "automationTab": {
         "schedule": "Cronograma",
@@ -735,6 +738,8 @@
         "recurrence": "Recurrencia",
         "startDateTime": "Fecha/hora de inicio",
         "theSpecificDateAndTimeForThis": "La fecha y hora específicas de este período de mantenimiento único.",
+        "startTime": "Hora de inicio",
+        "theTimeOfDayEachWindowOpensIn": "La hora del día en que se abre cada período de mantenimiento, en la zona horaria seleccionada. El valor predeterminado es medianoche (00:00).",
         "durationHours": "Duración (horas)",
         "timezone": "Zona horaria",
         "notifyBeforeMinutes": "Avisar antes (minutos)",

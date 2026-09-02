@@ -129,6 +129,54 @@
       "hybridPlan": "Hybrid Plan"
     }
   },
+  "partnerAiProvider": {
+    "title": "AI Provider",
+    "subtitle": "Run Breeze AI on your own Anthropic API key instead of the platform key.",
+    "platformKey": "Platform key",
+    "platformKeyDescription": "AI features run on Breeze's Anthropic key and are billed as Breeze AI credits.",
+    "yourKey": "Your key •••• {{last4}}",
+    "verifiedAt": "Verified {{date}}",
+    "notVerifiedYet": "Not verified yet",
+    "defaultModelValue": "Default model: {{model}}",
+    "platformDefault": "Platform default",
+    "keyErrorTitle": "Your Anthropic key is not working",
+    "reconnectHint": "AI features are unavailable for your organizations until you save a working key below.",
+    "connectKeyTitle": "Connect your Anthropic key",
+    "replaceKeyTitle": "Replace your Anthropic key",
+    "keyLabel": "Anthropic API key",
+    "writeOnlyHint": "The key is verified when you save it and is never shown again.",
+    "saveKey": "Save key",
+    "keySaved": "Anthropic key saved and verified.",
+    "keySaveFailed": "Could not save the Anthropic key.",
+    "defaultModelLabel": "Default model",
+    "defaultModelHint": "Used for new AI sessions across all your organizations.",
+    "modelUpdated": "Default model updated.",
+    "modelUpdateFailed": "Could not update the default model.",
+    "disconnectTitle": "Switch back to the platform key",
+    "disconnectDescription": "Removes your Anthropic key. AI usage is billed as Breeze AI credits again.",
+    "disconnect": "Disconnect",
+    "disconnectConfirm": "Disconnect your Anthropic key? AI features will switch back to the platform key and Breeze AI credits.",
+    "disconnected": "Anthropic key removed. AI features now use the platform key.",
+    "disconnectFailed": "Could not disconnect the Anthropic key.",
+    "permissionDenied": "Managing the AI provider requires billing permissions and access to all organizations.",
+    "loadFailed": "Could not load the AI provider configuration.",
+    "workspaceDisclosure": "Workspace content enrichment uses your configured AI provider and appears in your AI usage.",
+    "endpointCardTitle": "Endpoint",
+    "endpointCardSubtitle": "Choose where your AI traffic is sent. Breeze vets every option before it appears here.",
+    "directOptionLabel": "Anthropic (direct)",
+    "verifiedModelsLabel": "Verified models: {{models}}",
+    "noVerifiedModels": "No verified models yet",
+    "viewDataNote": "View data-handling note",
+    "hideDataNote": "Hide data-handling note",
+    "confirmDialogTitle": "Switch to {{name}}?",
+    "confirmDialogMessageWithNote": "Before your AI traffic routes through {{name}}, review how it handles your data:",
+    "confirmDialogMessageNoNote": "Switch your AI traffic to {{name}}?",
+    "consentCheckboxLabel": "I understand my AI traffic and content will be processed by {{name}}",
+    "endpointUpdated": "AI endpoint updated.",
+    "endpointUpdateFailed": "Could not update the AI endpoint.",
+    "endpointDelistedBanner": "This endpoint was delisted by Breeze — AI is paused until you choose another",
+    "endpointModelUnverifiedBanner": "The model {{model}} isn't verified on this endpoint. Choose a different model or endpoint to resume AI."
+  },
   "partnerDefaults": {
     "notSet": "Not set — orgs configure individually",
     "updatePolicy": "Agent Update Policy",
@@ -418,6 +466,10 @@
         "label": "AI Budgets",
         "description": "AI spending limits"
       },
+      "aiProvider": {
+        "label": "AI Provider",
+        "description": "Bring your own Anthropic key"
+      },
       "branding": {
         "label": "Branding",
         "description": "Logo and colors"
@@ -453,7 +505,7 @@
     "loadFailed": "Couldn't load your current branding — reload the page before saving, or you may overwrite existing settings.",
     "logoUrl": "Logo URL",
     "logoPlaceholder": "https://cdn.example.com/logo.png",
-    "logoHelp": "An <code>https://</code> URL to your logo. Leave blank for no logo.",
+    "logoHelp": "SVG or PNG. Wide logos work best: the portal shows it at a fixed height, so aim for roughly 4:1 and at least 320px wide.",
     "accentColor": "Accent color",
     "colorPicker": "Accent color picker",
     "colorHelp": "A <code>#rrggbb</code> hex color.",
@@ -536,7 +588,7 @@
     },
     "loading": "Loading enrollment keys...",
     "title": "Enrollment Keys",
-    "description": "Create and manage keys for agent enrollment. Use these keys with breeze-agent enroll <key>",
+    "description": "Create and manage keys for agent enrollment. Use these keys with <code>breeze-agent enroll <key/></code>",
     "createKey": "Create Key",
     "saveNow": "Save this enrollment key now. It will not be shown again.",
     "copied": "Copied",
@@ -568,7 +620,7 @@
     "retrySites": "Retry",
     "createASite": "Create a site",
     "maxUsage": "Max Usage (optional)",
-    "unlimited": "Unlimited",
+    "defaultDeviceLimit": "50 (default)",
     "maxUsageHelp": "Maximum number of agents that can enroll with this key.",
     "expiresAt": "Expires At (optional)",
     "creating": "Creating...",
@@ -1083,8 +1135,7 @@
     "deadline": "Deadline",
     "createAccessReview": "Create Access Review",
     "startANewAccessReviewToAuditUserPermissionsThisWillGener": "Start a new access review to audit user permissions. This will generate review items for all users in scope.",
-    "step": "Step",
-    "of": "of",
+    "stepSummary": "Step {{current}} of {{total}}",
     "reviewName": "Review Name",
     "q12024AccessReview": "Q1 2024 Access Review",
     "descriptionOptional": "Description (optional)",
@@ -1121,8 +1172,7 @@
     "pending": "Pending",
     "inProgress": "In Progress",
     "completed": "Completed",
-    "of": "of",
-    "reviews": "reviews",
+    "countSummary": "{{shown}} of {{total}} reviews",
     "name": "Name",
     "status": "Status",
     "reviewer": "Reviewer",
@@ -1153,23 +1203,21 @@
     "completed": "Completed",
     "reviewer": "Reviewer",
     "dueDate": "Due Date",
+    "dueOn": "Due {{date}}",
     "actions": "Actions",
     "view": "View",
     "noCompletedAccessReviewCampaignsYet": "No completed access review campaigns yet.",
     "usersToReview": "users to review",
-    "due": "Due",
+    "reviewedSummary": "{{reviewed}} of {{total}} reviewed",
+    "showingSummary": "Showing {{shown}} of {{total}} users",
     "close": "Close",
     "progress": "Progress",
-    "of": "of",
-    "reviewed": "reviewed",
     "deadline": "Deadline",
     "filter": "Filter",
     "allDecisions": "All decisions",
     "pending": "Pending",
     "approved": "Approved",
     "revoked": "Revoked",
-    "showing": "Showing",
-    "users": "users",
     "reasonForBulkActionOptional": "Reason for bulk action (optional)",
     "approveSelected": "Approve selected",
     "revokeSelected": "Revoke selected",
@@ -1272,7 +1320,391 @@
     "aIProposesAMultiStepPlanUserApprovesTheWholePlanAtOnceTh": "AI proposes a multi-step plan. User approves the whole plan at once, then steps auto-execute.",
     "tier2ToolsAutoExecuteWithAuditLoggingTier3ToolsStillRequ": "Tier 2 tools auto-execute with audit logging. Tier 3 tools still require approval.",
     "likeActionPlanPlusLiveScreenshotsBetweenStepsAndAPersist": "Like Action Plan, plus live screenshots between steps and a persistent Stop button.",
-    "untitled": "Untitled"
+    "untitled": "Untitled",
+    "billedToPartnerKey": "Billed to your key — AI usage goes to your own Anthropic account, not Breeze AI credits",
+    "billedToPartnerKeyViaEndpoint": "Billed to your key via {{name}} — AI usage goes to your own Anthropic account, not Breeze AI credits"
+  },
+  "aiAgentsPage": {
+    "schedules": {
+      "title": "Scheduled sweeps",
+      "description": "Cron schedules that run this agent's fleet sweep. Partners set the baseline; organizations can only tighten it.",
+      "partnerOnly": "Sweep schedules can only be attached to a partner-wide agent.",
+      "loading": "Loading schedules…",
+      "loadFailed": "Could not load sweep schedules.",
+      "empty": "No sweep schedules yet.",
+      "add": "Add schedule",
+      "edit": "Edit",
+      "save": "Save schedule",
+      "cancel": "Cancel",
+      "delete": "Delete schedule",
+      "deleteOverride": "Remove override",
+      "confirmDelete": "Confirm delete",
+      "cron": "Cron expression",
+      "cronHint": "Five fields: minute hour day-of-month month day-of-week. For example 0 3 * * * runs every day at 03:00.",
+      "cronInvalid": "Enter a valid five-field cron expression before saving.",
+      "timezone": "Timezone",
+      "kinds": {
+        "sweep": "Sweep",
+        "narrative": "Weekly report"
+      },
+      "kindsLabel": "Checks to run",
+      "kind": "Schedule type",
+      "weeklyOnlyHint": "A weekly report fires exactly once a week: a literal minute and hour, * for day-of-month and month, and a single day of the week 0-6. For example 0 7 * * 1 runs every Monday at 07:00.",
+      "kindsRequired": "Select at least one check.",
+      "enabled": "Enabled",
+      "override": "Override for this org",
+      "editOverride": "Edit this org's override",
+      "overrideHint": "This organization's override of the partner baseline. It always runs on the baseline's cadence.",
+      "overrideSummary": "This organization: {{state}} · {{kinds}}",
+      "overrideSummaryNarrative": "This organization: {{state}}",
+      "tightenOnly": "An override can only narrow the baseline: it may disable the sweep or drop checks, never add one.",
+      "noKinds": "No checks",
+      "lastRun": "Last run {{at}} · {{admitted}} of {{total}} organizations swept, {{skipped}} skipped.",
+      "kindLabels": {
+        "disk_pressure": "Disk pressure",
+        "stale_agents": "Stale agents",
+        "pending_reboots": "Pending reboots",
+        "failed_backups": "Failed backups",
+        "service_down": "Service down",
+        "unpatched_critical": "Unpatched critical vulnerabilities"
+      },
+      "toasts": {
+        "saved": "Schedule saved",
+        "saveFailed": "Could not save the schedule.",
+        "deleted": "Schedule deleted",
+        "deleteFailed": "Could not delete the schedule."
+      },
+      "errors": {
+        "invalidCron": "That cron expression isn't valid. Use five fields, for example 0 3 * * *.",
+        "invalidTimezone": "That isn't a valid IANA timezone.",
+        "kindsNotSubset": "An override can only narrow the baseline. Remove the checks the partner baseline does not run.",
+        "overrideExists": "This organization already overrides that baseline. Edit the existing override instead.",
+        "baselineWrongPartner": "That baseline belongs to a different partner.",
+        "baselineIsOverride": "That schedule is already an override. Overrides cannot be chained.",
+        "baselineNotPartnerRow": "That baseline has no owner and cannot be overridden.",
+        "baselineAgentMismatch": "That baseline belongs to a different agent.",
+        "agentNotPartnerWide": "Sweep schedules require a partner-wide agent.",
+        "agentKindNotTriage": "Only a triage agent can be scheduled.",
+        "kindsNotEmpty": "A weekly report schedule runs no checks. Clear the selected checks before saving.",
+        "invalidCronForKind": "A weekly report must fire exactly once a week. Use a literal minute and hour, * for day-of-month and month, and a single day of the week."
+      }
+    },
+    "title": "AI Agents",
+    "description": "Named AI workers with a policy. Partners set the baseline; organizations can only tighten it.",
+    "empty": "No agents yet.",
+    "allOrgs": "All orgs",
+    "allOrgsHint": "Partner-wide: applies to every organization unless an organization tightens it.",
+    "stateEnabled": "Enabled",
+    "stateDisabled": "Disabled",
+    "errors": {
+      "load": "Could not load agents.",
+      "kindExists": "An agent of this kind already exists for this owner. Edit the existing one, or disable it first.",
+      "modeNotSupported": "That mode is not available yet. Agents can currently investigate and propose, but not act.",
+      "actPrerequisitesNotMet": "This agent isn't ready for act mode yet.",
+      "actMissingRecipient": "Add at least one notification recipient before enabling act mode.",
+      "actMissingTool": "Allow at least one act-eligible tool, or authorize a script, before enabling act mode.",
+      "invalidSupervisedActionKeys": "One or more selected actions can't be authorized by policy.",
+      "supervisedKeyRejected": "{{key}}: {{reason}}"
+    },
+    "actions": {
+      "add": "New agent",
+      "edit": "Edit",
+      "save": "Save",
+      "cancel": "Cancel",
+      "disable": "Disable",
+      "confirmDisable": "Confirm disable"
+    },
+    "toasts": {
+      "saved": "Agent saved",
+      "saveFailed": "Could not save the agent.",
+      "disabled": "Agent disabled",
+      "disableFailed": "Could not disable the agent."
+    },
+    "issues": {
+      "name": "Give the agent a name.",
+      "severities": "Select at least one alert severity.",
+      "org": "Select an organization before creating an org-owned agent.",
+      "allKindsTaken": "Every agent kind already has an agent for this owner. Edit an existing agent instead."
+    },
+    "editor": {
+      "newTitle": "New agent",
+      "editTitle": "Edit agent",
+      "scopeLegend": "Applies to",
+      "allOrgs": "All organizations",
+      "allOrgsHint": "(partner-wide baseline)",
+      "thisOrg": "This organization only"
+    },
+    "sections": {
+      "scope": "When it runs",
+      "permissions": "Permissions",
+      "policyDecide": "Unattended policy authorization",
+      "limits": "Limits",
+      "notifications": "Notifications",
+      "instructions": "Instructions"
+    },
+    "kinds": {
+      "triage": "Alert triage",
+      "patch": "Patching",
+      "helpdesk": "Help desk"
+    },
+    "modes": {
+      "off": "Off",
+      "shadow": "Shadow — investigate and propose only",
+      "act": "Act — execute matched operations unattended, with verification"
+    },
+    "actWarning": {
+      "title": "Act mode executes without a human clicking approve",
+      "unattended": "Matched, rule-equivalent operations run unattended once revalidated — nobody approves them in the moment.",
+      "verification": "Verification can still fail after a clean execution. Check notifications after every run.",
+      "noRollback": "There is no automatic rollback. If something needs undoing, a person does it.",
+      "singleDevice": "Each run acts on one device only.",
+      "actionCap": "A run stops acting once it hits its configured action cap.",
+      "ack": "I understand act mode executes unattended, verification can fail, and there is no rollback."
+    },
+    "severities": {
+      "critical": "Critical",
+      "high": "High",
+      "medium": "Medium",
+      "low": "Low",
+      "info": "Informational"
+    },
+    "fields": {
+      "kind": "Kind",
+      "kindImmutable": "An agent's kind cannot be changed after it is created.",
+      "name": "Name",
+      "mode": "Mode",
+      "enabled": "Enabled",
+      "respectMaintenanceWindows": "Respect maintenance windows",
+      "toolAllowlist": "Tool allowlist",
+      "toolAllowlistHint": "Read-only tools are always available. List the mutating tools this agent may propose, one per line.",
+      "protectedHint": "Never touched, whatever the agent proposes. One entry per line.",
+      "protectedServices": "Protected services",
+      "protectedPaths": "Protected paths",
+      "protectedRegistryKeys": "Protected registry keys",
+      "maxDevicesPerRun": "Max devices per run",
+      "maxRunsPerHour": "Max runs per hour",
+      "maxBudgetCentsPerDay": "Daily budget (cents)",
+      "wallClockSeconds": "Max run duration (seconds)",
+      "maxFleetPercentPerDay": "Max fleet share per day (%)",
+      "cooldownSeconds": "Per-device cooldown (seconds)",
+      "recipientRolesHint": "Roles notified when this agent proposes something.",
+      "recipientRolesEmpty": "No roles available.",
+      "instructionsHint": "Guidance only — tone, what to check first, house conventions. It never grants permissions.",
+      "charactersLeft": "{{count}} characters left",
+      "recipientRolesFailed": "Couldn't load roles, so notification recipients can't be changed right now.",
+      "supervisedActionKeysHint": "Operations this agent may execute WITHOUT a human clicking approve, when a matching policy exists and the org's exposure cap has room. Each one still passes live guardrails, the kill switch, and per-org caps at execution time.",
+      "supervisedActionKeysEmpty": "No policy-decidable actions are registered.",
+      "supervisedActionKeysFailed": "Couldn't load the policy-decidable action list, so unattended authorization can't be changed right now.",
+      "ticketAutonomousWrites": "Autonomous ticket writes",
+      "ticketAutonomousWritesHint": "Org override only — autonomous ticket writes require act mode and this org-level opt-in"
+    },
+    "loading": "Loading agents…",
+    "runs": {
+      "title": "Agent runs",
+      "description": "Every run across your accessible organizations, newest first.",
+      "filters": {
+        "agent": "Agent",
+        "allAgents": "All agents",
+        "status": "Status",
+        "allStatuses": "All statuses"
+      },
+      "columns": {
+        "agent": "Agent",
+        "status": "Status",
+        "trigger": "Trigger",
+        "verdict": "Verdict",
+        "queued": "Queued",
+        "finished": "Finished",
+        "cost": "Cost"
+      },
+      "statuses": {
+        "queued": "Queued",
+        "running": "Running",
+        "awaiting_approval": "Awaiting approval",
+        "completed": "Completed",
+        "failed": "Failed",
+        "cancelled": "Cancelled",
+        "expired": "Expired",
+        "skipped": "Skipped"
+      },
+      "verdicts": {
+        "remediated": "Remediated",
+        "needs_attention": "Needs attention",
+        "partial": "Partial",
+        "no_action": "No action needed",
+        "pending": "Pending"
+      },
+      "triggers": {
+        "alert": "Alert",
+        "manual": "Manual",
+        "schedule": "Schedule",
+        "ticket": "Ticket",
+        "anomaly": "Anomaly"
+      },
+      "profile": {
+        "sweep": "Sweep",
+        "narrative": "Weekly report",
+        "triage": "Ticket triage"
+      },
+      "sweep": {
+        "title": "Sweep findings",
+        "kindsLabel": "Checks: {{kinds}}",
+        "empty": "No findings reported.",
+        "evidenceTruncated": "Evidence was truncated — not every matching row was shown to the agent.",
+        "proposalCreated": "Approval requested",
+        "columns": {
+          "kind": "Check",
+          "severity": "Severity",
+          "device": "Device",
+          "title": "Finding",
+          "detail": "Detail",
+          "proposal": "Proposal"
+        },
+        "kinds": {
+          "disk_pressure": "Disk pressure",
+          "stale_agents": "Stale agents",
+          "pending_reboots": "Pending reboots",
+          "failed_backups": "Failed backups",
+          "service_down": "Service down",
+          "unpatched_critical": "Unpatched critical vulnerabilities"
+        },
+        "severities": {
+          "critical": "Critical",
+          "high": "High",
+          "medium": "Medium",
+          "low": "Low",
+          "info": "Info"
+        },
+        "reasons": {
+          "device_not_in_evidence": "Device not in the sweep evidence",
+          "device_not_in_org": "Device not in this organization",
+          "not_allowlisted": "Tool not allowed for this agent",
+          "no_eligible_approvers": "No eligible approvers",
+          "intent_error": "Could not create the approval",
+          "max_actions_per_run": "Action limit reached for this run"
+        }
+      },
+      "narrative": {
+        "title": "Weekly narrative",
+        "period": "Covers {{start}} to {{end}}",
+        "truncatedNote": "The agent's context was cut short — this narrative did not see the whole week.",
+        "openReport": "Open report",
+        "download": "Download PDF",
+        "downloadFailed": "Could not download the PDF."
+      },
+      "noAgent": "Unknown agent",
+      "loading": "Loading runs…",
+      "empty": "No runs yet.",
+      "emptyFiltered": "No runs match these filters.",
+      "loadMore": "Load more",
+      "retry": "Retry",
+      "errors": {
+        "load": "Could not load runs.",
+        "loadMore": "Could not load more runs."
+      },
+      "detail": {
+        "title": "Run detail",
+        "back": "Back to runs",
+        "notFound": "Run not found.",
+        "loading": "Loading run…",
+        "errors": {
+          "load": "Could not load this run.",
+          "notFound": "Run not found."
+        },
+        "labels": {
+          "agent": "Agent",
+          "device": "Device",
+          "noDevice": "No device",
+          "status": "Status",
+          "verdict": "Verdict",
+          "cost": "Cost",
+          "duration": "Duration",
+          "trigger": "Trigger",
+          "queuedAt": "Queued",
+          "startedAt": "Started",
+          "finishedAt": "Finished",
+          "turnCount": "Turns",
+          "summary": "Summary"
+        },
+        "flags": {
+          "budgetExceeded": "Budget exceeded",
+          "wallClockExceeded": "Ran past its time limit",
+          "maxTurnsExceeded": "Hit its turn limit"
+        },
+        "trace": {
+          "title": "Execution trace",
+          "empty": "No trace entries recorded.",
+          "kinds": {
+            "executed": "Executed",
+            "proposed": "Proposed",
+            "denied": "Denied"
+          },
+          "result": {
+            "ok": "OK",
+            "failed": "Failed"
+          },
+          "execution": {
+            "succeeded": "Succeeded",
+            "failed": "Failed",
+            "timeout": "Timed out",
+            "unknown": "Unknown"
+          },
+          "verification": {
+            "passed": "Verified",
+            "failed": "Verification failed",
+            "inconclusive": "Verification inconclusive",
+            "skipped": "Verification skipped"
+          },
+          "viewApproval": "Review in Approvals"
+        },
+        "ledger": {
+          "title": "Tool executions",
+          "empty": "No tool executions recorded.",
+          "columns": {
+            "tool": "Tool",
+            "status": "Status",
+            "duration": "Duration",
+            "started": "Started",
+            "error": "Error"
+          }
+        },
+        "intents": {
+          "title": "Linked approvals",
+          "empty": "No linked approvals.",
+          "viewAll": "Review in Approvals"
+        },
+        "anomalyLink": "Open device anomalies",
+        "budget": {
+          "title": "Exposure budget",
+          "caption": "Recorded exposure — trailing {{hours}}h",
+          "devices": "{{count}} of {{allowance}} devices",
+          "decisionsToday": "{{count}} of {{max}} policy decisions today",
+          "partialNote": "Partial accounting while unattended policy authorization is disabled — this may understate actual exposure.",
+          "unavailable": "No active agent policy for this run's organization.",
+          "loading": "Loading budget…"
+        }
+      },
+      "triage": {
+        "title": "Ticket triage",
+        "fieldsTitle": "Proposed fields",
+        "fields": {
+          "categoryIdLabel": "Category ID",
+          "priority": "Priority"
+        },
+        "confidence": "{{value}}% confidence",
+        "device": "Device match: {{value}}",
+        "draftReplyTitle": "Draft reply",
+        "draftResolutionTitle": "Draft resolution note",
+        "notesTitle": "Notes",
+        "intentsTitle": "Proposed ticket changes",
+        "intentUnknown": "Status unavailable",
+        "draftsWrittenTitle": "Drafts written",
+        "draftKinds": {
+          "reply": "Reply draft",
+          "resolutionNote": "Resolution-note draft"
+        }
+      }
+    }
   },
   "apiKeyForm": {
     "devicesRead": "Devices: Read",
@@ -1328,8 +1760,8 @@
   },
   "apiKeyList": {
     "aPIKeys": "API Keys",
-    "of": "of",
-    "keys": "keys",
+    "countSummary": "{{shown}} of {{total}} keys",
+    "pageSummary": "Page {{current}} of {{total}}",
     "searchByName": "Search by name",
     "name": "Name",
     "keyPrefix": "Key Prefix",
@@ -1344,7 +1776,6 @@
     "view": "View",
     "rotate": "Rotate",
     "revoke": "Revoke",
-    "page": "Page",
     "previous": "Previous",
     "next": "Next",
     "allStatuses": "All statuses",
@@ -1410,6 +1841,7 @@
     "cancel": "Cancel",
     "rename": "Rename",
     "revoke": "Revoke",
+    "revokeConfirmTitle": "Revoke {{device}}?",
     "registerThisBrowser": "Register this browser",
     "optionalYourPhoneIsAlreadyAnApproverOnceYouSignInToTheMo": "Optional — your phone is already an approver once you sign in to the mobile app. Register this browser too and you'll be prompted for Windows Hello, Touch ID, or your device's biometric.",
     "deviceName": "Device name",
@@ -1587,8 +2019,7 @@
     "onInvoice": "on invoice",
     "componentCost": "Component cost",
     "bundleMargin": "Bundle margin",
-    "showingTheFirst": "Showing the first",
-    "itemsUseSearchToNarrowTheList": "items. Use search to narrow the list.",
+    "capNote": "Showing the first {{limit}} items. Use search to narrow the list.",
     "archiveItem": "Archive item",
     "rowActions": "Row actions",
     "edit": "Edit",
@@ -1695,10 +2126,15 @@
     "disable": "Disable",
     "enable": "Enable",
     "sMSCodes": "SMS codes",
-    "phoneVerified": "(phone verified: ...",
+    "phoneVerifiedLast4": "(phone verified: ...{{last4}})",
     "recoveryCodes": "Recovery codes",
     "useTheseCodesToAccessYourAccountIfYouLoseYourAuthenticat": "Use these codes to access your account if you lose your authenticator.",
-    "viewCodes": "View codes",
+    "recoveryCodesAreShownOnceAndCannotBeDisplayedAgain": "Recovery codes are shown once and cannot be displayed again.",
+    "regenerateRecoveryCodes": "Regenerate recovery codes",
+    "existingCodesCannotBeDisplayedAgainRegeneratingIssuesA": "Existing codes cannot be displayed again. Regenerating issues a new set and immediately invalidates the old one.",
+    "regenerateRecoveryCodesQuestion": "Regenerate recovery codes?",
+    "regeneratingImmediatelyInvalidatesEveryRecoveryCodeYou": "Regenerating immediately invalidates every recovery code you have saved, including printed copies. The replacements are shown once, right after they are generated.",
+    "thatCodeWasNotAcceptedYourQRCodeIsStillValidWaitForThe": "That code was not accepted. Your QR code is still valid, so wait for the next code from your authenticator and try again.",
     "confirmYourPassword": "Confirm your password",
     "reEnterYourAccountPasswordToStartSettingUpAnAuthenticato": "Re-enter your account password to start setting up an authenticator app.",
     "setUpAuthenticator": "Set up authenticator",
@@ -1710,7 +2146,8 @@
     "reEnterYourAccountPasswordToConfirmThisChange": "Re-enter your account password to confirm this change.",
     "saveTheseCodesInASafePlaceYouCanUseThemToAccessYourAccou": "Save these codes in a safe place. You can use them to access your account if you lose your authenticator device.",
     "copyCodes": "Copy codes",
-    "clickTheButtonBelowToViewOrGenerateNewRecoveryCodes": "Click the button below to view or generate new recovery codes.",
+    "copiedCodes": "Copied",
+    "copyCodesFailed": "Couldn't copy to the clipboard. Select the codes above and copy them by hand.",
     "eachCodeCanOnlyBeUsedOnceGeneratingNewCodesWillInvalidat": "Each code can only be used once. Generating new codes will invalidate any previously generated codes.",
     "back": "Back",
     "smsSentToPhone": "SMS codes sent to phone ending in {{last4}}.",
@@ -1734,7 +2171,10 @@
     "disabling": "Disabling...",
     "generating": "Generating...",
     "regenerateCodes": "Regenerate codes",
-    "showRecoveryCodes": "Show recovery codes"
+    "verifyYourIdentity": "Verify your identity",
+    "thisAccountSignsInThroughAnIdentityProviderAndHasNoPassw": "This account signs in through an identity provider and has no password. Re-verify with your provider to start setting up an authenticator app.",
+    "verifyWithYourIdentityProvider": "Verify with your identity provider",
+    "ssoReauthProofExpired": "Your identity provider verification has expired. Verify again to finish setting up your authenticator app."
   },
   "pax8CatalogDrawer": {
     "importFromPax8": "Import from Pax8",
@@ -1742,6 +2182,7 @@
     "close": "Close",
     "imported": "Imported \"{{name}}\" to the catalog",
     "importedWithoutCleanup": "Imported \"{{name}}\" — AI clean-up was unavailable, kept the original name.",
+    "importedPricePreserved": "Imported \"{{name}}\" — kept your existing {{currencies}} price; only the cost was updated from Pax8.",
     "couldNotImportThePax8Product": "Could not import the Pax8 product."
   },
   "profilePage": {
@@ -1762,7 +2203,7 @@
     "passkeys": "Passkeys",
     "managePasskeysThatCanBeUsedAsMultiFactorAuthenticationFo": "Manage passkeys that can be used as multi-factor authentication for your account.",
     "loadingPasskeys": "Loading passkeys...",
-    "lastUsed": "Last used:",
+    "lastUsedAt": "Last used: {{date}}",
     "rename": "Rename",
     "noPasskeysAreRegisteredForThisAccount": "No passkeys are registered for this account.",
     "addPasskey": "Add passkey",
@@ -1820,7 +2261,22 @@
     "failedToEnableMfaHttp": "Failed to enable MFA (HTTP {{status}})",
     "failedToDisableMfaHttp": "Failed to disable MFA (HTTP {{status}})",
     "failedToStartPasskeyHttp": "Failed to start passkey setup (HTTP {{status}})",
-    "failedToSavePasskeyHttp": "Failed to save passkey (HTTP {{status}})"
+    "failedToSavePasskeyHttp": "Failed to save passkey (HTTP {{status}})",
+    "ssoReauthNotFresh": "Your identity provider did not re-verify your sign-in. Try again, or ask your administrator to allow re-authentication prompts.",
+    "ssoReauthIdentityMismatch": "That identity provider account is not the one linked to this profile. Sign in with your own account and try again.",
+    "ssoReauthSessionInvalid": "Your session changed while you were verifying. Sign in again, then retry.",
+    "ssoReauthPasswordSet": "This account now has a password. Use it to set up multi-factor authentication.",
+    "ssoReauthUnavailable": "Identity provider verification is temporarily unavailable. Please try again shortly.",
+    "ssoReauthProviderInactive": "Single sign-on is no longer available for this account. Ask your administrator, then try again.",
+    "ssoReauthConfigChanged": "Your single sign-on settings changed while you were verifying. Start the verification again.",
+    "ssoReauthEmailUnverified": "Your identity provider reports that your email address is not verified. Verify it there, then try again.",
+    "ssoReauthProofExpired": "Your identity provider verification has expired. Verify again to finish setting up multi-factor authentication.",
+    "thisAccountSignsInThroughAnIdentityProviderVerifyBeforeAddingAPasskey": "This account signs in through an identity provider and has no password. Re-verify with your provider before adding a passkey.",
+    "yourIdentityIsVerifiedNameThisPasskeyAndContinue": "Your identity is verified. Name this passkey and continue.",
+    "verifyWithYourIdentityProvider": "Verify with your identity provider",
+    "passkeyIdpVerificationRequired": "Verify with your identity provider before adding a passkey.",
+    "ssoReauthFailed": "Could not verify with your identity provider. Please try again.",
+    "couldNotStartIdentityProviderVerification": "Could not start identity provider verification."
   },
   "roleManager": {
     "roles": "Roles",
@@ -1842,7 +2298,7 @@
     "clone": "Clone",
     "edit": "Edit",
     "delete": "Delete",
-    "permissionsFor": "Permissions for",
+    "permissionsForRole": "Permissions for {{role}}",
     "loadingPermissions": "Loading permissions...",
     "retry": "Retry",
     "resource": "Resource",
@@ -1985,6 +2441,8 @@
     "securitySettings": "Security Settings",
     "enforceSSOOnlyLogin": "Enforce SSO-only login",
     "usersMustUseSSOToSignInPasswordLoginWillBeDisabled": "Users must use SSO to sign in. Password login will be disabled.",
+    "trustThisProvidersMFA": "Trust this provider's MFA",
+    "trustThisProvidersMFAHelperText": "When your identity provider reports that multi-factor authentication was used (`amr: mfa`), treat MFA as satisfied in Breeze. Your IdP must include the `amr` claim in its ID token — most require this to be enabled explicitly. Off by default.",
     "warningSSOEnforcementEnabled": "Warning: SSO enforcement enabled",
     "usersWillNotBeAbleToSignInWithPasswordsMakeSureYourSSOCo": "Users will not be able to sign in with passwords. Make sure your SSO configuration is working correctly before enabling this option. Consider having at least one admin account that can bypass SSO for emergency access.",
     "testing": "Testing...",
@@ -1997,8 +2455,7 @@
     "inactive": "Inactive",
     "testing": "Testing",
     "sSOProviders": "SSO Providers",
-    "of": "of",
-    "providers": "providers",
+    "countSummary": "{{shown}} of {{total}} providers",
     "searchProviders": "Search providers",
     "name": "Name",
     "type": "Type",
@@ -2058,7 +2515,21 @@
     "unableToConnectToTheIdentityProvider": "Unable to connect to the identity provider.",
     "testFailed": "Test failed",
     "createProvider": "Create provider",
-    "saveChanges": "Save changes"
+    "saveChanges": "Save changes",
+    "enforceLockoutTitle": "Users will be locked out",
+    "enforceLockoutSummary": "{{unlinked}} of {{total}} active users have not connected SSO and will not be able to sign in once SSO enforcement is active:",
+    "enforceLockoutSelfBadge": "your account",
+    "enforceLockoutHasPasskey": "has a passkey",
+    "enforceLockoutTruncated": "…and more not shown.",
+    "enforceLockoutSelfWarning": "Your own account is not connected — you would lock yourself out.",
+    "enforceLockoutAcknowledge": "I understand these users will be unable to sign in until they connect SSO",
+    "enforceLockoutConfirm": "Enable enforcement",
+    "enforceLockoutConfirmationNeeded": "Confirm the lockout warning to enable SSO enforcement.",
+    "providerCreated": "Provider created",
+    "providerUpdated": "Provider updated",
+    "providerDeleted": "Provider deleted",
+    "providerEnabled": "Provider enabled",
+    "providerDisabled": "Provider disabled"
   },
   "tdSynnexCatalogPanel": {
     "marginUnavailableCostIn": "Cost in {{currency}} — margin unavailable",
@@ -2140,7 +2611,7 @@
     "password": "Password",
     "enabled": "Enabled",
     "sYNNEXSKUOrMfgPart": "SYNNEX SKU or mfg part #",
-    "sYNNEXSKU": "SYNNEX SKU",
+    "synnexSku": "SYNNEX SKU {{sku}}",
     "yourCost": "Your cost",
     "mSRP": "MSRP",
     "totalAvailable": "Total available",
@@ -2272,7 +2743,7 @@
     "responseSLAMinutes": "Response SLA (minutes)",
     "resolutionSLAMinutes": "Resolution SLA (minutes)",
     "billableByDefault": "Billable by default",
-    "defaultHourlyRate": "Default hourly rate",
+    "defaultHourlyRate": "Default hourly rate ({{currency}})",
     "save": "Save",
     "cancel": "Cancel",
     "responseMinutes": "{{count}}m response",
@@ -2348,7 +2819,9 @@
     "categories": "Categories",
     "export": "Export",
     "inboundEmail": "Inbound Email",
-    "cannedResponses": "Canned responses"
+    "cannedResponses": "Canned responses",
+    "checkingAccess": "Checking your access...",
+    "timeTracking": "Time Tracking"
   },
   "ticketFormsCard": {
     "heading": "Intake forms",
@@ -2508,6 +2981,12 @@
     "noOrganization": {
       "title": "No Organization Selected",
       "description": "Please select an organization from the switcher in the header to view settings."
+    },
+    "archived": {
+      "banner": "This organization is archived and read-only. Restore it to make changes.",
+      "bannerWithDate": "This organization is archived — purge scheduled for {{date}}. Restore it to make changes.",
+      "restoreLink": "Restore this organization",
+      "saveBlocked": "This organization is archived and cannot be edited. Restore it first."
     },
     "actions": {
       "save": "Save",
@@ -2773,7 +3252,8 @@
     "billing": {
       "title": "Billing defaults",
       "description": "Default billing settings for time entries on tickets for this organization.",
-      "hourlyRate": "Default hourly rate",
+      "hourlyRate": "Default hourly rate ({{currency}})",
+      "currencyNudge": "This organization bills in {{orgCurrency}}, not your partner default {{partnerCurrency}}. Rates entered here are stored in {{orgCurrency}} and are never converted.",
       "billable": "Default billable",
       "inherit": "Inherit",
       "billableOption": "Billable",
@@ -2827,7 +3307,10 @@
       "trial": "Trial",
       "suspended": "Suspended",
       "churned": "Churned",
-      "offboarding": "Offboarding"
+      "offboarding": "Offboarding",
+      "merging": "Merging…",
+      "archived": "Archived",
+      "purging": "Purging"
     },
     "columns": {
       "devices": "Devices"
@@ -2903,7 +3386,7 @@
       "addOrganization": "Add organization",
       "tryAgain": "Try again",
       "editOrganization": "Edit organization",
-      "deleteOrganization": "Delete organization",
+      "archiveOrganization": "Archive organization",
       "deleting": "Deleting..."
     },
     "errors": {
@@ -2911,7 +3394,6 @@
       "generic": "An error occurred",
       "saveOrder": "Failed to save organization order",
       "saveOrganization": "Failed to save organization",
-      "deleteOrganization": "Failed to delete organization",
       "saveSite": "Failed to save site ({{status}})",
       "deleteSite": "Failed to delete site"
     },
@@ -2920,7 +3402,10 @@
       "trial": "Trial",
       "suspended": "Suspended",
       "churned": "Churned",
-      "offboarding": "Offboarding"
+      "offboarding": "Offboarding",
+      "merging": "Merging…",
+      "archived": "Archived",
+      "purging": "Purging"
     },
     "deviceCount": "{{count}} devices",
     "list": {
@@ -2942,11 +3427,6 @@
       "description": "Create a new organization with the details below.",
       "submit": "Create organization"
     },
-    "delete": {
-      "title": "Delete Organization",
-      "messagePrefix": "Are you sure you want to delete",
-      "messageSuffix": " This action cannot be undone."
-    },
     "siteModal": {
       "editTitle": "Edit Site",
       "editDescription": "Update the site details below.",
@@ -2963,6 +3443,104 @@
       "title": "Delete Site",
       "messagePrefix": "Are you sure you want to delete",
       "messageSuffix": " This action cannot be undone."
+    },
+    "merge": {
+      "openButton": "Merge into another organization",
+      "title": "Merge organization",
+      "description": "Move {{name}}'s data into a surviving organization. {{name}} is retired permanently afterward and cannot be recovered.",
+      "survivorLabel": "Merge into",
+      "survivorPlaceholder": "Select a surviving organization...",
+      "noEligibleSurvivors": "No eligible organizations to merge into.",
+      "previewLoading": "Calculating what would move...",
+      "totalMovableRows": "{{count}} rows will move",
+      "tablesHeading": "Affected tables",
+      "tableRowSummary": "{{table}}: {{loserRows}} row(s), {{wouldDrop}} would be dropped",
+      "warningsHeading": "Warnings",
+      "tooLarge": "This merge would move too many rows to run automatically. Contact support to schedule a manual merge.",
+      "confirmLabel": "Type \"{{name}}\" to confirm",
+      "cancel": "Cancel",
+      "confirmButton": "Merge organization",
+      "merging": "Merging...",
+      "progressTitle": "Merge in progress",
+      "progressDescription": "This can take a few minutes.",
+      "doneTitle": "Merge complete",
+      "resultSummary": "{{moved}} row(s) moved, {{dropped}} row(s) dropped",
+      "close": "Close",
+      "failedTitle": "Merge failed",
+      "retry": "Retry merge",
+      "retrying": "Retrying...",
+      "errors": {
+        "preview": "Failed to preview the merge",
+        "merge": "Failed to start the merge",
+        "missingResult": "The merge finished but returned no result data. Try again.",
+        "mfaRequired": "Merging organizations requires multi-factor authentication. Enable MFA in your profile security settings, then try again."
+      }
+    },
+    "archive": {
+      "title": "Archive organization",
+      "description": "Archiving {{name}} hides it from your active list without erasing anything. You can restore it later.",
+      "consequencesHeading": "What happens when you archive:",
+      "consequences": {
+        "hidden": "Hidden from your organization list and search",
+        "readOnly": "Existing data stays intact and read-only",
+        "agentsUninstalled": "Agents are uninstalled from its devices",
+        "billingStops": "Billing for this organization stops",
+        "purgeScheduled": "Permanently deleted after the retention period, unless you restore it first",
+        "purgeNever": "Kept until you delete it — never automatically purged"
+      },
+      "restoreNote": "Restoring {{name}} is the undo for this action, available any time before it's purged.",
+      "retentionLabel": "Keep archived data for",
+      "retentionOptions": {
+        "days30": "30 days",
+        "days90": "90 days (recommended)",
+        "days365": "365 days",
+        "never": "Never — keep indefinitely",
+        "custom": "Custom"
+      },
+      "customDaysLabel": "Number of days (1–3650)",
+      "customError": "Enter a number of days between 1 and 3650.",
+      "cancel": "Cancel",
+      "confirmButton": "Archive organization",
+      "archiving": "Archiving...",
+      "doneOffboardingTitle": "Archiving started",
+      "doneOffboardingDescription": "{{name}} is being archived — its agents are being uninstalled now. This finishes automatically within a few minutes.",
+      "doneArchivedTitle": "Organization archived",
+      "doneArchivedDescription": "{{name}} has been archived.",
+      "donePurgeScheduled": "Scheduled to be permanently deleted on {{date}}.",
+      "donePurgeNever": "Its data will be kept until you delete it.",
+      "close": "Close",
+      "errors": {
+        "archive": "Failed to archive the organization",
+        "mfaRequired": "Archiving organizations requires multi-factor authentication. Enable MFA in your profile security settings, then try again."
+      }
+    },
+    "archived": {
+      "sectionTitle": "Archived",
+      "loading": "Loading archived organizations...",
+      "empty": "No archived organizations.",
+      "noMatches": "No archived organizations match your search.",
+      "badge": "Archived",
+      "keptIndefinitely": "Kept indefinitely",
+      "purgeToday": "Purges today",
+      "purgeCountdown_one": "Purges in {{count}} day",
+      "purgeCountdown_other": "Purges in {{count}} days",
+      "truncatedNote": "Showing the first {{count}} archived organizations. Search to narrow the list.",
+      "readOnlyNotice": "This organization is archived and read-only. Restore it to resume normal access.",
+      "errors": {
+        "fetch": "Failed to load archived organizations"
+      }
+    },
+    "restore": {
+      "action": "Restore",
+      "restoring": "Restoring...",
+      "success": "{{name}} restored — status: {{status}}.",
+      "recreateRequiredNote": "Before it's fully usable again: {{items}}",
+      "suspendedNote": "It was suspended before being archived, so it has been restored as suspended — resolve that before it resumes normal access.",
+      "errors": {
+        "restore": "Failed to restore the organization",
+        "mfaRequired": "Restoring organizations requires multi-factor authentication. Enable MFA in your profile security settings, then try again.",
+        "purging": "This organization is already being permanently deleted and can no longer be restored."
+      }
     }
   },
   "siteDetailPage": {
@@ -3390,5 +3968,17 @@
     "confirmBody": "This signs {{name}} out of the Outlook tech add-in on every device. They can re-bind by signing in again.",
     "cancel": "Cancel",
     "confirmRevoke": "Revoke binding"
+  },
+  "timeTrackingSettingsCard": {
+    "heading": "Suggested time entries",
+    "subheading": "When a remote session ends, offer it in the Breeze mobile app as a one-tap time entry. Nothing is logged without the tap. The web timesheet shows no suggestion list.",
+    "enabledLabel": "Suggest time entries from remote sessions",
+    "minSessionLabel": "Minimum session length (seconds)",
+    "mergeGapLabel": "Merge gap (minutes)",
+    "save": "Save",
+    "saved": "Time tracking settings saved",
+    "saveFailed": "Could not save time tracking settings",
+    "minSessionRange": "Minimum session length must be between {{min}} and {{max}} seconds",
+    "mergeGapRange": "Merge gap must be between {{min}} and {{max}} minutes"
   }
 }

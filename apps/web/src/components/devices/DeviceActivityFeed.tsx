@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { AuditResult } from "@breeze/shared";
 import {
   Activity,
   AlertTriangle,
@@ -18,6 +19,7 @@ import {
 } from "lucide-react";
 import { formatDateTime } from "@/lib/dateTimeFormat";
 import { fetchWithAuth } from "../../stores/auth";
+import HashLink from "../shared/HashLink";
 import { useTranslation } from "react-i18next";
 import "../../lib/i18n";
 
@@ -25,7 +27,7 @@ type ActivityEvent = {
   id: string;
   action?: string;
   message?: string;
-  result?: "success" | "failure" | "denied";
+  result?: AuditResult;
   initiatedBy?: string | null;
   timestamp?: string;
   actor?: { type?: string; name?: string; email?: string | null };
@@ -366,8 +368,8 @@ export default function DeviceActivityFeed({
 
       {/* Pinned alert summary — only when this device has active alerts. */}
       {activeAlerts > 0 && (
-        <a
-          href="#alerts"
+        <HashLink
+          hash="alerts"
           className="mt-4 flex items-center gap-2 rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-sm font-medium text-foreground transition hover:bg-warning/15"
         >
           <AlertTriangle className="h-4 w-4 shrink-0 text-warning" />
@@ -378,7 +380,7 @@ export default function DeviceActivityFeed({
           <span className="text-muted-foreground">
             {t("deviceActivityFeed.view")}
           </span>
-        </a>
+        </HashLink>
       )}
 
       <div className="mt-4">
@@ -505,13 +507,13 @@ export default function DeviceActivityFeed({
       </div>
 
       {!loading && !error && (
-        <a
-          href="#activities"
+        <HashLink
+          hash="activities"
           className="mt-4 inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline"
         >
           {t("deviceActivityFeed.viewAllActivity2")}{" "}
           <span aria-hidden="true">{t("deviceActivityFeed.text")}</span>
-        </a>
+        </HashLink>
       )}
       </div>
     </>

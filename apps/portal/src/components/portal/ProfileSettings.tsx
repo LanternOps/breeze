@@ -2,14 +2,18 @@ import React, { useState, useEffect } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
-import { Loader2, AlertCircle, CheckCircle, User, Lock } from 'lucide-react';
+import { Loader2, AlertCircle, CheckCircle } from 'lucide-react';
 import { usePortalAuth } from '@/lib/auth';
 import { portalApi } from '@/lib/api';
 import { cn } from '@/lib/utils';
+import { BTN_PRIMARY, INPUT } from './ui';
 
+// The API's updateProfile accepts `name` only (routes/portal/schemas.ts);
+// it used to strip a changed email silently and this form then said
+// "Details saved." with the old address still on file. Email is read-only here.
 const profileSchema = z.object({
   name: z.string().min(2, 'Name must be at least 2 characters'),
-  email: z.string().email('Please enter a valid email address')
+  email: z.string()
 });
 
 const passwordSchema = z
@@ -66,14 +70,14 @@ export function ProfileSettings() {
     setProfileError(null);
     setProfileSuccess(false);
 
-    const result = await portalApi.updateProfile(data);
+    const result = await portalApi.updateProfile({ name: data.name });
 
     if (result.error) {
       setProfileError(result.error);
     } else {
-      updateUser(data);
+      // Store what the server confirmed, not what was typed.
+      updateUser({ name: result.data?.name ?? data.name });
       setProfileSuccess(true);
-      setTimeout(() => setProfileSuccess(false), 3000);
     }
 
     setProfileLoading(false);
@@ -94,7 +98,6 @@ export function ProfileSettings() {
     } else {
       setPasswordSuccess(true);
       passwordForm.reset();
-      setTimeout(() => setPasswordSuccess(false), 3000);
     }
 
     setPasswordLoading(false);
@@ -102,34 +105,38 @@ export function ProfileSettings() {
 
   return (
     <div className="mx-auto max-w-2xl space-y-8">
-      {/* Profile Information */}
-      <div className="rounded-lg border bg-card">
-        <div className="border-b p-6">
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10">
-              <User className="h-5 w-5 text-primary" />
-            </div>
-            <div>
-              <h2 className="text-lg font-semibold">Profile Information</h2>
-              <p className="text-sm text-muted-foreground">
-                Update your account details
-              </p>
-            </div>
-          </div>
-        </div>
+      {/* Your details — a ruled section, not a boxed card with an icon chip. */}
+      <section className="border-t border-border/70 pt-5">
+        <h2 className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+          Your details
+        </h2>
 
-        <form onSubmit={profileForm.handleSubmit(onProfileSubmit)} className="p-6">
+        {/* method="post" is a pre-hydration safety net: if the island fails to
+            hydrate, a native submit must never be a GET that puts field values
+            in the URL / browser history / access logs (#2868). Once hydrated,
+            react-hook-form's handleSubmit preventDefaults and fetch() takes over. */}
+        <form
+          method="post"
+          onSubmit={profileForm.handleSubmit(onProfileSubmit)}
+          className="mt-4"
+        >
           {profileError && (
-            <div className="mb-4 flex items-center gap-2 rounded-md bg-destructive/10 p-3 text-sm text-destructive">
+            <div
+              role="alert"
+              className="mb-4 flex items-center gap-2 rounded-md bg-destructive/10 p-3 text-sm text-destructive-on-tint"
+            >
               <AlertCircle className="h-4 w-4" />
               {profileError}
             </div>
           )}
 
           {profileSuccess && (
-            <div className="mb-4 flex items-center gap-2 rounded-md bg-success/10 p-3 text-sm text-success">
+            <div
+              role="status"
+              className="mb-4 flex items-center gap-2 rounded-md bg-success/10 p-3 text-sm text-success-on-tint"
+            >
               <CheckCircle className="h-4 w-4" />
-              Profile updated successfully
+              Details saved.
             </div>
           )}
 
@@ -144,15 +151,19 @@ export function ProfileSettings() {
               <input
                 id="name"
                 type="text"
+                autoComplete="name"
+                aria-invalid={!!profileForm.formState.errors.name}
+                aria-describedby={
+                  profileForm.formState.errors.name ? 'name-error' : undefined
+                }
                 {...profileForm.register('name')}
                 className={cn(
-                  'mt-1 block w-full rounded-md border bg-background px-3 py-2 text-sm shadow-xs',
-                  'focus:border-primary focus:outline-hidden focus:ring-1 focus:ring-primary',
+                  INPUT,
                   profileForm.formState.errors.name && 'border-destructive'
                 )}
               />
               {profileForm.formState.errors.name && (
-                <p className="mt-1 text-sm text-destructive">
+                <p id="name-error" role="alert" className="mt-1 text-sm text-destructive-on-tint">
                   {profileForm.formState.errors.name.message}
                 </p>
               )}
@@ -168,15 +179,17 @@ export function ProfileSettings() {
               <input
                 id="email"
                 type="email"
+                autoComplete="email"
+                readOnly
+                aria-describedby="email-help"
                 {...profileForm.register('email')}
-                className={cn(
-                  'mt-1 block w-full rounded-md border bg-background px-3 py-2 text-sm shadow-xs',
-                  'focus:border-primary focus:outline-hidden focus:ring-1 focus:ring-primary',
-                  profileForm.formState.errors.email && 'border-destructive'
-                )}
+                className={cn(INPUT, 'bg-muted/60 text-muted-foreground')}
               />
+              <p id="email-help" className="mt-1 text-xs text-muted-foreground">
+                To change the email on your account, ask your IT team.
+              </p>
               {profileForm.formState.errors.email && (
-                <p className="mt-1 text-sm text-destructive">
+                <p id="email-error" role="alert" className="mt-1 text-sm text-destructive-on-tint">
                   {profileForm.formState.errors.email.message}
                 </p>
               )}
@@ -186,48 +199,51 @@ export function ProfileSettings() {
               <button
                 type="submit"
                 disabled={profileLoading}
-                className={cn(
-                  'flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground',
-                  'hover:bg-primary/90 focus:outline-hidden focus:ring-2 focus:ring-primary focus:ring-offset-2',
-                  'disabled:cursor-not-allowed disabled:opacity-50'
-                )}
+                className={cn(BTN_PRIMARY)}
               >
                 {profileLoading && <Loader2 className="h-4 w-4 animate-spin" />}
-                Save Changes
+                Save changes
               </button>
             </div>
           </div>
         </form>
-      </div>
+      </section>
 
-      {/* Change Password */}
-      <div className="rounded-lg border bg-card">
-        <div className="border-b p-6">
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10">
-              <Lock className="h-5 w-5 text-primary" />
-            </div>
-            <div>
-              <h2 className="text-lg font-semibold">Change Password</h2>
-              <p className="text-sm text-muted-foreground">
-                Update your password for security
-              </p>
-            </div>
-          </div>
-        </div>
+      {/* Change password */}
+      <section className="border-t border-border/70 pt-5">
+        <h2 className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+          Change password
+        </h2>
+        <p className="mt-1 max-w-[60ch] text-sm text-muted-foreground">
+          Choose something you don't use anywhere else.
+        </p>
 
-        <form onSubmit={passwordForm.handleSubmit(onPasswordSubmit)} className="p-6">
+        {/* method="post" matters most here: without it an unhydrated island
+            submits natively as a GET, putting the current AND new password in
+            the URL, browser history, the Referer header and server access logs
+            (#2868). Same guard as AcceptInviteForm. */}
+        <form
+          method="post"
+          onSubmit={passwordForm.handleSubmit(onPasswordSubmit)}
+          className="mt-4"
+        >
           {passwordError && (
-            <div className="mb-4 flex items-center gap-2 rounded-md bg-destructive/10 p-3 text-sm text-destructive">
+            <div
+              role="alert"
+              className="mb-4 flex items-center gap-2 rounded-md bg-destructive/10 p-3 text-sm text-destructive-on-tint"
+            >
               <AlertCircle className="h-4 w-4" />
               {passwordError}
             </div>
           )}
 
           {passwordSuccess && (
-            <div className="mb-4 flex items-center gap-2 rounded-md bg-success/10 p-3 text-sm text-success">
+            <div
+              role="status"
+              className="mb-4 flex items-center gap-2 rounded-md bg-success/10 p-3 text-sm text-success-on-tint"
+            >
               <CheckCircle className="h-4 w-4" />
-              Password changed successfully
+              Password changed.
             </div>
           )}
 
@@ -237,21 +253,31 @@ export function ProfileSettings() {
                 htmlFor="currentPassword"
                 className="block text-sm font-medium text-foreground"
               >
-                Current Password
+                Current password
               </label>
               <input
                 id="currentPassword"
                 type="password"
+                autoComplete="current-password"
+                aria-invalid={!!passwordForm.formState.errors.currentPassword}
+                aria-describedby={
+                  passwordForm.formState.errors.currentPassword
+                    ? 'currentPassword-error'
+                    : undefined
+                }
                 {...passwordForm.register('currentPassword')}
                 className={cn(
-                  'mt-1 block w-full rounded-md border bg-background px-3 py-2 text-sm shadow-xs',
-                  'focus:border-primary focus:outline-hidden focus:ring-1 focus:ring-primary',
+                  INPUT,
                   passwordForm.formState.errors.currentPassword &&
                     'border-destructive'
                 )}
               />
               {passwordForm.formState.errors.currentPassword && (
-                <p className="mt-1 text-sm text-destructive">
+                <p
+                  id="currentPassword-error"
+                  role="alert"
+                  className="mt-1 text-sm text-destructive-on-tint"
+                >
                   {passwordForm.formState.errors.currentPassword.message}
                 </p>
               )}
@@ -262,20 +288,30 @@ export function ProfileSettings() {
                 htmlFor="newPassword"
                 className="block text-sm font-medium text-foreground"
               >
-                New Password
+                New password
               </label>
               <input
                 id="newPassword"
                 type="password"
+                autoComplete="new-password"
+                aria-invalid={!!passwordForm.formState.errors.newPassword}
+                aria-describedby={
+                  passwordForm.formState.errors.newPassword
+                    ? 'newPassword-error'
+                    : undefined
+                }
                 {...passwordForm.register('newPassword')}
                 className={cn(
-                  'mt-1 block w-full rounded-md border bg-background px-3 py-2 text-sm shadow-xs',
-                  'focus:border-primary focus:outline-hidden focus:ring-1 focus:ring-primary',
+                  INPUT,
                   passwordForm.formState.errors.newPassword && 'border-destructive'
                 )}
               />
               {passwordForm.formState.errors.newPassword && (
-                <p className="mt-1 text-sm text-destructive">
+                <p
+                  id="newPassword-error"
+                  role="alert"
+                  className="mt-1 text-sm text-destructive-on-tint"
+                >
                   {passwordForm.formState.errors.newPassword.message}
                 </p>
               )}
@@ -286,21 +322,31 @@ export function ProfileSettings() {
                 htmlFor="confirmPassword"
                 className="block text-sm font-medium text-foreground"
               >
-                Confirm New Password
+                Confirm new password
               </label>
               <input
                 id="confirmPassword"
                 type="password"
+                autoComplete="new-password"
+                aria-invalid={!!passwordForm.formState.errors.confirmPassword}
+                aria-describedby={
+                  passwordForm.formState.errors.confirmPassword
+                    ? 'confirmPassword-error'
+                    : undefined
+                }
                 {...passwordForm.register('confirmPassword')}
                 className={cn(
-                  'mt-1 block w-full rounded-md border bg-background px-3 py-2 text-sm shadow-xs',
-                  'focus:border-primary focus:outline-hidden focus:ring-1 focus:ring-primary',
+                  INPUT,
                   passwordForm.formState.errors.confirmPassword &&
                     'border-destructive'
                 )}
               />
               {passwordForm.formState.errors.confirmPassword && (
-                <p className="mt-1 text-sm text-destructive">
+                <p
+                  id="confirmPassword-error"
+                  role="alert"
+                  className="mt-1 text-sm text-destructive-on-tint"
+                >
                   {passwordForm.formState.errors.confirmPassword.message}
                 </p>
               )}
@@ -310,19 +356,15 @@ export function ProfileSettings() {
               <button
                 type="submit"
                 disabled={passwordLoading}
-                className={cn(
-                  'flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground',
-                  'hover:bg-primary/90 focus:outline-hidden focus:ring-2 focus:ring-primary focus:ring-offset-2',
-                  'disabled:cursor-not-allowed disabled:opacity-50'
-                )}
+                className={cn(BTN_PRIMARY)}
               >
                 {passwordLoading && <Loader2 className="h-4 w-4 animate-spin" />}
-                Change Password
+                Change password
               </button>
             </div>
           </div>
         </form>
-      </div>
+      </section>
     </div>
   );
 }

@@ -35,6 +35,7 @@ import {
   idParamSchema,
   linkIdParamSchema,
 } from './schemas';
+import { AutomationReferenceAuthorizationError } from '../../services/automationReferenceAuthorization';
 
 export const featureLinkRoutes = new Hono();
 const requireConfigPolicyRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
@@ -224,12 +225,20 @@ featureLinkRoutes.post(
     // comment on its onConflictDoNothing insert in configurationPolicy.ts for
     // why the raised-violation catch pattern doesn't work inside this route's
     // withDbAccessContext transaction.
-    const link = await addFeatureLink(
-      id,
-      data.featureType,
-      data.featurePolicyId,
-      data.inlineSettings
-    );
+    let link;
+    try {
+      link = await addFeatureLink(
+        id,
+        data.featureType,
+        data.featurePolicyId,
+        data.inlineSettings
+      );
+    } catch (error) {
+      if (error instanceof AutomationReferenceAuthorizationError) {
+        return c.json({ error: 'Unknown or unauthorized automation reference' }, 400);
+      }
+      throw error;
+    }
 
     if (!link) {
       return c.json({ error: `Feature type "${data.featureType}" already linked to this policy` }, 409);
@@ -382,7 +391,15 @@ featureLinkRoutes.patch(
       }
     }
 
-    const updated = await updateFeatureLink(linkId, data, id);
+    let updated;
+    try {
+      updated = await updateFeatureLink(linkId, data, id);
+    } catch (error) {
+      if (error instanceof AutomationReferenceAuthorizationError) {
+        return c.json({ error: 'Unknown or unauthorized automation reference' }, 400);
+      }
+      throw error;
+    }
     if (!updated) return c.json({ error: 'Feature link not found' }, 404);
 
     writeRouteAudit(c, {

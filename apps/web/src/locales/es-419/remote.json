@@ -246,6 +246,7 @@
       "copy": "No se pudo copiar",
       "delete": "No se pudo eliminar",
       "download": "No se pudo descargar",
+      "downloadTooLarge": "Demasiado grande para descargar ({{size}}). El explorador de archivos transfiere archivos de hasta {{max}}.",
       "loadDirectory": "No se pudo cargar el directorio",
       "move": "No se pudo mover",
       "readFile": "No se pudo leer el archivo",
@@ -442,7 +443,7 @@
     "title": "Título"
   },
   "remoteTerminal": {
-    "connectedBang": "Explosión conectada",
+    "connectedBang": "¡Conectado!",
     "connectingTo": "Conectándose a {{hostname}}...",
     "copySelection": "Copiar selección",
     "disconnect": "Desconectar",

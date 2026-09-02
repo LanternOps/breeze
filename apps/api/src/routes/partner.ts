@@ -5,6 +5,7 @@ import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
 import { organizations, devices, partners, partnerUsers } from '../db/schema';
 import { authMiddleware, requirePermission, requireScope } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
+import { summarizeActiveContractMrrByOrg } from '../services/contractService';
 
 export const partnerRoutes = new Hono();
 
@@ -169,6 +170,12 @@ partnerRoutes.get(
     devicesByOrg.set(row.orgId, list);
   }
 
+  // Wave 7 (#3779): real per-currency MRR. `mrr` was a hardcoded 0 that the web
+  // rendered with a hardcoded 'USD' label; it stays for ONE release so an
+  // already-loaded bundle keeps rendering, and is always 0 — mrrByCurrency is
+  // the truth. Never sum across currencies here or in the client.
+  const mrrByOrg = await summarizeActiveContractMrrByOrg(orgIdList);
+
   const data = orgRows.map((org) => {
     const orgDevices = devicesByOrg.get(org.id) ?? [];
     return {
@@ -178,7 +185,8 @@ partnerRoutes.get(
       deviceCount: orgDevices.length,
       alertCount: 0,
       compliance: 100,
-      mrr: 0,
+      mrr: 0, // deprecated (wave 7 #3779) — read mrrByCurrency
+      mrrByCurrency: mrrByOrg.get(org.id) ?? [],
       devices: orgDevices
     };
   });

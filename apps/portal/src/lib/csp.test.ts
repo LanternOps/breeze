@@ -99,3 +99,83 @@ describe('buildFallbackCspDirectives', () => {
     expect(csp).toContain('wss://api.example.com');
   });
 });
+
+describe('resolvePortalCspHeader — runtime style nonce', () => {
+  const base = { existingCsp: "default-src 'self'; style-src 'self'", isDev: false, strictDev: false, fallback: 'x' };
+
+  it('keeps banning inline style ATTRIBUTES even when a nonce is present', () => {
+    // The nonce exists for one <style> ELEMENT (the partner brand accent). It
+    // must never be read as licence to reopen style attributes, which is what
+    // silently broke the accent in production in the first place.
+    const decision = resolvePortalCspHeader({ ...base, styleNonce: 'abc123' });
+    expect(decision).toMatchObject({ action: 'set' });
+    const value = (decision as { value: string }).value;
+    expect(value).toContain("style-src-attr 'none'");
+    expect(value).not.toContain("'unsafe-inline'");
+  });
+
+  it('allows the nonced style element', () => {
+    const decision = resolvePortalCspHeader({ ...base, styleNonce: 'abc123' });
+    expect((decision as { value: string }).value).toContain("style-src-elem 'self' 'nonce-abc123'");
+  });
+
+  // Regression: style-src-elem REPLACES style-src for <style> elements rather
+  // than extending it, so a bare `style-src-elem 'self' 'nonce-…'` silently
+  // dropped the per-page sha256 hashes Astro emits for its own inline styles.
+  // The browser then refused them and the ClientRouter's styles vanished —
+  // invisible in dev, which drops CSP entirely, and invisible to a unit test
+  // that only asserted the nonce was present.
+  it('carries the existing style-src hashes into style-src-elem', () => {
+    const decision = resolvePortalCspHeader({
+      ...base,
+      existingCsp: "default-src 'self'; style-src 'self' 'sha256-AAA=' 'sha256-BBB='",
+      styleNonce: 'abc123',
+    });
+    const elem = /style-src-elem ([^;]+)/.exec((decision as { value: string }).value)?.[1];
+    expect(elem).toContain("'sha256-AAA='");
+    expect(elem).toContain("'sha256-BBB='");
+    expect(elem).toContain("'nonce-abc123'");
+  });
+
+  it('never emits a style-src-elem narrower than the style-src it shadows', () => {
+    const styleSrc = "'self' 'sha256-AAA=' https://cdn.example.test";
+    const decision = resolvePortalCspHeader({
+      ...base,
+      existingCsp: `default-src 'self'; style-src ${styleSrc}`,
+      styleNonce: 'abc123',
+    });
+    const elem = /style-src-elem ([^;]+)/.exec((decision as { value: string }).value)?.[1] ?? '';
+    for (const source of styleSrc.split(/\s+/)) {
+      expect(elem, `style-src-elem dropped ${source}`).toContain(source);
+    }
+  });
+
+  it('falls back to self when the policy declares no style-src at all', () => {
+    const decision = resolvePortalCspHeader({
+      ...base,
+      existingCsp: "default-src 'self'",
+      styleNonce: 'abc123',
+    });
+    expect((decision as { value: string }).value).toContain("style-src-elem 'self' 'nonce-abc123'");
+  });
+
+  it('adds no style-src-elem when no nonce was generated', () => {
+    const decision = resolvePortalCspHeader(base);
+    expect((decision as { value: string }).value).not.toContain('style-src-elem');
+  });
+
+  it('does not clobber a style-src-elem the upstream policy already set', () => {
+    const decision = resolvePortalCspHeader({
+      ...base,
+      existingCsp: "default-src 'self'; style-src-elem 'self' 'sha256-abc'",
+      styleNonce: 'abc123',
+    });
+    const value = (decision as { value: string }).value;
+    expect(value.match(/style-src-elem/g)).toHaveLength(1);
+    expect(value).toContain("'sha256-abc'");
+  });
+
+  it('still drops the header entirely in plain dev', () => {
+    expect(resolvePortalCspHeader({ ...base, isDev: true, styleNonce: 'abc123' })).toEqual({ action: 'delete' });
+  });
+});

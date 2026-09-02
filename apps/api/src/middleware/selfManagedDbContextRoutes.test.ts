@@ -13,6 +13,13 @@ describe('isSelfManagedDbContextRoute', () => {
     ['post', '/api/v1/invoices/abc-123/pay-link'], // method is case-insensitive
     ['POST', '/api/v1/portal/invoices/def-456/pay'],
     ['POST', '/api/v1/portal/invoices/def-456/pay/'],
+    // Customer-portal "Pay quote" (#3777 review F2) — createQuotePayLink →
+    // createInvoicePayLink → checkout.sessions.create, same shape as the
+    // invoice pay route above. Until registered, the portal auth middleware
+    // pinned the request tx AND a system tx across the Stripe round-trip.
+    ['POST', '/api/v1/portal/quotes/def-456/pay'],
+    ['POST', '/api/v1/portal/quotes/def-456/pay/'],
+    ['post', '/api/v1/portal/quotes/def-456/pay'], // method is case-insensitive
     ['POST', '/api/v1/partner/stripe-connect/key'],
     ['POST', '/api/v1/partner/stripe-connect/key/'],
     ['GET', '/api/v1/partner/stripe-connect'],
@@ -24,6 +31,17 @@ describe('isSelfManagedDbContextRoute', () => {
     ['GET', '/api/v1/accounting/quickbooks/customers/'],
     ['POST', '/api/v1/accounting/quickbooks/customers/import'],
     ['POST', '/api/v1/accounting/quickbooks/customers/import/'],
+    // Task 5 entity-mapping routes — all four call QuickBooks HTTP inside the
+    // handler (list proposals, list income accounts, verify-on-confirm, sync).
+    ['GET', '/api/v1/accounting/quickbooks/mappings'],
+    ['GET', '/api/v1/accounting/quickbooks/mappings/'],
+    ['GET', '/api/v1/accounting/quickbooks/income-accounts'],
+    ['GET', '/api/v1/accounting/quickbooks/income-accounts/'],
+    ['PUT', '/api/v1/accounting/quickbooks/mappings'],
+    ['PUT', '/api/v1/accounting/quickbooks/mappings/'],
+    ['POST', '/api/v1/accounting/quickbooks/mappings/sync'],
+    ['POST', '/api/v1/accounting/quickbooks/mappings/sync/'],
+    ['put', '/api/v1/accounting/quickbooks/mappings'], // method is case-insensitive
     // #2190 — distributor catalog imports run a best-effort AI enrichment call
     // inside the handler.
     ['POST', '/api/v1/catalog/distributors/td-synnex/import'],
@@ -81,6 +99,19 @@ describe('isSelfManagedDbContextRoute', () => {
     ['GET', '/api/v1/devices/dev-1/sessions/live'],
     ['GET', '/api/v1/devices/dev-1/sessions/live/'],
     ['get', '/api/v1/devices/dev-1/sessions/live'],
+
+    // LLM provider catalog fidelity verification — runs a full tool-use
+    // round-trip against the provider AND spawns an Agent SDK subprocess.
+    ['POST', '/api/v1/admin/llm-provider-catalog/revisions/rev-1/verify'],
+    ['POST', '/api/v1/admin/llm-provider-catalog/revisions/rev-1/verify/'],
+    ['post', '/api/v1/admin/llm-provider-catalog/revisions/rev-1/verify'],
+    // Revision authoring resolves the operator-supplied base URL through
+    // assertSafeUrl (a real DNS lookup) BEFORE any DB work — holding the
+    // request transaction across it pins a pooled connection on a resolver
+    // the operator chose the timeout of.
+    ['POST', '/api/v1/admin/llm-provider-catalog/entry-1/revisions'],
+    ['POST', '/api/v1/admin/llm-provider-catalog/entry-1/revisions/'],
+    ['post', '/api/v1/admin/llm-provider-catalog/entry-1/revisions'],
   ];
 
   const NO_MATCH: ReadonlyArray<[string, string, string]> = [
@@ -92,12 +123,27 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/invoices/abc-123/pay-link/extra', 'extra path segment must not match'],
     ['POST', '/api/v1/invoices//pay-link', 'empty id segment must not match'],
     ['POST', '/api/v1/portal/invoices/def-456/pay/confirm', 'deeper portal path must not match'],
+    ['GET', '/api/v1/portal/quotes/def-456/pay', 'portal quote pay is POST-only'],
+    ['POST', '/api/v1/portal/quotes/def-456/accept', 'accept/decline are DB-only and keep the ambient org tx'],
+    ['POST', '/api/v1/portal/quotes/def-456/decline', 'accept/decline are DB-only and keep the ambient org tx'],
+    ['POST', '/api/v1/portal/quotes//pay', 'empty id segment must not match'],
+    ['POST', '/api/v1/portal/quotes/def-456/pay/confirm', 'deeper portal quote path must not match'],
     ['POST', '/api/v1/invoices', 'collection route'],
     ['DELETE', '/api/v1/partner/stripe-connect', 'disconnect is DB-only and keeps the ambient transaction'],
     ['GET', '/api/v1/accounting/quickbooks', 'accounting status route does only DB work — keep ambient tx'],
     ['POST', '/api/v1/accounting/quickbooks/customers', 'POST to the list route (only GET + /customers/import opt out)'],
     ['GET', '/api/v1/accounting/quickbooks/customers/import', 'import is POST-only'],
     ['POST', '/api/v1/accounting/quickbooks/customers/import/extra', 'extra segment must not match'],
+    // Task 5 — every OTHER accounting route (connect/callback/disconnect/status/
+    // settings) does only DB work and MUST keep the ambient RLS transaction.
+    ['POST', '/api/v1/accounting/quickbooks/mappings', 'POST to the mappings route (only GET/PUT opt out)'],
+    ['DELETE', '/api/v1/accounting/quickbooks/mappings', 'DELETE to the mappings route is not a route at all'],
+    ['GET', '/api/v1/accounting/quickbooks/mappings/extra', 'extra segment must not match'],
+    ['GET', '/api/v1/accounting/quickbooks/income-accounts/extra', 'extra segment must not match'],
+    ['POST', '/api/v1/accounting/quickbooks/income-accounts', 'income-accounts is GET-only'],
+    ['GET', '/api/v1/accounting/quickbooks/mappings/sync', 'sync is POST-only'],
+    ['PUT', '/api/v1/accounting/quickbooks/mappings/sync', 'sync is POST-only, not PUT'],
+    ['POST', '/api/v1/accounting/quickbooks/mappings/sync/extra', 'extra segment must not match'],
     // #2190 — the other distributor routes (status/config/test/search/lookup/pricing)
     // do only DB work — keep the ambient tx.
     ['GET', '/api/v1/catalog/distributors/td-synnex/status', 'status route is DB-only'],
@@ -164,6 +210,16 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/devices/dev-1/sessions/live', 'live is GET-only'],
     ['GET', '/api/v1/devices//sessions/live', 'empty device id must not match'],
     ['GET', '/api/v1/devices/dev-1/sessions/live/extra', 'extra segment must not match'],
+
+    // The other catalog mutations are DB-only and MUST keep the ambient tx.
+    ['GET', '/api/v1/admin/llm-provider-catalog', 'catalog listing is DB-only'],
+    ['POST', '/api/v1/admin/llm-provider-catalog/entry-1/activate', 'activation is DB-only'],
+    ['GET', '/api/v1/admin/llm-provider-catalog/entry-1/revisions', 'revision create is POST-only'],
+    ['POST', '/api/v1/admin/llm-provider-catalog//revisions', 'empty entry id must not match'],
+    ['POST', '/api/v1/admin/llm-provider-catalog/entry-1/revisions/extra', 'extra segment must not match'],
+    ['GET', '/api/v1/admin/llm-provider-catalog/revisions/rev-1/verify', 'verify is POST-only'],
+    ['POST', '/api/v1/admin/llm-provider-catalog/revisions//verify', 'empty revision id must not match'],
+    ['POST', '/api/v1/admin/llm-provider-catalog/revisions/rev-1/verify/extra', 'extra segment must not match'],
   ];
 
   it.each(MATCH)('opts out: %s %s', (method, path) => {

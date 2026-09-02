@@ -29,6 +29,8 @@ import {
 import { fetchWithAuth } from '../../stores/auth';
 import { fetchAllDevices, fetchAllNetworkDevices } from '../../lib/devicesFetch';
 import { useOrgStore } from '../../stores/orgStore';
+import { useOrgScope } from '@/hooks/useOrgScope';
+import { OrgLoadFailedState } from '../shared/OrgLoadFailedState';
 import { sendDeviceCommand, sendBulkCommand, executeScript, toggleMaintenanceMode, decommissionDevice, bulkDecommissionDevices, restoreDevice, permanentDeleteDevice, sendWakeCommand, sendBulkWakeCommand, summarizeBulkWakeFailures, summarizeBulkCommandFailures, watchWakeOutcome, WakeCommandError, wakeFriendlyErrorMessage, linkDevicesMultiboot, linkDevicesVmHost } from '../../services/deviceActions';
 import { navigateTo } from '@/lib/navigation';
 import { useHashState } from '@/lib/useHashState';
@@ -93,9 +95,24 @@ function summarizeFailedDevices(names: string[]): string {
 // #3698: destructive single-device actions, confirm-gated to match the device
 // detail page. `lock` is deliberately NOT here: it is reversible and does not
 // disconnect the machine, which is where DeviceActions.tsx draws the same line.
+// `restore` fails the same test and then some: it UNDOES a decommission, so
+// gating it would put a dialog in front of the recovery path.
+//
+// #4009: `decommission` belongs here and was missed by #3698. The dialog copy
+// it needs (deviceActions.confirm.decommission.*) already shipped for the
+// detail page, which has always gated it; only the list and grid kebabs fired
+// it on a single click. A kebab in a dense row/card grid is easier to hit by
+// accident than the detail page's own button, so it was the wrong one to leave
+// ungated.
 // Module scope — these are constant, so there is no reason to rebuild them on
 // every render.
-const CONFIRM_REQUIRED_ACTIONS = new Set(['reboot', 'reboot_safe_mode', 'shutdown']);
+const CONFIRM_REQUIRED_ACTIONS = new Set(['reboot', 'reboot_safe_mode', 'shutdown', 'decommission']);
+
+// ConfirmDialog encodes severity by SHAPE as well as colour (stop-octagon vs
+// caution-triangle), so the grading has to match the detail page rather than
+// drift from it: DeviceActions.tsx marks shutdown and decommission
+// `destructive` and every other confirm `warning`.
+const DESTRUCTIVE_CONFIRM_ACTIONS = new Set(['shutdown', 'decommission']);
 
 // The command name is snake_case; the locale keys are camelCase.
 const confirmKeyFor = (action: string): string =>
@@ -107,6 +124,36 @@ export default function DevicesPage() {
   // org picker); the page header no longer repeats it. orgStoreOrgs is still
   // used to name orgs in the run-script confirm dialog.
   const { organizations: orgStoreOrgs } = useOrgStore();
+
+  // #4147 — the list fetch carries no orgId of its own: fetchWithAuth injects
+  // the org store's selection synchronously at call time. Logout wipes the
+  // persisted `breeze-org` key, so on the FIRST load after a login the store is
+  // empty and only resolves once the shell's OrgSwitcher finishes its async
+  // fetchOrganizations. A fetch fired at mount therefore went out with no
+  // orgId — the API reads that as "every accessible org" — and nothing ever
+  // refetched, so the list stayed fleet-wide while the switcher pill showed a
+  // single org. (Re-picking an org only "fixed" it because applyOrgSwitch does
+  // a full window.location.reload, by which point the org IS persisted and
+  // rehydrates synchronously.)
+  //
+  // So key the fetch on the RESOLVED scope rather than on mount: hold while the
+  // context is still loading, then fetch — and refetch — whenever the scope
+  // changes. Deliberately keyed, not merely gated: a gate alone would still
+  // leave a resolved-later change unobserved.
+  const orgScope = useOrgScope();
+  const orgScopeResolving = orgScope.status === 'loading';
+  // 'error' gets its own render branch (see OrgLoadFailedState below) rather
+  // than an unscoped fetch. 'empty' — list loaded, this partner genuinely has
+  // zero orgs — is terminal and harmless: there is nothing to scope to, so it
+  // fetches and settles instead of spinning.
+  const orgContextFailed = orgScope.status === 'error';
+  // Prefixed so an org id can never collide with a status/fleet sentinel.
+  const orgScopeKey =
+    orgScope.status !== 'resolved'
+      ? `status:${orgScope.status}`
+      : orgScope.scope === 'all'
+        ? 'scope:all'
+        : `org:${orgScope.orgId}`;
 
   const [devices, setDevices] = useState<Device[]>([]);
   const [orgs, setOrgs] = useState<Org[]>([]);
@@ -557,10 +604,17 @@ export default function DevicesPage() {
   }, [t]);
 
   useEffect(() => {
+    // Org context not usable for scoping yet (#4147). A request now would go
+    // out unscoped: `loading` is the sub-second window before the shell's
+    // OrgSwitcher resolves the org list (the page already shows its initial
+    // loading state, so nothing is gained by racing it), and `error` renders
+    // OrgLoadFailedState instead of a misleading fleet-wide list. Both clear
+    // via orgScopeKey, which re-runs this effect.
+    if (orgScopeResolving || orgContextFailed) return;
     const controller = new AbortController();
     fetchDevices(controller.signal);
     return () => controller.abort();
-  }, [fetchDevices]);
+  }, [fetchDevices, orgScopeResolving, orgContextFailed, orgScopeKey]);
 
   const handleGroupCreated = useCallback(async (newGroupId: string) => {
     setShowCreateGroup(false);
@@ -599,9 +653,17 @@ export default function DevicesPage() {
       // fetch / device-detail load. Wire a producer in the watchdog heartbeat
       // branch before adding a consumer here.
     } else if (type === 'device.enrolled' || type === 'device.decommissioned') {
+      // #4147 review: useEventStream connects as soon as there is an auth
+      // token, independent of org resolution, so an enroll/decommission event
+      // can land inside the same pre-resolution window the mount effect holds
+      // for. Refetching here would issue the very unscoped request that gate
+      // exists to prevent — and could land AFTER the scoped one, leaving the
+      // fleet-wide list on screen. Nothing is lost by skipping: the mount
+      // effect fetches as soon as the scope resolves.
+      if (orgScopeResolving || orgContextFailed) return;
       fetchDevices();
     }
-  }, [fetchDevices]);
+  }, [fetchDevices, orgScopeResolving, orgContextFailed]);
 
   const { subscribe } = useEventStream({ onEvent: handleDeviceEvent });
 
@@ -656,11 +718,25 @@ export default function DevicesPage() {
       const { script, runAs, parameters, devices } = pending;
       const deviceIds = devices.map(d => d.id);
       const result = await executeScript(script.id, deviceIds, parameters, runAs);
+      const admitted = result.targets.filter(target => target.admission === 'admitted');
+      const refused = result.targets.filter(target => target.admission !== 'admitted');
 
-      if (devices.length === 1) {
+      if (admitted.length === 0) {
+        const reasons = [...new Set(refused.map(target => target.reasonCode ?? target.admission))].join(', ');
+        showToast({ type: 'error', message: `${t('devicesPage.toasts.scriptQueueFailed')}: ${reasons}` });
+        return;
+      }
+
+      if (refused.length > 0) {
+        const reasons = [...new Set(refused.map(target => target.reasonCode ?? target.admission))].join(', ');
+        showToast({
+          type: 'warning',
+          message: `${admitted.length} of ${result.targets.length} script targets queued; ${refused.length} not admitted (${reasons})`,
+        });
+      } else if (devices.length === 1) {
         showToast({ type: 'success', message: t('devicesPage.toasts.scriptQueuedOne', { script: script.name, hostname: devices[0].hostname }) });
       } else {
-        showToast({ type: 'success', message: t('devicesPage.toasts.scriptQueuedMany', { script: script.name, count: result.devicesTargeted }) });
+        showToast({ type: 'success', message: t('devicesPage.toasts.scriptQueuedMany', { script: script.name, count: admitted.length }) });
       }
 
       closeScriptPicker();
@@ -673,6 +749,21 @@ export default function DevicesPage() {
 
   const handleDeviceAction = async (action: string, device: Device) => {
     if (actionInProgress) return;
+    // #4014: every branch of runDeviceAction below addresses an enrolled agent
+    // through a `/devices/:id` endpoint, but a network row's `id` is a
+    // `discovered_assets.id`, NOT a `devices.id` (#1322) — it matches no device
+    // row and 404s. handleBulkAction has filtered these out since #1322.
+    //
+    // Stated as an invariant rather than as a claim about today's UI: this
+    // funnel must refuse network rows on its own, because nothing guarantees
+    // that every present and future caller hides the actions first. #4014 was
+    // exactly that failure — DeviceList hid them, DeviceCard did not, and the
+    // handler trusted its callers. A guard here cannot be re-opened by adding
+    // a third surface.
+    if ((device.deviceClass ?? 'agent') === 'network') {
+      showToast({ type: 'error', message: t('devicesPage.toasts.agentOnlyAction') });
+      return;
+    }
     if (CONFIRM_REQUIRED_ACTIONS.has(action)) {
       setPendingDeviceAction({ action, device });
       return;
@@ -924,13 +1015,20 @@ export default function DevicesPage() {
       return;
     }
 
-    // Decommissioned gate (#2465). Agent commands are QUEUED, not delivered
-    // live: the API refuses exactly one status — `decommissioned` — and any
-    // other device (offline included) has its command stored `pending` and run
-    // on its next check-in. So gate on `decommissioned` ONLY. Filtering to
-    // `status === 'online'` here would look like the obvious fix and would in
-    // fact discard commands the backend would have honoured — see the verified
-    // API contract in bulkActionGating.ts before "tightening" this.
+    // Decommissioned gate (#2465). For the agent-command actions in this Set,
+    // commands are QUEUED, not delivered live: the API refuses exactly one
+    // status — `decommissioned` — and any other device (offline included) has
+    // its command stored `pending` and run on its next check-in. So gate on
+    // `decommissioned` ONLY. Filtering to `status === 'online'` here would look
+    // like the obvious fix and would in fact discard commands the backend
+    // would have honoured — see the verified API contract in
+    // bulkActionGating.ts before "tightening" this.
+    //
+    // `decommission` (bulk Remove) is ALSO in this Set, but not for a queued-
+    // command reason — it dispatches an immediate `DELETE`, not an agent
+    // command. It is gated here to skip devices that are already removed, so
+    // they don't 400 the batch. See the full explanation on
+    // DECOMMISSION_BLOCKED_BULK_ACTIONS in bulkActionGating.ts.
     //
     // Decommissioned rows are hidden by default, but a status filter that
     // includes them (or the #2251 "show" hint) puts them back in reach of a
@@ -962,9 +1060,12 @@ export default function DevicesPage() {
 
   // Executes a bulk action against an already-vetted device set (network rows
   // dropped, decommissioned targets filtered + confirmed). Offline devices are
-  // deliberately still IN this set — their command queues and runs on reconnect.
-  // Entered either directly from handleBulkAction (nothing to skip) or from the
-  // decommissioned-skip confirm.
+  // deliberately still IN this set: for the queued agent-command actions, an
+  // offline device's command queues and runs on reconnect; for bulk Remove
+  // (`decommission`), an offline device is removed immediately (`DELETE`, not
+  // a queued command) — see DECOMMISSION_BLOCKED_BULK_ACTIONS in
+  // bulkActionGating.ts. Entered either directly from handleBulkAction
+  // (nothing to skip) or from the decommissioned-skip confirm.
   const runBulkAction = async (action: string, selectedDevices: Device[]) => {
     if (actionInProgress || selectedDevices.length === 0) return;
 
@@ -1091,11 +1192,28 @@ export default function DevicesPage() {
         }
 
         case 'decommission': {
-          const result = await bulkDecommissionDevices(deviceIds);
-          if (result.failed === 0) {
+          const result = await bulkDecommissionDevices(
+            selectedDevices.map(d => ({ id: d.id, hostname: d.hostname })),
+          );
+          if (result.failed.length === 0) {
             showToast({ type: 'success', message: t('devicesPage.toasts.bulkDecommissioned', { count: result.succeeded }) });
+          } else if (result.succeeded === 0) {
+            showToast({
+              type: 'error',
+              message: t('devicesPage.toasts.bulkDecommissionAllFailed', {
+                count: result.failed.length,
+                devices: summarizeFailedDevices(result.failed.map(f => f.hostname)),
+              }),
+            });
           } else {
-            showToast({ type: 'error', message: t('devicesPage.toasts.bulkDecommissionFailed', { succeeded: result.succeeded, failed: result.failed }) });
+            showToast({
+              type: 'error',
+              message: t('devicesPage.toasts.bulkDecommissionFailed', {
+                succeeded: result.succeeded,
+                failed: result.failed.length,
+                devices: summarizeFailedDevices(result.failed.map(f => f.hostname)),
+              }),
+            });
           }
           await fetchDevices();
           break;
@@ -1141,6 +1259,21 @@ export default function DevicesPage() {
       setActionInProgress(false);
     }
   };
+
+  // The org context itself failed to load (#4147 review). Falling through would
+  // fetch with no orgId, and the API reads an absent orgId as "every accessible
+  // org" — so a transient /orgs/organizations failure would quietly render a
+  // cross-tenant device list indistinguishable from a real org-scoped one
+  // (ContextScopeLine deliberately does NOT let the error state read as fleet
+  // view, so nothing on screen would say otherwise). Surface it instead, via
+  // the shared state whose Retry re-runs the org resolution — which doubles as
+  // the escape hatch when the context is stuck. Same treatment as DiscoveryPage
+  // and MonitoringAssetsDashboard. Only reachable when there is NO selection at
+  // all: deriveOrgScope gives a concrete currentOrgId precedence over a later
+  // refetch failure, so a warm session keeps working.
+  if (orgContextFailed) {
+    return <OrgLoadFailedState error={orgScope.error} />;
+  }
 
   if (loading) {
     return (
@@ -1416,19 +1549,26 @@ export default function DevicesPage() {
       {/* Decommissioned-skip confirm (#2465): the selection contained retired,
           agent-less devices, which the API refuses. Name the count being dropped
           and make the user own the reduced batch. Offline devices are NOT
-          dropped — their command queues and runs when they reconnect. */}
+          dropped: for the queued agent-command actions their command queues
+          and runs when they reconnect; for bulk Remove (`decommission`) an
+          offline device is removed immediately (an immediate `DELETE`, not a
+          queued command) — see DECOMMISSION_BLOCKED_BULK_ACTIONS in
+          bulkActionGating.ts. */}
       {pendingDecommissionedSkip && (
         <ConfirmDialog
           open={true}
           onClose={() => setPendingDecommissionedSkip(null)}
-          // Confirming UNMOUNTS this dialog, which is what makes a double-click
-          // safe — a second click has no button to hit. No isLoading/spinner
-          // here on purpose: that would mean keeping the dialog mounted, and
-          // then neither guard holds — ConfirmDialog's `disabled` and
-          // runBulkAction's `actionInProgress` both read a closure captured at
-          // render, still `false` on the second click, so the fleet reboots
-          // twice. (The set-state/dispatch ORDER below is not what saves us:
-          // React batches both. The unmount is.) DevicesPage.test.tsx pins it.
+          // Double-click safety lives in the shared components now (#3705), not
+          // in this call site. ConfirmDialog holds a synchronous ref latch, so
+          // the fleet cannot reboot twice even if the dialog stayed mounted;
+          // and Dialog swallows the tail of the gesture after its portal is
+          // torn out, so the second press cannot hit-test through to a device
+          // row underneath. Previously only the unmount protected this, and it
+          // protected only the first of those two failures.
+          // (The set-state/dispatch ORDER below is not load-bearing either:
+          // React batches both.) The click-through half is pinned in
+          // DevicesPage.test.tsx; the latch half in ConfirmDialog.test.tsx,
+          // which can hold the dialog mounted the way this call site does not.
           onConfirm={() => {
             const p = pendingDecommissionedSkip;
             setPendingDecommissionedSkip(null);
@@ -1448,9 +1588,8 @@ export default function DevicesPage() {
 
       {/* #3698: mirror of the device-detail confirm gate, reusing the SAME
           deviceActions.confirm.* copy so the two screens read identically and
-          no new locale keys are needed. Confirming UNMOUNTS the dialog, which
-          is what makes a double-click safe — see the decommissioned-skip
-          dialog above for why isLoading is deliberately absent. */}
+          no new locale keys are needed. Double-click safety is the shared
+          components' job (#3705) — see the decommissioned-skip dialog above. */}
       {pendingDeviceAction && (
         <ConfirmDialog
           open={true}
@@ -1465,7 +1604,7 @@ export default function DevicesPage() {
             hostname: pendingDeviceAction.device.hostname,
           })}
           confirmLabel={t(/* i18n-dynamic */ `deviceActions.confirm.${confirmKeyFor(pendingDeviceAction.action)}.confirm`)}
-          variant={pendingDeviceAction.action === 'shutdown' ? 'destructive' : 'warning'}
+          variant={DESTRUCTIVE_CONFIRM_ACTIONS.has(pendingDeviceAction.action) ? 'destructive' : 'warning'}
           confirmTestId="confirm-device-action"
         />
       )}

@@ -1,13 +1,16 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen } from '@testing-library/react';
-import type { PublicQuoteDetail } from '@/lib/api';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { portalApi, type PublicQuoteDetail } from '@/lib/api';
 
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 
 import { PublicQuoteView } from './PublicQuoteView';
 
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
 
 const DETAIL: PublicQuoteDetail = {
   quote: {
@@ -95,5 +98,62 @@ describe('PublicQuoteView exact public quote contract', () => {
   it('defaults data-doc-theme to "classic" when the DTO omits presentation', () => {
     render(<PublicQuoteView token="public-token" initial={DETAIL} />);
     expect(screen.getByTestId('public-quote').getAttribute('data-doc-theme')).toBe('classic');
+  });
+});
+
+describe('PublicQuoteView decline confirmation', () => {
+  // Regression: decline used to fire from window.prompt(), which returns null on
+  // Cancel/Escape — coerced to undefined and passed straight to the API, so backing
+  // out declined the proposal anyway. Nothing may reach the API but "Yes, decline".
+  it('does not decline when the customer backs out with "Keep reviewing"', () => {
+    const declineSpy = vi.spyOn(portalApi, 'declinePublicQuote');
+    render(<PublicQuoteView token="public-token" initial={DETAIL} />);
+
+    fireEvent.click(screen.getByTestId('public-quote-decline'));
+    expect(screen.getByTestId('public-quote-decline-panel')).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId('public-quote-decline-cancel'));
+
+    expect(declineSpy).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('public-quote-decline-panel')).toBeNull();
+    // Back to the normal row, still acceptable.
+    expect(screen.getByTestId('public-quote-accept')).toBeTruthy();
+  });
+
+  it('declines with the optional reason only once "Yes, decline" is pressed', async () => {
+    const declineSpy = vi
+      .spyOn(portalApi, 'declinePublicQuote')
+      .mockResolvedValue({ data: { data: { status: 'declined' } } });
+    render(<PublicQuoteView token="public-token" initial={DETAIL} />);
+
+    fireEvent.click(screen.getByTestId('public-quote-decline'));
+    fireEvent.change(screen.getByTestId('public-quote-decline-reason'), {
+      target: { value: 'Went with another vendor' },
+    });
+    expect(declineSpy).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByTestId('public-quote-decline-confirm'));
+    await waitFor(() =>
+      expect(declineSpy).toHaveBeenCalledWith('public-token', 'Went with another vendor')
+    );
+  });
+});
+
+describe('PublicQuoteView accept validation', () => {
+  // The Accept button stays enabled so a click can explain what is missing; a
+  // disabled button takes neither focus nor click, so the hint was unreachable.
+  it('explains what is missing instead of accepting when the form is incomplete', () => {
+    const acceptSpy = vi.spyOn(portalApi, 'acceptPublicQuote');
+    render(<PublicQuoteView token="public-token" initial={DETAIL} />);
+
+    const accept = screen.getByTestId('public-quote-accept');
+    expect(accept.getAttribute('aria-disabled')).toBe('true');
+    fireEvent.click(accept);
+
+    const hint = screen.getByTestId('public-quote-sign-hint');
+    expect(hint.getAttribute('role')).toBe('alert');
+    expect(hint.textContent).toContain('full name');
+    expect(accept.getAttribute('aria-describedby')).toBe('public-quote-sign-hint');
+    expect(acceptSpy).not.toHaveBeenCalled();
   });
 });

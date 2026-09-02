@@ -82,6 +82,12 @@ const DB_SESSION = {
   systemPrompt: null,
 };
 
+const PLATFORM_CONFIG = {
+  source: 'platform' as const,
+  apiKey: 'platform-key',
+  model: 'claude-sonnet-4-6',
+};
+
 const AUTH = {
   orgId: ORG,
   scope: 'organization',
@@ -182,7 +188,7 @@ describe('dropped tool_result fallback (#3094)', () => {
     ]);
 
     const session = await manager.getOrCreate(
-      'sess-dropped', DB_SESSION, AUTH, undefined, 'PROMPT', undefined,
+      'sess-dropped', DB_SESSION, AUTH, undefined, 'PROMPT', undefined, PLATFORM_CONFIG,
     );
     await session.processorPromise;
 
@@ -225,7 +231,7 @@ describe('dropped tool_result fallback (#3094)', () => {
     ]);
 
     const session = await manager.getOrCreate(
-      'sess-handled', DB_SESSION, AUTH, undefined, 'PROMPT', undefined,
+      'sess-handled', DB_SESSION, AUTH, undefined, 'PROMPT', undefined, PLATFORM_CONFIG,
     );
     await session.processorPromise;
 
@@ -241,7 +247,7 @@ describe('dropped tool_result fallback (#3094)', () => {
     ]);
 
     const session = await manager.getOrCreate(
-      'sess-plain', DB_SESSION, AUTH, undefined, 'PROMPT', undefined,
+      'sess-plain', DB_SESSION, AUTH, undefined, 'PROMPT', undefined, PLATFORM_CONFIG,
     );
     await session.processorPromise;
 
@@ -260,7 +266,7 @@ describe('dropped tool_result fallback (#3094)', () => {
     ]);
 
     const session = await manager.getOrCreate(
-      'sess-retry', DB_SESSION, AUTH, undefined, 'PROMPT', undefined,
+      'sess-retry', DB_SESSION, AUTH, undefined, 'PROMPT', undefined, PLATFORM_CONFIG,
     );
     await session.processorPromise;
 

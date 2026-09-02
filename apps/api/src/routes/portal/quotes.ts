@@ -39,7 +39,7 @@ quoteRoutes.get('/quotes', async (c) => {
   const auth = c.get('portalAuth');
   const conditions = and(eq(quotes.orgId, auth.user.orgId), ne(quotes.status, 'draft'));
   const data = await db.select({
-    id: quotes.id, quoteNumber: quotes.quoteNumber, status: quotes.status, currencyCode: quotes.currencyCode,
+    id: quotes.id, quoteNumber: quotes.quoteNumber, title: quotes.title, status: quotes.status, currencyCode: quotes.currencyCode,
     issueDate: quotes.issueDate, expiryDate: quotes.expiryDate, total: quotes.total,
   }).from(quotes).where(conditions).orderBy(desc(quotes.issueDate), desc(quotes.createdAt)).limit(200);
   return c.json({ data, pagination: { page: 1, limit: 200, total: data.length } });
@@ -63,7 +63,8 @@ quoteRoutes.get('/quotes/:id', zValidator('param', idParam), async (c) => {
   // portal_branding is org-scoped and reads fine here.
   const [partner] = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
     db.select({ name: partners.name, documentTheme: partners.documentTheme, documentPageSize: partners.documentPageSize, settings: partners.settings }).from(partners).where(eq(partners.id, quote.partnerId)).limit(1)));
-  const [brand] = await db.select({ logoUrl: portalBranding.logoUrl, primaryColor: portalBranding.primaryColor }).from(portalBranding).where(eq(portalBranding.orgId, quote.orgId)).limit(1);
+  // Support contact rides along for branding parity with the public token view.
+  const [brand] = await db.select({ logoUrl: portalBranding.logoUrl, primaryColor: portalBranding.primaryColor, supportEmail: portalBranding.supportEmail, supportPhone: portalBranding.supportPhone }).from(portalBranding).where(eq(portalBranding.orgId, quote.orgId)).limit(1);
   // Snapshot-first precedence (Task 5, shared with resolveQuoteBranding): a
   // sent quote's frozen presentation always wins over the partner's live
   // theme/pageSize columns.
@@ -80,8 +81,13 @@ quoteRoutes.get('/quotes/:id', zValidator('param', idParam), async (c) => {
     const serializedLines = attachCustomerLineImages(lines, (lineId) => `/portal/quotes/${id}/line-image/${lineId}`);
     const theme = resolveThemeId(presentationSnap?.theme ?? partner?.documentTheme);
     const pageSize = resolvePageSize(presentationSnap?.pageSize ?? partner?.documentPageSize);
-    return c.json({ data: { quote: { ...quote, dueOnAcceptanceTotal: totals.dueOnAcceptanceTotal, depositDueTotal: totals.depositDueTotal, categoryBreakdown: totals.categoryBreakdown }, blocks, lines: serializedLines, branding: {
+    // Draft successors stay private until sent; customers must not learn that a
+    // revision is still being prepared for them.
+    const [successor] = await db.select({ id: quotes.id }).from(quotes)
+      .where(and(eq(quotes.revisionOfQuoteId, quote.id), ne(quotes.status, 'draft'))).limit(1);
+    return c.json({ data: { quote: { ...quote, supersededByQuoteId: successor?.id ?? null, dueOnAcceptanceTotal: totals.dueOnAcceptanceTotal, depositDueTotal: totals.depositDueTotal, categoryBreakdown: totals.categoryBreakdown }, blocks, lines: serializedLines, branding: {
       partnerName: partner?.name ?? 'Proposal', logoUrl: brand?.logoUrl ?? null, primaryColor: brand?.primaryColor ?? null,
+      supportEmail: brand?.supportEmail ?? null, supportPhone: brand?.supportPhone ?? null,
       theme, pageSize,
     }, presentation: { theme, pageSize } } });
   } catch (err) {
@@ -305,17 +311,25 @@ quoteRoutes.post('/quotes/:id/decline', zValidator('param', idParam), zValidator
 });
 
 // POST /quotes/:id/pay — mint a Stripe checkout link for an accepted (converted)
-// quote's invoice. Runs in a system sub-context: createQuotePayLink →
-// createInvoicePayLink reads the partner-axis stripe connection, which this org
-// scope would RLS-filter to 0 rows (#1375). Org access stays enforced by the
-// org-scoped quote lookup below + the actor's accessibleOrgIds.
+// quote's invoice.
+//
+// #1448 — this route opts out of the auth middleware's auto request-transaction
+// (see selfManagedDbContextRoutes.ts), so there is NO ambient DB context here,
+// exactly like POST /portal/invoices/:id/pay. The ownership read below runs in
+// its own short system context (org isolation is the explicit `auth.user.orgId`
+// filter, not RLS scope), and createQuotePayLink is called with NO enclosing
+// context: it and createInvoicePayLink open short system contexts around each
+// DB step (quote read, invoice read, partner-axis Stripe key read, mapping
+// write) and run checkout.sessions.create truly outside any transaction. Never
+// wrap the call in withSystemDbAccessContext — that pins a pooled connection
+// idle-in-transaction across the Stripe round-trip (#1105 class; #3777 review F2).
 quoteRoutes.post('/quotes/:id/pay', zValidator('param', idParam), async (c) => {
   const auth = c.get('portalAuth'); const { id } = c.req.valid('param');
-  const [quote] = await db.select({ id: quotes.id }).from(quotes).where(and(eq(quotes.id, id), eq(quotes.orgId, auth.user.orgId))).limit(1);
+  const [quote] = await withSystemDbAccessContext(() =>
+    db.select({ id: quotes.id }).from(quotes).where(and(eq(quotes.id, id), eq(quotes.orgId, auth.user.orgId))).limit(1));
   if (!quote) return c.json({ error: 'Quote not found' }, 404);
   try {
-    const link = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
-      createQuotePayLink(id, { userId: null, partnerId: null, accessibleOrgIds: [auth.user.orgId] })));
+    const link = await createQuotePayLink(id, { userId: null, partnerId: null, accessibleOrgIds: [auth.user.orgId] });
     return c.json({ data: { url: link.url } });
   } catch (err) {
     if (err instanceof QuoteServiceError || err instanceof InvoiceServiceError) {

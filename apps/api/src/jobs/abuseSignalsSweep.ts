@@ -5,6 +5,7 @@ import { runAbuseSweep, runAbuseDigest } from '../services/abuseSignals';
 import { recordAbuseSweepRun } from '../services/abuseMetrics';
 import { abuseSignalsEnabled, abuseSignalsExplicitlyDisabled } from '../config/env';
 import { captureException } from '../services/sentry';
+import { jobSchedule } from './scheduleRegistry';
 
 const ABUSE_QUEUE = 'abuse-signals';
 const SWEEP_JOB = 'abuse-sweep';
@@ -12,8 +13,10 @@ const DIGEST_JOB = 'abuse-digest';
 // jobIds use hyphens, never colons (BullMQ jobId rule).
 const SWEEP_REPEAT_ID = 'abuse-sweep-repeat';
 const DIGEST_REPEAT_ID = 'abuse-digest-repeat';
-const SWEEP_INTERVAL_MS = 60 * 60 * 1000; // hourly
-const DIGEST_CRON = '0 9 * * 1'; // Monday 09:00
+// Hourly/weekly cron slots, not intervals: `every` is epoch-anchored
+// (see jobs/scheduleRegistry.ts).
+const SWEEP_CRON = jobSchedule('abuse-signals-sweep');
+const DIGEST_CRON = jobSchedule('abuse-signals-digest'); // Monday morning
 
 type AbuseJobData = Record<string, never>;
 
@@ -43,7 +46,7 @@ export async function scheduleAbuseSignalsJobs(): Promise<void> {
   await removeAbuseRepeatables(queue);
   await queue.add(SWEEP_JOB, {}, {
     jobId: SWEEP_REPEAT_ID,
-    repeat: { every: SWEEP_INTERVAL_MS },
+    repeat: { pattern: SWEEP_CRON },
     removeOnComplete: { count: 10 },
     removeOnFail: { count: 25 },
   });

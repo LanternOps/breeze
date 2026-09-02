@@ -72,6 +72,20 @@ export function isCommandQueueable(status: string): boolean {
  * `shutdown` / `lock` / `reboot_safe_mode` have no bulk button today, but
  * runBulkAction's switch already routes them through sendBulkCommand, so they are
  * classified up front: wiring a button later must not silently skip the gate.
+ *
+ * `decommission` (i.e. bulk Remove) is gated here too, but for a DIFFERENT
+ * reason than the agent-command actions above — read this before moving it back
+ * to INTENTIONALLY_UNGATED_BULK_ACTIONS. `bulkDecommissionDevices` fires one
+ * `DELETE /devices/:id` per selected device, and the API rejects that with
+ * `400 Device is already decommissioned` for a device whose status is already
+ * `decommissioned` — a distinct rejection from the agent-command one, but the
+ * same underlying fact (`isCommandQueueable` / `status !== 'decommissioned'`
+ * already answers it). Gating skips already-removed devices and proceeds with
+ * the rest; it does NOT skip `offline` devices — retiring an offline (dead)
+ * machine is still the intended use case, only retiring an ALREADY-retired one
+ * is not. Un-gating this reintroduces the doomed-request bug (#3987 fix wave):
+ * select several already-removed devices, hit "Remove Selected", and every one
+ * of them 400s into a "Bulk Remove Failed" toast instead of being skipped.
  */
 export const DECOMMISSION_BLOCKED_BULK_ACTIONS: ReadonlySet<string> = new Set([
   'reboot',
@@ -79,6 +93,7 @@ export const DECOMMISSION_BLOCKED_BULK_ACTIONS: ReadonlySet<string> = new Set([
   'shutdown',
   'lock',
   'run-script',
+  'decommission',
 ]);
 
 /**
@@ -94,7 +109,6 @@ export const DECOMMISSION_BLOCKED_BULK_ACTIONS: ReadonlySet<string> = new Set([
  *                     (b) it is not gated on `decommissioned` either — see the NOTE
  *                         below. That one is a deferral, not a principle.
  *   maintenance-*   — a DB flag, not an agent command. (Also see the NOTE.)
- *   decommission    — retiring dead machines IS the use case.
  *   deploy-software — navigates to /software; sends no command from here.
  *   link-*          — DB-only topology linkage; no agent involved.
  *   compare         — navigates to /devices/compare; read-only comparison
@@ -116,7 +130,6 @@ export const INTENTIONALLY_UNGATED_BULK_ACTIONS: ReadonlySet<string> = new Set([
   'wake',
   'maintenance-on',
   'maintenance-off',
-  'decommission',
   'deploy-software',
   'link-multiboot',
   'link-vm-host',

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { isIP } from 'node:net';
+import { softwareInventoryReportSchema } from '@breeze/shared';
 
 // ============================================
 // Enrollment
@@ -116,6 +117,36 @@ const ipEntrySchema = z.object({
 // and negatives fail .min(0), so bad input is caught either way.
 const uint64Counter = z.number().min(0).refine(Number.isInteger, 'expected integer');
 
+const agentHealthStateSchema = z.enum(['healthy', 'warning', 'error', 'unknown']);
+const agentHealthComponentSchema = z.object({
+  state: agentHealthStateSchema,
+  reason: z.string().max(512).optional(),
+}).strict();
+const agentHealthComponentsSchema = z.record(
+  z.string().min(1).max(100),
+  agentHealthComponentSchema,
+).superRefine((components, ctx) => {
+  if (Object.keys(components).length > 100) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.too_big,
+      maximum: 100,
+      inclusive: true,
+      origin: 'object',
+      message: 'Too many health components',
+    });
+  }
+});
+
+const agentHealthObservationWireV1Schema = z.object({
+  schemaVersion: z.literal(1),
+  deviceId: z.string().uuid().optional(),
+  agentVersion: z.string().min(1).max(64),
+  overall: agentHealthStateSchema,
+  metricsAvailable: z.boolean().nullable(),
+  components: agentHealthComponentsSchema,
+  observedAt: z.string().datetime({ offset: true }),
+}).strict();
+
 export const heartbeatSchema = z.object({
   metrics: z.object({
     cpuPercent: z.number(),
@@ -149,6 +180,10 @@ export const heartbeatSchema = z.object({
     processCount: z.number().int().optional().catch(undefined)
   }).optional(),
   metricsAvailable: z.boolean().optional().catch(undefined),
+  // Self-health is independent from reachability. Old maps, malformed values,
+  // and future schema versions are dropped locally so they can never reject
+  // an otherwise valid heartbeat.
+  healthStatus: agentHealthObservationWireV1Schema.optional().catch(undefined),
   status: z.enum(['ok', 'warning', 'error']),
   agentVersion: z.string(),
   helperVersion: z.string().max(20).optional().catch(undefined),
@@ -160,6 +195,10 @@ export const heartbeatSchema = z.object({
   // Installed breeze-backup version, reported by the agent so
   // devices.backup_version stays fresh (mirrors watchdogVersion above).
   backupVersion: z.string().max(20).optional().catch(undefined),
+  rollbackComponentVersions: z.record(
+    z.enum(['agent', 'helper', 'user-helper', 'watchdog', 'backup']),
+    z.string().min(1).max(20),
+  ).optional().catch(undefined),
   // #2288 — the control-plane base URL the agent used for this heartbeat.
   serverUrl: z.string().max(512).optional().catch(undefined),
   ipHistoryUpdate: z.object({
@@ -252,19 +291,68 @@ export const heartbeatSchema = z.object({
   }).optional().catch(undefined),
   // Wave 6 Task 4 (security remediation) — outbound-network-policy capability
   // handshake. Old agents omit this object entirely; a capable agent sends
-  // `{"outboundNetworkPolicyVersion":1}`. Informational — a bad value drops
-  // the whole object (.catch) rather than 400-ing the heartbeat, since the
-  // route treats anything other than exactly 1 as "not enforcing" anyway.
+  // `{"outboundNetworkPolicyVersion":1}`. Informational — a bad field drops
+  // independently rather than 400-ing the heartbeat, since the route treats
+  // every omitted/unrecognized value as capability zero anyway.
   securityCapabilities: z.object({
     outboundNetworkPolicyVersion: z.number().int().optional().catch(undefined),
     // #3409 PR4 — encrypted secret-env delivery. Same informational contract:
     // a bad value drops the field rather than 400-ing the heartbeat, since the
     // route treats anything other than exactly 1 as "not capable" anyway.
     scriptSecretEnvVersion: z.number().int().optional().catch(undefined),
+    // Device-control capability claims are tolerant informational fields.
+    // Each malformed field drops independently without rejecting the beat.
+    peripheralPolicyProtocolVersion: z.number().int().optional().catch(undefined),
+    rollbackProtocolVersion: z.number().int().optional().catch(undefined),
+    pamLifetimeProtocolVersion: z.number().int().optional().catch(undefined),
+    pamReconciliation: z.object({
+      unresolvedCount: z.number().int().nonnegative(),
+      quarantinedCount: z.number().int().nonnegative(),
+      awaitingAcknowledgementCount: z.number().int().nonnegative(),
+      receivedObservationPendingCount: z.number().int().nonnegative().optional(),
+      blockingReason: z.enum([
+        'resolver_unavailable',
+        'binding_unresolved',
+        'enqueue_failed',
+        'acknowledgement_unavailable',
+        'quarantined',
+        'outbox_unreadable',
+        'received_observation_transport',
+      ]).refine((value) => value.length <= 64).optional(),
+    }).optional().catch(undefined),
+  }).optional().catch(undefined),
+  // Signed rollback progress is informational and restart-resend safe. A
+  // malformed optional observation must never take the ordinary heartbeat
+  // offline; the server simply withholds an acknowledgement for that value.
+  rollbackObservation: z.object({
+    schemaVersion: z.literal(1),
+    observationId: z.string().regex(/^[a-f0-9]{64}$/),
+    rollbackId: z.string().uuid(),
+    deviceId: z.string().uuid(),
+    phase: z.enum([
+      'received',
+      'downloaded',
+      'verified',
+      'staged',
+      'swapped',
+      'restart_requested',
+      'healthy',
+      'failed',
+      'recovered',
+    ]),
+    currentVersion: z.string().min(1).max(100),
+    componentVersions: z.record(z.string().min(1).max(64), z.string().min(1).max(100)),
+    observedAt: z.string().datetime({ offset: true }),
+    errorCode: z.string().min(1).max(128).regex(/^[a-z0-9_]+$/).optional().catch(undefined),
   }).optional().catch(undefined),
   // Migration-banner Task 2 — self-reported install edition + whether the
-  // agent believes it needs to migrate hosted↔self-host. Informational: a bad
-  // value drops (.catch) rather than 400-ing the heartbeat.
+  // agent believes it needs to migrate hosted↔self-host. Since #4072 this is
+  // NOT merely informational: a reported edition is the capability signal
+  // that gates update-offer delivery (agentAcceptsServedEdition), and a
+  // value swallowed here makes the agent look silent — which on a hosted
+  // server means offers are withheld from a ≥0.105.0 build. The .catch is
+  // still correct (a future third edition must degrade to "silent", not
+  // 400 the heartbeat), but changes here are offer-load-bearing.
   agentEdition: z.enum(['hosted', 'self-host']).optional().catch(undefined),
   migrationRequired: z.boolean().optional().catch(undefined),
 });
@@ -561,18 +649,7 @@ export const updateHardwareSchema = z.object({
   gpuModel: z.string().optional()
 });
 
-export const updateSoftwareSchema = z.object({
-  software: z.array(z.object({
-    name: z.string().min(1),
-    version: z.string().optional(),
-    vendor: z.string().optional(),
-    installDate: z.string().optional(),
-    installLocation: z.string().optional(),
-    uninstallString: z.string().optional(),
-    fileHash: z.string().max(128).optional(),
-    hashAlgorithm: z.string().max(10).optional(),
-  })).max(10000)
-});
+export const updateSoftwareSchema = softwareInventoryReportSchema;
 
 export const updateDisksSchema = z.object({
   disks: z.array(z.object({

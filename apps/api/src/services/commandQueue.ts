@@ -1,6 +1,6 @@
 import { eq, and, inArray } from 'drizzle-orm';
 import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../db';
-import { deviceCommands, devices, auditLogs } from '../db/schema';
+import { deviceCommands, devices, auditLogs, users } from '../db/schema';
 import { sendCommandToAgent, isAgentConnected } from '../routes/agentWs';
 import { captureException } from './sentry';
 import { recordBackupCommandTimeout, recordRestoreTimeout } from './backupMetrics';
@@ -9,6 +9,10 @@ import {
   releaseClaimedCommandDelivery,
 } from './commandDispatch';
 import { commandAuditDetails } from './commandAudit';
+import {
+  AGENT_BINARY_UPDATE_COMMAND_TYPES,
+  agentBinaryUpdateDispatchRefusal,
+} from './agentEditionCompat';
 import { recordCommandDispatch } from './anomalyMetrics';
 import {
   decryptCommandForDelivery,
@@ -127,6 +131,8 @@ export const CommandTypes = {
 
   // Peripheral control — pushes full active policy set to agent
   PERIPHERAL_POLICY_SYNC: 'peripheral_policy_sync',
+  PERIPHERAL_POLICY_SYNC_V2: 'peripheral_policy_sync_v2',
+  AGENT_ROLLBACK_V1: 'agent_rollback_v1',
 
   // Log shipping
   SET_LOG_LEVEL: 'set_log_level',
@@ -232,6 +238,31 @@ export interface QueuedCommand {
   executedAt: Date | null;
   completedAt: Date | null;
   result: CommandResult | null;
+}
+
+type CommandQueueTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/** Persist a command inside a caller-owned transaction without dispatch side effects. */
+export async function insertQueuedCommandInTransaction(
+  tx: CommandQueueTx,
+  input: {
+    id: string;
+    deviceId: string;
+    type: CommandType;
+    payload: CommandPayload;
+    createdBy: string;
+  },
+): Promise<QueuedCommand> {
+  const [command] = await tx.insert(deviceCommands).values({
+    id: input.id,
+    deviceId: input.deviceId,
+    type: input.type,
+    payload: input.payload,
+    status: 'pending',
+    createdBy: input.createdBy,
+  }).returning();
+  if (!command) throw new Error('failed to persist queued command');
+  return command as QueuedCommand;
 }
 
 // Use the directly-imported runOutsideDbContext, NOT db.runOutsideDbContext.
@@ -404,6 +435,7 @@ const AUDITED_COMMANDS: Set<string> = new Set([
   CommandTypes.APPLY_AUDIT_POLICY_BASELINE,
   // Peripheral control — pushes full active policy set to agent
   CommandTypes.PERIPHERAL_POLICY_SYNC,
+  CommandTypes.PERIPHERAL_POLICY_SYNC_V2,
   // Reboots — manual and maintenance-window-automated
   'reboot',
   'schedule_reboot',
@@ -468,6 +500,102 @@ const INTERACTIVE_COMMAND_TYPES: Set<string> = new Set([
 ]);
 
 /**
+ * Resolve the value to stamp into `device_commands.created_by`.
+ *
+ * `created_by` carries a FK to `users(id)`, but several synthetic-auth classes
+ * reach the command-queue insert sites with an `auth.user.id` that is NOT a
+ * `users` row:
+ *
+ *  - **Helper sessions** — `auth.user.id` IS the device id (settled by the
+ *    equality check below, no DB read needed).
+ *  - **`ai_agent` principals** (wave 3b, #3824) — `buildAgentAuthContext` sets
+ *    `auth.user.id` to the agent's `ai_agents` id. The intent release worker
+ *    executes approved agent intents through the same tool handlers every human
+ *    path uses, and they all pass `auth.user.id` verbatim.
+ *
+ * The handlers cannot cheaply know which ids resolve to users, so it is settled
+ * here: one indexed PK probe per dispatch, and any id that is not a `users` row
+ * degrades to `created_by NULL` rather than raising a 23503 FK violation. For an
+ * agent-released intent that violation would land AFTER a human approved the
+ * action, at execution time — the worst possible moment (#3978). Attribution for
+ * agent commands lives on the intent/run (`requesting_agent_run_id`), not this
+ * column.
+ *
+ * **Why the probe must open its own system context.** `users` is RLS-protected:
+ *
+ *     breeze_has_partner_access(partner_id)
+ *     OR (org_id IS NOT NULL AND breeze_has_org_access(org_id))
+ *     OR id = breeze_current_user_id()
+ *
+ * `withSystemDbAccessContext` alone is NOT enough: `withDbAccessContext`
+ * short-circuits when a context store already exists (`db/index.ts`, "if
+ * (dbContextStorage.getStore()) return fn()"), so inside a caller's context the
+ * probe would silently run under the CALLER's scope instead of system scope.
+ *
+ * The shape that actually breaks is an already-open **org-scoped** context. The
+ * AI-tool handlers run under exactly that: `dbAccessContextFromAuth`
+ * (`middleware/auth.ts`) keeps `scope: 'organization'` while forcing
+ * `userId: null` for an `ai_agent` principal. A partner-level user
+ * (`users.org_id IS NULL`) then matches NO branch of the policy above —
+ * partner access is not granted to an org-scoped caller, the org branch is
+ * skipped on a NULL `org_id`, and `breeze_current_user_id()` is null. The probe
+ * reads zero rows and degrades a REAL human to NULL, silently destroying
+ * attribution while an agent-only test suite still passes.
+ *
+ * (The other two caller shapes happen to be safe on their own — a contextless
+ * call opens a genuine system context, and most BullMQ workers already wrap
+ * their dispatch in `withSystemDbAccessContext` — but that is incidental, not a
+ * guarantee any caller is obliged to preserve.)
+ *
+ * So exit the caller's context first: `runOutsideDbContext` clears both stores,
+ * which is what lets the nested `withSystemDbAccessContext` open a genuinely
+ * fresh system-scoped transaction. This mirrors the audit block below, which
+ * escapes the caller's context for the same reason.
+ *
+ * This is the one probe for both `device_commands` insert sites (`queueCommand`
+ * and `executeCommand`) so neither can drift back to a verbatim stamp. Note
+ * `services/scriptDispatch.ts` still carries its own independent copy of this
+ * probe for `script_executions.triggered_by`/`created_by`; it is FK-safe today
+ * but is NOT wired to this helper, so a new synthetic-principal class added here
+ * must be mirrored there until the two are converged.
+ */
+export async function resolveCommandCreatedBy(
+  deviceId: string,
+  userId?: string | null
+): Promise<string | null> {
+  const candidateUserId = userId && userId !== deviceId ? userId : null;
+  if (!candidateUserId) {
+    return null;
+  }
+
+  return runOutsideDbContextSafe(() =>
+    withSystemDbAccessContext(async () => {
+      const [userRow] = await db
+        .select({ id: users.id })
+        .from(users)
+        .where(eq(users.id, candidateUserId))
+        .limit(1);
+      // NOT logged here, deliberately. For an `ai_agent` or other synthetic
+      // principal this degrade is the DESIGNED outcome, not an anomaly, so a
+      // per-dispatch warn would fire on every agent-issued command — the
+      // cry-wolf shape that buried `db/index.ts`'s contextless-write reporter
+      // under thousands of events/day. Telling an expected degrade apart from a
+      // genuinely anomalous one (a stale or deleted user id) needs the caller's
+      // principal kind, which `queueCommand` does not receive; plumbing it
+      // through ~50 call sites is the very coupling this helper exists to
+      // avoid.
+      //
+      // The degrade is still observable without it: `dispatchActor` below keys
+      // on this resolved value, so every degraded dispatch is counted with
+      // actor="system" instead of actor="user" on the existing
+      // `commandsDispatchedTotal` counter. A spike there is the signal; a log
+      // line per command is not.
+      return userRow ? candidateUserId : null;
+    })
+  );
+}
+
+/**
  * Queue a command for execution on a device
  */
 export async function queueCommand(
@@ -481,17 +609,44 @@ export async function queueCommand(
   // default. Never accept a client-supplied value.
   options: { commandId?: string } = {}
 ): Promise<QueuedCommand> {
-  const [command] = await db
-    .insert(deviceCommands)
-    .values({
-      ...(options.commandId ? { id: options.commandId } : {}),
-      deviceId,
-      type,
-      payload,
-      status: 'pending',
-      createdBy: userId || null,
-    })
-    .returning();
+  // #4093 — agent-binary updates must not be created here. This insert site
+  // cannot set target_role (the row would default to 'agent', which has no
+  // handler for these types) and has no device row to evaluate the
+  // artifact-edition gate against. `executeCommand` is the one dispatch path
+  // that does both; refuse loudly rather than let this become the ungated
+  // back door. Checked FIRST: it is a pure Set lookup, so a refused type never
+  // pays for the `resolveCommandCreatedBy` users probe below.
+  if (AGENT_BINARY_UPDATE_COMMAND_TYPES.has(type)) {
+    throw new Error(
+      `${type} cannot be queued through queueCommand — dispatch it via ` +
+        `executeCommand(deviceId, '${type}', payload, { targetRole: 'watchdog' }) ` +
+        `so the artifact-edition gate (#4093) and the watchdog target role are applied.`,
+    );
+  }
+
+  // Never stamp `userId` verbatim — it may be a synthetic-auth id with no
+  // `users` row, which would fail the created_by FK with 23503 (#3978).
+  const safeUserId = await resolveCommandCreatedBy(deviceId, userId);
+
+  // Insert under a system context (device_commands has no RLS, but a bare-pool
+  // write with no access context trips the #1375 contextless-write guard, which
+  // CI runs in strict mode). BullMQ workers and other background callers reach
+  // here with no request context; when a caller context IS open this is a no-op
+  // and the insert stays on the caller's transaction, exactly as before. Matches
+  // executeCommand's insert site, which was already wrapped for this reason.
+  const [command] = await withSystemDbAccessContext(() =>
+    db
+      .insert(deviceCommands)
+      .values({
+        ...(options.commandId ? { id: options.commandId } : {}),
+        deviceId,
+        type,
+        payload,
+        status: 'pending',
+        createdBy: safeUserId,
+      })
+      .returning(),
+  );
 
   // Audit log for mutating commands — fire-and-forget under a system-scope
   // connection outside any caller tx, matching `services/auditService.ts`.
@@ -507,7 +662,10 @@ export async function queueCommand(
   // in the audited block below (where the device's org is already loaded) to
   // avoid adding a devices lookup to the dispatch hot path. Non-audited
   // dispatches are still counted, just with an unattributed tenant label.
-  const dispatchActor: 'user' | 'system' = userId ? 'user' : 'system';
+  // Keyed on the RESOLVED id, matching executeCommand: an id that is not a
+  // users row is not a human actor, so labelling it 'user' would misreport the
+  // dispatch (and, below, write an audit row claiming a user acted).
+  const dispatchActor: 'user' | 'system' = safeUserId ? 'user' : 'system';
   if (!AUDITED_COMMANDS.has(type)) {
     recordCommandDispatch(type, dispatchActor);
   }
@@ -531,8 +689,8 @@ export async function queueCommand(
 
         await db.insert(auditLogs).values({
           orgId: device.orgId,
-          actorType: userId ? 'user' : 'system',
-          actorId: userId || '00000000-0000-0000-0000-000000000000',
+          actorType: safeUserId ? 'user' : 'system',
+          actorId: safeUserId || '00000000-0000-0000-0000-000000000000',
           action: `agent.command.${type}`,
           resourceType: 'device',
           resourceId: deviceId,
@@ -791,6 +949,8 @@ export async function executeCommand(
   const dispatchViaWs = targetRole === 'agent' && !preferHeartbeat;
 
   // 1. Verify device inside the auth transaction (RLS-protected).
+  // agentEdition/agentVersion/watchdogVersion feed the artifact-edition gate
+  // below (#4093) — cheap here because this SELECT already runs.
   const [device] = await db
     .select({
       id: devices.id,
@@ -799,6 +959,9 @@ export async function executeCommand(
       orgId: devices.orgId,
       hostname: devices.hostname,
       watchdogLastSeen: devices.watchdogLastSeen,
+      agentEdition: devices.agentEdition,
+      agentVersion: devices.agentVersion,
+      watchdogVersion: devices.watchdogVersion,
     })
     .from(devices)
     .where(eq(devices.id, deviceId))
@@ -806,6 +969,24 @@ export async function executeCommand(
 
   if (!device) {
     return { status: 'failed', error: 'Device not found' };
+  }
+
+  // #4093 — artifact-edition gate for agent-binary updates, at the dispatch
+  // chokepoint. Runs BEFORE the liveness gates below on purpose: an edition
+  // mismatch is a permanent property of the installed build, so reporting the
+  // transient "watchdog is not reporting" first would send the operator back
+  // to retry a dispatch that can never succeed. Inert for every other command
+  // type (see AGENT_BINARY_UPDATE_COMMAND_TYPES).
+  const editionRefusal = agentBinaryUpdateDispatchRefusal({
+    commandType: type,
+    targetRole,
+    device,
+  });
+  if (editionRefusal) {
+    console.warn(
+      `[commandQueue] ${type} dispatch refused for device ${deviceId} (#4093): ${editionRefusal}`,
+    );
+    return { status: 'failed', error: editionRefusal };
   }
 
   if (targetRole === 'watchdog') {
@@ -857,10 +1038,13 @@ export async function executeCommand(
   // 2. Queue, dispatch, and poll OUTSIDE the auth transaction so the
   //    INSERT commits immediately and is visible to the WS handler.
   return runOutsideDbContextSafe(async () => {
-    // Validate userId for FK constraint: device_commands.created_by references users.id.
-    // Helper sessions use a synthetic auth where auth.user.id is actually the device ID
-    // (no real user record exists). Detect this by checking if userId equals deviceId.
-    const safeUserId = userId && userId !== deviceId ? userId : null;
+    // Validate userId for the created_by FK. Shared with queueCommand — see
+    // `resolveCommandCreatedBy` for why synthetic-auth ids degrade to NULL and
+    // why the probe opens its own system context. The sibling drift this used
+    // to warn about (queueCommand/queueCommandForExecution stamping verbatim,
+    // breaking the hyperv/backup/vault/mssql/incident/agent-logs tools) is
+    // closed: both insert sites now go through that one helper (#3978).
+    const safeUserId = await resolveCommandCreatedBy(deviceId, userId);
 
     // #3112: the caller's budget has to travel WITH the command, not merely bound
     // the server-side wait below. The agent's helper-IPC path used a hardcoded

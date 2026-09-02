@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { createHash } from 'node:crypto';
+import zlib from 'node:zlib';
 import PDFDocument from 'pdfkit';
 import { formatMoney } from '@breeze/shared';
 import { renderInvoiceHtml, renderInvoicePdfBuffer, buildInvoiceEmailAmounts, invoiceColumnsFor, type InvoiceBranding } from './invoicePdf';
@@ -68,6 +69,40 @@ const branding: InvoiceBranding = {
   footerText: 'Powered by Lantern',
   currencyCode: 'USD',
 };
+
+// Inflate pdfkit's flate content streams and decode each BT…ET text object to
+// {text, x, y} (WinAnsi bytes → latin1). Mirrors quotePdf.test.ts.
+function extractPositionedPdfText(pdf: Buffer): { text: string; x: number; y: number }[] {
+  const raw = pdf.toString('latin1');
+  const headerRe = /\/Length\s+(\d+)[\s\S]{0,120}?\/Filter\s+\/FlateDecode[\s\S]{0,40}?stream\r?\n/g;
+  const fragments: { text: string; x: number; y: number }[] = [];
+  let match: RegExpExecArray | null;
+  while ((match = headerRe.exec(raw))) {
+    const compressed = Buffer.from(raw.slice(headerRe.lastIndex, headerRe.lastIndex + Number(match[1])), 'latin1');
+    let body: string;
+    try { body = zlib.inflateSync(compressed).toString('latin1'); } catch { continue; }
+    const textObjectRe = /BT\s+([\s\S]*?)\s+ET/g;
+    let textObject: RegExpExecArray | null;
+    while ((textObject = textObjectRe.exec(body))) {
+      const tm = /1 0 0 1 ([\d.]+) ([\d.]+) Tm/.exec(textObject[1]!);
+      if (!tm) continue;
+      let text = '';
+      const tokenRe = /<([0-9a-fA-F]+)>|\(((?:[^()\\]|\\.)*)\)/g;
+      let token: RegExpExecArray | null;
+      while ((token = tokenRe.exec(textObject[1]!))) {
+        text += token[1] !== undefined
+          ? Buffer.from(token[1].length % 2 ? `${token[1]}0` : token[1], 'hex').toString('latin1')
+          : token[2]!.replace(/\\([()\\])/g, '$1');
+      }
+      if (text) fragments.push({ text, x: Number(tm[1]), y: 841.89 - Number(tm[2]) });
+    }
+  }
+  return fragments;
+}
+
+// numeric(12,2) schema maximum — the widest string the formatter can emit.
+const MAX_AMOUNT = '9999999999.99';
+const MAX_AMOUNT_RE = /9.999.999.999.99/;
 
 describe('renderInvoiceHtml', () => {
   it('excludes hidden (non-customer-visible) lines', () => {
@@ -183,6 +218,40 @@ describe('renderInvoicePdfBuffer', () => {
       expect(c.colSummaryLabelW).toBeGreaterThanOrEqual(labelWidth + 2);
       expect(c.colSummaryLabelX + c.colSummaryLabelW + 4).toBeCloseTo(c.colSummaryAmtX, 5);
     }
+  });
+
+  // #3777 review F10: the boxes are sized for ~1M; numeric(12,2) allows
+  // 9'999'999'999.99, which at CHF/de-CH is ~99pt (Helvetica 10) against an
+  // 84pt line box and ~140pt (Helvetica-Bold 14) against the 119pt summary box.
+  // The renderer must shrink the figure to fit rather than wrap/overprint.
+  it.each([[true], [false]])('keeps schema-maximum amounts inside their boxes on one line (showTax=%s)', async (showTax) => {
+    const invoice = makeInvoice({
+      currencyCode: 'CHF', documentLocale: 'de-CH',
+      subtotal: MAX_AMOUNT, taxRate: showTax ? '0.077' : null, taxTotal: showTax ? MAX_AMOUNT : '0',
+      total: MAX_AMOUNT, amountPaid: MAX_AMOUNT, balance: MAX_AMOUNT,
+    } as Partial<InvoiceRow>);
+    const lines = [makeLine({ quantity: '1', unitPrice: MAX_AMOUNT, lineTotal: MAX_AMOUNT, taxable: true })];
+    const pdf = await renderInvoicePdfBuffer(invoice, lines, branding);
+    const doc = new PDFDocument({ size: 'A4', margin: 50 });
+    const c = invoiceColumnsFor(doc, showTax);
+    const money = extractPositionedPdfText(pdf).filter((f) => MAX_AMOUNT_RE.test(f.text));
+    // line AMOUNT + Subtotal + (Tax) + Total + Paid + Balance due. The per-line
+    // TAX cell is lineTotal × rate, so it never equals the maximum itself.
+    expect(money.length).toBe(showTax ? 6 : 5);
+    for (const f of money) {
+      // Right-aligned with lineBreak:false, pdfkit starts an over-wide string
+      // LEFT of the box; a wrapped string shows up as a fragment without the
+      // full figure. Both are caught by the x floor + the regex above.
+      expect(f.x).toBeGreaterThanOrEqual(Math.min(c.colTaxX, c.colAmtX, c.colSummaryAmtX) - 0.5);
+    }
+    // The whole figure stays on its row: no fragment holds only a tail like "999.99".
+    const tails = extractPositionedPdfText(pdf).filter((f) => /^[\u2019'\u0092]?999/.test(f.text.trim()));
+    expect(tails).toHaveLength(0);
+    // The Balance due amount sits on its label's row (a shrunk font shifts the
+    // baseline by a few points; a wrapped second line would land ≥14pt lower).
+    const balance = extractPositionedPdfText(pdf).find((f) => f.text.startsWith('Balance due'))!;
+    expect(money.some((f) => Math.abs(f.y - balance.y) < 6)).toBe(true);
+    doc.end();
   });
 
   it('renders multiple grouped lines without throwing', async () => {

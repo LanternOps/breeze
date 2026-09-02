@@ -143,6 +143,7 @@
       "archived2": "Archived",
       "features": "Features",
       "noPoliciesFoundTryAdjustingYourSearch": "No policies found. Try adjusting your search.",
+      "noPoliciesYet": "No configuration policies yet. Create one, then assign it to organizations, sites or devices.",
       "partnerWidePolicyAppliesToEveryOrganization": "Partner-wide policy — applies to every organization",
       "allOrgs": "Partner-wide",
       "page": "Page",
@@ -252,7 +253,9 @@
         "thisRuleUsesUnsupportedMetrics": "This rule uses a metric the alert engine cannot evaluate ({{metrics}}). Pick a supported metric — or remove the condition — before saving; the server rejects rules that contain it.",
         "thisConditionUsesAnUnsupportedMetric": "The metric \"{{metric}}\" is not evaluated by the alert engine, so this condition is shown read-only.",
         "valueCount": "Value (count)",
-        "metricNotSet": "not set"
+        "metricNotSet": "not set",
+        "testRule": "Test rule",
+        "testRuleHint": "Evaluate these conditions against one device now, including unsaved changes."
       },
       "automationTab": {
         "schedule": "Schedule",
@@ -735,6 +738,8 @@
         "recurrence": "Recurrence",
         "startDateTime": "Start Date/Time",
         "theSpecificDateAndTimeForThis": "The specific date and time for this one-time maintenance window.",
+        "startTime": "Start time",
+        "theTimeOfDayEachWindowOpensIn": "The time of day each maintenance window opens, in the selected timezone. Defaults to midnight (00:00).",
         "durationHours": "Duration (hours)",
         "timezone": "Timezone",
         "notifyBeforeMinutes": "Notify before (minutes)",
@@ -884,7 +889,7 @@
         "windowsUpdateSource": "Windows Update Source",
         "manageWindowsUpdateExclusivelyThroughBreeze": "Manage Windows Update exclusively through Breeze",
         "suppressesTheEndpointSNativeWindowsUpdate": "Suppresses the endpoint's native Windows Update automatic-install channel so updates only flow through Breeze's approval rings — preventing unexpected reboots and patches outside your schedule. Windows-only; Breeze's own scan/approve/install path is unaffected. Reverts cleanly when disabled (a pre-existing admin Group Policy is left untouched).",
-        "times": "&times;",
+        "times": "×",
         "os": "os",
         "thirdParty": "third_party",
         "apps": "apps",

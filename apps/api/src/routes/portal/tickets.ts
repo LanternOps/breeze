@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import type { MiddlewareHandler } from 'hono';
 import { zValidator } from '../../lib/validation';
-import { and, desc, eq, isNull, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { tickets, ticketComments, ticketStatuses, organizations, portalBranding } from '../../db/schema';
 import {
@@ -9,6 +9,7 @@ import {
   createTicketSchema,
   ticketParamSchema,
   ticketCommentParamSchema,
+  portalAttachmentParamSchema,
   commentSchema,
 } from './schemas';
 import {
@@ -21,7 +22,13 @@ import {
 } from './helpers';
 import { createTicket, TicketServiceError, portalCommentMutable, editTicketComment, deleteTicketComment } from '../../services/ticketService';
 import { listTicketFormsForOrg } from '../../services/ticketFormService';
-import { editCommentSchema } from '@breeze/shared';
+import { editCommentSchema, PORTAL_TICKET_COMMENT_MAX_CHARS } from '@breeze/shared';
+import type { TicketAttachmentMeta } from '@breeze/shared';
+import { ATTACHMENT_META_COLUMNS, ticketAttachments } from '../../db/schema/ticketAttachments';
+import { openBytes } from '../../services/ticketAttachmentStorage';
+import { captureException } from '../../services/sentry';
+import { contentDispositionFor } from '../tickets/attachments';
+import { Readable } from 'node:stream';
 
 export const ticketRoutes = new Hono();
 
@@ -270,6 +277,7 @@ ticketRoutes.get('/tickets/:id', zValidator('param', ticketParamSchema), async (
     .select({
       id: ticketComments.id,
       authorName: ticketComments.authorName,
+      authorType: ticketComments.authorType,
       content: ticketComments.content,
       createdAt: ticketComments.createdAt
     })
@@ -281,7 +289,34 @@ ticketRoutes.get('/tickets/:id', zValidator('param', ticketParamSchema), async (
     ))
     .orderBy(desc(ticketComments.createdAt));
 
-  const payload = { ticket: { ...ticket, comments } };
+  // W08 #3902 — attachments on PUBLIC, non-deleted comments only. The id set
+  // comes from the already-filtered `comments` query above, so an internal or
+  // soft-deleted comment has no id here for an attachment to hang off, and a
+  // pending row (comment_id NULL) can never match. Render-only: the portal
+  // cannot upload in v1 (spec open question 3).
+  const commentIds = comments.map((row) => row.id);
+  const attachmentsByComment = new Map<string, TicketAttachmentMeta[]>();
+  if (commentIds.length > 0) {
+    const attachmentRows = await db
+      .select(ATTACHMENT_META_COLUMNS)
+      .from(ticketAttachments)
+      .where(and(
+        eq(ticketAttachments.ticketId, ticket.id),
+        inArray(ticketAttachments.commentId, commentIds)
+      ));
+    for (const row of attachmentRows) {
+      if (!row.commentId) continue;
+      const list = attachmentsByComment.get(row.commentId);
+      if (list) list.push(row as unknown as TicketAttachmentMeta);
+      else attachmentsByComment.set(row.commentId, [row as unknown as TicketAttachmentMeta]);
+    }
+  }
+  const commentsWithAttachments = comments.map((row) => ({
+    ...row,
+    attachments: attachmentsByComment.get(row.id) ?? [],
+  }));
+
+  const payload = { ticket: { ...ticket, comments: commentsWithAttachments } };
 
   applyPortalCacheHeaders(c, {
     scope: 'private',
@@ -390,8 +425,8 @@ ticketRoutes.patch(
     // Portal edit uses the shared editCommentSchema (50k), but portal CREATE caps
     // content at 5,000 chars (commentSchema). Enforce the same 5k limit here so
     // portal customers can't bypass it by editing instead of creating.
-    if (body.content.length > 5000) {
-      return c.json({ error: 'Comment content must be 5000 characters or fewer' }, 400);
+    if (body.content.length > PORTAL_TICKET_COMMENT_MAX_CHARS) {
+      return c.json({ error: `Comment content must be ${PORTAL_TICKET_COMMENT_MAX_CHARS} characters or fewer` }, 400);
     }
 
     const mutable = await portalCommentMutable(commentId, auth.user.id);
@@ -468,5 +503,96 @@ ticketRoutes.delete(
     });
 
     return c.json({ success: true });
+  }
+);
+
+/**
+ * GET /portal/tickets/:id/attachments/:attachmentId/content (W08 #3902).
+ *
+ * Render-only customer read. There is deliberately NO tickets:manage escape
+ * hatch here — every rung of the ladder returns a bare 404:
+ *   - the ticket must be this org's, submitted by THIS portal session, and not
+ *     soft-deleted;
+ *   - the attachment must be on THIS ticket;
+ *   - its parent comment must exist (inner join excludes pending rows), be
+ *     public and not soft-deleted.
+ */
+ticketRoutes.get(
+  '/tickets/:id/attachments/:attachmentId/content',
+  zValidator('param', portalAttachmentParamSchema),
+  async (c) => {
+    const auth = c.get('portalAuth' as never) as { user: { id: string; orgId: string } };
+    const { id, attachmentId } = c.req.valid('param');
+
+    const [ticket] = await db
+      .select({ id: tickets.id })
+      .from(tickets)
+      .where(and(
+        eq(tickets.id, id),
+        eq(tickets.orgId, auth.user.orgId),
+        eq(tickets.submittedBy, auth.user.id),
+        isNull(tickets.deletedAt)
+      ))
+      .limit(1);
+    if (!ticket) return c.json({ error: 'Attachment not found' }, 404);
+
+    const rows = await db
+      .select({
+        attachment: {
+          id: ticketAttachments.id,
+          contentType: ticketAttachments.contentType,
+          byteSize: ticketAttachments.byteSize,
+          originalFilename: ticketAttachments.originalFilename,
+          sha256: ticketAttachments.sha256,
+          storageBackend: ticketAttachments.storageBackend,
+          storageKey: ticketAttachments.storageKey,
+          data: ticketAttachments.data,
+        },
+      })
+      .from(ticketAttachments)
+      // INNER join: a pending row (comment_id NULL) matches nothing.
+      .innerJoin(ticketComments, eq(ticketComments.id, ticketAttachments.commentId))
+      .where(and(
+        eq(ticketAttachments.id, attachmentId),
+        eq(ticketAttachments.ticketId, id),
+        eq(ticketComments.isPublic, true),
+        isNull(ticketComments.deletedAt)
+      ))
+      .limit(1);
+    const att = rows[0]?.attachment;
+    if (!att) return c.json({ error: 'Attachment not found' }, 404);
+
+    const etag = `"${att.sha256}"`;
+    const headers: Record<string, string> = {
+      ETag: etag,
+      'Cache-Control': 'private, max-age=300',
+      'X-Content-Type-Options': 'nosniff',
+    };
+    if (c.req.header('If-None-Match') === etag) {
+      return c.body(null, 304, headers);
+    }
+
+    // Mirrors the technician route (routes/tickets/attachments.ts): a transport
+    // fault is a RETRYABLE 503, not a 500. Unguarded, an S3 blip surfaced to
+    // the customer as a generic 500 and was never attributed to this route in
+    // Sentry (W08A review).
+    let opened: Awaited<ReturnType<typeof openBytes>>;
+    try {
+      opened = await openBytes(att);
+    } catch (err) {
+      captureException(err);
+      return c.json({ error: 'Attachment storage is unavailable — try again shortly' }, 503);
+    }
+    if (!opened.body) return c.json({ error: 'Attachment not found' }, 404);
+
+    headers['Content-Type'] = att.contentType;
+    headers['Content-Disposition'] = contentDispositionFor(att.contentType, att.originalFilename);
+    const length = opened.contentLength ?? att.byteSize;
+    if (typeof length === 'number') headers['Content-Length'] = String(length);
+
+    if (Buffer.isBuffer(opened.body)) {
+      return c.body(new Uint8Array(opened.body), 200, headers);
+    }
+    return c.body(Readable.toWeb(opened.body) as ReadableStream, 200, headers);
   }
 );

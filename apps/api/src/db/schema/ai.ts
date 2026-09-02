@@ -32,6 +32,9 @@ export const aiSessions = pgTable('ai_sessions', {
   type: text('type').notNull().default('general'),
   title: varchar('title', { length: 255 }),
   model: varchar('model', { length: 100 }).notNull().default('claude-sonnet-4-5-20250929'),
+  billingSource: text('billing_source', { enum: ['platform', 'partner_key'] }).notNull().default('platform'),
+  catalogEntryId: uuid('catalog_entry_id'),
+  catalogRevisionId: uuid('catalog_revision_id'),
   systemPrompt: text('system_prompt'),
   contextSnapshot: jsonb('context_snapshot'),
   // TOTAL input across the session — uncached + cache-read + cache-creation.
@@ -67,6 +70,12 @@ export const aiSessions = pgTable('ai_sessions', {
   // file. Nullable (older rows, non-Office sessions). Added in
   // 2026-06-13-c-ai-sessions-workbook-name.sql.
   workbookName: varchar('workbook_name', { length: 500 }),
+  // AI agent principal (spec §3.3). CHECK ai_sessions_single_principal_check
+  // (at most one of user_id/client_user_id/agent_id) and
+  // ai_sessions_agent_type_check (type='agent' ⇒ agent_id set) live in
+  // 2026-09-02-ai-agents.sql. FK is declared in SQL to avoid a circular import
+  // (aiAgents.ts imports aiSessions for ai_agent_runs.session_id).
+  agentId: uuid('agent_id'),
 }, (table) => ({
   orgIdIdx: index('ai_sessions_org_id_idx').on(table.orgId),
   userIdIdx: index('ai_sessions_user_id_idx').on(table.userId),
@@ -144,6 +153,8 @@ export const aiCostUsage = pgTable('ai_cost_usage', {
   sessionCount: integer('session_count').notNull().default(0),
   messageCount: integer('message_count').notNull().default(0),
   toolExecutionCount: integer('tool_execution_count').notNull().default(0),
+  // Most-recent-writer label, not a per-source cost split; deductions are decided per turn, never from this column.
+  billingSource: text('billing_source', { enum: ['platform', 'partner_key'] }).notNull().default('platform'),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 }, (table) => ({
   orgPeriodIdx: uniqueIndex('ai_cost_usage_org_period_idx').on(table.orgId, table.period, table.periodKey)

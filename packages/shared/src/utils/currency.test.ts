@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   CURRENCY_CODES, isKnownCurrency, minorUnitExponent, isZeroDecimal,
-  toMinorUnits, fromMinorUnits, roundToCurrency, formatCurrencyAmount, formatMoney,
+  toMinorUnits, fromMinorUnits, roundToCurrency, multiplyToCurrency, isRepresentableInCurrency, formatCurrencyAmount, formatMoney,
   buildStripeCurrencyWarning,
 } from './currency';
 
@@ -43,6 +43,58 @@ describe('currency core', () => {
     expect(roundToCurrency('1000.50', 'JPY')).toBe('1001.00');
     expect(roundToCurrency('1000.49', 'JPY')).toBe('1000.00');
     expect(roundToCurrency(0, 'JPY')).toBe('0.00');
+  });
+
+  describe('exact half-up (review #2: binary FP must not break ties)', () => {
+    it('0.02 h x 7.25 USD is 0.15, matching the SQL ROUND() path', () => {
+      // The double product is 0.14499999999999999; Math.floor(n*100+0.5) gave 0.14.
+      expect(multiplyToCurrency('0.02', '7.25', 'USD')).toBe('0.15');
+      expect(roundToCurrency(0.02 * 7.25, 'USD')).toBe('0.15');
+      expect(roundToCurrency('0.145', 'USD')).toBe('0.15');
+    });
+    it('1.005 USD rounds to 1.01 as a string and as a number', () => {
+      expect(roundToCurrency('1.005', 'USD')).toBe('1.01');
+      expect(roundToCurrency(1.005, 'USD')).toBe('1.01');
+      expect(multiplyToCurrency('3', '0.335', 'USD')).toBe('1.01');
+    });
+    it('zero-decimal half-unit boundaries round up', () => {
+      expect(roundToCurrency('0.5', 'JPY')).toBe('1.00');
+      expect(roundToCurrency(0.5, 'JPY')).toBe('1.00');
+      expect(roundToCurrency('2.5', 'JPY')).toBe('3.00');
+      expect(roundToCurrency('2.49', 'JPY')).toBe('2.00');
+      expect(multiplyToCurrency('0.5', '5', 'JPY')).toBe('3.00');
+      expect(multiplyToCurrency('0.33', '1000', 'JPY')).toBe('330.00');
+    });
+    it('ties go toward +infinity (Math.floor(n+0.5) semantics kept for negatives)', () => {
+      expect(roundToCurrency('-1.005', 'USD')).toBe('-1.00');
+      expect(roundToCurrency('-1.006', 'USD')).toBe('-1.01');
+      expect(roundToCurrency('-0.001', 'USD')).toBe('0.00');
+      expect(roundToCurrency('-0.5', 'JPY')).toBe('0.00');
+    });
+    it('accepts exponent notation, blank, and plain integers', () => {
+      expect(roundToCurrency(1e-7, 'USD')).toBe('0.00');
+      expect(roundToCurrency('1e2', 'USD')).toBe('100.00');
+      expect(roundToCurrency('', 'USD')).toBe('0.00');
+      expect(roundToCurrency(42, 'USD')).toBe('42.00');
+      expect(roundToCurrency('.5', 'USD')).toBe('0.50');
+      expect(() => roundToCurrency('abc', 'USD')).toThrow(/non-finite/);
+      expect(() => multiplyToCurrency(Number.NaN, '1', 'USD')).toThrow(/non-finite/);
+    });
+    it('exact multiplication never rounds through a float between steps', () => {
+      expect(multiplyToCurrency('0.05', '0.70', 'USD')).toBe('0.04'); // 0.035 exactly
+      expect(multiplyToCurrency('1.5', '150', 'USD')).toBe('225.00');
+      expect(multiplyToCurrency('0', '99.99', 'USD')).toBe('0.00');
+      expect(multiplyToCurrency(1.1, 1.1, 'USD')).toBe('1.21');
+    });
+  });
+
+  it('isRepresentableInCurrency checks the exact decimal, not a float round-trip', () => {
+    expect(isRepresentableInCurrency('1.01', 'USD')).toBe(true);
+    expect(isRepresentableInCurrency('1.005', 'USD')).toBe(false);
+    expect(isRepresentableInCurrency('1.0151', 'USD')).toBe(false); // old impl said true
+    expect(isRepresentableInCurrency('12.00', 'JPY')).toBe(true);
+    expect(isRepresentableInCurrency('1000.50', 'JPY')).toBe(false);
+    expect(isRepresentableInCurrency(Number.NaN, 'USD')).toBe(false);
   });
 
   it('formatCurrencyAmount uses Intl and falls back on unknown codes', () => {
@@ -100,9 +152,21 @@ describe('buildStripeCurrencyWarning', () => {
     expect(buildStripeCurrencyWarning('usd', 'USD')).toBeNull();
   });
 
-  it('is null when the account currency is unknown', () => {
-    expect(buildStripeCurrencyWarning('EUR', null)).toBeNull();
-    expect(buildStripeCurrencyWarning('EUR', undefined)).toBeNull();
-    expect(buildStripeCurrencyWarning('EUR', '')).toBeNull();
+  it('an UNKNOWN account currency is an explicit "cache unavailable" warning, never silent no-warning (review F6)', () => {
+    for (const unknown of [null, undefined, '', '  ']) {
+      const w = buildStripeCurrencyWarning('EUR', unknown);
+      expect(w).toMatchObject({
+        code: 'STRIPE_ACCOUNT_CURRENCY_UNKNOWN',
+        documentCurrency: 'EUR',
+        accountCurrency: null,
+      });
+      expect(w?.message).toMatch(/refresh/i);
+      expect(w?.message).toContain('EUR');
+    }
+  });
+
+  it('is null only when the document currency itself is missing (nothing to compare)', () => {
+    expect(buildStripeCurrencyWarning('', 'USD')).toBeNull();
+    expect(buildStripeCurrencyWarning('', null)).toBeNull();
   });
 });

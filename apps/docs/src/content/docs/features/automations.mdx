@@ -114,6 +114,13 @@ Use the status filter dropdown to narrow results to Success, Failed, Partial, or
 | `create_alert` | Creates a Breeze alert with configured severity and message |
 | `execute_command` | Runs a shell command on target devices |
 | `deploy_software` | Installs the latest catalog version of a software item on target devices, automatically skipping devices that are already current or on an unsupported OS |
+| `ai_triage` | **System-managed.** Wakes an AI triage agent when an alert fires. Created automatically with the agent — see below. |
+
+<Aside type="caution" title="`ai_triage` is created for you">
+  You cannot author an automation that uses the `ai_triage` action — the API rejects it with `ai_triage_is_system_managed`. Creating an AI triage agent generates its own managed automation to route alerts to it, and disabling the agent disables that wiring.
+
+  Edit the **agent**, not the automation: severity, site, tag, maintenance-window and cooldown filtering all live on the agent's policy. See [AI Agents](/features/ai-agents/).
+</Aside>
 
 ### Run Status
 

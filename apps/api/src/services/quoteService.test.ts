@@ -119,6 +119,7 @@ describe('quoteService deposits', () => {
     queueResult([{ taxExempt: false, taxRate: '0.05000' }]);
     queueResult([{ defaultTaxRate: null }]);
     queueResult([]); // contract-blocks re-validation fetch (no contract blocks)
+    queueResult([{ currencyCode: 'USD' }]); // org SHARE barrier inside the move tx (#3778)
     queueResult([]); // tx: quotes header update
     queueResult([]); // tx: blocks org move
     queueResult([]); // tx: lines org move
@@ -149,6 +150,7 @@ describe('quoteService deposits', () => {
     queueResult([{ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft', currencyCode: 'USD', siteId: null, billToName: null, taxRate: '0.10000', depositType: 'none', depositPercent: null }]);
     queueResult([{ id: 'org2', currencyCode: 'USD' }]); // membership check (currency matches the draft stamp) — NO resolveQuoteTaxRate selects follow
     queueResult([]); // contract-blocks re-validation fetch (no contract blocks)
+    queueResult([{ currencyCode: 'USD' }]); // org SHARE barrier inside the move tx (#3778)
     queueResult([]); // tx: quotes header update
     queueResult([]); // tx: blocks org move
     queueResult([]); // tx: lines org move
@@ -174,6 +176,7 @@ describe('quoteService deposits', () => {
     queueResult([{ taxExempt: false, taxRate: null }]); // resolveQuoteTaxRate org
     queueResult([{ defaultTaxRate: null }]); // resolveQuoteTaxRate partner
     queueResult([]); // contract-blocks re-validation fetch (no contract blocks)
+    queueResult([{ currencyCode: 'USD' }]); // org SHARE barrier inside the move tx (#3778)
     queueResult([]); // tx: quotes header update
     queueResult([]); // tx: blocks org move
     queueResult([]); // tx: lines org move
@@ -224,6 +227,7 @@ describe('quoteService deposits', () => {
     queueResult([{ taxExempt: false, taxRate: null }]); // resolveQuoteTaxRate org
     queueResult([{ defaultTaxRate: null }]); // resolveQuoteTaxRate partner
     queueResult([{ blockType: 'contract', content: { templateId: 'tpl-1', templateVersionId: 'ver-1' } }]); // contract-blocks re-validation fetch
+    queueResult([{ currencyCode: 'USD' }]); // org SHARE barrier inside the move tx (#3778)
     // assertContractBlockValid inside the tx: version published, template OWNED BY org1 (invalid for org2)
     queueResult([{ templateId: 'tpl-1', status: 'published' }]);
     queueResult([{ status: 'active', orgId: 'org1', partnerId: 'p1' }]);
@@ -242,6 +246,7 @@ describe('quoteService deposits', () => {
     queueResult([{ taxExempt: false, taxRate: null }]); // resolveQuoteTaxRate org
     queueResult([{ defaultTaxRate: null }]); // resolveQuoteTaxRate partner
     queueResult([{ blockType: 'contract', content: { templateId: 'tpl-1', templateVersionId: 'ver-1' } }]); // contract-blocks fetch
+    queueResult([{ currencyCode: 'USD' }]); // org SHARE barrier inside the move tx (#3778)
     queueResult([{ templateId: 'tpl-1', status: 'published' }]); // version published
     queueResult([{ status: 'active', orgId: null, partnerId: 'p1' }]); // PARTNER-WIDE — visible to every org of the partner
     queueResult([]); // tx: quotes header update
@@ -396,6 +401,7 @@ describe('quoteService deposits', () => {
     queueResult(blocks); // getQuote: blocks
     queueResult(lines); // getQuote: lines
     queueResult([]); // getQuote: no staged Pax8 order
+    queueResult([]); // getQuote: no successor revision
     queueResult([]); // getQuote: listQuoteOrders — order headers
     queueResult([]); // getQuote: listQuoteOrders — order lines
     queueResult([{ name: 'Org Inc' }]); // getQuote: draft bill-to org lookup
@@ -480,6 +486,7 @@ describe('quoteService deposits', () => {
     queueResult([]); // blocks
     queueResult([]); // lines
     queueResult([]); // no staged Pax8 order
+    queueResult([]); // no successor revision
     queueResult([
       { id: 'ord-1', quoteId: 'q1', orgId: 'org1', clientRequestId: 'c1' },
       { id: 'ord-2', quoteId: 'q1', orgId: 'org1', clientRequestId: 'c2' },
@@ -507,6 +514,7 @@ describe('quoteService deposits', () => {
     queueResult([]); // blocks
     queueResult([{ quantity: '1', unitPrice: '1000.00', taxable: true, customerVisible: true, recurrence: 'one_time', depositEligible: false, itemType: 'hardware' }]); // lines
     queueResult([]); // no staged Pax8 order
+    queueResult([]); // no successor revision
     queueResult([]); // listQuoteOrders — order headers
     queueResult([]); // listQuoteOrders — order lines
 
@@ -527,6 +535,9 @@ describe('quoteService deposits', () => {
       { sourceQuoteLineId: 'ql-1', submitState: 'pending', quantity: '1.00' },
       { sourceQuoteLineId: 'ql-2', submitState: 'pending', quantity: '2.00' },
     ]);
+    queueResult([]); // no successor revision
+    queueResult([]); // listQuoteOrders — order headers
+    queueResult([]); // listQuoteOrders — order lines
 
     const detail = await svc.getQuote('q1', actor);
 
@@ -547,6 +558,9 @@ describe('quoteService deposits', () => {
     queueResult([]); // blocks
     queueResult([]); // quote lines
     queueResult([]); // no Pax8 order for this quote/tenant
+    queueResult([]); // no successor revision
+    queueResult([]); // listQuoteOrders — order headers
+    queueResult([]); // listQuoteOrders — order lines
 
     const detail = await svc.getQuote('q1', actor);
 
@@ -563,6 +577,9 @@ describe('quoteService deposits', () => {
     queueResult([]); // blocks
     queueResult([]); // lines
     queueResult([]); // no staged Pax8 order
+    queueResult([]); // no successor revision
+    queueResult([]); // listQuoteOrders — order headers
+    queueResult([]); // listQuoteOrders — order lines
     // Deliberately queue NO org row: a sent quote must not query the live org at all.
 
     const { billTo } = await svc.getQuote('q1', actor);
@@ -576,6 +593,7 @@ describe('quoteService deposits', () => {
     queueResult([]); // blocks
     queueResult([]); // lines
     queueResult([]); // no staged Pax8 order
+    queueResult([]); // no successor revision
     queueResult([]); // listQuoteOrders — order headers
     queueResult([]); // listQuoteOrders — order lines
     queueResult([{ name: 'Org Inc', taxId: 'ORG-TAX', billingAddressLine1: 'Org St', billingAddressLine2: null, billingAddressCity: 'Berthoud', billingAddressRegion: 'CO', billingAddressPostalCode: '80513', billingAddressCountry: 'US' }]); // org billing
@@ -667,6 +685,9 @@ describe('quoteService deposits', () => {
     ]); // blocks (one legacy dirty row, one unrelated block type)
     queueResult([]); // quote lines
     queueResult([]); // no staged Pax8 order
+    queueResult([]); // no successor revision
+    queueResult([]); // listQuoteOrders — order headers
+    queueResult([]); // listQuoteOrders — order lines
 
     const { blocks } = await svc.getQuote('q1', actor);
 
@@ -1066,7 +1087,7 @@ describe('changeQuoteCurrency reprice (price-book reprice of catalog lines, #377
     ]);
     await expect(
       svc.changeQuoteCurrency('q1', { currencyCode: 'EUR', reprice: true }, actor)
-    ).rejects.toMatchObject({ code: 'CURRENCY_LOCKED', status: 409, message: expect.stringContaining('1 non-catalog line(s) cannot be repriced — pass clearLines instead') });
+    ).rejects.toMatchObject({ code: 'CURRENCY_LOCKED', status: 409, message: expect.stringContaining('1 non-catalog line(s) have no price in the new currency — remove all lines first, or keep the current currency') });
     expect(resolvePriceMock).not.toHaveBeenCalled();
     expect((db as unknown as Chain).set.mock.calls.length).toBe(0);
     expect((db as unknown as { delete: { mock: { calls: unknown[][] } } }).delete.mock.calls.length).toBe(0);
@@ -1131,11 +1152,14 @@ describe('quote line writers lock the quote row first (#3774)', () => {
     queueResult([]); // recompute lines
     queueResult([]); // recompute update
 
-    await svc.addManualLine('q1', { sourceType: 'manual', name: 'Widget', quantity: 3, unitPrice: 33.35, taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false } as never, actor);
+    // The fraction lives in the QUANTITY, not the unit price: a fractional-yen
+    // unit price is now refused outright at this seam (W6-G2-1), so the rounding
+    // contract has to be demonstrated with a JPY-representable price.
+    await svc.addManualLine('q1', { sourceType: 'manual', name: 'Widget', quantity: 3.35, unitPrice: 30, taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false } as never, actor);
 
     const valuesMock = (db as unknown as Chain).values;
-    // 3 × 33.35 = 100.05 → '100.00' under JPY, '100.05' under a 2-decimal stamp.
-    expect((valuesMock.mock.calls.at(-1)![0] as { lineTotal: string }).lineTotal).toBe('100.00');
+    // 3.35 × 30 = 100.50 → half-up to '101.00' under JPY, '100.50' under a 2-decimal stamp.
+    expect((valuesMock.mock.calls.at(-1)![0] as { lineTotal: string }).lineTotal).toBe('101.00');
   });
 
   it('updateLine locks first and recomputes lineTotal with the locked row currency', async () => {
@@ -1193,5 +1217,51 @@ describe('quote line writers lock the quote row first (#3774)', () => {
     expect(chain.transaction.mock.calls.length).toBe(1);
     expect(chain.for.mock.calls[0]).toEqual(['update']);
     expect(chain.delete.mock.calls.length).toBe(2);
+  });
+});
+
+// Wave-6 release gate (W6-G2-1): hand-entered money on a quote line is validated
+// against the QUOTE's stamped currency under the same row lock that produced it.
+describe('quoteService currency representability guard (W6-G2-1)', () => {
+  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+
+  const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+  const draft = (currencyCode: string) => ({ id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft', currencyCode });
+  const line = (over: Record<string, unknown> = {}) => ({
+    sourceType: 'manual', name: 'Widget', quantity: 1, unitPrice: 100, taxable: false,
+    customerVisible: true, recurrence: 'one_time', depositEligible: false, ...over,
+  }) as never;
+
+  it('addManualLine rejects a fractional minor unit on a JPY quote (PRICE_NOT_REPRESENTABLE 400)', async () => {
+    queueResult([draft('JPY')]);
+    await expect(svc.addManualLine('q1', line({ unitPrice: 100.5 }), actor))
+      .rejects.toMatchObject({ code: 'PRICE_NOT_REPRESENTABLE', status: 400 });
+    expect((db as unknown as { insert: { mock: { calls: unknown[][] } } }).insert.mock.calls.length).toBe(0);
+  });
+
+  it('addManualLine rejects a fractional JPY unitCost even when the price is whole', async () => {
+    queueResult([draft('JPY')]);
+    await expect(svc.addManualLine('q1', line({ unitPrice: 100, unitCost: 40.5 }), actor))
+      .rejects.toMatchObject({ code: 'PRICE_NOT_REPRESENTABLE', status: 400 });
+    expect((db as unknown as { insert: { mock: { calls: unknown[][] } } }).insert.mock.calls.length).toBe(0);
+  });
+
+  it('addManualLine leaves a 2-decimal currency unchanged — 100.50 USD is accepted', async () => {
+    queueResult([draft('USD')]);
+    queueResult([{ id: 'blk1' }]);                                             // resolveLineBlockId
+    queueResult([{ max: -1 }]);                                                // nextLineSortOrder
+    queueResult([{ id: 'l1', blockId: 'blk1' }]);                              // insert returning
+    queueResult([{ taxRate: null, depositType: 'none', depositPercent: null }]); // recompute header
+    queueResult([]);                                                           // recompute lines
+    queueResult([]);                                                           // recompute update
+    await expect(svc.addManualLine('q1', line({ unitPrice: 100.5 }), actor)).resolves.toMatchObject({ id: 'l1' });
+  });
+
+  it('updateLine rejects a patch that would make an existing JPY line fractional', async () => {
+    queueResult([draft('JPY')]);
+    queueResult([{ id: 'l1', quoteId: 'q1', name: 'W', description: null, quantity: '1', unitPrice: '100.00', taxable: false, customerVisible: true, recurrence: 'one_time' }]);
+    await expect(svc.updateLine('q1', 'l1', { unitPrice: 100.5 }, actor))
+      .rejects.toMatchObject({ code: 'PRICE_NOT_REPRESENTABLE', status: 400 });
+    expect((db as unknown as { set: { mock: { calls: unknown[][] } } }).set.mock.calls.length).toBe(0);
   });
 });

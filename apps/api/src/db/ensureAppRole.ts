@@ -11,8 +11,15 @@ import { selectAppRolePassword } from './requestDatabaseConfig';
  * This runs from autoMigrate (which connects as the admin) because that is the
  * one place at startup where we have an admin connection and can afford to do
  * DDL. It is idempotent and safe to re-run.
+ *
+ * Returns `true` if the role was created/updated, `false` if the call was
+ * skipped because neither password env var is set. Callers that need
+ * `breeze_app` to exist (e.g. autoMigrate, before applying RLS-policy
+ * migrations) should check the return value and fail fast with a pointed
+ * error rather than let Postgres surface an unrelated-looking
+ * `role "breeze_app" does not exist` failure many files later.
  */
-export async function ensureAppRole(): Promise<void> {
+export async function ensureAppRole(): Promise<boolean> {
   const connectionString =
     process.env.DATABASE_URL || 'postgresql://breeze:breeze@localhost:5432/breeze';
 
@@ -24,7 +31,7 @@ export async function ensureAppRole(): Promise<void> {
     console.warn(
       '[ensure-app-role] Neither BREEZE_APP_DB_PASSWORD nor POSTGRES_PASSWORD is set — skipping breeze_app role setup. RLS will NOT be enforced against the admin connection.',
     );
-    return;
+    return false;
   }
 
   const client = postgres(connectionString, { max: 1 });
@@ -141,6 +148,23 @@ export async function ensureAppRole(): Promise<void> {
             GRANT USAGE ON SEQUENCE audit_chain_anchors_anchor_seq_seq TO breeze_app;
           END IF;
         END IF;
+        -- Agent health evidence is append-only except for trusted tenant
+        -- restamping during a device move. The migration trigger protects the
+        -- evidence fields; this override keeps ordinary app-role UPDATE and
+        -- TRUNCATE unavailable after the blanket grants above run at boot.
+        IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='agent_health_observations') THEN
+          REVOKE UPDATE, TRUNCATE ON TABLE agent_health_observations FROM breeze_app;
+          REVOKE TRUNCATE ON TABLE agent_health_observations FROM PUBLIC;
+        END IF;
+        -- Software inventory observations are retained evidence. The migration
+        -- grants the app role only read/append/delete capabilities, but the
+        -- blanket grant above runs at every boot, so re-revoke direct UPDATE
+        -- and TRUNCATE here. The structural UPDATE RLS policy and immutable
+        -- trigger remain in place for trusted tenant restamping.
+        IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='software_inventory_observations') THEN
+          REVOKE UPDATE, TRUNCATE ON TABLE software_inventory_observations FROM breeze_app;
+          REVOKE TRUNCATE ON TABLE software_inventory_observations FROM PUBLIC;
+        END IF;
         -- Reconstruction material clocks are maintained only by trusted
         -- SECURITY DEFINER triggers. The API may read them for incremental
         -- exports, but direct writes could suppress or forge change signals.
@@ -153,10 +177,23 @@ export async function ensureAppRole(): Promise<void> {
         IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='partner_export_configuration_org_state') THEN
           REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE partner_export_configuration_org_state FROM breeze_app;
         END IF;
+        -- #3922: llm_egress_events records what an LLM egress attempt DID --
+        -- which host, which resolved IP, allowed or blocked. Nothing in the API
+        -- updates it (the recorder only INSERTs), and a tenant-reachable role
+        -- that can rewrite the blocked flag after the fact turns the audit trail
+        -- into a claim. The migration narrows the GRANT, but step 4's blanket
+        -- GRANT ... UPDATE ... ON ALL TABLES re-permits it on the very next
+        -- boot, so the narrowing only sticks if it is re-applied here.
+        -- DELETE stays: the table is in CORE_ORG_CASCADE_DELETE_ORDER and org
+        -- erasure has to be able to remove these rows.
+        IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='llm_egress_events') THEN
+          REVOKE UPDATE, TRUNCATE ON TABLE llm_egress_events FROM breeze_app;
+        END IF;
       END $$;
     `);
 
     console.log('[ensure-app-role] breeze_app role ensured (NOSUPERUSER, NOBYPASSRLS)');
+    return true;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error(`[ensure-app-role] failed: ${message}`);

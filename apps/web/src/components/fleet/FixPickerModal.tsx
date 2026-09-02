@@ -470,7 +470,10 @@ export default function FixPickerModal({ finding, onClose, onRunStarted }: FixPi
                           </span>
                           {/* Falls back to the raw token so a reason the API
                               adds later is visible, not blank. */}
-                          <span className="shrink-0 text-muted-foreground">
+                          <span
+                            data-testid={`fix-picker-skipped-reason-${s.deviceId}`}
+                            className="shrink-0 text-muted-foreground"
+                          >
                             {key ? t(/* i18n-dynamic */ key) : s.reason}
                           </span>
                         </li>

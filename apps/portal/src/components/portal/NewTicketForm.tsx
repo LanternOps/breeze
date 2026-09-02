@@ -1,35 +1,38 @@
 import { withBase } from '@/lib/basePath';
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
-import { Loader2, AlertCircle, ArrowLeft, FileText, MessageSquarePlus } from 'lucide-react';
+import { Loader2, AlertCircle, ArrowLeft } from 'lucide-react';
 import { buildResponseValidator, coerceFormResponses } from '@breeze/shared';
 import { portalApi, type PortalTicketForm, type TicketPriority } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import { navigateTo } from '@/lib/navigation';
 import TicketFormFields from './TicketFormFields';
+import { BTN_PRIMARY, BTN_SECONDARY, INPUT } from './ui';
 
 const ticketSchema = z.object({
   subject: z.string().min(5, 'Title must be at least 5 characters'),
-  description: z.string().min(20, 'Please provide a detailed description (at least 20 characters)'),
+  description: z.string().min(20, 'Tell us a little more — a couple of sentences helps us help you.'),
   priority: z.enum(['low', 'normal', 'high', 'urgent'])
 });
 
 type TicketFormData = z.infer<typeof ticketSchema>;
 
-const inputCls = cn(
-  'mt-1 block w-full rounded-md border bg-background px-3 py-2 text-sm shadow-xs',
-  'focus:border-primary focus:outline-hidden focus:ring-1 focus:ring-primary'
-);
+const inputCls = INPUT;
 
-export function NewTicketForm() {
+interface NewTicketFormProps {
+  /** Intake forms from the page's server-side probe of /portal/tickets/forms —
+   *  the same call that gates the page, so the picker never fetches a second
+   *  time on the client. Empty when the MSP has published none (or the probe
+   *  failed, which the page logs): the legacy free-text form shows. */
+  forms: PortalTicketForm[];
+}
+
+export function NewTicketForm({ forms }: NewTicketFormProps) {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Intake forms (Phase 2). Purely additive: a fetch failure silently degrades to
-  // the legacy free-text form (no grid, no toast — just a console breadcrumb).
-  const [forms, setForms] = useState<PortalTicketForm[]>([]);
   const [selectedForm, setSelectedForm] = useState<PortalTicketForm | null>(null);
   // True once the user picks "Something else" from the grid → legacy free-text form.
   const [showLegacy, setShowLegacy] = useState(false);
@@ -51,24 +54,6 @@ export function NewTicketForm() {
     }
   });
 
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      const result = await portalApi.getTicketForms();
-      if (cancelled) return;
-      if (result.data) {
-        setForms(result.data);
-      } else {
-        // Forms are additive — degrade to the legacy free-text form, but leave a
-        // breadcrumb so a broken picker isn't invisible in the console.
-        console.warn('[portal/new-ticket] forms fetch failed', result.error);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
   // Legacy free-text path — unchanged behaviour from before intake forms.
   const onSubmit = async (data: TicketFormData) => {
     setIsLoading(true);
@@ -79,7 +64,7 @@ export function NewTicketForm() {
     if (result.data) {
       await navigateTo(`/tickets/${result.data.id}`);
     } else {
-      setError(result.error || 'Failed to create ticket');
+      setError(result.error || 'We couldn\'t send your request. Nothing you typed was lost — try again.');
     }
 
     setIsLoading(false);
@@ -149,7 +134,7 @@ export function NewTicketForm() {
     if (result.data) {
       await navigateTo(`/tickets/${result.data.id}`);
     } else {
-      setError(result.error || 'Failed to create ticket');
+      setError(result.error || 'We couldn\'t send your request. Nothing you typed was lost — try again.');
     }
 
     setIsLoading(false);
@@ -169,31 +154,29 @@ export function NewTicketForm() {
         </a>
       </div>
 
-      <div className="rounded-lg border bg-card p-6">
+      <div>
         {showGrid ? (
           <>
-            <h2 className="text-lg font-semibold">Create New Ticket</h2>
+            <h2 className="font-display text-xl font-semibold text-foreground">New ticket</h2>
             <p className="mt-1 text-sm text-muted-foreground">
-              Choose what you need help with to get started.
+              Choose what you need help with, and we'll get started.
             </p>
-            <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2">
+            {/* Request types as a ruled list, like every other register in the
+                portal. (State/testids still say "grid"/"card" from the earlier
+                layout; the e2e selectors depend on them.) The last entry is the
+                open door. */}
+            <div className="mt-6 divide-y divide-border/70 border-y border-border/70">
               {forms.map((form) => (
                 <button
                   key={form.id}
                   type="button"
                   onClick={() => selectForm(form)}
                   data-testid={`portal-ticket-form-card-${form.id}`}
-                  className={cn(
-                    'flex flex-col items-start gap-1 rounded-lg border bg-background p-4 text-left',
-                    'hover:border-primary hover:bg-muted focus:outline-hidden focus:ring-2 focus:ring-primary'
-                  )}
+                  className="ledger-row block w-full px-1 py-3.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
-                  <span className="flex items-center gap-2 text-sm font-medium text-foreground">
-                    <FileText className="h-4 w-4 text-muted-foreground" />
-                    {form.name}
-                  </span>
+                  <span className="block text-sm font-semibold text-foreground">{form.name}</span>
                   {form.description && (
-                    <span className="text-xs text-muted-foreground">{form.description}</span>
+                    <span className="mt-0.5 block text-xs text-muted-foreground">{form.description}</span>
                   )}
                 </button>
               ))}
@@ -201,16 +184,10 @@ export function NewTicketForm() {
                 type="button"
                 onClick={() => setShowLegacy(true)}
                 data-testid="portal-ticket-form-card-blank"
-                className={cn(
-                  'flex flex-col items-start gap-1 rounded-lg border border-dashed bg-background p-4 text-left',
-                  'hover:border-primary hover:bg-muted focus:outline-hidden focus:ring-2 focus:ring-primary'
-                )}
+                className="ledger-row block w-full px-1 py-3.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
-                <span className="flex items-center gap-2 text-sm font-medium text-foreground">
-                  <MessageSquarePlus className="h-4 w-4 text-muted-foreground" />
-                  Something else
-                </span>
-                <span className="text-xs text-muted-foreground">
+                <span className="block text-sm font-semibold text-foreground">Something else</span>
+                <span className="mt-0.5 block text-xs text-muted-foreground">
                   Describe your issue in your own words.
                 </span>
               </button>
@@ -229,12 +206,17 @@ export function NewTicketForm() {
                 Back to options
               </button>
             )}
-            <h2 className="text-lg font-semibold">{selectedForm.name}</h2>
+            <h2 className="font-display text-xl font-semibold text-foreground">{selectedForm.name}</h2>
             {selectedForm.description && (
               <p className="mt-1 text-sm text-muted-foreground">{selectedForm.description}</p>
             )}
 
+            {/* method="post" is a pre-hydration safety net: if the island fails to
+                hydrate, a native submit must never be a GET that puts what the
+                customer typed in the URL / browser history / access logs (#2868).
+                Once hydrated, onSubmit preventDefaults and fetch() takes over. */}
             <form
+              method="post"
               onSubmit={(e) => {
                 e.preventDefault();
                 void submitForm();
@@ -242,13 +224,20 @@ export function NewTicketForm() {
               className="mt-6 space-y-6"
             >
               {error && (
-                <div className="flex items-center gap-2 rounded-md bg-destructive/10 p-3 text-sm text-destructive">
+                <div
+                  role="alert"
+                  className="flex items-center gap-2 rounded-md bg-destructive/10 p-3 text-sm text-destructive-on-tint"
+                >
                   <AlertCircle className="h-4 w-4" />
                   {error}
                 </div>
               )}
               {formErrors.__form && (
-                <p className="text-sm text-destructive" data-testid="portal-ticket-form-error">
+                <p
+                  role="alert"
+                  className="text-sm text-destructive-on-tint"
+                  data-testid="portal-ticket-form-error"
+                >
                   {formErrors.__form}
                 </p>
               )}
@@ -284,39 +273,40 @@ export function NewTicketForm() {
                   value={formPriority}
                   onChange={(e) => setFormPriority(e.target.value as TicketPriority)}
                   data-testid="portal-ticket-form-priority"
+                  aria-describedby="form-priority-help"
                   className={inputCls}
                 >
-                  <option value="low">Low</option>
-                  <option value="normal">Normal</option>
-                  <option value="high">High</option>
-                  <option value="urgent">Urgent</option>
+                  {/* Labels describe the customer's situation, not an abstract
+                      severity an office manager cannot calibrate. Values stay
+                      low/normal/high/urgent — the API contract depends on them. */}
+                  <option value="low">Low: I can still work</option>
+                  <option value="normal">Normal: it slows me down</option>
+                  <option value="high">High: someone cannot work</option>
+                  <option value="urgent">Urgent: the whole office is down</option>
                 </select>
+                <p id="form-priority-help" className="mt-1 max-w-[60ch] text-xs text-muted-foreground">
+                  This sets how quickly we respond. If your situation changes, say so
+                  in the ticket and we will update it.
+                </p>
               </div>
 
               <div className="flex justify-end gap-3">
-                <a
-                  href={withBase('/tickets')}
-                  className="rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted"
-                >
+                <a href={withBase('/tickets')} className={BTN_SECONDARY}>
                   Cancel
                 </a>
                 <button
                   type="submit"
                   disabled={isLoading}
                   data-testid="portal-ticket-form-submit"
-                  className={cn(
-                    'flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground',
-                    'hover:bg-primary/90 focus:outline-hidden focus:ring-2 focus:ring-primary focus:ring-offset-2',
-                    'disabled:cursor-not-allowed disabled:opacity-50'
-                  )}
+                  className={cn(BTN_PRIMARY)}
                 >
                   {isLoading ? (
                     <>
                       <Loader2 className="h-4 w-4 animate-spin" />
-                      Creating...
+                      Creating
                     </>
                   ) : (
-                    'Submit Ticket'
+                    'Submit ticket'
                   )}
                 </button>
               </div>
@@ -335,14 +325,22 @@ export function NewTicketForm() {
                 Back to options
               </button>
             )}
-            <h2 className="text-lg font-semibold">Create New Ticket</h2>
+            <h2 className="font-display text-xl font-semibold text-foreground">New ticket</h2>
             <p className="mt-1 text-sm text-muted-foreground">
-              Describe your issue and we'll get back to you as soon as possible.
+              Describe what you need — it goes straight to your IT team.
             </p>
 
-            <form onSubmit={handleSubmit(onSubmit)} className="mt-6 space-y-6">
+            {/* method="post" is a pre-hydration safety net: if the island fails to
+                hydrate, a native submit must never be a GET that puts what the
+                customer typed in the URL / browser history / access logs (#2868).
+                Once hydrated, react-hook-form's handleSubmit preventDefaults and
+                fetch() takes over. */}
+            <form method="post" onSubmit={handleSubmit(onSubmit)} className="mt-6 space-y-6">
               {error && (
-                <div className="flex items-center gap-2 rounded-md bg-destructive/10 p-3 text-sm text-destructive">
+                <div
+                  role="alert"
+                  className="flex items-center gap-2 rounded-md bg-destructive/10 p-3 text-sm text-destructive-on-tint"
+                >
                   <AlertCircle className="h-4 w-4" />
                   {error}
                 </div>
@@ -356,11 +354,15 @@ export function NewTicketForm() {
                   id="subject"
                   type="text"
                   placeholder="Brief summary of your issue"
+                  aria-invalid={!!errors.subject}
+                  aria-describedby={errors.subject ? 'subject-error' : undefined}
                   {...register('subject')}
                   className={cn(inputCls, errors.subject && 'border-destructive')}
                 />
                 {errors.subject && (
-                  <p className="mt-1 text-sm text-destructive">{errors.subject.message}</p>
+                  <p id="subject-error" role="alert" className="mt-1 text-sm text-destructive-on-tint">
+                    {errors.subject.message}
+                  </p>
                 )}
               </div>
 
@@ -368,14 +370,27 @@ export function NewTicketForm() {
                 <label htmlFor="priority" className="block text-sm font-medium text-foreground">
                   Priority
                 </label>
-                <select id="priority" {...register('priority')} className={inputCls}>
-                  <option value="low">Low</option>
-                  <option value="normal">Normal</option>
-                  <option value="high">High</option>
-                  <option value="urgent">Urgent</option>
+                {/* SSR renders the first option selected until hydration; the
+                    explicit default keeps the pre-hydration HTML honest about
+                    what will actually submit ('normal'). */}
+                <select
+                  id="priority"
+                  aria-describedby="priority-help"
+                  defaultValue="normal"
+                  {...register('priority')}
+                  className={inputCls}
+                >
+                  {/* Labels describe the customer's situation, not an abstract
+                      severity an office manager cannot calibrate. Values stay
+                      low/normal/high/urgent — the API contract depends on them. */}
+                  <option value="low">Low: I can still work</option>
+                  <option value="normal">Normal: it slows me down</option>
+                  <option value="high">High: someone cannot work</option>
+                  <option value="urgent">Urgent: the whole office is down</option>
                 </select>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  Select the urgency level of your issue
+                <p id="priority-help" className="mt-1 max-w-[60ch] text-xs text-muted-foreground">
+                  This sets how quickly we respond. If your situation changes, say so
+                  in the ticket and we will update it.
                 </p>
               </div>
 
@@ -386,38 +401,35 @@ export function NewTicketForm() {
                 <textarea
                   id="description"
                   rows={6}
-                  placeholder="Please provide detailed information about your issue..."
+                  placeholder="What's happening, and since when? Anything you've tried helps."
+                  aria-invalid={!!errors.description}
+                  aria-describedby={errors.description ? 'description-error' : undefined}
                   {...register('description')}
                   className={cn(inputCls, errors.description && 'border-destructive')}
                 />
                 {errors.description && (
-                  <p className="mt-1 text-sm text-destructive">{errors.description.message}</p>
+                  <p id="description-error" role="alert" className="mt-1 text-sm text-destructive-on-tint">
+                    {errors.description.message}
+                  </p>
                 )}
               </div>
 
               <div className="flex justify-end gap-3">
-                <a
-                  href={withBase('/tickets')}
-                  className="rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted"
-                >
+                <a href={withBase('/tickets')} className={BTN_SECONDARY}>
                   Cancel
                 </a>
                 <button
                   type="submit"
                   disabled={isLoading}
-                  className={cn(
-                    'flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground',
-                    'hover:bg-primary/90 focus:outline-hidden focus:ring-2 focus:ring-primary focus:ring-offset-2',
-                    'disabled:cursor-not-allowed disabled:opacity-50'
-                  )}
+                  className={cn(BTN_PRIMARY)}
                 >
                   {isLoading ? (
                     <>
                       <Loader2 className="h-4 w-4 animate-spin" />
-                      Creating...
+                      Creating
                     </>
                   ) : (
-                    'Create Ticket'
+                    'Create ticket'
                   )}
                 </button>
               </div>

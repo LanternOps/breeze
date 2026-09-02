@@ -52,6 +52,8 @@ If a ticket landed under the wrong customer, use **Move to another org…** in t
 
 Because the attached device belongs to the original organization, moving the ticket **detaches its device** (the ticket becomes device-less; you can link a device from the new org afterward). The assignee, category, and SLA carry over unchanged.
 
+If the two organizations bill in different currencies and the ticket still has **unbilled** time entries or parts with amounts, the move is blocked: the dialog explains how many entries and parts are priced in the old currency and in which currency the target organization bills. The clean path is to invoice that work first (or assemble a draft in the old currency from the ticket), then move. If you need to move regardless, tick the acknowledgement and click **Move anyway** -- those items keep their amounts in the old currency, they are never converted, and they can only be invoiced later on a draft in that currency. "Move anyway" additionally requires invoice edit permission, and the acknowledgement is recorded in the activity feed and the audit log.
+
 <Aside>
   Tickets can only be moved between organizations of the **same partner**. This is a high-privilege action: it requires ticket and organization edit permissions plus MFA confirmation, and isn't available to site-restricted technicians.
 </Aside>
@@ -251,6 +253,8 @@ Under the **Priorities** tab you can rename each of the four priority levels (Lo
 
 In an organization's settings, open the **Ticketing** tab to set per-priority SLA overrides for that customer. You can also set the organization's **default hourly rate** and whether new time entries default to billable.
 
+The organization's default hourly rate is always in **that organization's billing currency** -- the label shows the currency code, and the rate is stored as entered, never converted. Partner-wide category rates are in your partner's currency, so they only apply to an organization that bills in the same currency. If an organization bills in a different currency than your partner default, the Ticketing tab shows a notice reminding you to set a local rate; until you do, time entries on its tickets carry no rate. The rate a time entry picks up is resolved in this order: an hourly rate set on the entry itself, then the organization's default rate, then the ticket category's rate (the last two only when their currency matches the organization's).
+
 <Aside>
   Saving organization-level ticketing settings requires MFA confirmation. SLA precedence: a category's SLA beats an organization override, which beats the partner-wide priority default.
 </Aside>
@@ -269,19 +273,46 @@ Click the stop icon in the header widget to open the stop popover, where you can
 
 Click **Log time** in the ticket's Time & Billing rail to open the quick-add form. Enter the number of minutes, an optional description, and whether the entry is billable, then click **Save**. The entry is back-dated so the end time is now and the start time is now minus the minutes you entered.
 
+### Suggested time entries
+
+When a remote session ends, Breeze can offer it as a one-tap time entry: *"You ran a 38-minute desktop session on ACME-DC01 and closed T-2026-1041 -- log it?"* Nothing is ever written until you tap it.
+
+<Aside type="caution" title="Mobile app only">
+  The suggestion list, the one-tap confirm and the dismiss/restore control live in the **Breeze mobile app** and ship with it. In the web app this release adds only the partner setting described below and the provenance badge described at the end of this section -- there is no web suggestions panel. Turning the setting on changes nothing a technician sees on **/timesheet**.
+</Aside>
+
+**Turning it on.** Go to **Settings → Ticketing → Time Tracking** and enable **Suggest time entries from remote sessions**. The setting is off by default and applies partner-wide, to every technician in your organization. Two thresholds sit beside it:
+
+- **Minimum session length** (default 120 seconds) -- sessions shorter than this are never suggested, so a mistyped connection does not become a billable line.
+- **Merge gap** (default 10 minutes) -- back-to-back sessions on the same device within this gap are combined into a single suggestion rather than offered separately.
+
+**What gets suggested.** Ended remote sessions -- terminal, desktop and file transfer -- from the day you are looking at, attributed to the technician who ran them, with the session's recorded duration. Back-to-back sessions on one device inside the merge gap are combined into a single suggestion, and suggestions never overlap each other. Quick Support sessions appear with their attribution label and no organization until you attach a ticket.
+
+**What does not.** Work you already logged (a session already covered by one of your own time entries is hidden), sessions you dismissed, sessions still running, and anything under the minimum length.
+
+**Accuracy.** A session whose duration was recorded exactly shows that duration. One whose end time had to be reconstructed shows an estimate. One closed by the server's stale-session reaper is marked unreliable and asks you to enter the end time yourself before it will log anything.
+
+**Ticket pairing.** A ticket you closed on that device around the same time is pre-selected. If two are equally likely, none is, and you pick. Changing the ticket can change the organization and therefore the currency the entry is priced in, so the picker shows the organization beside each ticket.
+
+**Dismiss and restore.** Dismissing a suggestion hides it; **Show dismissed → Restore** puts it back. Deleting a time entry that came from a suggestion does *not* re-suggest the session -- restore it explicitly if you want it offered again.
+
+**Where the provenance shows.** Entries created this way carry a small badge on the timesheet row and in the ticket's Time & Billing rail -- in the web app as well as on mobile -- so you can tell at a glance which entries were typed and which came from a session. That badge is the part of this feature the web app shows today.
+
 ### Parts
 
 The Parts card on the ticket rail lets you record physical or consumable items used on a job. Each part has a **description**, **quantity**, **unit price**, and an optional **cost basis** for margin tracking. Parts default to billable; uncheck the box for internal-only consumables.
 
 ### Timesheet
 
-Open **/timesheet** from the sidebar to see a week-at-a-glance view of all your time entries, grouped by day with billable totals. Use the week navigation buttons to move backwards and forwards. Technicians with a wildcard-permission admin role can switch to any other technician's timesheet via the dropdown.
+Open **/timesheet** from the sidebar to see a week-at-a-glance view of all your time entries, grouped by day with billable totals. Billable amounts -- here and in the ticket's Time & Billing rail -- are totalled **per currency**; if a technician's week spans organizations that bill in different currencies, you see one total per currency rather than a single combined figure. Use the week navigation buttons to move backwards and forwards. Technicians with a wildcard-permission admin role can switch to any other technician's timesheet via the dropdown.
 
 Admins can select one or more completed entries and click **Approve selected** to mark them approved. Approved entries become immutable for non-admins.
 
+Entries that were logged from a remote session carry a provenance badge on the row. The [suggested time entries](#suggested-time-entries) list itself -- the unlogged sessions waiting to be confirmed -- is a Breeze mobile app screen; the web timesheet does not show it.
+
 ### Billables export
 
-Under **Settings → Ticketing**, the Billables Export card lets you download a CSV of all time entries and parts for any date range up to 366 days. The export includes each entry's approval status, billable flag, and computed amounts -- useful for invoicing or importing into external accounting tools.
+Under **Settings → Ticketing**, the Billables Export card lets you download a CSV of all time entries and parts for any date range up to 366 days. The export includes each entry's approval status, billable flag, computed amounts, and a `currency` column (the currency each amount is priced in), so totals can be grouped per currency when importing into external accounting tools. Amounts are never converted between currencies.
 
 <Aside>
   Time entries and parts are technician-facing only. End-users accessing the customer portal never see time logs, cost data, or parts records.

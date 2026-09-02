@@ -1,7 +1,10 @@
-import { FileText, AlertCircle } from 'lucide-react';
+import { quoteStatusTone } from '@/lib/quoteStatus';
+import { withBase } from '@/lib/basePath';
+import { FileText } from 'lucide-react';
 import { type QuoteSummary } from '@/lib/api';
+import { money, shortDate } from '@/lib/format';
 import { cn } from '@/lib/utils';
-import { money } from '@/lib/money';
+import { ROW, CELL, TH, PageHeader, StatusMark, EmptyState, ErrorNotice } from './ui';
 
 interface QuoteListProps {
   quotes: QuoteSummary[];
@@ -17,91 +20,101 @@ const STATUS_LABELS: Record<string, string> = {
   declined: 'Declined',
   expired: 'Expired',
   converted: 'Accepted',
+  // Without this the `?? status` fallback renders the raw enum "superseded" to
+  // the customer. This status only became reachable when revisions shipped.
+  superseded: 'Replaced',
 };
 
-function statusColor(status: string): string {
-  switch (status) {
-    case 'accepted':
-    case 'converted':
-      return 'bg-success/10 text-success';
-    case 'declined':
-    case 'expired':
-      return 'bg-destructive/10 text-destructive';
-    case 'viewed':
-    case 'sent':
-      return 'bg-warning/10 text-warning';
-    default:
-      return 'bg-muted text-muted-foreground';
-  }
-}
-
-
-function shortDate(value: string | null): string {
-  if (!value) return '—';
-  const d = new Date(value.length === 10 ? `${value}T00:00:00` : value);
-  if (Number.isNaN(d.getTime())) return value;
-  return d.toLocaleDateString();
-}
 
 export function QuoteList({ quotes, error }: QuoteListProps) {
   if (error) {
-    return (
-      <div className="rounded-md bg-destructive/10 p-4 text-center text-destructive">
-        <AlertCircle className="mx-auto h-8 w-8" />
-        <p className="mt-2">{error}</p>
-      </div>
-    );
+    return <ErrorNotice>{error}</ErrorNotice>;
   }
 
+  // The ledger totals itself: how many entries still need the customer's hand.
+  const awaiting = quotes.filter((q) => q.status === 'sent' || q.status === 'viewed').length;
+
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold">Proposals</h2>
-      </div>
+    <div>
+      <PageHeader
+        title="Proposals"
+        lede="Work your IT team has prepared for your review and approval."
+      />
 
       {quotes.length === 0 ? (
-        <div
+        <EmptyState
           data-testid="portal-quotes-empty"
-          className="rounded-md border border-dashed p-8 text-center"
+          icon={<FileText className="h-10 w-10" strokeWidth={1.5} />}
+          title="No proposals"
         >
-          <FileText className="mx-auto h-12 w-12 text-muted-foreground" />
-          <h3 className="mt-4 text-lg font-medium">No proposals</h3>
           <p className="mt-1 text-sm text-muted-foreground">
-            You don't have any proposals yet.
+            When your IT team prepares work for your approval, it appears here.
           </p>
-        </div>
+        </EmptyState>
       ) : (
-        <div className="overflow-hidden rounded-lg border">
-          <table className="w-full">
-            <thead className="bg-muted/50">
+        <div className="overflow-x-auto">
+          <table className="block w-full sm:table sm:min-w-[38rem]">
+            <thead className="hidden border-b border-border sm:table-header-group">
               <tr>
-                <th className="px-4 py-3 text-left text-sm font-medium text-muted-foreground">Number</th>
-                <th className="px-4 py-3 text-left text-sm font-medium text-muted-foreground">Issued</th>
-                <th className="px-4 py-3 text-left text-sm font-medium text-muted-foreground">Valid until</th>
-                <th className="px-4 py-3 text-right text-sm font-medium text-muted-foreground">Total</th>
-                <th className="px-4 py-3 text-left text-sm font-medium text-muted-foreground">Status</th>
+                <th scope="col" className={cn(TH, 'text-left')}>Number</th>
+                <th scope="col" className={cn(TH, 'text-left')}>Issued</th>
+                <th scope="col" className={cn(TH, 'text-left')}>Valid until</th>
+                <th scope="col" className={cn(TH, 'text-right')}>Total</th>
+                <th scope="col" className={cn(TH, 'text-left')}>Status</th>
               </tr>
             </thead>
-            <tbody className="divide-y">
-              {quotes.map((q) => (
-                <tr key={q.id} data-testid={`quote-row-${q.id}`} className="hover:bg-muted/50">
-                  <td className="px-4 py-3">
-                    <a className="font-medium hover:underline" href={`/quotes/${q.id}`}>
-                      {q.quoteNumber ?? q.id.slice(0, 8)}
-                    </a>
-                  </td>
-                  <td className="px-4 py-3 text-sm text-muted-foreground">{shortDate(q.issueDate)}</td>
-                  <td className="px-4 py-3 text-sm text-muted-foreground">{shortDate(q.expiryDate)}</td>
-                  <td className="px-4 py-3 text-right text-sm">{money(q.total, q.currencyCode)}</td>
-                  <td className="px-4 py-3">
-                    <span className={cn('inline-flex rounded-full px-2 py-1 text-xs font-medium', statusColor(q.status))}>
-                      {STATUS_LABELS[q.status] ?? q.status}
-                    </span>
-                  </td>
-                </tr>
-              ))}
+            <tbody className="block divide-y divide-border/70 sm:table-row-group">
+              {quotes.map((q) => {
+                const tone = quoteStatusTone(q.status);
+                return (
+                  <tr key={q.id} data-testid={`quote-row-${q.id}`} className={ROW}>
+                    {/* order-* reorders the card: number and status share the first
+                        line, the total is the largest element, dates trail muted. */}
+                    <td className={cn(CELL, 'order-1 grow')}>
+                      {/* The proposal's name is how the customer knows it; the
+                          number is the filing handle and trails muted. */}
+                      <a className="font-semibold text-foreground underline-offset-4 hover:underline" href={withBase(`/quotes/${q.id}`)}>
+                        {q.title || (q.quoteNumber ?? q.id.slice(0, 8))}
+                      </a>
+                      {q.title && (
+                        <p className="text-figures text-xs text-muted-foreground sm:text-sm">
+                          {q.quoteNumber ?? q.id.slice(0, 8)}
+                        </p>
+                      )}
+                    </td>
+                    <td className={cn(CELL, 'order-4 text-xs text-muted-foreground sm:text-sm')}>
+                      <span className="sm:hidden">Issued </span>
+                      <span className="text-figures">{shortDate(q.issueDate)}</span>
+                    </td>
+                    <td className={cn(CELL, 'order-5 text-xs text-muted-foreground sm:text-sm')}>
+                      <span className="sm:hidden">Valid until </span>
+                      <span className="text-figures">{shortDate(q.expiryDate)}</span>
+                    </td>
+                    <td className={cn(CELL, 'order-3 basis-full sm:basis-auto sm:text-right sm:text-sm')}>
+                      <span className="text-figures font-display text-xl font-semibold sm:text-base">
+                        {money(q.total, q.currencyCode)}
+                      </span>
+                    </td>
+                    <td className={cn(CELL, 'order-2 shrink-0')}>
+                      <StatusMark tone={tone}>
+                        {STATUS_LABELS[q.status] ?? q.status}
+                      </StatusMark>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
+          <div
+            className="border-t border-border px-4 pt-3.5 text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground"
+            data-testid="quote-ledger-foot"
+          >
+            {awaiting === 0
+              ? 'Nothing awaiting your review'
+              : awaiting === 1
+                ? '1 proposal awaiting your review'
+                : `${awaiting} proposals awaiting your review`}
+          </div>
         </div>
       )}
     </div>

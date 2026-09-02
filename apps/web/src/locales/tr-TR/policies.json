@@ -143,6 +143,7 @@
       "archived2": "Arşivlendi",
       "features": "Özellikler",
       "noPoliciesFoundTryAdjustingYourSearch": "Politika bulunamadı. Aramanızı ayarlamayı deneyin.",
+      "noPoliciesYet": "Henüz yapılandırma politikası yok. Bir tane oluşturun, ardından kuruluşlara, sitelere veya cihazlara atayın.",
       "partnerWidePolicyAppliesToEveryOrganization": "İş ortağı çapında politika — her kuruluş için geçerlidir",
       "allOrgs": "İş ortağı çapında",
       "page": "Sayfa",
@@ -252,7 +253,9 @@
         "thisRuleUsesUnsupportedMetrics": "Bu kural, uyarı motorunun değerlendiremediği bir ölçüm kullanır ({{metrics}}). Kaydetmeden önce desteklenen bir ölçüm seçin veya koşulu kaldırın; sunucu onu içeren kuralları reddeder.",
         "thisConditionUsesAnUnsupportedMetric": "\"{{metric}}\" ölçümü uyarı motoru tarafından değerlendirilmediğinden bu durum salt okunur olarak gösterilir.",
         "valueCount": "Değer (sayım)",
-        "metricNotSet": "ayarlanmadı"
+        "metricNotSet": "ayarlanmadı",
+        "testRule": "Kuralı test et",
+        "testRuleHint": "Bu koşulları, kaydedilmemiş değişiklikler dahil, şimdi bir cihazda değerlendirin."
       },
       "automationTab": {
         "schedule": "Program",
@@ -735,6 +738,8 @@
         "recurrence": "Tekrarlama",
         "startDateTime": "Başlangıç Tarihi/Saati",
         "theSpecificDateAndTimeForThis": "Bu tek seferlik bakım aralığı için belirli tarih ve saat.",
+        "startTime": "Başlangıç saati",
+        "theTimeOfDayEachWindowOpensIn": "Her bakım aralığının seçilen saat diliminde açıldığı günün saati. Varsayılan olarak gece yarısıdır (00:00).",
         "durationHours": "Süre (saat)",
         "timezone": "Saat Dilimi",
         "notifyBeforeMinutes": "Önce bildir (dakika)",

@@ -5,6 +5,7 @@
  * and creates patch jobs when due.
  */
 
+import * as Sentry from '@sentry/node';
 import { Queue, Worker, Job } from 'bullmq';
 import * as dbModule from '../db';
 import {
@@ -428,6 +429,14 @@ async function scanAndCreateJobs(): Promise<{
   scanned: number;
   enqueueJobIds: string[];
   staleScheduledJobs: StaleScheduledJob[];
+  /**
+   * False when the orphan-recovery read did not produce a complete answer, so
+   * `staleScheduledJobs` is empty for want of data rather than because nothing
+   * is orphaned. Required (not optional-defaulting-to-true) so a new caller has
+   * to state which it is: the two are indistinguishable downstream, and getting
+   * it wrong silently disables the BREEZE-1A stall escalation.
+   */
+  staleScheduledJobsComplete: boolean;
 }> {
   const now = new Date();
   let created = 0;
@@ -600,12 +609,26 @@ async function scanAndCreateJobs(): Promise<{
   // (see the worker). A failure here silently disables the backstop, so surface
   // it to Sentry, not just the console (#1379 worker-observability convention).
   let staleScheduledJobs: StaleScheduledJob[] = [];
+  let staleScheduledJobsComplete = true;
   try {
     staleScheduledJobs = await runWithSystemDbAccess(() => selectStaleScheduledJobIds(now));
   } catch (err) {
+    // Reporting the failure is NOT enough on its own. An empty list is
+    // indistinguishable from "nothing is orphaned", and the downstream sweep
+    // would treat it as a completed sweep and clear every streak — so under the
+    // pool pressure this repo already alerts on, one failed read every <=4
+    // minutes resets the counter before it reaches
+    // PATCH_RECONCILE_STALL_SWEEPS and the error-level stall escalation becomes
+    // unreachable, while the warning-level "new orphan" notice re-fires each
+    // time. That is a severity DOWNGRADE on a genuinely stranded run, i.e. the
+    // exact opposite of what BREEZE-1A asked for. The flag is what makes the
+    // sweep say "I don't know" instead of "all clear".
+    staleScheduledJobsComplete = false;
     const message = '[PatchScheduler] Failed to read stale scheduled jobs for reconcile';
     console.error(`${message}:`, err instanceof Error ? err.message : err);
-    captureException(err instanceof Error ? err : new Error(message));
+    captureException(err instanceof Error ? err : new Error(message), undefined, {
+      patch_reconcile_stage: 'stale_read_failed',
+    });
   }
 
   return {
@@ -613,7 +636,127 @@ async function scanAndCreateJobs(): Promise<{
     scanned: patchPoliciesWithSchedules.length,
     enqueueJobIds,
     staleScheduledJobs,
+    staleScheduledJobsComplete,
   };
+}
+
+/**
+ * A #1733 orphan was found and re-enqueued. Not a fault — the backstop worked —
+ * but the RATE matters, so it is reported at warning level. Named so it stays
+ * readable in production, where `scrubEvent` deletes the message and only the
+ * exception type survives.
+ */
+class PatchOrphanRecoveredNotice extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'PatchOrphanRecoveredNotice';
+  }
+}
+
+/**
+ * The same patch job has been "recovered" on this many consecutive sweeps. The
+ * re-enqueue is therefore NOT taking effect (a recovered row leaves
+ * `status='scheduled'` as soon as processExecutePatchJob claims it, so a healthy
+ * recovery is visible for exactly one sweep). This is the real defect BREEZE-1A
+ * was hiding: 342 identical error events, every one of them reporting the
+ * backstop "succeeding", with nothing in the payload to say it was the same row
+ * over and over.
+ */
+class PatchReconcileStalledError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'PatchReconcileStalledError';
+  }
+}
+
+// A healthy recovery is visible for ONE sweep. Allow a little slack for a slow
+// execute worker before calling the loop stalled.
+const PATCH_RECONCILE_STALL_SWEEPS = 5;
+
+/** Consecutive sweeps that have re-enqueued each patch job id. */
+const reconcileSweepStreaks = new Map<string, number>();
+/** Ids already reported as stalled, so the escalation fires once per episode. */
+const reportedStalledJobIds = new Set<string>();
+
+/**
+ * Bucketed streak length for the `patch_reconcile_repeat` tag. Bucketed rather
+ * than exact so the tag stays low-cardinality.
+ */
+function reconcileRepeatBucket(sweeps: number): string {
+  if (sweeps <= 1) return '1';
+  if (sweeps < PATCH_RECONCILE_STALL_SWEEPS) return '2-4';
+  if (sweeps < 10) return '5-9';
+  return '10+';
+}
+
+/**
+ * Decide what a completed reconcile sweep should report (BREEZE-1A).
+ *
+ * The old code captured an error-level exception whenever `recovered > 0`. In a
+ * stalled loop that is one identical, contentless event per scheduler tick —
+ * 342 of them across 19 days, none of which said which job, how many times, or
+ * that it was the SAME job every tick. Two distinct signals replace it:
+ *
+ *   - a NEW orphan (first sweep that recovered this id): warning level, so the
+ *     #1733 rate stays observable without paging;
+ *   - the same id recovered on PATCH_RECONCILE_STALL_SWEEPS consecutive sweeps:
+ *     error level, once, because the backstop is looping without effect.
+ *
+ * Repeat sweeps below the threshold report nothing new — they are the same fact
+ * as the notice already sent for that id, not a swallowed failure.
+ *
+ * Only called for a sweep that actually ENUMERATED the orphan set. A sweep that
+ * threw, and equally one whose stale-jobs read failed (which yields the same
+ * empty list as a clean sweep), knows nothing about which ids are still
+ * orphaned — clearing streaks from it would hold the counter below
+ * PATCH_RECONCILE_STALL_SWEEPS forever and make the escalation unreachable.
+ */
+function reportReconcileOutcome(recoveredIds: string[]): void {
+  const recovered = new Set(recoveredIds);
+  for (const trackedId of [...reconcileSweepStreaks.keys()]) {
+    if (!recovered.has(trackedId)) {
+      reconcileSweepStreaks.delete(trackedId);
+      reportedStalledJobIds.delete(trackedId);
+    }
+  }
+
+  let freshOrphans = 0;
+  for (const jobId of recovered) {
+    const sweeps = (reconcileSweepStreaks.get(jobId) ?? 0) + 1;
+    reconcileSweepStreaks.set(jobId, sweeps);
+
+    if (sweeps === 1) {
+      freshOrphans += 1;
+      continue;
+    }
+    if (sweeps < PATCH_RECONCILE_STALL_SWEEPS || reportedStalledJobIds.has(jobId)) {
+      continue;
+    }
+    reportedStalledJobIds.add(jobId);
+    const message =
+      `[PatchScheduler] Patch job ${jobId} re-enqueued on ${sweeps} consecutive `
+      + 'reconcile sweeps — the #1733 recovery is not taking effect (row stays scheduled)';
+    console.error(message);
+    captureException(new PatchReconcileStalledError(message), undefined, {
+      patch_reconcile_stage: 'stalled',
+      patch_reconcile_repeat: reconcileRepeatBucket(sweeps),
+    });
+  }
+
+  if (freshOrphans === 0) return;
+
+  // Warning, not error: the backstop did its job. `captureException` has no
+  // level parameter, and services/sentry is owned elsewhere, so the level is set
+  // on the enclosing scope — its own inner withScope inherits it.
+  const message =
+    `[PatchScheduler] Recovered ${freshOrphans} newly orphaned scheduled patch job(s) — #1733 race active`;
+  Sentry.withScope((scope) => {
+    scope.setLevel('warning');
+    captureException(new PatchOrphanRecoveredNotice(message), undefined, {
+      patch_reconcile_stage: 'recovered',
+      patch_reconcile_repeat: reconcileRepeatBucket(1),
+    });
+  });
 }
 
 // Post-scan Redis work, run OUTSIDE the system DB access context (#1105): all
@@ -634,13 +777,15 @@ async function scanAndCreateJobs(): Promise<{
 //      status re-check in processExecutePatchJob makes the redundant enqueue a
 //      no-op. enqueuePatchJob is idempotent on the stable jobId.
 //
-// Observability (#1379): failing to recover an orphan, or a non-zero recovery
-// count (the #1733 race is actively firing in prod), is surfaced to Sentry —
-// console-only logging is not observable in this stack.
+// Observability (#1379/BREEZE-1A): failing to recover an orphan, or the #1733
+// race actually firing in prod, is surfaced to Sentry — console-only logging is
+// not observable in this stack. See reportReconcileOutcome for WHICH sweeps
+// report and at what severity.
 async function enqueueScanResults(
   result: {
     enqueueJobIds: string[];
     staleScheduledJobs: StaleScheduledJob[];
+    staleScheduledJobsComplete: boolean;
   },
   now: Date = new Date()
 ): Promise<{ enqueued: number; recovered: number }> {
@@ -650,14 +795,31 @@ async function enqueueScanResults(
       await enqueuePatchJob(jobId);
       enqueued += 1;
     } catch (err) {
-      console.error(
-        `[PatchScheduler] Failed to enqueue patch job ${jobId}:`,
-        err instanceof Error ? err.message : err
-      );
+      const message = `[PatchScheduler] Failed to enqueue patch job ${jobId}`;
+      console.error(`${message}:`, err instanceof Error ? err.message : err);
+      // Console-only was defensible when the only escape here was a raw Redis
+      // `add` rejection. It is not now that enqueuePatchJob can throw
+      // StaleQueueJobRemovalError, which is a PROOF the job was not queued: the
+      // stable id is occupied by something that could not be cleared, so
+      // re-adding it is a silent no-op. The reconcile sweep deliberately skips
+      // that same wedged id (filterOrphanedJobIds), so there is no backstop —
+      // without this capture the run is lost with no Sentry event at all. The
+      // orphan-recovery loop below already reports the identical failure.
+      captureException(err instanceof Error ? err : new Error(message), undefined, {
+        patch_reconcile_stage: 'scheduled_enqueue_failed',
+      });
     }
   }
 
-  let recovered = 0;
+  const recoveredIds: string[] = [];
+  // A sweep may only clear streaks if it actually enumerated the orphan set.
+  // Two things can make it incomplete, and BOTH have to be honoured here: the
+  // DB read that produces staleScheduledJobs may have failed (empty list, not
+  // an empty answer — see scanAndCreateJobs), or the queue-state pass below may
+  // have thrown. The first is the one that bit us: filterOrphanedJobIds([])
+  // early-returns without throwing, so the try/catch alone reported a clean
+  // sweep on a read that never happened.
+  let sweepCompleted = false;
   try {
     const orphaned = await filterOrphanedJobIds(result.staleScheduledJobs);
     for (const job of orphaned) {
@@ -668,32 +830,34 @@ async function enqueueScanResults(
           ? Math.max(0, job.scheduledAt.getTime() - now.getTime())
           : 0;
         await enqueuePatchJob(job.id, delayMs || undefined);
-        recovered += 1;
+        recoveredIds.push(job.id);
         console.warn(`[PatchScheduler] Re-enqueued orphaned scheduled patch job ${job.id} (#1733 recovery)`);
       } catch (err) {
         const message = `[PatchScheduler] Failed to re-enqueue orphaned patch job ${job.id} (#1733 recovery)`;
         console.error(`${message}:`, err instanceof Error ? err.message : err);
         // A recovery enqueue that fails means a silently-lost run stays lost —
         // page-worthy, surface it.
-        captureException(err instanceof Error ? err : new Error(message));
+        captureException(err instanceof Error ? err : new Error(message), undefined, {
+          patch_reconcile_stage: 'enqueue_failed',
+        });
       }
     }
+    sweepCompleted = true;
   } catch (err) {
     const message = '[PatchScheduler] Orphan-reconcile sweep failed';
     console.error(`${message}:`, err instanceof Error ? err.message : err);
-    captureException(err instanceof Error ? err : new Error(message));
+    captureException(err instanceof Error ? err : new Error(message), undefined, {
+      patch_reconcile_stage: 'sweep_failed',
+    });
   }
 
-  if (recovered > 0) {
-    // A non-zero recovery means the #1733 create->enqueue race fired in prod and
-    // we backstopped it. Surface as a warning-level Sentry signal so the rate is
-    // observable (vs. only living in container logs).
-    captureException(
-      new Error(`[PatchScheduler] Recovered ${recovered} orphaned scheduled patch job(s) — #1733 race active`)
-    );
+  // Both conditions, not just the try/catch: an incomplete sweep must leave the
+  // streak map exactly as it found it.
+  if (sweepCompleted && result.staleScheduledJobsComplete) {
+    reportReconcileOutcome(recoveredIds);
   }
 
-  return { enqueued, recovered };
+  return { enqueued, recovered: recoveredIds.length };
 }
 
 function createSchedulerWorker(): Worker {
@@ -712,7 +876,15 @@ function createSchedulerWorker(): Worker {
             _configPolicyTableWarningLogged = true;
             console.warn('[PatchScheduler] Config policy tables not found — run "pnpm db:migrate" to create them. Skipping patch schedule scan.');
           }
-          result = { created: 0, scanned: 0, enqueueJobIds: [], staleScheduledJobs: [] };
+          // No scan ran, so the orphan set was never enumerated — not "all
+          // clear". Streaks must survive a missing-tables cycle.
+          result = {
+            created: 0,
+            scanned: 0,
+            enqueueJobIds: [],
+            staleScheduledJobs: [],
+            staleScheduledJobsComplete: false,
+          };
         } else {
           throw error;
         }
@@ -797,6 +969,16 @@ export async function shutdownPatchSchedulerWorker(): Promise<void> {
 export const __testOnly = {
   loadDeviceSchedulingContexts,
   enqueueScanResults,
+  PATCH_RECONCILE_STALL_SWEEPS,
+  /**
+   * Clear the cross-sweep reconcile streak state. Module-level by design (the
+   * scheduler is a singleton), so a suite that exercises consecutive sweeps must
+   * reset between cases.
+   */
+  resetReconcileTracking: () => {
+    reconcileSweepStreaks.clear();
+    reportedStalledJobIds.clear();
+  },
   scanAndCreateJobs,
   resolveDeviceIdsForAssignment,
 };

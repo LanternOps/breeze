@@ -91,6 +91,34 @@ function ownedCatalogItem(overrides: Record<string, unknown> = {}) {
   };
 }
 
+/**
+ * The shape drizzle-orm/postgres-js actually throws: a DrizzleQueryError whose
+ * OWN `.code` is undefined, wrapping the postgres-js PostgresError on `.cause`.
+ * A flat `{ code }` fixture passes against a broken top-level `err.code` check
+ * and proves nothing (issue #3881), so every SQLSTATE mapping is exercised
+ * through this builder as well as the flat one below.
+ */
+function drizzleWrapped(code: string, message: string, extra: Record<string, unknown> = {}) {
+  const pgError = Object.assign(new Error(message), { code, severity: 'ERROR', ...extra });
+  // NB: no `name` override — the real DrizzleQueryError never sets `this.name`,
+  // so a genuine instance reports `name === 'Error'`. Keeping the fixture
+  // faithful here matters: it is the whole point of this builder.
+  const wrapper = Object.assign(new Error('Failed query: insert into "software_install_methods" ...'), {
+    cause: pgError,
+  });
+  return wrapper;
+}
+
+/** Raw postgres-js shape (no Drizzle wrapper) — still must map. */
+function flatPgError(code: string, message: string, extra: Record<string, unknown> = {}) {
+  return Object.assign(new Error(message), { code, severity: 'ERROR', ...extra });
+}
+
+const SQLSTATE_SHAPES = [
+  ['DrizzleQueryError-wrapped (real driver shape)', drizzleWrapped] as const,
+  ['flat postgres-js error', flatPgError] as const,
+];
+
 function installedMethod(overrides: Record<string, unknown> = {}) {
   return {
     id: METHOD_ID,
@@ -223,19 +251,40 @@ describe('softwareInstallMethodRoutes', () => {
       expect(db.insert).not.toHaveBeenCalled();
     });
 
-    it('maps unique-violation to 409', async () => {
-      vi.mocked(db.select).mockReturnValueOnce(chainMock([ownedCatalogItem()]) as any);
-      vi.mocked(db.insert).mockImplementationOnce(() => {
-        throw Object.assign(new Error('duplicate'), { code: '23505' });
-      });
-
-      const res = await app.request(`/software/catalog/${CATALOG_ID}/install-methods`, {
+    async function postDuplicate() {
+      return app.request(`/software/catalog/${CATALOG_ID}/install-methods`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
         body: JSON.stringify({ platform: 'windows', kind: 'winget', packageId: 'Vendor.App' }),
       });
+    }
+
+    it.each(SQLSTATE_SHAPES)('maps unique-violation (23505) to 409 — %s', async (_label, build) => {
+      vi.mocked(db.select).mockReturnValueOnce(chainMock([ownedCatalogItem()]) as any);
+      vi.mocked(db.insert).mockImplementationOnce(() => {
+        throw build('23505', 'duplicate key value violates unique constraint', {
+          constraint_name: 'software_install_methods_catalog_platform_kind_uniq',
+        });
+      });
+
+      const res = await postDuplicate();
 
       expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.error).toMatch(/already exists/i);
+      expect(writeRouteAudit).not.toHaveBeenCalled();
+    });
+
+    it('does not swallow a non-unique-violation error as a 409', async () => {
+      vi.mocked(db.select).mockReturnValueOnce(chainMock([ownedCatalogItem()]) as any);
+      vi.mocked(db.insert).mockImplementationOnce(() => {
+        throw drizzleWrapped('23502', 'null value in column "package_id" violates not-null constraint');
+      });
+
+      const res = await postDuplicate();
+
+      expect(res.status).toBe(500);
+      expect(writeRouteAudit).not.toHaveBeenCalled();
     });
   });
 
@@ -310,22 +359,48 @@ describe('softwareInstallMethodRoutes', () => {
       );
     });
 
-    it('maps a referencing-deployment FK violation to 409 without auditing', async () => {
+    function mockOwnedMethodLookup() {
       vi.mocked(db.select)
         .mockReturnValueOnce(chainMock([ownedCatalogItem()]) as any)
         .mockReturnValueOnce(chainMock([installedMethod()]) as any);
-      vi.mocked(db.delete).mockImplementationOnce(() => {
-        throw Object.assign(new Error('update or delete on table violates foreign key constraint'), { code: '23503' });
-      });
+    }
 
-      const res = await app.request(`/software/catalog/${CATALOG_ID}/install-methods/${METHOD_ID}`, {
+    async function deleteMethod() {
+      return app.request(`/software/catalog/${CATALOG_ID}/install-methods/${METHOD_ID}`, {
         method: 'DELETE',
         headers: { Authorization: 'Bearer token' },
       });
+    }
 
-      expect(res.status).toBe(409);
-      const body = await res.json();
-      expect(body.error).toMatch(/referenced by past deployments/i);
+    it.each(SQLSTATE_SHAPES)(
+      'maps a referencing-deployment FK violation (23503) to 409 without auditing — %s',
+      async (_label, build) => {
+        mockOwnedMethodLookup();
+        vi.mocked(db.delete).mockImplementationOnce(() => {
+          throw build('23503', 'update or delete on table violates foreign key constraint', {
+            table_name: 'software_deployments',
+            detail: 'Key (id)=(...) is still referenced from table "software_deployments".',
+          });
+        });
+
+        const res = await deleteMethod();
+
+        expect(res.status).toBe(409);
+        const body = await res.json();
+        expect(body.error).toMatch(/referenced by past deployments/i);
+        expect(writeRouteAudit).not.toHaveBeenCalled();
+      },
+    );
+
+    it('does not swallow a non-FK-violation error as a 409', async () => {
+      mockOwnedMethodLookup();
+      vi.mocked(db.delete).mockImplementationOnce(() => {
+        throw drizzleWrapped('40P01', 'deadlock detected');
+      });
+
+      const res = await deleteMethod();
+
+      expect(res.status).toBe(500);
       expect(writeRouteAudit).not.toHaveBeenCalled();
     });
   });

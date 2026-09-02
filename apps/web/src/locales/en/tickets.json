@@ -116,7 +116,15 @@
     "internalPlaceholder": "Add an internal note…",
     "sending": "Sending",
     "sendReply": "Send reply",
-    "addInternalNote": "Add internal note"
+    "addInternalNote": "Add internal note",
+    "attachments": {
+      "attach": "Attach",
+      "uploading": "Uploading…",
+      "retry": "Retry",
+      "remove": "Remove file",
+      "tooMany": "You can attach at most {{max}} files to one comment.",
+      "tooLarge": "{{name}} is larger than 10 MB."
+    }
   },
   "ticketFeed": {
     "empty": "No activity yet.",
@@ -149,6 +157,11 @@
     "deleteDialog": {
       "title": "Delete comment",
       "message": "Are you sure you want to delete this comment? This action cannot be undone."
+    },
+    "attachments": {
+      "broken": "Couldn't load {{name}}",
+      "open": "Open attachment",
+      "remove": "Remove attachment"
     }
   },
   "ticketPartsCard": {
@@ -184,6 +197,7 @@
     "totalTime": "Total time",
     "billable": "Billable",
     "timeAmount": "Time amount",
+    "noAmount": "—",
     "partsCount": "Parts ({{count}})",
     "partsCount_one": "Parts ({{count}})",
     "partsCount_other": "Parts ({{count}})",
@@ -397,14 +411,25 @@
       "create": "Create invoice",
       "creating": "Creating…",
       "createFailed": "Could not create an invoice from this ticket.",
-      "created": "Draft invoice created"
+      "created": "Draft invoice created",
+      "allBlockedByCurrency": "All billable work on this ticket is priced in another currency than the organization bills in. Assemble a draft in that currency instead:",
+      "assembleIn": "Assemble in {{code}} ({{count}} items, {{amount}})",
+      "partialLeftOut": "A draft invoice was created, but some billable work on this ticket was left out of it and is still unbilled.",
+      "openDraft": "Open the draft",
+      "allMissingRate": "Nothing could be invoiced: every billable time entry on this ticket is missing an hourly rate.",
+      "missingRateHeading": "Time entries with no hourly rate (not invoiced — set a rate and create the invoice again):",
+      "missingRateEntry": "{{description}} — {{hours}} h",
+      "setRate": "Set a rate on the timesheet"
     },
     "move": {
       "open": "Move to another org…",
       "label": "Move to organization",
       "selectOrganization": "Select organization…",
       "confirm": "Move",
-      "failed": "Move failed. Retry."
+      "failed": "Move failed. Retry.",
+      "blockedCurrency": "This ticket has {{timeCount}} unbilled time entries and {{partCount}} unbilled parts priced in {{sourceCurrency}}, but {{targetOrg}} bills in {{targetCurrency}}. Bill them first, or move anyway — the amounts stay in {{sourceCurrency}} and can only be invoiced on a {{sourceCurrency}} draft.",
+      "acceptCurrency": "I understand these amounts stay in {{sourceCurrency}} and are not converted.",
+      "moveAnyway": "Move anyway"
     },
     "triage": {
       "title": "Suggested triage",
@@ -419,6 +444,17 @@
       "applied": "Ticket triage suggestion applied",
       "feedbackFailed": "Could not save ticket triage feedback.",
       "feedbackSaved": "Ticket triage feedback saved"
+    },
+    "aiDraft": {
+      "kindReply": "AI-drafted reply",
+      "kindResolutionNote": "AI-drafted resolution note",
+      "sendAsMe": "Send as me",
+      "sending": "Sending…",
+      "discard": "Discard",
+      "sendFailed": "Could not send the AI draft.",
+      "sent": "Draft sent",
+      "discardFailed": "Could not discard the AI draft.",
+      "discarded": "Draft discarded"
     },
     "resolve": {
       "noteLabel": "Resolution note (visible to requester)",
@@ -457,7 +493,8 @@
       "categoryUpdateFailed": "Category update failed. Retry.",
       "assigned": "Assigned",
       "unassigned": "Unassigned",
-      "assignFailed": "Assign failed. Retry."
+      "assignFailed": "Assign failed. Retry.",
+      "attachmentFailed": "Could not upload the attachment."
     },
     "delete": {
       "failed": "Delete failed. Retry.",

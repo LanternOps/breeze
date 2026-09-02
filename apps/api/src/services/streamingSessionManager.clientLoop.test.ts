@@ -74,6 +74,22 @@ const AUTH = {
   user: { id: 'beefbeef-1111-4222-8333-444455556666', email: 'finance.user@contoso.com' },
 } as unknown as AuthContext;
 
+const PLATFORM_CONFIG = {
+  source: 'platform' as const,
+  apiKey: 'platform-key',
+  model: 'claude-sonnet-4-6',
+};
+
+const PARTNER_CONFIG = {
+  source: 'partner' as const,
+  partnerId: '1a1a1a1a-1111-4222-8333-444455556666',
+  apiKey: 'partner-key-v1',
+  model: 'claude-sonnet-4-6',
+  configId: '2b2b2b2b-2222-4222-8222-222222222222',
+  configVersion: 1,
+  endpoint: { kind: 'anthropic' as const },
+};
+
 const RESULT_MSG = {
   type: 'result',
   subtype: 'success',
@@ -121,7 +137,7 @@ describe('getOrCreate — approval-mode prompt injection option', () => {
     gate.resolve();
     mockSdkQuery([], gate.promise);
 
-    const session = await manager.getOrCreate('sess-default', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined);
+    const session = await manager.getOrCreate('sess-default', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, PLATFORM_CONFIG);
     await session.processorPromise;
 
     expect(capturedQueryArgs[0]!.options.systemPrompt).toContain('BASE PROMPT');
@@ -134,12 +150,159 @@ describe('getOrCreate — approval-mode prompt injection option', () => {
     mockSdkQuery([], gate.promise);
 
     const session = await manager.getOrCreate(
-      'sess-client', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined,
+      'sess-client', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, PLATFORM_CONFIG,
       undefined, undefined, { injectApprovalModeInstructions: false },
     );
     await session.processorPromise;
 
     expect(capturedQueryArgs[0]!.options.systemPrompt).toBe('BASE PROMPT');
+  });
+});
+
+describe('getOrCreate — resolved LLM configuration snapshots', () => {
+  it('uses the resolved partner model unless the stored session has an explicit model', async () => {
+    const gate = deferred();
+    mockSdkQuery([], gate.promise);
+    const resolved = { ...PARTNER_CONFIG, model: 'claude-opus-4-6' };
+
+    const inherited = await manager.getOrCreate(
+      'sess-model-inherited',
+      { ...DB_SESSION, model: null },
+      AUTH,
+      undefined,
+      'BASE PROMPT',
+      undefined,
+      resolved,
+    );
+    const explicit = await manager.getOrCreate(
+      'sess-model-explicit',
+      { ...DB_SESSION, model: 'claude-haiku-4-5' },
+      AUTH,
+      undefined,
+      'BASE PROMPT',
+      undefined,
+      resolved,
+    );
+
+    expect(inherited.model).toBe('claude-opus-4-6');
+    expect(capturedQueryArgs[0]!.options.model).toBe('claude-opus-4-6');
+    expect(explicit.model).toBe('claude-haiku-4-5');
+    expect(capturedQueryArgs[1]!.options.model).toBe('claude-haiku-4-5');
+
+    gate.resolve();
+    await Promise.all([inherited.processorPromise, explicit.processorPromise]);
+  });
+
+  it('reuses the SDK query when the source and partner config snapshot still match', async () => {
+    const gate = deferred();
+    mockSdkQuery([], gate.promise);
+
+    const first = await manager.getOrCreate(
+      'sess-config-match', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, PARTNER_CONFIG,
+    );
+    const second = await manager.getOrCreate(
+      'sess-config-match', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, { ...PARTNER_CONFIG },
+    );
+
+    expect(second).toBe(first);
+    expect(queryMock).toHaveBeenCalledTimes(1);
+    expect(second.llmConfigSnapshot).toEqual({
+      source: 'partner',
+      configId: PARTNER_CONFIG.configId,
+      configVersion: 1,
+    });
+
+    gate.resolve();
+    await first.processorPromise;
+  });
+
+  it('keeps a processing SDK session on config mismatch so the concurrent-message guard applies', async () => {
+    const gate = deferred();
+    mockSdkQuery([], gate.promise);
+
+    const first = await manager.getOrCreate(
+      'sess-config-processing', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, PARTNER_CONFIG,
+    );
+    first.state = 'processing';
+    const rotated = { ...PARTNER_CONFIG, apiKey: 'partner-key-v2', configVersion: 2 };
+
+    const second = await manager.getOrCreate(
+      'sess-config-processing', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, rotated,
+    );
+
+    expect(second).toBe(first);
+    expect(manager.tryTransitionToProcessing(second)).toBe(false);
+    expect(first.abortController.signal.aborted).toBe(false);
+    expect(first.query.close).not.toHaveBeenCalled();
+    expect(queryMock).toHaveBeenCalledTimes(1);
+    expect(first.llmConfigSnapshot).toEqual({
+      source: 'partner',
+      configId: PARTNER_CONFIG.configId,
+      configVersion: 1,
+    });
+
+    gate.resolve();
+    await first.processorPromise;
+  });
+
+  it('publishes terminal events and recreates an idle SDK session with fresh credentials when configVersion changes', async () => {
+    const oldGate = deferred();
+    const newGate = deferred();
+    const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+    const gates = [oldGate.promise, newGate.promise];
+    queryMock.mockImplementation((args: { prompt: unknown; options: Record<string, unknown> }) => {
+      const gate = gates[capturedQueryArgs.length]!;
+      capturedQueryArgs.push(args);
+      return {
+        async *[Symbol.asyncIterator]() {
+          await gate;
+        },
+        interrupt: vi.fn(),
+        close: vi.fn(),
+      };
+    });
+
+    const first = await manager.getOrCreate(
+      'sess-config-rotated', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, PARTNER_CONFIG,
+    );
+    first.state = 'idle';
+    const rotated = { ...PARTNER_CONFIG, apiKey: 'partner-key-v2', configVersion: 2 };
+    const second = await manager.getOrCreate(
+      'sess-config-rotated', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, rotated,
+    );
+
+    expect(second).not.toBe(first);
+    expect(first.abortController.signal.aborted).toBe(true);
+    expect(first.query.close).toHaveBeenCalledOnce();
+    expect(first.eventBus.getReplayEvents()).toEqual(expect.arrayContaining([
+      { type: 'error', message: 'AI provider configuration changed — please resend your message' },
+      { type: 'done' },
+    ]));
+    expect(infoSpy).toHaveBeenCalledWith(
+      '[StreamingSessionManager] rotating idle AI session after provider configuration change',
+      {
+        breezeSessionId: 'sess-config-rotated',
+        oldConfigVersion: 1,
+        newConfigVersion: 2,
+      },
+    );
+    expect(queryMock).toHaveBeenCalledTimes(2);
+    expect(capturedQueryArgs[1]!.options.env).toEqual(expect.objectContaining({
+      ANTHROPIC_API_KEY: 'partner-key-v2',
+    }));
+    expect(second.llmConfigSnapshot).toEqual({
+      source: 'partner',
+      configId: PARTNER_CONFIG.configId,
+      configVersion: 2,
+    });
+
+    oldGate.resolve();
+    await first.processorPromise;
+    expect(manager.get('sess-config-rotated')).toBe(second);
+
+    newGate.resolve();
+    await second.processorPromise;
+    infoSpy.mockRestore();
   });
 });
 
@@ -149,7 +312,7 @@ describe('result handling — usage-bearing done + recordExtraUsage', () => {
     mockSdkQuery([RESULT_MSG], gate.promise);
 
     const session = await manager.getOrCreate(
-      'sess-usage', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined,
+      'sess-usage', DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, PLATFORM_CONFIG,
       undefined, undefined, { injectApprovalModeInstructions: false },
     );
 
@@ -193,7 +356,7 @@ describe('result handling — usage-bearing done + recordExtraUsage', () => {
     } as unknown as AuthContext;
 
     const session = await manager.getOrCreate(
-      'sess-partner-usage', DB_SESSION, PARTNER_AUTH, undefined, 'BASE PROMPT', undefined,
+      'sess-partner-usage', DB_SESSION, PARTNER_AUTH, undefined, 'BASE PROMPT', undefined, PLATFORM_CONFIG,
       undefined, undefined, { injectApprovalModeInstructions: false },
     );
 
@@ -204,6 +367,9 @@ describe('result handling — usage-bearing done + recordExtraUsage', () => {
       'sess-partner-usage',
       ORG, // session.orgId (dbSession.orgId) — NOT auth.orgId, which is null here
       expect.objectContaining({ total_cost_usd: 0.03 }),
+      'platform',
+      // 5th arg: catalog pricing snapshot (#3922 W3) — absent off the catalog path.
+      undefined,
     );
   });
 });
@@ -216,7 +382,7 @@ describe('approval-wait budget lifecycle (#3089)', () => {
   async function createSession(id: string) {
     const gate = deferred();
     mockSdkQuery([], gate.promise);
-    const session = await manager.getOrCreate(id, DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined);
+    const session = await manager.getOrCreate(id, DB_SESSION, AUTH, undefined, 'BASE PROMPT', undefined, PLATFORM_CONFIG);
     return { session, gate };
   }
 

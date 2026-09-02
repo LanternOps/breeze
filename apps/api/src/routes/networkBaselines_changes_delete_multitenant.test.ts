@@ -380,6 +380,77 @@ describe('networkBaseline routes', () => {
       expect(body.error).toContain('Cannot delete baseline');
       expect(body.hint).toContain('deleteChanges=true');
     });
+
+    /**
+     * Regression for #4020. The flat fixture above passes whether or not the
+     * handler unwraps, so it never caught that the handler read `err.code` at
+     * the top level. The delete is issued through Drizzle, which catches the
+     * postgres-js `PostgresError` and rethrows a `DrizzleQueryError` whose own
+     * `.code` is undefined — the SQLSTATE lives on `.cause`. This is the shape
+     * production actually throws, so it is the shape that must produce the 409.
+     */
+    it('should return 409 when the 23503 is WRAPPED in a DrizzleQueryError (#4020)', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([makeBaseline()]),
+          }),
+        }),
+      } as any);
+
+      // Faithful to Drizzle: own `.code` undefined, SQLSTATE on `.cause`.
+      const cause = Object.assign(
+        new Error('update or delete on table "network_baselines" violates foreign key constraint'),
+        { code: '23503', table_name: 'network_change_events' },
+      );
+      const wrapped = Object.assign(new Error('Failed query: delete from "network_baselines" ...'), { cause });
+      wrapped.name = 'DrizzleQueryError';
+
+      vi.mocked(db.delete).mockReturnValueOnce({
+        where: vi.fn().mockRejectedValue(wrapped),
+      } as any);
+
+      const res = await app.request(`/baselines/${BASELINE_ID}?deleteChanges=false`, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.error).toContain('Cannot delete baseline');
+      expect(body.hint).toContain('deleteChanges=true');
+    });
+
+    /**
+     * The unwrap must stay code-specific: a wrapped SQLSTATE that is NOT a
+     * foreign-key violation still has to propagate to the global error handler
+     * rather than being mislabelled as a 409 the caller can "fix" with
+     * ?deleteChanges=true.
+     */
+    it('should propagate a wrapped non-FK SQLSTATE instead of answering 409 (#4020)', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([makeBaseline()]),
+          }),
+        }),
+      } as any);
+
+      const cause = Object.assign(new Error('deadlock detected'), { code: '40P01' });
+      const wrapped = Object.assign(new Error('Failed query: delete from "network_baselines" ...'), { cause });
+      wrapped.name = 'DrizzleQueryError';
+
+      vi.mocked(db.delete).mockReturnValueOnce({
+        where: vi.fn().mockRejectedValue(wrapped),
+      } as any);
+
+      const res = await app.request(`/baselines/${BASELINE_ID}?deleteChanges=false`, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(500);
+    });
   });
 
   // ----------------------------------------------------------------

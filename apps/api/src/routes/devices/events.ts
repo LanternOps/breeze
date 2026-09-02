@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { AUDIT_RESULTS } from '@breeze/shared';
 import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
 import { eq, desc, and, ilike, sql, or, gte, lte, SQL } from 'drizzle-orm';
@@ -81,7 +82,7 @@ export function buildActionConditions(
 const eventsQuerySchema = z.object({
   search: z.string().max(200).optional(),
   category: eventCategoryEnum.optional(),
-  result: z.enum(['success', 'failure', 'denied']).optional(),
+  result: z.enum(AUDIT_RESULTS).optional(),
   initiatedBy: z
     .enum(['manual', 'ai', 'automation', 'policy', 'schedule', 'agent', 'integration'])
     .optional(),
@@ -290,8 +291,13 @@ eventsRoutes.get(
   }
 );
 
-function resolveActorLabel(actorType: string, actorId: string): string {
+export function resolveActorLabel(actorType: string, actorId: string): string {
   if (actorType === 'agent') return 'Agent';
+  if (actorType === 'ai_agent') {
+    // Autonomous AI-agent principal (wave 3, #3824), distinct from 'agent'
+    // (the Go device agent).
+    return 'AI Agent';
+  }
   if (actorType === 'api_key') return 'API Key';
   if (actorType === 'system') return 'System';
   return 'Unknown';

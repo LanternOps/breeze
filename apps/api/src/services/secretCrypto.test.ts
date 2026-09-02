@@ -1,4 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
+import { createHash, createHmac } from 'node:crypto';
 
 const ENV_KEYS = [
   'APP_ENCRYPTION_KEY',
@@ -13,6 +14,7 @@ const ENV_KEYS = [
 ] as const;
 
 const originalEnv = Object.fromEntries(ENV_KEYS.map((key) => [key, process.env[key]]));
+const originalNodeEnv = process.env.NODE_ENV;
 
 async function loadSecretCrypto(env: Partial<Record<(typeof ENV_KEYS)[number], string>> = {}) {
   vi.resetModules();
@@ -21,6 +23,15 @@ async function loadSecretCrypto(env: Partial<Record<(typeof ENV_KEYS)[number], s
   }
   Object.assign(process.env, env);
   return import('./secretCrypto');
+}
+
+function caughtError(fn: () => unknown): unknown {
+  try {
+    fn();
+  } catch (error) {
+    return error;
+  }
+  throw new Error('Expected function to throw');
 }
 
 describe('secretCrypto', () => {
@@ -44,6 +55,8 @@ describe('secretCrypto', () => {
         process.env[key] = value;
       }
     }
+    if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = originalNodeEnv;
   });
 
   it('encrypts and decrypts a value', async () => {
@@ -189,7 +202,36 @@ describe('secretCrypto', () => {
       APP_ENCRYPTION_KEYRING: JSON.stringify({ current: 'current-key-material' })
     });
 
-    expect(() => currentCrypto.decryptSecret(oldCiphertext)).toThrow('Unknown encrypted secret key ID');
+    const error = caughtError(() => currentCrypto.decryptSecret(oldCiphertext));
+    expect(currentCrypto.SecretKeyMaterialError).toBeTypeOf('function');
+    expect(error).toBeInstanceOf(currentCrypto.SecretKeyMaterialError);
+    expect(error).toMatchObject({ message: 'Unknown encrypted secret key ID' });
+  });
+
+  it('types a missing production encryption key as key-material failure', async () => {
+    process.env.NODE_ENV = 'production';
+    const crypto = await loadSecretCrypto();
+
+    const error = caughtError(() => crypto.encryptSecret('secret'));
+    expect(crypto.SecretKeyMaterialError).toBeTypeOf('function');
+    expect(error).toBeInstanceOf(crypto.SecretKeyMaterialError);
+    expect(error).toMatchObject({
+      message: 'Missing APP_ENCRYPTION_KEY for secret encryption in production. ' +
+        'Set APP_ENCRYPTION_KEY (or SSO_ENCRYPTION_KEY/SECRET_ENCRYPTION_KEY) in your environment.',
+    });
+  });
+
+  it('scopes HMAC fingerprints to the active encryption key generation', async () => {
+    const currentCrypto = await loadSecretCrypto({
+      APP_ENCRYPTION_KEY: 'current-key-material',
+      APP_ENCRYPTION_KEY_ID: 'current',
+    });
+    expect(currentCrypto.hmacFingerprint('same-secret')).toMatch(/^fp1:current:[a-f0-9]{64}$/);
+
+    const legacyCrypto = await loadSecretCrypto({
+      APP_ENCRYPTION_KEY: 'legacy-key-material',
+    });
+    expect(legacyCrypto.hmacFingerprint('same-secret')).toMatch(/^fp1:legacy:[a-f0-9]{64}$/);
   });
 
   it('rejects malformed keyring configuration when needed', async () => {
@@ -279,13 +321,16 @@ describe('secretCrypto', () => {
     });
 
     it('refuses to decrypt v3 without aad', async () => {
-      const { encryptSecret, decryptSecret } = await loadSecretCrypto({
+      const crypto = await loadSecretCrypto({
         APP_ENCRYPTION_KEY: 'current-key-material',
         APP_ENCRYPTION_KEY_ID: 'current',
       });
 
-      const encrypted = encryptSecret('hello', { aad: 'webhooks.secret' });
-      expect(() => decryptSecret(encrypted)).toThrow();
+      const encrypted = crypto.encryptSecret('hello', { aad: 'webhooks.secret' });
+      const error = caughtError(() => crypto.decryptSecret(encrypted));
+      expect(crypto.SecretKeyMaterialError).toBeTypeOf('function');
+      expect(error).toBeInstanceOf(crypto.SecretKeyMaterialError);
+      expect(error).toMatchObject({ message: 'AAD is required to decrypt v3 secrets' });
     });
 
     it('continues to decrypt v2 (no aad) without breaking', async () => {
@@ -400,6 +445,54 @@ describe('secretCrypto', () => {
       });
 
       expect(() => decryptSecret('enc:v3:bad-data', { aad: 'x' })).toThrow('Malformed encrypted secret');
+    });
+  });
+
+  describe('domain-separated key material', () => {
+    function expectedDerivedKey(source: string, domain: string): Buffer {
+      const encryptionKey = createHash('sha256').update(source).digest();
+      return createHmac('sha256', encryptionKey)
+        .update(`breeze-secret-derived-key:v1\0${domain}`)
+        .digest();
+    }
+
+    it('derives deterministic HMAC material without exposing a master key', async () => {
+      const crypto = await loadSecretCrypto({
+        APP_ENCRYPTION_KEY: 'active-key-material',
+        APP_ENCRYPTION_KEY_ID: 'active',
+      });
+
+      const first = crypto.getSecretDerivedKeyMaterials('auth-browser-binding:v1');
+      const second = crypto.getSecretDerivedKeyMaterials('auth-browser-binding:v1');
+
+      expect(first.active).toEqual({
+        keyId: 'active',
+        key: expectedDerivedKey('active-key-material', 'auth-browser-binding:v1'),
+      });
+      expect(second).toEqual(first);
+      expect(first).not.toHaveProperty('masterKey');
+      expect(JSON.stringify(first)).not.toContain('active-key-material');
+    });
+
+    it('returns active and retained materials while keeping domains isolated', async () => {
+      const crypto = await loadSecretCrypto({
+        APP_ENCRYPTION_KEY: 'current-key-material',
+        APP_ENCRYPTION_KEY_ID: 'current',
+        APP_ENCRYPTION_KEYRING: JSON.stringify({
+          old: 'old-key-material',
+          current: 'current-key-material',
+        }),
+      });
+
+      const binding = crypto.getSecretDerivedKeyMaterials('auth-browser-binding:v1');
+      const other = crypto.getSecretDerivedKeyMaterials('another-domain:v1');
+
+      expect(binding.active.keyId).toBe('current');
+      expect(binding.retained.map((material) => material.keyId).sort()).toEqual(['current', 'old']);
+      expect(binding.retained.find((material) => material.keyId === 'old')?.key).toEqual(
+        expectedDerivedKey('old-key-material', 'auth-browser-binding:v1'),
+      );
+      expect(other.active.key).not.toEqual(binding.active.key);
     });
   });
 });

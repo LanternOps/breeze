@@ -6,6 +6,7 @@ import { userNotifications } from '../db/schema';
 import { eq, and, desc, inArray, sql } from 'drizzle-orm';
 import { authMiddleware } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
+import { NOTIFICATION_TYPES } from '@breeze/shared';
 
 export const notificationRoutes = new Hono();
 
@@ -16,7 +17,7 @@ const listQuerySchema = z.object({
   limit: z.string().optional().transform(v => v ? parseInt(v, 10) : 50),
   offset: z.string().optional().transform(v => v ? parseInt(v, 10) : 0),
   unreadOnly: z.string().optional().transform(v => v === 'true'),
-  type: z.enum(['alert', 'device', 'script', 'automation', 'system', 'user', 'security']).optional()
+  type: z.enum(NOTIFICATION_TYPES).optional()
 });
 
 const markReadSchema = z.object({

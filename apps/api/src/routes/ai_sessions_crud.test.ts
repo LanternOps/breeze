@@ -1,6 +1,26 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
+const configRef = vi.hoisted(() => ({
+  provider: 'anthropic' as 'anthropic' | 'openai-compatible',
+}));
+
+vi.mock('../config/validate', () => ({
+  getConfig: vi.fn(() => ({ MCP_LLM_PROVIDER: configRef.provider })),
+}));
+
+vi.mock('../services/llm/llmConfigResolver', () => ({
+  LlmUnavailableError: class LlmUnavailableError extends Error {
+    readonly status = 503;
+    readonly code = 'ai_unavailable';
+    constructor() {
+      super('AI unavailable');
+      this.name = 'LlmUnavailableError';
+    }
+  },
+  resolveLlmConfigForOrg: vi.fn(),
+}));
+
 vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
@@ -131,6 +151,7 @@ import {
 import { getUsageSummary, updateBudget, getSessionHistory } from '../services/aiCostTracker';
 import { streamingSessionManager } from '../services/streamingSessionManager';
 import { runPreFlightChecks, abortActivePlan } from '../services/aiAgentSdk';
+import { LlmUnavailableError } from '../services/llm/llmConfigResolver';
 
 const ORG_ID = 'org-111';
 const SESSION_ID = '11111111-1111-1111-1111-111111111111';
@@ -141,6 +162,7 @@ describe('AI routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    configRef.provider = 'anthropic';
     app = new Hono();
     app.route('/ai', aiRoutes);
   });
@@ -191,6 +213,19 @@ describe('AI routes', () => {
       expect(res.status).toBe(403);
       const body = await res.json();
       expect(body.error).toBe('Access denied to this organization');
+    });
+
+    it('returns ai_unavailable as 503 when session creation rejects a broken partner key', async () => {
+      vi.mocked(createSession).mockRejectedValueOnce(new LlmUnavailableError());
+
+      const res = await app.request('/ai/sessions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ title: 'Test' }),
+      });
+
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({ error: 'ai_unavailable' });
     });
 
     it('returns 500 on unexpected creation error', async () => {
@@ -359,6 +394,82 @@ describe('AI routes', () => {
   // POST /sessions/:id/messages
   // ============================================
   describe('POST /ai/sessions/:id/messages', () => {
+    it('returns ai_unavailable as 503 before touching the SDK manager', async () => {
+      vi.mocked(runPreFlightChecks).mockResolvedValueOnce({
+        ok: false,
+        error: 'ai_unavailable',
+        status: 503,
+      });
+
+      const res = await app.request(`/ai/sessions/${SESSION_ID}/messages`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ content: 'hello there' }),
+      });
+
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({ error: 'ai_unavailable' });
+      expect(streamingSessionManager.getOrCreate).not.toHaveBeenCalled();
+    });
+
+    it('preserves the structured retryable 503 from resolver preflight failures', async () => {
+      vi.mocked(runPreFlightChecks).mockResolvedValueOnce({
+        ok: false,
+        error: 'AI configuration could not be loaded. Try again.',
+        status: 503,
+      });
+
+      const res = await app.request(`/ai/sessions/${SESSION_ID}/messages`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ content: 'hello there' }),
+      });
+
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({ error: 'AI configuration could not be loaded. Try again.' });
+      expect(streamingSessionManager.getOrCreate).not.toHaveBeenCalled();
+    });
+
+    it('refuses partner-key traffic before entering the instance OpenAI-compatible path', async () => {
+      configRef.provider = 'openai-compatible';
+      vi.mocked(runPreFlightChecks).mockResolvedValueOnce({
+        ok: true,
+        session: {
+          id: SESSION_ID,
+          orgId: ORG_ID,
+          sdkSessionId: null,
+          model: 'claude-opus-4-6',
+          maxTurns: 50,
+          turnCount: 0,
+          systemPrompt: null,
+          title: 'Existing title',
+        } as any,
+        sanitizedContent: 'hello',
+        systemPrompt: 'SYSTEM PROMPT',
+        maxBudgetUsd: undefined,
+        resolved: {
+          source: 'partner',
+          partnerId: 'partner-1',
+          apiKey: 'partner-key',
+          model: 'claude-opus-4-6',
+          configId: 'config-1',
+          configVersion: 3,
+          endpoint: { kind: 'anthropic' as const },
+        },
+      });
+
+      const res = await app.request(`/ai/sessions/${SESSION_ID}/messages`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ content: 'hello there' }),
+      });
+
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({ error: 'ai_unavailable' });
+      expect(streamingSessionManager.getOrCreate).not.toHaveBeenCalled();
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
     it('passes the bound device id from the DB session into streamingSessionManager.getOrCreate (#3087 route wiring)', async () => {
       // This is the seam that arms the #3087 fix: getOrCreate uses `deviceId`
       // to decide whether to narrow tool execution to the device's org. If
@@ -380,6 +491,15 @@ describe('AI routes', () => {
         sanitizedContent: 'hello there',
         systemPrompt: 'SYSTEM PROMPT',
         maxBudgetUsd: undefined,
+        resolved: {
+          source: 'partner',
+          partnerId: 'partner-1',
+          apiKey: 'partner-key',
+          model: 'claude-sonnet-4-6',
+          configId: 'config-1',
+          configVersion: 3,
+          endpoint: { kind: 'anthropic' as const },
+        },
       });
 
       const fakeActiveSession = {
@@ -409,6 +529,7 @@ describe('AI routes', () => {
         expect.anything(),
         'SYSTEM PROMPT',
         undefined,
+        expect.objectContaining({ source: 'partner', configId: 'config-1', configVersion: 3 }),
       );
     });
   });

@@ -44,7 +44,9 @@ export function invoiceActorFrom(c: { get: (k: string) => unknown }): InvoiceAct
   return { userId: auth.user.id, partnerId: auth.partnerId ?? null, accessibleOrgIds: auth.accessibleOrgIds, allowedSiteIds: auth.allowedSiteIds };
 }
 export function handleServiceError(c: { json: (b: unknown, s: number) => Response }, err: unknown): Response {
-  if (err instanceof InvoiceServiceError) return c.json({ error: err.message, code: err.code }, err.status);
+  if (err instanceof InvoiceServiceError) {
+    return c.json({ error: err.message, code: err.code, ...(err.details ? { details: err.details } : {}) }, err.status);
+  }
   throw err;
 }
 

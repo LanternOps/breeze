@@ -391,6 +391,127 @@
         "blocking": "Blocking…",
         "blockDevice": "Block device"
       }
+    },
+    "llmProviderCatalog": {
+      "title": "LLM Provider Catalog",
+      "description": "Platform-vetted endpoints partners may route their AI traffic through.",
+      "totalEntries": "Total entries:",
+      "refresh": "Refresh",
+      "addEntry": "Add provider",
+      "loading": "Loading catalog…",
+      "empty": "No catalog entries yet.",
+      "dismiss": "Dismiss",
+      "platformAdmin": {
+        "title": "Platform-admin access required",
+        "prefix": "The LLM provider catalog is managed by Breeze platform admins. Your account",
+        "role": "an org/partner admin",
+        "suffix": "cannot view or edit it directly."
+      },
+      "errors": {
+        "load": "Failed to load catalog",
+        "generic": "An error occurred",
+        "createEntry": "Failed to create provider",
+        "createRevision": "Failed to create revision",
+        "activate": "Failed to activate revision",
+        "setStatus": "Failed to update status",
+        "verify": "Verification request failed"
+      },
+      "notice": {
+        "entryCreated": "Provider \"{{name}}\" created.",
+        "revisionCreated": "New revision created for \"{{name}}\".",
+        "activated": "Revision activated.",
+        "statusUpdated": "Status updated to {{status}}."
+      },
+      "status": {
+        "draft": "Draft",
+        "listed": "Listed",
+        "delisted": "Delisted"
+      },
+      "table": {
+        "slug": "Slug",
+        "name": "Name",
+        "status": "Status",
+        "activeRevision": "Active revision",
+        "revisions": "Revisions",
+        "actions": "Actions"
+      },
+      "actions": {
+        "expand": "Show revisions",
+        "collapse": "Hide revisions",
+        "addRevision": "Add revision",
+        "activate": "Activate",
+        "list": "List",
+        "delist": "Delist",
+        "verify": "Run verification"
+      },
+      "confirmDelist": "Delist \"{{name}}\"? Partners already using it keep working, but it disappears from selection for new setups.",
+      "revision": {
+        "baseUrl": "Base URL",
+        "authMode": "Auth mode",
+        "dataNote": "Data handling note",
+        "createdAt": "Created",
+        "notVerified": "Not verified",
+        "verified": "Verified",
+        "activateBlocked": "Every mapped model needs a passing verification before this revision can be activated.",
+        "listBlocked": "Every mapped model on the active revision needs a passing verification before this provider can be listed."
+      },
+      "authModeOptions": {
+        "x-api-key": "API key header",
+        "bearer": "Bearer token"
+      },
+      "entryForm": {
+        "title": "Add provider",
+        "fields": {
+          "slug": "Slug",
+          "name": "Name",
+          "notes": "Notes"
+        },
+        "placeholders": {
+          "slug": "openrouter",
+          "name": "OpenRouter",
+          "notes": "Internal notes about this provider…"
+        },
+        "submit": "Create provider",
+        "cancel": "Cancel"
+      },
+      "revisionForm": {
+        "title": "Add revision for \"{{name}}\"",
+        "fields": {
+          "baseUrl": "Base URL",
+          "authMode": "Auth mode",
+          "dataNote": "Data handling note"
+        },
+        "placeholders": {
+          "baseUrl": "https://openrouter.ai/api/anthropic",
+          "dataNote": "What this endpoint does with request data…"
+        },
+        "modelMap": {
+          "title": "Model mapping and pricing",
+          "description": "Only mapped models are selectable by partners. Prices are cents per million tokens.",
+          "included": "Include this model",
+          "providerModel": "Provider model id",
+          "inputPrice": "Input",
+          "outputPrice": "Output",
+          "cacheReadPrice": "Cache read",
+          "cacheWritePrice": "Cache write"
+        },
+        "submit": "Create revision",
+        "cancel": "Cancel",
+        "errors": {
+          "noModelsMapped": "Map at least one model before creating a revision."
+        }
+      },
+      "verifyForm": {
+        "title": "Run verification — {{model}}",
+        "description": "The key is used only for this request and is never stored.",
+        "apiKeyLabel": "Test API key",
+        "apiKeyPlaceholder": "Paste a transient test key",
+        "submit": "Run",
+        "cancel": "Cancel",
+        "running": "Running…",
+        "passed": "Passed",
+        "failed": "Failed"
+      }
     }
   },
   "audit": {
@@ -576,9 +697,15 @@
       "sensitiveOperations": "Sensitive Operations",
       "reviewRequired": "Review required",
       "categories": {
-        "gdpr": { "label": "GDPR" },
-        "soc2": { "label": "SOC 2" },
-        "hipaa": { "label": "HIPAA" }
+        "gdpr": {
+          "label": "GDPR"
+        },
+        "soc2": {
+          "label": "SOC 2"
+        },
+        "hipaa": {
+          "label": "HIPAA"
+        }
       },
       "summary": {
         "gdpr": {

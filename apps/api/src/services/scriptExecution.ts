@@ -1,3 +1,6 @@
+import { randomUUID } from 'node:crypto';
+
+import type { ScriptAdmissionResult, ScriptTargetAdmission } from '@breeze/shared';
 import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 
 import { db } from '../db';
@@ -32,50 +35,54 @@ type ExecuteScriptOnDevicesInput = {
 
 type ExecuteScriptOnDevicesFailure = {
   ok: false;
-  status: 400 | 403 | 404 | 409;
+  status: 404;
   error: string;
-  maintenanceSuppressedDeviceIds?: string[];
 };
 
 type ExecuteScriptOnDevicesSuccess = {
   ok: true;
-  batchId: string | null;
-  batchIds: string[];
-  scriptId: string;
+  admission: ScriptAdmissionResult;
   script: typeof scripts.$inferSelect;
-  devicesTargeted: number;
-  maintenanceSuppressedDeviceIds: string[];
-  executions: Array<{ executionId: string; deviceId: string; commandId: string }>;
-  // Per-device dispatch failures (e.g. unresolved {{var.*}} tokens). These
-  // devices are excluded from `executions` but still counted in
-  // `devicesTargeted` — they were targeted, just failed to dispatch. Each one
-  // gets its own 'failed' script_executions row (see the dispatch loop below)
-  // so `devicesTargeted` never outlives the rows a caller can find.
-  failures: Array<{ deviceId: string; code: string; error: string }>;
-  // Bound parameter keys the caller supplied a value for, unioned across the
-  // fan-out and de-duplicated (#3409 PR3 §2.2). The binding is authoritative,
-  // so the supplied value was DROPPED — it is reported rather than rejected
-  // because a stored automation action is validated without consulting the
-  // referenced script's definitions and so cannot pre-validate against a
-  // binding; a 400 would turn a previously-valid stored automation into a
-  // delayed runtime failure the moment an author flips a parameter to bound.
-  //
-  // Parameter definitions belong to the script, not the device, so in practice
-  // every device in a fan-out produces the identical set — the union is
-  // defensive, and keeps this a property of THE RUN rather than of whichever
-  // device happened to be dispatched first. Devices that failed to dispatch
-  // contribute nothing (the failure arm of DispatchScriptResult carries no
-  // ignored keys); with a per-script set that loses information only when
-  // EVERY device failed, which the caller already surfaces as a 422 naming the
-  // real failure.
-  ignoredParameters: string[];
-  status: 'queued';
+  auditOrgId: string | null;
   triggerType: 'manual' | 'scheduled' | 'alert' | 'policy';
   runAs: string;
-  auditOrgId: string | null;
+  ignoredParameters: string[];
 };
 
 export type ExecuteScriptOnDevicesResult = ExecuteScriptOnDevicesSuccess | ExecuteScriptOnDevicesFailure;
+
+/**
+ * Dispatch failure codes whose `script_executions` row and `devicesFailed`
+ * batch increment were ALREADY written before `dispatchScriptToDevice`
+ * returned — so this fan-out must record the refusal in admission but must
+ * NOT write its own duplicate row or double-spend the batch slot.
+ *
+ * Exactly one code qualifies: the claim-time secret gate's refusal (#3409
+ * PR4c-2). `failClaimedSecretCommandsForUnsupportedAgent` drives the command
+ * AND its linked execution row to 'failed' and bumps the batch itself before
+ * dispatch turns that into an 'agent_upgrade_required_recorded' refusal.
+ *
+ * Membership must be argued per code, not inferred from the message. The
+ * three neighbours that look similar and are NOT members:
+ *
+ * - 'agent_upgrade_required' — the ENQUEUE preflight, which refuses before
+ *   any row exists. It is the ORDINARY outcome for any pre-PR4b agent, and
+ *   it originally shared a code with the claim-time gate: on 10 devices with
+ *   3 old agents the batch showed 7 accounted rows and
+ *   `devicesCompleted + devicesFailed >= devicesTargeted` never held, so the
+ *   batch could never finalize. That is why the claim-time path carries a
+ *   code of its own.
+ * - 'secret_gate_unavailable' — the claim gate FAULTED rather than returning
+ *   a verdict, so it wrote nothing.
+ * - 'secrets_unsupported_run_as' / 'secret_delivery_unavailable' — enqueue
+ *   refusals, likewise nothing written.
+ *
+ * A named set rather than an inline `===` so a future code is added here
+ * deliberately, with that ownership question answered.
+ */
+const DISPATCH_CODES_ALREADY_RECORDED: ReadonlySet<string> = new Set([
+  'agent_upgrade_required_recorded',
+]);
 
 function ensureOrgAccess(orgId: string, auth: Pick<ScriptExecutionAuth, 'canAccessOrg'>) {
   return auth.canAccessOrg(orgId);
@@ -113,61 +120,49 @@ export async function executeScriptOnDevices(input: ExecuteScriptOnDevicesInput)
     return { ok: false, status: 404, error: 'Script not found' };
   }
 
+  const requestedDeviceIds = [...new Set(input.deviceIds)];
   const deviceRecords = await db
     .select()
     .from(devices)
-    .where(inArray(devices.id, input.deviceIds));
+    .where(inArray(devices.id, requestedDeviceIds));
 
-  if (deviceRecords.length === 0) {
-    return { ok: false, status: 400, error: 'No valid devices found' };
-  }
+  const deviceById = new Map(deviceRecords.map((device) => [device.id, device]));
+  const targetById = new Map<string, ScriptTargetAdmission>();
+  const executableDevices: typeof deviceRecords = [];
 
-  const validDevices: typeof deviceRecords = [];
-  const siteDeniedDeviceIds: string[] = [];
-  for (const device of deviceRecords) {
-    if (!ensureOrgAccess(device.orgId, input.auth)) continue;
-    // Org-equality invariant (mirrors playbooks.ts): a system/org-less script
-    // (orgId === null) is universally runnable, but a non-null script org must
-    // match the target device's org. Without this, a multi-org caller can run
-    // one org's script content on another org's devices even though both
-    // canAccessOrg checks pass. Treat a mismatch like an inaccessible device:
-    // exclude it from the executable set rather than failing the whole batch.
-    if (script.orgId !== null && script.orgId !== device.orgId) continue;
-    if (!canAccessDeviceSite(device.siteId, input.permissions)) {
-      siteDeniedDeviceIds.push(device.id);
-      continue;
+  for (const requestedDeviceId of requestedDeviceIds) {
+    const device = deviceById.get(requestedDeviceId);
+    let target: ScriptTargetAdmission;
+    if (!device || !ensureOrgAccess(device.orgId, input.auth)) {
+      target = { requestedDeviceId, admission: 'denied', reasonCode: 'not_found_or_inaccessible' };
+    } else if (!canAccessDeviceSite(device.siteId, input.permissions)) {
+      target = { requestedDeviceId, admission: 'denied', reasonCode: 'site_access_denied' };
+    } else if (script.orgId !== null && script.orgId !== device.orgId) {
+      target = { requestedDeviceId, admission: 'denied', reasonCode: 'script_org_mismatch' };
+    } else if (!script.osTypes.includes(device.osType)) {
+      target = { requestedDeviceId, admission: 'excluded', reasonCode: 'os_incompatible' };
+    } else if (device.status === 'decommissioned') {
+      target = { requestedDeviceId, admission: 'excluded', reasonCode: 'device_decommissioned' };
+    } else {
+      target = { requestedDeviceId, admission: 'admitted' };
+      executableDevices.push(device);
     }
-    if (script.osTypes.includes(device.osType) && device.status !== 'decommissioned') {
-      validDevices.push(device);
-    }
+    targetById.set(requestedDeviceId, target);
   }
 
-  if (siteDeniedDeviceIds.length > 0) {
-    return { ok: false, status: 403, error: 'Access to one or more device sites denied' };
-  }
-
-  if (validDevices.length === 0) {
-    return { ok: false, status: 400, error: 'No accessible or compatible devices found' };
-  }
-
-  const maintenanceSuppressedDeviceIds: string[] = [];
-  const executableDevices: typeof validDevices = [];
-  for (const device of validDevices) {
+  const maintenanceEligibleDevices = [...executableDevices];
+  executableDevices.length = 0;
+  for (const device of maintenanceEligibleDevices) {
     const maintenanceStatus = await checkDeviceMaintenanceWindow(device.id);
     if (maintenanceStatus.active && maintenanceStatus.suppressScripts) {
-      maintenanceSuppressedDeviceIds.push(device.id);
+      targetById.set(device.id, {
+        requestedDeviceId: device.id,
+        admission: 'suppressed',
+        reasonCode: 'maintenance_suppressed',
+      });
     } else {
       executableDevices.push(device);
     }
-  }
-
-  if (executableDevices.length === 0) {
-    return {
-      ok: false,
-      status: 409,
-      error: 'All target devices are in a maintenance window with script execution suppressed',
-      maintenanceSuppressedDeviceIds,
-    };
   }
 
   const triggerType = input.triggerType ?? 'manual';
@@ -234,8 +229,6 @@ export async function executeScriptOnDevices(input: ExecuteScriptOnDevicesInput)
     createdBatchIds.push(batch.id);
   }
 
-  const executions: Array<{ executionId: string; deviceId: string; commandId: string }> = [];
-  const failures: Array<{ deviceId: string; code: string; error: string }> = [];
   // A Set, not an array: see `ignoredParameters` on the success type. Insertion
   // order is preserved so the reported order matches definition order.
   const ignoredParameters = new Set<string>();
@@ -264,15 +257,35 @@ export async function executeScriptOnDevices(input: ExecuteScriptOnDevicesInput)
       variableScope,
     });
     if (!dispatch.ok) {
-      // 'insert_failed' means queueCommand/the execution insert itself broke
-      // — a programming error, not a per-device condition. Every other code
-      // ('unresolved_variables' from PR2's content substitution,
-      // 'unresolved_parameters' from PR3's sourced parameters, plus the
-      // device-state codes) is a condition specific to this device and must
-      // not truncate the rest of the fan-out — see
-      // softwareDeployment.ts:399-414 for the pattern this mirrors.
+      // Three-way branch on the code, by ROW OWNERSHIP:
+      //
+      //   1. 'insert_failed' — queueCommand/the execution insert itself broke.
+      //      A programming error, not a per-device condition: throw and abort
+      //      the run rather than recording N identical device failures.
+      //   2. a DISPATCH_CODES_ALREADY_RECORDED code — a per-device condition
+      //      whose failure row and batch slot the dispatch core's own gate
+      //      already wrote. Report it, write nothing.
+      //   3. everything else ('unresolved_variables' from PR2's content
+      //      substitution, 'unresolved_parameters' from PR3's sourced
+      //      parameters, the enqueue secret refusals, and the device-state
+      //      codes) — a per-device condition that owns no rows yet, so this
+      //      loop writes the failure row and spends the batch slot. It must
+      //      not truncate the rest of the fan-out; `dispatchManagerInstalls`
+      //      (softwareDeployment.ts) is the pattern this mirrors — named
+      //      rather than cited by line number so the reference cannot rot.
       if (dispatch.code === 'insert_failed') {
         throw new Error(dispatch.error);
+      }
+      // The device still lands in the admission result — the operator must see it — but
+      // its row and batch slot are already spent by whoever owns this code.
+      if (DISPATCH_CODES_ALREADY_RECORDED.has(dispatch.code)) {
+        targetById.set(device.id, {
+          requestedDeviceId: device.id,
+          admission: 'excluded',
+          reasonCode: normalizeDispatchReasonCode(dispatch.code),
+          ...(batchIdByOrg.get(device.orgId) ? { batchId: batchIdByOrg.get(device.orgId) } : {}),
+        });
+        continue;
       }
       await db.insert(scriptExecutions).values({
         scriptId: input.scriptId,
@@ -294,16 +307,23 @@ export async function executeScriptOnDevices(input: ExecuteScriptOnDevicesInput)
           .set({ devicesFailed: sql`${scriptExecutionBatches.devicesFailed} + 1` })
           .where(eq(scriptExecutionBatches.id, batchId));
       }
-      failures.push({ deviceId: device.id, code: dispatch.code, error: dispatch.error });
+      targetById.set(device.id, {
+        requestedDeviceId: device.id,
+        admission: 'excluded',
+        reasonCode: normalizeDispatchReasonCode(dispatch.code),
+        ...(batchId ? { batchId } : {}),
+      });
       continue;
     }
     for (const key of dispatch.ignoredParameters) {
       ignoredParameters.add(key);
     }
-    executions.push({
-      executionId: dispatch.executionId!,
-      deviceId: device.id,
+    targetById.set(device.id, {
+      requestedDeviceId: device.id,
+      admission: 'admitted',
+      ...(dispatch.executionId ? { executionId: dispatch.executionId } : {}),
       commandId: dispatch.commandId,
+      ...(batchIdByOrg.get(device.orgId) ? { batchId: batchIdByOrg.get(device.orgId) } : {}),
     });
   }
 
@@ -314,28 +334,28 @@ export async function executeScriptOnDevices(input: ExecuteScriptOnDevicesInput)
       .where(inArray(scriptExecutionBatches.id, createdBatchIds));
   }
 
+  const targets = requestedDeviceIds.map((deviceId) => targetById.get(deviceId)!);
+  const admittedCount = targets.filter((target) => target.admission === 'admitted').length;
+  const status: ScriptAdmissionResult['status'] = admittedCount === 0
+    ? 'rejected'
+    : admittedCount === targets.length
+      ? 'queued'
+      : 'partially_queued';
+
   return {
     ok: true,
-    // `batchId` is a legacy scalar convenience for the common single-batch
-    // case. In a multi-org run there is no single batch that represents the
-    // whole run — createdBatchIds[0] would silently pick an arbitrary org's
-    // batch, and a consumer polling just that id would track only a slice of
-    // the run. Prefer absent-and-loud over misleadingly partial: `batchId` is
-    // only populated when exactly one batch was created. `batchIds` (below)
-    // always carries the complete list and is what multi-batch callers must
-    // use.
-    batchId: createdBatchIds.length === 1 ? createdBatchIds[0]! : null,
-    batchIds: createdBatchIds,
-    scriptId: input.scriptId,
+    admission: { requestId: randomUUID(), status, targets },
     script,
-    devicesTargeted: executableDevices.length,
-    maintenanceSuppressedDeviceIds,
-    executions,
-    failures,
-    ignoredParameters: [...ignoredParameters],
-    status: 'queued',
+    auditOrgId: resolveScriptAuditOrgId(input.auth, script.orgId, executableDevices[0]?.orgId ?? null),
     triggerType,
     runAs,
-    auditOrgId: resolveScriptAuditOrgId(input.auth, script.orgId, executableDevices[0]?.orgId ?? null),
+    ignoredParameters: [...ignoredParameters],
   };
+}
+
+function normalizeDispatchReasonCode(code: string): string {
+  if (code === 'org_mismatch') return 'script_org_mismatch';
+  if (code === 'os_mismatch') return 'os_incompatible';
+  if (code === 'device_decommissioned') return 'device_decommissioned';
+  return code;
 }

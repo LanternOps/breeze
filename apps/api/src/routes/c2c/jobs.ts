@@ -86,6 +86,7 @@ c2cJobsRoutes.post(
     const created = await createC2cSyncJobIfIdle({
       orgId,
       configId,
+      auth,
     });
     const job = created?.job;
     if (!job) return c.json({ error: 'Failed to create job' }, 500);

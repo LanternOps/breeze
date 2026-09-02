@@ -2,11 +2,10 @@
 // core image and imported statically.
 //
 // Deliberately a LEAF module — it imports the built-in packages, the manifest
-// parser and node fs/path, and nothing else from `src/extensions/`. The loading
-// pipeline (builtinExtensions.ts) and the legacy source loader (loader.ts) both
-// need to see this registry, and loader.ts is itself imported by
-// builtinExtensions.ts; keeping the registry here is what stops that from being
-// an import cycle.
+// parser and node fs/path, and nothing else from `src/extensions/`. It is
+// imported by the loading pipeline; keeping the registry separate keeps the
+// pipeline's own import graph acyclic and lets tests import the registry without
+// importing the pipeline.
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -22,6 +21,21 @@ import workspaceExtension from '@breeze/ext-workspace';
 export interface BuiltinExtension {
   /** The v1 module, imported at build time into the core bundle. */
   module: BreezeExtensionV1;
+  /**
+   * The STATIC, authoritative extension name. The disabled path uses this
+   * identity when the manifest is unavailable; resolution enforces that it
+   * equals `manifest.name`.
+   *
+   * IMMUTABLE ONCE MIGRATIONS HAVE SHIPPED UNDER IT. Extension migrations are
+   * recorded in the core ledger under `<manifest.name>/<file>` (see
+   * builtinExtensions.ts `runMigrations`), and — because resolution pins
+   * `manifest.name === name` — that is this string. `builtinEverMigrated` finds
+   * those rows by the same string, so renaming a built-in that has already
+   * migrated somewhere would make the probe answer "never ran here" about a
+   * database that has its tables. A rename must therefore be paired with a
+   * ledger backfill, not done on its own.
+   */
+  name: string;
   /** Its parsed v1 manifest (read from the package's manifest.json). */
   manifest: ExtensionManifestV1;
   /** Package dir under the repo/image root, e.g. 'ee/workspace'. */
@@ -138,10 +152,11 @@ export function loadBuiltinManifest(packageDir: string): ExtensionManifestV1 {
   // A FOUND-but-unreadable manifest is a different failure from a missing one,
   // and its raw form says nothing about where it came from: `JSON.parse` throws
   // "Unexpected end of JSON input" and the zod parse throws a path-less list of
-  // field issues. Neither names the file. This module runs at IMPORT time (see
-  // BUILTINS below), so that bare error is the entire diagnostic an operator
-  // gets for a boot that died before the first log line — hence the path, the
-  // byte length (a truncated COPY's tell) and the likely cause.
+  // field issues. Neither names the file. Resolution is lazy now, so this error
+  // surfaces from the built-in loading phase after core DB initialization and
+  // the first log lines rather than during module evaluation. The contextual
+  // path, byte length (a truncated COPY's tell), and likely cause still matter
+  // because this is what an operator sees when boot aborts.
   try {
     return parseExtensionManifestV1(JSON.parse(raw));
   } catch (error) {
@@ -158,14 +173,72 @@ export function loadBuiltinManifest(packageDir: string): ExtensionManifestV1 {
 }
 
 /**
+ * Define a built-in whose manifest is read from disk LAZILY — on first access
+ * to `.manifest`, never during module evaluation (#3470).
+ *
+ * Importing this registry must touch no filesystem. `apps/api/src/index.ts`
+ * imports it transitively at module scope, so an eager read made
+ * `ee/workspace/manifest.json` a hard boot requirement for EVERY deployment,
+ * including one that had opted out via `BREEZE_WORKSPACE_ENABLED`. Laziness is
+ * what lets a slimmed image that omits a disabled built-in's files boot; the
+ * ENABLED path resolves the manifest immediately and still fails hard.
+ *
+ * BOTH outcomes are memoised, and neither re-reads disk:
+ *   - success → every later access returns the SAME manifest object.
+ *   - failure → every later access rethrows the IDENTICAL error instance, so a
+ *     retrying caller cannot hammer the disk and the operator sees one stable
+ *     diagnostic instead of a different one per attempt.
+ *
+ * A cached failure is NOT retried for the lifetime of the process, deliberately:
+ * the manifest ships inside the image, so it cannot legitimately appear after
+ * boot, and a per-access retry would turn one diagnosable failure into a
+ * stuttering series of them. The remedy for a fixed image is a restart.
+ *
+ * Resolution also enforces `manifest.name === spec.name`. The static name is
+ * the identity the disabled path uses when the manifest is unavailable
+ * (skipDisabledBuiltin), so a silent disagreement between the registry entry
+ * and the shipped manifest would let the two paths talk about different
+ * extensions.
+ */
+export function defineBuiltin(spec: Omit<BuiltinExtension, 'manifest'>): BuiltinExtension {
+  let outcome:
+    | { status: 'success'; manifest: ExtensionManifestV1 }
+    | { status: 'failure'; error: unknown }
+    | undefined;
+
+  return {
+    ...spec,
+    get manifest(): ExtensionManifestV1 {
+      if (outcome?.status === 'success') return outcome.manifest;
+      if (outcome?.status === 'failure') throw outcome.error;
+
+      try {
+        const manifest = loadBuiltinManifest(spec.packageDir);
+        if (manifest.name !== spec.name) {
+          throw new Error(
+            `[extensions] built-in registry entry "${spec.name}" for "${spec.packageDir}" ` +
+              `disagrees with shipped manifest name "${manifest.name}"`,
+          );
+        }
+        outcome = { status: 'success', manifest };
+        return manifest;
+      } catch (error) {
+        outcome = { status: 'failure', error };
+        throw error;
+      }
+    },
+  };
+}
+
+/**
  * Adding an entry here is the ONLY way an extension becomes built-in; the
  * collision gates in builtinExtensions.ts then make that name unavailable to
  * both other delivery paths.
  */
 export const BUILTINS: readonly BuiltinExtension[] = [
-  {
+  defineBuiltin({
     module: workspaceExtension,
-    manifest: loadBuiltinManifest('ee/workspace'),
+    name: 'workspace',
     packageDir: 'ee/workspace',
     packageName: '@breeze/ext-workspace',
     // Workspace's /helper/* tree is called by the device helper, so it needs
@@ -174,11 +247,11 @@ export const BUILTINS: readonly BuiltinExtension[] = [
     // Default OFF: workspace's migrations require a pgvector-enabled Postgres,
     // which a stock `postgres:16-alpine` deployment does not have.
     enableEnvVar: 'BREEZE_WORKSPACE_ENABLED',
-  },
+  }),
 ];
 
 export const BUILTIN_EXTENSION_NAMES: ReadonlySet<string> = new Set(
-  BUILTINS.map((builtin) => builtin.manifest.name),
+  BUILTINS.map((builtin) => builtin.name),
 );
 
 /**
@@ -186,17 +259,20 @@ export const BUILTIN_EXTENSION_NAMES: ReadonlySet<string> = new Set(
  * manifests — available BEFORE (and independently of) the loading pipeline that
  * publishes them to the tenancy registry.
  *
- * This exists for the legacy source loader's repo-wide unaccounted-tables sweep
- * (loader.ts). That sweep runs before `loadBuiltinExtensions` has published
- * anything, so without this accessor every `workspace_*` table created on an
- * earlier boot reads as belonging to no manifest and the sweep aborts boot.
+ * The source loader is gone, so this accessor now has no production caller. It
+ * is retained for the tenancy/tenant-export contract tests in
+ * builtinExtensions.test.ts, which pin the real manifest's classification.
  *
  * DELIBERATELY STATIC — it ignores {@link BuiltinExtension.enableEnvVar}, and
- * must keep doing so. The sweep only examines tables that EXIST, so declaring a
- * table that was never created is inert there, while gating the accessor on the
- * enable flag would resurrect exactly the failure it was written to prevent: a
+ * must keep doing so. That property is inherited from the boot-time sweep this
+ * once fed, which only examined tables that EXIST: declaring a table that was
+ * never created was inert there, while gating the accessor on the enable flag
+ * would have resurrected exactly the failure it was written to prevent — a
  * deployment that enabled workspace once (creating `workspace_*`) and later
- * unset the flag would have those tables read as unaccounted and abort boot.
+ * unset the flag would have had those tables read as unaccounted and abort
+ * boot. That sweep is no longer wired into any boot path; the property is kept
+ * because the contract tests still assert it, and because a future caller would
+ * want the same semantics.
  * The narrower, existence-checked publication that the DISABLED path performs
  * (builtinExtensions.ts) is a different thing: that one feeds the live tenancy
  * registry, which core cascade/export code iterates and issues SQL against, so

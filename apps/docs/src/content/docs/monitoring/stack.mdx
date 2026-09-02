@@ -147,6 +147,11 @@ Rules are evaluated every 30 seconds (API and infrastructure groups) or every 60
 | `http_requests_total` | Counter | Total HTTP requests by method, path, status |
 | `http_request_duration_seconds` | Histogram | Request latency distribution |
 | `http_requests_in_flight` | Gauge | Currently processing requests |
+| `agent_heartbeat_total` | Counter | Agent heartbeats received |
+
+<Aside type="caution">
+  **These series require Breeze v0.107.0 or newer.** On earlier releases the request-timing instrumentation was never wired into the API, so `http_requests_total`, `http_request_duration_seconds`, and `agent_heartbeat_total` were always absent -- the `/metrics` endpoint answered normally, the HTTP panels of the pre-built Grafana dashboard simply stayed empty, and the `NoAgentHeartbeats` alert could never fire. If those panels are blank, check the API version before troubleshooting Prometheus.
+</Aside>
 
 ### Business Metrics
 

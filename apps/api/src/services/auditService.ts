@@ -1,4 +1,5 @@
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import type { AuditResult } from '@breeze/shared';
 import { auditLogs } from '../db/schema';
 import { captureException } from './sentry';
 
@@ -6,7 +7,7 @@ export type InitiatedByType = 'manual' | 'ai' | 'automation' | 'policy' | 'sched
 
 export interface CreateAuditLogParams {
   orgId?: string | null;
-  actorType?: 'user' | 'api_key' | 'agent' | 'system';
+  actorType?: 'user' | 'api_key' | 'agent' | 'system' | 'ai_agent';
   actorId: string;
   actorEmail?: string;
   action: string;
@@ -16,7 +17,7 @@ export interface CreateAuditLogParams {
   details?: Record<string, unknown>;
   ipAddress?: string;
   userAgent?: string;
-  result: 'success' | 'failure' | 'denied';
+  result: AuditResult;
   errorMessage?: string;
   initiatedBy?: InitiatedByType;
 }

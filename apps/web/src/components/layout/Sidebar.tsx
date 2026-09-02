@@ -32,6 +32,8 @@ import {
   HardDrive,
   BarChart3,
   BrainCircuit,
+  Bot,
+  History,
   Activity,
   Layers,
   ScrollText,
@@ -55,6 +57,7 @@ import {
   Bug,
   Puzzle,
   LayoutGrid,
+  Cpu,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useUiStore } from '../../stores/uiStore';
@@ -143,7 +146,7 @@ type NavItem = {
   labelKey?: string;
   href: string;
   icon: React.ComponentType<{ className?: string }>;
-  badgeKind?: 'deletion-requests';
+  badgeKind?: 'deletion-requests' | 'approvals';
   // Hidden unless the current user is a platform admin. Keeps cross-tenant
   // platform-operator nav (and its badge fetch) out of ordinary users' UI.
   platformAdminOnly?: boolean;
@@ -174,13 +177,13 @@ export const topLevelNav: NavItem[] = [
   { name: 'Dashboard', labelKey: 'nav.dashboard', href: '/', icon: LayoutDashboard },
   { name: 'Devices', labelKey: 'nav.devices', href: '/devices', icon: Monitor, requiredPermission: { resource: 'devices', action: 'read' } },
   { name: 'Alerts', labelKey: 'nav.alerts', href: '/alerts', icon: Bell, requiredPermission: { resource: 'alerts', action: 'read' } },
+  { name: 'Approvals', labelKey: 'nav.approvals', href: '/approvals', icon: ShieldCheck, badgeKind: 'approvals' },
   { name: 'Tickets', labelKey: 'nav.tickets', href: '/tickets', icon: Ticket, requiredPermission: { resource: 'tickets', action: 'read' } },
   { name: 'Incidents', labelKey: 'nav.incidents', href: '/incidents', icon: ShieldAlert, requiredPermission: { resource: 'alerts', action: 'read' } },
   { name: 'Remote Access', labelKey: 'nav.remoteAccess', href: '/remote', icon: Terminal, requiredPermission: { resource: 'remote', action: 'access' } },
   { name: 'Scripts', labelKey: 'nav.scripts', href: '/scripts', icon: FileCode, requiredPermission: { resource: 'scripts', action: 'read' } },
   { name: 'Patches', labelKey: 'nav.patches', href: '/patches', icon: Download, requiredPermission: { resource: 'devices', action: 'read' } },
   { name: 'Vulnerabilities', labelKey: 'nav.vulnerabilities', href: '/vulnerabilities', icon: Bug, requiredPermission: { resource: 'devices', action: 'read' } },
-  { name: 'OneDrive', labelKey: 'nav.oneDrive', href: '/onedrive', icon: Cloud, requiredPermission: { resource: 'devices', action: 'read' } },
 ];
 
 // ---------------------------------------------------------------------------
@@ -197,25 +200,37 @@ interface NavSection {
 // Exported for structural nav tests (see Sidebar.nav.test.tsx).
 export const navSections: NavSection[] = [
   {
-    id: 'ai-fleet',
-    label: 'AI & Fleet',
-    labelKey: 'nav.sectionAiFleet',
+    id: 'ai',
+    label: 'AI',
+    labelKey: 'nav.sectionAi',
     icon: BrainCircuit,
     items: [
-      { name: 'Fleet', labelKey: 'nav.fleet', href: '/fleet', icon: BrainCircuit },
-      { name: 'AI Workspace', labelKey: 'nav.aiWorkspace', href: '/workspace', icon: MessagesSquare },
+      { name: 'Fleet Orchestration', labelKey: 'nav.fleetOrchestration', href: '/fleet', icon: BrainCircuit },
+      { name: 'AI Assistant', labelKey: 'nav.aiAssistant', href: '/workspace', icon: MessagesSquare },
+      { name: 'AI Agents', labelKey: 'nav.aiAgents', href: '/settings/ai-agents', icon: Bot, requiredPermission: { resource: 'ai_agents', action: 'read' } },
+      // Execution-trace runs list/detail (Wave 6 PR 1, #3828) — file-routed under
+      // /ai-agents/runs (not /settings/*) since a run is fleet activity, not
+      // agent configuration.
+      { name: 'AI Agent Runs', labelKey: 'nav.aiAgentRuns', href: '/ai-agents/runs', icon: History, requiredPermission: { resource: 'ai_agents', action: 'read' } },
+      { name: 'AI Usage & Budget', labelKey: 'nav.aiUsageBudget', href: '/settings/ai-usage', icon: BrainCircuit, partnerScopeOnly: true },
       { name: 'AI for Office', labelKey: 'nav.aiForOffice', href: '/ai-for-office', icon: FileSpreadsheet, partnerScopeOnly: true, requiresAiForOffice: true },
     ],
   },
   {
-    id: 'monitoring',
-    label: 'Monitoring',
-    labelKey: 'nav.sectionMonitoring',
-    icon: Activity,
-    // Both surfaces read device/network state, gated on devices:read server-side.
+    id: 'fleet-management',
+    label: 'Fleet Management',
+    labelKey: 'nav.sectionFleetManagement',
+    icon: Layers,
+    // Everything here reads/writes device state, gated on devices:read server-side.
     items: [
+      { name: 'Device Groups', labelKey: 'nav.deviceGroups', href: '/devices/groups', icon: LayoutGrid, requiredPermission: { resource: 'devices', action: 'read' } },
+      { name: 'Config Policies', labelKey: 'nav.configPolicies', href: '/configuration-policies', icon: Layers, requiredPermission: { resource: 'devices', action: 'read' } },
+      // One page with Inventory + Policies tabs; /software-inventory and
+      // /software-policies are aliases (see pathAliases).
+      { name: 'Software', labelKey: 'nav.software', href: '/software', icon: Package, requiredPermission: { resource: 'devices', action: 'read' } },
       { name: 'Network Monitor', labelKey: 'nav.networkMonitor', href: '/monitoring', icon: Activity, requiredPermission: { resource: 'devices', action: 'read' } },
       { name: 'Network Discovery', labelKey: 'nav.networkDiscovery', href: '/discovery', icon: Network, requiredPermission: { resource: 'devices', action: 'read' } },
+      { name: 'OneDrive', labelKey: 'nav.oneDrive', href: '/onedrive', icon: Cloud, requiredPermission: { resource: 'devices', action: 'read' } },
     ],
   },
   {
@@ -226,7 +241,7 @@ export const navSections: NavSection[] = [
     // The security suite is built on device posture/scan data (devices:read).
     // A billing-only role has no devices:read grant, so the whole section hides.
     items: [
-      { name: 'Security', labelKey: 'nav.security', href: '/security', icon: ShieldCheck, requiredPermission: { resource: 'devices', action: 'read' } },
+      { name: 'Overview', labelKey: 'nav.securityOverview', href: '/security', icon: ShieldCheck, requiredPermission: { resource: 'devices', action: 'read' } },
       ...(ENABLE_EDR_INTEGRATIONS
         ? [{ name: 'EDR', labelKey: 'nav.edr', href: '/security/edr', icon: ShieldAlert, requiredPermission: { resource: 'devices', action: 'read' } } satisfies NavItem]
         : []),
@@ -235,27 +250,9 @@ export const navSections: NavSection[] = [
       { name: 'User Risk', labelKey: 'nav.userRisk', href: '/security/user-risk', icon: UserCheck, requiredPermission: { resource: 'devices', action: 'read' } },
       { name: 'Sensitive Data', labelKey: 'nav.sensitiveData', href: '/sensitive-data', icon: ScanSearch, requiredPermission: { resource: 'devices', action: 'read' } },
       { name: 'Peripherals', labelKey: 'nav.peripherals', href: '/peripherals', icon: Usb, requiredPermission: { resource: 'devices', action: 'read' } },
-      { name: 'AI Risk Engine', labelKey: 'nav.aiRiskEngine', href: '/ai-risk', icon: BrainCircuit, requiredPermission: { resource: 'devices', action: 'read' } },
+      { name: 'AI Risk', labelKey: 'nav.aiRisk', href: '/ai-risk', icon: BrainCircuit, requiredPermission: { resource: 'devices', action: 'read' } },
       { name: 'CIS Benchmarks', labelKey: 'nav.cisBenchmarks', href: '/cis-hardening', icon: ClipboardCheck, requiredPermission: { resource: 'devices', action: 'read' } },
       { name: 'Compliance Baselines', labelKey: 'nav.complianceBaselines', href: '/audit-baselines', icon: ListChecks, requiredPermission: { resource: 'devices', action: 'read' } },
-    ],
-  },
-  {
-    id: 'operations',
-    label: 'Operations',
-    labelKey: 'nav.sectionOperations',
-    icon: Layers,
-    items: [
-      { name: 'Quotes', labelKey: 'nav.quotes', href: '/billing/quotes', icon: FileText, partnerScopeOnly: true, requiredPermission: { resource: 'quotes', action: 'read' } },
-      { name: 'Invoices', labelKey: 'nav.invoices', href: '/billing/invoices', icon: Receipt, partnerScopeOnly: true, requiredPermission: { resource: 'invoices', action: 'read' } },
-      { name: 'Contracts', labelKey: 'nav.contracts', href: '/contracts', icon: FileSignature, partnerScopeOnly: true, requiredPermission: { resource: 'contracts', action: 'read' } },
-      { name: 'Timesheets', labelKey: 'nav.timesheets', href: '/timesheet', icon: Clock, requiredPermission: { resource: 'time_entries', action: 'read' } },
-      { name: 'Product Catalog', labelKey: 'nav.productCatalog', href: '/settings/catalog', icon: Tags, partnerScopeOnly: true, requiredPermission: { resource: 'catalog', action: 'read' } },
-      { name: 'Software Library', labelKey: 'nav.softwareLibrary', href: '/software', icon: Package, requiredPermission: { resource: 'devices', action: 'read' } },
-      { name: 'Software Policies', labelKey: 'nav.softwarePolicies', href: '/software-inventory', icon: Package, requiredPermission: { resource: 'devices', action: 'read' } },
-      { name: 'Device Groups', labelKey: 'nav.deviceGroups', href: '/devices/groups', icon: LayoutGrid, requiredPermission: { resource: 'devices', action: 'read' } },
-      { name: 'Config Policies', labelKey: 'nav.configPolicies', href: '/configuration-policies', icon: Layers, requiredPermission: { resource: 'devices', action: 'read' } },
-      { name: 'Integrations', labelKey: 'nav.integrations', href: '/integrations', icon: Plug },
     ],
   },
   {
@@ -265,9 +262,22 @@ export const navSections: NavSection[] = [
     icon: HardDrive,
     // Backup/recovery surfaces are gated on the backup:read grant.
     items: [
-      { name: 'Backup', labelKey: 'nav.backup', href: '/backup', icon: HardDrive, requiredPermission: { resource: 'backup', action: 'read' } },
+      { name: 'Device Backup', labelKey: 'nav.deviceBackup', href: '/backup', icon: HardDrive, requiredPermission: { resource: 'backup', action: 'read' } },
       { name: 'Cloud Backup', labelKey: 'nav.cloudBackup', href: '/c2c', icon: Cloud, requiredPermission: { resource: 'backup', action: 'read' } },
       { name: 'Disaster Recovery', labelKey: 'nav.disasterRecovery', href: '/dr', icon: ShieldEllipsis, requiredPermission: { resource: 'backup', action: 'read' } },
+    ],
+  },
+  {
+    id: 'billing',
+    label: 'Billing',
+    labelKey: 'nav.sectionBilling',
+    icon: Receipt,
+    items: [
+      { name: 'Quotes', labelKey: 'nav.quotes', href: '/billing/quotes', icon: FileText, partnerScopeOnly: true, requiredPermission: { resource: 'quotes', action: 'read' } },
+      { name: 'Invoices', labelKey: 'nav.invoices', href: '/billing/invoices', icon: Receipt, partnerScopeOnly: true, requiredPermission: { resource: 'invoices', action: 'read' } },
+      { name: 'Contracts', labelKey: 'nav.contracts', href: '/contracts', icon: FileSignature, partnerScopeOnly: true, requiredPermission: { resource: 'contracts', action: 'read' } },
+      { name: 'Timesheets', labelKey: 'nav.timesheets', href: '/timesheet', icon: Clock, requiredPermission: { resource: 'time_entries', action: 'read' } },
+      { name: 'Product Catalog', labelKey: 'nav.productCatalog', href: '/settings/catalog', icon: Tags, partnerScopeOnly: true, requiredPermission: { resource: 'catalog', action: 'read' } },
     ],
   },
   {
@@ -293,20 +303,31 @@ export const navSections: NavSection[] = [
     items: [
       { name: 'Partner', labelKey: 'nav.partner', href: '/settings/partner', icon: Building, partnerScopeOnly: true },
       { name: 'Organizations', labelKey: 'nav.organizations', href: '/settings/organizations', icon: Building2, requiredPermission: { resource: 'organizations', action: 'read' } },
-      { name: 'AI Usage & Budget', labelKey: 'nav.aiUsageBudget', href: '/settings/ai-usage', icon: BrainCircuit, partnerScopeOnly: true },
-      { name: 'Custom Fields', labelKey: 'nav.customFields', href: '/settings/custom-fields', icon: ListChecks, requiredPermission: { resource: 'organizations', action: 'read' } },
-      { name: 'Variables', labelKey: 'nav.variables', href: '/settings/variables', icon: Braces, requiredPermission: { resource: 'variables', action: 'read' } },
-      { name: 'Saved Filters', labelKey: 'nav.savedFilters', href: '/settings/filters', icon: Filter },
       // Users + Roles are both served by the users routes (users:read).
       { name: 'Users', labelKey: 'nav.users', href: '/settings/users', icon: Users, requiredPermission: { resource: 'users', action: 'read' } },
       { name: 'Roles', labelKey: 'nav.roles', href: '/settings/roles', icon: KeyRound, requiredPermission: { resource: 'users', action: 'read' } },
       { name: 'SSO', labelKey: 'nav.sso', href: '/settings/sso', icon: Fingerprint, requiredPermission: { resource: 'sso', action: 'admin' } },
       { name: 'Access Reviews', labelKey: 'nav.accessReviews', href: '/settings/access-reviews', icon: FileCheck, requiredPermission: { resource: 'users', action: 'read' } },
       { name: 'Enrollment Keys', labelKey: 'nav.enrollmentKeys', href: '/settings/enrollment-keys', icon: Key, requiredPermission: { resource: 'devices', action: 'read' } },
-      { name: 'Deletion requests', labelKey: 'nav.deletionRequests', href: '/admin/account-deletion-requests', icon: UserX, badgeKind: 'deletion-requests', platformAdminOnly: true },
+      { name: 'Integrations', labelKey: 'nav.integrations', href: '/integrations', icon: Plug },
+      { name: 'Custom Fields', labelKey: 'nav.customFields', href: '/settings/custom-fields', icon: ListChecks, requiredPermission: { resource: 'organizations', action: 'read' } },
+      { name: 'Variables', labelKey: 'nav.variables', href: '/settings/variables', icon: Braces, requiredPermission: { resource: 'variables', action: 'read' } },
+      { name: 'Saved Filters', labelKey: 'nav.savedFilters', href: '/settings/filters', icon: Filter },
+    ],
+  },
+  {
+    // Platform-admin-only surfaces. Every item is platformAdminOnly, so the
+    // whole section (header included) hides for everyone else.
+    id: 'administration',
+    label: 'Administration',
+    labelKey: 'nav.sectionAdministration',
+    icon: ShieldEllipsis,
+    items: [
+      { name: 'Deletion Requests', labelKey: 'nav.deletionRequests', href: '/admin/account-deletion-requests', icon: UserX, badgeKind: 'deletion-requests', platformAdminOnly: true },
       { name: 'Quarantined Devices', labelKey: 'nav.quarantinedDevices', href: '/admin/quarantined', icon: Ban, platformAdminOnly: true },
       { name: 'Third-Party Catalog', labelKey: 'nav.thirdPartyCatalog', href: '/admin/third-party-catalog', icon: Boxes, platformAdminOnly: true },
-      { name: 'Connected Apps (admin)', labelKey: 'nav.connectedAppsAdmin', href: '/admin/connected-apps', icon: Plug, platformAdminOnly: true },
+      { name: 'LLM Provider Catalog', labelKey: 'nav.llmProviderCatalog', href: '/admin/llm-provider-catalog', icon: Cpu, platformAdminOnly: true },
+      { name: 'Connected Apps', labelKey: 'nav.connectedAppsAdmin', href: '/admin/connected-apps', icon: Plug, platformAdminOnly: true },
     ],
   },
 ];
@@ -357,7 +378,8 @@ const allNavItems: NavItem[] = [
 
 // Path aliases (highlight a different nav item for certain paths)
 const pathAliases: Record<string, string> = {
-  '/software-policies': '/software-inventory',
+  '/software-inventory': '/software',
+  '/software-policies': '/software',
 };
 
 // Determine which section a given href belongs to (for auto-expand)
@@ -374,8 +396,8 @@ function sectionForHref(href: string): string | null {
 // Component
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
-// Badge counts (admin-only nav signals). Returns undefined while loading or
-// disabled. Only fetched when `enabled` (= platform admin) — the endpoint
+// Badge counts. Returns undefined while loading or disabled. The deletion
+// request count is only fetched when `enabled` (= platform admin) — the endpoint
 // requires platform-admin access, so firing it for ordinary users 403s on
 // every page load and spams the console.
 // ---------------------------------------------------------------------------
@@ -400,6 +422,50 @@ function useDeletionRequestsBadge(enabled: boolean): number | undefined {
       .catch(() => { /* network error — leave badge hidden */ });
     return () => { cancelled = true; };
   }, [enabled]);
+  return count;
+}
+
+// Warn once per session when the approvals badge fetch fails. The badge only
+// hides itself on failure, so without a trace the failure is invisible — but
+// the 30s poll means warning every time would spam the console.
+let approvalsBadgeFailureWarned = false;
+function warnApprovalsBadgeFailureOnce(detail: unknown): void {
+  if (approvalsBadgeFailureWarned) return;
+  approvalsBadgeFailureWarned = true;
+  console.warn('[sidebar] pending-approvals badge fetch failed', detail);
+}
+
+function usePendingApprovalsBadge(): number | undefined {
+  const [count, setCount] = useState<number | undefined>(undefined);
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const response = await fetchWithAuth('/approvals/pending/count');
+        if (!response.ok) return;
+        let data: unknown;
+        try {
+          data = await response.json();
+        } catch (err) {
+          // Malformed body: keep the previously shown count. Coercing a parse
+          // failure to 0 would affirmatively claim "nothing pending".
+          warnApprovalsBadgeFailureOnce(err);
+          return;
+        }
+        const nextCount = (data as { count?: unknown } | null | undefined)?.count;
+        if (!cancelled) setCount(typeof nextCount === 'number' ? nextCount : 0);
+      } catch (err) {
+        // The inbox remains reachable; a badge fetch failure only hides its count.
+        warnApprovalsBadgeFailureOnce(err);
+      }
+    };
+    void load();
+    const interval = window.setInterval(() => void load(), 30_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, []);
   return count;
 }
 
@@ -604,6 +670,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
   }, [expandedSections, activeSectionId]);
 
   const deletionRequestsCount = useDeletionRequestsBadge(isPlatformAdmin);
+  const pendingApprovalsCount = usePendingApprovalsBadge();
 
   // --- Render a single nav item -------------------------------------------
   // Whether a nav item passes all visibility gates (feature flag, platform
@@ -631,7 +698,12 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
     const isActive = item.href === activeHref;
     const labels = forMobileOverlay ? true : showLabels;
     const narrow = forMobileOverlay ? false : isNarrow;
-    const badgeCount = item.badgeKind === 'deletion-requests' ? deletionRequestsCount : undefined;
+    const badgeCount =
+      item.badgeKind === 'deletion-requests'
+        ? deletionRequestsCount
+        : item.badgeKind === 'approvals'
+          ? pendingApprovalsCount
+          : undefined;
     const showBadge = typeof badgeCount === 'number' && badgeCount > 0;
     const label = item.labelKey ? t(/* i18n-dynamic */ item.labelKey, { defaultValue: item.name }) : item.name;
     return (
@@ -652,7 +724,11 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
         {labels && showBadge && (
           <span
             className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-amber-500/20 px-1.5 chart-legend-xs font-semibold text-amber-800 dark:bg-amber-500/30 dark:text-amber-200"
-            aria-label={`${badgeCount} pending`}
+            aria-label={
+              item.badgeKind === 'approvals'
+                ? t('nav.pendingApprovals', { count: badgeCount })
+                : `${badgeCount} pending`
+            }
           >
             {badgeCount! > 99 ? '99+' : badgeCount}
           </span>

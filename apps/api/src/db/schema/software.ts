@@ -10,7 +10,8 @@ import {
   bigint,
   date,
   index,
-  uniqueIndex
+  uniqueIndex,
+  foreignKey,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { organizations, partners } from './orgs';
@@ -131,6 +132,58 @@ export const deploymentResults = pgTable('deployment_results', {
   statusIdx: index('deployment_results_status_idx').on(table.status)
 }));
 
+export const softwareInventoryObservations = pgTable('software_inventory_observations', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  orgId: uuid('org_id').notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  deviceId: uuid('device_id').notNull(),
+  schemaVersion: integer('schema_version').notNull(),
+  collectorVersion: varchar('collector_version', { length: 64 }).notNull(),
+  agentVersion: varchar('agent_version', { length: 64 }),
+  observedAt: timestamp('observed_at', { withTimezone: true }).notNull(),
+  receivedAt: timestamp('received_at', { withTimezone: true }).notNull().defaultNow(),
+  completeness: varchar('completeness', { length: 16 }).notNull(),
+  truncated: boolean('truncated').notNull().default(false),
+  claimedItemCount: integer('claimed_item_count').notNull(),
+  actualItemCount: integer('actual_item_count').notNull(),
+  expectedSources: jsonb('expected_sources').$type<string[]>().notNull(),
+  succeededSources: jsonb('succeeded_sources').$type<string[]>().notNull(),
+  failedSources: jsonb('failed_sources').$type<Array<{ source: string; code: string }>>().notNull(),
+  items: jsonb('items').$type<unknown[]>().notNull(),
+  reportDigest: varchar('report_digest', { length: 64 }).notNull(),
+  acceptedForInventory: boolean('accepted_for_inventory').notNull(),
+  absenceResolutionEligible: boolean('absence_resolution_eligible').notNull(),
+  reasonCode: varchar('reason_code', { length: 64 }).notNull(),
+  visibleItemCount: integer('visible_item_count').notNull(),
+}, (table) => ({
+  identityOwnerUq: uniqueIndex('software_inventory_observations_identity_owner_uq').on(table.id, table.orgId, table.deviceId),
+  deviceReceivedIdx: index('software_inventory_observations_device_received_idx').on(table.deviceId, table.receivedAt, table.id),
+  orgReceivedIdx: index('software_inventory_observations_org_received_idx').on(table.orgId, table.receivedAt),
+  deviceOrgFk: foreignKey({
+    columns: [table.deviceId, table.orgId],
+    foreignColumns: [devices.id, devices.orgId],
+    name: 'software_inventory_observations_device_org_fkey',
+  }).onUpdate('cascade').onDelete('cascade'),
+}));
+
+export const deviceSoftwareInventoryState = pgTable('device_software_inventory_state', {
+  deviceId: uuid('device_id').primaryKey(),
+  orgId: uuid('org_id').notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  latestObservationId: uuid('latest_observation_id').references(() => softwareInventoryObservations.id, { onDelete: 'set null' }),
+  latestAcceptedObservationId: uuid('latest_accepted_observation_id').references(() => softwareInventoryObservations.id, { onDelete: 'set null' }),
+  visibleObservationId: uuid('visible_observation_id').references(() => softwareInventoryObservations.id, { onDelete: 'set null' }),
+  hasAcceptedV2: boolean('has_accepted_v2').notNull().default(false),
+  visibleItemCount: integer('visible_item_count').notNull().default(0),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => ({
+  orgIdx: index('device_software_inventory_state_org_idx').on(table.orgId),
+  latestAcceptedIdx: index('device_software_inventory_state_latest_accepted_idx').on(table.latestAcceptedObservationId),
+  deviceOrgFk: foreignKey({
+    columns: [table.deviceId, table.orgId],
+    foreignColumns: [devices.id, devices.orgId],
+    name: 'device_software_inventory_state_device_org_fkey',
+  }).onUpdate('cascade').onDelete('cascade'),
+}));
+
 export const softwareInventory = pgTable('software_inventory', {
   id: uuid('id').primaryKey().defaultRandom(),
   deviceId: uuid('device_id').notNull().references(() => devices.id),
@@ -146,12 +199,14 @@ export const softwareInventory = pgTable('software_inventory', {
   lastSeen: timestamp('last_seen'),
   fileHash: varchar('file_hash', { length: 128 }),
   hashAlgorithm: varchar('hash_algorithm', { length: 10 }),
+  observationId: uuid('observation_id').references(() => softwareInventoryObservations.id, { onDelete: 'set null' }),
 }, (table) => ({
   deviceIdx: index('software_inventory_device_id_idx').on(table.deviceId),
   catalogIdx: index('software_inventory_catalog_id_idx').on(table.catalogId),
   nameIdx: index('software_inventory_name_idx').on(table.name),
   nameVendorIdx: index('software_inventory_name_vendor_idx').on(table.name, table.vendor),
   nameTrgmIdx: index('software_inventory_name_trgm_idx').using('gin', sql`name gin_trgm_ops`),
+  observationIdx: index('software_inventory_observation_id_idx').on(table.observationId).where(sql`observation_id IS NOT NULL`),
 }));
 
 // Chunked-upload sessions for software package installers (issue #2951).

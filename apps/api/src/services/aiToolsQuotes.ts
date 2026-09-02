@@ -61,6 +61,9 @@ import {
 import { sendQuote, declineQuoteByActor } from './quoteLifecycle';
 import { createQuotePayLink } from './quotePay';
 import { QuoteServiceError, type QuoteActor } from './quoteTypes';
+import { requestLikeFromSnapshot } from './auditEvents';
+import { writeAuditEvent } from './auditEvents';
+import { supersededAuditEvent } from './quoteSupersedeAudit';
 
 type UpdateQuoteLinePatch = Parameters<typeof updateLine>[2];
 
@@ -131,7 +134,7 @@ export function registerQuoteTools(aiTools: Map<string, AiTool>): void {
           orgId: { type: 'string', description: 'Filter to a single organization (UUID)' },
           status: {
             type: 'string',
-            enum: ['draft', 'sent', 'viewed', 'accepted', 'declined', 'expired', 'converted'],
+            enum: ['draft', 'sent', 'viewed', 'accepted', 'declined', 'expired', 'converted', 'superseded'],
             description: 'Filter by quote status'
           },
           limit: { type: 'number', description: 'Max results (default 25, max 100)' }
@@ -463,8 +466,26 @@ export function registerQuoteTools(aiTools: Map<string, AiTool>): void {
             await reorderLines(String(input.quoteId), String(input.blockId), lineIds, actor);
             return JSON.stringify({ ok: true });
           }
-          case 'send':
-            return JSON.stringify(await sendQuote(String(input.quoteId), actor));
+          case 'send': {
+            const quoteId = String(input.quoteId);
+            const result = await sendQuote(quoteId, actor);
+            if (result.superseded) {
+              // No Hono context on the AI-tool path, so attribute the actor
+              // explicitly rather than letting the row fall back to anonymous.
+              writeAuditEvent(requestLikeFromSnapshot({}), {
+                ...supersededAuditEvent({
+                  childQuoteId: quoteId,
+                  orgId: result.quote.orgId,
+                  parentQuoteId: result.superseded.parentQuoteId,
+                  previousStatus: result.superseded.previousStatus,
+                  revisionNumber: result.quote.revisionNumber,
+                  emailed: result.emailed,
+                }),
+                actorId: actor.userId,
+              });
+            }
+            return JSON.stringify(result);
+          }
           case 'decline':
             return JSON.stringify(await declineQuoteByActor(String(input.quoteId), s('reason'), actor));
           case 'create_pay_link':

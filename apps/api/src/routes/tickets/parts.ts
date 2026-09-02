@@ -3,7 +3,7 @@ import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
 import { eq } from 'drizzle-orm';
 import { db } from '../../db';
-import { organizations, ticketParts } from '../../db/schema';
+import { ticketParts } from '../../db/schema';
 import { requireScope, requirePermission } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import { ticketPartSchema, updateTicketPartSchema, listTimeEntriesQuerySchema } from '@breeze/shared';
@@ -23,19 +23,6 @@ export const ticketPartsRoutes = new Hono();
 const scopes = requireScope('partner', 'system');
 const readPerm = requirePermission(PERMISSIONS.TICKETS_READ.resource, PERMISSIONS.TICKETS_READ.action);
 const writePerm = requirePermission(PERMISSIONS.TICKETS_WRITE.resource, PERMISSIONS.TICKETS_WRITE.action);
-
-// INTERIM (#3777): replaced by wave-4's `ticket_parts.currency_code` /
-// billing-summary snapshots. Pre-wave-4 parts store no currency, so the ticket
-// org's currency (the default that applied at their creation) is the only
-// context they have — the web formats with it instead of a hard-coded `$`.
-async function ticketOrgCurrencyCode(orgId: string): Promise<string> {
-  const rows = await db
-    .select({ currencyCode: organizations.currencyCode })
-    .from(organizations)
-    .where(eq(organizations.id, orgId))
-    .limit(1);
-  return rows[0]?.currencyCode ?? 'USD';
-}
 
 function handleServiceError(c: { json: (b: unknown, s: number) => Response }, err: unknown): Response {
   if (err instanceof TimeEntryServiceError) {
@@ -80,8 +67,7 @@ ticketPartsRoutes.get('/:id/parts', scopes, readPerm, zValidator('param', idPara
   const ticket = await getScopedTicketOr404(auth, c.req.valid('param').id);
   if (!ticket) return c.json({ error: 'Ticket not found' }, 404);
   const parts = await db.select().from(ticketParts).where(eq(ticketParts.ticketId, ticket.id));
-  const currencyCode = await ticketOrgCurrencyCode(ticket.orgId);
-  return c.json({ data: parts.map((part) => ({ ...part, currencyCode })) });
+  return c.json({ data: parts });
 });
 
 ticketPartsRoutes.post('/:id/parts', scopes, writePerm, zValidator('param', idParam), zValidator('json', ticketPartSchema), async (c) => {
@@ -110,6 +96,5 @@ ticketPartsRoutes.get('/:id/billing-summary', scopes, readPerm, zValidator('para
   const ticket = await getScopedTicketOr404(auth, c.req.valid('param').id);
   if (!ticket) return c.json({ error: 'Ticket not found' }, 404);
   const summary = await getTicketBillingSummary(ticket.id);
-  const currencyCode = await ticketOrgCurrencyCode(ticket.orgId);
-  return c.json({ data: { ...summary, currencyCode } });
+  return c.json({ data: summary });
 });

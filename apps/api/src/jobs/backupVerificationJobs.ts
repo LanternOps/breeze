@@ -8,11 +8,12 @@ import {
   runWeeklyTestRestore,
   timeoutStaleVerifications
 } from '../routes/backup/verificationService';
+import { jobSchedule } from './scheduleRegistry';
 
 const BACKUP_VERIFICATION_QUEUE = 'backup-verification';
 const POST_BACKUP_EVERY_MS = 10 * 60 * 1000;
-const DAILY_READINESS_CRON = '0 2 * * *'; // 02:00 UTC daily
-const WEEKLY_RESTORE_CRON = '0 3 * * 0'; // 03:00 UTC Sundays
+const DAILY_READINESS_CRON = jobSchedule('backup-readiness-score');
+const WEEKLY_RESTORE_CRON = jobSchedule('backup-weekly-test-restore');
 
 type BackupVerificationJobData =
   | { type: 'post-backup-integrity-check'; queuedAt: string }

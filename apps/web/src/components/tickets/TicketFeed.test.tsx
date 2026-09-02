@@ -353,3 +353,47 @@ describe('TicketFeed delete confirm dialog', () => {
     expect(onDelete).not.toHaveBeenCalled();
   });
 });
+
+describe('TicketFeed attachments (W08 #3902)', () => {
+  it('renders an attachment list for a comment that has attachments and nothing for one that does not', () => {
+    render(
+      <TicketFeed
+        ticketId="t-1"
+        comments={[
+          makeComment({
+            id: 'with-att',
+            content: 'See photo',
+            attachments: [{
+              id: 'a-1', commentId: 'with-att', contentType: 'application/pdf',
+              byteSize: 10, originalFilename: 'r.pdf', createdAt: '2026-08-30T10:00:00.000Z',
+            }],
+          }),
+          makeComment({ id: 'no-att', content: 'Plain' }),
+        ]}
+      />
+    );
+
+    expect(screen.getByTestId('ticket-attachment-file-a-1')).toBeInTheDocument();
+    expect(screen.getByTestId('ticket-comment-no-att')).not.toHaveTextContent('r.pdf');
+  });
+
+  it('does not render attachments of a soft-deleted comment', () => {
+    render(
+      <TicketFeed
+        ticketId="t-1"
+        comments={[
+          makeComment({
+            id: 'gone',
+            deleted: true,
+            attachments: [{
+              id: 'a-2', commentId: 'gone', contentType: 'application/pdf',
+              byteSize: 10, originalFilename: 'secret.pdf', createdAt: '2026-08-30T10:00:00.000Z',
+            }],
+          }),
+        ]}
+      />
+    );
+
+    expect(screen.queryByTestId('ticket-attachment-file-a-2')).toBeNull();
+  });
+});

@@ -113,7 +113,8 @@ async function seedFixture(entryCount = 2): Promise<Fixture> {
       const [te] = await db.insert(timeEntries).values({
         partnerId, orgId, userId, startedAt: now, endedAt: now,
         durationMinutes: 60, description: 'Work', isBillable: true,
-        hourlyRate: '100.00', billingStatus: 'not_billed', isApproved: true
+        hourlyRate: '100.00', billingStatus: 'not_billed', isApproved: true,
+        currencyCode: 'USD'
       }).returning({ id: timeEntries.id });
       timeEntryIds.push(te!.id);
     }

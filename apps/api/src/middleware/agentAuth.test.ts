@@ -64,6 +64,17 @@ vi.mock('../services/tenantStatus', () => ({
   getAgentTenantState: vi.fn(async () => 'active'),
 }));
 
+// #3986 — the device-remove drain predicate. Mocked here because this suite
+// runs against a fully faked drizzle surface: the predicate's OWN semantics
+// (the `device_remove` reason clause, the unexpired-deadline clause, and the
+// fact that an abuse-queued reason-less self_uninstall does NOT satisfy it)
+// are proven against compiled SQL in services/deviceUninstallDrain.test.ts.
+// What is under test HERE is the middleware's contract: predicate false =>
+// byte-for-byte today's 403, predicate true => a narrow admitted surface.
+vi.mock('../services/deviceUninstallDrain', () => ({
+  isDeviceUninstallDraining: vi.fn(async () => false),
+}));
+
 vi.mock('drizzle-orm', () => ({
   eq: vi.fn((left, right) => ({ left, right })),
   and: vi.fn((...args) => ({ and: args })),
@@ -94,14 +105,16 @@ vi.mock('../services/agentOrgRateLimit', async (importOriginal) => {
 import type { Context } from 'hono';
 import { createHash } from 'crypto';
 
-import { db, withDbAccessContext } from '../db';
+import { db, withDbAccessContext, withSystemDbAccessContext } from '../db';
 import { getRedis, rateLimiter } from '../services';
 import { createAuditLogAsync } from '../services/auditService';
 import { getTrustedClientIp, trustsForwardedHeadersFrom } from '../services/clientIp';
 import { getAgentTenantState } from '../services/tenantStatus';
+import { isDeviceUninstallDraining } from '../services/deviceUninstallDrain';
 import { resolveOrgRateLimit } from '../services/agentOrgRateLimit';
 import {
   agentAuthMiddleware,
+  DRAIN_CLAIM_TYPE_ALLOWLIST,
   isAgentTokenRotationDue,
   matchAgentTokenHash,
   matchRoleScopedAgentTokenHash,
@@ -666,6 +679,632 @@ describe('agentAuthMiddleware - offboarding drain mode', () => {
 
     expect(next).toHaveBeenCalledTimes(1);
     expect((c.get('agent') as { tenantDraining?: boolean }).tenantDraining).toBe(false);
+  });
+});
+
+// #3986 — a REMOVED device (status='decommissioned') is still denied by
+// default. The single exception is the device-remove uninstall drain: the
+// `self_uninstall` queued by DELETE /devices/:id?uninstallAgent=true has to be
+// collectable, and it cannot be if the agent is 403'd before it can heartbeat.
+//
+// Four separate layers are asserted here:
+//   L1  — the auth gate itself (denied unless the shared predicate says drain)
+//   L1b — role: main agent only, never the watchdog credential
+//   L2  — the route surface a draining device gets (heartbeat/commands/result/
+//         logs/rotate-token, and NOTHING else — the layer that keeps
+//         recovery-key ingest, PAM elevation, inventory and every extension
+//         `<prefix>/agent/:id/*` route shut)
+//   L3  — one derived command-type allowlist on the agent context
+describe('agentAuthMiddleware - device-remove uninstall drain (#3986)', () => {
+  const WATCHDOG_TOKEN = 'brz_watchdog_token';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.unstubAllEnvs();
+    vi.mocked(getRedis).mockReturnValue({} as any);
+    // `vi.clearAllMocks()` clears CALLS, not implementations, so both of these
+    // are restored explicitly — the system-context test below installs its own
+    // and would otherwise leak into every later test in the file.
+    vi.mocked(withSystemDbAccessContext).mockImplementation((async (fn: () => Promise<unknown>) =>
+      fn()) as never);
+    vi.mocked(getAgentTenantState).mockResolvedValue('active');
+    vi.mocked(isDeviceUninstallDraining).mockResolvedValue(false);
+    vi.mocked(rateLimiter).mockResolvedValue({
+      allowed: true,
+      remaining: 100,
+      resetAt: new Date(Date.now() + 60_000),
+    });
+  });
+
+  afterEach(() => {
+    // Implementations survive vi.clearAllMocks(), so a custom one installed by
+    // a test here would otherwise leak into every LATER describe in this file.
+    vi.mocked(withSystemDbAccessContext).mockImplementation((async (fn: () => Promise<unknown>) =>
+      fn()) as never);
+    vi.mocked(isDeviceUninstallDraining).mockResolvedValue(false);
+  });
+
+  // ---- Layer 1: the deny side. Three DIFFERENT reasons the shared predicate
+  // returns false; all three must land on exactly today's 403. Which of the
+  // three a given row is in is decided inside isDeviceUninstallDraining (see
+  // the mock note at the top of this file) — what matters here is that the
+  // middleware never second-guesses it and never softens the refusal.
+
+  it('still 403s a removed device with NO device_remove drain', async () => {
+    // DELETE /devices/:id with uninstallAgent:false — decommissioned, but no
+    // self_uninstall was ever queued, so the predicate reports not-draining.
+    vi.mocked(isDeviceUninstallDraining).mockResolvedValue(false);
+    buildSelectMock([makeDevice({ status: 'decommissioned' })]);
+
+    const c = createContext({ token: VALID_TOKEN, path: '/api/v1/agents/agent-1/heartbeat' });
+    const next = vi.fn();
+
+    await expect(agentAuthMiddleware(c, next)).rejects.toMatchObject({
+      status: 403,
+      message: 'Device has been decommissioned',
+    });
+    expect(next).not.toHaveBeenCalled();
+    expect(isDeviceUninstallDraining).toHaveBeenCalledWith('device-1');
+  });
+
+  it('still 403s a removed device whose drain deadline has passed', async () => {
+    // device_remove_expires_at <= now(): the window closed, the uninstall is no
+    // longer exempt from expiry, and the machine must go back to being denied.
+    vi.mocked(isDeviceUninstallDraining).mockResolvedValue(false);
+    buildSelectMock([makeDevice({ status: 'decommissioned' })]);
+
+    const c = createContext({ token: VALID_TOKEN, path: '/api/v1/agents/agent-1/commands' });
+    const next = vi.fn();
+
+    await expect(agentAuthMiddleware(c, next)).rejects.toMatchObject({
+      status: 403,
+      message: 'Device has been decommissioned',
+    });
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it('still 403s a removed device carrying only an abuse-queued uninstall', async () => {
+    // THE incident guard. routes/admin/abuse.ts queues self_uninstall across a
+    // suspended partner's whole fleet with NO uninstall_reasons and NO
+    // deadline, including onto already-decommissioned rows. A predicate of the
+    // shape "decommissioned + any pending self_uninstall" would re-open the
+    // agent channel for every one of those, and on un-suspension deliver a
+    // fleet-wide uninstall to a reinstated customer. The reason clause keeps
+    // them out; the middleware must not widen past it.
+    vi.mocked(isDeviceUninstallDraining).mockResolvedValue(false);
+    buildSelectMock([makeDevice({ status: 'decommissioned' })]);
+
+    const c = createContext({ token: VALID_TOKEN, path: '/api/v1/agents/agent-1/heartbeat' });
+    const next = vi.fn();
+
+    await expect(agentAuthMiddleware(c, next)).rejects.toMatchObject({
+      status: 403,
+      message: 'Device has been decommissioned',
+    });
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  // ---- Layer 1b: role.
+
+  it('refuses a WATCHDOG credential on a draining removed device', async () => {
+    // The predicate says "draining" — the ONLY thing refusing this request is
+    // the role gate. The watchdog heartbeat branch writes device state without
+    // the terminal-status guard the main branch has, and self_uninstall is
+    // targetRole='agent' anyway, so a watchdog has nothing to collect.
+    vi.mocked(isDeviceUninstallDraining).mockResolvedValue(true);
+    buildSelectMock([
+      makeDevice({
+        status: 'decommissioned',
+        agentTokenHash: sha('brz_some_other_agent_token'),
+        watchdogTokenHash: sha(WATCHDOG_TOKEN),
+      }),
+    ]);
+
+    const c = createContext({ token: WATCHDOG_TOKEN, path: '/api/v1/agents/agent-1/heartbeat' });
+    const next = vi.fn();
+
+    await expect(agentAuthMiddleware(c, next)).rejects.toMatchObject({
+      status: 403,
+      message: 'Device has been decommissioned',
+    });
+    expect(next).not.toHaveBeenCalled();
+    // Short-circuited before the predicate query — a watchdog costs no round trip.
+    expect(isDeviceUninstallDraining).not.toHaveBeenCalled();
+  });
+
+  it('admits the SAME device on the main-agent credential (proves the watchdog refusal is the role gate, not the fixture)', async () => {
+    vi.mocked(isDeviceUninstallDraining).mockResolvedValue(true);
+    buildSelectMock([
+      makeDevice({
+        status: 'decommissioned',
+        agentTokenHash: VALID_HASH,
+        watchdogTokenHash: sha(WATCHDOG_TOKEN),
+      }),
+    ]);
+
+    const c = createContext({ token: VALID_TOKEN, path: '/api/v1/agents/agent-1/heartbeat' });
+    const next = vi.fn().mockResolvedValue(undefined);
+
+    await agentAuthMiddleware(c, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+    expect((c.get('agent') as { role?: string }).role).toBe('agent');
+  });
+
+  // ---- Layer 1: the admit side.
+
+  it('admits a draining removed device on heartbeat', async () => {
+    vi.mocked(isDeviceUninstallDraining).mockResolvedValue(true);
+    buildSelectMock([makeDevice({ status: 'decommissioned' })]);
+
+    const c = createContext({ token: VALID_TOKEN, path: '/api/v1/agents/agent-1/heartbeat' });
+    const next = vi.fn().mockResolvedValue(undefined);
+
+    await agentAuthMiddleware(c, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+  });
+
+  it('evaluates the drain predicate inside withSystemDbAccessContext (a contextless read would report "never draining" fleet-wide)', async () => {
+    // The wrap is not decorative and its absence is SILENT. The predicate
+    // joins `devices`, which is RLS-scoped; a contextless read defaults to
+    // scope 'none', matches zero rows, and reports not-draining for EVERY
+    // device — so every queued uninstall becomes permanently undeliverable
+    // while the API and the audit log both say `uninstallQueued: true`, and
+    // nothing anywhere throws. Stubbing the predicate (as this suite must,
+    // see the mock note at the top of the file) means no other test in the
+    // unit job can see the wrap at all: reverting to a bare
+    // `isDeviceUninstallDraining(device.id)` left the whole Test API job
+    // green. This asserts the CONTEXT the predicate observes at call time,
+    // not merely that the helper was called somewhere in the request.
+    let depth = 0;
+    let contextAtPredicateCall: number | null = null;
+    vi.mocked(withSystemDbAccessContext).mockImplementation((async (fn: () => Promise<unknown>) => {
+      depth += 1;
+      try {
+        return await fn();
+      } finally {
+        depth -= 1;
+      }
+    }) as never);
+    vi.mocked(isDeviceUninstallDraining).mockImplementation(async () => {
+      contextAtPredicateCall = depth;
+      return true;
+    });
+    buildSelectMock([makeDevice({ status: 'decommissioned' })]);
+
+    const c = createContext({ token: VALID_TOKEN, path: '/api/v1/agents/agent-1/heartbeat' });
+    const next = vi.fn().mockResolvedValue(undefined);
+
+    await agentAuthMiddleware(c, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+    // Strictly greater than zero: the device lookup earlier in the middleware
+    // opens (and closes) its own system context, so "the helper ran at some
+    // point" proves nothing — only an OPEN context at predicate-call time does.
+    expect(contextAtPredicateCall).toBeGreaterThan(0);
+  });
+
+  it('a QUARANTINED device is still refused outright, drain or not', async () => {
+    // The quarantine throw is deliberately untouched by #3986; only the
+    // decommissioned arm gained a conditional.
+    vi.mocked(isDeviceUninstallDraining).mockResolvedValue(true);
+    buildSelectMock([makeDevice({ status: 'quarantined' })]);
+
+    const c = createContext({ token: VALID_TOKEN, path: '/api/v1/agents/agent-1/heartbeat' });
+    const next = vi.fn();
+
+    await expect(agentAuthMiddleware(c, next)).rejects.toMatchObject({
+      status: 403,
+      message: 'Device is quarantined pending admin approval',
+    });
+    expect(next).not.toHaveBeenCalled();
+    expect(isDeviceUninstallDraining).not.toHaveBeenCalled();
+  });
+
+  it('never consults the drain predicate for a device that is not decommissioned', async () => {
+    buildSelectMock([makeDevice({ status: 'online' })]);
+
+    const c = createContext({ token: VALID_TOKEN, path: '/api/v1/agents/agent-1/hardware' });
+    const next = vi.fn().mockResolvedValue(undefined);
+
+    await agentAuthMiddleware(c, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(isDeviceUninstallDraining).not.toHaveBeenCalled();
+  });
+
+  // ---- Layer 2: the route surface.
+
+  const drainAllowedPaths = [
+    '/api/v1/agents/agent-1/heartbeat',
+    '/api/v1/agents/agent-1/commands',
+    '/api/v1/agents/agent-1/commands/cmd-1/result',
+    // NOTE: `rotate-token` (the MINT half) is deliberately absent — see the
+    // dedicated describe block below. `/confirm` stays allowed.
+    '/api/v1/agents/agent-1/rotate-token/confirm',
+    '/api/v1/agents/agent-1/logs',
+  ];
+
+  for (const path of drainAllowedPaths) {
+    it(`allows ${path} for a draining removed device`, async () => {
+      vi.mocked(isDeviceUninstallDraining).mockResolvedValue(true);
+      buildSelectMock([makeDevice({ status: 'decommissioned' })]);
+
+      const c = createContext({ token: VALID_TOKEN, path });
+      const next = vi.fn().mockResolvedValue(undefined);
+
+      await agentAuthMiddleware(c, next);
+
+      expect(next).toHaveBeenCalledTimes(1);
+    });
+  }
+
+  const drainBlockedPaths: Array<[string, string]> = [
+    // BitLocker / FileVault recovery-key ingest. A removed machine must not be
+    // able to plant or overwrite escrowed key material for the org.
+    ['recovery-keys', '/api/v1/agents/agent-1/security/recovery-keys'],
+    // PAM elevation requests.
+    ['elevation-requests', '/api/v1/agents/agent-1/elevation-requests'],
+    // PAM reconciliation ownership reads are intentionally unavailable while
+    // either tenant or device drain has narrowed the agent surface.
+    ['pam-reconciliation-bindings', '/api/v1/agents/agent-1/pam/reconciliation-bindings'],
+    // Inventory push.
+    ['inventory (hardware)', '/api/v1/agents/agent-1/hardware'],
+    ['inventory (software)', '/api/v1/agents/agent-1/software'],
+    ['patches', '/api/v1/agents/agent-1/patches'],
+    ['config', '/api/v1/agents/agent-1/config'],
+    // The extension gateway mounts agent routes at `<prefix>/agent/:id/*`
+    // (singular) through THIS middleware. The drain allowlist is anchored on
+    // the core `agents/<id>/<action>` shape, so no extension namespace can
+    // join the drain surface — even by mimicking an allowed action name.
+    ['extension gateway agent path', '/api/v1/ext/acme/agent/agent-1/heartbeat'],
+    ['extension gateway agent subpath', '/api/v1/ext/acme/agent/agent-1/commands/cmd-1/result'],
+    // Nested path under a real agent route with an attacker-chosen final segment.
+    ['nested winget-bootstrap path', '/api/v1/agents/agent-1/winget-bootstrap/file/heartbeat'],
+    // The CRAFTED TAIL. The old predicate indexed from the END, so any path
+    // whose tail read `agents/<id>/<action>` matched — and the AGENT supplies
+    // the tail, so no extension-author complicity was needed. Extension route
+    // paths are copied verbatim with no validation
+    // (extensions/contributionRegistry.ts), and the gateway mounts agent routes
+    // at both `<prefix>/agent/<id>/*` and `/api/v1/<routeNamespace>/agent/<id>/*`.
+    ['crafted extension tail (heartbeat)', '/api/v1/ext/acme/agent/agent-1/agents/agent-1/heartbeat'],
+    ['crafted extension tail (rotate-token)', '/api/v1/ext/acme/agent/agent-1/agents/agent-1/rotate-token'],
+    ['crafted extension tail (commands result)', '/api/v1/ext/acme/agent/agent-1/agents/agent-1/commands/cmd-1/result'],
+    ['crafted namespace tail', '/api/v1/workspace/agent/agent-1/agents/agent-1/commands'],
+    // Right shape, wrong mount root.
+    ['wrong api version', '/api/v2/agents/agent-1/heartbeat'],
+    ['missing api prefix', '/v1/agents/agent-1/heartbeat'],
+    // Right mount, wrong agent id in the id position.
+    //
+    // WEAK GUARD, deliberately kept and labelled: `createContext`'s `param()`
+    // hardcodes 'agent-1' regardless of the path, so this asserts only that the
+    // id position is still compared to the authenticated agent id. The OLD
+    // from-the-end predicate compared it too, so no revert probe fails on this
+    // row — it is regression cover for the index arithmetic surviving the
+    // rewrite, NOT evidence of a hole the rewrite closed. Deriving `param()`
+    // from the path would make it strictly worse (the ids would then agree).
+    ['another agent id', '/api/v1/agents/agent-99/heartbeat'],
+  ];
+
+  for (const [label, path] of drainBlockedPaths) {
+    it(`refuses a draining removed device on ${label}`, async () => {
+      vi.mocked(isDeviceUninstallDraining).mockResolvedValue(true);
+      buildSelectMock([makeDevice({ status: 'decommissioned' })]);
+
+      const c = createContext({ token: VALID_TOKEN, path });
+      const next = vi.fn();
+
+      const result = await agentAuthMiddleware(c, next);
+
+      expect(next).not.toHaveBeenCalled();
+      expect((result as any).status).toBe(403);
+      expect((result as any).body).toEqual({ error: 'device_uninstall_draining' });
+    });
+  }
+
+  // ---- Layer 3: one derived claim allowlist.
+
+  it('carries the derived claim allowlist (and deviceUninstallDraining) on the agent context', async () => {
+    vi.mocked(isDeviceUninstallDraining).mockResolvedValue(true);
+    buildSelectMock([makeDevice({ status: 'decommissioned' })]);
+
+    const c = createContext({ token: VALID_TOKEN, path: '/api/v1/agents/agent-1/commands' });
+    const next = vi.fn().mockResolvedValue(undefined);
+
+    await agentAuthMiddleware(c, next);
+
+    const ctx = c.get('agent') as {
+      deviceUninstallDraining?: boolean;
+      tenantDraining?: boolean;
+      claimTypeAllowlist?: readonly string[];
+    };
+    expect(ctx.deviceUninstallDraining).toBe(true);
+    // The tenant is perfectly healthy — only this ONE device is being removed.
+    expect(ctx.tenantDraining).toBe(false);
+    expect(ctx.claimTypeAllowlist).toEqual(['self_uninstall']);
+    expect(DRAIN_CLAIM_TYPE_ALLOWLIST).toEqual(['self_uninstall']);
+  });
+
+  it('leaves claimTypeAllowlist UNDEFINED (unrestricted) for a healthy device on a healthy tenant', async () => {
+    buildSelectMock([makeDevice({ status: 'online' })]);
+
+    const c = createContext({ token: VALID_TOKEN, path: '/api/v1/agents/agent-1/hardware' });
+    const next = vi.fn().mockResolvedValue(undefined);
+
+    await agentAuthMiddleware(c, next);
+
+    const ctx = c.get('agent') as { claimTypeAllowlist?: readonly string[]; deviceUninstallDraining?: boolean };
+    expect(ctx.claimTypeAllowlist).toBeUndefined();
+    expect(ctx.deviceUninstallDraining).toBe(false);
+  });
+
+  it('derives the same claim allowlist for a TENANT drain (#2774), with the tenant_offboarding refusal code preserved', async () => {
+    vi.mocked(getAgentTenantState).mockResolvedValue('draining');
+    buildSelectMock([makeDevice({ status: 'online' })]);
+
+    const allowed = createContext({ token: VALID_TOKEN, path: '/api/v1/agents/agent-1/heartbeat' });
+    await agentAuthMiddleware(allowed, vi.fn().mockResolvedValue(undefined));
+    const ctx = allowed.get('agent') as {
+      claimTypeAllowlist?: readonly string[];
+      deviceUninstallDraining?: boolean;
+    };
+    expect(ctx.claimTypeAllowlist).toEqual(['self_uninstall']);
+    expect(ctx.deviceUninstallDraining).toBe(false);
+
+    buildSelectMock([makeDevice({ status: 'online' })]);
+    const blocked = createContext({ token: VALID_TOKEN, path: '/api/v1/agents/agent-1/hardware' });
+    const result = await agentAuthMiddleware(blocked, vi.fn());
+    expect((result as any).body).toEqual({ error: 'tenant_offboarding' });
+  });
+});
+
+// #3986 fix round 1, HIGH-1 — `rotate-token` (the MINT half) is off the DEVICE
+// drain surface. `routes/agents/token.ts` carries no `devices.status` guard of
+// its own, and the credentials it mints OUTLIVE the drain window: nothing
+// revokes a staged or promoted rotation when the deadline passes, and
+// POST /devices/:id/restore touches no token hash. A stolen token on a removed
+// device could therefore be rotated into a fresh agent + watchdog + helper set
+// that lies dormant behind the post-expiry 403 and becomes the LIVE credential
+// the moment an operator restores the device. Rotation also demotes the
+// legitimate token, letting a thief deny the very uninstall the window exists
+// to deliver.
+describe('agentAuthMiddleware - rotate-token is off the device drain surface (#3986)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.unstubAllEnvs();
+    vi.mocked(getRedis).mockReturnValue({} as any);
+    vi.mocked(getAgentTenantState).mockResolvedValue('active');
+    vi.mocked(isDeviceUninstallDraining).mockResolvedValue(true);
+    vi.mocked(rateLimiter).mockResolvedValue({
+      allowed: true,
+      remaining: 100,
+      resetAt: new Date(Date.now() + 60_000),
+    });
+  });
+
+  it('refuses a draining removed device on rotate-token (credential MINT)', async () => {
+    buildSelectMock([makeDevice({ status: 'decommissioned' })]);
+
+    const c = createContext({ token: VALID_TOKEN, path: '/api/v1/agents/agent-1/rotate-token' });
+    const next = vi.fn();
+
+    const result = await agentAuthMiddleware(c, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect((result as any).status).toBe(403);
+    expect((result as any).body).toEqual({ error: 'device_uninstall_draining' });
+  });
+
+  it('still allows rotate-token/confirm for a draining removed device (finish a staged rotation)', async () => {
+    // The CONFIRM half is safe and necessary: it only promotes a credential the
+    // agent already holds on disk. Blocking it would lock out an agent that
+    // crashed mid-rotation, which is the crash window two-phase rotation exists
+    // to survive.
+    buildSelectMock([makeDevice({ status: 'decommissioned' })]);
+
+    const c = createContext({
+      token: VALID_TOKEN,
+      path: '/api/v1/agents/agent-1/rotate-token/confirm',
+    });
+    const next = vi.fn().mockResolvedValue(undefined);
+
+    await agentAuthMiddleware(c, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+  });
+
+  it('a mid-rotation agent can still heartbeat on its STAGED credential — so dropping rotate-token strands nothing', async () => {
+    // The whole justification for keeping rotate-token open was "don't strand a
+    // mid-stage rotation". A staged (pending) credential authenticates as
+    // role:'agent' through matchRoleScopedAgentTokenHash, so it clears Layer 1b
+    // and collects the uninstall without ever calling rotate-token.
+    const STAGED_TOKEN = 'brz_staged_token';
+    buildSelectMock([
+      makeDevice({
+        status: 'decommissioned',
+        agentTokenHash: sha('brz_old_current_token'),
+        pendingTokenHash: sha(STAGED_TOKEN),
+        pendingTokenExpiresAt: new Date(Date.now() + 60 * 60 * 1000),
+      }),
+    ]);
+
+    const c = createContext({ token: STAGED_TOKEN, path: '/api/v1/agents/agent-1/heartbeat' });
+    const next = vi.fn().mockResolvedValue(undefined);
+
+    await agentAuthMiddleware(c, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+    expect((c.get('agent') as { role?: string }).role).toBe('agent');
+    expect((c.get('agent') as { deviceUninstallDraining?: boolean }).deviceUninstallDraining).toBe(true);
+  });
+
+  // Composition. Until this fix the two gates composed by "tenant wins", which
+  // in the only case that differs is a UNION: a device removed with
+  // uninstallAgent:true inside an org whose status is `offboarding` got
+  // `rotate-token` back — precisely the hole the device set exists to close,
+  // reopened by the combination. No test set BOTH states, so the whole
+  // describe above proved nothing about it.
+  it('refuses rotate-token when BOTH drains apply (two narrowing gates intersect; they never union)', async () => {
+    vi.mocked(getAgentTenantState).mockResolvedValue('draining');
+    vi.mocked(isDeviceUninstallDraining).mockResolvedValue(true);
+    buildSelectMock([makeDevice({ status: 'decommissioned' })]);
+
+    const c = createContext({ token: VALID_TOKEN, path: '/api/v1/agents/agent-1/rotate-token' });
+    const next = vi.fn();
+
+    const result = await agentAuthMiddleware(c, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect((result as any).status).toBe(403);
+    // The error CODE still reports the tenant drain (it is the longer-lived,
+    // agent-visible condition and #2774's clients parse it); only the action
+    // SET intersects. Asserting the code here also pins that this 403 came
+    // from the tenant-drain branch — i.e. the tenant state really was
+    // 'draining' and the refusal is the intersection at work, not the device
+    // branch having quietly won instead.
+    expect((result as any).body).toEqual({ error: 'tenant_offboarding' });
+  });
+
+  it('still allows rotate-token/confirm when BOTH drains apply (the CONFIRM half is in both sets)', async () => {
+    vi.mocked(getAgentTenantState).mockResolvedValue('draining');
+    vi.mocked(isDeviceUninstallDraining).mockResolvedValue(true);
+    buildSelectMock([makeDevice({ status: 'decommissioned' })]);
+
+    const c = createContext({
+      token: VALID_TOKEN,
+      path: '/api/v1/agents/agent-1/rotate-token/confirm',
+    });
+    const next = vi.fn().mockResolvedValue(undefined);
+
+    await agentAuthMiddleware(c, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+  });
+
+  it('still allows heartbeat when BOTH drains apply (positive control: the intersection is not an empty set)', async () => {
+    // Without this, the two refusals above would also pass if the
+    // intersection were computed as {} and the whole surface were blocked —
+    // the uninstall would then be undeliverable, which is the opposite
+    // failure and just as bad.
+    vi.mocked(getAgentTenantState).mockResolvedValue('draining');
+    vi.mocked(isDeviceUninstallDraining).mockResolvedValue(true);
+    buildSelectMock([makeDevice({ status: 'decommissioned' })]);
+
+    const c = createContext({ token: VALID_TOKEN, path: '/api/v1/agents/agent-1/heartbeat' });
+    const next = vi.fn().mockResolvedValue(undefined);
+
+    await agentAuthMiddleware(c, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+  });
+
+  it('a TENANT drain keeps rotate-token (the #2774 surface is unchanged)', async () => {
+    // The two drain kinds have different action sets on purpose. An offboarding
+    // customer's machines are legitimately alive and still need rotations to
+    // complete; a removed machine does not.
+    vi.mocked(getAgentTenantState).mockResolvedValue('draining');
+    vi.mocked(isDeviceUninstallDraining).mockResolvedValue(false);
+    buildSelectMock([makeDevice({ status: 'online' })]);
+
+    const c = createContext({ token: VALID_TOKEN, path: '/api/v1/agents/agent-1/rotate-token' });
+    const next = vi.fn().mockResolvedValue(undefined);
+
+    await agentAuthMiddleware(c, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+  });
+});
+
+// #3986 fix round 1, MEDIUM-1 — the drain path predicate and the self-managed
+// DB-context predicate are both anchored ABSOLUTELY on the core mount, not on
+// trailing segments.
+describe('agentAuthMiddleware - core agent path anchoring (#3986)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.unstubAllEnvs();
+    vi.mocked(getRedis).mockReturnValue({} as any);
+    vi.mocked(getAgentTenantState).mockResolvedValue('active');
+    vi.mocked(isDeviceUninstallDraining).mockResolvedValue(false);
+    vi.mocked(rateLimiter).mockResolvedValue({
+      allowed: true,
+      remaining: 100,
+      resetAt: new Date(Date.now() + 60_000),
+    });
+  });
+
+  it('pins CORE_AGENT_MOUNT_SEGMENTS to the actual mount lines in index.ts', async () => {
+    // The predicate hardcodes ['api','v1','agents']. If the mount ever moves,
+    // drain mode fails CLOSED (refuses the whole fleet) — a silent, fleet-wide
+    // outage. Catch it here instead.
+    const { readFileSync } = await import('node:fs');
+    const indexSource = readFileSync(
+      new URL('../index.ts', import.meta.url),
+      'utf-8',
+    );
+    expect(indexSource).toContain("app.route('/api/v1', api)");
+    expect(indexSource).toContain("api.route('/agents', agentRoutes)");
+    // Occurrence counts, not just presence: a SECOND mount of either sub-app
+    // (e.g. agentRoutes also mounted under another prefix) would leave both
+    // strings intact while giving agent requests a path shape the anchored
+    // predicate refuses during a drain.
+    expect(indexSource.split("api.route('/agents', agentRoutes)")).toHaveLength(2);
+    expect(indexSource.split("app.route('/api/v1', api)")).toHaveLength(2);
+    // Residual limitation, stated rather than papered over: this is still a
+    // source-text check. Re-mounting `agentRoutes` inside a DIFFERENT sub-app
+    // whose own prefix is not `/api/v1` would slip past it. Anchoring fails
+    // CLOSED in that case (drain mode refuses), so the blast radius is a loud
+    // refusal, not a silent admit.
+  });
+
+  it('a crafted `agents/<id>/<action>` TAIL under an extension mount does not opt out of the request DB context', async () => {
+    // Same shape as the drain hole, on the self-managed-context predicate. The
+    // trailing-segment match used to let any path ending in `heartbeat` skip
+    // the request-long org wrap; a handler that assumed the ambient context
+    // would then run contextless, which under RLS is a silent zero-row read.
+    buildSelectMock([makeDevice({ status: 'online' })]);
+
+    const c = createContext({
+      token: VALID_TOKEN,
+      path: '/api/v1/ext/acme/agent/agent-1/agents/agent-1/heartbeat',
+    });
+    const next = vi.fn().mockResolvedValue(undefined);
+
+    await agentAuthMiddleware(c, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(withDbAccessContext)).toHaveBeenCalledTimes(1);
+  });
+
+  it('the REAL core heartbeat still opts out of the request DB context', async () => {
+    // Positive control: the anchoring must not have broken the #1105 opt-out
+    // for the three core routes that genuinely self-manage their context.
+    buildSelectMock([makeDevice({ status: 'online' })]);
+
+    const c = createContext({ token: VALID_TOKEN, path: '/api/v1/agents/agent-1/heartbeat' });
+    const next = vi.fn().mockResolvedValue(undefined);
+
+    await agentAuthMiddleware(c, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(withDbAccessContext)).not.toHaveBeenCalled();
+  });
+
+  it('a crafted TAIL is refused during a TENANT drain too, not just a device drain', async () => {
+    vi.mocked(getAgentTenantState).mockResolvedValue('draining');
+    buildSelectMock([makeDevice({ status: 'online' })]);
+
+    const c = createContext({
+      token: VALID_TOKEN,
+      path: '/api/v1/ext/acme/agent/agent-1/agents/agent-1/rotate-token',
+    });
+    const next = vi.fn();
+
+    const result = await agentAuthMiddleware(c, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect((result as any).status).toBe(403);
+    expect((result as any).body).toEqual({ error: 'tenant_offboarding' });
   });
 });
 

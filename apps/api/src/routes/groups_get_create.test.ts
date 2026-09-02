@@ -18,6 +18,10 @@ vi.mock('../services/auditEvents', () => ({
   writeRouteAudit: vi.fn()
 }));
 
+vi.mock('../jobs/peripheralJobs', () => ({
+  schedulePeripheralPolicyDevice: vi.fn().mockResolvedValue(undefined),
+}));
+
 vi.mock('../services/filterEngine', () => ({
   evaluateFilterWithPreview: vi.fn().mockResolvedValue({
     totalCount: 1,

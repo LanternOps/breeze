@@ -10,9 +10,14 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { mockSelect, mockInsert } = vi.hoisted(() => ({
+const { mockSelect, mockInsert, mockSchedulePeripheralPolicyDevice } = vi.hoisted(() => ({
   mockSelect: vi.fn(),
   mockInsert: vi.fn(),
+  mockSchedulePeripheralPolicyDevice: vi.fn().mockResolvedValue('job'),
+}));
+
+vi.mock('../jobs/peripheralJobs', () => ({
+  schedulePeripheralPolicyDevice: mockSchedulePeripheralPolicyDevice,
 }));
 
 vi.mock('../db', () => ({
@@ -189,6 +194,7 @@ describe('addManualGroupMemberships', () => {
     expect(insertedRows[0]).toEqual([
       { deviceId: D2, groupId: GROUP_ID, orgId: ORG_ID, addedBy: 'manual' },
     ]);
+    expect(mockSchedulePeripheralPolicyDevice).toHaveBeenCalledWith(D2, 'manual_membership_changed');
   });
 
   it('does nothing for an empty deviceIds list', async () => {
@@ -219,5 +225,6 @@ describe('addManualGroupMemberships', () => {
     expect(insertedRows[0]).toEqual([
       { deviceId: D1, groupId: GROUP_ID, orgId: ORG_ID, addedBy: 'manual' },
     ]);
+    expect(mockSchedulePeripheralPolicyDevice).toHaveBeenCalledWith(D1, 'manual_membership_changed');
   });
 });

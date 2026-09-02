@@ -1,15 +1,26 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { rateLimiterMock, getRedisMock } = vi.hoisted(() => ({
+const { rateLimiterMock, getRedisMock, resolveLlmConfigForOrgMock } = vi.hoisted(() => ({
   rateLimiterMock: vi.fn(),
   getRedisMock: vi.fn(() => ({}) as never),
+  resolveLlmConfigForOrgMock: vi.fn(),
 }));
 
 vi.mock('./redis', () => ({ getRedis: getRedisMock }));
 vi.mock('./rate-limit', () => ({ rateLimiter: rateLimiterMock }));
+vi.mock('./llm/llmConfigResolver', () => ({
+  LlmOrgResolutionError: class LlmOrgResolutionError extends Error {
+    readonly orgId: string;
+    constructor(orgId: string) {
+      super(`Organization ${orgId} could not be resolved for AI configuration.`);
+      this.name = 'LlmOrgResolutionError';
+      this.orgId = orgId;
+    }
+  },
+  resolveLlmConfigForOrg: (...args: unknown[]) => resolveLlmConfigForOrgMock(...args),
+}));
 
 import {
-  DEFAULT_CLIENT_AI_MODEL,
   EXCEL_CLIENT_SYSTEM_PROMPT,
   WORD_CLIENT_SYSTEM_PROMPT,
   POWERPOINT_CLIENT_SYSTEM_PROMPT,
@@ -20,10 +31,12 @@ import {
   buildClientAuthContext,
   checkClientRateLimits,
   generateClientSessionTitle,
+  resolveClientLlmConfig,
 } from './clientAiSessions';
 import { CLIENT_HOSTS, type ClientHost } from './clientAiHosts';
 import { CLIENT_TOOL_REGISTRIES, isClientHostSupported } from './clientAiTools';
 import { defaultClientAiPolicy } from './clientAiPolicy';
+import { LlmOrgResolutionError } from './llm/llmConfigResolver';
 
 const ORG = '0c0c0c0c-1111-4222-8333-444455556666';
 const USER = 'beefbeef-1111-4222-8333-444455556666';
@@ -31,6 +44,11 @@ const USER = 'beefbeef-1111-4222-8333-444455556666';
 beforeEach(() => {
   vi.clearAllMocks();
   rateLimiterMock.mockResolvedValue({ allowed: true, remaining: 9, resetAt: new Date() });
+  resolveLlmConfigForOrgMock.mockResolvedValue({
+    source: 'platform',
+    apiKey: 'platform-key',
+    model: 'claude-sonnet-4-6',
+  });
 });
 
 describe('system prompt', () => {
@@ -91,7 +109,7 @@ describe('buildClientAuthContext', () => {
     expect(auth.canAccessOrg(ORG)).toBe(true);
     expect(auth.canAccessOrg('9d9d9d9d-1111-4222-8333-444455556666')).toBe(false);
     expect(auth.partnerId).toBeNull();
-    expect(auth.token.mfa).toBe(false);
+    expect(auth.token!.mfa).toBe(false);
   });
 
   it('falls back to the email when the user has no display name', () => {
@@ -135,9 +153,24 @@ describe('generateClientSessionTitle', () => {
   });
 });
 
-describe('DEFAULT_CLIENT_AI_MODEL', () => {
-  it('matches the platform default model', () => {
-    expect(DEFAULT_CLIENT_AI_MODEL).toBe('claude-sonnet-4-5-20250929');
+describe('resolveClientLlmConfig', () => {
+  it('resolves the provider from the authenticated organization owner', async () => {
+    await resolveClientLlmConfig(ORG);
+
+    expect(resolveLlmConfigForOrgMock).toHaveBeenCalledWith(ORG);
+  });
+
+  it('tags a missing organization with client-ai context before rethrowing', async () => {
+    const error = new LlmOrgResolutionError(ORG);
+    resolveLlmConfigForOrgMock.mockRejectedValueOnce(error);
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    await expect(resolveClientLlmConfig(ORG)).rejects.toBe(error);
+    expect(consoleError).toHaveBeenCalledWith('[client-ai] failed to resolve organization LLM config', {
+      orgId: ORG,
+      error,
+    });
+    consoleError.mockRestore();
   });
 });
 

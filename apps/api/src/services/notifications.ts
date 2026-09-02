@@ -5,6 +5,11 @@ import { alerts, mobileDevices, organizationUsers, pushNotifications, users } fr
 import { and, eq } from 'drizzle-orm';
 import { getEventBus } from './eventBus';
 import { isApnsConfigured, sendApnsNotification } from './apns';
+// Moved to its own module in W07 (#3901) so non-Firebase callers can use it.
+// Re-exported here so every existing importer keeps working.
+import { isInQuietHours, type QuietHoursConfig } from './quietHours';
+
+export { isInQuietHours, type QuietHoursConfig };
 
 export interface PushPayload {
   title: string;
@@ -12,13 +17,6 @@ export interface PushPayload {
   data: Record<string, string>;
   alertId: string | null;
   eventType: string;
-}
-
-export interface QuietHoursConfig {
-  start: string;
-  end: string;
-  timezone?: string;
-  enabled?: boolean;
 }
 
 type AlertSeverity = 'critical' | 'high' | 'medium' | 'low' | 'info';
@@ -217,30 +215,6 @@ export async function sendAPNS(token: string, payload: PushPayload): Promise<Pus
   throw new Error(`APNS delivery failed (status ${res.status}${res.reason ? `, ${res.reason}` : ''})`);
 }
 
-export function isInQuietHours(quietHours?: QuietHoursConfig | null): boolean {
-  if (!quietHours || quietHours.enabled === false) {
-    return false;
-  }
-
-  const startMinutes = parseMinutes(quietHours.start);
-  const endMinutes = parseMinutes(quietHours.end);
-
-  if (startMinutes === null || endMinutes === null) {
-    return false;
-  }
-
-  const nowMinutes = getMinutesInTimezone(new Date(), quietHours.timezone);
-
-  if (startMinutes === endMinutes) {
-    return true;
-  }
-
-  if (startMinutes < endMinutes) {
-    return nowMinutes >= startMinutes && nowMinutes < endMinutes;
-  }
-
-  return nowMinutes >= startMinutes || nowMinutes < endMinutes;
-}
 
 export function subscribeToAlertEvents(): () => void {
   const bus = getEventBus();
@@ -305,44 +279,4 @@ export async function getUsersForAlert(orgId: string, severity?: AlertSeverity):
   return rows.map(row => row.userId);
 }
 
-function parseMinutes(value: string): number | null {
-  const match = /^(\d{1,2}):(\d{2})$/.exec(value);
-  if (!match) {
-    return null;
-  }
 
-  const hours = Number(match[1]);
-  const minutes = Number(match[2]);
-
-  if (Number.isNaN(hours) || Number.isNaN(minutes)) {
-    return null;
-  }
-
-  if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) {
-    return null;
-  }
-
-  return hours * 60 + minutes;
-}
-
-function getMinutesInTimezone(date: Date, timezone?: string): number {
-  if (!timezone) {
-    return date.getHours() * 60 + date.getMinutes();
-  }
-
-  try {
-    const parts = new Intl.DateTimeFormat('en-US', {
-      timeZone: timezone,
-      hourCycle: 'h23',
-      hour: '2-digit',
-      minute: '2-digit'
-    }).formatToParts(date);
-
-    const hour = Number(parts.find(part => part.type === 'hour')?.value ?? '0');
-    const minute = Number(parts.find(part => part.type === 'minute')?.value ?? '0');
-
-    return hour * 60 + minute;
-  } catch (err) {
-    return date.getHours() * 60 + date.getMinutes();
-  }
-}

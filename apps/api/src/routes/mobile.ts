@@ -18,6 +18,12 @@ import {
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { userRateLimit } from '../middleware/userRateLimit';
 import { setCooldown, markConfigPolicyRuleCooldown } from '../services/alertCooldown';
+import {
+  ALERT_ACKNOWLEDGE_CAS_LOST_MESSAGE,
+  ALERT_CAS_LOST_MESSAGE,
+  buildAcknowledgeAlertCas,
+  buildResolveAlertCas,
+} from '../services/alertService';
 import { writeRouteAudit } from '../services/auditEvents';
 import { publishEvent } from '../services/eventBus';
 import { escapeLike } from '../utils/sql';
@@ -121,9 +127,10 @@ function registrationConflict(
   if (registrationConflictThrottle.shouldReport(`${reason}:${userId}`)) {
     captureMessage(
       'mobile push registration conflicted — the phone is not receiving notifications',
-      'warning',
-      undefined,
-      { area: 'mobile-device-identity', reason }
+      {
+        eventCode: 'mobile_push_registration_conflict',
+        tags: { mobile_registration_reason: reason },
+      }
     );
   }
   return c.json(
@@ -364,9 +371,10 @@ mobileRoutes.post(
       // this state re-registers on every app foreground.
       captureMessage(
         'mobile push registration fell back to push-derived device id — block enforcement stays inert for this caller',
-        'warning',
-        undefined,
-        { area: 'mobile-device-identity', reason: plan.fallbackReason }
+        {
+          eventCode: 'mobile_push_registration_fallback',
+          tags: { mobile_registration_reason: plan.fallbackReason },
+        }
       );
     }
 
@@ -901,11 +909,23 @@ mobileRoutes.post(
       return c.json({ error: 'Alert not found' }, 404);
     }
 
+    // Fast path with a specific message. It is NOT the concurrency control — the
+    // compare-and-swap below is. See the twin handler in routes/alerts/alerts.ts
+    // for why `acknowledged` carries the CAS loser's 409 rather than a 400.
+    if (alert.status === 'acknowledged') {
+      return c.json({ error: 'Alert is already acknowledged' }, 409);
+    }
     if (alert.status !== 'active') {
       return c.json({ error: `Cannot acknowledge alert with status: ${alert.status}` }, 400);
     }
 
     const acknowledgedAt = new Date();
+    // Winner-takes-all (#4101) — same predicate as the twin handler in
+    // routes/alerts/alerts.ts. This path additionally never looked at the
+    // `RETURNING` at all (`updated?.id ?? alertId`), so a write that matched zero
+    // rows — a lost race, or a row this tenant context cannot see, which raises no
+    // error under breeze_app RLS — still published `alert.acknowledged`, still fed
+    // the ML loop and still answered 200 with a null body.
     const [updated] = await db
       .update(alerts)
       .set({
@@ -913,15 +933,18 @@ mobileRoutes.post(
         acknowledgedAt,
         acknowledgedBy: auth.user.id
       })
-      .where(eq(alerts.id, alertId))
+      .where(buildAcknowledgeAlertCas(alertId))
       .returning();
+    if (!updated) {
+      return c.json({ error: ALERT_ACKNOWLEDGE_CAS_LOST_MESSAGE }, 409);
+    }
 
     try {
       await publishEvent(
         'alert.acknowledged',
         alert.orgId,
         {
-          alertId: updated?.id ?? alertId,
+          alertId: updated.id,
           ruleId: alert.ruleId,
           deviceId: alert.deviceId,
           acknowledgedBy: auth.user.id
@@ -935,7 +958,7 @@ mobileRoutes.post(
 
     await emitAlertStateFeedback({
       orgId: alert.orgId,
-      alertId: updated?.id ?? alertId,
+      alertId: updated.id,
       eventType: 'alert.acknowledged',
       outcome: 'acknowledged',
       actorUserId: auth.user.id,
@@ -950,8 +973,8 @@ mobileRoutes.post(
       orgId: alert.orgId,
       action: 'mobile.alert.acknowledge',
       resourceType: 'alert',
-      resourceId: updated?.id ?? alertId,
-      resourceName: updated?.title ?? alert.title
+      resourceId: updated.id,
+      resourceName: updated.title
     });
 
     return c.json(updated);
@@ -975,8 +998,10 @@ mobileRoutes.post(
       return c.json({ error: 'Alert not found' }, 404);
     }
 
+    // Fast path with a specific message. It is NOT the concurrency control — the
+    // compare-and-swap below is. A tech racing the auto-resolve sweep clears this.
     if (alert.status === 'resolved') {
-      return c.json({ error: 'Alert is already resolved' }, 400);
+      return c.json({ error: 'Alert is already resolved' }, 409);
     }
     if (alert.status === 'dismissed') {
       // Dismissed is terminal (matches POST /alerts/:id/resolve): resolving it
@@ -985,6 +1010,8 @@ mobileRoutes.post(
     }
 
     const resolvedAt = new Date();
+    // Winner-takes-all (#4094) — same predicate as `resolveAlert`. See the twin
+    // handler in routes/alerts/alerts.ts for the full rationale.
     const [updated] = await db
       .update(alerts)
       .set({
@@ -993,8 +1020,13 @@ mobileRoutes.post(
         resolvedBy: auth.user.id,
         resolutionNote: data.note
       })
-      .where(eq(alerts.id, alertId))
+      .where(buildResolveAlertCas(alertId))
       .returning();
+    if (!updated) {
+      // Lost the race: another request reached a terminal status first. The
+      // cooldown/event/feedback/audit fan-out below belongs to that caller only.
+      return c.json({ error: ALERT_CAS_LOST_MESSAGE }, 409);
+    }
 
     try {
       if (alert.ruleId) {
@@ -1030,11 +1062,13 @@ mobileRoutes.post(
         'alert.resolved',
         alert.orgId,
         {
-          alertId: updated?.id ?? alertId,
+          alertId: updated.id,
           ruleId: alert.ruleId,
           deviceId: alert.deviceId,
           resolvedBy: auth.user.id,
-          resolutionNote: data.note
+          resolutionNote: data.note,
+          resolvedAt: resolvedAt.toISOString(),
+          triggeredAt: alert.triggeredAt.toISOString(),
         },
         'mobile-routes',
         { userId: auth.user.id }
@@ -1045,7 +1079,7 @@ mobileRoutes.post(
 
     await emitAlertStateFeedback({
       orgId: alert.orgId,
-      alertId: updated?.id ?? alertId,
+      alertId: updated.id,
       eventType: 'alert.resolved',
       outcome: 'resolved',
       actorUserId: auth.user.id,
@@ -1061,8 +1095,8 @@ mobileRoutes.post(
       orgId: alert.orgId,
       action: 'mobile.alert.resolve',
       resourceType: 'alert',
-      resourceId: updated?.id ?? alertId,
-      resourceName: updated?.title ?? alert.title,
+      resourceId: updated.id,
+      resourceName: updated.title,
       details: { hasNote: Boolean(data.note) }
     });
 
@@ -1211,17 +1245,17 @@ mobileRoutes.post(
         return c.json({ error: result.error }, result.status);
       }
 
-      // A dispatch can now fail per device WITHOUT failing the request
-      // (#3409 PR2's per-device failure channel) — e.g. an unresolved or
-      // secret {{var.*}} token. For this single-device endpoint that means
-      // `executions` is empty and `failures` carries the reason; indexing
-      // [0] here used to throw and turn a user-fixable problem into a 500.
-      const execution = result.executions[0];
-      if (!execution) {
-        const failure = result.failures[0];
+      const admission = result.admission.targets.find(
+        (target) => target.requestedDeviceId === device.id,
+      );
+      if (!admission || admission.admission !== 'admitted' || !admission.executionId || !admission.commandId) {
+        const status = admission?.reasonCode === 'maintenance_suppressed' ? 409 : 422;
         return c.json(
-          { error: failure?.error ?? 'Script could not be dispatched to this device' },
-          422
+          {
+            admission: admission?.admission ?? 'denied',
+            reasonCode: admission?.reasonCode ?? 'not_found_or_inaccessible',
+          },
+          status,
         );
       }
       writeRouteAudit(c, {
@@ -1232,9 +1266,10 @@ mobileRoutes.post(
         resourceName: device.hostname,
         details: {
           action: data.action,
-          scriptId: result.scriptId,
-          executionId: execution.executionId,
-          commandId: execution.commandId,
+          requestId: result.admission.requestId,
+          scriptId: result.script.id,
+          executionId: admission.executionId,
+          commandId: admission.commandId,
           // #3409 PR3 §2.2 — bound parameter keys whose caller-supplied value
           // was dropped in favour of the binding. KEYS ONLY, never values.
           // Named distinctly rather than folded into an existing key: audit
@@ -1246,8 +1281,8 @@ mobileRoutes.post(
 
       return c.json({
         action: data.action,
-        executionId: execution.executionId,
-        commandId: execution.commandId,
+        executionId: admission.executionId,
+        commandId: admission.commandId,
         // This endpoint accepts `parameters`, so the mobile client is just as
         // able to supply a value for a bound key as the web one — the warning
         // is surfaced here for the same reason and in the same shape as

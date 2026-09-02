@@ -1,6 +1,8 @@
-import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, uniqueIndex, integer } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
+import { bigint, check, foreignKey, pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, uniqueIndex, integer } from 'drizzle-orm/pg-core';
 import { organizations, partners } from './orgs';
 import { users } from './users';
+import { authBrowserTransitions } from './authBrowserTransitions';
 
 export const ssoProviderTypeEnum = pgEnum('sso_provider_type', ['oidc', 'saml']);
 export const ssoProviderStatusEnum = pgEnum('sso_provider_status', ['active', 'inactive', 'testing']);
@@ -125,26 +127,58 @@ export const ssoSessions = pgTable('sso_sessions', {
   // has no partner_id/org_id, so the tenant-cascade sweep never reaches it.
   linkUserId: uuid('link_user_id').references(() => users.id, { onDelete: 'cascade' }),
 
+  // Reauth-mode marker (#4018): when set, the callback mints a single-use
+  // enrollment step-up grant for this user instead of logging in or linking.
+  // Same ON DELETE CASCADE rationale as linkUserId above. Mutually exclusive
+  // with linkUserId (sso_sessions_single_mode_chk).
+  reauthUserId: uuid('reauth_user_id').references(() => users.id, { onDelete: 'cascade' }),
+
   // SR2-11 pending-transaction binding.
   //
   // providerVersion: sso_providers.config_version at creation. NULL only for
   // rows written before this column existed — the callback REJECTS those.
   providerVersion: integer('provider_version'),
 
-  // The three initiating_* columns are LINK-MODE ONLY (set by
-  // POST /sso/link/start alongside linkUserId). A login session has no
+  // The three initiating_* columns are set by BOTH user-initiated modes — link
+  // (POST /sso/link/start, alongside linkUserId) and reauth (POST
+  // /sso/reauth/start, alongside reauthUserId). A login session has no
   // initiating user, so they stay NULL there — which is why they are nullable.
-  // The link callback requires all three to be present AND to still match live
-  // state, which is what makes logout / password reset / MFA reset / suspension
-  // / global revocation invalidate a pending link.
+  // Both callbacks require all three to be present AND to still match live
+  // state (validateSessionBinding), which is what makes logout / password reset
+  // / MFA reset / suspension / global revocation invalidate a pending
+  // transaction in either mode.
+  //
+  // Reauth leans on them twice: once for that binding check, and again to stamp
+  // the minted step-up grant with the epochs and sid the transaction STARTED
+  // under, so a grant cannot outlive the session that authorized it.
   initiatingAuthEpoch: integer('initiating_auth_epoch'),
   initiatingMfaEpoch: integer('initiating_mfa_epoch'),
   // = refresh_token_families.family_id == the initiating access token's `sid`.
   initiatingSessionId: uuid('initiating_session_id'),
 
+  // Nullable for link mode and pre-deploy in-flight SSO rows. New login starts
+  // refuse initiation without a live browser binding and capture both fields,
+  // so callbacks recover the exact transition generation durably.
+  browserTransitionId: uuid('browser_transition_id'),
+  browserGeneration: bigint('browser_generation', { mode: 'number' }),
+
   expiresAt: timestamp('expires_at').notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull()
-});
+}, (table) => ({
+  browserTransitionPairCheck: check(
+    'sso_sessions_browser_transition_pair_chk',
+    sql`(${table.browserTransitionId} IS NULL) = (${table.browserGeneration} IS NULL)`,
+  ),
+  browserGenerationCheck: check(
+    'sso_sessions_browser_generation_chk',
+    sql`${table.browserGeneration} IS NULL OR ${table.browserGeneration} >= 1`,
+  ),
+  browserTransitionFk: foreignKey({
+    columns: [table.browserTransitionId],
+    foreignColumns: [authBrowserTransitions.id],
+    name: 'sso_sessions_browser_transition_fk',
+  }).onDelete('cascade'),
+}));
 
 // SSO Verified Domains — org proves DNS ownership before JIT-provisioning is
 // allowed for addresses in the domain (security review #2, H-2, Plan B).

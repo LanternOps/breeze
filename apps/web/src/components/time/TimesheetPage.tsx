@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { sourceBadgeLabelKey } from './timeEntrySource';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, ActionError, handleActionError } from '../../lib/runAction';
 import { showToast } from '../shared/Toast';
 import { formatMinutes } from '../../lib/timeFormat';
+import { formatMoney } from '../billing/shared/format';
+import { ApproximateMoneyLine } from '../billing/shared/ApproximateMoneyLine';
 import { onTimerChanged } from '../../lib/timerActions';
 import { useHashState } from '@/lib/useHashState';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
@@ -23,6 +26,14 @@ interface TsEntry {
   description: string | null;
   isBillable: boolean;
   hourlyRate: string | null;
+  /** Snapshot stamped when the rate was set; null only while hourlyRate is null. */
+  currencyCode: string | null;
+  /** `billed` locks startedAt/endedAt/isBillable/hourlyRate server-side (409 ENTRY_BILLED
+   *  if any of them is PRESENT in a PATCH) — only the description may change. */
+  billingStatus?: 'not_billed' | 'billed' | 'no_charge' | 'contract';
+  /** W06 (#3900) server-stamped provenance. Absent on an API predating the
+   *  column — render nothing rather than guessing 'manual'. */
+  source?: string | null;
   isApproved: boolean;
   ticketId: string;
   ticketNumber: string;
@@ -37,10 +48,16 @@ interface TsDay {
   entries: TsEntry[];
 }
 
+/** Mirrors the API's `CurrencyAmount` — per-currency, never summed across. */
+interface CurrencyAmount {
+  currencyCode: string;
+  amount: string;
+}
+
 interface TsSheet {
   weekStart: string;
   days: TsDay[];
-  totals: { totalMinutes: number; billableMinutes: number };
+  totals: { totalMinutes: number; billableMinutes: number; billableAmounts: CurrencyAmount[] };
 }
 
 interface User {
@@ -64,6 +81,19 @@ function mondayUtc(d: Date): string {
   const dow = (utc.getUTCDay() + 6) % 7; // Mon=0 … Sun=6
   utc.setUTCDate(utc.getUTCDate() - dow);
   return utc.toISOString().slice(0, 10);
+}
+
+/** The date the approximate line asks rates for. A timesheet is HISTORICAL, so
+ *  an old week must be converted at that week's rates, not today's — but never
+ *  at a future date, because the feed has no rows past today. Hence the earlier
+ *  of today (UTC) and the displayed week's end (Sunday). */
+function reportingDateForWeek(weekStart: string): string {
+  const [y, mo, d] = weekStart.split('-').map(Number);
+  const end = new Date(Date.UTC(y, mo - 1, d));
+  end.setUTCDate(end.getUTCDate() + 6);
+  const weekEnd = end.toISOString().slice(0, 10);
+  const todayUtc = new Date().toISOString().slice(0, 10);
+  return weekEnd < todayUtc ? weekEnd : todayUtc;
 }
 
 function shiftWeek(weekStart: string, delta: number): string {
@@ -276,16 +306,22 @@ export default function TimesheetPage() {
     });
   }, []);
 
-  const saveEdit = useCallback(async (id: string) => {
+  const saveEdit = useCallback(async (entry: TsEntry) => {
+    // Billed rows (#3776 review #5): the API rejects the PATCH when a locked
+    // field is present at all, not just when it changed — send only the
+    // description. The locked inputs are disabled in the form for the same reason.
+    const body = entry.billingStatus === 'billed'
+      ? { description: editForm.description || null }
+      : {
+          description: editForm.description || null,
+          isBillable: editForm.isBillable,
+          hourlyRate: editForm.hourlyRate === '' ? null : Number(editForm.hourlyRate),
+        };
     try {
       await runAction({
-        request: () => fetchWithAuth(`/time-entries/${id}`, {
+        request: () => fetchWithAuth(`/time-entries/${entry.id}`, {
           method: 'PATCH',
-          body: JSON.stringify({
-            description: editForm.description || null,
-            isBillable: editForm.isBillable,
-            hourlyRate: editForm.hourlyRate === '' ? null : Number(editForm.hourlyRate),
-          }),
+          body: JSON.stringify(body),
         }),
         errorFallback: t('longTail.time.TimesheetPage.errors.saveEntryFailed'),
         successMessage: t('longTail.time.TimesheetPage.toasts.entryUpdated'),
@@ -457,6 +493,7 @@ export default function TimesheetPage() {
                             <input
                               type="checkbox"
                               checked={editForm.isBillable}
+                              disabled={entry.billingStatus === 'billed'}
                               onChange={(e) => setEditForm((f) => ({ ...f, isBillable: e.target.checked }))}
                               data-testid={`timesheet-edit-billable-${entry.id}`}
                             />
@@ -465,6 +502,7 @@ export default function TimesheetPage() {
                           <input
                             type="number"
                             value={editForm.hourlyRate}
+                            disabled={entry.billingStatus === 'billed'}
                             onChange={(e) => setEditForm((f) => ({ ...f, hourlyRate: e.target.value }))}
                             aria-label={t('longTail.time.TimesheetPage.rate')}
                             placeholder={t('longTail.time.TimesheetPage.rate')}
@@ -473,7 +511,7 @@ export default function TimesheetPage() {
                           />
                           <button
                             type="button"
-                            onClick={() => void saveEdit(entry.id)}
+                            onClick={() => void saveEdit(entry)}
                             data-testid={`timesheet-edit-save-${entry.id}`}
                             className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-white hover:bg-primary/90"
                           >
@@ -513,6 +551,14 @@ export default function TimesheetPage() {
                               ) : (
                                 <span className="text-sm text-muted-foreground">{t('longTail.time.TimesheetPage.noDescription')}</span>
                               )}
+                              {sourceBadgeLabelKey(entry.source) && (
+                                <span
+                                  data-testid={`time-entry-source-${entry.id}`}
+                                  className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground"
+                                >
+                                  {t(/* i18n-dynamic */ sourceBadgeLabelKey(entry.source)!)}
+                                </span>
+                              )}
                               {entry.isApproved && (
                                 <span
                                   data-testid={`timesheet-approved-${entry.id}`}
@@ -529,6 +575,16 @@ export default function TimesheetPage() {
                           <div className="flex items-center gap-2">
                             <span className="text-sm tabular-nums text-muted-foreground">
                               {entry.endedAt ? formatMinutes(entry.durationMinutes) : t('longTail.time.TimesheetPage.running')}
+                            </span>
+                            {/* Rate in its stamped currency only — a rate without a currency
+                                cannot exist server-side, and guessing USD would relabel money. */}
+                            <span
+                              className="text-sm tabular-nums text-muted-foreground"
+                              data-testid={`timesheet-rate-${entry.id}`}
+                            >
+                              {entry.hourlyRate != null && entry.currencyCode != null
+                                ? formatMoney(entry.hourlyRate, entry.currencyCode)
+                                : t('tickets:ticketTimeBilling.noAmount')}
                             </span>
                             <button
                               type="button"
@@ -555,12 +611,34 @@ export default function TimesheetPage() {
       {sheet && (
         <div
           data-testid="timesheet-total"
-          className="flex items-center gap-4 rounded-lg border bg-muted/30 px-4 py-3 text-sm font-medium"
+          className="flex flex-col gap-1 rounded-lg border bg-muted/30 px-4 py-3 text-sm font-medium"
         >
-          <span>{t('longTail.time.TimesheetPage.total', { duration: formatMinutes(sheet.totals.totalMinutes) })}</span>
-          {sheet.totals.billableMinutes > 0 && (
-            <span className="text-muted-foreground">{t('longTail.time.TimesheetPage.billableTotal', { duration: formatMinutes(sheet.totals.billableMinutes) })}</span>
-          )}
+          <div className="flex items-center gap-4">
+            <span>{t('longTail.time.TimesheetPage.total', { duration: formatMinutes(sheet.totals.totalMinutes) })}</span>
+            {sheet.totals.billableMinutes > 0 && (
+              <span className="text-muted-foreground">{t('longTail.time.TimesheetPage.billableTotal', { duration: formatMinutes(sheet.totals.billableMinutes) })}</span>
+            )}
+            {(sheet.totals.billableAmounts?.length ?? 0) > 0 && (
+              <span className="flex flex-wrap gap-1" data-testid="timesheet-billable-amounts">
+                {sheet.totals.billableAmounts.map((a) => (
+                  <span
+                    key={a.currencyCode}
+                    className="rounded-full border bg-background px-2 py-0.5 text-xs tabular-nums"
+                    data-testid={`timesheet-billable-amount-${a.currencyCode}`}
+                  >
+                    {formatMoney(a.amount, a.currencyCode)}
+                  </span>
+                ))}
+              </span>
+            )}
+          </div>
+          {/* Reporting-only companion to the chips above; hides itself whenever
+              a leg is missing or stale (multi-currency spec §8). */}
+          <ApproximateMoneyLine
+            byCurrency={(sheet.totals.billableAmounts ?? []).map((a) => ({ code: a.currencyCode, amount: a.amount }))}
+            date={reportingDateForWeek(sheet.weekStart)}
+            testId="timesheet-total-approx"
+          />
         </div>
       )}
     </div>

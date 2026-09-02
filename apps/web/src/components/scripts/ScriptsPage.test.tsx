@@ -4,6 +4,7 @@ import '@/lib/i18n';
 
 import ScriptsPage from './ScriptsPage';
 import { fetchWithAuth } from '../../stores/auth';
+import type { ScriptAdmissionResult } from '@breeze/shared';
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn()
@@ -37,7 +38,7 @@ vi.mock('./ScriptExecutionModal', () => ({
     script
   }: {
     isOpen: boolean;
-    onExecute: (scriptId: string, deviceIds: string[], parameters: Record<string, string | number | boolean>, runAs: 'system' | 'user') => Promise<void>;
+    onExecute: (scriptId: string, deviceIds: string[], parameters: Record<string, string | number | boolean>, runAs: 'system' | 'user') => Promise<ScriptAdmissionResult>;
     script: { id: string };
   }) =>
     isOpen ? (
@@ -74,15 +75,17 @@ const baseScript = {
   updatedAt: '2026-02-09T10:00:00.000Z'
 };
 
-describe('ScriptsPage execution freshness', () => {
+describe('ScriptsPage admission refresh', () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it('updates lastRun from execution response timestamp when available', async () => {
+  it('refreshes script history after at least one target is admitted', async () => {
+    let scriptsFetchCount = 0;
     fetchWithAuthMock.mockImplementation(async (input) => {
       const url = String(input);
       if (url.startsWith('/scripts?')) {
+        scriptsFetchCount += 1;
         return makeJsonResponse({ data: [baseScript] });
       }
       if (url === '/devices') {
@@ -96,7 +99,9 @@ describe('ScriptsPage execution freshness', () => {
       }
       if (url === '/scripts/script-1/execute') {
         return makeJsonResponse({
-          executions: [{ createdAt: '2026-02-09T15:30:00.000Z' }]
+          requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+          status: 'queued',
+          targets: [{ requestedDeviceId: 'device-1', admission: 'admitted', executionId: 'execution-1' }],
         }, true, 201);
       }
       return makeJsonResponse({}, false, 404);
@@ -105,30 +110,21 @@ describe('ScriptsPage execution freshness', () => {
     render(<ScriptsPage />);
 
     await screen.findByText('Run Cleanup Temp Files');
+    expect(fetchWithAuthMock.mock.calls.some(([url]) => /^\/devices(?:\?|$)/.test(String(url)))).toBe(false);
     fireEvent.click(screen.getByText('Run Cleanup Temp Files'));
     fireEvent.click(await screen.findByText('Confirm Execute'));
 
-    await waitFor(() => {
-      expect(screen.getByTestId('last-run-script-1').textContent).toBe('2026-02-09T15:30:00.000Z');
-    });
-
-    const scriptsCalls = fetchWithAuthMock.mock.calls.filter(([url]) => String(url).startsWith('/scripts?'));
-    expect(scriptsCalls).toHaveLength(1);
+    await waitFor(() => expect(scriptsFetchCount).toBeGreaterThanOrEqual(2));
   });
 
-  it('refetches scripts when execution response has no timestamp', async () => {
+  it('does not refresh script history when the valid admission rejects every target', async () => {
     let scriptsFetchCount = 0;
 
     fetchWithAuthMock.mockImplementation(async (input) => {
       const url = String(input);
       if (url.startsWith('/scripts?')) {
         scriptsFetchCount += 1;
-        if (scriptsFetchCount === 1) {
-          return makeJsonResponse({ data: [baseScript] });
-        }
-        return makeJsonResponse({
-          data: [{ ...baseScript, lastRun: '2026-02-09T16:45:00.000Z' }]
-        });
+        return makeJsonResponse({ data: [baseScript] });
       }
       if (url === '/devices') {
         return makeJsonResponse({ data: [] });
@@ -140,7 +136,11 @@ describe('ScriptsPage execution freshness', () => {
         return makeJsonResponse(baseScript);
       }
       if (url === '/scripts/script-1/execute') {
-        return makeJsonResponse({ status: 'queued' }, true, 201);
+        return makeJsonResponse({
+          requestId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+          status: 'rejected',
+          targets: [{ requestedDeviceId: 'device-1', admission: 'suppressed', reasonCode: 'maintenance_suppressed' }],
+        }, true, 201);
       }
       return makeJsonResponse({}, false, 404);
     });
@@ -151,11 +151,7 @@ describe('ScriptsPage execution freshness', () => {
     fireEvent.click(screen.getByText('Run Cleanup Temp Files'));
     fireEvent.click(await screen.findByText('Confirm Execute'));
 
-    await waitFor(() => {
-      expect(screen.getByTestId('last-run-script-1').textContent).toBe('2026-02-09T16:45:00.000Z');
-    });
-
-    const scriptsCalls = fetchWithAuthMock.mock.calls.filter(([url]) => String(url).startsWith('/scripts?'));
-    expect(scriptsCalls.length).toBeGreaterThanOrEqual(2);
+    await waitFor(() => expect(fetchWithAuthMock.mock.calls.some(([url]) => String(url) === '/scripts/script-1/execute')).toBe(true));
+    expect(scriptsFetchCount).toBe(1);
   });
 });

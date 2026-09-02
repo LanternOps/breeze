@@ -1,11 +1,20 @@
-import Anthropic from '@anthropic-ai/sdk';
+import type Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
+import { getAnthropicClientForPartner, resolveWireModel } from './llm/llmConfigResolver';
 
 export interface DraftInput {
   messages: Array<{ role: string; content: string | null }>;
   contextSnapshot: unknown;
   elapsedMinutes: number;
   model: string;
+  partnerId: string | null;
+  /**
+   * Tenant axis for the LLM egress audit when this function has to resolve its
+   * own client (#3922). Callers that pass `client` have already attributed the
+   * call themselves.
+   */
+  orgId?: string | null;
+  client?: Anthropic;
 }
 export interface DraftResult {
   subject: string;
@@ -58,7 +67,20 @@ export async function draftTicketFromTranscript(input: DraftInput): Promise<Draf
   const hasAssistant = input.messages.some((m) => m.role === 'assistant' && m.content && m.content.trim().length > 0);
   if (!hasAssistant) throw new ThinTranscriptError();
 
-  const client = new Anthropic();
+  // `input.model` is the WIRE model when the caller supplies its own client
+  // (the caller already translated it via `resolveWireModel`). On the fallback
+  // path we resolve the client here, so we must translate it here too — sending
+  // a platform-logical id to a catalog endpoint 404s at the provider.
+  let client = input.client;
+  let wireModel = input.model;
+  if (!client) {
+    const llm = await getAnthropicClientForPartner(input.partnerId, {
+      surface: 'one_shot_ticket_draft',
+      orgId: input.orgId ?? null,
+    });
+    client = llm.client;
+    wireModel = resolveWireModel(llm.resolved, input.model).model;
+  }
   const userContent = buildUserContent(input);
   let lastErr: unknown;
   let inTok = 0;
@@ -66,7 +88,7 @@ export async function draftTicketFromTranscript(input: DraftInput): Promise<Draf
 
   for (let attempt = 0; attempt < 2; attempt++) {
     const resp = await client.messages.create({
-      model: input.model,
+      model: wireModel,
       max_tokens: 1024,
       system: SYSTEM_PROMPT,
       messages: [{ role: 'user', content: userContent }],

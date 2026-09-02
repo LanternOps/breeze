@@ -63,6 +63,8 @@ function fixtureQuote(overrides: Partial<QuoteRow> = {}): QuoteRow {
     publicResponseConsumedAt: null,
     publicResponseOutcome: null,
     publicLinkRevokedAt: null,
+    revisionOfQuoteId: null,
+    revisionNumber: 1,
     acceptTokenJti: null,
     acceptTokenIssuedAt: null,
     acceptTokenExpiresAt: null,
@@ -140,6 +142,14 @@ describe('resolveAutoVariables', () => {
     expect(values['totals.monthly']).toBe('$0.00');
     expect(values['totals.annual']).toBe('$0.00');
     expect(values['totals.total']).toBe('$810.00');
+  });
+
+  it('an explicit renderLocale (persisted acceptance locale) beats the stamped documentLocale', () => {
+    const values = resolveAutoVariables(
+      fixtureQuote({ currencyCode: 'EUR', documentLocale: 'fr-FR', total: '1000.00' }),
+      { renderLocale: 'en' },
+    );
+    expect(values['totals.total']).toBe('€1,000.00');
   });
 
   it('renders money in the stamped documentLocale (de-DE EUR)', () => {

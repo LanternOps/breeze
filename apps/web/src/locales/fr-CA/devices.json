@@ -111,7 +111,10 @@
     "expiryMinutes_one": "Dans environ {{count}} minute",
     "expiryMinutes_other": "Dans environ {{count}} minutes",
     "expiryHours_one": "Dans environ {{count}} heure",
-    "expiryHours_other": "Dans environ {{count}} heures"
+    "expiryHours_other": "Dans environ {{count}} heures",
+    "mfaRequiredSsoLinks": "L'authentification multifacteur est requise pour générer des liens. Votre organisation vous ouvre une session par l'entremise d'un fournisseur d'identité — demandez à votre administrateur d'activer la confiance MFA pour celui-ci, ou inscrivez un facteur dans les paramètres de votre profil.",
+    "mfaRequiredSsoInstallers": "L'authentification multifacteur est requise pour générer des programmes d'installation. Votre organisation vous ouvre une session par l'entremise d'un fournisseur d'identité — demandez à votre administrateur d'activer la confiance MFA pour celui-ci, ou inscrivez un facteur dans les paramètres de votre profil.",
+    "mfaRequiredSsoTokens": "L'authentification multifacteur est requise pour générer des jetons d'installation. Votre organisation vous ouvre une session par l'entremise d'un fournisseur d'identité — demandez à votre administrateur d'activer la confiance MFA pour celui-ci, ou inscrivez un facteur dans les paramètres de votre profil."
   },
   "changeSiteModal": {
     "failedToLoadSites": "Impossible de charger les sites",
@@ -142,11 +145,15 @@
     "creating": "Création…",
     "createGroup": "Créer un groupe"
   },
+  "decommissionedHiddenHint": {
+    "label": "{{count}} retirés masqués",
+    "show": "afficher"
+  },
   "deviceActions": {
     "unavailable": {
       "offline": "L’appareil est hors ligne",
       "maintenance": "L’appareil est en mode maintenance",
-      "decommissioned": "L’appareil est hors service",
+      "decommissioned": "L’appareil est retiré",
       "quarantined": "L’appareil est mis en quarantaine",
       "updating": "L’appareil se met à jour",
       "pending": "L’appareil est en attente d’inscription",
@@ -179,9 +186,9 @@
         "confirm": "Voici la maintenance"
       },
       "decommission": {
-        "title": "Mettre l’appareil hors service",
-        "message": "Voulez-vous vraiment mettre {{hostname}} hors service ? Cette action retirera définitivement l’appareil de votre parc. L’agent cessera de transmettre ses données et l’appareil ne sera plus surveillé.",
-        "confirm": "Mettre hors service"
+        "title": "Retirer l’appareil",
+        "message": "Retirer {{hostname}} ? Il sera sorti de votre parc actif et ne sera plus surveillé. L’historique est conservé et vous pourrez le restaurer plus tard.",
+        "confirm": "Retirer"
       },
       "clearSessions": {
         "title": "Effacer les sessions",
@@ -206,7 +213,9 @@
     "changeSite": "Changement de site",
     "exitMaintenance": "Entretien des sorties",
     "enterMaintenance": "Voici la maintenance",
-    "decommission": "Mettre hors service",
+    "decommission": "Retirer",
+    "restore": "Restaurer",
+    "permanentlyDelete": "Supprimer définitivement",
     "sendAWakeOnLanPacket": "Envoyez un paquet Wake-on-LAN via un agent pair en ligne sur le LAN de l’appareil",
     "power": "Puissance",
     "shutdown": "Éteindre",
@@ -333,7 +342,8 @@
     "reboot": "Redémarrer",
     "settings": "Paramètres",
     "restore": "Restaurer",
-    "decommission": "Mettre hors service",
+    "decommission": "Retirer",
+    "permanentlyDelete": "Supprimer définitivement",
     "loadingTrend": "Tendance de chargement...",
     "trendUnavailable": "Tendance indisponible",
     "noTrendData": "Aucune donnée de tendance",
@@ -432,7 +442,7 @@
       "online": "En ligne",
       "offline": "Hors ligne",
       "maintenance": "Maintenance",
-      "decommissioned": "Hors service",
+      "decommissioned": "Retiré",
       "quarantined": "En quarantaine",
       "updating": "Mise à jour",
       "pending": "En attente"
@@ -497,7 +507,7 @@
     "takenOutOf": "Retiré de",
     "putInto": "mettre dans",
     "s": "s",
-    "decommissionCancelled": "Mise hors service annulée",
+    "decommissionCancelled": "Retrait annulé",
     "permanentDeleteCancelled": "Suppression permanente annulée",
     "failedToQueueScript": "Impossible de mettre en file d’attente le script",
     "loadingDevice": "Dispositif de chargement...",
@@ -993,7 +1003,7 @@
         "online": "En haut",
         "offline": "À terre",
         "maintenance": "Précipitation",
-        "decommissioned": "Hors serv.",
+        "decommissioned": "Retiré",
         "quarantined": "Quar.",
         "updating": "Mise à jour",
         "pending": "Att."
@@ -1002,7 +1012,7 @@
         "online": "En ligne",
         "offline": "Hors ligne",
         "maintenance": "Maintenance",
-        "decommissioned": "Hors service",
+        "decommissioned": "Retiré",
         "quarantined": "En quarantaine",
         "updating": "Mise à jour",
         "pending": "En attente"
@@ -1073,7 +1083,7 @@
     "wakeSelected": "Wake sélectionné",
     "compareSelected": "Comparer la sélection",
     "linkAsMultiBoot": "Liaison en tant que multi-boot",
-    "decommissionSelected": "Mettre la sélection hors service",
+    "decommissionSelected": "Retirer la sélection",
     "clearSelection": "Effacer la sélection",
     "selectAllDevicesOnThisPage": "Sélectionnez tous les appareils sur cette page",
     "actions": "Actions",
@@ -1087,7 +1097,8 @@
     "wake": "Veillée",
     "settings": "Paramètres",
     "restore": "Restaurer",
-    "decommission": "Mettre hors service",
+    "decommission": "Retirer",
+    "permanentlyDelete": "Supprimer définitivement",
     "inactive": "· inactif",
     "expectedOffline": "Attendu hors ligne",
     "lastSeen": "Dernière apparition",
@@ -1538,10 +1549,10 @@
   "deviceSettingsModal": {
     "addTagPlaceholder": "Ajoutez une balise...",
     "dangerZone": "Zone dangereuse",
-    "decommissionDevice": "Mettre l’appareil hors service",
-    "decommissionWarning": "La mise hors service retirera cet appareil de votre parc actif.",
-    "decommissionedDescription": "Cet appareil est hors service. Vous pouvez le restaurer ou le supprimer définitivement.",
-    "decommissionedTitle": "Appareil hors service",
+    "decommissionDevice": "Retirer l’appareil",
+    "decommissionWarning": "Le retrait sort cet appareil de votre parc actif. L’historique est conservé et vous pourrez le restaurer plus tard.",
+    "decommissionedDescription": "Cet appareil a été retiré. Vous pouvez le restaurer ou le supprimer définitivement.",
+    "decommissionedTitle": "Appareil retiré",
     "displayName": "Nom d’affichage",
     "errors": {
       "loadSites": "Impossible de charger les sites",
@@ -1752,8 +1763,9 @@
       "bulkActionFailed": "Échec de l’action en masse",
       "bulkCommandPartialFailed": "Commandement de masse partiellement échoué",
       "bulkCommandSent": "Commandement en vrac envoyé",
-      "bulkDecommissionFailed": "Échec de la mise hors service groupée",
-      "bulkDecommissioned": "Appareils mis hors service",
+      "bulkDecommissionAllFailed": "Échec du retrait des {{count}} appareil(s) : {{devices}}",
+      "bulkDecommissionFailed": "{{succeeded}} appareil(s) retiré(s) ; {{failed}} échoué(s) : {{devices}}",
+      "bulkDecommissioned": "{{count}} appareil(s) retiré(s)",
       "bulkMaintenanceAllFailed": "Impossible de mettre à jour le mode maintenance pour tous {{count}} appareil(s) : {{devices}}",
       "bulkMaintenanceSomeFailed": "{{succeeded}} ou périphérique(s) {{verb}} mode maintenance ; {{failed}} échoué : {{devices}}",
       "bulkMaintenanceSuccess": "{{count}} appareils {{verb}} mode maintenance",
@@ -1761,10 +1773,10 @@
       "bulkWakeSent": "Envoi d’un sillage en masse",
       "bulkWakeSomeFailed": "Bulk Wake Certains ont échoué",
       "commandSent": "{{action}} envoyé à {{hostname}}",
-      "decommissionCancelled": "Mise hors service annulée",
-      "decommissionFailed": "Échec de la mise hors service",
-      "decommissioned": "Hors service",
-      "decommissioning": "Mise hors service…",
+      "decommissionCancelled": "Retrait annulé",
+      "decommissionFailed": "Échec du retrait",
+      "decommissioned": "Retiré",
+      "decommissioning": "Retrait en cours…",
       "deleteFailed": "Échec de la suppression",
       "deviceError": "Erreur de l’appareil",
       "deviceOnline": "Appareil en ligne",
@@ -1788,7 +1800,7 @@
       "unknownBulkAction": "Action en vrac inconnue",
       "wakeSentWatching": "Commande de réveil envoyée ; surveillance en cours",
       "wakeTimeout": "Temps d’arrêt du réveil",
-      "bulkAllDecommissioned": "Les {{total}} appareil(s) sélectionnés sont désaffectés — ils n'ont plus d'agent pour exécuter cette action.",
+      "bulkAllDecommissioned": "Les {{total}} appareil(s) sélectionnés sont déjà retirés.",
       "commandQueued": "{{action}} en file d'attente — s'exécutera à la reconnexion de {{hostname}}"
     },
     "tryAgain": "Réessayer",
@@ -1797,8 +1809,8 @@
     "unknownSite": "Site inconnu",
     "viewInstallationGuide": "Voir le guide d’installation",
     "confirmDecommissionedSkip": {
-      "message": "{{skipped}} des {{total}} appareils sélectionnés sont désaffectés et seront ignorés — ils n'ont plus d'agent. Continuer avec les {{eligible}} appareil(s) restants ? Ceux qui sont hors ligne l'exécuteront à leur prochaine connexion.",
-      "title": "Certains appareils sélectionnés sont désaffectés"
+      "message": "{{skipped}} des {{total}} appareils sélectionnés sont retirés et seront ignorés — ils n’ont plus d’agent géré. Continuer avec les {{eligible}} appareil(s) restants ? Ceux qui sont hors ligne l’exécuteront à leur prochaine connexion.",
+      "title": "Certains appareils sélectionnés sont retirés"
     }
   },
   "filterAddDropdown": {
@@ -2267,11 +2279,11 @@
     "cancel": "Annuler"
   },
   "possibleReplacementBanner": {
-    "decommissionFailed": "Échec de la mise hors service de l’ancien appareil",
-    "decommissionOldDevice": "Mettre hors service l’ancien appareil",
-    "decommissionSucceeded": "Ancien appareil mis hors service",
-    "message": "Cet appareil remplace peut-être {{hostname}} — vérifiez et mettez hors service l’ancienne fiche.",
-    "oldDeviceDecommissioned": "Ancien appareil mis hors service — plus rien à vérifier.",
+    "decommissionFailed": "Échec du retrait de l’ancien appareil",
+    "decommissionOldDevice": "Retirer l’ancien appareil",
+    "decommissionSucceeded": "Ancien appareil retiré",
+    "message": "Cet appareil remplace peut-être {{hostname}} — vérifiez et retirez l’ancienne fiche.",
+    "oldDeviceDecommissioned": "Ancien appareil retiré — plus rien à vérifier.",
     "oldDeviceUnavailable": "La fiche de l’ancien appareil n’est plus disponible.",
     "title": "Inscription potentiellement en double",
     "unknownDevice": "l’appareil précédent",

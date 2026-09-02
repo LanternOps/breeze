@@ -3,7 +3,7 @@ import { zValidator } from '../lib/validation';
 import { z } from 'zod';
 import { and, asc, eq, inArray, type SQL } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { ticketCategories, organizations } from '../db/schema';
+import { ticketCategories, organizations, partners } from '../db/schema';
 import { authMiddleware, requireScope, requirePermission } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
 import { ticketCategoryInputSchema } from '@breeze/shared';
@@ -26,6 +26,12 @@ const requirePartnerGlobalAccess = async (c: Context, next: Next) => {
   }
   return next();
 };
+
+async function partnerCurrency(partnerId: string): Promise<string | null> {
+  const rows = await db.select({ currencyCode: partners.currencyCode })
+    .from(partners).where(eq(partners.id, partnerId)).limit(1);
+  return rows[0]?.currencyCode ?? null;
+}
 
 // GET /ticket-categories — list categories visible to the caller
 // RLS is the primary isolation; this adds defense-in-depth app-layer scoping.
@@ -188,10 +194,18 @@ ticketCategoriesRoutes.post(
       }
     }
 
+    let rateCurrency: string | null = null;
+    if (body.defaultHourlyRate != null) {
+      rateCurrency = await partnerCurrency(auth.partnerId);
+      if (!rateCurrency) return c.json({ error: 'Partner not found' }, 404);
+    }
     const inserted = await db.insert(ticketCategories).values({
       ...body,
       // numeric column requires string; Drizzle's numeric type maps to string at runtime
       defaultHourlyRate: body.defaultHourlyRate != null ? String(body.defaultHourlyRate) : null,
+      // Snapshot of the partner currency the rate was entered under (spec §7);
+      // a later partner-currency change must not reinterpret this number.
+      rateCurrency,
       partnerId: auth.partnerId
     }).returning();
     const row = inserted[0]!;
@@ -255,14 +269,38 @@ ticketCategoriesRoutes.patch(
       conditions.push(eq(ticketCategories.partnerId, auth.partnerId));
     }
 
+    const set: Record<string, unknown> = {
+      ...body,
+      defaultHourlyRate: body.defaultHourlyRate != null
+        ? String(body.defaultHourlyRate)
+        : body.defaultHourlyRate === null ? null : undefined,
+      updatedAt: new Date()
+    };
+
+    if (body.defaultHourlyRate !== undefined) {
+      const [existing] = await db
+        .select({ partnerId: ticketCategories.partnerId, defaultHourlyRate: ticketCategories.defaultHourlyRate })
+        .from(ticketCategories).where(eq(ticketCategories.id, id)).limit(1);
+      if (!existing) return c.json({ error: 'Category not found' }, 404);
+      if (body.defaultHourlyRate === null) {
+        set.rateCurrency = null;
+      } else if (
+        existing.defaultHourlyRate == null ||
+        // Compare at the column's numeric(10,2) scale — what the DB will actually store.
+        Number(existing.defaultHourlyRate).toFixed(2) !== body.defaultHourlyRate.toFixed(2)
+      ) {
+        // Snapshot rule: restamp ONLY when the number itself changes. The
+        // editor resends the rate on every save (name/colour/SLA edits), and a
+        // same-value resend after a partner currency change must not
+        // reinterpret the historical rate.
+        const cur = await partnerCurrency(existing.partnerId);
+        if (!cur) return c.json({ error: 'Partner not found' }, 404);
+        set.rateCurrency = cur;
+      }
+    }
+
     const updated = await db.update(ticketCategories)
-      .set({
-        ...body,
-        defaultHourlyRate: body.defaultHourlyRate != null
-          ? String(body.defaultHourlyRate)
-          : body.defaultHourlyRate === null ? null : undefined,
-        updatedAt: new Date()
-      })
+      .set(set)
       .where(and(...conditions))
       .returning();
     if (!updated[0]) return c.json({ error: 'Category not found' }, 404);

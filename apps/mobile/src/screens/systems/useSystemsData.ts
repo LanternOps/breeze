@@ -112,8 +112,14 @@ export function useSystemsData() {
   const lastFetchAt = useRef<number>(0);
   const inFlight = useRef<boolean>(false);
 
-  const fetchAll = useCallback(async (mode: 'initial' | 'refresh') => {
-    if (inFlight.current) return;
+  // Returns whether THIS call fetched and at least one slice arrived. Note what
+  // that does NOT mean: it is false when the call coalesces into an in-flight
+  // request that may yet succeed, and it is true when unrelated slices arrived
+  // but `alerts` itself failed. So it is not a freshness signal for any single
+  // slice, and callers must not treat it as one.
+  const fetchAll = useCallback(async (mode: 'initial' | 'refresh'): Promise<boolean> => {
+    // Coalesced into an in-flight request — this call fetched nothing itself.
+    if (inFlight.current) return false;
     inFlight.current = true;
     setData((d) => ({
       ...d,
@@ -201,7 +207,9 @@ export function useSystemsData() {
       });
       // Only count as a successful fetch when something arrived; an all-failed
       // round must not suppress the next focus refresh for a full minute.
-      if (failedCount < 5) lastFetchAt.current = Date.now();
+      const arrived = failedCount < 5;
+      if (arrived) lastFetchAt.current = Date.now();
+      return arrived;
     } catch (err) {
       // Covers the SYNCHRONOUS paths between allSettled and setData — chiefly
       // the `reportInternalError` loop, which reaches Sentry and can throw.
@@ -232,6 +240,11 @@ export function useSystemsData() {
       } catch {
         // nothing left to report to
       }
+      // A throw means nothing landed. Callers use this to decide whether an
+      // acknowledged row may be un-hidden, so a failed refetch must report
+      // false rather than undefined — otherwise the catch path reads as
+      // "fetch completed" and un-hides rows the server never confirmed.
+      return false;
     } finally {
       inFlight.current = false;
     }

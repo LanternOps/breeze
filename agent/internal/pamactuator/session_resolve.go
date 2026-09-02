@@ -1,6 +1,9 @@
 package pamactuator
 
-import "strings"
+import (
+	"errors"
+	"strings"
+)
 
 // invalidSessionID is the WTS sentinel for "no session" (0xFFFFFFFF, returned
 // by WTSGetActiveConsoleSessionId when there is no console session).
@@ -34,6 +37,20 @@ func resolveSubjectSessionWith(
 	}
 	id, err := console(req)
 	return id, "console_fallback", err
+}
+
+// resolveSubjectSessionStrictWith binds a v2 suspended launch to the live
+// session resolved for its named subject. It deliberately ignores console and
+// unverified numeric-session fallbacks: absence of the named subject fails
+// closed instead of launching into another user's desktop.
+func resolveSubjectSessionStrictWith(req Request, userLookup func(string) (uint32, bool)) (uint32, string, error) {
+	if strings.TrimSpace(req.SubjectUsername) == "" || userLookup == nil {
+		return 0, "subject_session_required", errors.New("PAM subject session is required")
+	}
+	if id, ok := userLookup(req.SubjectUsername); ok && id != 0 && id != invalidSessionID {
+		return id, "username_lookup", nil
+	}
+	return 0, "subject_session_required", errors.New("PAM subject has no active interactive session")
 }
 
 // bareUsername strips a DOMAIN\ (or MACHINE\) prefix and any @realm UPN suffix,

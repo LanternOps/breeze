@@ -5,6 +5,7 @@ const persistVerificationToDbMock = vi.fn(async () => undefined);
 const safePublishMock = vi.fn(async () => undefined);
 const listBackupVerificationsMock = vi.fn(async () => []);
 const runBackupVerificationMock = vi.fn(async () => ({ verification: null, readiness: null }));
+const runScheduledBackupVerificationMock = vi.fn(async () => ({ verification: null, readiness: null }));
 const selectMock = vi.fn();
 
 function selectChain(resolvedValue: unknown) {
@@ -26,6 +27,7 @@ vi.mock('../../db', () => ({
 }));
 
 vi.mock('../../db/schema', () => ({
+  RESTORABLE_BACKUP_JOB_STATUSES: ['completed', 'partial'],
   backupJobs: {
     orgId: 'backup_jobs.org_id',
     deviceId: 'backup_jobs.device_id',
@@ -84,10 +86,11 @@ vi.mock('./verificationService', () => ({
   listBackupVerifications: (...args: unknown[]) => listBackupVerificationsMock(...(args as [])),
   persistVerificationToDb: (...args: unknown[]) => persistVerificationToDbMock(...(args as [])),
   runBackupVerification: (...args: unknown[]) => runBackupVerificationMock(...(args as [])),
+  runScheduledBackupVerification: (...args: unknown[]) => runScheduledBackupVerificationMock(...(args as [])),
   safePublish: (...args: unknown[]) => safePublishMock(...(args as [])),
 }));
 
-import { processBackupVerificationResult, recalculateReadinessScores, timeoutStaleVerifications } from './verificationScheduled';
+import { ensurePostBackupIntegrityChecks, processBackupVerificationResult, recalculateReadinessScores, runWeeklyTestRestore, timeoutStaleVerifications } from './verificationScheduled';
 import { backupJobs, backupVerifications, jobOrgById, verificationOrgById } from './store';
 
 describe('verification timeout handling', () => {
@@ -101,6 +104,7 @@ describe('verification timeout handling', () => {
         })),
       })),
     });
+    runScheduledBackupVerificationMock.mockClear();
   });
 
   it('recomputes readiness immediately when a verification result fails', async () => {
@@ -252,6 +256,71 @@ describe('verification timeout handling', () => {
       expect(verificationOrgById.get(verificationId)).toBe(orgId);
     } finally {
       verificationOrgById.delete(verificationId);
+    }
+  });
+
+  it('post-backup checks call only the scheduled wrapper with the backup job ID', async () => {
+    const orgId = 'org-scheduled-integrity';
+    const jobId = 'job-scheduled-integrity';
+    backupJobs.push({
+      id: jobId,
+      type: 'scheduled',
+      deviceId: 'dev-scheduled-integrity',
+      configId: 'cfg-1',
+      snapshotId: 'provider-facing-snapshot-id',
+      status: 'completed',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+    jobOrgById.set(jobId, orgId);
+
+    try {
+      await ensurePostBackupIntegrityChecks(orgId);
+
+      expect(runScheduledBackupVerificationMock).toHaveBeenCalledWith({
+        orgId,
+        deviceId: 'dev-scheduled-integrity',
+        verificationType: 'integrity',
+        backupJobId: jobId,
+        source: 'post-backup-integrity-check',
+      });
+      expect(runBackupVerificationMock).not.toHaveBeenCalled();
+    } finally {
+      backupJobs.splice(backupJobs.findIndex((job) => job.id === jobId), 1);
+      jobOrgById.delete(jobId);
+    }
+  });
+
+  it('weekly restore checks call only the scheduled wrapper and never pass provider snapshot IDs', async () => {
+    const orgId = 'org-scheduled-restore';
+    const jobId = 'job-scheduled-restore';
+    backupJobs.push({
+      id: jobId,
+      type: 'scheduled',
+      deviceId: 'dev-scheduled-restore',
+      configId: 'cfg-1',
+      snapshotId: 'provider-facing-snapshot-id',
+      status: 'completed',
+      completedAt: new Date().toISOString(),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+    jobOrgById.set(jobId, orgId);
+
+    try {
+      await runWeeklyTestRestore(orgId);
+
+      expect(runScheduledBackupVerificationMock).toHaveBeenCalledWith({
+        orgId,
+        deviceId: 'dev-scheduled-restore',
+        verificationType: 'test_restore',
+        backupJobId: jobId,
+        source: 'weekly-test-restore',
+      });
+      expect(runBackupVerificationMock).not.toHaveBeenCalled();
+    } finally {
+      backupJobs.splice(backupJobs.findIndex((job) => job.id === jobId), 1);
+      jobOrgById.delete(jobId);
     }
   });
 });

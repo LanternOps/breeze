@@ -87,11 +87,46 @@ export async function findSecretVariableReferences(
 ): Promise<string[]> {
   const keys = findVariableTokens(content);
   if (keys.length === 0) return [];
+  const secrecyByKey = await lookupVariableSecrecyByKey(scope, keys);
+  return keys.filter((key) => secrecyByKey.get(key)?.isSecret === true);
+}
+
+/**
+ * What the save-time lookup knows about one tenant-variable key.
+ *
+ * `ownerScope` mirrors `ResolvedVariable.ownerScope`: `'partner'` for a
+ * partner-wide row (`tenant_variables.org_id IS NULL`), `'organization'` for
+ * an org-owned row (including one that SHADOWS a partner-wide key of the same
+ * name — the org row is what this org actually resolves, and it is the org's
+ * own value, so it carries no MSP→customer descent).
+ */
+interface VariableSecrecy {
+  isSecret: boolean;
+  ownerScope: 'organization' | 'partner';
+}
+
+/**
+ * The single save-time "what is this key for this scope?" lookup shared by
+ * {@link findSecretVariableReferences} (content tokens) and
+ * {@link findParameterSecretMismatches} (parameter bindings). One DB round
+ * trip per call. A key with no matching row is ABSENT from the result — the
+ * two callers each treat absence as "unknown, allow" (see their docblocks).
+ */
+async function lookupVariableSecrecyByKey(
+  scope: ScriptCreateScope,
+  keys: string[]
+): Promise<Map<string, VariableSecrecy>> {
+  const result = new Map<string, VariableSecrecy>();
+  if (keys.length === 0) return result;
 
   if (scope.orgId) {
     const variableScope = await loadTenantVariableScope([scope.orgId]);
     const resolved = resolveForOrg(variableScope, scope.orgId);
-    return keys.filter((key) => resolved.get(key)?.isSecret === true);
+    for (const key of keys) {
+      const variable = resolved.get(key);
+      if (variable) result.set(key, { isSecret: variable.isSecret === true, ownerScope: variable.ownerScope });
+    }
+    return result;
   }
 
   if (scope.partnerId) {
@@ -105,17 +140,188 @@ export async function findSecretVariableReferences(
           inArray(tenantVariables.key, keys)
         )
       );
-    const secretKeys = new Set(rows.filter((r) => r.isSecret).map((r) => r.key));
-    return keys.filter((key) => secretKeys.has(key));
+    // `org_id IS NULL` is in the WHERE clause, so every row here is
+    // partner-wide by construction — no need to project org_id back out.
+    for (const row of rows) result.set(row.key, { isSecret: row.isSecret === true, ownerScope: 'partner' });
+    return result;
   }
 
-  return [];
+  return result;
 }
 
 /** User-facing 400 message for {@link findSecretVariableReferences}'s non-empty result. Names only KEYS, never a value. */
 export function describeSecretVariableRejection(offendingKeys: string[]): string {
   const tokens = offendingKeys.map((key) => `{{var.${key}}}`).join(', ');
   return `Script content references secret variable(s): ${tokens}. Secret variables cannot be substituted into script content.`;
+}
+
+export type ParameterSecretMismatchKind = 'secretBoundAsPlain' | 'plainBoundAsSecret' | 'partnerSecretNotPermitted';
+
+export interface ParameterSecretMismatch {
+  /** Parameter NAME — never a value. */
+  name: string;
+  /** Tenant-variable KEY — never a value. */
+  variableKey: string;
+  kind: ParameterSecretMismatchKind;
+}
+
+/**
+ * A raw parameter definition element that binds to a tenant variable.
+ * Parsed TOLERANTLY, element by element (same posture as `parseDefinitions`
+ * in services/sourcedParameters.ts): a malformed sibling must not hide a
+ * real mismatch, and this check must not depend on the full union parsing —
+ * it only needs `source` and `variableKey`, which it reads straight off the
+ * element.
+ */
+interface VariableBoundParameter {
+  name: string;
+  source: 'tenantVariable' | 'tenantSecret';
+  variableKey: string;
+}
+
+function readVariableBoundParameters(parameters: unknown): VariableBoundParameter[] {
+  if (!Array.isArray(parameters)) return [];
+  const bound: VariableBoundParameter[] = [];
+  for (const element of parameters) {
+    if (!element || typeof element !== 'object') continue;
+    const { name, source, variableKey } = element as Record<string, unknown>;
+    if (source !== 'tenantVariable' && source !== 'tenantSecret') continue;
+    if (typeof variableKey !== 'string' || variableKey.length === 0) continue;
+    bound.push({
+      name: typeof name === 'string' ? name : '',
+      source,
+      variableKey
+    });
+  }
+  return bound;
+}
+
+/**
+ * Save-time parameter-binding secret check (#3409 PR4c-2) — the parameter-side
+ * twin of {@link findSecretVariableReferences}, called at all FOUR write
+ * ingresses for `scripts.parameters` right after it: `POST /scripts`,
+ * `PUT /scripts/:id`, `POST /scripts/import/:id` (the clone) and
+ * {@link importBundle}.
+ *
+ * Secret delivery is DECLARED, never inferred (settled design §1):
+ *
+ * - `source: 'tenantVariable'` bound to a SECRET key → `secretBoundAsPlain`.
+ *   Dispatch already denies this per device; rejecting it at save time is
+ *   what the web form's warning ("the save will be rejected") promises.
+ * - `source: 'tenantSecret'` bound to a NON-secret key → `plainBoundAsSecret`.
+ *   Dispatch fails that device closed; a save-time 400 says why up front.
+ * - `source: 'tenantSecret'` bound to a PARTNER-owned secret from an
+ *   ORG-scoped script → `partnerSecretNotPermitted`.
+ *
+ * ## The ownership-tier rule
+ *
+ * A script may resolve a secret at or below its own ownership tier, never
+ * above:
+ *
+ * - A partner-wide script (`scripts.org_id IS NULL`) may resolve a
+ *   partner-owned OR an org-owned secret. The org-owned case is a PRIMARY use
+ *   case: one partner-wide script, each target org's own value resolved per
+ *   device. (Such a key is simply INVISIBLE to the partner-wide lookup below,
+ *   so it lands in the unknown-key allowance.)
+ * - An org-scoped script may resolve only org-owned secrets. A partner-owned
+ *   one is denied: `tenantVariableReadCondition` shows partner-wide variable
+ *   KEYS to organization-scope sessions and `resolveForOrg` inherits the ROWS
+ *   into every org, so without this an org admin could bind the MSP's own
+ *   secret into a script they can run and base64 it out through script output
+ *   (both redactors are exact-substring). `tenantSecret` delivery is the first
+ *   and only channel through which a secret's PLAINTEXT leaves the server.
+ *
+ * The tier is the SCRIPT's, not the CALLER's capability: a full-partner admin
+ * saving an ORG-scoped script is denied too, because that script is afterwards
+ * editable and runnable by the customer org's own admins.
+ *
+ * ## Dispatch is the authority; this is a fast fail
+ *
+ * The same rule is enforced per device at dispatch, in the `tenantSecret` arm
+ * of services/sourcedParameters.ts — which is where it HAS to live. Variable
+ * key uniqueness is per-scope, so an org admin can create an org-owned secret
+ * shadowing a partner-wide key, save a binding that resolves the ORG row (this
+ * check passes, correctly), then delete their own row and let `resolveForOrg`
+ * inherit the partner-wide value. Binding a not-yet-existing key is the same
+ * hole in time. Save time cannot close either; dispatch can, and does.
+ *
+ * What this check buys is a good error while the tech is still looking at the
+ * form, instead of a per-device failure at run time. It is also why an UNKNOWN
+ * key produces NO mismatch: the variable may not exist yet, and a partner-wide
+ * script resolves per org at dispatch, where every device is checked against
+ * the row it actually resolves.
+ *
+ * Only one lookup is issued per call, whatever the number of bindings.
+ */
+export async function findParameterSecretMismatches(
+  scope: ScriptCreateScope,
+  parameters: unknown
+): Promise<ParameterSecretMismatch[]> {
+  const bound = readVariableBoundParameters(parameters);
+  if (bound.length === 0) return [];
+
+  // The tier the script itself is being written at. Derived from `scope`
+  // rather than passed as a separate flag: `scope` is already the scope the
+  // row will LIVE at for every ingress (the create/import target, the clone's
+  // target org, the PUT's post-rescope effective scope), and a second
+  // parameter could only ever disagree with it.
+  //
+  // No capability check belongs here: producing `orgId === null` at all
+  // already requires `canManagePartnerWidePolicies` upstream — see
+  // `resolveScriptCreateScope` (services/scriptWrite.ts) for create/import and
+  // `resolveRescopeTarget` (routes/scripts.ts) for the PUT re-scope. (System
+  // scope also reaches `orgId === null`, and `canManagePartnerWidePolicies`
+  // admits system scope, so that path agrees.)
+  const scriptIsPartnerWide = scope.orgId === null;
+
+  const keys = [...new Set(bound.map((p) => p.variableKey))];
+  const secrecyByKey = await lookupVariableSecrecyByKey(scope, keys);
+
+  const mismatches: ParameterSecretMismatch[] = [];
+  for (const parameter of bound) {
+    const secrecy = secrecyByKey.get(parameter.variableKey);
+    if (secrecy === undefined) continue; // unknown key — allowed
+    const { isSecret, ownerScope } = secrecy;
+    if (parameter.source === 'tenantVariable' && isSecret) {
+      // Checked BEFORE the ownership-tier arm: a `tenantVariable` binding to
+      // a secret is rejected at every tier, and its message names the actual
+      // fix (switch the source), so it must not be masked by the tier message
+      // when the target happens to be partner-owned.
+      mismatches.push({ name: parameter.name, variableKey: parameter.variableKey, kind: 'secretBoundAsPlain' });
+    } else if (parameter.source === 'tenantSecret' && !isSecret) {
+      mismatches.push({ name: parameter.name, variableKey: parameter.variableKey, kind: 'plainBoundAsSecret' });
+    } else if (
+      parameter.source === 'tenantSecret' &&
+      isSecret &&
+      ownerScope === 'partner' &&
+      !scriptIsPartnerWide
+    ) {
+      mismatches.push({ name: parameter.name, variableKey: parameter.variableKey, kind: 'partnerSecretNotPermitted' });
+    }
+  }
+  return mismatches;
+}
+
+/**
+ * User-facing 400 message for {@link findParameterSecretMismatches}'s
+ * non-empty result. Names parameter NAMES and variable KEYS only — never a
+ * value (settled design §5). "From a variable" is the web form's label for
+ * the `tenantVariable` source, so the message reads against what the tech
+ * actually selected.
+ */
+export function describeParameterSecretMismatch(mismatches: ParameterSecretMismatch[]): string {
+  return mismatches
+    .map((m) => {
+      switch (m.kind) {
+        case 'secretBoundAsPlain':
+          return `Parameter "${m.name}" binds secret variable "${m.variableKey}" with source "From a variable"; use a secret parameter instead`;
+        case 'plainBoundAsSecret':
+          return `Parameter "${m.name}" is a secret parameter but variable "${m.variableKey}" is not a secret`;
+        case 'partnerSecretNotPermitted':
+          return `Parameter "${m.name}" binds partner-wide secret variable "${m.variableKey}"; an organization-scoped script cannot use one — make the script partner-wide, or use an organization-owned secret.`;
+      }
+    })
+    .join('; ');
 }
 
 export type BundleAuth = ScriptWriteAuth & Pick<AuthContext, 'user'>;
@@ -504,6 +710,16 @@ export async function importBundle(
       const secretRefs = await findSecretVariableReferences(scope, entry.content);
       if (secretRefs.length > 0) {
         result.errors.push({ index, name: entry.name, error: describeSecretVariableRejection(secretRefs) });
+        continue;
+      }
+      // Parameter-binding twin of the content check (#3409 PR4c-2, Task 6):
+      // a tenantVariable→secret, a tenantSecret→non-secret, and — for an
+      // ORG-scoped import target — a tenantSecret→PARTNER-owned-secret binding
+      // are all per-entry errors the same way. The ownership tier comes from
+      // `scope`, the tier this bundle is being imported at.
+      const mismatches = await findParameterSecretMismatches(scope, entry.parameters);
+      if (mismatches.length > 0) {
+        result.errors.push({ index, name: entry.name, error: describeParameterSecretMismatch(mismatches) });
         continue;
       }
 

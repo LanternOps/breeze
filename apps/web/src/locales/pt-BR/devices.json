@@ -111,7 +111,10 @@
     "expiryMinutes_one": "em cerca de {{count}} minuto",
     "expiryMinutes_other": "em cerca de {{count}} minutos",
     "expiryHours_one": "em cerca de {{count}} hora",
-    "expiryHours_other": "em cerca de {{count}} horas"
+    "expiryHours_other": "em cerca de {{count}} horas",
+    "mfaRequiredSsoLinks": "A autenticação multifator é necessária para gerar links. Sua organização faz seu login por meio de um provedor de identidade — peça ao administrador para habilitar a confiança de MFA para ele ou registre um fator nas configurações do seu perfil.",
+    "mfaRequiredSsoInstallers": "A autenticação multifator é necessária para gerar instaladores. Sua organização faz seu login por meio de um provedor de identidade — peça ao administrador para habilitar a confiança de MFA para ele ou registre um fator nas configurações do seu perfil.",
+    "mfaRequiredSsoTokens": "A autenticação multifator é necessária para gerar tokens de instalação. Sua organização faz seu login por meio de um provedor de identidade — peça ao administrador para habilitar a confiança de MFA para ele ou registre um fator nas configurações do seu perfil."
   },
   "changeSiteModal": {
     "failedToLoadSites": "Falha ao carregar os sites",
@@ -142,11 +145,15 @@
     "creating": "Criando...",
     "createGroup": "Criar grupo"
   },
+  "decommissionedHiddenHint": {
+    "label": "{{count}} removidos ocultos",
+    "show": "mostrar"
+  },
   "deviceActions": {
     "unavailable": {
       "offline": "O dispositivo está offline",
       "maintenance": "O dispositivo está em modo de manutenção",
-      "decommissioned": "O dispositivo foi desativado",
+      "decommissioned": "O dispositivo foi removido",
       "quarantined": "O dispositivo está em quarentena",
       "updating": "O dispositivo está sendo atualizado",
       "pending": "O dispositivo está aguardando inscrição",
@@ -183,9 +190,9 @@
         "confirm": "Entrar em manutenção"
       },
       "decommission": {
-        "title": "Desativar dispositivo",
-        "message": "Tem certeza de que deseja desativar {{hostname}}? Isso removerá permanentemente o dispositivo da sua frota. O agente deixará de enviar dados e o dispositivo não será mais monitorado.",
-        "confirm": "Desativar"
+        "title": "Remover dispositivo",
+        "message": "Tem certeza de que deseja remover {{hostname}}? Isso o tirará da sua frota ativa e ele deixará de ser monitorado. O histórico é mantido e você pode restaurá-lo depois.",
+        "confirm": "Remover"
       },
       "clearSessions": {
         "title": "Encerrar sessões",
@@ -210,7 +217,9 @@
     "changeSite": "Alterar site",
     "exitMaintenance": "Sair da manutenção",
     "enterMaintenance": "Entrar em manutenção",
-    "decommission": "Desativar",
+    "decommission": "Remover",
+    "restore": "Restaurar",
+    "permanentlyDelete": "Excluir permanentemente",
     "sendAWakeOnLanPacket": "Enviar um pacote Wake-on-LAN por um agente par online na LAN do dispositivo",
     "power": "Energia",
     "shutdown": "Desligar",
@@ -333,7 +342,8 @@
     "reboot": "Reiniciar",
     "settings": "Configurações",
     "restore": "Restaurar",
-    "decommission": "Descomissionar",
+    "decommission": "Remover",
+    "permanentlyDelete": "Excluir permanentemente",
     "loadingTrend": "Carregando tendência...",
     "trendUnavailable": "Tendência indisponível",
     "noTrendData": "Nenhum dado de tendência",
@@ -432,7 +442,7 @@
       "online": "Online",
       "offline": "Offline",
       "maintenance": "Em manutenção",
-      "decommissioned": "Desativado",
+      "decommissioned": "Removido",
       "quarantined": "Em quarentena",
       "updating": "Atualizando",
       "pending": "Pendente"
@@ -497,7 +507,7 @@
     "takenOutOf": "retirado do",
     "putInto": "colocado em",
     "s": "s",
-    "decommissionCancelled": "Desativação cancelada",
+    "decommissionCancelled": "Remoção cancelada",
     "permanentDeleteCancelled": "Exclusão permanente cancelada",
     "failedToQueueScript": "Falha ao colocar o script na fila",
     "loadingDevice": "Carregando dispositivo...",
@@ -993,7 +1003,7 @@
         "online": "Ativo",
         "offline": "Inativo",
         "maintenance": "Manut.",
-        "decommissioned": "Descom.",
+        "decommissioned": "Removido",
         "quarantined": "Quar.",
         "updating": "Atualizando",
         "pending": "Pendente"
@@ -1002,7 +1012,7 @@
         "online": "Online",
         "offline": "Offline",
         "maintenance": "Manutenção",
-        "decommissioned": "Descomissionado",
+        "decommissioned": "Removido",
         "quarantined": "Em quarentena",
         "updating": "Atualizando",
         "pending": "Pendente"
@@ -1073,7 +1083,7 @@
     "wakeSelected": "Acordar selecionados",
     "compareSelected": "Comparar selecionados",
     "linkAsMultiBoot": "Vincular como multi-boot",
-    "decommissionSelected": "Descomissionar selecionados",
+    "decommissionSelected": "Remover selecionados",
     "clearSelection": "Limpar seleção",
     "selectAllDevicesOnThisPage": "Selecionar todos os dispositivos nesta página",
     "actions": "Ações",
@@ -1087,7 +1097,8 @@
     "wake": "Acordar",
     "settings": "Configurações",
     "restore": "Restaurar",
-    "decommission": "Descomissionar",
+    "decommission": "Remover",
+    "permanentlyDelete": "Excluir permanentemente",
     "inactive": "· inativo",
     "expectedOffline": "Deveria estar offline",
     "lastSeen": "Detectado pela última vez",
@@ -1538,10 +1549,10 @@
   "deviceSettingsModal": {
     "addTagPlaceholder": "Adicionar uma tag...",
     "dangerZone": "Zona de perigo",
-    "decommissionDevice": "Desativar dispositivo",
-    "decommissionWarning": "A desativação removerá este dispositivo da sua frota ativa.",
-    "decommissionedDescription": "Este dispositivo está desativado. Você pode restaurá-lo ou excluí-lo permanentemente.",
-    "decommissionedTitle": "Dispositivo desativado",
+    "decommissionDevice": "Remover dispositivo",
+    "decommissionWarning": "Remover tira este dispositivo da sua frota ativa. O histórico é mantido e você pode restaurá-lo depois.",
+    "decommissionedDescription": "Este dispositivo foi removido. Você pode restaurá-lo ou excluí-lo permanentemente.",
+    "decommissionedTitle": "Dispositivo removido",
     "displayName": "Nome de exibição",
     "errors": {
       "loadSites": "Falha ao carregar os sites",
@@ -1729,8 +1740,8 @@
     },
     "addDevice": "Adicionar dispositivo",
     "confirmDecommissionedSkip": {
-      "message": "{{skipped}} de {{total}} dispositivos selecionados estão desativados e serão ignorados — eles não têm mais um agente. Continuar com os {{eligible}} dispositivo(s) restantes? Os que estiverem offline executarão esta ação na próxima vez que se conectarem.",
-      "title": "Alguns dispositivos selecionados estão desativados"
+      "message": "{{skipped}} de {{total}} dispositivos selecionados estão removidos e serão ignorados — eles não têm mais um agente gerenciado. Continuar com os {{eligible}} dispositivo(s) restantes? Os que estiverem offline executarão isso na próxima conexão.",
+      "title": "Alguns dispositivos selecionados estão removidos"
     },
     "confirmRunAction": "Executar {{script}}",
     "confirmScriptRun": "Confirmar execução do script",
@@ -1754,11 +1765,12 @@
       "agentOnlyAction": "Esta ação se aplica somente a dispositivos com agente. Os dispositivos de rede não têm agente e foram ignorados.",
       "alreadyPendingTail": "Já estava pendente",
       "bulkActionFailed": "Falha na ação em massa",
-      "bulkAllDecommissioned": "Todos os {{total}} dispositivos selecionados estão desativados — eles não têm mais um agente para executar esta ação.",
+      "bulkAllDecommissioned": "Todos os {{total}} dispositivos selecionados já estão removidos.",
       "bulkCommandPartialFailed": "Falha parcial no comando em massa",
       "bulkCommandSent": "Comando em massa enviado",
-      "bulkDecommissionFailed": "Falha ao desativar dispositivos em massa",
-      "bulkDecommissioned": "Dispositivos desativados em massa",
+      "bulkDecommissionAllFailed": "Falha ao remover todos os {{count}} dispositivos: {{devices}}",
+      "bulkDecommissionFailed": "{{succeeded}} dispositivo(s) removido(s); {{failed}} com falha: {{devices}}",
+      "bulkDecommissioned": "{{count}} dispositivo(s) removido(s)",
       "bulkMaintenanceAllFailed": "Falha ao atualizar o modo de manutenção dos dispositivos (total: {{count}}): {{devices}}",
       "bulkMaintenanceSomeFailed": "Modo de manutenção {{verb}} em {{succeeded}} dispositivos; falha em {{failed}}: {{devices}}",
       "bulkMaintenanceSuccess": "{{count}} dispositivos {{verb}} modo de manutenção",
@@ -1767,10 +1779,10 @@
       "bulkWakeSomeFailed": "Falha ao despertar alguns dispositivos",
       "commandQueued": "{{action}} na fila — será executado quando {{hostname}} reconectar",
       "commandSent": "{{action}} enviado para {{hostname}}",
-      "decommissionCancelled": "Desativação cancelada",
-      "decommissionFailed": "Falha na desativação",
-      "decommissioned": "Desativado",
-      "decommissioning": "Desativando",
+      "decommissionCancelled": "Remoção cancelada",
+      "decommissionFailed": "Falha ao remover",
+      "decommissioned": "Removido",
+      "decommissioning": "Removendo",
       "deleteFailed": "Falha na exclusão",
       "deviceError": "Erro no dispositivo",
       "deviceOnline": "Dispositivo online",
@@ -2267,11 +2279,11 @@
     "cancel": "Cancelar"
   },
   "possibleReplacementBanner": {
-    "decommissionFailed": "Falha ao desativar o dispositivo antigo",
-    "decommissionOldDevice": "Desativar o dispositivo antigo",
-    "decommissionSucceeded": "Dispositivo antigo desativado",
-    "message": "Este dispositivo pode substituir {{hostname}} — revise e desative o registro antigo.",
-    "oldDeviceDecommissioned": "Dispositivo antigo desativado — nada mais a revisar.",
+    "decommissionFailed": "Falha ao remover o dispositivo antigo",
+    "decommissionOldDevice": "Remover dispositivo antigo",
+    "decommissionSucceeded": "Dispositivo antigo removido",
+    "message": "Este dispositivo pode substituir {{hostname}} — revise e remova o registro antigo.",
+    "oldDeviceDecommissioned": "Dispositivo antigo removido — nada mais a revisar.",
     "oldDeviceUnavailable": "O registro do dispositivo antigo não está mais disponível.",
     "title": "Possível registro duplicado",
     "unknownDevice": "o dispositivo anterior",

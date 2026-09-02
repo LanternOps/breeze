@@ -89,7 +89,13 @@ describe('recordActionIntentEvent', () => {
     expect(event.resourceType).toBe('action_intent');
     expect(event.resourceId).toBe('intent-1');
     expect(event.result).toBe('success');
-    expect(event.actorType).toBe('user');
+    // actorType is passed straight through (undefined here, since the caller
+    // didn't supply one) — auditEvents.ts's own fallback
+    // (`actorType ?? (actorId ? 'user' : 'system')`) is what resolves this to
+    // 'user' at persistence time, not this layer. That fallback formula is
+    // pinned unmocked in auditEvents.test.ts ("actorType resolution"); the
+    // pass-through cases live further down in this file.
+    expect(event.actorType).toBeUndefined();
     expect(event.actorId).toBe('user-1');
     expect(event.details).toEqual({
       actionName: 'run_script',
@@ -131,7 +137,7 @@ describe('recordActionIntentEvent', () => {
     }
   });
 
-  it('omits actorId and sets actorType=system when no actor is given', () => {
+  it('does not synthesise an actorType when the caller supplies neither actorId nor actorType', () => {
     recordActionIntentEvent({
       orgId: 'org-1',
       intentId: 'intent-1',
@@ -141,7 +147,7 @@ describe('recordActionIntentEvent', () => {
       outcome: 'expired',
     });
     const [, event] = mockWriteAuditEvent.mock.calls[0] as [unknown, Record<string, unknown>];
-    expect(event.actorType).toBe('system');
+    expect(event.actorType).toBeUndefined();
     expect(event).not.toHaveProperty('actorId');
   });
 
@@ -165,6 +171,48 @@ describe('recordActionIntentEvent', () => {
           value: 1,
         }),
       ]),
+    );
+  });
+
+  it('records an agent-originated event as ai_agent, not system', () => {
+    recordActionIntentEvent({
+      orgId: 'org-1',
+      intentId: 'intent-1',
+      actionName: 'manage_services',
+      argumentDigest: 'a'.repeat(64),
+      source: 'ai_agent',
+      outcome: 'created',
+      actorType: 'ai_agent',
+      details: { agentId: 'agent-1', agentRunId: 'run-1' },
+    });
+    expect(mockWriteAuditEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        actorType: 'ai_agent',
+        details: expect.objectContaining({ agentId: 'agent-1', agentRunId: 'run-1' }),
+      }),
+    );
+  });
+
+  it('passes actorId through without synthesising actorType, even when an actorId is present', () => {
+    // This layer only proves PASS-THROUGH: actorType stays whatever the
+    // caller supplied (undefined here). The actual resolution formula
+    // (`actorType ?? (actorId ? 'user' : 'system')`) lives one layer down in
+    // auditEvents.ts, which this file mocks out — it is NOT exercised here.
+    // Covered directly (with the real, unmocked formula) by
+    // auditEvents.test.ts > writeAuditEvent > actorType resolution.
+    recordActionIntentEvent({
+      orgId: 'org-1',
+      intentId: 'intent-1',
+      actionName: 'run_script',
+      argumentDigest: 'a'.repeat(64),
+      source: 'chat',
+      outcome: 'created',
+      actorId: 'user-1',
+    });
+    expect(mockWriteAuditEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ actorType: undefined, actorId: 'user-1' }),
     );
   });
 });

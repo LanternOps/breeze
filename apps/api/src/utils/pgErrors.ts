@@ -38,6 +38,27 @@ export function isPgUniqueViolation(err: unknown, constraint?: string): boolean 
  * that branch on several codes; for a simple unique check prefer
  * {@link isPgUniqueViolation}. Returns undefined if no SQLSTATE is found.
  */
+/**
+ * Returns the error object that actually carries the SQLSTATE, unwrapping the
+ * DrizzleQueryError `.cause` chain — so `code`, `detail`, `table_name`,
+ * `constraint_name` and friends are all read from the SAME node.
+ *
+ * Use this instead of {@link pgErrorCode} whenever the handler needs more than
+ * the code. Unwrapping only the code and then reading `detail` off the OUTER
+ * error yields a blank detail on every Drizzle-issued statement, which is how a
+ * mapper ends up returning "related records in undefined".
+ */
+export function pgErrorNode(err: unknown): Record<string, unknown> | undefined {
+  let cur: unknown = err;
+  for (let depth = 0; cur && typeof cur === 'object' && depth < 5; depth++) {
+    if (typeof (cur as { code?: unknown }).code === 'string') {
+      return cur as Record<string, unknown>;
+    }
+    cur = (cur as { cause?: unknown }).cause;
+  }
+  return undefined;
+}
+
 export function pgErrorCode(err: unknown): string | undefined {
   let cur: unknown = err;
   for (let depth = 0; cur && typeof cur === 'object' && depth < 5; depth++) {
@@ -71,12 +92,23 @@ export function isTransientLockError(err: unknown): boolean {
  * writers of the same rows, because losing a lock race should cost a retry,
  * not an entire inventory report.
  *
- * IMPORTANT — only wrap a NESTED drizzle transaction (one running inside a
- * request-long `withDbAccessContext`, which drizzle emits as a SAVEPOINT).
- * Retrying a statement that aborted the OUTER transaction cannot work: every
- * follow-up fails with 25P02 until the outer transaction ends. A nested
- * transaction rolls back to its savepoint and leaves the outer usable — see
- * dbSavepointErrorIsolation.integration.test.ts for the isolation proof.
+ * IMPORTANT — `fn` must own a transaction boundary that the victim's rollback
+ * actually reaches. Exactly two shapes qualify:
+ *
+ *  1. A NESTED drizzle transaction (one running inside a request-long
+ *     `withDbAccessContext`, which drizzle emits as a SAVEPOINT) — it rolls
+ *     back to its savepoint and leaves the outer transaction usable. See
+ *     dbSavepointErrorIsolation.integration.test.ts for the isolation proof.
+ *     Example: the software-inventory ingest in routes/agents/inventory.ts.
+ *  2. A TOP-LEVEL transaction opened by `fn` itself from OUTSIDE any held
+ *     context (e.g. `retryOnTransientLockError(..., () => correlateOrg(orgId))`
+ *     in jobs/vulnerabilityJobs.ts, where each call opens its own
+ *     withSystemDbAccessContext) — the victim has fully rolled back, so the
+ *     retry starts clean.
+ *
+ * What must NEVER be wrapped is a bare statement whose failure aborted an
+ * enclosing transaction the retry cannot escape: every follow-up then fails
+ * with 25P02 until that transaction ends, and the retries are pure noise.
  */
 export async function retryOnTransientLockError<T>(
   label: string,

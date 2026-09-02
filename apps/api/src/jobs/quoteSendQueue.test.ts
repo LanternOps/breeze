@@ -76,6 +76,12 @@ vi.mock('drizzle-orm', () => ({
   eq: (col: unknown, val: unknown) => ({ col, val }),
   and: (...args: unknown[]) => ({ and: args }),
   isNull: (col: unknown) => ({ isNull: col }),
+  // The worker now audits `quote.superseded`, which pulls auditEvents into this
+  // module graph, and that module uses sql`` at import time.
+  sql: Object.assign(
+    (strings: TemplateStringsArray, ...values: unknown[]) => ({ strings, values }),
+    { raw: (value: unknown) => ({ raw: value }) },
+  ),
 }));
 // Same constructor shape as the real class (services/quoteTypes.ts) — the
 // module under test both constructs and callers instanceof-check it.

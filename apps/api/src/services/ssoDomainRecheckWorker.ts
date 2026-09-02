@@ -2,6 +2,7 @@ import { Queue, Worker, Job } from 'bullmq';
 import * as dbModule from '../db';
 import { getBullMQConnection } from './redis';
 import { recheckAllDomains } from './ssoDomainVerification';
+import { jobSchedule } from '../jobs/scheduleRegistry';
 
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
   const withSystem = dbModule.withSystemDbAccessContext;
@@ -55,7 +56,8 @@ async function scheduleSsoDomainRecheckJobs(): Promise<void> {
     'recheck-all',
     { type: 'recheck-all' },
     {
-      repeat: { every: 24 * 60 * 60 * 1000 }, // daily
+      // Daily at a registry-allocated slot (jobs/scheduleRegistry.ts).
+      repeat: { pattern: jobSchedule('sso-domain-recheck') },
       removeOnComplete: { count: 10 },
       removeOnFail: { count: 50 },
     }

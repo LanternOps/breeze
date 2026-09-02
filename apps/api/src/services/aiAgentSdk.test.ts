@@ -48,6 +48,11 @@ vi.mock('./aiAgent', () => ({
   waitForApproval: vi.fn(),
 }));
 
+const mockResolveLlmConfigForOrg = vi.fn();
+vi.mock('./llm/llmConfigResolver', () => ({
+  resolveLlmConfigForOrg: (...args: unknown[]) => mockResolveLlmConfigForOrg(...args),
+}));
+
 const mockCheckAiRateLimit = vi.fn();
 const mockCheckBudget = vi.fn();
 const mockGetRemainingBudgetUsd = vi.fn();
@@ -191,6 +196,7 @@ vi.mock('./sentry', () => ({
 type TestAuth = {
   user: { id: string; email: string; name: string };
   orgId: string | null; // null for partner-scope logins — the real AuthContext.orgId type
+  partnerId: string | null;
   scope: string;
   accessibleOrgIds: string[];
   canAccessOrg: (orgId: string) => boolean;
@@ -201,6 +207,7 @@ function makeAuth(overrides?: Partial<TestAuth>) {
   return {
     user: { id: 'user-1', email: 'test@example.com', name: 'Test User' },
     orgId: 'org-1',
+    partnerId: 'partner-1',
     scope: 'org',
     accessibleOrgIds: ['org-1'],
     canAccessOrg: () => true,
@@ -302,6 +309,11 @@ describe('runPreFlightChecks', () => {
     mockSanitizeUserMessage.mockReturnValue({ sanitized: 'hello', flags: [] });
     mockBuildSystemPrompt.mockResolvedValue('system prompt');
     mockGetRemainingBudgetUsd.mockResolvedValue(10.0);
+    mockResolveLlmConfigForOrg.mockResolvedValue({
+      source: 'platform',
+      apiKey: 'platform-key',
+      model: 'claude-sonnet-4-6',
+    });
   });
 
   // --- Session ---
@@ -310,6 +322,67 @@ describe('runPreFlightChecks', () => {
     mockGetSession.mockResolvedValue(null);
     const result = await runPreFlightChecks('bad-id', 'hello', auth);
     expect(result).toEqual({ ok: false, error: 'Session not found' });
+  });
+
+  it('returns the ai_unavailable 503 contract before rate, budget, or SDK preparation', async () => {
+    mockResolveLlmConfigForOrg.mockResolvedValue({
+      source: 'unavailable',
+      partnerId: 'partner-1',
+      reason: 'key_error',
+    });
+
+    const result = await runPreFlightChecks('session-1', 'hello', auth);
+
+    expect(result).toEqual({ ok: false, error: 'ai_unavailable', status: 503 });
+    expect(mockResolveLlmConfigForOrg).toHaveBeenCalledWith('org-1');
+    expect(mockCheckAiRateLimit).not.toHaveBeenCalled();
+    expect(mockCheckBudget).not.toHaveBeenCalled();
+    expect(mockSanitizeUserMessage).not.toHaveBeenCalled();
+  });
+
+  // #3922 phase 2: a partner pinned to a catalog endpoint that the platform
+  // delists resolves as unavailable, and the turn must 503 rather than fall
+  // back to the platform key or to api.anthropic.com with the partner's key.
+  it.each(['provider_delisted', 'catalog_disabled', 'model_unverified'] as const)(
+    'returns the ai_unavailable 503 contract for catalog reason %s',
+    async (reason) => {
+      mockResolveLlmConfigForOrg.mockResolvedValue({
+        source: 'unavailable',
+        partnerId: 'partner-1',
+        reason,
+      });
+
+      const result = await runPreFlightChecks('session-1', 'hello', auth);
+
+      expect(result).toEqual({ ok: false, error: 'ai_unavailable', status: 503 });
+      expect(mockCheckBudget).not.toHaveBeenCalled();
+    },
+  );
+
+  it('captures resolver failures and returns a generic retryable 503', async () => {
+    const error = new Error('raw resolver failure');
+    mockResolveLlmConfigForOrg.mockRejectedValueOnce(error);
+
+    const result = await runPreFlightChecks('session-1', 'hello', auth);
+
+    expect(result).toEqual({
+      ok: false,
+      error: 'AI configuration could not be loaded. Try again.',
+      status: 503,
+    });
+    expect(mockCaptureException).toHaveBeenCalledWith(error, undefined, {
+      service: 'aiAgentSdk',
+      orgId: 'org-1',
+    });
+    expect(mockCheckAiRateLimit).not.toHaveBeenCalled();
+  });
+
+  it('resolves from the persisted session org instead of the caller partner token', async () => {
+    mockGetSession.mockResolvedValue(makeSession({ orgId: 'org-session-99' }));
+
+    await runPreFlightChecks('session-1', 'hello', makeAuth({ partnerId: null, scope: 'system' }));
+
+    expect(mockResolveLlmConfigForOrg).toHaveBeenCalledWith('org-session-99');
   });
 
   // --- Rate limits use session's org, not auth's org ---
@@ -342,10 +415,18 @@ describe('runPreFlightChecks', () => {
     const sessionOrg = 'org-session-99';
     mockGetSession.mockResolvedValue(makeSession({ orgId: sessionOrg }));
     mockCheckBudget.mockResolvedValue(null);
+    mockResolveLlmConfigForOrg.mockResolvedValue({
+      source: 'partner',
+      partnerId: 'partner-1',
+      apiKey: 'partner-key',
+      model: 'claude-sonnet-4-6',
+      configId: 'config-1',
+      configVersion: 2,
+    });
 
     await runPreFlightChecks('session-1', 'hello', auth);
 
-    expect(mockCheckBudget).toHaveBeenCalledWith(sessionOrg);
+    expect(mockCheckBudget).toHaveBeenCalledWith(sessionOrg, 'partner_key');
   });
 
   it('returns error when budget is exceeded', async () => {
@@ -570,6 +651,11 @@ describe('runPreFlightChecks', () => {
       expect(result.sanitizedContent).toBe('clean input');
       expect(result.systemPrompt).toBeDefined();
       expect(result.maxBudgetUsd).toBe(25.0);
+      expect(result.resolved).toEqual({
+        source: 'platform',
+        apiKey: 'platform-key',
+        model: 'claude-sonnet-4-6',
+      });
     }
   });
 });

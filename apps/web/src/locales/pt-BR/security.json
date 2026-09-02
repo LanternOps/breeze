@@ -587,6 +587,7 @@
     "startScan": "Iniciar varredura",
     "startScansWatchProgressAndReviewScan": "Inicie varreduras, acompanhe o progresso e revise o histórico de varreduras nos dispositivos.",
     "started": "Iniciado {{time}}",
+    "startedColumn": "Iniciado",
     "status": "Status: {{status}}",
     "status2": "Status",
     "type": "Tipo"
@@ -1139,7 +1140,7 @@
       "noPolicy": "Sem política (configuração manual)",
       "deviceIds": "IDs de dispositivos",
       "deviceIdsHelp": "Um UUID por linha ou separados por vírgula.",
-      "deviceIdsPlaceholder": "uuid-dispositivo-1&#10;uuid-dispositivo-2",
+      "deviceIdsPlaceholder": "uuid-dispositivo-1\nuuid-dispositivo-2",
       "detectionClasses": "Classes de detecção"
     },
     "actions": {

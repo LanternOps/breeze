@@ -1,3 +1,4 @@
+import { PORTAL_TICKET_COMMENT_MAX_CHARS } from '@breeze/shared';
 import { z } from 'zod';
 
 // ============================================
@@ -154,13 +155,19 @@ export const ticketParamSchema = z.object({
   id: z.string().guid()
 });
 
+// W08 #3902 — portal attachment content route params.
+export const portalAttachmentParamSchema = z.object({
+  id: z.string().guid(),
+  attachmentId: z.string().guid()
+});
+
 export const ticketCommentParamSchema = z.object({
   id: z.string().guid(),
   commentId: z.string().guid()
 });
 
 export const commentSchema = z.object({
-  content: z.string().min(1).max(5000)
+  content: z.string().min(1).max(PORTAL_TICKET_COMMENT_MAX_CHARS)
 });
 
 export const assetParamSchema = z.object({

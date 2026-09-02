@@ -26,13 +26,23 @@ import {
   normalizeAutomationActions,
   normalizeAutomationTrigger,
   normalizeNotificationTargets,
+  replaceAutomationResourceBindings,
+  resolveAutomationReferencesForOwner,
   withWebhookDefaults,
 } from '../services/automationRuntime';
+import { AutomationReferenceAuthorizationError } from '../services/automationReferenceAuthorization';
 import { enqueueAutomationRun } from '../jobs/automationWorker';
 import {
   canManagePartnerWidePolicies,
   PARTNER_WIDE_WRITE_DENIED_MESSAGE,
 } from '../services/partnerWideAccess';
+import {
+  AI_TRIAGE_SYSTEM_MANAGED_ERROR_CODE,
+  MANAGED_AUTOMATION_ERROR_CODE,
+  containsAiTriageAction,
+  isManagedAutomation,
+  managedAutomationOwnerIsLive,
+} from '../services/aiAgents/managedAutomation';
 import { UUID_REGEX } from '../utils/uuid';
 
 export const automationRoutes = new Hono();
@@ -44,6 +54,14 @@ const automationWebhookReplayCache = new Map<string, number>();
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isAutomationReferenceDenial(error: unknown): boolean {
+  return error instanceof AutomationReferenceAuthorizationError
+    || (typeof error === 'object'
+      && error !== null
+      && 'code' in error
+      && error.code === 'unknown_or_unauthorized_reference');
 }
 
 function asString(value: unknown): string | undefined {
@@ -900,6 +918,14 @@ automationRoutes.post(
       return c.json({ error: 'actions are required' }, 400);
     }
 
+    // ai_triage wiring is seeded per AI agent (services/aiAgents/managedAutomation.ts)
+    // and resolved through automations.managed_by_agent_id. A user-authored copy would
+    // be an unmanaged automation whose action has no owning agent, and — worse — would
+    // carry the automation's whole configured target set into the agent gate.
+    if (containsAiTriageAction(data.actions)) {
+      return c.json({ error: AI_TRIAGE_SYSTEM_MANAGED_ERROR_CODE }, 400);
+    }
+
     try {
       const automationId = randomUUID();
       const trigger = withWebhookDefaults(
@@ -926,23 +952,34 @@ automationRoutes.post(
         return siteScopeDenied;
       }
 
-      const [automation] = await db
-        .insert(automations)
-        .values({
-          id: automationId,
-          orgId: owner.orgId,
-          partnerId: owner.partnerId,
-          name: data.name,
-          description: data.description,
-          enabled: data.enabled,
-          trigger: storedTrigger,
-          conditions: data.conditions,
+      const automation = await db.transaction(async (tx) => {
+        const resolved = await resolveAutomationReferencesForOwner(
+          tx,
+          owner,
           actions,
-          onFailure: data.onFailure,
           notificationTargets,
-          createdBy: auth.user.id,
-        })
-        .returning();
+        );
+        const [created] = await tx
+          .insert(automations)
+          .values({
+            id: automationId,
+            orgId: owner.orgId,
+            partnerId: owner.partnerId,
+            name: data.name,
+            description: data.description,
+            enabled: data.enabled,
+            trigger: storedTrigger,
+            conditions: data.conditions,
+            actions,
+            onFailure: data.onFailure,
+            notificationTargets,
+            createdBy: auth.user.id,
+          })
+          .returning();
+        if (!created) return null;
+        await replaceAutomationResourceBindings(tx, created.id, owner, resolved);
+        return created;
+      });
 
       if (!automation) {
         return c.json({ error: 'Failed to create automation' }, 500);
@@ -961,6 +998,9 @@ automationRoutes.post(
     } catch (error) {
       if (error instanceof AutomationValidationError) {
         return c.json({ error: error.message }, 400);
+      }
+      if (isAutomationReferenceDenial(error)) {
+        return c.json({ error: 'Unknown or unauthorized automation reference' }, 400);
       }
       throw error;
     }
@@ -985,6 +1025,12 @@ async function handleUpdateAutomation(c: Context) {
   const automation = await getAutomationWithOrgCheck(automationId, auth);
   if (!automation) {
     return c.json({ error: 'Automation not found' }, 404);
+  }
+
+  // Even a plain enabled toggle goes through the agent so there is one switch
+  // for both the agent policy and its system-managed trigger wiring.
+  if (isManagedAutomation(automation)) {
+    return c.json({ error: MANAGED_AUTOMATION_ERROR_CODE, agentId: automation.managedByAgentId }, 409);
   }
 
   // Partner-wide automations mutate behavior across every org under the
@@ -1042,6 +1088,14 @@ async function handleUpdateAutomation(c: Context) {
     }
 
     if (data.actions !== undefined) {
+      // Same rejection as the create route. Without it the create gate is
+      // trivially bypassed: POST an ordinary automation, then PATCH the
+      // ai_triage action onto it. The row is unmanaged, so the action has no
+      // owning agent to resolve and executeAiTriageAction refuses it once per
+      // configured device — a failing run rather than a 400, for no reason.
+      if (containsAiTriageAction(data.actions)) {
+        return c.json({ error: AI_TRIAGE_SYSTEM_MANAGED_ERROR_CODE }, 400);
+      }
       updates.actions = normalizeAutomationActions(data.actions);
     }
 
@@ -1053,6 +1107,13 @@ async function handleUpdateAutomation(c: Context) {
         normalizeIncomingNotificationTargets(data),
       );
     }
+
+    const effectiveActions = data.actions !== undefined
+      ? updates.actions as ReturnType<typeof normalizeAutomationActions>
+      : normalizeAutomationActions(automation.actions);
+    const effectiveNotificationTargets = notificationTargetsProvided
+      ? updates.notificationTargets as ReturnType<typeof normalizeNotificationTargets>
+      : normalizeNotificationTargets(automation.notificationTargets);
 
     // Site-scope gate: re-validate the post-update target set against the
     // caller's allowlist. Covers conditions/trigger changes that would widen
@@ -1066,11 +1127,23 @@ async function handleUpdateAutomation(c: Context) {
       return siteScopeDenied;
     }
 
-    const [updated] = await db
-      .update(automations)
-      .set(updates)
-      .where(eq(automations.id, automationId))
-      .returning();
+    const updated = await db.transaction(async (tx) => {
+      const axes = { orgId: automation.orgId, partnerId: automation.partnerId };
+      const resolved = await resolveAutomationReferencesForOwner(
+        tx,
+        axes,
+        effectiveActions,
+        effectiveNotificationTargets,
+      );
+      const [row] = await tx
+        .update(automations)
+        .set(updates)
+        .where(eq(automations.id, automationId))
+        .returning();
+      if (!row) return null;
+      await replaceAutomationResourceBindings(tx, automationId, axes, resolved);
+      return row;
+    });
 
     if (!updated) {
       return c.json({ error: 'Automation not found' }, 404);
@@ -1089,6 +1162,9 @@ async function handleUpdateAutomation(c: Context) {
   } catch (error) {
     if (error instanceof AutomationValidationError) {
       return c.json({ error: error.message }, 400);
+    }
+    if (isAutomationReferenceDenial(error)) {
+      return c.json({ error: 'Unknown or unauthorized automation reference' }, 400);
     }
     throw error;
   }
@@ -1130,6 +1206,18 @@ automationRoutes.delete(
     const automation = await getAutomationWithOrgCheck(automationId, auth);
     if (!automation) {
       return c.json({ error: 'Automation not found' }, 404);
+    }
+
+    // Deletion is the ONE managed-row operation a user may reach, and only
+    // once the owning agent is soft-disabled. disableAgent flips this row to
+    // enabled:false but leaves managed_by_agent_id set, and a disabled agent
+    // can never be re-enabled — so without this branch every disable strands a
+    // row nothing in the product can remove, and each disable+recreate cycle
+    // strands another. Editing/triggering a managed row stays refused either
+    // way; the liveness probe fails closed.
+    if (isManagedAutomation(automation)
+      && await managedAutomationOwnerIsLive(automation.managedByAgentId as string)) {
+      return c.json({ error: MANAGED_AUTOMATION_ERROR_CODE, agentId: automation.managedByAgentId }, 409);
     }
 
     // Deleting a partner-wide automation affects every org under the partner.
@@ -1185,6 +1273,14 @@ async function triggerAutomationRun(
   const automation = await getAutomationWithOrgCheck(automationId, auth);
   if (!automation) {
     return c.json({ error: 'Automation not found' }, 404);
+  }
+
+  // A managed trigger is alert.triggered, so a manual run has no event to bind
+  // to. createAutomationRunRecord would instead resolve the automation's whole
+  // configured target set: one button press, one agent run per device — the
+  // exact fleet fan-out this PR closes, reached through a different door.
+  if (isManagedAutomation(automation)) {
+    return c.json({ error: MANAGED_AUTOMATION_ERROR_CODE, agentId: automation.managedByAgentId }, 409);
   }
 
   // Manually triggering a partner-wide automation fans actions out to devices
@@ -1285,6 +1381,7 @@ automationWebhookRoutes.post('/:id', async (c) => {
     return c.json({ error: 'Automation not found' }, 404);
   }
 
+  // Managed rows cannot become webhooks: their event trigger is seeded and the update route rejects changes.
   let trigger;
   try {
     trigger = normalizeAutomationTrigger(decryptAutomationTriggerSecret(automation.trigger));

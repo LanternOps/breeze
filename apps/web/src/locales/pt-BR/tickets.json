@@ -116,7 +116,15 @@
     "internalPlaceholder": "Adicionar uma nota interna…",
     "sending": "Enviando",
     "sendReply": "Enviar resposta",
-    "addInternalNote": "Adicionar nota interna"
+    "addInternalNote": "Adicionar nota interna",
+    "attachments": {
+      "attach": "Anexar",
+      "uploading": "Enviando…",
+      "retry": "Tentar novamente",
+      "remove": "Remover arquivo",
+      "tooMany": "Você pode anexar no máximo {{max}} arquivos a um comentário.",
+      "tooLarge": "{{name}} é maior que 10 MB."
+    }
   },
   "ticketFeed": {
     "empty": "Nenhuma atividade ainda.",
@@ -149,6 +157,11 @@
     "deleteDialog": {
       "title": "Excluir comentário",
       "message": "Tem certeza de que deseja excluir este comentário? Esta ação não pode ser desfeita."
+    },
+    "attachments": {
+      "broken": "Não foi possível carregar {{name}}",
+      "open": "Abrir anexo",
+      "remove": "Remover anexo"
     }
   },
   "ticketPartsCard": {
@@ -184,6 +197,7 @@
     "totalTime": "Tempo total",
     "billable": "Faturável",
     "timeAmount": "Valor do tempo",
+    "noAmount": "—",
     "partsCount": "Peças ({{count}})",
     "partsCount_one": "Peças ({{count}})",
     "partsCount_other": "Peças ({{count}})",
@@ -397,14 +411,25 @@
       "create": "Criar fatura",
       "creating": "Criando…",
       "createFailed": "Não foi possível criar uma fatura a partir deste chamado.",
-      "created": "Rascunho de fatura criado"
+      "created": "Rascunho de fatura criado",
+      "allBlockedByCurrency": "Todo o trabalho faturável deste chamado está precificado em uma moeda diferente daquela em que a organização fatura. Em vez disso, monte um rascunho nessa moeda:",
+      "assembleIn": "Montar em {{code}} ({{count}} itens, {{amount}})",
+      "partialLeftOut": "Um rascunho de fatura foi criado, mas parte do trabalho faturável deste ticket ficou de fora e continua não faturada.",
+      "openDraft": "Abrir o rascunho",
+      "allMissingRate": "Nada pôde ser faturado: todos os lançamentos de tempo faturáveis deste ticket estão sem valor por hora.",
+      "missingRateHeading": "Lançamentos de tempo sem valor por hora (não faturados — defina um valor e crie a fatura novamente):",
+      "missingRateEntry": "{{description}} — {{hours}} h",
+      "setRate": "Definir um valor na folha de horas"
     },
     "move": {
       "open": "Mover para outra org…",
       "label": "Mover para organização",
       "selectOrganization": "Selecionar organização…",
       "confirm": "Mover",
-      "failed": "Falha ao mover. Tente novamente."
+      "failed": "Falha ao mover. Tente novamente.",
+      "blockedCurrency": "Este chamado tem {{timeCount}} registros de tempo não faturados e {{partCount}} peças não faturadas precificados em {{sourceCurrency}}, mas {{targetOrg}} fatura em {{targetCurrency}}. Fature-os primeiro ou mova mesmo assim: os valores permanecem em {{sourceCurrency}} e só podem ser faturados em um rascunho em {{sourceCurrency}}.",
+      "acceptCurrency": "Entendo que esses valores permanecem em {{sourceCurrency}} e não são convertidos.",
+      "moveAnyway": "Mover mesmo assim"
     },
     "triage": {
       "title": "Triagem sugerida",
@@ -419,6 +444,17 @@
       "applied": "Sugestão de triagem aplicada",
       "feedbackFailed": "Não foi possível salvar o feedback da triagem do chamado.",
       "feedbackSaved": "Feedback da triagem salvo"
+    },
+    "aiDraft": {
+      "kindReply": "Resposta gerada por IA",
+      "kindResolutionNote": "Nota de resolução gerada por IA",
+      "sendAsMe": "Enviar como eu",
+      "sending": "Enviando…",
+      "discard": "Descartar",
+      "sendFailed": "Não foi possível enviar o rascunho da IA.",
+      "sent": "Rascunho enviado",
+      "discardFailed": "Não foi possível descartar o rascunho da IA.",
+      "discarded": "Rascunho descartado"
     },
     "resolve": {
       "noteLabel": "Nota de resolução (visível para o solicitante)",
@@ -457,7 +493,8 @@
       "categoryUpdateFailed": "Falha ao atualizar categoria. Tente novamente.",
       "assigned": "Atribuído",
       "unassigned": "Não atribuído",
-      "assignFailed": "Falha ao atribuir. Tente novamente."
+      "assignFailed": "Falha ao atribuir. Tente novamente.",
+      "attachmentFailed": "Não foi possível enviar o anexo."
     },
     "delete": {
       "failed": "Falha ao excluir. Tente novamente.",

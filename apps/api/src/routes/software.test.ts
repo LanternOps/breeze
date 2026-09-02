@@ -24,9 +24,10 @@ import {
 
 // Hoist the softwareDeployment service mock factories so the references are
 // available both inside the vi.mock factory and in the test body.
-const { createDeploymentMock, buildDispatchMock } = vi.hoisted(() => ({
+const { createDeploymentMock, buildDispatchMock, applyAutomationActionTerminalMock } = vi.hoisted(() => ({
   createDeploymentMock: vi.fn(),
   buildDispatchMock: vi.fn(),
+  applyAutomationActionTerminalMock: vi.fn().mockResolvedValue(true),
 }));
 
 vi.mock('../services', () => ({}));
@@ -34,6 +35,11 @@ vi.mock('../services', () => ({}));
 vi.mock('../services/softwareDeployment', () => ({
   createSoftwareDeployment: createDeploymentMock,
   buildAndDispatchSoftwareInstalls: buildDispatchMock,
+}));
+
+vi.mock('../services/automationActionResults', () => ({
+  applyAutomationActionTerminal: (...args: unknown[]) =>
+    applyAutomationActionTerminalMock(...(args as [])),
 }));
 
 // Wrap drizzle's condition builders in spies (behavior preserved) so tests can
@@ -1151,8 +1157,9 @@ describe('software routes', () => {
       });
       expect(captureMessage).toHaveBeenCalledWith(
         'software version created with undetermined installer type',
-        'warning',
-        expect.objectContaining({ downloadUrlHost: 'vendor.example.com' }),
+        expect.objectContaining({
+          eventCode: 'software_version_installer_type_unknown',
+        }),
       );
     });
 
@@ -1162,7 +1169,10 @@ describe('software routes', () => {
       await createVersion({
         downloadUrl: 'https://vendor.example.com/get?token=SECRET-CAPABILITY',
       });
-      const logged = vi.mocked(captureMessage).mock.calls.at(-1)?.[2];
+      // captureMessage no longer accepts an `extra` bag at all (BREEZE-18: it
+      // was never attached to the event and scrubEvent deleted it anyway), so
+      // assert the whole options object carries no capability string.
+      const logged = vi.mocked(captureMessage).mock.calls.at(-1)?.[1];
       expect(JSON.stringify(logged)).not.toContain('SECRET-CAPABILITY');
     });
 
@@ -2380,9 +2390,9 @@ describe('software routes', () => {
       // Flip returns three cancelled results: two queued-offline links, one
       // WS-dispatched row without a linked command.
       const flip = updateChain([
-        { deviceCommandId: 'cmd-1' },
-        { deviceCommandId: 'cmd-2' },
-        { deviceCommandId: null },
+        { id: 'result-1', deviceCommandId: 'cmd-1' },
+        { id: 'result-2', deviceCommandId: 'cmd-2' },
+        { id: 'result-3', deviceCommandId: null },
       ]);
       // The guarded purge only matches cmd-1 — cmd-2 was already claimed
       // ('sent'), so the status='pending' guard skips it.
@@ -2421,6 +2431,12 @@ describe('software routes', () => {
           cancelledQueuedCommands: 1,
         }),
       }));
+      expect(applyAutomationActionTerminalMock).toHaveBeenCalledTimes(3);
+      expect(applyAutomationActionTerminalMock).toHaveBeenCalledWith(expect.objectContaining({
+        source: 'cancellation',
+        deploymentResultId: 'result-1',
+        terminalStatus: 'cancelled',
+      }));
     });
 
     it('skips the command purge entirely when no flipped row was queued', async () => {
@@ -2429,7 +2445,7 @@ describe('software routes', () => {
         .mockReturnValueOnce(selectResult([
           { deploymentId: DEP_ID, status: 'cancelled', count: 1 },
         ]));
-      const flip = updateChain([{ deviceCommandId: null }]);
+      const flip = updateChain([{ id: 'result-1', deviceCommandId: null }]);
       vi.mocked(db.update).mockReturnValueOnce({ set: flip.set } as any);
 
       const res = await cancel();

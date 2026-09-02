@@ -1,4 +1,5 @@
-import { pgTable, uuid, varchar, timestamp, index } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
+import { check, pgTable, uuid, varchar, timestamp, index, unique } from 'drizzle-orm/pg-core';
 import { users } from './users';
 
 /**
@@ -39,9 +40,17 @@ export const refreshTokenFamilies = pgTable(
     // Absolute wall-clock cap on the family. Rotation never extends this;
     // /refresh rejects a family past it. Set at mint time.
     absoluteExpiresAt: timestamp('absolute_expires_at', { withTimezone: true }).notNull(),
+    // Nullable only during the staged W07 rollout. New guarded issuers write a
+    // domain-separated digest and rotations compare/swap it under row lock.
+    currentRefreshJtiDigest: varchar('current_refresh_jti_digest', { length: 64 }),
   },
   (t) => ({
     userIdx: index('refresh_token_families_user_idx').on(t.userId),
+    familyUserUnique: unique('refresh_token_families_family_user_unique').on(t.familyId, t.userId),
+    currentRefreshJtiDigestCheck: check(
+      'refresh_token_families_current_refresh_jti_digest_chk',
+      sql`${t.currentRefreshJtiDigest} IS NULL OR ${t.currentRefreshJtiDigest} ~ '^[0-9a-f]{64}$'`,
+    ),
   })
 );
 

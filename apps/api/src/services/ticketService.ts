@@ -1,14 +1,16 @@
 import { and, asc, desc, eq, gt, inArray, isNull, sql } from 'drizzle-orm';
 import { nanoid } from 'nanoid';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { tickets, ticketComments, ticketAlertLinks, organizations, alerts, devices, users, ticketCategories, portalUsers, ticketStatusEnum, ticketSourceEnum } from '../db/schema';
+import { tickets, ticketComments, ticketAlertLinks, organizations, alerts, devices, users, ticketCategories, portalUsers, ticketStatusEnum, ticketSourceEnum, ticketOutbox, ticketDrafts, actionIntents, type TicketOutboxEvent } from '../db/schema';
 import { allocateInternalTicketNumber } from './ticketNumbers';
 import { emitTicketEvent } from './ticketEvents';
 import { createAuditLogAsync } from './auditService';
 import { resolveSlaTargets } from './ticketSla';
 import { getOrgSlaOverride, getPartnerPrioritySla, getSystemStatusId, getTicketStatusById } from './ticketConfigService';
+import { readOrgStampingDefaultsMany } from './orgCurrencyCore';
 import { emitTicketTriageFeedback } from './mlFeedbackEmitters';
 import { applyIntakeForm, getTicketFormForOrg, TicketFormError } from './ticketFormService';
+import { assertTicketMoveCurrencyCompatible, type MoveCurrencyGuardDetails } from './ticketMoveCurrencyGuard';
 import type { AddinTicketSummary } from '@breeze/shared';
 
 export type TicketStatus = (typeof ticketStatusEnum.enumValues)[number];
@@ -42,7 +44,10 @@ export type TicketServiceErrorCode =
   | 'CONCURRENT_MODIFICATION'
   | 'STATUS_NOT_FOUND'
   | 'STATUS_INACTIVE'
-  | 'INVALID_INPUT';
+  | 'INVALID_INPUT'
+  // W08 #3902: one or more attachmentIds were not pending, not this user's,
+  // or not on this ticket. The comment transaction is rolled back.
+  | 'ATTACHMENT_NOT_CLAIMABLE';
 
 export class TicketServiceError extends Error {
   constructor(
@@ -61,6 +66,18 @@ export interface TicketActor {
   email?: string;
   triageFeedbackSource?: 'manual' | 'suggestion';
   triageFeedbackMetadata?: Record<string, unknown>;
+  /**
+   * P2-4 (#4191): who is actually behind this write, for `tickets.field_provenance`
+   * stamping in `updateTicketFields`. Defaults to 'user' — every existing caller
+   * (human staff, attended chat auto-executing under the caller's own session)
+   * is unaffected. An 'ai_agent'/'system' actor is never routed through
+   * `updateTicketFields` today (the AI ticket-triage release path uses the
+   * dedicated `applyAiFieldUpdates`, which is CAS-guarded and never overwrites
+   * a 'user' stamp) — this field exists so `updateTicketFields` stamps
+   * correctly if a future caller ever does pass a non-human actor here,
+   * without that caller having to know the stamping mechanics.
+   */
+  principalKind?: 'user' | 'ai_agent' | 'system';
 }
 
 // Legacy display identifier (NOT NULL UNIQUE), retry loop dropped when creation
@@ -75,6 +92,32 @@ async function getTicketOrThrow(ticketId: string) {
   const ticket = rows[0];
   if (!ticket) throw new TicketServiceError('Ticket not found', 404);
   return ticket;
+}
+
+/**
+ * Transactional outbox write (#3828 wave-6-3 task 2 —
+ * docs/superpowers/plans/ai-mcp/2026-08-28-ai-agents-wave6-3-ticket-shadow.md).
+ * Deliberately a PLAIN `db.insert` through the ambient `db` handle — the same
+ * one every other write in this file uses — so the row lands in whatever
+ * transaction the caller is already inside (the request's `withDbAccessContext`
+ * transaction). It must NEVER be wrapped in `runOutsideDbContext` /
+ * `withSystemDbAccessContext` (that is what `createAuditLogAsync` does, and is
+ * exactly why an audit row survives a request rollback while this one must
+ * NOT): if the surrounding transaction later rolls back, this row must roll
+ * back with it, or a published event could announce a ticket mutation that
+ * never actually committed.
+ *
+ * `payload` is id-only by construction (never subject/description/content/
+ * resolutionNote — see ticketOutbox.ts's export-policy note) — callers pass
+ * only structured ids/enum labels, never ticket free-text.
+ */
+async function writeTicketOutbox(
+  orgId: string,
+  ticketId: string,
+  eventType: TicketOutboxEvent,
+  payload: Record<string, unknown> = {}
+): Promise<void> {
+  await db.insert(ticketOutbox).values({ orgId, ticketId, eventType, payload });
 }
 
 /**
@@ -481,8 +524,9 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor)
     orgId: input.orgId,
     partnerId: org.partnerId ?? null,
     actorUserId: actor.userId,
-    payload: { internalNumber, subject, assigneeId: input.assigneeId ?? null, source: input.source }
+    payload: { internalNumber, assigneeId: input.assigneeId ?? null, source: input.source }
   });
+  await writeTicketOutbox(input.orgId, ticket.id, 'ticket.created');
   await createAuditLogAsync({
     orgId: input.orgId,
     actorId: actor.userId,
@@ -498,11 +542,74 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor)
 export interface ChangeStatusOptions {
   resolutionNote?: string;
   pendingReason?: string;
+  /**
+   * P2-4 (#4191), Task A10 — an active `resolution_note`-kind `ticket_drafts`
+   * row to apply as the resolution note (the web resolve modal's "use the AI
+   * draft" prefill, PR B). Only valid alongside a resolve (`status:
+   * 'resolved'`/a statusId resolving to `resolved`) — the schema-level
+   * refinement in `changeTicketStatusSchema` also relaxes `resolutionNote`'s
+   * required-ness whenever this is present, since the draft supplies the
+   * text. Locked and consumed (`state: 'consumed'`) in the SAME per-request
+   * transaction as the ticket's status CAS update below, via `SELECT ... FOR
+   * UPDATE` (mirrors `sendTicketDraft`'s locking contract) — a draft that is
+   * missing, the wrong kind, or no longer `active` fails the whole resolve
+   * with a 404/409 rather than silently resolving without it.
+   *
+   * Review fix (#4191 final review, C1) — this draft is ALWAYS consumed when
+   * supplied, but it does not always win: a non-empty `resolutionNote` on the
+   * same call is the technician's (possibly edited) text and takes priority
+   * over the draft's content. The draft is treated as a fallback/default,
+   * never a silent override of caller-supplied text.
+   */
+  aiDraftId?: string;
 }
 
 export interface ChangeStatusTarget {
   status?: TicketStatus;
   statusId?: string;
+}
+
+/**
+ * P2-4 (#4191) — shared by every `changeTicketStatus` branch that can apply
+ * an `aiDraftId` (the full FSM transition AND the same-core-status paths
+ * that skip FSM validation — a review fix: those used to return before ever
+ * looking at `aiDraftId`, silently dropping it). Locks the draft row for
+ * the rest of this transaction (`for('update')`) so a concurrent
+ * send/discard/resolve racing the SAME draft blocks here until this
+ * transaction commits or rolls back, then observes the now-committed state.
+ */
+async function lockAndValidateResolutionDraft(
+  ticketId: string,
+  draftId: string
+): Promise<{ id: string; content: string }> {
+  const [draft] = await db
+    .select()
+    .from(ticketDrafts)
+    .where(and(eq(ticketDrafts.id, draftId), eq(ticketDrafts.ticketId, ticketId)))
+    .limit(1)
+    .for('update');
+  if (!draft) throw new TicketServiceError('Draft not found', 404);
+  if (draft.kind !== 'resolution_note') {
+    throw new TicketServiceError('Only resolution-note drafts can be applied when resolving', 409);
+  }
+  if (draft.state !== 'active') {
+    throw new TicketServiceError('Draft is no longer active', 409);
+  }
+  return { id: draft.id, content: draft.content };
+}
+
+/** Companion to `lockAndValidateResolutionDraft` — CAS `active -> consumed` in the
+ *  SAME transaction as the caller's ticket update, so a failure here rolls back
+ *  that update too (defense-in-depth: unreachable while the lock above holds). */
+async function consumeResolutionDraft(draftId: string, consumedBy: string): Promise<void> {
+  const consumed = await db
+    .update(ticketDrafts)
+    .set({ state: 'consumed', consumedBy, consumedAt: new Date() })
+    .where(and(eq(ticketDrafts.id, draftId), eq(ticketDrafts.state, 'active')))
+    .returning({ id: ticketDrafts.id });
+  if (consumed.length === 0) {
+    throw new TicketServiceError('Draft was already consumed', 409);
+  }
 }
 
 export async function changeTicketStatus(
@@ -541,13 +648,48 @@ export async function changeTicketStatus(
     customStatusName = undefined;
   }
 
-  // No-op: same core status AND same statusId
-  if (toStatus === fromStatus && resolvedStatusId === ticket.statusId) return ticket;
+  // Review fix (#4191): this must run BEFORE every early-return branch below
+  // (no-op, same-status statusId relabel, AND the full FSM transition) — an
+  // aiDraftId on a non-resolve target must always 400, never be silently
+  // swallowed by a branch that returns before reaching a later check.
+  if (opts.aiDraftId && toStatus !== 'resolved') {
+    throw new TicketServiceError('aiDraftId is only accepted when resolving a ticket', 400, 'INVALID_INPUT');
+  }
 
-  // Same core status but different statusId — update statusId only (skip FSM validation)
+  // Review fix (#4191): the same-core-status branches below (no-op and the
+  // statusId-only relabel) skip FSM validation entirely and used to return
+  // BEFORE the full-transition path's aiDraftId handling ever ran — an
+  // aiDraftId supplied while relabeling an ALREADY-resolved ticket (or
+  // no-op-resolving it) was silently dropped: no error, no consumption, no
+  // resolutionNote write. Lock + validate it HERE, unconditionally, whenever
+  // the target core status is 'resolved' and the core status isn't changing.
+  let sameStatusDraft: { id: string; content: string } | null = null;
+  if (toStatus === fromStatus && toStatus === 'resolved' && opts.aiDraftId) {
+    sameStatusDraft = await lockAndValidateResolutionDraft(ticketId, opts.aiDraftId);
+  }
+
+  // No-op: same core status AND same statusId AND nothing else to apply —
+  // a draft still needing to be applied/consumed is real, explicit intent,
+  // never a silent no-op.
+  if (toStatus === fromStatus && resolvedStatusId === ticket.statusId && !sameStatusDraft) {
+    return ticket;
+  }
+
+  // Same core status but a statusId change and/or a draft to apply — update
+  // statusId/resolutionNote only (skip FSM validation; core status is
+  // unchanged either way).
   if (toStatus === fromStatus) {
     const now = new Date();
     const patch: Partial<typeof tickets.$inferInsert> = { statusId: resolvedStatusId ?? null, updatedAt: now };
+    // C1 (#4191 final review): a non-empty caller-supplied resolutionNote
+    // (e.g. the technician edited the prefilled AI draft before submitting)
+    // wins over the draft's content — the draft is still consumed below.
+    const appliedResolutionNote = sameStatusDraft
+      ? (opts.resolutionNote?.trim() ? opts.resolutionNote : sameStatusDraft.content)
+      : undefined;
+    if (sameStatusDraft) {
+      patch.resolutionNote = appliedResolutionNote;
+    }
     const updated = await db
       .update(tickets)
       .set(patch)
@@ -560,27 +702,37 @@ export async function changeTicketStatus(
     if (updated.length === 0) {
       throw new TicketServiceError('Ticket was modified concurrently', 409, 'CONCURRENT_MODIFICATION');
     }
-    // Only write a feed entry when there is meaningful content — i.e. the caller
-    // supplied a custom status name (statusId path).  A legacy {status} call that
-    // happens to resolve to the same core value but swaps the statusId back to the
-    // system row produces an empty content and identical oldValue/newValue, which
-    // would be a no-op noise row in the feed.
-    if (customStatusName) {
+
+    // Consume in the SAME transaction as the ticket update above — a failure
+    // here rolls the whole thing back (mirrors the full-transition path).
+    if (sameStatusDraft) {
+      await consumeResolutionDraft(sameStatusDraft.id, actor.userId);
+    }
+
+    // Only write a feed entry when there is meaningful content — i.e. the
+    // caller supplied a custom status name (statusId path) or an aiDraftId
+    // was applied. A legacy {status} call that happens to resolve to the
+    // same core value but swaps the statusId back to the system row (and
+    // carries no draft) produces an empty content and identical
+    // oldValue/newValue, which would be a no-op noise row in the feed.
+    const feedContent = sameStatusDraft ? appliedResolutionNote : customStatusName;
+    if (feedContent) {
       await db.insert(ticketComments).values({
         ticketId,
         userId: actor.userId,
         authorName: actor.name ?? null,
         authorType: 'internal',
         commentType: 'status_change',
-        content: customStatusName,
+        content: feedContent,
         isPublic: false,
         oldValue: fromStatus,
         newValue: toStatus
       });
     }
     // Do NOT emit ticket.status_changed — core status is unchanged; only the
-    // custom-status label (statusId) differs.  Emitting with identical from/to
-    // would produce noise and confuse downstream consumers.
+    // custom-status label (statusId) and/or resolutionNote differ.  Emitting
+    // with identical from/to would produce noise and confuse downstream
+    // consumers.
     await createAuditLogAsync({
       orgId: ticket.orgId,
       actorId: actor.userId,
@@ -596,8 +748,22 @@ export async function changeTicketStatus(
   if (!TICKET_STATUS_TRANSITIONS[fromStatus]?.includes(toStatus)) {
     throw new TicketServiceError(`Cannot transition ticket from ${fromStatus} to ${toStatus}`, 409, 'INVALID_TRANSITION');
   }
-  if (toStatus === 'resolved' && !opts.resolutionNote) {
+  if (toStatus === 'resolved' && !opts.resolutionNote && !opts.aiDraftId) {
     throw new TicketServiceError('A resolution note is required to resolve a ticket', 400);
+  }
+
+  // Lock + validate the `resolution_note` draft BEFORE the ticket's own CAS
+  // update below: a missing/wrong-kind/inactive draft must fail the whole
+  // resolve, not silently resolve without it.
+  let resolutionNote = opts.resolutionNote;
+  let draftToConsume: { id: string } | null = null;
+  if (toStatus === 'resolved' && opts.aiDraftId) {
+    const draft = await lockAndValidateResolutionDraft(ticketId, opts.aiDraftId);
+    // C1 (#4191 final review): a non-empty caller-supplied resolutionNote
+    // (e.g. the technician edited the prefilled AI draft before submitting)
+    // wins over the draft's content — the draft is still consumed below.
+    resolutionNote = opts.resolutionNote?.trim() ? opts.resolutionNote : draft.content;
+    draftToConsume = { id: draft.id };
   }
 
   const now = new Date();
@@ -605,7 +771,7 @@ export async function changeTicketStatus(
 
   if (toStatus === 'resolved') {
     patch.resolvedAt = ticket.resolvedAt ?? now;
-    patch.resolutionNote = opts.resolutionNote;
+    patch.resolutionNote = resolutionNote;
     patch.pendingReason = null;
   } else if (toStatus === 'closed') {
     patch.closedAt = now;
@@ -650,13 +816,20 @@ export async function changeTicketStatus(
     throw new TicketServiceError('Ticket was modified concurrently', 409, 'CONCURRENT_MODIFICATION');
   }
 
+  // Consume the draft in the SAME transaction as the ticket's own CAS update
+  // above — a failure here throws and rolls back the whole request
+  // transaction, including the status change just written.
+  if (draftToConsume) {
+    await consumeResolutionDraft(draftToConsume.id, actor.userId);
+  }
+
   await db.insert(ticketComments).values({
     ticketId,
     userId: actor.userId,
     authorName: actor.name ?? null,
     authorType: 'internal',
     commentType: 'status_change',
-    content: opts.resolutionNote ?? opts.pendingReason ?? customStatusName ?? '',
+    content: resolutionNote ?? opts.pendingReason ?? customStatusName ?? '',
     isPublic: false,
     oldValue: fromStatus,
     newValue: toStatus
@@ -668,8 +841,9 @@ export async function changeTicketStatus(
     orgId: ticket.orgId,
     partnerId: ticket.partnerId ?? null,
     actorUserId: actor.userId,
-    payload: { from: fromStatus, to: toStatus, resolutionNote: opts.resolutionNote ?? null }
+    payload: { from: fromStatus, to: toStatus }
   });
+  await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.status_changed', { from: fromStatus, to: toStatus });
   await createAuditLogAsync({
     orgId: ticket.orgId,
     actorId: actor.userId,
@@ -820,6 +994,21 @@ export async function updateTicketFields(
   }
   if (requesterChanged) Object.assign(patch, requesterPatch);
 
+  // P2-4 (#4191): stamp field_provenance, in the SAME transaction/statement
+  // as the field write itself — the human-set-field authority the release-
+  // time CAS in applyAiFieldUpdates relies on. A human write here (the only
+  // caller today; principalKind defaults 'user') ALWAYS overwrites whatever
+  // was there before, including an 'ai_agent' stamp — humans always win, no
+  // CAS needed on this path (unlike applyAiFieldUpdates, which is the one
+  // that must never overwrite a 'user' stamp).
+  if (changed.length > 0) {
+    const provenanceStamp = Object.fromEntries(
+      changed.map((field) => [field, actor.principalKind ?? 'user']),
+    );
+    (patch as Record<string, unknown>).fieldProvenance =
+      sql`${tickets.fieldProvenance} || ${JSON.stringify(provenanceStamp)}::jsonb`;
+  }
+
   const updated = await db
     .update(tickets)
     .set(patch)
@@ -847,6 +1036,7 @@ export async function updateTicketFields(
     actorUserId: actor.userId,
     payload: { changed: changedForLog }
   });
+  await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.updated');
   await createAuditLogAsync({
     orgId: ticket.orgId,
     actorId: actor.userId,
@@ -932,6 +1122,7 @@ export async function assignTicket(ticketId: string, assigneeId: string | null, 
     actorUserId: actor.userId,
     payload: { assigneeId }
   });
+  await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.assigned', { assigneeId });
   await createAuditLogAsync({
     orgId: ticket.orgId,
     actorId: actor.userId,
@@ -959,32 +1150,88 @@ export async function assignTicket(ticketId: string, assigneeId: string | null, 
 export interface AddCommentInput {
   content: string;
   isPublic: boolean;
+  /**
+   * W08 #3902 — pending attachment ids to claim for this comment (spec D2).
+   * They are claimed inside the SAME transaction as the comment insert, so a
+   * foreign/already-claimed id rolls the comment back rather than posting a
+   * comment whose photos silently vanished.
+   */
+  attachmentIds?: string[];
 }
 
 export async function addTicketComment(ticketId: string, input: AddCommentInput, actor: TicketActor) {
   const ticket = await getTicketOrThrow(ticketId);
+  const attachmentIds = input.attachmentIds ?? [];
 
-  const inserted = await db.insert(ticketComments).values({
-    ticketId,
-    userId: actor.userId,
-    authorName: actor.name ?? null,
-    authorType: 'internal',
-    commentType: input.isPublic ? 'comment' : 'internal',
-    content: input.content,
-    isPublic: input.isPublic
-  }).returning();
-  const comment = inserted[0];
-  if (!comment) throw new TicketServiceError('Failed to add comment', 500);
+  // W08 #3902: this used to be four separate writes on the global `db`. The
+  // attachment claim must roll back with the comment, so the comment insert,
+  // the firstResponseAt stamp and the claim now share one transaction.
+  // emitTicketEvent / writeTicketOutbox / createAuditLogAsync stay AFTER the
+  // commit — publishing ticket.commented for a comment that may still roll
+  // back would be worse than a late event.
+  const { comment, firstResponseStamped, attachments } = await db.transaction(async (tx) => {
+    const inserted = await tx.insert(ticketComments).values({
+      ticketId,
+      userId: actor.userId,
+      authorName: actor.name ?? null,
+      authorType: 'internal',
+      commentType: input.isPublic ? 'comment' : 'internal',
+      content: input.content,
+      isPublic: input.isPublic
+    }).returning();
+    const row = inserted[0];
+    if (!row) throw new TicketServiceError('Failed to add comment', 500);
 
-  // First PUBLIC technician response stamps firstResponseAt (spec §2).
-  // Internal notes do NOT stamp it.
-  let firstResponseStamped = false;
-  if (input.isPublic && !ticket.firstResponseAt) {
-    await db.update(tickets)
-      .set({ firstResponseAt: new Date(), updatedAt: new Date() })
-      .where(eq(tickets.id, ticketId));
-    firstResponseStamped = true;
-  }
+    // First PUBLIC technician response stamps firstResponseAt (spec §2).
+    // Internal notes do NOT stamp it.
+    let stamped = false;
+    if (input.isPublic && !ticket.firstResponseAt) {
+      await tx.update(tickets)
+        .set({ firstResponseAt: new Date(), updatedAt: new Date() })
+        .where(eq(tickets.id, ticketId));
+      stamped = true;
+    }
+
+    // The claim. Every predicate is load-bearing:
+    //   ticket_id           — cannot attach another ticket's file
+    //   org_id              — belt with the RLS braces
+    //   comment_id IS NULL  — cannot re-claim an already-attached file
+    //   uploaded_by_user_id — cannot claim someone else's upload
+    // RETURNING lists the META columns only: `data` (up to 10 MiB of bytea)
+    // must never leave the row here (spec D10).
+    let claimed: Array<{
+      id: string; commentId: string | null; contentType: string;
+      byteSize: number; originalFilename: string; createdAt: Date;
+    }> = [];
+    if (attachmentIds.length > 0) {
+      const idList = sql.join(attachmentIds.map((aid) => sql`${aid}::uuid`), sql`, `);
+      const result = await tx.execute(sql`
+        UPDATE ticket_attachments
+           SET comment_id = ${row.id}::uuid, attached_at = now()
+         WHERE id IN (${idList})
+           AND ticket_id = ${ticketId}::uuid
+           AND org_id = ${ticket.orgId}::uuid
+           AND comment_id IS NULL
+           AND uploaded_by_user_id = ${actor.userId}::uuid
+        RETURNING id,
+                  comment_id        AS "commentId",
+                  content_type      AS "contentType",
+                  byte_size         AS "byteSize",
+                  original_filename AS "originalFilename",
+                  created_at        AS "createdAt"
+      `);
+      claimed = (Array.isArray(result) ? result : []) as typeof claimed;
+      if (claimed.length !== attachmentIds.length) {
+        throw new TicketServiceError(
+          'One or more attachments could not be attached to this comment',
+          409,
+          'ATTACHMENT_NOT_CLAIMABLE'
+        );
+      }
+    }
+
+    return { comment: row, firstResponseStamped: stamped, attachments: claimed };
+  });
 
   await emitTicketEvent({
     type: 'ticket.commented',
@@ -994,6 +1241,7 @@ export async function addTicketComment(ticketId: string, input: AddCommentInput,
     actorUserId: actor.userId,
     payload: { commentId: comment.id, isPublic: input.isPublic }
   });
+  await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.commented', { commentId: comment.id, isPublic: input.isPublic });
   // Record the comment id + visibility only — the comment body can carry
   // sensitive/large content, so it stays out of the audit details (matching the
   // sibling pattern of keeping details lean).
@@ -1007,7 +1255,353 @@ export async function addTicketComment(ticketId: string, input: AddCommentInput,
     result: 'success'
   });
 
+  return { comment, firstResponseStamped, attachments };
+}
+
+/** Postgres unique-violation, however the driver happens to wrap it (mirrors tenantVariables.ts's isUniqueViolation). */
+function isUniqueViolation(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const code = (err as { code?: unknown }).code;
+  if (code === '23505') return true;
+  return isUniqueViolation((err as { cause?: unknown }).cause);
+}
+
+/**
+ * P2-4 (#4191): the first real writer of the 6.3 loop-guard columns
+ * (`originPrincipalKind` / `agentRunId`) — an AI-authored INTERNAL ticket
+ * note. `userId`/`portalUserId` are deliberately null: an ai_agent's identity
+ * (`aiAgents.id`) is not a `users.id` row, so writing it into
+ * `ticket_comments.user_id` (an FK to `users`) would violate the FK — the
+ * agent's display name goes into `authorName` for attribution instead
+ * (mirrors `remediationActResolver.ts`'s "never a synthetic users-FK id for
+ * an agent actor" precedent).
+ *
+ * Emits the SAME `ticket.commented` event/outbox row `addTicketComment`
+ * does — this does NOT re-trigger the 6.3 helpdesk subscriber's admission
+ * loop: the subscriber's own loop guard filters on
+ * `originPrincipalKind !== 'user'` (`ticketHelpdeskSubscriber.ts`), which
+ * this row satisfies by construction.
+ *
+ * Idempotent per run via `ticket_comments_one_ai_note_per_run_uq` (partial
+ * unique on `agent_run_id` WHERE `agent_run_id IS NOT NULL AND
+ * origin_principal_kind = 'ai_agent'`): a retry after a partial failure (the
+ * caller observed an error but the insert actually committed) returns the
+ * EXISTING row rather than erroring or duplicating the note.
+ */
+export async function addAiTriageNote(
+  ticketId: string,
+  runId: string,
+  content: string,
+  orgId: string,
+  agentName = 'AI Agent'
+): Promise<{ comment: { id: string } }> {
+  const ticket = await getTicketOrThrow(ticketId);
+  if (ticket.orgId !== orgId) {
+    throw new TicketServiceError('Ticket not found', 404);
+  }
+
+  try {
+    const inserted = await db.insert(ticketComments).values({
+      ticketId,
+      userId: null,
+      portalUserId: null,
+      authorName: agentName,
+      authorType: 'ai_agent',
+      commentType: 'internal',
+      content,
+      isPublic: false,
+      originPrincipalKind: 'ai_agent',
+      agentRunId: runId
+    }).returning({ id: ticketComments.id });
+    const comment = inserted[0];
+    if (!comment) throw new TicketServiceError('Failed to add AI triage note', 500);
+
+    await emitTicketEvent({
+      type: 'ticket.commented',
+      ticketId,
+      orgId: ticket.orgId,
+      partnerId: ticket.partnerId ?? null,
+      actorUserId: null,
+      payload: { commentId: comment.id, isPublic: false }
+    });
+    await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.commented', { commentId: comment.id, isPublic: false });
+
+    return { comment };
+  } catch (err) {
+    if (isUniqueViolation(err)) {
+      const existing = await db
+        .select({ id: ticketComments.id })
+        .from(ticketComments)
+        .where(and(eq(ticketComments.agentRunId, runId), eq(ticketComments.originPrincipalKind, 'ai_agent')))
+        .limit(1);
+      const row = existing[0];
+      if (row) return { comment: row };
+    }
+    throw err;
+  }
+}
+
+export interface AiFieldUpdateSpec<T> {
+  value: T;
+  /** The value the caller last observed — the CAS predicate's comparison target. */
+  expectedCurrent: T | null;
+}
+
+export interface ApplyAiFieldUpdatesInput {
+  categoryId?: AiFieldUpdateSpec<string>;
+  priority?: AiFieldUpdateSpec<'low' | 'normal' | 'high' | 'urgent'>;
+}
+
+export type AiFieldUpdateOutcome =
+  | { applied: true }
+  | { applied: false; skipped: 'human_set' | 'concurrent_change' };
+
+/**
+ * P2-4 (#4191): the AI-triage release-path counterpart to `updateTicketFields`
+ * — CAS-guarded so an autonomous write can never clobber a field a human has
+ * since touched, or one that changed concurrently since the caller last
+ * observed it. One UPDATE, per-field `CASE WHEN <value unchanged since
+ * expectedCurrent> AND <no human stamp on this field> THEN <new value> ELSE
+ * <current value> END` — the CAS predicate is evaluated by Postgres against
+ * the row under the UPDATE's own row lock, so this is atomic without a
+ * separate `SELECT ... FOR UPDATE`. `field_provenance` is stamped to
+ * 'ai_agent' with the SAME predicate, so a skipped field's provenance is left
+ * exactly as it was (see `updateTicketFields`'s "AI writes never overwrite a
+ * 'user' stamp" contract this implements).
+ *
+ * `categoryId`'s value is validated against `ticket_categories` for the
+ * ticket's PARTNER before the UPDATE runs — a cross-partner categoryId must
+ * fail closed exactly like the human `update_fields` path
+ * (`assertCategoryInPartner`), not silently write an orphaned id.
+ */
+export async function applyAiFieldUpdates(
+  ticketId: string,
+  orgId: string,
+  updates: ApplyAiFieldUpdatesInput,
+  runId: string
+): Promise<Partial<Record<'categoryId' | 'priority', AiFieldUpdateOutcome>>> {
+  // Reserved for forthcoming audit/observability wiring — not written
+  // anywhere yet (no brief-specified writer, and attributing an audit row
+  // correctly needs the run's agentId, which this signature doesn't carry;
+  // see the task report's Concerns).
+  void runId;
+
+  if (!updates.categoryId && !updates.priority) return {};
+
+  const [ticket] = await db
+    .select({ id: tickets.id, orgId: tickets.orgId, partnerId: tickets.partnerId })
+    .from(tickets)
+    .where(and(eq(tickets.id, ticketId), eq(tickets.orgId, orgId)))
+    .limit(1);
+  if (!ticket) {
+    throw new TicketServiceError('Ticket not found', 404);
+  }
+
+  if (updates.categoryId) {
+    await assertCategoryInPartner(updates.categoryId.value, await resolveTicketPartnerId(ticket));
+  }
+
+  const categoryCond = updates.categoryId
+    ? sql`(${tickets.categoryId} IS NOT DISTINCT FROM ${updates.categoryId.expectedCurrent} AND COALESCE(${tickets.fieldProvenance}->>'categoryId', '') <> 'user')`
+    : null;
+  const priorityCond = updates.priority
+    ? sql`(${tickets.priority} IS NOT DISTINCT FROM ${updates.priority.expectedCurrent} AND COALESCE(${tickets.fieldProvenance}->>'priority', '') <> 'user')`
+    : null;
+
+  const setClause: Record<string, unknown> = { updatedAt: new Date() };
+  if (categoryCond) {
+    setClause.categoryId = sql`CASE WHEN ${categoryCond} THEN ${updates.categoryId!.value}::uuid ELSE ${tickets.categoryId} END`;
+  }
+  if (priorityCond) {
+    setClause.priority = sql`CASE WHEN ${priorityCond} THEN ${updates.priority!.value}::ticket_priority ELSE ${tickets.priority} END`;
+  }
+
+  const provenanceParts = [
+    categoryCond ? sql`CASE WHEN ${categoryCond} THEN '{"categoryId":"ai_agent"}'::jsonb ELSE '{}'::jsonb END` : null,
+    priorityCond ? sql`CASE WHEN ${priorityCond} THEN '{"priority":"ai_agent"}'::jsonb ELSE '{}'::jsonb END` : null,
+  ].filter((part): part is NonNullable<typeof part> => part !== null);
+  if (provenanceParts.length > 0) {
+    setClause.fieldProvenance = sql.join([sql`${tickets.fieldProvenance}`, ...provenanceParts], sql` || `);
+  }
+
+  const [after] = await db
+    .update(tickets)
+    .set(setClause)
+    .where(and(eq(tickets.id, ticketId), eq(tickets.orgId, orgId)))
+    .returning({ categoryId: tickets.categoryId, priority: tickets.priority, fieldProvenance: tickets.fieldProvenance });
+
+  if (!after) {
+    throw new TicketServiceError('Ticket was modified concurrently', 409, 'CONCURRENT_MODIFICATION');
+  }
+
+  const result: Partial<Record<'categoryId' | 'priority', AiFieldUpdateOutcome>> = {};
+  if (updates.categoryId) {
+    result.categoryId = after.categoryId === updates.categoryId.value
+      ? { applied: true }
+      : { applied: false, skipped: after.fieldProvenance?.categoryId === 'user' ? 'human_set' : 'concurrent_change' };
+  }
+  if (updates.priority) {
+    result.priority = after.priority === updates.priority.value
+      ? { applied: true }
+      : { applied: false, skipped: after.fieldProvenance?.priority === 'user' ? 'human_set' : 'concurrent_change' };
+  }
+  return result;
+}
+
+// Task A10 (#4191) — human draft routes (list / send / discard)
+
+export interface ActiveTicketDraftRow {
+  id: string;
+  kind: 'reply' | 'resolution_note';
+  content: string;
+  createdAt: Date;
+  runId: string | null;
+}
+
+/**
+ * The active drafts for a ticket (at most one per `kind` —
+ * `ticket_drafts_active_uq`). `runId` is a bare link to the producing
+ * `ai_agent_runs` row (the run-detail page), never the run's own outcome.
+ */
+export async function listActiveTicketDrafts(ticketId: string): Promise<ActiveTicketDraftRow[]> {
+  return db
+    .select({
+      id: ticketDrafts.id,
+      kind: ticketDrafts.kind,
+      content: ticketDrafts.content,
+      createdAt: ticketDrafts.createdAt,
+      runId: ticketDrafts.runId,
+    })
+    .from(ticketDrafts)
+    .where(and(eq(ticketDrafts.ticketId, ticketId), eq(ticketDrafts.state, 'active')))
+    .orderBy(desc(ticketDrafts.createdAt))
+    // Defensive bound only — ticket_drafts_active_uq caps this at one active
+    // row per (ticketId, kind), and there are two kinds, so the real result
+    // is never more than 2 rows.
+    .limit(10);
+}
+
+/**
+ * Post a `reply`-kind draft as a PUBLIC comment under the CALLING
+ * technician's own identity — sending is a human act, so this is
+ * `originPrincipalKind: 'user'` and `userId: actor.userId`, never an
+ * AI-attributed row (contrast `addAiTriageNote`). `content` overrides the
+ * draft's stored text when the technician edited it before sending;
+ * otherwise the draft's own content is posted verbatim.
+ *
+ * `SELECT ... FOR UPDATE` locks the draft row for the rest of this
+ * transaction: a concurrent second send/discard call blocks on the same row
+ * until this one commits or rolls back, then observes the now-committed
+ * `state` — so a double-send under a race is a clean 409 with ZERO duplicate
+ * comments, never two racing inserts. The final CAS `UPDATE ... WHERE
+ * state='active'` is defense-in-depth (unreachable while the lock above
+ * holds, since nothing else in this same transaction can have changed the
+ * row) rather than the load-bearing guard.
+ */
+export async function sendTicketDraft(
+  ticketId: string,
+  draftId: string,
+  content: string | undefined,
+  actor: TicketActor
+): Promise<{ comment: { id: string }; firstResponseStamped: boolean }> {
+  const ticket = await getTicketOrThrow(ticketId);
+
+  const [draft] = await db
+    .select()
+    .from(ticketDrafts)
+    .where(and(eq(ticketDrafts.id, draftId), eq(ticketDrafts.ticketId, ticketId)))
+    .limit(1)
+    .for('update');
+  if (!draft) throw new TicketServiceError('Draft not found', 404);
+  if (draft.kind !== 'reply') {
+    throw new TicketServiceError('Only reply drafts can be sent — a resolution-note draft is consumed by resolving the ticket', 409);
+  }
+  if (draft.state !== 'active') {
+    throw new TicketServiceError('Draft is no longer active', 409);
+  }
+
+  const body = content && content.trim().length > 0 ? content : draft.content;
+
+  const inserted = await db.insert(ticketComments).values({
+    ticketId,
+    userId: actor.userId,
+    authorName: actor.name ?? null,
+    authorType: 'internal',
+    commentType: 'comment',
+    content: body,
+    isPublic: true,
+    originPrincipalKind: 'user'
+  }).returning({ id: ticketComments.id });
+  const comment = inserted[0];
+  if (!comment) throw new TicketServiceError('Failed to send draft', 500);
+
+  const consumed = await db
+    .update(ticketDrafts)
+    .set({ state: 'consumed', consumedBy: actor.userId, consumedAt: new Date() })
+    .where(and(eq(ticketDrafts.id, draftId), eq(ticketDrafts.state, 'active')))
+    .returning({ id: ticketDrafts.id });
+  if (consumed.length === 0) {
+    throw new TicketServiceError('Draft was already consumed', 409);
+  }
+
+  // Same first-PUBLIC-response stamping rule as addTicketComment.
+  let firstResponseStamped = false;
+  if (!ticket.firstResponseAt) {
+    await db.update(tickets)
+      .set({ firstResponseAt: new Date(), updatedAt: new Date() })
+      .where(eq(tickets.id, ticketId));
+    firstResponseStamped = true;
+  }
+
+  await emitTicketEvent({
+    type: 'ticket.commented',
+    ticketId,
+    orgId: ticket.orgId,
+    partnerId: ticket.partnerId ?? null,
+    actorUserId: actor.userId,
+    payload: { commentId: comment.id, isPublic: true }
+  });
+  await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.commented', { commentId: comment.id, isPublic: true });
+  await createAuditLogAsync({
+    orgId: ticket.orgId,
+    actorId: actor.userId,
+    action: 'ticket.comment',
+    resourceType: 'ticket',
+    resourceId: ticketId,
+    details: { commentId: comment.id, isInternal: false, fromAiDraft: draftId },
+    result: 'success'
+  });
+
   return { comment, firstResponseStamped };
+}
+
+/**
+ * CAS `active -> discarded`. Distinguishes "no such draft for this ticket"
+ * (404) from "found, but no longer active" (409) via a plain read before the
+ * CAS write — the write's own `WHERE state='active'` is what actually
+ * enforces the transition against a concurrent racer.
+ */
+export async function discardTicketDraft(ticketId: string, draftId: string): Promise<{ id: string }> {
+  const [draft] = await db
+    .select({ id: ticketDrafts.id, state: ticketDrafts.state })
+    .from(ticketDrafts)
+    .where(and(eq(ticketDrafts.id, draftId), eq(ticketDrafts.ticketId, ticketId)))
+    .limit(1);
+  if (!draft) throw new TicketServiceError('Draft not found', 404);
+  if (draft.state !== 'active') {
+    throw new TicketServiceError('Draft is no longer active', 409);
+  }
+
+  const updated = await db
+    .update(ticketDrafts)
+    .set({ state: 'discarded' })
+    .where(and(eq(ticketDrafts.id, draftId), eq(ticketDrafts.state, 'active')))
+    .returning({ id: ticketDrafts.id });
+  const row = updated[0];
+  if (!row) {
+    throw new TicketServiceError('Draft was already consumed or discarded', 409);
+  }
+  return row;
 }
 
 // Task 8 — Alert linking
@@ -1304,6 +1898,12 @@ export async function restoreTicket(ticketId: string, actor: TicketActor): Promi
     .returning();
   if (!updated) throw new TicketServiceError('Ticket is not deleted', 409);
 
+  // No emitTicketEvent here (restore never had a legacy-queue event — the
+  // notify worker has no ticket.restored branch). The outbox row is new for
+  // this PR: it exists purely so the durable-subscriber path (Task 3) and any
+  // future consumer can observe a restore, mirroring the other 5 sites.
+  await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.restored');
+
   await createAuditLogAsync({
     orgId: ticket.orgId,
     actorId: actor.userId,
@@ -1324,7 +1924,21 @@ export async function restoreTicket(ticketId: string, actor: TicketActor): Promi
 // invoice_lines is intentionally excluded: issued billing history must remain
 // stamped with the org that was billed (matches device CUSTOM_ORG_REWRITE_TABLES
 // exclusion); its ticket_id FK is ON DELETE SET NULL so moves do not orphan it.
-const TICKET_ORG_DENORMALIZED_TABLES = ['time_entries', 'ticket_parts', 'ticket_alert_links'] as const;
+// ticket_outbox (#3828 wave-6-3 review fix): carries both ticket_id and a
+// denormalized org_id (db/migrations/2026-09-19-ai-agents-ticket-shadow.sql)
+// — an unpublished row left on the source org would be published under the
+// old org's routing, resolving the wrong org's helpdesk agents and letting
+// the Task 4 context assembler load the moved ticket's content into a run
+// scoped to an org that no longer owns it. Same UPDATE shape as the other
+// three tables; the mover already holds access to both orgs (same-partner
+// constraint), so RLS USING/WITH CHECK both pass.
+// ticket_attachments (W08 #3902): comment photo/PDF metadata rows denormalize
+// org_id from their ticket (shape 1) and have no device_id. Appended LAST so
+// this path and the device-move path (routes/devices/moveOrg.ts) touch the
+// ticket-linked child tables in the same relative order; see the lock-order
+// comment at moveOrg.ts:~311. S3 objects are keyed by attachment id only
+// (spec D8) and are NOT touched by a move.
+const TICKET_ORG_DENORMALIZED_TABLES = ['time_entries', 'ticket_parts', 'ticket_alert_links', 'ticket_outbox', 'ticket_attachments'] as const;
 
 /**
  * Reassigns a ticket to another organization of the SAME partner.
@@ -1334,35 +1948,122 @@ const TICKET_ORG_DENORMALIZED_TABLES = ['time_entries', 'ticket_parts', 'ticket_
  * - Emits ticket.updated.
  * Rejects cross-partner moves with 400; unknown target with 404; same-org is a no-op.
  */
-export async function moveTicketOrg(ticketId: string, targetOrgId: string, actor: TicketActor): Promise<typeof tickets.$inferSelect> {
+export interface MoveTicketOrgOptions {
+  /**
+   * Multi-currency (#3776): allow a cross-currency move even though unbilled
+   * monetary time entries / parts will keep their OLD-currency snapshot under
+   * the new org. Route-gated on invoices:write; AI tools never set it.
+   */
+  acceptCurrencyMismatch?: boolean;
+}
+
+export async function moveTicketOrg(
+  ticketId: string,
+  targetOrgId: string,
+  actor: TicketActor,
+  opts: MoveTicketOrgOptions = {}
+): Promise<typeof tickets.$inferSelect> {
   const ticket = await getTicketOrThrow(ticketId);
   if (ticket.orgId === targetOrgId) return ticket;
 
-  const orgRows = await db
-    .select({ id: organizations.id, partnerId: organizations.partnerId, name: organizations.name })
-    .from(organizations)
-    .where(sql`${organizations.id} IN (${ticket.orgId}::uuid, ${targetOrgId}::uuid)`)
-    .limit(2);
-  const sourceOrg = orgRows.find((r) => r.id === ticket.orgId);
-  const targetOrg = orgRows.find((r) => r.id === targetOrgId);
-  if (!targetOrg) throw new TicketServiceError('Target organization not found', 404);
-  if (!sourceOrg || sourceOrg.partnerId !== targetOrg.partnerId) {
-    throw new TicketServiceError('Tickets can only be moved between organizations of the same partner', 400);
-  }
-
   let updated: typeof tickets.$inferSelect | undefined;
+  let guard: MoveCurrencyGuardDetails | null = null;
   await db.transaction(async (tx) => {
+    // Lock order (global, #3778): organizations FOR SHARE (BOTH orgs, ascending
+    // UUID so two concurrent moves between the same pair cannot deadlock) →
+    // tickets → time_entries → ticket_parts. The org lock is the FIRST statement
+    // of this transaction and is held to commit, so the source/target currency
+    // pair the guard compares cannot be restamped mid-move.
+    const lockedOrgs = await readOrgStampingDefaultsMany(tx, [ticket.orgId, targetOrgId]);
+    const orgRows = await tx
+      .select({ id: organizations.id, partnerId: organizations.partnerId, name: organizations.name })
+      .from(organizations)
+      .where(sql`${organizations.id} IN (${ticket.orgId}::uuid, ${targetOrgId}::uuid)`)
+      .limit(2);
+    const sourceMeta = orgRows.find((r) => r.id === ticket.orgId);
+    const targetMeta = orgRows.find((r) => r.id === targetOrgId);
+    if (!targetMeta) throw new TicketServiceError('Target organization not found', 404);
+    if (!sourceMeta || sourceMeta.partnerId !== targetMeta.partnerId) {
+      throw new TicketServiceError('Tickets can only be moved between organizations of the same partner', 400);
+    }
+    // Present by construction: the metadata rows above resolved, so the locks did too.
+    const sourceOrg = { ...sourceMeta, currencyCode: lockedOrgs.get(ticket.orgId)!.currencyCode };
+    const targetOrg = { ...targetMeta, currencyCode: lockedOrgs.get(targetOrgId)!.currencyCode };
+    // C1 fix (#4191 final review): both statements below MUST run BEFORE the
+    // `tx.update(tickets)` UPDATE just below — not after, despite every
+    // other cleanup here (the child-table org_id rewrites) following it.
+    // Both composite FKs below are DEFERRABLE INITIALLY IMMEDIATE (checked
+    // at the end of EACH statement, not deferred to COMMIT — no
+    // `SET CONSTRAINTS ... DEFERRED` is issued in this transaction), and
+    // both reference `tickets(id, org_id)` — org_id is part of the key the
+    // ticket UPDATE below changes. Running the ticket UPDATE first (as a
+    // first attempt at this fix did) fails immediately with 23503 the
+    // instant that statement completes: a still-live ticket_drafts/
+    // action_intents row now points at (ticketId, OLD org_id), which no
+    // longer matches any row in `tickets` (there is only one row per id).
+    // These two must run first so no such row exists by the time the ticket
+    // UPDATE's own FK check runs.
+    //
+    // Both must live HERE (inside this transaction) rather than on either
+    // caller (the HTTP route at routes/tickets/moveOrg.ts, or the AI-tool
+    // executor at aiToolsTicketing.ts's move_org action) — this is the one
+    // path both call through, and the AI-tool path's own tombstone predates
+    // this fix and covered neither table nor every status (see below).
+    //
+    // 1. action_intents.scope_ticket_id: composite FK (scope_ticket_id,
+    // org_id) -> tickets(id, org_id) (action_intents_scope_ticket_org_fk,
+    // migrations/2026-09-25-ai-agents-ticket-triage.sql). action_intents rows
+    // keep the org_id of the actor who requested them — they do NOT move
+    // with the ticket — so once the ticket UPDATE below changes tickets.org_id,
+    // ANY remaining scope_ticket_id pointer (regardless of status) 23503s,
+    // and permanently: the composite pair (scope_ticket_id, targetOrgId)
+    // never resolves because the intent's own org_id never becomes
+    // targetOrgId. The immutability trigger
+    // (action_intents_block_content_update()) only special-cases a non-null
+    // -> NULL transition, so tombstoning is the only legal move, and it must
+    // cover every status, not just the live pre-release ones — a terminal
+    // (completed/failed/expired) intent still carries the same FK and would
+    // still 23503 on the next unrelated UPDATE to that row (audit backfills,
+    // moveOrg's own UPDATE below). All statuses, unconditionally.
+    await tx
+      .update(actionIntents)
+      .set({ scopeTicketId: null })
+      .where(eq(actionIntents.scopeTicketId, ticketId));
+    // 2. ticket_drafts: composite FK (ticket_id, org_id) -> tickets(id,
+    // org_id) (ticket_drafts_ticket_org_fk) would break the same way UNLESS
+    // we also repoint ticket_drafts.org_id — but ticket_drafts.run_id is
+    // ALSO composite-FK'd (run_id, org_id) -> ai_agent_runs(id, org_id)
+    // (ticket_drafts_run_org_fk), and the run stays behind in the source
+    // org, so repointing org_id would just trade one 23503 for another.
+    // Drafts are ephemeral (proposed content awaiting human
+    // consumption/discard, never itself the ticket_comments record — see
+    // ticketDrafts.ts's header comment), so deleting them on a cross-org
+    // move is the same accepted ruling used by the org-merge custom
+    // executor for the same run-pinning conflict.
+    await tx.delete(ticketDrafts).where(eq(ticketDrafts.ticketId, ticketId));
+    // The UPDATE takes the ticket row lock; the currency guard then locks the
+    // unbilled monetary children, and the org_id rewrites follow. A throw here
+    // rolls this UPDATE back — nothing moves on a block.
     const [row] = await tx
       .update(tickets)
       .set({ orgId: targetOrgId, deviceId: null, updatedAt: new Date() })
       .where(eq(tickets.id, ticketId))
       .returning();
     updated = row;
+    guard = await assertTicketMoveCurrencyCompatible(tx, {
+      ticketIds: [ticketId],
+      sourceCurrency: sourceOrg.currencyCode,
+      targetCurrency: targetOrg.currencyCode,
+      targetOrgName: targetOrg.name,
+      acceptCurrencyMismatch: opts.acceptCurrencyMismatch === true
+    });
+    // SET org_id only — currency_code snapshots are never touched by a move.
     for (const table of TICKET_ORG_DENORMALIZED_TABLES) {
       await tx.execute(
         sql`UPDATE ${sql.identifier(table)} SET org_id = ${targetOrgId}::uuid WHERE ticket_id = ${ticketId}::uuid`
       );
     }
+    const strandedCount = guard?.accepted ? guard.unbilledTimeEntries + guard.unbilledParts : 0;
     // System feed entry on the moved ticket.
     await tx.insert(ticketComments).values({
       ticketId,
@@ -1370,7 +2071,9 @@ export async function moveTicketOrg(ticketId: string, targetOrgId: string, actor
       authorName: actor.name ?? null,
       authorType: 'internal',
       commentType: 'system',
-      content: `Moved to ${targetOrg.name}`,
+      content: `Moved to ${targetOrg.name}` + (strandedCount > 0
+        ? ` — ${strandedCount} unbilled items stay in ${sourceOrg.currencyCode}`
+        : ''),
       isPublic: false
     });
   });
@@ -1385,7 +2088,14 @@ export async function moveTicketOrg(ticketId: string, targetOrgId: string, actor
     payload: { changed: ['orgId'] }
   });
   // Audit on BOTH orgs so the move shows in source and target feeds (device precedent).
-  const details = { fromOrgId: ticket.orgId, toOrgId: targetOrgId, detachedDeviceId: ticket.deviceId ?? null };
+  // (Cast: TS narrows the closure-assigned `let` to its initial null.)
+  const accepted = guard as MoveCurrencyGuardDetails | null;
+  const details = {
+    fromOrgId: ticket.orgId,
+    toOrgId: targetOrgId,
+    detachedDeviceId: ticket.deviceId ?? null,
+    ...(accepted?.accepted ? { currencyMismatchAccepted: accepted } : {})
+  };
   await createAuditLogAsync({ orgId: ticket.orgId, actorId: actor.userId, action: 'ticket.move_org.source', resourceType: 'ticket', resourceId: ticketId, details, result: 'success' });
   await createAuditLogAsync({ orgId: targetOrgId, actorId: actor.userId, action: 'ticket.move_org.target', resourceType: 'ticket', resourceId: ticketId, details, result: 'success' });
   return updated;

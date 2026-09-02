@@ -75,7 +75,7 @@ export function ValueInput({
       >
         {field.enumValues.map((enumValue) => (
           <option key={enumValue} value={enumValue}>
-            {formatEnumValue(enumValue)}
+            {formatEnumValue(enumValue, t)}
           </option>
         ))}
       </select>
@@ -296,7 +296,7 @@ function MultiValueInput({
                 }}
                 className="sr-only"
               />
-              {formatEnumValue(enumValue)}
+              {formatEnumValue(enumValue, t)}
             </label>
           );
         })}
@@ -338,7 +338,18 @@ function MultiValueInput({
 
 // Helpers
 
-function formatEnumValue(value: string): string {
+// Enum values whose Title-Cased raw value no longer matches the product's
+// preferred wording get an explicit locale-key override here instead of a
+// hard-coded English string — see filters.value.enumOverrides in common.json.
+const ENUM_VALUE_OVERRIDE_KEYS: Record<string, string> = {
+  decommissioned: 'filters.value.enumOverrides.decommissioned'
+};
+
+function formatEnumValue(value: string, t: (key: string) => string): string {
+  const overrideKey = ENUM_VALUE_OVERRIDE_KEYS[value];
+  if (overrideKey) {
+    return t(/* i18n-dynamic */ overrideKey);
+  }
   // Convert snake_case or camelCase to Title Case
   return value
     .replace(/_/g, ' ')

@@ -42,6 +42,18 @@
  * `src/testUtils/actionIntentsTriggerDenyList.ts`), and this suite asserts it
  * has one behavioral case per column — so the next column added to the trigger
  * arrives with a real rejecting-UPDATE test or fails right here.
+ *
+ * AGENT-ORIGINATED BASE FIXTURE (wave 3, #3824, task 5 fix round 1): the
+ * seeded intent is agent-originated (source/origin_principal_kind = 'ai_agent',
+ * requesting_agent_run_id set) rather than human-originated, specifically so
+ * `requesting_agent_run_id` has a non-null starting value to change FROM. A
+ * second live `ai_agent_runs` row in the SAME org is also seeded — unused by
+ * the generic it.each case below (which, like every other column here, uses a
+ * context-free random value; see the comment on CONTENT_COLUMN_UPDATES for
+ * why that's sufficient) but consumed by the dedicated
+ * "blocks swapping requesting_agent_run_id..." test after the it.each block,
+ * which proves the trigger blocks the swap even when the new value would
+ * otherwise satisfy every CHECK and the composite FK.
  */
 import './setup';
 
@@ -49,7 +61,7 @@ import { randomUUID } from 'node:crypto';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { eq, sql as sqlTag } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
-import { partners, organizations, users, actionIntents } from '../../db/schema';
+import { partners, organizations, users, actionIntents, aiAgents, aiAgentRuns } from '../../db/schema';
 import type { NewActionIntent } from '../../db/schema/actionIntents';
 import {
   DENY_LISTED_COLUMNS,
@@ -58,11 +70,13 @@ import {
 } from '../../testUtils/actionIntentsTriggerDenyList';
 
 /**
- * Seeds partner -> org -> user -> a `pending_approval` action_intent and
- * returns the intent id. Called from `beforeEach` (see the header note on the
- * shared TRUNCATE hook).
+ * Seeds partner -> org -> user -> agent -> two live ai_agent_runs (same org)
+ * -> an agent-originated `pending_approval` action_intent attributed to the
+ * FIRST run. Returns the intent id and the SECOND run's id (a valid swap
+ * target under the same org, unattached to any intent). Called from
+ * `beforeEach` (see the header note on the shared TRUNCATE hook).
  */
-async function seedPendingIntent(): Promise<string> {
+async function seedPendingIntent(): Promise<{ id: string; otherRunId: string }> {
   const sfx = randomUUID().slice(0, 8);
   return withSystemDbAccessContext(async () => {
     const [partner] = await db
@@ -83,12 +97,44 @@ async function seedPendingIntent(): Promise<string> {
         status: 'active',
       })
       .returning({ id: users.id });
+    const [agent] = await db
+      .insert(aiAgents)
+      .values({ orgId: org!.id, partnerId: null, kind: 'triage', name: 'Triage', createdBy: user!.id })
+      .returning({ id: aiAgents.id });
+    const [run] = await db
+      .insert(aiAgentRuns)
+      .values({
+        agentId: agent!.id,
+        orgId: org!.id,
+        triggerKind: 'alert',
+        dedupeKey: `intent-immutability-${sfx}-1`,
+        modeAtStart: 'shadow',
+        policySnapshot: { schemaVersion: 1 } as never,
+      })
+      .returning({ id: aiAgentRuns.id });
+    // A second live run, SAME org, never attached to an intent — the valid
+    // swap target for the dedicated requesting_agent_run_id test below.
+    const [otherRun] = await db
+      .insert(aiAgentRuns)
+      .values({
+        agentId: agent!.id,
+        orgId: org!.id,
+        triggerKind: 'alert',
+        dedupeKey: `intent-immutability-${sfx}-2`,
+        modeAtStart: 'shadow',
+        policySnapshot: { schemaVersion: 1 } as never,
+      })
+      .returning({ id: aiAgentRuns.id });
 
     const values: NewActionIntent = {
       orgId: org!.id,
       partnerId: partner!.id,
-      requestedByUserId: user!.id,
-      source: 'chat',
+      requestedByUserId: null,
+      requestingApiKeyId: null,
+      requestingAgentRunId: run!.id,
+      source: 'ai_agent',
+      originPrincipalKind: 'ai_agent',
+      originPrincipalId: agent!.id,
       actionName: 'm365.mailbox.disable',
       actionVersion: 1,
       arguments: { mailbox: 'user@example.com' },
@@ -106,15 +152,18 @@ async function seedPendingIntent(): Promise<string> {
     const [intent] = await db.insert(actionIntents).values(values).returning({
       id: actionIntents.id,
     });
-    return intent!.id;
+    return { id: intent!.id, otherRunId: otherRun!.id };
   });
 }
 
 describe('action_intents immutability trigger (live DB)', () => {
   let intentId: string;
+  let otherRunId: string;
 
   beforeEach(async () => {
-    intentId = await seedPendingIntent();
+    const seeded = await seedPendingIntent();
+    intentId = seeded.id;
+    otherRunId = seeded.otherRunId;
   });
 
   // One rejecting UPDATE per deny-listed column. Keyed by DB column name so
@@ -123,16 +172,27 @@ describe('action_intents immutability trigger (live DB)', () => {
   // with a behavioral test rather than only a static one.
   //
   // Every value here also violates a CHECK/FK (or would, for org_id and the
-  // actor columns). That is fine and deliberate: action_intents_immutable_trg
-  // is a BEFORE UPDATE ... FOR EACH ROW trigger, and BEFORE-row triggers run
-  // ahead of CHECK and referential-integrity evaluation, so the immutability
-  // RAISE is always the error that surfaces. If one of these ever reports an
-  // FK/CHECK message instead, the trigger stopped firing — which is exactly
-  // the failure this suite exists to catch.
+  // actor columns, including requesting_agent_run_id — a fixed random UUID
+  // here is not a real ai_agent_runs row, so it collides with the composite
+  // FK (requesting_agent_run_id, org_id) -> ai_agent_runs(id, org_id), a
+  // 23503, not action_intents_one_actor_chk: swapping the column's value
+  // in place still leaves exactly one actor column non-null). That is fine
+  // and deliberate:
+  // action_intents_immutable_trg is a BEFORE UPDATE ... FOR EACH ROW trigger,
+  // and BEFORE-row triggers run ahead of CHECK and referential-integrity
+  // evaluation, so the immutability RAISE is always the error that surfaces.
+  // If one of these ever reports an FK/CHECK message instead, the trigger
+  // stopped firing — which is exactly the failure this suite exists to catch.
+  // (A dedicated test below additionally proves the block holds even when
+  // the new requesting_agent_run_id value is fully legitimate — a second
+  // live, same-org run — so this case's reliance on trigger-before-CHECK
+  // ordering isn't the only thing standing between this suite and a false
+  // pass on that column.)
   const CONTENT_COLUMN_UPDATES: Record<string, Partial<NewActionIntent>> = {
     org_id: { orgId: randomUUID() },
     requested_by_user_id: { requestedByUserId: randomUUID() },
     requesting_api_key_id: { requestingApiKeyId: randomUUID() },
+    requesting_agent_run_id: { requestingAgentRunId: randomUUID() },
     source: { source: 'mcp_api' },
     origin_principal_kind: { originPrincipalKind: 'api_key' },
     origin_principal_id: { originPrincipalId: `key-${randomUUID().slice(0, 8)}` },
@@ -153,6 +213,22 @@ describe('action_intents immutability trigger (live DB)', () => {
     approval_scope: { approvalScope: 'supervised' },
     classification_version: { classificationVersion: 99 },
     effect_digest: { effectDigest: 'c'.repeat(64) },
+    // 2026-09-23 (P2-2, #4189): scope_kind never changes post-creation.
+    scope_kind: { scopeKind: 'device' },
+    // scope_device_id's guard is conditional (see the migration + the unit
+    // suite's comment): only a transition TO a non-null value is blocked —
+    // the fixture's seeded intent starts with scope_device_id NULL, so
+    // setting it to any UUID is the blocked direction. The allowed tombstone
+    // direction (non-null -> NULL) is exercised separately in
+    // aiAgentSchedulesPartnerRls.integration.test.ts, which seeds a non-null
+    // starting value.
+    scope_device_id: { scopeDeviceId: randomUUID() },
+    // 2026-09-25 (P2-4, #4191): same conditional-guard shape as
+    // scope_device_id above. The fixture's seeded intent starts with
+    // scope_ticket_id NULL, so setting it to any UUID is the blocked
+    // direction; the allowed tombstone (non-null -> NULL) is exercised
+    // elsewhere once a Task A3/A6 fixture seeds a non-null starting value.
+    scope_ticket_id: { scopeTicketId: randomUUID() },
   };
 
   it('has a behavioral case for every column on the trigger deny-list', () => {
@@ -197,6 +273,37 @@ describe('action_intents immutability trigger (live DB)', () => {
       expect(causeMessage ?? topMessage).toMatch(/action_intents content is immutable/);
     },
   );
+
+  // Stronger companion to the generic requesting_agent_run_id case above:
+  // otherRunId is a REAL, LIVE ai_agent_runs row in the SAME org as the
+  // intent. Swapping to it would satisfy action_intents_one_actor_chk
+  // (still exactly one actor), action_intents_agent_origin_chk and
+  // action_intents_agent_source_chk (origin/source stay 'ai_agent'), and the
+  // composite (requesting_agent_run_id, org_id) -> ai_agent_runs(id, org_id)
+  // FK — every constraint Task 2 added except the immutability trigger
+  // itself. If the trigger ever stopped firing (or fired after CHECK/FK
+  // instead of before), this is the case that would catch it: the generic
+  // it.each case above would still "pass" on an FK/CHECK error message by
+  // accident, but this one cannot, because there is no other constraint left
+  // to fail.
+  it('blocks swapping requesting_agent_run_id even to a second, valid, same-org run', async () => {
+    let caught: unknown;
+    try {
+      await withSystemDbAccessContext(() =>
+        db
+          .update(actionIntents)
+          .set({ requestingAgentRunId: otherRunId })
+          .where(eq(actionIntents.id, intentId)),
+      );
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught, 'expected the immutability trigger to reject the UPDATE').toBeDefined();
+    const cause = (caught as { cause?: unknown })?.cause;
+    const causeMessage = cause instanceof Error ? cause.message : undefined;
+    const topMessage = caught instanceof Error ? caught.message : String(caught);
+    expect(causeMessage ?? topMessage).toMatch(/action_intents content is immutable/);
+  });
 
   it('allows an UPDATE to a lifecycle column (status) to succeed', async () => {
     await withSystemDbAccessContext(() =>

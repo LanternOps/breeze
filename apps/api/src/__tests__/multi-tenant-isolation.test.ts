@@ -59,6 +59,7 @@ vi.mock('../db/schema', () => ({
   alertNotifications:       { id: 'id' },
   escalationPolicies:       { id: 'id', orgId: 'orgId' },
   organizations:            { id: 'id' },
+  users:                    { id: 'id' },
   partnerUsers:             {},
   organizationUsers:        {},
   patchPolicies: {},
@@ -116,6 +117,18 @@ vi.mock('../services/alertCooldown', () => ({
 
 vi.mock('../services/eventBus', () => ({
   publishEvent: vi.fn(),
+}));
+
+// Phase 2 wave P2-1 (alert verdicts), Task 14 — `alerts.ts` now imports
+// `latestVerdictsForAlerts`/`projectAlertAiVerdictSummary`. Unmocked, the
+// real module drags in `createActionIntent` (services/actionIntents/
+// intentService.ts) and its own transitive graph (aiTools/aiToolSchemas, …),
+// which this file's partial `../db/schema` mock was never built to cover.
+// Mocked here purely to sever that transitive chain — this suite doesn't
+// exercise aiVerdict at all.
+vi.mock('../services/aiAgents/alertVerdicts', () => ({
+  latestVerdictsForAlerts: vi.fn(async () => new Map()),
+  projectAlertAiVerdictSummary: vi.fn(),
 }));
 
 vi.mock('../services/notificationSenders', () => ({
@@ -552,10 +565,7 @@ describe('Multi-tenant isolation', () => {
   // ===========================================================================
 
   describe('Scripts — cross-tenant execution isolation', () => {
-    it('POST /scripts/:id/execute — devices from another org are silently filtered out; request fails with 400 when no accessible devices remain', async () => {
-      // Security boundary: execute iterates deviceRecords and calls ensureOrgAccess
-      // per device. Devices in ORG_B are dropped; if no devices survive the filter
-      // the route returns 400 ("No accessible or compatible devices found").
+    it('POST /scripts/:id/execute — a foreign device receives an oracle-safe rejected admission', async () => {
       //
       // Setup: auth is ORG_A, but the script and the requested device both belong
       // to ORG_B. The script check runs first; to get past it we use a system-script
@@ -583,10 +593,16 @@ describe('Multi-tenant isolation', () => {
         }),
       });
 
-      // All devices were filtered → no accessible devices remain
-      expect(res.status).toBe(400);
+      expect(res.status).toBe(201);
       const body = await res.json();
-      expect(body.error).toMatch(/no accessible|no valid/i);
+      expect(body).toMatchObject({
+        status: 'rejected',
+        targets: [{
+          requestedDeviceId: DEVICE_ID,
+          admission: 'denied',
+          reasonCode: 'not_found_or_inaccessible',
+        }],
+      });
     });
 
     it('POST /scripts/:id/execute — only accessible devices are executed when ORG_A and ORG_B devices are mixed', async () => {
@@ -648,12 +664,13 @@ describe('Multi-tenant isolation', () => {
         }),
       });
 
-      // Device A (ORG_A) passes the org check; Device B (ORG_B) is filtered out.
-      // With one valid device the insert chain is exercised and we get 201.
       expect(res.status).toBe(201);
       const body = await res.json();
-      // Only one device should have been targeted (the ORG_A device)
-      expect(body.devicesTargeted).toBe(1);
+      expect(body.status).toBe('partially_queued');
+      expect(body.targets).toEqual([
+        expect.objectContaining({ requestedDeviceId: DEVICE_A_ID, admission: 'admitted' }),
+        { requestedDeviceId: DEVICE_B_ID, admission: 'denied', reasonCode: 'not_found_or_inaccessible' },
+      ]);
     });
   });
 

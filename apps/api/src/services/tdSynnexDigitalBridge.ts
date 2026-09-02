@@ -3,6 +3,7 @@ import { db, withDbAccessContext, type DbAccessContext } from '../db';
 import { tdSynnexDigitalBridgeIntegrations } from '../db/schema';
 import { encryptSecret, decryptForColumn } from './secretCrypto';
 import { createCatalogItem, type CatalogActor } from './catalogService';
+import { importedCost } from './catalogPricing';
 import { enrichDistributorListing } from './catalogEnrichmentService';
 import type { CreateCatalogItemInput, EnrichmentProvenance } from '@breeze/shared';
 import { checkSsrfSafe } from './ssrfGuard';
@@ -555,6 +556,7 @@ export async function importTdSynnexCatalogItem(input: ImportTdSynnexCatalogItem
     const enriched = await enrichDistributorListing(query, 'hardware', {
       userId: actor.userId,
       orgId: actor.accessibleOrgIds?.[0] ?? null,
+      partnerId: actor.partnerId,
     });
     if (enriched) {
       name = enriched.name;
@@ -575,10 +577,11 @@ export async function importTdSynnexCatalogItem(input: ImportTdSynnexCatalogItem
     ...(input.item.sellCurrency
       ? { prices: [{ currencyCode: input.item.sellCurrency, unitPrice: input.item.unitPrice }] }
       : { unitPrice: input.item.unitPrice }),
-    costBasis: input.item.costBasis ?? null,
-    markupPercent: input.item.markupPercent ?? null,
     // B4 (#3775): feed currency is the cost currency (real column, not jsonb-only).
-    costCurrency: input.product.currency ? input.product.currency.trim().toUpperCase() : undefined,
+    // item.costBasis is the form's echo of the feed cost, so a feed with no
+    // currency leaves it NULL (a gap) instead of the partner currency (#3775 review #2).
+    ...importedCost(input.item.costBasis, input.product.currency),
+    markupPercent: input.item.markupPercent ?? null,
     unitOfMeasure: 'each',
     taxable: input.item.taxable,
     taxCategory: null,

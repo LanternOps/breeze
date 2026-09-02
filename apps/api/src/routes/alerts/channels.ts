@@ -2,7 +2,9 @@ import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { and, eq, sql, desc, inArray, isNull, or } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { extractRowCount } from '../../db/rowCount';
 import { notificationChannels, organizations, partners } from '../../db/schema';
+import { captureException } from '../../services/sentry';
 import { requireMfa, requirePermission, requireScope, withAuthDbAccessContext } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import {
@@ -13,6 +15,7 @@ import {
   decryptNotificationChannelConfig,
   encryptNotificationChannelConfig,
   redactNotificationChannelConfig,
+  scrubChannelTestError,
 } from '../../services/notificationChannelSecrets';
 import {
   getEmailRecipients,
@@ -55,7 +58,7 @@ const requireAlertWrite = requirePermission(PERMISSIONS.ALERTS_WRITE.resource, P
  */
 
 function toChannelResponse(channel: typeof notificationChannels.$inferSelect) {
-  // lastTestedAt and lastTestStatus are carried through via the ...channel spread;
+  // lastTestedAt, lastTestStatus and lastTestError are carried through via the ...channel spread;
   // updatedAt is intentionally NOT bumped when persisting a test result — running
   // a test is not a user content change, only lastTestedAt is the relevant timestamp.
   return {
@@ -673,17 +676,67 @@ channelsRoutes.post(
     // updatedAt is intentionally NOT bumped here; running a test is not a user content change.
     // Own short context (#1105) — the outbound send above ran with no ambient
     // request transaction; this write reopens one just for the persist.
+    // Why it failed, not just that it did (#3697). The provider message is
+    // already operator-ready ("use our testing email address instead of domains
+    // like example.com") but until now it only ever existed in a five-second
+    // toast; a reload left the card saying "Failed" with no way to learn what
+    // to fix. Scrubbed first: for slack/teams/webhook the destination URL IS
+    // the credential, and a provider that quotes it back would otherwise leak
+    // it to everyone with alerts:read. Explicitly NULLed on success so a green
+    // verdict can never sit next to a stale reason from an earlier run.
+    const lastTestError = testResult.success
+      ? null
+      : scrubChannelTestError(channel.type, channelConfig, testResult.message);
+
+    // The reason reaches the operator TWICE: the persisted card, and the toast
+    // fired at test time — and the toast renders `testResult.message`, which
+    // until now was the raw provider text. So the card was scrubbed while the
+    // toast still showed the destination URL that, for slack/teams/webhook, IS
+    // the credential (#3992). Both surfaces render the same scrubbed string
+    // from here on. `scrubChannelTestError` returns null only for a non-string
+    // or an empty/whitespace-only message — never as a RESULT of scrubbing,
+    // since every redaction pass substitutes a non-empty placeholder — but the
+    // fallback keeps the toast from going blank when a sender hands us one.
+    if (!testResult.success) {
+      testResult = {
+        ...testResult,
+        message: lastTestError ?? 'Test failed — check the channel configuration.',
+      };
+    }
+
     try {
-      await withAuthDbAccessContext(auth, () =>
+      const persistResult = await withAuthDbAccessContext(auth, () =>
         db.update(notificationChannels)
           .set({
             lastTestedAt: new Date(),
             lastTestStatus: testResult.success ? 'success' : 'failed',
+            lastTestError,
           })
           .where(eq(notificationChannels.id, channel.id))
       );
+
+      // A zero-row UPDATE does not throw. `channel` was fetched moments ago
+      // under this same auth, so matching nothing means the row moved out from
+      // under us (a concurrent org move) or a policy divergence. Either way the
+      // card silently keeps whatever it showed before — which, now that a
+      // verdict is rendered, can be a stale green "Success" sitting under a
+      // toast that just said the test failed. That is #3697 one layer down, so
+      // it does not get to be silent.
+      if (extractRowCount(persistResult) === 0) {
+        captureException(
+          new Error('Notification channel test outcome matched 0 rows'),
+          c,
+          { channelId: channel.id, channelType: channel.type }
+        );
+      }
     } catch (persistError) {
+      // Still best-effort: a DB hiccup must not turn a completed outbound send
+      // into an error response, and the HTTP body already carries the verdict.
+      // But console.error alone made this invisible off-box, and this write now
+      // carries the operator-facing REASON rather than just a timestamp — the
+      // whole point of the fix is lost without a signal that it did not land.
       console.error('[Channels] Failed to persist test outcome', { channelId: channel.id, persistError });
+      captureException(persistError, c, { channelId: channel.id, channelType: channel.type });
     }
 
     const response = {

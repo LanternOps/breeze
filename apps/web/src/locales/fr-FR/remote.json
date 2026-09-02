@@ -246,6 +246,7 @@
       "copy": "Impossible de copier",
       "delete": "Impossible de supprimer",
       "download": "Impossible de télécharger",
+      "downloadTooLarge": "Trop volumineux pour être téléchargé ({{size}}). L’explorateur de fichiers transfère des fichiers jusqu’à {{max}}.",
       "loadDirectory": "Impossible de charger le répertoire",
       "move": "Impossible de déplacer l’élément",
       "readFile": "Impossible de lire le fichier",
@@ -442,7 +443,7 @@
     "title": "Titre"
   },
   "remoteTerminal": {
-    "connectedBang": "Bang connecté",
+    "connectedBang": "Connecté !",
     "connectingTo": "Connexion à {{hostname}}...",
     "copySelection": "Copier la sélection",
     "disconnect": "Déconnecter",

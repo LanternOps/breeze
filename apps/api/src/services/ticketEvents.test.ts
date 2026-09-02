@@ -62,7 +62,7 @@ describe('emitTicketEvent', () => {
       ticketId: 't',
       orgId: 'o',
       partnerId: null,
-      payload: { internalNumber: 'T-0001', subject: 'Test', assigneeId: null, source: 'manual' }
+      payload: { internalNumber: 'T-0001', assigneeId: null, source: 'manual' }
     })).resolves.toBeUndefined();
   });
 
@@ -74,9 +74,35 @@ describe('emitTicketEvent', () => {
       ticketId: 'failing-ticket',
       orgId: 'org-123',
       partnerId: null,
-      payload: { internalNumber: 'T-0002', subject: 'Test', assigneeId: null, source: 'manual' }
+      payload: { internalNumber: 'T-0002', assigneeId: null, source: 'manual' }
     });
     expect(captureExceptionMock).toHaveBeenCalledTimes(1);
     expect(captureExceptionMock).toHaveBeenCalledWith(err);
+  });
+  it('stamps a uuid eventId when the emitter did not provide one', async () => {
+    await emitTicketEvent({
+      type: 'ticket.assigned', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
+      actorUserId: 'u-1', payload: { assigneeId: 'u-2' }
+    });
+    const [, data] = addMock.mock.calls[0]!;
+    expect((data as { eventId: string }).eventId).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
+  it('preserves a caller-provided eventId', async () => {
+    await emitTicketEvent({
+      type: 'ticket.assigned', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
+      actorUserId: 'u-1', eventId: 'fixed-id', payload: { assigneeId: 'u-2' }
+    });
+    const [, data] = addMock.mock.calls[0]!;
+    expect((data as { eventId: string }).eventId).toBe('fixed-id');
+  });
+
+  it('does NOT use eventId as the BullMQ jobId (queue dedupe semantics unchanged)', async () => {
+    await emitTicketEvent({
+      type: 'ticket.assigned', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
+      actorUserId: 'u-1', eventId: 'fixed-id', payload: { assigneeId: 'u-2' }
+    });
+    const [, , opts] = addMock.mock.calls[0]!;
+    expect((opts as { jobId?: string }).jobId).toBeUndefined();
   });
 });

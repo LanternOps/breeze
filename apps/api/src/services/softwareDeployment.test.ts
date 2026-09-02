@@ -163,9 +163,18 @@ function insWithReturning(rows: unknown[]) {
   };
 }
 
-/** Insert without .returning() — for deploymentResults */
+/** Insert with exact per-device ids returned from deploymentResults. */
 function ins() {
-  return { values: vi.fn().mockResolvedValue([]) };
+  return {
+    values: vi.fn((values: Array<{ deviceId: string }> | { deviceId: string }) => ({
+      returning: vi.fn().mockResolvedValue(
+        (Array.isArray(values) ? values : [values]).map((value) => ({
+          id: `result-${value.deviceId}`,
+          deviceId: value.deviceId,
+        })),
+      ),
+    })),
+  };
 }
 
 /** Update chain: db.update().set().where() → void */
@@ -263,6 +272,20 @@ describe('createSoftwareDeployment', () => {
     expect(result.status).toBe('pending');
     expect(result.deployment).toEqual(deployment);
     expect(result.dispatchedDeviceIds).toEqual(['dev-1', 'dev-2']);
+    expect(result.deviceResults).toEqual([
+      {
+        deviceId: 'dev-1',
+        deploymentResultId: 'result-dev-1',
+        status: 'delivered',
+        deviceCommandId: null,
+      },
+      {
+        deviceId: 'dev-2',
+        deploymentResultId: 'result-dev-2',
+        status: 'delivered',
+        deviceCommandId: null,
+      },
+    ]);
     expect(sendCommandMock).toHaveBeenCalledTimes(2);
     expect(sendCommandMock.mock.calls[0]![1].type).toBe('software_install');
     // WS delivery succeeded for both devices — the offline fallback must not fire.
@@ -315,6 +338,20 @@ describe('createSoftwareDeployment', () => {
     // Both devices count as dispatched — one over WS, one queued.
     expect(result.status).toBe('pending');
     expect(result.dispatchedDeviceIds).toEqual(['dev-on', 'dev-off']);
+    expect(result.deviceResults).toEqual([
+      {
+        deviceId: 'dev-on',
+        deploymentResultId: 'result-dev-on',
+        status: 'delivered',
+        deviceCommandId: null,
+      },
+      {
+        deviceId: 'dev-off',
+        deploymentResultId: 'result-dev-off',
+        status: 'queued',
+        deviceCommandId: 'queued-cmd-off',
+      },
+    ]);
 
     // The queued fallback fired once, for the offline device, with the SAME
     // payload the WS command carried — including deploymentId for the
@@ -514,7 +551,7 @@ describe('createSoftwareDeployment', () => {
     );
   });
 
-  it('fails the device (no dispatch) through the existing unresolved branch when the URL references a SECRET tenant variable (#3409 PR2)', async () => {
+  it('fails the device (no dispatch) with an explicit secret-template message when the URL references a SECRET tenant variable (#3409 PR4c-2)', async () => {
     const versionRecord = {
       id: 'ver-var3',
       catalogId: 'cat-1',
@@ -553,21 +590,86 @@ describe('createSoftwareDeployment', () => {
       createdBy: null,
     });
 
-    // The secret is OMITTED from the vars map entirely (softwareDeployment.ts),
-    // so `{{var.super_secret}}` is indistinguishable from an unknown token here
-    // — it fails through the PRE-EXISTING unresolved branch, no new failure
-    // code or counter. The only (and last) device failed resolution, so the
-    // batch itself reports failed too (mirrors the sibling "cannot be
-    // resolved" test above).
+    // PR4c-2: the secret is still never flattened into the vars map, but the
+    // failure is now EXPLICIT — the per-device deployment_results write names
+    // the rule (and the key) instead of reading as an unknown token. Same
+    // channel and counter as the `unresolved` branch, so the batch-level
+    // outcome is unchanged: the only device failed, the batch reports failed.
     expect(result.status).toBe('failed');
     expect(result.dispatchedDeviceIds).toEqual([]);
     expect(sendCommandMock).not.toHaveBeenCalled();
     expect(queueCommandMock).not.toHaveBeenCalled();
-    const failureWrite = updateSetCalls.find(
-      (c) => typeof c.errorMessage === 'string' && c.errorMessage.includes('super_secret'),
+    const failureWrites = updateSetCalls.filter((c) => c.status === 'failed');
+    expect(failureWrites).toHaveLength(1);
+    expect(failureWrites[0]?.errorMessage).toBe(
+      'Software deployment templates cannot use secret variable(s) {{var.super_secret}}',
     );
-    expect(failureWrite).toBeDefined();
-    expect(failureWrite?.status).toBe('failed');
+    expect(failureWrites[0]?.completedAt).toBeInstanceOf(Date);
+    // The VALUE never lands anywhere a human or the agent could read it.
+    expect(JSON.stringify({ result, updateSetCalls })).not.toContain('sekrit');
+  });
+
+  it('lists EVERY secret key referenced across downloadUrl and silentInstallArgs (keys only, never values) (#3409 PR4c-2)', async () => {
+    const versionRecord = {
+      id: 'ver-var4',
+      catalogId: 'cat-1',
+      s3Key: null,
+      downloadUrl: 'https://dl/{{var.zeta_secret}}/app.msi',
+      checksum: null,
+      originalFileName: 'app.msi',
+      fileType: 'msi',
+      silentInstallArgs: '/S /KEY={{var.alpha_secret}} /REPO={{var.repo_token}}',
+      version: '2.0.0',
+    };
+    const catalogItem = { id: 'cat-1', orgId: null, name: 'TestApp', integrationProvider: null };
+    const deployment = { id: 'dep-var4', orgId: 'org-1' };
+    const targetDevices = [
+      { id: 'dev-1', agentId: 'agent-1', siteId: 'site-1', hostname: 'WKS-1', customFields: {} },
+      { id: 'dev-2', agentId: 'agent-2', siteId: 'site-1', hostname: 'WKS-2', customFields: {} },
+    ];
+    const variableRows = [
+      { id: 'tv-1', key: 'repo_token', value: 'tok-live', isSecret: false, version: 1, ownerOrgId: 'org-1', forOrgId: 'org-1' },
+      { id: 'tv-2', key: 'zeta_secret', value: 'zeta-plaintext', isSecret: true, version: 1, ownerOrgId: 'org-1', forOrgId: 'org-1' },
+      { id: 'tv-3', key: 'alpha_secret', value: 'alpha-plaintext', isSecret: true, version: 1, ownerOrgId: 'org-1', forOrgId: 'org-1' },
+      // A secret the templates do NOT reference must not be named either.
+      { id: 'tv-4', key: 'unrelated_secret', value: 'unrelated-plaintext', isSecret: true, version: 1, ownerOrgId: 'org-1', forOrgId: 'org-1' },
+    ];
+
+    selectMock
+      .mockReturnValueOnce(sel([versionRecord]))
+      .mockReturnValueOnce(sel([catalogItem]))
+      .mockReturnValueOnce(sel(targetDevices))
+      .mockReturnValueOnce(selLimit([{ name: 'Acme' }])) // organizations
+      .mockReturnValueOnce(sel([{ id: 'site-1', name: 'HQ' }])) // sites
+      .mockReturnValueOnce(selJoin(variableRows)); // tenant variable scope
+    insertMock.mockReturnValueOnce(insWithReturning([deployment])).mockReturnValueOnce(ins());
+
+    const result = await createSoftwareDeployment({
+      orgId: 'org-1',
+      softwareVersionId: 'ver-var4',
+      deploymentType: 'install',
+      deviceIds: ['dev-1', 'dev-2'],
+      scheduleType: 'immediate',
+      createdBy: null,
+    });
+
+    expect(result.status).toBe('failed');
+    expect(result.message).toBe('All target devices failed installer variable resolution');
+    expect(sendCommandMock).not.toHaveBeenCalled();
+    expect(queueCommandMock).not.toHaveBeenCalled();
+    // One failure row per device, all carrying the same sorted key list.
+    const failureWrites = updateSetCalls.filter((c) => c.status === 'failed');
+    expect(failureWrites).toHaveLength(2);
+    for (const write of failureWrites) {
+      expect(write.errorMessage).toBe(
+        'Software deployment templates cannot use secret variable(s) {{var.alpha_secret}}, {{var.zeta_secret}}',
+      );
+    }
+    const recorded = JSON.stringify({ result, updateSetCalls });
+    expect(recorded).not.toContain('unrelated_secret');
+    for (const value of ['zeta-plaintext', 'alpha-plaintext', 'unrelated-plaintext']) {
+      expect(recorded).not.toContain(value);
+    }
   });
 
   it('dispatches a built-in EDR install using the resolver-provided URL/args', async () => {

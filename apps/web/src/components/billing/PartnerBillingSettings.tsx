@@ -7,6 +7,7 @@ import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError } from '../../lib/runAction';
 import { pctFromFraction } from './invoiceTypes';
 import { isHttpUrl, httpUrlErrorMessage } from '@breeze/shared';
+import { resetPartnerCurrencyCache } from '@/lib/partnerCurrencyCache';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -153,6 +154,13 @@ export default function PartnerBillingSettings() {
         successMessage: t('partnerBillingSettings.saveSuccess'),
         onUnauthorized: UNAUTHORIZED,
       });
+      // The reporting currency may have just changed. Both money caches key off
+      // this one: partnerCurrencyCache feeds every currency LABEL, and the
+      // approximate-total cache is bound to its generation, so its converted
+      // figures (denominated in the SERVER-derived reporting currency, which
+      // their key cannot name) are dropped in the same motion. Without this the
+      // tab renders the previous currency until logout.
+      resetPartnerCurrencyCache();
       void load();
     } catch (err) {
       handleActionError(err, t('partnerBillingSettings.saveError'));

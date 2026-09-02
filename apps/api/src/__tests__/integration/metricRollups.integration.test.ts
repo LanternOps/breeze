@@ -3,7 +3,7 @@ import './setup';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { and, eq } from 'drizzle-orm';
 
-import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
+import { db, withDbAccessContext, type DbAccessContext } from '../../db';
 import { discoveredAssets, devices, deviceMetrics, deviceProcessSamples, metricRollups, snmpDevices, snmpMetrics } from '../../db/schema';
 import { rollupDeviceMetricsRange } from '../../services/metricRollups';
 import { createOrganization, createPartner, createSite } from './db-utils';
@@ -158,14 +158,18 @@ async function insertSnmpMetric(options: {
 }
 
 async function runRollup(orgId: string, from: Date, to: Date): Promise<void> {
-  await withSystemDbAccessContext(() =>
-    rollupDeviceMetricsRange({
-      orgId,
-      from,
-      to,
-      expectedSampleSeconds: 60,
-    })
-  );
+  // Deliberately NO outer context wrap: this must exercise the same call shape
+  // as jobs/metricRollups.ts — rollupDeviceMetricsRange opens its own labeled
+  // context per statement. If a refactor ever drops that (e.g. removes the
+  // runOutsideDbContext escape or the per-statement contexts), the statements
+  // here would run contextless against forced RLS and fail loudly, instead of
+  // an outer wrap silently absorbing them.
+  await rollupDeviceMetricsRange({
+    orgId,
+    from,
+    to,
+    expectedSampleSeconds: 60,
+  });
 }
 
 async function selectCpuRollups(orgId: string, deviceId: string) {

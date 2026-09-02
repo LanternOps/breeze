@@ -1,0 +1,45 @@
+{
+  "title": "Approbations",
+  "description": "Examinez les actions à fort impact qui attendent votre décision.",
+  "loading": "Chargement des approbations…",
+  "loadError": "Impossible de charger les approbations. Réessayez.",
+  "retry": "Réessayer",
+  "empty": {
+    "title": "Aucune approbation en attente",
+    "description": "Les nouvelles demandes apparaîtront ici lorsqu’une décision sera requise."
+  },
+  "requestedBy": "Demandé par {{client}}",
+  "proposedByAgent": "Proposé par {{agent}} (agent d’IA)",
+  "targetDevice": "Appareil ciblé : {{hostname}}",
+  "batch": {
+    "approveAll": "Tout approuver ({{count}})",
+    "declineAll": "Tout refuser ({{count}})",
+    "groupTitle": "{{count}} demandes similaires · {{tool}}"
+  },
+  "risk": {
+    "low": "Risque faible",
+    "medium": "Risque moyen",
+    "high": "Risque élevé",
+    "critical": "Risque critique"
+  },
+  "denyPrompt": "Pourquoi refusez-vous cette demande ? Le motif est facultatif.",
+  "denyReasonPlaceholder": "Facultatif — communiqué au demandeur",
+  "confirmDeny": "Confirmer le refus",
+  "cancel": "Annuler",
+  "deny": "Refuser",
+  "approve": "Approuver",
+  "deciding": "Envoi en cours…",
+  "expiresIn": "Expire dans {{minutes}} min",
+  "expiresSoon": "Expire dans moins d’une minute",
+  "errors": {
+    "noApproverDevice": "Enregistrez un appareil d’approbation dans votre profil, puis réessayez.",
+    "notSoleApprover": "Une autre personne habilitée doit décider de cette demande.",
+    "verificationFailed": "La vérification a été annulée ou a échoué. Réessayez.",
+    "alreadyDecided": "Cette demande a déjà été traitée.",
+    "expired": "Cette demande a expiré avant qu’une décision ne soit prise.",
+    "decisionFailed": "Impossible d’envoyer la décision. Réessayez.",
+    "batchStepUp": "Ce lot nécessite une connexion plus forte. Approuvez les demandes une par une.",
+    "batchNotHomogeneous": "Ces demandes ne peuvent plus être traitées ensemble."
+  },
+  "registerDevice": "Enregistrer l’appareil"
+}

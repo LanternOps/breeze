@@ -52,6 +52,7 @@ export const ROUTE_SCOPES: Array<{ pattern: RegExp; kind: RouteScopeKind }> = [
   { pattern: /^\/settings\/organizations$/, kind: 'partner-settings' },
   { pattern: /^\/settings\/organization$/, kind: 'partner-settings' },
   { pattern: /^\/settings\/profile$/, kind: 'self' },
+  { pattern: /^\/approvals$/, kind: 'self' },
   { pattern: /^\/account\/inactive$/, kind: 'auth' },
   { pattern: /^\/account(\/.*)?$/, kind: 'self' },
 
@@ -81,6 +82,11 @@ export const ROUTE_SCOPES: Array<{ pattern: RegExp; kind: RouteScopeKind }> = [
   // stripping the auto-injected ?orgId= and 400ing every partner action with
   // >1 accessible org.
   { pattern: /^\/$/, kind: 'org-or-all' },
+  // Execution-trace runs list/detail (wave 6.1, #3828): GET /ai/agents/runs
+  // filters via `auth.orgCondition`, same fleet-vs-single-org semantics as
+  // /devices below. The agent CONFIG surface (/settings/ai-agents) stays
+  // partner-settings — this is fleet execution state, not catalog config.
+  { pattern: /^\/ai-agents\/runs(\/.*)?$/, kind: 'org-or-all' },
   { pattern: /^\/devices(\/.*)?$/, kind: 'org-or-all' },
   { pattern: /^\/alerts(\/.*)?$/, kind: 'org-or-all' },
   { pattern: /^\/patches(\/.*)?$/, kind: 'org-or-all' },

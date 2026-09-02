@@ -10,8 +10,6 @@ vi.mock('../../../lib/api/distributors', async (orig) => ({
   tdSynnexSftpProducts: (...a: unknown[]) => tdSynnexSftpProducts(...a),
 }));
 
-const partnerCurrency = vi.fn(() => 'USD');
-vi.mock('../../../lib/usePartnerCurrency', () => ({ usePartnerCurrency: () => ({ currency: partnerCurrency(), failed: false, retry: () => {} }) }));
 
 import DistributorLookup from './DistributorLookup';
 import type { EcProduct, SftpProduct } from '../../../lib/api/distributors';
@@ -40,7 +38,6 @@ const selectNightly = (blockId = 'b1') =>
   fireEvent.change(screen.getByTestId(`quote-distributor-source-${blockId}`), { target: { value: 'nightly' } });
 
 beforeEach(() => {
-  partnerCurrency.mockReset(); partnerCurrency.mockReturnValue('USD');
   ecExpressLookup.mockReset();
   tdSynnexSftpProducts.mockReset();
   tdSynnexSftpProducts.mockResolvedValue(ok([]));
@@ -49,7 +46,7 @@ beforeEach(() => {
 describe('DistributorLookup — EC Express (exact lookup)', () => {
   it('searches and lists results with a prefilled price', async () => {
     ecExpressLookup.mockResolvedValue(ok([product]));
-    render(<DistributorLookup blockId="b1" busy={false} onImportAdd={vi.fn()} />);
+    render(<DistributorLookup blockId="b1" busy={false} currencyCode="USD" onImportAdd={vi.fn()} />);
     fireEvent.change(screen.getByTestId('quote-distributor-search-b1'), { target: { value: 'ABC123' } });
     fireEvent.click(screen.getByTestId('quote-distributor-search-btn-b1'));
     await waitFor(() => screen.getByTestId('quote-distributor-result-ABC123'));
@@ -64,7 +61,7 @@ describe('DistributorLookup — EC Express (exact lookup)', () => {
   it('calls onImportAdd with the (possibly edited) price', async () => {
     ecExpressLookup.mockResolvedValue(ok([product]));
     const onImportAdd = vi.fn();
-    render(<DistributorLookup blockId="b1" busy={false} onImportAdd={onImportAdd} />);
+    render(<DistributorLookup blockId="b1" busy={false} currencyCode="USD" onImportAdd={onImportAdd} />);
     fireEvent.change(screen.getByTestId('quote-distributor-search-b1'), { target: { value: 'ABC123' } });
     fireEvent.click(screen.getByTestId('quote-distributor-search-btn-b1'));
     await waitFor(() => screen.getByTestId('quote-distributor-result-ABC123'));
@@ -75,7 +72,7 @@ describe('DistributorLookup — EC Express (exact lookup)', () => {
 
   it('shows an inline error when lookup fails', async () => {
     ecExpressLookup.mockResolvedValue(new Response('{"error":"nope"}', { status: 500 }));
-    render(<DistributorLookup blockId="b1" busy={false} onImportAdd={vi.fn()} />);
+    render(<DistributorLookup blockId="b1" busy={false} currencyCode="USD" onImportAdd={vi.fn()} />);
     fireEvent.change(screen.getByTestId('quote-distributor-search-b1'), { target: { value: 'ABC123' } });
     fireEvent.click(screen.getByTestId('quote-distributor-search-btn-b1'));
     await waitFor(() => screen.getByTestId('quote-distributor-error-b1'));
@@ -84,7 +81,7 @@ describe('DistributorLookup — EC Express (exact lookup)', () => {
   it('disables Import & add and ignores clicks for an invalid price', async () => {
     ecExpressLookup.mockResolvedValue(ok([product]));
     const onImportAdd = vi.fn();
-    render(<DistributorLookup blockId="b1" busy={false} onImportAdd={onImportAdd} />);
+    render(<DistributorLookup blockId="b1" busy={false} currencyCode="USD" onImportAdd={onImportAdd} />);
     fireEvent.change(screen.getByTestId('quote-distributor-search-b1'), { target: { value: 'ABC123' } });
     fireEvent.click(screen.getByTestId('quote-distributor-search-btn-b1'));
     await waitFor(() => screen.getByTestId('quote-distributor-add-ABC123'));
@@ -100,7 +97,7 @@ describe('DistributorLookup — EC Express (exact lookup)', () => {
 describe('DistributorLookup — nightly catalog (keyword search)', () => {
   it('debounced keyword search hits the nightly endpoint, not EC Express', async () => {
     tdSynnexSftpProducts.mockResolvedValue(ok([nightlyRow()]));
-    render(<DistributorLookup blockId="b1" busy={false} onImportAdd={vi.fn()} />);
+    render(<DistributorLookup blockId="b1" busy={false} currencyCode="USD" onImportAdd={vi.fn()} />);
     selectNightly();
     fireEvent.change(screen.getByTestId('quote-distributor-search-b1'), { target: { value: 'lenovo dock' } });
     await waitFor(() => screen.getByTestId('quote-distributor-result-NF001'));
@@ -113,7 +110,7 @@ describe('DistributorLookup — nightly catalog (keyword search)', () => {
   });
 
   it('requires >= 3 characters before firing', async () => {
-    render(<DistributorLookup blockId="b1" busy={false} onImportAdd={vi.fn()} />);
+    render(<DistributorLookup blockId="b1" busy={false} currencyCode="USD" onImportAdd={vi.fn()} />);
     selectNightly();
     fireEvent.change(screen.getByTestId('quote-distributor-search-b1'), { target: { value: 'le' } });
     await new Promise((r) => setTimeout(r, 400));
@@ -123,7 +120,7 @@ describe('DistributorLookup — nightly catalog (keyword search)', () => {
 
   it('debounces bursts of keystrokes into a single request', async () => {
     tdSynnexSftpProducts.mockResolvedValue(ok([nightlyRow()]));
-    render(<DistributorLookup blockId="b1" busy={false} onImportAdd={vi.fn()} />);
+    render(<DistributorLookup blockId="b1" busy={false} currencyCode="USD" onImportAdd={vi.fn()} />);
     selectNightly();
     const input = screen.getByTestId('quote-distributor-search-b1');
     for (const value of ['len', 'leno', 'lenov', 'lenovo']) {
@@ -140,7 +137,7 @@ describe('DistributorLookup — nightly catalog (keyword search)', () => {
       nightlyRow({ synnexSku: 'TBD001', abcCode: 'T' }),
       nightlyRow({ synnexSku: 'OK001', abcCode: 'A' }),
     ]));
-    render(<DistributorLookup blockId="b1" busy={false} onImportAdd={vi.fn()} />);
+    render(<DistributorLookup blockId="b1" busy={false} currencyCode="USD" onImportAdd={vi.fn()} />);
     selectNightly();
     fireEvent.change(screen.getByTestId('quote-distributor-search-b1'), { target: { value: 'dock' } });
     await waitFor(() => screen.getByTestId('quote-distributor-result-EOL001'));
@@ -154,7 +151,7 @@ describe('DistributorLookup — nightly catalog (keyword search)', () => {
       nightlyRow({ synnexSku: 'ZERO1', totalQty: 0, warehouses: [] }),
       nightlyRow({ synnexSku: 'NF001' }),
     ]));
-    render(<DistributorLookup blockId="b1" busy={false} onImportAdd={vi.fn()} />);
+    render(<DistributorLookup blockId="b1" busy={false} currencyCode="USD" onImportAdd={vi.fn()} />);
     selectNightly();
     fireEvent.change(screen.getByTestId('quote-distributor-search-b1'), { target: { value: 'dock' } });
     await waitFor(() => screen.getByTestId('quote-distributor-result-ZERO1'));
@@ -167,7 +164,7 @@ describe('DistributorLookup — nightly catalog (keyword search)', () => {
 
   it('in-stock-only toggle re-queries with inStockOnly', async () => {
     tdSynnexSftpProducts.mockResolvedValue(ok([nightlyRow()]));
-    render(<DistributorLookup blockId="b1" busy={false} onImportAdd={vi.fn()} />);
+    render(<DistributorLookup blockId="b1" busy={false} currencyCode="USD" onImportAdd={vi.fn()} />);
     selectNightly();
     fireEvent.change(screen.getByTestId('quote-distributor-search-b1'), { target: { value: 'dock' } });
     await waitFor(() => screen.getByTestId('quote-distributor-result-NF001'));
@@ -180,7 +177,7 @@ describe('DistributorLookup — nightly catalog (keyword search)', () => {
   it('imports a nightly row as an EC-shaped product with numeric cost/msrp', async () => {
     tdSynnexSftpProducts.mockResolvedValue(ok([nightlyRow()]));
     const onImportAdd = vi.fn();
-    render(<DistributorLookup blockId="b1" busy={false} onImportAdd={onImportAdd} />);
+    render(<DistributorLookup blockId="b1" busy={false} currencyCode="USD" onImportAdd={onImportAdd} />);
     selectNightly();
     fireEvent.change(screen.getByTestId('quote-distributor-search-b1'), { target: { value: 'dock' } });
     await waitFor(() => screen.getByTestId('quote-distributor-add-NF001'));
@@ -204,7 +201,7 @@ describe('DistributorLookup — nightly catalog (keyword search)', () => {
 
   it('surfaces an empty result set instead of a silent no-op', async () => {
     tdSynnexSftpProducts.mockResolvedValue(ok([]));
-    render(<DistributorLookup blockId="b1" busy={false} onImportAdd={vi.fn()} />);
+    render(<DistributorLookup blockId="b1" busy={false} currencyCode="USD" onImportAdd={vi.fn()} />);
     selectNightly();
     fireEvent.change(screen.getByTestId('quote-distributor-search-b1'), { target: { value: 'zzzz' } });
     await waitFor(() => screen.getByTestId('quote-distributor-empty-b1'));
@@ -212,7 +209,7 @@ describe('DistributorLookup — nightly catalog (keyword search)', () => {
 
   it('shows an inline error when the nightly search fails', async () => {
     tdSynnexSftpProducts.mockResolvedValue(new Response('{"error":"boom"}', { status: 500 }));
-    render(<DistributorLookup blockId="b1" busy={false} onImportAdd={vi.fn()} />);
+    render(<DistributorLookup blockId="b1" busy={false} currencyCode="USD" onImportAdd={vi.fn()} />);
     selectNightly();
     fireEvent.change(screen.getByTestId('quote-distributor-search-b1'), { target: { value: 'dock' } });
     await waitFor(() => expect(screen.getByTestId('quote-distributor-error-b1').textContent).toBe('boom'));
@@ -220,7 +217,7 @@ describe('DistributorLookup — nightly catalog (keyword search)', () => {
 
   it('clears results when switching back to EC Express', async () => {
     tdSynnexSftpProducts.mockResolvedValue(ok([nightlyRow()]));
-    render(<DistributorLookup blockId="b1" busy={false} onImportAdd={vi.fn()} />);
+    render(<DistributorLookup blockId="b1" busy={false} currencyCode="USD" onImportAdd={vi.fn()} />);
     selectNightly();
     fireEvent.change(screen.getByTestId('quote-distributor-search-b1'), { target: { value: 'dock' } });
     await waitFor(() => screen.getByTestId('quote-distributor-result-NF001'));
@@ -229,39 +226,110 @@ describe('DistributorLookup — nightly catalog (keyword search)', () => {
   });
 });
 
-describe('DistributorLookup — margin guard (multi-currency wave 3)', () => {
-  const lookup = async (p: EcProduct) => {
+describe('DistributorLookup — quote currency gate (multi-currency wave 3, review #3)', () => {
+  const lookup = async (p: EcProduct, quoteCurrency = 'USD') => {
     ecExpressLookup.mockResolvedValue(ok([p]));
-    render(<DistributorLookup blockId="b1" busy={false} onImportAdd={vi.fn()} />);
+    render(<DistributorLookup blockId="b1" busy={false} currencyCode={quoteCurrency} onImportAdd={vi.fn()} />);
     fireEvent.change(screen.getByTestId('quote-distributor-search-b1'), { target: { value: 'ABC123' } });
     fireEvent.click(screen.getByTestId('quote-distributor-search-btn-b1'));
     await waitFor(() => screen.getByTestId('quote-distributor-result-ABC123'));
   };
 
-  it('hides the margin and names the cost currency when the feed currency differs from the partner currency', async () => {
-    await lookup({ ...product, currency: 'CAD' });
-    const guard = await screen.findByTestId('quote-distributor-margin-unavailable-ABC123');
-    expect(guard.textContent).toContain('Cost in CAD');
-    expect(screen.queryByTestId('quote-distributor-margin-ABC123')).toBeNull();
-  });
-
-  it('shows the margin in the partner currency when the feed currency matches', async () => {
+  it('prefills the sell price and shows the margin in the quote currency when the feed currency matches', async () => {
     await lookup({ ...product, currency: 'usd' });
+    expect((screen.getByTestId('quote-distributor-price-ABC123') as HTMLInputElement).value).toBe('100.00');
     const margin = await screen.findByTestId('quote-distributor-margin-ABC123');
     expect(margin.textContent).toContain('Profit USD 20.00');
-    expect(screen.queryByTestId('quote-distributor-margin-unavailable-ABC123')).toBeNull();
+    expect(screen.queryByTestId('quote-distributor-currency-note-ABC123')).toBeNull();
   });
 
-  it('shows the margin when the feed has no currency (assumes the partner currency)', async () => {
-    await lookup({ ...product, currency: null });
-    const margin = await screen.findByTestId('quote-distributor-margin-ABC123');
-    expect(margin.textContent).toContain('Profit USD 20.00');
-  });
-
-  it('renders neither the margin nor the guard while the partner currency is unknown', async () => {
-    partnerCurrency.mockReturnValue(null as unknown as string);
-    await lookup({ ...product, currency: 'USD' });
+  it('never copies a foreign-currency MSRP into the sell field: blank price + note, no margin', async () => {
+    await lookup({ ...product, currency: 'USD' }, 'EUR');
+    expect((screen.getByTestId('quote-distributor-price-ABC123') as HTMLInputElement).value).toBe('');
+    const note = screen.getByTestId('quote-distributor-currency-note-ABC123');
+    expect(note.textContent).toContain('USD');
+    expect(note.textContent).toContain('EUR');
     expect(screen.queryByTestId('quote-distributor-margin-ABC123')).toBeNull();
-    expect(screen.queryByTestId('quote-distributor-margin-unavailable-ABC123')).toBeNull();
+    expect((screen.getByTestId('quote-distributor-add-ABC123') as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(screen.getByTestId('quote-distributor-price-ABC123'), { target: { value: '95.00' } });
+    expect((screen.getByTestId('quote-distributor-add-ABC123') as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.queryByTestId('quote-distributor-margin-ABC123')).toBeNull();
+  });
+
+  it('nightly rows are gated the same way (feed currency vs quote currency)', async () => {
+    tdSynnexSftpProducts.mockResolvedValue(ok([nightlyRow()]));
+    render(<DistributorLookup blockId="b1" busy={false} currencyCode="EUR" onImportAdd={vi.fn()} />);
+    selectNightly();
+    fireEvent.change(screen.getByTestId('quote-distributor-search-b1'), { target: { value: 'lenovo dock' } });
+    await waitFor(() => screen.getByTestId('quote-distributor-result-NF001'));
+    expect((screen.getByTestId('quote-distributor-price-NF001') as HTMLInputElement).value).toBe('');
+    expect(screen.getByTestId('quote-distributor-currency-note-NF001')).toBeTruthy();
+  });
+
+  it('treats a feed with no currency as unknown: blank price + note, no margin', async () => {
+    await lookup({ ...product, currency: null });
+    expect((screen.getByTestId('quote-distributor-price-ABC123') as HTMLInputElement).value).toBe('');
+    expect(screen.getByTestId('quote-distributor-currency-note-ABC123').textContent).toContain('USD');
+    expect(screen.queryByTestId('quote-distributor-margin-ABC123')).toBeNull();
+  });
+});
+
+// #3775 review #4: the quote-currency gate ran only at SEARCH time — `prices`
+// was seeded in applyResults and never recomputed, while sameCurrency and the
+// note recompute every render. Changing the quote currency with results on
+// screen left a foreign-currency number in the field, which Import & add then
+// stamped with the NEW currency — the exact bug this PR set out to fix.
+describe('DistributorLookup — quote currency changes with results on screen (#3775 review #4)', () => {
+  const searchUsdProduct = async (currencyCode: string) => {
+    ecExpressLookup.mockResolvedValue(ok([product])); // feed row priced in USD
+    const view = render(<DistributorLookup blockId="b1" busy={false} currencyCode={currencyCode} onImportAdd={vi.fn()} />);
+    fireEvent.change(screen.getByTestId('quote-distributor-search-b1'), { target: { value: 'ABC123' } });
+    fireEvent.click(screen.getByTestId('quote-distributor-search-btn-b1'));
+    await waitFor(() => screen.getByTestId('quote-distributor-result-ABC123'));
+    return view;
+  };
+
+  it('clears the stale prefill when the quote currency moves away from the feed currency', async () => {
+    const { rerender } = await searchUsdProduct('USD');
+    expect((screen.getByTestId('quote-distributor-price-ABC123') as HTMLInputElement).value).toBe('100.00');
+
+    rerender(<DistributorLookup blockId="b1" busy={false} currencyCode="EUR" onImportAdd={vi.fn()} />);
+    await waitFor(() =>
+      expect((screen.getByTestId('quote-distributor-price-ABC123') as HTMLInputElement).value).toBe(''));
+    // The gate's own note agrees with the (now empty) field.
+    expect(screen.getByTestId('quote-distributor-currency-note-ABC123')).toBeInTheDocument();
+  });
+
+  it('re-seeds the prefill when the quote currency comes back to the feed currency', async () => {
+    const { rerender } = await searchUsdProduct('EUR');
+    expect((screen.getByTestId('quote-distributor-price-ABC123') as HTMLInputElement).value).toBe('');
+
+    rerender(<DistributorLookup blockId="b1" busy={false} currencyCode="USD" onImportAdd={vi.fn()} />);
+    await waitFor(() =>
+      expect((screen.getByTestId('quote-distributor-price-ABC123') as HTMLInputElement).value).toBe('100.00'));
+  });
+
+  it('never hands Import & add a foreign-currency number after a currency switch', async () => {
+    const onImportAdd = vi.fn();
+    ecExpressLookup.mockResolvedValue(ok([product]));
+    const { rerender } = render(<DistributorLookup blockId="b1" busy={false} currencyCode="USD" onImportAdd={onImportAdd} />);
+    fireEvent.change(screen.getByTestId('quote-distributor-search-b1'), { target: { value: 'ABC123' } });
+    fireEvent.click(screen.getByTestId('quote-distributor-search-btn-b1'));
+    await waitFor(() => screen.getByTestId('quote-distributor-result-ABC123'));
+
+    rerender(<DistributorLookup blockId="b1" busy={false} currencyCode="EUR" onImportAdd={onImportAdd} />);
+    await waitFor(() =>
+      expect((screen.getByTestId('quote-distributor-price-ABC123') as HTMLInputElement).value).toBe(''));
+    // Empty price → Add is blocked, so the USD 100.00 can never be stamped EUR.
+    expect((screen.getByTestId('quote-distributor-add-ABC123') as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByTestId('quote-distributor-add-ABC123'));
+    expect(onImportAdd).not.toHaveBeenCalled();
+  });
+
+  it('leaves a hand-typed price alone while the currency is unchanged', async () => {
+    const { rerender } = await searchUsdProduct('USD');
+    fireEvent.change(screen.getByTestId('quote-distributor-price-ABC123'), { target: { value: '133.00' } });
+    rerender(<DistributorLookup blockId="b1" busy={false} currencyCode="USD" onImportAdd={vi.fn()} />);
+    expect((screen.getByTestId('quote-distributor-price-ABC123') as HTMLInputElement).value).toBe('133.00');
   });
 });

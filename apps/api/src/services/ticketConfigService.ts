@@ -8,6 +8,28 @@ import { isHosted } from '../config/env';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { createTicket, type TicketActor } from './ticketService';
 import { isPgUniqueViolation } from '../utils/pgErrors';
+import { readOrgStampingDefaults, OrgCurrencyServiceError, type DbExecutor as OrgLockExecutor } from './orgCurrencyCore';
+
+/**
+ * Boundary mapping for the org SHARE barrier (#3778, review finding 1).
+ * `orgCurrencyCore` is domain-neutral by design and throws its own
+ * `OrgCurrencyServiceError`; this service's route boundary rethrows anything it
+ * does not recognise, so an unmapped ORG_NOT_FOUND would surface as a 500
+ * instead of the 404 this path returned before the barrier existed. Only
+ * ORG_NOT_FOUND is translated — a serialization failure, a deadlock or a
+ * genuine helper bug must keep its own identity.
+ */
+async function lockOrgStampingDefaults(tx: OrgLockExecutor, orgId: string): Promise<{ currencyCode: string }> {
+  try {
+    return await readOrgStampingDefaults(tx, orgId);
+  } catch (err) {
+    if (err instanceof OrgCurrencyServiceError && err.code === 'ORG_NOT_FOUND') {
+      throw new TicketConfigServiceError('Organization not found', 404, 'ORG_NOT_FOUND');
+    }
+    throw err;
+  }
+}
+
 import { countConnectedMailboxes } from './ticketMailbox/connectionService';
 import type {
   CreateTicketStatusInput, UpdateTicketStatusInput, PrioritySettingsInput,
@@ -15,6 +37,7 @@ import type {
   CreateCustomerEmailDomainInput, UpdateCustomerEmailDomainInput
 } from '@breeze/shared';
 import type { TicketSlaPriority } from './ticketSla';
+import { isRepresentableInCurrency, minorUnitExponent } from '@breeze/shared';
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -170,6 +193,7 @@ export async function getSystemStatusId(
  */
 export async function getOrgBillingDefaults(orgId: string): Promise<{
   defaultHourlyRate: string | null;
+  rateCurrency: string;
   defaultBillable: boolean | null;
 } | null> {
   const rows = await runOutsideDbContext(() =>
@@ -177,6 +201,7 @@ export async function getOrgBillingDefaults(orgId: string): Promise<{
       db
         .select({
           defaultHourlyRate: orgTicketSettings.defaultHourlyRate,
+          rateCurrency: orgTicketSettings.rateCurrency,
           defaultBillable: orgTicketSettings.defaultBillable,
         })
         .from(orgTicketSettings)
@@ -283,8 +308,14 @@ export type TicketConfigServiceErrorCode =
   | 'INBOUND_ROW_ALREADY_RESOLVED'
   | 'INBOUND_ROW_NO_SENDER'
   | 'ORG_NOT_ACCESSIBLE'
+  // #3778 (finding 1): the organization is gone at the org SHARE barrier that
+  // opens upsertOrgTicketSettings' transaction.
+  | 'ORG_NOT_FOUND'
   | 'DOMAIN_ALREADY_MAPPED'
-  | 'DOMAIN_MAPPING_NOT_FOUND';
+  | 'DOMAIN_MAPPING_NOT_FOUND'
+  // Wave-6 release gate (W6-G4-1): a default hourly rate that cannot be expressed
+  // in the org currency it is stamped under (¥100.50). Refused, never rounded.
+  | 'RATE_NOT_REPRESENTABLE';
 
 export class TicketConfigServiceError extends Error {
   constructor(message: string, public status: 400 | 404 | 409 = 400, public code?: TicketConfigServiceErrorCode) {
@@ -590,26 +621,55 @@ function toOrgTicketSettingsResponse(orgId: string, row?: {
   slaOverrides?: unknown;
   defaultHourlyRate?: string | null;
   defaultBillable?: boolean | null;
+  rateCurrency?: string | null;
 }) {
   return {
     orgId,
     slaOverrides: (row?.slaOverrides ?? {}) as Record<string, unknown>,
     defaultHourlyRate: row?.defaultHourlyRate ?? null,
     defaultBillable: row?.defaultBillable ?? null,
+    rateCurrency: row?.rateCurrency ?? null,
   };
 }
 
 export async function getOrgTicketSettings(orgId: string) {
+  // Settings + org currency are read under the caller's RLS context. The
+  // owning partner's currency is read in a system context on purpose:
+  // organization-scoped tokens carry an EMPTY accessible-partner list
+  // (`computeAccessiblePartnerIds`), so a join on `partners` would yield zero
+  // rows for them and silently blank the whole response. A currency code is
+  // not tenant-sensitive; the org row itself was already resolved under RLS.
   const rows = await db
     .select({
+      partnerId: organizations.partnerId,
+      orgCurrency: organizations.currencyCode,
       slaOverrides: orgTicketSettings.slaOverrides,
       defaultHourlyRate: orgTicketSettings.defaultHourlyRate,
       defaultBillable: orgTicketSettings.defaultBillable,
+      rateCurrency: orgTicketSettings.rateCurrency,
     })
-    .from(orgTicketSettings)
-    .where(eq(orgTicketSettings.orgId, orgId))
+    .from(organizations)
+    .leftJoin(orgTicketSettings, eq(orgTicketSettings.orgId, organizations.id))
+    .where(eq(organizations.id, orgId))
     .limit(1);
-  return toOrgTicketSettingsResponse(orgId, rows[0]);
+  const row = rows[0];
+  if (!row) throw new Error('Organization not found');
+  const partnerRows = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(() =>
+      db
+        .select({ currencyCode: partners.currencyCode })
+        .from(partners)
+        .where(eq(partners.id, row.partnerId))
+        .limit(1)
+    )
+  );
+  const partnerCurrency = partnerRows[0]?.currencyCode;
+  if (!partnerCurrency) throw new Error('Partner not found');
+  return {
+    ...toOrgTicketSettingsResponse(orgId, row),
+    orgCurrency: row.orgCurrency,
+    partnerCurrency,
+  };
 }
 
 /**
@@ -618,23 +678,59 @@ export async function getOrgTicketSettings(orgId: string) {
  * desired override map. defaultHourlyRate is a numeric column, so Drizzle wants
  * a string; we convert with String() (null stays null).
  */
-export async function upsertOrgTicketSettings(orgId: string, input: OrgTicketSettingsInput) {
+export async function upsertOrgTicketSettings(
+  orgId: string,
+  input: OrgTicketSettingsInput,
+) {
+  // #3778: the org currency is resolved INSIDE this transaction, under the
+  // SHARE barrier, as its first statement — the route used to resolve it in a
+  // separate pre-transaction read (`resolveAccessibleOrg`), which let a
+  // concurrent changeOrgCurrency stamp `rate_currency` with a stale code.
+  return db.transaction(async (tx) => {
+  const orgCurrencyCode = (await lockOrgStampingDefaults(tx, orgId)).currencyCode;
   const fields: Record<string, unknown> = {};
   if (input.slaOverrides !== undefined) fields.slaOverrides = input.slaOverrides;
   if (input.defaultHourlyRate !== undefined) {
-    fields.defaultHourlyRate = input.defaultHourlyRate == null ? null : String(input.defaultHourlyRate);
+    if (input.defaultHourlyRate == null) {
+      fields.defaultHourlyRate = null;
+    } else {
+      const rate = String(input.defaultHourlyRate);
+      // W6-G4-1: the rate is stamped with `orgCurrencyCode` below, so it must be
+      // representable in it. The validator's multipleOf(0.01) is only the outer
+      // bound — the currency-specific exponent is knowable only here.
+      if (!isRepresentableInCurrency(rate, orgCurrencyCode)) {
+        throw new TicketConfigServiceError(
+          `${rate} is not representable in ${orgCurrencyCode} — this currency has ${minorUnitExponent(orgCurrencyCode)} decimal place(s)`,
+          400, 'RATE_NOT_REPRESENTABLE'
+        );
+      }
+      fields.defaultHourlyRate = rate;
+    }
   }
   if (input.defaultBillable !== undefined) fields.defaultBillable = input.defaultBillable;
 
-  const [row] = await db
+  // rate_currency is a snapshot of the org currency the rate was entered under
+  // (spec §7). Stamped on insert; restamped on conflict ONLY when the stored
+  // rate actually changes — the editor resends the rate on every save, so a
+  // same-value PATCH (SLA/billability edit after an org currency change) must
+  // leave the historical pair intact. Decided in SQL so it is race-free.
+  const restamp = input.defaultHourlyRate !== undefined
+    ? {
+        rateCurrency: sql`CASE WHEN ${orgTicketSettings.defaultHourlyRate} IS DISTINCT FROM excluded.default_hourly_rate
+                               THEN excluded.rate_currency ELSE ${orgTicketSettings.rateCurrency} END`,
+      }
+    : {};
+
+  const [row] = await tx
     .insert(orgTicketSettings)
-    .values({ orgId, ...fields })
+    .values({ orgId, rateCurrency: orgCurrencyCode, ...fields })
     .onConflictDoUpdate({
       target: orgTicketSettings.orgId,
-      set: { ...fields, updatedAt: new Date() },
+      set: { ...fields, ...restamp, updatedAt: new Date() },
     })
     .returning();
   return toOrgTicketSettingsResponse(orgId, row);
+  });
 }
 
 // ============================================================================

@@ -211,6 +211,136 @@ function sortByHierarchy<T extends { assignmentLevel: string; assignmentPriority
 // ============================================
 
 /**
+ * Outcome of {@link resolveGoverningAlertRulePolicyForDevice}: exactly three
+ * states, each with its own remedy for the tech.
+ *
+ * A union rather than `{ winningPolicyId: string | null; candidateAssigned: boolean }`
+ * — that pair spells four combinations, and the fourth
+ * (`candidateAssigned` with no winner) is unreachable but would render as
+ * "another configuration policy takes precedence" naming a policy that does not
+ * exist. A fabricated verdict reason is precisely the failure class this
+ * endpoint exists to close (#3752/#3923/#3988), so the type refuses to spell it.
+ */
+export type GoverningAlertRulePolicy =
+  /** The candidate policy's alert rules are the ones that run on this device. */
+  | { outcome: 'governs' }
+  /**
+   * The candidate is assigned, but another policy wins the hierarchy.
+   * `winningPolicyId` is for diagnostics only — it may name a policy in another
+   * org under the partner, so it must never be surfaced to an API client.
+   */
+  | { outcome: 'outranked'; winningPolicyId: string }
+  /** The candidate policy is not assigned to this device at all. */
+  | { outcome: 'unassigned' };
+
+/**
+ * Would `candidatePolicyId`'s alert rules be the ones that run on this device,
+ * if the draft currently open in the editor were saved?
+ *
+ * This is the targeting half of the config-policy rule Test verdict (#3988), and
+ * it deliberately does NOT reuse {@link resolveAlertRulesForDevice}. That
+ * resolver inner-joins the persisted rule rows, which makes it answer the wrong
+ * question in both directions for an editor:
+ *
+ *  - A policy whose alert rules are not saved yet (the tech is authoring the
+ *    very first one, so there is no feature link and no row) cannot appear in
+ *    that join at all, so the draft's own policy would always be reported as
+ *    not governing the device.
+ *  - Conversely, resolving on the feature LINK alone would let a policy holding
+ *    an EMPTY alert_rule link outrank one that actually has rules — which is not
+ *    what happens at runtime, where a policy contributing no rows simply does
+ *    not win.
+ *
+ * So the candidate is overlaid onto real runtime behaviour: the candidate policy
+ * competes as though it already held a rule, every OTHER policy competes only if
+ * it currently holds at least one persisted alert rule, and the ordinary
+ * hierarchy sort (level, then assignment priority, then age) picks the winner.
+ * Assignment status, ownership, and the role/OS filters are unchanged.
+ *
+ * Runs under {@link withPartnerWideVisibility} (a system RLS context) like every
+ * sibling resolver, so it is NOT a tenancy boundary: it is self-tenanted by the
+ * device's own hierarchy, and the caller must have already authorized both the
+ * device and the candidate policy.
+ */
+export async function resolveGoverningAlertRulePolicyForDevice(
+  deviceId: string,
+  candidatePolicyId: string
+): Promise<GoverningAlertRulePolicy> {
+  const hierarchy = await loadDeviceHierarchy(deviceId);
+  if (!hierarchy) return { outcome: 'unassigned' };
+
+  const targetConditions = buildTargetConditions(hierarchy);
+  const roleOsConditions = buildRoleOsFilterConditions(hierarchy);
+
+  // Both reads share one elevated context: splitting them would run the second
+  // under the caller's RLS, where a partner-wide policy is invisible and its
+  // rules would look absent.
+  return withPartnerWideVisibility(async () => {
+    const assigned = await db
+      .select({
+        configPolicyId: configurationPolicies.id,
+        assignmentLevel: configPolicyAssignments.level,
+        assignmentPriority: configPolicyAssignments.priority,
+        assignmentCreatedAt: configPolicyAssignments.createdAt,
+      })
+      .from(configPolicyAssignments)
+      .innerJoin(
+        configurationPolicies,
+        and(
+          eq(configPolicyAssignments.configPolicyId, configurationPolicies.id),
+          eq(configurationPolicies.status, 'active'),
+          policyOwnershipCondition(hierarchy)
+        )
+      )
+      .where(and(sql`(${sql.join(targetConditions, sql` OR `)})`, ...roleOsConditions))
+      // sortByHierarchy re-sorts in JS, but ordering here too pins the outcome
+      // of a genuine three-way tie (same level, priority AND createdAt), which
+      // unordered Postgres output would otherwise decide arbitrarily. Matches
+      // resolveAlertRulesForDevice.
+      .orderBy(
+        configPolicyAssignments.level,
+        configPolicyAssignments.priority,
+        configPolicyAssignments.createdAt
+      );
+
+    if (!assigned.some((row) => row.configPolicyId === candidatePolicyId)) {
+      return { outcome: 'unassigned' };
+    }
+
+    // Which of the assigned policies actually hold alert rules today. The
+    // candidate is exempt: its rules are the draft being tested.
+    const policyIdsWithRules = await db
+      .select({ configPolicyId: configPolicyFeatureLinks.configPolicyId })
+      .from(configPolicyFeatureLinks)
+      .innerJoin(
+        configPolicyAlertRules,
+        eq(configPolicyAlertRules.featureLinkId, configPolicyFeatureLinks.id)
+      )
+      .where(
+        and(
+          eq(configPolicyFeatureLinks.featureType, 'alert_rule'),
+          inArray(
+            configPolicyFeatureLinks.configPolicyId,
+            [...new Set(assigned.map((row) => row.configPolicyId))]
+          )
+        )
+      );
+    const haveRules = new Set(policyIdsWithRules.map((row) => row.configPolicyId));
+
+    // The candidate is always a contender here — it is assigned, and its draft
+    // counts as a rule — so `contenders` can never be empty at this point.
+    const contenders = assigned.filter(
+      (row) => row.configPolicyId === candidatePolicyId || haveRules.has(row.configPolicyId)
+    );
+    const winningPolicyId = sortByHierarchy(contenders)[0]!.configPolicyId;
+
+    return winningPolicyId === candidatePolicyId
+      ? { outcome: 'governs' }
+      : { outcome: 'outranked', winningPolicyId };
+  });
+}
+
+/**
  * Resolves alert rules for a device via the hierarchy.
  * Returns all alert rule rows from the WINNING assignment (closest level wins).
  */
@@ -1469,6 +1599,30 @@ function getRetentionImmutableDays(retention: Record<string, unknown> | null): n
 }
 
 /**
+ * The device rows a backup policy is allowed to target (#3968).
+ *
+ * `decommissioned` is this schema's soft delete — `DELETE /devices/:id` only
+ * flips `status`, so the row (and every backup assignment reaching it) survives
+ * indefinitely — and an ephemeral device is a Quick Support session box the
+ * reaper purges a few hours after the session ends. Neither can ever complete a
+ * backup, so fanning out to them buys a guaranteed-failing `backup_jobs` row per
+ * schedule tick, forever, plus a `recovery_readiness` row scoring 0 that pins
+ * the low-readiness alert.
+ *
+ * Built as ONE predicate every branch of the fan-out switch reuses: the bug this
+ * fixes was five independent WHERE clauses of which zero carried the exclusion,
+ * and a sixth branch written later must not be able to miss it. Same pair used
+ * by `GET /metrics/`, `readFleetGauges`, and the fleet workers.
+ *
+ * A function rather than a module constant so the `sql` template is built at
+ * call time — module-level evaluation would run inside every suite that mocks
+ * `drizzle-orm` at import.
+ */
+function backupTargetableDeviceCondition(): SQL {
+  return sql`${devices.status} <> 'decommissioned' AND ${devices.isEphemeral} = false`;
+}
+
+/**
  * Finds ALL devices with backup config policy assignments for an org.
  * Used by the backup scheduler (to know which devices to back up) and the run-all endpoint.
  *
@@ -1553,6 +1707,12 @@ export async function resolveAllBackupAssignedDevices(
   // Track which devices we've already seen — first (highest priority) wins
   const seen = new Map<string, BackupAssignedDevice>();
 
+  // EVERY branch of the switch below must ALSO exclude decommissioned and
+  // ephemeral rows — see `backupTargetableDeviceCondition`. Bound once and
+  // reused because the bug was that all five branches independently forgot it
+  // (#3968); a sixth branch should have to reach for this same name.
+  const targetableDevice = backupTargetableDeviceCondition();
+
   for (const row of sorted) {
     let deviceIds: string[];
 
@@ -1569,7 +1729,13 @@ export async function resolveAllBackupAssignedDevices(
         const [device] = await db
           .select({ id: devices.id })
           .from(devices)
-          .where(and(eq(devices.id, row.assignmentTargetId), eq(devices.orgId, orgId)))
+          .where(
+            and(
+              eq(devices.id, row.assignmentTargetId),
+              eq(devices.orgId, orgId),
+              targetableDevice
+            )
+          )
           .limit(1);
         deviceIds = device ? [device.id] : [];
         break;
@@ -1582,7 +1748,8 @@ export async function resolveAllBackupAssignedDevices(
           .where(
             and(
               eq(deviceGroupMemberships.groupId, row.assignmentTargetId),
-              eq(devices.orgId, orgId)
+              eq(devices.orgId, orgId),
+              targetableDevice
             )
           );
         deviceIds = members.map((m) => m.deviceId);
@@ -1592,7 +1759,13 @@ export async function resolveAllBackupAssignedDevices(
         const siteDevices = await db
           .select({ id: devices.id })
           .from(devices)
-          .where(and(eq(devices.siteId, row.assignmentTargetId), eq(devices.orgId, orgId)));
+          .where(
+            and(
+              eq(devices.siteId, row.assignmentTargetId),
+              eq(devices.orgId, orgId),
+              targetableDevice
+            )
+          );
         deviceIds = siteDevices.map((d) => d.id);
         break;
       }
@@ -1605,7 +1778,7 @@ export async function resolveAllBackupAssignedDevices(
         const orgDevices = await db
           .select({ id: devices.id })
           .from(devices)
-          .where(eq(devices.orgId, orgId));
+          .where(and(eq(devices.orgId, orgId), targetableDevice));
         deviceIds = orgDevices.map((d) => d.id);
         break;
       }
@@ -1618,6 +1791,7 @@ export async function resolveAllBackupAssignedDevices(
             and(
               eq(organizations.partnerId, row.assignmentTargetId),
               eq(devices.orgId, orgId),
+              targetableDevice
             )
           );
         deviceIds = partnerDevices.map((d) => d.id);
@@ -1801,16 +1975,73 @@ export interface MaintenanceWindowStatus {
   rebootIfPending: boolean;
 }
 
+/** Bare time of day, e.g. "1:50", "01:50" or "01:50:00". */
+const TIME_OF_DAY_PATTERN = /^(\d{1,2}):(\d{2})(?::\d{2})?$/;
+/** Time component of a naive (zoneless) ISO-8601-ish datetime, e.g. "2026-03-15T02:00". */
+const DATETIME_TIME_PATTERN = /^\d{4}-\d{2}-\d{2}[T ](\d{1,2}):(\d{2})/;
+/**
+ * A trailing `Z` or `±HH:MM` offset. Such a value names an *instant*, so its
+ * digits are not wall-clock time in `settings.timezone` — `migrateToConfigPolicies`
+ * writes exactly this shape (`toISOString()`) for migrated `once` windows.
+ */
+const EXPLICIT_UTC_OFFSET_PATTERN = /(?:Z|[+-]\d{2}:?\d{2})$/i;
+
+/** The anchor recurring windows used before issue #4224, and the fallback still. */
+const MIDNIGHT_ANCHOR = { hours: 0, minutes: 0 } as const;
+
+/**
+ * Reads the time-of-day anchor for a recurring maintenance window out of
+ * `config_policy_maintenance_settings.window_start`.
+ *
+ * That column is recurrence-discriminated: for `once` it holds a full
+ * ISO-8601 local datetime, and for `daily`/`weekly`/`monthly` it holds an
+ * "HH:MM" time of day. A *naive* datetime is accepted for the recurring
+ * cadences too, using only its time component, so a policy switched from
+ * `once` keeps a sensible anchor instead of jumping to midnight.
+ *
+ * A datetime carrying `Z` or a numeric offset is rejected rather than read
+ * digit-for-digit: it names an instant, and treating its UTC hour as local
+ * wall-clock time would shift the window by the zone's offset invisibly.
+ *
+ * Returns `'invalid'` for a value that parses as none of these — the caller
+ * warns and falls back to midnight rather than treating the window as never
+ * open.
+ */
+function parseRecurringWindowAnchor(
+  rawWindowStart: string | null
+): { hours: number; minutes: number } | 'invalid' {
+  const value = (rawWindowStart ?? '').trim();
+  // Absent is not a defect: every pre-#4224 recurring row has window_start
+  // NULL and must keep the midnight schedule it has been running on.
+  if (value === '') return MIDNIGHT_ANCHOR;
+  if (EXPLICIT_UTC_OFFSET_PATTERN.test(value)) return 'invalid';
+
+  const match = TIME_OF_DAY_PATTERN.exec(value) ?? DATETIME_TIME_PATTERN.exec(value);
+  if (!match) return 'invalid';
+
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (hours > 23 || minutes > 59) return 'invalid';
+  return { hours, minutes };
+}
+
 /**
  * Determines whether a maintenance window is currently active based on
  * the recurrence pattern, duration, and timezone.
  *
- * Recurrence values:
- *   - 'daily'   — window starts every day at 00:00 in the configured timezone
- *   - 'weekly'  — window starts every Sunday at 00:00 in the configured timezone
- *   - 'monthly' — window starts on the 1st of each month at 00:00 in the configured timezone
+ * Recurrence values (all times in the configured timezone):
+ *   - 'once'    — window starts at the `windowStart` datetime
+ *   - 'daily'   — window starts every day at the `windowStart` time of day
+ *   - 'weekly'  — window starts every Sunday at the `windowStart` time of day
+ *   - 'monthly' — window starts on the 1st of each month at the `windowStart` time of day
  *
- * The window lasts for `durationHours` from the start time.
+ * Recurring cadences fall back to 00:00 when no `windowStart` is stored, which
+ * is what every recurring window did before issue #4224.
+ *
+ * The window lasts for `durationHours` from the start time. Because the start
+ * time may sit late in its period, the evaluated occurrence is the most recent
+ * one at or before `now` — a 23:00 daily window is still open at 00:30 the
+ * next morning.
  */
 export function isInMaintenanceWindow(
   settings: typeof configPolicyMaintenanceSettings.$inferSelect,
@@ -1853,6 +2084,20 @@ export function isInMaintenanceWindow(
 
   const durationMs = settings.durationHours * 60 * 60 * 1000;
 
+  // Lazily resolved so the `once` branch — which reads windowStart as a full
+  // datetime — never warns about a value that is valid for its own recurrence.
+  const resolveRecurringAnchor = (): { hours: number; minutes: number } => {
+    const anchor = parseRecurringWindowAnchor(settings.windowStart);
+    if (anchor === 'invalid') {
+      console.warn(
+        `[FeatureConfigResolver] Unparseable maintenance windowStart "${settings.windowStart}" for ` +
+          `'${settings.recurrence}' recurrence; anchoring the window to midnight`
+      );
+      return MIDNIGHT_ANCHOR;
+    }
+    return anchor;
+  };
+
   // Compute potential window start based on recurrence
   let windowStart: Date;
 
@@ -1874,24 +2119,40 @@ export function isInMaintenanceWindow(
       break;
     }
     case 'daily': {
-      // Window starts at midnight local time each day
+      // Window starts at the configured time of day, every day. If today's
+      // occurrence has not begun yet, yesterday's may still be running.
+      const { hours, minutes } = resolveRecurringAnchor();
       windowStart = new Date(localNow);
-      windowStart.setHours(0, 0, 0, 0);
+      windowStart.setHours(hours, minutes, 0, 0);
+      if (windowStart > localNow) {
+        windowStart.setDate(windowStart.getDate() - 1);
+      }
       break;
     }
     case 'weekly': {
-      // Window starts at midnight on the most recent Sunday
+      // Window starts at the configured time of day on Sunday. If this
+      // Sunday's occurrence has not begun yet, last Sunday's may still run.
+      const { hours, minutes } = resolveRecurringAnchor();
       windowStart = new Date(localNow);
-      const dayOfWeek = windowStart.getDay(); // 0 = Sunday
-      windowStart.setDate(windowStart.getDate() - dayOfWeek);
-      windowStart.setHours(0, 0, 0, 0);
+      windowStart.setDate(windowStart.getDate() - windowStart.getDay()); // 0 = Sunday
+      windowStart.setHours(hours, minutes, 0, 0);
+      if (windowStart > localNow) {
+        windowStart.setDate(windowStart.getDate() - 7);
+      }
       break;
     }
     case 'monthly': {
-      // Window starts at midnight on the 1st of the current month
+      // Window starts at the configured time of day on the 1st. If this
+      // month's occurrence has not begun yet, last month's may still run.
+      const { hours, minutes } = resolveRecurringAnchor();
       windowStart = new Date(localNow);
       windowStart.setDate(1);
-      windowStart.setHours(0, 0, 0, 0);
+      windowStart.setHours(hours, minutes, 0, 0);
+      if (windowStart > localNow) {
+        // Safe to roll the month back: the day is pinned to the 1st, so there
+        // is no short-month overflow.
+        windowStart.setMonth(windowStart.getMonth() - 1);
+      }
       break;
     }
     default: {

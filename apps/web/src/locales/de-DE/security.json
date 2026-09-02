@@ -585,6 +585,7 @@
     "startScan": "Scan starten",
     "startScansWatchProgressAndReviewScan": "Starten Sie Scans, beobachten Sie den Fortschritt und überprüfen Sie den Scanverlauf auf allen Geräten.",
     "started": "Begonnen {{time}}",
+    "startedColumn": "Begonnen",
     "status": "Status: {{status}}",
     "status2": "Status",
     "type": "Typ",

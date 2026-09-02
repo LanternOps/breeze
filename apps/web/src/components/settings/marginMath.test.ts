@@ -66,3 +66,15 @@ describe('marginGuard', () => {
     expect(marginGuard(' eur ', 'eur')).toBe(true);
   });
 });
+
+describe('feedMatchesCurrency (quote-currency gate, multi-currency wave 3 review #3)', () => {
+  it('only matches an explicit, equal ISO code — a missing feed currency is unknown, not assumed', async () => {
+    const { feedMatchesCurrency } = await import('./marginMath');
+    expect(feedMatchesCurrency('usd', 'USD')).toBe(true);
+    expect(feedMatchesCurrency(' eur ', 'eur')).toBe(true);
+    expect(feedMatchesCurrency('USD', 'EUR')).toBe(false);
+    expect(feedMatchesCurrency(null, 'USD')).toBe(false);
+    expect(feedMatchesCurrency(undefined, 'USD')).toBe(false);
+    expect(feedMatchesCurrency('', 'USD')).toBe(false);
+  });
+});

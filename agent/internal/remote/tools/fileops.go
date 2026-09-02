@@ -628,12 +628,13 @@ func DeleteFile(payload map[string]any) CommandResult {
 		return NewErrorResult(err, time.Since(start).Milliseconds())
 	}
 
-	// Block recursive deletes on any top-level directory (e.g. /home, /var, /opt)
-	if recursive {
-		parts := strings.Split(strings.TrimPrefix(cleanPath, "/"), "/")
-		if len(parts) <= 1 {
-			return NewErrorResult(fmt.Errorf("recursive delete denied on top-level path: %s", cleanPath), time.Since(start).Milliseconds())
-		}
+	// Block recursive deletes on any filesystem root or top-level directory
+	// (e.g. /, /home, /var, C:\, C:\Windows, \\server\share). See
+	// isRecursiveDeleteBoundary (fileops_delete_boundary.go) for the boundary
+	// semantics and why a plain slash-separated component count was wrong on
+	// Windows (#3932).
+	if recursive && isRecursiveDeleteBoundary(cleanPath) {
+		return NewErrorResult(fmt.Errorf("recursive delete denied on top-level path: %s", cleanPath), time.Since(start).Milliseconds())
 	}
 
 	// Check if path exists

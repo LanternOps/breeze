@@ -96,6 +96,7 @@
           "cancel": "Contrat annulé"
         },
         "invoiceGenerated": "Facture générée",
+        "priceBookGaps": "{{count}} ligne(s) de catalogue facturée(s) au prix figé du contrat — aucun prix en {{currency}} dans le catalogue : {{lines}}",
         "draftDeleted": "Brouillon supprimé"
       },
       "cancelConfirm": {
@@ -201,7 +202,11 @@
         "lineTotal": "Total de la ligne : {{total}}",
         "addLine": "Ajouter la ligne",
         "noPriceInCurrency": "Aucun prix en {{currency}} pour cet article — ajoutez-en un dans le catalogue, ou supprimez le lien vers le catalogue et saisissez une ligne manuelle.",
-        "priceFromCatalog": "Prix unitaire (issu du catalogue, en {{currency}})"
+        "priceFromCatalog": "Prix unitaire (issu du catalogue, en {{currency}})",
+        "resolvingPrice": "Recherche du prix en {{currency}}…",
+        "priceLookupFailed": "Impossible de récupérer le prix en {{currency}}.",
+        "priceNotRepresentable": "Le prix en {{currency}} enregistré pour cet article n’est pas valide en {{currency}} — corrigez-le dans le catalogue, ou supprimez le lien au catalogue et saisissez une ligne manuelle.",
+        "priceSourceOrgOverride": "Prix spécifique à l’organisation {{org}}"
       },
       "estimate": {
         "title": "Estimé pour cette période",
@@ -318,7 +323,65 @@
     "tabs": {
       "contracts": "Contrats",
       "templates": "Modèles",
-      "documents": "Documents"
+      "documents": "Documents",
+      "currencyMismatches": "Écarts de devise"
+    },
+    "currencyMismatches": {
+      "title": "Écarts de devise",
+      "description": "Contrats encore libellés dans une devise que leur organisation ne facture plus. Ouvrez un contrat pour l'examiner — rien n'est modifié en masse ici.",
+      "loading": "Chargement…",
+      "loadError": "Impossible de charger le rapport des écarts de devise.",
+      "loadMore": "Charger plus",
+      "emptyTitle": "Aucun écart de devise",
+      "emptyBody": "Chaque contrat est libellé dans la devise de facturation de son organisation.",
+      "eligible": "Prêt à être re-libellé",
+      "currencyPair": "{{contractCurrency}} → {{orgCurrency}}",
+      "blockingDrafts": "{{count}} factures en brouillon",
+      "blockingDrafts_one": "{{count}} facture en brouillon",
+      "columns": {
+        "contract": "Contrat",
+        "organization": "Organisation",
+        "status": "Statut",
+        "currencies": "Contrat → organisation",
+        "nextBilling": "Prochaine facturation",
+        "eligibility": "Éligibilité au re-libellé"
+      },
+      "reason": {
+        "STATUS_NOT_ACTIVE": "Non actif — seuls les contrats actifs peuvent être re-libellés",
+        "ORPHANED_CONTRACT_SOURCE": "Les lignes de facture issues de contrats ne peuvent pas être attribuées",
+        "ORPHANED_BILLING_PERIOD": "Une période de facturation n'a aucune facture accessible",
+        "BROKEN_CONTRACT_LINEAGE": "La vérification de la filiation des factures a échoué",
+        "UNBILLED_MONETARY_ROWS": "Des factures en brouillon contiennent encore des montants de ce contrat"
+      }
+    },
+    "currency": {
+      "actions": {
+        "change": "Changer de devise"
+      },
+      "dialog": {
+        "title": "Changer la devise du contrat",
+        "description": "Ce contrat est facturé en {{currency}}. Le nouveau libellé n'affecte que les factures à venir — les factures déjà émises et les périodes de facturation passées ne sont jamais modifiées.",
+        "currencyLabel": "Nouvelle devise",
+        "modeLegend": "Ce qu'il advient des lignes du contrat",
+        "modeClear": "Supprimer toutes les lignes du contrat",
+        "modeClearHint": "Les lignes sont supprimées puis ressaisies à la main dans la nouvelle devise. Obligatoire dès qu'une ligne est manuelle.",
+        "modeReprice": "Retarifer les lignes du catalogue",
+        "modeRepriceHint": "Chaque ligne du catalogue est résolue depuis la grille tarifaire de la nouvelle devise. Possible uniquement si toutes les lignes proviennent du catalogue.",
+        "confirm": "Je comprends que cette opération re-libelle un contrat actif et ne peut pas être annulée en masse.",
+        "submit": "Changer de devise"
+      },
+      "blockers": {
+        "UNBILLED_MONETARY_ROWS": "Émettez ou supprimez d'abord ces factures en brouillon — elles contiennent encore des montants de ce contrat :",
+        "ORPHANED_BILLING_PERIOD": "Ces périodes de facturation n'ont aucune facture accessible. Traitez-les avant de re-libeller :",
+        "ORPHANED_CONTRACT_SOURCE": "Ces lignes de facture issues de contrats ne peuvent être rattachées à aucun contrat. Traitez-les avant de re-libeller :",
+        "BROKEN_CONTRACT_LINEAGE": "La vérification de la filiation a échoué pour ces factures. Traitez-les avant de re-libeller :"
+      },
+      "toast": {
+        "changed": "Devise du contrat changée en {{currency}}."
+      },
+      "errors": {
+        "change": "Impossible de changer la devise du contrat."
+      }
     },
     "templatesTab": {
       "title": "Modèles de contrat",
@@ -631,7 +694,8 @@
         "updateLine": "Impossible de mettre à jour la ligne.",
         "updateSection": "Impossible de mettre à jour la section.",
         "uploadImage": "Impossible de téléverser l'image.",
-        "noPriceForCurrency": "Aucun prix en {{currency}} pour cet article. Ajoutez-en un dans le catalogue ou saisissez une ligne manuelle."
+        "noPriceForCurrency": "Aucun prix en {{currency}} pour cet article. Ajoutez-en un dans le catalogue ou saisissez une ligne manuelle.",
+        "sectionAddedListStale": "Section ajoutée, mais la liste n'a pas pu être actualisée. Rechargez la page pour la voir."
       },
       "image": {
         "alt": "Image du devis",
@@ -857,6 +921,11 @@
       "cloneError": "Impossible de dupliquer le devis.",
       "cloneQuote": "Dupliquer le devis",
       "cloneSavingTitle": "Attendez la fin de l'enregistrement avant de dupliquer.",
+      "reviseQuote": "Réviser le devis",
+      "revising": "Création de la révision…",
+      "reviseSuccess": "Révision créée.",
+      "reviseError": "Impossible de créer une révision.",
+      "reviseInProgress": "Une révision est déjà en cours — ouverture.",
       "cloneSuccess": "Devis dupliqué.",
       "cloning": "Duplication…",
       "deleteConfirm": {
@@ -892,7 +961,8 @@
         "toPlaceholder": "Ajouter un destinataire…",
         "tooManyRecipients": "Utilisez au maximum {{max}} adresses.",
         "zeroTotalWarning": "Ce devis totalise {{zero}} — vérifiez que ses lignes sont tarifées avant l'envoi.",
-        "noBillingContactHint": "Aucun contact de facturation n'est enregistré pour cette organisation — saisissez un e-mail ou ajoutez-en un dans les <orgLink>paramètres de l'organisation</orgLink>."
+        "noBillingContactHint": "Aucun contact de facturation n'est enregistré pour cette organisation — saisissez un e-mail ou ajoutez-en un dans les <orgLink>paramètres de l'organisation</orgLink>.",
+        "revisionWarning": "L’envoi remplace {{number}} et désactive le lien que le client possède déjà."
       },
       "sendEmailWarning": {
         "noBillingContact": "Proposition marquée comme Envoyée, mais aucun e-mail n'a été remis — {{orgName}} n'a pas d'adresse e-mail de contact de facturation. Ajoutez-en une dans les paramètres de l'organisation, puis renvoyez.",
@@ -936,7 +1006,8 @@
       "resendNewLinkOriginalDead": "Proposition renvoyée, mais avec un NOUVEAU lien. Le lien précédent ne peut plus être ouvert; toute personne qui le détient doit utiliser le nouveau.",
       "shareLinkNewLinkOriginalLive": "Un NOUVEAU lien a été copié. Cette proposition est antérieure au suivi des liens : celui que le client possédait n'a pas pu être réutilisé; il fonctionne toujours en parallèle de celui-ci.",
       "shareLinkNewLinkOriginalDead": "Un NOUVEAU lien a été copié. Le lien précédent ne peut plus être ouvert; toute personne qui le détient doit utiliser celui-ci.",
-      "currencyMismatch": "Ce devis est en {{documentCurrency}}, mais votre compte Stripe règle en {{accountCurrency}}. Stripe présentera {{documentCurrency}} au client et convertira lors du règlement — l'écart de change et les éventuels frais de conversion sont à votre charge."
+      "currencyMismatch": "Ce devis est en {{documentCurrency}}, mais votre compte Stripe règle en {{accountCurrency}}. Stripe présentera {{documentCurrency}} au client et convertira lors du règlement — l'écart de change et les éventuels frais de conversion sont à votre charge.",
+      "currencyUnknown": "La devise de règlement de votre compte Stripe n'est pas encore en cache ; elle n'a donc pas pu être comparée à ce devis en {{documentCurrency}}. Actualisez les détails de votre compte Stripe dans Paramètres → Intégrations pour activer la vérification."
     },
     "detail": {
       "addContentInEditor": "Ajouter du contenu dans l'Éditeur",
@@ -1055,10 +1126,17 @@
         "reasonLabel": "Note du client :",
         "revise": "Dupliquer et réviser",
         "revising": "Duplication…"
+      },
+      "lineage": {
+        "supersededTitle": "Ce devis a été remplacé par",
+        "inProgressTitle": "Une révision de ce devis est en préparation — l'envoyer remplacera ce devis et désactivera le lien du client :",
+        "revisionOfTitle": "Révision de",
+        "untitled": "une version plus récente"
       }
     },
     "distributorLookup": {
-      "marginUnavailableCostIn": "Coût en {{currency}} — marge indisponible",
+      "feedPriceCurrencyUnknown": "Devise du prix du flux inconnue — saisissez un prix en {{currency}}",
+      "feedPriceIn": "Le prix du flux est en {{feedCurrency}} — saisissez un prix en {{currency}}",
       "available": "{{count}} dispo",
       "cost": "coût {{currency}} {{amount}}",
       "endOfLife": "Fin de vie",
@@ -1226,7 +1304,8 @@
       "tryAgain": "Réessayer"
     },
     "pax8ProductLookup": {
-      "marginUnavailableCostIn": "Coût en {{currency}} — marge indisponible",
+      "feedPriceCurrencyUnknown": "Devise du prix du flux inconnue — saisissez un prix en {{currency}}",
+      "feedPriceIn": "Le prix du flux est en {{feedCurrency}} — saisissez un prix en {{currency}}",
       "cost": "coût {{currency}} {{amount}}",
       "importAndAdd": "Importer et ajouter",
       "option": "Option {{number}}",
@@ -1248,7 +1327,8 @@
       "accepted": "Accepté",
       "declined": "Refusé",
       "expired": "Expiré",
-      "converted": "Converti"
+      "converted": "Converti",
+      "superseded": "Remplacé"
     },
     "workspace": {
       "backLabel": "Devis",
@@ -1265,7 +1345,8 @@
         "preview": "Aperçu",
         "detail": "Détails"
       },
-      "loading": "Chargement du devis…"
+      "loading": "Chargement du devis…",
+      "revisionBanner": "Il s’agit d’une révision de {{number}}. L’envoyer remplacera l’original et désactivera le lien que le client possède déjà."
     }
   },
   "billingUi": {
@@ -1540,7 +1621,8 @@
       "shareLinkPrompt": "Partagez ce lien de paiement avec votre client :",
       "stripeNudge": "Connectez Stripe pour accepter les paiements par carte en ligne.",
       "title": "Paiements",
-      "viaStripe": "via Stripe"
+      "viaStripe": "via Stripe",
+      "currencyUnknown": "La devise de règlement de votre compte Stripe n'est pas encore en cache ; elle n'a donc pas pu être comparée à cette facture en {{documentCurrency}}. Actualisez les détails de votre compte Stripe dans Paramètres → Intégrations pour activer la vérification."
     },
     "requestPayment": {
       "invoiceSent": "Facture envoyée",
@@ -1654,16 +1736,21 @@
       "unpaid": "Acompte impayé"
     },
     "dialog": {
+      "allBlockedByCurrency": "Tout le travail non facturé de cette période est valorisé dans une autre devise, donc rien n’a pu être assemblé. Assemblez plutôt un brouillon dans cette devise :",
       "allSites": "Tous les sites",
       "assemble": "Assembler",
       "assembleError": "Impossible d'assembler une facture pour cette plage.",
       "assembleFromWork": "Assembler depuis les travaux",
+      "assembleIn": "Assembler en {{code}} ({{count}} éléments, {{amount}})",
       "assembleSuccess": "Facture brouillon assemblée",
       "blankInvoice": "Facture vierge",
+      "blockedByCurrency": "{{count}} éléments non facturés valorisés en {{code}} ont été exclus : assemblez un brouillon distinct en {{code}} pour les facturer.",
       "createDraft": "Créer un brouillon",
       "createError": "Impossible de créer une facture brouillon.",
       "createGenericError": "Impossible de créer la facture.",
       "createSuccess": "Facture brouillon créée",
+      "currency": "Devise",
+      "currencyOrgDefault": "Devise par défaut de l’organisation",
       "description": "Assemblez les travaux non facturés dans un brouillon ou démarrez une facture vierge.",
       "from": "De",
       "selectOrganization": "Sélectionner une organisation…",
@@ -1731,6 +1818,44 @@
       "emailPlaceholder": "billing@customer.example",
       "name": "Nom du contact",
       "title": "Contact de facturation"
+    },
+    "currency": {
+      "title": "Devise",
+      "description": "Les nouveaux devis, factures, contrats, saisies de temps et pièces de cette organisation sont horodatés dans cette devise. Rien de ce qui existe déjà n'est modifié.",
+      "label": "Devise de facturation",
+      "loading": "Vérification de l'impact d'un passage à {{currency}}…",
+      "error": "Le résumé du changement de devise n'a pas pu être chargé.",
+      "panelTitle": "Changer la devise de facturation pour {{currency}} ?",
+      "none": "Rien dans cette organisation n'est enregistré dans une autre devise.",
+      "groupTitle": "Enregistré en {{currency}}",
+      "counts": {
+        "draftInvoices": "Factures en brouillon",
+        "draftQuotes": "Devis en brouillon",
+        "sentQuotes": "Devis envoyés",
+        "viewedQuotes": "Devis consultés",
+        "draftContracts": "Contrats en brouillon",
+        "activeContracts": "Contrats actifs",
+        "pausedContracts": "Contrats en pause",
+        "timeEntries": "Saisies de temps non facturées",
+        "parts": "Pièces non facturées"
+      },
+      "timeDetail": "{{ready}} prêtes à facturer, {{running}} en cours, {{nonBillable}} non facturables, {{missingRate}} sans tarif",
+      "partsDetail": "{{ready}} prêtes à facturer, {{nonBillable}} non facturables",
+      "amounts": "Main-d'œuvre {{labor}} · Pièces {{parts}}",
+      "warningsTitle": "Configuration qui cessera de s'appliquer",
+      "warningRate": "Le taux horaire par défaut de l'organisation est défini en {{currency}} et ne s'appliquera plus aux nouvelles saisies de temps.",
+      "warningCategories": "{{count}} tarifs de catégorie de tickets dans une autre devise seront ignorés.",
+      "warningOverrides": "{{count}} remplacements de prix catalogue de l'organisation dans une autre devise seront ignorés.",
+      "recovery": "Pour facturer les éléments en {{currency}} ci-dessus, assemblez un brouillon en {{currency}}.",
+      "rateLess": "{{count}} entrées de temps non facturées ont des heures mais aucun taux horaire. Définissez un taux — un changement de devise ne les affecte pas.",
+      "retention": "Seuls les futurs documents, saisies de temps et pièces changent. Aucun montant n'est jamais converti et les brouillons, contrats et éléments non facturés existants conservent leur devise d'origine.",
+      "advisory": "Ces décomptes sont un aperçu, pas une garantie — rien de ce qui est créé ensuite n'y figure.",
+      "stale": "La devise de facturation est passée à {{currency}} pendant votre vérification. Consultez le résumé actualisé et confirmez à nouveau.",
+      "confirm": "Changer la devise",
+      "changing": "Changement…",
+      "cancel": "Annuler",
+      "changeError": "Échec du changement de devise de facturation de l'organisation.",
+      "changeSuccess": "Devise de facturation de l'organisation mise à jour"
     },
     "loadError": "Échec du chargement des paramètres de facturation.",
     "loading": "Chargement des paramètres de facturation…",

@@ -246,6 +246,7 @@
       "copy": "Impossibile copiare",
       "delete": "Impossibile eliminare",
       "download": "Impossibile scaricare",
+      "downloadTooLarge": "Troppo grande per il download ({{size}}). Il browser file trasferisce file fino a {{max}}.",
       "loadDirectory": "Impossibile caricare la directory",
       "move": "Impossibile spostare",
       "readFile": "Impossibile leggere il file",

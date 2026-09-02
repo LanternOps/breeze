@@ -1,10 +1,20 @@
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
+
+const { safeFetchFollowingRedirectsMock } = vi.hoisted(() => ({
+  safeFetchFollowingRedirectsMock: vi.fn(),
+}));
+
+vi.mock("./urlSafety", () => ({
+  safeFetchFollowingRedirects: safeFetchFollowingRedirectsMock,
+}));
+
 import {
   verifyGithubReleaseArtifactBuffer,
   verifyReleaseArtifactManifestAsset,
   verifyReleaseArtifactBuffer,
   verifyReleaseArtifactManifestIntegrity,
+  verifyManifestSignatureAgainstOfficialKeysOnly,
 } from "./releaseArtifactManifest";
 import { requiredPlatformTrustFor } from "./releaseAssetTrust";
 
@@ -55,6 +65,7 @@ describe("releaseArtifactManifest", () => {
 
   beforeEach(() => {
     process.env = { ...originalEnv };
+    safeFetchFollowingRedirectsMock.mockReset();
   });
 
   afterEach(() => {
@@ -205,9 +216,67 @@ describe("releaseArtifactManifest", () => {
     );
   });
 
+  // D4 (#3836) fix round 1: binarySync.ts's registerFromOfficialManifest
+  // needs to tell "asset genuinely absent from the manifest" (legitimate
+  // local/BYO fallback case) apart from "asset present but its entry is
+  // wrong" (must fail closed) WITHOUT matching on `.message` text, which is
+  // not a contract. These two tests pin the typed discriminant that makes
+  // that safe: only the true not-found case is ReleaseManifestAssetAbsentError;
+  // every other ReleaseManifestAssetLookupError variant (e.g. a malformed
+  // sha256 on a PRESENT entry) is deliberately NOT that subclass, even
+  // though its message text could say anything.
+  describe("asset lookup error typing (D4, #3836 fix round 1)", () => {
+    it("an asset name absent from the manifest's assets array throws ReleaseManifestAssetAbsentError", async () => {
+      const { ReleaseManifestAssetAbsentError } = await import("./releaseArtifactManifest");
+      const asset = Buffer.from("trusted-agent-binary");
+      const signed = makeSignedManifest({
+        assetName: "breeze-agent-linux-amd64",
+        assetBuffer: asset,
+      });
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+
+      await expect(
+        verifyReleaseArtifactManifestAsset({
+          assetName: "breeze-agent-windows-amd64.exe", // not in the manifest
+          manifestBytes: signed.manifest,
+          signatureBytes: signed.signature,
+        }),
+      ).rejects.toThrow(ReleaseManifestAssetAbsentError);
+    });
+
+    it("an asset PRESENT with a malformed sha256 throws the base ReleaseManifestAssetLookupError, NOT the absent subclass", async () => {
+      const { ReleaseManifestAssetAbsentError, ReleaseManifestAssetLookupError } =
+        await import("./releaseArtifactManifest");
+      const asset = Buffer.from("trusted-agent-binary");
+      const signed = makeSignedManifest({
+        assetName: "breeze-agent-linux-amd64",
+        assetBuffer: asset,
+        assetOverrides: { sha256: "not-a-valid-sha256" },
+      });
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+
+      expect.assertions(3);
+      try {
+        await verifyReleaseArtifactManifestAsset({
+          assetName: "breeze-agent-linux-amd64", // present, just malformed
+          manifestBytes: signed.manifest,
+          signatureBytes: signed.signature,
+        });
+      } catch (err) {
+        expect(err).toBeInstanceOf(ReleaseManifestAssetLookupError);
+        // This is the tripwire: even though the base-class instance's
+        // message ("...has invalid sha256 for...") does not currently
+        // contain "does not include", a caller distinguishing by message
+        // text alone would be one coincidental wording change away from
+        // misclassifying this as absent. instanceof must reject it
+        // regardless of message content.
+        expect(err).not.toBeInstanceOf(ReleaseManifestAssetAbsentError);
+        expect((err as Error).message).toMatch(/invalid sha256/);
+      }
+    });
+  });
+
   it("skips GitHub manifest fetches when no API trust root is configured", async () => {
-    const fetchMock = vi.fn();
-    vi.stubGlobal("fetch", fetchMock);
     process.env.NODE_ENV = "test";
 
     await expect(
@@ -219,12 +288,10 @@ describe("releaseArtifactManifest", () => {
           "https://example.com/release-artifact-manifest.json.ed25519",
       }),
     ).resolves.toBeNull();
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(safeFetchFollowingRedirectsMock).not.toHaveBeenCalled();
   });
 
   it("fails closed for GitHub fallback verification in production without a trust root", async () => {
-    const fetchMock = vi.fn();
-    vi.stubGlobal("fetch", fetchMock);
     process.env.NODE_ENV = "production";
 
     await expect(
@@ -236,7 +303,7 @@ describe("releaseArtifactManifest", () => {
           "https://example.com/release-artifact-manifest.json.ed25519",
       }),
     ).rejects.toThrow("public key is required");
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(safeFetchFollowingRedirectsMock).not.toHaveBeenCalled();
   });
 
   it("fetches and verifies GitHub manifest assets when a trust root is configured", async () => {
@@ -246,21 +313,22 @@ describe("releaseArtifactManifest", () => {
       assetBuffer: asset,
     });
     process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (url: string) => {
-        if (url.endsWith(".ed25519")) return new Response(signed.signature);
-        return new Response(signed.manifest);
-      }),
-    );
+    safeFetchFollowingRedirectsMock.mockImplementation(async (url: string) => {
+      if (url.endsWith(".ed25519")) return new Response(signed.signature);
+      return new Response(signed.manifest);
+    });
+
+    const manifestUrl =
+      "https://example.com/release-artifact-manifest.json";
+    const signatureUrl =
+      "https://example.com/release-artifact-manifest.json.ed25519";
 
     await expect(
       verifyGithubReleaseArtifactBuffer({
         assetName: "breeze-agent.msi",
         assetBuffer: asset,
-        manifestUrl: "https://example.com/release-artifact-manifest.json",
-        signatureUrl:
-          "https://example.com/release-artifact-manifest.json.ed25519",
+        manifestUrl,
+        signatureUrl,
         expectedRepository: "lanternops/breeze",
         expectedRelease: "v1.2.3",
       }),
@@ -268,6 +336,16 @@ describe("releaseArtifactManifest", () => {
       expect.objectContaining({
         sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
       }),
+    );
+    expect(safeFetchFollowingRedirectsMock).toHaveBeenNthCalledWith(
+      1,
+      manifestUrl,
+      { maxBytes: 1024 * 1024 },
+    );
+    expect(safeFetchFollowingRedirectsMock).toHaveBeenNthCalledWith(
+      2,
+      signatureUrl,
+      { maxBytes: 1024 * 1024 },
     );
   });
 
@@ -624,6 +702,70 @@ describe("releaseArtifactManifest", () => {
       expect(() =>
         verifyReleaseArtifactManifestIntegrity(signed.manifest, signed.signature),
       ).toThrow(/public key is not configured/);
+    });
+  });
+
+  // Task 2 (#3836): agentVersions.ts's legacy (non schema-v1) manifest
+  // verification dispatches an official-signingKeyId row here instead of
+  // the whole-set (env + DB deployment keys) check it used before. This
+  // function is the "official keys ONLY, no DB access" primitive that
+  // makes that narrowing possible.
+  describe("verifyManifestSignatureAgainstOfficialKeysOnly (Task 2, #3836)", () => {
+    it("returns true for a signature that verifies under a configured official key", () => {
+      const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+      const publicDer = publicKey.export({ format: "der", type: "spki" }) as Buffer;
+      const rawPublicKey = publicDer.subarray(publicDer.length - 32).toString("base64");
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = rawPublicKey;
+      const manifest = JSON.stringify({ foo: "bar" });
+      const signature = sign(null, Buffer.from(manifest, "utf8"), privateKey).toString("base64");
+
+      expect(verifyManifestSignatureAgainstOfficialKeysOnly(manifest, signature)).toBe(true);
+    });
+
+    it("returns false for a signature made by a DIFFERENT key, even one otherwise present in the process (not falling back to any other trust store)", () => {
+      const official = generateKeyPairSync("ed25519");
+      const officialDer = official.publicKey.export({ format: "der", type: "spki" }) as Buffer;
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = officialDer
+        .subarray(officialDer.length - 32)
+        .toString("base64");
+
+      const other = generateKeyPairSync("ed25519");
+      const manifest = JSON.stringify({ foo: "bar" });
+      const signature = sign(null, Buffer.from(manifest, "utf8"), other.privateKey).toString(
+        "base64",
+      );
+
+      expect(verifyManifestSignatureAgainstOfficialKeysOnly(manifest, signature)).toBe(false);
+    });
+
+    it("returns false (no soft-pass) when no official key is configured", () => {
+      delete process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS;
+      delete process.env.BREEZE_RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS;
+
+      expect(
+        verifyManifestSignatureAgainstOfficialKeysOnly("{}", "A".repeat(88)),
+      ).toBe(false);
+    });
+
+    it("returns false (never throws) when the configured official key value is malformed", () => {
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = "not-a-valid-key===";
+
+      expect(() =>
+        verifyManifestSignatureAgainstOfficialKeysOnly("{}", "A".repeat(88)),
+      ).not.toThrow();
+      expect(verifyManifestSignatureAgainstOfficialKeysOnly("{}", "A".repeat(88))).toBe(false);
+    });
+
+    it("returns false for a malformed (wrong-length) signature", () => {
+      const { publicKey } = generateKeyPairSync("ed25519");
+      const publicDer = publicKey.export({ format: "der", type: "spki" }) as Buffer;
+      process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = publicDer
+        .subarray(publicDer.length - 32)
+        .toString("base64");
+
+      expect(
+        verifyManifestSignatureAgainstOfficialKeysOnly("{}", "too-short"),
+      ).toBe(false);
     });
   });
 });

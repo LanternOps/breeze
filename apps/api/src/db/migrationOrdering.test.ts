@@ -49,7 +49,7 @@ describe('migration ordering', () => {
     // forms like `DROP TABLE IF EXISTS` or `ALTER TABLE IF EXISTS` are
     // intentionally excluded — they're a no-op against an absent table.
     const patterns = [
-      /\bREFERENCES\s+(?!"?public"?\s*\.\s*%)(?:"?public"?\.)?"?([a-zA-Z_][a-zA-Z0-9_]*)"?/gi,
+      /\bREFERENCES\s+(?!ON\b)(?!"?public"?\s*\.\s*%)(?:"?public"?\.)?"?([a-zA-Z_][a-zA-Z0-9_]*)"?/gi,
       /\bALTER\s+TABLE\s+(?!IF\s+EXISTS\b)(?:ONLY\s+)?(?!"?public"?\s*\.\s*%)(?:"?public"?\.)?"?([a-zA-Z_][a-zA-Z0-9_]*)"?/gi,
       /\bCREATE\s+POLICY\s+[^;]*?\bON\s+(?!"?public"?\s*\.\s*%)(?:"?public"?\.)?"?([a-zA-Z_][a-zA-Z0-9_]*)"?/gi,
       /\bCREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:CONCURRENTLY\s+)?(?:IF\s+NOT\s+EXISTS\s+)?[^;]*?\bON\s+(?!"?public"?\s*\.\s*%)(?:"?public"?\.)?"?([a-zA-Z_][a-zA-Z0-9_]*)"?/gi,
@@ -67,6 +67,12 @@ describe('migration ordering', () => {
     expect(extractReferencedTables(`
       CREATE TRIGGER t AFTER UPDATE ON public.real_table EXECUTE FUNCTION f();
     `)).toContain('real_table');
+    expect(extractReferencedTables(`
+      GRANT SELECT, INSERT, UPDATE, DELETE, REFERENCES ON public.real_table TO breeze_app;
+    `)).toEqual([]);
+    expect(extractReferencedTables(`
+      ALTER TABLE child ADD CONSTRAINT child_parent_fk FOREIGN KEY (parent_id) REFERENCES parent(id);
+    `)).toContain('parent');
   });
 
   it('every referenced table is created in the same file or an earlier one', async () => {

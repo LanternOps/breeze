@@ -1,8 +1,17 @@
 import { eq } from 'drizzle-orm';
-import { db, withSystemDbAccessContext } from '../../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { users } from '../../db/schema/users';
 import { apiKeys } from '../../db/schema/apiKeys';
+import { aiAgentRuns, aiAgents } from '../../db/schema/aiAgents';
+import { organizations } from '../../db/schema/orgs';
+import { devices } from '../../db/schema/devices';
+import { tickets } from '../../db/schema/portal';
 import type { ActionIntent } from '../../db/schema/actionIntents';
+import {
+  AgentRunOwnershipError,
+  buildAgentAuthContext,
+} from '../aiAgents/agentAuthContext';
+import { IntentScopeLostError, resolveIntentTargetDevice, resolveIntentTargetTicket } from './intentTargetScope';
 import { getUserPermissions, canAccessOrg as permsCanAccessOrg } from '../permissions';
 import { buildOrgAccessClosures, siteAccessCheck, type AuthContext } from '../../middleware/auth';
 import type { TokenPayload } from '../jwt';
@@ -20,6 +29,13 @@ import type { TokenPayload } from '../jwt';
  * the SAME closure factories `authMiddleware` uses to build the request-path
  * AuthContext — so org/site access semantics can never drift between "live
  * request" and "durable release" execution.
+ *
+ * ONE typed exception escapes instead of collapsing to `null`:
+ * `IntentScopeLostError` (P2-2, #4189), when an agent intent's device SCOPE
+ * is gone. It is distinguished from `null`/`actor_invalid` on purpose —
+ * `revalidateApprovedIntentForRelease` maps it to the terminal
+ * `agent_scope_lost` errorCode the controller ruling names, which tells an
+ * operator "the target device went away", not "the actor is broken".
  */
 export async function buildAuthContextForIntent(intent: ActionIntent): Promise<AuthContext | null> {
   if (intent.requestedByUserId) {
@@ -31,12 +47,15 @@ export async function buildAuthContextForIntent(intent: ActionIntent): Promise<A
   }
 
   // The migration's action_intents_one_actor_chk CHECK guarantees exactly
-  // one of requestedByUserId/requestingApiKeyId is set — an intent with
-  // neither is a data-integrity violation, not a normal revalidation
-  // failure. Fail closed the same as any other actor_invalid case rather
-  // than throwing out of a background worker.
+  // one of requestedByUserId/requestingApiKeyId/requestingAgentRunId is set.
+  // An agent-originated intent reconstructs the RUN's agent identity (wave
+  // 3b): structural, never a user token — checkToolPermission keeps denying
+  // the resulting principal, and release authority is checkAgentReleaseAuthority.
+  if (intent.requestingAgentRunId) {
+    return buildAgentOwnedAuthContext(intent, intent.requestingAgentRunId);
+  }
   console.error(
-    `[actorContext] intent ${intent.id} has neither requestedByUserId nor requestingApiKeyId set`,
+    `[actorContext] intent ${intent.id} has no actor column set (requestedByUserId/requestingApiKeyId/requestingAgentRunId all NULL) — data-integrity violation`,
   );
   return null;
 }
@@ -50,7 +69,7 @@ export async function buildAuthContextForIntent(intent: ActionIntent): Promise<A
  * trust every historical record, turning a fail-closed marker into an
  * escalation. `unknown` is trusted by nothing.
  */
-function originPrincipalFor(intent: ActionIntent): AuthContext['principal'] {
+export function originPrincipalFor(intent: ActionIntent): AuthContext['principal'] {
   switch (intent.originPrincipalKind) {
     case 'user_session':
       return { kind: 'user_session' };
@@ -66,8 +85,26 @@ function originPrincipalFor(intent: ActionIntent): AuthContext['principal'] {
       return { kind: 'helper' };
     case 'system':
       return { kind: 'system', reason: 'intent-origin-system' };
-    default:
+    case 'ai_agent':
+      // agentId is originPrincipalId; runId is the FK column. Both are
+      // REQUIRED on the principal type — an agent intent without them cannot
+      // exist (action_intents_agent_origin_chk), so falling to 'unknown' here
+      // would only hide corruption.
+      return intent.requestingAgentRunId && intent.originPrincipalId
+        ? {
+            kind: 'ai_agent',
+            agentId: intent.originPrincipalId,
+            runId: intent.requestingAgentRunId,
+          }
+        : { kind: 'unknown' };
+    default: {
+      // Compile-time exhaustiveness: when the origin-kind union widens again,
+      // this assignment errors instead of silently downgrading the new kind
+      // to `unknown` — exactly the drift the doc comment above warns about.
+      const _exhaustive: 'unknown' = intent.originPrincipalKind;
+      void _exhaustive;
       return { kind: 'unknown' };
+    }
   }
 }
 
@@ -188,6 +225,188 @@ async function buildUserOwnedAuthContext(
       canAccessSite: siteAccessCheck(allowedSiteIds),
     };
   });
+}
+
+/**
+ * Agent-owned intents (`requesting_agent_run_id` set, `source: 'ai_agent'`,
+ * wave 3b). Reconstructs the RUN's agent AuthContext — the same shape PR 3c's
+ * runner will hold live — via `buildAgentAuthContext`, whose
+ * `assertRunOwnership` re-proves the agent→run→org lineage at release time.
+ * Any doubt (missing run/agent/org, run pointing at another org or agent than
+ * the intent records, ownership mismatch) maps to `null` ⇒ `actor_invalid`,
+ * the same fail-closed shape as the other branches.
+ *
+ * The context carries `token: null` and an attribution-only synthetic user;
+ * `checkToolPermission`/`checkPermissionRequirements` continue to deny the
+ * `ai_agent` principal outright — release authority for agent intents is the
+ * separate structural check in `agentReleaseAuthority.ts`.
+ */
+async function buildAgentOwnedAuthContext(
+  intent: ActionIntent,
+  runId: string,
+): Promise<AuthContext | null> {
+  // runOutsideDbContext is load-bearing: the release worker runs with no
+  // ambient request context (where a bare system wrapper is fine), but the
+  // inline chat release path calls this INSIDE a request context, where
+  // withSystemDbAccessContext alone is a passthrough to the ambient org
+  // scope (db/index.ts ~440) and these cross-axis reads would be denied.
+  return runOutsideDbContext(() =>
+    withSystemDbAccessContext(async (): Promise<AuthContext | null> => {
+      const [run] = await db
+        .select({
+          id: aiAgentRuns.id,
+          agentId: aiAgentRuns.agentId,
+          orgId: aiAgentRuns.orgId,
+          deviceId: aiAgentRuns.deviceId,
+        })
+        .from(aiAgentRuns)
+        .where(eq(aiAgentRuns.id, runId))
+        .limit(1);
+      if (!run) {
+        console.error(
+          `[actorContext] intent ${intent.id} references agent run ${runId}, which does not exist — failing closed`,
+        );
+        return null;
+      }
+      // The composite FK (requesting_agent_run_id, org_id) →
+      // ai_agent_runs(id, org_id) guarantees the org match, and
+      // action_intents_agent_origin_chk pins originPrincipalId. Assert both
+      // anyway so a future schema change fails loud instead of executing an
+      // intent under the wrong run's identity.
+      if (run.orgId !== intent.orgId || run.agentId !== intent.originPrincipalId) {
+        console.error(
+          `[actorContext] intent ${intent.id} run ${runId} lineage mismatch `
+          + `(run.orgId=${run.orgId} intent.orgId=${intent.orgId} `
+          + `run.agentId=${run.agentId} originPrincipalId=${intent.originPrincipalId}) — failing closed`,
+        );
+        return null;
+      }
+      const [agent] = await db
+        .select({
+          id: aiAgents.id,
+          orgId: aiAgents.orgId,
+          partnerId: aiAgents.partnerId,
+          name: aiAgents.name,
+          kind: aiAgents.kind,
+        })
+        .from(aiAgents)
+        .where(eq(aiAgents.id, run.agentId))
+        .limit(1);
+      if (!agent) {
+        return null;
+      }
+      const [org] = await db
+        .select({ partnerId: organizations.partnerId })
+        .from(organizations)
+        .where(eq(organizations.id, run.orgId))
+        .limit(1);
+      if (!org) {
+        return null;
+      }
+      // P2-2 (#4189): the intent's TARGET device, not the run's. A sweep run
+      // is device-less and pins its intents one device at a time via
+      // scope_kind/scope_device_id; a tombstoned scope (device deleted, or
+      // detached by a moveOrg) can never be released, so fail closed here
+      // rather than silently falling back to the run's own (null) device,
+      // which would rebuild an UNSCOPED, org-wide agent context.
+      const target = resolveIntentTargetDevice(intent, run);
+      if (target.kind === 'tombstone') {
+        throw new IntentScopeLostError(
+          `agent_scope_lost: intent ${intent.id} is device-scoped but its scope_device_id was tombstoned`,
+        );
+      }
+      // The device's CURRENT site, not the site at proposal time — spec §3.2
+      // pins a device-bound run to its device's site, and release must
+      // reflect where the device lives NOW.
+      let deviceSiteId: string | null = null;
+      if (target.kind === 'scope') {
+        // Controller ruling (P2-2 A3): for a SCOPED target the device must
+        // still exist AND still belong to the intent's org — a device
+        // org-move that landed through the DB-side cascade rather than the
+        // HTTP moveOrg route leaves scope_device_id set, and this is the
+        // backstop. Treated exactly like a tombstone.
+        const [device] = await db
+          .select({ orgId: devices.orgId, siteId: devices.siteId })
+          .from(devices)
+          .where(eq(devices.id, target.deviceId))
+          .limit(1);
+        if (!device || device.orgId !== intent.orgId) {
+          throw new IntentScopeLostError(
+            `agent_scope_lost: intent ${intent.id}'s scoped device ${target.deviceId} is missing or no longer in org ${intent.orgId}`,
+          );
+        }
+        deviceSiteId = device.siteId ?? null;
+      } else if (target.deviceId) {
+        const [device] = await db
+          .select({ siteId: devices.siteId })
+          .from(devices)
+          .where(eq(devices.id, target.deviceId))
+          .limit(1);
+        deviceSiteId = device?.siteId ?? null;
+      }
+
+      // P2-4 (Task A3, #4189/#4191): the TICKET-scope mirror of the device
+      // check above. `resolveIntentTargetTicket` never falls back to
+      // anything (there is no run-level "own ticket" to fall back to — see
+      // its doc comment in intentTargetScope.ts), so 'none' here just means
+      // this intent has no ticket target at all, and the branch is a no-op.
+      const ticketTarget = resolveIntentTargetTicket(intent);
+      if (ticketTarget.kind === 'tombstone') {
+        throw new IntentScopeLostError(
+          `agent_scope_lost: intent ${intent.id} is ticket-scoped but its scope_ticket_id was tombstoned`,
+        );
+      }
+      if (ticketTarget.kind === 'scope') {
+        const [ticket] = await db
+          .select({ id: tickets.id, orgId: tickets.orgId, status: tickets.status, deletedAt: tickets.deletedAt })
+          .from(tickets)
+          .where(eq(tickets.id, ticketTarget.ticketId))
+          .limit(1);
+        // Missing, soft-deleted, moved to another org, or closed — all
+        // treated exactly like a lost device scope. `resolved` is
+        // deliberately EXCLUDED from this list: resolution-note drafts
+        // (`manage_tickets:draft`, kind `draftResolutionNote`) are the
+        // motivating case for proposing against a ticket that has already
+        // moved to `resolved`, and every other ticket-triage tool call is
+        // equally valid against a resolved (not yet closed) ticket.
+        if (
+          !ticket
+          || ticket.deletedAt !== null
+          || ticket.orgId !== intent.orgId
+          || ticket.status === 'closed'
+        ) {
+          throw new IntentScopeLostError(
+            `agent_scope_lost: intent ${intent.id}'s scoped ticket ${ticketTarget.ticketId} is missing, deleted, closed, or no longer in org ${intent.orgId}`,
+          );
+        }
+      }
+
+      try {
+        return buildAgentAuthContext(
+          {
+            id: agent.id,
+            orgId: agent.orgId,
+            partnerId: agent.partnerId,
+            name: agent.name,
+            kind: agent.kind,
+          },
+          // The run row's own deviceId is deliberately NOT used here: the
+          // rebuilt context is pinned to the intent's target device (and its
+          // site), which for a scoped intent is not the run's.
+          { id: run.id, orgId: run.orgId, deviceId: target.deviceId, deviceSiteId },
+          { id: run.orgId, partnerId: org.partnerId },
+        );
+      } catch (error) {
+        if (error instanceof AgentRunOwnershipError) {
+          console.error(
+            `[actorContext] intent ${intent.id} run ${runId}: ${error.message} — failing closed`,
+          );
+          return null;
+        }
+        throw error;
+      }
+    }),
+  );
 }
 
 /**

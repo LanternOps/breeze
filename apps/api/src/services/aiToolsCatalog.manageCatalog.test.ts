@@ -4,6 +4,8 @@ vi.mock('./catalogService', () => {
   class CatalogServiceError extends Error {
     constructor(
       message: string,
+      // Mirror the production union exactly; a narrowed double silently blocks
+      // any test that needs a status the real class supports.
       public status: 400 | 403 | 404 | 409 = 400,
       public code?: string,
     ) {
@@ -181,7 +183,7 @@ describe('manage_catalog', () => {
     ];
 
     const out = await getTool().handler(
-      { action: 'set_bundle_components', catalogId: 'bundle-1', components },
+      { action: 'set_bundle_components', catalogId: 'bundle-1', components, allocationCurrency: 'usd' },
       auth,
     );
 
@@ -189,8 +191,21 @@ describe('manage_catalog', () => {
       'bundle-1',
       components,
       actor,
+      'USD',
     );
     expect(JSON.parse(out)).toEqual({ item: { id: 'bundle-1' }, components: [] });
+  });
+
+  it('set_bundle_components with a revenueAllocation but no allocationCurrency is a VALIDATION_ERROR (#3775 review #7)', async () => {
+    const out = await getTool().handler(
+      {
+        action: 'set_bundle_components', catalogId: 'bundle-1',
+        components: [{ componentItemId: '11111111-1111-1111-1111-111111111111', quantity: 1, revenueAllocation: 50 }],
+      },
+      auth,
+    );
+    expect(catalogService.setBundleComponents).not.toHaveBeenCalled();
+    expect(JSON.parse(out)).toMatchObject({ code: 'VALIDATION_ERROR' });
   });
 
   it('create_item with an invalid item payload returns a structured VALIDATION_ERROR (BUG1 sibling fix)', async () => {

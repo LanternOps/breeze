@@ -15,6 +15,7 @@ import {
   getPagination,
   ensureOrgAccess,
   getReportWithOrgCheck,
+  isSystemManagedReportDefinition,
   reportDefinitionMetadataProjection,
   tenantAuthorizedReportCondition,
 } from './helpers';
@@ -40,6 +41,15 @@ export const coreRoutes = new Hono();
 coreRoutes.use('*', authMiddleware);
 
 const REPORT_NOT_FOUND = { error: 'Report not found' } as const;
+/**
+ * P2-3 (#4190). A 409, not a 403: the caller's permissions are fine and the
+ * report is genuinely theirs to read — it is the report's OWNERSHIP that makes
+ * the mutation impossible. A 404 would be worse still, since the definition is
+ * visible on `GET /reports` a line above.
+ */
+const SYSTEM_MANAGED_REPORT = { error: 'system_managed_report' } as const;
+/** `loadLockedDefinition`'s third outcome — see its docstring. */
+const SYSTEM_MANAGED = 'system_managed' as const;
 
 type DefinitionListScopeResult =
   | { ok: true; tenantCondition?: SQL<unknown>; definitionScopePredicate: SQL<unknown> }
@@ -123,10 +133,24 @@ function persistedMetadataMatches(
     left.executionScopeUserId === right.executionScopeUserId &&
     left.executionScopeFingerprint === right.executionScopeFingerprint &&
     left.executionScopeCapturedAt?.getTime() ===
-      right.executionScopeCapturedAt?.getTime()
+      right.executionScopeCapturedAt?.getTime() &&
+    (left.executionScopePrincipalKind ?? null) ===
+      (right.executionScopePrincipalKind ?? null)
   );
 }
 
+/**
+ * The single gate every definition MUTATION goes through (PUT, DELETE,
+ * reauthorize). Three outcomes:
+ *
+ *  - `null` — not found, not in the caller's tenancy, or the caller's live
+ *    site scope no longer contains the stored one. Callers answer 404.
+ *  - `SYSTEM_MANAGED` (P2-3, #4190) — the definition belongs to the platform
+ *    (the weekly AI narrative). Callers answer 409. Refused HERE, from the
+ *    metadata read the function already performs, so no authority is resolved
+ *    and no `FOR UPDATE` lock is taken for a mutation that cannot proceed.
+ *  - the locked row + scopes, for callers to mutate.
+ */
 async function loadLockedDefinition(
   tx: Pick<typeof db, 'select'>,
   reportId: string,
@@ -139,6 +163,7 @@ async function loadLockedDefinition(
     .where(tenantAuthorizedReportCondition(reportId, auth))
     .limit(1);
   if (!metadata) return null;
+  if (isSystemManagedReportDefinition(metadata)) return SYSTEM_MANAGED;
 
   const authorityResult = await resolveRequestReportAuthority(
     auth,
@@ -340,6 +365,7 @@ coreRoutes.get(
         executionScopeUserId: reportRuns.executionScopeUserId,
         executionScopeFingerprint: reportRuns.executionScopeFingerprint,
         executionScopeCapturedAt: reportRuns.executionScopeCapturedAt,
+        executionScopePrincipalKind: reportRuns.executionScopePrincipalKind,
       })
       .from(reportRuns)
       .where(and(eq(reportRuns.reportId, reportId), runScopePredicate))
@@ -457,6 +483,7 @@ coreRoutes.put(
         auth,
         'write',
       );
+      if (locked === SYSTEM_MANAGED) return SYSTEM_MANAGED;
       if (!locked) return null;
 
       const effectiveScope = intersectSiteScopes(
@@ -480,6 +507,9 @@ coreRoutes.put(
       return { updated, locked: locked.locked };
     });
 
+    if (mutation === SYSTEM_MANAGED) {
+      return c.json(SYSTEM_MANAGED_REPORT, 409);
+    }
     if (!mutation) {
       return c.json(REPORT_NOT_FOUND, 404);
     }
@@ -512,6 +542,7 @@ coreRoutes.post(
         auth,
         'write',
       );
+      if (locked === SYSTEM_MANAGED) return { kind: 'system_managed' as const };
       if (!locked) return { kind: 'not_found' as const };
 
       if (
@@ -551,6 +582,14 @@ coreRoutes.post(
         : { kind: 'changed' as const };
     });
 
+    if (result.kind === 'system_managed') {
+      // The reason this route in particular must refuse: the update below
+      // stamps `persistedSiteScopeValues`, whose principal_kind is ALWAYS
+      // 'user'. Letting it through would silently convert a system-managed
+      // definition into a human-owned one — and the scheduled-report worker's
+      // system-principal refusal would stop protecting it.
+      return c.json(SYSTEM_MANAGED_REPORT, 409);
+    }
     if (result.kind === 'not_found') {
       return c.json(REPORT_NOT_FOUND, 404);
     }
@@ -585,6 +624,7 @@ coreRoutes.delete(
         auth,
         'delete',
       );
+      if (locked === SYSTEM_MANAGED) return SYSTEM_MANAGED;
       if (!locked) return null;
 
       await tx
@@ -615,6 +655,9 @@ coreRoutes.delete(
       throw error;
     });
 
+    if (deleted === SYSTEM_MANAGED) {
+      return c.json(SYSTEM_MANAGED_REPORT, 409);
+    }
     if (!deleted) {
       return c.json(REPORT_NOT_FOUND, 404);
     }

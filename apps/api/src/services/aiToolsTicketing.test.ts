@@ -63,7 +63,8 @@ vi.mock('../db', () => ({
 // auth middleware dependency tree (jwt/permissions/token revocation).
 vi.mock('../middleware/auth', () => ({
   siteAccessCheck: (allowed: string[]) => (siteId?: string | null) =>
-    !!siteId && allowed.includes(siteId)
+    !!siteId && allowed.includes(siteId),
+  isAiAgentPrincipal: (auth: { principal?: { kind?: string } }) => auth?.principal?.kind === 'ai_agent'
 }));
 
 vi.mock('../db/schema', async (importOriginal) => {
@@ -486,11 +487,9 @@ describe('manage_tickets — log_time_entry / start_timer / stop_timer', () => {
   });
 
   // log_time_entry
-  it('log_time_entry delegates to createTimeEntry and labels the result with the organization currency', async () => {
-    mockLimit
-      .mockResolvedValueOnce(TICKET_ROW) // ticket scope check passes
-      .mockResolvedValueOnce([{ currencyCode: 'EUR' }]);
-    timeEntryMocks.createTimeEntry.mockResolvedValue({ id: 'te-1', orgId: 'o-1', durationMinutes: 30 });
+  it('log_time_entry delegates to createTimeEntry and labels the result with the entry\'s stamped currency', async () => {
+    mockLimit.mockResolvedValue(TICKET_ROW); // ticket scope check passes
+    timeEntryMocks.createTimeEntry.mockResolvedValue({ id: 'te-1', orgId: 'o-1', currencyCode: 'EUR', durationMinutes: 30 });
     const out = await getTool().handler(
       {
         action: 'log_time_entry',
@@ -566,7 +565,7 @@ describe('manage_tickets — log_time_entry / start_timer / stop_timer', () => {
   });
 
   it('log_time_entry with a standalone entry returns an explicit null currencyCode without an org query', async () => {
-    timeEntryMocks.createTimeEntry.mockResolvedValue({ id: 'te-2', orgId: null, durationMinutes: 60 });
+    timeEntryMocks.createTimeEntry.mockResolvedValue({ id: 'te-2', orgId: null, currencyCode: null, durationMinutes: 60 });
     const out = await getTool().handler(
       { action: 'log_time_entry', startedAt: '2026-06-11T09:00:00Z', endedAt: '2026-06-11T10:00:00Z' },
       auth
@@ -600,9 +599,8 @@ describe('manage_tickets — log_time_entry / start_timer / stop_timer', () => {
   });
 
   // stop_timer
-  it('stop_timer delegates to stopTimer and labels the billable result with the organization currency', async () => {
-    mockLimit.mockResolvedValueOnce([{ currencyCode: 'EUR' }]);
-    timeEntryMocks.stopTimer.mockResolvedValue({ id: 'te-3', orgId: 'o-1', endedAt: new Date(), durationMinutes: 45 });
+  it('stop_timer delegates to stopTimer and labels the result with the entry\'s stamped currency', async () => {
+    timeEntryMocks.stopTimer.mockResolvedValue({ id: 'te-3', orgId: 'o-1', currencyCode: 'EUR', endedAt: new Date(), durationMinutes: 45 });
     const out = await getTool().handler({ action: 'stop_timer' }, auth);
     expect(timeEntryMocks.stopTimer).toHaveBeenCalledWith(
       expect.objectContaining({}),

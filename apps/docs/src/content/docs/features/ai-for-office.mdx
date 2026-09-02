@@ -7,7 +7,7 @@ sidebar:
 
 import { Aside, Steps } from '@astrojs/starlight/components';
 
-AI for Office puts a branded, policy-controlled AI assistant directly inside Microsoft Office for your customers' **end-users** -- in Excel, Word, PowerPoint, and Outlook. It's not a tool for your technicians; it's a co-pilot your clients use in their own documents, governed by the same policy and data-protection controls as the rest of Breeze.
+AI for Office puts a branded, policy-controlled AI assistant directly inside Microsoft Office for your customers' **end-users** -- in Excel, Word, PowerPoint, and Outlook. It's primarily a co-pilot your clients use in their own documents, governed by the same policy and data-protection controls as the rest of Breeze. In Outlook, the same add-in also has a **technician side** -- see [Working tickets from Outlook](#working-tickets-from-outlook-technicians).
 
 End-users open the add-in task pane, sign in with their existing Microsoft identity, and chat with the assistant without leaving their document. You decide which customers can use it, what it's allowed to do, and how much it can spend.
 
@@ -65,6 +65,45 @@ The admin area gives you operational visibility for each customer organization:
   Every policy change, tenant-mapping change, and session is recorded in the [audit log](/reference/audit-logs/), and all queries run under strict per-organization isolation so customer data never crosses tenants.
 </Aside>
 
+## Working Tickets from Outlook (Technicians)
+
+The Outlook add-in has a second face. When the person signed in is one of *your* technicians rather than a customer end-user, the same task pane opens as a ticketing console instead of the client chat -- so a technician can work a customer email without leaving Outlook.
+
+### What a technician sees
+
+On an open received message, the pane shows, top to bottom:
+
+- **Context card** -- the customer organization resolved from the sender (by email domain, or an exact contact match), with a one-line summary of sites, devices, and open tickets. If nothing matched, an organization search box lets the technician pick one. If several contacts share the address, it asks which one -- nothing is guessed.
+- **Ticket list** -- the ticket already linked to this email thread if there is one, plus recent open tickets for that organization, flagged when the ticket's requester is this sender.
+- **Link email to ticket** -- attach the message to a ticket as either a **public comment** (the customer's own words, visible to them) or an **internal note**.
+- **Create ticket from this email** -- subject and description are prefilled from the email immediately and then improved by an AI draft. Choose whether the requester is the raw sender, an existing portal contact, or a new contact.
+- **Time tracking** -- start or stop the technician's timer against the selected ticket, or log time manually with a description and an optional billable flag.
+
+### Setting it up
+
+<Steps>
+1. Register the add-in in your own Microsoft Entra tenant and deploy it to your technicians through Microsoft 365 centralized deployment (sideload it first if you just want to try it).
+2. In Outlook, open the Breeze pane and choose **Technician sign-in**.
+3. Sign in with the technician's Breeze email, password, and MFA code. A technician without MFA enrolled is asked to enrol in Breeze first.
+</Steps>
+
+That links the technician's Microsoft identity to their Breeze account once. From then on it is the **Microsoft identity** that authorizes the pane, so nothing about which pane a person gets is left to them: a linked identity gets the technician console, an unlinked one falls through to the customer assistant, and a revoked one is refused outright.
+
+Manage the links at **Settings → Outlook Add-in Bindings**. The list shows each technician, their Microsoft tenant, and when the link was verified; revoking one signs that technician out of the add-in everywhere immediately. Viewing or revoking requires partner-level access across all organizations plus a multi-factor step-up. Links also invalidate themselves when a user is deactivated, a partner is suspended, or a password reset forces a logout.
+
+### Limits worth knowing
+
+- **One ticket per email message.** Linking the same message again returns the ticket it already created; a message attached to a different ticket reports the conflict rather than duplicating.
+- **A closed ticket cannot be appended to.** The pane offers a linked follow-up instead, which must stay in the same organization.
+- **The technician's own permissions still apply.** No ticket-write access means no create or link; no time-entry access hides the time widget; organization and site restrictions are unchanged.
+- **The AI draft is optional.** It needs the partner's AI for Office entitlement, and it is skipped when a data-protection policy blocks the email content or the model is unavailable -- the form then falls back to a plain prefill from the subject and body. Ticket creation never waits on AI, and the AI never chooses the organization, contact, or ticket for you.
+- **Future replies only auto-attach if you have a connected ticket mailbox.** Linking from a technician's personal mailbox will not thread later replies, and the pane says so rather than letting you assume otherwise.
+- Compose mode and shared mailboxes are not supported yet, and older Outlook builds fall back to subject-and-sender matching with a banner.
+
+<Aside type="note">
+  Self-hosted: the technician surface stays switched off until the API is configured with the Entra client ID for the add-in and the add-in's origin is in the API's allowed origins. Sessions are held in Redis, so Redis must be reachable -- without it, revoking a technician fails closed.
+</Aside>
+
 ## Permissions
 
 Viewing AI for Office configuration requires organization read access; changing org policies and templates requires organization write access. Tenant-mapping changes additionally require multi-factor authentication. The per-partner entitlement is operator-only.
@@ -74,3 +113,4 @@ Viewing AI for Office configuration requires organization read access; changing 
 - [AI Assistant](/features/ai/) -- the in-dashboard AI for your technicians
 - [Identity Console](/features/identity-console/) -- manage Microsoft 365 and Google Workspace identities
 - [Customer Portal](/features/portal/) -- other end-user-facing capabilities
+- [Ticketing](/features/ticketing/) -- the service desk the Outlook technician pane writes into

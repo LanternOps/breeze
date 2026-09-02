@@ -445,3 +445,100 @@ describe('ScriptPickerModal session targeting', () => {
     );
   });
 });
+
+// #3409 PR4c-2: a `tenantSecret` parameter rides an env var in the sealed
+// command envelope. The server refuses the run outright for a user-context run
+// AND for any targeted session (`runAsSupportsSecretEnv`), so this surface —
+// which offers both controls — has to say so before the operator submits.
+describe('ScriptPickerModal secret parameters (#3409 PR4c-2)', () => {
+  const SECRET_SCRIPTS = [
+    {
+      id: 's1',
+      name: 'Secret Script',
+      language: 'bash',
+      category: 'General',
+      osTypes: ['linux', 'windows'],
+      parameters: [
+        { name: 'message', type: 'string', required: true, defaultValue: 'hi' },
+        { name: 'api_token', type: 'string', required: true, source: 'tenantSecret', variableKey: 'vendor_password' },
+      ],
+    },
+    {
+      id: 's2',
+      name: 'Plain Script',
+      language: 'bash',
+      category: 'General',
+      osTypes: ['linux', 'windows'],
+      parameters: [{ name: 'message', type: 'string', required: true, defaultValue: 'hi' }],
+    },
+  ];
+
+  const routeSecretFetch = () =>
+    fetchWithAuthMock.mockImplementation(async (url: string) =>
+      url.startsWith('/devices/') ? makeJsonResponse(SESSIONS_RESPONSE) : makeJsonResponse(SECRET_SCRIPTS)
+    );
+
+  const openParamsFor = async (name: string) => {
+    await waitFor(() => expect(screen.getByText(name)).toBeDefined());
+    fireEvent.click(screen.getByText(name));
+    await waitFor(() => expect(screen.getByText('Run Script')).toBeDefined());
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    routeSecretFetch();
+  });
+
+  it('says nothing for an untargeted system run', async () => {
+    render(<ScriptPickerModal isOpen onClose={vi.fn()} onSelect={vi.fn()} />);
+    await openParamsFor('Secret Script');
+    expect(screen.queryByTestId('script-picker-secrets-require-system')).toBeNull();
+  });
+
+  it('warns once Run as user is selected', async () => {
+    render(<ScriptPickerModal isOpen onClose={vi.fn()} onSelect={vi.fn()} />);
+    await waitFor(() => expect(screen.getByText('Secret Script')).toBeDefined());
+    fireEvent.change(screen.getByTestId('script-run-as'), { target: { value: 'user' } });
+    await openParamsFor('Secret Script');
+
+    expect(screen.getByTestId('script-picker-secrets-require-system')).toHaveTextContent(
+      /secret variables/i
+    );
+  });
+
+  it('warns when a specific session is targeted', async () => {
+    render(
+      <ScriptPickerModal isOpen onClose={vi.fn()} onSelect={vi.fn()} deviceHostname="rds-01"
+        deviceId="dev-1" helperLifecycleMode="on-demand" />
+    );
+    fireEvent.change(screen.getByTestId('script-run-as'), { target: { value: 'user' } });
+    await waitFor(() => expect(screen.getByTestId('script-session-target')).toBeDefined());
+    fireEvent.change(screen.getByTestId('script-session-target'), { target: { value: '5' } });
+    await openParamsFor('Secret Script');
+
+    expect(screen.getByTestId('script-picker-secrets-require-system')).toBeDefined();
+  });
+
+  it('says nothing for a user run when no parameter is a secret', async () => {
+    render(<ScriptPickerModal isOpen onClose={vi.fn()} onSelect={vi.fn()} />);
+    await waitFor(() => expect(screen.getByText('Plain Script')).toBeDefined());
+    fireEvent.change(screen.getByTestId('script-run-as'), { target: { value: 'user' } });
+    await openParamsFor('Plain Script');
+
+    expect(screen.queryByTestId('script-picker-secrets-require-system')).toBeNull();
+  });
+
+  it('is a warning, not a block — the run still submits', async () => {
+    const onSelect = vi.fn();
+    render(<ScriptPickerModal isOpen onClose={vi.fn()} onSelect={onSelect} />);
+    await waitFor(() => expect(screen.getByText('Secret Script')).toBeDefined());
+    fireEvent.change(screen.getByTestId('script-run-as'), { target: { value: 'user' } });
+    await openParamsFor('Secret Script');
+
+    expect(screen.getByTestId('script-picker-secrets-require-system')).toBeDefined();
+    fireEvent.click(screen.getByText('Run Script'));
+
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    expect(onSelect.mock.calls[0][1]).toBe('user');
+  });
+});

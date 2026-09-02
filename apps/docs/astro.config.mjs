@@ -57,6 +57,7 @@ export default defineConfig({
                 { slug: 'features/remote-access' },
                 { slug: 'features/scripts' },
                 { slug: 'features/script-ai' },
+                { slug: 'features/ai-agents' },
                 { slug: 'features/automations' },
                 { slug: 'features/playbooks' },
                 { slug: 'features/deployments' },
@@ -134,6 +135,7 @@ export default defineConfig({
               label: 'AI & Intelligence',
               items: [
                 { slug: 'features/ai' },
+                { slug: 'features/bring-your-own-llm-key' },
                 { slug: 'features/ml-insights' },
                 { slug: 'features/fleet-hygiene' },
                 { slug: 'features/ai-computer-control' },

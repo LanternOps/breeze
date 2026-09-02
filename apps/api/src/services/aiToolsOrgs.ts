@@ -35,7 +35,10 @@
 import { and, eq, ilike, inArray, isNull, ne, type SQL } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { organizations, partners, sites } from '../db/schema';
+// Concrete module, not the barrel — see the note in routes/orgs.ts.
+import { ORG_SLUG_UNIQUE_INDEX } from '../db/schema/orgs';
 import { escapeLike } from '../utils/sql';
+import { isPgUniqueViolation } from '../utils/pgErrors';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool, AiToolTier } from './aiTools';
 import { writeAuditEvent, requestLikeFromSnapshot } from './auditEvents';
@@ -241,7 +244,7 @@ async function handleCreateOrg(
   // POST /orgs/organizations and quickbooksCustomerImport). Partner authority
   // was checked above. The slug read, org insert, and default-site insert share
   // one system-context transaction.
-  const created = await runOutsideDbContext(() =>
+  const createOrgWithDefaultSite = () => runOutsideDbContext(() =>
     withSystemDbAccessContext(async () => {
       const [partnerRow] = await db
         .select({ currencyCode: partners.currencyCode })
@@ -254,7 +257,12 @@ async function handleCreateOrg(
         .select({ slug: organizations.slug })
         .from(organizations)
         .where(eq(organizations.partnerId, partnerId));
-      const taken = new Set(existing.map((row) => row.slug));
+      // Lower-cased because organizations_partner_slug_uniq is on
+      // (partner_id, lower(slug)) (#3967): slugifyOrgName always produces a
+      // lowercase candidate, so a legacy mixed-case row like 'Acme' would not
+      // match a case-sensitive Set and the generated 'acme' would take a 23505
+      // at insert instead of being suffixed.
+      const taken = new Set(existing.map((row) => row.slug.toLowerCase()));
       const slug = generateUniqueOrgSlug(slugifyOrgName(name), taken);
 
       const [org] = await db
@@ -287,6 +295,24 @@ async function handleCreateOrg(
       return { org, site };
     })
   );
+
+  // #3967 — `taken` is read a few statements before the insert, so a concurrent
+  // create (another create_org, a POST /orgs/organizations, an import commit)
+  // can claim the slug in between and organizations_partner_slug_uniq will
+  // reject this one. Report that as a retryable conflict; letting the raw 23505
+  // escape would surface to the operator as an opaque tool failure.
+  let created: Awaited<ReturnType<typeof createOrgWithDefaultSite>>;
+  try {
+    created = await createOrgWithDefaultSite();
+  } catch (error) {
+    if (isPgUniqueViolation(error, ORG_SLUG_UNIQUE_INDEX)) {
+      return jsonError(
+        'That organization slug was claimed by another request while this one was running. Retry create_org.',
+        'ORG_SLUG_CONFLICT'
+      );
+    }
+    throw error;
+  }
 
   auditOrgToolEvent(auth, {
     orgId: created.org.id,

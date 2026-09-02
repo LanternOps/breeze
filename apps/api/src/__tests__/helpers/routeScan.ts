@@ -10,6 +10,8 @@
  *   - `canAccessDeviceSite`           (per-file helper, several locations)
  *   - `getDeviceWithOrgAndSiteCheck`  (`routes/devices/helpers.ts`)
  *   - `canAccessSite`                 (low-level helper in `services/permissions.ts`)
+ *   - `authorizeRouteResilienceResources` (shared recovery source/target gate)
+ *   - `resolveRouteAuthorizedDeviceIds` (shared recovery list narrowing)
  *
  * Routes that call a file-local wrapper which itself references one of the
  * canonical gates are also considered safe — see {@link findLocalGateWrappers}.
@@ -92,6 +94,11 @@ const CANONICAL_GATE_NAMES = [
   'canAccessDeviceSite',
   'getDeviceWithOrgAndSiteCheck',
   'canAccessSite',
+  // Shared resilience route chokepoint. It resolves the caller's live site
+  // permissions, authorizes every source/target lineage, and fails closed
+  // before recovery metadata or side effects are loaded.
+  'authorizeRouteResilienceResources',
+  'resolveRouteAuthorizedDeviceIds',
   // Site-narrowing helpers established by the 2026-05 input-sourced sweep.
   'resolveSiteAllowedDeviceIds',
   'hasDeniedDeviceSite',

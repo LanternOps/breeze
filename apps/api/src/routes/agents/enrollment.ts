@@ -820,8 +820,7 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
             deviceRoleSource: 'auto',
             isVirtual: data.isVirtual ?? false,
             virtualizationPlatform: data.virtualizationPlatform ?? null,
-            status: 'online',
-            lastSeenAt: new Date(),
+            status: 'pending',
             updatedAt: new Date(),
           })
           .where(eq(devices.id, existingDevice.id))
@@ -849,8 +848,7 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
             deviceRoleSource: 'auto',
             isVirtual: data.isVirtual ?? false,
             virtualizationPlatform: data.virtualizationPlatform ?? null,
-            status: 'online',
-            lastSeenAt: new Date(),
+            status: 'pending',
             isEphemeral: isSupportEnrollment,
             // #2764: forensic + UI linkage back to the row this enrollment may
             // be replacing. Set on the collision path only — the decom bypass

@@ -11,7 +11,7 @@ Online Payments lets your customers pay their invoices by card through a secure 
 
 ## How It Works
 
-You connect your Stripe account to Breeze once. After that, any issued invoice can carry a shareable **payment link**, and customers can also pay from the [Customer Portal](/features/portal/). Payments collected online are recorded against the invoice automatically.
+You connect your Stripe account to Breeze once. After that, every issued invoice carries a durable **customer link** you can share with anyone, and customers can also pay from the [Customer Portal](/features/portal/). Payments collected online are recorded against the invoice automatically.
 
 - **You are the merchant of record.** Your customer's card statement shows your business, and you handle any chargebacks -- not Breeze.
 - **No platform fee.** You receive the full payment, less Stripe's own processing fees. Breeze adds nothing.
@@ -35,13 +35,19 @@ The card shows your current connection status and whether the key is live or tes
 
 See [Accounting & Payments Integrations](/features/accounting-integrations/) for the full connection walkthrough.
 
-## Sending a Payment Link
+## The Customer Invoice Link
+
+Every issued invoice has its own private link that opens a view-and-pay page with no sign-in required. The same link is embedded in the invoice email and its PDF, so a customer who was emailed the invoice months ago can still open and pay it.
 
 <Steps>
 1. Open an issued [invoice](/features/invoices/).
-2. Click **Send payment link** to generate a secure Stripe Checkout URL for the invoice's outstanding balance.
-3. Share the link with your customer. When they pay, the payment is recorded against the invoice automatically and badged **Online**.
+2. Click **Copy invoice link** to put the customer's link on your clipboard. (This works whether or not Stripe is connected -- without Stripe the page is view-and-download only.)
+3. Share it however you like. The customer can read the invoice, download the PDF, and pay the amount due by card; the payment is recorded against the invoice automatically and badged **Online**.
 </Steps>
+
+The link stays valid for 12 months, or 180 days past the due date if that is later. If a link has gone to the wrong person, click **Reset customer link** -- that revokes *every* link issued for the invoice so far, including the one already sitting in a sent email, and issues a fresh one.
+
+A voided invoice's link keeps working but shows a plain "this invoice was voided" page with no amounts and no payment option.
 
 ## Paying from the Customer Portal
 
@@ -53,7 +59,11 @@ Refunds are **reflect-only**: you issue a refund from your own Stripe dashboard,
 
 ## Permissions
 
-Connecting and disconnecting Stripe requires billing management permission plus multi-factor authentication. Creating payment links on an invoice uses the same permission as issuing and sending invoices.
+Connecting and disconnecting Stripe requires billing management permission plus multi-factor authentication. Copying or resetting an invoice's customer link uses the same permission as issuing and sending invoices, and both actions are recorded in the [audit log](/reference/audit-logs/).
+
+<Aside type="caution">
+  Your connected Stripe account can only charge in the currencies it supports. If a document is priced in a currency your Stripe account doesn't handle, Breeze warns you on the invoice or quote rather than blocking your work -- but the customer's card payment will be declined at checkout with a plain "this invoice can't be paid online" message. Fix it by enabling that currency in Stripe, or take payment another way and record it manually.
+</Aside>
 
 ## Related
 

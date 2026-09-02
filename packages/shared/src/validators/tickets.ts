@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { TICKET_ATTACHMENT_LIMITS } from '../constants/ticketAttachments';
 
 export const ticketStatusSchema = z.enum(['new', 'open', 'pending', 'on_hold', 'resolved', 'closed']);
 export const ticketPrioritySchema = z.enum(['low', 'normal', 'high', 'urgent']);
@@ -82,7 +83,14 @@ export const changeTicketStatusSchema = z.object({
   status: ticketStatusSchema.optional(),
   statusId: z.string().guid().optional(),
   resolutionNote: z.string().min(1).max(10_000).optional(),
-  pendingReason: z.string().max(500).optional()
+  pendingReason: z.string().max(500).optional(),
+  // P2-4 (#4191), Task A10: an active `resolution_note`-kind ticket_drafts row
+  // to apply as the resolution note (the web resolve modal's AI-draft
+  // prefill, PR B) — the service reads its content and consumes it in the
+  // same transaction as the status change. Only meaningful alongside a
+  // resolve; the service rejects it otherwise. Supplying this relaxes the
+  // resolutionNote-required rule below since the draft supplies the text.
+  aiDraftId: z.string().guid().optional()
 }).superRefine((v, ctx) => {
   const hasStatus = v.status !== undefined;
   const hasStatusId = v.statusId !== undefined;
@@ -92,7 +100,7 @@ export const changeTicketStatusSchema = z.object({
   if (!hasStatus && !hasStatusId) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Either status or statusId is required', path: [] });
   }
-  if (hasStatus && v.status === 'resolved' && (!v.resolutionNote || v.resolutionNote.length === 0)) {
+  if (hasStatus && v.status === 'resolved' && !v.aiDraftId && (!v.resolutionNote || v.resolutionNote.length === 0)) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'resolutionNote is required when resolving', path: ['resolutionNote'] });
   }
 });
@@ -121,9 +129,22 @@ export const bulkTicketActionSchema = z.object({
   { message: 'Resolving requires a per-ticket resolution note; resolve tickets individually', path: ['status'] }
 );
 
+/**
+ * Portal (customer) comment cap, enforced by the API on create and edit and
+ * mirrored by the portal composer's maxLength. Technician comments keep the
+ * wider 50,000 limit of addTicketCommentSchema.
+ */
+export const PORTAL_TICKET_COMMENT_MAX_CHARS = 5000;
+
 export const addTicketCommentSchema = z.object({
-  content: z.string().min(1).max(50_000),
-  isPublic: z.boolean().default(true)
+  // W08 #3902: content may be blank when the comment carries attachments; the
+  // refine below keeps the old "non-empty" rule for attachment-less comments.
+  content: z.string().max(50_000).default(''),
+  isPublic: z.boolean().default(true),
+  attachmentIds: z.array(z.string().guid()).max(TICKET_ATTACHMENT_LIMITS.maxPerComment).default([])
+}).refine((v) => v.content.trim().length > 0 || v.attachmentIds.length > 0, {
+  message: 'Comment needs text or at least one attachment',
+  path: ['content']
 });
 
 export const editCommentSchema = z.object({
@@ -131,7 +152,12 @@ export const editCommentSchema = z.object({
 });
 
 export const moveTicketOrgSchema = z.object({
-  orgId: z.string().guid()
+  orgId: z.string().guid(),
+  // Multi-currency (#3776): a cross-currency move with unbilled monetary rows
+  // is blocked (409 TICKET_MOVE_CURRENCY_BLOCKED) unless the caller explicitly
+  // accepts that those snapshots stay in the OLD currency. The API additionally
+  // gates `true` on invoices:write. Client never supplies a currency itself.
+  acceptCurrencyMismatch: z.boolean().optional()
 });
 
 export const listTicketsQuerySchema = z.object({
@@ -153,6 +179,7 @@ export const listTicketsQuerySchema = z.object({
 });
 
 export const ticketCategoryInputSchema = z.object({
+  // rateCurrency is server-managed; unknown client fields are stripped by Zod.
   name: z.string().min(1).max(100),
   color: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
   parentId: z.string().guid().nullable().optional(),

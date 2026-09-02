@@ -127,7 +127,8 @@ describe.runIf(RUN)('changeInvoiceCurrency (atomic clear-and-restamp, #3774)', (
       const [te] = await db.insert(timeEntries).values({
         partnerId: f.partnerId, orgId: f.orgId, userId: f.userId, startedAt: now, endedAt: now,
         durationMinutes: 60, description: 'Work', isBillable: true,
-        hourlyRate: '100.00', billingStatus: 'billed', isApproved: true
+        hourlyRate: '100.00', billingStatus: 'billed', isApproved: true,
+        currencyCode: 'EUR'
       }).returning({ id: timeEntries.id });
       return te!.id;
     });
@@ -515,8 +516,15 @@ describe.runIf(RUN)('change-currency vs line-writer race (#3774)', () => {
     }
 
     const [addResult, changeResult] = settled!;
-    // The add always succeeds: the quote stays a draft in every interleaving.
-    expect(addResult!.status).toBe('fulfilled');
+    // The quote stays a draft in every interleaving, so the add is never
+    // rejected for STATE. Since wave 6 it can still be rejected for VALUE: if
+    // the restamp to JPY commits first, 33.35 is not representable in the new
+    // currency and the write seam refuses it (PRICE_NOT_REPRESENTABLE) instead
+    // of silently rounding it to whole yen.
+    if (addResult!.status === 'rejected') {
+      expect(errorCode(addResult!)).toBe('PRICE_NOT_REPRESENTABLE');
+      expect(changeResult!.status).toBe('fulfilled');
+    }
 
     const persisted = await withSystemDbAccessContext(async () => {
       const [q] = await db.select({ currencyCode: quotes.currencyCode, subtotal: quotes.subtotal })
@@ -538,12 +546,16 @@ describe.runIf(RUN)('change-currency vs line-writer race (#3774)', () => {
       expect(persisted.q.currencyCode).toBe('EUR');
       expect(persisted.lines).toHaveLength(1);
       expect(persisted.lines[0]!.lineTotal).toBe('100.05');
-    } else {
-      // Restamp won: the line writer re-read the NEW currency off the locked
-      // row and rounded to whole yen.
+    } else if (addResult!.status === 'fulfilled') {
+      // Restamp won and the line was still representable: the line writer
+      // re-read the NEW currency off the locked row and rounded to whole yen.
       expect(persisted.q.currencyCode).toBe('JPY');
       expect(persisted.lines).toHaveLength(1);
       expect(persisted.lines[0]!.lineTotal).toBe('100.00');
+    } else {
+      // Restamp won and the fractional-yen price was refused: nothing landed.
+      expect(persisted.q.currencyCode).toBe('JPY');
+      expect(persisted.lines).toHaveLength(0);
     }
   }, 30_000);
 

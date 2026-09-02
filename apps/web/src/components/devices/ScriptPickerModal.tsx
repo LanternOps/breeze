@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 import { Dialog } from '../shared/Dialog';
 import { fetchLiveSessions, type LiveSession } from '../../services/deviceActions';
-import { runtimeParameters, type ScriptParameter } from '../scripts/ScriptFormSchema';
+import { hasSecretParameters, runtimeParameters, secretsBlockedForRun, type ScriptParameter } from '../scripts/ScriptFormSchema';
 import ScriptParametersForm, { validateParameters } from '../scripts/ScriptParametersForm';
 import { fetchAllScripts } from '@/lib/scriptsFetch';
 
@@ -188,6 +188,15 @@ export default function ScriptPickerModal({
     setParamError(undefined);
     setView('params');
   };
+
+  // Secrets ride an environment variable in the sealed command envelope, which
+  // neither the user-context helper IPC nor a session-targeted run can carry —
+  // the server refuses both (#3409 PR4c-2). The run context is chosen on the
+  // list step and the script on the parameter step, so this is the first point
+  // where both halves are known. Advisory only: the server gate is
+  // authoritative and the operator may still submit.
+  const secretsBlocked = hasSecretParameters(selectedScript?.parameters)
+    && secretsBlockedForRun({ runAs, targetSessionId: showSessionTarget ? targetSessionId : undefined });
 
   const handleBack = () => {
     setSelectedScript(null);
@@ -408,6 +417,14 @@ export default function ScriptPickerModal({
               <div className="rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
                 {paramError}
               </div>
+            )}
+            {secretsBlocked && (
+              <p
+                data-testid="script-picker-secrets-require-system"
+                className="rounded-md border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-xs text-amber-600 dark:text-amber-500"
+              >
+                {t('scripts:secretParameters.requiresSystemContext')}
+              </p>
             )}
             {selectedScript?.parameters && (
               <ScriptParametersForm

@@ -2,8 +2,9 @@
  * Real-Postgres atomicity proof for `invalidateMfaAssuranceAfterFactorChange`
  * (Task 9 of the MFA policy/assurance PR — SR2-07/SR2-19).
  *
- * `mfaAssurance.test.ts` proves the call ordering (mutate → advance epoch →
- * revoke families → post-commit cleanup) against a MOCKED `db.transaction`.
+ * `mfaAssurance.test.ts` proves the global lock ordering (advance epoch →
+ * revoke families → mutate → post-commit cleanup) against a MOCKED
+ * `db.transaction`.
  * That proves nothing about whether Postgres itself actually commits the
  * three writes (factor mutation, `mfa_epoch` bump, refresh-family revoke)
  * together, or rolls all three back together when `mutate` throws — a mock

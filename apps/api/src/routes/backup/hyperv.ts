@@ -7,7 +7,7 @@ import { backupJobs, backupSnapshots, devices, hypervVms } from '../../db/schema
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { executeCommand, CommandTypes } from '../../services/commandQueue';
 import { writeRouteAudit } from '../../services/auditEvents';
-import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services/permissions';
+import { PERMISSIONS } from '../../services/permissions';
 import { resolveScopedOrgId } from './helpers';
 import { resolveAllBackupAssignedDevices, resolveBackupConfigForDevice, effectiveBackupModes } from '../../services/featureConfigResolver';
 import { backupCommandResultSchema } from './resultSchemas';
@@ -22,6 +22,10 @@ import {
   hypervCheckpointSchema,
   hypervVmStateSchema,
 } from './schemas';
+import {
+  authorizeRouteResilienceResources,
+  resolveRouteAuthorizedDeviceIds,
+} from './resilienceAuthorization';
 
 const deviceIdParamSchema = z.object({
   deviceId: z.string().guid(),
@@ -36,25 +40,6 @@ export const hypervRoutes = new Hono();
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
-async function verifyDevice(c: any, deviceId: string, orgId: string) {
-  const [device] = await db
-    .select({ id: devices.id, orgId: devices.orgId, siteId: devices.siteId })
-    .from(devices)
-    .where(eq(devices.id, deviceId))
-    .limit(1);
-
-  if (!device || device.orgId !== orgId) {
-    return { error: 'Device not found' as const, status: 404 as const };
-  }
-
-  const permissions = c.get('permissions') as UserPermissions | undefined;
-  if (permissions?.allowedSiteIds && (typeof device.siteId !== 'string' || !canAccessSite(permissions, device.siteId))) {
-    return { error: 'Access to this site denied' as const, status: 403 as const };
-  }
-
-  return { device };
-}
-
 // ── GET /hyperv/vms — List all Hyper-V VMs (org-wide) ──────────────
 
 hypervRoutes.get('/vms', requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action), async (c) => {
@@ -66,11 +51,21 @@ hypervRoutes.get('/vms', requirePermission(PERMISSIONS.ORGS_READ.resource, PERMI
 
   const deviceId = c.req.query('deviceId');
   const state = c.req.query('state');
+  const authorizedDeviceIds = await resolveRouteAuthorizedDeviceIds(c, orgId);
+  if (deviceId && authorizedDeviceIds && !authorizedDeviceIds.includes(deviceId)) {
+    return c.json({ error: 'site_access_denied' }, 403);
+  }
+  if (authorizedDeviceIds && authorizedDeviceIds.length === 0) {
+    return c.json({ vms: [], total: 0 });
+  }
 
   let query = db
     .select()
     .from(hypervVms)
-    .where(eq(hypervVms.orgId, orgId));
+    .where(and(
+      eq(hypervVms.orgId, orgId),
+      authorizedDeviceIds ? inArray(hypervVms.deviceId, authorizedDeviceIds) : undefined,
+    ));
 
   const rows = await query;
 
@@ -99,11 +94,10 @@ hypervRoutes.get(
     }
 
     const { deviceId } = c.req.valid('param');
-
-    const access = await verifyDevice(c, deviceId, orgId);
-    if ('error' in access) {
-      return c.json({ error: access.error }, access.status);
-    }
+    const authorization = await authorizeRouteResilienceResources(c, orgId, [
+      { kind: 'device', id: deviceId, role: 'source' },
+    ], 'read');
+    if (!authorization.ok) return authorization.response;
 
     const vms = await db
       .select()
@@ -128,12 +122,19 @@ hypervRoutes.get(
       return c.json({ error: 'orgId is required for this scope' }, 400);
     }
 
+    const authorizedDeviceIds = await resolveRouteAuthorizedDeviceIds(c, orgId);
+    if (authorizedDeviceIds && authorizedDeviceIds.length === 0) {
+      return c.json({ data: [] });
+    }
     const assignedDevices = await resolveAllBackupAssignedDevices(orgId);
     const targetDeviceIds = assignedDevices
       .filter((entry) => entry.configId && effectiveBackupModes(entry).includes('hyperv'))
       .map((entry) => entry.deviceId);
+    const visibleTargetDeviceIds = authorizedDeviceIds
+      ? targetDeviceIds.filter((deviceId) => authorizedDeviceIds.includes(deviceId))
+      : targetDeviceIds;
 
-    if (targetDeviceIds.length === 0) {
+    if (visibleTargetDeviceIds.length === 0) {
       return c.json({ data: [] });
     }
 
@@ -149,7 +150,7 @@ hypervRoutes.get(
       .where(and(
         eq(devices.orgId, orgId),
         eq(devices.osType, 'windows'),
-        inArray(devices.id, targetDeviceIds),
+        inArray(devices.id, visibleTargetDeviceIds),
       ));
 
     const data = rows
@@ -183,11 +184,10 @@ hypervRoutes.post(
     }
 
     const { deviceId } = c.req.valid('param');
-
-    const access = await verifyDevice(c, deviceId, orgId);
-    if ('error' in access) {
-      return c.json({ error: access.error }, access.status);
-    }
+    const authorization = await authorizeRouteResilienceResources(c, orgId, [
+      { kind: 'device', id: deviceId, role: 'target' },
+    ], 'verify');
+    if (!authorization.ok) return authorization.response;
 
     const result = await executeCommand(
       deviceId,
@@ -283,11 +283,10 @@ hypervRoutes.post(
     }
 
     const payload = c.req.valid('json');
-
-    const access = await verifyDevice(c, payload.deviceId, orgId);
-    if ('error' in access) {
-      return c.json({ error: access.error }, access.status);
-    }
+    const authorization = await authorizeRouteResilienceResources(c, orgId, [
+      { kind: 'device', id: payload.deviceId, role: 'source' },
+    ], 'verify');
+    if (!authorization.ok) return authorization.response;
 
     const resolvedConfig = await resolveBackupConfigForDevice(payload.deviceId);
     if (!resolvedConfig?.configId) {
@@ -407,11 +406,11 @@ hypervRoutes.post(
     }
 
     const payload = c.req.valid('json');
-
-    const access = await verifyDevice(c, payload.deviceId, orgId);
-    if ('error' in access) {
-      return c.json({ error: access.error }, access.status);
-    }
+    const authorization = await authorizeRouteResilienceResources(c, orgId, [
+      { kind: 'snapshot', id: payload.snapshotId, role: 'source' },
+      { kind: 'device', id: payload.deviceId, role: 'target' },
+    ], 'restore');
+    if (!authorization.ok) return authorization.response;
 
     const [snapshot] = await db
       .select({
@@ -496,11 +495,11 @@ hypervRoutes.post(
 
     const { deviceId, vmId } = c.req.valid('param');
     const payload = c.req.valid('json');
-
-    const access = await verifyDevice(c, deviceId, orgId);
-    if ('error' in access) {
-      return c.json({ error: access.error }, access.status);
-    }
+    const authorization = await authorizeRouteResilienceResources(c, orgId, [
+      { kind: 'device', id: deviceId, role: 'target' },
+      { kind: 'vm', id: vmId, role: 'source' },
+    ], 'verify');
+    if (!authorization.ok) return authorization.response;
 
     // Look up the VM name from our records.
     const [vm] = await db
@@ -577,11 +576,11 @@ hypervRoutes.post(
 
     const { deviceId, vmId } = c.req.valid('param');
     const payload = c.req.valid('json');
-
-    const access = await verifyDevice(c, deviceId, orgId);
-    if ('error' in access) {
-      return c.json({ error: access.error }, access.status);
-    }
+    const authorization = await authorizeRouteResilienceResources(c, orgId, [
+      { kind: 'device', id: deviceId, role: 'target' },
+      { kind: 'vm', id: vmId, role: 'source' },
+    ], 'verify');
+    if (!authorization.ok) return authorization.response;
 
     // Look up the VM name.
     const [vm] = await db

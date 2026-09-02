@@ -195,33 +195,6 @@ describe('parts routes', () => {
     expect(Array.isArray(body.data)).toBe(true);
   });
 
-  it('GET /:id/parts labels every row with the ticket org currency (INTERIM #3777)', async () => {
-    getScopedTicketOr404Mock.mockResolvedValue({ id: TICKET_ID, orgId: 'o-1', deviceId: null });
-    // The db mock calls dbSelectMock once at .where() and again at .limit():
-    // parts list (where) → org lookup (where, then limit).
-    dbSelectMock
-      .mockReturnValueOnce([{ id: PART_ID, ticketId: TICKET_ID, description: 'SSD', unitPrice: '99.00' }])
-      .mockReturnValueOnce([{ currencyCode: 'EUR' }])
-      .mockReturnValueOnce([{ currencyCode: 'EUR' }]);
-    const res = await ticketsRoutes.request(`/${TICKET_ID}/parts`);
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body.data).toEqual([
-      { id: PART_ID, ticketId: TICKET_ID, description: 'SSD', unitPrice: '99.00', currencyCode: 'EUR' },
-    ]);
-  });
-
-  it('GET /:id/parts falls back to USD when the org row is missing', async () => {
-    getScopedTicketOr404Mock.mockResolvedValue({ id: TICKET_ID, orgId: 'o-1', deviceId: null });
-    dbSelectMock
-      .mockReturnValueOnce([{ id: PART_ID, ticketId: TICKET_ID }])
-      .mockReturnValueOnce([])
-      .mockReturnValueOnce([]);
-    const res = await ticketsRoutes.request(`/${TICKET_ID}/parts`);
-    const body = await res.json();
-    expect(body.data[0].currencyCode).toBe('USD');
-  });
-
   it('GET /:id/parts 404s for out-of-scope ticket', async () => {
     getScopedTicketOr404Mock.mockResolvedValue(null);
     const res = await ticketsRoutes.request(`/${TICKET_ID}/parts`);
@@ -295,30 +268,20 @@ describe('parts routes', () => {
   it('GET /:id/billing-summary returns summary for in-scope ticket', async () => {
     getScopedTicketOr404Mock.mockResolvedValue({ id: TICKET_ID, orgId: 'o-1', deviceId: null });
     timeServiceMocks.getTicketBillingSummary.mockResolvedValue({
-      time: { totalMinutes: 60, billableMinutes: 60, billableAmount: '125.00' },
-      parts: { partsCount: 1, billableTotal: '99.00' }
+      time: {
+        totalMinutes: 60,
+        billableMinutes: 60,
+        billableAmounts: [{ currencyCode: 'USD', amount: '125.00' }]
+      },
+      parts: {
+        partsCount: 1,
+        billableTotals: [{ currencyCode: 'USD', amount: '99.00' }]
+      }
     });
     const res = await ticketsRoutes.request(`/${TICKET_ID}/billing-summary`);
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.data.time.billableAmount).toBe('125.00');
-  });
-
-  it('GET /:id/billing-summary carries the ticket org currency beside time + parts (INTERIM #3777)', async () => {
-    getScopedTicketOr404Mock.mockResolvedValue({ id: TICKET_ID, orgId: 'o-1', deviceId: null });
-    timeServiceMocks.getTicketBillingSummary.mockResolvedValue({
-      time: { totalMinutes: 60, billableMinutes: 60, billableAmount: '125.00' },
-      parts: { partsCount: 1, billableTotal: '99.00' }
-    });
-    dbSelectMock.mockReturnValue([{ currencyCode: 'EUR' }]);
-    const res = await ticketsRoutes.request(`/${TICKET_ID}/billing-summary`);
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body.data).toEqual({
-      time: { totalMinutes: 60, billableMinutes: 60, billableAmount: '125.00' },
-      parts: { partsCount: 1, billableTotal: '99.00' },
-      currencyCode: 'EUR'
-    });
+    expect(body.data.time.billableAmounts[0].amount).toBe('125.00');
   });
 });
 
@@ -326,21 +289,25 @@ describe('GET /export/billables.csv', () => {
   beforeEach(resetMocks);
 
   it('returns CSV with headers and no cost_basis column', async () => {
-    timeServiceMocks.listBillables.mockResolvedValue([
-      {
+    timeServiceMocks.listBillables.mockResolvedValue({
+      rows: [{
         kind: 'time', date: new Date('2026-06-10T10:00:00Z'), orgName: 'Acme',
         ticketNumber: 'T-2026-0001', description: 'fix', technician: 'Tess',
         quantity: '0.50', rate: '125.00', amount: '62.50',
+        currencyCode: 'USD',
         billingStatus: 'not_billed', isApproved: true
-      }
-    ]);
+      }],
+      totalsByCurrency: []
+    });
     const res = await ticketsRoutes.request('/export/billables.csv?from=2026-06-01&to=2026-06-30');
     expect(res.status).toBe(200);
     expect(res.headers.get('Content-Type')).toContain('text/csv');
     const body = await res.text();
     const headerLine = body.split('\n')[0];
-    expect(headerLine).toBe('type,date,organization,ticket,description,technician,quantity,rate,amount,billing_status,approved');
+    const dataLine = body.split('\n')[1]?.replaceAll('"', '');
+    expect(headerLine).toBe('type,date,organization,ticket,description,technician,quantity,rate,amount,currency,billing_status,approved');
     expect(body).toContain('T-2026-0001');
+    expect(dataLine).toContain(',62.50,USD,not_billed,');
     expect(body).not.toContain('cost');
     expect(auditSensitiveRead).toHaveBeenCalledWith(expect.anything(), {
       action: 'billing.billables.download',
@@ -363,7 +330,7 @@ describe('GET /export/billables.csv', () => {
   it('audits an organization-filtered export to the requested authorized org', async () => {
     const orgId = '11111111-1111-4111-8111-111111111111';
     authRef.current.canAccessOrg = (id: string) => id === orgId;
-    timeServiceMocks.listBillables.mockResolvedValue([]);
+    timeServiceMocks.listBillables.mockResolvedValue({ rows: [], totalsByCurrency: [] });
 
     const res = await ticketsRoutes.request(
       `/export/billables.csv?from=2026-06-01&to=2026-06-30&orgId=${orgId}`,
@@ -396,19 +363,23 @@ describe('GET /export/billables.csv', () => {
   });
 
   it('does not audit a row serialization failure', async () => {
-    timeServiceMocks.listBillables.mockResolvedValue([{
-      kind: 'time',
-      date: new Date(Number.NaN),
-      orgName: 'Acme',
-      ticketNumber: 'T-1',
-      description: 'fix',
-      technician: 'Tess',
-      quantity: '1',
-      rate: '1',
-      amount: '1',
-      billingStatus: 'not_billed',
-      isApproved: true,
-    }]);
+    timeServiceMocks.listBillables.mockResolvedValue({
+      rows: [{
+        kind: 'time',
+        date: new Date(Number.NaN),
+        orgName: 'Acme',
+        ticketNumber: 'T-1',
+        description: 'fix',
+        technician: 'Tess',
+        quantity: '1',
+        rate: '1',
+        amount: '1',
+        currencyCode: 'USD',
+        billingStatus: 'not_billed',
+        isApproved: true,
+      }],
+      totalsByCurrency: []
+    });
 
     const res = await ticketsRoutes.request(
       '/export/billables.csv?from=2026-06-01&to=2026-06-30',
@@ -419,7 +390,7 @@ describe('GET /export/billables.csv', () => {
   });
 
   it('keeps successful CSV bytes unchanged when audit delivery is non-blocking', async () => {
-    timeServiceMocks.listBillables.mockResolvedValue([]);
+    timeServiceMocks.listBillables.mockResolvedValue({ rows: [], totalsByCurrency: [] });
     vi.mocked(auditSensitiveRead).mockImplementationOnce(() => {
       void Promise.reject(new Error('audit backend unavailable')).catch(() => undefined);
     });
@@ -430,7 +401,7 @@ describe('GET /export/billables.csv', () => {
 
     expect(res.status).toBe(200);
     expect(await res.text()).toBe(
-      'type,date,organization,ticket,description,technician,quantity,rate,amount,billing_status,approved',
+      'type,date,organization,ticket,description,technician,quantity,rate,amount,currency,billing_status,approved',
     );
   });
 });

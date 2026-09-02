@@ -1,0 +1,121 @@
+---
+title: Bring Your Own LLM Key
+description: Use a partner-owned Anthropic API key for Breeze AI, optionally routed through a platform-vetted endpoint, or configure an instance-wide LLM backend on a self-hosted deployment.
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+Breeze supports two ways to use your own LLM provider configuration:
+
+- **Hosted BYOK** lets a partner use its own Anthropic API key for Breeze AI.
+- **Self-hosted instance configuration** routes platform-keyed AI usage to an Anthropic-compatible or OpenAI-compatible endpoint.
+
+If both are configured, a partner's BYOK configuration takes precedence. Instance environment variables apply only to AI usage that would otherwise use the platform key.
+
+## Hosted: use your own Anthropic key
+
+When you connect your own Anthropic API key, all AI features for your partner use that key and are billed directly to your Anthropic account. Breeze AI credits are not consumed.
+
+Workspace content enrichment also uses your configured AI provider, so it's billed the same way as your other AI features and appears in your AI usage.
+
+### Requirements
+
+You must be a partner admin with access to all organizations and the billing management permission. You must also complete MFA when you connect, replace, or disconnect a key.
+
+### Connect a key
+
+<Steps>
+
+1. Open **Partner Settings → AI Provider**.
+
+2. Paste your Anthropic API key into the write-only key field.
+
+3. Optionally select a default model from the supported model list.
+
+4. Click **Save**. Breeze verifies the key with Anthropic before storing it.
+
+</Steps>
+
+The page shows that your key is active and displays only its last four characters. Breeze never returns the full key after you save it.
+
+To rotate the key, paste the replacement and save it. Breeze verifies the replacement before changing the stored key, so a failed verification leaves the existing working key in place.
+
+To return to the Breeze platform key and Breeze AI credits, click **Disconnect** and complete MFA. Breeze does not switch back automatically.
+
+### Usage, budgets, and failures
+
+Organization AI budgets and rate limits still apply. With BYOK enabled, those controls limit usage billed to your own Anthropic account rather than consumption of Breeze AI credits.
+
+While the partner key is active, the AI usage page shows the note **"Billed to your key — AI usage goes to your own Anthropic account, not Breeze AI credits."**
+
+<Aside type="caution">
+  If the key is invalid, revoked, or rejected by Anthropic, AI is unavailable and Breeze shows an error banner. Breeze never silently falls back to the platform key, because doing so could consume Breeze AI credits without your intent. Replace the key or disconnect it explicitly to restore service.
+</Aside>
+
+### Route your key through a platform-vetted endpoint
+
+Once a key is connected, partners on deployments with the endpoint catalog enabled can send their AI traffic through a third-party endpoint instead of Anthropic directly — for example an OpenRouter or LiteLLM deployment that Breeze has verified against the Anthropic `/v1/messages` API. Your Anthropic key is still what gets billed; the endpoint only changes where the traffic is routed.
+
+Breeze maintains this list itself. **You choose from the list — you never enter a URL.** Every entry is a platform-vetted endpoint that Breeze has run through its own fidelity and safety checks before it can appear as an option; there is no free-form "custom endpoint" field anywhere in the partner UI.
+
+<Steps>
+
+1. Open **Partner Settings → AI Provider**. Whenever at least one catalog entry is available — or you already have an endpoint selected — an **Endpoint** card appears below the key card, listing **Anthropic (direct)** plus one radio option per vetted endpoint. Selecting an endpoint requires a connected key: if you try it before connecting one, Breeze rejects the change with *"Connect an Anthropic API key before selecting an endpoint."* rather than storing a selection that could not be used.
+
+2. Selecting **Anthropic (direct)** applies immediately — it always requires zero confirmation, since it is the safe fallback.
+
+3. Selecting a third-party endpoint opens a confirmation dialog. If the endpoint has a data-handling note, the dialog quotes it verbatim and requires you to check **"I understand my AI traffic and content will be processed by \<endpoint name\>"** before you can confirm. The note describes what that specific endpoint does with your traffic and content — read it before agreeing, since it varies per endpoint and Breeze cannot vouch for a third party's own data handling beyond the technical checks it ran.
+
+4. Confirm. As with connecting or disconnecting a key, changing your endpoint requires MFA.
+
+</Steps>
+
+While a third-party endpoint is selected, the AI usage page's "billed to your key" note also names the endpoint, so it's clear both that billing goes to your Anthropic account and which endpoint carried the traffic.
+
+<Aside type="caution">
+  **If Breeze delists an endpoint you're using, AI is paused — not silently rerouted.** Breeze shows a banner explaining the endpoint was delisted, and no further AI requests succeed until you either pick another listed endpoint or switch back to **Anthropic (direct)**. The same fail-loud behavior applies if your selected endpoint stops verifying a model you rely on: Breeze pauses AI for that model rather than silently falling back to the platform key or a different provider.
+</Aside>
+
+This platform-vetted endpoint list is a hosted-only feature. If you're self-hosting, you point the instance at any Anthropic-compatible or OpenAI-compatible endpoint yourself with environment variables — see [Self-hosted: configure an instance-wide provider](#self-hosted-configure-an-instance-wide-provider) below for the variable matrix. There is no vetting step on self-hosted deployments: you're trusting whatever endpoint you configure.
+
+## Self-hosted: configure an instance-wide provider
+
+Self-hosted operators can configure an LLM backend for platform-keyed usage with environment variables. These settings apply across the instance, except for partners that have their own BYOK configuration.
+
+If you're a hosted partner instead, see [Route your key through a platform-vetted endpoint](#route-your-key-through-a-platform-vetted-endpoint) above — hosted deployments select from Breeze's vetted catalog rather than setting these variables.
+
+### Anthropic-compatible endpoint with tool calling
+
+Use this path to route the full, tool-capable Breeze Agent through an endpoint that implements the Anthropic `/v1/messages` API, such as vLLM 0.23+ or LiteLLM.
+
+| Variable | Required | Purpose |
+|---|---|---|
+| `ANTHROPIC_BASE_URL` | Yes | Base URL for the Anthropic-compatible endpoint. It must be a valid HTTP or HTTPS URL. |
+| `ANTHROPIC_AUTH_TOKEN` | As required by the endpoint | Authentication token sent by the Anthropic SDK. |
+| `ANTHROPIC_MODEL` | Optional | Overrides the default model ID, including for a raw vLLM model name or a LiteLLM alias. |
+
+`ANTHROPIC_BASE_URL` is self-hosted only. Breeze refuses to start with this variable set unless `IS_HOSTED` is explicitly set to `false` (or another recognized false value). Hosted deployments cannot use a custom per-partner or instance-wide base URL.
+
+### OpenAI-compatible chat without tool calling
+
+Use this path for a chat-only backend that implements the OpenAI API dialect. Tool calling is not supported on this path.
+
+| Variable | Required | Purpose |
+|---|---|---|
+| `MCP_LLM_PROVIDER` | Yes | Set to `openai-compatible`. |
+| `MCP_LLM_BASE_URL` | Yes | Base URL for the OpenAI-compatible endpoint. It must be a valid URL. |
+| `MCP_LLM_MODEL` | Yes | Model ID exposed by the endpoint. |
+| `MCP_LLM_API_KEY` | Yes | API key used to authenticate with the endpoint. |
+| `MCP_LLM_PRICE_INPUT_PER_M_USD` | Optional | Input-token price in USD per million tokens. Defaults to `0`. |
+| `MCP_LLM_PRICE_OUTPUT_PER_M_USD` | Optional | Output-token price in USD per million tokens. Defaults to `0`. |
+
+The API validates the base URL and requires the model and API key when `MCP_LLM_PROVIDER=openai-compatible`. Both price values must be zero or greater.
+
+Requests to this endpoint go through Breeze's SSRF egress guard, which pins DNS at connect time and refuses to follow redirects. Two consequences for where you can host the model:
+
+- **Loopback is never reachable.** `http://localhost:8000/v1` and `http://127.0.0.1:8000/v1` are refused. Point `MCP_LLM_BASE_URL` at the model host's container service name or LAN address instead — in a Compose deployment that is the service name, which resolves to a private address.
+- **Private (RFC1918/ULA) addresses require `IS_HOSTED=false`.** The opt-in that lets Breeze reach an on-LAN model is only active on a self-hosted install that has explicitly set `IS_HOSTED` to `false`. A cleartext `http://` endpoint is additionally restricted to private addresses, so the API key is never sent unencrypted over the open internet.
+
+<Aside type="note">
+  Provider precedence is **partner BYOK configuration → instance environment**. A partner-owned Anthropic key always overrides these instance settings. The instance environment applies only when Breeze resolves the request as platform-keyed usage.
+</Aside>

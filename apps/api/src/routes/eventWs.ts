@@ -432,6 +432,44 @@ export function buildSiteFilter(
 }
 
 /**
+ * The per-client delivery predicate: audience targeting composed with site scope.
+ *
+ * Two rules, and the ORDER matters:
+ *
+ * 1. An event carrying `audienceUserId` is addressed to one person. It is
+ *    delivered to that person and nobody else — including other tabs belonging
+ *    to other users in the same org, which is what the dispatcher would
+ *    otherwise do, since it fans out per ORG.
+ *
+ * 2. Site scope does NOT apply to an addressed event. `buildSiteFilter` fails
+ *    closed on any event it cannot attribute to an allowed site, and a
+ *    notification has no site — so composing them the naive way (AND) would
+ *    mean every site-restricted user silently stopped receiving notifications.
+ *    The audience check is already strictly narrower than site scope: exactly
+ *    one user.
+ *
+ * Unaddressed events keep the pre-existing behaviour exactly.
+ */
+export function buildDeliveryFilter(
+  userId: string,
+  allowedSiteIds: string[] | null | undefined,
+): ((event: Record<string, unknown>) => boolean) | undefined {
+  const siteFilter = buildSiteFilter(allowedSiteIds);
+  if (!siteFilter) {
+    // No site restriction: only the audience rule can drop anything.
+    return (event) => {
+      const audience = event.audienceUserId;
+      return typeof audience === 'string' ? audience === userId : true;
+    };
+  }
+  return (event) => {
+    const audience = event.audienceUserId;
+    if (typeof audience === 'string') return audience === userId;
+    return siteFilter(event);
+  };
+}
+
+/**
  * Pull a `siteId` off an event message if one is present. Checks the top level
  * first, then the nested `payload` object (publishers attach domain fields
  * under `payload`). Returns `undefined` when no string siteId is found.
@@ -804,9 +842,10 @@ export function createEventWsHandlers(
           ws,
           userId: liveIdentity.userId,
           subscribedTypes: new Set<string>(),
-          // Site-scope (app-layer-only) delivery gate. Undefined for
-          // unrestricted users — no filtering, no behaviour change.
-          filter: buildSiteFilter(liveIdentity.allowedSiteIds),
+          // Audience targeting + site-scope delivery gate. Addressed events
+          // (audienceUserId) reach only their recipient; everything else keeps
+          // the previous site-scope behaviour.
+          filter: buildDeliveryFilter(liveIdentity.userId, liveIdentity.allowedSiteIds),
         };
 
         const dispatcher = getEventDispatcher();

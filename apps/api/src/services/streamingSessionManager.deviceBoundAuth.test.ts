@@ -101,6 +101,12 @@ const DB_SESSION = {
   systemPrompt: null,
 };
 
+const PLATFORM_CONFIG = {
+  source: 'platform' as const,
+  apiKey: 'platform-key',
+  model: 'claude-sonnet-4-6',
+};
+
 describe('buildDeviceBoundSessionAuth', () => {
   it('narrows a partner-scope login to the device org (sibling org under the same partner)', () => {
     const auth = makePartnerAuth();
@@ -220,6 +226,7 @@ describe('getOrCreate — device-bound sessions narrow the tool-facing auth', ()
       undefined,
       'PROMPT',
       undefined,
+      PLATFORM_CONFIG,
     );
 
     expect(session.deviceId).toBe(DEVICE_ID);
@@ -245,6 +252,7 @@ describe('getOrCreate — device-bound sessions narrow the tool-facing auth', ()
       undefined,
       'PROMPT',
       undefined,
+      PLATFORM_CONFIG,
     );
 
     // Second message on the same in-memory session with a fresh request auth.
@@ -255,6 +263,7 @@ describe('getOrCreate — device-bound sessions narrow the tool-facing auth', ()
       undefined,
       'PROMPT',
       undefined,
+      PLATFORM_CONFIG,
     );
 
     const toolAuth = capturedMcpArgs[0]!.getAuth() as AuthContext;
@@ -271,6 +280,7 @@ describe('getOrCreate — device-bound sessions narrow the tool-facing auth', ()
       undefined,
       'PROMPT',
       undefined,
+      PLATFORM_CONFIG,
     );
 
     expect(session.deviceId).toBeNull();

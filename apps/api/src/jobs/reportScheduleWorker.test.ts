@@ -3,6 +3,23 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const selectMock = vi.fn();
 const insertMock = vi.fn();
 const updateMock = vi.fn();
+const queueAddMock = vi.fn(async (..._args: unknown[]) => undefined);
+
+// Only the queued-path test (Redis available) ever constructs a Queue; a real
+// bullmq Queue would try to actually connect using the fake `{}` connection
+// object `getBullMQConnection()` returns below, so it's faked the same way
+// every other worker test file in this directory fakes it (see alertQueue.test.ts).
+vi.mock('bullmq', () => ({
+  Queue: class {
+    add = queueAddMock;
+    close = vi.fn();
+  },
+  Worker: class {
+    close = vi.fn();
+    on = vi.fn();
+  },
+  Job: class {},
+}));
 
 vi.mock('../db', () => ({
   db: {
@@ -17,6 +34,8 @@ vi.mock('../db/schema', () => ({
   reports: {
     id: 'reports.id',
     orgId: 'reports.org_id',
+    // P2-3 (#4190) — the column A7's exclusion predicate names.
+    type: 'reports.type',
     createdBy: 'reports.created_by',
     schedule: 'reports.schedule',
     lastGeneratedAt: 'reports.last_generated_at',
@@ -28,6 +47,7 @@ vi.mock('../db/schema', () => ({
     executionScopeUserId: 'reports.execution_scope_user_id',
     executionScopeFingerprint: 'reports.execution_scope_fingerprint',
     executionScopeCapturedAt: 'reports.execution_scope_captured_at',
+    executionScopePrincipalKind: 'reports.execution_scope_principal_kind',
   },
   reportRuns: {
     id: 'report_runs.id',
@@ -95,6 +115,7 @@ vi.mock('../services/siteScope', () => ({
     executionScopeUserId: authority.principalUserId,
     executionScopeFingerprint: authority.fingerprint,
     executionScopeCapturedAt: authority.capturedAt,
+    executionScopePrincipalKind: 'user',
   })),
 }));
 
@@ -133,6 +154,14 @@ vi.mock('../services/redis', () => ({
   getBullMQConnection: vi.fn(() => ({})),
 }));
 
+// Defaults to 'all' so every pre-existing test (written against the
+// single-process shape) keeps exercising the inline path unchanged; role-gate
+// tests below flip this per-test and restore it in their own finally.
+const breezeRoleState = vi.hoisted(() => ({ role: 'all' as 'all' | 'api' | 'worker' }));
+vi.mock('../config/env', () => ({
+  breezeRole: () => breezeRoleState.role,
+}));
+
 vi.mock('./workerObservability', () => ({
   attachWorkerObservability: vi.fn(),
 }));
@@ -149,6 +178,7 @@ import {
   findDueReports,
   processCheckSchedules,
   processRunScheduledReport,
+  buildOccurrenceClaimCas,
 } from './reportScheduleWorker';
 
 const REPORT_ID = '11111111-1111-1111-1111-111111111111';
@@ -183,8 +213,19 @@ function updateChain() {
   return chain;
 }
 
+/** For the CAS claim: `.update().set().where().returning()` — `rows` mimics
+ * what Postgres would RETURNING: one row on a won claim, none on a lost one. */
+function claimUpdateChain(rows: Array<{ id: string }>) {
+  const chain: Record<string, unknown> = {};
+  chain.set = vi.fn(() => chain);
+  chain.where = vi.fn(() => chain);
+  chain.returning = vi.fn(async () => rows);
+  return chain;
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
+  breezeRoleState.role = 'all';
   selectMock.mockReset();
   insertMock.mockReset();
   updateMock.mockReset();
@@ -336,7 +377,9 @@ describe('findDueReports', () => {
     selectMock.mockReturnValueOnce(selectChain([{ count: 0 }]));
 
     const due = await findDueReports(now);
-    expect(due).toEqual([{ id: REPORT_ID, occurrenceKey: 202607010900 }]);
+    // lastGeneratedAt is the OBSERVED value at discovery time — the inline CAS
+    // claim (processCheckSchedules) uses it to detect a concurrent claim.
+    expect(due).toEqual([{ id: REPORT_ID, occurrenceKey: 202607010900, lastGeneratedAt: null }]);
   });
 
   it('falls back to the partner timezone when the org has none', async () => {
@@ -376,6 +419,180 @@ describe('findDueReports', () => {
       );
     } finally {
       consoleWarn.mockRestore();
+    }
+  });
+});
+
+// ─── Occurrence CAS + all-role gating (inline fallback) ─────────────────────
+
+describe('processCheckSchedules inline fallback (occurrence CAS + role gate)', () => {
+  function dueRow(overrides: Partial<{ id: string; lastGeneratedAt: Date | null }> = {}) {
+    return {
+      id: REPORT_ID,
+      schedule: 'daily',
+      lastGeneratedAt: null,
+      config: { schedule: { time: '09:00' } },
+      orgSettings: null,
+      partnerTimezone: null,
+      partnerSettings: null,
+      ...overrides,
+    };
+  }
+
+  it.each(['worker', 'api'] as const)(
+    "role %s: skips the inline fallback entirely (even with Redis down) — never claims, never generates",
+    async (role) => {
+      breezeRoleState.role = role;
+      selectMock.mockReturnValueOnce(selectChain([dueRow()]));
+      selectMock.mockReturnValueOnce(selectChain([{ count: 0 }]));
+      const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      try {
+        await expect(processCheckSchedules()).resolves.toBeUndefined();
+        expect(consoleWarn).toHaveBeenCalledWith(
+          expect.stringContaining(`Redis unavailable outside 'all' role`),
+        );
+      } finally {
+        consoleWarn.mockRestore();
+      }
+
+      expect(updateMock).not.toHaveBeenCalled();
+      expect(insertMock).not.toHaveBeenCalled();
+      expect(generateReportMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it("'all' role claims the occurrence via CAS before running it", async () => {
+    selectMock.mockReturnValueOnce(selectChain([dueRow({ lastGeneratedAt: null })]));
+    selectMock.mockReturnValueOnce(selectChain([{ count: 0 }]));
+    const claim = claimUpdateChain([{ id: REPORT_ID }]);
+    updateMock.mockReturnValueOnce(claim);
+    // processRunScheduledReport's own path after the claim.
+    selectMock.mockReturnValueOnce(selectChain([{
+      id: REPORT_ID,
+      orgId: ORG_ID,
+      name: 'Nightly inventory',
+      type: 'device_inventory',
+      format: 'csv',
+      schedule: 'daily',
+      config: {},
+      lastGeneratedAt: null,
+      executionScopeVersion: 1,
+      executionScopeKind: 'unrestricted',
+      executionScopeSiteIds: null,
+      executionScopeUserId: '44444444-4444-4444-8444-444444444444',
+      executionScopeFingerprint: 'f'.repeat(64),
+      executionScopeCapturedAt: new Date('2026-07-24T12:00:00.000Z'),
+    }]));
+    insertMock.mockReturnValueOnce(insertChain([{ id: RUN_ID }]));
+    updateMock.mockReturnValueOnce(updateChain()); // reportRuns -> completed
+    generateReportMock.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+
+    await expect(processCheckSchedules()).resolves.toBeUndefined();
+
+    expect(claim.where).toHaveBeenCalledTimes(1);
+    expect(generateReportMock).toHaveBeenCalledTimes(1);
+    // Only ONE update happened inside processRunScheduledReport (the reportRuns
+    // completion) — the claim's own update already stamped lastGeneratedAt, so
+    // processRunScheduledReport must not have stamped it again.
+    expect(updateMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("'all' role threads a NON-NULL observed lastGeneratedAt into the claim (not a hardcoded null)", async () => {
+    // Every other CAS test in this describe block uses `lastGeneratedAt: null`,
+    // so a mutation that hardcodes `claimReportOccurrence(item.id, null)` in
+    // processCheckSchedules would pass them unnoticed (null replaced with null
+    // is a no-op there). This case observes a previously-generated report and
+    // asserts the CAS predicate actually threads that observed Date through —
+    // as opposed to always claiming via `IS NULL`.
+    const observed = new Date('2026-06-30T09:00:00.000Z');
+    selectMock.mockReturnValueOnce(selectChain([dueRow({ lastGeneratedAt: observed })]));
+    selectMock.mockReturnValueOnce(selectChain([{ count: 0 }]));
+    const claim = claimUpdateChain([{ id: REPORT_ID }]);
+    updateMock.mockReturnValueOnce(claim);
+    // processRunScheduledReport's own path after the claim.
+    selectMock.mockReturnValueOnce(selectChain([{
+      id: REPORT_ID,
+      orgId: ORG_ID,
+      name: 'Nightly inventory',
+      type: 'device_inventory',
+      format: 'csv',
+      schedule: 'daily',
+      config: {},
+      lastGeneratedAt: observed,
+      executionScopeVersion: 1,
+      executionScopeKind: 'unrestricted',
+      executionScopeSiteIds: null,
+      executionScopeUserId: '44444444-4444-4444-8444-444444444444',
+      executionScopeFingerprint: 'f'.repeat(64),
+      executionScopeCapturedAt: new Date('2026-07-24T12:00:00.000Z'),
+    }]));
+    insertMock.mockReturnValueOnce(insertChain([{ id: RUN_ID }]));
+    updateMock.mockReturnValueOnce(updateChain()); // reportRuns -> completed
+    generateReportMock.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+
+    await expect(processCheckSchedules()).resolves.toBeUndefined();
+
+    expect(claim.where).toHaveBeenCalledTimes(1);
+    const casArg = (claim.where as ReturnType<typeof vi.fn>).mock.calls[0]![0];
+    // The predicate actually used must equal the CAS built from the OBSERVED
+    // value (equality against the timestamp) and must NOT equal the CAS built
+    // from null (an IS NULL claim) — that distinguishes a genuine thread from
+    // a hardcoded-null mutation.
+    expect(casArg).toEqual(buildOccurrenceClaimCas(REPORT_ID, observed));
+    expect(casArg).not.toEqual(buildOccurrenceClaimCas(REPORT_ID, null));
+  });
+
+  it("a lost claim (concurrent tick already won it) skips the report without generating", async () => {
+    selectMock.mockReturnValueOnce(selectChain([dueRow({ lastGeneratedAt: null })]));
+    selectMock.mockReturnValueOnce(selectChain([{ count: 0 }]));
+    updateMock.mockReturnValueOnce(claimUpdateChain([])); // lost the race — no row returned
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      await expect(processCheckSchedules()).resolves.toBeUndefined();
+      expect(consoleWarn).toHaveBeenCalledWith(
+        expect.stringContaining('already claimed by a concurrent check'),
+      );
+    } finally {
+      consoleWarn.mockRestore();
+    }
+
+    expect(insertMock).not.toHaveBeenCalled();
+    expect(generateReportMock).not.toHaveBeenCalled();
+  });
+
+  it('the queued (Redis-available) path stays byte-identical: no claim, jobId dedup, real retry attempts', async () => {
+    const { isRedisAvailable } = await import('../services/redis');
+    vi.mocked(isRedisAvailable).mockReturnValue(true);
+
+    try {
+      selectMock.mockReturnValueOnce(selectChain([dueRow({ id: REPORT_ID, lastGeneratedAt: null })]));
+      selectMock.mockReturnValueOnce(selectChain([{ count: 0 }]));
+
+      await expect(processCheckSchedules()).resolves.toBeUndefined();
+
+      // No CAS claim, no inline execution — the queue absorbs the dedup/retry.
+      expect(updateMock).not.toHaveBeenCalled();
+      expect(insertMock).not.toHaveBeenCalled();
+      expect(generateReportMock).not.toHaveBeenCalled();
+      // occurrenceKey is computed from the real current time (findDueReports
+      // is called with `new Date()`), so it isn't hard-coded here — only its
+      // presence and consistent use in both the payload and the jobId matter.
+      expect(queueAddMock).toHaveBeenCalledTimes(1);
+      const [name, payload, opts] = queueAddMock.mock.calls[0]!;
+      expect(name).toBe('run-scheduled-report');
+      expect(payload).toMatchObject({ type: 'run-scheduled-report', reportId: REPORT_ID });
+      const occurrenceKey = (payload as { occurrenceKey: number }).occurrenceKey;
+      expect(opts).toEqual(
+        expect.objectContaining({
+          jobId: `report-sched-run-${REPORT_ID}-${occurrenceKey}`,
+          attempts: 3,
+          backoff: { type: 'exponential', delay: 30_000 },
+        }),
+      );
+    } finally {
+      vi.mocked(isRedisAvailable).mockReturnValue(false);
     }
   });
 });
@@ -453,6 +670,28 @@ describe('processRunScheduledReport', () => {
     expect(mail.attachments[0]!.filename).toMatch(/device_inventory-report-.*\.csv/);
   });
 
+  it('skips its own lastGeneratedAt stamp when the caller already claimed the occurrence', async () => {
+    selectMock.mockReturnValueOnce(selectChain([{ ...report, config: {} }]));
+    const runInsert = insertChain([{ id: RUN_ID }]);
+    insertMock.mockReturnValueOnce(runInsert);
+    const runCompleteUpdate = updateChain();
+    updateMock.mockReturnValueOnce(runCompleteUpdate);
+    generateReportMock.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+
+    await processRunScheduledReport(
+      { type: 'run-scheduled-report', reportId: REPORT_ID, occurrenceKey: 202607010900 },
+      { occurrenceClaimed: true },
+    );
+
+    // Exactly one update — the reportRuns completion. If the stamp update also
+    // fired, updateMock would have been called twice, same as the unclaimed
+    // test above.
+    expect(updateMock).toHaveBeenCalledTimes(1);
+    expect(runCompleteUpdate.set).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'completed' }),
+    );
+  });
+
   it('rejects an out-of-authority saved config before running insert, baseline, generation, update, or delivery', async () => {
     const restricted = {
       version: 1 as const,
@@ -527,6 +766,44 @@ describe('processRunScheduledReport', () => {
 
     expect(insertMock).not.toHaveBeenCalled();
     expect(generateReportMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses a system-principal definition before resolving any authority', async () => {
+    // P2-3 (#4190): the report scheduler has no acting user to reauthorize a
+    // system-authored definition against, and must never invent one. A7 also
+    // excludes the type from findDueReports; this is the defence in depth.
+    selectMock.mockReturnValueOnce(
+      selectChain([
+        {
+          ...report,
+          executionScopeUserId: null,
+          executionScopePrincipalKind: 'system',
+        },
+      ]),
+    );
+    const failedInsert = insertChain([{ id: RUN_ID }]);
+    insertMock.mockReturnValueOnce(failedInsert);
+
+    await processRunScheduledReport({
+      type: 'run-scheduled-report',
+      reportId: REPORT_ID,
+      occurrenceKey: 202607010900,
+    });
+
+    expect(failedInsert.values).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reportId: REPORT_ID,
+        status: 'failed',
+        errorMessage: 'system_principal_definition',
+      }),
+    );
+    expect(decodeSiteScopeMock).not.toHaveBeenCalled();
+    expect(resolveLiveReportAuthorityMock).not.toHaveBeenCalled();
+    expect(intersectSiteScopesMock).not.toHaveBeenCalled();
+    expect(generateReportMock).not.toHaveBeenCalled();
+    expect(previousBaselineForMock).not.toHaveBeenCalled();
+    expect(updateMock).not.toHaveBeenCalled();
+    expect(sendEmailMock).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -907,16 +1184,18 @@ describe('scheduled report failure handling', () => {
       ]),
     );
     selectMock.mockReturnValueOnce(selectChain([{ count: 0 }]));
-    // report 1: load -> throws during generation
+    // report 1: CAS claim wins, then load -> throws during generation
+    updateMock.mockReturnValueOnce(claimUpdateChain([{ id: report.id }]));
     selectMock.mockReturnValueOnce(selectChain([report]));
     insertMock.mockReturnValueOnce(insertChain([{ id: RUN_ID }]));
-    updateMock.mockReturnValueOnce(updateChain()).mockReturnValueOnce(updateChain());
+    updateMock.mockReturnValueOnce(updateChain());
     generateReportMock.mockRejectedValueOnce(new Error('boom'));
-    // report 2: load -> succeeds
+    // report 2: CAS claim wins, then load -> succeeds
+    updateMock.mockReturnValueOnce(claimUpdateChain([{ id: second.id }]));
     selectMock.mockReturnValueOnce(selectChain([second]));
     selectMock.mockReturnValueOnce(selectChain([])); // timezone lookup
     insertMock.mockReturnValueOnce(insertChain([{ id: RUN_ID }]));
-    updateMock.mockReturnValueOnce(updateChain()).mockReturnValueOnce(updateChain());
+    updateMock.mockReturnValueOnce(updateChain());
     generateReportMock.mockResolvedValueOnce({ rows: [], rowCount: 0 });
 
     await expect(processCheckSchedules()).resolves.toBeUndefined();
@@ -924,5 +1203,125 @@ describe('scheduled report failure handling', () => {
     // The throwing report must not starve its neighbour.
     expect(generateReportMock).toHaveBeenCalledTimes(2);
     expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ─── P2-3 (#4190): the report scheduler never touches a system-managed AI
+//     narrative definition ────────────────────────────────────────────────────
+
+/**
+ * A narrative definition lives in `reports` with `schedule = 'weekly'`, so it
+ * matches this worker's polling predicate on shape alone. It must not: its
+ * occurrences are owned by the AGENT scheduler, it has no acting user to
+ * reauthorize against, and its type has no generator at all.
+ *
+ * Two exclusions, and both are asserted here because they fail differently.
+ * `findDueReports` keeps it out of the polling result AND out of the
+ * "requires scope reauthorization" warning count — that warning is an operator
+ * signal, and a narrative definition (execution_scope_user_id IS NULL by
+ * construction) would inflate it forever with rows nobody can or should
+ * reauthorize. `processRunScheduledReport` refuses it too, for a job already
+ * on the queue when the exclusion shipped.
+ */
+describe('system-managed narrative definitions are outside this worker (P2-3)', () => {
+  const report = {
+    id: REPORT_ID,
+    orgId: ORG_ID,
+    name: 'Weekly AI operations narrative',
+    type: 'device_inventory',
+    format: 'csv',
+    schedule: 'weekly',
+    config: {},
+    lastGeneratedAt: null,
+    executionScopeVersion: 1,
+    executionScopeKind: 'unrestricted',
+    executionScopeSiteIds: null,
+    executionScopeUserId: '44444444-4444-4444-8444-444444444444',
+    executionScopeFingerprint: 'f'.repeat(64),
+    executionScopeCapturedAt: new Date('2026-07-24T12:00:00.000Z'),
+    executionScopePrincipalKind: 'user',
+  };
+
+  /** `selectChain` deliberately drops the condition; this variant keeps it. */
+  function capturingSelectChain(rows: unknown[], sink: unknown[]) {
+    const chain: Record<string, unknown> = {};
+    chain.from = vi.fn(() => chain);
+    chain.innerJoin = vi.fn(() => chain);
+    chain.leftJoin = vi.fn(() => chain);
+    chain.where = vi.fn((condition: unknown) => { sink.push(condition); return chain; });
+    chain.limit = vi.fn(async () => rows);
+    chain.then = (resolve: (v: unknown[]) => unknown) => Promise.resolve(rows).then(resolve);
+    return chain;
+  }
+
+  function mentions(condition: unknown, needle: string): boolean {
+    const seen = new Set<unknown>();
+    const walk = (node: unknown): boolean => {
+      if (node === needle) return true;
+      if (node === null || typeof node !== 'object') return false;
+      if (seen.has(node)) return false;
+      seen.add(node);
+      return Object.values(node as Record<string, unknown>).some(walk);
+    };
+    return walk(condition);
+  }
+
+  it('excludes the narrative type from BOTH the due query and the reauthorization warning count', async () => {
+    const wheres: unknown[] = [];
+    selectMock
+      .mockReturnValueOnce(capturingSelectChain([], wheres))
+      .mockReturnValueOnce(capturingSelectChain([{ count: 0 }], wheres));
+
+    await findDueReports(new Date('2026-07-01T15:00:00Z'));
+
+    expect(wheres).toHaveLength(2);
+    for (const [index, condition] of wheres.entries()) {
+      expect(mentions(condition, 'reports.type'), `query ${index} must name reports.type`).toBe(true);
+      expect(mentions(condition, 'ai_org_narrative'), `query ${index} must exclude the narrative type`)
+        .toBe(true);
+      // Non-vacuity: the pre-existing one_time exclusion is still there, so
+      // this is an ADDED predicate rather than a replaced one.
+      expect(mentions(condition, 'one_time')).toBe(true);
+    }
+  });
+
+  it('refuses a stale queued narrative job WITHOUT writing a failed run row', async () => {
+    // A failed `report_runs` row here would be worse than the no-op: it renders
+    // in the org's report history under the narrative definition, next to the
+    // real weekly artifacts, saying the weekly narrative failed. It did not —
+    // this worker simply is not its owner.
+    selectMock.mockReturnValueOnce(selectChain([{ ...report, type: 'ai_org_narrative' }]));
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      await processRunScheduledReport({
+        type: 'run-scheduled-report', reportId: REPORT_ID, occurrenceKey: 202607010900,
+      });
+
+      expect(insertMock).not.toHaveBeenCalled();
+      expect(updateMock).not.toHaveBeenCalled();
+      expect(generateReportMock).not.toHaveBeenCalled();
+      expect(decodeSiteScopeMock).not.toHaveBeenCalled();
+      expect(resolveLiveReportAuthorityMock).not.toHaveBeenCalled();
+      expect(consoleWarn).toHaveBeenCalledWith(
+        expect.stringContaining('agent scheduler'),
+        expect.objectContaining({ reportId: REPORT_ID }),
+      );
+    } finally {
+      consoleWarn.mockRestore();
+    }
+  });
+
+  it('CONTROL: an ordinary weekly definition still runs', async () => {
+    selectMock.mockReturnValueOnce(selectChain([{ ...report, schedule: 'weekly' }]));
+    insertMock.mockReturnValueOnce(insertChain([{ id: RUN_ID }]));
+    updateMock.mockReturnValue(updateChain());
+    generateReportMock.mockResolvedValue({ rows: [], rowCount: 0 });
+
+    await processRunScheduledReport({
+      type: 'run-scheduled-report', reportId: REPORT_ID, occurrenceKey: 202607010900,
+    });
+
+    expect(generateReportMock).toHaveBeenCalled();
   });
 });

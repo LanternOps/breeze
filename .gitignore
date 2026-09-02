@@ -16,7 +16,12 @@ dist/
 .env.prod
 .env.finder-dev
 
-# IDE
+# IDE / AI-assistant local state
+.specstory/
+.cursorindexingignore
+.env.cloud
+docker-compose.finder-dev.override.yml
+*.bak-*
 .idea/
 .vscode/
 *.swp

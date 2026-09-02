@@ -21,23 +21,6 @@ export function formatBytes(bytes: number, decimals = 2): string {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
 }
 
-export function formatRelativeTime(date: Date | string): string {
-  const d = typeof date === 'string' ? new Date(date) : date;
-  const now = new Date();
-  const diffMs = now.getTime() - d.getTime();
-  const diffSec = Math.floor(diffMs / 1000);
-  const diffMin = Math.floor(diffSec / 60);
-  const diffHour = Math.floor(diffMin / 60);
-  const diffDay = Math.floor(diffHour / 24);
-
-  if (diffSec < 60) return 'Just now';
-  if (diffMin < 60) return `${diffMin}m ago`;
-  if (diffHour < 24) return `${diffHour}h ago`;
-  if (diffDay < 7) return `${diffDay}d ago`;
-
-  return d.toLocaleDateString();
-}
-
 export function formatDate(date: Date | string): string {
   const d = typeof date === 'string' ? new Date(date) : date;
   return d.toLocaleDateString('en-US', {
@@ -56,4 +39,48 @@ export function formatDateTime(date: Date | string): string {
     hour: '2-digit',
     minute: '2-digit'
   });
+}
+
+/** Whole calendar days between two dates, ignoring the time of day, so
+ *  "Yesterday" stays correct for something that happened at 11pm and is read
+ *  at 7am (a raw hour difference would call that "8 hours ago"). */
+function calendarDaysAgo(from: Date, now: Date): number {
+  const a = new Date(from.getFullYear(), from.getMonth(), from.getDate());
+  const b = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  return Math.round((b.getTime() - a.getTime()) / 86400000);
+}
+
+function plural(count: number, unit: string): string {
+  return `${count} ${unit}${count === 1 ? '' : 's'} ago`;
+}
+
+/**
+ * Human phrasing for "when did this happen", written for the portal's audience:
+ * business customers who visit a few times a year, not technicians. Full words
+ * ("3 days ago", "Yesterday", "Last Tuesday") rather than the technician
+ * shorthand ("3d ago", "17h ago") this used to emit.
+ *
+ * Signature is unchanged: takes a Date or an ISO string, returns a display string.
+ * An unparseable value returns '' so a caller never prints "Invalid Date".
+ */
+export function formatRelativeTime(date: Date | string): string {
+  const d = typeof date === 'string' ? new Date(date) : date;
+  if (Number.isNaN(d.getTime())) return '';
+
+  const now = new Date();
+  const diffSec = Math.floor((now.getTime() - d.getTime()) / 1000);
+  // Future timestamps (clock skew on an agent check-in) read as "Just now"
+  // rather than a negative count.
+  if (diffSec < 60) return 'Just now';
+
+  const diffMin = Math.floor(diffSec / 60);
+  if (diffMin < 60) return plural(diffMin, 'minute');
+
+  const days = calendarDaysAgo(d, now);
+  if (days === 0) return plural(Math.floor(diffMin / 60), 'hour');
+  if (days === 1) return 'Yesterday';
+  // Inside the last week the weekday is the fastest thing to read.
+  if (days < 7) return `Last ${d.toLocaleDateString('en-US', { weekday: 'long' })}`;
+
+  return formatDate(d);
 }

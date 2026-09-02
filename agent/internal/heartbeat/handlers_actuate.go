@@ -1,14 +1,17 @@
 package heartbeat
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/elevaccount"
 	"github.com/breeze-rmm/agent/internal/pamactuator"
+	"github.com/breeze-rmm/agent/internal/pamlifetime"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
 )
 
@@ -40,6 +43,108 @@ import (
 
 func init() {
 	handlerRegistry[tools.CmdActuateElevation] = handleActuateElevation
+	handlerRegistry[tools.CmdPamApplyV2] = handlePamApplyV2
+	handlerRegistry[tools.CmdPamCleanupV2] = handlePamCleanupV2
+}
+
+const pamLifecycleOperationTimeout = 2 * time.Minute
+
+type legacyPamActuationAdmission interface {
+	AcquireLegacyActuation(context.Context) (func(), error)
+}
+
+type pamReceivedObservationManager interface {
+	ApplyWithReceivedObservation(
+		context.Context,
+		pamlifetime.ApplyCommand,
+		func(pamlifetime.Result) error,
+	) pamlifetime.Result
+}
+
+func handlePamApplyV2(h *Heartbeat, cmd Command) tools.CommandResult {
+	start := time.Now()
+	var payload pamlifetime.ApplyCommand
+	if err := decodePamLifetimePayload(cmd.Payload, &payload); err != nil {
+		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
+	}
+	if err := validatePamLifetimeLocalIdentity(h, payload.DeviceID, payload.OrgID); err != nil {
+		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
+	}
+	if h == nil || h.pamLifetimeManager == nil {
+		return tools.NewErrorResult(errors.New("PAM lifetime manager unavailable"), time.Since(start).Milliseconds())
+	}
+	if !h.pamReconciled.Load() {
+		return tools.NewErrorResult(errors.New("PAM lifetime reconciliation in progress"), time.Since(start).Milliseconds())
+	}
+	if !h.pamReceivedObservationReady.Load() {
+		return tools.NewErrorResult(errors.New("PAM received observation transport unavailable"), time.Since(start).Milliseconds())
+	}
+	if !h.pamVerificationAvailable.Load() {
+		return tools.NewErrorResult(errors.New("PAM lifetime verification unavailable"), time.Since(start).Milliseconds())
+	}
+	if !h.IsUACInterceptionEnabled() {
+		return tools.NewErrorResult(errors.New("PAM lifetime apply is disabled by policy"), time.Since(start).Milliseconds())
+	}
+	manager, ok := h.pamLifetimeManager.(pamReceivedObservationManager)
+	if !ok {
+		return tools.NewErrorResult(errors.New("PAM received observation transport unavailable"), time.Since(start).Milliseconds())
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), pamLifecycleOperationTimeout)
+	defer cancel()
+	result := manager.ApplyWithReceivedObservation(ctx, payload, func(received pamlifetime.Result) error {
+		return h.handOffPamReceivedObservation(ctx, cmd.ID, received)
+	})
+	h.refreshPamLifetimeAvailability()
+	commandResult := tools.NewSuccessResult(result, time.Since(start).Milliseconds())
+	commandResult.Result = result
+	return commandResult
+}
+
+func handlePamCleanupV2(h *Heartbeat, cmd Command) tools.CommandResult {
+	start := time.Now()
+	var payload pamlifetime.CleanupCommand
+	if err := decodePamLifetimePayload(cmd.Payload, &payload); err != nil {
+		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
+	}
+	if err := validatePamLifetimeLocalIdentity(h, payload.DeviceID, payload.OrgID); err != nil {
+		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
+	}
+	if h == nil || h.pamLifetimeManager == nil {
+		return tools.NewErrorResult(errors.New("PAM lifetime manager unavailable"), time.Since(start).Milliseconds())
+	}
+	if !h.pamReconciled.Load() {
+		return tools.NewErrorResult(errors.New("PAM lifetime reconciliation in progress"), time.Since(start).Milliseconds())
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), pamLifecycleOperationTimeout)
+	defer cancel()
+	result := h.pamLifetimeManager.Cleanup(ctx, payload)
+	h.refreshPamLifetimeAvailability()
+	commandResult := tools.NewSuccessResult(result, time.Since(start).Milliseconds())
+	commandResult.Result = result
+	return commandResult
+}
+
+func validatePamLifetimeLocalIdentity(h *Heartbeat, deviceID, orgID string) error {
+	if h == nil || h.config == nil || h.config.DeviceID == "" || h.config.OrgID == "" {
+		return errors.New("PAM lifetime local identity unavailable")
+	}
+	if deviceID != h.config.DeviceID || orgID != h.config.OrgID {
+		return errors.New("PAM lifetime command identity does not match enrolled device")
+	}
+	return nil
+}
+
+func decodePamLifetimePayload(payload map[string]any, destination any) error {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshal PAM lifetime v2 payload: %w", err)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(destination); err != nil {
+		return fmt.Errorf("decode PAM lifetime v2 payload: %w", err)
+	}
+	return nil
 }
 
 // actuatePayload is the typed view of cmd.Payload. Kept local — no
@@ -109,6 +214,30 @@ func handleActuateElevation(h *Heartbeat, cmd Command) tools.CommandResult {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*timeout)
 	defer cancel()
+	if h == nil || h.pamLifetimeManager == nil {
+		return tools.NewErrorResult(errors.New("PAM lifetime manager unavailable"), time.Since(start).Milliseconds())
+	}
+	if !h.pamReconciled.Load() {
+		return tools.NewErrorResult(errors.New("PAM lifetime reconciliation in progress"), time.Since(start).Milliseconds())
+	}
+	if !h.pamVerificationAvailable.Load() {
+		return tools.NewErrorResult(errors.New("PAM lifetime verification unavailable"), time.Since(start).Milliseconds())
+	}
+	if !h.IsUACInterceptionEnabled() {
+		return tools.NewErrorResult(errors.New("PAM lifetime actuation is disabled by policy"), time.Since(start).Milliseconds())
+	}
+	admission, ok := h.pamLifetimeManager.(legacyPamActuationAdmission)
+	if !ok {
+		return tools.NewErrorResult(errors.New("PAM lifetime legacy admission unavailable"), time.Since(start).Milliseconds())
+	}
+	release, err := admission.AcquireLegacyActuation(ctx)
+	if err != nil || release == nil {
+		if err == nil {
+			err = errors.New("PAM lifetime legacy admission unavailable")
+		}
+		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
+	}
+	defer release()
 
 	res := h.actuateElevation(ctx, payload.ElevationRequestID, payload.TimeoutMs,
 		pamTarget{Path: payload.TargetPath, CommandLine: payload.CommandLine, SubjectUsername: payload.SubjectUsername})

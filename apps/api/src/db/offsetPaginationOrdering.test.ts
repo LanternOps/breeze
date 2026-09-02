@@ -75,6 +75,12 @@ const ALLOWED_WITHOUT_LITERAL_ID: ReadonlyArray<{
     reason: 'every branch of the sort switch already ends in asc/desc(tickets.id)',
   },
   {
+    file: 'routes/orgs.listQuery.ts',
+    orderByContains: '...organizationOrderBy',
+    reason:
+      'organizationOrderBy() (same file) ends BOTH of its branches in organizations.createdAt, organizations.id — the empty/junk-order early return IS that pair, and the array_position branch appends it after the preferred-order term (#4004). Unlike the other helper entries here, that is not just prose: routes/orgs.listQuery.test.ts asserts it on the COMPILED SQL for both branches (the tiebreaker follows array_position, and the no-order case emits exactly `order by "organizations"."created_at", "organizations"."id"`), so a regression that dropped the id fails there rather than silently riding this exemption.',
+  },
+  {
     file: 'services/logSearch.ts',
     orderByContains: 'rowsQuery.offset',
     reason:

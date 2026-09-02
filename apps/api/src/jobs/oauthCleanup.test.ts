@@ -99,7 +99,7 @@ describe('oauthCleanup worker', () => {
   });
 
   it('exposes the daily cron pattern at 03:00 UTC', () => {
-    expect(__testOnly.DAILY_CRON).toBe('0 3 * * *');
+    expect(__testOnly.DAILY_CRON).toBe('8 3 * * *');
     expect(__testOnly.JOB_NAME).toBe('oauth-stale-clients-cleanup');
     expect(__testOnly.REPEAT_JOB_ID).toBe('oauth-stale-clients-cleanup');
   });
@@ -124,7 +124,7 @@ describe('oauthCleanup worker', () => {
     expect(data).toEqual({});
     expect(opts).toMatchObject({
       jobId: 'oauth-stale-clients-cleanup',
-      repeat: { pattern: '0 3 * * *' },
+      repeat: { pattern: '8 3 * * *' },
     });
   });
 

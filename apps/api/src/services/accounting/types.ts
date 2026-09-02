@@ -32,6 +32,21 @@ export interface RemoteCustomer extends RemoteEntity {
   billAddr?: RemoteAddress;
   shipAddr?: RemoteAddress;
   active?: boolean;
+  syncToken?: string;
+}
+
+export interface RemoteItem extends RemoteEntity {
+  sku?: string;
+  description?: string;
+  type?: 'Service' | 'NonInventory' | 'Inventory' | 'Category' | string;
+  unitPrice?: number;
+  active?: boolean;
+  syncToken?: string;
+}
+
+export interface RemoteIncomeAccount extends RemoteEntity {
+  accountType: string;
+  accountSubType?: string;
 }
 
 export interface RemoteRef {
@@ -40,12 +55,95 @@ export interface RemoteRef {
   docNumber?: string;
 }
 
+/** A previously-synced remote entity, for update-vs-create decisions. */
+export interface AccountingEntityMapping {
+  remoteEntityId: string;
+  remoteSyncToken: string | null;
+}
+
+export interface AccountingCustomerPayload {
+  organizationId: string;
+  displayName: string;
+  companyName?: string;
+  phone?: string;
+  billingEmail: string | null;
+  taxId: string | null;
+  billAddr?: RemoteAddress;
+  shipAddr?: RemoteAddress;
+  /** The organization's stamped billing currency (ISO 4217, uppercase). */
+  currencyCode: string;
+}
+
+export interface AccountingItemPayload {
+  catalogItemId: string;
+  name: string;
+  sku?: string;
+  description: string | null;
+  /** Service for Breeze `service` items; NonInventory for hardware/software. */
+  type: 'Service' | 'NonInventory';
+  /** Major-unit decimal string — storage stays numeric major units (spec §12). */
+  unitPrice: string;
+  currencyCode: string;
+  taxable: boolean;
+  active: boolean;
+  incomeAccountRef?: string;
+}
+
+export interface AccountingInvoiceLinePayload {
+  invoiceLineId: string;
+  description: string;
+  /** Decimal string; never a float, so no binary rounding enters at this seam. */
+  quantity: string;
+  unitPrice: string;
+  lineTotal: string;
+  taxable: boolean;
+}
+
+export interface AccountingInvoiceLineMapping {
+  invoiceLineId: string;
+  remoteItemRef: RemoteRef | null;
+}
+
+export interface AccountingInvoicePayload {
+  invoiceId: string;
+  docNumber: string | null;
+  /** ISO date (YYYY-MM-DD). */
+  txnDate: string;
+  dueDate: string | null;
+  customerRef: RemoteRef;
+  /** The invoice's STAMPED currency. Never re-derived from the org (snapshots rule). */
+  currencyCode: string;
+  subtotal: string;
+  taxTotal: string;
+  total: string;
+  lines: readonly AccountingInvoiceLinePayload[];
+}
+
+/**
+ * A void carries a payload too, so no accounting method sits outside the typed
+ * currency contract (multi-currency §11). Deliberately wider arity than the
+ * Phase-A sketch, which had `voidInvoice(conn, mapping)`.
+ */
+export interface AccountingVoidInvoicePayload {
+  invoiceId: string;
+  docNumber: string | null;
+  /** The invoice's STAMPED currency, carried so the guard applies on the way out too. */
+  currencyCode: string;
+}
+
 export interface ChangeSet {
   cursor: Date;
   payments: Array<{
     remoteInvoiceId: string;
     remotePaymentId: string;
+    /**
+     * Provider-reported INTEGER MINOR UNITS. Before applying, assert that
+     * `currency` equals the target invoice's stamped currency and convert
+     * exactly once with `fromMinorUnits` — see
+     * services/accounting/accountingCurrency.ts (multi-currency §11).
+     */
     amountMinor: number;
+    /** Provider-reported ISO 4217 code for this payment. */
     currency: string;
     txnDate: string;
   }>;
@@ -56,12 +154,36 @@ export interface AccountingProvider {
   buildAuthUrl(state: string): string;
   exchangeCode(code: string, realmId: string): Promise<ConnectionTokens>;
   refresh(refreshToken: string): Promise<ConnectionTokens>;
+  /**
+   * The realm/organization's home currency, normalized to an uppercase
+   * three-letter code, or null when the provider does not report one.
+   * NOT restricted to Breeze's curated supported-currency list — it is a cache
+   * of an external fact (multi-currency §11).
+   */
+  fetchHomeCurrency(conn: AccountingConnection): Promise<string | null>;
   listRemoteCustomers(conn: AccountingConnection, query?: string): Promise<RemoteCustomer[]>;
-  listRemoteItems(conn: AccountingConnection, query?: string): Promise<RemoteEntity[]>;
-  upsertCustomer(...args: unknown[]): Promise<RemoteRef>;
-  upsertItem(...args: unknown[]): Promise<RemoteRef>;
-  pushInvoice(...args: unknown[]): Promise<RemoteRef>;
-  voidInvoice(...args: unknown[]): Promise<void>;
+  listRemoteItems(conn: AccountingConnection, query?: string): Promise<RemoteItem[]>;
+  listRemoteIncomeAccounts(conn: AccountingConnection): Promise<RemoteIncomeAccount[]>;
+  upsertCustomer(
+    conn: AccountingConnection,
+    customer: AccountingCustomerPayload,
+    mapping: AccountingEntityMapping | null,
+  ): Promise<RemoteRef>;
+  upsertItem(
+    conn: AccountingConnection,
+    item: AccountingItemPayload,
+    mapping: AccountingEntityMapping | null,
+  ): Promise<RemoteRef>;
+  pushInvoice(
+    conn: AccountingConnection,
+    invoice: AccountingInvoicePayload,
+    lineMappings: readonly AccountingInvoiceLineMapping[],
+  ): Promise<RemoteRef>;
+  voidInvoice(
+    conn: AccountingConnection,
+    invoice: AccountingVoidInvoicePayload,
+    mapping: AccountingEntityMapping,
+  ): Promise<void>;
   reconcileChanges(conn: AccountingConnection, sinceCursor: Date | null): Promise<ChangeSet>;
   verifyWebhook(signatureHeader: string, rawBody: string, verifierToken: string): boolean;
 }

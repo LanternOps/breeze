@@ -46,7 +46,8 @@ async function seedFixture(orgCurrency = 'EUR'): Promise<Fixture> {
     await db.insert(timeEntries).values({
       partnerId, orgId, userId, startedAt: now, endedAt: now,
       durationMinutes: 60, description: 'Work', isBillable: true,
-      hourlyRate: '100.00', billingStatus: 'not_billed', isApproved: true
+      hourlyRate: '100.00', billingStatus: 'not_billed', isApproved: true,
+      currencyCode: orgCurrency
     });
     return { partnerId, orgId, userId };
   });
@@ -127,20 +128,28 @@ describe.runIf(RUN)('issueInvoice keeps the stamped header currency (B1)', () =>
     expect(issued.balance).toBe('100.00');
   });
 
-  it('JPY draft: header-currency rounding drives the persisted total (3 × 333.33 → 1000)', async () => {
+  it('JPY draft: header-currency rounding drives the persisted total (3.5 × 333 → 1166)', async () => {
     const f = await seedFixture('JPY'); // USD partner, JPY org
     const inv = await withDbAccessContext(ctx(f), () =>
       svc.createManualInvoice({ orgId: f.orgId }, actor(f)));
     expect(inv.currencyCode).toBe('JPY');
+    // The unit price itself must be representable in the header currency — a
+    // fractional yen is refused at the write seam since wave 6 (W6-G1-1), so
+    // the rounding this case exercises comes from the QUANTITY, not from an
+    // unrepresentable price.
+    await expect(withDbAccessContext(ctx(f), () =>
+      svc.addManualLine(inv.id, { description: 'Consulting', quantity: 3, unitPrice: 333.33, taxable: false }, actor(f))
+    )).rejects.toMatchObject({ status: 400, code: 'PRICE_NOT_REPRESENTABLE' });
+
     await withDbAccessContext(ctx(f), () =>
-      svc.addManualLine(inv.id, { description: 'Consulting', quantity: 3, unitPrice: 333.33, taxable: false }, actor(f)));
+      svc.addManualLine(inv.id, { description: 'Consulting', quantity: 3.5, unitPrice: 333, taxable: false }, actor(f)));
 
     const issued = await withDbAccessContext(ctx(f), () => svc.issueInvoice(inv.id, actor(f)));
     expect(issued.currencyCode).toBe('JPY');
-    // 3 × 333.33 = 999.99 rounds to a WHOLE-unit JPY total, not the USD-cent
-    // 999.99 the partner currency would have produced.
-    expect(issued.total).toBe('1000.00');
-    expect(issued.subtotal).toBe('1000.00');
-    expect(issued.balance).toBe('1000.00');
+    // 3.5 × 333 = 1165.5 rounds to a WHOLE-unit JPY total, not the USD-cent
+    // 1165.50 the partner currency would have produced.
+    expect(issued.total).toBe('1166.00');
+    expect(issued.subtotal).toBe('1166.00');
+    expect(issued.balance).toBe('1166.00');
   });
 });

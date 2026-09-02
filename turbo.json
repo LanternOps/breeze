@@ -3,7 +3,9 @@
   "globalPassThroughEnv": [
     "DATABASE_URL",
     "REDIS_URL",
-    "NODE_ENV"
+    "NODE_ENV",
+    "BREEZE_APP_DB_PASSWORD",
+    "POSTGRES_PASSWORD"
   ],
   "tasks": {
     "build": {

@@ -4,6 +4,60 @@ Tracking file for post-implementation feature verification results. Entries are 
 
 Use the `feature-testing` skill to run structured verification and record results here.
 
+## Auth browser/native transition Phase 1 foundation (#3852) — 2026-08-23
+
+**Branch:** `feat/3852-auth-browser-transition`
+**Tested by:** Codex
+**Result:** PASS — additive Phase 1 only; external telemetry gate not crossed
+
+### Scope verified
+
+- Native transition-v1 capability signaling and signed binding persistence under `breeze_native_auth_binding_v1`.
+- One HTTP-428 replacement retry, subsequent binding use, stale-install rotation, and no second retry.
+- Session-generation fencing across login, MFA, refresh binding writes, and logout; logout wipes token, CSRF mirror, and native binding even after network failure.
+- Enforcement-false legacy accounting through `auth_transition_legacy_issuer_total{issuer,client_class}` and stable enforcement-time HTTP 426 behavior (existing W07-A–E route/service contracts retained).
+- Expired-pending retirement bounded to 500 rows with `FOR UPDATE SKIP LOCKED`; unknown jobs reject; permanent tombstones remain and `deletedRetired=0`.
+- Chromium contracts cover late pre-logout issuer response rejection and cookie-less, replay-inert CF completion.
+
+### Evidence
+
+- RED: `pnpm --filter=breeze-mobile exec vitest run src/services/sessionGeneration.test.ts` — failed because `sessionGeneration` did not exist.
+- GREEN: same command — 1 file, 3 tests passed.
+- RED: `pnpm --filter=breeze-mobile exec vitest run src/services/api.logout.test.ts src/services/api.mfa.test.ts` — 2 files failed, 4/5 tests failed for missing binding/retry/logout wipe behavior.
+- GREEN: `pnpm --filter=breeze-mobile exec vitest run src/services/api.logout.test.ts src/services/api.mfa.test.ts src/services/sessionGeneration.test.ts src/store/authSlice.test.ts` — 4 files, 31 tests passed.
+- RED: `pnpm --filter=breeze-mobile exec vitest run src/services/api.logout.test.ts` — 1/3 tests failed because an already-running persistence write landed after logout cleanup.
+- GREEN: focused native suite after serializing cleanup — 4 files, 32 tests passed.
+- RED: `pnpm --filter=breeze-mobile exec vitest run src/services/api.logout.test.ts` — 1/4 tests failed because a delayed refresh returned `access-stale` after logout.
+- GREEN: focused native suite after fencing the refresh return — 4 files, 33 tests passed; full mobile suite 47 files, 558 passed and 3 skipped.
+- RED: `pnpm --filter=@breeze/api exec vitest run src/jobs/authBrowserTransitionCleanup.test.ts` — failed because the worker module did not exist.
+- GREEN: `pnpm --filter=@breeze/api exec vitest run src/jobs/authBrowserTransitionCleanup.test.ts src/services/authBrowserTransition.test.ts src/services/authTransitionMetrics.test.ts` — 3 files, 48 tests passed.
+- Enforcement contract: password legacy accounting for web/native clients plus enforcement-time HTTP 426 — 3 tests passed (43 unrelated tests skipped by the name filter).
+- Closure API unit contract: 8 files, 92 tests passed.
+- Real-DB integration contracts, run individually with both superuser and `breeze_app` URLs pinned to the same isolated stack: 11 + 5 + 9 + 12 = 37 tests passed.
+- RLS forge contract: 9 tests passed; RLS coverage: 75 tests passed.
+- Chromium real-stack contract: 2 tests passed; browser discovery listed 2 tests and the e2e TypeScript check exited 0.
+- Web suite: the initial resource-contended run passed 624 files/6,364 tests and timed out only the filesystem scan, which then passed 2/2 alone. The resource-stable four-shard rerun passed all 625 files/6,365 tests (shards: 1,617 + 1,946 + 1,200 + 1,602).
+- Static/build gates: API TypeScript (8 GB heap), Astro check (0 errors), mobile TypeScript, API/web lint, API/web builds, schema drift, CI YAML parse, and `git diff --check` exited 0.
+
+### Independent-review hardening
+
+- **AUTH-01:** Native requests now capture their session generation synchronously before the first await and recheck it before every send/retry, response-owned mutation, and issuer return. Deterministic server-URL, binding-retry, and stale-error barriers cover A → logout → B supersession, including generation-fenced CSRF deletion.
+- **AUTH-02:** Session-owned secure writes and complete token/user/CSRF/native-binding teardown now share the serialized generation queue. Local invalidation advances once and queues cleanup before slow logout I/O; login/MFA, refresh, and AI-chat bearer persistence are fenced. Tests cover slow persistence, delayed/failed logout, synchronous invalidation, and A → logout → B.
+- **BROWSER-01:** A fail-closed test-only barrier can pause after issuer admission and before finalization only when `NODE_ENV=test`, `E2E_MODE` is enabled, and a 32+-character secret matches. Real Chromium proves logout invalidates the admitted issuer before release, and the CF completion contract observes exactly one successor row at generation 1 across replay.
+- **CI-01:** `ci-success` now exports the browser contract result and fails unless it is `success`; a workflow contract locks both the environment mapping and predicate.
+- **JOB-01:** Cleanup worker initialization is idempotent; two calls construct exactly one worker.
+- Review RED (native): `pnpm --filter=breeze-mobile exec vitest run src/services/api.logout.test.ts src/services/auth.test.ts src/services/aiChat.test.ts src/store/authSlice.test.ts` — exit 1; 7 failed and 52 passed across 4 files.
+- Review RED (cleanup/CI): `pnpm --filter=@breeze/api exec vitest run src/jobs/authBrowserTransitionCleanup.test.ts src/config/authBrowserTransitionWorkflowContract.test.ts` — exit 1; 2 failed and 4 passed across 2 files.
+- Review RED (browser seam): `pnpm --filter=@breeze/api exec vitest run src/routes/auth/authTransitionTestBarrier.test.ts` — exit 1 because the intentionally test-first barrier module did not exist.
+- Review GREEN (native final): `pnpm --filter=breeze-mobile exec vitest run src/services/api.logout.test.ts src/services/api.mfa.test.ts src/services/auth.test.ts src/services/aiChat.test.ts src/services/sessionGeneration.test.ts src/store/authSlice.test.ts src/store/resettable.test.ts src/store/logoutResetContract.test.ts` — exit 0; 8 files and 74 tests passed.
+- Review GREEN (API final): `pnpm --filter=@breeze/api exec vitest run src/jobs/authBrowserTransitionCleanup.test.ts src/config/authBrowserTransitionWorkflowContract.test.ts src/routes/auth/authTransitionTestBarrier.test.ts src/routes/auth/login.test.ts` — exit 0; 4 files and 56 tests passed.
+- Review GREEN (real Chromium): `pnpm --dir e2e-tests exec playwright test --config=playwright.auth-browser-transition.config.ts` — exit 0; 2 tests passed in 2.9 seconds against the isolated controller-managed stack.
+- Review static gates: API TypeScript with an 8 GB heap, mobile TypeScript, E2E TypeScript, targeted API ESLint, CI YAML safe parse, browser discovery, and `git diff --check` exited 0. Mobile/E2E expose no lint script and the root has no flat ESLint config, so a direct root ESLint probe exited 2 at configuration discovery without linting source.
+
+### Phase boundary
+
+The legacy issuer seam and one-argument family mint overload remain active, final zero-legacy source assertions remain inactive, no guard-complete marker is true/exported, and neither production flag is enabled. Released minimum mobile version, app-store availability, and the full configured maximum refresh-family lifetime of zero supported-client legacy events remain external Phase 2 prerequisites documented in `docs/operations/auth-browser-transition-rollout.md`.
+
 ## Pax8 ordering (organization UI, orders API, and quote handoff) — 2026-07-14
 
 **Branch:** `ToddHebebrand/pax8-ordering`
@@ -4750,3 +4804,525 @@ guard; covered by its own integration tests, no browser surface exercised here.
    reboot toast does fire; "API 0.82.0" in the footer came from the stale local `.env`.
 
 **Backward-PR pass reached #3494** (2026-08-13). Older PRs were not re-verified — resume there.
+
+---
+
+## UI QA Sweep — 2026-08-24
+
+**Env**: per-worktree stack (`pnpm wt-stack up`) on branch `fix/3836-manifest-asset-name`
+(f580cb580), `baseUrl=http://localhost:32797`, seeded `e2e-tests/seed-fixtures.sql`
+(1 org "Default Partner", 2 offline device fixtures). Browser: ego-browser (Chromium).
+Login `admin@breeze.local` / `BreezeAdmin123!` — works. `E2E_MODE` is **unset** in the API
+container, so rate limiters are production-representative.
+
+### Auth / session — FAIL (blocker-class)
+- ❌ **BUG: 11 ordinary sidebar navigations inside ~20s force-logs the user out.**
+  Repro (clean login, then navigate in order): `/devices`, `/alerts`, `/scripts`,
+  `/patches`, `/reports`, `/analytics`, `/audit`, `/logs`, `/settings/users`,
+  `/settings/roles`, `/integrations` — the 11th lands on
+  `/login?next=%2Fintegrations&reason=session-expired` showing *"Your session expired.
+  Please sign in again to continue."* Elapsed: **20 seconds**. Nothing was idle, nothing
+  expired: the access token TTL is 900s and was ~19 min from issue.
+  - Mechanism: the access token lives **in memory only**, and the web app is Astro MPA, so
+    *every full page navigation* re-bootstraps by trading the refresh cookie at
+    `POST /api/v1/auth/refresh`. That endpoint is limited to **10 per user per 60s**
+    (`apps/api/src/routes/auth/login.ts:759`, `rateLimiter(redis, 'refresh:'+sub, 10, 60)`).
+    Navigation #11 in a minute gets 429.
+  - The client *does* classify 429 as transient (`apps/web/src/stores/auth.ts:383`) and
+    retries — but with `MAX_TRANSIENT_REFRESH_RETRIES = 2` and
+    `TRANSIENT_REFRESH_BASE_DELAY_MS = 300`, the whole retry budget is **~0.9s**, spent
+    entirely *inside* a 60-second limiter window. Every retry is guaranteed to 429 too.
+    The backoff cannot ever help against a windowed limiter; it only helps a one-off 502
+    (the case #3041/#3041-era work was aimed at).
+  - The limiter key is **per user, not per session**, so multiple tabs share one budget and
+    reach the cap ~N× faster.
+- ❌ **Second, worse symptom of the same cause: pages that render but are silently empty.**
+  Mid-trip (`/integrations`, `/incidents`) the page did *not* redirect — it rendered its
+  chrome with **every** data call 401'd (`/webhooks`, `/orgs/organizations`,
+  `/orgs/partners/me`, `/system/version`, `/extensions/registry`, `/incidents/feed`) and
+  showed no error, no toast, no retry affordance. This is the classic silent-failure class:
+  a user sees an "empty" Integrations page and concludes they have no integrations.
+- ⚠️ UI/UX: the eviction copy says "Your session expired", which is actively misleading —
+  the session had ~19 minutes left; the user was rate-limited, not expired.
+- Consequence for the rest of this sweep: all subsequent navigation is paced ≥7s apart to
+  stay under the limiter. Noted because it makes the defect hard to miss in real use.
+
+### Phase 2 — Nav crawl (53 sidebar destinations) — PASS with papercuts
+- ✅ All 53 sidebar destinations render, correct `<title>`, no JS exceptions, no unhandled
+  rejections, no 4xx/5xx on primary data calls (once navigation is paced under the refresh
+  limiter). Nav surface is larger than the skill's list — it now also includes Tickets,
+  Vulnerabilities, OneDrive, DNS Security, PAM, User Risk, Quotes, Invoices, Contracts,
+  Timesheets, Product Catalog, Device Groups, Fleet Posture, Variables, SSO, Access Reviews,
+  AI Agents.
+- ⚠️ UI/UX: five pages still show only a spinner at 3s and need ~8–12s to paint:
+  `/discovery` ("Loading discovered assets..."), `/pam` ("Loading overview…"),
+  `/timesheet` ("Loading…"), `/reports` ("Loading reports..."),
+  `/settings/ai-agents` ("Loading agents…"). All resolve correctly; on a 2-device seed
+  this is slower than it should be.
+- ⚠️ UI/UX: `/cis-hardening` fires two `AbortError: signal is aborted without reason`
+  fetch rejections on every load (`/cis/compliance?limit=1`, `/cis/baselines?active=true&limit=1`) —
+  double-effect abort noise, harmless but pollutes the console.
+
+### i18n rendering defects — FAIL (2 distinct systemic classes, both user-visible)
+- ❌ **BUG (class A): `<Trans>` misparses literal angle brackets — Enrollment Keys page shows
+  raw `&lt;key>`.** `/settings/enrollment-keys` subtitle renders literally as
+  *"Use these keys with breeze-agent enroll &lt;key>"*. DOM proof:
+  `innerHTML === "…breeze-agent enroll &amp;lt;key&gt;"`.
+  Root cause: `EnrollmentKeyManager.tsx:497` renders the string through
+  `<Trans i18nKey="enrollmentKeys.description" components={{ code: … }} />`. The en string
+  (`locales/en/settings.json:538`) is plain text containing `<key>`; i18next's `Trans` parses
+  it as markup, finds a `<key>` tag with no matching entry in `components`, and escapes it.
+  Two bugs in one line: the `components={{ code }}` map is also **dead** — no locale variant
+  of this string contains a `<code>` tag. Affects all 8 locales (all carry plain `<key>`).
+- ❌ **BUG (class B): i18n codemod dropped the space between a label key and the following
+  expression — 14 call sites render glued text.** Confirmed visually on `/settings/sso`:
+  *"0 of0 providers"* (`SsoProviderList.tsx:87` — `{t('ssoProviderList.of')}{providers.length}`,
+  and en value is `"of"` with no trailing space). Same shape at:
+  `AccessReviewPage.tsx:668` ("Due{date}"), `:701` ("N of{total} reviewed"),
+  `:756` ("Showing{N} of{M} users"), `AccessReviewForm.tsx:135` ("Step{n} of{total}"),
+  `AccessReviewList.tsx:138`, `ApiKeyList.tsx:103` + `:237` ("Page{n} of{total}"),
+  `CatalogItemsTab.tsx:539` ("Showing the first{100}"), `RoleManager.tsx:395`
+  ("Permissions for{role}"), `TdSynnexEcExpressPanel.tsx:428` ("SYNNEX SKU{sku}"),
+  `SsoProviderForm.tsx:277`, `MFASettings.tsx:584`, `FileManager.tsx:1218` ("Activity{n}").
+  (Method: regex for `{t('KEY')}{expr` excluding `{' '}`, then resolve KEY against
+  `locales/en/*.json` and keep only values with no trailing space/punctuation. 21 raw
+  suspects, 7 were false positives where the following template literal begins with a space.)
+- ❌ **BUG (class B, related): 9 en locale strings contain raw HTML entities** that React
+  renders literally: `alerts.json` `suppressAlertDialog.howLongShould` (`&ldquo;`) and
+  `staySuppressed` (`&rdquo;`), `createTicketFromAlertDialog.*` (`&apos;` ×2),
+  `backup.json` `recoveryBootstrapTab…` (`&lt;token&gt;`, `&lt;api-server&gt;`),
+  `integrations.json` `unifiIntegration.*` (`&nbsp;` ×2),
+  `policies.json` `configurationPolicies.featureTabs.patchTab.times` (`&times;`),
+  `security.json` `sensitiveDataCreateScanModal.form.deviceIdsPlaceholder` (`&#10;`).
+
+### Phase 3 — Alerts (ack / resolve / suppress) — PARTIAL
+- ✅ **Suppress**: row "Mute" → dialog → pick "1 hour" → Suppress. Toast
+  `"E2E fixture: high CPU" suppressed` **with an Undo affordance**, row STATUS → `Suppressed`,
+  ACTIVE ALERTS counter 2 → 1, row actions correctly collapse to just `Dismiss`. Good pattern.
+- ✅ **Acknowledge**: toast `Alert Acknowledged`, STATUS → `Acknowledged`, `Ack` button removed
+  from the row.
+- ✅ **Resolve**: row `Resolve` opens the detail drawer → drawer `Resolve` reveals an inline
+  "Resolution Note" confirm with `Cancel` / `Resolve Alert` →
+  `POST /api/v1/alerts/{id}/resolve` 200, list refetched, STATUS → `Resolved`, drawer closed.
+- ❌ **BUG: alert detail drawer prints a raw user UUID instead of a name.** The drawer shows
+  *"Acknowledged  8/24/2026, 5:00:19 PM by 9cea2f85-2da1-445d-88cc-7c404d7504c4"*.
+  `AlertDetails.tsx:259` and `AlertDetailPage.tsx:435` render `{alert.acknowledgedBy}` verbatim
+  and the API returns the user id, not a display name. Two render sites, same defect.
+- ❌ **BUG (see i18n class B above, confirmed live): the Suppress dialog prints raw HTML
+  entities.** Rendered text is literally
+  *How long should &ldquo;E2E fixture: high CPU&rdquo; stay suppressed?*
+  DOM proof: `<p …>How long should &amp;ldquo;E2E fixture: high CPU&amp;rdquo; stay suppressed?</p>`.
+- ✅ Resolve **does** toast (`alertsPage.alertResolved`) — `AlertsPage.tsx:268` routes it through
+  `runAction` with a `successMessage`. An earlier reading here recorded "Resolve fires no toast";
+  that was a measurement artifact (see the toast-timing note below), not a defect.
+- ⚠️ QA note (methodology, not a product bug): the alert drawer is a `fixed inset-0 z-50` div
+  with **no `role="dialog"`**, and the row-level `Resolve` button sits *underneath* it at
+  overlapping coordinates. `document.querySelectorAll('button')` picking "the last Resolve"
+  selects the **table's** button, not the drawer's, and `elementFromPoint` at its centre
+  returns the drawer's scroll container. This produced a false "Resolve silently does nothing"
+  reading on the first pass. Scope button lookups to the drawer element.
+
+### Phase 3 — Devices (list, filters, detail, actions) — PASS
+- ✅ Quick-filter chips work and write state to the URL **hash** (`#filtersV2=<base64>`), matching
+  the repo's URL-state convention. `Offline` → "Showing 1 to 2 of 2"; `Online` → "0 of 2 devices",
+  "Advanced filter active", and a real empty state ("No devices found. Try adjusting your search
+  or filters.") rather than a blank table.
+- ✅ Dashboard/device-list consistency **verified, not a bug**: dashboard tiles read
+  `Online 0 / 0%`, `Fleet Status 0/2 online`, and the API agrees
+  (`/devices/stats` → `{"total":2,"online":0,"offline":2}`). (An early-crawl reading of
+  "Online 2 100%" was taken seconds after seeding while both fixtures were still inside the
+  online window — same false positive noted in the previous sweep. Dismissed again.)
+- ✅ Device detail tabs all render and are hash-routed: `#details`, `#performance`, `#alerts`,
+  `#anomalies`, `#tickets`, `#eventlog`. Details shows OS/agent/enrollment; Event Log shows a
+  proper empty state with source explanations.
+- ✅ **Offline-device action handling is exemplary.** `Run Script`, `Connect Desktop`,
+  `Remote Tools`, `Power` are all `disabled` **and** carry `title="Device is offline"`.
+  `Wake` is enabled, POSTs `/devices/{id}/commands` → **412**, and surfaces a precise toast:
+  *"e2e-windows.local: No MAC address on file. The agent must check in at least once before
+  Wake-on-LAN is available."* This is the behaviour the rest of the app should copy.
+- ⚠️ UI/UX: `GET /api/v1/reliability/{deviceId}` returns **404** on every device-detail tab
+  switch. The UI degrades correctly ("No reliability snapshot available yet."), but "no snapshot
+  yet" is being modelled as 404 rather than 200-with-empty, so every tab click logs a failed
+  request.
+- ⚠️ QA note: the device tab bar labels (`Alerts`, `Tickets`, `Event Log`) collide by text with
+  **sidebar** nav links. An unscoped `querySelectorAll('button,a')` lookup clicks the sidebar and
+  navigates away from the device — scope to `main`.
+
+### Phase 4 — Notification channels (create + Test) — PASS
+- ✅ `/alerts/channels` create flow: `New Channel` → inline form carrying the **partner/org
+  `ownerScope` radio pair** (`notification-channel-owner-partner` / `-org`, defaulting to org),
+  which is the Partner-Wide-First contract. Filled name + recipient →
+  `POST /api/v1/alerts/channels` **201**, toast `Channel Created`, list refreshed to
+  "1 of 1 channels", row shows `Active` / `Never Tested`.
+- ✅ **Channel `Test` surfaces the real failure reason.** `POST /alerts/channels/{id}/test`
+  returns **HTTP 200** with `{"testResult":{"success":false,"message":"Resend error: Invalid \`to\`
+  field. Please use our testing email address instead of domains like \`example.com\`…"}}`, and the
+  UI toasts **that exact message** while flipping the row to `Failed` / `Last test: Just Now`.
+  This is the 200-with-failure-body case CLAUDE.md's `runAction` contract exists for, and it is
+  handled correctly (`runChannelTest` in `NotificationChannelsPage.tsx`).
+- ⚠️ UI/UX: with zero channels and no filter applied, the empty state reads *"No notification
+  channels found. Try adjusting your search or filters."* — it blames filters for what is really
+  a first-run empty state. Compare `/software` ("No software packages yet. Add one to get
+  started.") and `/scripts` ("No scripts yet — create your first script…"), which get this right.
+
+### ⚠️ METHODOLOGY WARNING for future sweeps — toasts auto-dismiss in well under 8s
+Two "silent failure" findings on this sweep were **false**, both from probing the DOM too late.
+A `wait(8)` after an action finds no toast even when one fired at t+0.2s. Probe at **t+1–2s**, or
+install a `MutationObserver` on `document.body` before the click and read the recorded log
+afterwards:
+```js
+window.__toastLog=[]; new MutationObserver(ms=>{for(const m of ms)for(const n of m.addedNodes)
+  if(n.nodeType===1){const t=(n.innerText||'').trim(); if(t&&t.length<400) window.__toastLog.push(t)}})
+  .observe(document.body,{childList:true,subtree:true})
+```
+Then confirm against the source (`runAction({ successMessage })`) before filing. Combined with the
+`role="dialog"`-less overlay trap already in this skill, **selector scope + probe timing** are the
+two ways this sweep manufactures fake bugs.
+
+### Phase 4 — Organizations & Sites — PARTIAL
+- ✅ Create org: slug **auto-derives** from the name as you type ("QA Sweep Org" → `qa-sweep-org`).
+  `POST /orgs/organizations` 201, org appears in the list and is auto-selected.
+- ✅ Validation on empty submit is correct and readable: inline **and** toasted
+  *"Organization name is required"* / *"Slug is required"*, and **no API call is fired**.
+  No `[object Object]`, no silence.
+- ✅ The guided first-site flow is genuinely good: after creating an org the right pane shows
+  *"Add the first site for QA Sweep Org — Organizations need at least one site, this is where
+  devices will live. You can add more later."* with a `Skip for now` escape and the hint
+  *"Only the site name is required."* `Create first site` → `POST /orgs/sites` 201, list → "1 of 1 sites".
+- ❌ **BUG: organization `slug` is declared UNIQUE in the Drizzle model but has no unique index in
+  the database — duplicate slugs are accepted.** Repro: create "QA Sweep Org" with slug
+  `qa-sweep-org`, then create "QA Sweep Org Dup" with the **same** slug → `POST
+  /api/v1/orgs/organizations` returns **201**, and `GET /orgs/organizations` then lists two orgs
+  under one partner both carrying `slug: "qa-sweep-org"`.
+  - Model says unique: `apps/api/src/db/schema/orgs.ts:21` —
+    `slug: varchar('slug', { length: 100 }).notNull().unique()`.
+  - Database disagrees: `\d organizations` shows only `organizations_pkey (id)`,
+    `organizations_id_partner_id_unique (id, partner_id)`, `organizations_id_partner_uq (id, partner_id)`
+    and the partial `organizations_partner_quick_support_uniq (partner_id) WHERE type='quick_support'`.
+    **There is no index on `slug` at all.**
+  - No app-layer guard either: the `POST /organizations` handler (`routes/orgs.ts:37`) and the
+    update path (`:386`) write `data.slug` straight through with no pre-existence check.
+  - Blast radius **today is limited** — `organizations.slug` is only ever projected into responses
+    (`routes/orgs.ts:1174`, `routes/partnerApi/organizations.ts:268`, `services/aiToolsOrgs.ts`),
+    never used in a `WHERE`, except `db/seed.ts:1095`. So this is a data-integrity/API-contract bug
+    rather than a live tenant-isolation break — but the partner API hands slugs to external
+    consumers as if they were stable identifiers, and any future slug-based lookup would silently
+    become cross-tenant.
+  - `pnpm db:check-drift` does **not** catch this class (it does not diff the Drizzle model against
+    the live database), which is why a model-only `.unique()` has survived.
+
+### Environment correction mid-sweep — the first stack was 47 commits stale
+Phases 2–4 above ran against the worktree branch `fix/3836-manifest-asset-name` (f580cb580),
+which is **47 commits behind `origin/main`**. None of #3921/#3923/#3924/#3926/#3929/#3931/#3953
+were in it. Every finding above was therefore re-checked against `origin/main` by source before
+filing, and the two cheapest were re-confirmed **in a browser** on a second stack built at
+`origin/main` (`6ec30b06a`, `http://localhost:32802`): the Enrollment Keys `&lt;key>` string and
+the SSO `0 of0 providers` count both still render wrong there.
+
+**Lesson for this skill:** check `git rev-list --count HEAD..origin/main` *before* Phase 2. A
+worktree stack tests the worktree, and the backward-PR pass is meaningless on a stale base.
+
+### Phase 5 — Backward-through-PRs pass (on the `origin/main` stack)
+- ✅ **#3926** *fix(web,api): persist and show WHY a notification channel test failed (#3697)* —
+  **verified, and the before/after is visible across the two stacks.** On the stale branch the
+  failure reason existed only in a transient toast and the row showed just `Failed`. On `main` the
+  row now reads:
+  `QA Main Email | Email | Active | qa-main@example.com | Failed | Last test: Just Now | Reason:
+  Resend error: Invalid \`to\` field. Please use our testing email address instead of domains like
+  \`example.com\`…` — persisted, not just toasted.
+- ✅ **#3877** *in-app approval notifications + /approvals inbox* — `/approvals` renders, correct
+  empty state ("No approvals waiting — New requests will appear here when your decision is needed.").
+- ✅ **#3914** *per-partner LLM BYOK wave 4 — AI Provider settings tab* — Partner Settings now lists
+  **"AI Provider — Bring your own Anthropic key"** alongside AI Budgets.
+- ✅ **#3878 / #3806** *quotes revision lineage* — `/billing/quotes` status filter includes
+  **`Superseded`**, the status those waves added.
+- ✅ **#3805** *public invoice pay link* — `/billing/invoices` renders with its empty state.
+- ⚠️ **#3923** *alert rule "Test" reports the real evaluation verdict* — **NOT VERIFIED.**
+  `/alerts/rules` redirects to `/configuration-policies`; alert rules now live behind a
+  Configuration Policy feature link, so reaching a rule's `Test` button needs a policy created and
+  a feature linked first. Out of budget this pass — re-test needs: create policy → link alert-rules
+  feature → add rule → Test.
+- ⚠️ **#3929** *stop a double-click on a confirm dialog hit-testing through to the list* —
+  **INCONCLUSIVE.** Attempted via the Organizations delete confirm, but the guided first-site modal
+  overlays the same region after an org is created and the probe kept landing in that form instead
+  of the confirm button. Needs a cleaner fixture (an org that already has a site).
+- Not reached this pass: #3924, #3921, #3953, #3931, #3912, #3915, #3911, #3913, #3883/#3882/#3874
+  (multi-currency), #3814 (portal Guest Ledger), #3790, #3771.
+
+**Backward-PR pass reached #3805 (2026-08-22)** on this run, verifying the UI-affecting subset
+above. The previous sweep reached #3494 — the window between #3494 and #3805 is still unswept.
+
+---
+
+## UI QA Sweep 2026-08-24 — Summary
+
+| Area | Result |
+|---|---|
+| Environment / stack bring-up | PASS (2 stacks: worktree branch, then `origin/main`) |
+| Auth / session under normal navigation | **FAIL** — forced logout in 20s (#3696, still open) |
+| Nav crawl, 53 destinations | PASS |
+| i18n rendering | **FAIL** — 2 systemic classes, 23 sites (#3964, #3965) |
+| Alerts — ack / resolve / suppress | PARTIAL — flows correct, drawer shows raw UUID (#3966) |
+| Devices — list, filters, detail, actions | PASS (offline-action handling is exemplary) |
+| Notification channels — create + Test | PASS |
+| Organizations & Sites — create / guided site / delete | PARTIAL — duplicate slugs accepted (#3967) |
+| Backward-PR pass | PARTIAL — 5 verified, 2 inconclusive, rest not reached |
+
+**Filed:** #3964 (i18n entities/markup), #3965 (i18n missing spaces), #3966 (raw UUID),
+#3967 (org slug uniqueness). **Commented:** #3696 with a tighter repro + a second symptom.
+
+### Top findings
+
+1. **The session bug is the only blocker, and it has a second face nobody has filed.** #3696
+   already documents the forced logout. What today added is that the *more common* outcome is not
+   a redirect at all — it's a page that renders completely and silently 401s every data call. A
+   fix that only stops the hard logout leaves users staring at an Integrations page that looks
+   empty. Fix option 2 in that issue (don't spend the retry budget inside the limiter window) is a
+   prerequisite for option 1, not an alternative — the current 0.9s backoff can never survive a
+   60s window.
+2. **One i18n codemod is still producing user-visible damage across three distinct symptom
+   classes.** #3964 (entities + angle brackets), #3965 (missing spaces), and the older #2649
+   (humanized key names as copy) are all the same extraction pass. 23 confirmed sites between the
+   two new issues. None are individually severe; collectively they make settings screens look
+   unfinished, and they are cheap to guard against with two assertions over `locales/**`.
+3. **The good news is real and worth protecting.** `runAction` adoption is visibly paying off:
+   the channel Test surfaces an HTTP-200-with-failure-body reason verbatim, org validation is
+   inline *and* toasted with no API call fired, the Wake button on an offline device returns 412
+   with a precise explanation, and every disabled device action carries
+   `title="Device is offline"`. The empty states on `/scripts`, `/software`, `/approvals` and
+   `/billing/*` are specific and actionable. This app degrades well.
+4. **Two of my own "silent failure" findings were false**, both from probing the DOM 5–8s after a
+   click when the toast had already dismissed, plus one from an unscoped selector clicking a
+   sidebar link instead of a device tab. Both traps are now written up above. Any future run of
+   this skill should assume its first "X does nothing" reading is a measurement error until it has
+   checked the source for `runAction({ successMessage })`.
+5. **Smaller, unfiled papercuts** (recorded above, not worth individual issues): `/discovery`,
+   `/pam`, `/timesheet`, `/reports`, `/settings/ai-agents` need 8–12s to paint on a 2-device seed;
+   `/cis-hardening` throws two `AbortError` fetch rejections per load; `GET /reliability/{id}`
+   404s on every device-tab switch to mean "no data yet"; the channels empty state blames filters
+   when there is simply nothing yet.
+
+---
+
+## MFA Client Completion — 2026-08-28
+
+Implemented the approved #2489 / #3853 / #3854 client-completion slices on
+`feat/2489-mfa-client-completion` without push, deploy, rollout-flag changes, or W07 native transport.
+
+- API full unit suite: **PASS** — 1,597 files passed, 3 skipped; 28,118 tests passed, 22 skipped.
+- Web full unit suite: **PASS** — 660 files / 6,806 tests passed.
+- Mobile full unit suite: **PASS** — 54 files passed; 648 tests passed, 3 skipped.
+- Auth-focused API regression set: **PASS** — 163 tests, including live TOTP policy checks,
+  auth/MFA epoch CAS behavior, method switching, recovery handling, SMS, passkey, and atomic enrollment.
+- Web MFA/store regressions: **PASS** — delayed enrollment responses cannot overwrite logout or a
+  replacement login; locale parity passes for all supported locales.
+- API and web TypeScript checks, mobile typecheck, API/web lint, and API/web production builds: **PASS**.
+- Independent security review: no critical findings; all three important findings were fixed and
+  covered by regressions. The passkey compatibility alias was also aligned with the policy-filtered
+  method set, and invalid SSO-link recovery attempts now preserve the original retry window.
+- Real-Postgres atomicity suite: **PASS** — 3 tests covering rollback, concurrent single-winner
+  enrollment, and concurrent `auth_epoch` cutoff. The concurrency barrier follows PostgreSQL's full
+  transitive lock-wait chain so queued enrollment transactions are counted deterministically.
+
+---
+
+### Re-verify — 2026-09-01 (post-fix, pre-0.109.0)
+
+Browser re-verification of four fixes merged to `main` today, against a freshly rebuilt seeded
+wt-stack (`release-prep` worktree at `1b733cedb`, baseUrl `http://localhost:32804`,
+`/health` → `{"status":"ok","version":"0.82.0"}`). Playwright MCP for the authenticated app,
+a fresh headless Chromium context for the public portal page.
+
+| # | Area | PR | Result |
+|---|---|---|---|
+| 1 | MFA enrollment error path | #4439 (#4413/#4414/#4471) | ✅ PASS |
+| 2 | FX approximate line | #4440 (#4415) | ✅ PASS |
+| 3 | UniFi integration page | #4437 (#2382) | ✅ PASS |
+| 4 | Portal hydration + quote accept | #4425 (#3906) | ❌ FAIL |
+
+---
+
+#### 1. MFA enrollment error path — ✅ PASS
+
+Account `admin@breeze.local` started at `mfa_enabled=f, mfa_epoch=3`. Enrollment is gated behind a
+current-password re-prompt (`mfa-current-password`), then renders the QR panel.
+
+- ✅ **Wrong code (`111111`) → visible inline error.** Rendered `Invalid MFA code` plus the
+  `mfa-code-rejected-hint` copy: *"That code was not accepted. Your QR code is still valid, so wait
+  for the next code from your authenticator and try again."*
+- ✅ **QR/secret NOT collapsed.** `img[alt="Authenticator QR code"]` still present; `mfa-setup-start`
+  ("Enable") absent — the panel did not fall back to the pre-enrollment state.
+- ✅ **No logout/redirect.** `POST /api/v1/auth/mfa/enable` → **401**, URL stayed
+  `/settings/profile`. This is the #4413 fix: a 401 on the enrollment path no longer trips the
+  global auth redirect.
+- ✅ **Correct code → enrollment completes.** TOTP derived from the pending secret in Redis
+  (`mfa:setup:<userId>`); `POST /auth/mfa/enable` → **200**; "Multi-factor authentication enabled
+  successfully"; **10 recovery codes displayed once**. DB after: `mfa_enabled=t, mfa_method=totp,
+  mfa_epoch=4, 10 codes`.
+- ✅ **Copy codes.** `mfa-copy-recovery-codes` label transitions `Copy codes` → **`Copied`** at 0 ms
+  and reverts at ~1.9 s (clipboard write succeeded, so `mfa-copy-recovery-codes-error` correctly did
+  not render). An explicit outcome, not silence.
+  *Trap:* a first probe ~2.5 s after the click read `Copy codes` and looked like a silent failure —
+  the label had already reverted. Re-measured with in-page 100 ms polling. (Same measurement trap
+  recorded in the 2026-08 sweep.)
+- ✅ **No "View codes" control.** The only `mfa-*` controls on the panel are
+  `mfa-copy-recovery-codes` and `mfa-recovery-regenerate`. Nothing offers to re-display stored codes.
+- ✅ **Regenerate is confirm-gated before any POST.** Clicking `mfa-recovery-regenerate` fired
+  **zero** `recovery-codes` requests (verified in both the page-level fetch log and the Playwright
+  network log) and opened the confirm dialog: *"Regenerate recovery codes? Regenerating immediately
+  invalidates every recovery code you have saved, including printed copies. The replacements are
+  shown once, right after they are generated."* Only on `confirm-regenerate-recovery-codes` did
+  `POST /api/v1/auth/mfa/recovery-codes` → **200** fire.
+- ✅ **TOTP challenge still works.** Signed out, signed back in: the challenge step rendered
+  (method selector Authenticator app / Recovery code), a live TOTP was accepted, landed on Dashboard.
+
+**Observation (not a regression, by design):** confirming regenerate bumps `mfa_epoch` 4 → 5 and
+tears down sessions (`services/…` via `apps/api/src/routes/auth/mfa.ts:1246`), so the very next
+`POST /auth/refresh` 401s and the UI bounces to `/login?reason=session-expired`. The consequence is
+that **the freshly regenerated codes are never actually shown** — the dialog promises "shown once,
+right after they are generated", but the session dies before that render. Worth a follow-up ticket;
+outside the scope of the four checks.
+
+#### 2. FX approximate line (#4415) — ✅ PASS
+
+Surface: `PartnerDashboard` MRR, `data-testid="partner-dashboard-mrr-approx"`. The
+`ApproximateMoneyLine` component (`apps/web/src/components/billing/shared/ApproximateMoneyLine.tsx`)
+stamps `data-approx-state`, which makes the state assertable. Both branches were exercised.
+
+**Branch A — rates available (stack default).**
+`GET /api/v1/billing/reporting-totals?groups=EUR%3A500.00&date=2026-09-01` → **200**
+```json
+{"data":{"status":"available","targetCurrencyCode":"USD","requestedDate":"2026-09-01",
+"maxStalenessDays":7,"rateDate":"2026-09-01","total":"579.50",
+"groups":[{"currencyCode":"EUR","amount":"500.00","convertedAmount":"579.50",
+"rate":"1.15900000","rateDate":"2026-09-01","source":"ecb"}],"unavailableCurrencyCodes":[]}}
+```
+✅ Rendered: `≈ $579.50 approximate · rates as of 2026-09-01`, `data-approx-state="available"`.
+
+**Branch B — rates unavailable (forced).** Temporarily deleted the single `EUR→USD` row from
+`exchange_rates`, reloaded, then restored it.
+`GET /api/v1/billing/reporting-totals?groups=EUR%3A500.00&date=2026-09-01` → **200**
+```json
+{"data":{"status":"unavailable","targetCurrencyCode":"USD","requestedDate":"2026-09-01",
+"maxStalenessDays":7,"rateDate":null,"total":null,
+"groups":[{"currencyCode":"EUR","amount":"500.00","convertedAmount":null,"rate":null,
+"rateDate":null,"source":null,"reason":"missing"}],"unavailableCurrencyCodes":["EUR"]}}
+```
+✅ Rendered: **`≈ total unavailable — no USD exchange rate for EUR`**,
+`data-approx-state="unavailable"` — an explicit line, not the pre-#4415 blank. This is the fix
+verified directly rather than inferred from the available branch.
+✅ `exchange_rates` row restored afterwards (`EUR|USD|1.15900000|ecb`); stack left as found.
+
+#### 3. UniFi integration page (#2382 refactor) — ✅ PASS
+
+`/integrations#unifi`.
+
+- ✅ Page loads; cards render from the split modules — heading "UniFi Network", "Not connected"
+  badge, `ConnectionChooser` radiogroup (Cloud (Site Manager API key) / Self-hosted controller),
+  API-key field, "Connect to UniFi", "View UniFi documentation".
+- ✅ **Console clean on load** — 0 errors, 0 warnings. No React errors, no hydration warnings.
+- ✅ **Mutation surfaces an outcome (runAction contract).** Submitted an invalid API key:
+  `POST /api/v1/unifi/connect` → **400**, and a toast (`data-testid="toast"`) appeared at ~600 ms
+  reading **"Could not validate the UniFi API key. Check the key and host URL."**, auto-dismissing
+  at ~5.5 s (matches the 5 s default in `apps/web/src/components/shared/Toast.tsx:103`).
+- ✅ Only console errors afterwards are the two expected `400` resource lines from the deliberate
+  bad input.
+  *Trap (again):* the first probe at ~2.5 s post-click found no toast because the tool round-trip
+  had already consumed the window. Confirmed with in-page polling — not a silent failure.
+
+#### 4. Portal hydration + quote accept (#3906 / PR #4425) — ❌ FAIL
+
+Setup: created quote **Q-2026-0002** ("Portal Hydration QA 0901") for `Euro Test GmbH` (EUR),
+€400.00, sent it through the UI (30 s undo window elapsed → `status=sent`, `accept_token_jti` set).
+`GET /api/v1/quotes/:id/share-link` → **200**, `acceptUrl = https://2breeze.app/portal/quote/<jwt>`;
+opened the local equivalent `http://localhost:32804/portal/quote/<jwt>` in a **fresh** headless
+Chromium context.
+
+**The page renders (SSR) but the island never hydrates, and the accept flow cannot be completed.**
+
+❌ Hydration failure, verified four independent ways:
+- Console: `[astro-island] Error hydrating /src/components/portal/PublicQuoteView.tsx TypeError:
+  Failed to fetch dynamically imported module: …/src/components/portal/PublicQuoteView.tsx?astro-retry=…`
+- Network: `GET /src/components/portal/PublicQuoteView.tsx` → **404** (and its `?astro-retry=` retry → 404).
+  This *is* the island's `component-url` (`<astro-island component-url="/src/components/portal/PublicQuoteView.tsx">`).
+- DOM: the `<astro-island>` still carries its `ssr` attribute — Astro strips it on successful hydration.
+- Behavioural: typed `QA Signer` into `public-quote-signer` and checked `public-quote-agree`; the
+  `public-quote-signature-preview` node stayed **empty** (a hydrated island mirrors the name into it),
+  and `public-quote-accept` remained `aria-disabled="true"` / `opacity-50`. `page.click` timed out
+  after 30 s on "element is not enabled". **Zero non-GET requests** were made for the whole session.
+- DB after: `Q-2026-0002 | viewed | accepted_at=NULL | converted_at=NULL` — SSR registered the view,
+  nothing was ever accepted.
+
+**Root cause — two independent defects, both defeating the #3906 Caddy carve-out.**
+
+The fix ships as an env-gated dev-only matcher in `docker/Caddyfile.prod:343-351`:
+```
+@portalDevAssets {
+  expression {env.CADDY_PORTAL_DEV_ASSETS} == "1"
+  header_regexp Referer ^https?://[^/]+(?::\d+)?/portal(?:/|$)
+  path /src/* /@fs/* /@vite/* /node_modules/.vite/*
+}
+```
+Both preconditions are satisfied on this stack — `CADDY_PORTAL_DEV_ASSETS=1` is set on
+`breeze-wt-release-prep-caddy-1`, and the block is present in the container's `/etc/caddy/Caddyfile`.
+The matcher itself works: `curl -H "Referer: http://localhost:32804/portal/quote/abc"
+http://localhost:32804/src/components/portal/PublicQuoteView.tsx` → **200**, and the same request
+without a `Referer` → **404**. The gate is never satisfied by a real browser, for two reasons:
+
+**(a) `/quote/` and `/invoice/` pages send no `Referer` at all.**
+`apps/portal/src/middleware.ts:107-111` sets `Referrer-Policy: no-referrer` on exactly those
+token-bearing paths (deliberately — the URL is the capability and must not leak). Verified on the
+wire: the accept page returns **two** `Referrer-Policy` headers —
+`strict-origin-when-cross-origin` (Caddy global, `Caddyfile.prod:361`) and `no-referrer`
+(portal middleware) — and the last valid value wins. Playwright's request log confirms the island
+module fetch goes out with an **absent/empty `Referer`**, so `header_regexp` cannot match and the
+request falls through to the web catch-all (`web:4321`), which has no such file → 404.
+The Referer-based gate and the no-referrer hardening are mutually exclusive on precisely the two
+page types the gate exists to serve.
+
+**(b) Even *with* a Referer, only depth-1 imports match — the rest of the module graph 404s.**
+Control run against `/portal/login` (which keeps `strict-origin-when-cross-origin`, so it *does*
+send a Referer) still fails to hydrate:
+`[astro-island] Error hydrating /src/components/portal/LoginForm.tsx`. Per-request Referers:
+
+| Module | Referer | Status |
+|---|---|---|
+| `/src/components/portal/LoginForm.tsx` | `/portal/login` | 200 ✅ |
+| `/src/lib/utils.ts` | `/src/components/portal/LoginForm.tsx` | 200 ⚠️ |
+| `/src/lib/navigation.ts` | `/src/components/portal/LoginForm.tsx` | 200 ⚠️ |
+| `/src/lib/basePath.ts` | `/src/components/portal/LoginForm.tsx` | **404** |
+| `/src/lib/auth.ts` | `/src/components/portal/LoginForm.tsx` | **404** |
+| `/src/lib/nextPath.ts` | `/src/components/portal/LoginForm.tsx` | **404** |
+| `/src/components/portal/ui.tsx` | `/src/components/portal/LoginForm.tsx` | **404** |
+
+A module-initiated `import()` carries the **importing module's URL** as its Referer, i.e.
+`/src/components/portal/LoginForm.tsx` — which does not start with `/portal`, so the regex rejects
+it and every transitive import is routed to the web app instead.
+
+⚠️ **Worse than a 404: silent cross-app module bleed.** The two rows above that returned 200 were
+served from `apps/web`, not `apps/portal` — `lib/utils.ts` and `lib/navigation.ts` exist in *both*
+apps, whereas `lib/basePath.ts`, `lib/auth.ts`, `lib/nextPath.ts` and `components/portal/ui.tsx`
+exist only in portal (verified by file presence). So a portal island that happens to import only
+same-named modules would hydrate against the **web app's** copies rather than failing loudly.
+
+**Scope.** Dev/wt-stack only — a production portal build serves bundled assets already prefixed
+under `/portal/*` and never hits this path, as `Caddyfile.prod:325-327` notes. So this is not a
+customer-facing regression, but it does mean **the quote-accept click-through still cannot be
+verified on wt-stack, and portal e2e specs continue to assert against dead (unhydrated) markup** —
+which is the failure mode #3906 was opened to end. Depth-1-only routing also makes the current
+carve-out look like it works when spot-checked with a single curl.
+
+Suspicion (file:line): `docker/Caddyfile.prod:345` (`header_regexp Referer …` — structurally cannot
+cover a Vite module graph) interacting with `apps/portal/src/middleware.ts:108`
+(`Referrer-Policy: no-referrer` on `/quote/` + `/invoice/`). A path-based split (e.g. serving the
+portal dev server under a distinct prefix, or a `Sec-Fetch-Dest`/port-based route) would not have
+either weakness.
+
+**Evidence labels:** all PASS/FAIL determinations above are **verified** in-browser against this
+stack. The production-safety scope note for #4 is **inferred** from `Caddyfile.prod` comments plus
+the fact that the 404s are Vite dev-server module-graph URLs; it was not tested against a production
+portal build.
+
+**Stack left as found** — EUR/USD exchange rate restored; no containers torn down. Residue from this
+run: `admin@breeze.local` now has TOTP MFA enabled (`mfa_epoch=5`, secret
+`KGU2MYZSQWKBWJHJOEBUMOTCCO7M6AXH`), and quote `Q-2026-0002` sits in `viewed`.

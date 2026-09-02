@@ -94,9 +94,12 @@ function envInt(name: string, defaultValue: number): number {
   return Number.isFinite(parsed) ? parsed : defaultValue;
 }
 
+// 30 days by default: techs stage installers through deploy tooling and expect
+// them to keep working well past the download day. Must stay in step with
+// PRODUCT_DEFAULT_ENROLLMENT_TTL_MINUTES (packages/shared enrollmentDefaults).
 const DEFAULT_ENROLLMENT_KEY_TTL_MINUTES = envInt(
   "ENROLLMENT_KEY_DEFAULT_TTL_MINUTES",
-  60,
+  60 * 24 * 30,
 );
 
 // Child enrollment keys (installer downloads, installer-link downloads, and
@@ -104,10 +107,10 @@ const DEFAULT_ENROLLMENT_KEY_TTL_MINUTES = envInt(
 // the parent's remaining lifetime. The previous "inherit parentKey.expiresAt"
 // behaviour made installers DOA whenever the parent was near expiry at
 // download time — a minute-59 download against a 60-minute parent produced a
-// child good for only 60 seconds. 24h by default, overridable.
+// child good for only 60 seconds. 30 days by default, overridable.
 const CHILD_ENROLLMENT_KEY_TTL_MINUTES = envInt(
   "CHILD_ENROLLMENT_KEY_TTL_MINUTES",
-  60 * 24,
+  60 * 24 * 30,
 );
 
 // Parent keys that are within this window of expiry are refused as installer

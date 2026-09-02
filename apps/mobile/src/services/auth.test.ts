@@ -29,8 +29,31 @@ vi.mock('./csrfToken', () => ({
   clearCsrfToken: (...a: unknown[]) => csrf.clearCsrfToken(...a),
 }));
 
+// The unsent time-entry queue lives in AsyncStorage, not SecureStore, so it is
+// invisible to the deleteItemAsync assertions and needs its own mock. Mocking
+// the owning module also keeps the native AsyncStorage binding out of this
+// node-environment suite.
+const timeQueue = {
+  clearQueueForSignOut: vi.fn(),
+};
+vi.mock('./timeEntryQueue', () => ({
+  QUEUE_KEY: 'breeze.timeEntryQueue.v2',
+  clearQueueForSignOut: (...a: unknown[]) => timeQueue.clearQueueForSignOut(...a),
+}));
+
+// A locally-ticking timer is cleared on every session end, deliberate or not.
+const localTimer = {
+  clearLocalTimer: vi.fn(),
+};
+vi.mock('./localTimer', () => ({
+  LOCAL_TIMER_KEY: 'breeze.localTimer.v1',
+  clearLocalTimer: (...a: unknown[]) => localTimer.clearLocalTimer(...a),
+}));
+
 beforeEach(() => {
   secureStore.deleteItemAsync.mockReset().mockResolvedValue(undefined);
+  timeQueue.clearQueueForSignOut.mockReset().mockResolvedValue(undefined);
+  localTimer.clearLocalTimer.mockReset().mockResolvedValue(undefined);
   sentry.captureException.mockReset();
   csrf.clearCsrfToken.mockReset().mockResolvedValue(undefined);
 });
@@ -81,6 +104,13 @@ describe('clearAuthData', () => {
     // The cross-session leak fix: the offline approvals cache must be wiped on
     // sign-out so the next account can't read the prior session's queue.
     expect(keys).toContain('breeze.approvals.cache.v1');
+  });
+
+  it('removes the signed native binding with the rest of session authority', async () => {
+    await clearAuthData();
+
+    const keys = secureStore.deleteItemAsync.mock.calls.map((c) => c[0]);
+    expect(keys).toContain('breeze_native_auth_binding_v1');
   });
 
   it('does not call Sentry or throw when every wipe succeeds', async () => {
@@ -135,5 +165,38 @@ describe('clearAuthData', () => {
       failedKeys: ['breeze_auth_token', 'breeze_user'],
     });
     expect(sentry.captureException).toHaveBeenCalledTimes(1);
+  });
+
+  it('discards the unsent time-entry queue on a DELIBERATE sign-out', async () => {
+    // `breeze.timeEntryQueue.v2` is a single un-namespaced AsyncStorage key and
+    // the replay sends with whatever bearer token the CURRENT session holds. On
+    // a shared field phone that writes technician A's queued minutes under
+    // technician B.
+    await clearAuthData({ deliberate: true });
+
+    expect(timeQueue.clearQueueForSignOut).toHaveBeenCalledTimes(1);
+  });
+
+  it('KEEPS the queue on an involuntary session loss', async () => {
+    // A 401 on the cold-start revalidation, a locked keychain and a blocked
+    // device all reach here. A technician who worked offline all day and whose
+    // token expired must not lose the backlog through no action of their own;
+    // `reconcileQueueOwner` protects the next account at sign-in instead.
+    await clearAuthData();
+    await clearAuthData({ deliberate: false });
+
+    expect(timeQueue.clearQueueForSignOut).not.toHaveBeenCalled();
+    // The session-owned local timer still goes, on every path: it holds an
+    // in-progress span, not unsent work.
+    expect(localTimer.clearLocalTimer).toHaveBeenCalledTimes(2);
+  });
+
+  it('names the time-entry queue when its wipe fails, rather than reporting a clean sign-out', async () => {
+    timeQueue.clearQueueForSignOut.mockRejectedValue(new Error('SQLite busy'));
+
+    await expect(clearAuthData({ deliberate: true })).rejects.toMatchObject({
+      name: 'SecureWipeError',
+      failedKeys: ['breeze.timeEntryQueue.v2'],
+    });
   });
 });

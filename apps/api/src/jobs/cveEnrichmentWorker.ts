@@ -9,13 +9,13 @@ import {
 } from '../services/osvClient';
 import { getBullMQConnection, isRedisAvailable } from '../services/redis';
 import { attachWorkerObservability } from './workerObservability';
+import { jobSchedule } from './scheduleRegistry';
 
 const { db } = dbModule;
 
 const QUEUE_NAME = 'cve-enrichment';
 const JOB_NAME = 'enrich';
 const DEFAULT_BATCH_LIMIT = 100;
-const DEFAULT_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 type CveEnrichmentJobData = {
   limit?: number;
@@ -199,7 +199,10 @@ export async function initializeCveEnrichmentWorker(): Promise<void> {
       JOB_NAME,
       { limit: DEFAULT_BATCH_LIMIT },
       {
-        repeat: { every: DEFAULT_INTERVAL_MS },
+        // Daily at a registry-allocated slot. NOT `every: 24h` — BullMQ anchors
+        // `every` to the Unix epoch, so every 24h job fires at 00:00:00.000 UTC
+        // together (see jobs/scheduleRegistry.ts).
+        repeat: { pattern: jobSchedule('cve-enrichment') },
         removeOnComplete: { count: 5 },
         removeOnFail: { count: 10 },
       }

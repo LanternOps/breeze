@@ -111,6 +111,15 @@ export const updateDeviceSchema = z.object({
 // POST /devices/provision — admin pre-creates a device row + downloadable
 // agent config so the agent never has to call /agents/enroll. orgId+siteId
 // come from the admin's input (not from an enrollment key).
+// DELETE /devices/:id (decommission) — optional body. `uninstallAgent`
+// defaults to `false`: the web UI that sends `true` ships in a later PR, and
+// this route may deploy before it does. Defaulting `true` would silently
+// queue a self_uninstall for every existing Remove call site, including
+// bulk-remove over a whole fleet (#3986 task 7 — see task-7-brief.md).
+export const decommissionDeviceSchema = z.object({
+  uninstallAgent: z.boolean().optional().default(false),
+}).strict();
+
 export const provisionDeviceSchema = z.object({
   orgId: z.string().guid(),
   siteId: z.string().guid(),
@@ -122,6 +131,11 @@ export const provisionDeviceSchema = z.object({
 export const moveOrgSchema = z.object({
   orgId: z.string().guid(),
   siteId: z.string().guid(),
+  // Multi-currency (#3776): tickets bound to the device move with it. When
+  // the target org bills in another currency and those tickets carry unbilled
+  // monetary rows, the move is blocked (409 TICKET_MOVE_CURRENCY_BLOCKED)
+  // unless explicitly accepted; `true` additionally requires invoices:write.
+  acceptCurrencyMismatch: z.boolean().optional(),
 });
 
 export const metricsQuerySchema = z.object({

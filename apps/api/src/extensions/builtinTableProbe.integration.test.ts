@@ -1,21 +1,27 @@
 import '../__tests__/integration/setup';
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { defaultExistingDeclaredTables } from './builtinExtensions';
+import {
+  defaultBuiltinEverMigrated,
+  defaultExistingDeclaredTables,
+} from './builtinExtensions';
+import { MIGRATION_TABLE } from '../db/autoMigrate';
 
 /**
- * The disabled built-in's table-existence probe, against a REAL Postgres.
+ * The disabled built-in's table-existence and migration-ledger probes, against
+ * a REAL Postgres.
  *
- * WHY THIS FILE EXISTS. `defaultExistingDeclaredTables` is the one piece of the
- * disabled path that no unit test can reach: `builtinExtensions.test.ts` drives
- * everything through injected ports, so the port's own SQL is stubbed out in
- * every one of those tests. That gap has already cost once — the first version
- * of this query bound the table names as a `text[]` parameter, which passed the
- * whole unit suite and then failed against a live server with `malformed array
- * literal`, aborting boot for every deployment that had ever enabled the
- * built-in. The query is now an `IN ${sql([...])}` list over `pg_class`; this
- * suite is what proves that shape actually executes and returns the right subset
- * for the three cases the caller distinguishes:
+ * WHY THIS FILE EXISTS. `defaultExistingDeclaredTables` and
+ * `defaultBuiltinEverMigrated` are the pieces of the disabled path that no unit
+ * test can reach: `builtinExtensions.test.ts` drives everything through
+ * injected ports, so both ports' own SQL is stubbed out there. That gap has
+ * already cost once — the first version of the table query bound the names as a
+ * `text[]` parameter, which passed the whole unit suite and then failed against
+ * a live server with `malformed array literal`, aborting boot for every
+ * deployment that had ever enabled the built-in. The table query is now an `IN
+ * ${sql([...])}` list over `pg_class`; this suite proves that shape actually
+ * executes and returns the right subset for the three cases the caller
+ * distinguishes:
  *
  *   - NONE present   → publish nothing (declaring absent tables would point
  *                      cascade/export SQL at relations that do not exist).
@@ -24,6 +30,9 @@ import { defaultExistingDeclaredTables } from './builtinExtensions';
  *
  * A >1-element list is used throughout on purpose: the binding bug that
  * motivated this file only appears with multiple names.
+ *
+ * The companion ledger cases prove the namespaced `LIKE $1` query distinguishes
+ * `workspace/%` from a lookalike such as `workspace-extra/%`.
  *
  * DATABASE. It provisions its OWN throwaway database rather than using the
  * shared `breeze_test`, for two reasons: this test CREATEs and DROPs tables in
@@ -70,11 +79,27 @@ describe('defaultExistingDeclaredTables (the disabled built-in table probe) agai
     }
   }
 
+  /** Run the real migration-ledger port against the same throwaway DB. */
+  async function probeEverMigrated(extensionName: string): Promise<boolean> {
+    previousDatabaseUrl = process.env.DATABASE_URL;
+    process.env.DATABASE_URL = PROBE_DATABASE_URL;
+    try {
+      return await defaultBuiltinEverMigrated(extensionName);
+    } finally {
+      if (previousDatabaseUrl === undefined) delete process.env.DATABASE_URL;
+      else process.env.DATABASE_URL = previousDatabaseUrl;
+    }
+  }
+
   beforeAll(async () => {
     baseAdmin = postgres(BASE_DATABASE_URL, { max: 1, onnotice: () => {} });
     await baseAdmin.unsafe(`DROP DATABASE IF EXISTS ${THROWAWAY_DB} WITH (FORCE)`);
     await baseAdmin.unsafe(`CREATE DATABASE ${THROWAWAY_DB}`);
     probeAdmin = postgres(PROBE_DATABASE_URL, { max: 1, onnotice: () => {} });
+    await probeAdmin.unsafe(
+      `CREATE TABLE ${MIGRATION_TABLE} (` +
+        'filename text PRIMARY KEY, checksum text NOT NULL, applied_at timestamptz DEFAULT now())',
+    );
   });
 
   afterAll(async () => {
@@ -132,5 +157,27 @@ describe('defaultExistingDeclaredTables (the disabled built-in table probe) agai
   // build `IN ()` — invalid SQL — if it is ever reached with one.
   it('short-circuits an empty list without touching the database', async () => {
     expect(await probe([])).toEqual([]);
+  });
+
+  it('reports false when the built-in has no namespaced migration-ledger row', async () => {
+    await probeAdmin.unsafe(`DELETE FROM ${MIGRATION_TABLE}`);
+    expect(await probeEverMigrated('workspace')).toBe(false);
+  });
+
+  it('reports only an exact built-in namespace prefix as migrated', async () => {
+    await probeAdmin.unsafe(
+      `INSERT INTO ${MIGRATION_TABLE} (filename, checksum) VALUES ($1, $2)`,
+      ['workspace-extra/0001-init.sql', 'fixture-checksum'],
+    );
+    try {
+      expect(await probeEverMigrated('workspace')).toBe(false);
+      await probeAdmin.unsafe(
+        `INSERT INTO ${MIGRATION_TABLE} (filename, checksum) VALUES ($1, $2)`,
+        ['workspace/0001-init.sql', 'fixture-checksum'],
+      );
+      expect(await probeEverMigrated('workspace')).toBe(true);
+    } finally {
+      await probeAdmin.unsafe(`DELETE FROM ${MIGRATION_TABLE}`);
+    }
   });
 });

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const updateMock = vi.fn();
+const applyAutomationActionTerminalMock = vi.fn().mockResolvedValue(true);
 
 vi.mock('../db', () => ({
   db: {
@@ -16,6 +17,11 @@ vi.mock('../db/schema', () => ({
     status: 'deployment_results.status',
     retryCount: 'deployment_results.retry_count',
   },
+}));
+
+vi.mock('./automationActionResults', () => ({
+  applyAutomationActionTerminal: (...args: unknown[]) =>
+    applyAutomationActionTerminalMock(...(args as [])),
 }));
 
 import { and, eq } from 'drizzle-orm';
@@ -85,6 +91,7 @@ describe('SW_INSTALL_COMMAND_ID_REGEX', () => {
 describe('applySoftwareInstallResult', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    applyAutomationActionTerminalMock.mockResolvedValue(true);
   });
 
   it('maps completed + exit code 0 to completed', async () => {
@@ -194,13 +201,15 @@ describe('applySoftwareInstallResult', () => {
       // real rows (the row is actually at retryCount=2).
       const { whereMock, returningMock } = riggedUpdateWithReturning([]);
 
-      await applySoftwareInstallResult({
+      const effectiveId = await applySoftwareInstallResult({
         deploymentId: DEPLOYMENT_ID,
         deviceId: DEVICE_ID,
         status: 'completed',
         exitCode: 0,
         attemptNumber: 1,
       });
+
+      expect(effectiveId).toBeNull();
 
       expect(whereMock).toHaveBeenCalledWith(
         and(
@@ -216,7 +225,7 @@ describe('applySoftwareInstallResult', () => {
     it('(b) applies a result whose attempt number matches the row current retryCount', async () => {
       const { setMock, whereMock } = riggedUpdateWithReturning([{ id: 'dr-row-1' }]);
 
-      await applySoftwareInstallResult({
+      const effectiveId = await applySoftwareInstallResult({
         deploymentId: DEPLOYMENT_ID,
         deviceId: DEVICE_ID,
         status: 'completed',
@@ -224,6 +233,13 @@ describe('applySoftwareInstallResult', () => {
         stdout: 'installed ok',
         attemptNumber: 2,
       });
+
+      expect(effectiveId).toBe('dr-row-1');
+      expect(applyAutomationActionTerminalMock).toHaveBeenCalledWith(expect.objectContaining({
+        source: 'deployment_result',
+        deploymentResultId: 'dr-row-1',
+        terminalStatus: 'succeeded',
+      }));
 
       expect(whereMock).toHaveBeenCalledWith(
         and(

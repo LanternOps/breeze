@@ -14,7 +14,7 @@ const nonnegativeQty = z.number().nonnegative().max(9_999_999_999.99).multipleOf
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'expected YYYY-MM-DD');
 const taxRate = z.number().min(0).max(1);
 
-export const quoteStatusSchema = z.enum(['draft', 'sent', 'viewed', 'accepted', 'declined', 'expired', 'converted']);
+export const quoteStatusSchema = z.enum(['draft', 'sent', 'viewed', 'accepted', 'declined', 'expired', 'converted', 'superseded']);
 export const quoteLineRecurrenceSchema = z.enum(['one_time', 'monthly', 'annual']);
 export const quoteLineSourceTypeSchema = z.enum(['catalog', 'bundle', 'manual']);
 export const quoteBlockTypeSchema = z.enum(['heading', 'rich_text', 'image', 'line_items', 'contract', 'table', 'callout']);

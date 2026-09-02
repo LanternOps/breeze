@@ -102,7 +102,7 @@ Every installer download, installer-link generation, or short-code redemption mi
   Previously, an installer's usable life was capped to its parent enrollment key's *remaining* life, and redemption returned `404` once the parent expired — so a 30-day installer link minted from the Add Device modal's transient ~60-minute parent key died in under an hour. As of this release, the bootstrap token's own `expiresAt` is the sole authority on whether an installer can still enroll a device; the parent key's expiry is no longer checked at redemption time. Revocation still works exactly as before: deleting the parent enrollment key cascade-deletes (`ON DELETE CASCADE`) every outstanding bootstrap token immediately, so a deliberate delete remains an effective kill switch.
 </Aside>
 
-The token's TTL defaults to `INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES` (24 hours) or the admin's chosen link expiry, clamped to the partner's `maxEnrollmentLinkTtlMinutes` cap if one is set — see [Partner & Organization Enrollment Defaults](#partner--organization-enrollment-defaults). The daily purge sweep also will not delete a parent enrollment key while it still has a live, unexhausted bootstrap token outstanding, even past the key's own grace period — see [Automatic Purge of Expired Keys](#automatic-purge-of-expired-keys).
+The token's TTL defaults to `INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES` (30 days) or the admin's chosen link expiry, clamped to the partner's `maxEnrollmentLinkTtlMinutes` cap if one is set — see [Partner & Organization Enrollment Defaults](#partner--organization-enrollment-defaults). The daily purge sweep also will not delete a parent enrollment key while it still has a live, unexhausted bootstrap token outstanding, even past the key's own grace period — see [Automatic Purge of Expired Keys](#automatic-purge-of-expired-keys).
 
 ---
 
@@ -141,12 +141,12 @@ curl -X POST https://breeze.yourdomain.com/api/v1/enrollment-keys \
 | `expiresAt` | `datetime` | No | Now + TTL | ISO 8601 absolute expiration. Mutually exclusive with `ttlMinutes`. |
 | `ttlMinutes` | `integer` | No | Now + TTL | Lifetime in minutes from creation (1 to 525600, i.e. up to 365 days). Mutually exclusive with `expiresAt`. |
 
-When neither `expiresAt` nor `ttlMinutes` is supplied, the key expires after `ENROLLMENT_KEY_DEFAULT_TTL_MINUTES` (default 60). Supplying both is rejected so the resolved expiry is unambiguous.
+When neither `expiresAt` nor `ttlMinutes` is supplied, the key expires after `ENROLLMENT_KEY_DEFAULT_TTL_MINUTES` (default 43200 — 30 days). Supplying both is rejected so the resolved expiry is unambiguous.
 
 POST and PATCH on `/enrollment-keys` reject any field that isn't in the table above. A typo like `maxUses` (instead of `maxUsage`) now returns `400 Bad Request` with a precise field-name error rather than silently dropping the value — useful when scripting key creation against earlier API examples that used different field names.
 
 <Aside>
-  The default TTL is configurable via the `ENROLLMENT_KEY_DEFAULT_TTL_MINUTES` environment variable. If unset, keys expire 60 minutes after creation.
+  The default TTL is configurable via the `ENROLLMENT_KEY_DEFAULT_TTL_MINUTES` environment variable. If unset, keys expire 30 days after creation.
 </Aside>
 
 <Aside type="tip">
@@ -373,8 +373,8 @@ Partners and organizations can configure three settings that shape enrollment li
 
 | Setting | Scope | Behavior |
 |---|---|---|
-| `defaultEnrollmentTtlMinutes` | Partner default, **inherit-with-override** by org | Pre-selects the link/installer expiry in the **Add Device** dialog. A partner sets a house default; an individual organization may override it with its own default. |
-| `defaultEnrollmentDeviceCount` | Partner default, **inherit-with-override** by org | Same inherit-with-override pattern, for the default device count on a new link. |
+| `defaultEnrollmentTtlMinutes` | Partner default, **inherit-with-override** by org | Pre-selects the link/installer expiry in the **Add Device** dialog. A partner sets a house default; an individual organization may override it with its own default. The product fallback when neither is set is 30 days. |
+| `defaultEnrollmentDeviceCount` | Partner default, **inherit-with-override** by org | Same inherit-with-override pattern, for the default device count on a new link. The product fallback when neither is set is 50 devices. |
 | `maxEnrollmentLinkTtlMinutes` | **Partner only** | A hard ceiling on enrollment key/installer lifetime for every organization under that partner. An organization cannot raise it — there is no org-level equivalent field. |
 
 Partners configure all three from their partner settings page (`PATCH /partners/me`); organizations override the first two from their own org settings page (`PATCH /orgs/organizations/:id`). See [Partner Management](/reference/partner-management/#updating-partner-settings-self-service) for the general settings-PATCH mechanics.
@@ -412,9 +412,9 @@ There is no option to mint a key or installer link that never expires, by design
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ENROLLMENT_KEY_DEFAULT_TTL_MINUTES` | `60` | Default time-to-live for new enrollment keys when `expiresAt` is not specified. |
-| `CHILD_ENROLLMENT_KEY_TTL_MINUTES` | `1440` | Fresh TTL (minutes) given to a "child" enrollment key minted at installer-download, installer-link, or short-code redemption time, measured from mint time rather than the parent key's remaining lifetime. Clamped to the partner's `maxEnrollmentLinkTtlMinutes` cap. |
-| `INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES` | `1440` | Base TTL (minutes) for a freshly-issued [installer bootstrap token](#installer-bootstrap-tokens) when no explicit `ttlMinutes` is supplied. The token's own expiry, not the parent enrollment key's, governs how long an installer has to complete enrollment. |
+| `ENROLLMENT_KEY_DEFAULT_TTL_MINUTES` | `43200` | Default time-to-live for new enrollment keys when `expiresAt` is not specified. |
+| `CHILD_ENROLLMENT_KEY_TTL_MINUTES` | `43200` | Fresh TTL (minutes) given to a "child" enrollment key minted at installer-download, installer-link, or short-code redemption time, measured from mint time rather than the parent key's remaining lifetime. Clamped to the partner's `maxEnrollmentLinkTtlMinutes` cap. |
+| `INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES` | `43200` | Base TTL (minutes) for a freshly-issued [installer bootstrap token](#installer-bootstrap-tokens) when no explicit `ttlMinutes` is supplied. The token's own expiry, not the parent enrollment key's, governs how long an installer has to complete enrollment. |
 | `INSTALLER_PARENT_MIN_REMAINING_SECONDS` | `60` | Minimum remaining lifetime (seconds) a parent enrollment key must have to be used as an installer source. Guards against building an installer from a parent that expires before the download reaches the target machine. |
 | `ENROLLMENT_KEY_PEPPER` | -- | Pepper used for SHA-256 hashing of enrollment keys. Falls back to `APP_ENCRYPTION_KEY`, `SECRET_ENCRYPTION_KEY`, or `JWT_SECRET`. |
 | `AGENT_ENROLLMENT_SECRET` | -- | Static secret that gates the enrollment endpoint in production. If empty or unset, the gate is skipped in non-production environments. |

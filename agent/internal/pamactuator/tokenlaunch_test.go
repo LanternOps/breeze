@@ -6,6 +6,9 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
+
+	"golang.org/x/sys/windows"
 )
 
 type fakeLauncher struct {
@@ -123,4 +126,27 @@ func TestTokenLaunchSuppressNilIsSafe(t *testing.T) {
 	if !res.Success || res.Reason != "ok" {
 		t.Fatalf("got success=%v reason=%q, want true/ok", res.Success, res.Reason)
 	}
+}
+
+func TestSuspendedTokenLaunchTransfersBothHandlesAndOmitsBreakaway(t *testing.T) {
+	request := SuspendedLaunchRequest{
+		ActuationID:     "10000000-0000-4000-8000-000000000001",
+		Username:        "~breeze_elev",
+		Password:        "ephemeral",
+		TargetPath:      `C:\Windows\System32\mmc.exe`,
+		SubjectUsername: `CORP\alice`,
+	}
+	if request.CreationFlags()&windows.CREATE_SUSPENDED == 0 {
+		t.Fatal("v2 token launch must create the primary thread suspended")
+	}
+	if request.CreationFlags()&windows.CREATE_BREAKAWAY_FROM_JOB != 0 {
+		t.Fatal("v2 token launch must not permit job breakaway")
+	}
+	var _ interface {
+		PID() uint32
+		ProcessCreationTime() time.Time
+		ProcessHandle() windows.Handle
+		PrimaryThreadHandle() windows.Handle
+		Close()
+	} = (*SuspendedProcess)(nil)
 }

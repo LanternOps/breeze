@@ -112,8 +112,8 @@ const tokenState = vi.hoisted(() => ({
   bindCalls: [] as Array<{ jti: string; familyId: string }>,
 }));
 
-vi.mock('../services', () => ({
-  createTokenPair: vi.fn(
+vi.mock('../services', () => {
+  const createTokenPair = vi.fn(
     async (payload: Record<string, unknown>, options?: Record<string, unknown>) => {
       tokenState.lastPayload = payload;
       tokenState.lastOptions = options ?? null;
@@ -124,19 +124,63 @@ vi.mock('../services', () => ({
         expiresInSeconds: 900,
       };
     }
-  ),
-  mintRefreshTokenFamily: vi.fn(async (userId: string) => {
+  );
+  const mintRefreshTokenFamily = vi.fn(async (userId: string) => {
     tokenState.mintCalls.push(userId);
     return 'fam-1';
-  }),
-  bindRefreshJtiToFamily: vi.fn(async (jti: string, familyId: string) => {
+  });
+  const bindRefreshJtiToFamily = vi.fn(async (jti: string, familyId: string) => {
     tokenState.bindCalls.push({ jti, familyId });
-  }),
-  getUserEpochs: vi.fn(async () => ({ authEpoch: 1, mfaEpoch: 1 })),
+  });
+  const getUserEpochs = vi.fn(async () => ({ authEpoch: 1, mfaEpoch: 1 }));
+  const issueLegacy = vi.fn(async (identity: any) => {
+    const familyId = await mintRefreshTokenFamily(identity.userId);
+    const epochs = await getUserEpochs();
+    const tokens = await createTokenPair({
+      sub: identity.userId,
+      email: identity.email,
+      roleId: identity.roleId,
+      orgId: identity.orgId,
+      partnerId: identity.partnerId,
+      scope: identity.scope,
+      mfa: identity.mfa,
+      aep: epochs.authEpoch,
+      mep: epochs.mfaEpoch,
+      mdid: identity.mobileDeviceId,
+    }, { refreshFam: familyId });
+    await bindRefreshJtiToFamily(tokens.refreshJti, familyId);
+    return { ...tokens, familyId };
+  });
+  class AuthBindingRotationRequiredError extends Error {
+    status = 428;
+    constructor(readonly replacement: unknown) { super('rotation required'); }
+  }
+  class AuthBindingUnavailableError extends Error {}
+  class AuthIssuanceConflictError extends Error {}
+  class AuthIssuanceCapabilityError extends Error {}
+  return {
+  createTokenPair,
+  mintRefreshTokenFamily,
+  bindRefreshJtiToFamily,
+  getUserEpochs,
   getRedis: vi.fn(() => ({
     setex: vi.fn(async () => 'OK'),
   })),
-}));
+  beginAuthIssuance: vi.fn(async () => ({ transitionId: 'transition-1', generation: 1 })),
+  finishAuthIssuance: vi.fn(async (_capability: unknown, callback: (tx: unknown) => Promise<unknown>) => callback({})),
+  cancelAuthIssuance: vi.fn(async () => undefined),
+  assertAuthIssuanceCapability: vi.fn(async () => undefined),
+  AuthBindingRotationRequiredError,
+  AuthBindingUnavailableError,
+  AuthIssuanceConflictError,
+  AuthIssuanceCapabilityError,
+  issueUserSession: vi.fn(async (identity: any) => issueLegacy(identity)),
+  issueUserSessionLegacyDuringTransition: issueLegacy,
+  bindIssuedUserSession: vi.fn(async () => undefined),
+  authBrowserTransitionsEnforced: vi.fn(() => process.env.AUTH_BROWSER_TRANSITIONS_ENFORCED === 'true'),
+  recordAuthTransitionLegacyIssuer: vi.fn(),
+  };
+});
 
 const auditState = vi.hoisted(() => ({
   audits: [] as Array<Record<string, unknown>>,
@@ -153,6 +197,10 @@ vi.mock('../routes/auth/helpers', async () => {
   const actual = await vi.importActual<typeof import('../routes/auth/helpers')>(
     '../routes/auth/helpers'
   );
+  const installCookie = vi.fn((c: Context, issued: { refreshToken: string }) => {
+    cookieState.set = issued.refreshToken;
+    c.header('set-cookie', `breeze_refresh=${issued.refreshToken}; Path=/; HttpOnly`);
+  });
   return {
     ...actual,
     auditUserLoginFailure: vi.fn((_c: unknown, entry: Record<string, unknown>) => {
@@ -164,6 +212,8 @@ vi.mock('../routes/auth/helpers', async () => {
       // ape Hono's behaviour just enough for the test's purposes
       c.header('set-cookie', `breeze_refresh=${refreshToken}; Path=/; HttpOnly`);
     }),
+    installAuthorizedUserSessionCookies: installCookie,
+    installLegacyUserSessionCookiesDuringTransition: installCookie,
     toPublicTokens: actual.toPublicTokens,
     userRequiresSetup: () => false,
     getClientIP: () => '127.0.0.1',
@@ -196,6 +246,12 @@ vi.mock('../routes/auth/schemas', async () => {
 });
 
 import { cfAccessLoginMiddleware } from './cfAccessLogin';
+import {
+  AuthIssuanceCapabilityError,
+  finishAuthIssuance,
+  issueUserSession,
+  issueUserSessionLegacyDuringTransition,
+} from '../services';
 
 function createContext(headers: Record<string, string | undefined> = {}): Context {
   const normalized = Object.fromEntries(
@@ -252,6 +308,7 @@ const activeUser = {
 describe('cfAccessLoginMiddleware', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    delete process.env.AUTH_BROWSER_TRANSITIONS_ENFORCED;
     envState.enabled = false;
     envState.teamDomain = 'your-team.cloudflareaccess.com';
     envState.audience = 'aud-app-1234567890abcdef';
@@ -420,6 +477,38 @@ describe('cfAccessLoginMiddleware', () => {
       action: 'user.login',
       details: expect.objectContaining({ method: 'cf_access_jwt', cfAccessCountry: 'CA' }),
     });
+  });
+
+  it('does not mint, update last login, audit success, or install a cookie when logout wins finalization', async () => {
+    envState.enabled = true;
+    verifyState.next = {
+      kind: 'claims',
+      claims: {
+        email: activeUser.email,
+        sub: 'cf-user-1',
+        aud: envState.audience,
+        iss: `https://${envState.teamDomain}`,
+        exp: 999,
+        iat: 1,
+      },
+    };
+    dbState.userRow = { ...activeUser };
+    vi.mocked(finishAuthIssuance).mockRejectedValueOnce(new AuthIssuanceCapabilityError());
+
+    const res = await cfAccessLoginMiddleware(
+      createContext({
+        'Cf-Access-Jwt-Assertion': 'valid.jwt.here',
+        'x-breeze-auth-transition': 'v1',
+      }),
+      createNext().next,
+    );
+
+    expect(res?.status).toBe(409);
+    expect(issueUserSession).not.toHaveBeenCalled();
+    expect(issueUserSessionLegacyDuringTransition).not.toHaveBeenCalled();
+    expect(dbState.lastUpdateId).toBeNull();
+    expect(auditState.audits).toEqual([]);
+    expect(cookieState.set).toBeNull();
   });
 
   it('binds the minted refresh token to a fresh family (reuse-detection invariant)', async () => {

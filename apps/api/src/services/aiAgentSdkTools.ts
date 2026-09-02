@@ -19,6 +19,7 @@ import type { AiToolTier, ActionPlanStep } from '@breeze/shared/types/ai';
 import { compactToolResultForChat } from './aiToolOutput';
 import { sanitizeThrownToolError } from './aiToolErrors';
 import type { ActiveSession } from './streamingSessionManager';
+import type { SdkTool } from './aiAgents/outcomeTools';
 import { waitForPlanApproval } from './aiAgent';
 import {
   aiActionPlans,
@@ -26,7 +27,7 @@ import {
   peripheralPolicyActionEnum,
 } from '../db/schema';
 import { CONFIG_FEATURE_TYPES } from './configFeatureTypes';
-import { INVOICE_STATUSES } from '@breeze/shared';
+import { ACTOR_TYPES, INVOICE_STATUSES } from '@breeze/shared';
 import { getToolTimeout, withToolTimeout } from './toolTimeouts';
 import {
   m365LookupUserHandler, m365RecentSigninsHandler, m365ListGroupMembershipsHandler,
@@ -290,7 +291,11 @@ export const BREEZE_MCP_TOOL_NAMES = Object.keys(TOOL_TIERS).map(
 // Helper: Create tool handler that delegates to executeTool
 // ============================================
 
-const POST_TOOL_USE_TIMEOUT_MS = 10_000; // 10s for postToolUse DB writes
+// Exported so callers that schedule I/O INSIDE a postToolUse hook (e.g. the
+// headless agent run loop's act-mode verification read, actVerify.ts) can
+// size their own budget with headroom under this cap instead of picking an
+// unrelated number — see the wave-4b review fix.
+export const POST_TOOL_USE_TIMEOUT_MS = 10_000; // 10s for postToolUse DB writes
 
 /**
  * Fire postToolUse with a timeout — if DB writes hang, don't block the conversation.
@@ -949,16 +954,130 @@ export function googleToolDefinitions(
 }
 
 /**
+ * `extraTools` (e.g. the headless-run outcome tools built by
+ * `buildOutcomeSdkTools` — `outcomeTools.ts`) arrive as bare
+ * `SdkMcpToolDefinition`s with no hook wiring of their own — `outcomeTools.ts`
+ * stays hook-free by design (it never touches the DB or the run's outcome
+ * object). Without this wrapper the SDK would invoke an extra tool's
+ * `handler` directly, so `onPreToolUse`/`onPostToolUse` — the run loop's
+ * ONLY channel for denying a call or capturing `outcome.alertVerdict` —
+ * would never fire for it (found in review: the verdict was silently never
+ * captured outside the unit tests, since nothing called the hooks in a real
+ * run). This gives an extra tool the SAME contract `makeHandler` gives every
+ * registry tool, including the two protections that were originally missing
+ * here (review round 2, Minor 1):
+ *   - The ENTIRE handler (preToolUse, the original handler, postToolUse)
+ *     runs inside `runOutsideDbContext`, exactly where `makeHandler` places
+ *     it — escaping any stale/committed AsyncLocalStorage DB context
+ *     inherited from the SDK's MCP callback chain (see `makeHandler`'s
+ *     docstring for the hang this prevents) so pre/post hooks that touch the
+ *     DB never inherit a dead connection.
+ *   - The original handler runs under `withToolTimeout(…, getToolTimeout(name),
+ *     name)` — the SAME timeout table `makeHandler` uses for registry tools
+ *     (`toolTimeouts.ts`: 60s default, per-name overrides), computed once per
+ *     wrap just like `makeHandler` computes it once per tool.
+ * Otherwise the flow is unchanged: the preToolUse gate runs first (a denial
+ * short-circuits with the SDK's own error-result shape, never reaching the
+ * handler), then postToolUse fires with the result's first text block (or the
+ * whole serialized result, if there is none) as `output` and `isError`
+ * reflecting whether the call actually failed — a timeout included, since
+ * `withToolTimeout`'s rejection lands in the same thrown-error catch block as
+ * any other failure (`sanitizeThrownToolError` → `isError` result →
+ * postToolUse).
+ */
+export function wrapExtraToolWithHooks(
+  extraTool: SdkTool,
+  onPreToolUse?: PreToolUseCallback,
+  onPostToolUse?: PostToolUseCallback,
+): SdkTool {
+  const { name, handler } = extraTool;
+  const toolTimeout = getToolTimeout(name);
+  return {
+    ...extraTool,
+    handler: async (args: Record<string, unknown>, extra: unknown): Promise<SdkToolResult> => {
+      // See makeHandler: escape any inherited AsyncLocalStorage DB context so
+      // preToolUse/handler/postToolUse all start with a clean context rather
+      // than a stale/committed one from the SDK's MCP callback chain.
+      return runOutsideDbContext(async (): Promise<SdkToolResult> => {
+      const startTime = Date.now();
+      if (onPreToolUse) {
+        let check: { allowed: true; context?: ToolExecutionContext } | { allowed: false; error: string };
+        try {
+          check = await onPreToolUse(name, args);
+        } catch (err) {
+          const reason = sanitizeThrownToolError(`${name}:preToolUse`, err);
+          check = { allowed: false, error: `Guardrails check failed: ${reason}` };
+        }
+        if (!check.allowed) {
+          const safeError = compactToolResultForChat(name, JSON.stringify({ error: check.error }));
+          await safePostToolUse(onPostToolUse, name, args, safeError, true, 0);
+          return { content: [{ type: 'text' as const, text: safeError }], isError: true };
+        }
+      }
+      try {
+        const result = await withToolTimeout(handler(args, extra), toolTimeout, name);
+        const durationMs = Date.now() - startTime;
+        await safePostToolUse(onPostToolUse, name, args, extraToolResultText(result), result.isError === true, durationMs);
+        return result;
+      } catch (err) {
+        const durationMs = Date.now() - startTime;
+        const message = sanitizeThrownToolError(name, err, { durationMs });
+        const safeError = compactToolResultForChat(name, JSON.stringify({ error: message }));
+        await safePostToolUse(onPostToolUse, name, args, safeError, true, durationMs);
+        return { content: [{ type: 'text' as const, text: safeError }], isError: true };
+      }
+      }); // end runOutsideDbContext
+    },
+  };
+}
+
+/** Best-effort text extraction from a `CallToolResult` for `onPostToolUse`'s
+ *  `output` string — the first text content block, or the whole serialized
+ *  result when there isn't one (e.g. an image-only result). */
+function extraToolResultText(result: SdkToolResult): string {
+  const blocks = (result as { content?: unknown[] }).content;
+  if (Array.isArray(blocks)) {
+    const first = blocks.find(
+      (block): block is { type: 'text'; text: string } =>
+        typeof block === 'object' && block !== null
+        && (block as { type?: unknown }).type === 'text'
+        && typeof (block as { text?: unknown }).text === 'string',
+    );
+    if (first) return first.text;
+  }
+  return JSON.stringify(result);
+}
+
+/**
  * Creates an SDK MCP server instance with all Breeze tools.
  * Auth context is fetched lazily via the getAuth thunk so all tool handlers
  * see the latest org-scoped access even when the session is reused.
  * Optional postToolUse callback fires after every tool execution for persistence/audit.
+ *
+ * `options.onlyTools` (F2 fix, P2-1 second live check): the SDK's
+ * `allowedTools` (set by the caller on `query()`) only gates PERMISSION to
+ * call a tool — it does not stop that tool's full JSON schema from being
+ * sent to the model every turn. Registering the whole ~200-tool registry
+ * unconditionally, as this function used to do, meant every turn of every
+ * run (verdict runs included, despite being restricted to 4-5 tools by
+ * `allowedTools`) paid the token cost of every tool definition — a single
+ * verdict turn cost 9¢ (run `59fb933c-…`, `turn_count=1`). When
+ * `onlyTools` is set, the registry `tools` array is filtered down to just
+ * those bare names BEFORE `createSdkMcpServer` is called, so the SERVER
+ * itself only advertises the pinned subset. `extraTools` are always
+ * included regardless of `onlyTools` — they're never part of the registry
+ * `tools` array (outcome tools in particular are deliberately absent from
+ * `TOOL_TIERS`, see `outcomeTools.ts`), so there's nothing in `onlyTools` for
+ * them to be filtered against. The name-collision guard below is unchanged:
+ * it still runs against the full, unfiltered registry.
  */
 export function createBreezeMcpServer(
   getAuth: () => AuthContext,
   onPreToolUse?: PreToolUseCallback,
   onPostToolUse?: PostToolUseCallback,
   getActiveSession?: () => ActiveSession,
+  extraTools: SdkTool[] = [],
+  options?: { onlyTools?: ReadonlySet<string> },
 ) {
   const uuid = z.string().guid();
   const backupEntityId = z.string().min(1).max(128).regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/);
@@ -1406,7 +1525,7 @@ export function createBreezeMcpServer(
         action: z.string().max(100).optional(),
         resourceType: z.string().max(100).optional(),
         resourceId: uuid.optional(),
-        actorType: z.enum(['user', 'api_key', 'agent', 'system']).optional(),
+        actorType: z.enum(ACTOR_TYPES).optional(),
         hoursBack: z.number().int().min(1).max(168).optional(),
         limit: z.number().int().min(1).max(100).optional(),
       },
@@ -2208,7 +2327,7 @@ export function createBreezeMcpServer(
       'List quotes/proposals for the orgs the caller can access, newest first. Optionally filter by org or status. Read-only.',
       {
         orgId: uuid.optional(),
-        status: z.enum(['draft', 'sent', 'viewed', 'accepted', 'declined', 'expired', 'converted']).optional(),
+        status: z.enum(['draft', 'sent', 'viewed', 'accepted', 'declined', 'expired', 'converted', 'superseded']).optional(),
         limit: z.number().int().min(1).max(100).optional(),
       },
       makeHandler('list_quotes', getAuth, onPreToolUse, onPostToolUse)
@@ -2526,9 +2645,34 @@ export function createBreezeMcpServer(
     ...googleToolDefinitions(getAuth, getActiveSession, onPreToolUse, onPostToolUse),
   ];
 
+  // extraTools (e.g. headless-run outcome tools like submit_alert_verdict) are
+  // never in the TOOL_TIERS registry — that's what keeps them off the chat/MCP
+  // surface (see outcomeTools.ts). A name collision here would mean an outcome
+  // tool shadowing a real registered tool, which must never happen silently.
+  // Checked against the ORIGINAL (unwrapped) names/array — wrapping never
+  // changes `.name`.
+  for (const extra of extraTools) {
+    if (Object.prototype.hasOwnProperty.call(TOOL_TIERS, extra.name)) {
+      throw new Error(`[createBreezeMcpServer] extra tool collides with registry: ${extra.name}`);
+    }
+  }
+  // Every extra tool is wrapped so onPreToolUse/onPostToolUse fire for it —
+  // see wrapExtraToolWithHooks's own docstring for why this is required, not
+  // optional plumbing.
+  const wrappedExtraTools = extraTools.map((extra) => wrapExtraToolWithHooks(extra, onPreToolUse, onPostToolUse));
+
+  // F2 fix: filter the registry down to the pinned subset BEFORE
+  // createSdkMcpServer, so those ~200 definitions never ride along on a
+  // verdict run's turns. See this function's docstring for the full
+  // rationale. Applied AFTER the collision guard above, which must still
+  // see the full, unfiltered registry.
+  const registeredTools = options?.onlyTools
+    ? tools.filter((t) => options.onlyTools!.has(t.name))
+    : tools;
+
   return createSdkMcpServer({
     name: 'breeze',
     version: '1.0.0',
-    tools,
+    tools: [...registeredTools, ...wrappedExtraTools],
   });
 }

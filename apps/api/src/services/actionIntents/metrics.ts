@@ -126,6 +126,25 @@ export interface ActionIntentAuditInput {
   /** User who triggered the event (requester or decider); omit for system-driven events (e.g. the reaper). */
   actorId?: string;
   /**
+   * What KIND of actor drove this event. Omit for the existing paths: the audit
+   * layer already resolves `actorId ? 'user' : 'system'` (auditEvents.ts:68),
+   * and this PR must not disturb that. An agent proposal supplies 'ai_agent'
+   * explicitly — it has no user actor, but classifying it `system` would put it
+   * in the same bucket as the expiry reaper.
+   */
+  actorType?: 'user' | 'ai_agent';
+  /**
+   * Wave 5 Part B (#3827): override `writeAuditEvent`'s auto-derived
+   * `initiatedBy` (which maps an omitted actorType to `'schedule'`, meant
+   * for the reaper/cron family, not an authorization mechanism). A
+   * policy-authorized `'approved'` event passes `'policy'` explicitly here
+   * — the locked design decision that policy is a mechanism, never a
+   * synthetic human decider, has to be readable in the audit trail itself.
+   * Omit for every other caller; the existing 'user'/'system' auto-derivation
+   * is unchanged.
+   */
+  initiatedBy?: import('../auditService').InitiatedByType;
+  /**
    * Extra audit context — ids, decider, assurance, error codes, counts. Must
    * NEVER carry raw tool argument contents, only the digest/summaries already
    * computed (spec §7: "Details carry ids, action name, digest, decider,
@@ -155,8 +174,9 @@ export function recordActionIntentEvent(input: ActionIntentAuditInput): void {
       ...input.details,
     },
     result: FAILURE_OUTCOMES.has(input.outcome) ? 'failure' : 'success',
-    actorType: input.actorId ? 'user' : 'system',
+    actorType: input.actorType,
     ...(input.actorId ? { actorId: input.actorId } : {}),
+    ...(input.initiatedBy ? { initiatedBy: input.initiatedBy } : {}),
   });
   recordActionIntentMetric(input.source, input.actionName, input.outcome);
 }

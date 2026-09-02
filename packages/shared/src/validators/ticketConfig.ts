@@ -55,6 +55,8 @@ export const prioritySettingsSchema = z.object({
 });
 export type PrioritySettingsInput = z.infer<typeof prioritySettingsSchema>;
 
+// rateCurrency is intentionally omitted: Zod strips unknown keys, so clients
+// cannot choose the currency snapshot stamped by the API from the organization.
 export const orgTicketSettingsSchema = z.object({
   slaOverrides: z.partialRecord(ticketPrioritySchema, z.object({
     responseMinutes: slaMinutes.optional(),

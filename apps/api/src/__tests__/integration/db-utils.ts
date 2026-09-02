@@ -8,7 +8,7 @@
  * that will catch any actual type errors at runtime against a real database.
  */
 import { randomUUID } from 'crypto';
-import { getTestDb } from './setup';
+import { getTestDb, type TestDatabase } from './setup';
 import { hashPassword } from '../../services/password';
 import { createAccessToken, type TokenPayload } from '../../services/jwt';
 import {
@@ -24,7 +24,7 @@ import {
   catalogItems,
   catalogItemPrices
 } from '../../db/schema';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 
 // Use any for database to avoid complex type inference issues in tests
 // Runtime errors will be caught by actual integration test execution
@@ -370,6 +370,12 @@ export interface SetupTestEnvironmentOptions {
   // optional fields.
   userOptions?: Partial<Omit<CreateUserOptions, 'partnerId' | 'orgId'>>;
   partnerOptions?: CreatePartnerOptions;
+  /**
+   * Overrides for the organization created by setupTestEnvironment — notably
+   * `currencyCode`, so an HTTP-level test can seed a non-USD org without a
+   * post-hoc `UPDATE organizations SET currency_code` (multi-currency #3778).
+   */
+  organizationOptions?: Partial<Omit<CreateOrganizationOptions, 'partnerId'>>;
   scope?: 'system' | 'partner' | 'organization';
   /**
    * Permissions granted to the created role. Defaults to a `*`/`*` wildcard
@@ -401,7 +407,10 @@ export async function setupTestEnvironment(
   // partner-scope tests create an MSP staff user (partner_id set, org_id
   // null); org-scope tests create a customer-org user (both set).
   const partner = await createPartner(options.partnerOptions);
-  const organization = await createOrganization({ partnerId: partner.id });
+  const organization = await createOrganization({
+    partnerId: partner.id,
+    ...options.organizationOptions,
+  });
   const site = await createSite({ orgId: organization.id });
   const user = await createUser({
     partnerId: partner.id,
@@ -512,4 +521,65 @@ export async function createIntegrationTestClient(
     put: (path: string, body?: unknown) => makeRequest('PUT', path, body),
     delete: (path: string) => makeRequest('DELETE', path)
   };
+}
+
+// ============================================
+// Deferrable-FK Replay Restoration
+// ============================================
+
+/**
+ * Restores the org-lifecycle deferrable-FK contract
+ * (`migrations/2026-09-12-100001-org-lifecycle-foundations.sql` Section 2):
+ * every composite FK referencing an `org_id` column must be
+ * `DEFERRABLE INITIALLY IMMEDIATE`, because the org-merge transaction
+ * (Wave 2) runs `SET CONSTRAINTS ALL DEFERRED` and re-points parent+child
+ * `org_id` in separate statements — a non-deferrable composite FK breaks it.
+ * `orgLifecycleFoundations.integration.test.ts` asserts this against live
+ * `pg_constraint` state at test-run time, so it cannot distinguish "never
+ * fixed" from "fixed, then un-fixed by a later migration replay in the same
+ * shared test DB."
+ *
+ * A handful of already-shipped migrations, replayed raw by other integration
+ * suites for their own idempotency/regression coverage, unconditionally
+ * recreate a composite `org_id` FK non-deferrable — an unguarded
+ * `ALTER CONSTRAINT ... NOT DEFERRABLE` in the partner-export material-state
+ * hardening migration, and unconditional `DROP CONSTRAINT` + `ADD CONSTRAINT`
+ * (with no `DEFERRABLE` clause) in the m365 graph-read-consent and
+ * agent-originated-intents migrations. Per CLAUDE.md, never edit a shipped
+ * migration to "fix" this — and never re-run the org-lifecycle migration's DO
+ * block from inside `orgLifecycleFoundations.integration.test.ts` itself,
+ * which would silently paper over genuinely new non-deferrable composite FKs
+ * from unrelated future PRs. Instead, every suite that replays one of these
+ * migrations raw must call this helper immediately after, to restore the
+ * contract the replay just undid.
+ *
+ * The DO block below is copied verbatim from that migration file's Section 2
+ * — keep it in sync if that block ever changes.
+ */
+export async function reapplyOrgIdFkDeferrability(db: TestDatabase = getTestDb()): Promise<void> {
+  await db.execute(sql`
+    DO $$
+    DECLARE
+      fk record;
+      n integer := 0;
+    BEGIN
+      FOR fk IN
+        SELECT con.conname, con.conrelid::regclass AS child_table
+        FROM pg_constraint con
+        WHERE con.contype = 'f'
+          AND con.condeferrable = false
+          AND con.connamespace = 'public'::regnamespace
+          AND EXISTS (
+            SELECT 1 FROM unnest(con.confkey) AS ck(attnum)
+            JOIN pg_attribute a ON a.attrelid = con.confrelid AND a.attnum = ck.attnum
+            WHERE a.attname = 'org_id'
+          )
+        ORDER BY con.conrelid::regclass::text, con.conname
+      LOOP
+        EXECUTE format('ALTER TABLE %s ALTER CONSTRAINT %I DEFERRABLE INITIALLY IMMEDIATE',
+                       fk.child_table, fk.conname);
+        n := n + 1;
+      END LOOP;
+    END $$;
+  `);
 }

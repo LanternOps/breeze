@@ -23,8 +23,9 @@
  *                     instead of reused.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { DispatchOutcome } from '../services/agentCommandRelay';
 
-const { mockDb, queueMock, agentWsMock, decryptMock, eqCalls } = vi.hoisted(() => ({
+const { mockDb, queueMock, agentRelayMock, decryptMock, eqCalls } = vi.hoisted(() => ({
   mockDb: {
     select: vi.fn(),
     insert: vi.fn(),
@@ -38,9 +39,9 @@ const { mockDb, queueMock, agentWsMock, decryptMock, eqCalls } = vi.hoisted(() =
     removeRepeatableByKey: vi.fn(async () => undefined),
     close: vi.fn(async () => undefined),
   },
-  agentWsMock: {
-    isAgentConnected: vi.fn(() => true),
-    sendCommandToAgent: vi.fn(() => true),
+  agentRelayMock: {
+    isAgentConnectedAnywhere: vi.fn(async () => true),
+    dispatchCommandToAgent: vi.fn(async (): Promise<DispatchOutcome> => ({ status: 'sent', via: 'local' })),
   },
   decryptMock: vi.fn((v: string | null) => v),
   // Records every drizzle `eq(column, value)` so a test can prove WHICH org
@@ -111,9 +112,9 @@ vi.mock('../services/redis', () => ({
   getBullMQConnection: vi.fn(() => ({ host: 'localhost', port: 6379 })),
 }));
 
-vi.mock('../routes/agentWs', () => ({
-  isAgentConnected: agentWsMock.isAgentConnected,
-  sendCommandToAgent: agentWsMock.sendCommandToAgent,
+vi.mock('../services/agentCommandRelay', () => ({
+  isAgentConnectedAnywhere: agentRelayMock.isAgentConnectedAnywhere,
+  dispatchCommandToAgent: agentRelayMock.dispatchCommandToAgent,
 }));
 
 vi.mock('../services/snmpSecrets', () => ({
@@ -207,8 +208,8 @@ describe('snmpWorker org authority (#3226)', () => {
     mockDb.select.mockReset();
     mockDb.update.mockReset();
     mockDb.update.mockImplementation(updateChain as never);
-    agentWsMock.isAgentConnected.mockReturnValue(true);
-    agentWsMock.sendCommandToAgent.mockReturnValue(true);
+    agentRelayMock.isAgentConnectedAnywhere.mockResolvedValue(true);
+    agentRelayMock.dispatchCommandToAgent.mockResolvedValue({ status: 'sent', via: 'local' });
     queueMock.getJob.mockResolvedValue(null);
     queueMock.add.mockResolvedValue({ id: 'job-1' });
     await shutdownSnmpWorker();
@@ -235,7 +236,7 @@ describe('snmpWorker org authority (#3226)', () => {
 
       // The whole point of the issue: credentials must never reach the wire.
       expect(decryptMock).not.toHaveBeenCalled();
-      expect(agentWsMock.sendCommandToAgent).not.toHaveBeenCalled();
+      expect(agentRelayMock.dispatchCommandToAgent).not.toHaveBeenCalled();
     });
 
     it('stops before the agent lookup, so no agent in either org is even selected', async () => {
@@ -315,7 +316,7 @@ describe('snmpWorker org authority (#3226)', () => {
     it('does not dispatch when the selected agent is no longer connected', async () => {
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
       wireDispatchSelects(LIVE_ORG, 'agent-live');
-      agentWsMock.isAgentConnected.mockReturnValue(false);
+      agentRelayMock.isAgentConnectedAnywhere.mockResolvedValue(false);
 
       const result = await processPollDevice({
         type: 'poll-device',
@@ -324,7 +325,7 @@ describe('snmpWorker org authority (#3226)', () => {
       });
 
       expect(result).toEqual({ dispatched: false, agentId: null });
-      expect(agentWsMock.sendCommandToAgent).not.toHaveBeenCalled();
+      expect(agentRelayMock.dispatchCommandToAgent).not.toHaveBeenCalled();
       expect(decryptMock).not.toHaveBeenCalled();
       expect(warn).toHaveBeenCalledWith(expect.stringContaining(LIVE_ORG));
       // A poll that never left the building must not count against the device.
@@ -337,13 +338,67 @@ describe('snmpWorker org authority (#3226)', () => {
 
       await processPollDevice({ type: 'poll-device', deviceId: DEVICE_ID, orgId: LIVE_ORG });
 
-      expect(agentWsMock.sendCommandToAgent).toHaveBeenCalledTimes(1);
-      const [agentId, command] = agentWsMock.sendCommandToAgent.mock.calls[0] as unknown as [
+      expect(agentRelayMock.dispatchCommandToAgent).toHaveBeenCalledTimes(1);
+      const [agentId, command] = agentRelayMock.dispatchCommandToAgent.mock.calls[0] as unknown as [
         string,
         { type: string },
       ];
       expect(agentId).toBe('agent-live');
       expect(command.type).toBe('snmp_poll');
+    });
+  });
+
+  describe('dispatch outcomes via the cross-process facade (wave 3.5b #4084)', () => {
+    it('returns dispatched:false and logs the outcome status when offline', async () => {
+      wireDispatchSelects(LIVE_ORG, 'agent-live');
+      agentRelayMock.dispatchCommandToAgent.mockResolvedValue({ status: 'offline' });
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      const result = await processPollDevice({ type: 'poll-device', deviceId: DEVICE_ID, orgId: LIVE_ORG });
+
+      expect(result).toEqual({ dispatched: false, agentId: 'agent-live' });
+      expect(error).toHaveBeenCalledWith(expect.stringContaining('offline'));
+      error.mockRestore();
+    });
+
+    it('returns dispatched:false and names "indeterminate" so ops can tell "maybe sent" from "definitely not"', async () => {
+      wireDispatchSelects(LIVE_ORG, 'agent-live');
+      agentRelayMock.dispatchCommandToAgent.mockResolvedValue({ status: 'indeterminate' });
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      const result = await processPollDevice({ type: 'poll-device', deviceId: DEVICE_ID, orgId: LIVE_ORG });
+
+      expect(result).toEqual({ dispatched: false, agentId: 'agent-live' });
+      expect(error).toHaveBeenCalledWith(expect.stringContaining('indeterminate'));
+      error.mockRestore();
+    });
+
+    it('dispatches with priority "probe"', async () => {
+      wireDispatchSelects(LIVE_ORG, 'agent-live');
+
+      await processPollDevice({ type: 'poll-device', deviceId: DEVICE_ID, orgId: LIVE_ORG });
+
+      expect(agentRelayMock.dispatchCommandToAgent).toHaveBeenCalledWith(
+        'agent-live',
+        expect.anything(),
+        { priority: 'probe' }
+      );
+    });
+
+    it('calls markPollDispatched (2nd db.update: attemptStamp is the 1st) BEFORE dispatchCommandToAgent, so an indeterminate dispatch still counts against the device', async () => {
+      wireDispatchSelects(LIVE_ORG, 'agent-live');
+      agentRelayMock.dispatchCommandToAgent.mockResolvedValue({ status: 'indeterminate' });
+
+      await processPollDevice({ type: 'poll-device', deviceId: DEVICE_ID, orgId: LIVE_ORG });
+
+      // updateLog confirms WHICH write is which (attemptStamp then dispatchCount);
+      // invocationCallOrder proves the relative order against the dispatch call —
+      // an indeterminate outcome (may have been sent) still leaves the poll
+      // counted, mirroring today's send-false-after-mark semantics.
+      expect(updateLog).toEqual(['attemptStamp', 'dispatchCount']);
+      const dispatchCountOrder = mockDb.update.mock.invocationCallOrder[1];
+      const dispatchCallOrder = agentRelayMock.dispatchCommandToAgent.mock.invocationCallOrder[0];
+      expect(dispatchCountOrder).toBeLessThan(dispatchCallOrder as number);
     });
   });
 

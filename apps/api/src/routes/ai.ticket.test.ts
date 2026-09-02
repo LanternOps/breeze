@@ -27,6 +27,28 @@ const routeMocks = vi.hoisted(() => ({
   createTimeEntryMock: vi.fn(),
   deviceInSiteScopeMock: vi.fn(),
   writeRouteAuditMock: vi.fn(),
+  getAnthropicClientForPartnerMock: vi.fn(),
+  resolveWireModelMock: vi.fn<(resolved: unknown, model: string) => { model: string; catalogPricing?: unknown }>((_resolved: unknown, model: string) => ({ model })),
+  anthropicClient: { messages: { create: vi.fn() } },
+}));
+
+const configRef = vi.hoisted(() => ({
+  provider: 'anthropic' as 'anthropic' | 'openai-compatible',
+}));
+
+vi.mock('../config/validate', () => ({
+  getConfig: vi.fn(() => ({ MCP_LLM_PROVIDER: configRef.provider })),
+}));
+
+vi.mock('../services/llm/llmConfigResolver', () => ({
+  LlmUnavailableError: class LlmUnavailableError extends Error {
+    constructor() {
+      super('AI is unavailable for this partner.');
+      this.name = 'LlmUnavailableError';
+    }
+  },
+  getAnthropicClientForPartner: routeMocks.getAnthropicClientForPartnerMock,
+  resolveWireModel: routeMocks.resolveWireModelMock,
 }));
 
 vi.mock('../db', () => ({
@@ -87,6 +109,7 @@ vi.mock('../db/schema', () => ({
   organizations: {
     id: 'organizations.id',
     name: 'organizations.name',
+    partnerId: 'organizations.partnerId',
   },
   devices: {
     id: 'devices.id',
@@ -185,11 +208,12 @@ vi.mock('../services/effectiveSettings', () => ({
   assertNotLocked: vi.fn(),
 }));
 
-import { aiRoutes } from './ai';
+import { aiRoutes, isOpenAICompatibleProvider } from './ai';
 import { db } from '../db';
 import { getSessionMessages } from '../services/aiAgent';
 import { recordUsage } from '../services/aiCostTracker';
 import { draftTicketFromTranscript, ThinTranscriptError } from '../services/aiTicketDraft';
+import { LlmUnavailableError } from '../services/llm/llmConfigResolver';
 import { TicketServiceError } from '../services/ticketService';
 
 const partnerAuth = authHarness.partnerAuth;
@@ -217,11 +241,27 @@ describe('POST /ai/sessions/:id/ticket-draft', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    configRef.provider = 'anthropic';
     authHarness.currentAuth.value = partnerAuth;
     app = new Hono();
     app.route('/ai', aiRoutes);
 
-    vi.mocked(db.select).mockReturnValue(selectRows([{ name: 'Acme Co' }]) as any);
+    routeMocks.getAnthropicClientForPartnerMock.mockResolvedValue({
+      client: routeMocks.anthropicClient,
+      resolved: {
+        source: 'partner',
+        partnerId: 'partner-from-session-org',
+        apiKey: 'partner-key',
+        model: 'claude-sonnet-4-6',
+        configId: 'config-1',
+        configVersion: 2,
+      },
+    });
+
+    vi.mocked(db.select).mockReturnValue(selectRows([{
+      name: 'Acme Co',
+      partnerId: 'partner-from-session-org',
+    }]) as any);
   });
 
   function postDraft(sessionId: string, auth: any = partnerAuth) {
@@ -277,14 +317,73 @@ describe('POST /ai/sessions/:id/ticket-draft', () => {
         contextSnapshot: null,
         elapsedMinutes: expect.any(Number),
         model: 'claude-test',
+        partnerId: 'partner-from-session-org',
+        client: routeMocks.anthropicClient,
       })
     );
-    expect(recordUsage).toHaveBeenCalledWith('s1', 'org1', 'claude-test', 10, 5, false);
+    expect(routeMocks.getAnthropicClientForPartnerMock).toHaveBeenCalledTimes(1);
+    expect(routeMocks.getAnthropicClientForPartnerMock).toHaveBeenCalledWith('partner-from-session-org', { surface: 'one_shot_ticket_draft', orgId: 'org1' });
+    expect(recordUsage).toHaveBeenCalledWith(
+      's1',
+      'org1',
+      'claude-test',
+      10,
+      5,
+      false,
+      'partner_key',
+      undefined,
+    );
+  });
+
+  it('sends the WIRE model to the summarizer and meters catalog traffic at revision rates', async () => {
+    const CATALOG_PRICING = {
+      catalogEntryId: 'entry-1',
+      revisionId: 'rev-1',
+      inputCentsPerM: 300,
+      outputCentsPerM: 1500,
+      cacheReadCentsPerM: 30,
+      cacheWriteCentsPerM: 375,
+    };
+    // A catalog endpoint speaks its own ids; the platform-logical one 404s.
+    routeMocks.resolveWireModelMock.mockReturnValueOnce({
+      model: 'anthropic/claude-test',
+      catalogPricing: CATALOG_PRICING,
+    });
+    vi.mocked(getSessionMessages).mockResolvedValueOnce({
+      session: { id: 's1', orgId: 'org1', deviceId: null, model: 'claude-sonnet-4-6', createdAt: new Date(), contextSnapshot: null },
+      messages: [
+        { role: 'user', content: 'hi' },
+        { role: 'assistant', content: 'fixed' },
+      ],
+    } as any);
+    vi.mocked(draftTicketFromTranscript).mockResolvedValueOnce({
+      subject: 'S', problemSummary: 'P', resolutionSummary: 'R', wasFixed: true,
+      suggestedTimeMinutes: 15, inputTokens: 10, outputTokens: 5,
+    });
+
+    const res = await postDraft('s1', partnerAuth);
+    expect(res.status).toBe(200);
+
+    // Translated from the SESSION's model, not the partner default.
+    expect(routeMocks.resolveWireModelMock).toHaveBeenCalledWith(
+      expect.anything(), 'claude-sonnet-4-6',
+    );
+    expect(draftTicketFromTranscript).toHaveBeenCalledWith(
+      expect.objectContaining({ model: 'anthropic/claude-test' }),
+    );
+    // Metered from the revision snapshot, never Anthropic list rates — and the
+    // ledger keeps the platform-logical id.
+    expect(recordUsage).toHaveBeenCalledWith(
+      's1', 'org1', 'claude-sonnet-4-6', 10, 5, false, 'partner_key', CATALOG_PRICING,
+    );
   });
 
   it('enriches a draft with the session device hostname', async () => {
     vi.mocked(db.select)
-      .mockReturnValueOnce(selectRows([{ name: 'Acme Co' }]) as any)
+      .mockReturnValueOnce(selectRows([{
+        name: 'Acme Co',
+        partnerId: 'partner-from-session-org',
+      }]) as any)
       .mockReturnValueOnce(selectRows([{ hostname: 'WKS-04' }]) as any);
     vi.mocked(getSessionMessages).mockResolvedValueOnce({
       session: { id: 's1', orgId: 'org1', deviceId: 'dev1', model: null, createdAt: new Date(), contextSnapshot: null },
@@ -322,6 +421,25 @@ describe('POST /ai/sessions/:id/ticket-draft', () => {
     expect(res.status).toBe(404);
   });
 
+  it('503s when the session organization is missing without constructing a client or recording usage', async () => {
+    vi.mocked(db.select).mockReturnValueOnce(selectRows([]) as any);
+    vi.mocked(getSessionMessages).mockResolvedValueOnce({
+      session: { id: 's1', orgId: 'org1', deviceId: null, model: null, createdAt: new Date(), contextSnapshot: null },
+      messages: [
+        { role: 'user', content: 'hi' },
+        { role: 'assistant', content: 'working' },
+      ],
+    } as any);
+
+    const res = await postDraft('s1', partnerAuth);
+
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'ai_unavailable' });
+    expect(routeMocks.getAnthropicClientForPartnerMock).not.toHaveBeenCalled();
+    expect(draftTicketFromTranscript).not.toHaveBeenCalled();
+    expect(recordUsage).not.toHaveBeenCalled();
+  });
+
   it('422 on a thin transcript', async () => {
     vi.mocked(getSessionMessages).mockResolvedValueOnce({
       session: { id: 's1', orgId: 'org1', deviceId: null, model: null, createdAt: new Date(), contextSnapshot: null },
@@ -347,6 +465,61 @@ describe('POST /ai/sessions/:id/ticket-draft', () => {
     const res = await postDraft('s1', partnerAuth);
 
     expect(res.status).toBe(502);
+  });
+
+  it('503s with ai_unavailable when the partner LLM config is unavailable', async () => {
+    vi.mocked(getSessionMessages).mockResolvedValueOnce({
+      session: { id: 's1', orgId: 'org1', deviceId: null, model: null, createdAt: new Date(), contextSnapshot: null },
+      messages: [
+        { role: 'user', content: 'hi' },
+        { role: 'assistant', content: 'working' },
+      ],
+    } as any);
+    routeMocks.getAnthropicClientForPartnerMock.mockRejectedValueOnce(new LlmUnavailableError());
+
+    const res = await postDraft('s1', partnerAuth);
+
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'ai_unavailable' });
+    expect(draftTicketFromTranscript).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The client resolving fine says nothing about the MODEL (#3922 W3 review
+   * round 2). `ai_sessions.model` is free-form client input, so a session can
+   * name a model the pinned revision never mapped or never verified — that
+   * throws from INSIDE the same try, and must land on the 503 branch rather
+   * than the generic 502 below it.
+   */
+  it('503s with ai_unavailable when the pinned revision has no mapping for the session model', async () => {
+    vi.mocked(getSessionMessages).mockResolvedValueOnce({
+      session: { id: 's1', orgId: 'org1', deviceId: null, model: 'claude-opus-4-8', createdAt: new Date(), contextSnapshot: null },
+      messages: [
+        { role: 'user', content: 'hi' },
+        { role: 'assistant', content: 'working' },
+      ],
+    } as any);
+    routeMocks.resolveWireModelMock.mockImplementationOnce(() => {
+      throw new LlmUnavailableError();
+    });
+
+    const res = await postDraft('s1', partnerAuth);
+
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'ai_unavailable' });
+    // Fail CLOSED: never re-pointed at the partner default, never metered.
+    expect(draftTicketFromTranscript).not.toHaveBeenCalled();
+    expect(recordUsage).not.toHaveBeenCalled();
+  });
+});
+
+describe('isOpenAICompatibleProvider', () => {
+  it.each([
+    ['openai-compatible', true],
+    ['anthropic', false],
+  ] as const)('returns %s only for the openai-compatible config', (provider, expected) => {
+    configRef.provider = provider;
+    expect(isOpenAICompatibleProvider()).toBe(expected);
   });
 });
 

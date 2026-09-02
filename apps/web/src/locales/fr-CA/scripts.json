@@ -19,6 +19,10 @@
       "create": "Créez un flux de travail automatisé avec des déclencheurs, des conditions et des actions.",
       "edit": "Modifiez la configuration de l’automatisation."
     },
+    "managed": {
+      "title": "Gérée par un agent IA",
+      "description": "Cette automatisation est maintenue par son agent IA. Configurez plutôt l’agent."
+    },
     "actions": {
       "create": "Créer l’automatisation",
       "saveChanges": "Enregistrer les modifications"
@@ -215,6 +219,8 @@
     "empty": "Aucune automatisation trouvée. Essayez d’ajuster votre recherche ou vos filtres.",
     "partnerWideTitle": "Automatisation à l’échelle du partenaire — s’applique à toutes les organisations",
     "allOrgs": "À l’échelle du partenaire",
+    "managedByAgent": "Gérée par un agent IA",
+    "managedByAgentHint": "Cette automatisation est maintenue par son agent IA. Configurez plutôt l’agent.",
     "never": "Jamais",
     "actions": {
       "viewHistory": "Voir l’historique",
@@ -806,6 +812,8 @@
       "advancedFilters": "Filtres avancés",
       "executing": "Exécution...",
       "started": "Démarré !",
+      "queued": "En file d’attente",
+      "reviewResult": "Examiner le résultat",
       "confirmExecute": "Confirmer l’exécution",
       "execute": "Exécuter"
     },
@@ -819,12 +827,23 @@
     },
     "matchCount": "{{count}} correspondance",
     "empty": {
-      "noCompatibleDevices": "Aucun appareil compatible trouvé. Ce script nécessite {{os}}."
+      "noCompatibleDevices": "Aucun appareil compatible trouvé. Ce script nécessite {{os}}.",
+      "offlineFiltered_one": "Aucun appareil {{status}} ne correspond. {{count}} appareil compatible est masqué par le filtre de statut — afficher tous les appareils pour l'inclure.",
+      "offlineFiltered_other": "Aucun appareil {{status}} ne correspond. {{count}} appareils compatibles sont masqués par le filtre de statut — afficher tous les appareils pour les inclure.",
+      "showAllDevices": "Afficher tous les appareils"
     },
     "orSeparator": " ou ",
     "progress": {
       "submitting": "Envoi à {{count}} appareils...",
-      "submitted": "Envoyé à {{count}} appareils"
+      "submitted": "Envoyé à {{count}} appareils",
+      "admitted": "{{admitted}} appareils sur {{count}} admis dans la file d’attente",
+      "submittingTarget": "Envoi en cours"
+    },
+    "admission": {
+      "allAdmitted": "Tous les appareils sélectionnés ont été admis et placés en file d’attente.",
+      "partiallyAdmitted": "Certains appareils ont été admis et placés en file d’attente. Examinez les cibles restantes.",
+      "rejected": "Aucun appareil n’a été admis. Examinez les raisons ci-dessous.",
+      "queued": "En file d’attente"
     },
     "confirm": {
       "title": "Confirmer l’exécution",
@@ -842,6 +861,9 @@
       "macos": "macOS",
       "linux": "Linux"
     }
+  },
+  "secretParameters": {
+    "requiresSystemContext": "Ce script utilise des variables secrètes, qui ne sont transmises qu’aux exécutions dans le contexte système sans session ciblée. Avec « Utilisateur connecté », ou lorsqu’une session précise est ciblée, les appareils échoueront avec « non exécuté »."
   },
   "scriptExecutionsPage": {
     "errors": {
@@ -998,14 +1020,15 @@
       "button": "Variables",
       "insertTitle": "Insérer une variable",
       "empty": "Aucune variable pour l'instant.",
-      "secretUnavailable": "Secret — une version ultérieure la transmettra comme variable d'environnement.",
+      "secretUnavailable": "Secret — liez-le par un paramètre dont la source est « À partir d’une variable secrète ».",
       "unknown": "Aucune variable ne correspond à {{keys}} — les appareils ciblés échoueront tant qu'elle n'existe pas."
     },
     "parameterSources": {
       "runtime": "Demandé à l’exécution",
       "tenantVariable": "À partir d’une variable",
       "deviceCustomField": "À partir d’un champ personnalisé de l’appareil",
-      "builtin": "À partir d’une propriété de l’appareil"
+      "builtin": "À partir d’une propriété de l’appareil",
+      "tenantSecret": "À partir d’une variable secrète (variable d’environnement)"
     },
     "parameterBinding": {
       "variableLabel": "Clé de la variable",
@@ -1015,6 +1038,9 @@
       "builtinLabel": "Propriété",
       "chooseTitle": "Choisir une variable",
       "secretRejected": "« {{key}} » est un secret — l’enregistrement sera refusé. Choisissez une variable non secrète.",
+      "notSecret": "« {{key}} » n’est pas un secret. Choisissez une variable secrète ou changez la source pour « À partir d’une variable ».",
+      "notSecretRow": "Pas un secret — utilisez « À partir d’une variable »",
+      "secretHint": "Transmise uniquement comme variable d’environnement {{env}} — jamais écrite dans le script. Nécessite une exécution dans le contexte système et un agent prenant en charge la transmission sécurisée des secrets.",
       "hint": "Résolu pour chaque appareil ciblé au moment de l’exécution — personne n’a à le saisir."
     }
   },
@@ -1077,7 +1103,8 @@
     "suppliedBy": {
       "tenantVariable": "Fourni automatiquement par la variable {{key}}",
       "deviceCustomField": "Fourni automatiquement par le champ personnalisé de l’appareil {{key}}",
-      "builtin": "Fourni automatiquement par {{key}}"
+      "builtin": "Fourni automatiquement par {{key}}",
+      "tenantSecret": "Fourni de façon sécurisée par la variable secrète {{key}}, comme variable d’environnement"
     }
   },
   "scriptTagManager": {

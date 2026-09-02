@@ -9,6 +9,7 @@ import {
   eventLogQuerySchema,
   eventRecordParamSchema
 } from './schemas';
+import { isCommandFailure, buildCommandFailureResponse } from './fileBrowserHelpers';
 import type { EventLogInfo, EventLogEntry } from './types';
 
 function normalizeEventLevel(value?: string): EventLogEntry['level'] {
@@ -93,8 +94,9 @@ eventLogsRoutes.get(
       timeoutMs: 30000
     });
 
-    if (result.status === 'failed') {
-      return c.json({ error: result.error || 'Failed to list event logs' }, 500);
+    if (isCommandFailure(result)) {
+      const failure = buildCommandFailureResponse(result, 'Failed to list event logs');
+      return c.json(failure.body, failure.status);
     }
 
     try {
@@ -105,7 +107,9 @@ eventLogsRoutes.get(
       return c.json({ data: logs });
     } catch (error) {
       console.error('Failed to parse agent response for event logs:', error);
-      return c.json({ error: 'Failed to parse agent response for event logs' }, 502);
+      // 500, not 502: Cloudflare replaces an origin 502 body with its own
+      // branded page, blanking this message on hosted deployments.
+      return c.json({ error: 'Failed to parse agent response for event logs', code: 'invalid_agent_response' }, 500);
     }
   }
 );
@@ -133,8 +137,9 @@ eventLogsRoutes.get(
       timeoutMs: 30000
     });
 
-    if (result.status === 'failed') {
-      return c.json({ error: result.error || 'Failed to get event log info' }, 500);
+    if (isCommandFailure(result)) {
+      const failure = buildCommandFailureResponse(result, 'Failed to get event log info');
+      return c.json(failure.body, failure.status);
     }
 
     try {
@@ -151,7 +156,9 @@ eventLogsRoutes.get(
       return c.json({ data: log });
     } catch (error) {
       console.error('Failed to parse agent response for event log info:', error);
-      return c.json({ error: 'Failed to parse agent response for event log info' }, 502);
+      // 500, not 502: Cloudflare replaces an origin 502 body with its own
+      // branded page, blanking this message on hosted deployments.
+      return c.json({ error: 'Failed to parse agent response for event log info', code: 'invalid_agent_response' }, 500);
     }
   }
 );
@@ -187,8 +194,9 @@ eventLogsRoutes.get(
       limit
     }, { userId: auth.user?.id, timeoutMs: 30000 });
 
-    if (result.status === 'failed') {
-      return c.json({ error: result.error || 'Failed to query event logs' }, 500);
+    if (isCommandFailure(result)) {
+      const failure = buildCommandFailureResponse(result, 'Failed to query event logs');
+      return c.json(failure.body, failure.status);
     }
 
     try {
@@ -208,7 +216,9 @@ eventLogsRoutes.get(
       });
     } catch (error) {
       console.error('Failed to parse agent response for event query:', error);
-      return c.json({ error: 'Failed to parse agent response for event query' }, 502);
+      // 500, not 502: Cloudflare replaces an origin 502 body with its own
+      // branded page, blanking this message on hosted deployments.
+      return c.json({ error: 'Failed to parse agent response for event query', code: 'invalid_agent_response' }, 500);
     }
   }
 );
@@ -236,21 +246,25 @@ eventLogsRoutes.get(
       recordId
     }, { userId: auth.user?.id, timeoutMs: 30000 });
 
-    if (result.status === 'failed') {
-      const error = result.error || 'Failed to get event';
-      return c.json({ error }, error.toLowerCase().includes('not found') ? 404 : 500);
+    if (isCommandFailure(result)) {
+      const failure = buildCommandFailureResponse(result, 'Failed to get event');
+      return c.json(failure.body, failure.status);
     }
 
     try {
       const payload = JSON.parse(result.stdout || '{}');
       const event = mapEventEntryFromAgent(payload);
       if (!event) {
-        return c.json({ error: 'Invalid event payload from agent' }, 502);
+        // 500, not 502: Cloudflare replaces an origin 502 body with its own
+        // branded page, blanking this message on hosted deployments.
+        return c.json({ error: 'Invalid event payload from agent', code: 'invalid_agent_response' }, 500);
       }
       return c.json({ data: event });
     } catch (error) {
       console.error('Failed to parse agent response for event detail:', error);
-      return c.json({ error: 'Failed to parse agent response for event detail' }, 502);
+      // 500, not 502: Cloudflare replaces an origin 502 body with its own
+      // branded page, blanking this message on hosted deployments.
+      return c.json({ error: 'Failed to parse agent response for event detail', code: 'invalid_agent_response' }, 500);
     }
   }
 );

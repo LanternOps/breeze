@@ -18,8 +18,11 @@ import { Job, Queue, Worker } from 'bullmq';
 import { sql } from 'drizzle-orm';
 
 import * as dbModule from '../db';
+import { extractRowCount } from '../db/rowCount';
 import { getBullMQConnection } from '../services/redis';
+import { recordRetentionRun } from '../services/retentionMetrics';
 import { captureException } from '../services/sentry';
+import { jobSchedule } from './scheduleRegistry';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -64,19 +67,6 @@ const DEFAULT_RETENTION_DAYS = resolveRetentionDays(
 
 type RetentionJobData = { retentionDays?: number };
 
-/**
- * postgres-js / drizzle row-count extraction. Mirrors
- * `processSampleRetention.extractRowCount` — never report 0 when rows were
- * actually deleted, which would prematurely end the batched-delete loop and
- * silently leave old rows behind.
- */
-export function extractRowCount(result: unknown): number {
-  const raw = result as { rowCount?: number; count?: number };
-  if (typeof raw.rowCount === 'number') return raw.rowCount;
-  if (typeof raw.count === 'number') return raw.count;
-  return Array.isArray(result) ? (result as unknown[]).length : 0;
-}
-
 let retentionQueue: Queue<RetentionJobData> | null = null;
 let retentionWorker: Worker<RetentionJobData> | null = null;
 
@@ -114,6 +104,7 @@ export function createServiceProcessCheckRetentionWorker(): Worker<RetentionJobD
 
         const durationMs = Date.now() - startedAt;
         console.log(`[ServiceProcessCheckRetention] Pruned ${deleted} check results older than ${retentionDays} days in ${durationMs}ms`);
+        recordRetentionRun('service_process_check_retention', { rowsDeleted: deleted });
         return { retentionDays, deleted, durationMs };
       });
     },
@@ -142,7 +133,14 @@ export async function initializeServiceProcessCheckRetention(): Promise<void> {
     await queue.add(
       'cleanup',
       { retentionDays: DEFAULT_RETENTION_DAYS },
-      { repeat: { every: 24 * 60 * 60 * 1000 }, removeOnComplete: { count: 5 }, removeOnFail: { count: 10 } }
+      // Daily at a registry-allocated slot. NOT `every: 24h` — BullMQ anchors
+      // `every` to the Unix epoch, so every 24h job fires at 00:00:00.000 UTC
+      // together (see jobs/scheduleRegistry.ts).
+      {
+        repeat: { pattern: jobSchedule('service-process-check-retention') },
+        removeOnComplete: { count: 5 },
+        removeOnFail: { count: 10 }
+      }
     );
 
     console.log('[ServiceProcessCheckRetention] Retention worker initialized');

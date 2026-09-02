@@ -561,17 +561,18 @@ describe('remediation suggestion routes', () => {
     mockSuggestionLoad(accepted);
     dbMocks.executeScriptOnDevicesMock.mockResolvedValueOnce({
       ok: true,
-      batchId: null,
-      scriptId: baseSuggestion.scriptId,
+      admission: {
+        requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        status: 'queued',
+        targets: [{
+          requestedDeviceId: baseSuggestion.deviceId,
+          admission: 'admitted',
+          executionId: scriptExecutionId,
+          commandId: '77777777-7777-4777-8777-777777777777',
+        }],
+      },
       script: { id: baseSuggestion.scriptId, name: 'Disk Cleanup' },
-      devicesTargeted: 1,
-      maintenanceSuppressedDeviceIds: [],
-      executions: [{
-        executionId: scriptExecutionId,
-        deviceId: baseSuggestion.deviceId,
-        commandId: '77777777-7777-4777-8777-777777777777',
-      }],
-      status: 'queued',
+      ignoredParameters: [],
       triggerType: 'manual',
       runAs: 'system',
       auditOrgId: baseSuggestion.orgId,
@@ -614,7 +615,40 @@ describe('remediation suggestion routes', () => {
     const body = await res.json();
     expect(body.data.status).toBe('executed');
     expect(body.data.scriptExecutionId).toBe(scriptExecutionId);
-    expect(body.execution.executions[0].executionId).toBe(scriptExecutionId);
+    expect(body.execution.targets[0].executionId).toBe(scriptExecutionId);
+  });
+
+  it('returns 422 for rejected admission without mutating or auditing the suggestion', async () => {
+    const accepted = { ...baseSuggestion, status: 'accepted' };
+    mockSuggestionLoad(accepted);
+    dbMocks.executeScriptOnDevicesMock.mockResolvedValueOnce({
+      ok: true,
+      admission: {
+        requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        status: 'rejected',
+        targets: [{
+          requestedDeviceId: baseSuggestion.deviceId,
+          admission: 'denied',
+          reasonCode: 'site_access_denied',
+        }],
+      },
+      script: { id: baseSuggestion.scriptId, name: 'Disk Cleanup' },
+      ignoredParameters: [],
+      triggerType: 'manual',
+      runAs: 'system',
+      auditOrgId: baseSuggestion.orgId,
+    });
+
+    const res = await app.request(`/remediation-suggestions/${baseSuggestion.id}/execute`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(422);
+    expect(await res.json()).toEqual({ admission: 'denied', reasonCode: 'site_access_denied' });
+    expect(dbMocks.updateMock).not.toHaveBeenCalled();
+    expect(dbMocks.emitFeedbackMock).not.toHaveBeenCalled();
+    expect(dbMocks.writeRouteAuditMock).not.toHaveBeenCalled();
   });
 
   it('blocks high-risk server-side execution without an approved elevation request', async () => {
@@ -677,17 +711,18 @@ describe('remediation suggestion routes', () => {
     });
     dbMocks.executeScriptOnDevicesMock.mockResolvedValueOnce({
       ok: true,
-      batchId: null,
-      scriptId: baseSuggestion.scriptId,
+      admission: {
+        requestId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        status: 'queued',
+        targets: [{
+          requestedDeviceId: baseSuggestion.deviceId,
+          admission: 'admitted',
+          executionId: scriptExecutionId,
+          commandId: '77777777-7777-4777-8777-777777777777',
+        }],
+      },
       script: { id: baseSuggestion.scriptId, name: 'Disk Cleanup' },
-      devicesTargeted: 1,
-      maintenanceSuppressedDeviceIds: [],
-      executions: [{
-        executionId: scriptExecutionId,
-        deviceId: baseSuggestion.deviceId,
-        commandId: '77777777-7777-4777-8777-777777777777',
-      }],
-      status: 'queued',
+      ignoredParameters: [],
       triggerType: 'manual',
       runAs: 'system',
       auditOrgId: baseSuggestion.orgId,

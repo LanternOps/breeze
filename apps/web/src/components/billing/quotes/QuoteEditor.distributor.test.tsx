@@ -156,15 +156,21 @@ describe('QuoteEditor distributor mode', () => {
     fireEvent.change(screen.getByTestId('quote-distributor-search-blk1'), { target: { value: 'ABC123' } });
     fireEvent.click(screen.getByTestId('quote-distributor-search-btn-blk1'));
     await waitFor(() => screen.getByTestId('quote-distributor-add-ABC123'));
+    // A CAD / unknown-currency feed on a USD quote never prefills the sell
+    // price (review #3) — the operator types a USD price explicitly.
+    expect((screen.getByTestId('quote-distributor-price-ABC123') as HTMLInputElement).value).toBe('');
+    fireEvent.change(screen.getByTestId('quote-distributor-price-ABC123'), { target: { value: '120.00' } });
     fireEvent.click(screen.getByTestId('quote-distributor-add-ABC123'));
     await waitFor(() => expect(ecExpressImport).toHaveBeenCalled());
-    return ecExpressImport.mock.calls[0][0] as { product: Record<string, unknown> };
+    return ecExpressImport.mock.calls[0][0] as { product: Record<string, unknown>; item: Record<string, unknown> };
   };
 
   it('posts the feed currency uppercased, never coerced to USD', async () => {
     lookupOne('cad');
     const body = await importViaDistributor();
     expect(body.product.currency).toBe('CAD');
+    // The typed price is stamped with the QUOTE currency, never the feed's.
+    expect(body.item).toEqual(expect.objectContaining({ unitPrice: 120, sellCurrency: 'USD' }));
   });
 
   it('posts an explicit null currency when the feed gave none (key present, not dropped)', async () => {

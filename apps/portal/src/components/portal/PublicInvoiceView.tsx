@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { CreditCard, Download } from 'lucide-react';
 import { withBase } from '@/lib/basePath';
 import { portalApi, buildPortalApiUrl, type PublicInvoiceDetail } from '@/lib/api';
-import { STATUS_LABELS, statusColor } from '@/lib/invoiceStatus';
+import { STATUS_LABELS, statusTone } from '@/lib/invoiceStatus';
 import { DocumentPaper, DocumentHeader, DocumentTerms, type DocSeller } from './documentShell';
 import { money } from '@/lib/money';
 
@@ -104,7 +104,7 @@ export function PublicInvoiceView({ token, initial = null, error }: PublicInvoic
             eyebrow="Invoice"
             title={invoice.invoiceNumber ?? 'Invoice'}
             statusLabel="No longer due"
-            statusClass="bg-muted text-muted-foreground"
+            statusTone="neutral"
             dates={[]}
           />
           <div className="space-y-2 text-sm text-muted-foreground">
@@ -242,7 +242,7 @@ export function PublicInvoiceView({ token, initial = null, error }: PublicInvoic
           eyebrow="Invoice"
           title={invoice.invoiceNumber ?? 'Invoice'}
           statusLabel={STATUS_LABELS[invoice.status] ?? invoice.status}
-          statusClass={statusColor(invoice.status)}
+          statusTone={statusTone(invoice.status)}
           dates={headerDates}
           preparedForLabel="Bill to"
           preparedForName={invoice.billToName ?? undefined}
@@ -291,9 +291,9 @@ export function PublicInvoiceView({ token, initial = null, error }: PublicInvoic
             {Number(invoice.amountPaid ?? 0) > 0 && (
               <div className="flex justify-between text-sm"><span className="text-muted-foreground">Paid</span><span className="tabular-nums text-foreground">−{money(invoice.amountPaid ?? 0, currency)}</span></div>
             )}
-            <div className="flex items-baseline justify-between border-t pt-3" style={{ borderColor: 'var(--doc-accent)' }}>
+            <div className="doc-accent-border flex items-baseline justify-between border-t pt-3">
               <span className="text-sm font-semibold text-foreground">{isPaid ? 'Balance' : 'Balance due'}</span>
-              <span className="text-2xl font-semibold tabular-nums" style={{ color: 'var(--doc-accent)' }} data-testid="public-invoice-balance">{money(invoice.balance ?? 0, currency)}</span>
+              <span className="doc-accent-text text-2xl font-semibold tabular-nums" data-testid="public-invoice-balance">{money(invoice.balance ?? 0, currency)}</span>
             </div>
             {hasDeposit && chargeNow && !isPaid && (
               <div className="rounded-md border bg-muted/40 p-3 text-sm text-muted-foreground" data-testid="public-invoice-deposit-strip">

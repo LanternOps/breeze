@@ -3,6 +3,7 @@ import type { ComponentType } from 'react';
 import { Monitor, Wifi, WifiOff, Maximize, Minimize, Keyboard, ClipboardPaste, ChevronDown, X, ArrowLeftRight, Volume2, VolumeX, MousePointer2, Check, Zap, MoreVertical, SlidersHorizontal } from 'lucide-react';
 import type { TransportCapabilities } from '../lib/transports/types';
 import { transportHasQualityControls } from '../lib/transportTuning';
+import { webrtcSwitchUnavailableReason, shouldShowWebRTCSwitchPill } from '../lib/transportAvailability';
 
 interface MonitorInfo {
   index: number;
@@ -24,6 +25,12 @@ interface Props {
   maxFps: number;
   bitrate: number;
   pasteProgress: { current: number; total: number } | null;
+  /**
+   * Set when a paste did not fully land on the remote machine. Without it the
+   * progress indicator simply completing is indistinguishable from a paste the
+   * agent dropped — see pasteFailureMessage in lib/pasteText.ts.
+   */
+  pasteNotice: string | null;
   remapCmdCtrl: boolean;
   monitors: MonitorInfo[];
   activeMonitor: number;
@@ -47,6 +54,14 @@ interface Props {
   onCancelPaste: () => void;
   /** True when a user session is active on the remote device and WebRTC is available (for Switch pill). */
   webRTCAvailable?: boolean;
+  /**
+   * Whether THIS WebView can construct an RTCPeerConnection at all — distinct
+   * from `webRTCAvailable`, which is about the remote device. False on Linux
+   * webkit2gtk builds without WebRTC, where offering the switch would produce a
+   * dead control (issue #3410). Defaults to true so existing callers are
+   * unaffected.
+   */
+  webrtcSupported?: boolean;
   /** The logged-in username on the remote end (for Switch pill label). */
   remoteUserName?: string | null;
   /** Current desktop state from agent control-channel events. */
@@ -135,6 +150,7 @@ export default function ViewerToolbar({
   maxFps,
   bitrate,
   pasteProgress,
+  pasteNotice,
   remapCmdCtrl,
   monitors,
   activeMonitor,
@@ -158,6 +174,7 @@ export default function ViewerToolbar({
   onCancelPaste,
   reconnectSecondsLeft,
   webRTCAvailable = false,
+  webrtcSupported = true,
   remoteUserName = null,
   desktopState,
   onSwitchTransport,
@@ -291,11 +308,13 @@ export default function ViewerToolbar({
   }, [webRTCAvailable]);
 
   // Auto-dismiss the "Switch to WebRTC" pill after 30 seconds
-  const showSwitchPill =
-    transport === 'vnc' &&
-    remoteOs === 'macos' &&
-    webRTCAvailable &&
-    !pillDismissed;
+  const showSwitchPill = shouldShowWebRTCSwitchPill({
+    transport,
+    remoteOs,
+    webRTCAvailable,
+    webrtcSupported,
+    pillDismissed,
+  });
 
   useEffect(() => {
     if (!showSwitchPill) return;
@@ -367,22 +386,40 @@ export default function ViewerToolbar({
                 <div className="absolute left-0 top-full mt-1 w-40 bg-gray-800 border border-gray-600 rounded-lg shadow-xl z-50 py-1">
                   {(['webrtc', 'vnc'] as const).map((opt) => {
                     const isActive = transport === opt;
-                    const isLoginWindow = opt === 'webrtc' && desktopState?.state === 'loginwindow';
+                    // Non-null only for 'webrtc', and only when something makes
+                    // the switch impossible — a WebView with no WebRTC, or a
+                    // remote sitting at the login window. Doubles as the tooltip
+                    // so a greyed-out row always says why (issue #3410).
+                    const unavailableReason =
+                      opt === 'webrtc'
+                        ? webrtcSwitchUnavailableReason({
+                            webrtcSupported,
+                            desktopState: desktopState?.state,
+                          })
+                        : null;
+                    const isUnavailable = unavailableReason !== null;
                     return (
                       <button
                         key={opt}
-                        disabled={isActive || isLoginWindow}
+                        // Deliberately NOT `disabled` when unavailable: browsers
+                        // suppress pointer events on disabled controls, so the
+                        // `title` explaining WHY would never appear and the row
+                        // would be an unfocusable grey blank. aria-disabled +
+                        // the no-op click below gives the same semantics while
+                        // keeping the tooltip and screen-reader text.
+                        disabled={isActive}
+                        aria-disabled={isUnavailable || undefined}
                         onClick={() => {
-                          if (!isActive && !isLoginWindow) {
+                          if (!isActive && !isUnavailable) {
                             onSwitchTransport?.(opt);
                           }
                           setTransportDropdownOpen(false);
                         }}
-                        title={isLoginWindow ? 'WebRTC unavailable: device is at login window' : undefined}
+                        title={unavailableReason ?? undefined}
                         className={`w-full flex items-center justify-between px-3 py-1.5 text-xs text-left ${
                           isActive
                             ? 'text-gray-200 cursor-default'
-                            : isLoginWindow
+                            : isUnavailable
                             ? 'text-gray-500 cursor-not-allowed'
                             : 'text-gray-300 hover:bg-gray-700'
                         }`}
@@ -609,6 +646,13 @@ export default function ViewerToolbar({
             <XIcon className="w-3 h-3" />
           </button>
         </div>
+      )}
+
+      {/* Paste failure notice — transient, cleared on a timer by DesktopViewer */}
+      {pasteNotice && (
+        <span className="text-xs text-red-400 max-w-xs truncate" title={pasteNotice}>
+          {pasteNotice}
+        </span>
       )}
 
       {/* Divider between status/telemetry and the primary action group */}

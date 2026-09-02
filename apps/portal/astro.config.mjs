@@ -42,9 +42,6 @@ export default defineConfig({
     port: 4322
   },
   vite: {
-    plugins: [tailwindcss()],
-    ssr: {
-      noExternal: ['@tanstack/react-query']
-    }
+    plugins: [tailwindcss()]
   }
 });

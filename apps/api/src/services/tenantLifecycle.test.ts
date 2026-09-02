@@ -1,7 +1,10 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
+const getCurrentDbAccessContextMock = vi.hoisted(() => vi.fn(() => undefined as { scope: string } | undefined));
+
 vi.mock('../db', () => ({
   db: { select: vi.fn(), update: vi.fn() },
+  getCurrentDbAccessContext: getCurrentDbAccessContextMock,
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
 }));
@@ -50,15 +53,18 @@ vi.mock('drizzle-orm', () => ({
   sql: vi.fn(),
 }));
 
-import { db } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { apiKeys, devices, enrollmentKeys } from '../db/schema';
 import { invalidateAgentTenantCache } from './tenantStatus';
 import { disconnectAgent, getConnectedAgentIds } from '../routes/agentWs';
 import {
+  ARCHIVE_SUSPENDED_TOKEN_REASON,
+  liftArchiveSuspension,
   revokeOrganizationTenantAccess,
   revokePartnerTenantAccess,
   restoreOrganizationTenantAccess,
   restorePartnerTenantAccess,
+  suspendOrganizationTenantAccessReversibly,
 } from './tenantLifecycle';
 
 const updateLog: { table: unknown; values: Record<string, unknown>; where: unknown }[] = [];
@@ -107,6 +113,7 @@ function andClauses(where: any): any[] {
 describe('tenantLifecycle — agent fleet severance', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    getCurrentDbAccessContextMock.mockReturnValue(undefined);
     setupUpdate();
   });
 
@@ -212,6 +219,69 @@ describe('tenantLifecycle — agent fleet severance', () => {
 
     expect(updateLog.some((u) => u.table === devices)).toBe(true);
     expect(result.agentTokensRestored).toBe(3);
+  });
+
+  it('archive suspension and lift round-trip only the org_archived reason tag', async () => {
+    returningByTable.set(devices, [{ id: 'd1' }]);
+
+    const suspended = await suspendOrganizationTenantAccessReversibly('org-1');
+    const lifted = await liftArchiveSuspension('org-1');
+
+    const deviceUpdates = updateLog.filter((u) => u.table === devices);
+    expect(deviceUpdates).toHaveLength(2);
+
+    const [suspend, lift] = deviceUpdates;
+    expect(suspend!.values.agentTokenSuspendedAt).toBeInstanceOf(Date);
+    expect(suspend!.values.agentTokenSuspendedReason).toBe(ARCHIVE_SUSPENDED_TOKEN_REASON);
+    expect(andClauses(suspend!.where)).toContainEqual({
+      inArray: ['devices.orgId', ['org-1']],
+    });
+    expect(andClauses(suspend!.where)).toContainEqual({
+      isNull: 'devices.agentTokenSuspendedAt',
+    });
+
+    expect(lift!.values).toEqual({
+      agentTokenSuspendedAt: null,
+      agentTokenSuspendedReason: null,
+    });
+    expect(andClauses(lift!.where)).toContainEqual({
+      inArray: ['devices.orgId', ['org-1']],
+    });
+    expect(andClauses(lift!.where)).toContainEqual({
+      eq: ['devices.agentTokenSuspendedReason', ARCHIVE_SUSPENDED_TOKEN_REASON],
+    });
+
+    expect(updateLog.some((u) => u.table === apiKeys)).toBe(false);
+    expect(updateLog.some((u) => u.table === enrollmentKeys)).toBe(false);
+    expect(suspended.agentTokensSuspended).toBe(1);
+    expect(lifted.agentTokensRestored).toBe(1);
+  });
+
+  // Review fix I-3: archive must not take OWNERSHIP of a suspension it did not
+  // create. It used to re-tag `tenant_suspended` rows to `org_archived`, and
+  // `liftArchiveSuspension` then cleared them on restore — so archive→restore
+  // was a two-call fleet un-suspension for an org suspended for non-payment or
+  // abuse, with the status column overwritten too. Now it only claims devices
+  // that nothing else has suspended.
+  it('archive suspension claims ONLY unsuspended devices — no reason tag is re-tagged', async () => {
+    await suspendOrganizationTenantAccessReversibly('org-1');
+
+    const suspend = updateLog.find((u) => u.table === devices)!;
+    const where = JSON.stringify(suspend.where);
+    expect(where).toContain('agentTokenSuspendedAt');
+    expect(where).not.toContain('tenant_suspended');
+    expect(where).not.toContain('cross_tenant_probe');
+    expect(where).not.toContain('cross-tenant-probe');
+  });
+
+  it('archive suspend/lift reuse an ambient system transaction instead of opening a second connection', async () => {
+    getCurrentDbAccessContextMock.mockReturnValue({ scope: 'system' });
+
+    await suspendOrganizationTenantAccessReversibly('org-1');
+    await liftArchiveSuspension('org-1');
+
+    expect(runOutsideDbContext).not.toHaveBeenCalled();
+    expect(withSystemDbAccessContext).not.toHaveBeenCalled();
   });
 
   // #2774 — the offboarding drain must lock users out WITHOUT suspending

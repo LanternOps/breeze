@@ -38,11 +38,30 @@ export type InvoiceServiceErrorCode =
   // price-book row (and no org override) in the invoice's currency. Mapped 409
   // from CatalogServiceError — never another currency's number, never converted.
   | 'NO_PRICE_FOR_CURRENCY'
+  | 'PRICE_NOT_REPRESENTABLE'
+  // Multi-currency wave 6 (#3778): the org's currency changed under the caller
+  // between the preflight summary and the confirm (optimistic precondition).
+  // 409, body carries a freshly computed impact summary.
+  | 'ORG_CURRENCY_CHANGED'
+  // Multi-currency wave 6 (#3778): a REAL org currency change was requested
+  // without `confirmSnapshotRetention: true`. Only the LOCKED row can tell a
+  // real change from a same-currency no-op, so this check lives in the service.
+  | 'CONFIRMATION_REQUIRED'
   // Multi-currency wave 3 (#3775): addBundleLine — the bundle has a headline
   // price but one or more components lack a price in the invoice's currency.
   | 'PRICE_BOOK_INCOMPLETE'
   | 'NOT_A_DRAFT'
   | 'NOTHING_TO_INVOICE'
+  // Multi-currency wave 4 (#3776): assembly found unbilled work, but every row
+  // is snapshotted in a currency other than the draft header's. Carries
+  // `details.blockedByCurrency` (per-currency count + amount) so the caller can
+  // assemble a separate draft in that currency instead.
+  | 'ALL_BLOCKED_BY_CURRENCY'
+  // Multi-currency wave 4 (#3776, review #1): assembly found billable time but
+  // every row has a NULL hourly rate (match-or-skip found no rate in the org's
+  // currency). Never billed at zero. Carries `details.missingRate` (the entries
+  // and their hours) so the caller can set a rate and retry.
+  | 'ALL_MISSING_RATE'
   | 'NO_VISIBLE_LINES'
   | 'SOURCE_ALREADY_BILLED'
   // B10 (#3774): a line's source row no longer exists (or belongs to another
@@ -68,7 +87,10 @@ export class InvoiceServiceError extends Error {
   constructor(
     message: string,
     public status: 400 | 403 | 404 | 409 | 500 = 400,
-    public code?: InvoiceServiceErrorCode
+    public code?: InvoiceServiceErrorCode,
+    /** Structured, JSON-safe payload surfaced verbatim on the error body (e.g.
+     *  `ALL_BLOCKED_BY_CURRENCY.blockedByCurrency`). Never carries secrets. */
+    public details?: Record<string, unknown>
   ) {
     super(message);
     this.name = 'InvoiceServiceError';

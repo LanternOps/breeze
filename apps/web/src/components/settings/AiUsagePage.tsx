@@ -10,6 +10,12 @@ import { formatCurrency, formatNumber } from '@/lib/i18n/format';
 interface UsageData {
   daily: { inputTokens: number; outputTokens: number; totalCostCents: number; messageCount: number };
   monthly: { inputTokens: number; outputTokens: number; totalCostCents: number; messageCount: number };
+  /** Who pays for LLM calls: the platform key or the partner's own Anthropic key (BYOK). */
+  billedTo?: 'platform' | 'partner_key';
+  /** Name of the catalog endpoint the org's most recent session used, when
+   *  billed to the partner key via a platform-vetted third-party endpoint
+   *  rather than direct Anthropic (#3922 W4). */
+  catalogEndpointName?: string | null;
   budget: {
     enabled: boolean;
     monthlyBudgetCents: number | null;
@@ -73,9 +79,15 @@ export default function AiUsagePage() {
       const sessionsUrl = showFlaggedOnly
         ? '/ai/admin/sessions?limit=50&flagged=true'
         : '/ai/admin/sessions?limit=50';
-      const [usageRes, sessionsRes] = await Promise.all([
+      const [usageRes, sessionsRes, effRes] = await Promise.all([
         fetchWithAuth('/ai/usage'),
-        fetchWithAuth(sessionsUrl)
+        fetchWithAuth(sessionsUrl),
+        currentOrgId
+          ? fetchWithAuth(`/orgs/organizations/${currentOrgId}/effective-settings`).catch((err) => {
+              console.warn('[AiUsagePage] Error fetching effective settings:', err);
+              return null;
+            })
+          : Promise.resolve(null),
       ]);
 
       if (usageRes.ok) {
@@ -99,17 +111,10 @@ export default function AiUsagePage() {
         setSessions(data.data || []);
       }
 
-      // Fetch locked fields from partner
-      if (currentOrgId) {
-        try {
-          const effRes = await fetchWithAuth(`/orgs/organizations/${currentOrgId}/effective-settings`);
-          if (effRes.ok) {
-            const effData = await effRes.json();
-            setLocked(effData.locked || []);
-          }
-        } catch (err) {
-          console.warn('[AiUsagePage] Error fetching effective settings:', err);
-        }
+      // Locked fields from partner (effective-settings), fetched in parallel above.
+      if (effRes && effRes.ok) {
+        const effData = await effRes.json();
+        setLocked(effData.locked || []);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : t('aiUsagePage.failedToLoadData'));
@@ -177,6 +182,13 @@ export default function AiUsagePage() {
       <div>
         <h1 className="text-xl font-semibold tracking-tight">{t('aiUsagePage.aIUsageBudget')}</h1>
         <p className="text-muted-foreground">{t('aiUsagePage.monitorAIAssistantUsageAndConfigureBudgetLimits')}</p>
+        {usage?.billedTo === 'partner_key' && (
+          <p className="mt-1 text-sm text-muted-foreground" data-testid="ai-usage-billed-to-note">
+            {usage.catalogEndpointName
+              ? t('aiUsagePage.billedToPartnerKeyViaEndpoint', { name: usage.catalogEndpointName })
+              : t('aiUsagePage.billedToPartnerKey')}
+          </p>
+        )}
       </div>
 
       {error && (

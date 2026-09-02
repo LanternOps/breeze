@@ -15,6 +15,8 @@ import {
 } from '../urlSafety';
 import { selfHostAllowsPrivateNetwork } from '../../config/env';
 import { getOutboundHeaderValidationErrors, sanitizeOutboundHeaders, validateOutboundHeader } from '../outboundHeaders';
+import { formatHttpFailure, formatHttpFailureDetail } from '../httpFailureMessage';
+import { collectChannelSecretStrings } from '../notificationChannelSecrets';
 
 export function redactUrlForLogs(rawUrl: string): string {
   try {
@@ -261,6 +263,10 @@ export async function sendWebhookNotification(
 
   // Send request with retries
   let lastError: string | undefined;
+  // The operator-facing `lastError` is deliberately short and markup-free
+  // (#3992); the unshortened form is kept for the log line below so debugging
+  // a strange destination loses nothing.
+  let lastErrorDetail: string | undefined;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
       const controller = new AbortController();
@@ -295,7 +301,12 @@ export async function sendWebhookNotification(
       }
 
       // Non-2xx response
-      lastError = `HTTP ${response.status}: ${responseBody.substring(0, 500)}`;
+      // Redact the channel's own credentials from the RAW body first: the
+      // route's scrub runs on the already-transformed string and matches by
+      // literal substring, so it cannot catch what normalisation rewrote (#3992).
+      const secrets = collectChannelSecretStrings('webhook', config);
+      lastError = formatHttpFailure(response.status, responseBody, { secrets });
+      lastErrorDetail = formatHttpFailureDetail(response.status, responseBody, secrets);
 
       // Don't retry on 4xx errors (client errors)
       if (response.status >= 400 && response.status < 500) {
@@ -313,11 +324,14 @@ export async function sendWebhookNotification(
       if (error instanceof Error) {
         if (error.name === 'AbortError') {
           lastError = 'Request timed out';
+          lastErrorDetail = lastError;
         } else {
           lastError = error.message;
+          lastErrorDetail = lastError;
         }
       } else {
         lastError = 'Unknown error';
+        lastErrorDetail = lastError;
       }
     }
 
@@ -327,7 +341,7 @@ export async function sendWebhookNotification(
     }
   }
 
-  console.error(`[WebhookSender] Failed to send to ${redactUrlForLogs(config.url)}: ${lastError}`);
+  console.error(`[WebhookSender] Failed to send to ${redactUrlForLogs(config.url)}: ${lastErrorDetail ?? lastError}`);
 
   return {
     success: false,

@@ -35,6 +35,9 @@ import { captureException } from '../services/sentry';
 import { db, withSystemDbAccessContext } from '../db';
 import { quotes } from '../db/schema/quotes';
 import { sendQuote, type SendQuoteEmailOptions } from '../services/quoteLifecycle';
+import { requestLikeFromSnapshot } from '../services/auditEvents';
+import { writeAuditEvent } from '../services/auditEvents';
+import { supersededAuditEvent } from '../services/quoteSupersedeAudit';
 import { QuoteServiceError, type QuoteActor } from '../services/quoteTypes';
 
 const QUOTE_SEND_QUEUE = 'quote-send';
@@ -162,6 +165,13 @@ export async function processQuoteSendJob(data: QuoteSendJobData): Promise<void>
   // the real-DB integration suite: an in-transaction catch-and-stamp was
   // undone by its own rethrow, so the failure banner could never appear).
   let sendError: unknown;
+  let supersedeAudit: {
+    orgId: string;
+    parentQuoteId: string;
+    previousStatus: string;
+    revisionNumber: number;
+    emailed: boolean;
+  } | undefined;
   const failed = await withSystemDbAccessContext(async () => {
     // Atomic claim: fire only if this job is still the row's registered
     // schedule, and take that registration out from under any concurrent
@@ -181,6 +191,15 @@ export async function processQuoteSendJob(data: QuoteSendJobData): Promise<void>
     // out — the delayed path has no request to return `emailed:false` to.
     // (Success needs no write: the flip already cleared the marker.)
     const result = await sendQuote(quoteId, actor, emailOpts);
+    if (result.superseded) {
+      supersedeAudit = {
+        orgId: result.quote.orgId,
+        parentQuoteId: result.superseded.parentQuoteId,
+        previousStatus: result.superseded.previousStatus,
+        revisionNumber: result.quote.revisionNumber,
+        emailed: result.emailed,
+      };
+    }
     if (!result.emailed) {
       await db.update(quotes)
         .set({ sendEmailReason: result.emailReason ?? 'send_failed' })
@@ -191,6 +210,23 @@ export async function processQuoteSendJob(data: QuoteSendJobData): Promise<void>
     sendError = err;
     return true;
   });
+  // Emit only after the transaction commits, so a rolled-back send can never
+  // leave a success audit behind. Audit persistence has its own internal retry queue.
+  if (!failed && supersedeAudit) {
+    // No request here, so attribute the actor who scheduled the send explicitly
+    // — writeRouteAudit's auth-context extraction is unavailable on this path.
+    writeAuditEvent(requestLikeFromSnapshot({}), {
+      ...supersededAuditEvent({
+        childQuoteId: quoteId,
+        orgId: supersedeAudit.orgId,
+        parentQuoteId: supersedeAudit.parentQuoteId,
+        previousStatus: supersedeAudit.previousStatus,
+        revisionNumber: supersedeAudit.revisionNumber,
+        emailed: supersedeAudit.emailed,
+      }),
+      actorId: actor.userId,
+    });
+  }
   if (!failed) return;
   // Fire-time rejection: the transaction above rolled back (including the
   // claim, so the row still carries this job's id), and the quote stays a

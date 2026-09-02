@@ -1,15 +1,35 @@
 import { useState, useCallback, useRef } from 'react';
 import '@/lib/i18n';
 import { useTranslation } from 'react-i18next';
-import type { TicketTemplateVars } from '@breeze/shared';
+import { TICKET_ATTACHMENT_LIMITS, type TicketTemplateVars } from '@breeze/shared';
 import { cn } from '@/lib/utils';
+import { showToast } from '../shared/Toast';
 import CannedResponsePicker from './CannedResponsePicker';
 import type { CannedResponse } from '../../lib/ticketResponseTemplatesApi';
+
+/**
+ * W08 #3902 — one chip per picked file. `status` drives the whole UI: Send is
+ * blocked while anything is 'uploading', only 'done' chips contribute an id to
+ * the comment, and an 'error' chip stays put with a Retry so a single failed
+ * file never costs the user the other four.
+ */
+interface AttachmentChip {
+  key: string;
+  file: File;
+  status: 'uploading' | 'done' | 'error';
+  id?: string;
+}
 
 interface Props {
   requesterName: string | null;
   /** Must surface its own failures (runAction). Rejection here only preserves the draft. */
-  onSend: (content: string, isPublic: boolean) => Promise<void>;
+  onSend: (content: string, isPublic: boolean, attachmentIds: string[]) => Promise<void>;
+  /**
+   * Uploads ONE file and resolves with its pending attachment id. The caller
+   * owns the runAction wrapping and the FormData POST; the composer only tracks
+   * chips. Omit to hide the attach control entirely.
+   */
+  onUploadAttachment?: (file: File) => Promise<{ id: string }>;
   disabled?: boolean;
   /** Partner canned responses (empty/omitted hides the picker). */
   templates?: CannedResponse[];
@@ -17,13 +37,17 @@ interface Props {
   templateVars?: TicketTemplateVars;
 }
 
-export default function TicketComposer({ requesterName, onSend, disabled, templates, templateVars }: Props) {
+export default function TicketComposer({ requesterName, onSend, onUploadAttachment, disabled, templates, templateVars }: Props) {
   const { t } = useTranslation('tickets');
   const [mode, setMode] = useState<'reply' | 'internal'>('reply'); // public reply default (UI brief)
   const [content, setContent] = useState('');
   const [sending, setSending] = useState(false);
+  const [chips, setChips] = useState<AttachmentChip[]>([]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const isPublic = mode === 'reply';
+  const uploading = chips.some((c) => c.status === 'uploading');
+  const readyIds = chips.filter((c) => c.status === 'done' && c.id).map((c) => c.id!);
 
   // Splice canned text in at the caret (append when there's no selection) so an
   // agent can stack snippets and keep editing. Never sends.
@@ -46,18 +70,68 @@ export default function TicketComposer({ requesterName, onSend, disabled, templa
     [content],
   );
 
+  const startUpload = useCallback(async (chip: AttachmentChip) => {
+    if (!onUploadAttachment) return;
+    try {
+      const { id } = await onUploadAttachment(chip.file);
+      setChips((cs) => cs.map((c) => (c.key === chip.key ? { ...c, status: 'done', id } : c)));
+    } catch {
+      // The uploader already toasted through runAction; the chip is the
+      // persistent, retryable record of the failure.
+      setChips((cs) => cs.map((c) => (c.key === chip.key ? { ...c, status: 'error', id: undefined } : c)));
+    }
+  }, [onUploadAttachment]);
+
+  const addFiles = useCallback((picked: FileList | null) => {
+    if (!picked || picked.length === 0 || !onUploadAttachment) return;
+    const files = Array.from(picked);
+    const room = TICKET_ATTACHMENT_LIMITS.maxPerComment - chips.length;
+    const accepted = files.slice(0, Math.max(room, 0));
+    const rejectedCount = files.length - accepted.length;
+    const oversize = accepted.filter((f) => f.size > TICKET_ATTACHMENT_LIMITS.maxBytes);
+    const fitting = accepted.filter((f) => f.size <= TICKET_ATTACHMENT_LIMITS.maxBytes);
+
+    if (rejectedCount > 0) {
+      showToast({
+        type: 'error',
+        message: t('ticketComposer.attachments.tooMany', { max: TICKET_ATTACHMENT_LIMITS.maxPerComment }),
+      });
+    }
+    if (oversize.length > 0) {
+      showToast({
+        type: 'error',
+        message: t('ticketComposer.attachments.tooLarge', { name: oversize[0]!.name }),
+      });
+    }
+
+    const added: AttachmentChip[] = fitting.map((file, i) => ({
+      key: `${Date.now()}-${i}-${file.name}`,
+      file,
+      status: 'uploading',
+    }));
+    if (added.length === 0) return;
+    setChips((cs) => [...cs, ...added]);
+    for (const chip of added) void startUpload(chip);
+  }, [chips.length, onUploadAttachment, startUpload, t]);
+
   const send = useCallback(async () => {
-    if (!content.trim() || sending) return;
+    // An attachment-only comment is legal (the shared validator allows empty
+    // content when attachmentIds is non-empty), so the guard is "nothing at
+    // all", not "no text".
+    if ((!content.trim() && readyIds.length === 0) || sending || uploading) return;
     setSending(true);
     try {
-      await onSend(content.trim(), isPublic);
+      await onSend(content.trim(), isPublic, readyIds);
       setContent('');
+      setChips([]);
+      if (fileInputRef.current) fileInputRef.current.value = '';
     } catch {
-      // failure already surfaced via runAction toast; keep the draft
+      // failure already surfaced via runAction toast; keep the draft AND the
+      // chips — re-uploading five photos because the POST 500'd is punitive.
     } finally {
       setSending(false);
     }
-  }, [content, isPublic, onSend, sending]);
+  }, [content, isPublic, onSend, readyIds, sending, uploading]);
 
   return (
     <div
@@ -91,6 +165,28 @@ export default function TicketComposer({ requesterName, onSend, disabled, templa
             {t('ticketComposer.internalBanner')}
           </span>
         )}
+        {onUploadAttachment && (
+          <>
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              accept={TICKET_ATTACHMENT_LIMITS.allowedMimes.join(',')}
+              className="hidden"
+              data-testid="ticket-composer-file-input"
+              onChange={(e) => addFiles(e.target.files)}
+            />
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={disabled || sending || chips.length >= TICKET_ATTACHMENT_LIMITS.maxPerComment}
+              className="rounded-md px-2 py-1 text-xs text-muted-foreground hover:text-foreground disabled:opacity-50"
+              data-testid="ticket-composer-attach"
+            >
+              {t('ticketComposer.attachments.attach')}
+            </button>
+          </>
+        )}
         <div className="ml-auto">
           <CannedResponsePicker
             templates={templates ?? []}
@@ -121,11 +217,54 @@ export default function TicketComposer({ requesterName, onSend, disabled, templa
           data-testid="ticket-composer-input"
           className="w-full resize-y rounded-md border bg-background px-3 py-2 text-sm focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-primary"
         />
+        {chips.length > 0 && (
+          <div className="mt-2 flex flex-wrap gap-2" data-testid="ticket-composer-chips">
+            {chips.map((chip) => (
+              <span
+                key={chip.key}
+                className={cn(
+                  'inline-flex items-center gap-2 rounded-md border px-2 py-1 text-xs',
+                  chip.status === 'error' && 'border-destructive/40 text-destructive'
+                )}
+                data-testid={`ticket-composer-chip-${chip.file.name}`}
+              >
+                <span>{chip.file.name}</span>
+                {chip.status === 'uploading' && (
+                  <span className="text-muted-foreground" data-testid={`ticket-composer-chip-uploading-${chip.file.name}`}>
+                    {t('ticketComposer.attachments.uploading')}
+                  </span>
+                )}
+                {chip.status === 'error' && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setChips((cs) => cs.map((c) => (c.key === chip.key ? { ...c, status: 'uploading' } : c)));
+                      void startUpload(chip);
+                    }}
+                    className="font-medium underline"
+                    data-testid={`ticket-composer-chip-retry-${chip.file.name}`}
+                  >
+                    {t('ticketComposer.attachments.retry')}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setChips((cs) => cs.filter((c) => c.key !== chip.key))}
+                  className="text-muted-foreground hover:text-destructive"
+                  aria-label={t('ticketComposer.attachments.remove')}
+                  data-testid={`ticket-composer-chip-remove-${chip.file.name}`}
+                >
+                  &times;
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
         <div className="mt-2 flex justify-end">
           <button
             type="button"
             onClick={() => void send()}
-            disabled={!content.trim() || sending || disabled}
+            disabled={(!content.trim() && readyIds.length === 0) || sending || uploading || disabled}
             data-testid="ticket-composer-send"
             className={cn(
               'rounded-md px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50',

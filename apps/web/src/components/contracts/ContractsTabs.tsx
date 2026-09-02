@@ -4,18 +4,20 @@ import { useHashState } from '@/lib/useHashState';
 import { ContractsList } from './ContractsList';
 import TemplatesTab from './TemplatesTab';
 import DocumentsTab from './DocumentsTab';
+import CurrencyMismatchesTab from './CurrencyMismatchesTab';
 
-// Three-tab landing shell for the contracts area: the recurring-contracts
-// list, the contract-template library, and unattached executed documents
-// (Task 18). Only one child mounts at a time so each owns the URL hash
+// Four-tab landing shell for the contracts area: the recurring-contracts
+// list, the contract-template library, unattached executed documents
+// (Task 18), and the read-only contract-vs-org currency mismatch report
+// (#3778, Task 15). Only one child mounts at a time so each owns the URL hash
 // exclusively — the Contracts tab lets ContractsList manage its own
 // `#orgId=…&status=…` filter fragment; Templates/Documents park on their own
 // `#tab=…` fragment (CLAUDE.md: hash for transient UI state, never query params).
-type Tab = 'contracts' | 'templates' | 'documents';
+type Tab = 'contracts' | 'templates' | 'documents' | 'currency-mismatches';
 
 function parseTab(hash: string): Tab | undefined {
   const tab = new URLSearchParams(hash).get('tab');
-  return tab === 'templates' || tab === 'documents' ? tab : undefined;
+  return tab === 'templates' || tab === 'documents' || tab === 'currency-mismatches' ? tab : undefined;
 }
 
 export default function ContractsTabs() {
@@ -69,8 +71,26 @@ export default function ContractsTabs() {
         >
           {t('contracts.tabs.documents')}
         </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'currency-mismatches'}
+          onClick={() => select('currency-mismatches')}
+          data-testid="contracts-tab-currency-mismatches"
+          className={tabClass(tab === 'currency-mismatches')}
+        >
+          {t('contracts.tabs.currencyMismatches')}
+        </button>
       </div>
-      {tab === 'templates' ? <TemplatesTab /> : tab === 'documents' ? <DocumentsTab /> : <ContractsList />}
+      {tab === 'templates' ? (
+        <TemplatesTab />
+      ) : tab === 'documents' ? (
+        <DocumentsTab />
+      ) : tab === 'currency-mismatches' ? (
+        <CurrencyMismatchesTab />
+      ) : (
+        <ContractsList />
+      )}
     </div>
   );
 }

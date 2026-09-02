@@ -12,6 +12,7 @@ import {
   devices,
   playbookDefinitions,
   playbookExecutions,
+  users,
 } from '../db/schema';
 import { eq, and, desc, sql, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
@@ -174,6 +175,23 @@ registerTool({
           ? (extraContext.variables as Record<string, unknown>)
           : {};
 
+      // #3826 Wave 4A Task 3: `playbook_executions.triggered_by_user_id`
+      // FK-references users.id (schema/playbooks.ts:118), but an `ai_agent`
+      // principal's `auth.user.id` is the agent's `ai_agents.id`, not a
+      // users row (services/aiAgents/agentAuthContext.ts) — inserting it
+      // verbatim would die on a 23503. Mirrors the shipped
+      // commandQueue.ts:855-889 probe precedent: one indexed PK lookup, and
+      // a non-resolving id degrades the FK column to NULL. The existing
+      // `triggeredBy: 'ai'` varchar tag is untouched either way — it already
+      // flags every AI-originated execution regardless of which principal
+      // triggered it.
+      const [userRow] = await db
+        .select({ id: users.id })
+        .from(users)
+        .where(eq(users.id, auth.user.id))
+        .limit(1);
+      const safeTriggeredByUserId = userRow ? auth.user.id : null;
+
       const [execution] = await db
         .insert(playbookExecutions)
         .values({
@@ -189,7 +207,7 @@ registerTool({
             },
           },
           triggeredBy: 'ai',
-          triggeredByUserId: auth.user.id,
+          triggeredByUserId: safeTriggeredByUserId,
         })
         .returning();
 

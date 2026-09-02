@@ -1,5 +1,15 @@
 import { z } from 'zod';
 
+/**
+ * Every value of the `report_type` pgEnum, INCLUDING the internal one. Reads
+ * need the full union: `GET /reports?type=ai_org_narrative` is a legitimate
+ * filter, and `GET /reports/:id` returns the stored row's type verbatim.
+ *
+ * The two WRITE schemas below narrow it — see `internalReportType`. Keeping one
+ * enum plus a refinement (rather than two enums) means a report type added to
+ * the DB shows up in the read filter automatically, and only the write refusal
+ * has to be considered deliberately.
+ */
 export const reportTypeSchema = z.enum([
   'device_inventory',
   'software_inventory',
@@ -7,8 +17,21 @@ export const reportTypeSchema = z.enum([
   'compliance',
   'performance',
   'executive_summary',
-  'security_compliance_posture'
+  'security_compliance_posture',
+  // P2-3 (#4190): system-managed. Created only by the AI narrative run's own
+  // transaction (`persistNarrativeReport`), never by a human, and never
+  // generated on demand (`StoredArtifactOnlyReportError`).
+  'ai_org_narrative'
 ]);
+
+/** Report types a human may never create or generate on demand. */
+const INTERNAL_REPORT_TYPES = new Set(['ai_org_narrative']);
+const INTERNAL_REPORT_TYPE_MESSAGE = 'internal report type';
+
+/** Applied to the CREATE and AD-HOC GENERATE schemas only — never to the read
+ *  filter above. A 400 here is what keeps a technician from minting a second,
+ *  human-owned "narrative" definition the agent scheduler would then ignore. */
+const notInternalReportType = (type: string) => !INTERNAL_REPORT_TYPES.has(type);
 
 /** Config for the Security & Compliance Posture report. Thresholds drive the
  * pass/fail percentages; all optional with insurance-sensible defaults. */
@@ -111,7 +134,7 @@ export const listReportsSchema = z.object({
 export const createReportSchema = z.object({
   orgId: z.string().guid().optional(),
   name: z.string().min(1).max(255),
-  type: reportTypeSchema,
+  type: reportTypeSchema.refine(notInternalReportType, INTERNAL_REPORT_TYPE_MESSAGE),
   config: reportConfigSchema.optional().default({}),
   schedule: z.enum(['one_time', 'daily', 'weekly', 'monthly']).default('one_time'),
   format: z.enum(['csv', 'pdf', 'excel']).default('csv')
@@ -125,7 +148,7 @@ export const updateReportSchema = z.object({
 });
 
 export const generateReportSchema = z.object({
-  type: reportTypeSchema,
+  type: reportTypeSchema.refine(notInternalReportType, INTERNAL_REPORT_TYPE_MESSAGE),
   config: z.object({
     dateRange: z.object({
       start: z.string().optional(),

@@ -30,6 +30,10 @@ GET /api/v1/agents/download/linux/amd64
 
 The release version is determined by `BINARY_VERSION` or `BREEZE_VERSION`. If neither is set, redirects to the `latest` release.
 
+<Aside type="caution">
+  **The pinned release has to be published on GitHub, not merely tagged.** Boot-time sync asks for that exact release; if it does not exist yet -- for example your server images rolled ahead of the public release -- the sync fails loudly, registers no agent binaries for that version, and deliberately does *not* fall back to `latest`. Agents then get a 404 when they try to download. The API still starts, and the log line tells you the fix: set `BINARY_VERSION` to the last published release until the newer one is out.
+</Aside>
+
 The repository itself is configurable: `BINARY_GITHUB_REPOSITORY` (default
 `lanternops/breeze`) controls where downloads redirect and where release
 sync reads from. Self-hosters who [sign their own agent
@@ -58,6 +62,8 @@ This is a public key (also embedded in the agent and CI), so it is safe to commi
 #### Unsigned signing inputs
 
 Official releases also publish `*-unsigned` build outputs with manifest entries marked `intendedUse: "signing-input"` and `platformTrust: "none"`. These exist solely as inputs for self-signing and are never registrable or downloadable through the API.
+
+Manifest entries for the Windows assets that *are* Authenticode-signed (the Viewer and Helper installers) additionally record which certificate authority signed them, so the provider behind a given build is auditable from the signed manifest itself.
 
 ### Local Mode
 

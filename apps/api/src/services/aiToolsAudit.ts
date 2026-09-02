@@ -7,6 +7,7 @@
  */
 
 import { db } from '../db';
+import { ACTOR_TYPES } from '@breeze/shared';
 import { devices, auditLogs, deviceChangeLog } from '../db/schema';
 import { eq, ne, or, and, not, isNull, desc, sql, gte, lte, inArray, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
@@ -57,7 +58,7 @@ export function registerAuditTools(aiTools: Map<string, AiTool>): void {
           action: { type: 'string', description: 'Filter by action (e.g., "agent.command.script")' },
           resourceType: { type: 'string', description: 'Filter by resource type (e.g., "device")' },
           resourceId: { type: 'string', description: 'Filter by resource UUID' },
-          actorType: { type: 'string', enum: ['user', 'api_key', 'agent', 'system'], description: 'Filter by actor type' },
+          actorType: { type: 'string', enum: [...ACTOR_TYPES], description: 'Filter by actor type' },
           hoursBack: { type: 'number', description: 'How many hours back to search (default: 24, max: 168)' },
           limit: { type: 'number', description: 'Max results (default 25, max 100)' }
         }

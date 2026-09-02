@@ -38,6 +38,10 @@ import {
 import { encryptSecret } from '../../services/secretCrypto';
 import { createAccessToken } from '../../services/jwt';
 import { clearPermissionCache } from '../../services/permissions';
+import {
+  beginAuthIssuance,
+  cancelAuthIssuance,
+} from '../../services/authBrowserTransition';
 
 process.env.APP_ENCRYPTION_KEY =
   process.env.APP_ENCRYPTION_KEY || 'integration-test-app-encryption-key-32-bytes!';
@@ -163,6 +167,18 @@ async function seedLoginSession(providerId: string, providerVersion: number) {
   const db = getTestDb();
   const state = `login-${randomUUID()}`;
   const nonce = `nonce-${randomUUID()}`;
+  let browserBinding: string;
+  try {
+    await beginAuthIssuance({ kind: 'browser', value: '' });
+    throw new Error('expected an empty browser binding to require rotation');
+  } catch (error) {
+    const replacement = (error as { replacement?: { value?: string } }).replacement?.value;
+    if (!replacement) throw error;
+    browserBinding = replacement;
+  }
+
+  const capability = await beginAuthIssuance({ kind: 'browser', value: browserBinding });
+  await cancelAuthIssuance(capability);
   await db.insert(ssoSessions).values({
     providerId,
     state,
@@ -170,6 +186,8 @@ async function seedLoginSession(providerId: string, providerVersion: number) {
     providerVersion,
     redirectUrl: '/',
     linkUserId: null,
+    browserTransitionId: capability.transitionId,
+    browserGeneration: capability.generation,
     expiresAt: new Date(Date.now() + 10 * 60 * 1000),
   });
   return { state, nonce, cookie: buildTestSsoStateCookie(state) };

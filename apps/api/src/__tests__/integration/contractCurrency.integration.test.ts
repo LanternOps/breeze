@@ -114,7 +114,7 @@ describe.runIf(RUN)('contract→invoice currency propagation (B2)', () => {
     await expect(
       withSystemDbAccessContext(() => addContractLine(gbpDraftId, {
         description: 'Managed services', quantity: '1', unitPrice: '100.00', taxable: false,
-        sourceId: line!.id
+        sourceId: line!.id, contractId: c.id
       }, actor))
     ).rejects.toMatchObject({ code: 'CURRENCY_MISMATCH', status: 400 });
 
@@ -122,7 +122,7 @@ describe.runIf(RUN)('contract→invoice currency propagation (B2)', () => {
     await expect(
       withSystemDbAccessContext(() => addContractLine(gbpDraftId, {
         description: 'Managed services', quantity: '1', unitPrice: '100.00', taxable: false,
-        sourceId: line!.id
+        sourceId: line!.id, contractId: c.id
       }, actor))
     ).rejects.toBeInstanceOf(InvoiceServiceError);
   });

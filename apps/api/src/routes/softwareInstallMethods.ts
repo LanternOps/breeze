@@ -17,6 +17,7 @@ import { authMiddleware, requireMfa, requirePermission, requireScope } from '../
 import { writeRouteAudit } from '../services/auditEvents';
 import { PERMISSIONS } from '../services/permissions';
 import { resolveScopedOrgId, type AuthScopeContext } from '../services/softwareVersionShared';
+import { pgErrorCode } from '../utils/pgErrors';
 
 export const WINGET_PACKAGE_ID_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
 export const BREW_PACKAGE_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9+._/@-]{0,255}$/;
@@ -129,7 +130,10 @@ softwareInstallMethodRoutes.post(
       });
       return c.json({ data: method }, 201);
     } catch (err: unknown) {
-      if ((err as { code?: string }).code === '23505') {
+      // Read the SQLSTATE through pgErrorCode: drizzle-orm/postgres-js rethrows
+      // the PostgresError inside a DrizzleQueryError whose own `.code` is
+      // undefined, so a top-level `err.code` check never fires (issue #3881).
+      if (pgErrorCode(err) === '23505') {
         return c.json({ error: 'An install method for this platform and kind already exists' }, 409);
       }
       throw err;
@@ -283,7 +287,8 @@ softwareInstallMethodRoutes.delete(
       await db.delete(softwareInstallMethods)
         .where(and(eq(softwareInstallMethods.id, existing.id), eq(softwareInstallMethods.catalogId, item.id)));
     } catch (err: unknown) {
-      if ((err as { code?: string }).code === '23503') {
+      // Same DrizzleQueryError unwrap as the create handler above (#3881).
+      if (pgErrorCode(err) === '23503') {
         return c.json({
           error: 'This install method is referenced by past deployments — disable it instead of deleting it',
         }, 409);

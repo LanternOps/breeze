@@ -19,6 +19,10 @@
       "create": "Erstellen Sie einen automatisierten Workflow mit Auslösern, Bedingungen und Aktionen.",
       "edit": "Ändern Sie die Automatisierungskonfiguration."
     },
+    "managed": {
+      "title": "Von KI-Agent verwaltet",
+      "description": "Diese Automatisierung wird von ihrem KI-Agenten gepflegt. Konfigurieren Sie stattdessen den Agenten."
+    },
     "actions": {
       "create": "Erstellen Sie Automatisierung",
       "saveChanges": "Änderungen speichern"
@@ -215,6 +219,8 @@
     "empty": "Keine Automatisierungen gefunden. Versuchen Sie, Ihre Suche oder Filter anzupassen.",
     "partnerWideTitle": "Partnerweite Automatisierung – gilt für jedes Unternehmen",
     "allOrgs": "Partnerweit",
+    "managedByAgent": "Von KI-Agent verwaltet",
+    "managedByAgentHint": "Diese Automatisierung wird von ihrem KI-Agenten gepflegt. Konfigurieren Sie stattdessen den Agenten.",
     "never": "Niemals",
     "actions": {
       "viewHistory": "Verlauf anzeigen",
@@ -806,6 +812,8 @@
       "advancedFilters": "Erweiterte Filter",
       "executing": "Ausführen...",
       "started": "Begonnen!",
+      "queued": "In Warteschlange",
+      "reviewResult": "Ergebnis prüfen",
       "confirmExecute": "Bestätigen Sie Ausführen",
       "execute": "Ausführen"
     },
@@ -819,12 +827,23 @@
     },
     "matchCount": "{{count}} Übereinstimmung",
     "empty": {
-      "noCompatibleDevices": "Keine kompatiblen Geräte gefunden. Dieses Skript erfordert {{os}}."
+      "noCompatibleDevices": "Keine kompatiblen Geräte gefunden. Dieses Skript erfordert {{os}}.",
+      "offlineFiltered_one": "Keine {{status}}-Geräte gefunden. {{count}} kompatibles Gerät ist durch den Statusfilter ausgeblendet — alle Geräte anzeigen, um es einzubeziehen.",
+      "offlineFiltered_other": "Keine {{status}}-Geräte gefunden. {{count}} kompatible Geräte sind durch den Statusfilter ausgeblendet — alle Geräte anzeigen, um sie einzubeziehen.",
+      "showAllDevices": "Alle Geräte anzeigen"
     },
     "orSeparator": "oder",
     "progress": {
       "submitting": "Übermittlung an {{count}} Geräte...",
-      "submitted": "An {{count}} Geräte übermittelt"
+      "submitted": "An {{count}} Geräte übermittelt",
+      "admitted": "{{admitted}} von {{count}} Geräten zur Warteschlange zugelassen",
+      "submittingTarget": "Wird übermittelt"
+    },
+    "admission": {
+      "allAdmitted": "Alle ausgewählten Geräte wurden zugelassen und in die Warteschlange gestellt.",
+      "partiallyAdmitted": "Einige Geräte wurden zugelassen und in die Warteschlange gestellt. Prüfen Sie die übrigen Ziele.",
+      "rejected": "Keine Geräte wurden zugelassen. Prüfen Sie die Gründe unten.",
+      "queued": "In Warteschlange"
     },
     "confirm": {
       "title": "Bestätigen Sie die Ausführung",
@@ -842,6 +861,9 @@
       "macos": "macOS",
       "linux": "Linux"
     }
+  },
+  "secretParameters": {
+    "requiresSystemContext": "Dieses Skript verwendet geheime Variablen, die nur an Ausführungen im Systemkontext ohne Sitzungsziel übergeben werden. Unter „Angemeldeter Benutzer“ oder bei einer bestimmten Zielsitzung schlagen die Geräte mit „nicht ausgeführt“ fehl."
   },
   "scriptExecutionsPage": {
     "errors": {
@@ -998,14 +1020,15 @@
       "button": "Variablen",
       "insertTitle": "Variable einfügen",
       "empty": "Noch keine Variablen.",
-      "secretUnavailable": "Geheim – wird erst in einer späteren Version als Umgebungsvariable übergeben.",
+      "secretUnavailable": "Geheim – binden Sie sie über einen Parameter mit der Quelle „Aus einer geheimen Variablen“ ein.",
       "unknown": "Für {{keys}} existiert keine Variable – die Ausführung schlägt auf jedem Zielgerät fehl, bis Sie sie anlegen."
     },
     "parameterSources": {
       "runtime": "Wird bei der Ausführung abgefragt",
       "tenantVariable": "Aus einer Variablen",
       "deviceCustomField": "Aus einem benutzerdefinierten Gerätefeld",
-      "builtin": "Aus einer Geräteeigenschaft"
+      "builtin": "Aus einer Geräteeigenschaft",
+      "tenantSecret": "Aus einer geheimen Variablen (Umgebungsvariable)"
     },
     "parameterBinding": {
       "variableLabel": "Variablenschlüssel",
@@ -1015,6 +1038,9 @@
       "builtinLabel": "Eigenschaft",
       "chooseTitle": "Variable auswählen",
       "secretRejected": "„{{key}}“ ist geheim – das Speichern wird abgelehnt. Wählen Sie eine Variable, die nicht geheim ist.",
+      "notSecret": "„{{key}}“ ist nicht geheim. Wählen Sie eine geheime Variable oder stellen Sie die Quelle auf „Aus einer Variablen“ um.",
+      "notSecretRow": "Nicht geheim – „Aus einer Variablen“ verwenden",
+      "secretHint": "Wird ausschließlich als Umgebungsvariable {{env}} übergeben – niemals in das Skript geschrieben. Erfordert die Ausführung im Systemkontext und einen Agenten, der die sichere Übergabe von Geheimnissen unterstützt.",
       "hint": "Wird bei der Ausführung für jedes Zielgerät aufgelöst – niemand wird danach gefragt."
     }
   },
@@ -1077,7 +1103,8 @@
     "suppliedBy": {
       "tenantVariable": "Wird automatisch aus der Variablen {{key}} übernommen",
       "deviceCustomField": "Wird automatisch aus dem benutzerdefinierten Gerätefeld {{key}} übernommen",
-      "builtin": "Wird automatisch aus {{key}} übernommen"
+      "builtin": "Wird automatisch aus {{key}} übernommen",
+      "tenantSecret": "Wird sicher aus der geheimen Variablen {{key}} als Umgebungsvariable übergeben"
     }
   },
   "scriptTagManager": {

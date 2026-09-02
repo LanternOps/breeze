@@ -149,6 +149,7 @@ vi.mock('../../db/schema', () => ({
     content: 'scripts.content',
     timeoutSeconds: 'scripts.timeoutSeconds',
     runAs: 'scripts.runAs',
+    parameters: 'scripts.parameters',
   },
 }));
 
@@ -237,6 +238,7 @@ vi.mock('../sensitiveCommandPayload', () => ({
 import {
   createRemediationRun,
   DISPATCH_ENQUEUE_FAILED_REASON,
+  REMEDIATION_BOUND_PARAMETER_ERROR,
   dispatchRunChunk,
   isTerminalRunStatus,
   markRunDispatchFailed,
@@ -394,6 +396,99 @@ describe('createRemediationRun — script validation', () => {
   it('accepts a script whose orgId matches the finding org', async () => {
     getFleetFindingMock.mockResolvedValue(findingDetail({ orgId: ORG_1 }));
     h.selectQueue.push([{ id: SCRIPT_1, orgId: ORG_1 }]);
+    h.selectQueue.push([]);
+    h.insertReturningQueue.push([{ id: RUN_1 }]);
+
+    const req: RemediateRequest = { actionKind: 'script', scriptId: SCRIPT_1, parameters: {} };
+    const result = await createRemediationRun(makeAuth(), FINDING_1, req);
+    expect(result.runId).toBe(RUN_1);
+  });
+});
+
+/**
+ * #3409 PR4c-2. Fleet remediation is the FOURTH script-dispatch path and the
+ * only one that does not go through `dispatchScriptToDevice`, so nothing here
+ * resolves a bound parameter, opens the tenant-variable scope, or seals a
+ * secret envelope. Until it does, a script that declares ANY non-`runtime`
+ * parameter must be refused rather than dispatched with the binding silently
+ * unresolved.
+ */
+describe('createRemediationRun — server-resolved parameter rejection (#3409 PR4c-2)', () => {
+  async function expectBoundParameterRejection(parameters: unknown): Promise<void> {
+    getFleetFindingMock.mockResolvedValue(findingDetail({ orgId: ORG_1 }));
+    h.selectQueue.push([{ id: SCRIPT_1, orgId: ORG_1, parameters }]);
+
+    const req: RemediateRequest = { actionKind: 'script', scriptId: SCRIPT_1, parameters: {} };
+    let caught: unknown;
+    try {
+      await createRemediationRun(makeAuth(), FINDING_1, req);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(RemediationRequestError);
+    expect((caught as RemediationRequestError).status).toBe(400);
+    expect((caught as RemediationRequestError).message).toBe(REMEDIATION_BOUND_PARAMETER_ERROR);
+    // Fails BEFORE the run row exists — a rejected remediation must leave no
+    // run for the worker to pick up.
+    expect(h.mockInsert).not.toHaveBeenCalled();
+  }
+
+  it('400s a script with a tenantSecret parameter', async () => {
+    await expectBoundParameterRejection([
+      { name: 'api_key', type: 'string', source: 'tenantSecret', variableKey: 'vendor_api_key' },
+    ]);
+  });
+
+  it('400s a script with a tenantVariable parameter', async () => {
+    await expectBoundParameterRejection([
+      { name: 'endpoint', type: 'string', source: 'tenantVariable', variableKey: 'vendor_endpoint' },
+    ]);
+  });
+
+  it('400s a script with a builtin parameter', async () => {
+    await expectBoundParameterRejection([{ name: 'org', type: 'string', source: 'builtin', builtinKey: 'org.name' }]);
+  });
+
+  it('400s a script with a deviceCustomField parameter', async () => {
+    await expectBoundParameterRejection([
+      { name: 'asset_tag', type: 'string', source: 'deviceCustomField', customFieldKey: 'asset_tag' },
+    ]);
+  });
+
+  it('400s a script whose ONLY bound definition is malformed (a binding we cannot read is never downgraded)', async () => {
+    await expectBoundParameterRejection([{ name: 'api_key', source: 'tenantSecret' }]);
+  });
+
+  it('400s when a bound parameter sits alongside runtime ones', async () => {
+    await expectBoundParameterRejection([
+      { name: 'first', type: 'string', source: 'runtime' },
+      { name: 'api_key', type: 'string', source: 'tenantSecret', variableKey: 'vendor_api_key' },
+    ]);
+  });
+
+  it('still accepts a script whose parameters are all runtime-sourced', async () => {
+    getFleetFindingMock.mockResolvedValue(findingDetail({ orgId: ORG_1 }));
+    h.selectQueue.push([
+      {
+        id: SCRIPT_1,
+        orgId: ORG_1,
+        parameters: [
+          { name: 'service_name', type: 'string', source: 'runtime' },
+          { name: 'implicit_default', type: 'string' },
+        ],
+      },
+    ]);
+    h.selectQueue.push([]);
+    h.insertReturningQueue.push([{ id: RUN_1 }]);
+
+    const req: RemediateRequest = { actionKind: 'script', scriptId: SCRIPT_1, parameters: { service_name: 'spooler' } };
+    const result = await createRemediationRun(makeAuth(), FINDING_1, req);
+    expect(result.runId).toBe(RUN_1);
+  });
+
+  it('still accepts a script with no parameter definitions at all', async () => {
+    getFleetFindingMock.mockResolvedValue(findingDetail({ orgId: ORG_1 }));
+    h.selectQueue.push([{ id: SCRIPT_1, orgId: ORG_1, parameters: null }]);
     h.selectQueue.push([]);
     h.insertReturningQueue.push([{ id: RUN_1 }]);
 
@@ -843,6 +938,61 @@ describe('dispatchRunChunk', () => {
     h.selectQueue.push([{ orgId: null, language: 'bash', content: 'echo hi', timeoutSeconds: 60, runAs: 'system' }]);
     h.updateReturningQueue.push([{ targetDeviceUuid: DEVICE_1 }]);
     queueCommandForExecutionMock.mockResolvedValue({ command: { id: 'cmd-4' } });
+
+    await dispatchRunChunk(RUN_1, 0);
+
+    expect(queueCommandForExecutionMock).toHaveBeenCalledWith(
+      DEVICE_1,
+      'script',
+      expect.objectContaining({ content: 'echo hi' }),
+      expect.anything()
+    );
+  });
+
+  /**
+   * #3409 PR4c-2 drift guard. The re-fetch exists precisely because a script
+   * can be edited between run creation and dispatch; adding a bound parameter
+   * is the edit that turns an accepted run into an unresolved-binding run.
+   */
+  it('regression: fails a script target when the script GAINED a bound parameter after run creation', async () => {
+    h.selectQueue.push([runRow({ status: 'running', actionKind: 'script', commandType: null, scriptId: SCRIPT_1 })]);
+    h.selectQueue.push([{ runId: RUN_1, orgId: ORG_1, targetDeviceUuid: DEVICE_1, status: 'pending' }]);
+    h.selectQueue.push([{ id: DEVICE_1, status: 'online' }]); // liveness probe
+    h.selectQueue.push([
+      {
+        orgId: ORG_1,
+        language: 'bash',
+        content: 'echo $BREEZE_VAR_API_KEY',
+        timeoutSeconds: 60,
+        runAs: 'system',
+        parameters: [{ name: 'api_key', type: 'string', source: 'tenantSecret', variableKey: 'vendor_api_key' }],
+      },
+    ]);
+    h.updateReturningQueue.push([{ targetDeviceUuid: DEVICE_1 }]);
+
+    await dispatchRunChunk(RUN_1, 0);
+
+    expect(queueCommandForExecutionMock).not.toHaveBeenCalled();
+    const failedUpdate = h.capturedUpdates.find((u) => (u.values as Record<string, unknown>).status === 'failed')!;
+    expect(failedUpdate.values).toMatchObject({ status: 'failed', resultSummary: REMEDIATION_BOUND_PARAMETER_ERROR });
+  });
+
+  it('still dispatches a script target whose parameters are all runtime-sourced', async () => {
+    h.selectQueue.push([runRow({ status: 'running', actionKind: 'script', commandType: null, scriptId: SCRIPT_1 })]);
+    h.selectQueue.push([{ runId: RUN_1, orgId: ORG_1, targetDeviceUuid: DEVICE_1, status: 'pending' }]);
+    h.selectQueue.push([{ id: DEVICE_1, status: 'online' }]); // liveness probe
+    h.selectQueue.push([
+      {
+        orgId: ORG_1,
+        language: 'bash',
+        content: 'echo hi',
+        timeoutSeconds: 60,
+        runAs: 'system',
+        parameters: [{ name: 'service_name', type: 'string', source: 'runtime' }],
+      },
+    ]);
+    h.updateReturningQueue.push([{ targetDeviceUuid: DEVICE_1 }]);
+    queueCommandForExecutionMock.mockResolvedValue({ command: { id: 'cmd-5' } });
 
     await dispatchRunChunk(RUN_1, 0);
 

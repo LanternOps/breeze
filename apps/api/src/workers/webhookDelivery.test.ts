@@ -32,6 +32,7 @@ vi.mock('../db', () => ({
 
 import { SsrfBlockedError } from '../services/urlSafety';
 import { deliverWebhook, type WebhookDeliveryJob } from './webhookDelivery';
+import { MAX_OPERATOR_ERROR_LENGTH } from '../services/httpFailureMessage';
 
 function makeJob(overrides: Partial<WebhookDeliveryJob> = {}): WebhookDeliveryJob {
   return {
@@ -120,6 +121,32 @@ describe('webhook delivery worker', () => {
     expect(result.success).toBe(true);
     expect(validateWebhookUrlSafetyWithDnsMock).not.toHaveBeenCalled();
     expect(safeFetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  // #3992: the worker composes its own failure string, separately from the
+  // three senders. Before the fix it spliced the destination's raw body into
+  // `HTTP <status>: <500 chars>`, so a delivery to a URL that answers with an
+  // HTML error page filled the delivery record's errorMessage with markup.
+  it('reduces a non-2xx HTML error page to a short readable errorMessage', async () => {
+    const htmlBody =
+      '<!doctype html><html><head><title>Example Domain</title>' +
+      '<style>body{background:#eee;font-family:system-ui}</style></head>' +
+      '<body><h1>Example Domain</h1><p>The method is not allowed for the requested URL.</p></body></html>';
+    safeFetchMock.mockResolvedValueOnce(new Response(htmlBody, { status: 405 }));
+
+    const result = await deliverWebhook(makeJob());
+
+    expect(result.success).toBe(false);
+    expect(result.errorMessage).toContain('HTTP 405');
+    expect(result.errorMessage).toContain('The method is not allowed');
+    expect(result.errorMessage!.length).toBeLessThanOrEqual(MAX_OPERATOR_ERROR_LENGTH);
+    expect(result.errorMessage).not.toContain('<');
+    expect(result.errorMessage).not.toContain('background:#eee');
+
+    // The raw body is NOT lost — the delivery record keeps its own copy, which
+    // is what makes shortening the operator-facing string safe here.
+    expect(result.responseBody).toContain('<!doctype html>');
+    expect(result.responseStatus).toBe(405);
   });
 
   it('carries the private-network and cleartext flags into the delivery call', async () => {

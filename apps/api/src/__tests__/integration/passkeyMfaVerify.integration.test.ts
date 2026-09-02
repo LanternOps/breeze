@@ -24,6 +24,7 @@
  *     src/__tests__/integration/passkeyMfaVerify.integration.test.ts
  */
 import './setup';
+import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { eq } from 'drizzle-orm';
@@ -102,8 +103,11 @@ describe('POST /auth/mfa/passkey/verify — passkey metadata persists under RLS 
         userId: user.id,
         mfaMethod: 'passkey',
         passkeyAvailable: true,
+        recoveryAvailable: false,
         authEpoch: 1,
         mfaEpoch: 1,
+        transitionId: randomUUID(),
+        browserGeneration: 1,
         statusExpectation: 'active',
         allowedMethods: { totp: true, sms: true, passkey: true },
         expiresAt: Date.now() + 5 * 60 * 1000,

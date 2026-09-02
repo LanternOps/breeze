@@ -100,7 +100,7 @@ export default function ApiKeyList({
         <div>
           <h2 className="text-lg font-semibold">{t('apiKeyList.aPIKeys')}</h2>
           <p className="text-sm text-muted-foreground">
-            {filteredApiKeys.length} {t('apiKeyList.of')}{safeApiKeys.length} {t('apiKeyList.keys')}</p>
+            {t('apiKeyList.countSummary', { shown: filteredApiKeys.length, total: safeApiKeys.length })}</p>
         </div>
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
           <input
@@ -234,7 +234,7 @@ export default function ApiKeyList({
       {totalPages > 1 && (
         <div className="mt-4 flex items-center justify-between">
           <p className="text-sm text-muted-foreground">
-            {t('apiKeyList.page')}{currentPage} {t('apiKeyList.of')}{totalPages}
+            {t('apiKeyList.pageSummary', { current: currentPage, total: totalPages })}
           </p>
           <div className="flex gap-2">
             <button

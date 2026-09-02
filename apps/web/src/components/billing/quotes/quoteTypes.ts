@@ -6,7 +6,7 @@ import type { SellerSnapshot } from '../invoiceTypes';
 export type { SellerSnapshot } from '../invoiceTypes';
 export { sellerLines } from '../invoiceTypes';
 import { STATUS_PILL, type StatusPillRole } from '../invoiceTypes';
-import type { QuoteDepositType, QuoteCategorySubtotal, CoverPage, ContractVariable, Pax8SubmitState, QuotePresentation } from '@breeze/shared';
+import type { QuoteDepositType, QuoteCategorySubtotal, CoverPage, ContractVariable, Pax8SubmitState, QuotePresentation, StripeCurrencyWarning } from '@breeze/shared';
 export type { QuoteDepositType, QuoteCategorySubtotal, CoverPage, ContractVariable, Pax8SubmitState, QuoteTableContent, QuoteCalloutContent, QuotePresentation } from '@breeze/shared';
 // Type-only (erased at compile time), so this pulls no runtime dep on the API
 // client into the types module.
@@ -14,7 +14,7 @@ import type { QuoteSendEmailReason } from '../../../lib/api/quotes';
 export type { QuoteSendEmailReason } from '../../../lib/api/quotes';
 
 export type QuoteStatus =
-  | 'draft' | 'sent' | 'viewed' | 'accepted' | 'declined' | 'expired' | 'converted';
+  | 'draft' | 'sent' | 'viewed' | 'accepted' | 'declined' | 'expired' | 'converted' | 'superseded';
 
 export type QuoteLineRecurrence = 'one_time' | 'monthly' | 'annual';
 export type QuoteItemType = 'hardware' | 'software' | 'service';
@@ -76,6 +76,12 @@ export interface ContractBlockAuthoring {
 /** A row from `GET /quotes` / the `quote` field of `GET /quotes/:id`. */
 export interface Quote {
   id: string;
+  /** Lineage: the quote this one revises, and its position in the chain.
+   *  Optional so existing fixtures and older cached payloads stay assignable;
+   *  absent/null both mean "not a revision". `revisionNumber` is 1 for an
+   *  original. */
+  revisionOfQuoteId?: string | null;
+  revisionNumber?: number;
   quoteNumber: string | null;
   /** Tech-authored display title; optional so long-standing test fixtures and
    *  older cached payloads without the column stay assignable. */
@@ -317,6 +323,30 @@ export interface QuoteDetail {
    *  tracking). Optional: older payloads and list fixtures don't carry it, and
    *  a quote nobody has ordered against yet gets an empty array. */
   orders?: QuoteOrder[];
+  /** The quote this one revises. Carries the parent's recipients so the send
+   *  composer can prefill the addresses the original actually went to — the
+   *  server falls back to them anyway when To is empty, so this is display
+   *  honesty rather than correctness. null when this quote is not a revision,
+   *  or when the parent is outside the viewer's site scope. */
+  revisionOf?: { id: string; quoteNumber: string | null; recipients: string[] } | null;
+  /** The revision that replaces this quote, if one exists. A `draft` successor
+   *  means a revision is in progress; a non-draft one means this quote has been
+   *  (or is about to be) superseded. null when none, or when the successor is
+   *  outside the viewer's site scope. */
+  successor?: { id: string; quoteNumber: string | null; status: QuoteStatus } | null;
+  /** Whether the quote's partner has a connected Stripe account (gates the
+   *  send composer's deposit-can't-be-paid warning). `null` = the server could
+   *  not look it up (show neither note); omitted on older payloads/fixtures,
+   *  which also reads as unknown. Precomputed server-side because `quotes:send`
+   *  is grantable without `billing:manage` (#3777 review F5). */
+  stripeConnected?: boolean | null;
+  /** The connected account's CACHED settlement currency; null when not
+   *  connected or never cached. Display only — never drives a conversion. */
+  stripeAccountCurrency?: string | null;
+  /** Warn-don't-block (#3777 spec §10): precomputed by GET /quotes/:id from
+   *  the cached account currency. null = nothing to say (matches, or not
+   *  connected). */
+  currencyWarning?: StripeCurrencyWarning | null;
 }
 
 export const STATUS_LABELS: Record<QuoteStatus, string> = {
@@ -327,6 +357,7 @@ export const STATUS_LABELS: Record<QuoteStatus, string> = {
   declined: 'Declined',
   expired: 'Expired',
   converted: 'Converted',
+  superseded: 'Superseded',
 };
 
 // Source-of-truth status → role map; STATUS_COLORS (class-string form) is
@@ -341,6 +372,9 @@ export const STATUS_ROLES: Record<QuoteStatus, { role: StatusPillRole; className
   declined: { role: 'danger' },
   expired: { role: 'warning' },
   converted: { role: 'success' },
+  // replaced-by-a-newer-version is a quiet historical state, not a warning;
+  // neutral matches draft's grey.
+  superseded: { role: 'neutral' },
 };
 
 export const STATUS_COLORS = Object.fromEntries(

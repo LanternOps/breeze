@@ -162,7 +162,7 @@ spctl --assess --verbose /usr/local/bin/breeze-agent
 ## Troubleshooting
 
 **Windows SmartScreen still warns after signing.**
-SmartScreen reputation is built over time. Newly signed binaries using any newly introduced certificate may still show a warning until enough users have downloaded and run the binary. If the warning persists, verify the signature with `Get-AuthenticodeSignature` to confirm the binary is properly signed. Self-hosters should see [Sign Your Own Agent Packages](/deploy/sign-your-own-packages/) for guidance on establishing their own signing identity.
+Breeze's own Viewer and Helper installers moved to an SSL.com OV certificate in v0.107.0. SmartScreen reputation is earned per certificate and does not transfer, so early v0.107.0 downloads may show *Windows protected your PC* even though the signature is valid and the publisher still reads LanternOps -- confirm with `Get-AuthenticodeSignature`, then choose **More info → Run anyway**. SmartScreen reputation is built over time. Newly signed binaries using any newly introduced certificate may still show a warning until enough users have downloaded and run the binary. If the warning persists, verify the signature with `Get-AuthenticodeSignature` to confirm the binary is properly signed. Self-hosters should see [Sign Your Own Agent Packages](/deploy/sign-your-own-packages/) for guidance on establishing their own signing identity.
 
 **macOS notarization timeout.**
 Apple's notarization service can be slow during peak times. The workflow allows up to 30 minutes. If it times out, re-run the release workflow — the binary does not need to be rebuilt, only re-submitted.

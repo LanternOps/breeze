@@ -195,6 +195,10 @@ vi.mock('../services/restoreResultPersistence', () => ({
   updateRestoreJobByCommandId: vi.fn(),
 }));
 
+vi.mock('../services/automationTerminalEvidence', () => ({
+  applyCommandAutomationTerminal: vi.fn(),
+}));
+
 vi.mock('../services/commandQueue', () => ({
   queueCommandForExecution: vi.fn(),
   CommandTypes: {
@@ -1061,6 +1065,64 @@ describe('agent routes', () => {
           })
         })
       );
+    });
+  });
+
+  describe('POST /agents/:id/commands/:commandId/pam-observations', () => {
+    const receivedBody = {
+      protocolVersion: 1,
+      observation: {
+        protocolVersion: 2,
+        observationId: '10000000-0000-4000-8000-000000000001',
+        actuationId: '20000000-0000-4000-8000-000000000001',
+        generation: 1,
+        state: 'received',
+        observedAt: '2026-08-27T12:00:00.000Z',
+        evidence: { bootId: 'boot-1' },
+      },
+    };
+
+    it('requires a valid agent credential through the real agent router', async () => {
+      vi.mocked(agentAuthMiddleware).mockImplementationOnce((c: any) =>
+        c.json({ error: 'Invalid agent token' }, 401));
+
+      const res = await app.request(
+        '/agents/agent-123/commands/60000000-0000-4000-8000-000000000001/pam-observations',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(receivedBody),
+        },
+      );
+
+      expect(res.status).toBe(401);
+      expect(agentAuthMiddleware).toHaveBeenCalledTimes(1);
+      expect(db.select).not.toHaveBeenCalled();
+    });
+
+    it('rejects a watchdog credential through the primary-agent role gate', async () => {
+      vi.mocked(agentAuthMiddleware).mockImplementationOnce((c: any, next: any) => {
+        c.set('agent', {
+          deviceId: 'device-123',
+          agentId: 'agent-123',
+          orgId: 'org-123',
+          siteId: 'site-123',
+          role: 'watchdog',
+        });
+        return next();
+      });
+
+      const res = await app.request(
+        '/agents/agent-123/commands/60000000-0000-4000-8000-000000000001/pam-observations',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(receivedBody),
+        },
+      );
+
+      expect(res.status).toBe(403);
+      expect(db.select).not.toHaveBeenCalled();
     });
   });
 

@@ -1,0 +1,31 @@
+# Release tags cut from a side branch, whose commit is therefore NOT reachable
+# from main by parent links.
+#
+# WHY THIS FILE EXISTS
+# The Main History Drift Detector asserts that main can still reach the latest
+# v* tag. That assertion is how a force-push severing main's history is caught
+# within 24h (see the 2026-04-25 incident and docs/runbooks/2026-05-02-main-
+# orphan-and-userhelper-flag.md). A hotfix released from an `origin/hotfix/*`
+# branch violates the same assertion for an entirely legitimate reason: the
+# fix reaches main as an EQUIVALENT commit, never as that commit.
+#
+# WHY IT IS A FILE AND NOT AN INFERENCE
+# The tempting shortcut is to let the detector pass whenever `git cherry` or
+# `git patch-id` finds an equivalent patch on main. That would defeat the
+# detector: a force-push that rebased history into patch-equivalent commits
+# would satisfy it and report green, which is precisely the severed-parent-link
+# case the check exists to catch. patch-id is also blind to commit metadata,
+# signatures and trailers, and mismatches squash-merges. So the exemption has
+# to be an explicit, reviewed, committed fact — a force-push cannot add a row
+# here without that addition itself being a visible commit on main.
+#
+# The recorded main-side commit is re-verified as reachable on every run, so an
+# entry cannot mask a later loss of that commit either.
+#
+# FORMAT  <tag><TAB><main-side equivalent commit><TAB><note>
+# Add a row when, and only when, a release is tagged on a branch that is not
+# merged back into main. Prefer merging the hotfix branch into main instead;
+# a row here is the fallback for releases already cut that way.
+v0.105.1	01f71e2547381e6158f4f9cc7cbd9a6bc8454b0b	quote PDF image block overlap (#3481)
+v0.105.2	8582acb9dc69e15d6b172e2f30139c7719ea8eaa	quote PDF contract placeholder + cover background (#3489)
+v0.107.1	3946b27bf05cb9803b284eb34a668851b014f99f	hosted agent update 409 (#3836, #3872)

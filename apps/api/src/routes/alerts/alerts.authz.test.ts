@@ -3,10 +3,25 @@ import { Hono } from 'hono';
 
 // Regression for Finding #6 (MEDIUM): alert state-change endpoints
 // (acknowledge/resolve/suppress/bulk) must gate on an alert RBAC permission in
-// addition to scope tier. acknowledge -> ALERTS_ACKNOWLEDGE; resolve/suppress/
-// bulk -> ALERTS_WRITE (mirrors the mobile alert routes).
+// addition to scope tier. acknowledge -> ALERTS_ACKNOWLEDGE; resolve/suppress ->
+// ALERTS_WRITE (mirrors the mobile alert routes). /bulk is PER ACTION: a bulk
+// acknowledge accepts ALERTS_ACKNOWLEDGE or ALERTS_WRITE, every other action
+// still demands ALERTS_WRITE.
 
-const { authRef, grantedRef, state, tables, dbMock } = vi.hoisted(() => {
+const { authRef, grantedRef, permsHookRef, permsCallsRef, trackedGetUserPermissions, state, tables, dbMock } = vi.hoisted(() => {
+  // ONE tracked permission lookup, shared by the permissions mock AND the auth
+  // mock's requirePermission, so the ordering test's call count reflects every
+  // ROUTE-LEVEL resolution. It is not a whole-request count: this suite mounts
+  // the alerts router without production `authMiddleware`, which resolves
+  // permissions of its own for organization scope.
+  const grantedRef = { current: new Set<string>() };
+  const permsCallsRef = { current: 0 };
+  const permsHookRef = { current: null as null | ((call: number) => void) };
+  const trackedGetUserPermissions = async () => {
+    permsCallsRef.current += 1;
+    permsHookRef.current?.(permsCallsRef.current);
+    return { granted: grantedRef.current };
+  };
   const tables = {
     alerts: { id: 'alerts.id', orgId: 'alerts.orgId', deviceId: 'alerts.deviceId', status: 'alerts.status' },
     devices: { id: 'devices.id', siteId: 'devices.siteId', orgId: 'devices.orgId' },
@@ -87,7 +102,12 @@ const { authRef, grantedRef, state, tables, dbMock } = vi.hoisted(() => {
         canAccessOrg: (_id: string) => true as boolean,
       },
     },
-    grantedRef: { current: new Set<string>() },
+    grantedRef,
+    permsCallsRef,
+    trackedGetUserPermissions,
+    // Fires on every getUserPermissions call, so a test can model state changing
+    // BETWEEN the pre-gate's lookup and the handler's.
+    permsHookRef,
     state,
     tables,
     dbMock,
@@ -114,8 +134,17 @@ vi.mock('../../middleware/auth', () => ({
     c.set('auth', authRef.current);
     await next();
   },
+  // Mirrors production in the ONE respect the ordering test depends on: real
+  // `requirePermission` resolves the permission set via `getUserPermissions`.
+  // While this mock answered straight from `grantedRef`, re-introducing a
+  // `requirePermission(...)` ahead of the bulk handler would have added a REAL
+  // pre-body lookup in production while `permsCalls` stayed at 1 here — the
+  // ordering test would have passed through exactly the regression it exists to
+  // catch. It must go through the tracked lookup for that count to mean
+  // anything.
   requirePermission: (resource: string, action: string) => async (c: any, next: any) => {
-    if (!grantedRef.current.has(`${resource}:${action}`)) {
+    const perms = await trackedGetUserPermissions();
+    if (!perms?.granted?.has(`${resource}:${action}`)) {
       return c.json({ error: 'Forbidden' }, 403);
     }
     c.set('permissions', { allowedSiteIds: authRef.current?.allowedSiteIds });
@@ -129,6 +158,21 @@ vi.mock('../../middleware/auth', () => ({
     return allowedSiteIds.includes(siteId);
   },
 }));
+
+// The /bulk gate moved from `requirePermission` middleware into the handler
+// (it needs `action`, which only exists after the body is parsed), so the test
+// must now drive the permission SOURCE as well as the middleware. Partial mock
+// on purpose: `canAccessSite` and `PERMISSIONS` are real, because the
+// site-scope suite below depends on their actual behaviour.
+vi.mock('../../services/permissions', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/permissions')>();
+  return {
+    ...actual,
+    getUserPermissions: trackedGetUserPermissions,
+    hasPermission: (perms: unknown, resource: string, action: string) =>
+      (perms as { granted?: Set<string> })?.granted?.has(`${resource}:${action}`) ?? false,
+  };
+});
 
 vi.mock('../../db', () => ({ db: dbMock }));
 vi.mock('../../db/schema', () => ({
@@ -154,6 +198,17 @@ vi.mock('./helpers', () => ({
   ensureOrgAccess: vi.fn(() => true),
   getAlertWithOrgCheck: vi.fn(),
 }));
+// Phase 2 wave P2-1 (alert verdicts), Task 14 — `alerts.ts` now imports
+// `latestVerdictsForAlerts`/`projectAlertAiVerdictSummary`. Unmocked, the
+// real module drags in `createActionIntent` (services/actionIntents/
+// intentService.ts) and its own transitive graph (aiTools/aiToolSchemas,
+// commandQueue, …), which this file's other partial mocks were never built
+// to cover. Mocked here purely to sever that transitive chain — this suite
+// doesn't exercise aiVerdict at all.
+vi.mock('../../services/aiAgents/alertVerdicts', () => ({
+  latestVerdictsForAlerts: vi.fn(async () => new Map()),
+  projectAlertAiVerdictSummary: vi.fn(),
+}));
 
 import { alertsRoutes, attachAlertCorrelationSummaries } from './alerts';
 import { getAlertWithOrgCheck } from './helpers';
@@ -172,6 +227,8 @@ describe('alert state-change authz (Finding #6)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     grantedRef.current = new Set<string>();
+    permsHookRef.current = null;
+    permsCallsRef.current = 0;
     authRef.current = {
       scope: 'organization',
       user: { id: 'u-1', name: 'Reed Only', email: 'reed@org.example' },
@@ -202,11 +259,36 @@ describe('alert state-change authz (Finding #6)', () => {
     expect(res.status).toBe(403);
   });
 
-  it('403 on POST /alerts/bulk without ALERTS_WRITE', async () => {
+  it('403 on POST /alerts/bulk with NEITHER alert permission', async () => {
     const res = await makeApp().request('/alerts/bulk', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ alertIds: [ALERT_ID], action: 'acknowledge' }),
+    });
+    expect(res.status).toBe(403);
+  });
+
+  /**
+   * The gate is in TWO parts, and this is what the coarse half buys — for a
+   * caller holding NEITHER alert permission. An acknowledge-only caller is
+   * unauthorised for resolve/suppress/dismiss and still distinguishes 400 from
+   * 403, because the action-specific check has to run after the parse.
+   *
+   * The action-specific check can only run after the body is parsed. On its own
+   * that let a caller holding NO alert permission reach `zValidator` and tell a
+   * well-formed body from a malformed one by the status — a schema oracle for a
+   * route they cannot use at all. The coarse gate runs first, so both shapes
+   * come back 403 and nothing about the schema leaks.
+   *
+   * Paired deliberately with the authorised test BELOW, which sends the SAME
+   * malformed body and gets 400 — so this asserts the ORDERING, not just that
+   * a 403 appears somewhere.
+   */
+  it('403, NOT 400, on a malformed body when the caller holds neither permission', async () => {
+    const res = await makeApp().request('/alerts/bulk', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ alertIds: 'not-an-array', action: 'nonsense' }),
     });
     expect(res.status).toBe(403);
   });
@@ -222,10 +304,205 @@ describe('alert state-change authz (Finding #6)', () => {
     const res = await makeApp().request('/alerts/bulk', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({}),
+      // The SAME malformed body the unauthorised test ABOVE sends. Paired on
+      // purpose: authorised -> 400 (validation speaks), unauthorised -> 403
+      // (the gate speaks first). Asserting only "not 403" here would not
+      // establish that contrast.
+      body: JSON.stringify({ alertIds: 'not-an-array', action: 'nonsense' }),
     });
-    expect(res.status).not.toBe(403);
+    // 400 exactly. `not.toBe(403)` is satisfied by a 404 or a 500 and would not
+    // show that VALIDATION is what answered.
+    expect(res.status).toBe(400);
   });
+
+  /**
+   * Per-action bulk gate. A bulk acknowledge is N single acknowledges, which
+   * ALERTS_ACKNOWLEDGE already permits one at a time, so requiring ALERTS_WRITE
+   * for the batched form granted no extra safety — it only denied the batched
+   * form to the role that triages alerts, which is what forced the mobile
+   * client into a per-alert queue that loses work when backgrounded mid-flush.
+   *
+   * The matrix below is the whole contract: acknowledge opens up, everything
+   * else stays shut.
+   */
+  const bulkAs = (action: string) =>
+    makeApp().request('/alerts/bulk', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ alertIds: [ALERT_ID], action, ...(action === 'suppress' ? { until: '2030-01-01T00:00:00.000Z' } : {}) }),
+    });
+
+  it('ALERTS_ACKNOWLEDGE alone CAN bulk-acknowledge', async () => {
+    grantedRef.current.add(ALERTS_ACKNOWLEDGE);
+    // 404, not merely "not 403": the fixture seeds no alerts, so passing the
+    // gate lands on the handler's empty-result branch. `not.toBe(403)` was
+    // satisfied by a 500 too, which is not evidence the gate opened.
+    expect((await bulkAs('acknowledge')).status).toBe(404);
+  });
+
+  /**
+   * The coarse pre-gate must not become the authorisation of record.
+   *
+   * A permission-checking middleware ahead of the validator is the obvious
+   * shape and is the wrong one: it would resolve permissions BEFORE the body is
+   * read, and the client controls when the body arrives. `getUserPermissions`
+   * caches locally, and `middleware/auth.ts` warms that cache only for
+   * ORGANIZATION scope — so on the partner path a pre-body gate would be a
+   * new route-level LOOKUP, warming that entry only if it was cold, and the
+   * authorising read could then return the gate's own entry (a successful
+   * intervening version bump would still force a refresh).
+   * (NOT "a cold read that reaches the database": the cache is process-global,
+   * so a partner entry may already be warm — this is a new LOOKUP, which warms
+   * that entry only if it was cold. And NOT "adds no new warm" either
+   * — the lookup now precedes the media-type and schema checks, so an
+   * invalid-body request performs one where `zValidator` used to reject it
+   * first. The precise claim is narrower: no ROUTE-LEVEL authorising lookup
+   * happens before the body is consumed — organization-scope `authMiddleware`
+   * resolves permissions earlier regardless — and a request that would
+   * previously have reached the handler gains no extra route-level lookup.)
+   *
+   * So this observes the ORDERING directly — was the body already consumed when
+   * the permission lookup ran? Counting lookups does not: with a single lookup
+   * moved ABOVE `c.req.json()` the count is still one and a count-based test
+   * stays green while the invariant is broken.
+   *
+   * SCOPE OF THE COUNT ASSERTION: this suite mounts the alerts router directly,
+   * without production `authMiddleware`. So "exactly one" is one lookup BY THIS
+   * ROUTE — it is not a claim about the whole request, which for an
+   * organization-scope caller also warms the cache in auth middleware. The
+   * ordering assertion above is the load-bearing one; the count only guards
+   * against a second route-level lookup creeping back in.
+   */
+  it('resolves permissions only AFTER the request body has been consumed', async () => {
+    grantedRef.current.add(ALERTS_WRITE);
+    let bodyPulled = false;
+    let pulledAtLookup: boolean | null = null;
+    permsHookRef.current = () => { pulledAtLookup = bodyPulled; };
+
+    // A streamed body, so "was it read yet" is observable rather than inferred.
+    const payload = new TextEncoder().encode(
+      JSON.stringify({ alertIds: [ALERT_ID], action: 'resolve' })
+    );
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        bodyPulled = true;
+        controller.enqueue(payload);
+        controller.close();
+      },
+    });
+
+    await makeApp().request(
+      new Request('http://localhost/alerts/bulk', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: stream,
+        // Node requires this for a streaming request body.
+        duplex: 'half',
+      } as RequestInit & { duplex: 'half' })
+    );
+
+    expect(pulledAtLookup, 'permissions were resolved BEFORE the body was read').toBe(true);
+    expect(permsCallsRef.current, 'expected exactly one permission lookup').toBe(1);
+  });
+
+  /**
+   * Dropping `zValidator` from this route dropped its media-type check with it.
+   * `c.req.json()` parses a valid JSON payload whatever the Content-Type says,
+   * so without an explicit gate a `text/plain` body would reach the mutation
+   * where it used to be rejected — a quiet widening of what the endpoint
+   * accepts, introduced by a change that was only about authorisation ordering.
+   *
+   * The cases below are chosen to SEPARATE Hono's predicate from a plausible
+   * hand-rolled one. An earlier version of this gate used
+   * `^application\/(\w+\+)?json\b`, which agrees with Hono on `application/json`
+   * and `text/plain` — so testing only those proved nothing. It disagrees on
+   * exactly these three, in both directions:
+   *   - `application/json-bogus`   -> hand-rolled ACCEPTS, Hono rejects (the
+   *      dangerous direction: a body reaching the mutation)
+   *   - `application/vnd.api+json` -> hand-rolled rejects, Hono ACCEPTS
+   *   - `application/merge-patch+json` -> same
+   * Verified against the installed Hono 4.13.2, which is why the shared helper
+   * copies its regex rather than approximating it.
+   *
+   * The gate deliberately sits BELOW the coarse permission check, so it cannot
+   * become an oracle FOR A CALLER HOLDING NEITHER PERMISSION. An
+   * acknowledge-only caller is unauthorised for resolve/suppress/dismiss and
+   * can still receive this 400 — the action-specific check necessarily runs
+   * after the parse, so that distinction is unavoidable here.
+   */
+  const withContentType = (ct: string) =>
+    makeApp().request('/alerts/bulk', {
+      method: 'POST',
+      headers: { 'Content-Type': ct },
+      body: JSON.stringify({ alertIds: [ALERT_ID], action: 'resolve' }),
+    });
+
+  // 404 = the seeded fixture has no alerts, i.e. it passed every gate.
+  it.each([
+    'application/json',
+    'application/json; charset=utf-8',
+    'application/vnd.api+json',
+    'application/merge-patch+json',
+  ])('accepts %s, as Hono does', async (ct) => {
+    grantedRef.current.add(ALERTS_WRITE);
+    expect((await withContentType(ct)).status).toBe(404);
+  });
+
+  it.each([
+    'text/plain',
+    'application/json-bogus',
+    'application/xml',
+  ])('rejects %s with 400, as Hono does', async (ct) => {
+    grantedRef.current.add(ALERTS_WRITE);
+    expect((await withContentType(ct)).status).toBe(400);
+  });
+
+  /**
+   * Every body-shaped verdict must stay BELOW the coarse permission check.
+   *
+   * The existing oracle test sends syntactically valid JSON, so a `400` raised
+   * from the `c.req.json()` catch — before RBAC — would keep it green. And the
+   * media-type cases above all run WITH `ALERTS_WRITE`, so moving that verdict
+   * above the coarse gate would keep them green too. These close both: an
+   * unauthorised caller learns nothing about the body, whatever is wrong with
+   * it.
+   */
+  it('403, not 400, on unparseable JSON when the caller holds neither permission', async () => {
+    const res = await makeApp().request('/alerts/bulk', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{',
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it.each(['text/plain', 'application/json-bogus'])(
+    '403, not 400, on Content-Type %s when the caller holds neither permission',
+    async (ct) => {
+      const res = await makeApp().request('/alerts/bulk', {
+        method: 'POST',
+        headers: { 'Content-Type': ct },
+        body: JSON.stringify({ alertIds: [ALERT_ID], action: 'resolve' }),
+      });
+      expect(res.status).toBe(403);
+    },
+  );
+
+  it.each(['resolve', 'suppress', 'dismiss'])(
+    'ALERTS_ACKNOWLEDGE alone is still 403 on bulk-%s',
+    async (action) => {
+      grantedRef.current.add(ALERTS_ACKNOWLEDGE);
+      expect((await bulkAs(action)).status).toBe(403);
+    },
+  );
+
+  it.each(['acknowledge', 'resolve', 'suppress', 'dismiss'])(
+    'ALERTS_WRITE alone still passes bulk-%s',
+    async (action) => {
+      grantedRef.current.add(ALERTS_WRITE);
+      expect((await bulkAs(action)).status).not.toBe(403);
+    },
+  );
 });
 
 // Site-axis enforcement on POST /alerts/bulk (T3, #1051 class). RLS does NOT
@@ -442,12 +719,17 @@ describe('alert dismiss', () => {
     expect(row.dismissedBy).toBe('u-1');
   });
 
-  it('400 when the alert is already dismissed', async () => {
+  it('409 when the alert is already dismissed', async () => {
     (getAlertWithOrgCheck as ReturnType<typeof vi.fn>).mockResolvedValue(
       state.alerts.find((a) => a.id === ALERT_DISMISSED)
     );
     const res = await makeApp().request(`/alerts/${ALERT_DISMISSED}/dismiss`, { method: 'POST' });
-    expect(res.status).toBe(400);
+    // 409, not the 400 this returned before #4293. Once the UPDATE became a
+    // compare-and-swap that answers 409 when it loses, keeping this branch at 400
+    // would have made the response code depend purely on whether the other dismissal
+    // landed before or after this request's pre-read — the split #4099 and #4288
+    // removed from resolve and acknowledge respectively.
+    expect(res.status).toBe(409);
     expect(await res.json()).toEqual({ error: 'Alert is already dismissed' });
   });
 

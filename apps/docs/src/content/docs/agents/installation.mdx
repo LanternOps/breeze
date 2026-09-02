@@ -94,6 +94,10 @@ Instead of running manual enrollment commands, you can download a ready-to-run i
   Each installer is pre-loaded with the enrollment key and site assignment. Just distribute the file and run it.
 </Aside>
 
+<Aside type="caution">
+  **Windows agent packages in the public release are published unsigned by design**, so that you can sign them under your own certificate. Expect a SmartScreen prompt on an interactive install unless you deploy them silently through your existing tooling, or sign them yourself first -- see [Sign Your Own Agent Packages](/deploy/sign-your-own-packages/). The Viewer and Helper installers *are* signed.
+</Aside>
+
 ### Public Installer Links
 
 You can generate a shareable download URL for an enrollment key so that site contacts can install the agent without needing access to the Breeze dashboard.

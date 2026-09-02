@@ -9,8 +9,12 @@ import { Job, Queue, Worker } from 'bullmq';
 import { sql } from 'drizzle-orm';
 
 import * as dbModule from '../db';
+import { extractRowCount } from '../db/rowCount';
 import { getBullMQConnection } from '../services/redis';
+import { recordRetentionRun } from '../services/retentionMetrics';
 import { attachWorkerObservability } from './workerObservability';
+import { cronFromEnv } from './scheduleRegistry';
+import { warnOnRetentionBacklog } from './retentionBatch';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -36,7 +40,13 @@ function parsePositiveIntEnv(name: string, defaultValue: number): number {
 }
 
 const DEFAULT_RETENTION_DAYS = Math.max(30, parsePositiveIntEnv('USER_RISK_RETENTION_DAYS', 90));
-const DEFAULT_RETENTION_INTERVAL_MS = parsePositiveIntEnv('USER_RISK_RETENTION_INTERVAL_MS', 24 * 60 * 60 * 1000);
+// Daily cron slot, not an interval: `every: 24h` is epoch-anchored and piles
+// every daily job onto 00:00:00.000 UTC (see jobs/scheduleRegistry.ts).
+const RETENTION_CRON = cronFromEnv(
+  'USER_RISK_RETENTION_CRON',
+  'user-risk-retention',
+  'USER_RISK_RETENTION_INTERVAL_MS',
+);
 
 type RetentionJobData = {
   retentionDays?: number;
@@ -46,13 +56,6 @@ type RetentionJobData = {
 
 let retentionQueue: Queue<RetentionJobData> | null = null;
 let retentionWorker: Worker<RetentionJobData> | null = null;
-
-export function extractUserRiskRetentionRowCount(result: unknown): number {
-  const raw = result as { rowCount?: number; count?: number };
-  if (typeof raw.rowCount === 'number') return raw.rowCount;
-  if (typeof raw.count === 'number') return raw.count;
-  return Array.isArray(result) ? result.length : 0;
-}
 
 export async function compactUserRiskSnapshots(options: {
   retentionDays: number;
@@ -90,7 +93,7 @@ export async function compactUserRiskSnapshots(options: {
       DELETE FROM user_risk_scores
       WHERE ctid IN (SELECT ctid FROM victims)
     `);
-    lastBatchDeleted = extractUserRiskRetentionRowCount(result);
+    lastBatchDeleted = extractRowCount(result);
     deleted += lastBatchDeleted;
     batches += 1;
     if (lastBatchDeleted < batchSize) break;
@@ -130,6 +133,12 @@ export function createUserRiskRetentionWorker(): Worker<RetentionJobData> {
         console.log(
           `[UserRiskRetention] Compacted user risk snapshots older than ${result.retentionDays} days (deleted=${result.deleted}, batches=${result.batches}, hasMore=${result.hasMore}) in ${result.durationMs}ms`
         );
+        // `hasMore=true` buried in an info line is not an alert (#4343).
+        warnOnRetentionBacklog('[UserRiskRetention]', 'user_risk_scores', result);
+        recordRetentionRun('user_risk_retention', {
+          rowsDeleted: result.deleted,
+          incomplete: result.hasMore,
+        });
         return result;
       });
     },
@@ -163,7 +172,7 @@ export async function initializeUserRiskRetention(): Promise<void> {
     { retentionDays: DEFAULT_RETENTION_DAYS, batchSize: BATCH_SIZE, maxBatches: MAX_BATCHES },
     {
       jobId: REPEAT_JOB_ID,
-      repeat: { every: DEFAULT_RETENTION_INTERVAL_MS },
+      repeat: { pattern: RETENTION_CRON },
       removeOnComplete: { count: 5 },
       removeOnFail: { count: 20 }
     }
@@ -190,5 +199,5 @@ export const __testOnly = {
   BATCH_SIZE,
   MAX_BATCHES,
   DEFAULT_RETENTION_DAYS,
-  DEFAULT_RETENTION_INTERVAL_MS,
+  RETENTION_CRON,
 };

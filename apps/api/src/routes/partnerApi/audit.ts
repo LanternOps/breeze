@@ -25,7 +25,7 @@ declare module 'hono' {
   }
 }
 
-type AuditResult = 'success' | 'failure' | 'denied';
+type AuditResult = import('@breeze/shared').AuditResult;
 
 type PublicError = {
   status: number;

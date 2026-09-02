@@ -613,24 +613,26 @@ Every System Tools request verifies that the device exists and that the authenti
 - Your user account has access to the organization that owns the device.
 - The device has been enrolled (not deleted).
 
-### Agent failed / device may be offline (502)
+### Agent command failures
 
-System Tools commands are dispatched to the agent via the command queue with a 30-second timeout (15 seconds for process kill). A 502 or 500 response with a message like "Failed to get processes" or "Agent failed to list files" indicates:
+System Tools commands are dispatched to the agent via the command queue with a 30-second timeout (15 seconds for process kill). Failures carry both a human-readable `error` and a stable `code` you can branch on:
 
-- The device agent is offline or unreachable.
-- The agent did not respond within the timeout window.
-- The agent encountered an internal error executing the command.
+| `code` | HTTP | Meaning |
+|---|---:|---|
+| `device_unreachable` | 503 | No live agent connection at dispatch time. Safe to retry. |
+| `device_offline` | 503 | The device is offline. Wait for it to come back. |
+| `agent_timeout` | 503 | The agent did not answer within the timeout. Read-only commands are safe to retry; for commands that change state the body also carries `unverified: true` — the operation may have completed on the device, so refresh and verify before retrying. |
+| `path_not_found` | 404 | The requested path or trash item does not exist on the device. |
+| `path_conflict` | 409 | The destination already exists. |
+| `agent_command_rejected` | 422 | The agent understood the command and refused it — for example `file too large: 8981850 bytes (max 1048576 bytes)`. Working as intended; adjust the request. |
+| `agent_execution_failed` | 500 | The agent hit an error carrying out the command (I/O error, permissions). |
+| `invalid_agent_response` | 500 | The agent returned a payload the API could not parse — usually an outdated agent. Update the agent and retry. |
 
-Check the device's online status on its detail page before retrying.
+Bulk operations (copy, move, delete, trash restore) always answer **200** once the batch has been processed, even when every item failed. Inspect the per-item `status`, `code`, `error`, and `unverified` fields in `results` rather than the HTTP status.
 
-### "Failed to parse agent response" (502)
-
-This means the agent returned a response that the API could not parse as valid JSON. This can happen if:
-
-- The agent version is outdated and returns a different payload format.
-- The command produced unexpected output (e.g., a system error message instead of JSON).
-
-Update the agent to the latest version and retry.
+:::note[These endpoints never return 502 or 504]
+Cloudflare replaces an origin 502 or 504 response with its own branded error page, which discards the JSON body — so on hosted deployments a 502 would hide the very message you need. Agent failures are therefore mapped onto statuses that pass through unchanged. Genuine proxy and tunnel endpoints elsewhere in the API may still return 502/504.
+:::
 
 ### "Registry is only supported on Windows" / "Event logs are only supported on Windows" / "Scheduled tasks are only supported on Windows"
 

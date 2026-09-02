@@ -12,4 +12,5 @@ export {
   configPolicyLinkIdParamSchema as linkIdParamSchema,
   configPolicyAssignmentIdParamSchema as assignmentIdParamSchema,
   configPolicyDeviceIdParamSchema as deviceIdParamSchema,
+  testConfigPolicyAlertRuleSchema,
 } from '@breeze/shared/validators';

@@ -1,0 +1,45 @@
+{
+  "title": "Aprobaciones",
+  "description": "Revisa las acciones de alto impacto que esperan tu decisión.",
+  "loading": "Cargando aprobaciones…",
+  "loadError": "No se pudieron cargar las aprobaciones. Inténtalo de nuevo.",
+  "retry": "Reintentar",
+  "empty": {
+    "title": "No hay aprobaciones pendientes",
+    "description": "Las nuevas solicitudes aparecerán aquí cuando se necesite tu decisión."
+  },
+  "requestedBy": "Solicitado por {{client}}",
+  "proposedByAgent": "Propuesto por {{agent}} (agente de IA)",
+  "targetDevice": "Dispositivo de destino: {{hostname}}",
+  "batch": {
+    "approveAll": "Aprobar todo ({{count}})",
+    "declineAll": "Rechazar todo ({{count}})",
+    "groupTitle": "{{count}} solicitudes similares · {{tool}}"
+  },
+  "risk": {
+    "low": "Riesgo bajo",
+    "medium": "Riesgo medio",
+    "high": "Riesgo alto",
+    "critical": "Riesgo crítico"
+  },
+  "denyPrompt": "¿Por qué rechazas esta solicitud? El motivo es opcional.",
+  "denyReasonPlaceholder": "Opcional: se comparte con quien lo solicitó",
+  "confirmDeny": "Confirmar rechazo",
+  "cancel": "Cancelar",
+  "deny": "Rechazar",
+  "approve": "Aprobar",
+  "deciding": "Enviando…",
+  "expiresIn": "Vence en {{minutes}} min",
+  "expiresSoon": "Vence en menos de un minuto",
+  "errors": {
+    "noApproverDevice": "Registra un dispositivo de aprobación en tu perfil y vuelve a intentarlo.",
+    "notSoleApprover": "Otra persona autorizada debe decidir sobre esta solicitud.",
+    "verificationFailed": "La verificación se canceló o falló. Inténtalo de nuevo.",
+    "alreadyDecided": "Esta solicitud ya fue decidida.",
+    "expired": "Esta solicitud venció antes de que se pudiera decidir.",
+    "decisionFailed": "No se pudo enviar la decisión. Inténtalo de nuevo.",
+    "batchStepUp": "Este lote requiere un inicio de sesión más seguro. Aprueba las solicitudes de una en una.",
+    "batchNotHomogeneous": "Estas solicitudes ya no se pueden decidir en conjunto."
+  },
+  "registerDevice": "Registrar dispositivo"
+}

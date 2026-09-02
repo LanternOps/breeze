@@ -433,13 +433,16 @@ it('imports a product into the catalog with a distributor snapshot', async () =>
   expect(enrichMocks.enrichDistributorListing).not.toHaveBeenCalled(); // aiCleanup unset → no AI
 });
 
-it('omits the cost currency when the distributor feed currency is null', async () => {
+it('stores the cost as NULL (not partner currency) when the distributor feed currency is null (#3775 review #2)', async () => {
   const createSpy = vi.mocked(createCatalogItem).mockResolvedValue({ id: 'item-null-currency' } as any);
   const product = { source: 'td_synnex_ec_express' as const, synnexSku: '8938996', mfgPartNo: 'DELL-U2724DE', manufacturer: 'Dell', status: 'ACTIVE', name: 'Dell U2724DE', description: 'Dell U2724DE', currency: null, cost: 400, msrp: 575, discount: null, totalQty: 20, warehouses: [], weight: 20.50, parcelShippable: 'Y', raw: {} };
-  await importEcExpressCatalogItem({ product, item: { name: 'Dell U2724DE', sku: '8938996', unitPrice: 575, costBasis: 400, taxable: true } }, actor, dbCtx);
+  await importEcExpressCatalogItem({ product, item: { name: 'Dell U2724DE', sku: '8938996', unitPrice: 575, costBasis: 400, markupPercent: 20, taxable: true } }, actor, dbCtx);
 
   const arg = createSpy.mock.calls.at(-1)![0];
+  expect(arg.costBasis).toBeNull();
   expect(arg).toEqual(expect.not.objectContaining({ costCurrency: expect.anything() }));
+  // The jsonb snapshot keeps the raw feed number for traceability.
+  expect((arg.attributes as any).distributor.cost).toBe(400);
 });
 
 it('records the cost currency for a nightly price-file product', async () => {

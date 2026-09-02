@@ -2,7 +2,7 @@
   {
     "path": "/agents/advanced-install/",
     "title": "Advanced Install Methods",
-    "description": "Alternate, scripted, and unattended ways to install the Breeze agent — ZIP bundles, MSI properties, direct binary + enroll, and the full enroll/service flag reference.",
+    "description": "Alternate, scripted, and unattended Breeze agent installs: ZIP bundles, MSI properties, direct binary enrollment, and the full flag reference.",
     "headings": [
       "Picking a Method",
       "ZIP Bundle (MSI + enrollment.json + install.bat)",
@@ -22,7 +22,7 @@
   {
     "path": "/agents/building/",
     "title": "Building from Source",
-    "description": "Compile the Breeze agent from source for any platform.",
+    "description": "Compile the Breeze agent from source: prerequisites, cross-platform build commands, Windows MSI packaging, version embedding, and testing.",
     "headings": [
       "Prerequisites",
       "Build Commands",
@@ -38,7 +38,7 @@
   {
     "path": "/agents/commands/",
     "title": "Commands & Config",
-    "description": "Agent command execution, configuration options, and service management.",
+    "description": "Agent command execution and configuration: process, service, and scheduled task management, Windows event logs and registry, and power actions.",
     "headings": [
       "Command Flow",
       "Command Result Format",
@@ -133,7 +133,7 @@
   {
     "path": "/agents/enrollment-keys/",
     "title": "Enrollment Keys",
-    "description": "Create, scope, rotate, and manage enrollment keys for onboarding agents into Breeze RMM.",
+    "description": "Create, scope, rotate, and manage enrollment keys for onboarding Breeze agents, covering TTL, usage limits, site pinning, and per-key secrets.",
     "headings": [
       "Key Concepts",
       "Per-Key Enrollment Secrets",
@@ -178,7 +178,7 @@
   {
     "path": "/agents/enrollment/",
     "title": "Enrollment",
-    "description": "How agent enrollment and authentication works in Breeze RMM.",
+    "description": "How Breeze agent enrollment and authentication works, covering the enrollment flow, brz_ token generation, SHA-256 hashed storage, and validation.",
     "headings": [
       "Enrollment Flow",
       "Token Security",
@@ -192,7 +192,7 @@
   {
     "path": "/agents/helper/",
     "title": "Breeze Helper",
-    "description": "System tray application providing end-user AI chat, vision-based troubleshooting, and self-service tools.",
+    "description": "System tray companion app for end users with AI chat, vision-based screen analysis, computer control, and self-service troubleshooting tools.",
     "headings": [
       "Overview",
       "Installation",
@@ -213,6 +213,7 @@
       "Self-Service Tools",
       "Organization Controls",
       "Enabling / Disabling Helper Chat",
+      "Hiding the System Tray Icon",
       "Configuration Endpoint",
       "Architecture",
       "Process Model",
@@ -231,7 +232,7 @@
   {
     "path": "/agents/installation/",
     "title": "Agent Installation",
-    "description": "Install the Breeze agent on Linux, macOS, and Windows devices.",
+    "description": "Install the Breeze agent on Linux, macOS, and Windows. Download the single Go binary, enroll with an enrollment key, and run it as a system service.",
     "headings": [
       "Supported Platforms",
       "Quick Install",
@@ -249,6 +250,18 @@
     "section": "agents"
   },
   {
+    "path": "/agents/macos-permissions/",
+    "title": "macOS Permissions",
+    "description": "Grant Full Disk Access, Accessibility, and Screen Recording to the Breeze agent using MDM PPPC profiles or System Settings.",
+    "headings": [
+      "Permissions Overview",
+      "Zero-Touch Grants with a PPPC Profile",
+      "Manual Grants in System Settings",
+      "Troubleshooting"
+    ],
+    "section": "agents"
+  },
+  {
     "path": "/agents/self-host-migration/",
     "title": "Migrating to the Self-Host Agent Edition",
     "description": "Move devices off hosted-edition agent builds and onto the self-host agent edition for self-hosted Breeze servers.",
@@ -262,7 +275,7 @@
   {
     "path": "/backup/api-reference/",
     "title": "Backup API Reference",
-    "description": "REST API endpoints for backup configurations, jobs, snapshots, restores, and enterprise features.",
+    "description": "REST API endpoints for backup storage configurations, jobs, snapshots, restores, VSS, SQL Server, Hyper-V, encryption keys, SLAs, and disaster recovery.",
     "headings": [
       "Storage Configurations",
       "Backup Jobs",
@@ -286,7 +299,7 @@
   {
     "path": "/backup/bare-metal-recovery/",
     "title": "Bare Metal Recovery",
-    "description": "Recover a full system from backup to bare hardware or a replacement device.",
+    "description": "Restore a full system image to bare hardware or a replacement device with the Breeze recovery environment, recovery token generation, and token security.",
     "headings": [
       "How It Works",
       "Generating a Recovery Token",
@@ -299,7 +312,7 @@
   {
     "path": "/backup/cloud-to-cloud/",
     "title": "Cloud-to-Cloud Backup",
-    "description": "Back up Microsoft 365 and Google Workspace data — mailboxes, OneDrive, SharePoint, and Google Drive.",
+    "description": "Back up Microsoft 365 mailboxes, OneDrive, and SharePoint plus Google Workspace Drive data, with delta sync for incremental backups.",
     "headings": [
       "Connecting Microsoft 365",
       "Connecting Google Workspace",
@@ -313,7 +326,7 @@
   {
     "path": "/backup/disaster-recovery/",
     "title": "Disaster Recovery Plans",
-    "description": "Define recovery groups, set RTO/RPO targets, and rehearse coordinated failover across your fleet.",
+    "description": "Build disaster recovery plans with ordered recovery groups, RTO and RPO targets, test and live execution types, and execution history tracking.",
     "headings": [
       "Creating a DR Plan",
       "Adding Recovery Groups",
@@ -328,7 +341,7 @@
   {
     "path": "/backup/encryption/",
     "title": "Encryption Key Management",
-    "description": "Create, rotate, and manage encryption keys for backup data protection.",
+    "description": "Create, rotate, and deactivate the AES-256 and RSA-2048 encryption keys that protect Breeze backup snapshots at rest, with key fingerprint handling.",
     "headings": [
       "Managing Keys",
       "Creating a Key",
@@ -358,7 +371,7 @@
   {
     "path": "/backup/monitoring/",
     "title": "Monitoring Backups",
-    "description": "Track backup health, job history, storage trends, and per-device protection status.",
+    "description": "Track backup health across the fleet: dashboard metrics, job history and lifecycle, storage usage trends, per-device status, and on-demand backup runs.",
     "headings": [
       "Overview Tab",
       "Metrics Cards",
@@ -394,7 +407,7 @@
   {
     "path": "/backup/policies/",
     "title": "Backup Policies",
-    "description": "Schedule and target backups using configuration policies with hierarchical assignment.",
+    "description": "Schedule backups through configuration policies. Covers file, Hyper-V, MSSQL, and system image modes, storage targets, GFS retention, and assignment.",
     "headings": [
       "Creating a Backup Policy",
       "How Policy Assignment Works",
@@ -411,7 +424,7 @@
   {
     "path": "/backup/profiles/",
     "title": "Backup Profiles",
-    "description": "Build a reusable backup profile once — choosing which sources it protects — and apply it across organizations, including partner-wide profiles that cover every org.",
+    "description": "Build a reusable backup profile once, choose which sources it protects, and apply it across organizations, including partner-wide profiles for every org.",
     "headings": [
       "What a Profile Protects",
       "Org-Owned vs. Partner-Wide Profiles",
@@ -428,7 +441,7 @@
   {
     "path": "/backup/restoring/",
     "title": "Restoring Data",
-    "description": "Restore files, folders, or full systems from backup snapshots.",
+    "description": "Restore files, folders, or full systems from Breeze backup snapshots. Covers browsing snapshots, full and selective restores, and bare metal recovery.",
     "headings": [
       "Browsing Snapshots",
       "Restore Types",
@@ -444,7 +457,7 @@
   {
     "path": "/backup/sla/",
     "title": "SLA Management",
-    "description": "Set RPO/RTO targets, track compliance, and get alerts when backup SLAs are breached.",
+    "description": "Define RPO and RTO targets for backup-protected devices, track compliance from the SLA dashboard, and get alerts when backup SLAs are breached.",
     "headings": [
       "Key Terms",
       "Creating an SLA Policy",
@@ -475,7 +488,7 @@
   {
     "path": "/backup/storage/",
     "title": "Storage Configuration",
-    "description": "Set up backup storage targets — S3, Azure Blob, Google Cloud, local NAS, or Backblaze B2.",
+    "description": "Set up backup storage targets for S3, Azure Blob, Google Cloud, Backblaze B2, or local NAS, with connectivity testing and multiple configurations.",
     "headings": [
       "Creating a Storage Configuration",
       "Testing Connectivity",
@@ -488,7 +501,7 @@
   {
     "path": "/backup/troubleshooting/",
     "title": "Backup Troubleshooting",
-    "description": "Common backup issues and how to resolve them.",
+    "description": "Fixes for common backup issues: stuck or failing jobs, empty snapshot browses, VSS writer failures, SQL Server chain breaks, and recovery token errors.",
     "headings": [
       "No backup configuration available",
       "Job stuck in Queued status",
@@ -509,7 +522,7 @@
   {
     "path": "/backup/vault/",
     "title": "Local Vaults",
-    "description": "Mirror backup snapshots to local or network storage for fast, offline recovery.",
+    "description": "Mirror backup snapshots from cloud storage to a local vault, NAS share, or USB drive for fast offline recovery, with incremental sync and retention.",
     "headings": [
       "Creating a Vault",
       "Syncing a Vault",
@@ -522,7 +535,7 @@
   {
     "path": "/backup/verification/",
     "title": "Verification & Recovery Readiness",
-    "description": "Verify backup integrity, run test restores, and track recovery readiness scores.",
+    "description": "Verify backup integrity with checksum checks and test restores, review verification history, and track per-device recovery readiness scores in Breeze.",
     "headings": [
       "Verification Types",
       "Running a Verification",
@@ -572,7 +585,7 @@
   {
     "path": "/deploy/binaries/",
     "title": "Binary Distribution",
-    "description": "How Breeze serves agent and viewer downloads — GitHub Releases, local disk, or S3.",
+    "description": "How Breeze serves agent and viewer downloads. Covers GitHub Releases mode, local disk with optional S3 offload, and the release manifest trust root.",
     "headings": [
       "Binary Source Modes",
       "GitHub Mode (Default)",
@@ -592,7 +605,7 @@
   {
     "path": "/deploy/cloudflare-access-trust/",
     "title": "Cloudflare Access JWT trust",
-    "description": "Skip the Breeze login form when a deployment sits behind Cloudflare Access using the same identity provider.",
+    "description": "Skip the Breeze login form behind Cloudflare Access by trusting verified Cf-Access-Jwt-Assertion headers from the same identity provider.",
     "headings": [
       "How it works",
       "Failure semantics",
@@ -624,7 +637,7 @@
   {
     "path": "/deploy/code-signing/",
     "title": "Code Signing",
-    "description": "Code signing for Breeze agent, viewer, and helper binaries on Windows and macOS.",
+    "description": "Code signing for Breeze agent, viewer, and helper binaries: Windows Authenticode, macOS notarization, self-hosted signing, and signature verification.",
     "headings": [
       "Why Code Signing Matters",
       "Signed Artifacts",
@@ -645,7 +658,7 @@
   {
     "path": "/deploy/environment/",
     "title": "Environment Variables",
-    "description": "Complete reference for all Breeze RMM configuration variables.",
+    "description": "Reference for every Breeze RMM environment variable: database, Redis, auth, email, object storage, TURN, monitoring, Sentry, and feature flags.",
     "headings": [
       "Database",
       "Redis",
@@ -671,6 +684,8 @@
       "Cloudflare mTLS",
       "Cloudflare Access JWT trust",
       "Cloud-to-Cloud Backup (M365)",
+      "Inbound email-to-ticket (Mailgun)",
+      "Mailgun setup",
       "Ticket Mailbox (M365 email-to-ticket)",
       "Customer Microsoft 365 Graph-read consent (optional)",
       "Customer Microsoft 365 Graph-actions (write) executor (optional)",
@@ -686,7 +701,7 @@
   {
     "path": "/deploy/production/",
     "title": "Production Deployment",
-    "description": "Deploy Breeze RMM to production with Docker Compose and automatic TLS.",
+    "description": "Deploy Breeze RMM to production with Docker Compose. Covers Caddy automatic TLS, API, dashboard, customer portal, PostgreSQL, Redis, and monitoring.",
     "headings": [
       "What Gets Deployed",
       "Deploy Steps",
@@ -757,7 +772,7 @@
   {
     "path": "/deploy/tls/",
     "title": "TLS & Reverse Proxy",
-    "description": "Configure TLS certificates and reverse proxy for Breeze RMM.",
+    "description": "Configure TLS and reverse proxying for Breeze RMM with Caddy or Nginx, including certificates, WebSocket proxying, and security headers.",
     "headings": [
       "Caddy (Default)",
       "Production Caddyfile",
@@ -771,7 +786,7 @@
   {
     "path": "/deploy/turn-server/",
     "title": "TURN Server",
-    "description": "Deploy a dedicated TURN relay server for WebRTC remote desktop connections.",
+    "description": "Deploy a dedicated coturn TURN relay for WebRTC remote desktop: server provisioning, firewall rules, relay port sizing, and credential handling.",
     "headings": [
       "Architecture Options",
       "External TURN Server Setup",
@@ -793,7 +808,7 @@
   {
     "path": "/deploy/upgrades/",
     "title": "Upgrade Guide",
-    "description": "How to upgrade a self-hosted Breeze RMM deployment to a new version.",
+    "description": "Upgrade a self-hosted Breeze RMM deployment with Docker Compose, including automatic database migrations, expected downtime, and version-specific notes.",
     "headings": [
       "Docker Compose Upgrade",
       "Version-specific notes",
@@ -836,7 +851,7 @@
   {
     "path": "/features/agent-diagnostics/",
     "title": "Agent Diagnostics & Service Commands",
-    "description": "Query structured internal logs shipped by the agent, and manage the Breeze agent as a Windows system service.",
+    "description": "Query structured diagnostic logs shipped by the Breeze agent and use CLI service commands to manage the agent as a Windows system service.",
     "headings": [
       "Agent Diagnostic Logs",
       "What is logged",
@@ -848,6 +863,21 @@
       "Commands",
       "Typical workflows",
       "Troubleshooting"
+    ],
+    "section": "features"
+  },
+  {
+    "path": "/features/ai-agents/",
+    "title": "AI Agents",
+    "description": "Configure an AI agent that triages alerts, records what it did, and proposes actions for a human to approve.",
+    "headings": [
+      "What an agent does",
+      "Runs",
+      "Approving what an agent proposes",
+      "Agent activity in the audit trail",
+      "Permissions",
+      "Alert triage wiring",
+      "Enabling agents"
     ],
     "section": "features"
   },
@@ -895,13 +925,17 @@
   {
     "path": "/features/ai-for-office/",
     "title": "AI for Office",
-    "description": "A governed AI assistant delivered to your customers' end-users inside Excel, Word, PowerPoint, and Outlook -- with org policies, data-loss protection, budgets, and per-partner entitlement.",
+    "description": "A governed AI assistant for customers' end-users in Excel, Word, PowerPoint, and Outlook, with org policies, DLP, budgets, and per-partner entitlement.",
     "headings": [
       "Enabling a Partner (Platform Operator)",
       "Configuring an Organization (MSP Admin)",
       "Mapping the Customer's Microsoft Tenant",
       "How End-Users Sign In",
       "Admin Visibility",
+      "Working Tickets from Outlook (Technicians)",
+      "What a technician sees",
+      "Setting it up",
+      "Limits worth knowing",
       "Permissions",
       "Related"
     ],
@@ -910,7 +944,7 @@
   {
     "path": "/features/ai/",
     "title": "AI Features",
-    "description": "AI Risk Engine, Fleet Orchestration Brain, AI Device Context Memory, Helper AI Chat, and cost tracking.",
+    "description": "AI assistant with tiered tool approvals, AI Risk Engine, Fleet Orchestration Brain, device context memory, Helper chat, and cost tracking.",
     "headings": [
       "AI Risk Engine",
       "Tool tiers",
@@ -985,7 +1019,7 @@
   {
     "path": "/features/alerts/",
     "title": "Alerts & Rules",
-    "description": "Create alert rules, manage notifications, and respond to device alerts in Breeze RMM.",
+    "description": "Create alert rules, route notifications through configured channels, and manage device alerts in Breeze RMM, with severity levels and alert lifecycle.",
     "headings": [
       "Viewing Alerts",
       "Severity Levels",
@@ -1012,7 +1046,7 @@
   {
     "path": "/features/approval-security/",
     "title": "Approval Security",
-    "description": "Set how strongly a technician must prove who they are before approving a privileged action -- map each risk tier to a required Breeze Authenticator assurance level.",
+    "description": "Set how strongly a technician must prove identity before approving a privileged action by mapping each risk tier to a Breeze Authenticator assurance level.",
     "headings": [
       "Risk tiers and assurance levels",
       "Configuring approval assurance",
@@ -1059,7 +1093,7 @@
   {
     "path": "/features/automations/",
     "title": "Automations",
-    "description": "Define event-driven, scheduled, and webhook-triggered automations that execute actions across your fleet.",
+    "description": "Define event-driven, scheduled, and webhook-triggered automations that run actions against target devices and platform services in your fleet.",
     "headings": [
       "Creating an Automation",
       "Partner-wide Automations (All organizations)",
@@ -1101,7 +1135,7 @@
   {
     "path": "/features/bandwidth-monitoring/",
     "title": "Bandwidth Monitoring",
-    "description": "Per-interface network bandwidth tracking with historical data, utilization metrics, and throughput analysis.",
+    "description": "Per-interface network bandwidth tracking with delta-based throughput rates, historical metrics storage, trending, and threshold alerting.",
     "headings": [
       "Collected Metrics",
       "Aggregate Metrics",
@@ -1131,7 +1165,7 @@
   {
     "path": "/features/boot-performance/",
     "title": "Boot & Startup Performance",
-    "description": "Collect and analyze device boot times, startup application impact, and identify slow-starting processes.",
+    "description": "Collect device boot phase timings and per-process startup impact data, track history over time, and identify slow-starting applications.",
     "headings": [
       "Why Boot Performance Matters",
       "Collected Metrics",
@@ -1203,6 +1237,21 @@
     "section": "features"
   },
   {
+    "path": "/features/bring-your-own-llm-key/",
+    "title": "Bring Your Own LLM Key",
+    "description": "Use a partner-owned Anthropic API key for Breeze AI, or configure an instance-wide LLM backend on a self-hosted deployment.",
+    "headings": [
+      "Hosted: use your own Anthropic key",
+      "Requirements",
+      "Connect a key",
+      "Usage, budgets, and failures",
+      "Self-hosted: configure an instance-wide provider",
+      "Anthropic-compatible endpoint with tool calling",
+      "OpenAI-compatible chat without tool calling"
+    ],
+    "section": "features"
+  },
+  {
     "path": "/features/browser-security/",
     "title": "Browser Security",
     "description": "Browser extension inventory, risk assessment, policy-based compliance, and violation tracking across your managed fleet.",
@@ -1258,7 +1307,7 @@
   {
     "path": "/features/cis-hardening/",
     "title": "CIS Hardening",
-    "description": "CIS benchmark compliance scanning, scoring, and guided remediation for Windows, macOS, and Linux endpoints.",
+    "description": "CIS benchmark compliance scanning with baselines, per-check findings, scores, and approval-gated remediation for Windows, macOS, and Linux.",
     "headings": [
       "Key Concepts",
       "Operating System Types",
@@ -1300,7 +1349,7 @@
   {
     "path": "/features/configuration-policies/",
     "title": "Configuration Policies",
-    "description": "Bundle and enforce device settings across your fleet using hierarchical configuration policies.",
+    "description": "Bundle patch, alert, maintenance, compliance, and backup settings into hierarchical policies with scoped assignments and automatic drift remediation.",
     "headings": [
       "Policy ownership: organization vs. partner-wide",
       "Feature types",
@@ -1329,7 +1378,7 @@
   {
     "path": "/features/contracts/",
     "title": "Recurring Contracts",
-    "description": "Managed-services agreements that generate invoices automatically on a schedule, with live per-device and per-seat counts so recurring revenue is always accurate.",
+    "description": "Managed-services agreements that generate invoices automatically on a schedule, with live per-device and per-seat counts for accurate recurring revenue.",
     "headings": [
       "How a Contract Bills",
       "Contract Statuses",
@@ -1453,6 +1502,8 @@
       "Columns",
       "Filters",
       "VPN Presence",
+      "Connected vs. disconnected",
+      "Naming tunnels on macOS",
       "On the device list",
       "On the device Info tab",
       "Battery and Power Status",
@@ -1466,7 +1517,7 @@
   {
     "path": "/features/discovery/",
     "title": "Network Discovery",
-    "description": "Scan your network to discover devices, hosts, and services using ARP, ICMP, and port scanning.",
+    "description": "Scan subnets with ARP, ICMP ping, TCP port scans, and SNMP to discover devices, classify asset types, map open services, and build network topology.",
     "headings": [
       "Key Concepts",
       "Scan Types",
@@ -1563,7 +1614,7 @@
   {
     "path": "/features/edr-integrations/",
     "title": "EDR Integrations",
-    "description": "Connect Huntress and SentinelOne to correlate endpoint detection data with your Breeze-managed fleet.",
+    "description": "Connect Huntress and SentinelOne to sync agents and threats, auto-link EDR agents to Breeze devices, and run actions like device isolation.",
     "headings": [
       "Auto-Linking: How EDR Agents Map to Breeze Devices",
       "Huntress",
@@ -1627,9 +1678,11 @@
   {
     "path": "/features/extensions/",
     "title": "Extensions",
-    "description": "Signed runtime bundles that extend Breeze with additional routes, AI tools, background jobs, and web surfaces.",
+    "description": "First-party extension modules compiled into the API image, off by default and enabled per deployment via flags, currently the Workspace extension.",
     "headings": [
-      "Tenant-scoped installs"
+      "What an enabled extension contributes",
+      "What Breeze does not have",
+      "Enabling Workspace"
     ],
     "section": "features"
   },
@@ -1757,7 +1810,7 @@
   {
     "path": "/features/integrations/",
     "title": "Integrations",
-    "description": "Connect Breeze to PSA platforms, communication tools, and external services for seamless workflow automation.",
+    "description": "Connect Breeze to PSA ticketing platforms, communication channels, and monitoring endpoints, with per-organization or partner-wide scoping.",
     "headings": [
       "Integration Types",
       "Communication Integrations",
@@ -1812,11 +1865,13 @@
   {
     "path": "/features/invoices/",
     "title": "Invoices",
-    "description": "Create invoices from your catalog, tracked time, and parts; issue and send them; record payments; void and reissue; and download a clean PDF -- all inside Breeze.",
+    "description": "Create invoices from your catalog, tracked time, and parts. Issue and send them, record payments, void and reissue, and download a clean PDF.",
     "headings": [
       "The Invoice List",
       "Invoice Statuses",
       "Creating an Invoice",
+      "Where the currency comes from",
+      "Assembling across currencies",
       "Adding Line Items",
       "Issuing and Sending",
       "Recording Payments",
@@ -1869,7 +1924,7 @@
   {
     "path": "/features/log-shipping/",
     "title": "Log Shipping",
-    "description": "Collect, ship, and query agent diagnostic logs with gzip compression, level filtering, and full-text search.",
+    "description": "Collect structured agent diagnostic logs, ship them in gzip-compressed batches, and query them centrally by level, component, and full text.",
     "headings": [
       "Key Concepts",
       "Log Levels",
@@ -1900,7 +1955,7 @@
   {
     "path": "/features/maintenance-windows/",
     "title": "Maintenance Windows",
-    "description": "Schedule maintenance periods that suppress alerts and pause automated actions for targeted devices.",
+    "description": "Schedule maintenance windows that suppress alerts, patching, automations, and scripts for targeted devices via policies or standalone windows.",
     "headings": [
       "Key Concepts",
       "Window Statuses",
@@ -2034,7 +2089,7 @@
   {
     "path": "/features/ml-insights/",
     "title": "AI Insights",
-    "description": "Machine-learning features that surface metric anomalies, group correlated alerts into incidents, explain root causes, suggest remediations, and forecast capacity.",
+    "description": "Machine-learning features that surface metric anomalies, group correlated alerts into incidents, explain root causes, and forecast capacity.",
     "headings": [
       "Availability and enabling",
       "Default state",
@@ -2057,13 +2112,14 @@
   {
     "path": "/features/mobile/",
     "title": "Mobile App",
-    "description": "Monitor and manage your fleet on the go with the Breeze mobile app for iOS and Android.",
+    "description": "Breeze mobile app for iOS and Android: device monitoring, alert inbox, remote actions, push notifications, approval mode, and biometric login.",
     "headings": [
       "Supported Platforms",
       "Key Features",
       "Dashboard Summary",
       "Device Monitoring",
       "Alert Inbox",
+      "Tickets",
       "Remote Actions",
       "Push Notifications",
       "Registration Flow",
@@ -2103,6 +2159,7 @@
       "Biometric authentication fails",
       "Login fails with \"MFA is required\"",
       "Alerts or devices not loading",
+      "Systems shows \"Some data could not be refreshed.\"",
       "Device actions fail"
     ],
     "section": "features"
@@ -2127,7 +2184,7 @@
   {
     "path": "/features/network-baselines/",
     "title": "Network Baselines",
-    "description": "Establish subnet baselines and detect new, changed, disappeared, or rogue devices on your network.",
+    "description": "Snapshot subnet devices into baselines and detect new, changed, disappeared, or rogue devices with scheduled rescans, change events, and alerts.",
     "headings": [
       "Key Concepts",
       "Event Types",
@@ -2165,7 +2222,7 @@
   {
     "path": "/features/network-intelligence/",
     "title": "Network Intelligence",
-    "description": "Network baseline computation, change detection, known guest management, and anomaly alerting.",
+    "description": "Continuous network monitoring with per-subnet baselines, device change detection, known guest management, IP history tracking, and anomaly alerting.",
     "headings": [
       "Network Baselines",
       "How Baselines Work",
@@ -2310,7 +2367,7 @@
     "headings": [
       "How It Works",
       "Connecting Stripe",
-      "Sending a Payment Link",
+      "The Customer Invoice Link",
       "Paying from the Customer Portal",
       "Refunds",
       "Permissions",
@@ -2321,7 +2378,7 @@
   {
     "path": "/features/pam/",
     "title": "Privileged Access Management",
-    "description": "Eliminate standing admin rights with just-in-time elevation -- intercept Windows UAC prompts, route them to an approver, and grant temporary admin access that revokes itself.",
+    "description": "Eliminate standing admin rights with just-in-time elevation: intercept Windows UAC prompts, route them to an approver, and grant self-revoking access.",
     "headings": [
       "The Privileged Access Console",
       "Overview",
@@ -2382,7 +2439,7 @@
   {
     "path": "/features/performance-metrics/",
     "title": "Performance Metrics",
-    "description": "Read per-device CPU, memory, disk, and network time-series graphs on the device Performance tab.",
+    "description": "Per-device CPU, memory, disk, and network time-series graphs on the device Performance tab, with 24h, 7d, and 30d ranges and aggregation intervals.",
     "headings": [
       "What the graphs show",
       "Time ranges",
@@ -2504,7 +2561,7 @@
   {
     "path": "/features/policy-management/",
     "title": "Policy Management",
-    "description": "Define and enforce organisational compliance policies with tracking, reporting, and remediation workflows.",
+    "description": "Define organisational compliance policies with rules for software, disk space, OS versions, registry, and config files, with tracked remediation.",
     "headings": [
       "Overview",
       "Creating policies",
@@ -2548,7 +2605,7 @@
   {
     "path": "/features/portal/",
     "title": "Customer Portal",
-    "description": "Self-service portal for end-users to view devices, submit tickets, and check out assets.",
+    "description": "Self-service customer portal where end-users view organization devices, submit and track tickets, and check out assets, with per-org feature toggles.",
     "headings": [
       "Accessing the Portal",
       "Key Concepts",
@@ -2597,10 +2654,12 @@
   {
     "path": "/features/product-catalog/",
     "title": "Product Catalog",
-    "description": "A reusable catalog of the products and services you sell, with per-customer pricing, bundles, and live margins -- the price list that invoices and contracts pull from.",
+    "description": "A reusable catalog of the products and services you sell, with per-customer pricing, bundles, and live margins, feeding your invoices and contracts.",
     "headings": [
       "Catalog Items",
       "Fields",
+      "Price books and cost",
+      "Using catalog prices on documents",
       "AI Auto-fill",
       "Product Images",
       "Per-Customer Pricing",
@@ -2638,7 +2697,7 @@
   {
     "path": "/features/quotes/",
     "title": "Quotes & Proposals",
-    "description": "Build priced quotes from your catalog, present them with images and titles, take a deposit on acceptance, and turn accepted quotes straight into invoices and recurring contracts -- all inside Breeze.",
+    "description": "Build priced quotes from your catalog, take a deposit on acceptance, and turn accepted quotes into invoices and recurring contracts in Breeze.",
     "headings": [
       "The Quote Editor",
       "Reordering, Bulk Edit, and Undo",
@@ -2657,6 +2716,10 @@
       "What Happens on Acceptance",
       "Ordering What You Sold",
       "Sending and Tracking",
+      "Re-sending and share links",
+      "Declined quotes",
+      "Quotes and currency",
+      "Document themes and content blocks",
       "Cloning a Quote",
       "Changing the Customer on a Draft",
       "Permissions",
@@ -2703,7 +2766,7 @@
   {
     "path": "/features/remote-access/",
     "title": "Remote Access",
-    "description": "Remote Desktop and Remote Terminal for managed devices over WebRTC.",
+    "description": "Remote Desktop and Remote Terminal for managed devices over WebRTC, with TURN relay support, WebSocket fallback, and MFA-gated session permissions.",
     "headings": [
       "Remote Desktop",
       "Starting a desktop session",
@@ -2735,6 +2798,10 @@
       "Network Proxy Tunnels",
       "Wake-on-LAN & Remote-Desktop Launcher",
       "Events",
+      "Linux viewer (AppImage)",
+      "FUSE 2 is required",
+      "Running without FUSE",
+      "Viewer launches but no window appears",
       "Troubleshooting"
     ],
     "section": "features"
@@ -2824,7 +2891,7 @@
   {
     "path": "/features/scripts/",
     "title": "Scripts",
-    "description": "Create, manage, and execute scripts across your fleet in PowerShell, Bash, Python, and Cmd.",
+    "description": "Create, manage, and run PowerShell, Bash, Python, and Cmd scripts across your fleet, with a shared system library, bundles, and partner-wide scoping.",
     "headings": [
       "Script Library",
       "Browsing and searching",
@@ -2848,7 +2915,14 @@
       "Pre-execution checks",
       "Script Parameters",
       "Defining parameters",
+      "Parameter sources",
       "Using parameters in script content",
+      "Variables",
+      "Defining a variable",
+      "Using variables in a script",
+      "Secret variables",
+      "Secret variables in scripts",
+      "Variables and approvals",
       "Execution History API",
       "Listing executions for a script",
       "Execution detail with output",
@@ -2980,7 +3054,7 @@
   {
     "path": "/features/setup-wizard/",
     "title": "First-Login Setup Wizard",
-    "description": "Guided setup wizard that walks new administrators through initial platform configuration on first login.",
+    "description": "Guided two-step setup wizard covering organization setup and device enrollment for new administrators on their first Breeze login.",
     "headings": [
       "When the Wizard Appears",
       "Setup Steps",
@@ -2995,7 +3069,7 @@
   {
     "path": "/features/snmp/",
     "title": "SNMP Monitoring",
-    "description": "Monitor network infrastructure devices using SNMP templates, custom OIDs, and real-time metric dashboards.",
+    "description": "Poll routers, switches, printers, and UPS units over SNMP using reusable OID templates, with scheduled polling and real-time metric dashboards.",
     "headings": [
       "Key Concepts",
       "SNMP Versions",
@@ -3036,7 +3110,7 @@
   {
     "path": "/features/software-inventory/",
     "title": "Software Inventory",
-    "description": "Track installed software across your fleet, manage a software catalog, deploy updates, and queue uninstalls.",
+    "description": "Track installed software per device, maintain a software catalog, and push install, update, and uninstall deployments across your fleet.",
     "headings": [
       "Software Catalog",
       "Catalog Item Fields",
@@ -3046,6 +3120,8 @@
       "Retrieving a Catalog Item",
       "Updating a Catalog Item",
       "Deleting a Catalog Item",
+      "Install methods",
+      "Sharing packages across customers",
       "Software Versions",
       "Version Fields",
       "Listing Versions",
@@ -3082,7 +3158,7 @@
   {
     "path": "/features/software-policies/",
     "title": "Software Policies",
-    "description": "Enforce software allowlists and blocklists across your fleet with automated detection and remediation.",
+    "description": "Enforce software allowlist, blocklist, and audit policies with violation detection during inventory scans and automated remediation options.",
     "headings": [
       "Policy Types",
       "Allowlist",
@@ -3181,8 +3257,7 @@
       "Scheduled Tasks (Windows only)",
       "Troubleshooting",
       "Device not found or access denied (404)",
-      "Agent failed / device may be offline (502)",
-      "\"Failed to parse agent response\" (502)",
+      "Agent command failures",
       "\"Registry is only supported on Windows\" / \"Event logs are only supported on Windows\" / \"Scheduled tasks are only supported on Windows\"",
       "Permission denied on service start/stop",
       "Registry write operations failing"
@@ -3192,7 +3267,7 @@
   {
     "path": "/features/tags/",
     "title": "Tags",
-    "description": "Organise devices with free-form tags for filtering, grouping, and targeting operations across your fleet.",
+    "description": "Attach free-form string tags to devices for lightweight categorisation, filtering, grouping, and targeting operations across your fleet.",
     "headings": [
       "How it works",
       "Setting tags on a device",
@@ -3235,6 +3310,7 @@
       "Bulk Actions",
       "Creating Tickets",
       "Email-to-Ticket",
+      "Turning it on and off",
       "Your inbound address",
       "How emails become tickets",
       "Autoresponder",
@@ -3259,7 +3335,7 @@
   {
     "path": "/features/unifi-integration/",
     "title": "UniFi Network Integration",
-    "description": "Discover your Ubiquiti UniFi fleet across every customer site through the Site Manager cloud or a self-hosted controller, with optional agent-collected deep telemetry.",
+    "description": "Discover your Ubiquiti UniFi fleet across customer sites via the Site Manager cloud or a self-hosted controller, with optional agent-collected telemetry.",
     "headings": [
       "Overview",
       "Connecting UniFi",
@@ -3297,7 +3373,7 @@
   {
     "path": "/features/user-risk/",
     "title": "User Risk Scoring",
-    "description": "AI-powered risk scoring, behavior analytics, access reviews, and automated security training for users.",
+    "description": "Composite user risk scores from behavioral signals and security events, with threshold-triggered training assignment and access review flagging.",
     "headings": [
       "Key Concepts",
       "Risk Score Ranges",
@@ -3344,7 +3420,7 @@
   {
     "path": "/features/user-sessions/",
     "title": "User Sessions",
-    "description": "Track active user sessions, login/logout events, idle time, and activity states across all managed devices.",
+    "description": "Track console, RDP, and SSH sessions across managed devices, with login and logout events, idle detection, and real-time event bus publishing.",
     "headings": [
       "Key Concepts",
       "Session Types",
@@ -3370,7 +3446,7 @@
   {
     "path": "/features/vulnerability-management/",
     "title": "Vulnerability Management",
-    "description": "Continuously detect, prioritize, and remediate CVEs across your fleet -- with risk scoring that factors in real-world exploitation, and one-click patching, risk acceptance, or mitigation.",
+    "description": "Continuously detect, prioritize, and remediate CVEs across your fleet, with exploit-aware risk scoring and one-click patching or risk acceptance.",
     "headings": [
       "Enabling vulnerability scanning",
       "What you can do",
@@ -3390,7 +3466,7 @@
   {
     "path": "/features/warranty-tracking/",
     "title": "Warranty Tracking",
-    "description": "Configure warranty expiry alert thresholds so techs get warned before device warranties lapse.",
+    "description": "Configure warning and critical warranty expiry thresholds on configuration policies so Breeze raises alerts before device manufacturer warranties lapse.",
     "headings": [
       "Where warranty dates come from",
       "Configure in a policy",
@@ -3423,7 +3499,7 @@
   {
     "path": "/features/webhooks/",
     "title": "Webhooks",
-    "description": "Send real-time event notifications to external systems when devices, alerts, and automations change state.",
+    "description": "Push signed JSON event notifications to external HTTP endpoints with HMAC-SHA256 signatures, custom headers, retries, and delivery history.",
     "headings": [
       "Creating a Webhook",
       "Organization Scoping",
@@ -3463,7 +3539,7 @@
   {
     "path": "/getting-started/architecture/",
     "title": "Architecture",
-    "description": "How Breeze RMM components fit together.",
+    "description": "How Breeze RMM components fit together: API server, web dashboard, Go agent, PostgreSQL, BullMQ job queue, TURN server, and multi-tenant hierarchy.",
     "headings": [
       "Multi-Tenant Hierarchy",
       "Component Overview",
@@ -3482,7 +3558,7 @@
   {
     "path": "/getting-started/introduction/",
     "title": "What is Breeze RMM?",
-    "description": "A fast, modern Remote Monitoring and Management platform for MSPs and internal IT teams.",
+    "description": "Overview of Breeze RMM, an open-source remote monitoring and management platform for MSPs and IT teams, with its architecture and technology stack.",
     "headings": [
       "Why Breeze?",
       "Architecture at a Glance",
@@ -3493,7 +3569,7 @@
   {
     "path": "/getting-started/prerequisites/",
     "title": "Prerequisites",
-    "description": "System requirements and tools needed to run Breeze RMM.",
+    "description": "Server hardware requirements and software needed to run Breeze RMM, including CPU, RAM, disk, and OS minimums plus Docker and Docker Compose setup.",
     "headings": [
       "Server Requirements",
       "Required Software",
@@ -3509,8 +3585,11 @@
   {
     "path": "/getting-started/quickstart/",
     "title": "Quickstart",
-    "description": "Get Breeze RMM running in under 5 minutes.",
+    "description": "Get Breeze RMM running in minutes with guided or manual setup, then reach the dashboard and enroll your first agent with an enrollment token.",
     "headings": [
+      "Guided setup (recommended)",
+      "Manual setup",
+      "Reaching the dashboard from another machine",
       "What's Running",
       "Next: Enroll Your First Agent"
     ],
@@ -3519,7 +3598,7 @@
   {
     "path": "/monitoring/alerts/",
     "title": "Infrastructure Alerts",
-    "description": "Configure Prometheus and Alertmanager rules to monitor the Breeze platform itself.",
+    "description": "Prometheus and Alertmanager rules that monitor the Breeze platform itself, covering API health, PostgreSQL, Redis, disk usage, and agent heartbeats.",
     "headings": [
       "Pre-Configured Infrastructure Alert Rules",
       "API Alerts",
@@ -3534,7 +3613,7 @@
   {
     "path": "/monitoring/health/",
     "title": "Health Endpoints",
-    "description": "Built-in health check and readiness endpoints for Breeze RMM.",
+    "description": "Built-in health, readiness, and metrics endpoints for Breeze RMM, with load balancer, Docker, and Kubernetes probe setup and troubleshooting.",
     "headings": [
       "Available Endpoints",
       "Response Formats",
@@ -3555,7 +3634,7 @@
   {
     "path": "/monitoring/stack/",
     "title": "Observability Stack",
-    "description": "Prometheus, Grafana, Loki, and Alertmanager setup for Breeze RMM.",
+    "description": "Set up the Breeze observability stack: Prometheus scraping, Grafana dashboards, Loki log aggregation, Alertmanager, and key metrics to watch.",
     "headings": [
       "Components",
       "Accessing Grafana",
@@ -3587,7 +3666,7 @@
   {
     "path": "/reference/access-reviews/",
     "title": "Access Reviews",
-    "description": "Conduct periodic audits of user access, role assignments, and permission levels across your organisation.",
+    "description": "Periodic audits of user role assignments at partner or organisation scope, with per-item approve or revoke decisions applied atomically.",
     "headings": [
       "Scope and Permissions",
       "Required Permissions",
@@ -3621,7 +3700,7 @@
   {
     "path": "/reference/account-deletion/",
     "title": "Account Deletion",
-    "description": "Self-service account deletion requests, the 30-day grace period, and the administrator review queue.",
+    "description": "Self-service account deletion requests with password and MFA verification, a 30-day grace period, and an administrator review queue.",
     "headings": [
       "Requesting deletion (user)",
       "Reviewing requests (administrator)",
@@ -3637,7 +3716,7 @@
   {
     "path": "/reference/api-keys/",
     "title": "API Keys & Enrollment Keys",
-    "description": "Generate and manage API keys for programmatic access and enrollment keys for agent onboarding.",
+    "description": "Generate and manage organization-scoped API keys for integration surfaces like the MCP server, plus enrollment keys for onboarding Breeze agents.",
     "headings": [
       "API Keys",
       "Key Format",
@@ -3684,7 +3763,7 @@
   {
     "path": "/reference/api/",
     "title": "API Overview",
-    "description": "REST API reference for Breeze RMM.",
+    "description": "REST API reference for Breeze RMM: authentication, devices, organizations, alerts, scripts, automations, patching, and role-based permissions.",
     "headings": [
       "Base URL",
       "Authentication",
@@ -3795,7 +3874,7 @@
   {
     "path": "/reference/filters-and-search/",
     "title": "Filters & Search",
-    "description": "Save reusable device filters and search across your fleet with full-text queries and advanced filtering.",
+    "description": "Saved device filters with nested AND/OR conditions across dozens of fields, plus global search over devices, scripts, alerts, and settings.",
     "headings": [
       "Overview",
       "Saved Filters",
@@ -3902,7 +3981,7 @@
   {
     "path": "/reference/partner-management/",
     "title": "Partner Management",
-    "description": "Partner self-registration, multi-tenant partner hierarchy, feature flag controls, and partner administration.",
+    "description": "Partner self-registration, the multi-tenant partner hierarchy, organization and user administration, and feature flag environment variables.",
     "headings": [
       "Partner Hierarchy",
       "Partner Types",
@@ -3953,7 +4032,7 @@
   {
     "path": "/reference/schema/",
     "title": "Database Schema",
-    "description": "Key database tables and their relationships in Breeze RMM.",
+    "description": "Key database tables and relationships in Breeze RMM, including the devices table, agent token hashes, watchdog state, and mTLS certificate columns.",
     "headings": [
       "Schema Location",
       "Core Tables",
@@ -3969,7 +4048,7 @@
   {
     "path": "/reference/sso/",
     "title": "Single Sign-On (SSO)",
-    "description": "Configure OIDC and SAML identity providers for organization-level single sign-on in Breeze RMM.",
+    "description": "Configure OIDC and SAML identity providers for organization SSO in Breeze RMM: attribute mapping, provisioning, enforcement, and partner-wide login.",
     "headings": [
       "Key Concepts",
       "Supported Providers",
@@ -3998,6 +4077,7 @@
       "Identity-First Sign-In (No Auto-Provisioning)",
       "Enforcement on the Login Page",
       "Password Reset and SSO Enforcement",
+      "Satisfying Breeze MFA with your IdP",
       "Login Page Branding",
       "Linking Your SSO Identity",
       "Database Schema",
@@ -4027,7 +4107,7 @@
   {
     "path": "/reference/troubleshooting/",
     "title": "Troubleshooting",
-    "description": "Common issues and solutions for Breeze RMM deployments.",
+    "description": "Fixes for common Breeze RMM deployment issues, including missing env vars, release manifest trust anchor errors, TLS provisioning, and migrations.",
     "headings": [
       "Deployment Issues",
       "Deploy script fails with \"Missing required env var\"",
@@ -4061,7 +4141,7 @@
   {
     "path": "/reference/users-and-roles/",
     "title": "Users & Roles",
-    "description": "Manage user accounts, role-based access control, permissions, MFA, and SSO for your Breeze organisation.",
+    "description": "Multi-tenant user management with role-based access control, granular resource permissions, MFA, and SSO for partner and organisation scopes.",
     "headings": [
       "Overview",
       "User Management",
@@ -4131,7 +4211,7 @@
   {
     "path": "/security/backup/",
     "title": "Backup & Restore",
-    "description": "Backup and restore procedures for Breeze RMM deployments.",
+    "description": "Back up and restore Breeze RMM deployments: database dumps, object storage, encrypted configuration, cron scheduling, retention, and offsite copies.",
     "headings": [
       "What Gets Backed Up",
       "Prerequisites",
@@ -4147,7 +4227,7 @@
   {
     "path": "/security/error-tracking/",
     "title": "Error Tracking & Privacy",
-    "description": "Optional Sentry integration for the API and web app, what's collected, and how to disable.",
+    "description": "Optional Sentry integration for the Breeze API and web app: what data is sent, how to enable or disable it, and how to customize PII scrubbing.",
     "headings": [
       "What gets sent",
       "API (`SENTRY_DSN`)",
@@ -4162,7 +4242,7 @@
   {
     "path": "/security/hardening/",
     "title": "Security Hardening",
-    "description": "Production security checklist and hardening guide for Breeze RMM.",
+    "description": "Production security checklist for Breeze RMM covering secrets, TLS, firewall rules, container security, audit logging, and rate limiting.",
     "headings": [
       "Production Security Checklist",
       "Secrets & Encryption",
@@ -4183,7 +4263,7 @@
   {
     "path": "/security/mtls/",
     "title": "Cloudflare mTLS",
-    "description": "Enable mutual TLS client certificates for zero-trust agent authentication.",
+    "description": "Enable Cloudflare mutual TLS for zero-trust agent authentication: setup, edge assertion contract, certificate lifecycle, and device quarantine.",
     "headings": [
       "How It Works",
       "Setup",
@@ -4249,6 +4329,8 @@
       "A1 — Availability",
       "C1 — Confidentiality",
       "Vulnerability Disclosure",
+      "Reporting a vulnerability to us",
+      "Staying informed (self-hosted operators)",
       "Security Controls Summary"
     ],
     "section": "security"
@@ -4256,7 +4338,7 @@
   {
     "path": "/security/pam/",
     "title": "Privileged Access Management Security Model",
-    "description": "Trust boundaries, elevation primitives, the dormant-admin pattern, separation of duties, and the audit guarantees behind Breeze just-in-time elevation -- for security teams evaluating PAM.",
+    "description": "Trust boundaries, elevation primitives, the dormant-admin pattern, and the audit guarantees behind Breeze just-in-time elevation, for security teams.",
     "headings": [
       "What PAM is for",
       "Trust boundaries",
@@ -4277,7 +4359,7 @@
   {
     "path": "/security/secrets/",
     "title": "Secret Rotation",
-    "description": "How to rotate secrets and encryption keys in Breeze RMM.",
+    "description": "Rotation schedules and step-by-step procedures for Breeze RMM secrets, including the JWT secret, encryption keys, peppers, and database credentials.",
     "headings": [
       "Rotation Schedule",
       "Rotating JWT Secret",

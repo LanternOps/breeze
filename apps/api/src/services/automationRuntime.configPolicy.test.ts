@@ -1,5 +1,34 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+const {
+  resolveOwnedAutomationReferencesMock,
+  seedActionResultsMock,
+  recordActionDispatchMock,
+  reconcileRunMock,
+  createSoftwareDeploymentMock,
+  isDeviceSoftwareCurrentMock,
+} = vi.hoisted(() => ({
+  resolveOwnedAutomationReferencesMock: vi.fn(),
+  seedActionResultsMock: vi.fn(),
+  recordActionDispatchMock: vi.fn(),
+  reconcileRunMock: vi.fn(),
+  createSoftwareDeploymentMock: vi.fn(),
+  isDeviceSoftwareCurrentMock: vi.fn(),
+}));
+
+vi.mock('./automationActionResults', () => ({
+  seedAutomationActionResults: seedActionResultsMock,
+  recordAutomationActionDispatch: recordActionDispatchMock,
+  reconcileAutomationRun: reconcileRunMock,
+}));
+
+vi.mock('./automationReferenceAuthorization', () => ({
+  AutomationReferenceAuthorizationError: class AutomationReferenceAuthorizationError extends Error {
+    readonly code = 'unknown_or_unauthorized_reference';
+  },
+  resolveOwnedAutomationReferences: resolveOwnedAutomationReferencesMock,
+}));
+
 // Mock DB and dependencies before importing
 vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn) => fn()),
@@ -9,14 +38,18 @@ vi.mock('../db', () => ({
     select: vi.fn(),
     insert: vi.fn(),
     update: vi.fn(),
+    transaction: vi.fn(),
   },
 }));
 
 vi.mock('../db/schema', () => ({
   automationRuns: { id: 'id', automationId: 'automationId', status: 'status' },
+  automationRunDeviceResults: { runId: 'runId', deviceId: 'deviceId' },
   configPolicyAutomations: { featureLinkId: 'featureLinkId' },
   configPolicyFeatureLinks: { id: 'id', configPolicyId: 'configPolicyId' },
-  configurationPolicies: { id: 'id', orgId: 'orgId' },
+  configurationPolicies: { id: 'id', orgId: 'orgId', partnerId: 'partnerId' },
+  organizations: { id: 'id', partnerId: 'partnerId', type: 'type' },
+  automationResourceBindings: { automationId: 'automationId' },
   devices: { id: 'id', hostname: 'hostname', osType: 'osType', status: 'status' },
   scripts: { id: 'id', deletedAt: 'deletedAt' },
   notificationChannels: { id: 'id', orgId: 'orgId' },
@@ -39,6 +72,25 @@ vi.mock('./scriptDispatch', () => ({
   dispatchScriptToDevice: vi.fn().mockResolvedValue({ ok: false, code: 'insert_failed', error: 'mocked' }),
 }));
 
+vi.mock('./softwareDeployment', () => ({
+  createSoftwareDeployment: createSoftwareDeploymentMock,
+}));
+
+vi.mock('./softwareCurrency', () => ({
+  isDeviceSoftwareCurrent: isDeviceSoftwareCurrentMock,
+  latestVersionsFromResolvedAutomationReferences: vi.fn((references: any) => {
+    const latest = new Map();
+    for (const [catalogId, version] of references.softwareVersionsByCatalogId) {
+      latest.set(catalogId, {
+        version,
+        catalogName: references.softwareCatalogsById.get(catalogId)?.name ?? catalogId,
+      });
+    }
+    return latest;
+  }),
+  resolveLatestVersionsByCatalogId: vi.fn().mockResolvedValue(new Map()),
+}));
+
 // #3409 PR3 P2: spied so the per-run call COUNT is assertable. The resolver's
 // own behaviour is covered in tenantVariableResolution.test.ts.
 vi.mock('./tenantVariableResolution', () => ({
@@ -52,10 +104,42 @@ vi.mock('./notificationSenders', () => ({
 }));
 
 import { db } from '../db';
-import { createConfigPolicyAutomationRun, executeConfigPolicyAutomationRun } from './automationRuntime';
+import {
+  createConfigPolicyAutomationRun,
+  executeAutomationRun,
+  executeConfigPolicyAutomationRun,
+} from './automationRuntime';
 import { dispatchScriptToDevice } from './scriptDispatch';
 import { publishEvent } from './eventBus';
 import { loadTenantVariableScope } from './tenantVariableResolution';
+
+function emptyResolvedReferences() {
+  return {
+    scriptsById: new Map(),
+    softwareCatalogsById: new Map(),
+    softwareVersionsByCatalogId: new Map(),
+    notificationChannelsById: new Map(),
+  };
+}
+
+function installTransactionMock() {
+  const tx = {
+    ...db,
+    select: vi.fn((selection?: Record<string, unknown>) => {
+      if (selection && Object.keys(selection).join(',') === 'partnerId') {
+        return {
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ partnerId: 'partner-1' }]),
+            }),
+          }),
+        };
+      }
+      return selection ? db.select(selection as any) : db.select();
+    }),
+  };
+  vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
+}
 
 function makeConfigPolicyAutomation(overrides: Record<string, unknown> = {}): any {
   return {
@@ -80,6 +164,7 @@ function mockInsertReturning(result: unknown[]) {
   vi.mocked(db.insert).mockReturnValue({
     values: vi.fn().mockReturnValue({
       returning: vi.fn().mockResolvedValue(result),
+      onConflictDoNothing: vi.fn().mockResolvedValue(undefined),
     }),
   } as any);
 }
@@ -87,6 +172,7 @@ function mockInsertReturning(result: unknown[]) {
 function mockInsertCapturingValues(result: unknown[]) {
   const valuesMock = vi.fn().mockReturnValue({
     returning: vi.fn().mockResolvedValue(result),
+    onConflictDoNothing: vi.fn().mockResolvedValue(undefined),
   });
   vi.mocked(db.insert).mockReturnValue({
     values: valuesMock,
@@ -117,10 +203,14 @@ function mockSelectChain(result: unknown[]) {
 function mockResolveConfigPolicyId(configPolicyId: string | null) {
   vi.mocked(db.select).mockReturnValue({
     from: vi.fn().mockReturnValue({
-      where: vi.fn().mockReturnValue({
-        limit: vi.fn().mockResolvedValue(
-          configPolicyId === null ? [] : [{ configPolicyId }],
-        ),
+      innerJoin: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue(
+            configPolicyId === null
+              ? []
+              : [{ configPolicyId, orgId: 'org-1', partnerId: null }],
+          ),
+        }),
       }),
     }),
   } as any);
@@ -129,6 +219,18 @@ function mockResolveConfigPolicyId(configPolicyId: string | null) {
 describe('createConfigPolicyAutomationRun', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    installTransactionMock();
+    resolveOwnedAutomationReferencesMock.mockResolvedValue(emptyResolvedReferences());
+    seedActionResultsMock.mockResolvedValue(undefined);
+    recordActionDispatchMock.mockResolvedValue(true);
+    reconcileRunMock.mockResolvedValue(undefined);
+    isDeviceSoftwareCurrentMock.mockResolvedValue(false);
+    createSoftwareDeploymentMock.mockResolvedValue({
+      deploymentId: 'deployment-1',
+      status: 'pending',
+      dispatchedDeviceIds: [],
+      deviceResults: [],
+    });
   });
 
   it('creates a run record with automationId=null and the resolved configPolicyId', async () => {
@@ -305,13 +407,18 @@ describe('createConfigPolicyAutomationRun', () => {
 describe('executeConfigPolicyAutomationRun', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    installTransactionMock();
+    resolveOwnedAutomationReferencesMock.mockResolvedValue(emptyResolvedReferences());
+    seedActionResultsMock.mockResolvedValue(undefined);
+    recordActionDispatchMock.mockResolvedValue(true);
+    reconcileRunMock.mockResolvedValue(undefined);
   });
 
   it('throws when orgId cannot be resolved', async () => {
     // resolveConfigPolicyOrgId does a dynamic import of ../db/schema and then
     // db.select().from(...).innerJoin(...).where(...).limit(1)
-    // Mock it to return empty → orgId = null → throws
-    mockSelectChain([]);
+    // The feature link resolves, but its parent policy has no org owner.
+    mockSelectChain([{ configPolicyId: 'cp-1', orgId: null, partnerId: 'partner-1' }]);
 
     await expect(
       executeConfigPolicyAutomationRun(
@@ -341,16 +448,6 @@ describe('executeConfigPolicyAutomationRun', () => {
           }),
         } as any;
       }
-      if (selectCallCount === 2) {
-        // resolveConfigPolicyId (featureLink -> configurationPolicies.id)
-        return {
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([{ configPolicyId: "cp-1" }]),
-            }),
-          }),
-        } as any;
-      }
       // Fallback for any other selects
       return {
         from: vi.fn().mockReturnValue({
@@ -366,6 +463,7 @@ describe('executeConfigPolicyAutomationRun', () => {
     vi.mocked(db.insert).mockReturnValue({
       values: vi.fn().mockReturnValue({
         returning: vi.fn().mockResolvedValue([run]),
+        onConflictDoNothing: vi.fn().mockResolvedValue(undefined),
       }),
     } as any);
 
@@ -384,7 +482,7 @@ describe('executeConfigPolicyAutomationRun', () => {
     expect(lastSetCall.status).toBe('failed');
   });
 
-  it('returns completed when all devices succeed', async () => {
+  it('keeps the parent running after an accepted asynchronous command dispatch', async () => {
     const automation = makeConfigPolicyAutomation({
       actions: [{ type: 'execute_command', command: 'echo ok' }],
     });
@@ -405,16 +503,6 @@ describe('executeConfigPolicyAutomationRun', () => {
         } as any;
       }
       if (selectCallCount === 2) {
-        // resolveConfigPolicyId (featureLink -> configurationPolicies.id)
-        return {
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([{ configPolicyId: "cp-1" }]),
-            }),
-          }),
-        } as any;
-      }
-      if (selectCallCount === 3) {
         // Load devices
         return {
           from: vi.fn().mockReturnValue({
@@ -437,6 +525,7 @@ describe('executeConfigPolicyAutomationRun', () => {
     vi.mocked(db.insert).mockReturnValue({
       values: vi.fn().mockReturnValue({
         returning: vi.fn().mockResolvedValue([run]),
+        onConflictDoNothing: vi.fn().mockResolvedValue(undefined),
       }),
     } as any);
 
@@ -452,12 +541,21 @@ describe('executeConfigPolicyAutomationRun', () => {
     } as any);
 
     const result = await executeConfigPolicyAutomationRun(automation, ['dev-1'], 'scheduler');
-    expect(result.status).toBe('completed');
-    expect(result.devicesSucceeded).toBe(1);
+    expect(result.status).toBe('running');
+    expect(result.devicesSucceeded).toBe(0);
     expect(result.devicesFailed).toBe(0);
-    // Verify final status was persisted to DB
-    const lastSetCall = setMock.mock.calls[setMock.mock.calls.length - 1]![0];
-    expect(lastSetCall.status).toBe('completed');
+    expect(seedActionResultsMock).toHaveBeenCalledWith(expect.objectContaining({
+      runId: 'run-1',
+      device: expect.objectContaining({ id: 'dev-1' }),
+      actions: [{ actionIndex: 0, actionType: 'execute_command' }],
+    }));
+    expect(recordActionDispatchMock).toHaveBeenCalledWith(expect.objectContaining({
+      runId: 'run-1', deviceId: 'dev-1', actionIndex: 0, status: 'delivered', commandId: 'cmd-1',
+    }));
+    expect(reconcileRunMock).toHaveBeenCalledWith('run-1');
+    expect(setMock.mock.calls.map(([values]) => values)).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ completedAt: expect.anything() })]),
+    );
 
     // execute_command builds a 'raw' dispatch source — assert the mapping
     // reaching dispatchScriptToDevice: shell -> language, and provenance
@@ -477,7 +575,10 @@ describe('executeConfigPolicyAutomationRun', () => {
 
   it('returns failed when device action fails and onFailure is stop', async () => {
     const automation = makeConfigPolicyAutomation({
-      actions: [{ type: 'execute_command', command: 'echo fail' }],
+      actions: [
+        { type: 'execute_command', command: 'echo fail' },
+        { type: 'execute_command', command: 'echo must-not-run' },
+      ],
       onFailure: 'stop',
     });
 
@@ -496,16 +597,6 @@ describe('executeConfigPolicyAutomationRun', () => {
         } as any;
       }
       if (selectCallCount === 2) {
-        // resolveConfigPolicyId (featureLink -> configurationPolicies.id)
-        return {
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([{ configPolicyId: "cp-1" }]),
-            }),
-          }),
-        } as any;
-      }
-      if (selectCallCount === 3) {
         return {
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockResolvedValue([
@@ -525,6 +616,7 @@ describe('executeConfigPolicyAutomationRun', () => {
     vi.mocked(db.insert).mockReturnValue({
       values: vi.fn().mockReturnValue({
         returning: vi.fn().mockResolvedValue([run]),
+        onConflictDoNothing: vi.fn().mockResolvedValue(undefined),
       }),
     } as any);
 
@@ -541,9 +633,92 @@ describe('executeConfigPolicyAutomationRun', () => {
     const result = await executeConfigPolicyAutomationRun(automation, ['dev-1'], 'scheduler');
     expect(result.status).toBe('failed');
     expect(result.devicesFailed).toBe(1);
-    // Verify final status was persisted to DB
-    const lastSetCall = setMock.mock.calls[setMock.mock.calls.length - 1]![0];
-    expect(lastSetCall.status).toBe('failed');
+    expect(recordActionDispatchMock).toHaveBeenCalledWith(expect.objectContaining({
+      runId: 'run-1', deviceId: 'dev-1', actionIndex: 0, status: 'failed',
+    }));
+    expect(recordActionDispatchMock).toHaveBeenCalledWith(expect.objectContaining({
+      runId: 'run-1', deviceId: 'dev-1', actionIndex: 1, status: 'skipped',
+    }));
+    expect(dispatchScriptToDevice).toHaveBeenCalledTimes(1);
+    expect(reconcileRunMock).toHaveBeenCalledWith('run-1');
+  });
+
+  it('does not dispatch a later command after an earlier software refusal with stop', async () => {
+    const automation = makeConfigPolicyAutomation({
+      actions: [
+        { type: 'deploy_software', catalogId: 'catalog-1' },
+        { type: 'execute_command', command: 'echo must-not-run' },
+      ],
+      onFailure: 'stop',
+    });
+    resolveOwnedAutomationReferencesMock.mockResolvedValue({
+      ...emptyResolvedReferences(),
+      softwareCatalogsById: new Map([['catalog-1', { id: 'catalog-1', name: 'Tool' }]]),
+      softwareVersionsByCatalogId: new Map([['catalog-1', {
+        id: 'version-1', catalogId: 'catalog-1', version: '1.0.0', supportedOs: ['linux'],
+      }]]),
+    });
+
+    let selectCallCount = 0;
+    vi.mocked(db.select).mockImplementation(() => {
+      selectCallCount++;
+      if (selectCallCount === 1) {
+        return {
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([{ orgId: 'org-1' }]),
+              }),
+            }),
+          }),
+        } as any;
+      }
+      if (selectCallCount === 2) {
+        return {
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{
+              id: 'dev-1', orgId: 'org-1', hostname: 'host-1', displayName: null,
+              osType: 'linux', status: 'online',
+            }]),
+          }),
+        } as any;
+      }
+      return {
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }),
+      } as any;
+    });
+
+    const run = { id: 'run-1', automationId: null, status: 'running', logs: [] };
+    vi.mocked(db.insert).mockReturnValue({
+      values: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([run]),
+        onConflictDoNothing: vi.fn().mockResolvedValue(undefined),
+      }),
+    } as any);
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
+    } as any);
+    createSoftwareDeploymentMock.mockResolvedValue({
+      deploymentId: 'deployment-1',
+      status: 'pending',
+      dispatchedDeviceIds: [],
+      deviceResults: [{
+        deviceId: 'dev-1', deploymentResultId: 'result-1', status: 'failed',
+        deviceCommandId: null, message: 'policy denied',
+      }],
+    });
+
+    const result = await executeConfigPolicyAutomationRun(automation, ['dev-1'], 'scheduler');
+
+    expect(result.status).toBe('failed');
+    expect(dispatchScriptToDevice).not.toHaveBeenCalled();
+    expect(recordActionDispatchMock).toHaveBeenCalledWith(expect.objectContaining({
+      runId: 'run-1', deviceId: 'dev-1', actionIndex: 0, status: 'failed',
+      deploymentResultId: 'result-1',
+    }));
+    expect(recordActionDispatchMock).toHaveBeenCalledWith(expect.objectContaining({
+      runId: 'run-1', deviceId: 'dev-1', actionIndex: 1, status: 'skipped',
+    }));
   });
 
   it('returns partial when some devices fail and some succeed', async () => {
@@ -567,16 +742,6 @@ describe('executeConfigPolicyAutomationRun', () => {
         } as any;
       }
       if (selectCallCount === 2) {
-        // resolveConfigPolicyId (featureLink -> configurationPolicies.id)
-        return {
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([{ configPolicyId: "cp-1" }]),
-            }),
-          }),
-        } as any;
-      }
-      if (selectCallCount === 3) {
         return {
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockResolvedValue([
@@ -597,6 +762,7 @@ describe('executeConfigPolicyAutomationRun', () => {
     vi.mocked(db.insert).mockReturnValue({
       values: vi.fn().mockReturnValue({
         returning: vi.fn().mockResolvedValue([run]),
+        onConflictDoNothing: vi.fn().mockResolvedValue(undefined),
       }),
     } as any);
 
@@ -615,12 +781,9 @@ describe('executeConfigPolicyAutomationRun', () => {
     });
 
     const result = await executeConfigPolicyAutomationRun(automation, ['dev-1', 'dev-2'], 'scheduler');
-    expect(result.status).toBe('partial');
-    expect(result.devicesSucceeded).toBe(1);
-    expect(result.devicesFailed).toBe(1);
-    // Verify final status was persisted to DB
-    const lastSetCall = setMock.mock.calls[setMock.mock.calls.length - 1]![0];
-    expect(lastSetCall.status).toBe('partial');
+    expect(result.status).toBe('running');
+    expect(result.devicesSucceeded).toBe(0);
+    expect(result.devicesFailed).toBe(0);
   });
 
   // #3409 PR3 P2 — the N-connection trap. Before the hoist,
@@ -654,6 +817,10 @@ describe('executeConfigPolicyAutomationRun', () => {
     const scriptRows = [
       { id: 'script-1', orgId: null, osTypes: ['linux'], runAs: 'system', content: 'curl {{var.repo_url}}', language: 'bash', timeoutSeconds: 60 },
     ];
+    resolveOwnedAutomationReferencesMock.mockResolvedValue({
+      ...emptyResolvedReferences(),
+      scriptsById: new Map(scriptRows.map((script) => [script.id, script])),
+    });
 
     let selectCallCount = 0;
     vi.mocked(db.select).mockImplementation(() => {
@@ -671,16 +838,6 @@ describe('executeConfigPolicyAutomationRun', () => {
         } as any;
       }
       if (selectCallCount === 2) {
-        // resolveConfigPolicyId (featureLink -> configurationPolicies.id)
-        return {
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([{ configPolicyId: 'cp-1' }]),
-            }),
-          }),
-        } as any;
-      }
-      if (selectCallCount === 3) {
         return {
           from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(deviceRows) }),
         } as any;
@@ -697,7 +854,10 @@ describe('executeConfigPolicyAutomationRun', () => {
 
     const run = { id: 'run-1', automationId: null, status: 'running', logs: [] };
     vi.mocked(db.insert).mockReturnValue({
-      values: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([run]) }),
+      values: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([run]),
+        onConflictDoNothing: vi.fn().mockResolvedValue(undefined),
+      }),
     } as any);
     vi.mocked(db.update).mockReturnValue({
       set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
@@ -713,7 +873,7 @@ describe('executeConfigPolicyAutomationRun', () => {
       'scheduler',
     );
 
-    expect(result.devicesSucceeded).toBe(4);
+    expect(result.devicesSucceeded).toBe(0);
     expect(dispatchScriptToDevice).toHaveBeenCalledTimes(4);
 
     // The assertion this test exists for.
@@ -726,7 +886,7 @@ describe('executeConfigPolicyAutomationRun', () => {
     }
   });
 
-  it('publishes automation.completed event on success', async () => {
+  it('delegates terminal publication to reconciliation after accepted dispatch', async () => {
     const automation = makeConfigPolicyAutomation({
       actions: [{ type: 'execute_command', command: 'echo ok' }],
     });
@@ -746,16 +906,6 @@ describe('executeConfigPolicyAutomationRun', () => {
         } as any;
       }
       if (selectCallCount === 2) {
-        // resolveConfigPolicyId (featureLink -> configurationPolicies.id)
-        return {
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([{ configPolicyId: "cp-1" }]),
-            }),
-          }),
-        } as any;
-      }
-      if (selectCallCount === 3) {
         return {
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockResolvedValue([
@@ -775,6 +925,7 @@ describe('executeConfigPolicyAutomationRun', () => {
     vi.mocked(db.insert).mockReturnValue({
       values: vi.fn().mockReturnValue({
         returning: vi.fn().mockResolvedValue([run]),
+        onConflictDoNothing: vi.fn().mockResolvedValue(undefined),
       }),
     } as any);
 
@@ -790,18 +941,11 @@ describe('executeConfigPolicyAutomationRun', () => {
 
     await executeConfigPolicyAutomationRun(automation, ['dev-1'], 'scheduler');
 
-    expect(publishEvent).toHaveBeenCalledWith(
-      'automation.completed',
-      'org-1',
-      expect.objectContaining({
-        configPolicyAutomationId: 'cpa-1',
-        status: 'completed',
-      }),
-      'automation-runtime'
-    );
+    expect(publishEvent).not.toHaveBeenCalled();
+    expect(reconcileRunMock).toHaveBeenCalledWith('run-1');
   });
 
-  it('publishes automation.failed event on failure', async () => {
+  it('delegates refusal terminal publication to reconciliation', async () => {
     const automation = makeConfigPolicyAutomation({
       actions: [{ type: 'execute_command', command: 'echo fail' }],
     });
@@ -821,16 +965,6 @@ describe('executeConfigPolicyAutomationRun', () => {
         } as any;
       }
       if (selectCallCount === 2) {
-        // resolveConfigPolicyId (featureLink -> configurationPolicies.id)
-        return {
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([{ configPolicyId: "cp-1" }]),
-            }),
-          }),
-        } as any;
-      }
-      if (selectCallCount === 3) {
         return {
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockResolvedValue([
@@ -850,6 +984,7 @@ describe('executeConfigPolicyAutomationRun', () => {
     vi.mocked(db.insert).mockReturnValue({
       values: vi.fn().mockReturnValue({
         returning: vi.fn().mockResolvedValue([run]),
+        onConflictDoNothing: vi.fn().mockResolvedValue(undefined),
       }),
     } as any);
 
@@ -865,15 +1000,8 @@ describe('executeConfigPolicyAutomationRun', () => {
 
     await executeConfigPolicyAutomationRun(automation, ['dev-1'], 'scheduler');
 
-    expect(publishEvent).toHaveBeenCalledWith(
-      'automation.failed',
-      'org-1',
-      expect.objectContaining({
-        configPolicyAutomationId: 'cpa-1',
-        status: 'failed',
-      }),
-      'automation-runtime'
-    );
+    expect(publishEvent).not.toHaveBeenCalled();
+    expect(reconcileRunMock).toHaveBeenCalledWith('run-1');
   });
 
   it('handles zero target devices gracefully', async () => {
@@ -895,16 +1023,6 @@ describe('executeConfigPolicyAutomationRun', () => {
           }),
         } as any;
       }
-      if (selectCallCount === 2) {
-        // resolveConfigPolicyId (featureLink -> configurationPolicies.id)
-        return {
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([{ configPolicyId: "cp-1" }]),
-            }),
-          }),
-        } as any;
-      }
       return {
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockResolvedValue([]),
@@ -916,6 +1034,7 @@ describe('executeConfigPolicyAutomationRun', () => {
     vi.mocked(db.insert).mockReturnValue({
       values: vi.fn().mockReturnValue({
         returning: vi.fn().mockResolvedValue([run]),
+        onConflictDoNothing: vi.fn().mockResolvedValue(undefined),
       }),
     } as any);
 
@@ -928,12 +1047,10 @@ describe('executeConfigPolicyAutomationRun', () => {
     expect(result.status).toBe('completed');
     expect(result.devicesSucceeded).toBe(0);
     expect(result.devicesFailed).toBe(0);
-    // Verify final status was persisted to DB
-    const lastSetCall = setMock.mock.calls[setMock.mock.calls.length - 1]![0];
-    expect(lastSetCall.status).toBe('completed');
+    expect(reconcileRunMock).toHaveBeenCalledWith('run-1');
   });
 
-  it('propagates error when publishEvent rejects', async () => {
+  it('propagates reconciliation publication failures', async () => {
     const automation = makeConfigPolicyAutomation({
       actions: [{ type: 'execute_command', command: 'echo ok' }],
     });
@@ -953,16 +1070,6 @@ describe('executeConfigPolicyAutomationRun', () => {
         } as any;
       }
       if (selectCallCount === 2) {
-        // resolveConfigPolicyId (featureLink -> configurationPolicies.id)
-        return {
-          from: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([{ configPolicyId: "cp-1" }]),
-            }),
-          }),
-        } as any;
-      }
-      if (selectCallCount === 3) {
         return {
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockResolvedValue([
@@ -982,6 +1089,7 @@ describe('executeConfigPolicyAutomationRun', () => {
     vi.mocked(db.insert).mockReturnValue({
       values: vi.fn().mockReturnValue({
         returning: vi.fn().mockResolvedValue([run]),
+        onConflictDoNothing: vi.fn().mockResolvedValue(undefined),
       }),
     } as any);
 
@@ -995,10 +1103,98 @@ describe('executeConfigPolicyAutomationRun', () => {
       ok: true, commandId: 'cmd-1', executionId: null, delivered: true, executedAt: new Date(),
     } as any);
 
-    vi.mocked(publishEvent).mockRejectedValue(new Error('Redis down'));
+    reconcileRunMock.mockRejectedValueOnce(new Error('Redis down'));
 
     await expect(
       executeConfigPolicyAutomationRun(automation, ['dev-1'], 'scheduler')
     ).rejects.toThrow('Redis down');
+  });
+});
+
+describe('executeAutomationRun durable dispatch', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    installTransactionMock();
+    resolveOwnedAutomationReferencesMock.mockResolvedValue(emptyResolvedReferences());
+    seedActionResultsMock.mockResolvedValue(undefined);
+    recordActionDispatchMock.mockResolvedValue(true);
+    reconcileRunMock.mockResolvedValue(undefined);
+  });
+
+  it('seeds ordinary-run actions and leaves accepted raw dispatch nonterminal', async () => {
+    const run = {
+      id: 'run-ordinary',
+      automationId: 'auto-ordinary',
+      status: 'running',
+      triggeredBy: 'scheduler',
+      logs: [],
+    };
+    const automation = {
+      id: 'auto-ordinary',
+      orgId: 'org-1',
+      partnerId: null,
+      name: 'Ordinary automation',
+      trigger: { type: 'manual' },
+      conditions: null,
+      actions: [{ type: 'execute_command', command: 'echo ordinary' }],
+      onFailure: 'stop',
+      notificationTargets: null,
+      createdBy: 'user-1',
+    };
+    let selectCall = 0;
+    vi.mocked(db.select).mockImplementation(() => {
+      selectCall += 1;
+      if (selectCall === 1 || selectCall === 2) {
+        const rows = selectCall === 1 ? [run] : [automation];
+        return {
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) }),
+          }),
+        } as any;
+      }
+      if (selectCall === 3) {
+        return {
+          from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }),
+        } as any;
+      }
+      return {
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([{
+            id: 'dev-1', orgId: 'org-1', hostname: 'host-1', displayName: null,
+            osType: 'linux', status: 'online', agentId: 'agent-1', siteId: null,
+            customFields: null,
+          }]),
+        }),
+      } as any;
+    });
+    vi.mocked(db.insert).mockReturnValue({
+      values: vi.fn().mockReturnValue({
+        onConflictDoNothing: vi.fn().mockResolvedValue(undefined),
+      }),
+    } as any);
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
+    } as any);
+    vi.mocked(dispatchScriptToDevice).mockResolvedValue({
+      ok: true, commandId: 'cmd-ordinary', executionId: null, delivered: true,
+      executedAt: new Date(), ignoredParameters: [],
+    } as any);
+
+    const result = await executeAutomationRun(run.id, ['dev-1']);
+
+    expect(result).toEqual({ status: 'running', devicesSucceeded: 0, devicesFailed: 0 });
+    expect(seedActionResultsMock).toHaveBeenCalledWith(expect.objectContaining({
+      runId: run.id,
+      device: expect.objectContaining({ id: 'dev-1', orgId: 'org-1' }),
+      actions: [{ actionIndex: 0, actionType: 'execute_command' }],
+    }));
+    expect(recordActionDispatchMock).toHaveBeenCalledWith(expect.objectContaining({
+      runId: run.id,
+      deviceId: 'dev-1',
+      actionIndex: 0,
+      status: 'delivered',
+      commandId: 'cmd-ordinary',
+    }));
+    expect(reconcileRunMock).toHaveBeenCalledWith(run.id);
   });
 });

@@ -3,6 +3,7 @@ import * as dbModule from '../db';
 import { getBullMQConnection } from './redis';
 import { createInstrumentedQueue } from './bullmqQueue';
 import { syncWarrantyForDevice, syncWarrantyBatch, getDevicesNeedingWarrantySync } from './warrantySync';
+import { jobSchedule } from '../jobs/scheduleRegistry';
 
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
   const withSystem = dbModule.withSystemDbAccessContext;
@@ -78,14 +79,12 @@ async function scheduleWarrantyJobs(): Promise<void> {
     await queue.removeRepeatableByKey(job.key);
   }
 
-  // Schedule batch sync every 6 hours
+  // Every 6h at a registry-allocated slot (jobs/scheduleRegistry.ts).
   await queue.add(
     'sync-batch',
     { type: 'sync-batch' },
     {
-      repeat: {
-        every: 6 * 60 * 60 * 1000, // 6 hours
-      },
+      repeat: { pattern: jobSchedule('warranty-batch-sync') },
       removeOnComplete: { count: 10 },
       removeOnFail: { count: 50 },
     }

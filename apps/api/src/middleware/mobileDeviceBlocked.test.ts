@@ -165,7 +165,10 @@ describe('mobileDeviceBlockedMiddleware — unresolved device telemetry (#2913)'
     // not re-registered yet, plus onboarding's pre-registration calls.
     expect(res.status).toBe(200);
     expect(captureMessageMock).toHaveBeenCalledTimes(1);
-    expect(captureMessageMock.mock.calls[0]?.[3]).toMatchObject({ source: 'signed-claim' });
+    expect(captureMessageMock.mock.calls[0]?.[1]).toMatchObject({
+      eventCode: 'mobile_device_unresolved',
+      tags: { mobile_device_id_source: 'signed-claim' },
+    });
   });
 
   it('tags a header-only (legacy token) miss distinctly from a signed-claim miss', async () => {
@@ -175,7 +178,9 @@ describe('mobileDeviceBlockedMiddleware — unresolved device telemetry (#2913)'
       headers: { Authorization: 'Bearer legacy-token', [MOBILE_DEVICE_ID_HEADER]: DEVICE },
     });
 
-    expect(captureMessageMock.mock.calls[0]?.[3]).toMatchObject({ source: 'header' });
+    expect(captureMessageMock.mock.calls[0]?.[1]).toMatchObject({
+      tags: { mobile_device_id_source: 'header' },
+    });
   });
 
   it('rate limits so an unregistered fleet cannot flood Sentry', async () => {

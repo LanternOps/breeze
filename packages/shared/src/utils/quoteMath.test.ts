@@ -38,9 +38,13 @@ describe('quoteMath (shared)', () => {
   });
 
   it('rounds at the cent boundary without rounding unitPrice first', () => {
-    // 0.05 * 0.70 = 0.035 → 3.4999.. cents → floor(+0.5) = 3 → 0.03 (not 0.04).
-    expect(computeLineTotal('0.05', '0.70')).toBe('0.03');
-    expect(computeQuoteTotals([line({ quantity: '0.05', unitPrice: '0.70' })], null).subtotal).toBe('0.03');
+    // 0.05 * 0.70 = 0.035 exactly → half-up → 0.04. The product is computed in
+    // scaled-integer space, so the binary double (0.034999…) can't drag it to 0.03
+    // (review #2) — this now agrees with Postgres ROUND(quantity * unit_price, 2).
+    expect(computeLineTotal('0.05', '0.70')).toBe('0.04');
+    expect(computeQuoteTotals([line({ quantity: '0.05', unitPrice: '0.70' })], null).subtotal).toBe('0.04');
+    // 1 minute at 7.25/h: 0.02 × 7.25 = 0.145 → 0.15 (the double is just below the tie).
+    expect(computeLineTotal('0.02', '7.25')).toBe('0.15');
     // sub-cent unit prices survive: 3 * 0.335 = 1.005 → round half-up → 1.01.
     expect(computeLineTotal('3', '0.335')).toBe('1.01');
   });

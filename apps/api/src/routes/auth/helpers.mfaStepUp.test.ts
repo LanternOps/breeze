@@ -27,7 +27,12 @@ const { selectLimit, db, getRedis, rateLimiter, consumeMFAToken, decryptMfaTotpS
 
 vi.mock('../../db', () => ({
   db,
-  withSystemDbAccessContext: undefined,
+  // Passthrough, matching production's real withSystemDbAccessContext when it
+  // is nested inside an existing context. NOT `undefined`: runWithSystemDbAccess
+  // now THROWS rather than silently running the probe contextless, because that
+  // fallback degraded a security read into a zero-row read whose answer is the
+  // permissive one (see the helper's doc comment).
+  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
 }));
 
 vi.mock('../../db/schema', () => ({

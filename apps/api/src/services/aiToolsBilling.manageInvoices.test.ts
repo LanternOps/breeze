@@ -127,6 +127,25 @@ describe('manage_invoices', () => {
     expect(JSON.parse(out)).toMatchObject({ id: 'inv-1', status: 'draft' });
   });
 
+  it('assemble_from_org forwards the currencyCode override and surfaces blockedByCurrency (#3776)', async () => {
+    vi.mocked(invoiceService.assembleDraftFromOrg).mockResolvedValueOnce({
+      invoice: { id: 'inv-1', currencyCode: 'EUR' }, lines: [], stripeConnected: false,
+      blockedByCurrency: [{ currencyCode: 'USD', count: 2, amount: '40.00' }],
+    } as any);
+    const out = await getTool().handler(
+      { action: 'assemble_from_org', orgId: 'org-1', from: '2026-06-01', to: '2026-06-30', currencyCode: 'EUR' }, auth);
+    expect(invoiceService.assembleDraftFromOrg).toHaveBeenCalledWith(
+      { orgId: 'org-1', siteId: undefined, from: '2026-06-01', to: '2026-06-30', currencyCode: 'EUR' }, actor);
+    expect(JSON.parse(out).blockedByCurrency).toEqual([{ currencyCode: 'USD', count: 2, amount: '40.00' }]);
+  });
+
+  it('assemble_from_ticket forwards the currencyCode override as opts (#3776)', async () => {
+    await getTool().handler({ action: 'assemble_from_ticket', ticketId: 't-1', currencyCode: 'EUR' }, auth);
+    expect(invoiceService.assembleDraftFromTicket).toHaveBeenCalledWith('t-1', actor, { currencyCode: 'EUR' });
+    await getTool().handler({ action: 'assemble_from_ticket', ticketId: 't-1' }, auth);
+    expect(invoiceService.assembleDraftFromTicket).toHaveBeenLastCalledWith('t-1', actor, { currencyCode: undefined });
+  });
+
   it('add_contract_line resolves authoritative contract line values before calling addContractLine', async () => {
     vi.mocked(contractService.getContract).mockResolvedValueOnce({
       contract: contractRow(),
@@ -174,6 +193,8 @@ describe('manage_invoices', () => {
         taxable: true,
         catalogItemId: 'catalog-1',
         sourceId: 'contract-line-1',
+        // Durable contract lineage (#3778) — the ACTIVE-contract restamp keys on it.
+        contractId: 'contract-1',
       },
       actor,
     );
@@ -275,6 +296,36 @@ describe('manage_invoices', () => {
     );
 
     expect(JSON.parse(out)).toEqual({ error: 'Payment exceeds balance', code: 'OVERPAYMENT' });
+  });
+
+  it('preserves InvoiceServiceError.details (ALL_BLOCKED_BY_CURRENCY recovery groups) like the HTTP handler does (#3776 review #6)', async () => {
+    const blockedByCurrency = [{ currencyCode: 'EUR', count: 2, amount: '125.00' }];
+    vi.mocked(invoiceService.assembleDraftFromOrg).mockRejectedValueOnce(
+      new InvoiceServiceError('All unbilled work is in EUR', 409, 'ALL_BLOCKED_BY_CURRENCY', { blockedByCurrency }),
+    );
+
+    const out = await getTool().handler(
+      { action: 'assemble_from_org', orgId: 'org-1', from: '2026-06-01', to: '2026-06-30' },
+      auth,
+    );
+
+    expect(JSON.parse(out)).toEqual({
+      error: 'All unbilled work is in EUR',
+      code: 'ALL_BLOCKED_BY_CURRENCY',
+      details: { blockedByCurrency },
+    });
+  });
+
+  it('omits the details key entirely when the InvoiceServiceError carries none', async () => {
+    vi.mocked(invoiceService.recordPayment).mockRejectedValueOnce(
+      new InvoiceServiceError('Nope', 400, 'OVERPAYMENT'),
+    );
+    const out = await getTool().handler(
+      { action: 'record_payment', invoiceId: 'inv-1', payment: { amount: 1, method: 'card', receivedAt: '2026-07-01' } },
+      auth,
+    );
+    expect(JSON.parse(out)).toEqual({ error: 'Nope', code: 'OVERPAYMENT' });
+    expect('details' in JSON.parse(out)).toBe(false);
   });
 
   it('record_payment with an incomplete payload returns a structured VALIDATION_ERROR instead of reaching recordPayment (BUG1 sibling fix)', async () => {

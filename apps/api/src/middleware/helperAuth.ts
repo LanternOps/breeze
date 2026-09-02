@@ -148,6 +148,7 @@ export const helperAuth: MiddlewareHandler = async (c, next) => {
     orgCondition: (orgIdColumn) => eq(orgIdColumn, device.orgId),
     canAccessOrg: (orgId) => orgId === device.orgId,
     helperDeviceId: device.id,
+    helperDevicePartnerId: device.partnerId,
   };
 
   c.set('auth', syntheticAuth);

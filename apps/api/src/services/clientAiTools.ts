@@ -15,6 +15,7 @@
  */
 
 import { z } from 'zod';
+import type { AuditResult } from '@breeze/shared';
 import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import { db, withDbAccessContext, runOutsideDbContext } from '../db';
 import { aiMessages, aiToolExecutions } from '../db/schema';
@@ -621,7 +622,7 @@ function auditClientTool(
   params: {
     toolUseId: string;
     toolName: string;
-    result: 'success' | 'failure' | 'denied';
+    result: AuditResult;
     details?: Record<string, unknown>;
   },
 ): void {

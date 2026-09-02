@@ -7,12 +7,24 @@ const {
   requirePermissionMock,
   requireMfaMock,
   siteDenied,
+  guardMock,
+  pamGuardMock,
+  captureExceptionMock,
+  schedulePeripheralPolicyDeviceMock,
 } = vi.hoisted(() => ({
+  guardMock: vi.fn(),
+  pamGuardMock: vi.fn(),
+  captureExceptionMock: vi.fn(),
+  schedulePeripheralPolicyDeviceMock: vi.fn().mockResolvedValue('job-id'),
   authMiddlewareMock: vi.fn(),
   requireScopeMock: vi.fn(() => async (_c: any, next: any) => next()),
   requirePermissionMock: vi.fn(() => async (_c: any, next: any) => next()),
   requireMfaMock: vi.fn(() => async (_c: any, next: any) => next()),
   siteDenied: Symbol('SITE_ACCESS_DENIED'),
+}));
+
+vi.mock('../../jobs/peripheralJobs', () => ({
+  schedulePeripheralPolicyDevice: schedulePeripheralPolicyDeviceMock,
 }));
 
 vi.mock('../../db', () => ({
@@ -50,6 +62,27 @@ vi.mock('../../services/deviceLinkGroups', () => ({
   dissolveLinkGroupIfBelowMinimum: vi.fn(async () => false),
 }));
 
+vi.mock('../../services/sentry', () => ({
+  captureException: captureExceptionMock,
+}));
+
+// Task 13 (#3776): the locked currency guard is unit-tested on its own
+// (services/ticketMoveCurrencyGuard.test.ts); here it is a mock so the route's
+// sequencing, 409 mapping, and permission gate can be asserted in isolation.
+vi.mock('../../services/ticketMoveCurrencyGuard', async () => {
+  const actual = await vi.importActual<typeof import('../../services/ticketMoveCurrencyGuard')>(
+    '../../services/ticketMoveCurrencyGuard',
+  );
+  return { ...actual, assertTicketMoveCurrencyCompatible: guardMock };
+});
+
+vi.mock('../../services/pamDeviceMoveGuard', async () => {
+  const actual = await vi.importActual<typeof import('../../services/pamDeviceMoveGuard')>(
+    '../../services/pamDeviceMoveGuard',
+  );
+  return { ...actual, assertPamDeviceOrgMoveAllowed: pamGuardMock };
+});
+
 vi.mock('../../extensions/tenancyRegistry', () => ({
   withExtensionDeviceCascade: (core: readonly string[]) => [...core],
   withExtensionDeviceOrgDenormalized: (core: readonly string[]) => [...core],
@@ -62,9 +95,12 @@ import { writeRouteAudit } from '../../services/auditEvents';
 import { disconnectAgent } from '../agentWs';
 import { dissolveLinkGroupIfBelowMinimum } from '../../services/deviceLinkGroups';
 import { moveOrgRoutes } from './moveOrg';
+import { TicketMoveCurrencyBlockedError } from '../../services/ticketMoveCurrencyGuard';
+import { PamDeviceMoveBlockedError } from '../../services/pamDeviceMoveGuard';
 import {
   CUSTOM_ORG_REWRITE_TABLES,
   getDeviceOrgDenormalizedTables,
+  DEVICE_ORG_FK_CASCADE_TABLES,
   getDeviceOrgMoveDeleteTables,
   DEVICE_SITE_DENORMALIZED_TABLES,
 } from './core';
@@ -103,8 +139,11 @@ const SAMPLE_DEVICE = {
 function setAuth(overrides: Partial<{
   scope: 'organization' | 'partner' | 'system';
   canAccessOrg: (id: string) => boolean;
+  /** Resolved permission set requirePermission stores on the context (auth.ts). */
+  permissions: { resource: string; action: string }[];
 }> = {}) {
   authMiddlewareMock.mockImplementation((c: any, next: any) => {
+    c.set('permissions', { permissions: overrides.permissions ?? [{ resource: '*', action: '*' }] });
     c.set('auth', {
       user: { id: 'user-1', email: 't@example.com' },
       scope: overrides.scope ?? 'partner',
@@ -123,16 +162,32 @@ function setAuth(overrides: Partial<{
 //   1) to load source/target organizations (returns array of org rows)
 //   2) to look up the target site (returns array with one site row)
 // Each call to .from(...).where(...) returns a thenable resolving to an array.
+// Org rows of the CURRENT test, shared with the in-transaction org SHARE
+// barrier (#3778): readOrgStampingDefaultsMany locks both orgs ascending by id
+// before anything else in the move transaction, and the currency guard now
+// compares those locked values rather than the pre-transaction read.
+let currentOrgRows: Array<{ id: string; partnerId: string; name?: string; currencyCode?: string }> = [];
+/** Org ids that exist in the PRE-transaction read but are gone by the time the
+ *  in-transaction SHARE barrier locks them (#3778 finding 7): an org deleted
+ *  between the two reads. readOrgStampingDefaultsMany omits such ids from its
+ *  map by design, so the route must guard instead of `!`-asserting. */
+let barrierMissingOrgIds = new Set<string>();
+
 function rigOrgAndSiteSelects(opts: {
-  orgRows: Array<{ id: string; partnerId: string }>;
+  orgRows: Array<{ id: string; partnerId: string; name?: string; currencyCode?: string }>;
   siteRow: { id: string } | null;
 }) {
+  currentOrgRows = opts.orgRows;
   let call = 0;
   vi.mocked(db.select).mockImplementation(() => {
     const idx = call++;
     if (idx === 0) {
-      // organizations lookup uses `.from(organizations).where(...)` (no limit)
-      const where = vi.fn().mockResolvedValue(opts.orgRows);
+      // organizations lookup uses `.from(organizations).where(...)` (no limit).
+      // Orgs default to USD/USD so the currency guard short-circuits unless a
+      // test sets them apart.
+      const where = vi.fn().mockResolvedValue(
+        opts.orgRows.map((r) => ({ name: `Org ${r.id.slice(0, 4)}`, currencyCode: 'USD', ...r })),
+      );
       return { from: vi.fn().mockReturnValue({ where }) } as never;
     }
     // sites lookup uses `.from(sites).where(...).limit(1)`
@@ -162,7 +217,12 @@ function sqlToText(q: any): string {
     .join('');
 }
 
-function rigTransactionSuccess(updatedRow: any = { ...SAMPLE_DEVICE, orgId: TARGET_ORG, siteId: TARGET_SITE }) {
+const BOUND_TICKET_ID = '77777777-7777-4777-8777-777777777777';
+
+function rigTransactionSuccess(
+  updatedRow: any = { ...SAMPLE_DEVICE, orgId: TARGET_ORG, siteId: TARGET_SITE },
+  deviceUpdateError?: unknown,
+) {
   // Each tx.execute() call captures the identifier name being UPDATEd (the
   // second chunk in our `UPDATE ${sql.identifier(table)} SET org_id = ...`
   // template — Drizzle exposes it as queryChunks[1].value) plus the full
@@ -170,18 +230,24 @@ function rigTransactionSuccess(updatedRow: any = { ...SAMPLE_DEVICE, orgId: TARG
   const updatedTables: string[] = [];
   const statements: string[] = [];
   const deviceUpdateSets: any[] = [];
+  let barrierReads = 0;
 
   vi.mocked(db.transaction).mockImplementation(async (cb: any) => {
     const tx = {
-      update: vi.fn().mockReturnValue({
+      update: vi.fn().mockImplementation(() => {
+        statements.push('UPDATE devices');
+        return {
         set: vi.fn().mockImplementation((vals: any) => {
           deviceUpdateSets.push(vals);
           return {
             where: vi.fn().mockReturnValue({
-              returning: vi.fn().mockResolvedValue([updatedRow]),
+              returning: vi.fn().mockImplementation(() => deviceUpdateError
+                ? Promise.reject(deviceUpdateError)
+                : Promise.resolve([updatedRow])),
             }),
           };
         }),
+        };
       }),
       execute: vi.fn().mockImplementation(async (sqlVal: any) => {
         const tableChunk = sqlVal?.queryChunks?.[1];
@@ -191,6 +257,31 @@ function rigTransactionSuccess(updatedRow: any = { ...SAMPLE_DEVICE, orgId: TARG
         statements.push(sqlToText(sqlVal));
         return [];
       }),
+      // #3776 — the ticket-id lookup feeding the currency guard
+      // (`tx.select({id}).from(tickets).where(deviceId = …)`). Records the
+      // position so lock-order assertions can place it against the UPDATEs.
+      select: vi.fn().mockImplementation(() => ({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockImplementation(() => ({
+            // Awaited directly => the ticket-id lookup feeding the currency guard.
+            then: (res: any, rej: any) => {
+              statements.push(`SELECT tickets.id (after ${updatedTables.length} updates)`);
+              return Promise.resolve([{ id: BOUND_TICKET_ID }]).then(res, rej);
+            },
+            // `.limit(1).for('share')` => the org SHARE barrier (#3778), served
+            // in ascending-id order from this test's org rows.
+            limit: vi.fn(() => ({
+              for: vi.fn((mode: string) => {
+                statements.push(`SELECT organizations FOR ${mode} (after ${updatedTables.length} updates)`);
+                const ordered = [...currentOrgRows].sort((a, b) => a.id.localeCompare(b.id));
+                const row = ordered[barrierReads++];
+                if (!row || barrierMissingOrgIds.has(row.id)) return Promise.resolve([]);
+                return Promise.resolve([{ currencyCode: row.currencyCode ?? 'USD' }]);
+              }),
+            })),
+          })),
+        }),
+      })),
     };
     await cb(tx);
     return updatedRow;
@@ -203,6 +294,11 @@ describe('POST /devices/:id/move-org', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    barrierMissingOrgIds = new Set<string>();
+    guardMock.mockReset();
+    guardMock.mockResolvedValue(null);
+    pamGuardMock.mockReset();
+    pamGuardMock.mockResolvedValue(undefined);
     setAuth();
     app = new Hono();
     app.route('/devices', moveOrgRoutes);
@@ -244,6 +340,10 @@ describe('POST /devices/:id/move-org', () => {
       expect(body.success).toBe(true);
       expect(body.device.orgId).toBe(TARGET_ORG);
       expect(body.device.siteId).toBe(TARGET_SITE);
+      expect(schedulePeripheralPolicyDeviceMock).toHaveBeenCalledWith(
+        DEVICE_ID,
+        'device_org_changed',
+      );
 
       // devices.set() must include both orgId and siteId flips, and MUST
       // unlink the device from any multi-boot group (#2138) — the composite
@@ -277,10 +377,17 @@ describe('POST /devices/:id/move-org', () => {
       // last and any table in DEVICE_SITE_DENORMALIZED_TABLES appears in
       // updatedTables a second time for the site_id rewrite.
       expect(updatedTables).toEqual([
-        ...getDeviceOrgDenormalizedTables(),
+        ...getDeviceOrgDenormalizedTables().filter(
+          (table) => !DEVICE_ORG_FK_CASCADE_TABLES.includes(table as never),
+        ),
         ...getDeviceOrgMoveDeleteTables(),
         ...CUSTOM_ORG_REWRITE_TABLES,
         ...DEVICE_SITE_DENORMALIZED_TABLES,
+      ]);
+      expect(getDeviceOrgDenormalizedTables()).toContain('agent_health_observations');
+      expect(DEVICE_ORG_FK_CASCADE_TABLES).toEqual([
+        'agent_health_observations',
+        'software_inventory_observations',
       ]);
 
       expect(statements).toContain(
@@ -358,6 +465,86 @@ describe('POST /devices/:id/move-org', () => {
         `UPDATE ticket_alert_links SET org_id = ${TARGET_ORG}::uuid ` +
           `WHERE alert_id IN (SELECT id FROM alerts WHERE device_id = ${DEVICE_ID}::uuid)`,
       ]);
+    });
+
+    it('rewrites ticket_attachments org_id via the tickets join inside the transaction (W08)', async () => {
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
+      rigOrgAndSiteSelects({
+        orgRows: [
+          { id: SOURCE_ORG, partnerId: 'partner-1' },
+          { id: TARGET_ORG, partnerId: 'partner-1' },
+        ],
+        siteRow: { id: TARGET_SITE },
+      });
+      const { statements } = rigTransactionSuccess();
+
+      const res = await app.request(`/devices/${DEVICE_ID}/move-org`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE }),
+      });
+      expect(res.status).toBe(200);
+
+      const rewrites = statements.filter((s) => s.startsWith('UPDATE ticket_attachments '));
+      expect(
+        rewrites,
+        `Expected exactly one ticket_attachments org_id rewrite.\nStatements:\n${statements.join('\n')}`,
+      ).toEqual([
+        `UPDATE ticket_attachments SET org_id = ${TARGET_ORG}::uuid ` +
+          `WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${DEVICE_ID}::uuid)`,
+      ]);
+      // Lock order: attachments must come AFTER ticket_parts in this path so
+      // the device-move and ticket-move paths agree (moveOrg.ts:~311).
+      const idx = (t: string) => statements.findIndex((s) => s.startsWith(`UPDATE ${t} `));
+      expect(idx('ticket_parts')).toBeLessThan(idx('ticket_attachments'));
+    });
+
+    it('detaches ai_agent_runs.ticket_id via the tickets join, before tickets are re-stamped (#4215)', async () => {
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
+      rigOrgAndSiteSelects({
+        orgRows: [
+          { id: SOURCE_ORG, partnerId: 'partner-1' },
+          { id: TARGET_ORG, partnerId: 'partner-1' },
+        ],
+        siteRow: { id: TARGET_SITE },
+      });
+      const { statements } = rigTransactionSuccess();
+
+      const res = await app.request(`/devices/${DEVICE_ID}/move-org`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE }),
+      });
+      expect(res.status).toBe(200);
+
+      // Agent-run history stays with the SOURCE org, so every FK pointing at a
+      // row that moves WITH the device must be severed. `ticket_id` is
+      // unreachable from the device-keyed detach: ticket-triggered runs carry
+      // a ticket_id with a NULL device_id, so they need their own statement
+      // keyed off the ticket's device_id.
+      const collapse = (s: string) => s.replace(/\s+/g, ' ').trim();
+      const runDetaches = statements
+        .filter((s) => s.startsWith('UPDATE ai_agent_runs '))
+        .map(collapse);
+      expect(
+        runDetaches,
+        `Expected the device-keyed run detach plus the ticket-keyed one.\nStatements:\n${statements.join('\n')}`,
+      ).toEqual([
+        'UPDATE ai_agent_runs SET device_id = NULL, alert_id = NULL, session_id = NULL, ' +
+          `anomaly_incident_id = NULL WHERE device_id = ${DEVICE_ID}::uuid`,
+        'UPDATE ai_agent_runs SET ticket_id = NULL ' +
+          `WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${DEVICE_ID}::uuid)`,
+      ]);
+
+      // The subselect resolves tickets by device_id, which the move never
+      // rewrites — but run it BEFORE the generic loop re-stamps tickets.org_id
+      // so both sides of the statement are still read under the SOURCE org,
+      // matching the metric_anomaly_incidents reverse-pointer ordering.
+      const detachIdx = statements.findIndex((s) => s.startsWith('UPDATE ai_agent_runs SET ticket_id'));
+      const ticketsIdx = statements.findIndex((s) => s.startsWith('UPDATE tickets '));
+      expect(detachIdx).toBeGreaterThanOrEqual(0);
+      expect(ticketsIdx).toBeGreaterThanOrEqual(0);
+      expect(detachIdx).toBeLessThan(ticketsIdx);
     });
 
     it('rewrites time_entries org_id via the ticket join inside the transaction', async () => {
@@ -452,6 +639,264 @@ describe('POST /devices/:id/move-org', () => {
 
       // No WS disconnect on failure (device never actually moved)
       expect(disconnectAgent).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('PAM ownership move guard', () => {
+    const postMove = () => app.request(`/devices/${DEVICE_ID}/move-org`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE }),
+    });
+
+    function rigMove() {
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
+      rigOrgAndSiteSelects({
+        orgRows: [
+          { id: SOURCE_ORG, partnerId: 'partner-1' },
+          { id: TARGET_ORG, partnerId: 'partner-1' },
+        ],
+        siteRow: { id: TARGET_SITE },
+      });
+    }
+
+    it('runs after both organization SHARE locks and before the device update', async () => {
+      rigMove();
+      const { statements } = rigTransactionSuccess();
+      pamGuardMock.mockImplementation(async () => {
+        statements.push('PAM guard');
+      });
+
+      const response = await postMove();
+
+      expect(response.status).toBe(200);
+      expect(statements.slice(0, 4)).toEqual([
+        'SELECT organizations FOR share (after 0 updates)',
+        'SELECT organizations FOR share (after 0 updates)',
+        'PAM guard',
+        'UPDATE devices',
+      ]);
+      expect(pamGuardMock).toHaveBeenCalledWith(expect.anything(), {
+        deviceId: DEVICE_ID,
+        sourceOrgId: SOURCE_ORG,
+      });
+    });
+
+    it('returns a stable 409 for the typed preflight conflict and records only its stable code', async () => {
+      rigMove();
+      rigTransactionSuccess();
+      pamGuardMock.mockRejectedValue(new PamDeviceMoveBlockedError());
+
+      const response = await postMove();
+
+      expect(response.status).toBe(409);
+      expect(await response.json()).toEqual({
+        error: 'Device organization move is blocked because durable PAM lifecycle evidence exists',
+        code: 'PAM_DEVICE_MOVE_BLOCKED',
+      });
+      expect(captureExceptionMock).not.toHaveBeenCalled();
+      expect(disconnectAgent).not.toHaveBeenCalled();
+      expect(schedulePeripheralPolicyDeviceMock).not.toHaveBeenCalled();
+      expect(writeRouteAudit).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(writeRouteAudit).mock.calls[0]![1]).toMatchObject({
+        orgId: SOURCE_ORG,
+        action: 'device.move_org.failed',
+        details: { code: 'PAM_DEVICE_MOVE_BLOCKED' },
+      });
+    });
+
+    it('maps only the exact database trigger race to the stable 409', async () => {
+      rigMove();
+      rigTransactionSuccess(undefined, Object.assign(new Error('guard race'), {
+        code: '23514',
+        constraint_name: 'devices_pam_history_move_guard',
+      }));
+
+      const response = await postMove();
+
+      expect(response.status).toBe(409);
+      expect(await response.json()).toEqual({
+        error: 'Device organization move is blocked because durable PAM lifecycle evidence exists',
+        code: 'PAM_DEVICE_MOVE_BLOCKED',
+      });
+      expect(captureExceptionMock).not.toHaveBeenCalled();
+      expect(disconnectAgent).not.toHaveBeenCalled();
+      expect(schedulePeripheralPolicyDeviceMock).not.toHaveBeenCalled();
+    });
+
+    it('keeps unrelated 23514 errors on the generic failure path', async () => {
+      rigMove();
+      const unrelated = Object.assign(new Error('other check'), {
+        code: '23514',
+        constraint_name: 'some_other_constraint',
+      });
+      rigTransactionSuccess(undefined, unrelated);
+
+      const response = await postMove();
+
+      expect(response.status).toBe(500);
+      expect(await response.json()).toEqual({ error: 'Failed to move device between organizations' });
+      expect(captureExceptionMock).toHaveBeenCalledWith(unrelated, expect.anything());
+      expect(disconnectAgent).not.toHaveBeenCalled();
+      expect(schedulePeripheralPolicyDeviceMock).not.toHaveBeenCalled();
+    });
+  });
+
+  // ── Multi-currency guard (#3776, Task 13) ────────────────────────────────
+  describe('ticket currency guard', () => {
+    const postBody = (extra: Record<string, unknown> = {}) => ({
+      method: 'POST',
+      headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE, ...extra }),
+    });
+    const crossCurrencyOrgs = [
+      { id: SOURCE_ORG, partnerId: 'partner-1', name: 'Alpha', currencyCode: 'USD' },
+      { id: TARGET_ORG, partnerId: 'partner-1', name: 'Beta', currencyCode: 'EUR' },
+    ];
+
+    it('runs the guard over the device\'s tickets after the tickets UPDATE and before the time_entries rewrite', async () => {
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
+      rigOrgAndSiteSelects({ orgRows: crossCurrencyOrgs, siteRow: { id: TARGET_SITE } });
+      const { statements, updatedTables } = rigTransactionSuccess();
+      guardMock.mockResolvedValue({ sourceCurrency: 'USD', targetCurrency: 'EUR', unbilledTimeEntries: 0, unbilledParts: 0, accepted: false });
+
+      const res = await app.request(`/devices/${DEVICE_ID}/move-org`, postBody());
+      expect(res.status).toBe(200);
+
+      expect(guardMock).toHaveBeenCalledTimes(1);
+      expect(guardMock.mock.calls[0]![1]).toEqual({
+        ticketIds: [BOUND_TICKET_ID],
+        sourceCurrency: 'USD',
+        targetCurrency: 'EUR',
+        targetOrgName: 'Beta',
+        acceptCurrencyMismatch: false,
+      });
+
+      // Lock order: `tickets` is rewritten by the denormalized loop BEFORE the
+      // guard's ticket lookup, and the time_entries/ticket_parts rewrites come
+      // AFTER it (tickets → time_entries → ticket_parts).
+      const selectIdx = statements.findIndex((s) => s.startsWith('SELECT tickets.id'));
+      const ticketsUpdateIdx = statements.findIndex((s) => s.startsWith('UPDATE tickets '));
+      const timeEntriesIdx = statements.findIndex((s) => s.startsWith('UPDATE time_entries '));
+      const partsIdx = statements.findIndex((s) => s.startsWith('UPDATE ticket_parts '));
+      expect(ticketsUpdateIdx).toBeGreaterThanOrEqual(0);
+      expect(ticketsUpdateIdx).toBeLessThan(selectIdx);
+      expect(selectIdx).toBeLessThan(timeEntriesIdx);
+      expect(timeEntriesIdx).toBeLessThan(partsIdx);
+      expect(updatedTables).toContain('tickets');
+
+      // Not accepted → no audit flag.
+      const sourceAudit = vi.mocked(writeRouteAudit).mock.calls.find((c) => (c[1] as any).action === 'device.move_org.source')![1] as any;
+      expect(sourceAudit.details).not.toHaveProperty('currencyMismatchAccepted');
+    });
+
+    it('409s with code + details when the guard blocks — no Sentry capture, no failed-move audit, no WS disconnect', async () => {
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
+      rigOrgAndSiteSelects({ orgRows: crossCurrencyOrgs, siteRow: { id: TARGET_SITE } });
+      rigTransactionSuccess();
+      const details = { sourceCurrency: 'USD', targetCurrency: 'EUR', unbilledTimeEntries: 0, unbilledParts: 1, accepted: false, blockedByCurrency: [{ currencyCode: 'USD', timeEntries: 0, parts: 1 }] };
+      guardMock.mockRejectedValue(new TicketMoveCurrencyBlockedError('Cannot move: stranded money', details));
+
+      const res = await app.request(`/devices/${DEVICE_ID}/move-org`, postBody());
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({
+        error: 'Cannot move: stranded money',
+        code: 'TICKET_MOVE_CURRENCY_BLOCKED',
+        details,
+      });
+      expect(captureExceptionMock).not.toHaveBeenCalled();
+      expect(writeRouteAudit).not.toHaveBeenCalled();
+      expect(disconnectAgent).not.toHaveBeenCalled();
+    });
+
+    it('403s acceptCurrencyMismatch:true without invoices:write before touching the DB', async () => {
+      setAuth({ permissions: [{ resource: 'devices', action: 'write' }, { resource: 'organizations', action: 'write' }] });
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
+
+      const res = await app.request(`/devices/${DEVICE_ID}/move-org`, postBody({ acceptCurrencyMismatch: true }));
+      expect(res.status).toBe(403);
+      expect((await res.json()).error).toMatch(/invoices:write/);
+      expect(db.select).not.toHaveBeenCalled();
+      expect(db.transaction).not.toHaveBeenCalled();
+      expect(guardMock).not.toHaveBeenCalled();
+    });
+
+    it('acceptCurrencyMismatch:false never needs invoices:write', async () => {
+      setAuth({ permissions: [{ resource: 'devices', action: 'write' }, { resource: 'organizations', action: 'write' }] });
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
+      rigOrgAndSiteSelects({ orgRows: crossCurrencyOrgs, siteRow: { id: TARGET_SITE } });
+      rigTransactionSuccess();
+
+      const res = await app.request(`/devices/${DEVICE_ID}/move-org`, postBody({ acceptCurrencyMismatch: false }));
+      expect(res.status).toBe(200);
+      expect(guardMock.mock.calls[0]![1]).toMatchObject({ acceptCurrencyMismatch: false });
+    });
+
+    it('with invoices:write, acceptCurrencyMismatch:true reaches the guard and the accepted counts land in both audit rows', async () => {
+      setAuth({ permissions: [
+        { resource: 'devices', action: 'write' },
+        { resource: 'organizations', action: 'write' },
+        { resource: 'invoices', action: 'write' },
+      ] });
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
+      rigOrgAndSiteSelects({ orgRows: crossCurrencyOrgs, siteRow: { id: TARGET_SITE } });
+      rigTransactionSuccess();
+      const accepted = { sourceCurrency: 'USD', targetCurrency: 'EUR', unbilledTimeEntries: 2, unbilledParts: 1, accepted: true };
+      guardMock.mockResolvedValue(accepted);
+
+      const res = await app.request(`/devices/${DEVICE_ID}/move-org`, postBody({ acceptCurrencyMismatch: true }));
+      expect(res.status).toBe(200);
+      expect(guardMock.mock.calls[0]![1]).toMatchObject({ acceptCurrencyMismatch: true });
+
+      expect(writeRouteAudit).toHaveBeenCalledTimes(2);
+      for (const call of vi.mocked(writeRouteAudit).mock.calls) {
+        expect((call[1] as any).details).toMatchObject({ currencyMismatchAccepted: accepted });
+      }
+    });
+
+    it('400s a non-boolean acceptCurrencyMismatch', async () => {
+      const res = await app.request(`/devices/${DEVICE_ID}/move-org`, postBody({ acceptCurrencyMismatch: 'yes' }));
+      expect(res.status).toBe(400);
+    });
+  });
+
+  describe('org vanished at the in-transaction SHARE barrier (#3778 finding 7)', () => {
+    const postBody = () => ({
+      method: 'POST',
+      headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE }),
+    });
+    const orgRows = [
+      { id: SOURCE_ORG, partnerId: 'partner-1', name: 'Alpha' },
+      { id: TARGET_ORG, partnerId: 'partner-1', name: 'Beta' },
+    ];
+
+    it('404s "Target organization not found" instead of a TypeError 500', async () => {
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
+      rigOrgAndSiteSelects({ orgRows, siteRow: { id: TARGET_SITE } });
+      rigTransactionSuccess();
+      barrierMissingOrgIds.add(TARGET_ORG);
+
+      const res = await app.request(`/devices/${DEVICE_ID}/move-org`, postBody());
+      expect(res.status).toBe(404);
+      expect(await res.json()).toEqual({ error: 'Target organization not found' });
+      // A row deleted under us is not an exception: no Sentry, and the move
+      // rolled back so the guard must never have run.
+      expect(captureExceptionMock).not.toHaveBeenCalled();
+      expect(guardMock).not.toHaveBeenCalled();
+      expect(disconnectAgent).not.toHaveBeenCalled();
+    });
+
+    it('500s "Source organization not found" (mirrors the pre-transaction check)', async () => {
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
+      rigOrgAndSiteSelects({ orgRows, siteRow: { id: TARGET_SITE } });
+      rigTransactionSuccess();
+      barrierMissingOrgIds.add(SOURCE_ORG);
+
+      const res = await app.request(`/devices/${DEVICE_ID}/move-org`, postBody());
+      expect(res.status).toBe(500);
+      expect(await res.json()).toEqual({ error: 'Source organization not found' });
+      expect(guardMock).not.toHaveBeenCalled();
     });
   });
 

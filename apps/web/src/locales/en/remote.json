@@ -246,6 +246,7 @@
       "copy": "Failed to copy",
       "delete": "Failed to delete",
       "download": "Failed to download",
+      "downloadTooLarge": "Too large to download ({{size}}). The file browser transfers files up to {{max}}.",
       "loadDirectory": "Failed to load directory",
       "move": "Failed to move",
       "readFile": "Failed to read file",
@@ -442,7 +443,7 @@
     "title": "Title"
   },
   "remoteTerminal": {
-    "connectedBang": "Connected Bang",
+    "connectedBang": "Connected!",
     "connectingTo": "Connecting to {{hostname}}...",
     "copySelection": "Copy Selection",
     "disconnect": "Disconnect",

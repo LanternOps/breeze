@@ -1,10 +1,17 @@
-import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'crypto';
+import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes } from 'crypto';
 
 const ENCRYPTED_V1_PREFIX = 'enc:v1:';
 const ENCRYPTED_V2_PREFIX = 'enc:v2:';
 const ENCRYPTED_V3_PREFIX = 'enc:v3:';
 const ENCRYPTION_ALGORITHM = 'aes-256-gcm';
 const KEY_ID_PATTERN = /^[A-Za-z0-9._-]+$/;
+
+export class SecretKeyMaterialError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SecretKeyMaterialError';
+  }
+}
 
 export interface SecretCryptoOptions {
   /**
@@ -35,6 +42,26 @@ export interface SecretCryptoOptions {
    * Has no effect when `aad` is unset (v2/v1 still decrypts as before).
    */
   strict?: boolean;
+}
+
+interface SecretEncryptionKeyMaterial {
+  keyId: string | null;
+  key: Buffer;
+}
+
+interface SecretEncryptionKeyMaterials {
+  active: SecretEncryptionKeyMaterial;
+  retained: SecretEncryptionKeyMaterial[];
+}
+
+export interface SecretDerivedKeyMaterial {
+  keyId: string | null;
+  key: Buffer;
+}
+
+export interface SecretDerivedKeyMaterials {
+  active: SecretDerivedKeyMaterial;
+  retained: SecretDerivedKeyMaterial[];
 }
 
 let cachedEncryptionKey: Buffer | null = null;
@@ -98,7 +125,7 @@ function getEncryptionKey(): Buffer {
         'Set APP_ENCRYPTION_KEY to a dedicated random value. See .env.example for details.'
       );
     }
-    throw new Error(
+    throw new SecretKeyMaterialError(
       'Missing APP_ENCRYPTION_KEY for secret encryption in production. ' +
       'Set APP_ENCRYPTION_KEY (or SSO_ENCRYPTION_KEY/SECRET_ENCRYPTION_KEY) in your environment.'
     );
@@ -116,6 +143,14 @@ function getEncryptionKey(): Buffer {
 
   cachedEncryptionKey = deriveEncryptionKey(keySource);
   return cachedEncryptionKey;
+}
+
+export function hmacFingerprint(value: string): string {
+  const activeKeyId = getActiveKeyId();
+  const key = activeKeyId ? getV2EncryptionKey(activeKeyId) : getEncryptionKey();
+  const hex = createHmac('sha256', key).update(value).digest('hex');
+  // Fingerprints are comparable only within one encryption-key generation.
+  return `fp1:${activeKeyId ?? 'legacy'}:${hex}`;
 }
 
 function getActiveKeyId(): string | null {
@@ -191,7 +226,44 @@ function getV2EncryptionKey(keyId: string): Buffer {
     }
   }
 
-  throw new Error('Unknown encrypted secret key ID');
+  throw new SecretKeyMaterialError('Unknown encrypted secret key ID');
+}
+
+/** Assemble copy-isolated master material for the public derivation boundary. */
+function getSecretEncryptionKeyMaterials(): SecretEncryptionKeyMaterials {
+  const activeKeyId = getActiveKeyId();
+  const activeKey = activeKeyId ? getV2EncryptionKey(activeKeyId) : getEncryptionKey();
+  const retained: SecretEncryptionKeyMaterial[] = [...getEncryptionKeyring().entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([keyId, key]) => ({ keyId, key: Buffer.from(key) }));
+
+  if (!retained.some(({ keyId }) => keyId === activeKeyId)) {
+    retained.push({ keyId: activeKeyId, key: Buffer.from(activeKey) });
+  }
+
+  return {
+    active: { keyId: activeKeyId, key: Buffer.from(activeKey) },
+    retained,
+  };
+}
+
+/**
+ * Derive service-scoped HMAC keys without exposing encryption-at-rest keys.
+ * Different domains are cryptographically independent namespaces.
+ */
+export function getSecretDerivedKeyMaterials(domain: string): SecretDerivedKeyMaterials {
+  if (!domain) throw new Error('Secret derived-key domain is required');
+  const materials = getSecretEncryptionKeyMaterials();
+  const derive = ({ keyId, key }: SecretEncryptionKeyMaterial): SecretDerivedKeyMaterial => ({
+    keyId,
+    key: createHmac('sha256', key)
+      .update(`breeze-secret-derived-key:v1\0${domain}`)
+      .digest(),
+  });
+  return {
+    active: derive(materials.active),
+    retained: materials.retained.map(derive),
+  };
 }
 
 function parseEncryptedPayload(encoded: string): {
@@ -403,7 +475,7 @@ export function decryptSecret(
     // decrypt with empty AAD which doesn't match what we encrypted with. We
     // fail closed instead of trying empty AAD.
     if (!options.aad) {
-      throw new Error('AAD is required to decrypt v3 secrets');
+      throw new SecretKeyMaterialError('AAD is required to decrypt v3 secrets');
     }
     return decryptWithKey(payload, getV2EncryptionKey(keyId), Buffer.from(options.aad, 'utf8'));
   }

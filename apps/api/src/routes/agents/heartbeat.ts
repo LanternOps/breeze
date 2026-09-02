@@ -1,12 +1,15 @@
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { zValidator } from '../../lib/validation';
-import { and, desc, eq, notInArray } from 'drizzle-orm';
-import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
+import { and, eq, notInArray } from 'drizzle-orm';
+import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../../db';
+import {
+  maybeDispatchEditionMigration,
+  shouldConsiderEditionMigration,
+} from '../../services/agentEditionAutoMigrate';
 import {
   devices,
   deviceMetrics,
-  agentVersions,
   agentLogs,
   onedriveDeviceState,
 } from '../../db/schema';
@@ -28,6 +31,7 @@ import {
   buildPatchSourceConfigUpdate,
   getOrgAgentUpdateConfig,
   resolvePinnedUpgradeTarget,
+  agentAcceptsServedEdition,
   type AgentVersionPins,
   type OnedriveConfigUpdate,
   type HelperSettings,
@@ -36,7 +40,7 @@ import { shouldSendAgentUpgrade } from './agentUpdatePolicy';
 import { processDeviceIPHistoryUpdate } from '../../services/deviceIpHistory';
 import { claimPendingCommandsForDevice } from '../../services/commandDispatch';
 import { publishEvent } from '../../services/eventBus';
-import { isAgentTokenRotationDue } from '../../middleware/agentAuth';
+import { DRAIN_CLAIM_TYPE_ALLOWLIST, isAgentTokenRotationDue } from '../../middleware/agentAuth';
 import type { AgentAuthContext } from '../../middleware/agentAuth';
 import { captureException } from '../../services/sentry';
 import { resolveRemoteAccessForDevice } from '../../services/remoteAccessPolicy';
@@ -47,8 +51,15 @@ import {
   type ManifestKeyDelegation,
 } from '../../services/manifestSigning';
 import { decryptClaimedCommandsForDelivery } from '../../services/commandDelivery';
+import { normalizeReportedScriptSecretEnvVersion } from '../../services/scriptSecretDelivery';
 import { redactSecretsDeep } from '../../services/secretRedaction';
 import { recordAgentHeartbeat, resolveResponseStatus } from '../metrics';
+import { ingestRollbackObservation } from '../../services/agentRollbackResult';
+import {
+  editionWithheldDetail,
+  type EditionWithheldContext as SharedEditionWithheldContext,
+} from '../../services/agentEditionCompat';
+import { recordAgentHealthObservation } from '../../services/agentHealthObservations';
 
 /**
  * #1121 — pure collapse detector for the watchdogState tolerance gap.
@@ -70,6 +81,87 @@ export function detectWatchdogStateCollapse(
       ? rawState.slice(0, 100)
       : JSON.stringify(rawState)?.slice(0, 100);
   return { field: 'watchdogState', rawValue };
+}
+
+// #4072 — one withhold warn per device per process. The edition gate fires on
+// every heartbeat of an affected device (~60s apart) for as long as it stays
+// on an incompatible build, so an undeduped warn is log spam at fleet scale.
+// Uncapped Set, deliberately: growth is bounded by the count of affected
+// devices (each entry is one device id), unlike the per-beat watchdog restart
+// cache that needs eviction.
+// The entry is REMOVED when the device accepts again (heartbeat main branch),
+// so a later regression to an incompatible build re-warns instead of being
+// permanently consumed by the first episode.
+const warnedEditionWithheldDevices = new Set<string>();
+// Separate dedupe for the far more severe failover-recovery withhold (device
+// stuck OFFLINE, not idling) — its error must not be suppressed by an earlier
+// routine offer-withhold warn for the same device.
+const warnedEditionRecoveryWithheldDevices = new Set<string>();
+// One aggregate Sentry event per process for routine offer withholds. Console
+// lines rotate out of droplet docker logs; this is the same "invisible
+// fleet-wide freeze must reach Sentry" bar the pin-miss path documents.
+let editionWithheldCaptured = false;
+
+export function __resetEditionWithheldWarnCacheForTests(): void {
+  warnedEditionWithheldDevices.clear();
+  warnedEditionRecoveryWithheldDevices.clear();
+  editionWithheldCaptured = false;
+}
+
+// The withhold explanation is shared with the DISPATCH gate (#4093) so both
+// doors describe the same condition in the same words. Imported straight from
+// the leaf module rather than through `./helpers` (which suites mock) so the
+// real text is always what an operator reads.
+type EditionWithheldContext = SharedEditionWithheldContext & { deviceId: string };
+
+// Dedupe entries are keyed per (device, reporting role): the main-agent and
+// watchdog branches gate on DIFFERENT binaries' capabilities, and a device
+// whose two verdicts persistently disagree (e.g. main agent pre-band, watchdog
+// inside it) must not have the watchdog's warn re-added by every failover beat
+// and deleted by every main beat — that would defeat the dedupe entirely.
+function warnEditionOfferWithheld(args: EditionWithheldContext & { role: 'agent' | 'watchdog' }): void {
+  const key = `${args.deviceId}:${args.role}`;
+  if (warnedEditionWithheldDevices.has(key)) return;
+  warnedEditionWithheldDevices.add(key);
+  console.warn(
+    `[agents] update offers withheld for device ${args.deviceId} (${args.role} path, #4072): ` +
+      `${editionWithheldDetail(args)} The device idles on its current version.`,
+  );
+  if (!editionWithheldCaptured) {
+    editionWithheldCaptured = true;
+    captureException(
+      new Error(
+        `Update offers withheld by the artifact-edition gate (#4072) for at least one device ` +
+          `(first: ${args.deviceId}). Affected devices idle on their current version until ` +
+          `recovered; see per-device [agents] warns for details.`,
+      ),
+    );
+  }
+}
+
+// Failover-branch variant: the binary-replacement recovery (#1104) is the
+// fallback for a wedged main-agent BINARY, so withholding it can leave the
+// device down if the watchdog's restart-based recovery is also failing.
+// Error level + per-device Sentry, deduped; the entry is cleared by any live
+// main-agent beat (proof of recovery), so a later wedge alerts again.
+// Wording stays hedged like editionWithheldDetail: the gate establishes
+// non-confirmation, not a certain refusal.
+function warnEditionRecoveryWithheld(args: EditionWithheldContext): void {
+  if (warnedEditionRecoveryWithheldDevices.has(args.deviceId)) return;
+  warnedEditionRecoveryWithheldDevices.add(args.deviceId);
+  console.error(
+    `[agents] agent RECOVERY withheld for device ${args.deviceId} (#4072): the main agent is ` +
+      `silent and the watchdog's binary-replacement recovery path is being withheld because ` +
+      `${editionWithheldDetail(args)} If the watchdog's restart-based recovery also fails, ` +
+      `this device may stay down until manually recovered.`,
+  );
+  captureException(
+    new Error(
+      `Agent recovery withheld by the artifact-edition gate for device ${args.deviceId} ` +
+        `(#4072): main agent silent, watchdog cannot be confirmed to accept the served ` +
+        `artifact edition. Manual recovery may be required.`,
+    ),
+  );
 }
 
 const WATCHDOG_RESTART_LOG_INTERVAL_MS = 60 * 60 * 1000;
@@ -133,6 +225,21 @@ export function watchdogRestartLogCacheSizeForTests(): number {
   return watchdogRestartLogCache.size;
 }
 
+/** Normalize the only peripheral-policy protocol version implemented here. */
+export function normalizePeripheralPolicyProtocolVersion(value: unknown): 0 | 2 {
+  return value === 2 ? 2 : 0;
+}
+
+/** Normalize the only signed rollback protocol version implemented here. */
+export function normalizeRollbackProtocolVersion(value: unknown): 0 | 1 {
+  return value === 1 ? 1 : 0;
+}
+
+/** Normalize the only PAM lifetime protocol version implemented here. */
+export function normalizePamLifetimeProtocolVersion(value: unknown): 0 | 2 {
+  return value === 2 ? 2 : 0;
+}
+
 export const heartbeatRoutes = new Hono();
 
 /**
@@ -181,6 +288,69 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
 
   if (!agent?.deviceId) {
     return c.json({ error: 'Agent context not found' }, 401);
+  }
+
+  // #3986 Layer 4 — MINIMAL DRAIN BEAT.
+  //
+  // The device has been REMOVED and is only still authenticated so it can
+  // collect its own `self_uninstall` (middleware/agentAuth.ts). Being on the
+  // drain route allowlist is not the same as being harmless: the normal
+  // heartbeat path below still ingests metrics into device_metrics, updates IP
+  // history, CREATES threshold filesystem-analysis commands, upserts OneDrive
+  // state and writes audit events — and its RESPONSE still carries configUpdate
+  // (event-log/monitoring/PAM/patch-source/OneDrive/policy-probe settings),
+  // agent + helper + watchdog upgrade targets, manifest trust keys and key
+  // delegations, renewCert, and rotateToken/confirmTokenRotation. The Go agent
+  // ACTS on every one of those (agent/internal/heartbeat), so a removed machine
+  // would keep being configured, upgraded and re-keyed for the whole drain
+  // window while the operator sees it as gone.
+  //
+  // So: claim and return the uninstall, nothing else. No device write either —
+  // which is what keeps the device correctly showing as Removed (no lastSeenAt
+  // bump, no status flip back to 'online', no state-change audit).
+  //
+  // Keyed on `deviceUninstallDraining`, NOT on `tenantDraining`: an offboarding
+  // tenant's machines are still live, still owned by a paying customer until
+  // the window closes, and #2774 deliberately keeps serving them a normal beat.
+  //
+  // `data.role` mismatch is intentionally NOT re-checked here (the normal path
+  // 401s `re_enrollment_required` on it). A stale pre-#568 watchdog binary
+  // presenting the MAIN agent token would be told to re-enrol instead of being
+  // handed the uninstall — turning a cosmetic version skew into an undeliverable
+  // uninstall. Only agent-role credentials reach this branch anyway (Layer 1b).
+  //
+  // KNOWN, ACCEPTED SIDE EFFECT of omitting the payload — do not "fix" it by
+  // re-adding the fields this branch exists to withhold. Two response fields
+  // are plain `bool` on the Go side (not pointers), so their ABSENCE decodes as
+  // `false` rather than "unchanged":
+  //   - `helperEnabled`          -> handleHelperEnabled(false) turns the helper flag off
+  //   - `manageRemoteManagement` -> SetManagedByPolicy(false) clears the tunnel policy flag
+  // Both therefore flip off on every beat for the whole drain window.
+  // (`uacInterceptionEnabled` is a `*bool` and handles absence correctly.)
+  // Bounded and self-correcting: these are in-memory flags on a machine that is
+  // being uninstalled, and a restore ends the drain, after which the next
+  // NORMAL heartbeat carries both fields again and restores them.
+  if (agent.deviceUninstallDraining) {
+    // Own DB context: this route is self-managed-context (agentAuth opens no
+    // request-long wrap for `heartbeat`), and the claim must not run
+    // contextless. System scope, matching the command-poll route — the claim
+    // writes `device_commands`, which is intentionally RLS-free.
+    const drainCommands = await runOutsideDbContext(() =>
+      withSystemDbAccessContext(async () => {
+        const claimed = await claimPendingCommandsForDevice(
+          agent.deviceId,
+          10,
+          'agent',
+          // Fail closed: the middleware always populates this while draining,
+          // but an `undefined` reaching claimPendingCommandsForDevice means
+          // UNRESTRICTED. Fall back to the shared constant, never to undefined.
+          agent.claimTypeAllowlist ?? DRAIN_CLAIM_TYPE_ALLOWLIST,
+        );
+        return decryptClaimedCommandsForDelivery(claimed);
+      }),
+    );
+
+    return c.json({ commands: drainCommands });
   }
 
   // #1121 — observability for the #1065 tolerance trade-off. watchdogState is
@@ -411,12 +581,48 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     // Claim watchdog-targeted commands (marks as sent to prevent duplicate delivery).
     // #2774 — during an offboarding drain the claim narrows to self_uninstall
     // (targetRole 'agent' only carries it, so the watchdog claims nothing).
+    // #3986 — the narrowing is now derived once on the agent context; passing
+    // `undefined` here means unrestricted, so read the context value rather
+    // than restating the ternary. A watchdog credential can only ever reach
+    // this line via a TENANT drain: a device-remove drain admits `role==='agent'`
+    // only (middleware/agentAuth.ts Layer 1b).
     const watchdogCommands = await claimPendingCommandsForDevice(
       device.id,
       10,
       'watchdog',
-      agent?.tenantDraining ? ['self_uninstall'] : undefined
+      agent?.claimTypeAllowlist
     );
+
+    // #4072 — in FAILOVER the WATCHDOG is the binary that downloads (its own
+    // self-update and the doUpdateAgent recovery path both run its updater),
+    // so the edition gate keys on the watchdog's payload: data.agentVersion
+    // is the watchdog's version here, and new watchdog builds report their
+    // edition. A watchdog build that would refuse the served artifact edition
+    // after download must not be offered it — the refusal just re-arms every
+    // failover beat.
+    //
+    // A SILENT watchdog is NOT evidence of a self-host build the way a silent
+    // main agent is: watchdog edition reporting first ships alongside this
+    // gate, so every watchdog in the field today is silent — including the
+    // hosted fleet's, whose recovery path (#1104) must not be withheld. Fall
+    // back to the device row's agentEdition, written unconditionally from
+    // every MAIN-agent beat: agent and watchdog install and upgrade from the
+    // same lane, so the main agent's build edition identifies the watchdog's.
+    // If both are silent (the stranded pre-telemetry band), the version-band
+    // inference inside the predicate takes over. Known imprecision: a device
+    // whose main agent already reports 'self-host' (transition-capable) but
+    // whose watchdog is still an older self-host build gets a hosted offer
+    // its watchdog refuses — failover-only, self-heals once the watchdog
+    // catches up via the main branch.
+    // Hoisted so the warn calls below print the value that actually DECIDED
+    // (the fallback included) — logging the silent payload as "none" when the
+    // stored edition drove the withhold would steer the operator to the wrong
+    // remediation.
+    const effectiveWatchdogEdition = data.agentEdition ?? device.agentEdition;
+    const watchdogAcceptsServedEdition = agentAcceptsServedEdition({
+      reportedEdition: effectiveWatchdogEdition,
+      agentVersion: data.agentVersion,
+    });
 
     // Check for watchdog upgrade. Honors the tenant's watchdog pin (issue
     // #2124) via the same resolver as the main path; fail-closed to no upgrade
@@ -436,13 +642,20 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
           agentId,
         });
 
-        if (targetWatchdog) {
+        if (targetWatchdog && watchdogAcceptsServedEdition) {
           if (!data.agentVersion.startsWith('dev-')) {
             const cmp = compareAgentVersions(targetWatchdog, data.agentVersion);
             if (cmp > 0) {
               watchdogUpgradeTo = targetWatchdog;
             }
           }
+        } else if (targetWatchdog) {
+          warnEditionOfferWithheld({
+            deviceId: device.id,
+            role: 'watchdog',
+            reportedEdition: effectiveWatchdogEdition,
+            agentVersion: data.agentVersion,
+          });
         }
       } catch (err) {
         console.error(`[agents] failed to evaluate watchdog upgrade target for ${agentId}:`, err);
@@ -462,7 +675,34 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     if (
       mainAgentSilent &&
       normalizedArch &&
+      device.agentVersion &&
+      !device.agentVersion.startsWith('dev-') &&
+      !watchdogAcceptsServedEdition
+    ) {
+      // #4072 — the ONLY recovery path for this wedged main agent is being
+      // withheld by the edition gate. That leaves the device DOWN, so it must
+      // be loudly observable — not folded into the routine withhold warn
+      // (which may have fired weeks earlier from the upgrade branch, or never,
+      // when no watchdog target resolves).
+      warnEditionRecoveryWithheld({
+        deviceId: device.id,
+        reportedEdition: effectiveWatchdogEdition,
+        agentVersion: data.agentVersion,
+      });
+    } else if (watchdogAcceptsServedEdition) {
+      // Residual re-arm path (manual watchdog reinstall while the main agent
+      // stays silent). The PRIMARY re-arm is any live main-agent beat — see
+      // the main branch — because a main-agent beat both proves recovery and
+      // is what refreshes lastSeenAt, ending mainAgentSilent.
+      warnedEditionRecoveryWithheldDevices.delete(device.id);
+    }
+    if (
+      mainAgentSilent &&
+      normalizedArch &&
       pinsResolved &&
+      // #4072 — the watchdog downloads the recovery binary, so ITS edition
+      // capability gates this offer (not the wedged main agent's).
+      watchdogAcceptsServedEdition &&
       device.agentVersion &&
       !device.agentVersion.startsWith('dev-')
     ) {
@@ -489,8 +729,17 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     // #2414 — decrypt just-in-time; a command whose payload fails decryption is
     // released back to `pending` (not stranded as `sent`) while its siblings
     // still deliver.
+    //
+    // #3409 PR4c-2 — hand the gate the capability THIS beat reported rather
+    // than letting it re-read the column: the watchdog branch returns before
+    // the device update at all, so the stored value here is always from an
+    // earlier beat.
     return c.json({
-      commands: await decryptClaimedCommandsForDelivery(watchdogCommands),
+      commands: await decryptClaimedCommandsForDelivery(watchdogCommands, {
+        reportedScriptSecretEnvVersion: normalizeReportedScriptSecretEnvVersion(
+          data.securityCapabilities?.scriptSecretEnvVersion,
+        ),
+      }),
       watchdogUpgradeTo,
       upgradeTo: agentUpgradeTo,
     });
@@ -518,7 +767,18 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     // beat so a downgrade is detected. PR4c re-checks this at CLAIM time too,
     // not only at enqueue, because an offline-queued command can be claimed
     // after the agent downgraded.
-    scriptSecretEnvVersion: data.securityCapabilities?.scriptSecretEnvVersion === 1 ? 1 : 0,
+    scriptSecretEnvVersion: normalizeReportedScriptSecretEnvVersion(data.securityCapabilities?.scriptSecretEnvVersion),
+    // Device-control capability claims are same-heartbeat, non-sticky truth.
+    // Never union with stored values or infer support from agentVersion.
+    peripheralPolicyProtocolVersion: normalizePeripheralPolicyProtocolVersion(
+      data.securityCapabilities?.peripheralPolicyProtocolVersion,
+    ),
+    rollbackProtocolVersion: normalizeRollbackProtocolVersion(
+      data.securityCapabilities?.rollbackProtocolVersion,
+    ),
+    pamLifetimeProtocolVersion: normalizePamLifetimeProtocolVersion(
+      data.securityCapabilities?.pamLifetimeProtocolVersion,
+    ),
     // Migration-banner Task 2 — self-reported install edition + migration
     // flag. Written UNCONDITIONALLY every heartbeat, mirroring
     // outboundNetworkPolicyVersion above: an agent that stops reporting these
@@ -564,6 +824,13 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // leaves the stored value untouched.
   if (data.backupVersion) {
     deviceUpdates.backupVersion = data.backupVersion;
+  }
+
+  // Rollback protocol v1 agents must replace this as a complete snapshot on
+  // every heartbeat. Missing inventory from a claiming agent clears prior
+  // truth so authorization fails closed instead of trusting stale components.
+  if (data.securityCapabilities?.rollbackProtocolVersion === 1) {
+    deviceUpdates.rollbackComponentVersions = data.rollbackComponentVersions ?? null;
   }
 
   // #2288 — active control-plane URL. Absent (old agent) leaves the stored
@@ -652,10 +919,17 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     deviceUpdates.batteryStatus = battery;
   }
 
-  // agentAuthMiddleware already 403s decommissioned/quarantined devices, but
-  // a decommission landing mid-request (between the auth fetch and this
-  // write) would be silently flipped back to 'online' (#2230). Mirrors
+  // agentAuthMiddleware 403s quarantined devices and every decommissioned
+  // device EXCEPT one inside the #3986 device-remove uninstall drain, but a
+  // decommission landing mid-request (between the auth fetch and this write)
+  // would be silently flipped back to 'online' (#2230). Mirrors
   // TERMINAL_DEVICE_STATUSES in routes/agentWs.ts.
+  //
+  // #3986 — this guard is now load-bearing for the drain, not just a mid-request
+  // race backstop: it is what keeps a draining removed device reading as
+  // "Removed" (0 rows matched -> no status flip, no lastSeenAt bump, no
+  // state-change audit) if it ever reaches this write. Never relax it to admit
+  // draining devices.
   //
   // `.returning` reports whether the guarded write actually took effect: a
   // terminal-status device matches 0 rows, so `updatedRows` is empty and the
@@ -884,13 +1158,40 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     }
   }
 
-  // #2774 — during an offboarding drain, the heartbeat (the primary command
-  // carrier) only delivers self_uninstall; everything else stays unclaimed.
+  // #2774 / #3986 — during a drain the heartbeat (the primary command carrier)
+  // only delivers self_uninstall; everything else stays unclaimed. The
+  // allowlist is derived ONCE in agentAuthMiddleware — `undefined` means
+  // unrestricted, so read the context value, never restate the literal.
+  //
+  // DELIVERY CONTRACT — do not move this claim inside the `updatedRows.length`
+  // guard above. That guard's UPDATE excludes terminal-status rows, so for a
+  // device in the #3986 device-remove drain (status='decommissioned') it
+  // matches ZERO rows by design: the device must keep reading as Removed in
+  // the UI, with no lastSeenAt bump and no state-change audit, while it drains.
+  // The claim is deliberately independent of that result — gating it on
+  // `updatedRows` would make the very command the drain exists to deliver
+  // permanently unclaimable, and would do so silently (a 200 with an empty
+  // `commands` array, indistinguishable from "nothing queued").
+  //
+  // Today a device-remove drain returns from the minimal branch at the top of
+  // this handler and never reaches this line; the invariant is stated here
+  // because that branch is what a future refactor is most likely to remove.
   const commands = await claimPendingCommandsForDevice(
     device.id,
     10,
     'agent',
-    agent?.tenantDraining ? ['self_uninstall'] : undefined
+    agent?.claimTypeAllowlist,
+    {
+      peripheralPolicyProtocolVersion: normalizePeripheralPolicyProtocolVersion(
+        data.securityCapabilities?.peripheralPolicyProtocolVersion,
+      ),
+      rollbackProtocolVersion: normalizeRollbackProtocolVersion(
+        data.securityCapabilities?.rollbackProtocolVersion,
+      ),
+      pamLifetimeProtocolVersion: normalizePamLifetimeProtocolVersion(
+        data.securityCapabilities?.pamLifetimeProtocolVersion,
+      ),
+    },
   );
 
   // Policy probe config (buildPolicyProbeConfigUpdate) is deliberately NOT
@@ -906,7 +1207,85 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // component bootstrap branches never do, so a first install is never gated.
   let upgradeTo: string | null = null;
   const normalizedArch = normalizeAgentArchitecture(device.architecture);
-  if (normalizedArch) {
+  // #4072 — the main agent's updater performs EVERY download on this branch
+  // (its own binary, the helper, the watchdog), and since v0.105.0 it refuses
+  // an artifact whose signed-manifest edition mismatches its build — AFTER
+  // download, retrying every heartbeat forever. Offer nothing this build
+  // would refuse; the device then idles quietly on its current version.
+  // Keyed on THIS beat's payload (not stored columns): the stored edition is
+  // one beat stale, exactly wrong on the first beat after a swap.
+  const acceptsServedEdition = agentAcceptsServedEdition({
+    reportedEdition: data.agentEdition,
+    agentVersion: data.agentVersion,
+  });
+
+  // A live main-agent beat is proof the agent is not wedged: re-arm the
+  // failover-recovery error so a LATER wedge (same process, possibly weeks
+  // on) alerts again instead of being consumed by the first episode.
+  warnedEditionRecoveryWithheldDevices.delete(device.id);
+
+  if (normalizedArch && !acceptsServedEdition) {
+    warnEditionOfferWithheld({
+      deviceId: device.id,
+      role: 'agent',
+      reportedEdition: data.agentEdition,
+      agentVersion: data.agentVersion,
+    });
+    // #4072 follow-up — automatic recovery for the stranded device behind the
+    // withhold above (default-off env flag; every precondition and the
+    // once-per-device claim live in the service). Fire-and-forget: the beat's
+    // response must not wait on script dispatch, and a dispatch failure must
+    // never fail the heartbeat. The service resolves the pin-honouring target
+    // with the SAME resolver as the offer path, so a holdback pin holds
+    // auto-migration too.
+    // The cheap non-DB gate runs FIRST so a flag-off deployment (or a
+    // non-candidate device) costs this hot path nothing beyond a few
+    // comparisons — no ALS exit, no system context, no second transaction.
+    if (
+      shouldConsiderEditionMigration({ device, normalizedArch, updateGateAllows })
+    ) {
+      // runOutsideDbContext + system context is load-bearing, not defensive:
+      // this promise is detached, and the surrounding org-scoped
+      // withDbAccessContext TRANSACTION commits when the handler returns — a
+      // detached query on the ambient context would run against the dead tx
+      // handle (same reason as the manifest-trust keyset at the top of this
+      // handler, #1105). System context is safe: everything dispatched was
+      // validated in the org-scoped block, the claim re-binds to the device's
+      // org and liveness, and dispatchScriptToDevice's org-equality invariant
+      // still applies.
+      runOutsideDbContext(() =>
+        withSystemDbAccessContext(() =>
+          maybeDispatchEditionMigration({
+            device,
+            reportedAgentVersion: data.agentVersion,
+            normalizedArch,
+            updateGateAllows,
+            pin: versionPins.agent,
+            resolveTarget: () =>
+              resolvePinnedUpgradeTarget({
+                component: 'agent',
+                platform: device.osType,
+                architecture: normalizedArch,
+                pin: versionPins.agent,
+                agentId,
+              }),
+          }),
+        ),
+        // The service catches everything itself; this catch only exists so a
+        // future regression there can never surface as an unhandled rejection
+        // on the heartbeat hot path.
+      ).catch((err) => {
+        console.error(`[agents] auto edition migration hook failed for ${agentId}:`, err);
+      });
+    }
+  } else if (acceptsServedEdition) {
+    // Re-arm THIS branch's withhold warn: if the device later regresses to an
+    // incompatible build (same process), that is a fresh episode and must log
+    // again. Only the agent-role key — the watchdog branch owns its own.
+    warnedEditionWithheldDevices.delete(`${device.id}:agent`);
+  }
+
+  if (normalizedArch && acceptsServedEdition) {
     try {
       // Resolve the effective target: the tenant's agent pin (issue #2124) when
       // set, else the globally promoted latest. Fails closed if the pinned
@@ -942,31 +1321,33 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
 
   let helperUpgradeTo: string | null = null;
   // Check for helper upgrade even if agent doesn't report a version yet
-  // (bootstraps the first install or recovers from a broken helper that never wrote status)
-  if (normalizedArch) {
+  // (bootstraps the first install or recovers from a broken helper that never
+  // wrote status). Gated on acceptsServedEdition like the agent offer above —
+  // the MAIN AGENT downloads the helper artifact, so its edition capability is
+  // what matters, and bootstrap is not exempt (the download refusal doesn't
+  // care why the download started) (#4072).
+  if (normalizedArch && acceptsServedEdition) {
     try {
-      const [latestHelper] = await db
-        .select({ version: agentVersions.version })
-        .from(agentVersions)
-        .where(
-          and(
-            eq(agentVersions.platform, device.osType),
-            eq(agentVersions.architecture, normalizedArch),
-            eq(agentVersions.component, 'helper'),
-            eq(agentVersions.isLatest, true)
-          )
-        )
-        .orderBy(desc(agentVersions.createdAt))
-        .limit(1);
+      // Global latest for the helper via the same edition-scoped resolver as
+      // the agent/watchdog channels (#4072 — replaces an inline query that
+      // was not edition-scoped). The helper channel is unpinnable, hence
+      // pin: null — which is exactly the isLatest lookup the inline query did.
+      const latestHelperVersion = await resolvePinnedUpgradeTarget({
+        component: 'helper',
+        platform: device.osType,
+        architecture: normalizedArch,
+        pin: null,
+        agentId,
+      });
 
-if (latestHelper) {
+      if (latestHelperVersion) {
         // If agent reports no helper version, always upgrade (bootstraps first install
         // or recovers from broken helper that never wrote its status file) — bootstrap
         // is NOT subject to the org update policy. Version-to-version upgrades are.
         if (!data.helperVersion) {
-          helperUpgradeTo = latestHelper.version;
-        } else if (updateGateAllows && compareAgentVersions(latestHelper.version, data.helperVersion) > 0) {
-          helperUpgradeTo = latestHelper.version;
+          helperUpgradeTo = latestHelperVersion;
+        } else if (updateGateAllows && compareAgentVersions(latestHelperVersion, data.helperVersion) > 0) {
+          helperUpgradeTo = latestHelperVersion;
         }
       }
     } catch (err) {
@@ -975,7 +1356,9 @@ if (latestHelper) {
   }
 
   let watchdogUpgradeTo: string | null = null;
-  if (normalizedArch) {
+  // acceptsServedEdition: the main agent downloads the watchdog artifact too,
+  // bootstrap included — same gate rationale as the helper block above (#4072).
+  if (normalizedArch && acceptsServedEdition) {
     try {
       // Effective watchdog target: the tenant's watchdog pin (issue #2124) when
       // set, else the globally promoted latest. Independent of the agent pin.
@@ -1159,7 +1542,17 @@ if (latestHelper) {
   // #2414 — decrypt just-in-time; a command whose payload fails decryption is
   // released back to `pending` (not stranded as `sent`) while its siblings
   // still deliver.
-  const deliverableCommands = await decryptClaimedCommandsForDelivery(commands);
+  //
+  // #3409 PR4c-2 — the secret-delivery claim gate uses the capability THIS
+  // heartbeat reported, not the stored column. The device write above carries
+  // the same value but is guarded on the device not being decommissioned/
+  // quarantined, so it can be skipped entirely; trusting the stored value
+  // could then deliver a sealed secret to an agent that just reported 0.
+  const deliverableCommands = await decryptClaimedCommandsForDelivery(commands, {
+    reportedScriptSecretEnvVersion: normalizeReportedScriptSecretEnvVersion(
+      data.securityCapabilities?.scriptSecretEnvVersion,
+    ),
+  });
 
   // Main-branch response payload — built inside the org context, but the
   // manifest-trust-keyset and policy probe config are fetched AFTER this
@@ -1192,6 +1585,57 @@ if (latestHelper) {
   // 404 / 401 / watchdog branches returned a Response directly from the scoped
   // block — pass it through.
   if (scoped instanceof Response) return scoped;
+
+  // Self-health is independent from reachability and is persisted only after
+  // the request's org-scoped transaction has released. A failed observation
+  // must never turn a valid heartbeat into an outage or roll back the device's
+  // online/last-seen update.
+  if (data.healthStatus) {
+    if (
+      data.healthStatus.deviceId !== undefined
+      && data.healthStatus.deviceId !== scoped.deviceId
+    ) {
+      const error = new Error('Agent health observation device identity mismatch');
+      console.error(
+        `[heartbeat] failed to persist health observation for agentId=${agentId}:`,
+        error,
+      );
+      captureException(error);
+    } else {
+      try {
+        await recordAgentHealthObservation({
+          device: { id: scoped.deviceId, orgId: scoped.deviceOrgId },
+          observation: data.healthStatus,
+          receivedAt: new Date(),
+        });
+      } catch (err) {
+        console.error(
+          `[heartbeat] failed to persist health observation for agentId=${agentId}:`,
+          err,
+        );
+        captureException(err);
+      }
+    }
+  }
+
+  // The device heartbeat above has committed before rollback truth is
+  // evaluated. This second short org context lets terminal `healthy` rely on
+  // persisted live agent/companion versions without holding the main
+  // heartbeat transaction or updating the parent device alongside child rows.
+  let acknowledgedRollbackObservationId: string | undefined;
+  if (data.rollbackObservation) {
+    try {
+      const result = await withDbAccessContext(dbContext, () =>
+        ingestRollbackObservation(scoped.deviceId, data.rollbackObservation!),
+      );
+      acknowledgedRollbackObservationId = result.acknowledgedObservationId ?? undefined;
+    } catch (err) {
+      // No acknowledgement means the restart-safe agent retains and resends
+      // the observation. Ordinary heartbeat delivery remains available.
+      console.error(`[heartbeat] Failed to ingest rollback observation for agentId=${agentId}:`, err);
+      captureException(err);
+    }
+  }
 
   // #1105 — the org transaction is now released. Fetch the manifest trust
   // keyset OUTSIDE it: getActiveTrustKeyset opens its own system-scoped
@@ -1412,6 +1856,7 @@ if (latestHelper) {
     uacInterceptionEnabled: pamSettings?.uacInterceptionEnabled ?? false,
     helperEnabled: helperSettings?.enabled ?? false,
     helperSettings: helperSettings ?? undefined,
+    acknowledgedRollbackObservationId,
   });
 });
 

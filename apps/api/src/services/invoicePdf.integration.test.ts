@@ -176,7 +176,14 @@ describe.runIf(RUN)('portal org guard: getCustomerInvoice / markViewed', () => {
     expect(invoice.id).toBe(f.invoiceId);
     // The seed has 3 lines, one of which is customerVisible:false (hidden bundle child).
     expect(lines).toHaveLength(2);
-    expect(lines.every((line) => Object.keys(line).sort().join(',') === 'description,lineTotal,quantity,taxable,unitPrice')).toBe(true);
+    // `name` is part of the customer line DTO since #3319 (a line with both a
+    // title and a blurb must show the customer both). This key-shape assertion
+    // still listed the pre-#3319 five and had been red ever since; it is
+    // corrected here, not relaxed — the exact key set is still pinned, and the
+    // `name` slot is asserted to be present on every line (this seed leaves it
+    // null, which is exactly the "description only" case #3319 kept working).
+    expect(lines.every((line) => Object.keys(line).sort().join(',') === 'description,lineTotal,name,quantity,taxable,unitPrice')).toBe(true);
+    expect(lines.every((line) => 'name' in line)).toBe(true);
   });
 
   it('throws 404 (not 403) when the requesting org does not own the invoice', async () => {

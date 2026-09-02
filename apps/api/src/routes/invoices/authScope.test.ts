@@ -68,5 +68,8 @@ describe('invoice routers do not leak auth onto sibling routes (#1383)', () => {
       method: 'PATCH',
     });
     expect(org.status).toBe(401);
+    // Multi-currency wave 7 (#3779): permission-free does NOT mean auth-free.
+    const totals = await app.request('/billing/reporting-totals?groups=USD:1.00&date=2026-09-03');
+    expect(totals.status).toBe(401);
   });
 });

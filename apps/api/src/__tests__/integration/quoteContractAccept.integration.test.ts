@@ -115,7 +115,7 @@ describe('quote accept → executed contract document', () => {
       db.select().from(quoteBlocks).where(eq(quoteBlocks.quoteId, quoteId)).orderBy(quoteBlocks.sortOrder));
     const lines2 = await withSystemDbAccessContext(() =>
       db.select().from(quoteLines).where(eq(quoteLines.quoteId, quoteId)).orderBy(quoteLines.sortOrder));
-    const parts = buildContractHashParts(blocks2 as any, renderData, q as any, effectiveDate);
+    const parts = buildContractHashParts(blocks2 as any, renderData, q as any, effectiveDate, q!.documentLocale ?? 'en');
     const expectedHash = computeQuoteSha256(q as any, blocks2 as any, lines2 as any, parts);
 
     const [acc] = await withSystemDbAccessContext(() =>

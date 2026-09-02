@@ -11,6 +11,7 @@ import { PERMISSIONS } from '../../services/permissions';
 import { CLIENT_AI_ENTRA_CLIENT_ID } from '../../config/env';
 import { resolveScopedOrgId } from '../c2c/helpers';
 import { getOrgPolicy } from '../../services/clientAiPolicy';
+import { isPgUniqueViolation } from '../../utils/pgErrors';
 import { putPolicySchema, putTenantMappingSchema } from './schemas';
 import { clientAiAdminOrgRoutes } from './adminOrgs';
 import { clientAiAdminSessionRoutes } from './adminSessions';
@@ -133,7 +134,7 @@ clientAiAdminRoutes.put(
     } catch (err) {
       // client_ai_tenant_mappings_tenant_uniq: the tenant is already mapped to
       // a DIFFERENT org. Deliberately opaque — do not reveal which org.
-      if ((err as { cause?: { code?: string } }).cause?.code === '23505') {
+      if (isPgUniqueViolation(err, 'client_ai_tenant_mappings_tenant_uniq')) {
         return c.json({ error: 'tenant_already_mapped' }, 409);
       }
       throw err;

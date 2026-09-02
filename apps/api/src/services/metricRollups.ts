@@ -1,7 +1,8 @@
 import { sql, type SQL } from 'drizzle-orm';
 
-import { db } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { shouldProduceMlOutput } from './mlFeatureFlags';
+import { recordRollupRun } from './retentionMetrics';
 
 export const METRIC_ROLLUP_VERSION = 'metric-rollups-v1';
 
@@ -136,6 +137,49 @@ function normalizeRange(from: Date, to: Date): { from: Date; to: Date } {
   return { from, to };
 }
 
+/**
+ * #4276 — run ONE statement inside its OWN short-lived system RLS context.
+ *
+ * This module used to run under a single caller-supplied
+ * `withSystemDbAccessContext`, so all 26 statements shared one transaction and
+ * pinned one pooled connection for the whole pass. At ~2s+ per org every 5
+ * minutes that made `metricRollupsWorker` the top `db_context_held_too_long`
+ * offender (983 events/7d, ~half the system-scope capture budget) and it is
+ * exactly the kind of long single-connection hold that elongates recovery when
+ * the pool degrades (#3225).
+ *
+ * Nothing here needed the atomicity: every statement is an idempotent
+ * `INSERT … SELECT … ON CONFLICT DO UPDATE`, so a pass that dies halfway leaves
+ * a partially-refreshed set of rollups that the next 5-minute run re-upserts.
+ * Splitting also removes a real hazard rather than only trading one: the
+ * derived passes read rows the raw passes just wrote, and across transactions
+ * they read them COMMITTED instead of from the writer's own snapshot.
+ *
+ * `runOutsideDbContext` is not decoration. Without it, a caller that wrapped
+ * this function in its own context would make `withDbAccessContext`
+ * short-circuit into that ambient transaction, silently collapsing all the
+ * per-statement contexts back into one long hold — the alertWorker/#3216 trap.
+ * WITH the escape, an outer wrap is instead defeated: it does no work and just
+ * pins an idle-in-transaction connection for the whole pass (an unlabeled
+ * #3218-shape hold, plus a second pool slot). So callers must not wrap this
+ * function at all — the worker, backfill script and integration suite all call
+ * it bare.
+ *
+ * `label` is REQUIRED here, not optional: under the tsup single-file bundle
+ * every opener in this file is an anonymous arrow that `parseOpenerFrame`
+ * collapses to a bare `index`. Keep the label set low-cardinality — one per
+ * rollup pass, never per org or per metric — because it becomes part of the
+ * grouped Sentry message.
+ */
+function inRollupDbContext<T>(label: string, fn: () => Promise<T>): Promise<T> {
+  return runOutsideDbContext(() => withSystemDbAccessContext(fn, label));
+}
+
+/** One rollup statement, in its own context. */
+function execInRollupDbContext(label: string, statement: SQL): Promise<unknown> {
+  return inRollupDbContext(label, () => db.execute(statement));
+}
+
 function expandRangeToBucketBounds(from: Date, to: Date, bucketSeconds: number): { from: Date; to: Date } {
   const bucketMs = bucketSeconds * 1000;
   return {
@@ -151,7 +195,7 @@ async function rollupRawDeviceMetric(options: MetricRollupRange, metric: (typeof
   const expectedSampleSeconds = options.expectedSampleSeconds ?? DEFAULT_EXPECTED_SAMPLE_SECONDS;
   const valueSql = sql.raw(`dm.${metric.column}`);
 
-  await db.execute(sql`
+  await execInRollupDbContext('metricRollups.raw.device_metrics', sql`
     WITH metric_devices AS (
       SELECT DISTINCT dm.org_id, dm.device_id
       FROM device_metrics dm
@@ -236,7 +280,7 @@ async function rollupRawProcessSampleMetric(options: MetricRollupRange, metric: 
   const expectedSampleSeconds = options.expectedSampleSeconds ?? DEFAULT_EXPECTED_SAMPLE_SECONDS;
   const valueSql = sql.raw(metric.valueSql);
 
-  await db.execute(sql`
+  await execInRollupDbContext('metricRollups.raw.device_process_samples', sql`
     WITH process_devices AS (
       SELECT DISTINCT dps.org_id, dps.device_id
       FROM device_process_samples dps
@@ -324,7 +368,7 @@ async function rollupRawSnmpMetrics(options: MetricRollupRange): Promise<void> {
   const toIso = to.toISOString();
   const expectedSampleSeconds = options.expectedSampleSeconds ?? DEFAULT_EXPECTED_SAMPLE_SECONDS;
 
-  await db.execute(sql`
+  await execInRollupDbContext('metricRollups.raw.snmp_metrics', sql`
     WITH snmp_values AS (
       SELECT
         sm.org_id,
@@ -458,7 +502,7 @@ async function rollupDerivedMetricSource(
   const toIso = sourceRange.to.toISOString();
   const targetBucketSql = bucketStartSql(sql`mr.bucket_start`, targetBucketSeconds);
 
-  await db.execute(sql`
+  await execInRollupDbContext(`metricRollups.derived.${sourceTable}.${targetBucketSeconds}`, sql`
     INSERT INTO metric_rollups (
       org_id,
       source_table,
@@ -509,9 +553,33 @@ async function rollupDerivedMetricSource(
   `);
 }
 
+/**
+ * Instrumentation-only wrapper around the rollup pass (#4345). This is the real
+ * "one rollup run" boundary — `jobs/metricRollups.ts` fans one of these out per
+ * org every 5 minutes — so `breeze_rollup_runs_total{status}` and
+ * `breeze_rollup_duration_seconds` are measured here rather than in the worker,
+ * which would also count the unrelated `scan-orgs` fan-out job.
+ */
 export async function rollupDeviceMetricsRange(options: MetricRollupRange): Promise<MetricRollupResult> {
+  const startedAt = Date.now();
+  try {
+    const result = await runRollupDeviceMetricsRange(options);
+    recordRollupRun(result.skipped ? 'skipped' : 'success', (Date.now() - startedAt) / 1000);
+    return result;
+  } catch (error) {
+    recordRollupRun('failure', (Date.now() - startedAt) / 1000);
+    throw error;
+  }
+}
+
+async function runRollupDeviceMetricsRange(options: MetricRollupRange): Promise<MetricRollupResult> {
   const { from, to } = normalizeRange(options.from, options.to);
-  if (!(await shouldProduceMlOutput(options.orgId, 'ml.metric_rollups.enabled'))) {
+  // The gate reads `organizations` + `partners`, both RLS-forced — with no
+  // context the read returns zero rows and every org would look disabled.
+  const produceOutput = await inRollupDbContext('metricRollups.mlFeatureGate', () =>
+    shouldProduceMlOutput(options.orgId, 'ml.metric_rollups.enabled')
+  );
+  if (!produceOutput) {
     return {
       orgId: options.orgId,
       from: from.toISOString(),

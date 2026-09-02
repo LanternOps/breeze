@@ -8,13 +8,93 @@ sidebar:
 
 import { Tabs, TabItem, Aside } from '@astrojs/starlight/components';
 
-## What Gets Backed Up
+## What Persists, and What to Back Up
 
-| Component | Script Flag | Tool | Description |
+A Compose deployment keeps state in six named Docker volumes, plus your object storage bucket and your configuration files. `scripts/backup.sh` has a flag for only three of those locations, and just one of the six volumes. The table below covers every location and gives each one a verdict, so nothing is left out silently.
+
+| Persistent location | Back it up? | Script flag | Details |
 |---|---|---|---|
-| Database | `--db` | `pg_dump` / `pg_restore` | All PostgreSQL data |
-| Object storage | `--storage` | `aws s3 sync` or `mc mirror` | Scripts, binaries, reports in MinIO/S3 |
-| Configuration | `--config` | `tar` + `openssl` | `.env`, certs, Docker configs — encrypted at rest |
+| `postgres_data` | Yes. This is the critical backup. | `--db` | PostgreSQL data at `/var/lib/postgresql/data` |
+| Object storage | Yes, when configured. | `--storage` | The bucket configured by `S3_ENDPOINT` and `S3_BUCKET` |
+| Configuration | Yes. | `--config` | `.env`, certificates, and Compose files. Encrypted with `tar` and `openssl` |
+| `api_data` | Yes, manually. | None | Patch compliance report CSV files at `/data/patch-reports` |
+| `redis_data` | No. Preserve the volume, but do not back it up and do not restore a snapshot. | None | Rebuildable Redis state at `/data` |
+| `binaries` | No. | None | Agent, viewer, and helper binaries at `/data/binaries`, mounted read-only. Refilled on every start |
+| `caddy_data` | Usually no. | None | Caddy's ACME account key and issued TLS certificates. See the note below |
+| `caddy_config` | No. | None | Caddy's autosaved runtime config, rewritten from `docker/Caddyfile.prod` on start |
+
+`./scripts/backup.sh --all` runs `--db`, `--storage`, and `--config`. It does not touch any of the named volumes.
+
+<Aside type="note">
+  On a fresh `caddy_data` volume, Caddy registers a new ACME account and re-issues certificates from Let's Encrypt, so nothing is permanently lost. Let's Encrypt does rate-limit duplicate certificates, so if you rebuild a host repeatedly, or you terminate TLS with certificates Caddy did not issue, keep a copy of this volume as well.
+</Aside>
+
+## The `api_data` Volume
+
+The `api_data` volume is mounted at `/data` on the `api` service, and on the `worker` service when you run the `worker-split` profile. Its only persistent content is patch compliance reports, written as plain CSV files under `/data/patch-reports`. PostgreSQL stores the path to each file, so if the volume is lost the database keeps report rows whose files no longer exist and downloading one fails.
+
+A report can be run again, but the replacement uses the current patch state. It does not reproduce the historical snapshot captured by the original CSV file.
+
+`scripts/backup.sh` has no flag for this volume. It shells out to `pg_dump`, the S3 client and `openssl`, and reading a Docker volume needs access to the Docker socket, so the volume is handled as a separate command rather than a fourth flag. Copy it out with a throwaway container, writing into the same `$BACKUP_DIR` the script uses:
+
+```bash
+docker run --rm -v breeze_api_data:/data -v "${BACKUP_DIR:-/var/backups/breeze}":/backup alpine \
+  tar czf /backup/api_data_$(date +%Y%m%d).tar.gz -C /data .
+```
+
+Compose prefixes the volume with the project name. The example assumes `COMPOSE_PROJECT_NAME=breeze`. Confirm the actual name before running the command:
+
+```bash
+docker volume ls
+```
+
+<Aside type="caution">
+  These archives are not pruned by `BACKUP_RETENTION_DAYS`. That retention applies only to what `scripts/backup.sh` writes. If you add this command to the cron job below, prune the archives yourself, and always use an absolute path for the destination: cron does not run from your shell's working directory.
+</Aside>
+
+Restore with the stack stopped. Extracting a `tar` archive over a volume overwrites the files it contains but does not delete anything else, so any report written after the backup was taken survives the restore and ends up mixed in with the restored files. Clear the directory first if you want the volume to match the archive exactly:
+
+```bash
+export API_DATA_ARCHIVE="${BACKUP_DIR:-/var/backups/breeze}/api_data_YYYYMMDD.tar.gz"
+docker compose down
+
+# Optional: start from an empty directory so the restore is exact.
+docker run --rm -v breeze_api_data:/data alpine \
+  sh -c 'rm -rf /data/patch-reports'
+
+docker run --rm -v breeze_api_data:/data -v "$(dirname "$API_DATA_ARCHIVE")":/backup alpine \
+  tar xzf "/backup/$(basename "$API_DATA_ARCHIVE")" -C /data
+docker compose up -d
+```
+
+Both commands run as root inside the throwaway `alpine` container, so `tar` preserves the numeric owner and the API process (uid 1001) can still read the files afterwards.
+
+<Aside type="caution">
+  User uploads do not live on `api_data`, so backing up this volume is not a substitute for the database dump. Avatars, product and catalog images, and proposal and quote images are stored in PostgreSQL and are covered by `--db`. Software package uploads require object storage: without it the API returns `503` and the web UI grays the upload control out, rather than storing the package on local disk. Upload chunks, screenshots, installer media, recovery media, and BMR media are written to `/tmp`, which the shipped Compose file mounts as a 64 MB `tmpfs`. Breeze Backup storage targets are the S3 buckets or local and NAS paths you configure separately, not this volume.
+</Aside>
+
+Custom deployments must set `PATCH_REPORT_STORAGE_PATH` to a persistent location. Its default, `./data/patch-reports`, is relative, so it resolves against the API process's working directory rather than against the volume. In the published image that working directory is `/app/apps/api`, putting the reports in the container's own writable layer, where they are lost the moment the container is replaced. The shipped Compose files set the absolute `/data/patch-reports`, and that override is what places the files on `api_data`.
+
+## The `redis_data` Volume
+
+The `redis_data` volume is mounted at `/data` on Redis. Redis uses AOF persistence, so the volume survives container restarts. Preserve it across upgrades, and do not run `docker compose down -v`.
+
+Do not add `redis_data` to a backup rotation, and do not restore it from a snapshot. PostgreSQL and Redis do not have a consistent snapshot mechanism. Restoring stale Redis state can reintroduce jobs that PostgreSQL records as complete.
+
+Starting Redis empty loses:
+
+- Queued and in-flight jobs, including work waiting for a retry. The next scheduled tick re-derives work from PostgreSQL, so this delays work instead of causing permanent data loss.
+- Access-token revocation entries. A revoked but unexpired access token can be accepted again for at most 15 minutes for a normal session or 2 hours for a remote-desktop or viewer token.
+- Rate-limit counters.
+- Redis pub/sub messages that were in flight.
+
+Starting Redis empty does not lose recurring schedules. They live in PostgreSQL and are registered again when the API and worker start. It also does not lose refresh-token family revocation, which is durable in PostgreSQL and is preserved by a database backup.
+
+If the access-token window matters, such as after off-boarding an administrator, sign the affected users out again after the stack starts. This writes fresh revocation entries to the new Redis state.
+
+## The `binaries` Volume
+
+Do not back up the `binaries` volume. The `binaries-init` container rebuilds it on every `docker compose up -d`, and the API mounts it read-only. With the default `BINARY_SOURCE=github`, the API syncs binaries from GitHub Releases instead of using this volume.
 
 ## Prerequisites
 
@@ -62,7 +142,7 @@ export BACKUP_RETENTION_DAYS="30"             # default: 30
 ## Manual Backup
 
 ```bash
-# Full backup (all components)
+# Back up all script-managed components
 ./scripts/backup.sh --all
 
 # Database only
@@ -92,7 +172,7 @@ Add a cron job for daily backups:
 # Edit crontab
 crontab -e
 
-# Daily full backup at 2 AM
+# Daily backup of all script-managed components at 2 AM
 0 2 * * * /path/to/breeze/scripts/backup.sh --all >> /var/log/breeze-backup.log 2>&1
 ```
 
@@ -108,6 +188,8 @@ crontab -e
 # Restore configuration (prompts for encryption key)
 ./scripts/restore.sh --config /var/backups/breeze/config_20260211_120000.tar.gz.enc
 ```
+
+`restore.sh` covers the same three components as `backup.sh`. To restore the `api_data` volume, use the `tar` command in [The `api_data` Volume](#the-api_data-volume). Do not restore `redis_data`.
 
 ## Retention
 

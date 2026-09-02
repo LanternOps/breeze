@@ -546,6 +546,167 @@ describe('ScriptForm sourced parameters', () => {
     expect(screen.getByText('device.hostname')).toBeInTheDocument();
   });
 
+  // #3409 PR4c-2: the fifth arm — a SECRET tenant variable, delivered to the
+  // agent only as an environment variable.
+  it('renders the secret binding field and its env-var hint, and hides value-bearing fields', async () => {
+    render(
+      <ScriptForm
+        isNew
+        defaultValues={{
+          ...draft,
+          parameters: [{ name: 'api_token', source: 'tenantSecret', variableKey: 'api_password' }],
+        }}
+      />
+    );
+
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalled());
+    const hint = await screen.findByTestId('script-parameter-secret-hint');
+    expect(hint).toHaveTextContent('BREEZE_VAR_API_TOKEN');
+    expect(screen.getByPlaceholderText('e.g. vendor_token')).toBeInTheDocument();
+    // A secret parameter is always required, always a string, and can carry no
+    // default — the API rejects any of those, so the form must not offer them.
+    expect(screen.queryByPlaceholderText('Default')).toBeNull();
+    expect(screen.queryByText('Required')).toBeNull();
+    // The plain-mode "this is a secret, the save will be rejected" warning must
+    // NOT fire here — a secret is exactly what this arm wants.
+    expect(screen.queryByTestId('script-parameter-secret-warning')).toBeNull();
+    expect(screen.queryByTestId('script-parameter-not-secret-warning')).toBeNull();
+  });
+
+  it('falls back to a placeholder env name while the parameter name is blank', async () => {
+    render(
+      <ScriptForm
+        isNew
+        defaultValues={{
+          ...draft,
+          parameters: [{ name: '', source: 'tenantSecret', variableKey: '' }],
+        }}
+      />
+    );
+
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalled());
+    expect(await screen.findByTestId('script-parameter-secret-hint')).toHaveTextContent('BREEZE_VAR_NAME');
+  });
+
+  it('warns when a secret parameter is bound to a variable that is NOT a secret', async () => {
+    render(
+      <ScriptForm
+        isNew
+        defaultValues={{
+          ...draft,
+          parameters: [{ name: 'api_token', source: 'tenantSecret', variableKey: 'vendor_token' }],
+        }}
+      />
+    );
+
+    const warning = await screen.findByTestId('script-parameter-not-secret-warning');
+    expect(warning).toHaveTextContent(/vendor_token/);
+    expect(warning).toHaveTextContent(/not a secret/i);
+  });
+
+  it('inverts the picker in secret mode: secrets selectable, plain variables disabled', async () => {
+    render(
+      <ScriptForm
+        isNew
+        defaultValues={{
+          ...draft,
+          parameters: [{ name: 'api_token', source: 'tenantSecret', variableKey: '' }],
+        }}
+      />
+    );
+
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalled());
+    fireEvent.click(screen.getByTitle('Choose a variable'));
+    const plainRow = await screen.findByRole('menuitem', { name: /Vendor portal token/i });
+    expect(plainRow).toBeDisabled();
+    expect(plainRow).toHaveTextContent('Not a secret');
+
+    const secretRow = await screen.findByRole('menuitem', { name: /Vendor API password/i });
+    expect(secretRow).not.toBeDisabled();
+    fireEvent.click(secretRow);
+    const keyInput = screen.getByPlaceholderText('e.g. vendor_token') as HTMLInputElement;
+    await waitFor(() => expect(keyInput.value).toBe('api_password'));
+  });
+
+  it('clears the abandoned key and the secret-only fields when switching off tenantSecret', async () => {
+    render(
+      <ScriptForm
+        isNew
+        defaultValues={{
+          ...draft,
+          parameters: [{ name: 'api_token', source: 'tenantSecret', variableKey: 'api_password' }],
+        }}
+      />
+    );
+
+    await screen.findByTestId('script-parameter-secret-hint');
+    fireEvent.change(screen.getByLabelText('Source for parameter 1'), {
+      target: { value: 'tenantVariable' },
+    });
+
+    expect(screen.queryByTestId('script-parameter-secret-hint')).toBeNull();
+    expect((screen.getByPlaceholderText('e.g. vendor_token') as HTMLInputElement).value).toBe('');
+    // The value-bearing fields come back for a non-secret arm.
+    expect(screen.getByPlaceholderText('Default')).toBeInTheDocument();
+  });
+
+  it('clears a runtime row\'s default and options when it becomes a secret parameter', async () => {
+    render(
+      <ScriptForm
+        isNew
+        defaultValues={{
+          ...draft,
+          parameters: [{ name: 'api_token', type: 'select', defaultValue: 'a', options: 'a,b' }],
+        }}
+      />
+    );
+
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalled());
+    fireEvent.change(screen.getByLabelText('Source for parameter 1'), {
+      target: { value: 'tenantSecret' },
+    });
+    await screen.findByTestId('script-parameter-secret-hint');
+
+    // Switching back proves the values were cleared rather than merely hidden —
+    // a stray `defaultValue: 'a'` would 400 at save.
+    fireEvent.change(screen.getByLabelText('Source for parameter 1'), {
+      target: { value: 'runtime' },
+    });
+    expect((screen.getByPlaceholderText('Default') as HTMLInputElement).value).toBe('');
+    // `type` is forced to `string` for a secret, so the options input (which only
+    // renders for `select`) is gone — its stored value was cleared with it.
+    expect(screen.queryByPlaceholderText('option1, option2, option3')).toBeNull();
+  });
+
+  it('submits a secret row without the seeded default/options the API would 400', async () => {
+    const onSubmit = vi.fn();
+    render(
+      <ScriptForm
+        isNew
+        onSubmit={onSubmit}
+        defaultValues={{ ...draft, parameters: [{ name: 'api_token', type: 'string' }] }}
+      />
+    );
+
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalled());
+    fireEvent.change(screen.getByLabelText('Source for parameter 1'), {
+      target: { value: 'tenantSecret' },
+    });
+    fireEvent.change(screen.getByPlaceholderText('e.g. vendor_token'), {
+      target: { value: 'api_password' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /save script/i }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit.mock.calls[0][0].parameters[0]).toEqual({
+      name: 'api_token',
+      source: 'tenantSecret',
+      variableKey: 'api_password',
+      type: 'string',
+      required: true,
+    });
+  });
+
   it('clears the previous arm\'s binding key when the source changes', async () => {
     render(
       <ScriptForm

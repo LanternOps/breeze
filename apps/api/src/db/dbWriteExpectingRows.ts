@@ -44,7 +44,10 @@ export async function dbWriteExpectingRows<T>(
         console.warn(`[dbWriteExpectingRows] diagnostic tags failed for ${label}:`, err);
       }
     }
-    captureMessage(message, 'warning', { label, stack: new Error().stack }, tags);
+    captureMessage(message, {
+      eventCode: 'db_write_expecting_rows_zero',
+      tags,
+    });
   }
   return rows;
 }

@@ -179,7 +179,7 @@ describe('auditChainAnchor worker', () => {
   });
 
   it('exposes a daily cron offset after the in-chain verifier', () => {
-    expect(__testOnly.DAILY_CRON).toBe('45 4 * * *');
+    expect(__testOnly.DAILY_CRON).toBe('48 4 * * *');
     expect(__testOnly.JOB_NAME).toBe('audit-chain-anchor');
     expect(__testOnly.REPEAT_JOB_ID).toBe('audit-chain-anchor');
   });
@@ -200,7 +200,7 @@ describe('auditChainAnchor worker', () => {
       await scheduleAuditChainAnchor();
       expect(addMock).toHaveBeenCalledTimes(1);
       const [, , opts] = addMock.mock.calls[0] as [unknown, unknown, Record<string, unknown>];
-      expect((opts.repeat as { pattern: string }).pattern).toBe('45 4 * * *');
+      expect((opts.repeat as { pattern: string }).pattern).toBe('48 4 * * *');
       expect(opts.jobId).toBe('audit-chain-anchor');
     });
 

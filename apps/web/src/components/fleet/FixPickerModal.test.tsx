@@ -418,7 +418,10 @@ describe('FixPickerModal — step 3 confirm + dispatch', () => {
     await waitFor(() => expect(screen.getByTestId('fix-picker-skipped')).toBeTruthy());
     const row = screen.getByTestId(`fix-picker-skipped-${DEVICE_B}`);
     expect(row.textContent).toContain('WS-ACME-02');
-    expect(row.textContent?.toLowerCase()).toContain('decommissioned');
+    // Scope to the reason span, not the whole row — 'removed' isn't a unique
+    // token across the row the way 'decommissioned' was.
+    const reason = screen.getByTestId(`fix-picker-skipped-reason-${DEVICE_B}`);
+    expect(reason.textContent?.toLowerCase()).toContain('removed');
     // Handoff is explicit — the skipped list must be readable first.
     expect(onRunStarted).not.toHaveBeenCalled();
 

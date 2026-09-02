@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '../../lib/i18n';
 import {
@@ -19,6 +19,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { NotificationChannelType } from '@breeze/shared';
+import { formatRelativeTime } from './alertConfig';
 
 export type { NotificationChannelType };
 
@@ -32,6 +33,9 @@ export type NotificationChannel = {
   config: Record<string, unknown>;
   lastTestedAt?: string;
   lastTestStatus?: 'success' | 'failed';
+  // Why the last test failed (#3697). NULL/absent when it passed. The API
+  // scrubs the channel's own secrets out of this before persisting it.
+  lastTestError?: string | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -41,6 +45,9 @@ type NotificationChannelListProps = {
   onEdit?: (channel: NotificationChannel) => void;
   onDelete?: (channel: NotificationChannel) => void;
   onTest?: (channel: NotificationChannel) => void;
+  /** Offered from the empty state, so a list with no rows has the create
+   *  action in front of it rather than only in the page header. */
+  onCreate?: () => void;
   pageSize?: number;
 };
 
@@ -80,23 +87,14 @@ const channelTypeConfig: Record<
   }
 };
 
+// Delegates to the shared `alerts:relativeTime.*` catalog rather than keeping a
+// private copy. The private copy was extracted into title-cased strings that
+// also dropped the `{{count}}` placeholder the caller passes, so the card read
+// "Last test: Hours Ago" — no case agreement and no number (#3992). The shared
+// node is correct in all eight locales and is what the alerts list already uses.
 function formatLastTested(dateString: string | undefined, t: AlertsT): string {
   if (!dateString) return t('notificationChannelList.neverTested');
-
-  const date = new Date(dateString);
-  if (Number.isNaN(date.getTime())) return dateString;
-
-  const now = new Date();
-  const diffMs = now.getTime() - date.getTime();
-  const diffMins = Math.floor(diffMs / (1000 * 60));
-  const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
-  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-
-  if (diffMins < 1) return t('notificationChannelList.justNow');
-  if (diffMins < 60) return t('notificationChannelList.minutesAgo', { count: diffMins });
-  if (diffHours < 24) return t('notificationChannelList.hoursAgo', { count: diffHours });
-  if (diffDays < 7) return t('notificationChannelList.daysAgo', { count: diffDays });
-  return date.toLocaleDateString();
+  return formatRelativeTime(dateString);
 }
 
 /**
@@ -170,6 +168,7 @@ export default function NotificationChannelList({
   onEdit,
   onDelete,
   onTest,
+  onCreate,
   pageSize = 10
 }: NotificationChannelListProps) {
   const { t } = useTranslation('alerts');
@@ -192,9 +191,42 @@ export default function NotificationChannelList({
     });
   }, [channels, query, typeFilter]);
 
-  const totalPages = Math.ceil(filteredChannels.length / pageSize);
-  const startIndex = (currentPage - 1) * pageSize;
+  // "No results" and "nothing exists yet" are different states. Keyed off the
+  // UNFILTERED list plus the search and type controls being at rest, so a
+  // search that matches nothing still gets the adjust-your-search message.
+  //
+  // Deliberately NOT a claim that the tenant is new: the list can be
+  // org-scoped, and a malformed HTTP 200 is coerced to [] upstream. It only
+  // distinguishes "the list is empty and the filters are untouched".
+  const hasNoChannelsAtAll =
+    channels.length === 0 && query.trim().length === 0 && typeFilter === 'all';
+
+  // Floor of 1 so an empty list reads as page 1 of 1 rather than page 1 of 0,
+  // and `safePage` below cannot land on 0. (The negative `startIndex` that a
+  // page of 0 produces is harmless against an empty array — it is the page
+  // COUNT that would be wrong, and it is what the pager renders.)
+  const totalPages = Math.max(1, Math.ceil(filteredChannels.length / pageSize));
+
+  // Render from a clamped page rather than trusting the stored one. Search and
+  // type changes reset the page, but nothing reconciled it with the row count,
+  // so deleting the only row on the last page (parent refetches and hands down
+  // a shorter array) left the user on a page that no longer exists: no rows,
+  // the adjust-your-search copy over an untouched search box, and — because
+  // `totalPages` had dropped below the stored page — no pager to get back
+  // (#4008). Clamping during render rather than in an effect means the dead
+  // page never paints.
+  const safePage = Math.min(currentPage, totalPages);
+  const startIndex = (safePage - 1) * pageSize;
   const paginatedChannels = filteredChannels.slice(startIndex, startIndex + pageSize);
+
+  // Retire the out-of-range value so it cannot come back. Without this the
+  // clamp above is purely cosmetic: a later create + refetch that grows the
+  // list past the stored page would teleport the user forward to a page they
+  // had already been bounced off. Renders the same output either way, so it
+  // costs a state write and no visible frame.
+  useEffect(() => {
+    if (currentPage !== safePage) setCurrentPage(safePage);
+  }, [currentPage, safePage]);
 
   const handleTest = async (channel: NotificationChannel) => {
     setTestingChannelId(channel.id);
@@ -251,9 +283,26 @@ export default function NotificationChannelList({
       <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {paginatedChannels.length === 0 ? (
           <div className="col-span-full rounded-md border border-dashed p-6 text-center">
-            <p className="text-sm text-muted-foreground">
-              {t('notificationChannelList.noNotificationChannelsFoundTryAdjustingYour')}
-            </p>
+            {hasNoChannelsAtAll ? (
+              <>
+                <p className="text-sm text-muted-foreground">
+                  {t('notificationChannelList.noChannelsYet')}
+                </p>
+                {onCreate && (
+                  <button
+                    type="button"
+                    onClick={onCreate}
+                    className="mt-3 inline-flex items-center rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
+                  >
+                    {t('notificationChannelsPage.newChannel')}
+                  </button>
+                )}
+              </>
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                {t('notificationChannelList.noNotificationChannelsFoundTryAdjustingYour')}
+              </p>
+            )}
           </div>
         ) : (
           paginatedChannels.map(channel => {
@@ -347,6 +396,28 @@ export default function NotificationChannelList({
                   </span>
                 </div>
 
+                {/* WHY it failed (#3697). "Failed" alone tells an operator their
+                    on-call routing is broken but not what to do about it, and
+                    the provider message that says exactly that ("use our testing
+                    email address instead of domains like example.com") used to
+                    live only in a five-second toast — gone on reload.
+
+                    Rendered as plain text rather than the hover/expand the issue
+                    floated: a tooltip is unreachable by touch and by keyboard,
+                    and this is the one line on the card an operator needs most.
+                    Clamped to two lines with the full string on `title`, because
+                    webhook/PagerDuty/Pushover errors can carry up to 500
+                    characters of the destination's own response body. */}
+                {channel.lastTestStatus === 'failed' && channel.lastTestError && (
+                  <p
+                    className="mt-1 line-clamp-2 text-xs text-red-600"
+                    title={channel.lastTestError}
+                    data-testid="notification-channel-last-test-error"
+                  >
+                    {t('notificationChannelList.lastTestError', { reason: channel.lastTestError })}
+                  </p>
+                )}
+
                 {/* Actions */}
                 <div className="mt-4 flex items-center gap-2 border-t pt-4">
                   <button
@@ -396,25 +467,41 @@ export default function NotificationChannelList({
             {t('notificationChannelList.showing')} {startIndex + 1} {t('notificationChannelList.to')} {Math.min(startIndex + pageSize, filteredChannels.length)}{' '}
             {t('notificationChannelList.of')} {filteredChannels.length}
           </p>
+          {/* The pager buttons hold only a lucide icon, and lucide-react
+              stamps aria-hidden="true" on an icon with no children and no
+              aria-, role or title prop (the mechanism recorded in #3697). The
+              buttons themselves stay in the accessibility tree — they are
+              native button elements — but the hidden icon was their only
+              naming source, so they had no accessible name at all:
+              unreachable by an accessible-name query, and announced as a bare
+              "button". `common:actions.previousPage`/`nextPage` are pager
+              nouns rather than the navigation verbs in actions.back/next,
+              which is what a pager should announce (#4008). */}
           <div className="flex items-center gap-2">
             <button
               type="button"
-              onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
-              disabled={currentPage === 1}
+              onClick={() => setCurrentPage(Math.max(1, safePage - 1))}
+              disabled={safePage === 1}
               className="flex h-9 w-9 items-center justify-center rounded-md border hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+              title={t('common:actions.previousPage')}
+              aria-label={t('common:actions.previousPage')}
+              data-testid="notification-channel-prev-page"
             >
-              <ChevronLeft className="h-4 w-4" />
+              <ChevronLeft className="h-4 w-4" aria-hidden="true" />
             </button>
             <span className="text-sm">
-              {t('notificationChannelList.page')} {currentPage} {t('notificationChannelList.of')} {totalPages}
+              {t('notificationChannelList.page')} {safePage} {t('notificationChannelList.of')} {totalPages}
             </span>
             <button
               type="button"
-              onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
-              disabled={currentPage === totalPages}
+              onClick={() => setCurrentPage(Math.min(totalPages, safePage + 1))}
+              disabled={safePage === totalPages}
               className="flex h-9 w-9 items-center justify-center rounded-md border hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+              title={t('common:actions.nextPage')}
+              aria-label={t('common:actions.nextPage')}
+              data-testid="notification-channel-next-page"
             >
-              <ChevronRight className="h-4 w-4" />
+              <ChevronRight className="h-4 w-4" aria-hidden="true" />
             </button>
           </div>
         </div>

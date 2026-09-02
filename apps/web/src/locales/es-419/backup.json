@@ -359,7 +359,7 @@
     "recoveryBootstrap": "Arranque de recuperación",
     "createInspectAuthenticateAndRevokeRecoveryTokensFor": "Cree, inspeccione, autentique y revoque tokens de recuperación para flujos de trabajo de recuperación manual. Esta pestaña inicia entornos de recuperación manual y puede organizar paquetes de recuperación descargables.",
     "cliTemplate": "plantilla CLI",
-    "breezeBackupBmrRecoverTokenLtTokenGt": "breeze-backup bmr-recover --token &lt;token&gt; --server &lt;api-server&gt;",
+    "breezeBackupBmrRecoverTokenLtTokenGt": "breeze-backup bmr-recover --token <token> --server <api-server>",
     "createRecoveryToken": "Crear token de recuperación",
     "generateANewTokenForASpecificBackup": "Genere un nuevo token para una instantánea de respaldo y un perfil de recuperación específicos.",
     "snapshot": "Instantánea",

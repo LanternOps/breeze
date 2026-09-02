@@ -3,13 +3,21 @@ import type { Tokens, User } from './auth';
 import { applyResolvedLocalePreferences } from '@/lib/appearance';
 import {
   apiAcceptInvite,
+  apiEnableSmsMfa,
+  apiEnableTotpMfa,
+  apiEnrollPasskey,
+  apiGetMfaEnrollmentOptions,
   apiLogin,
   apiLogout,
+  apiPrepareCfTerminalLogout,
   apiPreviewInvite,
   apiRegisterPartner,
   apiResetPassword,
+  apiVerifyEmail,
   apiVerifyMFA,
+  apiVerifyPasskeyMFA,
   AuthSessionExpiredError,
+  AuthThrottledError,
   fetchAndApplyPreferences,
   fetchWithAuth,
   handleSessionExpired,
@@ -17,8 +25,14 @@ import {
   restoreAccessTokenFromCookie,
   restoreAccessTokenFromCookieDetailed,
   useAuthStore,
-  waitForPendingRefresh
+  waitForPendingRefresh,
+  validateCfTerminalNavigationUrl,
 } from './auth';
+
+vi.mock('@simplewebauthn/browser', () => ({
+  startAuthentication: vi.fn(async () => ({ id: 'credential-1', response: {} })),
+  startRegistration: vi.fn(async () => ({ id: 'credential-1', response: {} })),
+}));
 
 // fetchAndApplyPreferences (auth.ts) is the only call site for these two exports
 // (verified via grep on auth.ts) — mocking the whole appearance module is safe
@@ -36,6 +50,25 @@ const makeResponse = (payload: unknown, ok = true, status = ok ? 200 : 500): Res
     status,
     json: vi.fn().mockResolvedValue(payload)
   }) as unknown as Response;
+
+// Like makeResponse, but with a real Headers bag. Needed for the #3696
+// throttle tests: the client reads `Retry-After` off a 429 to decide how long
+// to wait, and the header-less double above exercises only the fallback path.
+const makeResponseWithHeaders = (
+  payload: unknown,
+  ok: boolean,
+  status: number,
+  headers: Record<string, string> = {}
+): Response =>
+  ({
+    ok,
+    status,
+    headers: new Headers(headers),
+    json: vi.fn().mockResolvedValue(payload)
+  }) as unknown as Response;
+
+const refreshCallsOf = (fetchMock: { mock: { calls: unknown[][] } }) =>
+  fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/api/v1/auth/refresh'));
 
 const baseUser: User = {
   id: 'user-1',
@@ -331,6 +364,59 @@ describe('auth store fetchWithAuth', () => {
     expect(replace).toHaveBeenCalledWith(`/login?next=${encodeURIComponent('/devices')}&reason=session-expired`);
   });
 
+  // Self-hosted origin rejection, NOT a dead session. A self-hoster who reaches
+  // the dashboard over an SSH tunnel (`ssh -L 8443:127.0.0.1:443`) browses
+  // https://localhost:8443 while the generated .env allows only
+  // https://localhost, so validateCookieCsrfRequest answers POST /auth/refresh
+  // with 403 {"error":"Invalid request origin"}. Evicting is still correct —
+  // no access token can be minted from that origin — but reporting it as
+  // "session expired" made a pure config problem read as a wrong password,
+  // after EVERY successful login. The reason code is what lets the login page
+  // name the origin and the two settings that fix it.
+  it('reports a 403 "Invalid request origin" refresh as origin-rejected, not session-expired', async () => {
+    useAuthStore.getState().login(baseUser, baseTokens);
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(makeResponse({ error: 'unauthorized' }, false, 401))
+      .mockResolvedValueOnce(makeResponse({ error: 'Invalid request origin' }, false, 403));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { replace, restore } = mockLocation('/devices');
+    try {
+      await fetchWithAuth('/devices');
+    } finally {
+      restore();
+    }
+
+    expect(useAuthStore.getState().isAuthenticated).toBe(false);
+    expect(useAuthStore.getState().sessionExpiredReason).toBe('origin-rejected');
+    expect(replace).toHaveBeenCalledWith(`/login?next=${encodeURIComponent('/devices')}&reason=origin-rejected`);
+  });
+
+  // The discriminator is the body, not the status: every OTHER 403 on refresh
+  // stays a generic expiry, or the notice would blame CORS for unrelated
+  // rejections.
+  it('leaves an unrelated 403 on refresh as a generic session expiry', async () => {
+    useAuthStore.getState().login(baseUser, baseTokens);
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(makeResponse({ error: 'unauthorized' }, false, 401))
+      .mockResolvedValueOnce(makeResponse({ error: 'Forbidden' }, false, 403));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { replace, restore } = mockLocation('/devices');
+    try {
+      await fetchWithAuth('/devices');
+    } finally {
+      restore();
+    }
+
+    expect(useAuthStore.getState().sessionExpiredReason).toBe('session-expired');
+    expect(replace).toHaveBeenCalledWith(`/login?next=${encodeURIComponent('/devices')}&reason=session-expired`);
+  });
+
   // QA 2026-07-08: a single transient 502 on /auth/refresh must NOT boot the
   // user — a gateway blip reaches no verdict on the refresh cookie, so we retry
   // with backoff and recover the session instead of hard-logging-out.
@@ -360,32 +446,264 @@ describe('auth store fetchWithAuth', () => {
 
   // Issue #3041: a 429 on /auth/refresh is the rate limiter rejecting the
   // request before it was ever evaluated — no verdict was reached on the
-  // refresh cookie, so it is transient exactly like a 502. It used to fall
-  // through to the hard-failure branch, which is how a runaway remote-desktop
-  // viewer poll could exhaust the shared per-IP budget and dump an operator
-  // with a perfectly valid session on the login screen.
-  it('retries a 429 on refresh and keeps the session', async () => {
-    useAuthStore.getState().login(baseUser, baseTokens);
-    const refreshedTokens: Tokens = { accessToken: 'access-after-429', expiresInSeconds: 3600 };
-    const apiSuccess = makeResponse({ data: { ok: true } }, true, 200);
+  // refresh cookie, so the session is still valid. It used to fall through to
+  // the hard-failure branch, which is how a runaway remote-desktop viewer poll
+  // could exhaust the shared per-IP budget and dump an operator with a
+  // perfectly valid session on the login screen.
+  //
+  // Issue #3696 sharpened the handling: a 429 is no longer folded into the
+  // generic 'transient' bucket. The transient backoff ladder spends its whole
+  // budget in ~0.9s — always INSIDE the server's 60s window — so every retry
+  // was a guaranteed 429 that additionally consumed a slot in the server's
+  // sliding window and dug the client deeper. A 429 now returns immediately
+  // and the caller waits out the server-supplied `Retry-After` once.
+  it('waits out a 429 on refresh rather than retrying into it, and keeps the session', async () => {
+    vi.useFakeTimers();
+    try {
+      useAuthStore.getState().login(baseUser, baseTokens);
+      const refreshedTokens: Tokens = { accessToken: 'access-after-429', expiresInSeconds: 3600 };
+      const apiSuccess = makeResponse({ data: { ok: true } }, true, 200);
 
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(makeResponse({ error: 'unauthorized' }, false, 401))       // original request
-      .mockResolvedValueOnce(makeResponse({ error: 'Too many requests' }, false, 429))  // refresh throttled
-      .mockResolvedValueOnce(makeResponse({ tokens: refreshedTokens }, true, 200))      // refresh recovers
-      .mockResolvedValueOnce(apiSuccess);                                               // original replayed
-    vi.stubGlobal('fetch', fetchMock);
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(makeResponse({ error: 'unauthorized' }, false, 401))  // original request
+        .mockResolvedValueOnce(                                                      // refresh throttled
+          makeResponseWithHeaders({ error: 'Too many refresh attempts.', retryAfter: 1 }, false, 429, {
+            'Retry-After': '1'
+          })
+        )
+        .mockResolvedValueOnce(makeResponse({ tokens: refreshedTokens }, true, 200)) // refresh recovers
+        .mockResolvedValueOnce(apiSuccess);                                          // original replayed
+      vi.stubGlobal('fetch', fetchMock);
 
-    const response = await fetchWithAuth('/devices');
+      const pending = fetchWithAuth('/devices');
 
-    expect(response).toBe(apiSuccess);
-    // The session must survive being rate limited.
-    expect(useAuthStore.getState().isAuthenticated).toBe(true);
-    expect(useAuthStore.getState().tokens?.accessToken).toBe(refreshedTokens.accessToken);
-    expect(useAuthStore.getState().sessionExpiredReason).toBeNull();
-    const refreshCalls = fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/api/v1/auth/refresh'));
-    expect(refreshCalls).toHaveLength(2);
+      // Settle the 401 + the throttled refresh WITHOUT advancing the clock. The
+      // regression this guards: the old code fired two more refreshes inside
+      // ~0.9s, burning budget it could never win back.
+      await vi.advanceTimersByTimeAsync(0);
+      expect(refreshCallsOf(fetchMock)).toHaveLength(1);
+      // The wait is user-visible, not silent — AuthOverlay masks on this.
+      expect(useAuthStore.getState().authThrottledUntil).not.toBeNull();
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      const response = await pending;
+
+      expect(response).toBe(apiSuccess);
+      // The session must survive being rate limited.
+      expect(useAuthStore.getState().isAuthenticated).toBe(true);
+      expect(useAuthStore.getState().tokens?.accessToken).toBe(refreshedTokens.accessToken);
+      expect(useAuthStore.getState().sessionExpiredReason).toBeNull();
+      // Mask cleared once the session recovered.
+      expect(useAuthStore.getState().authThrottledUntil).toBeNull();
+      expect(refreshCallsOf(fetchMock)).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // THE #3696 REGRESSION. Reproduced live before the fix: eleven sidebar
+  // navigations in ~24s (the web app is an Astro MPA, so each one spends a
+  // refresh) tripped the per-user 10/60s budget and the client hard-redirected
+  // to /login?reason=session-expired with ~15 minutes of session left.
+  //
+  // A throttle is not a verdict on the refresh cookie. Even when it PERSISTS
+  // past the bounded wait, the session must survive: no logout(), no redirect,
+  // no "session expired" copy.
+  it('never logs out on a 429, even one that persists past the bounded wait', async () => {
+    vi.useFakeTimers();
+    const { replace, restore } = mockLocation('/devices');
+    try {
+      useAuthStore.getState().login(baseUser, baseTokens);
+
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(makeResponse({ error: 'unauthorized' }, false, 401))
+        .mockResolvedValue(
+          makeResponseWithHeaders({ error: 'Too many refresh attempts.', retryAfter: 1 }, false, 429, {
+            'Retry-After': '1'
+          })
+        );
+      vi.stubGlobal('fetch', fetchMock);
+
+      const pending = fetchWithAuth('/devices').catch((err: unknown) => err);
+      await vi.advanceTimersByTimeAsync(5_000);
+      const result = await pending;
+
+      // Surfaced as its own type — deliberately NOT an AuthSessionExpiredError,
+      // which dozens of callers swallow on the assumption the page is already
+      // navigating to /login (that swallow is the silent-blank-page variant).
+      expect(result).toBeInstanceOf(AuthThrottledError);
+      expect(result).not.toBeInstanceOf(AuthSessionExpiredError);
+
+      expect(useAuthStore.getState().isAuthenticated).toBe(true);
+      expect(useAuthStore.getState().tokens).not.toBeNull();
+      expect(useAuthStore.getState().sessionExpiredReason).toBeNull();
+      expect(replace).not.toHaveBeenCalled();
+      // Mask stays up so the page can never render as loaded-but-empty.
+      expect(useAuthStore.getState().authThrottledUntil).not.toBeNull();
+      // Bounded: the initial refresh plus exactly one retry after one wait.
+      expect(refreshCallsOf(fetchMock)).toHaveLength(2);
+    } finally {
+      restore();
+      vi.useRealTimers();
+    }
+  });
+
+  // The bootstrap path (authenticated in the persisted store, no in-memory
+  // access token) is the one EVERY full-page navigation takes, so it is the
+  // path #3696 actually fires on. It must not evict on a throttle either.
+  it('does not evict on a 429 during the bootstrap refresh', async () => {
+    vi.useFakeTimers();
+    const { replace, restore } = mockLocation('/integrations');
+    try {
+      useAuthStore.getState().login(baseUser, baseTokens);
+      useAuthStore.getState().setTokens(null);
+
+      const fetchMock = vi.fn().mockResolvedValue(
+        makeResponseWithHeaders({ error: 'Too many refresh attempts.', retryAfter: 1 }, false, 429, {
+          'Retry-After': '1'
+        })
+      );
+      vi.stubGlobal('fetch', fetchMock);
+
+      const pending = fetchWithAuth('/webhooks').catch((err: unknown) => err);
+      await vi.advanceTimersByTimeAsync(5_000);
+      const result = await pending;
+
+      expect(result).toBeInstanceOf(AuthThrottledError);
+      expect(useAuthStore.getState().isAuthenticated).toBe(true);
+      expect(replace).not.toHaveBeenCalled();
+      expect(useAuthStore.getState().sessionExpiredReason).toBeNull();
+      // No headerless request was fired — only refreshes went out.
+      expect(refreshCallsOf(fetchMock)).toHaveLength(fetchMock.mock.calls.length);
+    } finally {
+      restore();
+      vi.useRealTimers();
+    }
+  });
+
+  // Guard the other direction: not evicting on a THROTTLE must not stop us
+  // evicting on a real verdict. A 429 followed by a hard 401 is a dead session.
+  it('still evicts when the refresh reaches a hard 401 after a throttle', async () => {
+    vi.useFakeTimers();
+    const { replace, restore } = mockLocation('/devices');
+    try {
+      useAuthStore.getState().login(baseUser, baseTokens);
+      useAuthStore.getState().setTokens(null);
+
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(
+          makeResponseWithHeaders({ retryAfter: 1 }, false, 429, { 'Retry-After': '1' })
+        )
+        .mockResolvedValue(makeResponse({ error: 'Invalid refresh token' }, false, 401));
+      vi.stubGlobal('fetch', fetchMock);
+
+      const pending = fetchWithAuth('/devices').catch((err: unknown) => err);
+      await vi.advanceTimersByTimeAsync(5_000);
+      const result = await pending;
+
+      expect(result).toBeInstanceOf(AuthSessionExpiredError);
+      expect(useAuthStore.getState().isAuthenticated).toBe(false);
+      expect(useAuthStore.getState().sessionExpiredReason).toBe('session-expired');
+      expect(replace).toHaveBeenCalled();
+      // The mask must not outlive the session it was masking.
+      expect(useAuthStore.getState().authThrottledUntil).toBeNull();
+    } finally {
+      restore();
+      vi.useRealTimers();
+    }
+  });
+
+  // The mask must not outlive its cause on ANY exit path. 'restored' and
+  // 'auth-failed' are covered above; this covers the third — the retry after
+  // the wait comes back 5xx, i.e. still no verdict, but no longer a throttle.
+  it('clears the throttle mask when the post-wait retry is a transient failure', async () => {
+    vi.useFakeTimers();
+    const { restore } = mockLocation('/devices');
+    try {
+      useAuthStore.getState().login(baseUser, baseTokens);
+      useAuthStore.getState().setTokens(null);
+
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(
+          makeResponseWithHeaders({ retryAfter: 1 }, false, 429, { 'Retry-After': '1' })
+        )
+        .mockResolvedValue(makeResponse({ error: 'bad gateway' }, false, 502));
+      vi.stubGlobal('fetch', fetchMock);
+
+      const pending = fetchWithAuth('/devices').catch((err: unknown) => err);
+      await vi.advanceTimersByTimeAsync(10_000);
+      const result = await pending;
+
+      // A sustained 5xx is still a bounded-retries-then-evict path (unchanged
+      // by #3696) — what must NOT happen is the throttle mask being left up.
+      expect(result).toBeInstanceOf(AuthSessionExpiredError);
+      expect(useAuthStore.getState().authThrottledUntil).toBeNull();
+    } finally {
+      restore();
+      vi.useRealTimers();
+    }
+  });
+
+  // A `Retry-After: 0` (the sliding window's oldest entry about to age out)
+  // must never be honoured literally — that is a busy-loop against the very
+  // limiter that is rejecting us. Clamped to a floor of one second.
+  it('clamps a zero/absent Retry-After to a non-zero wait', async () => {
+    vi.useFakeTimers();
+    const { restore } = mockLocation('/devices');
+    try {
+      useAuthStore.getState().login(baseUser, baseTokens);
+      useAuthStore.getState().setTokens(null);
+
+      const fetchMock = vi.fn().mockResolvedValue(
+        makeResponseWithHeaders({ error: 'Too many refresh attempts.' }, false, 429, {
+          'Retry-After': '0'
+        })
+      );
+      vi.stubGlobal('fetch', fetchMock);
+
+      const pending = fetchWithAuth('/devices').catch(() => undefined);
+      await vi.advanceTimersByTimeAsync(0);
+
+      const until = useAuthStore.getState().authThrottledUntil;
+      expect(until).not.toBeNull();
+      expect(until! - Date.now()).toBeGreaterThan(0);
+      // Still exactly one refresh — the clamp did not turn into an immediate retry.
+      expect(refreshCallsOf(fetchMock)).toHaveLength(1);
+
+      await vi.advanceTimersByTimeAsync(120_000);
+      await pending;
+    } finally {
+      restore();
+      vi.useRealTimers();
+    }
+  });
+
+  // The detailed restore helper is what AuthOverlay / AuthGuard branch on, so
+  // 'throttled' has to reach them distinctly from 'auth-failed' — collapsing
+  // the two is what produced the bare, unexplained soft redirect to /login.
+  it('surfaces a 429 as a distinct "throttled" outcome to restore callers', async () => {
+    vi.useFakeTimers();
+    try {
+      useAuthStore.getState().login(baseUser, baseTokens);
+      useAuthStore.getState().setTokens(null);
+
+      const fetchMock = vi.fn().mockResolvedValue(
+        makeResponseWithHeaders({ retryAfter: 1 }, false, 429, { 'Retry-After': '1' })
+      );
+      vi.stubGlobal('fetch', fetchMock);
+
+      const pending = restoreAccessTokenFromCookieDetailed();
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(await pending).toBe('throttled');
+      expect(useAuthStore.getState().isAuthenticated).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   // The retry is bounded: a sustained gateway outage still evicts once the
@@ -643,7 +961,7 @@ describe('auth API helpers', () => {
 
     const result = await apiLogin('user@example.com', 'password');
 
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       success: true,
       mfaRequired: true,
       tempToken: 'temp-1',
@@ -694,16 +1012,221 @@ describe('auth API helpers', () => {
     expect(result).toEqual({ success: true, user: { ...baseUser, requiresSetup: false }, tokens, requiresSetup: false });
   });
 
+  it.each([
+    {
+      name: 'password login',
+      invoke: () => apiLogin('user@example.com', 'password'),
+      responses: [
+        makeResponse({ reason: 'auth_binding_rotation_required' }, false, 428),
+        makeResponse({ user: baseUser, tokens: baseTokens }),
+      ],
+      issuerPath: '/api/v1/auth/login',
+    },
+    {
+      name: 'MFA verification',
+      invoke: () => apiVerifyMFA('123456', 'temp-1', 'totp'),
+      responses: [
+        makeResponse({ reason: 'auth_binding_rotation_required' }, false, 428),
+        makeResponse({ user: baseUser, tokens: baseTokens }),
+      ],
+      issuerPath: '/api/v1/auth/mfa/verify',
+    },
+    {
+      name: 'email verification finalization',
+      invoke: () => apiVerifyEmail('verify-token'),
+      responses: [
+        makeResponse({ reason: 'binding_refresh' }, false, 428),
+        makeResponse({ verified: true, user: baseUser, tokens: baseTokens }),
+      ],
+      issuerPath: '/api/v1/auth/verify-email',
+    },
+    {
+      name: 'invite acceptance',
+      invoke: () => apiAcceptInvite('invite-token', 'strong-password'),
+      responses: [
+        makeResponse({ reason: 'binding_refresh' }, false, 428),
+        makeResponse({ user: baseUser, tokens: baseTokens }),
+      ],
+      issuerPath: '/api/v1/auth/accept-invite',
+    },
+  ])('retries $name exactly once on 428 and advertises transition-v1', async ({ invoke, responses, issuerPath }) => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(responses[0])
+      .mockResolvedValueOnce(responses[1]);
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await invoke();
+
+    expect(result.success).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    for (const [url, init] of fetchMock.mock.calls as Array<[string, RequestInit]>) {
+      expect(url).toBe(issuerPath);
+      expect(new Headers(init.headers).get('x-breeze-auth-transition')).toBe('v1');
+    }
+    expect(fetchMock.mock.calls[1]?.[1]?.body).toBe(fetchMock.mock.calls[0]?.[1]?.body);
+  });
+
+  it('retries only passkey verification on 428, not challenge options', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(makeResponse({ options: { challenge: 'challenge-1' } }))
+      .mockResolvedValueOnce(makeResponse({ reason: 'auth_binding_rotation_required' }, false, 428))
+      .mockResolvedValueOnce(makeResponse({ user: baseUser, tokens: baseTokens }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await apiVerifyPasskeyMFA('temp-1');
+
+    expect(result.success).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(String(fetchMock.mock.calls[0][0])).toContain('/auth/mfa/passkey/options');
+    const verifyCalls = fetchMock.mock.calls.slice(1) as Array<[string, RequestInit]>;
+    expect(verifyCalls).toHaveLength(2);
+    for (const [url, init] of verifyCalls) {
+      expect(url).toContain('/auth/mfa/passkey/verify');
+      expect(new Headers(init.headers).get('x-breeze-auth-transition')).toBe('v1');
+    }
+  });
+
   it('apiLogout clears state even when logout network call fails', async () => {
     useAuthStore.getState().login(baseUser, baseTokens);
     const fetchMock = vi.fn().mockRejectedValue(new Error('network down'));
     vi.stubGlobal('fetch', fetchMock);
 
-    await apiLogout();
+    const outcome = await apiLogout();
 
+    expect(outcome.kind).toBe('partial');
     expect(useAuthStore.getState().isAuthenticated).toBe(false);
     expect(useAuthStore.getState().tokens).toBeNull();
     expect(useAuthStore.getState().user).toBeNull();
+  });
+
+  it('apiLogout surfaces durable server failure while always evicting locally', async () => {
+    useAuthStore.getState().login(baseUser, baseTokens);
+    const fetchMock = vi.fn().mockResolvedValue(makeResponse({ error: 'postgres unavailable' }, false, 500));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const outcome = await apiLogout();
+
+    expect(outcome).toMatchObject({ kind: 'partial' });
+    expect(useAuthStore.getState().isAuthenticated).toBe(false);
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const headers = new Headers(init.headers);
+    expect(headers.get('Authorization')).toBe('Bearer access-old');
+    expect(headers.get('x-breeze-csrf')).toBe('csrf-test-token');
+    expect(headers.get('x-breeze-auth-transition')).toBe('v1');
+  });
+
+  it('apiLogout reports complete only after a successful terminal response', async () => {
+    useAuthStore.getState().login(baseUser, baseTokens);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(makeResponse({ success: true })));
+
+    await expect(apiLogout()).resolves.toEqual({ kind: 'complete' });
+    expect(useAuthStore.getState().isAuthenticated).toBe(false);
+  });
+
+  it('apiLogout remains partial when no authenticated access token is available', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(apiLogout()).resolves.toMatchObject({ kind: 'partial' });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(useAuthStore.getState().isAuthenticated).toBe(false);
+    expect(useAuthStore.getState().tokens).toBeNull();
+  });
+
+  it.each([
+    ['empty body contract', {}],
+    ['negative body contract', { success: false }],
+    ['non-exact body contract', { success: true, extra: true }],
+  ])('apiLogout remains partial for HTTP-ok %s', async (_name, body) => {
+    useAuthStore.getState().login(baseUser, baseTokens);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(makeResponse(body)));
+
+    await expect(apiLogout()).resolves.toMatchObject({ kind: 'partial' });
+    expect(useAuthStore.getState().isAuthenticated).toBe(false);
+  });
+
+  it('accepts only the exact same-origin ticketed Cloudflare navigation URL', () => {
+    const origin = window.location.origin;
+    expect(validateCfTerminalNavigationUrl('/api/v1/auth/cf-access-logout?ticket=signed.ticket'))
+      .toBe('/api/v1/auth/cf-access-logout?ticket=signed.ticket');
+    expect(validateCfTerminalNavigationUrl(
+      `${origin}/api/v1/auth/cf-access-logout?ticket=signed.ticket`,
+    )).toBe('/api/v1/auth/cf-access-logout?ticket=signed.ticket');
+    for (const unsafe of [
+      'https://evil.example/api/v1/auth/cf-access-logout?ticket=signed.ticket',
+      '/api/v1/auth/cf-access-logout',
+      '/api/v1/auth/cf-access-logout?ticket=',
+      '/api/v1/auth/cf-access-logout?ticket=one&ticket=two',
+      '/api/v1/auth/cf-access-logout?ticket=one&next=/evil',
+      '/api/v1/auth/cf-access-logout/complete?ticket=one',
+      '/api/v1/auth/cf-access-logout?ticket=one#fragment',
+      `https://user@${window.location.host}/api/v1/auth/cf-access-logout?ticket=one`,
+    ]) {
+      expect(validateCfTerminalNavigationUrl(unsafe)).toBeNull();
+    }
+  });
+
+  it('prepares CF terminal logout, validates navigation, and then evicts local state', async () => {
+    useAuthStore.getState().login(baseUser, baseTokens);
+    const fetchMock = vi.fn().mockResolvedValue(makeResponse({
+      navigationUrl: '/api/v1/auth/cf-access-logout?ticket=signed.ticket',
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const outcome = await apiPrepareCfTerminalLogout();
+
+    expect(outcome).toEqual({
+      kind: 'ready', navigationUrl: '/api/v1/auth/cf-access-logout?ticket=signed.ticket',
+    });
+    expect(useAuthStore.getState().isAuthenticated).toBe(false);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('/api/v1/auth/cf-access-logout/prepare');
+    const headers = new Headers(init.headers);
+    expect(headers.get('Authorization')).toBe('Bearer access-old');
+    expect(headers.get('x-breeze-csrf')).toBe('csrf-test-token');
+    expect(headers.get('x-breeze-auth-transition')).toBe('v1');
+  });
+
+  it('fails closed on prepare errors or invalid navigation and still evicts locally', async () => {
+    for (const response of [
+      makeResponse({ error: 'postgres unavailable' }, false, 503),
+      makeResponse({ navigationUrl: '/api/v1/auth/cf-access-logout' }),
+      makeResponse({ navigationUrl: 'https://evil.example/api/v1/auth/cf-access-logout?ticket=x' }),
+    ]) {
+      useAuthStore.getState().login(baseUser, baseTokens);
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response));
+      await expect(apiPrepareCfTerminalLogout()).resolves.toMatchObject({ kind: 'partial' });
+      expect(useAuthStore.getState().isAuthenticated).toBe(false);
+    }
+  });
+
+  it('allows a signed-out retry to use only an explicitly retained in-memory access token', async () => {
+    useAuthStore.getState().login(baseUser, baseTokens);
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(makeResponse({ error: 'postgres unavailable' }, false, 503))
+      .mockResolvedValueOnce(makeResponse({
+        navigationUrl: '/api/v1/auth/cf-access-logout?ticket=retry.ticket',
+      }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(apiPrepareCfTerminalLogout()).resolves.toMatchObject({ kind: 'partial' });
+    expect(useAuthStore.getState().tokens).toBeNull();
+    await expect(apiPrepareCfTerminalLogout('access-old')).resolves.toEqual({
+      kind: 'ready', navigationUrl: '/api/v1/auth/cf-access-logout?ticket=retry.ticket',
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('allows ordinary signed-out retry with an explicitly retained in-memory access token', async () => {
+    useAuthStore.getState().login(baseUser, baseTokens);
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(makeResponse({ error: 'postgres unavailable' }, false, 500))
+      .mockResolvedValueOnce(makeResponse({ success: true }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(apiLogout()).resolves.toMatchObject({ kind: 'partial' });
+    await expect(apiLogout('access-old')).resolves.toEqual({ kind: 'complete' });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it('apiLogout resolves on its own 8s timeout when the logout request never settles', async () => {
@@ -803,6 +1326,22 @@ describe('refresh rotation-race recovery (#1107)', () => {
       json: vi.fn().mockResolvedValue({ error: 'Refresh already in progress', reason: 'refresh_raced' })
     }) as unknown as Response;
 
+  it('retries a binding 428 exactly once inside one refresh attempt', async () => {
+    const refreshed: Tokens = { accessToken: 'access-after-binding', expiresInSeconds: 3600 };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(makeResponse({ reason: 'auth_binding_rotation_required' }, false, 428))
+      .mockResolvedValueOnce(makeResponse({ tokens: refreshed }, true, 200));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const restored = await restoreAccessTokenFromCookie();
+
+    expect(restored).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    for (const [, init] of fetchMock.mock.calls as Array<[string, RequestInit]>) {
+      expect(new Headers(init.headers).get('x-breeze-auth-transition')).toBe('v1');
+    }
+  });
+
   it('retries refresh once when the server reports a benign race, then succeeds', async () => {
     const refreshed: Tokens = { accessToken: 'access-after-race', expiresInSeconds: 3600 };
     const fetchMock = vi
@@ -820,17 +1359,117 @@ describe('refresh rotation-race recovery (#1107)', () => {
     expect(useAuthStore.getState().tokens?.accessToken).toBe('access-after-race');
   });
 
-  it('gives up after a single retry if the race persists (no infinite loop)', async () => {
+  // #4097 gave the server a per-binding issuance lease, and the LOSER of two
+  // concurrent /auth/refresh calls now gets a bare 409 instead of the
+  // 401 {reason:'refresh_raced'} it used to get. Same benign race, new status.
+  it('retries refresh once when the server reports the race as a 409, then succeeds', async () => {
+    const refreshed: Tokens = { accessToken: 'access-after-409', expiresInSeconds: 3600 };
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce(racedResponse())
-      .mockResolvedValueOnce(racedResponse());
+      .mockResolvedValueOnce(makeResponse({ error: 'Authentication issuance unavailable' }, false, 409))
+      .mockResolvedValueOnce(makeResponse({ tokens: refreshed }, true, 200));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const restored = await restoreAccessTokenFromCookie();
+
+    expect(restored).toBe(true);
+    // First attempt lost the lease; the second (retry) won — exactly one retry.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(useAuthStore.getState().tokens?.accessToken).toBe('access-after-409');
+  });
+
+  // THE ORG-SWITCH LOGOUT. applyOrgSwitch (lib/orgSwitch.ts) ends in a full
+  // reload; the reloaded page's bootstrap refresh races the pre-reload one that
+  // the unload aborted client-side but the server is still executing under its
+  // issuance lease. The loser's 409 must not evict a session that is alive.
+  it('does not evict on a 409 during the bootstrap refresh (org switch, #4097)', async () => {
+    const { replace, restore } = mockLocation('/devices');
+    try {
+      useAuthStore.getState().login(baseUser, baseTokens);
+      useAuthStore.getState().setTokens(null);
+
+      const refreshed: Tokens = { accessToken: 'access-after-409-bootstrap', expiresInSeconds: 3600 };
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(makeResponse({ error: 'Authentication issuance unavailable' }, false, 409))
+        .mockResolvedValueOnce(makeResponse({ tokens: refreshed }, true, 200))
+        .mockResolvedValue(makeResponse({ devices: [] }, true, 200));
+      vi.stubGlobal('fetch', fetchMock);
+
+      const response = await fetchWithAuth('/devices');
+
+      expect(response.ok).toBe(true);
+      expect(useAuthStore.getState().isAuthenticated).toBe(true);
+      expect(useAuthStore.getState().sessionExpiredReason).toBeNull();
+      expect(replace).not.toHaveBeenCalled();
+      expect(useAuthStore.getState().tokens?.accessToken).toBe('access-after-409-bootstrap');
+    } finally {
+      restore();
+    }
+  });
+
+  // The raced retry waits a FIXED 200ms. When the winner's issuance
+  // transaction is still holding the lease past that (DB/pool contention), the
+  // second attempt races too — and evicting there is the same org-switch
+  // logout, just rarer. A repeated race is still not a verdict on the refresh
+  // cookie, so it belongs in the bounded transient ladder, not in auth-failed.
+  it('backs off instead of expiring the session when the race repeats (#4167)', async () => {
+    const { replace, restore } = mockLocation('/devices');
+    try {
+      useAuthStore.getState().login(baseUser, baseTokens);
+      useAuthStore.getState().setTokens(null);
+
+      const refreshed: Tokens = { accessToken: 'access-after-double-409', expiresInSeconds: 3600 };
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(makeResponse({ error: 'Authentication issuance unavailable' }, false, 409))
+        .mockResolvedValueOnce(makeResponse({ error: 'Authentication issuance unavailable' }, false, 409))
+        .mockResolvedValueOnce(makeResponse({ tokens: refreshed }, true, 200))
+        .mockResolvedValue(makeResponse({ devices: [] }, true, 200));
+      vi.stubGlobal('fetch', fetchMock);
+
+      const response = await fetchWithAuth('/devices');
+
+      expect(response.ok).toBe(true);
+      expect(useAuthStore.getState().tokens?.accessToken).toBe('access-after-double-409');
+      expect(useAuthStore.getState().isAuthenticated).toBe(true);
+      expect(useAuthStore.getState().sessionExpiredReason).toBeNull();
+      expect(replace).not.toHaveBeenCalled();
+    } finally {
+      restore();
+    }
+  });
+
+  // The other direction: backing off must stay BOUNDED. A race that never
+  // clears has to end in a verdict, inside the existing transient cap — no new
+  // counter, no unbounded loop. (The 401 shape's cap is covered above; this is
+  // the 409 shape's.) Two calls per pass (attempt + raced retry) x three
+  // passes = the hard ceiling of six /auth/refresh requests.
+  it('still gives up within the transient cap when the 409 race never clears', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(makeResponse({ error: 'Authentication issuance unavailable' }, false, 409));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const outcome = await restoreAccessTokenFromCookieDetailed();
+
+    expect(outcome).toBe('transient');
+    expect(fetchMock).toHaveBeenCalledTimes(6);
+    expect(useAuthStore.getState().tokens).toBeNull();
+  });
+
+  // Was "gives up after a single retry": a repeated race now backs off into
+  // the bounded transient ladder instead of evicting (#4167). It must still
+  // END — same ceiling as the 409 shape above, two calls per pass across the
+  // three passes MAX_TRANSIENT_REFRESH_RETRIES allows.
+  it('gives up within the transient cap if the race persists (no infinite loop)', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(racedResponse());
     vi.stubGlobal('fetch', fetchMock);
 
     const restored = await restoreAccessTokenFromCookie();
 
     expect(restored).toBe(false);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(6);
   });
 
   it('does not retry on a non-raced 401 (genuine auth failure)', async () => {
@@ -929,6 +1568,21 @@ describe('restoreAccessTokenFromCookieDetailed (Task 3 — proactive keepalive)'
     const outcome = await restoreAccessTokenFromCookieDetailed();
 
     expect(outcome).toBe('auth-failed');
+  });
+
+  // Split out from 'auth-failed' so the heartbeat's eviction can carry the
+  // reason code the login notice keys off. Still an eviction — the origin can
+  // never mint a token — just an honestly-labelled one.
+  it("returns 'origin-rejected' on a 403 \"Invalid request origin\"", async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(makeResponse({ error: 'Invalid request origin' }, false, 403))
+    );
+
+    const outcome = await restoreAccessTokenFromCookieDetailed();
+
+    expect(outcome).toBe('origin-rejected');
+    expect(useAuthStore.getState().tokens).toBeNull();
   });
 
   it("returns 'transient' once a 5xx exhausts the retry budget — no verdict on the cookie", async () => {
@@ -1140,6 +1794,85 @@ describe('fetchAndApplyPreferences locale wiring', () => {
     const [message] = warnSpy.mock.calls[0] as [string];
     expect(message).toContain('locale resolution skipped');
   });
+
+  // #4018: this is the proof that `useAuthStore(s => s.user?.hasPassword)`
+  // is a REAL runtime signal and not a branch only a test can enter. A prior
+  // attempt at the AddDeviceModal SSO copy was correctly reverted precisely
+  // because nothing populated this field: /users/me did not return it, so the
+  // branch was unreachable in production while a unit test that set the store
+  // value directly still went green. These two cases drive the actual
+  // hydration path (GET /users/me -> updateUser) end to end.
+  it('hydrates hasPassword=false from /users/me for a passwordless SSO account', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      makeResponse({
+        id: 'user-1',
+        email: 'user@example.com',
+        name: 'User One',
+        preferences: {},
+        partnerId: 'partner-1',
+        orgId: null,
+        scope: 'partner',
+        partnerDefaultLocale: null,
+        permissions: [],
+        hasPassword: false,
+        requiresSetup: false
+      })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    expect(useAuthStore.getState().user?.hasPassword).toBeUndefined();
+    await fetchAndApplyPreferences();
+
+    expect(useAuthStore.getState().user?.hasPassword).toBe(false);
+  });
+
+  it('hydrates hasPassword=true from /users/me for a password account', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      makeResponse({
+        id: 'user-1',
+        email: 'user@example.com',
+        name: 'User One',
+        preferences: {},
+        partnerId: 'partner-1',
+        orgId: null,
+        scope: 'partner',
+        partnerDefaultLocale: null,
+        permissions: [],
+        hasPassword: true,
+        requiresSetup: false
+      })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await fetchAndApplyPreferences();
+
+    expect(useAuthStore.getState().user?.hasPassword).toBe(true);
+  });
+
+  // A server that has not shipped the field yet must leave the store value
+  // ABSENT (unknown), never coerce it to false — false is what flips the UI
+  // onto the identity-provider road.
+  it('leaves hasPassword absent when /users/me omits it', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      makeResponse({
+        id: 'user-1',
+        email: 'user@example.com',
+        name: 'User One',
+        preferences: {},
+        partnerId: 'partner-1',
+        orgId: null,
+        scope: 'partner',
+        partnerDefaultLocale: null,
+        permissions: [],
+        requiresSetup: false
+      })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await fetchAndApplyPreferences();
+
+    expect(useAuthStore.getState().user?.hasPassword).toBeUndefined();
+  });
 });
 
 describe('apiRegisterPartner recovery action', () => {
@@ -1198,5 +1931,113 @@ describe('apiRegisterPartner recovery action', () => {
     const result = await apiRegisterPartner('Acme', 'jane@acme.test', 'pw', 'Jane');
 
     expect(result).toEqual({ success: false, error: 'Registration failed', action: undefined });
+  });
+});
+
+describe('MFA enrollment API bindings', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useAuthStore.getState().login(baseUser, baseTokens);
+  });
+
+  it('accepts only a fully typed enrollment-options response', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(makeResponse({
+      allowedMethods: { totp: true, sms: false, passkey: true },
+      phoneConfigured: false,
+    })));
+
+    await expect(apiGetMfaEnrollmentOptions()).resolves.toEqual({
+      success: true,
+      options: {
+        allowedMethods: { totp: true, sms: false, passkey: true },
+        phoneConfigured: false,
+      },
+    });
+  });
+
+  // #4413: /auth/mfa/enable answers 401 for "that TOTP is wrong", which is not
+  // an expired bearer. Letting fetchWithAuth's generic 401 path have it either
+  // replays the code or — on the forced-enrollment page, where the user has
+  // nowhere else to go — signs them out for a typo.
+  it('treats a wrong-code 401 as a rejection, not an expired session', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(makeResponse({ error: 'Invalid MFA code' }, false, 401));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(apiEnableTotpMfa('123456', 'password')).resolves.toEqual({
+      success: false,
+      error: 'Invalid MFA code',
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1); // no refresh, no replay
+    expect(useAuthStore.getState().isAuthenticated).toBe(true);
+  });
+
+  it('rejects terminal enrollment responses without replacement access metadata', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(makeResponse({
+      success: true,
+      recoveryCodes: ['RC-ONE'],
+    })));
+
+    await expect(apiEnableTotpMfa('123456', 'password')).resolves.toEqual({
+      success: false,
+      error: 'Invalid MFA enrollment response',
+    });
+  });
+
+  it.each([
+    ['totp', () => apiEnableTotpMfa('123456', 'password')],
+    ['sms', () => apiEnableSmsMfa('password')],
+  ] as const)('returns recovery codes and replacement metadata for %s', async (_method, invoke) => {
+    const payload = {
+      success: true,
+      recoveryCodes: ['RC-ONE', 'RC-TWO'],
+      tokens: { accessToken: 'replacement', expiresInSeconds: 900 },
+    };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(makeResponse(payload)));
+
+    await expect(invoke()).resolves.toEqual(payload);
+  });
+
+  it('completes passkey registration through the terminal replacement response', async () => {
+    const payload = {
+      success: true,
+      recoveryCodes: ['RC-PASSKEY'],
+      tokens: { accessToken: 'replacement-passkey', expiresInSeconds: 900 },
+    };
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(makeResponse({ options: { challenge: 'challenge' } }))
+      .mockResolvedValueOnce(makeResponse(payload)));
+
+    await expect(apiEnrollPasskey('password')).resolves.toEqual(payload);
+  });
+});
+
+describe('MFA enrollment session adoption', () => {
+  it('refuses a terminal response after logout', () => {
+    useAuthStore.getState().login(baseUser, baseTokens);
+    const generation = useAuthStore.getState().sessionGeneration;
+    useAuthStore.getState().logout();
+
+    expect(useAuthStore.getState().commitMfaEnrollmentIfCurrent(generation, {
+      accessToken: 'stale',
+      expiresInSeconds: 900,
+    })).toBe(false);
+    expect(useAuthStore.getState()).toMatchObject({ user: null, tokens: null, isAuthenticated: false });
+  });
+
+  it('refuses a terminal response after a newer login, even for the same user', () => {
+    useAuthStore.getState().login(baseUser, baseTokens);
+    const generation = useAuthStore.getState().sessionGeneration;
+    const newerTokens = { accessToken: 'newer', expiresInSeconds: 900 };
+    useAuthStore.getState().login(baseUser, newerTokens);
+
+    expect(useAuthStore.getState().commitMfaEnrollmentIfCurrent(generation, {
+      accessToken: 'stale',
+      expiresInSeconds: 900,
+    })).toBe(false);
+    expect(useAuthStore.getState().tokens).toEqual(newerTokens);
+    expect(useAuthStore.getState().user?.mfaEnabled).toBe(false);
   });
 });

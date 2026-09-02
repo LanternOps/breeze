@@ -137,9 +137,17 @@ export const bundleComponentSchema = z.object({
 });
 export type BundleComponentInput = z.infer<typeof bundleComponentSchema>;
 
+// A revenueAllocation is money, so the set names the currency it was authored
+// in (#3775 review #7) — the bundle price currency being edited. Required
+// whenever any component carries an allocation; the service stamps it on
+// those rows and only ever uses an allocation in that same currency.
 export const setBundleComponentsSchema = z.object({
-  components: z.array(bundleComponentSchema).max(200)
-});
+  components: z.array(bundleComponentSchema).max(200),
+  allocationCurrency: currencyCodeSchema.optional()
+}).refine(
+  (v) => v.allocationCurrency !== undefined || v.components.every((c) => c.revenueAllocation == null),
+  { message: 'allocationCurrency is required when any component carries a revenueAllocation', path: ['allocationCurrency'] }
+);
 export type SetBundleComponentsInput = z.infer<typeof setBundleComponentsSchema>;
 
 export const listCatalogQuerySchema = z.object({

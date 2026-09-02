@@ -391,6 +391,127 @@
         "blocking": "Wird gesperrt…",
         "blockDevice": "Gerät sperren"
       }
+    },
+    "llmProviderCatalog": {
+      "title": "LLM-Anbieterkatalog",
+      "description": "Von der Plattform geprüfte Endpunkte, über die Partner ihren KI-Datenverkehr leiten können.",
+      "totalEntries": "Gesamtzahl der Einträge:",
+      "refresh": "Aktualisieren",
+      "addEntry": "Anbieter hinzufügen",
+      "loading": "Katalog wird geladen…",
+      "empty": "Noch keine Katalogeinträge.",
+      "dismiss": "Verwerfen",
+      "platformAdmin": {
+        "title": "Plattform-Administratorzugriff erforderlich",
+        "prefix": "Der LLM-Anbieterkatalog wird von Breeze-Plattformadministratoren verwaltet. Ihr Konto",
+        "role": "ein Organisations-/Partneradministrator",
+        "suffix": "kann ihn nicht direkt anzeigen oder bearbeiten."
+      },
+      "errors": {
+        "load": "Katalog konnte nicht geladen werden",
+        "generic": "Ein Fehler ist aufgetreten",
+        "createEntry": "Anbieter konnte nicht erstellt werden",
+        "createRevision": "Revision konnte nicht erstellt werden",
+        "activate": "Revision konnte nicht aktiviert werden",
+        "setStatus": "Status konnte nicht aktualisiert werden",
+        "verify": "Verifizierungsanfrage fehlgeschlagen"
+      },
+      "notice": {
+        "entryCreated": "Anbieter „{{name}}“ erstellt.",
+        "revisionCreated": "Neue Revision für „{{name}}“ erstellt.",
+        "activated": "Revision aktiviert.",
+        "statusUpdated": "Status auf {{status}} aktualisiert."
+      },
+      "status": {
+        "draft": "Entwurf",
+        "listed": "Gelistet",
+        "delisted": "Delistet"
+      },
+      "table": {
+        "slug": "Slug",
+        "name": "Name",
+        "status": "Status",
+        "activeRevision": "Aktive Revision",
+        "revisions": "Revisionen",
+        "actions": "Aktionen"
+      },
+      "actions": {
+        "expand": "Revisionen anzeigen",
+        "collapse": "Revisionen ausblenden",
+        "addRevision": "Revision hinzufügen",
+        "activate": "Aktivieren",
+        "list": "Listen",
+        "delist": "Delisten",
+        "verify": "Verifizierung ausführen"
+      },
+      "confirmDelist": "„{{name}}“ delisten? Partner, die diesen Anbieter bereits nutzen, arbeiten weiter damit, aber er verschwindet aus der Auswahl für neue Einrichtungen.",
+      "revision": {
+        "baseUrl": "Basis-URL",
+        "authMode": "Auth-Modus",
+        "dataNote": "Hinweis zur Datenverarbeitung",
+        "createdAt": "Erstellt",
+        "notVerified": "Nicht verifiziert",
+        "verified": "Verifiziert",
+        "activateBlocked": "Jedes zugeordnete Modell benötigt eine erfolgreiche Verifizierung, bevor diese Revision aktiviert werden kann.",
+        "listBlocked": "Jedes zugeordnete Modell der aktiven Revision benötigt eine erfolgreiche Verifizierung, bevor dieser Anbieter gelistet werden kann."
+      },
+      "authModeOptions": {
+        "x-api-key": "API-Schlüssel-Header",
+        "bearer": "Bearer-Token"
+      },
+      "entryForm": {
+        "title": "Anbieter hinzufügen",
+        "fields": {
+          "slug": "Slug",
+          "name": "Name",
+          "notes": "Notizen"
+        },
+        "placeholders": {
+          "slug": "openrouter",
+          "name": "OpenRouter",
+          "notes": "Interne Notizen zu diesem Anbieter…"
+        },
+        "submit": "Anbieter erstellen",
+        "cancel": "Abbrechen"
+      },
+      "revisionForm": {
+        "title": "Revision für „{{name}}“ hinzufügen",
+        "fields": {
+          "baseUrl": "Basis-URL",
+          "authMode": "Auth-Modus",
+          "dataNote": "Hinweis zur Datenverarbeitung"
+        },
+        "placeholders": {
+          "baseUrl": "https://openrouter.ai/api/anthropic",
+          "dataNote": "Was dieser Endpunkt mit Anfragedaten macht…"
+        },
+        "modelMap": {
+          "title": "Modellzuordnung und Preisgestaltung",
+          "description": "Nur zugeordnete Modelle sind für Partner auswählbar. Preise in Cent pro Million Tokens.",
+          "included": "Dieses Modell einbeziehen",
+          "providerModel": "Anbieter-Modell-ID",
+          "inputPrice": "Eingabe",
+          "outputPrice": "Ausgabe",
+          "cacheReadPrice": "Cache-Lesen",
+          "cacheWritePrice": "Cache-Schreiben"
+        },
+        "submit": "Revision erstellen",
+        "cancel": "Abbrechen",
+        "errors": {
+          "noModelsMapped": "Ordnen Sie mindestens ein Modell zu, bevor Sie eine Revision erstellen."
+        }
+      },
+      "verifyForm": {
+        "title": "Verifizierung ausführen — {{model}}",
+        "description": "Der Schlüssel wird nur für diese Anfrage verwendet und niemals gespeichert.",
+        "apiKeyLabel": "Test-API-Schlüssel",
+        "apiKeyPlaceholder": "Temporären Testschlüssel einfügen",
+        "submit": "Ausführen",
+        "cancel": "Abbrechen",
+        "running": "Wird ausgeführt…",
+        "passed": "Bestanden",
+        "failed": "Fehlgeschlagen"
+      }
     }
   },
   "audit": {

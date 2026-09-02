@@ -116,7 +116,15 @@
     "internalPlaceholder": "Ajoutez une note intérieure...",
     "sending": "Envoi",
     "sendReply": "Envoyer une réponse",
-    "addInternalNote": "Ajouter une note interne"
+    "addInternalNote": "Ajouter une note interne",
+    "attachments": {
+      "attach": "Joindre",
+      "uploading": "Envoi…",
+      "retry": "Réessayer",
+      "remove": "Retirer le fichier",
+      "tooMany": "Vous pouvez joindre au plus {{max}} fichiers à un commentaire.",
+      "tooLarge": "{{name}} dépasse 10 Mo."
+    }
   },
   "ticketFeed": {
     "empty": "Pas encore d’activité.",
@@ -149,6 +157,11 @@
     "deleteDialog": {
       "title": "Supprimer le commentaire",
       "message": "Êtes-vous sûr de vouloir supprimer ce commentaire ? Cette action ne peut être annulée."
+    },
+    "attachments": {
+      "broken": "Impossible de charger {{name}}",
+      "open": "Ouvrir la pièce jointe",
+      "remove": "Retirer la pièce jointe"
     }
   },
   "ticketPartsCard": {
@@ -184,6 +197,7 @@
     "totalTime": "Temps total",
     "billable": "Facturable",
     "timeAmount": "Durée",
+    "noAmount": "—",
     "partsCount": "Parties ({{count}})",
     "partsCount_one": "Parties ({{count}})",
     "partsCount_other": "Parties ({{count}})",
@@ -397,14 +411,25 @@
       "create": "Créer une facture",
       "creating": "Création…",
       "createFailed": "Impossible de créer une facture à partir de ce ticket.",
-      "created": "Projet de facture créé"
+      "created": "Projet de facture créé",
+      "allBlockedByCurrency": "Tout le travail facturable de ce ticket est valorisé dans une devise différente de celle dans laquelle l’organisation facture. Assemblez plutôt un brouillon dans cette devise :",
+      "assembleIn": "Assembler en {{code}} ({{count}} éléments, {{amount}})",
+      "partialLeftOut": "Un brouillon de facture a été créé, mais une partie du travail facturable de ce ticket en a été exclue et reste non facturée.",
+      "openDraft": "Ouvrir le brouillon",
+      "allMissingRate": "Rien n’a pu être facturé : chaque entrée de temps facturable de ce ticket n’a pas de taux horaire.",
+      "missingRateHeading": "Entrées de temps sans taux horaire (non facturées — définissez un taux puis recréez la facture) :",
+      "missingRateEntry": "{{description}} — {{hours}} h",
+      "setRate": "Définir un taux dans la feuille de temps"
     },
     "move": {
       "open": "Passer à une autre organisation...",
       "label": "Passage à l’organisation",
       "selectOrganization": "Organisation sélectionnée...",
       "confirm": "Bouge",
-      "failed": "Coup échoué. Réessayez."
+      "failed": "Coup échoué. Réessayez.",
+      "blockedCurrency": "Ce ticket comporte {{timeCount}} saisies de temps non facturées et {{partCount}} pièces non facturées valorisées en {{sourceCurrency}}, mais {{targetOrg}} facture en {{targetCurrency}}. Facturez-les d’abord, ou déplacez quand même : les montants restent en {{sourceCurrency}} et ne peuvent être facturés que sur un brouillon en {{sourceCurrency}}.",
+      "acceptCurrency": "Je comprends que ces montants restent en {{sourceCurrency}} et ne sont pas convertis.",
+      "moveAnyway": "Déplacer quand même"
     },
     "triage": {
       "title": "Triage suggéré",
@@ -419,6 +444,17 @@
       "applied": "Suggestion de triage des tickets appliquée",
       "feedbackFailed": "Impossible d’enregistrer les retours de triage des tickets.",
       "feedbackSaved": "Retour d’information sur le triage des tickets enregistré"
+    },
+    "aiDraft": {
+      "kindReply": "Réponse rédigée par l’IA",
+      "kindResolutionNote": "Note de résolution rédigée par l’IA",
+      "sendAsMe": "Envoyer en mon nom",
+      "sending": "Envoi en cours…",
+      "discard": "Rejeter",
+      "sendFailed": "Impossible d’envoyer le brouillon de l’IA.",
+      "sent": "Brouillon envoyé",
+      "discardFailed": "Impossible de rejeter le brouillon de l’IA.",
+      "discarded": "Brouillon rejeté"
     },
     "resolve": {
       "noteLabel": "Note de résolution (visible pour le demandeur)",
@@ -457,7 +493,8 @@
       "categoryUpdateFailed": "Mise à jour de catégorie échouée. Réessayez.",
       "assigned": "Assigné",
       "unassigned": "Non attribué",
-      "assignFailed": "Assignation échouée. Réessayez."
+      "assignFailed": "Assignation échouée. Réessayez.",
+      "attachmentFailed": "Impossible d'envoyer la pièce jointe."
     },
     "delete": {
       "failed": "Échec de la suppression. Réessayez.",

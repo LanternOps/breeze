@@ -6,6 +6,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // of catalogService; the data path is proven by catalogService.integration.test.ts.
 const results: unknown[][] = [];
 function queueResult(rows: unknown[]) { results.push(rows); }
+/** Queue a REJECTION for the next awaited chain — the transient-failure shape
+ *  (40001 serialization failure, 40P01 deadlock, dropped connection) that a
+ *  locking read can now raise. */
+function queueRejection(err: unknown) { results.push(err as never); }
 
 vi.mock('../db', () => {
   const makeChain = () => {
@@ -15,8 +19,9 @@ vi.mock('../db', () => {
       'delete', 'for', 'innerJoin', 'leftJoin', 'onConflictDoNothing', 'onConflictDoUpdate', '$dynamic', 'execute'
     ];
     for (const m of methods) chain[m] = vi.fn(() => chain);
-    (chain as { then: unknown }).then = (resolve: (v: unknown) => unknown) => {
+    (chain as { then: unknown }).then = (resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) => {
       const rows = results.shift() ?? [];
+      if (rows instanceof Error) return Promise.reject(rows).then(resolve, reject);
       return Promise.resolve(rows).then(resolve);
     };
     return chain;
@@ -256,26 +261,50 @@ describe('setOrgPriceOverride', () => {
   beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
 
   it('locks the item, stamps the org currency + partner_id, upserts', async () => {
-    queueResult([{ id: 'i1', partnerId: 'p1', name: 'Widget' }]); // lock
-    queueResult([{ partnerId: 'p1', currencyCode: 'EUR' }]); // org
+    queueResult([{ currencyCode: 'EUR' }]); // org SHARE barrier FIRST (#3778)
+    queueResult([{ id: 'i1', partnerId: 'p1', name: 'Widget' }]); // item lock
+    queueResult([{ partnerId: 'p1' }]); // org partner membership
     queueResult([{ id: 'ov1', unitPrice: '9.00', currencyCode: 'EUR' }]);
     const row = await svc.setOrgPriceOverride('i1', 'org1', { unitPrice: 9 }, actor);
     expect(row).toMatchObject({ unitPrice: '9.00' });
-    expect(mock.for.mock.invocationCallOrder[0]!).toBeLessThan(mock.onConflictDoUpdate.mock.invocationCallOrder[0]!);
+    // Lock order (#3778): organizations FOR SHARE, THEN the catalog item FOR
+    // UPDATE, then the upsert — the org lock is the transaction's first statement.
+    expect(mock.for.mock.calls.map((c) => c[0])).toEqual(['share', 'update']);
+    expect(mock.for.mock.invocationCallOrder[1]!).toBeLessThan(mock.onConflictDoUpdate.mock.invocationCallOrder[0]!);
     expect(mock.values).toHaveBeenCalledWith(expect.objectContaining({ partnerId: 'p1', orgId: 'org1', currencyCode: 'EUR', unitPrice: '9.00' }));
   });
 
   it('ORG_DENIED (403) when the org belongs to another partner', async () => {
+    queueResult([{ currencyCode: 'EUR' }]); // org SHARE barrier (#3778)
     queueResult([{ id: 'i1', partnerId: 'p1', name: 'Widget' }]);
-    queueResult([{ partnerId: 'p2', currencyCode: 'EUR' }]);
+    queueResult([{ partnerId: 'p2' }]);
     await expect(svc.setOrgPriceOverride('i1', 'org1', { unitPrice: 9 }, actor))
       .rejects.toMatchObject({ status: 403, code: 'ORG_DENIED' });
     expect(mock.insert).not.toHaveBeenCalled();
   });
 
+  it('a transient failure on the org barrier is rethrown, not masked as 403 ORG_DENIED (#3778 finding 5)', async () => {
+    // The barrier's `.catch(() => ORG_DENIED)` used to swallow EVERY rejection:
+    // a 40001/40P01 raised by the new row lock (it contends with
+    // changeOrgCurrency's FOR UPDATE) was reported to the caller as a permanent
+    // authorization failure instead of a retriable error, and helper bugs hid.
+    const serialization = Object.assign(new Error('could not serialize access due to concurrent update'), { code: '40001' });
+    queueRejection(serialization);
+    await expect(svc.setOrgPriceOverride('i1', 'org1', { unitPrice: 9 }, actor))
+      .rejects.toBe(serialization);
+    expect(mock.insert).not.toHaveBeenCalled();
+  });
+
+  it('a missing org on the barrier still maps to 403 ORG_DENIED', async () => {
+    queueResult([]); // org SHARE barrier finds no row
+    await expect(svc.setOrgPriceOverride('i1', 'org1', { unitPrice: 9 }, actor))
+      .rejects.toMatchObject({ status: 403, code: 'ORG_DENIED' });
+  });
+
   it('explicit JPY 10.5 → PRICE_NOT_REPRESENTABLE', async () => {
+    queueResult([{ currencyCode: 'USD' }]); // org SHARE barrier (#3778)
     queueResult([{ id: 'i1', partnerId: 'p1', name: 'Widget' }]);
-    queueResult([{ partnerId: 'p1', currencyCode: 'USD' }]);
+    queueResult([{ partnerId: 'p1' }]);
     await expect(svc.setOrgPriceOverride('i1', 'org1', { unitPrice: 10.5, currencyCode: 'JPY' }, actor))
       .rejects.toMatchObject({ status: 400, code: 'PRICE_NOT_REPRESENTABLE' });
   });
@@ -333,5 +362,106 @@ describe('updateCatalogItem price drivers', () => {
     queueResult([{ id: 'pr1' }]); queueResult([existing]);
     await svc.updateCatalogItem('i1', { markupPercent: 30 }, actor);
     expect(mock.values).toHaveBeenCalledWith(expect.objectContaining({ currencyCode: 'USD', unitPrice: '65.00' }));
+  });
+});
+
+describe('applyImportedPricingBySku (#3775 review #9 — importer duplicate-SKU recovery)', () => {
+  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+
+  it('locks the owned item by SKU FOR UPDATE, upserts the requested sell-currency row + cost, mirrors last, returns item + full price book', async () => {
+    queueResult([{ id: 'i1', partnerId: 'p1', sku: 'CFQ7', costBasis: '10.00', costCurrency: 'USD' }]); // lock by sku
+    queueResult([{ currencyCode: 'USD' }]); // partner currency
+    queueResult([{ currencyCode: 'USD' }]); // existing price-book codes (no EUR row yet)
+    queueResult([{ id: 'pr-eur', itemId: 'i1', currencyCode: 'EUR', unitPrice: '22.00' }]); // EUR upsert
+    queueResult([{ id: 'i1', partnerId: 'p1', sku: 'CFQ7', costBasis: '18.50', costCurrency: 'EUR' }]); // item cost update
+    queueResult([{ currencyCode: 'EUR', unitPrice: '22.00' }, { currencyCode: 'USD', unitPrice: '30.00' }]); // price book read
+    const res = await svc.applyImportedPricingBySku('CFQ7', { prices: [{ currencyCode: 'EUR', unitPrice: 22 }], costBasis: 18.5, costCurrency: 'EUR' }, actor);
+    expect(mock.transaction).toHaveBeenCalledTimes(1);
+    expect(mock.for).toHaveBeenCalledWith('update');
+    expect(mock.for.mock.invocationCallOrder[0]!).toBeLessThan(mock.onConflictDoUpdate.mock.invocationCallOrder[0]!);
+    expect(mock.values).toHaveBeenCalledWith(expect.objectContaining({ itemId: 'i1', partnerId: 'p1', currencyCode: 'EUR', unitPrice: '22.00' }));
+    expect(mock.set).toHaveBeenCalledWith(expect.objectContaining({ costBasis: '18.50', costCurrency: 'EUR' }));
+    // Non-partner currency → the deprecated unit_price mirror is untouched.
+    expect(mock.set).not.toHaveBeenCalledWith(expect.objectContaining({ unitPrice: expect.anything() }));
+    expect(res).toMatchObject({ id: 'i1', costBasis: '18.50', costCurrency: 'EUR' });
+    expect(res.prices).toEqual([{ currencyCode: 'EUR', unitPrice: '22.00' }, { currencyCode: 'USD', unitPrice: '30.00' }]);
+    expect(res.pricingApplied).toEqual({ added: ['EUR'], preserved: [] });
+    expect(emitCatalogEvent).toHaveBeenCalledWith(expect.objectContaining({ type: 'catalog.item.price_changed', catalogItemId: 'i1' }));
+  });
+
+  it('legacy unitPrice lands in the partner currency and rewrites the mirror LAST', async () => {
+    queueResult([{ id: 'i1', partnerId: 'p1', sku: 'CFQ7', costBasis: null, costCurrency: 'USD' }]);
+    queueResult([{ currencyCode: 'USD' }]);
+    queueResult([]); // existing price-book codes — none, so the USD row is ADDED
+    queueResult([{ id: 'pr-usd', itemId: 'i1', currencyCode: 'USD', unitPrice: '22.00' }]); // upsert
+    queueResult([{ id: 'i1', partnerId: 'p1', unitPrice: '22.00' }]); // mirror update
+    queueResult([{ currencyCode: 'USD', unitPrice: '22.00' }]);
+    const res = await svc.applyImportedPricingBySku('CFQ7', { unitPrice: 22 }, actor);
+    expect(mock.onConflictDoUpdate.mock.invocationCallOrder[0]!).toBeLessThan(mock.update.mock.invocationCallOrder[0]!);
+    expect(mock.set).toHaveBeenCalledWith(expect.objectContaining({ unitPrice: '22.00' }));
+    // No cost supplied → the stored cost is left alone (no cost update statement).
+    expect(mock.set).not.toHaveBeenCalledWith(expect.objectContaining({ costBasis: expect.anything() }));
+    expect(res.prices).toEqual([{ currencyCode: 'USD', unitPrice: '22.00' }]);
+  });
+
+  it('an unknown-currency cost (costBasis null) never clobbers the stored cost', async () => {
+    queueResult([{ id: 'i1', partnerId: 'p1', sku: 'CFQ7', costBasis: '10.00', costCurrency: 'USD' }]);
+    queueResult([{ currencyCode: 'USD' }]);
+    queueResult([{ currencyCode: 'USD' }]); // existing codes
+    queueResult([{ id: 'pr-eur', itemId: 'i1', currencyCode: 'EUR', unitPrice: '22.00' }]);
+    queueResult([{ currencyCode: 'EUR', unitPrice: '22.00' }]);
+    await svc.applyImportedPricingBySku('CFQ7', { prices: [{ currencyCode: 'EUR', unitPrice: 22 }], costBasis: null, costCurrency: undefined }, actor);
+    expect(mock.update).not.toHaveBeenCalled();
+  });
+
+  // #3775 review #3: the feed is authoritative for COST, never for the partner's
+  // sell price. A re-import of a SKU already in the catalog must not reset a
+  // hand-adjusted price-book row back to distributor MSRP.
+  it('never overwrites an existing price-book row — the currency is preserved and reported, cost still updates', async () => {
+    queueResult([{ id: 'i1', partnerId: 'p1', sku: 'CFQ7', costBasis: '10.00', costCurrency: 'USD' }]); // lock
+    queueResult([{ currencyCode: 'USD' }]); // partner currency
+    queueResult([{ currencyCode: 'EUR' }, { currencyCode: 'USD' }]); // EUR row already exists
+    queueResult([{ id: 'i1', partnerId: 'p1', sku: 'CFQ7', costBasis: '18.50', costCurrency: 'EUR' }]); // cost update
+    queueResult([{ currencyCode: 'EUR', unitPrice: '99.00' }, { currencyCode: 'USD', unitPrice: '30.00' }]);
+    const res = await svc.applyImportedPricingBySku('CFQ7', { prices: [{ currencyCode: 'EUR', unitPrice: 22 }], costBasis: 18.5, costCurrency: 'EUR' }, actor);
+
+    // No price write at all — not the upsert, not the mirror.
+    expect(mock.onConflictDoUpdate).not.toHaveBeenCalled();
+    expect(mock.values).not.toHaveBeenCalledWith(expect.objectContaining({ currencyCode: 'EUR' }));
+    // The operator's 99.00 survives; the feed cost (real feed truth) is applied.
+    expect(res.prices).toEqual([{ currencyCode: 'EUR', unitPrice: '99.00' }, { currencyCode: 'USD', unitPrice: '30.00' }]);
+    expect(mock.set).toHaveBeenCalledWith(expect.objectContaining({ costBasis: '18.50', costCurrency: 'EUR' }));
+    expect(res.pricingApplied).toEqual({ added: [], preserved: ['EUR'] });
+  });
+
+  it('adds only the currencies with no row and preserves the rest in one re-import', async () => {
+    queueResult([{ id: 'i1', partnerId: 'p1', sku: 'CFQ7', costBasis: null, costCurrency: 'USD' }]);
+    queueResult([{ currencyCode: 'USD' }]);
+    queueResult([{ currencyCode: 'USD' }]); // USD exists, EUR does not
+    queueResult([{ id: 'pr-eur', itemId: 'i1', currencyCode: 'EUR', unitPrice: '22.00' }]); // EUR upsert only
+    queueResult([{ currencyCode: 'EUR', unitPrice: '22.00' }, { currencyCode: 'USD', unitPrice: '30.00' }]);
+    const res = await svc.applyImportedPricingBySku(
+      'CFQ7', { prices: [{ currencyCode: 'EUR', unitPrice: 22 }, { currencyCode: 'USD', unitPrice: 25 }] }, actor);
+
+    expect(mock.values).toHaveBeenCalledWith(expect.objectContaining({ currencyCode: 'EUR', unitPrice: '22.00' }));
+    expect(mock.values).not.toHaveBeenCalledWith(expect.objectContaining({ currencyCode: 'USD' }));
+    // The partner-currency row was PRESERVED, so the deprecated mirror is not rewritten either.
+    expect(mock.set).not.toHaveBeenCalledWith(expect.objectContaining({ unitPrice: expect.anything() }));
+    expect(res.pricingApplied).toEqual({ added: ['EUR'], preserved: ['USD'] });
+  });
+
+  it('refuses an unrepresentable price (JPY 22.5) after the lock and before any write', async () => {
+    queueResult([{ id: 'i1', partnerId: 'p1', sku: 'CFQ7', costBasis: null, costCurrency: 'USD' }]);
+    queueResult([{ currencyCode: 'USD' }]);
+    await expect(svc.applyImportedPricingBySku('CFQ7', { prices: [{ currencyCode: 'JPY', unitPrice: 22.5 }] }, actor))
+      .rejects.toMatchObject({ status: 400, code: 'PRICE_NOT_REPRESENTABLE' });
+    expect(mock.insert).not.toHaveBeenCalled();
+    expect(mock.update).not.toHaveBeenCalled();
+  });
+
+  it('404s when the partner owns no item with that SKU', async () => {
+    queueResult([]);
+    await expect(svc.applyImportedPricingBySku('nope', { unitPrice: 1 }, actor))
+      .rejects.toMatchObject({ status: 404, code: 'ITEM_NOT_FOUND' });
   });
 });

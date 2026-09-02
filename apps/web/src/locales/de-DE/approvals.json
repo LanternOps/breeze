@@ -1,0 +1,45 @@
+{
+  "title": "Genehmigungen",
+  "description": "Prüfen Sie Aktionen mit großer Auswirkung, die auf Ihre Entscheidung warten.",
+  "loading": "Genehmigungen werden geladen…",
+  "loadError": "Genehmigungen konnten nicht geladen werden. Versuchen Sie es erneut.",
+  "retry": "Erneut versuchen",
+  "empty": {
+    "title": "Keine ausstehenden Genehmigungen",
+    "description": "Neue Anfragen erscheinen hier, sobald Ihre Entscheidung erforderlich ist."
+  },
+  "requestedBy": "Angefordert von {{client}}",
+  "proposedByAgent": "Vorgeschlagen von {{agent}} (KI-Agent)",
+  "targetDevice": "Zielgerät: {{hostname}}",
+  "batch": {
+    "approveAll": "Alle genehmigen ({{count}})",
+    "declineAll": "Alle ablehnen ({{count}})",
+    "groupTitle": "{{count}} ähnliche Anfragen · {{tool}}"
+  },
+  "risk": {
+    "low": "Niedriges Risiko",
+    "medium": "Mittleres Risiko",
+    "high": "Hohes Risiko",
+    "critical": "Kritisches Risiko"
+  },
+  "denyPrompt": "Warum lehnen Sie diese Anfrage ab? Eine Begründung ist optional.",
+  "denyReasonPlaceholder": "Optional – wird der anfragenden Person mitgeteilt",
+  "confirmDeny": "Ablehnung bestätigen",
+  "cancel": "Abbrechen",
+  "deny": "Ablehnen",
+  "approve": "Genehmigen",
+  "deciding": "Wird gesendet…",
+  "expiresIn": "Läuft in {{minutes}} Min. ab",
+  "expiresSoon": "Läuft in weniger als einer Minute ab",
+  "errors": {
+    "noApproverDevice": "Registrieren Sie in Ihrem Profil ein Genehmigungsgerät und versuchen Sie es erneut.",
+    "notSoleApprover": "Eine andere berechtigte Person muss diese Anfrage genehmigen.",
+    "verificationFailed": "Die Überprüfung wurde abgebrochen oder ist fehlgeschlagen. Versuchen Sie es erneut.",
+    "alreadyDecided": "Über diese Anfrage wurde bereits entschieden.",
+    "expired": "Diese Anfrage ist abgelaufen, bevor eine Entscheidung getroffen wurde.",
+    "decisionFailed": "Die Entscheidung konnte nicht gesendet werden. Versuchen Sie es erneut.",
+    "batchStepUp": "Für diesen Stapel ist eine stärkere Anmeldung erforderlich. Genehmigen Sie die Anfragen einzeln.",
+    "batchNotHomogeneous": "Über diese Anfragen kann nicht mehr gemeinsam entschieden werden."
+  },
+  "registerDevice": "Gerät registrieren"
+}

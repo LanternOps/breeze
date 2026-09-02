@@ -246,6 +246,7 @@
       "copy": "Kopyalanamadı",
       "delete": "Silinemedi",
       "download": "İndirilemedi",
+      "downloadTooLarge": "İndirilemeyecek kadar büyük ({{size}}). Dosya tarayıcısı en fazla {{max}} boyutunda dosya aktarır.",
       "loadDirectory": "Dizin yüklenemedi",
       "move": "Taşınamadı",
       "readFile": "Dosya okunamadı",
@@ -442,7 +443,7 @@
     "title": "Başlık"
   },
   "remoteTerminal": {
-    "connectedBang": "Bağlantılı Patlama",
+    "connectedBang": "Bağlandı!",
     "connectingTo": "{{hostname}}'ye bağlanılıyor...",
     "copySelection": "Seçimi Kopyala",
     "disconnect": "Bağlantıyı kes",

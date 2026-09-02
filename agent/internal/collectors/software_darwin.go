@@ -4,9 +4,12 @@ package collectors
 
 import (
 	"encoding/json"
+	"log/slog"
 	"strings"
 	"time"
 )
+
+var softwareCommandOutput = runCollectorOutput
 
 // systemProfilerOutput represents the JSON structure from system_profiler
 type systemProfilerOutput struct {
@@ -22,16 +25,24 @@ type applicationInfo struct {
 	LastModified string `json:"lastModified"`
 }
 
-// Collect retrieves installed software from macOS using system_profiler
-func (c *SoftwareCollector) Collect() ([]SoftwareItem, error) {
-	output, err := runCollectorOutput(collectorLongCommandTimeout, "system_profiler", "SPApplicationsDataType", "-json")
+// CollectObservation retrieves installed software and source-completeness evidence.
+func (c *SoftwareCollector) CollectObservation() (SoftwareInventoryObservationV2, error) {
+	if c.collectObservation != nil {
+		return c.collectObservation()
+	}
+	result := softwareSourceResult{Source: SoftwareSourceMacOSSystemProfiler}
+	output, err := softwareCommandOutput(collectorLongCommandTimeout, "system_profiler", "SPApplicationsDataType", "-json")
 	if err != nil {
-		return nil, err
+		slog.Warn("software inventory source failed", "source", result.Source, "error", err.Error())
+		result.FailureCode = SoftwareFailureCommandFailed
+		return buildSoftwareObservation(c.collectorVersion, []softwareSourceResult{result}, c.now, c.newObservationID), nil
 	}
 
 	var profilerData systemProfilerOutput
 	if err := json.Unmarshal(output, &profilerData); err != nil {
-		return nil, err
+		slog.Warn("software inventory source decode failed", "source", result.Source, "error", err.Error())
+		result.FailureCode = SoftwareFailureDecodeFailed
+		return buildSoftwareObservation(c.collectorVersion, []softwareSourceResult{result}, c.now, c.newObservationID), nil
 	}
 
 	var software []SoftwareItem
@@ -59,12 +70,10 @@ func (c *SoftwareCollector) Collect() ([]SoftwareItem, error) {
 		}
 
 		software = append(software, sanitizeSoftwareItem(item))
-		if len(software) >= collectorResultLimit {
-			break
-		}
 	}
 
-	return software, nil
+	result.Items = software
+	return buildSoftwareObservation(c.collectorVersion, []softwareSourceResult{result}, c.now, c.newObservationID), nil
 }
 
 // normalizeVendor converts obtained_from values to human-readable vendor strings
@@ -120,11 +129,5 @@ func parseInstallDate(dateStr string) string {
 }
 
 func sanitizeSoftwareItem(item SoftwareItem) SoftwareItem {
-	item.Name = truncateCollectorString(item.Name)
-	item.Version = truncateCollectorString(item.Version)
-	item.Vendor = truncateCollectorString(item.Vendor)
-	item.InstallDate = truncateCollectorString(item.InstallDate)
-	item.InstallLocation = truncateCollectorString(item.InstallLocation)
-	item.UninstallString = truncateCollectorString(item.UninstallString)
-	return item
+	return sanitizeSoftwareInventoryItem(item)
 }

@@ -10,6 +10,7 @@ import {
   setItemPrice,
   removeItemPrice,
   listItemPrices,
+  resolvePrice,
   CatalogServiceError,
 } from '../../services/catalogService';
 import { catalogActorFrom } from './catalog';
@@ -22,6 +23,7 @@ const writePerm = requirePermission(PERMISSIONS.CATALOG_WRITE.resource, PERMISSI
 const idParam = z.object({ id: z.string().guid() });
 const priceParam = z.object({ id: z.string().guid(), currencyCode: currencyCodeSchema });
 const param = z.object({ id: z.string().guid(), orgId: z.string().guid() });
+const resolveQuery = z.object({ currencyCode: currencyCodeSchema, orgId: z.string().guid().optional() });
 
 function handleServiceError(c: { json: (b: unknown, s: number) => Response }, err: unknown): Response {
   if (err instanceof CatalogServiceError) return c.json({ error: err.message, code: err.code }, err.status);
@@ -41,6 +43,20 @@ catalogPricingRoutes.delete('/:id/pricing/:orgId', scopes, writePerm, zValidator
   try {
     const row = await removeOrgPriceOverride(p.id, p.orgId, catalogActorFrom(c));
     return c.json({ data: row });
+  } catch (err) { return handleServiceError(c, err); }
+});
+
+/**
+ * The server-side resolution (spec §6: org override in `currencyCode` → price-
+ * book row → typed 409 gap) exposed read-only so document editors gate and
+ * preview on the SAME answer the add path will use — never re-derived from
+ * `item.prices`, which cannot see org overrides (post-merge review #6).
+ */
+catalogPricingRoutes.get('/:id/resolve', scopes, readPerm, zValidator('param', idParam), zValidator('query', resolveQuery), async (c) => {
+  try {
+    const q = c.req.valid('query');
+    const data = await resolvePrice(c.req.valid('param').id, q.currencyCode, q.orgId ?? null, catalogActorFrom(c));
+    return c.json({ data });
   } catch (err) { return handleServiceError(c, err); }
 });
 

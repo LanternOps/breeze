@@ -162,6 +162,10 @@ describe('orgTicketSettingsSchema', () => {
     expect(orgTicketSettingsSchema.safeParse({ defaultBillable: true }).success).toBe(true);
     expect(orgTicketSettingsSchema.safeParse({ slaOverrides: { normal: { resolutionMinutes: 480 } } }).success).toBe(true);
   });
+  it('strips a client-supplied rateCurrency', () => {
+    const parsed = orgTicketSettingsSchema.parse({ defaultHourlyRate: 10, rateCurrency: 'EUR' });
+    expect(parsed).not.toHaveProperty('rateCurrency');
+  });
 });
 
 import { createCustomerEmailDomainSchema, updateCustomerEmailDomainSchema } from './ticketConfig';

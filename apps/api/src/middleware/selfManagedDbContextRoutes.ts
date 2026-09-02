@@ -32,9 +32,14 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   { method: 'POST', pattern: /^\/api\/v1\/invoices\/[^/]+\/pay-link\/?$/ },
   // Customer-portal "Pay invoice online".
   { method: 'POST', pattern: /^\/api\/v1\/portal\/invoices\/[^/]+\/pay\/?$/ },
+  // Customer-portal "Pay quote" — createQuotePayLink → createInvoicePayLink →
+  // checkout.sessions.create. Same shape as the invoice pay route; it was missed
+  // when the route shipped, so the portal request tx was pinned across Stripe
+  // (#3777 review F2).
+  { method: 'POST', pattern: /^\/api\/v1\/portal\/quotes\/[^/]+\/pay\/?$/ },
   // Stripe key verification — savePartnerStripeKey calls accounts.retrieve.
   { method: 'POST', pattern: /^\/api\/v1\/partner\/stripe-connect\/key\/?$/ },
-  // Stripe cache lazy refresh — getStripeAccountCurrency may call accounts.retrieve.
+  // Stripe cache lazy refresh — getPartnerStripeAccountSnapshot may call accounts.retrieve.
   { method: 'GET', pattern: /^\/api\/v1\/partner\/stripe-connect\/?$/ },
   // Stripe cache forced refresh — refreshPartnerStripeAccount calls accounts.retrieve.
   { method: 'POST', pattern: /^\/api\/v1\/partner\/stripe-connect\/refresh\/?$/ },
@@ -44,6 +49,19 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // around each DB op, so we must NOT pin a request transaction across the call.
   { method: 'GET', pattern: /^\/api\/v1\/accounting\/[^/]+\/customers\/?$/ },
   { method: 'POST', pattern: /^\/api\/v1\/accounting\/[^/]+\/customers\/import\/?$/ },
+  // Task 5 (2026-08-29-quickbooks-customer-item-mapping) — entity-mapping
+  // reconciliation and sync routes. GET .../mappings and GET
+  // .../income-accounts call the QBO list APIs inside the handler
+  // (listMappingProposals / listRemoteIncomeAccountsForPartner); PUT
+  // .../mappings calls the same provider list to verify a `confirmed`
+  // decision before writing (saveMappingDecision); POST .../mappings/sync
+  // calls provider.upsertCustomer/upsertItem (syncMappedEntity). All four
+  // manage their own short DB access contexts around the outbound QuickBooks
+  // call — see accountingMappingService.ts's per-function comments.
+  { method: 'GET', pattern: /^\/api\/v1\/accounting\/[^/]+\/mappings\/?$/ },
+  { method: 'GET', pattern: /^\/api\/v1\/accounting\/[^/]+\/income-accounts\/?$/ },
+  { method: 'PUT', pattern: /^\/api\/v1\/accounting\/[^/]+\/mappings\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/accounting\/[^/]+\/mappings\/sync\/?$/ },
   // #2190 — the three distributor catalog import routes run a best-effort AI
   // enrichment (enrichDistributorListing, up to a 12s outbound Anthropic call)
   // before persisting. The import services manage their own short
@@ -146,6 +164,28 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // The handler reads the device row through a short `withAuthDbAccessContext`
   // block and makes the agent call outside any context.
   { method: 'GET', pattern: /^\/api\/v1\/devices\/[^/]+\/sessions\/live\/?$/ },
+  // #3922 — LLM provider catalog fidelity verification. The handler runs the
+  // full two-stage harness against an operator-supplied provider endpoint: a
+  // direct tool_use/tool_result round-trip (60s client timeout) AND a real
+  // Agent SDK subprocess session (150s timeout). Holding a pooled connection
+  // idle-in-transaction for up to minutes per call is the #1105 pool-poison
+  // class, and `safeFetch`'s own `assertOutsideHeldDbContext` tripwire throws
+  // in CI when it is called inside a held context — which the guarded fetch in
+  // the harness would do on every verification. The handler reads the revision
+  // and writes the verification through the service's own short
+  // `withSystemDbAccessContext` blocks, with the harness call between them.
+  { method: 'POST', pattern: /^\/api\/v1\/admin\/llm-provider-catalog\/revisions\/[^/]+\/verify\/?$/ },
+  // #3922 review round 2 — revision AUTHORING is the second network-touching
+  // route on this surface, and the quieter one. `createRevision` runs
+  // `validateBaseUrl` → `assertSafeUrl` on the operator-supplied base URL,
+  // which is a real `dns.lookup` against a host the operator chose, BEFORE any
+  // of its DB work. A blackholed or merely slow resolver therefore held a
+  // pooled connection idle-in-transaction for the whole resolution — the
+  // #1105 pool-poison class without a single byte of payload leaving the box.
+  // `createRevision` wraps its reads and its insert in their own short
+  // `withSystemDbAccessContext` block, run strictly AFTER the URL check, so
+  // the handler needs no ambient transaction at all.
+  { method: 'POST', pattern: /^\/api\/v1\/admin\/llm-provider-catalog\/[^/]+\/revisions\/?$/ },
 ];
 
 /**

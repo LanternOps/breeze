@@ -102,6 +102,13 @@ export const invoiceLines = pgTable('invoice_lines', {
   sourceType: invoiceLineSourceTypeEnum('source_type').notNull(),
   // sourceId is polymorphic (time_entries|ticket_parts) — FK-by-convention, no DB FK.
   sourceId: uuid('source_id'),
+  // Durable contract lineage (#3778, wave 6). Unlike the polymorphic sourceId,
+  // this survives contract_lines deletion (removeContractLine is permitted on
+  // ACTIVE contracts) and is same-tenant-enforced by the composite FK
+  // (source_contract_id, org_id) -> contracts(id, org_id) ON DELETE SET NULL
+  // (source_contract_id), created in SQL migration 2026-09-02-a. It is the ONLY
+  // predicate the ACTIVE-contract currency restamp keys on.
+  sourceContractId: uuid('source_contract_id'),
   // catalog_item_id + ticket_id FKs created in SQL (ON DELETE SET NULL) to avoid coupling
   // issued-invoice history to catalog/ticket deletion and dodge import cycles.
   catalogItemId: uuid('catalog_item_id'),

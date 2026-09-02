@@ -25,6 +25,16 @@ vi.mock('../db', () => {
   };
 });
 
+// `./sentry` is mocked so the decrypt-failure report can be ASSERTED rather
+// than merely not-crashing: a real `captureException` no-ops without a DSN
+// (services/sentry.ts's `initialized` guard), which is exactly the unit-test
+// environment — so an un-mocked module would let the missing report pass.
+vi.mock('./sentry', () => ({
+  captureException: (...args: unknown[]) => mockCaptureException(...args)
+}));
+
+const mockCaptureException = vi.fn();
+
 import {
   db,
   getCurrentDbAccessContext,
@@ -317,6 +327,39 @@ describe('loadTenantVariableScope', () => {
     expect(resolved.get('k')?.value).not.toBe('partner-value');
     expect(unreadableForOrg(scope, ORG_A).has('k')).toBe(true);
     warn.mockRestore();
+  });
+
+  // #3409 PR4c-2 review finding 1 — a decrypt failure is a KEY-MATERIAL
+  // incident (a botched rotation, a keyring missing the id a row was sealed
+  // under), not a per-row curiosity. Reported only to `console.warn`, it is
+  // invisible on hosted, where nobody reads container logs and the operator's
+  // only symptom is scripts failing on a variable that visibly exists. It has
+  // to reach Sentry.
+  it('reports a decrypt failure to Sentry, carrying the row id and never the value', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    stubSelect([
+      { id: ROW_BAD, key: 'broken', value: 'enc:v3:unit:not.real.ciphertext', isSecret: false, version: 1, ownerOrgId: ORG_A, forOrgId: ORG_A }
+    ]);
+
+    await loadTenantVariableScope([ORG_A]);
+
+    expect(mockCaptureException).toHaveBeenCalledTimes(1);
+    const [err, context, tags] = mockCaptureException.mock.calls[0] as [unknown, unknown, Record<string, string>];
+    expect(err).toBeInstanceOf(Error);
+    expect(context).toBeUndefined();
+    expect(tags?.tenantVariableId).toBe(ROW_BAD);
+    // Identity only: never the ciphertext, never an attempted plaintext, and
+    // never the variable's key name (which can itself be descriptive).
+    expect(JSON.stringify({ tags, message: (err as Error).message })).not.toContain('not.real.ciphertext');
+    // The existing log line is kept — Sentry is an addition, not a swap.
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('does not report to Sentry when every row decrypts', async () => {
+    stubSelect([encryptedRow(ROW_ORG, 'v', { key: 'k', ownerOrgId: ORG_A, forOrgId: ORG_A })]);
+    await loadTenantVariableScope([ORG_A]);
+    expect(mockCaptureException).not.toHaveBeenCalled();
   });
 });
 

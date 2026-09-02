@@ -104,7 +104,7 @@ export function reportBodyLimitRejection(
 }
 
 function defaultCapture(message: string, tags: Record<string, string>): void {
-  captureMessage(message, 'warning', undefined, tags);
+  captureMessage(message, { eventCode: 'body_limit_rejected', tags });
 }
 
 /**

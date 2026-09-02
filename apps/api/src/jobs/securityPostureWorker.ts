@@ -9,6 +9,7 @@ import { createInstrumentedQueue } from '../services/bullmqQueue';
 import { computeAndPersistOrgSecurityPosture } from '../services/securityPosture';
 import { attachWorkerObservability } from './workerObservability';
 import { isReusableState } from '../services/bullmqUtils';
+import { jobSchedule } from './scheduleRegistry';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -17,7 +18,6 @@ const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
 };
 
 const SECURITY_POSTURE_QUEUE = 'security-posture';
-const SCAN_INTERVAL_MS = 60 * 60 * 1000;
 
 function parsePositiveIntEnv(name: string, defaultValue: number): number {
   const raw = process.env[name];
@@ -247,7 +247,8 @@ async function scheduleSecurityPostureScan(): Promise<void> {
       queuedAt: new Date().toISOString()
     },
     {
-      repeat: { every: SCAN_INTERVAL_MS },
+      // Hourly at a registry-allocated minute (jobs/scheduleRegistry.ts).
+      repeat: { pattern: jobSchedule('security-posture-scan') },
       removeOnComplete: { count: 10 },
       removeOnFail: { count: 50 }
     }

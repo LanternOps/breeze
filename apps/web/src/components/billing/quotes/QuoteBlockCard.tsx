@@ -657,12 +657,14 @@ export function BlockCard({
                 <DistributorLookup
                   blockId={block.id}
                   busy={addLineBusy}
+                  currencyCode={currency}
                   onImportAdd={(product, sellPrice) => onImportAddDistributor(block.id, product, sellPrice)}
                 />
               ) : mode === 'pax8' ? (
                 <Pax8ProductLookup
                   blockId={block.id}
                   busy={addLineBusy}
+                  currencyCode={currency}
                   onImportAdd={(product, term, sellPrice) => onImportAddPax8(block.id, product, term, sellPrice)}
                 />
               ) : mode === 'catalog' ? (

@@ -697,9 +697,21 @@ export async function processReevaluateOfflineSweep(): Promise<{
  * same guard list heartbeat.ts's own device UPDATE uses) that is NOT part of
  * the spec's two-clause predicate but is required for correctness: an already
  * -decommissioned row keeps its (now-irrelevant) uninstall_intent_at stamp
- * forever — it can never heartbeat again to clear it (agentAuthMiddleware
- * 403s decommissioned/quarantined devices, and heartbeat's own UPDATE guards
- * on status) — so without this exclusion every sweep would re-select and
+ * forever — it can never CLEAR it.
+ *
+ * That last claim used to be justified by "it can never heartbeat again —
+ * agentAuthMiddleware 403s decommissioned devices". Since #3986 that is no
+ * longer true: a device removed with `uninstallAgent:true` keeps a narrow
+ * authenticated window so its agent can collect the queued `self_uninstall`.
+ * The EXCLUSION is still correct, on the surviving half of the reasoning —
+ * such a beat cannot clear the stamp:
+ *   - the drain beat is a minimal branch that performs NO device write at all
+ *     (routes/agents/heartbeat.ts), and
+ *   - heartbeat's own device UPDATE is guarded on
+ *     `status NOT IN ('decommissioned','quarantined')`, so it matches 0 rows.
+ * A quarantined device is still 403'd outright.
+ *
+ * So without this exclusion every sweep would re-select and
  * re-"decommission" (no-op status-wise, but still a fresh `updatedAt` write
  * and a fresh audit event) the SAME already-dead row forever: one duplicate
  * `device.decommission` audit row every sweep interval, per historically
@@ -755,9 +767,12 @@ export async function processReapUninstallIntent(): Promise<{
     const reapPredicate = [
       lt(devices.uninstallIntentAt, cutoff),
       or(isNull(devices.lastSeenAt), lt(devices.lastSeenAt, devices.uninstallIntentAt)),
-      // Already-terminal rows can never heartbeat again to clear their stamp —
-      // exclude them so a reaped device isn't re-selected (and re-audited)
-      // forever. Same guard list as heartbeat.ts's own device UPDATE.
+      // Already-terminal rows can never clear their stamp — a quarantined
+      // device is 403'd at auth, and a decommissioned one either is too or
+      // (in the #3986 uninstall drain) beats into a branch that writes nothing
+      // and is guarded on this same status list. Exclude them so a reaped
+      // device isn't re-selected (and re-audited) forever. Same guard list as
+      // heartbeat.ts's own device UPDATE.
       notInArray(devices.status, ['decommissioned', 'quarantined'])
     ];
     const selectConditions = [...reapPredicate];

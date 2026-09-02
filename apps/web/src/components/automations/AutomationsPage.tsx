@@ -46,6 +46,11 @@ function toListAutomation(raw: unknown, t: ScriptsT): Automation {
     name: asString(item.name) ?? t('automationsPage.fallback.untitled'),
     // orgId === null marks a partner-wide ("All orgs") automation (#2133).
     orgId: item.orgId === null ? null : asString(item.orgId),
+    // Seeded, agent-owned automations are read-only in the UI (#3824). The
+    // field has to survive this mapping or the badge and the edit lock silently
+    // never render.
+    managedByAgentId:
+      item.managedByAgentId === null ? null : asString(item.managedByAgentId),
     description: asString(item.description),
     triggerType,
     triggerConfig: {

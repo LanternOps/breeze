@@ -1,4 +1,5 @@
 import { eq, sql } from 'drizzle-orm';
+import type { AuditResult } from '@breeze/shared';
 import { db } from '../../db';
 import { organizations, patchPolicies } from '../../db/schema';
 import { writeRouteAudit, type AuthContext } from '../../services/auditEvents';
@@ -61,7 +62,7 @@ export function writePatchAuditForOrgIds(
     resourceType: string;
     resourceId?: string;
     resourceName?: string;
-    result?: 'success' | 'failure' | 'denied';
+    result?: AuditResult;
     details?: Record<string, unknown>;
   }
 ): void {

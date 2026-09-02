@@ -6,13 +6,18 @@ import type { Organization } from './OrganizationList';
 import OrganizationForm from './OrganizationForm';
 import SiteList, { type Site } from './SiteList';
 import SiteForm from './SiteForm';
+import MergeOrgModal from './MergeOrgModal';
+import ArchiveOrgModal from './ArchiveOrgModal';
 import BulkOrgImport from '../organizations/BulkOrgImport';
-import { fetchWithAuth } from '../../stores/auth';
+import { fetchWithAuth, handleSessionExpired } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
+import { useJwtClaims } from '../../lib/authScope';
 import { extractApiError } from '@/lib/apiError';
+import { runAction, ActionError, handleActionError } from '@/lib/runAction';
+import { showToast } from '../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
 
-type ModalMode = 'closed' | 'add' | 'edit' | 'delete';
+type ModalMode = 'closed' | 'add' | 'edit' | 'archive' | 'merge';
 type SiteModalMode = 'closed' | 'add' | 'edit' | 'delete';
 
 type OrganizationFormValues = {
@@ -40,21 +45,70 @@ export function shouldShowDeviceCount(count: number | undefined): boolean {
   return typeof count === 'number' && Number.isFinite(count);
 }
 
-const statusLabelKeys: Record<Organization['status'], string> = {
+// Exported for test — see OrganizationsPage.statusMaps.test.tsx.
+export const statusLabelKeys: Record<Organization['status'], string> = {
   active: 'organizationsPage.status.active',
   trial: 'organizationsPage.status.trial',
   suspended: 'organizationsPage.status.suspended',
   churned: 'organizationsPage.status.churned',
   offboarding: 'organizationsPage.status.offboarding',
+  merging: 'organizationsPage.status.merging',
+  archived: 'organizationsPage.status.archived',
+  purging: 'organizationsPage.status.purging',
 };
 
-const statusColors: Record<Organization['status'], string> = {
+export const statusColors: Record<Organization['status'], string> = {
   active: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400',
   trial: 'border-blue-500/30 bg-blue-500/10 text-blue-700 dark:text-blue-400',
   suspended: 'border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-400',
   churned: 'border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-400',
   offboarding: 'border-orange-500/30 bg-orange-500/10 text-orange-700 dark:text-orange-400',
+  merging: 'border-indigo-500/30 bg-indigo-500/10 text-indigo-700 dark:text-indigo-400',
+  archived: 'border-gray-500/30 bg-gray-500/10 text-gray-700 dark:text-gray-400',
+  purging: 'border-red-400/30 bg-red-400/10 text-red-600 dark:text-red-300',
 };
+
+/**
+ * Days remaining until an archived org's scheduled purge, rounded UP so a
+ * countdown reading "1 day" never flips to "0 days" while any part of that day
+ * remains — the operator's read of "1 day left" must stay true until it
+ * actually is zero. `null` covers both `purgeAt: null` ("kept indefinitely",
+ * `retentionDays` was Never) and an unparseable timestamp, so callers can
+ * treat the two identically instead of rendering `NaN`.
+ *
+ * Exported for test. `now` defaults to `new Date()` — real callers never pass
+ * it; tests pin it (or the global clock via `vi.setSystemTime`) for a
+ * deterministic countdown.
+ */
+export function purgeCountdownDays(purgeAt: string | null | undefined, now: Date = new Date()): number | null {
+  if (!purgeAt) return null;
+  const target = new Date(purgeAt);
+  if (Number.isNaN(target.getTime())) return null;
+  return Math.ceil((target.getTime() - now.getTime()) / (24 * 60 * 60 * 1000));
+}
+
+/**
+ * The archived-org restore route (`apps/api/src/routes/orgArchive.ts`) answers
+ * a purging target with a bare `{ error: '<this text>' }, 410` — no machine
+ * `code` field the way its MFA rejection carries `code: 'MFA_REQUIRED'`. That
+ * makes this literal string the only handle `runAction`'s `friendly` lookup
+ * has to give the purging case its own localized copy instead of the raw
+ * backend sentence; a copy edit to that route's message must update this
+ * constant too, or the match silently stops firing (degrading gracefully back
+ * to the raw — still correct, just unlocalized — backend text).
+ */
+export const RESTORE_PURGING_ERROR_TEXT = 'Organization is already purging and can no longer be restored';
+
+/**
+ * Debounce for the Archived section's search-driven refetch. Mirrors
+ * `DistributorLookup.tsx`'s `NIGHTLY_DEBOUNCE_MS` — a per-keystroke full page
+ * walk (`fetchAllOrganizations`) is expensive enough, and slow enough to
+ * overlap the NEXT keystroke's own fetch, that firing on every change is both
+ * wasteful and (without the request-token guard below) a genuine race: an
+ * older, broader request resolving after a newer, narrower one would clobber
+ * results the user already found. Exported for the test.
+ */
+export const ARCHIVED_SEARCH_DEBOUNCE_MS = 300;
 
 // Walking every page of GET /orgs/organizations moved to lib/ (#3446 follow-up)
 // so the org-switcher store — a second reader with the same first-50 truncation
@@ -69,6 +123,14 @@ import { fetchAllOrganizations } from '../../lib/fetchAllOrganizations';
 
 export default function OrganizationsPage() {
   const { t } = useTranslation('settings');
+  // Merge is a partner-scope-only action (the API's org-merge routes require
+  // `requireScope('partner', 'system')`, and only a partner token's own
+  // partner org list is ever eligible as a survivor). `useJwtClaims()`
+  // (not the one-shot `getJwtClaims()`) so this stays reactive to the token
+  // landing after cold load instead of freezing the pre-token "unresolved"
+  // answer for the life of the mount (#4013's lesson, TicketingSettingsTabs).
+  const jwt = useJwtClaims();
+  const canMergeOrgs = jwt.status === 'resolved' && jwt.claims.scope === 'partner';
   const [organizations, setOrganizations] = useState<Organization[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -81,7 +143,49 @@ export default function OrganizationsPage() {
   const [searchQuery, setSearchQuery] = useState('');
   const [showBulkImport, setShowBulkImport] = useState(false);
   const [draggedOrgId, setDraggedOrgId] = useState<string | null>(null);
+  /**
+   * True from the moment a reorder PATCH is issued until its reconciliation
+   * settles. Dragging is disabled meanwhile, which SERIALIZES reorders: every
+   * stale-order race on this page needs a second drag to start while the first
+   * request (or its reconciling GET) is still in flight, so removing that
+   * overlap removes the class rather than guarding each instance.
+   *
+   * Before this change the overlap was blocked only as a side effect of the
+   * full-page loading spinner unmounting the draggable rows — which the silent
+   * reconciliation above deliberately no longer does.
+   */
+  const [reorderPending, setReorderPending] = useState(false);
   const [dragOverOrgId, setDragOverOrgId] = useState<string | null>(null);
+
+  // Archived-organizations section state. Collapsed by default and fetched
+  // ONLY on expand (`includeArchived=true`) — deliberately NOT threaded through
+  // `fetchOrganizations`/the org store's own page walk (orgStore.ts), which
+  // stays on the plain unarchived query every other reader of it relies on.
+  // Archived orgs live in their own array rather than merged into
+  // `organizations`, so the active list, its search, drag-reorder, and the
+  // hash-based deep-link effect never have to know archived rows exist.
+  const [archivedExpanded, setArchivedExpanded] = useState(false);
+  const [archivedOrgs, setArchivedOrgs] = useState<Organization[]>([]);
+  const [archivedLoading, setArchivedLoading] = useState(false);
+  const [archivedError, setArchivedError] = useState<string>();
+  // Mirrors the list endpoint's own `archivedTruncated` (archived rows are
+  // capped at the page limit rather than paginated — see orgs.ts) so the
+  // section can say "there are more" instead of silently showing a short list.
+  const [archivedTruncated, setArchivedTruncated] = useState(false);
+  // Which archived org id is mid-restore, so only THAT row's button shows a
+  // busy state — `submitting`/`siteSubmitting` are page/site-modal-scoped and
+  // would incorrectly disable every other control if reused here.
+  const [restoringOrgId, setRestoringOrgId] = useState<string | null>(null);
+  // Monotonic request id for the archived fetch. The search-driven refetch
+  // (see the debounced effect below) can overlap: a full page walk is slow
+  // enough that an OLDER (e.g. broader, pre-search) request can still be
+  // in flight when a NEWER (narrower) one is fired, and nothing guarantees
+  // they resolve in request order. Every call captures the id current at its
+  // own start and re-checks it before touching state, so a stale response
+  // — even one that resolves last — can never clobber a newer one's results
+  // (or its loading flag). A `ref`, not state: it's pure bookkeeping and must
+  // never itself trigger a re-render.
+  const archivedRequestIdRef = useRef(0);
 
   // Sites state
   const [sites, setSites] = useState<Site[]>([]);
@@ -106,15 +210,61 @@ export default function OrganizationsPage() {
     return organizations.filter(org => org.name.toLowerCase().includes(q));
   }, [organizations, searchQuery]);
 
-  const fetchOrganizations = useCallback(async () => {
+  /**
+   * Client-side re-filter of whatever archived rows are already loaded, using
+   * the SAME search box as `filteredOrgs` above. This is deliberately in
+   * addition to — not instead of — forwarding `search` to the server fetch
+   * (see `fetchArchivedOrganizations`): the network round trip means
+   * `archivedOrgs` can briefly still hold the previous query's results after a
+   * keystroke, and filtering client-side too avoids flashing those stale rows
+   * before the fresh, server-filtered set lands. Once it lands this filter is
+   * a no-op (the loaded rows already match), so it costs nothing steady-state.
+   */
+  const filteredArchivedOrgs = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return archivedOrgs;
+    return archivedOrgs.filter(org => org.name.toLowerCase().includes(q));
+  }, [archivedOrgs, searchQuery]);
+
+  /** Renders an archived org's purge countdown, shared by the row and the
+   *  read-only detail pane. `purgeAt: null` (retention "Never") and an
+   *  unparseable timestamp both collapse to "kept indefinitely" via
+   *  `purgeCountdownDays` — see its own doc comment for why those two cases
+   *  are deliberately indistinguishable here. */
+  const renderPurgeCountdown = (purgeAt: string | null | undefined): string => {
+    const days = purgeCountdownDays(purgeAt);
+    if (days === null) return t('organizationsPage.archived.keptIndefinitely');
+    if (days <= 0) return t('organizationsPage.archived.purgeToday');
+    return t('organizationsPage.archived.purgeCountdown', { count: days });
+  };
+
+  /**
+   * `silent` skips the page-level loading flag. `loading` is an EARLY RETURN
+   * that replaces the whole page with a spinner, which is right for the first
+   * load and wrong for a background reconciliation: the reorder catch would
+   * otherwise blank the list the user is looking at, right as its error toast
+   * appears, and take their scroll position and selected org with it.
+   */
+  const fetchOrganizations = useCallback(async (options?: { silent?: boolean }) => {
+    const silent = options?.silent === true;
     try {
-      setLoading(true);
+      if (!silent) setLoading(true);
       setError(undefined);
       const organizations = await fetchAllOrganizations<Organization>(async (page, limit) => {
         const response = await fetchWithAuth(`/orgs/organizations?page=${page}&limit=${limit}`);
         if (!response.ok) {
           if (response.status === 401) {
-            void navigateTo('/login', { replace: true });
+            // handleSessionExpired, NOT a bare navigateTo('/login'): this GET
+            // runs immediately after a successful create/delete (via
+            // refreshOrgs), so its 401 lands while fetchWithAuth may already
+            // have started the real expiry redirect — which carries `next` and
+            // `reason`. A second, bare navigation replaces that destination
+            // with a plain /login. handleSessionExpired is idempotent
+            // (sessionExpiryInFlight), so calling it here either no-ops into
+            // the redirect already running, or performs the full logout for a
+            // 401 that survived a SUCCESSFUL refresh — the case where
+            // fetchWithAuth returns the 401 without handling it at all.
+            handleSessionExpired();
             return null;
           }
           throw new Error(t('organizationsPage.errors.fetchOrganizations'));
@@ -126,7 +276,78 @@ export default function OrganizationsPage() {
     } catch (err) {
       setError(err instanceof Error ? err.message : t('organizationsPage.errors.generic'));
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
+    }
+  }, [t]);
+
+  /**
+   * Fetches the Archived section's contents. Reuses `fetchAllOrganizations`
+   * (the same page-walking helper `fetchOrganizations` above uses) rather than
+   * a bespoke single-page GET: archived orgs ride along on only the LAST live
+   * page (`isFinalOrganizationsPage`, orgs.ts), so a partner with more than one
+   * page of live orgs would silently see an empty Archived section on a
+   * single-page fetch. Walking every page and filtering to `archived === true`
+   * costs nothing extra for the common case (one page) and stays correct for
+   * the uncommon one, at the cost of one throwaway array per open — cheap next
+   * to a GDPR-relevant tenant silently going missing from its own purge queue.
+   *
+   * Deliberately NOT threaded through the org store's own page walk
+   * (`orgStore.ts`) or `fetchOrganizations` above: both stay on the plain
+   * unarchived query every other caller of them expects, and this is the one
+   * reader that opts in to `includeArchived=true`.
+   *
+   * `search` is forwarded as the API's own `search` query param (same one
+   * `fetchOrganizations`'s active-list query would use, and the one
+   * `listArchivedOrgs` filters archived rows by server-side — orgs.ts,
+   * archivedOrgReads.ts). Without this, the truncation note's "search to
+   * narrow the list" was a dead end: the page's search box only filtered
+   * whatever was already loaded, so an archived org past the truncation cap
+   * could never be reached by any partner with more archived orgs than the
+   * page limit.
+   */
+  const fetchArchivedOrganizations = useCallback(async (search: string) => {
+    // Claim this call as "current" BEFORE the first await — a later call
+    // (another keystroke) bumps this again and thereby supersedes it. Every
+    // state-touching point below re-checks `requestId === archivedRequestIdRef.current`
+    // so a stale response is inert even if it resolves after the current one.
+    const requestId = ++archivedRequestIdRef.current;
+    setArchivedLoading(true);
+    setArchivedError(undefined);
+    let truncated = false;
+    try {
+      const all = await fetchAllOrganizations<Organization>(async (page, limit) => {
+        const searchParam = search ? `&search=${encodeURIComponent(search)}` : '';
+        const response = await fetchWithAuth(`/orgs/organizations?page=${page}&limit=${limit}&includeArchived=true${searchParam}`);
+        if (!response.ok) {
+          if (response.status === 401) {
+            handleSessionExpired();
+            return null;
+          }
+          throw new Error(t('organizationsPage.archived.errors.fetch'));
+        }
+        const body = await response.json();
+        // Present only on the page that actually carries the archived block
+        // (orgs.ts) — a page that never looked must not overwrite a `true`
+        // already captured from an earlier page in this same walk.
+        if (typeof body?.archivedTruncated === 'boolean') truncated = body.archivedTruncated;
+        return body;
+      });
+      // A newer search/expand superseded this request while its page walk was
+      // still in flight. Applying these results now — even though they just
+      // arrived — would clobber whatever the newer request already rendered
+      // (or is about to): the exact race this guard exists to close.
+      if (requestId !== archivedRequestIdRef.current) return;
+      if (all === null) return;
+      setArchivedOrgs(all.filter((org) => org.archived === true));
+      setArchivedTruncated(truncated);
+    } catch (err) {
+      if (requestId !== archivedRequestIdRef.current) return;
+      setArchivedError(err instanceof Error ? err.message : t('organizationsPage.errors.generic'));
+    } finally {
+      // Only the current request may clear the busy flag — an old request's
+      // finally firing after a newer one started must not flip the spinner
+      // off out from under the request that's still actually in flight.
+      if (requestId === archivedRequestIdRef.current) setArchivedLoading(false);
     }
   }, [t]);
 
@@ -182,6 +403,31 @@ export default function OrganizationsPage() {
     fetchOrganizations();
   }, [fetchOrganizations]);
 
+  // Fetch-on-expand: the Archived section starts collapsed and empty, and only
+  // issues the `includeArchived=true` request the moment it's opened — not on
+  // page mount. Also re-fires whenever the page's own search box changes
+  // while expanded, forwarding the term as the API's `search` param — the
+  // same box that filters the active list above doubles as the archived
+  // section's search, so a >100-row partner can still reach an archived org
+  // past the truncation cap. No "already fetched" cache: every expand/search
+  // change re-issues the request, which is cheap next to a stale purge
+  // countdown or an unreachable archived tenant.
+  //
+  // Debounced (mirrors `DistributorLookup.tsx`'s nightly search): a full page
+  // walk is real network work, expensive enough to still be in flight when
+  // the next keystroke fires another one. The debounce cuts the number of
+  // overlapping requests way down; the request-token guard inside
+  // `fetchArchivedOrganizations` is what makes an overlap that DOES still
+  // happen (e.g. a slow response outliving the 300ms window) harmless rather
+  // than a race where a stale reply can clobber a fresher one.
+  useEffect(() => {
+    if (!archivedExpanded) return;
+    const timer = setTimeout(() => {
+      void fetchArchivedOrganizations(searchQuery.trim());
+    }, ARCHIVED_SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [archivedExpanded, searchQuery, fetchArchivedOrganizations]);
+
   // Load the partner's default timezone once so new sites pre-select it.
   // Best-effort: on any failure we silently fall back to the form's UTC default.
   useEffect(() => {
@@ -217,6 +463,15 @@ export default function OrganizationsPage() {
 
   useEffect(() => {
     if (selectedOrg) {
+      // An archived org is outside the request's own accessible-org set by
+      // design (RLS excludes it from `accessibleOrgIds`), so its sites read
+      // would come back an empty array regardless of the real count — reading
+      // that as "confirmed zero sites" would be a lie. The read-only detail
+      // pane has no sites section anyway, so skip the request outright.
+      if (selectedOrg.status === 'archived') {
+        setSites([]);
+        return;
+      }
       // Skip the fetch if org creation already fetched sites for this org
       // synchronously — avoids a redundant concurrent GET per create.
       if (skipSiteFetchForOrgId.current === selectedOrg.id) {
@@ -238,9 +493,66 @@ export default function OrganizationsPage() {
     void navigateTo(`/settings/organizations/${org.id}`);
   };
 
-  const handleDelete = (org: Organization) => {
+  const handleArchive = (org: Organization) => {
     setSelectedOrg(org);
-    setModalMode('delete');
+    setModalMode('archive');
+  };
+
+  /**
+   * Called by ArchiveOrgModal the moment its archive POST reports 202.
+   * LIST-STATE UPDATE ONLY — mirrors handleMergeComplete: the modal stays open
+   * on its own `done` phase so the operator can see the purge-date summary,
+   * so this must not close the modal or touch `selectedOrg`.
+   */
+  const handleArchiveComplete = (archivedId: string) => {
+    setOrganizations(prev => prev.filter(o => o.id !== archivedId));
+  };
+
+  /**
+   * The done-phase summary's explicit Close button. `selectedOrg` here is the
+   * org that was just archived (handleArchiveComplete already dropped it from
+   * the active list), so it's cleared too — mirrors handleMergeDoneClose.
+   */
+  const handleArchiveDoneClose = () => {
+    setSelectedOrg(null);
+    handleCloseModal();
+  };
+
+  const handleMerge = (org: Organization) => {
+    setSelectedOrg(org);
+    setModalMode('merge');
+  };
+
+  /**
+   * Called by MergeOrgModal once its merge-runs poll reports a genuine
+   * `completed` result. LIST-STATE UPDATE ONLY — deliberately does not close
+   * the modal or touch `selectedOrg`. MergeOrgModal stays open on its own
+   * `done` phase so the operator can actually see the result summary; if this
+   * closed the modal too, the summary would be unmounted the instant it
+   * appeared (React 18 batches this call with the child's own `setPhase`
+   * update into one render).
+   *
+   * NOT a `refreshOrgs()` — the merged-away org is not soft-deleted, it ends
+   * up a terminal `status='merging'` shell with `deleted_at IS NULL`
+   * (services/orgMerge.ts), so a refetch would still return it. The local
+   * filter is the only way to actually drop it from this screen.
+   */
+  const handleMergeComplete = (loserId: string) => {
+    setOrganizations(prev => prev.filter(o => o.id !== loserId));
+  };
+
+  /**
+   * The done-phase summary's explicit Close button. Unlike a plain
+   * `handleCloseModal()`, `selectedOrg` here is known to be the org that was
+   * JUST merged away (handleMergeComplete already dropped it from the list),
+   * so it's cleared too — mirrors handleArchiveDoneClose's selectedOrg-clearing
+   * behavior. A plain Cancel out of the pick/failed phases (before anything
+   * merged) must NOT clear it, which is why this is a separate handler
+   * rather than folded into `onClose`.
+   */
+  const handleMergeDoneClose = () => {
+    setSelectedOrg(null);
+    handleCloseModal();
   };
 
   const handleSelectOrg = (org: Organization) => {
@@ -250,17 +562,144 @@ export default function OrganizationsPage() {
     window.location.hash = org.id;
   };
 
-  const persistOrganizationOrder = useCallback(async (orderedIds: string[]) => {
+  const handleToggleArchived = () => {
+    setArchivedExpanded(prev => !prev);
+  };
+
+  /** Maps the restore route's error tokens to localized copy. MFA is a real
+   *  machine `code`; the purging refusal is matched on its literal backend
+   *  text (see `RESTORE_PURGING_ERROR_TEXT`'s comment for why). Anything else
+   *  (e.g. a plain 409 for a status that can't be restored) falls through to
+   *  the raw backend message via `runAction`'s default handling. */
+  const restoreFriendly = (code: string) => {
+    if (code === 'MFA_REQUIRED') return t('organizationsPage.restore.errors.mfaRequired');
+    if (code === RESTORE_PURGING_ERROR_TEXT) return t('organizationsPage.restore.errors.purging');
+    return undefined;
+  };
+
+  /**
+   * Restores an archived org. This page's OWN list state is updated
+   * synchronously/optimistically, mirroring the archive/merge complete
+   * handlers above: drop it from `archivedOrgs`, add it back to the active
+   * `organizations` list under the status the API reports (its PRE-archive
+   * status — restoring a suspended org lands it back suspended, not active),
+   * and re-select it so the detail pane switches out of read-only
+   * immediately. Deliberately not a `refreshOrgs()` (which also re-fetches
+   * this page's OWN list): that would re-fetch the plain list and could race
+   * this optimistic update, and everything the active list needs
+   * (id/name/status/deviceCount/createdAt) already rode along on the archived
+   * row itself.
+   *
+   * The global org store (`orgStore.ts`, feeds the org-switcher/sidebar) is a
+   * SEPARATE concern from this page's own state and doesn't share that
+   * optimistic update — it has to hear about the restored org from the server
+   * to pick up fields this page never had (partnerId, currencyCode, trial
+   * end date). Fired fire-and-forget, same as `refreshOrgs` does for org
+   * create: it must not block clearing `restoringOrgId` or block/replace the
+   * success toast, and a failure here is a stale switcher entry, not a
+   * failed restore — the restore itself already committed.
+   */
+  const handleRestore = async (org: Organization) => {
+    setRestoringOrgId(org.id);
     try {
-      const res = await fetchWithAuth('/orgs/organizations/order', {
-        method: 'PATCH',
-        body: JSON.stringify({ orderedIds })
+      const data = await runAction<{ status: string; recreateRequired: string[] }>({
+        request: () => fetchWithAuth(`/orgs/organizations/${org.id}/restore`, { method: 'POST' }),
+        errorFallback: t('organizationsPage.restore.errors.restore'),
+        friendly: restoreFriendly,
+        onUnauthorized: handleSessionExpired,
       });
-      if (!res.ok) throw new Error(`Reorder failed (${res.status})`);
+
+      const restoredStatus = data.status as Organization['status'];
+      const restoredOrg: Organization = { ...org, status: restoredStatus, archived: undefined, purgeAt: undefined };
+
+      setArchivedOrgs(prev => prev.filter(o => o.id !== org.id));
+      setOrganizations(prev => [...prev, restoredOrg]);
+      setSelectedOrg(restoredOrg);
+      useOrgStore.getState().fetchOrganizations().catch((storeErr) => {
+        console.warn('[OrganizationsPage] org store refresh failed after restore', storeErr);
+      });
+
+      const parts = [t('organizationsPage.restore.success', { name: org.name, status: t(/* i18n-dynamic */ statusLabelKeys[restoredStatus]) })];
+      if (data.recreateRequired.length > 0) {
+        parts.push(t('organizationsPage.restore.recreateRequiredNote', { items: data.recreateRequired.join('; ') }));
+      }
+      if (restoredStatus === 'suspended') {
+        parts.push(t('organizationsPage.restore.suspendedNote'));
+      }
+      showToast({ message: parts.join(' '), type: 'success' });
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('organizationsPage.errors.saveOrder'));
-      // Revert by re-fetching the authoritative order from the server.
-      void fetchOrganizations();
+      // runAction already toasted (the friendly copy above for MFA/purging, or
+      // the raw backend message for anything else, e.g. a 409). onUnauthorized
+      // handles a 401 redirect. Only a non-ActionError escape needs a fallback.
+      handleActionError(err, t('organizationsPage.restore.errors.restore'));
+    } finally {
+      setRestoringOrgId(null);
+    }
+  };
+
+  const persistOrganizationOrder = useCallback(async (orderedIds: string[]) => {
+    setReorderPending(true);
+    try {
+      // runAction, not setError: this handler was SILENT. It set the page error
+      // and then called fetchOrganizations() to revert the optimistic order —
+      // and that function calls setError(undefined) before its first await, so
+      // React batches the two updates and renders no failure at all. A toast
+      // survives the refetch.
+      await runAction({
+        request: () =>
+          fetchWithAuth('/orgs/organizations/order', {
+            method: 'PATCH',
+            body: JSON.stringify({ orderedIds })
+          }),
+        errorFallback: t('organizationsPage.errors.saveOrder'),
+        onUnauthorized: handleSessionExpired,
+      });
+    } catch {
+      // Re-fetch the authoritative order. Two earlier attempts were wrong in
+      // instructive ways, so the reasoning is worth keeping:
+      //
+      //   1. Skipping reconciliation for status 0 (to dodge a redirect race)
+      //      left an ordinary dropped connection showing an order the server
+      //      never accepted, with only a transient toast and no correction.
+      //   2. Restoring a locally captured pre-drag array fixes that but CANNOT
+      //      be correct: `runAction` collapses every request-side throw to
+      //      status 0, so a PATCH that COMMITTED and then lost its response is
+      //      indistinguishable from one that never arrived. Restoring locally
+      //      would then show an order the server does not have — the same
+      //      lie, in the other direction. It also races an in-flight
+      //      authoritative GET and can clobber newer data with an older
+      //      snapshot.
+      //
+      // Only the server knows what actually persisted, so the closest thing to
+      // a correct answer is to ask it. Two limits, stated rather than implied:
+      //
+      //   - A slow GET could install an order that a later reorder already
+      //     superseded. That needs a SECOND drag to overlap the first request,
+      //     which `reorderPending` now prevents by disabling dragging until
+      //     this settles. A client generation counter was tried first and
+      //     reverted: it discarded genuinely current create/delete/import
+      //     refreshes — leaving a newly created org invisible — while still
+      //     not covering a GET resolving during an in-flight PATCH.
+      //     Serializing the drags removes the overlap those guards were
+      //     chasing. Two reorders from SEPARATE TABS can still interleave;
+      //     that one needs a revision or compare-and-swap on the endpoint,
+      //     which has neither.
+      //   - Reconciliation used to be authoritative only up to the FIRST page:
+      //     the list endpoint paged by `created_at, id` and applied the
+      //     partner's preferred order only WITHIN each page, so a drag that
+      //     crossed a page boundary could not survive the refetch. Fixed
+      //     server-side in #4004 — the preferred order is now the leading
+      //     ORDER BY term of the paginated query, so the page walk returns the
+      //     stored order end to end and this GET is authoritative for the whole
+      //     list.
+      //
+      // The refetch was previously unsafe purely because fetchOrganizations
+      // answered its own 401 with a bare navigateTo('/login'), which raced the
+      // richer session-expiry redirect. That is fixed at its source above, so
+      // the 401 path of this second GET is idempotent.
+      await fetchOrganizations({ silent: true });
+    } finally {
+      setReorderPending(false);
     }
   }, [fetchOrganizations, t]);
 
@@ -316,16 +755,23 @@ export default function OrganizationsPage() {
   const handleSubmit = async (values: OrganizationFormValues) => {
     setSubmitting(true);
     try {
-      const response = await fetchWithAuth('/orgs/organizations', {
-        method: 'POST',
-        body: JSON.stringify(values)
+      // runAction, not setError. The failure has to be VISIBLE, and the page
+      // error banner is not: it renders outside this modal, which stays open on
+      // failure behind a `fixed inset-0 z-50` overlay, so the message landed
+      // underneath the form the user is still looking at. Nothing is rendered
+      // inside the dialog itself. The toast container is mounted after the page
+      // slot in DashboardLayout at the same z-50, so it paints above the
+      // overlay — which is what makes the API's own text reachable at all.
+      const createdOrg = await runAction<{ id?: string } | null>({
+        request: () =>
+          fetchWithAuth('/orgs/organizations', {
+            method: 'POST',
+            body: JSON.stringify(values)
+          }),
+        errorFallback: t('organizationsPage.errors.saveOrganization'),
+        onUnauthorized: handleSessionExpired,
+        parseSuccess: (data) => (data ?? null) as { id?: string } | null,
       });
-
-      if (!response.ok) {
-        throw new Error(t('organizationsPage.errors.saveOrganization'));
-      }
-
-      const createdOrg = await response.json().catch(() => null) as { id?: string } | null;
 
       await refreshOrgs();
       handleCloseModal();
@@ -359,34 +805,23 @@ export default function OrganizationsPage() {
         }
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('organizationsPage.errors.generic'));
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  const handleConfirmDelete = async () => {
-    if (!selectedOrg) return;
-
-    setSubmitting(true);
-    try {
-      const response = await fetchWithAuth(`/orgs/organizations/${selectedOrg.id}`, {
-        method: 'DELETE'
-      });
-
-      if (!response.ok) {
-        throw new Error(t('organizationsPage.errors.deleteOrganization'));
+      // runAction already surfaced an ActionError as a toast, and onUnauthorized
+      // is redirecting on 401 — re-storing either in the page banner would be a
+      // second, INVISIBLE copy (it renders behind this modal). Only a
+      // non-ActionError escaped runAction untoasted, so only that is surfaced.
+      if (!(err instanceof ActionError)) {
+        // A toast, NOT setError. The modal is still open on failure and the
+        // page banner renders behind its `fixed inset-0 z-50` overlay, so
+        // routing an unexpected error there reproduces the exact invisibility
+        // this change removes. Reachable in practice: `runAction` calls
+        // `onUnauthorized` OUTSIDE its request try/catch, so a throw from
+        // handleSessionExpired's logout or location.replace arrives here as a
+        // non-ActionError.
+        showToast({
+          message: err instanceof Error ? err.message : t('organizationsPage.errors.generic'),
+          type: 'error'
+        });
       }
-
-      const deletedId = selectedOrg.id;
-      await refreshOrgs();
-      handleCloseModal();
-
-      if (selectedOrg?.id === deletedId) {
-        setSelectedOrg(null);
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : t('organizationsPage.errors.generic'));
     } finally {
       setSubmitting(false);
     }
@@ -442,20 +877,39 @@ export default function OrganizationsPage() {
         : '/orgs/sites';
       const method = siteModalMode === 'edit' ? 'PATCH' : 'POST';
 
-      const response = await fetchWithAuth(url, {
-        method,
-        body: JSON.stringify(payload)
+      // This handler already read the body — but it threw into `setError`,
+      // whose banner sits behind the still-open site modal. runAction keeps the
+      // extracted message and puts it somewhere the user can actually see.
+      await runAction({
+        request: () => fetchWithAuth(url, { method, body: JSON.stringify(payload) }),
+        // `organizationsPage.errors.saveSite` interpolates {{status}}, which
+        // runAction does not expose when building the fallback — passing 0
+        // renders the nonsense "Failed to save site (0)". This is the existing
+        // status-free sibling, present in all 8 locales, so no new keys and
+        // nothing for localeParity to catch.
+        errorFallback: t('siteDetailPage.errors.saveSite'),
+        onUnauthorized: handleSessionExpired,
       });
-
-      if (!response.ok) {
-        const data = await response.json().catch(() => ({}));
-        throw new Error(extractApiError(data, t('organizationsPage.errors.saveSite', { status: response.status })));
-      }
 
       await fetchSites(selectedOrg.id);
       handleCloseSiteModal();
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('organizationsPage.errors.generic'));
+      // See the org handlers above: runAction already toasted an ActionError,
+      // and onUnauthorized handles 401. Only a non-ActionError escape is
+      // unsurfaced, and the page banner is invisible behind this modal anyway.
+      if (!(err instanceof ActionError)) {
+        // A toast, NOT setError. The modal is still open on failure and the
+        // page banner renders behind its `fixed inset-0 z-50` overlay, so
+        // routing an unexpected error there reproduces the exact invisibility
+        // this change removes. Reachable in practice: `runAction` calls
+        // `onUnauthorized` OUTSIDE its request try/catch, so a throw from
+        // handleSessionExpired's logout or location.replace arrives here as a
+        // non-ActionError.
+        showToast({
+          message: err instanceof Error ? err.message : t('organizationsPage.errors.generic'),
+          type: 'error'
+        });
+      }
     } finally {
       setSiteSubmitting(false);
     }
@@ -465,15 +919,32 @@ export default function OrganizationsPage() {
     if (!selectedSite || !selectedOrg) return;
     setSiteSubmitting(true);
     try {
-      const response = await fetchWithAuth(`/orgs/sites/${selectedSite.id}`, {
-        method: 'DELETE'
+      await runAction({
+        request: () =>
+          fetchWithAuth(`/orgs/sites/${selectedSite.id}`, { method: 'DELETE' }),
+        errorFallback: t('organizationsPage.errors.deleteSite'),
+        onUnauthorized: handleSessionExpired,
       });
-      if (!response.ok) throw new Error(t('organizationsPage.errors.deleteSite'));
 
       await fetchSites(selectedOrg.id);
       handleCloseSiteModal();
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('organizationsPage.errors.generic'));
+      // See the org handlers above: runAction already toasted an ActionError,
+      // and onUnauthorized handles 401. Only a non-ActionError escape is
+      // unsurfaced, and the page banner is invisible behind this modal anyway.
+      if (!(err instanceof ActionError)) {
+        // A toast, NOT setError. The modal is still open on failure and the
+        // page banner renders behind its `fixed inset-0 z-50` overlay, so
+        // routing an unexpected error there reproduces the exact invisibility
+        // this change removes. Reachable in practice: `runAction` calls
+        // `onUnauthorized` OUTSIDE its request try/catch, so a throw from
+        // handleSessionExpired's logout or location.replace arrives here as a
+        // non-ActionError.
+        showToast({
+          message: err instanceof Error ? err.message : t('organizationsPage.errors.generic'),
+          type: 'error'
+        });
+      }
     } finally {
       setSiteSubmitting(false);
     }
@@ -510,7 +981,7 @@ export default function OrganizationsPage() {
         <p className="text-sm text-destructive">{error}</p>
         <button
           type="button"
-          onClick={fetchOrganizations}
+          onClick={() => void fetchOrganizations()}
           className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
           {t('organizationsPage.actions.tryAgain')}
@@ -550,7 +1021,7 @@ export default function OrganizationsPage() {
         <BulkOrgImport
           onImported={() => void fetchOrganizations()}
           onClose={() => setShowBulkImport(false)}
-          onUnauthorized={() => void navigateTo('/login', { replace: true })}
+          onUnauthorized={handleSessionExpired}
         />
       )}
 
@@ -587,7 +1058,7 @@ export default function OrganizationsPage() {
             ) : (
               <ul className="divide-y">
                 {filteredOrgs.map(org => {
-                  const dragEnabled = searchQuery.trim().length === 0;
+                  const dragEnabled = searchQuery.trim().length === 0 && !reorderPending;
                   const isDragging = draggedOrgId === org.id;
                   const isDropTarget = dragOverOrgId === org.id && draggedOrgId !== org.id;
                   return (
@@ -659,17 +1130,18 @@ export default function OrganizationsPage() {
                         </button>
                         <button
                           type="button"
+                          data-testid={`org-archive-open-row-${org.id}`}
                           onClick={e => {
                             e.stopPropagation();
-                            handleDelete(org);
+                            handleArchive(org);
                           }}
                           className="rounded p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-                          title={t('organizationsPage.actions.deleteOrganization')}
+                          title={t('organizationsPage.actions.archiveOrganization')}
                         >
                           <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                            <path d="M3 6h18" />
-                            <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" />
-                            <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
+                            <rect x="2" y="4" width="20" height="5" rx="1" />
+                            <path d="M4 9v9a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9" />
+                            <path d="M10 13h4" />
                           </svg>
                         </button>
                       </div>
@@ -680,67 +1152,202 @@ export default function OrganizationsPage() {
               </ul>
             )}
           </div>
+
+          {/* Archived organizations — collapsed by default, fetched only on expand */}
+          <div className="border-t">
+            <button
+              type="button"
+              data-testid="org-archived-toggle"
+              onClick={handleToggleArchived}
+              aria-expanded={archivedExpanded}
+              className="flex w-full items-center justify-between px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground hover:bg-muted/50"
+            >
+              <span>{t('organizationsPage.archived.sectionTitle')}</span>
+              <svg
+                xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none"
+                stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+                className={`transition-transform ${archivedExpanded ? 'rotate-180' : ''}`}
+                aria-hidden="true"
+              >
+                <path d="m6 9 6 6 6-6" />
+              </svg>
+            </button>
+
+            {archivedExpanded && (
+              <div data-testid="org-archived-section" className="max-h-[calc(100vh-320px)] overflow-y-auto">
+                {archivedLoading ? (
+                  <div className="px-4 py-6 text-center text-sm text-muted-foreground">
+                    {t('organizationsPage.archived.loading')}
+                  </div>
+                ) : archivedError ? (
+                  <div className="px-4 py-4 text-sm text-destructive">
+                    {archivedError}
+                  </div>
+                ) : filteredArchivedOrgs.length === 0 ? (
+                  <div className="px-4 py-6 text-center text-sm text-muted-foreground">
+                    {/* Keyed on whether a search is active, NOT on `archivedOrgs.length`:
+                        once a search term is present, `archivedOrgs` IS the
+                        server-filtered result (see fetchArchivedOrganizations), so an
+                        empty array there no longer means "there are truly zero
+                        archived orgs" — it means "zero matched this search". */}
+                    {searchQuery.trim()
+                      ? t('organizationsPage.archived.noMatches')
+                      : t('organizationsPage.archived.empty')}
+                  </div>
+                ) : (
+                  <>
+                    {archivedTruncated && (
+                      <p data-testid="org-archived-truncated-note" className="px-4 py-2 text-xs text-muted-foreground">
+                        {t('organizationsPage.archived.truncatedNote', { count: archivedOrgs.length })}
+                      </p>
+                    )}
+                    <ul className="divide-y">
+                      {filteredArchivedOrgs.map(org => (
+                        <li
+                          key={org.id}
+                          data-testid="org-archived-row"
+                          onClick={() => handleSelectOrg(org)}
+                          className={`cursor-pointer px-4 py-3 transition hover:bg-muted/50 ${
+                            selectedOrg?.id === org.id ? 'bg-muted/60 border-l-2 border-l-primary' : 'border-l-2 border-l-transparent'
+                          }`}
+                        >
+                          <p className="truncate text-sm font-medium">{org.name}</p>
+                          <div className="mt-1 flex items-center gap-2">
+                            <span
+                              data-testid="org-archived-badge"
+                              className={`inline-flex items-center rounded-full border px-1.5 py-0.5 text-[10px] font-medium leading-none ${statusColors.archived}`}
+                            >
+                              {t('organizationsPage.archived.badge')}
+                            </span>
+                            <span data-testid="org-archived-purge" className="text-xs text-muted-foreground">
+                              {renderPurgeCountdown(org.purgeAt)}
+                            </span>
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Right panel - Detail view */}
-        <div className="rounded-lg border bg-card shadow-xs">
+        <div className="rounded-lg border bg-card shadow-xs" data-testid="org-detail-panel">
           {selectedOrg ? (
-            <>
-              {/* Org header */}
-              <div className="border-b px-6 py-4">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <h2 className="text-lg font-semibold">{selectedOrg.name}</h2>
-                    <div className="mt-1 flex items-center gap-3 text-sm text-muted-foreground">
-                      <span
-                        className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${statusColors[selectedOrg.status]}`}
-                      >
-                        {t(/* i18n-dynamic */ statusLabelKeys[selectedOrg.status])}
-                      </span>
-                      {shouldShowDeviceCount(selectedOrg.deviceCount) && (
-                        <span>
-                          {t('organizationsPage.deviceCount', { count: selectedOrg.deviceCount })}
+            selectedOrg.status === 'archived' ? (
+              /* Archived org detail — READ-ONLY. No edit/merge/archive buttons: an
+               * archived org is outside the request's own accessible-org set by
+               * design (RLS), so none of those mutations could succeed against it
+               * anyway, and offering them would just produce a confusing 404/409
+               * after the fact. Restore is the only action, and the only way back
+               * to the normal (mutable) detail pane. */
+              <>
+                <div className="border-b px-6 py-4">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h2 className="text-lg font-semibold">{selectedOrg.name}</h2>
+                      <div className="mt-1 flex items-center gap-3 text-sm text-muted-foreground">
+                        <span
+                          data-testid="org-archived-detail-badge"
+                          className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${statusColors.archived}`}
+                        >
+                          {t('organizationsPage.archived.badge')}
                         </span>
+                        <span data-testid="org-archived-detail-purge">
+                          {renderPurgeCountdown(selectedOrg.purgeAt)}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        data-testid="org-restore"
+                        onClick={() => void handleRestore(selectedOrg)}
+                        disabled={restoringOrgId === selectedOrg.id}
+                        className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {restoringOrgId === selectedOrg.id
+                          ? t('organizationsPage.restore.restoring')
+                          : t('organizationsPage.restore.action')}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                <div className="p-6 text-sm text-muted-foreground" data-testid="org-archived-readonly-notice">
+                  {t('organizationsPage.archived.readOnlyNotice')}
+                </div>
+              </>
+            ) : (
+              <>
+                {/* Org header */}
+                <div className="border-b px-6 py-4">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h2 className="text-lg font-semibold">{selectedOrg.name}</h2>
+                      <div className="mt-1 flex items-center gap-3 text-sm text-muted-foreground">
+                        <span
+                          className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${statusColors[selectedOrg.status]}`}
+                        >
+                          {t(/* i18n-dynamic */ statusLabelKeys[selectedOrg.status])}
+                        </span>
+                        {shouldShowDeviceCount(selectedOrg.deviceCount) && (
+                          <span>
+                            {t('organizationsPage.deviceCount', { count: selectedOrg.deviceCount })}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => handleEdit(selectedOrg)}
+                        className="rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-muted"
+                      >
+                        {t('common:actions.edit')}
+                      </button>
+                      <button
+                        type="button"
+                        data-testid="org-archive-open"
+                        onClick={() => handleArchive(selectedOrg)}
+                        className="rounded-md border border-destructive/40 px-3 py-1.5 text-xs font-medium text-destructive hover:bg-destructive/10"
+                      >
+                        {t('organizationsPage.actions.archiveOrganization')}
+                      </button>
+                      {canMergeOrgs && (
+                        <button
+                          type="button"
+                          data-testid="org-merge-open"
+                          onClick={() => handleMerge(selectedOrg)}
+                          className="rounded-md border border-destructive/40 px-3 py-1.5 text-xs font-medium text-destructive hover:bg-destructive/10"
+                        >
+                          {t('organizationsPage.merge.openButton')}
+                        </button>
                       )}
                     </div>
                   </div>
-                  <div className="flex gap-2">
-                    <button
-                      type="button"
-                      onClick={() => handleEdit(selectedOrg)}
-                      className="rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-muted"
-                    >
-                      {t('common:actions.edit')}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleDelete(selectedOrg)}
-                      className="rounded-md border border-destructive/40 px-3 py-1.5 text-xs font-medium text-destructive hover:bg-destructive/10"
-                    >
-                      {t('common:actions.delete')}
-                    </button>
-                  </div>
                 </div>
-              </div>
 
-              {/* Sites section */}
-              <div className="p-6">
-                {sitesLoading ? (
-                  <div className="flex items-center justify-center py-8">
-                    <div className="h-6 w-6 animate-spin rounded-full border-4 border-primary border-t-transparent" />
-                    <span className="ml-3 text-sm text-muted-foreground">{t('organizationsPage.sites.loading')}</span>
-                  </div>
-                ) : (
-                  <SiteList
-                    sites={sites}
-                    onAddSite={handleAddSite}
-                    onEdit={handleEditSite}
-                    onDelete={handleDeleteSite}
-                    onSiteClick={(site) => void navigateTo(`/settings/sites/${site.id}`)}
-                  />
-                )}
-              </div>
-            </>
+                {/* Sites section */}
+                <div className="p-6">
+                  {sitesLoading ? (
+                    <div className="flex items-center justify-center py-8">
+                      <div className="h-6 w-6 animate-spin rounded-full border-4 border-primary border-t-transparent" />
+                      <span className="ml-3 text-sm text-muted-foreground">{t('organizationsPage.sites.loading')}</span>
+                    </div>
+                  ) : (
+                    <SiteList
+                      sites={sites}
+                      onAddSite={handleAddSite}
+                      onEdit={handleEditSite}
+                      onDelete={handleDeleteSite}
+                      onSiteClick={(site) => void navigateTo(`/settings/sites/${site.id}`)}
+                    />
+                  )}
+                </div>
+              </>
+            )
           ) : (
             /* Empty state */
             <div className="flex flex-col items-center justify-center py-20 text-center">
@@ -784,34 +1391,25 @@ export default function OrganizationsPage() {
         </div>
       )}
 
-      {/* Org Delete Confirmation Modal */}
-      {modalMode === 'delete' && selectedOrg && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
-          <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-xs">
-            <h2 className="text-lg font-semibold">{t('organizationsPage.delete.title')}</h2>
-            <p className="mt-2 text-sm text-muted-foreground">
-              {t('organizationsPage.delete.messagePrefix')} <span className="font-medium">{selectedOrg.name}</span>?
-              {t('organizationsPage.delete.messageSuffix')}
-            </p>
-            <div className="mt-6 flex justify-end gap-3">
-              <button
-                type="button"
-                onClick={handleCloseModal}
-                className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground"
-              >
-                {t('common:actions.cancel')}
-              </button>
-              <button
-                type="button"
-                onClick={handleConfirmDelete}
-                disabled={submitting}
-                className="inline-flex h-10 items-center justify-center rounded-md bg-destructive px-4 text-sm font-medium text-destructive-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {submitting ? t('organizationsPage.actions.deleting') : t('common:actions.delete')}
-              </button>
-            </div>
-          </div>
-        </div>
+      {/* Org Archive Modal */}
+      {modalMode === 'archive' && selectedOrg && (
+        <ArchiveOrgModal
+          org={selectedOrg}
+          onClose={handleCloseModal}
+          onArchived={handleArchiveComplete}
+          onDoneClose={handleArchiveDoneClose}
+        />
+      )}
+
+      {/* Org Merge Modal */}
+      {modalMode === 'merge' && selectedOrg && (
+        <MergeOrgModal
+          loserOrg={selectedOrg}
+          orgs={organizations}
+          onClose={handleCloseModal}
+          onMerged={handleMergeComplete}
+          onDoneClose={handleMergeDoneClose}
+        />
       )}
 
       {/* Site Add/Edit Modal */}

@@ -4,8 +4,24 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import OrganizationsPage from './OrganizationsPage';
 import { fetchWithAuth } from '../../stores/auth';
 
+// handleSessionExpired is the `onUnauthorized` callback for every mutation on
+// this page. Mocking the module replaces ALL of its exports, so omitting it
+// makes the mere ACT of building the runAction options throw
+// ("No export is defined on the mock") before any request is made — which
+// reads as the create flow silently doing nothing.
 vi.mock('../../stores/auth', () => ({
-  fetchWithAuth: vi.fn()
+  fetchWithAuth: vi.fn(),
+  handleSessionExpired: vi.fn()
+}));
+
+// OrganizationsPage reads useJwtClaims() to gate the merge-org launcher button
+// (partner-scope only). It subscribes to useAuthStore directly, which the
+// mock above does not export — stub the module's own public surface instead
+// of wiring up a fake zustand store. 'unresolved' just hides the button,
+// which is irrelevant to these first-site-nag assertions.
+vi.mock('../../lib/authScope', () => ({
+  useJwtClaims: () => ({ status: 'unresolved' as const }),
+  getJwtClaims: () => ({ scope: null, orgId: null, partnerId: null }),
 }));
 
 const navigateTo = vi.fn();

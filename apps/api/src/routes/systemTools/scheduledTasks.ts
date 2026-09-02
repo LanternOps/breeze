@@ -12,6 +12,11 @@ import {
   taskHistoryQuerySchema,
   paginationQuerySchema
 } from './schemas';
+import {
+  isCommandFailure,
+  buildCommandFailureResponse,
+  auditErrorMessage,
+} from './fileBrowserHelpers';
 import type { ScheduledTaskInfo, TaskHistoryEntry } from './types';
 
 const taskListQuerySchema = z.object({
@@ -171,8 +176,9 @@ scheduledTasksRoutes.get(
       limit
     }, { userId: auth.user?.id, timeoutMs: 30000 });
 
-    if (result.status === 'failed') {
-      return c.json({ error: result.error || 'Failed to list tasks' }, 500);
+    if (isCommandFailure(result)) {
+      const failure = buildCommandFailureResponse(result, 'Failed to list tasks');
+      return c.json(failure.body, failure.status);
     }
 
     try {
@@ -193,7 +199,9 @@ scheduledTasksRoutes.get(
       });
     } catch (error) {
       console.error('Failed to parse agent response for task listing:', error);
-      return c.json({ error: 'Failed to parse agent response for task listing' }, 502);
+      // 500, not 502: Cloudflare replaces an origin 502 body with its own
+      // branded page, blanking this message on hosted deployments.
+      return c.json({ error: 'Failed to parse agent response for task listing', code: 'invalid_agent_response' }, 500);
     }
   }
 );
@@ -220,21 +228,25 @@ scheduledTasksRoutes.get(
       path
     }, { userId: auth.user?.id, timeoutMs: 30000 });
 
-    if (result.status === 'failed') {
-      const error = result.error || 'Failed to get task';
-      return c.json({ error }, error.toLowerCase().includes('not found') ? 404 : 500);
+    if (isCommandFailure(result)) {
+      const failure = buildCommandFailureResponse(result, 'Failed to get task');
+      return c.json(failure.body, failure.status);
     }
 
     try {
       const payload = JSON.parse(result.stdout || '{}');
       const task = normalizeScheduledTask(payload);
       if (!task) {
-        return c.json({ error: 'Invalid task payload from agent' }, 502);
+        // 500, not 502: Cloudflare replaces an origin 502 body with its own
+        // branded page, blanking this message on hosted deployments.
+        return c.json({ error: 'Invalid task payload from agent', code: 'invalid_agent_response' }, 500);
       }
       return c.json({ data: task });
     } catch (error) {
       console.error('Failed to parse agent response for task details:', error);
-      return c.json({ error: 'Failed to parse agent response for task details' }, 502);
+      // 500, not 502: Cloudflare replaces an origin 502 body with its own
+      // branded page, blanking this message on hosted deployments.
+      return c.json({ error: 'Failed to parse agent response for task details', code: 'invalid_agent_response' }, 500);
     }
   }
 );
@@ -267,9 +279,9 @@ scheduledTasksRoutes.get(
       limit
     }, { userId: auth.user?.id, timeoutMs: 30000 });
 
-    if (result.status === 'failed') {
-      const error = result.error || 'Failed to get task history';
-      return c.json({ error }, error.toLowerCase().includes('not found') ? 404 : 500);
+    if (isCommandFailure(result)) {
+      const failure = buildCommandFailureResponse(result, 'Failed to get task history');
+      return c.json(failure.body, failure.status);
     }
 
     try {
@@ -288,7 +300,9 @@ scheduledTasksRoutes.get(
       });
     } catch (error) {
       console.error('Failed to parse agent response for task history:', error);
-      return c.json({ error: 'Failed to parse agent response for task history' }, 502);
+      // 500, not 502: Cloudflare replaces an origin 502 body with its own
+      // branded page, blanking this message on hosted deployments.
+      return c.json({ error: 'Failed to parse agent response for task history', code: 'invalid_agent_response' }, 500);
     }
   }
 );
@@ -325,13 +339,13 @@ scheduledTasksRoutes.post(
       resourceName: device.hostname ?? device.id,
       details: { path },
       ipAddress: getTrustedClientIpOrUndefined(c),
-      result: result.status === 'completed' ? 'success' : 'failure',
-      errorMessage: result.error
+      result: isCommandFailure(result) ? 'failure' : 'success',
+      errorMessage: auditErrorMessage(result)
     });
 
-    if (result.status === 'failed') {
-      const error = result.error || 'Failed to run task';
-      return c.json({ error }, error.toLowerCase().includes('not found') ? 404 : 500);
+    if (isCommandFailure(result)) {
+      const failure = buildCommandFailureResponse(result, 'Failed to run task', { mutating: true });
+      return c.json(failure.body, failure.status);
     }
 
     return c.json({
@@ -373,13 +387,13 @@ scheduledTasksRoutes.post(
       resourceName: device.hostname ?? device.id,
       details: { path },
       ipAddress: getTrustedClientIpOrUndefined(c),
-      result: result.status === 'completed' ? 'success' : 'failure',
-      errorMessage: result.error
+      result: isCommandFailure(result) ? 'failure' : 'success',
+      errorMessage: auditErrorMessage(result)
     });
 
-    if (result.status === 'failed') {
-      const error = result.error || 'Failed to enable task';
-      return c.json({ error }, error.toLowerCase().includes('not found') ? 404 : 500);
+    if (isCommandFailure(result)) {
+      const failure = buildCommandFailureResponse(result, 'Failed to enable task', { mutating: true });
+      return c.json(failure.body, failure.status);
     }
 
     return c.json({
@@ -421,13 +435,13 @@ scheduledTasksRoutes.post(
       resourceName: device.hostname ?? device.id,
       details: { path },
       ipAddress: getTrustedClientIpOrUndefined(c),
-      result: result.status === 'completed' ? 'success' : 'failure',
-      errorMessage: result.error
+      result: isCommandFailure(result) ? 'failure' : 'success',
+      errorMessage: auditErrorMessage(result)
     });
 
-    if (result.status === 'failed') {
-      const error = result.error || 'Failed to disable task';
-      return c.json({ error }, error.toLowerCase().includes('not found') ? 404 : 500);
+    if (isCommandFailure(result)) {
+      const failure = buildCommandFailureResponse(result, 'Failed to disable task', { mutating: true });
+      return c.json(failure.body, failure.status);
     }
 
     return c.json({

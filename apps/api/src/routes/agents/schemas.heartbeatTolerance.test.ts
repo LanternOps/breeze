@@ -17,6 +17,71 @@ describe('heartbeatSchema — Layer A tolerance', () => {
     expect(result.success).toBe(true);
   });
 
+  it('drops malformed PAM reconciliation telemetry independently', () => {
+    const result = heartbeatSchema.safeParse({
+      ...minimal,
+      securityCapabilities: {
+        peripheralPolicyProtocolVersion: 2,
+        pamLifetimeProtocolVersion: 2,
+        pamReconciliation: {
+          unresolvedCount: -1,
+          quarantinedCount: 'one',
+          awaitingAcknowledgementCount: 0,
+          receivedObservationPendingCount: -1,
+          blockingReason: 'not_a_protocol_reason',
+        },
+      },
+    });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.securityCapabilities?.peripheralPolicyProtocolVersion).toBe(2);
+    expect(result.data.securityCapabilities?.pamLifetimeProtocolVersion).toBe(2);
+    expect(result.data.securityCapabilities?.pamReconciliation).toBeUndefined();
+  });
+
+  it('accepts a valid rollback observation and drops a malformed optional one', () => {
+    const valid = heartbeatSchema.safeParse({
+      ...minimal,
+      rollbackObservation: {
+        schemaVersion: 1,
+        observationId: 'a'.repeat(64),
+        rollbackId: '10000000-0000-4000-8000-000000000001',
+        deviceId: '20000000-0000-4000-8000-000000000002',
+        phase: 'restart_requested',
+        currentVersion: '2.0.0',
+        componentVersions: { agent: '1.9.0' },
+        observedAt: '2026-08-25T12:00:00Z',
+      },
+    });
+    expect(valid.success).toBe(true);
+    if (valid.success) expect(valid.data.rollbackObservation?.phase).toBe('restart_requested');
+
+    const malformed = heartbeatSchema.safeParse({
+      ...minimal,
+      rollbackObservation: { schemaVersion: 1, phase: 'made_up' },
+    });
+    expect(malformed.success).toBe(true);
+    if (malformed.success) expect(malformed.data.rollbackObservation).toBeUndefined();
+  });
+
+  it('accepts a bounded rollback component inventory and drops malformed inventory', () => {
+    const valid = heartbeatSchema.safeParse({
+      ...minimal,
+      rollbackComponentVersions: {
+        agent: '2.0.0', helper: '2.0.0', 'user-helper': '2.0.0', watchdog: '2.0.0', backup: '2.0.0',
+      },
+    });
+    expect(valid.success).toBe(true);
+    if (valid.success) expect(valid.data.rollbackComponentVersions?.helper).toBe('2.0.0');
+
+    const malformed = heartbeatSchema.safeParse({
+      ...minimal,
+      rollbackComponentVersions: { agent: '2.0.0', unknown: '2.0.0' },
+    });
+    expect(malformed.success).toBe(true);
+    if (malformed.success) expect(malformed.data.rollbackComponentVersions).toBeUndefined();
+  });
+
   it('parses a full battery snapshot (#2142)', () => {
     const result = heartbeatSchema.safeParse({
       ...minimal,
@@ -261,6 +326,67 @@ describe('heartbeatSchema — Layer A tolerance', () => {
     };
     const result = heartbeatSchema.safeParse(payload);
     expect(result.success).toBe(false);
+  });
+});
+
+describe('heartbeatSchema — versioned agent health tolerance', () => {
+  const minimal = {
+    status: 'ok' as const,
+    agentVersion: '0.65.15',
+  };
+  const validHealth = {
+    schemaVersion: 1 as const,
+    deviceId: '11111111-1111-4111-8111-111111111111',
+    agentVersion: '0.65.15',
+    overall: 'warning' as const,
+    metricsAvailable: true,
+    components: {
+      metrics: { state: 'warning' as const, reason: 'collector delayed' },
+      commandLoop: { state: 'healthy' as const },
+    },
+    observedAt: '2026-08-24T12:34:56.789Z',
+  };
+
+  it('accepts omission and strips the current unversioned health map', () => {
+    const omitted = heartbeatSchema.parse(minimal);
+    const legacy = heartbeatSchema.parse({
+      ...minimal,
+      healthStatus: { status: 'healthy', components: { metrics: 'healthy' } },
+    });
+
+    expect(omitted.healthStatus).toBeUndefined();
+    expect(legacy.healthStatus).toBeUndefined();
+  });
+
+  it('retains every bounded v1 field including an optional wire device id', () => {
+    const parsed = heartbeatSchema.parse({ ...minimal, healthStatus: validHealth });
+    expect(parsed.healthStatus).toEqual(validHealth);
+  });
+
+  it.each([
+    ['unknown schema', { ...validHealth, schemaVersion: 2 }],
+    ['non-object components', { ...validHealth, components: [] }],
+    ['invalid component state', { ...validHealth, components: { metrics: { state: 'degraded' } } }],
+    ['bad observedAt', { ...validHealth, observedAt: 'yesterday' }],
+    ['oversized component name', { ...validHealth, components: { ['x'.repeat(101)]: { state: 'error' } } }],
+    ['oversized reason', { ...validHealth, components: { metrics: { state: 'error', reason: 'x'.repeat(513) } } }],
+    ['too many components', {
+      ...validHealth,
+      components: Object.fromEntries(Array.from({ length: 101 }, (_, index) => [
+        `component-${index}`,
+        { state: 'healthy' },
+      ])),
+    }],
+    ['unsupported top-level member', { ...validHealth, userHelpers: { status: 'healthy' } }],
+  ])('drops %s without rejecting reachability', (_label, healthStatus) => {
+    const parsed = heartbeatSchema.safeParse({ ...minimal, healthStatus });
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+    expect(parsed.data.healthStatus).toBeUndefined();
+  });
+
+  it('keeps unrelated heartbeat fields strict', () => {
+    expect(heartbeatSchema.safeParse({ agentVersion: '0.65.15', healthStatus: validHealth }).success).toBe(false);
   });
 });
 
@@ -524,5 +650,31 @@ describe('desktopAccess Linux reasons', () => {
     });
     expect(parsed.desktopAccess).toBeDefined();
     expect(parsed.desktopAccess?.reason).toBeUndefined();
+  });
+});
+
+// #4072 — agentEdition is offer-load-bearing: a reported edition is the
+// capability signal agentAcceptsServedEdition keys on, and a value swallowed
+// at this layer makes the agent look silent (offers withheld from ≥0.105.0
+// builds on a hosted server). Pin both directions of the wire contract here,
+// where the REAL schema runs (heartbeat.test.ts stubs the validator).
+describe('heartbeatSchema — agentEdition passthrough (#4072)', () => {
+  const minimal = {
+    status: 'ok' as const,
+    agentVersion: '0.109.0',
+  };
+
+  it.each(['self-host', 'hosted'] as const)('passes agentEdition %s through parse', (edition) => {
+    const result = heartbeatSchema.safeParse({ ...minimal, agentEdition: edition });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.agentEdition).toBe(edition);
+  });
+
+  it('coerces an unknown edition to undefined WITHOUT rejecting the heartbeat (future edition must degrade to silent)', () => {
+    const result = heartbeatSchema.safeParse({ ...minimal, agentEdition: 'enterprise' });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.agentEdition).toBeUndefined();
   });
 });

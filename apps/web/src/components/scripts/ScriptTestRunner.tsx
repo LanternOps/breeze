@@ -8,7 +8,8 @@ import { navigateTo } from '@/lib/navigation';
 import { asList } from '@/lib/asList';
 import { OutputSection } from './ExecutionDetails';
 import type { OSType } from './ScriptList';
-import type { ScriptParameter } from './ScriptFormSchema';
+import { runtimeParameters, type ScriptParameter } from './ScriptFormSchema';
+import type { ScriptAdmissionResult } from '@breeze/shared';
 
 export type TestDevice = {
   id: string;
@@ -212,14 +213,24 @@ export default function ScriptTestRunner({
     onTestDeviceChange?.(deviceId || null);
   };
 
+  // Runtime parameters only (#3409 PR3/PR4c-2). A BOUND parameter is resolved
+  // per target device by the server, so a `required` one with no default is not
+  // missing anything the author can supply here — and a `tenantSecret` row is
+  // forced `required: true` with a `defaultValue` the shared schema REJECTS, so
+  // gating on the whole list disabled Test Run forever and asked the author for
+  // something the schema forbids.
   const missingRequiredParams = useMemo(
-    () => (parameters ?? []).filter(p => p.required && !p.defaultValue).map(p => p.name),
+    () => runtimeParameters(parameters).filter(p => p.required && !p.defaultValue).map(p => p.name),
     [parameters]
   );
 
+  // Same reason on the submit side: a bound parameter's `defaultValue` is the
+  // SERVER's fallback (resolved value -> definition default -> missing), so
+  // sending it as a runtime value would be ignored and reported back in
+  // `ignoredParameters`.
   const defaultParameters = useMemo(() => {
     const result: Record<string, string | number | boolean> = {};
-    for (const p of parameters ?? []) {
+    for (const p of runtimeParameters(parameters)) {
       if (p.defaultValue === undefined || p.defaultValue === '') continue;
       if (p.type === 'number') result[p.name] = Number(p.defaultValue);
       else if (p.type === 'boolean') result[p.name] = p.defaultValue === 'true';
@@ -316,7 +327,7 @@ export default function ScriptTestRunner({
     setPhase('starting');
     setExecution(null);
     try {
-      const data = await runAction<{ executions?: Array<{ executionId: string }> }>({
+      const data = await runAction<ScriptAdmissionResult>({
         request: () => fetchWithAuth(`/scripts/${scriptId}/execute`, {
           method: 'POST',
           body: JSON.stringify({
@@ -329,12 +340,12 @@ export default function ScriptTestRunner({
         onUnauthorized: () => { void navigateTo('/login', { replace: true }); },
       });
 
-      const executionId = data.executions?.[0]?.executionId;
+      const target = data.targets.find(candidate => candidate.requestedDeviceId === selectedDeviceId);
+      const executionId = target?.admission === 'admitted' ? target.executionId : undefined;
       if (!executionId) {
-        // 201 with zero executions (e.g. maintenance-suppressed) — runAction
-        // treats it as success, so surface it here.
         setPhase('idle');
-        setRunError(t('testRunner.errors.notStarted'));
+        const reason = target?.reasonCode ?? target?.admission ?? t('testRunner.errors.notStarted');
+        setRunError(`${t('testRunner.errors.notStarted')} (${reason})`);
         return;
       }
 

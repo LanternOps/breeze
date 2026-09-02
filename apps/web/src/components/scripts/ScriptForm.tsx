@@ -18,7 +18,7 @@ import type { EditorProps } from '@monaco-editor/react';
 // static bundle (see lib/monacoLoader.ts).
 import 'monaco-editor/min/vs/editor/editor.main.css';
 
-import { SCRIPT_BUILTIN_PARAMETER_KEYS, SCRIPT_PARAMETER_SOURCES } from '@breeze/shared';
+import { SCRIPT_BUILTIN_PARAMETER_KEYS, SCRIPT_PARAMETER_SOURCES, scriptSecretEnvName } from '@breeze/shared';
 import ScriptAiPanel from './ScriptAiPanel';
 import ScriptTestRunner from './ScriptTestRunner';
 import CollapsibleSection from './CollapsibleSection';
@@ -36,25 +36,37 @@ import { getJwtClaims } from '@/lib/authScope';
 import {
   scriptSchema, languageOptions, categoryOptions,
   runAsOptions, parameterTypeOptions, severityOptions,
-  rowsToMapping, parameterBindingKey, parameterSource,
+  rowsToMapping, parameterBindingKey, parameterSource, stripSecretParameterValueFields,
   type ScriptFormDefaults, type ScriptFormValues, type ScriptSubmitValues,
 } from './ScriptFormSchema';
 
 export type { ScriptFormValues, ScriptParameter, ScriptSubmitValues } from './ScriptFormSchema';
 
 /**
- * The `tenantVariable` binding cell: a free-text key plus the shared picker.
+ * The variable-binding cell: a free-text key plus the shared picker.
  *
- * Its own component purely so the secret warning can own a `useId` — the row
- * lives inside a `.map`, where a hook cannot be called, and a single shared id
- * would mean two parameters bound to two different secrets announce only one of
- * them (the same rule `VariableInput` follows for its two warning paragraphs).
+ * Serves BOTH variable-backed arms, and the two are exact mirrors of each other
+ * (#3409 PR4c-2):
+ *
+ * - `mode="plain"` (`source: 'tenantVariable'`) wants a NON-secret; picking a
+ *   secret is refused by the API at save.
+ * - `mode="secret"` (`source: 'tenantSecret'`) wants a SECRET; the value is
+ *   never substituted into the script, it reaches the agent only as
+ *   `BREEZE_VAR_<UPPER(name)>`, so a plain variable there is the error.
+ *
+ * One component rather than two so the picker predicate, the typed-key warning
+ * and the field chrome cannot drift apart between the arms.
+ *
+ * Its own component purely so the warning can own a `useId` — the row lives
+ * inside a `.map`, where a hook cannot be called, and a single shared id would
+ * mean two parameters bound to two different secrets announce only one of them
+ * (the same rule `VariableInput` follows for its two warning paragraphs).
  *
  * The warning is deliberately advisory rather than a submit gate: the API
- * rejects a secret binding with a 400 at save, so the point here is to say so
- * BEFORE the round trip, not to re-implement the rule. Typing a key by hand is
- * still allowed — the picker disables secret rows, but a key can also be
- * classified secret after the script was authored.
+ * rejects a mismatched binding with a 400 at save, so the point here is to say
+ * so BEFORE the round trip, not to re-implement the rule. Typing a key by hand
+ * is still allowed — the picker disables the wrong rows, but a key can also be
+ * re-classified after the script was authored.
  */
 function TenantVariableBindingField({
   registration,
@@ -62,16 +74,28 @@ function TenantVariableBindingField({
   variables,
   onPick,
   error,
+  mode = 'plain',
+  parameterName = '',
 }: {
   registration: UseFormRegisterReturn;
   value: string;
   variables: TenantVariableEntry[];
   onPick: (key: string) => void;
   error?: string;
+  mode?: 'plain' | 'secret';
+  parameterName?: string;
 }) {
   const { t } = useTranslation('scripts');
   const warnId = useId();
-  const isSecret = variables.some(v => v.key === value && v.isSecret);
+  const secretMode = mode === 'secret';
+  const matched = variables.find(v => v.key === value);
+  // Only a KNOWN variable can be judged: an unknown key is a legitimate
+  // mid-typing state (and, for partner-wide scripts, a key that exists in
+  // another org), so it warns about nothing.
+  const mismatch = secretMode ? !!value && matched !== undefined && !matched.isSecret : !!matched?.isSecret;
+  const warningTestId = secretMode
+    ? 'script-parameter-not-secret-warning'
+    : 'script-parameter-secret-warning';
 
   return (
     <div className="space-y-1 sm:col-span-2">
@@ -82,11 +106,11 @@ function TenantVariableBindingField({
         <input
           {...registration}
           placeholder={t('scriptForm.parameterBinding.variablePlaceholder')}
-          aria-invalid={isSecret || undefined}
-          aria-describedby={isSecret ? warnId : undefined}
+          aria-invalid={mismatch || undefined}
+          aria-describedby={mismatch ? warnId : undefined}
           className={cn(
             'h-9 min-w-0 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring',
-            isSecret && 'border-destructive/60 focus:ring-destructive/40'
+            mismatch && 'border-destructive/60 focus:ring-destructive/40'
           )}
         />
         <TenantVariableMenu
@@ -96,19 +120,41 @@ function TenantVariableBindingField({
           // the key itself — showing `{{var.key}}` here would advertise a shape
           // this field must not contain.
           formatDetail={key => key}
+          selectable={secretMode ? v => v.isSecret : undefined}
+          disabledReason={
+            secretMode
+              ? v => (v.isSecret ? undefined : t('scriptForm.parameterBinding.notSecretRow'))
+              : undefined
+          }
           trigger={<Braces className="h-3.5 w-3.5" />}
           triggerTitle={t('scriptForm.parameterBinding.chooseTitle')}
           triggerClassName="h-9 shrink-0 bg-background px-3"
         />
       </div>
-      {isSecret && (
+      {mismatch && (
         <p
           id={warnId}
-          data-testid="script-parameter-secret-warning"
+          data-testid={warningTestId}
           className="flex items-start gap-1.5 text-xs text-destructive"
         >
           <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-          <span>{t('scriptForm.parameterBinding.secretRejected', { key: value })}</span>
+          <span>
+            {secretMode
+              ? t('scriptForm.parameterBinding.notSecret', { key: value })
+              : t('scriptForm.parameterBinding.secretRejected', { key: value })}
+          </span>
+        </p>
+      )}
+      {secretMode && (
+        <p
+          data-testid="script-parameter-secret-hint"
+          className="text-xs text-muted-foreground"
+        >
+          {t('scriptForm.parameterBinding.secretHint', {
+            // `name` is the env-var key, so the hint is only accurate once the
+            // row is named; until then it shows the shape, not a real name.
+            env: scriptSecretEnvName(parameterName || 'name'),
+          })}
         </p>
       )}
       {error && <p className="text-xs text-destructive">{error}</p>}
@@ -243,7 +289,17 @@ export default function ScriptForm({
     reset,
     formState: { errors, isSubmitting, isDirty }
   } = useForm<ScriptFormValues>({
-    resolver: zodResolver(scriptSchema) as never,
+    // Sanitized on the way in: a row switched to `tenantSecret` still carries
+    // the runtime seed's `defaultValue: ''` / `options: ''` in form state (RHF
+    // keeps values of unmounted inputs), and the secret arm rejects a PRESENT
+    // default outright. The sanitized object is also what `handleSubmit`
+    // forwards, so nothing empty reaches the API.
+    resolver: ((values: ScriptFormValues, context: unknown, options: unknown) =>
+      (zodResolver(scriptSchema) as never as (
+        v: ScriptFormValues,
+        c: unknown,
+        o: unknown
+      ) => unknown)(stripSecretParameterValueFields(values), context, options)) as never,
     mode: 'onTouched',
     defaultValues: {
       name: '',
@@ -472,7 +528,7 @@ export default function ScriptForm({
    * on the value it visually displays rather than on an empty non-option.
    */
   const handleParameterSourceChange = (index: number, next: string) => {
-    const set = (field: string, value: string | undefined) => {
+    const set = (field: string, value: unknown) => {
       setValue(
         `parameters.${index}.${field}` as unknown as keyof ScriptFormValues,
         value as never,
@@ -480,9 +536,24 @@ export default function ScriptForm({
       );
     };
     set('source', next);
+    // Both variable-backed arms store the key under `variableKey`, so switching
+    // between them must clear it too — a secret key left behind on the plain arm
+    // (or the reverse) is exactly the mismatch the API 400s.
     set('variableKey', '');
     set('fieldKey', '');
     set('builtinKey', next === 'builtin' ? SCRIPT_BUILTIN_PARAMETER_KEYS[0] : '');
+    if (next === 'tenantSecret') {
+      // The secret arm is `{type:'string', required:true}` with NO defaultValue
+      // and NO options — the inputs are cleared here so switching back does not
+      // resurrect an abandoned value; `stripSecretParameterValueFields` is what
+      // keeps the resulting `''` out of the schema and off the wire. `required` is not reset when switching away: `true`
+      // is a legitimate value on every other arm, and clobbering it would throw
+      // away an intentional choice.
+      set('type', 'string');
+      set('required', true);
+      set('defaultValue', '');
+      set('options', '');
+    }
   };
 
   /**
@@ -800,6 +871,11 @@ export default function ScriptForm({
             const row = watchParameters?.[index];
             const source = row ? parameterSource(row) : 'runtime';
             const isBound = source !== 'runtime';
+            // A secret parameter's type/required/default are fixed by the
+            // schema, so the inputs that would edit them are not rendered —
+            // offering a control whose every non-default value is a 400 is
+            // worse than not offering it.
+            const isSecretParam = source === 'tenantSecret';
             return (
             <div key={field.id} className="rounded-md border bg-muted/20 p-4">
               <div className="flex items-start gap-3">
@@ -826,12 +902,14 @@ export default function ScriptForm({
                       {SCRIPT_PARAMETER_SOURCES.map(value => <option key={value} value={value}>{parameterSourceLabel(value)}</option>)}
                     </select>
                   </div>
-                  {source === 'tenantVariable' && (
+                  {(source === 'tenantVariable' || isSecretParam) && (
                     <TenantVariableBindingField
                       registration={register(`parameters.${index}.variableKey` as unknown as keyof ScriptFormValues)}
                       value={(row && parameterBindingKey(row)) || ''}
                       variables={tenantVariables}
                       error={parameterFieldError(index, 'variableKey')}
+                      mode={isSecretParam ? 'secret' : 'plain'}
+                      parameterName={row?.name ?? ''}
                       onPick={key => setValue(
                         `parameters.${index}.variableKey` as unknown as keyof ScriptFormValues,
                         key as never,
@@ -862,22 +940,27 @@ export default function ScriptForm({
                       {parameterFieldError(index, 'builtinKey') && <p className="text-xs text-destructive">{parameterFieldError(index, 'builtinKey')}</p>}
                     </div>
                   )}
+                  {!isSecretParam && (
                   <div className="space-y-1">
                     <label className="text-xs font-medium text-muted-foreground">{t('common:labels.type')}</label>
                     <select className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring" {...register(`parameters.${index}.type`)}>
                       {parameterTypeOptions.map(opt => <option key={opt.value} value={opt.value}>{parameterTypeLabel(opt.value)}</option>)}
                     </select>
                   </div>
+                  )}
                   {/* Bound parameters keep a default — resolution is
                       `resolved value -> definition default -> missing` — but it
                       is a fallback, not a prefilled answer, so it is labelled as
                       one. */}
+                  {!isSecretParam && (
                   <div className="space-y-1">
                     <label className="text-xs font-medium text-muted-foreground">
                       {isBound ? t('scriptForm.fields.fallbackValue') : t('scriptForm.fields.defaultValue')}
                     </label>
                     <input placeholder={t('scriptForm.placeholders.defaultValue')} className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring" {...register(`parameters.${index}.defaultValue`)} />
                   </div>
+                  )}
+                  {!isSecretParam && (
                   <div className="space-y-1">
                     <label className="text-xs font-medium text-muted-foreground">{t('common:labels.required')}</label>
                     <div className="flex items-center h-9">
@@ -885,10 +968,11 @@ export default function ScriptForm({
                       <span className="ml-2 text-sm">{t('common:labels.yes')}</span>
                     </div>
                   </div>
+                  )}
                   {/* `options` renders the run-time `<select>`. A bound parameter
                       is never prompted for, so a choice list has nothing to
                       drive and is hidden rather than silently ignored. */}
-                  {!isBound && row?.type === 'select' && (
+                  {!isBound && !isSecretParam && row?.type === 'select' && (
                     <div className="space-y-1 sm:col-span-2 md:col-span-4">
                       <label className="text-xs font-medium text-muted-foreground">{t('scriptForm.fields.options')}</label>
                       <input placeholder={t('scriptForm.placeholders.options')} className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring" {...register(`parameters.${index}.options`)} />

@@ -1,5 +1,5 @@
 import { eq } from 'drizzle-orm';
-import { db } from '../db';
+import { db, withSystemDbAccessContext } from '../db';
 import { quotes } from '../db/schema/quotes';
 import { QuoteServiceError, assertQuoteAccess } from './quoteTypes';
 import { createInvoicePayLink } from './invoiceCheckout';
@@ -18,13 +18,17 @@ import type { InvoiceActor } from './invoiceTypes';
  * clicks at the same balance. A degenerate recurring-only quote ($0) never gets an
  * issued invoice, so this returns NOT_PAYABLE for it.
  *
- * Caller establishes the DB context: the portal path runs org-scoped; the public
- * path wraps this in runOutsideDbContext(withSystemDbAccessContext(...)).
+ * DB context (#1448): callers on a Stripe-bound request path (portal pay route)
+ * invoke this with NO ambient context; the quote read below runs in its own
+ * short system context (a no-op nest when a caller already holds one, e.g. the
+ * AI tool path), and createInvoicePayLink likewise scopes each of its DB steps
+ * so checkout.sessions.create runs outside any transaction. Tenant access is
+ * enforced by assertQuoteAccess against the actor, not by RLS scope.
  */
 export async function createQuotePayLink(quoteId: string, actor: InvoiceActor): Promise<{ url: string }> {
-  const [q] = await db
+  const [q] = await withSystemDbAccessContext(() => db
     .select({ status: quotes.status, convertedInvoiceId: quotes.convertedInvoiceId, orgId: quotes.orgId, siteId: quotes.siteId })
-    .from(quotes).where(eq(quotes.id, quoteId)).limit(1);
+    .from(quotes).where(eq(quotes.id, quoteId)).limit(1));
   if (!q) throw new QuoteServiceError('Quote not found', 404, 'QUOTE_NOT_FOUND');
   // Enforce org + site on the QUOTE itself. createInvoicePayLink enforces org on the
   // converted invoice downstream, but the site axis was previously bypassable here —

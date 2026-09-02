@@ -19,6 +19,7 @@ vi.mock('../db', () => {
   };
   return {
     db: makeChain(),
+    getCurrentDbAccessContext: () => undefined,
     runOutsideDbContext: <T>(fn: () => T): T => fn(),
     withSystemDbAccessContext: <T>(fn: () => Promise<T>): Promise<T> => fn(),
   };
@@ -36,8 +37,26 @@ vi.mock('../services/quoteLifecycle', () => ({ markQuoteViewed: vi.fn() }));
 // Post-commit notify runs its own queries — mock it so where-call assertions
 // against the decline UPDATE stay pointed at the decline UPDATE.
 vi.mock('../services/quoteOutcomeNotify', () => ({ notifyQuoteOutcome: vi.fn().mockResolvedValue(undefined) }));
+// Merge-chain resolution (Task 6) is exercised for real in
+// orgMergeQuoteContinuity.integration.test.ts; here it's a pure passthrough
+// so this file stays focused on the serialization path, same rationale as
+// the quoteAcceptToken/quoteLifecycle stubs above.
+vi.mock('../services/orgMerge', () => ({ resolveMergedOrgIds: vi.fn(async (orgId: string) => [orgId]) }));
+// Org-lifecycle gate (Wave 4 review fix C-A.1): resolve() runs one extra
+// system-context read per request. Stubbed so it does not consume the FIFO
+// dbResults queue every other test in this file depends on; the gate's own
+// query/mapping is covered by services/publicLinkOrgGate.test.ts, and the
+// route behaviour it drives is pinned in the 410 describe block below.
+vi.mock('../services/publicLinkOrgGate', async (importActual) => {
+  const actual = await importActual<typeof import('../services/publicLinkOrgGate')>();
+  return {
+    ...actual,
+    resolveQuoteLinkOrgGate: vi.fn(async () => actual.PUBLIC_LINK_ORG_GATE_OPEN),
+  };
+});
 
 import { quotesPublicRoutes } from './quotesPublic';
+import { resolveQuoteLinkOrgGate, PUBLIC_LINK_ORG_UNAVAILABLE } from '../services/publicLinkOrgGate';
 import { db } from '../db';
 import { verifyQuoteAcceptToken, isQuoteAcceptJtiRevoked, revokeQuoteAcceptJti } from '../services/quoteAcceptToken';
 import { markQuoteViewed } from '../services/quoteLifecycle';
@@ -534,5 +553,87 @@ describe('quotesPublic GET /:token/line-image/:lineId', () => {
     dbResults.push([]); // no line on this quote
     const res = await app().request(`/quotes/public/${TOKEN}/line-image/${LINE_ID}`);
     expect(res.status).toBe(404);
+  });
+});
+
+// ── org-lifecycle gate (Wave 4 review fix C-A.1) ───────────────────────────
+// A durable accept/pay token outlives an archive by design (Wave 2 keeps it
+// alive across a merge), so the ONLY thing standing between an archived tenant
+// and a fresh invoice + Pax8 order is this gate. Enumerated over every route in
+// the router: a new handler that forgets the check fails here, not in prod.
+describe('quotesPublic org-lifecycle gate', () => {
+  const IMG_ID = '99999999-9999-9999-9999-999999999999';
+  const LINE_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const BLK_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+
+  const ROUTES: Array<[string, string, RequestInit]> = [
+    ['GET view', `/quotes/public/${TOKEN}`, { method: 'GET' }],
+    ['GET image', `/quotes/public/${TOKEN}/images/${IMG_ID}`, { method: 'GET' }],
+    ['GET line-image', `/quotes/public/${TOKEN}/line-image/${LINE_ID}`, { method: 'GET' }],
+    ['GET contract-file', `/quotes/public/${TOKEN}/contract-file/${BLK_ID}`, { method: 'GET' }],
+    ['POST accept', `/quotes/public/${TOKEN}/accept`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ signerName: 'Pat Prospect' }),
+    }],
+    ['POST decline', `/quotes/public/${TOKEN}/decline`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    }],
+  ];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbResults.length = 0;
+    (verifyQuoteAcceptToken as ReturnType<typeof vi.fn>).mockResolvedValue({
+      quoteId: QUOTE_ID, orgId: ORG_ID, partnerId: PARTNER_ID, jti: 'jti-1',
+    });
+    (isQuoteAcceptJtiRevoked as ReturnType<typeof vi.fn>).mockResolvedValue(false);
+    // clearAllMocks clears CALLS, not implementations — reset the gate to open
+    // so a blocked case cannot leak forward and make a later case vacuous.
+    vi.mocked(resolveQuoteLinkOrgGate).mockResolvedValue({ orgId: null, status: null, blocked: false });
+  });
+
+  it.each(ROUTES)('%s returns 410 when the quote resolves to an archived org', async (_name, path, init) => {
+    vi.mocked(resolveQuoteLinkOrgGate).mockResolvedValue({
+      orgId: ORG_ID, status: 'archived', blocked: true,
+    });
+
+    const res = await app().request(path, init);
+
+    expect(res.status).toBe(410);
+    expect(await res.json()).toEqual(PUBLIC_LINK_ORG_UNAVAILABLE);
+    // Refused BEFORE any row work — no queued result was consumed, and the
+    // accept path never reached acceptQuote.
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('keeps a merged-away quote working when the SURVIVOR org is live (Wave 2 continuity)', async () => {
+    const SURVIVOR = '99999999-9999-4999-8999-999999999999';
+    vi.mocked(resolveQuoteLinkOrgGate).mockResolvedValue({
+      orgId: SURVIVOR, status: 'active', blocked: false,
+    });
+    dbResults.push([{
+      id: QUOTE_ID, orgId: SURVIVOR, partnerId: PARTNER_ID, status: 'sent',
+      quoteNumber: 'Q-1', currencyCode: 'USD', taxRate: null,
+      depositType: 'none', depositPercent: null,
+    }]);
+    dbResults.push([]); // blocks
+    dbResults.push([]); // lines
+    dbResults.push([{ name: 'Lantern IT' }]); // partner
+    dbResults.push([]); // branding
+
+    const res = await app().request(`/quotes/public/${TOKEN}`, { method: 'GET' });
+
+    expect(res.status).toBe(200);
+  });
+
+  it('gates on the RESOLVED org set, not the token claim (survivor ids are passed through)', async () => {
+    vi.mocked(resolveQuoteLinkOrgGate).mockResolvedValue({
+      orgId: ORG_ID, status: 'archived', blocked: true,
+    });
+    await app().request(`/quotes/public/${TOKEN}`, { method: 'GET' });
+    expect(resolveQuoteLinkOrgGate).toHaveBeenCalledWith(QUOTE_ID, [ORG_ID]);
   });
 });

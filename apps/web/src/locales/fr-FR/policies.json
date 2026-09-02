@@ -143,6 +143,7 @@
       "archived2": "Archivé",
       "features": "Caractéristiques",
       "noPoliciesFoundTryAdjustingYourSearch": "Aucune stratégie n’a été trouvée. Essayez d’ajuster votre recherche.",
+      "noPoliciesYet": "Aucune politique de configuration pour l’instant. Créez-en une, puis attribuez-la à des organisations, des sites ou des appareils.",
       "partnerWidePolicyAppliesToEveryOrganization": "Politique à l’échelle des partenaires — s’applique à toutes les organisations",
       "allOrgs": "À l’échelle du partenaire",
       "page": "Page",
@@ -252,7 +253,9 @@
         "thisRuleUsesUnsupportedMetrics": "Cette règle utilise une métrique que le moteur d'alertes ne peut pas évaluer ({{metrics}}). Choisissez une métrique prise en charge — ou supprimez la condition — avant d'enregistrer ; le serveur refuse les règles qui la contiennent.",
         "thisConditionUsesAnUnsupportedMetric": "La métrique « {{metric}} » n'est pas évaluée par le moteur d'alertes, cette condition est donc affichée en lecture seule.",
         "valueCount": "Valeur (nombre)",
-        "metricNotSet": "non défini"
+        "metricNotSet": "non défini",
+        "testRule": "Tester la règle",
+        "testRuleHint": "Évaluez ces conditions sur un appareil maintenant, y compris les modifications non enregistrées."
       },
       "automationTab": {
         "schedule": "Calendrier",
@@ -735,6 +738,8 @@
         "recurrence": "Récidive",
         "startDateTime": "Date/Heure de début",
         "theSpecificDateAndTimeForThis": "La date et l’heure précises pour cette fenêtre de maintenance unique.",
+        "startTime": "Heure de début",
+        "theTimeOfDayEachWindowOpensIn": "L’heure à laquelle chaque fenêtre de maintenance s’ouvre, dans le fuseau horaire sélectionné. Minuit (00:00) par défaut.",
         "durationHours": "Durée (heures)",
         "timezone": "Fuse horaire",
         "notifyBeforeMinutes": "Notifier avant (minutes)",
@@ -884,7 +889,7 @@
         "windowsUpdateSource": "Source Windows Update",
         "manageWindowsUpdateExclusivelyThroughBreeze": "Gérer Windows Update exclusivement avec Breeze",
         "suppressesTheEndpointSNativeWindowsUpdate": "Désactive le canal Windows Update automatique natif du terminal afin que les mises à jour passent uniquement par les anneaux d’approbation Breeze. Cela évite les redémarrages inattendus et les correctifs hors calendrier. Windows uniquement ; le processus d’analyse, d’approbation et d’installation de Breeze n’est pas affecté. La configuration est restaurée proprement à la désactivation, sans modifier une stratégie de groupe administrateur préexistante.",
-        "times": "&times;",
+        "times": "×",
         "os": "OS",
         "thirdParty": "third_party",
         "apps": "Applications",

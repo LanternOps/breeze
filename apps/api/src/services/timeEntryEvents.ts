@@ -12,7 +12,7 @@ interface TimeEntryEventEnvelope {
 }
 
 export type TimeEntryEvent = TimeEntryEventEnvelope & (
-  | { type: 'time_entry.created'; payload: { userId: string; durationMinutes: number | null; isBillable: boolean } }
+  | { type: 'time_entry.created'; payload: { userId: string; durationMinutes: number | null; isBillable: boolean; source?: string } }
   | { type: 'time_entry.updated'; payload: { changed: string[] } }
   | { type: 'time_entry.deleted'; payload: { userId: string } }
   | { type: 'time_entry.approved'; payload: { ids: string[]; approvedBy: string } }
