@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
 
 type ContextTraceEvent =
   | { type: 'escape' }
@@ -58,8 +60,8 @@ function openedLabels(): Array<string | undefined> {
   return contextTrace.filter((event) => event.type === 'open').map((event) => event.label);
 }
 
-/** Every statement issued under `label`, serialized the way the SQL assertions read it. */
-const executedSqlByLabel = new Map<string, string[]>();
+/** Every statement issued under `label`: its serialization and the SQL object itself. */
+const executedByLabel = new Map<string, Array<{ json: string; statement: SQL }>>();
 
 /**
  * The one statement issued under `label`. Fails loudly when a label ran more
@@ -67,9 +69,21 @@ const executedSqlByLabel = new Map<string, string[]>();
  * per raw source table, not one per metric.
  */
 function onlyStatementFor(label: string): string {
-  const statements = executedSqlByLabel.get(label) ?? [];
+  const statements = executedByLabel.get(label) ?? [];
   expect(statements).toHaveLength(1);
-  return statements[0] as string;
+  return (statements[0] as { json: string }).json;
+}
+
+/**
+ * The bound parameters of the one statement issued under `label`, in order.
+ * Substring assertions on the serialized SQL cannot tell `'cpu'` the metric_type
+ * from `'cpu_percent'` the metric_name, so anything about which value is bound
+ * WHERE has to read the compiled parameter list instead.
+ */
+function onlyStatementParamsFor(label: string): unknown[] {
+  const statements = executedByLabel.get(label) ?? [];
+  expect(statements).toHaveLength(1);
+  return new PgDialect().sqlToQuery((statements[0] as { statement: SQL }).statement).params;
 }
 
 function countOccurrences(haystack: string, needle: string): number {
@@ -79,15 +93,15 @@ function countOccurrences(haystack: string, needle: string): number {
 describe('metric rollups service', () => {
   beforeEach(() => {
     contextTrace.length = 0;
-    executedSqlByLabel.clear();
+    executedByLabel.clear();
     openContext.label = undefined;
     executeMock.mockReset();
     executeMock.mockImplementation(async (statement: unknown) => {
       contextTrace.push({ type: 'execute' });
       const label = openContext.label ?? '<no-context>';
-      const existing = executedSqlByLabel.get(label) ?? [];
-      existing.push(JSON.stringify(statement));
-      executedSqlByLabel.set(label, existing);
+      const existing = executedByLabel.get(label) ?? [];
+      existing.push({ json: JSON.stringify(statement), statement: statement as SQL });
+      executedByLabel.set(label, existing);
       return [];
     });
     shouldProduceMlOutputMock.mockReset();
@@ -283,17 +297,30 @@ describe('metric rollups service', () => {
       // 1 device_metrics + 1 device_process_samples + 1 snmp_metrics + 6 derived.
       expect(result).toMatchObject({ statements: 9, skipped: false });
       expect(executeMock).toHaveBeenCalledTimes(9);
-      expect(executedSqlByLabel.get('metricRollups.raw.device_metrics')).toHaveLength(1);
-      expect(executedSqlByLabel.get('metricRollups.raw.device_process_samples')).toHaveLength(1);
+      expect(executedByLabel.get('metricRollups.raw.device_metrics')).toHaveLength(1);
+      expect(executedByLabel.get('metricRollups.raw.device_process_samples')).toHaveLength(1);
     });
 
     it('derives all ten device_metrics series from that one scan, each keeping its own metric_type', async () => {
       await rollupDeviceMetricsRange({ ...RANGE });
 
       const deviceSql = onlyStatementFor('metricRollups.raw.device_metrics');
-      for (const [metricType, metricName] of DEVICE_METRIC_SERIES) {
+      for (const [, metricName] of DEVICE_METRIC_SERIES) {
         expect(deviceSql).toContain(metricName);
-        expect(deviceSql).toContain(metricType);
+      }
+
+      // `toContain(metricType)` would be vacuous here — 'cpu' is a substring of
+      // 'cpu_percent', 'disk' of 'disk_percent', 'process' of 'process_count' —
+      // so it would still pass with metric_type dropped from the unpivot
+      // entirely. The unpivot binds each row as (metric_type, metric_name), so
+      // assert on that adjacency in the compiled parameter list instead. Each
+      // name is bound twice (the non-null probe, then the unpivot); the unpivot
+      // is the later one.
+      const params = onlyStatementParamsFor('metricRollups.raw.device_metrics');
+      for (const [metricType, metricName] of DEVICE_METRIC_SERIES) {
+        const unpivotIndex = params.lastIndexOf(metricName);
+        expect(unpivotIndex).toBeGreaterThan(0);
+        expect(params[unpivotIndex - 1]).toBe(metricType);
       }
       // The window itself is read at most twice (device discovery + the bucket
       // join). Ten reads is the bug.
