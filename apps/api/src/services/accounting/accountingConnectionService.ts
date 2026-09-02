@@ -275,66 +275,72 @@ export async function findConnectionByRealmFingerprint(
 export async function backfillRealmFingerprints(): Promise<{ scanned: number; updated: number; skipped: number }> {
   assertNoAmbientDbContext('backfillRealmFingerprints');
 
-  return withSystemDbAccessContext(async () => {
-    const rows = await db
-      .select({
-        id: accountingConnections.id,
-        partnerId: accountingConnections.partnerId,
-        realmIdEncrypted: accountingConnections.realmIdEncrypted,
-        realmIdFingerprint: accountingConnections.realmIdFingerprint,
-      })
-      .from(accountingConnections)
-      .where(isNotNull(accountingConnections.realmIdEncrypted));
+  // The LIST is one short context; each WRITE gets its own (finding E).
+  // Postgres leaves a transaction ABORTED after a constraint violation, so the
+  // caught unique violation below used to poison every later row in the sweep
+  // with 25P02 and roll back every earlier one — a single shared realm could
+  // leave the entire fleet unfingerprinted, and therefore invisible to webhooks.
+  const rows = await withSystemDbAccessContext(() => db
+    .select({
+      id: accountingConnections.id,
+      partnerId: accountingConnections.partnerId,
+      realmIdEncrypted: accountingConnections.realmIdEncrypted,
+      realmIdFingerprint: accountingConnections.realmIdFingerprint,
+    })
+    .from(accountingConnections)
+    .where(isNotNull(accountingConnections.realmIdEncrypted)),
+  'backfillRealmFingerprints.list');
 
-    const activeGen = getActiveSecretEncryptionKeyId() ?? 'legacy';
-    let updated = 0;
-    let skipped = 0;
+  const activeGen = getActiveSecretEncryptionKeyId() ?? 'legacy';
+  let updated = 0;
+  let skipped = 0;
 
-    for (const row of rows) {
-      if (row.realmIdFingerprint !== null && fingerprintKeyGeneration(row.realmIdFingerprint) === activeGen) {
-        continue;
-      }
-
-      const realmId = decryptSecret(row.realmIdEncrypted);
-      // Guarded by the isNotNull(realmIdEncrypted) filter above; decryptSecret
-      // only returns null for a falsy/empty input, which that filter excludes.
-      if (realmId === null) continue;
-      const fingerprint = hmacFingerprint(realmId);
-
-      try {
-        // Zero-row-throw discipline (see other writes in this file) doesn't
-        // fit a multi-row backfill loop verbatim — aborting the whole sweep
-        // over one row deleted concurrently would strand every later row
-        // unprocessed. Guard against MISCOUNTING instead: only bump `updated`
-        // when a row actually matched.
-        const written = await db
-          .update(accountingConnections)
-          .set({ realmIdFingerprint: fingerprint })
-          .where(and(
-            eq(accountingConnections.id, row.id),
-            eq(accountingConnections.partnerId, row.partnerId),
-          ))
-          .returning({ id: accountingConnections.id });
-        if (written.length > 0) updated++;
-      } catch (err) {
-        // Two partners' realms hashing to the same fingerprint is a real data
-        // conflict an operator must see (a stolen/shared realm, or a bug in a
-        // migration), not a crash that blocks boot for every other partner.
-        if (isPgUniqueViolation(err, 'accounting_connections_provider_realm_fp_idx')) {
-          skipped++;
-          captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
-            module: 'accountingConnectionService',
-            op: 'backfillRealmFingerprints',
-            connectionId: row.id,
-          });
-          continue;
-        }
-        throw err;
-      }
+  for (const row of rows) {
+    if (row.realmIdFingerprint !== null && fingerprintKeyGeneration(row.realmIdFingerprint) === activeGen) {
+      continue;
     }
 
-    return { scanned: rows.length, updated, skipped };
-  }, 'backfillRealmFingerprints');
+    const realmId = decryptSecret(row.realmIdEncrypted);
+    // Guarded by the isNotNull(realmIdEncrypted) filter above; decryptSecret
+    // only returns null for a falsy/empty input, which that filter excludes.
+    if (realmId === null) continue;
+    const fingerprint = hmacFingerprint(realmId);
+
+    try {
+      // Zero-row-throw discipline (see other writes in this file) doesn't
+      // fit a multi-row backfill loop verbatim — aborting the whole sweep
+      // over one row deleted concurrently would strand every later row
+      // unprocessed. Guard against MISCOUNTING instead: only bump `updated`
+      // when a row actually matched.
+      const written = await withSystemDbAccessContext(() => db
+        .update(accountingConnections)
+        .set({ realmIdFingerprint: fingerprint })
+        .where(and(
+          eq(accountingConnections.id, row.id),
+          eq(accountingConnections.partnerId, row.partnerId),
+        ))
+        .returning({ id: accountingConnections.id }),
+      'backfillRealmFingerprints.write');
+      if (written.length > 0) updated++;
+    } catch (err) {
+      // Two partners' realms hashing to the same fingerprint is a real data
+      // conflict an operator must see (a stolen/shared realm, or a bug in a
+      // migration), not a crash that blocks boot for every other partner.
+      // Its transaction is now its own, so the abort dies with it.
+      if (isPgUniqueViolation(err, 'accounting_connections_provider_realm_fp_idx')) {
+        skipped++;
+        captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+          module: 'accountingConnectionService',
+          op: 'backfillRealmFingerprints',
+          connectionId: row.id,
+        });
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  return { scanned: rows.length, updated, skipped };
 }
 
 /** Connections the 15-minute sweep should reconcile: status 'connected' AND pull_payments. */

@@ -22,7 +22,7 @@ import {
   resetConnectionForRealmChange,
   upsertConnection,
 } from '../../services/accounting/accountingConnectionService';
-import { hmacFingerprint } from '../../services/secretCrypto';
+import { encryptSecret, hmacFingerprint } from '../../services/secretCrypto';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
@@ -57,6 +57,41 @@ describe('accountingRealmFingerprint (Phase D Task 1)', () => {
 
     const [row] = await withSystemDbAccessContext(() => db.select().from(accountingConnections).where(eq(accountingConnections.id, conn.id)));
     expect(row!.realmIdFingerprint).toBe(hmacFingerprint('realm-rotated'));
+  });
+
+  runDb('a duplicate-fingerprint row does not roll back the rows around it (finding E)', async () => {
+    // The backfill used to run every row in ONE transaction. Postgres leaves a
+    // transaction ABORTED after a constraint violation, so the caught unique
+    // violation on the duplicate poisoned every LATER row (25P02) and rolled
+    // back every EARLIER one. One short context per row is the fix.
+    const [a, b, c] = [await createPartner(), await createPartner(), await createPartner()];
+    const connA = await withSystemDbAccessContext(() => upsertConnection(db, a.id, 'quickbooks', { realmId: 'realm-dup' }));
+    const connB = await withSystemDbAccessContext(() => upsertConnection(db, b.id, 'quickbooks', { realmId: 'realm-b-unique' }));
+    const connC = await withSystemDbAccessContext(() => upsertConnection(db, c.id, 'quickbooks', { realmId: 'realm-third' }));
+
+    await withSystemDbAccessContext(async () => {
+      // B now decrypts to the SAME realm as A, so exactly one of them can hold
+      // the fingerprint under accounting_connections_provider_realm_fp_idx.
+      await db.update(accountingConnections)
+        .set({ realmIdEncrypted: encryptSecret('realm-dup'), realmIdFingerprint: null })
+        .where(eq(accountingConnections.id, connB.id));
+      await db.update(accountingConnections)
+        .set({ realmIdFingerprint: null }).where(eq(accountingConnections.id, connA.id));
+      await db.update(accountingConnections)
+        .set({ realmIdFingerprint: null }).where(eq(accountingConnections.id, connC.id));
+    });
+
+    const out = await backfillRealmFingerprints();
+
+    expect(out.skipped).toBe(1);
+    expect(out.updated).toBe(2);
+    const rows = await withSystemDbAccessContext(() => db.select().from(accountingConnections));
+    const byId = new Map(rows.map((r) => [r.id, r.realmIdFingerprint]));
+    // The unrelated third row landed even though the duplicate blew up mid-sweep.
+    expect(byId.get(connC.id)).toBe(hmacFingerprint('realm-third'));
+    // Exactly one of the duplicate pair holds the fingerprint; the other is null.
+    expect([byId.get(connA.id), byId.get(connB.id)].filter((fp) => fp === hmacFingerprint('realm-dup'))).toHaveLength(1);
+    expect([byId.get(connA.id), byId.get(connB.id)].filter((fp) => fp === null)).toHaveLength(1);
   });
 
   runDb('advanceReconcileCursor reports a miss when the connection is not this partner\'s', async () => {
