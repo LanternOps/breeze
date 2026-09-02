@@ -2291,6 +2291,77 @@ jobs:
         if: always()
         run: docker compose -f docker-compose.yml -f docker-compose.override.yml.ci down -v || true
 
+  # ─── Guided installer smoke (self-host) ───────────────────────────────
+  # Runs scripts/guided-setup.sh end to end on the runner — the real installer,
+  # this PR's docker-compose.yml/.env.example/Caddyfile, locally built images —
+  # then asserts what a self-hoster hits in the first ten minutes: the stack is
+  # healthy through the packaged Caddy, the bootstrap admin can sign in, a
+  # session survives a page load through the quickstart's SSH-tunnel topology
+  # (https://localhost:8443 vs CORS_ALLOWED_ORIGINS=https://localhost), and the
+  # reboot-startup systemd unit really enables/starts/stops/starts the stack.
+  # Both #4201 defects and the tunnel login loop only ever surfaced on
+  # customers' hosts because nothing executed the installer before release.
+  # Same policy as smoke-test: non-blocking on PRs, required on main.
+  guided-setup-smoke:
+    name: Guided Setup Smoke (self-host installer)
+    runs-on: ubuntu-latest
+    needs: [lint, typecheck]
+    continue-on-error: ${{ github.event_name == 'pull_request' }}
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Install socat (stands in for the quickstart's `ssh -L 8443:127.0.0.1:443`)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq socat
+
+      # The installer pins images by BREEZE_VERSION; build this checkout's
+      # api/web/portal under that tag so `docker compose up` uses them
+      # (the pull for these local-only tags fails, which the installer treats
+      # as non-fatal — the documented bring-your-own-images path). The agent
+      # binaries image is pulled from GHCR like the Smoke Test job does.
+      - name: Build api/web/portal images under the ci-smoke tag
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/guided-smoke-build
+          docker build -f docker/Dockerfile.api -t ghcr.io/lanternops/breeze/api:ci-smoke .             > /tmp/guided-smoke-build/api.log 2>&1 &
+          API_PID=$!
+          docker build -f docker/Dockerfile.web --build-arg PUBLIC_API_URL=             -t ghcr.io/lanternops/breeze/web:ci-smoke .             > /tmp/guided-smoke-build/web.log 2>&1 &
+          WEB_PID=$!
+          docker build -f apps/portal/Dockerfile --build-arg PORTAL_BASE_PATH=/portal --build-arg PUBLIC_API_URL=             -t ghcr.io/lanternops/breeze/portal:ci-smoke .             > /tmp/guided-smoke-build/portal.log 2>&1 &
+          PORTAL_PID=$!
+          FAIL=0
+          for pair in "api:${API_PID}" "web:${WEB_PID}" "portal:${PORTAL_PID}"; do
+            name="${pair%%:*}"; pid="${pair##*:}"
+            if wait "${pid}"; then
+              echo "built ghcr.io/lanternops/breeze/${name}:ci-smoke"
+            else
+              echo "::error::docker build failed for ${name}"
+              tail -60 "/tmp/guided-smoke-build/${name}.log"
+              FAIL=1
+            fi
+          done
+          [ "${FAIL}" -eq 0 ]
+
+      - name: Mask the fixed bootstrap credential before the installer prints it
+        run: echo "::add-mask::ci-smoke-bootstrap-credential-32-chars"
+
+      - name: Run the guided installer end to end
+        run: bash scripts/smoke-guided-setup.sh
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: bash scripts/smoke-guided-setup.sh logs || true
+
+      - name: Teardown
+        if: always()
+        run: bash scripts/smoke-guided-setup.sh teardown || true
+
   auth-browser-transition-browser-contract:
     name: Auth Browser Transition (Chromium)
     runs-on: ubuntu-latest
@@ -2400,7 +2471,7 @@ jobs:
   ci-success:
     name: CI Success
     runs-on: ubuntu-latest
-    needs: [lint, typecheck, test-api, test-m365-graph-read-executor, test-m365-graph-actions-executor, test-m365-communications-executor, test-web, test-mobile, test-portal, test-viewer, test-office-addin-core, test-excel-addin, test-word-addin, test-powerpoint-addin, test-outlook-addin, security-audit, build-api, build-m365-graph-read-executor, build-m365-graph-actions-executor, build-m365-communications-executor, build-web, build-portal, build-agent, test-agent, test-agent-windows, windows-runtime-smoke, integration-test, check-migrations-nonsuperuser, rust-check, smoke-test, auth-browser-transition-browser-contract]
+    needs: [lint, typecheck, test-api, test-m365-graph-read-executor, test-m365-graph-actions-executor, test-m365-communications-executor, test-web, test-mobile, test-portal, test-viewer, test-office-addin-core, test-excel-addin, test-word-addin, test-powerpoint-addin, test-outlook-addin, security-audit, build-api, build-m365-graph-read-executor, build-m365-graph-actions-executor, build-m365-communications-executor, build-web, build-portal, build-agent, test-agent, test-agent-windows, windows-runtime-smoke, integration-test, check-migrations-nonsuperuser, rust-check, smoke-test, guided-setup-smoke, auth-browser-transition-browser-contract]
     if: ${{ !cancelled() }}
     steps:
       - name: Check all jobs passed
@@ -2435,6 +2506,7 @@ jobs:
           CHECK_MIGRATIONS_NONSUPERUSER_RESULT: ${{ needs.check-migrations-nonsuperuser.result }}
           RUST_CHECK_RESULT: ${{ needs.rust-check.result }}
           SMOKE_TEST_RESULT: ${{ needs.smoke-test.result }}
+          GUIDED_SETUP_SMOKE_RESULT: ${{ needs.guided-setup-smoke.result }}
           AUTH_BROWSER_TRANSITION_BROWSER_CONTRACT_RESULT: ${{ needs.auth-browser-transition-browser-contract.result }}
           IS_PR: ${{ github.event_name == 'pull_request' }}
         run: |
@@ -2474,6 +2546,11 @@ jobs:
           # Smoke test: non-blocking on PRs, required on main
           if [[ "${IS_PR}" != "true" ]] && [[ "${SMOKE_TEST_RESULT}" != "success" ]]; then
             echo "Smoke test failed on main branch push"
+            exit 1
+          fi
+          # Guided installer smoke: same policy — non-blocking on PRs, required on main
+          if [[ "${IS_PR}" != "true" ]] && [[ "${GUIDED_SETUP_SMOKE_RESULT}" != "success" ]]; then
+            echo "Guided setup smoke failed on main branch push"
             exit 1
           fi
           echo "All required jobs passed!"
