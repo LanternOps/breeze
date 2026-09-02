@@ -185,7 +185,13 @@ export function registerContractTools(aiTools: Map<string, AiTool>): void {
           line: {
             type: 'object',
             description:
-              'Contract line input fields. With catalogItemId set, unitPrice/taxable are resolved from the catalog ' +
+              'Contract line input. lineType is one of flat | per_device | per_device_role | per_seat | manual. ' +
+              'per_device counts the org\'s billable devices (optionally one site via siteId). ' +
+              'per_device_role counts only devices whose role is in deviceRoles — a non-empty array of ' +
+              'workstation, server, printer, router, switch, firewall, access_point, phone, iot, camera, nas ' +
+              '(never "unknown": unclassified devices are reported as uncovered, not billed); siteId is optional there too. ' +
+              'manual requires manualQuantity. ' +
+              'With catalogItemId set, unitPrice/taxable are resolved from the catalog ' +
               'price book in the CONTRACT\'s currency (any supplied values are ignored) and add_line fails with ' +
               'NO_PRICE_FOR_CURRENCY (409) when the item has no price in that currency — never converted; add a ' +
               'non-catalog line with an explicit unitPrice instead. Without catalogItemId, unitPrice is required.',

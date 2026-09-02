@@ -220,4 +220,33 @@ describe('manage_contracts', () => {
     expect(parsed.code).toBe('VALIDATION_ERROR');
     expect(contractService.addContractLineToContract).not.toHaveBeenCalled();
   });
+
+  // #3205
+  it('add_line accepts a per_device_role line with deviceRoles and forwards it verbatim', async () => {
+    const line = {
+      lineType: 'per_device_role', description: 'Network gear', unitPrice: '25.00', taxable: true,
+      deviceRoles: ['switch', 'router', 'firewall'],
+    };
+    const out = await getTool().handler({ action: 'add_line', contractId: 'contract-1', line }, auth);
+    expect(contractService.addContractLineToContract).toHaveBeenCalledWith('contract-1', line, actor);
+    expect(JSON.parse(out)).toEqual({ id: 'line-1', contractId: 'contract-1' });
+  });
+
+  it('add_line with per_device_role but no deviceRoles returns VALIDATION_ERROR naming the field', async () => {
+    const out = await getTool().handler(
+      { action: 'add_line', contractId: 'contract-1', line: { lineType: 'per_device_role', description: 'x', unitPrice: '1.00', taxable: false } },
+      auth,
+    );
+    const parsed = JSON.parse(out);
+    expect(parsed.code).toBe('VALIDATION_ERROR');
+    expect(parsed.error).toContain('deviceRoles');
+    expect(contractService.addContractLineToContract).not.toHaveBeenCalled();
+  });
+
+  it('documents per_device_role and deviceRoles in the tool schema so the model can discover them', () => {
+    const desc = JSON.stringify(getTool().definition.input_schema);
+    expect(desc).toContain('per_device_role');
+    expect(desc).toContain('deviceRoles');
+    expect(desc).toContain('unknown');
+  });
 });
