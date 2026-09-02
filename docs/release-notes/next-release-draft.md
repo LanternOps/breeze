@@ -75,9 +75,9 @@ bookkeeper instead of rewriting a QuickBooks receipt.
   `push_payments`: once Breeze created a Payment in QuickBooks it owns its
   removal, so switching the feature off cannot strand money in the books.
 - Migration `2026-10-05-100000-quickbooks-payment-push.sql` adds
-  `accounting_connections.push_payments` and three columns on
-  `accounting_entity_mappings` (`breeze_origin`, `pending_op`, `claimed_at`),
-  one CHECK constraint and one partial index. It backfills `breeze_origin = true`
+  `accounting_connections.push_payments` and four columns on
+  `accounting_entity_mappings` (`breeze_origin`, `pending_op`, `claimed_at`,
+  `sync_attempts`), one CHECK constraint and one partial index. It backfills `breeze_origin = true`
   for existing invoice mappings under `set_config('breeze.scope','system', true)`
   and logs the row count as a `WARNING`. No new tables, no RLS changes.
 - New per-connection setting `push_payments` (default **on**) beside the
@@ -91,6 +91,12 @@ bookkeeper instead of rewriting a QuickBooks receipt.
   15-minute `accounting-reconcile` sweep gained a second pass that re-enqueues
   any mapping still owing QuickBooks work. A Redis outage therefore delays a
   push by at most one sweep — it never loses one.
+- A payment push that keeps failing now GIVES UP after 20 attempts (about five
+  hours of 15-minute sweeps) instead of retrying forever: the mapping reads
+  `QuickBooks payment push gave up after 20 attempts: <reason>. Fix the cause and
+  push the invoice again.`, and the invoice's "Push to QuickBooks" button clears
+  the counter and tries again. A pending DELETE is never capped — once Breeze
+  created a Payment in QuickBooks it owns the removal.
 - The reconcile sweep's gate widened from `pull_payments` to
   `pull_payments OR push_payments`, so a realm with pull off and push on now
   runs the CDC pass (it suppresses new QuickBooks-origin imports, logging

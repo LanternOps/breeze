@@ -522,8 +522,8 @@ Follow-ups surfaced by this run (not fixed here):
 
 ### Phase D2 checklist (payment push)
 
-**Status: PENDING — not yet run.** Items 27-40 below have never been executed
-against a live Intuit sandbox. Item 27 is a HARD PREREQUISITE for 28-40:
+**Status: PENDING — not yet run.** Items 27-42 below have never been executed
+against a live Intuit sandbox. Item 27 is a HARD PREREQUISITE for 28-42:
 the Development webhook URL registered during the Phase D walk points at a
 dead quick tunnel, so without re-registering it the echo and adoption cases
 cannot be observed at webhook latency at all and the 15-minute
@@ -618,6 +618,18 @@ items 34 and 35 change both and must put them back.
     `QuickBooks rejected the payment sync (HTTP n)` and never an Intuit fault
     body, `pending_op` is KEPT (so the sweep retries) and the job is retried
     rather than marked terminal.
+    Then WATCH THE RETRY COUNT: record `sync_attempts` on the mapping row after
+    the first failure and again after a few sweeps (it must climb by one per
+    attempt, not stay at 0 and not jump). Either wait out the 20 attempts or
+    fast-forward with
+    `UPDATE accounting_entity_mappings SET sync_attempts = 19 WHERE id = '<id>';`
+    and let one more sweep run, then confirm the row GIVES UP: `pending_op` is
+    NULL, `claimed_at` is NULL, and `last_error` reads
+    `QuickBooks payment push gave up after 20 attempts: QuickBooks rejected the
+    payment sync (HTTP n). Fix the cause and push the invoice again.` Confirm the
+    sweep stops re-enqueueing it (no further `push-payment` jobs for that
+    mapping id), and that pressing "Push to QuickBooks" on the invoice re-owns
+    the row with `sync_attempts` back to 0.
     Result: PENDING.
 
 37. **Void a fully-paid invoice in Breeze** and confirm the QuickBooks Invoice
@@ -625,6 +637,14 @@ items 34 and 35 change both and must put them back.
     (spec decision 11), and that when the void echoes back the invoice mapping
     reads `invoice_void` and does NOT show "Deleted in QuickBooks" (the
     self-void guard).
+    Then check that invoice's PAYMENT mappings, not just the invoice one:
+    voiding the QuickBooks Invoice leaves its Payment unapplied, which CDC
+    reports as a live Payment with no Invoice link. Every payment mapping of
+    that invoice must still carry its `remote_entity_id` and
+    `remote_sync_token`, must NOT have been dropped, and no new QuickBooks
+    Payment may appear. Expect `sync_status = error` /
+    `Edited in QuickBooks; Breeze remains the source of truth for this payment`
+    on Breeze-origin rows.
     Result: PENDING.
 
 38. **Kill the API between the QuickBooks create and phase 2** — stop the
@@ -655,6 +675,28 @@ items 34 and 35 change both and must put them back.
     payment created directly in QuickBooks by hand is NOT imported, logging
     `skipped_pull_disabled` once per run rather than once per payment. Put
     `pull_payments` back on.
+    Result: PENDING.
+
+41. **VOID (do not delete) the QuickBooks Payment by hand** — QuickBooks' own
+    "Void" on a Payment zeroes `TotalAmt` and keeps the transaction. Confirm the
+    Breeze payment row survives with the invoice's `amount_paid`/`balance`
+    untouched, and — the point of this item, distinct from item 32 — that the
+    mapping KEEPS its `remote_entity_id` and `remote_sync_token`, going to
+    `sync_status = error` /
+    `Edited in QuickBooks; Breeze remains the source of truth for this payment`.
+    Then press "Push to QuickBooks" on the invoice and confirm NOTHING new is
+    created: no second QuickBooks Payment, no new mapping row, and the existing
+    row is not re-owned (`pending_op` stays NULL). Finally void the payment in
+    Breeze and confirm the delete still reaches QuickBooks by name — which is
+    only possible because the id and token were kept.
+    Result: PENDING.
+
+42. **UNAPPLY the QuickBooks Payment** — edit it to settle no invoice at all
+    (clear the invoice line, leaving the Payment as customer credit). Confirm
+    exactly the same end state as item 41: Breeze row intact, invoice totals
+    intact, mapping keeps its ids with the "Edited in QuickBooks" error, and a
+    re-push creates nothing. A Payment with no Invoice-linked line and a voided
+    Payment take the same route, and neither is a deletion.
     Result: PENDING.
 
 ### How to fill this in on the next run
