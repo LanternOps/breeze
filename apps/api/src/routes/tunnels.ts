@@ -26,7 +26,8 @@ import { isViewerJtiRevoked, isViewerSessionRevoked, revokeViewerSession } from 
 import type { AuthContext } from '../middleware/auth';
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../services/permissions';
 import { createRemoteSession, RemoteSessionDeniedError } from '../services/remoteSessionCreate';
-import { trustDenyBody } from '../services/partnerTrust';
+import { evaluateCapability, partnerIdForDevice, trustDenyBody } from '../services/partnerTrust';
+import { partnerTrustMode } from '../config/partnerTrustMode';
 
 export const tunnelRoutes = new Hono();
 
@@ -54,6 +55,28 @@ const PROXY_IDLE_EXPIRY_MS = 10 * 60 * 1000;
 // enforces it at ticket-mint time so a caller can't refresh past a dead
 // session with a fresh ticket.
 const HTTP_TUNNEL_MAX_SESSION_MS = HTTP_TUNNEL_MAX_SESSION_HOURS * 60 * 60 * 1000;
+
+async function tunnelTicketTrustDenyBody(deviceId: string, userId: string) {
+  if (partnerTrustMode() === 'off') return null;
+
+  const partnerId = await partnerIdForDevice(deviceId);
+  if (!partnerId) return null;
+
+  const decision = await evaluateCapability('remote_control', {
+    partnerId,
+    deviceId,
+    userId,
+    detail: { stage: 'ticket', kind: 'tunnel' },
+  });
+  if (decision.allow) return null;
+
+  return trustDenyBody({
+    allow: false,
+    code: decision.code,
+    capability: 'remote_control',
+    reason: decision.reason,
+  }, false);
+}
 
 const createTunnelSchema = z.discriminatedUnion('type', [
   z.object({ deviceId: z.string().guid(), type: z.literal('vnc') }),
@@ -1105,6 +1128,9 @@ tunnelRoutes.post(
       }, 400);
     }
 
+    const trustDenial = await tunnelTicketTrustDenyBody(session.deviceId, auth.user.id);
+    if (trustDenial) return c.json(trustDenial, 403);
+
     const ticket = await createWsTicket({
       sessionId: id,
       sessionType: 'tunnel',
@@ -1173,6 +1199,9 @@ tunnelRoutes.post(
       }, 400);
     }
 
+    const trustDenial = await tunnelTicketTrustDenyBody(session.deviceId, auth.user.id);
+    if (trustDenial) return c.json(trustDenial, 403);
+
     const ticket = await createWsTicket({
       sessionId: id,
       sessionType: 'tunnel-http',
@@ -1239,6 +1268,9 @@ tunnelRoutes.post(
         status: session.status,
       }, 400);
     }
+
+    const trustDenial = await tunnelTicketTrustDenyBody(session.deviceId, auth.user.id);
+    if (trustDenial) return c.json(trustDenial, 403);
 
     try {
       const result = await createVncConnectCode({

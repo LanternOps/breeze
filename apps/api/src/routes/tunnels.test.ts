@@ -1226,6 +1226,89 @@ describe('POST /tunnels/:id/connect-code', () => {
   });
 });
 
+describe.each([
+  {
+    routeName: 'ws-ticket',
+    path: `/tunnels/${SESSION_ID}/ws-ticket`,
+    minted: () => vi.mocked(createWsTicket),
+  },
+  {
+    routeName: 'http-ticket',
+    path: `/tunnels/${SESSION_ID}/http-ticket`,
+    minted: () => vi.mocked(createWsTicket),
+  },
+  {
+    routeName: 'connect-code',
+    path: `/tunnels/${SESSION_ID}/connect-code`,
+    minted: () => vi.mocked(createVncConnectCode),
+  },
+])('ticket-time partner trust re-check: $routeName', ({ path, minted }) => {
+  let app: Hono;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    app = new Hono();
+    app.route('/tunnels', tunnelRoutes);
+    vi.mocked(db.select).mockReturnValueOnce(makeSelectChain([sessionRecord]) as any);
+    vi.mocked(db.insert).mockReturnValue(makeAuditAwareInsertChain([]) as any);
+  });
+
+  it('returns TRUST_PROBATION under enforce without minting a ticket or code', async () => {
+    partnerTrustMode.mockReturnValueOnce('enforce');
+    evaluateCapability.mockResolvedValueOnce({
+      allow: false,
+      code: 'TRUST_PROBATION',
+      capability: 'remote_control',
+      reason: 'probation_default_deny',
+    });
+
+    const res = await app.request(path, { method: 'POST' });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual(expect.objectContaining({
+      error: 'TRUST_PROBATION',
+      capability: 'remote_control',
+      reason: 'probation_default_deny',
+      reviewRequested: false,
+    }));
+    expect(partnerIdForDevice).toHaveBeenCalledWith(DEVICE_ID);
+    expect(evaluateCapability).toHaveBeenCalledWith('remote_control', {
+      partnerId: PARTNER_ID,
+      deviceId: DEVICE_ID,
+      userId: USER_ID,
+      detail: { stage: 'ticket', kind: 'tunnel' },
+    });
+    expect(minted()).not.toHaveBeenCalled();
+  });
+
+  it('keeps ticket or code issuance unchanged for a trusted partner', async () => {
+    partnerTrustMode.mockReturnValueOnce('enforce');
+    evaluateCapability.mockResolvedValueOnce({ allow: true });
+
+    const res = await app.request(path, { method: 'POST' });
+
+    expect(res.status).toBe(200);
+    expect(partnerIdForDevice).toHaveBeenCalledWith(DEVICE_ID);
+    expect(evaluateCapability).toHaveBeenCalledWith('remote_control', expect.objectContaining({
+      partnerId: PARTNER_ID,
+      deviceId: DEVICE_ID,
+      userId: USER_ID,
+    }));
+    expect(minted()).toHaveBeenCalledOnce();
+  });
+
+  it('does not resolve the partner or evaluate trust when mode is off', async () => {
+    partnerTrustMode.mockReturnValueOnce('off');
+
+    const res = await app.request(path, { method: 'POST' });
+
+    expect(res.status).toBe(200);
+    expect(partnerIdForDevice).not.toHaveBeenCalled();
+    expect(evaluateCapability).not.toHaveBeenCalled();
+    expect(minted()).toHaveBeenCalledOnce();
+  });
+});
+
 // ─── POST /vnc-exchange/:code ─────────────────────────────────────────────────
 
 describe('POST /vnc-exchange/:code', () => {
