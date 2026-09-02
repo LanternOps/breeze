@@ -748,6 +748,17 @@ describe('pushPaymentToAccounting', () => {
       .rejects.toMatchObject({ code: 'sync_in_progress' });
   });
 
+  it('reports nothing_owed (not sync_in_progress) when a void flipped the row to pending_op=delete while this push job was queued', async () => {
+    // Mirrors the delete side's own CAS-miss shortcut: the CAS wants
+    // pending_op='push' and misses because a destroyer already flipped the row
+    // to 'delete' — retrying the push can never succeed, so a stale push job
+    // must not burn five retries on it.
+    currentMappings = [invoiceMapRow(), orgMapRow(), paymentMapRow({ pendingOp: 'delete' })];
+
+    await expect(pushPaymentToAccounting(MAPPING, PARTNER, runCtx)).resolves.toBe('nothing_owed');
+    expect(createPaymentMock).not.toHaveBeenCalled();
+  });
+
   it('never reads another partner\'s org mapping', async () => {
     currentMappings = [invoiceMapRow(), orgMapRow({ partnerId: 'other-partner' }), paymentMapRow()];
 

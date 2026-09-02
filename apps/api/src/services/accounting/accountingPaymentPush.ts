@@ -793,7 +793,15 @@ export async function pushPaymentToAccounting(
     const claimed = await claimPaymentMapping(mappingId, partnerId, 'push', now);
     if (!claimed) {
       const existing = await loadMappingById(mappingId, partnerId);
-      if (existing && existing.pendingOp === null) {
+      if (existing && (existing.pendingOp === null || existing.pendingOp === 'delete')) {
+        // `pendingOp === null`: nothing is owed. `pendingOp === 'delete'`:
+        // mirrors the delete side's own CAS-miss shortcut below — a destroyer
+        // flipped this row to a delete while a push job for it was still
+        // queued (a void racing an in-flight/queued create). Retrying the
+        // push can never succeed against a row that no longer wants one, so
+        // report `nothing_owed` rather than burning five retries on
+        // `sync_in_progress`; the delete-payment job the destroyer's caller
+        // already enqueued (or the sweep will) is what actually does the work.
         return { kind: 'outcome', outcome: 'nothing_owed' } as const;
       }
       // Either a live lease, or the row is not visible yet because the caller's

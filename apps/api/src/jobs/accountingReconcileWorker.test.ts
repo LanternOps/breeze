@@ -45,6 +45,9 @@ const {
   reverseMock,
   reverseStaleMock,
   markInvoiceDeletedMock,
+  listOwedPaymentMappingsMock,
+  enqueuePaymentPushMock,
+  enqueuePaymentDeleteMock,
 } = vi.hoisted(() => {
   const ctx = { depth: 0, order: [] as string[], depths: [] as number[] };
   const record = (name: string) => {
@@ -84,6 +87,9 @@ const {
     reverseMock: vi.fn(),
     reverseStaleMock: vi.fn(),
     markInvoiceDeletedMock: vi.fn(),
+    listOwedPaymentMappingsMock: vi.fn(),
+    enqueuePaymentPushMock: vi.fn(),
+    enqueuePaymentDeleteMock: vi.fn(),
   };
 });
 
@@ -136,6 +142,15 @@ vi.mock('../services/accounting/accountingPaymentPull', () => ({
   reverseAccountingPayment: reverseMock,
   reverseStaleAllocations: reverseStaleMock,
   markInvoiceDeletedRemotely: markInvoiceDeletedMock,
+}));
+
+vi.mock('../services/accounting/accountingPaymentPush', () => ({
+  listOwedPaymentMappings: listOwedPaymentMappingsMock,
+}));
+
+vi.mock('./accountingSyncWorker', () => ({
+  enqueueAccountingPaymentPush: enqueuePaymentPushMock,
+  enqueueAccountingPaymentDelete: enqueuePaymentDeleteMock,
 }));
 
 import type { AccountingConnection } from '../services/accounting/accountingConnectionService';
@@ -288,6 +303,10 @@ beforeEach(() => {
   });
   reverseReturns();
   applyReturns('applied');
+
+  listOwedPaymentMappingsMock.mockResolvedValue([]);
+  enqueuePaymentPushMock.mockResolvedValue(true);
+  enqueuePaymentDeleteMock.mockResolvedValue(true);
 });
 
 // ---------------------------------------------------------------------------
@@ -675,14 +694,16 @@ describe('processReconcileSweep', () => {
 
     const outcome = await processReconcileSweep();
 
-    expect(outcome).toEqual({ enqueued: 3, failed: 0 });
+    expect(outcome).toEqual({ enqueued: 3, failed: 0, pendingOpsEnqueued: 0, pendingOpsFailed: 0 });
     expect(queueAddMock).toHaveBeenCalledTimes(3);
     for (const call of queueAddMock.mock.calls) {
       expect(call[1]).toMatchObject({ type: 'reconcile-connection', trigger: 'sweep' });
     }
     // The list read happens INSIDE one short system context...
     expect(depthsOf('listReconcilableConnections')).toEqual([1]);
-    expect(withSystemDbAccessContextMock).toHaveBeenCalledTimes(1);
+    // ...and the pass-2 owed-mappings read opens its own SEPARATE short context
+    // (never held across pass 1's Redis enqueues, and never the same context).
+    expect(withSystemDbAccessContextMock).toHaveBeenCalledTimes(2);
     // ...and every Redis enqueue happens with that context already closed.
     expect(depthsOf('queue.add')).toEqual([0, 0, 0]);
   });
@@ -694,7 +715,63 @@ describe('processReconcileSweep', () => {
     ]);
     queueAddMock.mockRejectedValueOnce(new Error('redis down'));
 
-    await expect(processReconcileSweep()).resolves.toEqual({ enqueued: 1, failed: 1 });
+    await expect(processReconcileSweep()).resolves.toEqual({ enqueued: 1, failed: 1, pendingOpsEnqueued: 0, pendingOpsFailed: 0 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase D2: pull-or-push gate + the stale pending_op sweep
+// ---------------------------------------------------------------------------
+
+describe('gate: pull OR push (spec decision 6)', () => {
+  it('still runs the CDC pass when pull is off but push is on', async () => {
+    getConnectionMock.mockResolvedValue({ id: 'c1', status: 'connected', pullPayments: false, pushPayments: true, realmIdFingerprint: 'fp', cdcCursor: null });
+    reconcileChangesMock.mockResolvedValue(EMPTY_CHANGESET);
+    await expect(processReconcileConnectionJob({ type: 'reconcile-connection', connectionId: 'c1', partnerId: 'p1', trigger: 'sweep' }))
+      .resolves.not.toBeNull();
+    expect(reconcileChangesMock).toHaveBeenCalled();
+  });
+
+  it('returns null and touches nothing when BOTH switches are off', async () => {
+    getConnectionMock.mockResolvedValue({ id: 'c1', status: 'connected', pullPayments: false, pushPayments: false });
+    await expect(processReconcileConnectionJob({ type: 'reconcile-connection', connectionId: 'c1', partnerId: 'p1', trigger: 'sweep' }))
+      .resolves.toBeNull();
+    expect(reconcileChangesMock).not.toHaveBeenCalled();
+    expect(resolveConnectionAndTokenMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('stale pending_op sweep', () => {
+  it('re-enqueues every owed mapping by its own operation, with nothing held', async () => {
+    listReconcilableConnectionsMock.mockResolvedValue([]);
+    listOwedPaymentMappingsMock.mockResolvedValue([
+      { id: 'm1', partnerId: 'p1', pendingOp: 'push' },
+      { id: 'm2', partnerId: 'p2', pendingOp: 'delete' },
+    ]);
+    let depthAtEnqueue = -1;
+    enqueuePaymentPushMock.mockImplementation(async () => { depthAtEnqueue = ctx.depth; return true; });
+
+    const summary = await processReconcileSweep();
+
+    expect(enqueuePaymentPushMock).toHaveBeenCalledWith('m1', 'p1');
+    expect(enqueuePaymentDeleteMock).toHaveBeenCalledWith('m2', 'p2');
+    expect(summary.pendingOpsEnqueued).toBe(2);
+    // Redis work never happens inside a DB context.
+    expect(depthAtEnqueue).toBe(0);
+  });
+
+  it('counts a refused enqueue as failed rather than reporting it as queued', async () => {
+    listReconcilableConnectionsMock.mockResolvedValue([]);
+    listOwedPaymentMappingsMock.mockResolvedValue([{ id: 'm1', partnerId: 'p1', pendingOp: 'push' }]);
+    enqueuePaymentPushMock.mockResolvedValue(false);
+    await expect(processReconcileSweep()).resolves.toMatchObject({ pendingOpsEnqueued: 0, pendingOpsFailed: 1 });
+  });
+
+  it('sweeps owed mappings even when NO connection is reconcilable (deletes must still propagate)', async () => {
+    listReconcilableConnectionsMock.mockResolvedValue([]);
+    listOwedPaymentMappingsMock.mockResolvedValue([{ id: 'm2', partnerId: 'p2', pendingOp: 'delete' }]);
+    await processReconcileSweep();
+    expect(enqueuePaymentDeleteMock).toHaveBeenCalledWith('m2', 'p2');
   });
 });
 

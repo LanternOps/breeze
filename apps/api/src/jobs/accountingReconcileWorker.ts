@@ -71,6 +71,8 @@ import {
   reverseStaleAllocations,
   type PaymentPullOutcome,
 } from '../services/accounting/accountingPaymentPull';
+import { listOwedPaymentMappings } from '../services/accounting/accountingPaymentPush';
+import { enqueueAccountingPaymentPush, enqueueAccountingPaymentDelete } from './accountingSyncWorker';
 
 export const ACCOUNTING_RECONCILE_QUEUE = 'accounting-reconcile';
 
@@ -220,12 +222,16 @@ function logRunLine(data: ReconcileConnectionJobData, summary: ReconcileRunSumma
 /**
  * Reconcile ONE connection's CDC window.
  *
- * Returns `null` when the job is a no-op (no connection, a connection that is
- * not the one the job names, one that is not `connected`, or one whose
- * `pull_payments` switch is off). A switched-off connection short-circuits
- * BEFORE `resolveConnectionAndToken`: that call is itself a QuickBooks round
- * trip plus a token write, and refreshing tokens for a connection the operator
- * has disabled is work nobody asked for.
+ * Returns null when the job is a no-op: no connection, a connection that is
+ * not the one the job names, one that is not `connected`, or one with BOTH
+ * direction switches off. Phase D2 (spec decision 6): pull-off/push-on still
+ * runs the CDC pass — it is what ADOPTS a Breeze-created Payment whose phase
+ * 2 never landed and what notices a Breeze-origin Payment deleted in
+ * QuickBooks — it just suppresses new QuickBooks-origin imports. A
+ * switched-off connection (both switches off) short-circuits BEFORE
+ * `resolveConnectionAndToken`: that call is itself a QuickBooks round trip
+ * plus a token write, and refreshing tokens for a connection the operator has
+ * fully disabled is work nobody asked for.
  */
 export async function processReconcileConnectionJob(
   data: ReconcileConnectionJobData,
@@ -236,7 +242,17 @@ export async function processReconcileConnectionJob(
       withSystemDbAccessContext(fn, `accountingReconcile.${data.trigger}`);
 
     const conn = await runInDbContext(() => getConnection(db, data.partnerId, 'quickbooks'));
-    if (!conn || conn.id !== data.connectionId || conn.status !== 'connected' || !conn.pullPayments) return null;
+    const shortCircuit = (reason: 'missing' | 'connection_mismatch' | 'not_connected' | 'both_switches_off'): null => {
+      console.log(
+        '[AccountingReconcileWorker] short-circuit',
+        `connectionId=${data.connectionId}`, `trigger=${data.trigger}`, `reason=${reason}`,
+      );
+      return null;
+    };
+    if (!conn) return shortCircuit('missing');
+    if (conn.id !== data.connectionId) return shortCircuit('connection_mismatch');
+    if (conn.status !== 'connected') return shortCircuit('not_connected');
+    if (!conn.pullPayments && !conn.pushPayments) return shortCircuit('both_switches_off');
 
     const { conn: fresh, liveConn } = await resolveConnectionAndToken(data.partnerId, 'quickbooks', runInDbContext);
     // The realm generation this ENTIRE run is staked on (finding C). Reconnecting
@@ -370,14 +386,27 @@ export async function processReconcileConnectionJob(
 }
 
 /**
- * The 15-minute fan-out: enqueue one `reconcile-connection` job per
- * pull-enabled QuickBooks connection.
+ * The 15-minute fan-out, in two passes.
  *
- * The connection list is read inside ONE short system context which is CLOSED
- * before any Redis work — an `add()` that blocks on a slow/unavailable Redis
- * must never do so while holding a pooled Postgres connection.
+ * Pass 1 enqueues one `reconcile-connection` job per connection with either
+ * direction switched on. Pass 2 is the OUTBOX BACKSTOP (spec decision 1): every
+ * `accounting_entity_mappings` row that still owes QuickBooks a push or a delete,
+ * whose lease has expired and whose last update is older than the grace window,
+ * is re-enqueued on the accounting-sync queue. That is what makes a lost
+ * enqueue — Redis down, the process dying between COMMIT and `add()`, BullMQ
+ * exhausting its attempts — recover with no operator action.
+ *
+ * Pass 2 is deliberately NOT gated on any connection switch: a delete must
+ * propagate even for a connection whose push is switched off, because Breeze
+ * created that Payment in QuickBooks and owns its removal.
+ *
+ * Both passes read inside ONE short system context each, CLOSED before any Redis
+ * work — an `add()` that blocks on a slow Redis must never hold a pooled
+ * Postgres connection.
  */
-export async function processReconcileSweep(): Promise<{ enqueued: number; failed: number }> {
+export async function processReconcileSweep(): Promise<{
+  enqueued: number; failed: number; pendingOpsEnqueued: number; pendingOpsFailed: number;
+}> {
   return runOutsideDbContext(async () => {
     const connections = await withSystemDbAccessContext(
       () => listReconcilableConnections(db, 'quickbooks'),
@@ -391,8 +420,27 @@ export async function processReconcileSweep(): Promise<{ enqueued: number; faile
       else failed++;
     }
 
-    console.log('[AccountingReconcileWorker] sweep complete', `connections=${connections.length}`, `enqueued=${enqueued}`, `failed=${failed}`);
-    return { enqueued, failed };
+    const owed = await withSystemDbAccessContext(
+      () => listOwedPaymentMappings(db, new Date()),
+      'accountingReconcile.sweep.pendingOps',
+    );
+
+    let pendingOpsEnqueued = 0;
+    let pendingOpsFailed = 0;
+    for (const row of owed) {
+      const accepted = row.pendingOp === 'push'
+        ? await enqueueAccountingPaymentPush(row.id, row.partnerId)
+        : await enqueueAccountingPaymentDelete(row.id, row.partnerId);
+      if (accepted) pendingOpsEnqueued++;
+      else pendingOpsFailed++;
+    }
+
+    console.log(
+      '[AccountingReconcileWorker] sweep complete',
+      `connections=${connections.length}`, `enqueued=${enqueued}`, `failed=${failed}`,
+      `pendingOps=${owed.length}`, `pendingOpsEnqueued=${pendingOpsEnqueued}`, `pendingOpsFailed=${pendingOpsFailed}`,
+    );
+    return { enqueued, failed, pendingOpsEnqueued, pendingOpsFailed };
   });
 }
 
