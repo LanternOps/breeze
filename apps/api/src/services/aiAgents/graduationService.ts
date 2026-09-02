@@ -123,12 +123,22 @@ export function graduationLockKey(orgId: string, agentId: string, opKey: string)
  * provide none. Every `withDbAccessContext` IS a transaction (`db/index.ts`
  * runs the context inside `baseDb.transaction`), so the guard below keys on an
  * established context rather than sniffing the driver.
+ *
+ * `database` is the executor the lock statement is issued on, defaulting to
+ * the ambient `db` proxy. The demote executor (`supervisedKeyDemote.ts`)
+ * passes the SAVEPOINT it is running in: a nested `db.transaction` does NOT
+ * rebind that proxy (`dbContextStorage` still holds the OUTER transaction),
+ * so a lock taken through it would be issued on the outer scope — where
+ * postgres-js records any failure and rethrows it at scope end even if the
+ * caller caught it, aborting the terminal CAS the savepoint exists to
+ * protect. Same parameter, and the same reason, as `insertOpEvidence`'s.
  */
 export async function withGraduationLock<T>(
   orgId: string,
   agentId: string,
   opKey: string,
   fn: () => Promise<T>,
+  database: Pick<typeof db, 'execute'> = db,
 ): Promise<T> {
   if (!getCurrentDbAccessContext()) {
     throw new Error(
@@ -136,7 +146,7 @@ export async function withGraduationLock<T>(
         + 'pg_advisory_xact_lock taken in autocommit releases immediately and serializes nothing.',
     );
   }
-  await db.execute(
+  await database.execute(
     sql`select pg_advisory_xact_lock(hashtext(${GRADUATION_LOCK_NAMESPACE}), hashtext(${graduationLockKey(orgId, agentId, opKey)}))`,
   );
   return fn();

@@ -15,6 +15,11 @@ import { transitionIntent, type ActionIntentTransitionPatch } from '../services/
 import { canonicalPolicyKey } from '../services/actionIntents/canonicalPolicyKey';
 import { insertOpEvidence, intentEvidenceSourceId } from '../services/aiAgents/opEvidence';
 import { createIntentFixWatchRow } from '../services/aiAgents/fixWatch';
+import {
+  demoteSupervisedKey,
+  notifyDemotion,
+  type NotifyDemotionInput,
+} from '../services/aiAgents/supervisedKeyDemote';
 import { enqueueFixWatchPhase1 } from './fixWatchWorker';
 import { attemptPolicyDecision, PolicyDecisionTransientError } from '../services/actionIntents/policyDecide';
 import { revalidateApprovedIntentForRelease } from '../services/actionIntents/revalidateRelease';
@@ -267,6 +272,14 @@ interface IntentEvidenceAnchor {
   opKey: string;
   sourceId: string;
   runId: string;
+  /**
+   * The ORG agent row a key was actually revoked from by the auto-demote that
+   * rode this evidence write (P2-5 Task 6), or null when nothing was revoked
+   * — a successful outcome, a key held only by the partner ceiling, or an org
+   * with no override row at all. It is the ONE thing the post-commit
+   * notification needs that the anchor did not already carry.
+   */
+  demotedOrgAgentId: string | null;
 }
 
 /**
@@ -345,6 +358,7 @@ async function recordIntentTerminalEvidence(
         opKey: canonicalPolicyKey(intent.actionName, intent.arguments),
         sourceId: intentEvidenceSourceId(intent.id),
         runId,
+        demotedOrgAgentId: null,
       };
 
       await insertOpEvidence(
@@ -364,6 +378,33 @@ async function recordIntentTerminalEvidence(
         ],
         tx,
       );
+
+      // AUTO-DEMOTE (P2-5 Task 6, #4192). An ATTEMPTED failure of a key this
+      // org actually granted revokes it, in THIS savepoint — the revoke and
+      // the `failed` row that justifies it commit together or not at all, so
+      // the ledger can never show a disqualifying failure next to a key that
+      // silently kept running unattended, nor the reverse. Always on: no
+      // feature flag is consulted (`supervisedKeyDemote.ts`).
+      //
+      // `tx` is threaded for the same reason `insertOpEvidence` gets it: a
+      // statement issued through the ambient `db` proxy inside a savepoint
+      // goes to the OUTER scope, and a failure there aborts the terminal CAS
+      // of an action that already ran.
+      if (metric === 'failed') {
+        const { revoked, orgAgentId } = await demoteSupervisedKey(
+          {
+            orgId: intent.orgId,
+            agentId: anchor.agentId,
+            opKey: anchor.opKey,
+            reason: 'attempted_failure',
+            runId,
+            watchId: null,
+            intentId: intent.id,
+          },
+          tx,
+        );
+        if (revoked && orgAgentId) anchor.demotedOrgAgentId = orgAgentId;
+      }
       return anchor;
     });
   } catch (error) {
@@ -490,16 +531,50 @@ async function terminalizeIntent(
   patch: TerminalPatch,
   onWon?: (anchor: IntentEvidenceAnchor | null) => Promise<void>,
 ): Promise<boolean> {
-  return withSystemDbAccessContext(async () => {
-    const won = await transitionIntent(intent.id, 'executing', to, patch);
-    if (!won) return false;
+  // A holder, not a bare `let`: the assignment happens inside the context
+  // closure, and TypeScript does not track closure writes back to the outer
+  // binding's narrowed type.
+  const pending: { demotion: NotifyDemotionInput | null } = { demotion: null };
+
+  const won = await withSystemDbAccessContext(async () => {
+    const casWon = await transitionIntent(intent.id, 'executing', to, patch);
+    if (!casWon) return false;
     let anchor: IntentEvidenceAnchor | null = null;
     if (isAttemptedTerminal(patch)) {
       anchor = await recordIntentTerminalEvidence(intent, to === 'completed' ? 'executed' : 'failed');
     }
+    if (anchor?.demotedOrgAgentId) {
+      pending.demotion = {
+        orgId: intent.orgId,
+        agentId: anchor.agentId,
+        orgAgentId: anchor.demotedOrgAgentId,
+        opKey: anchor.opKey,
+        reason: 'attempted_failure',
+        runId: anchor.runId,
+        watchId: null,
+      };
+    }
     if (onWon) await onWon(anchor);
     return true;
   });
+
+  // STRICTLY after the terminal transaction closed — same discipline as the
+  // fix-watch enqueue below: the revoke is committed, and a notification for
+  // a revoke that then rolled back is a false alarm an operator cannot tell
+  // from a real one. Swallowed on failure for the same reason: the authority
+  // change already happened and must not be undone by a notification outage.
+  if (won && pending.demotion) {
+    try {
+      await notifyDemotion(pending.demotion);
+    } catch (err) {
+      console.error(
+        `[IntentReleaseWorker] Failed to notify the supervised-key revoke for intent ${intent.id} — the revoke is committed:`,
+        err,
+      );
+      captureException(err instanceof Error ? err : new Error(String(err)));
+    }
+  }
+  return won;
 }
 
 /**

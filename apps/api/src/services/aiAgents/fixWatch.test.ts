@@ -163,6 +163,20 @@ vi.mock('../userNotifications', () => ({
   createNotification: (...args: unknown[]) => createNotificationMock(...args),
 }));
 
+// P2-5 (#4192) Task 6 — auto-demote. Mocked at the module boundary: the
+// revoke's own advisory-lock / FOR UPDATE / SET-clause contract is pinned
+// against the real dialect in `supervisedKeyDemote.test.ts`. What THIS file
+// proves is which keys a `recurred` verdict hands it, that it runs inside the
+// winning CAS's transaction, and that the notification runs strictly after.
+const demoteSupervisedKeyMock = vi.fn(
+  async (_input: Record<string, unknown>) => ({ revoked: false, orgAgentId: null as string | null }),
+);
+const notifyDemotionMock = vi.fn(async (_input: Record<string, unknown>) => undefined);
+vi.mock('./supervisedKeyDemote', () => ({
+  demoteSupervisedKey: (input: Record<string, unknown>) => demoteSupervisedKeyMock(input),
+  notifyDemotion: (input: Record<string, unknown>) => notifyDemotionMock(input),
+}));
+
 import {
   checkFixWatchPhase1,
   checkFixWatchPhase2,
@@ -245,6 +259,8 @@ beforeEach(() => {
   resetDbState();
   resolveRecipientUserIdsMock.mockReset().mockResolvedValue([USER_ID]);
   createNotificationMock.mockReset().mockResolvedValue('notif-id');
+  demoteSupervisedKeyMock.mockReset().mockResolvedValue({ revoked: false, orgAgentId: null });
+  notifyDemotionMock.mockReset().mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -1130,5 +1146,139 @@ describe('checkFixWatchPhase2 — P2-5 watch-verdict op evidence', () => {
     await checkFixWatchPhase2(WATCH_ID);
 
     expect(state.insertCount).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P2-5 (#4192) Task 6 — auto-demote on a `recurred` verdict
+//
+// A recurrence is the second disqualifying signal (the first is an ATTEMPTED
+// failure, in `intentReleaseWorker.ts`): the agent's fix did not hold, so any
+// colon key the ORG actually granted for it stops running unattended. The
+// revoke rides the SAME transaction as the `recurred` CAS and its evidence
+// rows, so it can never commit without them; the notification runs strictly
+// after, like every other operator-facing artifact this module emits.
+// ---------------------------------------------------------------------------
+describe('checkFixWatchPhase2 — P2-5 auto-demote on recurrence', () => {
+  const recoveredAt = new Date('2026-08-28T00:00:00Z');
+  const OTHER_OP_KEY = 'manage_alerts:acknowledge';
+
+  function queueRecurrence(overrides: Record<string, unknown>): void {
+    state.selectQueue.push(
+      [watchRow({ state: 'watching', recoveryObservedAt: recoveredAt, ...overrides })],
+      [{ id: RECURRENCE_ALERT_ID }],
+      [{ name: 'Disk Cleaner', orgId: null, partnerId: PARTNER_ID }],
+      [{ policySnapshot: { effective: { recipients: { userIds: [USER_ID] } } } }],
+      [], // episode guard
+    );
+  }
+
+  it('asks to revoke every colon key on the watch, and notifies only for the ones actually granted', async () => {
+    queueRecurrence({ sourceKind: 'intent', intentId: INTENT_ID, opKeys: [OP_KEY, OTHER_OP_KEY] });
+    demoteSupervisedKeyMock
+      .mockResolvedValueOnce({ revoked: true, orgAgentId: 'org-agent-1' })
+      .mockResolvedValueOnce({ revoked: false, orgAgentId: 'org-agent-1' });
+
+    const result = await checkFixWatchPhase2(WATCH_ID);
+
+    expect(result).toEqual({ action: 'recurred' });
+    expect(demoteSupervisedKeyMock).toHaveBeenCalledTimes(2);
+    // Sorted, so two concurrent multi-key demotes can never take the same
+    // pair of advisory locks in opposite orders.
+    expect(demoteSupervisedKeyMock.mock.calls.map((c) => c[0].opKey))
+      .toEqual([OTHER_OP_KEY, OP_KEY]);
+    expect(demoteSupervisedKeyMock).toHaveBeenCalledWith({
+      orgId: ORG_ID,
+      agentId: AGENT_ID,
+      opKey: OP_KEY,
+      reason: 'recurrence',
+      runId: RUN_ID,
+      watchId: WATCH_ID,
+      intentId: INTENT_ID,
+    });
+    // Exactly one notification — the key that was only ever in the partner
+    // ceiling had nothing revoked, so paging about it would be a lie.
+    expect(notifyDemotionMock).toHaveBeenCalledTimes(1);
+    expect(notifyDemotionMock).toHaveBeenCalledWith({
+      orgId: ORG_ID,
+      agentId: AGENT_ID,
+      orgAgentId: 'org-agent-1',
+      opKey: OTHER_OP_KEY,
+      reason: 'recurrence',
+      runId: RUN_ID,
+      watchId: WATCH_ID,
+    });
+  });
+
+  it('never asks to revoke an act-manifest DOT key — those are never granted', async () => {
+    queueRecurrence({ sourceKind: 'act_run', intentId: null, opKeys: ['manage_services.restart', 'manage_alerts.acknowledge'] });
+
+    await checkFixWatchPhase2(WATCH_ID);
+
+    expect(demoteSupervisedKeyMock).not.toHaveBeenCalled();
+    expect(notifyDemotionMock).not.toHaveBeenCalled();
+  });
+
+  it('revokes nothing on a held_qualified verdict — the fix held', async () => {
+    state.selectQueue.push(
+      [watchRow({ state: 'watching', recoveryObservedAt: recoveredAt, sourceKind: 'intent', intentId: INTENT_ID, opKeys: [OP_KEY] })],
+      [], // no recurrence
+    );
+
+    const result = await checkFixWatchPhase2(WATCH_ID);
+
+    expect(result).toEqual({ action: 'held_qualified' });
+    expect(demoteSupervisedKeyMock).not.toHaveBeenCalled();
+  });
+
+  it('a LOST recurred CAS revokes nothing — the verdict belongs to whoever won it', async () => {
+    state.selectQueue.push(
+      [watchRow({ state: 'watching', recoveryObservedAt: recoveredAt, sourceKind: 'intent', intentId: INTENT_ID, opKeys: [OP_KEY] })],
+      [{ id: RECURRENCE_ALERT_ID }],
+    );
+    state.updateReturningQueue.push([]); // lost the CAS
+
+    const result = await checkFixWatchPhase2(WATCH_ID);
+
+    expect(result).toEqual({ action: 'not_found' });
+    expect(demoteSupervisedKeyMock).not.toHaveBeenCalled();
+    expect(notifyDemotionMock).not.toHaveBeenCalled();
+  });
+
+  it('revokes inside the CAS transaction and notifies strictly after it', async () => {
+    queueRecurrence({ sourceKind: 'intent', intentId: INTENT_ID, opKeys: [OP_KEY] });
+    demoteSupervisedKeyMock.mockResolvedValueOnce({ revoked: true, orgAgentId: 'org-agent-1' });
+
+    await checkFixWatchPhase2(WATCH_ID);
+
+    const casOrder = (db.update as unknown as { mock: { invocationCallOrder: number[] } })
+      .mock.invocationCallOrder[0]!;
+    const revokeOrder = demoteSupervisedKeyMock.mock.invocationCallOrder[0]!;
+    const notifyOrder = notifyDemotionMock.mock.invocationCallOrder[0]!;
+    const recurrenceNotifyOrder = createNotificationMock.mock.invocationCallOrder[0]!;
+    expect(revokeOrder).toBeGreaterThan(casOrder);
+    expect(notifyOrder).toBeGreaterThan(revokeOrder);
+    // ...and after the recurrence notification, i.e. outside the detection
+    // transaction entirely.
+    expect(notifyOrder).toBeGreaterThan(recurrenceNotifyOrder);
+  });
+
+  it('a demote-notification failure still returns recurred — the revoke is already committed', async () => {
+    queueRecurrence({ sourceKind: 'intent', intentId: INTENT_ID, opKeys: [OP_KEY] });
+    demoteSupervisedKeyMock.mockResolvedValueOnce({ revoked: true, orgAgentId: 'org-agent-1' });
+    notifyDemotionMock.mockRejectedValueOnce(new Error('notification service down'));
+
+    const result = await checkFixWatchPhase2(WATCH_ID);
+
+    expect(result).toEqual({ action: 'recurred' });
+    expect(state.updateSets[0]).toMatchObject({ state: 'recurred' });
+  });
+
+  it('a watch with empty op_keys revokes nothing', async () => {
+    queueRecurrence({ sourceKind: 'intent', intentId: INTENT_ID, opKeys: [] });
+
+    await checkFixWatchPhase2(WATCH_ID);
+
+    expect(demoteSupervisedKeyMock).not.toHaveBeenCalled();
   });
 });

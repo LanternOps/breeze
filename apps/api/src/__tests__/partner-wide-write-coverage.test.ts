@@ -156,6 +156,16 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   // Tier-3 four-eyes intent, whose own release re-checks the requester's
   // ai_agents:write RBAC.
   'services/aiAgents/supervisedKeyGrant.ts': 'grants one supervised key on the ORG row only (clone pins partner_id NULL; the update targets a row read by org_id); the partner baseline is read-locked as the ceiling, never written',
+  // P2-5 (#4192), Task 16. The mirror of the promote executor above, and
+  // ORG-axis by the same construction: the one UPDATE targets the id of a
+  // row read under `eq(aiAgents.orgId, orgId)` + `.for('update')`, and the
+  // partner baseline is read ONLY for its `kind` (pinned through the
+  // organization's own partner) and never written — narrowing a partner
+  // ceiling is a partner-level decision no automated signal from one org
+  // may make. There is no caller to gate and deliberately no RBAC check:
+  // auto-demote is ALWAYS ON, fired by the release worker's terminal CAS
+  // and the fix-watch phase-2 verdict, and it only ever REMOVES authority.
+  'services/aiAgents/supervisedKeyDemote.ts': 'revokes one supervised key from the ORG row only (the update targets a row read by org_id); the partner baseline is read for its kind and never written; always-on automatic path with no caller to gate, and it only ever removes authority',
   'services/aiAgents/managedAutomation.ts': 'seeds/syncs one agent\'s own managed automation; the owner axis is copied verbatim from the ai_agents row, never chosen by the caller, and every entry point (createAgent/updateAgent/disableAgent) has already passed assertAgentWriteAllowed — which throws PartnerWideWriteDeniedError for a partner-owned agent',
   'services/aiAgents/scheduleService.ts': 'gated centrally in services/aiAgents/access.ts (assertAgentWriteAllowed → PartnerWideWriteDeniedError) before every create/update/delete; partner rows additionally require a partner-wide triage agent under auth.partnerId (P2-2, #4189)',
   'services/automationRuntime.ts': 'manual trigger gated at routes/automations.ts; webhook path requires the provisioned automation secret',
