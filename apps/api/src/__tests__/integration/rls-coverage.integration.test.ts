@@ -1,5 +1,5 @@
 import { afterAll, describe, it, expect } from 'vitest';
-import { eq, sql } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { partners, users, organizations, sites, invoices, invoiceLines, invoiceDocuments, contracts, contractLines, contractBillingPeriods, mlFeedbackEvents, unifiCollectors, unifiDeviceTelemetry, unifiClients } from '../../db/schema';
 import { approvalRequests } from '../../db/schema/approvals';
@@ -10,7 +10,7 @@ import {
 import { partnerAbuseSignals, abuseScriptHosts } from '../../db/schema/abuseSignals';
 import { automations, automationRuns } from '../../db/schema/automations';
 import { configurationPolicies } from '../../db/schema/configurationPolicies';
-import { scripts, scriptExecutionBatches } from '../../db/schema/scripts';
+import { scripts, scriptExecutionBatches, scriptTags, scriptToTags, scriptVersions } from '../../db/schema/scripts';
 import { unifiIntegrations, unifiDevices } from '../../db/schema/unifi';
 import { oauthRevocationRetries } from '../../db/schema/oauth';
 import {
@@ -4291,4 +4291,314 @@ describe('m365 communications-delegated RLS — structural enforcement', () => {
       expect(def).not.toMatch(/'active'::text\s*\]?\)?\s*\)?\s*AND vault_ref IS NULL/);
     },
   );
+});
+
+// ---------------------------------------------------------------------------
+// script_versions / script_to_tags — parent-join forge test (RMM-QA-220)
+// ---------------------------------------------------------------------------
+// Both tables reach their tenant only through `scripts` (dual-axis, nullable
+// org_id, is_system) and `script_tags` (dual-axis). Migration under test:
+// 2026-09-30-100000-script-children-rls.sql. Runs as `breeze_app` under real
+// contexts, modelled on the scripts partner-wide block above: self-contained
+// fixtures seeded under system scope, cleanup by id in afterAll.
+//
+// Actors: org A1 (partner A), org B1 (partner B), org A1 with a MIS-SET own
+// partner (B), partner A, partner B. Rows marked "positive" pass on main too —
+// they guard against an over-tight policy; every negative row is RED on main.
+describe('script_versions / script_to_tags RLS — parent-join forge enforcement (Org A/B, Partner A/B)', () => {
+  const runSuffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  let partnerAId: string;
+  let partnerBId: string;
+  let orgA1Id: string;
+  let orgB1Id: string;
+  let sA1Id: string; // org A1 script
+  let sB1Id: string; // org B1 script
+  let sPAId: string; // partner-wide script of partner A (org_id NULL)
+  let sSysId: string; // system script (is_system, org NULL, partner NULL)
+  let tA1Id: string; // org A1 tag
+  let tB1Id: string; // org B1 tag
+  let tPAId: string; // partner-wide tag of partner A
+  let vSysId: string; // seeded version on sSys
+  let vPAId: string; // seeded version on sPA
+  let vA1Id: string | null = null; // version org A1 creates in the positive test
+
+  async function ensureFixtures(): Promise<void> {
+    if (partnerAId) return;
+    await withSystemDbAccessContext(async () => {
+      const seededPartners = await db.insert(partners).values([
+        { name: `RLS ScriptChildren A ${runSuffix}`, slug: `rls-sc-a-${runSuffix}`, type: 'msp', plan: 'pro', status: 'active' },
+        { name: `RLS ScriptChildren B ${runSuffix}`, slug: `rls-sc-b-${runSuffix}`, type: 'msp', plan: 'pro', status: 'active' },
+      ]).returning({ id: partners.id });
+      partnerAId = seededPartners[0]!.id;
+      partnerBId = seededPartners[1]!.id;
+
+      const seededOrgs = await db.insert(organizations).values([
+        { currencyCode: 'USD', partnerId: partnerAId, name: `RLS SC Org A1 ${runSuffix}`, slug: `rls-sc-org-a1-${runSuffix}` },
+        { currencyCode: 'USD', partnerId: partnerBId, name: `RLS SC Org B1 ${runSuffix}`, slug: `rls-sc-org-b1-${runSuffix}` },
+      ]).returning({ id: organizations.id });
+      orgA1Id = seededOrgs[0]!.id;
+      orgB1Id = seededOrgs[1]!.id;
+
+      const base = { osTypes: ['windows'], language: 'powershell' as const, content: 'echo seed' };
+      const seededScripts = await db.insert(scripts).values([
+        { ...base, orgId: orgA1Id, partnerId: partnerAId, name: `sc-sA1-${runSuffix}` },
+        { ...base, orgId: orgB1Id, partnerId: partnerBId, name: `sc-sB1-${runSuffix}` },
+        { ...base, orgId: null, partnerId: partnerAId, name: `sc-sPA-${runSuffix}` },
+        { ...base, orgId: null, partnerId: null, isSystem: true, name: `sc-sSys-${runSuffix}` },
+      ]).returning({ id: scripts.id });
+      sA1Id = seededScripts[0]!.id;
+      sB1Id = seededScripts[1]!.id;
+      sPAId = seededScripts[2]!.id;
+      sSysId = seededScripts[3]!.id;
+
+      const seededTags = await db.insert(scriptTags).values([
+        { orgId: orgA1Id, partnerId: partnerAId, name: `tA1-${runSuffix}` },
+        { orgId: orgB1Id, partnerId: partnerBId, name: `tB1-${runSuffix}` },
+        { orgId: null, partnerId: partnerAId, name: `tPA-${runSuffix}` },
+      ]).returning({ id: scriptTags.id });
+      tA1Id = seededTags[0]!.id;
+      tB1Id = seededTags[1]!.id;
+      tPAId = seededTags[2]!.id;
+
+      // created_by is nullable (0001-baseline.sql:5216) — no users rows needed.
+      const seededVersions = await db.insert(scriptVersions).values([
+        { scriptId: sSysId, version: 1, content: 'echo sys-v1', changelog: 'seed', createdBy: null },
+        { scriptId: sPAId, version: 1, content: 'echo pa-v1', changelog: 'seed', createdBy: null },
+      ]).returning({ id: scriptVersions.id });
+      vSysId = seededVersions[0]!.id;
+      vPAId = seededVersions[1]!.id;
+    });
+  }
+
+  afterAll(async () => {
+    if (!partnerAId) return;
+    await withSystemDbAccessContext(async () => {
+      const scriptIds = [sA1Id, sB1Id, sPAId, sSysId];
+      await db.delete(scriptVersions).where(inArray(scriptVersions.scriptId, scriptIds));
+      await db.delete(scriptToTags).where(inArray(scriptToTags.scriptId, scriptIds));
+      await db.delete(scripts).where(inArray(scripts.id, scriptIds));
+      await db.delete(scriptTags).where(inArray(scriptTags.id, [tA1Id, tB1Id, tPAId]));
+      await db.delete(organizations).where(inArray(organizations.id, [orgA1Id, orgB1Id]));
+      await db.delete(partners).where(inArray(partners.id, [partnerAId, partnerBId]));
+    });
+  });
+
+  function partnerContext(partnerId: string) {
+    return { scope: 'partner' as const, orgId: null, accessibleOrgIds: [], accessiblePartnerIds: [partnerId], userId: null, currentPartnerId: partnerId };
+  }
+
+  // ORGANIZATION scope: no partner-axis write access (accessiblePartnerIds []),
+  // currentPartnerId = the caller's own partner so the read-only own-partner
+  // branch of the parents' SELECT policies applies.
+  function orgContext(orgId: string, ownPartnerId: string | null) {
+    return { scope: 'organization' as const, orgId, accessibleOrgIds: [orgId], accessiblePartnerIds: [], currentPartnerId: ownPartnerId, userId: null };
+  }
+
+  async function expectRlsViolation(table: 'script_versions' | 'script_to_tags', fn: () => Promise<unknown>): Promise<void> {
+    let caught: unknown;
+    try {
+      await fn();
+    } catch (err) {
+      caught = err;
+    }
+    const cause = caught as { cause?: { message?: string }; message?: string } | undefined;
+    const message = cause?.cause?.message ?? cause?.message ?? '';
+    expect(message, `expected an RLS violation on ${table}; got: ${message || '<no error>'}`).toMatch(
+      new RegExp(`new row violates row-level security policy for table "${table}"`),
+    );
+  }
+
+  const versionsOf = (scriptId: string) =>
+    db.select({ id: scriptVersions.id }).from(scriptVersions).where(eq(scriptVersions.scriptId, scriptId));
+  const linksOf = (scriptId: string) =>
+    db.select({ tagId: scriptToTags.tagId }).from(scriptToTags).where(eq(scriptToTags.scriptId, scriptId));
+
+  // 1 (positive)
+  it('org A1 can INSERT and SELECT a version of its own script', async () => {
+    await ensureFixtures();
+    const inserted = await withDbAccessContext(orgContext(orgA1Id, partnerAId), async () =>
+      db.insert(scriptVersions).values({ scriptId: sA1Id, version: 1, content: 'echo a1-v1', changelog: 'org A1', createdBy: null }).returning({ id: scriptVersions.id })
+    );
+    expect(inserted).toHaveLength(1);
+    vA1Id = inserted[0]!.id;
+    const visible = await withDbAccessContext(orgContext(orgA1Id, partnerAId), async () => versionsOf(sA1Id));
+    expect(visible.map((r) => r.id)).toEqual([vA1Id]);
+  });
+
+  // 2 (positive)
+  it('org A1 can INSERT and SELECT a link between its own script and its own tag', async () => {
+    await ensureFixtures();
+    await withDbAccessContext(orgContext(orgA1Id, partnerAId), async () =>
+      db.insert(scriptToTags).values({ scriptId: sA1Id, tagId: tA1Id })
+    );
+    const visible = await withDbAccessContext(orgContext(orgA1Id, partnerAId), async () => linksOf(sA1Id));
+    expect(visible.map((r) => r.tagId)).toEqual([tA1Id]);
+  });
+
+  // 3
+  it("org B1 cannot SELECT org A1's versions or links", async () => {
+    await ensureFixtures();
+    const versions = await withDbAccessContext(orgContext(orgB1Id, partnerBId), async () => versionsOf(sA1Id));
+    const links = await withDbAccessContext(orgContext(orgB1Id, partnerBId), async () => linksOf(sA1Id));
+    expect(versions).toEqual([]);
+    expect(links).toEqual([]);
+  });
+
+  // 4
+  it("org B1 INSERT of a version onto org A1's script is rejected by WITH CHECK", async () => {
+    await ensureFixtures();
+    await expectRlsViolation('script_versions', () =>
+      withDbAccessContext(orgContext(orgB1Id, partnerBId), async () =>
+        db.insert(scriptVersions).values({ scriptId: sA1Id, version: 9, content: 'forged', changelog: null, createdBy: null })
+      )
+    );
+  });
+
+  // 5
+  it('org B1 cannot pair (own script, A tag) nor (A script, own tag)', async () => {
+    await ensureFixtures();
+    await expectRlsViolation('script_to_tags', () =>
+      withDbAccessContext(orgContext(orgB1Id, partnerBId), async () => db.insert(scriptToTags).values({ scriptId: sB1Id, tagId: tA1Id }))
+    );
+    await expectRlsViolation('script_to_tags', () =>
+      withDbAccessContext(orgContext(orgB1Id, partnerBId), async () => db.insert(scriptToTags).values({ scriptId: sA1Id, tagId: tB1Id }))
+    );
+  });
+
+  // 6
+  it("org B1 UPDATE/DELETE on org A1's version and DELETE on its link affect 0 rows and leave the rows intact", async () => {
+    await ensureFixtures();
+    if (!vA1Id) throw new Error('positive test must run first');
+    const updated = await withDbAccessContext(orgContext(orgB1Id, partnerBId), async () =>
+      db.update(scriptVersions).set({ changelog: 'tampered' }).where(eq(scriptVersions.id, vA1Id!)).returning({ id: scriptVersions.id })
+    );
+    const deletedVersions = await withDbAccessContext(orgContext(orgB1Id, partnerBId), async () =>
+      db.delete(scriptVersions).where(eq(scriptVersions.id, vA1Id!)).returning({ id: scriptVersions.id })
+    );
+    const deletedLinks = await withDbAccessContext(orgContext(orgB1Id, partnerBId), async () =>
+      db.delete(scriptToTags).where(and(eq(scriptToTags.scriptId, sA1Id), eq(scriptToTags.tagId, tA1Id))).returning({ tagId: scriptToTags.tagId })
+    );
+    expect(updated).toEqual([]);
+    expect(deletedVersions).toEqual([]);
+    expect(deletedLinks).toEqual([]);
+
+    const intact = await withSystemDbAccessContext(async () =>
+      db.select({ changelog: scriptVersions.changelog }).from(scriptVersions).where(eq(scriptVersions.id, vA1Id!))
+    );
+    expect(intact).toEqual([{ changelog: 'org A1' }]);
+    const linkIntact = await withSystemDbAccessContext(async () => linksOf(sA1Id));
+    expect(linkIntact.map((r) => r.tagId)).toEqual([tA1Id]);
+  });
+
+  // 7
+  it("partner B cannot SELECT org A1's version and cannot INSERT a version onto partner A's partner-wide script", async () => {
+    await ensureFixtures();
+    const visible = await withDbAccessContext(partnerContext(partnerBId), async () => versionsOf(sA1Id));
+    expect(visible).toEqual([]);
+    await expectRlsViolation('script_versions', () =>
+      withDbAccessContext(partnerContext(partnerBId), async () =>
+        db.insert(scriptVersions).values({ scriptId: sPAId, version: 9, content: 'forged', changelog: null, createdBy: null })
+      )
+    );
+  });
+
+  // 8 (positive)
+  it('partner A can INSERT a version and a link on its own partner-wide script', async () => {
+    await ensureFixtures();
+    const inserted = await withDbAccessContext(partnerContext(partnerAId), async () =>
+      db.insert(scriptVersions).values({ scriptId: sPAId, version: 2, content: 'echo pa-v2', changelog: 'partner A', createdBy: null }).returning({ id: scriptVersions.id })
+    );
+    expect(inserted).toHaveLength(1);
+    await withDbAccessContext(partnerContext(partnerAId), async () => db.insert(scriptToTags).values({ scriptId: sPAId, tagId: tPAId }));
+    const links = await withDbAccessContext(partnerContext(partnerAId), async () => linksOf(sPAId));
+    expect(links.map((r) => r.tagId)).toEqual([tPAId]);
+  });
+
+  // 9
+  it("org A1 can SELECT its MSP's partner-wide version (read branch) but cannot INSERT one", async () => {
+    await ensureFixtures();
+    const visible = await withDbAccessContext(orgContext(orgA1Id, partnerAId), async () =>
+      db.select({ id: scriptVersions.id }).from(scriptVersions).where(eq(scriptVersions.id, vPAId))
+    );
+    expect(visible.map((r) => r.id)).toEqual([vPAId]);
+    await expectRlsViolation('script_versions', () =>
+      withDbAccessContext(orgContext(orgA1Id, partnerAId), async () =>
+        db.insert(scriptVersions).values({ scriptId: sPAId, version: 9, content: 'forged', changelog: null, createdBy: null })
+      )
+    );
+  });
+
+  // 10
+  it("org A1 whose own partner is mis-set to B CANNOT SELECT partner A's partner-wide version", async () => {
+    await ensureFixtures();
+    const visible = await withDbAccessContext(orgContext(orgA1Id, partnerBId), async () =>
+      db.select({ id: scriptVersions.id }).from(scriptVersions).where(eq(scriptVersions.id, vPAId))
+    );
+    expect(visible).toEqual([]);
+  });
+
+  // 11 (positive)
+  it("org A1 can link its own script to its MSP's partner-wide tag (tag read branch)", async () => {
+    await ensureFixtures();
+    await withDbAccessContext(orgContext(orgA1Id, partnerAId), async () => db.insert(scriptToTags).values({ scriptId: sA1Id, tagId: tPAId }));
+    const links = await withDbAccessContext(orgContext(orgA1Id, partnerAId), async () => linksOf(sA1Id));
+    expect(links.map((r) => r.tagId).sort()).toEqual([tA1Id, tPAId].sort());
+  });
+
+  // 12
+  it("org B1 cannot link its own script to partner A's partner-wide tag", async () => {
+    await ensureFixtures();
+    await expectRlsViolation('script_to_tags', () =>
+      withDbAccessContext(orgContext(orgB1Id, partnerBId), async () => db.insert(scriptToTags).values({ scriptId: sB1Id, tagId: tPAId }))
+    );
+  });
+
+  // 13 (positive, bound parameter through the extended protocol)
+  it("org A1 can SELECT a system script's version by bound script_id (is_system read branch)", async () => {
+    await ensureFixtures();
+    const visible = await withDbAccessContext(orgContext(orgA1Id, partnerAId), async () => versionsOf(sSysId));
+    expect(visible.map((r) => r.id)).toEqual([vSysId]);
+  });
+
+  // 14
+  it('neither org A1 nor partner A can INSERT a version onto a system script (no is_system in any write predicate)', async () => {
+    await ensureFixtures();
+    await expectRlsViolation('script_versions', () =>
+      withDbAccessContext(orgContext(orgA1Id, partnerAId), async () =>
+        db.insert(scriptVersions).values({ scriptId: sSysId, version: 9, content: 'forged', changelog: null, createdBy: null })
+      )
+    );
+    await expectRlsViolation('script_versions', () =>
+      withDbAccessContext(partnerContext(partnerAId), async () =>
+        db.insert(scriptVersions).values({ scriptId: sSysId, version: 9, content: 'forged', changelog: null, createdBy: null })
+      )
+    );
+  });
+
+  // 16 — runs BEFORE 15 because 15 deletes the (sA1, tA1) link this test re-points.
+  it('org A1 UPDATE re-pointing its own link at org B1\'s tag is rejected by the UPDATE WITH CHECK tag leg', async () => {
+    await ensureFixtures();
+    await expectRlsViolation('script_to_tags', () =>
+      withDbAccessContext(orgContext(orgA1Id, partnerAId), async () =>
+        db.update(scriptToTags).set({ tagId: tB1Id }).where(and(eq(scriptToTags.scriptId, sA1Id), eq(scriptToTags.tagId, tA1Id)))
+      )
+    );
+    const intact = await withSystemDbAccessContext(async () => linksOf(sA1Id));
+    expect(intact.map((r) => r.tagId).sort()).toEqual([tA1Id, tPAId].sort());
+  });
+
+  // 15
+  it("org A1 can DELETE its own link but DELETE on the partner-wide link affects 0 rows (unlink needs script WRITE)", async () => {
+    await ensureFixtures();
+    const own = await withDbAccessContext(orgContext(orgA1Id, partnerAId), async () =>
+      db.delete(scriptToTags).where(and(eq(scriptToTags.scriptId, sA1Id), eq(scriptToTags.tagId, tA1Id))).returning({ tagId: scriptToTags.tagId })
+    );
+    expect(own.map((r) => r.tagId)).toEqual([tA1Id]);
+    const partnerWide = await withDbAccessContext(orgContext(orgA1Id, partnerAId), async () =>
+      db.delete(scriptToTags).where(and(eq(scriptToTags.scriptId, sPAId), eq(scriptToTags.tagId, tPAId))).returning({ tagId: scriptToTags.tagId })
+    );
+    expect(partnerWide).toEqual([]);
+    const intact = await withSystemDbAccessContext(async () => linksOf(sPAId));
+    expect(intact.map((r) => r.tagId)).toEqual([tPAId]);
+  });
 });
