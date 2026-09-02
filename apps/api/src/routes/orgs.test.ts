@@ -488,7 +488,14 @@ describe('org routes', () => {
             insert: vi.fn(() => ({
               values: vi.fn((vals: Record<string, unknown>) => {
                 captured.push(vals);
-                return { returning: vi.fn().mockResolvedValue([{ id: 'partner-1' }]) };
+                // Model the real `.returning(partnerPublicColumns())`, which
+                // projects the PERSISTED row — settings included. That echo is
+                // what tells an admin caller what actually landed.
+                return {
+                  returning: vi.fn().mockResolvedValue([
+                    { id: 'partner-1', settings: vals.settings }
+                  ])
+                };
               })
             }))
           };
@@ -567,6 +574,27 @@ describe('org routes', () => {
         expect(captured[0]?.settings).toEqual({
           security: { allowedMethods: { totp: true } },
           ticketing: { inbound: { enabled: false } }
+        });
+      });
+
+      // `settings` is `z.any()`, so a malformed value reaches the handler. It
+      // cannot carry the flag, and the readers treat an untraversable path as
+      // absent (= inbound ENABLED), so it is normalized rather than persisted.
+      // The 201 body echoes the persisted row, so the caller is not left
+      // guessing what landed — assert that end-to-end, not just the insert.
+      it('normalizes a non-object settings value and echoes the result in the 201 body', async () => {
+        const captured = captureInsertedValues();
+
+        const res = await app.request('/orgs/partners', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'Partner', slug: 'partner', settings: 'nonsense' })
+        });
+
+        expect(res.status).toBe(201);
+        expect(captured[0]?.settings).toEqual({ ticketing: { inbound: { enabled: false } } });
+        expect(await res.json()).toMatchObject({
+          settings: { ticketing: { inbound: { enabled: false } } }
         });
       });
     });
