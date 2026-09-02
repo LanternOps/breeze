@@ -28,8 +28,7 @@
 - Test `apps/api/src/services/portal/actionItemsReadModel.test.ts`
 
 **Interfaces:**
-- Consumes `classifyDeviceProtection(input: { securityStatus: { provider: string; realTimeProtection: boolean | null; updatedAt: Date } | null; hasS1Agent: boolean; hasHuntressAgent: boolean; now: Date; maxSecurityStatusAgeDays: number }): ProtectionState`
-- Consumes `securityCompliancePostureConfigSchema` from `apps/api/src/routes/reports/schemas.ts:38-56` so the portal uses the report's real `maxSecurityStatusAgeDays` default instead of duplicating `30`
+- Consumes `classifyDeviceProtection(input: { securityStatus: { provider: SecurityProvider; realTimeProtection: boolean | null } | null; hasS1Agent: boolean; hasHuntressAgent: boolean }): ProtectionState`
 - Produces one shared `portalMonthWindow(now, timezone)` SQL boundary for patch and support month-to-date queries
 - Consumes `getSecurityPostureTrend(params: { orgId?: string; orgIds?: string[]; days: number })` from `apps/api/src/services/securityPosture.ts:1077-1121`
 - Consumes `OUTSTANDING_DEVICE_PATCH_STATUSES` from `apps/api/src/db/schema/patches.ts:53-68`
@@ -127,7 +126,7 @@ describe('dashboard security tiles', () => {
     ).toBe(true);
   });
 
-  it('classifies protected, unprotected, and unknown devices', async () => {
+  it('classifies devices by protection evidence regardless of status age', async () => {
     state.rows.push([
       {
         id: 'd-protected',
@@ -142,8 +141,9 @@ describe('dashboard security tiles', () => {
         hasHuntressAgent: false,
       },
       {
-        id: 'd-unknown',
+        id: 'd-unprotected',
         realTimeProtection: false,
+        provider: 'windows_defender',
         avProducts: [],
         securityUpdatedAt: new Date('2026-07-01T00:00:00Z'),
         hasS1Agent: false,
@@ -154,8 +154,8 @@ describe('dashboard security tiles', () => {
     await expect(devicesProtectedTile(ORG_ID, NOW)).resolves.toEqual({
       status: 'ok',
       protected: 1,
-      unprotected: 0,
-      unknown: 1,
+      unprotected: 1,
+      unknown: 0,
       total: 2,
       asOf: NOW.toISOString(),
     });
@@ -484,12 +484,7 @@ import {
   securityStatus,
 } from '../../db/schema';
 import { classifyDeviceProtection } from './protection';
-import { securityCompliancePostureConfigSchema } from '../../routes/reports/schemas';
 import { getSecurityPostureTrend } from '../securityPosture';
-
-const SECURITY_STATUS_MAX_AGE_DAYS =
-  securityCompliancePostureConfigSchema.parse({})
-    .maxSecurityStatusAgeDays;
 
 function scoreBand(
   score: number,
@@ -560,7 +555,6 @@ export async function devicesProtectedTile(orgId: string, now: Date) {
       id: devices.id,
       realTimeProtection: securityStatus.realTimeProtection,
       provider: securityStatus.provider,
-      securityUpdatedAt: securityStatus.updatedAt,
       hasS1Agent: sql<boolean>`exists (
         select 1 from s1_agents s1
         where s1.org_id = ${orgId}
@@ -597,17 +591,14 @@ export async function devicesProtectedTile(orgId: string, now: Date) {
   const counts = { protected: 0, unprotected: 0, unknown: 0 };
   for (const row of rows) {
     counts[classifyDeviceProtection({
-      securityStatus: row.securityUpdatedAt
-          ? {
+      securityStatus: row.provider
+        ? {
             provider: row.provider!,
             realTimeProtection: row.realTimeProtection,
-            updatedAt: row.securityUpdatedAt,
           }
         : null,
       hasS1Agent: row.hasS1Agent,
       hasHuntressAgent: row.hasHuntressAgent,
-      now,
-      maxSecurityStatusAgeDays: SECURITY_STATUS_MAX_AGE_DAYS,
     })] += 1;
   }
 
@@ -1977,12 +1968,9 @@ export async function securityDevicesPage(
     select 1 from huntress_agents ha
     where ha.org_id = ${orgId} and ha.device_id = ${devices.id}
   )`;
-  const stale = sql`${securityStatus.id} is null or
-    ${securityStatus.updatedAt} < ${args.now} -
-      ${SECURITY_STATUS_MAX_AGE_DAYS} * interval '1 day'`;
   const protectionOrder = sql`case
     when ${hasS1Agent} or ${hasHuntressAgent} then 'protected'
-    when ${stale} then 'unknown'
+    when ${securityStatus.id} is null then 'unknown'
     when ${securityStatus.provider} <> 'other'
       and ${securityStatus.realTimeProtection} = true then 'protected'
     else 'unprotected'
@@ -2029,9 +2017,8 @@ export async function securityDevicesPage(
       ))
       .orderBy(
         sql`case ${protectionOrder}
-          when 'unprotected' then 0
-          when 'unknown' then 1
-          else 2 end`,
+          when 'protected' then 1
+          else 0 end`,
         asc(sql`coalesce(${devices.displayName}, ${devices.hostname})`),
         asc(devices.id),
       )
@@ -2043,17 +2030,14 @@ export async function securityDevicesPage(
     id: row.id,
     name: row.displayName ?? row.hostname,
     protection: classifyDeviceProtection({
-      securityStatus: row.securityUpdatedAt && row.provider
+      securityStatus: row.provider
         ? {
             provider: row.provider,
             realTimeProtection: row.realTimeProtection,
-            updatedAt: row.securityUpdatedAt,
           }
         : null,
       hasS1Agent: row.hasS1Agent,
       hasHuntressAgent: row.hasHuntressAgent,
-      now: args.now,
-      maxSecurityStatusAgeDays: SECURITY_STATUS_MAX_AGE_DAYS,
     }),
     avProducts: [...new Set([
       ...(row.hasS1Agent ? ['SentinelOne'] : []),
@@ -2755,7 +2739,7 @@ it('returns overview verification, restore, breach, and readiness evidence', asy
       verificationType: 'integrity',
     },
     lastTestRestoreAt: '2026-09-01T09:00:00.000Z',
-    openRpoBreaches: 1,
+    openRpoBreaches: 2, // rpo_breach + missed_backup (RPO family)
     openRtoBreaches: 1,
     meanReadinessScore: 83,
   });
@@ -2878,8 +2862,13 @@ export async function backupOverview(
     getBackupHealthSummary(orgId),
   ]);
 
-  const countBreach = (type: 'rpo_breach' | 'rto_breach') =>
-    breachRows.filter((row) => row.eventType === type).length;
+  // Mirrors apps/api/src/jobs/backupSlaWorker.ts: 'missed_backup' is an RPO-family event.
+  const RPO_EVENT_TYPES = new Set(['rpo_breach', 'missed_backup']);
+  const RTO_EVENT_TYPES = new Set(['rto_breach']);
+  const countBreach = (family: 'rpo' | 'rto') =>
+    breachRows.filter((row) =>
+      (family === 'rpo' ? RPO_EVENT_TYPES : RTO_EVENT_TYPES).has(row.eventType),
+    ).length;
 
   return {
     asOf: args.now.toISOString(),
@@ -2895,8 +2884,8 @@ export async function backupOverview(
         ? { completedAt: tile.completedAt, verificationType: tile.verificationType }
         : null,
     lastTestRestoreAt: restoreRows[0]?.completedAt?.toISOString() ?? null,
-    openRpoBreaches: countBreach('rpo_breach'),
-    openRtoBreaches: countBreach('rto_breach'),
+    openRpoBreaches: countBreach('rpo'),
+    openRtoBreaches: countBreach('rto'),
     meanReadinessScore:
       Number(readinessCountRows[0]?.readinessCount ?? 0) > 0
         ? health.readiness.averageScore
@@ -3657,11 +3646,7 @@ import {
   devices,
   securityStatus,
 } from '../../db/schema';
-import { securityCompliancePostureConfigSchema } from '../../routes/reports/schemas';
 import { classifyDeviceProtection } from './protection';
-
-const MAX_SECURITY_STATUS_AGE_DAYS =
-  securityCompliancePostureConfigSchema.parse({}).maxSecurityStatusAgeDays;
 
 export async function enrichedDevicesForOrg(
   orgId: string,
@@ -3743,17 +3728,14 @@ export async function enrichedDevicesForOrg(
     lastSeenAt: row.lastSeenAt?.toISOString() ?? null,
     lastPatchAt: row.lastPatchAt?.toISOString() ?? null,
     protection: classifyDeviceProtection({
-      securityStatus: row.securityUpdatedAt
+      securityStatus: row.provider
         ? {
             provider: row.provider,
             realTimeProtection: row.realTimeProtection,
-            updatedAt: row.securityUpdatedAt,
           }
         : null,
       hasS1Agent: row.hasS1Agent,
       hasHuntressAgent: row.hasHuntressAgent,
-      now: args.now,
-      maxSecurityStatusAgeDays: MAX_SECURITY_STATUS_AGE_DAYS,
     }),
     encryption: row.encryption,
     lastBackupAt: row.lastBackupAt?.toISOString() ?? null,
@@ -4836,10 +4818,12 @@ git add apps/api/src/routes/portal/schemas.ts apps/api/src/routes/portal/tickets
 - Modify `apps/portal/src/pages/tickets/index.astro:1-30`
 - Modify `apps/portal/src/components/portal/TicketList.tsx:10-122`
 - Modify `apps/portal/src/components/portal/TicketList.test.tsx:1-65`
+- Modify `apps/portal/src/components/portal/TicketDetails.test.tsx:18-33` (factory gains the now-required `sla`)
 - Create `apps/portal/src/components/portal/SupportUsagePanel.tsx`
 - Create `apps/portal/src/components/portal/SupportUsagePanel.test.tsx`
 - Test `apps/portal/src/lib/api.test.ts`
 - Test `apps/portal/src/components/portal/TicketList.test.tsx`
+- Test `apps/portal/src/components/portal/TicketDetails.test.tsx`
 - Test `apps/portal/src/components/portal/SupportUsagePanel.test.tsx`
 
 **Interfaces:**
@@ -4966,6 +4950,33 @@ it('renders honest no-data copy', () => {
  });
 ```
 
+```diff
+// update the existing factory in apps/portal/src/components/portal/TicketDetails.test.tsx:18-33
+// (TicketDetails extends TicketSummary, so the required `sla` field breaks this factory too)
+ const ticket = (over: Partial<TicketDetailsType> = {}): TicketDetailsType => ({
+   id: 't1',
+   ticketNumber: 'T-1',
+   subject: 'Printer offline',
+   status: 'new',
+   priority: 'normal',
+   description: 'Drops every afternoon.',
+   createdAt: '2026-08-01T00:00:00Z',
+   updatedAt: '2026-08-02T00:00:00Z',
++  sla: {
++    firstResponseMinutes: null,
++    resolutionMinutes: null,
++    responseTargetMinutes: null,
++    resolutionTargetMinutes: null,
++    status: 'not_configured',
++  },
+   comments: [
+     { id: 'c2', authorName: 'Tech', authorType: 'user', content: 'second', createdAt: '2026-08-02T00:00:00Z' },
+     { id: 'c1', authorName: 'Maya', authorType: 'portal', content: 'first', createdAt: '2026-08-01T00:00:00Z' },
+   ],
+   ...over,
+ });
+```
+
 ```tsx
 // append to apps/portal/src/components/portal/TicketList.test.tsx
 it.each([
@@ -4994,7 +5005,7 @@ it.each([
 
 ```bash
 cd apps/portal && npx vitest run src/lib/api.test.ts
-cd apps/portal && npx vitest run src/components/portal/TicketList.test.tsx
+cd apps/portal && npx vitest run src/components/portal/TicketList.test.tsx src/components/portal/TicketDetails.test.tsx
 cd apps/portal && npx vitest run src/components/portal/SupportUsagePanel.test.tsx
 ```
 
@@ -5176,14 +5187,14 @@ const usageStrictlyDisabled = usageResponse.statusCode === 403;
 
 ```bash
 cd apps/portal && npx vitest run src/lib/api.test.ts
-cd apps/portal && npx vitest run src/components/portal/TicketList.test.tsx
+cd apps/portal && npx vitest run src/components/portal/TicketList.test.tsx src/components/portal/TicketDetails.test.tsx
 cd apps/portal && npx vitest run src/components/portal/SupportUsagePanel.test.tsx
 ```
 
 - [ ] **Step 5: Commit the support usage and SLA UI.**
 
 ```bash
-git add apps/portal/src/lib/api.ts apps/portal/src/lib/api.test.ts apps/portal/src/pages/tickets/index.astro apps/portal/src/components/portal/TicketList.tsx apps/portal/src/components/portal/TicketList.test.tsx apps/portal/src/components/portal/SupportUsagePanel.tsx apps/portal/src/components/portal/SupportUsagePanel.test.tsx && git commit -m "feat(portal): show support usage and SLA"
+git add apps/portal/src/lib/api.ts apps/portal/src/lib/api.test.ts apps/portal/src/pages/tickets/index.astro apps/portal/src/components/portal/TicketList.tsx apps/portal/src/components/portal/TicketList.test.tsx apps/portal/src/components/portal/TicketDetails.test.tsx apps/portal/src/components/portal/SupportUsagePanel.tsx apps/portal/src/components/portal/SupportUsagePanel.test.tsx && git commit -m "feat(portal): show support usage and SLA"
 ```
 
 ### Task 8.4: Add ticket numbers to customer invoice lines
