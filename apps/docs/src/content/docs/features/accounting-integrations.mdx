@@ -134,8 +134,11 @@ touched).
   can see) if its currency doesn't match the invoice's.
 - If QuickBooks records a payment against an invoice **you've voided in
   Breeze**, Breeze does not apply it — the invoice mapping flips to an error
-  ("Payment received in QuickBooks against a voided invoice") rather than
-  silently reopening a document you closed.
+  ("Payment pull: Payment received in QuickBooks against a voided invoice")
+  rather than silently reopening a document you closed. Errors that came from
+  the payment pull are prefixed **"Payment pull:"** and clear themselves once a
+  payment for that invoice lands cleanly; errors from the invoice push (such as
+  "Deleted in QuickBooks") are never cleared by a payment.
 - If an invoice itself is **voided or deleted in QuickBooks**, its mapping
   shows an **Error** status with the message **"Deleted in QuickBooks"** in
   the sync card, and Breeze never recreates it automatically.

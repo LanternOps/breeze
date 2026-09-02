@@ -182,11 +182,11 @@ describe('QuickBooks payment applier — real Postgres', () => {
     const invoiceId = await seedInvoice(fx, { total: '150.00' });
     await seedInvoiceMapping(fx, invoiceId, '145');
 
-    const first = await applyAccountingPayment(fx.conn, paymentLine(), systemRunner);
+    const first = await applyAccountingPayment(fx.conn, paymentLine(), systemRunner, fx.conn.realmIdFingerprint);
     expect(first.outcome).toBe('applied');
     expect(first.invoiceId).toBe(invoiceId);
 
-    const second = await applyAccountingPayment(fx.conn, paymentLine(), systemRunner);
+    const second = await applyAccountingPayment(fx.conn, paymentLine(), systemRunner, fx.conn.realmIdFingerprint);
     expect(second.outcome).toBe('replayed');
     expect(second.invoicePaymentId).toBe(first.invoicePaymentId);
 
@@ -215,8 +215,8 @@ describe('QuickBooks payment applier — real Postgres', () => {
     await seedInvoiceMapping(fx, invoiceA, '145');
     await seedInvoiceMapping(fx, invoiceB, '146');
 
-    const a = await applyAccountingPayment(fx.conn, paymentLine({ remoteInvoiceId: '145' }), systemRunner);
-    const b = await applyAccountingPayment(fx.conn, paymentLine({ remoteInvoiceId: '146' }), systemRunner);
+    const a = await applyAccountingPayment(fx.conn, paymentLine({ remoteInvoiceId: '145' }), systemRunner, fx.conn.realmIdFingerprint);
+    const b = await applyAccountingPayment(fx.conn, paymentLine({ remoteInvoiceId: '146' }), systemRunner, fx.conn.realmIdFingerprint);
 
     expect([a.outcome, b.outcome]).toEqual(['applied', 'applied']);
     expect(await loadPayments(invoiceA)).toHaveLength(1);
@@ -241,11 +241,11 @@ describe('QuickBooks payment applier — real Postgres', () => {
     }).returning({ id: invoicePayments.id }));
     if (!manual) throw new Error('failed to seed the manual payment');
 
-    const applied = await applyAccountingPayment(fx.conn, paymentLine(), systemRunner);
+    const applied = await applyAccountingPayment(fx.conn, paymentLine(), systemRunner, fx.conn.realmIdFingerprint);
     expect(applied.outcome).toBe('applied');
     expect((await loadInvoice(invoiceId)).status).toBe('paid'); // 50 + 150 = 200
 
-    const reversed = await reverseAccountingPayment(fx.conn, '180', systemRunner);
+    const reversed = await reverseAccountingPayment(fx.conn, '180', systemRunner, fx.conn.realmIdFingerprint);
 
     expect(reversed).toHaveLength(1);
     expect(reversed[0]).toMatchObject({ outcome: 'reversed', invoiceId, invoicePaymentId: applied.invoicePaymentId });
@@ -270,11 +270,11 @@ describe('QuickBooks payment applier — real Postgres', () => {
     const invoiceB = await seedInvoice(fx, { total: '150.00' });
     await seedInvoiceMapping(fx, invoiceA, '145');
     await seedInvoiceMapping(fx, invoiceB, '146');
-    await applyAccountingPayment(fx.conn, paymentLine({ remoteInvoiceId: '145' }), systemRunner);
-    await applyAccountingPayment(fx.conn, paymentLine({ remoteInvoiceId: '146' }), systemRunner);
+    await applyAccountingPayment(fx.conn, paymentLine({ remoteInvoiceId: '145' }), systemRunner, fx.conn.realmIdFingerprint);
+    await applyAccountingPayment(fx.conn, paymentLine({ remoteInvoiceId: '146' }), systemRunner, fx.conn.realmIdFingerprint);
     expect((await loadInvoice(invoiceB)).status).toBe('paid');
 
-    const stale = await reverseStaleAllocations(fx.conn, '180', ['145'], systemRunner);
+    const stale = await reverseStaleAllocations(fx.conn, '180', ['145'], systemRunner, fx.conn.realmIdFingerprint);
 
     expect(stale.map((r) => r.outcome)).toEqual(['reversed']);
     expect(await loadPayments(invoiceA)).toHaveLength(1);
@@ -294,10 +294,10 @@ describe('QuickBooks payment applier — real Postgres', () => {
     const invoiceB = await seedInvoice(fx, { total: '150.00' });
     await seedInvoiceMapping(fx, invoiceA, '145');
     await seedInvoiceMapping(fx, invoiceB, '146');
-    await applyAccountingPayment(fx.conn, paymentLine({ remoteInvoiceId: '145' }), systemRunner);
-    await applyAccountingPayment(fx.conn, paymentLine({ remoteInvoiceId: '146' }), systemRunner);
+    await applyAccountingPayment(fx.conn, paymentLine({ remoteInvoiceId: '145' }), systemRunner, fx.conn.realmIdFingerprint);
+    await applyAccountingPayment(fx.conn, paymentLine({ remoteInvoiceId: '146' }), systemRunner, fx.conn.realmIdFingerprint);
 
-    expect(await reverseStaleAllocations(fx.conn, '180', ['145', '146'], systemRunner)).toEqual([]);
+    expect(await reverseStaleAllocations(fx.conn, '180', ['145', '146'], systemRunner, fx.conn.realmIdFingerprint)).toEqual([]);
 
     expect(await loadPayments(invoiceA)).toHaveLength(1);
     expect(await loadPayments(invoiceB)).toHaveLength(1);
@@ -309,7 +309,7 @@ describe('QuickBooks payment applier — real Postgres', () => {
     const invoiceId = await seedInvoice(fx, { currencyCode: 'USD', total: '150.00' });
     await seedInvoiceMapping(fx, invoiceId, '145');
 
-    const res = await applyAccountingPayment(fx.conn, paymentLine({ currency: 'EUR' }), systemRunner);
+    const res = await applyAccountingPayment(fx.conn, paymentLine({ currency: 'EUR' }), systemRunner, fx.conn.realmIdFingerprint);
 
     expect(res).toMatchObject({ outcome: 'currency_mismatch', invoiceId, invoicePaymentId: null });
     expect(await loadPayments(invoiceId)).toEqual([]);
@@ -322,7 +322,7 @@ describe('QuickBooks payment applier — real Postgres', () => {
     expect(invoiceMappings).toHaveLength(1);
     expect(invoiceMappings[0]).toMatchObject({
       syncStatus: 'error',
-      lastError: 'Payment currency EUR does not match invoice currency USD. Cross-currency payments are not supported.',
+      lastError: 'Payment pull: Payment currency EUR does not match invoice currency USD. Cross-currency payments are not supported.',
       remoteEntityId: '145',
       linkStatus: 'confirmed',
     });
@@ -340,7 +340,7 @@ describe('QuickBooks payment applier — real Postgres', () => {
       .set({ status: 'void', voidedAt: new Date(), voidReason: 'issued in error' })
       .where(eq(invoices.id, invoiceId)));
 
-    const res = await applyAccountingPayment(fx.conn, paymentLine(), systemRunner);
+    const res = await applyAccountingPayment(fx.conn, paymentLine(), systemRunner, fx.conn.realmIdFingerprint);
 
     expect(res).toMatchObject({ outcome: 'invoice_void', invoiceId, invoicePaymentId: null });
     expect(await loadPayments(invoiceId)).toEqual([]);
@@ -349,7 +349,7 @@ describe('QuickBooks payment applier — real Postgres', () => {
     const [invoiceMapping] = await loadMappings(fx, 'invoice');
     expect(invoiceMapping).toMatchObject({
       syncStatus: 'error',
-      lastError: 'Payment received in QuickBooks against a voided invoice',
+      lastError: 'Payment pull: Payment received in QuickBooks against a voided invoice',
       remoteEntityId: '145',
       linkStatus: 'confirmed',
     });
@@ -361,12 +361,40 @@ describe('QuickBooks payment applier — real Postgres', () => {
     expect(inv.balance).toBe('150.00');
   });
 
+  runDb('a later payment clears the payment-pull marker but never a push-originated one (finding G)', async () => {
+    const fx = await seedFixture();
+    const invoiceId = await seedInvoice(fx, { total: '150.00' });
+    const mappingId = await seedInvoiceMapping(fx, invoiceId, '145');
+
+    // A payment-originated marker (a currency mismatch that has since been fixed).
+    await withSystemDbAccessContext(() => db.update(accountingEntityMappings)
+      .set({ syncStatus: 'error', lastError: 'Payment pull: Payment currency EUR does not match invoice currency USD. Cross-currency payments are not supported.' })
+      .where(eq(accountingEntityMappings.id, mappingId)));
+
+    await applyAccountingPayment(fx.conn, paymentLine(), systemRunner, fx.conn.realmIdFingerprint);
+
+    const [cleared] = await loadMappings(fx, 'invoice');
+    expect(cleared).toMatchObject({ syncStatus: 'synced', lastError: null });
+
+    // A PUSH-originated marker survives the next pulled payment untouched.
+    await withSystemDbAccessContext(() => db.update(accountingEntityMappings)
+      .set({ syncStatus: 'error', lastError: 'Deleted in QuickBooks' })
+      .where(eq(accountingEntityMappings.id, mappingId)));
+
+    await applyAccountingPayment(
+      fx.conn, paymentLine({ remotePaymentId: '181', paymentRefNum: '10442' }), systemRunner,
+    );
+
+    const [kept] = await loadMappings(fx, 'invoice');
+    expect(kept).toMatchObject({ syncStatus: 'error', lastError: 'Deleted in QuickBooks' });
+  });
+
   runDb('a payment for an invoice Breeze never pushed is skipped and writes nothing', async () => {
     const fx = await seedFixture();
     const invoiceId = await seedInvoice(fx, { total: '150.00' });
     // Deliberately NO invoice mapping row.
 
-    const res = await applyAccountingPayment(fx.conn, paymentLine(), systemRunner);
+    const res = await applyAccountingPayment(fx.conn, paymentLine(), systemRunner, fx.conn.realmIdFingerprint);
 
     expect(res.outcome).toBe('skipped_unmapped');
     expect(await loadPayments(invoiceId)).toEqual([]);
@@ -379,7 +407,7 @@ describe('QuickBooks payment applier — real Postgres', () => {
     const partnerB = await seedFixture();
     const invoiceId = await seedInvoice(partnerA, { total: '150.00' });
     await seedInvoiceMapping(partnerA, invoiceId, '145');
-    const applied = await applyAccountingPayment(partnerA.conn, paymentLine(), systemRunner);
+    const applied = await applyAccountingPayment(partnerA.conn, paymentLine(), systemRunner, partnerA.conn.realmIdFingerprint);
     expect(applied.invoicePaymentId).toBeTruthy();
 
     let caught: unknown;
@@ -406,7 +434,7 @@ describe('QuickBooks payment applier — real Postgres', () => {
     const fx = await seedFixture();
     const invoiceId = await seedInvoice(fx, { total: '150.00' });
     await seedInvoiceMapping(fx, invoiceId, '145');
-    const applied = await applyAccountingPayment(fx.conn, paymentLine(), systemRunner);
+    const applied = await applyAccountingPayment(fx.conn, paymentLine(), systemRunner, fx.conn.realmIdFingerprint);
     expect(await loadMappings(fx, 'payment')).toHaveLength(1);
 
     await withSystemDbAccessContext(() => voidPayment(applied.invoicePaymentId!, {
@@ -425,7 +453,7 @@ describe('QuickBooks payment applier — real Postgres', () => {
     const invoiceId = await seedInvoice(fx, { total: '150.00' });
     await seedInvoiceMapping(fx, invoiceId, '145');
 
-    const outcome = await markInvoiceDeletedRemotely(fx.conn, '145', systemRunner);
+    const outcome = await markInvoiceDeletedRemotely(fx.conn, '145', systemRunner, fx.conn.realmIdFingerprint);
 
     expect(outcome).toBe('marked');
     const [mapping] = await loadMappings(fx, 'invoice');
@@ -437,6 +465,6 @@ describe('QuickBooks payment applier — real Postgres', () => {
     });
 
     // An invoice QuickBooks never saw is a clean no-op.
-    expect(await markInvoiceDeletedRemotely(fx.conn, '999', systemRunner)).toBe('skipped_unmapped');
+    expect(await markInvoiceDeletedRemotely(fx.conn, '999', systemRunner, fx.conn.realmIdFingerprint)).toBe('skipped_unmapped');
   });
 });

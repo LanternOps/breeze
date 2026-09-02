@@ -325,7 +325,18 @@ function installDbMocks() {
             return Promise.resolve(matched.map((r) => ({ id: r.id })));
           }
           if (table === accountingEntityMappings) {
-            const matched = currentMappings.filter((r) => boundTo(cond, r.id) && boundTo(cond, r.partnerId));
+            // The finding-G clear narrows its WHERE with `sync_status = 'error'`
+            // AND `last_error LIKE 'Payment pull: %'`. Honour both here, or the
+            // fake would "clear" a push-originated error the real SQL leaves
+            // alone — a vacuously passing test.
+            const whereParams = paramsOf(cond);
+            const likePattern = whereParams.find(
+              (v): v is string => typeof v === 'string' && v.endsWith('%'),
+            );
+            const requiresError = whereParams.includes('error');
+            const matched = currentMappings.filter((r) => boundTo(cond, r.id) && boundTo(cond, r.partnerId)
+              && (!requiresError || r.syncStatus === 'error')
+              && (!likePattern || (r.lastError ?? '').startsWith(likePattern.slice(0, -1))));
             for (const row of matched) Object.assign(row, patch);
             return Promise.resolve(matched.map((r) => ({ ...r })));
           }
@@ -629,7 +640,7 @@ describe('applyAccountingPayment', () => {
     const mappingUpdate = stmts.find((s) => s.kind === 'update' && s.table === 'accounting_entity_mappings')!;
     expect(mappingUpdate.set).toMatchObject({
       syncStatus: 'error',
-      lastError: 'Payment currency EUR does not match invoice currency USD. Cross-currency payments are not supported.',
+      lastError: 'Payment pull: Payment currency EUR does not match invoice currency USD. Cross-currency payments are not supported.',
     });
     // The marker must never clear the remote link or re-open the mapping.
     expect(mappingUpdate.set).not.toHaveProperty('remoteEntityId');
@@ -658,7 +669,7 @@ describe('applyAccountingPayment', () => {
     const mappingUpdate = stmts.find((s) => s.kind === 'update' && s.table === 'accounting_entity_mappings')!;
     expect(mappingUpdate.set).toMatchObject({
       syncStatus: 'error',
-      lastError: 'Payment received in QuickBooks against a voided invoice',
+      lastError: 'Payment pull: Payment received in QuickBooks against a voided invoice',
     });
     expect(mappingUpdate.set).not.toHaveProperty('remoteEntityId');
   });
@@ -791,6 +802,72 @@ describe('reverseAccountingPayment', () => {
 
     expect(results).toEqual([]);
     expect(currentPayments.map((p) => p.id)).toEqual(['pay-1800']);
+  });
+});
+
+describe('payment-originated error markers (finding G)', () => {
+  it('clears a PAYMENT-prefixed invoice-mapping error back to synced once a payment applies', async () => {
+    currentMappings = [invoiceMappingRow({
+      syncStatus: 'error',
+      lastError: 'Payment pull: Payment currency EUR does not match invoice currency USD. Cross-currency payments are not supported.',
+    })];
+
+    const outcome = await applyAccountingPayment(conn(), LINE, runCtx, REALM_FP);
+
+    expect(outcome.outcome).toBe('applied');
+    expect(currentMappings.find((m) => m.breezeEntityType === 'invoice')).toMatchObject({
+      syncStatus: 'synced', lastError: null,
+    });
+  });
+
+  it('NEVER clears a push-originated error such as "Deleted in QuickBooks"', async () => {
+    // The invoice mapping's error column is shared with the PUSH path. A pulled
+    // payment says nothing about whether the invoice still exists in QuickBooks,
+    // so clearing that marker would hide a real divergence from the operator.
+    currentMappings = [invoiceMappingRow({ syncStatus: 'error', lastError: 'Deleted in QuickBooks' })];
+
+    const outcome = await applyAccountingPayment(conn(), LINE, runCtx, REALM_FP);
+
+    expect(outcome.outcome).toBe('applied');
+    expect(currentMappings.find((m) => m.breezeEntityType === 'invoice')).toMatchObject({
+      syncStatus: 'error', lastError: 'Deleted in QuickBooks',
+    });
+  });
+
+  it('scopes the clear by the prefix in SQL, not by the row it read before the lock', async () => {
+    currentMappings = [invoiceMappingRow({ syncStatus: 'error', lastError: 'Payment pull: something' })];
+
+    await applyAccountingPayment(conn(), LINE, runCtx, REALM_FP);
+
+    const clear = stmts.find((st) => st.kind === 'update'
+      && st.table === 'accounting_entity_mappings'
+      && (st.set as Record<string, unknown> | undefined)?.syncStatus === 'synced'
+      && (st.set as Record<string, unknown> | undefined)?.lastError === null);
+    expect(clear).toBeDefined();
+    expect(paramsOf(clear!.where)).toContain('Payment pull: %');
+  });
+
+  it('an UPDATE (QuickBooks edited the payment) clears a payment-prefixed marker too', async () => {
+    currentPayments = [paymentRow()];
+    currentMappings = [
+      invoiceMappingRow({ syncStatus: 'error', lastError: 'Payment pull: transient' }),
+      paymentMappingRow({ remoteSyncToken: '0' }),
+    ];
+
+    const outcome = await applyAccountingPayment(
+      conn(), { ...LINE, remotePaymentSyncToken: '1' }, runCtx, REALM_FP,
+    );
+
+    expect(outcome.outcome).toBe('updated');
+    expect(currentMappings.find((m) => m.breezeEntityType === 'invoice')).toMatchObject({
+      syncStatus: 'synced', lastError: null,
+    });
+  });
+
+  it('markInvoiceDeletedRemotely writes its message UNPREFIXED so a payment can never clear it', async () => {
+    await markInvoiceDeletedRemotely(conn(), QBO_INVOICE_ID, runCtx, REALM_FP);
+
+    expect(currentMappings[0]).toMatchObject({ lastError: 'Deleted in QuickBooks' });
   });
 });
 

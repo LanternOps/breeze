@@ -154,6 +154,23 @@ interface PendingAudit {
  * and `reverseAccountingPayment` recovers the whole set with a `<PaymentId>/%`
  * prefix match.
  */
+/**
+ * Prefix on every error THIS module writes to an invoice mapping's `last_error`
+ * (final-review finding G).
+ *
+ * That column is shared with the invoice PUSH path, which writes things like
+ * "Deleted in QuickBooks". Before the prefix existed, a pulled payment's
+ * currency mismatch would silently overwrite a push error an operator still
+ * needed to see — and, in the other direction, nothing ever cleared a payment
+ * error once the underlying problem was fixed, so the mapping card showed a
+ * stale failure forever.
+ *
+ * The prefix makes the two owners distinguishable: a later `applied`/`updated`
+ * clears ONLY a prefixed marker, and never touches a push-originated one.
+ * Contains no LIKE metacharacters, so it is safe as a `<prefix>%` pattern.
+ */
+export const PAYMENT_PULL_ERROR_PREFIX = 'Payment pull: ';
+
 export function paymentMappingRemoteId(remotePaymentId: string, remoteInvoiceId: string): string {
   return `${remotePaymentId}/${remoteInvoiceId}`;
 }
@@ -402,7 +419,7 @@ async function applyInsideTransaction(
   // marker is the same invoice-mapping path the currency mismatch uses.
   if (inv.status === 'void') {
     const message = 'Payment received in QuickBooks against a voided invoice';
-    await markInvoiceMappingError(conn, invoiceMapping.id, message);
+    await markInvoiceMappingError(conn, invoiceMapping.id, `${PAYMENT_PULL_ERROR_PREFIX}${message}`);
     captureException(
       new Error(`${message} (remotePaymentId=${line.remotePaymentId}, invoiceId=${inv.id})`),
       undefined,
@@ -423,7 +440,7 @@ async function applyInsideTransaction(
     if (!(err instanceof AccountingCurrencyContractError)) throw err;
     // `err.message` is generated locally by accountingCurrency.ts — never a QBO
     // response body — so it is safe to persist verbatim.
-    await markInvoiceMappingError(conn, invoiceMapping.id, err.message);
+    await markInvoiceMappingError(conn, invoiceMapping.id, `${PAYMENT_PULL_ERROR_PREFIX}${err.message}`);
     captureException(err, undefined, {
       service: 'accountingPaymentPull',
       remotePaymentId: line.remotePaymentId,
@@ -482,6 +499,7 @@ async function applyInsideTransaction(
       throw new Error(`accountingPaymentPull: payment mapping update matched no row (id=${existing.id})`);
     }
 
+    await clearPaymentPullMappingError(conn, invoiceMapping.id);
     await recomputeInvoiceStatus(inv.id, db);
 
     return {
@@ -549,6 +567,7 @@ async function applyInsideTransaction(
     throw new Error('accountingPaymentPull: payment mapping insert returned no row');
   }
 
+  await clearPaymentPullMappingError(conn, invoiceMapping.id);
   await recomputeInvoiceStatus(inv.id, db);
 
   return {
@@ -574,6 +593,28 @@ async function applyInsideTransaction(
  * `link_status`, so the link back to QuickBooks survives the failure and a later
  * push/pull can clear the marker instead of re-creating the remote entity.
  */
+/**
+ * Clears a PAYMENT-ORIGINATED error marker off the invoice mapping once a
+ * payment lands cleanly (finding G).
+ *
+ * Scoped by the prefix IN SQL rather than by the row read before the invoice
+ * lock, so a marker another writer set in between is judged on its own content.
+ * A zero-row result is the normal case (the mapping was already `synced`), and
+ * deliberately not a throw.
+ */
+async function clearPaymentPullMappingError(conn: AccountingConnection, mappingId: string): Promise<void> {
+  await db
+    .update(accountingEntityMappings)
+    .set({ syncStatus: 'synced', lastError: null, updatedAt: new Date() })
+    .where(and(
+      eq(accountingEntityMappings.id, mappingId),
+      eq(accountingEntityMappings.partnerId, conn.partnerId),
+      eq(accountingEntityMappings.syncStatus, 'error'),
+      like(accountingEntityMappings.lastError, `${PAYMENT_PULL_ERROR_PREFIX}%`),
+    ))
+    .returning({ id: accountingEntityMappings.id });
+}
+
 async function markInvoiceMappingError(
   conn: AccountingConnection,
   mappingId: string,
