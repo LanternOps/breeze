@@ -101,11 +101,14 @@ export const accountingEntityMappings = pgTable('accounting_entity_mappings', {
   // Worker lease. A claim is a compare-and-set on (pending_op IS NOT NULL AND
   // (claimed_at IS NULL OR claimed_at < now() - 10 min)).
   claimedAt: timestamp('claimed_at', { withTimezone: true }),
-  // Consecutive failed/skipped attempts at `pending_op`, incremented by every
-  // error stamp and reset to 0 when the invoice fan-out re-owns the row. A
-  // `push` row that reaches PAYMENT_PUSH_MAX_ATTEMPTS gives up (`pending_op`
-  // cleared, `last_error` saying so); a `delete` row is never capped, and uses
-  // the counter only to throttle its Sentry reporting to once a day.
+  // Consecutive failed attempts at `pending_op`, incremented by every error
+  // stamp and reset to 0 when the invoice fan-out re-owns the row. The unit is
+  // an ATTEMPT, not a sweep: BullMQ retries a retryable failure five times per
+  // enqueue, so five attempts is roughly one 15-minute sweep. A `push` row that
+  // reaches PAYMENT_PUSH_MAX_ATTEMPTS (100, ~5 h) gives up (`pending_op`
+  // cleared, `last_error` saying so); a `delete` row is never capped, does not
+  // count not-connected skips, and uses the counter only to throttle its Sentry
+  // reporting to about once a day.
   syncAttempts: integer('sync_attempts').notNull().default(0),
   lastSyncedAt: timestamp('last_synced_at', { withTimezone: true }),
   lastError: text('last_error'),

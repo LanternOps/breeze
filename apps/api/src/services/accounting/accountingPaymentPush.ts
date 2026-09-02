@@ -114,13 +114,20 @@ export const PAYMENT_PUSH_DISABLED_MESSAGE = 'Payment push is disabled for this 
  * an over-application, a realm that stays disconnected, a deleted QuickBooks
  * customer — is retried every quarter hour forever, and the operator's only
  * signal is a `last_error` that keeps being rewritten with the same text.
- * Twenty attempts is five hours of sweeps: long enough to ride out a QuickBooks
- * outage or a reconnect, short enough that a genuinely broken row stops
- * generating traffic the same working day.
+ *
+ * THE UNIT IS AN ATTEMPT, NOT A SWEEP, and one sweep is worth FIVE of them:
+ * `quickbooks_error` is retryable, so the worker rethrows and BullMQ burns its
+ * whole `attempts: 5` budget (5 s exponential backoff) inside a single enqueue
+ * before the job is finally failed. The 15-minute sweep then supplies the next
+ * enqueue. So 100 attempts is ~20 sweeps is ~5 hours: long enough to ride out a
+ * QuickBooks outage or an operator reconnect, short enough that a genuinely
+ * broken row stops generating traffic the same working day. (At 20 the real
+ * horizon was ~45 minutes — the first enqueue plus three sweeps — which is not
+ * long enough to survive a lunch-hour outage.)
  *
  * A `delete` row is deliberately NOT capped — see `markPaymentMappingError`.
  */
-export const PAYMENT_PUSH_MAX_ATTEMPTS = 20;
+export const PAYMENT_PUSH_MAX_ATTEMPTS = 100;
 
 /** Stamped by the sync worker when a payment job finds no connected QuickBooks
  *  connection to run against (`notePaymentJobSkipped`). */
@@ -139,12 +146,19 @@ export function paymentPushGaveUpMessage(previous: string): string {
 }
 
 /**
- * Sentry cadence for an UNCAPPED `delete` row: the first failure, then once
- * every 96 attempts. At the sweep's 15-minute cadence that is one event on day
- * zero and one a day after that — enough to keep a stuck delete visible without
- * turning a disconnected realm into 96 identical events a day.
+ * Sentry cadence for an UNCAPPED `delete` row: the first counted attempt, then
+ * once every 480. Same arithmetic as `PAYMENT_PUSH_MAX_ATTEMPTS` — BullMQ burns
+ * five attempts per enqueue and the sweep supplies one enqueue every 15 minutes
+ * — so 480 attempts is ~96 sweeps is about a day. Enough to keep a stuck delete
+ * visible without turning one broken row into an event every quarter hour.
+ *
+ * "First counted attempt" is not always the first delete failure: a row that
+ * `convertToDelete` (or `requestPaymentDelete`) flipped over from a push carries
+ * that push's failures with it, so its first delete failure can land mid-cycle.
+ * The modulus still bounds the gap, and skips no longer inflate the count at all
+ * (`notePaymentJobSkipped` does not increment a delete row).
  */
-const PAYMENT_DELETE_ALERT_EVERY_ATTEMPTS = 96;
+export const PAYMENT_DELETE_ALERT_EVERY_ATTEMPTS = 480;
 
 /**
  * The ONE divergence string both refund paths write into `last_error` — the
@@ -510,9 +524,15 @@ export async function requestPaymentPush(
  *  - a pre-call terminal refusal — `invoice_void`, `customer_not_mapped`, a
  *    currency-contract failure, or a push row that burned through
  *    `PAYMENT_PUSH_MAX_ATTEMPTS`;
- *  - `record_failed` with no remote id, which is already a loud
- *    manual-reconciliation state (Sentry + a stamped `last_error`) and gains
- *    nothing from a delete job that has no id to delete.
+ *  - `record_failed` with no remote id — QuickBooks accepted a create whose
+ *    result Breeze could not record. THE ACCEPTED COST IS HERE: before this
+ *    branch, the mapping survived the void and the CDC pull could still adopt
+ *    the orphaned Payment by its `PrivateNote` marker and fill the id in. Now
+ *    the row is dropped, so that orphan stays in QuickBooks. It is not lost
+ *    silently — `record_failed` already raised a Sentry event and stamped
+ *    "do not retry; contact support to reconcile", and the void writes its own
+ *    audit entry — and the adoption was itself unlikely to fire, since it
+ *    requires the `invoice_payments` row this void is deleting. Accepted.
  *
  * Returns the mapping id to enqueue a `delete-payment` job for, or `null`.
  * Zero rows is LEGITIMATE and deliberately not a throw: a manual or Stripe
@@ -651,16 +671,22 @@ async function releaseLease(mappingId: string, partnerId: string): Promise<void>
  * pull observes the deletion and satisfies it). The counter still earns its keep
  * there — it is what throttles the delete path's Sentry reporting.
  *
- * Returns the row's NEW attempt count, or null when no row matched. Zero rows is
- * tolerated for the same reason as `releaseLease` above: this is best-effort
- * annotation of a failure that is being reported anyway, and Sentry already
- * carries the original.
+ * `countAttempt: 'push_only'` counts the attempt for a `push` row and leaves a
+ * `delete` row's counter alone, decided inside the UPDATE so no read races it.
+ * Only the not-connected skip uses it: a delete row's count is its ONLY Sentry
+ * throttle, and letting a disconnected realm inflate it would mean the first
+ * genuine failure after the reconnect landed mid-cycle and raised nothing.
+ *
+ * Returns the row's NEW attempt count (unchanged for a delete row under
+ * `push_only`), or null when no row matched. Zero rows is tolerated for the same
+ * reason as `releaseLease` above: this is best-effort annotation of a failure
+ * that is being reported anyway, and Sentry already carries the original.
  */
 async function markPaymentMappingError(
   mappingId: string,
   partnerId: string,
   message: string,
-  opts: { clearPendingOp: boolean },
+  opts: { clearPendingOp: boolean; countAttempt?: 'always' | 'push_only' },
 ): Promise<number | null> {
   const rows = await db
     .update(accountingEntityMappings)
@@ -668,7 +694,9 @@ async function markPaymentMappingError(
       syncStatus: 'error',
       lastError: message,
       claimedAt: null,
-      syncAttempts: sql`${accountingEntityMappings.syncAttempts} + 1`,
+      syncAttempts: opts.countAttempt === 'push_only'
+        ? sql`CASE WHEN ${accountingEntityMappings.pendingOp} = 'push' THEN ${accountingEntityMappings.syncAttempts} + 1 ELSE ${accountingEntityMappings.syncAttempts} END`
+        : sql`${accountingEntityMappings.syncAttempts} + 1`,
       ...(opts.clearPendingOp ? { pendingOp: null } : {}),
       updatedAt: new Date(),
     })
@@ -710,7 +738,14 @@ async function markPaymentMappingError(
  * minutes against a realm that was disconnected weeks ago, the operator saw a
  * mapping stuck on `pending` with an empty `last_error`, and nothing ever
  * counted the attempts. Routing the skip through `markPaymentMappingError` gives
- * it both — a reason on the card, and the same ceiling a QuickBooks failure gets.
+ * it both — a reason on the card, and, for a PUSH row, the same ceiling a
+ * QuickBooks failure gets, so a create nobody can complete eventually retires.
+ *
+ * A DELETE row is stamped but NOT counted (`countAttempt: 'push_only'`). It has
+ * no ceiling to move it towards, and its `sync_attempts` is the sole throttle on
+ * its Sentry reporting: a realm disconnected for a week would otherwise push the
+ * counter deep into a cycle, so the first REAL delete failure after the reconnect
+ * would fail the `% PAYMENT_DELETE_ALERT_EVERY_ATTEMPTS` test and raise nothing.
  *
  * Opens its OWN short system context (the worker calls this outside any) and
  * swallows its own failures: this is annotation of a job that is ending either
@@ -723,7 +758,10 @@ export async function notePaymentJobSkipped(
 ): Promise<void> {
   try {
     await withSystemDbAccessContext(
-      () => markPaymentMappingError(mappingId, partnerId, reason, { clearPendingOp: false }),
+      () => markPaymentMappingError(mappingId, partnerId, reason, {
+        clearPendingOp: false,
+        countAttempt: 'push_only',
+      }),
       'accountingPaymentPush.notePaymentJobSkipped',
     );
   } catch (err) {
@@ -1149,7 +1187,7 @@ export async function pushPaymentToAccounting(
       return { kind: 'refused', error: new AccountingPaymentPushError('customer_not_mapped', 409, message) } as const;
     }
 
-    // Currency guard BEFORE any token refresh or network call (spec decision 13,
+    // Currency guard BEFORE any token refresh or network call (spec decision 14,
     // multi-currency §11 contract in accountingCurrency.ts).
     try {
       assertAccountingInvoicePushCurrency(conn, { currencyCode: invoice.currencyCode });
@@ -1481,9 +1519,10 @@ export async function deletePaymentInAccounting(
     // `pending_op` KEPT and NEVER capped: the mapping is never cleared until
     // QuickBooks confirms, which is what makes a delete survive Redis failure
     // and exhausted retries. The stamp runs FIRST so its attempt count can
-    // throttle the Sentry event below — an uncapped row retried every 15 minutes
-    // would otherwise raise 96 identical events a day for one stuck delete, and
-    // that volume is how a real one stops being noticed.
+    // throttle the Sentry event below — an uncapped row is retried five times
+    // per enqueue and re-enqueued every 15 minutes, so unthrottled it would
+    // raise ~480 identical events a day for one stuck delete, and that volume is
+    // how a real one stops being noticed.
     const attempts = await markPaymentMappingErrorInOwnContext(
       runInDbContext, mappingId, partnerId, message, { clearPendingOp: false },
     );

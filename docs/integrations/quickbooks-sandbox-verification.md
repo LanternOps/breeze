@@ -619,13 +619,16 @@ items 34 and 35 change both and must put them back.
     body, `pending_op` is KEPT (so the sweep retries) and the job is retried
     rather than marked terminal.
     Then WATCH THE RETRY COUNT: record `sync_attempts` on the mapping row after
-    the first failure and again after a few sweeps (it must climb by one per
-    attempt, not stay at 0 and not jump). Either wait out the 20 attempts or
-    fast-forward with
-    `UPDATE accounting_entity_mappings SET sync_attempts = 19 WHERE id = '<id>';`
+    the first enqueue and again after a sweep. Expect it to climb by FIVE per
+    enqueue, not one — the job is retryable, so BullMQ burns its whole
+    `attempts: 5` budget before failing, and the 15-minute sweep then supplies
+    the next enqueue. (If it climbs by one per enqueue, the increment is being
+    lost somewhere; if it stays at 0, the counter is not wired.) Do not wait out
+    all 100 attempts (~5 h) — fast-forward with
+    `UPDATE accounting_entity_mappings SET sync_attempts = 99 WHERE id = '<id>';`
     and let one more sweep run, then confirm the row GIVES UP: `pending_op` is
     NULL, `claimed_at` is NULL, and `last_error` reads
-    `QuickBooks payment push gave up after 20 attempts: QuickBooks rejected the
+    `QuickBooks payment push gave up after 100 attempts: QuickBooks rejected the
     payment sync (HTTP n). Fix the cause and push the invoice again.` Confirm the
     sweep stops re-enqueueing it (no further `push-payment` jobs for that
     mapping id), and that pressing "Push to QuickBooks" on the invoice re-owns

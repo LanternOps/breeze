@@ -1506,7 +1506,7 @@ export async function voidPayment(paymentId: string, actor: InvoiceActor) {
     if (!pay || pay.invoiceId !== pre.invoiceId) throw new InvoiceServiceError('Payment not found', 404, 'PAYMENT_NOT_FOUND');
 
     // QuickBooks-origin payments are refused at the SERVICE layer, not just
-    // hidden in the UI (spec decision 14). QuickBooks is the system of record
+    // hidden in the UI (spec decision 15). QuickBooks is the system of record
     // for them: a Breeze-side void would not touch the books, and the next CDC
     // sweep would pull the payment straight back in — leaving an audit trail of
     // a void that did nothing. Read with the same (type, entity id) shape
@@ -1611,7 +1611,7 @@ export async function listPayments(invoiceId: string, actor: InvoiceActor) {
   return rows.map((r) => {
     const mapping = mappingByPaymentId.get(r.id) ?? null;
     // `quickbooks` means "QuickBooks OWNS this row", which is true only for a
-    // payment the pull created (spec decision 14). A Breeze-origin payment that
+    // payment the pull created (spec decision 15). A Breeze-origin payment that
     // Breeze PUSHED to QuickBooks stays manual/stripe — it is still hand-voidable
     // and the void propagates the deletion — and instead carries a sync badge.
     const source = stripeIds.has(r.id)

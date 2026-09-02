@@ -26,13 +26,15 @@ ALTER TABLE accounting_entity_mappings
   ADD COLUMN IF NOT EXISTS pending_op text;
 ALTER TABLE accounting_entity_mappings
   ADD COLUMN IF NOT EXISTS claimed_at timestamptz;
--- Consecutive failed/skipped attempts at the row's `pending_op`. Reset to 0
--- when the invoice fan-out re-owns a row for a fresh push. A `push` row that
--- reaches PAYMENT_PUSH_MAX_ATTEMPTS (accountingPaymentPush.ts) gives up:
--- `pending_op` is cleared and `last_error` says so, which is what stops the
--- 15-minute sweep re-enqueueing a doomed create forever. A `delete` row is
--- never capped — Breeze owns the removal of a Payment it created — so this is
--- also what throttles that row's Sentry reporting to once a day.
+-- Consecutive failed attempts at the row's `pending_op`. Reset to 0 when the
+-- invoice fan-out re-owns a row for a fresh push. The unit is one ATTEMPT, and
+-- BullMQ burns five of them per enqueue before failing a retryable job, so five
+-- attempts is roughly one 15-minute sweep. A `push` row that reaches
+-- PAYMENT_PUSH_MAX_ATTEMPTS (100 in accountingPaymentPush.ts, ~20 sweeps, ~5 h)
+-- gives up: `pending_op` is cleared and `last_error` says so, which is what
+-- stops the sweep re-enqueueing a doomed create forever. A `delete` row is never
+-- capped — Breeze owns the removal of a Payment it created — so this is instead
+-- what throttles that row's Sentry reporting to about once a day.
 ALTER TABLE accounting_entity_mappings
   ADD COLUMN IF NOT EXISTS sync_attempts integer NOT NULL DEFAULT 0;
 

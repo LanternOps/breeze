@@ -17,7 +17,7 @@
  *  - The ownership TRIGGER (`validate_accounting_mapping_entity_partner`)
  *    refusing a cross-partner payment mapping forge.
  *  - `invoiceService.voidPayment` REFUSING a QuickBooks-origin payment (Phase
- *    D2, spec decision 14) against the real `breeze_origin` column the pull
+ *    D2, spec decision 15) against the real `breeze_origin` column the pull
  *    writes — the row and its mapping must both survive the refusal.
  *
  * Mirrors `accountingInvoicePushCurrency.integration.test.ts`: `import './setup'`
@@ -437,7 +437,7 @@ describe('QuickBooks payment applier — real Postgres', () => {
   });
 
   runDb('invoiceService.voidPayment REFUSES a pulled (QuickBooks-origin) payment and changes nothing', async () => {
-    // Phase D2, spec decision 14. Until now this void succeeded, and the next
+    // Phase D2, spec decision 15. Until now this void succeeded, and the next
     // CDC sweep pulled the same payment straight back in — leaving an audit
     // trail of a void that did nothing. The refusal is asserted here rather than
     // only in the unit suite because it turns on the REAL `breeze_origin` value

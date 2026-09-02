@@ -112,6 +112,7 @@ import {
   PAYMENT_DELETE_UNRESOLVED_GRACE_MS,
   PAYMENT_PUSH_DISABLED_MESSAGE,
   PAYMENT_PUSH_MAX_ATTEMPTS,
+  PAYMENT_DELETE_ALERT_EVERY_ATTEMPTS,
   PAYMENT_NOT_CONNECTED_MESSAGE,
   notePaymentJobSkipped,
   paymentPushGaveUpMessage,
@@ -324,13 +325,35 @@ function matchedRows(table: unknown, cond: unknown): unknown[] {
   return [];
 }
 
+const COL = '"accounting_entity_mappings"';
+/** `<col> + 1` — the unconditional counter bump. */
+const INCREMENT_RE = new RegExp(`^${COL}\\."([a-z_]+)" \\+ 1$`);
+/** `CASE WHEN <guard> = '<value>' THEN <col> + 1 ELSE <col> END` — the
+ *  push-only counter bump `notePaymentJobSkipped` uses. */
+const GUARDED_INCREMENT_RE = new RegExp(
+  `^CASE WHEN ${COL}\\."([a-z_]+)" = '([a-z_]+)' THEN ${COL}\\."([a-z_]+)" \\+ 1`
+  + ` ELSE ${COL}\\."([a-z_]+)" END$`,
+);
+
+const toField = (column: string): string => column.replace(/_([a-z])/g, (_m, c: string) => c.toUpperCase());
+
+function numberField(row: Record<string, unknown>, column: string): number {
+  const value = row[toField(column)];
+  if (typeof value !== 'number') {
+    throw new Error(`fake DB: sql increment targets "${column}", which the fixture row does not carry as a number`);
+  }
+  return value;
+}
+
 /**
- * Applies an UPDATE's `set` to a row, evaluating a `sql` expression rather than
- * storing the SQL object. Only the one shape the coordinator uses is understood
- * — `<column> + 1` — and anything else `sql`-shaped is a hard failure, so a new
- * expression cannot silently write a `SQL` object into a fixture and read as a
- * pass. The expression is COMPILED with the real dialect, so a counter aimed at
- * the wrong column would not match here either.
+ * Applies an UPDATE's `set` to a row, EVALUATING a `sql` expression rather than
+ * storing the SQL object. Only the two shapes the coordinator uses are
+ * understood — `<col> + 1` and the guarded
+ * `CASE WHEN <guard> = '<v>' THEN <col> + 1 ELSE <col> END` — and anything else
+ * `sql`-shaped is a hard failure, so a new expression cannot silently write a
+ * `SQL` object into a fixture and read as a pass. Expressions are COMPILED with
+ * the real dialect, so a counter aimed at the wrong column, or a guard on the
+ * wrong one, would not match here either.
  */
 function applyPatch(row: Record<string, unknown>, patch: Record<string, unknown>): void {
   for (const [key, value] of Object.entries(patch)) {
@@ -339,14 +362,25 @@ function applyPatch(row: Record<string, unknown>, patch: Record<string, unknown>
       continue;
     }
     const text = compiledSql(value);
-    const match = /^"accounting_entity_mappings"\."([a-z_]+)" \+ 1$/.exec(text);
-    if (!match) throw new Error(`fake DB: unsupported sql expression in an UPDATE set: ${text}`);
-    const column = match[1]!;
-    const field = column.replace(/_([a-z])/g, (_m, c: string) => c.toUpperCase());
-    if (typeof row[field] !== 'number') {
-      throw new Error(`fake DB: sql increment targets "${column}", which the fixture row does not carry as a number`);
+
+    const plain = INCREMENT_RE.exec(text);
+    if (plain) {
+      row[key] = numberField(row, plain[1]!) + 1;
+      continue;
     }
-    row[key] = (row[field] as number) + 1;
+
+    const guarded = GUARDED_INCREMENT_RE.exec(text);
+    if (guarded) {
+      const [, guardColumn, guardValue, thenColumn, elseColumn] = guarded as unknown as string[];
+      if (thenColumn !== elseColumn) {
+        throw new Error(`fake DB: guarded increment reads "${thenColumn}" but falls back to "${elseColumn}"`);
+      }
+      const current = numberField(row, thenColumn!);
+      row[key] = row[toField(guardColumn!)] === guardValue ? current + 1 : current;
+      continue;
+    }
+
+    throw new Error(`fake DB: unsupported sql expression in an UPDATE set: ${text}`);
   }
 }
 
@@ -1380,7 +1414,10 @@ describe('sync_attempts: the outbox\'s only bound', () => {
     expect(mapping()!.lastError).not.toContain('gave up');
   });
 
-  it('reports a stuck delete to Sentry on the FIRST failure and then once a day, not every sweep', async () => {
+  it('reports a stuck delete to Sentry on the first counted attempt and then about daily, not every try', async () => {
+    // BullMQ burns five attempts per enqueue and the sweep re-enqueues every 15
+    // minutes, so 480 counted attempts is ~96 sweeps — about a day. Reporting
+    // every attempt would be ~480 identical events a day for one stuck delete.
     currentPayments = [];
     const seed = (syncAttempts: number) => {
       currentMappings = [invoiceMapRow(), orgMapRow(), paymentMapRow({
@@ -1396,23 +1433,27 @@ describe('sync_attempts: the outbox\'s only bound', () => {
     };
 
     seed(0);
-    expect(await attempt()).toBe(1); // the first failure is always reported
+    expect(await attempt()).toBe(1); // the first counted attempt is reported
     seed(1);
     expect(await attempt()).toBe(0); // ...the second is not
-    seed(50);
+    seed(250);
     expect(await attempt()).toBe(0);
-    seed(95);
-    expect(await attempt()).toBe(1); // 96 attempts = one sweep-day
-    expect(captureExceptionMock.mock.calls[0]![2]).toMatchObject({ syncAttempts: '96' });
+    seed(PAYMENT_DELETE_ALERT_EVERY_ATTEMPTS - 1);
+    expect(await attempt()).toBe(1); // 480 counted attempts ~ one sweep-day
+    expect(captureExceptionMock.mock.calls[0]![2])
+      .toMatchObject({ syncAttempts: String(PAYMENT_DELETE_ALERT_EVERY_ATTEMPTS) });
   });
 
   it('records a payment job the sync worker skipped because QuickBooks is not connected', async () => {
     // Finding I2: this used to `return` silently, leaving the row pending with
     // an empty last_error while the sweep re-enqueued it forever.
     await notePaymentJobSkipped(MAPPING, PARTNER, PAYMENT_NOT_CONNECTED_MESSAGE);
+    await notePaymentJobSkipped(MAPPING, PARTNER, PAYMENT_NOT_CONNECTED_MESSAGE);
 
     expect(mapping()).toMatchObject({
-      syncAttempts: 1,
+      // A PUSH row DOES count skips — it has a ceiling to reach, and a create
+      // nobody can complete must eventually retire.
+      syncAttempts: 2,
       pendingOp: 'push', // still owed — a reconnect must be able to finish it
       syncStatus: 'error',
       lastError: PAYMENT_NOT_CONNECTED_MESSAGE,
@@ -1432,16 +1473,33 @@ describe('sync_attempts: the outbox\'s only bound', () => {
     });
   });
 
-  it('leaves a skipped DELETE row owed no matter how many times it is skipped', async () => {
+  it('stamps a skipped DELETE row but does NOT count the skip against its Sentry cadence', async () => {
+    // A delete row has no ceiling to move towards, and `sync_attempts` is the
+    // ONLY throttle on its Sentry reporting. If a disconnected realm inflated
+    // the counter, the first REAL failure after the reconnect would land
+    // mid-cycle and raise nothing — exactly the event an operator needs.
     currentPayments = [];
     currentMappings = [invoiceMapRow(), orgMapRow(), paymentMapRow({
-      remoteEntityId: '181/145', pendingOp: 'delete', syncStatus: 'pending',
-      syncAttempts: PAYMENT_PUSH_MAX_ATTEMPTS - 1,
+      remoteEntityId: '181/145', pendingOp: 'delete', syncStatus: 'pending', syncAttempts: 0,
     })];
 
     await notePaymentJobSkipped(MAPPING, PARTNER, PAYMENT_NOT_CONNECTED_MESSAGE);
+    await notePaymentJobSkipped(MAPPING, PARTNER, PAYMENT_NOT_CONNECTED_MESSAGE);
+    await notePaymentJobSkipped(MAPPING, PARTNER, PAYMENT_NOT_CONNECTED_MESSAGE);
 
-    expect(mapping()).toMatchObject({ pendingOp: 'delete', syncAttempts: PAYMENT_PUSH_MAX_ATTEMPTS });
+    expect(mapping()).toMatchObject({
+      pendingOp: 'delete', // still owed: Breeze owns the removal
+      syncAttempts: 0, // ...and three skips left the counter untouched
+      syncStatus: 'error',
+      lastError: PAYMENT_NOT_CONNECTED_MESSAGE,
+    });
+
+    // ...so the first genuine failure after the realm reconnects IS reported.
+    captureExceptionMock.mockClear();
+    deletePaymentMock.mockRejectedValueOnce(Object.assign(new Error('boom'), { status: 500 }));
+    await expect(deletePaymentInAccounting(MAPPING, PARTNER, runCtx)).rejects.toThrow();
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+    expect(mapping()).toMatchObject({ syncAttempts: 1 });
   });
 
   it('never lets its own failure escape into the worker', async () => {
