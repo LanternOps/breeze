@@ -242,6 +242,43 @@ describe('LLM_PROVIDER_CATALOG_ENABLED regression (#4113/#4116)', () => {
   });
 });
 
+/**
+ * QuickBooks (final-review finding I). The Phase C sandbox walkthrough needed a
+ * manual container override for exactly this reason: all five QBO_* vars were
+ * validated in `validate.ts` and read by `config/env.ts`, but documented
+ * nowhere and mapped into no service block — so setting them in `.env` was a
+ * silent no-op and the integration simply stayed dark. Pinned on all three axes,
+ * for both the self-host and droplet compose files, so they cannot drift apart
+ * again.
+ */
+describe('QuickBooks QBO_* env plumbing (finding I)', () => {
+  const ROOT_COMPOSE = readFileSync(path.join(REPO_ROOT, 'docker-compose.yml'), 'utf8');
+  const PROD_COMPOSE = readFileSync(path.join(REPO_ROOT, 'deploy/docker-compose.prod.yml'), 'utf8');
+  const QBO_VARS = [
+    'QBO_CLIENT_ID',
+    'QBO_CLIENT_SECRET',
+    'QBO_REDIRECT_URI',
+    'QBO_ENVIRONMENT',
+    'QBO_WEBHOOK_VERIFIER_TOKEN',
+  ] as const;
+
+  it.each(QBO_VARS)('%s is declared in the validate.ts schema', (name) => {
+    expect(ENV_SCHEMA_KEYS).toContain(name);
+  });
+
+  it.each(QBO_VARS)('%s is documented in the root .env.example', (name) => {
+    expect(documentedEnvExampleVars('.env.example')).toContain(name);
+  });
+
+  it.each(QBO_VARS)('%s reaches the api container in docker-compose.yml', (name) => {
+    expect(isReferencedInCompose(name, ROOT_COMPOSE)).toBe(true);
+  });
+
+  it.each(QBO_VARS)('%s reaches the api container in deploy/docker-compose.prod.yml', (name) => {
+    expect(isReferencedInCompose(name, PROD_COMPOSE)).toBe(true);
+  });
+});
+
 describe('parseDocumentedVars — what counts as a documented variable (#3239)', () => {
   it('collects commented-out assignments, the form used for optional knobs', () => {
     expect(parseDocumentedVars('# MCP_REQUIRE_EXECUTE_ADMIN=true')).toEqual([
