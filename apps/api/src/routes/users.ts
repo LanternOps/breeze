@@ -1766,7 +1766,19 @@ userRoutes.post(
     // predicate every enrollment gate uses. A passkey-only leftover (enabled
     // flag already cleared, passkey rows still present) must be resettable,
     // otherwise the account stays "protected" by a credential nobody holds.
-    if (!(await userIsMfaProtected(userId))) {
+    //
+    // The read MUST escape the request's tenant context (same escape the
+    // `mfaProtected` list read uses above). `userIsMfaProtected` asks for a
+    // system context internally, but `withSystemDbAccessContext` JOINS an open
+    // context rather than escalating it (db/index.ts: `withDbAccessContext`
+    // short-circuits when a store exists), and `user_passkeys` RLS is
+    // `user_id = breeze_current_user_id() OR scope = 'system'`. Called bare
+    // from inside the admin's partner context the passkey half of the OR
+    // therefore counts ZERO for any target but the caller — the gate would
+    // silently collapse back to the `mfa_enabled` column it is meant to
+    // replace, and a passkey-only leftover would still be refused with 400.
+    const targetIsMfaProtected = await runOutsideDbContext(() => userIsMfaProtected(userId));
+    if (!targetIsMfaProtected) {
       return c.json({ error: 'MFA is not enabled for this user' }, 400);
     }
 
