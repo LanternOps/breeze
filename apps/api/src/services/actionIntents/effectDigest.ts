@@ -271,13 +271,26 @@ const EFFECT_DIGEST_RESOLVERS: Record<
   // re-validation rather than by this pin.
   //
   // `args.orgId` is an ADDRESS, never an authority: it is set from the
-  // authenticated org at creation, creation rejects `args.orgId !== intent.orgId`,
-  // and the executor re-asserts the same equality before writing. It exists
-  // here only because a resolver receives `(args, database)` and has no other
-  // way to name the org whose keys are being changed — both release paths
-  // recompute inside `withSystemDbAccessContext`, which carries no ambient org.
-  // The read predicates on org_id explicitly for the same reason every loader
-  // in this codebase does: RLS passes unconditionally under a system context.
+  // authenticated org at creation, `createActionIntent` rejects
+  // `args.orgId !== intent.orgId` (there BECAUSE both creation paths — the
+  // promote route and the chat/MCP `tool()` declaration — funnel through it),
+  // and the executor re-asserts the same equality UNCONDITIONALLY before
+  // writing. It exists here only because a resolver receives `(args, database)`
+  // and has no other way to name the org whose keys are being changed — both
+  // release paths recompute inside `withSystemDbAccessContext`, which carries
+  // no ambient org. The read predicates on org_id explicitly for the same
+  // reason every loader in this codebase does: RLS passes unconditionally
+  // under a system context.
+  //
+  // THIS PIN IS NOT A CROSS-TENANT CONTROL, and nothing may be built on the
+  // idea that it is. It fails closed on a forged `orgId` only for an
+  // ORG-scoped creator (creation reads no row → pins null; release reads the
+  // real row → `content_changed`). A PARTNER-scoped caller passes
+  // `breeze_has_org_access` for every org beneath the partner, so a forged
+  // SIBLING org id reads that sibling's real row at creation and the SAME row
+  // at release: the digest MATCHES and `content_changed` never fires. The
+  // equality checks above are the control; this resolver only pins drift in
+  // the authority set.
   manage_ai_agents: async (args, database) => {
     const orgId = typeof args.orgId === 'string' && args.orgId.length > 0 ? args.orgId : null;
     const kind = typeof args.kind === 'string' && (AI_AGENT_KINDS as readonly string[]).includes(args.kind)

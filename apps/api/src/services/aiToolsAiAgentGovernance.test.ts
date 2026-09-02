@@ -13,6 +13,8 @@
  */
 import { readFileSync } from 'node:fs';
 
+import type { SQL } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
@@ -235,16 +237,27 @@ describe('policy-decide exclusion', () => {
  * execution under the graduation advisory lock instead (Task 15).
  */
 describe('effect-digest pinning (actionIntents/effectDigest)', () => {
-  /** Fake `Database` — one `select().from().where().limit()` chain per queued row set. */
-  function fakeDb(rows: unknown[][]): Database {
+  /**
+   * Fake `Database` — one `select().from().where().limit()` chain per queued
+   * row set. `captured` collects every condition handed to `.where()`: this
+   * fake returns the same rows whatever the predicate is, so the digest bytes
+   * alone can never prove the query is tenant-scoped. The predicate is
+   * asserted directly (see "predicates the read on org_id, kind and
+   * disabled_at" below).
+   */
+  function fakeDb(rows: unknown[][], captured: unknown[] = []): Database {
     const take = async () => rows.shift() ?? [];
     const chain = {
       limit: vi.fn(take),
       orderBy: vi.fn(take),
       then: (resolve: (r: unknown[]) => unknown, reject: (e: unknown) => unknown) => take().then(resolve, reject),
     };
+    const where = vi.fn((condition: unknown) => {
+      captured.push(condition);
+      return chain;
+    });
     return {
-      select: vi.fn(() => ({ from: vi.fn(() => ({ where: vi.fn(() => chain) })) })),
+      select: vi.fn(() => ({ from: vi.fn(() => ({ where })) })),
     } as unknown as Database;
   }
 
@@ -265,6 +278,29 @@ describe('effect-digest pinning (actionIntents/effectDigest)', () => {
   it('pins a digest for a well-formed call', async () => {
     const outcome = await computeEffectDigestOutcome(TOOL, validInput, fakeDb([[orgAgentRow()]]));
     expect(outcome.kind).toBe('pinned');
+  });
+
+  it('predicates the read on org_id, kind and disabled_at — not just on the material JSON', async () => {
+    // `orgId` and `kind` are MEMBERS of the pinned material, so "differs by
+    // orgId"/"differs by kind" below would still pass with the WHERE clause
+    // stripped down to nothing: the JSON changes, the row does not. That is
+    // the repo's documented vacuous-Drizzle-assertion class, and it matters
+    // more than usual here — BOTH release paths recompute inside
+    // `withSystemDbAccessContext`, where RLS passes unconditionally, so a
+    // dropped `org_id` predicate would silently pin (and later compare
+    // against) ANOTHER TENANT's key list with nothing left to catch it.
+    // Assert the compiled predicate itself.
+    const captured: unknown[] = [];
+    await computeEffectDigestForRelease(TOOL, validInput, fakeDb([[orgAgentRow()]], captured));
+
+    expect(captured, 'the resolver must issue exactly one predicated read').toHaveLength(1);
+    const compiled = new PgDialect().sqlToQuery(captured[0] as SQL);
+    expect(compiled.sql).toMatch(/"org_id"\s*=/);
+    expect(compiled.sql).toMatch(/"kind"\s*=/);
+    expect(compiled.sql).toMatch(/"disabled_at"\s+is\s+null/i);
+    // Exactly these two bound values, in this order: a dropped predicate or a
+    // widened one (an extra OR branch, a partner-axis read) changes the list.
+    expect(compiled.params).toEqual([ORG_ID, 'triage']);
   });
 
   it('changes when the org agent gains a supervised key during the approval window', async () => {
