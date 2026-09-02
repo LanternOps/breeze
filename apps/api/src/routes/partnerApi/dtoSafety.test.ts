@@ -89,6 +89,9 @@ describe('partner enrollment-key DTO safety contract', () => {
       expiresAt: '2026-08-09T12:30:00.000Z',
       createdAt: '2026-08-09T12:00:00.000Z',
     },
+    // Required on both envelopes: an integrator has to know which secret the
+    // agent will present before it tries to enroll.
+    enrollmentSecretSource: 'global' as const,
   };
 
   it('accepts the reviewed one-time and replay response shapes', () => {
@@ -158,6 +161,20 @@ describe('partner enrollment-key DTO safety contract', () => {
     });
     expect(parsed.success).toBe(true);
     expect(parsed.success && 'enrollmentSecret' in parsed.data).toBe(false);
+  });
+
+  // Optional would let the field be forgotten on one branch and silently
+  // absent, which is the same class of surprise it exists to prevent.
+  it.each([
+    ['create', partnerEnrollmentKeyCreateResponseSchema, { key: 'a'.repeat(64) }],
+    ['replay', partnerEnrollmentKeyReplayResponseSchema, { idempotencyReplay: true }],
+  ])('requires enrollmentSecretSource on the %s response', (_label, schema, extra) => {
+    const { enrollmentSecretSource: _omitted, ...withoutSource } = metadata;
+    expect(schema.safeParse({ ...withoutSource, ...extra }).success).toBe(false);
+    expect(schema.safeParse({ ...metadata, ...extra, enrollmentSecretSource: 'maybe' }).success)
+      .toBe(false);
+    expect(schema.safeParse({ ...metadata, ...extra, enrollmentSecretSource: 'per_key' }).success)
+      .toBe(true);
   });
 
   it('still validates the enrollment secret shape when one is issued', () => {

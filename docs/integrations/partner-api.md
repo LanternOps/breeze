@@ -374,12 +374,21 @@ no-secret allowlist:
     "expiresAt": "2026-08-09T13:00:00.000Z",
     "createdAt": "2026-08-09T12:00:00.000Z"
   },
-  "key": "<64-char hex, returned once>"
+  "key": "<64-char hex, returned once>",
+  "enrollmentSecretSource": "global"
 }
 ```
 
 Store `key` securely and pass it to the agent enrollment flow. It is not
 recoverable afterwards.
+
+`enrollmentSecretSource` tells you which secret the agent must present when it
+redeems this key — `"global"` for the deployment's `AGENT_ENROLLMENT_SECRET`,
+`"per_key"` for the `enrollmentSecret` returned alongside it. It is present on
+every response including replays, because the alternative failure is silent and
+remote: assume the wrong model and you get a clean `201` here and a
+`403 Enrollment secret required` at install time, with nothing connecting the
+two.
 
 #### Choosing an enrollment-secret model
 
@@ -404,7 +413,8 @@ secret unique to that key, stores its hash, and returns it once:
   "schemaVersion": "1",
   "data": { "id": "<enrollment-key-uuid>", "...": "..." },
   "key": "<64-char hex, returned once>",
-  "enrollmentSecret": "<64-char hex, returned once>"
+  "enrollmentSecret": "<64-char hex, returned once>",
+  "enrollmentSecretSource": "per_key"
 }
 ```
 
@@ -420,8 +430,9 @@ signal that the key requires one.
 Idempotency uses a durable database claim keyed by service principal and
 `X-Idempotency-Key`. The claim, enrollment-key insert, and result link commit
 in one transaction, so concurrent duplicate requests cannot mint two keys. A
-completed replay returns `200` with metadata and `idempotencyReplay: true`, and
-never returns either one-time credential. Replays are answered before the mint
+completed replay returns `200` with metadata, `idempotencyReplay: true` and the
+same `enrollmentSecretSource` as the original create, and never returns either
+one-time credential. Replays are answered before the mint
 rate limiter is charged, so retrying with the same key cannot exhaust your own
 mint budget.
 

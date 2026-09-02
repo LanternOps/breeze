@@ -561,6 +561,47 @@ describe('POST /enrollment-keys', () => {
     expect((insertedValues[0] as { siteId: unknown }).siteId).toBeNull();
   });
 
+  // `body.data.maxUsage` comes from the canned returning-row fixture, so it
+  // proves nothing about what the handler asked Postgres to store: pinning the
+  // column to 1 and ignoring the request passed the whole suite.
+  it('persists the requested maxUsage rather than the default', async () => {
+    primeSuccess();
+    const res = await post('/enrollment-keys', 'enrollment-keys:write', {
+      orgId: ORG_ID, name: 'k', maxUsage: 250,
+    });
+    expect(res.status).toBe(201);
+    expect((insertedValues[0] as { maxUsage: unknown }).maxUsage).toBe(250);
+  });
+
+  it('persists maxUsage 1 when the caller omits it', async () => {
+    primeSuccess();
+    const res = await post('/enrollment-keys', 'enrollment-keys:write', { orgId: ORG_ID, name: 'k' });
+    expect(res.status).toBe(201);
+    expect((insertedValues[0] as { maxUsage: unknown }).maxUsage).toBe(1);
+  });
+
+  it('persists the request name verbatim', async () => {
+    primeSuccess();
+    const res = await post('/enrollment-keys', 'enrollment-keys:write', {
+      orgId: ORG_ID, name: 'a distinctive key name',
+    });
+    expect(res.status).toBe(201);
+    expect((insertedValues[0] as { name: unknown }).name).toBe('a distinctive key name');
+  });
+
+  it('persists the orgId from the request, inside the principal partner context', async () => {
+    primeSuccess();
+    await post('/enrollment-keys', 'enrollment-keys:write', { orgId: ORG_ID, name: 'k' });
+    expect((insertedValues[0] as { orgId: unknown }).orgId).toBe(ORG_ID);
+    expect(mocks.partnerContexts.at(-1)).toMatchObject({
+      scope: 'partner',
+      accessibleOrgIds: [ORG_ID],
+      accessiblePartnerIds: [PARTNER_ID],
+      currentPartnerId: PARTNER_ID,
+      userId: null,
+    });
+  });
+
   it('attributes the audit event to the service principal', async () => {
     primeSuccess();
     await post('/enrollment-keys', 'enrollment-keys:write', { orgId: ORG_ID, name: 'k' });
@@ -784,6 +825,27 @@ describe('POST /enrollment-keys', () => {
       expect(body.key).toMatch(/^[0-9a-f]{64}$/);
       expect(body).not.toHaveProperty('enrollmentSecret');
       expect((insertedValues[0] as Record<string, unknown>).keySecretHash).toBeNull();
+    });
+
+    /**
+     * Round-four finding 5: an integrator gets a clean 201 here and then a
+     * `403 Enrollment secret required` from the agent enrollment route, with
+     * nothing connecting the two. The response says which secret the agent
+     * will need, on every path including a replay that carries no secret.
+     */
+    it.each([
+      ['global', undefined],
+      ['global', false],
+      ['per_key', true],
+    ])('reports enrollmentSecretSource=%s to the caller', async (expected, flag) => {
+      primeSuccess();
+      const res = await post('/enrollment-keys', 'enrollment-keys:write', {
+        orgId: ORG_ID,
+        name: 'k',
+        ...(flag === undefined ? {} : { issueEnrollmentSecret: flag }),
+      });
+      expect(res.status).toBe(201);
+      expect((await res.json()).enrollmentSecretSource).toBe(expected);
     });
 
     it('leaves key_secret_hash null when the flag is explicitly false', async () => {

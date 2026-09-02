@@ -671,6 +671,7 @@ partnerProvisioningRoutes.post(
             expiresAt: replayed.expiresAt ? iso(replayed.expiresAt) : null,
             createdAt: iso(replayed.createdAt),
           },
+          enrollmentSecretSource: replayed.keySecretHash ? 'per_key' as const : 'global' as const,
           idempotencyReplay: true as const,
         }), 200);
       }
@@ -862,6 +863,10 @@ partnerProvisioningRoutes.post(
       },
       key: rawKey,
       ...(rawEnrollmentSecret === null ? {} : { enrollmentSecret: rawEnrollmentSecret }),
+      // Tells the integrator which secret the agent will need, so a key minted
+      // under the default model cannot surprise them with a 403 at install
+      // time (#2826 round-four finding 5).
+      enrollmentSecretSource: rawEnrollmentSecret === null ? 'global' as const : 'per_key' as const,
     }), 201);
   },
 );

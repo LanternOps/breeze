@@ -171,9 +171,12 @@ describe('partner reconstruction export RLS traversal', () => {
       body: JSON.stringify(mintBody),
     });
     expect(response.status, await response.clone().text()).toBe(201);
-    const body = await response.json() as { data: { id: string }; key: string; enrollmentSecret: string };
+    const body = await response.json() as {
+      data: { id: string }; key: string; enrollmentSecret: string; enrollmentSecretSource: string;
+    };
     expect(body.key).toMatch(/^[a-f0-9]{64}$/);
     expect(body.enrollmentSecret).toMatch(/^[a-f0-9]{64}$/);
+    expect(body.enrollmentSecretSource).toBe('per_key');
     const [stored] = await getTestDb().select().from(enrollmentKeys).where(eq(enrollmentKeys.id, body.data.id)).limit(1);
     expect(stored).toMatchObject({ orgId: partnerA.orgs[0]!.id, siteId: partnerA.sites[0]!.id, createdBy: null });
     expect(stored?.key).not.toBe(body.key);
@@ -188,6 +191,9 @@ describe('partner reconstruction export RLS traversal', () => {
     expect(replay.status, await replay.clone().text()).toBe(200);
     expect(await replay.json()).toMatchObject({
       data: { id: body.data.id },
+      // Derived from the stored row, so it survives the credential being
+      // unrecoverable on the replay path.
+      enrollmentSecretSource: 'per_key',
       idempotencyReplay: true,
     });
   });
@@ -214,9 +220,12 @@ describe('partner reconstruction export RLS traversal', () => {
       body: JSON.stringify({ orgId: partnerA.orgs[0]!.id, name: 'Global-secret enrollment key' }),
     });
     expect(response.status, await response.clone().text()).toBe(201);
-    const body = await response.json() as { data: { id: string }; key: string; enrollmentSecret?: string };
+    const body = await response.json() as {
+      data: { id: string }; key: string; enrollmentSecret?: string; enrollmentSecretSource: string;
+    };
     expect(body.key).toMatch(/^[a-f0-9]{64}$/);
     expect(body).not.toHaveProperty('enrollmentSecret');
+    expect(body.enrollmentSecretSource).toBe('global');
 
     const [stored] = await getTestDb().select().from(enrollmentKeys)
       .where(eq(enrollmentKeys.id, body.data.id)).limit(1);
