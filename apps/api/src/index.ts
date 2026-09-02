@@ -544,6 +544,10 @@ const FALLBACK_AUDIT_EXCLUDE_PREFIXES = [
 ];
 
 const FALLBACK_AUDIT_EXCLUDE_PATHS: RegExp[] = [
+  // Transport-layer ticket mint for the event-stream WebSocket, polled routinely
+  // by the web app. Not a user action — nobody is accountable for it, and it
+  // does not belong in a compliance trail. See issue #3991.
+  /^\/api\/v1\/events\/ws-ticket$/,
   // Agent telemetry endpoints are high-volume and many already emit explicit audit events.
   /^\/api\/v1\/agents\/[^/]+\/heartbeat$/,
   /^\/api\/v1\/agents\/[^/]+\/security\/status$/,
