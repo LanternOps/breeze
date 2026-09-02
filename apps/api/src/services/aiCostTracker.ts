@@ -206,7 +206,36 @@ export async function checkBillingCreditsDetailed(
       return null;
     }
 
-    const data = await res.json() as { allowed: boolean; remainingCredits: number; plan: string };
+    const data = await res.json() as {
+      allowed: boolean;
+      remainingCredits: number;
+      plan: string;
+      /** breeze-billing added these alongside `remainingCredits` (in flight,
+       *  #4388 W04) — optional here so this deploys safely ahead of that
+       *  billing-service rollout; both default to 0 in the cached record
+       *  until the field actually starts arriving. */
+      includedBalance?: number;
+      purchasedBalance?: number;
+    };
+
+    // #4388 W04: cache the latest balance per PARTNER (not per org — the
+    // balance is partner-wide) so getUsageSummary can surface it on
+    // /ai/usage without its own billing-service round trip. Best-effort: a
+    // Redis outage must not affect the credit gate this function exists for.
+    const redis = getRedis();
+    if (redis) {
+      void redis.set(
+        `ai:credits:${org.partnerId}`,
+        JSON.stringify({
+          remaining: data.remainingCredits,
+          includedBalance: data.includedBalance ?? 0,
+          purchasedBalance: data.purchasedBalance ?? 0,
+          fetchedAt: new Date().toISOString(),
+        }),
+        'EX',
+        60,
+      ).catch(() => undefined);
+    }
 
     if (!data.allowed) {
       if (['free', 'starter'].includes(data.plan)) {
@@ -1276,6 +1305,12 @@ export async function getUsageSummary(orgId: string): Promise<{
   /** Name of the catalog endpoint the org's most recent session used, or null
    *  for direct-Anthropic / platform-key traffic (#3922 W4). */
   catalogEndpointName: string | null;
+  /** #4388 W04: the partner's platform-credit balance, as last cached by
+   *  checkBillingCreditsDetailed. `null` when billed to the partner's own
+   *  key (BYOK — no platform credits apply), when the org has no partner id,
+   *  or when nothing has been cached yet (no billing service, or the cache
+   *  entry expired/was never written). Never throws. */
+  credits: { remaining: number; includedBalance: number; purchasedBalance: number; fetchedAt: string } | null;
   /** #4388: threshold rungs already fired for the org's CURRENT daily and
    *  monthly periods (nothing from prior, rolled-over periods). */
   alerts: {
@@ -1334,6 +1369,27 @@ export async function getUsageSummary(orgId: string): Promise<{
     if (entryId) catalogEndpointName = await getCatalogEntryName(entryId);
   }
 
+  // #4388 W04: the cached partner credit balance. Only meaningful for
+  // platform-billed orgs (a partner_key/BYOK org spends against its own
+  // Anthropic account, not platform credits). Wrapped so a Redis outage, a
+  // missing/deleted org row, or a corrupt cache entry all degrade to `null`
+  // rather than a 500 on /ai/usage.
+  let credits: { remaining: number; includedBalance: number; purchasedBalance: number; fetchedAt: string } | null = null;
+  if (billedTo === 'platform') {
+    try {
+      const [org] = await db
+        .select({ partnerId: organizations.partnerId })
+        .from(organizations)
+        .where(eq(organizations.id, orgId))
+        .limit(1);
+      const redis = org?.partnerId ? getRedis() : null;
+      const raw = redis ? await redis.get(`ai:credits:${org?.partnerId}`) : null;
+      if (raw) credits = JSON.parse(raw);
+    } catch {
+      credits = null;
+    }
+  }
+
   return {
     daily: {
       inputTokens: dailyUsage?.inputTokens ?? 0,
@@ -1358,6 +1414,7 @@ export async function getUsageSummary(orgId: string): Promise<{
     },
     billedTo,
     catalogEndpointName,
+    credits,
     alerts: {
       fired: fired.map((r) => ({
         period: r.period,

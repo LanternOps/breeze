@@ -1063,6 +1063,10 @@ aiRoutes.get(
         monthly: { inputTokens: 0, outputTokens: 0, totalCostCents: 0, messageCount: 0 },
         budget: null,
         billedTo: 'platform' as const,
+        // #4388 W04: present (null) on every /ai/usage response, same
+        // rationale as `alerts.fired` above — callers read `usage.credits`
+        // unconditionally.
+        credits: null,
         alerts: { fired: [] },
       });
     }

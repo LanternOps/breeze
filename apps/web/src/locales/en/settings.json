@@ -1333,7 +1333,8 @@
     "likeActionPlanPlusLiveScreenshotsBetweenStepsAndAPersist": "Like Action Plan, plus live screenshots between steps and a persistent Stop button.",
     "untitled": "Untitled",
     "billedToPartnerKey": "Billed to your key — AI usage goes to your own Anthropic account, not Breeze AI credits",
-    "billedToPartnerKeyViaEndpoint": "Billed to your key via {{name}} — AI usage goes to your own Anthropic account, not Breeze AI credits"
+    "billedToPartnerKeyViaEndpoint": "Billed to your key via {{name}} — AI usage goes to your own Anthropic account, not Breeze AI credits",
+    "creditsRemaining": "Breeze AI credits remaining"
   },
   "aiAgentsPage": {
     "schedules": {

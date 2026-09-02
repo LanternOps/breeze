@@ -82,6 +82,44 @@ describe('AiUsagePage billedTo indicator', () => {
   });
 });
 
+// #4388 W04: the credits StatCard only appears when the API actually sent a
+// cached partner balance — the existing `usageBody()` fixture never sets it,
+// so every other describe block in this file keeps proving the card stays
+// hidden by default.
+describe('AiUsagePage credits stat card (#4388 W04)', () => {
+  function mockUsageWithCredits(credits: { remaining: number; includedBalance: number; purchasedBalance: number; fetchedAt: string } | null) {
+    fetchWithAuth.mockImplementation((url: string) => {
+      if (url === '/ai/usage') return Promise.resolve(jsonRes({ ...usageBody(), credits }));
+      if (url.startsWith('/ai/admin/sessions')) return Promise.resolve(jsonRes({ data: [] }));
+      return Promise.resolve(jsonRes({ data: [] }));
+    });
+  }
+
+  it('renders the credits remaining stat card when usage.credits is present', async () => {
+    mockUsageWithCredits({ remaining: 1240, includedBalance: 0, purchasedBalance: 1240, fetchedAt: '2026-09-01T00:00:00.000Z' });
+    render(<AiUsagePage />);
+
+    await waitFor(() => expect(screen.getByText('Breeze AI credits remaining')).toBeInTheDocument());
+    expect(screen.getByText('1,240')).toBeInTheDocument();
+  });
+
+  it('does not render the credits stat card when usage.credits is null', async () => {
+    mockUsageWithCredits(null);
+    render(<AiUsagePage />);
+
+    await waitFor(() => expect(screen.getByText('Budget Configuration')).toBeInTheDocument());
+    expect(screen.queryByText('Breeze AI credits remaining')).toBeNull();
+  });
+
+  it('does not render the credits stat card when the response omits credits (older API)', async () => {
+    mockUsage('platform');
+    render(<AiUsagePage />);
+
+    await waitFor(() => expect(screen.getByText('Budget Configuration')).toBeInTheDocument());
+    expect(screen.queryByText('Breeze AI credits remaining')).toBeNull();
+  });
+});
+
 describe('AiUsagePage effective-settings parallel fetch', () => {
   beforeEach(() => {
     orgState.currentOrgId = 'org-1';

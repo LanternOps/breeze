@@ -82,7 +82,17 @@ vi.mock('../db/schema', () => ({
   organizations: { id: 'id', partnerId: 'partnerId' },
 }));
 
-vi.mock('./redis', () => ({ getRedis: vi.fn(() => ({})) }));
+// #4388 W04: `set`/`get` back the per-partner credit-balance cache
+// (checkBillingCreditsDetailed writes it, getUsageSummary reads it).
+// `mockResolvedValue` at creation survives `vi.clearAllMocks()` in the outer
+// beforeEach (it only clears call tracking, not the implementation), so each
+// test only needs to override what it cares about via `mockResolvedValueOnce`
+// / `mockRejectedValueOnce`.
+const { redisSet, redisGet } = vi.hoisted(() => ({
+  redisSet: vi.fn().mockResolvedValue('OK'),
+  redisGet: vi.fn().mockResolvedValue(null),
+}));
+vi.mock('./redis', () => ({ getRedis: vi.fn(() => ({ set: redisSet, get: redisGet })) }));
 vi.mock('./rate-limit', () => ({ rateLimiter: vi.fn() }));
 
 // Single source of truth for an enabled, unlimited effective budget with the
@@ -246,6 +256,8 @@ function billingCreditsResponse(input: {
   allowed: boolean;
   remainingCredits: number;
   plan: string;
+  includedBalance?: number;
+  purchasedBalance?: number;
 }): Response {
   return new Response(JSON.stringify(input), {
     status: 200,
@@ -1478,6 +1490,136 @@ describe('checkBillingCreditsDetailed', () => {
     await expect(checkBillingCredits('org-cd-3', 'platform')).resolves.toBe(
       'AI assistant requires the Community plan.',
     );
+  });
+});
+
+// ============================================
+// #4388 W04: partner credit-balance cache
+// ============================================
+//
+// checkBillingCreditsDetailed writes the last-seen balance to Redis
+// (`ai:credits:<partnerId>`, 60s TTL) so getUsageSummary can surface it on
+// /ai/usage without an extra billing-service round trip per page load. The
+// write must never fail the credit check itself — a Redis outage degrades to
+// "no cached balance to show", not a broken AI gate.
+
+describe('checkBillingCreditsDetailed: partner credit cache (#4388 W04)', () => {
+  it('caches the last credit balance per partner for /ai/usage (#4388)', async () => {
+    const fetchMock = enableBillingService();
+    fetchMock.mockResolvedValueOnce(billingCreditsResponse({
+      allowed: true, remainingCredits: 1240, includedBalance: 0, purchasedBalance: 1240, plan: 'pro',
+    }));
+    setupDbMocks(null); // organizations partnerId lookup resolves 'partner-1'
+
+    await checkBillingCreditsDetailed('org-cache-1', 'platform');
+
+    expect(redisSet).toHaveBeenCalledWith(
+      'ai:credits:partner-1',
+      expect.stringContaining('"remaining":1240'),
+      'EX',
+      60,
+    );
+    const written = JSON.parse(redisSet.mock.calls[0]![1] as string);
+    expect(written).toMatchObject({ remaining: 1240, includedBalance: 0, purchasedBalance: 1240 });
+    expect(typeof written.fetchedAt).toBe('string');
+  });
+
+  it('defaults includedBalance/purchasedBalance to 0 when the billing response omits them (pre-deploy compat)', async () => {
+    const fetchMock = enableBillingService();
+    fetchMock.mockResolvedValueOnce(billingCreditsResponse({
+      allowed: true, remainingCredits: 500, plan: 'pro',
+    }));
+    setupDbMocks(null);
+
+    await checkBillingCreditsDetailed('org-cache-2', 'platform');
+
+    const written = JSON.parse(redisSet.mock.calls[0]![1] as string);
+    expect(written).toMatchObject({ remaining: 500, includedBalance: 0, purchasedBalance: 0 });
+  });
+
+  it('does not throw and still returns the access decision when the cache write fails', async () => {
+    const fetchMock = enableBillingService();
+    fetchMock.mockResolvedValueOnce(billingCreditsResponse({
+      allowed: true, remainingCredits: 10, plan: 'pro',
+    }));
+    setupDbMocks(null);
+    redisSet.mockRejectedValueOnce(new Error('redis down'));
+
+    await expect(checkBillingCreditsDetailed('org-cache-3', 'platform')).resolves.toBeNull();
+  });
+});
+
+// getUsageSummary's `credits` field: cached per-partner balance, surfaced only
+// for platform-billed orgs. Must never throw — a Redis outage or a missing
+// partner/cache entry all degrade to `credits: null`, never a 500.
+describe('getUsageSummary: credits (#4388 W04)', () => {
+  beforeEach(() => {
+    setupDbMocks(null); // organizations partnerId lookup resolves 'partner-1'
+  });
+
+  it('returns the cached credit balance when billed to the platform and a cache entry exists', async () => {
+    getLlmBillingSourceForOrgMock.mockResolvedValueOnce('platform');
+    redisGet.mockResolvedValueOnce(JSON.stringify({
+      remaining: 1240, includedBalance: 0, purchasedBalance: 1240, fetchedAt: '2026-09-01T00:00:00.000Z',
+    }));
+
+    const summary = await getUsageSummary('org1');
+
+    expect(summary.credits).toEqual({
+      remaining: 1240, includedBalance: 0, purchasedBalance: 1240, fetchedAt: '2026-09-01T00:00:00.000Z',
+    });
+    expect(redisGet).toHaveBeenCalledWith('ai:credits:partner-1');
+  });
+
+  it('is null for BYOK orgs (billedTo partner_key) — never even reads the cache', async () => {
+    getLlmBillingSourceForOrgMock.mockResolvedValueOnce('partner_key');
+
+    const summary = await getUsageSummary('org1');
+
+    expect(summary.credits).toBeNull();
+    expect(redisGet).not.toHaveBeenCalled();
+  });
+
+  it('is null when the org has no partner id', async () => {
+    getLlmBillingSourceForOrgMock.mockResolvedValueOnce('platform');
+    mockDb.select.mockImplementation((cols?: Record<string, unknown>) => {
+      const isPartnerLookup = !!cols && 'partnerId' in cols;
+      return {
+        from: vi.fn(() => ({
+          where: vi.fn(() => ({
+            limit: vi.fn().mockResolvedValue(isPartnerLookup ? [{ partnerId: null }] : []),
+          })),
+        })),
+      };
+    });
+
+    const summary = await getUsageSummary('org1');
+
+    expect(summary.credits).toBeNull();
+    expect(redisGet).not.toHaveBeenCalled();
+  });
+
+  it('is null when uncached', async () => {
+    getLlmBillingSourceForOrgMock.mockResolvedValueOnce('platform');
+    redisGet.mockResolvedValueOnce(null);
+
+    const summary = await getUsageSummary('org1');
+
+    expect(summary.credits).toBeNull();
+  });
+
+  it('never throws when the Redis read fails; degrades to null', async () => {
+    getLlmBillingSourceForOrgMock.mockResolvedValueOnce('platform');
+    redisGet.mockRejectedValueOnce(new Error('redis down'));
+
+    await expect(getUsageSummary('org1')).resolves.toMatchObject({ credits: null });
+  });
+
+  it('is null (not a throw) when the cached value is corrupt/not valid JSON', async () => {
+    getLlmBillingSourceForOrgMock.mockResolvedValueOnce('platform');
+    redisGet.mockResolvedValueOnce('not-json');
+
+    await expect(getUsageSummary('org1')).resolves.toMatchObject({ credits: null });
   });
 });
 

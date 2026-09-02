@@ -1333,7 +1333,8 @@
     "likeActionPlanPlusLiveScreenshotsBetweenStepsAndAPersist": "Come Piano d'azione, più screenshot live tra i passaggi e un pulsante Interrompi persistente.",
     "untitled": "Senza titolo",
     "billedToPartnerKey": "Addebitato sulla tua chiave: l'utilizzo dell'IA va sul tuo account Anthropic, non sui crediti IA di Breeze",
-    "billedToPartnerKeyViaEndpoint": "Addebitato sulla tua chiave tramite {{name}}: l'utilizzo dell'IA va sul tuo account Anthropic, non sui crediti IA di Breeze"
+    "billedToPartnerKeyViaEndpoint": "Addebitato sulla tua chiave tramite {{name}}: l'utilizzo dell'IA va sul tuo account Anthropic, non sui crediti IA di Breeze",
+    "creditsRemaining": "Crediti IA Breeze rimanenti"
   },
   "aiAgentsPage": {
     "schedules": {

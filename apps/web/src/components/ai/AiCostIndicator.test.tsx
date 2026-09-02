@@ -55,6 +55,59 @@ describe('AiCostIndicator polling behavior', () => {
   });
 });
 
+// #4388 W04: when /ai/usage carries a cached partner credit balance, append
+// it to the same cost-summary text the indicator already shows — no separate
+// UI slot, just a trailing " · N credits" clause.
+describe('AiCostIndicator credit balance (#4388 W04)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.clearAllMocks();
+    useAuthStoreMock.mockImplementation((selector: any) => selector({ isAuthenticated: true }));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('appends the credit balance to the cost summary when usage.credits is present', async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeJsonResponse({
+        daily: { totalCostCents: 0, messageCount: 0 },
+        monthly: { totalCostCents: 0, messageCount: 0 },
+        budget: null,
+        credits: { remaining: 1240, includedBalance: 0, purchasedBalance: 1240, fetchedAt: '2026-09-01T00:00:00.000Z' },
+      }),
+    );
+
+    const { container } = render(<AiCostIndicator />);
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain('1,240 credits');
+  });
+
+  it('does not append anything when usage.credits is null', async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeJsonResponse({
+        daily: { totalCostCents: 0, messageCount: 0 },
+        monthly: { totalCostCents: 0, messageCount: 0 },
+        budget: null,
+        credits: null,
+      }),
+    );
+
+    const { container } = render(<AiCostIndicator />);
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).not.toContain('credits');
+  });
+});
+
 describe('AiCostIndicator post-turn refresh (defect: stale header through a completed exchange)', () => {
   beforeEach(() => {
     vi.useFakeTimers();
