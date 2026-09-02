@@ -35,7 +35,9 @@ vi.mock('./contractEvents', () => ({ emitContractEvent: vi.fn().mockResolvedValu
 vi.mock('./invoiceService', () => ({
   createManualInvoice: vi.fn(), addContractLine: vi.fn(), deleteDraftInvoice: vi.fn(),
 }));
-vi.mock('./contractQuantities', () => ({ countContractDevices: vi.fn(), countContractSeats: vi.fn() }));
+vi.mock('./contractQuantities', () => ({
+  countContractDevices: vi.fn(), countContractSeats: vi.fn(), snapshotContractDevices: vi.fn(),
+}));
 // Multi-currency wave 3 (#3775): catalog contract lines price through the
 // resolver. Mock only resolvePrice; CatalogServiceError stays real so the
 // NO_PRICE_FOR_CURRENCY mapping is exercised against the genuine class.
@@ -56,7 +58,7 @@ import { db } from '../db';
 import { resolvePrice, CatalogServiceError } from './catalogService';
 import { resolvePriceFrom } from './catalogPricing';
 import { createManualInvoice, addContractLine } from './invoiceService';
-import { countContractDevices, countContractSeats } from './contractQuantities';
+import { countContractDevices, countContractSeats, snapshotContractDevices } from './contractQuantities';
 
 const resolvePriceMock = vi.mocked(resolvePrice);
 
@@ -538,6 +540,7 @@ describe('summarizeActiveContractMrrByOrg (#3779)', () => {
     vi.clearAllMocks();
     vi.mocked(countContractDevices).mockResolvedValue(0);
     vi.mocked(countContractSeats).mockResolvedValue(0);
+    vi.mocked(snapshotContractDevices).mockResolvedValue([]);
   });
 
   /** Every bound parameter value inside a Drizzle SQL/condition tree. */
@@ -665,15 +668,15 @@ describe('summarizeActiveContractMrrByOrg (#3779)', () => {
     expect(out.get('org1')).toEqual([{ currencyCode: 'USD', amount: '50.00' }]);
   });
 
-  it('batches device counts: one call per distinct (orgId, siteId) across all orgs', async () => {
-    vi.mocked(countContractDevices).mockResolvedValue(2);
+  it('batches device counts: one snapshot per org across all orgs', async () => {
+    vi.mocked(snapshotContractDevices).mockResolvedValue([{ role: 'workstation', siteId: null, n: 2 }]);
     queueResult(['org1', 'org2', 'org3'].map((orgId, i) => contract({ id: `c${i}`, orgId })));
     queueResult(['c0', 'c1', 'c2'].flatMap((contractId) => [
       line({ id: `${contractId}-a`, contractId, lineType: 'per_device', unitPrice: '10.00' }),
       line({ id: `${contractId}-b`, contractId, lineType: 'per_device', unitPrice: '5.00' }),
     ]));
     const out = await svc.summarizeActiveContractMrrByOrg(['org1', 'org2', 'org3']);
-    expect(vi.mocked(countContractDevices).mock.calls.length).toBe(3);
+    expect(vi.mocked(snapshotContractDevices).mock.calls.length).toBe(3); // one snapshot per org
     expect(out.get('org2')).toEqual([{ currencyCode: 'USD', amount: '30.00' }]);
   });
 
@@ -720,5 +723,48 @@ describe('summarizeActiveContractMrrByOrg (#3779)', () => {
     const out = await svc.summarizeActiveContractMrrByOrg(['org1']);
     expect(vi.mocked(resolvePriceFrom)).not.toHaveBeenCalled();
     expect(out.get('org1')).toEqual([{ currencyCode: 'USD', amount: '10.00' }]);
+  });
+});
+
+// #3205: device-counted lines resolve from ONE org snapshot; per_device_role
+// with no roles is an invariant violation, never an unfiltered count.
+describe('computeContractEstimate — per_device_role + uncoveredDevices (#3205)', () => {
+  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+
+  const contract = { id: 'c1', orgId: 'org1', partnerId: 'p1', status: 'draft', currencyCode: 'USD' };
+  const lineRow = (p: Record<string, unknown>) => ({
+    id: 'l1', contractId: 'c1', orgId: 'org1', description: 'x', unitPrice: '10.00', taxable: false,
+    catalogItemId: null, manualQuantity: null, siteId: null, deviceRoles: null, sortOrder: 0, ...p,
+  });
+  const snapshot = [
+    { role: 'workstation', siteId: null, n: 3 },
+    { role: 'server', siteId: null, n: 2 },
+    { role: 'unknown', siteId: null, n: 1 },
+  ];
+
+  it('bills the role set from the snapshot and reports uncovered devices by role', async () => {
+    vi.mocked(snapshotContractDevices).mockResolvedValue(snapshot);
+    queueResult([contract]); // getOwnedContractOr404
+    queueResult([lineRow({ lineType: 'per_device_role', deviceRoles: ['server'], unitPrice: '50.00' })]);
+    const out = await svc.computeContractEstimate('c1', actor);
+    expect(out.lines).toEqual([{ lineId: 'l1', lineType: 'per_device_role', quantity: 2, value: '100.00', live: true }]);
+    expect(out.uncoveredDevices).toEqual({ total: 4, byRole: { workstation: 3, unknown: 1 } });
+    expect(vi.mocked(snapshotContractDevices)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(countContractDevices)).not.toHaveBeenCalled();
+  });
+
+  it('uncoveredDevices is null when the contract has no device-counted line', async () => {
+    queueResult([contract]);
+    queueResult([lineRow({ lineType: 'flat' })]);
+    const out = await svc.computeContractEstimate('c1', actor);
+    expect(out.uncoveredDevices).toBeNull();
+    expect(vi.mocked(snapshotContractDevices)).not.toHaveBeenCalled();
+  });
+
+  it('throws INVALID_STATE for a per_device_role row with no roles instead of counting every device', async () => {
+    vi.mocked(snapshotContractDevices).mockResolvedValue(snapshot);
+    queueResult([contract]);
+    queueResult([lineRow({ lineType: 'per_device_role', deviceRoles: null })]);
+    await expect(svc.computeContractEstimate('c1', actor)).rejects.toMatchObject({ code: 'INVALID_STATE', status: 500 });
   });
 });

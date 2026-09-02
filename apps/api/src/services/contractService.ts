@@ -1,6 +1,6 @@
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../db';
-import { contracts, contractLines, contractBillingPeriods, organizations, catalogItemPrices, catalogItemOrgPricing } from '../db/schema';
+import { contracts, contractLines, contractBillingPeriods, organizations, sites, catalogItemPrices, catalogItemOrgPricing } from '../db/schema';
 import { ContractServiceError, actorCan, type ContractActor } from './contractTypes';
 import type { ContractLineInput, UpdateContractInput } from '@breeze/shared';
 import { isRepresentableInCurrency, minorUnitExponent, roundToCurrency, PERMISSION_GRANTS } from '@breeze/shared';
@@ -32,7 +32,8 @@ async function lockOrgStampingDefaults(tx: OrgLockExecutor, orgId: string): Prom
 import { createManualInvoice, addContractLine, deleteDraftInvoice } from './invoiceService';
 import { resolvePrice, CatalogServiceError } from './catalogService';
 import { resolvePriceFrom, isPriceGap } from './catalogPricing';
-import { countContractDevices, countContractSeats } from './contractQuantities';
+import { countContractSeats, snapshotContractDevices, type DeviceSnapshotRow } from './contractQuantities';
+import { isDeviceLine, quantityFor, uncoveredByRole, type UncoveredDevices } from './contractCoverage';
 import type { InvoiceActor } from './invoiceTypes';
 
 export type ContractActorT = ContractActor;
@@ -61,6 +62,14 @@ function assertEditable(c: { status: string }): void {
 }
 
 type DbExecutor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/** A line may only be scoped to a site of ITS OWN org. The composite FK
+ *  contract_lines_site_org_fk is the backstop; this is the 400 the operator sees. */
+async function assertSiteInOrg(tx: DbExecutor, siteId: string, orgId: string): Promise<void> {
+  const [row] = await tx.select({ id: sites.id }).from(sites)
+    .where(and(eq(sites.id, siteId), eq(sites.orgId, orgId))).limit(1);
+  if (!row) throw new ContractServiceError('Site does not belong to this organization', 400, 'SITE_NOT_IN_ORG');
+}
 
 /**
  * Lock-order anchor (#3774, mirrors invoiceService.lockDraftInvoice): SELECT
@@ -174,10 +183,27 @@ export async function listContracts(query: {
   return out;
 }
 
-// ---- recurring-value estimate (live per_device/per_seat resolution) --------
-type DeviceCache = Map<string, number>; // key `${orgId}|${siteId ?? 'all'}`
-type SeatCache = Map<string, number>;   // key orgId
+// ---- recurring-value estimate (live per_device/per_device_role/per_seat) ----
+// One device snapshot per org (#3205): every device-counted line on a contract
+// is computed from the same grouped query, so a device reclassified between two
+// per-line COUNTs can no longer be billed twice or skipped on the same run.
+type DeviceCache = Map<string, DeviceSnapshotRow[]>; // key orgId
+type SeatCache = Map<string, number>;                // key orgId
 type ContractLineRow = typeof contractLines.$inferSelect;
+
+async function orgSnapshot(orgId: string, dc: DeviceCache): Promise<DeviceSnapshotRow[]> {
+  let snap = dc.get(orgId);
+  if (!snap) { snap = await snapshotContractDevices(orgId); dc.set(orgId, snap); }
+  return snap;
+}
+
+function assertRoleLineHasRoles(line: Pick<ContractLineRow, 'id' | 'lineType' | 'deviceRoles'>): void {
+  if (line.lineType === 'per_device_role' && (!line.deviceRoles || line.deviceRoles.length === 0)) {
+    // Unreachable under contract_lines_device_roles_chk, but the row type allows
+    // null — and a role line must NEVER degrade into an every-device count.
+    throw new ContractServiceError(`Contract line ${line.id} is per_device_role but carries no device roles`, 500, 'INVALID_STATE');
+  }
+}
 
 async function resolveLineQty(
   orgId: string, line: ContractLineRow, dc: DeviceCache, sc: SeatCache,
@@ -185,36 +211,52 @@ async function resolveLineQty(
   switch (line.lineType) {
     case 'flat': return { quantity: 1, live: false };
     case 'manual': return { quantity: Number(line.manualQuantity ?? '0'), live: false };
-    case 'per_device': {
-      const key = `${orgId}|${line.siteId ?? 'all'}`;
-      if (!dc.has(key)) dc.set(key, await countContractDevices(orgId, line.siteId));
-      return { quantity: dc.get(key)!, live: true };
+    case 'per_device':
+    case 'per_device_role': {
+      assertRoleLineHasRoles(line);
+      return { quantity: quantityFor(await orgSnapshot(orgId, dc), line), live: true };
     }
     case 'per_seat': {
       if (!sc.has(orgId)) sc.set(orgId, await countContractSeats(orgId));
       return { quantity: sc.get(orgId)!, live: true };
     }
-    default: return { quantity: 0, live: false };
+    default: {
+      // Exhaustiveness: a new line type is a compile error here, not a silent qty 0.
+      const _exhaustive: never = line.lineType;
+      throw new ContractServiceError(`Unknown contract line type: ${String(line.lineType)}`, 500, 'INVALID_STATE');
+    }
   }
+}
+
+export interface ContractEstimate {
+  currencyCode: string;
+  periodTotal: string;
+  lines: Array<{ lineId: string; lineType: ContractLineRow['lineType']; quantity: number; value: string; live: boolean }>;
+  /** Devices no device-counted line bills (#3205). null when the contract has
+   *  no per_device / per_device_role line, so the UI can tell "n/a" from "0". */
+  uncoveredDevices: UncoveredDevices | null;
 }
 
 /** Per-line resolved quantities + values + period total for one contract, using
  *  live device/seat counts as of now. Powers the editor sidebar and detail. */
-export async function computeContractEstimate(contractId: string, actor: ContractActor) {
+export async function computeContractEstimate(contractId: string, actor: ContractActor): Promise<ContractEstimate> {
   const contract = await getOwnedContractOr404(contractId, actor);
   const lines = await db.select().from(contractLines)
     .where(eq(contractLines.contractId, contractId)).orderBy(contractLines.sortOrder);
   const dc: DeviceCache = new Map();
   const sc: SeatCache = new Map();
   let total = 0;
-  const out = [];
+  const out: ContractEstimate['lines'] = [];
   for (const l of lines) {
     const { quantity, live } = await resolveLineQty(contract.orgId, l, dc, sc);
     const value = Number(l.unitPrice) * quantity;
     total += value;
     out.push({ lineId: l.id, lineType: l.lineType, quantity, value: value.toFixed(2), live });
   }
-  return { currencyCode: contract.currencyCode, periodTotal: total.toFixed(2), lines: out };
+  const uncoveredDevices = lines.some(isDeviceLine)
+    ? uncoveredByRole(await orgSnapshot(contract.orgId, dc), lines)
+    : null;
+  return { currencyCode: contract.currencyCode, periodTotal: total.toFixed(2), lines: out, uncoveredDevices };
 }
 
 // ---- per-currency MRR rollup (multi-currency wave 7, #3779) ----------------
@@ -833,11 +875,17 @@ export async function addContractLineToContract(contractId: string, input: Contr
       assertRepresentable(unitPrice, c.currencyCode);
       taxable = input.taxable;
     }
+    const scopesSite = input.lineType === 'per_device' || input.lineType === 'per_device_role';
+    const siteId = scopesSite ? (input.siteId ?? null) : null;
+    if (siteId) await assertSiteInOrg(tx, siteId, c.orgId);
     const [row] = await tx.insert(contractLines).values({
       contractId, orgId: c.orgId, lineType: input.lineType, description: input.description,
       catalogItemId: input.catalogItemId ?? null, unitPrice,
       manualQuantity: input.lineType === 'manual' ? (input.manualQuantity ?? '0') : null,
-      siteId: input.lineType === 'per_device' ? (input.siteId ?? null) : null,
+      siteId,
+      // #3205: roles only on per_device_role (CHECK-enforced); the validator
+      // already guarantees a non-empty, duplicate-free, billable set.
+      deviceRoles: input.lineType === 'per_device_role' ? (input.deviceRoles ?? null) : null,
       taxable, sortOrder: input.sortOrder ?? 0
     }).returning();
     return row!;
@@ -1043,6 +1091,7 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
   //    currency when catalogItemId is set (falling back to this stamped snapshot
   //    on a price-book gap, reported below), or uses them when it is null.
   const priceBookGaps: PriceBookGap[] = [];
+  const dc: DeviceCache = new Map();
   for (const l of lines) {
     let quantity: string;
     switch (l.lineType) {
@@ -1053,7 +1102,9 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
         quantity = l.manualQuantity ?? '0';
         break;
       case 'per_device':
-        quantity = String(await countContractDevices(c.orgId, l.siteId));
+      case 'per_device_role':
+        assertRoleLineHasRoles(l);
+        quantity = String(quantityFor(await orgSnapshot(c.orgId, dc), l));
         break;
       case 'per_seat':
         quantity = String(await countContractSeats(c.orgId));
@@ -1158,6 +1209,9 @@ export async function createContractWithLinesDetailed(
     // Same guard as addContractLineToContract — the quote→contract conversion
     // path must not be a way around it (W6-G3-1).
     assertRepresentable(l.unitPrice, spec.currencyCode);
+    const scopesSite = l.lineType === 'per_device' || l.lineType === 'per_device_role';
+    const siteId = scopesSite ? (l.siteId ?? null) : null;
+    if (siteId) await assertSiteInOrg(db, siteId, spec.orgId);
     const [insertedLine] = await db.insert(contractLines).values({
       contractId: contract.id,
       orgId: spec.orgId,
@@ -1166,7 +1220,8 @@ export async function createContractWithLinesDetailed(
       catalogItemId: l.catalogItemId ?? null,
       unitPrice: l.unitPrice,
       manualQuantity: l.lineType === 'manual' ? (l.manualQuantity ?? '0') : null,
-      siteId: l.lineType === 'per_device' ? (l.siteId ?? null) : null,
+      siteId,
+      deviceRoles: l.lineType === 'per_device_role' ? (l.deviceRoles ?? null) : null,
       taxable: l.taxable,
       sortOrder: l.sortOrder ?? i,
     }).returning({ id: contractLines.id });
