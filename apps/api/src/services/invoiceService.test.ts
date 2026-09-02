@@ -69,6 +69,13 @@ vi.mock('../jobs/accountingSyncWorker', () => ({
   enqueueAccountingInvoiceVoid: vi.fn().mockResolvedValue(undefined),
 }));
 
+// The QBO payment-mapping cleanup voidPayment now performs inside its own
+// transaction (Phase D, Task 3). Mocked so these tests assert the DELEGATION
+// (handle + payment id), not a second copy of the applier's own suite.
+vi.mock('./accounting/accountingPaymentPull', () => ({
+  clearPaymentMappingForInvoicePayment: vi.fn().mockResolvedValue(0),
+}));
+
 import { SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { Mock } from 'vitest';
@@ -78,6 +85,9 @@ import { InvoiceServiceError } from './invoiceTypes';
 import { resolvePrice, computeBundleEconomics, CatalogServiceError } from './catalogService';
 import { mergeBillingContact } from './contacts/compat';
 import { enqueueAccountingInvoicePush, enqueueAccountingInvoiceVoid } from '../jobs/accountingSyncWorker';
+import { clearPaymentMappingForInvoicePayment } from './accounting/accountingPaymentPull';
+
+const clearPaymentMappingMock = vi.mocked(clearPaymentMappingForInvoicePayment);
 
 const enqueueAccountingInvoicePushMock = vi.mocked(enqueueAccountingInvoicePush);
 const enqueueAccountingInvoiceVoidMock = vi.mocked(enqueueAccountingInvoiceVoid);
@@ -1618,5 +1628,111 @@ describe('runOverdueSweep tenant scope', () => {
     const { sql } = dialect.sqlToQuery(whereArg);
     expect(sql).toContain('"invoices"."due_date" <');
     expect(sql).toContain('"invoices"."balance" > 0');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase D (QuickBooks payment pull-back, Task 3): the payment-mapping cleanup
+// and the widened listPayments source tag.
+// ---------------------------------------------------------------------------
+
+describe('voidPayment clears the QuickBooks payment mapping', () => {
+  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+
+  const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+
+  /** Queues the reads voidPayment issues, in order. */
+  function queueVoidPaymentReads(payment: Record<string, unknown>) {
+    queueResult([{ invoiceId: 'i1' }]);                                                  // unlocked discovery read
+    queueResult([{ id: 'i1', status: 'partially_paid', orgId: 'org1', partnerId: 'p1' }]); // invoice FOR UPDATE
+    queueResult([payment]);                                                              // payment re-read under lock
+    queueResult([]);                                                                     // delete invoice_payments
+    queueResult([{ id: 'i1', status: 'partially_paid', orgId: 'org1', partnerId: 'p1', total: '100.00', invoiceNumber: 'INV-1', dueDate: null, paidAt: null, markedOverdueAt: null }]); // recompute: getOwnedInvoiceOr404
+    queueResult([]);                                                                     // recompute: payment sum
+    queueResult([]);                                                                     // recompute: update invoice
+    queueResult([{ id: 'i1', status: 'partially_paid', orgId: 'org1', partnerId: 'p1' }]); // final getOwnedInvoiceOr404
+  }
+
+  it('deletes the payment mapping row with the SAME transaction handle, before the payment row', async () => {
+    clearPaymentMappingMock.mockResolvedValueOnce(1);
+    queueVoidPaymentReads({ id: 'pay1', invoiceId: 'i1', orgId: 'org1', amount: '40.00', method: 'check', reference: '10441', recordedBy: null });
+
+    await svc.voidPayment('pay1', actor);
+
+    // The mocked db chain IS the tx handle the transaction callback receives, so
+    // asserting on it proves the cleanup runs inside the caller's transaction
+    // rather than escaping to a fresh connection.
+    expect(clearPaymentMappingMock).toHaveBeenCalledTimes(1);
+    expect(clearPaymentMappingMock).toHaveBeenCalledWith(db, 'pay1');
+    // Mapping first: breeze_entity_id is polymorphic with no FK to cascade, so
+    // deleting the payment row first would strand the mapping.
+    const clearOrder = clearPaymentMappingMock.mock.invocationCallOrder[0]!;
+    const deleteOrder = (db as unknown as { delete: Mock }).delete.mock.invocationCallOrder[0]!;
+    expect(clearOrder).toBeLessThan(deleteOrder);
+  });
+
+  it('does not throw when a manual payment has no mapping row to remove', async () => {
+    clearPaymentMappingMock.mockResolvedValueOnce(0);
+    queueVoidPaymentReads({ id: 'pay1', invoiceId: 'i1', orgId: 'org1', amount: '40.00', method: 'cash', reference: null, recordedBy: 'u1' });
+
+    const res = await svc.voidPayment('pay1', actor);
+
+    expect(res.audit).toMatchObject({ paymentId: 'pay1', amount: '40.00', method: 'cash' });
+    await expect(clearPaymentMappingMock.mock.results[0]!.value).resolves.toBe(0);
+  });
+});
+
+describe('listPayments source tagging', () => {
+  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+
+  const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+
+  /** invoice → payment rows → stripe links → quickbooks mapping rows. */
+  function queueListPayments(
+    payments: Array<Record<string, unknown>>,
+    stripeLinked: string[],
+    qboLinked: string[],
+  ) {
+    queueResult([{ id: 'i1', status: 'partially_paid', orgId: 'org1', partnerId: 'p1' }]);
+    queueResult(payments);
+    queueResult(stripeLinked.map((id) => ({ invoicePaymentId: id })));
+    queueResult(qboLinked.map((id) => ({ breezeEntityId: id })));
+  }
+
+  it('tags a payment carrying a QuickBooks payment mapping as quickbooks', async () => {
+    queueListPayments([{ id: 'pay-qbo', method: 'check' }], [], ['pay-qbo']);
+
+    const rows = await svc.listPayments('i1', actor);
+
+    expect(rows).toEqual([expect.objectContaining({ id: 'pay-qbo', source: 'quickbooks' })]);
+  });
+
+  it('tags a succeeded Stripe mapping as stripe and everything else as manual', async () => {
+    queueListPayments(
+      [{ id: 'pay-stripe', method: 'card' }, { id: 'pay-manual', method: 'cash' }],
+      ['pay-stripe'],
+      [],
+    );
+
+    const rows = await svc.listPayments('i1', actor);
+
+    expect(rows.map((r) => r.source)).toEqual(['stripe', 'manual']);
+  });
+
+  it('reports stripe when a row somehow carries BOTH links (stripe wins)', async () => {
+    // Structurally impossible today — asserted so the precedence is a decision
+    // in the code rather than an accident of Set-lookup order.
+    queueListPayments([{ id: 'pay-both', method: 'card' }], ['pay-both'], ['pay-both']);
+
+    const rows = await svc.listPayments('i1', actor);
+
+    expect(rows[0]!.source).toBe('stripe');
+  });
+
+  it('does not query the accounting mappings at all when the invoice has no payments', async () => {
+    queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1' }]);
+    queueResult([]);
+
+    await expect(svc.listPayments('i1', actor)).resolves.toEqual([]);
   });
 });
