@@ -308,5 +308,13 @@ describe('AI agent graduation worker — daily evaluation sweep (P2-5 Task A2-3,
 
     expect(listTrackedTuplesMock).toHaveBeenCalledTimes(1);
     expect(result).toEqual({ tuples: 1, changed: 1, durationMs: expect.any(Number) });
+    // Load-bearing: evaluate must run OUTSIDE any outer system DB context —
+    // listTrackedTuples/refreshGraduationRow each open/join their own system
+    // context per call inside graduationService.ts. Wrapping the whole sweep
+    // in withSystemDbAccessContext (the shape the prune-evidence case above
+    // uses) would pin one pooled connection, plus every per-tuple
+    // pg_advisory_xact_lock, for the entire nightly pass across every tuple
+    // listTrackedTuples() returns.
+    expect(withSystemDbAccessContextMock).not.toHaveBeenCalled();
   });
 });
