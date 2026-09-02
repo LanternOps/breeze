@@ -29,8 +29,13 @@
 //         (24h backoff) instead of believing an unconfigured region processed the event
 //   401 — missing or bad intuit-signature -> does NOT retry (permanent)
 //   400 — body is not JSON, or has no eventNotifications array -> does NOT retry
-//   503 — every queue add for the request failed, OR the realm lookup itself
-//         threw (never surface a bare 500 to an external caller) -> retries
+//   503 — ANY queue add for the request failed, OR the realm lookup itself
+//         threw (never surface a bare 500 to an external caller) -> retries.
+//         Deliberately ANY, not "every" (final-review finding F): a partial
+//         failure used to answer 202, and Intuit never retried — so the realm
+//         whose enqueue was refused waited up to 15 minutes for the sweep. The
+//         jobId is deterministic per connection, so re-delivering the whole
+//         batch is a no-op for the realms that DID enqueue.
 //   202 — accepted, including "all realms unknown" or "some realms dropped
 //         past the cap" (nothing more we can do with those) -> done
 import { Hono } from 'hono';
@@ -62,9 +67,13 @@ const RATE_WINDOW_SECONDS = 60;
 // 15-minute reconcile sweep is the backstop for anything a capped delivery
 // can't route this time.
 const MAX_REALMS_PER_PAYLOAD = 50;
-// Within the cap, look up connections CHUNK_SIZE at a time rather than firing
-// all of them at once — bounds how many concurrent lookups (and thus how much
-// pool pressure) one delivery can create while the system context is held.
+// Within the cap, look up connections CHUNK_SIZE at a time rather than in one
+// unbounded pass — bounds how much work one delivery can queue up while the
+// system context is held. Lookups WITHIN a chunk run sequentially: they all
+// ride the SAME system DB context, i.e. the same Postgres transaction, and a
+// single rejected lookup aborts it — every sibling issued concurrently on that
+// handle would then fail with 25P02 and the whole delivery would 503 over one
+// transient error (final-review finding F / Opus #6).
 const REALM_LOOKUP_CHUNK_SIZE = 10;
 
 // Sentry throttle for the missing-verifier-token capture below. The route is
@@ -120,10 +129,9 @@ async function lookupConnectionsChunked(realmIds: readonly string[]): Promise<Ar
   const results: Array<AccountingConnection | null> = [];
   for (let i = 0; i < realmIds.length; i += REALM_LOOKUP_CHUNK_SIZE) {
     const chunk = realmIds.slice(i, i + REALM_LOOKUP_CHUNK_SIZE);
-    const chunkResults = await Promise.all(
-      chunk.map((realmId) => findConnectionByRealmFingerprint(db, 'quickbooks', hmacFingerprint(realmId))),
-    );
-    results.push(...chunkResults);
+    for (const realmId of chunk) {
+      results.push(await findConnectionByRealmFingerprint(db, 'quickbooks', hmacFingerprint(realmId)));
+    }
   }
   return results;
 }
@@ -237,7 +245,10 @@ quickbooksWebhookRoutes.post('/quickbooks', async (c) => {
     entityCounts,
   });
 
-  if (enqueued === 0 && failed > 0) {
+  // ANY failed enqueue -> 503 (finding F). A 202 here would tell Intuit the
+  // whole delivery was handled and it would never retry, leaving the refused
+  // realm to wait for the next 15-minute sweep.
+  if (failed > 0) {
     return c.json({ error: 'Service Unavailable' }, 503);
   }
   return c.json({ accepted: true }, 202);

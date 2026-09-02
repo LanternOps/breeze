@@ -213,7 +213,11 @@ describe('POST /quickbooks (Intuit CDC webhook)', () => {
     infoSpy.mockRestore();
   });
 
-  it('looks up connections in chunks of at most 10 concurrent lookups', async () => {
+  it('issues the realm lookups ONE AT A TIME on the shared transaction handle', async () => {
+    // Finding F (Opus #6). The lookups share ONE system DB context, i.e. ONE
+    // Postgres transaction. Firing them concurrently means a single rejected
+    // lookup aborts that transaction and 25P02s every other lookup riding on
+    // it, turning one transient error into a whole delivery lost.
     let inFlight = 0;
     let maxInFlight = 0;
     findConnectionByRealmFingerprint.mockImplementation(async () => {
@@ -230,8 +234,42 @@ describe('POST /quickbooks (Intuit CDC webhook)', () => {
     const res = await post(quickbooksWebhookRoutes, { sig: SIG, body });
     expect(res.status).toBe(202);
     expect(findConnectionByRealmFingerprint).toHaveBeenCalledTimes(25);
-    expect(maxInFlight).toBeLessThanOrEqual(10);
-    expect(maxInFlight).toBeGreaterThan(1); // proves lookups within a chunk really run concurrently
+    expect(maxInFlight).toBe(1);
+  });
+
+  it('503s when only SOME enqueues failed — Intuit must retry the realm we dropped (finding F)', async () => {
+    findConnectionByRealmFingerprint.mockImplementation(async (_db: unknown, _p: unknown, fp: string) => ({
+      id: `c-${fp.slice(-4)}`, partnerId: 'p1',
+    }));
+    let call = 0;
+    enqueueAccountingReconcile.mockImplementation(async () => (call++ === 0));
+
+    const body = JSON.stringify({
+      eventNotifications: [
+        { realmId: 'realm-ok', dataChangeEvent: { entities: [] } },
+        { realmId: 'realm-refused', dataChangeEvent: { entities: [] } },
+      ],
+    });
+    const res = await post(quickbooksWebhookRoutes, { sig: SIG, body });
+
+    // The jobId is deterministic per connection, so re-delivering the whole
+    // batch is a no-op for the realm that DID enqueue.
+    expect(res.status).toBe(503);
+    expect(enqueueAccountingReconcile).toHaveBeenCalledTimes(2);
+  });
+
+  it('still 202s when every enqueue succeeded and only unknown realms were dropped', async () => {
+    findConnectionByRealmFingerprint
+      .mockResolvedValueOnce({ id: 'c1', partnerId: 'p1' })
+      .mockResolvedValueOnce(null);
+    const body = JSON.stringify({
+      eventNotifications: [
+        { realmId: 'realm-known', dataChangeEvent: { entities: [] } },
+        { realmId: 'realm-other-region', dataChangeEvent: { entities: [] } },
+      ],
+    });
+    const res = await post(quickbooksWebhookRoutes, { sig: SIG, body });
+    expect(res.status).toBe(202);
   });
 
   it('never logs an entity id via console.log or console.info', async () => {
