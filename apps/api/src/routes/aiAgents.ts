@@ -3,6 +3,7 @@ import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { and, asc, desc, eq, inArray, isNull, sql, type SQL } from 'drizzle-orm';
 import {
+  AI_AGENT_GRADUATION_BY_ORG_LIMIT,
   AI_AGENT_IMPACT_REBUILD_DAYS,
   AI_AGENT_IMPACT_REBUILD_MAX_ORGS,
   AI_AGENT_KINDS,
@@ -296,6 +297,15 @@ aiAgentsRoutes.get('/policy-decidable-keys', scopes, requireAiRead, async (c) =>
 });
 
 /**
+ * Orgs per system-context transaction in the `byOrg` fan-out of
+ * `GET /graduation` below. Exported for the route test, which pins the bound
+ * (one context per batch) rather than the incidental call count. 25 x ~7
+ * round trips is a short-lived snapshot; the cap on the SIZE of that fan-out
+ * is `AI_AGENT_GRADUATION_BY_ORG_LIMIT`.
+ */
+export const AI_AGENT_GRADUATION_BY_ORG_BATCH = 25;
+
+/**
  * P2-5 (#4192, Task A2-8) — the graduation READ route: the panel (web Task
  * 20) and the partner-wide agent page both read through here. Registered
  * beside GET /policy-decidable-keys, ahead of GET /:id, for the same reason
@@ -318,14 +328,18 @@ aiAgentsRoutes.get('/policy-decidable-keys', scopes, requireAiRead, async (c) =>
  *
  * Without `orgId` (partner scope only — an org-scoped caller has no partner
  * axis to fan out over, so it 400s the same way `GET /impact` does for a
- * system-scoped caller with no orgId): every org this caller can access is
- * resolved the same way and grouped into `byOrg`. An org with no active
- * agent for `kind` is omitted rather than reported empty. The top-level
- * `promoteThreshold` is informational only (the per-row `state`/
+ * system-scoped caller with no orgId): the first
+ * `AI_AGENT_GRADUATION_BY_ORG_LIMIT` orgs this caller can access, in name
+ * order, are resolved the same way and grouped into `byOrg`, in batches of
+ * `AI_AGENT_GRADUATION_BY_ORG_BATCH` (see the loop's comment for why BOTH
+ * bounds exist). A partner over the cap gets `byOrgTruncated: true`. An org
+ * with no active agent for `kind` is omitted rather than reported empty. The
+ * top-level `promoteThreshold` is informational only (the per-row `state`/
  * `blockedReason` already apply each org's own merged threshold) — it is the
  * first resolved org's merged value, or the shared default when no org under
  * this partner has an active agent for `kind` yet.
  */
+
 aiAgentsRoutes.get(
   '/graduation',
   scopes,
@@ -376,39 +390,69 @@ aiAgentsRoutes.get(
       return c.json({ error: 'org_id_required', message: 'orgId is required for this scope' }, 400);
     }
 
+    // `+ 1` is a probe row, not slack: it tells the route there IS more
+    // without a second COUNT, and is dropped before any work is done for it.
     const orgRows = await db
       .select({ id: organizations.id, name: organizations.name })
       .from(organizations)
       .where(and(auth.orgCondition(organizations.id), isNull(organizations.deletedAt)))
-      .orderBy(asc(organizations.name));
+      .orderBy(asc(organizations.name))
+      .limit(AI_AGENT_GRADUATION_BY_ORG_LIMIT + 1);
+
+    const byOrgTruncated = orgRows.length > AI_AGENT_GRADUATION_BY_ORG_LIMIT;
+    const fanoutOrgs = byOrgTruncated
+      ? orgRows.slice(0, AI_AGENT_GRADUATION_BY_ORG_LIMIT)
+      : orgRows;
 
     const byOrg: AiAgentGraduationByOrgDto['byOrg'] = [];
     let promoteThreshold: number | null = null;
-    // Review round 1 (Task 18): the loop used to let each org open its own
-    // resolve + two concurrent reads, i.e. 3 pooled transactions per org on
-    // top of the request's own held connection. resolveEffectiveAgentSystem
-    // and graduationService's inSystemDbContext both skip re-opening when
-    // getCurrentDbAccessContext() already reads 'system' (effectivePolicy.ts,
-    // graduationService.ts), so opening ONE system context around the whole
-    // loop collapses 3N transactions to 1 — the org listing above still runs
-    // in the request's own context so auth.orgCondition's tenancy pin binds.
-    await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
-      for (const org of orgRows) {
-        const resolved = await resolveEffectiveAgentSystem(org.id, kind);
-        if (!resolved) continue;
-        if (promoteThreshold === null) promoteThreshold = resolved.effective.limits.promoteThreshold;
-        const [rows, actOpReliability] = await Promise.all([
-          loadGraduationRows(org.id, resolved.agentId),
-          loadActOpReliability(org.id, resolved.agentId),
-        ]);
-        byOrg.push({ orgId: org.id, orgName: org.name, agentId: resolved.agentId, rows, actOpReliability });
-      }
-    }, 'aiAgents.graduation.byOrg'));
+    // Two separate bounds, because either alone leaves the pool-starvation
+    // shape this router has already been bitten by.
+    //
+    // COUNT (`AI_AGENT_GRADUATION_BY_ORG_LIMIT`, above): every org here costs
+    // a policy resolve plus two ledger reads, so an uncapped partner-wide
+    // read is an unbounded per-request workload — the same reason `GET
+    // /impact` refuses a fan-out outright and `POST /impact/rebuild` carries
+    // `AI_AGENT_IMPACT_REBUILD_MAX_ORGS`. Over the cap the panel reports
+    // `byOrgTruncated` and reaches the rest through `?orgId=`, which is never
+    // capped.
+    //
+    // TRANSACTION LIFETIME (`AI_AGENT_GRADUATION_BY_ORG_BATCH`, below):
+    // review round 1 collapsed 3N pooled transactions into one by opening a
+    // single system context around the loop — resolveEffectiveAgentSystem and
+    // graduationService's inSystemDbContext both skip re-opening when
+    // getCurrentDbAccessContext() already reads 'system'. That fixed the
+    // transaction COUNT and created a new problem: one snapshot held open for
+    // N x ~7 sequential round trips, on a second pooled connection, while the
+    // request's own auth transaction holds the first. Batching keeps the
+    // collapse (one context per 25 orgs, not per org) while bounding how long
+    // any single connection is pinned. Batches are independent read-only
+    // snapshots, which is correct here — the listing itself is already read
+    // outside them.
+    //
+    // The org listing above deliberately stays in the REQUEST's own context
+    // so `auth.orgCondition`'s tenancy pin binds.
+    for (let i = 0; i < fanoutOrgs.length; i += AI_AGENT_GRADUATION_BY_ORG_BATCH) {
+      const batch = fanoutOrgs.slice(i, i + AI_AGENT_GRADUATION_BY_ORG_BATCH);
+      await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+        for (const org of batch) {
+          const resolved = await resolveEffectiveAgentSystem(org.id, kind);
+          if (!resolved) continue;
+          if (promoteThreshold === null) promoteThreshold = resolved.effective.limits.promoteThreshold;
+          const [rows, actOpReliability] = await Promise.all([
+            loadGraduationRows(org.id, resolved.agentId),
+            loadActOpReliability(org.id, resolved.agentId),
+          ]);
+          byOrg.push({ orgId: org.id, orgName: org.name, agentId: resolved.agentId, rows, actOpReliability });
+        }
+      }, 'aiAgents.graduation.byOrg'));
+    }
 
     const dto: AiAgentGraduationByOrgDto = {
       version: 1,
       promoteThreshold: promoteThreshold ?? AI_AGENT_LIMIT_DEFAULTS.promoteThreshold,
       policyDecideEnabled: flagEnabled,
+      byOrgTruncated,
       byOrg,
     };
     return c.json(dto);
