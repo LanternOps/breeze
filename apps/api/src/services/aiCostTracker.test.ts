@@ -84,11 +84,14 @@ vi.mock('../db/schema', () => ({
 
 vi.mock('./redis', () => ({ getRedis: vi.fn(() => ({})) }));
 vi.mock('./rate-limit', () => ({ rateLimiter: vi.fn() }));
-// Default: an enabled, unlimited effective budget with the default alert
-// ladder, same shape `getEffectiveAiBudget` itself defaults to. Individual
-// tests override via `vi.mocked(getEffectiveAiBudget).mockResolvedValue(...)`.
-vi.mock('./effectiveSettings', () => ({
-  getEffectiveAiBudget: vi.fn().mockResolvedValue({
+
+// Single source of truth for an enabled, unlimited effective budget with the
+// default alert ladder, same shape `getEffectiveAiBudget` itself defaults
+// to. Used both as the module mock's default resolved value below and by
+// the local `effectiveBudget()` override helper in the #4388 getUsageSummary
+// describe block, so the 8 fields aren't typed out twice.
+const { DEFAULT_EFFECTIVE_BUDGET } = vi.hoisted(() => ({
+  DEFAULT_EFFECTIVE_BUDGET: {
     enabled: true,
     monthlyBudgetCents: null,
     dailyBudgetCents: null,
@@ -97,7 +100,13 @@ vi.mock('./effectiveSettings', () => ({
     messagesPerHourPerOrg: 200,
     approvalMode: 'per_step',
     alertThresholdPercents: [50, 80, 95],
-  }),
+  },
+}));
+
+// Default: the fixture above. Individual tests override via
+// `vi.mocked(getEffectiveAiBudget).mockResolvedValue(...)`.
+vi.mock('./effectiveSettings', () => ({
+  getEffectiveAiBudget: vi.fn().mockResolvedValue(DEFAULT_EFFECTIVE_BUDGET),
 }));
 vi.mock('./sentry', () => ({ captureException: vi.fn(), captureMessage: vi.fn() }));
 vi.mock('./aiBudgetAlerts', () => ({ evaluateAiBudgetThresholds: vi.fn().mockResolvedValue([]) }));
@@ -1140,14 +1149,7 @@ describe('getUsageSummary catalog endpoint provenance (#3922 W4)', () => {
 
 describe('getUsageSummary: effective budget + alert ladder (#4388)', () => {
   const effectiveBudget = (over: Record<string, unknown> = {}) => ({
-    enabled: true,
-    monthlyBudgetCents: null,
-    dailyBudgetCents: null,
-    maxTurnsPerSession: 50,
-    messagesPerMinutePerUser: 20,
-    messagesPerHourPerOrg: 200,
-    approvalMode: 'per_step',
-    alertThresholdPercents: [50, 80, 95],
+    ...DEFAULT_EFFECTIVE_BUDGET,
     ...over,
   }) as Awaited<ReturnType<typeof getEffectiveAiBudget>>;
 
@@ -1179,7 +1181,9 @@ describe('getUsageSummary: effective budget + alert ladder (#4388)', () => {
     expect(summary.budget?.monthlyBudgetCents).toBe(5000);
     expect(summary.budget?.alertThresholdPercents).toEqual([50, 80, 95]);
     // #2190: the budget read must be self-contexted like checkBudgetDetailed.
-    expect(vi.mocked(withSystemDbAccessContext)).toHaveBeenCalled();
+    // getUsageSummary only wraps that one read (unlike checkBudget, which
+    // also self-contexts a usage read), so it's called exactly once here.
+    expect(vi.mocked(withSystemDbAccessContext)).toHaveBeenCalledTimes(1);
   });
 
   it('lists rungs fired in the current periods', async () => {
