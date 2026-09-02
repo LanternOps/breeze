@@ -58,6 +58,21 @@ vi.mock('../services/tokenRevocation', () => ({
   isTokenIssuedBeforePasswordChange: vi.fn(() => false),
 }));
 
+// RMM-QA-176: grant storage is Redis-backed, and this suite has no Redis — a
+// real validate would fail closed (403) for the ADMISSION case too, which
+// would make the denial cases unfalsifiable. PARTIAL on purpose:
+// maintenanceResourceDigest stays REAL, so the route still computes the
+// production canonicalization. The gates under test (authMiddleware,
+// requireInteractiveSession, requireMfa) are all untouched.
+vi.mock('../services/mfaStepUpGrant', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/mfaStepUpGrant')>();
+  return {
+    ...actual,
+    validateStepUpGrant: vi.fn(async () => true),
+    consumeStepUpGrant: vi.fn(async () => true),
+  };
+});
+
 vi.mock('../db', () => ({
   db: {
     select: vi.fn(() => ({
@@ -78,7 +93,12 @@ vi.mock('../db', () => ({
           returning: vi.fn(() => Promise.resolve([]))
         }))
       }))
-    }))
+    })),
+    // RMM-QA-176: the maintenance route now writes through db.transaction
+    // (services/deviceMaintenanceLease). Without this key the route 500s with
+    // "db.transaction is not a function" — which is how the pre-Task-9 RED
+    // presented for the exit case.
+    transaction: vi.fn()
   },
   withDbAccessContext: vi.fn(async (_ctx: any, fn: any) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: any) => fn()),
@@ -236,55 +256,181 @@ describe('device endpoints (authenticated)', () => {
   });
 
   describe('POST /devices/:id/maintenance', () => {
-    it('should enable maintenance mode', async () => {
-      const device = createTestDevice({ id: '11111111-2222-4333-8444-555555555555', status: 'online' });
-      const updated = { ...device, status: 'maintenance' };
+    // This suite mints a REAL token (helpers.ts createTestToken) and runs the
+    // REAL authMiddleware, so `mfa` here is an actual JWT claim, not a mocked
+    // context field. That is what makes it a different proof from
+    // routes/devices/commands.test.ts and worth keeping.
+    //
+    // RMM-QA-176: `should enable maintenance mode` used to assert a 200 for the
+    // DEFAULT token, whose mfa claim is false (helpers.ts:93). A passing
+    // assertion that a non-assured session may suppress monitoring IS the
+    // finding, written down. It is replaced by the denial below, and the 200 is
+    // now claimed only by an assured session presenting a grant.
+    const DEVICE_ID = '11111111-2222-4333-8444-555555555555';
 
-      mockUserLookup();
-      mockDeviceLookup(device);
-      vi.mocked(db.update).mockReturnValueOnce({
-        set: vi.fn().mockReturnValue({
+    /**
+     * getUserEpochs (services/authEpochs) reads users.auth_epoch/mfa_epoch
+     * through db.select — the THIRD select of an entry request (authMiddleware's
+     * user lookup, then the route's device lookup, then this). Queue it or the
+     * route answers 503 before it ever reaches the step-up check.
+     */
+    function mockEpochsLookup() {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
-            returning: vi.fn().mockResolvedValue([updated])
+            limit: vi.fn().mockResolvedValue([{ authEpoch: 1, mfaEpoch: 1 }])
           })
         })
       } as any);
+    }
 
+    /**
+     * Drives services/deviceMaintenanceLease against a recording stub tx:
+     * locked select, then exactly one UPDATE ... RETURNING. Returns the array of
+     * value-sets the route actually wrote, so an admission case can assert the
+     * write LANDED and what it contained — a 200 on its own would not.
+     */
+    function stubLeaseTransaction(device: Record<string, unknown>) {
+      const written: Array<Record<string, unknown>> = [];
+      vi.mocked(db.transaction).mockImplementationOnce(async (fn: any) => fn({
+        select: () => ({ from: () => ({ where: () => ({ limit: () => ({ for: async () => [device] }) }) }) }),
+        update: () => ({
+          set: (values: Record<string, unknown>) => {
+            written.push(values);
+            return { where: () => ({ returning: async () => [{ ...device, ...values }] }) };
+          },
+        }),
+      }));
+      return written;
+    }
+
+    it('denies entry from a non-assured session and writes nothing (was: a 200 — the finding)', async () => {
+      const device = createTestDevice({ id: DEVICE_ID, status: 'online' });
+      mockUserLookup();
+      mockDeviceLookup(device);
+
+      // Default token: mfa:false (helpers.ts:93). On main this returned 200.
       const client = await createAuthenticatedClient(app);
       const res = await client.post(`/devices/${device.id}/maintenance`, {
         enable: true,
-        durationHours: 2
+        reason: 'scheduled patching',
+        durationHours: 2,
       });
 
-      expect(res.status).toBe(200);
-      const body = await res.json();
-      expect(body.success).toBe(true);
-      expect(body.device.status).toBe('maintenance');
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({ code: 'MFA_REQUIRED' });
+      expect(db.update).not.toHaveBeenCalled();
+      expect(db.transaction).not.toHaveBeenCalled();
     });
 
-    it('should disable maintenance mode', async () => {
-      const device = createTestDevice({ id: '22222222-3333-4444-8555-666666666666', status: 'maintenance' });
-      const updated = { ...device, status: 'online' };
-
+    it('rejects the OLD body shape (no reason) even from an assured session', async () => {
+      const device = createTestDevice({ id: DEVICE_ID, status: 'online' });
       mockUserLookup();
       mockDeviceLookup(device);
-      vi.mocked(db.update).mockReturnValueOnce({
-        set: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            returning: vi.fn().mockResolvedValue([updated])
-          })
-        })
-      } as any);
 
-      const client = await createAuthenticatedClient(app);
+      const client = await createAuthenticatedClient(app, { mfa: true });
+      const res = await client.post(`/devices/${device.id}/maintenance`, { enable: true, durationHours: 2 });
+
+      expect(res.status).toBe(400);
+      expect(db.update).not.toHaveBeenCalled();
+      expect(db.transaction).not.toHaveBeenCalled();
+    });
+
+    it('denies an assured session with NO step-up grant and writes nothing', async () => {
+      const device = createTestDevice({ id: DEVICE_ID, status: 'online' });
+      mockUserLookup();
+      mockDeviceLookup(device);
+      mockEpochsLookup();
+
+      const client = await createAuthenticatedClient(app, { mfa: true });
       const res = await client.post(`/devices/${device.id}/maintenance`, {
-        enable: false
+        enable: true,
+        reason: 'scheduled patching',
+        durationHours: 2,
+      });
+
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({ code: 'STEP_UP_REQUIRED' });
+      expect(db.update).not.toHaveBeenCalled();
+      expect(db.transaction).not.toHaveBeenCalled();
+    });
+
+    it('admits an assured session presenting a valid grant and WRITES the lease', async () => {
+      const device = createTestDevice({ id: DEVICE_ID, status: 'online' });
+      mockUserLookup();
+      mockDeviceLookup(device);
+      mockEpochsLookup();
+      const written = stubLeaseTransaction(device);
+
+      const client = await createAuthenticatedClient(app, { mfa: true });
+      const res = await client.post(`/devices/${device.id}/maintenance`, {
+        enable: true,
+        reason: 'scheduled patching',
+        durationHours: 2,
+        stepUpGrant: '11111111-1111-4111-8111-111111111111',
       });
 
       expect(res.status).toBe(200);
       const body = await res.json();
-      expect(body.success).toBe(true);
-      expect(body.device.status).toBe('online');
+      expect(body).toMatchObject({ success: true, action: 'enable' });
+      // The admission's PROOF is the write, not the status code.
+      expect(written).toHaveLength(1);
+      expect(written[0]).toMatchObject({
+        status: 'maintenance',
+        maintenanceReason: 'scheduled patching',
+        maintenanceStartedBy: 'test-user-id',
+      });
+      expect(written[0]!.maintenanceUntil).toBeInstanceOf(Date);
+      expect(written[0]!.maintenanceStartedAt).toBeInstanceOf(Date);
+    });
+
+    it('exits maintenance without MFA and without a grant, clearing the lease', async () => {
+      const device = createTestDevice({
+        id: '22222222-3333-4444-8555-666666666666',
+        status: 'maintenance',
+        lastSeenAt: new Date(),
+        maintenanceUntil: new Date(Date.now() + 3_600_000),
+        maintenanceStartedAt: new Date(Date.now() - 3_600_000),
+        maintenanceReason: 'scheduled patching',
+        maintenanceStartedBy: 'test-user-id',
+      });
+      mockUserLookup();
+      mockDeviceLookup(device);
+      const written = stubLeaseTransaction(device);
+
+      const client = await createAuthenticatedClient(app); // mfa:false on purpose
+      const res = await client.post(`/devices/${device.id}/maintenance`, { enable: false });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ success: true, changed: true });
+      expect(written).toHaveLength(1);
+      expect(written[0]).toMatchObject({
+        status: 'online',
+        maintenanceUntil: null,
+        maintenanceReason: null,
+        maintenanceStartedAt: null,
+        maintenanceStartedBy: null,
+      });
+    });
+
+    it('rejects an X-API-Key-only request at authMiddleware and writes nothing', async () => {
+      // /devices is mounted under the JWT authMiddleware only (index.ts:840) —
+      // no apiKeyAuthMiddleware branch — so an API key never reaches the route
+      // at all. Asserted here rather than assumed: if a future PR mounts an
+      // API-key branch under /devices, this test is what notices.
+      const device = createTestDevice({ id: DEVICE_ID, status: 'online' });
+      mockUserLookup();
+      mockDeviceLookup(device);
+
+      const res = await app.request(`/devices/${device.id}/maintenance`, {
+        method: 'POST',
+        headers: { 'X-API-Key': 'brz_test_key', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enable: true, reason: 'scheduled patching', durationHours: 2 }),
+      });
+
+      expect(res.status).toBe(401);
+      expect(db.update).not.toHaveBeenCalled();
+      expect(db.transaction).not.toHaveBeenCalled();
     });
   });
 
