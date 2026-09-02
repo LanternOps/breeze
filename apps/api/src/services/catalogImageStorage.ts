@@ -28,7 +28,8 @@ export const CATALOG_IMAGE_WEBP_REJECTED_MESSAGE = "WebP images can't be used in
  * addresses; a 10s timeout bounds the request. Size is checked twice: an early
  * Content-Length reject, then the actual byte count after read. The format is
  * confirmed by magic-byte sniffing (the Content-Type header is untrusted).
- * Throws plain Errors; the route maps them to a generic 4xx.
+ * Throws plain Errors; the route maps most of them to a generic 4xx, except
+ * the WebP case above, which it recognizes by message and maps to 415.
  */
 export async function fetchImageFromUrl(url: string): Promise<{ mime: string; buffer: Buffer }> {
   const res = await safeFetch(url, { timeoutMs: 10_000 });
