@@ -39,6 +39,217 @@ export type PromotionBlocker =
   | 'email_unverified'
   | 'too_young';
 
+export type HardDenyDecision =
+  | { restrict: true; reason: string; evidence: Record<string, unknown> }
+  | { restrict: false };
+
+interface HardDenyRow {
+  signup_ip_class: IpClass;
+  card_partner_id: string | null;
+  network_partner_id: string | null;
+  candidate_ip: string | null;
+  suspended_ip: string | null;
+  prefix_length: number | null;
+  corroboration_type: 'email_domain' | 'billing_card_fingerprint' | 'signup_user_agent_hostname_prefix' | null;
+  corroboration_value: string | null;
+}
+
+/**
+ * Evaluates local, independently sufficient abuse signals under a system DB
+ * context. Returning no row means the partner is absent or no longer in
+ * probation, which also prevents a billing outage from affecting trusted or
+ * already-restricted partners.
+ */
+export async function evaluateHardDenies(partnerId: string): Promise<HardDenyDecision> {
+  const row = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+    const rows = (await db.execute(sql`
+      WITH target AS (
+        SELECT id, signup_ip, signup_ip_class, signup_user_agent, billing_card_fingerprint
+        FROM partners
+        WHERE id = ${partnerId} AND trust_state = 'probation'
+      ),
+      suspended_abuse AS (
+        SELECT DISTINCT p.id, p.signup_ip, p.signup_user_agent, p.billing_card_fingerprint
+        FROM partners p
+        JOIN audit_logs a
+          ON a.resource_id = p.id
+         AND a.resource_type = 'partner'
+         AND a.action = 'partner.suspended_for_abuse'
+        WHERE p.status = 'suspended'
+      ),
+      recent_suspended_abuse AS (
+        SELECT DISTINCT p.id, p.signup_ip, p.signup_user_agent, p.billing_card_fingerprint
+        FROM partners p
+        JOIN audit_logs a
+          ON a.resource_id = p.id
+         AND a.resource_type = 'partner'
+         AND a.action = 'partner.suspended_for_abuse'
+         AND a.timestamp >= now() - interval '90 days'
+        WHERE p.status = 'suspended'
+      ),
+      target_ips AS (
+        SELECT t.signup_ip AS ip FROM target t WHERE t.signup_ip IS NOT NULL
+        UNION ALL
+        SELECT d.enrollment_ip AS ip
+        FROM devices d
+        JOIN organizations o ON o.id = d.org_id
+        JOIN target t ON t.id = o.partner_id
+        WHERE d.enrollment_ip IS NOT NULL
+      ),
+      suspended_ips AS (
+        SELECT s.id AS partner_id, s.signup_ip AS ip
+        FROM recent_suspended_abuse s WHERE s.signup_ip IS NOT NULL
+        UNION ALL
+        SELECT s.id AS partner_id, d.enrollment_ip AS ip
+        FROM recent_suspended_abuse s
+        JOIN organizations o ON o.partner_id = s.id
+        JOIN devices d ON d.org_id = o.id
+        WHERE d.enrollment_ip IS NOT NULL
+      ),
+      network_matches AS (
+        SELECT
+          s.id AS partner_id,
+          ti.ip AS candidate_ip,
+          si.ip AS suspended_ip,
+          CASE WHEN family(host(ti.ip::inet)::inet) = 4 THEN 24 ELSE 64 END AS prefix_length,
+          CASE
+            WHEN email_match.domain IS NOT NULL THEN 'email_domain'
+            WHEN t.billing_card_fingerprint IS NOT NULL
+              AND t.billing_card_fingerprint = s.billing_card_fingerprint
+              THEN 'billing_card_fingerprint'
+            WHEN t.signup_user_agent IS NOT NULL
+              AND t.signup_user_agent = s.signup_user_agent
+              AND hostname_match.prefix IS NOT NULL
+              THEN 'signup_user_agent_hostname_prefix'
+          END AS corroboration_type,
+          COALESCE(
+            email_match.domain,
+            CASE WHEN t.billing_card_fingerprint IS NOT NULL
+              AND t.billing_card_fingerprint = s.billing_card_fingerprint
+              THEN t.billing_card_fingerprint END,
+            hostname_match.prefix
+          ) AS corroboration_value
+        FROM target t
+        CROSS JOIN target_ips ti
+        JOIN suspended_ips si
+          ON family(host(ti.ip::inet)::inet) = family(host(si.ip::inet)::inet)
+         AND set_masklen(
+           host(ti.ip::inet)::inet,
+           CASE WHEN family(host(ti.ip::inet)::inet) = 4 THEN 24 ELSE 64 END
+         ) = set_masklen(
+           host(si.ip::inet)::inet,
+           CASE WHEN family(host(si.ip::inet)::inet) = 4 THEN 24 ELSE 64 END
+         )
+        JOIN recent_suspended_abuse s ON s.id = si.partner_id
+        LEFT JOIN LATERAL (
+          SELECT lower(split_part(tu.email, '@', 2)) AS domain
+          FROM users tu
+          JOIN users su
+            ON su.partner_id = s.id
+           AND lower(split_part(su.email, '@', 2)) = lower(split_part(tu.email, '@', 2))
+          WHERE tu.partner_id = t.id
+            AND split_part(tu.email, '@', 2) <> ''
+          LIMIT 1
+        ) email_match ON true
+        LEFT JOIN LATERAL (
+          SELECT left(lower(td.hostname), 6) AS prefix
+          FROM devices td
+          JOIN organizations tor_org ON tor_org.id = td.org_id AND tor_org.partner_id = t.id
+          JOIN devices sd
+            ON length(td.hostname) >= 6
+           AND length(sd.hostname) >= 6
+           AND left(lower(sd.hostname), 6) = left(lower(td.hostname), 6)
+          JOIN organizations sus_org ON sus_org.id = sd.org_id AND sus_org.partner_id = s.id
+          LIMIT 1
+        ) hostname_match ON true
+        WHERE email_match.domain IS NOT NULL
+           OR (t.billing_card_fingerprint IS NOT NULL
+             AND t.billing_card_fingerprint = s.billing_card_fingerprint)
+           OR (t.signup_user_agent IS NOT NULL
+             AND t.signup_user_agent = s.signup_user_agent
+             AND hostname_match.prefix IS NOT NULL)
+        ORDER BY s.id, ti.ip, si.ip
+        LIMIT 1
+      )
+      SELECT
+        t.signup_ip_class,
+        card_match.partner_id AS card_partner_id,
+        network_match.partner_id AS network_partner_id,
+        network_match.candidate_ip,
+        network_match.suspended_ip,
+        network_match.prefix_length,
+        network_match.corroboration_type,
+        network_match.corroboration_value
+      FROM target t
+      LEFT JOIN LATERAL (
+        SELECT s.id AS partner_id
+        FROM suspended_abuse s
+        WHERE t.billing_card_fingerprint IS NOT NULL
+          AND t.billing_card_fingerprint = s.billing_card_fingerprint
+        ORDER BY s.id
+        LIMIT 1
+      ) card_match ON true
+      LEFT JOIN LATERAL (
+        SELECT * FROM network_matches
+      ) network_match ON true
+    `)) as unknown as HardDenyRow[];
+    return rows[0] ?? null;
+  }, 'partnerTrustPromotion.hardDenies'));
+
+  if (!row) return { restrict: false };
+  if (row.signup_ip_class === 'tor') {
+    return {
+      restrict: true,
+      reason: 'auto:tor_signup',
+      evidence: { matchedAxes: ['signup_ip_class'], signupIpClass: 'tor' },
+    };
+  }
+  if (row.card_partner_id) {
+    return {
+      restrict: true,
+      reason: 'auto:fraud_identity_match',
+      evidence: {
+        matchedAxes: ['billing_card_fingerprint', 'suspended_for_abuse'],
+        matchedSuspendedPartnerId: row.card_partner_id,
+      },
+    };
+  }
+  if (row.network_partner_id && row.corroboration_type) {
+    return {
+      restrict: true,
+      reason: 'auto:corroborated_suspended_network',
+      evidence: {
+        matchedAxes: ['network_prefix', row.corroboration_type],
+        matchedSuspendedPartnerId: row.network_partner_id,
+        network: {
+          candidateIp: row.candidate_ip,
+          suspendedIp: row.suspended_ip,
+          prefixLength: row.prefix_length,
+        },
+        corroboration: {
+          type: row.corroboration_type,
+          value: row.corroboration_value,
+        },
+      },
+    };
+  }
+
+  try {
+    if (await getBreezeBillingClient().hasFraudulentRefundMatch(partnerId)) {
+      return {
+        restrict: true,
+        reason: 'auto:fraud_identity_match',
+        evidence: { matchedAxes: ['fraudulent_refund_customer'] },
+      };
+    }
+  } catch (error) {
+    // Fail open for this optional corroboration endpoint. The client normally
+    // absorbs request failures; this also covers missing local configuration.
+    console.warn(`[partnerTrustPromotion] fraudulent-refund lookup failed for partner ${partnerId}`, error);
+  }
+  return { restrict: false };
+}
+
 export function promotionDecision(
   facts: PromotionFacts,
   now: Date,

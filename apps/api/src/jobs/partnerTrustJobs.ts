@@ -5,12 +5,27 @@ import { partnerTrustMode } from '../config/partnerTrustMode';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { devices, partners } from '../db/schema';
 import { classifyIp, type IpClassifyTarget } from '../services/ipClassify';
-import { tryAutoPromote } from '../services/partnerTrustPromotion';
+import { partnerForDevice } from '../services/partnerTrust.repo';
+import { setTrustState } from '../services/partnerTrust';
+import { evaluateHardDenies, tryAutoPromote } from '../services/partnerTrustPromotion';
 import { jobSchedule } from './scheduleRegistry';
 
 export const IP_CLASSIFY_JOB = 'ip-classify';
 export const PARTNER_TRUST_PROMOTE_JOB = 'partner-trust-promote';
 const PROMOTE_REPEAT_ID = 'partner-trust-promote-repeat';
+
+async function restrictOnHardDeny(partnerId: string): Promise<boolean> {
+  const decision = await evaluateHardDenies(partnerId);
+  if (!decision.restrict) return false;
+  return setTrustState(
+    partnerId,
+    'restricted',
+    decision.reason,
+    null,
+    decision.evidence,
+    { expectedFrom: 'probation' },
+  );
+}
 
 export async function runPartnerTrustPromote(): Promise<{ processed: number; promoted: number }> {
   let cursor: string | undefined;
@@ -27,6 +42,7 @@ export async function runPartnerTrustPromote(): Promise<{ processed: number; pro
       .limit(200), 'partnerTrustJobs.promote'));
     for (const partner of batch) {
       processed += 1;
+      if (await restrictOnHardDeny(partner.id)) continue;
       if (await tryAutoPromote(partner.id)) promoted += 1;
     }
     cursor = batch.at(-1)?.id;
@@ -64,6 +80,10 @@ export async function processPartnerTrustJob(
       enrollmentIpClassifiedAt: classifiedAt,
     }).where(eq(devices.id, target.deviceId));
   }));
+  const partnerId = target.kind === 'partner'
+    ? target.partnerId
+    : await partnerForDevice(target.deviceId);
+  if (partnerId) await restrictOnHardDeny(partnerId);
   return classification;
 }
 

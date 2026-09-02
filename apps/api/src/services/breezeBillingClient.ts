@@ -38,6 +38,7 @@ export interface BreezeBillingClient {
 
   getSettledCardCharge(partnerId: string): Promise<SettledCardCharge | null>;
   getSignupRiskHold(partnerId: string): Promise<SignupRiskHold | null>;
+  hasFraudulentRefundMatch(partnerId: string): Promise<boolean>;
 }
 
 export class BillingError extends Error {
@@ -148,6 +149,22 @@ export function createBreezeBillingClient(opts: {
 
     async getSignupRiskHold(partnerId) {
       return internalGet<SignupRiskHold>(partnerId, 'signup-risk-hold');
+    },
+
+    async hasFraudulentRefundMatch(partnerId) {
+      try {
+        const row = await internalGet<{ match: boolean }>(partnerId, 'fraudulent-refund-match');
+        return row?.match === true;
+      } catch (error) {
+        // Hard-deny signals must fail open when the optional billing endpoint
+        // is unavailable. internalGet already logs 404s and network failures;
+        // only HTTP/service errors reach this catch.
+        console.warn(
+          `[breezeBillingClient] fraudulent-refund-match request failed for partner ${partnerId}`,
+          error,
+        );
+        return false;
+      }
     },
   };
 }

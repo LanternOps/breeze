@@ -1,12 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { update, select, runOutside, withSystem, classify, tryAutoPromote } = vi.hoisted(() => ({
+const {
+  update, select, runOutside, withSystem, classify, tryAutoPromote,
+  evaluateHardDenies, setTrustState, partnerForDevice,
+} = vi.hoisted(() => ({
   update: vi.fn(),
   select: vi.fn(),
   runOutside: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   withSystem: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   classify: vi.fn(),
   tryAutoPromote: vi.fn(),
+  evaluateHardDenies: vi.fn(),
+  setTrustState: vi.fn(),
+  partnerForDevice: vi.fn(),
 }));
 
 vi.mock('../db', () => ({
@@ -21,7 +27,9 @@ vi.mock('../db/schema', () => ({
 vi.mock('../services/ipClassify', () => ({
   classifyIp: classify,
 }));
-vi.mock('../services/partnerTrustPromotion', () => ({ tryAutoPromote }));
+vi.mock('../services/partnerTrustPromotion', () => ({ tryAutoPromote, evaluateHardDenies }));
+vi.mock('../services/partnerTrust', () => ({ setTrustState }));
+vi.mock('../services/partnerTrust.repo', () => ({ partnerForDevice }));
 
 import { processPartnerTrustJob } from './partnerTrustJobs';
 
@@ -35,6 +43,9 @@ describe('processPartnerTrustJob', () => {
     process.env.PARTNER_TRUST_MODE = 'shadow';
     classify.mockResolvedValue({ ipClass: 'hosting', asn: 64500, provider: 'ipinfo' });
     tryAutoPromote.mockResolvedValue(false);
+    evaluateHardDenies.mockResolvedValue({ restrict: false });
+    setTrustState.mockResolvedValue(true);
+    partnerForDevice.mockResolvedValue('partner-for-device');
     set.mockReturnValue({ where });
     update.mockReturnValue({ set });
   });
@@ -53,6 +64,7 @@ describe('processPartnerTrustJob', () => {
       .resolves.toEqual({ processed: 201, promoted: 1 });
 
     expect(tryAutoPromote).toHaveBeenCalledTimes(201);
+    expect(evaluateHardDenies).toHaveBeenCalledTimes(201);
     expect(tryAutoPromote).toHaveBeenLastCalledWith('partner-200');
     expect(limit).toHaveBeenCalledTimes(2);
     expect(runOutside).toHaveBeenCalledTimes(2);
@@ -69,6 +81,7 @@ describe('processPartnerTrustJob', () => {
     }));
     expect(runOutside).toHaveBeenCalledTimes(1);
     expect(withSystem).toHaveBeenCalledTimes(1);
+    expect(evaluateHardDenies).toHaveBeenCalledWith('partner-1');
   });
 
   it('writes device enrollment classification', async () => {
@@ -79,6 +92,49 @@ describe('processPartnerTrustJob', () => {
     expect(set).toHaveBeenCalledWith(expect.objectContaining({
       enrollmentIpClass: 'hosting', enrollmentIpAsn: 64500, enrollmentIpClassifiedAt: expect.any(Date),
     }));
+    expect(partnerForDevice).toHaveBeenCalledWith('device-1');
+    expect(evaluateHardDenies).toHaveBeenCalledWith('partner-for-device');
+  });
+
+  it('restricts a probation partner on hard deny and does not attempt promotion', async () => {
+    const limit = vi.fn().mockResolvedValue([{ id: 'partner-1' }]);
+    select.mockReturnValue({
+      from: () => ({ where: () => ({ orderBy: () => ({ limit }) }) }),
+    });
+    evaluateHardDenies.mockResolvedValue({
+      restrict: true,
+      reason: 'auto:tor_signup',
+      evidence: { matchedAxes: ['signup_ip_class'] },
+    });
+
+    await expect(processPartnerTrustJob({ name: 'partner-trust-promote', data: {} }))
+      .resolves.toEqual({ processed: 1, promoted: 0 });
+
+    expect(setTrustState).toHaveBeenCalledWith(
+      'partner-1', 'restricted', 'auto:tor_signup', null,
+      { matchedAxes: ['signup_ip_class'] },
+      { expectedFrom: 'probation' },
+    );
+    expect(tryAutoPromote).not.toHaveBeenCalled();
+  });
+
+  it('does not restrict when the probation CAS loses to a trusted state', async () => {
+    evaluateHardDenies.mockResolvedValue({
+      restrict: true,
+      reason: 'auto:tor_signup',
+      evidence: {},
+    });
+    setTrustState.mockResolvedValue(false);
+
+    await processPartnerTrustJob({
+      name: 'ip-classify',
+      data: { kind: 'partner', partnerId: 'partner-1', ip: '198.51.100.1' },
+    });
+
+    expect(setTrustState).toHaveBeenCalledWith(
+      'partner-1', 'restricted', 'auto:tor_signup', null, {},
+      { expectedFrom: 'probation' },
+    );
   });
 
   it('does nothing when partner trust is off', async () => {

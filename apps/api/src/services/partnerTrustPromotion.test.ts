@@ -1,18 +1,23 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { IpClass } from '../db/schema/orgs';
 
-const { readTrust, setTrustState, getSettledCardCharge, getSignupRiskHold, select, runOutside, withSystem } = vi.hoisted(() => ({
+const {
+  readTrust, setTrustState, getSettledCardCharge, getSignupRiskHold,
+  hasFraudulentRefundMatch, select, execute, runOutside, withSystem,
+} = vi.hoisted(() => ({
   readTrust: vi.fn(),
   setTrustState: vi.fn(),
   getSettledCardCharge: vi.fn(),
   getSignupRiskHold: vi.fn(),
+  hasFraudulentRefundMatch: vi.fn(),
   select: vi.fn(),
+  execute: vi.fn(),
   runOutside: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   withSystem: vi.fn(async (fn: () => Promise<unknown>) => fn()),
 }));
 
 vi.mock('../db', () => ({
-  db: { select },
+  db: { select, execute },
   runOutsideDbContext: runOutside,
   withSystemDbAccessContext: withSystem,
 }));
@@ -25,10 +30,14 @@ vi.mock('../db/schema', () => ({
 vi.mock('./partnerTrust.repo', () => ({ readTrust }));
 vi.mock('./partnerTrust', () => ({ setTrustState }));
 vi.mock('./breezeBillingClient', () => ({
-  getBreezeBillingClient: () => ({ getSettledCardCharge, getSignupRiskHold }),
+  getBreezeBillingClient: () => ({
+    getSettledCardCharge, getSignupRiskHold, hasFraudulentRefundMatch,
+  }),
 }));
 
-import { promotionDecision, tryAutoPromote, type PromotionFacts } from './partnerTrustPromotion';
+import {
+  evaluateHardDenies, promotionDecision, tryAutoPromote, type PromotionFacts,
+} from './partnerTrustPromotion';
 
 const now = new Date('2026-09-02T12:00:00.000Z');
 const hoursAgo = (hours: number) => new Date(now.getTime() - hours * 60 * 60 * 1_000);
@@ -41,6 +50,96 @@ const baseFacts = (): PromotionFacts => ({
   unresolvedAlerts: 0,
   billingHold: false,
   billingHoldUnknown: false,
+});
+
+const hardDenyRow = (overrides: Record<string, unknown> = {}) => ({
+  signup_ip_class: 'residential',
+  card_partner_id: null,
+  network_partner_id: null,
+  candidate_ip: null,
+  suspended_ip: null,
+  prefix_length: null,
+  corroboration_type: null,
+  corroboration_value: null,
+  ...overrides,
+});
+
+describe('evaluateHardDenies', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    execute.mockResolvedValue([hardDenyRow()]);
+    hasFraudulentRefundMatch.mockResolvedValue(false);
+  });
+
+  it('restricts a probation partner that signed up over Tor', async () => {
+    execute.mockResolvedValue([hardDenyRow({ signup_ip_class: 'tor' })]);
+
+    await expect(evaluateHardDenies('p1')).resolves.toEqual({
+      restrict: true,
+      reason: 'auto:tor_signup',
+      evidence: { matchedAxes: ['signup_ip_class'], signupIpClass: 'tor' },
+    });
+    expect(hasFraudulentRefundMatch).not.toHaveBeenCalled();
+  });
+
+  it('does not restrict on a suspended-partner network match alone', async () => {
+    // No network result is returned unless SQL found a second, corroborating
+    // axis; sharing an IP prefix by itself remains deliberately insufficient.
+    execute.mockResolvedValue([hardDenyRow()]);
+
+    await expect(evaluateHardDenies('p1')).resolves.toEqual({ restrict: false });
+  });
+
+  it('restricts on an IP prefix plus the same email domain and names both axes', async () => {
+    execute.mockResolvedValue([hardDenyRow({
+      network_partner_id: 'suspended-1',
+      candidate_ip: '198.51.100.9',
+      suspended_ip: '198.51.100.25',
+      prefix_length: 24,
+      corroboration_type: 'email_domain',
+      corroboration_value: 'example.com',
+    })]);
+
+    const decision = await evaluateHardDenies('p1');
+
+    expect(decision).toEqual(expect.objectContaining({
+      restrict: true,
+      reason: 'auto:corroborated_suspended_network',
+      evidence: expect.objectContaining({
+        matchedAxes: ['network_prefix', 'email_domain'],
+        network: expect.objectContaining({ prefixLength: 24 }),
+        corroboration: { type: 'email_domain', value: 'example.com' },
+      }),
+    }));
+  });
+
+  it('restricts on a card fingerprint belonging to a suspended-for-abuse partner', async () => {
+    execute.mockResolvedValue([hardDenyRow({ card_partner_id: 'suspended-1' })]);
+
+    await expect(evaluateHardDenies('p1')).resolves.toEqual(expect.objectContaining({
+      restrict: true,
+      reason: 'auto:fraud_identity_match',
+      evidence: expect.objectContaining({ matchedSuspendedPartnerId: 'suspended-1' }),
+    }));
+  });
+
+  it('uses the billing fraudulent-refund match as an independent fraud identity rule', async () => {
+    hasFraudulentRefundMatch.mockResolvedValue(true);
+
+    await expect(evaluateHardDenies('p1')).resolves.toEqual({
+      restrict: true,
+      reason: 'auto:fraud_identity_match',
+      evidence: { matchedAxes: ['fraudulent_refund_customer'] },
+    });
+  });
+
+  it.each(['trusted', 'restricted'])('never restricts an already-%s partner', async () => {
+    // The SQL target CTE only admits trust_state='probation'.
+    execute.mockResolvedValue([]);
+
+    await expect(evaluateHardDenies('p1')).resolves.toEqual({ restrict: false });
+    expect(hasFraudulentRefundMatch).not.toHaveBeenCalled();
+  });
 });
 
 describe('promotionDecision', () => {
