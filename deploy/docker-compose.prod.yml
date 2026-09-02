@@ -113,6 +113,18 @@ x-api-env: &api-env
   # stays dark (env.ts defaults to ''). Threaded through compose so the feature
   # can be enabled from .env. Same gap class as IS_HOSTED above.
   CLIENT_AI_ENTRA_CLIENT_ID: ${CLIENT_AI_ENTRA_CLIENT_ID:-}
+  # QuickBooks Online accounting integration. All optional: unset leaves the
+  # integration dark. Mapped explicitly because Compose only interpolates vars
+  # listed in this block — a value in .env alone is never seen by the API
+  # (the IS_HOSTED / #570 failure mode; Phase C's sandbox walkthrough needed a
+  # manual override for exactly this).
+  QBO_CLIENT_ID: ${QBO_CLIENT_ID:-}
+  QBO_CLIENT_SECRET: ${QBO_CLIENT_SECRET:-}
+  QBO_REDIRECT_URI: ${QBO_REDIRECT_URI:-}
+  QBO_ENVIRONMENT: ${QBO_ENVIRONMENT:-}
+  # Intuit's app-level webhook verifier token. Unset -> the webhook route
+  # answers 503 and the 15-minute reconcile sweep is the only pull path.
+  QBO_WEBHOOK_VERIFIER_TOKEN: ${QBO_WEBHOOK_VERIFIER_TOKEN:-}
   # Optional customer Graph-read onboarding. The executor is intentionally
   # not part of this generic Compose stack: deploy it separately with a
   # workload identity, private ingress, and controlled HTTPS egress.

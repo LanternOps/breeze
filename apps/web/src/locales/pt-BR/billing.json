@@ -1622,6 +1622,8 @@
       "stripeNudge": "Conecte o Stripe para aceitar pagamentos online com cartão.",
       "title": "Pagamentos",
       "viaStripe": "via Stripe",
+      "quickbooks": "QuickBooks",
+      "viaQuickbooks": "via QuickBooks",
       "currencyUnknown": "A moeda de liquidação da sua conta Stripe ainda não foi armazenada em cache, então não foi possível compará-la com esta fatura em {{documentCurrency}}. Atualize os dados da conta Stripe em Configurações → Integrações para habilitar a verificação."
     },
     "requestPayment": {

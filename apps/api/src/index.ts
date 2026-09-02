@@ -38,6 +38,7 @@ import { quotesPublicRoutes } from './routes/quotesPublic';
 import { invoicesPublicRoutes } from './routes/invoicesPublic';
 import { stripeConnectRoutes } from './routes/stripeConnect';
 import { stripeWebhookRoutes } from './routes/webhooks/stripe';
+import { quickbooksWebhookRoutes } from './routes/webhooks/quickbooks';
 import { invoiceAssemblyRoutes } from './routes/invoices/assembly';
 import { invoiceSettingsRoutes } from './routes/invoices/settings';
 import { contractRoutes } from './routes/contracts';
@@ -929,6 +930,12 @@ api.route('/webhooks/tickets', emailWebhookRoutes);
 // passes through (no Authorization header); the route reads the raw body itself
 // via c.req.text(), so no body-consuming middleware sits in front of it.
 api.route('/webhooks', stripeWebhookRoutes);
+// Intuit QuickBooks webhook — no session auth, HMAC-gated with the app-level
+// verifier token. partnerGuard passes through (no Authorization header); the
+// route reads the raw body itself via c.req.text(), so no body-consuming
+// middleware may sit in front of it. NOT in SELF_MANAGED_DB_CONTEXT_ROUTES:
+// there is no ambient auth transaction to opt out of on an unauthenticated route.
+api.route('/webhooks', quickbooksWebhookRoutes);
 api.route('/policies', policyRoutes);
 api.route('/configuration-policies', configPolicyRoutes);
 api.route('/psa', psaRoutes);

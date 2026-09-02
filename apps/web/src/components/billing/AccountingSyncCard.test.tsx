@@ -77,6 +77,26 @@ describe('AccountingSyncCard', () => {
     expect(screen.getByTestId('invoice-accounting-sync-push')).toBeInTheDocument();
   });
 
+  // Phase D writes a mapping-error marker onto the same `lastError` column when
+  // a reconcile finds the QuickBooks invoice gone. Nothing new is added to this
+  // component for that — this pins the copy path the spec relies on, so a future
+  // change that sanitizes/normalizes `lastError` before render breaks here
+  // rather than silently blanking the only explanation the operator gets.
+  it('renders a reconcile-sourced lastError verbatim, not just push failures', () => {
+    render(
+      <AccountingSyncCard
+        invoiceId="inv-1"
+        sync={sync({ syncStatus: 'error', lastError: 'Deleted in QuickBooks' })}
+        canPush
+        onChanged={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId('invoice-accounting-sync-error')).toHaveTextContent(
+      'Deleted in QuickBooks',
+    );
+  });
+
   it('renders tax variance with its own copy — never as "pending" and never as a plain "Synced"', () => {
     render(
       <AccountingSyncCard
