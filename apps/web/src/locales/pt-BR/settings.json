@@ -3105,6 +3105,8 @@
       "organization": "Organização",
       "general": "Geral",
       "generalDescription": "Perfil e padrões",
+      "contacts": "Contatos",
+      "contactsDescription": "Pessoas para procurar neste cliente, por local ou em toda a organização",
       "contracts": "Contratos",
       "contractsDescription": "Acordos recorrentes",
       "billing": "Cobrança",
@@ -3704,7 +3706,8 @@
       "title": "Dispositivos",
       "assigned": "dispositivos atribuídos a este site",
       "viewAll": "Ver todos os dispositivos"
-    }
+    },
+    "allContactsLink": "Todos os contatos deste cliente"
   },
   "siteForm": {
     "description": "Apenas o nome do site é obrigatório. Endereço e contato são opcionais – você pode preenchê-los mais tarde.",
@@ -4089,5 +4092,154 @@
     "saveFailed": "Não foi possível salvar as configurações de controle de tempo",
     "minSessionRange": "A duração mínima da sessão deve estar entre {{min}} e {{max}} segundos",
     "mergeGapRange": "O intervalo de mesclagem deve estar entre {{min}} e {{max}} minutos"
+  },
+  "contactsCard": {
+    "title": "Contatos",
+    "description": "As pessoas que sua equipe procura neste cliente. Um contato pode ficar preso a um local ou valer para toda a organização.",
+    "organizationLevel": "Organização",
+    "unknownSite": "Um local que você não pode ver",
+    "empty": "Nenhum contato ainda. Adicione um ou importe um CSV da sua ferramenta anterior.",
+    "loading": "Carregando contatos…",
+    "confirmDelete": "Excluir {{name}}? Isso não pode ser desfeito.",
+    "actions": {
+      "add": "Adicionar contato",
+      "import": "Importar CSV",
+      "edit": "Editar",
+      "delete": "Excluir",
+      "save": "Salvar contato",
+      "saving": "Salvando…",
+      "cancel": "Cancelar",
+      "retry": "Tentar novamente"
+    },
+    "filters": {
+      "site": "Filtrar por local",
+      "role": "Filtrar por função",
+      "allSites": "Todos os locais",
+      "allRoles": "Todas as funções"
+    },
+    "columns": {
+      "name": "Nome",
+      "reach": "Como falar com a pessoa",
+      "jobTitle": "Cargo",
+      "roles": "Funções",
+      "site": "Pertence a",
+      "actions": "Ações"
+    },
+    "primary": {
+      "organization": "Principal (organização)",
+      "site": "Principal ({{site}})"
+    },
+    "roles": {
+      "billing": "Faturamento",
+      "technical": "Técnico",
+      "escalation": "Escalonamento",
+      "admin": "Administração",
+      "site": "Local",
+      "afterHours": "Fora do horário",
+      "portal": "Portal do cliente"
+    },
+    "form": {
+      "addHeading": "Novo contato",
+      "editHeading": "Editar contato",
+      "identifierRequired": "Preencha pelo menos um: nome, endereço de e-mail, telefone ou celular.",
+      "fields": {
+        "name": "Nome",
+        "email": "Endereço de e-mail",
+        "phone": "Telefone",
+        "mobile": "Celular",
+        "title": "Cargo",
+        "site": "Pertence a",
+        "roles": "Funções",
+        "notes": "Observações",
+        "isPrimary": "Tornar este o contato principal do escopo escolhido acima"
+      }
+    },
+    "pagination": {
+      "summary": "Exibindo {{from}} a {{to}} de {{total}}",
+      "previous": "Anterior",
+      "next": "Próxima"
+    },
+    "toasts": {
+      "created": "Contato adicionado",
+      "updated": "Contato salvo",
+      "deleted": "Contato excluído"
+    },
+    "errors": {
+      "load": "Não foi possível carregar os contatos desta organização.",
+      "create": "Não foi possível adicionar o contato.",
+      "update": "Não foi possível salvar o contato.",
+      "delete": "Não foi possível excluir o contato."
+    }
+  },
+  "bulkContactImport": {
+    "title": "Importar contatos de um CSV",
+    "description": "Envie uma exportação de contatos do seu RMM ou PSA anterior. Cada linha fica arquivada nesta organização.",
+    "dropzone": "Solte um arquivo CSV aqui ou clique para procurar",
+    "dropzoneHint": "Mapeie pelo menos um: nome, endereço de e-mail, telefone ou celular — sem isso não existe contato.",
+    "actions": {
+      "close": "Fechar",
+      "preview": "Conferir {{count}} linhas",
+      "previewing": "Conferindo…",
+      "import": "Importar {{count}} selecionadas",
+      "importing": "Importando…"
+    },
+    "mapping": {
+      "heading": "Mapeamento de colunas",
+      "unmapped": "Não mapeada",
+      "identifierRequired": "Mapeie uma coluna de nome, endereço de e-mail, telefone ou celular para continuar.",
+      "fields": {
+        "name": "Nome",
+        "email": "Endereço de e-mail",
+        "phone": "Telefone",
+        "mobile": "Celular",
+        "title": "Cargo",
+        "roles": "Funções",
+        "site": "Local",
+        "externalId": "Identificador do contato no sistema de origem",
+        "externalSystem": "Sistema de origem"
+      }
+    },
+    "mode": {
+      "label": "Contatos já vinculados",
+      "skip": "Deixar como estão",
+      "update": "Mesclar o arquivo neles"
+    },
+    "preview": {
+      "heading": "O que vai acontecer"
+    },
+    "summary": {
+      "imported": "{{count}} adicionados",
+      "updated": "{{count}} mesclados",
+      "skipped": "{{count}} sem alteração",
+      "failed": "{{count}} recusadas",
+      "allFailed": "Nada foi importado — {{summary}}."
+    },
+    "failures": {
+      "title_one": "{{count}} linha foi recusada",
+      "title_other": "{{count}} linhas foram recusadas"
+    },
+    "errors": {
+      "previewFailed": "Não foi possível comparar o arquivo com os contatos existentes.",
+      "importFailed": "Não foi possível importar os contatos selecionados."
+    }
+  },
+  "contactImportPreview": {
+    "selectAll": "Selecionar todas as linhas novas e vinculadas",
+    "organizationLevel": "Organização",
+    "matches": "corresponde a “{{name}}”",
+    "columns": {
+      "name": "Nome",
+      "email": "Endereço de e-mail",
+      "site": "Local",
+      "status": "Resultado"
+    },
+    "badges": {
+      "create": "Novo",
+      "linkMatch": "Já vinculado",
+      "emailMatch": "E-mail coincide — confirme",
+      "nameMatch": "Nome coincide — confirme",
+      "conflict": "Conflito",
+      "orgNotFound": "Organização não encontrada"
+    }
   }
 }
