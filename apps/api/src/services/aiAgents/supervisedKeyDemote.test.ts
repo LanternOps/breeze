@@ -154,6 +154,18 @@ vi.mock('../userNotifications', () => ({
   createNotification: (...args: unknown[]) => createNotificationMock(...args),
 }));
 
+/** #4582 — every way this module can end WITHOUT paging a human must be
+ *  Sentry-visible, so the capture is asserted, not just the absent notice. */
+const captureExceptionMock = vi.hoisted(() => vi.fn());
+vi.mock('../sentry', () => ({
+  captureException: (...args: unknown[]) => captureExceptionMock(...args),
+}));
+
+/** The messages of every Sentry report this call made. */
+function capturedMessages(): string[] {
+  return captureExceptionMock.mock.calls.map((call) => (call[0] as Error).message);
+}
+
 import { db } from '../../db';
 import { aiAgents } from '../../db/schema/aiAgents';
 import { ANONYMOUS_ACTOR_ID } from '../auditEvents';
@@ -526,12 +538,27 @@ describe('notifyDemotion', () => {
     expect(sent.message).not.toContain('attempt failed');
   });
 
-  it('sends nothing when the agent row is gone', async () => {
+  it('reports to Sentry — not just the console — when the agent row is gone', async () => {
     queueNotify({ agent: [] });
 
     await notify();
 
+    // Nothing to build a notice from, so this one genuinely cannot notify.
+    // It must still be LOUD: the revoke is already committed.
     expect(createNotificationMock).not.toHaveBeenCalled();
+    expect(capturedMessages()).toEqual([expect.stringContaining('notified NOBODY')]);
+  });
+
+  it('treats a run row whose snapshot is null as empty recipients, not a throw', async () => {
+    queueNotify({ run: [{ policySnapshot: null }] });
+    resolveRecipientUserIdsMock.mockResolvedValueOnce([]);
+
+    await expect(notify()).resolves.toBeUndefined();
+
+    expect(resolveRecipientUserIdsMock).toHaveBeenCalledWith(
+      expect.objectContaining({ recipients: {} }),
+      ORG_ID,
+    );
   });
 
   // #4582 — a revoke that notifies nobody is a silent loss of unattended
@@ -607,7 +634,24 @@ describe('notifyDemotion', () => {
       expect(sent.dedupeKey).toBeNull();
     });
 
-    it('sends nothing when the effective policy names no recipient at all', async () => {
+    it('reads the org override pinned by org_id + kind + not-disabled', async () => {
+      queueFallback();
+
+      await notify({ runId: null, watchId: WATCH_ID });
+
+      // Two selects on this path: the baseline by id, then the org override.
+      // Asserted as COMPILED SQL — the capture-and-replay mock hands back the
+      // queued row whatever the predicate is, so a dropped `org_id` filter
+      // would otherwise sail through every test in this block.
+      expect(state.selects).toHaveLength(2);
+      const where = sqlText(state.selects[1]!.where);
+      expect(where).toContain('"org_id" = $1');
+      expect(where).toContain('"kind" = $2');
+      expect(where).toContain('"disabled_at" is null');
+      expect(sqlParams(state.selects[1]!.where)).toEqual([ORG_ID, 'triage']);
+    });
+
+    it('reports to Sentry when the effective policy names no recipient at all', async () => {
       state.selectQueue.push([baselineRow({ recipients: { userIds: [], roleIds: [] } })]);
       state.selectQueue.push([orgRow([OP_KEY], { recipients: { userIds: [], roleIds: [] } })]);
       resolveRecipientUserIdsMock.mockResolvedValueOnce([]);
@@ -621,6 +665,13 @@ describe('notifyDemotion', () => {
         ORG_ID,
       );
       expect(createNotificationMock).not.toHaveBeenCalled();
+      // The outcome #4582 is about, reached by the one route this function
+      // cannot fix — so it is reported rather than passed over in silence.
+      // Two distinct reports: the run was unreadable, AND nobody resolved.
+      expect(capturedMessages()).toEqual([
+        expect.stringContaining('no readable run'),
+        expect.stringContaining('ZERO recipients'),
+      ]);
     });
 
     it('notifies from the partner baseline alone when the org override row is gone', async () => {
