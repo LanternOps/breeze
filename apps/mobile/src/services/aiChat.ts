@@ -4,9 +4,7 @@ import * as Sentry from '@sentry/react-native';
 import { getServerUrl } from './serverConfig';
 import { fetchWithTimeout } from './fetchWithTimeout';
 import type { ApiError } from './api';
-import { refreshToken } from './api';
-import { storeToken } from './auth';
-import { commitIfCurrent, currentSessionGeneration } from './sessionGeneration';
+import { refreshAccessToken } from './tokenRefresh';
 
 const FALLBACK_API_BASE_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:3001';
 const API_CORE_PREFIX = '/api/v1';
@@ -32,69 +30,6 @@ async function getToken(): Promise<string | null> {
   }
 }
 
-// Single-flight guard so N concurrent 401s trigger one /auth/refresh, not N.
-// Cleared once the refresh settles; callers that grabbed the promise still
-// receive its result. NOTE: /auth/refresh rotates the refresh cookie and
-// replaying a rotated token revokes the whole token family, so this guard is
-// only safe while aiChat is the sole mobile refresh caller — if another
-// service starts calling refreshToken(), move the single-flight into a shared
-// module.
-let refreshInFlight: Promise<string | null> | null = null;
-
-/**
- * Refresh the access token via the shared `refreshToken()` helper (api.ts) and
- * persist it so every service reading `breeze_auth_token` picks it up.
- * Returns the new token, or null when refresh failed (e.g. the refresh cookie
- * itself expired) — callers then surface the original 401.
- */
-async function refreshAccessToken(): Promise<string | null> {
-  if (!refreshInFlight) {
-    refreshInFlight = (async () => {
-      const generation = currentSessionGeneration();
-      try {
-        const { token } = await refreshToken();
-        try {
-          const committed = await commitIfCurrent(generation, async () => {
-            await storeToken(token);
-            return token;
-          });
-          if (committed === undefined) return null;
-        } catch (e) {
-          // Persisting failed (locked keychain, etc.) — the in-memory token is
-          // still valid for the retry, so don't turn a usable refresh into a
-          // hard failure. But a phone that can't persist tokens will silently
-          // double every aiChat round-trip while all non-refreshing services
-          // hard-401, so make the real cause observable in production
-          // (console.* goes nowhere on release RN builds).
-          Sentry.captureException(e, {
-            tags: { area: 'aichat-token-refresh' },
-            extra: { stage: 'persist' },
-          });
-          if (generation !== currentSessionGeneration()) return null;
-        }
-        if (generation !== currentSessionGeneration()) return null;
-        return token;
-      } catch (e) {
-        // Refresh failed — expired refresh cookie, offline, or a
-        // /auth/refresh outage. We return null so the caller surfaces the
-        // original 401 to the UI either way, but record which failure mode it
-        // was: without this, "users see 401s" is undiagnosable in production.
-        Sentry.captureMessage('aiChat token refresh failed', {
-          level: 'warning',
-          tags: { area: 'aichat-token-refresh' },
-          extra: {
-            statusCode: (e as ApiError)?.statusCode,
-            message: (e as ApiError)?.message ?? String(e),
-          },
-        });
-        return null;
-      } finally {
-        refreshInFlight = null;
-      }
-    })();
-  }
-  return refreshInFlight;
-}
 
 async function doAuthedFetch(
   path: string,
