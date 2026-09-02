@@ -231,7 +231,7 @@ import {
   initializeAgentCommandRelayWorker,
   shutdownAgentCommandRelayWorker,
 } from './jobs/agentCommandRelayWorker';
-import { abuseSignalsEnabled, breezeRole } from './config/env';
+import { AI_AGENTS_ENABLED, abuseSignalsEnabled, breezeRole, eventDispatchMode } from './config/env';
 import { getEventBus } from './services/eventBus';
 import { writeAuditEvent } from './services/auditEvents';
 import { drainAuditRetryQueue } from './services/auditService';
@@ -1067,8 +1067,11 @@ let auditRetryInterval: NodeJS.Timeout | null = null;
 async function initializeWorkers(): Promise<void> {
   const redisAvailable = startupChecks.redisOk && isRedisAvailable();
   declareExpectedConsumers({
+    role: breezeRole(),
     redisAvailable,
     abuseSignalsEnabled: abuseSignalsEnabled(),
+    eventDispatchEnabled: eventDispatchMode() !== 'off',
+    aiAgentsEnabled: AI_AGENTS_ENABLED,
     registry: workerReadinessRegistry,
   });
 

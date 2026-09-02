@@ -1,11 +1,21 @@
+import type { BreezeRole } from '../config/env';
 import type { WorkerReadinessRegistry } from '../services/workerReadinessRegistry';
+import { selectWorkers } from '../services/workerRegistry';
+
+export type ConsumerRequirementRule =
+  | 'redis'                   // required whenever Redis is available
+  | 'abuse_signals_enabled'   // Track C: abuseSignalsWorker
+  | 'event_dispatch_enabled'  // D3a: eventDispatch (EVENT_DISPATCH_MODE !== 'off')
+  | 'ai_agents_enabled';      // D3a: aiAgentRunner (AI_AGENTS_ENABLED)
 
 export type WorkerInitializerClassification =
   | {
       kind: 'consumers';
       initializer: string;
       consumers: readonly string[];
-      requiredWhen: 'redis' | 'abuse_signals_enabled';
+      requiredWhen: ConsumerRequirementRule;
+      /** D3a: declared (expect(name, false)) and attached, never required, never disabled. Subset of `consumers`. */
+      optionalConsumers?: readonly string[];
     }
   | {
       kind: 'non_consumer';
@@ -20,7 +30,7 @@ export type WorkerInitializerClassification =
 const consumers = (
   initializer: string,
   names: readonly string[] = [initializer],
-  requiredWhen: 'redis' | 'abuse_signals_enabled' = 'redis',
+  requiredWhen: ConsumerRequirementRule = 'redis',
 ): WorkerInitializerClassification => ({
   kind: 'consumers',
   initializer,
@@ -43,7 +53,11 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('policyEvaluationWorker'),
   consumers('softwareComplianceWorker'),
   consumers('softwareRemediationWorker'),
-  consumers('aiAgentRunner'),
+  // D3a (spec section 4, C1): main's initializeAiAgentRunner returns before
+  // constructing/attaching when BREEZE_AI_AGENTS_ENABLED is off (default).
+  // socket-owner placement — a plain-required row would pin every api/all
+  // process not-ready on the default configuration.
+  consumers('aiAgentRunner', ['aiAgentRunner'], 'ai_agents_enabled'),
   consumers('auditBaselineJobs'),
   consumers('cisJobs'),
   consumers('automationWorker'),
@@ -148,7 +162,19 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('alertVerdictScheduler'),
   consumers('aiAgentSweepScheduler'),
   // Started outside WORKER_REGISTRY, role-gated in index.ts / worker.ts.
-  consumers('eventDispatch', ['eventDispatch', 'eventDispatchMaintenance']),
+  // D3a: the dispatch consumer is constructed only when EVENT_DISPATCH_MODE is
+  // on (or an off-mode backlog remains — that drain then attaches as
+  // optional-running, no readiness effect). Maintenance registration is an
+  // isolated failure domain on main (a Redis blip during boot must not pin
+  // /ready for a housekeeping job), so it is declared, attached, and never
+  // required — and never disabled, since it constructs regardless of the flag.
+  {
+    kind: 'consumers',
+    initializer: 'eventDispatch',
+    consumers: ['eventDispatch', 'eventDispatchMaintenance'],
+    requiredWhen: 'event_dispatch_enabled',
+    optionalConsumers: ['eventDispatchMaintenance'],
+  },
   consumers('agentCommandRelay'),
 ] as const;
 
@@ -159,19 +185,49 @@ export function consumersForInitializer(initializer: string): readonly string[] 
   return classification?.kind === 'consumers' ? classification.consumers : [];
 }
 
+function ruleEnabled(
+  rule: ConsumerRequirementRule,
+  input: { abuseSignalsEnabled: boolean; eventDispatchEnabled: boolean; aiAgentsEnabled: boolean },
+): boolean {
+  switch (rule) {
+    case 'redis':
+      return true;
+    case 'abuse_signals_enabled':
+      return input.abuseSignalsEnabled;
+    case 'event_dispatch_enabled':
+      return input.eventDispatchEnabled;
+    case 'ai_agents_enabled':
+      return input.aiAgentsEnabled;
+  }
+}
+
 export function declareExpectedConsumers(input: {
+  role: BreezeRole;
   redisAvailable: boolean;
   abuseSignalsEnabled: boolean;
+  eventDispatchEnabled: boolean;
+  aiAgentsEnabled: boolean;
   registry: WorkerReadinessRegistry;
 }): void {
   if (!input.redisAvailable) return;
 
+  // Only consumers this process will actually start exist for readiness.
+  // Entries not selected for the role are not declared at all (not optional,
+  // not disabled) — the public aggregate must not count them.
+  const selected = new Set(selectWorkers(input.role).map((entry) => entry.name));
+  if (input.role !== 'api') selected.add('eventDispatch');
+  if (input.role !== 'worker') selected.add('agentCommandRelay');
+
   for (const entry of WORKER_READINESS_MANIFEST) {
     if (entry.kind === 'non_consumer') continue;
-    const required = entry.requiredWhen === 'redis' || input.abuseSignalsEnabled;
-    for (const name of entry.consumers) input.registry.expect(name, required);
-    if (entry.requiredWhen === 'abuse_signals_enabled' && !input.abuseSignalsEnabled) {
-      for (const name of entry.consumers) input.registry.disable(name, 'feature_disabled');
+    if (!selected.has(entry.initializer)) continue;
+    const enabled = ruleEnabled(entry.requiredWhen, input);
+    const isOptional = (name: string): boolean => entry.optionalConsumers?.includes(name) ?? false;
+    for (const name of entry.consumers) input.registry.expect(name, enabled && !isOptional(name));
+    if (!enabled) {
+      for (const name of entry.consumers) {
+        if (!isOptional(name)) input.registry.disable(name, 'feature_disabled');
+      }
     }
   }
 }
