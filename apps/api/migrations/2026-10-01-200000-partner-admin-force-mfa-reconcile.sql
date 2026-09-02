@@ -23,6 +23,17 @@
 --
 -- Idempotent: the force_mfa = false predicate makes re-application a no-op.
 -- The row count is always logged (a zero is evidence too).
+--
+-- roles is ENABLE + FORCE ROW LEVEL SECURITY and breeze_current_scope()
+-- defaults to 'none', so on managed Postgres (DigitalOcean / RDS), where
+-- DATABASE_URL is NOT a superuser, a contextless UPDATE silently matches zero
+-- rows and the ledger records the file as applied anyway — the trap
+-- 2026-09-30-100000-rls-scoped-backfill-replay.sql had to fix forward.
+-- Elevate for this file's transaction only (autoMigrate wraps each file in
+-- one; is_local = true scopes the setting to it). breeze_has_partner_access()
+-- is TRUE under system scope, which is what the update policy checks, and
+-- the epoch trigger's UPDATE of users runs under the same scope.
+SELECT set_config('breeze.scope', 'system', true);
 
 DO $$
 DECLARE n integer;
