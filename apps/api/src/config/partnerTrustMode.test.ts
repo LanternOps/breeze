@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { partnerTrustMode } from './partnerTrustMode';
 
 const env = process.env;
-afterEach(() => { process.env = { ...env }; });
+afterEach(() => { process.env = { ...env }; vi.restoreAllMocks(); });
 
 describe('partnerTrustMode', () => {
   it('is off when not hosted, regardless of the env value', () => {
