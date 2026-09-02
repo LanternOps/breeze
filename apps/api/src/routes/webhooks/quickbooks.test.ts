@@ -1,11 +1,11 @@
 // apps/api/src/routes/webhooks/quickbooks.test.ts
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // The route is UNAUTHENTICATED (Intuit-signed). We mock the rate limiter, the
 // client-ip helper, the provider's HMAC verifier, the realm->connection
 // lookup, and the reconcile enqueue so the test exercises the route's
-// contract (status codes, dedup, and that the RAW body string is what reaches
-// verifyWebhook) without real Redis/Postgres/QuickBooks.
+// contract (status codes, dedup, capping/chunking, and that the RAW body
+// string is what reaches verifyWebhook) without real Redis/Postgres/QuickBooks.
 const { rateLimiter, verifyWebhook, findConnectionByRealmFingerprint, enqueueAccountingReconcile, captureMessage } =
   vi.hoisted(() => ({
     rateLimiter: vi.fn().mockResolvedValue({ allowed: true }),
@@ -54,6 +54,16 @@ function post(routes: typeof quickbooksWebhookRoutes, opts: { sig?: string; body
   });
 }
 
+// Finds the ('[quickbooksWebhook] processed webhook delivery', {...}) info-log
+// call and returns its structured payload, so tests can assert positively on
+// the logged counts instead of only on absence of a substring.
+function findProcessedLogPayload(infoSpy: ReturnType<typeof vi.spyOn>): Record<string, unknown> | undefined {
+  const call = (infoSpy.mock.calls as unknown[][]).find(
+    (args) => typeof args[0] === 'string' && args[0].includes('processed webhook delivery'),
+  );
+  return call?.[1] as Record<string, unknown> | undefined;
+}
+
 describe('POST /quickbooks (Intuit CDC webhook)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -61,6 +71,10 @@ describe('POST /quickbooks (Intuit CDC webhook)', () => {
     verifyWebhook.mockReturnValue(true);
     findConnectionByRealmFingerprint.mockResolvedValue({ id: 'c1', partnerId: 'p1' });
     enqueueAccountingReconcile.mockResolvedValue(true);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it('429s when rate-limited (before signature work)', async () => {
@@ -81,6 +95,30 @@ describe('POST /quickbooks (Intuit CDC webhook)', () => {
     expect(res.status).toBe(503);
     expect(verifyWebhook).not.toHaveBeenCalled();
     expect(captureMessage).toHaveBeenCalled();
+  });
+
+  it('throttles the missing-token Sentry capture to once per 10 minutes', async () => {
+    vi.useFakeTimers();
+    vi.resetModules();
+    vi.doMock('../../config/env', async (importOriginal) => ({
+      ...(await importOriginal<typeof import('../../config/env')>()),
+      QBO_WEBHOOK_VERIFIER_TOKEN: '',
+    }));
+    const { quickbooksWebhookRoutes: fresh } = await import('./quickbooks');
+
+    // Two consecutive requests -> ONE captureMessage call (the second is throttled).
+    const res1 = await post(fresh, { sig: SIG });
+    const res2 = await post(fresh, { sig: SIG });
+    expect(res1.status).toBe(503);
+    expect(res2.status).toBe(503);
+    expect(captureMessage).toHaveBeenCalledTimes(1);
+    expect(verifyWebhook).not.toHaveBeenCalled();
+
+    // A request after the 10-minute throttle window elapses -> a SECOND call.
+    vi.advanceTimersByTime(10 * 60 * 1000);
+    const res3 = await post(fresh, { sig: SIG });
+    expect(res3.status).toBe(503);
+    expect(captureMessage).toHaveBeenCalledTimes(2);
   });
 
   it('401s when the intuit-signature header is missing', async () => {
@@ -106,12 +144,21 @@ describe('POST /quickbooks (Intuit CDC webhook)', () => {
     expect(enqueueAccountingReconcile).not.toHaveBeenCalled();
   });
 
-  it('202s on the happy path and enqueues once for the matched realm', async () => {
+  it('202s on the happy path, enqueues once, and logs a positive Payment count', async () => {
+    const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
     const res = await post(quickbooksWebhookRoutes, { sig: SIG });
     expect(res.status).toBe(202);
     expect(await res.json()).toMatchObject({ accepted: true });
     expect(enqueueAccountingReconcile).toHaveBeenCalledTimes(1);
     expect(enqueueAccountingReconcile).toHaveBeenCalledWith('c1', 'p1', 'webhook');
+    // Positive assertion on the log payload — this fails if the log line is
+    // ever deleted, unlike a pure absence check.
+    expect(findProcessedLogPayload(infoSpy)).toMatchObject({
+      matched: 1,
+      enqueued: 1,
+      entityCounts: { Payment: 1, Invoice: 0, other: 0 },
+    });
+    infoSpy.mockRestore();
   });
 
   it('passes the RAW body string verbatim to verifyWebhook', async () => {
@@ -142,6 +189,51 @@ describe('POST /quickbooks (Intuit CDC webhook)', () => {
     expect(res.status).toBe(503);
   });
 
+  it('503s (never 500) when the realm lookup rejects', async () => {
+    findConnectionByRealmFingerprint.mockRejectedValue(new Error('pg connection lost'));
+    const res = await post(quickbooksWebhookRoutes, { sig: SIG });
+    expect(res.status).toBe(503);
+    expect(enqueueAccountingReconcile).not.toHaveBeenCalled();
+  });
+
+  it('caps unique realms per payload at 50 and drops the rest (still 202)', async () => {
+    const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+    const realmIds = Array.from({ length: 51 }, (_, i) => `realm-${i}`);
+    const body = JSON.stringify({
+      eventNotifications: realmIds.map((realmId) => ({
+        realmId,
+        dataChangeEvent: { entities: [{ name: 'Payment', id: `p-${realmId}`, operation: 'Update', lastUpdated: '2026-09-02T20:04:34.000Z' }] },
+      })),
+    });
+    const res = await post(quickbooksWebhookRoutes, { sig: SIG, body });
+    expect(res.status).toBe(202);
+    expect(findConnectionByRealmFingerprint).toHaveBeenCalledTimes(50);
+    expect(enqueueAccountingReconcile).toHaveBeenCalledTimes(50);
+    expect(findProcessedLogPayload(infoSpy)).toMatchObject({ realmsCapped: 1, dropped: 1, matched: 50 });
+    infoSpy.mockRestore();
+  });
+
+  it('looks up connections in chunks of at most 10 concurrent lookups', async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    findConnectionByRealmFingerprint.mockImplementation(async () => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      inFlight -= 1;
+      return { id: 'c1', partnerId: 'p1' };
+    });
+    const realmIds = Array.from({ length: 25 }, (_, i) => `realm-${i}`);
+    const body = JSON.stringify({
+      eventNotifications: realmIds.map((realmId) => ({ realmId, dataChangeEvent: { entities: [] } })),
+    });
+    const res = await post(quickbooksWebhookRoutes, { sig: SIG, body });
+    expect(res.status).toBe(202);
+    expect(findConnectionByRealmFingerprint).toHaveBeenCalledTimes(25);
+    expect(maxInFlight).toBeLessThanOrEqual(10);
+    expect(maxInFlight).toBeGreaterThan(1); // proves lookups within a chunk really run concurrently
+  });
+
   it('never logs an entity id via console.log or console.info', async () => {
     const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
@@ -153,5 +245,18 @@ describe('POST /quickbooks (Intuit CDC webhook)', () => {
     expect(allArgs).not.toMatch(/180/);
     infoSpy.mockRestore();
     logSpy.mockRestore();
+  });
+
+  it('clamps an unrecognized entity name to "other" in the info log', async () => {
+    const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+    const body = JSON.stringify({ eventNotifications: [{ realmId: '1185883561', dataChangeEvent: { entities: [
+      { name: 'not-a-real-qbo-entity<script>', id: '999', operation: 'Update', lastUpdated: '2026-09-02T20:04:34.000Z' },
+    ] } }] });
+    const res = await post(quickbooksWebhookRoutes, { sig: SIG, body });
+    expect(res.status).toBe(202);
+    expect(findProcessedLogPayload(infoSpy)).toMatchObject({ entityCounts: { Payment: 0, Invoice: 0, other: 1 } });
+    const allArgs = infoSpy.mock.calls.flat().map((arg) => (typeof arg === 'string' ? arg : JSON.stringify(arg))).join(' | ');
+    expect(allArgs).not.toContain('script');
+    infoSpy.mockRestore();
   });
 });

@@ -19,9 +19,9 @@
 // Flow:
 //   rate-limit (per source IP) -> raw body read -> verifier-token presence
 //   check -> provider.verifyWebhook (HMAC) -> JSON.parse -> shape check ->
-//   dedup realmIds -> look up each connection by realm fingerprint (ONE short
-//   system DB context) -> enqueue a reconcile per matched connection (no DB
-//   context held around the Redis call) -> 202.
+//   dedup + cap realmIds -> look up each connection by realm fingerprint, in
+//   chunks, inside ONE short system DB context -> enqueue a reconcile per
+//   matched connection (no DB context held around the Redis call) -> 202.
 //
 // Status matrix (Intuit retry behaviour in comments):
 //   429 — rate limiter denies (fails CLOSED: a Redis outage lands here too) -> retries
@@ -29,14 +29,19 @@
 //         (24h backoff) instead of believing an unconfigured region processed the event
 //   401 — missing or bad intuit-signature -> does NOT retry (permanent)
 //   400 — body is not JSON, or has no eventNotifications array -> does NOT retry
-//   503 — every queue add for the request failed -> retries
-//   202 — accepted, including "all realms unknown" (nothing more we can do with it) -> done
+//   503 — every queue add for the request failed, OR the realm lookup itself
+//         threw (never surface a bare 500 to an external caller) -> retries
+//   202 — accepted, including "all realms unknown" or "some realms dropped
+//         past the cap" (nothing more we can do with those) -> done
 import { Hono } from 'hono';
 import { getTrustedClientIp, rateLimitIpKey } from '../../services/clientIp';
 import { rateLimiter } from '../../services/rate-limit';
 import { getRedis } from '../../services/redis';
 import { getAccountingProvider } from '../../services/accounting/providerRegistry';
-import { findConnectionByRealmFingerprint } from '../../services/accounting/accountingConnectionService';
+import {
+  findConnectionByRealmFingerprint,
+  type AccountingConnection,
+} from '../../services/accounting/accountingConnectionService';
 import { enqueueAccountingReconcile } from '../../jobs/accountingReconcileWorker';
 import { hmacFingerprint } from '../../services/secretCrypto';
 import { db, withSystemDbAccessContext } from '../../db';
@@ -48,6 +53,45 @@ export const quickbooksWebhookRoutes = new Hono();
 const RATE_LIMIT = 240;
 const RATE_WINDOW_SECONDS = 60;
 
+// Intuit can (and does) batch an unbounded number of distinct realms into one
+// delivery. Without a cap, an unusually large or malicious payload would open
+// one system DB context and issue one HMAC + one Postgres lookup per realm —
+// the context stays held for the whole fan-out, which is exactly the "long
+// held context" shape the repo's DB-context guard exists to catch. Beyond the
+// cap, excess realms are simply dropped (counted, logged, still 202) — the
+// 15-minute reconcile sweep is the backstop for anything a capped delivery
+// can't route this time.
+const MAX_REALMS_PER_PAYLOAD = 50;
+// Within the cap, look up connections CHUNK_SIZE at a time rather than firing
+// all of them at once — bounds how many concurrent lookups (and thus how much
+// pool pressure) one delivery can create while the system context is held.
+const REALM_LOOKUP_CHUNK_SIZE = 10;
+
+// Sentry throttle for the missing-verifier-token capture below. The route is
+// unauthenticated: ANY anonymous POST (not just genuine Intuit deliveries)
+// reaches this check before any signature is verified, so without a throttle
+// a trivial anonymous flood (up to the rate limiter's 240/min ceiling) mints
+// one Sentry event per request. One capture per throttle window is enough to
+// alert an operator that the token needs configuring; console.warn stays
+// unthrottled locally but carries no request content.
+const VERIFIER_TOKEN_MISSING_CAPTURE_THROTTLE_MS = 10 * 60 * 1000;
+let lastVerifierTokenMissingCaptureAtMs: number | null = null;
+
+function reportMissingVerifierToken(): void {
+  const now = Date.now();
+  if (
+    lastVerifierTokenMissingCaptureAtMs !== null &&
+    now - lastVerifierTokenMissingCaptureAtMs < VERIFIER_TOKEN_MISSING_CAPTURE_THROTTLE_MS
+  ) {
+    console.warn('[quickbooksWebhook] QBO_WEBHOOK_VERIFIER_TOKEN unset (Sentry capture throttled)');
+    return;
+  }
+  lastVerifierTokenMissingCaptureAtMs = now;
+  captureMessage('QuickBooks webhook received but QBO_WEBHOOK_VERIFIER_TOKEN is unset', {
+    eventCode: 'accounting_webhook_verifier_token_missing',
+  });
+}
+
 interface QboEventEntity {
   name?: string;
   id?: string;
@@ -58,6 +102,30 @@ interface QboEventEntity {
 interface QboEventNotification {
   realmId?: string;
   dataChangeEvent?: { entities?: QboEventEntity[] };
+}
+
+// The info log below reports entity NAMES, never ids — but the payload is
+// only signature-verified, not schema-validated, so an entity `name` is still
+// attacker-shaped input. Clamp to the two names Phase D actually cares about
+// and bucket everything else as 'other' so a signed-but-crafted payload can't
+// inject arbitrary strings into structured logs.
+type LoggedEntityKind = 'Payment' | 'Invoice' | 'other';
+
+function classifyEntityName(name: string | undefined): LoggedEntityKind {
+  if (name === 'Payment' || name === 'Invoice') return name;
+  return 'other';
+}
+
+async function lookupConnectionsChunked(realmIds: readonly string[]): Promise<Array<AccountingConnection | null>> {
+  const results: Array<AccountingConnection | null> = [];
+  for (let i = 0; i < realmIds.length; i += REALM_LOOKUP_CHUNK_SIZE) {
+    const chunk = realmIds.slice(i, i + REALM_LOOKUP_CHUNK_SIZE);
+    const chunkResults = await Promise.all(
+      chunk.map((realmId) => findConnectionByRealmFingerprint(db, 'quickbooks', hmacFingerprint(realmId))),
+    );
+    results.push(...chunkResults);
+  }
+  return results;
 }
 
 quickbooksWebhookRoutes.post('/quickbooks', async (c) => {
@@ -78,9 +146,7 @@ quickbooksWebhookRoutes.post('/quickbooks', async (c) => {
   //    retrying (24h backoff) until the token is configured; the 15-minute
   //    reconcile sweep is the fallback in the meantime.
   if (!QBO_WEBHOOK_VERIFIER_TOKEN) {
-    captureMessage('QuickBooks webhook received but QBO_WEBHOOK_VERIFIER_TOKEN is unset', {
-      eventCode: 'accounting_webhook_verifier_token_missing',
-    });
+    reportMissingVerifierToken();
     return c.json({ error: 'Service Unavailable' }, 503);
   }
 
@@ -112,30 +178,36 @@ quickbooksWebhookRoutes.post('/quickbooks', async (c) => {
   //    only ever want ONE reconcile enqueue per connection per delivery
   //    (the reconcile job itself re-reads everything that changed via CDC).
   const realmIds = new Set<string>();
-  const entityNames = new Set<string>();
+  const entityCounts: Record<LoggedEntityKind, number> = { Payment: 0, Invoice: 0, other: 0 };
   for (const notification of typedNotifications) {
     if (notification?.realmId) {
       realmIds.add(notification.realmId);
     }
     for (const entity of notification?.dataChangeEvent?.entities ?? []) {
-      if (entity?.name) {
-        entityNames.add(entity.name);
-      }
+      entityCounts[classifyEntityName(entity?.name)] += 1;
     }
   }
 
-  // 7. Resolve realm -> connection in ONE short system context; the enqueue
-  //    below runs OUTSIDE any DB context (Redis call, not DB work).
-  const connections = await withSystemDbAccessContext(() =>
-    Promise.all(
-      [...realmIds].map((realmId) =>
-        findConnectionByRealmFingerprint(db, 'quickbooks', hmacFingerprint(realmId)),
-      ),
-    ),
-  );
+  // Cap the unique-realm fan-out; anything past the cap is dropped (counted
+  // below) rather than looked up.
+  const allRealmIds = [...realmIds];
+  const cappedRealmIds = allRealmIds.slice(0, MAX_REALMS_PER_PAYLOAD);
+  const realmsCapped = allRealmIds.length - cappedRealmIds.length;
+
+  // 7. Resolve realm -> connection in ONE short system context, chunked; the
+  //    enqueue below runs OUTSIDE any DB context (Redis call, not DB work).
+  //    A rejected lookup must never surface as a bare 500 to an external,
+  //    unauthenticated caller — Intuit gets a 503 (retry) instead.
+  let connections: Array<AccountingConnection | null>;
+  try {
+    connections = await withSystemDbAccessContext(() => lookupConnectionsChunked(cappedRealmIds));
+  } catch (err) {
+    console.error('[quickbooksWebhook] realm lookup failed', err instanceof Error ? err.message : err);
+    return c.json({ error: 'Service Unavailable' }, 503);
+  }
 
   let matched = 0;
-  let dropped = 0;
+  let dropped = realmsCapped;
   let enqueued = 0;
   let failed = 0;
   for (const conn of connections) {
@@ -152,16 +224,17 @@ quickbooksWebhookRoutes.post('/quickbooks', async (c) => {
     }
   }
 
-  // Log entity NAMES only (e.g. "Payment", "Invoice") — never ids. The
-  // handler never acts on payload entity ids; CDC (Task 2) is the only thing
-  // that decides what changed.
+  // Log entity NAMES (clamped to a known set above) and COUNTS only — never
+  // ids. The handler never acts on payload entity ids; CDC (Task 2) is the
+  // only thing that decides what changed.
   console.info('[quickbooksWebhook] processed webhook delivery', {
     notifications: typedNotifications.length,
+    realmsCapped,
     matched,
     dropped,
     enqueued,
     failed,
-    entities: [...entityNames],
+    entityCounts,
   });
 
   if (enqueued === 0 && failed > 0) {
