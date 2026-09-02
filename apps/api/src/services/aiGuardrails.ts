@@ -256,10 +256,11 @@ export const TIER3_ACTIONS: Record<string, string[]> = {
   manage_contracts: ['activate', 'pause', 'resume', 'cancel'],
   manage_quotes: ['send'],
   // Org lifecycle (issue #2366) — tenant-shape mutations require approval.
-  // add_contact stays at the tool's base tier (it returns guidance only).
+  // add_contact (#3258) writes customer PII (a first-class contact record),
+  // so it escalates too, even though it reshapes no tenant boundary.
   // update_org's approval SCOPE (not its tier) is input-aware — see
   // resolveApprovalScope's override hook below.
-  manage_organizations: ['create_org', 'update_org', 'create_site'],
+  manage_organizations: ['create_org', 'update_org', 'create_site', 'add_contact'],
   // s1_threat_action is registered at base Tier 3 (see TIER3_FOUR_EYES_TOOLS /
   // TIER3_SUPERVISED_TOOLS below for its whole-tool catch-all), but its
   // `action` enum (kill/quarantine/rollback) is a real dispatch discriminator
@@ -438,7 +439,10 @@ export const TIER3_SUPERVISED_ACTIONS: Record<string, string[]> = {
   manage_contracts: ['pause', 'resume'],
   // create_site adds a location within an existing org, not a new tenant —
   // spec §3.2's tenant-shape bullet names only create_org/update_org.
-  manage_organizations: ['create_site'],
+  // add_contact (#3258) writes customer PII but is neither externally-binding
+  // nor identity/destroy-class, so it stays supervised alongside create_site
+  // rather than four_eyes — see spec §5.
+  manage_organizations: ['create_site', 'add_contact'],
   s1_threat_action: ['kill', 'quarantine'],
 };
 
@@ -2178,7 +2182,44 @@ function buildApprovalDescription(
       if (action === 'create_org') parts.push(`Create organization "${input.name}" (with a default Main Office site)`);
       else if (action === 'update_org') parts.push(`Update organization ${(input.orgId as string)?.slice(0, 8)}...${input.status ? ` (status → ${input.status})` : ''}`);
       else if (action === 'create_site') parts.push(`Create site "${input.name}" in organization ${(input.orgId as string)?.slice(0, 8) ?? '(own org)'}...`);
-      else parts.push(`Organizations: ${action}`);
+      else if (action === 'add_contact') {
+        // Review finding (fix round 1): `input.name` had no `??` fallback, so
+        // a phone/mobile-only contact (legal since contacts_identifiable_chk
+        // only needs ONE of name/email/phone/mobile) rendered literally as
+        // `Add contact "undefined"` — the approver saw nothing identifying,
+        // the exact failure spec §5 created this branch to prevent. Falls
+        // back through the same priority order createContact accepts, and
+        // lists every OTHER present identifier alongside it so the approver
+        // sees everything supplied, not just whichever field won the fallback.
+        const acName = typeof input.name === 'string' ? input.name : undefined;
+        const acEmail = typeof input.email === 'string' ? input.email : undefined;
+        const acPhone = typeof input.phone === 'string' ? input.phone : undefined;
+        const acMobile = typeof input.mobile === 'string' ? input.mobile : undefined;
+        const acHeadline = acName ?? acEmail ?? acPhone ?? acMobile ?? 'no identifying info provided';
+        const acOthers = [
+          acEmail && acEmail !== acHeadline ? `email: ${acEmail}` : null,
+          acPhone && acPhone !== acHeadline ? `phone: ${acPhone}` : null,
+          acMobile && acMobile !== acHeadline ? `mobile: ${acMobile}` : null,
+        ].filter((part): part is string => part !== null);
+        parts.push(
+          `Add contact "${acHeadline}"${acOthers.length ? ` (${acOthers.join(', ')})` : ''} to organization ${(input.orgId as string)?.slice(0, 8) ?? '(own org)'}...`
+        );
+        // Review finding (fix round 2): `siteId` and `isPrimary` are the only
+        // two add_contact inputs whose effect reaches beyond inserting a row,
+        // and neither was shown. `isPrimary: true` DEMOTES whoever currently
+        // holds the scope's primary slot and REPLACES the legacy projection —
+        // organizations.billing_contact, or sites.contact when a site is
+        // pinned, which is a public partner-API DTO. Without these the
+        // approver cannot tell "file a new contact" (routine, hence
+        // supervised) apart from "overwrite this customer's billing contact".
+        const acSiteId = typeof input.siteId === 'string' ? input.siteId : undefined;
+        if (acSiteId) parts.push(`on site ${acSiteId.slice(0, 8)}...`);
+        if (input.isPrimary === true) {
+          parts.push(
+            `as PRIMARY contact (replaces the ${acSiteId ? "site's current contact" : 'current billing contact'})`
+          );
+        }
+      } else parts.push(`Organizations: ${action}`);
       break;
 
     case 'manage_monitors':

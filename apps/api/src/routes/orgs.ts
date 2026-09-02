@@ -55,6 +55,8 @@ import { clearPartnerAllowlistCache, ipAllowlistMode, readPartnerAllowlist } fro
 import { commitOrgImport, previewOrgImport, MAX_IMPORT_ROWS } from '../services/orgImport';
 import { writeOrgImportAudits } from '../services/orgImport/audit';
 import { commitImportRowSchema, importRowSchema } from '../services/orgImport/schemas';
+import { resolveImportPartnerId } from './importScope';
+import { registerOrgContactsRoutes } from './orgContacts';
 import { registerOrgPortalSettingsRoutes } from './orgPortalSettings';
 import { registerOrgPortalUsersRoutes } from './orgPortalUsers';
 import { registerOrgTicketSettingsRoutes } from './orgTicketSettings';
@@ -1709,26 +1711,6 @@ const commitOrgImportSchema = z.object({
   mode: z.enum(['skip', 'update']).default('skip'),
 });
 
-function resolveImportPartnerId(
-  auth: AuthContext,
-  bodyPartnerId: string | undefined,
-): { partnerId: string } | { error: string; status: 400 | 403 } {
-  if (auth.scope === 'partner') {
-    if (!auth.partnerId) {
-      return { error: 'Partner context required to import organizations', status: 400 };
-    }
-    if (bodyPartnerId && bodyPartnerId !== auth.partnerId) {
-      return { error: 'Access denied to this partner', status: 403 };
-    }
-    return { partnerId: auth.partnerId };
-  }
-  const partnerId = bodyPartnerId ?? auth.partnerId;
-  if (!partnerId) {
-    return { error: 'partnerId is required for system scope', status: 400 };
-  }
-  return { partnerId };
-}
-
 // The import creates SITES as well as orgs, so it is gated on sites:write in
 // addition to orgs:write (#3242). Preview carries the same gate for an early,
 // honest failure — a preview a caller could never commit is a trap.
@@ -1736,7 +1718,7 @@ orgRoutes.post('/import/preview', requireScope('partner', 'system'), requireOrgW
   const auth = c.get('auth') as AuthContext;
   const { rows, partnerId: bodyPartnerId } = c.req.valid('json');
 
-  const resolved = resolveImportPartnerId(auth, bodyPartnerId);
+  const resolved = resolveImportPartnerId(auth, bodyPartnerId, 'organizations');
   if ('error' in resolved) {
     return c.json({ error: resolved.error }, resolved.status);
   }
@@ -1749,7 +1731,7 @@ orgRoutes.post('/import', requireScope('partner', 'system'), requireOrgWrite, re
   const auth = c.get('auth') as AuthContext;
   const { rows, mode, partnerId: bodyPartnerId } = c.req.valid('json');
 
-  const resolved = resolveImportPartnerId(auth, bodyPartnerId);
+  const resolved = resolveImportPartnerId(auth, bodyPartnerId, 'organizations');
   if ('error' in resolved) {
     return c.json({ error: resolved.error }, resolved.status);
   }
@@ -2302,6 +2284,8 @@ registerOrgPortalSettingsRoutes(orgRoutes);
 registerOrgPortalUsersRoutes(orgRoutes);
 // Org ticketing overrides (org_ticket_settings) — see routes/orgTicketSettings.ts
 registerOrgTicketSettingsRoutes(orgRoutes);
+// First-class contacts (contacts + the dedicated importer) — see routes/orgContacts.ts
+registerOrgContactsRoutes(orgRoutes);
 
 orgRoutes.delete('/organizations/:id', requireScope('partner', 'system'), requireOrgWrite, requireMfa(), async (c) => {
   const auth = c.get('auth') as AuthContext;
