@@ -4,7 +4,7 @@ import * as Sentry from '@sentry/react-native';
 import { getServerUrl } from './serverConfig';
 import { fetchWithTimeout } from './fetchWithTimeout';
 import type { ApiError } from './api';
-import { refreshAccessToken } from './tokenRefresh';
+import { refreshAccessToken } from './api';
 
 const FALLBACK_API_BASE_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:3001';
 const API_CORE_PREFIX = '/api/v1';
