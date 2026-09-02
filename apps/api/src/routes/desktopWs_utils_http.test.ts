@@ -4,6 +4,9 @@ const {
   revokeViewerSessionMock,
   persistDesktopFinalizationIntentMock,
   finalizeDesktopSessionOnceMock,
+  partnerTrustModeMock,
+  partnerIdForDeviceMock,
+  evaluateCapabilityMock,
 } = vi.hoisted(() => {
   const revokeViewerSessionMock = vi.fn(async (_sessionId: string) => undefined);
   return {
@@ -17,6 +20,9 @@ const {
       await revokeViewerSessionMock(input.sessionId);
       return 'finalized' as const;
     }),
+    partnerTrustModeMock: vi.fn((): 'off' | 'shadow' | 'enforce' => 'off'),
+    partnerIdForDeviceMock: vi.fn(),
+    evaluateCapabilityMock: vi.fn(),
   };
 });
 
@@ -56,6 +62,22 @@ vi.mock('../services/remoteSessionAuth', () => ({
   consumeWsTicket: vi.fn(),
   consumeDesktopConnectCode: vi.fn(),
   getViewerAccessTokenExpirySeconds: vi.fn(() => 900)
+}));
+
+vi.mock('../config/partnerTrustMode', () => ({
+  partnerTrustMode: partnerTrustModeMock,
+}));
+
+vi.mock('../services/partnerTrust', () => ({
+  partnerIdForDevice: partnerIdForDeviceMock,
+  evaluateCapability: evaluateCapabilityMock,
+  trustDenyBody: vi.fn((decision, reviewRequested) => ({
+    error: decision.code,
+    capability: decision.capability,
+    reason: decision.reason,
+    reviewRequested,
+    meetingUrl: null,
+  })),
 }));
 
 vi.mock('../services/jwt', () => ({
@@ -126,6 +148,7 @@ import {
   getViewerAccessTokenExpirySeconds,
 } from '../services/remoteSessionAuth';
 import { createViewerAccessToken, verifyViewerAccessToken } from '../services/jwt';
+import { evaluateCapability, partnerIdForDevice } from '../services/partnerTrust';
 import {
   isViewerJtiRevoked,
   isViewerSessionRevoked,
@@ -287,6 +310,7 @@ function buildApp() {
 describe('desktopWs', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    partnerTrustModeMock.mockReturnValue('off');
     __resetDesktopWsForTest();
   });
 
@@ -470,6 +494,102 @@ describe('desktopWs', () => {
       const body = await res.json();
       expect(body.accessToken).toBe('mock-access-token-xyz');
       expect(body.expiresInSeconds).toBe(900);
+    });
+
+    it('returns 403 without issuing a token when probation denies ticket exchange', async () => {
+      const userId = 'user-probation';
+      partnerTrustModeMock.mockReturnValue('enforce');
+      vi.mocked(partnerIdForDevice).mockResolvedValue('partner-1');
+      vi.mocked(evaluateCapability).mockResolvedValue({
+        allow: false,
+        code: 'TRUST_PROBATION',
+        capability: 'remote_control',
+        reason: 'Partner is in trust probation',
+      });
+      vi.mocked(consumeDesktopConnectCode).mockResolvedValue({
+        sessionId: SESSION_ID,
+        userId,
+        email: 'test@example.com',
+        expiresAt: Date.now() + 60_000,
+      });
+      vi.mocked(db.select).mockReturnValueOnce(mockSelectChain([{
+        id: SESSION_ID,
+        userId,
+        type: 'desktop',
+        status: 'pending',
+        deviceId: DEVICE_ID,
+      }]));
+
+      const res = await buildApp().request('/connect/exchange', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId: SESSION_ID, code: 'probation-code' }),
+      });
+
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({ error: 'TRUST_PROBATION' });
+      expect(evaluateCapability).toHaveBeenCalledWith('remote_control', {
+        partnerId: 'partner-1',
+        deviceId: DEVICE_ID,
+        userId,
+        detail: { stage: 'ticket', kind: 'desktop' },
+      });
+      expect(createViewerAccessToken).not.toHaveBeenCalled();
+    });
+
+    it('keeps trusted ticket exchange behavior unchanged under enforce mode', async () => {
+      const userId = 'user-trusted';
+      partnerTrustModeMock.mockReturnValue('enforce');
+      vi.mocked(partnerIdForDevice).mockResolvedValue('partner-1');
+      vi.mocked(evaluateCapability).mockResolvedValue({ allow: true });
+      vi.mocked(consumeDesktopConnectCode).mockResolvedValue({
+        sessionId: SESSION_ID,
+        userId,
+        email: 'test@example.com',
+        expiresAt: Date.now() + 60_000,
+      });
+      vi.mocked(db.select).mockReturnValueOnce(mockSelectChain([{
+        id: SESSION_ID,
+        userId,
+        type: 'desktop',
+        status: 'pending',
+        deviceId: DEVICE_ID,
+      }]));
+
+      const res = await buildApp().request('/connect/exchange', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId: SESSION_ID, code: 'trusted-code' }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(createViewerAccessToken).toHaveBeenCalledOnce();
+    });
+
+    it('does not resolve a partner when trust mode is off', async () => {
+      const userId = 'user-mode-off';
+      vi.mocked(consumeDesktopConnectCode).mockResolvedValue({
+        sessionId: SESSION_ID,
+        userId,
+        email: 'test@example.com',
+        expiresAt: Date.now() + 60_000,
+      });
+      vi.mocked(db.select).mockReturnValueOnce(mockSelectChain([{
+        id: SESSION_ID,
+        userId,
+        type: 'desktop',
+        status: 'pending',
+        deviceId: DEVICE_ID,
+      }]));
+
+      const res = await buildApp().request('/connect/exchange', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId: SESSION_ID, code: 'mode-off-code' }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(partnerIdForDevice).not.toHaveBeenCalled();
     });
 
     it('rejects a re-exchange of a consumed connect code (no re-exchange cache)', async () => {
