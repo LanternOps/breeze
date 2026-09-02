@@ -121,7 +121,7 @@
     "messagesPerHour": "Messaggi all'ora per org",
     "alertThresholds": "Avvisa al (% del budget)",
     "alertThresholdsHelp": "Gli admin partner con accesso alla fatturazione ricevono un avviso in-app a ogni soglia e un'email per gli avvisi mensili e di limite raggiunto. Lascia vuoto per ereditare 50, 80, 95.",
-    "notSet": "Non impostato — le org si configurano singolarmente",
+    "notSet": "Non impostato, le org si configurano singolarmente",
     "description": "I valori di budget vengono applicati a tutte le organizzazioni figlie. Gli importi in dollari sono archiviati internamente in centesimi.",
     "modes": {
       "perStep": "Per passaggio",
@@ -1302,7 +1302,6 @@
     "alertThresholds": "Avvisa al (% del budget)",
     "alertThresholdsHelp": "Gli avvisi vengono inviati agli admin partner con accesso alla fatturazione. Il 100% (limite raggiunto) viene sempre inviato.",
     "firedRung": "Avviso {{pct}}% {{period}} inviato il {{date}}",
-    "alertThresholdsPlaceholder": "50, 80, 95",
     "periodLabel": {
       "daily": "giornaliero",
       "monthly": "mensile"

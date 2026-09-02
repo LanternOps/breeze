@@ -121,7 +121,7 @@
     "messagesPerHour": "Kuruluş Başına Saat Başına Mesaj Sayısı",
     "alertThresholds": "Uyar (bütçenin %'si)",
     "alertThresholdsHelp": "Faturalama erişimine sahip partner yöneticileri her eşikte uygulama içi bir uyarı ve aylık ile limit aşımı uyarıları için e-posta alır. 50, 80, 95 değerlerini devralmak için boş bırakın.",
-    "notSet": "Ayarlanmadı — kuruluşlar ayrı ayrı yapılandırılır",
+    "notSet": "Ayarlanmadı, kuruluşlar ayrı ayrı yapılandırılır",
     "description": "Bütçe değerleri tüm alt kuruluşlarda uygulanır. Dolar tutarları dahili olarak sent cinsinden saklanır.",
     "modes": {
       "perStep": "Adım Başına",
@@ -1302,7 +1302,6 @@
     "alertThresholds": "Uyar (bütçenin %'si)",
     "alertThresholdsHelp": "Uyarılar, faturalama erişimine sahip partner yöneticilerine gönderilir. %100 (limite ulaşıldı) her zaman gönderilir.",
     "firedRung": "%{{pct}} {{period}} uyarısı {{date}} tarihinde gönderildi",
-    "alertThresholdsPlaceholder": "50, 80, 95",
     "periodLabel": {
       "daily": "günlük",
       "monthly": "aylık"

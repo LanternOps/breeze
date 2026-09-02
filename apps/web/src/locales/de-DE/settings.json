@@ -121,7 +121,7 @@
     "messagesPerHour": "Nachrichten pro Stunde und Organisation",
     "alertThresholds": "Warnen bei (% des Budgets)",
     "alertThresholdsHelp": "Partner-Admins mit Abrechnungszugriff erhalten bei jeder Stufe eine In-App-Benachrichtigung und eine E-Mail für monatliche und Obergrenzen-Warnungen. Leer lassen, um 50, 80, 95 zu übernehmen.",
-    "notSet": "Nicht festgelegt – Organisationen werden individuell konfiguriert",
+    "notSet": "Nicht festgelegt, Organisationen werden individuell konfiguriert",
     "description": "Budgetwerte werden in allen untergeordneten Organisationen durchgesetzt. Dollarbeträge werden intern in Cent gespeichert.",
     "modes": {
       "perStep": "Pro Schritt",
@@ -1302,7 +1302,6 @@
     "alertThresholds": "Warnen bei (% des Budgets)",
     "alertThresholdsHelp": "Benachrichtigungen gehen an Partner-Admins mit Abrechnungszugriff. 100% (Obergrenze erreicht) wird immer gesendet.",
     "firedRung": "{{pct}}% {{period}}-Warnung gesendet am {{date}}",
-    "alertThresholdsPlaceholder": "50, 80, 95",
     "periodLabel": {
       "daily": "täglich",
       "monthly": "monatlich"

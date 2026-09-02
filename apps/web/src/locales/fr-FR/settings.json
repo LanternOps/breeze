@@ -121,7 +121,7 @@
     "messagesPerHour": "Messages par heure et par organisation",
     "alertThresholds": "Avertir à (% du budget)",
     "alertThresholdsHelp": "Les administrateurs partenaires ayant accès à la facturation reçoivent une alerte dans l'application à chaque palier et un e-mail pour les alertes mensuelles et de plafond atteint. Laissez vide pour hériter de 50, 80, 95.",
-    "notSet": "Non défini — les organisations se configurent individuellement",
+    "notSet": "Non défini, les organisations se configurent individuellement",
     "description": "Les valeurs budgétaires sont appliquées dans toutes les organisations d’enfants. Les montants en dollars sont stockés en centimes en interne.",
     "modes": {
       "perStep": "Par étape",
@@ -1302,7 +1302,6 @@
     "alertThresholds": "Avertir à (% du budget)",
     "alertThresholdsHelp": "Les alertes sont envoyées aux administrateurs partenaires ayant accès à la facturation. 100% (plafond atteint) est toujours envoyé.",
     "firedRung": "Alerte {{pct}}% {{period}} envoyée le {{date}}",
-    "alertThresholdsPlaceholder": "50, 80, 95",
     "periodLabel": {
       "daily": "quotidienne",
       "monthly": "mensuelle"

@@ -1321,7 +1321,7 @@ export async function getUsageSummary(orgId: string): Promise<{
     FROM ai_budget_alert_events
     WHERE org_id = ${orgId}::uuid
       AND ((period = 'daily' AND period_key = ${dailyKey}) OR (period = 'monthly' AND period_key = ${monthlyKey}))
-    ORDER BY created_at
+    ORDER BY created_at, id
   `);
 
   const billedTo = await getLlmBillingSourceForOrg(orgId);

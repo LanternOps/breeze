@@ -1302,7 +1302,6 @@
     "alertThresholds": "Avisar al (% del presupuesto)",
     "alertThresholdsHelp": "Las alertas se envían a los administradores del partner con acceso a facturación. El 100% (límite alcanzado) siempre se envía.",
     "firedRung": "Alerta del {{pct}}% {{period}} enviada el {{date}}",
-    "alertThresholdsPlaceholder": "50, 80, 95",
     "periodLabel": {
       "daily": "diaria",
       "monthly": "mensual"

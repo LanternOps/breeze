@@ -7,9 +7,15 @@ type Props = {
   /** Internal representation uses cents for budgets; this component displays dollars */
   data: InheritableAiBudgetSettings;
   onChange: (data: InheritableAiBudgetSettings) => void;
+  /**
+   * Raised when the alert-threshold box holds text that does not parse. The
+   * hub gates its Save button on it, so an unparseable ladder cannot be
+   * silently dropped while the save reports success (#4388 W03).
+   */
+  onValidityChange?: (valid: boolean) => void;
 };
 
-export default function PartnerAiBudgetsTab({ data, onChange }: Props) {
+export default function PartnerAiBudgetsTab({ data, onChange, onValidityChange }: Props) {
   const { t } = useTranslation('settings');
   const set = (patch: Partial<InheritableAiBudgetSettings>) =>
     onChange({ ...data, ...patch });
@@ -122,6 +128,7 @@ export default function PartnerAiBudgetsTab({ data, onChange }: Props) {
               <AiBudgetThresholdsInput
                 value={data.alertThresholdPercents}
                 onChange={(v) => set({ alertThresholdPercents: v })}
+                onValidityChange={onValidityChange}
                 placeholder={t('partnerAiBudgets.notSet')}
                 testId="partner-ai-budget-thresholds"
               />

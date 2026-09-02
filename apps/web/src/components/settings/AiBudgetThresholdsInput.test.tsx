@@ -70,6 +70,43 @@ describe('AiBudgetThresholdsInput', () => {
     expect(screen.queryByTestId('thresholds-error')).not.toBeInTheDocument();
   });
 
+  // The commit path swallows unparseable text (no onChange), so the page above
+  // has no other way to know its Save button would persist the stale value.
+  it('reports invalid on an unparseable entry and valid again once it parses', () => {
+    const onValidityChange = vi.fn();
+    render(
+      <AiBudgetThresholdsInput value={[]} onChange={vi.fn()} onValidityChange={onValidityChange} testId="thresholds" />,
+    );
+    const input = screen.getByTestId('thresholds-input');
+
+    fireEvent.change(input, { target: { value: '100' } });
+    fireEvent.blur(input);
+    expect(onValidityChange).toHaveBeenLastCalledWith(false);
+    expect(input).toHaveAttribute('aria-invalid', 'true');
+    expect(input).toHaveAttribute('aria-describedby', 'thresholds-error');
+    expect(screen.getByTestId('thresholds-error')).toHaveAttribute('id', 'thresholds-error');
+
+    fireEvent.change(input, { target: { value: '50, 80' } });
+    fireEvent.blur(input);
+    expect(onValidityChange).toHaveBeenLastCalledWith(true);
+    expect(input).not.toHaveAttribute('aria-invalid');
+    expect(input).not.toHaveAttribute('aria-describedby');
+  });
+
+  it('releases the caller when it unmounts holding unparseable text', () => {
+    const onValidityChange = vi.fn();
+    const { unmount } = render(
+      <AiBudgetThresholdsInput value={[]} onChange={vi.fn()} onValidityChange={onValidityChange} testId="thresholds" />,
+    );
+    const input = screen.getByTestId('thresholds-input');
+    fireEvent.change(input, { target: { value: 'abc' } });
+    fireEvent.blur(input);
+    expect(onValidityChange).toHaveBeenLastCalledWith(false);
+
+    unmount();
+    expect(onValidityChange).toHaveBeenLastCalledWith(true);
+  });
+
   it('does not commit a disabled input', () => {
     const onChange = vi.fn();
     render(<AiBudgetThresholdsInput value={[50]} onChange={onChange} disabled testId="thresholds" />);

@@ -38,7 +38,7 @@ test.describe('AI budget alert thresholds', () => {
     expect(putResponse.ok()).toBe(true);
 
     await authedPage.reload();
-    await aiUsage.thresholdsInput().waitFor();
+    await aiUsage.waitUntilReady();
     await expect(aiUsage.thresholdsInput()).toHaveValue('60, 90');
   });
 });

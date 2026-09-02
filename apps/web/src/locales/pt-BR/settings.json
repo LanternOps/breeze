@@ -121,7 +121,7 @@
     "messagesPerHour": "Mensagens por hora por organização",
     "alertThresholds": "Avisar em (% do orçamento)",
     "alertThresholdsHelp": "Administradores parceiros com acesso a cobrança recebem um alerta no aplicativo em cada nível e um e-mail para alertas mensais e de limite atingido. Deixe em branco para herdar 50, 80, 95.",
-    "notSet": "Não definido — as organizações configuram individualmente",
+    "notSet": "Não definido, as organizações configuram individualmente",
     "description": "Os valores de orçamento são aplicados a todas as organizações filhas. Os valores em dólares são armazenados internamente em centavos.",
     "modes": {
       "perStep": "Por etapa",
@@ -1302,7 +1302,6 @@
     "alertThresholds": "Avisar em (% do orçamento)",
     "alertThresholdsHelp": "Os alertas vão para administradores parceiros com acesso a cobrança. 100% (limite atingido) é sempre enviado.",
     "firedRung": "Alerta de {{pct}}% {{period}} enviado em {{date}}",
-    "alertThresholdsPlaceholder": "50, 80, 95",
     "periodLabel": {
       "daily": "diário",
       "monthly": "mensal"

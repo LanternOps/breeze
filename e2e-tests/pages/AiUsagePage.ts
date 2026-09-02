@@ -19,6 +19,15 @@ export class AiUsagePage extends BasePage {
 
   async goto() {
     await this.page.goto(this.url);
+    await this.waitUntilReady();
+  }
+
+  /**
+   * Wait for the island to hydrate after any navigation this Page Object did
+   * not perform itself (a `page.reload()`, say). A bare `waitFor()` on the
+   * input passes on the SSR'd markup, before React has attached its handlers.
+   */
+  async waitUntilReady() {
     await waitForAppReady(this.page, 'ai-budget-thresholds-input');
   }
 }

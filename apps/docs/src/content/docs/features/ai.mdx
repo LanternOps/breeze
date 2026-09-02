@@ -324,6 +324,8 @@ When billing is not configured, AI usage is unlimited — cost tracking still re
 
 Independent of hard budget enforcement, an organisation can get warned as its AI spend approaches its cap. Each period (daily and monthly) is checked against a ladder of percentage thresholds, and once spend crosses a rung, an alert fires for that rung.
 
+Alerts only fire for an organisation that has AI enabled and a daily or monthly cap set. With no cap there is nothing to measure a percentage against, so no rung can be crossed.
+
 The default ladder is 50%, 80%, and 95% of the configured budget. On top of the ladder, a 100% "cap reached" alert always fires when the budget is exhausted, even if the ladder is empty or disabled, since that alert cannot be turned off. Each rung fires once per period; the ladder resets automatically when the daily or monthly period rolls over.
 
 Alerts are delivered to active users with the `billing:manage` permission, whether they belong to the organisation directly or are partner users whose access covers that organisation. Delivery has two channels:
@@ -338,7 +340,9 @@ The threshold ladder is configured in two places:
 - **Organisation**: **Settings → AI Usage** on the org's own budget configuration.
 - **Partner**: the **AI Budgets** tab of Partner Settings, which can set a value that applies across every organisation under the partner.
 
-A partner-set value locks the field on the organisation page, so the org can see it but can't override it. Leaving the field empty means "inherit the default ladder" (50/80/95); explicitly setting it to an empty list turns pre-cap warnings off entirely for that org (the 100% cap-reached alert still fires regardless).
+A partner-set value locks the field on the organisation page, so the org can see it but can't override it.
+
+Either field takes two kinds of input: leave it empty to inherit (the org inherits the partner value, or the 50/80/95 default when the partner sets nothing), or type an explicit ladder of up to five whole percentages, such as `60, 90`. Turning pre-cap warnings off entirely requires storing an empty list, which the UI cannot produce; do that through `PUT /ai/budget` with `"alertThresholdPercents": []`. The 100% cap-reached alert still fires regardless.
 
 ---
 

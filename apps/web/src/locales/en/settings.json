@@ -121,7 +121,7 @@
     "messagesPerHour": "Messages per Hour per Org",
     "alertThresholds": "Warn at (% of budget)",
     "alertThresholdsHelp": "Partner admins with billing access get an in-app alert at each rung and an email for monthly and cap-reached alerts. Leave empty to inherit 50, 80, 95.",
-    "notSet": "Not set — orgs configure individually",
+    "notSet": "Not set, orgs configure individually",
     "description": "Budget values are enforced across all child organizations. Dollar amounts are stored in cents internally.",
     "modes": {
       "perStep": "Per Step",
@@ -1302,7 +1302,6 @@
     "alertThresholds": "Warn at (% of budget)",
     "alertThresholdsHelp": "Alerts go to partner admins with billing access. 100% (cap reached) is always sent.",
     "firedRung": "{{pct}}% {{period}} alert sent {{date}}",
-    "alertThresholdsPlaceholder": "50, 80, 95",
     "periodLabel": {
       "daily": "daily",
       "monthly": "monthly"

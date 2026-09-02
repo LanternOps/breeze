@@ -4,9 +4,18 @@ import { useState, useEffect, useCallback } from 'react';
 import { Bot, DollarSign, Flag, MessageSquare, Zap, Save, Loader2, Lock } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
-import { formatDateTime } from '@/lib/dateTimeFormat';
+import { formatDate, formatDateTime } from '@/lib/dateTimeFormat';
 import { formatCurrency, formatNumber } from '@/lib/i18n/format';
-import AiBudgetThresholdsInput from './AiBudgetThresholdsInput';
+import AiBudgetThresholdsInput, { DEFAULT_THRESHOLDS_PLACEHOLDER } from './AiBudgetThresholdsInput';
+
+/**
+ * Literal keys per alert period, so the i18n key scanner can see them (a
+ * `t(\`...${f.period}\`)` template is a dynamic key it cannot check).
+ */
+const PERIOD_LABEL_KEYS = {
+  daily: 'aiUsagePage.periodLabel.daily',
+  monthly: 'aiUsagePage.periodLabel.monthly',
+} as const;
 
 interface UsageData {
   daily: { inputTokens: number; outputTokens: number; totalCostCents: number; messageCount: number };
@@ -68,6 +77,12 @@ export default function AiUsagePage() {
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showFlaggedOnly, setShowFlaggedOnly] = useState(false);
+  // The org row cannot distinguish "inherit" from an explicit ladder, and the
+  // form seeds itself from the EFFECTIVE budget, so sending the field on every
+  // save would pin the inherited default (50/80/95) onto the org. Only a field
+  // the user actually edited in this session is sent (#4388 W03).
+  const [thresholdsDirty, setThresholdsDirty] = useState(false);
+  const [thresholdsValid, setThresholdsValid] = useState(true);
   const { currentOrgId } = useOrgStore();
   const [budget, setBudget] = useState<BudgetForm>({
     enabled: true,
@@ -101,6 +116,7 @@ export default function AiUsagePage() {
         const data = await usageRes.json();
         setUsage(data);
         if (data.budget) {
+          setThresholdsDirty(false);
           setBudget({
             enabled: data.budget.enabled,
             monthlyBudgetDollars: data.budget.monthlyBudgetCents ? (data.budget.monthlyBudgetCents / 100).toFixed(2) : '',
@@ -155,7 +171,12 @@ export default function AiUsagePage() {
       if (!isLocked('messagesPerMinutePerUser')) payload.messagesPerMinutePerUser = parseInt(budget.messagesPerMinutePerUser) || 20;
       if (!isLocked('messagesPerHourPerOrg')) payload.messagesPerHourPerOrg = parseInt(budget.messagesPerHourPerOrg) || 200;
       if (!isLocked('approvalMode')) payload.approvalMode = budget.approvalMode;
-      if (!isLocked('alertThresholdPercents')) payload.alertThresholdPercents = budget.alertThresholdPercents ?? null;
+      // Only when the user edited the ladder in this session: an untouched
+      // field is showing the effective (possibly inherited) value, and sending
+      // it back would write that value onto the org row as an explicit choice.
+      if (!isLocked('alertThresholdPercents') && thresholdsDirty) {
+        payload.alertThresholdPercents = budget.alertThresholdPercents ?? null;
+      }
 
       const res = await fetchWithAuth('/ai/budget', {
         method: 'PUT',
@@ -238,11 +259,14 @@ export default function AiUsagePage() {
 
       {usage?.alerts?.fired?.length ? (
         <p data-testid="ai-budget-fired-rungs" className="text-xs text-muted-foreground">
-          {usage.alerts.fired.map((f) => t('aiUsagePage.firedRung', {
-            pct: f.thresholdPct,
-            period: t(`aiUsagePage.periodLabel.${f.period}`, { defaultValue: f.period }),
-            date: new Date(f.createdAt).toLocaleDateString(),
-          })).join(' · ')}
+          {usage.alerts.fired.map((f) => {
+            const periodKey = PERIOD_LABEL_KEYS[f.period as keyof typeof PERIOD_LABEL_KEYS];
+            return t('aiUsagePage.firedRung', {
+              pct: f.thresholdPct,
+              period: periodKey ? t(/* i18n-dynamic */ periodKey) : f.period,
+              date: formatDate(f.createdAt),
+            });
+          }).join(' · ')}
         </p>
       ) : null}
 
@@ -326,9 +350,10 @@ export default function AiUsagePage() {
             <span className="text-sm text-muted-foreground">{t('aiUsagePage.alertThresholds')}</span>
             <AiBudgetThresholdsInput
               value={budget.alertThresholdPercents}
-              onChange={(v) => setBudget({ ...budget, alertThresholdPercents: v })}
+              onChange={(v) => { setThresholdsDirty(true); setBudget({ ...budget, alertThresholdPercents: v }); }}
+              onValidityChange={setThresholdsValid}
               disabled={isLocked('alertThresholdPercents')}
-              placeholder={t('aiUsagePage.alertThresholdsPlaceholder')}
+              placeholder={DEFAULT_THRESHOLDS_PLACEHOLDER}
               testId="ai-budget-thresholds"
             />
             {isLocked('alertThresholdPercents') && (
@@ -384,7 +409,7 @@ export default function AiUsagePage() {
           <button
             data-testid="ai-budget-save"
             onClick={handleSaveBudget}
-            disabled={saving || allFieldsLocked}
+            disabled={saving || allFieldsLocked || !thresholdsValid}
             className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
           >
             {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}

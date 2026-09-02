@@ -1167,8 +1167,9 @@ describe('getUsageSummary: effective budget + alert ladder (#4388)', () => {
   });
 
   it('returns the EFFECTIVE budget (partner override wins) and the threshold ladder', async () => {
-    // A raw `ai_budgets` row would say 99999; this proves the merged/effective
-    // value is what ships, not whatever the org's own row happens to hold.
+    // getUsageSummary reads ONLY getEffectiveAiBudget (the org row merged with
+    // any partner-wide override); it no longer selects the raw `ai_budgets`
+    // row, so what this helper resolves is exactly what ships.
     vi.mocked(getEffectiveAiBudget).mockResolvedValue(effectiveBudget({
       monthlyBudgetCents: 5000,
       dailyBudgetCents: null,
