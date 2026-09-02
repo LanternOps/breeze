@@ -25,7 +25,7 @@
 import './setup';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { and, eq, sql } from 'drizzle-orm';
 
 // The autoresponder is the one outbound boundary this suite stubs: whether the
@@ -52,8 +52,11 @@ import { portalUsers } from '../../db/schema/portal';
 import { portalTicketOwnership } from '../../routes/portal/ticketOwnership';
 import { processInboundEmail } from '../../services/inboundEmail/inboundEmailService';
 import type { NormalizedInboundEmail } from '../../services/inboundEmail/types';
-import { createOrganization, createPartner } from './db-utils';
+import { createOrganization, createPartner, createSite } from './db-utils';
 import { getTestDb } from './setup';
+import { randomUUID } from 'node:crypto';
+import * as orgMergeModule from '../../services/orgMerge';
+import { devices, sites } from '../../db/schema';
 
 const MIGRATION_FILE = join(__dirname, '../../../migrations/2026-10-02-100001-ticket-requester-contact.sql');
 
@@ -133,6 +136,11 @@ afterAll(async () => {
   await db.delete(partnerInboundDomains).where(sql`${partnerInboundDomains.partnerId} IN (${partnerList})`);
   await db.execute(sql`DELETE FROM partner_ticket_sequences WHERE partner_id IN (${partnerList})`);
   await db.execute(sql`DELETE FROM audit_logs WHERE org_id IN (${orgList})`);
+  // org merge / device fixtures below reference the orgs; drop them first or
+  // the organizations DELETE trips their FKs.
+  await db.execute(sql`DELETE FROM org_merge_events WHERE partner_id IN (${partnerList})`);
+  await db.delete(devices).where(sql`${devices.orgId} IN (${orgList})`);
+  await db.delete(sites).where(sql`${sites.orgId} IN (${orgList})`);
   await db.delete(organizations).where(sql`${organizations.id} IN (${orgList})`);
   await db.delete(partners).where(sql`${partners.id} IN (${partnerList})`);
 });
@@ -282,6 +290,184 @@ describe('inbound email -> contact requester (#3258 W03)', () => {
   });
 });
 
+
+// ---------------------------------------------------------------------------
+// Cross-org movement: the composite FK, and the two paths that re-stamp
+// tickets.org_id out from under it (#3258 W03 review C1).
+// ---------------------------------------------------------------------------
+
+/** A committed contact + ticket pair in `orgId`, optionally bound to a device. */
+async function seedLinkedTicket(orgId: string, partnerId: string, deviceId: string | null = null) {
+  const suffix = uniqueSuffix();
+  const [contact] = await admin()
+    .insert(contacts)
+    .values({ orgId, email: `linked-${suffix}@example.test`, name: 'Linked Person' })
+    .returning({ id: contacts.id });
+  const [ticket] = await admin()
+    .insert(tickets)
+    .values({
+      orgId,
+      partnerId,
+      ticketNumber: `LNK-${suffix}`,
+      internalNumber: `T-2026-${suffix.slice(-4)}`,
+      subject: 'Contact-linked',
+      status: 'open',
+      source: 'email',
+      deviceId,
+      submitterEmail: `linked-${suffix}@example.test`,
+      submitterName: 'Linked Person',
+      requesterContactId: contact.id,
+    })
+    .returning({ id: tickets.id });
+  return { contactId: contact.id, ticketId: ticket.id };
+}
+
+describe('tickets_requester_contact_org_fk — the composite same-org FK', () => {
+  it('refuses a ticket in org A that names a contact belonging to org B', async () => {
+    const otherOrg = await createOrganization({ partnerId: fx.partnerId });
+    seeded.orgIds.push(otherOrg.id);
+    const [foreign] = await admin()
+      .insert(contacts)
+      .values({ orgId: otherOrg.id, email: `foreign-${uniqueSuffix()}@example.test`, name: 'Foreign' })
+      .returning({ id: contacts.id });
+
+    // The app-layer guard (assertRequesterContactInOrg) is bypassed on purpose:
+    // this asserts the DATABASE makes a cross-org requester unrepresentable,
+    // which is what makes the guard a nicety rather than the boundary.
+    const forge = admin()
+      .insert(tickets)
+      .values({
+        orgId: fx.orgId,
+        partnerId: fx.partnerId,
+        ticketNumber: `FORGE-${uniqueSuffix()}`,
+        internalNumber: `T-2026-${uniqueSuffix().slice(-4)}`,
+        subject: 'Cross-tenant requester',
+        status: 'open',
+        source: 'manual',
+        requesterContactId: foreign.id,
+      });
+
+    // Drizzle wraps the driver error, so the pg code lives on `cause`. The
+    // CONSTRAINT NAME is asserted too: a bare 23503 would also be satisfied by
+    // the org_id or partner_id FK, which is not what this test is about.
+    await expect(forge).rejects.toMatchObject({
+      cause: { code: '23503', constraint_name: 'tickets_requester_contact_org_fk' },
+    });
+  });
+});
+
+describe('device org-move detaches the requester (breeze_cascade_device_org_id)', () => {
+  it('moves a device carrying a contact-linked ticket without 23503, and nulls the link', async () => {
+    const targetOrg = await createOrganization({ partnerId: fx.partnerId });
+    seeded.orgIds.push(targetOrg.id);
+    const site = await createSite({ orgId: fx.orgId });
+    const suffix = uniqueSuffix();
+    const [device] = await admin()
+      .insert(devices)
+      .values({
+        orgId: fx.orgId,
+        siteId: site.id,
+        agentId: `w03-move-${suffix}`,
+        hostname: `w03-${suffix}`,
+        osType: 'windows',
+        osVersion: '10.0.19041',
+        architecture: 'x64',
+        agentVersion: '0.1.0',
+      })
+      .returning({ id: devices.id });
+    const { ticketId, contactId } = await seedLinkedTicket(fx.orgId, fx.partnerId, device.id);
+
+    const targetSite = await createSite({ orgId: targetOrg.id });
+    // The trigger is the DB-side path EVERY caller goes through (the route in
+    // routes/devices/moveOrg.ts only mirrors it). Its generic loop re-stamps
+    // tickets.org_id, and that statement is the one the DEFERRABLE INITIALLY
+    // IMMEDIATE composite FK checks — so without the detach this UPDATE raises
+    // 23503 and the whole device move fails.
+    await expect(
+      admin().execute(
+        sql`UPDATE devices SET org_id = ${targetOrg.id}::uuid, site_id = ${targetSite.id}::uuid WHERE id = ${device.id}::uuid`,
+      ),
+    ).resolves.toBeDefined();
+
+    const [row] = await admin()
+      .select({ orgId: tickets.orgId, requesterContactId: tickets.requesterContactId, submitterEmail: tickets.submitterEmail })
+      .from(tickets)
+      .where(eq(tickets.id, ticketId));
+    expect(row.orgId).toBe(targetOrg.id);
+    expect(row.requesterContactId).toBeNull();
+    // The SNAPSHOT survives: "who filed this" is still answerable after the
+    // move, it just no longer points at a live contact row.
+    expect(row.submitterEmail).toBeTruthy();
+
+    // The contact itself stays with its organization.
+    const [stillHome] = await admin().select({ orgId: contacts.orgId }).from(contacts).where(eq(contacts.id, contactId));
+    expect(stillHome.orgId).toBe(fx.orgId);
+  });
+});
+
+describe('org merge KEEPS the requester link', () => {
+  let priorDrain: string | undefined;
+
+  beforeEach(() => {
+    priorDrain = process.env.ORG_MERGE_FENCE_DRAIN_MS;
+    process.env.ORG_MERGE_FENCE_DRAIN_MS = '0';
+  });
+  afterEach(() => {
+    if (priorDrain === undefined) delete process.env.ORG_MERGE_FENCE_DRAIN_MS;
+    else process.env.ORG_MERGE_FENCE_DRAIN_MS = priorDrain;
+  });
+
+  it('re-tenants contact AND ticket to the survivor with the link intact, device move included', async () => {
+    // The merge repoints `devices` (REPOINT_TABLES), which fires
+    // breeze_cascade_device_org_id() — the same trigger the device-move case
+    // above relies on to DETACH. Here the contact is moving to the survivor
+    // alongside the ticket, so detaching would silently destroy the customer's
+    // portal ownership of their own history. The trigger's merge-fence gate is
+    // what makes these two cases differ, and this is the test that would go
+    // red if that gate were dropped.
+    const survivor = await createOrganization({ partnerId: fx.partnerId });
+    seeded.orgIds.push(survivor.id);
+    const site = await createSite({ orgId: fx.orgId });
+    const suffix = uniqueSuffix();
+    const [device] = await admin()
+      .insert(devices)
+      .values({
+        orgId: fx.orgId,
+        siteId: site.id,
+        agentId: `w03-merge-${suffix}`,
+        hostname: `w03m-${suffix}`,
+        osType: 'windows',
+        osVersion: '10.0.19041',
+        architecture: 'x64',
+        agentVersion: '0.1.0',
+      })
+      .returning({ id: devices.id });
+    const { ticketId, contactId } = await seedLinkedTicket(fx.orgId, fx.partnerId, device.id);
+
+    await orgMergeModule.executeOrgMerge({
+      loserOrgId: fx.orgId,
+      survivorOrgId: survivor.id,
+      partnerId: fx.partnerId,
+      performedBy: randomUUID(),
+      performedByEmail: `merge-actor-${suffix}@example.test`,
+    });
+
+    const [ticketRow] = await admin()
+      .select({ orgId: tickets.orgId, requesterContactId: tickets.requesterContactId })
+      .from(tickets)
+      .where(eq(tickets.id, ticketId));
+    const [contactRow] = await admin()
+      .select({ orgId: contacts.orgId })
+      .from(contacts)
+      .where(eq(contacts.id, contactId));
+
+    expect(ticketRow.orgId).toBe(survivor.id);
+    expect(contactRow.orgId).toBe(survivor.id);
+    // The whole point: SAME contact, still linked.
+    expect(ticketRow.requesterContactId).toBe(contactId);
+  });
+});
+
 describe('2026-10-02-100001-ticket-requester-contact.sql', () => {
   it('is idempotent — a second apply is a no-op, not a duplicate-constraint abort', async () => {
     const text = readFileSync(MIGRATION_FILE, 'utf8');
@@ -330,5 +516,46 @@ describe('2026-10-02-100001-ticket-requester-contact.sql', () => {
       .from(tickets)
       .where(eq(tickets.id, legacy.id));
     expect(row.requesterContactId).toBe(contact.id);
+  });
+
+  it('skips a login whose contact lives in ANOTHER org instead of aborting the file', async () => {
+    // portal_users.contact_id is a SINGLE-column FK to contacts(id): nothing in
+    // the schema forces the login and its contact into the same org. Such a
+    // drifted row makes the backfill propose a pair the composite FK rejects,
+    // and a 23503 inside a migration aborts the WHOLE file — on every database
+    // that has the drift, with no way to skip it.
+    const otherOrg = await createOrganization({ partnerId: fx.partnerId });
+    seeded.orgIds.push(otherOrg.id);
+    const suffix = uniqueSuffix();
+    const [foreignContact] = await admin()
+      .insert(contacts)
+      .values({ orgId: otherOrg.id, email: `drift-${suffix}@example.test`, name: 'Drifted' })
+      .returning({ id: contacts.id });
+    const [login] = await admin()
+      .insert(portalUsers)
+      .values({ orgId: fx.orgId, email: `drift-${suffix}@example.test`, name: 'Drifted', contactId: foreignContact.id })
+      .returning({ id: portalUsers.id });
+    const [ticket] = await admin()
+      .insert(tickets)
+      .values({
+        orgId: fx.orgId,
+        partnerId: fx.partnerId,
+        ticketNumber: `DRIFT-${suffix}`,
+        internalNumber: `T-2026-${suffix.slice(-4)}`,
+        subject: 'Drifted login',
+        status: 'open',
+        source: 'portal',
+        submittedBy: login.id,
+      })
+      .returning({ id: tickets.id });
+
+    await expect(admin().execute(sql.raw(readFileSync(MIGRATION_FILE, 'utf8')))).resolves.toBeDefined();
+
+    const [row] = await admin()
+      .select({ requesterContactId: tickets.requesterContactId })
+      .from(tickets)
+      .where(eq(tickets.id, ticket.id));
+    // Left unlinked — recoverable — rather than blocking the deploy.
+    expect(row.requesterContactId).toBeNull();
   });
 });
