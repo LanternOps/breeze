@@ -58,7 +58,7 @@ import { randomUUID } from 'node:crypto';
 import * as orgMergeModule from '../../services/orgMerge';
 import { devices, sites } from '../../db/schema';
 
-const MIGRATION_FILE = join(__dirname, '../../../migrations/2026-10-02-100001-ticket-requester-contact.sql');
+const MIGRATION_FILE = join(__dirname, '../../../migrations/2026-10-04-100000-ticket-requester-contact.sql');
 
 const uniqueSuffix = () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const admin = () => getTestDb() as any;
@@ -468,7 +468,7 @@ describe('org merge KEEPS the requester link', () => {
   });
 });
 
-describe('2026-10-02-100001-ticket-requester-contact.sql', () => {
+describe('2026-10-04-100000-ticket-requester-contact.sql', () => {
   it('is idempotent — a second apply is a no-op, not a duplicate-constraint abort', async () => {
     const text = readFileSync(MIGRATION_FILE, 'utf8');
     await admin().execute(sql.raw(text));

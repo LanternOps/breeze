@@ -57,7 +57,7 @@ export const portalUsers = pgTable('portal_users', {
   // (`resolveInviteContact` in routes/orgPortalUsers.ts, which links an
   // existing contact or creates one and never overwrites a link already
   // there), and the same backfill again in
-  // 2026-10-02-100001-ticket-requester-contact.sql for tickets.
+  // 2026-10-04-100000-ticket-requester-contact.sql for tickets.
   //
   // Inbound email does NOT write here any more (#3258 W03): it used to mint a
   // password-less row per unknown sender, and now resolves the sender onto
@@ -101,7 +101,7 @@ export const tickets = pgTable('tickets', {
   // (requester_contact_id, org_id) -> contacts (id, org_id), DEFERRABLE
   // INITIALLY IMMEDIATE with a column-list `ON DELETE SET NULL
   // (requester_contact_id)` so deleting a contact never nulls the NOT NULL
-  // org_id. That lives in SQL only (2026-10-02-100001-ticket-requester-contact.sql)
+  // org_id. That lives in SQL only (2026-10-04-100000-ticket-requester-contact.sql)
   // — same "SQL migration only" convention as this table's categoryId/statusId.
   requesterContactId: uuid('requester_contact_id'),
   submitterEmail: varchar('submitter_email', { length: 255 }),
