@@ -17,6 +17,12 @@ const { rateLimiterMock } = vi.hoisted(() => ({
   })),
 }));
 
+const { evaluateCapability, partnerIdForDevice, partnerTrustMode } = vi.hoisted(() => ({
+  evaluateCapability: vi.fn(async (): Promise<any> => ({ allow: true })),
+  partnerIdForDevice: vi.fn(() => Promise.resolve('pppppppp-pppp-4ppp-8ppp-pppppppppppp')),
+  partnerTrustMode: vi.fn(() => 'off'),
+}));
+
 // --- DB mock ---
 vi.mock('../db', () => ({
   db: {
@@ -152,6 +158,19 @@ vi.mock('../services/redis', () => ({
 
 vi.mock('../services/rate-limit', () => ({
   rateLimiter: rateLimiterMock,
+}));
+
+vi.mock('../config/partnerTrustMode', () => ({ partnerTrustMode }));
+vi.mock('../services/partnerTrust', () => ({
+  evaluateCapability,
+  partnerIdForDevice,
+  trustDenyBody: (d: Record<string, unknown>, reviewRequested: boolean) => ({
+    error: d.code,
+    capability: d.capability,
+    reason: d.reason,
+    reviewRequested,
+    meetingUrl: null,
+  }),
 }));
 
 // Partial mock: only the IP SOURCE is stubbed. rateLimitIpKey (the IPv6 /64
@@ -331,6 +350,26 @@ describe('POST /tunnels (VNC)', () => {
     expect(body).toHaveProperty('id', SESSION_ID);
     expect(body).toHaveProperty('type', 'vnc');
     expect(body).toHaveProperty('status', 'pending');
+  });
+
+  it('maps partner-trust denial to a 403 without inserting a tunnel session', async () => {
+    partnerTrustMode.mockReturnValueOnce('enforce');
+    evaluateCapability.mockResolvedValueOnce({
+      allow: false,
+      code: 'TRUST_RESTRICTED',
+      capability: 'remote_control',
+      reason: 'restricted',
+    });
+
+    const res = await app.request('/tunnels', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deviceId: DEVICE_ID, type: 'vnc' }),
+    });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual(expect.objectContaining({ error: 'TRUST_RESTRICTED' }));
+    expect(db.insert).not.toHaveBeenCalled();
   });
 });
 
