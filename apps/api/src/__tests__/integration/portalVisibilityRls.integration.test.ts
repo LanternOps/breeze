@@ -359,6 +359,124 @@ describe('portal visibility RLS', () => {
     });
   });
 
+  it('resolves the month boundary in the caller-supplied timezone, not UTC', async () => {
+    const admin = getTestDb();
+    const partner = await createPartner();
+    const orgA = await createOrganization({
+      partnerId: partner.id,
+    });
+    const technician = await createUser({
+      partnerId: partner.id,
+      orgId: null,
+    });
+
+    const [portalA] = await admin
+      .insert(portalUsers)
+      .values({
+        orgId: orgA.id,
+        email: `portal-${randomUUID()}@example.test`,
+        name: 'Portal A',
+        status: 'active',
+      })
+      .returning({ id: portalUsers.id });
+    if (!portalA) throw new Error('portal user insert failed');
+
+    const [ticketAug] = await admin
+      .insert(tickets)
+      .values({
+        orgId: orgA.id,
+        partnerId: partner.id,
+        ticketNumber: `AUG-${randomUUID()}`,
+        subject: 'Straddles into August in Denver',
+        source: 'portal',
+      })
+      .returning({ id: tickets.id });
+    if (!ticketAug) throw new Error('ticket insert failed');
+
+    // 2026-09-01T03:00:00Z is 2026-08-31T21:00:00 in America/Denver
+    // (UTC-6 in summer) — belongs to the August 2026 window in Denver,
+    // but to September in UTC.
+    await admin.insert(timeEntries).values({
+      partnerId: partner.id,
+      orgId: orgA.id,
+      ticketId: ticketAug.id,
+      userId: technician.id,
+      startedAt: new Date('2026-09-01T03:00:00Z'),
+      endedAt: new Date('2026-09-01T03:30:00Z'),
+      durationMinutes: 30,
+      isBillable: true,
+      billingStatus: 'billed',
+      isApproved: true,
+      currencyCode: 'USD',
+    });
+
+    const [ticketJul] = await admin
+      .insert(tickets)
+      .values({
+        orgId: orgA.id,
+        partnerId: partner.id,
+        ticketNumber: `JUL-${randomUUID()}`,
+        subject: 'Belongs to July in Denver',
+        source: 'portal',
+      })
+      .returning({ id: tickets.id });
+    if (!ticketJul) throw new Error('ticket insert failed');
+
+    // 2026-08-01T04:00:00Z is 2026-07-31T22:00:00 in America/Denver —
+    // belongs to July in Denver (excluded from the August window), but
+    // to August in UTC.
+    await admin.insert(timeEntries).values({
+      partnerId: partner.id,
+      orgId: orgA.id,
+      ticketId: ticketJul.id,
+      userId: technician.id,
+      startedAt: new Date('2026-08-01T04:00:00Z'),
+      endedAt: new Date('2026-08-01T04:20:00Z'),
+      durationMinutes: 20,
+      isBillable: true,
+      billingStatus: 'billed',
+      isApproved: true,
+      currencyCode: 'USD',
+    });
+
+    const context: DbAccessContext = {
+      scope: 'organization',
+      orgId: orgA.id,
+      accessibleOrgIds: [orgA.id],
+      accessiblePartnerIds: [],
+      userId: null,
+      currentPartnerId: null,
+    };
+
+    await withDbAccessContext(context, async () => {
+      const denverUsage = await supportUsageForOrg({
+        orgId: orgA.id,
+        month: '2026-08',
+        timezone: 'America/Denver',
+        portalUserId: portalA.id,
+      });
+
+      // Only the entry that falls in Denver's August window counts; the
+      // one that is August only in UTC must be excluded.
+      expect(denverUsage.totals.billed.minutes).toBe(30);
+
+      const utcUsage = await supportUsageForOrg({
+        orgId: orgA.id,
+        month: '2026-08',
+        timezone: 'UTC',
+        portalUserId: portalA.id,
+      });
+
+      // Under UTC, the first entry (Sep 1 03:00Z) is September and stays
+      // excluded, while the second entry (Aug 1 04:00Z, July in Denver)
+      // is now August and included — the two calls disagree on which
+      // entry belongs to the month, which is only possible if the
+      // boundary is actually computed in the caller's timezone rather
+      // than always in UTC.
+      expect(utcUsage.totals.billed.minutes).toBe(20);
+    });
+  });
+
   it('installs every portal visibility query index', async () => {
     const expected = [
       'device_patches_org_installed_at_idx',

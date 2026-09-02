@@ -10,6 +10,15 @@ export type SecurityScoreBand =
   | 'fair'
   | 'at_risk';
 
+/**
+ * Device protection state classification from security compliance analysis.
+ * Reflects agent-provided and policy-provided signals.
+ */
+export type ProtectionState =
+  | 'protected'
+  | 'unprotected'
+  | 'unknown';
+
 export interface PaginationDto {
   page: number;
   limit: number;
@@ -131,7 +140,7 @@ export interface SecurityOverviewDto {
 export interface SecurityDeviceRow {
   id: string;
   name: string;
-  protection: 'protected' | 'unprotected' | 'unknown';
+  protection: ProtectionState;
   avProducts: string[];
   realTimeProtection: boolean | null;
   definitionsAgeDays: number | null;
@@ -251,7 +260,7 @@ export interface EnrichedPortalDevice {
   status: string;
   lastSeenAt: string | null;
   lastPatchAt: string | null;
-  protection: 'protected' | 'unprotected' | 'unknown';
+  protection: ProtectionState;
   encryption: string | null;
   lastBackupAt: string | null;
   warrantyEndsAt: string | null;

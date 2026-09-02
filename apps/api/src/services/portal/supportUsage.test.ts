@@ -6,23 +6,27 @@ const state = vi.hoisted(() => ({
   rows: [] as Record<string, unknown>[],
   join: undefined as SQL | undefined,
   where: undefined as SQL | undefined,
+  columns: undefined as Record<string, unknown> | undefined,
 }));
 
 vi.mock('../../db', () => ({
   db: {
-    select: vi.fn(() => ({
-      from: vi.fn(() => ({
-        innerJoin: vi.fn((_table, join: SQL) => {
-          state.join = join;
-          return {
-            where: vi.fn(async (where: SQL) => {
-              state.where = where;
-              return state.rows;
-            }),
-          };
-        }),
-      })),
-    })),
+    select: vi.fn((columns: Record<string, unknown>) => {
+      state.columns = columns;
+      return {
+        from: vi.fn(() => ({
+          innerJoin: vi.fn((_table, join: SQL) => {
+            state.join = join;
+            return {
+              where: vi.fn(async (where: SQL) => {
+                state.where = where;
+                return state.rows;
+              }),
+            };
+          }),
+        })),
+      };
+    }),
   },
   runOutsideDbContext: vi.fn(async (
     fn: () => Promise<unknown>,
@@ -48,6 +52,7 @@ describe('supportUsageForOrg', () => {
     state.rows = [];
     state.join = undefined;
     state.where = undefined;
+    state.columns = undefined;
   });
 
   it('places minutes into the four approved buckets', async () => {
@@ -103,6 +108,22 @@ describe('supportUsageForOrg', () => {
     expect(join.params).toContain(args.orgId);
     expect(where.sql).toContain('"time_entries"."org_id" = $');
     expect(where.params).toContain(args.orgId);
+  });
+
+  it('binds portalUserId into the compiled title-mask CASE expression', async () => {
+    await supportUsageForOrg(args);
+
+    const dialect = new PgDialect();
+    const title = dialect.sqlToQuery(
+      (state.columns as { title: SQL }).title,
+    );
+
+    // The title is only revealed when the ticket was submitted by the
+    // requesting portal user — dropping the portalUserId binding would
+    // leak every ticket's subject (or mask every one), so the compiled
+    // SQL must reference submitted_by and actually bind portalUserId.
+    expect(title.sql).toContain('"tickets"."submitted_by" = $');
+    expect(title.params).toContain(args.portalUserId);
   });
 
   it('compares the naive started_at column against the timezone-aware boundary via AT TIME ZONE', async () => {

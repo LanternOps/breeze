@@ -1,11 +1,9 @@
 import type { securityStatus } from '../../db/schema';
+import type { ProtectionState } from '@breeze/shared';
+
+export type { ProtectionState };
 
 type SecurityProvider = (typeof securityStatus.$inferSelect)['provider'];
-
-export type ProtectionState =
-  | 'protected'
-  | 'unprotected'
-  | 'unknown';
 
 /**
  * Direct extraction of the posture report's device-protection rule
