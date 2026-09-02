@@ -24,14 +24,20 @@ vi.mock('../db', () => ({
   db: {
     select: vi.fn(() => ({
       from: vi.fn(() => ({
-        where: vi.fn(() => ({
+        where: vi.fn(() => {
+          // `.for('key share')` pins the matched contact in the same read (the
+          // caller writes an FK to it next), so the chain has to return itself.
+          const leaf: any = {
           limit: vi.fn(() => selectResult()),
           orderBy: vi.fn(() => selectResult()),
           // bulk-invite's candidates query awaits `.where()` directly with no
           // `.limit()`/`.orderBy()` leaf — make the where-result thenable so
           // `await ...where(x)` also resolves via selectResult().
           then: (resolve: any, reject: any) => selectResult().then(resolve, reject)
-        }))
+          };
+          leaf.for = vi.fn(() => leaf);
+          return leaf;
+        })
       }))
     })),
     insert: vi.fn(() => ({ values: vi.fn((v: unknown) => { valuesSpy(v); return { returning: vi.fn(() => insertReturning()) }; }) })),
