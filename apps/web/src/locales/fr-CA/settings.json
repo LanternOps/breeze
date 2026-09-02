@@ -1009,6 +1009,33 @@
         }
       }
     },
+    "visibility": {
+      "title": "Visibilité",
+      "description": "Choisissez les renseignements de service que ce client peut voir dans le portail.",
+      "enableAll": "Activer toute la visibilité",
+      "toggles": {
+        "enableDashboard": {
+          "label": "Tableau de bord",
+          "description": "Affiche un résumé de l'état du service à la connexion."
+        },
+        "enableSecurity": {
+          "label": "Sécurité",
+          "description": "Affiche la posture de sécurité, la protection, les menaces et les vulnérabilités."
+        },
+        "enableBackups": {
+          "label": "Sauvegardes",
+          "description": "Affiche la couverture des sauvegardes, la vérification, les tests de restauration et l'état de préparation."
+        },
+        "enableReports": {
+          "label": "Rapports",
+          "description": "Permet aux clients de générer et de télécharger les rapports approuvés."
+        },
+        "enableSupportUsage": {
+          "label": "Utilisation du soutien",
+          "description": "Affiche le total du temps de soutien facturable pour le mois en cours."
+        }
+      }
+    },
     "support": {
       "title": "Contact support",
       "description": "Montré aux clients dans le portail.",

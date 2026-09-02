@@ -1009,6 +1009,33 @@
         }
       }
     },
+    "visibility": {
+      "title": "Görünürlük",
+      "description": "Bu müşterinin portalda hangi hizmet bilgilerini görebileceğini seçin.",
+      "enableAll": "Tüm görünürlüğü etkinleştir",
+      "toggles": {
+        "enableDashboard": {
+          "label": "Pano",
+          "description": "Müşteriler oturum açtığında bir hizmet durumu özetini gösterir."
+        },
+        "enableSecurity": {
+          "label": "Güvenlik",
+          "description": "Güvenlik duruşunu, korumayı, tehditleri ve güvenlik açıklarını gösterir."
+        },
+        "enableBackups": {
+          "label": "Yedeklemeler",
+          "description": "Yedekleme kapsamını, doğrulamayı, geri yükleme testlerini ve hazır olma durumunu gösterir."
+        },
+        "enableReports": {
+          "label": "Raporlar",
+          "description": "Müşterilerin onaylı raporlar oluşturmasına ve indirmesine izin verir."
+        },
+        "enableSupportUsage": {
+          "label": "Destek kullanımı",
+          "description": "Ayın bugüne kadarki faturalandırılabilir destek süresi toplamını gösterir."
+        }
+      }
+    },
     "support": {
       "title": "Destek iletişim kişisi",
       "description": "Portalda müşterilere gösterilir.",

@@ -1009,6 +1009,33 @@
         }
       }
     },
+    "visibility": {
+      "title": "Visibility",
+      "description": "Choose which service insights this customer can see in the portal.",
+      "enableAll": "Enable all visibility",
+      "toggles": {
+        "enableDashboard": {
+          "label": "Dashboard",
+          "description": "Show a service-health summary when customers sign in."
+        },
+        "enableSecurity": {
+          "label": "Security",
+          "description": "Show security posture, protection, threats, and vulnerabilities."
+        },
+        "enableBackups": {
+          "label": "Backups",
+          "description": "Show backup coverage, verification, restore tests, and readiness."
+        },
+        "enableReports": {
+          "label": "Reports",
+          "description": "Allow customers to generate and download approved reports."
+        },
+        "enableSupportUsage": {
+          "label": "Support usage",
+          "description": "Show month-to-date billable support-time totals."
+        }
+      }
+    },
     "support": {
       "title": "Support contact",
       "description": "Shown to customers in the portal.",

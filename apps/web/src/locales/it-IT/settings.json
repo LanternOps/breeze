@@ -1009,6 +1009,33 @@
         }
       }
     },
+    "visibility": {
+      "title": "Visibilità",
+      "description": "Scegli quali informazioni sul servizio questo cliente può vedere nel portale.",
+      "enableAll": "Abilita tutta la visibilità",
+      "toggles": {
+        "enableDashboard": {
+          "label": "Pannello di controllo",
+          "description": "Mostra un riepilogo dello stato del servizio all'accesso."
+        },
+        "enableSecurity": {
+          "label": "Sicurezza",
+          "description": "Mostra postura di sicurezza, protezione, minacce e vulnerabilità."
+        },
+        "enableBackups": {
+          "label": "Backup",
+          "description": "Mostra copertura backup, verifica, test di ripristino e prontezza."
+        },
+        "enableReports": {
+          "label": "Report",
+          "description": "Consente ai clienti di generare e scaricare i report approvati."
+        },
+        "enableSupportUsage": {
+          "label": "Utilizzo assistenza",
+          "description": "Mostra il totale del tempo di assistenza fatturabile del mese in corso."
+        }
+      }
+    },
     "support": {
       "title": "Contatto assistenza",
       "description": "Mostrato ai clienti nel portale.",
