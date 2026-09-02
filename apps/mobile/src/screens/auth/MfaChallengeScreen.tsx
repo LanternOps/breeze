@@ -224,6 +224,12 @@ export function MfaChallengeScreen() {
                     minHeight: 48,
                     flex: 1,
                     fontSize: 22,
+                    // type.mono's lineHeight (22) is sized for its own 14pt
+                    // fontSize, not this input's 22pt override — left as-is
+                    // it gives zero headroom above the font size, and iOS
+                    // clips glyphs from the top when that happens. 28 matches
+                    // the app's own 22pt/28 line-height pairing (type.title).
+                    lineHeight: 28,
                     letterSpacing: isRecovery ? 1 : 6,
                     textAlign: 'center',
                   },

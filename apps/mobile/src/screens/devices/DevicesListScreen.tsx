@@ -17,6 +17,9 @@ import { getDevices, type Device } from '../../services/api';
 import { relativeTime } from '../../lib/relativeTime';
 import { reportInternalError } from '../../lib/errorReporting';
 import type { SystemsStackParamList } from '../../navigation/MainNavigator';
+// Imported from the sibling detail screen so the raw osType -> display name
+// mapping (windows -> Windows, macos -> macOS, ...) lives in one place.
+import { osLabel } from '../../lib/osLabel';
 
 import {
   shapeDeviceList,
@@ -63,7 +66,9 @@ function DeviceRow({ device, onPress }: { device: Device; onPress: () => void })
           {device.name}
         </Text>
         <Text style={styles.meta} numberOfLines={1}>
-          {[device.os, device.siteName].filter(Boolean).join(' · ') || '—'}
+          {[device.os ? osLabel(device.os) : null, device.siteName]
+            .filter(Boolean)
+            .join(' · ') || '—'}
         </Text>
       </View>
       <Text style={styles.seen}>
