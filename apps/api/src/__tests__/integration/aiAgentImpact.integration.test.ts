@@ -70,6 +70,7 @@ import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContex
 import {
   actionIntents,
   aiAgentFixWatches,
+  aiAgentGraduation,
   aiAgentImpactDaily,
   aiAgentRuns,
   aiAgents,
@@ -1222,5 +1223,73 @@ describe('ai_agent_impact_daily — Drizzle/organizations cascade wiring', () =>
     await adminDb.delete(organizations).where(eq(organizations.id, org.id));
 
     expect(await readStoredRows(org.id)).toEqual([]);
+  });
+});
+
+function partnerDbContext(partnerId: string, accessibleOrgIds: string[]): DbAccessContext {
+  return { scope: 'partner', orgId: null, accessibleOrgIds, accessiblePartnerIds: [partnerId], userId: null };
+}
+
+function partnerAuth(partnerId: string, userId: string, accessibleOrgIds: string[]): AuthContext {
+  const { orgCondition, canAccessOrg } = buildOrgAccessClosures(accessibleOrgIds);
+  return {
+    principal: { kind: 'user_session' },
+    user: { id: userId, email: 'impact-reader@example.test', name: 'Impact Reader', isPlatformAdmin: false },
+    token: null,
+    partnerId,
+    orgId: null,
+    scope: 'partner',
+    accessibleOrgIds,
+    orgCondition,
+    canAccessOrg,
+  } as unknown as AuthContext;
+}
+
+describe('promoteEligibleCount — live graduation rows in the impact DTO', () => {
+  it('counts eligible rows per scope, excludes the other three states, and never crosses a tenant', async () => {
+    const adminDb = getTestDb() as any;
+    const a = await createTenant();
+    const b = await createTenant(a.partnerId); // sibling org, same partner
+    const outsider = await createTenant();     // different partner entirely
+
+    // Non-uniform by construction: one row per state under org A, so a
+    // predicate that lost its `state = 'eligible'` filter returns 4, not 1.
+    await adminDb.insert(aiAgentGraduation).values([
+      { orgId: a.orgId, agentId: a.agentId, opKey: 'manage_services:restart', state: 'eligible' },
+      { orgId: a.orgId, agentId: a.agentId, opKey: 'manage_devices:reboot', state: 'tracking' },
+      { orgId: a.orgId, agentId: a.agentId, opKey: 'manage_patches:install', state: 'promoted' },
+      { orgId: a.orgId, agentId: a.agentId, opKey: 'manage_alerts:acknowledge', state: 'demoted' },
+      { orgId: b.orgId, agentId: b.agentId, opKey: 'manage_services:restart', state: 'eligible' },
+      { orgId: outsider.orgId, agentId: outsider.agentId, opKey: 'manage_services:restart', state: 'eligible' },
+    ]);
+
+    // Org scope: org A's single eligible row. Not 4 (the other states), not
+    // 2 (the sibling org), not 3 (the outsider).
+    const orgSummary = await withDbAccessContext(orgDbContext(a.orgId), () =>
+      loadImpactSummary(orgAuth(a.orgId, a.partnerId, a.userId), { window: 7, orgId: a.orgId }),
+    );
+    expect(orgSummary.promoteEligibleCount).toBe(1);
+
+    // Partner scope over BOTH accessible orgs: 2. The outsider's row is
+    // excluded by RLS AND by orgCondition — belt and braces, as designed.
+    const partnerSummary = await withDbAccessContext(
+      partnerDbContext(a.partnerId, [a.orgId, b.orgId]),
+      () => loadImpactSummary(partnerAuth(a.partnerId, a.userId, [a.orgId, b.orgId]), { window: 7 }),
+    );
+    expect(partnerSummary.promoteEligibleCount).toBe(2);
+
+    // A partner who can reach only ONE of their orgs sees only that one.
+    const narrowed = await withDbAccessContext(partnerDbContext(a.partnerId, [b.orgId]), () =>
+      loadImpactSummary(partnerAuth(a.partnerId, a.userId, [b.orgId]), { window: 7 }),
+    );
+    expect(narrowed.promoteEligibleCount).toBe(1);
+  });
+
+  it('is 0, never null, for an org with no graduation rows at all', async () => {
+    const t = await createTenant();
+    const summary = await withDbAccessContext(orgDbContext(t.orgId), () =>
+      loadImpactSummary(orgAuth(t.orgId, t.partnerId, t.userId), { window: 7, orgId: t.orgId }),
+    );
+    expect(summary.promoteEligibleCount).toBe(0);
   });
 });

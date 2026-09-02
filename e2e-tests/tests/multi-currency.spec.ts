@@ -228,12 +228,12 @@ test.describe('multi-currency — non-USD org browser slices', () => {
         await expect(publicPage.getByTestId('public-quote-accept')).toBeVisible();
 
         // Hydration guard (#3906) — see the same note in
-        // quote-contract-proposal.spec.ts: Caddy previously dropped this
-        // `client:load` island's unprefixed dev module URL into the web
-        // catch-all instead of the portal, so it never hydrated even though
-        // the SSR'd markup above looked correct. Fail loud here if that
-        // routing (docker/Caddyfile.prod's @portalDevAssets matcher)
-        // regresses.
+        // quote-contract-proposal.spec.ts: the portal dev server used to emit
+        // this `client:load` island's module URL without the `/portal` prefix,
+        // so Caddy dropped it into the web catch-all and it never hydrated even
+        // though the SSR'd markup above looked correct. The portal dev server
+        // now serves its whole module graph under the base path, so fail loud
+        // here if that regresses.
         await waitForHydration(publicPage, 'public-quote-accept');
 
         // Accept through the same public endpoint the "Accept & sign" button

@@ -290,7 +290,7 @@ function minimalImpactDto(overrides: Partial<AiAgentImpactDto> = {}): AiAgentImp
     byOrg: [],
     byOrgTruncated: false,
     positiveFeedback: { up: 0, down: 0, rate: null },
-    promoteEligibleCount: null,
+    promoteEligibleCount: 0,
     weights: { effective: { ...DEFAULT_IMPACT_WEIGHTS }, overrides: null },
     canEditWeights: false,
     ...overrides,

@@ -3626,6 +3626,107 @@ apply_reverse_proxy_env() {
 #
 # Skipped for localhost and bare IPv4 addresses: Caddy never attempts ACME for
 # either, so it already falls back to its internal CA without being told to.
+# The templates this script downloads are pinned to the SELECTED release tag,
+# while the script itself is whatever the operator fetched — usually newer. The
+# internal-CA opt-in needs two template edits to take effect: the compose
+# `caddy` service must pass CADDY_LOCAL_CERTS through, and the Caddyfile's
+# global options block must carry the `{$CADDY_LOCAL_CERTS}` placeholder.
+# Against a tag that predates both, writing CADDY_LOCAL_CERTS=local_certs to
+# .env is a silent no-op: Caddy still attempts the ACME order, fails it, and
+# aborts the handshake with SSL_ERROR_INTERNAL_ERROR_ALERT — exactly the
+# symptom the prompt exists to prevent (reported on v0.109.0 templates).
+#
+# So backfill the two lines when they are missing. Idempotent: a template that
+# already carries the wiring is left byte-for-byte alone (no backup either).
+ensure_caddy_local_certs_template_support() {
+  [[ "${REVERSE_PROXY_MODE}" == "caddy" ]] || return 0
+
+  if [[ -f "${COMPOSE_FILE}" ]] && ! grep -q 'CADDY_LOCAL_CERTS' "${COMPOSE_FILE}"; then
+    backfill_compose_caddy_local_certs
+  fi
+
+  if [[ -f "${CADDYFILE_FILE}" ]] && ! grep -q '{\$CADDY_LOCAL_CERTS' "${CADDYFILE_FILE}"; then
+    backfill_caddyfile_local_certs_placeholder
+  fi
+}
+
+# Adds `CADDY_LOCAL_CERTS: ${CADDY_LOCAL_CERTS:-}` directly after the
+# `ACME_EMAIL:` line of the `caddy` service — the same block and indentation the
+# current docker-compose.yml uses. Anchored on the service, not on the first
+# ACME_EMAIL in the file, so a future service that also takes ACME_EMAIL cannot
+# receive the line by mistake.
+backfill_compose_caddy_local_certs() {
+  local tmp
+
+  if ! grep -Eq '^  caddy:[[:space:]]*$' "${COMPOSE_FILE}"; then
+    fail "${COMPOSE_FILE} does not contain the packaged Caddy service; cannot enable the internal CA. Restore a fresh Compose file with --download."
+  fi
+
+  tmp="$(mktemp "${COMPOSE_FILE}.tmp.XXXXXX")"
+  backup_file "${COMPOSE_FILE}"
+
+  if ! awk '
+    /^  caddy:[[:space:]]*$/ { in_caddy = 1; print; next }
+    in_caddy && /^  [a-z][a-z0-9_-]*:[[:space:]]*$/ { in_caddy = 0 }
+    {
+      print
+      if (in_caddy && !done && /^      ACME_EMAIL:/) {
+        print "      CADDY_LOCAL_CERTS: ${CADDY_LOCAL_CERTS:-}"
+        done = 1
+      }
+    }
+  ' "${COMPOSE_FILE}" > "${tmp}"; then
+    rm -f "${tmp}"
+    fail "Failed to add CADDY_LOCAL_CERTS to the caddy service; ${COMPOSE_FILE} was left unchanged."
+  fi
+
+  [[ -s "${tmp}" ]] || fail_compose_rewrite "${tmp}" "Generated Compose file was empty; ${COMPOSE_FILE} was left unchanged."
+  assert_generated_compose_contains "${tmp}" '      CADDY_LOCAL_CERTS: ${CADDY_LOCAL_CERTS:-}' "the CADDY_LOCAL_CERTS pass-through on the caddy service"
+  if ! mv "${tmp}" "${COMPOSE_FILE}"; then
+    rm -f "${tmp}"
+    fail "Failed to replace ${COMPOSE_FILE} with the CADDY_LOCAL_CERTS-enabled Compose file."
+  fi
+  log "Added CADDY_LOCAL_CERTS pass-through to the caddy service in ${COMPOSE_FILE} (release template predates the internal-CA option)."
+}
+
+# Inserts the bare `{$CADDY_LOCAL_CERTS}` placeholder as the first entry of the
+# global options block — the block that opens the file with a lone `{`. A bare
+# placeholder expands to `local_certs` when set and to a blank line when empty,
+# which the Caddyfile adapter discards; see docker/Caddyfile.prod.
+backfill_caddyfile_local_certs_placeholder() {
+  local tmp
+
+  if ! grep -Eq '^\{[[:space:]]*$' "${CADDYFILE_FILE}"; then
+    fail "${CADDYFILE_FILE} has no global options block; cannot enable the internal CA. Restore a fresh Caddyfile with --download."
+  fi
+
+  tmp="$(mktemp "${CADDYFILE_FILE}.tmp.XXXXXX")"
+  backup_file "${CADDYFILE_FILE}"
+
+  if ! awk '
+    {
+      print
+      if (!done && /^\{[[:space:]]*$/) {
+        print "  {$CADDY_LOCAL_CERTS}"
+        done = 1
+      }
+    }
+  ' "${CADDYFILE_FILE}" > "${tmp}"; then
+    rm -f "${tmp}"
+    fail "Failed to add the CADDY_LOCAL_CERTS placeholder; ${CADDYFILE_FILE} was left unchanged."
+  fi
+
+  if [[ ! -s "${tmp}" ]] || ! grep -Fq -- '  {$CADDY_LOCAL_CERTS}' "${tmp}"; then
+    rm -f "${tmp}"
+    fail "Generated Caddyfile is missing the CADDY_LOCAL_CERTS placeholder; ${CADDYFILE_FILE} was left unchanged."
+  fi
+  if ! mv "${tmp}" "${CADDYFILE_FILE}"; then
+    rm -f "${tmp}"
+    fail "Failed to replace ${CADDYFILE_FILE} with the CADDY_LOCAL_CERTS-enabled Caddyfile."
+  fi
+  log "Added the CADDY_LOCAL_CERTS placeholder to ${CADDYFILE_FILE} (release template predates the internal-CA option)."
+}
+
 configure_caddy_local_certs() {
   local domain="$1"
   local existing default_answer
@@ -3654,6 +3755,7 @@ configure_caddy_local_certs() {
     return 0
   fi
 
+  ensure_caddy_local_certs_template_support
   set_env_value "CADDY_LOCAL_CERTS" "local_certs"
   log "Caddy will issue certificates for ${domain} from its own internal CA instead of Let's Encrypt."
   log "Browsers will warn on every visit until that CA root is trusted on each machine. Export it with:"

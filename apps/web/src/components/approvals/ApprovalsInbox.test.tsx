@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { AiAgentGraduationDto, AiAgentGraduationRowDto } from '@breeze/shared';
 import ApprovalsInbox from './ApprovalsInbox';
 import { ActionError } from '@/lib/runAction';
 import { fetchWithAuth } from '../../stores/auth';
@@ -8,6 +9,7 @@ const intentApprovalsMock = vi.hoisted(() => ({
   decide: vi.fn(),
 }));
 const navigateToMock = vi.hoisted(() => vi.fn());
+const showToastMock = vi.hoisted(() => vi.fn());
 // Only the WebAuthn ceremony is stubbed. `decideIntentApprovalBatch` itself is
 // deliberately left REAL (the intentApprovals mock below spreads the actual
 // module), so these cases prove the endpoint, the payload and the batch error
@@ -18,6 +20,11 @@ const authenticatorMock = vi.hoisted(() => ({
 }));
 
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+// Resolved relative to THIS file (components/approvals/), the same module
+// runAction.ts reaches via '../components/shared/Toast' — matches the
+// established pattern (AiAgentGraduationPanel.test.tsx) for intercepting
+// runAction's own toast without mocking runAction itself.
+vi.mock('../shared/Toast', () => ({ showToast: (...args: unknown[]) => showToastMock(...args) }));
 // Spreads the ACTUAL module so `AssertionChallengeError` is the real class the
 // batch client `instanceof`-checks against — a bare object mock leaves that
 // export undefined and the challenge-refusal branch silently unreachable.
@@ -650,5 +657,258 @@ describe('ApprovalsInbox — grouped agent cards and batch decisions', () => {
     const row = await screen.findByTestId('approval-row-ap-a');
     expect(row).toHaveTextContent('Target device: HOST-ap-a');
     expect(screen.getByTestId('approval-row-ap-b')).not.toHaveTextContent('Target device');
+  });
+});
+
+describe('ApprovalsInbox — "Approve and always allow"', () => {
+  /** Deliberately non-uniform where it matters: `firstVerifiedAt` and the
+   *  counters are irrelevant to this affordance, only `state` and `opKey`
+   *  drive it. */
+  const graduationRow = (
+    opKey: string,
+    state: AiAgentGraduationRowDto['state'] = 'eligible',
+  ): AiAgentGraduationRowDto => ({
+    opKey,
+    namespace: 'policy_key',
+    state,
+    window: { executed: 12, verified: 9, failed: 0, recurred: 0, firstVerifiedAt: '2026-08-01T00:00:00.000Z' },
+    blockedReason: state === 'eligible' ? null : 'below_threshold',
+    promotedAt: null,
+    demotedAt: null,
+    demoteReason: null,
+  });
+
+  const graduationDto = (
+    rows: AiAgentGraduationRowDto[],
+    policyDecideEnabled = true,
+  ): AiAgentGraduationDto => ({
+    version: 1,
+    agentId: 'agent-1',
+    ownerScope: 'organization',
+    rows,
+    actOpReliability: [],
+    promoteThreshold: 20,
+    policyDecideEnabled,
+  });
+
+  /** Only ONE of the three AI_AGENT_KINDS ('patch') ever has an active agent
+   *  in these fixtures — the other two answer the route's real 404 shape
+   *  ("No active agent policy for this organization/kind"), proving the
+   *  component tolerates the two misses rather than requiring all three. */
+  const routeGraduationAndBatch = (
+    approvals: unknown[],
+    patchDto: AiAgentGraduationDto,
+    options?: {
+      batch?: { status: number; payload: unknown };
+      promote?: { status: number; payload: unknown };
+      /** Mutable, empty at call time. The always-allow flow's own
+       *  `decideIntentApproval` mock (set up per test) adds an id to this set
+       *  the moment it "approves" it, so the pending-list refetch that
+       *  follows genuinely stops returning that row — mirroring what the real
+       *  server does, since single-card decide reloads rather than removing
+       *  locally. Passing a set the test also populates is what lets this
+       *  distinguish "not yet approved" from "approved" across calls, unlike
+       *  a static filter which would hide the row from the very first paint. */
+      removedOnApprove?: Set<string>;
+    },
+  ) => {
+    fetchMock.mockImplementation((async (url: string) => {
+      const raw = String(url);
+      if (raw.includes('/batch/decide')) {
+        const batch = options?.batch ?? { status: 200, payload: { results: [] } };
+        return response(batch.payload, batch.status < 300, batch.status);
+      }
+      if (raw.includes('/ai/agents/graduation/promote')) {
+        const promote = options?.promote ?? { status: 201, payload: { intentId: 'intent-promo-1' } };
+        return response(promote.payload, promote.status < 300, promote.status);
+      }
+      if (raw.includes('/ai/agents/graduation')) {
+        const query = new URL(raw, 'http://local').searchParams;
+        if (query.get('kind') === 'patch') return response(patchDto);
+        return response({ error: 'No active agent policy for this organization/kind' }, false, 404);
+      }
+      const removed = options?.removedOnApprove;
+      const rows = removed
+        ? approvals.filter((a) => !removed.has((a as { id: string }).id))
+        : approvals;
+      return response({ approvals: rows, nextCursor: null });
+    }) as unknown as typeof fetchWithAuth);
+  };
+
+  const promoteCalls = () =>
+    fetchMock.mock.calls.filter(([url]) => String(url).includes('/ai/agents/graduation/promote'));
+
+  const promoteBody = (index = 0) =>
+    JSON.parse(String((promoteCalls()[index]?.[1] as RequestInit | undefined)?.body));
+
+  it('shows the button only for a supervised card whose op key is eligible', async () => {
+    routeGraduationAndBatch([agentCard('ap-a')], graduationDto([graduationRow('manage_patches:install')]));
+    render(<ApprovalsInbox />);
+
+    expect(await screen.findByTestId('approval-always-allow-ap-a')).toBeInTheDocument();
+  });
+
+  it('never shows the button on a four_eyes card, even with an eligible key', async () => {
+    routeGraduationAndBatch(
+      [agentCard('ap-a', { approvalScope: 'four_eyes' })],
+      graduationDto([graduationRow('manage_patches:install')]),
+    );
+    render(<ApprovalsInbox />);
+    await screen.findByTestId('approval-row-ap-a');
+
+    expect(screen.queryByTestId('approval-always-allow-ap-a')).not.toBeInTheDocument();
+  });
+
+  it('never shows the button on a critical-tier card, even with an eligible key', async () => {
+    routeGraduationAndBatch(
+      [agentCard('ap-a', { riskTier: 'critical' })],
+      graduationDto([graduationRow('manage_patches:install')]),
+    );
+    render(<ApprovalsInbox />);
+    await screen.findByTestId('approval-row-ap-a');
+
+    expect(screen.queryByTestId('approval-always-allow-ap-a')).not.toBeInTheDocument();
+  });
+
+  it('hides the button when the card key is not eligible', async () => {
+    routeGraduationAndBatch(
+      [agentCard('ap-a')],
+      graduationDto([graduationRow('manage_patches:install', 'tracking')]),
+    );
+    render(<ApprovalsInbox />);
+    await screen.findByTestId('approval-row-ap-a');
+
+    expect(screen.queryByTestId('approval-always-allow-ap-a')).not.toBeInTheDocument();
+  });
+
+  it('hides the button when policy-decide is disabled', async () => {
+    routeGraduationAndBatch(
+      [agentCard('ap-a')],
+      graduationDto([graduationRow('manage_patches:install')], false),
+    );
+    render(<ApprovalsInbox />);
+    await screen.findByTestId('approval-row-ap-a');
+
+    expect(screen.queryByTestId('approval-always-allow-ap-a')).not.toBeInTheDocument();
+  });
+
+  it('approves the card before requesting always-allow, in that order, with the exact promote body', async () => {
+    const removedOnApprove = new Set<string>();
+    routeGraduationAndBatch(
+      [agentCard('ap-a')],
+      graduationDto([graduationRow('manage_patches:install')]),
+      { removedOnApprove },
+    );
+    intentApprovalsMock.decide.mockImplementation(async (id: string) => {
+      removedOnApprove.add(id);
+      return 'decided';
+    });
+    render(<ApprovalsInbox />);
+
+    fireEvent.click(await screen.findByTestId('approval-always-allow-ap-a'));
+    fireEvent.click(await screen.findByTestId('approval-always-allow-confirm-ap-a'));
+
+    await waitFor(() => expect(promoteCalls()).toHaveLength(1));
+    expect(intentApprovalsMock.decide).toHaveBeenCalledWith('ap-a', 'approve');
+
+    const decideOrder = intentApprovalsMock.decide.mock.invocationCallOrder[0];
+    const promoteCallIndex = fetchMock.mock.calls.findIndex(([url]) =>
+      String(url).includes('/ai/agents/graduation/promote'),
+    );
+    const promoteOrder = fetchMock.mock.invocationCallOrder[promoteCallIndex];
+    expect(decideOrder).toBeLessThan(promoteOrder);
+
+    expect(promoteBody()).toEqual({ orgId: 'org-1', kind: 'patch', opKey: 'manage_patches:install' });
+  });
+
+  it('shows an "approved, promotion failed" toast and still removes the card when the promote POST fails', async () => {
+    const removedOnApprove = new Set<string>();
+    routeGraduationAndBatch(
+      [agentCard('ap-a')],
+      graduationDto([graduationRow('manage_patches:install')]),
+      {
+        promote: { status: 500, payload: { error: 'internal' } },
+        removedOnApprove,
+      },
+    );
+    intentApprovalsMock.decide.mockImplementation(async (id: string) => {
+      removedOnApprove.add(id);
+      return 'decided';
+    });
+    render(<ApprovalsInbox />);
+
+    fireEvent.click(await screen.findByTestId('approval-always-allow-ap-a'));
+    fireEvent.click(await screen.findByTestId('approval-always-allow-confirm-ap-a'));
+
+    await waitFor(() => expect(promoteCalls()).toHaveLength(1));
+    // The approve already went through — the row leaves the list regardless
+    // of the promote outcome.
+    await waitFor(() => expect(screen.queryByTestId('approval-row-ap-a')).not.toBeInTheDocument());
+
+    await waitFor(() =>
+      expect(showToastMock).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'error', message: expect.stringMatching(/approved/i) }),
+      ),
+    );
+    // Must not read as "the whole action failed" — the approve's own success
+    // is not the thing being reported as broken here.
+    const [errorToast] = showToastMock.mock.calls.map(([toast]) => toast).filter(
+      (toast: { type: string }) => toast.type === 'error',
+    );
+    expect(errorToast.message).not.toMatch(/could not be submitted/i);
+  });
+
+  it('never promotes when decideIntentApproval returns needs_device — leaves an inline error and the card stays put', async () => {
+    routeGraduationAndBatch([agentCard('ap-a')], graduationDto([graduationRow('manage_patches:install')]));
+    intentApprovalsMock.decide.mockResolvedValue('needs_device');
+    render(<ApprovalsInbox />);
+
+    fireEvent.click(await screen.findByTestId('approval-always-allow-ap-a'));
+    fireEvent.click(await screen.findByTestId('approval-always-allow-confirm-ap-a'));
+
+    await waitFor(() => expect(screen.getByTestId('approval-error-ap-a')).toBeInTheDocument());
+    // The card was NOT approved the ordinary way, so the promote must never
+    // have been reached — a regression that hoisted the promote above this
+    // outcome check would leave a card the approver never actually approved
+    // showing a success toast.
+    expect(promoteCalls()).toHaveLength(0);
+    expect(showToastMock).not.toHaveBeenCalled();
+    expect(screen.getByTestId('approval-row-ap-a')).toBeInTheDocument();
+  });
+
+  it('never promotes when decideIntentApproval returns not_sole_approver — leaves an inline error and the card stays put', async () => {
+    routeGraduationAndBatch([agentCard('ap-a')], graduationDto([graduationRow('manage_patches:install')]));
+    intentApprovalsMock.decide.mockResolvedValue('not_sole_approver');
+    render(<ApprovalsInbox />);
+
+    fireEvent.click(await screen.findByTestId('approval-always-allow-ap-a'));
+    fireEvent.click(await screen.findByTestId('approval-always-allow-confirm-ap-a'));
+
+    await waitFor(() => expect(screen.getByTestId('approval-error-ap-a')).toBeInTheDocument());
+    expect(promoteCalls()).toHaveLength(0);
+    expect(showToastMock).not.toHaveBeenCalled();
+    expect(screen.getByTestId('approval-row-ap-a')).toBeInTheDocument();
+  });
+
+  it('hides the button and stays silent when the graduation fetch fails, without blocking Approve', async () => {
+    fetchMock.mockImplementation((async (url: string) => {
+      const raw = String(url);
+      if (raw.includes('/ai/agents/graduation')) throw new Error('network down');
+      return response({ approvals: [agentCard('ap-a')], nextCursor: null });
+    }) as unknown as typeof fetchWithAuth);
+    render(<ApprovalsInbox />);
+
+    await screen.findByTestId('approval-row-ap-a');
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/ai/agents/graduation'))).toBe(
+        true,
+      ),
+    );
+
+    expect(screen.queryByTestId('approval-always-allow-ap-a')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('approvals-error')).not.toBeInTheDocument();
+    expect(showToastMock).not.toHaveBeenCalled();
+    // The ordinary Approve affordance is unaffected by the failed side fetch.
+    expect(screen.getByTestId('approval-approve-ap-a')).toBeEnabled();
   });
 });

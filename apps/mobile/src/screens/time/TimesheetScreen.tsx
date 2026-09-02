@@ -11,6 +11,7 @@ import {
   View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useFocusEffect } from '@react-navigation/native';
 
 import { palette, radii, spacing, type } from '../../theme';
 import { useAppDispatch, useAppSelector } from '../../store';
@@ -189,9 +190,16 @@ export function TimesheetScreen({ navigation }: TimesheetProps = {}) {
     [dispatch]
   );
 
-  useEffect(() => {
-    void load(weekStart);
-  }, [load, weekStart]);
+  // Reload on every focus, not just on mount or week change: a timer stopped on
+  // a ticket and then the Time tab opened is the reviewer's exact path, and the
+  // tab used to keep the week it fetched the first time, so the new entry was
+  // simply not there until the week was paged away and back. The screen has no
+  // pull-to-refresh either, so focus is the only natural refresh point.
+  useFocusEffect(
+    useCallback(() => {
+      void load(weekStart);
+    }, [load, weekStart])
+  );
 
   const days = useMemo(() => daysOfWeek(weekStart), [weekStart]);
   // Only data actually loaded FOR the displayed week counts. Anything else is
@@ -274,7 +282,10 @@ export function TimesheetScreen({ navigation }: TimesheetProps = {}) {
         <View style={styles.entryHeader}>
           <Text style={styles.entryRef}>
             {entry.ticketId
-              ? (ticketRef({ internalNumber: ticket?.internalNumber ?? null }) ?? ticket?.subject ?? 'Ticket')
+              ? (ticketRef({ internalNumber: entry.ticketNumber ?? ticket?.internalNumber ?? null }) ??
+                entry.ticketSubject ??
+                ticket?.subject ??
+                'Ticket')
               : 'No ticket'}
           </Text>
           <Text style={styles.entryDuration}>{formatMinutes(entry.durationMinutes)}</Text>

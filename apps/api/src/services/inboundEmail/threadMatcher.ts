@@ -44,7 +44,11 @@ const MATCH_COLS = {
 // authenticated callers (Office add-in: a partner-scoped tech) omit it and get
 // pure partner-scoped matching.
 export interface SenderResolver {
-  portalUser(): Promise<{ id: string; orgId: string; name: string | null } | null>;
+  // `contactId` (#3258 W03) is the person behind the LOGIN. Carried here rather
+  // than re-read at the create path so the one portal_users lookup this
+  // resolver memoises answers both "who is the sender" and "can the ticket be
+  // attributed to a person".
+  portalUser(): Promise<{ id: string; orgId: string; name: string | null; contactId: string | null } | null>;
   domainOrg(): Promise<{ orgId: string; autoCreateContact: boolean } | null>;
 }
 

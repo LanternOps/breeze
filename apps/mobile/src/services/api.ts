@@ -18,6 +18,7 @@ import {
 import { beginSessionInvalidation } from './sessionAuthority';
 import { noteServerDate } from './serverClock';
 import { AUTH_TOKEN_KEY, NATIVE_AUTH_BINDING_KEY } from './authSessionKeys';
+import { createTokenRefresher } from './tokenRefresh';
 
 export const FALLBACK_API_BASE_URL =
   process.env.EXPO_PUBLIC_API_URL || 'http://localhost:3001';
@@ -344,6 +345,19 @@ export async function getAuthImageHeaders(): Promise<Record<string, string>> {
 }
 
 // Request helper
+/**
+ * Whether a 401 on this request should be answered with a token refresh. Only
+ * the auth endpoints are excluded: a 401 from /auth/login is bad credentials,
+ * and /auth/refresh must never trigger itself. /auth/me is a normal session
+ * probe (cold-start revalidation) and does refresh.
+ */
+function canRefreshFor(prefix: string, endpoint: string): boolean {
+  if (prefix !== API_CORE_PREFIX) return true;
+  const path = endpoint.split('?')[0];
+  return !path.startsWith('/auth/') || path === '/auth/me';
+}
+
+
 async function requestWithPrefix<T>(
   endpoint: string,
   prefix: string,
@@ -364,12 +378,18 @@ async function requestWithPrefix<T>(
   const nativeAuthIssuer = prefix === API_CORE_PREFIX
     && NATIVE_AUTH_ISSUER_ENDPOINTS.has(endpoint);
   let retriedBindingBootstrap = false;
+  // One refresh-and-retry per request. Set by the 401 branch below; the token
+  // read prefers it so the retry cannot race a slow keychain write and re-send
+  // the token that just expired.
+  let retriedAuth = false;
+  let refreshedToken: string | null = null;
 
   while (true) {
     assertCurrentSession(capturedGeneration);
-    const token = Object.prototype.hasOwnProperty.call(sessionContext, 'bearerToken')
-      ? sessionContext.bearerToken ?? null
-      : await getToken();
+    const token = refreshedToken
+      ?? (Object.prototype.hasOwnProperty.call(sessionContext, 'bearerToken')
+        ? sessionContext.bearerToken ?? null
+        : await getToken());
     const method = (options.method ?? 'GET').toUpperCase();
     const multipart = isFormData(options.body);
     const headers: Record<string, string> = {
@@ -459,6 +479,26 @@ async function requestWithPrefix<T>(
     if (!response.ok) {
       const body = await response.json().catch(() => ({} as Record<string, unknown>));
       assertCurrentSession(capturedGeneration);
+      // Access tokens live JWT_EXPIRES_IN (15 minutes in production) and the
+      // refresh cookie lives days. Until this branch existed only the AI chat
+      // path refreshed, so every other screen hard-401'd a quarter of an hour
+      // after sign-in and the cold-start revalidation then signed the user
+      // out. Refresh once and replay; a second 401 is final. The auth
+      // endpoints themselves are excluded so /auth/refresh can never recurse.
+      if (
+        response.status === 401
+        && !retriedAuth
+        && token
+        && canRefreshFor(prefix, endpoint)
+      ) {
+        retriedAuth = true;
+        const fresh = await refreshAccessToken();
+        assertCurrentSession(capturedGeneration);
+        if (fresh) {
+          refreshedToken = fresh;
+          continue;
+        }
+      }
       const code = typeof body.code === 'string' ? body.code : undefined;
       if (code === DEVICE_BLOCKED_CODE) {
         const reason = typeof body.reason === 'string' ? body.reason : null;
@@ -710,6 +750,13 @@ export async function refreshToken(): Promise<{ token: string }> {
   }
   return { token };
 }
+
+/**
+ * The app's single token refresher: the request core calls it on a 401 and
+ * aiChat reopens its stream through it, so concurrent 401s share one
+ * /auth/refresh. See tokenRefresh.ts for why it is built here.
+ */
+export const refreshAccessToken = createTokenRefresher(refreshToken);
 
 export async function changePassword(currentPassword: string, newPassword: string): Promise<void> {
   await requestWithPrefix('/auth/change-password', API_CORE_PREFIX, {

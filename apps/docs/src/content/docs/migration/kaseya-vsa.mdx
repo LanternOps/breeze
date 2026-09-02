@@ -27,6 +27,7 @@ Kaseya's identity for a machine is `machineName.groupName.orgName` — the machi
 | **Machine Group** | **Site** | Machine groups are usually locations or departments. Nested subgroups (`hq.acme`) flatten to one site each. |
 | View / filter | Device Group | VSA Views map to Breeze [dynamic device groups](/features/device-groups/). |
 | Agent | Device | |
+| Staff member | **Contact** | An org's staff records, including the one designated its primary contact. Bulk-load with [Recipe 1c](/migration/toolkit/#recipe-1c--import-contacts); Breeze keeps one primary per organization and one per site. |
 
 <Aside type="tip">
   If your machine groups are departmental rather than geographic (`accounting.acme`, `warehouse.acme`), map them to Breeze **device groups** under a single site instead of to sites. Breeze sites carry a timezone and drive maintenance-window and patch scheduling; a department is not a timezone.

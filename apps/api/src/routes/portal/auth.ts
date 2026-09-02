@@ -127,6 +127,12 @@ export async function portalAuthMiddleware(c: Context, next: Next) {
         orgId: portalUsers.orgId,
         email: portalUsers.email,
         name: portalUsers.name,
+        // #3258 W03: the CONTACT this login belongs to. Portal ticket
+        // ownership is `submitted_by = me OR requester_contact_id = my
+        // contact` — without this hydration a customer who emailed support
+        // and then logged in would see none of their own tickets, because an
+        // emailed ticket has no `submitted_by` at all.
+        contactId: portalUsers.contactId,
         receiveNotifications: portalUsers.receiveNotifications,
         status: portalUsers.status
       })

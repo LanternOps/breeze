@@ -27,6 +27,7 @@ Datto RMM is flat: an account contains **Sites**, and a Site contains Devices. T
 | — | Site | Create one site per org (name it `Main`) unless the customer genuinely has multiple locations. |
 | Device Group / filter | Device Group | Datto's saved device filters map to Breeze [dynamic device groups](/features/device-groups/). |
 | Device | Device | |
+| — | **Contact** | Breeze contacts are first-class records, organization-level or pinned to a site. Load them from your PSA export with [Recipe 1c](/migration/toolkit/#recipe-1c--import-contacts). |
 
 <Aside type="caution">
   Resist the temptation to map Datto Sites onto Breeze *Sites* under one big organization. Breeze scopes tenancy, RLS, billing, and portal access at the **organization** level — a customer that is only a Site cannot be isolated, billed, or given portal access independently. One customer, one organization.

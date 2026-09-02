@@ -9,6 +9,7 @@ const NEW_TICKET_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 const OTHER_TICKET_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
 const CLOSED_TICKET_ID = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
 const PORTAL_USER_ID = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+const CONTACT_ID = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
 
 type AuthState = { accessibleOrgIds: string[] | null };
 
@@ -21,7 +22,7 @@ const { authRef, mockDb, hoisted } = vi.hoisted(() => ({
     addTicketComment: vi.fn(),
     claimMessageLink: vi.fn(),
     findLinkByMessageId: vi.fn(),
-    createConfirmedContact: vi.fn(),
+    resolveConfirmedContact: vi.fn(),
     findPortalUserByEmail: vi.fn(),
     insertEmailAuthoredComment: vi.fn(),
     ticketThreadAnchor: vi.fn(),
@@ -122,7 +123,7 @@ vi.mock('../../services/ticketEmailLinks', async () => {
 });
 
 vi.mock('../../services/officeAddin/addinContacts', () => ({
-  createConfirmedContact: hoisted.createConfirmedContact,
+  resolveConfirmedContact: hoisted.resolveConfirmedContact,
   findPortalUserByEmail: hoisted.findPortalUserByEmail,
 }));
 
@@ -457,17 +458,111 @@ describe('POST /tickets/from-email', () => {
     expect(hoisted.writeAuditEvent).not.toHaveBeenCalled();
   });
 
-  it('creates a confirmed contact and sets it as the requester', async () => {
-    hoisted.createConfirmedContact.mockResolvedValue({ portalUserId: PORTAL_USER_ID });
+  // ---- #3258 follow-up: the add-in's confirmed requester is a CONTACT ----
+  // A `portal_users` row is a LOGIN, minted only when portal access is granted.
+  // The add-in needs a person to attribute the ticket to, not a login, so it
+  // resolves a contact and passes `requesterContactId`.
+
+  it('creates a confirmed CONTACT and sets it as the ticket requester', async () => {
+    hoisted.resolveConfirmedContact.mockResolvedValue({ contactId: CONTACT_ID, outcome: 'created' });
     const res = await post({
       ...baseBody,
       requester: { kind: 'create_contact', email: 'New.Person@acme.com', name: 'New Person' },
     });
     expect(res.status).toBe(201);
-    expect(hoisted.createConfirmedContact).toHaveBeenCalledWith(ORG_A, {
-      email: 'New.Person@acme.com',
-      name: 'New Person',
+    // The technician is the acting user — this is a confirmed action, not an
+    // ingest side effect, so `contacts.created_by` names who confirmed it.
+    expect(hoisted.resolveConfirmedContact).toHaveBeenCalledWith(
+      ORG_A,
+      { email: 'New.Person@acme.com', name: 'New Person' },
+      { userId: USER_ID },
+    );
+    const created = hoisted.createTicket.mock.calls[0]![0];
+    expect(created.requesterContactId).toBe(CONTACT_ID);
+    // No login is minted, so nothing is attributed to one.
+    expect(created.submittedBy).toBeUndefined();
+  });
+
+  it('records the contact outcome and id in the audit event', async () => {
+    // Without this the audit says only requesterKind, so "did this ticket get a
+    // requester, and if not why" is unanswerable from the log.
+    hoisted.resolveConfirmedContact.mockResolvedValue({ contactId: CONTACT_ID, outcome: 'linked' });
+    await post({
+      ...baseBody,
+      requester: { kind: 'create_contact', email: 'New.Person@acme.com', name: 'New Person' },
     });
+    expect(hoisted.writeAuditEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        details: expect.objectContaining({
+          requesterKind: 'create_contact',
+          contactLink: 'linked',
+          requesterContactId: CONTACT_ID,
+        }),
+      })
+    );
+  });
+
+  it('audits contactLink=null for a requester that resolves no contact', async () => {
+    hoisted.getPortalUserForValidation.mockResolvedValue({
+      id: PORTAL_USER_ID, orgId: ORG_A, name: 'Known', email: 'known@acme.com',
+    });
+    await post({ ...baseBody, requester: { kind: 'portal_user', id: PORTAL_USER_ID } });
+    expect(hoisted.writeAuditEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        details: expect.objectContaining({ requesterKind: 'portal_user', contactLink: null }),
+      })
+    );
+  });
+
+  it('still creates the ticket when the contact resolver THROWS', async () => {
+    // A contacts failure is ours, not the technician's. Losing the email they
+    // are filing would be a far worse outcome than an unattributed ticket.
+    hoisted.resolveConfirmedContact.mockRejectedValue(new Error('deadlock detected'));
+    const res = await post({
+      ...baseBody,
+      requester: { kind: 'create_contact', email: 'New.Person@acme.com', name: 'New Person' },
+    });
+    expect(res.status).toBe(201);
+    const created = hoisted.createTicket.mock.calls[0]![0];
+    expect(created.requesterContactId).toBeUndefined();
+    // The snapshot still carries who it came from.
+    expect(created.submitterEmail).toBe(baseBody.from.email);
+    expect(hoisted.writeAuditEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ details: expect.objectContaining({ contactLink: 'link-failed' }) })
+    );
+  });
+
+  it('still creates the ticket when the address is a shared mailbox', async () => {
+    // Several contacts share the address, so the person is genuinely unknown.
+    // The ticket keeps the submitter name/email snapshot and is simply not
+    // attributed to a contact — refusing the ticket would be worse.
+    hoisted.resolveConfirmedContact.mockResolvedValue({ contactId: null, outcome: 'ambiguous' });
+    const res = await post({
+      ...baseBody,
+      requester: { kind: 'create_contact', email: 'support@acme.com', name: null },
+    });
+    expect(res.status).toBe(201);
+    const created = hoisted.createTicket.mock.calls[0]![0];
+    expect(created.requesterContactId).toBeUndefined();
+    expect(created.submittedBy).toBeUndefined();
+    expect(created.submitterEmail).toBe(baseBody.from.email);
+  });
+
+  it('carries the contact link of a named EXISTING portal-user requester', async () => {
+    // The portal_user branch is unchanged: createTicket derives the contact
+    // from that login's own contact_id.
+    hoisted.getPortalUserForValidation.mockResolvedValue({
+      id: PORTAL_USER_ID,
+      orgId: ORG_A,
+      name: 'Known',
+      email: 'known@acme.com',
+    });
+    const res = await post({ ...baseBody, requester: { kind: 'portal_user', id: PORTAL_USER_ID } });
+    expect(res.status).toBe(201);
+    expect(hoisted.resolveConfirmedContact).not.toHaveBeenCalled();
     expect(hoisted.createTicket.mock.calls[0]![0].submittedBy).toBe(PORTAL_USER_ID);
   });
 
