@@ -98,7 +98,9 @@ function app(orgId = ORG_ID, authMethod: 'bearer' | 'cookie' = 'bearer') {
   const a = new Hono();
   a.use('*', async (c, next) => {
     c.set('portalAuth', {
-      user: { id: 'pu1', orgId, email: 'c@example.test', name: 'Cust', receiveNotifications: true, status: 'active' },
+      // contactId is REQUIRED on PortalAuthContext (#3258 W03); invoice routes
+      // do not read it, so the null (contact-less login) case is stated.
+      user: { id: 'pu1', orgId, email: 'c@example.test', name: 'Cust', contactId: null, receiveNotifications: true, status: 'active' },
       token: 't', authMethod,
     });
     await next();

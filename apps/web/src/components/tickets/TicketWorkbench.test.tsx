@@ -2065,6 +2065,48 @@ describe('TicketWorkbench requester editing + device link', () => {
       }));
     });
   });
+
+  it('does NOT PATCH when the requester editor is opened and saved unchanged', async () => {
+    // #3258 W03: an emailed ticket has no portal login, so the editor opens on
+    // "someone else" with the snapshot pre-filled. Saving it untouched used to
+    // POST {submittedBy: null, submitterName, submitterEmail} — which the API
+    // read as a requester change and used to clear requester_contact_id,
+    // removing the customer's own ticket from their portal with no way back.
+    mockTicketApi({
+      'tk-1': makeTicket({ submittedBy: null, submitterName: 'Jane Doe', submitterEmail: 'jane@acme.test' })
+    });
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ticket-workbench');
+    fireEvent.click(screen.getByTestId('ticket-workbench-requester-edit'));
+    fireEvent.click(screen.getByTestId('ticket-workbench-requester-save'));
+
+    const patches = fetchMock.mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method === 'PATCH');
+    expect(patches).toHaveLength(0);
+    // The editor still closes — an unchanged save is a successful no-op, not a
+    // stuck form.
+    await waitFor(() => expect(screen.queryByTestId('ticket-workbench-requester-save')).toBeNull());
+  });
+
+  it('still PATCHes when only the requester EMAIL is edited', async () => {
+    // The dirty check must compare all three fields, not just the picker.
+    mockTicketApi({
+      'tk-1': makeTicket({ submittedBy: null, submitterName: 'Jane Doe', submitterEmail: 'jane@acme.test' })
+    });
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ticket-workbench');
+    fireEvent.click(screen.getByTestId('ticket-workbench-requester-edit'));
+    fireEvent.change(screen.getByTestId('ticket-workbench-requester-email'), { target: { value: 'bob@acme.test' } });
+    fireEvent.click(screen.getByTestId('ticket-workbench-requester-save'));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith('/tickets/tk-1', expect.objectContaining({
+        method: 'PATCH',
+        body: JSON.stringify({ submittedBy: null, submitterName: 'Jane Doe', submitterEmail: 'bob@acme.test' })
+      }));
+    });
+  });
 });
 
 // ─── Move to another org ──────────────────────────────────────────────────────
