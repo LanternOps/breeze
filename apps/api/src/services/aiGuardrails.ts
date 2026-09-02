@@ -451,7 +451,41 @@ export const TIER3_SUPERVISED_TOOLS = new Set<string>([
  */
 export const TIER3_INPUT_AWARE_ACTIONS: ReadonlySet<string> = new Set<string>([
   'manage_organizations:update_org',
+  // RMM-QA-176 D9: a 'maintenance' feature link is the canonical
+  // monitoring-suppression source, so authoring one is a different class of
+  // act from authoring any other link — but only the INPUT says which it is,
+  // so it cannot be classified by (tool, action) in the static tables.
+  'manage_policy_feature_link:add',
+  'manage_policy_feature_link:update',
 ]);
+
+/**
+ * True when a (tool, action, input) triple escalates to Tier 3 on argument
+ * CONTENT. Exported so checkGuardrails, resolveApprovalScope and the tests all
+ * ask the SAME question — a second copy of this predicate is how a tier and
+ * its scope drift apart.
+ *
+ * Strict `=== 'maintenance'`: a non-string featureType stays at the base tier,
+ * which is safe here because the handler writes exactly the featureType it was
+ * given, so a value that is not the literal 'maintenance' cannot create a
+ * maintenance link either. The handler's own principal check (D9.3) is the
+ * belt to this brace for `update`, where featureType is not a required input.
+ *
+ * The action guard is not decoration: without it a read (`list`) carrying a
+ * stray featureType argument would be escalated into an approval that the MCP
+ * transport then denies outright.
+ */
+export function isInputAwareTier3(
+  toolName: string,
+  action: string | undefined,
+  input: Record<string, unknown>,
+): boolean {
+  return (
+    toolName === 'manage_policy_feature_link' &&
+    (action === 'add' || action === 'update') &&
+    input.featureType === 'maintenance'
+  );
+}
 
 /**
  * Whole-tool counterpart of TIER3_INPUT_AWARE_ACTIONS — base-tier-3 tools
@@ -477,6 +511,16 @@ export function resolveApprovalScope(
     // tenant access — externally binding, same class as the other
     // TIER3_FOUR_EYES_ACTIONS members — vs a plain name edit, which is inert.
     return 'status' in input ? 'four_eyes' : 'supervised';
+  }
+  if (isInputAwareTier3(toolName, action, input)) {
+    // MANDATORY, not stylistic: manage_policy_feature_link is in NEITHER
+    // whole-tool scope set and add/update are in neither *_ACTIONS scope
+    // table, so without this override an escalated add/update would fall all
+    // the way to the per-TOOL `four_eyes` fail-safe at the bottom of this
+    // function. `supervised` matches the #3552/835f7eb3d policy-prerequisite
+    // escalations and manage_configuration_policy's own create/update/delete —
+    // authoring policy configuration, not an externally binding act.
+    return 'supervised';
   }
   if (toolName === 's1_isolate_device') {
     // isolate:false is containment RELEASE (reverses a prior mitigation —
@@ -1286,6 +1330,20 @@ export function checkGuardrails(
     };
   }
 
+  // Input-aware Tier-3 escalation (RMM-QA-176 D9). After the Tier-1 downgrade
+  // so a read action can never be escalated by a stray argument; before
+  // TIER3_ACTIONS and TIER2_ACTIONS, and necessarily before the base-tier
+  // resolution below, so the base tier 2 cannot claim it first.
+  if (isInputAwareTier3(toolName, action, input)) {
+    return {
+      tier: 3,
+      allowed: true,
+      requiresApproval: true,
+      approvalScope: resolveApprovalScope(toolName, action, input),
+      description: buildApprovalDescription(toolName, action, input)
+    };
+  }
+
   if (action && TIER3_ACTIONS[toolName]?.includes(action)) {
     return {
       tier: 3,
@@ -2068,6 +2126,11 @@ function buildApprovalDescription(
     case 'apply_configuration_policy':
       parts.push(`Assign config policy ${(input.configPolicyId as string)?.slice(0, 8)}...`);
       parts.push(`to ${input.level} ${(input.targetId as string)?.slice(0, 8)}...`);
+      break;
+
+    case 'manage_policy_feature_link':
+      parts.push(`${action?.toUpperCase()} ${String(input.featureType ?? 'feature')} link`);
+      parts.push(`on config policy ${(input.configPolicyId as string)?.slice(0, 8) ?? 'unknown'}...`);
       break;
 
     case 'remove_configuration_policy_assignment':

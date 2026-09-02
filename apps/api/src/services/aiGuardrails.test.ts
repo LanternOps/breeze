@@ -15,6 +15,11 @@ vi.mock('./aiTools', () => ({
       manage_configuration_policy: 1,
       get_configuration_policy: 1,
       configuration_policy_compliance: 1,
+      // RMM-QA-176 D9: real base tier is 2 (aiToolsConfigPolicy.ts registerTool
+      // { tier: 2, name: 'manage_policy_feature_link' }). Without it here,
+      // checkGuardrails short-circuits on "Unknown tool" at tier 4 and every
+      // assertion below would be vacuous.
+      manage_policy_feature_link: 2,
       // Playbook tools
       list_playbooks: 1,
       execute_playbook: 3,
@@ -909,5 +914,76 @@ describe('tier action tables are pairwise disjoint per tool', () => {
       }
     }
     expect(dupes).toEqual([]);
+  });
+});
+
+// ─── RMM-QA-176 D9: manage_policy_feature_link maintenance escalation ────────
+
+describe('manage_policy_feature_link maintenance escalation (RMM-QA-176 D9)', () => {
+  it('escalates add of a maintenance link to tier 3, supervised', () => {
+    const check = checkGuardrails('manage_policy_feature_link', {
+      action: 'add', configPolicyId: 'p1', featureType: 'maintenance',
+    });
+    expect(check.tier).toBe(3);
+    expect(check.requiresApproval).toBe(true);
+    expect(check.approvalScope).toBe('supervised');
+  });
+
+  it('escalates update of a maintenance link to tier 3, supervised', () => {
+    const check = checkGuardrails('manage_policy_feature_link', {
+      action: 'update', configPolicyId: 'p1', featureLinkId: 'l1', featureType: 'maintenance',
+    });
+    expect(check.tier).toBe(3);
+    expect(check.approvalScope).toBe('supervised');
+  });
+
+  it('leaves every OTHER feature type at the tool base tier 2 — the gate stays narrow', () => {
+    for (const featureType of ['patch', 'monitoring', 'backup', 'alert_rule']) {
+      const check = checkGuardrails('manage_policy_feature_link', {
+        action: 'add', configPolicyId: 'p1', featureType,
+      });
+      expect(check.tier, `${featureType} must not escalate`).toBe(2);
+      expect(check.requiresApproval).toBe(false);
+    }
+  });
+
+  it('leaves list at tier 2 and remove at its existing tier 3', () => {
+    expect(checkGuardrails('manage_policy_feature_link', { action: 'list', configPolicyId: 'p1' }).tier).toBe(2);
+    const remove = checkGuardrails('manage_policy_feature_link', { action: 'remove', configPolicyId: 'p1', featureLinkId: 'l1' });
+    expect(remove.tier).toBe(3);
+    expect(remove.approvalScope).toBe('supervised');
+  });
+
+  it('a READ action is never escalated by a stray featureType argument', () => {
+    // The predicate's action guard, not its ordering, is what protects reads:
+    // `list` carries no write capability, so a caller passing
+    // featureType:'maintenance' alongside it must not be pushed into an
+    // approval that the MCP transport then denies outright. Drops of the
+    // `action === 'add' || action === 'update'` clause turn this red.
+    const check = checkGuardrails('manage_policy_feature_link', {
+      action: 'list', configPolicyId: 'p1', featureType: 'maintenance',
+    });
+    expect(check.tier).toBe(2);
+    expect(check.requiresApproval).toBe(false);
+  });
+
+  it('fails CLOSED on a non-string featureType rather than falling through to tier 2', () => {
+    // A caller sending featureType: { $ne: 'maintenance' } or an array must not
+    // slip past the predicate into auto-execute. Strict === 'maintenance' means
+    // anything else stays tier 2 — which is the correct outcome ONLY because a
+    // non-'maintenance' value cannot create a maintenance link either (the
+    // handler's own featureType is what addFeatureLink writes). Pinned so a
+    // future loosening of the predicate is a deliberate act.
+    const check = checkGuardrails('manage_policy_feature_link', {
+      action: 'add', configPolicyId: 'p1', featureType: ['maintenance'],
+    });
+    expect(check.tier).toBe(2);
+  });
+
+  it('names the feature type in the approval description', () => {
+    const check = checkGuardrails('manage_policy_feature_link', {
+      action: 'add', configPolicyId: 'p1', featureType: 'maintenance',
+    });
+    expect(check.description).toContain('maintenance');
   });
 });

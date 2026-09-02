@@ -195,6 +195,13 @@ const MANAGE_INVOICES_SCHEMA = {
   },
 };
 
+const MANAGE_POLICY_FEATURE_LINK_SCHEMA = {
+  type: 'object',
+  properties: {
+    action: { type: 'string', enum: ['add', 'update', 'remove', 'list'] },
+  },
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
   testState.scopes = ['ai:read', 'ai:write', 'ai:execute'];
@@ -360,6 +367,73 @@ describe('MCP interactive-approval-only gate (all Tier 3, tier-driven)', () => {
         expect.objectContaining({ action: 'create_draft' }),
         expect.anything(),
       );
+    });
+  });
+
+  // (c2) manage_policy_feature_link (RMM-QA-176 D9) — mixed multiplexer, base
+  // tier 2, escalated by INPUT content rather than by action name.
+  describe('manage_policy_feature_link — maintenance links escalate by input', () => {
+    beforeEach(() => {
+      mocks.getToolDefinitions.mockReturnValue([
+        { name: 'manage_policy_feature_link', description: 'Manage feature links.', input_schema: MANAGE_POLICY_FEATURE_LINK_SCHEMA },
+      ]);
+      mocks.getToolTier.mockImplementation((name: string) => (name === 'manage_policy_feature_link' ? 2 : undefined));
+    });
+
+    it('add of a MAINTENANCE link is denied MCP_APPROVAL_REQUIRED without executing', async () => {
+      const res = await callTool('manage_policy_feature_link', {
+        action: 'add', configPolicyId: 'p1', featureType: 'maintenance',
+        inlineSettings: { recurrence: 'weekly', durationHours: 2 },
+      });
+      const body = await res.json();
+      expect(body.result.isError).toBe(true);
+      expect(JSON.parse(body.result.content[0].text).code).toBe('MCP_APPROVAL_REQUIRED');
+      expect(mocks.executeTool).not.toHaveBeenCalled();
+    });
+
+    it('update of a MAINTENANCE link is denied the same way', async () => {
+      const res = await callTool('manage_policy_feature_link', {
+        action: 'update', configPolicyId: 'p1', featureLinkId: 'l1', featureType: 'maintenance',
+        inlineSettings: { durationHours: 8 },
+      });
+      const body = await res.json();
+      expect(body.result.isError).toBe(true);
+      expect(JSON.parse(body.result.content[0].text).code).toBe('MCP_APPROVAL_REQUIRED');
+      expect(mocks.executeTool).not.toHaveBeenCalled();
+    });
+
+    it('add of a MONITORING link still executes — this gate is narrow, not a tool ban', async () => {
+      const res = await callTool('manage_policy_feature_link', {
+        action: 'add', configPolicyId: 'p1', featureType: 'monitoring',
+        inlineSettings: { checkIntervalSeconds: 60, watches: [] },
+      });
+      const body = await res.json();
+      expect(body.result.isError).toBeFalsy();
+      expect(mocks.executeTool).toHaveBeenCalledWith(
+        'manage_policy_feature_link',
+        expect.objectContaining({ featureType: 'monitoring' }),
+        expect.anything(),
+      );
+    });
+
+    it('the denial does not depend on MFA at all — the caller carries token:{} and no MFA gate runs on this transport', async () => {
+      // mcpServer.ts builds api_key/oauth_grant contexts with token:{} (:2246),
+      // so hasSatisfiedMfa would return true for them on an ENABLE_2FA=false
+      // deployment. The MCP denial is the EFFECTIVE-TIER gate (:1194-1206),
+      // which never consults MFA — asserted here by the fact that the deny
+      // above happens with no MFA state configured anywhere in this harness,
+      // and holds for the widest scope set this harness's caller can actually
+      // hold. (NOT 'ai:execute_admin': API_KEY_SCOPE_POLICIES maps that to
+      // PERMISSIONS.ADMIN_ALL, which FULL_PERMISSIONS_BASELINE above does not
+      // grant, so the live scope-delegation re-clamp rejects the request with a
+      // JSON-RPC error before the tier gate is ever reached — a denial for the
+      // wrong reason, which would make this control decorative.)
+      const res = await callTool('manage_policy_feature_link', {
+        action: 'add', configPolicyId: 'p1', featureType: 'maintenance',
+      }, ['ai:read', 'ai:write', 'ai:execute']);
+      const body = await res.json();
+      expect(JSON.parse(body.result.content[0].text).code).toBe('MCP_APPROVAL_REQUIRED');
+      expect(mocks.executeTool).not.toHaveBeenCalled();
     });
   });
 

@@ -108,6 +108,15 @@ function safeHandler(
   };
 }
 
+/**
+ * RMM-QA-176 D9.3. Exported so the tests assert the SAME string the handler
+ * returns, rather than a copy that can drift.
+ */
+export const MAINTENANCE_LINK_MACHINE_PRINCIPAL_DENIED =
+  'Authoring a maintenance feature link suppresses monitoring and requires an interactive user session. API-key and OAuth-grant callers cannot perform this action.';
+export const MAINTENANCE_LINK_FEATURE_TYPE_REQUIRED =
+  'This feature link is a maintenance link. Re-issue the call with featureType: "maintenance" so the change routes through approval.';
+
 export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
   function registerTool(tool: AiTool): void {
     aiTools.set(tool.definition.name, tool);
@@ -769,6 +778,50 @@ For link-only types, set featurePolicyId instead of inlineSettings:
         return JSON.stringify({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
       }
 
+      // RMM-QA-176 D9.3. Belt-and-braces to the input-aware tier escalation in
+      // aiGuardrails, and the ANTI-BYPASS for `update`: featureType is not a
+      // required input there, so a call that omits it presents nothing the
+      // guardrail hook can recognise as maintenance and would auto-execute at
+      // tier 2. Resolve the EXISTING link's type unconditionally (one indexed
+      // lookup, reused by the update branch below) and make the omission an
+      // actionable refusal, not a silent write.
+      let existingFeatureType: string | undefined;
+      if (action === 'update') {
+        const featureLinkIdForLookup = input.featureLinkId as string | undefined;
+        if (!featureLinkIdForLookup) return JSON.stringify({ error: 'featureLinkId is required for update' });
+        const [existingLink] = await db
+          .select({ featureType: configPolicyFeatureLinks.featureType })
+          .from(configPolicyFeatureLinks)
+          .where(and(
+            eq(configPolicyFeatureLinks.id, featureLinkIdForLookup),
+            eq(configPolicyFeatureLinks.configPolicyId, configPolicyId),
+          ))
+          .limit(1);
+        existingFeatureType = existingLink?.featureType as string | undefined;
+      }
+
+      const touchesMaintenance =
+        (action === 'add' && input.featureType === 'maintenance') ||
+        (action === 'update' && existingFeatureType === 'maintenance');
+
+      if (touchesMaintenance) {
+        // `?.` deliberately: callers build this context in several shapes and a
+        // hard read would turn any principal-less one into a safeHandler-wrapped
+        // generic tool error rather than reaching the real handler.
+        const principalKind = auth.principal?.kind;
+        if (principalKind === 'api_key' || principalKind === 'oauth_grant') {
+          // NOT an MFA check. Machine contexts carry token:{} (mcpServer.ts:2246)
+          // and hasSatisfiedMfa passes ANY context when ENABLE_2FA is off
+          // (middleware/auth.ts:884-887), so an MFA-based denial would admit
+          // exactly the callers this refuses. `ai_agent` is deliberately NOT
+          // here: an approved agent run must proceed (approval is upstream).
+          return JSON.stringify({ error: MAINTENANCE_LINK_MACHINE_PRINCIPAL_DENIED });
+        }
+        if (action === 'update' && input.featureType !== 'maintenance') {
+          return JSON.stringify({ error: MAINTENANCE_LINK_FEATURE_TYPE_REQUIRED });
+        }
+      }
+
       if (action === 'add') {
         const featureType = input.featureType as string | undefined;
         if (!featureType) return JSON.stringify({ error: 'featureType is required for add' });
@@ -812,15 +865,13 @@ For link-only types, set featurePolicyId instead of inlineSettings:
         if (input.featurePolicyId !== undefined) updates.featurePolicyId = input.featurePolicyId as string | null;
         if (input.inlineSettings !== undefined) {
           let inlineSettings: unknown = input.inlineSettings;
-          // update doesn't take featureType, so look up the existing link's
-          // type to know which validate-via-schema rule applies (same reasoning
-          // as the 'add' branch above).
-          const [existingLink] = await db
-            .select({ featureType: configPolicyFeatureLinks.featureType })
-            .from(configPolicyFeatureLinks)
-            .where(and(eq(configPolicyFeatureLinks.id, featureLinkId), eq(configPolicyFeatureLinks.configPolicyId, configPolicyId)))
-            .limit(1);
-          const validated = validateInlineSettingsForFeature(existingLink?.featureType, inlineSettings);
+          // update doesn't take featureType, so the existing link's type says
+          // which validate-via-schema rule applies (same reasoning as the 'add'
+          // branch above). Resolved once, above the maintenance gate — the
+          // lookup has to happen for EVERY update, not only inlineSettings
+          // ones, or a featurePolicyId-only edit of a maintenance link would
+          // slip past that gate entirely.
+          const validated = validateInlineSettingsForFeature(existingFeatureType, inlineSettings);
           if ('error' in validated) return JSON.stringify({ error: validated.error });
           inlineSettings = validated.value;
           updates.inlineSettings = inlineSettings;

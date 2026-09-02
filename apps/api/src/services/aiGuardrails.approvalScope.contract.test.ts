@@ -271,6 +271,52 @@ describe('tier-3 approval scope classification', () => {
     expect(resolveApprovalScope('s1_isolate_device', undefined, { deviceId: 'd1' })).toBe('supervised');
   });
 
+  it('manage_policy_feature_link add+update are input-aware: exempt from the static per-action tables', () => {
+    expect(TIER3_INPUT_AWARE_ACTIONS.has('manage_policy_feature_link:add')).toBe(true);
+    expect(TIER3_INPUT_AWARE_ACTIONS.has('manage_policy_feature_link:update')).toBe(true);
+    // They escalate through the input-aware hook, NOT the static table — so
+    // they must not appear in TIER3_ACTIONS either, or `remove`'s entry would
+    // stop being the only static escalation for this tool.
+    expect(TIER3_ACTIONS.manage_policy_feature_link ?? []).toEqual(['remove']);
+    expect(TIER3_FOUR_EYES_ACTIONS.manage_policy_feature_link ?? []).not.toContain('add');
+    expect(TIER3_SUPERVISED_ACTIONS.manage_policy_feature_link ?? []).not.toContain('add');
+  });
+
+  it('the resolveApprovalScope override is MANDATORY for this tool, not stylistic', () => {
+    // RMM-QA-176 D9. manage_policy_feature_link is in NEITHER whole-tool set,
+    // and add/update are in neither *_ACTIONS scope table. Every static lookup
+    // in resolveApprovalScope therefore misses for them, and the function's
+    // last line is the per-TOOL `four_eyes` fail-safe. Without the input-aware
+    // override an escalated `add` would resolve to four_eyes — a scope spec
+    // §3.2 reserves for externally-binding/identity/destroy acts, and one the
+    // in-app approval UI would surface as needing a second approver. This test
+    // pins the three facts the override's necessity rests on, so that removing
+    // the override becomes a visible change rather than a silent re-scoping.
+    expect(TIER3_FOUR_EYES_TOOLS.has('manage_policy_feature_link')).toBe(false);
+    expect(TIER3_SUPERVISED_TOOLS.has('manage_policy_feature_link')).toBe(false);
+    expect(TIER3_FOUR_EYES_ACTIONS.manage_policy_feature_link).toBeUndefined();
+    // ...and the fail-safe really is what an unclassified (tool, action) pair
+    // on this tool reaches, demonstrated on an action the override does not
+    // cover at all.
+    expect(resolveApprovalScope('manage_policy_feature_link', 'not_a_real_action', {})).toBe('four_eyes');
+  });
+
+  it('manage_policy_feature_link resolves supervised for maintenance on both add and update', () => {
+    expect(resolveApprovalScope('manage_policy_feature_link', 'add', { featureType: 'maintenance' })).toBe('supervised');
+    expect(resolveApprovalScope('manage_policy_feature_link', 'update', { featureType: 'maintenance' })).toBe('supervised');
+    // remove keeps reaching supervised via the STATIC table, unchanged.
+    expect(resolveApprovalScope('manage_policy_feature_link', 'remove', {})).toBe('supervised');
+  });
+
+  it('checkGuardrails surfaces the input-aware escalation on both branches', () => {
+    const maintenance = checkGuardrails('manage_policy_feature_link', { action: 'add', featureType: 'maintenance' });
+    expect(maintenance.tier).toBe(3);
+    expect(maintenance.approvalScope).toBe('supervised');
+    const patch = checkGuardrails('manage_policy_feature_link', { action: 'add', featureType: 'patch' });
+    expect(patch.tier).toBe(2);
+    expect(patch.approvalScope).toBeUndefined();
+  });
+
   it('checkGuardrails surfaces the scope on tier-3 results', () => {
     const fourEyes = checkGuardrails('manage_invoices', { action: 'issue' });
     expect(fourEyes.tier).toBe(3);
