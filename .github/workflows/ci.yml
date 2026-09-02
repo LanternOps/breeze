@@ -1004,7 +1004,9 @@ jobs:
         run: pnpm build --filter=@breeze/web
 
       - name: Install Chromium for CSP guard
-        run: pnpm --filter @breeze/web exec playwright install --with-deps chromium
+        uses: ./.github/actions/install-chromium
+        with:
+          run-prefix: pnpm --filter @breeze/web exec
 
       - name: CSP drift guard (real-browser)
         run: pnpm --filter @breeze/web run csp:guard
@@ -2448,8 +2450,9 @@ jobs:
         run: npm ci
 
       - name: Install Chromium
-        working-directory: e2e-tests
-        run: npx playwright install --with-deps chromium
+        uses: ./.github/actions/install-chromium
+        with:
+          working-directory: e2e-tests
 
       - name: Migrate and seed auth contract database
         run: |
@@ -2589,21 +2592,12 @@ jobs:
         working-directory: e2e-tests
         run: pnpm install --ignore-workspace
 
-      # `--with-deps` shells out to `apt-get update`, which intermittently 403s
-      # on packages.microsoft.com from Azure-hosted runners and takes the whole
-      # browser install down with it (exit 100). That repo holds nothing
-      # Playwright needs, so drop it first; if apt still fails, fall back to the
-      # browser-only install — the ubuntu-24.04 runner image already ships
-      # Chromium's shared libraries — and say so loudly rather than silently.
+      # apt 403 guard lives in the composite action (see its description).
       - name: Install Chromium
-        working-directory: e2e-tests
-        run: |
-          sudo rm -f /etc/apt/sources.list.d/microsoft*.list \
-                     /etc/apt/sources.list.d/microsoft*.sources || true
-          if ! pnpm exec playwright install --with-deps chromium; then
-            echo "::warning::playwright install --with-deps failed (apt); retrying without system deps"
-            pnpm exec playwright install chromium
-          fi
+        uses: ./.github/actions/install-chromium
+        with:
+          run-prefix: pnpm exec
+          working-directory: e2e-tests
 
       # `pnpm wt-stack up` without a workspace install: the CLI imports nothing
       # but node builtins and its own sibling modules, so e2e-tests' tsx runs it
