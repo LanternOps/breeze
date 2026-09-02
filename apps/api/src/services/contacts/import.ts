@@ -31,7 +31,8 @@ import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { contacts, contactExternalLinks } from '../../db/schema/contacts';
 import { organizations, sites } from '../../db/schema/orgs';
-import { normalizeContactEmail, reprojectPrimaryContact } from './crud';
+import { pgErrorCode } from '../../utils/pgErrors';
+import { normalizeContactEmail, updateContact, type UpdateContactInput } from './crud';
 import {
   CONTACT_ROLES,
   DEFAULT_CONTACT_IMPORT_SYSTEM,
@@ -248,36 +249,57 @@ interface Resolution {
  * again at commit against a freshly loaded snapshot, so a row whose state moved
  * in between is caught by `checkExpectation` rather than silently re-targeted.
  */
+/**
+ * Which organization a row lands in. Shared by the duplicate pre-pass and by
+ * `resolveRow` so the two can never disagree about a row's tenant.
+ *
+ * An id outside the snapshot is indistinguishable from a name that matches
+ * nothing — deliberately, so neither answer reveals that another partner's
+ * organization exists.
+ */
+function resolveRowOrg(
+  row: ContactImportRow,
+  snapshot: Snapshot,
+): { org: SnapshotOrg } | { annotation: ContactRowAnnotation; conflictReason: string } {
+  if (row.organizationId) {
+    const org = snapshot.orgById.get(row.organizationId);
+    if (!org) {
+      return { annotation: 'org-not-found', conflictReason: 'No such organization under this partner' };
+    }
+    return { org };
+  }
+  const named = clean(row.organization);
+  if (!named) return { annotation: 'conflict', conflictReason: 'Row names no organization' };
+
+  const candidates = snapshot.orgsByName.get(normalizeContactName(named)) ?? [];
+  if (candidates.length === 0) {
+    return { annotation: 'org-not-found', conflictReason: `No organization named "${named}"` };
+  }
+  if (candidates.length > 1) {
+    return { annotation: 'conflict', conflictReason: `Multiple organizations are named "${named}"` };
+  }
+  return { org: candidates[0]! };
+}
+
 function resolveRow(
   normalized: NormalizedRow,
   snapshot: Snapshot,
   duplicateLinkKeys: Set<string>,
 ): Resolution {
-  const miss = (annotation: ContactRowAnnotation, conflictReason: string): Resolution =>
-    ({ annotation, organizationId: null, siteId: null, contactId: null, conflictReason });
-
   const { row } = normalized;
 
-  // 1. Organization. An id outside the partner snapshot is indistinguishable
-  //    from a name that matches nothing — deliberately, so neither answer
-  //    reveals that another partner's organization exists.
-  let org: SnapshotOrg | undefined;
-  if (row.organizationId) {
-    org = snapshot.orgById.get(row.organizationId);
-    if (!org) return miss('org-not-found', 'No such organization under this partner');
-  } else if (clean(row.organization)) {
-    const candidates = snapshot.orgsByName.get(normalizeContactName(row.organization!)) ?? [];
-    if (candidates.length === 0) {
-      return miss('org-not-found', `No organization named "${row.organization!.trim()}"`);
-    }
-    if (candidates.length > 1) {
-      return miss('conflict', `Multiple organizations are named "${row.organization!.trim()}"`);
-    }
-    org = candidates[0]!;
-  } else {
-    return miss('conflict', 'Row names no organization');
+  // 1. Organization.
+  const orgResult = resolveRowOrg(row, snapshot);
+  if (!('org' in orgResult)) {
+    return {
+      annotation: orgResult.annotation,
+      organizationId: null,
+      siteId: null,
+      contactId: null,
+      conflictReason: orgResult.conflictReason,
+    };
   }
-
+  const org = orgResult.org;
   const base = { organizationId: org.id, organizationName: org.name };
 
   // 2. The row must be able to produce a legal contacts row.
@@ -309,7 +331,7 @@ function resolveRow(
 
   // 4. Identity. The durable link wins; email and name are hints only.
   if (normalized.externalId) {
-    if (duplicateLinkKeys.has(key(normalized.system, normalized.externalId))) {
+    if (duplicateLinkKeys.has(key(org.id, normalized.system, normalized.externalId))) {
       return { ...resolved, annotation: 'conflict', contactId: null,
         conflictReason: `External id "${normalized.externalId}" appears on more than one row in this file` };
     }
@@ -359,13 +381,25 @@ function resolveRow(
   return { ...resolved, annotation: 'create', contactId: null };
 }
 
-/** `(system, externalId)` pairs used by more than one row in this batch. */
-function findDuplicateLinkKeys(normalized: NormalizedRow[]): Set<string> {
+/**
+ * `(organizationId, system, externalId)` triples used by more than one row in
+ * this batch.
+ *
+ * ORG-SCOPED, matching `contact_external_links_uniq`. A partner-wide key would
+ * refuse the shipped identity model outright: one person can work for two of an
+ * MSP's customers, so the SAME source contact id legitimately appears under two
+ * organizations in one file (db/schema/contacts.ts documents exactly this).
+ * Rows whose organization does not resolve are skipped — they are already
+ * refused on the org axis, and they have no tenant to be a duplicate within.
+ */
+function findDuplicateLinkKeys(normalized: NormalizedRow[], snapshot: Snapshot): Set<string> {
   const seen = new Set<string>();
   const duplicates = new Set<string>();
   for (const row of normalized) {
     if (!row.externalId) continue;
-    const k = key(row.system, row.externalId);
+    const orgResult = resolveRowOrg(row.row, snapshot);
+    if (!('org' in orgResult)) continue;
+    const k = key(orgResult.org.id, row.system, row.externalId);
     if (seen.has(k)) duplicates.add(k);
     else seen.add(k);
   }
@@ -378,7 +412,7 @@ export async function previewContactImport(
 ): Promise<AnnotatedContactRow[]> {
   const snapshot = await loadSnapshot(rows, ctx);
   const normalized = normalizeRows(rows);
-  const duplicates = findDuplicateLinkKeys(normalized);
+  const duplicates = findDuplicateLinkKeys(normalized, snapshot);
 
   return normalized.map((r) => {
     const resolution = resolveRow(r, snapshot, duplicates);
@@ -452,23 +486,56 @@ function checkExpectation(
 /**
  * Attach the original thrown error WITHOUT making it serializable: routes hand
  * the summary straight to `c.json(...)`, and a stack trace (or a pg error
- * carrying query text) must never reach a response body.
+ * carrying query text) must never reach a response body. Read `entry.cause`
+ * in-process; never serialize it.
  */
 function withCause(entry: ContactImportErrorEntry, cause: unknown): ContactImportErrorEntry {
   Object.defineProperty(entry, 'cause', { value: cause, enumerable: false, writable: false });
   return entry;
 }
 
-/** Fields the row actually carries. An absent column never clears stored data. */
-function presentFields(r: NormalizedRow): Record<string, unknown> {
-  const fields: Record<string, unknown> = {};
-  if (r.name !== null) fields.name = r.name;
-  if (r.email !== null) fields.email = r.email;
-  if (r.phone !== null) fields.phone = r.phone;
-  if (r.mobile !== null) fields.mobile = r.mobile;
-  if (r.title !== null) fields.title = r.title;
-  if (r.roles && r.roles.length > 0) fields.roles = r.roles;
-  return fields;
+/**
+ * Stable, non-leaking copy for a failed row.
+ *
+ * A postgres.js error's `.message` carries the failing statement's detail —
+ * column values, constraint text, sometimes the query itself — so it is
+ * customer PII and schema disclosure in one string and must never reach the
+ * response body. Known SQLSTATEs get useful fixed copy; anything else, pg or
+ * not, collapses to the generic line. The raw message is logged, and the
+ * original error rides along non-enumerably on `entry.cause`.
+ */
+const WRITE_FAILURE_COPY: Record<string, string> = {
+  '23505': 'This contact conflicts with one that already exists',
+  '23503': 'The organization or site this contact refers to no longer exists',
+  '23514': 'The contact is missing a name, email, phone, and mobile',
+  '22001': 'A value on this row is too long for the field it targets',
+};
+const GENERIC_WRITE_FAILURE = 'Could not write this contact — check the server log for details';
+
+export function writeFailureMessage(err: unknown): string {
+  const code = pgErrorCode(err);
+  return (code && WRITE_FAILURE_COPY[code]) ?? GENERIC_WRITE_FAILURE;
+}
+
+/**
+ * The patch a matched row applies. Only fields the row actually carries, so an
+ * absent CSV column never clears stored data.
+ *
+ * `siteId` is included ONLY when the row named a site: an absent `site` means
+ * "not specified" and must leave the contact where it is, never move it to org
+ * level. When it IS named, `resolveRow` has already resolved it against the
+ * organization (an unknown name never reaches here — it is a conflict).
+ */
+function matchedRowPatch(r: NormalizedRow, resolvedSiteId: string | null): UpdateContactInput {
+  const patch: UpdateContactInput = {};
+  if (r.name !== null) patch.name = r.name;
+  if (r.email !== null) patch.email = r.email;
+  if (r.phone !== null) patch.phone = r.phone;
+  if (r.mobile !== null) patch.mobile = r.mobile;
+  if (r.title !== null) patch.title = r.title;
+  if (r.roles && r.roles.length > 0) patch.roles = r.roles;
+  if (clean(r.row.site) !== null) patch.siteId = resolvedSiteId;
+  return patch;
 }
 
 export async function commitContactImport(
@@ -479,7 +546,7 @@ export async function commitContactImport(
   // Re-derived against state loaded NOW, not against whatever preview saw.
   const snapshot = await loadSnapshot(rows, ctx);
   const normalized = normalizeRows(rows);
-  const duplicates = findDuplicateLinkKeys(normalized);
+  const duplicates = findDuplicateLinkKeys(normalized, snapshot);
 
   const summary: ContactImportSummary = { imported: [], updated: [], skipped: [], errors: [] };
 
@@ -525,7 +592,7 @@ export async function commitContactImport(
         const result = await createImportedContact(r, orgId, resolution.siteId, actor);
         summary.imported.push({ index: r.index, organizationId: orgId, ...result });
       } else {
-        const result = await applyMatchedContact(r, orgId, resolution.matched!, actor);
+        const result = await applyMatchedContact(r, orgId, resolution, actor);
         summary.updated.push({ index: r.index, organizationId: orgId, ...result });
       }
     } catch (err) {
@@ -537,7 +604,7 @@ export async function commitContactImport(
       summary.errors.push(withCause({
         index: r.index,
         ...(organization ? { organization } : {}),
-        error: err instanceof Error ? err.message : String(err),
+        error: writeFailureMessage(err),
         code: 'write-failed',
       }, err));
     }
@@ -574,29 +641,37 @@ async function createImportedContact(
 }
 
 /**
- * Apply an acknowledged email/name match. Only fields the row carries are
- * written, so a CSV missing a column never blanks stored data, and the legacy
- * jsonb is re-projected when the edit landed on a primary contact.
+ * Apply an acknowledged email/name match.
+ *
+ * Routed through the CRUD service's `updateContact` rather than issuing its own
+ * UPDATE: that function already owns primary demotion and the both-scope
+ * re-projection of the legacy jsonb, and a matched row CAN move a contact
+ * between scopes. Re-implementing the write here is how the site pin came to be
+ * silently dropped in the first place.
  */
 async function applyMatchedContact(
   r: NormalizedRow,
   orgId: string,
-  matched: SnapshotContact,
+  resolution: Resolution,
   actor: ContactImportActor,
 ): Promise<{ contactId: string; name: string | null; createdLink: boolean }> {
+  const matched = resolution.matched!;
   return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
-    await db.update(contacts)
-      .set({ ...presentFields(r), updatedAt: new Date() })
-      .where(and(eq(contacts.id, matched.id), eq(contacts.orgId, orgId)));
+    const updated = await updateContact(
+      db,
+      matched.id,
+      orgId,
+      matchedRowPatch(r, resolution.siteId),
+      { userId: actor.userId },
+    );
+    // Only reachable if the contact was deleted between the snapshot and now.
+    if (!updated) throw new Error('Matched contact no longer exists');
 
     // Persist the acknowledgement as a durable link so the next import
     // link-matches instead of asking for the same confirmation again.
     const createdLink = await attachLink(r, orgId, matched.id, actor);
 
-    if (matched.isPrimary) {
-      await reprojectPrimaryContact(db, orgId, matched.siteId, actor.userId);
-    }
-    return { contactId: matched.id, name: r.name ?? matched.name, createdLink };
+    return { contactId: matched.id, name: updated.name, createdLink };
   }));
 }
 

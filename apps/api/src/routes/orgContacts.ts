@@ -7,6 +7,7 @@ import { organizations } from '../db/schema';
 import { requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
 import { PG_UUID_REGEX } from '../utils/uuid';
+import { resolveImportPartnerId } from './importScope';
 import {
   ContactValidationError,
   createContact,
@@ -98,29 +99,22 @@ async function resolveContactOrg(c: any): Promise<{ contactId: string; orgId: st
 
 /**
  * The importer resolves organization names within ONE partner, so a partner is
- * required. An organization-scoped token has no partner-wide reach to resolve
- * within, which is why the import routes admit partner and system scope only.
+ * required. An organization-scoped token carries one, and its single-org
+ * allowlist bounds the writes, so it is admitted per spec S4.
  */
 function resolveImportContext(
   auth: AuthContext,
   bodyPartnerId: string | undefined,
 ): ContactImportContext | { error: string; status: 400 | 403 } {
-  // The caller's own organization allowlist travels with the request: the
-  // importer writes in a SYSTEM db context, so RLS is not the boundary there
-  // and a partner user restricted to a subset of their organizations would
-  // otherwise reach every tenant the MSP owns. Null is system scope.
-  const accessibleOrgIds = auth.accessibleOrgIds ?? null;
+  const resolved = resolveImportPartnerId(auth, bodyPartnerId, 'contacts');
+  if ('error' in resolved) return resolved;
 
-  if (auth.scope === 'partner') {
-    if (!auth.partnerId) return { error: 'Partner context required to import contacts', status: 400 };
-    if (bodyPartnerId && bodyPartnerId !== auth.partnerId) {
-      return { error: 'Access denied to this partner', status: 403 };
-    }
-    return { partnerId: auth.partnerId, accessibleOrgIds };
-  }
-  const partnerId = bodyPartnerId ?? auth.partnerId;
-  if (!partnerId) return { error: 'partnerId is required for system scope', status: 400 };
-  return { partnerId, accessibleOrgIds };
+  // The caller's own organization allowlist travels with the request: the
+  // importer writes in a SYSTEM db context, so RLS is not the boundary there.
+  // Null is system scope (unrestricted); for an organization token this is the
+  // single org, which is what makes admitting that scope safe — rows naming any
+  // other organization come back `org-not-found` and write nothing.
+  return { partnerId: resolved.partnerId, accessibleOrgIds: auth.accessibleOrgIds ?? null };
 }
 
 function actorFrom(c: any): { userId: string | null } {
@@ -143,7 +137,7 @@ export function registerOrgContactsRoutes(orgRoutes: Hono) {
 
   orgRoutes.post(
     '/contacts/import/preview',
-    requireScope('partner', 'system'),
+    requireScope('organization', 'partner', 'system'),
     requireOrgWrite,
     requireMfa(),
     zValidator('json', previewImportSchema),
@@ -159,7 +153,7 @@ export function registerOrgContactsRoutes(orgRoutes: Hono) {
 
   orgRoutes.post(
     '/contacts/import',
-    requireScope('partner', 'system'),
+    requireScope('organization', 'partner', 'system'),
     requireOrgWrite,
     requireMfa(),
     zValidator('json', commitImportSchema),
@@ -215,7 +209,8 @@ export function registerOrgContactsRoutes(orgRoutes: Hono) {
 
       let contact;
       try {
-        contact = await createContact(db, { orgId: org.id, ...body }, actorFrom(c));
+        // orgId last: the PATH names the organization, never the body.
+        contact = await createContact(db, { ...body, orgId: org.id }, actorFrom(c));
       } catch (err) {
         return validationResponse(c, err) ?? Promise.reject(err);
       }

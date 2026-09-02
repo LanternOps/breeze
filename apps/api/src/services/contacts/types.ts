@@ -159,13 +159,18 @@ export type ContactImportErrorCode =
 export interface ContactImportErrorEntry {
   index: number;
   organization?: string;
-  /** Human-readable copy. Callers must branch on `code`, never on this. */
+  /**
+   * Human-readable copy, safe to display. Callers must branch on `code`, never
+   * on this. For `write-failed` it is FIXED copy chosen from the SQLSTATE, not
+   * the driver's message: a pg error's `.message` carries column values and
+   * constraint text, so it is never put on the wire.
+   */
   error: string;
   code: ContactImportErrorCode;
   /**
    * The ORIGINAL thrown error for `write-failed`, so error trackers keep the
-   * stack and pg SQLSTATE that `error` (a flattened `.message`) discards.
-   * NON-ENUMERABLE, so it never reaches a JSON response body.
+   * stack and pg SQLSTATE that the fixed `error` copy discards. NON-ENUMERABLE,
+   * so it never reaches a JSON response body — read it in-process only.
    */
   cause?: unknown;
 }

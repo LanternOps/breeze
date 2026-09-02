@@ -1,10 +1,13 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 
-const { selectMock, insertMock, updateMock } = vi.hoisted(() => ({
+const { selectMock, insertMock, updateMock, systemContextCalls } = vi.hoisted(() => ({
   selectMock: vi.fn(),
   insertMock: vi.fn(),
   updateMock: vi.fn(),
+  // Counts how many separate system contexts (= transactions) were opened, so a
+  // test can assert each row got its OWN failure boundary.
+  systemContextCalls: { count: 0 },
 }));
 
 vi.mock('../../db', () => ({
@@ -12,15 +15,19 @@ vi.mock('../../db', () => ({
   runOutsideDbContext: (fn: () => unknown) => fn(),
   // The real helper runs its callback in ONE transaction, which is what gives
   // each row its own failure boundary; the pass-through here means a rejection
-  // propagates exactly as a rollback would.
-  withSystemDbAccessContext: (fn: () => unknown) => fn(),
+  // propagates exactly as a rollback would, and the counter makes the boundary
+  // itself assertable.
+  withSystemDbAccessContext: (fn: () => unknown) => {
+    systemContextCalls.count += 1;
+    return fn();
+  },
 }));
 
 import { commitContactImport, previewContactImport } from './import';
 import { MAX_IMPORT_ROWS } from './types';
 import type { CommitContactRowInput, ContactImportRow } from './types';
 import { contacts, contactExternalLinks } from '../../db/schema/contacts';
-import { organizations } from '../../db/schema/orgs';
+import { organizations, sites } from '../../db/schema/orgs';
 
 const PARTNER = 'aaaaaaaa-1111-4111-8111-111111111111';
 const ORG = '11111111-1111-4111-8111-111111111111';
@@ -70,6 +77,15 @@ function stubState(state: {
   }));
 }
 
+/** The projection `crud.getContact` selects, which updateContact reads first. */
+function storedContact(overrides: StateRow = {}): StateRow {
+  return {
+    id: EXISTING, orgId: ORG, siteId: null, name: 'Jane Ops', email: 'jane@acme.example',
+    phone: null, mobile: null, title: null, roles: [], isPrimary: false, notes: null,
+    ...overrides,
+  };
+}
+
 const selectWheres: unknown[] = [];
 const dialect = new PgDialect();
 function compile(condition: unknown): { sql: string; params: unknown[] } {
@@ -77,7 +93,7 @@ function compile(condition: unknown): { sql: string; params: unknown[] } {
   return { sql: query.sql, params: query.params };
 }
 
-const inserted: Array<{ table: unknown; values: Record<string, unknown> }> = [];
+const inserted: Array<{ table: unknown; values: Record<string, unknown>; contextAt: number }> = [];
 const updated: Array<{ table: unknown; set: Record<string, unknown> }> = [];
 
 function stubWrites(options: { failOn?: (values: Record<string, unknown>) => Error | null } = {}) {
@@ -85,7 +101,8 @@ function stubWrites(options: { failOn?: (values: Record<string, unknown>) => Err
   insertMock.mockImplementation((table: unknown) => ({
     values: (values: Record<string, unknown>) => {
       const failure = options.failOn?.(values) ?? null;
-      inserted.push({ table, values });
+      // Which system context (= transaction) this write rode in.
+      inserted.push({ table, values, contextAt: systemContextCalls.count });
       n += 1;
       const row = { id: `new-contact-${n}`, ...values };
       if (failure) {
@@ -99,7 +116,12 @@ function stubWrites(options: { failOn?: (values: Record<string, unknown>) => Err
   updateMock.mockImplementation((table: unknown) => ({
     set: (set: Record<string, unknown>) => {
       updated.push({ table, set });
-      return { where: () => Promise.resolve([]) };
+      const row = { id: EXISTING, orgId: ORG, ...set };
+      return {
+        where: () => Object.assign(Promise.resolve([row]), {
+          returning: () => Promise.resolve([row]),
+        }),
+      };
     },
   }));
 }
@@ -111,6 +133,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   inserted.length = 0;
   updated.length = 0;
+  systemContextCalls.count = 0;
   stubWrites();
 });
 
@@ -182,6 +205,38 @@ describe('previewContactImport', () => {
     );
     expect(row!.annotation).toBe('conflict');
     expect(row!.conflictReason).toMatch(/accounts@acme.example/);
+  });
+
+  it('allows one source contact id to appear under two different customers', async () => {
+    // contact_external_links_uniq is (org_id, system, external_id), and the
+    // schema comment is explicit that one person can work for two of an MSP's
+    // customers. A partner-wide in-file duplicate check would refuse both rows.
+    stubState({ orgs: [{ id: ORG, name: 'Acme Co' }, { id: ORG_B, name: 'Beta Ltd' }] });
+    const rows = await previewContactImport([
+      { organizationId: ORG, name: 'Jane Ops', externalId: 'CT-9', externalSystem: 'datto_rmm' },
+      { organizationId: ORG_B, name: 'Jane Ops', externalId: 'CT-9', externalSystem: 'datto_rmm' },
+    ], CTX);
+    expect(rows.map((r) => r.annotation)).toEqual(['create', 'create']);
+    expect(rows.map((r) => r.organizationId)).toEqual([ORG, ORG_B]);
+  });
+
+  it('still conflicts when one source contact id repeats under the SAME customer', async () => {
+    stubState();
+    const rows = await previewContactImport([
+      { organizationId: ORG, name: 'Jane Ops', externalId: 'CT-9', externalSystem: 'datto_rmm' },
+      { organizationId: ORG, name: 'Someone Else', externalId: 'CT-9', externalSystem: 'datto_rmm' },
+    ], CTX);
+    expect(rows.map((r) => r.annotation)).toEqual(['conflict', 'conflict']);
+    expect(rows[0]!.conflictReason).toMatch(/more than one row/);
+  });
+
+  it('resolves the duplicate check by NAME too, not only by organizationId', async () => {
+    stubState({ orgs: [{ id: ORG, name: 'Acme Co' }, { id: ORG_B, name: 'Beta Ltd' }] });
+    const rows = await previewContactImport([
+      { organization: 'Acme Co', name: 'Jane Ops', externalId: 'CT-9' },
+      { organization: 'Beta Ltd', name: 'Jane Ops', externalId: 'CT-9' },
+    ], CTX);
+    expect(rows.map((r) => r.annotation)).toEqual(['create', 'create']);
   });
 
   it('reports an unknown organization name as org-not-found', async () => {
@@ -341,7 +396,9 @@ describe('commitContactImport', () => {
         id: EXISTING, orgId: ORG, siteId: null, name: 'Jane Ops',
         email: 'jane@acme.example', isPrimary: true,
       }],
-      then: [[merged], [merged]],
+      // updateContact re-reads the row, then the re-projection reads the
+      // primary and compat re-reads the same row.
+      then: [[storedContact({ isPrimary: true })], [merged], [merged]],
     });
     const summary = await commitContactImport([{
       organizationId: ORG, name: 'Jane Ops', email: 'jane@acme.example', phone: '555-0100',
@@ -361,6 +418,7 @@ describe('commitContactImport', () => {
         id: EXISTING, orgId: ORG, siteId: null, name: 'Jane Ops',
         email: 'jane@acme.example', isPrimary: false,
       }],
+      then: [[storedContact()]],
     });
     await commitContactImport([{
       organizationId: ORG, name: 'Jane Ops', email: 'jane@acme.example', phone: '555-0100',
@@ -380,7 +438,10 @@ describe('commitContactImport', () => {
   });
 
   it('applies an acknowledged email-match as an update', async () => {
-    stubState({ contacts: [{ id: EXISTING, orgId: ORG, siteId: null, name: 'Jane Ops', email: 'jane@acme.example' }] });
+    stubState({
+      contacts: [{ id: EXISTING, orgId: ORG, siteId: null, name: 'Jane Ops', email: 'jane@acme.example' }],
+      then: [[storedContact()]],
+    });
     const summary = await commitContactImport([{
       organizationId: ORG, name: 'Jane Ops-Smith', email: 'jane@acme.example', phone: '555-0100',
       expectedAnnotation: 'email-match', expectedContactId: EXISTING,
@@ -401,7 +462,7 @@ describe('commitContactImport', () => {
     );
     expect(refused.errors[0]).toMatchObject({ code: 'match-unconfirmed' });
 
-    stubState(state);
+    stubState({ ...state, then: [[storedContact({ email: null })]] });
     const accepted = await commitContactImport(
       [{ organizationId: ORG, name: 'Jane Ops', title: 'Controller', expectedAnnotation: 'name-match' }],
       CTX, ACTOR,
@@ -484,6 +545,97 @@ describe('commitContactImport', () => {
     expect(inserted).toHaveLength(0);
   });
 
+  it('APPLIES a matched row\'s site pin and keeps both jsonb projections in step', async () => {
+    // The contact is the org-level primary and the row moves it onto a site.
+    // Reporting `updated` while silently dropping the move would be a success
+    // response for a no-op.
+    const moved = { id: EXISTING, name: 'Jane Ops', email: 'jane@acme.example', phone: null, mobile: null };
+    stubState({
+      sites: [{ id: SITE, orgId: ORG, name: 'HQ' }],
+      contacts: [{
+        id: EXISTING, orgId: ORG, siteId: null, name: 'Jane Ops',
+        email: 'jane@acme.example', isPrimary: true,
+      }],
+      then: [
+        [{ id: EXISTING, orgId: ORG, siteId: null, name: 'Jane Ops', email: 'jane@acme.example', phone: null, mobile: null, title: null, roles: [], isPrimary: true, notes: null }],
+        [{ id: SITE }],   // the site pin is validated against the org
+        [], [],           // vacated org scope: no primary left
+        [moved], [moved], // claimed site scope
+      ],
+    });
+
+    const summary = await commitContactImport([{
+      organizationId: ORG, site: 'HQ', name: 'Jane Ops', email: 'jane@acme.example',
+      expectedAnnotation: 'email-match',
+    }], CTX, ACTOR);
+
+    expect(summary.updated).toHaveLength(1);
+    const patch = updated.find((u) => u.table === contacts && 'siteId' in u.set);
+    expect(patch?.set).toMatchObject({ siteId: SITE });
+    // The headline contact moved scopes, so BOTH projections must follow.
+    expect(updated.filter((u) => u.table === organizations).map((u) => u.set.billingContact)).toEqual([null]);
+    expect(updated.filter((u) => u.table === sites).map((u) => u.set.contact)).toEqual([
+      { name: 'Jane Ops', email: 'jane@acme.example', phone: null },
+    ]);
+  });
+
+  it('leaves an unpinned matched contact where it is', async () => {
+    // No `site` on the row means "not specified", never "move to org level".
+    stubState({
+      contacts: [{ id: EXISTING, orgId: ORG, siteId: SITE, name: 'Jane Ops', email: 'jane@acme.example', isPrimary: false }],
+      then: [[{ id: EXISTING, orgId: ORG, siteId: SITE, name: 'Jane Ops', email: 'jane@acme.example', phone: null, mobile: null, title: null, roles: [], isPrimary: false, notes: null }]],
+    });
+    await commitContactImport([{
+      organizationId: ORG, name: 'Jane Ops', email: 'jane@acme.example', phone: '555-0100',
+      expectedAnnotation: 'email-match',
+    }], CTX, ACTOR);
+
+    const patch = updated.find((u) => u.table === contacts);
+    expect(patch?.set).toMatchObject({ siteId: SITE, phone: '555-0100' });
+  });
+
+  it('gives every row its own transaction, so one failure cannot poison the rest', async () => {
+    // Per-row isolation is unachievable inside ONE transaction: a failed
+    // statement aborts it and every later statement raises 25P02. Folding these
+    // rows into a single wrapping context would make both contextAt values
+    // equal and fail here.
+    stubState();
+    await commitContactImport([
+      { organizationId: ORG, name: 'Jane Ops' },
+      { organizationId: ORG, name: 'Sam Site' },
+    ], CTX, ACTOR);
+
+    const rows = contactInserts();
+    expect(rows).toHaveLength(2);
+    expect(rows[0]!.contextAt).not.toBe(rows[1]!.contextAt);
+  });
+
+  it('reports fixed copy for a pg failure, never the driver message', async () => {
+    stubState();
+    const pgError = Object.assign(
+      new Error('duplicate key value violates unique constraint "contact_external_links_uniq"'
+        + ' DETAIL: Key (org_id, system, external_id)=(..., datto_rmm, CT-9) already exists.'),
+      { code: '23505' },
+    );
+    stubWrites({ failOn: () => pgError });
+    const summary = await commitContactImport([{ organizationId: ORG, name: 'Boom' }], CTX, ACTOR);
+
+    const entry = summary.errors[0]!;
+    expect(entry.code).toBe('write-failed');
+    expect(entry.error).toBe('This contact conflicts with one that already exists');
+    // Neither the constraint name nor the offending values may reach the wire.
+    expect(entry.error).not.toMatch(/DETAIL|contact_external_links_uniq|CT-9/);
+    expect(entry.cause).toBe(pgError);
+  });
+
+  it('collapses an unrecognised failure to generic copy', async () => {
+    stubState();
+    stubWrites({ failOn: () => new Error('connection terminated at 10.0.0.4:5432') });
+    const summary = await commitContactImport([{ organizationId: ORG, name: 'Boom' }], CTX, ACTOR);
+    expect(summary.errors[0]!.error).toBe('Could not write this contact — check the server log for details');
+    expect(summary.errors[0]!.error).not.toMatch(/10\.0\.0\.4/);
+  });
+
   it('records a per-row write failure and still commits the remaining rows', async () => {
     stubState();
     stubWrites({
@@ -507,6 +659,7 @@ describe('commitContactImport', () => {
     const entry = summary.errors[0]!;
     expect(entry.cause).toBeInstanceOf(Error);
     expect(JSON.parse(JSON.stringify(entry))).not.toHaveProperty('cause');
+    expect(JSON.stringify(entry)).not.toMatch(/relation/);
   });
 
   it('always returns the four-bucket summary shape', async () => {

@@ -323,12 +323,29 @@ describe('POST /contacts/import/preview', () => {
     expect(res.status).toBe(400);
   });
 
-  it('403s an organization-scoped token: name resolution needs a partner', async () => {
+  it('admits an organization-scoped token, bounded to its own org', async () => {
+    // Spec S4 gates these on all three scopes. Admitting org scope is safe
+    // because accessibleOrgIds is that one org, which is what bounds the
+    // system-context writes.
     setAuth({ scope: 'organization', orgId: ORG, accessibleOrgIds: [ORG] });
+    importMocks.previewContactImport.mockResolvedValue([]);
     const res = await makeApp().request(
       '/contacts/import/preview', json({ rows: [{ organizationId: ORG, name: 'Jane' }] }),
     );
+    expect(res.status).toBe(200);
+    expect(importMocks.previewContactImport.mock.calls[0]![1]).toEqual({
+      partnerId: PARTNER, accessibleOrgIds: [ORG],
+    });
+  });
+
+  it('403s an organization-scoped token trying to redirect the import to another partner', async () => {
+    setAuth({ scope: 'organization', orgId: ORG, accessibleOrgIds: [ORG] });
+    const res = await makeApp().request('/contacts/import/preview', json({
+      partnerId: 'bbbbbbbb-1111-4111-8111-111111111111',
+      rows: [{ organizationId: ORG, name: 'Jane' }],
+    }));
     expect(res.status).toBe(403);
+    expect(importMocks.previewContactImport).not.toHaveBeenCalled();
   });
 });
 
@@ -398,6 +415,34 @@ describe('POST /contacts/import', () => {
     const res = await makeApp().request('/contacts/import', json({ rows: [{ organizationId: ORG, name: 'Jane' }] }));
     expect(res.status).toBe(400);
     expect(importMocks.commitContactImport).not.toHaveBeenCalled();
+  });
+
+  it('an org-scoped token importing rows for ANOTHER org gets org-not-found and writes nothing', async () => {
+    // The route hands the service the caller's single-org allowlist; the
+    // service refuses every row outside it. Asserted end to end: the context
+    // the route builds is what bounds the write.
+    setAuth({ scope: 'organization', orgId: ORG, accessibleOrgIds: [ORG] });
+    importMocks.commitContactImport.mockImplementation(async (rows: any, ctx: any) => {
+      const reach: string[] | null = ctx.accessibleOrgIds;
+      const errors = rows
+        .map((row: any, index: number) => ({ row, index }))
+        .filter(({ row }: any) => reach !== null && !reach.includes(row.organizationId))
+        .map(({ index }: any) => ({ index, error: 'No such organization under this partner', code: 'org-not-found' }));
+      return { imported: [], updated: [], skipped: [], errors };
+    });
+
+    const res = await makeApp().request('/contacts/import', json({
+      rows: [{ organizationId: OTHER_ORG, name: 'Mallory' }, { organizationId: ORG, name: 'Jane' }],
+    }));
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.errors).toEqual([
+      { index: 0, error: 'No such organization under this partner', code: 'org-not-found' },
+    ]);
+    expect(body.imported).toEqual([]);
+    // Nothing was created or updated, so nothing is audited.
+    expect(auditSpy).not.toHaveBeenCalled();
   });
 
   it('403s a partner caller asking to import into a different partner', async () => {
