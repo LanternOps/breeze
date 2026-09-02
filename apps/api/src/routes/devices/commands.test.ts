@@ -156,6 +156,14 @@ describe('device commands routes', () => {
     // decide a route's outcome so every case starts from an empty queue.
     vi.mocked(getDeviceWithOrgCheck).mockReset();
     vi.mocked(db.transaction).mockReset();
+    // Same hazard on the two grant mocks: a bulk case that denies BEFORE the
+    // consume (the missing-grant and shadowed-route paths) leaves its
+    // `mockResolvedValueOnce(false)` queued, and the next test to actually
+    // reach the consume is served it. That silently inverted T4 (a 403 where a
+    // 200 was expected) during Task 8's first RED run, masking the real
+    // finding — reset both and restore the module-factory default explicitly.
+    vi.mocked(validateStepUpGrant).mockReset().mockResolvedValue(true);
+    vi.mocked(consumeStepUpGrant).mockReset().mockResolvedValue(true);
     app = new Hono();
     app.route('/devices', commandsRoutes);
   });
@@ -940,6 +948,217 @@ describe('device commands routes', () => {
     vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn({ select: txSelect, update: txUpdate }));
     return { calls, captured, txSelect, txUpdate };
   }
+
+  describe('POST /devices/bulk/maintenance', () => {
+    const GRANT = '22222222-2222-4222-8222-222222222222';
+    const ids = {
+      ok: '00000000-0000-4000-8000-00000000000a',
+      missing: '00000000-0000-4000-8000-00000000000b',
+      denied: '00000000-0000-4000-8000-00000000000c',
+      quarantined: '00000000-0000-4000-8000-00000000000d',
+      ok2: '00000000-0000-4000-8000-00000000000e',
+    };
+    const row = (id: string, over: Record<string, unknown> = {}) => ({
+      id, orgId: 'org-123', hostname: `host-${id.slice(-1)}`, siteId: 'site-allowed',
+      status: 'online', lastSeenAt: new Date(Date.now() - 60_000),
+      maintenanceStartedAt: null, maintenanceUntil: null, maintenanceReason: null, maintenanceStartedBy: null,
+      ...over,
+    });
+    const bulkPost = (body: unknown, headers: Record<string, string> = {}) =>
+      app.request('/devices/bulk/maintenance', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token', ...headers },
+        body: JSON.stringify(body),
+      });
+    const validBody = (over: Record<string, unknown> = {}) => ({
+      // NOTE the duplicate: the digest must be computed over the DEDUPED set.
+      deviceIds: [ids.ok, ids.missing, ids.denied, ids.quarantined, ids.ok],
+      reason: 'scheduled patching', durationHours: 2, stepUpGrant: GRANT, ...over,
+    });
+
+    function stubLookups() {
+      vi.mocked(getDeviceWithOrgCheck).mockImplementation(async (id: string) => {
+        if (id === ids.missing) return null as never;
+        if (id === ids.denied) return row(id, { siteId: 'site-denied' }) as never;
+        if (id === ids.quarantined) return row(id, { status: 'quarantined' }) as never;
+        return row(id) as never;
+      });
+    }
+
+    /**
+     * Multi-row variant of mockMaintenanceTx: the bulk route locks each eligible
+     * device in turn inside ONE transaction, so the stub must hand back a
+     * DIFFERENT row per FOR UPDATE. Without this the "exactly one transaction"
+     * control cannot discriminate — with a single eligible device, per-device
+     * transactions and one batch transaction both call db.transaction once.
+     */
+    function mockBulkTx(rows: Array<Record<string, unknown>>) {
+      const queue = [...rows];
+      const calls: string[] = [];
+      let current: Record<string, unknown> | null = null;
+      const txSelect = vi.fn(() => ({
+        from: vi.fn(() => ({
+          where: vi.fn(() => ({
+            limit: vi.fn(() => ({
+              for: vi.fn(async () => {
+                calls.push('select-for-update');
+                current = queue.shift() ?? null;
+                return current ? [current] : [];
+              }),
+            })),
+          })),
+        })),
+      }));
+      const txUpdate = vi.fn(() => ({
+        set: vi.fn((values: Record<string, unknown>) => {
+          calls.push('update');
+          const locked = current;
+          return { where: vi.fn(() => ({ returning: vi.fn(async () => [{ ...locked, ...values }]) })) };
+        }),
+      }));
+      vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn({ select: txSelect, update: txUpdate }));
+      return { calls };
+    }
+
+    it('validates the grant over the SORTED, DEDUPED device set and consumes it exactly once, after preflight', async () => {
+      stubLookups();
+      mockMaintenanceTx(row(ids.ok));
+      const res = await bulkPost(validBody(), { 'x-site-restricted': 'true' });
+      expect(res.status).toBe(200);
+      const expectedDigest = maintenanceResourceDigest({
+        deviceIds: [ids.ok, ids.missing, ids.denied, ids.quarantined],
+        reason: 'scheduled patching', durationHours: 2,
+      });
+      expect(validateStepUpGrant).toHaveBeenCalledWith(GRANT, expect.objectContaining({ operation: 'device_maintenance', resourceDigest: expectedDigest }));
+      expect(consumeStepUpGrant).toHaveBeenCalledTimes(1);
+      expect(consumeStepUpGrant).toHaveBeenCalledWith(GRANT, expect.objectContaining({ resourceDigest: expectedDigest }));
+    });
+
+    // The digest canonicalizer dedupes internally, so a digest-only assertion
+    // CANNOT prove the route deduped. These two do: the repeated id must cost
+    // exactly one lookup and produce exactly one success.
+    it('deduplicates the device set before the preflight loop, not just inside the digest', async () => {
+      stubLookups();
+      mockMaintenanceTx(row(ids.ok));
+      const res = await bulkPost(validBody(), { 'x-site-restricted': 'true' });
+      expect(res.status).toBe(200);
+      expect(vi.mocked(getDeviceWithOrgCheck).mock.calls.map((c) => c[0])).toEqual([
+        ids.ok, ids.missing, ids.denied, ids.quarantined,
+      ]);
+      const body = await res.json();
+      expect(body.succeeded).toHaveLength(1);
+    });
+
+    it('reports per-device failures with codes and enters only the eligible devices, in ONE transaction', async () => {
+      stubLookups();
+      mockMaintenanceTx(row(ids.ok));
+      const res = await bulkPost(validBody(), { 'x-site-restricted': 'true' });
+      const body = await res.json();
+      expect(body.succeeded.map((s: any) => s.deviceId)).toEqual([ids.ok]);
+      expect(body.succeeded[0]).toMatchObject({ action: 'enable' });
+      expect(body.failed.map((f: any) => [f.deviceId, f.code]).sort()).toEqual([
+        [ids.denied, 'SITE_ACCESS_DENIED'],
+        [ids.missing, 'TARGET_NOT_FOUND'],
+        [ids.quarantined, 'STATE_CONFLICT'],
+      ].sort());
+      expect(db.transaction).toHaveBeenCalledTimes(1);
+    });
+
+    it('applies a MULTI-device eligible set inside exactly ONE transaction', async () => {
+      stubLookups();
+      const { calls } = mockBulkTx([row(ids.ok), row(ids.ok2)]);
+      const res = await bulkPost(validBody({ deviceIds: [ids.ok, ids.ok2] }), { 'x-site-restricted': 'true' });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.succeeded.map((s: any) => s.deviceId)).toEqual([ids.ok, ids.ok2]);
+      expect(calls).toEqual(['select-for-update', 'update', 'select-for-update', 'update']);
+      expect(db.transaction).toHaveBeenCalledTimes(1);
+    });
+
+    it('writes one audit row per succeeded device (per-resource trail, like bulk wake)', async () => {
+      stubLookups();
+      mockMaintenanceTx(row(ids.ok));
+      await bulkPost(validBody(), { 'x-site-restricted': 'true' });
+      const maintenanceAudits = vi.mocked(writeRouteAudit).mock.calls
+        .filter(([, e]: any) => String(e.action).startsWith('device.maintenance.'));
+      expect(maintenanceAudits).toHaveLength(1);
+      expect(maintenanceAudits[0]![1]).toMatchObject({ action: 'device.maintenance.enable' });
+    });
+
+    it('returns 200 with all failures and NEVER burns the grant when no device is eligible', async () => {
+      vi.mocked(getDeviceWithOrgCheck).mockResolvedValue(null as never);
+      const res = await bulkPost(validBody());
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.succeeded).toEqual([]);
+      expect(body.failed).toHaveLength(4);
+      expect(consumeStepUpGrant).not.toHaveBeenCalled();
+      expect(db.transaction).not.toHaveBeenCalled();
+    });
+
+    it('returns 403 STEP_UP_REQUIRED with no transaction when the consume loses a race', async () => {
+      stubLookups();
+      vi.mocked(consumeStepUpGrant).mockResolvedValueOnce(false);
+      const res = await bulkPost(validBody());
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({ code: 'STEP_UP_REQUIRED' });
+      expect(db.transaction).not.toHaveBeenCalled();
+    });
+
+    it('returns 403 STEP_UP_REQUIRED before any lookup when the grant is missing', async () => {
+      stubLookups();
+      const res = await bulkPost(validBody({ stepUpGrant: undefined }));
+      expect(res.status).toBe(403);
+      expect(consumeStepUpGrant).not.toHaveBeenCalled();
+      expect(db.transaction).not.toHaveBeenCalled();
+    });
+
+    it('requires MFA unconditionally — this route is entry only', async () => {
+      authState.mfa = false;
+      const res = await bulkPost(validBody());
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({ code: 'MFA_REQUIRED' });
+      expect(db.transaction).not.toHaveBeenCalled();
+    });
+
+    it.each([[true], [false]])('denies an api_key principal with ENABLE_2FA=%s and no state change', async (twoFactorOn) => {
+      // Everything else is staged for SUCCESS — lookups resolve, the tx stub is
+      // armed, the grant validates — so the ONLY thing standing between this
+      // machine principal and a written row is the interactive gate. With
+      // ENABLE_2FA=false, hasSatisfiedMfa short-circuits to true for the
+      // production `token: {}` shape, so requireMfa() would ADMIT this caller.
+      enable2faState.value = twoFactorOn;
+      authState.principalKind = 'api_key';
+      authState.mfa = false;
+      authState.sid = undefined;
+      stubLookups();
+      const { calls } = mockBulkTx([row(ids.ok)]);
+      const res = await bulkPost(validBody(), { 'x-site-restricted': 'true' });
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'Interactive user session required' });
+      expect(db.transaction).not.toHaveBeenCalled();
+      expect(calls).toEqual([]);
+      expect(getDeviceWithOrgCheck).not.toHaveBeenCalled();
+      expect(writeRouteAudit).not.toHaveBeenCalled();
+    });
+
+    it('rejects a body over the shared device cap with 400 and no state change', async () => {
+      const res = await bulkPost(validBody({ deviceIds: Array.from({ length: 501 }, (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`) }));
+      expect(res.status).toBe(400);
+      expect(db.transaction).not.toHaveBeenCalled();
+    });
+
+    it('is registered BEFORE /:id/maintenance so "bulk" is not read as a device id', async () => {
+      stubLookups();
+      mockMaintenanceTx(row(ids.ok));
+      const res = await bulkPost(validBody(), { 'x-site-restricted': 'true' });
+      // A 200 is half the proof: if /:id/maintenance shadowed this path, its
+      // maintenanceModeSchema would 400 the bulk body before any lookup ran,
+      // so the id assertion alone could not tell shadowing from success.
+      expect(res.status).toBe(200);
+      expect(vi.mocked(getDeviceWithOrgCheck).mock.calls.map((c) => c[0])).not.toContain('bulk');
+    });
+  });
 
   describe('POST /devices/:id/maintenance', () => {
     const deviceRow = (over: Record<string, unknown> = {}) => ({

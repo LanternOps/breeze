@@ -9,7 +9,7 @@ import { deviceCommands, devices } from '../../db/schema';
 import { authMiddleware, isInteractiveUserSession, requireMfa, requireScope, requirePermission, type AuthContext } from '../../middleware/auth';
 import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import { getPagination, getDeviceWithOrgCheck, canAccessDeviceSite } from './helpers';
-import { createCommandSchema, bulkCommandSchema, maintenanceModeSchema } from './schemas';
+import { createCommandSchema, bulkCommandSchema, maintenanceModeSchema, bulkMaintenanceSchema } from './schemas';
 import {
   MAINTENANCE_ENTRY_ALLOWED_STATUSES,
   MaintenanceLeaseError,
@@ -247,6 +247,180 @@ commandsRoutes.post(
     }
 
     return c.json({ commands: commandList, failed, skipped }, 201);
+  }
+);
+
+// POST /devices/bulk/maintenance - Enter maintenance mode on many devices
+//
+// RMM-QA-176 D2. ENTRY ONLY (exit stays per-device — ending suppression needs
+// no batching). Registered before the `/:id/…` routes IN THIS FILE so `bulk` is
+// never read as a device id: `POST /:id/maintenance` is registered further down
+// this file, so this handler must appear above it or Hono matches it with
+// id='bulk'. (`POST /bulk/commands` directly above is the existing precedent
+// for static-before-:id in this file.) That is not hypothetical: before this
+// route existed, `POST /devices/bulk/maintenance` reached the `/:id/maintenance`
+// handler and was rejected 400 by `maintenanceModeSchema` — the RED for this
+// task. Cross-router shadowing is not the hazard: no other router under
+// routes/devices registers POST /bulk/* or /:id/maintenance. Note commandsRoutes
+// is NOT mounted last — it is at routes/devices/index.ts:103 with 14 routers
+// after it — but later mounts cannot shadow an already-registered path, so the
+// mount position is moot.
+//
+// The gates and helpers this route reuses (requireInteractiveSession,
+// STEP_UP_REQUIRED_BODY, maintenanceLeaseErrorResponse) are declared further
+// down beside the single-device route; the function declaration is hoisted and
+// the consts are only read inside this handler, which runs long after module
+// evaluation.
+//
+// Three phases, in this order and for this reason:
+//   1. PREFLIGHT, no writes — validate the grant against the digest of the
+//      WHOLE deduplicated set, then authorize every device, collecting the
+//      ineligible ones. Authorization is decided before anything is written.
+//   2. CONSUME ONCE — one getdel for the batch. A multi-use grant, or N
+//      single-device calls re-presenting one grant, would be a wider replay
+//      window than a single consume.
+//   3. ONE TRANSACTION over the eligible set, all-or-nothing.
+// Cost, stated: a phase-3 failure rolls the batch back with the grant already
+// burned, so the technician re-steps-up. Preflight-ineligible devices never
+// touch the transaction and are reported, never silently retried.
+commandsRoutes.post(
+  '/bulk/maintenance',
+  requireScope('organization', 'partner', 'system'),
+  requireInteractiveSession(),
+  requirePermission(PERMISSIONS.DEVICES_WRITE.resource, PERMISSIONS.DEVICES_WRITE.action),
+  requireMfa(),
+  zValidator('json', bulkMaintenanceSchema),
+  async (c) => {
+    const auth = c.get('auth') as AuthContext;
+    const data = c.req.valid('json');
+    const now = new Date();
+    const permissions = c.get('permissions') as UserPermissions | undefined;
+    const deviceIds = [...new Set(data.deviceIds)];
+
+    type BulkMaintenanceFailureCode = 'TARGET_NOT_FOUND' | 'SITE_ACCESS_DENIED' | 'DECOMMISSIONED' | 'STATE_CONFLICT';
+    const failed: Array<{ deviceId: string; code: BulkMaintenanceFailureCode; message: string }> = [];
+    const eligible: Array<{ id: string; orgId: string; hostname: string | null; displayName?: string | null }> = [];
+
+    let grantBinding: StepUpGrantBinding | null = null;
+    if (ENABLE_2FA) {
+      const epochs = await getUserEpochs(auth.user.id);
+      const sid = auth.token?.sid;
+      if (!epochs || !sid) {
+        return c.json({ error: 'Service temporarily unavailable' }, 503);
+      }
+      grantBinding = {
+        userId: auth.user.id,
+        operation: 'device_maintenance',
+        authEpoch: epochs.authEpoch,
+        mfaEpoch: epochs.mfaEpoch,
+        sid,
+        // The digest covers the WHOLE deduplicated set: one grant for the set
+        // the technician was shown, not one per device.
+        resourceDigest: maintenanceResourceDigest({
+          deviceIds,
+          reason: data.reason,
+          durationHours: data.durationHours,
+        }),
+      };
+      if (!data.stepUpGrant || !(await validateStepUpGrant(data.stepUpGrant, grantBinding))) {
+        return c.json(STEP_UP_REQUIRED_BODY, 403);
+      }
+    }
+
+    // Phase 1 — preflight. No writes.
+    for (const deviceId of deviceIds) {
+      const device = await getDeviceWithOrgCheck(deviceId, auth);
+      if (!device) {
+        failed.push({ deviceId, code: 'TARGET_NOT_FOUND', message: 'Device not found.' });
+        continue;
+      }
+      // Same precedence as the single-device and bulk-command paths: site
+      // denial wins over device-state denials so a state code never confirms
+      // the existence of a device the caller may not see.
+      if (!canAccessDeviceSite(device, permissions)) {
+        failed.push({ deviceId, code: 'SITE_ACCESS_DENIED', message: 'Access to this site denied.' });
+        continue;
+      }
+      if (device.status === 'decommissioned') {
+        failed.push({ deviceId, code: 'DECOMMISSIONED', message: 'Cannot change maintenance mode for a decommissioned device.' });
+        continue;
+      }
+      if (!(MAINTENANCE_ENTRY_ALLOWED_STATUSES as readonly string[]).includes(device.status)) {
+        failed.push({ deviceId, code: 'STATE_CONFLICT', message: `Cannot enter maintenance mode while the device is "${device.status}".` });
+        continue;
+      }
+      eligible.push(device);
+    }
+
+    // Nothing to do: report and leave the grant unspent so the technician can
+    // fix the selection and retry without a second factor prompt.
+    if (eligible.length === 0) {
+      return c.json({ succeeded: [], failed });
+    }
+
+    // Phase 2 — consume ONCE, outside the transaction, after authorization.
+    if (grantBinding && !(await consumeStepUpGrant(data.stepUpGrant!, grantBinding))) {
+      return c.json(STEP_UP_REQUIRED_BODY, 403);
+    }
+
+    // Phase 3 — one transaction, all-or-nothing.
+    let results: Array<{ device: typeof eligible[number]; result: Awaited<ReturnType<typeof applyMaintenanceEntry>> }>;
+    try {
+      results = await db.transaction(async (tx) => {
+        const applied: Array<{ device: typeof eligible[number]; result: Awaited<ReturnType<typeof applyMaintenanceEntry>> }> = [];
+        for (const device of eligible) {
+          applied.push({
+            device,
+            result: await applyMaintenanceEntry(tx, {
+              deviceId: device.id,
+              reason: data.reason,
+              durationHours: data.durationHours,
+              actorUserId: auth.user.id,
+              now,
+            }),
+          });
+        }
+        return applied;
+      });
+    } catch (err) {
+      // A state change that surfaced only under the lock aborts the whole batch
+      // — reported, not partially applied.
+      if (err instanceof MaintenanceLeaseError) {
+        return maintenanceLeaseErrorResponse(c, err);
+      }
+      throw err;
+    }
+
+    // Per-device audit rows after commit — same shape as the single route, no
+    // aggregate row, so the trail stays per-resource like bulk wake.
+    for (const { device, result } of results) {
+      writeRouteAudit(c, {
+        orgId: device.orgId,
+        action: result.action === 'extend' ? 'device.maintenance.extend' : 'device.maintenance.enable',
+        resourceType: 'device',
+        resourceId: result.device.id,
+        resourceName: result.device.hostname ?? result.device.displayName ?? device.hostname,
+        details: {
+          reason: data.reason,
+          durationHours: data.durationHours,
+          maintenanceUntil: result.until.toISOString(),
+          maintenanceStartedAt: result.startedAt.toISOString(),
+          previousMaintenanceUntil: result.previousUntil?.toISOString() ?? null,
+          previousReason: result.previousReason,
+          stepUp: grantBinding ? 'grant' : 'disabled_2fa',
+          bulk: true,
+        },
+      });
+    }
+
+    return c.json({
+      succeeded: results.map(({ result }) => ({
+        deviceId: result.device.id,
+        action: result.action,
+        maintenanceUntil: result.until.toISOString(),
+      })),
+      failed,
+    });
   }
 );
 
