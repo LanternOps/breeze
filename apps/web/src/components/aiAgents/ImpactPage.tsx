@@ -210,16 +210,35 @@ function Tile({
   label,
   value,
   title,
+  href,
 }: {
   testId: string;
   label: string;
   value: string;
   title?: string;
+  href?: string;
 }) {
-  return (
-    <div data-testid={testId} title={title} className="rounded-lg border bg-card p-4">
+  const body = (
+    <>
       <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</p>
       <p className="mt-1 text-2xl font-semibold tabular-nums">{value}</p>
+    </>
+  );
+  if (href) {
+    return (
+      <a
+        data-testid={testId}
+        href={href}
+        title={title}
+        className="block rounded-lg border bg-card p-4 transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        {body}
+      </a>
+    );
+  }
+  return (
+    <div data-testid={testId} title={title} className="rounded-lg border bg-card p-4">
+      {body}
     </div>
   );
 }
@@ -516,7 +535,11 @@ export default function ImpactPage() {
 
       {!loading && !error && dto && (
         <>
-          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4 xl:grid-cols-7">
+          <div
+            className={`grid grid-cols-2 gap-3 lg:grid-cols-4 ${
+              dto.promoteEligibleCount === null ? 'xl:grid-cols-7' : 'xl:grid-cols-8'
+            }`}
+          >
             <Tile
               testId="ai-impact-tile-alerts-judged"
               label={t('aiAgentsPage.impact.tiles.alertsJudged')}
@@ -560,6 +583,17 @@ export default function ImpactPage() {
               label={t('aiAgentsPage.impact.tiles.llmSpend')}
               value={formatCurrency(dto.totals.llmCents / 100)}
             />
+            {/* P2-6b: a nudge, not a list — the graduation panel re-derives state per
+                read, so the exact rows live there and this only ever links to them. */}
+            {dto.promoteEligibleCount !== null && (
+              <Tile
+                testId="ai-impact-tile-promote-eligible"
+                label={t('aiAgentsPage.impact.tiles.promoteEligible')}
+                value={formatNumber(dto.promoteEligibleCount)}
+                title={t('aiAgentsPage.impact.tiles.promoteEligibleHint')}
+                href="/settings/ai-agents"
+              />
+            )}
           </div>
 
           <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm text-muted-foreground">

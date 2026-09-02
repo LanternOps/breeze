@@ -1748,6 +1748,8 @@
         "ticketsTriaged": "Tickets triés",
         "draftsSent": "Brouillons envoyés",
         "fixesExecuted": "Correctifs appliqués",
+        "promoteEligible": "Opérations éligibles à la promotion",
+        "promoteEligibleHint": "Opérations disposant de suffisamment de preuves sans échec pour être préautorisées. Ouvrez Paramètres → Agents IA pour les examiner et les promouvoir.",
         "estTimeSaved": "Temps gagné estimé",
         "estTimeSavedValue": "{{hours}} heures",
         "llmSpend": "Dépenses LLM"
@@ -1825,6 +1827,60 @@
         },
         "weightRowLabel": "{{label}} (secondes créditées)",
         "neverRebuilt": "Jamais reconstruit"
+      }
+    },
+    "graduation": {
+      "title": "Habilitation progressive",
+      "description": "Ce que cet agent a démontré sur les 30 derniers jours, opération par opération, et si ces preuves suffisent à demander une exécution préautorisée.",
+      "loading": "Chargement des preuves d’habilitation…",
+      "error": "Les preuves d’habilitation n’ont pas pu être chargées.",
+      "retry": "Réessayer",
+      "orgRequired": "Choisissez une seule organisation dans le sélecteur d’organisations pour voir ses preuves d’habilitation.",
+      "empty": "Aucune preuve n’a encore été enregistrée pour cet agent.",
+      "readOnlyNote": "L’exécution préautorisée est désactivée sur ce déploiement ; ces chiffres sont fournis à titre indicatif.",
+      "byOrgTruncated": "Les {{limit}} premières organisations par nom sont affichées. Choisissez une seule organisation dans le sélecteur d’organisations pour voir les autres.",
+      "thresholdPerOrgNote": "Chaque organisation résout son propre seuil d’habilitation : les exécutions vérifiées sont donc affichées ici sans cible. Choisissez une seule organisation dans le sélecteur d’organisations pour voir sa cible.",
+      "approvalsLink": "Suivre cette demande dans la boîte des approbations",
+      "ceilingHint": "Les clés au niveau du partenaire sont un plafond, pas une autorisation. L’agent de chaque organisation doit recevoir la clé séparément — par l’habilitation ou en modifiant l’agent de cette organisation.",
+      "promote": "Promouvoir",
+      "verifiedOfThreshold": "{{verified}} sur {{threshold}}",
+      "columns": {
+        "opKey": "Opération",
+        "state": "État",
+        "verified": "Vérifiées",
+        "executed": "Exécutées",
+        "failed": "En échec",
+        "recurred": "Réapparitions",
+        "firstVerified": "Première vérification",
+        "blockedReason": "Pourquoi pas encore"
+      },
+      "states": {
+        "tracking": "Sous observation",
+        "eligible": "Éligible",
+        "promoted": "Promue",
+        "demoted": "Rétrogradée"
+      },
+      "blockedReasons": {
+        "needs_partner_baseline": "L’agent au niveau du partenaire n’autorise pas encore cette opération.",
+        "below_threshold": "Pas encore assez d’exécutions vérifiées.",
+        "too_recent": "La première exécution vérifiée est encore trop récente.",
+        "has_failures": "Un échec ou une réapparition a été enregistré sur cette période.",
+        "not_policy_decidable": "Cette opération ne peut jamais être préautorisée."
+      },
+      "confirm": {
+        "title": "Demander une préautorisation",
+        "message": "Cela demande à une deuxième personne de préautoriser {{opKey}} pour l’agent de cette organisation. Cela ne vaut que pour les exécutions futures et n’autorise jamais une demande déjà en attente de décision.",
+        "action": "Demander l’approbation"
+      },
+      "toasts": {
+        "requested": "Préautorisation demandée. Une deuxième personne doit l’approuver avant que cette opération s’exécute sans surveillance, et cela ne vaut que pour les exécutions futures."
+      },
+      "errors": {
+        "promote": "La demande de préautorisation n’a pas pu être déposée.",
+        "policyDecideDisabled": "L’exécution préautorisée est désactivée sur ce déploiement, cette opération ne peut donc pas être promue."
+      },
+      "reliability": {
+        "caption": "Opérations du mode action, en lecture seule : ce ne sont pas des clés de politique, elles ne peuvent donc jamais être préautorisées."
       }
     }
   },

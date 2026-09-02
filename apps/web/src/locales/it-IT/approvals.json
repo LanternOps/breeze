@@ -41,5 +41,20 @@
     "batchStepUp": "Questo gruppo richiede un accesso più sicuro. Approva le richieste una alla volta.",
     "batchNotHomogeneous": "Non è più possibile decidere queste richieste insieme."
   },
-  "registerDevice": "Registra dispositivo"
+  "registerDevice": "Registra dispositivo",
+  "alwaysAllow": {
+    "button": "Approva e consenti sempre",
+    "confirm": {
+      "title": "Approva e richiedi la preautorizzazione",
+      "message": "Questo approva la richiesta che stai visualizzando in questo momento. Chiede inoltre a un secondo approvatore di preautorizzare {{opKey}} per l’agente di questa organizzazione: si applica solo alle esecuzioni future e non autorizza mai questa richiesta né altre già in attesa di decisione.",
+      "action": "Approva e richiedi"
+    },
+    "toasts": {
+      "requested": "Approvato. Un secondo approvatore deve approvare la preautorizzazione prima che questa operazione venga eseguita senza supervisione, e si applica solo alle esecuzioni future."
+    },
+    "errors": {
+      "approvedPromoteFailed": "Approvato, ma non è stato possibile inviare la richiesta di preautorizzazione. Riprova dalle impostazioni dell’agente.",
+      "policyDecideDisabled": "Approvato. Non è stato possibile richiedere la preautorizzazione perché è disattivata per questa distribuzione."
+    }
+  }
 }

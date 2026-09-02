@@ -1748,6 +1748,8 @@
         "ticketsTriaged": "Tickets triaged",
         "draftsSent": "Drafts sent",
         "fixesExecuted": "Fixes executed",
+        "promoteEligible": "Promotion-eligible operations",
+        "promoteEligibleHint": "Operations with enough clean evidence to be pre-authorized. Open Settings → AI Agents to review and promote them.",
         "estTimeSaved": "Estimated time saved",
         "estTimeSavedValue": "{{hours}} hours",
         "llmSpend": "LLM spend"
@@ -1825,6 +1827,60 @@
         },
         "weightRowLabel": "{{label}} (seconds credited)",
         "neverRebuilt": "Never rebuilt"
+      }
+    },
+    "graduation": {
+      "title": "Graduation",
+      "description": "What this agent has earned over the last 30 days, operation by operation, and whether that evidence is enough to ask for pre-authorized execution.",
+      "loading": "Loading graduation evidence…",
+      "error": "The graduation evidence could not be loaded.",
+      "retry": "Try again",
+      "orgRequired": "Choose a single organization in the organization switcher to see its graduation evidence.",
+      "empty": "No evidence has been recorded for this agent yet.",
+      "readOnlyNote": "Pre-authorized execution is turned off for this deployment; these figures are informational.",
+      "byOrgTruncated": "Showing the first {{limit}} organizations by name. Choose a single organization in the organization switcher to see the rest.",
+      "thresholdPerOrgNote": "Each organization resolves its own promotion threshold, so verified counts are shown here without a target. Choose a single organization in the organization switcher to see that organization's target.",
+      "approvalsLink": "Track this request in the approvals inbox",
+      "ceilingHint": "Partner-level keys are a ceiling, not a grant. Each organization's agent must be granted the key separately — through graduation or by editing that organization's agent.",
+      "promote": "Promote",
+      "verifiedOfThreshold": "{{verified}} of {{threshold}}",
+      "columns": {
+        "opKey": "Operation",
+        "state": "State",
+        "verified": "Verified",
+        "executed": "Executed",
+        "failed": "Failed",
+        "recurred": "Recurred",
+        "firstVerified": "First verified",
+        "blockedReason": "Why not yet"
+      },
+      "states": {
+        "tracking": "Tracking",
+        "eligible": "Eligible",
+        "promoted": "Promoted",
+        "demoted": "Demoted"
+      },
+      "blockedReasons": {
+        "needs_partner_baseline": "The partner-wide agent does not allow this operation yet.",
+        "below_threshold": "Not enough verified executions yet.",
+        "too_recent": "The first verified execution is still too recent.",
+        "has_failures": "A failure or a recurrence was recorded in this window.",
+        "not_policy_decidable": "This operation can never be pre-authorized."
+      },
+      "confirm": {
+        "title": "Request pre-authorization",
+        "message": "This asks a second approver to pre-authorize {{opKey}} for this organization's agent. It applies to future runs only and never authorizes a request that is already waiting for a decision.",
+        "action": "Request approval"
+      },
+      "toasts": {
+        "requested": "Pre-authorization requested. A second approver has to approve it before this operation runs unattended, and it applies to future runs only."
+      },
+      "errors": {
+        "promote": "The pre-authorization request could not be raised.",
+        "policyDecideDisabled": "Pre-authorized execution is turned off for this deployment, so this operation cannot be promoted."
+      },
+      "reliability": {
+        "caption": "Act-mode operations, read-only: these are not policy keys, so they can never be pre-authorized."
       }
     }
   },
