@@ -2012,11 +2012,25 @@ function buildApprovalDescription(
     // P2-5 (#4192): the op key ONLY. Never the agent's own text, never a
     // rationale — this string is rendered in the approval inbox and stored on
     // the intent, and no model-authored content may reach either.
+    //
+    // The parenthetical is not decoration: `cloneValuesFromEffective`
+    // (`aiAgents/supervisedKeyGrant.ts`) materializes the partner's CURRENT
+    // policy as a per-org `ai_agents` row whenever the org has none — the
+    // COMMON case under partner-wide-first. After that the org follows the
+    // partner only where the merge is tighten-only, so a partner that later
+    // WIDENS (a new tool in the allowlist, a raised limit, a new recipient or
+    // trigger) no longer reaches this org. The grant audit row records
+    // `clonedFromEffective` after the fact; this is the only place the second
+    // approver can be told BEFORE they consent. Unconditional because the
+    // description is built at intent-CREATION time, when whether the org
+    // already has a row is a race against the release — stating the
+    // conditional truth is honest at both moments.
     case 'manage_ai_agents':
       if (action === 'authorize_supervised_key') {
         parts.push(
           `Authorize the AI agent to run "${String(input.opKey ?? 'unknown')}" without an approval ` +
           'for this organization in future runs',
+          '(creates a per-organization agent policy override if this organization does not already have one)',
         );
       } else {
         parts.push(`${toolName}${action ? `: ${action}` : ''}`);
