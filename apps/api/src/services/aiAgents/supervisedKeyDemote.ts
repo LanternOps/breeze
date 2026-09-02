@@ -23,10 +23,13 @@
  *    attempt failed.
  *
  * 2. **It rides the transaction that recorded the negative evidence.** Both
- *    callers hand it the executor of the transaction that just wrote the
- *    `failed` / `recurred` row (a SAVEPOINT in the release worker, the
- *    phase-2 CAS's own transaction in `fixWatch`), so the revoke and the
- *    evidence that justifies it commit together or not at all. That is what
+ *    callers hand it the executor of a SAVEPOINT nested inside the
+ *    transaction that just wrote the `failed` / `recurred` row, so on the
+ *    happy path the revoke and the evidence that justifies it commit
+ *    together, while a revoke failure rolls back to that savepoint and is
+ *    Sentry-captured rather than unwinding a terminal state (an already-
+ *    executed action in the release worker; a recurrence verdict a human
+ *    needs to see in `fixWatch`). That is what
  *    the `database` parameter is for — the same shape `insertOpEvidence` and
  *    `createIntentFixWatchRow` already use, and for the same reason: a
  *    statement issued through the AMBIENT `db` proxy inside a savepoint goes
@@ -85,9 +88,10 @@ export type AiAgentDemoteReason = 'attempted_failure' | 'recurrence';
 
 /**
  * The executor the caller's transaction is running on. Defaults to the
- * ambient `db` proxy; the release worker passes its SAVEPOINT's `tx` so a
- * failure here rolls back the revoke and its evidence row together instead
- * of aborting the terminal CAS. Mirrors `fixWatch.ts`'s `WatchDatabase`.
+ * ambient `db` proxy; both callers pass their SAVEPOINT's `tx` so a failure
+ * here rolls the revoke back to that savepoint instead of aborting the
+ * terminal state the savepoint is nested in. Mirrors `fixWatch.ts`'s
+ * `WatchDatabase`.
  */
 export type DemoteDatabase = Pick<typeof db, 'select' | 'update' | 'insert' | 'execute'>;
 
@@ -119,8 +123,8 @@ async function inSystemDbContext<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 /**
- * Removes `opKey` from the ORG row's `supervisedActionKeys`, in the SAME
- * transaction as the negative evidence insert and under the same
+ * Removes `opKey` from the ORG row's `supervisedActionKeys`, in a SAVEPOINT
+ * of the SAME transaction as the negative evidence insert and under the same
  * `withGraduationLock` that serializes the promote executor and the daily
  * refresh on this `(org, agent, op_key)` tuple.
  *

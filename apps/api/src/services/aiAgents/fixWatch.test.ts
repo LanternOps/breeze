@@ -45,6 +45,15 @@ const state = vi.hoisted(() => ({
   selectCount: 0,
   insertCount: 0,
   updateCount: 0,
+  // P2-5 (#4192) fix round 1 — the auto-demote runs in a SAVEPOINT nested
+  // inside the phase-2 CAS transaction. `transactionDepth` is what proves the
+  // nesting; `savepointExecutor` is the sentinel the callback receives, so a
+  // test can prove the executor threaded into `demoteSupervisedKey` is the
+  // savepoint's and NOT the ambient `db` proxy (a statement issued through the
+  // proxy would abort the outer transaction no matter how it were wrapped).
+  transactionCount: 0,
+  transactionDepth: 0,
+  savepointExecutor: { __savepoint: true } as Record<string, unknown>,
 }));
 
 function resetDbState(): void {
@@ -61,6 +70,8 @@ function resetDbState(): void {
   state.selectCount = 0;
   state.insertCount = 0;
   state.updateCount = 0;
+  state.transactionCount = 0;
+  state.transactionDepth = 0;
 }
 
 vi.mock('../../db', () => {
@@ -146,6 +157,18 @@ vi.mock('../../db', () => {
       select: vi.fn(() => selectBuilder()),
       insert: vi.fn(() => insertBuilder()),
       update: vi.fn(() => updateBuilder()),
+      // `db.transaction` inside an already-open context transaction is a
+      // SAVEPOINT (postgres-js). The callback gets a DISTINCT executor object
+      // on purpose — see `state.savepointExecutor`.
+      transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => {
+        state.transactionCount += 1;
+        state.transactionDepth += 1;
+        try {
+          return await fn(state.savepointExecutor);
+        } finally {
+          state.transactionDepth -= 1;
+        }
+      }),
     },
     getCurrentDbAccessContext: vi.fn(() => ({ scope: 'system' })),
     runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
@@ -163,17 +186,24 @@ vi.mock('../userNotifications', () => ({
   createNotification: (...args: unknown[]) => createNotificationMock(...args),
 }));
 
+const captureExceptionMock = vi.fn();
+vi.mock('../sentry', () => ({
+  captureException: (...args: unknown[]) => captureExceptionMock(...args),
+}));
+
 // P2-5 (#4192) Task 6 — auto-demote. Mocked at the module boundary: the
 // revoke's own advisory-lock / FOR UPDATE / SET-clause contract is pinned
 // against the real dialect in `supervisedKeyDemote.test.ts`. What THIS file
 // proves is which keys a `recurred` verdict hands it, that it runs inside the
 // winning CAS's transaction, and that the notification runs strictly after.
 const demoteSupervisedKeyMock = vi.fn(
-  async (_input: Record<string, unknown>) => ({ revoked: false, orgAgentId: null as string | null }),
+  async (_input: Record<string, unknown>, _database?: unknown) =>
+    ({ revoked: false, orgAgentId: null as string | null }),
 );
 const notifyDemotionMock = vi.fn(async (_input: Record<string, unknown>) => undefined);
 vi.mock('./supervisedKeyDemote', () => ({
-  demoteSupervisedKey: (input: Record<string, unknown>) => demoteSupervisedKeyMock(input),
+  demoteSupervisedKey: (input: Record<string, unknown>, database?: unknown) =>
+    demoteSupervisedKeyMock(input, database),
   notifyDemotion: (input: Record<string, unknown>) => notifyDemotionMock(input),
 }));
 
@@ -261,6 +291,7 @@ beforeEach(() => {
   createNotificationMock.mockReset().mockResolvedValue('notif-id');
   demoteSupervisedKeyMock.mockReset().mockResolvedValue({ revoked: false, orgAgentId: null });
   notifyDemotionMock.mockReset().mockResolvedValue(undefined);
+  captureExceptionMock.mockReset();
 });
 
 afterEach(() => {
@@ -1195,7 +1226,7 @@ describe('checkFixWatchPhase2 — P2-5 auto-demote on recurrence', () => {
       runId: RUN_ID,
       watchId: WATCH_ID,
       intentId: INTENT_ID,
-    });
+    }, state.savepointExecutor);
     // Exactly one notification — the key that was only ever in the partner
     // ceiling had nothing revoked, so paging about it would be a lie.
     expect(notifyDemotionMock).toHaveBeenCalledTimes(1);
@@ -1280,5 +1311,82 @@ describe('checkFixWatchPhase2 — P2-5 auto-demote on recurrence', () => {
     await checkFixWatchPhase2(WATCH_ID);
 
     expect(demoteSupervisedKeyMock).not.toHaveBeenCalled();
+  });
+
+  // -------------------------------------------------------------------------
+  // Containment (review round 1). The revoke is the side that YIELDS: it runs
+  // in a SAVEPOINT so a failure rolls back to it instead of unwinding the
+  // `recurred` CAS, the watch-verdict evidence and the operator-facing
+  // recurrence alert together. That matters more here than in the sibling
+  // release-worker path: a watch left back in `watching` is NOT recoverable
+  // (`listPendingWatchesForRecovery` scans `state = 'pending'` only), so once
+  // the phase-2 job exhausts its BullMQ attempts the recurrence would never be
+  // reported to anyone at all.
+  // -------------------------------------------------------------------------
+  it('revokes in a SAVEPOINT nested in the CAS transaction, on that savepoint executor', async () => {
+    queueRecurrence({ sourceKind: 'intent', intentId: INTENT_ID, opKeys: [OP_KEY] });
+    let depthAtRevoke = -1;
+    demoteSupervisedKeyMock.mockImplementationOnce(async () => {
+      depthAtRevoke = state.transactionDepth;
+      return { revoked: true, orgAgentId: 'org-agent-1' };
+    });
+
+    await checkFixWatchPhase2(WATCH_ID);
+
+    expect(state.transactionCount).toBe(1);
+    expect(depthAtRevoke).toBe(1);
+    // The savepoint's executor, never the ambient `db` proxy: postgres-js
+    // latches a failed statement on the scope that issued it and rethrows at
+    // scope end even when the caller catches, so a proxied statement would
+    // abort the outer transaction however it were wrapped.
+    expect(demoteSupervisedKeyMock.mock.calls[0]![1]).toBe(state.savepointExecutor);
+    expect(demoteSupervisedKeyMock.mock.calls[0]![1]).not.toBe(db);
+  });
+
+  it('opens NO savepoint when the watch has nothing grantable to revoke', async () => {
+    queueRecurrence({ sourceKind: 'act_run', intentId: null, opKeys: ['manage_services.restart'] });
+
+    await checkFixWatchPhase2(WATCH_ID);
+
+    expect(state.transactionCount).toBe(0);
+  });
+
+  it('a revoke that throws KEEPS the recurred verdict, its evidence and the recurrence page', async () => {
+    queueRecurrence({ sourceKind: 'intent', intentId: INTENT_ID, opKeys: [OP_KEY] });
+    demoteSupervisedKeyMock.mockRejectedValueOnce(new Error('deadlock detected'));
+
+    const result = await checkFixWatchPhase2(WATCH_ID);
+
+    expect(result).toEqual({ action: 'recurred' });
+    expect(state.updateSets[0]).toMatchObject({ state: 'recurred' });
+    // The watch-verdict evidence rows committed with the CAS...
+    expect(state.insertValues[0]).toEqual([
+      expect.objectContaining({ metric: 'recurred', opKey: OP_KEY }),
+    ]);
+    // ...and the human still hears about the recurrence.
+    expect(createNotificationMock).toHaveBeenCalledTimes(1);
+    // Loud, and identifiers only — no alert text, no model-authored text.
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+    const captured = captureExceptionMock.mock.calls[0]![0] as Error;
+    expect(captured.message).toContain(WATCH_ID);
+    expect(captured.message).not.toContain('deadlock detected');
+    // Nothing was revoked, so nothing is announced as revoked.
+    expect(notifyDemotionMock).not.toHaveBeenCalled();
+  });
+
+  it('a revoke that throws still lets the OTHER keys of the same verdict stay unrevoked', async () => {
+    queueRecurrence({ sourceKind: 'intent', intentId: INTENT_ID, opKeys: [OP_KEY, OTHER_OP_KEY] });
+    // The savepoint wraps the WHOLE loop, so one throw discards every revoke
+    // in it — the alternative (a savepoint per key) would let a verdict commit
+    // a partial authority change with no record of which half failed.
+    demoteSupervisedKeyMock
+      .mockResolvedValueOnce({ revoked: true, orgAgentId: 'org-agent-1' })
+      .mockRejectedValueOnce(new Error('lock timeout'));
+
+    const result = await checkFixWatchPhase2(WATCH_ID);
+
+    expect(result).toEqual({ action: 'recurred' });
+    expect(notifyDemotionMock).not.toHaveBeenCalled();
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
   });
 });

@@ -43,6 +43,7 @@ import { alerts } from '../../db/schema/alerts';
 import { aiAgents, aiAgentRuns } from '../../db/schema/aiAgents';
 import { organizations } from '../../db/schema/orgs';
 import { createNotification } from '../userNotifications';
+import { captureException } from '../sentry';
 import { resolveRecipientUserIds } from './recipients';
 import { insertOpEvidence, watchEvidenceSourceId } from './opEvidence';
 import {
@@ -565,9 +566,27 @@ async function recordWatchVerdictEvidence(watch: AiAgentFixWatch, metric: 'recur
  * `jobs/intentReleaseWorker.ts`. The fix did not hold, so any key the ORG
  * actually granted for this operation stops running unattended.
  *
- * Runs INSIDE the caller's winning CAS transaction, on the ambient `db` (this
- * module opens no savepoint — see `recordWatchVerdictEvidence`'s header for
- * why a rollback here is safe and simply re-evaluates on the next delivery).
+ * Runs INSIDE the caller's winning CAS transaction, in a SAVEPOINT of its
+ * own — the SAME containment `intentReleaseWorker.ts`'s sibling revoke uses,
+ * and for a stronger version of the same reason. **The revoke is the side
+ * that yields.** On the happy path it is still one atomic commit with the
+ * `recurred` CAS and its evidence rows, which is what the plan asks for; only
+ * the losing side changed. If a revoke failure were allowed to propagate it
+ * would unwind the CAS, the watch-verdict evidence AND the operator-facing
+ * recurrence alert together, leaving the watch back in `watching` — and
+ * unlike a `pending` watch, a `watching` one is NOT recoverable:
+ * `listPendingWatchesForRecovery` scans `state = 'pending'` only, so once
+ * this phase-2 job exhausts its five BullMQ attempts the recurrence is
+ * silently never reported at all. A key that outlives its revoke by one
+ * sweep is strictly better than a recurrence no human ever hears about.
+ *
+ * A plain try/catch would NOT be enough, which is why this is a real nested
+ * transaction with the executor threaded: postgres-js records the first
+ * failed query of a transaction scope in that scope's `uncaughtError` and
+ * rethrows it when the scope ends EVEN IF the caller caught the rejection
+ * (`postgres/src/index.js`'s `scope()`), so a statement issued through the
+ * ambient `db` proxy would abort the outer transaction no matter how it were
+ * wrapped. `demoteSupervisedKey`'s second parameter exists for exactly this.
  *
  * Only COLON keys are considered: `policy_key` colon keys are the only thing
  * `supervisedActionKeys` ever holds, while an act-run watch's `op_keys` are
@@ -576,41 +595,59 @@ async function recordWatchVerdictEvidence(watch: AiAgentFixWatch, metric: 'recur
  * the same pair of `(org, agent, op_key)` advisory locks in opposite orders.
  * (Today an intent-anchored watch carries exactly one key and an act-run
  * watch carries none of this shape, so the multi-key case is defensive; a
- * deadlock there would abort this transaction and the phase-2 job would
- * re-evaluate, which is already this branch's documented failure mode.)
+ * deadlock there now rolls back to the savepoint and is captured, and the
+ * verdict still stands.)
  *
  * Returns the notifications the caller must send AFTER the commit — never
- * from in here.
+ * from in here. A contained failure returns `[]`: nothing was revoked, so
+ * there is nothing to announce.
  */
 async function demoteRecurredKeys(watch: AiAgentFixWatch): Promise<NotifyDemotionInput[]> {
   const grantableKeys = watch.opKeys.filter((opKey) => opKey.includes(':')).sort();
-  const demotions: NotifyDemotionInput[] = [];
-  for (const opKey of grantableKeys) {
-    const { revoked, orgAgentId } = await demoteSupervisedKey({
-      orgId: watch.orgId,
-      agentId: watch.agentId,
-      opKey,
-      reason: 'recurrence',
-      runId: watch.runId,
-      watchId: watch.id,
-      intentId: watch.intentId,
+  if (grantableKeys.length === 0) return [];
+
+  try {
+    return await db.transaction(async (tx) => {
+      const demotions: NotifyDemotionInput[] = [];
+      for (const opKey of grantableKeys) {
+        const { revoked, orgAgentId } = await demoteSupervisedKey({
+          orgId: watch.orgId,
+          agentId: watch.agentId,
+          opKey,
+          reason: 'recurrence',
+          runId: watch.runId,
+          watchId: watch.id,
+          intentId: watch.intentId,
+        }, tx);
+        // Only a key that was really revoked earns a page. A key held only by
+        // the partner ceiling was never live for this org, so announcing its
+        // "revocation" would report an authority change that did not happen.
+        if (revoked && orgAgentId) {
+          demotions.push({
+            orgId: watch.orgId,
+            agentId: watch.agentId,
+            orgAgentId,
+            opKey,
+            reason: 'recurrence',
+            runId: watch.runId,
+            watchId: watch.id,
+          });
+        }
+      }
+      return demotions;
     });
-    // Only a key that was really revoked earns a page. A key held only by the
-    // partner ceiling was never live for this org, so announcing its
-    // "revocation" would report an authority change that did not happen.
-    if (revoked && orgAgentId) {
-      demotions.push({
-        orgId: watch.orgId,
-        agentId: watch.agentId,
-        orgAgentId,
-        opKey,
-        reason: 'recurrence',
-        runId: watch.runId,
-        watchId: watch.id,
-      });
-    }
+  } catch (error) {
+    // Loud, but never at the cost of a verdict a human needs to see.
+    // Identifiers only in the message — no alert text, no model-authored
+    // text, no op key values beyond the ids this row already carries.
+    captureException(
+      new Error(
+        `auto-demote failed for fix watch ${watch.id} (org ${watch.orgId}, run ${watch.runId}); recurred verdict kept`,
+        { cause: error },
+      ),
+    );
+    return [];
   }
-  return demotions;
 }
 
 /**
