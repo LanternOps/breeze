@@ -17,6 +17,10 @@ import { tickets } from '../../db/schema';
  * working filter. Omitting it says what is meant and keeps the compiled
  * predicate honest.
  *
+ * `contactId` is REQUIRED rather than optional so an un-hydrated caller is a
+ * compile error instead of a silently login-only query — the same reason
+ * PortalAuthContext declares it required.
+ *
  * Its own module rather than a member of `./helpers` on purpose: every portal
  * route suite mocks `./helpers` wholesale, so a predicate living there would be
  * stubbed out of the very tests that exist to assert the compiled WHERE.
@@ -24,8 +28,8 @@ import { tickets } from '../../db/schema';
  * READ paths only. Comment authoring still keys on `ticket_comments.portal_user_id`:
  * writing as a login is a different claim from being named as the requester.
  */
-export function portalTicketOwnership(user: { id: string; contactId?: string | null }) {
-  const contactId = user.contactId ?? null;
+export function portalTicketOwnership(user: { id: string; contactId: string | null }) {
+  const contactId = user.contactId;
   return contactId === null
     ? eq(tickets.submittedBy, user.id)
     : or(eq(tickets.submittedBy, user.id), eq(tickets.requesterContactId, contactId))!;

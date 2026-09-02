@@ -3,7 +3,8 @@ import { zValidator } from '../lib/validation';
 import { and, eq, isNull, desc, ne, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { organizations, portalUsers, tickets, ticketComments, assetCheckouts, contacts } from '../db/schema';
-import { createContact } from '../services/contacts/crud';
+import { createContact, updateContact } from '../services/contacts/crud';
+import { INBOUND_CONTACT_LOCK_NAMESPACE } from '../services/inboundEmail/resolveOrg';
 import { requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
 import { writeRouteAudit } from '../services/auditEvents';
@@ -96,9 +97,11 @@ async function issueAndSendInvite(c: any, orgId: string, user: { id: string; ema
 
 /**
  * How an invite resolved to the org's contact for that address (#3258 W03).
- * Recorded in the invite's audit details, because a null `contact_id` is not
- * self-explaining after the fact: 'ambiguous' means we declined to guess,
- * 'kept' means we deliberately did not touch a link that was already there.
+ * Recorded in the invite's audit details AND returned in the response body,
+ * because a null `contact_id` is not self-explaining after the fact:
+ * 'ambiguous' means we declined to guess (and the new login will not see that
+ * address's emailed tickets), 'kept' means we deliberately did not touch a
+ * link that was already there.
  */
 type InviteContactLink = 'linked' | 'created' | 'ambiguous' | 'kept';
 
@@ -125,14 +128,35 @@ async function resolveInviteContact(
   name: string | null,
   actorUserId: string,
 ): Promise<{ contactId: string | null; link: InviteContactLink }> {
+  // The SAME namespaced advisory lock the inbound resolver takes, on the SAME
+  // (org, address) key. An invite and a first email from that address arriving
+  // together would otherwise each see "no contact" and each create one —
+  // `contacts_org_email_idx` is deliberately non-unique (shared mailboxes are
+  // real), so the database will not stop it. Transaction-scoped: the request's
+  // own transaction releases it.
+  await db.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtext(${INBOUND_CONTACT_LOCK_NAMESPACE}), hashtext(${`${orgId}:${normalizedEmail}`}))`,
+  );
+
   // limit(2) is all the arithmetic this needs: two rows means "at least two".
   const found = await db
-    .select({ id: contacts.id })
+    .select({ id: contacts.id, roles: contacts.roles })
     .from(contacts)
     .where(and(eq(contacts.orgId, orgId), sql`lower(${contacts.email}) = ${normalizedEmail}`))
     .limit(2);
   if (found.length > 1) return { contactId: null, link: 'ambiguous' };
-  if (found.length === 1) return { contactId: found[0]!.id, link: 'linked' };
+  if (found.length === 1) {
+    const existing = found[0]!;
+    // Grant the 'portal' role the invite is actually granting. A UNION, never
+    // a replace: an existing billing/technical contact does not stop being one
+    // because someone gave them a login. Skipped when the role is already
+    // there so a re-invite writes nothing (and does not churn updated_at).
+    const roles = (existing.roles ?? []) as string[];
+    if (!roles.includes('portal')) {
+      await updateContact(db, existing.id, orgId, { roles: [...roles, 'portal'] }, { userId: actorUserId });
+    }
+    return { contactId: existing.id, link: 'linked' };
+  }
   const created = await createContact(
     db,
     { orgId, email: normalizedEmail, name, roles: ['portal'] },
@@ -208,7 +232,12 @@ export function registerOrgPortalUsersRoutes(orgRoutes: Hono) {
     const emailSent = await issueAndSendInvite(c, org.id, { id: userId, email: normalizedEmail }, orgRow?.name ?? null, auth.user.name, message);
 
     writeRouteAudit(c, { orgId: org.id, action: 'organization.portal_user.invite', resourceType: 'portal_user', resourceId: userId, details: { email: normalizedEmail, emailSent, contactLink } });
-    return c.json({ data: { id: userId, email: normalizedEmail, status: 'invited' }, emailSent });
+    // `contactLink` is returned, not only audited: 'ambiguous' means the login
+    // was created WITHOUT a contact and therefore cannot see the tickets that
+    // address has emailed in (routes/portal/ticketOwnership.ts). The audit log
+    // is not somewhere an API consumer — or the invite UI — can read that from.
+    // (The UI warning itself is a follow-up; this is the field it needs.)
+    return c.json({ data: { id: userId, email: normalizedEmail, status: 'invited', contactLink }, emailSent });
   });
 
   orgRoutes.patch('/organizations/:id/portal-users/:userId', requireScope('partner', 'system'), requireOrgWrite, requireMfa(), zValidator('json', updatePortalUserSchema), async (c) => {

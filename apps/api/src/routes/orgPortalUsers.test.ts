@@ -1,9 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import { INBOUND_CONTACT_LOCK_NAMESPACE } from '../services/inboundEmail/resolveOrg';
 
-const { valuesSpy, setSpy } = vi.hoisted(() => ({ valuesSpy: vi.fn(), setSpy: vi.fn() }));
-const { authRef, selectResult, insertReturning, sendInvite, createContactMock, auditMock } = vi.hoisted(() => ({
+const { valuesSpy, setSpy, executeSpy } = vi.hoisted(() => ({ valuesSpy: vi.fn(), setSpy: vi.fn(), executeSpy: vi.fn() }));
+const { authRef, selectResult, insertReturning, sendInvite, createContactMock, updateContactMock, auditMock } = vi.hoisted(() => ({
   createContactMock: vi.fn(),
+  updateContactMock: vi.fn(),
   auditMock: vi.fn(),
   authRef: { current: { scope: 'partner' as string, user: { id: 'u-1', name: 'Tess', email: 'tess@msp.example' }, partnerId: 'p-1' as string | null, canAccessOrg: (_id: string) => true } },
   selectResult: vi.fn(),
@@ -43,12 +46,15 @@ vi.mock('../db', () => ({
         }))
       }); })
     })),
-    delete: vi.fn(() => ({ where: vi.fn(() => Promise.resolve()) }))
+    delete: vi.fn(() => ({ where: vi.fn(() => Promise.resolve()) })),
+    // The invite path takes the SAME namespaced advisory lock the inbound
+    // resolver takes (#3258 W03), so the mock has to serve `db.execute`.
+    execute: vi.fn((statement: unknown) => { executeSpy(statement); return Promise.resolve([]); })
   }
 }));
 vi.mock('../db/schema', () => ({
   portalUsers: { id: 'id', orgId: 'orgId', email: 'email', name: 'name', passwordHash: 'passwordHash', receiveNotifications: 'receiveNotifications', status: 'status', invitedBy: 'invitedBy', invitedAt: 'invitedAt', lastLoginAt: 'lastLoginAt', createdAt: 'createdAt', contactId: 'contactId' },
-  contacts: { id: 'id', orgId: 'orgId', email: 'email' },
+  contacts: { id: 'id', orgId: 'orgId', email: 'email', roles: 'roles' },
   organizations: { id: 'id', name: 'name', deletedAt: 'deletedAt' },
   tickets: { id: 'id', submittedBy: 'submittedBy' },
   ticketComments: { id: 'id', portalUserId: 'portalUserId' },
@@ -57,7 +63,7 @@ vi.mock('../db/schema', () => ({
 vi.mock('../services/auditEvents', () => ({ writeRouteAudit: auditMock }));
 vi.mock('../services/contacts/crud', async () => {
   const actual = await vi.importActual<typeof import('../services/contacts/crud')>('../services/contacts/crud');
-  return { ...actual, createContact: createContactMock };
+  return { ...actual, createContact: createContactMock, updateContact: updateContactMock };
 });
 vi.mock('../routes/portal/helpers', () => ({ storePortalInviteToken: vi.fn(async () => 'raw-token'), buildPortalUrl: (p: string) => `https://x/portal${p}` }));
 vi.mock('../services/email', () => ({ getEmailService: () => ({ sendPortalInvite: sendInvite }) }));
@@ -122,6 +128,64 @@ describe('POST /organizations/:id/portal-users/invite', () => {
     expect(auditMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       details: expect.objectContaining({ contactLink: 'linked' }),
     }));
+    // The caller gets the outcome too, not only the audit log: the UI needs it
+    // to warn on 'ambiguous' (follow-up), and an API consumer has no other way
+    // to learn the invite left the login unlinked.
+    expect(await res.json()).toMatchObject({ data: expect.objectContaining({ contactLink: 'linked' }) });
+  });
+
+  it("grants the existing contact the 'portal' role it did not have", async () => {
+    selectResult
+      .mockResolvedValueOnce([{ id: ORG_ID }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ id: 'ct-1', roles: ['billing'] }])
+      .mockResolvedValueOnce([{ name: 'Acme Co' }]);
+    insertReturning.mockResolvedValueOnce([{ id: 'pu-new' }]);
+
+    await invite({ email: 'known@acme.example' });
+
+    // A UNION, never a replace: the invite grants portal access, it does not
+    // decide the person stopped being the billing contact.
+    expect(updateContactMock).toHaveBeenCalledTimes(1);
+    const [, contactId, orgId, patch] = updateContactMock.mock.calls[0]!;
+    expect(contactId).toBe('ct-1');
+    expect(orgId).toBe(ORG_ID);
+    expect((patch as { roles: string[] }).roles.slice().sort()).toEqual(['billing', 'portal']);
+  });
+
+  it("does not re-write the contact when it ALREADY has the 'portal' role", async () => {
+    selectResult
+      .mockResolvedValueOnce([{ id: ORG_ID }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ id: 'ct-1', roles: ['portal', 'technical'] }])
+      .mockResolvedValueOnce([{ name: 'Acme Co' }]);
+    insertReturning.mockResolvedValueOnce([{ id: 'pu-new' }]);
+
+    await invite({ email: 'known@acme.example' });
+
+    expect(updateContactMock).not.toHaveBeenCalled();
+  });
+
+  it('serialises on the SAME advisory lock inbound email takes for (org, address)', async () => {
+    // An invite and a first email from the same address, arriving together,
+    // would otherwise each see "no contact" and each create one —
+    // contacts_org_email_idx is deliberately non-unique, so the DB will not
+    // stop it. Same namespace AND same key, or the two lock different things
+    // and serialise nothing.
+    selectResult
+      .mockResolvedValueOnce([{ id: ORG_ID }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ name: 'Acme Co' }]);
+    createContactMock.mockResolvedValueOnce({ id: 'ct-made' });
+    insertReturning.mockResolvedValueOnce([{ id: 'pu-new' }]);
+
+    await invite({ email: 'Fresh@Acme.Example' });
+
+    expect(executeSpy).toHaveBeenCalledTimes(1);
+    const { sql: lockSql, params } = new PgDialect().sqlToQuery(executeSpy.mock.calls[0]![0] as never);
+    expect(lockSql).toMatch(/pg_advisory_xact_lock\(hashtext\(\$\d\), hashtext\(\$\d\)\)/i);
+    expect(params).toEqual([INBOUND_CONTACT_LOCK_NAMESPACE, `${ORG_ID}:fresh@acme.example`]);
   });
 
   it('creates a portal-role contact when the org has none for the address', async () => {
@@ -160,6 +224,7 @@ describe('POST /organizations/:id/portal-users/invite', () => {
     expect(auditMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       details: expect.objectContaining({ contactLink: 'ambiguous' }),
     }));
+    expect(await res.json()).toMatchObject({ data: expect.objectContaining({ contactLink: 'ambiguous' }) });
   });
 
   it('re-inviting an existing login NEVER overwrites a contact link it already has', async () => {
@@ -174,7 +239,12 @@ describe('POST /organizations/:id/portal-users/invite', () => {
     expect(res.status).toBe(200);
     expect(createContactMock).not.toHaveBeenCalled();
     // The link is not re-derived at all — no lookup, and nothing written.
-    expect(setSpy).toHaveBeenCalledWith(expect.not.objectContaining({ contactId: expect.anything() }));
+    // `not.objectContaining({ contactId: expect.anything() })` is satisfied by
+    // ANY of the several set() calls this route can make, so it passes even
+    // when one of them DOES carry contactId. Assert on the one call that
+    // matters, by absence of the key.
+    expect(setSpy).toHaveBeenCalledTimes(1);
+    expect(setSpy.mock.calls[0]![0]).not.toHaveProperty('contactId');
     expect(auditMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       details: expect.objectContaining({ contactLink: 'kept' }),
     }));

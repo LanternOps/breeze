@@ -79,7 +79,9 @@ function portalApp(orgId: string) {
   const a = new Hono();
   a.use('/api/v1/portal/*', async (c, next) => {
     c.set('portalAuth', {
-      user: { id: 'portal-user-gate', orgId, email: PORTAL_EMAIL, name: 'Gate Signer', receiveNotifications: true, status: 'active' },
+      // contactId is REQUIRED on PortalAuthContext (#3258 W03); quote routes
+      // do not read it, so the null (contact-less login) case is stated.
+      user: { id: 'portal-user-gate', orgId, email: PORTAL_EMAIL, name: 'Gate Signer', contactId: null, receiveNotifications: true, status: 'active' },
       token: 't',
       authMethod: 'bearer',
     });

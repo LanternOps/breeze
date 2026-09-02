@@ -38,15 +38,20 @@ describe('portalTicketOwnership', () => {
     // NOT `requester_contact_id = NULL`, which matches nothing and reads as a
     // deliberate filter to anyone auditing the query later.
     expect(sql).not.toMatch(/requester_contact_id/);
-    expect(sql).not.toMatch(/null/i);
+    // The PARAMS are the discriminating half. `not.toMatch(/null/i)` cannot
+    // see the failure it was written for: `eq(col, null)` compiles to
+    // `"requester_contact_id" = $2` with a NULL bound in the params — the word
+    // "null" never appears in the SQL text at all.
     expect(params).toEqual(['pu-1']);
+    expect(params).not.toContain(null);
+    expect(params).not.toContain(undefined);
   });
 
-  it('treats an undefined contactId the same as null (a stale session object)', () => {
-    // portalAuth is built by the middleware, but the attachment route reads it
-    // through a hand-written cast — a shape that predates the contact link
-    // must not compile to `= NULL`.
-    const { sql } = compile(portalTicketOwnership({ id: 'pu-1' }));
-    expect(sql).not.toMatch(/requester_contact_id/);
+  it('binds the contact id itself, not a placeholder, when one is present', () => {
+    const { params } = compile(portalTicketOwnership({ id: 'pu-1', contactId: 'ct-1' }));
+    // Order matters only in so far as both are present and neither is null:
+    // a swapped pair would match the wrong column and is caught by the
+    // column-name assertions in the first case.
+    expect(params).toEqual(['pu-1', 'ct-1']);
   });
 });

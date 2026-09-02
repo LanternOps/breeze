@@ -20,6 +20,20 @@ export type PortalAuthContext = {
     orgName?: string | null;
     email: string;
     name: string | null;
+    /**
+     * The CONTACT this login belongs to (#3258 W03), or null when it has none
+     * (Entra SSO provisioning and the Outlook add-in's "create contact" both
+     * mint logins without one).
+     *
+     * REQUIRED, not optional. Portal ticket ownership is
+     * `submitted_by = me OR requester_contact_id = my contact`, so a context
+     * built without this field does not fail — it silently narrows every read
+     * back to login-only ownership and the customer stops seeing the tickets
+     * they emailed in. Making it required means `portalAuthMiddleware` is the
+     * only thing that can produce a PortalAuthContext, and every test double
+     * has to state which case it is modelling.
+     */
+    contactId: string | null;
     receiveNotifications: boolean;
     status: string;
   };

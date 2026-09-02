@@ -522,7 +522,7 @@ ticketRoutes.get(
   '/tickets/:id/attachments/:attachmentId/content',
   zValidator('param', portalAttachmentParamSchema),
   async (c) => {
-    const auth = c.get('portalAuth' as never) as { user: { id: string; orgId: string; contactId: string | null } };
+    const auth = c.get('portalAuth');
     const { id, attachmentId } = c.req.valid('param');
 
     const [ticket] = await db

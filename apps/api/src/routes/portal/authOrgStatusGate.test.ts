@@ -21,11 +21,25 @@ const { portalUserRow, activeOrgResult } = vi.hoisted(() => ({
   activeOrgResult: { current: null as { orgId: string; partnerId: string } | null },
 }));
 
+// The select mock APPLIES the projection rather than echoing the whole fixture
+// row. Without that, `select({ id, orgId, ... })` is unobservable and any
+// assertion about which columns the middleware hydrates is vacuous — deleting
+// `contactId: portalUsers.contactId` from the real query would still return it
+// (verified: the naive echo mock kept these tests green through exactly that
+// mutation).
+function project(columns: Record<string, unknown>): Array<Record<string, unknown>> {
+  const row = portalUserRow.current;
+  if (!row) return [];
+  const out: Record<string, unknown> = {};
+  for (const key of Object.keys(columns)) out[key] = row[key] ?? null;
+  return [out];
+}
+
 vi.mock('../../db', () => ({
   db: {
-    select: () => ({
+    select: (columns: Record<string, unknown>) => ({
       from: () => ({
-        where: () => ({ limit: () => Promise.resolve(portalUserRow.current ? [portalUserRow.current] : []) }),
+        where: () => ({ limit: () => Promise.resolve(project(columns)) }),
       }),
     }),
   },
@@ -40,6 +54,7 @@ vi.mock('../../db/schema', () => ({
     orgId: 'orgId',
     email: 'email',
     name: 'name',
+    contactId: 'contactId',
     receiveNotifications: 'receiveNotifications',
     status: 'status',
   },
@@ -63,11 +78,17 @@ import { getActiveOrgTenant } from '../../services/tenantStatus';
 const ORG_ID = '7c0a1f7e-1111-4222-8333-444455556666';
 const USER_ID = '11111111-2222-4333-8444-555566667777';
 const TOKEN = 'portal-session-token-for-gate-test';
+const CONTACT_ID = '99999999-8888-4777-8666-555544443333';
 
 function makeApp() {
   const app = new Hono();
   app.use('/protected', portalAuthMiddleware);
-  app.get('/protected', (c) => c.json({ ok: true }));
+  // Echoes the hydrated context so the contact link (#3258 W03) is asserted on
+  // what the REAL middleware produced, not on a hand-built fixture. Every
+  // portal ticket read is `submitted_by = me OR requester_contact_id = my
+  // contact`, so an un-hydrated contactId is a silently narrowed query, not a
+  // type error.
+  app.get('/protected', (c) => c.json({ ok: true, user: c.get('portalAuth').user }));
   return app;
 }
 
@@ -92,6 +113,7 @@ beforeEach(() => {
     orgId: ORG_ID,
     email: 'cust@acme.example',
     name: 'Cust',
+    contactId: CONTACT_ID,
     receiveNotifications: true,
     status: 'active',
   };
@@ -143,5 +165,26 @@ describe('portalAuthMiddleware org-status gate', () => {
     expect(res.status).toBe(403);
     expect(await res.json()).toEqual({ error: 'Account is not active' });
     expect(getActiveOrgTenant).not.toHaveBeenCalled();
+  });
+  // ---- #3258 W03: the contact link is HYDRATED onto portalAuth ----
+
+  it('hydrates the linked contact id onto portalAuth.user', async () => {
+    seedSession();
+    const res = await call();
+    expect(res.status).toBe(200);
+    const body = await res.json() as { user: { contactId: string | null } };
+    expect(body.user.contactId).toBe(CONTACT_ID);
+  });
+
+  it('hydrates contactId as null (not undefined) for a login with no contact', async () => {
+    seedSession();
+    portalUserRow.current = { ...portalUserRow.current, contactId: null };
+    const res = await call();
+    const body = await res.json() as { user: Record<string, unknown> };
+    // `undefined` and `null` diverge downstream: portalTicketOwnership drops
+    // the contact arm on null, and a MISSING key is how a stale session object
+    // sneaks past a required field.
+    expect(Object.prototype.hasOwnProperty.call(body.user, 'contactId')).toBe(true);
+    expect(body.user.contactId).toBeNull();
   });
 });
