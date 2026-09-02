@@ -72,6 +72,10 @@ const TARGET_GLOBS = [
   // cron, unattended. A silent create/update/delete here is invisible until the
   // next occurrence fires — or fails to.
   'src/components/settings/AiAgentSchedulesSection.tsx',
+  // P2-6 (#4193): Refresh enqueues a fleet-wide 90-day rebuild and the weights
+  // drawer re-prices every estimate the MSP shows its customers — a silent
+  // failure here is invisible until someone quotes a wrong number.
+  'src/components/aiAgents/ImpactPage.tsx',
   'src/components/devices/DeviceInfoTab.tsx',
   'src/components/devices/DevicePatchStatusTab.tsx',
   'src/components/dnsSecurity/DnsSecurityIntegrationsTab.tsx',
@@ -496,13 +500,14 @@ describe('no silent mutations in targeted set', () => {
   const checker = program.getTypeChecker();
 
   it('finds files to scan', () => {
-    // 104: 99 since #3989 added OrganizationsPage.tsx, plus MergeOrgModal.tsx
+    // 105: 99 since #3989 added OrganizationsPage.tsx, plus MergeOrgModal.tsx
     // (org-lifecycle Wave 3), plus ArchiveOrgModal.tsx (org-lifecycle Wave 5),
     // plus SsoProvidersPage.tsx and ReportBuilder.tsx (2026-08-28 pre-release sweep),
     // plus AlertVerdictBadge.tsx (P2-1 Task 15), plus
     // AiAgentSchedulesSection.tsx (P2-2 Task 13, #4189), plus
-    // QuickbooksMappingWorkbench.tsx (QuickBooks entity mapping, Task 6).
-    expect(absoluteFiles.length).toBe(104);
+    // QuickbooksMappingWorkbench.tsx (QuickBooks entity mapping, Task 6), plus
+    // ImpactPage.tsx (P2-6 Task 10, #4193).
+    expect(absoluteFiles.length).toBe(105);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }
