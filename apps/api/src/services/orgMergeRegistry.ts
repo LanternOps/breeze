@@ -164,6 +164,7 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // across two orgs. Same composite (org_id, partner_id) FK fragility as
   // llm_egress_events/ai_unattended_exposure applies too.
   ai_agent_fix_watches: { kind: 'leave-for-erasure', note: 'watch history is tied to a run that itself stays with the source org (ai_agent_runs disposition); composite (org_id, partner_id) FK also makes a bare org_id repoint fragile — rows die with the loser shell' },
+  ai_agent_impact_daily: { kind: 'leave-for-erasure', note: 'derived per-org daily rollup of runs/verdicts/watches that all themselves stay with the loser org (ai_agent_runs disposition) — repointing would double-count the survivor and nothing can regenerate under it; rows die with the loser shell' },
   // ticket_drafts (P2-4, #4191): CUSTOM, not leave-for-erasure — the row
   // must not survive INTO the merge, or `tickets`' own `repoint` aborts it.
   //
