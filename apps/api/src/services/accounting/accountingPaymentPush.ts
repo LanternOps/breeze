@@ -9,7 +9,14 @@
  * commit and `add()`, a savepoint not yet committed — is recovered by the
  * 15-minute reconcile sweep, which re-enqueues every stale `pending_op` row. The
  * mapping is NEVER cleared until QuickBooks confirms, so a delete cannot be lost
- * even after BullMQ exhausts its attempts.
+ * even after BullMQ exhausts its attempts. That is also why
+ * `requestPaymentDelete` never DELETES a Breeze-origin row, not even one whose
+ * push has not recorded a remote id yet: the create may be in flight at that
+ * exact moment, and a deleted mapping row cannot be recreated afterwards — the
+ * `accounting_entity_mappings_entity_partner_guard` trigger refuses an INSERT
+ * whose `invoice_payments` row no longer exists. Flipping the row to
+ * `pending_op = 'delete'` instead keeps a durable place for phase 2 to stamp the
+ * remote ref it is about to learn.
  *
  * EXCLUSIVE CLAIM BY LEASE (spec decision 2). A worker claims a row with a
  * compare-and-set — `SET claimed_at = now() WHERE id = ? AND pending_op = ? AND
@@ -75,6 +82,19 @@ export const PAYMENT_CLAIM_LEASE_MS = 10 * 60 * 1000;
 export const PAYMENT_SWEEP_MIN_AGE_MS = 2 * 60 * 1000;
 /** QuickBooks caps PaymentRefNum at 21 characters and REJECTS a longer one. */
 export const PAYMENT_REF_MAX_LENGTH = 21;
+/**
+ * How long a delete-pending mapping with NO remote id is allowed to wait for
+ * one before Breeze gives up on it.
+ *
+ * The row means "a Breeze payment was destroyed while its create was in flight,
+ * and we never learned whether QuickBooks kept the Payment". The CDC pull can
+ * still adopt it and fill the remote id in (the marker survives in PrivateNote),
+ * so the delete worker parks the row instead of guessing. Past this window
+ * nothing will resolve it — QBO's 24-hour `requestid` dedupe has closed and CDC
+ * has had a day of sweeps — so the row is dropped LOUDLY (Sentry + audit)
+ * rather than left owing a delete forever.
+ */
+export const PAYMENT_DELETE_UNRESOLVED_GRACE_MS = 24 * 60 * 60 * 1000;
 
 export const PAYMENT_PUSH_DISABLED_MESSAGE = 'Payment push is disabled for this QuickBooks connection';
 
@@ -113,7 +133,13 @@ export class AccountingPaymentPushError extends Error {
 export type PaymentPushOutcome =
   | 'pushed' | 'already_adopted' | 'converted_to_delete' | 'diverged'
   | 'payment_gone' | 'nothing_owed';
-export type PaymentDeleteOutcome = 'deleted' | 'already_absent' | 'nothing_owed';
+export type PaymentDeleteOutcome =
+  | 'deleted' | 'already_absent' | 'nothing_owed'
+  // The row owes a delete but has no remote id yet: the create may still be in
+  // flight, or its response was lost and the CDC pull has yet to adopt it.
+  | 'awaiting_remote_ref'
+  // ...and it never resolved within PAYMENT_DELETE_UNRESOLVED_GRACE_MS.
+  | 'unresolved_dropped';
 
 /** Same shape as invoiceService's own DbExecutor: the ambient `db` proxy (which,
  *  inside an open access context, IS the transaction handle) or a drizzle tx handle. */
@@ -368,17 +394,35 @@ export async function requestPaymentPush(
  * later CDC delivery for the same QuickBooks Payment reads as "already applied"
  * and silently skips.
  *
- * Three cases:
- *  - Breeze-origin WITH a remote id -> keep the row, flip `pending_op='delete'`.
- *    Breeze created that Payment in QuickBooks, so Breeze owns its removal —
- *    regardless of `push_mode` or `push_payments` (spec decision 10).
- *  - Breeze-origin with NO remote id -> delete the row. Nothing exists in
- *    QuickBooks. If a create is in flight right now, its phase 2 finds the
- *    payment row gone and converts ITSELF to a delete (spec decision 7), so
- *    nothing is stranded.
+ * Two cases:
+ *  - Breeze-origin (with OR without a remote id) -> keep the row, flip
+ *    `pending_op='delete'`. Breeze created that Payment in QuickBooks — or is
+ *    creating it right now — so Breeze owns its removal, regardless of
+ *    `push_mode` or `push_payments` (spec decision 10).
  *  - QuickBooks-origin -> delete the row, as Phase D always did. The pull's
  *    reversal path owns those; asking QuickBooks to delete its own payment
  *    because Breeze voided a mirror of it would be backwards.
+ *
+ * WHY A PUSH-PENDING ROW WITH NO REMOTE ID IS KEPT, NOT DELETED. It is tempting
+ * to drop it — "nothing exists in QuickBooks yet" — but that is only true if no
+ * create is in flight, and this helper runs at exactly the moment one might be:
+ * a worker can sit between its phase 1 and its QuickBooks call. Deleting the row
+ * there orphans a real QuickBooks Payment, because phase 2 then finds no row to
+ * stamp and CANNOT recreate one — the
+ * `accounting_entity_mappings_entity_partner_guard` trigger rejects an INSERT
+ * whose `invoice_payments` row is already gone. Flipping to `delete` instead
+ * leaves phase 2 somewhere to record the remote ref it is about to learn, and
+ * the delete worker parks the row until then
+ * (`awaiting_remote_ref`/`PAYMENT_DELETE_UNRESOLVED_GRACE_MS`).
+ *
+ * `claimed_at` is deliberately left ALONE for the same reason: a live lease
+ * means a worker is mid-flight, and clearing it would invite a SECOND worker to
+ * start a second create for the same payment. The delete worker gets a clean
+ * `sync_in_progress` while the lease is live and retries.
+ *
+ * The UPDATE touches no column the partner-guard trigger watches
+ * (`partner_id`, `breeze_entity_type`, `breeze_entity_id`), so it stays legal
+ * even as the `invoice_payments` row disappears in the same transaction.
  *
  * Returns the mapping id to enqueue a `delete-payment` job for, or `null`.
  * Zero rows is LEGITIMATE and deliberately not a throw: a manual or Stripe
@@ -391,7 +435,7 @@ export async function requestPaymentDelete(
   const mapping = await loadPaymentMappingByPaymentId(tx, invoicePaymentId);
   if (!mapping) return null;
 
-  if (!mapping.breezeOrigin || !mapping.remoteEntityId) {
+  if (!mapping.breezeOrigin) {
     await deleteMappingRow(tx, mapping.id);
     return null;
   }
@@ -401,7 +445,6 @@ export async function requestPaymentDelete(
     .set({
       pendingOp: 'delete',
       syncStatus: 'pending',
-      claimedAt: null,
       lastError: null,
       updatedAt: new Date(),
     })
@@ -437,6 +480,10 @@ async function claimPaymentMapping(
     .where(and(
       eq(accountingEntityMappings.id, mappingId),
       eq(accountingEntityMappings.partnerId, partnerId),
+      // Payment rows ONLY. Without this a mis-routed job id (or a future
+      // `pending_op` user on another entity type) would hand an Invoice's
+      // remote id straight to `provider.deletePayment`.
+      eq(accountingEntityMappings.breezeEntityType, 'payment'),
       eq(accountingEntityMappings.pendingOp, op),
       or(
         isNull(accountingEntityMappings.claimedAt),
@@ -447,7 +494,17 @@ async function claimPaymentMapping(
   return (rows as MappingRow[])[0] ?? null;
 }
 
-/** Release the lease, keeping `pending_op` — the work is still owed. */
+/**
+ * Release the lease, keeping `pending_op` — the work is still owed.
+ *
+ * Zero rows is TOLERATED here (unlike `stampRemoteRef`/`convertToDelete`, which
+ * throw): every caller is on a path that is already giving up, and the row can
+ * legitimately be gone by now — a concurrent tenant erasure, or a destroyer that
+ * dropped a QuickBooks-origin row. Failing loudly would replace a precise typed
+ * refusal with a raw 500 and change nothing about the outcome. The paths that
+ * must not lose a write — the ones recording a QuickBooks RESULT — are the ones
+ * that throw.
+ */
 async function releaseLease(mappingId: string, partnerId: string): Promise<void> {
   await db
     .update(accountingEntityMappings)
@@ -464,6 +521,10 @@ async function releaseLease(mappingId: string, partnerId: string): Promise<void>
  * retrying can never succeed) and record why, so the mapping card shows an
  * operator what to fix. Runs inside the caller's phase-1 transaction, which is
  * why phase 1 RETURNS a recordable refusal instead of throwing it.
+ *
+ * Zero rows is tolerated for the same reason as `releaseLease` above: this is
+ * best-effort annotation of a failure that is being reported anyway, and Sentry
+ * already carries the original.
  */
 async function markPaymentMappingError(
   mappingId: string,
@@ -506,6 +567,20 @@ async function markPaymentMappingErrorInOwnContext(
       service: 'accountingPaymentPush', mappingId, partnerId,
     });
   }
+}
+
+/** The push is done and nothing more is owed: drop `pending_op` and the lease
+ *  together. Used when the CDC echo adopted the row before phase 2 got to it —
+ *  the coordinator still owns closing out its own at-most-once claim. */
+async function clearPendingPush(mappingId: string, partnerId: string): Promise<void> {
+  await db
+    .update(accountingEntityMappings)
+    .set({ pendingOp: null, claimedAt: null, updatedAt: new Date() })
+    .where(and(
+      eq(accountingEntityMappings.id, mappingId),
+      eq(accountingEntityMappings.partnerId, partnerId),
+    ))
+    .returning({ id: accountingEntityMappings.id });
 }
 
 async function convertToDelete(mappingId: string, partnerId: string): Promise<void> {
@@ -562,28 +637,37 @@ async function stampRemoteRef(
 }
 
 /** Off-request path (worker): the system-scope audit writer, never
- *  writeRouteAudit. Never lets an audit failure undo committed money state. */
-function fireAudit(
-  conn: AccountingConnection,
-  action: 'accounting.payment.pushed' | 'accounting.payment.deleted',
-  orgId: string,
-  invoiceId: string,
-  details: Record<string, unknown>,
-): void {
+ *  writeRouteAudit. Never lets an audit failure undo committed money state.
+ *  `orgId` is nullable because the unresolved-delete drop has no payment row and
+ *  no remote invoice id left to resolve one from (`audit_logs.org_id` is
+ *  nullable). */
+function fireAudit(params: {
+  provider: string;
+  action: 'accounting.payment.pushed' | 'accounting.payment.deleted' | 'accounting.payment.delete_unresolved';
+  orgId: string | null;
+  resourceType: 'invoice' | 'accounting_entity_mapping';
+  resourceId: string | null;
+  result?: 'success' | 'failure';
+  details: Record<string, unknown>;
+}): void {
   try {
     writeAuditEvent(requestLikeFromSnapshot({}), {
-      orgId,
-      action,
-      resourceType: 'invoice',
-      resourceId: invoiceId,
+      orgId: params.orgId,
+      action: params.action,
+      resourceType: params.resourceType,
+      resourceId: params.resourceId,
       actorType: 'system',
       actorId: null,
-      result: 'success',
-      details: { provider: conn.provider, ...details },
+      result: params.result ?? 'success',
+      details: { provider: params.provider, ...params.details },
     });
   } catch (err) {
     captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
-      service: 'accountingPaymentPush', action, resourceId: invoiceId,
+      service: 'accountingPaymentPush',
+      action: params.action,
+      // Sentry tags are Record<string, string>; the unresolved-delete drop has
+      // no resource id to report.
+      ...(params.resourceId ? { resourceId: params.resourceId } : {}),
     });
   }
 }
@@ -617,6 +701,9 @@ export async function listOwedPaymentMappings(
     })
     .from(accountingEntityMappings)
     .where(and(
+      // Same guard as the lease CAS: only `payment` rows are ever handed to the
+      // payment workers.
+      eq(accountingEntityMappings.breezeEntityType, 'payment'),
       inArray(accountingEntityMappings.pendingOp, ['push', 'delete']),
       or(
         isNull(accountingEntityMappings.claimedAt),
@@ -746,6 +833,13 @@ export async function pushPaymentToAccounting(
 
     const invoice = await loadOwnedInvoice(payment.invoiceId, partnerId);
     if (!invoice) {
+      // Same rule as the missing-payment branch above: a remote id means a
+      // QuickBooks Payment exists and Breeze still owes its removal, so the row
+      // converts to a delete rather than being dropped.
+      if (claimed.remoteEntityId) {
+        await convertToDelete(mappingId, partnerId);
+        return { kind: 'outcome', outcome: 'converted_to_delete' } as const;
+      }
       await deleteMappingRow(db, mappingId);
       return { kind: 'outcome', outcome: 'payment_gone' } as const;
     }
@@ -841,7 +935,17 @@ export async function pushPaymentToAccounting(
   let audit: { orgId: string; invoiceId: string; details: Record<string, unknown> } | null = null;
   try {
     const phase2 = await runInDbContext(async () => {
-      await lockOwnedInvoice(prep.invoiceId, partnerId);
+      const lockedInvoice = await lockOwnedInvoice(prep.invoiceId, partnerId);
+      if (!lockedInvoice) {
+        // No lock means no serialisation against a concurrent
+        // recordPayment/voidPayment, and the invoice this Payment settles is
+        // gone. Refuse rather than write the result unlocked: `record_failed`
+        // is terminal and stamps the row for an operator.
+        throw new Error(
+          `accountingPaymentPush: invoice ${prep.invoiceId} could not be locked in phase 2 `
+          + `(remote payment ${ref.id}); refusing to record the result unlocked`,
+        );
+      }
 
       const mapping = await loadMappingById(mappingId, partnerId);
       if (!mapping) {
@@ -853,19 +957,32 @@ export async function pushPaymentToAccounting(
       const remoteEntityId = paymentMappingRemoteId(ref.id, prep.remoteInvoiceId);
 
       // The echo won the race: the CDC pull adopted this row and stored a token
-      // that is at least as new as ours. Keep ITS token; just release the lease.
+      // that is at least as new as ours. Keep ITS token.
       // The comparison is on the FULL composite id, never the Payment id alone:
       // one QuickBooks Payment can settle several invoices, and a sibling split
       // line's mapping is a different row that must not be mistaken for ours.
       if (mapping.remoteEntityId === remoteEntityId) {
-        await releaseLease(mappingId, partnerId);
+        if (mapping.pendingOp === 'delete') {
+          // A destroyer flipped the row while the adopter was stamping it. The
+          // delete is still owed and already has an Id and a token; just free
+          // the lease so the delete worker can claim it.
+          await releaseLease(mappingId, partnerId);
+          return { outcome: 'converted_to_delete' as const, audit: null };
+        }
+        // The push IS complete — this coordinator owns closing out its own claim,
+        // so `pending_op` goes too, not just the lease. Left set, the sweep would
+        // re-enqueue forever and, once QBO's 24-hour `requestid` dedupe window
+        // lapsed, mint a SECOND Payment for money that only moved once.
+        await clearPendingPush(mappingId, partnerId);
         return { outcome: 'already_adopted' as const, audit: null };
       }
 
       const payment = await loadPaymentRow(mapping.breezeEntityId);
-      if (!payment) {
-        // Voided or fully refunded during the round trip. Stamp the ref anyway —
-        // the delete needs an Id and a SyncToken — then flip to delete.
+      // Two ways to land here: the payment row went away during the round trip,
+      // or `requestPaymentDelete` flipped this row to `delete` while we were in
+      // flight. It never deletes a Breeze-origin push row precisely so that this
+      // branch can hand the delete worker an Id and a SyncToken.
+      if (mapping.pendingOp === 'delete' || !payment) {
         await stampRemoteRef(mappingId, partnerId, remoteEntityId, ref.syncToken ?? null, {
           syncStatus: 'pending', linkStatus: 'confirmed', pendingOp: 'delete', lastError: null,
         });
@@ -915,7 +1032,14 @@ export async function pushPaymentToAccounting(
   }
 
   if (audit) {
-    fireAudit(prep.conn, 'accounting.payment.pushed', audit.orgId, audit.invoiceId, audit.details);
+    fireAudit({
+      provider: prep.conn.provider,
+      action: 'accounting.payment.pushed',
+      orgId: audit.orgId,
+      resourceType: 'invoice',
+      resourceId: audit.invoiceId,
+      details: audit.details,
+    });
   }
   return outcome;
 }
@@ -959,9 +1083,31 @@ export async function deletePaymentInAccounting(
     }
 
     if (!claimed.remoteEntityId) {
-      // Nothing exists in QuickBooks. Drop the row; there is nothing to call.
+      // The row owes a delete but never recorded a remote id: a destroyer
+      // flipped it while its create was in flight (or before one ran). Whether a
+      // QuickBooks Payment exists is genuinely unknown from here — `createPayment`
+      // may have succeeded with a response Breeze never saw — and the PrivateNote
+      // marker is not queryable, so there is no recovery QUERY. Waiting is the
+      // only correct move: the CDC pull adopts the Payment and fills the remote
+      // id in, and the sweep re-enqueues this job afterwards.
+      //
+      // `created_at`, NOT `updated_at`: the lease CAS bumps `updated_at` on every
+      // attempt, so an age measured on it would never expire.
+      const unresolvedForMs = now.getTime() - claimed.createdAt.getTime();
+      if (unresolvedForMs < PAYMENT_DELETE_UNRESOLVED_GRACE_MS) {
+        await releaseLease(mappingId, partnerId);
+        return { kind: 'outcome', outcome: 'awaiting_remote_ref' } as const;
+      }
+      // Past the window nothing will resolve it. Drop the row rather than leave a
+      // delete owed forever, and make the loss loud: a QuickBooks Payment may be
+      // orphaned and only a human can reconcile it.
       await deleteMappingRow(db, mappingId);
-      return { kind: 'outcome', outcome: 'already_absent' } as const;
+      return {
+        kind: 'outcome',
+        outcome: 'unresolved_dropped',
+        invoicePaymentId: claimed.breezeEntityId,
+        unresolvedForMs,
+      } as const;
     }
 
     const conn = await resolveConnection(partnerId, 'quickbooks').catch(translateMappingError);
@@ -1000,7 +1146,36 @@ export async function deletePaymentInAccounting(
     } as const;
   });
 
-  if (prep.kind === 'outcome') return prep.outcome;
+  if (prep.kind === 'outcome') {
+    if (prep.outcome === 'unresolved_dropped') {
+      captureException(
+        new Error(
+          `accountingPaymentPush: dropped a delete-pending payment mapping (id=${mappingId}) that never recorded a `
+          + 'QuickBooks remote id within the grace window; a QuickBooks Payment for this Breeze payment may be '
+          + 'orphaned and needs manual reconciliation',
+        ),
+        undefined,
+        { service: 'accountingPaymentPush', mappingId, partnerId },
+      );
+      fireAudit({
+        // The connection was never resolved on this path (it must work even for
+        // a disconnected realm), and this coordinator only ever runs against
+        // QuickBooks connections.
+        provider: 'quickbooks',
+        action: 'accounting.payment.delete_unresolved',
+        orgId: null,
+        resourceType: 'accounting_entity_mapping',
+        resourceId: mappingId,
+        result: 'failure',
+        details: {
+          invoicePaymentId: prep.invoicePaymentId,
+          mappingId,
+          unresolvedForMs: prep.unresolvedForMs,
+        },
+      });
+    }
+    return prep.outcome;
+  }
   if (prep.kind === 'refused') throw prep.error;
 
   const liveConn = await resolveLiveConnection(prep.conn).catch(translateMappingError);
@@ -1023,19 +1198,38 @@ export async function deletePaymentInAccounting(
     throw new AccountingPaymentPushError('quickbooks_error', 502, message);
   }
 
-  await runInDbContext(async () => {
-    const removed = await deleteMappingRow(db, mappingId);
-    if (removed !== 1) {
-      throw new Error(`accountingPaymentPush: payment mapping delete matched no row (id=${mappingId})`);
-    }
-  });
+  try {
+    await runInDbContext(async () => {
+      const removed = await deleteMappingRow(db, mappingId);
+      if (removed !== 1) {
+        throw new Error(`accountingPaymentPush: payment mapping delete matched no row (id=${mappingId})`);
+      }
+    });
+  } catch (dbErr) {
+    captureException(dbErr instanceof Error ? dbErr : new Error(String(dbErr)), undefined, {
+      service: 'accountingPaymentPush', mappingId, remotePaymentId: prep.remotePaymentId,
+    });
+    const message = `QuickBooks removed the payment (remote id ${prep.remotePaymentId}) but Breeze could not clear its mapping; the reconcile sweep will retry`;
+    // `pending_op` KEPT and the lease released: a repeat delete against an
+    // already-deleted Payment answers `already_absent`, which clears the row —
+    // so the sweep heals this on its own.
+    await markPaymentMappingErrorInOwnContext(runInDbContext, mappingId, partnerId, message, { clearPendingOp: false });
+    throw new AccountingPaymentPushError('record_failed', 502, message);
+  }
 
   if (prep.orgId && prep.invoiceId) {
-    fireAudit(prep.conn, 'accounting.payment.deleted', prep.orgId, prep.invoiceId, {
-      invoicePaymentId: prep.invoicePaymentId,
-      remotePaymentId: prep.remotePaymentId,
-      remoteInvoiceId: prep.remoteInvoiceId,
-      result,
+    fireAudit({
+      provider: prep.conn.provider,
+      action: 'accounting.payment.deleted',
+      orgId: prep.orgId,
+      resourceType: 'invoice',
+      resourceId: prep.invoiceId,
+      details: {
+        invoicePaymentId: prep.invoicePaymentId,
+        remotePaymentId: prep.remotePaymentId,
+        remoteInvoiceId: prep.remoteInvoiceId,
+        result,
+      },
     });
   } else {
     console.warn(
