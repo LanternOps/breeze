@@ -53,7 +53,7 @@ delete once done:
       against the production keys and the Production redirect URIs
       (registered 2026-09-02) — watch that callback.
 
-## QuickBooks payment push
+## QuickBooks payment push (#4624)
 
 Payments recorded in Breeze against an invoice that is already in QuickBooks are
 now created in QuickBooks automatically, and deleted there when the Breeze
