@@ -1748,6 +1748,8 @@
         "ticketsTriaged": "Tickets clasificados",
         "draftsSent": "Borradores enviados",
         "fixesExecuted": "Correcciones ejecutadas",
+        "promoteEligible": "Operaciones aptas para promoción",
+        "promoteEligibleHint": "Operaciones con evidencia suficiente y sin fallas para autorizarse previamente. Abre Configuración → Agentes de IA para revisarlas y promoverlas.",
         "estTimeSaved": "Tiempo ahorrado estimado",
         "estTimeSavedValue": "{{hours}} horas",
         "llmSpend": "Gasto en LLM"
@@ -1825,6 +1827,60 @@
         },
         "weightRowLabel": "{{label}} (segundos acreditados)",
         "neverRebuilt": "Nunca reconstruido"
+      }
+    },
+    "graduation": {
+      "title": "Graduación",
+      "description": "Lo que este agente demostró en los últimos 30 días, operación por operación, y si esa evidencia alcanza para pedir ejecución preautorizada.",
+      "loading": "Cargando la evidencia de graduación…",
+      "error": "No se pudo cargar la evidencia de graduación.",
+      "retry": "Reintentar",
+      "orgRequired": "Elige una sola organización en el selector de organizaciones para ver su evidencia de graduación.",
+      "empty": "Todavía no se registró evidencia para este agente.",
+      "readOnlyNote": "La ejecución preautorizada está desactivada en esta instalación; estas cifras son solo informativas.",
+      "byOrgTruncated": "Se muestran las primeras {{limit}} organizaciones por nombre. Elige una sola organización en el selector de organizaciones para ver el resto.",
+      "thresholdPerOrgNote": "Cada organización resuelve su propio umbral de promoción, por eso aquí las ejecuciones verificadas se muestran sin objetivo. Elige una sola organización en el selector de organizaciones para ver su objetivo.",
+      "approvalsLink": "Seguir esta solicitud en la bandeja de aprobaciones",
+      "ceilingHint": "Las claves del nivel de socio son un techo, no una concesión. El agente de cada organización debe recibir la clave por separado: mediante la graduación o editando el agente de esa organización.",
+      "promote": "Promover",
+      "verifiedOfThreshold": "{{verified}} de {{threshold}}",
+      "columns": {
+        "opKey": "Operación",
+        "state": "Estado",
+        "verified": "Verificadas",
+        "executed": "Ejecutadas",
+        "failed": "Fallidas",
+        "recurred": "Reincidencias",
+        "firstVerified": "Primera verificación",
+        "blockedReason": "Por qué todavía no"
+      },
+      "states": {
+        "tracking": "En seguimiento",
+        "eligible": "Apta",
+        "promoted": "Promovida",
+        "demoted": "Degradada"
+      },
+      "blockedReasons": {
+        "needs_partner_baseline": "El agente del socio todavía no permite esta operación.",
+        "below_threshold": "Aún no hay suficientes ejecuciones verificadas.",
+        "too_recent": "La primera ejecución verificada es demasiado reciente.",
+        "has_failures": "En esta ventana se registró una falla o una reincidencia.",
+        "not_policy_decidable": "Esta operación nunca puede preautorizarse."
+      },
+      "confirm": {
+        "title": "Solicitar preautorización",
+        "message": "Esto le pide a una segunda persona que preautorice {{opKey}} para el agente de esta organización. Se aplica solo a ejecuciones futuras y nunca autoriza una solicitud que ya está esperando una decisión.",
+        "action": "Solicitar aprobación"
+      },
+      "toasts": {
+        "requested": "Preautorización solicitada. Una segunda persona debe aprobarla antes de que esta operación se ejecute sin supervisión, y se aplica solo a ejecuciones futuras."
+      },
+      "errors": {
+        "promote": "No se pudo presentar la solicitud de preautorización.",
+        "policyDecideDisabled": "La ejecución preautorizada está desactivada en esta instalación, así que esta operación no puede promoverse."
+      },
+      "reliability": {
+        "caption": "Operaciones del modo de acción, solo lectura: no son claves de política, así que nunca pueden preautorizarse."
       }
     }
   },

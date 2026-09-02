@@ -72,6 +72,10 @@ const TARGET_GLOBS = [
   // cron, unattended. A silent create/update/delete here is invisible until the
   // next occurrence fires — or fails to.
   'src/components/settings/AiAgentSchedulesSection.tsx',
+  // Graduation (P2-5, #4192): the promote POST raises a four-eyes authority
+  // change that widens what an agent may do unattended. A silent failure here
+  // reads as "requested" while no approval was ever queued.
+  'src/components/settings/AiAgentGraduationPanel.tsx',
   // P2-6 (#4193): Refresh enqueues a fleet-wide 90-day rebuild and the weights
   // drawer re-prices every estimate the MSP shows its customers — a silent
   // failure here is invisible until someone quotes a wrong number.
@@ -535,13 +539,33 @@ describe('no silent mutations in targeted set', () => {
     // (P2-6 Task 11, #4193), plus AccountingSyncCard.tsx (QuickBooks invoice
     // push, Phase C Task 7), plus QuickbooksIntegration.tsx (QuickBooks payment
     // pull-back, Phase D Task 7 — the pull-payments PATCH and the "Sync now"
-    // enqueue joined four pre-existing unguarded mutations in that file),
-    // plus BulkContactImport.tsx, ContactImportPreviewTable.tsx and
+    // enqueue joined four pre-existing unguarded mutations in that file), plus
+    // AiAgentGraduationPanel.tsx (P2-5 Task 20, #4192). ApprovalsInbox.tsx was
+    // already guarded before P2-5 — Task 21's promote mutation needed no list
+    // edit. Also plus BulkContactImport.tsx, ContactImportPreviewTable.tsx and
     // ContactsCard.tsx (#3258 W04, the contacts tab and its CSV importer).
-    expect(absoluteFiles.length).toBe(111);
+    // NOTE: merge-base held 108; this branch added 1 and main added 3 in
+    // parallel, so the true merged count is 112 — bump it deliberately on
+    // every merge, never by resolving the hunk.
+    expect(absoluteFiles.length).toBe(112);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }
+  });
+
+  it('lists every guarded file exactly once', () => {
+    // A duplicated entry inflates the count above without adding coverage: the
+    // file is scanned twice and the next person to bump the counter inherits an
+    // off-by-one that is invisible unless they dedupe the list by hand. Assert
+    // it mechanically instead, and name the offenders so the fix is obvious.
+    const seen = new Set<string>();
+    const duplicates = TARGET_GLOBS.filter((rel) => {
+      if (seen.has(rel)) return true;
+      seen.add(rel);
+      return false;
+    });
+    expect(duplicates).toEqual([]);
+    expect(seen.size).toBe(absoluteFiles.length);
   });
 
   for (const absPath of absoluteFiles) {

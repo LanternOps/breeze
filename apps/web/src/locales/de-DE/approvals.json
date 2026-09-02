@@ -41,5 +41,20 @@
     "batchStepUp": "Für diesen Stapel ist eine stärkere Anmeldung erforderlich. Genehmigen Sie die Anfragen einzeln.",
     "batchNotHomogeneous": "Über diese Anfragen kann nicht mehr gemeinsam entschieden werden."
   },
-  "registerDevice": "Gerät registrieren"
+  "registerDevice": "Gerät registrieren",
+  "alwaysAllow": {
+    "button": "Genehmigen und immer zulassen",
+    "confirm": {
+      "title": "Genehmigen und Vorautorisierung anfordern",
+      "message": "Damit wird die gerade angezeigte Anfrage genehmigt. Außerdem wird eine zweite genehmigende Person gebeten, {{opKey}} für den Agenten dieser Organisation vorzuautorisieren – das gilt nur für zukünftige Ausführungen und autorisiert weder diese Anfrage noch andere bereits wartende Entscheidungen rückwirkend.",
+      "action": "Genehmigen und anfordern"
+    },
+    "toasts": {
+      "requested": "Genehmigt. Eine zweite genehmigende Person muss die Vorautorisierung noch bestätigen, bevor dieser Vorgang unbeaufsichtigt ausgeführt wird; sie gilt nur für zukünftige Ausführungen."
+    },
+    "errors": {
+      "approvedPromoteFailed": "Genehmigt, aber die Anfrage zur Vorautorisierung konnte nicht gesendet werden. Versuchen Sie es erneut in den Agenteneinstellungen.",
+      "policyDecideDisabled": "Genehmigt. Die Vorautorisierung konnte nicht angefordert werden, da sie für diese Bereitstellung deaktiviert ist."
+    }
+  }
 }

@@ -66,6 +66,7 @@ wave: W05 (#4192) — P2-5 Feedback + graduation (PR A1 evidence + watches, PR A
 |---|---|
 | `apps/web/src/components/settings/AiAgentGraduationPanel.tsx` (new), `AiAgentForm.tsx` (modify), `locales/*/settings.json` | Graduation panel, act-op reliability, Promote button, partner ceiling hint (Task 20). |
 | `apps/web/src/components/approvals/ApprovalsInbox.tsx` (modify), `locales/*/approvals.json` | "Approve and always allow" on eligible supervised agent cards (Task 21). |
+| `apps/api/src/services/aiAgents/graduationService.ts` + `.test.ts`, `impactQuery.ts` + `.test.ts`, `routes/aiAgents.test.ts`, `__tests__/integration/aiAgentImpact.integration.test.ts`, `packages/shared/src/types/aiAgentImpact.ts` (comment only); `apps/web/src/components/aiAgents/ImpactPage.tsx` + `.test.tsx`, `locales/*/settings.json` (modify) | P2-6b: `countEligibleGraduations` fills `promoteEligibleCount`; promotion-eligible tile linking to the graduation panel (Task 22). |
 
 ---
 
@@ -891,6 +892,8 @@ Its row count feeds a merge note: `ai_agents: cleared graduated supervised actio
 
 ## PR B — web (branch `feature/4187-ai-agents-p2/wave-4192-b`, base main, opened after A2 merges)
 
+**PR B also carries P2-6b.** Wave P2-6 (#4193) shipped `AiAgentImpactDto.promoteEligibleCount` as a hard-coded `null` "until P2-5 lands" (`2026-09-01-ai-agents-p2-6-impact.md:72`, amendment 8). A2 has landed the graduation table and service, so Task 22 fills the field from `ai_agent_graduation` and puts the promotion-eligible tile on the impact page — the API half of PR B, and the only task in this PR that touches `apps/api`.
+
 ### Task 20 (B1): Graduation panel + partner ceiling hint
 
 **Files:**
@@ -928,7 +931,444 @@ Its row count feeds a merge note: `ai_agents: cleared graduated supervised actio
 - [ ] **Step 2:** Run `cd apps/web && npx vitest run src/components/approvals/ApprovalsInbox.test.tsx` — expect FAIL.
 - [ ] **Step 3:** Implement + the 8 `approvals.json` locale files.
 - [ ] **Step 4:** Run `cd apps/web && npx vitest run src/components/approvals src/lib/i18n/localeParity.test.ts src/lib/i18n/translationCoverage.test.ts src/lib/__tests__/no-silent-mutations.test.ts` — PASS; `cd apps/web && npx astro check`; `pnpm lint` in `apps/web`.
-- [ ] **Step 5:** Commit: `git add apps/web && git commit -m "feat(web): P2-5 approve-and-always-allow on eligible supervised agent cards (#4192)" -m "Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"`; run **Final verification**; open **PR B** targeting main with body `Closes #4192`. STOP at the open PR.
+- [ ] **Step 5:** Commit: `git add apps/web && git commit -m "feat(web): P2-5 approve-and-always-allow on eligible supervised agent cards (#4192)" -m "Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"`. Do NOT open the PR here — Task 22 is the last task in PR B and carries the Final-verification-then-open step.
+
+### Task 22 (B3): P2-6b — `promoteEligibleCount` in the impact DTO + tile
+
+**Files:**
+- Modify: `apps/api/src/services/aiAgents/graduationService.ts` (append `countEligibleGraduations` after `loadActOpReliability`, which ends at `:673` = EOF; new type-only import beside the `drizzle-orm` import at `:31`), `apps/api/src/services/aiAgents/graduationService.test.ts` (the `../../db` capture mock is `:60-118`, the SUT import list `:121-130`, `sqlText`/`sqlParams` `:133-139`)
+- Modify: `apps/api/src/services/aiAgents/impactQuery.ts` (imports `:29-50`; the `Promise.all` at `:190-223`; the assembled return at `:275-290`, whose placeholder `promoteEligibleCount: null` is `:285-287`), `apps/api/src/services/aiAgents/impactQuery.test.ts` (module mocks `:31-42`, `beforeEach` `:152-161`, and the case **`'schemaVersion is 1 and promoteEligibleCount is null'` at `:185-190`, which this task REWRITES**)
+- Modify: `apps/api/src/routes/aiAgents.test.ts` (`minimalImpactDto` fixture `:281-298`; its `promoteEligibleCount: null` is `:293`)
+- Modify: `apps/api/src/__tests__/integration/aiAgentImpact.integration.test.ts` (schema barrel import `:71-85`; `orgDbContext` `:185-194`; `orgAuth` `:195-208`; `Tenant`/`createTenant` `:210-232`; append the new `describe` after the final block, which ends at `:1226` = EOF)
+- Modify: `apps/web/src/components/aiAgents/ImpactPage.tsx` (`Tile` `:208-226`; the tile grid `<div>` opens at `:519`, its last tile is `:557-561`, the grid closes at `:563`), `apps/web/src/components/aiAgents/ImpactPage.test.tsx` (the `dto()` fixture `:81-152`; its `promoteEligibleCount: null` is `:137`)
+- Modify: `apps/web/src/locales/{de-DE,en,es-419,fr-CA,fr-FR,it-IT,pt-BR,tr-TR}/settings.json` — two new leaves under `aiAgentsPage.impact.tiles` (the object holding `alertsJudged` … `llmSpend`), inserted after `fixesExecuted`
+- Modify (**doc comment only**): `packages/shared/src/types/aiAgentImpact.ts:152` — the `/** P2-6b, after P2-5's ai_agent_graduation lands. Always null in P2-6. */` comment becomes the v1 contract below. The TYPE at `:153` (`promoteEligibleCount: number | null`) and `AI_AGENT_IMPACT_DTO_SCHEMA_VERSION = 1` (`:111`) are **unchanged** — P2-6 shipped the field deliberately so filling it is additive (P2-6 plan amendment 8, `2026-09-01-ai-agents-p2-6-impact.md:72`), and a bump would invalidate every stored/exported DTO for a field whose type did not move.
+
+**Interfaces (produced):**
+
+```ts
+// apps/api/src/services/aiAgents/graduationService.ts
+export async function countEligibleGraduations(
+  orgCondition: (orgIdColumn: PgColumn) => SQL | undefined,
+  orgId?: string,
+): Promise<number>;
+```
+
+**Interfaces (consumed):**
+- `aiAgentGraduation` — `apps/api/src/db/schema/aiAgentGraduation.ts:24`; columns `orgId` (`:28`), `agentId` (`:29`), `opKey` (`:30`), `state` (`:31`, `.$type<AiAgentGraduationState>()`, default `'tracking'`); unique `ai_agent_graduation_key_uq` on `(org_id, agent_id, op_key)` (`:58`). Re-exported by the barrel at `apps/api/src/db/schema/index.ts:60`.
+- `AuthContext['orgCondition']: (orgIdColumn: PgColumn) => SQL | undefined` — declared `apps/api/src/middleware/auth.ts:125`, built by `buildOrgAccessClosures(accessibleOrgIds)` (`:256-282`): `null` → `undefined` (system scope, no filter); `[]` → the impossible `eq(col, '00000000-0000-0000-0000-000000000000')`; one id → `eq`; many → `inArray`.
+- `db` from `../../db` — already imported by `graduationService.ts:44-49` and `impactQuery.ts:43`.
+- `and`, `eq`, `sql`, `type SQL` from `drizzle-orm` — already imported by `graduationService.ts:31`. **New:** `import type { PgColumn } from 'drizzle-orm/pg-core';` (type-only, erased at build, so it adds nothing to the BullMQ worker closure `workerEntrypointClosure.contract.test.ts` polices).
+- `AiAgentImpactDto.promoteEligibleCount` — `packages/shared/src/types/aiAgentImpact.ts:153`.
+- Web: `formatNumber` (already imported by `ImpactPage.tsx`), `useTranslation('settings')` (`ImpactPage.tsx:242`), and the `Tile` local component (`:208`).
+
+**Contract:**
+
+1. **What the number is.** `COUNT(*)` over `ai_agent_graduation` rows whose PERSISTED `state = 'eligible'`, within the caller's scope. One row is one `(org, agent, op_key)` tuple (the table's unique key), so the count is "operations ready to be promoted", not runs or evidence rows.
+2. **Eligibility is never re-implemented.** `impactQuery.ts` gains exactly one new import — `countEligibleGraduations` from `./graduationService` — and never imports `evaluateEligibility`, `isPolicyDecidableKey`, `aiAgentOpEvidence`, or the window SQL. The `state` column it counts is written only by `refreshGraduationRow` (`graduationService.ts:494-533`, the sole writer of `tracking`/`eligible`), Task 15's promote executor (`promoted`) and Task 16's demote path (`demoted`).
+3. **Scope, mapped to the three cases the impact query already implements** (`impactQuery.ts:157-175`): **org scope** → `orgCondition` collapses to `eq(org_id, thatOrg)`; **partner scope** → the same `inArray(accessibleOrgIds)` set the impact aggregate uses, so the tile and the byOrg table can never disagree about which orgs are in view; **system scope with `orgId`** → `orgCondition` is `undefined` and the explicit `eq(org_id, input.orgId)` narrows it. That third case is the whole reason `orgId` is a separate parameter rather than being folded into the closure. System scope WITHOUT `orgId` never reaches the count — `loadImpactSummary` throws at `:159-163` first.
+4. **DB context.** The count runs under the CALLER's request context, exactly like every other statement in `impactQuery.ts`. `ai_agent_graduation` is Shape 1 (`org_id NOT NULL` + `breeze_has_org_access(org_id)`, auto-discovered by `rls-coverage.integration.test.ts` — Global Constraints), so RLS scopes it already; `orgCondition` is the second, explicit gate for the reason `impactQuery.ts:7-10` gives — partner scope means ACCESSIBLE orgs, not every org under the partner. This is therefore the **one** function in `graduationService.ts` that deliberately does NOT go through `inSystemDbContext` (`:156-159`): every other function there reads the PARTNER baseline agent row, invisible to an org token, so they must elevate; this one touches only `ai_agent_graduation`, and elevating would DROP the RLS gate that makes an org-token count safe. Pin that reasoning in the function's docstring, and pin it in a test (Step 1) — a later "consistency" refactor that wraps it in `inSystemDbContext` is the exact regression this note exists to stop.
+5. **Null, precisely.** The field stays `number | null` and in v1 the API **never returns null**. `ai_agent_graduation` ships unconditionally in A1's migration, and `BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED` gates the promote WRITE, never this read — the rule `graduationService.ts:20-22` already states. `null` survives in the TYPE only so an older API behind a newer web build still renders (the web hides the tile). Because the type does not move, `schemaVersion` stays `1`.
+6. **Staleness is bounded and named.** The persisted `state` is refreshed by the daily job (Task 13: `listTrackedTuples` → `refreshGraduationRow`) and by every graduation READ (Task 18). So the tile can lead the panel by at most one daily pass, and only in the "still says eligible" direction. The tile is a NUDGE that LINKS to the panel, where `loadGraduationRows` (`:583-641`) re-derives every state per request; it carries no promote action of its own.
+7. **Link target.** `/settings/ai-agents` — `apps/web/src/pages/settings/ai-agents.astro` renders `AiAgentsPage`, which renders `AiAgentForm`, which is where Task 20 mounts `AiAgentGraduationPanel`. Task 20 introduces no new route and `AiAgentsPage` holds no hash state (verified: no `useHashState` / `location.hash` in `AiAgentsPage.tsx`), so there is no deeper anchor to link to.
+8. **Leak rule.** The tile is a single integer. No op key, agent name, org name, or evidence row crosses from the ledger into the impact DTO.
+9. **Out of scope, deliberately:** the PDF export (`buildImpactPdfRows`, `ImpactPage.tsx:165-206`). The PDF is a point-in-time impact report; a promotion backlog is a live to-do, not a period result, and adding it would need two more locale leaves per locale for no reporting value.
+
+- [ ] **Step 1:** Write the failing API unit tests.
+
+  In `apps/api/src/services/aiAgents/graduationService.test.ts`, add `countEligibleGraduations` to the SUT import list (`:121-130`), add `import { withSystemDbAccessContext } from '../../db';` beside it, and append:
+
+  ```ts
+  describe('countEligibleGraduations', () => {
+    const orgCondition = (col: PgColumn): SQL | undefined => inArray(col, [ORG_ID, OTHER_ORG_ID]);
+
+    it('counts only state = eligible, predicated on the caller org set', async () => {
+      state.selectQueue.push([{ count: 3 }]);
+
+      const total = await countEligibleGraduations(orgCondition);
+
+      expect(total).toBe(3);
+      const where = sqlText(state.selectWheres[0]);
+      expect(where).toContain('"state" = ');
+      expect(sqlParams(state.selectWheres[0])).toContain('eligible');
+      // The org predicate is present and targets ai_agent_graduation.org_id,
+      // not some other table's — compiled SQL, never mock-call identity.
+      expect(where).toContain('"ai_agent_graduation"."org_id" in ');
+      expect(sqlParams(state.selectWheres[0])).toEqual(
+        expect.arrayContaining([ORG_ID, OTHER_ORG_ID, 'eligible']),
+      );
+      // Never the other three states.
+      for (const s of ['tracking', 'promoted', 'demoted']) {
+        expect(sqlParams(state.selectWheres[0])).not.toContain(s);
+      }
+    });
+
+    it('adds an explicit org equality when orgId is given, even for a system caller whose orgCondition is undefined', async () => {
+      state.selectQueue.push([{ count: 1 }]);
+
+      await countEligibleGraduations(() => undefined, ORG_ID);
+
+      const where = sqlText(state.selectWheres[0]);
+      expect(where).toContain('"ai_agent_graduation"."org_id" = ');
+      expect(sqlParams(state.selectWheres[0])).toEqual(expect.arrayContaining([ORG_ID, 'eligible']));
+    });
+
+    it('returns 0 for an empty result set', async () => {
+      state.selectQueue.push([]);
+      await expect(countEligibleGraduations(orgCondition)).resolves.toBe(0);
+    });
+
+    it('does NOT elevate to a system context — the caller RLS context is the gate', async () => {
+      // Every other function in this module joins-or-opens a system context;
+      // this one must not, or an org caller's RLS scoping is discarded.
+      state.dbContext = { scope: 'organization' };
+      state.selectQueue.push([{ count: 2 }]);
+
+      await countEligibleGraduations(orgCondition);
+
+      expect(vi.mocked(withSystemDbAccessContext)).not.toHaveBeenCalled();
+    });
+  });
+  ```
+
+  Add `const OTHER_ORG_ID = '00000000-0000-4000-8000-0000000000e6';` beside the existing id constants (`:22-31`), and `import { inArray } from 'drizzle-orm';` / `import type { PgColumn } from 'drizzle-orm/pg-core';` to the test's imports.
+
+  In `apps/api/src/services/aiAgents/impactQuery.test.ts`, mock the new module beside the existing `./impactWeights` mock (`:35-42`) so the `db.select` stub sequence used by every other case in the file is untouched:
+
+  ```ts
+  const { countEligibleGraduationsMock } = vi.hoisted(() => ({ countEligibleGraduationsMock: vi.fn() }));
+  vi.mock('./graduationService', () => ({ countEligibleGraduations: countEligibleGraduationsMock }));
+  ```
+
+  Add `countEligibleGraduationsMock.mockResolvedValue(0);` to `beforeEach` (`:152-161`), then REPLACE the `'schemaVersion is 1 and promoteEligibleCount is null'` case at `:185-190` with:
+
+  ```ts
+  it('schemaVersion stays 1 and promoteEligibleCount carries the graduation count', async () => {
+    countEligibleGraduationsMock.mockResolvedValueOnce(4);
+    stubOrgScopeQueries([], [{ up: 0, down: 0 }]);
+
+    const result = await loadImpactSummary(orgAuth(), { window: 7 });
+
+    expect(result.schemaVersion).toBe(1);
+    expect(result.promoteEligibleCount).toBe(4);
+  });
+
+  it('promoteEligibleCount is 0, not null, when no key is eligible', async () => {
+    countEligibleGraduationsMock.mockResolvedValueOnce(0);
+    stubOrgScopeQueries([], [{ up: 0, down: 0 }]);
+
+    const result = await loadImpactSummary(orgAuth(), { window: 7 });
+
+    expect(result.promoteEligibleCount).toBe(0);
+  });
+
+  it('org scope passes the caller orgCondition and the requested orgId through', async () => {
+    stubOrgScopeQueries([], [{ up: 0, down: 0 }]);
+    const auth = orgAuth();
+
+    await loadImpactSummary(auth, { window: 7, orgId: ORG_A });
+
+    expect(countEligibleGraduationsMock).toHaveBeenCalledTimes(1);
+    const [passedCondition, passedOrgId] = countEligibleGraduationsMock.mock.calls[0]!;
+    expect(passedOrgId).toBe(ORG_A);
+    // The SAME closure the impact aggregates use, proven by compiling what it
+    // builds — not by identity, which a wrapper would satisfy vacuously.
+    expect(compile(passedCondition(aiAgentGraduation.orgId)).params).toEqual([ORG_A]);
+  });
+
+  it('partner scope passes an orgCondition covering exactly the accessible orgs, and no orgId', async () => {
+    stubPartnerScopeQueries([], [], [{ up: 0, down: 0 }]);
+
+    await loadImpactSummary(partnerAuth(), { window: 30 });
+
+    const [passedCondition, passedOrgId] = countEligibleGraduationsMock.mock.calls[0]!;
+    expect(passedOrgId).toBeUndefined();
+    expect(compile(passedCondition(aiAgentGraduation.orgId)).params).toEqual([ORG_A, ORG_B]);
+  });
+  ```
+
+  That last pair needs `import { aiAgentGraduation } from '../../db/schema/aiAgentGraduation';` in the test (the direct module, not the barrel — the file already mocks `../../db`, and the barrel would drag unmocked schema modules in).
+
+  Finally, in `apps/api/src/routes/aiAgents.test.ts`, change the `minimalImpactDto` fixture at `:293` from `promoteEligibleCount: null` to `promoteEligibleCount: 0` — a structurally-valid DTO must now carry the shape the service actually returns.
+
+- [ ] **Step 2:** Run `cd apps/api && npx vitest run src/services/aiAgents/graduationService.test.ts src/services/aiAgents/impactQuery.test.ts` — expect FAIL: `countEligibleGraduations` is not exported (`TypeError: countEligibleGraduations is not a function`) and `promoteEligibleCount` is still the hard-coded `null`. Check the reported file count is 2 — a 0-test run is a stall, not green.
+
+- [ ] **Step 3:** Implement the API side.
+
+  Append to `apps/api/src/services/aiAgents/graduationService.ts` (after `loadActOpReliability`, `:642-673`), and add `import type { PgColumn } from 'drizzle-orm/pg-core';` beside the `drizzle-orm` import at `:31`:
+
+  ```ts
+  /**
+   * How many `(org, agent, op_key)` tuples are sitting in `eligible` — the
+   * P2-6b `promoteEligibleCount` on the impact DTO (`aiAgentImpact.ts:153`).
+   *
+   * Unlike every other export in this module it runs under the CALLER's
+   * request DB context and does NOT go through `inSystemDbContext`. The others
+   * read the PARTNER baseline agent row, which an org token cannot see, so
+   * they must elevate. This one reads `ai_agent_graduation` only — Shape 1
+   * (`org_id NOT NULL` + `breeze_has_org_access(org_id)`) — so the caller's own
+   * RLS context is a real gate, and elevating would THROW IT AWAY. Do not
+   * "harmonize" this with the rest of the file.
+   *
+   * `orgCondition` is `auth.orgCondition` (`middleware/auth.ts:125`), applied
+   * on top of RLS for the reason `impactQuery.ts` states: partner scope means
+   * ACCESSIBLE orgs, not every org under the partner. `orgId` narrows to one
+   * org and is what makes a system-scope caller (whose `orgCondition` returns
+   * `undefined`) still land on exactly the org it named.
+   *
+   * Reads the persisted `state`; it never re-derives eligibility. That column
+   * is written by `refreshGraduationRow` above (the only writer of
+   * `tracking`/`eligible`), by the promote executor (`promoted`) and by the
+   * demote path (`demoted`), so this count can lag a window change by at most
+   * one daily evaluation pass — the caller must present it as a link to the
+   * graduation panel, which re-derives per read, not as an authoritative list.
+   */
+  export async function countEligibleGraduations(
+    orgCondition: (orgIdColumn: PgColumn) => SQL | undefined,
+    orgId?: string,
+  ): Promise<number> {
+    const rows = await db
+      .select({ count: sql<number>`COUNT(*)::int` })
+      .from(aiAgentGraduation)
+      .where(and(
+        orgCondition(aiAgentGraduation.orgId),
+        orgId === undefined ? undefined : eq(aiAgentGraduation.orgId, orgId),
+        eq(aiAgentGraduation.state, 'eligible'),
+      ));
+    return Number((rows as Array<{ count: number }>)[0]?.count ?? 0);
+  }
+  ```
+
+  In `apps/api/src/services/aiAgents/impactQuery.ts`, add the import beside the sibling service imports (`:49-50`):
+
+  ```ts
+  import { countEligibleGraduations } from './graduationService';
+  ```
+
+  Extend the `Promise.all` at `:190-223` with a fifth entry so the count is concurrent with the three aggregates rather than serialized after them:
+
+  ```ts
+  const [rawSeriesRows, rawByOrgRows, rawFeedbackRows, partnerId, promoteEligibleCount] = await Promise.all([
+    // Entries 1-3 (the series select, the partner-scope byOrg select, the
+    // feedback select) stay verbatim as written at `:191-221`.
+    resolveImpactPartnerId(auth, input.orgId),
+    // P2-6b (#4193 follow-up, P2-5 #4192 Task 22): the persisted `eligible`
+    // count over the SAME accessible-org set the aggregates above use. Never
+    // re-derives eligibility — `graduationService` owns that ladder.
+    countEligibleGraduations(auth.orgCondition, input.orgId),
+  ]);
+  ```
+
+  Replace the placeholder at `:285-287` with `promoteEligibleCount,` and update the field's doc comment at `packages/shared/src/types/aiAgentImpact.ts:152` to:
+
+  ```ts
+  /**
+   * `(org, agent, op_key)` tuples in `ai_agent_graduation` state `eligible`
+   * over the same accessible-org set as `totals` — "operations ready to be
+   * promoted to pre-authorized execution". Refreshed by the daily graduation
+   * pass and by every graduation read, so it may lag the graduation panel by
+   * one pass; surface it as a LINK to that panel, never as a list.
+   * `number | null` only so an older API behind a newer web build still
+   * renders — v1 always returns a number.
+   */
+  ```
+
+- [ ] **Step 4:** Run `cd apps/api && npx vitest run src/services/aiAgents/graduationService.test.ts src/services/aiAgents/impactQuery.test.ts src/routes/aiAgents.test.ts` — PASS (3 files). Then `cd apps/api && NODE_OPTIONS=--max-old-space-size=8192 npx tsc --noEmit -p tsconfig.json` and `cd packages/shared && npx tsc --noEmit -p tsconfig.json`.
+
+- [ ] **Step 5:** Extend the live-Postgres proof. In `apps/api/src/__tests__/integration/aiAgentImpact.integration.test.ts`, add `aiAgentGraduation` to the schema barrel import (`:71-85`, alphabetically before `aiAgentImpactDaily`), and append after the final `describe` (`:1215-1226`):
+
+  ```ts
+  function partnerDbContext(partnerId: string, accessibleOrgIds: string[]): DbAccessContext {
+    return { scope: 'partner', orgId: null, accessibleOrgIds, accessiblePartnerIds: [partnerId], userId: null };
+  }
+
+  function partnerAuth(partnerId: string, userId: string, accessibleOrgIds: string[]): AuthContext {
+    const { orgCondition, canAccessOrg } = buildOrgAccessClosures(accessibleOrgIds);
+    return {
+      principal: { kind: 'user_session' },
+      user: { id: userId, email: 'impact-reader@example.test', name: 'Impact Reader', isPlatformAdmin: false },
+      token: null,
+      partnerId,
+      orgId: null,
+      scope: 'partner',
+      accessibleOrgIds,
+      orgCondition,
+      canAccessOrg,
+    } as unknown as AuthContext;
+  }
+
+  describe('promoteEligibleCount — live graduation rows in the impact DTO', () => {
+    it('counts eligible rows per scope, excludes the other three states, and never crosses a tenant', async () => {
+      const adminDb = getTestDb() as any;
+      const a = await createTenant();
+      const b = await createTenant(a.partnerId); // sibling org, same partner
+      const outsider = await createTenant();     // different partner entirely
+
+      // Non-uniform by construction: one row per state under org A, so a
+      // predicate that lost its `state = 'eligible'` filter returns 4, not 1.
+      await adminDb.insert(aiAgentGraduation).values([
+        { orgId: a.orgId, agentId: a.agentId, opKey: 'manage_services:restart', state: 'eligible' },
+        { orgId: a.orgId, agentId: a.agentId, opKey: 'manage_devices:reboot', state: 'tracking' },
+        { orgId: a.orgId, agentId: a.agentId, opKey: 'manage_patches:install', state: 'promoted' },
+        { orgId: a.orgId, agentId: a.agentId, opKey: 'manage_alerts:acknowledge', state: 'demoted' },
+        { orgId: b.orgId, agentId: b.agentId, opKey: 'manage_services:restart', state: 'eligible' },
+        { orgId: outsider.orgId, agentId: outsider.agentId, opKey: 'manage_services:restart', state: 'eligible' },
+      ]);
+
+      // Org scope: org A's single eligible row. Not 4 (the other states), not
+      // 2 (the sibling org), not 3 (the outsider).
+      const orgSummary = await withDbAccessContext(orgDbContext(a.orgId), () =>
+        loadImpactSummary(orgAuth(a.orgId, a.partnerId, a.userId), { window: 7, orgId: a.orgId }),
+      );
+      expect(orgSummary.promoteEligibleCount).toBe(1);
+
+      // Partner scope over BOTH accessible orgs: 2. The outsider's row is
+      // excluded by RLS AND by orgCondition — belt and braces, as designed.
+      const partnerSummary = await withDbAccessContext(
+        partnerDbContext(a.partnerId, [a.orgId, b.orgId]),
+        () => loadImpactSummary(partnerAuth(a.partnerId, a.userId, [a.orgId, b.orgId]), { window: 7 }),
+      );
+      expect(partnerSummary.promoteEligibleCount).toBe(2);
+
+      // A partner who can reach only ONE of their orgs sees only that one.
+      const narrowed = await withDbAccessContext(partnerDbContext(a.partnerId, [b.orgId]), () =>
+        loadImpactSummary(partnerAuth(a.partnerId, a.userId, [b.orgId]), { window: 7 }),
+      );
+      expect(narrowed.promoteEligibleCount).toBe(1);
+    });
+
+    it('is 0, never null, for an org with no graduation rows at all', async () => {
+      const t = await createTenant();
+      const summary = await withDbAccessContext(orgDbContext(t.orgId), () =>
+        loadImpactSummary(orgAuth(t.orgId, t.partnerId, t.userId), { window: 7, orgId: t.orgId }),
+      );
+      expect(summary.promoteEligibleCount).toBe(0);
+    });
+  });
+  ```
+
+  Run `docker compose -p breeze-test-ai-agents-p2-5 -f docker-compose.test.yml up -d postgres`, then `cd apps/api && npx vitest run --config vitest.integration.config.ts src/__tests__/integration/aiAgentImpact.integration.test.ts` — expect FAIL on the new cases first if Step 3 were reverted, then PASS with the whole file green (the pre-existing cases must not regress: the DTO gained a value, not a statement, on the paths they cover).
+
+- [ ] **Step 6:** Write the failing web tests. In `apps/web/src/components/aiAgents/ImpactPage.test.tsx`, change the `dto()` fixture at `:137` to `promoteEligibleCount: 5` (distinct from every other number in that fixture, so a tile wired to the wrong field fails), and append:
+
+  ```ts
+  describe('ImpactPage — promotion-eligible tile', () => {
+    it('renders the count and links to the graduation panel', async () => {
+      fetchMock.mockResolvedValueOnce(json({ data: dto() }));
+      render(<ImpactPage />);
+
+      const tile = await screen.findByTestId('ai-impact-tile-promote-eligible');
+      expect(tile).toHaveTextContent('5');
+      expect(tile.getAttribute('href')).toBe('/settings/ai-agents');
+    });
+
+    it('renders 0 as a tile, not as a hidden one', async () => {
+      fetchMock.mockResolvedValueOnce(json({ data: dto({ promoteEligibleCount: 0 }) }));
+      render(<ImpactPage />);
+
+      expect(await screen.findByTestId('ai-impact-tile-promote-eligible')).toHaveTextContent('0');
+    });
+
+    it('hides the tile when the API returns null (an older API behind a newer build)', async () => {
+      fetchMock.mockResolvedValueOnce(json({ data: dto({ promoteEligibleCount: null }) }));
+      render(<ImpactPage />);
+
+      await screen.findByTestId('ai-impact-tile-llm-cents');
+      expect(screen.queryByTestId('ai-impact-tile-promote-eligible')).toBeNull();
+    });
+  });
+  ```
+
+  Run `cd apps/web && npx vitest run src/components/aiAgents/ImpactPage.test.tsx` — expect FAIL (`Unable to find an element by: [data-testid="ai-impact-tile-promote-eligible"]`).
+
+- [ ] **Step 7:** Implement the web side.
+
+  Give `Tile` (`ImpactPage.tsx:208-226`) an optional `href` so the testid stays on the same element in both variants:
+
+  ```tsx
+  function Tile({
+    testId,
+    label,
+    value,
+    title,
+    href,
+  }: {
+    testId: string;
+    label: string;
+    value: string;
+    title?: string;
+    href?: string;
+  }) {
+    const body = (
+      <>
+        <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</p>
+        <p className="mt-1 text-2xl font-semibold tabular-nums">{value}</p>
+      </>
+    );
+    if (href) {
+      return (
+        <a
+          data-testid={testId}
+          href={href}
+          title={title}
+          className="block rounded-lg border bg-card p-4 transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          {body}
+        </a>
+      );
+    }
+    return (
+      <div data-testid={testId} title={title} className="rounded-lg border bg-card p-4">
+        {body}
+      </div>
+    );
+  }
+  ```
+
+  Widen the tile grid only when the eighth tile is present, so the row never leaves a hole (`:519`; both class literals appear in source, which Tailwind's JIT scanner requires):
+
+  ```tsx
+  <div
+    className={`grid grid-cols-2 gap-3 lg:grid-cols-4 ${
+      dto.promoteEligibleCount === null ? 'xl:grid-cols-7' : 'xl:grid-cols-8'
+    }`}
+  >
+  ```
+
+  Add the tile after the LLM-spend tile (`:557-561`), inside that grid:
+
+  ```tsx
+  {/* P2-6b: a nudge, not a list — the graduation panel re-derives state per
+      read, so the exact rows live there and this only ever links to them. */}
+  {dto.promoteEligibleCount !== null && (
+    <Tile
+      testId="ai-impact-tile-promote-eligible"
+      label={t('aiAgentsPage.impact.tiles.promoteEligible')}
+      value={formatNumber(dto.promoteEligibleCount)}
+      title={t('aiAgentsPage.impact.tiles.promoteEligibleHint')}
+      href="/settings/ai-agents"
+    />
+  )}
+  ```
+
+  Add the two leaves to `aiAgentsPage.impact.tiles` in all 8 catalogs, after `fixesExecuted`:
+
+  | locale | `promoteEligible` | `promoteEligibleHint` |
+  |---|---|---|
+  | `en` | `Promotion-eligible operations` | `Operations with enough clean evidence to be pre-authorized. Open Settings → AI Agents to review and promote them.` |
+  | `de-DE` | `Für Freigabe geeignete Vorgänge` | `Vorgänge mit ausreichend fehlerfreien Nachweisen für eine Vorabgenehmigung. Öffnen Sie Einstellungen → KI-Agenten, um sie zu prüfen und freizugeben.` |
+  | `es-419` | `Operaciones aptas para promoción` | `Operaciones con evidencia suficiente y sin fallas para autorizarse previamente. Abre Configuración → Agentes de IA para revisarlas y promoverlas.` |
+  | `fr-CA` | `Opérations admissibles à la promotion` | `Opérations disposant d'assez de preuves sans échec pour être préautorisées. Ouvrez Paramètres → Agents IA pour les examiner et les promouvoir.` |
+  | `fr-FR` | `Opérations éligibles à la promotion` | `Opérations disposant de suffisamment de preuves sans échec pour être préautorisées. Ouvrez Paramètres → Agents IA pour les examiner et les promouvoir.` |
+  | `it-IT` | `Operazioni idonee alla promozione` | `Operazioni con prove sufficienti e senza errori per essere preautorizzate. Apri Impostazioni → Agenti IA per esaminarle e promuoverle.` |
+  | `pt-BR` | `Operações elegíveis para promoção` | `Operações com evidências suficientes e sem falhas para serem pré-autorizadas. Abra Configurações → Agentes de IA para revisar e promover.` |
+  | `tr-TR` | `Yükseltmeye uygun işlemler` | `Ön yetkilendirme için yeterli ve hatasız kanıta sahip işlemler. İncelemek ve yükseltmek için Ayarlar → Yapay Zekâ Ajanları'nı açın.` |
+
+  Every non-English value differs from the English one, so `translationCoverage.test.ts`'s per-namespace exact-duplicate baselines need no bump. Never compare UI logic against `i18n.t(...)` output in a test (the tr-TR rule).
+
+- [ ] **Step 8:** Run `cd apps/web && npx vitest run src/components/aiAgents/ImpactPage.test.tsx src/lib/i18n/localeParity.test.ts src/lib/i18n/translationCoverage.test.ts` — PASS (3 files; add `--pool=threads --maxWorkers=2` if a dev stack is up). Then `cd apps/web && npx astro check` — clean. Then `pnpm lint` in `apps/web`, `apps/api` and `packages/shared`. `no-silent-mutations` is untouched by this task (the tile is a link, not a mutation), but it is already in PR B's Step 4 run above.
+
+- [ ] **Step 9:** Commit: `git add apps/api apps/web packages/shared && git commit -m "feat(api,web): P2-6b — promoteEligibleCount in the impact DTO and a promotion-eligible tile (#4192)" -m "Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>" -m "Claude-Session: https://claude.ai/code/session_01EDZToQ9YjbpojJorSx28M2"`; run **Final verification**; open **PR B** targeting main with body `Closes #4192` (and note it also closes out the P2-6b follow-up left by `2026-09-01-ai-agents-p2-6-impact.md`). STOP at the open PR.
 
 ---
 
@@ -943,6 +1383,7 @@ Its row count feeds a merge note: `ai_agents: cleared graduated supervised actio
 - [ ] `pnpm db:migrate` twice in a row on a fresh DB (idempotency), then `pnpm db:check-drift` clean.
 - [ ] Confirm no forbidden profile literal crept in: `cd apps/api && npx vitest run src/services/aiAgents/verdictProfile.contract.test.ts`.
 - [ ] PR body: A1 and A2 carry `Part of #4192`; B carries `Closes #4192`. Every body lists, explicitly, each scope call this plan made — the contract points implemented (C1–C16), the migration filename as merged, the registries touched, the contract suites run with their results, and any item from **Deviations from the contract** below that the PR relies on.
+- [ ] **PR B only (Task 22 touches `apps/api`, `packages/shared` and `apps/web`).** Unit: `cd apps/api && npx vitest run src/services/aiAgents/graduationService.test.ts src/services/aiAgents/impactQuery.test.ts src/routes/aiAgents.test.ts` (3 files) and `cd apps/web && npx vitest run src/components/settings src/components/approvals src/components/aiAgents/ImpactPage.test.tsx src/lib/i18n/localeParity.test.ts src/lib/i18n/translationCoverage.test.ts src/lib/__tests__/no-silent-mutations.test.ts`. Live DB: `cd apps/api && npx vitest run --config vitest.integration.config.ts src/__tests__/integration/aiAgentImpact.integration.test.ts` — the WHOLE file green, not just the two new `promoteEligibleCount` cases. Types: `cd apps/api && NODE_OPTIONS=--max-old-space-size=8192 npx tsc --noEmit -p tsconfig.json`, `cd packages/shared && npx tsc --noEmit -p tsconfig.json`, `cd apps/web && npx astro check`. Grep guard for the deferral this PR closes: `grep -rn 'promoteEligibleCount' apps packages` must show NO remaining `: null` producer in `services/aiAgents/impactQuery.ts` — only the `number | null` type in `packages/shared/src/types/aiAgentImpact.ts` and the web's null-guard.
 - [ ] All three PRs target **main**, so `gh pr checks` is real. Do NOT stack them: a PR based on a sibling branch runs no CI at all and reads green.
 
 ---

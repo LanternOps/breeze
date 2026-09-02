@@ -29,6 +29,7 @@
  * and `agentCircuit` use.
  */
 import { and, asc, eq, isNull, sql, type SQL } from 'drizzle-orm';
+import type { PgColumn } from 'drizzle-orm/pg-core';
 import {
   AI_AGENT_GRADUATION_MIN_AGE_DAYS,
   AI_AGENT_GRADUATION_WINDOW_DAYS,
@@ -670,4 +671,44 @@ export async function loadActOpReliability(
       recurred: Number(row.recurred),
     }));
   });
+}
+
+/**
+ * How many `(org, agent, op_key)` tuples are sitting in `eligible` — the
+ * P2-6b `promoteEligibleCount` on the impact DTO (`aiAgentImpact.ts:153`).
+ *
+ * Unlike every other export in this module it runs under the CALLER's
+ * request DB context and does NOT go through `inSystemDbContext`. The others
+ * read the PARTNER baseline agent row, which an org token cannot see, so
+ * they must elevate. This one reads `ai_agent_graduation` only — Shape 1
+ * (`org_id NOT NULL` + `breeze_has_org_access(org_id)`) — so the caller's own
+ * RLS context is a real gate, and elevating would THROW IT AWAY. Do not
+ * "harmonize" this with the rest of the file.
+ *
+ * `orgCondition` is `auth.orgCondition` (`middleware/auth.ts:125`), applied
+ * on top of RLS for the reason `impactQuery.ts` states: partner scope means
+ * ACCESSIBLE orgs, not every org under the partner. `orgId` narrows to one
+ * org and is what makes a system-scope caller (whose `orgCondition` returns
+ * `undefined`) still land on exactly the org it named.
+ *
+ * Reads the persisted `state`; it never re-derives eligibility. That column
+ * is written by `refreshGraduationRow` above (the only writer of
+ * `tracking`/`eligible`), by the promote executor (`promoted`) and by the
+ * demote path (`demoted`), so this count can lag a window change by at most
+ * one daily evaluation pass — the caller must present it as a link to the
+ * graduation panel, which re-derives per read, not as an authoritative list.
+ */
+export async function countEligibleGraduations(
+  orgCondition: (orgIdColumn: PgColumn) => SQL | undefined,
+  orgId?: string,
+): Promise<number> {
+  const rows = await db
+    .select({ count: sql<number>`COUNT(*)::int` })
+    .from(aiAgentGraduation)
+    .where(and(
+      orgCondition(aiAgentGraduation.orgId),
+      orgId === undefined ? undefined : eq(aiAgentGraduation.orgId, orgId),
+      eq(aiAgentGraduation.state, 'eligible'),
+    ));
+  return Number((rows as Array<{ count: number }>)[0]?.count ?? 0);
 }
