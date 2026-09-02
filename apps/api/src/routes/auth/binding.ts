@@ -8,6 +8,7 @@ import {
   type AuthBindingSource,
 } from '../../services/authBrowserTransition';
 import { readMobileDeviceId } from '../../services/mobileDeviceBinding';
+import { isSameOriginRequest } from '../../services/requestTransport';
 import {
   AUTH_BINDING_COOKIE_NAME,
   buildAuthBindingCookie,
@@ -56,8 +57,8 @@ export const authBindingRoutes = new Hono();
 
 authBindingRoutes.post('/browser-binding/bootstrap', async (c) => {
   const origin = c.req.header('origin');
-  if (origin && !isAllowedOrigin(origin)) {
-    return c.json({ error: 'Invalid request origin' }, 403);
+  if (origin && !isAllowedOrigin(origin) && !isSameOriginRequest(c, origin)) {
+    return c.json({ error: 'Invalid request origin', code: 'invalid_request_origin' }, 403);
   }
 
   if (c.req.header('sec-fetch-site')?.trim().toLowerCase() === 'cross-site') {

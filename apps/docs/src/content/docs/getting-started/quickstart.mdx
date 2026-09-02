@@ -164,6 +164,26 @@ Pick whichever fits:
   # then browse to https://localhost:8443
   ```
 
+  A browser origin includes the **port**, so `https://localhost:8443` is a
+  different origin from the `https://localhost` that the generated `.env`
+  allows, and the API rejects sign-in requests coming from it. Pick one of:
+
+  ```bash
+  # Forward the SAME port — 443 is privileged, so run this as root
+  sudo ssh -L 443:127.0.0.1:443 user@your-server
+  # then browse to https://localhost
+  ```
+
+  ```bash
+  # …or keep the high port and add the tunnel origin to .env on the server
+  # (comma-separated, no spaces, no trailing paths)
+  CORS_ALLOWED_ORIGINS=https://localhost,https://localhost:8443
+  docker compose up -d api
+  ```
+
+  From the next release the API accepts same-origin requests on its own, so the
+  extra entry is no longer required — but it stays correct either way.
+
 - **LAN address** — serve the machine's IP or hostname directly:
 
   ```bash
@@ -209,7 +229,24 @@ Pick whichever fits:
 Whichever you choose, `PUBLIC_APP_URL` must be the URL users actually visit:
 it is what agent installers and portal links are built from.
 
-## The browser shows ERR_SSL_PROTOCOL_ERROR
+## Troubleshooting
+
+**You are sent back to the login page with "session expired" right after signing in**
+- Cause: the address in your browser's address bar is not an origin this server
+  accepts. `CORS_ALLOWED_ORIGINS` doesn't list it, or `PUBLIC_APP_URL` is set to
+  a different address than the one you are visiting. Reaching a
+  `BREEZE_DOMAIN=localhost` install through an SSH tunnel on a different port is
+  the usual way to land here — the password was fine, the sign-in worked, and
+  the token refresh that follows it is what got rejected.
+- Confirm: open your browser devtools, go to the **Network** tab, and sign in
+  again. `POST /api/v1/auth/refresh` returns **403** with the body
+  `{"error":"Invalid request origin"}`. Newer Breeze builds also say so on the
+  login page itself, naming the exact origin that was refused.
+- Fix: browse to the address in `PUBLIC_APP_URL`, or add the address you are
+  actually using to `CORS_ALLOWED_ORIGINS` in `.env` (comma-separated, no spaces,
+  no trailing paths) and restart the API with `docker compose up -d api`.
+
+### The browser shows ERR_SSL_PROTOCOL_ERROR
 
 Chrome reports `ERR_SSL_PROTOCOL_ERROR` and Firefox `SSL_ERROR_INTERNAL_ERROR_ALERT`,
 with no certificate warning you can click through. That is Caddy aborting the TLS

@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { getTableName } from 'drizzle-orm';
@@ -345,28 +345,26 @@ describe('DEVICE_SITE_DENORMALIZED_TABLES coverage', () => {
  * destination org — exactly the bug this blocker fixes for
  * `anomaly_incident_id`.
  *
- * The detach statement is duplicated in two places that must stay in sync:
- * moveOrg.ts's UPDATE and breeze_cascade_device_org_id()'s identical UPDATE
- * (the DB-side trigger, for direct-SQL/non-route callers). This block derives
- * the expected column set from the ai_agent_runs schema's own FK columns —
- * not a hand-maintained list — so the next FK added to this table cannot
- * silently skip both detach sites the way anomaly_incident_id did.
+ * The detach is duplicated in two places that must stay in sync: moveOrg.ts's
+ * UPDATEs and breeze_cascade_device_org_id()'s identical UPDATEs (the DB-side
+ * trigger, for direct-SQL/non-route callers). Each site needs TWO statements,
+ * not one: `WHERE device_id = <moved>` cannot reach `ticket_id`, because
+ * ticket-triggered runs are device-less (trigger_kind 'ticket' stamps
+ * ticket_id and leaves device_id NULL), so ticket_id is severed by its own
+ * `WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = <moved>)`
+ * statement — the same join shape the ticket_attachments / time_entries /
+ * ticket_parts org rewrites already use (#4215).
+ *
+ * This block derives the expected column set from the ai_agent_runs schema's
+ * own FK columns — not a hand-maintained list — and unions the SET clauses of
+ * EVERY ai_agent_runs UPDATE at each site, so the next FK added to this table
+ * cannot silently skip both detach sites the way anomaly_incident_id (#3828)
+ * and ticket_id (#4215) did.
  */
 describe('ai_agent_runs run-lineage detach coverage', () => {
   const runsCfg = getTableConfig(aiAgentRuns);
   const denormTableSet = new Set<string>(getDeviceOrgDenormalizedTables());
-
-  // KNOWN, pre-existing, NOT fixed by this change: `ticket_id` references
-  // `tickets`, which IS in getDeviceOrgDenormalizedTables() (tickets bound to
-  // the moved device are re-stamped to the destination org by the generic
-  // loop) — so by the same reasoning as anomaly_incident_id, a source-org run
-  // keeping its ticket_id would end up pointing at a now-foreign ticket too.
-  // That gap predates this PR (wave 6 PR 3, #3828) and is NOT one of the
-  // three review blockers this change fixes — flagged here instead of
-  // silently "fixed" as a scope change. Tracked for a follow-up; remove this
-  // entry (and stop excluding it below) once ticket_id is detached alongside
-  // device_id/alert_id/session_id/anomaly_incident_id in both sites.
-  const KNOWN_UNDETACHED_RUN_LINEAGE_COLUMNS: ReadonlySet<string> = new Set(['ticket_id']);
+  const MIGRATIONS_DIR = fileURLToPath(new URL('../../../migrations/', import.meta.url));
 
   // Columns that reference the run's OWN identity, not a row that moves WITH
   // the device — must stay untouched by device-lineage detach.
@@ -382,58 +380,106 @@ describe('ai_agent_runs run-lineage detach coverage', () => {
       const foreignTableName = getTableName(ref.foreignTable);
       const isDeviceLineage = foreignTableName === 'devices' || denormTableSet.has(foreignTableName);
       if (!isDeviceLineage) continue;
-      if (KNOWN_UNDETACHED_RUN_LINEAGE_COLUMNS.has(column.name)) continue;
       expected.push(column.name);
     }
     return expected.sort();
   }
 
-  function extractDetachColumns(sqlText: string): string[] {
-    // Matches `<col> = NULL` occurrences inside an UPDATE ai_agent_runs SET
-    // ... WHERE device_id = ... statement targeting a single row's lineage
-    // columns (not bulk org_id rewrites, which use `= <param>` not `= NULL`).
-    return [...sqlText.matchAll(/\b([a-z_]+)\s*=\s*NULL\b/g)].map((m) => m[1]!).sort();
+  /**
+   * SET clause of every `UPDATE <tableRef> ... WHERE ...` statement in `src`.
+   * Unioned rather than matched once because ticket_id is detached by its own
+   * statement (device-less ticket runs are unreachable from `WHERE device_id`).
+   */
+  function runUpdateSetClauses(src: string, tableRef: string): string[] {
+    return [...src.matchAll(new RegExp(`UPDATE ${tableRef}\\s+SET ([\\s\\S]*?)\\s*WHERE `, 'g'))].map(
+      (m) => m[1]!,
+    );
   }
 
-  it('sanity: the derived expected set is non-empty and contains the known lineage columns', () => {
+  function extractDetachColumns(setClauses: string[]): string[] {
+    // Matches `<col> = NULL` occurrences inside the SET clause of an
+    // `UPDATE ai_agent_runs` statement (not bulk org_id rewrites, which use
+    // `= <param>` not `= NULL`).
+    const columns = new Set<string>();
+    for (const clause of setClauses) {
+      for (const m of clause.matchAll(/\b([a-z_]+)\s*=\s*NULL\b/g)) columns.add(m[1]!);
+    }
+    return [...columns].sort();
+  }
+
+  /**
+   * Newest migration that (re)defines breeze_cascade_device_org_id(), resolved
+   * the same way autoMigrate applies files — filename `localeCompare` order,
+   * last definition wins. Resolved dynamically (not a hardcoded filename) so a
+   * later migration replacing the function again cannot leave this contract
+   * silently asserting a superseded definition.
+   */
+  function newestCascadeFunctionMigration(): { name: string; src: string } {
+    const definitions = readdirSync(MIGRATIONS_DIR)
+      .filter((name) => /^\d{4}-.*\.sql$/.test(name))
+      .sort((a, b) => a.localeCompare(b))
+      .map((name) => ({ name, src: readFileSync(`${MIGRATIONS_DIR}${name}`, 'utf8') }))
+      .filter(({ src }) => /CREATE OR REPLACE FUNCTION (public\.)?breeze_cascade_device_org_id/.test(src));
+    const newest = definitions.at(-1);
+    expect(newest, 'no migration defines breeze_cascade_device_org_id()').toBeTruthy();
+    return newest!;
+  }
+
+  const moveOrgSource = () =>
+    readFileSync(fileURLToPath(new URL('./moveOrg.ts', import.meta.url)), 'utf8');
+
+  it('sanity: the derived expected set is non-empty and contains every device-lineage column', () => {
     const expected = deriveExpectedDetachColumns();
     expect(expected.length).toBeGreaterThan(0);
     expect(expected).toEqual(
-      expect.arrayContaining(['device_id', 'alert_id', 'session_id', 'anomaly_incident_id']),
+      expect.arrayContaining([
+        'device_id',
+        'alert_id',
+        'session_id',
+        'anomaly_incident_id',
+        'ticket_id',
+      ]),
     );
   });
 
   it('moveOrg.ts detaches exactly the derived run-lineage columns', () => {
-    const moveOrgPath = fileURLToPath(new URL('./moveOrg.ts', import.meta.url));
-    const src = readFileSync(moveOrgPath, 'utf8');
-
-    const match = src.match(/UPDATE ai_agent_runs SET ([\s\S]*?)\s*WHERE device_id/);
+    const setClauses = runUpdateSetClauses(moveOrgSource(), 'ai_agent_runs');
     expect(
-      match,
-      'moveOrg.ts no longer has the expected "UPDATE ai_agent_runs SET ... WHERE device_id" statement — update this test if the statement shape changed intentionally',
-    ).toBeTruthy();
+      setClauses.length,
+      'moveOrg.ts no longer has any "UPDATE ai_agent_runs SET ... WHERE ..." statement — update this test if the statement shape changed intentionally',
+    ).toBeGreaterThan(0);
 
-    const actual = extractDetachColumns(match![1]!);
-    expect(actual).toEqual(deriveExpectedDetachColumns());
+    expect(extractDetachColumns(setClauses)).toEqual(deriveExpectedDetachColumns());
+  });
+
+  it('moveOrg.ts severs ticket_id through the tickets join, not WHERE device_id (#4215)', () => {
+    // Ticket-triggered runs carry ticket_id with a NULL device_id, so the
+    // device-keyed detach above cannot reach them. Keying off the ticket's
+    // device_id catches BOTH those and device-triggered runs on the same
+    // ticket, and touches nothing whose ticket stays in the source org.
+    expect(moveOrgSource()).toMatch(
+      /UPDATE ai_agent_runs SET ticket_id = NULL\s+WHERE ticket_id IN \(SELECT id FROM tickets WHERE device_id = \$\{deviceId\}::uuid\)/,
+    );
   });
 
   it('breeze_cascade_device_org_id() detaches exactly the derived run-lineage columns', () => {
-    // Newest definition of the function as of this PR — grep migrations/ for
-    // `CREATE OR REPLACE FUNCTION public.breeze_cascade_device_org_id` if this
-    // ever fails after a later migration replaces the function again.
-    const migrationPath = fileURLToPath(
-      new URL('../../../migrations/2026-09-20-ai-agents-anomaly-pilot.sql', import.meta.url),
-    );
-    const src = readFileSync(migrationPath, 'utf8');
-
-    const match = src.match(/UPDATE public\.ai_agent_runs\s+SET ([\s\S]*?)\s*WHERE device_id = NEW\.id/);
+    const { name, src } = newestCascadeFunctionMigration();
+    const setClauses = runUpdateSetClauses(src, 'public\\.ai_agent_runs');
     expect(
-      match,
-      'breeze_cascade_device_org_id() no longer has the expected ai_agent_runs detach statement',
-    ).toBeTruthy();
+      setClauses.length,
+      `${name} redefines breeze_cascade_device_org_id() but has no ai_agent_runs detach statement`,
+    ).toBeGreaterThan(0);
 
-    const actual = extractDetachColumns(match![1]!);
-    expect(actual).toEqual(deriveExpectedDetachColumns());
+    expect(
+      extractDetachColumns(setClauses),
+      `${name} is the newest definition of breeze_cascade_device_org_id() and its ai_agent_runs detach has drifted from moveOrg.ts / the schema's FK columns`,
+    ).toEqual(deriveExpectedDetachColumns());
+  });
+
+  it('breeze_cascade_device_org_id() severs ticket_id through the tickets join (#4215)', () => {
+    expect(newestCascadeFunctionMigration().src).toMatch(
+      /UPDATE public\.ai_agent_runs\s+SET ticket_id = NULL\s+WHERE ticket_id IN \(SELECT id FROM public\.tickets WHERE device_id = NEW\.id\)/,
+    );
   });
 });
 
@@ -454,9 +500,9 @@ describe('ai_agent_runs run-lineage detach coverage', () => {
  * trigger for direct-SQL/non-route callers) in this round — the controller
  * ruling scoped this fix to the moveOrg route only. A direct
  * `UPDATE devices SET org_id = ...` that bypasses the route would still leave
- * a stale scope_device_id; tracked as a known gap for a follow-up, same
- * pattern as this file's own `KNOWN_UNDETACHED_RUN_LINEAGE_COLUMNS` note for
- * ticket_id above.
+ * a stale scope_device_id; tracked as a known gap for a follow-up, the same
+ * way the ai_agent_runs `ticket_id` gap above was carried as a documented
+ * hole until #4215 closed it in both sites.
  */
 describe('action_intents.scope_device_id detach coverage', () => {
   it('moveOrg.ts tombstones scope_device_id for the moved device, scoped to live statuses', () => {

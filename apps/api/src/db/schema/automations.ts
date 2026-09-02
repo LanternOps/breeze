@@ -235,4 +235,19 @@ export const automationPolicyCompliance = pgTable('automation_policy_compliance'
 }, (table) => ({
   configPolicyIdIdx: index('apc_config_policy_id_idx').on(table.configPolicyId),
   deviceIdIdx: index('apc_device_id_idx').on(table.deviceId),
+  // Two shapes share this table and exactly one axis is populated per row, so
+  // uniqueness is two PARTIAL indexes rather than table constraints (#4122).
+  // `policyEvaluationService.ts` names these predicates verbatim as the
+  // `targetWhere` of its ON CONFLICT arbiter — Postgres only infers a partial
+  // index when the statement's predicate implies the index's, so the three
+  // copies (here, migration 2026-09-29-100000, and the service) move together.
+  policyDeviceUq: uniqueIndex('apc_policy_device_uq')
+    .on(table.policyId, table.deviceId)
+    .where(sql`${table.policyId} IS NOT NULL`),
+  // config_item_name is nullable and NULLs never collide in a btree unique
+  // index, so a row without one cannot be keyed — it stays outside the index
+  // rather than being silently treated as a distinct key.
+  configPolicyItemDeviceUq: uniqueIndex('apc_config_policy_item_device_uq')
+    .on(table.configPolicyId, table.configItemName, table.deviceId)
+    .where(sql`${table.configPolicyId} IS NOT NULL AND ${table.configItemName} IS NOT NULL`),
 }));
