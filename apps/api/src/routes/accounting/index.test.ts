@@ -52,6 +52,11 @@ const { authState, mocks, AccountingConnectionErrorClass } = vi.hoisted(() => {
       // withAuthDbAccessContext. Runs `fn` through so existing behavior is
       // unchanged; asserted directly in the settings/refresh describe block.
       withAuthDbAccessContext: vi.fn(async (_auth: unknown, fn: () => unknown) => fn()),
+      // Task 6 — the PATCH /:provider/settings `.returning({...})` row. A
+      // separate controllable mock (rather than an inline arrow in the `db`
+      // factory below) so individual tests can set what the "update" reports
+      // back, same idiom as `updateHomeCurrency` above.
+      dbUpdateReturning: vi.fn(async () => [] as Record<string, unknown>[]),
     },
     AccountingConnectionErrorClass,
   };
@@ -62,7 +67,7 @@ vi.mock('../../db', () => ({
     update: vi.fn(() => ({
       set: vi.fn(() => ({
         where: vi.fn(() => ({
-          returning: vi.fn(async () => []),
+          returning: mocks.dbUpdateReturning,
         })),
       })),
     })),
@@ -588,6 +593,51 @@ describe('accounting routes', () => {
     await expect(disconnected.json()).resolves.toMatchObject({ status: 'disconnected', homeCurrency: null });
   });
 
+  // Phase D, Task 6 — the "Sync now" card needs both fields to render whether
+  // pull is on and when it last ran, on the SAME shape whether or not a
+  // connection exists yet (mirrors the homeCurrency/multiCurrencyEnabled
+  // precedent above).
+  it('returns pullPayments and lastReconcileAt for a connected partner and for the disconnected branch', async () => {
+    const lastReconcileAt = new Date('2026-09-02T12:00:00Z');
+    mocks.getConnection.mockResolvedValueOnce({
+      id: CONNECTION_ID,
+      partnerId: authState.partnerId,
+      provider: 'quickbooks',
+      realmId: 'realm-1',
+      accessToken: 'secret-access-token',
+      refreshToken: 'secret-refresh-token',
+      accessTokenExpiresAt: new Date(),
+      refreshTokenExpiresAt: new Date(),
+      environment: 'production',
+      homeCurrency: 'CAD',
+      defaultIncomeAccountRef: null,
+      defaultTaxCodeRef: null,
+      pushMode: 'auto',
+      status: 'connected',
+      createdAt: new Date('2026-06-23T00:00:00Z'),
+      updatedAt: new Date(),
+      lastError: null,
+      pullPayments: false,
+      lastReconcileAt,
+    });
+
+    const connected = await app.request('/accounting/quickbooks');
+    expect(connected.status).toBe(200);
+    await expect(connected.json()).resolves.toMatchObject({
+      pullPayments: false,
+      lastReconcileAt: lastReconcileAt.toISOString(),
+    });
+
+    mocks.getConnection.mockResolvedValueOnce(null);
+    const disconnected = await app.request('/accounting/quickbooks');
+    expect(disconnected.status).toBe(200);
+    await expect(disconnected.json()).resolves.toMatchObject({
+      status: 'disconnected',
+      pullPayments: true,
+      lastReconcileAt: null,
+    });
+  });
+
   it('disconnect requires MFA', async () => {
     authState.mfa = false;
 
@@ -653,6 +703,58 @@ describe('accounting routes', () => {
 
       expect(res.status).toBe(409);
       await expect(res.json()).resolves.toMatchObject({ code: 'reauth_required' });
+    });
+  });
+
+  // Phase D, Task 6.
+  describe('PATCH /:provider/settings', () => {
+    function patchSettings(body: Record<string, unknown>) {
+      return app.request('/accounting/quickbooks/settings', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    }
+
+    it('persists and echoes pullPayments', async () => {
+      mocks.dbUpdateReturning.mockResolvedValueOnce([{
+        status: 'connected',
+        environment: 'production',
+        pushMode: 'auto',
+        defaultIncomeAccountRef: null,
+        defaultTaxCodeRef: null,
+        lastError: null,
+        pullPayments: false,
+      }]);
+
+      const res = await patchSettings({ pullPayments: false });
+
+      expect(res.status).toBe(200);
+      await expect(res.json()).resolves.toMatchObject({ pullPayments: false });
+    });
+
+    it('still rejects an empty body (400)', async () => {
+      const res = await patchSettings({});
+      expect(res.status).toBe(400);
+      expect(mocks.dbUpdateReturning).not.toHaveBeenCalled();
+    });
+
+    it('still rejects homeCurrency as read-only — a captured fact, not a setting (400)', async () => {
+      const res = await patchSettings({ homeCurrency: 'CAD' });
+      expect(res.status).toBe(400);
+      expect(mocks.dbUpdateReturning).not.toHaveBeenCalled();
+    });
+
+    it('still rejects multiCurrencyEnabled as read-only — a captured fact, not a setting (400)', async () => {
+      const res = await patchSettings({ multiCurrencyEnabled: true });
+      expect(res.status).toBe(400);
+      expect(mocks.dbUpdateReturning).not.toHaveBeenCalled();
+    });
+
+    it('404s when there is no connection to update', async () => {
+      mocks.dbUpdateReturning.mockResolvedValueOnce([]);
+      const res = await patchSettings({ pullPayments: true });
+      expect(res.status).toBe(404);
     });
   });
 });

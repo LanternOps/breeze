@@ -39,6 +39,7 @@ import {
 } from '../../services/accounting/accountingMappingService';
 import { AccountingInvoicePushError, pushInvoiceToAccounting } from '../../services/accounting/accountingInvoicePush';
 import { enqueueAccountingInvoicePush } from '../../jobs/accountingSyncWorker';
+import { enqueueAccountingReconcile } from '../../jobs/accountingReconcileWorker';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { getAccountingProvider } from '../../services/accounting/providerRegistry';
 import { captureException, captureMessage } from '../../services/sentry';
@@ -94,6 +95,11 @@ const settingsSchema = z.object({
   pushMode: z.enum(['auto', 'manual']).optional(),
   defaultIncomeAccountRef: z.string().max(64).nullable().optional(),
   defaultTaxCodeRef: z.string().max(64).nullable().optional(),
+  // Phase D, Task 6 — whether the reconcile worker pulls QuickBooks payments
+  // for this connection. Same tier as pushMode: a plain connection setting,
+  // not a captured external fact (unlike homeCurrency/multiCurrencyEnabled
+  // below, which PATCH must never accept).
+  pullPayments: z.boolean().optional(),
 }).refine((value) => Object.keys(value).length > 0, {
   message: 'At least one setting is required',
 });
@@ -538,6 +544,11 @@ accountingRoutes.get('/:provider', authMiddleware, partnerScopes, zValidator('pa
       lastError: null,
       homeCurrency: null,
       multiCurrencyEnabled: null,
+      // Same shape either way (Phase D, Task 6) — the "Sync now" card reads
+      // these fields whether or not a connection exists yet. `true` matches
+      // the column's own `.default(true)` (accountingConnectionService.ts).
+      pullPayments: true,
+      lastReconcileAt: null,
     });
   }
   return c.json({
@@ -554,6 +565,10 @@ accountingRoutes.get('/:provider', authMiddleware, partnerScopes, zValidator('pa
     homeCurrency: connection.homeCurrency,
     // Same story: captured at connect / settings refresh, read-only here.
     multiCurrencyEnabled: connection.multiCurrencyEnabled,
+    // Phase D, Task 6 — reconcile-worker settings/status, so the "Sync now"
+    // card can render whether pull is on and when it last ran.
+    pullPayments: connection.pullPayments,
+    lastReconcileAt: connection.lastReconcileAt,
   });
 });
 
@@ -624,6 +639,7 @@ accountingRoutes.patch('/:provider/settings', authMiddleware, partnerScopes, req
       ...('pushMode' in body ? { pushMode: body.pushMode } : {}),
       ...('defaultIncomeAccountRef' in body ? { defaultIncomeAccountRef: body.defaultIncomeAccountRef } : {}),
       ...('defaultTaxCodeRef' in body ? { defaultTaxCodeRef: body.defaultTaxCodeRef } : {}),
+      ...('pullPayments' in body ? { pullPayments: body.pullPayments } : {}),
       updatedAt: new Date(),
     })
     .where(and(
@@ -637,6 +653,7 @@ accountingRoutes.patch('/:provider/settings', authMiddleware, partnerScopes, req
       defaultIncomeAccountRef: accountingConnections.defaultIncomeAccountRef,
       defaultTaxCodeRef: accountingConnections.defaultTaxCodeRef,
       lastError: accountingConnections.lastError,
+      pullPayments: accountingConnections.pullPayments,
     });
 
   if (!updated) return c.json({ error: 'Accounting connection not found' }, 404);
@@ -682,6 +699,44 @@ accountingRoutes.post('/:provider/settings/refresh', authMiddleware, partnerScop
   });
 
   return c.json(settings);
+});
+
+// "Sync now" (Phase D, Task 6) — manually kicks the accounting-reconcile
+// worker's CDC pull for this connection, same job shape the 15-minute sweep
+// and the QuickBooks webhook route enqueue with `trigger: 'sweep'`/`'webhook'`
+// (jobs/accountingReconcileWorker.ts). Gated on INVOICES_WRITE via
+// requireInvoicePush — a payment pull-back is an invoice-shaped write, same
+// tier as the manual/bulk invoice push routes above.
+//
+// This route only ever touches Redis (`enqueueAccountingReconcile` never
+// calls QuickBooks itself — the actual CDC pull happens later, on the
+// worker), so — like `push-bulk` above — it keeps the normal ambient request
+// transaction and carries NO SELF_MANAGED_DB_CONTEXT_ROUTES entry
+// (middleware/selfManagedDbContextRoutes.ts:90-92 records the same reasoning
+// for push-bulk).
+//
+// Reports `enqueued` HONESTLY (the Phase C lesson: `enqueueAccountingInvoicePush`
+// swallows a Redis outage by design, so the caller must surface its boolean
+// rather than assume the job landed — see the push-bulk route's comment above).
+accountingRoutes.post('/:provider/reconcile', authMiddleware, partnerScopes, requireMfa(), requireInvoicePush, zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), async (c) => {
+  const { provider } = c.req.valid('param');
+  const partner = resolvePartnerId(c.get('auth'), c.req.valid('query').partnerId);
+  if ('error' in partner) return c.json({ error: partner.error }, partner.status);
+
+  const connection = await getConnection(db, partner.partnerId, provider);
+  if (!connection) return c.json({ error: 'Accounting connection not found' }, 404);
+
+  const enqueued = await enqueueAccountingReconcile(connection.id, partner.partnerId, 'manual');
+
+  writeRouteAudit(c, {
+    orgId: null,
+    action: 'accounting.reconcile.requested',
+    resourceType: 'accounting_connection',
+    resourceId: connection.id,
+    details: { provider, connectionId: connection.id, enqueued },
+  });
+
+  return c.json({ enqueued });
 });
 
 // Mapping proposals (reconciliation) — read-only, so partner/system scope is
