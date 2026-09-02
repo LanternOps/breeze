@@ -412,12 +412,15 @@ export async function getAgent(
  * `auth: null` is the system-caller shape A2's promote/demote executors
  * (not in this PR) are expected to use, run from a scheduler with no HTTP
  * request or AuthContext — the same SYSTEM-context case `getAgent`'s own
- * comment documents. There the accessible-agent predicate is dropped
- * entirely and the row is located by `id` alone: under a system DB context
- * RLS passes unconditionally (see `getAgent`'s comment above), so an
- * app-layer org predicate would only be able to narrow an already-trusted
- * caller, never widen an untrusted one — unlike the `auth` branch, where the
- * predicate IS the tenancy boundary for the unit-test path (no RLS at all).
+ * comment documents. Fix round 1/5: this branch previously dropped the
+ * tenancy predicate to `id` alone, reasoning that RLS passes unconditionally
+ * under a system DB context so an app-layer predicate could only narrow an
+ * already-trusted caller. That reasoning is exactly what this repo's
+ * tenancy invariant rejects (CLAUDE.md: "every new loader predicates by
+ * org_id explicitly under the system context") — a forged or mismatched
+ * agent id would lock and return another tenant's row. The system branch
+ * now REQUIRES `opts.orgId` (enforced both by the overload below and at
+ * runtime) and predicates by `id + org_id`, never `id` alone.
  *
  * Callers must not re-check "not found" — a predicate miss is reported as
  * `AgentAccessDeniedError` from here, before `fn` ever runs. Anything else
@@ -426,11 +429,31 @@ export async function getAgent(
  * unlocked read.
  */
 export async function withAgentRowLocked<T>(
+  auth: AuthContext,
+  id: string,
+  fn: (row: AiAgentRow) => Promise<T>,
+): Promise<T>;
+export async function withAgentRowLocked<T>(
+  auth: null,
+  id: string,
+  fn: (row: AiAgentRow) => Promise<T>,
+  opts: { orgId: string },
+): Promise<T>;
+export async function withAgentRowLocked<T>(
   auth: AuthContext | null,
   id: string,
   fn: (row: AiAgentRow) => Promise<T>,
+  opts?: { orgId: string },
 ): Promise<T> {
-  const condition = auth === null ? eq(aiAgents.id, id) : and(eq(aiAgents.id, id), accessibleAgentCondition(auth));
+  if (auth === null && !opts?.orgId) {
+    // Programmer error, not a tenancy denial — a system caller that forgot
+    // to bind an org would otherwise fall through to an id-only predicate,
+    // which is the exact cross-tenant hole this overload exists to close.
+    throw new AgentInvariantError('withAgentRowLocked: system caller (auth: null) requires opts.orgId');
+  }
+  const condition = auth === null
+    ? and(eq(aiAgents.id, id), eq(aiAgents.orgId, opts!.orgId))
+    : and(eq(aiAgents.id, id), accessibleAgentCondition(auth));
 
   const [row] = await db
     .select()
