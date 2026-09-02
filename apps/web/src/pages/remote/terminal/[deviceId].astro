@@ -1,11 +1,16 @@
 ---
 import Layout from '../../../layouts/Layout.astro';
+import AuthOverlay from '../../../components/auth/AuthOverlay';
 import RemoteToolsPage from '../../../components/remote/RemoteToolsPage';
 
 const { deviceId } = Astro.params;
 ---
 
 <Layout title="Remote Terminal">
+  <!-- #3984: this page used bare Layout.astro with no AuthOverlay, so an
+       AuthThrottledError from a throttled /auth/refresh here went unhandled —
+       no waiting mask, no recovery, just a broken remote session. -->
+  <AuthOverlay client:load />
   <div class="h-[calc(100vh-1rem)]">
     <RemoteToolsPage
       deviceId={deviceId!}
