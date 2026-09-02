@@ -496,6 +496,21 @@ describe('processReconcileConnectionJob: cursor', () => {
     expect(advanceReconcileCursorMock).not.toHaveBeenCalled();
   });
 
+  it('reports the lost CAS to Sentry and still completes the job when the realm changed mid-run', async () => {
+    reconcileChangesMock.mockResolvedValue(EMPTY_CHANGESET);
+    advanceReconcileCursorMock.mockResolvedValueOnce(false);
+
+    const summary = await processReconcileConnectionJob(JOB);
+
+    expect(summary).toBeDefined();
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+    expect(captureExceptionMock).toHaveBeenCalledWith(
+      expect.any(Error),
+      undefined,
+      { service: 'accountingReconcileWorker', connectionId: CONN_ID, trigger: JOB.trigger },
+    );
+  });
+
   it('reverses the allocations QuickBooks removed from a payment it still holds', async () => {
     // Finding B: the CDC window carries payment 180 settling invoice 145 only.
     // Any OTHER 180/<invoice> mapping in Breeze is an allocation QBO dropped.

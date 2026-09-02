@@ -350,6 +350,11 @@ export async function processReconcileConnectionJob(
         '[AccountingReconcileWorker] cursor CAS lost — realm changed during the run',
         `connectionId=${fresh.id}`, `trigger=${data.trigger}`,
       );
+      captureException(
+        new Error(`accounting reconcile cursor CAS lost for connection ${fresh.id} (realm changed mid-run)`),
+        undefined,
+        { service: 'accountingReconcileWorker', connectionId: fresh.id, trigger: data.trigger },
+      );
       return summary;
     }
     summary.cursorAfter = changes.cursor;
