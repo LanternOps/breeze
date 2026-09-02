@@ -844,13 +844,20 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
         ? () => executeGoogleToolHeadless(intent.actionName, intent.arguments, intent.orgId)
         : isHeadlessM365Tool(intent.actionName)
         ? () => executeM365ToolHeadless(intent.actionName, intent.arguments, intent.orgId, intent.id)
-        : // The options bag is passed ONLY when something was actually
-          // verified, so every other release keeps the exact three-argument
-          // call it has always made.
+        : // The context bag is ALWAYS passed on this path (P2-5, #4192): every
+          // call the durable worker makes IS the release of an approved
+          // intent, and `actionIntentId` is how a handler that may only run
+          // as such a release names the approval it is executing —
+          // `manage_ai_agents:authorize_supervised_key` stamps it onto the
+          // graduation row and re-checks its org. `verifiedRunScript` keeps
+          // its previous "only when something was actually verified"
+          // semantics, so no existing handler observes a change: it reads
+          // `context?.verifiedRunScript`, which is still undefined here
+          // unless the effect-digest recompute produced one.
           () =>
-            verifiedContext
-              ? executeTool(intent.actionName, intent.arguments, auth, { context: verifiedContext })
-              : executeTool(intent.actionName, intent.arguments, auth);
+            executeTool(intent.actionName, intent.arguments, auth, {
+              context: { ...verifiedContext, actionIntentId: intent.id },
+            });
       rawResult = await withToolTimeout(
         withAuthDbAccessContext(auth, invoke),
         getToolTimeout(intent.actionName),

@@ -17,6 +17,7 @@ import {
   impactQuerySchema,
   impactRebuildQuerySchema,
   impactWeightsSchema,
+  promoteSupervisedKeyRequestSchema,
   triggerAgentRunSchema,
   updateAiAgentSchema,
 } from '@breeze/shared';
@@ -51,6 +52,7 @@ import {
 } from '../services/aiAgents/agentService';
 import { resolveEffectiveAgent } from '../services/aiAgents/effectivePolicy';
 import { POLICY_DECIDABLE_TIER3 } from '../services/actionIntents/policyDecidable';
+import { ActionIntentError, createActionIntent } from '../services/actionIntents/intentService';
 import { computeExposureBudget } from '../services/actionIntents/exposureBudget';
 import { createAndEnqueueAgentRun } from '../services/aiAgents/runService';
 import { InvalidAgentRecipientsError } from '../services/aiAgents/recipients';
@@ -289,6 +291,79 @@ aiAgentsRoutes.get('/policy-decidable-keys', scopes, requireAiRead, async (c) =>
       .map((entry) => ({ key: entry.key, toolName: entry.toolName, action: entry.action, note: entry.note })),
   });
 });
+
+/**
+ * P2-5 (#4192, Task A2-5) — RAISE a promotion. This route grants nothing: it
+ * creates the Tier-3 FOUR-EYES action intent
+ * (`manage_ai_agents:authorize_supervised_key`) whose eventual release runs
+ * the grant (`services/aiAgents/supervisedKeyGrant.ts`).
+ *
+ * Four-eyes AS BUILT is requester + one DIFFERENT approver, first eligible
+ * approval wins (`decideApprovalRequest.ts`); the sole-operator WebAuthn
+ * self-approval exception (`intentService.ts`) applies here UNCHANGED — a
+ * partner whose only eligible approver is the requester can still approve
+ * their own request with a hardware credential, exactly as for every other
+ * four-eyes tool. This wave adds no new state machine.
+ *
+ * 409 when `BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED` is off: the whole point
+ * of a supervised key is to let `attemptPolicyDecision` release without human
+ * fanout, so raising an approval for one while that lane is dark would queue
+ * an authority change nobody can use — and the executor would refuse it at
+ * release anyway (`policy_decide_disabled`). The graduation READ route is
+ * deliberately not gated the same way (Task 18): eligibility is an
+ * observation, not a write.
+ *
+ * `source: 'mcp_api'` is deliberate and is about the DEADLINE, not the
+ * caller: `computeExpiresAt` keys the approval window off source first, and
+ * only the non-chat branch (24h) is long enough for a second human to reach
+ * their inbox. The chat branch would expire the request in 60 minutes.
+ *
+ * No `requireMfa()` — this raises a request that a second human must still
+ * approve; the MFA/assurance bar belongs to that approval (riskTier 'high'
+ * floors it at L3), not to asking for it.
+ */
+aiAgentsRoutes.post(
+  '/graduation/promote',
+  scopes,
+  requireAiWrite,
+  zValidator('json', promoteSupervisedKeyRequestSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { orgId, kind, opKey } = c.req.valid('json');
+
+    if (!policyDecideEnabled()) {
+      return c.json({ error: 'policy_decide_disabled' }, 409);
+    }
+    if (!auth.canAccessOrg(orgId)) {
+      return c.json({ error: 'Organization not accessible' }, 403);
+    }
+
+    try {
+      const intent = await createActionIntent(auth, {
+        toolName: 'manage_ai_agents',
+        // `orgId` is carried in the ARGUMENTS as well as on the intent: the
+        // effect-digest resolver receives only `(args, database)` and pins
+        // this org's authorized-key list from it. createActionIntent rejects
+        // an `orgId` argument that disagrees with the intent's own resolved
+        // org, so it can only ever name the org this caller is authorized for.
+        input: { action: 'authorize_supervised_key', kind, opKey, orgId },
+        source: 'mcp_api',
+        orgId,
+        requestingClientLabel: 'Breeze',
+      });
+      return c.json({ intentId: intent.id }, 201);
+    } catch (err) {
+      // Every ActionIntentError is a caller-fixable refusal (tool blocked or
+      // reclassified, org unresolvable, argument mismatch) — answered as a
+      // 400 with its code rather than allowed to reach the global handler as
+      // a 500.
+      if (err instanceof ActionIntentError) {
+        return c.json({ error: err.code, message: err.message }, 400);
+      }
+      throw err;
+    }
+  },
+);
 
 /**
  * Wave 6 PR 1 (#3828) — the org+kind unattended-exposure budget readout:

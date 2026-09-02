@@ -393,6 +393,7 @@ import { db as mockedDb, runOutsideDbContext as mockedRunOutside, withSystemDbAc
 // be asserted rather than assumed.
 import { eq as mockedEq } from 'drizzle-orm';
 import type { ActionIntent } from '../db/schema/actionIntents';
+import type { ToolExecutionContext } from '../services/toolExecutionContext';
 import { GoogleConnectionUnavailableError } from '../services/googleToolsHeadless';
 import { M365ConnectionUnavailableError } from '../services/m365ToolsHeadless';
 import { PolicyDecisionTransientError } from '../services/actionIntents/policyDecide';
@@ -631,7 +632,13 @@ describe('releaseApprovedIntent', () => {
         expect.objectContaining({ executedAt: null, executionStartedAt: expect.any(Date) }),
         { requireNotExpired: 'release' },
       );
-      expect(aiToolsMock.executeTool).toHaveBeenCalledWith(intent.actionName, intent.arguments, fakeAuth);
+      expect(aiToolsMock.executeTool).toHaveBeenCalledWith(
+        intent.actionName, intent.arguments, fakeAuth,
+        // P2-5 (#4192): the durable worker ALWAYS names the intent it is
+        // releasing. A handler that may only run as an approved release
+        // (manage_ai_agents:authorize_supervised_key) reads it from here.
+        { context: { actionIntentId: intent.id } },
+      );
       expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
         intent.id, 'executing', 'completed', expect.anything(),
       );
@@ -686,7 +693,13 @@ describe('releaseApprovedIntent', () => {
       intent.arguments,
       fakeAuth,
     );
-    expect(aiToolsMock.executeTool).toHaveBeenCalledWith(intent.actionName, intent.arguments, fakeAuth);
+    expect(aiToolsMock.executeTool).toHaveBeenCalledWith(
+        intent.actionName, intent.arguments, fakeAuth,
+        // P2-5 (#4192): the durable worker ALWAYS names the intent it is
+        // releasing. A handler that may only run as an approved release
+        // (manage_ai_agents:authorize_supervised_key) reads it from here.
+        { context: { actionIntentId: intent.id } },
+      );
     expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
       intent.id,
       'executing',
@@ -1113,7 +1126,13 @@ describe('releaseApprovedIntent', () => {
       await releaseApprovedIntent(intent.id);
 
       expect(killStateMock.readAiKillState).toHaveBeenCalled();
-      expect(aiToolsMock.executeTool).toHaveBeenCalledWith(intent.actionName, intent.arguments, fakeAuth);
+      expect(aiToolsMock.executeTool).toHaveBeenCalledWith(
+        intent.actionName, intent.arguments, fakeAuth,
+        // P2-5 (#4192): the durable worker ALWAYS names the intent it is
+        // releasing. A handler that may only run as an approved release
+        // (manage_ai_agents:authorize_supervised_key) reads it from here.
+        { context: { actionIntentId: intent.id } },
+      );
       expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
         intent.id, 'executing', 'completed', expect.anything(),
       );
@@ -1140,7 +1159,13 @@ describe('releaseApprovedIntent', () => {
       await releaseApprovedIntent(intent.id);
 
       expect(killStateMock.readAiKillState).not.toHaveBeenCalled();
-      expect(aiToolsMock.executeTool).toHaveBeenCalledWith(intent.actionName, intent.arguments, fakeAuth);
+      expect(aiToolsMock.executeTool).toHaveBeenCalledWith(
+        intent.actionName, intent.arguments, fakeAuth,
+        // P2-5 (#4192): the durable worker ALWAYS names the intent it is
+        // releasing. A handler that may only run as an approved release
+        // (manage_ai_agents:authorize_supervised_key) reads it from here.
+        { context: { actionIntentId: intent.id } },
+      );
       expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
         intent.id, 'executing', 'completed', expect.anything(),
       );
@@ -1202,9 +1227,15 @@ describe('releaseApprovedIntent', () => {
       await releaseApprovedIntent(intent.id);
 
       // No verified material came back (this tool has no snapshot to carry),
-      // so the call stays at three arguments — unchanged for every non-
-      // run_script tool.
-      expect(aiToolsMock.executeTool).toHaveBeenCalledWith(intent.actionName, intent.arguments, fakeAuth);
+      // so `verifiedRunScript` is absent — the context bag itself is still
+      // present, carrying only the releasing intent's id (P2-5, #4192).
+      expect(aiToolsMock.executeTool).toHaveBeenCalledWith(
+        intent.actionName, intent.arguments, fakeAuth,
+        // P2-5 (#4192): the durable worker ALWAYS names the intent it is
+        // releasing. A handler that may only run as an approved release
+        // (manage_ai_agents:authorize_supervised_key) reads it from here.
+        { context: { actionIntentId: intent.id } },
+      );
       expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
         intent.id,
         'executing',
@@ -1239,8 +1270,10 @@ describe('releaseApprovedIntent', () => {
       expect(call.slice(0, 3)).toEqual([intent.actionName, intent.arguments, fakeAuth]);
       // Identity, not shape: the handler must receive the very object the
       // recompute resolved, not an equal-looking reconstruction.
-      expect((call[3] as { context?: { verifiedRunScript?: unknown } }).context?.verifiedRunScript)
-        .toBe(verifiedRunScript);
+      const context = (call[3] as { context?: ToolExecutionContext }).context!;
+      expect(context.verifiedRunScript).toBe(verifiedRunScript);
+      // …and the releasing intent's id rides ALONGSIDE it, not instead of it.
+      expect(context.actionIntentId).toBe(intent.id);
     });
 
     it('never executes — and never forwards the verified material — when the digest mismatches', async () => {
@@ -1649,6 +1682,7 @@ describe('releaseApprovedIntent', () => {
         'manage_alerts',
         expect.objectContaining({ action: 'suppress', alertId: 'alert-1' }),
         agentAuth,
+        { context: { actionIntentId: intent.id } },
       );
       expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
         intent.id, 'executing', 'completed', expect.anything(),

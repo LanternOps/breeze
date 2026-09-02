@@ -41,9 +41,53 @@
  *    principal outright, so a model cannot reach this tool at all.
  */
 
-import { AI_AGENT_KINDS } from '@breeze/shared';
+import { AI_AGENT_KINDS, type AiAgentKind } from '@breeze/shared';
 
+import {
+  authorizeSupervisedKey,
+  SupervisedKeyGrantError,
+} from './aiAgents/supervisedKeyGrant';
 import type { AiTool, AiToolTier } from './aiTools';
+
+/**
+ * The three structural facts only the DISPATCH site can establish, checked
+ * before the executor is reached. Each is a `SupervisedKeyGrantError`, so the
+ * catch below renders it exactly like a refusal from the executor itself.
+ *
+ * `orgId` here is the EXECUTING context's org. On both release paths that is
+ * `intent.org_id` verbatim (`buildAuthContextForIntent` builds the release
+ * AuthContext with `orgId: intent.orgId`, `scope: 'organization'`,
+ * `accessibleOrgIds: [intent.orgId]`), which is what makes comparing the
+ * ARGUMENT against it the "`args.orgId !== intent.orgId` is rejected" rule —
+ * and the executor re-derives the same comparison from the intent row itself,
+ * so neither side is load-bearing alone.
+ */
+function assertReleaseContext(
+  argsOrgId: unknown,
+  authOrgId: string | null,
+  principalKind: string,
+  actionIntentId: string | undefined,
+): { orgId: string; intentId: string } {
+  if (principalKind === 'ai_agent') {
+    throw new SupervisedKeyGrantError(
+      'non_human_origin',
+      'Supervised keys are never granted on behalf of an AI agent principal',
+    );
+  }
+  if (!actionIntentId) {
+    throw new SupervisedKeyGrantError(
+      'no_authorizing_intent',
+      'This action may only run as the release of an approved four-eyes action intent',
+    );
+  }
+  if (!authOrgId || typeof argsOrgId !== 'string' || argsOrgId !== authOrgId) {
+    throw new SupervisedKeyGrantError(
+      'org_mismatch',
+      'orgId must name the organization this request is authorized for',
+    );
+  }
+  return { orgId: authOrgId, intentId: actionIntentId };
+}
 
 export function registerAiAgentGovernanceTools(aiTools: Map<string, AiTool>): void {
   aiTools.set('manage_ai_agents', {
@@ -85,11 +129,48 @@ export function registerAiAgentGovernanceTools(aiTools: Map<string, AiTool>): vo
         required: ['action', 'kind', 'opKey', 'orgId'],
       },
     },
-    // Task 15 (#4192) supplies the body: `authorizeSupervisedKey` in
-    // services/aiAgents/supervisedKeyGrant.ts, called with the org from the
-    // executing auth context. Landing in the same PR as this registration.
-    handler: async () => {
-      throw new Error('manage_ai_agents:authorize_supervised_key is not implemented yet');
+    /**
+     * The grant itself lives in `services/aiAgents/supervisedKeyGrant.ts`;
+     * this is only the dispatch seam.
+     *
+     * A refusal is RETURNED, not thrown: `isReturnedToolError`
+     * (jobs/intentReleaseWorker.ts) treats a parsed object carrying `error`
+     * and no `success`/`data`/`configured` key as a FAILED release, so the
+     * intent terminalizes `failed:tool_returned_error` with the reason
+     * recorded — a thrown error would land as the opaque `execution_error`,
+     * and a plain success shape would record a grant that never happened.
+     * (`googleHelpers.errorString` is deliberately NOT used — it belongs to
+     * the Google/M365 tool families.)
+     */
+    handler: async (input, auth, context) => {
+      try {
+        const { orgId, intentId } = assertReleaseContext(
+          input.orgId,
+          auth.orgId,
+          auth.principal?.kind ?? 'unknown',
+          context?.actionIntentId,
+        );
+        const result = await authorizeSupervisedKey({
+          orgId,
+          kind: input.kind as AiAgentKind,
+          opKey: String(input.opKey),
+          intentId,
+          actorUserId: auth.user.id,
+        });
+        return JSON.stringify({
+          success: true,
+          data: {
+            agentId: result.agentId,
+            orgAgentId: result.orgAgentId,
+            supervisedActionKeys: result.keys,
+          },
+        });
+      } catch (err) {
+        if (err instanceof SupervisedKeyGrantError) {
+          return JSON.stringify({ error: err.code, message: err.message });
+        }
+        throw err;
+      }
     },
   });
 }

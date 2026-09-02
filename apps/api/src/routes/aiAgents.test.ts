@@ -179,6 +179,27 @@ vi.mock('../services/auditEvents', () => ({
   writeRouteAudit: writeRouteAuditMock,
 }));
 
+// P2-5 (#4192, Task A2-5): POST /graduation/promote RAISES a four-eyes intent
+// and grants nothing. `createActionIntent` has its own extensive coverage
+// (intentService.*.test.ts) and reaches the whole guardrail/approver-fanout
+// graph, so it is mocked here — these tests exercise routing, the flag gate,
+// RBAC and the argument the route hands it, same convention as
+// createAndEnqueueAgentRun above.
+const { createActionIntentMock, ActionIntentError } = vi.hoisted(() => ({
+  createActionIntentMock: vi.fn(),
+  ActionIntentError: class ActionIntentError extends Error {
+    constructor(message: string, public code: string) {
+      super(message);
+      this.name = 'ActionIntentError';
+    }
+  },
+}));
+
+vi.mock('../services/actionIntents/intentService', () => ({
+  createActionIntent: createActionIntentMock,
+  ActionIntentError,
+}));
+
 vi.mock('../db', () => ({
   db: { select: selectMock },
   runOutsideDbContext: (fn: () => unknown) => fn(),
@@ -202,6 +223,7 @@ const OTHER_ORG_ID = '44444444-4444-4444-8444-444444444444';
 const PARTNER_ID = '55555555-5555-4555-8555-555555555555';
 const RUN_ID = '66666666-6666-4666-8666-666666666666';
 const USER_ID = '77777777-7777-4777-8777-777777777777';
+const INTENT_ID = '88888888-8888-4888-8888-888888888888';
 
 function agent(overrides: Record<string, unknown> = {}) {
   return {
@@ -286,6 +308,7 @@ beforeEach(() => {
     run: { id: RUN_ID, status: 'queued' },
   });
   envMock.policyDecideEnabled.mockReturnValue(true);
+  createActionIntentMock.mockResolvedValue({ id: INTENT_ID });
   recordVerdictFeedbackMock.mockResolvedValue({ status: 'ok', orgId: ORG_ID });
   loadImpactSummaryMock.mockResolvedValue(minimalImpactDto());
   enqueueImpactRollupForOrgsMock.mockImplementation(async (orgIds: string[]) => orgIds.length);
@@ -2282,5 +2305,90 @@ describe('DELETE /ai-agents/impact/weights', () => {
 
     expect(res.status).toBe(403);
     expect(saveImpactWeightsMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /ai-agents/graduation/promote', () => {
+  const body = { orgId: ORG_ID, kind: 'triage', opKey: 'manage_services:restart' };
+
+  function promote(app: Hono, payload: unknown = body) {
+    return app.request('/ai-agents/graduation/promote', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  }
+
+  it('raises the four-eyes intent and returns its id', async () => {
+    const res = await promote(buildApp());
+
+    expect(res.status).toBe(201);
+    expect(await res.json()).toEqual({ intentId: INTENT_ID });
+    expect(createActionIntentMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        toolName: 'manage_ai_agents',
+        orgId: ORG_ID,
+        source: 'mcp_api',
+        // The orgId ARGUMENT is the authenticated org, never a caller-chosen
+        // target: createActionIntent rejects any disagreement with the org it
+        // resolves the intent to.
+        input: {
+          action: 'authorize_supervised_key',
+          kind: 'triage',
+          opKey: 'manage_services:restart',
+          orgId: ORG_ID,
+        },
+      }),
+    );
+  });
+
+  it('409s while BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED is off, without raising anything', async () => {
+    envMock.policyDecideEnabled.mockReturnValue(false);
+
+    const res = await promote(buildApp());
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'policy_decide_disabled' });
+    expect(createActionIntentMock).not.toHaveBeenCalled();
+  });
+
+  it('denies a caller without ai_agents:write', async () => {
+    hasPermMock.mockImplementation((resource: string, action: string) => (
+      !(resource === 'ai_agents' && action === 'write')
+    ));
+
+    const res = await promote(buildApp());
+
+    expect(res.status).toBe(403);
+    expect(createActionIntentMock).not.toHaveBeenCalled();
+  });
+
+  it('denies an org the caller cannot reach', async () => {
+    const res = await promote(
+      buildApp(false, { canAccessOrg: (id: string) => id === ORG_ID }),
+      { ...body, orgId: OTHER_ORG_ID },
+    );
+
+    expect(res.status).toBe(403);
+    expect(createActionIntentMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a dot-form act-op key (only colon keys are promotable)', async () => {
+    const res = await promote(buildApp(), { ...body, opKey: 'manage_services.restart' });
+
+    expect(res.status).toBe(400);
+    expect(createActionIntentMock).not.toHaveBeenCalled();
+  });
+
+  it('answers an ActionIntentError with its code, not a 500', async () => {
+    createActionIntentMock.mockRejectedValue(
+      new ActionIntentError('must name the authorized organization', 'org_argument_mismatch'),
+    );
+
+    const res = await promote(buildApp());
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: 'org_argument_mismatch' });
   });
 });

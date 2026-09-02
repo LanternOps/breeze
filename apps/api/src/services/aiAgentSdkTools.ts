@@ -390,7 +390,7 @@ function makeHandler(
     // Pre-execution check (guardrails, RBAC, rate limits, approval)
     if (onPreToolUse) {
       let check:
-        | { allowed: true; context?: ToolExecutionContext }
+        | { allowed: true; intentId?: string; context?: ToolExecutionContext }
         | { allowed: false; error: string };
       try {
         check = await onPreToolUse(toolName, args);
@@ -401,7 +401,20 @@ function makeHandler(
         const reason = sanitizeThrownToolError(`${toolName}:preToolUse`, err);
         check = { allowed: false, error: `Guardrails check failed: ${reason}` };
       }
-      if (check.allowed) verifiedContext = check.context;
+      // P2-5 (#4192): `intentId` is set by createSessionPreToolUse ONLY after
+      // it won the approved -> executing CAS on a durable intent, i.e. this
+      // invocation IS that intent's inline release — the same fact the durable
+      // worker carries as `intent.id`. Carried on the context (not on args,
+      // not on auth — see toolExecutionContext.ts) so a handler that may only
+      // run as an approved release can name the approval it is executing.
+      // Left entirely absent for an ordinary chat call, which keeps the
+      // three-argument executeTool call below unchanged for every tool that
+      // neither verified anything nor went through an intent.
+      if (check.allowed) {
+        verifiedContext = check.intentId
+          ? { ...check.context, actionIntentId: check.intentId }
+          : check.context;
+      }
       if (!check.allowed) {
         const safeError = compactToolResultForChat(toolName, JSON.stringify({ error: check.error }));
         await safePostToolUse(onPostToolUse, toolName, args, safeError, true, 0);

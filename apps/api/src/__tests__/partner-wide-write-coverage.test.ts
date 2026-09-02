@@ -147,6 +147,15 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   // --- caller-facing, gated at the route layer (verify the gate when editing
   //     these services or adding ANY new route caller) -----------------------
   'services/aiAgents/agentService.ts': 'gated centrally in services/aiAgents/access.ts (assertAgentWriteAllowed), called before every write',
+  // P2-5 (#4192). The promote executor writes the ORG axis ONLY, by
+  // construction: the clone it may insert pins `partnerId: null` +
+  // `orgId`, and the one UPDATE targets the id of a row it read under
+  // `eq(aiAgents.orgId, orgId)` + `.for('update')`. A partner baseline row
+  // is READ (locked, as the ceiling) and never written. There is also no
+  // caller to gate: it runs only as the effect of an already-approved
+  // Tier-3 four-eyes intent, whose own release re-checks the requester's
+  // ai_agents:write RBAC.
+  'services/aiAgents/supervisedKeyGrant.ts': 'grants one supervised key on the ORG row only (clone pins partner_id NULL; the update targets a row read by org_id); the partner baseline is read-locked as the ceiling, never written',
   'services/aiAgents/managedAutomation.ts': 'seeds/syncs one agent\'s own managed automation; the owner axis is copied verbatim from the ai_agents row, never chosen by the caller, and every entry point (createAgent/updateAgent/disableAgent) has already passed assertAgentWriteAllowed — which throws PartnerWideWriteDeniedError for a partner-owned agent',
   'services/aiAgents/scheduleService.ts': 'gated centrally in services/aiAgents/access.ts (assertAgentWriteAllowed → PartnerWideWriteDeniedError) before every create/update/delete; partner rows additionally require a partner-wide triage agent under auth.partnerId (P2-2, #4189)',
   'services/automationRuntime.ts': 'manual trigger gated at routes/automations.ts; webhook path requires the provisioned automation secret',
