@@ -469,6 +469,107 @@ describe('org routes', () => {
         'partner-1'
       );
     });
+
+    // Issue #4520: this platform-admin path inserts partners directly instead of
+    // going through createPartner(), so it used to miss the #3608 opt-out default
+    // and fall back to the readers' absent-means-enabled behaviour.
+    describe('new-partner default settings (#4520)', () => {
+      const captureInsertedValues = () => {
+        const captured: Record<string, unknown>[] = [];
+        vi.mocked(db.select).mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([])
+            })
+          })
+        } as any);
+        vi.mocked(db.transaction).mockImplementation(async (fn: (tx: any) => any) => {
+          const tx = {
+            insert: vi.fn(() => ({
+              values: vi.fn((vals: Record<string, unknown>) => {
+                captured.push(vals);
+                return { returning: vi.fn().mockResolvedValue([{ id: 'partner-1' }]) };
+              })
+            }))
+          };
+          return fn(tx);
+        });
+        return captured;
+      };
+
+      it('writes settings.ticketing.inbound.enabled=false when the caller sends no settings', async () => {
+        const captured = captureInsertedValues();
+
+        const res = await app.request('/orgs/partners', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'Partner', slug: 'partner' })
+        });
+
+        expect(res.status).toBe(201);
+        expect(captured[0]?.settings).toEqual({ ticketing: { inbound: { enabled: false } } });
+      });
+
+      it('adds the default alongside caller-supplied settings without clobbering them', async () => {
+        const captured = captureInsertedValues();
+
+        const res = await app.request('/orgs/partners', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: 'Partner',
+            slug: 'partner',
+            settings: {
+              security: { ipAllowlist: ['10.0.0.0/8'] },
+              ticketing: { inbound: { unknownSenderMode: 'triage' } }
+            }
+          })
+        });
+
+        expect(res.status).toBe(201);
+        expect(captured[0]?.settings).toEqual({
+          security: { ipAllowlist: ['10.0.0.0/8'] },
+          ticketing: { inbound: { unknownSenderMode: 'triage', enabled: false } }
+        });
+      });
+
+      it('respects an explicit ticketing.inbound.enabled=true from the caller', async () => {
+        const captured = captureInsertedValues();
+
+        const res = await app.request('/orgs/partners', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: 'Partner',
+            slug: 'partner',
+            settings: { ticketing: { inbound: { enabled: true } } }
+          })
+        });
+
+        expect(res.status).toBe(201);
+        expect(captured[0]?.settings).toEqual({ ticketing: { inbound: { enabled: true } } });
+      });
+
+      it('still folds the legacy allowedMfaMethods alias while applying the default', async () => {
+        const captured = captureInsertedValues();
+
+        const res = await app.request('/orgs/partners', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: 'Partner',
+            slug: 'partner',
+            settings: { security: { allowedMfaMethods: { totp: true } } }
+          })
+        });
+
+        expect(res.status).toBe(201);
+        expect(captured[0]?.settings).toEqual({
+          security: { allowedMethods: { totp: true } },
+          ticketing: { inbound: { enabled: false } }
+        });
+      });
+    });
   });
 
   describe('GET /orgs/partners/:id', () => {
