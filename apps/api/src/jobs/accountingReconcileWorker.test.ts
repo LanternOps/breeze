@@ -201,6 +201,7 @@ function connectionRow(overrides: Partial<AccountingConnection> = {}): Accountin
     provider: 'quickbooks',
     status: 'connected',
     pullPayments: true,
+    pushPayments: true,
     cdcCursor: CURSOR_BEFORE,
     lastReconcileAt: null,
     realmIdFingerprint: 'fp1:legacy:abc',
@@ -331,17 +332,11 @@ describe('processReconcileConnectionJob: gating', () => {
     expect(reconcileChangesMock).not.toHaveBeenCalled();
   });
 
-  it('returns null without even resolving a token when pull_payments is off', async () => {
-    getConnectionMock.mockResolvedValue(connectionRow({ pullPayments: false }));
-
-    await expect(processReconcileConnectionJob(JOB)).resolves.toBeNull();
-
-    expect(reconcileChangesMock).not.toHaveBeenCalled();
-    // No token refresh for a switched-off connection: the refresh itself is a
-    // QuickBooks round trip and a write, and doing it here would keep a
-    // disabled connection's tokens alive forever.
-    expect(resolveConnectionAndTokenMock).not.toHaveBeenCalled();
-  });
+  // The `pull_payments`-off short-circuit is covered by the both-switches-off
+  // pair in the "gate: pull OR push" describe below (connectionRow now
+  // defaults pushPayments:true, so a fixture that only sets pullPayments:false
+  // no longer exercises the switched-off path this test used to name — it was
+  // silently exercising both_switches_off before that default existed).
 
   it('returns null when the resolved connection is not the one the job names', async () => {
     getConnectionMock.mockResolvedValue(connectionRow({ id: 'some-other-connection' }));
@@ -717,6 +712,29 @@ describe('processReconcileSweep', () => {
 
     await expect(processReconcileSweep()).resolves.toEqual({ enqueued: 1, failed: 1, pendingOpsEnqueued: 0, pendingOpsFailed: 0 });
   });
+
+  it('a failed connection-list read does not suppress the pending-op pass — it still enqueues, and the job rethrows so BullMQ retries', async () => {
+    listReconcilableConnectionsMock.mockRejectedValue(new Error('connections read boom'));
+    listOwedPaymentMappingsMock.mockResolvedValue([{ id: 'm1', partnerId: 'p1', pendingOp: 'push' }]);
+
+    await expect(processReconcileSweep()).rejects.toThrow();
+
+    expect(queueAddMock).not.toHaveBeenCalled();
+    expect(enqueuePaymentPushMock).toHaveBeenCalledWith('m1', 'p1');
+    expect(captureExceptionMock).toHaveBeenCalled();
+  });
+
+  it('a failed owed-mappings read does not suppress the connection fan-out — it still enqueues, and the job rethrows so BullMQ retries', async () => {
+    listReconcilableConnectionsMock.mockResolvedValue([{ id: 'c1', partnerId: 'p1' }]);
+    listOwedPaymentMappingsMock.mockRejectedValue(new Error('owed read boom'));
+
+    await expect(processReconcileSweep()).rejects.toThrow();
+
+    expect(queueAddMock).toHaveBeenCalledTimes(1);
+    expect(enqueuePaymentPushMock).not.toHaveBeenCalled();
+    expect(enqueuePaymentDeleteMock).not.toHaveBeenCalled();
+    expect(captureExceptionMock).toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -724,11 +742,12 @@ describe('processReconcileSweep', () => {
 // ---------------------------------------------------------------------------
 
 describe('gate: pull OR push (spec decision 6)', () => {
-  it('still runs the CDC pass when pull is off but push is on', async () => {
+  it('still runs the CDC pass when pull is off but push is on — proceeds past the gate to resolveConnectionAndToken', async () => {
     getConnectionMock.mockResolvedValue({ id: 'c1', status: 'connected', pullPayments: false, pushPayments: true, realmIdFingerprint: 'fp', cdcCursor: null });
     reconcileChangesMock.mockResolvedValue(EMPTY_CHANGESET);
     await expect(processReconcileConnectionJob({ type: 'reconcile-connection', connectionId: 'c1', partnerId: 'p1', trigger: 'sweep' }))
       .resolves.not.toBeNull();
+    expect(resolveConnectionAndTokenMock).toHaveBeenCalled();
     expect(reconcileChangesMock).toHaveBeenCalled();
   });
 
@@ -738,6 +757,34 @@ describe('gate: pull OR push (spec decision 6)', () => {
       .resolves.toBeNull();
     expect(reconcileChangesMock).not.toHaveBeenCalled();
     expect(resolveConnectionAndTokenMock).not.toHaveBeenCalled();
+  });
+
+  it('pins the four short-circuit reason strings in the info log', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    getConnectionMock.mockResolvedValue(null);
+    await processReconcileConnectionJob(JOB);
+
+    getConnectionMock.mockResolvedValue(connectionRow({ id: 'some-other-connection' }));
+    await processReconcileConnectionJob(JOB);
+
+    getConnectionMock.mockResolvedValue(connectionRow({ status: 'reauth_required' }));
+    await processReconcileConnectionJob(JOB);
+
+    getConnectionMock.mockResolvedValue(connectionRow({ pullPayments: false, pushPayments: false }));
+    await processReconcileConnectionJob(JOB);
+
+    const reasons = logSpy.mock.calls
+      .filter((call) => call[0] === '[AccountingReconcileWorker] short-circuit')
+      .map((call) => call.find((arg) => typeof arg === 'string' && arg.startsWith('reason=')));
+    expect(reasons).toEqual([
+      'reason=missing',
+      'reason=connection_mismatch',
+      'reason=not_connected',
+      'reason=both_switches_off',
+    ]);
+
+    logSpy.mockRestore();
   });
 });
 

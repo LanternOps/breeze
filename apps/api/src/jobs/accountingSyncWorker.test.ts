@@ -315,6 +315,25 @@ describe('payment jobs', () => {
     expect(deletePaymentMock).toHaveBeenCalledWith(MAPPING_ID, PARTNER_ID, expect.any(Function));
   });
 
+  it('treats a delete-payment TERMINAL code (not_connected) as logged, not rethrown', async () => {
+    deletePaymentMock.mockRejectedValueOnce(new AccountingPaymentPushError('not_connected', 404, 'gone'));
+    await expect(processAccountingSyncJob({ type: 'delete-payment', mappingId: MAPPING_ID, partnerId: PARTNER_ID }))
+      .resolves.toBeUndefined();
+    expect(captureExceptionMock).toHaveBeenCalled();
+  });
+
+  it('rethrows a delete-payment RETRYABLE code (quickbooks_error) so BullMQ retries', async () => {
+    deletePaymentMock.mockRejectedValueOnce(new AccountingPaymentPushError('quickbooks_error', 502, 'upstream'));
+    await expect(processAccountingSyncJob({ type: 'delete-payment', mappingId: MAPPING_ID, partnerId: PARTNER_ID }))
+      .rejects.toThrow('upstream');
+  });
+
+  it('enqueues nothing on a plain pushed outcome — the follow-up delete is only for converted_to_delete', async () => {
+    pushPaymentMock.mockResolvedValueOnce('pushed');
+    await processAccountingSyncJob({ type: 'push-payment', mappingId: MAPPING_ID, partnerId: PARTNER_ID });
+    expect(queueAddMock).not.toHaveBeenCalled();
+  });
+
   it.each<AccountingPaymentPushErrorCode>([
     'push_disabled', 'customer_not_mapped', 'currency_mismatch', 'home_currency_unknown',
     'invoice_void', 'record_failed', 'not_connected', 'reauth_required',

@@ -62,6 +62,8 @@ import {
   deletePaymentInAccounting,
   AccountingPaymentPushError,
   type AccountingPaymentPushErrorCode,
+  type PaymentPushOutcome,
+  type PaymentDeleteOutcome,
 } from '../services/accounting/accountingPaymentPush';
 
 export const ACCOUNTING_SYNC_QUEUE = 'accounting-sync';
@@ -220,7 +222,7 @@ async function processPaymentJob(
   runInDbContext: <T>(fn: () => Promise<T>) => Promise<T>,
 ): Promise<void> {
   const startedAt = Date.now();
-  let outcome: string;
+  let outcome: PaymentPushOutcome | PaymentDeleteOutcome;
   try {
     outcome = data.type === 'push-payment'
       ? await pushPaymentToAccounting(data.mappingId, data.partnerId, runInDbContext)

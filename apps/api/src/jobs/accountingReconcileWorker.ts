@@ -408,10 +408,29 @@ export async function processReconcileSweep(): Promise<{
   enqueued: number; failed: number; pendingOpsEnqueued: number; pendingOpsFailed: number;
 }> {
   return runOutsideDbContext(async () => {
-    const connections = await withSystemDbAccessContext(
-      () => listReconcilableConnections(db, 'quickbooks'),
-      'accountingReconcile.sweep.list',
-    );
+    // Each pass's DB read is its OWN try/catch: a failure reading the
+    // connection list must not suppress the pending-op pass (a payment delete
+    // owed by a connection that is otherwise fine must still go out), and the
+    // reverse — a failure reading owed payment mappings must not suppress the
+    // CDC fan-out. Both passes always get their chance; the job rethrows at
+    // the very end if either read failed, so BullMQ retries the whole sweep.
+    let connections: Awaited<ReturnType<typeof listReconcilableConnections>> = [];
+    let connectionsReadFailed = false;
+    try {
+      connections = await withSystemDbAccessContext(
+        () => listReconcilableConnections(db, 'quickbooks'),
+        'accountingReconcile.sweep.list',
+      );
+    } catch (err) {
+      connectionsReadFailed = true;
+      console.error(
+        '[AccountingReconcileWorker] sweep pass 1 (list reconcilable connections) failed',
+        err instanceof Error ? err.message : err,
+      );
+      captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+        service: 'accountingReconcileWorker', phase: 'sweep.list',
+      });
+    }
 
     let enqueued = 0;
     let failed = 0;
@@ -420,10 +439,23 @@ export async function processReconcileSweep(): Promise<{
       else failed++;
     }
 
-    const owed = await withSystemDbAccessContext(
-      () => listOwedPaymentMappings(db, new Date()),
-      'accountingReconcile.sweep.pendingOps',
-    );
+    let owed: Awaited<ReturnType<typeof listOwedPaymentMappings>> = [];
+    let owedReadFailed = false;
+    try {
+      owed = await withSystemDbAccessContext(
+        () => listOwedPaymentMappings(db, new Date()),
+        'accountingReconcile.sweep.pendingOps',
+      );
+    } catch (err) {
+      owedReadFailed = true;
+      console.error(
+        '[AccountingReconcileWorker] sweep pass 2 (list owed payment mappings) failed',
+        err instanceof Error ? err.message : err,
+      );
+      captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+        service: 'accountingReconcileWorker', phase: 'sweep.pendingOps',
+      });
+    }
 
     let pendingOpsEnqueued = 0;
     let pendingOpsFailed = 0;
@@ -440,6 +472,17 @@ export async function processReconcileSweep(): Promise<{
       `connections=${connections.length}`, `enqueued=${enqueued}`, `failed=${failed}`,
       `pendingOps=${owed.length}`, `pendingOpsEnqueued=${pendingOpsEnqueued}`, `pendingOpsFailed=${pendingOpsFailed}`,
     );
+
+    if (connectionsReadFailed || owedReadFailed) {
+      // Both passes above already ran with whatever they had (empty on a
+      // failed read) — this throw only decides whether BullMQ retries the
+      // sweep, it does not gate either pass's work.
+      throw new Error(
+        `accounting reconcile sweep had a failed DB read (connectionsReadFailed=${connectionsReadFailed}, `
+        + `owedReadFailed=${owedReadFailed})`,
+      );
+    }
+
     return { enqueued, failed, pendingOpsEnqueued, pendingOpsFailed };
   });
 }
