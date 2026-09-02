@@ -119,7 +119,9 @@
     "maxTurns": "Max. Umdrehungen pro Sitzung",
     "messagesPerMinute": "Nachrichten pro Minute und Benutzer",
     "messagesPerHour": "Nachrichten pro Stunde und Organisation",
-    "notSet": "Nicht festgelegt – Organisationen werden individuell konfiguriert",
+    "alertThresholds": "Warnen bei (% des Budgets)",
+    "alertThresholdsHelp": "Partner-Admins mit Abrechnungszugriff erhalten bei jeder Stufe eine In-App-Benachrichtigung und eine E-Mail für monatliche und Obergrenzen-Warnungen. Leer lassen, um 50, 80, 95 zu übernehmen.",
+    "notSet": "Nicht festgelegt, Organisationen werden individuell konfiguriert",
     "description": "Budgetwerte werden in allen untergeordneten Organisationen durchgesetzt. Dollarbeträge werden intern in Cent gespeichert.",
     "modes": {
       "perStep": "Pro Schritt",
@@ -127,6 +129,9 @@
       "autoApprove": "Automatisch genehmigen",
       "hybridPlan": "Hybridplan"
     }
+  },
+  "aiBudgetThresholds": {
+    "invalid": "Geben Sie bis zu fünf ganze Zahlen zwischen 1 und 99 ein, durch Kommas getrennt."
   },
   "partnerAiProvider": {
     "title": "KI-Anbieter",
@@ -1294,6 +1299,13 @@
     "monthlyBudget": "Monatsbudget ($)",
     "noLimit": "Keine Begrenzung",
     "dailyBudget": "Tagesbudget ($)",
+    "alertThresholds": "Warnen bei (% des Budgets)",
+    "alertThresholdsHelp": "Benachrichtigungen gehen an Partner-Admins mit Abrechnungszugriff. 100% (Obergrenze erreicht) wird immer gesendet.",
+    "firedRung": "{{pct}}% {{period}}-Warnung gesendet am {{date}}",
+    "periodLabel": {
+      "daily": "täglich",
+      "monthly": "monatlich"
+    },
     "maxTurnsPerSession": "Maximale Umdrehungen pro Sitzung",
     "msgsMinPerUser": "Nachrichten/Minute pro Benutzer",
     "msgsHrPerOrg": "Nachrichten/Std. pro Organisation",
