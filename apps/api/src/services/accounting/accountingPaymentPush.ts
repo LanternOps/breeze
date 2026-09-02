@@ -68,6 +68,10 @@ import {
 // here instead would close a cycle: invoiceService -> this module -> pull ->
 // invoiceService (pull needs `recomputeInvoiceStatus`).
 import { buildPaymentPrivateNote, paymentMappingRemoteId } from './accountingPaymentMarker';
+// Integer-cents money helpers. `invoiceMath` is a pure calculation module (its
+// only import is @breeze/shared), so this pulls in no service graph and closes
+// no cycle.
+import { fromCents, toCents } from '../invoiceMath';
 import { getAccountingProvider } from './providerRegistry';
 import { requestLikeFromSnapshot, writeAuditEvent } from '../auditEvents';
 import { captureException } from '../sentry';
@@ -98,8 +102,25 @@ export const PAYMENT_DELETE_UNRESOLVED_GRACE_MS = 24 * 60 * 60 * 1000;
 
 export const PAYMENT_PUSH_DISABLED_MESSAGE = 'Payment push is disabled for this QuickBooks connection';
 
-export function partialRefundDivergenceMessage(amount: string): string {
-  return `Partially refunded in Stripe (${amount}); record the refund in QuickBooks`;
+/**
+ * The ONE divergence string both refund paths write into `last_error` — the
+ * Stripe webhook (`stripeReconcile.reflectStripeRefund`, partial-refund arm) and
+ * this module's own mid-flight `diverged` branch. Sharing it is not tidiness:
+ * two texts quoting two different quantities is how a bookkeeper enters the
+ * wrong refund.
+ *
+ * `totalRefunded` is the CUMULATIVE amount refunded so far, in the payment's
+ * currency, 2dp — Stripe's `amount_refunded` is itself cumulative, and the
+ * coordinator derives the same figure as (pushed amount − current amount). The
+ * wording restates it as a RUNNING TOTAL on purpose: the previous text quoted a
+ * bare amount ("Partially refunded in Stripe (67.00)"), which a bookkeeper who
+ * had already recorded an earlier 40.00 refund read as a second, fresh 67.00 to
+ * enter. The trailing clause says what QuickBooks currently shows, so the reader
+ * can reconcile the two numbers without opening Stripe.
+ */
+export function partialRefundDivergenceMessage(totalRefunded: string): string {
+  return `Refunded in Stripe, total ${totalRefunded}; record the refund in QuickBooks `
+    + '(this QuickBooks payment still shows the full amount)';
 }
 
 export type AccountingPaymentPushErrorCode =
@@ -1001,7 +1022,15 @@ export async function pushPaymentToAccounting(
         // A partial refund reduced the amount mid-flight. Rewriting a QuickBooks
         // Payment's amount would rewrite receipt history (spec decision 9), so
         // record the divergence and leave the Payment exactly as created.
-        const message = partialRefundDivergenceMessage(payment.amount);
+        //
+        // The message quotes the TOTAL REFUNDED SO FAR, which here is what
+        // QuickBooks was told (`prep.amount`) minus what the Breeze row now says
+        // — the same quantity the Stripe path reads straight off Stripe's
+        // cumulative `amount_refunded`. Quoting `payment.amount` (the REMAINING
+        // amount, as this branch first did) tells the bookkeeper to refund money
+        // that was never returned.
+        const totalRefunded = fromCents(toCents(prep.amount) - toCents(payment.amount));
+        const message = partialRefundDivergenceMessage(totalRefunded);
         await stampRemoteRef(mappingId, partnerId, remoteEntityId, ref.syncToken ?? null, {
           syncStatus: 'error', linkStatus: 'confirmed', pendingOp: null, lastError: message,
         });

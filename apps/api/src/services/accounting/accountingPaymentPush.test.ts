@@ -427,8 +427,12 @@ describe('constants (spec decisions 2, 3)', () => {
     expect(PAYMENT_SWEEP_MIN_AGE_MS).toBe(2 * 60 * 1000);
     expect(PAYMENT_REF_MAX_LENGTH).toBe(21);
     expect(PAYMENT_DELETE_UNRESOLVED_GRACE_MS).toBe(24 * 60 * 60 * 1000);
-    expect(partialRefundDivergenceMessage('40.00'))
-      .toBe('Partially refunded in Stripe (40.00); record the refund in QuickBooks');
+    // The argument is the CUMULATIVE total refunded so far, and the wording says
+    // so: an earlier text quoted a bare amount ("Partially refunded in Stripe
+    // (67.00)") that a bookkeeper who had already entered the first refund read
+    // as a SECOND, fresh amount to enter.
+    expect(partialRefundDivergenceMessage('67.00'))
+      .toBe('Refunded in Stripe, total 67.00; record the refund in QuickBooks (this QuickBooks payment still shows the full amount)');
   });
 });
 
@@ -986,6 +990,10 @@ describe('pushPaymentToAccounting', () => {
   });
 
   it('records a divergence when a partial refund changed the amount mid-flight (spec decision 9)', async () => {
+    // 107.00 was pushed to QuickBooks; the Breeze row is now 40.00, so 67.00 has
+    // been refunded so far. The message must quote the REFUNDED TOTAL (67.00),
+    // not the amount left on the payment (40.00) — a bookkeeper acting on 40.00
+    // would enter a refund for money that was never returned.
     createPaymentMock.mockImplementationOnce(async () => {
       currentPayments = [payRow({ amount: '40.00' })];
       return { id: '181', syncToken: '0' };
@@ -998,8 +1006,13 @@ describe('pushPaymentToAccounting', () => {
       syncStatus: 'error',
       pendingOp: null,
       claimedAt: null,
-      lastError: 'Partially refunded in Stripe (40.00); record the refund in QuickBooks',
+      lastError: partialRefundDivergenceMessage('67.00'),
     });
+    // Both divergence paths (this one and stripeReconcile's) go through the same
+    // helper with the same quantity, so the two can never quote different numbers.
+    expect(mapping()!.lastError)
+      .toBe('Refunded in Stripe, total 67.00; record the refund in QuickBooks (this QuickBooks payment still shows the full amount)');
+    expect(mapping()!.lastError).not.toContain('40.00');
     expect(deletePaymentMock).not.toHaveBeenCalled();
   });
 

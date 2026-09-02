@@ -636,6 +636,12 @@ export async function pushInvoiceToAccounting(
     await enqueueAccountingInvoiceVoid(inv.id, partnerId);
   }
 
+  // ...but NOT for an invoice that went void mid-flight: the void job enqueued
+  // just above is about to remove it from QuickBooks, and every payment this
+  // would fan out gets a pending mapping the payment coordinator then refuses
+  // terminally with `invoice_void` — a red sync badge per payment for work that
+  // was never going to land.
+  //
   // Fan out this invoice's payments (spec decision 10). Runs in BOTH modes: in
   // `manual` it is the ONLY way payments reach QuickBooks, and in `auto` it
   // catches payments recorded while this push was still in flight — their own
@@ -650,7 +656,7 @@ export async function pushInvoiceToAccounting(
   // caller's retry back down the create path. The reconcile sweep re-enqueues
   // any mapping row this leaves pending.
   try {
-    const owed = await fanOutOwedPayments(inv.id, partnerId, runInDbContext);
+    const owed = becameVoid ? [] : await fanOutOwedPayments(inv.id, partnerId, runInDbContext);
     if (owed.length > 0) {
       const { enqueueAccountingPaymentPush } = await import('../../jobs/accountingSyncWorker');
       for (const mappingId of owed) await enqueueAccountingPaymentPush(mappingId, partnerId);

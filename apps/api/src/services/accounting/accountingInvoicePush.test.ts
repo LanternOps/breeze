@@ -984,6 +984,23 @@ describe('pushInvoiceToAccounting payment fan-out (spec decision 10)', () => {
     expect(captureExceptionMock).toHaveBeenCalled();
   });
 
+  it('does NOT fan out when the invoice was voided while the push was in flight', async () => {
+    // The void enqueue above already fired for this invoice. Fanning out here
+    // would give every payment a pending mapping that the coordinator refuses
+    // terminally with `invoice_void` — a red badge per payment for work that was
+    // never going to happen.
+    pushInvoiceMock.mockImplementationOnce(async () => {
+      currentInvoices = [defaultInvoice({ status: 'void' })];
+      return { id: 'qb-inv-1', syncToken: '0', docNumber: 'INV-2026-0001', remoteTaxTotal: '7.00', remoteTotal: '107.00' };
+    });
+
+    await pushInvoiceToAccounting(INVOICE, PARTNER, runCtx);
+
+    expect(enqueueAccountingInvoiceVoidMock).toHaveBeenCalledWith(INVOICE, PARTNER);
+    expect(fanOutOwedPaymentsMock).not.toHaveBeenCalled();
+    expect(enqueuePaymentPushMock).not.toHaveBeenCalled();
+  });
+
   it('does not fan out when the push itself failed', async () => {
     pushInvoiceMock.mockRejectedValueOnce(Object.assign(new Error('boom'), { status: 500 }));
 

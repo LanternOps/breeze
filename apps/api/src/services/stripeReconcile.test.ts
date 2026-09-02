@@ -537,7 +537,9 @@ describe('Phase D2 — QuickBooks payment push/delete hooks', () => {
   it('records a PARTIAL Stripe refund as a divergence and NEVER rewrites the QuickBooks Payment', async () => {
     // Rewriting a Payment's amount would rewrite receipt history, and Intuit
     // models a refund as its own transaction (spec decision 9). The message
-    // carries the REFUNDED amount — the figure the bookkeeper has to enter.
+    // carries the CUMULATIVE refunded total — Stripe's `amountRefundedCents` is
+    // cumulative, and the wording restates it as a running total so it cannot be
+    // read as a fresh amount to enter on top of an earlier one.
     queuePartialRefund();
 
     await reflectStripeRefund({ ...refundInput(), amountRefundedCents: 6700, chargeAmountCents: 10700 });
@@ -550,12 +552,26 @@ describe('Phase D2 — QuickBooks payment push/delete hooks', () => {
       syncStatus: 'error',
       lastError: partialRefundDivergenceMessage('67.00'),
     });
-    expect(patch.lastError).toBe('Partially refunded in Stripe (67.00); record the refund in QuickBooks');
+    expect(patch.lastError).toBe('Refunded in Stripe, total 67.00; record the refund in QuickBooks (this QuickBooks payment still shows the full amount)');
     // pending_op and claimed_at are deliberately UNTOUCHED: an owed push or a
     // converted delete must survive this flag, and clearing a live lease would
     // invite a second worker to create a second QuickBooks Payment.
     expect('pendingOp' in patch).toBe(false);
     expect('claimedAt' in patch).toBe(false);
+  });
+
+  it('restates the CUMULATIVE refunded total on a second refund event, not that event\'s delta', async () => {
+    // Stripe sends `amount_refunded` cumulatively: a 40.00 refund followed by a
+    // 27.00 one arrives as 6700, not 2700. The message must say "total 67.00" —
+    // the old wording quoted a bare amount, so a bookkeeper who had already
+    // entered 40.00 would enter 67.00 MORE.
+    queuePartialRefund();
+
+    await reflectStripeRefund({ ...refundInput(), amountRefundedCents: 6700, chargeAmountCents: 10700 });
+
+    const patch = lastStmtOn(accountingEntityMappings, 'update')!.set as Record<string, unknown>;
+    expect(patch.lastError).toContain('total 67.00');
+    expect(patch.lastError).not.toContain('27.00');
   });
 
   it('is currency-aware about the refunded amount it reports (zero-decimal currencies are not divided)', async () => {
