@@ -85,8 +85,8 @@ export async function supportUsageForOrg(args: {
           eq(timeEntries.isBillable, true),
           ne(timeEntries.billingStatus, 'no_charge'),
           isNull(tickets.deletedAt),
-          sql`${timeEntries.startedAt} >= ${start}`,
-          sql`${timeEntries.startedAt} < ${end}`,
+          sql`${timeEntries.startedAt} AT TIME ZONE 'UTC' >= ${start}`,
+          sql`${timeEntries.startedAt} AT TIME ZONE 'UTC' < ${end}`,
         )) as Promise<UsageRow[]>,
     ),
   );
@@ -112,6 +112,10 @@ export async function supportUsageForOrg(args: {
       pendingReviewMinutes: 0,
     };
 
+    // Bucket precedence: an unapproved entry always lands in pendingReview,
+    // regardless of its billingStatus — approval gates billed/contract/
+    // toBeBilled classification, so those three are only considered once a
+    // row is approved.
     if (!row.isApproved) {
       pendingReview += minutes;
       ticket.pendingReviewMinutes += minutes;

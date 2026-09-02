@@ -105,6 +105,20 @@ describe('supportUsageForOrg', () => {
     expect(where.params).toContain(args.orgId);
   });
 
+  it('compares the naive started_at column against the timezone-aware boundary via AT TIME ZONE', async () => {
+    await supportUsageForOrg(args);
+
+    const dialect = new PgDialect();
+    const where = dialect.sqlToQuery(state.where as SQL);
+
+    // time_entries.started_at is `timestamp` (no tz). Comparing it directly
+    // to make_timestamptz(...) would coerce through the session TimeZone GUC
+    // (which the app never sets) instead of the caller's requested timezone.
+    expect(where.sql).toContain(
+      '"time_entries"."started_at" AT TIME ZONE \'UTC\'',
+    );
+  });
+
   it('rejects an invalid month before querying', async () => {
     await expect(supportUsageForOrg({
       ...args,

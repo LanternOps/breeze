@@ -67,6 +67,15 @@ describe('aggregateVulnerabilityCounts', () => {
 
     expect(counts.get('d1')).toBeUndefined();
   });
+
+  it('fails instead of publishing zeroes when referenced catalog rows are missing', () => {
+    expect(() =>
+      aggregateVulnerabilityCounts(
+        [{ deviceId: 'd1', vulnerabilityId: 'missing' }],
+        [],
+      ),
+    ).toThrow('Vulnerability catalog lookup incomplete');
+  });
 });
 
 describe('loadOpenVulnerabilityCounts', () => {
@@ -102,6 +111,25 @@ describe('loadOpenVulnerabilityCounts', () => {
     expect(runOutsideDbContext).toHaveBeenCalledTimes(1);
     expect(withSystemDbAccessContext).toHaveBeenCalledTimes(1);
     expect(counts.get('device-1')).toEqual({ high: 10_001, critical: 0 });
+  });
+
+  it('propagates the catalog-incomplete failure end to end when a referenced row is missing from the catalog table', async () => {
+    const findings = [{ deviceId: 'device-1', vulnerabilityId: 'vuln-missing' }];
+
+    selectMock.mockImplementation(() => ({
+      from: (table: unknown) => ({
+        where: (predicate: { values?: unknown[] }) => {
+          if (table === deviceVulnerabilities) return Promise.resolve(findings);
+          expect(table).toBe(vulnerabilities);
+          // Catalog table has no row for 'vuln-missing' — simulates the row
+          // being unreadable (e.g. an org-context RLS bypass returning zero rows).
+          return Promise.resolve([]);
+        },
+      }),
+    }));
+
+    await expect(loadOpenVulnerabilityCounts(['device-1']))
+      .rejects.toThrow('Vulnerability catalog lookup incomplete');
   });
 
   it('returns an empty map without querying or changing context for empty input', async () => {

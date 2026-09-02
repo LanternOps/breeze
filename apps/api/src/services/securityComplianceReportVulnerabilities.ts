@@ -66,6 +66,8 @@ export async function loadOpenVulnerabilityCounts(
   const severityByVulnerability =
     await vulnerabilitySeverityForFindings(vulnerabilityIds);
 
+  // Only pass through rows the catalog actually produced — aggregateVulnerabilityCounts'
+  // missingIds guard must stay reachable, never invent zeros for a missing catalog row.
   const catalogRows: CatalogRow[] = [...severityByVulnerability].map(
     ([id, metadata]) => ({
       id,

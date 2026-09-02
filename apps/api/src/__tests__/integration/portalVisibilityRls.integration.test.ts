@@ -251,6 +251,32 @@ describe('portal visibility RLS', () => {
       (row) => row.reportId === reportByOrg.get(orgB.id),
     )!.id;
 
+    const [ticketA] = await admin
+      .insert(tickets)
+      .values({
+        orgId: orgA.id,
+        partnerId: partner.id,
+        ticketNumber: `A-${randomUUID()}`,
+        subject: 'A visible',
+        source: 'portal',
+      })
+      .returning({ id: tickets.id });
+    if (!ticketA) throw new Error('ticket insert failed');
+
+    await admin.insert(timeEntries).values({
+      partnerId: partner.id,
+      orgId: orgA.id,
+      ticketId: ticketA.id,
+      userId: technician.id,
+      startedAt: new Date(),
+      endedAt: new Date(),
+      durationMinutes: 45,
+      isBillable: true,
+      billingStatus: 'billed',
+      isApproved: true,
+      currencyCode: 'USD',
+    });
+
     const [ticketB] = await admin
       .insert(tickets)
       .values({
@@ -323,9 +349,13 @@ describe('portal visibility RLS', () => {
         portalUserId: portalA.id,
       });
 
-      expect(
-        Object.values(usage.totals).map((value) => value.minutes),
-      ).toEqual([0, 0, 0, 0]);
+      // Positive control: org A's own billed time entry must surface a
+      // non-zero minutes value — proving the query actually reads org A's
+      // rows, not merely that it excludes org B's.
+      expect(usage.totals.billed.minutes).toBe(45);
+      expect(usage.totals.toBeBilled.minutes).toBe(0);
+      expect(usage.totals.coveredByContract.minutes).toBe(0);
+      expect(usage.totals.pendingReview.minutes).toBe(0);
     });
   });
 
