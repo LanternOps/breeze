@@ -50,18 +50,22 @@ ALTER TABLE contract_lines ADD CONSTRAINT contract_lines_device_roles_chk CHECK 
   ELSE device_roles IS NULL END
 );
 
--- Site ownership. Today site_id -> sites(id) only, so a site from another org is
--- accepted and the count silently returns zero. Null out any such rows (with a
--- logged count), then bind the pair to sites_id_org_id_uniq (2026-07-23).
+-- Site ownership. Today contract_lines_site_fkey -> sites(id) only, so a site
+-- from another org is accepted and the count silently returns zero. Null out
+-- any such rows (with a logged count), then REPLACE that FK with a composite
+-- one against sites_id_org_id_uniq (2026-07-23). ON DELETE SET NULL (site_id):
+-- the column list (PG 15+; we run 16) nulls only site_id — a bare SET NULL on
+-- a composite FK would also null org_id, which is NOT NULL.
 DO $$ DECLARE n int; BEGIN
   UPDATE contract_lines cl SET site_id = NULL
     FROM sites s WHERE cl.site_id = s.id AND s.org_id <> cl.org_id;
   GET DIAGNOSTICS n = ROW_COUNT;
   IF n > 0 THEN RAISE WARNING 'cleaned % contract_lines with a site from another org', n; END IF;
 END $$;
+ALTER TABLE contract_lines DROP CONSTRAINT IF EXISTS contract_lines_site_fkey;
 ALTER TABLE contract_lines DROP CONSTRAINT IF EXISTS contract_lines_site_org_fk;
 ALTER TABLE contract_lines ADD CONSTRAINT contract_lines_site_org_fk
-  FOREIGN KEY (site_id, org_id) REFERENCES sites(id, org_id) ON DELETE SET NULL;
+  FOREIGN KEY (site_id, org_id) REFERENCES sites (id, org_id) ON DELETE SET NULL (site_id);
 ```
 
 The role list is hard-coded in the CHECK on purpose. It is the DB-level twin of the Zod rule below, and it is what makes every downstream consumer (counting, caching, export) safe to trust the column. Adding a role to `DEVICE_ROLES` therefore also means a migration widening this CHECK; that goes on the DEVICE_ROLES change checklist. `devices.device_role` itself stays unconstrained; the contract side is where a wrong value costs money.
@@ -145,7 +149,7 @@ uncoveredDevices: { total: number; byRole: Record<string, number> } | null
 
 - `apps/web/src/lib/api/contracts.ts`: `ContractLineType` union and the `ContractLine` / `ContractEstimate` / generate-result types gain the new members.
 - Move `LINE_TYPE_LABELS` and `AUTO_QTY_TYPES` out of `ContractEditor.tsx` and `ContractDetail.tsx` (each has its own copy today) into one shared module under `apps/web/src/components/contracts/`, and replace the inlined `l.lineType === 'per_device' || l.lineType === 'per_seat'` check in `ContractDetail.tsx` with the set. Adding a fourth auto-quantity type to two divergent copies is how one of them gets missed.
-- `ContractEditor.tsx` add-line form: when `lineType === 'per_device_role'`, render a checkbox group of the eleven billable roles, built from the web-side `DEVICE_ROLES` mirror in `@/lib/deviceRoles` minus `unknown`, with `getDeviceRoleLabel` and `getDeviceRoleIcon` from the same module (already used by the device filters). Add the same site select the `per_device` branch shows. Switching line type clears the role selection. The add-line payload includes `deviceRoles` for that type. Submit is disabled with no role checked. The web tuple is a mirror of the shared one; a small test asserting the two are equal keeps them from drifting.
+- `ContractEditor.tsx` add-line form: when `lineType === 'per_device_role'`, render a checkbox group of the eleven billable roles, built from a `BILLABLE_DEVICE_ROLES` constant added to the web-side mirror in `@/lib/deviceRoles` (`DEVICE_ROLES` minus `unknown`), with `getDeviceRoleLabel` and `getDeviceRoleIcon` from the same module (already used by the device filters). Add the same site select the `per_device` branch shows. Switching line type clears the role selection. The add-line payload includes `deviceRoles` for that type. Submit is disabled with no role checked. The web tuple is a hand-maintained mirror of the shared one (the web package does not depend on `@breeze/shared`, so a parity test cannot import both); the shared module's doc comment names the mirror so a role addition touches it.
 - Line rows: the editor shows type label "Per device role" with a sub-label listing the roles and, if scoped, the site name, matching how it shows a `per_device` site today. `ContractDetail.tsx` shows no site for any line today and loads no site lookup; it gains the role sub-label only, and keeps its site-less rendering for both types. Adding site names to the detail page is a separate legibility fix for `per_device` too.
 - Estimate panel (both pages): when `uncoveredDevices` is non-null and `total > 0`, a warning block: *"N devices on this organization are not billed by any line: 3 Unknown, 2 Printer."* Plain text with the counts; no deep link into the devices list in this slice (the devices page mirrors its filters into the URL hash, but whether the role filter is part of that is a plan-time check, not a design commitment). When `total === 0`, a one-line confirmation that every device is covered. The generate dialog shows the same block from the generate response.
 - i18n: `contracts.shared.lineType.perDeviceRole` plus the warning strings, in all eight locales in `apps/web/src/locales/*/billing.json`. The `tr-TR` parity test fails on any missing key.
@@ -173,7 +177,7 @@ Red first for each unit, then implement.
 - **Counting** (`contractQuantities.integration.test.ts`): role filter counts only matching roles; decommissioned and ephemeral devices excluded from role counts and from the snapshot; site narrowing composes with roles. Pure helpers (`quantityFor`, `uncoveredByRole`) get table-driven unit tests: unscoped role line, site-scoped role line with matching devices at another site, site-scoped `per_device` plus an unscoped role line, unknown-only inventory, empty inventory, overlapping role lines (both count, coverage reported once).
 - **Service** (`contractService.test.ts` unit): `resolveLineQty` role path reads the snapshot once per org for a batch of lines; a `per_device_role` row with null roles throws rather than counting; the exhaustive `never` guard needs no test, `tsc` in CI is the test. (`contractService.integration.test.ts`): `generateDueInvoice` with a role line produces the right quantity and returns `uncoveredDevices`; `computeContractEstimate` returns `null` for a contract with only `flat`/`per_seat`/`manual` lines and the correct breakdown otherwise; both writers persist `deviceRoles` and a role line's `siteId`; a site from another org is rejected with `SITE_NOT_IN_ORG`.
 - **Routes** (`apps/api/src/routes/contracts/contracts.test.ts`): `POST /:id/lines` accepts a role line and rejects one without roles; the AI `add_line` tool accepts and rejects the same payloads.
-- **Export**: `tenant-export-policy.integration.test.ts` and `tenantExportErasureRoundtrip.integration.test.ts` must pass, and the roundtrip suite (which seeds no contract lines today) gains a `per_device_role` line so the exported `contract_lines.json` is asserted to carry the array.
+- **Export**: `tenant-export-policy.integration.test.ts` (column classification) and `tenantExportErasureRoundtrip.integration.test.ts` must pass, and the roundtrip suite (which seeds no contract lines today) gains a contract with a `per_device_role` line so `contracts.json` and `contract_lines.json` appear in the manifest with the expected row counts and the erasure half deletes them.
 - **Web** (`ContractEditor.test.tsx`): role picker renders for the new type, payload carries `deviceRoles`, submit disabled with none checked, switching type clears roles; (`ContractDetail.*.test.tsx`): warning block from a fixture with `uncoveredDevices`, the zero-state line, role sub-label rendering; the web/shared `DEVICE_ROLES` parity test; `tr-TR` locale parity.
 - **Manual**: as `breeze_app` in psql, insert a `per_device_role` row with `device_roles = NULL` and a `flat` row with roles set. Both must fail on `contract_lines_device_roles_chk`. Run `pnpm db:check-drift`.
 
