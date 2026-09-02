@@ -1660,6 +1660,21 @@
       "confirm": "Restablecer enlace",
       "success": "Enlace restablecido: los enlaces anteriores ya no funcionan",
       "error": "No se pudo restablecer el enlace"
+    },
+    "accountingSync": {
+      "title": "Sincronización con QuickBooks",
+      "status": {
+        "pending": "Aún no enviada",
+        "synced": "Sincronizada",
+        "error": "Error de sincronización",
+        "synced_with_tax_variance": "Sincronizada con diferencia de impuestos"
+      },
+      "taxVarianceHint": "QuickBooks calculó un total de impuestos diferente. Compara ambos registros antes de cerrar el período.",
+      "docNumber": "Documento de QuickBooks {{docNumber}}",
+      "lastSynced": "Última sincronización: {{when}}",
+      "push": "Enviar a QuickBooks",
+      "pushed": "Factura enviada a QuickBooks.",
+      "pushFailed": "No se pudo enviar la factura a QuickBooks."
     }
   },
   "invoiceDocument": {
@@ -1719,7 +1734,11 @@
       "partial": "{{succeeded}} {{verb}}, {{skipped}} omitido{{failedText}}",
       "success": "{{succeeded}} {{verb}}",
       "void": "Anular",
-      "voidedVerb": "anulado"
+      "voidedVerb": "anulado",
+      "quickbooks": "Enviar a QuickBooks",
+      "quickbooksQueued": "{{enqueued}} en cola para QuickBooks",
+      "quickbooksQueuedPartial": "{{enqueued}} en cola para QuickBooks, {{skipped}} omitidas",
+      "quickbooksFailed": "No se pudo poner en cola el envío a QuickBooks. Reintenta."
     },
     "bulkDelete": {
       "message": "¿Eliminar las facturas seleccionadas {{count}}? Sólo se eliminarán las facturas DRAFT; esto no se puede deshacer.",

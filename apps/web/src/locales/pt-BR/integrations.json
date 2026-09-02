@@ -731,14 +731,18 @@
     "mappingSaved": "Mapeamento salvo.",
     "entitySynced": "Sincronizado com o QuickBooks.",
     "confirmMatch": "Confirmar correspondência",
-    "manualEntry": "Inserir ID manualmente",
     "noProposals": "Ainda não há registros para mapear. Carregue os mapeamentos para começar.",
     "failedToLoadMappings": "Não foi possível carregar os mapeamentos do QuickBooks.",
     "failedToLoadIncomeAccounts": "Não foi possível carregar as contas de receita.",
     "failedToSaveMapping": "Não foi possível salvar o mapeamento.",
     "failedToSyncEntity": "Não foi possível sincronizar com o QuickBooks.",
     "failedToSaveIncomeAccount": "Não foi possível salvar a conta de receita.",
-    "incomeAccountSaved": "Conta de receita salva."
+    "incomeAccountSaved": "Conta de receita salva.",
+    "searchPlaceholder": "Pesquisar no QuickBooks",
+    "searching": "Pesquisando…",
+    "noCandidates": "Nenhuma correspondência no QuickBooks para essa pesquisa.",
+    "failedToSearchCandidates": "Falha ao pesquisar no QuickBooks.",
+    "syncedWithTaxVariance": "Sincronizado com diferença de imposto"
   },
   "quickbooksIntegration": {
     "quickbooksConnected": "QuickBooks conectados.",
@@ -766,7 +770,13 @@
     "reconnectQuickBooks": "Reconectar ao QuickBooks",
     "connectToQuickBooks": "Conectar ao QuickBooks",
     "automaticOnIssue": "Automático ao emitir",
-    "manual": "Manual"
+    "manual": "Manual",
+    "refreshSettings": "Atualizar configurações",
+    "settingsRefreshed": "Configurações do QuickBooks atualizadas.",
+    "failedToRefreshSettings": "Falha ao atualizar as configurações do QuickBooks.",
+    "homeCurrency": "Moeda base",
+    "multiCurrency": "Multimoeda",
+    "multiCurrencyUnknown": "Desconhecido — atualize as configurações para verificar"
   },
   "securityIntegration": {
     "notConfigured": "Não configurado ",

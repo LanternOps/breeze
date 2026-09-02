@@ -102,6 +102,11 @@ const TARGET_GLOBS = [
   'src/components/billing/InvoicesPage.tsx',
   'src/components/billing/InvoiceEditor.tsx',
   'src/components/billing/InvoiceDetail.tsx',
+  // Invoice → QuickBooks push (Phase C): the button's whole job is to reach an
+  // external system of record. A silent failure here reads as "pushed" while
+  // the books stay short an invoice, so this file is in the guarded set from
+  // its first commit rather than after the first regression.
+  'src/components/billing/AccountingSyncCard.tsx',
   'src/components/billing/PartnerBillingSettings.tsx',
   'src/components/billing/OrgBillingSettings.tsx',
   'src/components/contracts/ContractEditor.tsx',
@@ -395,8 +400,9 @@ describe('no silent mutations in targeted set', () => {
     // plus SsoProvidersPage.tsx and ReportBuilder.tsx (2026-08-28 pre-release sweep),
     // plus AlertVerdictBadge.tsx (P2-1 Task 15), plus
     // AiAgentSchedulesSection.tsx (P2-2 Task 13, #4189), plus
-    // QuickbooksMappingWorkbench.tsx (QuickBooks entity mapping, Task 6).
-    expect(absoluteFiles.length).toBe(104);
+    // QuickbooksMappingWorkbench.tsx (QuickBooks entity mapping, Task 6), plus
+    // AccountingSyncCard.tsx (QuickBooks invoice push, Phase C Task 7).
+    expect(absoluteFiles.length).toBe(105);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

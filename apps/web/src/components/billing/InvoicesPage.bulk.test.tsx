@@ -20,8 +20,12 @@ vi.mock('../shared/Toast', () => ({ showToast: (a: unknown) => showToast(a) }));
 // Mock navigateTo to prevent navigation side-effects.
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 
-// Grant all permissions so all bulk actions appear.
-vi.mock('../../lib/permissions', () => ({ usePermissions: () => ({ can: () => true }) }));
+// Grant all permissions so all bulk actions appear. Mutable so a single test
+// can drop `invoices:write` and prove the QuickBooks bulk push is gated on it.
+let canFn: (resource: string, action: string) => boolean = () => true;
+vi.mock('../../lib/permissions', () => ({
+  usePermissions: () => ({ can: (r: string, a: string) => canFn(r, a) }),
+}));
 
 import { InvoicesPage } from './InvoicesPage';
 
@@ -47,6 +51,7 @@ function wireDefault() {
 describe('InvoicesPage bulk actions', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    canFn = () => true;
     wireDefault();
   });
 
@@ -151,5 +156,56 @@ describe('InvoicesPage bulk actions', () => {
     // Clearing the reason re-disables the submit button.
     fireEvent.change(screen.getByTestId('invoices-bulk-void-reason'), { target: { value: '' } });
     expect(screen.getByTestId('invoices-bulk-void-submit')).toBeDisabled();
+  });
+
+  it('bulk "Push to QuickBooks" posts the selected ids and reports enqueued/skipped', async () => {
+    render(<InvoicesPage />);
+    await screen.findByTestId(`invoices-row-${I1}`);
+
+    // Hidden until something is selected (BulkActionBar only renders with a count).
+    expect(screen.queryByTestId('invoices-bulk-action-quickbooks')).toBeNull();
+
+    fireEvent.click(screen.getByTestId(`invoices-select-${I1}`));
+    fireEvent.click(screen.getByTestId(`invoices-select-${I2}`));
+
+    fetchWithAuth.mockImplementation((url: string) => {
+      if (String(url).includes('/accounting/quickbooks/invoices/push-bulk'))
+        return Promise.resolve(json({ enqueued: 1, skipped: 1 }));
+      if (String(url).includes('/orgs/organizations')) return Promise.resolve(json({ data: [] }));
+      if (String(url).startsWith('/invoices')) return Promise.resolve(json({ data: INVOICES }));
+      return Promise.resolve(json({}, 404));
+    });
+
+    fireEvent.click(screen.getByTestId('invoices-bulk-action-quickbooks'));
+
+    await waitFor(() => {
+      const call = fetchWithAuth.mock.calls.find((c) =>
+        String(c[0]).includes('/accounting/quickbooks/invoices/push-bulk'));
+      expect(call).toBeTruthy();
+      expect(JSON.parse((call![1] as RequestInit).body as string).invoiceIds).toEqual([I1, I2]);
+    });
+
+    // The route answers a bare `{ enqueued, skipped }` (no `data` envelope) —
+    // both counts must reach the operator, not just the happy half.
+    await waitFor(() =>
+      expect(showToast).toHaveBeenCalledWith(
+        expect.objectContaining({ message: expect.stringContaining('1 skipped') }),
+      ));
+
+    // Selection clears so the bar collapses, same as every other bulk action.
+    await waitFor(() => expect(screen.queryByTestId('invoices-bulk-action-quickbooks')).toBeNull());
+  });
+
+  it('hides the QuickBooks bulk push without invoices:write', async () => {
+    canFn = (resource, action) => !(resource === 'invoices' && action === 'write');
+    render(<InvoicesPage />);
+    await screen.findByTestId(`invoices-row-${I1}`);
+
+    fireEvent.click(screen.getByTestId(`invoices-select-${I1}`));
+
+    expect(screen.queryByTestId('invoices-bulk-action-quickbooks')).toBeNull();
+    // Control: a non-write action is still offered, so the assertion above is
+    // about the permission, not about the bar failing to render at all.
+    expect(screen.getByTestId('invoices-bulk-action-issue')).toBeInTheDocument();
   });
 });

@@ -1660,6 +1660,21 @@
       "confirm": "Reimposta link",
       "success": "Link reimpostato — i link precedenti non funzionano più",
       "error": "Impossibile reimpostare il link"
+    },
+    "accountingSync": {
+      "title": "Sincronizzazione QuickBooks",
+      "status": {
+        "pending": "Non ancora inviata",
+        "synced": "Sincronizzata",
+        "error": "Sincronizzazione non riuscita",
+        "synced_with_tax_variance": "Sincronizzata con differenza d'imposta"
+      },
+      "taxVarianceHint": "QuickBooks ha calcolato un totale imposte diverso. Confronta entrambi i record prima di chiudere il periodo.",
+      "docNumber": "Documento QuickBooks {{docNumber}}",
+      "lastSynced": "Ultima sincronizzazione: {{when}}",
+      "push": "Invia a QuickBooks",
+      "pushed": "Fattura inviata a QuickBooks.",
+      "pushFailed": "Impossibile inviare la fattura a QuickBooks."
     }
   },
   "invoiceDocument": {
@@ -1719,7 +1734,11 @@
       "partial": "{{succeeded}} {{verb}}, {{skipped}} ignorate{{failedText}}",
       "success": "{{succeeded}} {{verb}}",
       "void": "Storna",
-      "voidedVerb": "stornate"
+      "voidedVerb": "stornate",
+      "quickbooks": "Invia a QuickBooks",
+      "quickbooksQueued": "{{enqueued}} in coda per QuickBooks",
+      "quickbooksQueuedPartial": "{{enqueued}} in coda per QuickBooks, {{skipped}} ignorate",
+      "quickbooksFailed": "Impossibile accodare l'invio a QuickBooks. Riprova."
     },
     "bulkDelete": {
       "message": "Eliminare {{count}} fatture selezionate? Verranno eliminate solo le fatture in stato DRAFT; l'operazione non può essere annullata.",

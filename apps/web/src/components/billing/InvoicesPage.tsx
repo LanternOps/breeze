@@ -326,6 +326,42 @@ export function InvoicesPage() {
     [bulk, loadInvoices, filters, t],
   );
 
+  // Bulk QuickBooks push (Phase C, Task 7). Deliberately NOT routed through
+  // `runBulkInvoices`: the accounting route answers a bare
+  // `{ enqueued, skipped }` (no `data` envelope, no `succeeded`/`failed`) and
+  // only enqueues — the push itself happens later on the accounting-sync
+  // worker, so the toast must say "queued", never "pushed".
+  const pushSelectedToQuickbooks = useCallback(async () => {
+    const invoiceIds = Array.from(bulk.selectedIds);
+    if (invoiceIds.length === 0) return;
+    if (invoiceIds.length > BULK_ID_LIMIT) {
+      showToast({ type: 'warning', message: t('invoicesPage.bulk.limit', { limit: BULK_ID_LIMIT }) });
+      return;
+    }
+    setBulkBusy(true);
+    try {
+      const { enqueued, skipped } = await runAction<{ enqueued: number; skipped: number }>({
+        request: () =>
+          fetchWithAuth('/accounting/quickbooks/invoices/push-bulk', {
+            method: 'POST',
+            body: JSON.stringify({ invoiceIds }),
+          }),
+        errorFallback: t('invoicesPage.bulk.quickbooksFailed'),
+        onUnauthorized: UNAUTHORIZED,
+      });
+      showToast(
+        skipped > 0
+          ? { type: 'warning', message: t('invoicesPage.bulk.quickbooksQueuedPartial', { enqueued, skipped }) }
+          : { type: 'success', message: t('invoicesPage.bulk.quickbooksQueued', { enqueued }) },
+      );
+      bulk.clear();
+    } catch (err) {
+      handleActionError(err, t('invoicesPage.bulk.quickbooksFailed'));
+    } finally {
+      setBulkBusy(false);
+    }
+  }, [bulk, t]);
+
   // ---- derived rows: search filter (client) then optional sort ------------
   const rows = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -723,6 +759,7 @@ export function InvoicesPage() {
               actions={[
                 ...(can('invoices', 'send') ? [{ key: 'issue', label: t('invoicesPage.bulk.issue'), disabled: bulkBusy, onClick: () => void runBulkInvoices('/invoices/bulk-issue', t('invoicesPage.bulk.issuedVerb')) }] : []),
                 ...(can('invoices', 'send') ? [{ key: 'void', label: t('invoicesPage.bulk.void'), variant: 'destructive' as const, disabled: bulkBusy, onClick: () => { setVoidReason(''); setVoidOpen(true); } }] : []),
+                ...(can('invoices', 'write') ? [{ key: 'quickbooks', label: t('invoicesPage.bulk.quickbooks'), disabled: bulkBusy, onClick: () => void pushSelectedToQuickbooks() }] : []),
                 ...(can('invoices', 'write') ? [{ key: 'delete', label: t('invoicesPage.bulk.deleteDrafts'), variant: 'destructive' as const, disabled: bulkBusy, onClick: () => setDeleteOpen(true) }] : []),
               ]}
             />

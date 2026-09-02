@@ -1660,6 +1660,21 @@
       "confirm": "Reset link",
       "success": "Link reset — previous links no longer work",
       "error": "Could not reset the link"
+    },
+    "accountingSync": {
+      "title": "QuickBooks sync",
+      "status": {
+        "pending": "Not pushed yet",
+        "synced": "Synced",
+        "error": "Sync failed",
+        "synced_with_tax_variance": "Synced with tax difference"
+      },
+      "taxVarianceHint": "QuickBooks calculated a different tax total. Compare both records before closing the period.",
+      "docNumber": "QuickBooks document {{docNumber}}",
+      "lastSynced": "Last synced {{when}}",
+      "push": "Push to QuickBooks",
+      "pushed": "Invoice pushed to QuickBooks.",
+      "pushFailed": "Failed to push the invoice to QuickBooks."
     }
   },
   "invoiceDocument": {
@@ -1719,7 +1734,11 @@
       "partial": "{{succeeded}} {{verb}}, {{skipped}} skipped{{failedText}}",
       "success": "{{succeeded}} {{verb}}",
       "void": "Void",
-      "voidedVerb": "voided"
+      "voidedVerb": "voided",
+      "quickbooks": "Push to QuickBooks",
+      "quickbooksQueued": "{{enqueued}} queued for QuickBooks",
+      "quickbooksQueuedPartial": "{{enqueued}} queued for QuickBooks, {{skipped}} skipped",
+      "quickbooksFailed": "Failed to queue the QuickBooks push. Retry."
     },
     "bulkDelete": {
       "message": "Delete {{count}} selected invoice(s)? Only DRAFT invoices will be deleted; this cannot be undone.",
