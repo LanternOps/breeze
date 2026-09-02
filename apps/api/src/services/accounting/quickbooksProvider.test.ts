@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { createHmac } from 'crypto';
-import { quickbooksProvider, mapQboCustomer, mapQboAddress, mapQboHomeCurrency, QBO_PREFERENCES_TIMEOUT_MS } from './quickbooksProvider';
+import {
+  quickbooksProvider, mapQboCustomer, mapQboAddress, mapQboHomeCurrency, QBO_PREFERENCES_TIMEOUT_MS,
+  QBO_CDC_CURSOR_SLACK_MS,
+} from './quickbooksProvider';
 import type { AccountingConnection } from './accountingConnectionService';
 
 function conn(overrides: Partial<AccountingConnection> = {}): AccountingConnection {
@@ -652,5 +655,106 @@ describe('fetchRealmSettings', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+// --- reconcileChanges (CDC) fixture helpers --------------------------------
+
+function cdcResponse(entityBlocks: Record<string, unknown>[], time = '2026-09-02T20:10:00.000Z') {
+  return { CDCResponse: [{ QueryResponse: entityBlocks }], time };
+}
+
+function qboPayment(overrides: Record<string, unknown> = {}) {
+  return {
+    Id: '180', SyncToken: '0', TxnDate: '2026-09-02', TotalAmt: 150.0,
+    CurrencyRef: { value: 'USD', name: 'United States Dollar' },
+    CustomerRef: { value: '58' },
+    PaymentMethodRef: { value: '2', name: 'Check' },
+    PaymentRefNum: '10441',
+    Line: [{ Amount: 150.0, LinkedTxn: [{ TxnId: '145', TxnType: 'Invoice' }] }],
+    MetaData: { CreateTime: '2026-09-02T20:04:34-07:00', LastUpdatedTime: '2026-09-02T20:04:34-07:00' },
+    ...overrides,
+  };
+}
+
+describe('reconcileChanges (CDC)', () => {
+  it('requests entities=Payment,Invoice with changedSince 5 minutes behind the cursor', async () => {
+    const spy = mockFetchJsonOnce(cdcResponse([{ Payment: [qboPayment()], startPosition: 1, maxResults: 1, totalCount: 1 }]));
+    const since = new Date('2026-09-02T20:00:00.000Z');
+    await quickbooksProvider.reconcileChanges(conn(), since);
+    const url = String(spy.mock.calls[0]![0]);
+    expect(url).toContain('/cdc?entities=Payment%2CInvoice');
+    expect(url).toContain(`changedSince=${encodeURIComponent('2026-09-02T19:55:00.000Z')}`);
+    expect(url).toContain('minorversion=70');
+  });
+
+  it('floors a null cursor at 30 days and never earlier than the connection createdAt', async () => {
+    mockFetchJsonOnce(cdcResponse([]));
+    const created = new Date(Date.now() - 5 * 24 * 3600_000);
+    const spy = vi.mocked(globalThis.fetch);
+    await quickbooksProvider.reconcileChanges(conn({ createdAt: created }), null);
+    expect(String(spy.mock.calls[0]![0])).toContain(encodeURIComponent(new Date(created.getTime() - QBO_CDC_CURSOR_SLACK_MS).toISOString()));
+  });
+
+  it('emits one payment line per Invoice-linked Line, in minor units', async () => {
+    mockFetchJsonOnce(cdcResponse([{ Payment: [qboPayment()] }]));
+    const cs = await quickbooksProvider.reconcileChanges(conn(), new Date());
+    expect(cs.payments).toEqual([{
+      remoteInvoiceId: '145', remotePaymentId: '180', amountMinor: 15000, currency: 'USD',
+      txnDate: '2026-09-02', remotePaymentSyncToken: '0', paymentMethodName: 'Check', paymentRefNum: '10441',
+    }]);
+  });
+
+  it('splits one Payment applied across two invoices into two lines', async () => {
+    mockFetchJsonOnce(cdcResponse([{ Payment: [qboPayment({
+      TotalAmt: 250.0,
+      Line: [
+        { Amount: 100.0, LinkedTxn: [{ TxnId: '145', TxnType: 'Invoice' }] },
+        { Amount: 150.0, LinkedTxn: [{ TxnId: '146', TxnType: 'Invoice' }] },
+      ],
+    })] }]));
+    const cs = await quickbooksProvider.reconcileChanges(conn(), new Date());
+    expect(cs.payments.map((p) => [p.remoteInvoiceId, p.amountMinor])).toEqual([['145', 10000], ['146', 15000]]);
+  });
+
+  it('ignores non-Invoice LinkedTxn lines (deposits, credit applications)', async () => {
+    mockFetchJsonOnce(cdcResponse([{ Payment: [qboPayment({
+      Line: [{ Amount: 150.0, LinkedTxn: [{ TxnId: '9', TxnType: 'CreditMemo' }] }],
+    })] }]));
+    expect((await quickbooksProvider.reconcileChanges(conn(), new Date())).payments).toEqual([]);
+  });
+
+  it('treats a voided payment (TotalAmt 0, no lines) as a deletion, not a zero payment', async () => {
+    mockFetchJsonOnce(cdcResponse([{ Payment: [qboPayment({ TotalAmt: 0, Line: [] })] }]));
+    const cs = await quickbooksProvider.reconcileChanges(conn(), new Date());
+    expect(cs.payments).toEqual([]);
+    expect(cs.deletedPayments).toEqual(['180']);
+  });
+
+  it('collects status:"Deleted" Payment and Invoice entities into the deletion lists', async () => {
+    mockFetchJsonOnce(cdcResponse([
+      { Payment: [{ Id: '181', status: 'Deleted', domain: 'QBO', MetaData: { LastUpdatedTime: '2026-09-02T20:06:00-07:00' } }] },
+      { Invoice: [{ Id: '145', status: 'Deleted', domain: 'QBO', MetaData: { LastUpdatedTime: '2026-09-02T20:07:00-07:00' } }] },
+    ]));
+    const cs = await quickbooksProvider.reconcileChanges(conn(), new Date());
+    expect(cs.deletedPayments).toEqual(['181']);
+    expect(cs.deletedInvoices).toEqual(['145']);
+  });
+
+  it('halves the window when an entity reports more changes than it returned, and de-duplicates', async () => {
+    const overflow = cdcResponse([{ Payment: [qboPayment()], startPosition: 1, maxResults: 1, totalCount: 2 }]);
+    const settled = cdcResponse([{ Payment: [qboPayment({ Id: '182' })], totalCount: 1 }]);
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(jsonResponse(overflow))   // full window: overflowing
+      .mockResolvedValueOnce(jsonResponse(settled))    // first half
+      .mockResolvedValueOnce(jsonResponse(cdcResponse([{ Payment: [qboPayment()] }])));  // second half
+    const cs = await quickbooksProvider.reconcileChanges(conn(), new Date(Date.now() - 3600_000));
+    expect(cs.payments.map((p) => p.remotePaymentId).sort()).toEqual(['180', '182']);
+  });
+
+  it('returns the window end as the cursor and never a raw QBO body on failure', async () => {
+    mockFetchJsonOnce({ Fault: { Error: [{ Detail: 'realm secrets' }] } }, 500);
+    await expect(quickbooksProvider.reconcileChanges(conn(), new Date())).rejects.toThrow(/QuickBooks change data capture failed with 500/);
+    await expect(quickbooksProvider.reconcileChanges(conn(), new Date())).rejects.not.toThrow(/realm secrets/);
   });
 });

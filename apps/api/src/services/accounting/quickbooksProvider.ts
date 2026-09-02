@@ -1,4 +1,5 @@
 import { createHmac, timingSafeEqual } from 'crypto';
+import { toMinorUnits } from '@breeze/shared';
 import { runOutsideDbContext } from '../../db';
 import { QBO_CLIENT_ID, QBO_CLIENT_SECRET, QBO_REDIRECT_URI } from '../../config/env';
 import type {
@@ -10,6 +11,7 @@ import type {
   AccountingProvider,
   AccountingVoidInvoicePayload,
   ChangeSet,
+  ChangeSetPaymentLine,
   ConnectionTokens,
   InvoicePushResult,
   RealmSettings,
@@ -39,6 +41,13 @@ const QBO_QUERY_PAGE_SIZE = 1000; // QBO hard cap per query page
  * (sub-second) and well inside a user's patience for a redirect.
  */
 export const QBO_PREFERENCES_TIMEOUT_MS = 8_000;
+
+/** QBO's CDC lookback limit — a `changedSince` older than this is rejected/meaningless. */
+export const QBO_CDC_LOOKBACK_DAYS = 30;
+/** Re-read this far behind the stored cursor so a payment written mid-window is never missed. */
+export const QBO_CDC_CURSOR_SLACK_MS = 5 * 60 * 1000;
+/** Cap on recursive window-halving when a CDC block reports more changes than it returned (decision 3). */
+export const QBO_CDC_MAX_SPLIT_DEPTH = 6;
 
 function qboApiBase(environment: 'sandbox' | 'production'): string {
   return environment === 'production'
@@ -146,6 +155,104 @@ interface QboRawAccount {
   AccountType?: string;
   AccountSubType?: string;
   Active?: boolean;
+}
+
+interface QboRawPaymentLine {
+  Amount?: number;
+  LinkedTxn?: { TxnId?: string; TxnType?: string }[];
+}
+
+interface QboRawCdcPayment {
+  Id: string;
+  status?: string;
+  SyncToken?: string;
+  TxnDate?: string;
+  TotalAmt?: number;
+  CurrencyRef?: { value?: string };
+  PaymentMethodRef?: { name?: string };
+  PaymentRefNum?: string;
+  Line?: QboRawPaymentLine[];
+}
+
+interface QboRawCdcInvoice {
+  Id: string;
+  status?: string;
+  TotalAmt?: number;
+  Balance?: number;
+  PrivateNote?: string;
+}
+
+/** One `CDCResponse[].QueryResponse[]` entity block — entity arrays keyed by
+ *  entity name, alongside optional QBO paging metadata for that block. */
+interface QboCdcEntityBlock {
+  Payment?: QboRawCdcPayment[];
+  Invoice?: QboRawCdcInvoice[];
+  startPosition?: number;
+  maxResults?: number;
+  totalCount?: number;
+}
+
+interface QboCdcResponse {
+  CDCResponse?: { QueryResponse?: QboCdcEntityBlock[] }[];
+  time?: string;
+}
+
+/**
+ * A CDC-reported Payment is a deletion candidate for the applier when QBO
+ * either zeroed it (a void — QBO never deletes a Payment) or it carries no
+ * Invoice-linked line (nothing for the applier to reconcile against).
+ */
+function mapQboCdcPayment(raw: QboRawCdcPayment, conn: AccountingConnection): ChangeSetPaymentLine[] {
+  const currency = raw.CurrencyRef?.value ?? conn.homeCurrency ?? '';
+  const invoiceLines = (raw.Line ?? []).flatMap((line) => {
+    const invoiceTxnId = (line.LinkedTxn ?? []).find((txn) => txn.TxnType === 'Invoice')?.TxnId;
+    return invoiceTxnId ? [{ line, invoiceTxnId }] : [];
+  });
+  if (raw.TotalAmt === 0 || invoiceLines.length === 0) return [];
+
+  return invoiceLines.map(({ line, invoiceTxnId }) => ({
+    remoteInvoiceId: invoiceTxnId,
+    remotePaymentId: raw.Id,
+    amountMinor: toMinorUnits(line.Amount ?? 0, currency),
+    currency,
+    txnDate: raw.TxnDate ?? '',
+    remotePaymentSyncToken: raw.SyncToken ?? null,
+    paymentMethodName: raw.PaymentMethodRef?.name ?? null,
+    paymentRefNum: raw.PaymentRefNum ?? null,
+  }));
+}
+
+function isDeletedOrVoidedInvoice(raw: QboRawCdcInvoice): boolean {
+  if (raw.status === 'Deleted') return true;
+  return raw.TotalAmt === 0 && raw.Balance === 0 && typeof raw.PrivateNote === 'string' && raw.PrivateNote.includes('Voided');
+}
+
+/** Result of one CDC request over one [changedSince, now] window — private to the provider. */
+interface CdcWindowResult {
+  payments: ChangeSetPaymentLine[];
+  deletedPayments: string[];
+  deletedInvoices: string[];
+  /** True when any entity block reported totalCount > the array it returned. */
+  overflowed: boolean;
+}
+
+function mergeCdcWindowResults(parts: readonly CdcWindowResult[]): CdcWindowResult {
+  const payments = new Map<string, ChangeSetPaymentLine>();
+  const deletedPayments = new Set<string>();
+  const deletedInvoices = new Set<string>();
+  let overflowed = false;
+  for (const part of parts) {
+    for (const p of part.payments) payments.set(`${p.remotePaymentId}/${p.remoteInvoiceId}`, p);
+    for (const id of part.deletedPayments) deletedPayments.add(id);
+    for (const id of part.deletedInvoices) deletedInvoices.add(id);
+    overflowed = overflowed || part.overflowed;
+  }
+  return {
+    payments: [...payments.values()],
+    deletedPayments: [...deletedPayments],
+    deletedInvoices: [...deletedInvoices],
+    overflowed,
+  };
 }
 
 export function mapQboAddress(raw: QboRawAddress | undefined): RemoteAddress | undefined {
@@ -562,8 +669,75 @@ export class QuickbooksProvider implements AccountingProvider {
     );
   }
 
-  async reconcileChanges(_conn: AccountingConnection, _sinceCursor: Date | null): Promise<ChangeSet> {
-    throw new Error('NotImplemented: Phase D');
+  async reconcileChanges(conn: AccountingConnection, sinceCursor: Date | null): Promise<ChangeSet> {
+    const now = new Date();
+    const epoch = new Date(0);
+    const lookbackFloor = new Date(now.getTime() - QBO_CDC_LOOKBACK_DAYS * 24 * 3600_000);
+    const windowStart = new Date(Math.max(
+      (sinceCursor ?? epoch).getTime(),
+      (conn.createdAt ?? epoch).getTime(),
+      lookbackFloor.getTime(),
+    ));
+    const from = new Date(windowStart.getTime() - QBO_CDC_CURSOR_SLACK_MS);
+
+    const result = await this.fetchCdcWindow(conn, from, now);
+    return {
+      cursor: now,
+      payments: result.payments,
+      deletedPayments: result.deletedPayments,
+      deletedInvoices: result.deletedInvoices,
+    };
+  }
+
+  // One CDC request over [from, to]. QBO's /cdc endpoint has no upper-bound
+  // parameter — it always returns everything since `changedSince` — so `to`
+  // only drives our own recursive window-halving below, never the request URL.
+  private async fetchCdcWindow(
+    conn: AccountingConnection,
+    from: Date,
+    to: Date,
+    depth = 0,
+  ): Promise<CdcWindowResult> {
+    const params = new URLSearchParams({
+      entities: 'Payment,Invoice',
+      changedSince: from.toISOString(),
+      minorversion: QBO_API_MINOR_VERSION,
+    });
+    const parsed = await this.qboRequest<QboCdcResponse>(
+      conn,
+      `cdc?${params.toString()}`,
+      'QuickBooks change data capture',
+    );
+
+    const payments: ChangeSetPaymentLine[] = [];
+    const deletedPayments: string[] = [];
+    const deletedInvoices: string[] = [];
+    let overflowed = false;
+
+    for (const block of parsed.CDCResponse?.[0]?.QueryResponse ?? []) {
+      const totalCount = block.totalCount;
+
+      for (const raw of block.Payment ?? []) {
+        if (raw.status === 'Deleted') { deletedPayments.push(raw.Id); continue; }
+        const lines = mapQboCdcPayment(raw, conn);
+        if (lines.length === 0) { deletedPayments.push(raw.Id); continue; }
+        payments.push(...lines);
+      }
+      if (totalCount !== undefined && totalCount > (block.Payment?.length ?? 0) && block.Payment) overflowed = true;
+
+      for (const raw of block.Invoice ?? []) {
+        if (isDeletedOrVoidedInvoice(raw)) deletedInvoices.push(raw.Id);
+      }
+      if (totalCount !== undefined && totalCount > (block.Invoice?.length ?? 0) && block.Invoice) overflowed = true;
+    }
+
+    const current: CdcWindowResult = { payments, deletedPayments, deletedInvoices, overflowed };
+    if (!overflowed || depth >= QBO_CDC_MAX_SPLIT_DEPTH) return current;
+
+    const mid = new Date(from.getTime() + (to.getTime() - from.getTime()) / 2);
+    const firstHalf = await this.fetchCdcWindow(conn, from, mid, depth + 1);
+    const secondHalf = await this.fetchCdcWindow(conn, mid, to, depth + 1);
+    return mergeCdcWindowResults([current, firstHalf, secondHalf]);
   }
 
   verifyWebhook(signatureHeader: string, rawBody: string, verifierToken: string): boolean {

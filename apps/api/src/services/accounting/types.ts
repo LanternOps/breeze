@@ -161,22 +161,34 @@ export interface RealmSettings {
   multiCurrencyEnabled: boolean | null;
 }
 
+export interface ChangeSetPaymentLine {
+  remoteInvoiceId: string;
+  remotePaymentId: string;
+  /**
+   * Provider-reported INTEGER MINOR UNITS. Convert exactly once, and only via
+   * normalizeAccountingPayment (accountingCurrency.ts) — multi-currency §11.
+   */
+  amountMinor: number;
+  /** Provider-reported ISO 4217 code for this payment. */
+  currency: string;
+  /** ISO date (YYYY-MM-DD) from Payment.TxnDate. */
+  txnDate: string;
+  /** QBO Payment SyncToken at CDC read time — the applier's "QBO edited it" signal. */
+  remotePaymentSyncToken: string | null;
+  /** PaymentMethodRef.name; null when the realm did not expand the ref. */
+  paymentMethodName: string | null;
+  /** PaymentRefNum (cheque number etc.); null when absent. */
+  paymentRefNum: string | null;
+}
+
 export interface ChangeSet {
+  /** The instant the CDC window ends. Becomes the connection's next cdc_cursor. */
   cursor: Date;
-  payments: Array<{
-    remoteInvoiceId: string;
-    remotePaymentId: string;
-    /**
-     * Provider-reported INTEGER MINOR UNITS. Before applying, assert that
-     * `currency` equals the target invoice's stamped currency and convert
-     * exactly once with `fromMinorUnits` — see
-     * services/accounting/accountingCurrency.ts (multi-currency §11).
-     */
-    amountMinor: number;
-    /** Provider-reported ISO 4217 code for this payment. */
-    currency: string;
-    txnDate: string;
-  }>;
+  payments: ChangeSetPaymentLine[];
+  /** QBO Payment ids the realm reports as status:"Deleted", plus voided (TotalAmt 0) payments. */
+  deletedPayments: string[];
+  /** QBO Invoice ids the realm reports as status:"Deleted" or voided. */
+  deletedInvoices: string[];
 }
 
 export interface AccountingProvider {
