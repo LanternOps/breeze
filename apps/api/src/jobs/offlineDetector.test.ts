@@ -137,6 +137,8 @@ describe('offline detector scheduling and worker bounds', () => {
 
   it.each([
     [undefined, 5],
+    ['', 5],
+    ['   ', 5],
     ['1', 1],
     ['20', 20],
     ['0', 1],

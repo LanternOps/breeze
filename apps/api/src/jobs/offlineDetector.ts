@@ -151,7 +151,15 @@ export function offlineContinuationJobId(sweepId: string, cursor: string): strin
 }
 
 export function resolveOfflineWorkerConcurrency(raw: string | undefined): number {
-  if (raw === undefined) return 5;
+  // Empty and whitespace-only readings mean ABSENT, not zero. Both compose
+  // stacks thread this variable in as `OFFLINE_DETECTOR_WORKER_CONCURRENCY:
+  // ${OFFLINE_DETECTOR_WORKER_CONCURRENCY:-}`, and `docker compose config`
+  // renders an unset variable as `VAR: ""` -- the container sees it SET to an
+  // empty string. `Number('') === 0` then clamps to 1, silently cutting the
+  // offline sweep to a fifth of the documented default of 5 (see
+  // utils/envInt.ts, and the sibling READINESS_* readers in
+  // config/readinessConfig.ts which guard the same way).
+  if (!raw || !raw.trim()) return 5;
   const parsed = Number(raw);
   if (!Number.isFinite(parsed) || !Number.isInteger(parsed)) return 5;
   return Math.min(20, Math.max(1, parsed));
