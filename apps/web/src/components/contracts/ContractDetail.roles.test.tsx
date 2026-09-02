@@ -79,6 +79,32 @@ describe('ContractDetail — per_device_role (#3205)', () => {
     expect((await screen.findByTestId('contract-coverage-warning')).textContent).toContain('2 Unknown, 1 Printer');
   });
 
+  it('shows an estimate failure banner and no coverage notice for a non-ok response', async () => {
+    (contractsApi.getContractEstimate as any).mockResolvedValue(resp({}, false));
+    render(<ContractDetail detail={{ ...detail, lines: [roleLine] }} onChanged={vi.fn()} />);
+
+    expect(await screen.findByTestId('contract-estimate-stale')).toHaveTextContent('Couldn’t load live counts.');
+    expect(screen.queryByTestId('contract-coverage-warning')).not.toBeInTheDocument();
+  });
+
+  it('shows an estimate failure banner and no coverage notice when the request rejects', async () => {
+    (contractsApi.getContractEstimate as any).mockRejectedValue(new Error('network down'));
+    render(<ContractDetail detail={{ ...detail, lines: [roleLine] }} onChanged={vi.fn()} />);
+
+    expect(await screen.findByTestId('contract-estimate-stale')).toHaveTextContent('Couldn’t load live counts.');
+    expect(screen.queryByTestId('contract-coverage-warning')).not.toBeInTheDocument();
+  });
+
+  it('retries the estimate request from the failure banner', async () => {
+    (contractsApi.getContractEstimate as any)
+      .mockResolvedValueOnce(resp({}, false))
+      .mockResolvedValueOnce(resp({ data: { currencyCode: 'EUR', periodTotal: '25.00', lines: [], uncoveredDevices: null } }));
+    render(<ContractDetail detail={{ ...detail, lines: [roleLine] }} onChanged={vi.fn()} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(contractsApi.getContractEstimate).toHaveBeenCalledTimes(2));
+  });
+
   it('generate now warns when the API reports uncovered devices', async () => {
     (contractsApi.getContractEstimate as any).mockResolvedValue(resp({ data: { currencyCode: 'EUR', periodTotal: '0.00', lines: [], uncoveredDevices: null } }));
     vi.mocked(contractsApi.generateContractInvoice).mockResolvedValue(resp({

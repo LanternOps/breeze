@@ -13,10 +13,12 @@
 
 import { fetchWithAuth } from '../../stores/auth';
 import type { StatusPillRole } from '../../components/billing/shared/statusPillRoles';
+import type { ContractLineType } from '@breeze/shared';
+
+export type { ContractLineType };
 
 export type ContractStatus = 'draft' | 'active' | 'paused' | 'cancelled' | 'expired';
 export type ContractBillingTiming = 'advance' | 'arrears';
-export type ContractLineType = 'flat' | 'per_device' | 'per_device_role' | 'per_seat' | 'manual';
 
 /** Devices no device-counted line on the contract bills (#3205). null = not applicable. */
 export interface UncoveredDevices {

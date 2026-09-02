@@ -1,4 +1,5 @@
 import type { ComponentType } from 'react';
+import type { DeviceRole as SharedDeviceRole } from '@breeze/shared';
 import {
   Monitor,
   Server,
@@ -20,6 +21,10 @@ export const DEVICE_ROLES = [
 ] as const;
 
 export type DeviceRole = typeof DEVICE_ROLES[number];
+type _RolesMatch = [DeviceRole] extends [SharedDeviceRole]
+  ? ([SharedDeviceRole] extends [DeviceRole] ? true : never)
+  : never;
+const _rolesMatch: _RolesMatch = true;
 
 /** Roles a contract line may bill (#3205). `unknown` is a classification gap, not a rate. */
 export const BILLABLE_DEVICE_ROLES = DEVICE_ROLES.filter(

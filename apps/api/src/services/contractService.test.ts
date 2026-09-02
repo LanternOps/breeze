@@ -429,6 +429,18 @@ describe('contractService currency representability guard (W6-G3-1)', () => {
       } as never)
     ).rejects.toMatchObject({ code: 'PRICE_NOT_REPRESENTABLE', status: 400 });
   });
+
+  it('createContractWithLinesDetailed rejects a role line without roles before inserting the line', async () => {
+    queueResult([{ id: 'c1', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD', status: 'draft' }]);
+    await expect(
+      svc.createContractWithLinesDetailed({
+        partnerId: 'p1', orgId: 'org1', name: 'C', billingTiming: 'advance', intervalMonths: 1,
+        startDate: '2026-01-01', currencyCode: 'USD',
+        lines: [{ lineType: 'per_device_role', description: 'Network gear', unitPrice: '25.00', taxable: false }],
+      } as never),
+    ).rejects.toMatchObject({ code: 'INVALID_STATE', status: 400 });
+    expect((db as unknown as { insert: { mock: { calls: unknown[][] } } }).insert.mock.calls.length).toBe(1);
+  });
 });
 
 // ---------------------------------------------------------------------------

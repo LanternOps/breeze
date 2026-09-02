@@ -3,7 +3,7 @@ import { db } from '../db';
 import { contracts, contractLines, contractBillingPeriods, organizations, sites, catalogItemPrices, catalogItemOrgPricing } from '../db/schema';
 import { ContractServiceError, actorCan, type ContractActor } from './contractTypes';
 import type { ContractLineInput, UpdateContractInput } from '@breeze/shared';
-import { isRepresentableInCurrency, minorUnitExponent, roundToCurrency, PERMISSION_GRANTS } from '@breeze/shared';
+import { BILLABLE_DEVICE_ROLES, isRepresentableInCurrency, minorUnitExponent, roundToCurrency, PERMISSION_GRANTS } from '@breeze/shared';
 import type { NewContractSpec } from './quoteToContract';
 import { periodIndexFor, nextBillingDate, computePeriod, isExpired, duePeriodStartFor } from './contractMath';
 import { emitContractEvent } from './contractEvents';
@@ -160,8 +160,8 @@ export async function listContracts(query: {
   if (rows.length === 0) return rows;
 
   // Enrich each row with estimatedPeriodValue (live counts for per_device/per_seat
-  // lines). All lines for the page load in one query; device/seat counts are
-  // memoized per (org, site) / org so distinct counts run once, not per contract.
+  // lines). All lines for the page load in one query; one device snapshot is
+  // cached per org and seat counts are memoized per org, not per contract.
   const ids = rows.map((r) => r.id);
   const allLines = await db.select().from(contractLines).where(inArray(contractLines.contractId, ids));
   const byContract = new Map<string, typeof allLines>();
@@ -197,11 +197,32 @@ async function orgSnapshot(orgId: string, dc: DeviceCache): Promise<DeviceSnapsh
   return snap;
 }
 
+/** True when `line` is a per_device_role line whose deviceRoles is missing,
+ *  empty, or (when `allowedRoles` is given) contains a role outside it. Shared
+ *  core for the two guards below — they differ only in status code / message
+ *  and in who is responsible for a bad set (DB CHECK vs untrusted spec input). */
+function roleLineIsInvalid(
+  line: { lineType: string; deviceRoles?: readonly string[] | null },
+  allowedRoles?: ReadonlySet<string>,
+): boolean {
+  if (line.lineType !== 'per_device_role') return false;
+  if (!line.deviceRoles || line.deviceRoles.length === 0) return true;
+  return allowedRoles ? line.deviceRoles.some((role) => !allowedRoles.has(role)) : false;
+}
+
 function assertRoleLineHasRoles(line: Pick<ContractLineRow, 'id' | 'lineType' | 'deviceRoles'>): void {
-  if (line.lineType === 'per_device_role' && (!line.deviceRoles || line.deviceRoles.length === 0)) {
+  if (roleLineIsInvalid(line)) {
     // Unreachable under contract_lines_device_roles_chk, but the row type allows
     // null — and a role line must NEVER degrade into an every-device count.
     throw new ContractServiceError(`Contract line ${line.id} is per_device_role but carries no device roles`, 500, 'INVALID_STATE');
+  }
+}
+
+const BILLABLE_DEVICE_ROLE_SET = new Set<string>(BILLABLE_DEVICE_ROLES);
+
+function assertSpecRoleLine(line: NewContractSpec['lines'][number]): void {
+  if (roleLineIsInvalid(line, BILLABLE_DEVICE_ROLE_SET)) {
+    throw new ContractServiceError('per_device_role line requires at least one device role', 400, 'INVALID_STATE');
   }
 }
 
@@ -875,8 +896,7 @@ export async function addContractLineToContract(contractId: string, input: Contr
       assertRepresentable(unitPrice, c.currencyCode);
       taxable = input.taxable;
     }
-    const scopesSite = input.lineType === 'per_device' || input.lineType === 'per_device_role';
-    const siteId = scopesSite ? (input.siteId ?? null) : null;
+    const siteId = isDeviceLine(input) ? (input.siteId ?? null) : null;
     if (siteId) await assertSiteInOrg(tx, siteId, c.orgId);
     const [row] = await tx.insert(contractLines).values({
       contractId, orgId: c.orgId, lineType: input.lineType, description: input.description,
@@ -1096,7 +1116,8 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
   //    on a price-book gap, reported below), or uses them when it is null.
   // #3205: one snapshot per run. Every device-counted line and the coverage
   // figure below derive from it — never a per-line COUNT.
-  const snapshot = lines.some(isDeviceLine) ? await snapshotContractDevices(c.orgId) : [];
+  const hasDeviceLine = lines.some(isDeviceLine);
+  const snapshot = hasDeviceLine ? await snapshotContractDevices(c.orgId) : [];
   const priceBookGaps: PriceBookGap[] = [];
   for (const l of lines) {
     let quantity: string;
@@ -1163,7 +1184,7 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
   await emitContractEvent({ type: 'contract.invoiced', contractId, orgId: c.orgId, partnerId: c.partnerId, invoiceId: inv.id });
   // Auto-issue + email are intentionally returned to the caller (NOT done here) so they
   // run post-commit, outside the billing transaction. See the doc-comment above.
-  const uncoveredDevices = lines.some(isDeviceLine) ? uncoveredByRole(snapshot, lines) : null;
+  const uncoveredDevices = hasDeviceLine ? uncoveredByRole(snapshot, lines) : null;
   return { generated: true, invoiceId: inv.id, autoIssue: c.autoIssue, actor, priceBookGaps, uncoveredDevices };
 }
 
@@ -1213,11 +1234,11 @@ export async function createContractWithLinesDetailed(
   const createdLines: CreatedContractWithLines['lines'] = [];
   for (let i = 0; i < spec.lines.length; i++) {
     const l = spec.lines[i]!;
+    assertSpecRoleLine(l);
     // Same guard as addContractLineToContract — the quote→contract conversion
     // path must not be a way around it (W6-G3-1).
     assertRepresentable(l.unitPrice, spec.currencyCode);
-    const scopesSite = l.lineType === 'per_device' || l.lineType === 'per_device_role';
-    const siteId = scopesSite ? (l.siteId ?? null) : null;
+    const siteId = isDeviceLine(l) ? (l.siteId ?? null) : null;
     if (siteId) await assertSiteInOrg(db, siteId, spec.orgId);
     const [insertedLine] = await db.insert(contractLines).values({
       contractId: contract.id,

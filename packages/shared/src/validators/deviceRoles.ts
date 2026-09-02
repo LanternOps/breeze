@@ -7,7 +7,9 @@
  * schema construction was an initialization cycle waiting to happen.
  *
  * Adding a role here means also widening `contract_lines_device_roles_chk`
- * (migration 2026-10-05-100100) and the web mirror in apps/web/src/lib/deviceRoles.ts.
+ * (migration 2026-10-05-100100, test-enforced) and the hand-maintained web
+ * mirror in apps/web/src/lib/deviceRoles.ts. The AI description derives from
+ * this tuple automatically.
  */
 export const BILLABLE_DEVICE_ROLES = [
   'workstation', 'server', 'printer', 'router', 'switch',

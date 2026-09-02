@@ -33,6 +33,7 @@ import * as contractService from './contractService';
 import type { AiTool } from './aiTools';
 import type { AuthContext } from '../middleware/auth';
 import { ContractServiceError } from './contractTypes';
+import { BILLABLE_DEVICE_ROLES } from '@breeze/shared';
 
 const auth: AuthContext = {
   principal: { kind: 'user_session' },
@@ -247,6 +248,8 @@ describe('manage_contracts', () => {
     const desc = JSON.stringify(getTool().definition.input_schema);
     expect(desc).toContain('per_device_role');
     expect(desc).toContain('deviceRoles');
-    expect(desc).toContain('unknown');
+    for (const role of BILLABLE_DEVICE_ROLES) expect(desc).toContain(role);
+    expect(desc.match(/unknown/g)).toHaveLength(1);
+    expect(desc).toContain('never unknown');
   });
 });

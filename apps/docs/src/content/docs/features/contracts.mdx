@@ -42,9 +42,9 @@ Each line is one charge on the contract. Lines can resolve their quantity in dif
 | Per seat | Counts the customer's seats/users at billing time × unit price |
 | Manual | A fixed quantity you set × unit price |
 
-Per-device, per-device-role and per-seat lines can be scoped to a specific **site** so you bill only the devices or seats at that location. A line can link to a [catalog item](/features/product-catalog/), which prefills its description and price.
+Per-device and per-device-role lines can be scoped to a specific **site** so you bill only the devices at that location. Per-seat lines always bill the organization's whole active-user count and cannot be site-scoped. A line can link to a [catalog item](/features/product-catalog/), which prefills its description and price.
 
-Device roles come from the agent's classification (or a manual override on the device). A device whose role is still **Unknown** is never billed by a per-device-role line. The contract's estimate and each generated invoice report how many devices on the organization are not billed by any line, broken down by role, so you can classify them or add a line before the next period.
+Device roles come from the agent's automatic classification, a network discovery scan, or a manual override on the device. A device whose role is still **Unknown** is never billed by a per-device-role line. The contract's estimate and each generated invoice report how many devices on the organization are not billed by any line, broken down by role, so you can classify them or add a line before the next period.
 
 ## Creating a Contract
 

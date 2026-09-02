@@ -19,7 +19,7 @@
  */
 
 import { z } from 'zod';
-import { createContractSchema, updateContractSchema, contractLineInputSchema } from '@breeze/shared';
+import { BILLABLE_DEVICE_ROLES, createContractSchema, updateContractSchema, contractLineInputSchema } from '@breeze/shared';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool, AiToolTier } from './aiTools';
 import {
@@ -188,8 +188,8 @@ export function registerContractTools(aiTools: Map<string, AiTool>): void {
               'Contract line input. lineType is one of flat | per_device | per_device_role | per_seat | manual. ' +
               'per_device counts the org\'s billable devices (optionally one site via siteId). ' +
               'per_device_role counts only devices whose role is in deviceRoles — a non-empty array of ' +
-              'workstation, server, printer, router, switch, firewall, access_point, phone, iot, camera, nas ' +
-              '(never "unknown": unclassified devices are reported as uncovered, not billed); siteId is optional there too. ' +
+              `${BILLABLE_DEVICE_ROLES.join(', ')} ` +
+              '(never unknown: unclassified devices are reported as uncovered, not billed); siteId is optional there too. ' +
               'manual requires manualQuantity. ' +
               'With catalogItemId set, unitPrice/taxable are resolved from the catalog ' +
               'price book in the CONTRACT\'s currency (any supplied values are ignored) and add_line fails with ' +

@@ -23,6 +23,7 @@ export const contractLineInputSchema = z.object({
   siteId: z.string().guid().optional(),
   // #3205: the SET of roles a per_device_role line bills. 'unknown' is not a
   // rate; the DB CHECK (contract_lines_device_roles_chk) enforces the same list.
+  // Write side: omit the key when not a role line; `null` is rejected here (Zod `.optional()`), while every read layer (DB row, API JSON, web) uses `null` for not-applicable.
   deviceRoles: z.array(z.enum(BILLABLE_DEVICE_ROLES)).min(1).optional(),
   sortOrder: z.number().int().min(0).optional()
 }).refine(

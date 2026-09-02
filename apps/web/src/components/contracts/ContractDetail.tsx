@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { navigateTo } from '@/lib/navigation';
 import { getDeviceRoleLabel } from '@/lib/deviceRoles';
@@ -103,6 +103,7 @@ export default function ContractDetail({ detail, onChanged }: Props) {
   // reversible and fire immediately.
   const [cancelOpen, setCancelOpen] = useState(false);
   const [estimate, setEstimate] = useState<ContractEstimate | null>(null);
+  const [estimateFailed, setEstimateFailed] = useState(false);
   // Currency restamp (ACTIVE contracts only, manage-gated, #3778).
   const [currencyOpen, setCurrencyOpen] = useState(false);
   const [targetCurrency, setTargetCurrency] = useState(currency);
@@ -110,17 +111,36 @@ export default function ContractDetail({ detail, onChanged }: Props) {
   const [currencyConfirmed, setCurrencyConfirmed] = useState(false);
   const [currencyBlockers, setCurrencyBlockers] = useState<CurrencyBlockers | null>(null);
 
-  useEffect(() => {
-    let cancelled = false;
-    void getContractEstimate(contract.id).then(async (res) => {
-      if (cancelled || !res.ok) return;
-      const body = (await res.json().catch(() => null)) as { data?: ContractEstimate } | null;
-      if (!cancelled) setEstimate(body?.data ?? null);
-    });
-    return () => { cancelled = true; };
+  // Guards against a response landing after unmount (or after `loadEstimate`
+  // itself changes, e.g. contract.id changing under us): toggled false in the
+  // effect cleanup below and checked before every setState past an await.
+  const mountedRef = useRef(true);
+
+  const loadEstimate = useCallback(async () => {
+    setEstimate(null);
+    setEstimateFailed(false);
+    let res: Response;
+    try {
+      res = await getContractEstimate(contract.id);
+    } catch {
+      if (mountedRef.current) setEstimateFailed(true);
+      return;
+    }
+    if (!res.ok) {
+      if (mountedRef.current) setEstimateFailed(true);
+      return;
+    }
+    const body = (await res.json().catch(() => null)) as { data?: ContractEstimate } | null;
+    if (mountedRef.current) setEstimate(body?.data ?? null);
   }, [contract.id]);
 
-  const refresh = useCallback(() => onChanged(), [onChanged]);
+  useEffect(() => {
+    mountedRef.current = true;
+    void loadEstimate();
+    return () => { mountedRef.current = false; };
+  }, [loadEstimate]);
+
+  const refresh = useCallback(() => { onChanged(); void loadEstimate(); }, [onChanged, loadEstimate]);
 
   const transition = useCallback(async (verb: ContractTransition) => {
     if (busy) return;
@@ -313,6 +333,14 @@ export default function ContractDetail({ detail, onChanged }: Props) {
                 <dd className="mt-1 font-medium tabular-nums" data-testid="contract-estimate-stat">
                   {estimate ? formatMoney(estimate.periodTotal, currency) : '—'}
                   <DeviceCoverageNotice uncovered={estimate?.uncoveredDevices} />
+                  {estimateFailed && (
+                    <p className="mt-1 text-xs text-amber-600 dark:text-amber-500" data-testid="contract-estimate-stale">
+                      {t('contracts.contractEditor.estimate.loadLiveCountsFailed')}{' '}
+                      <button type="button" onClick={() => void loadEstimate()} className="underline hover:text-foreground">
+                        {t('common:actions.retry')}
+                      </button>
+                    </p>
+                  )}
                 </dd>
               </div>
             </dl>

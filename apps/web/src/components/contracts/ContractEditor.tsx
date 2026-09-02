@@ -392,6 +392,8 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
   // Anything short of a server-resolved price blocks Add (the server would
   // refuse or — worse — a stale guess would mislead the preview).
   const catalogPriceUnresolved = lineCatalogItem != null && catalogPrice == null;
+  // #3205: per_device_role requires at least one role picked before Add is allowed.
+  const roleLineMissingRoles = lineType === 'per_device_role' && lineRoles.length === 0;
   const effectiveLinePrice = lineCatalogItem ? (catalogPrice?.unitPrice ?? '0') : linePrice;
 
   const newLineEstimate = useMemo(() => {
@@ -566,7 +568,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
   }, [canWrite, isCreate, terms, contract, savePatch]);
 
   const addLine = useCallback(async () => {
-    if (busy || !contract || !lineDesc.trim() || catalogPriceUnresolved || (lineType === 'per_device_role' && lineRoles.length === 0)) return;
+    if (busy || !contract || !lineDesc.trim() || catalogPriceUnresolved || roleLineMissingRoles) return;
     setBusy(true);
     try {
       await runAction({
@@ -600,7 +602,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
     } finally {
       setBusy(false);
     }
-  }, [busy, contract, lineType, lineDesc, linePrice, lineQty, lineSiteId, lineRoles, lineCatalogItem, lineTaxable, catalogPriceUnresolved, refresh, t]);
+  }, [busy, contract, lineType, lineDesc, linePrice, lineQty, lineSiteId, lineRoles, lineCatalogItem, lineTaxable, catalogPriceUnresolved, roleLineMissingRoles, refresh, t]);
 
   const removeLine = useCallback((lineId: string) =>
     runScoped(`remove-${lineId}`, async () => {
@@ -1147,7 +1149,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                   </span>
                   {can('contracts', 'write') && (
                     <button
-                      type="button" onClick={() => void addLine()} disabled={busy || !lineDesc.trim() || catalogPriceUnresolved || (lineType === 'per_device_role' && lineRoles.length === 0)}
+                      type="button" onClick={() => void addLine()} disabled={busy || !lineDesc.trim() || catalogPriceUnresolved || roleLineMissingRoles}
                       data-testid="add-line-btn"
                       className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
                     >

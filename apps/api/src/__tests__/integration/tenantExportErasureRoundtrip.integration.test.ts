@@ -221,6 +221,8 @@ describe('tenant export + erasure round-trip (live DB)', () => {
     // Target org fully wiped.
     expect(await rowCount(db, 'sites', orgA)).toBe(0);
     expect(await rowCount(db, 'device_groups', orgA)).toBe(0);
+    expect(await rowCount(db, 'contracts', orgA)).toBe(0);
+    expect(await rowCount(db, 'contract_lines', orgA)).toBe(0);
     expect(await rowCount(db, 'device_mtls_certificates', orgA)).toBe(0);
     const orgARows = (await db.execute(
       sql`SELECT count(*)::int AS n FROM organizations WHERE id = ${orgA}`,
@@ -241,6 +243,8 @@ describe('tenant export + erasure round-trip (live DB)', () => {
     expect(stats.totalRowsDeleted).toBeGreaterThanOrEqual(7);
     expect(stats.tablesDeleted['sites']).toBe(2);
     expect(stats.tablesDeleted['device_groups']).toBe(2);
+    expect(stats.tablesDeleted['contracts']).toBeGreaterThanOrEqual(1);
+    expect(stats.tablesDeleted['contract_lines']).toBeGreaterThanOrEqual(1);
     expect(stats.tablesDeleted['organizations']).toBe(1);
     // device_mtls_certificates is deleted explicitly (via its cascade-list
     // registration), not merely as a side effect of the devices row's

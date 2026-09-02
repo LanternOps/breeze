@@ -74,6 +74,54 @@ describe('runContractBillingSweep price-book gap logging (#3775)', () => {
       warn.mockRestore();
     }
   });
+
+  it('logs one structured warning when generated billing leaves devices uncovered', async () => {
+    dueRows.push({ id: 'c1' });
+    const uncovered = { total: 3, byRole: { unknown: 2, printer: 1 } };
+    generateDueInvoiceMock.mockResolvedValue({ generated: true, invoiceId: 'inv1', autoIssue: false, priceBookGaps: [], uncoveredDevices: uncovered });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await runContractBillingSweep(new Date('2026-07-01T06:00:00Z'));
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('uncovered devices'), 'c1', 3, JSON.stringify(uncovered.byRole));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('logs both price-book and uncovered-device warnings when both apply', async () => {
+    dueRows.push({ id: 'c1' });
+    const uncovered = { total: 3, byRole: { unknown: 2, printer: 1 } };
+    generateDueInvoiceMock.mockResolvedValue({
+      generated: true, invoiceId: 'inv1', autoIssue: false,
+      priceBookGaps: [{ contractLineId: 'cl-1', catalogItemId: 'cat-1', itemName: 'Managed endpoint', currencyCode: 'EUR' }],
+      uncoveredDevices: uncovered,
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await runContractBillingSweep(new Date('2026-07-01T06:00:00Z'));
+      expect(warn).toHaveBeenCalledTimes(2);
+      expect(warn).toHaveBeenNthCalledWith(1, expect.stringContaining('price-book gap'), 'c1', 'cl-1', 'cat-1', 'EUR');
+      expect(warn).toHaveBeenNthCalledWith(2, expect.stringContaining('uncovered devices'), 'c1', 3, JSON.stringify(uncovered.byRole));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('does not log an uncovered-device warning when the uncovered total is zero', async () => {
+    dueRows.push({ id: 'c1' });
+    generateDueInvoiceMock.mockResolvedValue({
+      generated: true, invoiceId: 'inv1', autoIssue: false, priceBookGaps: [],
+      uncoveredDevices: { total: 0, byRole: {} },
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await runContractBillingSweep(new Date('2026-07-01T06:00:00Z'));
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
 });
 
 // ── billing sweep tenant scope (org-lifecycle Wave 4 review fix C-A.2) ──────

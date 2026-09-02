@@ -39,6 +39,18 @@ describe('quantityFor', () => {
     expect(() => quantityFor(snapshot, line({ lineType: 'flat' }))).toThrow(/not a device-counted/);
   });
 
+  it('resolves each line quantity independently for mixed site and role coverage', () => {
+    const perDeviceAtA = line({ lineType: 'per_device', siteId: A });
+    const switches = line({ lineType: 'per_device_role', deviceRoles: ['switch'] });
+    expect(quantityFor(snapshot, perDeviceAtA)).toBe(4);
+    expect(quantityFor(snapshot, switches)).toBe(1);
+  });
+
+  it('returns zero for a server role line against unknown-only inventory', () => {
+    const unknownOnly: DeviceSnapshotRow[] = [{ role: 'unknown', siteId: null, n: 3 }];
+    expect(quantityFor(unknownOnly, line({ lineType: 'per_device_role', deviceRoles: ['server'] }))).toBe(0);
+  });
+
   it.each([
     ['null', null],
     ['empty', []],
@@ -85,6 +97,21 @@ describe('uncoveredByRole', () => {
       line({ lineType: 'per_device_role', deviceRoles: ['server', 'workstation', 'switch'] }),
     ];
     expect(uncoveredByRole(snapshot, lines)).toEqual({ total: 1, byRole: { unknown: 1 } });
+  });
+
+  it('combines a site-scoped device line with an unscoped role line', () => {
+    const lines = [
+      line({ lineType: 'per_device', siteId: A }),
+      line({ lineType: 'per_device_role', deviceRoles: ['switch'] }),
+    ];
+    expect(uncoveredByRole(snapshot, lines)).toEqual({ total: 1, byRole: { workstation: 1 } });
+  });
+
+  it('reports all unknown-only inventory as uncovered by a server role line', () => {
+    const unknownOnly: DeviceSnapshotRow[] = [{ role: 'unknown', siteId: null, n: 3 }];
+    expect(uncoveredByRole(unknownOnly, [line({ lineType: 'per_device_role', deviceRoles: ['server'] })])).toEqual({
+      total: 3, byRole: { unknown: 3 },
+    });
   });
 
   it('empty inventory is zero, not an error', () => {

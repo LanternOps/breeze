@@ -2,6 +2,7 @@ import { and, eq, ne, count, countDistinct, inArray } from 'drizzle-orm';
 import { db } from '../db';
 import { devices, organizationUsers, users } from '../db/schema';
 import type { DeviceRole } from '@breeze/shared';
+import { ContractServiceError } from './contractTypes';
 
 /** The one set of "is this device billable" predicates. Every device count and
  *  the snapshot below MUST use it — never fork these conditions. */
@@ -17,6 +18,10 @@ function billableDeviceConds(orgId: string) {
 
 /** Billable device count for an org, optionally narrowed to a site and/or a set
  *  of device roles (#3205). Excludes decommissioned + ephemeral.
+ *  Not on the contract/invoice billing path any more (that uses
+ *  `snapshotContractDevices` + `contractCoverage`); current callers are the
+ *  AI-agent device-count budget checks (`actionIntents/exposureBudget.ts`,
+ *  `aiAgents/actRevalidation.ts`). The optional `roles` filter has no production caller yet.
  *  Must be called inside a db access context (system for the worker, request otherwise). */
 export async function countContractDevices(
   orgId: string,
@@ -24,7 +29,7 @@ export async function countContractDevices(
   roles?: readonly DeviceRole[],
 ): Promise<number> {
   if (roles !== undefined && roles.length === 0) {
-    throw new Error('countContractDevices: roles must be non-empty when provided');
+    throw new ContractServiceError('countContractDevices: roles must be non-empty when provided', 500, 'INVALID_STATE');
   }
   const conds = billableDeviceConds(orgId);
   if (siteId) conds.push(eq(devices.siteId, siteId));
