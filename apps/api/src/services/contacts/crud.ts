@@ -294,20 +294,36 @@ function contactListWhere(orgId: string, filters: ContactListFilters): SQL {
   return and(...conditions)!;
 }
 
+/**
+ * `page` is REQUIRED. There is no unpaginated read of this table: the only
+ * caller is `GET /organizations/:id/contacts`, which always supplies
+ * `getPagination`'s output, and an optional window would be an easy way to
+ * reintroduce the unbounded list this endpoint used to be.
+ *
+ * The whole chain is built in ONE statement on purpose. The guard in
+ * `db/offsetPaginationOrdering.test.ts` splits each source file on `;` and
+ * pairs an offset call only with an ordering call in the SAME statement, so
+ * splitting this builder across a `const query = ...` and a `return ...` reads
+ * to that guard as an offset query with no ordering at all — precisely the
+ * non-determinism it exists to catch, and not a distinction worth an allowlist
+ * entry. (That guard scans raw source, comments included, so this note itself
+ * deliberately avoids spelling those two method calls with a leading dot.)
+ */
 export async function listContacts(
   exec: ContactExecutor,
   orgId: string,
-  filters: ContactListFilters = {},
-  page: { limit: number; offset: number } | null = null,
+  filters: ContactListFilters,
+  page: { limit: number; offset: number },
 ): Promise<ContactRecord[]> {
-  const query = exec
+  return exec
     .select(contactColumns())
     .from(contacts)
     .where(contactListWhere(orgId, filters))
     // `id` last so the order is total: two contacts can share a name and a
     // creation timestamp, and a non-total order makes paging drop/repeat rows.
-    .orderBy(asc(contacts.name), asc(contacts.createdAt), asc(contacts.id));
-  return (page ? query.limit(page.limit).offset(page.offset) : query) as Promise<ContactRecord[]>;
+    .orderBy(asc(contacts.name), asc(contacts.createdAt), asc(contacts.id))
+    .limit(page.limit)
+    .offset(page.offset) as Promise<ContactRecord[]>;
 }
 
 /** Total matching `listContacts` with the same filters, for the page envelope. */

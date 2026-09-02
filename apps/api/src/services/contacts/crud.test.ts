@@ -135,6 +135,9 @@ function makeExec(
   return { exec, calls };
 }
 
+/** `listContacts` requires a window; this one is the route's own default. */
+const PAGE = { limit: 50, offset: 0 };
+
 /** The org/site pre-locks a primary re-projection takes. */
 function lockReads(calls: Capture) {
   return calls.selects.filter((s) => s.lockMode !== undefined);
@@ -485,7 +488,7 @@ describe('listContacts site confinement and paging', () => {
     // RLS on `contacts` is the ORG axis only, so this WHERE clause IS the site
     // boundary for a sub-org-restricted user.
     const { exec, calls } = makeExec([[]]);
-    await listContacts(exec, ORG, { allowedSiteIds: [SITE] });
+    await listContacts(exec, ORG, { allowedSiteIds: [SITE] }, PAGE);
     const { sql, params } = compile(calls.selects[0]!.where);
     expect(sql).toContain('"site_id" is null');
     expect(sql).toContain(' in ');
@@ -494,7 +497,7 @@ describe('listContacts site confinement and paging', () => {
 
   it('leaves ONLY org-level contacts when the allowlist is empty', async () => {
     const { exec, calls } = makeExec([[]]);
-    await listContacts(exec, ORG, { allowedSiteIds: [] });
+    await listContacts(exec, ORG, { allowedSiteIds: [] }, PAGE);
     const { sql, params } = compile(calls.selects[0]!.where);
     expect(sql).toContain('"site_id" is null');
     // An empty allowlist must never degrade into "no site filter".
@@ -504,32 +507,29 @@ describe('listContacts site confinement and paging', () => {
 
   it('applies no site clause at all when the caller is unrestricted', async () => {
     const { exec, calls } = makeExec([[]]);
-    await listContacts(exec, ORG, {});
+    await listContacts(exec, ORG, {}, PAGE);
     expect(compile(calls.selects[0]!.where).sql).not.toContain('"site_id"');
   });
 
   it('narrows an explicit siteId filter AND the allowlist together', async () => {
     const { exec, calls } = makeExec([[]]);
-    await listContacts(exec, ORG, { siteId: SITE, allowedSiteIds: [SITE] });
+    await listContacts(exec, ORG, { siteId: SITE, allowedSiteIds: [SITE] }, PAGE);
     const { params } = compile(calls.selects[0]!.where);
     expect(params).toEqual([ORG, SITE, SITE]);
   });
 
-  it('takes the requested window and orders totally', async () => {
+  it('takes the requested window and breaks ties on the primary key', async () => {
     const { exec, calls } = makeExec([[PRIMARY_ROW]]);
     await listContacts(exec, ORG, {}, { limit: 25, offset: 50 });
     expect(calls.selects[0]!.limit).toBe(25);
     expect(calls.selects[0]!.offset).toBe(50);
     // name + createdAt alone is not a total order — two contacts can share
-    // both, and a non-total order drops or repeats rows across pages.
-    expect(calls.selects[0]!.orderBy).toHaveLength(3);
-  });
-
-  it('reads no window when none is asked for', async () => {
-    const { exec, calls } = makeExec([[PRIMARY_ROW]]);
-    await listContacts(exec, ORG, {});
-    expect(calls.selects[0]!.limit).toBeUndefined();
-    expect(calls.selects[0]!.offset).toBeUndefined();
+    // both (created_at defaults to the TRANSACTION timestamp, so a seed or a
+    // bulk import gives every row a byte-identical value), and a non-total
+    // order silently drops and repeats rows across pages.
+    const order = calls.selects[0]!.orderBy!;
+    expect(order).toHaveLength(3);
+    expect(compile(order[2]).sql).toContain('"id"');
   });
 });
 
@@ -542,7 +542,7 @@ describe('countContacts', () => {
     expect(total).toBe(137);
 
     const { exec: listExec, calls: listCalls } = makeExec([[]]);
-    await listContacts(listExec, ORG, filters);
+    await listContacts(listExec, ORG, filters, PAGE);
     expect(compile(countCalls.selects[0]!.where)).toEqual(compile(listCalls.selects[0]!.where));
   });
 
@@ -568,14 +568,14 @@ describe('findContactScope', () => {
 describe('listContacts', () => {
   it('scopes to the organization', async () => {
     const { exec, calls } = makeExec([[PRIMARY_ROW]]);
-    const rows = await listContacts(exec, ORG, {});
+    const rows = await listContacts(exec, ORG, {}, PAGE);
     expect(rows).toHaveLength(1);
     expect(compile(calls.selects[0]!.where).params).toEqual([ORG]);
   });
 
   it('adds the siteId and role filters to the compiled WHERE', async () => {
     const { exec, calls } = makeExec([[]]);
-    await listContacts(exec, ORG, { siteId: SITE, role: 'billing' });
+    await listContacts(exec, ORG, { siteId: SITE, role: 'billing' }, PAGE);
     const { sql, params } = compile(calls.selects[0]!.where);
     expect(sql).toContain('"site_id"');
     // roles is text[]; membership is an array containment test, not equality,
@@ -586,7 +586,7 @@ describe('listContacts', () => {
 
   it('filters to org-level contacts when siteId is explicitly null', async () => {
     const { exec, calls } = makeExec([[]]);
-    await listContacts(exec, ORG, { siteId: null });
+    await listContacts(exec, ORG, { siteId: null }, PAGE);
     expect(compile(calls.selects[0]!.where).sql).toContain('"site_id" is null');
   });
 });
