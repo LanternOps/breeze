@@ -39,6 +39,7 @@ import {
 } from '../../services/deviceIdentityCollisionAlert';
 import { partnerTrustMode } from '../../config/partnerTrustMode';
 import { evaluateCapability, trustDenyBody } from '../../services/partnerTrust';
+import { enqueueIpClassify } from '../../services/ipClassify';
 
 export const enrollmentRoutes = new Hono();
 const ENROLLMENT_RATE_LIMIT = 10;
@@ -729,8 +730,6 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
         }
       }
 
-      // TODO(Task 5.1): enqueue ip-classify for the new device's enrollmentIp.
-
       // Device limit check inside transaction to prevent TOCTOU race.
       // Runs when no existing row OR when the decom-bypass-fresh-id path
       // (#914) is going to INSERT a new active row — both grow net active
@@ -1177,6 +1176,16 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
   queueWarrantySyncForDevice(enrollmentOutcome.deviceId).catch((err) => {
     console.error('[Enrollment] Failed to queue warranty sync:', err instanceof Error ? err.message : err);
   });
+
+  if (enrollmentIp && partnerTrustMode() !== 'off') {
+    void enqueueIpClassify({
+      kind: 'device',
+      deviceId: enrollmentOutcome.deviceId,
+      ip: enrollmentIp,
+    }).catch((err) => {
+      console.warn('[Enrollment] Failed to queue IP classification:', err instanceof Error ? err.message : err);
+    });
+  }
 
   // #2764 identity-collision alert. Best-effort and strictly fire-and-forget:
   // an alerting failure must never fail an enrollment that already committed.

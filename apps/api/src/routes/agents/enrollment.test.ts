@@ -120,6 +120,10 @@ vi.mock('../../services/warrantyWorker', () => ({
   queueWarrantySyncForDevice: vi.fn(async () => undefined),
 }));
 
+vi.mock('../../services/ipClassify', () => ({
+  enqueueIpClassify: vi.fn(async () => undefined),
+}));
+
 vi.mock('../../services/partnerHooks', () => ({
   dispatchHook: vi.fn(async () => undefined),
 }));
@@ -156,6 +160,7 @@ import { getActiveOrgTenant } from '../../services/tenantStatus';
 import * as manifestSigning from '../../services/manifestSigning';
 import { getTrustedClientIp } from '../../services/clientIp';
 import { queueWarrantySyncForDevice } from '../../services/warrantyWorker';
+import { enqueueIpClassify } from '../../services/ipClassify';
 import { raiseDeviceIdentityCollisionAlert } from '../../services/deviceIdentityCollisionAlert';
 import { partnerTrustMode } from '../../config/partnerTrustMode';
 import { evaluateCapability } from '../../services/partnerTrust';
@@ -2914,6 +2919,7 @@ describe('POST /agents/enroll — enrollment IP persistence', () => {
     vi.clearAllMocks();
     delete process.env.AGENT_ENROLLMENT_SECRET;
     process.env.NODE_ENV = 'test';
+    vi.mocked(partnerTrustMode).mockReturnValue('off');
   });
 
   // Stands up the full happy fresh-enroll path and returns the spy that
@@ -2982,6 +2988,23 @@ describe('POST /agents/enroll — enrollment IP persistence', () => {
     expect(deviceInsertValues).toHaveBeenCalledWith(
       expect.objectContaining({ enrollmentIp: '127.0.0.1' }),
     );
+  });
+
+  it('fire-and-forgets IP classification after a successful hosted enrollment', async () => {
+    // The first mode read is the in-transaction probation gate; keep this
+    // fixture on its simple trusted path. The post-commit read enables the
+    // enqueue under test.
+    vi.mocked(partnerTrustMode).mockReturnValueOnce('off').mockReturnValue('shadow');
+    setupSuccessfulEnrollTransaction();
+    const resp = await buildApp().request('/agents/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(baseEnrollBody),
+    });
+    expect(resp.status).toBe(201);
+    expect(enqueueIpClassify).toHaveBeenCalledWith({
+      kind: 'device', deviceId: 'device-ip', ip: '127.0.0.1',
+    });
   });
 
   it('stores NULL enrollmentIp when the client IP could not be determined', async () => {

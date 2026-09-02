@@ -152,6 +152,43 @@ export function isHosted(): boolean {
   return envFlag('IS_HOSTED');
 }
 
+export type IpClassifyProvider = 'ipinfo' | 'ipdata' | 'none';
+
+let warnedAboutIpClassifyConfig = false;
+
+/**
+ * Optional IP-classification provider configuration. Invalid or incomplete
+ * configuration deliberately degrades to the offline classifier: trust
+ * classification must never prevent API boot or block a request.
+ */
+export function ipClassifyProvider(
+  source: NodeJS.ProcessEnv = process.env,
+): IpClassifyProvider {
+  const raw = (source.IP_CLASSIFY_PROVIDER ?? '').trim().toLowerCase();
+  const key = (source.IP_CLASSIFY_API_KEY ?? '').trim();
+
+  if (raw === '' || raw === 'none') return 'none';
+  if (raw !== 'ipinfo' && raw !== 'ipdata') {
+    if (!warnedAboutIpClassifyConfig) {
+      warnedAboutIpClassifyConfig = true;
+      console.warn(`[IPClassify] Unknown provider ${JSON.stringify(raw)}; using offline fallback`);
+    }
+    return 'none';
+  }
+  if (!key) {
+    if (!warnedAboutIpClassifyConfig) {
+      warnedAboutIpClassifyConfig = true;
+      console.warn(`[IPClassify] ${raw} is configured without IP_CLASSIFY_API_KEY; using offline fallback`);
+    }
+    return 'none';
+  }
+  return raw;
+}
+
+export function ipClassifyApiKey(source: NodeJS.ProcessEnv = process.env): string {
+  return (source.IP_CLASSIFY_API_KEY ?? '').trim();
+}
+
 // Signup-abuse detection (services/abuseSignals) is a HOSTED-operator concern:
 // it exists to police untrusted public signups on a multi-tenant service. A
 // self-hosted install is normally one IT team managing its own machines, where

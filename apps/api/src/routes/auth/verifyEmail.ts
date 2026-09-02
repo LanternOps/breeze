@@ -69,6 +69,8 @@ import {
 } from './helpers';
 import { installAuthBindingReplacement, requestAuthBinding } from './binding';
 import { isPgUniqueViolation } from '../../utils/pgErrors';
+import { partnerTrustMode } from '../../config/partnerTrustMode';
+import { enqueueIpClassify } from '../../services/ipClassify';
 
 const { db, withSystemDbAccessContext } = dbModule;
 
@@ -669,6 +671,15 @@ async function finalizePendingRegistration(
   }
 
   const { facts } = committed;
+  if (rec.signupIp && partnerTrustMode() !== 'off') {
+    void enqueueIpClassify({
+      kind: 'partner',
+      partnerId: facts.created.partnerId,
+      ip: rec.signupIp,
+    }).catch((err) => {
+      console.warn('[VerifyEmail] Failed to queue signup IP classification:', err instanceof Error ? err.message : err);
+    });
+  }
   if (committed.kind === 'created_guarded') {
     await bindIssuedUserSession(committed.issued);
   }
