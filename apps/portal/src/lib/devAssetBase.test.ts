@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { isHtmlContentType, prefixDevAssetUrlsFor } from './devAssetBase';
+import {
+  isHtmlContentType,
+  prefixDevAssetUrlsFor,
+  shouldPrefixDevAssetUrlsFor
+} from './devAssetBase';
 
 /**
  * Regression cover for #3906: the portal dev server emits its module URLs from
@@ -75,6 +79,36 @@ describe('prefixDevAssetUrlsFor', () => {
     expect(prefixDevAssetUrlsFor('/portal', html)).toBe(
       '<script src="/portal/@vite/client"></script><script src="/portal/src/a.ts"></script><script src="/portal/src/b.ts"></script>'
     );
+  });
+});
+
+describe('shouldPrefixDevAssetUrlsFor', () => {
+  const html = { isDev: true, hasBody: true, contentType: 'text/html; charset=utf-8' };
+
+  it('rewrites a dev HTML page response', () => {
+    expect(shouldPrefixDevAssetUrlsFor('/portal', html)).toBe(true);
+  });
+
+  it('never rewrites in a production build', () => {
+    expect(shouldPrefixDevAssetUrlsFor('/portal', { ...html, isDev: false })).toBe(false);
+  });
+
+  it('never rewrites at a root deploy (empty base)', () => {
+    expect(shouldPrefixDevAssetUrlsFor('', html)).toBe(false);
+  });
+
+  it('skips a null-body status — swapping its body for a string throws in Response', () => {
+    // A 304 can still carry Content-Type: text/html. Rewriting it would hand
+    // `new Response('', { status: 304 })` a body, which the constructor rejects.
+    expect(shouldPrefixDevAssetUrlsFor('/portal', { ...html, hasBody: false })).toBe(false);
+    expect(() => new Response('', { status: 304 })).toThrow();
+  });
+
+  it('skips non-HTML bodies (JSON endpoints, assets)', () => {
+    expect(
+      shouldPrefixDevAssetUrlsFor('/portal', { ...html, contentType: 'application/json' })
+    ).toBe(false);
+    expect(shouldPrefixDevAssetUrlsFor('/portal', { ...html, contentType: null })).toBe(false);
   });
 });
 

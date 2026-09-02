@@ -71,3 +71,26 @@ export function prefixDevAssetUrls(html: string): string {
 export function isHtmlContentType(contentType: string | null): boolean {
   return !!contentType && contentType.split(';', 1)[0].trim().toLowerCase() === 'text/html';
 }
+
+/**
+ * Whether a response should get the rewrite, with the base passed explicitly.
+ *
+ * `hasBody` is load-bearing rather than an optimisation: a null-body status
+ * (204/304/…) has nothing to rewrite, and swapping its null body for the empty
+ * string the rewrite would return makes the `Response` constructor throw.
+ */
+export function shouldPrefixDevAssetUrlsFor(
+  base: string,
+  input: { isDev: boolean; hasBody: boolean; contentType: string | null }
+): boolean {
+  return !!base && input.isDev && input.hasBody && isHtmlContentType(input.contentType);
+}
+
+/** Whether a response should get the rewrite, bound to the build-time base path. */
+export function shouldPrefixDevAssetUrls(input: {
+  isDev: boolean;
+  hasBody: boolean;
+  contentType: string | null;
+}): boolean {
+  return shouldPrefixDevAssetUrlsFor(BASE_PATH, input);
+}

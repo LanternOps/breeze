@@ -3,7 +3,7 @@ import { randomBytes } from 'node:crypto';
 import { hasPortalSessionCookie } from './lib/session';
 import { isOutsideBase, stripBase, withBase } from './lib/basePath';
 import { buildFallbackCspDirectives, resolvePortalCspHeader } from './lib/csp';
-import { isHtmlContentType, prefixDevAssetUrls } from './lib/devAssetBase';
+import { prefixDevAssetUrls, shouldPrefixDevAssetUrls } from './lib/devAssetBase';
 
 // Every signed-in surface. `/quotes` and `/invoices` were missing here, so both
 // rendered server-side for an unauthenticated visitor and only failed at the API
@@ -120,10 +120,19 @@ export const onRequest = defineMiddleware(async (context, next) => {
   // unprefixed entry point resolves against the *web* app, so the island stays
   // dead while the SSR'd markup still looks right. Buffering the body costs dev
   // streaming only; a production build ships base-prefixed bundled assets and
-  // never enters this branch.
+  // never enters this branch. shouldPrefixDevAssetUrls carries the conditions
+  // (and the reason each one matters) so they stay unit-testable.
   let body: BodyInit | null = response.body;
-  if (isDev && isHtmlContentType(headers.get('Content-Type'))) {
+  if (
+    shouldPrefixDevAssetUrls({
+      isDev,
+      hasBody: response.body !== null,
+      contentType: headers.get('Content-Type')
+    })
+  ) {
     body = prefixDevAssetUrls(await response.text());
+    // The rewritten body is longer than the original; a stale Content-Length
+    // would truncate it.
     headers.delete('Content-Length');
   }
 
