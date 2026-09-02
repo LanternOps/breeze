@@ -211,6 +211,13 @@ export function registerOrgPortalUsersRoutes(orgRoutes: Hono) {
       // set it (the 2026-08-19 backfill, a previous invite, a tech editing the
       // contact) knew more than an email string does. Skipping the lookup also
       // stops a re-invite from minting a duplicate contact.
+      //
+      // `resolveInviteContact` only ever returns a contact in `org.id`, and
+      // this row is in `org.id` too — but that is no longer the only thing
+      // keeping the pair same-org: `portal_users_contact_org_fk`
+      // (contact_id, org_id) -> contacts (id, org_id) makes a cross-org link
+      // unrepresentable, so a future writer that forgets the org bound gets a
+      // 23503 rather than a silent tenant leak (#3258 follow-up).
       const contactPatch: { contactId?: string } = {};
       if (existing.contactId) {
         contactLink = 'kept';

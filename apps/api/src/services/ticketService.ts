@@ -383,6 +383,11 @@ async function assertRequesterContactInOrg(contactId: string, orgId: string) {
  * the caller can reach — an invisible row degrades to "no link", which is the
  * stricter outcome. The explicit org comparison at the call site remains the
  * security boundary either way.
+ *
+ * `contactId` needs no org of its own: `portal_users_contact_org_fk`
+ * (contact_id, org_id) -> contacts (id, org_id) makes the contact's org
+ * IDENTICAL to the `orgId` returned here (#3258 follow-up), so comparing that
+ * one value against the ticket's org settles both.
  */
 async function readPortalUserContactLink(
   portalUserId: string
@@ -599,11 +604,15 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor)
     // assertRequesterInOrg on the staff branch; the portal/email branch trusts
     // its caller's submittedBy and has not read anything yet.
     const link = validatedPortalUser ?? (await readPortalUserContactLink(resolvedSubmittedBy));
-    // A login from another org would produce a contact from another org, which
-    // the composite FK rejects as a raw 23503 (a 500 carrying a Postgres
-    // message). Assert it here for the same typed 400 every other requester
-    // tenant guard returns. A MISSING login is not an error — it simply yields
-    // no link, matching the pre-existing behaviour.
+    // A login from another org carries a contact from that other org —
+    // `portal_users_contact_org_fk` makes login-org and contact-org provably
+    // equal (#3258 follow-up), so this ONE comparison is the complete
+    // cross-tenant boundary for the derived link, not an approximation of it.
+    // Kept as an explicit guard rather than left to the database: without it
+    // the write reaches `tickets_requester_contact_org_fk` and comes back as a
+    // raw 23503 (a 500 carrying a Postgres message) instead of the typed 400
+    // every other requester tenant guard returns. A MISSING login is not an
+    // error — it simply yields no link, matching the pre-existing behaviour.
     if (link && link.orgId !== input.orgId) {
       throw new TicketServiceError(
         'Requester contact must belong to the ticket organization',
