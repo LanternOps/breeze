@@ -4097,7 +4097,7 @@
     "title": "Contatos",
     "description": "As pessoas que sua equipe procura neste cliente. Um contato pode ficar preso a um local ou valer para toda a organização.",
     "organizationLevel": "Organização",
-    "unknownSite": "Um local que você não pode ver",
+    "unknownSite": "Local indisponível",
     "empty": "Nenhum contato ainda. Adicione um ou importe um CSV da sua ferramenta anterior.",
     "loading": "Carregando contatos…",
     "confirmDelete": "Excluir {{name}}? Isso não pode ser desfeito.",
@@ -4166,6 +4166,7 @@
     },
     "errors": {
       "load": "Não foi possível carregar os contatos desta organização.",
+      "sites": "Não foi possível carregar os locais desta organização. Os nomes de local e o filtro por local ficam indisponíveis até carregarem.",
       "create": "Não foi possível adicionar o contato.",
       "update": "Não foi possível salvar o contato.",
       "delete": "Não foi possível excluir o contato."
@@ -4187,6 +4188,9 @@
       "heading": "Mapeamento de colunas",
       "unmapped": "Não mapeada",
       "identifierRequired": "Mapeie uma coluna de nome, endereço de e-mail, telefone ou celular para continuar.",
+      "droppedRows_one": "{{count}} linha ignorada: sem nome, e-mail, telefone ou celular.",
+      "droppedRows_other": "{{count}} linhas ignoradas: sem nome, e-mail, telefone ou celular.",
+      "tooManyRows": "Este arquivo mapeia {{count}} linhas, mais do que as {{max}} aceitas por importação. Divida-o em arquivos menores.",
       "fields": {
         "name": "Nome",
         "email": "Endereço de e-mail",
@@ -4212,15 +4216,37 @@
       "updated": "{{count}} mesclados",
       "skipped": "{{count}} sem alteração",
       "failed": "{{count}} recusadas",
-      "allFailed": "Nada foi importado — {{summary}}."
+      "allFailed": "Nada foi importado — {{summary}}.",
+      "nothingImported": "Nada foi importado: {{count}} já vinculados.",
+      "nothingImportedEmpty": "Nada foi importado."
     },
     "failures": {
       "title_one": "{{count}} linha foi recusada",
       "title_other": "{{count}} linhas foram recusadas"
     },
+    "skipped": {
+      "title_one": "{{count}} linha ficou sem alteração",
+      "title_other": "{{count}} linhas ficaram sem alteração",
+      "reasons": {
+        "alreadyLinked": "já vinculado a um contato existente"
+      }
+    },
+    "errorCodes": {
+      "rowConflict": "A linha é ambígua diante dos contatos que já existem aqui.",
+      "orgNotFound": "Esta organização não está mais ao seu alcance.",
+      "annotationChanged": "Esta linha mudou desde a prévia. Confira o arquivo novamente.",
+      "matchChanged": "Esta linha agora corresponde a outro contato. Confira o arquivo novamente.",
+      "matchUnconfirmed": "Marque a linha e importe novamente para confirmar a correspondência.",
+      "writeFailed": "O banco de dados recusou a gravação. Nada desta linha foi salvo.",
+      "noIdentifier": "A linha fica sem nome, e-mail, telefone ou celular.",
+      "invalidRole": "A linha indica um papel que o Breeze não reconhece.",
+      "siteNotInOrg": "O local desta linha não pertence a esta organização."
+    },
     "errors": {
       "previewFailed": "Não foi possível comparar o arquivo com os contatos existentes.",
-      "importFailed": "Não foi possível importar os contatos selecionados."
+      "importFailed": "Não foi possível importar os contatos selecionados.",
+      "fileRead": "Não foi possível ler esse arquivo. Selecione-o novamente.",
+      "noColumns": "Esse arquivo não tem linha de cabeçalho, então não há nada a mapear."
     }
   },
   "contactImportPreview": {

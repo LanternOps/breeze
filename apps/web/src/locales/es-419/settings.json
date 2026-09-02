@@ -4097,7 +4097,7 @@
     "title": "Contactos",
     "description": "Las personas con las que su equipo habla en este cliente. Un contacto puede quedar fijado a un sitio o valer para toda la organización.",
     "organizationLevel": "Organización",
-    "unknownSite": "Un sitio que usted no puede ver",
+    "unknownSite": "Sitio no disponible",
     "empty": "Todavía no hay contactos. Agregue uno o importe un CSV de su herramienta anterior.",
     "loading": "Cargando contactos…",
     "confirmDelete": "¿Eliminar a {{name}}? Esta acción no se puede deshacer.",
@@ -4166,6 +4166,7 @@
     },
     "errors": {
       "load": "No se pudieron cargar los contactos de esta organización.",
+      "sites": "No se pudieron cargar los sitios de esta organización. Los nombres de sitio y el filtro por sitio seguirán sin estar disponibles hasta que carguen.",
       "create": "No se pudo agregar el contacto.",
       "update": "No se pudo guardar el contacto.",
       "delete": "No se pudo eliminar el contacto."
@@ -4187,6 +4188,9 @@
       "heading": "Asignación de columnas",
       "unmapped": "Sin asignar",
       "identifierRequired": "Asigne una columna de nombre, correo electrónico, teléfono o celular para continuar.",
+      "droppedRows_one": "{{count}} fila omitida: sin nombre, correo electrónico, teléfono ni celular.",
+      "droppedRows_other": "{{count}} filas omitidas: sin nombre, correo electrónico, teléfono ni celular.",
+      "tooManyRows": "Este archivo asigna {{count}} filas, más de las {{max}} que acepta una importación. Divídalo en archivos más pequeños.",
       "fields": {
         "name": "Nombre",
         "email": "Correo electrónico",
@@ -4212,15 +4216,37 @@
       "updated": "{{count}} combinados",
       "skipped": "{{count}} sin cambios",
       "failed": "{{count}} rechazados",
-      "allFailed": "No se importó nada: {{summary}}."
+      "allFailed": "No se importó nada: {{summary}}.",
+      "nothingImported": "No se importó nada: {{count}} ya vinculados.",
+      "nothingImportedEmpty": "No se importó nada."
     },
     "failures": {
       "title_one": "Se rechazó {{count}} fila",
       "title_other": "Se rechazaron {{count}} filas"
     },
+    "skipped": {
+      "title_one": "Se dejó {{count}} fila sin cambios",
+      "title_other": "Se dejaron {{count}} filas sin cambios",
+      "reasons": {
+        "alreadyLinked": "ya vinculado a un contacto existente"
+      }
+    },
+    "errorCodes": {
+      "rowConflict": "La fila es ambigua frente a los contactos que ya están aquí.",
+      "orgNotFound": "Esta organización ya no está a su alcance.",
+      "annotationChanged": "Esta fila cambió desde la vista previa. Revise el archivo de nuevo.",
+      "matchChanged": "Esta fila ahora coincide con otro contacto. Revise el archivo de nuevo.",
+      "matchUnconfirmed": "Marque la fila e importe de nuevo para confirmar la coincidencia.",
+      "writeFailed": "La base de datos rechazó la escritura. No se guardó nada de esta fila.",
+      "noIdentifier": "La fila queda sin nombre, correo electrónico, teléfono ni celular.",
+      "invalidRole": "La fila nombra un rol que Breeze no reconoce.",
+      "siteNotInOrg": "El sitio de esta fila no pertenece a esta organización."
+    },
     "errors": {
       "previewFailed": "No se pudo comparar el archivo con los contactos existentes.",
-      "importFailed": "No se pudieron importar los contactos seleccionados."
+      "importFailed": "No se pudieron importar los contactos seleccionados.",
+      "fileRead": "No se pudo leer ese archivo. Selecciónelo de nuevo.",
+      "noColumns": "Ese archivo no tiene fila de encabezado, así que no hay nada que asignar."
     }
   },
   "contactImportPreview": {

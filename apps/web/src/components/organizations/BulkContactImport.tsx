@@ -10,6 +10,7 @@ import ContactImportPreviewTable, {
   toContactCommitRow,
   type AnnotatedContactRow,
   type CommitContactRowInput,
+  type ContactImportErrorCode,
   type ContactImportSummary,
 } from './ContactImportPreviewTable';
 
@@ -30,9 +31,11 @@ type MappableField =
   | 'roles' | 'site' | 'externalId' | 'externalSystem';
 
 /**
- * Order matters: `guessMapping` claims headers first-come, so a field whose
- * guesses overlap another's must be resolved earlier. `title` precedes `roles`
- * so a bare `Title` column is a job title rather than a role list.
+ * Iteration order for `guessMapping`, which claims each header first-come. The
+ * nine guess lists below are pairwise disjoint today, so no header is contested
+ * and this order changes nothing; it is fixed only so that ADDING an overlapping
+ * guess later resolves deterministically (earlier field wins) instead of by
+ * whatever order the record happens to enumerate in.
  */
 const MAPPABLE_FIELDS: MappableField[] = [
   'name', 'email', 'phone', 'mobile', 'title', 'roles', 'site', 'externalId', 'externalSystem',
@@ -44,6 +47,14 @@ const MAPPABLE_FIELDS: MappableField[] = [
  * request, such rows are dropped client-side rather than sent.
  */
 const IDENTIFIER_FIELDS = ['name', 'email', 'phone', 'mobile'] as const;
+
+/**
+ * Mirrors MAX_IMPORT_ROWS in apps/api/src/services/contacts/types.ts, which the
+ * preview and commit routes both enforce with `.max()`. Over the cap Zod refuses
+ * the WHOLE request, so the file is stopped here with a count the operator can
+ * act on rather than a generic 400.
+ */
+const MAX_IMPORT_ROWS = 1000;
 
 // Header auto-guess, first match wins. Compared against the lowercased,
 // space/underscore/hyphen-stripped header.
@@ -114,12 +125,18 @@ export default function BulkContactImport({ orgId, onImported, onUnauthorized, o
   const [previewing, setPreviewing] = useState(false);
   const [importing, setImporting] = useState(false);
   const [failures, setFailures] = useState<ContactImportSummary['errors']>([]);
-  /** Row index → a human label, so a failure names the person, not a number. */
+  const [skipped, setSkipped] = useState<ContactImportSummary['skipped']>([]);
+  /**
+   * SUBMITTED position → a human label, so an outcome names the person rather
+   * than a number. Keyed by position in the array actually sent, because that is
+   * what the server's `errors[].index` and `skipped[].index` count — NOT the
+   * preview row's own `index`, which still numbers the deselected rows.
+   */
   const [failureLabels, setFailureLabels] = useState<Record<number, string>>({});
   const [lastSummary, setLastSummary] = useState<string | null>(null);
 
-  const importRows = useMemo<CommitContactRowInput[]>(() => {
-    if (!csv) return [];
+  const mapped = useMemo<{ rows: CommitContactRowInput[]; dropped: number }>(() => {
+    if (!csv) return { rows: [], dropped: 0 };
     const col = (field: MappableField) => {
       const header = mapping[field];
       return header ? csv.headers.indexOf(header) : -1;
@@ -129,6 +146,7 @@ export default function BulkContactImport({ orgId, onImported, onUnauthorized, o
     ) as Record<MappableField, number>;
 
     const rows: CommitContactRowInput[] = [];
+    let dropped = 0;
     for (const raw of csv.rows) {
       const cell = (i: number) => (i >= 0 ? (raw[i] ?? '').trim() : '');
       // The organization is the TAB's, never the file's.
@@ -141,18 +159,35 @@ export default function BulkContactImport({ orgId, onImported, onUnauthorized, o
       const roles = parseRoles(cell(idx.roles));
       if (roles.length > 0) row.roles = roles;
       // Blank spreadsheet tail rows satisfy no identifier; one of them would
-      // fail Zod and reject every other row in the request with it.
-      if (!IDENTIFIER_FIELDS.some((f) => row[f])) continue;
+      // fail Zod and reject every other row in the request with it. Counted, not
+      // silently swallowed: a mis-mapped identifier column drops EVERY row, and
+      // an unexplained "Check 0 rows" is indistinguishable from an empty file.
+      if (!IDENTIFIER_FIELDS.some((f) => row[f])) {
+        dropped += 1;
+        continue;
+      }
       rows.push(row);
     }
-    return rows;
+    return { rows, dropped };
   }, [csv, mapping, orgId]);
 
+  const importRows = mapped.rows;
+  const droppedRows = mapped.dropped;
+  const tooManyRows = importRows.length > MAX_IMPORT_ROWS;
   const hasIdentifierColumn = IDENTIFIER_FIELDS.some((f) => mapping[f]);
+  /** A file that parsed but produced no header row at all — nothing to map. */
+  const noColumns = csv !== null && csv.headers.length === 0;
 
   function resetPreview() {
     setPreviewRows(null);
     setSelected(new Set());
+  }
+
+  function clearOutcome() {
+    setFailures([]);
+    setSkipped([]);
+    setFailureLabels({});
+    setLastSummary(null);
   }
 
   function loadFile(file: File) {
@@ -162,9 +197,18 @@ export default function BulkContactImport({ orgId, onImported, onUnauthorized, o
       setCsv(parsed);
       setMapping(guessMapping(parsed.headers));
       resetPreview();
-      setFailures([]);
-      setFailureLabels({});
-      setLastSummary(null);
+      clearOutcome();
+    }).catch((err: unknown) => {
+      // A rejected read (the file was moved, renamed or its permission revoked
+      // between picking and reading) used to leave the panel looking idle, with
+      // the operator waiting on a preview that would never come.
+      console.warn('[BulkContactImport] file read failed', err);
+      showToast({ type: 'error', message: t('bulkContactImport.errors.fileRead') });
+      setFileName(null);
+      setCsv(null);
+      setMapping({});
+      resetPreview();
+      clearOutcome();
     });
   }
 
@@ -177,9 +221,7 @@ export default function BulkContactImport({ orgId, onImported, onUnauthorized, o
 
   async function preview() {
     setPreviewing(true);
-    setFailures([]);
-    setFailureLabels({});
-    setLastSummary(null);
+    clearOutcome();
     try {
       const res = await runAction<{ rows: AnnotatedContactRow[] }>({
         request: () =>
@@ -206,8 +248,11 @@ export default function BulkContactImport({ orgId, onImported, onUnauthorized, o
     if (!previewRows) return;
     const chosen = previewRows.filter((r) => selected.has(r.index));
     if (chosen.length === 0) return;
+    // Keyed by SUBMITTED position: the server counts `errors[].index` and
+    // `skipped[].index` against the array it received, so keying by the preview
+    // row's own index names the wrong person the moment a row is deselected.
     const labels = Object.fromEntries(
-      chosen.map((r) => [r.index, r.name ?? r.email ?? r.phone ?? r.mobile ?? `#${r.index + 1}`]),
+      chosen.map((r, i) => [i, r.name ?? r.email ?? r.phone ?? r.mobile ?? `#${r.index + 1}`]),
     );
     setImporting(true);
     try {
@@ -233,10 +278,22 @@ export default function BulkContactImport({ orgId, onImported, onUnauthorized, o
         showToast({ type: 'error', message: t('bulkContactImport.summary.allFailed', { summary: message }) });
       } else if (s.errors.length > 0) {
         showToast({ type: 'warning', message: `${message}.` });
+      } else if (!wrote) {
+        // Nothing failed, but nothing was written either — the DEFAULT re-import
+        // path, since link-match rows arrive pre-ticked and skip mode leaves them
+        // alone. Green here reads as "imported", which is exactly backwards.
+        // Toast has no neutral/info type, so warning is the honest one.
+        showToast({
+          type: 'warning',
+          message: s.skipped.length > 0
+            ? t('bulkContactImport.summary.nothingImported', { count: s.skipped.length })
+            : t('bulkContactImport.summary.nothingImportedEmpty'),
+        });
       } else {
         showToast({ type: 'success', message: `${message}.` });
       }
       setFailures(s.errors);
+      setSkipped(s.skipped);
       setFailureLabels(labels);
       setLastSummary(message);
       resetPreview();
@@ -246,6 +303,39 @@ export default function BulkContactImport({ orgId, onImported, onUnauthorized, o
     } finally {
       setImporting(false);
     }
+  }
+
+  /** The person behind a submitted position, for an error or a skip line. */
+  function outcomeLabel(index: number, organization?: string): string {
+    return failureLabels[index] ?? organization ?? `#${index + 1}`;
+  }
+
+  /**
+   * Translated copy for a refusal. Branches on the CODE, never on `error`: the
+   * server's string is English and phrased for a developer (`match-unconfirmed`
+   * names a JSON field the operator has never seen). An unknown code — a server
+   * newer than this bundle — falls through to that string rather than to nothing.
+   */
+  function failureCopy(code: ContactImportErrorCode, serverText: string): string {
+    switch (code) {
+      case 'row-conflict': return t('bulkContactImport.errorCodes.rowConflict');
+      case 'org-not-found': return t('bulkContactImport.errorCodes.orgNotFound');
+      case 'annotation-changed': return t('bulkContactImport.errorCodes.annotationChanged');
+      case 'match-changed': return t('bulkContactImport.errorCodes.matchChanged');
+      case 'match-unconfirmed': return t('bulkContactImport.errorCodes.matchUnconfirmed');
+      case 'write-failed': return t('bulkContactImport.errorCodes.writeFailed');
+      case 'no-identifier': return t('bulkContactImport.errorCodes.noIdentifier');
+      case 'invalid-role': return t('bulkContactImport.errorCodes.invalidRole');
+      case 'site-not-in-org': return t('bulkContactImport.errorCodes.siteNotInOrg');
+      default: return serverText;
+    }
+  }
+
+  /** `skipped[].reason` is a machine token; only `already_linked` exists today. */
+  function skipCopy(reason: string): string {
+    return reason === 'already_linked'
+      ? t('bulkContactImport.skipped.reasons.alreadyLinked')
+      : reason;
   }
 
   return (
@@ -296,6 +386,15 @@ export default function BulkContactImport({ orgId, onImported, onUnauthorized, o
         <span className="mt-1 text-xs">{t('bulkContactImport.dropzoneHint')}</span>
       </div>
 
+      {noColumns && (
+        <p
+          data-testid="bulk-contact-import-no-columns"
+          className="mt-3 text-xs text-destructive"
+        >
+          {t('bulkContactImport.errors.noColumns')}
+        </p>
+      )}
+
       {/* Step 2: column mapping */}
       {csv && csv.headers.length > 0 && (
         <div className="mt-4">
@@ -332,7 +431,7 @@ export default function BulkContactImport({ orgId, onImported, onUnauthorized, o
               type="button"
               data-testid="bulk-contact-import-preview"
               onClick={preview}
-              disabled={previewing || importRows.length === 0}
+              disabled={previewing || importRows.length === 0 || tooManyRows}
               className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
             >
               {previewing
@@ -345,6 +444,25 @@ export default function BulkContactImport({ orgId, onImported, onUnauthorized, o
                 className="text-xs text-muted-foreground"
               >
                 {t('bulkContactImport.mapping.identifierRequired')}
+              </span>
+            )}
+            {droppedRows > 0 && (
+              <span
+                data-testid="bulk-contact-import-dropped"
+                className="text-xs text-amber-700 dark:text-amber-400"
+              >
+                {t('bulkContactImport.mapping.droppedRows', { count: droppedRows })}
+              </span>
+            )}
+            {tooManyRows && (
+              <span
+                data-testid="bulk-contact-import-too-many"
+                className="text-xs text-destructive"
+              >
+                {t('bulkContactImport.mapping.tooManyRows', {
+                  count: importRows.length,
+                  max: MAX_IMPORT_ROWS,
+                })}
               </span>
             )}
           </div>
@@ -401,6 +519,26 @@ export default function BulkContactImport({ orgId, onImported, onUnauthorized, o
         </p>
       )}
 
+      {skipped.length > 0 && (
+        <div
+          className="mt-4 rounded-md border border-border bg-muted/40 p-3"
+          data-testid="bulk-contact-import-skipped"
+        >
+          <p className="text-sm font-medium">
+            {t('bulkContactImport.skipped.title', { count: skipped.length })}
+          </p>
+          <ul className="mt-2 space-y-1 text-xs text-muted-foreground">
+            {skipped.map((row) => (
+              <li key={row.index} data-testid={`bulk-contact-import-skipped-${row.index}`}>
+                <span className="font-medium text-foreground">{outcomeLabel(row.index)}</span>
+                {': '}
+                {skipCopy(row.reason)}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {failures.length > 0 && (
         <div
           className="mt-4 rounded-md border border-destructive/40 bg-destructive/10 p-3"
@@ -410,15 +548,27 @@ export default function BulkContactImport({ orgId, onImported, onUnauthorized, o
             {t('bulkContactImport.failures.title', { count: failures.length })}
           </p>
           <ul className="mt-2 space-y-1 text-xs text-destructive">
-            {failures.map((f) => (
-              <li key={f.index} data-testid={`bulk-contact-import-failure-${f.index}`}>
-                <span className="font-medium">
-                  {failureLabels[f.index] ?? f.organization ?? `#${f.index + 1}`}
-                </span>
-                {': '}
-                {f.error}
-              </li>
-            ))}
+            {failures.map((f) => {
+              const copy = failureCopy(f.code, f.error);
+              return (
+                <li key={f.index} data-testid={`bulk-contact-import-failure-${f.index}`}>
+                  <span className="font-medium">{outcomeLabel(f.index, f.organization)}</span>
+                  {': '}
+                  {copy}
+                  {/* The server's own sentence, kept as detail so a support
+                      thread can still quote it verbatim. */}
+                  {copy !== f.error && (
+                    <span
+                      data-testid={`bulk-contact-import-failure-detail-${f.index}`}
+                      className="mt-0.5 block text-[11px] opacity-75"
+                      title={f.error}
+                    >
+                      {f.error}
+                    </span>
+                  )}
+                </li>
+              );
+            })}
           </ul>
         </div>
       )}

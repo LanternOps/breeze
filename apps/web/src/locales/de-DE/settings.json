@@ -4097,7 +4097,7 @@
     "title": "Kontakte",
     "description": "Die Personen, die Ihr Team bei diesem Kunden erreicht. Ein Kontakt kann an einen Standort gebunden sein oder für die gesamte Organisation gelten.",
     "organizationLevel": "Organisation",
-    "unknownSite": "Ein Standort, den Sie nicht einsehen dürfen",
+    "unknownSite": "Standort nicht verfügbar",
     "empty": "Noch keine Kontakte. Legen Sie einen an oder importieren Sie eine CSV-Datei aus Ihrem bisherigen Werkzeug.",
     "loading": "Kontakte werden geladen…",
     "confirmDelete": "{{name}} löschen? Das lässt sich nicht rückgängig machen.",
@@ -4166,6 +4166,7 @@
     },
     "errors": {
       "load": "Die Kontakte dieser Organisation konnten nicht geladen werden.",
+      "sites": "Die Standorte dieser Organisation konnten nicht geladen werden. Standortnamen und der Standortfilter bleiben bis dahin nicht verfügbar.",
       "create": "Der Kontakt konnte nicht hinzugefügt werden.",
       "update": "Der Kontakt konnte nicht gespeichert werden.",
       "delete": "Der Kontakt konnte nicht gelöscht werden."
@@ -4187,6 +4188,9 @@
       "heading": "Spaltenzuordnung",
       "unmapped": "Nicht zugeordnet",
       "identifierRequired": "Ordnen Sie eine Spalte mit Name, E-Mail-Adresse, Telefon oder Mobilnummer zu, um fortzufahren.",
+      "droppedRows_one": "{{count}} Zeile übersprungen: kein Name, keine E-Mail-Adresse, keine Telefon- oder Mobilnummer.",
+      "droppedRows_other": "{{count}} Zeilen übersprungen: kein Name, keine E-Mail-Adresse, keine Telefon- oder Mobilnummer.",
+      "tooManyRows": "Diese Datei ordnet {{count}} Zeilen zu, mehr als die {{max}} pro Import zulässigen. Teilen Sie sie in kleinere Dateien auf.",
       "fields": {
         "name": "Name",
         "email": "E-Mail-Adresse",
@@ -4212,15 +4216,37 @@
       "updated": "{{count}} zusammengeführt",
       "skipped": "{{count}} unverändert",
       "failed": "{{count}} abgelehnt",
-      "allFailed": "Nichts wurde importiert — {{summary}}."
+      "allFailed": "Nichts wurde importiert — {{summary}}.",
+      "nothingImported": "Nichts importiert: {{count}} bereits verknüpft.",
+      "nothingImportedEmpty": "Es wurde nichts importiert."
     },
     "failures": {
       "title_one": "{{count}} Zeile wurde abgelehnt",
       "title_other": "{{count}} Zeilen wurden abgelehnt"
     },
+    "skipped": {
+      "title_one": "{{count}} Zeile blieb unverändert",
+      "title_other": "{{count}} Zeilen blieben unverändert",
+      "reasons": {
+        "alreadyLinked": "bereits mit einem vorhandenen Kontakt verknüpft"
+      }
+    },
+    "errorCodes": {
+      "rowConflict": "Die Zeile ist gegenüber den bereits vorhandenen Kontakten mehrdeutig.",
+      "orgNotFound": "Diese Organisation ist für Sie nicht mehr erreichbar.",
+      "annotationChanged": "Diese Zeile hat sich seit der Vorschau geändert. Prüfen Sie die Datei erneut.",
+      "matchChanged": "Diese Zeile passt jetzt zu einem anderen Kontakt. Prüfen Sie die Datei erneut.",
+      "matchUnconfirmed": "Haken Sie die Zeile an und importieren Sie erneut, um die Zuordnung zu bestätigen.",
+      "writeFailed": "Die Datenbank hat den Schreibvorgang abgelehnt. Für diese Zeile wurde nichts gespeichert.",
+      "noIdentifier": "Der Zeile bleibt weder Name noch E-Mail-Adresse, Telefon- oder Mobilnummer.",
+      "invalidRole": "Die Zeile nennt eine Rolle, die Breeze nicht kennt.",
+      "siteNotInOrg": "Der Standort in dieser Zeile gehört nicht zu dieser Organisation."
+    },
     "errors": {
       "previewFailed": "Die Datei konnte nicht mit den vorhandenen Kontakten abgeglichen werden.",
-      "importFailed": "Die ausgewählten Kontakte konnten nicht importiert werden."
+      "importFailed": "Die ausgewählten Kontakte konnten nicht importiert werden.",
+      "fileRead": "Die Datei konnte nicht gelesen werden. Wählen Sie sie erneut aus.",
+      "noColumns": "Diese Datei hat keine Kopfzeile, es gibt also nichts zuzuordnen."
     }
   },
   "contactImportPreview": {

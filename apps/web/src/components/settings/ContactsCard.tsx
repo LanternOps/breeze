@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
-import { runAction, ActionError } from '@/lib/runAction';
+import { runAction, handleActionError } from '@/lib/runAction';
 import BulkContactImport from '../organizations/BulkContactImport';
 
 /**
@@ -148,40 +148,79 @@ export default function ContactsCard({ orgId }: ContactsCardProps) {
   const [roleFilter, setRoleFilter] = useState('');
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
+  const [sitesError, setSitesError] = useState(false);
+  /** Bumped by the sites retry button; the sites effect keys off it. */
+  const [sitesAttempt, setSitesAttempt] = useState(0);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const [showImport, setShowImport] = useState(false);
   const [editing, setEditing] = useState<Contact | null>(null);
   const [formOpen, setFormOpen] = useState(false);
   const [draft, setDraft] = useState<Draft>(EMPTY_DRAFT);
   const [saving, setSaving] = useState(false);
+  /**
+   * Monotonic request id. `loadContacts` is fired from an effect AND from every
+   * mutation, so two loads can be in flight at once (change a filter mid-delete);
+   * without this the slower response wins and paints a list nobody asked for.
+   */
+  const loadSeq = useRef(0);
 
   const unauthorized = useCallback(() => { void navigateTo('/login', { replace: true }); }, []);
 
+  /**
+   * Site id → name, or null when this screen has no name for it. Reachable in
+   * ordinary use, so the fallback copy must NOT read as a permission verdict:
+   * the list route already intersects the caller's allowed sites, and the picker
+   * above fetches `limit=100` without paging, so an organization's 101st site
+   * resolves to nothing here purely because the name was never fetched. A failed
+   * sites call (see `sitesError`) takes the same path.
+   */
   const siteName = useCallback(
     (siteId: string | null) => sites.find((s) => s.id === siteId)?.name ?? null,
     [sites],
   );
 
   const loadContacts = useCallback(async () => {
+    const seq = (loadSeq.current += 1);
+    const superseded = () => seq !== loadSeq.current;
     setLoading(true);
     setLoadError(false);
     const params = new URLSearchParams({ page: String(page), limit: String(PAGE_SIZE) });
     if (siteFilter) params.set('siteId', siteFilter);
     if (roleFilter) params.set('role', roleFilter);
+    // Set only on the clamp path below, where `loading` must stay true across the
+    // re-fetch so the emptied page never flashes as "No contacts yet".
+    let clamping = false;
     try {
       const res = await fetchWithAuth(`/orgs/organizations/${orgId}/contacts?${params.toString()}`);
+      if (superseded()) return;
       if (res.status === 401) return unauthorized();
       if (!res.ok) throw new Error(`contacts load failed: ${res.status}`);
       const body = (await res.json()) as {
         data: Contact[];
         pagination: { total: number };
       };
-      setContacts(body.data ?? []);
-      setTotal(body.pagination?.total ?? 0);
+      if (superseded()) return;
+      const rows = body.data ?? [];
+      const count = body.pagination?.total ?? 0;
+      const lastPage = Math.max(1, Math.ceil(count / PAGE_SIZE));
+      // Deleting the last row of page N leaves that page empty and the pagination
+      // block unmounted, stranding the operator on "No contacts yet" with rows
+      // still on page N-1. Walk back to the page that now holds the end of the
+      // list and let the effect re-fetch it.
+      if (rows.length === 0 && page > 1 && lastPage < page) {
+        clamping = true;
+        setTotal(count);
+        setPage(lastPage);
+        return;
+      }
+      setContacts(rows);
+      setTotal(count);
     } catch (err) {
+      if (superseded()) return;
       console.warn('[ContactsCard] contacts load failed', err);
       setLoadError(true);
     } finally {
-      setLoading(false);
+      if (!clamping && !superseded()) setLoading(false);
     }
   }, [orgId, page, siteFilter, roleFilter, unauthorized]);
 
@@ -197,18 +236,23 @@ export default function ContactsCard({ orgId }: ContactsCardProps) {
       try {
         const res = await fetchWithAuth(`/orgs/sites?organizationId=${orgId}&limit=100`);
         if (res.status === 401) return unauthorized();
-        if (!res.ok) return;
+        if (!res.ok) throw new Error(`sites load failed: ${res.status}`);
         const body = (await res.json()) as { data?: SiteOption[] } | SiteOption[];
         const data = Array.isArray(body) ? body : (body.data ?? []);
-        if (!cancelled) setSites(data.map((s) => ({ id: s.id, name: s.name })));
+        if (cancelled) return;
+        setSites(data.map((s) => ({ id: s.id, name: s.name })));
+        setSitesError(false);
       } catch (err) {
-        // Site names are decoration on this screen: a failure downgrades the
-        // attribution column, it does not break the contact list.
+        // Site names are not decoration: they also populate the site FILTER and
+        // the form's site select, so a silent failure looks like an organization
+        // with no sites. Surfaced as a non-blocking notice — the contacts
+        // themselves are organization-scoped and stay fully usable.
         console.warn('[ContactsCard] sites load failed', err);
+        if (!cancelled) setSitesError(true);
       }
     })();
     return () => { cancelled = true; };
-  }, [orgId, unauthorized]);
+  }, [orgId, unauthorized, sitesAttempt]);
 
   function changeFilter(next: () => void) {
     // A filter narrows the result set, so whatever page the user was on is
@@ -262,15 +306,19 @@ export default function ContactsCard({ orgId }: ContactsCardProps) {
       await loadContacts();
     } catch (err) {
       // A refused save leaves the form open with the operator's input intact.
-      if (!(err instanceof ActionError)) throw err;
+      // Never rethrow: `save` is called through `void save()`, so a throw here
+      // becomes an unhandled rejection rather than anything the user can see.
+      handleActionError(err, t('contactsCard.errors.update'));
     } finally {
       setSaving(false);
     }
   }
 
   async function remove(contact: Contact) {
+    if (deletingId) return;
     const label = contact.name ?? contact.email ?? contact.phone ?? contact.mobile ?? '';
     if (!window.confirm(t('contactsCard.confirmDelete', { name: label }))) return;
+    setDeletingId(contact.id);
     try {
       await runAction({
         request: () => fetchWithAuth(`/orgs/contacts/${contact.id}`, { method: 'DELETE' }),
@@ -280,7 +328,11 @@ export default function ContactsCard({ orgId }: ContactsCardProps) {
       });
       await loadContacts();
     } catch (err) {
-      if (!(err instanceof ActionError)) throw err;
+      // Same contract as `save`: called through `void remove(c)`, so a rethrow
+      // would surface as an unhandled rejection instead of a toast.
+      handleActionError(err, t('contactsCard.errors.delete'));
+    } finally {
+      setDeletingId(null);
     }
   }
 
@@ -362,6 +414,23 @@ export default function ContactsCard({ orgId }: ContactsCardProps) {
           </label>
         </div>
       </div>
+
+      {sitesError && (
+        <div
+          data-testid="org-contacts-sites-error"
+          className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-400"
+        >
+          {t('contactsCard.errors.sites')}{' '}
+          <button
+            type="button"
+            data-testid="org-contacts-sites-retry"
+            onClick={() => setSitesAttempt((n) => n + 1)}
+            className="underline hover:text-foreground"
+          >
+            {t('contactsCard.actions.retry')}
+          </button>
+        </div>
+      )}
 
       {showImport && (
         <BulkContactImport
@@ -508,7 +577,9 @@ export default function ContactsCard({ orgId }: ContactsCardProps) {
       )}
 
       {loading && contacts.length === 0 && !loadError && (
-        <p className="text-sm text-muted-foreground">{t('contactsCard.loading')}</p>
+        <p data-testid="org-contacts-loading" className="text-sm text-muted-foreground">
+          {t('contactsCard.loading')}
+        </p>
       )}
 
       {loadError && (
@@ -602,7 +673,8 @@ export default function ContactsCard({ orgId }: ContactsCardProps) {
                         type="button"
                         data-testid={`org-contacts-delete-${c.id}`}
                         onClick={() => void remove(c)}
-                        className="ml-1 rounded-md px-2 py-1 text-xs text-destructive underline hover:bg-muted"
+                        disabled={deletingId !== null}
+                        className="ml-1 rounded-md px-2 py-1 text-xs text-destructive underline hover:bg-muted disabled:opacity-50"
                       >
                         {t('contactsCard.actions.delete')}
                       </button>

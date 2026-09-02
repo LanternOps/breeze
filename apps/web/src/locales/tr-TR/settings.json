@@ -4097,7 +4097,7 @@
     "title": "Kişiler",
     "description": "Ekibinizin bu müşteride ulaştığı kişiler. Bir kişi tek bir siteye bağlanabilir ya da kuruluşun tamamı için geçerli olabilir.",
     "organizationLevel": "Kuruluş",
-    "unknownSite": "Göremediğiniz bir site",
+    "unknownSite": "Site kullanılamıyor",
     "empty": "Henüz kişi yok. Bir tane ekleyin ya da önceki aracınızdan bir CSV içe aktarın.",
     "loading": "Kişiler yükleniyor…",
     "confirmDelete": "{{name}} silinsin mi? Bu geri alınamaz.",
@@ -4166,6 +4166,7 @@
     },
     "errors": {
       "load": "Bu kuruluşun kişileri yüklenemedi.",
+      "sites": "Bu kuruluşun siteleri yüklenemedi. Site adları ve site filtresi yüklenene kadar kullanılamaz.",
       "create": "Kişi eklenemedi.",
       "update": "Kişi kaydedilemedi.",
       "delete": "Kişi silinemedi."
@@ -4187,6 +4188,9 @@
       "heading": "Sütun eşleme",
       "unmapped": "Eşlenmedi",
       "identifierRequired": "Devam etmek için ad, e-posta adresi, telefon veya cep telefonu sütunu eşleyin.",
+      "droppedRows_one": "{{count}} satır atlandı: ad, e-posta adresi, telefon veya cep telefonu yok.",
+      "droppedRows_other": "{{count}} satır atlandı: ad, e-posta adresi, telefon veya cep telefonu yok.",
+      "tooManyRows": "Bu dosya {{count}} satır eşliyor; tek bir içe aktarmanın kabul ettiği {{max}} satırdan fazla. Dosyayı daha küçük parçalara bölün.",
       "fields": {
         "name": "Ad",
         "email": "E-posta adresi",
@@ -4212,15 +4216,37 @@
       "updated": "{{count}} birleştirildi",
       "skipped": "{{count}} değiştirilmedi",
       "failed": "{{count}} reddedildi",
-      "allFailed": "Hiçbir şey içe aktarılmadı — {{summary}}."
+      "allFailed": "Hiçbir şey içe aktarılmadı — {{summary}}.",
+      "nothingImported": "Hiçbir şey içe aktarılmadı: {{count}} zaten bağlı.",
+      "nothingImportedEmpty": "Hiçbir kayıt içe aktarılmadı."
     },
     "failures": {
       "title_one": "{{count}} satır reddedildi",
       "title_other": "{{count}} satır reddedildi"
     },
+    "skipped": {
+      "title_one": "{{count}} satır olduğu gibi bırakıldı",
+      "title_other": "{{count}} satır olduğu gibi bırakıldı",
+      "reasons": {
+        "alreadyLinked": "zaten mevcut bir kişiye bağlı"
+      }
+    },
+    "errorCodes": {
+      "rowConflict": "Satır, burada zaten bulunan kişiler karşısında belirsiz.",
+      "orgNotFound": "Bu kuruluş artık erişiminizde değil.",
+      "annotationChanged": "Bu satır önizlemeden bu yana değişti. Dosyayı yeniden denetleyin.",
+      "matchChanged": "Bu satır artık başka bir kişiyle eşleşiyor. Dosyayı yeniden denetleyin.",
+      "matchUnconfirmed": "Eşleşmeyi onaylamak için satırı işaretleyip yeniden içe aktarın.",
+      "writeFailed": "Veritabanı yazma işlemini reddetti. Bu satır için hiçbir şey kaydedilmedi.",
+      "noIdentifier": "Satırda ad, e-posta adresi, telefon veya cep telefonu kalmıyor.",
+      "invalidRole": "Satır, Breeze’in tanımadığı bir rol belirtiyor.",
+      "siteNotInOrg": "Bu satırdaki site bu kuruluşa ait değil."
+    },
     "errors": {
       "previewFailed": "Dosya mevcut kişilerle karşılaştırılamadı.",
-      "importFailed": "Seçilen kişiler içe aktarılamadı."
+      "importFailed": "Seçilen kişiler içe aktarılamadı.",
+      "fileRead": "Bu dosya okunamadı. Lütfen yeniden seçin.",
+      "noColumns": "Bu dosyada başlık satırı yok, dolayısıyla eşlenecek bir şey de yok."
     }
   },
   "contactImportPreview": {

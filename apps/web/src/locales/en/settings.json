@@ -4128,6 +4128,9 @@
       "heading": "Column mapping",
       "unmapped": "Not mapped",
       "identifierRequired": "Map a name, email address, phone, or mobile column to continue.",
+      "droppedRows_one": "{{count}} row skipped: no name, email address, phone or mobile.",
+      "droppedRows_other": "{{count}} rows skipped: no name, email address, phone or mobile.",
+      "tooManyRows": "This file maps {{count}} rows, more than the {{max}} one import accepts. Split it into smaller files.",
       "fields": {
         "name": "Name",
         "email": "Email address",
@@ -4153,22 +4156,44 @@
       "updated": "{{count}} merged",
       "skipped": "{{count}} left alone",
       "failed": "{{count}} refused",
-      "allFailed": "Nothing was imported — {{summary}}."
+      "allFailed": "Nothing was imported — {{summary}}.",
+      "nothingImported": "Nothing imported: {{count}} already linked.",
+      "nothingImportedEmpty": "Nothing was imported."
     },
     "failures": {
       "title_one": "{{count}} row was refused",
       "title_other": "{{count}} rows were refused"
     },
+    "skipped": {
+      "title_one": "{{count}} row was left as it is",
+      "title_other": "{{count}} rows were left as they are",
+      "reasons": {
+        "alreadyLinked": "already linked to an existing contact"
+      }
+    },
+    "errorCodes": {
+      "rowConflict": "The row is ambiguous against the contacts already here.",
+      "orgNotFound": "This organization is no longer one you can reach.",
+      "annotationChanged": "This row changed since the preview. Check the file again.",
+      "matchChanged": "This row now matches a different contact. Check the file again.",
+      "matchUnconfirmed": "Tick the row and import again to confirm the match.",
+      "writeFailed": "The database refused the write. Nothing was saved for this row.",
+      "noIdentifier": "The row is left with no name, email address, phone or mobile.",
+      "invalidRole": "The row names a role Breeze does not recognize.",
+      "siteNotInOrg": "The site on this row does not belong to this organization."
+    },
     "errors": {
       "previewFailed": "Could not check the file against existing contacts.",
-      "importFailed": "Could not import the selected contacts."
+      "importFailed": "Could not import the selected contacts.",
+      "fileRead": "Could not read that file. Choose it again.",
+      "noColumns": "That file has no header row, so there is nothing to map."
     }
   },
   "contactsCard": {
     "title": "Contacts",
     "description": "The people your team reaches at this customer. One contact can be pinned to a site or belong to the organization as a whole.",
     "organizationLevel": "Organization",
-    "unknownSite": "A site you cannot see",
+    "unknownSite": "Site unavailable",
     "empty": "No contacts yet. Add one, or import a CSV from your previous tool.",
     "loading": "Loading contacts…",
     "confirmDelete": "Delete {{name}}? This cannot be undone.",
@@ -4237,6 +4262,7 @@
     },
     "errors": {
       "load": "Could not load the contacts for this organization.",
+      "sites": "Could not load this organization's sites. Site names and the site filter stay unavailable until they load.",
       "create": "Could not add the contact.",
       "update": "Could not save the contact.",
       "delete": "Could not delete the contact."
