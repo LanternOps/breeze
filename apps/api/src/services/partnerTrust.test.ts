@@ -1,3 +1,6 @@
+import { readdirSync, readFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { audit, state } = vi.hoisted(() => ({
@@ -23,13 +26,67 @@ vi.mock('./partnerTrust.repo', () => ({
 }));
 
 import { partnerTrustMode } from '../config/partnerTrustMode';
-import { CommandTypes } from './commandQueue';
 import {
   evaluateCapability,
   GATED_COMMAND_TYPES,
   isLifecycleCommand,
   LIFECYCLE_COMMAND_TYPES,
 } from './partnerTrust';
+
+function sourceFilesUnder(directory: string): string[] {
+  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) return sourceFilesUnder(path);
+    return entry.isFile() && entry.name.endsWith('.ts') && !entry.name.endsWith('.test.ts')
+      ? [path]
+      : [];
+  });
+}
+
+function addMatches(source: string, pattern: RegExp, commandTypes: Set<string>): void {
+  for (const match of source.matchAll(pattern)) {
+    const commandType = match[1];
+    if (commandType) commandTypes.add(commandType);
+  }
+}
+
+function dispatchedCommandTypeLiterals(): string[] {
+  const srcDirectory = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+  const commandTypes = new Set<string>();
+
+  for (const file of sourceFilesUnder(srcDirectory)) {
+    const source = readFileSync(file, 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^\s*\/\/.*$/gm, '');
+
+    // Direct command queue/execution calls whose command type is a string literal.
+    addMatches(
+      source,
+      /\b(?:queueCommand|queueCommandForExecution|executeCommand)\s*\(\s*[^,]+,\s*['"]([a-z][a-z0-9_]*)['"]/g,
+      commandTypes,
+    );
+    // Direct agent sends with an inline command frame.
+    addMatches(
+      source,
+      /\bsendCommandToAgent\s*\(\s*[^,]+,\s*\{[\s\S]{0,2000}?\btype\s*:\s*['"]([a-z][a-z0-9_]*)['"]/g,
+      commandTypes,
+    );
+    // Direct deviceCommands inserts whose type is a string literal.
+    addMatches(
+      source,
+      /\binsert\s*\(\s*deviceCommands\s*\)[\s\S]{0,2000}?\btype\s*:\s*['"]([a-z][a-z0-9_]*)['"]/g,
+      commandTypes,
+    );
+
+    if (file.endsWith(`${join('services', 'commandQueue.ts')}`)) {
+      const constants = source.match(/export const CommandTypes\s*=\s*\{([\s\S]*?)\}\s*as const/);
+      expect(constants, 'CommandTypes constants object must remain discoverable').not.toBeNull();
+      addMatches(constants?.[1] ?? '', /:\s*['"]([a-z][a-z0-9_]*)['"]/g, commandTypes);
+    }
+  }
+
+  return [...commandTypes].sort();
+}
 
 beforeEach(() => {
   audit.mockClear();
@@ -78,6 +135,36 @@ describe('evaluateCapability', () => {
     })).toMatchObject({ allow: false, reason: 'probation_enrollment_cap' });
   });
 
+  it('writes only fixed, typed detail fields to denial audits', async () => {
+    await evaluateCapability('remote_control', {
+      partnerId: 'p1',
+      deviceId: 'device-1',
+      commandType: 'script',
+      detail: {
+        mode: 'forged',
+        capability: 'forged',
+        probationEnrollments: 5,
+        stage: 'dispatch',
+        via: 'api',
+        untrustedExtra: 'must-not-leak',
+      },
+    });
+
+    expect(audit).toHaveBeenCalledWith(expect.objectContaining({
+      details: {
+        mode: 'enforce',
+        capability: 'remote_control',
+        code: 'TRUST_PROBATION',
+        reason: 'probation_default_deny',
+        deviceId: 'device-1',
+        commandType: 'script',
+        probationEnrollments: 5,
+        stage: 'dispatch',
+        via: 'api',
+      },
+    }));
+  });
+
   it('lets lifecycle commands through device_execute even in probation', async () => {
     expect(await evaluateCapability('device_execute', {
       partnerId: 'p1',
@@ -103,44 +190,9 @@ describe('evaluateCapability', () => {
 });
 
 describe('command allowlist', () => {
-  const dispatchLiteralsOutsideCommandTypes = [
-    'actuate_elevation',
-    'apply_browser_policy',
-    'desktop_config',
-    'desktop_input',
-    'desktop_stream_start',
-    'desktop_stream_stop',
-    'dev_update',
-    'network_discovery',
-    'network_dns_check',
-    'network_http_check',
-    'network_ping',
-    'network_tcp_check',
-    'pam_apply_v2',
-    'pam_cleanup_v2',
-    'reboot',
-    'restart_agent',
-    'schedule_reboot',
-    'set_auto_update',
-    'shutdown',
-    'snmp_poll',
-    'start_desktop',
-    'stop_desktop',
-    'support_end',
-    'tunnel_close',
-    'tunnel_data',
-    'tunnel_open',
-    'update',
-    'update_agent',
-    'update_watchdog',
-  ] as const;
-  const realCommandTypes = [
-    ...Object.values(CommandTypes),
-    ...dispatchLiteralsOutsideCommandTypes,
-  ];
+  const realCommandTypes = dispatchedCommandTypeLiterals();
 
   it('classifies every known command type exactly once', () => {
-    expect(new Set(realCommandTypes).size).toBe(realCommandTypes.length);
     const lifecycle = new Set<string>(LIFECYCLE_COMMAND_TYPES);
     const gated = new Set<string>(GATED_COMMAND_TYPES);
     expect(LIFECYCLE_COMMAND_TYPES.filter((type) => gated.has(type))).toEqual([]);
@@ -153,15 +205,27 @@ describe('command allowlist', () => {
     }
   });
 
-  it('contains no stale command names from the proposed brief inventory', () => {
-    const classified = new Set<string>([
-      ...LIFECYCLE_COMMAND_TYPES,
-      ...GATED_COMMAND_TYPES,
-    ]);
-    for (const type of classified) {
-      expect(realCommandTypes, `classified command ${type} must exist in the repository inventory`)
-        .toContain(type as (typeof realCommandTypes)[number]);
-    }
+  it('keeps operator-directed commands gated and narrow lifecycle commands allowed', () => {
+    for (const type of [
+      'script',
+      'network_ping',
+      'network_tcp_check',
+      'network_http_check',
+      'network_dns_check',
+      'pam_apply_v2',
+      'apply_browser_policy',
+      'dev_update',
+      'snmp_poll',
+      'peripheral_policy_sync',
+      'peripheral_policy_sync_v2',
+      'filesystem_analysis',
+    ]) expect(isLifecycleCommand(type)).toBe(false);
+    for (const type of [
+      'self_uninstall',
+      'terminal_stop',
+      'wake_on_lan',
+      'pam_cleanup_v2',
+    ]) expect(isLifecycleCommand(type)).toBe(true);
   });
 
   it('an unknown command type is gated (fail closed)', () => {

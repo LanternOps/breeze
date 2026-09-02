@@ -21,29 +21,19 @@ export interface GateContext {
 
 export const PROBATION_ENROLLMENT_CAP = 5;
 
-/** Commands the platform itself needs on a probation tenant. Anything not
- * listed here is gated: an unknown type fails closed. */
+/** Lifecycle commands are platform-driven and carry no operator-chosen content,
+ * target, credential, or binary. Anything else is gated; unknown types fail closed. */
 export const LIFECYCLE_COMMAND_TYPES = [
   'agent_rollback_v1',
-  'apply_browser_policy',
   'backup_stop',
   'desktop_stream_stop',
-  'dev_update',
-  'filesystem_analysis',
-  'network_dns_check',
-  'network_http_check',
-  'network_ping',
-  'network_tcp_check',
   'patch_scan',
-  'pam_apply_v2',
+  // Lifecycle: cleanup only removes privilege; it does not grant or actuate it.
   'pam_cleanup_v2',
-  'peripheral_policy_sync',
-  'peripheral_policy_sync_v2',
   'refresh_inventory',
   'restart_agent',
   'security_collect_status',
   'self_uninstall',
-  'snmp_poll',
   'stop_desktop',
   'support_end',
   'terminal_stop',
@@ -57,6 +47,7 @@ export const LIFECYCLE_COMMAND_TYPES = [
  * documented and checked by the allowlist test; runtime fails closed. */
 export const GATED_COMMAND_TYPES = [
   'actuate_elevation',
+  'apply_browser_policy',
   'apply_audit_policy_baseline',
   'apply_cis_remediation',
   'backup_cleanup',
@@ -75,6 +66,7 @@ export const GATED_COMMAND_TYPES = [
   'desktop_config',
   'desktop_input',
   'desktop_stream_start',
+  'dev_update',
   'encrypt_file',
   'encryption_collect_keys',
   'encryption_rotate_key',
@@ -93,6 +85,7 @@ export const GATED_COMMAND_TYPES = [
   'file_trash_purge',
   'file_trash_restore',
   'file_write',
+  'filesystem_analysis',
   'get_process',
   'get_service',
   'hardware_profile',
@@ -112,6 +105,13 @@ export const GATED_COMMAND_TYPES = [
   'mssql_restore',
   'mssql_verify',
   'network_discovery',
+  'network_dns_check',
+  'network_http_check',
+  'network_ping',
+  'network_tcp_check',
+  'pam_apply_v2',
+  'peripheral_policy_sync',
+  'peripheral_policy_sync_v2',
   'quarantine_file',
   'reboot',
   'reboot_safe_mode',
@@ -135,6 +135,7 @@ export const GATED_COMMAND_TYPES = [
   'set_auto_update',
   'set_log_level',
   'shutdown',
+  'snmp_poll',
   'software_install',
   'software_uninstall',
   'software_update',
@@ -228,7 +229,11 @@ export async function evaluateCapability(cap: GatedCapability, ctx: GateContext)
       reason: denial.reason,
       deviceId: ctx.deviceId ?? null,
       commandType: ctx.commandType ?? null,
-      ...ctx.detail,
+      probationEnrollments: typeof ctx.detail?.probationEnrollments === 'number'
+        ? ctx.detail.probationEnrollments
+        : null,
+      stage: typeof ctx.detail?.stage === 'string' ? ctx.detail.stage : null,
+      via: typeof ctx.detail?.via === 'string' ? ctx.detail.via : null,
     },
   });
   if (mode === 'shadow') return { allow: true, shadowDenied: denial };
