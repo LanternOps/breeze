@@ -2170,17 +2170,6 @@ describe('user routes', () => {
       } as any;
     }
 
-    // The MFA-state probe: select({mfaEnabled,mfaMethod}).from(users).where().limit(1).
-    function mockMfaState(row: { mfaEnabled: boolean; mfaMethod: string | null } | null) {
-      return {
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue(row ? [row] : [])
-          })
-        })
-      } as any;
-    }
-
     // tx stub for resetAllFactorsAndInvalidate: advanceUserEpochs({mfa}) sets
     // `mfaEpoch` and RETURNs the epoch row; revokeAllRefreshFamilies sets
     // revoked_at/revoked_reason; resetAllFactors reads the inventory (select),
@@ -2223,30 +2212,77 @@ describe('user routes', () => {
       return { capturedUpdates, calls, txDelete };
     }
 
-    it('clears the factor, bumps mfa_epoch + revokes families in-tx (system context), then post-commit cleanup', async () => {
-      vi.mocked(db.select)
-        .mockReturnValueOnce(mockScopedUser(true))
-        .mockReturnValueOnce(mockMfaState({ mfaEnabled: true, mfaMethod: 'totp' }));
-      const { capturedUpdates } = mockFactorChangeTx();
-
-      const res = await app.request(`/users/${TARGET}/mfa/reset`, {
-        method: 'POST',
-        headers: { Authorization: 'Bearer token' }
+    it('U-1: resets a passkey-only target even when users.mfaEnabled is false (inventory gate, not the column)', async () => {
+      vi.mocked(db.select).mockReturnValueOnce(mockScopedUser(true));
+      userIsMfaProtectedMock.mockResolvedValue(true);
+      const { capturedUpdates, calls } = mockFactorChangeTx({
+        inventory: { mfaEnabled: false, mfaMethod: null },
+        passkeyRows: [{ id: 'pk-1', credentialId: 'cred-1', name: 'Lost key' }],
       });
 
+      const res = await app.request(`/users/${TARGET}/mfa/reset`, { method: 'POST', headers: { Authorization: 'Bearer token' } });
+
       expect(res.status).toBe(200);
+      expect(userIsMfaProtectedMock).toHaveBeenCalledWith(TARGET);
       // Cross-user write went through the system-context escape.
       expect(runOutsideDbContext).toHaveBeenCalled();
       expect(withSystemDbAccessContext).toHaveBeenCalled();
-      // Factor cleared (mfaEnabled:false) + mfa_epoch bumped + families revoked.
-      expect(capturedUpdates.some((v) => v.mfaEnabled === false && v.mfaSecret === null)).toBe(true);
+      // One transaction: mfa_epoch bump → families → users clear → passkey delete.
+      expect(calls).toEqual(['epochs', 'families', 'clear-factors', 'delete-passkeys']);
+      expect(capturedUpdates.some((v) => v.mfaEnabled === false && v.mfaSecret === null && v.phoneNumber === null && v.phoneVerified === false)).toBe(true);
       expect(capturedUpdates.some((v) => 'mfaEpoch' in v)).toBe(true);
       expect(capturedUpdates.some((v) => 'revokedReason' in v)).toBe(true);
       expect(runPostCommitCleanup).toHaveBeenCalledWith(TARGET);
-      // Audit records the admin action against the target.
-      expect(createAuditLogAsyncMock).toHaveBeenCalledWith(
-        expect.objectContaining({ action: 'user.mfa_reset', resourceId: TARGET, actorId: 'user-123' })
-      );
+      expect(createAuditLogAsyncMock).toHaveBeenCalledWith(expect.objectContaining({
+        action: 'user.mfa_reset', resourceId: TARGET, actorId: 'user-123',
+        details: expect.objectContaining({ method: 'passkey', passkeysDeleted: 1, mfaEpoch: 7, pendingSweepOk: true }),
+      }));
+    });
+
+    it('U-2: resets every factor for a mixed TOTP+SMS+recovery+two-passkey target and audits each deleted credential', async () => {
+      vi.mocked(db.select).mockReturnValueOnce(mockScopedUser(true));
+      userIsMfaProtectedMock.mockResolvedValue(true);
+      const { capturedUpdates } = mockFactorChangeTx({
+        inventory: { mfaEnabled: true, mfaMethod: 'sms', mfaSecret: 'enc', mfaRecoveryCodes: ['h1'], phoneNumber: '+15550100', phoneVerified: true },
+        passkeyRows: [{ id: 'pk-1', credentialId: 'cred-1', name: 'A' }, { id: 'pk-2', credentialId: 'cred-2', name: 'B' }],
+      });
+
+      const res = await app.request(`/users/${TARGET}/mfa/reset`, { method: 'POST', headers: { Authorization: 'Bearer token' } });
+
+      expect(res.status).toBe(200);
+      const clear = capturedUpdates.find((v) => 'mfaSecret' in v)!;
+      expect(clear).toMatchObject({ mfaSecret: null, mfaEnabled: false, mfaMethod: null, mfaRecoveryCodes: null, phoneNumber: null, phoneVerified: false });
+      const audit = createAuditLogAsyncMock.mock.calls.find(([p]) => p.action === 'user.mfa_reset')![0];
+      expect(audit.details).toMatchObject({
+        method: 'sms',
+        factors: { totp: true, sms: true, recoveryCodes: true, phone: true, passkeys: [{ id: 'pk-1', credentialId: 'cred-1', name: 'A' }, { id: 'pk-2', credentialId: 'cred-2', name: 'B' }] },
+        passkeysDeleted: 2,
+        teardownFailed: false,
+      });
+    });
+
+    it('U-3: sweeps mfa:setup and both passkey challenge keys after the transaction committed', async () => {
+      vi.mocked(db.select).mockReturnValueOnce(mockScopedUser(true));
+      userIsMfaProtectedMock.mockResolvedValue(true);
+      mockFactorChangeTx({ inventory: { mfaEnabled: true, mfaMethod: 'totp', mfaSecret: 'enc' } });
+      const redis = getRedis() as unknown as { del: ReturnType<typeof vi.fn> };
+
+      const res = await app.request(`/users/${TARGET}/mfa/reset`, { method: 'POST', headers: { Authorization: 'Bearer token' } });
+
+      expect(res.status).toBe(200);
+      expect(redis.del).toHaveBeenCalledWith(`mfa:setup:${TARGET}`, `passkey:challenge:registration:${TARGET}`, `passkey:challenge:authentication:${TARGET}`);
+      expect(redis.del.mock.invocationCallOrder[0]).toBeGreaterThan(vi.mocked(db.transaction).mock.invocationCallOrder[0]!);
+    });
+
+    it('U-4: 400s when the inventory is empty (no enabled factor AND no live passkey) and opens no transaction', async () => {
+      vi.mocked(db.select).mockReturnValueOnce(mockScopedUser(true));
+      userIsMfaProtectedMock.mockResolvedValue(false);
+
+      const res = await app.request(`/users/${TARGET}/mfa/reset`, { method: 'POST', headers: { Authorization: 'Bearer token' } });
+
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'MFA is not enabled for this user' });
+      expect(vi.mocked(db.transaction)).not.toHaveBeenCalled();
     });
 
     it('refuses to reset the caller’s own MFA (must use self-service disable)', async () => {
@@ -2254,39 +2290,16 @@ describe('user routes', () => {
         c.set('auth', { scope: 'partner', partnerId: 'partner-123', orgId: null, user: { id: TARGET, email: 'target@example.com' } });
         return next();
       });
-
-      const res = await app.request(`/users/${TARGET}/mfa/reset`, {
-        method: 'POST',
-        headers: { Authorization: 'Bearer token' }
-      });
-
+      const res = await app.request(`/users/${TARGET}/mfa/reset`, { method: 'POST', headers: { Authorization: 'Bearer token' } });
       expect(res.status).toBe(400);
       expect(vi.mocked(db.transaction)).not.toHaveBeenCalled();
     });
 
-    it('404s for a target outside the caller’s tenant (no cross-tenant reset)', async () => {
+    it('404s for a target outside the caller’s tenant (no cross-tenant reset; no inventory probe)', async () => {
       vi.mocked(db.select).mockReturnValueOnce(mockScopedUser(false));
-
-      const res = await app.request(`/users/${TARGET}/mfa/reset`, {
-        method: 'POST',
-        headers: { Authorization: 'Bearer token' }
-      });
-
+      const res = await app.request(`/users/${TARGET}/mfa/reset`, { method: 'POST', headers: { Authorization: 'Bearer token' } });
       expect(res.status).toBe(404);
-      expect(vi.mocked(db.transaction)).not.toHaveBeenCalled();
-    });
-
-    it('400s when the target has no MFA enabled (nothing to reset)', async () => {
-      vi.mocked(db.select)
-        .mockReturnValueOnce(mockScopedUser(true))
-        .mockReturnValueOnce(mockMfaState({ mfaEnabled: false, mfaMethod: null }));
-
-      const res = await app.request(`/users/${TARGET}/mfa/reset`, {
-        method: 'POST',
-        headers: { Authorization: 'Bearer token' }
-      });
-
-      expect(res.status).toBe(400);
+      expect(userIsMfaProtectedMock).not.toHaveBeenCalled();
       expect(vi.mocked(db.transaction)).not.toHaveBeenCalled();
     });
   });

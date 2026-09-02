@@ -42,7 +42,7 @@ import { enforceExistingFactorStepUp, hashInviteToken, inviteRedisKey, inviteUse
 import { isPasswordAuthDisabledBySso } from './auth/ssoPolicy';
 import { terminateUserRemoteSessions, TEARDOWN_FAILED } from '../services/remoteSessionTeardown';
 import { advanceUserEpochs, revokeAllRefreshFamilies, runPostCommitCleanup, type Tx } from '../services/authLifecycle';
-import { invalidateMfaAssuranceAfterFactorChange } from '../services/mfaAssurance';
+import { resetAllFactorsAndInvalidate } from '../services/mfaFactorReset';
 import { getEffectiveMfaPolicy } from '../services/mfaPolicy';
 import { requestPendingEmailChange } from '../services/pendingEmail';
 
@@ -1729,6 +1729,8 @@ userRoutes.delete(
 //    bypass the code + password step-up the self-service flow requires).
 //  - requireMfa() forces the acting admin's session to have satisfied MFA, so a
 //    stolen access token alone cannot reset another user's second factor.
+//  - RMM-QA-166: gated on the factor inventory (userIsMfaProtected), not the
+//    mfa_enabled column, and strips passkeys too — a reset must leave NO factor.
 userRoutes.post(
   '/:id/mfa/reset',
   requirePermission(PERMISSIONS.USERS_WRITE.resource, PERMISSIONS.USERS_WRITE.action),
@@ -1753,50 +1755,43 @@ userRoutes.post(
       return c.json({ error: 'User not found' }, 404);
     }
 
-    const [mfaState] = await db
-      .select({ mfaEnabled: users.mfaEnabled, mfaMethod: users.mfaMethod })
-      .from(users)
-      .where(eq(users.id, userId))
-      .limit(1);
-
-    if (!mfaState?.mfaEnabled) {
+    // RMM-QA-166 (D6): the gate is the factor INVENTORY, not `users.mfa_enabled`.
+    // userIsMfaProtected = mfa_enabled OR a live user_passkeys row — the same
+    // predicate every enrollment gate uses. A passkey-only leftover (enabled
+    // flag already cleared, passkey rows still present) must be resettable,
+    // otherwise the account stays "protected" by a credential nobody holds.
+    if (!(await userIsMfaProtected(userId))) {
       return c.json({ error: 'MFA is not enabled for this user' }, 400);
     }
-    const previousMethod = mfaState.mfaMethod || 'totp';
 
-    // Cross-user write: clear the factor + advance mfa_epoch (kills the target's
-    // live access/refresh JWTs) + revoke refresh families + post-commit token/
-    // OAuth cutoff + remote-session teardown, via the same primitive the
-    // self-service disable uses. MUST run in system context — the target's
-    // `refresh_token_families` rows are user-scoped RLS and the admin's ambient
-    // context would revoke zero of them (see invalidateMfaAssuranceAfterFactorChange).
-    const result = await runOutsideDbContext(() =>
-      withSystemDbAccessContext(() =>
-        invalidateMfaAssuranceAfterFactorChange(userId, 'admin-mfa-reset', async (tx: Tx) => {
-          await tx
-            .update(users)
-            .set({
-              mfaSecret: null,
-              mfaEnabled: false,
-              mfaMethod: null,
-              mfaRecoveryCodes: null,
-              phoneNumber: null,
-              phoneVerified: false,
-              updatedAt: new Date()
-            })
-            .where(eq(users.id, userId));
-        })
-      )
-    );
+    // Cross-user write: clear EVERY factor (TOTP secret, method, recovery
+    // codes, phone, and all passkey rows) + advance mfa_epoch (kills the
+    // target's live access/refresh JWTs and epoch-bound step-up grants) +
+    // revoke refresh families + post-commit token/OAuth cutoff + remote-session
+    // teardown + pending-artifact sweep. The composite runs under system
+    // context — the target's `refresh_token_families` and `user_passkeys` rows
+    // are user-scoped RLS and the admin's ambient context would write zero of
+    // them (see services/mfaFactorReset.ts).
+    const result = await resetAllFactorsAndInvalidate(userId, 'admin-mfa-reset');
+    const { inventory } = result;
 
     writeUserAudit(c, auth, scopeContext, {
       action: 'user.mfa_reset',
       resourceId: userId,
       resourceName: record.email,
       details: {
-        method: previousMethod,
+        method: inventory.previousMethod ?? (inventory.passkeysDeleted > 0 ? 'passkey' : 'totp'),
+        factors: {
+          totp: inventory.hadTotp,
+          sms: inventory.hadSms,
+          recoveryCodes: inventory.hadRecoveryCodes,
+          phone: inventory.hadPhone,
+          passkeys: inventory.passkeys
+        },
+        passkeysDeleted: inventory.passkeysDeleted,
         mfaEpoch: result.mfaEpoch,
-        teardownFailed: result.remoteSessionsTerminated === TEARDOWN_FAILED
+        teardownFailed: result.remoteSessionsTerminated === TEARDOWN_FAILED,
+        pendingSweepOk: result.pendingSweepOk
       }
     });
 
