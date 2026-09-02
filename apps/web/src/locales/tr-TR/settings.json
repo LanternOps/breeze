@@ -1735,6 +1735,8 @@
         "ticketsTriaged": "Sınıflandırılan biletler",
         "draftsSent": "Gönderilen taslaklar",
         "fixesExecuted": "Uygulanan düzeltmeler",
+        "promoteEligible": "Yükseltmeye uygun işlemler",
+        "promoteEligibleHint": "Ön yetkilendirme için yeterli ve hatasız kanıta sahip işlemler. İncelemek ve yükseltmek için Ayarlar → Yapay Zekâ Ajanları'nı açın.",
         "estTimeSaved": "Tahmini kazanılan zaman",
         "estTimeSavedValue": "{{hours}} saat",
         "llmSpend": "LLM harcaması"

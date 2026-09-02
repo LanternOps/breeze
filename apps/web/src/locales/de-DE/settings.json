@@ -1735,6 +1735,8 @@
         "ticketsTriaged": "Sortierte Tickets",
         "draftsSent": "Gesendete Entwürfe",
         "fixesExecuted": "Ausgeführte Behebungen",
+        "promoteEligible": "Für Freigabe geeignete Vorgänge",
+        "promoteEligibleHint": "Vorgänge mit ausreichend fehlerfreien Nachweisen für eine Vorabgenehmigung. Öffnen Sie Einstellungen → KI-Agenten, um sie zu prüfen und freizugeben.",
         "estTimeSaved": "Geschätzte Zeitersparnis",
         "estTimeSavedValue": "{{hours}} Std.",
         "llmSpend": "LLM-Ausgaben"

@@ -1735,6 +1735,8 @@
         "ticketsTriaged": "Tickets triaged",
         "draftsSent": "Drafts sent",
         "fixesExecuted": "Fixes executed",
+        "promoteEligible": "Promotion-eligible operations",
+        "promoteEligibleHint": "Operations with enough clean evidence to be pre-authorized. Open Settings → AI Agents to review and promote them.",
         "estTimeSaved": "Estimated time saved",
         "estTimeSavedValue": "{{hours}} hours",
         "llmSpend": "LLM spend"

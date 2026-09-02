@@ -12,6 +12,8 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
+import type { PgColumn } from 'drizzle-orm/pg-core';
+import { inArray } from 'drizzle-orm';
 import type { SQL } from 'drizzle-orm';
 import {
   AI_AGENT_GRADUATION_MIN_AGE_DAYS,
@@ -25,6 +27,7 @@ const PARTNER_ID = '00000000-0000-4000-8000-0000000000e2';
 const AGENT_ID = '00000000-0000-4000-8000-0000000000e3';
 const ORG_AGENT_ID = '00000000-0000-4000-8000-0000000000e4';
 const GRADUATION_ID = '00000000-0000-4000-8000-0000000000e5';
+const OTHER_ORG_ID = '00000000-0000-4000-8000-0000000000e6';
 /** A real POLICY_DECIDABLE_TIER3 member. */
 const OP_KEY = 'manage_services:restart';
 /** Registered nowhere — check 1 must reject it. */
@@ -119,7 +122,9 @@ vi.mock('../../db', () => {
   };
 });
 
+import { withSystemDbAccessContext } from '../../db';
 import {
+  countEligibleGraduations,
   evaluateEligibility,
   evaluateGraduation,
   listTrackedTuples,
@@ -809,5 +814,56 @@ describe('loadActOpReliability', () => {
     expect(params).toContain('act_op');
     expect(params).toContain(ORG_ID);
     expect(params).toContain(AGENT_ID);
+  });
+});
+
+describe('countEligibleGraduations', () => {
+  const orgCondition = (col: PgColumn): SQL | undefined => inArray(col, [ORG_ID, OTHER_ORG_ID]);
+
+  it('counts only state = eligible, predicated on the caller org set', async () => {
+    state.selectQueue.push([{ count: 3 }]);
+
+    const total = await countEligibleGraduations(orgCondition);
+
+    expect(total).toBe(3);
+    const where = sqlText(state.selectWheres[0]);
+    expect(where).toContain('"state" = ');
+    expect(sqlParams(state.selectWheres[0])).toContain('eligible');
+    // The org predicate is present and targets ai_agent_graduation.org_id,
+    // not some other table's — compiled SQL, never mock-call identity.
+    expect(where).toContain('"ai_agent_graduation"."org_id" in ');
+    expect(sqlParams(state.selectWheres[0])).toEqual(
+      expect.arrayContaining([ORG_ID, OTHER_ORG_ID, 'eligible']),
+    );
+    // Never the other three states.
+    for (const s of ['tracking', 'promoted', 'demoted']) {
+      expect(sqlParams(state.selectWheres[0])).not.toContain(s);
+    }
+  });
+
+  it('adds an explicit org equality when orgId is given, even for a system caller whose orgCondition is undefined', async () => {
+    state.selectQueue.push([{ count: 1 }]);
+
+    await countEligibleGraduations(() => undefined, ORG_ID);
+
+    const where = sqlText(state.selectWheres[0]);
+    expect(where).toContain('"ai_agent_graduation"."org_id" = ');
+    expect(sqlParams(state.selectWheres[0])).toEqual(expect.arrayContaining([ORG_ID, 'eligible']));
+  });
+
+  it('returns 0 for an empty result set', async () => {
+    state.selectQueue.push([]);
+    await expect(countEligibleGraduations(orgCondition)).resolves.toBe(0);
+  });
+
+  it('does NOT elevate to a system context — the caller RLS context is the gate', async () => {
+    // Every other function in this module joins-or-opens a system context;
+    // this one must not, or an org caller's RLS scoping is discarded.
+    state.dbContext = { scope: 'organization' };
+    state.selectQueue.push([{ count: 2 }]);
+
+    await countEligibleGraduations(orgCondition);
+
+    expect(vi.mocked(withSystemDbAccessContext)).not.toHaveBeenCalled();
   });
 });

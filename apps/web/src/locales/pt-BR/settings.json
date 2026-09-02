@@ -1735,6 +1735,8 @@
         "ticketsTriaged": "Chamados triados",
         "draftsSent": "Rascunhos enviados",
         "fixesExecuted": "Correções executadas",
+        "promoteEligible": "Operações elegíveis para promoção",
+        "promoteEligibleHint": "Operações com evidências suficientes e sem falhas para serem pré-autorizadas. Abra Configurações → Agentes de IA para revisar e promover.",
         "estTimeSaved": "Tempo economizado estimado",
         "estTimeSavedValue": "{{hours}} horas",
         "llmSpend": "Gasto com LLM"
