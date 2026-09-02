@@ -7,6 +7,7 @@ import {
   setPortalSessionCookies,
   clearPortalSessionCookies,
   _resetPortalCookieWarnStateForTests,
+  validatePortalCookieCsrfRequest,
 } from './helpers';
 import type { Context } from 'hono';
 
@@ -289,5 +290,56 @@ describe('portal cookie transport warnings (#2611 diagnostics)', () => {
     setPortalSessionCookies(makeCookieContext({ forwardedProto: 'http' }).c, 't');
     expect(allWarnings()).toContain('PORTAL_COOKIE_SAME_SITE=None');
     expect(allWarnings()).toContain('WILL silently discard');
+  });
+});
+
+describe('validatePortalCookieCsrfRequest — same-origin requests outside CORS_ALLOWED_ORIGINS', () => {
+  const originalNodeEnv = process.env.NODE_ENV;
+  const originalOrigins = process.env.CORS_ALLOWED_ORIGINS;
+  const originalTrust = process.env.TRUST_PROXY_HEADERS;
+
+  beforeEach(() => {
+    process.env.NODE_ENV = 'production';
+    process.env.CORS_ALLOWED_ORIGINS = 'https://portal.example.com';
+    process.env.TRUST_PROXY_HEADERS = 'false';
+  });
+
+  afterEach(() => {
+    if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = originalNodeEnv;
+    if (originalOrigins === undefined) delete process.env.CORS_ALLOWED_ORIGINS;
+    else process.env.CORS_ALLOWED_ORIGINS = originalOrigins;
+    if (originalTrust === undefined) delete process.env.TRUST_PROXY_HEADERS;
+    else process.env.TRUST_PROXY_HEADERS = originalTrust;
+  });
+
+  function csrfContext(headers: Record<string, string>, url = 'http://api:3001/api/v1/portal/logout'): Context {
+    const normalized = Object.fromEntries(
+      Object.entries(headers).map(([name, value]) => [name.toLowerCase(), value]),
+    );
+    return {
+      get: (key: string) => (key === 'portalAuth' ? { authMethod: 'cookie' } : undefined),
+      req: { header: (name: string) => normalized[name.toLowerCase()], url },
+    } as unknown as Context;
+  }
+
+  const tokens = { cookie: 'breeze_portal_csrf_token=csrf', 'x-breeze-csrf': 'csrf' };
+
+  it('accepts a tunnel origin the browser asserts is same-origin', () => {
+    const c = csrfContext({ ...tokens, origin: 'https://localhost:8443', 'sec-fetch-site': 'same-origin' });
+    expect(validatePortalCookieCsrfRequest(c)).toBeNull();
+  });
+
+  it('accepts a tunnel origin equal to the request scheme + Host', () => {
+    const c = csrfContext(
+      { ...tokens, origin: 'https://localhost:8443', host: 'localhost:8443' },
+      'https://localhost:8443/api/v1/portal/logout',
+    );
+    expect(validatePortalCookieCsrfRequest(c)).toBeNull();
+  });
+
+  it('still rejects a foreign origin', () => {
+    const c = csrfContext({ ...tokens, origin: 'https://evil.example', 'sec-fetch-site': 'same-site', host: 'localhost:8443' });
+    expect(validatePortalCookieCsrfRequest(c)).toBe('Invalid request origin');
   });
 });

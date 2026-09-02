@@ -866,7 +866,15 @@ loginRoutes.post('/refresh', async (c) => {
   const csrfError = validateCookieCsrfRequest(c);
   if (csrfError) {
     clearRefreshTokenCookie(c);
-    return c.json({ error: csrfError }, 403);
+    // `code` lets the web client tell an origin misconfiguration (operator
+    // opened Breeze at an address outside CORS_ALLOWED_ORIGINS) apart from a
+    // dead session, instead of showing "session expired" for both.
+    return c.json(
+      csrfError === 'Invalid request origin'
+        ? { error: csrfError, code: 'invalid_request_origin' }
+        : { error: csrfError },
+      403,
+    );
   }
 
   const payload = await verifyToken(refreshToken);

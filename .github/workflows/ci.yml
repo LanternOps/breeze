@@ -1699,7 +1699,8 @@ jobs:
             # Bounded too: dpkg runs maintainer scripts and can block on its
             # own, and an unbounded recovery would reintroduce the very stall
             # this step exists to prevent.
-            sudo timeout --kill-after=30s 60s dpkg --configure -a || true
+            sudo timeout --kill-after=30s 60s dpkg --configure -a || \
+              echo "::warning::dpkg --configure -a recovery failed after attempt ${attempt}; this can mean a genuinely broken runner (corrupted dpkg state, disk full) rather than a slow mirror — check this run's logs if all ${attempts} attempts fail."
             sleep $((attempt * 15))
           done
           echo "::error::Failed to install Tauri system dependencies after ${attempts} attempts."
@@ -2566,20 +2567,38 @@ jobs:
               if [ -n "$existing" ]; then
                 gh issue close "$existing" --repo "$GITHUB_REPOSITORY" \
                   --comment "Main is green again as of \`$short_sha\`: $RUN_URL" \
-                  || echo "::error::Failed to close ci-red issue #$existing; it will close on the next green main run."
+                  || {
+                    echo "::error::Failed to close ci-red issue #$existing; it will close on the next green main run."
+                    {
+                      echo "### main-red-alert: failed to close ci-red issue #$existing"
+                      echo "Main is green again as of \`$short_sha\`, but closing ci-red issue #$existing failed. It will self-heal on the next green push to main, or can be closed manually. Run: $RUN_URL"
+                    } >> "$GITHUB_STEP_SUMMARY"
+                  }
               fi
               ;;
             failure)
               if [ -n "$existing" ]; then
                 gh issue comment "$existing" --repo "$GITHUB_REPOSITORY" \
                   --body "Still red at \`$short_sha\`: $RUN_URL" \
-                  || echo "::error::Failed to comment on ci-red issue #$existing; the issue is already open, so main-red state is still tracked."
+                  || {
+                    echo "::error::Failed to comment on ci-red issue #$existing; the issue is already open, so main-red state is still tracked."
+                    {
+                      echo "### main-red-alert: failed to comment on ci-red issue #$existing"
+                      echo "Main is still red at \`$short_sha\`, but commenting on ci-red issue #$existing failed. The issue is already open, so main-red state is still tracked, but this run's failure is not recorded on it. Run: $RUN_URL"
+                    } >> "$GITHUB_STEP_SUMMARY"
+                  }
               else
                 body=$(printf "CI failed on a main push at \`%s\`.\n\nRun: %s\n\nThis issue is managed by the main-red-alert job: it stays open while main is red and closes automatically on the next green main run." "$short_sha" "$RUN_URL")
                 gh issue create --repo "$GITHUB_REPOSITORY" --label ci-red \
                   --title "CI is red on main" \
                   --body "$body" \
-                  || echo "::error::Failed to open a ci-red issue for $short_sha — main is RED and untracked. Re-run this job once the API recovers."
+                  || {
+                    echo "::error::Failed to open a ci-red issue for $short_sha — main is RED and untracked. Re-run this job once the API recovers."
+                    {
+                      echo "### :rotating_light: main-red-alert: failed to open ci-red issue"
+                      echo "Main failed at \`$short_sha\`, and opening a ci-red tracking issue also failed. **Main is red and untracked** — this will not self-heal until the next push to main. Re-run this job once the GitHub API recovers, or file the tracking issue by hand. Run: $RUN_URL"
+                    } >> "$GITHUB_STEP_SUMMARY"
+                  }
               fi
               ;;
             *)

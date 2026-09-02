@@ -218,7 +218,8 @@
     {
       "pattern": "docker-compose*.yml",
       "docs": [
-        "deploy/production.mdx"
+        "deploy/production.mdx",
+        "getting-started/prerequisites.mdx"
       ]
     },
     {
@@ -2352,6 +2353,63 @@
       "pattern": "packages/shared/src/types/aiAgents.ts",
       "docs": [
         "features/ai-agents.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/contractTemplateService.ts",
+      "docs": [
+        "features/contracts.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/contractTemplateRender.ts",
+      "docs": [
+        "features/contracts.mdx",
+        "features/quotes.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/contractDocumentService.ts",
+      "docs": [
+        "features/contracts.mdx",
+        "features/quotes.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/db/schema/contractDocuments.ts",
+      "docs": [
+        "features/contracts.mdx",
+        "reference/schema.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/contracts/templates.ts",
+      "docs": [
+        "features/contracts.mdx"
+      ]
+    },
+    {
+      "pattern": "packages/shared/src/validators/contractTemplates.ts",
+      "docs": [
+        "features/contracts.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/contracts/TemplatesTab.tsx",
+      "docs": [
+        "features/contracts.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/billing/quotes/QuoteContractBlockEditor.tsx",
+      "docs": [
+        "features/quotes.mdx"
+      ]
+    },
+    {
+      "pattern": "scripts/guided-setup.sh",
+      "docs": [
+        "getting-started/prerequisites.mdx"
       ]
     }
   ]

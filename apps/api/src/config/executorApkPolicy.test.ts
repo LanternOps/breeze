@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -117,11 +117,15 @@ describe('credential-boundary executor apk policy', () => {
     expect(policyAccepts('RUN $(which apk) add curl')).toBe(false);
   });
 
-  it('applies the policy to both credential-boundary executors', () => {
+  it('applies the policy to all three credential-boundary executors', () => {
     // Guards the wiring rather than the regex: if a future edit drops one of
     // these call sites, the rule silently stops running for that image.
+    // Includes the actions executor (#4272, dup #4264): it holds Graph
+    // *mutation* credentials — the highest blast radius of the three — and
+    // previously had no Dockerfile-content policy applied to it at all.
     const script = execFileSync('cat', [SCRIPT], { encoding: 'utf8' });
     expect(script).toMatch(/require_audited_openssl_upgrade "\$EXECUTOR_DOCKERFILE"/);
+    expect(script).toMatch(/require_audited_openssl_upgrade "\$ACTIONS_EXECUTOR_DOCKERFILE"/);
     expect(script).toMatch(/require_audited_openssl_upgrade "\$COMMS_EXECUTOR_DOCKERFILE"/);
     // ...and that wrapper is what actually runs the rejection rule. If a
     // refactor keeps the call sites but drops this line, the images would still
@@ -130,11 +134,25 @@ describe('credential-boundary executor apk policy', () => {
     // And the images themselves must actually pass it.
     for (const image of [
       'apps/m365-graph-read-executor/Dockerfile',
+      'apps/m365-graph-actions-executor/Dockerfile',
       'apps/m365-communications-executor/Dockerfile',
     ]) {
       expect(() =>
         execFileSync('bash', [SCRIPT, '--check-apk', path.join(REPO_ROOT, image)], { stdio: 'pipe' }),
       ).not.toThrow();
     }
+  });
+
+  it('rejects the exact actions-executor regression reported in #4272', () => {
+    // Issue #4272 verified the gap by appending this line to the real
+    // apps/m365-graph-actions-executor/Dockerfile and observing the full
+    // guard exit 0. Reproduce that mutation against the real file content and
+    // confirm the now-wired policy rejects it.
+    const actionsDockerfile = readFileSync(
+      path.join(REPO_ROOT, 'apps/m365-graph-actions-executor/Dockerfile'),
+      'utf8',
+    );
+    const mutated = `${actionsDockerfile}\nRUN apk add --no-cache sudo openssh netcat-openbsd\n`;
+    expect(policyAccepts(mutated)).toBe(false);
   });
 });

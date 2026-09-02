@@ -1,8 +1,6 @@
 export interface InstallCommandOptions {
   /** Breeze API origin, e.g. https://eu.2breeze.app */
   apiUrl: string;
-  /** Base URL for direct Windows binary downloads (GitHub releases) */
-  ghBase: string;
   /** Enrollment token from the Add Device / setup flow */
   token: string;
   /** Optional org enrollment secret */
@@ -29,7 +27,6 @@ export interface InstallCommands {
  */
 export function buildInstallCommands(opts: InstallCommandOptions): InstallCommands {
   const apiUrl = opts.apiUrl.replace(/\/+$/, '');
-  const ghBase = opts.ghBase.replace(/\/+$/, '');
   const { token, enrollmentSecret } = opts;
 
   // The connectivity message is scoped to the fetch + shebang check only —
@@ -42,6 +39,13 @@ export function buildInstallCommands(opts: InstallCommandOptions): InstallComman
     `{ echo "[ERROR] Could not fetch the Breeze installer from ${apiUrl} — verify this machine has network access to your Breeze server." >&2; false; }; } && ` +
     `sudo bash "$f" --server "${apiUrl}" --token "${token}"${unixSecretFlag}`;
 
+  // Windows downloads through the server's own route, never a hard-coded
+  // GitHub URL: that route is what serves BYO / self-hosted signed binaries
+  // (BINARY_SOURCE=local, or a custom BINARY_GITHUB_REPOSITORY) and what
+  // install.sh already uses for macOS/Linux. In github mode the server 302s
+  // to the release asset it is pinned to, which Invoke-WebRequest follows
+  // exactly as it did for GitHub's own latest/download redirect (#4441).
+  //
   // The MZ-magic check is the Windows analog of the unix shebang check: a
   // captive portal's 200 HTML saved as breeze-agent.exe would otherwise stop
   // the chain with PowerShell's raw "not a valid application" exception
@@ -56,7 +60,7 @@ export function buildInstallCommands(opts: InstallCommandOptions): InstallComman
     `{throw "Breeze: downloaded file is not a Windows executable - a captive portal or web filter may be intercepting this network"}`;
   const windows =
     `$ErrorActionPreference='Stop'; ` +
-    `Invoke-WebRequest -Uri "${ghBase}/breeze-agent-windows-amd64.exe" -OutFile breeze-agent.exe; ` +
+    `Invoke-WebRequest -Uri "${apiUrl}/api/v1/agents/download/windows/amd64" -OutFile breeze-agent.exe; ` +
     `${winMzCheck}; ` +
     `.\\breeze-agent.exe service install; ${winThrow('service install')}; ` +
     `.\\breeze-agent.exe enroll "${token}" --server "${apiUrl}"${winSecretFlag}; ${winThrow('enrollment')}; ` +
