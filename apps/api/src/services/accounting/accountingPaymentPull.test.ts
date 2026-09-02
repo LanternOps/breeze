@@ -624,6 +624,42 @@ describe('applyAccountingPayment', () => {
     expect(recomputeMock).not.toHaveBeenCalled();
   });
 
+  it('refuses a payment against a voided invoice and marks the invoice mapping instead', async () => {
+    currentInvoices = [invoiceRow({ status: 'void' })];
+
+    const result = await applyAccountingPayment(conn(), LINE, runCtx);
+
+    expect(result).toMatchObject({
+      outcome: 'invoice_void',
+      remotePaymentId: QBO_PAYMENT_ID,
+      remoteInvoiceId: QBO_INVOICE_ID,
+      invoiceId: INVOICE_ID,
+      invoicePaymentId: null,
+    });
+    // No money row, and the void header's amount_paid/balance are never rewritten.
+    expect(stmts.some((s) => s.kind === 'insert')).toBe(false);
+    expect(recomputeMock).not.toHaveBeenCalled();
+    expect(writeAuditEventMock).not.toHaveBeenCalled();
+
+    const mappingUpdate = stmts.find((s) => s.kind === 'update' && s.table === 'accounting_entity_mappings')!;
+    expect(mappingUpdate.set).toMatchObject({
+      syncStatus: 'error',
+      lastError: 'Payment received in QuickBooks against a voided invoice',
+    });
+    expect(mappingUpdate.set).not.toHaveProperty('remoteEntityId');
+  });
+
+  it('refuses a voided invoice BEFORE consulting the payment mapping, so a replay cannot slip through', async () => {
+    currentInvoices = [invoiceRow({ status: 'void' })];
+    currentPayments = [paymentRow()];
+    currentMappings = [invoiceMappingRow(), paymentMappingRow({ remoteSyncToken: '0' })];
+
+    const result = await applyAccountingPayment(conn(), LINE, runCtx);
+
+    expect(result.outcome).toBe('invoice_void');
+    expect(stmts.some((s) => s.kind === 'update' && s.table === 'invoice_payments')).toBe(false);
+  });
+
   it('throws rather than reporting applied when the payment insert returns no row', async () => {
     paymentInsertReturnsZeroRows = true;
 
@@ -648,6 +684,18 @@ describe('applyAccountingPayment', () => {
     expect(result).toMatchObject({ outcome: 'replayed', invoiceId: INVOICE_ID, invoicePaymentId: 'pay-racer' });
     // Our own invoice_payments insert must not have survived the rollback.
     expect(currentPayments.map((p) => p.id)).toEqual(['pay-racer']);
+    expect(writeAuditEventMock).not.toHaveBeenCalled();
+  });
+
+  it('throws when the racing claim vanished before the re-read, so the item ends failed', async () => {
+    // The racer won the index, then its mapping was reversed in the gap before
+    // our fresh-context re-read. Reporting `replayed` here would let the worker
+    // advance the CDC cursor past a payment that now exists nowhere.
+    mappingInsertViolation = 'accounting_entity_mappings_remote_uniq';
+    racerMappingRow = null;
+
+    await expect(applyAccountingPayment(conn(), LINE, runCtx))
+      .rejects.toThrow(/claimed .*180\/145.* but no mapping row remains/i);
     expect(writeAuditEventMock).not.toHaveBeenCalled();
   });
 

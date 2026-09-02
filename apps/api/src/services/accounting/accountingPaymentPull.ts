@@ -50,8 +50,13 @@
  *      which re-reads the payment sum inside the same transaction and therefore
  *      under the same lock.
  *
- * TWO DELIBERATE DEPARTURES FROM THE MANUAL PAYMENT PATH:
+ * DELIBERATE DEPARTURES FROM THE MANUAL PAYMENT PATH:
  *
+ *  0. A VOID INVOICE IS REFUSED, like `recordPayment` refuses one — but as the
+ *     clean `invoice_void` outcome plus an invoice-mapping error marker rather
+ *     than a throw, because there is no caller to show a 409 to and a throw
+ *     would pin the CDC cursor forever on a document that will never accept the
+ *     payment.
  *  1. OVER-PAYMENT IS ALLOWED (plan decision 2). `recordPayment` rejects a
  *     payment that exceeds the balance because a human typed it; here
  *     QuickBooks is reporting money that already moved, and refusing it would
@@ -89,6 +94,11 @@ export type PaymentPullOutcome =
   | 'reversed'           // mirrored a QBO delete/void
   | 'skipped_unmapped'   // Breeze never pushed this invoice; not an error
   | 'currency_mismatch'  // recorded on the mapping row as sync_status='error'; no payment row
+  // QuickBooks took money against an invoice Breeze already voided. CLEAN for
+  // cursor purposes (exactly like `currency_mismatch`): retrying cannot help,
+  // the divergence is recorded on the invoice mapping row for a human, and the
+  // void header's amount_paid/balance are deliberately left untouched.
+  | 'invoice_void'
   // Produced by the CDC WORKER, never by this module: anything unexpected here
   // throws so the caller's transaction rolls back rather than half-applying, and
   // the worker classifies the throw, leaves the cursor and rethrows.
@@ -296,10 +306,21 @@ export async function applyAccountingPayment(
       const claimed = await loadMappingByRemoteId(conn, 'payment', 'Payment', remoteMappingId);
       // The mapping alone only names the payment row; read it back so the
       // caller still gets a complete result including the invoice id.
-      const pay = claimed ? await loadPaymentRow(claimed.breezeEntityId) : null;
+      if (!claimed) {
+        // The winner's row was reversed (or erased) in the gap between its
+        // commit and this re-read. Reporting `replayed` here would tell the
+        // worker this payment is safely recorded and let it advance the CDC
+        // cursor past a payment that now exists NOWHERE. Fail the item instead:
+        // the cursor stays put and the next sweep re-applies it cleanly.
+        throw new Error(
+          `accountingPaymentPull: a concurrent writer claimed the QuickBooks payment mapping ${remoteMappingId} `
+          + 'but no mapping row remains on re-read — refusing to report this payment as already applied',
+        );
+      }
+      const pay = await loadPaymentRow(claimed.breezeEntityId);
       return result(
         'replayed', line.remotePaymentId, line.remoteInvoiceId,
-        pay?.invoiceId ?? null, claimed?.breezeEntityId ?? null,
+        pay?.invoiceId ?? null, claimed.breezeEntityId,
       );
     });
   }
@@ -329,6 +350,24 @@ async function applyInsideTransaction(
   if (!inv) {
     // The mapping outlived its invoice (an erased org, or a partner change).
     return noAudit(result('skipped_unmapped', line.remotePaymentId, line.remoteInvoiceId));
+  }
+
+  // (b2) A voided invoice is a hard stop, checked on the LOCKED row and BEFORE
+  // the payment mapping is consulted — so no branch below it (replay, edit,
+  // first delivery) can write to a void document. Recording the payment would
+  // rewrite `amount_paid`/`balance` on a header the operator deliberately
+  // voided, and `deriveInvoiceStatus` short-circuits on `voided`, so the row
+  // would silently disagree with its own status with no operator signal. The
+  // marker is the same invoice-mapping path the currency mismatch uses.
+  if (inv.status === 'void') {
+    const message = 'Payment received in QuickBooks against a voided invoice';
+    await markInvoiceMappingError(conn, invoiceMapping.id, message);
+    captureException(
+      new Error(`${message} (remotePaymentId=${line.remotePaymentId}, invoiceId=${inv.id})`),
+      undefined,
+      { service: 'accountingPaymentPull', remotePaymentId: line.remotePaymentId, invoiceId: inv.id },
+    );
+    return noAudit(result('invoice_void', line.remotePaymentId, line.remoteInvoiceId, inv.id));
   }
 
   // (c) Authoritative at-most-once claim, read under the lock.

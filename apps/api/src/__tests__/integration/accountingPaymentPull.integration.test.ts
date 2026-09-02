@@ -287,6 +287,35 @@ describe('QuickBooks payment applier — real Postgres', () => {
     expect(inv.balance).toBe('150.00');
   });
 
+  runDb('a payment against an invoice Breeze already voided writes no money row and marks the mapping', async () => {
+    const fx = await seedFixture();
+    const invoiceId = await seedInvoice(fx, { total: '150.00' });
+    await seedInvoiceMapping(fx, invoiceId, '145');
+    await withSystemDbAccessContext(() => db.update(invoices)
+      .set({ status: 'void', voidedAt: new Date(), voidReason: 'issued in error' })
+      .where(eq(invoices.id, invoiceId)));
+
+    const res = await applyAccountingPayment(fx.conn, paymentLine(), systemRunner);
+
+    expect(res).toMatchObject({ outcome: 'invoice_void', invoiceId, invoicePaymentId: null });
+    expect(await loadPayments(invoiceId)).toEqual([]);
+    expect(await loadMappings(fx, 'payment')).toEqual([]);
+
+    const [invoiceMapping] = await loadMappings(fx, 'invoice');
+    expect(invoiceMapping).toMatchObject({
+      syncStatus: 'error',
+      lastError: 'Payment received in QuickBooks against a voided invoice',
+      remoteEntityId: '145',
+      linkStatus: 'confirmed',
+    });
+
+    // The void header is untouched: no amount_paid/balance rewrite.
+    const inv = await loadInvoice(invoiceId);
+    expect(inv.status).toBe('void');
+    expect(inv.amountPaid).toBe('0.00');
+    expect(inv.balance).toBe('150.00');
+  });
+
   runDb('a payment for an invoice Breeze never pushed is skipped and writes nothing', async () => {
     const fx = await seedFixture();
     const invoiceId = await seedInvoice(fx, { total: '150.00' });
