@@ -205,7 +205,7 @@ Nothing auto-suspends. Suspension remains an explicit admin action; probation ma
 
 Flag `PARTNER_TRUST_MODE = off | shadow | enforce` (env; hosted default `shadow`, self-hosted default `off`), following the `ML_FEATURE_FLAGS` global-kill-switch pattern (`services/mlFeatureFlags.ts`).
 
-- `off`: columns exist, nothing reads them.
+- `off`: columns exist, nothing reads them. **Self-hosted safeguard:** the resolver returns `off` whenever `IS_HOSTED` is not `true`, regardless of the env value, and a unit test pins that. The guided-setup smoke job additionally asserts that a fresh self-hosted stack can open a remote session, so a regression here fails CI before it ships.
 - `shadow`: `evaluateCapability` runs, logs would-deny decisions as `partner.trust.capability_denied` audit events with `mode: shadow`, and allows. Gives a false-positive count before any customer is affected.
 - `enforce`: denies.
 
