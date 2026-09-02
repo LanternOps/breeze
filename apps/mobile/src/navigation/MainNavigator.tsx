@@ -15,6 +15,7 @@ import { HomeScreen } from '../screens/chat/HomeScreen';
 import { SystemsScreen } from '../screens/systems/SystemsScreen';
 import { TicketsScreen } from '../screens/tickets/TicketsScreen';
 import { TicketDetailScreen } from '../screens/tickets/TicketDetailScreen';
+import { CreateTicketScreen } from '../screens/tickets/CreateTicketScreen';
 import { AttachmentViewerScreen } from '../screens/tickets/AttachmentViewerScreen';
 import { TimesheetScreen } from '../screens/time/TimesheetScreen';
 import { TimeSuggestionsScreen } from '../screens/time/TimeSuggestionsScreen';
@@ -33,6 +34,7 @@ export type SystemsStackParamList = {
 
 export type TicketsStackParamList = {
   Tickets: undefined;
+  CreateTicket: undefined;
   TicketDetail: { ticketId: string };
   /**
    * W11 (#4337). Carries `contentType` and `filename` as params rather than
@@ -96,6 +98,11 @@ function TicketsStackNavigator() {
         name="Tickets"
         component={TicketsScreen}
         options={{ headerShown: false }}
+      />
+      <TicketsStack.Screen
+        name="CreateTicket"
+        component={CreateTicketScreen}
+        options={{ title: 'New ticket' }}
       />
       <TicketsStack.Screen
         name="TicketDetail"
