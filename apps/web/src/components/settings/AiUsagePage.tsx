@@ -6,6 +6,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { formatCurrency, formatNumber } from '@/lib/i18n/format';
+import AiBudgetThresholdsInput from './AiBudgetThresholdsInput';
 
 interface UsageData {
   daily: { inputTokens: number; outputTokens: number; totalCostCents: number; messageCount: number };
@@ -23,7 +24,11 @@ interface UsageData {
     monthlyUsedCents: number;
     dailyUsedCents: number;
     approvalMode: string;
+    alertThresholdPercents?: number[];
   } | null;
+  alerts?: {
+    fired: Array<{ period: string; periodKey: string; thresholdPct: number; createdAt: string; deliveredAt: string | null }>;
+  };
 }
 
 interface SessionRow {
@@ -50,6 +55,7 @@ interface BudgetForm {
   messagesPerMinutePerUser: string;
   messagesPerHourPerOrg: string;
   approvalMode: ApprovalMode;
+  alertThresholdPercents: number[] | undefined;
 }
 
 export default function AiUsagePage() {
@@ -71,6 +77,7 @@ export default function AiUsagePage() {
     messagesPerMinutePerUser: '20',
     messagesPerHourPerOrg: '200',
     approvalMode: 'per_step',
+    alertThresholdPercents: undefined,
   });
 
   const fetchData = useCallback(async () => {
@@ -102,6 +109,7 @@ export default function AiUsagePage() {
             messagesPerMinutePerUser: '20',
             messagesPerHourPerOrg: '200',
             approvalMode: data.budget.approvalMode || 'per_step',
+            alertThresholdPercents: data.budget.alertThresholdPercents,
           });
         }
       }
@@ -130,7 +138,7 @@ export default function AiUsagePage() {
   const budgetFields = [
     'enabled', 'monthlyBudgetCents', 'dailyBudgetCents',
     'maxTurnsPerSession', 'messagesPerMinutePerUser', 'messagesPerHourPerOrg',
-    'approvalMode',
+    'approvalMode', 'alertThresholdPercents',
   ];
   const allFieldsLocked = budgetFields.every((f) => isLocked(f));
 
@@ -147,6 +155,7 @@ export default function AiUsagePage() {
       if (!isLocked('messagesPerMinutePerUser')) payload.messagesPerMinutePerUser = parseInt(budget.messagesPerMinutePerUser) || 20;
       if (!isLocked('messagesPerHourPerOrg')) payload.messagesPerHourPerOrg = parseInt(budget.messagesPerHourPerOrg) || 200;
       if (!isLocked('approvalMode')) payload.approvalMode = budget.approvalMode;
+      if (!isLocked('alertThresholdPercents')) payload.alertThresholdPercents = budget.alertThresholdPercents ?? null;
 
       const res = await fetchWithAuth('/ai/budget', {
         method: 'PUT',
@@ -227,6 +236,12 @@ export default function AiUsagePage() {
         />
       </div>
 
+      {usage?.alerts?.fired?.length ? (
+        <p data-testid="ai-budget-fired-rungs" className="text-xs text-muted-foreground">
+          {usage.alerts.fired.map((f) => t('aiUsagePage.firedRung', { pct: f.thresholdPct, period: f.period, date: new Date(f.createdAt).toLocaleDateString() })).join(' · ')}
+        </p>
+      ) : null}
+
       {/* Budget configuration */}
       <div className="rounded-lg border bg-card p-6">
         <h2 className="text-lg font-semibold mb-4">{t('aiUsagePage.budgetConfiguration')}</h2>
@@ -304,6 +319,21 @@ export default function AiUsagePage() {
             )}
           </label>
           <label className="block">
+            <span className="text-sm text-muted-foreground">{t('aiUsagePage.alertThresholds')}</span>
+            <AiBudgetThresholdsInput
+              value={budget.alertThresholdPercents}
+              onChange={(v) => setBudget({ ...budget, alertThresholdPercents: v })}
+              disabled={isLocked('alertThresholdPercents')}
+              placeholder="50, 80, 95"
+              testId="ai-budget-thresholds"
+            />
+            {isLocked('alertThresholdPercents') && (
+              <span className="mt-1 flex items-center gap-1 text-xs text-amber-600 dark:text-amber-400 italic">
+                <Lock className="h-3 w-3" /> {t('aiUsagePage.managedByPartner')}</span>
+            )}
+            <span className="mt-1 block text-xs text-muted-foreground">{t('aiUsagePage.alertThresholdsHelp')}</span>
+          </label>
+          <label className="block">
             <span className="text-sm text-muted-foreground">{t('aiUsagePage.maxTurnsPerSession')}</span>
             <input
               type="number"
@@ -348,6 +378,7 @@ export default function AiUsagePage() {
         </div>
         <div className="mt-4 flex items-center gap-3">
           <button
+            data-testid="ai-budget-save"
             onClick={handleSaveBudget}
             disabled={saving || allFieldsLocked}
             className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"

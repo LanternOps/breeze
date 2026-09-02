@@ -119,6 +119,8 @@
     "maxTurns": "Máximo de turnos por sessão",
     "messagesPerMinute": "Mensagens por minuto por usuário",
     "messagesPerHour": "Mensagens por hora por organização",
+    "alertThresholds": "Avisar em (% do orçamento)",
+    "alertThresholdsHelp": "Administradores parceiros com acesso a cobrança recebem um alerta no aplicativo em cada nível e um e-mail para alertas mensais e de limite atingido. Deixe em branco para herdar 50, 80, 95.",
     "notSet": "Não definido — as organizações configuram individualmente",
     "description": "Os valores de orçamento são aplicados a todas as organizações filhas. Os valores em dólares são armazenados internamente em centavos.",
     "modes": {
@@ -127,6 +129,9 @@
       "autoApprove": "Aprovar automaticamente",
       "hybridPlan": "Plano híbrido"
     }
+  },
+  "aiBudgetThresholds": {
+    "invalid": "Insira até cinco números inteiros entre 1 e 99, separados por vírgulas."
   },
   "partnerAiProvider": {
     "title": "Provedor de IA",
@@ -1294,6 +1299,9 @@
     "monthlyBudget": "Orçamento mensal (US$)",
     "noLimit": "Sem limite",
     "dailyBudget": "Orçamento diário (US$)",
+    "alertThresholds": "Avisar em (% do orçamento)",
+    "alertThresholdsHelp": "Os alertas vão para administradores parceiros com acesso a cobrança. 100% (limite atingido) é sempre enviado.",
+    "firedRung": "Alerta de {{pct}}% {{period}} enviado em {{date}}",
     "maxTurnsPerSession": "Máximo de turnos por sessão",
     "msgsMinPerUser": "Mensagens/minuto por usuário",
     "msgsHrPerOrg": "Mensagens/hora por organização",

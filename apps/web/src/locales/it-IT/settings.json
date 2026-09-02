@@ -119,6 +119,8 @@
     "maxTurns": "Turni massimi per sessione",
     "messagesPerMinute": "Messaggi al minuto per utente",
     "messagesPerHour": "Messaggi all'ora per org",
+    "alertThresholds": "Avvisa al (% del budget)",
+    "alertThresholdsHelp": "Gli admin partner con accesso alla fatturazione ricevono un avviso in-app a ogni soglia e un'email per gli avvisi mensili e di limite raggiunto. Lascia vuoto per ereditare 50, 80, 95.",
     "notSet": "Non impostato — le org si configurano singolarmente",
     "description": "I valori di budget vengono applicati a tutte le organizzazioni figlie. Gli importi in dollari sono archiviati internamente in centesimi.",
     "modes": {
@@ -127,6 +129,9 @@
       "autoApprove": "Approvazione automatica",
       "hybridPlan": "Piano ibrido"
     }
+  },
+  "aiBudgetThresholds": {
+    "invalid": "Inserisci fino a cinque numeri interi tra 1 e 99, separati da virgole."
   },
   "partnerAiProvider": {
     "title": "Provider IA",
@@ -1294,6 +1299,9 @@
     "monthlyBudget": "Budget mensile ($)",
     "noLimit": "Nessun limite",
     "dailyBudget": "Budget giornaliero ($)",
+    "alertThresholds": "Avvisa al (% del budget)",
+    "alertThresholdsHelp": "Gli avvisi vengono inviati agli admin partner con accesso alla fatturazione. Il 100% (limite raggiunto) viene sempre inviato.",
+    "firedRung": "Avviso {{pct}}% {{period}} inviato il {{date}}",
     "maxTurnsPerSession": "Turni massimi per sessione",
     "msgsMinPerUser": "Messaggi/min per utente",
     "msgsHrPerOrg": "Messaggi/ora per organizzazione",
