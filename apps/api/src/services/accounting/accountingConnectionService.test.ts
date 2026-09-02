@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { decryptSecret } from '../secretCrypto';
+import { decryptSecret, encryptSecret } from '../secretCrypto';
 
 // refreshRealmSettings resolves the ambient `db` from '../../db' itself (its
 // signature is `(partnerId, provider)` — no db parameter), so it needs the
@@ -32,9 +32,25 @@ const { dbRef, ambientDb, getValidAccessTokenMock, ReauthRequiredErrorClass, fet
 
 vi.mock('../../db', () => ({
   db: ambientDb,
+  hasDbAccessContext: () => ctx.depth > 0,
   runOutsideDbContext: (fn: () => unknown) => fn(),
   withSystemDbAccessContext: (fn: () => unknown) => fn(),
 }));
+
+/**
+ * Context tracker for the `DbContextRunner` `refreshRealmSettings` now takes.
+ * The db mock's `hasDbAccessContext` reads the same depth, so the real
+ * (unmocked) `dbContextGuard.assertNoAmbientDbContext` runs its real logic.
+ */
+const ctx = vi.hoisted(() => ({ depth: 0 }));
+const runCtx = async <T>(fn: () => Promise<T>): Promise<T> => {
+  ctx.depth++;
+  try {
+    return await fn();
+  } finally {
+    ctx.depth--;
+  }
+};
 
 vi.mock('./accountingTokens', () => ({
   getValidAccessToken: getValidAccessTokenMock,
@@ -360,27 +376,58 @@ describe('accountingConnectionService', () => {
     expect(conn?.multiCurrencyEnabled).toBeNull();
   });
 
+  // The multi-currency flag carries the SAME per-realm identity risk as the
+  // cached home currency: it is read off one specific realm's settings
+  // response, and `refreshRealmSettings` captures its generation before a
+  // multi-second QuickBooks round trip. It therefore gets the same
+  // compare-and-set, not a plain guarded UPDATE.
   describe('updateMultiCurrencyEnabled', () => {
-    it('writes the flag under a plain guarded UPDATE', async () => {
-      const setSpy = vi.fn(() => ({
-        where: vi.fn(() => ({ returning: vi.fn(async () => [{ id: 'c1' }]) })),
+    const at = new Date('2026-09-03T00:00:00Z');
+
+    it('writes the flag under the row lock at the expected realm + generation', async () => {
+      const { db, state } = makeAmbientFakeDb(ambientConnectionRow({
+        realmIdEncrypted: encryptSecret('realm-A'), updatedAt: at, multiCurrencyEnabled: null,
       }));
-      const db = { select: vi.fn(), insert: vi.fn(), update: vi.fn(() => ({ set: setSpy })), delete: vi.fn() } as any;
       const { updateMultiCurrencyEnabled } = await import('./accountingConnectionService');
 
-      await updateMultiCurrencyEnabled(db, 'c1', 'p1', true);
+      await updateMultiCurrencyEnabled(db as any, 'c1', 'p1', { updatedAt: at, realmId: 'realm-A' }, true);
 
-      expect(setSpy).toHaveBeenCalledWith(expect.objectContaining({ multiCurrencyEnabled: true }));
+      expect(state.row?.multiCurrencyEnabled).toBe(true);
     });
 
-    it('throws on a zero-row match instead of silently dropping the write', async () => {
-      const db = {
-        select: vi.fn(), insert: vi.fn(), delete: vi.fn(),
-        update: vi.fn(() => ({ set: vi.fn(() => ({ where: vi.fn(() => ({ returning: vi.fn(async () => []) })) })) })),
-      } as any;
+    it('ABORTS when the row now belongs to a different realm — even at an IDENTICAL updatedAt', async () => {
+      const { db, state } = makeAmbientFakeDb(ambientConnectionRow({
+        realmIdEncrypted: encryptSecret('realm-B'), updatedAt: at, multiCurrencyEnabled: null,
+      }));
+      const { updateMultiCurrencyEnabled, isHomeCurrencyCasAbort } = await import('./accountingConnectionService');
+
+      const err: unknown = await updateMultiCurrencyEnabled(
+        db as any, 'c1', 'p1', { updatedAt: at, realmId: 'realm-A' }, true,
+      ).catch((e: unknown) => e);
+
+      expect(isHomeCurrencyCasAbort(err)).toBe(true);
+      expect(state.row?.multiCurrencyEnabled).toBeNull(); // the old realm's flag never lands on the new realm
+    });
+
+    it('ABORTS on a stale generation (same realm, reconnected since)', async () => {
+      const { db, state } = makeAmbientFakeDb(ambientConnectionRow({
+        realmIdEncrypted: encryptSecret('realm-A'), updatedAt: new Date('2026-09-04T00:00:00Z'), multiCurrencyEnabled: null,
+      }));
+      const { updateMultiCurrencyEnabled, isHomeCurrencyCasAbort } = await import('./accountingConnectionService');
+
+      const err: unknown = await updateMultiCurrencyEnabled(
+        db as any, 'c1', 'p1', { updatedAt: at, realmId: 'realm-A' }, true,
+      ).catch((e: unknown) => e);
+
+      expect(isHomeCurrencyCasAbort(err)).toBe(true);
+      expect(state.row?.multiCurrencyEnabled).toBeNull();
+    });
+
+    it('throws when the lock read returns nothing (deleted row or wrong RLS context)', async () => {
+      const { db } = makeAmbientFakeDb(null);
       const { updateMultiCurrencyEnabled } = await import('./accountingConnectionService');
 
-      await expect(updateMultiCurrencyEnabled(db, 'c1', 'p1', false))
+      await expect(updateMultiCurrencyEnabled(db as any, 'c1', 'p1', { updatedAt: at, realmId: null }, false))
         .rejects.toThrow(/matched no accounting_connections row/);
     });
   });
@@ -393,7 +440,7 @@ describe('accountingConnectionService', () => {
       fetchRealmSettingsMock.mockResolvedValue({ homeCurrency: 'CAD', multiCurrencyEnabled: true });
 
       const { refreshRealmSettings } = await import('./accountingConnectionService');
-      const result = await refreshRealmSettings('p1', 'quickbooks');
+      const result = await refreshRealmSettings('p1', 'quickbooks', runCtx);
 
       expect(result).toEqual({ homeCurrency: 'CAD', multiCurrencyEnabled: true });
       expect(state.row?.multiCurrencyEnabled).toBe(true);
@@ -406,7 +453,7 @@ describe('accountingConnectionService', () => {
       dbRef.current = db;
 
       const { refreshRealmSettings } = await import('./accountingConnectionService');
-      await expect(refreshRealmSettings('p1', 'quickbooks')).rejects.toMatchObject({ code: 'not_connected', status: 404 });
+      await expect(refreshRealmSettings('p1', 'quickbooks', runCtx)).rejects.toMatchObject({ code: 'not_connected', status: 404 });
       expect(fetchRealmSettingsMock).not.toHaveBeenCalled();
     });
 
@@ -415,7 +462,7 @@ describe('accountingConnectionService', () => {
       dbRef.current = db;
 
       const { refreshRealmSettings } = await import('./accountingConnectionService');
-      await expect(refreshRealmSettings('p1', 'quickbooks')).rejects.toMatchObject({ code: 'reauth_required', status: 409 });
+      await expect(refreshRealmSettings('p1', 'quickbooks', runCtx)).rejects.toMatchObject({ code: 'reauth_required', status: 409 });
       expect(fetchRealmSettingsMock).not.toHaveBeenCalled();
     });
 
@@ -425,7 +472,7 @@ describe('accountingConnectionService', () => {
       getValidAccessTokenMock.mockRejectedValue(new ReauthRequiredErrorClass());
 
       const { refreshRealmSettings } = await import('./accountingConnectionService');
-      await expect(refreshRealmSettings('p1', 'quickbooks')).rejects.toMatchObject({ code: 'reauth_required', status: 409 });
+      await expect(refreshRealmSettings('p1', 'quickbooks', runCtx)).rejects.toMatchObject({ code: 'reauth_required', status: 409 });
       expect(fetchRealmSettingsMock).not.toHaveBeenCalled();
     });
 
@@ -442,7 +489,7 @@ describe('accountingConnectionService', () => {
         throw new AccountingHomeCurrencyCasAbortError('updateHomeCurrency aborted: lost the compare-and-set');
       });
 
-      const result = await refreshRealmSettings('p1', 'quickbooks');
+      const result = await refreshRealmSettings('p1', 'quickbooks', runCtx);
 
       expect(result).toEqual({ homeCurrency: 'CAD', multiCurrencyEnabled: false });
     });
@@ -457,7 +504,7 @@ describe('accountingConnectionService', () => {
       });
 
       const { refreshRealmSettings } = await import('./accountingConnectionService');
-      await expect(refreshRealmSettings('p1', 'quickbooks')).rejects.toThrow('deadlock detected');
+      await expect(refreshRealmSettings('p1', 'quickbooks', runCtx)).rejects.toThrow('deadlock detected');
     });
 
     it('skips the home-currency write (never blanks it) when the realm reports no currency', async () => {
@@ -467,7 +514,7 @@ describe('accountingConnectionService', () => {
       fetchRealmSettingsMock.mockResolvedValue({ homeCurrency: null, multiCurrencyEnabled: true });
 
       const { refreshRealmSettings } = await import('./accountingConnectionService');
-      const result = await refreshRealmSettings('p1', 'quickbooks');
+      const result = await refreshRealmSettings('p1', 'quickbooks', runCtx);
 
       expect(result).toEqual({ homeCurrency: null, multiCurrencyEnabled: true });
       expect(state.row?.homeCurrency).toBe('USD'); // untouched
@@ -481,7 +528,7 @@ describe('accountingConnectionService', () => {
       fetchRealmSettingsMock.mockResolvedValue({ homeCurrency: 'USD', multiCurrencyEnabled: null });
 
       const { refreshRealmSettings } = await import('./accountingConnectionService');
-      const result = await refreshRealmSettings('p1', 'quickbooks');
+      const result = await refreshRealmSettings('p1', 'quickbooks', runCtx);
 
       expect(result).toEqual({ homeCurrency: 'USD', multiCurrencyEnabled: null });
       expect(state.row?.multiCurrencyEnabled).toBe(true); // untouched
@@ -499,7 +546,7 @@ describe('accountingConnectionService', () => {
       });
 
       const { refreshRealmSettings } = await import('./accountingConnectionService');
-      const result = await refreshRealmSettings('p1', 'quickbooks');
+      const result = await refreshRealmSettings('p1', 'quickbooks', runCtx);
 
       // If the CAS had compared against the STALE pre-refresh updatedAt, this
       // write would have lost the race and homeCurrency would stay 'USD'.

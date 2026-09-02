@@ -186,8 +186,7 @@ describe('pushInvoiceToAccounting currency contract — real Postgres', () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch');
 
     await expect(
-      withDbAccessContext(partnerCtx(fx.partnerId, fx.orgId), () =>
-        pushInvoiceToAccounting(invoiceId, fx.partnerId))
+      pushInvoiceToAccounting(invoiceId, fx.partnerId, (fn) => withDbAccessContext(partnerCtx(fx.partnerId, fx.orgId), fn))
     ).rejects.toMatchObject({ code: 'currency_mismatch', status: 409 });
 
     expect(fetchSpy).not.toHaveBeenCalled();
@@ -200,8 +199,7 @@ describe('pushInvoiceToAccounting currency contract — real Postgres', () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch');
 
     await expect(
-      withDbAccessContext(partnerCtx(fx.partnerId, fx.orgId), () =>
-        pushInvoiceToAccounting(invoiceId, fx.partnerId))
+      pushInvoiceToAccounting(invoiceId, fx.partnerId, (fn) => withDbAccessContext(partnerCtx(fx.partnerId, fx.orgId), fn))
     ).rejects.toMatchObject({ code: 'home_currency_unknown', status: 409 });
 
     expect(fetchSpy).not.toHaveBeenCalled();
@@ -224,8 +222,7 @@ describe('pushInvoiceToAccounting currency contract — real Postgres', () => {
       })
     );
 
-    const first = await withDbAccessContext(partnerCtx(fx.partnerId, fx.orgId), () =>
-      pushInvoiceToAccounting(invoiceId, fx.partnerId));
+    const first = await pushInvoiceToAccounting(invoiceId, fx.partnerId, (fn) => withDbAccessContext(partnerCtx(fx.partnerId, fx.orgId), fn));
 
     expect(first.syncStatus).toBe('synced');
     expect(first.taxVarianceCents).toBeNull();
@@ -246,8 +243,7 @@ describe('pushInvoiceToAccounting currency contract — real Postgres', () => {
     // Second push: the coordinator finds the existing mapping row and re-sends
     // via the sparse-update wire path (mapping present -> `sparse:true, Id,
     // SyncToken` per quickbooksProvider.pushInvoice), not a second INSERT.
-    const second = await withDbAccessContext(partnerCtx(fx.partnerId, fx.orgId), () =>
-      pushInvoiceToAccounting(invoiceId, fx.partnerId));
+    const second = await pushInvoiceToAccounting(invoiceId, fx.partnerId, (fn) => withDbAccessContext(partnerCtx(fx.partnerId, fx.orgId), fn));
 
     expect(second.syncStatus).toBe('synced');
     expect(fetchSpy).toHaveBeenCalledTimes(2);

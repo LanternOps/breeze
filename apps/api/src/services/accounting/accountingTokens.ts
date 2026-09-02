@@ -1,5 +1,6 @@
 import { and, eq } from 'drizzle-orm';
-import { runOutsideDbContext } from '../../db';
+import { withSystemDbAccessContext } from '../../db';
+import { assertNoAmbientDbContext } from './dbContextGuard';
 import { accountingConnections } from '../../db/schema';
 import { decryptSecret } from '../secretCrypto';
 import type { AccountingConnection, DbExecutor, DbTransactor } from './accountingConnectionService';
@@ -100,7 +101,12 @@ async function handleRefreshFailure(
     throw err;
   }
 
-  return db.transaction(async (tx) => {
+  // Its OWN short system transaction, for the same reason A and B below are:
+  // entered with no ambient context this is a real transaction that commits on
+  // its own, so the `reauth_required` status it writes survives the throw two
+  // lines later. Joined onto a caller's context it would be a savepoint and the
+  // status would roll back with the caller's transaction.
+  return withSystemDbAccessContext(() => db.transaction(async (tx) => {
     const row = await lockConnectionRow(tx, connection);
     const currentRefreshToken = decryptRowRefreshToken(row);
 
@@ -134,14 +140,31 @@ async function handleRefreshFailure(
     });
     await markStatus(tx, connection.id, connection.partnerId, 'reauth_required', 'QuickBooks refresh token is invalid or expired');
     throw new ReauthRequiredError();
-  });
+  }), 'accountingTokens.refreshFailureRecheck');
 }
 
+/**
+ * Refresh the connection's access token if needed and return a live one.
+ *
+ * MUST be entered with NO ambient DB access context (asserted): every DB block
+ * below opens its own short `withSystemDbAccessContext` transaction so that the
+ * row lock is released — and the token rotation committed — before and after
+ * the `provider.refresh()` network call, and so that a `reauth_required` status
+ * write survives the `ReauthRequiredError` thrown immediately after it. Joined
+ * onto a caller's transaction every one of those blocks degrades to a savepoint:
+ * the lock would then genuinely span the fetch (the #1105 hold this module
+ * claims to avoid) and the status writes would roll back with the caller.
+ */
 export async function getValidAccessToken(db: DbTransactor, connection: AccountingConnection): Promise<string> {
+  assertNoAmbientDbContext('getValidAccessToken');
+
   const now = Date.now();
   const refreshExpiresAt = connection.refreshTokenExpiresAt?.getTime() ?? 0;
   if (!connection.refreshToken || refreshExpiresAt <= now) {
-    await markStatus(db, connection.id, connection.partnerId, 'reauth_required', 'QuickBooks refresh token expired');
+    await withSystemDbAccessContext(
+      () => markStatus(db, connection.id, connection.partnerId, 'reauth_required', 'QuickBooks refresh token expired'),
+      'accountingTokens.markReauth',
+    );
     throw new ReauthRequiredError();
   }
 
@@ -163,9 +186,11 @@ export async function getValidAccessToken(db: DbTransactor, connection: Accounti
   // UPDATE ... await provider.refresh() ...)`, pinning a pooled Postgres
   // connection AND the row lock for the entire QBO round trip. That is
   // exactly the #1105 connection-hold class this repo has had pool-storm
-  // incidents from; `runOutsideDbContext` only escapes the RLS/ALS context,
-  // it does not release a transaction whose `tx` handle we still hold
-  // directly. Instead, two SHORT transactions bracket the fetch:
+  // incidents from. Note that `runOutsideDbContext` is NOT what buys the
+  // release: it only re-routes the AsyncLocalStorage lookup and cannot commit
+  // a transaction the caller already opened, which is why this function
+  // asserts it was entered with none (see the doc comment above) and opens
+  // each of the two SHORT transactions itself:
   //
   //   A. Lock the row, re-check under the lock (double-checked: a peer may
   //      already have refreshed while we waited for the lock). If still
@@ -183,7 +208,7 @@ export async function getValidAccessToken(db: DbTransactor, connection: Accounti
   //      the connection until reauth. Comparing the actual token value has no
   //      such collision window. Otherwise persist ours, same zero-row-throw
   //      `updateTokens` as before.
-  const captured = await db.transaction(async (tx) => {
+  const captured = await withSystemDbAccessContext(() => db.transaction(async (tx) => {
     const row = await lockConnectionRow(tx, connection);
 
     const winnerToken = freshAccessTokenFromRow(row, now);
@@ -197,7 +222,7 @@ export async function getValidAccessToken(db: DbTransactor, connection: Accounti
     }
 
     return { needsRefresh: true as const, refreshToken: lockedRefreshToken };
-  });
+  }), 'accountingTokens.captureRefresh');
 
   if (!captured.needsRefresh) return captured.accessToken;
 
@@ -206,13 +231,15 @@ export async function getValidAccessToken(db: DbTransactor, connection: Accounti
     const provider = getAccountingProvider(connection.provider);
     // QBO ROTATES the refresh token on every refresh — the persist below
     // writes the returned refresh_token, not the old one. Dropping that write
-    // permanently breaks the connection. No transaction is open here.
-    tokens = await runOutsideDbContext(() => provider.refresh(captured.refreshToken));
+    // permanently breaks the connection. Transaction A has COMMITTED by now and
+    // the entry assert guarantees the caller left none open, so this genuinely
+    // runs with no connection held.
+    tokens = await provider.refresh(captured.refreshToken);
   } catch (err) {
     return handleRefreshFailure(db, connection, captured.refreshToken, err);
   }
 
-  return db.transaction(async (tx) => {
+  return withSystemDbAccessContext(() => db.transaction(async (tx) => {
     const row = await lockConnectionRow(tx, connection);
 
     if (decryptRowRefreshToken(row) !== captured.refreshToken) {
@@ -237,5 +264,5 @@ export async function getValidAccessToken(db: DbTransactor, connection: Accounti
       refreshTokenExpiresAt: tokens.refreshTokenExpiresAt,
     });
     return tokens.accessToken;
-  });
+  }), 'accountingTokens.persistRefresh');
 }

@@ -66,15 +66,29 @@ function connectionRow(overrides: Record<string, unknown> = {}) {
 describe('processAccountingSyncJob', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('runs inside runOutsideDbContext(withSystemDbAccessContext(...)) — the coordinator does not self-wrap', async () => {
+  it('runs outside any DB context and hands the coordinator a LABELLED system-context runner', async () => {
     getConnectionMock.mockResolvedValue(connectionRow());
     pushInvoiceMock.mockResolvedValue({});
 
     await processAccountingSyncJob({ type: 'push-invoice', invoiceId: INV_ID, partnerId: PARTNER_ID });
 
     expect(runOutsideDbContextMock).toHaveBeenCalledOnce();
+    // Exactly ONE context so far — the connection gate read. The coordinator
+    // opens the rest itself, per phase, through the runner it was handed.
+    // Wrapping the whole job in one context (the old shape) held a pooled
+    // connection across every QuickBooks call and rolled back the
+    // coordinator's error markers.
     expect(withSystemDbAccessContextMock).toHaveBeenCalledOnce();
-    expect(pushInvoiceMock).toHaveBeenCalledWith(INV_ID, PARTNER_ID);
+    expect(withSystemDbAccessContextMock).toHaveBeenCalledWith(expect.any(Function), 'accountingSync.push-invoice');
+
+    const [invoiceId, partnerId, runInDbContext] = pushInvoiceMock.mock.calls[0]!;
+    expect(invoiceId).toBe(INV_ID);
+    expect(partnerId).toBe(PARTNER_ID);
+    // The runner really opens a system context — not an identity passthrough
+    // that would silently leave every phase contextless.
+    withSystemDbAccessContextMock.mockClear();
+    await (runInDbContext as <T>(fn: () => Promise<T>) => Promise<T>)(async () => 'phase');
+    expect(withSystemDbAccessContextMock).toHaveBeenCalledWith(expect.any(Function), 'accountingSync.push-invoice');
   });
 
   it('returns without calling the coordinator when there is no QuickBooks connection', async () => {
@@ -110,7 +124,7 @@ describe('processAccountingSyncJob', () => {
 
     await processAccountingSyncJob({ type: 'void-invoice', invoiceId: INV_ID, partnerId: PARTNER_ID });
 
-    expect(voidInvoiceMock).toHaveBeenCalledWith(INV_ID, PARTNER_ID);
+    expect(voidInvoiceMock).toHaveBeenCalledWith(INV_ID, PARTNER_ID, expect.any(Function));
   });
 
   const terminalCodes: Array<[AccountingInvoicePushErrorCode, 404 | 409 | 502]> = [
@@ -137,6 +151,16 @@ describe('processAccountingSyncJob', () => {
     expect(errSpy).toHaveBeenCalled();
     expect(captureExceptionMock).toHaveBeenCalled();
     errSpy.mockRestore();
+  });
+
+  it('rethrows sync_in_progress (409) so BullMQ retries — a void that raced a mid-flight push is NOT terminal', async () => {
+    getConnectionMock.mockResolvedValue(connectionRow());
+    const err = new AccountingInvoicePushError('sync_in_progress', 409, 'push still in flight');
+    voidInvoiceMock.mockRejectedValue(err);
+
+    await expect(
+      processAccountingSyncJob({ type: 'void-invoice', invoiceId: INV_ID, partnerId: PARTNER_ID }),
+    ).rejects.toBe(err);
   });
 
   it('rethrows quickbooks_error (502) so BullMQ retries', async () => {
@@ -184,8 +208,12 @@ describe('enqueueAccountingInvoicePush / enqueueAccountingInvoiceVoid (Redis-out
         jobId: `accounting-push-${INV_ID}`,
         attempts: 5,
         backoff: { type: 'exponential', delay: 5000 },
-        removeOnComplete: { count: 100 },
-        removeOnFail: { count: 500 },
+        // NOT a retained count: BullMQ silently drops an add() whose jobId is
+        // still in the completed/failed sets, so retaining jobs made a
+        // re-push of a fixed mapping a no-op the route still called
+        // "enqueued". In-flight dedup (wait/active) is unaffected.
+        removeOnComplete: true,
+        removeOnFail: true,
       }),
     );
     const jobId = queueAddMock.mock.calls[0]![2].jobId as string;
@@ -204,21 +232,27 @@ describe('enqueueAccountingInvoicePush / enqueueAccountingInvoiceVoid (Redis-out
     expect(opts).toMatchObject({
       attempts: 5,
       backoff: { type: 'exponential', delay: 5000 },
-      removeOnComplete: { count: 100 },
-      removeOnFail: { count: 500 },
+      removeOnComplete: true,
+      removeOnFail: true,
     });
     expect((opts.jobId as string)).not.toContain(':');
   });
 
-  it('never throws when the queue add fails (e.g. Redis down) — push', async () => {
+  it('reports acceptance so the bulk route can count honestly', async () => {
+    queueAddMock.mockResolvedValue({ id: 'j1' });
+    await expect(enqueueAccountingInvoicePush(INV_ID, PARTNER_ID)).resolves.toBe(true);
+    await expect(enqueueAccountingInvoiceVoid(INV_ID, PARTNER_ID)).resolves.toBe(true);
+  });
+
+  it('never throws when the queue add fails (e.g. Redis down) — push — and reports false', async () => {
     queueAddMock.mockRejectedValue(new Error('ECONNREFUSED'));
-    await expect(enqueueAccountingInvoicePush(INV_ID, PARTNER_ID)).resolves.toBeUndefined();
+    await expect(enqueueAccountingInvoicePush(INV_ID, PARTNER_ID)).resolves.toBe(false);
     expect(captureExceptionMock).toHaveBeenCalled();
   });
 
-  it('never throws when the queue add fails (e.g. Redis down) — void', async () => {
+  it('never throws when the queue add fails (e.g. Redis down) — void — and reports false', async () => {
     queueAddMock.mockRejectedValue(new Error('ECONNREFUSED'));
-    await expect(enqueueAccountingInvoiceVoid(INV_ID, PARTNER_ID)).resolves.toBeUndefined();
+    await expect(enqueueAccountingInvoiceVoid(INV_ID, PARTNER_ID)).resolves.toBe(false);
     expect(captureExceptionMock).toHaveBeenCalled();
   });
 });

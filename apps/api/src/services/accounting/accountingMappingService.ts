@@ -29,7 +29,8 @@
  */
 
 import { and, eq, isNull } from 'drizzle-orm';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { db } from '../../db';
+import { assertNoAmbientDbContext, type DbContextRunner } from './dbContextGuard';
 import {
   accountingEntityMappings,
   catalogItems,
@@ -156,7 +157,7 @@ function orgBillingEmail(billingContact: unknown): string | null {
  * unlink-without-live-token fix): callers that DO need a live token call
  * `resolveConnectionAndToken`, which composes this with `resolveLiveConnection`.
  */
-async function resolveConnection(
+export async function resolveConnection(
   partnerId: string,
   provider: 'quickbooks',
 ): Promise<AccountingConnection> {
@@ -177,14 +178,22 @@ async function resolveConnection(
 
 /**
  * Refresh (if needed) and attach a LIVE access token to an already-resolved
- * connection row. Token rotation (and its persisted write) runs under a
- * system DB context per the plan's Global Constraints — it is a partner-axis
- * write, not tied to the caller's request-scoped RLS context.
+ * connection row.
+ *
+ * MUST be called with NO ambient DB access context, and deliberately does NOT
+ * open one: `getValidAccessToken` opens its own short system transactions
+ * around the QuickBooks refresh fetch and asserts that nothing is already open
+ * (accountingTokens.ts). Wrapping this in `withSystemDbAccessContext` — as it
+ * once was — made those "two short transactions" savepoints inside the
+ * caller's transaction, which held the connection's `FOR UPDATE` row lock
+ * across the refresh round trip: the exact hold the module claims to avoid.
+ * `runOutsideDbContext` would not help either; it re-routes the ALS lookup but
+ * cannot commit the caller's transaction.
  */
-async function resolveLiveConnection(conn: AccountingConnection): Promise<AccountingConnection> {
+export async function resolveLiveConnection(conn: AccountingConnection): Promise<AccountingConnection> {
   let accessToken: string;
   try {
-    accessToken = await runOutsideDbContext(() => withSystemDbAccessContext(() => getValidAccessToken(db, conn)));
+    accessToken = await getValidAccessToken(db, conn);
   } catch (err) {
     if (err instanceof ReauthRequiredError) {
       throw new AccountingMappingError('reauth_required', 409, 'QuickBooks needs to be reconnected');
@@ -196,10 +205,14 @@ async function resolveLiveConnection(conn: AccountingConnection): Promise<Accoun
 
 /**
  * Resolve the partner's connection AND a valid access token, rejecting
- * disconnected/reauth states as typed errors. Everything else in this module
- * reads through the ambient `db` (the caller's partner-scoped context),
- * matching "Request route reads/writes otherwise stay in the caller's
- * partner RLS context."
+ * disconnected/reauth states as typed errors.
+ *
+ * Entered with NO ambient DB access context (asserted): the connection row is
+ * read inside ONE short `runInDbContext` transaction that commits, and the
+ * token refresh then runs with nothing held (see `resolveLiveConnection`).
+ * Callers supply the runner — routes pass
+ * `(fn) => withAuthDbAccessContext(auth, fn)`, off-request callers pass
+ * `(fn) => withSystemDbAccessContext(fn, '<label>')`.
  *
  * Exported for `accountingInvoicePush.ts` (Phase C, Task 3): the invoice-push
  * coordinator needs the exact same connection/token/reauth resolution this
@@ -209,8 +222,10 @@ async function resolveLiveConnection(conn: AccountingConnection): Promise<Accoun
 export async function resolveConnectionAndToken(
   partnerId: string,
   provider: 'quickbooks',
+  runInDbContext: DbContextRunner,
 ): Promise<{ conn: AccountingConnection; liveConn: AccountingConnection }> {
-  const conn = await resolveConnection(partnerId, provider);
+  assertNoAmbientDbContext('resolveConnectionAndToken');
+  const conn = await runInDbContext(() => resolveConnection(partnerId, provider));
   const liveConn = await resolveLiveConnection(conn);
   return { conn, liveConn };
 }
@@ -287,30 +302,35 @@ async function proposeOrgMappings(
   partnerId: string,
   conn: AccountingConnection,
   liveConn: AccountingConnection,
+  runInDbContext: DbContextRunner,
 ): Promise<MappingProposal[]> {
-  // runOutsideDbContext here is self-documentation/parity with the
-  // quickbooksCustomerImport.ts precedent, NOT a standalone fix: per the
-  // comment on SELF_MANAGED_DB_CONTEXT_ROUTES
-  // (middleware/selfManagedDbContextRoutes.ts), it only swaps which `db` the
-  // AsyncLocalStorage proxy resolves to — it does NOT close an outer
-  // transaction the auth middleware already opened for the request. Unlike
-  // quickbooksCustomerImport's routes, this service's DB reads deliberately
-  // stay in the CALLER'S ambient partner context (ruling in the task brief),
-  // so the ONLY thing that actually keeps this multi-second QBO page fetch
-  // from pinning a pooled connection idle-in-transaction (#1105) is the
-  // caller opting out of the auto request-transaction. Task 5's mapping
-  // routes MUST be added to SELF_MANAGED_DB_CONTEXT_ROUTES — the same
-  // treatment already given `/accounting/:provider/customers` — or every
-  // proposal/income-account request holds a connection across the QBO round
-  // trip.
-  const remoteCustomers = await runOutsideDbContext(() =>
-    callProviderOrThrow(
-      () => getAccountingProvider(conn.provider).listRemoteCustomers(liveConn),
-      'QuickBooks returned an error while listing customers',
-    ),
+  // The multi-second QuickBooks page fetch runs FIRST, with no DB context (and
+  // therefore no pooled connection) held — `resolveConnectionAndToken` asserted
+  // the caller left none open, and every DB read/write below is then done
+  // inside ONE short `runInDbContext` transaction. An earlier version relied on
+  // `runOutsideDbContext` here, which only swaps which `db` the
+  // AsyncLocalStorage proxy resolves to and does NOT close a transaction the
+  // caller already opened (#1105).
+  const remoteCustomers = await callProviderOrThrow(
+    () => getAccountingProvider(conn.provider).listRemoteCustomers(liveConn),
+    'QuickBooks returned an error while listing customers',
   );
   const remoteNameById = new Map(remoteCustomers.map((c) => [c.id, c.displayName]));
 
+  return runInDbContext(() => buildOrgProposals(partnerId, conn, remoteCustomers, remoteNameById));
+}
+
+/**
+ * The DB half of `proposeOrgMappings`, split out so it can be handed WHOLE to
+ * one short `runInDbContext` transaction opened after the QuickBooks fetch —
+ * rather than the reads straddling a context that was open across it.
+ */
+async function buildOrgProposals(
+  partnerId: string,
+  conn: AccountingConnection,
+  remoteCustomers: RemoteCustomer[],
+  remoteNameById: Map<string, string>,
+): Promise<MappingProposal[]> {
   const orgs = await db
     .select()
     .from(organizations)
@@ -414,16 +434,26 @@ async function proposeItemMappings(
   partnerId: string,
   conn: AccountingConnection,
   liveConn: AccountingConnection,
+  runInDbContext: DbContextRunner,
 ): Promise<MappingProposal[]> {
-  // See the comment in proposeOrgMappings above — same SELF_MANAGED_DB_CONTEXT_ROUTES obligation.
-  const remoteItems = await runOutsideDbContext(() =>
-    callProviderOrThrow(
-      () => getAccountingProvider(conn.provider).listRemoteItems(liveConn),
-      'QuickBooks returned an error while listing items',
-    ),
+  // See the comment in proposeOrgMappings above — fetch first with nothing
+  // held, then one short DB context for the reads.
+  const remoteItems = await callProviderOrThrow(
+    () => getAccountingProvider(conn.provider).listRemoteItems(liveConn),
+    'QuickBooks returned an error while listing items',
   );
   const remoteNameById = new Map(remoteItems.map((i) => [i.id, i.displayName]));
 
+  return runInDbContext(() => buildItemProposals(partnerId, conn, remoteItems, remoteNameById));
+}
+
+/** The DB half of `proposeItemMappings` — see `buildOrgProposals`. */
+async function buildItemProposals(
+  partnerId: string,
+  conn: AccountingConnection,
+  remoteItems: RemoteItem[],
+  remoteNameById: Map<string, string>,
+): Promise<MappingProposal[]> {
   const items = await db
     .select()
     .from(catalogItems)
@@ -489,13 +519,16 @@ async function proposeItemMappings(
   });
 }
 
-export async function listMappingProposals(input: ListMappingProposalsInput): Promise<MappingProposal[]> {
+export async function listMappingProposals(
+  input: ListMappingProposalsInput,
+  runInDbContext: DbContextRunner,
+): Promise<MappingProposal[]> {
   const { partnerId, provider, entityType } = input;
-  const { conn, liveConn } = await resolveConnectionAndToken(partnerId, provider);
+  const { conn, liveConn } = await resolveConnectionAndToken(partnerId, provider, runInDbContext);
 
   return entityType === 'org'
-    ? proposeOrgMappings(partnerId, conn, liveConn)
-    : proposeItemMappings(partnerId, conn, liveConn);
+    ? proposeOrgMappings(partnerId, conn, liveConn, runInDbContext)
+    : proposeItemMappings(partnerId, conn, liveConn, runInDbContext);
 }
 
 /**
@@ -503,18 +536,17 @@ export async function listMappingProposals(input: ListMappingProposalsInput): Pr
  * /:provider/income-accounts` route): owns connection lookup, token refresh,
  * and the provider call so the route stays a thin pass-through.
  */
-export async function listRemoteIncomeAccountsForPartner(input: {
-  partnerId: string;
-  provider: 'quickbooks';
-}): Promise<RemoteIncomeAccount[]> {
-  const { conn, liveConn } = await resolveConnectionAndToken(input.partnerId, input.provider);
-  // Same SELF_MANAGED_DB_CONTEXT_ROUTES obligation as proposeOrgMappings above —
-  // Task 5's `GET /:provider/income-accounts` route must be registered there too.
-  return runOutsideDbContext(() =>
-    callProviderOrThrow(
-      () => getAccountingProvider(conn.provider).listRemoteIncomeAccounts(liveConn),
-      'QuickBooks returned an error while listing income accounts',
-    ),
+export async function listRemoteIncomeAccountsForPartner(
+  input: { partnerId: string; provider: 'quickbooks' },
+  runInDbContext: DbContextRunner,
+): Promise<RemoteIncomeAccount[]> {
+  const { conn, liveConn } = await resolveConnectionAndToken(input.partnerId, input.provider, runInDbContext);
+  // Nothing to persist, so there is no second DB phase: the connection read
+  // committed inside `resolveConnectionAndToken`'s short context and this
+  // provider call runs with no connection held.
+  return callProviderOrThrow(
+    () => getAccountingProvider(conn.provider).listRemoteIncomeAccounts(liveConn),
+    'QuickBooks returned an error while listing income accounts',
   );
 }
 
@@ -686,19 +718,28 @@ async function upsertMappingRow(params: {
  * must not stand between that partner and a decision that never touches
  * QuickBooks.
  */
-export async function saveMappingDecision(input: SaveMappingDecisionInput): Promise<MappingRow> {
+export async function saveMappingDecision(
+  input: SaveMappingDecisionInput,
+  runInDbContext: DbContextRunner,
+): Promise<MappingRow> {
   const { partnerId, provider, breezeEntityType, breezeEntityId, decision, remoteEntityId } = input;
-  const conn = await resolveConnection(partnerId, provider);
+  assertNoAmbientDbContext('saveMappingDecision');
   const remoteEntityType: 'Customer' | 'Item' = breezeEntityType === 'org' ? 'Customer' : 'Item';
 
-  if (breezeEntityType === 'org') {
-    await loadOwnedOrg(breezeEntityId, partnerId);
-  } else {
-    await loadOwnedCatalogItem(breezeEntityId, partnerId);
-  }
+  // Phase 1 — connection, ownership and the current mapping rows, in ONE short
+  // context that commits before the `confirmed` path's QuickBooks list call.
+  const { conn, mappingRows, existing } = await runInDbContext(async () => {
+    const conn = await resolveConnection(partnerId, provider);
 
-  const mappingRows = await loadMappingRows(partnerId, conn.id, breezeEntityType);
-  const existing = mappingRows.find((m) => m.breezeEntityId === breezeEntityId) ?? null;
+    if (breezeEntityType === 'org') {
+      await loadOwnedOrg(breezeEntityId, partnerId);
+    } else {
+      await loadOwnedCatalogItem(breezeEntityId, partnerId);
+    }
+
+    const mappingRows = await loadMappingRows(partnerId, conn.id, breezeEntityType);
+    return { conn, mappingRows, existing: mappingRows.find((m) => m.breezeEntityId === breezeEntityId) ?? null };
+  });
 
   let fields: MappingDecisionFields;
 
@@ -720,11 +761,9 @@ export async function saveMappingDecision(input: SaveMappingDecisionInput): Prom
     // live token — resolved here, not upfront (see the function doc above).
     const liveConn = await resolveLiveConnection(conn);
     const remoteProvider = getAccountingProvider(conn.provider);
-    const remoteList = await runOutsideDbContext(() =>
-      callProviderOrThrow(
-        () => (remoteEntityType === 'Customer' ? remoteProvider.listRemoteCustomers(liveConn) : remoteProvider.listRemoteItems(liveConn)),
-        `QuickBooks returned an error while listing ${remoteEntityType === 'Customer' ? 'customers' : 'items'}`,
-      ),
+    const remoteList = await callProviderOrThrow(
+      () => (remoteEntityType === 'Customer' ? remoteProvider.listRemoteCustomers(liveConn) : remoteProvider.listRemoteItems(liveConn)),
+      `QuickBooks returned an error while listing ${remoteEntityType === 'Customer' ? 'customers' : 'items'}`,
     );
     const found = remoteList.find((r) => r.id === remoteEntityId);
     if (!found) {
@@ -742,7 +781,9 @@ export async function saveMappingDecision(input: SaveMappingDecisionInput): Prom
     fields = { remoteEntityId: null, remoteSyncToken: null, remoteCurrencyCode: null, linkStatus: 'unlinked', syncStatus: 'pending', lastError: null };
   }
 
-  return upsertMappingRow({ existing, integrationId: conn.id, partnerId, breezeEntityType, breezeEntityId, remoteEntityType, fields });
+  // Phase 2 — its own short context, so the decision COMMITS on its own.
+  return runInDbContext(() =>
+    upsertMappingRow({ existing, integrationId: conn.id, partnerId, breezeEntityType, breezeEntityId, remoteEntityType, fields }));
 }
 
 /** Only the fields QBO omission (§11) needs: never send a raw org/item row across the seam. */
@@ -971,65 +1012,100 @@ async function persistRemoteRef(params: {
  * `AccountingEntityMapping` in types.ts); its absence makes it a create —
  * Item creation additionally requires `accounting_connections.default_income_account_ref`.
  */
-export async function syncMappedEntity(input: SyncMappedEntityInput): Promise<MappingRow> {
+export async function syncMappedEntity(
+  input: SyncMappedEntityInput,
+  runInDbContext: DbContextRunner,
+): Promise<MappingRow> {
   const { partnerId, provider, breezeEntityType, breezeEntityId } = input;
-  const { conn, liveConn } = await resolveConnectionAndToken(partnerId, provider);
-  const providerImpl = getAccountingProvider(conn.provider);
+  assertNoAmbientDbContext('syncMappedEntity');
 
-  const mappingRows = await loadMappingRows(partnerId, conn.id, breezeEntityType);
-  const mapping = mappingRows.find((m) => m.breezeEntityId === breezeEntityId);
-  if (!mapping) {
-    throw new AccountingMappingError('mapping_not_ready', 409, 'Confirm or create a mapping before syncing this entity');
-  }
-  if (mapping.linkStatus !== 'confirmed' && mapping.linkStatus !== 'create_new') {
-    throw new AccountingMappingError('mapping_not_ready', 409, 'Confirm or create a mapping before syncing this entity');
-  }
+  // Phase 1 — connection, mapping row, ownership and the whole provider
+  // payload, in ONE short context. Every pre-flight refusal
+  // (mapping_not_ready, income_account_required, item_price_required,
+  // entity_not_found, a create-time currency_mismatch) is raised here, before
+  // a token is resolved or QuickBooks is touched.
+  const prep = await runInDbContext(async () => {
+    const conn = await resolveConnection(partnerId, provider);
 
-  const existingRef: AccountingEntityMappingSeam | null = mapping.remoteEntityId
-    ? { remoteEntityId: mapping.remoteEntityId, remoteSyncToken: mapping.remoteSyncToken ?? null }
-    : null;
-  const isCreate = existingRef === null;
+    const mappingRows = await loadMappingRows(partnerId, conn.id, breezeEntityType);
+    const mapping = mappingRows.find((m) => m.breezeEntityId === breezeEntityId);
+    if (!mapping) {
+      throw new AccountingMappingError('mapping_not_ready', 409, 'Confirm or create a mapping before syncing this entity');
+    }
+    if (mapping.linkStatus !== 'confirmed' && mapping.linkStatus !== 'create_new') {
+      throw new AccountingMappingError('mapping_not_ready', 409, 'Confirm or create a mapping before syncing this entity');
+    }
 
-  let remote: RemoteRef;
-  try {
+    const existingRef: AccountingEntityMappingSeam | null = mapping.remoteEntityId
+      ? { remoteEntityId: mapping.remoteEntityId, remoteSyncToken: mapping.remoteSyncToken ?? null }
+      : null;
+    const isCreate = existingRef === null;
+
     if (breezeEntityType === 'org') {
       const org = await loadOwnedOrg(breezeEntityId, partnerId);
       if (isCreate) assertCreateCurrencyMatchesRealm(conn, org.currencyCode, 'organization');
-      remote = await runOutsideDbContext(() => providerImpl.upsertCustomer(liveConn, buildCustomerPayload(org), existingRef));
-    } else {
-      if (isCreate && !conn.defaultIncomeAccountRef) {
-        throw new AccountingMappingError(
-          'income_account_required',
-          409,
-          'Select a default QuickBooks income account before creating catalog items in QuickBooks',
-        );
-      }
-      const item = await loadOwnedCatalogItem(breezeEntityId, partnerId);
-      const { currencyCode, unitPrice } = await resolveItemSellPrice(item, partnerId);
-      // The Item payload's currency is the PARTNER's default currency (see
-      // resolveItemSellPrice), so that is what QBO would stamp the new Item at.
-      if (isCreate) assertCreateCurrencyMatchesRealm(conn, currencyCode, 'catalog item');
-      remote = await runOutsideDbContext(() =>
-        providerImpl.upsertItem(liveConn, buildItemPayload(item, conn, currencyCode, unitPrice), existingRef),
+      return { conn, mapping, existingRef, kind: 'org' as const, payload: buildCustomerPayload(org) };
+    }
+
+    if (isCreate && !conn.defaultIncomeAccountRef) {
+      throw new AccountingMappingError(
+        'income_account_required',
+        409,
+        'Select a default QuickBooks income account before creating catalog items in QuickBooks',
       );
     }
+    const item = await loadOwnedCatalogItem(breezeEntityId, partnerId);
+    const { currencyCode, unitPrice } = await resolveItemSellPrice(item, partnerId);
+    // The Item payload's currency is the PARTNER's default currency (see
+    // resolveItemSellPrice), so that is what QBO would stamp the new Item at.
+    if (isCreate) assertCreateCurrencyMatchesRealm(conn, currencyCode, 'catalog item');
+    return {
+      conn, mapping, existingRef, kind: 'catalog_item' as const,
+      payload: buildItemPayload(item, conn, currencyCode, unitPrice),
+    };
+  });
+
+  const { conn, mapping, existingRef } = prep;
+  // Token refresh and the upsert both run with NO context held (see
+  // `resolveLiveConnection`).
+  const liveConn = await resolveLiveConnection(conn);
+  const providerImpl = getAccountingProvider(conn.provider);
+
+  let remote: RemoteRef;
+  try {
+    remote = prep.kind === 'org'
+      ? await providerImpl.upsertCustomer(liveConn, prep.payload, existingRef)
+      : await providerImpl.upsertItem(liveConn, prep.payload, existingRef);
   } catch (err) {
-    // Pre-flight typed errors (income_account_required, item_price_required,
-    // entity_not_found) never reached the provider — nothing to record, and
-    // marking sync_status='error' for a request that never attempted a sync
-    // would misreport the mapping's health.
+    // A typed error can still surface here from `callProviderOrThrow`-shaped
+    // provider wrappers; it never reached QuickBooks, so there is nothing to
+    // record and marking sync_status='error' would misreport the mapping.
     if (err instanceof AccountingMappingError) throw err;
 
     const message = sanitizeSyncErrorMessage(err, breezeEntityType);
     captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
       service: 'accountingMappingService', mappingId: mapping.id, breezeEntityType,
     });
-    await markMappingError(mapping.id, partnerId, message);
+    // Phase 2 (failure) — its OWN short context, so the error marker COMMITS
+    // before the throw below. Written inside the caller's transaction it was a
+    // savepoint that rolled straight back with the throw: the operator saw a
+    // mapping still reading 'pending' and no lastError at all.
+    try {
+      await runInDbContext(() => markMappingError(mapping.id, partnerId, message));
+    } catch (markErr) {
+      // Still best-effort: markMappingError swallows a failed UPDATE, but
+      // OPENING the context can fail too, and that must not replace the typed
+      // 502 below with a raw error. Sentry already has the original.
+      captureException(markErr instanceof Error ? markErr : new Error(String(markErr)), undefined, {
+        service: 'accountingMappingService', mappingId: mapping.id, partnerId,
+      });
+    }
     throw new AccountingMappingError('quickbooks_error', 502, message);
   }
 
   try {
-    return await persistRemoteRef({
+    // Phase 2 (success) — likewise its own short, self-committing context.
+    return await runInDbContext(() => persistRemoteRef({
       mappingId: mapping.id,
       partnerId,
       remoteEntityId: remote.id,
@@ -1039,7 +1115,7 @@ export async function syncMappedEntity(input: SyncMappedEntityInput): Promise<Ma
       // entity-type gate documents that this is a deliberate org-only field, not
       // an accident of which provider methods happen to fill it in today.
       remoteCurrencyCode: breezeEntityType === 'org' ? (remote.currencyCode ?? null) : null,
-    });
+    }));
   } catch (dbErr) {
     captureException(dbErr instanceof Error ? dbErr : new Error(String(dbErr)), undefined, {
       service: 'accountingMappingService',

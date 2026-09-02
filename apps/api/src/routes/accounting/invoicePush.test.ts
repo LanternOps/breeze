@@ -152,6 +152,26 @@ vi.mock('../../config/env', () => ({
 import { accountingRoutes } from './index';
 import { withAuthDbAccessContext } from '../../middleware/auth';
 
+/**
+ * The routes no longer WRAP the service call in `withAuthDbAccessContext` —
+ * that held the request transaction across every QuickBooks HTTP call and
+ * rolled back the coordinator's sync-state writes. They hand the service a
+ * `runInDbContext` runner it re-enters per phase instead. This asserts the
+ * seam is genuinely wired: the runner really delegates to
+ * `withAuthDbAccessContext` with this request's auth, rather than being an
+ * identity passthrough that would leave every phase contextless.
+ */
+async function expectAuthContextRunner(runner: unknown): Promise<void> {
+  expect(typeof runner).toBe('function');
+  vi.mocked(withAuthDbAccessContext).mockClear();
+  await (runner as <T>(fn: () => Promise<T>) => Promise<T>)(async () => 'phase');
+  expect(withAuthDbAccessContext).toHaveBeenCalledTimes(1);
+  expect(withAuthDbAccessContext).toHaveBeenCalledWith(
+    expect.objectContaining({ partnerId: 'p1' }),
+    expect.any(Function),
+  );
+}
+
 function app() {
   const a = new Hono();
   a.route('/accounting', accountingRoutes);
@@ -179,6 +199,9 @@ beforeEach(() => {
   authState.scope = 'partner';
   authState.permissions = new Set(['invoices:write']);
   authState.mfa = true;
+  // The enqueue helper reports whether the queue ACCEPTED the job; the bulk
+  // route counts on that, so the default must be a real acceptance.
+  enqueueAccountingInvoicePushMock.mockResolvedValue(true);
 });
 
 describe('POST /accounting/:provider/invoices/:invoiceId/push', () => {
@@ -191,8 +214,8 @@ describe('POST /accounting/:provider/invoices/:invoiceId/push', () => {
     const res = await pushInvoice();
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ syncStatus: 'synced', docNumber: '1042', taxVarianceCents: 0 });
-    expect(withAuthDbAccessContext).toHaveBeenCalledTimes(1);
-    expect(pushInvoiceToAccountingMock).toHaveBeenCalledWith(INVOICE_ID, 'p1');
+    expect(pushInvoiceToAccountingMock).toHaveBeenCalledWith(INVOICE_ID, 'p1', expect.any(Function));
+    await expectAuthContextRunner(pushInvoiceToAccountingMock.mock.calls[0]![2]);
     expect(writeRouteAuditMock).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
@@ -252,7 +275,7 @@ describe('POST /accounting/:provider/invoices/:invoiceId/push', () => {
     pushInvoiceToAccountingMock.mockResolvedValue(pushOutcome());
     const res = await pushInvoice(INVOICE_ID, `?partnerId=${OTHER_PARTNER_ID}`);
     expect(res.status).toBe(200);
-    expect(pushInvoiceToAccountingMock).toHaveBeenCalledWith(INVOICE_ID, OTHER_PARTNER_ID);
+    expect(pushInvoiceToAccountingMock).toHaveBeenCalledWith(INVOICE_ID, OTHER_PARTNER_ID, expect.any(Function));
   });
 
   it('system scope without an explicit partnerId is rejected (400) before calling the coordinator', async () => {
@@ -292,7 +315,7 @@ describe('POST /accounting/:provider/invoices/push-bulk', () => {
     });
     const res = await pushBulk([INVOICE_ID, INVOICE_ID_2, INVOICE_ID_FOREIGN]);
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ enqueued: 2, skipped: 1 });
+    expect(await res.json()).toEqual({ enqueued: 2, skipped: 1, failed: 0 });
     expect(enqueueAccountingInvoicePushMock).toHaveBeenCalledTimes(2);
     expect(enqueueAccountingInvoicePushMock).toHaveBeenCalledWith(INVOICE_ID, 'p1');
     expect(enqueueAccountingInvoicePushMock).toHaveBeenCalledWith(INVOICE_ID_2, 'p1');
@@ -301,7 +324,29 @@ describe('POST /accounting/:provider/invoices/push-bulk', () => {
       expect.anything(),
       expect.objectContaining({
         action: 'accounting.invoice.push_bulk',
-        details: expect.objectContaining({ requested: 3, enqueued: 2, skipped: 1 }),
+        details: expect.objectContaining({ requested: 3, enqueued: 2, skipped: 1, failed: 0 }),
+      }),
+    );
+  });
+
+  it('counts a swallowed enqueue failure as `failed`, never as `enqueued`', async () => {
+    // `enqueueAccountingInvoicePush` never throws (a Redis outage must not fail
+    // the request), so the ONLY signal that nothing was queued is its boolean.
+    // Counting every owned id as enqueued told the operator the work was
+    // queued when the queue had rejected all of it.
+    selectMock.mockReturnValue({
+      from: () => ({ where: () => Promise.resolve([{ id: INVOICE_ID }, { id: INVOICE_ID_2 }]) }),
+    });
+    enqueueAccountingInvoicePushMock.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+
+    const res = await pushBulk([INVOICE_ID, INVOICE_ID_2, INVOICE_ID_FOREIGN]);
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ enqueued: 1, skipped: 1, failed: 1 });
+    expect(writeRouteAuditMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        details: expect.objectContaining({ requested: 3, enqueued: 1, skipped: 1, failed: 1 }),
       }),
     );
   });
@@ -359,8 +404,8 @@ describe('GET /accounting/:provider/remote-candidates', () => {
     const res = await getCandidates('?entityType=org&q=Acme');
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ data: [{ id: 'qb-1', displayName: 'Acme', email: 'billing@acme.test', currencyCode: 'USD' }] });
-    expect(withAuthDbAccessContext).toHaveBeenCalledTimes(1);
-    expect(resolveConnectionAndTokenMock).toHaveBeenCalledWith('p1', 'quickbooks');
+    expect(resolveConnectionAndTokenMock).toHaveBeenCalledWith('p1', 'quickbooks', expect.any(Function));
+    await expectAuthContextRunner(resolveConnectionAndTokenMock.mock.calls[0]![2]);
     expect(listRemoteCustomersMock).toHaveBeenCalledWith({ accessToken: 'tok' }, 'Acme');
     expect(listRemoteItemsMock).not.toHaveBeenCalled();
   });

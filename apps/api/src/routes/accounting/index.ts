@@ -437,18 +437,23 @@ accountingRoutes.get('/:provider/callback', zValidator('param', providerParamSch
   // The QBO call runs with no ambient DB context; the write is a short
   // compare-and-set on the row we just persisted.
   let capturedSettings: { homeCurrency: string | null; multiCurrencyEnabled: boolean | null } | null = null;
+  // The generation both realm-derived writes below stake their compare-and-set
+  // on. `updateHomeCurrency` BUMPS it, so it hands back the new one for the
+  // multi-currency write to chain onto; a lost CAS clears it, which skips the
+  // second write rather than issuing it against a claim we know has expired.
+  let generation: Date | null = connection.updatedAt;
   try {
     capturedSettings = await runOutsideDbContext(() => providerClient.fetchRealmSettings(connection));
     const { homeCurrency } = capturedSettings;
-    if (homeCurrency && connection.updatedAt) {
+    if (homeCurrency && generation) {
       // The generation this capture belongs to: the row as we just wrote it
       // (updatedAt) AND the realm we just exchanged for. A reconnect to another
       // realm in between — even inside the same millisecond — aborts the write.
-      await withSystemDbAccessContext(() => updateHomeCurrency(
+      generation = await withSystemDbAccessContext(() => updateHomeCurrency(
         db,
         connection.id,
         state.partnerId,
-        { updatedAt: connection.updatedAt as Date, realmId: tokens.realmId },
+        { updatedAt: generation as Date, realmId: tokens.realmId },
         homeCurrency,
       ));
     } else if (!homeCurrency) {
@@ -469,6 +474,7 @@ accountingRoutes.get('/:provider/callback', zValidator('param', providerParamSch
     // the generation that survived. Report it as a warning so it stops filing
     // Sentry issues on a normal user action; genuine failures stay exceptions.
     if (isHomeCurrencyCasAbort(err)) {
+      generation = null;
       captureMessage('[accounting] QuickBooks home currency capture lost the compare-and-set', {
         eventCode: 'accounting_home_currency_cas_lost',
       });
@@ -479,21 +485,29 @@ accountingRoutes.get('/:provider/callback', zValidator('param', providerParamSch
     }
   }
 
-  // Persist the realm's multi-currency flag. Deliberately run AFTER the home
-  // currency block above, never before: updateMultiCurrencyEnabled is a plain
-  // guarded UPDATE that bumps updated_at, and updateHomeCurrency's
-  // compare-and-set above is keyed on connection.updatedAt captured at the top
-  // of this handler — writing the flag first would make that CAS observe a
-  // generation it never captured and spuriously abort on every callback.
+  // Persist the realm's multi-currency flag, under the SAME realm+generation
+  // compare-and-set as the home currency (a reconnect to a different realm
+  // must not be stamped with the old realm's flag). It runs AFTER the block
+  // above and chains onto the generation that write returned — both writes
+  // bump updated_at, so ordering and chaining are both load-bearing.
   // A null flag is left untouched (unknown must never blank a previously
   // captured true/false), matching the home-currency "never blank" rule above.
-  if (typeof capturedSettings?.multiCurrencyEnabled === 'boolean') {
+  if (typeof capturedSettings?.multiCurrencyEnabled === 'boolean' && generation) {
     try {
-      await withSystemDbAccessContext(() =>
-        updateMultiCurrencyEnabled(db, connection.id, state.partnerId, capturedSettings!.multiCurrencyEnabled));
+      await withSystemDbAccessContext(() => updateMultiCurrencyEnabled(
+        db,
+        connection.id,
+        state.partnerId,
+        { updatedAt: generation as Date, realmId: tokens.realmId },
+        capturedSettings!.multiCurrencyEnabled,
+      ));
     } catch (err) {
-      captureException(err instanceof Error ? err : new Error(String(err)), c);
-      console.warn('[accounting] QuickBooks multi-currency flag capture failed', { partnerId: state.partnerId, provider });
+      if (isHomeCurrencyCasAbort(err)) {
+        console.warn('[accounting] QuickBooks multi-currency flag capture lost the compare-and-set', { partnerId: state.partnerId, provider });
+      } else {
+        captureException(err instanceof Error ? err : new Error(String(err)), c);
+        console.warn('[accounting] QuickBooks multi-currency flag capture failed', { partnerId: state.partnerId, provider });
+      }
     }
   }
 
@@ -635,10 +649,11 @@ accountingRoutes.patch('/:provider/settings', authMiddleware, partnerScopes, req
 // live QBO HTTP request, so this route also carries the
 // SELF_MANAGED_DB_CONTEXT_ROUTES registration (middleware/selfManagedDbContextRoutes.ts)
 // — no ambient request transaction, so `refreshRealmSettings`'s ambient-`db`
-// reads/writes need an explicit context, supplied here via
-// `withAuthDbAccessContext` (Task 5 review fix — this route (and the four
-// mapping-workbench routes below) previously called the service bare, which
-// RLS-denies every read/write under real Postgres).
+// reads/writes need an explicit context. The route supplies a RUNNER, not a
+// wrapper: the service re-enters it per DB phase and asserts nothing is
+// already open, so no connection is pinned across the QuickBooks round trip
+// and each phase commits on its own (services/accounting/dbContextGuard.ts).
+// The same applies to the four mapping-workbench routes below.
 accountingRoutes.post('/:provider/settings/refresh', authMiddleware, partnerScopes, requireMfa(), zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), async (c) => {
   const { provider } = c.req.valid('param');
   const configError = validateProviderConfig(provider);
@@ -649,7 +664,7 @@ accountingRoutes.post('/:provider/settings/refresh', authMiddleware, partnerScop
 
   let settings;
   try {
-    settings = await withAuthDbAccessContext(auth, () => refreshRealmSettings(partner.partnerId, provider));
+    settings = await refreshRealmSettings(partner.partnerId, provider, (fn) => withAuthDbAccessContext(auth, fn));
   } catch (err) {
     return handleConnectionError(c, err);
   }
@@ -685,7 +700,10 @@ accountingRoutes.get('/:provider/mappings', authMiddleware, partnerScopes, zVali
   const { entityType } = c.req.valid('query');
 
   try {
-    const data = await withAuthDbAccessContext(auth, () => listMappingProposals({ partnerId: partner.partnerId, provider, entityType }));
+    const data = await listMappingProposals(
+      { partnerId: partner.partnerId, provider, entityType },
+      (fn) => withAuthDbAccessContext(auth, fn),
+    );
     return c.json({ data });
   } catch (err) {
     return handleMappingError(c, err);
@@ -704,7 +722,10 @@ accountingRoutes.get('/:provider/income-accounts', authMiddleware, partnerScopes
   if ('error' in partner) return c.json({ error: partner.error }, partner.status);
 
   try {
-    const data = await withAuthDbAccessContext(auth, () => listRemoteIncomeAccountsForPartner({ partnerId: partner.partnerId, provider }));
+    const data = await listRemoteIncomeAccountsForPartner(
+      { partnerId: partner.partnerId, provider },
+      (fn) => withAuthDbAccessContext(auth, fn),
+    );
     return c.json({ data });
   } catch (err) {
     return handleMappingError(c, err);
@@ -727,14 +748,14 @@ accountingRoutes.put('/:provider/mappings', authMiddleware, partnerScopes, requi
 
   let mapping;
   try {
-    mapping = await withAuthDbAccessContext(auth, () => saveMappingDecision({
+    mapping = await saveMappingDecision({
       partnerId: partner.partnerId,
       provider,
       breezeEntityType: body.breezeEntityType,
       breezeEntityId: body.breezeEntityId,
       decision: body.decision as MappingDecision,
       remoteEntityId: body.remoteEntityId,
-    }));
+    }, (fn) => withAuthDbAccessContext(auth, fn));
   } catch (err) {
     return handleMappingError(c, err);
   }
@@ -772,12 +793,12 @@ accountingRoutes.post('/:provider/mappings/sync', authMiddleware, partnerScopes,
 
   let mapping;
   try {
-    mapping = await withAuthDbAccessContext(auth, () => syncMappedEntity({
+    mapping = await syncMappedEntity({
       partnerId: partner.partnerId,
       provider,
       breezeEntityType: body.breezeEntityType,
       breezeEntityId: body.breezeEntityId,
-    }));
+    }, (fn) => withAuthDbAccessContext(auth, fn));
   } catch (err) {
     return handleMappingError(c, err);
   }
@@ -806,14 +827,15 @@ accountingRoutes.post('/:provider/mappings/sync', authMiddleware, partnerScopes,
 
 // Manual, synchronous invoice push. Write + MFA-gated on INVOICES_WRITE
 // (system scope bypasses the role lookup — see `requireInvoicePush`).
-// `pushInvoiceToAccounting` makes a REAL outbound QuickBooks call and does
-// NOT self-wrap in a DB access context (accountingInvoicePush.ts's own
-// doc comment: "Callers (routes, jobs) provide the context") — this route
-// therefore carries the SELF_MANAGED_DB_CONTEXT_ROUTES registration
-// (middleware/selfManagedDbContextRoutes.ts) and supplies its own short
-// `withAuthDbAccessContext`, exactly mirroring how `processAccountingSyncJob`
-// (jobs/accountingSyncWorker.ts) supplies a SYSTEM context for the same
-// coordinator off the request path.
+// `pushInvoiceToAccounting` makes REAL outbound QuickBooks calls and must be
+// entered with NO ambient DB context (it asserts that): this route therefore
+// carries the SELF_MANAGED_DB_CONTEXT_ROUTES registration
+// (middleware/selfManagedDbContextRoutes.ts) and hands the coordinator a
+// `runInDbContext` runner it re-enters per phase — exactly mirroring how
+// `processAccountingSyncJob` (jobs/accountingSyncWorker.ts) hands it a SYSTEM
+// runner off the request path. Wrapping the call instead would hold one
+// transaction across every QuickBooks call AND roll back the coordinator's
+// error markers whenever it throws.
 accountingRoutes.post(
   '/:provider/invoices/:invoiceId/push',
   authMiddleware,
@@ -832,7 +854,7 @@ accountingRoutes.post(
 
     let outcome;
     try {
-      outcome = await withAuthDbAccessContext(auth, () => pushInvoiceToAccounting(invoiceId, partner.partnerId));
+      outcome = await pushInvoiceToAccounting(invoiceId, partner.partnerId, (fn) => withAuthDbAccessContext(auth, fn));
     } catch (err) {
       return handleInvoicePushError(c, err);
     }
@@ -888,23 +910,29 @@ accountingRoutes.post(
       .where(and(inArray(invoices.id, invoiceIds), eq(invoices.partnerId, partner.partnerId)));
     const ownedIds = new Set(owned.map((row) => row.id));
 
+    // `enqueued` counts jobs the queue actually ACCEPTED. It used to count
+    // every owned id regardless — `enqueueAccountingInvoicePush` swallows a
+    // Redis outage by design, so a total queue failure still reported "all
+    // enqueued" and the operator had no signal at all. Failures now get their
+    // own count and their own line in the audit record.
     let enqueued = 0;
+    let failed = 0;
+    let skipped = 0;
     for (const invoiceId of invoiceIds) {
-      if (!ownedIds.has(invoiceId)) continue;
-      await enqueueAccountingInvoicePush(invoiceId, partner.partnerId);
-      enqueued++;
+      if (!ownedIds.has(invoiceId)) { skipped++; continue; }
+      if (await enqueueAccountingInvoicePush(invoiceId, partner.partnerId)) enqueued++;
+      else failed++;
     }
-    const skipped = invoiceIds.length - enqueued;
 
     writeRouteAudit(c, {
       orgId: null,
       action: 'accounting.invoice.push_bulk',
       resourceType: 'accounting_mapping',
       resourceId: null,
-      details: { provider, requested: invoiceIds.length, enqueued, skipped },
+      details: { provider, requested: invoiceIds.length, enqueued, skipped, failed },
     });
 
-    return c.json({ enqueued, skipped });
+    return c.json({ enqueued, skipped, failed });
   },
 );
 
@@ -913,7 +941,7 @@ accountingRoutes.post(
 // shape as GET /:provider/customers above (no MFA/permission; see that
 // route's comment for why). Makes a real outbound QuickBooks call via
 // `resolveConnectionAndToken` + `listRemoteCustomers`/`listRemoteItems`, so it
-// carries the same SELF_MANAGED_DB_CONTEXT_ROUTES + `withAuthDbAccessContext`
+// carries the same SELF_MANAGED_DB_CONTEXT_ROUTES + `runInDbContext` runner
 // treatment as the push route above. Wraps its response in `{ data }` —
 // review ruling (Task 5 fix round): every sibling list route in this file
 // (`/customers`, `/mappings`, `/income-accounts`) uses that envelope, and
@@ -934,7 +962,7 @@ accountingRoutes.get(
     const { entityType, q } = c.req.valid('query');
 
     try {
-      const { liveConn } = await withAuthDbAccessContext(auth, () => resolveConnectionAndToken(partner.partnerId, provider));
+      const { liveConn } = await resolveConnectionAndToken(partner.partnerId, provider, (fn) => withAuthDbAccessContext(auth, fn));
       const providerImpl = getAccountingProvider(provider);
       const data = entityType === 'org'
         ? (await runOutsideDbContext(() => providerImpl.listRemoteCustomers(liveConn, q))).map((r) => ({

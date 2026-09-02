@@ -13,8 +13,10 @@ const {
   selectMock,
   insertMock,
   updateMock,
-  resolveConnectionAndTokenMock,
+  resolveConnectionMock,
+  resolveLiveConnectionMock,
   syncMappedEntityMock,
+  enqueueAccountingInvoiceVoidMock,
   pushInvoiceMock,
   voidInvoiceMock,
   captureExceptionMock,
@@ -34,8 +36,10 @@ const {
     selectMock: vi.fn(),
     insertMock: vi.fn(),
     updateMock: vi.fn(),
-    resolveConnectionAndTokenMock: vi.fn(),
+    resolveConnectionMock: vi.fn(),
+    resolveLiveConnectionMock: vi.fn(),
     syncMappedEntityMock: vi.fn(),
+    enqueueAccountingInvoiceVoidMock: vi.fn(),
     pushInvoiceMock: vi.fn(),
     voidInvoiceMock: vi.fn(),
     captureExceptionMock: vi.fn(),
@@ -45,15 +49,41 @@ const {
 
 vi.mock('../../db', () => ({
   db: { select: selectMock, insert: insertMock, update: updateMock },
+  hasDbAccessContext: () => ctx.depth > 0,
   runOutsideDbContext: (fn: () => unknown) => fn(),
   withSystemDbAccessContext: (fn: () => unknown) => fn(),
 }));
 
 vi.mock('./accountingMappingService', () => ({
-  resolveConnectionAndToken: resolveConnectionAndTokenMock,
+  resolveConnection: resolveConnectionMock,
+  resolveLiveConnection: resolveLiveConnectionMock,
   syncMappedEntity: syncMappedEntityMock,
   AccountingMappingError,
 }));
+
+vi.mock('../../jobs/accountingSyncWorker', () => ({
+  enqueueAccountingInvoiceVoid: enqueueAccountingInvoiceVoidMock,
+}));
+
+/**
+ * Stands in for the real AsyncLocalStorage context stack. `runCtx` is the
+ * `DbContextRunner` the coordinator now takes; it logs enter/exit and tracks
+ * depth so a test can prove each DB phase ran in its own short context and
+ * that nothing was held across a QuickBooks call. The db mock's
+ * `hasDbAccessContext` reads the same depth, so the real (unmocked)
+ * `dbContextGuard.assertNoAmbientDbContext` runs its real logic.
+ */
+const ctx = vi.hoisted(() => ({ depth: 0, events: [] as string[] }));
+const runCtx = async <T>(fn: () => Promise<T>): Promise<T> => {
+  ctx.depth++;
+  ctx.events.push('ctx:enter');
+  try {
+    return await fn();
+  } finally {
+    ctx.events.push('ctx:exit');
+    ctx.depth--;
+  }
+};
 
 vi.mock('./providerRegistry', () => ({
   getAccountingProvider: () => ({
@@ -293,13 +323,16 @@ function stubInsertWithViolation() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  ctx.depth = 0;
+  ctx.events.length = 0;
   insertedValues.length = 0;
   updatedPatches.length = 0;
   insertUniqueViolation = null;
   stubInsert();
   stubUpdate();
   setup();
-  resolveConnectionAndTokenMock.mockResolvedValue({ conn: conn(), liveConn: liveConn() });
+  resolveConnectionMock.mockResolvedValue(conn());
+  resolveLiveConnectionMock.mockResolvedValue(liveConn());
   syncMappedEntityMock.mockImplementation(async ({ breezeEntityType, breezeEntityId }: { breezeEntityType: string; breezeEntityId: string }) => {
     const idx = currentMappings.findIndex((m) => m.breezeEntityType === breezeEntityType && m.breezeEntityId === breezeEntityId);
     if (idx === -1) throw new Error('syncMappedEntity called for an unmapped entity in test setup');
@@ -320,11 +353,64 @@ beforeEach(() => {
   voidInvoiceMock.mockResolvedValue(undefined);
 });
 
+// ---------------------------------------------------------------------------
+// Review round 3 — DB-context phase split (#1105 / lost-sync-state class).
+// ---------------------------------------------------------------------------
+
+describe('DB access context contract', () => {
+  it.each([
+    ['pushInvoiceToAccounting', (): Promise<unknown> => pushInvoiceToAccounting(INVOICE, PARTNER, runCtx)],
+    ['voidInvoiceInAccounting', (): Promise<unknown> => voidInvoiceInAccounting(INVOICE, PARTNER, runCtx)],
+  ] as const)('%s refuses to run inside an ambient DB access context', async (_name, coordinator) => {
+    await expect(runCtx(coordinator)).rejects.toThrow(/no ambient DB access context/i);
+    expect(pushInvoiceMock).not.toHaveBeenCalled();
+    expect(voidInvoiceMock).not.toHaveBeenCalled();
+  });
+
+  it('runs the currency guard BEFORE resolving a token, so an expired grant never refreshes for an unpushable invoice', async () => {
+    // The realm is USD and the invoice is EUR: the push can never succeed. If
+    // the token were resolved first (the old shape resolved connection+token
+    // up front), an expired access token would fire a QuickBooks refresh —
+    // network I/O, token rotation and possibly a `reauth_required` flip — for
+    // work that was always going to 409.
+    setup({ invoice: { currencyCode: 'EUR' } });
+    resolveConnectionMock.mockResolvedValue(conn({ homeCurrency: 'USD', multiCurrencyEnabled: false }));
+    resolveLiveConnectionMock.mockRejectedValue(new Error('token refresh must not be reached'));
+
+    await expect(pushInvoiceToAccounting(INVOICE, PARTNER, runCtx)).rejects.toMatchObject({ code: 'currency_mismatch' });
+    expect(resolveLiveConnectionMock).not.toHaveBeenCalled();
+    expect(pushInvoiceMock).not.toHaveBeenCalled();
+  });
+
+  it('calls QuickBooks with NO context open, and marks the failure in a FRESH context that commits before the throw', async () => {
+    let depthAtProviderCall = -1;
+    pushInvoiceMock.mockImplementationOnce(async () => {
+      depthAtProviderCall = ctx.depth;
+      ctx.events.push('provider');
+      throw Object.assign(new Error('boom'), { status: 500 });
+    });
+
+    await expect(pushInvoiceToAccounting(INVOICE, PARTNER, runCtx)).rejects.toMatchObject({ code: 'quickbooks_error' });
+
+    expect(depthAtProviderCall).toBe(0);
+    // Phase 1, Phase 1b, then the provider call with nothing held, then the
+    // error marker in a context opened AFTER it — a real transaction that
+    // commits, not a savepoint the throw rolls back.
+    expect(ctx.events).toEqual([
+      'ctx:enter', 'ctx:exit', // phase 1: connection, invoice, guards, mappings
+      'ctx:enter', 'ctx:exit', // phase 1b: pending mapping row claim
+      'provider',
+      'ctx:enter', 'ctx:exit', // phase 2: markInvoiceMappingError
+    ]);
+    expect(ctx.depth).toBe(0);
+  });
+});
+
 describe('pushInvoiceToAccounting', () => {
   it('rejects a draft invoice with invoice_not_pushable and never calls the provider', async () => {
     setup({ invoice: { status: 'draft', invoiceNumber: null } });
 
-    await expect(pushInvoiceToAccounting(INVOICE, PARTNER)).rejects.toMatchObject({
+    await expect(pushInvoiceToAccounting(INVOICE, PARTNER, runCtx)).rejects.toMatchObject({
       code: 'invoice_not_pushable', status: 409,
     });
     expect(pushInvoiceMock).not.toHaveBeenCalled();
@@ -332,7 +418,7 @@ describe('pushInvoiceToAccounting', () => {
 
   it('rejects a voided invoice with invoice_not_pushable', async () => {
     setup({ invoice: { status: 'void' } });
-    await expect(pushInvoiceToAccounting(INVOICE, PARTNER)).rejects.toMatchObject({
+    await expect(pushInvoiceToAccounting(INVOICE, PARTNER, runCtx)).rejects.toMatchObject({
       code: 'invoice_not_pushable', status: 409,
     });
     expect(pushInvoiceMock).not.toHaveBeenCalled();
@@ -340,9 +426,10 @@ describe('pushInvoiceToAccounting', () => {
 
   describe('currency guard runs before any provider call', () => {
     it('blocks with home_currency_unknown when the realm home currency is unavailable', async () => {
-      resolveConnectionAndTokenMock.mockResolvedValue({ conn: conn({ homeCurrency: null }), liveConn: liveConn({ homeCurrency: null }) });
+      resolveConnectionMock.mockResolvedValue(conn({ homeCurrency: null }));
+      resolveLiveConnectionMock.mockResolvedValue(liveConn({ homeCurrency: null }));
 
-      await expect(pushInvoiceToAccounting(INVOICE, PARTNER)).rejects.toMatchObject({
+      await expect(pushInvoiceToAccounting(INVOICE, PARTNER, runCtx)).rejects.toMatchObject({
         code: 'home_currency_unknown', status: 409,
       });
       expect(pushInvoiceMock).not.toHaveBeenCalled();
@@ -350,14 +437,12 @@ describe('pushInvoiceToAccounting', () => {
 
     it('blocks a currency mismatch with a single-currency-realm message when multiCurrencyEnabled !== true', async () => {
       setup({ invoice: { currencyCode: 'EUR' } });
-      resolveConnectionAndTokenMock.mockResolvedValue({
-        conn: conn({ homeCurrency: 'USD', multiCurrencyEnabled: false }),
-        liveConn: liveConn({ homeCurrency: 'USD', multiCurrencyEnabled: false }),
-      });
+      resolveConnectionMock.mockResolvedValue(conn({ homeCurrency: 'USD', multiCurrencyEnabled: false }));
+      resolveLiveConnectionMock.mockResolvedValue(liveConn({ homeCurrency: 'USD', multiCurrencyEnabled: false }));
 
       let caught: AccountingInvoicePushError | undefined;
       try {
-        await pushInvoiceToAccounting(INVOICE, PARTNER);
+        await pushInvoiceToAccounting(INVOICE, PARTNER, runCtx);
       } catch (err) {
         caught = err as AccountingInvoicePushError;
       }
@@ -369,14 +454,12 @@ describe('pushInvoiceToAccounting', () => {
 
     it('blocks a currency mismatch with a multi-currency-realm message when multiCurrencyEnabled === true', async () => {
       setup({ invoice: { currencyCode: 'EUR' } });
-      resolveConnectionAndTokenMock.mockResolvedValue({
-        conn: conn({ homeCurrency: 'USD', multiCurrencyEnabled: true }),
-        liveConn: liveConn({ homeCurrency: 'USD', multiCurrencyEnabled: true }),
-      });
+      resolveConnectionMock.mockResolvedValue(conn({ homeCurrency: 'USD', multiCurrencyEnabled: true }));
+      resolveLiveConnectionMock.mockResolvedValue(liveConn({ homeCurrency: 'USD', multiCurrencyEnabled: true }));
 
       let caught: AccountingInvoicePushError | undefined;
       try {
-        await pushInvoiceToAccounting(INVOICE, PARTNER);
+        await pushInvoiceToAccounting(INVOICE, PARTNER, runCtx);
       } catch (err) {
         caught = err as AccountingInvoicePushError;
       }
@@ -390,7 +473,7 @@ describe('pushInvoiceToAccounting', () => {
   it('rejects with customer_currency_mismatch when the mapped customer currency differs from the invoice', async () => {
     setup({ mappings: [orgMappingRow({ remoteCurrencyCode: 'EUR' })] });
 
-    await expect(pushInvoiceToAccounting(INVOICE, PARTNER)).rejects.toMatchObject({
+    await expect(pushInvoiceToAccounting(INVOICE, PARTNER, runCtx)).rejects.toMatchObject({
       code: 'customer_currency_mismatch', status: 409,
     });
     expect(pushInvoiceMock).not.toHaveBeenCalled();
@@ -398,7 +481,7 @@ describe('pushInvoiceToAccounting', () => {
 
   it('allows a null remoteCurrencyCode (unknown is not a mismatch)', async () => {
     setup({ mappings: [orgMappingRow({ remoteCurrencyCode: null })] });
-    await expect(pushInvoiceToAccounting(INVOICE, PARTNER)).resolves.toMatchObject({ syncStatus: 'synced' });
+    await expect(pushInvoiceToAccounting(INVOICE, PARTNER, runCtx)).resolves.toMatchObject({ syncStatus: 'synced' });
   });
 
   it.each([
@@ -407,7 +490,7 @@ describe('pushInvoiceToAccounting', () => {
   ])('rejects with customer_not_mapped when the org mapping linkStatus is %s', async (linkStatus) => {
     setup({ mappings: [orgMappingRow({ linkStatus, remoteEntityId: null, syncStatus: 'pending' })] });
 
-    await expect(pushInvoiceToAccounting(INVOICE, PARTNER)).rejects.toMatchObject({
+    await expect(pushInvoiceToAccounting(INVOICE, PARTNER, runCtx)).rejects.toMatchObject({
       code: 'customer_not_mapped', status: 409,
     });
     expect(pushInvoiceMock).not.toHaveBeenCalled();
@@ -415,7 +498,7 @@ describe('pushInvoiceToAccounting', () => {
 
   it('rejects with customer_not_mapped when no org mapping row exists at all', async () => {
     setup({ mappings: [] });
-    await expect(pushInvoiceToAccounting(INVOICE, PARTNER)).rejects.toMatchObject({
+    await expect(pushInvoiceToAccounting(INVOICE, PARTNER, runCtx)).rejects.toMatchObject({
       code: 'customer_not_mapped', status: 409,
     });
   });
@@ -436,11 +519,11 @@ describe('pushInvoiceToAccounting', () => {
       ],
     });
 
-    await pushInvoiceToAccounting(INVOICE, PARTNER);
+    await pushInvoiceToAccounting(INVOICE, PARTNER, runCtx);
 
-    expect(syncMappedEntityMock).toHaveBeenCalledWith(expect.objectContaining({ breezeEntityType: 'org', breezeEntityId: ORG }));
-    expect(syncMappedEntityMock).toHaveBeenCalledWith(expect.objectContaining({ breezeEntityType: 'catalog_item', breezeEntityId: 'item-1' }));
-    expect(syncMappedEntityMock).not.toHaveBeenCalledWith(expect.objectContaining({ breezeEntityId: 'item-2' }));
+    expect(syncMappedEntityMock).toHaveBeenCalledWith(expect.objectContaining({ breezeEntityType: 'org', breezeEntityId: ORG }), runCtx);
+    expect(syncMappedEntityMock).toHaveBeenCalledWith(expect.objectContaining({ breezeEntityType: 'catalog_item', breezeEntityId: 'item-1' }), runCtx);
+    expect(syncMappedEntityMock).not.toHaveBeenCalledWith(expect.objectContaining({ breezeEntityId: 'item-2' }), runCtx);
     // Step 3 order (brief): the org sync must land BEFORE the line-item sync,
     // not just "both happened" — a bundle-child sync racing ahead of the
     // customer that owns it would build lineMappings for a customer QuickBooks
@@ -469,7 +552,7 @@ describe('pushInvoiceToAccounting', () => {
       ],
     });
 
-    const outcome = await pushInvoiceToAccounting(INVOICE, PARTNER);
+    const outcome = await pushInvoiceToAccounting(INVOICE, PARTNER, runCtx);
 
     const [, payload] = pushInvoiceMock.mock.calls[0]!;
     expect(payload.lines).toHaveLength(2);
@@ -501,7 +584,7 @@ describe('pushInvoiceToAccounting', () => {
   it('flags synced_with_tax_variance when remoteTaxTotal differs from invoice taxTotal by more than 1 cent', async () => {
     pushInvoiceMock.mockResolvedValue({ id: 'qb-inv-1', syncToken: '0', docNumber: null, remoteTaxTotal: '7.02', remoteTotal: '107.02' });
 
-    const outcome = await pushInvoiceToAccounting(INVOICE, PARTNER);
+    const outcome = await pushInvoiceToAccounting(INVOICE, PARTNER, runCtx);
 
     expect(outcome.syncStatus).toBe('synced_with_tax_variance');
     expect(outcome.taxVarianceCents).toBe(2);
@@ -510,7 +593,7 @@ describe('pushInvoiceToAccounting', () => {
   it('treats a 1-cent tax difference as plain synced (within tolerance)', async () => {
     pushInvoiceMock.mockResolvedValue({ id: 'qb-inv-1', syncToken: '0', docNumber: null, remoteTaxTotal: '7.01', remoteTotal: '107.01' });
 
-    const outcome = await pushInvoiceToAccounting(INVOICE, PARTNER);
+    const outcome = await pushInvoiceToAccounting(INVOICE, PARTNER, runCtx);
 
     expect(outcome.syncStatus).toBe('synced');
     expect(outcome.taxVarianceCents).toBeNull();
@@ -519,7 +602,7 @@ describe('pushInvoiceToAccounting', () => {
   it('persists remote_doc_number only when the QBO DocNumber differs from the Breeze invoice number', async () => {
     pushInvoiceMock.mockResolvedValue({ id: 'qb-inv-1', syncToken: '0', docNumber: 'INV-2026-9999', remoteTaxTotal: '7.00', remoteTotal: '107.00' });
 
-    const outcome = await pushInvoiceToAccounting(INVOICE, PARTNER);
+    const outcome = await pushInvoiceToAccounting(INVOICE, PARTNER, runCtx);
 
     expect(outcome.docNumber).toBe('INV-2026-9999');
     const mappingUpdate = updatedPatches.find((u) => 'remoteDocNumber' in u.patch);
@@ -529,7 +612,7 @@ describe('pushInvoiceToAccounting', () => {
   it('does not persist remote_doc_number when the QBO DocNumber matches the Breeze invoice number', async () => {
     pushInvoiceMock.mockResolvedValue({ id: 'qb-inv-1', syncToken: '0', docNumber: 'INV-2026-0001', remoteTaxTotal: '7.00', remoteTotal: '107.00' });
 
-    const outcome = await pushInvoiceToAccounting(INVOICE, PARTNER);
+    const outcome = await pushInvoiceToAccounting(INVOICE, PARTNER, runCtx);
 
     expect(outcome.docNumber).toBe('INV-2026-0001');
     const mappingUpdate = updatedPatches.find((u) => 'remoteDocNumber' in u.patch);
@@ -541,7 +624,7 @@ describe('pushInvoiceToAccounting', () => {
 
     let caught: AccountingInvoicePushError | undefined;
     try {
-      await pushInvoiceToAccounting(INVOICE, PARTNER);
+      await pushInvoiceToAccounting(INVOICE, PARTNER, runCtx);
     } catch (err) {
       caught = err as AccountingInvoicePushError;
     }
@@ -573,7 +656,7 @@ describe('pushInvoiceToAccounting', () => {
 
     let caught: AccountingInvoicePushError | undefined;
     try {
-      await pushInvoiceToAccounting(INVOICE, PARTNER);
+      await pushInvoiceToAccounting(INVOICE, PARTNER, runCtx);
     } catch (err) {
       caught = err as AccountingInvoicePushError;
     }
@@ -595,6 +678,28 @@ describe('pushInvoiceToAccounting', () => {
     expect(invoiceMapping?.lastError).toMatch(/do not retry/i);
   });
 
+  it('enqueues a void when the invoice was voided while the push was in flight', async () => {
+    // The invoice flips to void between Phase 1 and Phase 2. The void job that
+    // fired at that moment saw a pending row with no remote id and backed off
+    // with sync_in_progress, so nothing else will re-drive it — this push must.
+    let pushed = false;
+    pushInvoiceMock.mockImplementationOnce(async () => {
+      pushed = true;
+      currentInvoices = [defaultInvoice({ status: 'void' })];
+      return { id: 'qb-inv-1', syncToken: '0', docNumber: 'INV-2026-0001', remoteTaxTotal: '7.00', remoteTotal: '107.00' };
+    });
+
+    await pushInvoiceToAccounting(INVOICE, PARTNER, runCtx);
+
+    expect(pushed).toBe(true);
+    expect(enqueueAccountingInvoiceVoidMock).toHaveBeenCalledWith(INVOICE, PARTNER);
+  });
+
+  it('does NOT enqueue a void when the invoice is still issued after the push', async () => {
+    await pushInvoiceToAccounting(INVOICE, PARTNER, runCtx);
+    expect(enqueueAccountingInvoiceVoidMock).not.toHaveBeenCalled();
+  });
+
   it('re-pushes an already-synced invoice mapping via the sparse update path (no duplicate insert)', async () => {
     setup({
       mappings: [
@@ -607,7 +712,7 @@ describe('pushInvoiceToAccounting', () => {
       ],
     });
 
-    await pushInvoiceToAccounting(INVOICE, PARTNER);
+    await pushInvoiceToAccounting(INVOICE, PARTNER, runCtx);
 
     expect(insertedValues.some((v) => v.breezeEntityType === 'invoice')).toBe(false);
     const [, payload] = pushInvoiceMock.mock.calls[0]!;
@@ -619,7 +724,7 @@ describe('pushInvoiceToAccounting', () => {
     stubInsertWithViolation();
     insertUniqueViolation = 'accounting_entity_mappings_breeze_uniq';
 
-    await expect(pushInvoiceToAccounting(INVOICE, PARTNER)).rejects.toMatchObject({ code: 'quickbooks_error', status: 502 });
+    await expect(pushInvoiceToAccounting(INVOICE, PARTNER, runCtx)).rejects.toMatchObject({ code: 'quickbooks_error', status: 502 });
     expect(pushInvoiceMock).not.toHaveBeenCalled();
   });
 
@@ -634,7 +739,7 @@ describe('pushInvoiceToAccounting', () => {
 
       let caught: AccountingInvoicePushError | undefined;
       try {
-        await pushInvoiceToAccounting(INVOICE, PARTNER);
+        await pushInvoiceToAccounting(INVOICE, PARTNER, runCtx);
       } catch (err) {
         caught = err as AccountingInvoicePushError;
       }
@@ -663,7 +768,7 @@ describe('pushInvoiceToAccounting', () => {
 
       let caught: AccountingInvoicePushError | undefined;
       try {
-        await pushInvoiceToAccounting(INVOICE, PARTNER);
+        await pushInvoiceToAccounting(INVOICE, PARTNER, runCtx);
       } catch (err) {
         caught = err as AccountingInvoicePushError;
       }
@@ -683,7 +788,7 @@ describe('pushInvoiceToAccounting', () => {
 
       let caught: AccountingInvoicePushError | undefined;
       try {
-        await pushInvoiceToAccounting(INVOICE, PARTNER);
+        await pushInvoiceToAccounting(INVOICE, PARTNER, runCtx);
       } catch (err) {
         caught = err as AccountingInvoicePushError;
       }
@@ -699,7 +804,7 @@ describe('pushInvoiceToAccounting', () => {
       });
       syncMappedEntityMock.mockRejectedValueOnce(new AccountingMappingError('reauth_required', 409, 'QuickBooks needs to be reconnected'));
 
-      await expect(pushInvoiceToAccounting(INVOICE, PARTNER)).rejects.toMatchObject({ code: 'reauth_required', status: 409 });
+      await expect(pushInvoiceToAccounting(INVOICE, PARTNER, runCtx)).rejects.toMatchObject({ code: 'reauth_required', status: 409 });
     });
   });
 });
@@ -708,7 +813,46 @@ describe('voidInvoiceInAccounting', () => {
   it('resolves without calling the provider when the invoice was never pushed', async () => {
     setup({ mappings: [orgMappingRow()] }); // no invoice mapping row at all
 
-    await expect(voidInvoiceInAccounting(INVOICE, PARTNER)).resolves.toBeUndefined();
+    await expect(voidInvoiceInAccounting(INVOICE, PARTNER, runCtx)).resolves.toBeUndefined();
+    expect(voidInvoiceMock).not.toHaveBeenCalled();
+  });
+
+  // --- push/void race (review round 3) --------------------------------------
+
+  it('throws a NON-terminal sync_in_progress when a push is mid-flight (pending row, no remote id)', async () => {
+    // The push coordinator's Phase 1b has claimed the row but its Phase 2 has
+    // not landed the remote id yet. Returning "nothing to void" here would
+    // leave the invoice open in QuickBooks forever once that push completes.
+    setup({
+      mappings: [
+        orgMappingRow(),
+        {
+          id: 'map-inv-1', integrationId: CONN_ID, partnerId: PARTNER, breezeEntityType: 'invoice', breezeEntityId: INVOICE,
+          remoteEntityType: 'Invoice', remoteEntityId: null, remoteSyncToken: null,
+          remoteCurrencyCode: null, remoteDocNumber: null, linkStatus: 'create_new', syncStatus: 'pending', lastError: null,
+        },
+      ],
+    });
+
+    await expect(voidInvoiceInAccounting(INVOICE, PARTNER, runCtx)).rejects.toMatchObject({
+      code: 'sync_in_progress', status: 409,
+    });
+    expect(voidInvoiceMock).not.toHaveBeenCalled();
+  });
+
+  it('still no-ops for an errored mapping with no remote id (that push never reached QuickBooks)', async () => {
+    setup({
+      mappings: [
+        orgMappingRow(),
+        {
+          id: 'map-inv-1', integrationId: CONN_ID, partnerId: PARTNER, breezeEntityType: 'invoice', breezeEntityId: INVOICE,
+          remoteEntityType: 'Invoice', remoteEntityId: null, remoteSyncToken: null,
+          remoteCurrencyCode: null, remoteDocNumber: null, linkStatus: 'create_new', syncStatus: 'error', lastError: 'boom',
+        },
+      ],
+    });
+
+    await expect(voidInvoiceInAccounting(INVOICE, PARTNER, runCtx)).resolves.toBeUndefined();
     expect(voidInvoiceMock).not.toHaveBeenCalled();
   });
 
@@ -724,7 +868,7 @@ describe('voidInvoiceInAccounting', () => {
       ],
     });
 
-    await voidInvoiceInAccounting(INVOICE, PARTNER);
+    await voidInvoiceInAccounting(INVOICE, PARTNER, runCtx);
 
     expect(voidInvoiceMock).toHaveBeenCalledWith(
       expect.anything(),
@@ -751,7 +895,7 @@ describe('voidInvoiceInAccounting', () => {
 
     let caught: AccountingInvoicePushError | undefined;
     try {
-      await voidInvoiceInAccounting(INVOICE, PARTNER);
+      await voidInvoiceInAccounting(INVOICE, PARTNER, runCtx);
     } catch (err) {
       caught = err as AccountingInvoicePushError;
     }

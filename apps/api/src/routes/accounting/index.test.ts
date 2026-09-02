@@ -40,7 +40,7 @@ const { authState, mocks, AccountingConnectionErrorClass } = vi.hoisted(() => {
       deleteConnection: vi.fn(),
       exchangeCode: vi.fn(),
       fetchRealmSettings: vi.fn(),
-      updateHomeCurrency: vi.fn(),
+      updateHomeCurrency: vi.fn(async () => HOME_CURRENCY_WRITTEN_AT),
       updateMultiCurrencyEnabled: vi.fn(),
       refreshRealmSettings: vi.fn(),
       captureException: vi.fn(),
@@ -141,6 +141,13 @@ import { accountingRoutes } from './index';
 
 const CONNECTION_ID = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 const PERSISTED_AT = new Date('2026-09-04T00:00:00Z');
+/**
+ * The generation `updateHomeCurrency` reports back after ITS write (it bumps
+ * `updated_at`). The multi-currency compare-and-set must chain onto this, not
+ * onto `PERSISTED_AT` — deliberately a DIFFERENT instant so a regression back
+ * to the pre-write generation fails here instead of passing by coincidence.
+ */
+const HOME_CURRENCY_WRITTEN_AT = new Date('2026-09-04T00:05:00Z');
 
 function exchangedTokens(realmId = 'realm-A') {
   return {
@@ -350,10 +357,14 @@ describe('accounting routes', () => {
     const res = await runCallback(app, 'realm-A');
 
     expect(res.status).toBe(302);
+    // Same realm+generation compare-and-set as the home currency, chained onto
+    // the generation THAT write returned (both bump updated_at) — a reconnect
+    // to a different realm must not be stamped with the old realm's flag.
     expect(mocks.updateMultiCurrencyEnabled).toHaveBeenCalledWith(
       expect.anything(),
       CONNECTION_ID,
       authState.partnerId,
+      { updatedAt: HOME_CURRENCY_WRITTEN_AT, realmId: 'realm-A' },
       true,
     );
   });
@@ -595,10 +606,18 @@ describe('accounting routes', () => {
 
       expect(res.status).toBe(200);
       await expect(res.json()).resolves.toEqual({ homeCurrency: 'CAD', multiCurrencyEnabled: true });
-      expect(mocks.refreshRealmSettings).toHaveBeenCalledWith(authState.partnerId, 'quickbooks');
-      // Self-managed route (no ambient request tx) — the service call must
-      // run inside an explicit withAuthDbAccessContext (Task 5 review fix).
+      // The route no longer WRAPS the service call in withAuthDbAccessContext
+      // (that held the request transaction across the QuickBooks call); it
+      // hands the service a runner it re-enters per phase.
+      expect(mocks.refreshRealmSettings).toHaveBeenCalledWith(authState.partnerId, 'quickbooks', expect.any(Function));
+      const runner = mocks.refreshRealmSettings.mock.calls[0]![2] as <T>(fn: () => Promise<T>) => Promise<T>;
+      mocks.withAuthDbAccessContext.mockClear();
+      await runner(async () => 'phase');
       expect(mocks.withAuthDbAccessContext).toHaveBeenCalledTimes(1);
+      expect(mocks.withAuthDbAccessContext).toHaveBeenCalledWith(
+        expect.objectContaining({ partnerId: authState.partnerId }),
+        expect.any(Function),
+      );
       expect(mocks.writeRouteAudit).toHaveBeenCalledWith(
         expect.anything(),
         expect.objectContaining({ action: 'accounting.settings.refresh' }),

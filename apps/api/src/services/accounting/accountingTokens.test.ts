@@ -1,16 +1,34 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { encryptSecret } from '../secretCrypto';
 
-const { mocks } = vi.hoisted(() => ({
+const { mocks, ctx } = vi.hoisted(() => ({
   mocks: {
     updateTokens: vi.fn(),
     markStatus: vi.fn(),
     provider: { refresh: vi.fn() },
   },
+  /**
+   * A faithful stand-in for the real AsyncLocalStorage context stack: `depth`
+   * counts OPEN `withSystemDbAccessContext` blocks and `ambient` simulates a
+   * caller (a route handler, a worker) that already opened one. `hasDbAccessContext`
+   * is the exact predicate the real `db/index.ts` exports, so the guard under
+   * test (`dbContextGuard.ts`, deliberately NOT mocked) runs its real logic.
+   */
+  ctx: { depth: 0, ambient: false, events: [] as string[] },
 }));
 
 vi.mock('../../db', () => ({
-  runOutsideDbContext: <T>(fn: () => T) => fn(),
+  hasDbAccessContext: () => ctx.ambient || ctx.depth > 0,
+  withSystemDbAccessContext: async <T>(fn: () => T | Promise<T>, label?: string): Promise<T> => {
+    ctx.depth++;
+    ctx.events.push(`ctx:enter${label ? `(${label})` : ''}`);
+    try {
+      return await fn();
+    } finally {
+      ctx.events.push('ctx:exit');
+      ctx.depth--;
+    }
+  },
 }));
 
 vi.mock('./accountingConnectionService', () => ({
@@ -76,7 +94,11 @@ function lockedRow(overrides: Record<string, unknown> = {}) {
  */
 function makeLockableDb(row: Record<string, unknown> | null) {
   const state = { row };
-  const events: string[] = [];
+  // Shared with the mocked `withSystemDbAccessContext` above so a single
+  // ordered log proves BOTH properties at once: each transaction runs inside
+  // its own system context, and neither the context nor the lock spans the
+  // provider.refresh() fetch.
+  const events = ctx.events;
   let seq = 0;
   const db = {
     transaction: vi.fn(async (fn: (tx: unknown) => unknown) => {
@@ -104,6 +126,66 @@ function makeLockableDb(row: Record<string, unknown> | null) {
 describe('accountingTokens', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    ctx.depth = 0;
+    ctx.ambient = false;
+    ctx.events.length = 0;
+  });
+
+  // ---------------------------------------------------------------------------
+  // Review round 3 (#1105 / lost-sync-state class): `withSystemDbAccessContext`
+  // JOINS an already-open context and `db.transaction` inside one degrades to a
+  // SAVEPOINT, so the "two short transactions" this module documents only exist
+  // when it is entered with NO ambient context. That is now enforced, not
+  // assumed.
+  // ---------------------------------------------------------------------------
+
+  it('refuses to run inside an ambient DB access context (the caller must close it first)', async () => {
+    ctx.ambient = true;
+    const conn = connection({ accessTokenExpiresAt: new Date(Date.now() + 60_000) });
+    const { db } = makeLockableDb(lockedRow());
+
+    const { getValidAccessToken } = await import('./accountingTokens');
+
+    await expect(getValidAccessToken(db, conn)).rejects.toThrow(/no ambient DB access context/i);
+    expect(db.transaction).not.toHaveBeenCalled();
+    expect(mocks.provider.refresh).not.toHaveBeenCalled();
+  });
+
+  it('opens each lock transaction in its OWN system context, and holds neither across provider.refresh', async () => {
+    const conn = connection({ accessTokenExpiresAt: new Date(Date.now() + 60_000) });
+    const { db, events } = makeLockableDb(lockedRow());
+
+    mocks.provider.refresh.mockImplementation(async () => {
+      // The defining assertion: at the moment QuickBooks is called, no system
+      // context (and therefore no transaction) is open at all.
+      expect(ctx.depth).toBe(0);
+      events.push('refresh');
+      return {
+        realmId: 'realm-1',
+        accessToken: 'NEW-at',
+        refreshToken: 'NEW-rt',
+        accessTokenExpiresAt: new Date(Date.now() + 3600_000),
+        refreshTokenExpiresAt: new Date(Date.now() + 8640000_000),
+      };
+    });
+
+    const { getValidAccessToken } = await import('./accountingTokens');
+    await getValidAccessToken(db, conn);
+
+    expect(events).toEqual([
+      'ctx:enter(accountingTokens.captureRefresh)', 'tx1:start', 'tx1:end', 'ctx:exit',
+      'refresh',
+      'ctx:enter(accountingTokens.persistRefresh)', 'tx2:start', 'tx2:end', 'ctx:exit',
+    ]);
+  });
+
+  it('marks reauth_required through its own system context on the fast-fail path', async () => {
+    const conn = connection({ refreshTokenExpiresAt: new Date(Date.now() - 1000) });
+
+    const { getValidAccessToken, ReauthRequiredError } = await import('./accountingTokens');
+
+    await expect(getValidAccessToken({} as any, conn)).rejects.toBeInstanceOf(ReauthRequiredError);
+    expect(ctx.events).toEqual(['ctx:enter(accountingTokens.markReauth)', 'ctx:exit']);
   });
 
   it('returns the existing access token when it is outside the refresh buffer', async () => {
@@ -215,7 +297,11 @@ describe('accountingTokens', () => {
     // the fetch resolved. A regression back to one transaction wrapping the
     // fetch would produce a different event sequence (and a different
     // `db.transaction` call count) than this exact order.
-    expect(events).toEqual(['tx1:start', 'tx1:end', 'refresh:call', 'refresh:resolve', 'tx2:start', 'tx2:end']);
+    expect(events).toEqual([
+      'ctx:enter(accountingTokens.captureRefresh)', 'tx1:start', 'tx1:end', 'ctx:exit',
+      'refresh:call', 'refresh:resolve',
+      'ctx:enter(accountingTokens.persistRefresh)', 'tx2:start', 'tx2:end', 'ctx:exit',
+    ]);
   });
 
   it('persists the rotated tokens (Transaction B), writing through the LOCKED tx (not the outer db)', async () => {
