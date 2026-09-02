@@ -19,6 +19,7 @@ vi.mock('../db/schema', () => ({
     table: 'vulnerabilities',
     id: 'vulnerabilities.id',
     severity: 'vulnerabilities.severity',
+    knownExploited: 'vulnerabilities.knownExploited',
   },
 }));
 
@@ -58,13 +59,13 @@ describe('aggregateVulnerabilityCounts', () => {
     expect(counts.get('d2')).toEqual({ high: 1, critical: 1 });
   });
 
-  it('fails instead of publishing zeroes when referenced catalog rows are missing', () => {
-    expect(() =>
-      aggregateVulnerabilityCounts(
-        [{ deviceId: 'd1', vulnerabilityId: 'missing' }],
-        [],
-      ),
-    ).toThrow('Vulnerability catalog lookup incomplete');
+  it('treats a catalog entry mapped to unknown severity as contributing no counts', () => {
+    const counts = aggregateVulnerabilityCounts(
+      [{ deviceId: 'd1', vulnerabilityId: 'missing' }],
+      [{ id: 'missing', severity: 'unknown' }],
+    );
+
+    expect(counts.get('d1')).toBeUndefined();
   });
 });
 
