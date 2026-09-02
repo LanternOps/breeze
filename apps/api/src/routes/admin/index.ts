@@ -7,11 +7,13 @@ import { desktopFinalizationRoutes } from './desktopFinalization';
 import { exchangeRateAdminRoutes } from './exchangeRates';
 import { llmProviderCatalogAdminRoutes } from './llmProviderCatalog';
 import { aiKillStateAdminRoutes } from './aiKillState';
+import { trustAdminRoutes } from './trust';
 
 export const adminRoutes = new Hono();
 
 adminRoutes.use('*', platformAdminMiddleware);
 adminRoutes.route('/', abuseRoutes);
+adminRoutes.route('/', trustAdminRoutes);
 // Task 30 — GDPR org-wide erasure + export.
 // Mounted UNDER the platformAdminMiddleware above; tenantErasureRoutes
 // adds its own requireMfa() middleware on top.
