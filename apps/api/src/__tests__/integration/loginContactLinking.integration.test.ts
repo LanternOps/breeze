@@ -351,6 +351,53 @@ describe('Entra SSO provisioning links a contact (#3258)', () => {
     expect(login!.contactId).not.toBeNull();
   });
 
+  it('still mints the session when the contacts write raises a real DB error', async () => {
+    // The `link-failed` catch is only real if the failure is contained in a
+    // SAVEPOINT: postgres.js re-throws a database error at COMMIT time even
+    // after it has been caught, so a deadlock or constraint violation raised on
+    // the OUTER exchange transaction would still 500 the request. Only a real
+    // Postgres error can prove that — a mocked rejection never reaches commit.
+    //
+    // The trigger is scoped to one address prefix so it cannot disturb suites
+    // running concurrently against the same database.
+    await admin().execute(sql`
+      CREATE OR REPLACE FUNCTION breeze_test_block_contact_insert() RETURNS trigger AS $fn$
+      BEGIN
+        IF NEW.email LIKE 'linkfail-%' THEN
+          RAISE EXCEPTION 'injected contacts failure' USING ERRCODE = '40001';
+        END IF;
+        RETURN NEW;
+      END;
+      $fn$ LANGUAGE plpgsql;
+    `);
+    await admin().execute(sql`
+      DROP TRIGGER IF EXISTS breeze_test_block_contact_insert ON contacts;
+      CREATE TRIGGER breeze_test_block_contact_insert
+        BEFORE INSERT ON contacts FOR EACH ROW
+        EXECUTE FUNCTION breeze_test_block_contact_insert();
+    `);
+
+    try {
+      const email = `linkfail-${randomUUID().slice(0, 8)}@${fx.domain}`;
+      const outcome = await resolveAndMintClientSession(claims({ upn: email }), fakeRedis);
+
+      // The token is a verified Entra identity; a contacts problem is ours.
+      expect(outcome.kind).toBe('resolved');
+      if (outcome.kind !== 'resolved') return;
+      expect(outcome.audit.details).toMatchObject({ contactLink: 'link-failed', contactId: null });
+
+      // The LOGIN committed — proof the outer transaction was never poisoned.
+      const [login] = await loginRow(outcome.body.user.id);
+      expect(login).toBeTruthy();
+      expect(login!.contactId).toBeNull();
+      // And the savepoint rolled the contact back rather than leaving a partial.
+      expect(await contactsFor(fx.orgId, email)).toHaveLength(0);
+    } finally {
+      await admin().execute(sql`DROP TRIGGER IF EXISTS breeze_test_block_contact_insert ON contacts`);
+      await admin().execute(sql`DROP FUNCTION IF EXISTS breeze_test_block_contact_insert()`);
+    }
+  });
+
   it('writes NO contact when the org policy does not permit the user', async () => {
     // A tenant member outside policy.selectedUserIds is denied — and must not
     // leave a seeded person behind on the way out.

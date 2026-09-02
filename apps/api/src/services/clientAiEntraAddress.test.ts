@@ -8,14 +8,16 @@
  * customer demonstrably owns, not merely one the token asserts.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
 
-const { selectResult, whereSpy } = vi.hoisted(() => ({ selectResult: vi.fn(), whereSpy: vi.fn() }));
+const { selectResult, wheres } = vi.hoisted(() => ({ selectResult: vi.fn(), wheres: [] as unknown[] }));
 
 vi.mock('../db', () => {
   const chain: any = {
     from: () => chain,
     where: (w: unknown) => {
-      whereSpy(w);
+      wheres.push(w);
       return chain;
     },
     limit: () => selectResult(),
@@ -25,6 +27,13 @@ vi.mock('../db', () => {
 
 import { resolveLinkableEntraAddress } from './clientAiEntraAddress';
 import type { ClientAiEntraClaims } from './clientAiEntraJwt';
+
+// Real drizzle columns reach the predicate, so the WHERE can be COMPILED. The
+// mock returns its queued rows regardless of the predicate, so only a
+// compiled-SQL assertion can tell an `=` on the domain from a LIKE/suffix
+// match — the difference between "the org owns this domain" and "the org owns
+// something this domain ends with".
+const compile = (statement: SQL) => new PgDialect().sqlToQuery(statement as never);
 
 const ORG = 'org-1';
 const PARTNER = 'partner-1';
@@ -50,7 +59,10 @@ const claims = (over: Partial<ClientAiEntraClaims>): ClientAiEntraClaims =>
 const domainOwned = () => selectResult.mockResolvedValueOnce([{ orgId: ORG }]);
 const domainNotOwned = () => selectResult.mockResolvedValueOnce([]);
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  wheres.length = 0;
+});
 
 describe('resolveLinkableEntraAddress', () => {
   it('links a UPN whose domain the org owns', async () => {
@@ -127,10 +139,31 @@ describe('resolveLinkableEntraAddress', () => {
 
   it('matches the EXACT domain, never a parent (no subdomain widening)', async () => {
     // Same rule inbound email applies: a suffix match would route arbitrary
-    // subdomains the MSP never vetted into the org.
+    // subdomains the MSP never vetted into the org. Asserted on the COMPILED
+    // predicate, because the mock would return the queued row for a LIKE too.
     domainNotOwned();
     const got = await resolveLinkableEntraAddress(ORG, PARTNER, claims({ upn: 'jane@mail.acme.example' }));
     expect(got).toEqual({ kind: 'refused', outcome: 'unverified-address' });
+
+    const { sql, params } = compile(wheres[0] as SQL);
+    expect(sql).toMatch(/"domain"\s*=\s*\$\d/i);
+    expect(sql).not.toMatch(/like/i);
+    // The domain is queried whole — no stripping to a parent before the lookup.
+    expect(params).toContain('mail.acme.example');
+  });
+
+  it('bounds the lookup by partner AND is_active, with the exact params', async () => {
+    // The partner bound is the tenant boundary (the unique index is
+    // (partner_id, domain)); `is_active` is the MSP's revocation switch — a
+    // retired domain must stop verifying anyone.
+    domainOwned();
+    await resolveLinkableEntraAddress(ORG, PARTNER, claims({ upn: 'jane@acme.example' }));
+
+    expect(wheres).toHaveLength(1);
+    const { sql, params } = compile(wheres[0] as SQL);
+    expect(sql).toMatch(/"partner_id"\s*=\s*\$\d/i);
+    expect(sql).toMatch(/"is_active"\s*=\s*\$\d/i);
+    expect(params).toEqual([PARTNER, 'acme.example', true]);
   });
 
   it('requires the mapping to name THIS org, not merely the partner', async () => {

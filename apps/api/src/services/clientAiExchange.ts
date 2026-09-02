@@ -224,18 +224,28 @@ async function resolveSessionContactLink(
   }
 
   try {
-    const resolved = await linkLoginToContact(db, {
-      orgId: user.orgId,
-      email: decision.email,
-      name: claims.name,
-      // No acting Breeze user exists: the login provisions ITSELF from a
-      // verified token, so `contacts.created_by` is genuinely null.
-      actor: { userId: null },
-      // An Entra login IS portal access, so it claims the role the invite does
-      // (unlike the add-in's ticket requester, which grants nothing).
-      roles: ['portal'],
-      unionRoles: ['portal'],
-    });
+    // SAVEPOINT, for the same reason the provisioning INSERT has one: postgres.js
+    // re-throws a database error at COMMIT time even after it has been caught
+    // here (see the note in ticketConfigService/catalogService). A deadlock or
+    // an FK violation raised on the OUTER transaction would therefore still
+    // 500 the exchange despite the catch below — the nested transaction is what
+    // makes this catch real. Releasing the savepoint reassigns the advisory
+    // lock and the FOR KEY SHARE pin to the parent, so the follow-up
+    // `portal_users.contact_id` write still holds both.
+    const resolved = await db.transaction((tx) =>
+      linkLoginToContact(tx, {
+        orgId: user.orgId,
+        email: decision.email,
+        name: claims.name,
+        // No acting Breeze user exists: the login provisions ITSELF from a
+        // verified token, so `contacts.created_by` is genuinely null.
+        actor: { userId: null },
+        // An Entra login IS portal access, so it claims the role the invite does
+        // (unlike the add-in's ticket requester, which grants nothing).
+        roles: ['portal'],
+        unionRoles: ['portal'],
+      })
+    );
     return {
       contactLink: resolved.outcome,
       contactId: resolved.contactId,
@@ -421,6 +431,10 @@ export async function resolveAndMintClientSession(
         .update(portalUsers)
         .set({ contactId: link.contactId, updatedAt: now })
         .where(eq(portalUsers.id, user.id));
+      // Refresh the in-memory row rather than leave it disagreeing with the
+      // database: `user` was read BEFORE this write, so its `contactId` is now
+      // stale, and it outlives this block as part of the returned resolution.
+      user = { ...user, contactId: link.contactId };
     }
 
     return { user, provisioned, branding: brandingFromPolicy(policy.branding), link };

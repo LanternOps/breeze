@@ -16,6 +16,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const {
+  txSentinel,
   linkLoginToContactMock,
   resolveAddressMock,
   getOrgPolicyMock,
@@ -26,6 +27,9 @@ const {
   selectResult,
   insertReturning,
 } = vi.hoisted(() => ({
+  // Identity of the executor handed to a nested `db.transaction` callback, so a
+  // test can tell savepoint work from outer-transaction work.
+  txSentinel: {} as Record<string, unknown>,
   linkLoginToContactMock: vi.fn(),
   resolveAddressMock: vi.fn(),
   getOrgPolicyMock: vi.fn(),
@@ -44,10 +48,7 @@ vi.mock('../db', () => {
     where: () => chain,
     limit: () => selectResult(),
   };
-  const dbMock: any = {
-    // A nested transaction is a SAVEPOINT in production; here it is just the
-    // callback, so a rejecting insert still surfaces to the caller's catch.
-    transaction: (fn: (tx: unknown) => unknown) => fn(dbMock),
+  const methods = {
     select: vi.fn(() => chain),
     insert: vi.fn(() => ({
       values: (v: unknown) => {
@@ -61,6 +62,14 @@ vi.mock('../db', () => {
         return { where: () => Promise.resolve() };
       },
     })),
+  };
+  // A nested transaction is a SAVEPOINT in production. The callback receives a
+  // DISTINCT executor with the same surface, so a test can tell work that ran
+  // inside the savepoint from work that ran on the outer transaction.
+  Object.assign(txSentinel, methods);
+  const dbMock: any = {
+    ...methods,
+    transaction: (fn: (tx: unknown) => unknown) => fn(txSentinel),
   };
   return {
     withSystemDbAccessContext: (fn: () => Promise<unknown>) => fn(),
@@ -120,6 +129,14 @@ const activeUser = (over: Record<string, unknown> = {}) => ({
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // `clearAllMocks` clears CALLS but not queued `mockResolvedValueOnce`
+  // implementations, and a test that denies early leaves its unconsumed queue
+  // entries behind to be picked up by the next test's first query. Reset the
+  // two queues outright, then re-establish a safe default.
+  selectResult.mockReset();
+  selectResult.mockResolvedValue([]);
+  insertReturning.mockReset();
+  insertReturning.mockResolvedValue([]);
   getOrgPolicyMock.mockResolvedValue({ enabled: true, branding: null, userAccess: 'all', selectedUserIds: [] });
   isPermittedMock.mockReturnValue(true);
   resolveAddressMock.mockResolvedValue({ kind: 'linkable', email: EMAIL });
@@ -286,6 +303,20 @@ describe('resolveAndMintClientSession — contact linkage (#3258)', () => {
     expect(outcome.audit.details).toMatchObject({ reason: 'org_mismatch', contactLink: 'not-attempted' });
   });
 
+  it('runs the contact link inside a SAVEPOINT, not on the outer transaction', async () => {
+    // postgres.js re-throws a database error at COMMIT time even after it has
+    // been caught (see catalogService/ticketConfigService), so a deadlock or
+    // 23503 raised on the outer transaction would still 500 the exchange
+    // despite the `link-failed` catch below. Running the link in a savepoint is
+    // what makes that catch real — same fix as the provisioning INSERT.
+    seedSelects([]);
+    insertReturning.mockResolvedValueOnce([activeUser()]);
+
+    await resolveAndMintClientSession(claims(), redis);
+
+    expect(linkLoginToContactMock.mock.calls[0]![0]).toBe(txSentinel);
+  });
+
   // ---- T3: a contacts failure must not deny a valid SSO login ----
 
   it('provisions with link-failed when the resolver throws', async () => {
@@ -352,6 +383,32 @@ describe('resolveAndMintClientSession — contact linkage (#3258)', () => {
     expect(outcome.kind).toBe('resolved');
     // The winner already linked it, so the loser keeps that link untouched.
     expect(outcome.audit.details).toMatchObject({ contactLink: 'kept', contactId: 'ct-1' });
+  });
+
+  it('records not-attempted on the partner-entitlement denial', async () => {
+    selectResult.mockResolvedValueOnce([{ orgId: ORG_ID, partnerId: PARTNER_ID, partnerEnabled: false }]);
+    const outcome = await resolveAndMintClientSession(claims(), redis);
+    expect(outcome.kind).toBe('denied');
+    expect(outcome.audit.details).toMatchObject({ reason: 'partner_not_enabled', contactLink: 'not-attempted' });
+    expect(linkLoginToContactMock).not.toHaveBeenCalled();
+  });
+
+  it('records not-attempted when the org policy is disabled', async () => {
+    seedSelects([]);
+    getOrgPolicyMock.mockResolvedValue({ enabled: false, branding: null, userAccess: 'all', selectedUserIds: [] });
+    const outcome = await resolveAndMintClientSession(claims(), redis);
+    expect(outcome.kind).toBe('denied');
+    expect(outcome.audit.details).toMatchObject({ reason: 'disabled', contactLink: 'not-attempted' });
+    expect(linkLoginToContactMock).not.toHaveBeenCalled();
+  });
+
+  it('records not-attempted when provisioning yields no row', async () => {
+    seedSelects([]);
+    insertReturning.mockResolvedValueOnce([]); // insert returned nothing
+    const outcome = await resolveAndMintClientSession(claims(), redis);
+    expect(outcome.kind).toBe('denied');
+    expect(outcome.audit.details).toMatchObject({ reason: 'provisioning_failed', contactLink: 'not-attempted' });
+    expect(linkLoginToContactMock).not.toHaveBeenCalled();
   });
 
   it('does not resolve a contact for a denied tenant', async () => {
