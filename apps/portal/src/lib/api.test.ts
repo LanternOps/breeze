@@ -115,3 +115,45 @@ describe('portalApi.getBrandingByDomain', () => {
     vi.unstubAllGlobals();
   });
 });
+
+describe('ApiRequestConfig.timeoutMs', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('attaches an AbortSignal built from timeoutMs to the fetch call', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ branding: { name: 'Customer Portal' } }),
+      { status: 200 },
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await portalApi.getBranding({ redirectOnUnauthorized: false, timeoutMs: 3000 });
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it('omits signal when timeoutMs is not set, unchanged from prior behavior', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ branding: { name: 'Customer Portal' } }),
+      { status: 200 },
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await portalApi.getBranding({ redirectOnUnauthorized: false });
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect(init.signal).toBeUndefined();
+  });
+
+  it('falls through to the existing network-error path when the fetch aborts', async () => {
+    const abortError = new DOMException('The operation was aborted.', 'TimeoutError');
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(abortError));
+
+    const result = await portalApi.getBranding({ redirectOnUnauthorized: false, timeoutMs: 3000 });
+
+    expect(result.data).toBeUndefined();
+    expect(result.error).toBe('Network error');
+  });
+});

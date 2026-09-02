@@ -32,6 +32,13 @@ function brandingDomain(request: Request): string {
   return host.split(':')[0] || '';
 }
 
+// The middleware calls loadPortalBranding on every '/' and auth-only-path
+// visit for a signed-in customer to pick the flag-aware landing page — a
+// hanging (not erroring) branding fetch there would otherwise block every
+// such visit indefinitely. Bound only THIS function's own requests; other
+// portalApi call sites built from buildServerApiConfig are unaffected.
+const BRANDING_FETCH_TIMEOUT_MS = 3000;
+
 // Session-aware branding lookup. A session cookie means we have an authenticated
 // portal user, so pull their exact org's branding; otherwise fall back to the
 // public-by-domain lookup keyed off the forwarded host (custom domain / shared
@@ -41,7 +48,10 @@ function brandingDomain(request: Request): string {
 export async function loadPortalBranding(
   request: Request
 ): Promise<BrandingConfig> {
-  const config = buildServerApiConfig(request);
+  const config: ApiRequestConfig = {
+    ...buildServerApiConfig(request),
+    timeoutMs: BRANDING_FETCH_TIMEOUT_MS
+  };
   const domain = brandingDomain(request);
   let response = hasPortalSessionCookie(request)
     ? await portalApi.getBranding(config)

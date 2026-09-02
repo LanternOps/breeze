@@ -149,6 +149,12 @@ export function buildServerForwardHeaders(request: Request): Headers {
 export interface ApiRequestConfig {
   headers?: HeadersInit;
   redirectOnUnauthorized?: boolean;
+  /** Abort the request after this many ms, falling into the existing
+   *  network-error catch path below (so callers that already fail closed on
+   *  a network error — e.g. loadPortalBranding — also fail closed on a
+   *  hang, not just a hard error). Undefined = no bound, matching prior
+   *  behavior for every other call site. */
+  timeoutMs?: number;
 }
 
 export interface ApiResponse<T> {
@@ -197,7 +203,8 @@ export async function apiRequest<T>(
     const response = await fetch(url, {
       ...options,
       headers,
-      credentials: 'include'
+      credentials: 'include',
+      signal: config.timeoutMs !== undefined ? AbortSignal.timeout(config.timeoutMs) : options.signal
     });
 
     if (response.status === 401) {
