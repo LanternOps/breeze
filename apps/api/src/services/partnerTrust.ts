@@ -225,8 +225,9 @@ export async function evaluateCapability(cap: GatedCapability, ctx: GateContext)
   const mode = partnerTrustMode();
   if (mode === 'off') return { allow: true };
   const row = await readTrust(ctx.partnerId);
-  if (!row) return { allow: true };
-  const denial = decide(cap, row, ctx);
+  const denial = row
+    ? decide(cap, row, ctx)
+    : { code: 'TRUST_RESTRICTED' as const, reason: 'partner_unresolved' };
   if (!denial) return { allow: true };
   await createAuditLog({
     orgId: ctx.orgId ?? null,

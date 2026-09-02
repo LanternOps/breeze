@@ -198,7 +198,7 @@ const TERMINAL_TRANSITION_FAMILIES_ON_VALIDATION_FAILURE = new Set<CriticalResul
 
 interface ActiveAgentConnection {
   ws: WSContext;
-  partnerId: string;
+  partnerId: string | null;
   trustState: PartnerTrustState;
 }
 
@@ -1983,7 +1983,10 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
 
   return {
     onOpen: async (_event: unknown, ws: WSContext) => {
-      await initializePartnerTrustSubscription();
+      const trustMode = partnerTrustMode();
+      if (trustMode !== 'off') {
+        await initializePartnerTrustSubscription();
+      }
       // Finding #4: enforce the one-socket-per-agent invariant. A second socket
       // for the same agentId would otherwise overwrite the map entry WITHOUT
       // closing the previous socket, leaving an orphaned-but-authorized socket
@@ -2007,20 +2010,32 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
         agentPingStates.delete(agentId);
       }
 
-      // Resolve and cache the partner trust snapshot once for this connection.
-      // Missing partner/trust rows retain evaluateCapability's existing allow behavior.
-      const partnerId = await partnerIdForDevice(agentDb.deviceId);
-      if (!partnerId) {
-        ws.close(1011, 'Unable to resolve partner trust state');
-        return;
+      // Trust mode off preserves the pre-gate connection path without trust DB reads.
+      // Shadow/enforce keep the socket open but fail closed in the cached snapshot
+      // whenever partner or trust resolution is missing or unavailable.
+      let partnerId: string | null = null;
+      let trustState: PartnerTrustState = 'trusted';
+      if (trustMode !== 'off') {
+        try {
+          partnerId = await partnerIdForDevice(agentDb.deviceId);
+          const trust = partnerId ? await loadTrustState(partnerId) : null;
+          if (!trust) {
+            trustState = 'restricted';
+            console.warn(`[AgentWs] Partner trust unresolved for device ${agentDb.deviceId}; restricting connection`);
+          } else {
+            trustState = trust.trustState;
+          }
+        } catch {
+          trustState = 'restricted';
+          console.warn(`[AgentWs] Partner trust resolution failed for device ${agentDb.deviceId}; restricting connection`);
+        }
       }
-      const trust = await loadTrustState(partnerId);
 
       // Store connection and stamp this socket's delivery epoch.
       activeConnections.set(agentId, {
         ws,
         partnerId,
-        trustState: trust?.trustState ?? 'trusted',
+        trustState,
       });
       socketEpoch = installAgentSocketEpoch(agentId);
       void setAgentPresence(agentId, { instanceId: INSTANCE_ID, connectionToken });
@@ -3237,11 +3252,13 @@ export function sendCommandToAgent(agentId: string, command: AgentCommand): bool
   const mode = partnerTrustMode();
   if (mode !== 'off' && conn.trustState !== 'trusted' && !isLifecycleCommand(command.type)) {
     if (mode === 'enforce') return false;
-    void evaluateCapability('device_execute', {
-      partnerId: conn.partnerId,
-      commandType: command.type,
-      detail: { via: 'ws_fast_path' },
-    });
+    if (conn.partnerId) {
+      void evaluateCapability('device_execute', {
+        partnerId: conn.partnerId,
+        commandType: command.type,
+        detail: { via: 'ws_fast_path' },
+      });
+    }
   }
 
   try {

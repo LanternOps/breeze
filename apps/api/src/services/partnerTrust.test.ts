@@ -35,7 +35,7 @@ import {
   LIFECYCLE_COMMAND_TYPES,
   setTrustState,
 } from './partnerTrust';
-import { writeTrust } from './partnerTrust.repo';
+import { readTrust, writeTrust } from './partnerTrust.repo';
 
 function sourceFilesUnder(directory: string): string[] {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
@@ -184,6 +184,25 @@ describe('evaluateCapability', () => {
       .toMatchObject({ allow: false, code: 'TRUST_RESTRICTED' });
   });
 
+  it('denies an unresolved partner in enforce mode and audits the denial', async () => {
+    vi.mocked(readTrust).mockResolvedValueOnce(null);
+
+    expect(await evaluateCapability('remote_control', { partnerId: 'missing-partner' })).toEqual({
+      allow: false,
+      code: 'TRUST_RESTRICTED',
+      capability: 'remote_control',
+      reason: 'partner_unresolved',
+    });
+    expect(audit).toHaveBeenCalledWith(expect.objectContaining({
+      resourceId: 'missing-partner',
+      result: 'denied',
+      details: expect.objectContaining({
+        code: 'TRUST_RESTRICTED',
+        reason: 'partner_unresolved',
+      }),
+    }));
+  });
+
   it('allows everything when trusted and writes no audit row', async () => {
     state.trustState = 'trusted';
     expect(await evaluateCapability('remote_control', { partnerId: 'p1' })).toEqual({ allow: true });
@@ -250,6 +269,23 @@ describe('evaluateCapability', () => {
     expect(audit).toHaveBeenCalledWith(expect.objectContaining({
       action: 'partner.trust.capability_denied',
       details: expect.objectContaining({ mode: 'shadow' }),
+    }));
+  });
+
+  it('shadow mode allows an unresolved partner and records the would-deny', async () => {
+    vi.mocked(partnerTrustMode).mockReturnValue('shadow');
+    vi.mocked(readTrust).mockResolvedValueOnce(null);
+
+    expect(await evaluateCapability('remote_control', { partnerId: 'missing-partner' })).toEqual({
+      allow: true,
+      shadowDenied: { code: 'TRUST_RESTRICTED', reason: 'partner_unresolved' },
+    });
+    expect(audit).toHaveBeenCalledWith(expect.objectContaining({
+      result: 'success',
+      details: expect.objectContaining({
+        mode: 'shadow',
+        reason: 'partner_unresolved',
+      }),
     }));
   });
 
