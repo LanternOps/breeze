@@ -60,59 +60,6 @@ export type ReadinessProbeName = 'db' | 'redis';
  */
 export type WorkerInitPhase = 'pending' | 'started' | 'skipped-no-redis';
 
-export interface WorkersHealthyInput {
-  phase: WorkerInitPhase;
-  /** Per-worker initialisation outcome, keyed by worker name. */
-  workerStatus: Record<string, boolean>;
-  /** Result of the *current* Redis probe, not a boot-time snapshot. */
-  redisOk: boolean;
-  shuttingDown: boolean;
-}
-
-/**
- * Live view of background-worker health — the *fact*, not the verdict.
- *
- * Deliberately derived on every evaluation rather than frozen at boot, so a
- * worker that finishes registering after the first probe flips `/ready` to true
- * without a restart.
- *
- * This reports what is actually true even when the deployment has declared
- * Redis optional. Tolerating a missing Redis is a decision about the overall
- * `ready` verdict (see `createReadinessEvaluator`), and folding it in here
- * would make the `workers` field claim workers exist when none do — the same
- * class of untruth as #2974, just in the other direction.
- */
-export function computeWorkersHealthy({
-  phase,
-  workerStatus,
-  redisOk,
-  shuttingDown
-}: WorkersHealthyInput): boolean {
-  // Draining: report not-ready so load balancers stop routing to us.
-  if (shuttingDown) return false;
-
-  // Boot hasn't reached worker initialisation yet. The HTTP server is already
-  // listening at this point, so this window is exactly the race that #2974 used
-  // to latch permanently. Checked before Redis so that "nothing has started
-  // yet" is never reported as healthy on a Redis-optional deployment.
-  if (phase === 'pending') return false;
-
-  // Every tracked worker is BullMQ-backed, so no Redis means no workers —
-  // whether Redis was already gone at boot or died afterwards.
-  if (!redisOk) return false;
-
-  // Redis is reachable *now*, but boot skipped worker startup because it wasn't
-  // reachable then. Nothing is consuming the queues and only a restart fixes
-  // it, so this must not silently report healthy once Redis returns.
-  if (phase === 'skipped-no-redis') return false;
-
-  // `every` is vacuously true on an empty map. `phase` only becomes 'started'
-  // after all workers have recorded an outcome, so an empty map means the
-  // bookkeeping is wrong — report not-ready rather than healthy-with-no-workers.
-  const outcomes = Object.values(workerStatus);
-  return outcomes.length > 0 && outcomes.every(Boolean);
-}
-
 export interface ReadinessEvaluatorOptions {
   /** Live database probe. */
   checkDb: () => Promise<boolean>;

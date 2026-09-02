@@ -38,11 +38,16 @@
  * unfollowed (see that file's header).
  *
  * Only genuinely leaf modules stay as static top-of-file imports:
- * `config/env` (just `breezeRole`), `config/validate`, `services/sentry`,
- * `services/readiness` (zero imports of its own), `services/shutdownPhases`
- * (zero imports of its own), `utils/envInt` (zero imports of its own), and
- * `services/rejectionSuppressions` (zero imports of its own) — each
- * independently verified importable without pulling in the route graph.
+ * `config/env` (`breezeRole` plus the readiness flag readers), `config/validate`,
+ * `services/sentry`, `services/readiness` (type-only import of its own),
+ * `services/shutdownPhases` (zero imports of its own), `utils/envInt` (zero
+ * imports of its own), `services/rejectionSuppressions` (zero imports of its
+ * own), `config/readinessConfig` (zero imports of its own) and
+ * `services/workerReadinessRegistry` (only `import type { Worker }`) — each
+ * independently verified importable without pulling in the route graph. The
+ * consumer-readiness MANIFEST (`jobs/workerReadinessManifest`) is NOT static:
+ * it value-imports `selectWorkers` from the worker registry, so it is loaded
+ * in `main()`'s dynamic block alongside `./services/workerRegistry`.
  *
  * #4143 added four more, all held to the same bar: `services/eventLoopMonitor`
  * (`node:perf_hooks` only), `services/eventLoopStarvationReporter` (the
@@ -88,7 +93,8 @@
 import 'dotenv/config';
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from 'node:http';
 import { sql } from 'drizzle-orm';
-import { breezeRole } from './config/env';
+import { AI_AGENTS_ENABLED, abuseSignalsEnabled, breezeRole, eventDispatchMode } from './config/env';
+import { resolveReadinessTiming } from './config/readinessConfig';
 import { validateConfig } from './config/validate';
 import {
   captureException,
@@ -114,12 +120,13 @@ import {
   parseMetricsScrapeIpAllowlist,
   resolveMetricsScrapeToken,
 } from './services/metricsScrapeAuth';
-import {
-  computeWorkersHealthy,
-  createReadinessEvaluator,
-  type WorkerInitPhase,
-} from './services/readiness';
+import { createReadinessEvaluator, type WorkerInitPhase } from './services/readiness';
 import { runShutdownPhases } from './services/shutdownPhases';
+import {
+  setWorkerReadinessTransitionHandler,
+  summarizeConsumerReadiness,
+  workerReadinessRegistry,
+} from './services/workerReadinessRegistry';
 import { envInt } from './utils/envInt';
 import { isBenignRejection, isRecoverablePostgresConnectionTeardown } from './services/rejectionSuppressions';
 
@@ -132,8 +139,10 @@ if (breezeRole() !== 'worker') {
 
 // ---------------------------------------------------------------------------
 // Module-level boot state. Mirrors index.ts's shape (workerStatus,
-// workerInitPhase, shutdownInProgress) so `computeWorkersHealthy` — shared
-// with index.ts — sees the same input contract.
+// workerInitPhase, shutdownInProgress). `workerStatus` now feeds ONLY the boot
+// log's failed-list; readiness reads the consumer registry
+// (`services/workerReadinessRegistry`) — the live per-consumer state, not a
+// boot-time snapshot (Track C, D4).
 // ---------------------------------------------------------------------------
 
 const workerStatus: Record<string, boolean> = {};
@@ -164,34 +173,35 @@ let probeDb: () => Promise<boolean> = async () => false;
 let probeRedis: () => Promise<boolean> = async () => false;
 
 /**
- * Readiness cache TTL / probe timeout. Duplicated from index.ts rather than
- * imported: index.ts's own module pulls in the entire route graph at its
- * top, which this file must never do (see the header comment). Same values,
- * same clamping — see index.ts's `READINESS_CACHE_TTL_MS` for the rationale.
+ * Same clamp as index.ts (config/readinessConfig.ts): ttl + probe timeout
+ * never exceed the published 10 s transition-visibility threshold.
  */
-const READINESS_CACHE_TTL_MAX_MS = 30_000;
-const readinessTtlRaw = envInt('READINESS_CACHE_TTL_MS', 5_000);
-const READINESS_CACHE_TTL_MS = Math.min(Math.max(readinessTtlRaw, 0), READINESS_CACHE_TTL_MAX_MS);
-const READINESS_PROBE_TIMEOUT_MS = Math.max(envInt('READINESS_PROBE_TIMEOUT_MS', 3_000), 100);
+const readinessTiming = resolveReadinessTiming(process.env, (name, requested, effective) => {
+  console.warn(`[worker][ready] ${name}=${requested} clamped to ${effective}ms`);
+});
 
 const readiness = createReadinessEvaluator({
   checkDb: () => probeDb(),
   checkRedis: () => probeRedis(),
-  workersHealthy: (redisOk) =>
-    computeWorkersHealthy({ phase: workerInitPhase, workerStatus, redisOk, shuttingDown }),
+  workerRegistry: workerReadinessRegistry,
+  workersInitialized: () => workerInitPhase === 'started',
   isShuttingDown: () => shuttingDown,
   // ALWAYS true for a worker: `REQUIRE_REDIS_ON_STARTUP` is an api/all-role
   // knob (index.ts:1354-1359's `skipped-no-redis` limp mode is deliberately
   // NOT available here) — every tracked worker is BullMQ-backed, so a
   // worker process with no Redis has no reason to exist.
   requireRedis: true,
-  ttlMs: READINESS_CACHE_TTL_MS,
-  probeTimeoutMs: READINESS_PROBE_TIMEOUT_MS,
+  ttlMs: readinessTiming.ttlMs,
+  probeTimeoutMs: readinessTiming.probeTimeoutMs,
   onProbeFailure: (probeName, error) => {
     console.error(`[worker][ready] ${probeName} probe failed:`, error);
     captureException(error instanceof Error ? error : new Error(String(error)));
   },
 });
+// Every consumer lifecycle transition drops the cached snapshot so the next
+// probe re-evaluates — a consumer failing mid-life flips /health/ready within
+// one probe, not one TTL.
+setWorkerReadinessTransitionHandler(() => readiness.invalidate());
 
 // ---------------------------------------------------------------------------
 // Slim health server (raw node:http — no Hono, no route graph).
@@ -224,12 +234,24 @@ async function handleReadyRequest(res: ServerResponse): Promise<void> {
   }
   try {
     const snapshot = await readiness.get();
+    const body = {
+      role: 'worker' as const,
+      ready: snapshot.ready,
+      db: snapshot.db,
+      redis: snapshot.redis,
+      workers: snapshot.workers,
+      checkedAt: snapshot.checkedAt,
+      // Aggregate counts only — consumer names, timestamps and error codes
+      // are internal (same rule as routes/readiness.ts). Never spread the
+      // snapshot: its `consumers` map carries all three.
+      consumerSummary: summarizeConsumerReadiness(snapshot.consumers),
+    };
     if (snapshot.ready) {
-      writeJson(res, 200, { role: 'worker', ...snapshot });
+      writeJson(res, 200, body);
       return;
     }
     const reason = !snapshot.db ? 'db' : !snapshot.redis ? 'redis' : 'workers-pending';
-    writeJson(res, 503, { reason, role: 'worker', ...snapshot });
+    writeJson(res, 503, { reason, ...body });
   } catch (error) {
     console.error('[worker][ready] readiness evaluation failed:', error);
     captureException(error instanceof Error ? error : new Error(String(error)));
@@ -414,6 +436,7 @@ export async function bootWorker(): Promise<void> {
   const { registerAllEventSubscribers } = await import('./services/eventSubscribers');
   const { buildWebhookFanoutDeps } = await import('./services/webhookFanoutDeps');
   const { startRegisteredWorkers, buildWorkerShutdownTasks } = await import('./services/workerRegistry');
+  const { declareExpectedConsumers, consumersForInitializer } = await import('./jobs/workerReadinessManifest');
   const { initializeEventDispatchWorker, shutdownEventDispatchWorker } = await import('./jobs/eventDispatchWorker');
   const { shutdownEventDispatcher } = await import('./services/eventDispatcher');
   const { shutdownEventDispatchQueue } = await import('./services/eventDispatchQueue');
@@ -543,12 +566,30 @@ export async function bootWorker(): Promise<void> {
   // Step 8: the registry's `global`-placement workers, then the event-dispatch
   // consumer (its own phase-2 special, mirroring index.ts). No relay consumer
   // — that stays `socket-owner` (api/all only).
+  // Redis is mandatory here (step 5 exited otherwise), so every consumer the
+  // worker role starts is declared up front — fail-closed until each attaches
+  // (spec D3/D4); flag-gated consumers resolve at declare time (D3a).
+  declareExpectedConsumers({
+    role: 'worker',
+    redisAvailable: true,
+    abuseSignalsEnabled: abuseSignalsEnabled(),
+    eventDispatchEnabled: eventDispatchMode() !== 'off',
+    aiAgentsEnabled: AI_AGENTS_ENABLED,
+    registry: workerReadinessRegistry,
+  });
+
   await startRegisteredWorkers('worker', {
     onResult: (name, ok, error) => {
       workerStatus[name] = ok;
       if (!ok) {
         console.error(`[CRITICAL][worker] Failed to initialize ${name}:`, error);
         captureException(error instanceof Error ? error : new Error(String(error)));
+        // Every queue consumer this entry owns is now permanently failed for
+        // readiness. AFTER captureException: this loop throws on an
+        // undeclared name and the registry's allSettled would swallow it.
+        for (const consumer of consumersForInitializer(name)) {
+          workerReadinessRegistry.recordInitializationFailure(consumer, error);
+        }
       }
     },
   });
@@ -560,6 +601,9 @@ export async function bootWorker(): Promise<void> {
     workerStatus['eventDispatch'] = false;
     console.error('[CRITICAL][worker] Failed to initialize eventDispatch:', error);
     captureException(error instanceof Error ? error : new Error(String(error)));
+    for (const consumer of consumersForInitializer('eventDispatch')) {
+      workerReadinessRegistry.recordInitializationFailure(consumer, error);
+    }
   }
 
   workerInitPhase = 'started';

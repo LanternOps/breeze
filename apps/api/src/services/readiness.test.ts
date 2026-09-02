@@ -1,6 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
-  computeWorkersHealthy,
   createReadinessEvaluator,
   type ReadinessEvaluatorOptions
 } from './readiness';
@@ -420,78 +419,5 @@ describe('createReadinessEvaluator', () => {
 
       expect((await evaluator.get()).ready).toBe(false);
     });
-  });
-});
-
-describe('computeWorkersHealthy', () => {
-  const base = {
-    phase: 'started' as const,
-    workerStatus: { alertWorkers: true, cisJobs: true },
-    redisOk: true,
-    shuttingDown: false
-  };
-
-  it('is healthy when every tracked worker initialised', () => {
-    expect(computeWorkersHealthy(base)).toBe(true);
-  });
-
-  it('is unhealthy when any tracked worker failed to initialise', () => {
-    expect(
-      computeWorkersHealthy({ ...base, workerStatus: { alertWorkers: true, cisJobs: false } })
-    ).toBe(false);
-  });
-
-  it('is unhealthy before worker initialisation runs', () => {
-    // The HTTP server starts listening before initializeWorkers() resolves, so
-    // probes really do hit this window.
-    expect(computeWorkersHealthy({ ...base, phase: 'pending', workerStatus: {} })).toBe(false);
-  });
-
-  it('is unhealthy while pending even when Redis is also unreachable', () => {
-    // Guard ordering: 'pending' must be checked before the Redis branch, or a
-    // Redis-optional deployment would report healthy before anything started.
-    expect(
-      computeWorkersHealthy({ ...base, phase: 'pending', workerStatus: {}, redisOk: false })
-    ).toBe(false);
-  });
-
-  it('is unhealthy when Redis is unreachable', () => {
-    // Every tracked worker is BullMQ-backed. Whether the deployment tolerates
-    // that is a verdict decision, not a fact about the workers.
-    expect(computeWorkersHealthy({ ...base, redisOk: false })).toBe(false);
-  });
-
-  it('stays unhealthy when Redis recovers but boot never started the workers', () => {
-    // Nothing is consuming the queues; only a restart fixes this, so returning
-    // healthy here would be a lie in the same direction as the original bug.
-    expect(
-      computeWorkersHealthy({ ...base, phase: 'skipped-no-redis', workerStatus: {} })
-    ).toBe(false);
-  });
-
-  it('is unhealthy when boot skipped the workers and Redis is still down', () => {
-    expect(
-      computeWorkersHealthy({
-        ...base,
-        phase: 'skipped-no-redis',
-        workerStatus: {},
-        redisOk: false
-      })
-    ).toBe(false);
-  });
-
-  it('is unhealthy for a started phase with no recorded workers', () => {
-    // `every` is vacuously true on an empty map. Guarding against that stops a
-    // refactor that marks 'started' too early from reporting a healthy API
-    // with zero workers running.
-    expect(computeWorkersHealthy({ ...base, workerStatus: {} })).toBe(false);
-  });
-
-  it('is unhealthy while shutting down', () => {
-    expect(computeWorkersHealthy({ ...base, shuttingDown: true })).toBe(false);
-  });
-
-  it('is unhealthy while shutting down even when everything else is healthy', () => {
-    expect(computeWorkersHealthy({ ...base, shuttingDown: true, redisOk: true })).toBe(false);
   });
 });
