@@ -1629,20 +1629,6 @@
       "summaryCompleted7d": "Completed (7d)",
       "summaryFailed7d": "Failed (7d)"
     },
-    "softwareComplianceReport": {
-      "softwareComplianceReport": "Software Compliance Report",
-      "analyzeSoftwareVersionDriftAcrossManagedDevices": "Analyze software version drift across managed devices.",
-      "bulkUpdate": "Bulk update",
-      "versionDriftAnalysis": "Version drift analysis",
-      "clickARowToSeeOutdatedDevices": "Click a row to see outdated devices.",
-      "software": "Software",
-      "expectedVersion": "Expected version",
-      "devicesOnVersion": "Devices on version",
-      "devicesOutdated": "Devices outdated",
-      "details": "Details",
-      "outdatedDevices": "Outdated devices",
-      "hide": "Hide"
-    },
     "softwareInventory": {
       "allowed": "Allowed",
       "blocked": "Blocked",

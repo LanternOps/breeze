@@ -849,10 +849,6 @@
           "description": "Top-Warnungen, Schweregradtrends und Reaktionsaufwand.",
           "name": "Alarmzusammenfassungsbericht"
         },
-        "billing_usage": {
-          "description": "Lizenznutzung, Nutzungsstufen und Zusammenfassungen der Rückbuchungen.",
-          "name": "Abrechnungs-/Nutzungsbericht"
-        },
         "device_health": {
           "description": "CPU-, Arbeitsspeicher- und Betriebszeittrends mit Gerätezustandsbewertung.",
           "name": "Gerätezustandsbericht"
@@ -861,21 +857,9 @@
           "description": "KPIs auf hoher Ebene, Risikolage und strategische Trends für Führungskräfte.",
           "name": "Zusammenfassung"
         },
-        "patch_compliance": {
-          "description": "Patch-Abdeckung, überfällige Updates und Behebungsstatus.",
-          "name": "Patch-Compliance-Bericht"
-        },
         "security_compliance_posture": {
           "description": "Versicherungs-/prüfbereite Beweise: EDR-Abdeckung, Verschlüsselung, Firewall, Patching, Schwachstellen, privilegierter Zugriff und Sicherheitsintegrationen mit prozentual implementierten Rollups.",
           "name": "Sicherheits- und Compliance-Status (Versicherung)"
-        },
-        "sla_compliance": {
-          "description": "SLA Einhaltung, Verstoßrisiko und Reaktionsfristen.",
-          "name": "SLA Compliance-Bericht"
-        },
-        "technician_activity": {
-          "description": "Ticketvolumen, Geräteberührungen und Auflösungsgeschwindigkeit.",
-          "name": "Tätigkeitsbericht des Technikers"
         }
       },
       "title": "Berichtsvorlagen",
