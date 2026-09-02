@@ -7,6 +7,7 @@ import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext
 import { users, partnerUsers, organizations } from '../db/schema';
 import { and, eq, inArray, isNull, or, SQL } from 'drizzle-orm';
 import type { PgColumn } from 'drizzle-orm/pg-core';
+import type { PartnerTrustState } from '../db/schema/orgs';
 import { ENABLE_2FA } from '../routes/auth/schemas';
 import { assertActiveTenantContext, TenantInactiveError } from '../services/tenantStatus';
 import { writeAuditEvent } from '../services/auditEvents';
@@ -91,6 +92,7 @@ export interface AuthContext {
   };
   token: TokenPayload | null;
   partnerId: string | null;
+  trustState?: PartnerTrustState;
   orgId: string | null;
   scope: 'system' | 'partner' | 'organization';
 
@@ -178,6 +180,7 @@ declare module 'hono' {
   interface ContextVariableMap {
     auth: AuthContext;
     permissions: UserPermissions;
+    trustState: PartnerTrustState;
   }
 }
 
@@ -712,6 +715,7 @@ export async function authMiddleware(c: Context, next: Next): Promise<void | Res
     },
     token: payload,
     partnerId: payload.partnerId,
+    trustState: c.get('trustState'),
     orgId: payload.orgId,
     scope: payload.scope,
     accessibleOrgIds,
