@@ -40,6 +40,7 @@ const SCAN_ROOTS = ['apps/api/src', 'ee'].map((rel) => join(REPO_ROOT, rel));
 /** Repo-root-relative path -> the exact number of permitted call expressions (both methods combined). */
 const EXPECTED_CALL_SITES: Record<string, number> = {
   'apps/api/src/services/accounting/accountingInvoicePush.ts': 2, // one pushInvoice, one voidInvoice
+  'apps/api/src/services/accounting/accountingPaymentPush.ts': 2, // one createPayment, one deletePayment
 };
 
 function listSourceFiles(dir: string): string[] {
@@ -112,6 +113,7 @@ describe('AccountingProvider pushInvoice/voidInvoice/createPayment/deletePayment
     }
     expect(byModuleAndMethod).toEqual({
       'apps/api/src/services/accounting/accountingInvoicePush.ts': { pushInvoice: 1, voidInvoice: 1 },
+      'apps/api/src/services/accounting/accountingPaymentPush.ts': { createPayment: 1, deletePayment: 1 },
     });
   });
 });
