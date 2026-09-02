@@ -38,6 +38,9 @@ interface Recorder {
   executes: SQL[];
   wheres: SQL[];
   limits: number[];
+  /** ONE ordered log across both call kinds — two arrays cannot prove order. */
+  order: string[];
+  forShares: number;
 }
 
 /**
@@ -49,27 +52,37 @@ function recorder(rows: Array<Array<Record<string, unknown>>>): Recorder {
   const executes: SQL[] = [];
   const wheres: SQL[] = [];
   const limits: number[] = [];
+  const order: string[] = [];
+  const rec: Recorder = { exec: null as never, executes, wheres, limits, order, forShares: 0 };
   const queue = [...rows];
-  const exec = {
+  rec.exec = {
     execute: (statement: SQL) => {
       executes.push(statement);
+      order.push('lock');
       return Promise.resolve([]);
     },
     select: () => ({
       from: () => ({
         where: (clause: SQL) => {
           wheres.push(clause);
-          return {
+          const leaf = {
             limit: (n: number) => {
               limits.push(n);
+              order.push('select');
               return Promise.resolve(queue.shift() ?? []);
             },
+            for: (strength: string) => {
+              expect(strength).toBe('key share');
+              rec.forShares += 1;
+              return leaf;
+            },
           };
+          return leaf;
         },
       }),
     }),
   } as unknown as ContactExecutor;
-  return { exec, executes, wheres, limits };
+  return rec;
 }
 
 const actor = { userId: 'u-1' };
@@ -112,6 +125,19 @@ describe('linkLoginToContact', () => {
     const { sql: lockSql, params } = compile(r.executes[0]!);
     expect(lockSql).toMatch(/pg_advisory_xact_lock\(hashtext\(\$\d\), hashtext\(\$\d\)\)/i);
     expect(params).toEqual([INBOUND_CONTACT_LOCK_NAMESPACE, `${ORG_ID}:fresh@acme.example`]);
+    // ORDER, on one shared log: locking AFTER the read would serialise nothing.
+    expect(r.order).toEqual(['lock', 'select']);
+  });
+
+  it('pins the matched contact with FOR KEY SHARE in the same read', async () => {
+    // Both callers write an FK to this row next (portal_users.contact_id,
+    // tickets.requester_contact_id). The advisory lock only serialises other
+    // CREATORS of the address — it does not stop a concurrent deleteContact,
+    // which would turn the FK write into a raw 23503. Taking the lock in the
+    // same statement as the read leaves no window between them.
+    const r = recorder([[{ id: 'ct-1', roles: ['portal'] }]]);
+    await linkLoginToContact(r.exec, { orgId: ORG_ID, email: 'known@acme.example', actor });
+    expect(r.forShares).toBe(1);
   });
 
   it('scopes the lookup to the org AND the lower-cased address', async () => {
@@ -192,6 +218,59 @@ describe('linkLoginToContact', () => {
     await linkLoginToContact(r.exec, { orgId: ORG_ID, email: 'fresh@acme.example', actor });
 
     expect(createContactMock.mock.calls[0]![1]).toMatchObject({ name: null });
+  });
+
+  // ---- #3258 security round S4: roles are the CALLER's decision ----
+  // The add-in grants nobody portal access — a technician filing a ticket must
+  // not mutate the customer's contact record as a side effect. Only the paths
+  // that actually hand out a login claim the 'portal' role.
+
+  it('creates with the caller\'s roles and unions nothing when told not to', async () => {
+    const r = recorder([[]]);
+    createContactMock.mockResolvedValueOnce({ id: 'ct-made' });
+
+    await linkLoginToContact(r.exec, {
+      orgId: ORG_ID,
+      email: 'fresh@acme.example',
+      actor,
+      roles: [],
+      unionRoles: [],
+    });
+
+    // roles: [] — this person has demonstrated nothing except being named on a
+    // ticket, exactly like an inbound emailer.
+    expect(createContactMock.mock.calls[0]![1]).toMatchObject({ roles: [] });
+  });
+
+  it('NEVER touches an existing contact when unionRoles is empty', async () => {
+    const r = recorder([[{ id: 'ct-1', roles: ['billing'] }]]);
+
+    const result = await linkLoginToContact(r.exec, {
+      orgId: ORG_ID,
+      email: 'known@acme.example',
+      actor,
+      roles: [],
+      unionRoles: [],
+    });
+
+    expect(result).toEqual({ contactId: 'ct-1', outcome: 'linked' });
+    // A ticket-create permission must not imply contact mutation.
+    expect(updateContactMock).not.toHaveBeenCalled();
+  });
+
+  it('unions every missing role, not just the first', async () => {
+    const r = recorder([[{ id: 'ct-1', roles: ['billing'] }]]);
+
+    await linkLoginToContact(r.exec, {
+      orgId: ORG_ID,
+      email: 'known@acme.example',
+      actor,
+      roles: ['portal'],
+      unionRoles: ['portal', 'technical'],
+    });
+
+    expect((updateContactMock.mock.calls[0]![3] as { roles: string[] }).roles.slice().sort())
+      .toEqual(['billing', 'portal', 'technical']);
   });
 
   it('leaves a shared mailbox UNLINKED instead of guessing which person it is', async () => {

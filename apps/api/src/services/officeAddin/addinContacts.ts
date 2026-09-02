@@ -55,6 +55,13 @@ export async function resolveConfirmedContact(
     email: input.email,
     name: input.name ?? null,
     actor,
+    // No role, and nothing unioned onto a contact that already exists. The
+    // add-in grants no portal access, so naming someone as a ticket requester
+    // must not rewrite their contact record — a technician holding
+    // `tickets:write` is not thereby authorised to edit contacts. Inbound email
+    // creates its requesters with `[]` on the same reasoning.
+    roles: [],
+    unionRoles: [],
   });
 }
 
@@ -63,8 +70,9 @@ export async function resolveConfirmedContact(
  * ONE org, for Task 17's link-email route. Mirrors
  * `inboundEmailService.findPortalUserInPartner` but org-scoped (the caller
  * already has the target ticket's org) rather than partner-scoped, and read-only
- * — linking an email to an existing ticket is not licensed to mint a contact,
- * unlike `createConfirmedContact` above which is a technician-confirmed action.
+ * — linking an email to an existing ticket is not licensed to create or
+ * modify a contact, unlike `resolveConfirmedContact` above, which is a
+ * technician-confirmed action.
  */
 export async function findPortalUserByEmail(
   orgId: string,

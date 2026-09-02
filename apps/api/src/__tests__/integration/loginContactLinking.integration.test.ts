@@ -28,8 +28,15 @@ import './setup';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { and, eq, sql } from 'drizzle-orm';
 
-import { withSystemDbAccessContext } from '../../db';
-import { contacts, organizations, partners, tickets, users } from '../../db/schema';
+import { withDbAccessContext, withSystemDbAccessContext } from '../../db';
+import {
+  contacts,
+  customerEmailDomains,
+  organizations,
+  partners,
+  tickets,
+  users,
+} from '../../db/schema';
 import { portalUsers } from '../../db/schema/portal';
 import { clientAiOrgPolicies, clientAiTenantMappings } from '../../db/schema/clientAi';
 import { resolveAndMintClientSession } from '../../services/clientAiExchange';
@@ -56,6 +63,8 @@ interface Fixture {
   userId: string;
   /** Entra tenant GUID mapped to this org. */
   tid: string;
+  /** The domain the PARTNER has declared this org owns. */
+  domain: string;
 }
 
 let fx: Fixture;
@@ -73,27 +82,60 @@ async function seed(): Promise<Fixture> {
   await admin().insert(clientAiTenantMappings).values({ orgId: org.id, entraTenantId: tid });
   await admin().insert(clientAiOrgPolicies).values({ orgId: org.id, enabled: true });
 
-  return { partnerId: partner.id, orgId: org.id, userId: user.id, tid };
+  // The partner's declaration that this org owns the domain — the same table
+  // inbound email trusts to route a sender to a tenant. Without a row here, no
+  // Entra address is linkable at all.
+  const domain = `c${randomUUID().slice(0, 8)}.test`;
+  await admin().insert(customerEmailDomains).values({
+    partnerId: partner.id, orgId: org.id, domain, isActive: true,
+  });
+
+  return { partnerId: partner.id, orgId: org.id, userId: user.id, tid, domain };
 }
 
-const claims = (over: Record<string, unknown> = {}) =>
-  ({
+/** A UPN on the org's owned domain — the strongest, linkable shape. */
+const ownedAddress = () => `jane.${randomUUID().slice(0, 8)}@${fx.domain}`;
+
+const claims = (over: Record<string, unknown> = {}) => {
+  // `in`, not `??`: an explicit `upn: null` is the address-less case and must
+  // NOT fall back to a generated address.
+  const upn = 'upn' in over ? (over.upn as string | null) : ownedAddress();
+  return {
     tid: fx.tid,
     oid: randomUUID(),
-    email: `jane.${randomUUID().slice(0, 8)}@customer.test`,
+    upn,
+    emailClaim: null,
+    emailDomainOwnerVerified: false,
+    email: upn,
     name: 'Jane Client',
     aud: 'api://breeze',
     iss: `https://login.microsoftonline.com/${fx.tid}/v2.0`,
     exp: 0,
     iat: 0,
+    scp: null,
     ...over,
-  }) as never;
+  } as never;
+};
 
 const contactsFor = (orgId: string, email: string) =>
   admin()
     .select({ id: contacts.id, roles: contacts.roles, name: contacts.name })
     .from(contacts)
     .where(and(eq(contacts.orgId, orgId), sql`lower(${contacts.email}) = ${email.toLowerCase()}`));
+
+/** The add-in's real request context: partner scope, RLS enforced. */
+const techContext = <T,>(fn: () => Promise<T>): Promise<T> =>
+  withDbAccessContext(
+    {
+      scope: 'partner',
+      orgId: null,
+      accessibleOrgIds: [fx.orgId],
+      accessiblePartnerIds: [fx.partnerId],
+      currentPartnerId: fx.partnerId,
+      userId: fx.userId,
+    },
+    fn,
+  );
 
 const loginRow = (id: string) =>
   admin().select({ id: portalUsers.id, contactId: portalUsers.contactId, orgId: portalUsers.orgId })
@@ -111,6 +153,7 @@ afterAll(async () => {
     await admin().delete(contacts).where(eq(contacts.orgId, orgId));
     await admin().delete(clientAiOrgPolicies).where(eq(clientAiOrgPolicies.orgId, orgId));
     await admin().delete(clientAiTenantMappings).where(eq(clientAiTenantMappings.orgId, orgId));
+    await admin().delete(customerEmailDomains).where(eq(customerEmailDomains.orgId, orgId));
   }
   for (const orgId of seeded.orgIds) await admin().delete(organizations).where(eq(organizations.id, orgId));
   // `users.partner_id` has no ON DELETE, so the staff row must go before its partner.
@@ -193,7 +236,7 @@ describe('Entra SSO provisioning links a contact (#3258)', () => {
   });
 
   it('leaves the link NULL for a shared mailbox rather than picking a person', async () => {
-    const email = `support.${randomUUID().slice(0, 8)}@customer.test`;
+    const email = `support.${randomUUID().slice(0, 8)}@${fx.domain}`;
     // contacts_org_email_idx is deliberately non-unique — this insert is the
     // proof, and it is why the resolver refuses to guess.
     await admin().insert(contacts).values([
@@ -201,7 +244,7 @@ describe('Entra SSO provisioning links a contact (#3258)', () => {
       { orgId: fx.orgId, email, name: 'AP Clerk Two', roles: [] },
     ]);
 
-    const outcome = await resolveAndMintClientSession(claims({ email }), fakeRedis);
+    const outcome = await resolveAndMintClientSession(claims({ upn: email }), fakeRedis);
 
     expect(outcome.kind).toBe('resolved');
     if (outcome.kind !== 'resolved') return;
@@ -215,7 +258,10 @@ describe('Entra SSO provisioning links a contact (#3258)', () => {
   });
 
   it('never keys a contact on the synthetic @entra.invalid address', async () => {
-    const outcome = await resolveAndMintClientSession(claims({ email: null }), fakeRedis);
+    const outcome = await resolveAndMintClientSession(
+      claims({ upn: null, email: null, emailClaim: null }),
+      fakeRedis,
+    );
 
     expect(outcome.kind).toBe('resolved');
     if (outcome.kind !== 'resolved') return;
@@ -229,21 +275,114 @@ describe('Entra SSO provisioning links a contact (#3258)', () => {
       .from(contacts).where(eq(contacts.orgId, fx.orgId));
     expect(all.map((r: { email: string | null }) => r.email)).not.toContain(outcome.body.user.email);
   });
+
+  it('NEVER links a UPN on a domain the org does not own', async () => {
+    // The token is a perfectly valid Entra identity from the mapped tenant, and
+    // the address already belongs to a real contact of this customer. Linking
+    // on it would hand that contact's emailed ticket history to whoever holds
+    // the tenant — the whole point of the ownership gate.
+    const victim = `ceo@${randomUUID().slice(0, 8)}.victim.test`;
+    const [existing] = await admin()
+      .insert(contacts)
+      .values({ orgId: fx.orgId, email: victim, name: 'Real CEO', roles: [] })
+      .returning({ id: contacts.id });
+
+    const outcome = await resolveAndMintClientSession(claims({ upn: victim }), fakeRedis);
+
+    expect(outcome.kind).toBe('resolved');
+    if (outcome.kind !== 'resolved') return;
+    expect(outcome.audit.details).toMatchObject({ contactLink: 'unverified-address', contactId: null });
+
+    const [login] = await loginRow(outcome.body.user.id);
+    expect(login!.contactId).toBeNull();
+    // The victim's contact is untouched — not linked, and not role-mutated.
+    const [after] = await admin()
+      .select({ roles: contacts.roles }).from(contacts).where(eq(contacts.id, existing!.id)).limit(1);
+    expect(after!.roles).toEqual([]);
+  });
+
+  it('denies a login that sits in a different org than the tenant now maps to', async () => {
+    // Re-mapping the tenant leaves old logins behind under the OLD org.
+    const otherOrg = await createOrganization({ partnerId: fx.partnerId, name: `Stale ${randomUUID().slice(0, 8)}` });
+    seeded.orgIds.push(otherOrg.id);
+    const c = claims();
+    await admin().insert(portalUsers).values({
+      orgId: otherOrg.id,
+      email: (c as { email: string }).email,
+      passwordHash: null,
+      entraOid: (c as { oid: string }).oid,
+      entraTenantId: fx.tid,
+      authMethod: 'entra',
+      status: 'active',
+      contactId: null,
+    });
+
+    const outcome = await resolveAndMintClientSession(c, fakeRedis);
+
+    expect(outcome.kind).toBe('denied');
+    if (outcome.kind !== 'denied') return;
+    expect(outcome.body.error).toBe('org_mismatch');
+    // Nothing was seeded into either org.
+    expect(await contactsFor(otherOrg.id, (c as { email: string }).email)).toHaveLength(0);
+    expect(await contactsFor(fx.orgId, (c as { email: string }).email)).toHaveLength(0);
+  });
+
+  it('two CONCURRENT first exchanges yield one login and one contact', async () => {
+    // The only proof the advisory lock actually serialises: a mocked
+    // single-threaded suite cannot run two transactions at once.
+    const c = claims();
+
+    const [a, b] = await Promise.all([
+      resolveAndMintClientSession(c, fakeRedis),
+      resolveAndMintClientSession(c, fakeRedis),
+    ]);
+
+    expect(a.kind).toBe('resolved');
+    expect(b.kind).toBe('resolved');
+    if (a.kind !== 'resolved' || b.kind !== 'resolved') return;
+    expect(a.body.user.id).toBe(b.body.user.id);
+
+    const logins = await admin().select({ id: portalUsers.id })
+      .from(portalUsers).where(eq(portalUsers.orgId, fx.orgId));
+    expect(logins).toHaveLength(1);
+    expect(await contactsFor(fx.orgId, (c as { email: string }).email)).toHaveLength(1);
+
+    const [login] = await loginRow(a.body.user.id);
+    expect(login!.contactId).not.toBeNull();
+  });
+
+  it('writes NO contact when the org policy does not permit the user', async () => {
+    // A tenant member outside policy.selectedUserIds is denied — and must not
+    // leave a seeded person behind on the way out.
+    const c = claims();
+    await admin().update(clientAiOrgPolicies)
+      .set({ userAccess: 'selected', selectedUserIds: [] })
+      .where(eq(clientAiOrgPolicies.orgId, fx.orgId));
+
+    const outcome = await resolveAndMintClientSession(c, fakeRedis);
+
+    expect(outcome.kind).toBe('denied');
+    if (outcome.kind !== 'denied') return;
+    expect(outcome.audit.details).toMatchObject({ contactLink: 'not-attempted' });
+    expect(await contactsFor(fx.orgId, (c as { email: string }).email)).toHaveLength(0);
+    const [login] = await loginRow(outcome.audit.details.portalUserId as string);
+    expect(login!.contactId).toBeNull();
+  });
 });
 
 describe('Outlook add-in confirmed requester is a contact (#3258)', () => {
   it('creates a ticket whose requester IS the contact, and NO login', async () => {
-    const email = `new.person.${randomUUID().slice(0, 8)}@customer.test`;
+    const email = `new.person.${randomUUID().slice(0, 8)}@${fx.domain}`;
 
-    const resolved = await withSystemDbAccessContext(() =>
-      resolveConfirmedContact(fx.orgId, { email, name: 'New Person' }, { userId: fx.userId }),
-    );
-    expect(resolved.outcome).toBe('created');
-    expect(resolved.contactId).not.toBeNull();
-
-    // Exactly the two arguments the route passes: no submittedBy at all.
-    const ticket = await withSystemDbAccessContext(() =>
-      createTicket(
+    // The REAL context the add-in route runs in: partner scope with RLS
+    // enforced, not the system context. A policy that only passes under system
+    // scope would be a false green here.
+    const { resolved, ticket } = await techContext(async () => {
+      const resolved = await resolveConfirmedContact(
+        fx.orgId, { email, name: 'New Person' }, { userId: fx.userId },
+      );
+      // Exactly the arguments the route passes: no submittedBy at all.
+      const ticket = await createTicket(
         {
           source: 'email',
           orgId: fx.orgId,
@@ -254,8 +393,11 @@ describe('Outlook add-in confirmed requester is a contact (#3258)', () => {
           requesterContactId: resolved.contactId!,
         },
         { userId: fx.userId, name: 'Tess Tech' },
-      ),
-    );
+      );
+      return { resolved, ticket };
+    });
+    expect(resolved.outcome).toBe('created');
+    expect(resolved.contactId).not.toBeNull();
 
     const [row] = await admin()
       .select({ requesterContactId: tickets.requesterContactId, submittedBy: tickets.submittedBy })
@@ -272,17 +414,44 @@ describe('Outlook add-in confirmed requester is a contact (#3258)', () => {
       .from(portalUsers).where(eq(portalUsers.orgId, fx.orgId));
     expect(logins).toHaveLength(0);
 
-    expect(await contactsFor(fx.orgId, email)).toHaveLength(1);
+    const made = await contactsFor(fx.orgId, email);
+    expect(made).toHaveLength(1);
+    // A technician-confirmed action, so the CONTACT records who confirmed it —
+    // not a null system actor.
+    const [audit] = await admin()
+      .select({ createdBy: contacts.createdBy, roles: contacts.roles })
+      .from(contacts).where(eq(contacts.id, made[0]!.id)).limit(1);
+    expect(audit!.createdBy).toBe(fx.userId);
+    // And it grants nothing: the add-in hands out no portal access.
+    expect(audit!.roles).toEqual([]);
+  });
+
+  it('does not mutate an existing contact\'s roles', async () => {
+    const email = `billing.${randomUUID().slice(0, 8)}@${fx.domain}`;
+    const [existing] = await admin()
+      .insert(contacts)
+      .values({ orgId: fx.orgId, email, name: 'AP', roles: ['billing'] })
+      .returning({ id: contacts.id });
+
+    const resolved = await techContext(() =>
+      resolveConfirmedContact(fx.orgId, { email, name: 'AP' }, { userId: fx.userId }),
+    );
+
+    expect(resolved).toEqual({ contactId: existing!.id, outcome: 'linked' });
+    const [after] = await admin()
+      .select({ roles: contacts.roles }).from(contacts).where(eq(contacts.id, existing!.id)).limit(1);
+    // `tickets:write` is not licence to edit the customer's contact record.
+    expect(after!.roles).toEqual(['billing']);
   });
 
   it('reuses the contact inbound email already made for that sender', async () => {
-    const email = `repeat.${randomUUID().slice(0, 8)}@customer.test`;
+    const email = `repeat.${randomUUID().slice(0, 8)}@${fx.domain}`;
     const [fromEmail] = await admin()
       .insert(contacts)
       .values({ orgId: fx.orgId, email, name: 'Repeat Sender', roles: [] })
       .returning({ id: contacts.id });
 
-    const resolved = await withSystemDbAccessContext(() =>
+    const resolved = await techContext(() =>
       resolveConfirmedContact(fx.orgId, { email, name: 'Repeat Sender' }, { userId: fx.userId }),
     );
 
@@ -294,7 +463,7 @@ describe('Outlook add-in confirmed requester is a contact (#3258)', () => {
 
 describe('linkLoginToContact tenancy', () => {
   it('never links across orgs, even when the SAME address exists in another tenant', async () => {
-    const email = `shared.${randomUUID().slice(0, 8)}@customer.test`;
+    const email = `shared.${randomUUID().slice(0, 8)}@${fx.domain}`;
     const otherOrg = await createOrganization({ partnerId: fx.partnerId, name: `Other ${randomUUID().slice(0, 8)}` });
     seeded.orgIds.push(otherOrg.id);
     const [foreign] = await admin()

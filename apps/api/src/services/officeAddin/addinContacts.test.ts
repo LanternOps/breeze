@@ -9,10 +9,9 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { linkLoginToContactMock, insertSpy, selectSpy } = vi.hoisted(() => ({
+const { linkLoginToContactMock, insertSpy } = vi.hoisted(() => ({
   linkLoginToContactMock: vi.fn(),
   insertSpy: vi.fn(),
-  selectSpy: vi.fn(),
 }));
 
 vi.mock('../../db', () => ({
@@ -21,8 +20,7 @@ vi.mock('../../db', () => ({
       insertSpy(...args);
       throw new Error('resolveConfirmedContact must not write to portal_users');
     },
-    select: (...args: unknown[]) => {
-      selectSpy(...args);
+    select: () => {
       const chain: any = { from: () => chain, where: () => chain, limit: () => Promise.resolve([]) };
       return chain;
     },
@@ -52,8 +50,17 @@ describe('resolveConfirmedContact', () => {
       // The org comes from the CALLER (already reachability-checked by the
       // route), never re-derived from the address — that is what keeps the link
       // inside one tenant.
-      { orgId: ORG_ID, email: 'New.Person@acme.com', name: 'New Person', actor },
+      { orgId: ORG_ID, email: 'New.Person@acme.com', name: 'New Person', actor, roles: [], unionRoles: [] },
     );
+  });
+
+  it('grants NO role and unions nothing onto an existing contact', async () => {
+    // S4: the add-in hands out no portal access, and `tickets:write` must not
+    // imply mutating the customer's contact record. Inbound email uses [] for
+    // the same reason.
+    linkLoginToContactMock.mockResolvedValueOnce({ contactId: 'ct-1', outcome: 'linked' });
+    await resolveConfirmedContact(ORG_ID, { email: 'a@b.com' }, actor);
+    expect(linkLoginToContactMock.mock.calls[0]![1]).toMatchObject({ roles: [], unionRoles: [] });
   });
 
   it('passes the technician through as the acting user', async () => {

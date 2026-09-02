@@ -132,6 +132,11 @@ async function resolveInviteContact(
     email: normalizedEmail,
     name,
     actor: { userId: actorUserId },
+    // Stated explicitly rather than left to the default: an invite really is
+    // granting portal access, which is what earns the role — the add-in path
+    // deliberately passes [] because it grants none.
+    roles: ['portal'],
+    unionRoles: ['portal'],
   });
   return { contactId, link: outcome };
 }

@@ -8,6 +8,7 @@ import { recordUsage } from '../../services/aiCostTracker';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { applyDlp } from '../../services/clientAiDlp';
 import { getOrgPolicy } from '../../services/clientAiPolicy';
+import { captureException } from '../../services/sentry';
 import { ticketThreadAnchor } from '../../services/inboundEmail/outboundThreading';
 import { insertEmailAuthoredComment } from '../../services/inboundEmail/emailComments';
 import { resolveConfirmedContact, findPortalUserByEmail } from '../../services/officeAddin/addinContacts';
@@ -87,7 +88,7 @@ import { draftSchema, fromEmailSchema, linkEmailSchema } from './schemas';
  *       ticketService.ts), so the job retries and expires instead of
  *       corrupting anything.
  *     - `createAuditLogAsync` leaves an orphan `ticket.create` audit row.
- *     - `createConfirmedContact` (the `create_contact` requester branch) runs
+ *     - `resolveConfirmedContact` (the `create_contact` requester branch) runs
  *       before the nested transaction opens, so the requester's portal-user
  *       row survives a claim-race loser. Intentional: the technician
  *       explicitly confirmed that contact, and it stays valid for the winning
@@ -438,6 +439,10 @@ officeAddinTicketRoutes.post(
     //    `services/officeAddin/addinContacts.ts` for what that used to cost.
     let submittedBy: string | undefined;
     let requesterContactId: string | undefined;
+    // Recorded in the audit event: without it the log says only which KIND of
+    // requester was sent, so "did this ticket get a person, and if not why"
+    // cannot be answered afterwards.
+    let contactLink: string | null = null;
     if (input.requester.kind === 'portal_user') {
       const portalUser = await getPortalUserForValidation(input.requester.id);
       if (!portalUser || portalUser.orgId !== input.orgId) {
@@ -445,16 +450,30 @@ officeAddinTicketRoutes.post(
       }
       submittedBy = portalUser.id;
     } else if (input.requester.kind === 'create_contact') {
-      const contact = await resolveConfirmedContact(
-        input.orgId,
-        { email: input.requester.email, name: input.requester.name ?? null },
-        { userId: auth.userId }
-      );
-      // A shared mailbox resolves to no single person. The ticket still gets
-      // made — it keeps the submitter name/email snapshot below — it is simply
-      // not attributed to a contact, which is the same refusal inbound email
-      // makes rather than guessing whose history to hand over.
-      requesterContactId = contact.contactId ?? undefined;
+      try {
+        const contact = await resolveConfirmedContact(
+          input.orgId,
+          { email: input.requester.email, name: input.requester.name ?? null },
+          { userId: auth.userId }
+        );
+        // A shared mailbox resolves to no single person. The ticket still gets
+        // made — it keeps the submitter name/email snapshot below — it is simply
+        // not attributed to a contact, which is the same refusal inbound email
+        // makes rather than guessing whose history to hand over.
+        requesterContactId = contact.contactId ?? undefined;
+        contactLink = contact.outcome;
+      } catch (err) {
+        // A contacts failure is OURS, not the technician's. Dropping the email
+        // they are filing would be a far worse outcome than an unattributed
+        // ticket, and the submitter snapshot below still records who it came
+        // from — so the ticket proceeds and the failure is reported.
+        console.error('[office-addin] confirmed-contact resolution failed:', {
+          orgId: input.orgId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        captureException(err, { eventCode: 'office_addin_contact_link_failed' } as never);
+        contactLink = 'link-failed';
+      }
     }
 
     // 4. Closed-ticket continuation: carry the original thread key so replies to
@@ -561,6 +580,8 @@ officeAddinTicketRoutes.post(
         bindingId: auth.bindingId,
         hasMessageId: Boolean(messageId),
         requesterKind: input.requester.kind,
+        contactLink,
+        requesterContactId: requesterContactId ?? null,
         followUpOf: input.followUpOf?.ticketId ?? null,
       },
     });

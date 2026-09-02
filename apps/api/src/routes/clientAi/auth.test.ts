@@ -14,6 +14,7 @@ const {
   writeAuditEventMock,
   getOrgPolicyMock,
   linkLoginToContactMock,
+  resolveAddressMock,
 } = vi.hoisted(() => {
   const redis = {
     setex: vi.fn(() => Promise.resolve('OK')),
@@ -33,6 +34,7 @@ const {
     writeAuditEventMock: vi.fn(),
     getOrgPolicyMock: vi.fn(),
     linkLoginToContactMock: vi.fn(),
+    resolveAddressMock: vi.fn(),
   };
 });
 
@@ -50,16 +52,29 @@ vi.mock('../../services/clientAiEntraJwt', () => {
   };
 });
 
-vi.mock('../../db', () => ({
-  db: { select: dbSelectMock, insert: dbInsertMock, update: dbUpdateMock },
-  withSystemDbAccessContext: vi.fn((fn: () => unknown) => fn()),
-}));
+vi.mock('../../db', () => {
+  // The exchange wraps its provisioning INSERT in a SAVEPOINT (nested
+  // db.transaction) so a 23505 does not abort the whole exchange transaction.
+  const dbMock: any = {
+    transaction: (fn: (tx: unknown) => unknown) => fn(dbMock),
+    select: dbSelectMock,
+    insert: dbInsertMock,
+    update: dbUpdateMock,
+  };
+  return { db: dbMock, withSystemDbAccessContext: vi.fn((fn: () => unknown) => fn()) };
+});
 
 // #3258: the exchange resolves the login's CONTACT. The resolver's own rules
 // are proved in services/contacts/loginLink.test.ts (real compiled SQL) and its
 // use by the exchange in services/clientAiExchange.test.ts — this suite is the
 // route's wire shape, so it stubs the resolver.
 vi.mock('../../services/contacts/loginLink', () => ({ linkLoginToContact: linkLoginToContactMock }));
+// The address-trust rule (which claim, and does the org own the domain) is
+// proved in services/clientAiEntraAddress.test.ts; stubbed here so this suite
+// stays about the route's wire shape.
+vi.mock('../../services/clientAiEntraAddress', () => ({
+  resolveLinkableEntraAddress: resolveAddressMock,
+}));
 
 vi.mock('../../services/redis', () => ({ getRedis: getRedisMock }));
 vi.mock('../../services/rate-limit', () => ({ rateLimiter: rateLimiterMock }));
@@ -142,13 +157,14 @@ function setupDb({ mapping, user }: { mapping: object | null; user: object | nul
   });
   dbInsertMock.mockImplementation(() => ({
     values: vi.fn(() => ({
-      returning: vi.fn(() => Promise.resolve([{ ...USER_ROW }])),
+      returning: vi.fn(() => Promise.resolve([{ ...USER_ROW, contactId: null }])),
     })),
   }));
   dbUpdateMock.mockImplementation(() => ({
     set: vi.fn(() => ({ where: vi.fn(() => Promise.resolve()) })),
   }));
   linkLoginToContactMock.mockResolvedValue({ contactId: 'c0c0c0c0-1111-4222-8333-444455556666', outcome: 'created' });
+  resolveAddressMock.mockResolvedValue({ kind: 'linkable', email: 'finance.user@contoso.com' });
 }
 
 function buildApp() {
@@ -328,15 +344,22 @@ describe('POST /client-ai/auth/exchange', () => {
         entraTenantId: TID,
         authMethod: 'entra',
         passwordHash: null,
-        // #3258: a provisioned login is never persisted without its person.
-        contactId: 'c0c0c0c0-1111-4222-8333-444455556666',
       })
     );
+    // #3258 + A1: the contact link lands in a follow-up UPDATE, after the deny
+    // gates, so a request that ends in a 403 never seeds a contacts row. Both
+    // statements are inside the one exchange transaction, so the login is never
+    // externally observable without its person.
+    expect(dbUpdateMock).toHaveBeenCalled();
     expect(writeAuditEventMock).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
         result: 'success',
-        details: expect.objectContaining({ provisioned: true, contactLink: 'created' }),
+        details: expect.objectContaining({
+          provisioned: true,
+          contactLink: 'created',
+          contactId: 'c0c0c0c0-1111-4222-8333-444455556666',
+        }),
       })
     );
   });
