@@ -699,6 +699,41 @@ describe('accounting routes', () => {
     });
   });
 
+  // Phase D2, Task 7 — same shape story as pullPayments above: GET answers
+  // pushPayments on BOTH branches, defaulting `true` when disconnected (the
+  // column's own `.default(true)`, accounting.ts schema).
+  it('returns pushPayments for a connected partner, and defaults it true when no connection exists', async () => {
+    mocks.getConnection.mockResolvedValueOnce({
+      id: CONNECTION_ID,
+      partnerId: authState.partnerId,
+      provider: 'quickbooks',
+      realmId: 'realm-1',
+      accessToken: 'secret-access-token',
+      refreshToken: 'secret-refresh-token',
+      accessTokenExpiresAt: new Date(),
+      refreshTokenExpiresAt: new Date(),
+      environment: 'production',
+      homeCurrency: 'CAD',
+      defaultIncomeAccountRef: null,
+      defaultTaxCodeRef: null,
+      pushMode: 'auto',
+      status: 'connected',
+      createdAt: new Date('2026-06-23T00:00:00Z'),
+      updatedAt: new Date(),
+      lastError: null,
+      pushPayments: false,
+    });
+
+    const connected = await app.request('/accounting/quickbooks');
+    expect(connected.status).toBe(200);
+    await expect(connected.json()).resolves.toMatchObject({ pushPayments: false });
+
+    mocks.getConnection.mockResolvedValueOnce(null);
+    const disconnected = await app.request('/accounting/quickbooks');
+    expect(disconnected.status).toBe(200);
+    await expect(disconnected.json()).resolves.toMatchObject({ pushPayments: true });
+  });
+
   it('disconnect requires MFA', async () => {
     authState.mfa = false;
 
@@ -816,6 +851,36 @@ describe('accounting routes', () => {
       authState.invoicesWrite = false;
 
       const res = await patchSettings({ pullPayments: false });
+
+      expect(res.status).toBe(403);
+      expect(mocks.dbUpdateReturning).not.toHaveBeenCalled();
+    });
+
+    // Phase D2, Task 7 — pushPayments is the outbound half of the same
+    // authority story as pullPayments/pushMode: switching it off silently
+    // stops every Breeze payment from reaching the books, the same class of
+    // harm the manual/bulk push routes already gate on invoices:write.
+    it('persists and echoes pushPayments', async () => {
+      mocks.dbUpdateReturning.mockResolvedValueOnce([{
+        status: 'connected',
+        environment: 'production',
+        pushMode: 'auto',
+        defaultIncomeAccountRef: null,
+        defaultTaxCodeRef: null,
+        lastError: null,
+        pushPayments: false,
+      }]);
+
+      const res = await patchSettings({ pushPayments: false });
+
+      expect(res.status).toBe(200);
+      await expect(res.json()).resolves.toMatchObject({ pushPayments: false });
+    });
+
+    it('rejects flipping pushPayments without invoices:write, like pushMode and pullPayments (403, finding D)', async () => {
+      authState.invoicesWrite = false;
+
+      const res = await patchSettings({ pushPayments: false });
 
       expect(res.status).toBe(403);
       expect(mocks.dbUpdateReturning).not.toHaveBeenCalled();

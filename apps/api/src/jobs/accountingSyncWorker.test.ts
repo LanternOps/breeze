@@ -49,12 +49,35 @@ vi.mock('../services/accounting/accountingInvoicePush', async (importOriginal) =
   };
 });
 
+const { pushPaymentMock, deletePaymentMock, noteSkippedMock } = vi.hoisted(() => ({
+  pushPaymentMock: vi.fn(), deletePaymentMock: vi.fn(), noteSkippedMock: vi.fn(),
+}));
+// The REAL AccountingPaymentPushError class and PAYMENT_NOT_CONNECTED_MESSAGE
+// are kept so the worker's instanceof/terminal branch exercises the real
+// taxonomy and the skip test asserts the shipped string.
+vi.mock('../services/accounting/accountingPaymentPush', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/accounting/accountingPaymentPush')>();
+  return {
+    ...actual,
+    pushPaymentToAccounting: pushPaymentMock,
+    deletePaymentInAccounting: deletePaymentMock,
+    notePaymentJobSkipped: noteSkippedMock,
+  };
+});
+
 import {
   processAccountingSyncJob,
   enqueueAccountingInvoicePush,
   enqueueAccountingInvoiceVoid,
+  enqueueAccountingPaymentPush,
+  enqueueAccountingPaymentDelete,
 } from './accountingSyncWorker';
 import { AccountingInvoicePushError, type AccountingInvoicePushErrorCode } from '../services/accounting/accountingInvoicePush';
+import {
+  AccountingPaymentPushError,
+  PAYMENT_NOT_CONNECTED_MESSAGE,
+  type AccountingPaymentPushErrorCode,
+} from '../services/accounting/accountingPaymentPush';
 
 const INV_ID = '11111111-1111-1111-1111-111111111111';
 const PARTNER_ID = '22222222-2222-2222-2222-222222222222';
@@ -253,6 +276,141 @@ describe('enqueueAccountingInvoicePush / enqueueAccountingInvoiceVoid (Redis-out
   it('never throws when the queue add fails (e.g. Redis down) — void — and reports false', async () => {
     queueAddMock.mockRejectedValue(new Error('ECONNREFUSED'));
     await expect(enqueueAccountingInvoiceVoid(INV_ID, PARTNER_ID)).resolves.toBe(false);
+    expect(captureExceptionMock).toHaveBeenCalled();
+  });
+});
+
+const MAPPING_ID = '33333333-3333-3333-3333-333333333333';
+
+describe('payment jobs', () => {
+  beforeEach(() => {
+    // The two sibling describes above each clear mocks in their own
+    // beforeEach; this one does too, so a call left over from an earlier test
+    // in THIS describe (e.g. the converted_to_delete enqueue below) can never
+    // leak into the exact `queueAddMock.mock.calls` assertion further down.
+    vi.clearAllMocks();
+    getConnectionMock.mockResolvedValue({ id: 'c1', status: 'connected', pushMode: 'auto', pullPayments: true, pushPayments: true });
+    pushPaymentMock.mockResolvedValue('pushed');
+    deletePaymentMock.mockResolvedValue('deleted');
+  });
+
+  it('runs a push-payment job through the coordinator with a SYSTEM runner and no ambient context', async () => {
+    await processAccountingSyncJob({ type: 'push-payment', mappingId: MAPPING_ID, partnerId: PARTNER_ID });
+    expect(runOutsideDbContextMock).toHaveBeenCalled();
+    expect(pushPaymentMock).toHaveBeenCalledWith(MAPPING_ID, PARTNER_ID, expect.any(Function));
+  });
+
+  it('does NOT apply the pushMode gate to payment jobs — the coordinator owns that', async () => {
+    // The pushMode gate exists for push-invoice only. requestPaymentPush already
+    // refused to create the mapping in manual mode, so a payment job that EXISTS
+    // in manual mode came from the manual fan-out and must run.
+    getConnectionMock.mockResolvedValue({ id: 'c1', status: 'connected', pushMode: 'manual', pushPayments: true });
+    await processAccountingSyncJob({ type: 'push-payment', mappingId: MAPPING_ID, partnerId: PARTNER_ID });
+    expect(pushPaymentMock).toHaveBeenCalled();
+  });
+
+  it('enqueues the follow-up delete when a push converted itself to one', async () => {
+    pushPaymentMock.mockResolvedValueOnce('converted_to_delete');
+    await processAccountingSyncJob({ type: 'push-payment', mappingId: MAPPING_ID, partnerId: PARTNER_ID });
+    expect(queueAddMock).toHaveBeenCalledWith(
+      'delete-payment',
+      { type: 'delete-payment', mappingId: MAPPING_ID, partnerId: PARTNER_ID },
+      expect.objectContaining({ jobId: `accounting-payment-${MAPPING_ID}-delete` }),
+    );
+  });
+
+  it('RECORDS a payment job skipped because QuickBooks is not connected, instead of returning silently', async () => {
+    // Finding I2. The mapping row is the OUTBOX, so a silent return left it
+    // `pending` with an empty last_error while the 15-minute sweep re-enqueued
+    // it forever against a realm that may have been disconnected for weeks.
+    getConnectionMock.mockResolvedValue({ id: 'c1', status: 'reauth_required', pushMode: 'auto', pushPayments: true });
+
+    await processAccountingSyncJob({ type: 'push-payment', mappingId: MAPPING_ID, partnerId: PARTNER_ID });
+    await processAccountingSyncJob({ type: 'delete-payment', mappingId: MAPPING_ID, partnerId: PARTNER_ID });
+
+    expect(pushPaymentMock).not.toHaveBeenCalled();
+    expect(deletePaymentMock).not.toHaveBeenCalled();
+    expect(noteSkippedMock.mock.calls).toEqual([
+      [MAPPING_ID, PARTNER_ID, PAYMENT_NOT_CONNECTED_MESSAGE],
+      [MAPPING_ID, PARTNER_ID, PAYMENT_NOT_CONNECTED_MESSAGE],
+    ]);
+  });
+
+  it('records the same skip when there is no QuickBooks connection row at all', async () => {
+    getConnectionMock.mockResolvedValue(null);
+
+    await processAccountingSyncJob({ type: 'push-payment', mappingId: MAPPING_ID, partnerId: PARTNER_ID });
+
+    expect(noteSkippedMock).toHaveBeenCalledWith(MAPPING_ID, PARTNER_ID, PAYMENT_NOT_CONNECTED_MESSAGE);
+  });
+
+  it('does NOT record a skip for an INVOICE job — those carry no mapping id to stamp', async () => {
+    getConnectionMock.mockResolvedValue(null);
+
+    await processAccountingSyncJob({ type: 'push-invoice', invoiceId: INV_ID, partnerId: PARTNER_ID });
+    await processAccountingSyncJob({ type: 'void-invoice', invoiceId: INV_ID, partnerId: PARTNER_ID });
+
+    expect(noteSkippedMock).not.toHaveBeenCalled();
+  });
+
+  it('runs a delete-payment job even when the connection has both switches off', async () => {
+    getConnectionMock.mockResolvedValue({ id: 'c1', status: 'connected', pushMode: 'manual', pushPayments: false });
+    await processAccountingSyncJob({ type: 'delete-payment', mappingId: MAPPING_ID, partnerId: PARTNER_ID });
+    expect(deletePaymentMock).toHaveBeenCalledWith(MAPPING_ID, PARTNER_ID, expect.any(Function));
+  });
+
+  it('treats a delete-payment TERMINAL code (not_connected) as logged, not rethrown', async () => {
+    deletePaymentMock.mockRejectedValueOnce(new AccountingPaymentPushError('not_connected', 404, 'gone'));
+    await expect(processAccountingSyncJob({ type: 'delete-payment', mappingId: MAPPING_ID, partnerId: PARTNER_ID }))
+      .resolves.toBeUndefined();
+    expect(captureExceptionMock).toHaveBeenCalled();
+  });
+
+  it('rethrows a delete-payment RETRYABLE code (quickbooks_error) so BullMQ retries', async () => {
+    deletePaymentMock.mockRejectedValueOnce(new AccountingPaymentPushError('quickbooks_error', 502, 'upstream'));
+    await expect(processAccountingSyncJob({ type: 'delete-payment', mappingId: MAPPING_ID, partnerId: PARTNER_ID }))
+      .rejects.toThrow('upstream');
+  });
+
+  it('enqueues nothing on a plain pushed outcome — the follow-up delete is only for converted_to_delete', async () => {
+    pushPaymentMock.mockResolvedValueOnce('pushed');
+    await processAccountingSyncJob({ type: 'push-payment', mappingId: MAPPING_ID, partnerId: PARTNER_ID });
+    expect(queueAddMock).not.toHaveBeenCalled();
+  });
+
+  it.each<AccountingPaymentPushErrorCode>([
+    'push_disabled', 'customer_not_mapped', 'currency_mismatch', 'home_currency_unknown',
+    'invoice_void', 'record_failed', 'not_connected', 'reauth_required',
+  ])('treats %s as TERMINAL — logged, not rethrown', async (code) => {
+    pushPaymentMock.mockRejectedValueOnce(new AccountingPaymentPushError(code, 409, 'nope'));
+    await expect(processAccountingSyncJob({ type: 'push-payment', mappingId: MAPPING_ID, partnerId: PARTNER_ID }))
+      .resolves.toBeUndefined();
+    expect(captureExceptionMock).toHaveBeenCalled();
+  });
+
+  it.each<AccountingPaymentPushErrorCode>(['quickbooks_error', 'sync_in_progress', 'invoice_not_synced'])(
+    'rethrows %s so BullMQ retries', async (code) => {
+      pushPaymentMock.mockRejectedValueOnce(new AccountingPaymentPushError(code, 502, 'later'));
+      await expect(processAccountingSyncJob({ type: 'push-payment', mappingId: MAPPING_ID, partnerId: PARTNER_ID }))
+        .rejects.toThrow('later');
+    });
+
+  it('uses per-operation jobIds so a delete is never swallowed by a live push job', async () => {
+    await enqueueAccountingPaymentPush(MAPPING_ID, PARTNER_ID);
+    await enqueueAccountingPaymentDelete(MAPPING_ID, PARTNER_ID);
+    const ids = queueAddMock.mock.calls.map((c) => (c[2] as { jobId: string }).jobId);
+    expect(ids).toEqual([`accounting-payment-${MAPPING_ID}-push`, `accounting-payment-${MAPPING_ID}-delete`]);
+    expect(ids.every((id) => !id.includes(':'))).toBe(true);
+    expect(queueAddMock.mock.calls[0]![2]).toEqual({
+      jobId: `accounting-payment-${MAPPING_ID}-push`,
+      attempts: 5, backoff: { type: 'exponential', delay: 5000 },
+      removeOnComplete: true, removeOnFail: true,
+    });
+  });
+
+  it('swallows a Redis outage into false rather than failing the caller', async () => {
+    queueAddMock.mockRejectedValueOnce(new Error('redis down'));
+    await expect(enqueueAccountingPaymentPush(MAPPING_ID, PARTNER_ID)).resolves.toBe(false);
     expect(captureExceptionMock).toHaveBeenCalled();
   });
 });

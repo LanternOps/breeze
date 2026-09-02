@@ -1,4 +1,4 @@
-import { and, eq, isNotNull, isNull, like } from 'drizzle-orm';
+import { and, eq, isNotNull, isNull, like, or } from 'drizzle-orm';
 import { accountingConnections, accountingEntityMappings } from '../../db/schema';
 import { decryptSecret, encryptSecret, getActiveSecretEncryptionKeyId, hmacFingerprint } from '../secretCrypto';
 import { db, withSystemDbAccessContext } from '../../db';
@@ -37,6 +37,8 @@ export interface AccountingConnection {
   realmIdFingerprint: string | null;
   /** Per-connection QBO -> Breeze payment pull-back switch. DB default true. */
   pullPayments: boolean;
+  /** Per-connection Breeze -> QBO payment push switch. DB default true. */
+  pushPayments: boolean;
   /** Stamped only after a CDC run in which no item failed. */
   lastReconcileAt: Date | null;
   /** CDC watermark. Column already existed (2026-06-23 migration); now read/written. */
@@ -59,6 +61,7 @@ export interface UpsertConnectionFields {
   lastError?: string | null;
   connectedBy?: string | null;
   pullPayments?: boolean;
+  pushPayments?: boolean;
 }
 
 export interface AccountingTokenUpdate {
@@ -140,6 +143,7 @@ function mapConnection(row: AccountingConnectionRow): AccountingConnection {
     lastError: row.lastError ?? null,
     realmIdFingerprint: row.realmIdFingerprint ?? null,
     pullPayments: row.pullPayments,
+    pushPayments: row.pushPayments,
     lastReconcileAt: row.lastReconcileAt ?? null,
     cdcCursor: row.cdcCursor ?? null,
   };
@@ -187,6 +191,8 @@ export async function upsertConnection(
     // Insert default true: an existing connected realm should start
     // reconciling once the sweep ships, rather than silently opting out.
     pullPayments: fields.pullPayments ?? true,
+    // Same rationale as pullPayments above (Phase D2).
+    pushPayments: fields.pushPayments ?? true,
     status: fields.status ?? 'connected',
     lastError: fields.lastError,
     connectedBy: fields.connectedBy,
@@ -215,6 +221,7 @@ export async function upsertConnection(
     // Same "do not reset settings on a token-only reconnect" rule as pushMode
     // above: only present when the caller explicitly supplies it.
     pullPayments: fields.pullPayments,
+    pushPayments: fields.pushPayments,
     status: fields.status,
     lastError: fields.lastError,
     connectedBy: fields.connectedBy,
@@ -343,7 +350,13 @@ export async function backfillRealmFingerprints(): Promise<{ scanned: number; up
   return { scanned: rows.length, updated, skipped };
 }
 
-/** Connections the 15-minute sweep should reconcile: status 'connected' AND pull_payments. */
+/**
+ * Connections the 15-minute sweep should reconcile: 'connected' AND at least one
+ * direction switched on. Phase D2 (spec decision 6): with pull OFF and push ON
+ * the CDC pass still has to run — it is what adopts a Breeze-created Payment
+ * whose phase 2 never landed, and what notices a Breeze-origin Payment someone
+ * deleted in QuickBooks. It just suppresses NEW QuickBooks-origin imports.
+ */
 export async function listReconcilableConnections(
   dbc: DbExecutor,
   provider: AccountingProviderId,
@@ -354,7 +367,10 @@ export async function listReconcilableConnections(
     .where(and(
       eq(accountingConnections.provider, provider),
       eq(accountingConnections.status, 'connected'),
-      eq(accountingConnections.pullPayments, true),
+      or(
+        eq(accountingConnections.pullPayments, true),
+        eq(accountingConnections.pushPayments, true),
+      ),
     ));
 }
 

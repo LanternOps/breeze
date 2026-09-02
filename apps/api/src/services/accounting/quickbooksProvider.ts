@@ -5,16 +5,19 @@ import { captureException } from '../sentry';
 import { QBO_CLIENT_ID, QBO_CLIENT_SECRET, QBO_REDIRECT_URI } from '../../config/env';
 import type {
   AccountingCustomerPayload,
+  AccountingDeletePaymentPayload,
   AccountingEntityMapping,
   AccountingInvoiceLineMapping,
   AccountingInvoicePayload,
   AccountingItemPayload,
+  AccountingPaymentPayload,
   AccountingProvider,
   AccountingVoidInvoicePayload,
   ChangeSet,
   ChangeSetPaymentLine,
   ConnectionTokens,
   InvoicePushResult,
+  PaymentDeleteResult,
   RealmSettings,
   RemoteAddress,
   RemoteCustomer,
@@ -23,6 +26,7 @@ import type {
   RemoteRef,
 } from './types';
 import type { AccountingConnection } from './accountingConnectionService';
+import { parseBreezePaymentMarker } from './accountingPaymentMarker';
 
 const QBO_AUTH_URL = 'https://appcenter.intuit.com/connect/oauth2';
 const QBO_TOKEN_URL = 'https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer';
@@ -185,6 +189,7 @@ interface QboRawCdcPayment {
   CurrencyRef?: { value?: string };
   PaymentMethodRef?: { name?: string };
   PaymentRefNum?: string;
+  PrivateNote?: string;
   Line?: QboRawPaymentLine[];
 }
 
@@ -212,11 +217,20 @@ interface QboCdcResponse {
 }
 
 /**
- * A CDC-reported Payment is a deletion candidate for the applier when QBO
- * either zeroed it (a void — QBO never deletes a Payment) or it carries no
- * Invoice-linked line (nothing for the applier to reconcile against).
+ * The Invoice-linked lines a CDC-reported Payment carries RIGHT NOW.
+ *
+ * An EMPTY result does NOT mean the Payment was deleted (final-review finding
+ * C1). QBO zeroes a voided Payment (`TotalAmt` 0) and leaves an unapplied one
+ * with no Invoice `LinkedTxn` — in both cases the Payment still EXISTS, and the
+ * only entity QBO ever reports as gone is one carrying `status: "Deleted"`,
+ * which the callers classify before they get here. So an empty line set is
+ * delivered as a LIVE payment with no allocations (`unappliedPayments`), which
+ * the applier reconciles through `reverseStaleAllocations` with an empty
+ * keep-set: identical to a deletion for a QuickBooks-origin mirror row, but a
+ * Breeze-origin row keeps the remote id and SyncToken its own pending delete
+ * still needs.
  */
-function mapQboCdcPayment(raw: QboRawCdcPayment, conn: AccountingConnection): ChangeSetPaymentLine[] {
+export function mapQboCdcPayment(raw: QboRawCdcPayment, conn: AccountingConnection): ChangeSetPaymentLine[] {
   const currency = raw.CurrencyRef?.value ?? conn.homeCurrency ?? '';
   const invoiceLines = (raw.Line ?? []).flatMap((line) => {
     const invoiceTxnId = (line.LinkedTxn ?? []).find((txn) => txn.TxnType === 'Invoice')?.TxnId;
@@ -233,12 +247,39 @@ function mapQboCdcPayment(raw: QboRawCdcPayment, conn: AccountingConnection): Ch
     remotePaymentSyncToken: raw.SyncToken ?? null,
     paymentMethodName: raw.PaymentMethodRef?.name ?? null,
     paymentRefNum: raw.PaymentRefNum ?? null,
+    // Anchored whole-note match only — an operator-authored note that merely
+    // mentions a Breeze id must never claim a Breeze payment row.
+    breezePaymentId: parseBreezePaymentMarker(raw.PrivateNote),
   }));
 }
 
 function isDeletedOrVoidedInvoice(raw: QboRawCdcInvoice): boolean {
   if (raw.status === 'Deleted') return true;
   return raw.TotalAmt === 0 && raw.Balance === 0 && typeof raw.PrivateNote === 'string' && raw.PrivateNote.includes('Voided');
+}
+
+/**
+ * `qboRequest` attaches `{ status, body }` (body truncated to 500 chars) to a
+ * non-2xx error. Intuit's fault CODES are the stable signal — the Message text
+ * is localized and has changed between minor versions — so match the code first
+ * and keep the text as a belt-and-braces fallback.
+ */
+function qboFaultBody(err: unknown): string {
+  return err && typeof err === 'object' && typeof (err as { body?: unknown }).body === 'string'
+    ? (err as { body: string }).body
+    : '';
+}
+
+/** QBO fault 610 — the object does not exist (already deleted, or never was). */
+function isQboObjectNotFound(err: unknown): boolean {
+  const body = qboFaultBody(err);
+  return /"code"\s*:\s*"610"/.test(body) || /Object Not Found/i.test(body);
+}
+
+/** QBO fault 5010 — the object exists but our SyncToken is behind. */
+function isQboStaleObject(err: unknown): boolean {
+  const body = qboFaultBody(err);
+  return /"code"\s*:\s*"5010"/.test(body) || /Stale Object/i.test(body);
 }
 
 /** The two entities Phase D reconciles. */
@@ -248,6 +289,8 @@ type CdcEntity = 'Payment' | 'Invoice';
 interface CdcWindowResult {
   payments: ChangeSetPaymentLine[];
   deletedPayments: string[];
+  /** Alive, but settling no invoice — voided or unapplied (see `ChangeSet`). */
+  unappliedPayments: string[];
   deletedInvoices: string[];
   /**
    * Entities whose CDC block reported `totalCount` greater than the array it
@@ -304,15 +347,18 @@ function mergeQueryBackfill(
   const covered = new Set(raws.map((raw) => raw.Id));
   window.payments = window.payments.filter((p) => !covered.has(p.remotePaymentId));
   const deleted = new Set(window.deletedPayments);
+  const unapplied = new Set(window.unappliedPayments);
   for (const raw of raws) {
-    const lines = mapQboCdcPayment(raw, conn);
-    if (lines.length === 0) { deleted.add(raw.Id); continue; }
-    // A live, invoice-linked payment is not a deletion, whatever the truncated
-    // CDC list said about it.
+    // `/query` never returns a DELETED entity, so every id it covers is alive —
+    // whatever the truncated CDC list said about it.
     deleted.delete(raw.Id);
+    const lines = mapQboCdcPayment(raw, conn);
+    if (lines.length === 0) { unapplied.add(raw.Id); continue; }
+    unapplied.delete(raw.Id);
     window.payments.push(...lines);
   }
   window.deletedPayments = [...deleted];
+  window.unappliedPayments = [...unapplied];
 }
 
 export function mapQboAddress(raw: QboRawAddress | undefined): RemoteAddress | undefined {
@@ -729,6 +775,120 @@ export class QuickbooksProvider implements AccountingProvider {
     );
   }
 
+  async createPayment(conn: AccountingConnection, payment: AccountingPaymentPayload): Promise<RemoteRef> {
+    // Idempotency key, exactly as pushInvoice's create path uses (`:663-678`):
+    // QBO recognizes the same `requestid` for a rolling 24h window and returns
+    // the ORIGINAL response rather than creating again, so a retry after a lost
+    // response cannot double-book the customer's money. Deterministic per Breeze
+    // payment and well under QBO's 50-char cap (a uuid is 36).
+    const path = `payment?minorversion=${QBO_API_MINOR_VERSION}`
+      + `&requestid=${encodeURIComponent(payment.invoicePaymentId)}`;
+    const parsed = await this.qboRequest<{ Payment?: { Id?: string; SyncToken?: string } }>(
+      conn,
+      path,
+      'QuickBooks payment create',
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          CustomerRef: { value: payment.remoteCustomerId },
+          // Wire-time Number() only — storage stays a major-unit decimal string.
+          TotalAmt: Number(payment.amount),
+          TxnDate: payment.txnDate,
+          ...(payment.reference ? { PaymentRefNum: payment.reference } : {}),
+          PrivateNote: payment.privateNote,
+          Line: [{
+            Amount: Number(payment.amount),
+            LinkedTxn: [{ TxnId: payment.remoteInvoiceId, TxnType: 'Invoice' }],
+          }],
+          // CurrencyRef is deliberately NEVER sent — same rule as pushInvoice
+          // (`:650-654`): the coordinator asserted home-currency equality before
+          // this method was reached, and sending it to a single-currency realm is
+          // a QBO error. DepositToAccountRef is omitted so QuickBooks books the
+          // receipt to Undeposited Funds and the bookkeeper records the processor
+          // fee at deposit time (spec decision 8). PaymentMethodRef needs a
+          // per-realm PaymentMethod list Breeze does not fetch.
+        }),
+      },
+    );
+    if (!parsed.Payment?.Id) throw new Error('QuickBooks payment response was missing an Id');
+    return { id: parsed.Payment.Id, syncToken: parsed.Payment.SyncToken };
+  }
+
+  async deletePayment(
+    conn: AccountingConnection,
+    payment: AccountingDeletePaymentPayload,
+  ): Promise<PaymentDeleteResult> {
+    let syncToken = payment.syncToken;
+    // No token held (an adoption that never read one) — fetch one before trying.
+    if (syncToken === null) {
+      const fresh = await this.readPaymentSyncToken(conn, payment.remotePaymentId);
+      if (!fresh.found) return 'already_absent';
+      syncToken = fresh.syncToken;
+    }
+
+    try {
+      await this.postPaymentDelete(conn, payment.remotePaymentId, syncToken);
+      return 'deleted';
+    } catch (err) {
+      if (isQboObjectNotFound(err)) return 'already_absent';
+      if (!isQboStaleObject(err)) throw err;
+      // Stale token means the Payment STILL EXISTS with a newer revision (spec
+      // decision 12). Read it once, retry once, then let the error out as
+      // retryable — a Payment somebody is editing in a loop must not spin here.
+      const fresh = await this.readPaymentSyncToken(conn, payment.remotePaymentId);
+      if (!fresh.found) return 'already_absent';
+      try {
+        await this.postPaymentDelete(conn, payment.remotePaymentId, fresh.syncToken);
+        return 'deleted';
+      } catch (retryErr) {
+        if (isQboObjectNotFound(retryErr)) return 'already_absent';
+        throw retryErr;
+      }
+    }
+  }
+
+  /**
+   * The current SyncToken for a Payment, or `{ found: false }` ONLY when
+   * QuickBooks reports fault 610 (the object genuinely does not exist). A 2xx
+   * response whose body lacks `Payment.SyncToken` is a malformed response, not
+   * absence — throwing here (rather than folding it into `found: false`)
+   * matters because a 5010 stale-object fault just PROVED the Payment exists;
+   * silently reporting `already_absent` right after that would be
+   * self-contradictory and would let a real delete request go unissued on a
+   * money path.
+   */
+  private async readPaymentSyncToken(
+    conn: AccountingConnection,
+    remotePaymentId: string,
+  ): Promise<{ found: false } | { found: true; syncToken: string }> {
+    try {
+      const parsed = await this.qboRequest<{ Payment?: { SyncToken?: string } }>(
+        conn,
+        `payment/${encodeURIComponent(remotePaymentId)}?minorversion=${QBO_API_MINOR_VERSION}`,
+        'QuickBooks payment read',
+      );
+      if (!parsed.Payment?.SyncToken) throw new Error('QuickBooks payment read returned no SyncToken');
+      return { found: true, syncToken: parsed.Payment.SyncToken };
+    } catch (err) {
+      if (isQboObjectNotFound(err)) return { found: false };
+      throw err;
+    }
+  }
+
+  private async postPaymentDelete(conn: AccountingConnection, remotePaymentId: string, syncToken: string): Promise<void> {
+    const parsed = await this.qboRequest<{ Payment?: { Id?: string; status?: string } }>(
+      conn,
+      `payment?operation=delete&minorversion=${QBO_API_MINOR_VERSION}`,
+      'QuickBooks payment delete',
+      { method: 'POST', body: JSON.stringify({ Id: remotePaymentId, SyncToken: syncToken }) },
+    );
+    // Same discipline as createPayment: a 2xx with a body that does not
+    // actually confirm the delete must not be reported as success.
+    if (!parsed.Payment?.Id && parsed.Payment?.status !== 'Deleted') {
+      throw new Error('QuickBooks payment delete response did not confirm deletion');
+    }
+  }
+
   async reconcileChanges(conn: AccountingConnection, sinceCursor: Date | null): Promise<ChangeSet> {
     const now = new Date();
     const epoch = new Date(0);
@@ -788,6 +948,7 @@ export class QuickbooksProvider implements AccountingProvider {
       cursor: window.responseTime ?? now,
       payments: window.payments,
       deletedPayments: window.deletedPayments,
+      unappliedPayments: window.unappliedPayments,
       deletedInvoices: window.deletedInvoices,
       overflowed,
     };
@@ -811,6 +972,7 @@ export class QuickbooksProvider implements AccountingProvider {
 
     const payments: ChangeSetPaymentLine[] = [];
     const deletedPayments: string[] = [];
+    const unappliedPayments: string[] = [];
     const deletedInvoices: string[] = [];
     const overflowedEntities = new Set<CdcEntity>();
 
@@ -818,9 +980,12 @@ export class QuickbooksProvider implements AccountingProvider {
       const totalCount = block.totalCount;
 
       for (const raw of block.Payment ?? []) {
+        // `status: "Deleted"` is the ONE deletion signal. A Payment QBO voided
+        // or unapplied is still there, and treating it as deleted re-pushed a
+        // duplicate through the fan-out (finding C1).
         if (raw.status === 'Deleted') { deletedPayments.push(raw.Id); continue; }
         const lines = mapQboCdcPayment(raw, conn);
-        if (lines.length === 0) { deletedPayments.push(raw.Id); continue; }
+        if (lines.length === 0) { unappliedPayments.push(raw.Id); continue; }
         payments.push(...lines);
       }
       if (totalCount !== undefined && totalCount > (block.Payment?.length ?? 0) && block.Payment) {
@@ -836,7 +1001,7 @@ export class QuickbooksProvider implements AccountingProvider {
     }
 
     return {
-      payments, deletedPayments, deletedInvoices,
+      payments, deletedPayments, unappliedPayments, deletedInvoices,
       overflowedEntities: [...overflowedEntities],
       responseTime: parseCdcResponseTime(parsed.time),
     };

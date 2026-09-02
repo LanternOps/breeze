@@ -71,6 +71,8 @@ import {
   reverseStaleAllocations,
   type PaymentPullOutcome,
 } from '../services/accounting/accountingPaymentPull';
+import { listOwedPaymentMappings } from '../services/accounting/accountingPaymentPush';
+import { enqueueAccountingPaymentPush, enqueueAccountingPaymentDelete } from './accountingSyncWorker';
 
 export const ACCOUNTING_RECONCILE_QUEUE = 'accounting-reconcile';
 
@@ -117,6 +119,21 @@ export interface ReconcileRunSummary {
   realmChanged: number;
   failed: number;
   invoicesMarkedDeleted: number;
+  // --- Phase D2 (payment push). Every one of these is CLEAN for the cursor:
+  // each is a recorded, permanent decision the applier reached, not a step that
+  // failed and could succeed on a re-read. ---
+  /** Breeze-created Payments whose lost create response the echo recovered. */
+  adopted: number;
+  /** Breeze-origin payments QuickBooks edited. Recorded, not applied. */
+  breezeOriginDiverged: number;
+  /** Breeze-origin lines the pull deliberately left to the push/delete job. */
+  skippedBreezeOrigin: number;
+  /** New QuickBooks-origin imports suppressed because `pull_payments` is off. */
+  skippedPullDisabled: number;
+  /** Breeze-created Payments somebody removed in QuickBooks. */
+  breezeOriginRemovedRemotely: number;
+  /** CDC "deleted" invoices that were Breeze's OWN void echoing back. */
+  invoicesSelfVoided: number;
   cursorBefore: Date | null;
   cursorAfter: Date | null;
 }
@@ -150,6 +167,12 @@ function emptySummary(cursorBefore: Date | null): ReconcileRunSummary {
     realmChanged: 0,
     failed: 0,
     invoicesMarkedDeleted: 0,
+    adopted: 0,
+    breezeOriginDiverged: 0,
+    skippedBreezeOrigin: 0,
+    skippedPullDisabled: 0,
+    breezeOriginRemovedRemotely: 0,
+    invoicesSelfVoided: 0,
     cursorBefore,
     cursorAfter: null,
   };
@@ -171,6 +194,11 @@ function tally(summary: ReconcileRunSummary, outcome: PaymentPullOutcome): void 
     case 'currency_mismatch': summary.currencyMismatch++; break;
     case 'invoice_void': summary.invoiceVoid++; break;
     case 'realm_changed': summary.realmChanged++; break;
+    case 'adopted': summary.adopted++; break;
+    case 'breeze_origin_diverged': summary.breezeOriginDiverged++; break;
+    case 'skipped_breeze_origin': summary.skippedBreezeOrigin++; break;
+    case 'skipped_pull_disabled': summary.skippedPullDisabled++; break;
+    case 'breeze_origin_removed_remotely': summary.breezeOriginRemovedRemotely++; break;
     case 'failed': summary.failed++; break;
   }
 }
@@ -207,6 +235,12 @@ function logRunLine(data: ReconcileConnectionJobData, summary: ReconcileRunSumma
     `realmChanged=${summary.realmChanged}`,
     `failed=${summary.failed}`,
     `invoicesMarkedDeleted=${summary.invoicesMarkedDeleted}`,
+    `adopted=${summary.adopted}`,
+    `breezeOriginDiverged=${summary.breezeOriginDiverged}`,
+    `skippedBreezeOrigin=${summary.skippedBreezeOrigin}`,
+    `skippedPullDisabled=${summary.skippedPullDisabled}`,
+    `breezeOriginRemovedRemotely=${summary.breezeOriginRemovedRemotely}`,
+    `invoicesSelfVoided=${summary.invoicesSelfVoided}`,
     `cursorBefore=${summary.cursorBefore?.toISOString() ?? 'null'}`,
     `cursorAfter=${summary.cursorAfter?.toISOString() ?? 'null'}`,
     `durationMs=${durationMs}`,
@@ -220,12 +254,16 @@ function logRunLine(data: ReconcileConnectionJobData, summary: ReconcileRunSumma
 /**
  * Reconcile ONE connection's CDC window.
  *
- * Returns `null` when the job is a no-op (no connection, a connection that is
- * not the one the job names, one that is not `connected`, or one whose
- * `pull_payments` switch is off). A switched-off connection short-circuits
- * BEFORE `resolveConnectionAndToken`: that call is itself a QuickBooks round
- * trip plus a token write, and refreshing tokens for a connection the operator
- * has disabled is work nobody asked for.
+ * Returns null when the job is a no-op: no connection, a connection that is
+ * not the one the job names, one that is not `connected`, or one with BOTH
+ * direction switches off. Phase D2 (spec decision 6): pull-off/push-on still
+ * runs the CDC pass — it is what ADOPTS a Breeze-created Payment whose phase
+ * 2 never landed and what notices a Breeze-origin Payment deleted in
+ * QuickBooks — it just suppresses new QuickBooks-origin imports. A
+ * switched-off connection (both switches off) short-circuits BEFORE
+ * `resolveConnectionAndToken`: that call is itself a QuickBooks round trip
+ * plus a token write, and refreshing tokens for a connection the operator has
+ * fully disabled is work nobody asked for.
  */
 export async function processReconcileConnectionJob(
   data: ReconcileConnectionJobData,
@@ -236,7 +274,17 @@ export async function processReconcileConnectionJob(
       withSystemDbAccessContext(fn, `accountingReconcile.${data.trigger}`);
 
     const conn = await runInDbContext(() => getConnection(db, data.partnerId, 'quickbooks'));
-    if (!conn || conn.id !== data.connectionId || conn.status !== 'connected' || !conn.pullPayments) return null;
+    const shortCircuit = (reason: 'missing' | 'connection_mismatch' | 'not_connected' | 'both_switches_off'): null => {
+      console.log(
+        '[AccountingReconcileWorker] short-circuit',
+        `connectionId=${data.connectionId}`, `trigger=${data.trigger}`, `reason=${reason}`,
+      );
+      return null;
+    };
+    if (!conn) return shortCircuit('missing');
+    if (conn.id !== data.connectionId) return shortCircuit('connection_mismatch');
+    if (conn.status !== 'connected') return shortCircuit('not_connected');
+    if (!conn.pullPayments && !conn.pushPayments) return shortCircuit('both_switches_off');
 
     const { conn: fresh, liveConn } = await resolveConnectionAndToken(data.partnerId, 'quickbooks', runInDbContext);
     // The realm generation this ENTIRE run is staked on (finding C). Reconnecting
@@ -254,6 +302,10 @@ export async function processReconcileConnectionJob(
     for (const remoteInvoiceId of changes.deletedInvoices) {
       const outcome = await markInvoiceDeletedRemotely(fresh, remoteInvoiceId, runInDbContext, expectedRealmFingerprint);
       if (outcome === 'marked') summary.invoicesMarkedDeleted++;
+      // Breeze's own void job voids the invoice in QuickBooks and CDC reports
+      // that void as a deletion. Counted separately so a run line can never read
+      // as "QuickBooks deleted N invoices" for work Breeze itself did.
+      else if (outcome === 'invoice_void') summary.invoicesSelfVoided++;
     }
     for (const remotePaymentId of changes.deletedPayments) {
       for (const reversal of await reverseAccountingPayment(fresh, remotePaymentId, runInDbContext, expectedRealmFingerprint)) {
@@ -294,6 +346,22 @@ export async function processReconcileConnectionJob(
       // set comes from QuickBooks, not from whether Breeze could apply it.
       for (const stale of await reverseStaleAllocations(
         fresh, remotePaymentId, lines.map((l) => l.remoteInvoiceId), runInDbContext, expectedRealmFingerprint,
+      )) {
+        tally(summary, stale.outcome);
+      }
+    }
+
+    // A Payment that is ALIVE but settles nothing: QuickBooks voided it
+    // (`TotalAmt` 0) or its Invoice links were all removed. It is the same
+    // operation as the loop above with an EMPTY current line set — every
+    // allocation Breeze holds for this Payment is stale — and deliberately NOT
+    // `reverseAccountingPayment`: the Payment still exists, so a Breeze-origin
+    // mapping must keep the remote id and SyncToken its own pending delete needs
+    // (finding C1). A QuickBooks-origin mirror row is still removed, exactly as
+    // Phase D removed it when the provider called this a deletion.
+    for (const remotePaymentId of changes.unappliedPayments) {
+      for (const stale of await reverseStaleAllocations(
+        fresh, remotePaymentId, [], runInDbContext, expectedRealmFingerprint,
       )) {
         tally(summary, stale.outcome);
       }
@@ -370,19 +438,51 @@ export async function processReconcileConnectionJob(
 }
 
 /**
- * The 15-minute fan-out: enqueue one `reconcile-connection` job per
- * pull-enabled QuickBooks connection.
+ * The 15-minute fan-out, in two passes.
  *
- * The connection list is read inside ONE short system context which is CLOSED
- * before any Redis work — an `add()` that blocks on a slow/unavailable Redis
- * must never do so while holding a pooled Postgres connection.
+ * Pass 1 enqueues one `reconcile-connection` job per connection with either
+ * direction switched on. Pass 2 is the OUTBOX BACKSTOP (spec decision 1): every
+ * `accounting_entity_mappings` row that still owes QuickBooks a push or a delete,
+ * whose lease has expired and whose last update is older than the grace window,
+ * is re-enqueued on the accounting-sync queue. That is what makes a lost
+ * enqueue — Redis down, the process dying between COMMIT and `add()`, BullMQ
+ * exhausting its attempts — recover with no operator action.
+ *
+ * Pass 2 is deliberately NOT gated on any connection switch: a delete must
+ * propagate even for a connection whose push is switched off, because Breeze
+ * created that Payment in QuickBooks and owns its removal.
+ *
+ * Both passes read inside ONE short system context each, CLOSED before any Redis
+ * work — an `add()` that blocks on a slow Redis must never hold a pooled
+ * Postgres connection.
  */
-export async function processReconcileSweep(): Promise<{ enqueued: number; failed: number }> {
+export async function processReconcileSweep(): Promise<{
+  enqueued: number; failed: number; pendingOpsEnqueued: number; pendingOpsFailed: number;
+}> {
   return runOutsideDbContext(async () => {
-    const connections = await withSystemDbAccessContext(
-      () => listReconcilableConnections(db, 'quickbooks'),
-      'accountingReconcile.sweep.list',
-    );
+    // Each pass's DB read is its OWN try/catch: a failure reading the
+    // connection list must not suppress the pending-op pass (a payment delete
+    // owed by a connection that is otherwise fine must still go out), and the
+    // reverse — a failure reading owed payment mappings must not suppress the
+    // CDC fan-out. Both passes always get their chance; the job rethrows at
+    // the very end if either read failed, so BullMQ retries the whole sweep.
+    let connections: Awaited<ReturnType<typeof listReconcilableConnections>> = [];
+    let connectionsReadFailed = false;
+    try {
+      connections = await withSystemDbAccessContext(
+        () => listReconcilableConnections(db, 'quickbooks'),
+        'accountingReconcile.sweep.list',
+      );
+    } catch (err) {
+      connectionsReadFailed = true;
+      console.error(
+        '[AccountingReconcileWorker] sweep pass 1 (list reconcilable connections) failed',
+        err instanceof Error ? err.message : err,
+      );
+      captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+        service: 'accountingReconcileWorker', phase: 'sweep.list',
+      });
+    }
 
     let enqueued = 0;
     let failed = 0;
@@ -391,8 +491,51 @@ export async function processReconcileSweep(): Promise<{ enqueued: number; faile
       else failed++;
     }
 
-    console.log('[AccountingReconcileWorker] sweep complete', `connections=${connections.length}`, `enqueued=${enqueued}`, `failed=${failed}`);
-    return { enqueued, failed };
+    let owed: Awaited<ReturnType<typeof listOwedPaymentMappings>> = [];
+    let owedReadFailed = false;
+    try {
+      owed = await withSystemDbAccessContext(
+        () => listOwedPaymentMappings(db, new Date()),
+        'accountingReconcile.sweep.pendingOps',
+      );
+    } catch (err) {
+      owedReadFailed = true;
+      console.error(
+        '[AccountingReconcileWorker] sweep pass 2 (list owed payment mappings) failed',
+        err instanceof Error ? err.message : err,
+      );
+      captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+        service: 'accountingReconcileWorker', phase: 'sweep.pendingOps',
+      });
+    }
+
+    let pendingOpsEnqueued = 0;
+    let pendingOpsFailed = 0;
+    for (const row of owed) {
+      const accepted = row.pendingOp === 'push'
+        ? await enqueueAccountingPaymentPush(row.id, row.partnerId)
+        : await enqueueAccountingPaymentDelete(row.id, row.partnerId);
+      if (accepted) pendingOpsEnqueued++;
+      else pendingOpsFailed++;
+    }
+
+    console.log(
+      '[AccountingReconcileWorker] sweep complete',
+      `connections=${connections.length}`, `enqueued=${enqueued}`, `failed=${failed}`,
+      `pendingOps=${owed.length}`, `pendingOpsEnqueued=${pendingOpsEnqueued}`, `pendingOpsFailed=${pendingOpsFailed}`,
+    );
+
+    if (connectionsReadFailed || owedReadFailed) {
+      // Both passes above already ran with whatever they had (empty on a
+      // failed read) — this throw only decides whether BullMQ retries the
+      // sweep, it does not gate either pass's work.
+      throw new Error(
+        `accounting reconcile sweep had a failed DB read (connectionsReadFailed=${connectionsReadFailed}, `
+        + `owedReadFailed=${owedReadFailed})`,
+      );
+    }
+
+    return { enqueued, failed, pendingOpsEnqueued, pendingOpsFailed };
   });
 }
 

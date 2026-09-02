@@ -17,6 +17,8 @@ const {
   resolveLiveConnectionMock,
   syncMappedEntityMock,
   enqueueAccountingInvoiceVoidMock,
+  enqueuePaymentPushMock,
+  fanOutOwedPaymentsMock,
   pushInvoiceMock,
   voidInvoiceMock,
   captureExceptionMock,
@@ -40,6 +42,8 @@ const {
     resolveLiveConnectionMock: vi.fn(),
     syncMappedEntityMock: vi.fn(),
     enqueueAccountingInvoiceVoidMock: vi.fn(),
+    enqueuePaymentPushMock: vi.fn(),
+    fanOutOwedPaymentsMock: vi.fn(),
     pushInvoiceMock: vi.fn(),
     voidInvoiceMock: vi.fn(),
     captureExceptionMock: vi.fn(),
@@ -63,6 +67,14 @@ vi.mock('./accountingMappingService', () => ({
 
 vi.mock('../../jobs/accountingSyncWorker', () => ({
   enqueueAccountingInvoiceVoid: enqueueAccountingInvoiceVoidMock,
+  enqueueAccountingPaymentPush: enqueuePaymentPushMock,
+}));
+
+// Phase D2, spec decision 10: a landed invoice push fans its payments out. The
+// coordinator's own suite proves what fanOutOwedPayments selects; this file
+// proves the invoice push CALLS it, in the right place, and survives it failing.
+vi.mock('./accountingPaymentPush', () => ({
+  fanOutOwedPayments: fanOutOwedPaymentsMock,
 }));
 
 /**
@@ -111,7 +123,7 @@ function conn(overrides: Record<string, unknown> = {}) {
     id: CONN_ID, partnerId: PARTNER, provider: 'quickbooks', realmId: 'r1',
     environment: 'sandbox', status: 'connected', homeCurrency: 'USD', multiCurrencyEnabled: false,
     defaultIncomeAccountRef: '79', defaultTaxCodeRef: 'TAX-1',
-    realmIdFingerprint: null, pullPayments: true, lastReconcileAt: null, cdcCursor: null,
+    realmIdFingerprint: null, pullPayments: true, pushPayments: true, lastReconcileAt: null, cdcCursor: null,
     ...overrides,
   };
 }
@@ -352,6 +364,8 @@ beforeEach(() => {
     remoteTaxTotal: '7.00', remoteTotal: '107.00',
   });
   voidInvoiceMock.mockResolvedValue(undefined);
+  fanOutOwedPaymentsMock.mockResolvedValue([]);
+  enqueuePaymentPushMock.mockResolvedValue(true);
 });
 
 // ---------------------------------------------------------------------------
@@ -907,5 +921,92 @@ describe('voidInvoiceInAccounting', () => {
     const mapping = currentMappings.find((m) => m.id === 'map-inv-1')!;
     expect(mapping.syncStatus).toBe('error');
     expect(mapping.lastError).toBe('QuickBooks rejected the invoice sync (HTTP 500)');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase D2 (Task 5) — payment fan-out after a landed invoice push.
+// ---------------------------------------------------------------------------
+
+describe('pushInvoiceToAccounting payment fan-out (spec decision 10)', () => {
+  it('fans out the invoice payments after the remote ref is recorded, and enqueues each', async () => {
+    // Runs in BOTH push modes: in `manual` this is the ONLY way payments reach
+    // QuickBooks, and in `auto` it catches payments recorded while this push was
+    // still in flight (their own requestPaymentPush returned null because the
+    // invoice had no remote id yet).
+    let patchesWhenFannedOut: Array<Record<string, unknown>> = [];
+    fanOutOwedPaymentsMock.mockImplementation(async () => {
+      patchesWhenFannedOut = updatedPatches.map((u) => u.patch);
+      return ['map-a', 'map-b'];
+    });
+
+    const res = await pushInvoiceToAccounting(INVOICE, PARTNER, runCtx);
+
+    expect(res.syncStatus).toBe('synced');
+    expect(fanOutOwedPaymentsMock).toHaveBeenCalledWith(INVOICE, PARTNER, runCtx);
+    // Ordering, proven from the fan-out's own vantage point: the mapping row
+    // already carried the QuickBooks id when it ran. A payment pushed before the
+    // invoice's remote ref lands has nothing to attach itself to.
+    expect(patchesWhenFannedOut.some((p) => p.remoteEntityId === 'qb-inv-1')).toBe(true);
+    expect(enqueuePaymentPushMock).toHaveBeenCalledWith('map-a', PARTNER);
+    expect(enqueuePaymentPushMock).toHaveBeenCalledWith('map-b', PARTNER);
+  });
+
+  it('enqueues nothing when no payment is owed a push', async () => {
+    fanOutOwedPaymentsMock.mockResolvedValue([]);
+
+    await pushInvoiceToAccounting(INVOICE, PARTNER, runCtx);
+
+    expect(enqueuePaymentPushMock).not.toHaveBeenCalled();
+  });
+
+  it('never fails a landed invoice push because the payment fan-out threw', async () => {
+    // The invoice IS in QuickBooks and the mapping row already says so. Failing
+    // the call here would report an error for work that succeeded, and the
+    // caller's retry would take the create path again.
+    fanOutOwedPaymentsMock.mockRejectedValue(new Error('boom'));
+
+    await expect(pushInvoiceToAccounting(INVOICE, PARTNER, runCtx)).resolves.toMatchObject({
+      syncStatus: 'synced', remoteEntityId: 'qb-inv-1',
+    });
+    expect(captureExceptionMock).toHaveBeenCalledWith(
+      expect.any(Error),
+      undefined,
+      expect.objectContaining({ service: 'accountingInvoicePush', phase: 'payment-fan-out' }),
+    );
+  });
+
+  it('never fails a landed invoice push because the payment enqueue threw', async () => {
+    fanOutOwedPaymentsMock.mockResolvedValue(['map-a']);
+    enqueuePaymentPushMock.mockRejectedValue(new Error('redis down'));
+
+    await expect(pushInvoiceToAccounting(INVOICE, PARTNER, runCtx)).resolves.toMatchObject({ syncStatus: 'synced' });
+    expect(captureExceptionMock).toHaveBeenCalled();
+  });
+
+  it('does NOT fan out when the invoice was voided while the push was in flight', async () => {
+    // The void enqueue above already fired for this invoice. Fanning out here
+    // would give every payment a pending mapping that the coordinator refuses
+    // terminally with `invoice_void` — a red badge per payment for work that was
+    // never going to happen.
+    pushInvoiceMock.mockImplementationOnce(async () => {
+      currentInvoices = [defaultInvoice({ status: 'void' })];
+      return { id: 'qb-inv-1', syncToken: '0', docNumber: 'INV-2026-0001', remoteTaxTotal: '7.00', remoteTotal: '107.00' };
+    });
+
+    await pushInvoiceToAccounting(INVOICE, PARTNER, runCtx);
+
+    expect(enqueueAccountingInvoiceVoidMock).toHaveBeenCalledWith(INVOICE, PARTNER);
+    expect(fanOutOwedPaymentsMock).not.toHaveBeenCalled();
+    expect(enqueuePaymentPushMock).not.toHaveBeenCalled();
+  });
+
+  it('does not fan out when the push itself failed', async () => {
+    pushInvoiceMock.mockRejectedValueOnce(Object.assign(new Error('boom'), { status: 500 }));
+
+    await expect(pushInvoiceToAccounting(INVOICE, PARTNER, runCtx)).rejects.toMatchObject({ code: 'quickbooks_error' });
+
+    expect(fanOutOwedPaymentsMock).not.toHaveBeenCalled();
+    expect(enqueuePaymentPushMock).not.toHaveBeenCalled();
   });
 });

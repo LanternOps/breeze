@@ -302,6 +302,80 @@ describe('InvoiceDetail', () => {
     expect(screen.queryByTestId('invoice-payment-quickbooks-p3')).not.toBeInTheDocument();
     expect(screen.queryByTestId('invoice-payment-online-p3')).not.toBeInTheDocument();
   });
+
+  // Phase D2, Task 7 — pushed Breeze-origin payments carry a sync badge but
+  // stay hand-voidable: the push does not transfer ownership, so a void must
+  // still propagate the deletion to QuickBooks (unlike the pull-owned rows
+  // above, where a Breeze-side reverse would never touch the books).
+  it('badges a synced Breeze-origin payment and STILL offers the void button', async () => {
+    fetchMock.mockImplementation(async (input: string) => {
+      if (input.endsWith('/payments')) return json({ data: [
+        { id: 'p4', invoiceId: 'inv-1', amount: '120.00', method: 'cash', reference: null, receivedAt: '2026-06-13', note: null, createdAt: '', source: 'manual', accountingSync: { status: 'synced', lastError: null } },
+      ] });
+      return json({ data: {} });
+    });
+    render(<InvoiceDetail detail={issued} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('invoice-payment-p4')).toBeInTheDocument());
+
+    expect(screen.getByTestId('invoice-payment-qbosync-p4')).toHaveTextContent('In QuickBooks');
+    expect(screen.getByTestId('invoice-payment-void-p4')).toBeInTheDocument();
+  });
+
+  it('shows a pending payment as syncing', async () => {
+    fetchMock.mockImplementation(async (input: string) => {
+      if (input.endsWith('/payments')) return json({ data: [
+        { id: 'p5', invoiceId: 'inv-1', amount: '120.00', method: 'cash', reference: null, receivedAt: '2026-06-14', note: null, createdAt: '', source: 'manual', accountingSync: { status: 'pending', lastError: null } },
+      ] });
+      return json({ data: {} });
+    });
+    render(<InvoiceDetail detail={issued} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('invoice-payment-p5')).toBeInTheDocument());
+
+    expect(screen.getByTestId('invoice-payment-qbosync-p5')).toHaveTextContent('Syncing');
+  });
+
+  it('surfaces the sync error text and reason on a failed push', async () => {
+    fetchMock.mockImplementation(async (input: string) => {
+      if (input.endsWith('/payments')) return json({ data: [
+        { id: 'p6', invoiceId: 'inv-1', amount: '120.00', method: 'card', reference: 'pi_y', receivedAt: '2026-06-15', note: null, createdAt: '', source: 'stripe', accountingSync: { status: 'error', lastError: 'QuickBooks rejected the payment sync (HTTP 400)' } },
+      ] });
+      return json({ data: {} });
+    });
+    render(<InvoiceDetail detail={issued} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('invoice-payment-p6')).toBeInTheDocument());
+
+    const badge = screen.getByTestId('invoice-payment-qbosync-p6');
+    expect(badge).toHaveTextContent('QuickBooks sync failed');
+    expect(badge).toHaveAttribute('title', 'QuickBooks rejected the payment sync (HTTP 400)');
+  });
+
+  it('renders no sync badge when a payment has no QuickBooks mapping', async () => {
+    fetchMock.mockImplementation(async (input: string) => {
+      if (input.endsWith('/payments')) return json({ data: [
+        { id: 'p7', invoiceId: 'inv-1', amount: '120.00', method: 'cash', reference: null, receivedAt: '2026-06-16', note: null, createdAt: '', source: 'manual', accountingSync: null },
+      ] });
+      return json({ data: {} });
+    });
+    render(<InvoiceDetail detail={issued} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('invoice-payment-p7')).toBeInTheDocument());
+
+    expect(screen.queryByTestId('invoice-payment-qbosync-p7')).not.toBeInTheDocument();
+  });
+
+  it('keeps a QuickBooks-ORIGIN payment un-voidable regardless of accountingSync (unchanged Phase D behaviour)', async () => {
+    fetchMock.mockImplementation(async (input: string) => {
+      if (input.endsWith('/payments')) return json({ data: [
+        { id: 'p8', invoiceId: 'inv-1', amount: '120.00', method: 'check', reference: 'QB-1', receivedAt: '2026-06-17', note: null, createdAt: '', source: 'quickbooks', accountingSync: null },
+      ] });
+      return json({ data: {} });
+    });
+    render(<InvoiceDetail detail={issued} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('invoice-payment-p8')).toBeInTheDocument());
+
+    expect(screen.getByTestId('invoice-payment-quickbooks-p8')).toBeInTheDocument();
+    expect(screen.queryByTestId('invoice-payment-void-p8')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('invoice-payment-qbosync-p8')).not.toBeInTheDocument();
+  });
 });
 
 describe('InvoiceDetail — Stripe currency-mismatch warning (#3777)', () => {

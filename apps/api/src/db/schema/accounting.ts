@@ -7,6 +7,7 @@ import {
   timestamp,
   char,
   boolean,
+  integer,
   uniqueIndex,
   index,
   foreignKey,
@@ -47,6 +48,10 @@ export const accountingConnections = pgTable('accounting_connections', {
   // true so an existing connected realm starts reconciling once the sweep
   // ships, rather than silently opting every partner out.
   pullPayments: boolean('pull_payments').notNull().default(true),
+  // Per-connection Breeze -> QBO payment push switch (Phase D2). Defaults true,
+  // matching pullPayments: a connected realm should push the payments it is
+  // already pulling, rather than silently opting every partner out.
+  pushPayments: boolean('push_payments').notNull().default(true),
   // Stamped only after a CDC reconcile run in which no item failed (Phase D).
   lastReconcileAt: timestamp('last_reconcile_at', { withTimezone: true }),
   status: varchar('status', { length: 20 }).notNull().default('connected'),
@@ -85,6 +90,26 @@ export const accountingEntityMappings = pgTable('accounting_entity_mappings', {
   remoteDocNumber: varchar('remote_doc_number', { length: 40 }),
   linkStatus: varchar('link_status', { length: 20 }).notNull().default('suggested'),
   syncStatus: varchar('sync_status', { length: 30 }).notNull().default('pending'),
+  // TRUE for every mapping Breeze's own push created (payments here; invoices
+  // by the Task-1 backfill). The CDC pull needs origin LOCALLY because a
+  // deletion notification carries no PrivateNote to read it from.
+  breezeOrigin: boolean('breeze_origin').notNull().default(false),
+  // The operation this row still owes QuickBooks. NULL = nothing owed. Written
+  // in the SAME transaction as the invoice_payments insert/delete, which is what
+  // makes the mapping row the outbox rather than the BullMQ job.
+  pendingOp: text('pending_op').$type<'push' | 'delete'>(),
+  // Worker lease. A claim is a compare-and-set on (pending_op IS NOT NULL AND
+  // (claimed_at IS NULL OR claimed_at < now() - 10 min)).
+  claimedAt: timestamp('claimed_at', { withTimezone: true }),
+  // Consecutive failed attempts at `pending_op`, incremented by every error
+  // stamp and reset to 0 when the invoice fan-out re-owns the row. The unit is
+  // an ATTEMPT, not a sweep: BullMQ retries a retryable failure five times per
+  // enqueue, so five attempts is roughly one 15-minute sweep. A `push` row that
+  // reaches PAYMENT_PUSH_MAX_ATTEMPTS (100, ~5 h) gives up (`pending_op`
+  // cleared, `last_error` saying so); a `delete` row is never capped, does not
+  // count not-connected skips, and uses the counter only to throttle its Sentry
+  // reporting to about once a day.
+  syncAttempts: integer('sync_attempts').notNull().default(0),
   lastSyncedAt: timestamp('last_synced_at', { withTimezone: true }),
   lastError: text('last_error'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
@@ -114,6 +139,13 @@ export const accountingEntityMappings = pgTable('accounting_entity_mappings', {
     'accounting_entity_mappings_sync_status_chk',
     sql`${table.syncStatus} IN ('pending', 'synced', 'error', 'synced_with_tax_variance')`,
   ),
+  pendingOpCheck: check(
+    'accounting_entity_mappings_pending_op_chk',
+    sql`${table.pendingOp} IS NULL OR ${table.pendingOp} IN ('push', 'delete')`,
+  ),
+  pendingOpIdx: index('accounting_entity_mappings_pending_op_idx')
+    .on(table.partnerId, table.pendingOp)
+    .where(sql`${table.pendingOp} IS NOT NULL`),
   breezeEntityUniq: uniqueIndex('accounting_entity_mappings_breeze_uniq')
     .on(table.integrationId, table.breezeEntityType, table.breezeEntityId),
   remoteEntityUniq: uniqueIndex('accounting_entity_mappings_remote_uniq')

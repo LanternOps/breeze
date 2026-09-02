@@ -1625,6 +1625,9 @@
       "viaStripe": "via Stripe",
       "quickbooks": "QuickBooks",
       "viaQuickbooks": "via QuickBooks",
+      "inQuickbooks": "In QuickBooks",
+      "syncingToQuickbooks": "Syncing…",
+      "quickbooksSyncFailed": "QuickBooks sync failed",
       "currencyUnknown": "Your Stripe account's settlement currency hasn't been cached, so it couldn't be checked against this {{documentCurrency}} invoice. Refresh your Stripe account details under Settings → Integrations to enable the mismatch check."
     },
     "requestPayment": {

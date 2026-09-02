@@ -8,11 +8,21 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const results: unknown[][] = [];
 function queueResult(rows: unknown[]) { results.push(rows); }
 
+// Every `.set({...})` object handed to the chain, in call order. #4542 asserts
+// on the PATCH itself (is `paidAt` present? is it null?), which a
+// `toHaveBeenCalled`-style mock assertion cannot express: the bug was a missing
+// KEY, not a missing call.
+const setCalls = vi.hoisted(() => ({ calls: [] as Array<Record<string, unknown>> }));
+
 vi.mock('../db', () => {
   const makeChain = () => {
     const chain: Record<string, unknown> = {};
     const methods = ['select', 'from', 'where', 'limit', 'orderBy', 'insert', 'values', 'returning', 'update', 'set', 'delete', 'for', 'innerJoin', 'execute'];
     for (const m of methods) chain[m] = vi.fn(() => chain);
+    chain.set = vi.fn((patch: unknown) => {
+      if (patch && typeof patch === 'object') setCalls.calls.push(patch as Record<string, unknown>);
+      return chain;
+    });
     // Make the chain awaitable: resolve to the next queued result (or []).
     (chain as { then: unknown }).then = (resolve: (v: unknown) => unknown) => {
       const rows = results.shift() ?? [];
@@ -67,13 +77,17 @@ vi.mock('../jobs/invoiceWorker', () => ({ enqueueInvoicePdfRender: vi.fn().mockR
 vi.mock('../jobs/accountingSyncWorker', () => ({
   enqueueAccountingInvoicePush: vi.fn().mockResolvedValue(undefined),
   enqueueAccountingInvoiceVoid: vi.fn().mockResolvedValue(undefined),
+  enqueueAccountingPaymentPush: vi.fn().mockResolvedValue(true),
+  enqueueAccountingPaymentDelete: vi.fn().mockResolvedValue(true),
 }));
 
-// The QBO payment-mapping cleanup voidPayment now performs inside its own
-// transaction (Phase D, Task 3). Mocked so these tests assert the DELEGATION
-// (handle + payment id), not a second copy of the applier's own suite.
-vi.mock('./accounting/accountingPaymentPull', () => ({
-  clearPaymentMappingForInvoicePayment: vi.fn().mockResolvedValue(0),
+// The Phase D2 payment push/delete REQUEST helpers recordPayment/voidPayment
+// call inside their own transaction. Mocked so these tests assert the
+// DELEGATION (transaction handle, arguments, ordering against the enqueue),
+// not a second copy of the coordinator's own suite.
+vi.mock('./accounting/accountingPaymentPush', () => ({
+  requestPaymentPush: vi.fn().mockResolvedValue(null),
+  requestPaymentDelete: vi.fn().mockResolvedValue(null),
 }));
 
 import { SQL } from 'drizzle-orm';
@@ -84,10 +98,16 @@ import { db } from '../db';
 import { InvoiceServiceError } from './invoiceTypes';
 import { resolvePrice, computeBundleEconomics, CatalogServiceError } from './catalogService';
 import { mergeBillingContact } from './contacts/compat';
-import { enqueueAccountingInvoicePush, enqueueAccountingInvoiceVoid } from '../jobs/accountingSyncWorker';
-import { clearPaymentMappingForInvoicePayment } from './accounting/accountingPaymentPull';
+import {
+  enqueueAccountingInvoicePush, enqueueAccountingInvoiceVoid,
+  enqueueAccountingPaymentPush, enqueueAccountingPaymentDelete,
+} from '../jobs/accountingSyncWorker';
+import { requestPaymentPush, requestPaymentDelete } from './accounting/accountingPaymentPush';
 
-const clearPaymentMappingMock = vi.mocked(clearPaymentMappingForInvoicePayment);
+const requestPaymentPushMock = vi.mocked(requestPaymentPush);
+const requestPaymentDeleteMock = vi.mocked(requestPaymentDelete);
+const enqueuePaymentPushMock = vi.mocked(enqueueAccountingPaymentPush);
+const enqueuePaymentDeleteMock = vi.mocked(enqueueAccountingPaymentDelete);
 
 const enqueueAccountingInvoicePushMock = vi.mocked(enqueueAccountingInvoicePush);
 const enqueueAccountingInvoiceVoidMock = vi.mocked(enqueueAccountingInvoiceVoid);
@@ -1632,20 +1652,99 @@ describe('runOverdueSweep tenant scope', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Phase D (QuickBooks payment pull-back, Task 3): the payment-mapping cleanup
-// and the widened listPayments source tag.
+// Phase D2 (QuickBooks payment PUSH, Task 5): the record/void hooks, the
+// QuickBooks-origin void refusal, and the widened listPayments row shape.
 // ---------------------------------------------------------------------------
 
-describe('voidPayment clears the QuickBooks payment mapping', () => {
-  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+describe('recordPayment -> QuickBooks push hook', () => {
+  beforeEach(() => {
+    results.length = 0; setCalls.calls.length = 0; vi.clearAllMocks();
+    requestPaymentPushMock.mockResolvedValue(null);
+  });
+
+  const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+  const invoice = {
+    id: 'i1', orgId: 'org1', partnerId: 'p1', siteId: null, status: 'sent', invoiceNumber: 'INV-0001',
+    currencyCode: 'USD', total: '100.00', amountPaid: '0.00', balance: '100.00', dueDate: null,
+    voidedAt: null, paidAt: null, markedOverdueAt: null,
+  };
+
+  /** The reads recordPayment issues inside its one transaction, in order. */
+  function queueRecordPayment() {
+    queueResult([invoice]);                                                    // invoice FOR UPDATE
+    queueResult([]);                                                           // prior payments (balance 100.00)
+    queueResult([{ id: 'pay1', amount: '10.00', method: 'check', reference: null, recordedBy: 'u1' }]); // insert returning
+    queueResult([invoice]);                                                    // recompute: invoice re-read
+    queueResult([{ amount: '10.00' }]);                                        // recompute: payment sum
+    queueResult([]);                                                           // recompute: invoice update
+    queueResult([{ ...invoice, status: 'partially_paid', amountPaid: '10.00', balance: '90.00' }]); // final read
+  }
+
+  const record = () => svc.recordPayment('i1', { amount: '10.00', method: 'check', receivedAt: '2026-09-02' } as never, actor);
+
+  it('requests the push INSIDE the payment transaction and enqueues only AFTER it returns', async () => {
+    // The mapping row is the outbox and must be written in the SAME transaction
+    // as the payment; the Redis nudge must not happen until that transaction has
+    // returned, or a rolled-back payment could still leave a job behind.
+    const order: string[] = [];
+    requestPaymentPushMock.mockImplementation(async () => { order.push('request'); return 'map-1'; });
+    enqueuePaymentPushMock.mockImplementation(async () => { order.push('enqueue'); return true; });
+    const txMock = (db as unknown as { transaction: Mock }).transaction;
+    txMock.mockImplementationOnce(async (fn: (tx: unknown) => unknown) => {
+      const out = await fn(db);
+      order.push('tx-returned');
+      return out;
+    });
+    queueRecordPayment();
+
+    await record();
+
+    // `db` IS the transaction handle the callback receives, so this also proves
+    // the request did not escape to a fresh connection.
+    expect(requestPaymentPushMock).toHaveBeenCalledWith(db, {
+      invoicePaymentId: 'pay1', invoiceId: 'i1', partnerId: 'p1',
+    });
+    expect(order).toEqual(['request', 'tx-returned', 'enqueue']);
+    expect(enqueuePaymentPushMock).toHaveBeenCalledWith('map-1', 'p1');
+  });
+
+  it('does not enqueue when nothing is owed (push disabled, manual mode, or the invoice is not in QuickBooks)', async () => {
+    requestPaymentPushMock.mockResolvedValue(null);
+    queueRecordPayment();
+
+    await record();
+
+    expect(enqueuePaymentPushMock).not.toHaveBeenCalled();
+  });
+
+  it('never fails a committed payment because Redis is down', async () => {
+    requestPaymentPushMock.mockResolvedValue('map-1');
+    enqueuePaymentPushMock.mockRejectedValue(new Error('redis down'));
+    queueRecordPayment();
+
+    const res = await record();
+
+    expect(res.audit).toMatchObject({ paymentId: 'pay1', amount: '10.00' });
+  });
+});
+
+describe('voidPayment -> QuickBooks delete hook', () => {
+  beforeEach(() => {
+    results.length = 0; setCalls.calls.length = 0; vi.clearAllMocks();
+    requestPaymentDeleteMock.mockResolvedValue(null);
+  });
 
   const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
 
   /** Queues the reads voidPayment issues, in order. */
-  function queueVoidPaymentReads(payment: Record<string, unknown>) {
+  function queueVoidPaymentReads(
+    payment: Record<string, unknown>,
+    mappingRows: Array<Record<string, unknown>> = [],
+  ) {
     queueResult([{ invoiceId: 'i1' }]);                                                  // unlocked discovery read
     queueResult([{ id: 'i1', status: 'partially_paid', orgId: 'org1', partnerId: 'p1' }]); // invoice FOR UPDATE
     queueResult([payment]);                                                              // payment re-read under lock
+    queueResult(mappingRows);                                                            // payment mapping origin probe
     queueResult([]);                                                                     // delete invoice_payments
     queueResult([{ id: 'i1', status: 'partially_paid', orgId: 'org1', partnerId: 'p1', total: '100.00', invoiceNumber: 'INV-1', dueDate: null, paidAt: null, markedOverdueAt: null }]); // recompute: getOwnedInvoiceOr404
     queueResult([]);                                                                     // recompute: payment sum
@@ -1653,37 +1752,79 @@ describe('voidPayment clears the QuickBooks payment mapping', () => {
     queueResult([{ id: 'i1', status: 'partially_paid', orgId: 'org1', partnerId: 'p1' }]); // final getOwnedInvoiceOr404
   }
 
-  it('deletes the payment mapping row with the SAME transaction handle, before the payment row', async () => {
-    clearPaymentMappingMock.mockResolvedValueOnce(1);
-    queueVoidPaymentReads({ id: 'pay1', invoiceId: 'i1', orgId: 'org1', amount: '40.00', method: 'check', reference: '10441', recordedBy: null });
+  const payment = (over: Record<string, unknown> = {}) => ({
+    id: 'pay1', invoiceId: 'i1', orgId: 'org1', amount: '40.00', method: 'check',
+    reference: '10441', recordedBy: null, ...over,
+  });
+
+  it('requests the delete with the SAME transaction handle, BEFORE the payment row is destroyed', async () => {
+    requestPaymentDeleteMock.mockResolvedValue('map-1');
+    queueVoidPaymentReads(payment(), [{ breezeOrigin: true }]);
 
     await svc.voidPayment('pay1', actor);
 
-    // The mocked db chain IS the tx handle the transaction callback receives, so
-    // asserting on it proves the cleanup runs inside the caller's transaction
-    // rather than escaping to a fresh connection.
-    expect(clearPaymentMappingMock).toHaveBeenCalledTimes(1);
-    expect(clearPaymentMappingMock).toHaveBeenCalledWith(db, 'pay1');
-    // Mapping first: breeze_entity_id is polymorphic with no FK to cascade, so
-    // deleting the payment row first would strand the mapping.
-    const clearOrder = clearPaymentMappingMock.mock.invocationCallOrder[0]!;
+    expect(requestPaymentDeleteMock).toHaveBeenCalledWith(db, 'pay1');
+    // breeze_entity_id is polymorphic with no FK to cascade: deleting the
+    // payment row first would strand the mapping row behind it, and the
+    // coordinator's own guard trigger then refuses to recreate it.
+    const requestOrder = requestPaymentDeleteMock.mock.invocationCallOrder[0]!;
     const deleteOrder = (db as unknown as { delete: Mock }).delete.mock.invocationCallOrder[0]!;
-    expect(clearOrder).toBeLessThan(deleteOrder);
+    expect(requestOrder).toBeLessThan(deleteOrder);
   });
 
-  it('does not throw when a manual payment has no mapping row to remove', async () => {
-    clearPaymentMappingMock.mockResolvedValueOnce(0);
-    queueVoidPaymentReads({ id: 'pay1', invoiceId: 'i1', orgId: 'org1', amount: '40.00', method: 'cash', reference: null, recordedBy: 'u1' });
+  it('enqueues the delete only AFTER the transaction returns', async () => {
+    const order: string[] = [];
+    requestPaymentDeleteMock.mockImplementation(async () => { order.push('request'); return 'map-1'; });
+    enqueuePaymentDeleteMock.mockImplementation(async () => { order.push('enqueue'); return true; });
+    const txMock = (db as unknown as { transaction: Mock }).transaction;
+    txMock.mockImplementationOnce(async (fn: (tx: unknown) => unknown) => {
+      const out = await fn(db);
+      order.push('tx-returned');
+      return out;
+    });
+    queueVoidPaymentReads(payment(), [{ breezeOrigin: true }]);
+
+    await svc.voidPayment('pay1', actor);
+
+    expect(order).toEqual(['request', 'tx-returned', 'enqueue']);
+    expect(enqueuePaymentDeleteMock).toHaveBeenCalledWith('map-1', 'p1');
+  });
+
+  it('does not enqueue when there was nothing to delete (an ordinary manual payment)', async () => {
+    requestPaymentDeleteMock.mockResolvedValue(null);
+    queueVoidPaymentReads(payment({ method: 'cash', reference: null, recordedBy: 'u1' }), []);
 
     const res = await svc.voidPayment('pay1', actor);
 
     expect(res.audit).toMatchObject({ paymentId: 'pay1', amount: '40.00', method: 'cash' });
-    await expect(clearPaymentMappingMock.mock.results[0]!.value).resolves.toBe(0);
+    expect(enqueuePaymentDeleteMock).not.toHaveBeenCalled();
+  });
+
+  it('never fails a committed void because Redis is down', async () => {
+    requestPaymentDeleteMock.mockResolvedValue('map-1');
+    enqueuePaymentDeleteMock.mockRejectedValue(new Error('redis down'));
+    queueVoidPaymentReads(payment(), [{ breezeOrigin: true }]);
+
+    await expect(svc.voidPayment('pay1', actor)).resolves.toMatchObject({ audit: { paymentId: 'pay1' } });
+  });
+
+  it('REFUSES a QuickBooks-origin payment at the service layer, not just in the UI', async () => {
+    // Until now only the UI hid the button, so any API client could void a row
+    // QuickBooks owns — and the next CDC sweep would pull it straight back in,
+    // leaving an audit trail of a void that did nothing.
+    queueVoidPaymentReads(payment(), [{ breezeOrigin: false }]);
+
+    await expect(svc.voidPayment('pay1', actor)).rejects.toMatchObject({
+      status: 409, code: 'QUICKBOOKS_OWNED_PAYMENT',
+    });
+    expect(requestPaymentDeleteMock).not.toHaveBeenCalled();
+    expect((db as unknown as { delete: Mock }).delete).not.toHaveBeenCalled();
+    expect(enqueuePaymentDeleteMock).not.toHaveBeenCalled();
   });
 });
 
-describe('listPayments source tagging', () => {
-  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+describe('listPayments source tagging + accountingSync', () => {
+  beforeEach(() => { results.length = 0; setCalls.calls.length = 0; vi.clearAllMocks(); });
 
   const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
 
@@ -1691,20 +1832,59 @@ describe('listPayments source tagging', () => {
   function queueListPayments(
     payments: Array<Record<string, unknown>>,
     stripeLinked: string[],
-    qboLinked: string[],
+    mappings: Array<Record<string, unknown>>,
   ) {
     queueResult([{ id: 'i1', status: 'partially_paid', orgId: 'org1', partnerId: 'p1' }]);
     queueResult(payments);
     queueResult(stripeLinked.map((id) => ({ invoicePaymentId: id })));
-    queueResult(qboLinked.map((id) => ({ breezeEntityId: id })));
+    queueResult(mappings);
   }
 
-  it('tags a payment carrying a QuickBooks payment mapping as quickbooks', async () => {
-    queueListPayments([{ id: 'pay-qbo', method: 'check' }], [], ['pay-qbo']);
+  const mapping = (over: Record<string, unknown> = {}) => ({
+    breezeEntityId: 'pay1', breezeOrigin: true, syncStatus: 'synced', lastError: null, ...over,
+  });
+
+  it('classifies a QUICKBOOKS-ORIGIN mapped payment as quickbooks with no sync card', async () => {
+    // QuickBooks owns the row: the UI must not offer a hand-void, and there is
+    // no Breeze-side push state to report on it.
+    queueListPayments([{ id: 'pay1', method: 'check' }], [], [mapping({ breezeOrigin: false })]);
 
     const rows = await svc.listPayments('i1', actor);
 
-    expect(rows).toEqual([expect.objectContaining({ id: 'pay-qbo', source: 'quickbooks' })]);
+    expect(rows).toEqual([expect.objectContaining({ id: 'pay1', source: 'quickbooks', accountingSync: null })]);
+  });
+
+  it('classifies a BREEZE-ORIGIN mapped payment as manual, with its sync state attached', async () => {
+    // A payment Breeze PUSHED to QuickBooks stays hand-voidable (the void
+    // propagates the deletion) — it only gains a sync badge.
+    queueListPayments([{ id: 'pay1', method: 'check' }], [], [mapping({ syncStatus: 'synced' })]);
+
+    const rows = await svc.listPayments('i1', actor);
+
+    expect(rows[0]).toMatchObject({ source: 'manual', accountingSync: { status: 'synced', lastError: null } });
+  });
+
+  it('surfaces a push failure on a Stripe payment without changing its source', async () => {
+    queueListPayments(
+      [{ id: 'pay1', method: 'card' }],
+      ['pay1'],
+      [mapping({ syncStatus: 'error', lastError: 'QuickBooks rejected the payment sync (HTTP 400)' })],
+    );
+
+    const rows = await svc.listPayments('i1', actor);
+
+    expect(rows[0]).toMatchObject({
+      source: 'stripe',
+      accountingSync: { status: 'error', lastError: 'QuickBooks rejected the payment sync (HTTP 400)' },
+    });
+  });
+
+  it('leaves an unmapped payment with a null sync card', async () => {
+    queueListPayments([{ id: 'pay1', method: 'cash' }], [], []);
+
+    const rows = await svc.listPayments('i1', actor);
+
+    expect(rows[0]).toMatchObject({ source: 'manual', accountingSync: null });
   });
 
   it('tags a succeeded Stripe mapping as stripe and everything else as manual', async () => {
@@ -1719,10 +1899,10 @@ describe('listPayments source tagging', () => {
     expect(rows.map((r) => r.source)).toEqual(['stripe', 'manual']);
   });
 
-  it('reports stripe when a row somehow carries BOTH links (stripe wins)', async () => {
+  it('reports stripe when a QuickBooks-owned row somehow carries BOTH links (stripe wins)', async () => {
     // Structurally impossible today — asserted so the precedence is a decision
-    // in the code rather than an accident of Set-lookup order.
-    queueListPayments([{ id: 'pay-both', method: 'card' }], ['pay-both'], ['pay-both']);
+    // in the code rather than an accident of lookup order.
+    queueListPayments([{ id: 'pay1', method: 'card' }], ['pay1'], [mapping({ breezeOrigin: false })]);
 
     const rows = await svc.listPayments('i1', actor);
 
@@ -1734,5 +1914,102 @@ describe('listPayments source tagging', () => {
     queueResult([]);
 
     await expect(svc.listPayments('i1', actor)).resolves.toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #4542 — paid_at is STAMPED but was never CLEARED. Every path that drops an
+// invoice out of `paid` (a voided payment, a Stripe refund, a QuickBooks-side
+// reversal, a void) left the payment date behind, so "paid in period" reports
+// counted the invoice again in the period it was un-paid.
+// ---------------------------------------------------------------------------
+
+describe('recomputeInvoiceStatus paid_at lifecycle (#4542)', () => {
+  beforeEach(() => { results.length = 0; setCalls.calls.length = 0; vi.clearAllMocks(); });
+
+  /** An issued invoice; `total` and `paidAt` are what the assertions turn on. */
+  const issued = (over: Record<string, unknown> = {}) => ({
+    id: 'i1', orgId: 'org1', partnerId: 'p1', siteId: null, status: 'sent',
+    invoiceNumber: 'INV-0001', currencyCode: 'USD', total: '100.00', amountPaid: '0.00',
+    balance: '100.00', dueDate: null, voidedAt: null, paidAt: null, markedOverdueAt: null,
+    ...over,
+  });
+
+  /** recomputeInvoiceStatus reads: invoice → payment rows → (update). */
+  function queueRecompute(inv: Record<string, unknown>, payments: Array<{ amount: string }>) {
+    queueResult([inv]);
+    queueResult(payments);
+    queueResult([]);
+  }
+
+  const lastPatch = () => setCalls.calls.at(-1)!;
+
+  it('stamps paid_at when the invoice becomes paid', async () => {
+    queueRecompute(issued({ paidAt: null }), [{ amount: '100.00' }]);
+
+    await svc.recomputeInvoiceStatus('i1');
+
+    expect(lastPatch()).toMatchObject({ status: 'paid', amountPaid: '100.00', balance: '0.00', paidAt: expect.any(Date) });
+  });
+
+  it('CLEARS paid_at when a reversal drops the invoice out of paid', async () => {
+    // The bug: paid_at survived the reversal, so a partially_paid invoice still
+    // reported a payment date and every "paid in period" report double-counted it.
+    queueRecompute(issued({ paidAt: new Date('2026-09-01T00:00:00Z') }), [{ amount: '40.00' }]);
+
+    await svc.recomputeInvoiceStatus('i1');
+
+    expect(lastPatch()).toMatchObject({ status: 'partially_paid', balance: '60.00', paidAt: null });
+  });
+
+  it('CLEARS paid_at when every payment is reversed and the invoice falls back to sent', async () => {
+    queueRecompute(issued({ paidAt: new Date('2026-09-01T00:00:00Z') }), []);
+
+    await svc.recomputeInvoiceStatus('i1');
+
+    expect(lastPatch()).toMatchObject({ status: 'sent', amountPaid: '0.00', paidAt: null });
+  });
+
+  it('leaves paid_at alone when the invoice is still paid (no needless rewrite of the payment date)', async () => {
+    queueRecompute(issued({ paidAt: new Date('2026-09-01T00:00:00Z') }), [{ amount: '100.00' }]);
+
+    await svc.recomputeInvoiceStatus('i1');
+
+    expect(lastPatch()).toMatchObject({ status: 'paid' });
+    expect('paidAt' in lastPatch()).toBe(false);
+  });
+
+  it('leaves paid_at alone when an unpaid invoice stays unpaid (no null churn on every recompute)', async () => {
+    queueRecompute(issued({ paidAt: null }), [{ amount: '40.00' }]);
+
+    await svc.recomputeInvoiceStatus('i1');
+
+    expect(lastPatch()).toMatchObject({ status: 'partially_paid' });
+    expect('paidAt' in lastPatch()).toBe(false);
+  });
+});
+
+describe('voidInvoice clears paid_at (#4542)', () => {
+  beforeEach(() => { results.length = 0; setCalls.calls.length = 0; vi.clearAllMocks(); });
+
+  const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
+
+  it('nulls paid_at on the void update, which bypasses recomputeInvoiceStatus entirely', async () => {
+    // A PAID invoice that is voided would otherwise keep its payment date
+    // forever: this update writes `status: 'void'` directly and never runs the
+    // recompute whose paid_at branch was just fixed.
+    queueResult([{
+      id: 'i1', orgId: 'org1', partnerId: 'p1', siteId: null, status: 'paid', invoiceNumber: 'INV-0001',
+      currencyCode: 'USD', total: '100.00', amountPaid: '100.00', balance: '0.00', dueDate: null,
+      voidedAt: null, paidAt: new Date('2026-09-01T00:00:00Z'), markedOverdueAt: null,
+    }]); // invoice FOR UPDATE
+    queueResult([]); // invoice_lines FOR UPDATE (no source-backed lines)
+    queueResult([]); // the void update itself
+    queueResult([{ id: 'i1', orgId: 'org1', partnerId: 'p1', status: 'void', currencyCode: 'USD' }]); // getInvoice re-read
+
+    await svc.voidInvoice('i1', 'duplicate', {}, actor);
+
+    const voidPatch = setCalls.calls.find((p) => p.status === 'void')!;
+    expect(voidPatch).toMatchObject({ voidedAt: expect.any(Date), voidReason: 'duplicate', paidAt: null });
   });
 });

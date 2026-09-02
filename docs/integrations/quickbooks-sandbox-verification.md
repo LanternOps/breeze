@@ -520,6 +520,188 @@ Follow-ups surfaced by this run (not fixed here):
   now-dead quick-tunnel URL; Intuit will retry and eventually disable it.
   Re-register before the next walk. The Production tab is untouched.
 
+### Phase D2 checklist (payment push)
+
+**Status: PENDING — not yet run.** Items 27-42 below have never been executed
+against a live Intuit sandbox. Item 27 is a HARD PREREQUISITE for 28-42:
+the Development webhook URL registered during the Phase D walk points at a
+dead quick tunnel, so without re-registering it the echo and adoption cases
+cannot be observed at webhook latency at all and the 15-minute
+`accounting-reconcile` sweep is the only path left — which still reaches the
+same end state, but turns every "within seconds" assertion below into "within
+one sweep".
+
+Payment push (Phase D2, migration
+`apps/api/migrations/2026-10-05-100000-quickbooks-payment-push.sql`): payments
+recorded in Breeze against an invoice already pushed to QuickBooks are created
+there, and deleted there when the Breeze payment is voided or fully refunded.
+The mapping row is the outbox (`pending_op`), so BullMQ is a latency
+optimisation on this path too. Same rules as Sections 2/2a above: dedicated
+sandbox company, no credentials or realm IDs committed to this repository.
+
+Before starting, confirm the realm's connection is `connected`, that
+`push_payments` is **on** (it defaults on) and note the current `push_mode` —
+items 34 and 35 change both and must put them back.
+
+27. **Re-register the Development webhook URL in the Intuit developer portal
+    (#4545) and confirm the verifier handshake**, exactly as Phase D item 17
+    did: tunnel → Intuit app → Webhooks → Development, Invoice + Payment event
+    groups, then check that a bogus `intuit-signature` answers `401` (and that
+    `503` means `QBO_WEBHOOK_VERIFIER_TOKEN` never reached the container). The
+    URL registered during the Phase D walk is dead; every echo case below
+    depends on it.
+    Result: PENDING.
+
+28. **Record a manual payment in Breeze against an invoice already pushed to
+    QuickBooks** and confirm a QuickBooks Payment appears, applied to that
+    invoice, with the QuickBooks invoice balance dropping by the payment amount
+    and the payment's `PrivateNote` reading exactly `Breeze payment <uuid>`
+    (the `invoice_payments.id`).
+    Visible status: the payment row on the invoice shows the "In QuickBooks"
+    badge (`invoice-payment-qbosync-<id>`); the mapping row is
+    `remote_entity_id = '<PaymentId>/<InvoiceId>'`, `sync_status = synced`,
+    `pending_op` NULL, `breeze_origin = true`.
+    Result: PENDING.
+
+29. **Let the webhook echo of item 28 arrive** and confirm the reconcile run
+    logs `replayed` (not `applied`), that NO second payment row appears in
+    Breeze, and that the invoice balance and `amount_paid` are unchanged.
+    Result: PENDING.
+
+30. **Pay an invoice with a Stripe test card** and confirm the QuickBooks
+    Payment carries the GROSS charge amount (not net of the Stripe fee), has no
+    `DepositToAccountRef` (so QuickBooks books it to Undeposited Funds), and
+    that its `PaymentRefNum` is the `pi_…` reference truncated to QuickBooks'
+    21 characters.
+    Result: PENDING.
+
+31. **Void the Breeze payment** and confirm the QuickBooks Payment is deleted,
+    the QuickBooks invoice balance returns, the mapping row disappears
+    entirely, and an `accounting.payment.deleted` audit entry is written.
+    Result: PENDING.
+
+32. **Delete the QuickBooks Payment by hand** and confirm the Breeze payment
+    row SURVIVES with the invoice's `amount_paid`/`balance` untouched, that its
+    mapping flips to `sync_status = error` / `last_error = "Deleted in
+    QuickBooks"` with `remote_entity_id` and `remote_sync_token` cleared, and
+    that pressing "Push to QuickBooks" on the invoice re-creates the Payment
+    (the fan-out re-owns the SAME mapping row rather than inserting a second
+    one).
+    Visible status: the payment row's badge turns into the red
+    "QuickBooks sync failed" badge whose tooltip is `Deleted in QuickBooks`.
+    Result: PENDING.
+
+33. **Edit the QuickBooks Payment's amount by hand** and confirm Breeze does
+    NOT change its own payment amount or the invoice totals, that the mapping
+    goes to `error` / `Edited in QuickBooks; Breeze remains the source of truth
+    for this payment` (`breeze_origin_diverged`), that `remote_entity_id` is
+    KEPT, and that the stored `remote_sync_token` advances — the advanced token
+    is what stops a later delete failing "stale object".
+    Result: PENDING.
+
+34. **Set `push_mode = manual`, record a payment, and confirm NOTHING is
+    pushed** (no QuickBooks Payment, no mapping row). Then press "Push to
+    QuickBooks" on the invoice and confirm the invoice syncs first and the
+    payment follows immediately after via the fan-out. Put `push_mode` back.
+    Result: PENDING.
+
+35. **Switch `push_payments` off, record a payment** (no QuickBooks Payment and
+    no create job should result), **then void an already-pushed payment** and
+    confirm the DELETE still propagates to QuickBooks — Breeze owns the removal
+    of what it created, regardless of the switch. Then switch `push_payments`
+    back on and confirm the payment recorded while it was off is still not
+    pushed automatically (only a fan-out or a new payment pushes).
+    Result: PENDING.
+
+36. **Record a payment larger than the QuickBooks invoice balance** and confirm
+    QuickBooks rejects it, the mapping shows the sanitized
+    `QuickBooks rejected the payment sync (HTTP n)` and never an Intuit fault
+    body, `pending_op` is KEPT (so the sweep retries) and the job is retried
+    rather than marked terminal.
+    Then WATCH THE RETRY COUNT: record `sync_attempts` on the mapping row after
+    the first enqueue and again after a sweep. Expect it to climb by FIVE per
+    enqueue, not one — the job is retryable, so BullMQ burns its whole
+    `attempts: 5` budget before failing, and the 15-minute sweep then supplies
+    the next enqueue. (If it climbs by one per enqueue, the increment is being
+    lost somewhere; if it stays at 0, the counter is not wired.) Do not wait out
+    all 100 attempts (~5 h) — fast-forward with
+    `UPDATE accounting_entity_mappings SET sync_attempts = 99 WHERE id = '<id>';`
+    and let one more sweep run, then confirm the row GIVES UP: `pending_op` is
+    NULL, `claimed_at` is NULL, and `last_error` reads
+    `QuickBooks payment push gave up after 100 attempts: QuickBooks rejected the
+    payment sync (HTTP n). Fix the cause and push the invoice again.` Confirm the
+    sweep stops re-enqueueing it (no further `push-payment` jobs for that
+    mapping id), and that pressing "Push to QuickBooks" on the invoice re-owns
+    the row with `sync_attempts` back to 0.
+    Result: PENDING.
+
+37. **Void a fully-paid invoice in Breeze** and confirm the QuickBooks Invoice
+    is voided while its Payment is LEFT IN PLACE as unapplied customer credit
+    (spec decision 11), and that when the void echoes back the invoice mapping
+    reads `invoice_void` and does NOT show "Deleted in QuickBooks" (the
+    self-void guard).
+    Then check that invoice's PAYMENT mappings, not just the invoice one:
+    voiding the QuickBooks Invoice leaves its Payment unapplied, which CDC
+    reports as a live Payment with no Invoice link. Every payment mapping of
+    that invoice must still carry its `remote_entity_id` and
+    `remote_sync_token`, must NOT have been dropped, and no new QuickBooks
+    Payment may appear. Expect `sync_status = error` /
+    `Edited in QuickBooks; Breeze remains the source of truth for this payment`
+    on Breeze-origin rows.
+    Result: PENDING.
+
+38. **Kill the API between the QuickBooks create and phase 2** — stop the
+    container while a push job is in flight, e.g. with a breakpoint or by
+    stopping it the moment the QuickBooks request is logged — and confirm that
+    within one 15-minute sweep the CDC pass ADOPTS the orphaned Payment: the
+    mapping gains the remote id and token, no second Payment is created, and
+    the reconcile summary reports `adopted=1`.
+    Result: PENDING.
+
+39. **Exercise the accepted "Copy" residual risk.** With a Breeze payment
+    delete-pending and its remote id not yet known (the item-38 shape: void the
+    Breeze payment while the create is in flight), use QuickBooks' **Copy** on
+    the original Payment — Copy preserves `PrivateNote`, so the copy carries
+    Breeze's marker for a payment it is not. Record what actually happens when
+    the copy is the first CDC line to arrive: the documented risk is that the
+    adoption takes the COPY's id and the delete worker deletes the copy,
+    leaving the original Payment standing. This is an ACCEPTED risk
+    (`accountingPaymentPull.ts`, "RESIDUAL RISK"), not a bug to fail the walk
+    on — the item exists to confirm the blast radius is exactly this and no
+    wider (no Breeze row deleted, no unrelated Payment touched).
+    Result: PENDING.
+
+40. **Turn `pull_payments` OFF while leaving `push_payments` ON**, then push a
+    payment and let its echo arrive. Confirm the reconcile pass still RUNS
+    (the gate is `pull_payments OR push_payments`), that the echo is still
+    processed — `replayed`, or `adopted` if it beats phase 2 — and that a
+    payment created directly in QuickBooks by hand is NOT imported, logging
+    `skipped_pull_disabled` once per run rather than once per payment. Put
+    `pull_payments` back on.
+    Result: PENDING.
+
+41. **VOID (do not delete) the QuickBooks Payment by hand** — QuickBooks' own
+    "Void" on a Payment zeroes `TotalAmt` and keeps the transaction. Confirm the
+    Breeze payment row survives with the invoice's `amount_paid`/`balance`
+    untouched, and — the point of this item, distinct from item 32 — that the
+    mapping KEEPS its `remote_entity_id` and `remote_sync_token`, going to
+    `sync_status = error` /
+    `Edited in QuickBooks; Breeze remains the source of truth for this payment`.
+    Then press "Push to QuickBooks" on the invoice and confirm NOTHING new is
+    created: no second QuickBooks Payment, no new mapping row, and the existing
+    row is not re-owned (`pending_op` stays NULL). Finally void the payment in
+    Breeze and confirm the delete still reaches QuickBooks by name — which is
+    only possible because the id and token were kept.
+    Result: PENDING.
+
+42. **UNAPPLY the QuickBooks Payment** — edit it to settle no invoice at all
+    (clear the invoice line, leaving the Payment as customer credit). Confirm
+    exactly the same end state as item 41: Breeze row intact, invoice totals
+    intact, mapping keeps its ids with the "Edited in QuickBooks" error, and a
+    re-push creates nothing. A Payment with no Invoice-linked line and a voided
+    Payment take the same route, and neither is a deletion.
+    Result: PENDING.
+
 ### How to fill this in on the next run
 
 1. Copy the "Evidence header" and "Checklist" blocks above into a new
@@ -536,7 +718,9 @@ Follow-ups surfaced by this run (not fixed here):
 4. Migrations referenced by this feature:
    `apps/api/migrations/2026-09-28-quickbooks-entity-mappings.sql` (Phase B),
    `apps/api/migrations/2026-09-30-quickbooks-invoice-push.sql` (Phase C),
-   `apps/api/migrations/2026-10-01-quickbooks-payment-pullback.sql` (Phase D).
+   `apps/api/migrations/2026-10-01-quickbooks-payment-pullback.sql` (Phase D),
+   `apps/api/migrations/2026-10-05-100000-quickbooks-payment-push.sql`
+   (Phase D2).
 
 ---
 
@@ -678,7 +862,20 @@ no new production code was needed or added to prove this out.
 
 ## Change log
 
-### (this PR) — 2026-09-02, first live Phase D sandbox run
+### (this PR) — 2026-09-02, Phase D2 payment push added, sandbox PENDING
+
+Section 2 gains a `### Phase D2 checklist (payment push)` block, items 27-40,
+every `Result:` **PENDING** — nothing in it has been run against a live Intuit
+sandbox. Item 27 (re-register the dead Development webhook, #4545) gates the
+rest: without it the echo and adoption cases only observe the 15-minute sweep.
+The Phase D block above is untouched and still records its executed 17-26.
+Two items beyond the obvious happy path are deliberate: item 39 exercises the
+accepted QuickBooks "Copy" residual risk documented in `accountingPaymentPull.ts`
+(Copy preserves `PrivateNote`, so a copy can be adopted into a delete-pending
+row), and item 40 covers `pull_payments` off with `push_payments` on, which is
+the configuration the reconcile gate was widened for.
+
+### `#4537` — 2026-09-02, first live Phase D sandbox run
 
 Section 2's Phase D checklist executed against the live default US sandbox:
 items 17–25 PASS, item 26 not reproducible via a Redis outage (fenced

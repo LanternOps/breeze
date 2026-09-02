@@ -19,19 +19,42 @@ const setMapping = vi.hoisted(() => ({ calls: [] as unknown[] }));
 // Captures every `.insert(...).values({...})` so the redelivery no-op can assert
 // no second payment row is inserted.
 const insertValues = vi.hoisted(() => ({ calls: [] as unknown[] }));
+// A statement LOG: one entry per select/insert/update/delete, carrying the table
+// it was issued against plus the `.set()` patch and `.where()` condition that
+// followed. The flat `setMapping`/`deleteWhereArgs` captures above cannot say
+// WHICH table a patch was written to, and Phase D2's partial-refund divergence
+// writes accounting_entity_mappings in the middle of a run that also patches
+// invoice_payments and invoice_stripe_payments.
+type Stmt = { kind: string; table?: unknown; set?: unknown; where?: unknown };
+const stmts = vi.hoisted(() => ({ list: [] as Array<{ kind: string; table?: unknown; set?: unknown; where?: unknown }> }));
+// Ordering probe: `withSystemDbAccessContext` runs the whole reconcile in ONE
+// transaction, so "enqueued after the transaction returned" is a claim about
+// this boundary, not about mock call counts.
+const ctxEvents = vi.hoisted(() => ({ list: [] as string[] }));
 
 vi.mock('../db', () => {
   const makeChain = () => {
     const chain: Record<string, unknown> = {};
     const methods = ['select', 'from', 'where', 'limit', 'orderBy', 'insert', 'values', 'returning', 'update', 'set', 'delete', 'for', 'innerJoin', 'execute'];
     for (const m of methods) chain[m] = vi.fn(() => chain);
+    const current = () => stmts.list[stmts.list.length - 1];
+    chain.select = vi.fn(() => { stmts.list.push({ kind: 'select' }); return chain; });
+    chain.from = vi.fn((t: unknown) => { const c = current(); if (c) c.table = t; return chain; });
     chain.set = vi.fn((v: { amount?: unknown }) => {
       if (v && typeof v === 'object' && 'amount' in v) setAmount.calls.push(v.amount);
       if (v && typeof v === 'object') setMapping.calls.push(v);
+      const c = current(); if (c && c.set === undefined) c.set = v;
       return chain;
     });
+    chain.where = vi.fn((w: unknown) => { const c = current(); if (c && c.where === undefined) c.where = w; return chain; });
     chain.values = vi.fn((v: unknown) => { insertValues.calls.push(v); return chain; });
-    chain.delete = vi.fn((arg: unknown) => { deleteWhereArgs.calls.push(arg); return chain; });
+    chain.insert = vi.fn((t: unknown) => { stmts.list.push({ kind: 'insert', table: t }); return chain; });
+    chain.update = vi.fn((t: unknown) => { stmts.list.push({ kind: 'update', table: t }); return chain; });
+    chain.delete = vi.fn((arg: unknown) => {
+      deleteWhereArgs.calls.push(arg);
+      stmts.list.push({ kind: 'delete', table: arg });
+      return chain;
+    });
     (chain as { then: unknown }).then = (resolve: (v: unknown) => unknown) => {
       const rows = results.shift() ?? [];
       return Promise.resolve(rows).then(resolve);
@@ -42,7 +65,11 @@ vi.mock('../db', () => {
   return {
     db,
     runOutsideDbContext: (fn: () => unknown) => fn(),
-    withSystemDbAccessContext: (fn: () => unknown) => fn()
+    withSystemDbAccessContext: async (fn: () => unknown) => {
+      const out = await fn();
+      ctxEvents.list.push('tx-returned');
+      return out;
+    },
   };
 });
 
@@ -55,18 +82,53 @@ vi.mock('./auditEvents', () => ({
   requestLikeFromSnapshot: () => ({ req: { header: () => undefined } }),
 }));
 
-// The QBO payment-mapping cleanup the full-refund branch now performs (Phase D,
-// Task 3). Mocked so this suite asserts the DELEGATION and its ordering, not a
-// second copy of the applier's own suite.
-const { clearPaymentMapping } = vi.hoisted(() => ({ clearPaymentMapping: vi.fn().mockResolvedValue(0) }));
-vi.mock('./accounting/accountingPaymentPull', () => ({
-  clearPaymentMappingForInvoicePayment: clearPaymentMapping,
+// The Phase D2 payment push/delete REQUEST helpers (Task 3). Mocked so this
+// suite asserts the DELEGATION and its ordering, not a second copy of the
+// coordinator's own suite. `partialRefundDivergenceMessage` is kept REAL via
+// importOriginal: the divergence string this path writes into `last_error` is
+// operator-facing, and asserting a locally-retyped copy of it would pass while
+// the two halves drifted apart.
+const { requestPaymentPush, requestPaymentDelete } = vi.hoisted(() => ({
+  requestPaymentPush: vi.fn().mockResolvedValue(null),
+  requestPaymentDelete: vi.fn().mockResolvedValue(null),
+}));
+vi.mock('./accounting/accountingPaymentPush', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./accounting/accountingPaymentPush')>()),
+  requestPaymentPush,
+  requestPaymentDelete,
 }));
 
+const { enqueuePaymentPush, enqueuePaymentDelete } = vi.hoisted(() => ({
+  enqueuePaymentPush: vi.fn().mockResolvedValue(true),
+  enqueuePaymentDelete: vi.fn().mockResolvedValue(true),
+}));
+vi.mock('../jobs/accountingSyncWorker', () => ({
+  enqueueAccountingPaymentPush: enqueuePaymentPush,
+  enqueueAccountingPaymentDelete: enqueuePaymentDelete,
+}));
+
+import type { SQL } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import { accountingEntityMappings } from '../db/schema';
 import { db } from '../db';
+import { partialRefundDivergenceMessage } from './accounting/accountingPaymentPush';
 import { recordStripePayment, reflectStripeRefund } from './stripeReconcile';
 
-beforeEach(() => { results.length = 0; recompute.mockReset(); emit.mockReset(); capture.mockReset(); audit.mockReset(); setAmount.calls.length = 0; deleteWhereArgs.calls.length = 0; setMapping.calls.length = 0; insertValues.calls.length = 0; clearPaymentMapping.mockReset(); clearPaymentMapping.mockResolvedValue(0); });
+const dialect = new PgDialect();
+/** The LAST statement issued against `table` — `undefined` when there was none. */
+const lastStmtOn = (table: unknown, kind: string): Stmt | undefined =>
+  [...stmts.list].reverse().find((st) => st.kind === kind && st.table === table);
+
+beforeEach(() => {
+  results.length = 0;
+  recompute.mockReset(); emit.mockReset(); capture.mockReset(); audit.mockReset();
+  setAmount.calls.length = 0; deleteWhereArgs.calls.length = 0; setMapping.calls.length = 0;
+  insertValues.calls.length = 0; stmts.list.length = 0; ctxEvents.list.length = 0;
+  requestPaymentPush.mockReset(); requestPaymentPush.mockResolvedValue(null);
+  requestPaymentDelete.mockReset(); requestPaymentDelete.mockResolvedValue(null);
+  enqueuePaymentPush.mockReset(); enqueuePaymentPush.mockResolvedValue(true);
+  enqueuePaymentDelete.mockReset(); enqueuePaymentDelete.mockResolvedValue(true);
+});
 
 describe('recordStripePayment', () => {
   it('inserts a card payment, links the mapping, recomputes, emits payment.recorded', async () => {
@@ -317,6 +379,7 @@ describe('reflectStripeRefund', () => {
     queueResult([{ id: 'm1', invoiceId: 'inv1', orgId: 'org1', invoicePaymentId: 'pay1', stripeAccountId: 'acct_1' }]); // mapping
     queueResult([]); // update payment amount
     queueResult([]); // update mapping → partially_refunded
+    queueResult([]); // accounting_entity_mappings divergence flag (Phase D2)
     queueResult([{ partnerId: 'p1' }]); // invoicePartnerId select
 
     await reflectStripeRefund({ stripePaymentIntentId: 'pi_1', amountRefundedCents: 4000, chargeAmountCents: 10000, currency: 'USD', stripeAccountId: 'acct_1' });
@@ -328,6 +391,7 @@ describe('reflectStripeRefund', () => {
     queueResult([{ id: 'm1', invoiceId: 'inv1', orgId: 'org1', invoicePaymentId: 'pay1', stripeAccountId: 'acct_1' }]); // mapping
     queueResult([]); // update payment amount
     queueResult([]); // update mapping → partially_refunded
+    queueResult([]); // accounting_entity_mappings divergence flag (Phase D2)
     queueResult([{ partnerId: 'p1' }]); // invoicePartnerId select
 
     await reflectStripeRefund({ stripePaymentIntentId: 'pi_1', amountRefundedCents: 4000, chargeAmountCents: 10000, currency: 'USD', stripeAccountId: 'acct_1' });
@@ -345,6 +409,7 @@ describe('reflectStripeRefund', () => {
     queueResult([{ id: 'm1', invoiceId: 'inv1', orgId: 'org1', invoicePaymentId: 'pay1', stripeAccountId: 'acct_1' }]); // mapping
     queueResult([]); // update payment amount
     queueResult([]); // update mapping → partially_refunded
+    queueResult([]); // accounting_entity_mappings divergence flag (Phase D2)
     queueResult([{ partnerId: 'p1' }]); // invoicePartnerId select
 
     await reflectStripeRefund({ stripePaymentIntentId: 'pi_1', amountRefundedCents: 4000, chargeAmountCents: 10000, currency: 'JPY', stripeAccountId: 'acct_1' });
@@ -375,38 +440,195 @@ describe('reflectStripeRefund', () => {
   });
 });
 
-describe('reflectStripeRefund clears the QuickBooks payment mapping', () => {
-  it('full refund removes the payment mapping row BEFORE deleting the payment row', async () => {
-    queueResult([{ id: 'm1', invoiceId: 'inv1', orgId: 'org1', invoicePaymentId: 'pay1', stripeAccountId: 'acct_1' }]); // mapping
-    queueResult([{ id: 'pay1', invoiceId: 'inv1', orgId: 'org1', amount: '100.00', method: 'card', recordedBy: null }]); // snapshot
-    queueResult([]); // delete payment
-    queueResult([]); // update mapping -> refunded
-    queueResult([{ partnerId: 'p1' }]); // invoicePartnerId select
+describe('Phase D2 — QuickBooks payment push/delete hooks', () => {
+  const captureInput = () => ({
+    stripeObjectId: 'cs_1', stripePaymentIntentId: 'pi_1', stripeAccountId: 'acct_1',
+    amount: '107.00', currency: 'USD',
+  });
 
-    // The shared db chain mock is module-level and never reset between tests in
-    // this file, so scope the ordering assertion to THIS test's delete call.
+  /** The reads recordStripePayment issues, in order (B10 lock order). */
+  function queueCapture() {
+    queueResult([{ id: 'm1', invoiceId: 'inv1', invoicePaymentId: null, stripeAccountId: 'acct_1' }]); // discovery
+    queueResult([{ id: 'inv1', orgId: 'org1', partnerId: 'p1', status: 'sent', balance: '107.00', currencyCode: 'USD', stripeAccountId: 'acct_1' }]); // invoice (locked)
+    queueResult([{ id: 'm1', invoiceId: 'inv1', invoicePaymentId: null, stripeAccountId: 'acct_1' }]); // re-read under lock
+    queueResult([{ id: 'pay1' }]); // insert payment returning
+    queueResult([{ id: 'm1' }]); // guarded mapping link RETURNING
+    queueResult([{ id: 'inv1', status: 'paid' }]); // updated invoice re-read
+  }
+
+  /** The reads reflectStripeRefund issues on the FULL-refund arm. */
+  function queueFullRefund() {
+    queueResult([{ id: 'm1', invoiceId: 'inv1', orgId: 'org1', invoicePaymentId: 'pay1', stripeAccountId: 'acct_1' }]); // mapping
+    queueResult([{ id: 'pay1', invoiceId: 'inv1', orgId: 'org1', amount: '107.00', method: 'card', recordedBy: null }]); // snapshot
+    queueResult([]); // delete payment
+    queueResult([]); // update stripe mapping -> refunded
+    queueResult([{ partnerId: 'p1' }]); // invoicePartnerId select
+  }
+
+  /** The reads reflectStripeRefund issues on the PARTIAL-refund arm. */
+  function queuePartialRefund(mappingRows: unknown[] = [{ id: 'map-1' }]) {
+    queueResult([{ id: 'm1', invoiceId: 'inv1', orgId: 'org1', invoicePaymentId: 'pay1', stripeAccountId: 'acct_1' }]); // mapping
+    queueResult([]); // update payment amount
+    queueResult([]); // update stripe mapping -> partially_refunded
+    queueResult(mappingRows); // accounting_entity_mappings divergence flag RETURNING
+    queueResult([{ partnerId: 'p1' }]); // invoicePartnerId select
+  }
+
+  const refundInput = () => ({
+    stripePaymentIntentId: 'pi_1', currency: 'USD', stripeAccountId: 'acct_1',
+    amountRefundedCents: 10700, chargeAmountCents: 10700,
+  });
+
+  it('requests a QuickBooks push for a captured Stripe payment, enqueued after the transaction', async () => {
+    // Gross amount is what settles the invoice, so gross is what QuickBooks
+    // gets; the processor fee is recorded by the bookkeeper at deposit time.
+    requestPaymentPush.mockImplementation(async () => { ctxEvents.list.push('request'); return 'map-1'; });
+    enqueuePaymentPush.mockImplementation(async () => { ctxEvents.list.push('enqueue'); return true; });
+    queueCapture();
+
+    await recordStripePayment(captureInput());
+
+    expect(requestPaymentPush).toHaveBeenCalledWith(db, {
+      invoicePaymentId: 'pay1', invoiceId: 'inv1', partnerId: 'p1',
+    });
+    // The mapping row is written inside the reconcile transaction; the Redis
+    // nudge only happens once that transaction has returned.
+    expect(ctxEvents.list).toEqual(['request', 'tx-returned', 'enqueue']);
+    expect(enqueuePaymentPush).toHaveBeenCalledWith('map-1', 'p1');
+  });
+
+  it('does not enqueue a push when nothing is owed', async () => {
+    requestPaymentPush.mockResolvedValue(null);
+    queueCapture();
+
+    await recordStripePayment(captureInput());
+
+    expect(enqueuePaymentPush).not.toHaveBeenCalled();
+  });
+
+  it('mirrors a FULL Stripe refund as a QuickBooks delete, requested BEFORE the payment row is destroyed', async () => {
+    requestPaymentDelete.mockImplementation(async () => { ctxEvents.list.push('request'); return 'map-1'; });
+    enqueuePaymentDelete.mockImplementation(async () => { ctxEvents.list.push('enqueue'); return true; });
     const dbDelete = (db as unknown as { delete: { mock: { invocationCallOrder: number[] } } }).delete;
     const deletesBefore = dbDelete.mock.invocationCallOrder.length;
+    queueFullRefund();
 
-    await reflectStripeRefund({ stripePaymentIntentId: 'pi_1', amountRefundedCents: 10000, chargeAmountCents: 10000, currency: 'USD', stripeAccountId: 'acct_1' });
+    await reflectStripeRefund(refundInput());
 
-    expect(clearPaymentMapping).toHaveBeenCalledTimes(1);
-    expect(clearPaymentMapping).toHaveBeenCalledWith(expect.anything(), 'pay1');
+    expect(requestPaymentDelete).toHaveBeenCalledWith(db, 'pay1');
     // breeze_entity_id is polymorphic with no FK to cascade: deleting the
     // payment row first would strand the mapping row behind it.
     expect(dbDelete.mock.invocationCallOrder.length).toBe(deletesBefore + 1);
-    expect(clearPaymentMapping.mock.invocationCallOrder[0]!)
+    expect(requestPaymentDelete.mock.invocationCallOrder[0]!)
       .toBeLessThan(dbDelete.mock.invocationCallOrder[deletesBefore]!);
+    expect(ctxEvents.list).toEqual(['request', 'tx-returned', 'enqueue']);
+    expect(enqueuePaymentDelete).toHaveBeenCalledWith('map-1', 'p1');
   });
 
-  it('partial refund never touches the payment mapping (the row survives)', async () => {
-    queueResult([{ id: 'm1', invoiceId: 'inv1', orgId: 'org1', invoicePaymentId: 'pay1', stripeAccountId: 'acct_1' }]); // mapping
-    queueResult([]); // update payment amount
-    queueResult([]); // update mapping -> partially_refunded
-    queueResult([{ partnerId: 'p1' }]); // invoicePartnerId select
+  it('does not enqueue a delete when the refunded payment was never mapped', async () => {
+    requestPaymentDelete.mockResolvedValue(null);
+    queueFullRefund();
 
-    await reflectStripeRefund({ stripePaymentIntentId: 'pi_1', amountRefundedCents: 4000, chargeAmountCents: 10000, currency: 'USD', stripeAccountId: 'acct_1' });
+    await reflectStripeRefund(refundInput());
 
-    expect(clearPaymentMapping).not.toHaveBeenCalled();
+    expect(enqueuePaymentDelete).not.toHaveBeenCalled();
+  });
+
+  it('records a PARTIAL Stripe refund as a divergence and NEVER rewrites the QuickBooks Payment', async () => {
+    // Rewriting a Payment's amount would rewrite receipt history, and Intuit
+    // models a refund as its own transaction (spec decision 9). The message
+    // carries the CUMULATIVE refunded total — Stripe's `amountRefundedCents` is
+    // cumulative, and the wording restates it as a running total so it cannot be
+    // read as a fresh amount to enter on top of an earlier one.
+    queuePartialRefund();
+
+    await reflectStripeRefund({ ...refundInput(), amountRefundedCents: 6700, chargeAmountCents: 10700 });
+
+    expect(requestPaymentDelete).not.toHaveBeenCalled();
+    expect(enqueuePaymentPush).not.toHaveBeenCalled();
+    expect(enqueuePaymentDelete).not.toHaveBeenCalled();
+    const patch = lastStmtOn(accountingEntityMappings, 'update')!.set as Record<string, unknown>;
+    expect(patch).toMatchObject({
+      syncStatus: 'error',
+      lastError: partialRefundDivergenceMessage('67.00'),
+    });
+    expect(patch.lastError).toBe('Refunded in Stripe, total 67.00; record the refund in QuickBooks (this QuickBooks payment still shows the full amount)');
+    // pending_op and claimed_at are deliberately UNTOUCHED: an owed push or a
+    // converted delete must survive this flag, and clearing a live lease would
+    // invite a second worker to create a second QuickBooks Payment.
+    expect('pendingOp' in patch).toBe(false);
+    expect('claimedAt' in patch).toBe(false);
+  });
+
+  it('restates the CUMULATIVE refunded total on a second refund event, not that event\'s delta', async () => {
+    // Stripe sends `amount_refunded` cumulatively: a 40.00 refund followed by a
+    // 27.00 one arrives as 6700, not 2700. The message must say "total 67.00" —
+    // the old wording quoted a bare amount, so a bookkeeper who had already
+    // entered 40.00 would enter 67.00 MORE.
+    queuePartialRefund();
+
+    await reflectStripeRefund({ ...refundInput(), amountRefundedCents: 6700, chargeAmountCents: 10700 });
+
+    const patch = lastStmtOn(accountingEntityMappings, 'update')!.set as Record<string, unknown>;
+    expect(patch.lastError).toContain('total 67.00');
+    expect(patch.lastError).not.toContain('27.00');
+  });
+
+  it('is currency-aware about the refunded amount it reports (zero-decimal currencies are not divided)', async () => {
+    queuePartialRefund();
+
+    await reflectStripeRefund({
+      ...refundInput(), currency: 'JPY', amountRefundedCents: 6700, chargeAmountCents: 10700,
+    });
+
+    const patch = lastStmtOn(accountingEntityMappings, 'update')!.set as Record<string, unknown>;
+    expect(patch.lastError).toBe(partialRefundDivergenceMessage('6700.00'));
+  });
+
+  it('only flags a payment that Breeze actually pushed: breeze_origin AND a remote id', async () => {
+    // A Breeze payment with no QuickBooks Payment behind it has nothing to
+    // diverge FROM — flagging it would park an error on a row the push worker
+    // is about to complete normally. Asserted on the COMPILED condition, so a
+    // guard that silently disappeared cannot pass against a mock that ignores
+    // its `where` argument.
+    queuePartialRefund();
+
+    await reflectStripeRefund({ ...refundInput(), amountRefundedCents: 6700, chargeAmountCents: 10700 });
+
+    const where = lastStmtOn(accountingEntityMappings, 'update')!.where;
+    const { sql, params } = dialect.sqlToQuery(where as SQL);
+    expect(sql).toContain('"breeze_origin" =');
+    expect(sql).toContain('"remote_entity_id" is not null');
+    expect(sql).toContain('"breeze_entity_type" =');
+    expect(sql).toContain('"breeze_entity_id" =');
+    expect(params).toContain('pay1');
+    expect(params).toContain('payment');
+    expect(params).toContain(true);
+  });
+
+  it('never 500s the webhook on a committed capture because Redis is down', async () => {
+    // A thrown enqueue would fail the webhook, and Stripe would retry a capture
+    // that has already been recorded.
+    requestPaymentPush.mockResolvedValue('map-1');
+    enqueuePaymentPush.mockRejectedValue(new Error('redis down'));
+    queueCapture();
+
+    await expect(recordStripePayment(captureInput())).resolves.toEqual({ invoiceId: 'inv1' });
+  });
+
+  it('never 500s the webhook on a committed refund because Redis is down', async () => {
+    requestPaymentDelete.mockResolvedValue('map-1');
+    enqueuePaymentDelete.mockRejectedValue(new Error('redis down'));
+    queueFullRefund();
+
+    await expect(reflectStripeRefund(refundInput())).resolves.toBeUndefined();
+  });
+
+  it('does not throw when the divergence flag matches no row (the payment was never pushed)', async () => {
+    queuePartialRefund([]); // zero rows returned by the guarded UPDATE
+
+    await expect(reflectStripeRefund({ ...refundInput(), amountRefundedCents: 6700, chargeAmountCents: 10700 }))
+      .resolves.toBeUndefined();
+    expect(emit).toHaveBeenCalledWith(expect.objectContaining({ type: 'payment.voided' }));
   });
 });

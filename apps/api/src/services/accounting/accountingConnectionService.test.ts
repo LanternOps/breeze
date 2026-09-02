@@ -127,6 +127,7 @@ function ambientConnectionRow(overrides: Record<string, unknown> = {}) {
     updatedAt: new Date('2026-09-01T00:00:00Z'),
     realmIdFingerprint: null,
     pullPayments: true,
+    pushPayments: true,
     lastReconcileAt: null,
     cdcCursor: null,
     ...overrides,
@@ -772,6 +773,50 @@ describe('accountingConnectionService', () => {
     });
   });
 
+  describe('pushPayments switch (Phase D2)', () => {
+    it('upsertConnection inserts pushPayments true by default', async () => {
+      const captured: { row?: any; insertValues?: any; updateSet?: any } = {};
+      const db = makeMockDb(captured);
+      const { upsertConnection } = await import('./accountingConnectionService');
+
+      await upsertConnection(db, 'p1', 'quickbooks', { realmId: 'realm-9' });
+
+      expect(captured.insertValues.pushPayments).toBe(true);
+    }, 20_000);
+
+    it('upsertConnection leaves pushPayments untouched on a token-only reconnect', async () => {
+      const captured: { row?: any; insertValues?: any; updateSet?: any } = {};
+      const db = makeMockDb(captured);
+      const { upsertConnection } = await import('./accountingConnectionService');
+
+      await upsertConnection(db, 'p1', 'quickbooks', { accessToken: 'a' });
+
+      expect(captured.updateSet).toBeDefined();
+      expect('pushPayments' in captured.updateSet).toBe(false);
+    }, 20_000);
+
+    it('upsertConnection writes pushPayments when the caller supplies it', async () => {
+      const captured: { row?: any; insertValues?: any; updateSet?: any } = {};
+      const db = makeMockDb(captured);
+      const { upsertConnection } = await import('./accountingConnectionService');
+
+      await upsertConnection(db, 'p1', 'quickbooks', { pushPayments: false });
+
+      expect(captured.updateSet.pushPayments).toBe(false);
+    }, 20_000);
+
+    it('mapConnection surfaces pushPayments', async () => {
+      const captured: { row?: any; insertValues?: any; updateSet?: any } = {};
+      const db = makeMockDb(captured);
+      const { upsertConnection, getConnection } = await import('./accountingConnectionService');
+
+      await upsertConnection(db, 'p1', 'quickbooks', { realmId: 'realm-9' });
+      const conn = await getConnection(db, 'p1', 'quickbooks');
+
+      expect(conn).toMatchObject({ pushPayments: true });
+    }, 20_000);
+  });
+
   describe('listReconcilableConnections', () => {
     /** A dedicated db mock exposing the compiled `.where(...)` clause for assertion. */
     function makeSelectWhereDb() {
@@ -785,7 +830,7 @@ describe('accountingConnectionService', () => {
       return { db, whereMock };
     }
 
-    it('filters to provider AND status connected AND pull_payments true', async () => {
+    it('filters to provider AND status connected AND (pull_payments OR push_payments) — spec decision 6', async () => {
       const { db, whereMock } = makeSelectWhereDb();
       const { listReconcilableConnections } = await import('./accountingConnectionService');
 
@@ -798,8 +843,8 @@ describe('accountingConnectionService', () => {
       // on a single-table query, but the compiled clause and bound params
       // below are the actual filter Drizzle applies either way.
       const { sql, params } = dialect.sqlToQuery(whereMock.mock.calls.at(-1)![0] as SQL);
-      expect(sql).toMatch(/"accounting_connections"\."provider" = \$\d+ and "accounting_connections"\."status" = \$\d+ and "accounting_connections"\."pull_payments" = \$\d+/i);
-      expect(params).toEqual(['quickbooks', 'connected', true]);
+      expect(sql).toMatch(/"accounting_connections"\."provider" = \$\d+ and "accounting_connections"\."status" = \$\d+ and \("accounting_connections"\."pull_payments" = \$\d+ or "accounting_connections"\."push_payments" = \$\d+\)/i);
+      expect(params).toEqual(['quickbooks', 'connected', true, true]);
     });
   });
 });

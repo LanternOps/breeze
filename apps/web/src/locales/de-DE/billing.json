@@ -1625,6 +1625,9 @@
       "viaStripe": "über Stripe",
       "quickbooks": "QuickBooks",
       "viaQuickbooks": "über QuickBooks",
+      "inQuickbooks": "In QuickBooks vorhanden",
+      "syncingToQuickbooks": "Wird synchronisiert…",
+      "quickbooksSyncFailed": "QuickBooks-Synchronisierung fehlgeschlagen",
       "currencyUnknown": "Die Abrechnungswährung Ihres Stripe-Kontos ist noch nicht zwischengespeichert, daher konnte sie nicht mit dieser Rechnung in {{documentCurrency}} abgeglichen werden. Aktualisieren Sie die Stripe-Kontodaten unter Einstellungen → Integrationen, um die Prüfung zu aktivieren."
     },
     "requestPayment": {

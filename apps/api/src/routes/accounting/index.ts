@@ -101,6 +101,10 @@ const settingsSchema = z.object({
   // not a captured external fact (unlike homeCurrency/multiCurrencyEnabled
   // below, which PATCH must never accept).
   pullPayments: z.boolean().optional(),
+  // Phase D2 — whether Breeze pushes its own payments INTO QuickBooks for this
+  // connection. Same tier as pushMode/pullPayments: a plain connection setting,
+  // not a captured external fact.
+  pushPayments: z.boolean().optional(),
 }).refine((value) => Object.keys(value).length > 0, {
   message: 'At least one setting is required',
 });
@@ -225,21 +229,23 @@ const requireInvoicePush = partnerScopedPermission(
  * Finding D. `PATCH /:provider/settings` was gated on partner scope + MFA only,
  * so any partner admin without `invoices:write` could switch the payment
  * pull-back off — silently stopping every QuickBooks payment from reaching
- * Breeze — or flip `pushMode` to `manual` and stop invoices going out. Both are
- * the same authority the manual/bulk push routes require, so the settings
- * handler now demands it too WHEN THE BODY CARRIES ONE OF THOSE TWO FIELDS.
+ * Breeze — or flip `pushMode` to `manual` and stop invoices going out, or flip
+ * `pushPayments` off and silently stop every Breeze payment from reaching the
+ * books. All three are the same authority the manual/bulk push routes
+ * require, so the settings handler now demands it too WHEN THE BODY CARRIES
+ * ONE OF THOSE FIELDS.
  *
  * The account-ref settings stay ungated: they are plumbing for a push someone
  * else performs, not a switch over whether money syncs at all.
  */
-type SettingsWriteJsonInput = { pushMode?: 'auto' | 'manual'; pullPayments?: boolean };
+type SettingsWriteJsonInput = { pushMode?: 'auto' | 'manual'; pullPayments?: boolean; pushPayments?: boolean };
 const requireInvoicePushForSyncSwitches: MiddlewareHandler<
   Env,
   string,
   { in: { json: SettingsWriteJsonInput }; out: { json: SettingsWriteJsonInput } }
 > = async (c, next) => {
   const body = c.req.valid('json');
-  if (!('pushMode' in body) && !('pullPayments' in body)) return next();
+  if (!('pushMode' in body) && !('pullPayments' in body) && !('pushPayments' in body)) return next();
   return requireInvoicePush(c, next);
 };
 
@@ -607,6 +613,9 @@ accountingRoutes.get('/:provider', authMiddleware, partnerScopes, zValidator('pa
       // the column's own `.default(true)` (accountingConnectionService.ts).
       pullPayments: true,
       lastReconcileAt: null,
+      // Phase D2 — same story as pullPayments: `true` matches the
+      // push_payments column's own `.default(true)`.
+      pushPayments: true,
     });
   }
   return c.json({
@@ -627,6 +636,8 @@ accountingRoutes.get('/:provider', authMiddleware, partnerScopes, zValidator('pa
     // card can render whether pull is on and when it last ran.
     pullPayments: connection.pullPayments,
     lastReconcileAt: connection.lastReconcileAt,
+    // Phase D2 — whether Breeze pushes its own payments into QuickBooks.
+    pushPayments: connection.pushPayments,
   });
 });
 
@@ -698,6 +709,7 @@ accountingRoutes.patch('/:provider/settings', authMiddleware, partnerScopes, req
       ...('defaultIncomeAccountRef' in body ? { defaultIncomeAccountRef: body.defaultIncomeAccountRef } : {}),
       ...('defaultTaxCodeRef' in body ? { defaultTaxCodeRef: body.defaultTaxCodeRef } : {}),
       ...('pullPayments' in body ? { pullPayments: body.pullPayments } : {}),
+      ...('pushPayments' in body ? { pushPayments: body.pushPayments } : {}),
       updatedAt: new Date(),
     })
     .where(and(
@@ -712,6 +724,7 @@ accountingRoutes.patch('/:provider/settings', authMiddleware, partnerScopes, req
       defaultTaxCodeRef: accountingConnections.defaultTaxCodeRef,
       lastError: accountingConnections.lastError,
       pullPayments: accountingConnections.pullPayments,
+      pushPayments: accountingConnections.pushPayments,
     });
 
   if (!updated) return c.json({ error: 'Accounting connection not found' }, 404);

@@ -53,6 +53,7 @@ import {
 import type { AccountingConnection } from './accountingConnectionService';
 import { AccountingCurrencyContractError, assertAccountingInvoicePushCurrency, normalizeCurrencyCode } from './accountingCurrency';
 import { getAccountingProvider } from './providerRegistry';
+import { fanOutOwedPayments } from './accountingPaymentPush';
 import { captureException } from '../sentry';
 import { isPgUniqueViolation } from '../../utils/pgErrors';
 import type {
@@ -633,6 +634,37 @@ export async function pushInvoiceToAccounting(
   if (becameVoid) {
     const { enqueueAccountingInvoiceVoid } = await import('../../jobs/accountingSyncWorker');
     await enqueueAccountingInvoiceVoid(inv.id, partnerId);
+  }
+
+  // ...but NOT for an invoice that went void mid-flight: the void job enqueued
+  // just above is about to remove it from QuickBooks, and every payment this
+  // would fan out gets a pending mapping the payment coordinator then refuses
+  // terminally with `invoice_void` — a red sync badge per payment for work that
+  // was never going to land.
+  //
+  // Fan out this invoice's payments (spec decision 10). Runs in BOTH modes: in
+  // `manual` it is the ONLY way payments reach QuickBooks, and in `auto` it
+  // catches payments recorded while this push was still in flight — their own
+  // `requestPaymentPush` returned null because the invoice had no remote id yet.
+  // The COORDINATOR is a plain static import (accountingPaymentPush does not
+  // import this module); only the ENQUEUE is lazy, for the same reason the void
+  // enqueue above is — accountingSyncWorker imports THIS module, so a static
+  // import of it would be a cycle (and would drag BullMQ/Redis into every unit
+  // test of the coordinator).
+  // Best-effort: the invoice push has already landed and been recorded, so
+  // failing here would report an error for work that succeeded and send the
+  // caller's retry back down the create path. The reconcile sweep re-enqueues
+  // any mapping row this leaves pending.
+  try {
+    const owed = becameVoid ? [] : await fanOutOwedPayments(inv.id, partnerId, runInDbContext);
+    if (owed.length > 0) {
+      const { enqueueAccountingPaymentPush } = await import('../../jobs/accountingSyncWorker');
+      for (const mappingId of owed) await enqueueAccountingPaymentPush(mappingId, partnerId);
+    }
+  } catch (err) {
+    captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+      service: 'accountingInvoicePush', invoiceId: inv.id, phase: 'payment-fan-out',
+    });
   }
 
   return {

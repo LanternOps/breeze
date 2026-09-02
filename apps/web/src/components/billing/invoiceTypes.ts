@@ -156,6 +156,13 @@ export interface InvoicePayment {
    *  are not hand-voidable either — a Breeze-side reverse would not touch the
    *  books and the next reconcile would pull the payment straight back in. */
   source?: 'stripe' | 'manual' | 'quickbooks';
+  /** QuickBooks push state for a BREEZE-ORIGIN payment (Phase D2). Null when the
+   *  payment has no QuickBooks mapping, and always null for `source: 'quickbooks'`
+   *  (that badge already says QuickBooks owns the row). */
+  accountingSync?: {
+    status: 'pending' | 'synced' | 'error' | 'synced_with_tax_variance';
+    lastError: string | null;
+  } | null;
 }
 
 export const STATUS_LABELS: Record<InvoiceStatus, string> = {
