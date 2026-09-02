@@ -3105,6 +3105,8 @@
       "organization": "Organization",
       "general": "General",
       "generalDescription": "Profile and defaults",
+      "contacts": "Contacts",
+      "contactsDescription": "People to reach at this customer, by site or organization-wide",
       "contracts": "Contracts",
       "contractsDescription": "Recurring agreements",
       "billing": "Billing",
