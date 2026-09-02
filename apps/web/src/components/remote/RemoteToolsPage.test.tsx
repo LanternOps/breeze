@@ -100,4 +100,18 @@ describe('RemoteToolsPage tab hash persistence (#4512)', () => {
 
     expect(await screen.findByTestId('remote-terminal-stub')).toBeInTheDocument();
   });
+
+  it('falls back to the Processes tab when the hash names a windows-only tab on a non-Windows device (regression: hash bypasses OS gating)', async () => {
+    window.location.hash = '#services';
+
+    render(<RemoteToolsPage deviceId="device-1" deviceName="host-1" deviceOs="linux" />);
+
+    // 'services' is windows-only and this device is linux, so the page must
+    // not get stuck on a tab whose button/content never render.
+    await waitFor(() => {
+      expect(window.location.hash).toBe('#processes');
+    });
+    const processesButton = await screen.findByRole('button', { name: 'Processes' });
+    expect(processesButton.className).toMatch(/border-primary/);
+  });
 });

@@ -448,6 +448,21 @@ export default function RemoteToolsPage({
     setActiveTabState(tab);
   }, [setActiveTabState]);
 
+  // A hash can restore a windows-only tab (bookmarked/shared link, or a stale
+  // fragment left over from a different device) for a device that turns out
+  // not to be Windows. `availableTabs` below already hides that tab's button
+  // and none of the tab-content branches render for it, so without this the
+  // page would silently show no active tab and an empty content pane — the
+  // hash gives that state a second, unguarded path that clicking a tab button
+  // never could. Reset to the always-available Processes tab when that
+  // happens, and reflect the correction into the hash too.
+  useEffect(() => {
+    const tabDef = tabs.find(tab => tab.id === activeTab);
+    if (tabDef?.windowsOnly && !isWindows) {
+      switchTab('processes');
+    }
+  }, [activeTab, isWindows, switchTab]);
+
   const handleClose = useCallback(() => {
     if (onClose) {
       onClose();
