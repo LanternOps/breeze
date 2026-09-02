@@ -73,6 +73,17 @@ describe('prefixDevAssetUrlsFor', () => {
     expect(prefixDevAssetUrlsFor('', html)).toBe(html);
   });
 
+  it('covers a Vite dev namespace nobody enumerated', () => {
+    // The `/@…` space is reserved for Vite dev-server internals and grows across
+    // versions. A hand-maintained list would miss a new one silently — the page
+    // would still SSR and simply never hydrate, which is #3906 all over again.
+    const html = '<script type="module" src="/@some-future-vite-namespace/thing.js"></script>';
+
+    expect(prefixDevAssetUrlsFor('/portal', html)).toBe(
+      '<script type="module" src="/portal/@some-future-vite-namespace/thing.js"></script>'
+    );
+  });
+
   it('rewrites every occurrence, not just the first', () => {
     const html = '<script src="/@vite/client"></script><script src="/src/a.ts"></script><script src="/src/b.ts"></script>';
 

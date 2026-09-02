@@ -59,6 +59,15 @@ function portalDevBase(basePath) {
         // of /portal/ — did you mean to visit ...". Astro's is the one that has to
         // stay: it also handles `/portal` exactly, trailing slashes and the
         // outside-the-base redirect. Drop the redundant one.
+        //
+        // Loudness caveat on the throw below: from a cold `astro dev` it
+        // propagates uncaught out of `vite.createServer` and kills the process,
+        // which is what we want (verified — the container logs the full message
+        // and the portal never comes up). On a *live restart* (editing this file
+        // while the dev server runs) Vite's own `restartServer` catches it, logs
+        // "server restart failed" and keeps serving the previous config, so the
+        // signal is two easy-to-miss log lines plus a stale server. Restart the
+        // process if a base-path change does not seem to take.
         const stack = server.middlewares.stack;
         const index = stack.findIndex((layer) => layer.handle?.name === 'viteBaseMiddleware');
         if (index === -1) {

@@ -32,24 +32,33 @@ import { BASE_PATH } from './basePath';
  * URL namespaces the Astro/Vite dev server owns. Every one of these is served by
  * the dev server's own middleware — none is a portal route, and API calls
  * (`/api/v1/...`) are deliberately absent so they keep going to the API origin.
+ *
+ * `@` is deliberately the bare prefix rather than an enumeration of the four
+ * namespaces we actually observed (`/@fs/`, `/@id/`, `/@vite/`,
+ * `/@react-refresh`). Vite reserves the whole `/@…` space for dev-server
+ * internals and adds to it across versions, and a namespace missing from a
+ * hand-maintained list would fail exactly the way #3906 did: silently, with the
+ * page still SSR'ing correctly and only a console 404 nobody reads. Matching the
+ * reserved prefix means a namespace we have never seen still routes to the
+ * portal. No portal route begins with `/@`.
  */
-export const DEV_ASSET_NAMESPACES = [
-  '@fs/',
-  '@id/',
-  '@vite/',
-  '@react-refresh',
-  'src/',
-  'node_modules/'
-] as const;
+export const DEV_ASSET_NAMESPACES = ['@', 'src/', 'node_modules/'] as const;
 
 /**
  * Matches a root-relative dev-server URL sitting in an HTML attribute value —
  * `="/@fs/…`, `="/src/…` and friends. Anchoring on `="` (or `='`) keeps the
- * rewrite inside attribute values instead of touching page text, and an
- * already-prefixed URL (`="/portal/@fs/…`) does not match, so the rewrite is
- * idempotent.
+ * rewrite inside attribute values instead of touching page text (and leaves
+ * Vite's `data-vite-dev-id`, which holds an absolute *filesystem* path rather
+ * than a URL, correctly alone). An already-prefixed URL (`="/portal/@fs/…`)
+ * does not match, so the rewrite is idempotent.
+ *
+ * Built from DEV_ASSET_NAMESPACES so the list above stays the single source of
+ * truth — a namespace added there is picked up here automatically.
  */
-const DEV_ASSET_URL_RE = /(=["'])\/(@fs\/|@id\/|@vite\/|@react-refresh|src\/|node_modules\/)/g;
+const DEV_ASSET_URL_RE = new RegExp(
+  `(=["'])\\/(${DEV_ASSET_NAMESPACES.map((ns) => ns.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})`,
+  'g'
+);
 
 /**
  * Prefix the dev server's module URLs in `html` with an explicit base.
