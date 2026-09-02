@@ -18,10 +18,7 @@ import {
 import { beginSessionInvalidation } from './sessionAuthority';
 import { noteServerDate } from './serverClock';
 import { AUTH_TOKEN_KEY, NATIVE_AUTH_BINDING_KEY } from './authSessionKeys';
-// Function-only cycle (tokenRefresh imports refreshToken from here); both
-// bindings are hoisted declarations used at call time, so evaluation order
-// does not matter.
-import { refreshAccessToken } from './tokenRefresh';
+import { createTokenRefresher } from './tokenRefresh';
 
 export const FALLBACK_API_BASE_URL =
   process.env.EXPO_PUBLIC_API_URL || 'http://localhost:3001';
@@ -753,6 +750,13 @@ export async function refreshToken(): Promise<{ token: string }> {
   }
   return { token };
 }
+
+/**
+ * The app's single token refresher: the request core calls it on a 401 and
+ * aiChat reopens its stream through it, so concurrent 401s share one
+ * /auth/refresh. See tokenRefresh.ts for why it is built here.
+ */
+export const refreshAccessToken = createTokenRefresher(refreshToken);
 
 export async function changePassword(currentPassword: string, newPassword: string): Promise<void> {
   await requestWithPrefix('/auth/change-password', API_CORE_PREFIX, {
