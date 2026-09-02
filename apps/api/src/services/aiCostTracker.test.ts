@@ -47,6 +47,10 @@ vi.mock('../db', () => ({
     update: vi.fn(),
     insert: vi.fn(),
     select: vi.fn(),
+    // Default: no alert-event rows. `vi.clearAllMocks()` (used in beforeEach
+    // below) only resets call tracking, not this implementation, so tests
+    // that don't care about `alerts.fired` never have to stub it themselves.
+    execute: vi.fn().mockResolvedValue([]),
   },
 }));
 
@@ -78,9 +82,42 @@ vi.mock('../db/schema', () => ({
   organizations: { id: 'id', partnerId: 'partnerId' },
 }));
 
-vi.mock('./redis', () => ({ getRedis: vi.fn(() => ({})) }));
+// #4388 W04: `set`/`get` back the per-partner credit-balance cache
+// (checkBillingCreditsDetailed writes it, getUsageSummary reads it).
+// `mockResolvedValue` at creation survives `vi.clearAllMocks()` in the outer
+// beforeEach (it only clears call tracking, not the implementation), so each
+// test only needs to override what it cares about via `mockResolvedValueOnce`
+// / `mockRejectedValueOnce`.
+const { redisSet, redisGet } = vi.hoisted(() => ({
+  redisSet: vi.fn().mockResolvedValue('OK'),
+  redisGet: vi.fn().mockResolvedValue(null),
+}));
+vi.mock('./redis', () => ({ getRedis: vi.fn(() => ({ set: redisSet, get: redisGet })) }));
 vi.mock('./rate-limit', () => ({ rateLimiter: vi.fn() }));
-vi.mock('./effectiveSettings', () => ({ getEffectiveAiBudget: vi.fn() }));
+
+// Single source of truth for an enabled, unlimited effective budget with the
+// default alert ladder, same shape `getEffectiveAiBudget` itself defaults
+// to. Used both as the module mock's default resolved value below and by
+// the local `effectiveBudget()` override helper in the #4388 getUsageSummary
+// describe block, so the 8 fields aren't typed out twice.
+const { DEFAULT_EFFECTIVE_BUDGET } = vi.hoisted(() => ({
+  DEFAULT_EFFECTIVE_BUDGET: {
+    enabled: true,
+    monthlyBudgetCents: null,
+    dailyBudgetCents: null,
+    maxTurnsPerSession: 50,
+    messagesPerMinutePerUser: 20,
+    messagesPerHourPerOrg: 200,
+    approvalMode: 'per_step',
+    alertThresholdPercents: [50, 80, 95],
+  },
+}));
+
+// Default: the fixture above. Individual tests override via
+// `vi.mocked(getEffectiveAiBudget).mockResolvedValue(...)`.
+vi.mock('./effectiveSettings', () => ({
+  getEffectiveAiBudget: vi.fn().mockResolvedValue(DEFAULT_EFFECTIVE_BUDGET),
+}));
 vi.mock('./sentry', () => ({ captureException: vi.fn(), captureMessage: vi.fn() }));
 vi.mock('./aiBudgetAlerts', () => ({ evaluateAiBudgetThresholds: vi.fn().mockResolvedValue([]) }));
 
@@ -219,6 +256,8 @@ function billingCreditsResponse(input: {
   allowed: boolean;
   remainingCredits: number;
   plan: string;
+  includedBalance?: number;
+  purchasedBalance?: number;
 }): Response {
   return new Response(JSON.stringify(input), {
     status: 200,
@@ -1111,6 +1150,131 @@ describe('getUsageSummary catalog endpoint provenance (#3922 W4)', () => {
 });
 
 // ============================================
+// #4388: /ai/usage effective budget + fired-alert ladder
+// ============================================
+//
+// getUsageSummary used to read the raw `ai_budgets` row directly. It now
+// reads the EFFECTIVE budget (org row merged with any partner-wide override,
+// via getEffectiveAiBudget) so a partner-set cap is reflected here exactly
+// like it already is in checkBudgetDetailed. It also reports which alert
+// rungs have already fired for the org's current daily/monthly periods.
+
+describe('getUsageSummary: effective budget + alert ladder (#4388)', () => {
+  const effectiveBudget = (over: Record<string, unknown> = {}) => ({
+    ...DEFAULT_EFFECTIVE_BUDGET,
+    ...over,
+  }) as Awaited<ReturnType<typeof getEffectiveAiBudget>>;
+
+  const currentMonthKey = () => {
+    const now = new Date();
+    return `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
+  };
+  const currentDailyKey = () => {
+    const now = new Date();
+    return `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}-${String(now.getUTCDate()).padStart(2, '0')}`;
+  };
+
+  beforeEach(() => {
+    setupDbMocks(null);
+  });
+
+  it('returns the EFFECTIVE budget (partner override wins) and the threshold ladder', async () => {
+    // getUsageSummary reads ONLY getEffectiveAiBudget (the org row merged with
+    // any partner-wide override); it no longer selects the raw `ai_budgets`
+    // row, so what this helper resolves is exactly what ships.
+    vi.mocked(getEffectiveAiBudget).mockResolvedValue(effectiveBudget({
+      monthlyBudgetCents: 5000,
+      dailyBudgetCents: null,
+      approvalMode: 'per_step',
+      alertThresholdPercents: [50, 80, 95],
+    }));
+
+    const summary = await getUsageSummary('org1');
+
+    expect(summary.budget?.monthlyBudgetCents).toBe(5000);
+    expect(summary.budget?.alertThresholdPercents).toEqual([50, 80, 95]);
+    // #2190: the budget read must be self-contexted like checkBudgetDetailed.
+    // getUsageSummary only wraps that one read (unlike checkBudget, which
+    // also self-contexts a usage read), so it's called exactly once here.
+    expect(vi.mocked(withSystemDbAccessContext)).toHaveBeenCalledTimes(1);
+  });
+
+  it('lists rungs fired in the current periods', async () => {
+    vi.mocked(getEffectiveAiBudget).mockResolvedValue(effectiveBudget({ monthlyBudgetCents: 5000 }));
+    vi.mocked(db.execute).mockResolvedValueOnce([
+      {
+        period: 'monthly',
+        period_key: currentMonthKey(),
+        threshold_pct: 80,
+        created_at: '2026-09-03T10:00:00Z',
+        delivered_at: '2026-09-03T10:00:05Z',
+      },
+    ] as never);
+
+    const summary = await getUsageSummary('org1');
+
+    expect(summary.alerts.fired).toEqual([
+      {
+        period: 'monthly',
+        periodKey: currentMonthKey(),
+        thresholdPct: 80,
+        createdAt: '2026-09-03T10:00:00.000Z',
+        deliveredAt: '2026-09-03T10:00:05.000Z',
+      },
+    ]);
+  });
+
+  it('reports an undelivered rung with a null deliveredAt', async () => {
+    vi.mocked(getEffectiveAiBudget).mockResolvedValue(effectiveBudget({ dailyBudgetCents: 1000 }));
+    vi.mocked(db.execute).mockResolvedValueOnce([
+      {
+        period: 'daily',
+        period_key: currentDailyKey(),
+        threshold_pct: 50,
+        created_at: '2026-09-03T10:00:00Z',
+        delivered_at: null,
+      },
+    ] as never);
+
+    const summary = await getUsageSummary('org1');
+
+    expect(summary.alerts.fired).toEqual([
+      {
+        period: 'daily',
+        periodKey: currentDailyKey(),
+        thresholdPct: 50,
+        createdAt: '2026-09-03T10:00:00.000Z',
+        deliveredAt: null,
+      },
+    ]);
+  });
+
+  // The instruction not to use a vacuous assertion here means: don't just
+  // stub db.execute to return whatever and check the mapping (the test
+  // above already does that). Separately prove the query itself is scoped
+  // to THIS org and THIS org's current daily/monthly period keys, by
+  // asserting on the exact rendered SQL text and interpolated values that
+  // reached the mocked db.execute call.
+  it('scopes the fired-events query to this org and its current daily/monthly period keys', async () => {
+    vi.mocked(getEffectiveAiBudget).mockResolvedValue(effectiveBudget());
+    const executeMock = vi.mocked(db.execute);
+
+    await getUsageSummary('org-scope-1');
+
+    expect(executeMock).toHaveBeenCalledTimes(1);
+    const queryArg = executeMock.mock.calls[0]![0] as unknown as {
+      _sql: TemplateStringsArray;
+      values: unknown[];
+    };
+    const renderedSql = queryArg._sql.join('?');
+    expect(renderedSql).toContain('FROM ai_budget_alert_events');
+    expect(renderedSql).toContain("period = 'daily'");
+    expect(renderedSql).toContain("period = 'monthly'");
+    expect(queryArg.values).toEqual(['org-scope-1', currentDailyKey(), currentMonthKey()]);
+  });
+});
+
+// ============================================
 // #2190 — self-contexted DB ops (no ambient request transaction)
 // ============================================
 //
@@ -1326,6 +1490,234 @@ describe('checkBillingCreditsDetailed', () => {
     await expect(checkBillingCredits('org-cd-3', 'platform')).resolves.toBe(
       'AI assistant requires the Community plan.',
     );
+  });
+});
+
+// ============================================
+// #4388 W04: partner credit-balance cache
+// ============================================
+//
+// checkBillingCreditsDetailed and getUsageSummary share one fetch-and-cache
+// path, writing the last-seen balance to Redis (`ai:credits:<partnerId>`,
+// 900s TTL) so /ai/usage can surface it without a billing-service round trip
+// per page load. The write must never fail the credit check itself: a Redis
+// outage degrades to "no cached balance to show", not a broken AI gate.
+
+describe('checkBillingCreditsDetailed: partner credit cache (#4388 W04)', () => {
+  it('caches the last credit balance per partner for /ai/usage (#4388)', async () => {
+    const fetchMock = enableBillingService();
+    fetchMock.mockResolvedValueOnce(billingCreditsResponse({
+      allowed: true, remainingCredits: 1240, includedBalance: 0, purchasedBalance: 1240, plan: 'pro',
+    }));
+    setupDbMocks(null); // organizations partnerId lookup resolves 'partner-1'
+
+    await checkBillingCreditsDetailed('org-cache-1', 'platform');
+
+    // 900s, not 60s: the cache is now read-through from the usage page, and a
+    // one-minute TTL meant the credits card had nothing to render on almost
+    // every page load.
+    expect(redisSet).toHaveBeenCalledWith(
+      'ai:credits:partner-1',
+      expect.stringContaining('"remaining":1240'),
+      'EX',
+      900,
+    );
+    const written = JSON.parse(redisSet.mock.calls[0]![1] as string);
+    expect(written).toMatchObject({ remaining: 1240, includedBalance: 0, purchasedBalance: 1240 });
+    expect(typeof written.fetchedAt).toBe('string');
+  });
+
+  it('defaults includedBalance/purchasedBalance to 0 when the billing response omits them (pre-deploy compat)', async () => {
+    const fetchMock = enableBillingService();
+    fetchMock.mockResolvedValueOnce(billingCreditsResponse({
+      allowed: true, remainingCredits: 500, plan: 'pro',
+    }));
+    setupDbMocks(null);
+
+    await checkBillingCreditsDetailed('org-cache-2', 'platform');
+
+    const written = JSON.parse(redisSet.mock.calls[0]![1] as string);
+    expect(written).toMatchObject({ remaining: 500, includedBalance: 0, purchasedBalance: 0 });
+  });
+
+  it('does not throw and still returns the access decision when the cache write fails', async () => {
+    const fetchMock = enableBillingService();
+    fetchMock.mockResolvedValueOnce(billingCreditsResponse({
+      allowed: true, remainingCredits: 10, plan: 'pro',
+    }));
+    setupDbMocks(null);
+    redisSet.mockRejectedValueOnce(new Error('redis down'));
+
+    await expect(checkBillingCreditsDetailed('org-cache-3', 'platform')).resolves.toBeNull();
+  });
+});
+
+// getUsageSummary's `credits` field: the partner-wide balance, surfaced only
+// when the CALLER opted in (`includeCredits`) and only for platform-billed
+// orgs. Read-through: a cache miss fills the cache from the billing service
+// rather than rendering nothing. Must never throw: a Redis outage, a missing
+// partner, a corrupt entry, or a billing outage all degrade to
+// `credits: null`, never a 500.
+const CACHED = { remaining: 1240, includedBalance: 0, purchasedBalance: 1240, fetchedAt: '2026-09-01T00:00:00.000Z' };
+
+describe('getUsageSummary: credits (#4388 W04)', () => {
+  beforeEach(() => {
+    setupDbMocks(null); // organizations partnerId lookup resolves 'partner-1'
+    // vi.clearAllMocks() clears recorded calls but NOT queued
+    // mockResolvedValueOnce values, and several tests here deliberately leave
+    // one unconsumed (they assert the cache is never read). Reset explicitly
+    // so that queued value cannot surface in the next test.
+    redisGet.mockReset();
+    redisGet.mockResolvedValue(null);
+    redisSet.mockReset();
+    redisSet.mockResolvedValue('OK');
+  });
+
+  it('returns the cached credit balance when billed to the platform and a cache entry exists', async () => {
+    getLlmBillingSourceForOrgMock.mockResolvedValueOnce('platform');
+    redisGet.mockResolvedValueOnce(JSON.stringify(CACHED));
+
+    const summary = await getUsageSummary('org1', { includeCredits: true });
+
+    expect(summary.credits).toEqual(CACHED);
+    expect(redisGet).toHaveBeenCalledWith('ai:credits:partner-1');
+  });
+
+  // The partner-wide pool must not reach an org-scoped caller. Proven against
+  // a WARM cache, so a null here is the flag withholding it, not an empty
+  // cache: without the gate this same fixture returns the balance above.
+  it('is null when the caller did not ask for credits, even with a warm cache', async () => {
+    getLlmBillingSourceForOrgMock.mockResolvedValueOnce('platform');
+    redisGet.mockResolvedValueOnce(JSON.stringify(CACHED));
+
+    const summary = await getUsageSummary('org1');
+
+    expect(summary.credits).toBeNull();
+    expect(redisGet).not.toHaveBeenCalled();
+  });
+
+  it('is null for BYOK orgs (billedTo partner_key): never even reads the cache', async () => {
+    getLlmBillingSourceForOrgMock.mockResolvedValueOnce('partner_key');
+
+    const summary = await getUsageSummary('org1', { includeCredits: true });
+
+    expect(summary.credits).toBeNull();
+    expect(redisGet).not.toHaveBeenCalled();
+  });
+
+  it('is null when the org has no partner id', async () => {
+    getLlmBillingSourceForOrgMock.mockResolvedValueOnce('platform');
+    mockDb.select.mockImplementation((cols?: Record<string, unknown>) => {
+      const isPartnerLookup = !!cols && 'partnerId' in cols;
+      return {
+        from: vi.fn(() => ({
+          where: vi.fn(() => ({
+            limit: vi.fn().mockResolvedValue(isPartnerLookup ? [{ partnerId: null }] : []),
+          })),
+        })),
+      };
+    });
+
+    const summary = await getUsageSummary('org1', { includeCredits: true });
+
+    expect(summary.credits).toBeNull();
+    expect(redisGet).not.toHaveBeenCalled();
+  });
+
+  it('is null when uncached and no billing service is configured (self-hosted)', async () => {
+    getLlmBillingSourceForOrgMock.mockResolvedValueOnce('platform');
+    redisGet.mockResolvedValueOnce(null);
+
+    const summary = await getUsageSummary('org1', { includeCredits: true });
+
+    expect(summary.credits).toBeNull();
+  });
+
+  it('never throws when the Redis read fails; degrades to null', async () => {
+    getLlmBillingSourceForOrgMock.mockResolvedValueOnce('platform');
+    redisGet.mockRejectedValueOnce(new Error('redis down'));
+
+    await expect(getUsageSummary('org1', { includeCredits: true })).resolves.toMatchObject({ credits: null });
+  });
+
+  it('is null (not a throw) when the cached value is corrupt/not valid JSON', async () => {
+    getLlmBillingSourceForOrgMock.mockResolvedValueOnce('platform');
+    redisGet.mockResolvedValueOnce('not-json');
+
+    await expect(getUsageSummary('org1', { includeCredits: true })).resolves.toMatchObject({ credits: null });
+  });
+});
+
+// Read-through fill. The cache used to be written ONLY by an AI turn, so on a
+// fleet that is not mid-conversation the credits card essentially never
+// rendered and the header cost indicator flickered. getUsageSummary now fills
+// the cache itself on a miss.
+describe('getUsageSummary: credit cache read-through (#4388 W04)', () => {
+  beforeEach(() => {
+    setupDbMocks(null); // organizations partnerId lookup resolves 'partner-1'
+    // vi.clearAllMocks() clears recorded calls but NOT queued
+    // mockResolvedValueOnce values, and several tests here deliberately leave
+    // one unconsumed (they assert the cache is never read). Reset explicitly
+    // so that queued value cannot surface in the next test.
+    redisGet.mockReset();
+    redisGet.mockResolvedValue(null);
+    redisSet.mockReset();
+    redisSet.mockResolvedValue('OK');
+  });
+
+  it('a cache HIT does not call the billing service at all', async () => {
+    const fetchMock = enableBillingService();
+    getLlmBillingSourceForOrgMock.mockResolvedValueOnce('platform');
+    redisGet.mockResolvedValueOnce(JSON.stringify(CACHED));
+
+    const summary = await getUsageSummary('org1', { includeCredits: true });
+
+    expect(summary.credits).toEqual(CACHED);
+    // /ai/usage is polled by the header indicator on every page; a hit that
+    // still round-trips to billing would defeat the cache entirely.
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('a cache MISS fetches from billing once and writes the cache with a 900s TTL', async () => {
+    const fetchMock = enableBillingService();
+    fetchMock.mockResolvedValueOnce(billingCreditsResponse({
+      allowed: true, remainingCredits: 777, includedBalance: 200, purchasedBalance: 577, plan: 'pro',
+    }));
+    getLlmBillingSourceForOrgMock.mockResolvedValueOnce('platform');
+    redisGet.mockResolvedValueOnce(null);
+
+    const summary = await getUsageSummary('org1', { includeCredits: true });
+
+    expect(summary.credits).toMatchObject({ remaining: 777, includedBalance: 200, purchasedBalance: 577 });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://billing.internal/api/internal/partners/partner-1/ai-credits',
+      expect.objectContaining({ headers: { Authorization: 'Bearer billing-key' } }),
+    );
+    expect(redisSet).toHaveBeenCalledWith(
+      'ai:credits:partner-1',
+      expect.stringContaining('"remaining":777'),
+      'EX',
+      900,
+    );
+  });
+
+  it('a billing HTTP failure on the miss path yields credits: null without throwing', async () => {
+    const fetchMock = enableBillingService();
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 503 }));
+    getLlmBillingSourceForOrgMock.mockResolvedValueOnce('platform');
+    redisGet.mockResolvedValueOnce(null);
+
+    await expect(getUsageSummary('org1', { includeCredits: true })).resolves.toMatchObject({ credits: null });
+  });
+
+  it('a billing transport failure on the miss path yields credits: null without throwing', async () => {
+    const fetchMock = enableBillingService();
+    fetchMock.mockRejectedValueOnce(new Error('ECONNREFUSED'));
+    getLlmBillingSourceForOrgMock.mockResolvedValueOnce('platform');
+    redisGet.mockResolvedValueOnce(null);
+
+    await expect(getUsageSummary('org1', { includeCredits: true })).resolves.toMatchObject({ credits: null });
   });
 });
 

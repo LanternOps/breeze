@@ -298,6 +298,42 @@ Only `orgId` and `name` are required. `timezone`, `address`, `contact`, and `set
 
 ---
 
+## Contacts
+
+A **Contact** is a person attached to an organisation -- a billing contact, a technical escalation, an after-hours number. Contacts belong to the organisation, and each one is either **organisation-level** or pinned to a single site within that organisation via `siteId`.
+
+### Contact Fields
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | `uuid` | Auto-generated primary key. |
+| `orgId` | `uuid` | FK to the parent organisation. Required. |
+| `siteId` | `uuid` | Optional FK to a site in the same organisation. Null means an organisation-level contact. |
+| `name` | `varchar(255)` | Display name. |
+| `email` | `varchar(320)` | Stored lower-cased. |
+| `phone` | `varchar(64)` | Primary telephone number. |
+| `mobile` | `varchar(64)` | Mobile number. |
+| `title` | `varchar(255)` | Job title. |
+| `roles` | `text[]` | Validated role vocabulary. Defaults to empty. |
+| `isPrimary` | `boolean` | Marks the headline contact for its scope. Defaults to `false`. |
+| `notes` | `text` | Free text, up to 5,000 characters. |
+| `createdAt` | `timestamp` | Record creation time. |
+| `updatedAt` | `timestamp` | Last modification time. |
+
+**Every contact needs an identifier.** At least one of `name`, `email`, `phone`, or `mobile` must be non-blank -- a contact known only by an email address is a real contact, but an empty one is not. It is enforced by a database constraint as well as request validation, so nothing can write past it, and violating it returns `400` with `code: "no-identifier"`.
+
+**Roles are a fixed vocabulary:** `billing`, `technical`, `escalation`, `admin`, `site`, `after_hours`, and `portal`. A contact can hold any number of them. An unrecognised role returns `400` with `code: "invalid-role"`, and a `siteId` belonging to a different organisation returns `400` with `code: "site-not-in-org"`.
+
+**One primary per scope.** `isPrimary` marks the headline contact for its scope, where a scope is either *the organisation* (`siteId` null) or *one site*. Setting it demotes whichever contact previously held it in that same scope -- so an organisation can have one organisation-level primary plus one primary per site, and never two in the same place.
+
+On `PATCH`, an explicit `null` clears a field and an omitted key leaves it alone. That distinction is the reason clearing a field lives here rather than in the contacts importer, which merges and never clears.
+
+<Aside type="note">
+  `organizations.billingContact` and `sites.contact` are still present, still readable, and still **writable** through the organisation and site routes (`POST`/`PATCH /orgs/organizations` and `/orgs/sites` accept them). They are maintained as **compatibility projections** of whichever contact holds the primary flag for that scope, and every write to either representation is kept in sync with the other — so the two never drift, whichever one you write. The `contacts` table is the system of record for people.
+</Aside>
+
+---
+
 ## Multi-Tenant Access Control
 
 All routes under `/api/v1/orgs` require JWT authentication. Access is governed by the caller's **scope**, which is one of three levels:
@@ -414,9 +450,24 @@ These endpoints allow partner-scoped users to view and update their own partner 
 | `PATCH` | `/orgs/sites/:id` | `organization`, `partner`, `system` | Update a site. `orgId` cannot be changed. Returns `400` if no fields provided. |
 | `DELETE` | `/orgs/sites/:id` | `organization`, `partner`, `system` | **Hard-delete** a site. The record is permanently removed. Returns `{ success: true }`. |
 
+### Contact Endpoints
+
+| Method | Path | Scope | Description |
+|---|---|---|---|
+| `GET` | `/orgs/organizations/:id/contacts` | `organization`, `partner`, `system` | List an organisation's contacts. Supports `siteId` (a site UUID, or the literal `none` for organisation-level contacts only), `role`, `page`, and `limit`. |
+| `POST` | `/orgs/organizations/:id/contacts` | `organization`, `partner`, `system` | Create a contact. Returns the created record with a `201` status. |
+| `PATCH` | `/orgs/contacts/:contactId` | `organization`, `partner`, `system` | Update a contact. No organisation in the path. An explicit `null` clears a field; an omitted key leaves it alone. |
+| `DELETE` | `/orgs/contacts/:contactId` | `organization`, `partner`, `system` | Delete a contact. Returns `{ success: true }`. |
+| `POST` | `/orgs/contacts/import/preview` | `organization`, `partner`, `system` | Annotate a batch of contact rows against existing state without writing anything. Up to 1,000 rows. |
+| `POST` | `/orgs/contacts/import` | `organization`, `partner`, `system` | Commit a previewed batch. Always answers `200` with `{ imported, updated, skipped, errors }`, including on a partial failure. |
+
+Reads require `organizations:read`. Every write requires `organizations:write` **and a satisfied MFA challenge**. `sites:write` is deliberately *not* required, even for a contact pinned to a site: contacts are organisation-owned records, and whoever can write the organisation can manage its people. The site axis is still enforced separately -- a caller confined to a subset of an organisation's sites cannot reach a contact pinned outside that subset.
+
+Neither import path is organisation-scoped, because each row names its own organisation. See [Recipe 1c](/migration/toolkit/#recipe-1c--import-contacts) in the Migration Toolkit for the row fields, the annotation vocabulary, and the acknowledgement handshake.
+
 ### Pagination
 
-Paginated endpoints (`GET /partners`, `GET /organizations`, `GET /sites`) accept these query parameters:
+Paginated endpoints (`GET /partners`, `GET /organizations`, `GET /sites`, `GET /organizations/:id/contacts`) accept these query parameters:
 
 | Parameter | Type | Default | Max | Description |
 |---|---|---|---|---|
@@ -504,6 +555,25 @@ curl -X POST https://breeze.example.com/api/v1/orgs/sites \
     }
   }'
 ```
+
+#### Create a Contact
+
+```bash
+curl -X POST https://breeze.example.com/api/v1/orgs/organizations/<org-uuid>/contacts \
+  -H "Authorization: Bearer <partner-token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "siteId": "<site-uuid>",
+    "name": "Dana Reyes",
+    "email": "dana.reyes@contoso.example",
+    "phone": "+13035551234",
+    "title": "Office Manager",
+    "roles": ["billing", "escalation"],
+    "isPrimary": true
+  }'
+```
+
+Omit `siteId` (or send `null`) for an organisation-level contact.
 
 #### List Sites with Organisation Filter
 

@@ -5,6 +5,7 @@ vi.mock('./api', () => ({ coreRequest: (...args: unknown[]) => coreRequest(...ar
 
 import {
   addTicketComment,
+  createTicket,
   allowedQuickStatuses,
   buildTicketListQuery,
   canTransition,
@@ -196,5 +197,17 @@ describe('SYSTEM_COMMENT_TYPES', () => {
     );
     expect(SYSTEM_COMMENT_TYPES.has('comment')).toBe(false);
     expect(SYSTEM_COMMENT_TYPES.has('internal')).toBe(false);
+  });
+});
+
+describe('createTicket', () => {
+  it('posts the body to /tickets and returns the created ticket', async () => {
+    coreRequest.mockResolvedValue({ data: { id: 'new-1', internalNumber: 'T-2026-0004', subject: 'x' } });
+    const created = await createTicket({ orgId: 'o1', subject: 'x', priority: 'normal' });
+    expect(coreRequest).toHaveBeenCalledWith('/tickets', {
+      method: 'POST',
+      body: JSON.stringify({ orgId: 'o1', subject: 'x', priority: 'normal' }),
+    });
+    expect(created).toMatchObject({ id: 'new-1', internalNumber: 'T-2026-0004' });
   });
 });

@@ -119,7 +119,9 @@
     "maxTurns": "Nombre maximal de tours par session",
     "messagesPerMinute": "Messages par minute et utilisateur",
     "messagesPerHour": "Messages par heure et par organisation",
-    "notSet": "Non défini — les organisations se configurent individuellement",
+    "alertThresholds": "Avertir à (% du budget)",
+    "alertThresholdsHelp": "Les administrateurs partenaires ayant accès à la facturation reçoivent une alerte dans l'application à chaque palier et un e-mail pour les alertes mensuelles et de plafond atteint. Laissez vide pour hériter de 50, 80, 95.",
+    "notSet": "Non défini, les organisations se configurent individuellement",
     "description": "Les valeurs budgétaires sont appliquées dans toutes les organisations d’enfants. Les montants en dollars sont stockés en centimes en interne.",
     "modes": {
       "perStep": "Par étape",
@@ -127,6 +129,9 @@
       "autoApprove": "Approbation automatique",
       "hybridPlan": "Plan hybride"
     }
+  },
+  "aiBudgetThresholds": {
+    "invalid": "Saisissez jusqu'à cinq nombres entiers entre 1 et 99, séparés par des virgules."
   },
   "partnerAiProvider": {
     "title": "Fournisseur d'IA",
@@ -1294,6 +1299,13 @@
     "monthlyBudget": "Budget mensuel ($)",
     "noLimit": "Aucune limite",
     "dailyBudget": "Budget quotidien ($)",
+    "alertThresholds": "Avertir à (% du budget)",
+    "alertThresholdsHelp": "Les alertes sont envoyées aux administrateurs partenaires ayant accès à la facturation. 100% (plafond atteint) est toujours envoyé.",
+    "firedRung": "Alerte {{pct}}% {{period}} envoyée le {{date}}",
+    "periodLabel": {
+      "daily": "quotidienne",
+      "monthly": "mensuelle"
+    },
     "maxTurnsPerSession": "Nombre maximal de tours par session",
     "msgsMinPerUser": "Messages par Min par utilisateur",
     "msgsHrPerOrg": "Messages et RH par organisation",
@@ -1321,7 +1333,8 @@
     "likeActionPlanPlusLiveScreenshotsBetweenStepsAndAPersist": "Comme Action Plan, plus des captures d’écran en direct entre les étapes et un bouton Stop persistant.",
     "untitled": "Sans titre",
     "billedToPartnerKey": "Facturé sur votre clé — l'utilisation de l'IA est portée à votre propre compte Anthropic, et non aux crédits IA de Breeze",
-    "billedToPartnerKeyViaEndpoint": "Facturé sur votre clé via {{name}} — l'utilisation de l'IA est portée à votre propre compte Anthropic, et non aux crédits IA de Breeze"
+    "billedToPartnerKeyViaEndpoint": "Facturé sur votre clé via {{name}}: l'utilisation de l'IA est portée à votre propre compte Anthropic, et non aux crédits IA de Breeze",
+    "creditsRemaining": "Crédits IA Breeze restants"
   },
   "aiAgentsPage": {
     "schedules": {
@@ -3052,6 +3065,8 @@
       "organization": "Organisation",
       "general": "Généralités",
       "generalDescription": "Profil et paramètres par défaut",
+      "contacts": "Contacts",
+      "contactsDescription": "Personnes à joindre chez ce client, par site ou pour toute l’organisation",
       "contracts": "Contrats",
       "contractsDescription": "Accords récurrents",
       "billing": "Facturation",
@@ -3651,7 +3666,8 @@
       "title": "Dispositifs",
       "assigned": "Appareils attribués à ce site",
       "viewAll": "Voir tous les appareils"
-    }
+    },
+    "allContactsLink": "Tous les contacts de ce client"
   },
   "siteForm": {
     "description": "Seul le nom du site est requis. L’adresse et le contact sont optionnels — vous pourrez les remplir plus tard.",
@@ -4089,5 +4105,180 @@
     "saveFailed": "Impossible d’enregistrer les paramètres de suivi du temps",
     "minSessionRange": "La durée minimale de session doit être comprise entre {{min}} et {{max}} secondes",
     "mergeGapRange": "L’intervalle de fusion doit être compris entre {{min}} et {{max}} minutes"
+  },
+  "contactsCard": {
+    "title": "Contacts",
+    "description": "Les personnes que votre équipe joint chez ce client. Un contact peut être rattaché à un site ou valoir pour toute l’organisation.",
+    "organizationLevel": "Organisation",
+    "unknownSite": "Site indisponible",
+    "empty": "Aucun contact pour l’instant. Ajoutez-en un, ou importez un CSV depuis votre ancien outil.",
+    "loading": "Chargement des contacts…",
+    "confirmDelete": "Supprimer {{name}} ? Cette action est irréversible.",
+    "actions": {
+      "add": "Ajouter un contact",
+      "import": "Importer un CSV",
+      "edit": "Modifier",
+      "delete": "Supprimer",
+      "save": "Enregistrer le contact",
+      "saving": "Enregistrement…",
+      "cancel": "Annuler",
+      "retry": "Réessayer"
+    },
+    "filters": {
+      "site": "Filtrer par site",
+      "role": "Filtrer par rôle",
+      "allSites": "Tous les sites",
+      "allRoles": "Tous les rôles"
+    },
+    "columns": {
+      "name": "Nom",
+      "reach": "Comment les joindre",
+      "jobTitle": "Fonction",
+      "roles": "Rôles",
+      "site": "Rattaché à",
+      "actions": "Opérations"
+    },
+    "primary": {
+      "organization": "Principal (organisation)",
+      "site": "Principal ({{site}})"
+    },
+    "roles": {
+      "billing": "Facturation",
+      "technical": "Technique",
+      "escalation": "Escalade",
+      "admin": "Administration",
+      "site": "Site",
+      "afterHours": "Hors heures ouvrées",
+      "portal": "Portail"
+    },
+    "form": {
+      "addHeading": "Nouveau contact",
+      "editHeading": "Modifier le contact",
+      "identifierRequired": "Renseignez au moins un élément : nom, adresse e-mail, téléphone ou portable.",
+      "fields": {
+        "name": "Nom",
+        "email": "Adresse e-mail",
+        "phone": "Téléphone",
+        "mobile": "Portable",
+        "title": "Fonction",
+        "site": "Rattaché à",
+        "roles": "Rôles",
+        "notes": "Remarques",
+        "isPrimary": "Définir comme contact principal du périmètre choisi ci-dessus"
+      }
+    },
+    "pagination": {
+      "summary": "Affichage de {{from}} à {{to}} sur {{total}}",
+      "previous": "Précédent",
+      "next": "Suivant"
+    },
+    "toasts": {
+      "created": "Contact ajouté",
+      "updated": "Contact enregistré",
+      "deleted": "Contact supprimé"
+    },
+    "errors": {
+      "load": "Impossible de charger les contacts de cette organisation.",
+      "sites": "Impossible de charger les sites de cette organisation. Les noms de site et le filtre par site restent indisponibles.",
+      "create": "Impossible d’ajouter le contact.",
+      "update": "Impossible d’enregistrer le contact.",
+      "delete": "Impossible de supprimer le contact."
+    }
+  },
+  "bulkContactImport": {
+    "title": "Importer des contacts depuis un CSV",
+    "description": "Téléversez un export de contacts de votre ancien RMM ou PSA. Chaque ligne est rattachée à cette organisation.",
+    "dropzone": "Déposez un fichier CSV ici ou cliquez pour parcourir",
+    "dropzoneHint": "Associez au moins un élément : nom, adresse e-mail, téléphone ou portable — sans cela il n’y a pas de contact.",
+    "actions": {
+      "close": "Fermer",
+      "preview": "Vérifier {{count}} lignes",
+      "previewing": "Vérification…",
+      "import": "Importer {{count}} sélectionnées",
+      "importing": "Import en cours…"
+    },
+    "mapping": {
+      "heading": "Correspondance des colonnes",
+      "unmapped": "Non associée",
+      "identifierRequired": "Associez une colonne nom, adresse e-mail, téléphone ou portable pour continuer.",
+      "droppedRows_one": "{{count}} ligne ignorée : ni nom, ni adresse e-mail, ni téléphone, ni portable.",
+      "droppedRows_other": "{{count}} lignes ignorées : ni nom, ni adresse e-mail, ni téléphone, ni portable.",
+      "tooManyRows": "Ce fichier associe {{count}} lignes, soit plus que les {{max}} acceptées par import. Découpez-le en fichiers plus petits.",
+      "fields": {
+        "name": "Nom",
+        "email": "Adresse e-mail",
+        "phone": "Téléphone",
+        "mobile": "Portable",
+        "title": "Fonction",
+        "roles": "Rôles",
+        "site": "Site",
+        "externalId": "Identifiant du contact dans le système source",
+        "externalSystem": "Système source"
+      }
+    },
+    "mode": {
+      "label": "Contacts déjà liés",
+      "skip": "Les laisser inchangés",
+      "update": "Y fusionner le fichier"
+    },
+    "preview": {
+      "heading": "Ce qui va se passer"
+    },
+    "summary": {
+      "imported": "{{count}} ajoutés",
+      "updated": "{{count}} fusionnés",
+      "skipped": "{{count}} inchangés",
+      "failed": "{{count}} refusées",
+      "allFailed": "Rien n’a été importé — {{summary}}.",
+      "nothingImported": "Rien d’importé : {{count}} déjà liés.",
+      "nothingImportedEmpty": "Rien n’a été importé."
+    },
+    "failures": {
+      "title_one": "{{count}} ligne a été refusée",
+      "title_other": "{{count}} lignes ont été refusées"
+    },
+    "skipped": {
+      "title_one": "{{count}} ligne a été laissée inchangée",
+      "title_other": "{{count}} lignes ont été laissées inchangées",
+      "reasons": {
+        "alreadyLinked": "déjà lié à un contact existant"
+      }
+    },
+    "errorCodes": {
+      "rowConflict": "La ligne est ambiguë par rapport aux contacts déjà présents.",
+      "orgNotFound": "Cette organisation n’est plus accessible pour vous.",
+      "annotationChanged": "Cette ligne a changé depuis l’aperçu. Vérifiez à nouveau le fichier.",
+      "matchChanged": "Cette ligne correspond désormais à un autre contact. Vérifiez à nouveau le fichier.",
+      "matchUnconfirmed": "Cochez la ligne puis relancez l’import pour confirmer la correspondance.",
+      "writeFailed": "La base de données a refusé l’écriture. Rien n’a été enregistré pour cette ligne.",
+      "noIdentifier": "Il ne reste à la ligne ni nom, ni adresse e-mail, ni téléphone, ni portable.",
+      "invalidRole": "La ligne nomme un rôle que Breeze ne connaît pas.",
+      "siteNotInOrg": "Le site de cette ligne n’appartient pas à cette organisation."
+    },
+    "errors": {
+      "previewFailed": "Impossible de comparer le fichier aux contacts existants.",
+      "importFailed": "Impossible d’importer les contacts sélectionnés.",
+      "fileRead": "Impossible de lire ce fichier. Sélectionnez-le à nouveau.",
+      "noColumns": "Ce fichier n’a pas de ligne d’en-tête : il n’y a donc rien à associer."
+    }
+  },
+  "contactImportPreview": {
+    "selectAll": "Sélectionner toutes les lignes nouvelles et liées",
+    "organizationLevel": "Organisation",
+    "matches": "correspond à « {{name}} »",
+    "columns": {
+      "name": "Nom",
+      "email": "Adresse e-mail",
+      "site": "Site",
+      "status": "Résultat"
+    },
+    "badges": {
+      "create": "Nouveau",
+      "linkMatch": "Déjà lié",
+      "emailMatch": "Correspondance d’e-mail — à confirmer",
+      "nameMatch": "Correspondance de nom — à confirmer",
+      "conflict": "Conflit",
+      "orgNotFound": "Organisation introuvable"
+    }
   }
 }
