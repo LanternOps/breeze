@@ -19,6 +19,7 @@ import { db, withSystemDbAccessContext } from '../db';
 import { getEffectiveAiBudget } from './effectiveSettings';
 import { rateLimiter } from './rate-limit';
 import { captureException, captureMessage } from './sentry';
+import { evaluateAiBudgetThresholds } from './aiBudgetAlerts';
 
 // ============================================
 // Mocks
@@ -81,6 +82,7 @@ vi.mock('./redis', () => ({ getRedis: vi.fn(() => ({})) }));
 vi.mock('./rate-limit', () => ({ rateLimiter: vi.fn() }));
 vi.mock('./effectiveSettings', () => ({ getEffectiveAiBudget: vi.fn() }));
 vi.mock('./sentry', () => ({ captureException: vi.fn(), captureMessage: vi.fn() }));
+vi.mock('./aiBudgetAlerts', () => ({ evaluateAiBudgetThresholds: vi.fn().mockResolvedValue([]) }));
 
 const { getLlmBillingSourceForOrgMock } = vi.hoisted(() => ({
   getLlmBillingSourceForOrgMock: vi.fn(),
@@ -902,6 +904,15 @@ describe('recordUsage', () => {
     await expect(
       recordUsage(null, 'org-1', 'claude-sonnet-4-6', 100, 50, true, 'platform'),
     ).resolves.toBeUndefined();
+  });
+
+  it('evaluates budget thresholds after recording usage (#4388)', async () => {
+    setupDbMocks(null);
+
+    await recordUsage('sess-1', 'org-1', 'claude-sonnet-4-6', 1_000_000, 1_000_000, true, 'platform');
+    await new Promise((r) => setImmediate(r)); // fire-and-forget settles
+
+    expect(evaluateAiBudgetThresholds).toHaveBeenCalledWith('org-1');
   });
 });
 
