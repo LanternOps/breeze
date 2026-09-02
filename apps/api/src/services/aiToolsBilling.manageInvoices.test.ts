@@ -82,6 +82,7 @@ function contractLineRow(
     unitPrice: '12.50',
     manualQuantity: null,
     siteId: null,
+    deviceRoles: null,
     taxable: true,
     sortOrder: 0,
     createdAt: now,
@@ -164,6 +165,7 @@ describe('manage_invoices', () => {
       currencyCode: 'USD',
       periodTotal: '37.50',
       lines: [{ lineId: 'contract-line-1', lineType: 'per_device', quantity: 3, value: '37.50', live: true }],
+      uncoveredDevices: null,
     });
 
     const out = await getTool().handler(

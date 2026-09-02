@@ -989,6 +989,10 @@ export interface GenerateResult {
   actor?: InvoiceActor;
   /** Always present (`[]` when none / nothing generated) — never a silent fallback. */
   priceBookGaps: PriceBookGap[];
+  /** Devices no device-counted line billed on this run (#3205). null when the
+   *  contract has no per_device / per_device_role line or nothing generated.
+   *  Rides beside priceBookGaps: the worker logs it, the generate route returns it. */
+  uncoveredDevices: UncoveredDevices | null;
 }
 
 /**
@@ -1041,9 +1045,9 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
   // plain string but drizzle types it as the narrow union; `as never` keeps tsc happy
   // while the runtime check stays a simple string compare (mirrors listContracts).
   if ((c.status as never) !== ('active' as never) || c.nextBillingAt === null) {
-    return { generated: false, autoIssue: false, skipped: 'not_due', priceBookGaps: [] };
+    return { generated: false, autoIssue: false, skipped: 'not_due', priceBookGaps: [], uncoveredDevices: null };
   }
-  if (c.nextBillingAt > todayISO(asOf)) return { generated: false, autoIssue: false, skipped: 'not_due', priceBookGaps: [] };
+  if (c.nextBillingAt > todayISO(asOf)) return { generated: false, autoIssue: false, skipped: 'not_due', priceBookGaps: [], uncoveredDevices: null };
 
   // Which period does this billing run cover?
   // advance: the period whose START == nextBillingAt.
@@ -1056,7 +1060,7 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
   if (isExpired({ endDate: c.endDate, periodStart: period.periodStart })) {
     await db.update(contracts).set({ status: 'expired', nextBillingAt: null, updatedAt: asOf }).where(eq(contracts.id, contractId));
     await emitContractEvent({ type: 'contract.expired', contractId, orgId: c.orgId, partnerId: c.partnerId });
-    return { generated: false, autoIssue: false, skipped: 'expired', priceBookGaps: [] };
+    return { generated: false, autoIssue: false, skipped: 'expired', priceBookGaps: [], uncoveredDevices: null };
   }
 
   // Build an InvoiceActor for the contract. createdBy is nullable on system-seeded /
@@ -1072,7 +1076,7 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
   // Never bill an empty (zero-line) contract: don't create/claim/issue a $0 invoice.
   // (removeContractLine stays permissive; this generation-side guard is the backstop.)
   if (lines.length === 0) {
-    return { generated: false, autoIssue: false, skipped: 'not_due', priceBookGaps: [] };
+    return { generated: false, autoIssue: false, skipped: 'not_due', priceBookGaps: [], uncoveredDevices: null };
   }
 
   // 1. Draft invoice. Carry contract notes + terms onto the invoice notes
@@ -1090,8 +1094,10 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
   //    passed as-is — addContractLine resolves the catalog price in the contract's
   //    currency when catalogItemId is set (falling back to this stamped snapshot
   //    on a price-book gap, reported below), or uses them when it is null.
+  // #3205: one snapshot per run. Every device-counted line and the coverage
+  // figure below derive from it — never a per-line COUNT.
+  const snapshot = lines.some(isDeviceLine) ? await snapshotContractDevices(c.orgId) : [];
   const priceBookGaps: PriceBookGap[] = [];
-  const dc: DeviceCache = new Map();
   for (const l of lines) {
     let quantity: string;
     switch (l.lineType) {
@@ -1104,7 +1110,7 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
       case 'per_device':
       case 'per_device_role':
         assertRoleLineHasRoles(l);
-        quantity = String(quantityFor(await orgSnapshot(c.orgId, dc), l));
+        quantity = String(quantityFor(snapshot, l));
         break;
       case 'per_seat':
         quantity = String(await countContractSeats(c.orgId));
@@ -1140,7 +1146,7 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
 
   if (claimed.length === 0) {
     await deleteDraftInvoice(inv.id, actor); // still a draft here — safe to remove
-    return { generated: false, autoIssue: false, skipped: 'already_billed', priceBookGaps: [] };
+    return { generated: false, autoIssue: false, skipped: 'already_billed', priceBookGaps: [], uncoveredDevices: null };
   }
 
   // 4. Advance the pointer to the next period (or expire if the next period is past end_date).
@@ -1157,7 +1163,8 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
   await emitContractEvent({ type: 'contract.invoiced', contractId, orgId: c.orgId, partnerId: c.partnerId, invoiceId: inv.id });
   // Auto-issue + email are intentionally returned to the caller (NOT done here) so they
   // run post-commit, outside the billing transaction. See the doc-comment above.
-  return { generated: true, invoiceId: inv.id, autoIssue: c.autoIssue, actor, priceBookGaps };
+  const uncoveredDevices = lines.some(isDeviceLine) ? uncoveredByRole(snapshot, lines) : null;
+  return { generated: true, invoiceId: inv.id, autoIssue: c.autoIssue, actor, priceBookGaps, uncoveredDevices };
 }
 
 // INTERNAL (Phase 4): persist a contract + lines built by buildContractSpecsFromQuote.

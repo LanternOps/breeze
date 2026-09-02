@@ -48,6 +48,7 @@ describe('runContractBillingSweep price-book gap logging (#3775)', () => {
         { contractLineId: 'cl-1', catalogItemId: 'cat-1', itemName: 'Managed endpoint', currencyCode: 'EUR' },
         { contractLineId: 'cl-2', catalogItemId: 'cat-2', itemName: 'Backup', currencyCode: 'EUR' },
       ],
+      uncoveredDevices: null,
     });
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
@@ -64,7 +65,7 @@ describe('runContractBillingSweep price-book gap logging (#3775)', () => {
 
   it('logs nothing when there are no gaps', async () => {
     dueRows.push({ id: 'c1' });
-    generateDueInvoiceMock.mockResolvedValue({ generated: true, invoiceId: 'inv1', autoIssue: false, priceBookGaps: [] });
+    generateDueInvoiceMock.mockResolvedValue({ generated: true, invoiceId: 'inv1', autoIssue: false, priceBookGaps: [], uncoveredDevices: null });
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       await runContractBillingSweep(new Date('2026-07-01T06:00:00Z'));

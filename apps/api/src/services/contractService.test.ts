@@ -352,6 +352,38 @@ describe('generateDueInvoice surfaces price-book gaps (#3775)', () => {
     const res = await svc.generateDueInvoice('c1', asOf);
     expect(res).toMatchObject({ generated: false, skipped: 'not_due', priceBookGaps: [] });
   });
+
+  // #3205
+  it('bills per_device_role from one org snapshot and returns uncoveredDevices', async () => {
+    vi.mocked(createManualInvoice).mockResolvedValue({ id: 'inv1' } as never);
+    vi.mocked(addContractLine).mockResolvedValue({ line: { id: 'il1' }, pricedFrom: 'contract_snapshot' } as never);
+    vi.mocked(snapshotContractDevices).mockResolvedValue([
+      { role: 'server', siteId: null, n: 2 },
+      { role: 'workstation', siteId: null, n: 5 },
+      { role: 'unknown', siteId: null, n: 1 },
+    ]);
+    queueRun([
+      { id: 'cl-1', lineType: 'per_device_role', description: 'Servers', unitPrice: '40.00', taxable: false, catalogItemId: null, manualQuantity: null, siteId: null, deviceRoles: ['server'] },
+      { id: 'cl-2', lineType: 'per_device_role', description: 'Workstations', unitPrice: '10.00', taxable: false, catalogItemId: null, manualQuantity: null, siteId: null, deviceRoles: ['workstation'] },
+    ]);
+
+    const res = await svc.generateDueInvoice('c1', asOf);
+    expect(res.generated).toBe(true);
+    expect(vi.mocked(snapshotContractDevices)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(countContractDevices)).not.toHaveBeenCalled();
+    expect(vi.mocked(addContractLine).mock.calls[0]![1]).toMatchObject({ description: 'Servers', quantity: '2' });
+    expect(vi.mocked(addContractLine).mock.calls[1]![1]).toMatchObject({ description: 'Workstations', quantity: '5' });
+    expect(res.uncoveredDevices).toEqual({ total: 1, byRole: { unknown: 1 } });
+  });
+
+  it('returns uncoveredDevices: null when no device-counted line exists', async () => {
+    vi.mocked(createManualInvoice).mockResolvedValue({ id: 'inv1' } as never);
+    vi.mocked(addContractLine).mockResolvedValue({ line: { id: 'il1' }, pricedFrom: 'contract_snapshot' } as never);
+    queueRun([{ id: 'cl-1', lineType: 'flat', description: 'Fee', unitPrice: '80.00', taxable: true, catalogItemId: null, manualQuantity: null, siteId: null, deviceRoles: null }]);
+    const res = await svc.generateDueInvoice('c1', asOf);
+    expect(res.uncoveredDevices).toBeNull();
+    expect(vi.mocked(snapshotContractDevices)).not.toHaveBeenCalled();
+  });
 });
 
 // Wave-6 release gate (W6-G3-1): a contract line is the template every future

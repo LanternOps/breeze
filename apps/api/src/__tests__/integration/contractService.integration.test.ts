@@ -187,6 +187,23 @@ describe('contractService CRUD', () => {
 });
 
 describe('per_device_role lines (#3205)', () => {
+  async function seedOrgWithUser(): Promise<{ actor: ContractActorT; orgId: string }> {
+    const { orgId } = await seedOrg();
+    const sfx = Math.random().toString(36).slice(2, 8);
+    let partnerId = '';
+    let userId = '';
+    await withSystemDbAccessContext(async () => {
+      const [org] = await db.select({ partnerId: organizations.partnerId })
+        .from(organizations).where(eq(organizations.id, orgId)).limit(1);
+      partnerId = org!.partnerId;
+      const [u] = await db.insert(users).values({
+        partnerId, orgId, email: `role-gen-${sfx}@x.io`, name: 'Role Gen User', status: 'active'
+      }).returning({ id: users.id });
+      userId = u!.id;
+    });
+    return { actor: { userId, partnerId, accessibleOrgIds: [orgId] }, orgId };
+  }
+
   async function seedSitesAndDevices(orgId: string) {
     const sfx = Math.random().toString(36).slice(2, 8);
     return withSystemDbAccessContext(async () => {
@@ -254,6 +271,26 @@ describe('per_device_role lines (#3205)', () => {
     }, actor));
     const est = await withSystemDbAccessContext(() => computeContractEstimate(c.id, actor));
     expect(est.uncoveredDevices).toBeNull();
+  });
+
+  it('generateDueInvoice bills the role quantity and returns uncoveredDevices', async () => {
+    const { actor, orgId } = await seedOrgWithUser();
+    await seedSitesAndDevices(orgId);
+    const c = await withSystemDbAccessContext(() => createContract({
+      orgId, name: 'RoleGen', billingTiming: 'advance', intervalMonths: 1, startDate: '2026-07-01'
+    }, actor));
+    await withSystemDbAccessContext(() => addContractLineToContract(c.id, {
+      lineType: 'per_device_role', description: 'Servers', unitPrice: '40.00', taxable: false, deviceRoles: ['server'],
+    }, actor));
+    await withSystemDbAccessContext(() => activateContract(c.id, actor, new Date('2026-07-01T08:00:00Z')));
+
+    const res = await withSystemDbAccessContext(() => generateDueInvoice(c.id, new Date('2026-07-01T08:00:00Z')));
+    expect(res.generated).toBe(true);
+    expect(res.uncoveredDevices).toEqual({ total: 2, byRole: { workstation: 1, unknown: 1 } });
+    const rows = await withSystemDbAccessContext(() =>
+      db.select({ quantity: invoiceLines.quantity, description: invoiceLines.description })
+        .from(invoiceLines).where(eq(invoiceLines.invoiceId, res.invoiceId!)));
+    expect(rows).toEqual([{ quantity: '1.00', description: 'Servers' }]);
   });
 });
 
