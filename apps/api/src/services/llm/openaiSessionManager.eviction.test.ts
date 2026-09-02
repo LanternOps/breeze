@@ -44,6 +44,7 @@ const {
     return {
       dbUpdateMock: vi.fn(),
       capturedExpires: [] as {
+        table: unknown;
         context: unknown;
         set: Record<string, unknown>;
         where: SQL;
@@ -68,7 +69,10 @@ const {
   });
 
 vi.mock('../../db', () => ({
-  db: { update: dbUpdateMock },
+  db: {
+    update: dbUpdateMock,
+    insert: vi.fn(() => ({ values: () => Promise.resolve([]) })),
+  },
   withDbAccessContext: vi.fn(async (ctx: unknown, fn: () => unknown) => {
     // Real semantics (db/index.ts:529-531): an already-open context is JOINED,
     // and the caller's GUCs win over the context handed in here.
@@ -86,12 +90,22 @@ vi.mock('../../db', () => ({
   withSystemDbAccessContext: vi.fn((fn: () => unknown) => fn()),
 }));
 
+vi.mock('./historyBuilder', () => ({
+  buildMessagesFromHistory: vi.fn(async () => []),
+  ToolUseInHistoryError: class ToolUseInHistoryError extends Error {},
+}));
+vi.mock('../../config/validate', () => ({
+  getConfig: () => ({ MCP_LLM_MODEL: 'test-model' }),
+}));
+vi.mock('../aiCostTracker', () => ({ recordOpenAIUsage: vi.fn(async () => undefined) }));
+vi.mock('../aiAgent', () => ({ sanitizeErrorForClient: (e: unknown) => String(e) }));
+
 vi.mock('../sentry', () => ({
   captureException: captureExceptionMock,
   captureMessage: captureMessageMock,
 }));
 
-import { OpenAISessionManager } from './openaiSessionManager';
+import { OpenAISessionManager, PROCESSING_STALL_TIMEOUT_MS } from './openaiSessionManager';
 import { aiSessions } from '../../db/schema';
 import type { OpenAICompatibleProvider } from './openaiCompatibleProvider';
 import type { AuthContext } from '../../middleware/auth';
@@ -136,6 +150,14 @@ function seed(
 /** The expire-write is fire-and-forget; let its microtasks settle. */
 const flush = () => Promise.resolve();
 
+/**
+ * Drain the macrotask queue. Required wherever the assertion is about something
+ * that happens AFTER the write's `await` (the row-count check): the first write
+ * itself is issued synchronously, so any wait keyed on `capturedExpires`
+ * resolves long before that code runs.
+ */
+const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
 describe('OpenAISessionManager eviction (#4384)', () => {
   let manager: OpenAISessionManager;
 
@@ -146,10 +168,11 @@ describe('OpenAISessionManager eviction (#4384)', () => {
     captureMessageMock.mockClear();
     captureExceptionMock.mockClear();
     dbUpdateMock.mockReset();
-    dbUpdateMock.mockImplementation(() => ({
+    dbUpdateMock.mockImplementation((table: unknown) => ({
       set: (values: Record<string, unknown>) => ({
         where: (clause: SQL) => {
           capturedExpires.push({
+            table,
             context: mockState.effectiveContext,
             set: values,
             where: clause,
@@ -215,6 +238,24 @@ describe('OpenAISessionManager eviction (#4384)', () => {
       for (const id of ['s1', 's2', 's3']) {
         expect(manager.get(id)!.abortController.signal.aborted).toBe(false);
       }
+      // The cap is genuinely breached here — the operator's only signal.
+      expect(captureMessageMock).toHaveBeenCalledTimes(1);
+      expect(captureMessageMock.mock.calls[0]![1]).toMatchObject({
+        eventCode: 'ai_session_cap_all_in_flight',
+      });
+    });
+
+    it('throttles the capacity alarm instead of firing it every request', () => {
+      seed(manager, 's1', 'org-a', { idleFor: 5 * MINUTE, state: 'processing' });
+      seed(manager, 's2', 'org-b', { idleFor: 4 * MINUTE, state: 'processing' });
+
+      internals(manager).evictLeastRecentlyActive();
+      internals(manager).evictLeastRecentlyActive();
+      internals(manager).evictLeastRecentlyActive();
+
+      // Under sustained pressure this runs once per request; unthrottled it
+      // would flood the Sentry quota and drown the signal it exists to give.
+      expect(captureMessageMock).toHaveBeenCalledTimes(1);
     });
 
     it('protects the in-flight turn on the real cap path, not just the private method', () => {
@@ -249,6 +290,62 @@ describe('OpenAISessionManager eviction (#4384)', () => {
     });
   });
 
+  describe('stream progress keeps a long turn alive', () => {
+    function streamingProvider(): OpenAICompatibleProvider {
+      return {
+        chatStream: async function* () {
+          yield { type: 'content_delta', delta: 'partial ' };
+          yield { type: 'content_delta', delta: 'answer' };
+          yield { type: 'message_end', inputTokens: 1, outputTokens: 2 };
+        },
+        computeCostUsd: () => 0,
+      } as unknown as OpenAICompatibleProvider;
+    }
+
+    it('refreshes lastActivityAt on every content delta', async () => {
+      // The ONLY thing keeping a long stream alive past the stall window. Drop
+      // that line and isTurnInFlight goes false ten minutes into any slow turn,
+      // eviction aborts mid-stream, and the partial text is persisted as a
+      // complete answer — this PR's own defect, reintroduced for exactly the
+      // turns most expensive to lose. Nothing else in this file drives runTurn.
+      const streaming = new OpenAISessionManager(streamingProvider());
+      try {
+        const session = streaming.getOrCreate('s', 'org-a', {} as AuthContext, undefined);
+        expect(streaming.tryTransitionToProcessing(session)).toBe(true);
+        // Back-date AFTER the transition stamp, so only a delta can refresh it.
+        (session as unknown as MutableSession).lastActivityAt =
+          Date.now() - 3 * HOUR;
+
+        streaming.startTurn(session, 'm', 'sys', 'hello');
+        await vi.waitFor(() => expect(session.state).toBe('idle'));
+
+        expect(Date.now() - session.lastActivityAt).toBeLessThan(5 * MINUTE);
+      } finally {
+        streaming.shutdown();
+      }
+    });
+
+    it('leaves a session that streamed recently unevictable by the stale sweep', async () => {
+      const streaming = new OpenAISessionManager(streamingProvider());
+      try {
+        const session = streaming.getOrCreate('s', 'org-a', {} as AuthContext, undefined);
+        streaming.tryTransitionToProcessing(session);
+        (session as unknown as MutableSession).lastActivityAt =
+          Date.now() - 3 * HOUR;
+
+        streaming.startTurn(session, 'm', 'sys', 'hello');
+        await vi.waitFor(() => expect(session.state).toBe('idle'));
+
+        // Idle-timeout sweep: the refreshed stamp is what saves it.
+        internals(streaming).evictStaleSessions();
+
+        expect(streaming.get('s')).toBeDefined();
+      } finally {
+        streaming.shutdown();
+      }
+    });
+  });
+
   describe('a stalled turn stays evictable (no immortal session)', () => {
     it('evicts a processing session that has made no progress past the stall window', async () => {
       // runTurn can throw before resetting state to 'idle', and a hung provider
@@ -265,6 +362,55 @@ describe('OpenAISessionManager eviction (#4384)', () => {
       expect(manager.get('stalled')).toBeUndefined();
       expect(stalled.abortController.signal.aborted).toBe(true);
       expect(capturedExpires).toHaveLength(1);
+    });
+
+    // Frozen clock: with the real one, seed() and the eviction read Date.now()
+    // milliseconds apart, so "exactly at the edge" drifts past it. Each case
+    // also makes the boundary session the SOLE candidate — LRU takes only one
+    // victim, so a second stalled session would spare it by position rather
+    // than by protection, which is how the first draft of this test passed
+    // against a flipped comparison.
+    it('protects a processing session at exactly the stall window', () => {
+      vi.useFakeTimers();
+      const m = new OpenAISessionManager({} as OpenAICompatibleProvider);
+      try {
+        const atEdge = seed(m, 'at-edge', 'org-a', {
+          idleFor: PROCESSING_STALL_TIMEOUT_MS,
+          state: 'processing',
+        });
+        seed(m, 'newer-idle', 'org-b', { idleFor: 1000, state: 'idle' });
+
+        internals(m).evictLeastRecentlyActive();
+
+        // at-edge has the oldest stamp, so only protection can spare it.
+        expect(m.get('at-edge')).toBeDefined();
+        expect(atEdge.abortController.signal.aborted).toBe(false);
+        expect(m.get('newer-idle')).toBeUndefined();
+      } finally {
+        m.shutdown();
+        vi.useRealTimers();
+      }
+    });
+
+    it('releases a processing session one millisecond past the stall window', () => {
+      vi.useFakeTimers();
+      const m = new OpenAISessionManager({} as OpenAICompatibleProvider);
+      try {
+        const pastEdge = seed(m, 'past-edge', 'org-a', {
+          idleFor: PROCESSING_STALL_TIMEOUT_MS + 1,
+          state: 'processing',
+        });
+        seed(m, 'newer-idle', 'org-b', { idleFor: 1000, state: 'idle' });
+
+        internals(m).evictLeastRecentlyActive();
+
+        expect(m.get('past-edge')).toBeUndefined();
+        expect(pastEdge.abortController.signal.aborted).toBe(true);
+        expect(m.get('newer-idle')).toBeDefined();
+      } finally {
+        m.shutdown();
+        vi.useRealTimers();
+      }
     });
 
     it('LRU can reclaim a stalled processing session', () => {
@@ -394,8 +540,9 @@ describe('OpenAISessionManager eviction (#4384)', () => {
       seed(manager, 'ghost', 'org-a', { idleFor: 3 * HOUR, state: 'idle' });
 
       internals(manager).evictStaleSessions();
-      await vi.waitFor(() => expect(captureMessageMock).toHaveBeenCalledTimes(1));
+      await settle();
 
+      expect(captureMessageMock).toHaveBeenCalledTimes(1);
       expect(captureMessageMock.mock.calls[0]![1]).toMatchObject({
         eventCode: 'db_write_expecting_rows_zero',
       });
@@ -405,9 +552,33 @@ describe('OpenAISessionManager eviction (#4384)', () => {
       seed(manager, 'real', 'org-a', { idleFor: 3 * HOUR, state: 'idle' });
 
       internals(manager).evictStaleSessions();
-      await vi.waitFor(() => expect(capturedExpires).toHaveLength(1));
+      // A real settle, not vi.waitFor: the first write is pushed SYNCHRONOUSLY,
+      // so waiting on capturedExpires resolves several ticks before the
+      // post-await row-count check runs — which made this pass in both worlds.
+      await settle();
 
+      expect(capturedExpires).toHaveLength(1);
       expect(captureMessageMock).not.toHaveBeenCalled();
+    });
+
+    it('still retires the sessions already dropped when the sweep throws mid-way', async () => {
+      // The `finally` exists so a throw cannot strand the rows for sessions
+      // already removed from the Map — the exact defect being fixed, minus any
+      // record of which ones.
+      seed(manager, 'first', 'org-a', { idleFor: 3 * HOUR, state: 'idle' });
+      const exploding = seed(manager, 'second', 'org-b', { idleFor: 3 * HOUR, state: 'idle' });
+      seed(manager, 'third', 'org-c', { idleFor: 3 * HOUR, state: 'idle' });
+      exploding.eventBus.publish = () => {
+        throw new Error('bus exploded');
+      };
+
+      expect(() => internals(manager).evictStaleSessions()).toThrow('bus exploded');
+      await settle();
+
+      // 'first' was already removed from the Map, so its row must be retired.
+      expect(manager.get('first')).toBeUndefined();
+      expect(capturedExpires).toHaveLength(1);
+      expect((capturedExpires[0]!.context as { orgId: string }).orgId).toBe('org-a');
     });
 
     it('does not expire rows for sessions it leaves in place', async () => {
@@ -460,11 +631,21 @@ describe('OpenAISessionManager eviction (#4384)', () => {
         (w) => (w.context as { orgId: string }).orgId,
       );
       expect(orgs.sort()).toEqual(['org-a', 'org-b']);
-      const orgAWrite = capturedExpires.find(
-        (w) => (w.context as { orgId: string }).orgId === 'org-a',
-      )!;
-      const { params } = dialect.sqlToQuery(orgAWrite.where);
-      expect(params).toEqual(expect.arrayContaining(['a1', 'a2', 'a3']));
+      // Exact sets, not arrayContaining: an implementation that put EVERY id in
+      // EVERY org's batch would satisfy a containment check, and under RLS the
+      // stray ids match zero rows — surfacing as a Sentry flood rather than a
+      // clean failure.
+      const idsFor = (org: string) => {
+        const write = capturedExpires.find(
+          (w) => (w.context as { orgId: string }).orgId === org,
+        )!;
+        return dialect
+          .sqlToQuery(write.where)
+          .params.filter((p): p is string => typeof p === 'string' && p !== 'active')
+          .sort();
+      };
+      expect(idsFor('org-a')).toEqual(['a1', 'a2', 'a3']);
+      expect(idsFor('org-b')).toEqual(['b1']);
     });
 
     it('keeps expiring later orgs when one org\'s write fails', async () => {
