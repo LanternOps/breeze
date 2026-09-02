@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
-import { and, asc, desc, eq, inArray, sql, type SQL } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNull, sql, type SQL } from 'drizzle-orm';
 import {
   AI_AGENT_IMPACT_REBUILD_DAYS,
   AI_AGENT_IMPACT_REBUILD_MAX_ORGS,
@@ -11,6 +11,8 @@ import {
   AI_AGENT_RUN_STATUSES,
   type AgentRunVerdict,
   type AiAgentDto,
+  type AiAgentGraduationByOrgDto,
+  type AiAgentGraduationDto,
   type AiAgentRunListItemDto,
   type ExposureBudgetDto,
   createAiAgentSchema,
@@ -50,7 +52,8 @@ import {
   ActPrerequisitesNotMetError, AgentInvariantError, AgentKindConflictError,
   InvalidSupervisedActionKeysError, UnsupportedAgentModeError,
 } from '../services/aiAgents/agentService';
-import { resolveEffectiveAgent } from '../services/aiAgents/effectivePolicy';
+import { resolveEffectiveAgent, resolveEffectiveAgentSystem } from '../services/aiAgents/effectivePolicy';
+import { loadActOpReliability, loadGraduationRows } from '../services/aiAgents/graduationService';
 import { POLICY_DECIDABLE_TIER3 } from '../services/actionIntents/policyDecidable';
 import { ActionIntentError, createActionIntent } from '../services/actionIntents/intentService';
 import { computeExposureBudget } from '../services/actionIntents/exposureBudget';
@@ -291,6 +294,116 @@ aiAgentsRoutes.get('/policy-decidable-keys', scopes, requireAiRead, async (c) =>
       .map((entry) => ({ key: entry.key, toolName: entry.toolName, action: entry.action, note: entry.note })),
   });
 });
+
+/**
+ * P2-5 (#4192, Task A2-8) — the graduation READ route: the panel (web Task
+ * 20) and the partner-wide agent page both read through here. Registered
+ * beside GET /policy-decidable-keys, ahead of GET /:id, for the same reason
+ * every other literal segment on this router is: it must not fall into the
+ * `:id` param route.
+ *
+ * This route is deliberately NOT gated on `policyDecideEnabled()` — a read is
+ * an observation about evidence, never a write (only POST
+ * /graduation/promote 409s while the flag is dark; see that route's own
+ * docstring). `policyDecideEnabled` is still reported on the DTO so the panel
+ * can explain why Promote is disabled.
+ *
+ * With `orgId`: the effective agent is resolved SERVER-SIDE via
+ * `resolveEffectiveAgentSystem` — an org token carries a `partnerId` but
+ * never passes `breeze_has_partner_access`, so it cannot read the partner
+ * baseline row itself (`effectivePolicy.ts:341-350`) — never an id supplied
+ * on the query string. `ownerScope` reports `'organization'` only when THIS
+ * org has its own active `ai_agents` row for `kind` (an override); every
+ * other org rides the partner baseline and reports `'partner'`.
+ *
+ * Without `orgId` (partner scope only — an org-scoped caller has no partner
+ * axis to fan out over, so it 400s the same way `GET /impact` does for a
+ * system-scoped caller with no orgId): every org this caller can access is
+ * resolved the same way and grouped into `byOrg`. An org with no active
+ * agent for `kind` is omitted rather than reported empty. The top-level
+ * `promoteThreshold` is informational only (the per-row `state`/
+ * `blockedReason` already apply each org's own merged threshold) — it is the
+ * first resolved org's merged value, or the shared default when no org under
+ * this partner has an active agent for `kind` yet.
+ */
+aiAgentsRoutes.get(
+  '/graduation',
+  scopes,
+  requireAiRead,
+  zValidator('query', z.object({
+    orgId: z.string().guid().optional(),
+    kind: z.enum(AI_AGENT_KINDS),
+  })),
+  async (c) => {
+    const auth = c.get('auth');
+    const { orgId, kind } = c.req.valid('query');
+    const flagEnabled = policyDecideEnabled();
+
+    if (orgId !== undefined) {
+      if (!auth.canAccessOrg(orgId)) {
+        return c.json({ error: 'Organization not accessible' }, 403);
+      }
+
+      const resolved = await resolveEffectiveAgentSystem(orgId, kind);
+      if (!resolved) {
+        return c.json({ error: 'No active agent policy for this organization/kind' }, 404);
+      }
+
+      const [orgOverride] = await db
+        .select({ id: aiAgents.id })
+        .from(aiAgents)
+        .where(and(eq(aiAgents.orgId, orgId), eq(aiAgents.kind, kind), isNull(aiAgents.disabledAt)))
+        .limit(1);
+
+      const [rows, actOpReliability] = await Promise.all([
+        loadGraduationRows(orgId, resolved.agentId),
+        loadActOpReliability(orgId, resolved.agentId),
+      ]);
+
+      const dto: AiAgentGraduationDto = {
+        version: 1,
+        agentId: resolved.agentId,
+        ownerScope: orgOverride ? 'organization' : 'partner',
+        rows,
+        actOpReliability,
+        promoteThreshold: resolved.effective.limits.promoteThreshold,
+        policyDecideEnabled: flagEnabled,
+      };
+      return c.json(dto);
+    }
+
+    if (auth.scope !== 'partner') {
+      return c.json({ error: 'org_id_required', message: 'orgId is required for this scope' }, 400);
+    }
+
+    const orgRows = await db
+      .select({ id: organizations.id, name: organizations.name })
+      .from(organizations)
+      .where(and(auth.orgCondition(organizations.id), isNull(organizations.deletedAt)))
+      .orderBy(asc(organizations.name));
+
+    const byOrg: AiAgentGraduationByOrgDto['byOrg'] = [];
+    let promoteThreshold: number | null = null;
+    for (const org of orgRows) {
+      const resolved = await resolveEffectiveAgentSystem(org.id, kind);
+      if (!resolved) continue;
+      if (promoteThreshold === null) promoteThreshold = resolved.effective.limits.promoteThreshold;
+      const [rows, actOpReliability] = await Promise.all([
+        loadGraduationRows(org.id, resolved.agentId),
+        loadActOpReliability(org.id, resolved.agentId),
+      ]);
+      byOrg.push({ orgId: org.id, orgName: org.name, agentId: resolved.agentId, rows, actOpReliability });
+    }
+
+    const dto: AiAgentGraduationByOrgDto = {
+      version: 1,
+      promoteThreshold: promoteThreshold ?? AI_AGENT_LIMIT_DEFAULTS.promoteThreshold,
+      policyDecideEnabled: flagEnabled,
+      byOrg,
+    };
+    return c.json(dto);
+  },
+);
 
 /**
  * P2-5 (#4192, Task A2-5) — RAISE a promotion. This route grants nothing: it

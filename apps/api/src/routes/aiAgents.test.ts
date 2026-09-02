@@ -34,6 +34,9 @@ const {
   enqueueImpactRollupForOrgsMock,
   saveImpactWeightsMock,
   resolveImpactPartnerIdMock,
+  resolveEffectiveAgentSystemMock,
+  loadGraduationRowsMock,
+  loadActOpReliabilityMock,
 } = vi.hoisted(() => ({
   selectMock: vi.fn(),
   // Explicit generic: vitest infers a zero-arg tuple from a bare `() => true`
@@ -62,6 +65,14 @@ const {
   enqueueImpactRollupForOrgsMock: vi.fn(),
   saveImpactWeightsMock: vi.fn(),
   resolveImpactPartnerIdMock: vi.fn(),
+  // Task A2-8 (#4192) — the graduation read route. `resolveEffectiveAgentSystem`
+  // and `graduationService`'s two loaders have their own full unit coverage
+  // (Task 11/effectivePolicy.test.ts, Task 12/graduationService.test.ts);
+  // these route tests exercise only routing/auth/validation, same convention
+  // as loadImpactSummary above.
+  resolveEffectiveAgentSystemMock: vi.fn(),
+  loadGraduationRowsMock: vi.fn(),
+  loadActOpReliabilityMock: vi.fn(),
 }));
 
 vi.mock('../middleware/auth', () => ({
@@ -209,6 +220,12 @@ vi.mock('../db', () => ({
 
 vi.mock('../services/aiAgents/effectivePolicy', () => ({
   resolveEffectiveAgent: resolveEffectiveAgentMock,
+  resolveEffectiveAgentSystem: resolveEffectiveAgentSystemMock,
+}));
+
+vi.mock('../services/aiAgents/graduationService', () => ({
+  loadGraduationRows: loadGraduationRowsMock,
+  loadActOpReliability: loadActOpReliabilityMock,
 }));
 
 const envMock = vi.hoisted(() => ({ policyDecideEnabled: vi.fn(() => true) }));
@@ -2390,5 +2407,180 @@ describe('POST /ai-agents/graduation/promote', () => {
 
     expect(res.status).toBe(400);
     expect(await res.json()).toMatchObject({ error: 'org_argument_mismatch' });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P2-5 (#4192, Task A2-8) — graduation read route
+// ---------------------------------------------------------------------------
+
+describe('GET /ai-agents/graduation', () => {
+  const graduationQuery = `orgId=${ORG_ID}&kind=triage`;
+
+  function mockResolvedAgent(overrides: Record<string, unknown> = {}) {
+    resolveEffectiveAgentSystemMock.mockResolvedValue({
+      schemaVersion: 9,
+      agentId: AGENT_ID,
+      kind: 'triage',
+      effective: { limits: { promoteThreshold: 20 } },
+      ...overrides,
+    });
+  }
+
+  function graduationRow(overrides: Record<string, unknown> = {}) {
+    return {
+      opKey: 'manage_services:restart',
+      namespace: 'policy_key',
+      state: 'eligible',
+      window: { executed: 25, verified: 25, failed: 0, recurred: 0, firstVerifiedAt: '2026-08-01T00:00:00.000Z' },
+      blockedReason: null,
+      promotedAt: null,
+      demotedAt: null,
+      demoteReason: null,
+      ...overrides,
+    };
+  }
+
+  const actOpReliability = [
+    { opKey: 'restart_service', executed: 10, verified: 9, failed: 1, recurred: 0 },
+  ];
+
+  beforeEach(() => {
+    mockResolvedAgent();
+    loadGraduationRowsMock.mockResolvedValue([graduationRow()]);
+    loadActOpReliabilityMock.mockResolvedValue(actOpReliability);
+    // No org override by default — the ownerScope existence check
+    // (`db.select` against `ai_agents`) comes back empty.
+    selectMock.mockReturnValue(selectChain([]));
+  });
+
+  it('is gated on ai_agents:read', async () => {
+    hasPermMock.mockReturnValue(false);
+
+    const res = await buildApp().request(`/ai-agents/graduation?${graduationQuery}`);
+
+    expect(res.status).toBe(403);
+    expect(resolveEffectiveAgentSystemMock).not.toHaveBeenCalled();
+  });
+
+  it('returns version 1 with rows and actOpReliability for an org-scope call', async () => {
+    const res = await buildApp().request(`/ai-agents/graduation?${graduationQuery}`);
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      version: 1,
+      agentId: AGENT_ID,
+      ownerScope: 'partner',
+      rows: [graduationRow()],
+      actOpReliability,
+      promoteThreshold: 20,
+      policyDecideEnabled: true,
+    });
+    expect(resolveEffectiveAgentSystemMock).toHaveBeenCalledWith(ORG_ID, 'triage');
+    expect(loadGraduationRowsMock).toHaveBeenCalledWith(ORG_ID, AGENT_ID);
+    expect(loadActOpReliabilityMock).toHaveBeenCalledWith(ORG_ID, AGENT_ID);
+  });
+
+  it('reports ownerScope organization when an org override row exists', async () => {
+    selectMock.mockReturnValueOnce(selectChain([{ id: AGENT_ID }]));
+
+    const res = await buildApp().request(`/ai-agents/graduation?${graduationQuery}`);
+
+    expect((await res.json() as { ownerScope: string }).ownerScope).toBe('organization');
+  });
+
+  it("ignores a caller-supplied agentId — the response agent id is the resolver's", async () => {
+    const res = await buildApp().request(
+      `/ai-agents/graduation?${graduationQuery}&agentId=99999999-9999-4999-8999-999999999999`,
+    );
+
+    expect(res.status).toBe(200);
+    expect((await res.json() as { agentId: string }).agentId).toBe(AGENT_ID);
+  });
+
+  it('returns 404 when there is no active agent policy for the org/kind', async () => {
+    resolveEffectiveAgentSystemMock.mockResolvedValue(null);
+
+    const res = await buildApp().request(`/ai-agents/graduation?${graduationQuery}`);
+
+    expect(res.status).toBe(404);
+    expect(selectMock).not.toHaveBeenCalled();
+    expect(loadGraduationRowsMock).not.toHaveBeenCalled();
+  });
+
+  it('denies a cross-org orgId', async () => {
+    const app = buildApp(false, { canAccessOrg: (id: string) => id === ORG_ID });
+
+    const res = await app.request(`/ai-agents/graduation?orgId=${OTHER_ORG_ID}&kind=triage`);
+
+    expect(res.status).toBe(403);
+    expect(resolveEffectiveAgentSystemMock).not.toHaveBeenCalled();
+  });
+
+  it('is 400 for an org-scope caller omitting orgId', async () => {
+    const res = await buildApp().request('/ai-agents/graduation?kind=triage');
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual(expect.objectContaining({ error: 'org_id_required' }));
+    expect(resolveEffectiveAgentSystemMock).not.toHaveBeenCalled();
+  });
+
+  it('is 400 for a system-scoped caller with no orgId (no partner axis to fan out over)', async () => {
+    const app = buildApp(false, { scope: 'system', partnerId: null });
+
+    const res = await app.request('/ai-agents/graduation?kind=triage');
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual(expect.objectContaining({ error: 'org_id_required' }));
+  });
+
+  it('works with the policy-decide flag off — 200, policyDecideEnabled: false', async () => {
+    envMock.policyDecideEnabled.mockReturnValue(false);
+
+    const res = await buildApp().request(`/ai-agents/graduation?${graduationQuery}`);
+
+    expect(res.status).toBe(200);
+    expect((await res.json() as { policyDecideEnabled: boolean }).policyDecideEnabled).toBe(false);
+  });
+
+  it('returns byOrg for a partner-scope call with no orgId', async () => {
+    const app = buildApp(false, { scope: 'partner', partnerId: PARTNER_ID });
+    selectMock.mockReturnValueOnce(selectChain([{ id: ORG_ID, name: 'Acme Corp' }]));
+
+    const res = await app.request('/ai-agents/graduation?kind=triage');
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      version: 1,
+      promoteThreshold: 20,
+      policyDecideEnabled: true,
+      byOrg: [
+        {
+          orgId: ORG_ID,
+          orgName: 'Acme Corp',
+          agentId: AGENT_ID,
+          rows: [graduationRow()],
+          actOpReliability,
+        },
+      ],
+    });
+  });
+
+  it('omits an org with no active agent for kind from byOrg', async () => {
+    const app = buildApp(false, { scope: 'partner', partnerId: PARTNER_ID });
+    selectMock.mockReturnValueOnce(
+      selectChain([{ id: ORG_ID, name: 'Acme Corp' }, { id: OTHER_ORG_ID, name: 'Beta LLC' }]),
+    );
+    resolveEffectiveAgentSystemMock
+      .mockResolvedValueOnce({
+        schemaVersion: 9, agentId: AGENT_ID, kind: 'triage', effective: { limits: { promoteThreshold: 20 } },
+      })
+      .mockResolvedValueOnce(null);
+
+    const res = await app.request('/ai-agents/graduation?kind=triage');
+
+    const body = (await res.json()) as { byOrg: Array<{ orgId: string }> };
+    expect(body.byOrg).toHaveLength(1);
+    expect(body.byOrg[0]?.orgId).toBe(ORG_ID);
   });
 });
