@@ -55,14 +55,20 @@ export function periodKeysFor(now: Date): { daily: string; monthly: string } {
  * rung (highest only; monotonic per period — see spec §4.2). Never throws
  * into the caller: the recorder path is fire-and-forget and must not fail a turn.
  *
- * Delivery is enqueued once, after BOTH periods' `db.transaction` calls have
- * resolved (i.e. every row this call is going to insert is already committed),
- * never from inside a transaction callback. Enqueuing per-row before the next
- * period's read/insert has run would let a later period's failure strand an
- * already-queued job pointed at a row that in fact committed fine — moving the
- * enqueue loop after the whole evaluation removes that ordering dependency
- * entirely: every enqueue in the loop refers to an already-durable row
- * regardless of what any other period did.
+ * DELIVERY IS ENQUEUED OUTSIDE THE DB CONTEXT, after `run()` has fully
+ * resolved. `withSystemDbAccessContext` opens a real `baseDb.transaction`, and
+ * the per-period `db.transaction` calls are savepoints inside it — so an
+ * enqueue written inside `run()` publishes `deliver-<id>` while the INSERT is
+ * still uncommitted. A worker picking that job up first sees no row; before
+ * W02 it treated that as success and COMPLETED, and BullMQ's addStandardJob
+ * Lua short-circuits on `EXISTS <prefix><jobId>` (returning the existing id)
+ * while `removeOnComplete: {count: 200}` keeps the completed hash around — so
+ * the reconcile sweep's re-add under the same job id did nothing and the alert
+ * was silently lost. Hoisting the loop out closes the window on the escape
+ * path entirely; on the ambient-system path (`checkCostAnomalies`, whose
+ * transaction is still open when we return) the residual race is covered by
+ * the worker treating a missing row as RETRYABLE, plus reconcile's per-sweep
+ * job id.
  */
 export async function evaluateAiBudgetThresholds(orgId: string, now = new Date()): Promise<CreatedAlertEvent[]> {
   const run = async (): Promise<CreatedAlertEvent[]> => {
@@ -121,19 +127,6 @@ export async function evaluateAiBudgetThresholds(orgId: string, now = new Date()
       if (id) created.push({ id, period, thresholdPct: rung });
     }
 
-    if (created.length > 0) {
-      // Lazy import breaks the jobs → services → jobs cycle: this module
-      // enqueues into the delivery worker, and the delivery worker's
-      // partner-fan-out job calls back into this module's evaluator.
-      const { enqueueAiBudgetAlertDelivery } = await import('../jobs/aiBudgetAlertDelivery');
-      for (const event of created) {
-        await enqueueAiBudgetAlertDelivery(event.id).catch((err: unknown) => {
-          // The reconcile job picks up any row left undelivered.
-          console.error(`[AI] budget alert enqueue failed for event ${event.id}:`, err instanceof Error ? err.message : err);
-        });
-      }
-    }
-
     return created;
   };
 
@@ -148,11 +141,32 @@ export async function evaluateAiBudgetThresholds(orgId: string, now = new Date()
   // 25-connection production ceiling for ~7 queries. Same skip-branch contract
   // as `readWithPartnerAxisVisibility` (db/partnerAxisRead.ts).
   const ambientScope = getCurrentDbAccessContext()?.scope;
-  const evaluate = ambientScope === 'system' ? run() : runOutsideDbContext(() => withSystemDbAccessContext(run));
+  const evaluate = ambientScope === 'system' ? run() : runOutsideDbContext(() => withSystemDbAccessContext(run, 'aiBudgetAlerts.evaluate'));
 
-  return evaluate.catch((err: unknown) => {
+  const created = await evaluate.catch((err: unknown) => {
     captureException(err instanceof Error ? err : new Error(String(err)), undefined, { orgId, service: 'aiBudgetAlerts' });
     console.error(`[AI] budget threshold evaluation failed for org=${orgId}:`, err instanceof Error ? err.message : err);
-    return [];
+    return [] as CreatedAlertEvent[];
   });
+
+  if (created.length > 0) {
+    try {
+      // Lazy import breaks the jobs → services → jobs cycle: this module
+      // enqueues into the delivery worker, and the delivery worker's
+      // partner-fan-out job calls back into this module's evaluator.
+      const { enqueueAiBudgetAlertDelivery } = await import('../jobs/aiBudgetAlertDelivery');
+      for (const event of created) {
+        await enqueueAiBudgetAlertDelivery(event.id).catch((err: unknown) => {
+          // The reconcile job picks up any row left undelivered.
+          console.error(`[AI] budget alert enqueue failed for event ${event.id}:`, err instanceof Error ? err.message : err);
+        });
+      }
+    } catch (err: unknown) {
+      // A failed dynamic import must not break the never-throws contract; the
+      // rows are committed and the reconcile sweep will pick them up.
+      console.error('[AI] budget alert delivery enqueue unavailable:', err instanceof Error ? err.message : err);
+    }
+  }
+
+  return created;
 }

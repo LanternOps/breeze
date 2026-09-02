@@ -5074,6 +5074,43 @@ describe('org routes', () => {
       expect(enqueueAiBudgetEvaluationForPartner).toHaveBeenCalledWith('partner-123');
     });
 
+    // W02 minor 8: `!== undefined` fires the fleet-wide fan-out on every save
+    // of the AI settings card, including the many that re-post an unchanged
+    // aiBudgets block alongside an edit to some other field. The fan-out walks
+    // EVERY org of the partner and evaluates each one, so a no-op resubmit is
+    // real, avoidable load. Compare the value actually being persisted against
+    // the previous one.
+    it('does NOT enqueue when the submitted aiBudgets is deep-equal to the stored one (#4388 W02)', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      const storedAiBudgets = { monthlyBudgetCents: 5000, alertThresholdPercents: [50, 95] };
+      const currentPartner = { id: 'partner-123', name: 'Acme MSP', settings: { aiBudgets: storedAiBudgets } };
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([currentPartner]),
+          }),
+        }),
+      } as any);
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([currentPartner]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request('/orgs/partners/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        // Rungs resubmitted in a different order: normalisation makes this
+        // byte-identical to what is already stored, so it is a true no-op.
+        body: JSON.stringify({ settings: { aiBudgets: { monthlyBudgetCents: 5000, alertThresholdPercents: [95, 50] } } }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(enqueueAiBudgetEvaluationForPartner).not.toHaveBeenCalled();
+    });
+
     // NOTE: `updatePartnerSettingsSchema`'s `aiBudgets` field is
     // `z.object({...}).optional()`, not `.nullable()` — an explicit
     // `{ aiBudgets: null }` is rejected by zValidator before the handler ever

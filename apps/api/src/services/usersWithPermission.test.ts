@@ -4,6 +4,8 @@ import { PERMISSION_GRANTS as PERMISSIONS } from '@breeze/shared';
 
 vi.mock('../db', () => ({
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  getCurrentDbAccessContext: vi.fn(() => undefined),
   db: {
     select: vi.fn(),
   },
@@ -18,7 +20,7 @@ vi.mock('../db/schema', () => ({
   users: { id: 'id', status: 'status' },
 }));
 
-import { db } from '../db';
+import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { resolveUsersWithPermissionForOrg } from './usersWithPermission';
 
 const dialect = new PgDialect();
@@ -76,6 +78,9 @@ describe('resolveUsersWithPermissionForOrg', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(db.select).mockReset();
+    // `clearAllMocks` clears calls but KEEPS implementations, so a scope pinned
+    // by one test would leak into the next. Reset the ambient scope explicitly.
+    vi.mocked(getCurrentDbAccessContext).mockReturnValue(undefined);
     roleWhereArgs = [];
   });
 
@@ -105,5 +110,30 @@ describe('resolveUsersWithPermissionForOrg', () => {
     await resolveUsersWithPermissionForOrg('org1', PERMISSIONS.BILLING_MANAGE);
     expect(renderedWhere(0)).toContain('billing');
     expect(renderedWhere(0)).toContain('manage');
+  });
+
+  // W02 finding #3: `withSystemDbAccessContext` is a PASSTHROUGH when a context
+  // already exists (db/index.ts) — under an org-scoped request context the
+  // partner_users read (Shape 3, partner-axis RLS) silently returns ZERO rows
+  // and every partner admin drops out of the result. The escape must be taken
+  // explicitly, exactly like `readWithPartnerAxisVisibility`.
+  it('escapes an org-scoped ambient context before reading partner_users (finding #3)', async () => {
+    vi.mocked(getCurrentDbAccessContext).mockReturnValue({ scope: 'organization' } as never);
+    mockGrantingRoles([]);
+
+    await resolveUsersWithPermissionForOrg('org1', PERMISSIONS.BILLING_MANAGE);
+
+    expect(runOutsideDbContext).toHaveBeenCalledTimes(1);
+    expect(withSystemDbAccessContext).toHaveBeenCalledTimes(1);
+  });
+
+  it('does NOT escape when the ambient context is already system-scoped (finding #3)', async () => {
+    vi.mocked(getCurrentDbAccessContext).mockReturnValue({ scope: 'system' } as never);
+    mockGrantingRoles([]);
+
+    await resolveUsersWithPermissionForOrg('org1', PERMISSIONS.BILLING_MANAGE);
+
+    expect(runOutsideDbContext).not.toHaveBeenCalled();
+    expect(withSystemDbAccessContext).not.toHaveBeenCalled();
   });
 });
