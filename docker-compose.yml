@@ -391,6 +391,8 @@ x-api-env: &api-env
   # so a value set in .env alone is a silent no-op.
   READINESS_CACHE_TTL_MS: ${READINESS_CACHE_TTL_MS:-}
   READINESS_PROBE_TIMEOUT_MS: ${READINESS_PROBE_TIMEOUT_MS:-}
+  # Offline-detector mark-worker concurrency (1-20, code default 5). Empty === unset.
+  OFFLINE_DETECTOR_WORKER_CONCURRENCY: ${OFFLINE_DETECTOR_WORKER_CONCURRENCY:-}
   # Startup + agent-fleet behaviour
   AUTO_MIGRATE: ${AUTO_MIGRATE:-}
   AGENT_AUTO_PROMOTE: ${AGENT_AUTO_PROMOTE:-}

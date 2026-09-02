@@ -94,4 +94,48 @@ describe('production readiness wiring', () => {
     expect(index.match(/workerReadinessRegistry\.recordInitializationFailure\(consumer, error\)/g)).toHaveLength(3);
     expect(index).not.toContain('initializeDeclaredWorkerGroup');
   });
+
+  // Task 3's declare-time rules only hold if index.ts hands the manifest the
+  // live role and the three real flag expressions. Nothing else exercises
+  // initializeWorkers()' body, so pin the call site's arguments as text —
+  // a hardcoded `role: 'all'` or `eventDispatchEnabled: true` would silently
+  // re-require every socket-owner / flag-gated consumer on a worker-only box.
+  it('declares expected consumers from the live role and the three feature-flag expressions', () => {
+    const index = read('apps/api/src/index.ts');
+    const call = index.slice(
+      index.indexOf('declareExpectedConsumers({'),
+      index.indexOf('});', index.indexOf('declareExpectedConsumers({')),
+    );
+    expect(call).toContain('role: breezeRole()');
+    expect(call).toContain("eventDispatchEnabled: eventDispatchMode() !== 'off'");
+    expect(call).toContain('aiAgentsEnabled: AI_AGENTS_ENABLED');
+    expect(call).toContain('abuseSignalsEnabled: abuseSignalsEnabled()');
+    expect(call).toContain('registry: workerReadinessRegistry');
+  });
+
+  // D5: the worker container (profile worker-split) DOES healthcheck
+  // readiness, and that is safe only because nothing depends_on it: an
+  // unhealthy worker only shows `unhealthy` in `docker compose ps` (Compose
+  // does not restart on unhealthy), gates no other service's startup, and
+  // deploy.sh runs `compose up -d` without --wait. The zero-dependents
+  // assertion is what makes the api rule above and this one consistent.
+  it.each([
+    ['docker-compose.yml'],
+    ['deploy/docker-compose.prod.yml'],
+  ])('%s healthchecks the worker service on READINESS because no service depends on it', (path) => {
+    const document = load(read(path)) as {
+      services: Record<string, { healthcheck?: { test: string[] }; depends_on?: Record<string, unknown> }>;
+    };
+    const probe = document.services.worker?.healthcheck?.test.join(' ') ?? '';
+    expect(probe).toContain('http://127.0.0.1:3001/health/ready');
+    const dependents = Object.entries(document.services)
+      .filter(([, service]) => service.depends_on !== undefined && 'worker' in service.depends_on)
+      .map(([name]) => name);
+    expect(dependents).toEqual([]);
+  });
+
+  it('deploy.sh never waits on container health (so an unhealthy worker cannot block a deploy)', () => {
+    const deploy = read('scripts/prod/deploy.sh');
+    expect(deploy).not.toMatch(/compose[^\n]*\bup\b[^\n]*--wait\b/);
+  });
 });

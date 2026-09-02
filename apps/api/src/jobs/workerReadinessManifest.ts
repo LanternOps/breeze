@@ -146,9 +146,11 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('ticketMailboxPollWorker'),
   consumers('invoiceWorker'),
   consumers('contractWorker'),
-  // Registry entries main added after Track C's merge base (wave 3.5d-b names).
-  // The first six already attach under exactly these names on main; the next
-  // six receive their attach in this commit (registry entry name == consumer name).
+  // Registry entries main added after Track C's merge base (wave 3.5d-b names;
+  // registry entry name == consumer name). Rows 1-3 and 10-12 already attached
+  // under exactly these names on main; rows 4-9 (authBrowserTransitionCleanup
+  // through metricAnomalyIncidentPublisher) received their
+  // attachWorkerObservability hook when the manifest was rekeyed to the registry.
   consumers('webhookDeliveryRecovery'),
   consumers('agentNotifyRetry'),
   consumers('fixWatchWorker'),

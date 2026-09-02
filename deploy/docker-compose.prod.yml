@@ -274,6 +274,14 @@ x-api-env: &api-env
   # Empty === unset for both readers, so unset keeps the code defaults.
   EXCHANGE_RATE_SYNC_ENABLED: ${EXCHANGE_RATE_SYNC_ENABLED:-}
   FRANKFURTER_BASE_URL: ${FRANKFURTER_BASE_URL:-}
+  # Readiness cache + dependency-probe bounds. Empty === unset, so the
+  # `${VAR:-}` form keeps the clamped code defaults (5000 / 3000 ms). Both
+  # MUST be listed here: compose only interpolates vars named in this block,
+  # so a value set in .env alone is a silent no-op.
+  READINESS_CACHE_TTL_MS: ${READINESS_CACHE_TTL_MS:-}
+  READINESS_PROBE_TIMEOUT_MS: ${READINESS_PROBE_TIMEOUT_MS:-}
+  # Offline-detector mark-worker concurrency (1-20, code default 5). Empty === unset.
+  OFFLINE_DETECTOR_WORKER_CONCURRENCY: ${OFFLINE_DETECTOR_WORKER_CONCURRENCY:-}
 
 services:
   binaries-init:
