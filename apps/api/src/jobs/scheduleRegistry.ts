@@ -118,6 +118,9 @@ export const JOB_SCHEDULES = {
   'sso-domain-recheck': '23 16 * * *',
   'exchange-rate-sync': '13 17 * * *',
   'ai-unattended-exposure-retention': '8 18 * * *',
+  // P2-6 (#4193): nightly value-accounting rollup. Daily lane; hour 18 held
+  // only minute 8 before this. Runs well after the day it summarises closed.
+  'ai-agent-impact-rollup': '33 18 * * *',
 
   // ------------------------------------------------------------ sub-daily tier
   // Minutes ≡ 2 (mod 5), plus three legacy slots on :00 / :15 / :35. Minute 0

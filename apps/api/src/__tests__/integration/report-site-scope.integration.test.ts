@@ -42,6 +42,7 @@ import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { and, eq, sql } from 'drizzle-orm';
+import { AI_AGENT_RUN_PROFILES } from '@breeze/shared';
 
 import { getAppDb, getTestDb } from './setup';
 import {
@@ -121,6 +122,31 @@ const MIGRATION_FILE = '2026-08-06-a-report-site-scope.sql';
 // redefines a constraint owned by MIGRATION_FILE belongs in this list, newest
 // last; each is idempotent, so re-applying is a no-op beyond the restore.
 const SUCCESSOR_MIGRATION_FILES = ['2026-09-24-b-ai-agents-org-narrative.sql'] as const;
+
+// Second-order hazard, and the reason `restoreSuccessorMigrations` does more
+// than replay the list above: a successor also redefines constraints it does
+// NOT own, and replaying it reverts THOSE to the successor's own (older) body.
+// 2026-09-24-b section 3 re-adds `ai_agent_runs_profile_chk` as
+// ('full','verdict','sweep','narrative'), so replaying it here dropped
+// 'triage' — widened later by 2026-09-25-ai-agents-ticket-triage.sql — for the
+// rest of the shard, and every subsequent file inserting a triage run died
+// 23514 (#4193: eight failures in aiAgentImpact.integration.test.ts, which
+// shard 4 happens to schedule after this file).
+//
+// Appending the newest owner (2026-09-25-ai-agents-ticket-triage.sql) to the
+// list above would only move the hazard onto the constraints THAT file owns
+// (action_intents_scope_*, ticket_drafts_*_org_fk) the moment anything
+// redefines one of them. Re-assert the single leaked constraint instead, and
+// derive its value set from the shared list so a future profile cannot
+// silently re-open this — `AI_AGENT_RUN_PROFILES` is the same source the DB
+// contract test in aiAgentSchedulesPartnerRls.integration.test.ts pins the
+// live constraint against.
+const LEAKED_CONSTRAINT_RESTORES = [
+  `ALTER TABLE ai_agent_runs DROP CONSTRAINT IF EXISTS ai_agent_runs_profile_chk`,
+  `ALTER TABLE ai_agent_runs ADD CONSTRAINT ai_agent_runs_profile_chk CHECK (profile IN (${AI_AGENT_RUN_PROFILES.map(
+    (profile) => `'${profile}'`,
+  ).join(', ')}))`,
+] as const;
 
 function buildApp(): Hono {
   const app = new Hono();
@@ -2448,9 +2474,15 @@ describe('Wave 2 · scheduled execution fails closed before any side effect', ()
  * a replay of MIGRATION_FILE cannot leave the shared database on the pre-P2-3
  * shape. Each successor is idempotent, so this is a no-op beyond the restore.
  *
+ * Then re-assert the constraints those successors clobber without owning — see
+ * LEAKED_CONSTRAINT_RESTORES. Replaying a successor is not self-contained: it
+ * carries the whole of that migration's DDL, including CHECKs a LATER migration
+ * has since widened.
+ *
  * NOTE: `ADD CONSTRAINT` VALIDATES existing rows, so any row written while the
  * reverted CHECK was in force must be gone first — the file-level beforeEach
- * TRUNCATE handles that between tests.
+ * TRUNCATE handles that between tests. The leaked-constraint restores only ever
+ * widen a value set, so they validate trivially.
  */
 async function restoreSuccessorMigrations(): Promise<void> {
   if (!process.env.DATABASE_URL) return;
@@ -2458,6 +2490,9 @@ async function restoreSuccessorMigrations(): Promise<void> {
   for (const file of SUCCESSOR_MIGRATION_FILES) {
     const successorSql = await readFile(path.resolve(here, '../../../migrations', file), 'utf8');
     await getTestDb().execute(sql.raw(successorSql));
+  }
+  for (const statement of LEAKED_CONSTRAINT_RESTORES) {
+    await getTestDb().execute(sql.raw(statement));
   }
 }
 
@@ -2570,6 +2605,27 @@ describe('Wave P2-3 · a system-authored report carries no acting user', () => {
   // reverts the shape CHECK to its pre-P2-3 body. Restoring here means these
   // tests hold whether or not that block ran (or ran to completion) first.
   beforeAll(restoreSuccessorMigrations);
+
+  // Guards the second-order leak documented at LEAKED_CONSTRAINT_RESTORES: the
+  // successor replay above re-adds `ai_agent_runs_profile_chk` from 2026-09-24-b's
+  // body, which predates the 'triage' widening. This file cannot see the damage
+  // itself — it writes no agent runs — so without this assertion the only symptom
+  // is an unrelated suite later in the same shard failing 23514 (#4193). Asserted
+  // as a set equality against the shared list, the same contract
+  // aiAgentSchedulesPartnerRls.integration.test.ts pins on a pristine database.
+  runDb('the successor replay leaves ai_agent_runs_profile_chk on the CURRENT profile set', async () => {
+    const rows = await rawRows<{ definition: string }>(sql`
+      SELECT pg_get_constraintdef(oid) AS definition
+        FROM pg_constraint
+       WHERE conrelid = 'ai_agent_runs'::regclass
+         AND conname = 'ai_agent_runs_profile_chk'
+    `);
+    expect(rows).toHaveLength(1);
+    const allowed = new Set(
+      [...(rows[0]!.definition.matchAll(/'([^']+)'::text/g))].map((m) => m[1]!),
+    );
+    expect([...allowed].sort()).toEqual([...AI_AGENT_RUN_PROFILES].sort());
+  });
 
   runDb('the shape CHECK rejects every forged system-principal combination', async () => {
     const f = await buildFixture();

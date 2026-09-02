@@ -51,6 +51,9 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   // observed to have resolved), not credential material — reviewedIncluded,
   // same treatment as action_intents.policy_authorization_key.
   "ai_agent_fix_watches": tablePolicy("org_id", {"included":["id","org_id","partner_id","agent_id","run_id","alert_id","rule_id","device_id","config_item_name","state","due_at","evaluated_at","recurrence_alert_id","notified_at","created_at"],"reviewedIncluded":["recovery_observed_at"],"excludedSensitive":[],"excludedOpen":[]}),
+  // ai_agent_impact_daily (P2-6, #4193): every column is a counter, an id
+  // or a date — no jsonb/bytea, no SUSPICIOUS_NAME_PARTS hit.
+  "ai_agent_impact_daily": tablePolicy("org_id", {"included":["id","org_id","day","alerts_judged","noise_flagged","suppressions_applied","tickets_triaged","drafts_sent","fixes_proposed","fixes_executed","fix_watches_held","fix_watches_recurred","narratives_delivered","llm_cents","rebuilt_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   // ticket_id (wave 6 PR 3, #3828): the triggering ticket for a
   // triggerKind='ticket' run — a plain tenant identifier, same treatment as
   // device_id/alert_id above. profile / correlation_group_id (phase 2 wave

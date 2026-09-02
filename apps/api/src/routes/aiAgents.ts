@@ -3,6 +3,8 @@ import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { and, asc, desc, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import {
+  AI_AGENT_IMPACT_REBUILD_DAYS,
+  AI_AGENT_IMPACT_REBUILD_MAX_ORGS,
   AI_AGENT_KINDS,
   AI_AGENT_LIMIT_DEFAULTS,
   AI_AGENT_RUN_DTO_SCHEMA_VERSION,
@@ -12,6 +14,9 @@ import {
   type AiAgentRunListItemDto,
   type ExposureBudgetDto,
   createAiAgentSchema,
+  impactQuerySchema,
+  impactRebuildQuerySchema,
+  impactWeightsSchema,
   triggerAgentRunSchema,
   updateAiAgentSchema,
 } from '@breeze/shared';
@@ -23,9 +28,22 @@ import {
 } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { policyDecideEnabled } from '../config/env';
-import { PARTNER_WIDE_WRITE_DENIED_MESSAGE, PartnerWideWriteDeniedError } from '../services/partnerWideAccess';
+import {
+  canManagePartnerWidePolicies,
+  PARTNER_WIDE_WRITE_DENIED_MESSAGE,
+  PartnerWideWriteDeniedError,
+} from '../services/partnerWideAccess';
 import { AgentAccessDeniedError } from '../services/aiAgents/access';
 import { getCircuitState, resetCircuit } from '../services/aiAgents/agentCircuit';
+import { enqueueImpactRollupForOrgs } from '../jobs/aiAgentImpactRollup';
+import { loadImpactSummary } from '../services/aiAgents/impactQuery';
+import { lastCompleteUtcDay, shiftUtcDay } from '../services/aiAgents/impactRollup';
+import {
+  ImpactPartnerNotFoundError,
+  ImpactPartnerUnresolvedError,
+  resolveImpactPartnerId,
+  saveImpactWeights,
+} from '../services/aiAgents/impactWeights';
 import {
   createAgent, disableAgent, getAgent, listAgents, updateAgent,
   ActPrerequisitesNotMetError, AgentInvariantError, AgentKindConflictError,
@@ -190,6 +208,22 @@ export function mapError(c: Context, err: unknown) {
   }
   if (err instanceof PartnerWideWriteDeniedError) {
     return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+  }
+  // Task 8 (#4193 A8): resolveImpactPartnerId throws this when neither
+  // auth.partnerId nor an orgId yield a single partner — practically only a
+  // system-scoped caller reaching PUT/DELETE /impact/weights, which takes no
+  // orgId. Answered the same "name a target" shape as GET /impact's own
+  // system-scope-without-orgId 400, not a 500.
+  if (err instanceof ImpactPartnerUnresolvedError) {
+    return c.json({ error: 'org_id_required', message: err.message }, 400);
+  }
+  // saveImpactWeights: the UPDATE matched zero rows (unknown or RLS-declined
+  // partnerId) after the caller already passed canManagePartnerWidePolicies —
+  // see the class's own docstring. Not "not found" in the everyday sense (the
+  // caller can't specify a partnerId at all on this route), but 404 is the
+  // honest answer for "nothing to update".
+  if (err instanceof ImpactPartnerNotFoundError) {
+    return c.json({ error: err.message }, 404);
   }
   // AgentInvariantError is deliberately NOT caught: returning a response here
   // would let the request transaction COMMIT, so a create whose RETURNING read
@@ -712,6 +746,166 @@ aiAgentsRoutes.post(
     return c.json({ ok: true });
   },
 );
+
+/**
+ * Phase 2 wave P2-6 (#4193), Task A8 — the "AI operations impact" reporting
+ * surface: an estimated-time-saved dashboard over `ai_agent_impact_daily`.
+ * All four routes are registered here, immediately after the verdict-feedback
+ * block and BEFORE `GET /:id` below — same reason as `/effective`,
+ * `/policy-decidable-keys` and `/runs/:runId` above them: a literal path
+ * segment ("impact") must not fall into the `:id` param route.
+ */
+
+/**
+ * `GET /ai/agents/impact?window=7|30|90[&orgId]` — no MFA (a read). A
+ * system-scoped caller MUST name one org (one weight set belongs to one
+ * partner); `orgId` present but outside the caller's accessible set is a
+ * 403. `loadImpactSummary` (A7) carries its own defensive copy of both
+ * checks — this is the primary gate.
+ */
+aiAgentsRoutes.get(
+  '/impact',
+  scopes,
+  requireAiRead,
+  zValidator('query', impactQuerySchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const query = c.req.valid('query');
+
+    if (query.orgId !== undefined) {
+      if (!auth.canAccessOrg(query.orgId)) {
+        return c.json({ error: 'Access to this organization denied' }, 403);
+      }
+    } else if (auth.scope === 'system') {
+      return c.json({
+        error: 'org_id_required',
+        message: 'A system-scoped impact query must name one organization — one weight set belongs to one partner.',
+      }, 400);
+    }
+
+    const data = await loadImpactSummary(auth, query);
+    return c.json({ data });
+  },
+);
+
+/**
+ * `POST /ai/agents/impact/rebuild[?orgId]` — manual refresh. Targets one org
+ * (`orgId`, 403 if inaccessible) or every org the caller can reach
+ * (`auth.accessibleOrgIds`; `null` means unrestricted system scope, which
+ * must then name one org the same way `GET /impact` does). Deterministic
+ * job ids (`enqueueImpactRollupForOrgs` → `buildImpactRollupJobId`) make a
+ * repeated press a natural no-op, so this is safe to call repeatedly.
+ */
+aiAgentsRoutes.post(
+  '/impact/rebuild',
+  scopes,
+  requireAiWrite,
+  zValidator('query', impactRebuildQuerySchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { orgId } = c.req.valid('query');
+
+    let orgIds: string[];
+    if (orgId !== undefined) {
+      if (!auth.canAccessOrg(orgId)) {
+        return c.json({ error: 'Access to this organization denied' }, 403);
+      }
+      orgIds = [orgId];
+    } else if (auth.accessibleOrgIds === null) {
+      return c.json({
+        error: 'org_id_required',
+        message: 'A system-scoped impact rebuild must name one organization.',
+      }, 400);
+    } else {
+      orgIds = auth.accessibleOrgIds;
+    }
+
+    if (orgIds.length > AI_AGENT_IMPACT_REBUILD_MAX_ORGS) {
+      return c.json({
+        error: 'too_many_orgs',
+        limit: AI_AGENT_IMPACT_REBUILD_MAX_ORGS,
+        count: orgIds.length,
+      }, 409);
+    }
+
+    const through = lastCompleteUtcDay();
+    const from = shiftUtcDay(through, -(AI_AGENT_IMPACT_REBUILD_DAYS - 1));
+    const queued = await enqueueImpactRollupForOrgs(orgIds, from, through);
+
+    writeRouteAudit(c, {
+      orgId: orgId ?? null,
+      action: 'ai_agent_impact.rebuild_requested',
+      resourceType: 'ai_agent_impact',
+      details: { orgCount: orgIds.length, from, through },
+      result: 'success',
+    });
+
+    return c.json({ queued, from, through }, 202);
+  },
+);
+
+/**
+ * `PUT /ai/agents/impact/weights` — an estimate-model preference, not a
+ * credential or a destructive act, so deliberately NO `requireMfa()` (unlike
+ * `DELETE /:id` below, which removes an agent policy — plan Deviation 5).
+ * Gated on `canManagePartnerWidePolicies`, checked here BEFORE resolving a
+ * partnerId so an organization-scoped or selected-access caller 403s without
+ * ever needing one; `saveImpactWeights` (A6) re-checks the same capability
+ * as a second gate for any future non-route caller.
+ */
+aiAgentsRoutes.put(
+  '/impact/weights',
+  scopes,
+  requireAiWrite,
+  zValidator('json', impactWeightsSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    if (!canManagePartnerWidePolicies(auth)) {
+      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+    }
+
+    const overrides = c.req.valid('json');
+    try {
+      const partnerId = await resolveImpactPartnerId(auth);
+      const { before, after, effective } = await saveImpactWeights(auth, partnerId, overrides);
+      writeRouteAudit(c, {
+        orgId: null,
+        action: 'ai_agent_impact_weights.updated',
+        resourceType: 'ai_agent_impact_weights',
+        resourceId: partnerId,
+        details: { before, after },
+        result: 'success',
+      });
+      return c.json({ data: { effective, overrides: after } });
+    } catch (err) {
+      return mapError(c, err);
+    }
+  },
+);
+
+/** `DELETE /ai/agents/impact/weights` — resets to defaults. Same gate as the PUT above. */
+aiAgentsRoutes.delete('/impact/weights', scopes, requireAiWrite, async (c) => {
+  const auth = c.get('auth');
+  if (!canManagePartnerWidePolicies(auth)) {
+    return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+  }
+
+  try {
+    const partnerId = await resolveImpactPartnerId(auth);
+    const { before, after, effective } = await saveImpactWeights(auth, partnerId, null);
+    writeRouteAudit(c, {
+      orgId: null,
+      action: 'ai_agent_impact_weights.updated',
+      resourceType: 'ai_agent_impact_weights',
+      resourceId: partnerId,
+      details: { before, after },
+      result: 'success',
+    });
+    return c.json({ data: { effective, overrides: after } });
+  } catch (err) {
+    return mapError(c, err);
+  }
+});
 
 aiAgentsRoutes.get('/:id', scopes, requireAiRead, async (c) => {
   const auth = c.get('auth');
