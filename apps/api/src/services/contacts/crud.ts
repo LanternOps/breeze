@@ -20,6 +20,7 @@
 import { and, arrayContains, asc, eq, inArray, isNull, ne, or, sql, type SQL } from 'drizzle-orm';
 import { contacts, type Contact } from '../../db/schema/contacts';
 import { organizations, sites } from '../../db/schema/orgs';
+import { pgErrorCode } from '../../utils/pgErrors';
 import { replaceBillingContact, replaceSiteContact, type ContactExecutor } from './compat';
 import { CONTACT_ROLES, type ContactRole } from './types';
 
@@ -129,14 +130,55 @@ export function assertValidRoles(roles: string[] | undefined): ContactRole[] | u
 
 type Identifiers = Pick<ContactRecord, 'name' | 'email' | 'phone' | 'mobile'>;
 
+const NO_IDENTIFIER_MESSAGE = 'A contact needs at least one of name, email, phone, or mobile';
+
 /** Mirrors `contacts_identifiable_chk`, so the DB constraint is never the first to complain. */
 function assertIdentifiable(fields: Identifiers): void {
   if (fields.name === null && fields.email === null && fields.phone === null && fields.mobile === null) {
-    throw new ContactValidationError(
-      'A contact needs at least one of name, email, phone, or mobile',
-      'no-identifier',
-    );
+    throw new ContactValidationError(NO_IDENTIFIER_MESSAGE, 'no-identifier');
   }
+}
+
+/**
+ * Take the row locks a primary re-projection is about to need, parent-first.
+ *
+ * ── The deadlock this closes (#3911 class) ──────────────────────────────────
+ * This module writes the `contacts` row and THEN re-projects into
+ * `organizations.billing_contact` / `sites.contact`, while
+ * `compat.mergeBillingContact` (compat.ts:167, the billing-settings path)
+ * updates `organizations` FIRST and the contact row second. Two concurrent
+ * writers on one organization therefore end up holding each other's next lock —
+ * A holds the contact row and wants the org row, B holds the org row and wants
+ * the contact row — which Postgres breaks with 40P01. Acquiring the parent
+ * first gives both writers the same order, so they queue instead of deadlock.
+ *
+ * FOR NO KEY UPDATE, not FOR UPDATE: the weakest mode that still conflicts with
+ * itself and with the plain UPDATE compat issues (which takes NO KEY UPDATE
+ * anyway), so an FK's KEY SHARE lock — taken by any unrelated child insert that
+ * merely REFERENCES the org — stays compatible.
+ *
+ * Sites are locked after the organization and in id order, so two callers
+ * moving a primary between the same two sites cannot deadlock on each other.
+ */
+async function lockProjectionScopes(
+  exec: ContactExecutor,
+  orgId: string,
+  siteIds: Array<string | null>,
+): Promise<void> {
+  await exec
+    .select({ id: organizations.id })
+    .from(organizations)
+    .where(eq(organizations.id, orgId))
+    .for('no key update');
+
+  const pinned = [...new Set(siteIds.filter((id): id is string => id !== null))].sort();
+  if (pinned.length === 0) return;
+  await exec
+    .select({ id: sites.id })
+    .from(sites)
+    .where(inArray(sites.id, pinned))
+    .orderBy(asc(sites.id))
+    .for('no key update');
 }
 
 /**
@@ -334,7 +376,13 @@ export async function createContact(
   if (siteId !== null) await assertSiteInOrg(exec, input.orgId, siteId);
 
   const isPrimary = input.isPrimary === true;
-  if (isPrimary) await demoteScopePrimary(exec, input.orgId, siteId);
+  // Parent-first, before the demotion UPDATE and the INSERT — see
+  // lockProjectionScopes. A non-primary create re-projects nothing and takes
+  // no lock, so ordinary contact creation never serialises on the org row.
+  if (isPrimary) {
+    await lockProjectionScopes(exec, input.orgId, [siteId]);
+    await demoteScopePrimary(exec, input.orgId, siteId);
+  }
 
   const [created] = await exec
     .insert(contacts)
@@ -379,30 +427,57 @@ export async function updateContact(
   }
 
   const nextIsPrimary = patch.isPrimary === undefined ? existing.isPrimary : patch.isPrimary;
+
+  // Both the vacated and the claimed scope can have lost or gained a primary.
+  // This is also EXACTLY the set of parents the re-projection will write, so the
+  // pre-lock and the re-projection below cannot drift apart.
+  const scopes = new Set<string | null>();
+  if (existing.isPrimary) scopes.add(existing.siteId);
+  if (nextIsPrimary) scopes.add(nextSiteId);
+  if (scopes.size > 0) await lockProjectionScopes(exec, orgId, [...scopes]);
+
   // Demote the incumbent whenever this row is claiming a primary slot it does
   // not already hold — a scope move counts, even with is_primary unchanged.
   if (nextIsPrimary && !(existing.isPrimary && existing.siteId === nextSiteId)) {
     await demoteScopePrimary(exec, orgId, nextSiteId, contactId);
   }
 
-  const [updated] = await exec
-    .update(contacts)
-    .set({
-      ...fields,
-      siteId: nextSiteId,
-      ...(patch.title === undefined ? {} : { title: clean(patch.title) }),
-      ...(roles ? { roles } : {}),
-      isPrimary: nextIsPrimary,
-      ...(patch.notes === undefined ? {} : { notes: clean(patch.notes) }),
-      updatedAt: new Date(),
-    })
-    .where(and(eq(contacts.id, contactId), eq(contacts.orgId, orgId)))
-    .returning(contactColumns());
+  // SET only what the patch actually names. Writing all four identifiers (and
+  // site/primary) back on every PATCH made two concurrent disjoint patches
+  // overwrite each other: a caller changing only the phone re-wrote the name
+  // and email it had read moments earlier. `fields` above is still computed —
+  // it is the MERGED row the identifier check has to be made against — but only
+  // the named columns are written. An explicit null stays a real clear.
+  const set: Record<string, unknown> = { updatedAt: new Date() };
+  if (patch.name !== undefined) set.name = fields.name;
+  if (patch.email !== undefined) set.email = fields.email;
+  if (patch.phone !== undefined) set.phone = fields.phone;
+  if (patch.mobile !== undefined) set.mobile = fields.mobile;
+  if (patch.siteId !== undefined) set.siteId = nextSiteId;
+  if (patch.title !== undefined) set.title = clean(patch.title);
+  if (roles) set.roles = roles;
+  if (patch.isPrimary !== undefined) set.isPrimary = patch.isPrimary;
+  if (patch.notes !== undefined) set.notes = clean(patch.notes);
 
-  // Both the vacated and the claimed scope can have lost or gained a primary.
-  const scopes = new Set<string | null>();
-  if (existing.isPrimary) scopes.add(existing.siteId);
-  if (nextIsPrimary) scopes.add(nextSiteId);
+  let updated: ContactRecord | undefined;
+  try {
+    [updated] = await exec
+      .update(contacts)
+      .set(set)
+      .where(and(eq(contacts.id, contactId), eq(contacts.orgId, orgId)))
+      .returning(contactColumns()) as ContactRecord[];
+  } catch (err) {
+    // 23514 on `contacts` can only be `contacts_identifiable_chk` — it is the
+    // table's only CHECK. The in-process pre-check above reads the STORED row,
+    // so a concurrent patch that cleared the other identifier between that read
+    // and this write lands here instead; it is the same refusal and must be the
+    // caller's 400, not an uncaught 500.
+    if (pgErrorCode(err) === '23514') {
+      throw new ContactValidationError(NO_IDENTIFIER_MESSAGE, 'no-identifier');
+    }
+    throw err;
+  }
+
   for (const scope of scopes) await reprojectPrimaryContact(exec, orgId, scope, actor.userId);
 
   return updated as ContactRecord;
@@ -417,6 +492,9 @@ export async function deleteContact(
 ): Promise<ContactRecord | null> {
   const existing = await getContact(exec, contactId, orgId);
   if (!existing) return null;
+
+  // Parent-first before the DELETE, for the same reason updateContact does it.
+  if (existing.isPrimary) await lockProjectionScopes(exec, orgId, [existing.siteId]);
 
   await exec.delete(contacts).where(and(eq(contacts.id, contactId), eq(contacts.orgId, orgId)));
 

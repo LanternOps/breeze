@@ -46,7 +46,9 @@ interface StateRow { [key: string]: unknown }
  * The importer loads its snapshot with four reads in a fixed order:
  * organizations, sites, contacts, contact_external_links. `then` seeds any
  * later reads in order — a primary re-projection adds two (its own lookup,
- * then compat's re-read of the same row).
+ * then compat's re-read of the same row), preceded by the parent pre-locks
+ * crud.lockProjectionScopes takes (one for the org, one more when a site scope
+ * is involved).
  */
 function stubState(state: {
   orgs?: StateRow[];
@@ -69,6 +71,10 @@ function stubState(state: {
       const settle = () => {
         const promise = Promise.resolve(rows) as Promise<unknown[]> & Record<string, unknown>;
         promise.limit = () => Promise.resolve(rows.slice(0, 1));
+        promise.orderBy = () => settle();
+        // The parent pre-locks crud.lockProjectionScopes takes before a primary
+        // re-projection (see the deadlock note there).
+        promise.for = () => settle();
         return promise;
       };
       // The fake cannot APPLY a WHERE, so tenancy filters are asserted on the
@@ -482,9 +488,9 @@ describe('commitContactImport', () => {
         id: EXISTING, orgId: ORG, siteId: null, name: 'Jane Ops',
         email: 'jane@acme.example', isPrimary: true,
       }],
-      // updateContact re-reads the row, then the re-projection reads the
-      // primary and compat re-reads the same row.
-      then: [[storedContact({ isPrimary: true })], [merged], [merged]],
+      // updateContact re-reads the row, takes the org pre-lock, then the
+      // re-projection reads the primary and compat re-reads the same row.
+      then: [[storedContact({ isPrimary: true })], [], [merged], [merged]],
     });
     const summary = await commitContactImport([{
       organizationId: ORG, name: 'Jane Ops', email: 'jane@acme.example', phone: '555-0100',
@@ -698,6 +704,7 @@ describe('commitContactImport', () => {
       then: [
         [{ id: EXISTING, orgId: ORG, siteId: null, name: 'Jane Ops', email: 'jane@acme.example', phone: null, mobile: null, title: null, roles: [], isPrimary: true, notes: null }],
         [{ id: SITE }],   // the site pin is validated against the org
+        [], [],           // parent pre-locks: org, then site
         [], [],           // vacated org scope: no primary left
         [moved], [moved], // claimed site scope
       ],
@@ -730,7 +737,11 @@ describe('commitContactImport', () => {
     }], CTX, ACTOR);
 
     const patch = updated.find((u) => u.table === contacts);
-    expect(patch?.set).toMatchObject({ siteId: SITE, phone: '555-0100' });
+    expect(patch?.set).toMatchObject({ phone: '555-0100' });
+    // The row named no site, so the UPDATE must not touch site_id at all —
+    // re-asserting the stored value would still be a write, and a concurrent
+    // move would lose to it.
+    expect(patch?.set).not.toHaveProperty('siteId');
   });
 
   it('gives every row its own transaction, so one failure cannot poison the rest', async () => {

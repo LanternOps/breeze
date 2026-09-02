@@ -37,13 +37,17 @@ interface SelectCall {
   limit?: number;
   offset?: number;
   orderBy?: unknown[];
+  /** The row-lock mode, when the statement took one (`.for(...)`). */
+  lockMode?: string;
+  /** Statement order across ALL four verbs, so lock-before-write is assertable. */
+  seq: number;
 }
 
 interface Capture {
   selects: SelectCall[];
-  inserts: Array<{ table: unknown; values: Record<string, unknown> }>;
-  updates: Array<{ table: unknown; set: Record<string, unknown>; where?: unknown }>;
-  deletes: Array<{ table: unknown; where?: unknown }>;
+  inserts: Array<{ table: unknown; values: Record<string, unknown>; seq: number }>;
+  updates: Array<{ table: unknown; set: Record<string, unknown>; where?: unknown; seq: number }>;
+  deletes: Array<{ table: unknown; where?: unknown; seq: number }>;
 }
 
 /**
@@ -55,6 +59,7 @@ function thenable(rows: Array<Record<string, unknown>>, call: SelectCall) {
   promise.limit = (n: number) => { call.limit = n; return thenable(rows.slice(0, n), call); };
   promise.offset = (n: number) => { call.offset = n; return thenable(rows, call); };
   promise.orderBy = (...args: unknown[]) => { call.orderBy = args; return thenable(rows, call); };
+  promise.for = (mode: string) => { call.lockMode = mode; return thenable(rows, call); };
   return promise;
 }
 
@@ -67,19 +72,25 @@ function thenable(rows: Array<Record<string, unknown>>, call: SelectCall) {
  *   getContact ......... 1 (contacts)
  *   reprojectScope ..... 2 (the primary lookup, then compat's own re-read)
  */
-function makeExec(selectRows: Array<Array<Record<string, unknown>>> = []) {
+function makeExec(
+  selectRows: Array<Array<Record<string, unknown>>> = [],
+  options: { updateError?: unknown } = {},
+) {
   const queue = [...selectRows];
   const calls: Capture = { selects: [], inserts: [], updates: [], deletes: [] };
   let lastSelected: Record<string, unknown> | undefined;
   let generated = 0;
+  let seq = 0;
 
   const exec = {
     select: () => ({
       from: (table: unknown) => {
         const rows = queue.shift() ?? [];
-        lastSelected = rows[0];
-        const entry: SelectCall = { table };
+        const entry: SelectCall = { table, seq: (seq += 1) };
         calls.selects.push(entry);
+        // Only a `contacts` read can be the row a later UPDATE returns merged;
+        // a parent pre-lock read must not stand in for it.
+        if (table === contacts) lastSelected = rows[0];
         return {
           where: (condition: unknown) => { entry.where = condition; return thenable(rows, entry); },
         };
@@ -87,7 +98,7 @@ function makeExec(selectRows: Array<Array<Record<string, unknown>>> = []) {
     }),
     insert: (table: unknown) => ({
       values: (values: Record<string, unknown>) => {
-        calls.inserts.push({ table, values });
+        calls.inserts.push({ table, values, seq: (seq += 1) });
         generated += 1;
         const row = { id: `generated-${generated}`, ...values };
         return Object.assign(Promise.resolve([row]), { returning: () => Promise.resolve([row]) });
@@ -95,11 +106,18 @@ function makeExec(selectRows: Array<Array<Record<string, unknown>>> = []) {
     }),
     update: (table: unknown) => ({
       set: (set: Record<string, unknown>) => {
-        const entry: { table: unknown; set: Record<string, unknown>; where?: unknown } = { table, set };
+        const entry = { table, set, seq: (seq += 1) } as Capture['updates'][number];
         calls.updates.push(entry);
         return {
           where: (condition: unknown) => {
             entry.where = condition;
+            if (options.updateError !== undefined && table === contacts) {
+              const rejected = Promise.reject(options.updateError);
+              rejected.catch(() => {});
+              return Object.assign(rejected, {
+                returning: () => Promise.reject(options.updateError),
+              });
+            }
             const row = { ...(lastSelected ?? {}), ...set };
             return Object.assign(Promise.resolve([row]), { returning: () => Promise.resolve([row]) });
           },
@@ -108,13 +126,18 @@ function makeExec(selectRows: Array<Array<Record<string, unknown>>> = []) {
     }),
     delete: (table: unknown) => ({
       where: (condition: unknown) => {
-        calls.deletes.push({ table, where: condition });
+        calls.deletes.push({ table, where: condition, seq: (seq += 1) });
         return Promise.resolve([]);
       },
     }),
   } as unknown as ContactExecutor;
 
   return { exec, calls };
+}
+
+/** The org/site pre-locks a primary re-projection takes. */
+function lockReads(calls: Capture) {
+  return calls.selects.filter((s) => s.lockMode !== undefined);
 }
 
 /** The compat projection's writes into the legacy jsonb columns. */
@@ -231,9 +254,10 @@ describe('createContact', () => {
 
   it('projects a site-scoped primary into sites.contact, not billing_contact', async () => {
     const sitePrimary = { name: 'Sam Site', email: null, phone: '555-0111', mobile: null };
-    // assertSiteInOrg, then reprojectScope's two reads.
+    // assertSiteInOrg, the org + site pre-locks, then reprojectScope's two reads.
     const { exec, calls } = makeExec([
       [{ id: SITE }],
+      [], [],
       [sitePrimary],
       [{ id: CONTACT, ...sitePrimary }],
     ]);
@@ -278,6 +302,7 @@ describe('updateContact', () => {
     const moved = { name: 'Jane Ops', email: 'jane@acme.example', phone: '555-0100', mobile: null };
     const { exec, calls } = makeExec([
       [{ ...PRIMARY_ROW, siteId: SITE }], // getContact
+      [], [],                             // parent pre-locks: org, then site
       [], [],                             // vacated site scope: no primary left
       [moved], [{ id: CONTACT, ...moved }], // claimed org scope
     ]);
@@ -294,6 +319,137 @@ describe('updateContact', () => {
     await expect(updateContact(exec, CONTACT, ORG, { name: null, email: null }, ACTOR))
       .rejects.toMatchObject({ code: 'no-identifier' });
     expect(calls.updates).toHaveLength(0);
+  });
+});
+
+describe('parent-first locking around a primary re-projection', () => {
+  // Deadlock pair (#3911 class): this module writes `contacts` and THEN
+  // re-projects into organizations.billing_contact / sites.contact, while
+  // compat.mergeBillingContact updates `organizations` first and the contact
+  // row second. Two concurrent writers on one org hold each other's next lock.
+  it('locks the organization before the contact UPDATE when a primary is edited', async () => {
+    const patched = { name: 'Jane Ops', email: 'ap@acme.example', phone: '555-0100', mobile: null };
+    // getContact, the org pre-lock, then reprojectScope's two reads.
+    const { exec, calls } = makeExec([[PRIMARY_ROW], [], [patched], [{ id: CONTACT, ...patched }]]);
+    await updateContact(exec, CONTACT, ORG, { email: 'ap@acme.example' }, ACTOR);
+
+    const locks = lockReads(calls);
+    expect(locks).toHaveLength(1);
+    expect(locks[0]!.table).toBe(organizations);
+    // NO KEY UPDATE, not UPDATE: the weakest mode that still conflicts with
+    // compat's own UPDATE, so an FK's KEY SHARE from an unrelated child insert
+    // stays compatible.
+    expect(locks[0]!.lockMode).toBe('no key update');
+    expect(compile(locks[0]!.where).params).toEqual([ORG]);
+
+    const contactWrite = calls.updates.find((u) => u.table === contacts)!;
+    expect(locks[0]!.seq).toBeLessThan(contactWrite.seq);
+  });
+
+  it('takes NO lock for a field-only patch on a non-primary contact', async () => {
+    // Nothing re-projects, so there is no cycle to order and no reason to
+    // serialise unrelated writers on the org row.
+    const { exec, calls } = makeExec([[{ ...PRIMARY_ROW, isPrimary: false }]]);
+    await updateContact(exec, CONTACT, ORG, { phone: '222' }, ACTOR);
+    expect(lockReads(calls)).toEqual([]);
+  });
+
+  it('locks the organization before the site, and before the demotion write', async () => {
+    const moved = { name: 'Jane Ops', email: 'jane@acme.example', phone: '555-0100', mobile: null };
+    const { exec, calls } = makeExec([
+      [{ ...PRIMARY_ROW, siteId: null }], // getContact
+      [{ id: SITE }],                     // assertSiteInOrg
+      [], [],                             // org lock, then site lock
+      [], [],                             // vacated org scope: no primary left
+      [moved], [{ id: CONTACT, ...moved }],
+    ]);
+    await updateContact(exec, CONTACT, ORG, { siteId: SITE }, ACTOR);
+
+    const locks = lockReads(calls);
+    expect(locks.map((l) => l.table)).toEqual([organizations, sites]);
+    expect(compile(locks[1]!.where).params).toEqual([SITE]);
+    // The demotion is itself a contacts UPDATE, so it must come after both.
+    const firstContactWrite = calls.updates.find((u) => u.table === contacts)!;
+    expect(locks[1]!.seq).toBeLessThan(firstContactWrite.seq);
+  });
+
+  it('locks before creating a primary contact', async () => {
+    const primary = { name: 'Jane Ops', email: 'jane@acme.example', phone: '555-0100', mobile: null };
+    const { exec, calls } = makeExec([[], [primary], [{ id: CONTACT, ...primary }]]);
+    await createContact(exec, {
+      orgId: ORG, name: 'Jane Ops', email: 'jane@acme.example', phone: '555-0100', isPrimary: true,
+    }, ACTOR);
+
+    const locks = lockReads(calls);
+    expect(locks.map((l) => l.table)).toEqual([organizations]);
+    expect(locks[0]!.seq).toBeLessThan(calls.inserts[0]!.seq);
+  });
+
+  it('takes no lock creating a non-primary contact', async () => {
+    const { exec, calls } = makeExec([]);
+    await createContact(exec, { orgId: ORG, name: 'Jane Ops' }, ACTOR);
+    expect(lockReads(calls)).toEqual([]);
+  });
+
+  it('locks before deleting a primary contact, and not otherwise', async () => {
+    const { exec, calls } = makeExec([[PRIMARY_ROW], [], [], []]);
+    await deleteContact(exec, CONTACT, ORG, ACTOR);
+    const locks = lockReads(calls);
+    expect(locks.map((l) => l.table)).toEqual([organizations]);
+    expect(locks[0]!.seq).toBeLessThan(calls.deletes[0]!.seq);
+
+    const plain = makeExec([[{ ...PRIMARY_ROW, isPrimary: false }]]);
+    await deleteContact(plain.exec, CONTACT, ORG, ACTOR);
+    expect(lockReads(plain.calls)).toEqual([]);
+  });
+});
+
+describe('updateContact writes only what the patch names', () => {
+  it('SETs exactly the patched column plus updated_at', async () => {
+    // Writing every identifier back on every PATCH makes two concurrent
+    // disjoint patches overwrite each other.
+    const { exec, calls } = makeExec([[{ ...PRIMARY_ROW, isPrimary: false }]]);
+    await updateContact(exec, CONTACT, ORG, { phone: '222' }, ACTOR);
+
+    const write = calls.updates.find((u) => u.table === contacts)!;
+    expect(Object.keys(write.set).sort()).toEqual(['phone', 'updatedAt']);
+    expect(write.set.phone).toBe('222');
+  });
+
+  it('does not write siteId or isPrimary unless the patch names them', async () => {
+    const { exec, calls } = makeExec([[{ ...PRIMARY_ROW, isPrimary: false, siteId: SITE }]]);
+    await updateContact(exec, CONTACT, ORG, { title: 'CFO', notes: null }, ACTOR);
+    const write = calls.updates.find((u) => u.table === contacts)!;
+    expect(Object.keys(write.set).sort()).toEqual(['notes', 'title', 'updatedAt']);
+  });
+
+  it('still writes an explicit null, which is a real clear', async () => {
+    const { exec, calls } = makeExec([[{ ...PRIMARY_ROW, isPrimary: false }]]);
+    await updateContact(exec, CONTACT, ORG, { email: null }, ACTOR);
+    const write = calls.updates.find((u) => u.table === contacts)!;
+    expect(write.set).toMatchObject({ email: null });
+    expect(Object.keys(write.set).sort()).toEqual(['email', 'updatedAt']);
+  });
+
+  it('maps the identifiable CHECK violation to the same no-identifier refusal', async () => {
+    // The in-process pre-check reads the STORED row, so a concurrent patch that
+    // cleared the other identifier between the read and the write lands as
+    // 23514 — which must be the caller's 400, not an uncaught 500.
+    const { exec } = makeExec(
+      [[{ ...PRIMARY_ROW, isPrimary: false, phone: null, mobile: null }]],
+      { updateError: Object.assign(new Error('violates check constraint'), { code: '23514' }) },
+    );
+    await expect(updateContact(exec, CONTACT, ORG, { name: null }, ACTOR))
+      .rejects.toMatchObject({ code: 'no-identifier' });
+  });
+
+  it('lets an unrelated database error propagate', async () => {
+    const { exec } = makeExec(
+      [[{ ...PRIMARY_ROW, isPrimary: false }]],
+      { updateError: Object.assign(new Error('deadlock detected'), { code: '40P01' }) },
+    );
+    await expect(updateContact(exec, CONTACT, ORG, { phone: '222' }, ACTOR))
+      .rejects.toMatchObject({ code: '40P01' });
   });
 });
 
