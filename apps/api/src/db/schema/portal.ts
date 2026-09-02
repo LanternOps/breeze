@@ -1,6 +1,5 @@
 import { pgTable, uuid, varchar, text, integer, timestamp, boolean, jsonb, pgEnum } from 'drizzle-orm/pg-core';
 import { organizations, partners } from './orgs';
-import { contacts } from './contacts';
 import { devices } from './devices';
 import { users } from './users';
 
@@ -65,11 +64,17 @@ export const portalUsers = pgTable('portal_users', {
   // Rows can therefore still have a null link (Entra SSO provisioning and the
   // Outlook add-in's "create contact" both create logins without one).
   //
-  // ON DELETE SET NULL so deleting a contact never silently destroys someone's
-  // portal login. The FK is single-column, so it does NOT prove login and
-  // contact share an org — routes that derive a ticket's requester from this
-  // column compare the orgs explicitly (ticketService.createTicket).
-  contactId: uuid('contact_id').references(() => contacts.id, { onDelete: 'set null' }),
+  // Declared as a plain nullable uuid on purpose: the real constraint is the
+  // COMPOSITE same-org FK `portal_users_contact_org_fk` (contact_id, org_id)
+  // -> contacts (id, org_id), DEFERRABLE INITIALLY IMMEDIATE with a column-list
+  // `ON DELETE SET NULL (contact_id)` so deleting a contact unlinks the login
+  // instead of failing on the NOT NULL org_id. A login and its contact
+  // therefore CANNOT belong to different organizations — that is a database
+  // guarantee now, not a convention every writer has to honour. It lives in
+  // SQL only (2026-10-04-100002-portal-users-contact-composite-fk.sql), the
+  // same convention as tickets.requesterContactId below and this table's
+  // partial unique index on the Entra identity.
+  contactId: uuid('contact_id'),
   receiveNotifications: boolean('receive_notifications').notNull().default(true),
   lastLoginAt: timestamp('last_login_at'),
   status: varchar('status', { length: 20 }).notNull().default('active'),
