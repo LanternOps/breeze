@@ -1625,6 +1625,9 @@
       "viaStripe": "tramite Stripe",
       "quickbooks": "QuickBooks",
       "viaQuickbooks": "tramite QuickBooks",
+      "inQuickbooks": "Presente in QuickBooks",
+      "syncingToQuickbooks": "Sincronizzazione…",
+      "quickbooksSyncFailed": "Sincronizzazione con QuickBooks non riuscita",
       "currencyUnknown": "La valuta di regolamento del tuo account Stripe non è ancora in cache, quindi non è stato possibile confrontarla con questa fattura in {{documentCurrency}}. Aggiorna i dettagli dell'account Stripe in Impostazioni → Integrazioni per abilitare il controllo."
     },
     "requestPayment": {

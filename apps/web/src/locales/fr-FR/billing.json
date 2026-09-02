@@ -1625,6 +1625,9 @@
       "viaStripe": "via Stripe",
       "quickbooks": "QuickBooks",
       "viaQuickbooks": "via QuickBooks",
+      "inQuickbooks": "Dans QuickBooks",
+      "syncingToQuickbooks": "Synchronisation…",
+      "quickbooksSyncFailed": "Échec de la synchronisation QuickBooks",
       "currencyUnknown": "La devise de règlement de votre compte Stripe n'est pas encore en cache ; elle n'a donc pas pu être comparée à cette facture en {{documentCurrency}}. Actualisez les détails de votre compte Stripe dans Paramètres → Intégrations pour activer la vérification."
     },
     "requestPayment": {

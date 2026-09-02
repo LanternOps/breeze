@@ -54,6 +54,12 @@ interface QuickbooksStatus {
   pullPayments?: boolean;
   /** When the reconcile worker last completed a pull for this connection. */
   lastReconcileAt?: string | null;
+  /**
+   * Phase D2 — whether Breeze pushes its own payments INTO QuickBooks for
+   * this connection. GET /accounting/quickbooks answers with it on BOTH
+   * branches (connected and disconnected), same story as pullPayments.
+   */
+  pushPayments?: boolean;
 }
 
 function isMfaError(err: unknown): boolean {
@@ -85,6 +91,7 @@ export default function QuickbooksIntegration() {
   const [savingMode, setSavingMode] = useState(false);
   const [refreshingSettings, setRefreshingSettings] = useState(false);
   const [savingPullPayments, setSavingPullPayments] = useState(false);
+  const [savingPushPayments, setSavingPushPayments] = useState(false);
   const [reconciling, setReconciling] = useState(false);
 
   const onUnauthorized = useCallback(() => {
@@ -286,6 +293,46 @@ export default function QuickbooksIntegration() {
       }
     },
     [savingPullPayments, status?.pullPayments, onUnauthorized],
+  );
+
+  // Phase D2 — the outbound half. Same non-optimistic shape as
+  // handleSetPullPayments above: the switch renders from the SERVER's echoed
+  // value, so a rejected PATCH leaves it showing the setting QuickBooks
+  // actually still has rather than a lie the operator then acts on. This one
+  // gates OUTBOUND money writes, which makes the honesty matter more, not less.
+  const handleSetPushPayments = useCallback(
+    async (next: boolean) => {
+      if (savingPushPayments || (status?.pushPayments ?? false) === next) return;
+      setSavingPushPayments(true);
+      try {
+        const updated = await runAction<QuickbooksStatus>({
+          request: () =>
+            fetchWithAuth("/accounting/quickbooks/settings", {
+              method: "PATCH",
+              body: JSON.stringify({ pushPayments: next }),
+            }),
+          errorFallback: t("quickbooksIntegration.failedToUpdatePushPayments"),
+          successMessage: next
+            ? t("quickbooksIntegration.pushPaymentsEnabled")
+            : t("quickbooksIntegration.pushPaymentsDisabled"),
+          onUnauthorized,
+        });
+        setStatus((prev) =>
+          prev ? { ...prev, pushPayments: updated.pushPayments } : prev,
+        );
+      } catch (err) {
+        if (isMfaError(err))
+          setLoadError(t("quickbooksIntegration.mfaRequiredHint"));
+        else if (!(err instanceof ActionError))
+          handleActionError(
+            err,
+            t("quickbooksIntegration.failedToUpdatePushPayments"),
+          );
+      } finally {
+        setSavingPushPayments(false);
+      }
+    },
+    [savingPushPayments, status?.pushPayments, onUnauthorized],
   );
 
   // Phase D — "Sync now". POST /reconcile answers 200 with `{ enqueued }` in
@@ -582,6 +629,43 @@ export default function QuickbooksIntegration() {
               <span
                 className={`inline-block h-5 w-5 rounded-full bg-white transition ${
                   status.pullPayments === true
+                    ? "translate-x-5"
+                    : "translate-x-1"
+                }`}
+              />
+            </button>
+          </div>
+          )}
+
+          {/* Phase D2: the outbound half. Sits under the pull toggle so the two
+              read as one direction-of-travel pair. */}
+          {canWriteInvoices && (
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <p className="text-sm font-medium">
+                {t("quickbooksIntegration.pushPayments")}
+              </p>
+              <p className="text-xs text-muted-foreground">
+                {t("quickbooksIntegration.pushPaymentsDescription")}
+              </p>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={status.pushPayments === true}
+              aria-label={t("quickbooksIntegration.pushPayments")}
+              onClick={() =>
+                void handleSetPushPayments(status.pushPayments !== true)
+              }
+              disabled={savingPushPayments}
+              className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full border transition disabled:opacity-50 ${
+                status.pushPayments === true ? "bg-emerald-500/80" : "bg-muted"
+              }`}
+              data-testid="quickbooks-pushpayments"
+            >
+              <span
+                className={`inline-block h-5 w-5 rounded-full bg-white transition ${
+                  status.pushPayments === true
                     ? "translate-x-5"
                     : "translate-x-1"
                 }`}

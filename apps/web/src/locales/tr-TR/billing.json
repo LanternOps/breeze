@@ -1625,6 +1625,9 @@
       "viaStripe": "Stripe aracılığıyla",
       "quickbooks": "QuickBooks",
       "viaQuickbooks": "QuickBooks aracılığıyla",
+      "inQuickbooks": "QuickBooks'ta",
+      "syncingToQuickbooks": "Eşitleniyor…",
+      "quickbooksSyncFailed": "QuickBooks eşitlemesi başarısız oldu",
       "currencyUnknown": "Stripe hesabınızın ödeme para birimi henüz önbelleğe alınmadığından bu {{documentCurrency}} faturayla karşılaştırılamadı. Uyuşmazlık kontrolünü etkinleştirmek için Ayarlar → Entegrasyonlar altından Stripe hesap bilgilerinizi yenileyin."
     },
     "requestPayment": {

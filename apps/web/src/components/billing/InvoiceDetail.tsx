@@ -558,6 +558,23 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
                           {t('invoiceDetail.payments.quickbooks')}
                         </span>
                       )}
+                      {p.accountingSync && (
+                        <span
+                          className={`rounded border px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide ${
+                            p.accountingSync.status === 'error'
+                              ? 'border-destructive/40 bg-destructive/10 text-destructive'
+                              : 'border-border bg-muted text-muted-foreground'
+                          }`}
+                          data-testid={`invoice-payment-qbosync-${p.id}`}
+                          title={p.accountingSync.lastError ?? undefined}
+                        >
+                          {p.accountingSync.status === 'error'
+                            ? t('invoiceDetail.payments.quickbooksSyncFailed')
+                            : p.accountingSync.status === 'pending'
+                              ? t('invoiceDetail.payments.syncingToQuickbooks')
+                              : t('invoiceDetail.payments.inQuickbooks')}
+                        </span>
+                      )}
                     </span>
                     {/* Stripe payments are refunded through Stripe, never hand-voided.
                         QuickBooks-pulled payments are the same story with a different

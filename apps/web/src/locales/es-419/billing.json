@@ -1625,6 +1625,9 @@
       "viaStripe": "vía Stripe",
       "quickbooks": "QuickBooks",
       "viaQuickbooks": "vía QuickBooks",
+      "inQuickbooks": "En QuickBooks",
+      "syncingToQuickbooks": "Sincronizando…",
+      "quickbooksSyncFailed": "Error de sincronización con QuickBooks",
       "currencyUnknown": "La moneda de liquidación de tu cuenta de Stripe aún no está en caché, así que no se pudo comparar con esta factura en {{documentCurrency}}. Actualiza los datos de tu cuenta de Stripe en Configuración → Integraciones para habilitar la verificación."
     },
     "requestPayment": {
