@@ -808,8 +808,8 @@ export class QuickbooksProvider implements AccountingProvider {
     // No token held (an adoption that never read one) — fetch one before trying.
     if (syncToken === null) {
       const fresh = await this.readPaymentSyncToken(conn, payment.remotePaymentId);
-      if (fresh === null) return 'already_absent';
-      syncToken = fresh;
+      if (!fresh.found) return 'already_absent';
+      syncToken = fresh.syncToken;
     }
 
     try {
@@ -822,9 +822,9 @@ export class QuickbooksProvider implements AccountingProvider {
       // decision 12). Read it once, retry once, then let the error out as
       // retryable — a Payment somebody is editing in a loop must not spin here.
       const fresh = await this.readPaymentSyncToken(conn, payment.remotePaymentId);
-      if (fresh === null) return 'already_absent';
+      if (!fresh.found) return 'already_absent';
       try {
-        await this.postPaymentDelete(conn, payment.remotePaymentId, fresh);
+        await this.postPaymentDelete(conn, payment.remotePaymentId, fresh.syncToken);
         return 'deleted';
       } catch (retryErr) {
         if (isQboObjectNotFound(retryErr)) return 'already_absent';
@@ -833,28 +833,46 @@ export class QuickbooksProvider implements AccountingProvider {
     }
   }
 
-  /** Current SyncToken for a Payment, or null when QuickBooks says it is gone. */
-  private async readPaymentSyncToken(conn: AccountingConnection, remotePaymentId: string): Promise<string | null> {
+  /**
+   * The current SyncToken for a Payment, or `{ found: false }` ONLY when
+   * QuickBooks reports fault 610 (the object genuinely does not exist). A 2xx
+   * response whose body lacks `Payment.SyncToken` is a malformed response, not
+   * absence — throwing here (rather than folding it into `found: false`)
+   * matters because a 5010 stale-object fault just PROVED the Payment exists;
+   * silently reporting `already_absent` right after that would be
+   * self-contradictory and would let a real delete request go unissued on a
+   * money path.
+   */
+  private async readPaymentSyncToken(
+    conn: AccountingConnection,
+    remotePaymentId: string,
+  ): Promise<{ found: false } | { found: true; syncToken: string }> {
     try {
       const parsed = await this.qboRequest<{ Payment?: { SyncToken?: string } }>(
         conn,
         `payment/${encodeURIComponent(remotePaymentId)}?minorversion=${QBO_API_MINOR_VERSION}`,
         'QuickBooks payment read',
       );
-      return parsed.Payment?.SyncToken ?? null;
+      if (!parsed.Payment?.SyncToken) throw new Error('QuickBooks payment read returned no SyncToken');
+      return { found: true, syncToken: parsed.Payment.SyncToken };
     } catch (err) {
-      if (isQboObjectNotFound(err)) return null;
+      if (isQboObjectNotFound(err)) return { found: false };
       throw err;
     }
   }
 
   private async postPaymentDelete(conn: AccountingConnection, remotePaymentId: string, syncToken: string): Promise<void> {
-    await this.qboRequest(
+    const parsed = await this.qboRequest<{ Payment?: { Id?: string; status?: string } }>(
       conn,
       `payment?operation=delete&minorversion=${QBO_API_MINOR_VERSION}`,
       'QuickBooks payment delete',
       { method: 'POST', body: JSON.stringify({ Id: remotePaymentId, SyncToken: syncToken }) },
     );
+    // Same discipline as createPayment: a 2xx with a body that does not
+    // actually confirm the delete must not be reported as success.
+    if (!parsed.Payment?.Id && parsed.Payment?.status !== 'Deleted') {
+      throw new Error('QuickBooks payment delete response did not confirm deletion');
+    }
   }
 
   async reconcileChanges(conn: AccountingConnection, sinceCursor: Date | null): Promise<ChangeSet> {

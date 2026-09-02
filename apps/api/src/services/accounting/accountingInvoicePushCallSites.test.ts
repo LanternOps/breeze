@@ -92,10 +92,10 @@ function findProviderCalls(absPath: string): ProviderCall[] {
   return calls;
 }
 
-describe('AccountingProvider pushInvoice/voidInvoice call-site contract (Phase C, multi-currency §11)', () => {
+describe('AccountingProvider pushInvoice/voidInvoice/createPayment/deletePayment call-site contract (Phase C/D2, multi-currency §11)', () => {
   const calls = SCAN_ROOTS.flatMap((root) => listSourceFiles(root)).flatMap(findProviderCalls);
 
-  it('has exactly the known production pushInvoice/voidInvoice CALLS, counted per call', () => {
+  it('has exactly the known production pushInvoice/voidInvoice/createPayment/deletePayment CALLS, counted per call', () => {
     const counts: Record<string, number> = {};
     for (const call of calls) counts[call.file] = (counts[call.file] ?? 0) + 1;
     expect(counts).toEqual(EXPECTED_CALL_SITES);

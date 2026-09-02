@@ -957,6 +957,7 @@ describe('createPayment', () => {
 
     expect(ref).toEqual({ id: '181', syncToken: '0' });
     const [url, init] = fetchSpy.mock.calls[0]!;
+    expect((init as RequestInit).method).toBe('POST');
     expect(String(url)).toContain('/v3/company/realm123/payment?minorversion=70');
     // Deterministic per Breeze payment: a network-level retry of a create that
     // actually landed must return the ORIGINAL Payment, not mint a second one.
@@ -1000,6 +1001,7 @@ describe('deletePayment', () => {
 
     expect(result).toBe('deleted');
     expect(String(fetchSpy.mock.calls[0]![0])).toContain('payment?operation=delete&minorversion=70');
+    expect((fetchSpy.mock.calls[0]![1] as RequestInit).method).toBe('POST');
     expect(JSON.parse(String((fetchSpy.mock.calls[0]![1] as RequestInit).body)))
       .toEqual({ Id: '181', SyncToken: '3' });
     expect(fetchSpy).toHaveBeenCalledTimes(1);
@@ -1028,6 +1030,9 @@ describe('deletePayment', () => {
 
     expect(fetchSpy).toHaveBeenCalledTimes(3);
     expect(String(fetchSpy.mock.calls[1]![0])).toContain('payment/181?minorversion=70');
+    // The SyncToken re-read is a plain GET — the provider must never send
+    // `method: 'POST'` for it (that would be a second, unintended delete).
+    expect((fetchSpy.mock.calls[1]![1] as RequestInit | undefined)?.method).not.toBe('POST');
     expect(JSON.parse(String((fetchSpy.mock.calls[2]![1] as RequestInit).body)))
       .toEqual({ Id: '181', SyncToken: '7' });
   });
@@ -1050,6 +1055,38 @@ describe('deletePayment', () => {
     await expect(quickbooksProvider.deletePayment(conn(), { remotePaymentId: '181', syncToken: null }))
       .resolves.toBe('deleted');
     expect(String(fetchSpy.mock.calls[0]![0])).toContain('payment/181?minorversion=70');
+  });
+
+  it('throws — rather than reporting already_absent — when a 2xx read carries no SyncToken (no held token)', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(jsonResponse({ Payment: { Id: '181' } })); // no SyncToken
+    await expect(quickbooksProvider.deletePayment(conn(), { remotePaymentId: '181', syncToken: null }))
+      .rejects.toThrow(/no SyncToken/);
+    // The malformed read must never be treated as "go ahead and delete" —
+    // no second (delete) request should have been issued.
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('throws — rather than reporting already_absent — when a 2xx read carries no SyncToken (stale-retry path)', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(
+        JSON.stringify({ Fault: { Error: [{ code: '5010', Message: 'Stale Object Error' }] } }),
+        { status: 400 },
+      ))
+      .mockResolvedValueOnce(jsonResponse({ Payment: { Id: '181' } })); // no SyncToken
+    await expect(quickbooksProvider.deletePayment(conn(), { remotePaymentId: '181', syncToken: '3' }))
+      .rejects.toThrow(/no SyncToken/);
+    // Malformed read after the stale fault must not trigger a second delete attempt.
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('propagates an unrelated fault as a rejection — it is NOT classified already_absent', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(
+      JSON.stringify({ Fault: { Error: [{ code: '6240', Message: 'Invalid Reference Id' }] } }),
+      { status: 400 },
+    ));
+    await expect(quickbooksProvider.deletePayment(conn(), { remotePaymentId: '181', syncToken: '3' }))
+      .rejects.toMatchObject({ status: 400 });
   });
 });
 
