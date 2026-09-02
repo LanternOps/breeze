@@ -2,12 +2,46 @@ import { and, eq, isNull, sql } from 'drizzle-orm';
 
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { devices, organizations, partnerAbuseSignals, partners } from '../db/schema';
-import type { IpClass } from '../db/schema/orgs';
+import type { IpClass, PartnerTrustState } from '../db/schema/orgs';
 import { getBreezeBillingClient } from './breezeBillingClient';
 import { readTrust } from './partnerTrust.repo';
 import { setTrustState } from './partnerTrust';
 
 const DAY_MS = 24 * 60 * 60 * 1_000;
+
+/**
+ * Free/webmail domains excluded from the email-domain corroboration axis in
+ * evaluateHardDenies. A shared @gmail.com (etc.) address is not identity
+ * corroboration — millions of unrelated signups share these domains, so
+ * treating one as a second axis alongside a shared IP prefix would restrict
+ * unrelated partners on pure coincidence.
+ */
+export const FREE_MAIL_DOMAINS: ReadonlySet<string> = new Set([
+  'gmail.com',
+  'googlemail.com',
+  'outlook.com',
+  'hotmail.com',
+  'live.com',
+  'msn.com',
+  'yahoo.com',
+  'icloud.com',
+  'me.com',
+  'proton.me',
+  'protonmail.com',
+  'aol.com',
+  'mail.com',
+  'gmx.com',
+  'gmx.de',
+  'gmx.net',
+  'gmx.at',
+  'gmx.co.uk',
+  'yandex.com',
+  'yandex.ru',
+  'yandex.by',
+  'yandex.kz',
+  'yandex.ua',
+  'yandex.com.tr',
+]);
 
 export interface PromotionFacts {
   createdAt: Date;
@@ -44,6 +78,7 @@ export type HardDenyDecision =
   | { restrict: false };
 
 interface HardDenyRow {
+  trust_state: PartnerTrustState;
   signup_ip_class: IpClass;
   card_partner_id: string | null;
   network_partner_id: string | null;
@@ -61,10 +96,14 @@ interface HardDenyRow {
  * already-restricted partners.
  */
 export async function evaluateHardDenies(partnerId: string): Promise<HardDenyDecision> {
+  const freeMailDomains = sql.join(
+    [...FREE_MAIL_DOMAINS].map((domain) => sql`${domain}`),
+    sql`, `,
+  );
   const row = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
     const rows = (await db.execute(sql`
       WITH target AS (
-        SELECT id, signup_ip, signup_ip_class, signup_user_agent, billing_card_fingerprint
+        SELECT id, trust_state, signup_ip, signup_ip_class, signup_user_agent, billing_card_fingerprint
         FROM partners
         WHERE id = ${partnerId} AND trust_state = 'probation'
       ),
@@ -133,14 +172,18 @@ export async function evaluateHardDenies(partnerId: string): Promise<HardDenyDec
         CROSS JOIN target_ips ti
         JOIN suspended_ips si
           ON family(host(ti.ip::inet)::inet) = family(host(si.ip::inet)::inet)
+         -- inet retains the host bits after set_masklen (only cidr zeroes
+         -- them), so comparing two set_masklen(...)::inet values only matches
+         -- byte-identical addresses, never two distinct IPs sharing a
+         -- prefix. Cast to ::cidr to compare actual network addresses.
          AND set_masklen(
            host(ti.ip::inet)::inet,
            CASE WHEN family(host(ti.ip::inet)::inet) = 4 THEN 24 ELSE 64 END
-         ) = set_masklen(
+         )::cidr = set_masklen(
            host(si.ip::inet)::inet,
            CASE WHEN family(host(si.ip::inet)::inet) = 4 THEN 24 ELSE 64 END
-         )
-        JOIN recent_suspended_abuse s ON s.id = si.partner_id
+         )::cidr
+        JOIN recent_suspended_abuse s ON s.id = si.partner_id AND s.id <> t.id
         LEFT JOIN LATERAL (
           SELECT lower(split_part(tu.email, '@', 2)) AS domain
           FROM users tu
@@ -149,6 +192,7 @@ export async function evaluateHardDenies(partnerId: string): Promise<HardDenyDec
            AND lower(split_part(su.email, '@', 2)) = lower(split_part(tu.email, '@', 2))
           WHERE tu.partner_id = t.id
             AND split_part(tu.email, '@', 2) <> ''
+            AND lower(split_part(tu.email, '@', 2)) <> ALL(ARRAY[${freeMailDomains}]::text[])
           LIMIT 1
         ) email_match ON true
         LEFT JOIN LATERAL (
@@ -172,6 +216,7 @@ export async function evaluateHardDenies(partnerId: string): Promise<HardDenyDec
         LIMIT 1
       )
       SELECT
+        t.trust_state,
         t.signup_ip_class,
         card_match.partner_id AS card_partner_id,
         network_match.partner_id AS network_partner_id,
@@ -184,7 +229,8 @@ export async function evaluateHardDenies(partnerId: string): Promise<HardDenyDec
       LEFT JOIN LATERAL (
         SELECT s.id AS partner_id
         FROM suspended_abuse s
-        WHERE t.billing_card_fingerprint IS NOT NULL
+        WHERE s.id <> t.id
+          AND t.billing_card_fingerprint IS NOT NULL
           AND t.billing_card_fingerprint = s.billing_card_fingerprint
         ORDER BY s.id
         LIMIT 1
@@ -196,7 +242,11 @@ export async function evaluateHardDenies(partnerId: string): Promise<HardDenyDec
     return rows[0] ?? null;
   }, 'partnerTrustPromotion.hardDenies'));
 
-  if (!row) return { restrict: false };
+  // The SQL target CTE already filters to trust_state='probation'; this is a
+  // belt-and-suspenders check against the same field on the returned row so
+  // a future edit that loosens that WHERE clause can't silently start
+  // restricting trusted/restricted partners.
+  if (!row || row.trust_state !== 'probation') return { restrict: false };
   if (row.signup_ip_class === 'tor') {
     return {
       restrict: true,

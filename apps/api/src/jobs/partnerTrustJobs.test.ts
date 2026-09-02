@@ -137,6 +137,48 @@ describe('processPartnerTrustJob', () => {
     );
   });
 
+  it('skips a partner whose hard-deny evaluation throws, without stopping the batch', async () => {
+    const limit = vi.fn().mockResolvedValue([{ id: 'partner-1' }, { id: 'partner-2' }]);
+    select.mockReturnValue({ from: () => ({ where: () => ({ orderBy: () => ({ limit }) }) }) });
+    evaluateHardDenies.mockImplementation(async (id: string) => {
+      if (id === 'partner-1') throw new Error('db exploded');
+      return { restrict: false };
+    });
+    tryAutoPromote.mockImplementation(async (id: string) => id === 'partner-2');
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    await expect(processPartnerTrustJob({ name: 'partner-trust-promote', data: {} }))
+      .resolves.toEqual({ processed: 2, promoted: 1 });
+
+    // The throwing partner is skipped entirely — not promoted just because
+    // its restrict check couldn't be confirmed — while the next partner in
+    // the batch still gets processed normally.
+    expect(tryAutoPromote).toHaveBeenCalledTimes(1);
+    expect(tryAutoPromote).toHaveBeenCalledWith('partner-2');
+    expect(tryAutoPromote).not.toHaveBeenCalledWith('partner-1');
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('partner-1'),
+      expect.any(Error),
+    );
+    warnSpy.mockRestore();
+  });
+
+  it('does not throw out of the ip-classify job when hard-deny evaluation fails', async () => {
+    evaluateHardDenies.mockRejectedValue(new Error('db exploded'));
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    await expect(processPartnerTrustJob({
+      name: 'ip-classify',
+      data: { kind: 'partner', partnerId: 'partner-1', ip: '198.51.100.1' },
+    })).resolves.toEqual({ ipClass: 'hosting', asn: 64500, provider: 'ipinfo' });
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('partner-1'),
+      expect.any(Error),
+    );
+    warnSpy.mockRestore();
+  });
+
   it('does nothing when partner trust is off', async () => {
     process.env.PARTNER_TRUST_MODE = 'off';
     await processPartnerTrustJob({

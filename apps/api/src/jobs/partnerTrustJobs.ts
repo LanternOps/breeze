@@ -42,7 +42,16 @@ export async function runPartnerTrustPromote(): Promise<{ processed: number; pro
       .limit(200), 'partnerTrustJobs.promote'));
     for (const partner of batch) {
       processed += 1;
-      if (await restrictOnHardDeny(partner.id)) continue;
+      try {
+        if (await restrictOnHardDeny(partner.id)) continue;
+      } catch (error) {
+        // A DB error evaluating one partner's hard-deny signals must not
+        // abort the rest of the batch. Skip this partner entirely — don't
+        // fall through to tryAutoPromote, since we couldn't confirm it's
+        // clear of a hard-deny match.
+        console.warn(`[partnerTrustJobs] hard-deny evaluation failed for partner ${partner.id}`, error);
+        continue;
+      }
       if (await tryAutoPromote(partner.id)) promoted += 1;
     }
     cursor = batch.at(-1)?.id;
@@ -83,7 +92,16 @@ export async function processPartnerTrustJob(
   const partnerId = target.kind === 'partner'
     ? target.partnerId
     : await partnerForDevice(target.deviceId);
-  if (partnerId) await restrictOnHardDeny(partnerId);
+  if (partnerId) {
+    try {
+      await restrictOnHardDeny(partnerId);
+    } catch (error) {
+      // Same as runPartnerTrustPromote: a hard-deny evaluation failure must
+      // not fail the ip-classify job itself — the classification above is
+      // still valid and should be returned.
+      console.warn(`[partnerTrustJobs] hard-deny evaluation failed for partner ${partnerId}`, error);
+    }
+  }
   return classification;
 }
 

@@ -53,6 +53,7 @@ const baseFacts = (): PromotionFacts => ({
 });
 
 const hardDenyRow = (overrides: Record<string, unknown> = {}) => ({
+  trust_state: 'probation',
   signup_ip_class: 'residential',
   card_partner_id: null,
   network_partner_id: null,
@@ -133,9 +134,13 @@ describe('evaluateHardDenies', () => {
     });
   });
 
-  it.each(['trusted', 'restricted'])('never restricts an already-%s partner', async () => {
-    // The SQL target CTE only admits trust_state='probation'.
-    execute.mockResolvedValue([]);
+  it.each(['trusted', 'restricted'] as const)('never restricts an already-%s partner', async (trustState) => {
+    // In production the SQL target CTE's WHERE clause already excludes
+    // non-probation partners, so this row would never come back at all. Set
+    // it on the mocked row anyway (rather than an unconditional empty array
+    // for both cases) to exercise evaluateHardDenies' own belt-and-suspenders
+    // trust_state check independently of the SQL filter.
+    execute.mockResolvedValue([hardDenyRow({ trust_state: trustState })]);
 
     await expect(evaluateHardDenies('p1')).resolves.toEqual({ restrict: false });
     expect(hasFraudulentRefundMatch).not.toHaveBeenCalled();
