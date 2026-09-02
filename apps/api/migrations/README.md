@@ -6,6 +6,17 @@ Hand-written SQL, applied by `apps/api/src/db/autoMigrate.ts` on API boot.
 Enforced by `scripts/check-migration-naming.sh` — it runs as a pre-commit hook
 and again in CI, so you find out here rather than in a red `Test API`.
 
+The pre-commit guard only compares a new migration against history already
+reachable from the branch's own HEAD — it cannot see a migration that lands on
+`origin/main` *after* the branch was cut. A separate `pre-push` hook re-runs
+the same script as `check-migration-naming.sh --against-ref origin/main`
+(after fetching `origin/main` itself, and warning rather than blocking if that
+fetch fails, e.g. offline), so a branch whose migration sorted fine at commit
+time but has since been overtaken by `origin/main` fails locally, at push
+time, instead of surfacing later in CI's `Check Migrations` job on the merge
+commit — the round-trip that motivated adding this check. If it fails, rename
+the migration to sort after the newest one it names on `origin/main`.
+
 ## Naming
 
 - **`YYYY-MM-DD-<slug>.sql`.** The runner discovers files matching
