@@ -1153,11 +1153,77 @@ describe('executeAgentRun', () => {
       await executeAgentRun(RUN_ID);
 
       const rows = insertOpEvidence.mock.calls[0]![0] as Array<Record<string, unknown>>;
+      // `disk_cleanup.execute` dispatched successfully (`execution: 'succeeded'`)
+      // but its own verification failed — per plan line 84 (C4 amendment)
+      // `executed` and `failed` are independent rules, so it earns BOTH rows
+      // on the SAME sourceId, not `failed` alone.
       expect(rows).toEqual([
         expect.objectContaining({ opKey: 'manage_services.restart', metric: 'executed', sourceId: `${RUN_ID}:0` }),
+        expect.objectContaining({ opKey: 'disk_cleanup.execute', metric: 'executed', sourceId: `${RUN_ID}:1` }),
         expect.objectContaining({ opKey: 'disk_cleanup.execute', metric: 'failed', sourceId: `${RUN_ID}:1` }),
       ]);
     });
+
+    it('a dispatch that succeeded but whose own verification failed gets BOTH "executed" and "failed" rows — never "executed" alone', async () => {
+      seedActRun();
+      scheduleFixWatch.mockResolvedValueOnce('watch-1');
+      revalidateActExecution.mockImplementation(async (args: Record<string, unknown>) => ({
+        ok: true, pin: { op: args.op, target: { kind: 'disk_cleanup' as const, paths: ['C:\\Temp'] } },
+      }));
+      verifyActExecution.mockResolvedValue({
+        execution: 'succeeded', verification: 'failed', verifyDetail: 'disk usage did not improve',
+      });
+      scriptQuery({
+        toolCalls: [{ tool: 'disk_cleanup', input: { action: 'execute', deviceId: DEVICE_ID, paths: ['C:\\Temp'] } }],
+        assistantText: 'Attempted disk cleanup.',
+      });
+
+      await executeAgentRun(RUN_ID);
+
+      const rows = insertOpEvidence.mock.calls[0]![0] as Array<Record<string, unknown>>;
+      expect(rows).toEqual([
+        expect.objectContaining({ opKey: 'disk_cleanup.execute', metric: 'executed', sourceId: `${RUN_ID}:0` }),
+        expect.objectContaining({ opKey: 'disk_cleanup.execute', metric: 'failed', sourceId: `${RUN_ID}:0` }),
+      ]);
+    });
+
+    it('when scheduleFixWatch returns null, a dispatch whose own verification failed is credited "failed" but NEVER "verified" even though it earns "executed"', async () => {
+      seedActRun();
+      scheduleFixWatch.mockResolvedValueOnce(null);
+      revalidateActExecution.mockImplementation(async (args: Record<string, unknown>) => ({
+        ok: true, pin: { op: args.op, target: { kind: 'service', serviceName: 'Spooler' } },
+      }));
+      verifyActExecution.mockResolvedValue({
+        execution: 'succeeded', verification: 'failed', verifyDetail: 'service did not stay up',
+      });
+      scriptQuery({ toolCalls: [ACT_CALL], assistantText: 'Restarted the spooler service.' });
+
+      await executeAgentRun(RUN_ID);
+
+      const rows = insertOpEvidence.mock.calls[0]![0] as Array<Record<string, unknown>>;
+      const metrics = rows.map((r) => r.metric).sort();
+      expect(metrics).toEqual(['executed', 'failed']);
+      expect(rows.every((r) => r.sourceId === `${RUN_ID}:0`)).toBe(true);
+    });
+
+    it.each(['timeout', 'unknown'] as const)(
+      'an execution that %s gets a "failed" row — attempted but never resolved cleanly, per isFixWatchEligible\'s "not clean" rule',
+      async (executionState) => {
+        seedActRun();
+        revalidateActExecution.mockImplementation(async (args: Record<string, unknown>) => ({
+          ok: true, pin: { op: args.op, target: { kind: 'service', serviceName: 'Spooler' } },
+        }));
+        verifyActExecution.mockResolvedValue({ execution: executionState, verification: 'inconclusive' });
+        scriptQuery({ toolCalls: [ACT_CALL], assistantText: 'Attempted a restart.' });
+
+        await executeAgentRun(RUN_ID);
+
+        const rows = insertOpEvidence.mock.calls[0]![0] as Array<Record<string, unknown>>;
+        expect(rows).toEqual([
+          expect.objectContaining({ metric: 'failed', opKey: 'manage_services.restart', sourceId: `${RUN_ID}:0` }),
+        ]);
+      },
+    );
 
     it('a failed execution gets a "failed" row, never "executed"', async () => {
       seedActRun();

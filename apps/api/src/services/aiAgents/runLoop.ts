@@ -2488,11 +2488,12 @@ async function isRunStillRunning(runId: string, orgId: string): Promise<boolean>
  * attempted and came back null (an ineligible run, or a genuinely failed
  * `createFixWatchRow` — see `scheduleFixWatch`'s own header for why null
  * means exactly that and nothing else after Task 5). Either way, every
- * `executed` action is credited an immediate `verified` row on the SAME
- * source id, since no later watch verdict will ever supply one. A non-null
- * `watchId` means a watch row exists and `checkFixWatchPhase2` (fixWatch.ts)
- * will supply `verified`/`recurred` later — this function credits nothing
- * extra in that case.
+ * `executed` action whose own verification did NOT fail is credited an
+ * immediate `verified` row on the SAME source id, since no later watch
+ * verdict will ever supply one. A non-null `watchId` means a watch row
+ * exists and `checkFixWatchPhase2` (fixWatch.ts) will supply
+ * `verified`/`recurred` later — this function credits nothing extra in
+ * that case.
  *
  * Best-effort and non-fatal, like every other post-CAS side effect in this
  * function (`deliverRunFinishedNotifications` above): a ledger write
@@ -2506,24 +2507,12 @@ async function recordActExecutionEvidence(
 ): Promise<void> {
   const rows: OpEvidenceInsert[] = [];
   const occurredAt = new Date();
-  for (const [index, action] of executedActions.entries()) {
-    if (!action.actOpKey) continue;
-    // `failed` checked FIRST: a verification failure on an action whose
-    // dispatch itself `execution === 'succeeded'` (the disk-cleanup shape —
-    // the command ran but disk usage didn't improve) must grade `failed`,
-    // not `executed` — the two conditions are not mutually exclusive, and
-    // `failed` is the one that matters for graduation.
-    let metric: 'executed' | 'failed' | null = null;
-    if (action.execution === 'failed' || action.verification === 'failed') metric = 'failed';
-    else if (action.execution === 'succeeded') metric = 'executed';
-    if (!metric) continue;
-
-    const sourceId = actEvidenceSourceId(run.id, index);
+  const pushRow = (opKey: string, sourceId: string, metric: 'executed' | 'failed' | 'verified') => {
     rows.push({
       orgId: run.orgId,
       agentId: run.agentId,
       namespace: 'act_op',
-      opKey: action.actOpKey,
+      opKey,
       ruleId: null,
       sourceKind: 'act_execution',
       sourceId,
@@ -2531,19 +2520,42 @@ async function recordActExecutionEvidence(
       runId: run.id,
       occurredAt,
     });
-    if (metric === 'executed' && watchId === null) {
-      rows.push({
-        orgId: run.orgId,
-        agentId: run.agentId,
-        namespace: 'act_op',
-        opKey: action.actOpKey,
-        ruleId: null,
-        sourceKind: 'act_execution',
-        sourceId,
-        metric: 'verified',
-        runId: run.id,
-        occurredAt,
-      });
+  };
+
+  for (const [index, action] of executedActions.entries()) {
+    if (!action.actOpKey) continue;
+
+    // Plan line 84 (C4 amendment) defines `executed` and `failed` as TWO
+    // INDEPENDENT rules, not an if/else — the UNIQUE constraint is
+    // `(source_kind, source_id, metric)`, so the same sourceId can legally
+    // carry both metrics. `executed` = "attempted AND the executor reported
+    // success" (`execution === 'succeeded'`), full stop. `failed` = an
+    // ATTEMPTED failure: the dispatch itself failed, OR it dispatched but
+    // never resolved cleanly (`timeout`/`unknown` — `isFixWatchEligible`,
+    // fixWatch.ts, already documents these as "not clean"), OR it dispatched
+    // successfully but its own verification failed (the disk-cleanup shape:
+    // the command ran, but the check that grades it failed). A dispatch that
+    // succeeded AND whose verification failed therefore earns BOTH rows —
+    // the executor did its job; the outcome was still bad.
+    const isExecuted = action.execution === 'succeeded';
+    const isFailedAttempt =
+      action.execution === 'failed' ||
+      action.execution === 'timeout' ||
+      action.execution === 'unknown' ||
+      action.verification === 'failed';
+    if (!isExecuted && !isFailedAttempt) continue;
+
+    const sourceId = actEvidenceSourceId(run.id, index);
+    if (isExecuted) pushRow(action.actOpKey, sourceId, 'executed');
+    if (isFailedAttempt) pushRow(action.actOpKey, sourceId, 'failed');
+
+    // No watch will ever verify this run, so a successfully-dispatched
+    // action is credited immediately — UNLESS its own inline verification
+    // already failed, in which case it must never be credited `verified`
+    // even though the dispatch itself succeeded (it also just earned a
+    // `failed` row above).
+    if (isExecuted && watchId === null && action.verification !== 'failed') {
+      pushRow(action.actOpKey, sourceId, 'verified');
     }
   }
   if (rows.length === 0) return;
