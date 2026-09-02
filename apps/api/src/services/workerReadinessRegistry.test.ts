@@ -158,6 +158,60 @@ describe('createWorkerReadinessRegistry', () => {
     expect(JSON.stringify(registry.snapshot())).not.toContain('secret');
   });
 
+  it('keeps an initialization failure terminal when BullMQ re-emits ready', () => {
+    const registry = createWorkerReadinessRegistry();
+    const { emitter, worker } = makeFakeWorker();
+    registry.expect('requiredWorker', true);
+    // Dominant initializer shape: attach first, then do throwable work. A
+    // Redis flap during init throws AFTER the attach, and BullMQ re-emits
+    // `ready` on every reconnect (and forwards the initial one deferred by a
+    // macrotask) -- that must not resurrect a failed consumer.
+    registry.attach('requiredWorker', worker);
+
+    registry.recordInitializationFailure('requiredWorker', new TypeError('init blew up'));
+    emitter.emit('ready');
+
+    expect(registry.requiredConsumersRunnable()).toBe(false);
+    expect(registry.snapshot().requiredWorker).toMatchObject({
+      state: 'failed',
+      running: false,
+      redisConnected: false,
+    });
+  });
+
+  it('keeps an initialization failure terminal across a disconnect and reconnect', () => {
+    const registry = createWorkerReadinessRegistry();
+    const { emitter, worker } = makeFakeWorker();
+    registry.expect('requiredWorker', true);
+    registry.attach('requiredWorker', worker);
+
+    registry.recordInitializationFailure('requiredWorker', new TypeError('init blew up'));
+    emitter.emit('error', new RangeError('connection lost'));
+    emitter.emit('ready');
+
+    expect(registry.requiredConsumersRunnable()).toBe(false);
+    expect(registry.snapshot().requiredWorker).toMatchObject({
+      state: 'failed',
+      running: false,
+      redisConnected: false,
+    });
+  });
+
+  it('does not refresh last-success time for a failed consumer', () => {
+    let now = Date.parse('2026-08-24T12:00:00.000Z');
+    const registry = createWorkerReadinessRegistry({ now: () => now });
+    const { emitter, worker } = makeFakeWorker();
+    registry.expect('requiredWorker', true);
+    registry.attach('requiredWorker', worker);
+
+    registry.recordInitializationFailure('requiredWorker', new TypeError('init blew up'));
+    now += 1_000;
+    emitter.emit('completed', { id: 'job-1' });
+
+    expect(registry.snapshot().requiredWorker?.lastSuccessfulJobAt).toBeNull();
+    expect(registry.requiredConsumersRunnable()).toBe(false);
+  });
+
   it('allows optional disabled consumers but fails closed for required disabled consumers', () => {
     const optionalRegistry = createWorkerReadinessRegistry();
     optionalRegistry.expect('optionalWorker', false);

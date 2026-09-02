@@ -84,6 +84,16 @@ export function createWorkerReadinessRegistry(options: {
   const now = options.now ?? Date.now;
   const consumers = new Map<string, ConsumerReadinessState>();
   const attached = new Set<string>();
+  // An initialization failure is terminal for the process lifetime: the
+  // initializer never completed, so its repeatables were never scheduled and
+  // no later event can make the consumer trustworthy again. This has to be a
+  // separate set rather than a `state === 'failed'` check because the
+  // dominant initializer shape attaches BEFORE the throwable work, so a
+  // failed consumer still has live BullMQ listeners: `error` would otherwise
+  // move it off `failed` to `redis_disconnected` and the next `ready` (BullMQ
+  // re-emits one on every Redis reconnect) would flip it back to `running`,
+  // fail-opening /ready for a process whose worker never initialized.
+  const terminallyFailed = new Set<string>();
 
   const timestamp = (): string => new Date(now()).toISOString();
 
@@ -126,6 +136,7 @@ export function createWorkerReadinessRegistry(options: {
     redisConnected: boolean,
   ): void => {
     const consumer = getExpected(name);
+    if (terminallyFailed.has(name)) return;
     if (
       consumer.state === state
       && consumer.running === running
@@ -142,6 +153,7 @@ export function createWorkerReadinessRegistry(options: {
 
   const recordError = (name: string, error: unknown, stopConsumer: boolean): void => {
     const consumer = getExpected(name);
+    if (terminallyFailed.has(name)) return;
     const errorAt = timestamp();
     const errorCode = sanitizeErrorCode(error);
     const lifecycleChanged = stopConsumer && (
@@ -168,6 +180,7 @@ export function createWorkerReadinessRegistry(options: {
   const recordInitializationFailure = (name: string, error: unknown): void => {
     const consumer = getExpected(name);
     const failedAt = timestamp();
+    terminallyFailed.add(name);
     consumer.state = 'failed';
     consumer.running = false;
     consumer.redisConnected = false;
@@ -184,6 +197,7 @@ export function createWorkerReadinessRegistry(options: {
 
     disable(name, reasonCode): void {
       const consumer = getExpected(name);
+      if (terminallyFailed.has(name)) return;
       const disabledAt = timestamp();
       const sanitizedReason = ERROR_CODE_PATTERN.test(reasonCode)
         ? reasonCode
@@ -239,6 +253,7 @@ export function createWorkerReadinessRegistry(options: {
       });
       worker.on('completed', () => {
         const consumer = getExpected(name);
+        if (terminallyFailed.has(name)) return;
         const completedAt = timestamp();
         if (consumer.lastSuccessfulJobAt === completedAt) return;
         consumer.lastSuccessfulJobAt = completedAt;
