@@ -37,8 +37,8 @@
 | `packages/shared/src/validators/deviceRoles.ts` (new) | SSOT for `DEVICE_ROLES`, `BILLABLE_DEVICE_ROLES`, `DeviceRole`, `BillableDeviceRole` |
 | `packages/shared/src/validators/index.ts` | Re-exports the new module; stops declaring `DEVICE_ROLES` itself |
 | `packages/shared/src/validators/contracts.ts` | `contractLineInputSchema`: new type, `deviceRoles`, refines |
-| `apps/api/migrations/2026-10-04-100000-contract-line-type-per-device-role.sql` (new) | Enum value only |
-| `apps/api/migrations/2026-10-04-100100-contract-lines-device-roles.sql` (new) | Column, CHECK, site-ownership cleanup + composite FK |
+| `apps/api/migrations/2026-10-05-100000-contract-line-type-per-device-role.sql` (new) | Enum value only |
+| `apps/api/migrations/2026-10-05-100100-contract-lines-device-roles.sql` (new) | Column, CHECK, site-ownership cleanup + composite FK |
 | `apps/api/src/db/schema/contracts.ts` | Enum + `deviceRoles` column |
 | `apps/api/src/services/tenantExportPolicyRegistry.ts` | `device_roles` in `included` |
 | `apps/api/src/services/contractQuantities.ts` | `countContractDevices(..., roles?)`, `snapshotContractDevices` |
@@ -112,7 +112,7 @@ Create `packages/shared/src/validators/deviceRoles.ts`:
  * schema construction was an initialization cycle waiting to happen.
  *
  * Adding a role here means also widening `contract_lines_device_roles_chk`
- * (migration 2026-10-04-100100) and the web mirror in apps/web/src/lib/deviceRoles.ts.
+ * (migration 2026-10-05-100100) and the web mirror in apps/web/src/lib/deviceRoles.ts.
  */
 export const BILLABLE_DEVICE_ROLES = [
   'workstation', 'server', 'printer', 'router', 'switch',
@@ -250,8 +250,8 @@ git commit -m "feat(shared): per_device_role contract line type + BILLABLE_DEVIC
 ### Task 2: Migrations, Drizzle schema, export policy
 
 **Files:**
-- Create: `apps/api/migrations/2026-10-04-100000-contract-line-type-per-device-role.sql`
-- Create: `apps/api/migrations/2026-10-04-100100-contract-lines-device-roles.sql`
+- Create: `apps/api/migrations/2026-10-05-100000-contract-line-type-per-device-role.sql`
+- Create: `apps/api/migrations/2026-10-05-100100-contract-lines-device-roles.sql`
 - Modify: `apps/api/src/db/schema/contracts.ts:14-16, 56-74`
 - Modify: `apps/api/src/services/tenantExportPolicyRegistry.ts:148`
 - Test: `apps/api/src/db/autoMigrate.test.ts` (existing), `pnpm db:check-drift`, `apps/api/src/__tests__/integration/tenant-export-policy.integration.test.ts` (existing)
@@ -266,7 +266,7 @@ Expected: `2026-10-02-100000-outbox-retention-indexes.sql`. If newer, rename bot
 
 - [ ] **Step 2: Write Migration A**
 
-Create `apps/api/migrations/2026-10-04-100000-contract-line-type-per-device-role.sql`:
+Create `apps/api/migrations/2026-10-05-100000-contract-line-type-per-device-role.sql`:
 
 ```sql
 -- #3205: contract lines billed by device role. Spec:
@@ -275,7 +275,7 @@ Create `apps/api/migrations/2026-10-04-100000-contract-line-type-per-device-role
 -- This file contains ONLY the ALTER TYPE. Postgres forbids USING a value added
 -- by ALTER TYPE ... ADD VALUE inside the same transaction, and autoMigrate
 -- wraps each file in one — so every statement referencing 'per_device_role'
--- lives in 2026-10-04-100100-contract-lines-device-roles.sql, not here.
+-- lives in 2026-10-05-100100-contract-lines-device-roles.sql, not here.
 -- (Precedent: 2026-09-05-b-audit-actor-type-ai-agent.sql.)
 
 ALTER TYPE public.contract_line_type ADD VALUE IF NOT EXISTS 'per_device_role';
@@ -283,11 +283,11 @@ ALTER TYPE public.contract_line_type ADD VALUE IF NOT EXISTS 'per_device_role';
 
 - [ ] **Step 3: Write Migration B**
 
-Create `apps/api/migrations/2026-10-04-100100-contract-lines-device-roles.sql`:
+Create `apps/api/migrations/2026-10-05-100100-contract-lines-device-roles.sql`:
 
 ```sql
 -- #3205: contract lines billed by device role — column, invariant, site ownership.
--- Companion to 2026-10-04-100000-contract-line-type-per-device-role.sql (enum value).
+-- Companion to 2026-10-05-100000-contract-line-type-per-device-role.sql (enum value).
 
 ALTER TABLE contract_lines ADD COLUMN IF NOT EXISTS device_roles text[];
 
@@ -382,7 +382,7 @@ Expected: PASS (it would fail with an unclassified `device_roles` column had Ste
 - [ ] **Step 9: Commit**
 
 ```bash
-git add apps/api/migrations/2026-10-04-100000-contract-line-type-per-device-role.sql apps/api/migrations/2026-10-04-100100-contract-lines-device-roles.sql apps/api/src/db/schema/contracts.ts apps/api/src/services/tenantExportPolicyRegistry.ts
+git add apps/api/migrations/2026-10-05-100000-contract-line-type-per-device-role.sql apps/api/migrations/2026-10-05-100100-contract-lines-device-roles.sql apps/api/src/db/schema/contracts.ts apps/api/src/services/tenantExportPolicyRegistry.ts
 git commit -m "feat(api): contract_lines.device_roles + per_device_role enum + site ownership FK (#3205)"
 ```
 
@@ -2050,8 +2050,8 @@ Plan: `docs/superpowers/plans/billing/2026-09-02-contract-lines-per-device-role.
 
 ## Migrations
 
-- `2026-10-04-100000-contract-line-type-per-device-role.sql` — enum value only.
-- `2026-10-04-100100-contract-lines-device-roles.sql` — column, CHECK, foreign-org site cleanup (count logged), composite FK.
+- `2026-10-05-100000-contract-line-type-per-device-role.sql` — enum value only.
+- `2026-10-05-100100-contract-lines-device-roles.sql` — column, CHECK, foreign-org site cleanup (count logged), composite FK.
 
 ## Tests
 

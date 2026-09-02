@@ -57,7 +57,7 @@ delete once done:
 
 **Self-Hosting / Upgrade Notes**
 
-- Migration `2026-10-04-100100-contract-lines-device-roles.sql` replaces the
+- Migration `2026-10-05-100100-contract-lines-device-roles.sql` replaces the
   `contract_lines.site_id` foreign key with a composite one to `sites(id, org_id)`.
   Before adding it, it **clears `site_id` on any contract line whose site belongs
   to a different organization** (such lines silently counted zero devices before).
