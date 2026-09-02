@@ -119,7 +119,9 @@
     "maxTurns": "Max. Umdrehungen pro Sitzung",
     "messagesPerMinute": "Nachrichten pro Minute und Benutzer",
     "messagesPerHour": "Nachrichten pro Stunde und Organisation",
-    "notSet": "Nicht festgelegt – Organisationen werden individuell konfiguriert",
+    "alertThresholds": "Warnen bei (% des Budgets)",
+    "alertThresholdsHelp": "Partner-Admins mit Abrechnungszugriff erhalten bei jeder Stufe eine In-App-Benachrichtigung und eine E-Mail für monatliche und Obergrenzen-Warnungen. Leer lassen, um 50, 80, 95 zu übernehmen.",
+    "notSet": "Nicht festgelegt, Organisationen werden individuell konfiguriert",
     "description": "Budgetwerte werden in allen untergeordneten Organisationen durchgesetzt. Dollarbeträge werden intern in Cent gespeichert.",
     "modes": {
       "perStep": "Pro Schritt",
@@ -127,6 +129,9 @@
       "autoApprove": "Automatisch genehmigen",
       "hybridPlan": "Hybridplan"
     }
+  },
+  "aiBudgetThresholds": {
+    "invalid": "Geben Sie bis zu fünf ganze Zahlen zwischen 1 und 99 ein, durch Kommas getrennt."
   },
   "partnerAiProvider": {
     "title": "KI-Anbieter",
@@ -1294,6 +1299,13 @@
     "monthlyBudget": "Monatsbudget ($)",
     "noLimit": "Keine Begrenzung",
     "dailyBudget": "Tagesbudget ($)",
+    "alertThresholds": "Warnen bei (% des Budgets)",
+    "alertThresholdsHelp": "Benachrichtigungen gehen an Partner-Admins mit Abrechnungszugriff. 100% (Obergrenze erreicht) wird immer gesendet.",
+    "firedRung": "{{pct}}% {{period}}-Warnung gesendet am {{date}}",
+    "periodLabel": {
+      "daily": "täglich",
+      "monthly": "monatlich"
+    },
     "maxTurnsPerSession": "Maximale Umdrehungen pro Sitzung",
     "msgsMinPerUser": "Nachrichten/Minute pro Benutzer",
     "msgsHrPerOrg": "Nachrichten/Std. pro Organisation",
@@ -1321,7 +1333,8 @@
     "likeActionPlanPlusLiveScreenshotsBetweenStepsAndAPersist": "Wie ein Aktionsplan, plus Live-Screenshots zwischen den Schritten und eine dauerhafte Stopp-Schaltfläche.",
     "untitled": "Ohne Titel",
     "billedToPartnerKey": "Abrechnung über Ihren Schlüssel — die KI-Nutzung läuft über Ihr eigenes Anthropic-Konto, nicht über Breeze-KI-Guthaben",
-    "billedToPartnerKeyViaEndpoint": "Abrechnung über Ihren Schlüssel via {{name}} — die KI-Nutzung läuft über Ihr eigenes Anthropic-Konto, nicht über Breeze-KI-Guthaben"
+    "billedToPartnerKeyViaEndpoint": "Abrechnung über Ihren Schlüssel via {{name}}: die KI-Nutzung läuft über Ihr eigenes Anthropic-Konto, nicht über Breeze-KI-Guthaben",
+    "creditsRemaining": "Verbleibendes Breeze-KI-Guthaben"
   },
   "aiAgentsPage": {
     "schedules": {
@@ -1735,6 +1748,8 @@
         "ticketsTriaged": "Sortierte Tickets",
         "draftsSent": "Gesendete Entwürfe",
         "fixesExecuted": "Ausgeführte Behebungen",
+        "promoteEligible": "Für Freigabe geeignete Vorgänge",
+        "promoteEligibleHint": "Vorgänge mit ausreichend fehlerfreien Nachweisen für eine Vorabgenehmigung. Öffnen Sie Einstellungen → KI-Agenten, um sie zu prüfen und freizugeben.",
         "estTimeSaved": "Geschätzte Zeitersparnis",
         "estTimeSavedValue": "{{hours}} Std.",
         "llmSpend": "LLM-Ausgaben"
@@ -1812,6 +1827,60 @@
         },
         "weightRowLabel": "{{label}} (angerechnete Sekunden)",
         "neverRebuilt": "Nie neu erstellt"
+      }
+    },
+    "graduation": {
+      "title": "Freigabestufen",
+      "description": "Was dieser Agent in den letzten 30 Tagen je Vorgang nachgewiesen hat und ob diese Nachweise für einen Antrag auf vorab genehmigte Ausführung genügen.",
+      "loading": "Nachweise werden geladen…",
+      "error": "Die Nachweise konnten nicht geladen werden.",
+      "retry": "Erneut versuchen",
+      "orgRequired": "Wählen Sie in der Organisationsauswahl eine einzelne Organisation aus, um deren Nachweise zu sehen.",
+      "empty": "Für diesen Agenten wurden noch keine Nachweise erfasst.",
+      "readOnlyNote": "Vorab genehmigte Ausführung ist in dieser Installation deaktiviert; diese Zahlen dienen nur zur Information.",
+      "byOrgTruncated": "Es werden die ersten {{limit}} Organisationen nach Name angezeigt. Wählen Sie in der Organisationsauswahl eine einzelne Organisation aus, um die übrigen zu sehen.",
+      "thresholdPerOrgNote": "Jede Organisation ermittelt ihren eigenen Schwellenwert für die Freigabe, daher werden die bestätigten Ausführungen hier ohne Zielwert angezeigt. Wählen Sie in der Organisationsauswahl eine einzelne Organisation aus, um deren Zielwert zu sehen.",
+      "approvalsLink": "Diesen Antrag im Genehmigungseingang verfolgen",
+      "ceilingHint": "Schlüssel auf Partnerebene sind eine Obergrenze, keine Erteilung. Der Agent jeder Organisation muss den Schlüssel gesondert erhalten — über die Freigabestufe oder durch Bearbeiten des Agenten dieser Organisation.",
+      "promote": "Hochstufen",
+      "verifiedOfThreshold": "{{verified}} von {{threshold}}",
+      "columns": {
+        "opKey": "Vorgang",
+        "state": "Status",
+        "verified": "Bestätigt",
+        "executed": "Ausgeführt",
+        "failed": "Fehlgeschlagen",
+        "recurred": "Erneut aufgetreten",
+        "firstVerified": "Erstmals bestätigt",
+        "blockedReason": "Warum noch nicht"
+      },
+      "states": {
+        "tracking": "Wird beobachtet",
+        "eligible": "Berechtigt",
+        "promoted": "Hochgestuft",
+        "demoted": "Zurückgestuft"
+      },
+      "blockedReasons": {
+        "needs_partner_baseline": "Der partnerweite Agent erlaubt diesen Vorgang noch nicht.",
+        "below_threshold": "Noch nicht genug bestätigte Ausführungen.",
+        "too_recent": "Die erste bestätigte Ausführung liegt noch nicht lange genug zurück.",
+        "has_failures": "In diesem Zeitraum wurde ein Fehlschlag oder ein erneutes Auftreten erfasst.",
+        "not_policy_decidable": "Dieser Vorgang kann niemals vorab genehmigt werden."
+      },
+      "confirm": {
+        "title": "Vorabgenehmigung beantragen",
+        "message": "Damit wird eine zweite Person gebeten, {{opKey}} für den Agenten dieser Organisation vorab zu genehmigen. Das gilt nur für künftige Läufe und genehmigt niemals eine Anfrage, die bereits auf eine Entscheidung wartet.",
+        "action": "Genehmigung anfordern"
+      },
+      "toasts": {
+        "requested": "Vorabgenehmigung beantragt. Eine zweite Person muss sie genehmigen, bevor dieser Vorgang unbeaufsichtigt läuft, und sie gilt nur für künftige Läufe."
+      },
+      "errors": {
+        "promote": "Der Antrag auf Vorabgenehmigung konnte nicht gestellt werden.",
+        "policyDecideDisabled": "Vorab genehmigte Ausführung ist in dieser Installation deaktiviert, dieser Vorgang kann daher nicht hochgestuft werden."
+      },
+      "reliability": {
+        "caption": "Vorgänge im Act-Modus, nur zur Ansicht: Sie sind keine Richtlinienschlüssel und können daher nie vorab genehmigt werden."
       }
     }
   },
@@ -3052,6 +3121,8 @@
       "organization": "Organisation",
       "general": "Allgemein",
       "generalDescription": "Profil und Standardeinstellungen",
+      "contacts": "Kontakte",
+      "contactsDescription": "Ansprechpartner bei diesem Kunden, je Standort oder organisationsweit",
       "contracts": "Verträge",
       "contractsDescription": "Wiederkehrende Vereinbarungen",
       "billing": "Abrechnung",
@@ -3651,7 +3722,8 @@
       "title": "Geräte",
       "assigned": "Geräte, die dieser Standort zugewiesen sind",
       "viewAll": "Alle Geräte anzeigen"
-    }
+    },
+    "allContactsLink": "Alle Kontakte dieses Kunden"
   },
   "siteForm": {
     "description": "Es ist nur der Standort-Name erforderlich. Adresse und Kontakt sind optional – Sie können diese später ausfüllen.",
@@ -4089,5 +4161,180 @@
     "saveFailed": "Zeiterfassungseinstellungen konnten nicht gespeichert werden",
     "minSessionRange": "Die Mindestdauer der Sitzung muss zwischen {{min}} und {{max}} Sekunden liegen",
     "mergeGapRange": "Das Zusammenführungsintervall muss zwischen {{min}} und {{max}} Minuten liegen"
+  },
+  "contactsCard": {
+    "title": "Kontakte",
+    "description": "Die Personen, die Ihr Team bei diesem Kunden erreicht. Ein Kontakt kann an einen Standort gebunden sein oder für die gesamte Organisation gelten.",
+    "organizationLevel": "Organisation",
+    "unknownSite": "Standort nicht verfügbar",
+    "empty": "Noch keine Kontakte. Legen Sie einen an oder importieren Sie eine CSV-Datei aus Ihrem bisherigen Werkzeug.",
+    "loading": "Kontakte werden geladen…",
+    "confirmDelete": "{{name}} löschen? Das lässt sich nicht rückgängig machen.",
+    "actions": {
+      "add": "Kontakt hinzufügen",
+      "import": "CSV importieren",
+      "edit": "Bearbeiten",
+      "delete": "Löschen",
+      "save": "Kontakt speichern",
+      "saving": "Wird gespeichert…",
+      "cancel": "Abbrechen",
+      "retry": "Erneut versuchen"
+    },
+    "filters": {
+      "site": "Nach Standort filtern",
+      "role": "Nach Rolle filtern",
+      "allSites": "Alle Standorte",
+      "allRoles": "Alle Rollen"
+    },
+    "columns": {
+      "name": "Name",
+      "reach": "Erreichbarkeit",
+      "jobTitle": "Position",
+      "roles": "Rollen",
+      "site": "Gehört zu",
+      "actions": "Aktionen"
+    },
+    "primary": {
+      "organization": "Hauptkontakt (Organisation)",
+      "site": "Hauptkontakt ({{site}})"
+    },
+    "roles": {
+      "billing": "Buchhaltung",
+      "technical": "Technik",
+      "escalation": "Eskalation",
+      "admin": "Verwaltung",
+      "site": "Standort",
+      "afterHours": "Außerhalb der Geschäftszeiten",
+      "portal": "Kundenportal"
+    },
+    "form": {
+      "addHeading": "Neuer Kontakt",
+      "editHeading": "Kontakt bearbeiten",
+      "identifierRequired": "Füllen Sie mindestens eines aus: Name, E-Mail-Adresse, Telefon oder Mobilnummer.",
+      "fields": {
+        "name": "Name",
+        "email": "E-Mail-Adresse",
+        "phone": "Telefon",
+        "mobile": "Mobilnummer",
+        "title": "Position",
+        "site": "Gehört zu",
+        "roles": "Rollen",
+        "notes": "Notizen",
+        "isPrimary": "Als Hauptkontakt für den oben gewählten Bereich festlegen"
+      }
+    },
+    "pagination": {
+      "summary": "{{from}} bis {{to}} von {{total}}",
+      "previous": "Zurück",
+      "next": "Weiter"
+    },
+    "toasts": {
+      "created": "Kontakt hinzugefügt",
+      "updated": "Kontakt gespeichert",
+      "deleted": "Kontakt gelöscht"
+    },
+    "errors": {
+      "load": "Die Kontakte dieser Organisation konnten nicht geladen werden.",
+      "sites": "Die Standorte dieser Organisation konnten nicht geladen werden. Standortnamen und der Standortfilter bleiben bis dahin nicht verfügbar.",
+      "create": "Der Kontakt konnte nicht hinzugefügt werden.",
+      "update": "Der Kontakt konnte nicht gespeichert werden.",
+      "delete": "Der Kontakt konnte nicht gelöscht werden."
+    }
+  },
+  "bulkContactImport": {
+    "title": "Kontakte aus CSV importieren",
+    "description": "Laden Sie einen Kontaktexport aus Ihrem bisherigen RMM oder PSA hoch. Jede Zeile wird dieser Organisation zugeordnet.",
+    "dropzone": "CSV-Datei hier ablegen oder klicken zum Auswählen",
+    "dropzoneHint": "Ordnen Sie mindestens eines zu: Name, E-Mail-Adresse, Telefon oder Mobilnummer — ohne eines davon geht es nicht.",
+    "actions": {
+      "close": "Schließen",
+      "preview": "{{count}} Zeilen prüfen",
+      "previewing": "Wird geprüft…",
+      "import": "{{count}} ausgewählte importieren",
+      "importing": "Import läuft…"
+    },
+    "mapping": {
+      "heading": "Spaltenzuordnung",
+      "unmapped": "Nicht zugeordnet",
+      "identifierRequired": "Ordnen Sie eine Spalte mit Name, E-Mail-Adresse, Telefon oder Mobilnummer zu, um fortzufahren.",
+      "droppedRows_one": "{{count}} Zeile übersprungen: kein Name, keine E-Mail-Adresse, keine Telefon- oder Mobilnummer.",
+      "droppedRows_other": "{{count}} Zeilen übersprungen: kein Name, keine E-Mail-Adresse, keine Telefon- oder Mobilnummer.",
+      "tooManyRows": "Diese Datei ordnet {{count}} Zeilen zu, mehr als die {{max}} pro Import zulässigen. Teilen Sie sie in kleinere Dateien auf.",
+      "fields": {
+        "name": "Name",
+        "email": "E-Mail-Adresse",
+        "phone": "Telefon",
+        "mobile": "Mobilnummer",
+        "title": "Position",
+        "roles": "Rollen",
+        "site": "Standort",
+        "externalId": "Kontakt-Kennung im Quellsystem",
+        "externalSystem": "Quellsystem"
+      }
+    },
+    "mode": {
+      "label": "Bereits verknüpfte Kontakte",
+      "skip": "Unverändert lassen",
+      "update": "Datei in sie einpflegen"
+    },
+    "preview": {
+      "heading": "Was geschehen wird"
+    },
+    "summary": {
+      "imported": "{{count}} hinzugefügt",
+      "updated": "{{count}} zusammengeführt",
+      "skipped": "{{count}} unverändert",
+      "failed": "{{count}} abgelehnt",
+      "allFailed": "Nichts wurde importiert — {{summary}}.",
+      "nothingImported": "Nichts importiert: {{count}} bereits verknüpft.",
+      "nothingImportedEmpty": "Es wurde nichts importiert."
+    },
+    "failures": {
+      "title_one": "{{count}} Zeile wurde abgelehnt",
+      "title_other": "{{count}} Zeilen wurden abgelehnt"
+    },
+    "skipped": {
+      "title_one": "{{count}} Zeile blieb unverändert",
+      "title_other": "{{count}} Zeilen blieben unverändert",
+      "reasons": {
+        "alreadyLinked": "bereits mit einem vorhandenen Kontakt verknüpft"
+      }
+    },
+    "errorCodes": {
+      "rowConflict": "Die Zeile ist gegenüber den bereits vorhandenen Kontakten mehrdeutig.",
+      "orgNotFound": "Diese Organisation ist für Sie nicht mehr erreichbar.",
+      "annotationChanged": "Diese Zeile hat sich seit der Vorschau geändert. Prüfen Sie die Datei erneut.",
+      "matchChanged": "Diese Zeile passt jetzt zu einem anderen Kontakt. Prüfen Sie die Datei erneut.",
+      "matchUnconfirmed": "Haken Sie die Zeile an und importieren Sie erneut, um die Zuordnung zu bestätigen.",
+      "writeFailed": "Die Datenbank hat den Schreibvorgang abgelehnt. Für diese Zeile wurde nichts gespeichert.",
+      "noIdentifier": "Der Zeile bleibt weder Name noch E-Mail-Adresse, Telefon- oder Mobilnummer.",
+      "invalidRole": "Die Zeile nennt eine Rolle, die Breeze nicht kennt.",
+      "siteNotInOrg": "Der Standort in dieser Zeile gehört nicht zu dieser Organisation."
+    },
+    "errors": {
+      "previewFailed": "Die Datei konnte nicht mit den vorhandenen Kontakten abgeglichen werden.",
+      "importFailed": "Die ausgewählten Kontakte konnten nicht importiert werden.",
+      "fileRead": "Die Datei konnte nicht gelesen werden. Wählen Sie sie erneut aus.",
+      "noColumns": "Diese Datei hat keine Kopfzeile, es gibt also nichts zuzuordnen."
+    }
+  },
+  "contactImportPreview": {
+    "selectAll": "Alle neuen und verknüpften Zeilen auswählen",
+    "organizationLevel": "Organisation",
+    "matches": "entspricht „{{name}}“",
+    "columns": {
+      "name": "Name",
+      "email": "E-Mail-Adresse",
+      "site": "Standort",
+      "status": "Ergebnis"
+    },
+    "badges": {
+      "create": "Neu",
+      "linkMatch": "Bereits verknüpft",
+      "emailMatch": "E-Mail-Treffer — bestätigen",
+      "nameMatch": "Namenstreffer — bestätigen",
+      "conflict": "Konflikt",
+      "orgNotFound": "Organisation nicht gefunden"
+    }
   }
 }

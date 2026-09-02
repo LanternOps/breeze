@@ -212,6 +212,40 @@ describe('rate-limit service', () => {
         expect(mockRedis.zrem).toHaveBeenCalledWith('test-key', ...expectedMembers);
       });
 
+      // #3984: `remaining` used to be computed from the pre-refund `count`, so
+      // a well-behaved client honouring Retry-After would read `remaining: 0`
+      // even though its own rejected attempt's slot was just refunded. Uses
+      // cost=2 deliberately: at cost=1 (both current refundOnReject callers)
+      // a rejection always means `remaining` is 0 either way, since refunding
+      // only this call's own 1 entry can never bring the count below `limit`
+      // — see the NOTE in rate-limit.ts. This proves the general contract for
+      // any weighted-cost caller, present or future.
+      it('reports remaining from the post-refund count, not the pre-refund count', async () => {
+        mockRejectedExec(2); // count=6, limit=5, cost=2 -> post-refund count=4
+
+        const result = await rateLimiter(mockRedis as Redis, 'test-key', 5, 60, 2, { refundOnReject: true });
+
+        expect(result.allowed).toBe(false);
+        // Pre-refund this would be Math.max(0, 5 - 6) = 0; post-refund it's
+        // Math.max(0, 5 - 4) = 1 — the capacity the refund actually restored.
+        expect(result.remaining).toBe(1);
+      });
+
+      it('reports remaining from the pre-refund count when the refund itself fails', async () => {
+        mockRejectedExec(2);
+        mockRedis.zrem = vi.fn().mockRejectedValue(new Error('redis down'));
+        const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+        const result = await rateLimiter(mockRedis as Redis, 'test-key', 5, 60, 2, { refundOnReject: true });
+
+        // The zrem never landed, so the entries are still in Redis — reporting
+        // restored capacity here would be a lie in the other direction.
+        expect(result.allowed).toBe(false);
+        expect(result.remaining).toBe(0);
+
+        consoleErrorSpy.mockRestore();
+      });
+
       it('does NOT call zrem when refundOnReject is true but the request is allowed', async () => {
         const now = Date.now();
         mockMulti.exec.mockResolvedValue([

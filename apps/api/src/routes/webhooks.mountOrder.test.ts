@@ -14,17 +14,23 @@
  *      HMAC handler (NOT session auth), and
  *   2. webhookRoutes' own CRUD endpoints still require session auth.
  *
- * The Stripe Connect webhook (`/webhooks/stripe/connect`) is affected by the
- * identical mechanism and protected by the same per-route-auth fix.
+ * The Stripe Connect webhook (`/webhooks/stripe/connect`) and the QuickBooks
+ * webhook (`/webhooks/quickbooks`, Phase D Task 5) are affected by the
+ * identical mechanism and protected by the same per-route-auth fix — a
+ * re-added `/webhooks/*` wildcard auth middleware would 401 Intuit's CDC
+ * deliveries before the HMAC handler ever ran, and Intuit does not retry a
+ * 401 (it reads as "permanently rejected"), so the regression would be
+ * silent until CDC payments simply stopped flowing.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 
-const { verifyMock, parseMock, enqueueMock, rateLimiterMock } = vi.hoisted(() => ({
+const { verifyMock, parseMock, enqueueMock, rateLimiterMock, qboVerifyWebhookMock } = vi.hoisted(() => ({
   verifyMock: vi.fn(),
   parseMock: vi.fn(),
   enqueueMock: vi.fn().mockResolvedValue(undefined),
-  rateLimiterMock: vi.fn()
+  rateLimiterMock: vi.fn(),
+  qboVerifyWebhookMock: vi.fn()
 }));
 
 // --- Inbound-email service deps (exercised by the email route) ---
@@ -67,7 +73,23 @@ vi.mock('../services/stripeWebhook', () => ({
   handleStripeEvent: vi.fn(async () => undefined)
 }));
 vi.mock('../services/sentry', () => ({
-  captureException: vi.fn()
+  captureException: vi.fn(),
+  captureMessage: vi.fn()
+}));
+
+// --- QuickBooks webhook deps (the signature handler is reached past auth) ---
+vi.mock('../config/env', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../config/env')>()),
+  QBO_WEBHOOK_VERIFIER_TOKEN: 'test-verifier-token'
+}));
+vi.mock('../services/accounting/providerRegistry', () => ({
+  getAccountingProvider: () => ({ verifyWebhook: qboVerifyWebhookMock })
+}));
+vi.mock('../services/accounting/accountingConnectionService', () => ({
+  findConnectionByRealmFingerprint: vi.fn().mockResolvedValue(null)
+}));
+vi.mock('../jobs/accountingReconcileWorker', () => ({
+  enqueueAccountingReconcile: vi.fn().mockResolvedValue(true)
 }));
 
 // db is mocked to avoid a real connection at import; the paths under test
@@ -82,15 +104,18 @@ vi.mock('../db', () => ({
 import { webhookRoutes } from './webhooks';
 import { emailWebhookRoutes } from './tickets/emailWebhook';
 import { stripeWebhookRoutes } from './webhooks/stripe';
+import { quickbooksWebhookRoutes } from './webhooks/quickbooks';
 
 // Reproduce the index.ts mount order: CRUD router first, then the public
-// signature-gated siblings — emailWebhookRoutes at /webhooks/tickets and
-// stripeWebhookRoutes back under /webhooks (index.ts:816,819,823).
+// signature-gated siblings — emailWebhookRoutes at /webhooks/tickets,
+// stripeWebhookRoutes back under /webhooks, and quickbooksWebhookRoutes last
+// (index.ts:925,928,932,938).
 function buildApp() {
   const app = new Hono();
   app.route('/webhooks', webhookRoutes);
   app.route('/webhooks/tickets', emailWebhookRoutes);
   app.route('/webhooks', stripeWebhookRoutes);
+  app.route('/webhooks', quickbooksWebhookRoutes);
   return app;
 }
 
@@ -108,6 +133,7 @@ describe('webhooks mount-order regression (#2053)', () => {
     rateLimiterMock.mockResolvedValue({ allowed: true, remaining: 59, resetAt: new Date() });
     verifyMock.mockResolvedValue(true);
     parseMock.mockResolvedValue({ provider: 'mailgun', to: 'x', from: 'y', attachments: [], raw: {} });
+    qboVerifyWebhookMock.mockReturnValue(true);
   });
 
   it('inbound email reaches the HMAC handler, not session auth (bad sig → 401 "Unauthorized")', async () => {
@@ -140,6 +166,24 @@ describe('webhooks mount-order regression (#2053)', () => {
     const body = await res.json() as { error: string };
     expect(body.error).toBe('Missing signature');
     expect(body.error).not.toBe('Missing or invalid authorization header');
+  });
+
+  it('QuickBooks webhook reaches the signature handler, not session auth (no sig → 401 "Unauthorized")', async () => {
+    // Same wildcard-mount hazard as Stripe/email above, applied to Task 5's
+    // Intuit CDC webhook. With no intuit-signature header the handler returns
+    // 401 "Unauthorized" — proof it ran past auth, not the authMiddleware 401
+    // ("Missing or invalid authorization header"). Getting this backwards
+    // means Intuit's CDC deliveries get a PERMANENT 401 (no retry) instead of
+    // ever reaching the HMAC check.
+    const res = await buildApp().request('/webhooks/quickbooks', {
+      method: 'POST',
+      body: '{}'
+    });
+    expect(res.status).toBe(401);
+    const body = await res.json() as { error: string };
+    expect(body.error).toBe('Unauthorized');
+    expect(body.error).not.toBe('Missing or invalid authorization header');
+    expect(qboVerifyWebhookMock).not.toHaveBeenCalled();
   });
 
   it('webhookRoutes CRUD still requires session auth (no token → 401 auth header)', async () => {

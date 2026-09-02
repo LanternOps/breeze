@@ -244,16 +244,17 @@ test.describe('quote + contract proposal lifecycle', () => {
       await expect(publicPage.getByTestId('public-quote-signer')).toBeVisible();
       await expect(publicPage.getByTestId('public-quote-accept')).toBeVisible();
 
-      // Hydration guard (#3906): a worktree-stack Caddy config used to route
-      // the unprefixed Astro/Vite dev module URLs these `client:load`
-      // islands fetch (e.g. `/src/components/portal/PublicQuoteView.tsx`)
-      // into the web catch-all instead of the portal, so the hydration
-      // module always 404'd here and PublicQuoteView never mounted — the
-      // SSR'd markup above looked correct while every button on the page was
-      // inert. Caddy now routes those dev module URLs to the portal service
-      // (docker/Caddyfile.prod's @portalDevAssets matcher), so this island
-      // MUST hydrate; if the routing (or the island) regresses, fail loud
-      // here instead of only being caught by the console 404 nobody reads.
+      // Hydration guard (#3906): the portal dev server used to emit the Astro/
+      // Vite module URLs these `client:load` islands fetch (e.g.
+      // `/src/components/portal/PublicQuoteView.tsx`) without the `/portal`
+      // prefix, so the worktree stack's path-routed Caddy sent them to the web
+      // catch-all — the hydration module 404'd and PublicQuoteView never
+      // mounted. The SSR'd markup above looked correct while every button on
+      // the page was inert. The portal dev server now serves its whole module
+      // graph under the base path (apps/portal/astro.config.mjs +
+      // src/middleware.ts), so this island MUST hydrate; if that (or the
+      // island) regresses, fail loud here instead of only being caught by the
+      // console 404 nobody reads.
       await waitForHydration(publicPage, 'public-quote-accept');
 
       // Accept via the same public endpoint the "Accept & sign" button calls

@@ -1065,13 +1065,19 @@ export async function finalizePartnerOffboarding(
  * it is safe; the stamp write is the marker that the entry is now complete.
  */
 /**
- * Exported for the integration test that pins #4022: the sweep calls this from a
+ * Exported for the integration test that pins #4022
+ * (`offboardingRepairRecheck.integration.test.ts`): the sweep calls this from a
  * SNAPSHOTTED candidate taken in an earlier, already-committed context, and by
- * the time an abort has committed the sweep own select no longer returns the
- * tenant. A lock-barrier test that holds an uncommitted UPDATE open across the
- * repair could drive it through sweepOffboardingTenants instead, and would pin
- * the FOR UPDATE as well as the recheck; this export is the cost of not doing
- * that here.
+ * the time an abort has committed the sweep's own select no longer returns the
+ * tenant, so that suite cannot stage its six aborts through the sweep.
+ *
+ * The lock-barrier test this comment used to describe as hypothetical now
+ * exists (`offboardingRepairLockBarrier.integration.test.ts`, #4036): it holds
+ * an uncommitted UPDATE open across the repair and DOES drive the real
+ * `sweepOffboardingTenants`, so the FOR UPDATE below is covered. The export
+ * survives only because the recheck suite still imports it directly —
+ * un-exporting means rewriting that suite onto the barrier harness, which is
+ * follow-up work, not a consequence of #4036.
  */
 export async function repairIncompleteEntry(
   scope: 'organization' | 'partner',

@@ -18,19 +18,22 @@ import {
 // 6 PR 3 Task 2, #3828; `metricAnomalyIncidentPublisher`, wave 6 PR 4 Task 2,
 // #3828; `alertVerdictScheduler`, Phase 2 wave P2-1 Task 13; `aiAgentImpactRollup`,
 // Phase 2 wave P2-6 Task A5, #4193; `aiAgentGraduation`, Phase 2 wave P2-5
-// Task 9, #4192).
+// Task 9, #4192; `accountingReconcileWorker`, QuickBooks Phase D Task 4;
+// `ticketOutboxRetention` / `intentOutboxRetention` /
+// `metricAnomalyIncidentRetention`, #4210).
 // This list is duplicated here deliberately — the whole point of the test is
 // to catch drift between the plan's documented contract and the actual
 // registry, so it must not import the list from the module under test.
-const EXPECTED_118_NAMES = [
+const EXPECTED_123_NAMES = [
   'alertWorkers', 'alertCorrelationWorker', 'metricRollupsWorker', 'metricRollupMaintenance',
-  'metricAnomaliesWorker', 'fleetFindingsWorker', 'fleetRemediationDispatchWorker', 'mlOutputRetention',
+  'metricAnomaliesWorker', 'aiBudgetAlertDeliveryWorker', 'fleetFindingsWorker', 'fleetRemediationDispatchWorker', 'mlOutputRetention',
   'offlineDetector', 'notificationDispatcher', 'webhookDelivery', 'webhookDeliveryRecovery',
   'policyEvaluationWorker', 'softwareComplianceWorker', 'softwareRemediationWorker', 'aiAgentRunner',
   'agentNotifyRetry', 'fixWatchWorker',
   'auditBaselineJobs', 'cisJobs', 'automationWorker', 'securityPostureWorker',
   'reliabilityWorker', 'userRiskWorker', 'abuseSignalsWorker', 'userRiskRetention',
   'backupVerificationJobs', 'eventLogRetention', 'logCorrelationWorker', 'agentLogRetention',
+  'ticketOutboxRetention', 'intentOutboxRetention', 'metricAnomalyIncidentRetention',
   'ipHistoryRetention', 'reliabilityRetention', 'processSampleRetention', 'deviceMetricsRetention',
   'serviceProcessCheckRetention', 'changeLogRetention', 'oauthCleanup', 'authBrowserTransitionCleanup', 'stripeAccountCacheRefresh',
   'exchangeRateSync', 'oauthRevocationRetryWorker', 'mtlsCertificateRevocationWorker', 'authEmailWorker',
@@ -51,17 +54,18 @@ const EXPECTED_118_NAMES = [
   'ticketAttachmentReaper', 'quoteExpiryReaper', 'suppressionExpiryReaper', 'ticketNotifyWorker', 'ticketOutboxPublisher',
   'ticketSlaWorker', 'inboundEmailWorker', 'ticketMailboxPollWorker', 'invoiceWorker',
   'metricAnomalyIncidentPublisher', 'contractWorker', 'aiUnattendedExposureRetention',
-  'alertVerdictScheduler', 'aiAgentSweepScheduler', 'accountingSyncWorker', 'aiAgentImpactRollup',
+  'alertVerdictScheduler', 'aiAgentSweepScheduler', 'accountingSyncWorker', 'accountingReconcileWorker',
+  'aiAgentImpactRollup',
   'aiAgentGraduation',
 ];
 
 describe('workerRegistry: losslessness', () => {
-  it('contains exactly the 118 known names, in order', () => {
-    expect(WORKER_REGISTRY.map((e) => e.name)).toEqual(EXPECTED_118_NAMES);
+  it('contains exactly the 123 known names, in order', () => {
+    expect(WORKER_REGISTRY.map((e) => e.name)).toEqual(EXPECTED_123_NAMES);
   });
 
-  it('has exactly 118 entries', () => {
-    expect(WORKER_REGISTRY.length).toBe(118);
+  it('has exactly 123 entries', () => {
+    expect(WORKER_REGISTRY.length).toBe(123);
   });
 
   it('every entry has a well-formed shape', () => {
@@ -81,14 +85,14 @@ describe('workerRegistry: losslessness', () => {
 
 describe('workerRegistry: selectWorkers', () => {
   it("'all' selects every entry", () => {
-    expect(selectWorkers('all').length).toBe(118);
+    expect(selectWorkers('all').length).toBe(123);
     expect(selectWorkers('all')).toEqual(WORKER_REGISTRY);
   });
 
   it("'api' and 'worker' partition the set with no overlap and no loss", () => {
     const api = selectWorkers('api');
     const worker = selectWorkers('worker');
-    expect(api.length + worker.length).toBe(118);
+    expect(api.length + worker.length).toBe(123);
 
     const apiNames = new Set(api.map((e) => e.name));
     const workerNames = new Set(worker.map((e) => e.name));
@@ -96,7 +100,7 @@ describe('workerRegistry: selectWorkers', () => {
       expect(workerNames.has(name)).toBe(false);
     }
     const union = new Set([...apiNames, ...workerNames]);
-    expect(union.size).toBe(118);
+    expect(union.size).toBe(123);
   });
 
   it("'api' selects only socket-owner placements", () => {

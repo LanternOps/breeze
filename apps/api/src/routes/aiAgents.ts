@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
-import { and, asc, desc, eq, inArray, sql, type SQL } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNull, sql, type SQL } from 'drizzle-orm';
 import {
+  AI_AGENT_GRADUATION_BY_ORG_LIMIT,
   AI_AGENT_IMPACT_REBUILD_DAYS,
   AI_AGENT_IMPACT_REBUILD_MAX_ORGS,
   AI_AGENT_KINDS,
@@ -11,17 +12,20 @@ import {
   AI_AGENT_RUN_STATUSES,
   type AgentRunVerdict,
   type AiAgentDto,
+  type AiAgentGraduationByOrgDto,
+  type AiAgentGraduationDto,
   type AiAgentRunListItemDto,
   type ExposureBudgetDto,
   createAiAgentSchema,
   impactQuerySchema,
   impactRebuildQuerySchema,
   impactWeightsSchema,
+  promoteSupervisedKeyRequestSchema,
   triggerAgentRunSchema,
   updateAiAgentSchema,
 } from '@breeze/shared';
 import { zValidator } from '../lib/validation';
-import { db } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import {
   actionIntents, aiAgentRuns, aiAgents, aiToolExecutions, devices, organizations,
   reportRuns, reports, ticketDrafts, type AiAgentRow,
@@ -49,8 +53,10 @@ import {
   ActPrerequisitesNotMetError, AgentInvariantError, AgentKindConflictError,
   InvalidSupervisedActionKeysError, UnsupportedAgentModeError,
 } from '../services/aiAgents/agentService';
-import { resolveEffectiveAgent } from '../services/aiAgents/effectivePolicy';
+import { resolveEffectiveAgent, resolveEffectiveAgentSystem } from '../services/aiAgents/effectivePolicy';
+import { loadActOpReliability, loadGraduationRows } from '../services/aiAgents/graduationService';
 import { POLICY_DECIDABLE_TIER3 } from '../services/actionIntents/policyDecidable';
+import { ActionIntentError, createActionIntent } from '../services/actionIntents/intentService';
 import { computeExposureBudget } from '../services/actionIntents/exposureBudget';
 import { createAndEnqueueAgentRun } from '../services/aiAgents/runService';
 import { InvalidAgentRecipientsError } from '../services/aiAgents/recipients';
@@ -289,6 +295,270 @@ aiAgentsRoutes.get('/policy-decidable-keys', scopes, requireAiRead, async (c) =>
       .map((entry) => ({ key: entry.key, toolName: entry.toolName, action: entry.action, note: entry.note })),
   });
 });
+
+/**
+ * Orgs per system-context transaction in the `byOrg` fan-out of
+ * `GET /graduation` below. Exported for the route test, which pins the bound
+ * (one context per batch) rather than the incidental call count. 25 x ~7
+ * round trips is a short-lived snapshot; the cap on the SIZE of that fan-out
+ * is `AI_AGENT_GRADUATION_BY_ORG_LIMIT`.
+ */
+export const AI_AGENT_GRADUATION_BY_ORG_BATCH = 25;
+
+/**
+ * P2-5 (#4192, Task A2-8) — the graduation READ route: the panel (web Task
+ * 20) and the partner-wide agent page both read through here. Registered
+ * beside GET /policy-decidable-keys, ahead of GET /:id, for the same reason
+ * every other literal segment on this router is: it must not fall into the
+ * `:id` param route.
+ *
+ * This route is deliberately NOT gated on `policyDecideEnabled()` — a read is
+ * an observation about evidence, never a write (only POST
+ * /graduation/promote 409s while the flag is dark; see that route's own
+ * docstring). `policyDecideEnabled` is still reported on the DTO so the panel
+ * can explain why Promote is disabled.
+ *
+ * With `orgId`: the effective agent is resolved SERVER-SIDE via
+ * `resolveEffectiveAgentSystem` — an org token carries a `partnerId` but
+ * never passes `breeze_has_partner_access`, so it cannot read the partner
+ * baseline row itself (`effectivePolicy.ts:341-350`) — never an id supplied
+ * on the query string. `ownerScope` reports `'organization'` only when THIS
+ * org has its own active `ai_agents` row for `kind` (an override); every
+ * other org rides the partner baseline and reports `'partner'`.
+ *
+ * Without `orgId` (partner scope only — an org-scoped caller has no partner
+ * axis to fan out over, so it 400s the same way `GET /impact` does for a
+ * system-scoped caller with no orgId): the first
+ * `AI_AGENT_GRADUATION_BY_ORG_LIMIT` orgs this caller can access, in name
+ * order, are resolved the same way and grouped into `byOrg`, in batches of
+ * `AI_AGENT_GRADUATION_BY_ORG_BATCH` (see the loop's comment for why BOTH
+ * bounds exist). A partner over the cap gets `byOrgTruncated: true`. An org
+ * with no active agent for `kind` is omitted rather than reported empty. The
+ * top-level `promoteThreshold` is informational only (the per-row `state`/
+ * `blockedReason` already apply each org's own merged threshold) — it is the
+ * first resolved org's merged value, or the shared default when no org under
+ * this partner has an active agent for `kind` yet.
+ */
+
+aiAgentsRoutes.get(
+  '/graduation',
+  scopes,
+  requireAiRead,
+  zValidator('query', z.object({
+    orgId: z.string().guid().optional(),
+    kind: z.enum(AI_AGENT_KINDS),
+  })),
+  async (c) => {
+    const auth = c.get('auth');
+    const { orgId, kind } = c.req.valid('query');
+    const flagEnabled = policyDecideEnabled();
+
+    if (orgId !== undefined) {
+      if (!auth.canAccessOrg(orgId)) {
+        return c.json({ error: 'Organization not accessible' }, 403);
+      }
+
+      const resolved = await resolveEffectiveAgentSystem(orgId, kind);
+      if (!resolved) {
+        return c.json({ error: 'No active agent policy for this organization/kind' }, 404);
+      }
+
+      const [orgOverride] = await db
+        .select({ id: aiAgents.id })
+        .from(aiAgents)
+        .where(and(eq(aiAgents.orgId, orgId), eq(aiAgents.kind, kind), isNull(aiAgents.disabledAt)))
+        .limit(1);
+
+      const [rows, actOpReliability] = await Promise.all([
+        loadGraduationRows(orgId, resolved.agentId),
+        loadActOpReliability(orgId, resolved.agentId),
+      ]);
+
+      const dto: AiAgentGraduationDto = {
+        version: 1,
+        agentId: resolved.agentId,
+        ownerScope: orgOverride ? 'organization' : 'partner',
+        rows,
+        actOpReliability,
+        promoteThreshold: resolved.effective.limits.promoteThreshold,
+        policyDecideEnabled: flagEnabled,
+      };
+      return c.json(dto);
+    }
+
+    if (auth.scope !== 'partner') {
+      return c.json({ error: 'org_id_required', message: 'orgId is required for this scope' }, 400);
+    }
+
+    // `+ 1` is a probe row, not slack: it tells the route there IS more
+    // without a second COUNT, and is dropped before any work is done for it.
+    const orgRows = await db
+      .select({ id: organizations.id, name: organizations.name })
+      .from(organizations)
+      .where(and(auth.orgCondition(organizations.id), isNull(organizations.deletedAt)))
+      .orderBy(asc(organizations.name))
+      .limit(AI_AGENT_GRADUATION_BY_ORG_LIMIT + 1);
+
+    const byOrgTruncated = orgRows.length > AI_AGENT_GRADUATION_BY_ORG_LIMIT;
+    const fanoutOrgs = byOrgTruncated
+      ? orgRows.slice(0, AI_AGENT_GRADUATION_BY_ORG_LIMIT)
+      : orgRows;
+
+    const byOrg: AiAgentGraduationByOrgDto['byOrg'] = [];
+    let promoteThreshold: number | null = null;
+    // Two separate bounds, because either alone leaves the pool-starvation
+    // shape this router has already been bitten by.
+    //
+    // COUNT (`AI_AGENT_GRADUATION_BY_ORG_LIMIT`, above): every org here costs
+    // a policy resolve plus two ledger reads, so an uncapped partner-wide
+    // read is an unbounded per-request workload — the same reason `GET
+    // /impact` refuses a fan-out outright and `POST /impact/rebuild` carries
+    // `AI_AGENT_IMPACT_REBUILD_MAX_ORGS`. Over the cap the panel reports
+    // `byOrgTruncated` and reaches the rest through `?orgId=`, which is never
+    // capped.
+    //
+    // TRANSACTION LIFETIME (`AI_AGENT_GRADUATION_BY_ORG_BATCH`, below):
+    // review round 1 collapsed 3N pooled transactions into one by opening a
+    // single system context around the loop — resolveEffectiveAgentSystem and
+    // graduationService's inSystemDbContext both skip re-opening when
+    // getCurrentDbAccessContext() already reads 'system'. That fixed the
+    // transaction COUNT and created a new problem: one snapshot held open for
+    // N x ~7 sequential round trips, on a second pooled connection, while the
+    // request's own auth transaction holds the first. Batching keeps the
+    // collapse (one context per 25 orgs, not per org) while bounding how long
+    // any single connection is pinned. Batches are independent read-only
+    // snapshots, which is correct here — the listing itself is already read
+    // outside them.
+    //
+    // The org listing above deliberately stays in the REQUEST's own context
+    // so `auth.orgCondition`'s tenancy pin binds.
+    for (let i = 0; i < fanoutOrgs.length; i += AI_AGENT_GRADUATION_BY_ORG_BATCH) {
+      const batch = fanoutOrgs.slice(i, i + AI_AGENT_GRADUATION_BY_ORG_BATCH);
+      await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+        for (const org of batch) {
+          const resolved = await resolveEffectiveAgentSystem(org.id, kind);
+          if (!resolved) continue;
+          if (promoteThreshold === null) promoteThreshold = resolved.effective.limits.promoteThreshold;
+          const [rows, actOpReliability] = await Promise.all([
+            loadGraduationRows(org.id, resolved.agentId),
+            loadActOpReliability(org.id, resolved.agentId),
+          ]);
+          byOrg.push({ orgId: org.id, orgName: org.name, agentId: resolved.agentId, rows, actOpReliability });
+        }
+      }, 'aiAgents.graduation.byOrg'));
+    }
+
+    const dto: AiAgentGraduationByOrgDto = {
+      version: 1,
+      promoteThreshold: promoteThreshold ?? AI_AGENT_LIMIT_DEFAULTS.promoteThreshold,
+      policyDecideEnabled: flagEnabled,
+      byOrgTruncated,
+      byOrg,
+    };
+    return c.json(dto);
+  },
+);
+
+/**
+ * P2-5 (#4192, Task A2-5) — RAISE a promotion. This route grants nothing: it
+ * creates the Tier-3 FOUR-EYES action intent
+ * (`manage_ai_agents:authorize_supervised_key`) whose eventual release runs
+ * the grant (`services/aiAgents/supervisedKeyGrant.ts`).
+ *
+ * Four-eyes AS BUILT is requester + one DIFFERENT approver, first eligible
+ * approval wins (`decideApprovalRequest.ts`); the sole-operator WebAuthn
+ * self-approval exception (`intentService.ts`) applies here UNCHANGED — a
+ * partner whose only eligible approver is the requester can still approve
+ * their own request with a hardware credential, exactly as for every other
+ * four-eyes tool. This wave adds no new state machine.
+ *
+ * 409 when `BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED` is off: the whole point
+ * of a supervised key is to let `attemptPolicyDecision` release without human
+ * fanout, so raising an approval for one while that lane is dark would queue
+ * an authority change nobody can use — and the executor would refuse it at
+ * release anyway (`policy_decide_disabled`). The graduation READ route is
+ * deliberately not gated the same way (Task 18): eligibility is an
+ * observation, not a write.
+ *
+ * `source: 'mcp_api'` is deliberate and is about the DEADLINE, not the
+ * caller: `computeExpiresAt` keys the approval window off source first, and
+ * only the non-chat branch (24h) is long enough for a second human to reach
+ * their inbox. The chat branch would expire the request in 60 minutes.
+ *
+ * No `requireMfa()` — this raises a request that a second human must still
+ * approve; the MFA/assurance bar belongs to that approval (riskTier 'high'
+ * floors it at L3), not to asking for it.
+ *
+ * A key the org ALREADY holds is not rejected here: eligibility is
+ * re-established at RELEASE time, not at request time, and a pre-check would
+ * be TOCTOU comfort rather than a guarantee. A duplicate therefore surfaces
+ * as the intent terminalizing `failed` with reason `already_granted` — the
+ * "nothing to do, the key is already live" signal, deliberately not a false
+ * success (`services/aiAgents/supervisedKeyGrant.ts` gives the full
+ * reasoning, including why the provenance columns are not re-stamped).
+ */
+aiAgentsRoutes.post(
+  '/graduation/promote',
+  scopes,
+  requireAiWrite,
+  zValidator('json', promoteSupervisedKeyRequestSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { orgId, kind, opKey } = c.req.valid('json');
+
+    if (!policyDecideEnabled()) {
+      return c.json({ error: 'policy_decide_disabled' }, 409);
+    }
+    if (!auth.canAccessOrg(orgId)) {
+      return c.json({ error: 'Organization not accessible' }, 403);
+    }
+
+    try {
+      // `runOutsideDbContext` is LOAD-BEARING, not tidiness — found by
+      // `aiAgentGraduation.integration.test.ts` (Task A2-9) against real
+      // Postgres, where this route 500'd on every promotion.
+      // `createActionIntent` opens its transaction with a bare
+      // `withSystemDbAccessContext`, and that is a NO-OP passthrough when a
+      // context is already held (`db/index.ts`). This route is not in
+      // `SELF_MANAGED_DB_CONTEXT_ROUTES`, so `authMiddleware` runs the whole
+      // handler inside the REQUESTER's org-scoped request transaction; the
+      // four-eyes fan-out then inserts an `approval_requests` row owned by a
+      // DIFFERENT user, and that table's Shape-6 policy is
+      // `user_id = breeze_current_user_id() OR breeze_current_scope() = 'system'`
+      // — so the insert dies 42501 and the request 500s. Every OTHER caller
+      // of `createActionIntent` (the chat SDK, the agent run loop, the
+      // verdict/triage/sweep proposers) reaches it from a contextless stack,
+      // which is why this is the first route to meet it. Exiting the request
+      // context makes the system wrapper actually elevate.
+      //
+      // No atomicity is lost: nothing else in this handler writes, and
+      // `createActionIntent`'s own transaction still commits the intent, its
+      // fan-out and its outbox row together.
+      const intent = await runOutsideDbContext(() => createActionIntent(auth, {
+        toolName: 'manage_ai_agents',
+        // `orgId` is carried in the ARGUMENTS as well as on the intent: the
+        // effect-digest resolver receives only `(args, database)` and pins
+        // this org's authorized-key list from it. createActionIntent rejects
+        // an `orgId` argument that disagrees with the intent's own resolved
+        // org, so it can only ever name the org this caller is authorized for.
+        input: { action: 'authorize_supervised_key', kind, opKey, orgId },
+        source: 'mcp_api',
+        orgId,
+        requestingClientLabel: 'Breeze',
+      }));
+      return c.json({ intentId: intent.id }, 201);
+    } catch (err) {
+      // Every ActionIntentError is a caller-fixable refusal (tool blocked or
+      // reclassified, org unresolvable, argument mismatch) — answered as a
+      // 400 with its code rather than allowed to reach the global handler as
+      // a 500.
+      if (err instanceof ActionIntentError) {
+        return c.json({ error: err.code, message: err.message }, 400);
+      }
+      throw err;
+    }
+  },
+);
 
 /**
  * Wave 6 PR 1 (#3828) — the org+kind unattended-exposure budget readout:

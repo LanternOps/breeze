@@ -59,6 +59,15 @@ import { Steps, Aside } from '@astrojs/starlight/components';
 
 ## Version-specific notes
 
+### v0.109.0 — AI agents, ticket attachments and org archiving
+
+Mostly additive. Nothing in this release requires a new setting before you upgrade, but note the following:
+
+- **Migrations.** 53 idempotent migrations auto-apply on boot. Two touch tables that can be very large on a long-running self-hosted instance: one builds an index on remote-session history, and one adds a validated constraint to time entries. Both take a brief lock while they run, so expect a slightly longer boot than a routine upgrade — proportional to how much remote-session and time-entry history you hold. Take the database backup in step 1 above and upgrade during a quiet window.
+- **New AI agent capabilities are off by default.** `BREEZE_AI_AGENTS_ENABLED` remains `false`, and even with it on, each agent starts in **Off** — an agent only acts after you deliberately move it to **Act** and confirm with multi-factor. See [AI Agents](/features/ai-agents/).
+- **New partners start with inbound email-to-ticket turned off.** Existing partners are unchanged. See [Ticketing](/features/ticketing/).
+- **Optional worker split.** You can now move background jobs to their own container. Entirely opt-in and off unless you enable it — see [Worker Split](/deploy/worker-split/).
+
 ### v0.95.0 — authentication & tenancy hardening
 
 This release resets the authentication surface. Plan for a short low-traffic window and expect the following the first time the new API boots:

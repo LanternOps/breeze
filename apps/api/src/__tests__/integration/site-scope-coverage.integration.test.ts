@@ -35,6 +35,12 @@ import {
  * deferred — the default action on a new failure is to fix the handler,
  * not extend the allowlist.
  *
+ * NOTE: the scanner is `:deviceId`-only — the contact routes
+ * (`routes/orgContacts.ts`, #3258) carry no device in their path and are
+ * covered by their own suites (`orgContacts.test.ts`, `contacts/crud.test.ts`,
+ * `contacts/import.test.ts`, `contactImport.integration.test.ts`); do not
+ * extend the scanner to reach them.
+ *
  * NOTE: this test only catches per-device URL patterns. Handlers that take
  * a `deviceId` via query/body filter are still vulnerable to the same
  * class of bug; those are caught by route-level reviews and the targeted

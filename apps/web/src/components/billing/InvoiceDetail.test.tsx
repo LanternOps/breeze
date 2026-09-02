@@ -268,6 +268,40 @@ describe('InvoiceDetail', () => {
     expect(screen.getByTestId('invoice-payment-online-p1')).toBeInTheDocument();
     expect(screen.queryByTestId('invoice-payment-void-p1')).not.toBeInTheDocument();
   });
+
+  it('badges QuickBooks-pulled payments and hides manual void on them (Phase D)', async () => {
+    fetchMock.mockImplementation(async (input: string) => {
+      if (input.endsWith('/payments')) return json({ data: [
+        { id: 'p2', invoiceId: 'inv-1', amount: '120.00', method: 'check', reference: 'QB-9012', receivedAt: '2026-06-11', note: null, createdAt: '', source: 'quickbooks' },
+      ] });
+      return json({ data: {} });
+    });
+    render(<InvoiceDetail detail={issued} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('invoice-payment-p2')).toBeInTheDocument());
+
+    expect(screen.getByTestId('invoice-payment-quickbooks-p2')).toHaveTextContent('QuickBooks');
+    // Reversing a pulled payment in Breeze would not touch QuickBooks, and the
+    // next reconcile would pull it straight back in — so the void affordance is
+    // replaced by a provenance label, exactly as it is for Stripe.
+    expect(screen.getByTestId('invoice-payment-p2')).toHaveTextContent('via QuickBooks');
+    expect(screen.queryByTestId('invoice-payment-void-p2')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('invoice-payment-online-p2')).not.toBeInTheDocument();
+  });
+
+  it('keeps the void affordance and adds no badge on operator-recorded payments', async () => {
+    fetchMock.mockImplementation(async (input: string) => {
+      if (input.endsWith('/payments')) return json({ data: [
+        { id: 'p3', invoiceId: 'inv-1', amount: '120.00', method: 'cash', reference: null, receivedAt: '2026-06-12', note: null, createdAt: '', source: 'manual' },
+      ] });
+      return json({ data: {} });
+    });
+    render(<InvoiceDetail detail={issued} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('invoice-payment-p3')).toBeInTheDocument());
+
+    expect(screen.getByTestId('invoice-payment-void-p3')).toBeInTheDocument();
+    expect(screen.queryByTestId('invoice-payment-quickbooks-p3')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('invoice-payment-online-p3')).not.toBeInTheDocument();
+  });
 });
 
 describe('InvoiceDetail — Stripe currency-mismatch warning (#3777)', () => {

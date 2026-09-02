@@ -11,16 +11,9 @@ services:
     ports:
       - '6379:6379'
 
-  caddy:
-    # Uses canonical docker/Caddyfile.prod mounted by the base compose.
-    # No command override needed — Caddy reads the volume-mounted config.
-    environment:
-      # Enables the @portalDevAssets matcher (#3906) so unprefixed Astro/Vite
-      # dev module URLs for portal islands (/src/*, /@fs/*, /@vite/*,
-      # /node_modules/.vite/*) route to the dev portal service instead of
-      # 404ing against web:4321. Unset in production — see the matcher's
-      # comment in docker/Caddyfile.prod.
-      CADDY_PORTAL_DEV_ASSETS: "1"
+  # caddy needs no dev override: it uses the canonical docker/Caddyfile.prod
+  # mounted by the base compose, and the portal (dev server included) is routed
+  # on path alone under /portal — see the @portal block there and #3906.
 
   binaries-init:
     image: alpine:3.19

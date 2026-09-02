@@ -127,6 +127,11 @@ vi.mock('../services/effectiveSettings', () => ({
   assertNotLocked: vi.fn(),
 }));
 
+vi.mock('../services/aiBudgetAlerts', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/aiBudgetAlerts')>();
+  return { ...actual, evaluateAiBudgetThresholds: vi.fn().mockResolvedValue([]) };
+});
+
 import { aiRoutes } from './ai';
 import { db } from '../db';
 import {
@@ -139,6 +144,8 @@ import {
   searchSessions,
 } from '../services/aiAgent';
 import { getUsageSummary, updateBudget, getSessionHistory } from '../services/aiCostTracker';
+import { evaluateAiBudgetThresholds } from '../services/aiBudgetAlerts';
+import { assertNotLocked } from '../services/effectiveSettings';
 import { streamingSessionManager } from '../services/streamingSessionManager';
 import { runPreFlightChecks, abortActivePlan } from '../services/aiAgentSdk';
 
@@ -179,6 +186,91 @@ describe('AI routes', () => {
       expect(body.billedTo).toBe('partner_key');
     });
 
+    // ============================================
+    // #4388 W04: the partner-wide credit pool
+    // ============================================
+    //
+    // `credits` is the MSP's balance, shared across every one of its customer
+    // orgs, so an organization-scoped token must never receive it. The mock
+    // below stands in for a WARM cache: getUsageSummary hands back a balance
+    // whenever the caller asked for one, so a `credits: null` in the response
+    // is the ROUTE withholding it, not an empty cache.
+    const CACHED_CREDITS = {
+      remaining: 1240, includedBalance: 0, purchasedBalance: 1240, fetchedAt: '2026-09-01T00:00:00.000Z',
+    };
+
+    function mockWarmCreditCache() {
+      vi.mocked(getUsageSummary).mockImplementation(
+        (async (_orgId: string, options?: { includeCredits?: boolean }) => ({
+          daily: { inputTokens: 0, outputTokens: 0, totalCostCents: 0, messageCount: 0 },
+          monthly: { inputTokens: 0, outputTokens: 0, totalCostCents: 0, messageCount: 0 },
+          budget: null,
+          billedTo: 'platform',
+          catalogEndpointName: null,
+          credits: options?.includeCredits ? CACHED_CREDITS : null,
+          alerts: { fired: [] },
+        })) as unknown as typeof getUsageSummary,
+      );
+    }
+
+    async function authAs(scope: 'organization' | 'partner' | 'system') {
+      const { authMiddleware } = await import('../middleware/auth');
+      vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-1', email: 'test@example.com', name: 'Test User' },
+          scope,
+          partnerId: scope === 'organization' ? null : 'partner-1',
+          orgId: ORG_ID,
+          accessibleOrgIds: [ORG_ID],
+          orgCondition: () => undefined,
+          canAccessOrg: () => true,
+        });
+        return next();
+      });
+    }
+
+    it('withholds the partner-wide credit pool from an organization-scoped token', async () => {
+      mockWarmCreditCache();
+      await authAs('organization');
+
+      const res = await app.request('/ai/usage', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      expect((await res.json()).credits).toBeNull();
+      expect(getUsageSummary).toHaveBeenCalledWith(ORG_ID, { includeCredits: false });
+    });
+
+    it('returns the credit balance to a partner-scoped token', async () => {
+      mockWarmCreditCache();
+      await authAs('partner');
+
+      const res = await app.request('/ai/usage', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      expect((await res.json()).credits).toEqual(CACHED_CREDITS);
+      expect(getUsageSummary).toHaveBeenCalledWith(ORG_ID, { includeCredits: true });
+    });
+
+    it('returns the credit balance to a system-scoped token', async () => {
+      mockWarmCreditCache();
+      await authAs('system');
+
+      const res = await app.request('/ai/usage', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      expect((await res.json()).credits).toEqual(CACHED_CREDITS);
+      expect(getUsageSummary).toHaveBeenCalledWith(ORG_ID, { includeCredits: true });
+    });
+
     it('returns 403 when accessing other org', async () => {
       const res = await app.request('/ai/usage?orgId=other-org', {
         method: 'GET',
@@ -186,6 +278,35 @@ describe('AI routes', () => {
       });
 
       expect(res.status).toBe(403);
+    });
+
+    // #4388: the no-orgId branch (system/partner users with no specific org)
+    // never calls getUsageSummary, so it has its own literal response shape.
+    // alerts.fired must still be present (empty) so callers can read
+    // `usage.alerts.fired` unconditionally across every /ai/usage response.
+    it('returns alerts.fired as an empty array when there is no orgId to resolve', async () => {
+      const { authMiddleware } = await import('../middleware/auth');
+      vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'admin-1', email: 'admin@example.com' },
+          scope: 'system',
+          orgId: null,
+          accessibleOrgIds: null,
+          canAccessOrg: () => true,
+        });
+        return next();
+      });
+
+      const res = await app.request('/ai/usage', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.budget).toBeNull();
+      expect(body.alerts).toEqual({ fired: [] });
+      expect(getUsageSummary).not.toHaveBeenCalled();
     });
   });
 
@@ -213,6 +334,7 @@ describe('AI routes', () => {
         ORG_ID,
         expect.objectContaining({ enabled: true, monthlyBudgetCents: 10000 })
       );
+      expect(evaluateAiBudgetThresholds).toHaveBeenCalledWith(ORG_ID);
     });
 
     it('rejects invalid approval mode', async () => {
@@ -233,6 +355,53 @@ describe('AI routes', () => {
       });
 
       expect(res.status).toBe(403);
+    });
+
+    it('rejects an alert threshold outside 1..99', async () => {
+      const res = await app.request('/ai/budget', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ alertThresholdPercents: [50, 100] }),
+      });
+
+      expect(res.status).toBe(400);
+    });
+
+    it('stores normalised alert thresholds', async () => {
+      vi.mocked(updateBudget).mockResolvedValueOnce(undefined);
+
+      const res = await app.request('/ai/budget', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ alertThresholdPercents: [95, 50, 50] }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(updateBudget).toHaveBeenCalledWith(
+        ORG_ID,
+        expect.objectContaining({ alertThresholdPercents: [50, 95] })
+      );
+    });
+
+    it('checks the partner lock against the normalised thresholds, not the raw submitted order (finding #2a)', async () => {
+      // assertNotLocked (services/effectiveSettings.ts) compares with
+      // isDeepStrictEqual, which is array-order-sensitive. Passing the raw body
+      // means a partner-locked [50, 80, 95] would 403 a legitimate no-op resubmit
+      // sent as [95, 50, 80] purely on array order.
+      vi.mocked(updateBudget).mockResolvedValueOnce(undefined);
+
+      const res = await app.request('/ai/budget', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ alertThresholdPercents: [95, 50, 80] }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(assertNotLocked).toHaveBeenCalledWith(
+        ORG_ID,
+        'aiBudgets',
+        expect.objectContaining({ alertThresholdPercents: [50, 80, 95] })
+      );
     });
   });
 

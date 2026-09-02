@@ -38,6 +38,9 @@ function payment(overrides: Partial<ChangeSet['payments'][number]> = {}): Change
     amountMinor: 1234,
     currency: 'USD',
     txnDate: '2026-09-04',
+    remotePaymentSyncToken: '0',
+    paymentMethodName: null,
+    paymentRefNum: null,
     ...overrides,
   };
 }

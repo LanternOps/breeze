@@ -522,10 +522,13 @@ describe('POST /devices/:id/move-org', () => {
       // unreachable from the device-keyed detach: ticket-triggered runs carry
       // a ticket_id with a NULL device_id, so they need their own statement
       // keyed off the ticket's device_id.
+      // Collapse BEFORE filtering: the source formats these statements across
+      // two lines, so filtering on the raw text would silently yield [] if the
+      // template were ever reflowed to `UPDATE ai_agent_runs\n  SET ...`.
       const collapse = (s: string) => s.replace(/\s+/g, ' ').trim();
       const runDetaches = statements
-        .filter((s) => s.startsWith('UPDATE ai_agent_runs '))
-        .map(collapse);
+        .map(collapse)
+        .filter((s) => s.startsWith('UPDATE ai_agent_runs '));
       expect(
         runDetaches,
         `Expected the device-keyed run detach plus the ticket-keyed one.\nStatements:\n${statements.join('\n')}`,
@@ -536,10 +539,11 @@ describe('POST /devices/:id/move-org', () => {
           `WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${DEVICE_ID}::uuid)`,
       ]);
 
-      // The subselect resolves tickets by device_id, which the move never
-      // rewrites — but run it BEFORE the generic loop re-stamps tickets.org_id
-      // so both sides of the statement are still read under the SOURCE org,
-      // matching the metric_anomaly_incidents reverse-pointer ordering.
+      // Position is pinned to mirror breeze_cascade_device_org_id()'s internal
+      // order, where it IS load-bearing. It is not load-bearing here: that
+      // trigger fires on the devices UPDATE and has already restamped
+      // tickets.org_id (and run this detach) before any of these statements is
+      // sent. Kept so the route stays correct on its own without the trigger.
       const detachIdx = statements.findIndex((s) => s.startsWith('UPDATE ai_agent_runs SET ticket_id'));
       const ticketsIdx = statements.findIndex((s) => s.startsWith('UPDATE tickets '));
       expect(detachIdx).toBeGreaterThanOrEqual(0);

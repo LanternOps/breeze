@@ -45,8 +45,10 @@ const REAPER_QUEUE_NAME = 'ticket-outbox-publisher';
 const PUBLISH_INTERVAL_MS = 5 * 1000; // every 5s
 const MAX_PUBLISH_PER_RUN = 200;
 // Rows with publish_attempts > this are considered stuck: logged as an alarm
-// and left alone rather than retried forever.
-const MAX_PUBLISH_ATTEMPTS = 5;
+// and left alone rather than retried forever. Exported so
+// ticketOutboxRetention.ts's prune cutoff stays in sync with this threshold
+// instead of duplicating the magic number (#4210).
+export const MAX_PUBLISH_ATTEMPTS = 5;
 
 // The bounded subset of TicketOutboxEvent that currently has a corresponding
 // eventBus EventType literal. See the file doc comment above for why the

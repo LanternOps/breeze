@@ -79,7 +79,7 @@ The `config_policy_maintenance_settings` table stores:
 | `recurrence` | `varchar(20)` | One of `once`, `daily`, `weekly`, `monthly` |
 | `durationHours` | `integer` | How long the window lasts from its computed start time |
 | `timezone` | `varchar(100)` | IANA timezone identifier (e.g., `America/New_York`). Defaults to `UTC`. |
-| `windowStart` | `varchar(30)` | ISO-8601 datetime for `once` recurrence only (e.g., `2026-03-15T02:00:00`). Ignored for other recurrence types. |
+| `windowStart` | `varchar(30)` | For `once` recurrence, the ISO-8601 datetime the window runs at (e.g., `2026-03-15T02:00:00`). For `daily`, `weekly` and `monthly`, its time-of-day sets when each window opens; when empty, the window opens at midnight. |
 | `suppressAlerts` | `boolean` | Default: `true` |
 | `suppressPatching` | `boolean` | Default: `false` |
 | `suppressAutomations` | `boolean` | Default: `false` |
@@ -171,9 +171,11 @@ For recurring windows, the system generates occurrence records automatically. St
 
 | Recurrence | Window Start |
 |------------|--------------|
-| `daily` | Midnight (00:00) in the configured timezone, every day |
-| `weekly` | Midnight on the most recent Sunday in the configured timezone |
-| `monthly` | Midnight on the 1st of the current month in the configured timezone |
+| `daily` | The configured start time, in the configured timezone, every day |
+| `weekly` | The configured start time on the most recent Sunday in the configured timezone |
+| `monthly` | The configured start time on the 1st of the current month in the configured timezone |
+
+Set **Start time** on the policy's Maintenance tab to choose the time of day each window opens, in the selected timezone. A policy that has no start time stored — including every recurring policy saved before this was configurable — falls back to **midnight (00:00)**, which is how those windows have always behaved.
 
 The window remains active for `durationHours` from its computed start time.
 
@@ -183,7 +185,7 @@ The window remains active for `durationHours` from its computed start time.
 
 Both standalone windows and configuration policy settings store a `timezone` field as an IANA timezone identifier (e.g., `America/New_York`, `Europe/London`, `Asia/Tokyo`). The default is `UTC`.
 
-For configuration policy maintenance, the system converts the current UTC time to the configured timezone using `Intl.DateTimeFormat` before computing whether the window is active. This means a `daily` window with timezone `America/Chicago` and `durationHours: 4` is active from midnight to 04:00 Central time, regardless of the server's timezone.
+For configuration policy maintenance, the system converts the current UTC time to the configured timezone using `Intl.DateTimeFormat` before computing whether the window is active. This means a `daily` window with timezone `America/Chicago`, `durationHours: 4` and no start time set is active from midnight to 04:00 Central time, regardless of the server's timezone. Give it a start time of `02:00` and the same window runs from 02:00 to 06:00 Central instead.
 
 <Aside type="note">
 If an invalid timezone string is provided, the system logs a warning and falls back to UTC. This prevents a misconfigured timezone from permanently disabling maintenance windows.

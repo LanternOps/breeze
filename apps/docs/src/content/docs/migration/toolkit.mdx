@@ -19,7 +19,7 @@ Everything here uses only documented, stable endpoints — see the [API Referenc
 Two credentials matter here, and they split cleanly by job:
 
 - **A partner service principal** — for anything unattended: Recipe 2's provisioning loop, scheduled syncs, anything that must run without a human at the keyboard. It authenticates against the Partner API (`$BREEZE_URL/partner-api/*`) via the `X-API-Key` header, never touches MFA, and never expires mid-run. Deliberately create-only: it can mint orgs, sites, and enrollment keys, but there is **no** DELETE surface — tearing down tenancy stays a human, MFA-gated act.
-- **A partner-admin user JWT** — for the bulk endpoints that live on the main API: org/site import (Recipe 1) and script bundles (Recipe 6). These are `requireMfa()`-gated: log in as a partner admin, complete the MFA challenge (when `ENABLE_2FA` is on, the JWT must carry `mfa: true` — a bare `POST /auth/login` token gets `403 MFA required`), and export the access token. Tokens are short-lived, so long runs should refresh via `POST /auth/refresh`.
+- **A partner-admin user JWT** — for the bulk endpoints that live on the main API: org/site import (Recipe 1), contact import (Recipe 1c), and script bundles (Recipe 6). These are `requireMfa()`-gated: log in as a partner admin, complete the MFA challenge (when `ENABLE_2FA` is on, the JWT must carry `mfa: true` — a bare `POST /auth/login` token gets `403 MFA required`), and export the access token. Tokens are short-lived, so long runs should refresh via `POST /auth/refresh`.
 
 <Aside title="Setting up the service principal (once, as a human)">
   Creating the principal is itself MFA-gated — that's the point: one interactive act mints a credential your scripts use unattended afterwards.
@@ -32,7 +32,7 @@ Two credentials matter here, and they split cleanly by job:
 
 ```bash
 export BREEZE_URL="https://breeze.yourdomain.com/api/v1"
-export BREEZE_TOKEN="eyJ..."         # partner-admin JWT with MFA satisfied (Recipes 1, 6)
+export BREEZE_TOKEN="eyJ..."         # partner-admin JWT with MFA satisfied (Recipes 1, 1c, 6)
 export BREEZE_PARTNER_KEY="..."      # partner service principal key (Recipe 2)
 
 # Sanity check the JWT — should return your partner record
@@ -117,7 +117,7 @@ Commit re-derives every row's annotation against fresh database state and reject
 
 Commit-only per-row fields: `expectedAnnotation`, `expectedOrganizationId`, `reactivate`. Top-level: `mode` (`skip` default, or `update`).
 
-The import covers **organizations and sites** (plus their external-link rows). It does not import devices — devices arrive by enrolling agents (Recipes 2–3). The single-record endpoints (`POST /orgs/organizations`, `POST /orgs/sites`) still exist for one-offs and carry fields the import rows don't (`contractStart`, `billingContact`, …).
+The import covers **organizations and sites** (plus their external-link rows). It does not import devices — devices arrive by enrolling agents (Recipes 2–3) — and its `contact` field carries only one headline contact per row; the many-contacts-per-organization case has its own importer in [Recipe 1c](#recipe-1c--import-contacts). The single-record endpoints (`POST /orgs/organizations`, `POST /orgs/sites`) still exist for one-offs and carry fields the import rows don't (`contractStart`, `billingContact`, …).
 
 ### Recipe 1b — Import Companies from Your PSA
 
@@ -126,6 +126,91 @@ If your company list already lives in a PSA, skip the CSV: a connected PSA can f
 In the web UI, open **Integrations → PSA** and choose **Import companies** on a connection. Scripted, the same preview → commit pair lives at `POST /psa/connections/:id/import/preview` and `POST /psa/connections/:id/import` (partner scope, MFA, and both org- and site-write permissions required). The PSA's companies come back as ordinary import rows with the same annotation vocabulary as the CSV import (create / matched / conflict), and each imported organization gets an external-link row carrying the PSA's stable company ID — so re-imports and later PSA syncs match by identity, not by name. Companies already linked to an organization are filtered out of the preview.
 
 The preview is bounded: a company cap, a wall-clock budget, and a page guard each stop a runaway listing, and the response says whether (and why) it was truncated — import a batch, then preview again for the rest.
+
+### Recipe 1c — Import Contacts
+
+Contacts are first-class records in Breeze — an organization's people, each either organization-level or pinned to one of that organization's sites — so they load through their own preview → commit pair: `POST /orgs/contacts/import/preview` and `POST /orgs/contacts/import`. Same partner-admin JWT with MFA satisfied as Recipe 1, same **1,000 rows per request** cap. Neither path is organization-scoped: every row names its own organization, so one file covers the whole estate.
+
+The web UI does the same job at **Settings → Organizations → *(an organization)* → Contacts**, which handles the upload, the column mapping, and the acknowledgement handshake below for you.
+
+**Row fields for `POST /orgs/contacts/import` and `/orgs/contacts/import/preview`**
+
+| Field | Required | Notes |
+|---|---|---|
+| `organizationId` *or* `organization` | yes | A UUID, or a name resolved within your own partner |
+| `site` | no | Site **name** within that organization; omit for an organization-level contact |
+| `name`, `email`, `phone`, `mobile` | one of | At least one must be non-blank — that is the identifier rule, and the database enforces it |
+| `title` | no | ≤255 chars |
+| `roles` | no | `billing`, `technical`, `escalation`, `admin`, `site`, `after_hours`, `portal` |
+| `externalId` / `externalSystem` | no | The source's stable contact ID, stored as a `contact_external_links` row. `externalSystem` defaults to `csv` |
+
+Commit-only per-row fields: `expectedAnnotation`, `expectedContactId`. Top-level: `mode` (`skip` default, or `update`), and `partnerId` when a system-scoped caller has to name the partner explicitly.
+
+A row carrying none of `name`/`email`/`phone`/`mobile` is a wire-contract violation, and **one malformed row rejects the whole request** with a `400`. Filter the trailing blank line every spreadsheet export leaves behind before you upload.
+
+Preview annotates every row and writes nothing:
+
+| Annotation | Meaning |
+|---|---|
+| `create` | A new contact will be created |
+| `link-match` | Matched through the durable `(organization, externalSystem, externalId)` link — the stable match, and the link *is* the acknowledgement |
+| `email-match` | Matched an existing contact by email alone — a hint, never applied unless acknowledged |
+| `name-match` | Matched an existing contact by name alone — a hint, never applied unless acknowledged |
+| `conflict` | Row can't proceed (see `conflictReason`) |
+| `org-not-found` | No such organization under your partner — also the answer when the organization exists but is not yours |
+
+A row may additionally carry a `warning`. That is a **non-fatal disclosure**: the row still applies exactly as its annotation says. There is one case today — an email or name hint matched several existing contacts, and the row resolved to `create` anyway because it carries its own `externalId`. Without that `externalId` the same ambiguity is a `conflict`.
+
+To commit a fuzzy match, echo back **both** `expectedAnnotation` and `expectedContactId` — the contact the preview named. Commit re-derives every annotation against fresh state and rejects a row whose annotation moved; the identity pin is what stops an acknowledgement you gave for one person being applied to whoever took over that address between preview and commit. `link-match` rows need no acknowledgement. `conflict` and `org-not-found` rows cannot be committed at all.
+
+Top-level `mode` decides what happens to a `link-match`: `skip` (the default) leaves the linked contact untouched and reports it under `skipped`, so re-uploading an unchanged file writes nothing; `update` applies the row. Either way the import **merges** — a blank or absent column never clears stored data, and `roles` is replaced only when the row supplies a non-empty list. Clearing a field is a deliberate act and lives on `PATCH /orgs/contacts/:contactId`, where an explicit `null` really does clear.
+
+```bash
+#!/usr/bin/env bash
+# import-contacts.sh — preview, then commit, a contacts CSV.
+# Columns: organization,site,name,email,phone,title,externalId
+# Usage: ./import-contacts.sh contacts.csv
+set -euo pipefail
+: "${BREEZE_URL:?}" "${BREEZE_TOKEN:?}"
+CSV="$1"
+AUTH=(-H "Authorization: Bearer $BREEZE_TOKEN" -H "Content-Type: application/json")
+
+# CSV → {"rows":[…]} (≤1000 rows per request). Blank cells are dropped rather
+# than sent: the import merges, so an empty column is "no data", never "clear".
+payload=$(tail -n +2 "$CSV" | jq -Rnc '
+  [inputs | split(",") | select((.[0] // "") != "")
+   | {organization: .[0], site: .[1], name: .[2], email: .[3],
+      phone: .[4], title: .[5], externalId: .[6], externalSystem: "csv"}
+   | with_entries(select(.value != null and .value != ""))]
+  | {rows: .}')
+
+# 1. Preview — writes nothing. Everything that is not a plain create wants eyes.
+curl -sf "${AUTH[@]}" -X POST "$BREEZE_URL/orgs/contacts/import/preview" -d "$payload" \
+  | jq -r '.rows[] | select(.annotation != "create" or .warning)
+           | [.annotation, (.organizationName // .organization),
+              (.name // .email),
+              (.matchedContactEmail // .conflictReason // .warning // "")] | @tsv'
+
+# 2. Commit. mode=skip leaves already-linked contacts alone, so re-runs are idempotent.
+curl -sf "${AUTH[@]}" -X POST "$BREEZE_URL/orgs/contacts/import" \
+  -d "$(jq -c '. + {mode:"skip"}' <<<"$payload")" \
+  | jq '{imported: (.imported|length), updated: (.updated|length),
+         skipped: (.skipped|length), errors: .errors}'
+```
+
+Commit always answers **`200`**, including on a partial failure — `{ imported, updated, skipped, errors }`, so the rows that did land are never hidden behind the rows that didn't. Branch on each error's `code`, never on its `error` text, which is display copy and gets reworded:
+
+| `code` | Meaning |
+|---|---|
+| `row-conflict` | The row is malformed, or ambiguous against existing state |
+| `org-not-found` | No such organization under your partner |
+| `annotation-changed` | The re-derived annotation differs from your acknowledgement |
+| `match-changed` | The contact you acknowledged is no longer the one the row resolves to |
+| `match-unconfirmed` | An `email-match` / `name-match` was never acknowledged |
+| `no-identifier` | The merged row would be left with no name, email, phone, or mobile |
+| `invalid-role` | A role outside the vocabulary above |
+| `site-not-in-org` | The named site does not belong to that organization |
+| `write-failed` | The database write failed |
 
 ---
 

@@ -101,6 +101,11 @@ export const JOB_SCHEDULES = {
   'event-log-retention': '3 7 * * *',
   'agent-log-retention': '23 7 * * *',
   'change-log-retention': '43 7 * * *',
+  // #4210 — outbox/incident retention family, same daily tier as the other
+  // batched-DELETE retention jobs above.
+  'ticket-outbox-retention': '13 7 * * *',
+  'intent-outbox-retention': '33 7 * * *',
+  'metric-anomaly-incident-retention': '53 7 * * *',
   'ip-history-retention': '3 8 * * *',
   'ml-output-retention': '23 8 * * *',
   'user-risk-retention': '43 8 * * *',
@@ -118,6 +123,10 @@ export const JOB_SCHEDULES = {
   'sso-domain-recheck': '23 16 * * *',
   'exchange-rate-sync': '13 17 * * *',
   'ai-unattended-exposure-retention': '8 18 * * *',
+  // P2-5 (#4192, Task A2-3): daily graduation eligibility sweep. Runs after
+  // the evidence-window's day has fully closed, same lane as its sibling
+  // retention slot below (same queue/worker — Deviation #10).
+  'ai-agent-graduation-evaluate': '28 18 * * *',
   // P2-6 (#4193): nightly value-accounting rollup. Daily lane; hour 18 held
   // only minute 8 before this. Runs well after the day it summarises closed.
   'ai-agent-impact-rollup': '33 18 * * *',

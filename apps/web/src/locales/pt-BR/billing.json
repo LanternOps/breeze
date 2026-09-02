@@ -557,7 +557,7 @@
       "addSection": {
         "captionPlaceholder": "Legenda (opcional)",
         "headingPlaceholder": "Texto do título",
-        "imageHelp": "PNG, JPEG ou WebP, até 5 MB.",
+        "imageHelp": "PNG ou JPEG, até 5 MB.",
         "imageUrlPlaceholder": "https://example.com/photo.png",
         "insertHere": "Adicionar seção",
         "richTextPlaceholder": "Texto da proposta…",
@@ -695,7 +695,8 @@
         "updateSection": "Não foi possível atualizar a seção.",
         "uploadImage": "Não foi possível enviar a imagem.",
         "noPriceForCurrency": "Este item não tem preço em {{currency}}. Adicione um no catálogo ou insira uma linha manual.",
-        "sectionAddedListStale": "Seção adicionada, mas não foi possível atualizar a lista. Recarregue a página para vê-la."
+        "sectionAddedListStale": "Seção adicionada, mas não foi possível atualizar a lista. Recarregue a página para vê-la.",
+        "lineAddedListStale": "Linha adicionada, mas não foi possível atualizar a lista. Recarregue a página para vê-la."
       },
       "image": {
         "alt": "Imagem da cotação",
@@ -875,7 +876,7 @@
         "preparedForPlaceholder": "Substituir o nome do cliente",
         "showPreparedBy": "Mostrar “preparado por” (sua empresa)",
         "imageLabel": "Imagem de capa",
-        "imageHelp": "PNG, JPEG ou WebP, até 5 MB.",
+        "imageHelp": "PNG ou JPEG, até 5 MB.",
         "removeImage": "Remover imagem"
       },
       "ghost": {
@@ -1622,6 +1623,8 @@
       "stripeNudge": "Conecte o Stripe para aceitar pagamentos online com cartão.",
       "title": "Pagamentos",
       "viaStripe": "via Stripe",
+      "quickbooks": "QuickBooks",
+      "viaQuickbooks": "via QuickBooks",
       "currencyUnknown": "A moeda de liquidação da sua conta Stripe ainda não foi armazenada em cache, então não foi possível compará-la com esta fatura em {{documentCurrency}}. Atualize os dados da conta Stripe em Configurações → Integrações para habilitar a verificação."
     },
     "requestPayment": {

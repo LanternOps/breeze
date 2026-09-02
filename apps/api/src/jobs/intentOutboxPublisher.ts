@@ -57,8 +57,10 @@ const PAM_ACTUATION_QUEUE_NAME = 'pam-actuation';
 const PUBLISH_INTERVAL_MS = 5 * 1000; // every 5s
 const MAX_PUBLISH_PER_RUN = 200;
 // Rows with publish_attempts > this are considered stuck: logged as an alarm
-// and left alone rather than retried forever.
-const MAX_PUBLISH_ATTEMPTS = 5;
+// and left alone rather than retried forever. Exported so
+// intentOutboxRetention.ts's prune cutoff stays in sync with this threshold
+// instead of duplicating the magic number (#4210).
+export const MAX_PUBLISH_ATTEMPTS = 5;
 
 type PublisherJobData = { type: 'publish-intent-outbox'; queuedAt: string };
 

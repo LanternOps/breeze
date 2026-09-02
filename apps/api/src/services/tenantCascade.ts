@@ -111,6 +111,10 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // orders the actual DELETE, not this list's alphabetization (same
   // reasoning as ai_unattended_exposure above).
   'ai_alert_verdicts',
+  // ai_budget_alert_events (#4388, W01): durable outbox row, FK org_id ON
+  // DELETE CASCADE. No cross-references to ai_budgets, so its position is
+  // pure alphabetization ('_' sorts before letters under localeCompare).
+  'ai_budget_alert_events',
   'ai_budgets',
   'ai_cost_usage',
   'ai_screenshots',

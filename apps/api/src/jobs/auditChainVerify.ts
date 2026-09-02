@@ -81,6 +81,42 @@ function isEnabled(): boolean {
   return !(v === '0' || v === 'false' || v === 'no' || v === 'off');
 }
 
+export type ChainVerifyMode = 'incremental' | 'full';
+
+/**
+ * `AUDIT_CHAIN_VERIFY_MODE`: `incremental` (default) runs the bounded plan
+ * from migration 2026-10-03 — everything after the org's latest anchor plus
+ * one rolling slice of the historical chain — so a night's work is O(new rows
+ * + chain/slices) instead of O(whole chain). `full` keeps the legacy
+ * whole-chain walk (audit_log_verify_chain) for incident response or a
+ * one-off complete re-verification.
+ */
+function verifyMode(): ChainVerifyMode {
+  const raw = (process.env.AUDIT_CHAIN_VERIFY_MODE ?? '').trim().toLowerCase();
+  return raw === 'full' ? 'full' : 'incremental';
+}
+
+const DEFAULT_RESCAN_SLICES = 30;
+
+/**
+ * `AUDIT_CHAIN_VERIFY_RESCAN_SLICES`: how many nightly slices the historical
+ * chain (below the anchor) is cut into. Every row is re-verified at least once
+ * per that many days. Default 30 ≈ monthly full coverage.
+ */
+function rescanSlices(): number {
+  const n = Number.parseInt(process.env.AUDIT_CHAIN_VERIFY_RESCAN_SLICES ?? '', 10);
+  return Number.isFinite(n) && n >= 1 ? n : DEFAULT_RESCAN_SLICES;
+}
+
+/**
+ * Zero-based slice for tonight: UTC epoch-day modulo `slices`, so consecutive
+ * nights walk consecutive slices with no month-length gaps (a day-of-month
+ * scheme would skip slices 29/30 in February).
+ */
+function rescanSliceIndex(slices: number, now: Date = new Date()): number {
+  return Math.floor(now.getTime() / 86_400_000) % slices;
+}
+
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
   if (typeof dbModule.withSystemDbAccessContext !== 'function') {
     throw new Error(
@@ -125,11 +161,21 @@ const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout
  */
 async function verifyOrgChain(orgId: string): Promise<ChainBreakRow[]> {
   return runWithSystemDbAccess(async () => {
-    const rows = (await dbModule.db.execute(sql`
-      SELECT broken_id, expected, actual
-      FROM audit_log_verify_chain(${orgId}::uuid)
-    `)) as unknown as ChainBreakRow[];
-    return Array.isArray(rows) ? rows : [];
+    let rows: unknown;
+    if (verifyMode() === 'full') {
+      rows = await dbModule.db.execute(sql`
+        SELECT broken_id, expected, actual
+        FROM audit_log_verify_chain(${orgId}::uuid)
+      `);
+    } else {
+      const slices = rescanSlices();
+      const sliceIndex = rescanSliceIndex(slices);
+      rows = await dbModule.db.execute(sql`
+        SELECT broken_id, expected, actual
+        FROM audit_log_verify_chain_incremental(${orgId}::uuid, ${slices}::int, ${sliceIndex}::int)
+      `);
+    }
+    return Array.isArray(rows) ? (rows as ChainBreakRow[]) : [];
   });
 }
 
@@ -392,4 +438,7 @@ export const __testOnly = {
   DAILY_CRON,
   INCIDENT_CLASSIFICATION,
   isEnabled,
+  verifyMode,
+  rescanSlices,
+  rescanSliceIndex,
 };

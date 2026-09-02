@@ -13,6 +13,7 @@ import { rateLimiter } from './rate-limit';
 import { getEffectiveAiBudget } from './effectiveSettings';
 import { getLlmBillingSourceForOrg } from './llm/llmConfigResolver';
 import { captureException, captureMessage } from './sentry';
+import { evaluateAiBudgetThresholds } from './aiBudgetAlerts';
 import { getCatalogEntryName } from './llmProviderCatalog';
 
 export type AiBillingSource = 'platform' | 'partner_key';
@@ -131,6 +132,99 @@ const DEFAULT_PRICING = { inputPerMillion: 500, outputPerMillion: 2500 };
 const CACHE_READ_INPUT_MULTIPLIER = 0.1;
 const CACHE_WRITE_INPUT_MULTIPLIER = 1.25;
 
+/** The record cached at `ai:credits:<partnerId>` and surfaced on /ai/usage. */
+export interface CachedPartnerCredits {
+  remaining: number;
+  includedBalance: number;
+  purchasedBalance: number;
+  fetchedAt: string;
+}
+
+/**
+ * How long a fetched partner credit balance stays cached.
+ *
+ * 15 minutes, up from the 60s this shipped with. The cache used to be written
+ * only by {@link checkBillingCreditsDetailed}, which runs only on an actual AI
+ * turn: for any org that was not mid-conversation the entry had long expired
+ * by the time the usage page or the header cost indicator asked for it, so the
+ * credits card rendered on almost no page load and the header flickered
+ * between "has credits" and nothing. {@link getUsageSummary} now fills the
+ * cache on a miss, and a 15-minute TTL keeps a page refresh from turning into
+ * a billing-service round trip every time. A balance this stale is fine for a
+ * display surface; the credit GATE always reads live.
+ */
+const PARTNER_CREDITS_CACHE_TTL_SECONDS = 900;
+
+/** The `/ai-credits` response from breeze-billing. */
+interface BillingCreditsPayload {
+  allowed: boolean;
+  remainingCredits: number;
+  plan: string;
+  /** Present since breeze-billing's #4388 W04 rollout; optional so this
+   *  deploys safely ahead of it, defaulting to 0 in the cached record. */
+  includedBalance?: number;
+  purchasedBalance?: number;
+}
+
+/**
+ * Discriminated so each caller can react to a failure the way it needs to:
+ * the credit gate reports HTTP and transport failures to Sentry and falls
+ * open, while the usage page just shows no credits card.
+ */
+type PartnerCreditsFetch =
+  | { ok: true; payload: BillingCreditsPayload; credits: CachedPartnerCredits }
+  | { ok: false; reason: 'unconfigured' }
+  | { ok: false; reason: 'http'; status: number }
+  | { ok: false; reason: 'transport'; error: unknown };
+
+/**
+ * Fetch a partner's platform credit balance from breeze-billing and cache it
+ * at `ai:credits:<partnerId>`, the single place that HTTP call is made.
+ *
+ * Never throws: every failure comes back as an `ok: false` variant, including
+ * "no billing service configured", which is the self-hosted default rather
+ * than an error. The Redis write is best-effort for the same reason it always
+ * was - a Redis outage must degrade the credits CARD, never the credit GATE
+ * this call primarily exists to feed.
+ */
+async function fetchAndCachePartnerCredits(partnerId: string): Promise<PartnerCreditsFetch> {
+  const billingUrl = process.env.BILLING_SERVICE_URL;
+  const billingKey = process.env.BILLING_SERVICE_API_KEY;
+  if (!billingUrl || !billingKey) return { ok: false, reason: 'unconfigured' };
+
+  try {
+    const res = await fetch(`${billingUrl}/api/internal/partners/${partnerId}/ai-credits`, {
+      headers: { 'Authorization': `Bearer ${billingKey}` },
+    });
+
+    if (!res.ok) return { ok: false, reason: 'http', status: res.status };
+
+    const payload = await res.json() as BillingCreditsPayload;
+
+    // Cached per PARTNER, not per org: the balance is partner-wide.
+    const credits: CachedPartnerCredits = {
+      remaining: payload.remainingCredits,
+      includedBalance: payload.includedBalance ?? 0,
+      purchasedBalance: payload.purchasedBalance ?? 0,
+      fetchedAt: new Date().toISOString(),
+    };
+
+    const redis = getRedis();
+    if (redis) {
+      void redis.set(
+        `ai:credits:${partnerId}`,
+        JSON.stringify(credits),
+        'EX',
+        PARTNER_CREDITS_CACHE_TTL_SECONDS,
+      ).catch(() => undefined);
+    }
+
+    return { ok: true, payload, credits };
+  } catch (error) {
+    return { ok: false, reason: 'transport', error };
+  }
+}
+
 /**
  * Legacy string-or-null facade over {@link checkBillingCreditsDetailed}, kept
  * because a dozen call sites branch on `if (creditError) return 402`. New
@@ -183,57 +277,61 @@ export async function checkBillingCreditsDetailed(
     return null;
   }
 
-  try {
-    const res = await fetch(`${billingUrl}/api/internal/partners/${org.partnerId}/ai-credits`, {
-      headers: { 'Authorization': `Bearer ${billingKey}` },
-    });
+  // #4388 W04: the fetch and the `ai:credits:<partnerId>` cache write both
+  // live in fetchAndCachePartnerCredits, so the gate and the usage page share
+  // one HTTP path and one cache shape. It never throws; the failure variants
+  // are interpreted here, where the orgId needed to tag them is in scope.
+  const result = await fetchAndCachePartnerCredits(org.partnerId);
 
-    if (!res.ok) {
-      // Fail OPEN on purpose (a billing outage must not take AI down for every
-      // tenant) — but no longer fail SILENT: this branch also swallows a 401
-      // from a rotated BILLING_SERVICE_API_KEY, which looks exactly like
-      // "everyone has credits" from here.
+  if (!result.ok) {
+    // Fail OPEN on purpose (a billing outage must not take AI down for every
+    // tenant), but no longer fail SILENT: the HTTP branch also swallows a 401
+    // from a rotated BILLING_SERVICE_API_KEY, which looks exactly like
+    // "everyone has credits" from here.
+    if (result.reason === 'http') {
       console.error(
-        `[AI] Billing credit check returned HTTP ${res.status} for org=${orgId} — allowing the request (fail-open)`,
+        `[AI] Billing credit check returned HTTP ${result.status} for org=${orgId}, allowing the request (fail-open)`,
       );
       reportBillingIssueAtMostHourly(`credits-http:${orgId}`, () => {
         captureMessage('AI credit check failed; gate fell open', {
           eventCode: 'ai_billing_credits_check_failed',
-          tags: { org_id: orgId, ai_billing_http_status: String(res.status) },
+          tags: { org_id: orgId, ai_billing_http_status: String(result.status) },
         });
       });
-      return null;
-    }
-
-    const data = await res.json() as { allowed: boolean; remainingCredits: number; plan: string };
-
-    if (!data.allowed) {
-      if (['free', 'starter'].includes(data.plan)) {
-        // A plan gate, not a spend cap: nothing about waiting changes it.
-        return denial('plan_gate', 'AI assistant requires the Community plan.');
-      }
-      if (billingSource === 'platform') {
-        return denial(
-          'credits_exhausted',
-          'You are out of AI credits. Purchase more credits to continue.',
-        );
-      }
-    }
-
-    return null;
-  } catch (err) {
-    console.error(
-      `[AI] Billing credit check failed for org=${orgId} — allowing the request (fail-open):`,
-      err instanceof Error ? err.message : String(err),
-    );
-    reportBillingIssueAtMostHourly(`credits-throw:${orgId}`, () => {
-      captureException(err, undefined, {
-        org_id: orgId,
-        ai_billing_http_status: 'transport_error',
+    } else if (result.reason === 'transport') {
+      const err = result.error;
+      console.error(
+        `[AI] Billing credit check failed for org=${orgId}, allowing the request (fail-open):`,
+        err instanceof Error ? err.message : String(err),
+      );
+      reportBillingIssueAtMostHourly(`credits-throw:${orgId}`, () => {
+        captureException(err, undefined, {
+          org_id: orgId,
+          ai_billing_http_status: 'transport_error',
+        });
       });
-    });
+    }
+    // 'unconfigured' cannot be reached here (the env check above returns
+    // first) and is deliberately unreported anyway: see that comment.
     return null;
   }
+
+  const data = result.payload;
+
+  if (!data.allowed) {
+    if (['free', 'starter'].includes(data.plan)) {
+      // A plan gate, not a spend cap: nothing about waiting changes it.
+      return denial('plan_gate', 'AI assistant requires the Community plan.');
+    }
+    if (billingSource === 'platform') {
+      return denial(
+        'credits_exhausted',
+        'You are out of AI credits. Purchase more credits to continue.',
+      );
+    }
+  }
+
+  return null;
 }
 
 /**
@@ -679,7 +777,7 @@ export async function recordUsage(
   }
 
   // Cost anomaly detection (after counter updates)
-  checkCostAnomalies(sessionId, orgId, costCents, dailyKey).catch(err => {
+  checkCostAnomalies(sessionId, orgId, costCents).catch(err => {
     console.error('[AI] Cost anomaly check failed:', err);
   });
 }
@@ -845,7 +943,7 @@ export async function recordUsageFromSdkResult(
   }
 
   // Cost anomaly detection
-  checkCostAnomalies(sessionId, orgId, costCents, dailyKey).catch(err => {
+  checkCostAnomalies(sessionId, orgId, costCents).catch(err => {
     console.error('[AI] Cost anomaly check failed (SDK):', err);
   });
 
@@ -976,7 +1074,7 @@ export async function recordSessionlessSdkUsage(
     }
   }
 
-  checkCostAnomalies(null, orgId, costCents, dailyKey).catch(err => {
+  checkCostAnomalies(null, orgId, costCents).catch(err => {
     console.error('[AI] Cost anomaly check failed (sessionless SDK):', err);
   });
 
@@ -1056,7 +1154,7 @@ export async function recordOpenAIUsage(
     }
   }
 
-  checkCostAnomalies(sessionId, orgId, costCents, dailyKey).catch(err => {
+  checkCostAnomalies(sessionId, orgId, costCents).catch(err => {
     console.error('[AI] Cost anomaly check failed (OpenAI):', err);
   });
 
@@ -1105,8 +1203,7 @@ export async function getRemainingBudgetUsd(orgId: string): Promise<number | nul
 async function checkCostAnomalies(
   sessionId: string | null,
   orgId: string,
-  costCents: number,
-  dailyKey: string
+  costCents: number
 ): Promise<void> {
   // #2190 — self-contexted: reached fire-and-forget from recordUsage on the
   // (contextless) enrichment path; without a context these reads RLS-filter to
@@ -1114,6 +1211,12 @@ async function checkCostAnomalies(
   // DB reads + console.warn, so one short context covers it; the wrapper
   // reuses any active ambient context (see checkBillingCredits).
   return withSystemDbAccessContext(async () => {
+    // #4388 — the 80 %-of-daily console.warn this replaced never reached a
+    // user. Durable rung evaluation for both ladders lives in aiBudgetAlerts.
+    // Called above the early return below so monthly-only and partner-locked
+    // budgets (which have no dailyBudgetCents) are still evaluated.
+    await evaluateAiBudgetThresholds(orgId);
+
     const [budget] = await db
       .select()
       .from(aiBudgets)
@@ -1139,26 +1242,6 @@ async function checkCostAnomalies(
         `(>${Math.round(budget.dailyBudgetCents * 0.1)} cents = 10% of daily budget)`
       );
     }
-
-    // Check if daily spend > 80% of budget
-    const [dailyUsage] = await db
-      .select({ totalCostCents: aiCostUsage.totalCostCents })
-      .from(aiCostUsage)
-      .where(
-        and(
-          eq(aiCostUsage.orgId, orgId),
-          eq(aiCostUsage.period, 'daily'),
-          eq(aiCostUsage.periodKey, dailyKey)
-        )
-      )
-      .limit(1);
-
-    if (dailyUsage && dailyUsage.totalCostCents > budget.dailyBudgetCents * 0.8) {
-      console.warn(
-        `[AI] Cost warning: org ${orgId} daily spend at ${dailyUsage.totalCostCents} cents ` +
-        `(>${Math.round(budget.dailyBudgetCents * 0.8)} cents = 80% of daily budget)`
-      );
-    }
   });
 }
 
@@ -1173,6 +1256,7 @@ export async function updateBudget(orgId: string, settings: {
   messagesPerMinutePerUser?: number;
   messagesPerHourPerOrg?: number;
   approvalMode?: 'per_step' | 'action_plan' | 'auto_approve' | 'hybrid_plan';
+  alertThresholdPercents?: number[] | null;
 }): Promise<void> {
   const [existing] = await db
     .select()
@@ -1193,7 +1277,8 @@ export async function updateBudget(orgId: string, settings: {
       dailyBudgetCents: settings.dailyBudgetCents ?? null,
       maxTurnsPerSession: settings.maxTurnsPerSession ?? 50,
       messagesPerMinutePerUser: settings.messagesPerMinutePerUser ?? 20,
-      messagesPerHourPerOrg: settings.messagesPerHourPerOrg ?? 200
+      messagesPerHourPerOrg: settings.messagesPerHourPerOrg ?? 200,
+      alertThresholdPercents: settings.alertThresholdPercents ?? null,
     });
   }
 }
@@ -1269,9 +1354,49 @@ async function getRecentCatalogEntryIdForOrg(orgId: string): Promise<string | nu
 }
 
 /**
- * Get usage summary for an org.
+ * Read the partner's platform credit balance for the usage page: cache first,
+ * billing service on a miss.
+ *
+ * Read-through because the cache used to be written only by an actual AI turn
+ * (see {@link PARTNER_CREDITS_CACHE_TTL_SECONDS}), which meant the credits
+ * card essentially never had anything to render. Every failure mode - no
+ * partner row, Redis down, a corrupt cache entry, billing unreachable -
+ * degrades to `null` rather than a 500 on /ai/usage.
  */
-export async function getUsageSummary(orgId: string): Promise<{
+async function readPartnerCreditsForUsage(orgId: string): Promise<CachedPartnerCredits | null> {
+  try {
+    const [org] = await db
+      .select({ partnerId: organizations.partnerId })
+      .from(organizations)
+      .where(eq(organizations.id, orgId))
+      .limit(1);
+    if (!org?.partnerId) return null;
+
+    const redis = getRedis();
+    if (redis) {
+      const raw = await redis.get(`ai:credits:${org.partnerId}`);
+      // A cache hit must NOT hit billing: /ai/usage is polled by the header
+      // cost indicator on every page.
+      if (raw) return JSON.parse(raw) as CachedPartnerCredits;
+    }
+
+    const fetched = await fetchAndCachePartnerCredits(org.partnerId);
+    return fetched.ok ? fetched.credits : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Get usage summary for an org.
+ *
+ * `includeCredits` gates the partner-wide credit pool, which an org-scoped
+ * caller must never see: it is the MSP's balance, shared across every one of
+ * its customers, so surfacing it to one customer's users leaks a partner-level
+ * figure across the tenancy boundary. Off by default so a new call site has to
+ * opt in deliberately (see the /ai/usage route).
+ */
+export async function getUsageSummary(orgId: string, options: { includeCredits?: boolean } = {}): Promise<{
   daily: { inputTokens: number; outputTokens: number; totalCostCents: number; messageCount: number };
   monthly: { inputTokens: number; outputTokens: number; totalCostCents: number; messageCount: number };
   budget: {
@@ -1281,11 +1406,30 @@ export async function getUsageSummary(orgId: string): Promise<{
     monthlyUsedCents: number;
     dailyUsedCents: number;
     approvalMode: string;
-  } | null;
+    /** #4388: pre-cap alert rungs (1-99), partner-override-aware. */
+    alertThresholdPercents: number[];
+  };
   billedTo: AiBillingSource;
   /** Name of the catalog endpoint the org's most recent session used, or null
    *  for direct-Anthropic / platform-key traffic (#3922 W4). */
   catalogEndpointName: string | null;
+  /** #4388 W04: the partner's platform-credit balance. `null` unless the
+   *  caller passed `includeCredits` (an org-scoped caller must not see the
+   *  partner-wide pool), when billed to the partner's own key (BYOK: no
+   *  platform credits apply), when the org has no partner id, or when neither
+   *  the cache nor the billing service can produce one. Never throws. */
+  credits: CachedPartnerCredits | null;
+  /** #4388: threshold rungs already fired for the org's CURRENT daily and
+   *  monthly periods (nothing from prior, rolled-over periods). */
+  alerts: {
+    fired: Array<{
+      period: 'daily' | 'monthly';
+      periodKey: string;
+      thresholdPct: number;
+      createdAt: string;
+      deliveredAt: string | null;
+    }>;
+  };
 }> {
   const now = new Date();
   const dailyKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}-${String(now.getUTCDate()).padStart(2, '0')}`;
@@ -1303,11 +1447,25 @@ export async function getUsageSummary(orgId: string): Promise<{
     .where(and(eq(aiCostUsage.orgId, orgId), eq(aiCostUsage.period, 'monthly'), eq(aiCostUsage.periodKey, monthlyKey)))
     .limit(1);
 
-  const [budget] = await db
-    .select()
-    .from(aiBudgets)
-    .where(eq(aiBudgets.orgId, orgId))
-    .limit(1);
+  // #4388: the EFFECTIVE budget (org row merged with any partner-wide
+  // override), not the raw ai_budgets row: a partner-set cap must show up
+  // here exactly like it already does in checkBudgetDetailed. Self-contexted
+  // for the same #2190 reason as that function; see the comment there.
+  const budget = await withSystemDbAccessContext(() => getEffectiveAiBudget(orgId));
+
+  const fired = await db.execute<{
+    period: 'daily' | 'monthly';
+    period_key: string;
+    threshold_pct: number;
+    created_at: string;
+    delivered_at: string | null;
+  }>(sql`
+    SELECT period, period_key, threshold_pct, created_at, delivered_at
+    FROM ai_budget_alert_events
+    WHERE org_id = ${orgId}::uuid
+      AND ((period = 'daily' AND period_key = ${dailyKey}) OR (period = 'monthly' AND period_key = ${monthlyKey}))
+    ORDER BY created_at, id
+  `);
 
   const billedTo = await getLlmBillingSourceForOrg(orgId);
 
@@ -1318,6 +1476,14 @@ export async function getUsageSummary(orgId: string): Promise<{
     const entryId = await getRecentCatalogEntryIdForOrg(orgId);
     if (entryId) catalogEndpointName = await getCatalogEntryName(entryId);
   }
+
+  // #4388 W04: the partner credit balance. Withheld from org-scoped callers
+  // (see the `includeCredits` note on this function), and only meaningful for
+  // platform-billed orgs at all - a partner_key/BYOK org spends against its
+  // own Anthropic account, not platform credits.
+  const credits = options.includeCredits && billedTo === 'platform'
+    ? await readPartnerCreditsForUsage(orgId)
+    : null;
 
   return {
     daily: {
@@ -1332,15 +1498,26 @@ export async function getUsageSummary(orgId: string): Promise<{
       totalCostCents: monthlyUsage?.totalCostCents ?? 0,
       messageCount: monthlyUsage?.messageCount ?? 0
     },
-    budget: budget ? {
+    budget: {
       enabled: budget.enabled,
       monthlyBudgetCents: budget.monthlyBudgetCents,
       dailyBudgetCents: budget.dailyBudgetCents,
       monthlyUsedCents: monthlyUsage?.totalCostCents ?? 0,
       dailyUsedCents: dailyUsage?.totalCostCents ?? 0,
       approvalMode: budget.approvalMode ?? 'per_step',
-    } : null,
+      alertThresholdPercents: budget.alertThresholdPercents,
+    },
     billedTo,
     catalogEndpointName,
+    credits,
+    alerts: {
+      fired: fired.map((r) => ({
+        period: r.period,
+        periodKey: r.period_key,
+        thresholdPct: Number(r.threshold_pct),
+        createdAt: new Date(r.created_at).toISOString(),
+        deliveredAt: r.delivered_at ? new Date(r.delivered_at).toISOString() : null,
+      })),
+    },
   };
 }

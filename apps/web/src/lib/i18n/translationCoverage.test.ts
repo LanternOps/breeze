@@ -41,7 +41,12 @@ const namespaceDuplicateBaselines = {
     // necessarily identical in every catalog.
     // +1: contracts.currencyMismatches.columns.status — "Status" is spelled
     // identically in pt-BR.
-    'billing.json': 55,
+    // +2: invoiceDetail.payments.quickbooks / .viaQuickbooks (QuickBooks
+    // payment pull-back, Phase D) — the badge value IS the proper noun, and
+    // this locale already renders the parallel `viaStripe` as "via Stripe",
+    // so "via QuickBooks" is the correct wording here, not an untranslated
+    // string.
+    'billing.json': 57,
     // +1: richTextEditor.link — "Link" is the standard loanword in pt-BR.
     // +3: dashboard.vuln.kevCves — "{{count}} CVE(s)" is a locale-invariant
     // acronym (base/_one/_other).
@@ -116,7 +121,10 @@ const namespaceDuplicateBaselines = {
     // +1: contracts.currencyMismatches.currencyPair — the value is pure
     // interpolation ("{{contractCurrency}} → {{orgCurrency}}"), so it is
     // necessarily identical in every catalog.
-    'billing.json': 43,
+    // +1: invoiceDetail.payments.quickbooks (QuickBooks payment pull-back,
+    // Phase D) — the badge value IS the proper noun, so it is identical in
+    // every catalog. `.viaQuickbooks` IS translated in this locale.
+    'billing.json': 44,
     // +1: dashboard.vuln.kevCves_one — "{{count}} CVE" is a locale-invariant
     // acronym.
     // +8: PsaConnectionForm credential placeholders — literal token formats
@@ -157,7 +165,10 @@ const namespaceDuplicateBaselines = {
     // rather than root-caused here).
     // +4: aiAgentsPage.runs (#3828 Task 4) — "Manual" and "Ticket" are the
     // same cognate in es-419, and "OK"/"Error" are locale-invariant.
-    'settings.json': 121,
+    // +3: contactsCard / bulkContactImport (#3258 W04) — "Roles" is the same
+    // word in Spanish (plural of "rol"), and the contacts UI labels it in
+    // three places (the list column, the form fieldset and the CSV mapping row).
+    'settings.json': 124,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -194,7 +205,12 @@ const namespaceDuplicateBaselines = {
     // +1: contracts.currencyMismatches.currencyPair — the value is pure
     // interpolation ("{{contractCurrency}} → {{orgCurrency}}"), so it is
     // necessarily identical in every catalog.
-    'billing.json': 55,
+    // +2: invoiceDetail.payments.quickbooks / .viaQuickbooks (QuickBooks
+    // payment pull-back, Phase D) — the badge value IS the proper noun, and
+    // this locale already renders the parallel `viaStripe` as "via Stripe",
+    // so "via QuickBooks" is the correct wording here, not an untranslated
+    // string.
+    'billing.json': 57,
     // +1: dashboard.vuln.kevCves_one — "{{count}} CVE" is a locale-invariant
     // acronym.
     // +8: PsaConnectionForm credential placeholders — literal token formats
@@ -243,7 +259,11 @@ const namespaceDuplicateBaselines = {
     // same word in French, and "OK" is locale-invariant.
     // +1: aiAgentsPage.runs.triage.notesTitle (P2-4, #4191) — "Notes" is the
     // same word in French.
-    'settings.json': 160,
+    // +5: contactsCard / bulkContactImport / contactImportPreview (#3258 W04)
+    // — "Contacts" and "Site" are the same words in French, and
+    // TERMINOLOGY.md pins site → site for both French locales, so the three
+    // site labels plus the tab title and its nav entry stay identical.
+    'settings.json': 165,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -274,7 +294,12 @@ const namespaceDuplicateBaselines = {
     // +1: contracts.currencyMismatches.currencyPair — the value is pure
     // interpolation ("{{contractCurrency}} → {{orgCurrency}}"), so it is
     // necessarily identical in every catalog.
-    'billing.json': 55,
+    // +2: invoiceDetail.payments.quickbooks / .viaQuickbooks (QuickBooks
+    // payment pull-back, Phase D) — the badge value IS the proper noun, and
+    // this locale already renders the parallel `viaStripe` as "via Stripe",
+    // so "via QuickBooks" is the correct wording here, not an untranslated
+    // string.
+    'billing.json': 57,
     // +1: dashboard.vuln.kevCves_one "{{count}} CVE" is a locale-invariant
     // acronym.
     // +8: PsaConnectionForm credential placeholders — literal token formats
@@ -323,7 +348,11 @@ const namespaceDuplicateBaselines = {
     // same word in French, and "OK" is locale-invariant.
     // +1: aiAgentsPage.runs.triage.notesTitle (P2-4, #4191) — "Notes" is the
     // same word in French.
-    'settings.json': 165,
+    // +5: contactsCard / bulkContactImport / contactImportPreview (#3258 W04)
+    // — "Contacts" and "Site" are the same words in Canadian French, and
+    // TERMINOLOGY.md pins site → site for both French locales, so the three
+    // site labels plus the tab title and its nav entry stay identical.
+    'settings.json': 170,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -357,7 +386,10 @@ const namespaceDuplicateBaselines = {
     // necessarily identical in every catalog.
     // +1: contracts.currencyMismatches.columns.status — "Status" is spelled
     // identically in de-DE.
-    'billing.json': 42,
+    // +1: invoiceDetail.payments.quickbooks (QuickBooks payment pull-back,
+    // Phase D) — the badge value IS the proper noun, so it is identical in
+    // every catalog. `.viaQuickbooks` IS translated in this locale.
+    'billing.json': 43,
     // +1: richTextEditor.link — "Link" is the standard loanword in de-DE.
     // +3: dashboard.vuln.kevCves — "{{count}} CVE(s)" is a locale-invariant
     // acronym (base/_one/_other).
@@ -396,7 +428,11 @@ const namespaceDuplicateBaselines = {
     // rather than root-caused here).
     // +10: aiAgentsPage.runs (#3828 Task 4) — "Agent", "Status", "Ticket" and
     // "Tool" are the same words in German, and "OK" is locale-invariant.
-    'settings.json': 179,
+    // +4: contactsCard / bulkContactImport / contactImportPreview (#3258 W04)
+    // — "Name" is the same word in German, and the contacts UI labels it in
+    // four places (the list column, the form field, the CSV mapping row and
+    // the import preview column).
+    'settings.json': 183,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -424,7 +460,10 @@ const namespaceDuplicateBaselines = {
     // +1: contracts.currencyMismatches.currencyPair — the value is pure
     // interpolation ("{{contractCurrency}} → {{orgCurrency}}"), so it is
     // necessarily identical in every catalog.
-    'billing.json': 35,
+    // +1: invoiceDetail.payments.quickbooks (QuickBooks payment pull-back,
+    // Phase D) — the badge value IS the proper noun, so it is identical in
+    // every catalog. `.viaQuickbooks` IS translated in this locale.
+    'billing.json': 36,
     // +1: dashboard.vuln.kevCves_one "{{count}} CVE" is a locale-invariant
     // acronym.
     // +8: PsaConnectionForm credential placeholders — literal token formats
@@ -487,7 +526,10 @@ const namespaceDuplicateBaselines = {
     // +1: contracts.currencyMismatches.currencyPair — the value is pure
     // interpolation ("{{contractCurrency}} → {{orgCurrency}}"), so it is
     // necessarily identical in every catalog.
-    'billing.json': 20,
+    // +1: invoiceDetail.payments.quickbooks (QuickBooks payment pull-back,
+    // Phase D) — the badge value IS the proper noun, so it is identical in
+    // every catalog. `.viaQuickbooks` IS translated in this locale.
+    'billing.json': 21,
     'common.json': 48,
     'devices.json': 77,
     'discovery.json': 9,
@@ -510,7 +552,10 @@ const namespaceDuplicateBaselines = {
     // (see the pt-BR block's note above — same root cause, carried forward
     // rather than root-caused here). aiAgentsPage.runs (#3828 Task 4) itself
     // introduced zero new tr-TR duplicates.
-    'settings.json': 65,
+    // +3: contactsCard / bulkContactImport / contactImportPreview (#3258 W04)
+    // — "Site" is the established loanword in tr-TR (bulkOrgImport already
+    // uses it), so the three site labels stay identical.
+    'settings.json': 68,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     'tickets.json': 12,

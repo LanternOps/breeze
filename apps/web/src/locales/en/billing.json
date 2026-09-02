@@ -557,7 +557,7 @@
       "addSection": {
         "captionPlaceholder": "Caption (optional)",
         "headingPlaceholder": "Heading text",
-        "imageHelp": "PNG, JPEG, or WebP, up to 5 MB.",
+        "imageHelp": "PNG or JPEG, up to 5 MB.",
         "imageUrlPlaceholder": "https://example.com/photo.png",
         "insertHere": "Add section",
         "richTextPlaceholder": "Proposal text…",
@@ -695,7 +695,8 @@
         "updateSection": "Could not update the section.",
         "uploadImage": "Could not upload the image.",
         "noPriceForCurrency": "No {{currency}} price for this item. Add one in the catalog or enter a manual line.",
-        "sectionAddedListStale": "Section added, but the list could not refresh. Reload the page to see it."
+        "sectionAddedListStale": "Section added, but the list could not refresh. Reload the page to see it.",
+        "lineAddedListStale": "Line added, but the list could not refresh. Reload the page to see it."
       },
       "image": {
         "alt": "Quote image",
@@ -875,7 +876,7 @@
         "preparedForPlaceholder": "Override the customer name",
         "showPreparedBy": "Show “prepared by” (your company)",
         "imageLabel": "Cover image",
-        "imageHelp": "PNG, JPEG, or WebP, up to 5 MB.",
+        "imageHelp": "PNG or JPEG, up to 5 MB.",
         "removeImage": "Remove image"
       },
       "ghost": {
@@ -1622,6 +1623,8 @@
       "stripeNudge": "Connect Stripe to accept online card payments.",
       "title": "Payments",
       "viaStripe": "via Stripe",
+      "quickbooks": "QuickBooks",
+      "viaQuickbooks": "via QuickBooks",
       "currencyUnknown": "Your Stripe account's settlement currency hasn't been cached, so it couldn't be checked against this {{documentCurrency}} invoice. Refresh your Stripe account details under Settings → Integrations to enable the mismatch check."
     },
     "requestPayment": {

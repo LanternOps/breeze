@@ -33,8 +33,22 @@ export const accountingConnections = pgTable('accounting_connections', {
   defaultIncomeAccountRef: varchar('default_income_account_ref', { length: 64 }),
   defaultTaxCodeRef: varchar('default_tax_code_ref', { length: 64 }),
   pushMode: varchar('push_mode', { length: 10 }).notNull().default('auto'), // 'auto' | 'manual'
+  // RESERVED, unused: the Intuit webhook verifier token is app-level
+  // (QBO_WEBHOOK_VERIFIER_TOKEN, config/env.ts), not per-connection — Intuit
+  // issues one verifier token per app, not per realm. See Phase D decision 7.
   webhookVerifierTokenEncrypted: text('webhook_verifier_token_encrypted'),
   cdcCursor: timestamp('cdc_cursor', { withTimezone: true }),
+  // Keyed HMAC of the decrypted realm id — `realm_id_encrypted` uses a random
+  // IV, so it cannot be queried by value. Populated by the app
+  // (backfillRealmFingerprints / upsertConnection), never by SQL. Phase D
+  // Task 1 — webhook realm routing.
+  realmIdFingerprint: text('realm_id_fingerprint'),
+  // Per-connection QBO -> Breeze payment pull-back switch (Phase D). Defaults
+  // true so an existing connected realm starts reconciling once the sweep
+  // ships, rather than silently opting every partner out.
+  pullPayments: boolean('pull_payments').notNull().default(true),
+  // Stamped only after a CDC reconcile run in which no item failed (Phase D).
+  lastReconcileAt: timestamp('last_reconcile_at', { withTimezone: true }),
   status: varchar('status', { length: 20 }).notNull().default('connected'),
   lastSyncAt: timestamp('last_sync_at', { withTimezone: true }),
   lastError: text('last_error'),
@@ -45,6 +59,11 @@ export const accountingConnections = pgTable('accounting_connections', {
   partnerProviderIdx: uniqueIndex('accounting_connections_partner_provider_idx')
     .on(table.partnerId, table.provider),
   idPartnerIdx: uniqueIndex('accounting_connections_id_partner_idx').on(table.id, table.partnerId),
+  // Webhook realm routing: exactly one connection per (provider, fingerprint).
+  // Partial index because the fingerprint is null until backfilled.
+  providerRealmFpIdx: uniqueIndex('accounting_connections_provider_realm_fp_idx')
+    .on(table.provider, table.realmIdFingerprint)
+    .where(sql`${table.realmIdFingerprint} IS NOT NULL`),
 }));
 
 export const accountingEntityMappings = pgTable('accounting_entity_mappings', {

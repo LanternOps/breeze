@@ -119,7 +119,9 @@
     "maxTurns": "Max Turns per Session",
     "messagesPerMinute": "Messages per Minute per User",
     "messagesPerHour": "Messages per Hour per Org",
-    "notSet": "Not set — orgs configure individually",
+    "alertThresholds": "Warn at (% of budget)",
+    "alertThresholdsHelp": "Partner admins with billing access get an in-app alert at each rung and an email for monthly and cap-reached alerts. Leave empty to inherit 50, 80, 95.",
+    "notSet": "Not set, orgs configure individually",
     "description": "Budget values are enforced across all child organizations. Dollar amounts are stored in cents internally.",
     "modes": {
       "perStep": "Per Step",
@@ -127,6 +129,9 @@
       "autoApprove": "Auto Approve",
       "hybridPlan": "Hybrid Plan"
     }
+  },
+  "aiBudgetThresholds": {
+    "invalid": "Enter up to five whole numbers between 1 and 99, separated by commas."
   },
   "partnerAiProvider": {
     "title": "AI Provider",
@@ -1294,6 +1299,13 @@
     "monthlyBudget": "Monthly Budget ($)",
     "noLimit": "No limit",
     "dailyBudget": "Daily Budget ($)",
+    "alertThresholds": "Warn at (% of budget)",
+    "alertThresholdsHelp": "Alerts go to partner admins with billing access. 100% (cap reached) is always sent.",
+    "firedRung": "{{pct}}% {{period}} alert sent {{date}}",
+    "periodLabel": {
+      "daily": "daily",
+      "monthly": "monthly"
+    },
     "maxTurnsPerSession": "Max Turns Per Session",
     "msgsMinPerUser": "Msgs/Min Per User",
     "msgsHrPerOrg": "Msgs/Hr Per Org",
@@ -1321,7 +1333,8 @@
     "likeActionPlanPlusLiveScreenshotsBetweenStepsAndAPersist": "Like Action Plan, plus live screenshots between steps and a persistent Stop button.",
     "untitled": "Untitled",
     "billedToPartnerKey": "Billed to your key — AI usage goes to your own Anthropic account, not Breeze AI credits",
-    "billedToPartnerKeyViaEndpoint": "Billed to your key via {{name}} — AI usage goes to your own Anthropic account, not Breeze AI credits"
+    "billedToPartnerKeyViaEndpoint": "Billed to your key via {{name}}: AI usage goes to your own Anthropic account, not Breeze AI credits",
+    "creditsRemaining": "Breeze AI credits remaining"
   },
   "aiAgentsPage": {
     "schedules": {
@@ -1735,6 +1748,8 @@
         "ticketsTriaged": "Tickets triaged",
         "draftsSent": "Drafts sent",
         "fixesExecuted": "Fixes executed",
+        "promoteEligible": "Promotion-eligible operations",
+        "promoteEligibleHint": "Operations with enough clean evidence to be pre-authorized. Open Settings → AI Agents to review and promote them.",
         "estTimeSaved": "Estimated time saved",
         "estTimeSavedValue": "{{hours}} hours",
         "llmSpend": "LLM spend"
@@ -1812,6 +1827,60 @@
         },
         "weightRowLabel": "{{label}} (seconds credited)",
         "neverRebuilt": "Never rebuilt"
+      }
+    },
+    "graduation": {
+      "title": "Graduation",
+      "description": "What this agent has earned over the last 30 days, operation by operation, and whether that evidence is enough to ask for pre-authorized execution.",
+      "loading": "Loading graduation evidence…",
+      "error": "The graduation evidence could not be loaded.",
+      "retry": "Try again",
+      "orgRequired": "Choose a single organization in the organization switcher to see its graduation evidence.",
+      "empty": "No evidence has been recorded for this agent yet.",
+      "readOnlyNote": "Pre-authorized execution is turned off for this deployment; these figures are informational.",
+      "byOrgTruncated": "Showing the first {{limit}} organizations by name. Choose a single organization in the organization switcher to see the rest.",
+      "thresholdPerOrgNote": "Each organization resolves its own promotion threshold, so verified counts are shown here without a target. Choose a single organization in the organization switcher to see that organization's target.",
+      "approvalsLink": "Track this request in the approvals inbox",
+      "ceilingHint": "Partner-level keys are a ceiling, not a grant. Each organization's agent must be granted the key separately — through graduation or by editing that organization's agent.",
+      "promote": "Promote",
+      "verifiedOfThreshold": "{{verified}} of {{threshold}}",
+      "columns": {
+        "opKey": "Operation",
+        "state": "State",
+        "verified": "Verified",
+        "executed": "Executed",
+        "failed": "Failed",
+        "recurred": "Recurred",
+        "firstVerified": "First verified",
+        "blockedReason": "Why not yet"
+      },
+      "states": {
+        "tracking": "Tracking",
+        "eligible": "Eligible",
+        "promoted": "Promoted",
+        "demoted": "Demoted"
+      },
+      "blockedReasons": {
+        "needs_partner_baseline": "The partner-wide agent does not allow this operation yet.",
+        "below_threshold": "Not enough verified executions yet.",
+        "too_recent": "The first verified execution is still too recent.",
+        "has_failures": "A failure or a recurrence was recorded in this window.",
+        "not_policy_decidable": "This operation can never be pre-authorized."
+      },
+      "confirm": {
+        "title": "Request pre-authorization",
+        "message": "This asks a second approver to pre-authorize {{opKey}} for this organization's agent. It applies to future runs only and never authorizes a request that is already waiting for a decision.",
+        "action": "Request approval"
+      },
+      "toasts": {
+        "requested": "Pre-authorization requested. A second approver has to approve it before this operation runs unattended, and it applies to future runs only."
+      },
+      "errors": {
+        "promote": "The pre-authorization request could not be raised.",
+        "policyDecideDisabled": "Pre-authorized execution is turned off for this deployment, so this operation cannot be promoted."
+      },
+      "reliability": {
+        "caption": "Act-mode operations, read-only: these are not policy keys, so they can never be pre-authorized."
       }
     }
   },
@@ -3105,6 +3174,8 @@
       "organization": "Organization",
       "general": "General",
       "generalDescription": "Profile and defaults",
+      "contacts": "Contacts",
+      "contactsDescription": "People to reach at this customer, by site or organization-wide",
       "contracts": "Contracts",
       "contractsDescription": "Recurring agreements",
       "billing": "Billing",
@@ -3704,7 +3775,8 @@
       "title": "Devices",
       "assigned": "devices assigned to this site",
       "viewAll": "View all devices"
-    }
+    },
+    "allContactsLink": "All contacts for this customer"
   },
   "siteForm": {
     "description": "Only the site name is required. Address and contact are optional — you can fill these in later.",
@@ -4089,5 +4161,180 @@
     "saveFailed": "Could not save time tracking settings",
     "minSessionRange": "Minimum session length must be between {{min}} and {{max}} seconds",
     "mergeGapRange": "Merge gap must be between {{min}} and {{max}} minutes"
+  },
+  "contactImportPreview": {
+    "selectAll": "Select all new and linked rows",
+    "organizationLevel": "Organization",
+    "matches": "matches “{{name}}”",
+    "columns": {
+      "name": "Name",
+      "email": "Email address",
+      "site": "Site",
+      "status": "Status"
+    },
+    "badges": {
+      "create": "New",
+      "linkMatch": "Already linked",
+      "emailMatch": "Email match — confirm",
+      "nameMatch": "Name match — confirm",
+      "conflict": "Conflict",
+      "orgNotFound": "Organization not found"
+    }
+  },
+  "bulkContactImport": {
+    "title": "Import contacts from CSV",
+    "description": "Upload a contact export from your previous RMM or PSA. Every row is filed under this organization.",
+    "dropzone": "Drop a CSV file here or click to browse",
+    "dropzoneHint": "Map at least one of name, email address, phone, or mobile — a contact needs one of them.",
+    "actions": {
+      "close": "Close",
+      "preview": "Check {{count}} rows",
+      "previewing": "Checking…",
+      "import": "Import {{count}} selected",
+      "importing": "Importing…"
+    },
+    "mapping": {
+      "heading": "Column mapping",
+      "unmapped": "Not mapped",
+      "identifierRequired": "Map a name, email address, phone, or mobile column to continue.",
+      "droppedRows_one": "{{count}} row skipped: no name, email address, phone or mobile.",
+      "droppedRows_other": "{{count}} rows skipped: no name, email address, phone or mobile.",
+      "tooManyRows": "This file maps {{count}} rows, more than the {{max}} one import accepts. Split it into smaller files.",
+      "fields": {
+        "name": "Name",
+        "email": "Email address",
+        "phone": "Phone",
+        "mobile": "Mobile",
+        "title": "Job title",
+        "roles": "Roles",
+        "site": "Site",
+        "externalId": "Contact ID in the source system",
+        "externalSystem": "Source system"
+      }
+    },
+    "mode": {
+      "label": "Contacts already linked",
+      "skip": "Leave them as they are",
+      "update": "Merge the file into them"
+    },
+    "preview": {
+      "heading": "What will happen"
+    },
+    "summary": {
+      "imported": "{{count}} added",
+      "updated": "{{count}} merged",
+      "skipped": "{{count}} left alone",
+      "failed": "{{count}} refused",
+      "allFailed": "Nothing was imported — {{summary}}.",
+      "nothingImported": "Nothing imported: {{count}} already linked.",
+      "nothingImportedEmpty": "Nothing was imported."
+    },
+    "failures": {
+      "title_one": "{{count}} row was refused",
+      "title_other": "{{count}} rows were refused"
+    },
+    "skipped": {
+      "title_one": "{{count}} row was left as it is",
+      "title_other": "{{count}} rows were left as they are",
+      "reasons": {
+        "alreadyLinked": "already linked to an existing contact"
+      }
+    },
+    "errorCodes": {
+      "rowConflict": "The row is ambiguous against the contacts already here.",
+      "orgNotFound": "This organization is no longer one you can reach.",
+      "annotationChanged": "This row changed since the preview. Check the file again.",
+      "matchChanged": "This row now matches a different contact. Check the file again.",
+      "matchUnconfirmed": "Tick the row and import again to confirm the match.",
+      "writeFailed": "The database refused the write. Nothing was saved for this row.",
+      "noIdentifier": "The row is left with no name, email address, phone or mobile.",
+      "invalidRole": "The row names a role Breeze does not recognize.",
+      "siteNotInOrg": "The site on this row does not belong to this organization."
+    },
+    "errors": {
+      "previewFailed": "Could not check the file against existing contacts.",
+      "importFailed": "Could not import the selected contacts.",
+      "fileRead": "Could not read that file. Choose it again.",
+      "noColumns": "That file has no header row, so there is nothing to map."
+    }
+  },
+  "contactsCard": {
+    "title": "Contacts",
+    "description": "The people your team reaches at this customer. One contact can be pinned to a site or belong to the organization as a whole.",
+    "organizationLevel": "Organization",
+    "unknownSite": "Site unavailable",
+    "empty": "No contacts yet. Add one, or import a CSV from your previous tool.",
+    "loading": "Loading contacts…",
+    "confirmDelete": "Delete {{name}}? This cannot be undone.",
+    "actions": {
+      "add": "Add contact",
+      "import": "Import CSV",
+      "edit": "Edit",
+      "delete": "Delete",
+      "save": "Save contact",
+      "saving": "Saving…",
+      "cancel": "Cancel",
+      "retry": "Try again"
+    },
+    "filters": {
+      "site": "Filter by site",
+      "role": "Filter by role",
+      "allSites": "Every site",
+      "allRoles": "Every role"
+    },
+    "columns": {
+      "name": "Name",
+      "reach": "How to reach them",
+      "jobTitle": "Job title",
+      "roles": "Roles",
+      "site": "Belongs to",
+      "actions": "Actions"
+    },
+    "primary": {
+      "organization": "Primary (organization)",
+      "site": "Primary ({{site}})"
+    },
+    "roles": {
+      "billing": "Billing",
+      "technical": "Technical",
+      "escalation": "Escalation",
+      "admin": "Admin",
+      "site": "Site",
+      "afterHours": "After hours",
+      "portal": "Portal"
+    },
+    "form": {
+      "addHeading": "New contact",
+      "editHeading": "Edit contact",
+      "identifierRequired": "Fill in at least one of name, email address, phone, or mobile.",
+      "fields": {
+        "name": "Name",
+        "email": "Email address",
+        "phone": "Phone",
+        "mobile": "Mobile",
+        "title": "Job title",
+        "site": "Belongs to",
+        "roles": "Roles",
+        "notes": "Notes",
+        "isPrimary": "Make this the primary contact for the scope above"
+      }
+    },
+    "pagination": {
+      "summary": "Showing {{from}} to {{to}} of {{total}}",
+      "previous": "Previous",
+      "next": "Next"
+    },
+    "toasts": {
+      "created": "Contact added",
+      "updated": "Contact saved",
+      "deleted": "Contact deleted"
+    },
+    "errors": {
+      "load": "Could not load the contacts for this organization.",
+      "sites": "Could not load this organization's sites. Site names and the site filter stay unavailable until they load.",
+      "create": "Could not add the contact.",
+      "update": "Could not save the contact.",
+      "delete": "Could not delete the contact."
+    }
   }
 }

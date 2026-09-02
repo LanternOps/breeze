@@ -350,11 +350,15 @@ const actionLabels: Record<string, string> = {
   'agent.recovery_keys.submit': 'Recovery keys escrowed',
   'script.execute': 'Script executed',
   'script.execution.cancel': 'Script execution cancelled',
-  'agent.command.install_patches': 'Patches installed',
-  'agent.command.rollback_patches': 'Patches rolled back',
-  'agent.command.script': 'Script ran',
-  'agent.command.software_uninstall': 'Software uninstalled',
-  'agent.command.software_update': 'Software updated',
+  // These fire when the command is DISPATCHED to the agent, not when it
+  // completes — the audit row's `result` is 'dispatched', not 'success' (see
+  // commandQueue.ts, #4225). Keep the copy in the command-sent tense so it
+  // doesn't assert an outcome the row can't know yet.
+  'agent.command.install_patches': 'Patch install command sent',
+  'agent.command.rollback_patches': 'Patch rollback command sent',
+  'agent.command.script': 'Script run command sent',
+  'agent.command.software_uninstall': 'Software uninstall command sent',
+  'agent.command.software_update': 'Software update command sent',
   'alert.acknowledge': 'Alert acknowledged',
   'alert.resolve': 'Alert resolved',
   'alert.suppress': 'Alert suppressed',
