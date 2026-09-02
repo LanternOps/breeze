@@ -319,7 +319,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
   const orgName = orgs.find((o) => o.id === orgId)?.name ?? orgId;
 
   // ---- live "Estimated this period" ----------------------------------------
-  // flat/manual contribute qty×price; per_device/per_seat are resolved by the
+  // flat/manual contribute qty×price; per_device/per_device_role/per_seat are resolved by the
   // generator from live counts, so we surface them as "auto" without a number.
   const estimate = useMemo(() => {
     let known = 0;
@@ -332,7 +332,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
     return { known, hasAuto };
   }, [lines]);
 
-  // Resolved live quantity per line (per_device/per_seat) from the estimate.
+  // Resolved live quantity per line (per_device/per_device_role/per_seat) from the estimate.
   const estByLine = useMemo(() => {
     const m = new Map<string, number>();
     for (const e of liveEstimate?.lines ?? []) m.set(e.lineId, e.quantity);
