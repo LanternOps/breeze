@@ -245,7 +245,7 @@ async function loadWatchAnchor(
  * The act-run watch insert, unexecuted — exported so its ON CONFLICT clause
  * (the thing that absorbs a duplicate `finishRun`) can be asserted as
  * compiled SQL rather than against a mocked builder. `run_id`'s UNIQUE became
- * PARTIAL in `2026-09-29-ai-agents-graduation-evidence.sql` (`WHERE
+ * PARTIAL in `2026-10-01-100000-ai-agents-graduation-evidence.sql` (`WHERE
  * source_kind = 'act_run'`, since one run may now also spawn N intent
  * watches), and Postgres cannot infer a partial unique index as the arbiter
  * unless the statement repeats its predicate — without it this is a runtime

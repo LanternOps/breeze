@@ -33,7 +33,7 @@ describe('AI_AGENT_FIX_WATCH_SOURCE_KINDS', () => {
 
   it('matches the SQL CHECK constraint literals exactly (P2-5, #4192)', () => {
     const sqlPath = new URL(
-      '../../../migrations/2026-09-29-ai-agents-graduation-evidence.sql',
+      '../../../migrations/2026-10-01-100000-ai-agents-graduation-evidence.sql',
       import.meta.url,
     );
     const sql = readFileSync(sqlPath, 'utf8');

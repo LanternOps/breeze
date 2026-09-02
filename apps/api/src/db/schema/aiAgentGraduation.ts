@@ -6,7 +6,7 @@ import { aiAgents } from './aiAgents';
 import { organizations } from './orgs';
 
 // P2-5 (#4192) — per-(org, agent, op_key) graduation state.
-// Migration: 2026-09-29-ai-agents-graduation-evidence.sql.
+// Migration: 2026-10-01-100000-ai-agents-graduation-evidence.sql.
 //
 // Tracks one colon-key's journey through `tracking -> eligible -> promoted
 // -> demoted -> tracking`, read from the ai_agent_op_evidence ledger over a

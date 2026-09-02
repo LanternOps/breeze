@@ -20,7 +20,7 @@ export type AiAgentFixWatchState = (typeof AI_AGENT_FIX_WATCH_STATES)[number];
  * original Wave 6 shape — one run's manifest execution) or intent-anchored
  * (`intent` — one independently-released action intent from that run).
  * Mirrors `ai_agent_fix_watches_source_kind_chk` in
- * `2026-09-29-ai-agents-graduation-evidence.sql` — the two must be edited
+ * `2026-10-01-100000-ai-agents-graduation-evidence.sql` — the two must be edited
  * together, same convention as AI_AGENT_FIX_WATCH_STATES above.
  */
 export const AI_AGENT_FIX_WATCH_SOURCE_KINDS = ['act_run', 'intent'] as const;

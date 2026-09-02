@@ -21,7 +21,7 @@ import { aiAgentOpEvidence } from './aiAgentOpEvidence';
 import { aiAgentGraduation } from './aiAgentGraduation';
 
 const MIGRATION_SQL = readFileSync(
-  new URL('../../../migrations/2026-09-29-ai-agents-graduation-evidence.sql', import.meta.url),
+  new URL('../../../migrations/2026-10-01-100000-ai-agents-graduation-evidence.sql', import.meta.url),
   'utf8',
 );
 

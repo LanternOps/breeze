@@ -4,7 +4,7 @@
  * REAL schema and dialect.
  *
  * Both of `ai_agent_fix_watches`'s uniqueness guarantees became PARTIAL
- * indexes in `2026-09-29-ai-agents-graduation-evidence.sql`
+ * indexes in `2026-10-01-100000-ai-agents-graduation-evidence.sql`
  * (`run_id WHERE source_kind = 'act_run'`, `intent_id WHERE intent_id IS NOT
  * NULL`), and Postgres cannot infer a partial unique index as an ON CONFLICT
  * arbiter unless the statement repeats its predicate. A conflict clause that

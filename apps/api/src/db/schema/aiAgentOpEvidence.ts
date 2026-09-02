@@ -10,7 +10,7 @@ import { aiAgentRuns, aiAgents } from './aiAgents';
 import { organizations } from './orgs';
 
 // P2-5 (#4192) — graduation evidence ledger.
-// Migration: 2026-09-29-ai-agents-graduation-evidence.sql.
+// Migration: 2026-10-01-100000-ai-agents-graduation-evidence.sql.
 //
 // One immutable row per terminal outcome an agent produces (a released
 // action intent, an act-mode manifest execution, a fix-watch verdict, a
