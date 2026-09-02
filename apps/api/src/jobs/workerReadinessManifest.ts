@@ -171,6 +171,22 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('accountingSyncWorker'),
   consumers('aiAgentImpactRollup', ['aiAgentImpactRollupWorker']),
   consumers('aiAgentGraduation'),
+  // Task 8 merge-forward (origin/main ff9e10aec): five more `global` registry
+  // entries. Each was read, not inferred from its name — none is feature-flag
+  // gated, every one constructs exactly one Worker and attaches it
+  // unconditionally inside a rethrowing try/catch, so all five are
+  // plain-required (`redis`).
+  // aiBudgetAlertDeliveryWorker attaches under AI_BUDGET_ALERT_QUEUE
+  // ('ai-budget-alert-delivery'), which differs from its registry key, so the
+  // row maps the key to that consumer name. Despite the name it reads no AI
+  // flag at all (no env/*_ENABLED reference anywhere in the module);
+  // accountingReconcileWorker likewise reads no integrations flag — its
+  // per-connection gating happens inside the sweep job, at job time.
+  consumers('aiBudgetAlertDeliveryWorker', ['ai-budget-alert-delivery']),
+  consumers('ticketOutboxRetention'),
+  consumers('intentOutboxRetention'),
+  consumers('metricAnomalyIncidentRetention'),
+  consumers('accountingReconcileWorker'),
   // Started outside WORKER_REGISTRY, role-gated in index.ts / worker.ts.
   // D3a: the dispatch consumer is constructed only when EVENT_DISPATCH_MODE is
   // on (or an off-mode backlog remains — that drain then attaches as

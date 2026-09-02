@@ -65,9 +65,38 @@ function productionCoverage(): CoverageFailure[] {
     .sort((a, b) => a.file.localeCompare(b.file));
 }
 
-function attachmentNames(file: string): string[] {
-  const sourceText = readFileSync(file, 'utf8');
+/**
+ * `const NAME = 'literal'` bindings in this module, so an attach site that
+ * names its queue through a constant is still visible to the scan.
+ * Deliberately narrow: only a `const` whose initializer is a string literal.
+ * A binding that is not one (a parameter, a computed name) stays unresolved
+ * and is skipped, which is why `attachWorkerObservability`'s own forwarding
+ * call to `workerReadinessRegistry.attach(name)` inside workerObservability.ts
+ * does not register as a site.
+ */
+function stringConstants(source: ts.SourceFile): Map<string, string> {
+  const out = new Map<string, string>();
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isVariableDeclaration(node)
+      && ts.isIdentifier(node.name)
+      && node.initializer
+      && ts.isStringLiteral(node.initializer)
+      && ts.isVariableDeclarationList(node.parent)
+      // eslint-disable-next-line no-bitwise
+      && (node.parent.flags & ts.NodeFlags.Const) !== 0
+    ) {
+      out.set(node.name.text, node.initializer.text);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return out;
+}
+
+export function attachmentNamesFromSource(file: string, sourceText: string): string[] {
   const source = ts.createSourceFile(file, sourceText, ts.ScriptTarget.Latest, true);
+  const constants = stringConstants(source);
   const names: string[] = [];
   const visit = (node: ts.Node): void => {
     if (ts.isCallExpression(node)) {
@@ -78,11 +107,19 @@ function attachmentNames(file: string): string[] {
           ? node.arguments[0]
           : undefined;
       if (nameArg && ts.isStringLiteral(nameArg)) names.push(nameArg.text);
+      else if (nameArg && ts.isIdentifier(nameArg)) {
+        const resolved = constants.get(nameArg.text);
+        if (resolved !== undefined) names.push(resolved);
+      }
     }
     ts.forEachChild(node, visit);
   };
   visit(source);
   return names;
+}
+
+function attachmentNames(file: string): string[] {
+  return attachmentNamesFromSource(file, readFileSync(file, 'utf8'));
 }
 
 // The two scans below parse every production module under jobs/, services/
@@ -108,6 +145,31 @@ describe('production BullMQ consumer readiness coverage', () => {
     ).sort();
     expect(attached).toEqual(declared);
   }, AST_SCAN_TIMEOUT_MS);
+
+  it('resolves an attach name given as a module-local string const', () => {
+    // jobs/aiBudgetAlertDelivery.ts attaches with AI_BUDGET_ALERT_QUEUE, not a
+    // literal. Before this resolution the site was invisible to the scan, so a
+    // consumer could be declared-but-never-attached (permanently `expected`,
+    // /ready 503 forever) without this contract noticing.
+    const source = `
+      import { Worker } from 'bullmq';
+      export const QUEUE = 'ai-budget-alert-delivery';
+      const worker = new Worker(QUEUE, async () => undefined);
+      attachWorkerObservability(worker, QUEUE);
+    `;
+    expect(attachmentNamesFromSource('const-named.ts', source)).toEqual(['ai-budget-alert-delivery']);
+  });
+
+  it('skips an attach name it cannot resolve to a string const', () => {
+    // The forwarding call inside attachWorkerObservability itself names a
+    // parameter; it is not an attach site and must not become one.
+    const source = `
+      export function attachWorkerObservability(worker: unknown, name: string) {
+        workerReadinessRegistry.attach(name, worker);
+      }
+    `;
+    expect(attachmentNamesFromSource('forwarder.ts', source)).toEqual([]);
+  });
 
   it('fails closed when an initializer silently succeeds without attaching its Worker', () => {
     const source = `
