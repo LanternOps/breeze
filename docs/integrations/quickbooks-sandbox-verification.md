@@ -282,7 +282,7 @@ assigns the sandbox company, e.g. "Breeze QBO Sandbox 1"), never the realm ID.
 ### Phase C checklist (invoice push)
 
 Issued-invoice push, void, and the multi-currency seams (Phase C, migration
-`apps/api/migrations/2026-09-29-quickbooks-invoice-push.sql`). Same rules as
+`apps/api/migrations/2026-09-30-quickbooks-invoice-push.sql`). Same rules as
 Section 2 above: dedicated sandbox company, no credentials or realm IDs
 committed to this repository.
 
@@ -347,7 +347,7 @@ committed to this repository.
    committing).
 4. Migrations referenced by this feature:
    `apps/api/migrations/2026-09-28-quickbooks-entity-mappings.sql` (Phase B),
-   `apps/api/migrations/2026-09-29-quickbooks-invoice-push.sql` (Phase C).
+   `apps/api/migrations/2026-09-30-quickbooks-invoice-push.sql` (Phase C).
 
 ---
 

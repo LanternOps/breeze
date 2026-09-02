@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - Branch off **main AFTER PR #4372 (Phase B) merges**. Commit this plan file as the first commit.
-- Migration file MUST be named `2026-09-29-quickbooks-invoice-push.sql` — it must sort after `2026-09-28-quickbooks-entity-mappings.sql` (Phase B, newest committed). Never use today's real date. Idempotent; no inner BEGIN/COMMIT.
+- Migration file MUST be named `2026-09-30-quickbooks-invoice-push.sql` — it must sort after `2026-09-28-quickbooks-entity-mappings.sql` (Phase B, newest committed). Never use today's real date. Idempotent; no inner BEGIN/COMMIT.
 - Money is **major-unit decimal strings** end-to-end; convert to JSON number only at the QBO wire (`Number(...)`), and compare totals in integer cents.
 - Every QBO HTTP call wraps in `runOutsideDbContext(...)`; every new accounting route that triggers one registers in `SELF_MANAGED_DB_CONTEXT_ROUTES` (`apps/api/src/middleware/selfManagedDbContextRoutes.ts:50-64`).
 - Never persist or rethrow a raw QBO response body — sanitize to `QuickBooks rejected the <label> sync (HTTP <status>)` (pattern: `accountingMappingService.ts:826-840`).
@@ -29,7 +29,7 @@
 ## File Structure
 
 ```
-apps/api/migrations/2026-09-29-quickbooks-invoice-push.sql          (new)
+apps/api/migrations/2026-09-30-quickbooks-invoice-push.sql          (new)
 apps/api/src/db/schema/accounting.ts                                 (modify: 3 new columns)
 apps/api/src/services/accounting/types.ts                            (modify: RemoteCustomer.currencyCode, InvoicePushResult, RealmSettings, fetchRealmSettings)
 apps/api/src/services/accounting/quickbooksProvider.ts               (modify: pushInvoice, voidInvoice, fetchRealmSettings)
@@ -158,7 +158,7 @@ Each `...` body is written out in full during implementation with the same fixtu
 ### Task 2: Migration + connection/mapping columns + settings refresh
 
 **Files:**
-- Create: `apps/api/migrations/2026-09-29-quickbooks-invoice-push.sql`
+- Create: `apps/api/migrations/2026-09-30-quickbooks-invoice-push.sql`
 - Modify: `apps/api/src/db/schema/accounting.ts`, `accountingConnectionService.ts`, `accountingMappingService.ts` (persist customer currency), `routes/accounting/index.ts` (callback persists multiCurrencyEnabled; new `POST /:provider/settings/refresh`), `middleware/selfManagedDbContextRoutes.ts`
 - Test: `accountingConnectionService.test.ts`, `accountingMappingService.test.ts`, `routes/accounting/index.test.ts`, `apps/api/src/db/autoMigrate.test.ts` (auto-covers naming)
 
@@ -171,7 +171,7 @@ Each `...` body is written out in full during implementation with the same fixtu
 
 - [ ] **Step 1: Write the migration** (idempotent):
 ```sql
--- 2026-09-29-quickbooks-invoice-push.sql
+-- 2026-09-30-quickbooks-invoice-push.sql
 ALTER TABLE accounting_connections ADD COLUMN IF NOT EXISTS multi_currency_enabled boolean;
 ALTER TABLE accounting_entity_mappings ADD COLUMN IF NOT EXISTS remote_currency_code char(3);
 ALTER TABLE accounting_entity_mappings ADD COLUMN IF NOT EXISTS remote_doc_number varchar(40);
