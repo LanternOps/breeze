@@ -1,7 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 
-const { authRef, selectResult, insertReturning, sendInvite } = vi.hoisted(() => ({
+const { valuesSpy, setSpy } = vi.hoisted(() => ({ valuesSpy: vi.fn(), setSpy: vi.fn() }));
+const { authRef, selectResult, insertReturning, sendInvite, createContactMock, auditMock } = vi.hoisted(() => ({
+  createContactMock: vi.fn(),
+  auditMock: vi.fn(),
   authRef: { current: { scope: 'partner' as string, user: { id: 'u-1', name: 'Tess', email: 'tess@msp.example' }, partnerId: 'p-1' as string | null, canAccessOrg: (_id: string) => true } },
   selectResult: vi.fn(),
   insertReturning: vi.fn(),
@@ -28,9 +31,9 @@ vi.mock('../db', () => ({
         }))
       }))
     })),
-    insert: vi.fn(() => ({ values: vi.fn(() => ({ returning: vi.fn(() => insertReturning()) })) })),
+    insert: vi.fn(() => ({ values: vi.fn((v: unknown) => { valuesSpy(v); return { returning: vi.fn(() => insertReturning()) }; }) })),
     update: vi.fn(() => ({
-      set: vi.fn(() => ({
+      set: vi.fn((v: unknown) => { setSpy(v); return ({
         where: vi.fn(() => ({
           returning: vi.fn(() => insertReturning()),
           // bulk-invite's per-user update has no `.returning()` leaf —
@@ -38,19 +41,24 @@ vi.mock('../db', () => ({
           // also resolves via insertReturning().
           then: (resolve: any, reject: any) => insertReturning().then(resolve, reject)
         }))
-      }))
+      }); })
     })),
     delete: vi.fn(() => ({ where: vi.fn(() => Promise.resolve()) }))
   }
 }));
 vi.mock('../db/schema', () => ({
-  portalUsers: { id: 'id', orgId: 'orgId', email: 'email', name: 'name', passwordHash: 'passwordHash', receiveNotifications: 'receiveNotifications', status: 'status', invitedBy: 'invitedBy', invitedAt: 'invitedAt', lastLoginAt: 'lastLoginAt', createdAt: 'createdAt' },
+  portalUsers: { id: 'id', orgId: 'orgId', email: 'email', name: 'name', passwordHash: 'passwordHash', receiveNotifications: 'receiveNotifications', status: 'status', invitedBy: 'invitedBy', invitedAt: 'invitedAt', lastLoginAt: 'lastLoginAt', createdAt: 'createdAt', contactId: 'contactId' },
+  contacts: { id: 'id', orgId: 'orgId', email: 'email' },
   organizations: { id: 'id', name: 'name', deletedAt: 'deletedAt' },
   tickets: { id: 'id', submittedBy: 'submittedBy' },
   ticketComments: { id: 'id', portalUserId: 'portalUserId' },
   assetCheckouts: { id: 'id', checkedOutTo: 'checkedOutTo' }
 }));
-vi.mock('../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
+vi.mock('../services/auditEvents', () => ({ writeRouteAudit: auditMock }));
+vi.mock('../services/contacts/crud', async () => {
+  const actual = await vi.importActual<typeof import('../services/contacts/crud')>('../services/contacts/crud');
+  return { ...actual, createContact: createContactMock };
+});
 vi.mock('../routes/portal/helpers', () => ({ storePortalInviteToken: vi.fn(async () => 'raw-token'), buildPortalUrl: (p: string) => `https://x/portal${p}` }));
 vi.mock('../services/email', () => ({ getEmailService: () => ({ sendPortalInvite: sendInvite }) }));
 
@@ -84,11 +92,106 @@ describe('POST /organizations/:id/portal-users/invite', () => {
     selectResult
       .mockResolvedValueOnce([{ id: ORG_ID }]) // org existence
       .mockResolvedValueOnce([])               // no existing portal user
+      .mockResolvedValueOnce([])               // no contact for the address yet (#3258 W03)
       .mockResolvedValueOnce([{ name: 'Acme Co' }]); // org name
+    createContactMock.mockResolvedValueOnce({ id: 'ct-new' });
     insertReturning.mockResolvedValueOnce([{ id: 'pu-new', email: 'new@acme.example', status: 'invited' }]);
     const res = await invite({ email: 'new@acme.example', name: 'New Cust' });
     expect(res.status).toBe(200);
     expect(sendInvite).toHaveBeenCalledWith(expect.objectContaining({ to: 'new@acme.example', inviteUrl: expect.stringContaining('/portal/accept-invite?token=raw-token') }));
+  });
+
+  // ---- #3258 W03: an invited LOGIN is linked to the org's CONTACT ----
+  // A portal login is a login attached to a person, and tickets now attribute
+  // to that person. An invite that leaves contact_id null hands the customer a
+  // login that cannot see the tickets they emailed in.
+
+  it('links the new login to the org contact that already holds the address', async () => {
+    selectResult
+      .mockResolvedValueOnce([{ id: ORG_ID }])          // org existence
+      .mockResolvedValueOnce([])                        // no existing portal user
+      .mockResolvedValueOnce([{ id: 'ct-1' }])          // exactly one contact on the address
+      .mockResolvedValueOnce([{ name: 'Acme Co' }]);    // org name
+    insertReturning.mockResolvedValueOnce([{ id: 'pu-new' }]);
+
+    const res = await invite({ email: 'known@acme.example', name: 'Known Cust' });
+
+    expect(res.status).toBe(200);
+    expect(createContactMock).not.toHaveBeenCalled();
+    expect(valuesSpy).toHaveBeenCalledWith(expect.objectContaining({ contactId: 'ct-1' }));
+    expect(auditMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      details: expect.objectContaining({ contactLink: 'linked' }),
+    }));
+  });
+
+  it('creates a portal-role contact when the org has none for the address', async () => {
+    selectResult
+      .mockResolvedValueOnce([{ id: ORG_ID }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])                        // no contact yet
+      .mockResolvedValueOnce([{ name: 'Acme Co' }]);
+    createContactMock.mockResolvedValueOnce({ id: 'ct-made' });
+    insertReturning.mockResolvedValueOnce([{ id: 'pu-new' }]);
+
+    const res = await invite({ email: 'fresh@acme.example', name: 'Fresh Cust' });
+
+    expect(res.status).toBe(200);
+    const [, input, actor] = createContactMock.mock.calls[0]!;
+    // 'portal' is the role the INVITE grants — inbound email deliberately
+    // claims no role at all.
+    expect(input).toMatchObject({ orgId: ORG_ID, email: 'fresh@acme.example', name: 'Fresh Cust', roles: ['portal'] });
+    expect(actor).toEqual({ userId: 'u-1' });
+    expect(valuesSpy).toHaveBeenCalledWith(expect.objectContaining({ contactId: 'ct-made' }));
+  });
+
+  it('leaves contact_id null and records contactLink=ambiguous for a shared address', async () => {
+    selectResult
+      .mockResolvedValueOnce([{ id: ORG_ID }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ id: 'ct-a' }, { id: 'ct-b' }])  // shared mailbox
+      .mockResolvedValueOnce([{ name: 'Acme Co' }]);
+    insertReturning.mockResolvedValueOnce([{ id: 'pu-new' }]);
+
+    const res = await invite({ email: 'support@acme.example' });
+
+    expect(res.status).toBe(200);
+    expect(createContactMock).not.toHaveBeenCalled();
+    expect(valuesSpy).toHaveBeenCalledWith(expect.objectContaining({ contactId: null }));
+    expect(auditMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      details: expect.objectContaining({ contactLink: 'ambiguous' }),
+    }));
+  });
+
+  it('re-inviting an existing login NEVER overwrites a contact link it already has', async () => {
+    selectResult
+      .mockResolvedValueOnce([{ id: ORG_ID }])
+      .mockResolvedValueOnce([{ id: 'pu-1', email: 'again@acme.example', passwordHash: null, status: 'invited', contactId: 'ct-existing' }])
+      .mockResolvedValueOnce([{ name: 'Acme Co' }]);
+    insertReturning.mockResolvedValueOnce([{ id: 'pu-1' }]);
+
+    const res = await invite({ email: 'again@acme.example' });
+
+    expect(res.status).toBe(200);
+    expect(createContactMock).not.toHaveBeenCalled();
+    // The link is not re-derived at all — no lookup, and nothing written.
+    expect(setSpy).toHaveBeenCalledWith(expect.not.objectContaining({ contactId: expect.anything() }));
+    expect(auditMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      details: expect.objectContaining({ contactLink: 'kept' }),
+    }));
+  });
+
+  it('re-inviting a login with NO contact link backfills one', async () => {
+    selectResult
+      .mockResolvedValueOnce([{ id: ORG_ID }])
+      .mockResolvedValueOnce([{ id: 'pu-1', email: 'again@acme.example', passwordHash: null, status: 'invited', contactId: null }])
+      .mockResolvedValueOnce([{ id: 'ct-1' }])
+      .mockResolvedValueOnce([{ name: 'Acme Co' }]);
+    insertReturning.mockResolvedValueOnce([{ id: 'pu-1' }]);
+
+    const res = await invite({ email: 'again@acme.example' });
+
+    expect(res.status).toBe(200);
+    expect(setSpy).toHaveBeenCalledWith(expect.objectContaining({ contactId: 'ct-1' }));
   });
 
   it('409s when the email is already an active account with a password', async () => {

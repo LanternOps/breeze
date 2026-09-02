@@ -20,6 +20,7 @@ import {
   validatePortalCookieCsrfRequest,
   writePortalAudit,
 } from './helpers';
+import { portalTicketOwnership } from './ticketOwnership';
 import { createTicket, TicketServiceError, portalCommentMutable, editTicketComment, deleteTicketComment } from '../../services/ticketService';
 import { listTicketFormsForOrg } from '../../services/ticketFormService';
 import { editCommentSchema, PORTAL_TICKET_COMMENT_MAX_CHARS } from '@breeze/shared';
@@ -124,7 +125,7 @@ ticketRoutes.get('/tickets', zValidator('query', listSchema), async (c) => {
 
   const conditions = and(
     eq(tickets.orgId, auth.user.orgId),
-    eq(tickets.submittedBy, auth.user.id),
+    portalTicketOwnership(auth.user),
     isNull(tickets.deletedAt) // soft-deleted tickets are invisible to portal customers
   );
 
@@ -263,7 +264,7 @@ ticketRoutes.get('/tickets/:id', zValidator('param', ticketParamSchema), async (
       and(
         eq(tickets.id, id),
         eq(tickets.orgId, auth.user.orgId),
-        eq(tickets.submittedBy, auth.user.id),
+        portalTicketOwnership(auth.user),
         isNull(tickets.deletedAt)
       )
     )
@@ -355,7 +356,7 @@ ticketRoutes.post(
         and(
           eq(tickets.id, id),
           eq(tickets.orgId, auth.user.orgId),
-          eq(tickets.submittedBy, auth.user.id),
+          portalTicketOwnership(auth.user),
           isNull(tickets.deletedAt)
         )
       )
@@ -521,7 +522,7 @@ ticketRoutes.get(
   '/tickets/:id/attachments/:attachmentId/content',
   zValidator('param', portalAttachmentParamSchema),
   async (c) => {
-    const auth = c.get('portalAuth' as never) as { user: { id: string; orgId: string } };
+    const auth = c.get('portalAuth' as never) as { user: { id: string; orgId: string; contactId: string | null } };
     const { id, attachmentId } = c.req.valid('param');
 
     const [ticket] = await db
@@ -530,7 +531,7 @@ ticketRoutes.get(
       .where(and(
         eq(tickets.id, id),
         eq(tickets.orgId, auth.user.orgId),
-        eq(tickets.submittedBy, auth.user.id),
+        portalTicketOwnership(auth.user),
         isNull(tickets.deletedAt)
       ))
       .limit(1);

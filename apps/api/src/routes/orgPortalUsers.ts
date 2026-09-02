@@ -1,8 +1,9 @@
 import type { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
-import { and, eq, isNull, desc, ne } from 'drizzle-orm';
+import { and, eq, isNull, desc, ne, sql } from 'drizzle-orm';
 import { db } from '../db';
-import { organizations, portalUsers, tickets, ticketComments, assetCheckouts } from '../db/schema';
+import { organizations, portalUsers, tickets, ticketComments, assetCheckouts, contacts } from '../db/schema';
+import { createContact } from '../services/contacts/crud';
 import { requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
 import { writeRouteAudit } from '../services/auditEvents';
@@ -93,6 +94,53 @@ async function issueAndSendInvite(c: any, orgId: string, user: { id: string; ema
   }
 }
 
+/**
+ * How an invite resolved to the org's contact for that address (#3258 W03).
+ * Recorded in the invite's audit details, because a null `contact_id` is not
+ * self-explaining after the fact: 'ambiguous' means we declined to guess,
+ * 'kept' means we deliberately did not touch a link that was already there.
+ */
+type InviteContactLink = 'linked' | 'created' | 'ambiguous' | 'kept';
+
+/**
+ * Bind an invited portal LOGIN to the org's CONTACT for that address.
+ *
+ * A portal login is a login attached to a person (#3258), and tickets now
+ * attribute to that person — so an invite that leaves `contact_id` null hands
+ * the customer a login that cannot see the tickets they emailed in
+ * (routes/portal/ticketOwnership.ts).
+ *
+ * Runs in the caller's REQUEST context, so `contacts` is read and written
+ * under RLS with the acting user as `created_by` — unlike the inbound path,
+ * which is a system-context ingest side effect with no acting user.
+ *
+ * Several contacts on one address (a shared mailbox) is left UNLINKED rather
+ * than resolved by a guess: `contacts_org_email_idx` is deliberately
+ * non-unique, and picking one would silently grant that person's ticket
+ * history to whoever accepted the invite.
+ */
+async function resolveInviteContact(
+  orgId: string,
+  normalizedEmail: string,
+  name: string | null,
+  actorUserId: string,
+): Promise<{ contactId: string | null; link: InviteContactLink }> {
+  // limit(2) is all the arithmetic this needs: two rows means "at least two".
+  const found = await db
+    .select({ id: contacts.id })
+    .from(contacts)
+    .where(and(eq(contacts.orgId, orgId), sql`lower(${contacts.email}) = ${normalizedEmail}`))
+    .limit(2);
+  if (found.length > 1) return { contactId: null, link: 'ambiguous' };
+  if (found.length === 1) return { contactId: found[0]!.id, link: 'linked' };
+  const created = await createContact(
+    db,
+    { orgId, email: normalizedEmail, name, roles: ['portal'] },
+    { userId: actorUserId },
+  );
+  return { contactId: created.id, link: 'created' };
+}
+
 export function registerOrgPortalUsersRoutes(orgRoutes: Hono) {
   const requireOrgRead = requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action);
   const requireOrgWrite = requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action);
@@ -120,7 +168,7 @@ export function registerOrgPortalUsersRoutes(orgRoutes: Hono) {
     const { email, name, message } = c.req.valid('json');
     const normalizedEmail = email.trim().toLowerCase();
 
-    const [existing] = await db.select({ id: portalUsers.id, email: portalUsers.email, passwordHash: portalUsers.passwordHash, status: portalUsers.status })
+    const [existing] = await db.select({ id: portalUsers.id, email: portalUsers.email, passwordHash: portalUsers.passwordHash, status: portalUsers.status, contactId: portalUsers.contactId })
       .from(portalUsers).where(and(eq(portalUsers.orgId, org.id), eq(portalUsers.email, normalizedEmail))).limit(1);
 
     if (existing && existing.status === 'disabled') {
@@ -133,18 +181,33 @@ export function registerOrgPortalUsersRoutes(orgRoutes: Hono) {
 
     const now = new Date();
     let userId: string;
+    let contactLink: InviteContactLink;
     if (existing) {
-      await db.update(portalUsers).set({ name: name ?? undefined, status: 'invited', invitedBy: auth.user.id, invitedAt: now, updatedAt: now }).where(eq(portalUsers.id, existing.id)).returning({ id: portalUsers.id });
+      // An existing link is never re-derived, let alone overwritten: whoever
+      // set it (the 2026-08-19 backfill, a previous invite, a tech editing the
+      // contact) knew more than an email string does. Skipping the lookup also
+      // stops a re-invite from minting a duplicate contact.
+      const contactPatch: { contactId?: string } = {};
+      if (existing.contactId) {
+        contactLink = 'kept';
+      } else {
+        const resolved = await resolveInviteContact(org.id, normalizedEmail, name ?? null, auth.user.id);
+        contactLink = resolved.link;
+        if (resolved.contactId) contactPatch.contactId = resolved.contactId;
+      }
+      await db.update(portalUsers).set({ name: name ?? undefined, status: 'invited', invitedBy: auth.user.id, invitedAt: now, updatedAt: now, ...contactPatch }).where(eq(portalUsers.id, existing.id)).returning({ id: portalUsers.id });
       userId = existing.id;
     } else {
-      const [created] = await db.insert(portalUsers).values({ orgId: org.id, email: normalizedEmail, name: name ?? null, passwordHash: null, authMethod: 'password', status: 'invited', invitedBy: auth.user.id, invitedAt: now }).returning({ id: portalUsers.id });
+      const resolved = await resolveInviteContact(org.id, normalizedEmail, name ?? null, auth.user.id);
+      contactLink = resolved.link;
+      const [created] = await db.insert(portalUsers).values({ orgId: org.id, email: normalizedEmail, name: name ?? null, passwordHash: null, authMethod: 'password', status: 'invited', invitedBy: auth.user.id, invitedAt: now, contactId: resolved.contactId }).returning({ id: portalUsers.id });
       userId = created!.id;
     }
 
     const [orgRow] = await db.select({ name: organizations.name }).from(organizations).where(eq(organizations.id, org.id)).limit(1);
     const emailSent = await issueAndSendInvite(c, org.id, { id: userId, email: normalizedEmail }, orgRow?.name ?? null, auth.user.name, message);
 
-    writeRouteAudit(c, { orgId: org.id, action: 'organization.portal_user.invite', resourceType: 'portal_user', resourceId: userId, details: { email: normalizedEmail, emailSent } });
+    writeRouteAudit(c, { orgId: org.id, action: 'organization.portal_user.invite', resourceType: 'portal_user', resourceId: userId, details: { email: normalizedEmail, emailSent, contactLink } });
     return c.json({ data: { id: userId, email: normalizedEmail, status: 'invited' }, emailSent });
   });
 
