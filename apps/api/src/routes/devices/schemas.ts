@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { DEVICES_SORT_KEYS } from './cursor';
 import { discoveredAssetTypeEnum } from '../../db/schema/discovery';
-import { MAINTENANCE_MAX_BULK_DEVICES, MAINTENANCE_MAX_DURATION_HOURS } from '../../services/mfaStepUpGrant';
+import { MAINTENANCE_MAX_BULK_DEVICES, MAINTENANCE_MAX_DURATION_HOURS } from '../../services/maintenanceStepUpLimits';
 
 const DEVICE_ROLES = [
   'workstation', 'server', 'printer', 'router', 'switch',

@@ -82,15 +82,9 @@ export function rollbackResourceDigest(input: {
   return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
 }
 
-/**
- * Shared maxima for the device-maintenance operation. Single owner on purpose:
- * the step-up mint schema (routes/auth/schemas.ts), the device route schemas
- * (routes/devices/schemas.ts) and the bulk route all bound the SAME numbers,
- * and a drift between the schema that accepts a value and the digest that
- * binds it would be a silent authorization hole.
- */
-export const MAINTENANCE_MAX_DURATION_HOURS = 168;
-export const MAINTENANCE_MAX_BULK_DEVICES = 500;
+// The device-maintenance maxima moved to services/maintenanceStepUpLimits.ts —
+// see that file's header for why a constant must not live in a module this
+// many suites mock wholesale.
 
 /**
  * Canonical digest for a device-maintenance grant.

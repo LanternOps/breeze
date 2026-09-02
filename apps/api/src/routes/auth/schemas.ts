@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { envFlag } from '../../utils/envFlag';
 import type { StepUpOperation } from '../../services/mfaStepUpGrant';
-import { MAINTENANCE_MAX_BULK_DEVICES, MAINTENANCE_MAX_DURATION_HOURS } from '../../services/mfaStepUpGrant';
+import { MAINTENANCE_MAX_BULK_DEVICES, MAINTENANCE_MAX_DURATION_HOURS } from '../../services/maintenanceStepUpLimits';
 
 // ============================================
 // Feature flags
@@ -164,7 +164,7 @@ export const rollbackStepUpResource = z.object({
 // bulkMaintenanceSchema (routes/devices/schemas.ts) exactly — a value the
 // device route would accept but this schema would not (or vice versa) is a
 // grant a technician can mint and never spend, or spend for more than they
-// proved. Both sides import the maxima from services/mfaStepUpGrant.ts.
+// proved. Both sides import the maxima from services/maintenanceStepUpLimits.ts.
 export const maintenanceStepUpResource = z.object({
   deviceIds: z.array(z.string().uuid()).min(1).max(MAINTENANCE_MAX_BULK_DEVICES),
   reason: z.string().trim().min(3).max(500),

@@ -171,8 +171,10 @@ vi.mock('../services/mfaStepUpGrant', () => ({
   // dispatch that fell back to rollbackResourceDigest would produce the other
   // constant and the device_maintenance mint assertion below would fail.
   maintenanceResourceDigest: vi.fn(() => 'sha256:ma1n7enanceb0undd19e57000000000000000000000000000000000000000000'),
-  MAINTENANCE_MAX_DURATION_HOURS: 168,
-  MAINTENANCE_MAX_BULK_DEVICES: 500,
+  // NB: the MAINTENANCE_MAX_* maxima are deliberately NOT restated here. They
+  // live in services/maintenanceStepUpLimits.ts, which nothing mocks, so the
+  // schemas under test bind the REAL 168/500 rather than a copy in this
+  // factory that could drift from them silently.
 }));
 
 // mfa.ts's POST /mfa/step-up passkey branch calls verifyStepUpPasskeyAssertion
