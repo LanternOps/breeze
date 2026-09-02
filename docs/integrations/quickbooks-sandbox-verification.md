@@ -253,7 +253,7 @@ assigns the sandbox company, e.g. "Breeze QBO Sandbox 1"), never the realm ID.
 
 3. **Reconcile one existing customer by email and confirm it; verify QBO is
    unchanged.**
-   Result: PASS. Visible status: org with billing email `Surf@Intuit.com` was proposed to QBO customer 2 with confidence `exact_email`; confirm + sync → `confirmed / synced`, `remote_entity_id=2`, `remote_sync_token=1`, `remote_currency_code=USD`. QBO customer 2 was sparse-updated (DisplayName now follows the Breeze org name).
+   Result: PASS. Visible status: org with billing email `surf@example.com` was proposed to QBO customer 2 with confidence `exact_email`; confirm + sync → `confirmed / synced`, `remote_entity_id=2`, `remote_sync_token=1`, `remote_currency_code=USD`. QBO customer 2 was sparse-updated (DisplayName now follows the Breeze org name).
 
 4. **Choose create-new for a second organization; sync twice; verify one QBO
    Customer exists and the second sync updates it without duplication.**
