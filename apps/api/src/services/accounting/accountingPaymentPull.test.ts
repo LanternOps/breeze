@@ -1346,15 +1346,23 @@ describe('the echo of a Breeze-origin payment (spec decision 5)', () => {
 });
 
 describe('pull disabled (spec decision 6, #4543)', () => {
-  it('suppresses a NEW QuickBooks-origin import and says so', async () => {
+  it('suppresses a NEW QuickBooks-origin import and says so, without logging per item', async () => {
     currentMappings = [invoiceMappingRow()];
+    // A window against a pull-off connection is ALL skips, every 15 minutes.
+    // The reason reaches the operator as the run line's `skippedPullDisabled=<n>`
+    // (#4543), never as one console line per payment.
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const r = await applyAccountingPayment(conn({ pullPayments: false }), LINE, runCtx, REALM_FP);
 
-    const r = await applyAccountingPayment(conn({ pullPayments: false }), LINE, runCtx, REALM_FP);
-
-    expect(r.outcome).toBe('skipped_pull_disabled');
-    expect(r.invoiceId).toBe(INVOICE_ID);
-    expect(currentPayments).toHaveLength(0);
-    expect(insertMock).not.toHaveBeenCalled();
+      expect(r.outcome).toBe('skipped_pull_disabled');
+      expect(r.invoiceId).toBe(INVOICE_ID);
+      expect(currentPayments).toHaveLength(0);
+      expect(insertMock).not.toHaveBeenCalled();
+      expect(logSpy).not.toHaveBeenCalled();
+    } finally {
+      logSpy.mockRestore();
+    }
   });
 
   it('still ADOPTS a Breeze-created Payment with pull off — push and pull are separate switches', async () => {

@@ -130,7 +130,11 @@ export type PaymentPullOutcome =
   | 'skipped_breeze_origin'
   // `pull_payments` is off. Only NEW QuickBooks-origin imports are suppressed —
   // adoptions, echoes and remote deletions of Breeze-origin payments still run
-  // (spec decision 6). Logged per item, which is the #4543 fix for this reason.
+  // (spec decision 6). Counted, and surfaced ONCE PER RUN as
+  // `skippedPullDisabled=<n>` on the reconcile worker's run line — which is the
+  // #4543 fix for this reason. Deliberately not logged per item: a CDC window
+  // against a pull-off connection is ALL skips, so a per-line log would bury the
+  // rest of the run in noise it repeats every 15 minutes.
   | 'skipped_pull_disabled'
   // Somebody deleted, in QuickBooks, a Payment Breeze created. The Breeze row
   // SURVIVES (the money moved); the mapping goes to error with its remote id
@@ -471,14 +475,9 @@ async function applyInsideTransaction(
   // (c2) Pull switched off. Only a NEW QuickBooks-origin import is suppressed:
   // a line that already has a mapping, or that carries Breeze's own marker, is
   // this connection's outbound work echoing back and must still be processed
-  // (spec decision 6). Logged with the id so the skip is never silent (#4543).
+  // (spec decision 6). The skip is never silent — it is a counted outcome the
+  // worker reports once per run as `skippedPullDisabled=<n>` (#4543).
   if (!existing && !line.breezePaymentId && !conn.pullPayments) {
-    console.log(
-      '[accountingPaymentPull] skipping a QuickBooks-origin payment because pull_payments is off',
-      `connectionId=${conn.id}`,
-      `remotePaymentId=${line.remotePaymentId}`,
-      `remoteInvoiceId=${line.remoteInvoiceId}`,
-    );
     return noAudit(result('skipped_pull_disabled', line.remotePaymentId, line.remoteInvoiceId, inv.id));
   }
 

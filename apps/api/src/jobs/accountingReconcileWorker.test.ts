@@ -525,6 +525,29 @@ describe('processReconcileConnectionJob: cursor', () => {
     expect(stampReconcileRunErrorMock).toHaveBeenCalledWith({}, CONN_ID, PARTNER_ID, null);
   });
 
+  it('reports the pull-disabled skips ONCE on the run line, not once per suppressed payment', async () => {
+    // A CDC window against a pull-off connection is ALL skips. Logging each one
+    // would bury the run in noise it repeats every 15 minutes (#4543 asks for a
+    // visible reason, not a per-item trace).
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      applyReturns('skipped_pull_disabled');
+      reconcileChangesMock.mockResolvedValue({
+        ...EMPTY_CHANGESET,
+        payments: [line(), line(), line()],
+      });
+
+      const summary = await processReconcileConnectionJob(JOB);
+
+      expect(summary?.skippedPullDisabled).toBe(3);
+      const runLines = logSpy.mock.calls.filter((c) => String(c[0]).includes('run complete'));
+      expect(runLines).toHaveLength(1);
+      expect(runLines[0]).toContain('skippedPullDisabled=3');
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
   it('does NOT advance the cursor and rethrows when an applier throws', async () => {
     reconcileChangesMock.mockResolvedValue({ ...EMPTY_CHANGESET, payments: [line()] });
     applyMock.mockRejectedValue(new Error('boom'));
