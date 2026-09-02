@@ -28,5 +28,8 @@ describe('reportTypeSurvivesBuilder', () => {
     // posture → compliance, executive_summary → performance
     expect(reportTypeSurvivesBuilder('security_compliance_posture')).toBe(false);
     expect(reportTypeSurvivesBuilder('executive_summary')).toBe(false);
+    // ai_org_narrative → activity. The AI schedule owns this type end to end;
+    // the builder must never present itself as able to author it.
+    expect(reportTypeSurvivesBuilder('ai_org_narrative')).toBe(false);
   });
 });

@@ -90,3 +90,14 @@ export async function initializeUnifiTelemetryWorker(): Promise<void> {
   workerInstance.on('failed', (job, e) => console.error(`[UnifiTelemetryWorker] job ${job?.id} failed:`, e));
   console.log('[UnifiTelemetryWorker] initialized');
 }
+
+export async function shutdownUnifiTelemetryWorker(): Promise<void> {
+  if (workerInstance) {
+    await workerInstance.close();
+    workerInstance = null;
+  }
+  if (queue) {
+    await queue.close();
+    queue = null;
+  }
+}

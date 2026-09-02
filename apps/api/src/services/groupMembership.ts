@@ -3,6 +3,7 @@ import type { FilterConditionGroup } from './filterEngine';
 import { db, getCurrentDbAccessContext, hasDbAccessContext } from '../db';
 import { deviceGroups, deviceGroupMemberships, devices, groupMembershipLog } from '../db/schema';
 import { deviceMatchesFilter, evaluateFilter, extractFieldsFromFilter } from './filterEngine';
+import { schedulePeripheralPolicyDevice } from '../jobs/peripheralJobs';
 
 type MembershipAction = 'added' | 'removed';
 type MembershipReason = 'manual' | 'filter_match' | 'filter_unmatch' | 'pinned' | 'unpinned';
@@ -24,6 +25,19 @@ export interface MembershipUpdateSummary {
    * a logged error — see `evaluateGroupMembership`.
    */
   materialized?: number;
+}
+
+async function schedulePeripheralMembershipChanges(
+  deviceIds: readonly string[],
+  reason: 'dynamic_membership_changed' | 'manual_membership_changed' | 'membership_pin_changed',
+): Promise<void> {
+  await Promise.all([...new Set(deviceIds)].map(async (deviceId) => {
+    try {
+      await schedulePeripheralPolicyDevice(deviceId, reason);
+    } catch (error) {
+      console.error(`[groupMembership] failed to schedule peripheral reconciliation for ${deviceId}:`, error);
+    }
+  }));
 }
 
 /**
@@ -170,6 +184,7 @@ export async function evaluateDeviceMembershipForGroup(
         eq(deviceGroupMemberships.deviceId, deviceId),
       ));
       await logMembershipChange(groupId, deviceId, 'removed', 'filter_unmatch', group.orgId);
+      await schedulePeripheralMembershipChanges([deviceId], 'dynamic_membership_changed');
       return { evaluatedGroups: 1, added: 0, removed: 1 };
     }
     return { evaluatedGroups: 1, added: 0, removed: 0 };
@@ -202,6 +217,7 @@ export async function evaluateDeviceMembershipForGroup(
         })
         .onConflictDoNothing();
       await logMembershipChange(groupId, deviceId, 'added', 'filter_match', group.orgId);
+      await schedulePeripheralMembershipChanges([deviceId], 'dynamic_membership_changed');
       return { evaluatedGroups: 1, added: 1, removed: 0 };
     }
     return { evaluatedGroups: 1, added: 0, removed: 0 };
@@ -217,6 +233,7 @@ export async function evaluateDeviceMembershipForGroup(
         )
       );
     await logMembershipChange(groupId, deviceId, 'removed', 'filter_unmatch', group.orgId);
+    await schedulePeripheralMembershipChanges([deviceId], 'dynamic_membership_changed');
     return { evaluatedGroups: 1, added: 0, removed: 1 };
   }
 
@@ -307,6 +324,13 @@ export async function evaluateGroupMembership(groupId: string): Promise<Membersh
     await logMembershipChanges(groupId, toRemove, 'removed', 'filter_unmatch', group.orgId);
   }
 
+  if (toAdd.length > 0 || toRemove.length > 0) {
+    await schedulePeripheralMembershipChanges(
+      [...toAdd, ...toRemove],
+      'dynamic_membership_changed',
+    );
+  }
+
   // Verify what actually landed whenever we wrote something. `matched` is the
   // same number the server-side preview endpoint reports for this filter, so a
   // shortfall is precisely the "preview says 3, membership says 0" symptom —
@@ -350,7 +374,8 @@ export async function pruneGroupMembershipsOutsideSite(
   siteId: string,
   orgId: string,
   database: GroupMembershipDatabase = db,
-): Promise<{ removed: number }> {
+  options: { deferPeripheralReconciliation?: boolean } = {},
+): Promise<{ removed: number; deviceIds?: string[] }> {
   const memberships = await database
     .select({
       deviceId: deviceGroupMemberships.deviceId,
@@ -365,7 +390,9 @@ export async function pruneGroupMembershipsOutsideSite(
       .filter((membership) => membership.siteId !== siteId)
       .map((membership) => membership.deviceId),
   )];
-  if (deviceIds.length === 0) return { removed: 0 };
+  if (deviceIds.length === 0) {
+    return options.deferPeripheralReconciliation ? { removed: 0, deviceIds: [] } : { removed: 0 };
+  }
 
   await database
     .delete(deviceGroupMemberships)
@@ -377,8 +404,13 @@ export async function pruneGroupMembershipsOutsideSite(
     deviceIds.map((deviceId) =>
       logMembershipChange(groupId, deviceId, 'removed', 'filter_unmatch', orgId, database)),
   );
+  if (!options.deferPeripheralReconciliation) {
+    await schedulePeripheralMembershipChanges(deviceIds, 'dynamic_membership_changed');
+  }
 
-  return { removed: deviceIds.length };
+  return options.deferPeripheralReconciliation
+    ? { removed: deviceIds.length, deviceIds }
+    : { removed: deviceIds.length };
 }
 
 export async function updateDeviceMembership(
@@ -491,6 +523,7 @@ export async function pinDeviceToGroup(
     }
 
     await logMembershipChange(groupId, deviceId, 'added', 'pinned', orgId);
+    await schedulePeripheralMembershipChanges([deviceId], 'membership_pin_changed');
     return;
   }
 
@@ -528,6 +561,7 @@ export async function pinDeviceToGroup(
       await logMembershipChange(groupId, deviceId, 'removed', 'unpinned', orgId);
     }
   }
+  await schedulePeripheralMembershipChanges([deviceId], 'membership_pin_changed');
 }
 
 export async function updateDeviceMemberships(
@@ -658,6 +692,7 @@ export async function addManualGroupMemberships(params: {
         addedBy: 'manual' as const
       }))
     );
+    await schedulePeripheralMembershipChanges(added, 'manual_membership_changed');
   }
 
   return { added, skipped: existingSet.size };

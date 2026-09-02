@@ -13,6 +13,23 @@ import {
 } from './installerBuilder';
 import type { Context } from 'hono';
 
+// `fetchRegularMsi` pulls the release artifact manifest + signature through
+// `releaseArtifactManifest.fetchSmallBuffer`, which moved off global `fetch` onto
+// the SSRF-guarded `safeFetchFollowingRedirects` (#3649). That helper dials
+// Node's http/https directly so it is pinned per hop, which means the
+// `vi.stubGlobal('fetch', ...)` harness below no longer intercepts it — these
+// tests silently began making REAL requests to github.com and failing on a 404.
+// Routing the guarded helper back through the global stub keeps every existing
+// case intercepted and unchanged. Guard behaviour itself is covered for real
+// (socket-level, unmocked) in releaseArtifactManifest.redirect.test.ts.
+const { safeFetchFollowingRedirectsMock } = vi.hoisted(() => ({
+  safeFetchFollowingRedirectsMock: vi.fn((url: string) => globalThis.fetch(url)),
+}));
+
+vi.mock('./urlSafety', () => ({
+  safeFetchFollowingRedirects: safeFetchFollowingRedirectsMock,
+}));
+
 // Real keys are 64 lowercase hex chars produced by randomBytes(32).toString('hex').
 // Tests use that exact generator so a future drift between generator and validator
 // fails here loudly.
@@ -55,6 +72,8 @@ describe('fetchRegularMsi', () => {
 
   beforeEach(() => {
     process.env = { ...originalEnv };
+    // mockClear, not mockReset: the forwarding implementation must survive.
+    safeFetchFollowingRedirectsMock.mockClear();
   });
 
   afterEach(() => {
@@ -78,9 +97,13 @@ describe('fetchRegularMsi', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     await expect(fetchRegularMsi()).resolves.toEqual(asset);
-    expect(fetchMock).toHaveBeenCalledWith(
+    // Previously this pinned `{ redirect: 'follow' }` on the global fetch. That
+    // argument is exactly what #3649 removed, so the assertion now pins the
+    // stronger property: the signature is fetched through the SSRF-guarded
+    // helper, under the manifest byte ceiling.
+    expect(safeFetchFollowingRedirectsMock).toHaveBeenCalledWith(
       'https://github.com/lanternops/breeze/releases/download/v1.2.3/release-artifact-manifest.json.ed25519',
-      { redirect: 'follow' },
+      { maxBytes: 1024 * 1024 },
     );
   });
 

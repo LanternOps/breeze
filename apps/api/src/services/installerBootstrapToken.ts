@@ -25,9 +25,10 @@ export function generateBootstrapToken(): string {
 
 /**
  * Default TTL for a freshly-issued bootstrap token. Tunable via env
- * for testing; production default is 24 hours which matches the
- * "admin downloads installer, sends to user, user runs sometime
- * within a day" mental model.
+ * for testing; production default is 30 days — installers get staged
+ * through deploy tooling (RMM/GPO/Intune) and are expected to keep
+ * working well past the day they were downloaded. Keep in step with
+ * PRODUCT_DEFAULT_ENROLLMENT_TTL_MINUTES (packages/shared).
  *
  * Must go through `envInt`, never `Number(process.env.X ?? default)`:
  * compose threads this in as `${INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES:-}`,
@@ -37,6 +38,6 @@ export function generateBootstrapToken(): string {
  * pulled this release without adding the key to its .env (#2776).
  */
 export function bootstrapTokenExpiresAt(): Date {
-  const ttlMin = envInt('INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES', 24 * 60);
+  const ttlMin = envInt('INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES', 60 * 24 * 30);
   return new Date(Date.now() + ttlMin * 60 * 1000);
 }

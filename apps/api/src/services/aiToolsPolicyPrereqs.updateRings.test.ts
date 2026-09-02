@@ -32,6 +32,10 @@ vi.mock('../db/schema/softwarePolicies', () => ({ softwarePolicies: {} }));
 vi.mock('../db/schema/peripheralControl', () => ({ peripheralPolicies: {} }));
 vi.mock('../db/schema/backup', () => ({ backupConfigs: {}, backupProfiles: {} }));
 vi.mock('../db/schema/configurationPolicies', () => ({ configPolicyBackupSettings: {} }));
+vi.mock('../jobs/peripheralJobs', () => ({
+  resolvePeripheralPolicyDeviceIds: vi.fn(async () => []),
+  schedulePeripheralPolicyDevices: vi.fn(async () => undefined),
+}));
 vi.mock('./aiToolsSoftwarePolicyAudit', () => ({
   auditSoftwarePolicyToolEvent: vi.fn(),
   summarizeEnforcementChange: vi.fn(() => ({})),

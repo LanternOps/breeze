@@ -98,9 +98,17 @@ export function clampTtlToOfferableOption(ttlMinutes: number, maxTtlMinutes: num
   return options[options.length - 1]!;
 }
 
-/** Product fallbacks when neither partner nor org has expressed a preference. */
-export const PRODUCT_DEFAULT_ENROLLMENT_TTL_MINUTES = 1440;
-export const PRODUCT_DEFAULT_ENROLLMENT_DEVICE_COUNT = 1;
+/**
+ * Product fallbacks when neither partner nor org has expressed a preference.
+ *
+ * 30 days / 50 devices (raised from 24h / 1): techs mass-deploy one downloaded
+ * installer through RMM/GPO tooling and expect it to keep working — a 24-hour
+ * single-use default meant any rollout that ran later than the download window
+ * silently enrolled nothing. Partners who want tighter credentials set their
+ * own defaults or cap (`maxEnrollmentLinkTtlMinutes`).
+ */
+export const PRODUCT_DEFAULT_ENROLLMENT_TTL_MINUTES = 43200;
+export const PRODUCT_DEFAULT_ENROLLMENT_DEVICE_COUNT = 50;
 
 export const enrollmentDefaultsSchema = z.object({
   defaultEnrollmentTtlMinutes: z.number().int().min(1).max(MAX_ENROLLMENT_TTL_MINUTES).optional(),

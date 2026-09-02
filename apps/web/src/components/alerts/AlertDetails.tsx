@@ -27,6 +27,7 @@ import {
   type AlertStatus,
 } from './alertConfig';
 import type { Alert } from './AlertList';
+import AlertVerdictBadge, { submitVerdictFeedback } from './AlertVerdictBadge';
 import RemediationSuggestionsPanel from '../remediation/RemediationSuggestionsPanel';
 import { formatAnomalyConfidence, formatAnomalyType, formatAnomalyValue } from './alertMlContext';
 
@@ -159,7 +160,25 @@ export default function AlertDetails({
                 >
                   {t(/* i18n-dynamic */ `alertDetails.status.${alert.status}`)}
                 </span>
+                {alert.aiVerdict && (
+                  <AlertVerdictBadge
+                    verdict={alert.aiVerdict}
+                    onFeedback={value => submitVerdictFeedback(alert.aiVerdict!.id, value)}
+                  />
+                )}
               </div>
+              {alert.aiVerdict && (
+                <p className="mt-1.5 text-sm text-muted-foreground">{alert.aiVerdict.rationale}</p>
+              )}
+              {alert.aiVerdict?.suggestedIntentId && (
+                <a
+                  href="/approvals"
+                  className="mt-1 inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline"
+                >
+                  {t('alertVerdict.suggestionPending')}
+                  <ExternalLink className="h-3 w-3" />
+                </a>
+              )}
             </div>
           </div>
           <button

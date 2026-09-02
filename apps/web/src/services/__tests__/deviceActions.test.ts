@@ -162,11 +162,12 @@ describe('deviceActions service', () => {
   describe('executeScript', () => {
     it('executes script with parameters', async () => {
       const execution = {
-        batchId: 'batch-1',
-        scriptId: 'script-1',
-        devicesTargeted: 2,
-        executions: [],
-        status: 'queued'
+        requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        status: 'partially_queued',
+        targets: [
+          { requestedDeviceId: 'dev-1', admission: 'admitted', executionId: 'execution-1', batchId: 'batch-1' },
+          { requestedDeviceId: 'dev-2', admission: 'denied', reasonCode: 'site_access_denied' },
+        ],
       };
 
       fetchWithAuthMock.mockResolvedValue(makeResponse(execution));
@@ -182,11 +183,9 @@ describe('deviceActions service', () => {
 
     it('executes script with runAs override', async () => {
       const execution = {
-        batchId: 'batch-2',
-        scriptId: 'script-2',
-        devicesTargeted: 1,
-        executions: [],
-        status: 'queued'
+        requestId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        status: 'queued',
+        targets: [{ requestedDeviceId: 'dev-9', admission: 'admitted', executionId: 'execution-2', batchId: 'batch-2' }],
       };
 
       fetchWithAuthMock.mockResolvedValue(makeResponse(execution));

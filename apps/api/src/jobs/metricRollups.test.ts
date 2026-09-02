@@ -15,6 +15,7 @@ const {
   workerProcessorMock,
   runOutsideDbContextMock,
   withSystemDbAccessContextMock,
+  rollupDeviceMetricsRangeMock,
 } = vi.hoisted(() => ({
   getJobMock: vi.fn(),
   addMock: vi.fn(),
@@ -30,6 +31,7 @@ const {
   workerProcessorMock: vi.fn(),
   runOutsideDbContextMock: vi.fn(<T>(fn: () => T) => fn()),
   withSystemDbAccessContextMock: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  rollupDeviceMetricsRangeMock: vi.fn(),
 }));
 
 vi.mock('bullmq', () => ({
@@ -71,7 +73,7 @@ vi.mock('../db/schema', () => ({
 }));
 
 vi.mock('../services/metricRollups', () => ({
-  rollupDeviceMetricsRange: vi.fn(),
+  rollupDeviceMetricsRange: rollupDeviceMetricsRangeMock,
 }));
 
 vi.mock('./workerObservability', () => ({
@@ -101,6 +103,8 @@ describe('metric rollups queue helpers', () => {
     whereMock.mockReset();
     groupByMock.mockReset();
     workerProcessorMock.mockReset();
+    rollupDeviceMetricsRangeMock.mockReset();
+    rollupDeviceMetricsRangeMock.mockResolvedValue({ statements: 24, skipped: false });
     runOutsideDbContextMock.mockClear();
     withSystemDbAccessContextMock.mockClear();
     runOutsideDbContextMock.mockImplementation(<T>(fn: () => T) => fn());
@@ -231,5 +235,51 @@ describe('metric rollups queue helpers', () => {
       'withSystemDbAccessContext:end',
       'addBulk',
     ]);
+  });
+
+  // #4276 — under the tsup single-file bundle every anonymous-arrow opener in
+  // the API collapses to a bare `index` in `parseOpenerFrame`, so an unlabelled
+  // context arrives in Sentry unattributed. The worker tag alone was doing all
+  // the attribution work for this queue's holds.
+  it('labels the scan-orgs system context for Sentry attribution', async () => {
+    await initializeMetricRollupsWorker();
+    withSystemDbAccessContextMock.mockClear();
+
+    await workerProcessorMock({ data: { type: 'scan-orgs', lookbackMinutes: 15 } });
+
+    expect(withSystemDbAccessContextMock).toHaveBeenCalledWith(
+      expect.any(Function),
+      'metricRollups.scanOrgs',
+    );
+  });
+
+  // #4276 — the worker used to wrap ALL of rollupDeviceMetricsRange in one
+  // system context, pinning a pooled connection across 26 sequential statements
+  // for 2s+ every 5 minutes. The service now owns one short-lived context per
+  // statement; a wrap here would make each of those short-circuit back into a
+  // single transaction and silently restore the hold (the alertWorker/#3216
+  // trap).
+  it('does not wrap rollup-org-range in a worker-level system DB context', async () => {
+    await initializeMetricRollupsWorker();
+    withSystemDbAccessContextMock.mockClear();
+    runOutsideDbContextMock.mockClear();
+
+    await workerProcessorMock({
+      data: {
+        type: 'rollup-org-range',
+        orgId: 'org-1',
+        from: '2026-06-18T12:00:00.000Z',
+        to: '2026-06-18T12:15:00.000Z',
+        queuedAt: '2026-06-18T12:15:00.000Z',
+      },
+    });
+
+    expect(withSystemDbAccessContextMock).not.toHaveBeenCalled();
+    expect(runOutsideDbContextMock).toHaveBeenCalledTimes(1);
+    expect(rollupDeviceMetricsRangeMock).toHaveBeenCalledWith({
+      orgId: 'org-1',
+      from: new Date('2026-06-18T12:00:00.000Z'),
+      to: new Date('2026-06-18T12:15:00.000Z'),
+    });
   });
 });

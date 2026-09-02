@@ -91,6 +91,20 @@ describe('ticket validators', () => {
     }
   });
 
+  // P2-4 (#4191), Task A10: aiDraftId relaxes the resolutionNote requirement —
+  // the draft supplies the text server-side.
+  it('changeTicketStatusSchema: status=resolved with aiDraftId (no resolutionNote) → valid', () => {
+    const r = changeTicketStatusSchema.safeParse({
+      status: 'resolved',
+      aiDraftId: '3f2f1d8e-1111-4222-8333-444455556666',
+    });
+    expect(r.success).toBe(true);
+  });
+
+  it('changeTicketStatusSchema: aiDraftId must be a uuid', () => {
+    expect(changeTicketStatusSchema.safeParse({ status: 'resolved', aiDraftId: 'not-a-uuid' }).success).toBe(false);
+  });
+
   it('assign accepts a uuid or null (unassign)', () => {
     expect(assignTicketSchema.safeParse({ assigneeId: null }).success).toBe(true);
     expect(assignTicketSchema.safeParse({ assigneeId: '3f2f1d8e-1111-4222-8333-444455556666' }).success).toBe(true);
@@ -282,5 +296,24 @@ describe('createTicketFromChatSchema', () => {
   it('rejects negative timeMinutes and empty subject', () => {
     expect(createTicketFromChatSchema.safeParse({ ...base, timeMinutes: -1 }).success).toBe(false);
     expect(createTicketFromChatSchema.safeParse({ ...base, subject: '' }).success).toBe(false);
+  });
+});
+
+describe('addTicketCommentSchema attachmentIds (W08)', () => {
+  const uuid = (n: number) => `00000000-0000-4000-8000-00000000000${n}`;
+
+  it('defaults attachmentIds to [] and still requires content when empty', () => {
+    expect(addTicketCommentSchema.parse({ content: 'hi' })).toMatchObject({ attachmentIds: [] });
+    expect(addTicketCommentSchema.safeParse({ content: '' }).success).toBe(false);
+  });
+
+  it('allows empty content when at least one attachment id is present', () => {
+    const r = addTicketCommentSchema.safeParse({ content: '', attachmentIds: [uuid(1)] });
+    expect(r.success).toBe(true);
+  });
+
+  it('caps attachmentIds at 5 and rejects non-uuids', () => {
+    expect(addTicketCommentSchema.safeParse({ content: 'x', attachmentIds: [1, 2, 3, 4, 5, 6].map(uuid) }).success).toBe(false);
+    expect(addTicketCommentSchema.safeParse({ content: 'x', attachmentIds: ['nope'] }).success).toBe(false);
   });
 });

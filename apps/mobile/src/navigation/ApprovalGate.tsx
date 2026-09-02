@@ -110,7 +110,7 @@ export function ApprovalGate({ children }: Props) {
           onDismiss={() => setDismissedApprover(true)}
           onSignOut={() => {
             setDismissedApprover(true);
-            void dispatch(logoutAsync());
+            void dispatch(logoutAsync({ deliberate: true }));
           }}
         />
       ) : null}

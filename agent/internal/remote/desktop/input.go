@@ -65,6 +65,16 @@ type TypeCharHandler interface {
 	TypeChar(ch rune) error
 }
 
+// TextTyper is an optional interface for input handlers that can inject a whole
+// literal string in one operation (macOS CGEventKeyboardSetUnicodeString,
+// Windows KEYEVENTF_UNICODE batched into a single SendInput call). Preferred
+// over TypeCharHandler because it is both faster and layout-independent: the
+// string is delivered verbatim regardless of the remote machine's active
+// keyboard layout. See InjectText in input_text.go.
+type TextTyper interface {
+	TypeText(text string) error
+}
+
 // NewInputHandler creates a platform-specific input handler.
 // desktopContext is "user_session" or "login_window" — on macOS, login_window
 // uses IOHIDPostEvent instead of CGEvent for input at the login screen.

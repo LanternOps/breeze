@@ -10,6 +10,12 @@
   },
   "requestedBy": "Angefordert von {{client}}",
   "proposedByAgent": "Vorgeschlagen von {{agent}} (KI-Agent)",
+  "targetDevice": "Zielgerät: {{hostname}}",
+  "batch": {
+    "approveAll": "Alle genehmigen ({{count}})",
+    "declineAll": "Alle ablehnen ({{count}})",
+    "groupTitle": "{{count}} ähnliche Anfragen · {{tool}}"
+  },
   "risk": {
     "low": "Niedriges Risiko",
     "medium": "Mittleres Risiko",
@@ -29,7 +35,11 @@
     "noApproverDevice": "Registrieren Sie in Ihrem Profil ein Genehmigungsgerät und versuchen Sie es erneut.",
     "notSoleApprover": "Eine andere berechtigte Person muss diese Anfrage genehmigen.",
     "verificationFailed": "Die Überprüfung wurde abgebrochen oder ist fehlgeschlagen. Versuchen Sie es erneut.",
-    "decisionFailed": "Die Entscheidung konnte nicht gesendet werden. Versuchen Sie es erneut."
+    "alreadyDecided": "Über diese Anfrage wurde bereits entschieden.",
+    "expired": "Diese Anfrage ist abgelaufen, bevor eine Entscheidung getroffen wurde.",
+    "decisionFailed": "Die Entscheidung konnte nicht gesendet werden. Versuchen Sie es erneut.",
+    "batchStepUp": "Für diesen Stapel ist eine stärkere Anmeldung erforderlich. Genehmigen Sie die Anfragen einzeln.",
+    "batchNotHomogeneous": "Über diese Anfragen kann nicht mehr gemeinsam entschieden werden."
   },
   "registerDevice": "Gerät registrieren"
 }

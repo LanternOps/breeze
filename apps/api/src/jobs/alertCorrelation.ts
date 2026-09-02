@@ -3,6 +3,7 @@ import { and, desc, eq, gte, inArray, lte } from 'drizzle-orm';
 
 import { db, withSystemDbAccessContext } from '../db';
 import {
+  alertCorrelationGroups,
   alertCorrelations,
   alertRules,
   alerts,
@@ -15,6 +16,7 @@ import {
 import { persistAlertCorrelationGroupsForAlerts } from '../services/alertCorrelationGroups';
 import { isFlapping } from '../services/alertCooldown';
 import { isReusableState } from '../services/bullmqUtils';
+import { publishEvent } from '../services/eventBus';
 import { shouldProduceMlOutput } from '../services/mlFeatureFlags';
 import { getBullMQConnection } from '../services/redis';
 import { attachWorkerObservability } from './workerObservability';
@@ -387,13 +389,20 @@ export async function enqueueAlertCorrelation(options: {
   return String(job.id);
 }
 
+export type CreatedCorrelationGroupPayload = {
+  groupId: string;
+  rootAlertId: string | null;
+  memberCount: number;
+  deviceId: string | null;
+};
+
 export async function runAlertCorrelationForDevice(options: {
   orgId: string;
   deviceId: string;
   windowMinutes?: number;
-}): Promise<{ scanned: number; created: number }> {
+}): Promise<{ scanned: number; created: number; createdGroups: CreatedCorrelationGroupPayload[] }> {
   if (!(await shouldProduceMlOutput(options.orgId, 'ml.alert_correlation.enabled'))) {
-    return { scanned: 0, created: 0 };
+    return { scanned: 0, created: 0, createdGroups: [] };
   }
 
   const windowMinutes = options.windowMinutes ?? DEFAULT_WINDOW_MINUTES;
@@ -406,7 +415,7 @@ export async function runAlertCorrelationForDevice(options: {
     .limit(1);
 
   if (!targetDevice) {
-    return { scanned: 0, created: 0 };
+    return { scanned: 0, created: 0, createdGroups: [] };
   }
 
   const recentAlerts = await db
@@ -435,7 +444,7 @@ export async function runAlertCorrelationForDevice(options: {
     .limit(MAX_ALERTS_PER_SITE_PASS);
 
   if (recentAlerts.length < 2) {
-    return { scanned: recentAlerts.length, created: 0 };
+    return { scanned: recentAlerts.length, created: 0, createdGroups: [] };
   }
 
   const alertIds = recentAlerts.map((alert) => alert.id);
@@ -524,19 +533,101 @@ export async function runAlertCorrelationForDevice(options: {
     }
   }
 
-  await persistAlertCorrelationGroupsForAlerts({
+  const persisted = await persistAlertCorrelationGroupsForAlerts({
     orgId: options.orgId,
     alertIds,
   });
 
-  return { scanned: recentAlerts.length, created };
+  // F1 fix (P2-1 second live check): build the created-group payloads here —
+  // inside the transaction, so these lookups see the rows this same
+  // transaction just wrote — but do NOT publish them. This function runs
+  // inside createAlertCorrelationWorker's withSystemDbAccessContext, which
+  // (via withDbAccessContext, db/index.ts) opens a REAL Postgres transaction
+  // (`baseDb.transaction`). The comment this replaced claimed "there is no
+  // enclosing transaction around this worker" — that premise was wrong (2/2
+  // reproductions): publishEvent's synchronous local delivery ran the
+  // ai-agent-alert-verdict subscriber, on another pooled connection via
+  // runOutsideDbContext, before this transaction had committed, so
+  // createAndEnqueueAgentRun's insert FK-violated on correlation_group_id
+  // (ai_agent_runs_correlation_group_id_fkey). Publishing is now the
+  // caller's job — see createAlertCorrelationWorker below, which publishes
+  // only after this whole withSystemDbAccessContext call has resolved.
+  const createdGroups: CreatedCorrelationGroupPayload[] = [];
+
+  for (const groupId of persisted.createdGroupIds) {
+    const [groupRow] = await db
+      .select({
+        rootAlertId: alertCorrelationGroups.rootAlertId,
+        memberCount: alertCorrelationGroups.memberCount,
+      })
+      .from(alertCorrelationGroups)
+      .where(and(eq(alertCorrelationGroups.id, groupId), eq(alertCorrelationGroups.orgId, options.orgId)))
+      .limit(1);
+
+    if (!groupRow) {
+      // Should not happen (just written above, org-scoped by construction) —
+      // don't let a race/anomaly here throw and drop the alerts.length/created result.
+      console.warn(`[AlertCorrelationWorker] correlation group ${groupId} not found after persist — skipping alert.correlation_group.created`);
+      continue;
+    }
+
+    // rootAlertId is ON DELETE SET NULL: a null here means the root alert has since
+    // been hard-deleted, which is a valid (not exceptional) state — include the
+    // payload with deviceId/rootAlertId both null rather than warning; Task 12's
+    // subscriber skips.
+    let deviceId: string | null = null;
+    if (groupRow.rootAlertId) {
+      const [rootAlert] = await db
+        .select({ deviceId: alerts.deviceId })
+        .from(alerts)
+        .where(and(eq(alerts.id, groupRow.rootAlertId), eq(alerts.orgId, options.orgId)))
+        .limit(1);
+      deviceId = rootAlert?.deviceId ?? null;
+    }
+
+    createdGroups.push({
+      groupId,
+      rootAlertId: groupRow.rootAlertId,
+      memberCount: groupRow.memberCount,
+      deviceId,
+    });
+  }
+
+  return { scanned: recentAlerts.length, created, createdGroups };
+}
+
+/**
+ * The worker's job processor, extracted so it can be invoked directly by an
+ * integration test (with `publishEvent` mocked) without needing a live
+ * BullMQ `Worker` instance around it.
+ *
+ * F1 fix (P2-1 second live check): publish AFTER `withSystemDbAccessContext`
+ * resolves — i.e. publish OUTSIDE the DB context, mirroring
+ * `metricAnomalyIncidentPublisher.ts`'s Phase 2 comment for the #1105
+ * rationale. Here the reason is stronger than #1105's "don't hold a pooled
+ * connection idle": publishing INSIDE the transaction let the local
+ * subscriber's synchronous write race the transaction's own commit (see
+ * `runAlertCorrelationForDevice`'s comment above) — publishing here, once
+ * the `withSystemDbAccessContext` promise has already resolved, guarantees
+ * every `alert_correlation_groups` row is committed and visible before
+ * `alert.correlation_group.created` goes out for it.
+ */
+export async function processAlertCorrelationJob(
+  data: AlertCorrelationJobData
+): Promise<{ scanned: number; created: number; createdGroups: CreatedCorrelationGroupPayload[] }> {
+  const result = await withSystemDbAccessContext(() => runAlertCorrelationForDevice(data));
+
+  for (const group of result.createdGroups) {
+    await publishEvent('alert.correlation_group.created', data.orgId, group, 'alert-correlation');
+  }
+
+  return result;
 }
 
 export function createAlertCorrelationWorker(): Worker<AlertCorrelationJobData> {
   return new Worker<AlertCorrelationJobData>(
     ALERT_CORRELATION_QUEUE,
-    async (job: Job<AlertCorrelationJobData>) =>
-      withSystemDbAccessContext(() => runAlertCorrelationForDevice(job.data)),
+    async (job: Job<AlertCorrelationJobData>) => processAlertCorrelationJob(job.data),
     {
       connection: getBullMQConnection(),
       concurrency: 2,

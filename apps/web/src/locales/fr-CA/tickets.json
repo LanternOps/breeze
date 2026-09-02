@@ -116,7 +116,15 @@
     "internalPlaceholder": "Ajouter une note interne...",
     "sending": "Envoi en cours",
     "sendReply": "Envoyer une réponse",
-    "addInternalNote": "Ajouter une note interne"
+    "addInternalNote": "Ajouter une note interne",
+    "attachments": {
+      "attach": "Joindre",
+      "uploading": "Téléversement…",
+      "retry": "Réessayer",
+      "remove": "Retirer le fichier",
+      "tooMany": "Vous pouvez joindre au plus {{max}} fichiers à un commentaire.",
+      "tooLarge": "{{name}} dépasse 10 Mo."
+    }
   },
   "ticketFeed": {
     "empty": "Pas encore d’activité.",
@@ -149,6 +157,11 @@
     "deleteDialog": {
       "title": "Supprimer le commentaire",
       "message": "Êtes-vous sûr de vouloir supprimer ce commentaire ? Cette action ne peut être annulée."
+    },
+    "attachments": {
+      "broken": "Impossible de charger {{name}}",
+      "open": "Ouvrir la pièce jointe",
+      "remove": "Retirer la pièce jointe"
     }
   },
   "ticketPartsCard": {
@@ -432,6 +445,17 @@
       "feedbackFailed": "Impossible d’enregistrer les retours de triage des billets.",
       "feedbackSaved": "Retour d’information sur le triage des billets enregistré"
     },
+    "aiDraft": {
+      "kindReply": "Réponse rédigée par l’IA",
+      "kindResolutionNote": "Note de résolution rédigée par l’IA",
+      "sendAsMe": "Envoyer en mon nom",
+      "sending": "Envoi en cours…",
+      "discard": "Rejeter",
+      "sendFailed": "Impossible d’envoyer le brouillon de l’IA.",
+      "sent": "Brouillon envoyé",
+      "discardFailed": "Impossible de rejeter le brouillon de l’IA.",
+      "discarded": "Brouillon rejeté"
+    },
     "resolve": {
       "noteLabel": "Note de résolution (visible pour le demandeur)",
       "submit": "Résoudre le billet"
@@ -469,7 +493,8 @@
       "categoryUpdateFailed": "Mise à jour de catégorie échouée. Réessayez.",
       "assigned": "Assigné",
       "unassigned": "Non attribué",
-      "assignFailed": "Assignation échouée. Réessayez."
+      "assignFailed": "Assignation échouée. Réessayez.",
+      "attachmentFailed": "Impossible de téléverser la pièce jointe."
     },
     "delete": {
       "failed": "Échec de la suppression. Réessayez.",

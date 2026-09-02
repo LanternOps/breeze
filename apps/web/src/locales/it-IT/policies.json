@@ -738,6 +738,8 @@
         "recurrence": "Ricorrenza",
         "startDateTime": "Data/ora di inizio",
         "theSpecificDateAndTimeForThis": "La data e l'ora specifiche per questa finestra di manutenzione una tantum.",
+        "startTime": "Ora di inizio",
+        "theTimeOfDayEachWindowOpensIn": "L'ora del giorno in cui si apre ogni finestra di manutenzione, nel fuso orario selezionato. Il valore predefinito è mezzanotte (00:00).",
         "durationHours": "Durata (ore)",
         "timezone": "Fuso orario",
         "notifyBeforeMinutes": "Notifica prima (minuti)",

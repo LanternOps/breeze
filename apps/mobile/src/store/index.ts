@@ -6,8 +6,12 @@ import alertsReducer from './alertsSlice';
 import approvalsReducer from './approvalsSlice';
 import aiChatReducer from './aiChatSlice';
 import ticketsReducer from './ticketsSlice';
+import timeReducer from './timeSlice';
+import timeSuggestionsReducer from './timeSuggestionsSlice';
+import notificationPrefsReducer from './notificationPrefsSlice';
 import lifecycleReducer from './lifecycleSlice';
 import { withLogoutReset } from './resettable';
+import { loadServerClock } from '../services/serverClock';
 
 const appReducer = combineReducers({
   auth: authReducer,
@@ -15,6 +19,9 @@ const appReducer = combineReducers({
   approvals: approvalsReducer,
   aiChat: aiChatReducer,
   tickets: ticketsReducer,
+  time: timeReducer,
+  timeSuggestions: timeSuggestionsReducer,
+  notificationPrefs: notificationPrefsReducer,
   lifecycle: lifecycleReducer,
 });
 
@@ -32,6 +39,12 @@ export const store = configureStore({
       },
     }),
 });
+
+// Hydrate the server-clock anchor persisted by a previous launch, so the first
+// offline time entry of a session is already corrected for a device clock that
+// drifted (services/serverClock.ts). Fire-and-forget: it never throws, and an
+// un-hydrated anchor only means the first API response re-establishes it.
+void loadServerClock();
 
 // Infer the `RootState` and `AppDispatch` types from the store itself
 export type RootState = ReturnType<typeof store.getState>;
@@ -84,3 +97,24 @@ export {
   selectTicketAssignee,
   selectTicketTotal,
 } from './ticketsSlice';
+
+export {
+  loadTicketPushPrefs,
+  saveTicketPushPrefs,
+  clearError as clearNotificationPrefsError,
+  selectTicketPushPrefs,
+  selectTicketPushPrefsSaving,
+  selectTicketPushPrefsError,
+  selectTicketPushPrefsErrorKind,
+} from './notificationPrefsSlice';
+
+export {
+  runningTimerAdopted,
+  startedTimer,
+  stoppedTimer,
+  pendingWritesChanged,
+  needsAttentionChanged,
+  timeErrorRaised,
+  timeAccessDenied,
+  elapsedSeconds,
+} from './timeSlice';

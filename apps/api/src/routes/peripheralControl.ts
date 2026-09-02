@@ -20,7 +20,10 @@ import {
   canManagePartnerWidePolicies,
   PARTNER_WIDE_WRITE_DENIED_MESSAGE,
 } from '../services/partnerWideAccess';
-import { schedulePeripheralPolicyDistribution } from '../jobs/peripheralJobs';
+import {
+  resolvePeripheralPolicyDeviceIds,
+  schedulePeripheralPolicyDevices,
+} from '../jobs/peripheralJobs';
 import { writeRouteAudit } from '../services/auditEvents';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
 import { publishEvent } from '../services/eventBus';
@@ -43,6 +46,7 @@ const policySchema = z.object({
   deviceClass: z.enum(peripheralDeviceClassEnum.enumValues),
   action: z.enum(peripheralPolicyActionEnum.enumValues),
   targetType: z.enum(peripheralPolicyTargetTypeEnum.enumValues).optional().default('organization'),
+  priority: z.number().int().safe().min(0).max(1000).optional(),
   targetIds: z.object({
     siteIds: z.array(z.string().guid()).max(1000).optional(),
     groupIds: z.array(z.string().guid()).max(1000).optional(),
@@ -285,25 +289,20 @@ async function emitPolicyChanged(
  */
 async function fanOutPolicyChange(
   targetOrgIds: string[],
+  affectedDeviceIds: string[],
   policyId: string,
   reason: string,
   eventPayload: Record<string, unknown>
 ): Promise<string | undefined> {
   let warning: string | undefined;
 
-  const distributionFailures: string[] = [];
-  for (const targetOrgId of targetOrgIds) {
-    try {
-      await schedulePeripheralPolicyDistribution(targetOrgId, [policyId], reason);
-    } catch (error) {
-      distributionFailures.push(targetOrgId);
-      console.error(`[peripheralControl] Failed to schedule policy distribution for policy ${policyId} (org ${targetOrgId}):`, error);
-    }
-  }
-  if (distributionFailures.length > 0) {
+  try {
+    await schedulePeripheralPolicyDevices(affectedDeviceIds, reason);
+  } catch (error) {
+    console.error(`[peripheralControl] Failed to schedule policy reconciliation for policy ${policyId}:`, error);
     warning = combineWarning(
       warning,
-      `distribution scheduling failed for ${distributionFailures.length}/${targetOrgIds.length} org(s): ${distributionFailures.join(', ')}`
+      `reconciliation scheduling failed for ${affectedDeviceIds.length} device(s)`
     );
   }
 
@@ -511,6 +510,8 @@ peripheralControlRoutes.post(
         return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
       }
 
+      const oldDeviceIds = await resolvePeripheralPolicyDeviceIds(existing);
+
       const [updated] = await db
         .update(peripheralPolicies)
         .set({
@@ -518,6 +519,7 @@ peripheralControlRoutes.post(
           deviceClass: payload.deviceClass,
           action: payload.action,
           targetType: payload.targetType,
+          priority: payload.priority ?? existing.priority,
           targetIds: sanitizeTargetIds(payload.targetIds),
           exceptions: payload.exceptions ?? [],
           isActive: payload.isActive ?? existing.isActive,
@@ -531,7 +533,8 @@ peripheralControlRoutes.post(
       }
 
       const updateTargetOrgIds = await resolvePolicyTargetOrgIds(updated);
-      const distributionWarning = await fanOutPolicyChange(updateTargetOrgIds, updated.id, 'policy-updated', {
+      const newDeviceIds = await resolvePeripheralPolicyDeviceIds(updated);
+      const distributionWarning = await fanOutPolicyChange(updateTargetOrgIds, [...new Set([...oldDeviceIds, ...newDeviceIds])], updated.id, 'policy-updated', {
         policyId: updated.id,
         action: 'updated',
         changedBy: auth.user.id
@@ -583,6 +586,7 @@ peripheralControlRoutes.post(
         deviceClass: payload.deviceClass,
         action: payload.action,
         targetType: payload.targetType,
+        priority: payload.priority ?? 100,
         targetIds: sanitizeTargetIds(payload.targetIds),
         exceptions: payload.exceptions ?? [],
         isActive: payload.isActive ?? true,
@@ -595,7 +599,8 @@ peripheralControlRoutes.post(
     }
 
     const createTargetOrgIds = await resolvePolicyTargetOrgIds(created);
-    const distributionWarning = await fanOutPolicyChange(createTargetOrgIds, created.id, 'policy-created', {
+    const createDeviceIds = await resolvePeripheralPolicyDeviceIds(created);
+    const distributionWarning = await fanOutPolicyChange(createTargetOrgIds, createDeviceIds, created.id, 'policy-created', {
       policyId: created.id,
       action: 'created',
       changedBy: auth.user.id
@@ -643,6 +648,8 @@ peripheralControlRoutes.post(
       return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
     }
 
+    const disableDeviceIds = await resolvePeripheralPolicyDeviceIds(policy);
+
     const [updated] = await db
       .update(peripheralPolicies)
       .set({
@@ -657,7 +664,7 @@ peripheralControlRoutes.post(
     }
 
     const disableTargetOrgIds = await resolvePolicyTargetOrgIds(updated);
-    const distributionWarning = await fanOutPolicyChange(disableTargetOrgIds, updated.id, 'policy-disabled', {
+    const distributionWarning = await fanOutPolicyChange(disableTargetOrgIds, disableDeviceIds, updated.id, 'policy-disabled', {
       policyId: updated.id,
       action: 'disabled',
       changedBy: auth.user.id
@@ -746,7 +753,8 @@ peripheralControlRoutes.post(
     }
 
     const exceptionsTargetOrgIds = await resolvePolicyTargetOrgIds(updated);
-    const distributionWarning = await fanOutPolicyChange(exceptionsTargetOrgIds, updated.id, 'policy-exceptions-updated', {
+    const exceptionsDeviceIds = await resolvePeripheralPolicyDeviceIds(updated);
+    const distributionWarning = await fanOutPolicyChange(exceptionsTargetOrgIds, exceptionsDeviceIds, updated.id, 'policy-exceptions-updated', {
       policyId: updated.id,
       action: 'exceptions_updated',
       changedBy: auth.user.id,

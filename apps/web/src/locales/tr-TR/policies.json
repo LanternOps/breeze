@@ -738,6 +738,8 @@
         "recurrence": "Tekrarlama",
         "startDateTime": "Başlangıç Tarihi/Saati",
         "theSpecificDateAndTimeForThis": "Bu tek seferlik bakım aralığı için belirli tarih ve saat.",
+        "startTime": "Başlangıç saati",
+        "theTimeOfDayEachWindowOpensIn": "Her bakım aralığının seçilen saat diliminde açıldığı günün saati. Varsayılan olarak gece yarısıdır (00:00).",
         "durationHours": "Süre (saat)",
         "timezone": "Saat Dilimi",
         "notifyBeforeMinutes": "Önce bildir (dakika)",

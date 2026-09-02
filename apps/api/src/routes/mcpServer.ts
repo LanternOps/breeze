@@ -17,7 +17,7 @@
  *   - prompts/get
  */
 
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { Hono, type Context, type Next } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import { z } from 'zod';
@@ -53,7 +53,7 @@ import { getRedis } from '../services/redis';
 import { rateLimiter } from '../services/rate-limit';
 import { getTrustedClientIp } from '../services/clientIp';
 import { enforceIpAllowlist, IP_NOT_ALLOWED_BODY, isBlocked } from '../services/ipAllowlist';
-import { captureException } from '../services/sentry';
+import { captureException, captureMessage } from '../services/sentry';
 import type { BootstrapTool } from '../modules/mcpInvites/types';
 import { BootstrapError } from '../modules/mcpInvites/types';
 
@@ -636,18 +636,81 @@ mcpServerRoutes.post(
 // `(sessionId → principalKey)` in Redis, and return it in the same header.
 // Subsequent calls MUST present that server-minted ID and the stored
 // principalKey must match the caller's principalKey — otherwise the request
-// is rejected. This prevents an attacker from stamping arbitrary
-// `Mcp-Session-Id` values to muddy audit triage or merge their activity
-// into another principal's session (audit finding MCP MED-1).
+// is rejected before dispatch. This prevents an attacker from stamping
+// arbitrary `Mcp-Session-Id` values to muddy audit triage or merge their
+// activity into another principal's session (audit finding MCP MED-1).
+//
+// Rejection status codes (issue #3744):
+//   400 — header absent or not server-minted: the client sent something this
+//         transport can never accept, and re-initializing won't change that.
+//   404 — the header is well-formed but does not resolve to a session this
+//         principal owns: unknown, expired/terminated, OR owned by someone
+//         else. MCP Streamable HTTP (2025-06-18) Session Management rules 3-4
+//         make 404 the signal that tells a client to re-initialize; 403 reads
+//         as "authenticated but forbidden" and has no defined recovery, so a
+//         client that got it stayed broken until the process was restarted.
+//         The TTL below is never refreshed, so this is an ORDINARY event, not
+//         just an attack signal. The owned-by-someone-else case answers
+//         identically on purpose: a distinct status would confirm "this
+//         session id is live" for an id that leaked via logs, telemetry or a
+//         proxy, and that caller's only legitimate recovery is to
+//         re-initialize under its own principal anyway. The mismatch is still
+//         distinguished server-side via a warn log.
+//   503 — the session store is unreachable. Deliberately NOT 404: a Redis
+//         outage must not make every client re-initialize in a loop.
 //
 // The minted-session map is keyed in Redis under MCP_SESSION_PREFIX with a
-// short TTL (matches OAuth access-token lifetime plus a small buffer).
+// short TTL (matches OAuth access-token lifetime plus a small buffer). It is
+// intentionally NOT sliding — see #3744, which proposed no change to lifetime.
 const MCP_SESSION_REDIS_PREFIX = 'mcp-session:';
 const MCP_SERVER_SESSION_PREFIX = 'mcp-';
 const MCP_SESSION_TTL_SECONDS = envInt('MCP_SESSION_TTL_SECONDS', 11 * 60);
 
 function mintMcpSessionId(): string {
   return `${MCP_SERVER_SESSION_PREFIX}${randomBytes(16).toString('hex')}`;
+}
+
+// #3744 follow-through: 404 is the spec's self-heal signal, and that has a cost
+// worth paying for deliberately. Under the old 403 a mass session-store loss
+// (a Redis flush, an eviction under memory pressure, a failover to an empty
+// replica — none of which throw, so none of which reach the 503 paths) was
+// LOUD: every client stayed broken until it was restarted, and somebody filed a
+// ticket. Under 404 the same event is silent — every client re-initializes and
+// carries on — so the incident would now pass unnoticed.
+//
+// Per-request telemetry is not an option: every session ages out this way by
+// design roughly every MCP_SESSION_TTL_SECONDS, so a log line per 404 is pure
+// noise with no operator action attached. Instead, count them per process and
+// raise ONE Sentry event per window when the rate is far above what ordinary
+// expiry can produce. Deliberately coarse — this is a "something ate the
+// session store" tripwire, not a metric.
+const MCP_UNKNOWN_SESSION_WINDOW_MS = 60_000;
+const MCP_UNKNOWN_SESSION_ALERT_THRESHOLD = envInt('MCP_UNKNOWN_SESSION_ALERT_THRESHOLD', 50);
+
+let unknownSessionWindowStart = 0;
+let unknownSessionWindowCount = 0;
+let unknownSessionWindowAlerted = false;
+
+function recordUnknownMcpSession(): void {
+  const now = Date.now();
+  if (now - unknownSessionWindowStart >= MCP_UNKNOWN_SESSION_WINDOW_MS) {
+    unknownSessionWindowStart = now;
+    unknownSessionWindowCount = 0;
+    unknownSessionWindowAlerted = false;
+  }
+  unknownSessionWindowCount += 1;
+  if (unknownSessionWindowAlerted || unknownSessionWindowCount < MCP_UNKNOWN_SESSION_ALERT_THRESHOLD) {
+    return;
+  }
+  // Once per window, not once per request.
+  unknownSessionWindowAlerted = true;
+  captureMessage('MCP unknown/expired Mcp-Session-Id rate is abnormally high', {
+    eventCode: 'mcp_session_unknown_rate_high',
+    level: 'warning',
+    // Bounded and constant — the count itself would be an unbounded tag, and
+    // `scrubEvent` drops the message body, so the code is what triage groups on.
+    tags: { window_seconds: '60' },
+  });
 }
 
 mcpServerRoutes.post(
@@ -678,9 +741,15 @@ mcpServerRoutes.post(
             principalKey,
           );
         } catch (err) {
-          // If Redis is unreachable we still mint the id — subsequent calls
-          // will fail closed (no stored principal → 403), which is the
-          // correct safety behavior.
+          // We still mint and return the id. Either way the next call fails
+          // closed, but WHICH way depends on the failure, so don't promise one:
+          //   - a one-off write failure on an otherwise healthy connection →
+          //     the next `redis.get` succeeds and finds nothing → 404, and the
+          //     client re-initializes;
+          //   - a real outage → the next call hits the `!redis` or thrown-`get`
+          //     path instead → 503 (see the status table above; a 503 there is
+          //     deliberate, so an outage does not stampede every client into
+          //     re-initializing).
           console.warn('[MCP] Failed to persist Mcp-Session-Id mapping:', err);
         }
       }
@@ -722,15 +791,49 @@ mcpServerRoutes.post(
           503,
         );
       }
-      if (!storedPrincipal || storedPrincipal !== principalKey) {
-        return c.json(
+      // #3744: unknown/expired and owned-by-another-principal both answer 404
+      // with THIS EXACT body. Built once rather than twice on purpose — the
+      // "no session-existence oracle" property holds only while the two
+      // responses are indistinguishable, and two copies of a literal are two
+      // things a later edit can drift apart.
+      const sessionNotFound = () =>
+        c.json(
           {
             jsonrpc: '2.0',
             id: pre.body.id ?? null,
-            error: { code: -32001, message: 'Mcp-Session-Id principal mismatch' },
+            error: { code: -32001, message: 'Mcp-Session-Id not found' },
           },
-          403,
+          404,
         );
+      if (!storedPrincipal) {
+        // Unknown, or aged out of Redis via MCP_SESSION_TTL_SECONDS (never
+        // refreshed, so this is routine). 404 tells the client to re-initialize.
+        // Silent per-request on purpose; only an abnormal RATE is reported.
+        recordUnknownMcpSession();
+        return sessionNotFound();
+      }
+      if (storedPrincipal !== principalKey) {
+        // Same response to the caller, but keep the operator signal: this is
+        // the MED-1 case and the only one worth alerting on per-event.
+        //
+        // Sentry carries the alertable, groupable signal (the console line is
+        // grep-only, and nothing in this app forwards console output to
+        // Sentry). Detail stays on the console because `scrubEvent` strips
+        // message/extra from outbound events — only bounded tags survive, and
+        // principal ids are too high-cardinality to be tags.
+        captureMessage('MCP Mcp-Session-Id presented by a non-owning principal', {
+          eventCode: 'mcp_session_principal_mismatch',
+          level: 'warning',
+          tags: { transport: 'streamable_http' },
+        });
+        // Log a short hash rather than the raw id so the log is not itself a
+        // session-id leak.
+        console.warn('[MCP] Mcp-Session-Id presented by a principal that does not own it:', {
+          sessionIdHash: createHash('sha256').update(sessionIdFromHeader).digest('hex').slice(0, 12),
+          presentedPrincipal: principalKey,
+          storedPrincipal,
+        });
+        return sessionNotFound();
       }
       trustedSessionId = sessionIdFromHeader;
     }

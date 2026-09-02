@@ -29,6 +29,7 @@ import { claimPendingCommandsForDevice } from '../../services/commandDispatch';
 import { decryptClaimedCommandsForDelivery } from '../../services/commandDelivery';
 import { redactResultAgainstCommandSecrets } from '../../services/commandSecretRedaction';
 import { terminalPayloadErasureSet } from '../../services/sensitiveCommandPayload';
+import { applyCommandAutomationTerminal } from '../../services/automationTerminalEvidence';
 import { applyVaultSyncCommandResult } from '../../services/vaultSyncPersistence';
 import { processBackupVerificationResult } from '../backup/verificationService';
 import { updateRestoreJobByCommandId } from '../../services/restoreResultPersistence';
@@ -41,9 +42,20 @@ import {
 } from '../../services/softwareDeploymentResult';
 
 import {
+  ACCEPTED_COMMAND_RESULT_STATUSES,
   commandAcceptsAgentResult,
   commandAcceptsAgentResultCondition,
 } from '../../services/commandResultAcceptance';
+import {
+  pamAgentResultV2Schema,
+  type PamActuationResultClassification,
+} from '../../services/pamActuationResult';
+import { consumePamReconciliationRateLimit } from '../../services/pamReconciliationRateLimit';
+
+export type PamResultAcknowledgement = {
+  protocolVersion: 1;
+  classification: PamActuationResultClassification;
+};
 
 export const commandsRoutes = new Hono();
 
@@ -78,7 +90,12 @@ const REGISTRY_DISPATCHED_COMMAND_TYPES = new Set([
   'mssql_backup',
   'snmp_poll',
   'script',
+  'peripheral_policy_sync_v2',
+  'pam_apply_v2',
+  'pam_cleanup_v2',
 ]);
+
+const PAM_COMMAND_TYPES = new Set(['pam_apply_v2', 'pam_cleanup_v2']);
 
 function commandResultToStdout(data: z.infer<typeof commandResultSchema>): string | undefined {
   return data.stdout ??
@@ -329,10 +346,52 @@ commandsRoutes.post(
       return c.json({ error: 'Command role mismatch' }, 403);
     }
 
+    // Supplemental PAM evidence for every terminal command state, including a
+    // server-side timeout, enters only the frozen PAM result transaction. It
+    // must never use #3607's timeout exception to rewrite the command row.
+    const isTerminalPamCommand = PAM_COMMAND_TYPES.has(command.type)
+      && !(ACCEPTED_COMMAND_RESULT_STATUSES as readonly string[]).includes(command.status);
+    const parsedTerminalPamResult = isTerminalPamCommand
+      ? pamAgentResultV2Schema.safeParse(data.result)
+      : null;
+    if (parsedTerminalPamResult?.success) {
+      const rate = await consumePamReconciliationRateLimit(deviceId);
+      if (!rate.allowed) {
+        return c.json({
+          error: 'Rate limit exceeded',
+          resetAt: rate.resetAt.toISOString(),
+        }, 429);
+      }
+
+      const { commandResultHandlers } = await import('../../services/commandResultHandlers');
+      const handler = commandResultHandlers[command.type];
+      if (!handler) {
+        throw new Error(`Missing PAM result handler for ${command.type}`);
+      }
+      const outcome = await handler({
+        agentId: agent.agentId ?? agentId,
+        command,
+        commandId,
+        result: { ...data, result: parsedTerminalPamResult.data },
+        resolvedDeviceId: command.deviceId,
+        stdout: commandResultToStdout({ ...data, result: parsedTerminalPamResult.data }),
+      });
+      if (!outcome || outcome.kind !== 'pam') {
+        throw new Error(`PAM result handler returned no acknowledgement for ${command.type}`);
+      }
+      return c.json<PamResultAcknowledgement>({
+        protocolVersion: 1,
+        classification: outcome.classification,
+      });
+    }
+    if (isTerminalPamCommand) {
+      return c.json({ success: true });
+    }
+
     // #3607: a row terminalized by a SERVER-SIDE timeout (`result.status ===
     // 'timeout'`, written by the wait deadline in commandQueue or by the stale
-    // reaper) is still allowed through — the agent's real output is the whole
-    // point. Any other terminal state short-circuits exactly as before.
+    // reaper) remains acceptable for non-PAM commands. Every other terminal
+    // result preserves the historical short circuit.
     if (!commandAcceptsAgentResult(command.status, command.result)) {
       return c.json({ success: true });
     }
@@ -380,6 +439,7 @@ commandsRoutes.post(
     // should be RARER than the WS twin because the terminal pre-read above
     // usually short-circuits first — which is itself a useful signal.
     let updated: unknown;
+    const terminalCompletedAt = new Date();
     const updatedRows = await runOutsideDbContext(async () => withSystemDbAccessContext(async () =>
       dbWriteExpectingRows(
         'device_commands.rest_result_terminal_cas',
@@ -388,7 +448,7 @@ commandsRoutes.post(
             .update(deviceCommands)
             .set({
               status: normalizedData.status === 'completed' ? 'completed' : 'failed',
-              completedAt: new Date(),
+              completedAt: terminalCompletedAt,
               result: buildStoredCommandResult(command.type, normalizedData, stdout),
               // Credentials ride the payload for some command types (FileVault
               // rotation, and the #3409 script secret envelope); strip them
@@ -420,6 +480,17 @@ commandsRoutes.post(
     if (updatedRows.length === 0) {
       return c.json({ success: true });
     }
+
+    // The guarded command transition is the authority. Reconcile before the
+    // validation-error return so malformed terminal frames cannot strand an
+    // automation action after the command itself became terminal.
+    await applyCommandAutomationTerminal({
+      commandId,
+      result: normalizedData,
+      output: stdout ?? null,
+      error: normalizedData.error ?? normalizedData.stderr ?? null,
+      completedAt: terminalCompletedAt,
+    });
 
     if (validationError) {
       console.warn(`[agents] ${validationError}`);
@@ -645,6 +716,7 @@ commandsRoutes.post(
     // `withDbAccessContext` returns `fn()` unchanged when a context is already
     // on the async-local store, and opening a second real transaction is the
     // #1105 double-hold this route was explicitly cleaned up to avoid.
+    let pamAcknowledgement: PamResultAcknowledgement | undefined;
     if (REGISTRY_DISPATCHED_COMMAND_TYPES.has(command.type)) {
       // Imported dynamically, like the DR handler below: the registry pulls in
       // the discovery and SNMP workers, and through them the Drizzle schema
@@ -654,7 +726,7 @@ commandsRoutes.post(
       const handler = commandResultHandlers[command.type];
       if (handler) {
         try {
-          await handler({
+          const outcome = await handler({
             // Handlers use this for log lines and one audit `actorId`, never a
             // lookup. Prefer the authenticated agent record over the path
             // param, matching this route's own writeAuditEvent actor below.
@@ -667,9 +739,19 @@ commandsRoutes.post(
             resolvedDeviceId: command.deviceId,
             stdout,
           });
+          if (PAM_COMMAND_TYPES.has(command.type)) {
+            if (!outcome || outcome.kind !== 'pam') {
+              throw new Error(`PAM result handler returned no acknowledgement for ${command.type}`);
+            }
+            pamAcknowledgement = {
+              protocolVersion: 1,
+              classification: outcome.classification,
+            };
+          }
         } catch (err) {
           console.error(`[agents] shared ${command.type} result handler failed for ${commandId}:`, err);
           captureException(err);
+          if (PAM_COMMAND_TYPES.has(command.type)) throw err;
         }
       }
     }
@@ -689,6 +771,6 @@ commandsRoutes.post(
       result: normalizedData.status === 'completed' ? 'success' : 'failure',
     });
 
-    return c.json({ success: true });
+    return c.json(pamAcknowledgement ?? { success: true });
   }
 );

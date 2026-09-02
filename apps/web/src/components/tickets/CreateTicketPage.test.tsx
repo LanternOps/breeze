@@ -32,6 +32,11 @@ const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500):
     json: vi.fn().mockResolvedValue(payload)
   }) as unknown as Response;
 
+const emptyDeviceOptionsResponse = () => makeJsonResponse({
+  data: [],
+  page: { nextCursor: null, returned: 0, total: 0, hasMore: false, observedAt: '2026-08-24T00:00:00.000Z' },
+});
+
 function mockOptionsApi() {
   fetchMock.mockImplementation(async (input, init) => {
     const url = String(input);
@@ -41,8 +46,11 @@ function mockOptionsApi() {
     if (url === '/ticket-categories') {
       return makeJsonResponse({ data: [{ id: 'cat-1', name: 'Hardware', isActive: true }] });
     }
-    if (url.startsWith('/devices?orgId=')) {
-      return makeJsonResponse({ data: [{ id: 'dev-1', displayName: 'PC-1' }] });
+    if (url.startsWith('/devices/options?')) {
+      return makeJsonResponse({
+        data: [{ id: 'dev-1', hostname: 'PC-1', displayName: 'PC-1', osType: 'windows', status: 'online', siteId: null, siteName: null }],
+        page: { nextCursor: null, returned: 1, total: 1, hasMore: false, observedAt: '2026-08-24T00:00:00.000Z' },
+      });
     }
     if (url.startsWith('/tickets/requesters?orgId=')) {
       return makeJsonResponse({ data: [{ id: 'pu-1', name: 'Jane Doe', email: 'jane@example.com' }] });
@@ -80,6 +88,7 @@ describe('CreateTicketPage', () => {
 
     fireEvent.change(screen.getByTestId('create-ticket-org-input'), { target: { value: 'org-a' } });
     fireEvent.change(screen.getByTestId('create-ticket-subject-input'), { target: { value: 'Printer down' } });
+    await waitFor(() => expect(screen.getByTestId('create-ticket-submit')).not.toBeDisabled());
     fireEvent.click(screen.getByTestId('create-ticket-submit'));
 
     await waitFor(() => {
@@ -104,7 +113,8 @@ describe('CreateTicketPage', () => {
     fireEvent.change(screen.getByTestId('create-ticket-org-input'), { target: { value: 'org-a' } });
 
     await screen.findByText('PC-1');
-    expect(fetchMock).toHaveBeenCalledWith('/devices?orgId=org-a');
+    expect(fetchMock.mock.calls.some(([url]) => String(url).startsWith('/devices/options?') && String(url).includes('orgId=org-a'))).toBe(true);
+    expect(fetchMock.mock.calls.some(([url]) => /^\/devices(?:\?|$)/.test(String(url)))).toBe(false);
     expect(screen.getByTestId('create-ticket-device-input')).not.toBeDisabled();
 
     fireEvent.change(screen.getByTestId('create-ticket-device-input'), { target: { value: 'dev-1' } });
@@ -123,7 +133,7 @@ describe('CreateTicketPage', () => {
 
     fireEvent.change(screen.getByTestId('create-ticket-org-input'), { target: { value: 'org-b' } });
     await waitFor(() => {
-      expect(fetchMock).toHaveBeenCalledWith('/devices?orgId=org-b');
+      expect(fetchMock.mock.calls.some(([url]) => String(url).startsWith('/devices/options?') && String(url).includes('orgId=org-b'))).toBe(true);
     });
     expect(screen.getByTestId('create-ticket-device-input')).toHaveValue('');
 
@@ -240,7 +250,7 @@ describe('CreateTicketPage', () => {
         const url = String(input);
         if (url === '/orgs/organizations?limit=100') return makeJsonResponse({ data: [{ id: 'org-a', name: 'Org A' }] });
         if (url === '/ticket-categories') return makeJsonResponse({ data: [{ id: 'cat-1', name: 'Hardware', isActive: true }] });
-        if (url.startsWith('/devices?orgId=')) return makeJsonResponse({ data: [] });
+        if (url.startsWith('/devices/options?')) return emptyDeviceOptionsResponse();
         if (url.startsWith('/tickets/requesters?orgId=')) return makeJsonResponse({ data: [] });
         if (url.startsWith('/ticket-forms/available')) {
           return makeJsonResponse({
@@ -296,7 +306,10 @@ describe('CreateTicketPage', () => {
         const url = String(input);
         if (url === '/orgs/organizations?limit=100') return makeJsonResponse({ data: [] });
         if (url === '/ticket-categories') return makeJsonResponse({ data: [{ id: 'cat-1', name: 'Hardware', isActive: true }] });
-        if (url === '/devices?orgId=org-1') return makeJsonResponse({ data: [{ id: 'dev-1', displayName: 'PC-1' }] });
+        if (url.startsWith('/devices/options?')) return makeJsonResponse({
+          data: [{ id: 'dev-1', hostname: 'PC-1', displayName: 'PC-1', osType: 'windows', status: 'online', siteId: null, siteName: null }],
+          page: { nextCursor: null, returned: 1, total: 1, hasMore: false, observedAt: '2026-08-24T00:00:00.000Z' },
+        });
         if (url === '/tickets' && init?.method === 'POST') return makeJsonResponse({ data: { id: 'tk-1', internalNumber: 'T-1' } });
         return makeJsonResponse({ error: 'unexpected' }, false, 404);
       });
@@ -309,7 +322,7 @@ describe('CreateTicketPage', () => {
 
       // Device list fetched for org-1 automatically
       await screen.findByText('PC-1');
-      expect(fetchMock).toHaveBeenCalledWith('/devices?orgId=org-1');
+      expect(fetchMock.mock.calls.some(([url]) => String(url).startsWith('/devices/options?') && String(url).includes('orgId=org-1'))).toBe(true);
 
       // No /orgs/organizations call
       const allUrls = fetchMock.mock.calls.map((c) => String(c[0]));
@@ -338,7 +351,7 @@ describe('CreateTicketPage', () => {
         const url = String(input);
         if (url === '/orgs/organizations?limit=100') return makeJsonResponse({ error: 'Forbidden' }, false, 403);
         if (url === '/ticket-categories') return makeJsonResponse({ data: [{ id: 'cat-1', name: 'Hardware', isActive: true }] });
-        if (url.startsWith('/devices?orgId=')) return makeJsonResponse({ data: [] });
+        if (url.startsWith('/devices/options?')) return emptyDeviceOptionsResponse();
         return makeJsonResponse({ error: 'unexpected' }, false, 404);
       });
 
@@ -365,7 +378,7 @@ describe('CreateTicketPage', () => {
             ]
           });
         }
-        if (url.startsWith('/devices?orgId=')) return makeJsonResponse({ data: [] });
+        if (url.startsWith('/devices/options?')) return emptyDeviceOptionsResponse();
         if (url === '/tickets' && init?.method === 'POST') return makeJsonResponse({ data: { id: 'tk-1', internalNumber: 'T-1' } });
         return makeJsonResponse({ error: 'unexpected' }, false, 404);
       });

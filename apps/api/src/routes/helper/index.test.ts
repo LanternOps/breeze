@@ -102,6 +102,14 @@ vi.mock('../../services/aiAgentSdk', () => ({
 
 vi.mock('../../services/llm/llmConfigResolver', () => ({
   resolveLlmConfig: (...args: unknown[]) => resolveLlmConfigMock(...args),
+  LlmUnavailableError: class LlmUnavailableError extends Error {
+    readonly status = 503;
+    readonly code = 'ai_unavailable';
+    constructor(message = 'AI is unavailable.') {
+      super(message);
+      this.name = 'LlmUnavailableError';
+    }
+  },
 }));
 
 vi.mock('../../services/sentry', () => ({
@@ -128,6 +136,7 @@ import { matchAgentTokenHash } from '../../middleware/agentAuth';
 import { resolveHelperPermissionLevelForDevice } from '../../services/helperPermissions';
 import { buildHelperSystemPrompt } from '../../services/helperAiAgent';
 import { streamingSessionManager } from '../../services/streamingSessionManager';
+import { LlmUnavailableError } from '../../services/llm/llmConfigResolver';
 import { resolveClientDeclaredTool } from '../../services/clientSessionTools';
 
 const VALID_TOOL_DECL = {
@@ -373,6 +382,50 @@ describe('helper routes permission derivation', () => {
     expect(await res.json()).toEqual({ error: 'ai_unavailable' });
     expect(streamingSessionManager.getOrCreate).not.toHaveBeenCalled();
     expect(resolveLlmConfigMock).toHaveBeenCalledWith('partner-1');
+  });
+
+  /**
+   * The resolver-level check above cannot see this one: `getOrCreate` resolves
+   * the WIRE model inside the manager, so a pinned revision with no verified
+   * mapping for this session's model throws only once the manager is already
+   * running (#3922 W3 review round 2). Unmapped, it reached Hono's onError as a
+   * 500 — telling the helper "we broke" instead of "reconnect your provider".
+   */
+  it('maps a wire-model fail-close from the SDK manager to 503 ai_unavailable', async () => {
+    mockHelperAuthDevice();
+    vi.mocked(resolveHelperPermissionLevelForDevice).mockResolvedValue('standard');
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{
+            id: 'session-1',
+            orgId: 'org-1',
+            deviceId: 'device-1',
+            sdkSessionId: null,
+            model: 'claude-opus-4-8',
+            maxTurns: 50,
+            turnCount: 0,
+            status: 'active',
+            title: 'Existing title',
+            systemPrompt: 'prompt',
+            createdAt: new Date(),
+          }]),
+        }),
+      }),
+    } as never);
+    vi.mocked(streamingSessionManager.getOrCreate).mockRejectedValue(new LlmUnavailableError());
+
+    const res = await app.request('/helper/chat/sessions/session-1/messages', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer brz_agent_token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: 'hello' }),
+    });
+
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'ai_unavailable' });
+    // Fail CLOSED: the turn's user message is never persisted under a session
+    // that produced no assistant turn.
+    expect(db.insert).not.toHaveBeenCalled();
   });
 
   it('captures resolver throws and returns a generic retryable 503 on a turn', async () => {

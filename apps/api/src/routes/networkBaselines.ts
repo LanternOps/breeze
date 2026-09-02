@@ -24,6 +24,7 @@ import {
   mapNetworkChangeRow,
   resolveOrgId
 } from './networkShared';
+import { pgErrorCode } from '../utils/pgErrors';
 
 export const networkBaselineRoutes = new Hono();
 
@@ -539,8 +540,20 @@ networkBaselineRoutes.delete(
           .where(eq(networkBaselines.id, baseline.id));
       }
     } catch (error) {
-      const pgError = error as { code?: string };
-      if (!deleteChanges && pgError.code === '23503') {
+      // Read the SQLSTATE through `pgErrorCode` (utils/pgErrors.ts, which owns
+      // the unwrap contract): Drizzle hides the real code behind `.cause`, so
+      // reading `error.code` directly -- as this did until #4020 -- made the
+      // branch unreachable for every Drizzle-issued delete. The 409 and its
+      // `hint` below were never actually delivered.
+      //
+      // Bare code check rather than a constraint-scoped one because
+      // network_change_events.baseline_id is currently the ONLY FK referencing
+      // network_baselines(id), so a 23503 escaping this delete can only mean
+      // what the hint says. If a second table ever references
+      // network_baselines, narrow this to that constraint name -- otherwise the
+      // new violation inherits this hint, `?deleteChanges=true` will not clear
+      // it, and the caller retries into the same wall.
+      if (!deleteChanges && pgErrorCode(error) === '23503') {
         return c.json({
           error: 'Cannot delete baseline without deleting associated change events',
           hint: 'Use ?deleteChanges=true to delete events with the baseline'

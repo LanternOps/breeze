@@ -1,0 +1,204 @@
+---
+title: AI Agents
+description: Configure permission-scoped AI agents and review their recorded runs and proposed actions.
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+An AI agent is a named, permission-scoped worker you configure once. It wakes on a trigger, gathers the context available for that trigger, and writes up what it found. Every run is recorded, and — unless the agent is in Act mode and the action is on its pre-approved list — anything it wants to *do* is proposed for a person to approve.
+
+Agents are off by default and must be enabled by your operator before they appear. See [Enabling agents](#enabling-agents).
+
+<Aside type="caution" title="Act mode runs unattended — read this before enabling it">
+  An agent has three modes: **Off**, **Shadow**, and **Act**. Shadow observes, reasons, and proposes — it never executes an action by itself. Act mode is different: for a small, fixed set of low-risk, narrowly-scoped operations it verifies and executes **without waiting for a person to approve, and without an automatic rollback if verification fails**. Everything outside that set still proposes and waits, exactly as in Shadow. See [Act mode](#act-mode) before turning it on.
+</Aside>
+
+## What an agent does
+
+Manage agents under **Settings → AI Agents**.
+
+An agent has a **kind**: `triage`, `patch`, or `helpdesk`. The kind decides what the agent is for and what triggers it. Triage agents accept alerts and opted-in anomaly incidents. Helpdesk agents accept newly created tickets.
+
+Each agent carries its own limits — devices per run, concurrent runs, runs per hour, turns per run, spend per run and per day, wall-clock time, and a ceiling on the percentage of your fleet it may touch in a day. These are enforced per run, not advisory.
+
+<Aside>
+  An organization can have one live agent of each kind. If you need to change an agent's configuration, edit it — you cannot create a second agent of the same kind alongside it.
+</Aside>
+
+## Runs
+
+When a trigger passes admission, the agent opens a **run**. The run is the audit surface: open it to see what triggered the agent, which devices it looked at, and what it concluded.
+
+Runs are triggered by an **alert**, an **anomaly**, a **schedule**, a **ticket**, or **manually** from the agent itself. A run moves through these states:
+
+| Status | Meaning |
+|---|---|
+| `queued` | Accepted and waiting for a runner. |
+| `running` | Actively working. |
+| `awaiting_approval` | The agent proposed an action and is waiting on a person. |
+| `completed` | Finished. |
+| `failed` | Stopped on an error. |
+| `cancelled` | Stopped by a person. |
+| `expired` | Exceeded its wall-clock budget. |
+| `skipped` | A run record was created but stopped before executing, for example when the agent's policy was revoked between admission and start. |
+
+Admission checks happen before Breeze creates a run. If an agent policy filters out a trigger, no `skipped` run appears in the runs list. See [Why nothing happened](#why-nothing-happened) for the skip signals that are recorded instead.
+
+## Approving what an agent proposes
+
+When an agent wants to take an action, it does not perform it by default. It records the proposal and the run moves to `awaiting_approval`. You are notified in the app, and the proposal appears in the **Approvals** inbox, where you approve or reject it.
+
+An agent in **Act mode** is the one exception: for a small set of pre-approved operations, it executes directly instead of recording a proposal. See [Act mode](#act-mode). Everything else, in every mode, always proposes and waits. Rejecting a proposal ends it; the agent does not retry the same action behind you.
+
+## Act mode
+
+Act mode lets an agent execute a fixed, closed set of low-risk, narrowly-scoped operations — restarting a service, running an already-authorized script, executing a disk-cleanup plan it already previewed, running a built-in playbook — without a person approving each one in the moment. Anything not on that list still becomes a proposal in the Approvals inbox, exactly as in Shadow mode. The set is not configurable per agent beyond allowlisting which of those operations it may reach; you cannot add arbitrary tools to Act mode's unattended list.
+
+<Aside type="caution">
+  Act mode is only reachable from an **alert**-triggered or **manually**-triggered run. Ticket- and anomaly-triggered runs are always forced into Shadow mode regardless of the agent's configured mode (see [Ticket helpdesk lane](#ticket-helpdesk-lane) and [Anomaly lane](#anomaly-lane)), so switching an agent to Act does not change how it handles those triggers.
+</Aside>
+
+Act mode is bounded by more than the operation list:
+
+- **Guardrails re-check every call.** Each tool call an agent makes is classified before it runs. A call outside the fixed set — or one that fails a live re-check just before execution (the target device doesn't match the run, the script's content has changed since it was authorized, a required preview no longer exists) — is denied outright or downgraded into an ordinary proposal, never silently executed.
+- **One device per run.** A run only ever acts on the single device it was triggered against.
+- **A per-run action cap.** A run stops taking unattended actions once it hits its configured limit, in addition to the run-level limits (concurrency, spend, wall-clock time) every agent already has.
+- **An organization-wide exposure ledger.** Every unattended action Act mode takes is recorded against the organization it ran in, alongside the equivalent record for the separate, not-yet-generally-available policy-decide capability. This ledger is the foundation for a shared, org-wide cap on unattended activity across all of an organization's agents.
+- **Verification, not certainty.** Act mode checks the result of what it did (a service is running again, disk usage improved) and reports if that check fails — but it does not roll anything back. If verification fails, a person resolves it, the same as they would resolve any other failed run.
+
+### Turning Act mode on
+
+In **Settings → AI Agents**, set the agent's mode to **Act**. The API refuses the change unless the agent already has both a recipient that resolves to a real person (Act mode still needs someone to notify) and at least one act-eligible operation in its **Tool allowlist** (for scripts, at least one authorized script). The form shows an explicit warning — unattended execution, no rollback, single-device scope, the action cap — and, the first time you switch an agent into Act mode, requires you to check an acknowledgement before it lets you save.
+
+### Turning it off
+
+Set the agent's mode back to **Off** or **Shadow**, or disable the agent — either stops unattended execution for that agent immediately. Disabling `BREEZE_AI_AGENTS_ENABLED` (see [Enabling agents](#enabling-agents)) is the platform-wide switch: it stops every agent, in every mode, for the whole deployment.
+
+## Agent activity in the audit trail
+
+Actions that originate from an agent are attributed to **the agent**, not to the person who configured it or happened to be signed in. Agent-created entries in the audit log carry the agent as the actor, so an agent's work is never mistaken for a technician's during a review.
+
+## Permissions
+
+Agents are gated on their own capabilities rather than on general organization permissions:
+
+| Permission | Grants |
+|---|---|
+| `ai_agents:read` | View agents and their runs. |
+| `ai_agents:write` | Create, edit, disable, and trigger agents. |
+
+These are deliberately separate from `organizations:write`. Authoring an agent policy is what authorizes autonomous action on customer machines once an agent is switched to Act mode, so it is not bundled into a permission every organization admin already holds. Partner Admin retains access through its full-access role.
+
+Creating, editing, disabling, or manually triggering an agent additionally requires you to complete MFA.
+
+## Alert triage wiring
+
+Creating a triage agent automatically creates a matching **system-managed automation** that wakes the agent when an alert fires. You will see it on the Automations page, marked as system-managed.
+
+<Aside type="caution">
+  Edit the agent, not the automation. The managed automation exists only to route alerts to the agent — severity, site, tag, maintenance-window and cooldown filtering all live on the agent's own policy. The API refuses automations that try to use the `ai_triage` action directly.
+</Aside>
+
+Disabling the agent disables its wiring too, so an agent that is switched off never gets live alerts routed in front of it.
+
+## Ticket helpdesk lane
+
+A newly created ticket can wake a helpdesk agent when all of these conditions are met:
+
+- `BREEZE_AI_AGENTS_ENABLED=true`.
+- An enabled partner-level baseline agent of kind `helpdesk` exists. An organization-level agent cannot enable itself without this baseline.
+- The effective policy is enabled for both the partner and the organization, and its mode is not Off.
+- The ticket matches the optional `triggers.ticketCategories` and `triggers.ticketPriorities` filters. An absent filter is unrestricted.
+
+Every ticket creation is written to a transactional outbox. A background publisher drains the outbox onto the event bus approximately every five seconds, so you do not need a separate ticket trigger flag.
+
+Ticket-triggered runs are always forced into Shadow mode, regardless of the agent's configured mode. They have no device context, so device-changing tools are denied outright.
+
+Only ticket creation admits a helpdesk run in this release. Ticket comments and status changes are published on the event bus, but this lane does not read them yet. A ticket that already has agent-originated comment activity is also rejected to prevent a loop.
+
+## Anomaly lane
+
+A newly opened anomaly incident can wake a triage agent when all of these conditions are met:
+
+- `BREEZE_AI_AGENTS_ENABLED=true`.
+- Anomaly Detection is enabled for the organization through `ml.anomalies.enabled`. It is off by default, and the global ML kill switches can still suppress it. See [Availability and enabling](/features/ml-insights/#availability-and-enabling).
+- An enabled partner-level baseline agent of kind `triage` exists. Triage is the only agent kind that accepts anomaly triggers.
+- The organization-level triage agent sets `triggers.anomalyEnabled` to `true`. Its default is `false`.
+- The optional narrowing filters match the incident.
+
+The detector collapses raw anomalies into a canonical incident. A background publisher sends each newly opened incident to the event bus, so you do not need another anomaly event flag.
+
+<Aside type="caution" title="Opt in each organization, not the partner baseline">
+  Set `triggers.anomalyEnabled` on the **organization-level** triage agent. Breeze never reads this value from the partner baseline. Setting it on the partner baseline does nothing and produces no error or warning, while an organization with no override row always resolves to off. This prevents a partner from opting every downstream organization into an unproven detector with one setting.
+</Aside>
+
+Anomaly-triggered runs are always forced into Shadow mode. They are bound to a device, so device pinning, site scope, and maintenance-window rules still apply normally.
+
+You can narrow admission with `triggers.anomalyTypes`, `triggers.metricNames`, `triggers.minAnomalyScore`, and the usual site and device-tag filters. An absent filter is unrestricted. These filters cannot opt the lane in; `triggers.anomalyEnabled` is still required.
+
+If the underlying anomaly has already been promoted to an alert, the anomaly run reuses the alert's deduplication key. One incident therefore does not produce both an anomaly run and a separate alert-triage run.
+
+### Opt in through the API
+
+The **Settings → AI Agents** form exposes alert severities and the maintenance-window toggle, but it does not show an anomaly control. First list agents and identify the organization-scoped triage agent for the customer:
+
+```bash
+GET /api/v1/ai/agents
+```
+
+Then patch only the anomaly opt-in:
+
+```bash
+PATCH /api/v1/ai/agents/{agentId}
+Content-Type: application/json
+
+{"triggers": {"anomalyEnabled": true}}
+```
+
+`{agentId}` must identify the organization-scoped agent, not the partner baseline. The request requires the `ai_agents:write` permission and a completed MFA step, as do other agent mutations.
+
+The server merges the `triggers` object one level onto the stored policy. Fields you omit keep their values, and later edits in the UI do not clear `anomalyEnabled` because the form submits only its own trigger fields.
+
+Verify the effective policy for the organization:
+
+```bash
+GET /api/v1/ai/agents/effective?orgId={orgId}&kind=triage
+```
+
+Confirm that `triggers.anomalyEnabled` is `true` in the response.
+
+## Why nothing happened
+
+When admission is refused, Breeze does not create a run row, so nothing new appears in the runs list. The API always writes a `run skipped` log line carrying the reason, organization, agent, trigger kind, and device.
+
+| Skip reason | Meaning | Also published as an event |
+|---|---|---|
+| `trigger_filter_mismatch` | The anomaly opt-in gate or a narrowing trigger filter did not match. | Yes |
+| `no_effective_agent` | No enabled partner baseline agent of that kind exists. | No, log only |
+| `kill_switch_off` | `BREEZE_AI_AGENTS_ENABLED` is off. | No, log only |
+
+Only a skip that happens *after* the agent has been resolved publishes an `ai.agent.run.skipped` event. `kill_switch_off` and `no_effective_agent` are deliberately log-only: they fire on every trigger in every organization for as long as the condition holds, so publishing them would put a write on the hot alert path for a non-event. If you want to catch those two, alert on the log line rather than the event.
+
+A run that was already admitted can also stop before it starts. If the agent is disabled or its policy is revoked between admission and delivery, the run transitions to `skipped` with the reason `policy_revoked_before_start` and publishes `ai.agent.run.skipped`. Unlike the admission-time skips above, that case does leave a run record in the runs list.
+
+## Durable delivery for agent triggers
+
+**The event dispatch settings do not enable or disable the ticket-helpdesk or anomaly lanes.** Both subscribers are registered when the API starts, and both lanes still run in-process when `EVENT_DISPATCH_MODE` is unset or `off`. Naming a subscriber changes the durability of its delivery hop, not whether the feature runs.
+
+In-process delivery is best-effort. If a handler throws, Breeze writes the failure only to the API log, swallows it, and loses the trigger. Queue delivery leaves a delivery receipt and retries a failed hop. The `ai-agent-ticket-helpdesk` and `ai-agent-anomaly` subscribers each retry up to five times with a 10-second backoff. `ai-agent-alert-verdict` retries up to three times with a 30-second backoff.
+
+| `EVENT_DISPATCH_MODE` | Delivery behavior |
+|---|---|
+| `off` | In-process delivery only. This is the default when the variable is unset. |
+| `shadow` | Also mirrors the routing plan into delivery receipts for observability, but executes nothing through the queue. |
+| `enforce` | Routes named subscribers only through the BullMQ queue and skips their in-process delivery. Subscribers that are not named continue in-process. |
+
+`EVENT_DISPATCH_QUEUE_SUBSCRIBERS` is ignored unless the mode is `enforce`. To make these trigger hops durable, set the mode to `enforce` and name `ai-agent-ticket-helpdesk` and/or `ai-agent-anomaly`. An empty subscriber list is accepted, but everything remains in-process and the API logs a warning at boot.
+
+See [Environment Variables](/deploy/environment/) for validation rules and the complete subscriber ID list.
+
+## Enabling agents
+
+Agents are off unless your operator sets `BREEZE_AI_AGENTS_ENABLED=true`. Upgrading does not turn them on, and no existing role gains access to them by default — the `ai_agents` permissions must be granted to a role explicitly.
+
+Self-hosted operators: see [Environment Variables](/deploy/environment/) for the flag, and remember it must also be mapped in the `api` service's `environment:` block of your compose file — a value in `.env` alone has no effect.

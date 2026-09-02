@@ -31,25 +31,34 @@ vi.mock('./aiAgents/runService', () => ({
 
 import { __testOnly, type AutomationTriggerContext } from './automationRuntime';
 
-// Expected ActionExecutionResult.success per skip reason — the INVERSE of the
+// Expected terminal action outcome per skip reason — the INVERSE of the
 // runtime's AI_TRIAGE_SKIP_IS_FAILURE table, restated independently so a flipped
 // classification cannot pass. Typed as a total Record over the union: when 3c
 // adds a skip reason this file stops compiling until it is classified here too.
-const EXPECTED_SUCCESS: Record<AgentRunSkipReason, boolean> = {
-  kill_switch_off: true,
-  no_effective_agent: true,
-  agent_disabled: true,
-  mode_off: true,
-  trigger_filter_mismatch: true,
-  maintenance_window: true,
-  cooldown: true,
-  max_concurrent_runs: true,
-  max_runs_per_hour: true,
-  org_budget_exceeded: true,
-  agent_daily_budget_exceeded: true,
-  duplicate: true,
-  ownership_mismatch: false,
-  device_not_in_org: false,
+const EXPECTED_OUTCOME: Record<AgentRunSkipReason, 'succeeded' | 'failed'> = {
+  kill_switch_off: 'succeeded',
+  no_effective_agent: 'succeeded',
+  agent_disabled: 'succeeded',
+  mode_off: 'succeeded',
+  circuit_open: 'succeeded',
+  trigger_filter_mismatch: 'succeeded',
+  maintenance_window: 'succeeded',
+  cooldown: 'succeeded',
+  max_concurrent_runs: 'succeeded',
+  max_runs_per_hour: 'succeeded',
+  org_budget_exceeded: 'succeeded',
+  agent_daily_budget_exceeded: 'succeeded',
+  duplicate: 'succeeded',
+  max_concurrent_verdict_runs: 'succeeded',
+  verdict_rate: 'succeeded',
+  max_concurrent_sweep_runs: 'succeeded',
+  sweep_rate: 'succeeded',
+  max_concurrent_narrative_runs: 'succeeded',
+  narrative_rate: 'succeeded',
+  max_concurrent_triage_runs: 'succeeded',
+  triage_rate: 'succeeded',
+  ownership_mismatch: 'failed',
+  device_not_in_org: 'failed',
 };
 
 const DEFAULT_TRIGGER: AutomationTriggerContext = {
@@ -160,7 +169,7 @@ describe('executeAiTriageAction', () => {
       },
       dedupeKey: 'alert:alert-1',
     });
-    expect(result.success).toBe(true);
+    expect(result.outcome.status).toBe('succeeded');
     expect(result.log.message).toBe('ai_triage queued agent run');
     expect(result.log.details).toEqual({ agentRunId: 'agent-run-1' });
   });
@@ -177,7 +186,7 @@ describe('executeAiTriageAction', () => {
     expect(actual.orgId).toBe('org-device');
   });
 
-  it('maps a cooldown skip to success:true with an info log', async () => {
+  it('maps a cooldown skip to a succeeded terminal outcome with an info log', async () => {
     createAndEnqueueAgentRunMock.mockResolvedValue({ created: false, skipped: 'cooldown' });
 
     const result = await __testOnly.executeAiTriageAction(
@@ -189,12 +198,12 @@ describe('executeAiTriageAction', () => {
     expect(createAndEnqueueAgentRunMock).toHaveBeenCalledTimes(1);
     const actual = gateInput();
     expect(actual.deviceId).toBe('dev-1');
-    expect(result.success).toBe(true);
+    expect(result.outcome).toEqual({ status: 'succeeded' });
     expect(result.log.level).toBe('info');
     expect(result.log.message).toContain('cooldown');
   });
 
-  it('maps ownership_mismatch to success:false', async () => {
+  it('maps ownership_mismatch to a failed terminal outcome', async () => {
     createAndEnqueueAgentRunMock.mockResolvedValue({ created: false, skipped: 'ownership_mismatch' });
 
     const result = await __testOnly.executeAiTriageAction(
@@ -206,11 +215,14 @@ describe('executeAiTriageAction', () => {
     expect(createAndEnqueueAgentRunMock).toHaveBeenCalledTimes(1);
     const actual = gateInput();
     expect(actual.orgId).toBe('org-device');
-    expect(result.success).toBe(false);
+    expect(result.outcome).toEqual({
+      status: 'failed',
+      message: 'ai_triage skipped: ownership_mismatch',
+    });
     expect(result.log.level).toBe('error');
   });
 
-  it('maps device_not_in_org to success:false', async () => {
+  it('maps device_not_in_org to a failed terminal outcome', async () => {
     createAndEnqueueAgentRunMock.mockResolvedValue({ created: false, skipped: 'device_not_in_org' });
 
     const result = await __testOnly.executeAiTriageAction(
@@ -222,14 +234,17 @@ describe('executeAiTriageAction', () => {
     expect(createAndEnqueueAgentRunMock).toHaveBeenCalledTimes(1);
     const actual = gateInput();
     expect(actual.orgId).toBe('org-device');
-    expect(result.success).toBe(false);
+    expect(result.outcome).toEqual({
+      status: 'failed',
+      message: 'ai_triage skipped: device_not_in_org',
+    });
     expect(result.log.level).toBe('error');
   });
 
   it('every AgentRunSkipReason is classified and produces a recorded log', async () => {
-    for (const [reason, expectedSuccess] of Object.entries(EXPECTED_SUCCESS) as Array<[
+    for (const [reason, expectedOutcome] of Object.entries(EXPECTED_OUTCOME) as Array<[
       AgentRunSkipReason,
-      boolean,
+      'succeeded' | 'failed',
     ]>) {
       createAndEnqueueAgentRunMock.mockResolvedValueOnce({ created: false, skipped: reason });
 
@@ -241,7 +256,11 @@ describe('executeAiTriageAction', () => {
 
       const actual = gateInput(createAndEnqueueAgentRunMock.mock.calls.length - 1);
       expect(actual.deviceId).toBe('dev-1');
-      expect(result.success, reason).toBe(expectedSuccess);
+      expect(result.outcome, reason).toEqual(
+        expectedOutcome === 'failed'
+          ? { status: 'failed', message: `ai_triage skipped: ${reason}` }
+          : { status: 'succeeded' },
+      );
       expect(result.log.message, reason).toContain(reason);
       expect(result.log.message.length, reason).toBeGreaterThan(0);
     }
@@ -263,7 +282,10 @@ describe('executeAiTriageAction', () => {
       makeContext(),
     );
 
-    expect(result.success).toBe(false);
+    expect(result.outcome).toEqual({
+      status: 'failed',
+      message: 'ai_triage agent run was created but could not be enqueued',
+    });
     expect(result.log.level).toBe('error');
     expect(result.log.message).not.toContain('queued agent run');
     expect(result.log.details).toEqual({
@@ -284,11 +306,14 @@ describe('executeAiTriageAction', () => {
       makeContext(),
     );
 
-    expect(result.success).toBe(false);
+    expect(result.outcome).toEqual({
+      status: 'failed',
+      message: 'ai_triage agent run was created but could not be enqueued',
+    });
     expect(result.log.details).toMatchObject({ errorCode: 'enqueue_failed' });
   });
 
-  it('still reports success for a genuinely queued run', async () => {
+  it('terminalizes the parent action after a genuinely queued child run', async () => {
     createAndEnqueueAgentRunMock.mockResolvedValue({
       created: true,
       run: { id: 'agent-run-3', status: 'queued', errorCode: null },
@@ -300,7 +325,7 @@ describe('executeAiTriageAction', () => {
       makeContext(),
     );
 
-    expect(result.success).toBe(true);
+    expect(result.outcome.status).toBe('succeeded');
     expect(result.log.message).toBe('ai_triage queued agent run');
   });
 
@@ -311,7 +336,10 @@ describe('executeAiTriageAction', () => {
       makeContext({ automation: { managedByAgentId: null } }),
     );
 
-    expect(result.success).toBe(false);
+    expect(result.outcome).toEqual({
+      status: 'failed',
+      message: 'ai_triage action on an unmanaged automation — refusing',
+    });
     expect(result.log.level).toBe('error');
     expect(createAndEnqueueAgentRunMock).not.toHaveBeenCalled();
     expect(selectMock).not.toHaveBeenCalled();

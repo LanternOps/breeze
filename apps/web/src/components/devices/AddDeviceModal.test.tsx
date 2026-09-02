@@ -17,8 +17,19 @@ import { fetchWithAuth } from '../../stores/auth';
 
 // --- Mocks ---
 
+// #4018: the modal reads `user.hasPassword` off the auth store to choose the
+// MFA_REQUIRED copy. Kept as a MUTABLE hoisted object so a test can flip the
+// flag between renders without re-mocking the module.
+const { authState } = vi.hoisted(() => ({
+  authState: { user: null as { hasPassword?: boolean } | null },
+}));
+
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
+  useAuthStore: Object.assign(
+    (selector: (state: typeof authState) => unknown) => selector(authState),
+    { getState: () => authState },
+  ),
 }));
 
 vi.mock('../../stores/orgStore', () => ({
@@ -101,6 +112,7 @@ describe('AddDeviceModal', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     setOrgStore();
+    authState.user = { hasPassword: true };
   });
 
   afterEach(() => {
@@ -205,9 +217,9 @@ describe('AddDeviceModal', () => {
     // the parent POST must NOT carry it (PR #739 review finding #1).
     expect(createBody.ttlMinutes).toBeUndefined();
 
-    // Default 24h (1440) flows to the installer (child) download URL.
+    // Default 30 days (43200) flows to the installer (child) download URL.
     const dlCall = fetchWithAuthMock.mock.calls[1];
-    expect(String(dlCall[0])).toContain('ttlMinutes=1440');
+    expect(String(dlCall[0])).toContain('ttlMinutes=43200');
   });
 
   // #2992 — the parent key must NOT carry the device count. max_usage is an
@@ -326,7 +338,7 @@ describe('AddDeviceModal', () => {
       expect(screen.getByDisplayValue(/public-download/)).toBeDefined();
     });
 
-    expect(screen.getByText(/Valid for 1 download/)).toBeDefined();
+    expect(screen.getByText(/Valid for 50 downloads/)).toBeDefined();
 
     // ttlMinutes goes on the installer-link (child) body, not the parent POST.
     const createCall = fetchWithAuthMock.mock.calls[0];
@@ -408,6 +420,75 @@ describe('AddDeviceModal', () => {
     });
   });
 
+  // #4018: "set up MFA in your profile settings and sign in again" is a DEAD
+  // END for an SSO-provisioned account — it has no password, so the profile
+  // enrollment flow rejects it. Those users get the identity-provider road.
+  describe('MFA_REQUIRED copy for a passwordless SSO account (#4018)', () => {
+    async function failWithMfaRequired(trigger: () => void) {
+      fetchWithAuthMock.mockResolvedValue(
+        makeJsonResponse({ error: 'MFA required' }, false, 403)
+      );
+      render(<AddDeviceModal isOpen onClose={vi.fn()} />);
+      trigger();
+    }
+
+    it('points the installer download at the identity provider, not the password flow', async () => {
+      authState.user = { hasPassword: false };
+      await failWithMfaRequired(() => fireEvent.click(getDownloadButton()));
+
+      const banner = await screen.findByTestId('download-mfa-required');
+      expect(banner.textContent).toContain('signs you in through an identity provider');
+      // The dead-end instruction must be GONE, not merely supplemented.
+      expect(banner.textContent).not.toContain('and sign in again');
+      expect(banner.querySelector('a')).toBeNull();
+    });
+
+    it('points link generation at the identity provider', async () => {
+      authState.user = { hasPassword: false };
+      await failWithMfaRequired(() => fireEvent.click(screen.getByText('Generate Link')));
+
+      const banner = await screen.findByTestId('link-mfa-required');
+      expect(banner.textContent).toContain('required to generate links');
+      expect(banner.textContent).toContain('signs you in through an identity provider');
+      expect(banner.textContent).not.toContain('and sign in again');
+    });
+
+    it('points CLI token generation at the identity provider', async () => {
+      authState.user = { hasPassword: false };
+      fetchWithAuthMock.mockResolvedValue(
+        makeJsonResponse({ error: 'MFA required' }, false, 403)
+      );
+      render(<AddDeviceModal isOpen onClose={vi.fn()} />);
+      fireEvent.click(screen.getByText('CLI Commands'));
+
+      const banner = await screen.findByTestId('token-mfa-required');
+      expect(banner.textContent).toContain('required to generate installation tokens');
+      expect(banner.textContent).toContain('signs you in through an identity provider');
+    });
+
+    it('keeps the password-account copy when hasPassword is true', async () => {
+      authState.user = { hasPassword: true };
+      await failWithMfaRequired(() => fireEvent.click(getDownloadButton()));
+
+      const banner = await screen.findByTestId('download-mfa-required');
+      expect(banner.textContent).toContain('Set up MFA in your profile settings');
+      expect(banner.textContent).not.toContain('identity provider');
+      expect(banner.querySelector('a')?.getAttribute('href')).toBe('/settings/profile');
+    });
+
+    // Absent is UNKNOWN (a session persisted before /users/me carried the
+    // field), and unknown must NOT silently take the SSO road — a password
+    // user would then be told to go ask their admin about an IdP they don't use.
+    it('keeps the password-account copy when hasPassword is absent', async () => {
+      authState.user = {};
+      await failWithMfaRequired(() => fireEvent.click(getDownloadButton()));
+
+      const banner = await screen.findByTestId('download-mfa-required');
+      expect(banner.textContent).toContain('Set up MFA in your profile settings');
+      expect(banner.textContent).not.toContain('identity provider');
+    });
+  });
+
   it('shows error when link generation fails', async () => {
     fetchWithAuthMock.mockImplementation(async (input) => {
       const url = String(input);
@@ -444,12 +525,12 @@ describe('AddDeviceModal', () => {
       expect(fetchWithAuthMock).toHaveBeenCalledWith(
         '/devices/onboarding-token',
         // #1108: the request now carries a device count → maxUsage.
-        // #2777: …and an explicit TTL (default 24h) with the JSON content type
+        // #2777: …and an explicit TTL (default 30 days) with the JSON content type
         // the route's strict validator requires.
         expect.objectContaining({
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ count: 1, ttlMinutes: 1440 }),
+          body: JSON.stringify({ count: 50, ttlMinutes: 43200 }),
         })
       );
     });
@@ -512,7 +593,7 @@ describe('AddDeviceModal', () => {
         expect.objectContaining({
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ count: 5, ttlMinutes: 1440 }),
+          body: JSON.stringify({ count: 5, ttlMinutes: 43200 }),
         })
       );
     });
@@ -582,6 +663,7 @@ describe('AddDeviceModal — resolved enrollment defaults (#2776)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     setOrgStore();
+    authState.user = { hasPassword: true };
   });
 
   it('pre-selects the partner/org default TTL and count, and hides options above the cap', async () => {
@@ -605,8 +687,8 @@ describe('AddDeviceModal — resolved enrollment defaults (#2776)', () => {
 
     render(<AddDeviceModal isOpen onClose={vi.fn()} />);
 
-    expect((screen.getByTestId('link-ttl') as HTMLSelectElement).value).toBe('1440');
-    expect((screen.getByTestId('device-count') as HTMLInputElement).value).toBe('1');
+    expect((screen.getByTestId('link-ttl') as HTMLSelectElement).value).toBe('43200');
+    expect((screen.getByTestId('device-count') as HTMLInputElement).value).toBe('50');
     expect(optionLabels('link-ttl')).toEqual([
       '1 hour',
       '24 hours',

@@ -690,3 +690,59 @@ describe('password reset eligibility (#719)', () => {
     });
   });
 });
+
+// #4018: an SSO-provisioned account has no password, so the profile UI must be
+// able to tell "password step-up is possible" from "offer the IdP road". The
+// hash is selected only to derive the boolean and must never be serialized.
+describe('GET /auth/me — hasPassword (#4018)', () => {
+  const ME_ROW = {
+    id: 'u-1',
+    email: 'user@example.test',
+    name: 'Sample User',
+    avatarUrl: null,
+    mfaEnabled: false,
+    mfaMethod: null,
+    phoneNumber: null,
+    phoneVerified: false,
+    status: 'active',
+    lastLoginAt: null,
+    createdAt: new Date('2026-01-01T00:00:00Z'),
+  };
+
+  function mockMe(passwordHash: string | null) {
+    vi.mocked(db.select).mockReturnValue(
+      selectChain([{ ...ME_ROW, passwordHash }]) as never,
+    );
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(db.select).mockReset();
+  });
+
+  it('reports hasPassword false for an SSO-provisioned user', async () => {
+    mockMe(null);
+    const res = await passwordRoutes.request('/me');
+    expect(res.status).toBe(200);
+    const body = await res.json() as { user: { hasPassword: boolean } };
+    expect(body.user.hasPassword).toBe(false);
+  });
+
+  it('reports hasPassword true for a password user and never leaks the hash', async () => {
+    mockMe('$argon2id$v=19$m=65536,t=3,p=4$abc');
+    const res = await passwordRoutes.request('/me');
+    expect(res.status).toBe(200);
+    const body = await res.json() as { user: Record<string, unknown> };
+    expect(body.user.hasPassword).toBe(true);
+    expect(body.user).not.toHaveProperty('passwordHash');
+    // The whole envelope, not just the user object: a future refactor that
+    // spreads the row at any level would land the hash somewhere in here.
+    expect(JSON.stringify(body)).not.toContain('argon2id');
+  });
+
+  it('404s when the user row is gone', async () => {
+    vi.mocked(db.select).mockReturnValue(selectChain([]) as never);
+    const res = await passwordRoutes.request('/me');
+    expect(res.status).toBe(404);
+  });
+});

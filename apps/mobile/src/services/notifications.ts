@@ -9,11 +9,13 @@ import { registerPushToken as apiRegisterPushToken } from './api';
 // Configure how notifications are handled when the app is in the foreground.
 // SDK 55: shouldShowAlert is deprecated; use shouldShowBanner + shouldShowList.
 Notifications.setNotificationHandler({
-  handleNotification: async () => ({
+  handleNotification: async (notification) => ({
     shouldShowBanner: true,
     shouldShowList: true,
     shouldPlaySound: true,
-    shouldSetBadge: true,
+    shouldSetBadge: shouldSetBadgeFor(
+      notification.request.content.data as Record<string, unknown> | undefined
+    ),
   }),
 });
 
@@ -102,6 +104,18 @@ export async function registerForPushNotifications(): Promise<PushRegistrationOu
         name: 'Approvals',
         importance: Notifications.AndroidImportance.MAX,
         vibrationPattern: [0, 200, 100, 200],
+        lightColor: '#1c8a9e',
+        sound: 'default',
+      });
+
+      // W10 (#4336). Inert on today's builds — Android push is not wired at all
+      // (see the projectId branch above) and the server skips FCM tokens for
+      // ticket pushes. Registered now so the channel exists the moment either
+      // side lands, rather than ticket pushes arriving on 'default'.
+      await Notifications.setNotificationChannelAsync('tickets', {
+        name: 'Tickets',
+        importance: Notifications.AndroidImportance.HIGH,
+        vibrationPattern: [0, 200],
         lightColor: '#1c8a9e',
         sound: 'default',
       });
@@ -285,6 +299,84 @@ export function parseApprovalNotification(
     return { approvalId: data.approvalId };
   }
   return null;
+}
+
+/**
+ * W10 (#4336). What a ticket push carries once it has been validated.
+ *
+ * Deliberately narrower than the wire payload: the server also sends
+ * `internalNumber` for the lock-screen body, which nothing on this side routes
+ * on. Keeping the parsed shape to the routing-relevant fields means a change to
+ * the presentation extras cannot break tap handling.
+ */
+export interface TicketPushData {
+  ticketId: string;
+  reason: 'assigned' | 'sla_breached';
+  target?: 'response' | 'resolution';
+}
+
+/**
+ * Pure parser over the notification `data` map.
+ *
+ * Wire contract: `buildTicketPush` in `apps/api/src/services/expoPush.ts`
+ * (shipped in the API half of W07, PR #4281) emits
+ * `{ type: 'ticket', ticketId, reason, target?, internalNumber? }`.
+ *
+ * An unrecognised `target` is dropped rather than rejecting the push: the
+ * target is a label, and refusing the whole notification would strand the
+ * technician on a breach the server already decided to tell them about. A bad
+ * `ticketId` or `reason` IS fatal — both feed navigation.
+ */
+export function parseTicketData(
+  data: Record<string, unknown> | null | undefined
+): TicketPushData | null {
+  if (!data || data.type !== 'ticket') return null;
+  if (typeof data.ticketId !== 'string' || data.ticketId.length === 0) return null;
+  if (data.reason !== 'assigned' && data.reason !== 'sla_breached') return null;
+  const parsed: TicketPushData = { ticketId: data.ticketId, reason: data.reason };
+  if (data.target === 'response' || data.target === 'resolution') parsed.target = data.target;
+  return parsed;
+}
+
+export function parseTicketNotification(
+  notification: Notifications.Notification | Notifications.NotificationResponse['notification']
+): TicketPushData | null {
+  return parseTicketData(notification.request.content.data as Record<string, unknown> | undefined);
+}
+
+/**
+ * Ticket pushes never touch the app badge.
+ *
+ * `reconcileApprovalNotifications` SETS the badge to the pending-approval
+ * count, so the badge means "approvals waiting on you" and nothing else. A
+ * ticket push that bumped it would read as a phantom approval until the next
+ * reconcile silently corrected it.
+ */
+export function shouldSetBadgeFor(data: Record<string, unknown> | null | undefined): boolean {
+  return !(data && data.type === 'ticket');
+}
+
+/** The server sends a date-only `YYYY-MM-DD`; the screen puts it straight into `?date=`. */
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * W06 (#3900). The daily "N unlogged sessions" push.
+ *
+ * W06 ships only this parser: the listener wiring, quiet hours and the
+ * notification category belong to W07.
+ *
+ * A payload with no usable date returns null rather than defaulting to today —
+ * routing to a screen for the wrong day silently shows the technician the wrong
+ * sessions to bill, which is worse than a tap that does nothing.
+ */
+export function parseTimeSuggestionsNotification(
+  notification: Notifications.Notification | Notifications.NotificationResponse['notification']
+): { date: string } | null {
+  const data = notification.request.content.data;
+  if (!data || data.type !== 'time_suggestions') return null;
+  const date = data.date;
+  if (typeof date !== 'string' || !ISO_DATE.test(date)) return null;
+  return { date };
 }
 
 /**

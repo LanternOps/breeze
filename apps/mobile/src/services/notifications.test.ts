@@ -40,6 +40,11 @@ import {
   reconcileApprovalNotifications,
   reconcilePushRegistration,
   staleApprovalNotificationIds,
+  parseApprovalNotification,
+  parseTicketData,
+  parseTicketNotification,
+  parseTimeSuggestionsNotification,
+  shouldSetBadgeFor,
 } from './notifications';
 import {
   notificationsRowCopy,
@@ -286,5 +291,149 @@ describe('reconcilePushRegistration (#3143)', () => {
     }
     expect(notif.getPermissionsAsync).not.toHaveBeenCalled();
     expect(api.registerPushToken).not.toHaveBeenCalled();
+  });
+});
+
+
+// ── W06 (#3900): the time-suggestions push parser ──────────────────────────
+// W06 ships ONLY the parser. W07 owns the listener wiring, quiet hours and the
+// preference category.
+function pushWith(data: Record<string, unknown>) {
+  return { request: { identifier: 'n1', content: { data } } } as never;
+}
+
+describe('parseTimeSuggestionsNotification (#3900)', () => {
+  it('accepts the W06 payload shape', () => {
+    expect(parseTimeSuggestionsNotification(pushWith({ type: 'time_suggestions', date: '2026-08-29' })))
+      .toEqual({ date: '2026-08-29' });
+  });
+
+  it('ignores approval and alert pushes', () => {
+    expect(parseTimeSuggestionsNotification(pushWith({ type: 'approval', approvalId: 'a1' }))).toBeNull();
+    expect(parseTimeSuggestionsNotification(pushWith({ alertId: 'x', eventType: 'alert.triggered' }))).toBeNull();
+    expect(parseTimeSuggestionsNotification(pushWith({ type: 'ticket', ticketId: 't1' }))).toBeNull();
+  });
+
+  it('ignores a payload without a date — routing to an undated screen is worse than not routing', () => {
+    expect(parseTimeSuggestionsNotification(pushWith({ type: 'time_suggestions' }))).toBeNull();
+    expect(parseTimeSuggestionsNotification(pushWith({ type: 'time_suggestions', date: 42 }))).toBeNull();
+  });
+
+  it('rejects a date that is not YYYY-MM-DD', () => {
+    // The screen puts this straight into `?date=`, which the server 400s on a
+    // bad shape — better to drop the tap than to open a screen that errors.
+    expect(parseTimeSuggestionsNotification(pushWith({ type: 'time_suggestions', date: '29/08/2026' }))).toBeNull();
+  });
+
+  it('tolerates a missing data bag', () => {
+    expect(parseTimeSuggestionsNotification({ request: { identifier: 'n1', content: {} } } as never)).toBeNull();
+  });
+
+  it('parseApprovalNotification still works on the approval payload (no regression)', () => {
+    expect(parseApprovalNotification(pushWith({ type: 'approval', approvalId: 'a1' }))).toEqual({ approvalId: 'a1' });
+    expect(parseApprovalNotification(pushWith({ type: 'time_suggestions', date: '2026-08-29' }))).toBeNull();
+  });
+});
+
+// ── W10 (#4336): the ticket push parser ────────────────────────────────────
+// Wire contract is `buildTicketPush` in apps/api/src/services/expoPush.ts,
+// shipped in the API half (PR #4281): `{ type: 'ticket', ticketId, reason,
+// target?, internalNumber? }`.
+describe('parseTicketData (#4336)', () => {
+  it('parses assigned and sla_breached payloads', () => {
+    expect(parseTicketData({ type: 'ticket', ticketId: 't-1', reason: 'assigned' })).toEqual({
+      ticketId: 't-1',
+      reason: 'assigned',
+    });
+    expect(
+      parseTicketData({ type: 'ticket', ticketId: 't-1', reason: 'sla_breached', target: 'response' })
+    ).toEqual({ ticketId: 't-1', reason: 'sla_breached', target: 'response' });
+    expect(
+      parseTicketData({ type: 'ticket', ticketId: 't-1', reason: 'sla_breached', target: 'resolution' })
+    ).toEqual({ ticketId: 't-1', reason: 'sla_breached', target: 'resolution' });
+  });
+
+  it('ignores the server-side presentation extras it does not route on', () => {
+    // buildTicketPush also ships `internalNumber` for the lock-screen body.
+    // Routing must not depend on it, and its presence must not defeat the parse.
+    expect(
+      parseTicketData({ type: 'ticket', ticketId: 't-1', reason: 'assigned', internalNumber: 'T-42' })
+    ).toEqual({ ticketId: 't-1', reason: 'assigned' });
+  });
+
+  it('returns null for malformed or non-ticket data', () => {
+    expect(parseTicketData(null)).toBeNull();
+    expect(parseTicketData(undefined)).toBeNull();
+    expect(parseTicketData({ type: 'approval', approvalId: 'a' })).toBeNull();
+    expect(parseTicketData({ alertId: 'x', eventType: 'alert.triggered' })).toBeNull();
+    expect(parseTicketData({ type: 'ticket' })).toBeNull();
+    expect(parseTicketData({ type: 'ticket', ticketId: '', reason: 'assigned' })).toBeNull();
+    expect(parseTicketData({ type: 'ticket', ticketId: 42, reason: 'assigned' })).toBeNull();
+    expect(parseTicketData({ type: 'ticket', ticketId: 't-1', reason: 'bogus' })).toBeNull();
+  });
+
+  it('drops an unknown target but keeps the notification', () => {
+    // A target the phone does not understand is cosmetic; dropping the whole
+    // push would strand the technician on a breach they were told about.
+    expect(
+      parseTicketData({ type: 'ticket', ticketId: 't-1', reason: 'sla_breached', target: 'x' })
+    ).toEqual({ ticketId: 't-1', reason: 'sla_breached' });
+  });
+
+  it('parseTicketNotification reads the data bag off a notification', () => {
+    expect(parseTicketNotification(pushWith({ type: 'ticket', ticketId: 't-9', reason: 'assigned' }))).toEqual(
+      { ticketId: 't-9', reason: 'assigned' }
+    );
+    expect(parseTicketNotification({ request: { identifier: 'n1', content: {} } } as never)).toBeNull();
+  });
+
+  it('the other parsers still reject ticket payloads (no cross-talk)', () => {
+    expect(parseApprovalNotification(pushWith({ type: 'ticket', ticketId: 't-1', reason: 'assigned' }))).toBeNull();
+    expect(
+      parseTimeSuggestionsNotification(pushWith({ type: 'ticket', ticketId: 't-1', reason: 'assigned' }))
+    ).toBeNull();
+  });
+});
+
+describe('shouldSetBadgeFor (#4336)', () => {
+  it('is false for ticket pushes and true otherwise (badge stays owned by approvals)', () => {
+    // reconcileApprovalNotifications SETS the badge to the pending-approval
+    // count. A ticket push that incremented it would be overwritten on the next
+    // reconcile anyway — but until then it reads as a phantom approval.
+    expect(shouldSetBadgeFor({ type: 'ticket', ticketId: 't-1', reason: 'assigned' })).toBe(false);
+    expect(shouldSetBadgeFor({ type: 'approval', approvalId: 'a' })).toBe(true);
+    expect(shouldSetBadgeFor({ alertId: 'x', eventType: 'alert.triggered' })).toBe(true);
+    expect(shouldSetBadgeFor(undefined)).toBe(true);
+    expect(shouldSetBadgeFor(null)).toBe(true);
+  });
+
+  it('the registered foreground handler actually consults it', async () => {
+    // Asserting the pure function alone would stay green if the handler kept
+    // its hard-coded `shouldSetBadge: true`.
+    const config = notif.setNotificationHandler.mock.calls[0]?.[0] as {
+      handleNotification: (n: unknown) => Promise<{ shouldSetBadge: boolean }>;
+    };
+    expect(config).toBeDefined();
+
+    await expect(
+      config.handleNotification(pushWith({ type: 'ticket', ticketId: 't-1', reason: 'assigned' }))
+    ).resolves.toMatchObject({ shouldSetBadge: false, shouldShowBanner: true });
+    await expect(
+      config.handleNotification(pushWith({ type: 'approval', approvalId: 'a' }))
+    ).resolves.toMatchObject({ shouldSetBadge: true });
+  });
+});
+
+describe('the tickets Android channel (#4336)', () => {
+  it('is registered alongside alerts and approvals', async () => {
+    platform.OS = 'android';
+    constants.expoConfig = { extra: { eas: { projectId: 'proj-1' } } };
+
+    await registerForPushNotifications();
+
+    expect(notif.setNotificationChannelAsync).toHaveBeenCalledWith(
+      'tickets',
+      expect.objectContaining({ name: 'Tickets' })
+    );
   });
 });

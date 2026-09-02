@@ -11,9 +11,19 @@
  * The companion `resolvePendingAgentCommand` is called from the agentWs
  * processCommandResult dispatcher whenever a command_result message arrives,
  * so any in-flight awaited command resolves automatically.
+ *
+ * This module is API-ROLE-AFFINE BY DESIGN (wave 3.5b, #4084): `pending` is an
+ * in-process correlation map keyed by command id, resolved only by a
+ * command_result arriving on THIS process's WebSocket. There is no
+ * cross-process equivalent — a worker-role process could enqueue a relay send
+ * via dispatchCommandToAgent, but it could never observe the result, so this
+ * helper is never given a cross-process path. Its callers never leave the api
+ * role (see the plan's Global Constraints — "no cross-process
+ * agentCommandAwait" is a deliberate scope cut, not an oversight).
  */
 
 import { sendCommandToAgent } from '../routes/agentWs';
+import { breezeRole } from '../config/env';
 
 export type AgentCommandAwaitResult = {
   status: string;
@@ -44,6 +54,17 @@ export function sendCommandToAgentAwaitResult(
   command: { id: string; type: string; payload: Record<string, unknown> },
   timeoutMs: number,
 ): Promise<AgentCommandAwaitResult> {
+  // Wave 3.5b (#4084): fail LOUDLY in the worker role rather than resolving
+  // {status:'failed', error:'agent offline'} for every call — that would be
+  // indistinguishable from a real offline agent and would hide the actual
+  // bug (this helper called from a process with no sockets and no way to
+  // ever see the result).
+  if (breezeRole() === 'worker') {
+    throw new Error(
+      '[BREEZE_ROLE] sendCommandToAgentAwaitResult is socket-local and api-role-affine '
+      + '(its correlation map cannot resolve cross-process) — it cannot run in the worker role',
+    );
+  }
   const sent = sendCommandToAgent(agentId, command);
   if (!sent) {
     return Promise.resolve({ status: 'failed', error: 'agent offline' });

@@ -32,6 +32,7 @@ import { envInt } from '../utils/envInt';
 
 import { terminalPayloadErasureSet } from '../services/sensitiveCommandPayload';
 import { attachWorkerObservability } from './workerObservability';
+import { applyAutomationActionTerminal } from '../services/automationActionResults';
 const QUEUE_NAME = 'stale-command-reaper';
 const REAP_INTERVAL_MS = 2 * 60 * 1000; // every 2 minutes
 // Per-run cap (env-tunable). Was a hardcoded 200 which silently truncated the
@@ -331,6 +332,13 @@ export async function reapStaleDeviceCommands(): Promise<number> {
     if (updated.length === 0) continue;
 
     reaped++;
+    await applyAutomationActionTerminal({
+      source: 'reaper',
+      commandId: updated[0]!.id,
+      terminalStatus: 'timed_out',
+      error: errorMsg,
+      completedAt,
+    });
     if (BACKUP_COMMAND_TYPES.has(cmd.type)) {
       recordBackupCommandTimeout(cmd.type, 'reaper');
     }
@@ -457,11 +465,12 @@ export async function reapStaleScriptExecutions(): Promise<number> {
       ? 'Agent result was delivered but never recorded on this execution; recovered from the device command (#3097)'
       : 'Server-side timeout: no response from agent';
 
+    const scriptCompletedAt = new Date();
     const updated = await db
       .update(scriptExecutions)
       .set({
         status: reapedStatus,
-        completedAt: new Date(),
+        completedAt: scriptCompletedAt,
         errorMessage: reapedError,
       })
       .where(
@@ -474,6 +483,18 @@ export async function reapStaleScriptExecutions(): Promise<number> {
 
     if (updated.length === 0) continue;
     reaped++;
+
+    await applyAutomationActionTerminal({
+      source: 'reaper',
+      scriptExecutionId: updated[0]!.id,
+      terminalStatus: reapedStatus === 'completed'
+        ? 'succeeded'
+        : reapedStatus === 'failed'
+          ? 'failed'
+          : 'timed_out',
+      error: reapedError,
+      completedAt: scriptCompletedAt,
+    });
 
     // Batch attribution reuses the row fetched above (same query, one round-trip).
     const batchId = (cmd?.payload as Record<string, unknown>)?.batchId as string | undefined;
@@ -788,6 +809,14 @@ export async function reapStaleSoftwareDeploymentResults(): Promise<number> {
 
     if (updated.length === 0) continue;
     reaped++;
+
+    await applyAutomationActionTerminal({
+      source: 'reaper',
+      deploymentResultId: updated[0]!.id,
+      terminalStatus: 'timed_out',
+      error: errorMessage,
+      completedAt,
+    });
 
     // Tier 2: cancel the still-queued device_commands row so the install
     // can't fire when the device eventually reconnects. Guarded on

@@ -35,6 +35,8 @@
 import { and, eq, ilike, inArray, isNull, ne, type SQL } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { organizations, partners, sites } from '../db/schema';
+// Concrete module, not the barrel — see the note in routes/orgs.ts.
+import { ORG_SLUG_UNIQUE_INDEX } from '../db/schema/orgs';
 import { escapeLike } from '../utils/sql';
 import { isPgUniqueViolation } from '../utils/pgErrors';
 import type { AuthContext } from '../middleware/auth';
@@ -303,7 +305,7 @@ async function handleCreateOrg(
   try {
     created = await createOrgWithDefaultSite();
   } catch (error) {
-    if (isPgUniqueViolation(error, 'organizations_partner_slug_uniq')) {
+    if (isPgUniqueViolation(error, ORG_SLUG_UNIQUE_INDEX)) {
       return jsonError(
         'That organization slug was claimed by another request while this one was running. Retry create_org.',
         'ORG_SLUG_CONFLICT'

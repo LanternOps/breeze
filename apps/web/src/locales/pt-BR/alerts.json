@@ -181,6 +181,7 @@
     "title": "Título",
     "severity": "Gravidade",
     "status": "Status",
+    "aiVerdict": "Veredito da IA",
     "triggered": "Disparado",
     "actions": "Ações",
     "noAlertsMatchYourFilters": "Nenhum alerta corresponde aos filtros.",
@@ -520,6 +521,24 @@
     "deleteConfirm": "Excluir o modelo \"{{name}}\"? Esta ação não pode ser desfeita.",
     "deleteFailed": "Não foi possível excluir o modelo.",
     "deleted": "Modelo excluído"
+  },
+  "alertVerdict": {
+    "label": {
+      "actionable": "Requer ação",
+      "transient_self_healed": "Autorresolvido",
+      "recurring_pattern": "Padrão recorrente",
+      "duplicate_of_group": "Duplicado",
+      "needs_human": "Requer revisão humana"
+    },
+    "confidence": "{{pct}}% de confiança",
+    "feedbackUp": "Este veredito foi útil",
+    "feedbackDown": "Este veredito não foi útil",
+    "feedbackThanks": "Obrigado pelo seu feedback",
+    "feedbackTaken": "Alguém já deixou feedback neste veredito",
+    "feedbackFailed": "Não foi possível registrar o feedback",
+    "hideNoise": "Ocultar ruído sinalizado pela IA",
+    "suggestionPending": "A IA sugeriu uma ação — revise em Aprovações",
+    "none": "Ainda não há veredito da IA"
   },
   "alertsPage": {
     "loadingAlerts": "Carregando alertas...",

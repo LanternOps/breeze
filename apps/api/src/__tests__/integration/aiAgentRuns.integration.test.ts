@@ -1,6 +1,7 @@
 import './setup';
 import { afterEach, describe, expect, it } from 'vitest';
-import { inArray } from 'drizzle-orm';
+import { inArray, sql } from 'drizzle-orm';
+import { AI_AGENT_TRIGGER_KINDS } from '@breeze/shared';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
 import { aiAgentRuns, aiAgents } from '../../db/schema';
 import { createOrganization, createPartner, createUser } from './db-utils';
@@ -189,5 +190,59 @@ describe('ai_agent_runs — org isolation, dedupe scope, immutability', () => {
         ),
       '23000',
     );
+  });
+});
+
+// Contract test for the CHECK constraint that gates `ai_agent_runs.trigger_kind`.
+// `ai_agent_runs_trigger_kind_chk` was created inside an `IF NOT EXISTS` guard
+// in the shipped 2026-09-02-ai-agents.sql migration, so an existing database
+// never automatically picks up a new trigger kind added later — the 'anomaly'
+// kind (wave 6 PR 4, #3828) was added to AI_AGENT_TRIGGER_KINDS in shared
+// without the migration DROP/ADD that re-syncs the DB-side CHECK, so an insert
+// with trigger_kind='anomaly' failed 23514 in the field. This test reads the
+// live constraint definition back out of pg_constraint and asserts its value
+// set is EXACTLY AI_AGENT_TRIGGER_KINDS (both directions), so the next new
+// trigger kind cannot repeat this — a source-scan unit test would not catch a
+// migration that forgets to touch the DB-side constraint at all.
+describe('ai_agent_runs_trigger_kind_chk — DB constraint matches AI_AGENT_TRIGGER_KINDS', () => {
+  it('the constraint value set equals AI_AGENT_TRIGGER_KINDS exactly', async () => {
+    const rows = (await db.execute(sql`
+      SELECT pg_get_constraintdef(oid) AS def
+      FROM pg_constraint
+      WHERE conrelid = 'ai_agent_runs'::regclass
+        AND conname = 'ai_agent_runs_trigger_kind_chk';
+    `)) as unknown as Array<{ def: string }>;
+
+    expect(rows).toHaveLength(1);
+    const def = rows[0]?.def ?? '';
+    // e.g. CHECK (trigger_kind = ANY (ARRAY['alert'::text, 'manual'::text, ...]))
+    const matches = [...def.matchAll(/'([^']+)'::text/g)].map((m) => m[1]!);
+    expect(matches.length).toBeGreaterThan(0);
+    const constraintKinds = new Set(matches);
+    const sharedKinds = new Set<string>(AI_AGENT_TRIGGER_KINDS);
+
+    // Both directions: nothing in the DB constraint that shared doesn't know
+    // about, and nothing in shared that the DB constraint doesn't allow.
+    for (const kind of constraintKinds) {
+      expect(sharedKinds.has(kind), `DB constraint allows '${kind}' but AI_AGENT_TRIGGER_KINDS does not`).toBe(true);
+    }
+    for (const kind of sharedKinds) {
+      expect(constraintKinds.has(kind), `AI_AGENT_TRIGGER_KINDS has '${kind}' but the DB constraint rejects it`).toBe(
+        true,
+      );
+    }
+  });
+
+  it('accepts an insert with trigger_kind=anomaly (regression for #3828 blocker 1)', async () => {
+    const t = await orgWithAgent();
+    const ctx = orgContext(t.org.id, t.partner.id);
+    const [row] = await withDbAccessContext(ctx, () =>
+      db
+        .insert(aiAgentRuns)
+        .values({ ...runValues(t.agent.id, t.org.id, 'anomaly-chk-1'), triggerKind: 'anomaly' })
+        .returning(),
+    );
+    expect(row!.triggerKind).toBe('anomaly');
+    createdRuns.push(row!.id);
   });
 });

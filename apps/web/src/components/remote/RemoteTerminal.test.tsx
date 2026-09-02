@@ -31,6 +31,20 @@ const resetTerminalHandlers = () => {
   terminalHandlers.disposeCalls = 0;
 };
 
+// Lifecycle counters for the xterm `Terminal` class itself (construction /
+// `.dispose()`), separate from `terminalHandlers` above which only tracks the
+// onData/onResize listener disposables. Plain counters (not vi.fn) so the
+// suite's clearMocks/restoreMocks can't wipe them between tests.
+const terminalLifecycle = {
+  constructCount: 0,
+  disposeCallCount: 0,
+};
+
+const resetTerminalLifecycle = () => {
+  terminalLifecycle.constructCount = 0;
+  terminalLifecycle.disposeCallCount = 0;
+};
+
 const makeTerminalStub = () => ({
   loadAddon() {},
   open() {},
@@ -54,7 +68,9 @@ const makeTerminalStub = () => ({
       },
     };
   },
-  dispose() {},
+  dispose() {
+    terminalLifecycle.disposeCallCount += 1;
+  },
   focus() {},
   clear() {},
   rows: 24,
@@ -63,6 +79,7 @@ const makeTerminalStub = () => ({
 
 vi.mock('@xterm/xterm', () => ({
   Terminal: function () {
+    terminalLifecycle.constructCount += 1;
     return makeTerminalStub();
   },
 }));
@@ -187,6 +204,7 @@ beforeEach(() => {
   MockWebSocket.instances = [];
   MockWebSocket.autoOpen = true;
   resetTerminalHandlers();
+  resetTerminalLifecycle();
   vi.stubGlobal('WebSocket', MockWebSocket);
   vi.stubGlobal(
     'ResizeObserver',
@@ -515,5 +533,52 @@ describe('RemoteTerminal keepalive & silent-death watchdog (#2871)', () => {
     expect(MockWebSocket.instances).toHaveLength(2);
     expect(sessionPostCount()).toBe(2);
     expect(ticketPostCount()).toBe(2);
+  });
+});
+
+// The real device hostname resolves ~100-300ms after mount, once the parent
+// page's device fetch completes; until then the page passes a placeholder
+// (e.g. "Loading device..."). A prop update carrying only the hostname must
+// never re-run terminal initialization or disturb an in-flight/established
+// connection (issue #4152, half of #4090).
+describe('RemoteTerminal hostname prop lifecycle (#4152)', () => {
+  it('does not construct a second terminal or dispose the existing one when deviceHostname changes after mount', async () => {
+    const { rerender } = render(
+      <RemoteTerminal deviceId="device-1" deviceHostname="Loading device..." />,
+    );
+
+    // Let the initial (real-hostname-unaware) init fully complete: xterm
+    // constructed, terminalReady flipped, auto-connect fired. This is the
+    // steady state the placeholder-hostname page sits in for ~100-300ms
+    // before the real hostname resolves.
+    await waitFor(() => expect(MockWebSocket.instances).toHaveLength(1), { timeout: 2000 });
+    expect(terminalLifecycle.constructCount).toBe(1);
+
+    // The device fetch resolves and the parent re-renders with the real
+    // hostname — this must not re-run terminal initialization.
+    rerender(<RemoteTerminal deviceId="device-1" deviceHostname="workstation-42" />);
+    await act(async () => {});
+
+    expect(terminalLifecycle.constructCount).toBe(1);
+    expect(terminalLifecycle.disposeCallCount).toBe(0);
+  });
+
+  it('does not drop an active connection when deviceHostname flips after connect', async () => {
+    const { rerender } = render(
+      <RemoteTerminal deviceId="device-1" deviceHostname="Loading device..." />,
+    );
+
+    await waitFor(() => expect(MockWebSocket.instances).toHaveLength(1), { timeout: 2000 });
+    fireConnected(MockWebSocket.instances[0]!);
+    expect(await screen.findByRole('button', { name: /disconnect/i })).toBeInTheDocument();
+
+    rerender(<RemoteTerminal deviceId="device-1" deviceHostname="workstation-42" />);
+    await act(async () => {});
+
+    // The session must still read as connected — not silently torn down and
+    // reset to 'disconnected' just because the hostname prop resolved.
+    expect(await screen.findByRole('button', { name: /disconnect/i })).toBeInTheDocument();
+    expect(screen.queryByTestId('terminal-disconnect-overlay')).not.toBeInTheDocument();
+    expect(MockWebSocket.instances).toHaveLength(1);
   });
 });

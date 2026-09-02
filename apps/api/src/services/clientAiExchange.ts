@@ -273,3 +273,46 @@ export async function resolveAndMintClientSession(
     },
   };
 }
+
+/**
+ * Drop every live client-AI (Excel/Word/Outlook add-in) session belonging to a
+ * set of portal users. Used by the org-merge fence (`services/orgMerge.ts`) so
+ * add-in principals stop writing under an org the moment it is fenced.
+ *
+ * `/client-ai` is a SECOND portal_users ingress with its own Redis namespace,
+ * so the portal purge does not reach it: an add-in user would keep inserting
+ * `ai_messages` and updating `ai_sessions` under the loser org through the
+ * drain and into Phase B, where those rows are stranded by the re-tenant and
+ * then destroyed by the erasure that follows.
+ *
+ * Lives here, next to `resolveAndMintClientSession` (which is what `sadd`s each
+ * token into the `userSessions` index above), so the purge and the mint can
+ * never disagree about the key layout.
+ *
+ * Best-effort by design — the durable control is the org-status gate in
+ * `clientAiAuthMiddleware`, which rejects any session surviving this purge on
+ * its very next request.
+ */
+export async function purgeClientAiSessionsForUsers(
+  redis: Redis,
+  portalUserIds: string[]
+): Promise<number> {
+  let purged = 0;
+  for (const portalUserId of new Set(portalUserIds)) {
+    try {
+      const indexKey = CLIENT_AI_REDIS_KEYS.userSessions(portalUserId);
+      const tokens = await redis.smembers(indexKey);
+      if (tokens.length > 0) {
+        await redis.del(...tokens.map((t) => CLIENT_AI_REDIS_KEYS.session(t)));
+        purged += tokens.length;
+      }
+      await redis.del(indexKey);
+    } catch (err) {
+      console.error('[client-ai] Failed to purge sessions for portal user:', {
+        portalUserId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+  return purged;
+}

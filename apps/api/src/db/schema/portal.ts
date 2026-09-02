@@ -66,6 +66,13 @@ export const portalUsers = pgTable('portal_users', {
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 });
 
+// P2-4 (#4191): tickets also gains a composite-FK target unique index,
+// `tickets_id_org_uq` on (id, org_id) — a plain `CREATE UNIQUE INDEX` in
+// 2026-09-25-ai-agents-ticket-triage.sql, not modeled here as a Drizzle
+// table-option (same "SQL migration only" convention as this table's own
+// categoryId/statusId FKs above — see their inline comments). It backs
+// ticket_drafts.ticketId and action_intents.scopeTicketId's composite FKs
+// (ticketDrafts.ts, actionIntents.ts).
 export const tickets = pgTable('tickets', {
   id: uuid('id').primaryKey().defaultRandom(),
   orgId: uuid('org_id').notNull().references(() => organizations.id),
@@ -112,7 +119,17 @@ export const tickets = pgTable('tickets', {
   deletedAt: timestamp('deleted_at'),
   deletedBy: uuid('deleted_by').references(() => users.id),
   createdAt: timestamp('created_at').defaultNow().notNull(),
-  updatedAt: timestamp('updated_at').defaultNow().notNull()
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  // P2-4 (#4191): per-field authorship map for AI-assisted edits — keys are
+  // ticket column names (e.g. 'subject', 'category'), values are the
+  // principal kind that last set that field. NOT NULL DEFAULT {} so every
+  // pre-existing row backfills to "nobody has attributed this field yet"
+  // rather than NULL. jsonb -> excludedOpen in the export policy regardless
+  // of contents (CLAUDE.md: any json/jsonb/bytea column is excludedOpen).
+  fieldProvenance: jsonb('field_provenance')
+    .$type<Record<string, 'user' | 'ai_agent' | 'system'>>()
+    .notNull()
+    .default({})
 });
 
 export const ticketComments = pgTable('ticket_comments', {
@@ -130,7 +147,38 @@ export const ticketComments = pgTable('ticket_comments', {
   newValue: text('new_value'),
   deletedAt: timestamp('deleted_at'),
   editedAt: timestamp('edited_at'),
-  createdAt: timestamp('created_at').defaultNow().notNull()
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  // Wave 6 PR 3 (#3828) — origin-based loop guard for the ticket-shadow
+  // helpdesk subscriber (design authority: never 'source'-string matching).
+  //
+  // Deliberate deviation from action_intents.origin_principal_kind's
+  // fail-closed 'unknown' default: every ticket_comments row that predates
+  // this column IS human/user-authored (no agent write path into this table
+  // exists before this PR — Task 3's shadow gating denies manage_tickets
+  // mutations for ticket runs, and the deferred autonomous-note lane is not
+  // built), so DEFAULT 'user' is correct here. The admitted vocabulary itself
+  // is shared with action_intents' CHECK, not private: 'ai_agent' (never bare
+  // 'agent' — that literal means the opposite principal on action_intents),
+  // plus 'system'/'unknown' for future fail-closed writers. The loop guard
+  // (ticketHelpdeskSubscriber, Task 3) treats anything NOT 'user' as suspect
+  // and skips admission — see the migration header for the full rationale.
+  originPrincipalKind: text('origin_principal_kind').notNull().default('user'),
+  // Loop-guard link to the agent run that authored this comment (Task 3
+  // reads it; nothing writes it yet — the autonomous-note lane is deferred).
+  // Deliberately NOT `.references(() => aiAgentRuns.id, ...)` here: aiAgents.ts
+  // already imports `tickets` from this file (for ai_agent_runs.ticket_id),
+  // so a reverse import would be a circular module dependency. The actual FK
+  // (ON DELETE SET NULL) is declared in the SQL migration only — same
+  // established pattern as this table's own categoryId/statusId columns
+  // above, for the identical reason.
+  //
+  // P2-4 (#4191, 2026-09-25-ai-agents-ticket-triage.sql): also carries a
+  // partial unique index, `ticket_comments_one_ai_note_per_run_uq` ON
+  // ticket_comments (agent_run_id) WHERE agent_run_id IS NOT NULL AND
+  // origin_principal_kind = 'ai_agent' — at most one AI-authored comment per
+  // run. Not modeled in Drizzle for the same "partial index" reason as
+  // ticketDrafts.ts's ticket_drafts_active_uq.
+  agentRunId: uuid('agent_run_id')
 });
 
 export const assetCheckouts = pgTable('asset_checkouts', {

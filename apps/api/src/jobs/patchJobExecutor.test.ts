@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const shared = vi.hoisted(() => ({
   getJobMock: vi.fn(),
@@ -105,6 +105,7 @@ import {
 } from './patchJobExecutor';
 import { resolveApprovedPatchesForDevice } from '../services/patchApprovalEvaluator';
 import { queueCommandForExecution } from '../services/commandQueue';
+import { evaluateRebootPolicy, executeReboot } from '../services/patchRebootHandler';
 
 function createSelectChain(rows: any[] = []) {
   const chain: any = {};
@@ -1217,5 +1218,424 @@ describe('parseJobCategoryList (#2117 category filter fail-closed parse)', () =>
   it('returns null when an array carries a non-string entry', () => {
     expect(parseJobCategoryList(['driver', 42])).toBeNull();
     expect(parseJobCategoryList([{ category: 'driver' }])).toBeNull();
+  });
+});
+
+// ============================================================================
+// #4228 — post-patch reboot policy on a partially failed job
+// ============================================================================
+
+type AgentPatchEntry = {
+  id: string;
+  externalId: string;
+  status: 'installed' | 'failed' | 'rolled_back';
+  rebootRequired?: boolean;
+  error?: string;
+};
+
+/**
+ * Builds the command row exactly as a Windows agent produces it.
+ *
+ * The shape is load-bearing for #4228: `executePatchInstallCommand`
+ * (agent/internal/heartbeat/heartbeat.go) returns `Status: "failed"` /
+ * `ExitCode: 1` the moment ONE patch fails, while still emitting the full
+ * install summary on stdout — so `rebootRequired: true` and
+ * `installedCount > 0` arrive on a command the server reads as failed. Anything
+ * keyed off overall success therefore misses the reboot the successful installs
+ * need.
+ */
+function agentCommandRow(summary: {
+  success: boolean;
+  installedCount: number;
+  failedCount: number;
+  rebootRequired: boolean;
+  results: AgentPatchEntry[];
+}) {
+  return {
+    status: summary.failedCount > 0 ? 'failed' : 'completed',
+    result: {
+      stdout: JSON.stringify(summary),
+      exitCode: summary.failedCount > 0 ? 1 : 0,
+      error: summary.failedCount > 0 ? `${summary.failedCount} patch operations failed` : undefined,
+    },
+  };
+}
+
+/**
+ * Drives the real per-device worker processor end to end (prepare → poll →
+ * record) so the reboot decision is exercised through the shipped code path
+ * rather than a hand-called internal.
+ */
+async function runDeviceExecution(opts: {
+  approvedPatches: Array<{ patchId: string; externalId: string; requiresReboot: boolean }>;
+  rebootPolicy?: string;
+  command: { status: string; result: unknown } | null;
+}) {
+  const { approvedPatches, rebootPolicy = 'if_required', command } = opts;
+
+  vi.mocked(db.select)
+    // 1. patch job row
+    .mockImplementationOnce(() => createSelectChain([{
+      id: 'job-1',
+      orgId: 'org-1',
+      status: 'running',
+      patches: { ringId: null, autoApprove: {} },
+      targets: { deviceIds: ['device-1'], deployment: { rebootPolicy } },
+    }]) as any)
+    // 2. device-in-org check
+    .mockImplementationOnce(() => createSelectChain([{ id: 'device-1' }]) as any)
+    // 3. patch records for the install command (terminal .where(), no .limit())
+    .mockImplementationOnce(() => createWhereSelectChain(
+      approvedPatches.map((p) => ({
+        id: p.patchId,
+        source: 'windows_update',
+        externalId: p.externalId,
+        title: p.externalId,
+      })),
+    ) as any)
+    // 4. completion poll on device_commands
+    .mockImplementationOnce(() => createSelectChain(command ? [command] : []) as any)
+    // 5. checkAndFinalizeJob — no row, so it returns early
+    .mockImplementationOnce(() => createSelectChain([]) as any);
+
+  vi.mocked(db.insert).mockImplementation(() => ({
+    values: vi.fn(() => Promise.resolve()),
+  }) as any);
+  vi.mocked(db.update).mockImplementation(() => ({
+    set: vi.fn(() => ({ where: vi.fn(() => Promise.resolve()) })),
+  }) as any);
+
+  vi.mocked(resolveApprovedPatchesForDevice).mockResolvedValueOnce(approvedPatches as any);
+  vi.mocked(queueCommandForExecution).mockResolvedValueOnce({ command: { id: 'cmd-1' } } as any);
+
+  createPatchJobDeviceWorker();
+  const running = shared.processorRefs['patch-job-devices']({
+    data: {
+      type: 'execute-patch-job-device',
+      patchJobId: 'job-1',
+      deviceId: 'device-1',
+      orgId: 'org-1',
+    },
+  });
+  // pollForPatchCommandResult sleeps 5s before its first read of device_commands.
+  await vi.advanceTimersByTimeAsync(5_000);
+  return running;
+}
+
+const TWO_PATCHES = [
+  { patchId: 'patch-1', externalId: 'KB5000001', requiresReboot: true },
+  { patchId: 'patch-2', externalId: 'KB5000002', requiresReboot: false },
+];
+
+describe('post-patch reboot policy is independent of overall job success (#4228)', () => {
+  let logSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.useFakeTimers();
+    shared.processorRef = undefined;
+    shared.processorRefs = {};
+    logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(executeReboot).mockResolvedValue({ success: true, delayMinutes: 15 });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it('dispatches the reboot when one patch fails but an installed patch requires one', async () => {
+    vi.mocked(evaluateRebootPolicy).mockResolvedValue({
+      shouldReboot: true,
+      reason: 'Installed patch requires reboot',
+      deferred: false,
+    });
+
+    await runDeviceExecution({
+      approvedPatches: TWO_PATCHES,
+      rebootPolicy: 'if_required',
+      command: agentCommandRow({
+        success: false,
+        installedCount: 1,
+        failedCount: 1,
+        rebootRequired: true,
+        results: [
+          { id: 'patch-1', externalId: 'KB5000001', status: 'installed', rebootRequired: true },
+          { id: 'patch-2', externalId: 'KB5000002', status: 'failed', error: '0x80070005' },
+        ],
+      }),
+    });
+
+    // The reboot requirement the agent reported must reach the policy even
+    // though the job's aggregate status is "failed".
+    expect(evaluateRebootPolicy).toHaveBeenCalledWith('device-1', 'if_required', true);
+    expect(executeReboot).toHaveBeenCalledWith(
+      'device-1',
+      'Installed patch requires reboot',
+      { expectedOrgId: 'org-1' },
+    );
+  });
+
+  it('records that the dispatched reboot followed a partially failed job', async () => {
+    vi.mocked(evaluateRebootPolicy).mockResolvedValue({
+      shouldReboot: true,
+      reason: 'Installed patch requires reboot',
+      deferred: false,
+    });
+
+    await runDeviceExecution({
+      approvedPatches: TWO_PATCHES,
+      command: agentCommandRow({
+        success: false,
+        installedCount: 1,
+        failedCount: 1,
+        rebootRequired: true,
+        results: [
+          { id: 'patch-1', externalId: 'KB5000001', status: 'installed', rebootRequired: true },
+          { id: 'patch-2', externalId: 'KB5000002', status: 'failed', error: '0x80070005' },
+        ],
+      }),
+    });
+
+    const logged = logSpy.mock.calls.map((args: unknown[]) => args.join(' ')).join('\n');
+    expect(logged).toContain('device-1');
+    expect(logged).toContain('scheduled reboot');
+    expect(logged).toMatch(/partial/i);
+  });
+
+  it('records why the reboot was skipped when the policy declines it', async () => {
+    vi.mocked(evaluateRebootPolicy).mockResolvedValue({
+      shouldReboot: false,
+      reason: 'Reboot policy is never',
+      deferred: false,
+    });
+
+    await runDeviceExecution({
+      approvedPatches: TWO_PATCHES,
+      rebootPolicy: 'never',
+      command: agentCommandRow({
+        success: false,
+        installedCount: 1,
+        failedCount: 1,
+        rebootRequired: true,
+        results: [
+          { id: 'patch-1', externalId: 'KB5000001', status: 'installed', rebootRequired: true },
+          { id: 'patch-2', externalId: 'KB5000002', status: 'failed', error: '0x80070005' },
+        ],
+      }),
+    });
+
+    expect(evaluateRebootPolicy).toHaveBeenCalledWith('device-1', 'never', true);
+    expect(executeReboot).not.toHaveBeenCalled();
+    const logged = logSpy.mock.calls.map((args: unknown[]) => args.join(' ')).join('\n');
+    expect(logged).toContain('Reboot policy is never');
+  });
+
+  it('does not reboot when every patch failed and nothing was installed', async () => {
+    await runDeviceExecution({
+      // Both patches statically claim to require a reboot — neither installed.
+      approvedPatches: [
+        { patchId: 'patch-1', externalId: 'KB5000001', requiresReboot: true },
+        { patchId: 'patch-2', externalId: 'KB5000002', requiresReboot: true },
+      ],
+      command: agentCommandRow({
+        success: false,
+        installedCount: 0,
+        failedCount: 2,
+        rebootRequired: false,
+        results: [
+          { id: 'patch-1', externalId: 'KB5000001', status: 'failed', error: '0x80070005' },
+          { id: 'patch-2', externalId: 'KB5000002', status: 'failed', error: '0x80070005' },
+        ],
+      }),
+    });
+
+    expect(evaluateRebootPolicy).not.toHaveBeenCalled();
+    expect(executeReboot).not.toHaveBeenCalled();
+    const logged = logSpy.mock.calls.map((args: unknown[]) => args.join(' ')).join('\n');
+    expect(logged).toMatch(/no patch installed/i);
+  });
+
+  it('does not manufacture a reboot from static flags when a failed run is unparsable', async () => {
+    // Agent returned a failed command with non-JSON stdout: we know nothing about
+    // what installed, so the `approvedPatches.some(p => p.requiresReboot)`
+    // fallback — which assumes a success-shaped run — must not fire.
+    await runDeviceExecution({
+      approvedPatches: [
+        { patchId: 'patch-1', externalId: 'KB5000001', requiresReboot: true },
+      ],
+      command: {
+        status: 'failed',
+        result: { stdout: 'Access is denied.', exitCode: 1, error: 'install failed' },
+      },
+    });
+
+    expect(evaluateRebootPolicy).not.toHaveBeenCalled();
+    expect(executeReboot).not.toHaveBeenCalled();
+    // ...but an unparsable result is an anomaly, not a shrug: it is the one way a
+    // real partial success can still read as "nothing installed", so it has to
+    // leave a trail rather than silently taking the conservative branch.
+    expect(captureException).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining('unparsable patch install result') }),
+    );
+    const logged = logSpy.mock.calls.map((args: unknown[]) => args.join(' ')).join('\n');
+    expect(logged).toMatch(/unparsable/i);
+    // Must NOT claim the stronger "no patch installed successfully" — we do not know that.
+    expect(logged).not.toContain('no patch installed successfully');
+  });
+
+  it('records that a declined reboot was deferred by the maintenance window', async () => {
+    vi.mocked(evaluateRebootPolicy).mockResolvedValue({
+      shouldReboot: false,
+      reason: 'Outside maintenance window — reboot deferred',
+      deferred: true,
+    });
+
+    await runDeviceExecution({
+      approvedPatches: TWO_PATCHES,
+      rebootPolicy: 'maintenance_window',
+      command: agentCommandRow({
+        success: false,
+        installedCount: 1,
+        failedCount: 1,
+        rebootRequired: true,
+        results: [
+          { id: 'patch-1', externalId: 'KB5000001', status: 'installed', rebootRequired: true },
+          { id: 'patch-2', externalId: 'KB5000002', status: 'failed', error: '0x80070005' },
+        ],
+      }),
+    });
+
+    expect(executeReboot).not.toHaveBeenCalled();
+    const logged = logSpy.mock.calls.map((args: unknown[]) => args.join(' ')).join('\n');
+    expect(logged).toContain('Outside maintenance window');
+    expect(logged).toContain('(deferred)');
+  });
+
+  it('does not reboot when the install command never came back', async () => {
+    await runDeviceExecution({
+      approvedPatches: [
+        { patchId: 'patch-1', externalId: 'KB5000001', requiresReboot: true },
+      ],
+      command: null,
+    });
+
+    expect(evaluateRebootPolicy).not.toHaveBeenCalled();
+    expect(executeReboot).not.toHaveBeenCalled();
+  });
+
+  it('still falls back to static requiresReboot flags on a fully successful unparsable run', async () => {
+    // Behaviour preserved from before #4228: a completed, exit-0 command whose
+    // stdout we cannot parse means every approved patch installed, so the static
+    // flags are a sound description of what landed.
+    vi.mocked(evaluateRebootPolicy).mockResolvedValue({
+      shouldReboot: true,
+      reason: 'Installed patch requires reboot',
+      deferred: false,
+    });
+
+    await runDeviceExecution({
+      approvedPatches: TWO_PATCHES,
+      command: {
+        status: 'completed',
+        result: { stdout: 'Installation successful.', exitCode: 0 },
+      },
+    });
+
+    expect(evaluateRebootPolicy).toHaveBeenCalledWith('device-1', 'if_required', true);
+    expect(executeReboot).toHaveBeenCalled();
+  });
+
+  it('honors a reported rebootRequired: false over the static patch flags', async () => {
+    // The approved set statically claims patch-1 requires a reboot, but the agent
+    // installed it and reported `rebootRequired: false` — Windows does not always
+    // need the restart the catalog advertises. The agent observed the real
+    // machine, so its `false` wins. Drop the `??` and read the static flags
+    // directly and this device gets an unnecessary reboot.
+    vi.mocked(evaluateRebootPolicy).mockResolvedValue({
+      shouldReboot: false,
+      reason: 'No installed patch requires reboot',
+      deferred: false,
+    });
+
+    await runDeviceExecution({
+      approvedPatches: TWO_PATCHES, // patch-1 has requiresReboot: true
+      rebootPolicy: 'if_required',
+      command: agentCommandRow({
+        success: true,
+        installedCount: 2,
+        failedCount: 0,
+        rebootRequired: false,
+        results: [
+          { id: 'patch-1', externalId: 'KB5000001', status: 'installed', rebootRequired: false },
+          { id: 'patch-2', externalId: 'KB5000002', status: 'installed', rebootRequired: false },
+        ],
+      }),
+    });
+
+    expect(evaluateRebootPolicy).toHaveBeenCalledWith('device-1', 'if_required', false);
+    expect(executeReboot).not.toHaveBeenCalled();
+  });
+
+  it('treats a per-patch installed entry as an install even when installedCount is 0', async () => {
+    // The two signals disagree: the summary counter says nothing installed, the
+    // per-patch array says patch-1 did. `anyPatchInstalled` ORs them, so the
+    // reboot still gets evaluated. Reading only `installedCount` would silently
+    // reinstate #4228 for any agent whose counter is absent, stale, or wrong.
+    vi.mocked(evaluateRebootPolicy).mockResolvedValue({
+      shouldReboot: true,
+      reason: 'Installed patch requires reboot',
+      deferred: false,
+    });
+
+    await runDeviceExecution({
+      approvedPatches: TWO_PATCHES,
+      rebootPolicy: 'if_required',
+      command: agentCommandRow({
+        success: false,
+        installedCount: 0,
+        failedCount: 1,
+        rebootRequired: true,
+        results: [
+          { id: 'patch-1', externalId: 'KB5000001', status: 'installed', rebootRequired: true },
+          { id: 'patch-2', externalId: 'KB5000002', status: 'failed', error: '0x80070005' },
+        ],
+      }),
+    });
+
+    expect(evaluateRebootPolicy).toHaveBeenCalledWith('device-1', 'if_required', true);
+    expect(executeReboot).toHaveBeenCalled();
+  });
+
+  it('evaluates the reboot policy for a rollback-only run with no net installs', async () => {
+    // Deliberate: `rolled_back` counts as "the device changed". Uninstalling a
+    // patch can require a restart just as installing one can, so a rollback that
+    // reports rebootRequired must reach the policy even though nothing was
+    // installed. Pinned because it is the least obvious arm of anyPatchInstalled
+    // and reads like a copy-paste at a glance.
+    vi.mocked(evaluateRebootPolicy).mockResolvedValue({
+      shouldReboot: true,
+      reason: 'Installed patch requires reboot',
+      deferred: false,
+    });
+
+    await runDeviceExecution({
+      approvedPatches: TWO_PATCHES,
+      rebootPolicy: 'if_required',
+      command: agentCommandRow({
+        success: false,
+        installedCount: 0,
+        failedCount: 1,
+        rebootRequired: true,
+        results: [
+          { id: 'patch-1', externalId: 'KB5000001', status: 'rolled_back', rebootRequired: true },
+          { id: 'patch-2', externalId: 'KB5000002', status: 'failed', error: '0x80070005' },
+        ],
+      }),
+    });
+
+    expect(evaluateRebootPolicy).toHaveBeenCalledWith('device-1', 'if_required', true);
+    expect(executeReboot).toHaveBeenCalled();
   });
 });

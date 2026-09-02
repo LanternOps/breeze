@@ -116,7 +116,15 @@
     "internalPlaceholder": "Adicionar uma nota interna…",
     "sending": "Enviando",
     "sendReply": "Enviar resposta",
-    "addInternalNote": "Adicionar nota interna"
+    "addInternalNote": "Adicionar nota interna",
+    "attachments": {
+      "attach": "Anexar",
+      "uploading": "Enviando…",
+      "retry": "Tentar novamente",
+      "remove": "Remover arquivo",
+      "tooMany": "Você pode anexar no máximo {{max}} arquivos a um comentário.",
+      "tooLarge": "{{name}} é maior que 10 MB."
+    }
   },
   "ticketFeed": {
     "empty": "Nenhuma atividade ainda.",
@@ -149,6 +157,11 @@
     "deleteDialog": {
       "title": "Excluir comentário",
       "message": "Tem certeza de que deseja excluir este comentário? Esta ação não pode ser desfeita."
+    },
+    "attachments": {
+      "broken": "Não foi possível carregar {{name}}",
+      "open": "Abrir anexo",
+      "remove": "Remover anexo"
     }
   },
   "ticketPartsCard": {
@@ -432,6 +445,17 @@
       "feedbackFailed": "Não foi possível salvar o feedback da triagem do chamado.",
       "feedbackSaved": "Feedback da triagem salvo"
     },
+    "aiDraft": {
+      "kindReply": "Resposta gerada por IA",
+      "kindResolutionNote": "Nota de resolução gerada por IA",
+      "sendAsMe": "Enviar como eu",
+      "sending": "Enviando…",
+      "discard": "Descartar",
+      "sendFailed": "Não foi possível enviar o rascunho da IA.",
+      "sent": "Rascunho enviado",
+      "discardFailed": "Não foi possível descartar o rascunho da IA.",
+      "discarded": "Rascunho descartado"
+    },
     "resolve": {
       "noteLabel": "Nota de resolução (visível para o solicitante)",
       "submit": "Resolver chamado"
@@ -469,7 +493,8 @@
       "categoryUpdateFailed": "Falha ao atualizar categoria. Tente novamente.",
       "assigned": "Atribuído",
       "unassigned": "Não atribuído",
-      "assignFailed": "Falha ao atribuir. Tente novamente."
+      "assignFailed": "Falha ao atribuir. Tente novamente.",
+      "attachmentFailed": "Não foi possível enviar o anexo."
     },
     "delete": {
       "failed": "Falha ao excluir. Tente novamente.",

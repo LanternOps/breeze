@@ -1,4 +1,5 @@
-import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, integer } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, integer, index, uniqueIndex } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 import { organizations, partners } from './orgs';
 import { users } from './users';
 import { alerts } from './alerts';
@@ -7,7 +8,6 @@ import { devices } from './devices';
 export const pluginStatusEnum = pgEnum('plugin_status', ['active', 'disabled', 'error', 'installing']);
 export const webhookStatusEnum = pgEnum('webhook_status', ['active', 'disabled', 'error']);
 export const webhookDeliveryStatusEnum = pgEnum('webhook_delivery_status', ['pending', 'delivered', 'failed', 'retrying']);
-export const eventBusPriorityEnum = pgEnum('event_bus_priority', ['low', 'normal', 'high', 'critical']);
 // The DB enum is intentionally WIDER than the implemented provider list
 // (PSA_PROVIDERS in @breeze/shared): 'halo', 'syncro', 'kaseya' and 'other'
 // are DEAD values — no adapter exists and the route-level zod gate
@@ -85,7 +85,15 @@ export const webhookDeliveries = pgTable('webhook_deliveries', {
   eventId: varchar('event_id', { length: 100 }).notNull(),
   payload: jsonb('payload').notNull(),
   status: webhookDeliveryStatusEnum('status').notNull().default('pending'),
+  /** HTTP delivery attempts. Written by the delivery callback, shown in the UI. */
   attempts: integer('attempts').notNull().default(0),
+  /**
+   * Times the recovery sweep has re-queued this row (#4095). Deliberately NOT
+   * `attempts`: that column is overwritten by the delivery callback, so a
+   * counter kept there would reset on the first completed attempt and would
+   * misreport enqueue recoveries as HTTP attempts in the UI.
+   */
+  recoveryAttempts: integer('recovery_attempts').notNull().default(0),
   nextRetryAt: timestamp('next_retry_at'),
   responseStatus: integer('response_status'),
   responseBody: text('response_body'),
@@ -93,19 +101,21 @@ export const webhookDeliveries = pgTable('webhook_deliveries', {
   errorMessage: text('error_message'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   deliveredAt: timestamp('delivered_at')
-});
-
-export const eventBusEvents = pgTable('event_bus_events', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  orgId: uuid('org_id').notNull().references(() => organizations.id),
-  eventType: varchar('event_type', { length: 100 }).notNull(),
-  source: varchar('source', { length: 100 }).notNull(),
-  priority: eventBusPriorityEnum('priority').notNull().default('normal'),
-  payload: jsonb('payload').notNull(),
-  metadata: jsonb('metadata'),
-  processedAt: timestamp('processed_at'),
-  createdAt: timestamp('created_at').defaultNow().notNull()
-});
+}, (table) => ({
+  // One delivery per (webhook, event). The '*' subscriber creates a row and
+  // queues an outbound POST per matching webhook, so without this a redelivered
+  // event POSTs to the customer's endpoint twice (2026-09-11-a migration).
+  webhookEventUq: uniqueIndex('webhook_deliveries_webhook_event_uq')
+    .on(table.webhookId, table.eventId),
+  // Partial, over the UNRESOLVED statuses only (2026-09-11-d migration). The
+  // recovery sweep ticks every five minutes forever and this table has no
+  // retention job, so the index it scans must not grow with the table —
+  // `pending`/`retrying` are transient, so in a healthy fleet this holds ~0
+  // entries however large `webhook_deliveries` becomes.
+  unresolvedIdx: index('webhook_deliveries_unresolved_idx')
+    .on(table.createdAt)
+    .where(sql`${table.status} IN ('pending', 'retrying')`)
+}));
 
 // Dual ownership (epic #2135): a connection is owned by EITHER an org
 // (org_id set, partner_id NULL — a customer's own Jira/Zendesk in a co-managed

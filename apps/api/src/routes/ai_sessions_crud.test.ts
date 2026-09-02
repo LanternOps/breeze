@@ -454,6 +454,7 @@ describe('AI routes', () => {
           model: 'claude-opus-4-6',
           configId: 'config-1',
           configVersion: 3,
+          endpoint: { kind: 'anthropic' as const },
         },
       });
 
@@ -497,6 +498,7 @@ describe('AI routes', () => {
           model: 'claude-sonnet-4-6',
           configId: 'config-1',
           configVersion: 3,
+          endpoint: { kind: 'anthropic' as const },
         },
       });
 

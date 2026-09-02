@@ -229,10 +229,10 @@ audit log.
 | `GET` | `/alerts` | List alerts |
 | `GET` | `/alerts/summary` | Alert summary counts |
 | `GET` | `/alerts/:id` | Get alert details |
-| `POST` | `/alerts/:id/acknowledge` | Acknowledge alert |
-| `POST` | `/alerts/:id/resolve` | Resolve alert |
-| `POST` | `/alerts/:id/suppress` | Suppress alert |
-| `POST` | `/alerts/:id/dismiss` | Permanently dismiss an alert. Terminal and valid from any status (including `resolved`); dismissed alerts are hidden from `GET /alerts` unless you filter to `status=dismissed` |
+| `POST` | `/alerts/:id/acknowledge` | Acknowledge alert. Valid only from `active`; returns `409` if the alert left that status first (another user, or the auto-resolve sweep, got there first) |
+| `POST` | `/alerts/:id/resolve` | Resolve alert. Returns `409` if the alert already reached a terminal status |
+| `POST` | `/alerts/:id/suppress` | Suppress alert. Returns `409` if the alert already reached a terminal status |
+| `POST` | `/alerts/:id/dismiss` | Permanently dismiss an alert. Terminal and valid from any status (including `resolved`); dismissed alerts are hidden from `GET /alerts` unless you filter to `status=dismissed`. Returns `409` if the alert was already dismissed — including when a concurrent caller dismissed it first, in which case `dismissedAt`/`dismissedBy` name that caller, not this one |
 | `POST` | `/alerts/bulk` | Bulk state change for up to 100 alerts — `action` is one of `acknowledge`, `resolve`, `suppress`, or `dismiss` |
 
 ### Alert Rules
@@ -1055,6 +1055,34 @@ Core ticket CRUD follows the standard REST pattern under `/tickets`; the endpoin
 | `DELETE` | `/tickets/:id` | Soft-delete a ticket. Requires `tickets:manage`. Reversible; by-id operations on a deleted ticket return `404`. |
 | `POST` | `/tickets/:id/restore` | Restore a soft-deleted ticket. Requires `tickets:manage`. |
 | `POST` | `/tickets/bulk` | Bulk `assign` / status change / `delete` across up to 100 ticket IDs. The `delete` action requires `tickets:manage`; `assign` and status changes require `tickets:write`. Returns per-ticket `updated`/`skipped`/`failed` counts. |
+| `POST` | `/tickets/:id/attachments` | Upload one file (`multipart/form-data`, field `file`) and get back a **pending** attachment. Requires `tickets:write`. |
+| `GET` | `/tickets/:id/attachments/:attachmentId/content` | Stream an attachment's bytes. Requires `tickets:read`. |
+| `DELETE` | `/tickets/:id/attachments/:attachmentId` | Delete an attachment and its bytes. `tickets:write` for your own pending upload or your own comment's file; `tickets:manage` for anyone else's. |
+
+### Comment attachments
+
+Attaching a photo or PDF to a ticket comment is a **two-step** flow:
+
+1. `POST /tickets/:id/attachments` with a `multipart/form-data` body carrying exactly one file under the field name `file`. The response is attachment metadata with `commentId: null` — a *pending* upload that belongs to the uploader and nothing else.
+2. `POST /tickets/:id/comments` with `attachmentIds: ["<id>", …]`. The comment and the claim happen in one transaction, so a rejected attachment rolls the comment back rather than posting a comment with missing files. `content` may be empty when `attachmentIds` is non-empty.
+
+A pending upload that is never claimed is deleted automatically after 24 hours.
+
+**Limits**
+
+| Limit | Value |
+|---|---|
+| Maximum file size | 10 MiB |
+| Attachments per comment | 5 |
+| Pending (unclaimed) uploads per user | 20 |
+| Upload rate | 30 per minute per user |
+| Accepted types | `image/jpeg`, `image/png`, `image/webp`, `application/pdf` |
+
+The client's `Content-Type` is **ignored**. The file's type is determined by sniffing its magic bytes, and anything that does not sniff to one of the four accepted types is rejected with `415 UNSUPPORTED_ATTACHMENT_TYPE`. Other error codes: `413 ATTACHMENT_TOO_LARGE`, `429 TOO_MANY_PENDING`, `409 ATTACHMENT_NOT_CLAIMABLE`, `409 TICKET_DELETED`, `503 STORAGE_UNAVAILABLE`.
+
+Bytes are always served through the authenticated `…/content` route — there is no public URL and no presigned link — with `X-Content-Type-Options: nosniff`, an `ETag` (so `If-None-Match` gets a `304`) and `Cache-Control: private, max-age=300`. Customers see attachments on **public** comments only, through `GET /portal/tickets/:id/attachments/:attachmentId/content`.
+
+**Storage on self-hosted installs.** When an object-storage bucket is configured (`S3_BUCKET` and its credentials), attachment bytes go to the bucket under `ticket-attachments/<attachmentId>`. When it is not — the default self-hosted setup — the bytes are stored inline in Postgres instead, and every route behaves identically. The choice is made once, per attachment, at upload time: rows written before you configure a bucket keep serving from the database. Plan database sizing accordingly, or configure a bucket before enabling attachments for a large fleet.
 
 ## Ticketing
 
@@ -1159,8 +1187,8 @@ Over the transport, the server speaks JSON-RPC 2.0. Alongside `tools/*` and `res
 | `GET` | `/mobile/devices/:id/settings` | Device settings |
 | `GET` | `/mobile/devices/:id` | Device details |
 | `GET` | `/mobile/alerts/inbox` | Alert inbox |
-| `POST` | `/mobile/alerts/:id/acknowledge` | Acknowledge alert |
-| `POST` | `/mobile/alerts/:id/resolve` | Resolve alert |
+| `POST` | `/mobile/alerts/:id/acknowledge` | Acknowledge alert. Same `409`-on-conflict contract as `POST /alerts/:id/acknowledge` |
+| `POST` | `/mobile/alerts/:id/resolve` | Resolve alert. Same `409`-on-conflict contract as `POST /alerts/:id/resolve` |
 | `POST` | `/mobile/devices/:id/actions` | Send device action |
 | `GET` | `/mobile/summary` | Dashboard summary |
 

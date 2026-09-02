@@ -1,12 +1,14 @@
+import { randomUUID } from 'node:crypto';
 import { Job, Queue, Worker } from 'bullmq';
-import { and, eq, gte, isNull, ne, or, sql } from 'drizzle-orm';
+import { and, asc, eq, gt, gte, inArray, isNull, ne, or, sql } from 'drizzle-orm';
 import * as dbModule from '../db';
-import { devices, organizations, peripheralEvents, peripheralPolicies } from '../db/schema';
+import { deviceGroupMemberships, devices, organizations, peripheralEvents, peripheralPolicies } from '../db/schema';
+import type { PeripheralPolicyTargetIds, PeripheralPolicyTargetType } from '../db/schema/peripheralControl';
 import { publishEvent } from '../services/eventBus';
-import { CommandTypes, queueCommand, queueCommandForExecution } from '../services/commandQueue';
 import { getBullMQConnection } from '../services/redis';
 import { isReusableState } from '../services/bullmqUtils';
 import { attachWorkerObservability } from './workerObservability';
+import { reconcilePeripheralPolicyDevice } from '../services/peripheralPolicyState';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -17,6 +19,8 @@ const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
 const PERIPHERAL_ANOMALY_QUEUE = 'peripheral-anomaly-detector';
 const PERIPHERAL_POLICY_DISTRIBUTION_QUEUE = 'peripheral-policy-distribution';
 const PERIPHERAL_ANOMALY_INTERVAL_MS = 15 * 60 * 1000;
+const PERIPHERAL_POLICY_RECONCILIATION_INTERVAL_MS = 15 * 60 * 1000;
+const PERIPHERAL_POLICY_RECONCILIATION_PAGE_SIZE = 250;
 const DEFAULT_BLOCKED_THRESHOLD = 5;
 const ANOMALY_LOOKBACK_MINUTES = 30;
 
@@ -33,12 +37,36 @@ interface PolicyDistributionJobData {
   queuedAt: string;
 }
 
-type PeripheralJobData = AnomalyScanJobData | PolicyDistributionJobData;
+interface PolicyReconciliationJobData {
+  type: 'policy-reconciliation';
+  deviceId: string;
+  reason: string;
+  queuedAt: string;
+}
+
+interface PolicyReconciliationSweepJobData {
+  type: 'policy-reconciliation-sweep';
+  queuedAt: string;
+}
+
+type PeripheralPolicyJobData =
+  | PolicyDistributionJobData
+  | PolicyReconciliationJobData
+  | PolicyReconciliationSweepJobData;
+type PeripheralJobData = AnomalyScanJobData | PeripheralPolicyJobData;
 
 let anomalyQueue: Queue<AnomalyScanJobData> | null = null;
 let anomalyWorker: Worker<AnomalyScanJobData> | null = null;
-let policyDistributionQueue: Queue<PolicyDistributionJobData> | null = null;
-let policyDistributionWorker: Worker<PolicyDistributionJobData> | null = null;
+let policyDistributionQueue: Queue<PeripheralPolicyJobData> | null = null;
+let policyDistributionWorker: Worker<PeripheralPolicyJobData> | null = null;
+
+export type PeripheralPolicyTargetSnapshot = {
+  orgId: string | null;
+  partnerId: string | null;
+  targetType: PeripheralPolicyTargetType;
+  targetIds: PeripheralPolicyTargetIds | null;
+  isActive: boolean;
+};
 
 function getBlockedThreshold(): number {
   const raw = process.env.PERIPHERAL_ANOMALY_BLOCKED_THRESHOLD;
@@ -62,9 +90,9 @@ export function getPeripheralAnomalyQueue(): Queue<AnomalyScanJobData> {
   return anomalyQueue;
 }
 
-export function getPeripheralPolicyDistributionQueue(): Queue<PolicyDistributionJobData> {
+export function getPeripheralPolicyDistributionQueue(): Queue<PeripheralPolicyJobData> {
   if (!policyDistributionQueue) {
-    policyDistributionQueue = new Queue<PolicyDistributionJobData>(PERIPHERAL_POLICY_DISTRIBUTION_QUEUE, {
+    policyDistributionQueue = new Queue<PeripheralPolicyJobData>(PERIPHERAL_POLICY_DISTRIBUTION_QUEUE, {
       connection: getBullMQConnection(),
     });
   }
@@ -160,7 +188,10 @@ export function findUncommittedPolicyIds(
 
 export async function processPolicyDistribution(
   data: PolicyDistributionJobData,
-  options: { isFinalAttempt?: boolean } = {}
+  options: {
+    isFinalAttempt?: boolean;
+    scheduleDevice?: (deviceId: string, reason: string) => Promise<string>;
+  } = {}
 ): Promise<{
   queued: number;
   immediate: number;
@@ -253,46 +284,14 @@ export async function processPolicyDistribution(
     return { queued: 0, immediate: 0, failed: 0 };
   }
 
-  const activePolicies = orgPolicies.filter((policy) => policy.isActive);
-
-  const payload = {
-    generatedAt: new Date().toISOString(),
-    reason: data.reason,
-    changedPolicyIds,
-    policies: activePolicies.map((policy) => ({
-      id: policy.id,
-      name: policy.name,
-      deviceClass: policy.deviceClass,
-      action: policy.action,
-      targetType: policy.targetType,
-      targetIds: policy.targetIds ?? {},
-      exceptions: policy.exceptions ?? [],
-      isActive: policy.isActive,
-      updatedAt: policy.updatedAt?.toISOString?.() ?? null
-    }))
-  };
-
   let queued = 0;
   let immediate = 0;
   let failed = 0;
+  const scheduleDevice = options.scheduleDevice ?? schedulePeripheralPolicyDevice;
 
   for (const device of orgDevices) {
     try {
-      if (device.status === 'online') {
-        const result = await queueCommandForExecution(
-          device.id,
-          CommandTypes.PERIPHERAL_POLICY_SYNC,
-          payload,
-          { preferHeartbeat: false }
-        );
-        if (result.command) {
-          queued++;
-          immediate++;
-          continue;
-        }
-      }
-
-      await queueCommand(device.id, CommandTypes.PERIPHERAL_POLICY_SYNC, payload);
+      await scheduleDevice(device.id, data.reason);
       queued++;
     } catch (error) {
       failed++;
@@ -337,23 +336,212 @@ function createPeripheralAnomalyWorker(): Worker<AnomalyScanJobData> {
   );
 }
 
-function createPeripheralPolicyDistributionWorker(): Worker<PolicyDistributionJobData> {
-  return new Worker<PolicyDistributionJobData>(
+function createPeripheralPolicyDistributionWorker(): Worker<PeripheralPolicyJobData> {
+  return new Worker<PeripheralPolicyJobData>(
     PERIPHERAL_POLICY_DISTRIBUTION_QUEUE,
-    async (job: Job<PolicyDistributionJobData>) => {
+    async (job: Job<PeripheralPolicyJobData>) => {
+      const data = job.data;
+      if (data.type === 'policy-reconciliation') {
+        return runWithSystemDbAccess(() =>
+          reconcilePeripheralPolicyDevice(data.deviceId, data.reason));
+      }
+      if (data.type === 'policy-reconciliation-sweep') {
+        return processPeripheralPolicyReconciliationSweep();
+      }
       // attemptsMade counts prior failures, so this run is attempt
       // (attemptsMade + 1); on the last one we stop retrying the commit-race and
       // distribute the current active set instead of failing silently.
       const maxAttempts = job.opts.attempts ?? 1;
       const isFinalAttempt = job.attemptsMade + 1 >= maxAttempts;
       return runWithSystemDbAccess(async () => {
-        return processPolicyDistribution(job.data, { isFinalAttempt });
+        return processPolicyDistribution(data, { isFinalAttempt });
       });
     },
     {
       connection: getBullMQConnection(),
       concurrency: 2
     }
+  );
+}
+
+export async function schedulePeripheralPolicyDevice(
+  deviceId: string,
+  reason: string,
+): Promise<string> {
+  const queue = getPeripheralPolicyDistributionQueue();
+  const jobId = `policy-reconciliation-${deviceId}`;
+  const existing = await queue.getJob(jobId);
+  if (existing) {
+    const state = await existing.getState();
+    if (isReusableState(state)) {
+      if (state === 'active') {
+        const followUp = await queue.add(
+          'policy-reconciliation',
+          {
+            type: 'policy-reconciliation',
+            deviceId,
+            reason,
+            queuedAt: new Date().toISOString(),
+          },
+          {
+            jobId: `${jobId}-follow-up-${randomUUID()}`,
+            attempts: 6,
+            backoff: { type: 'exponential', delay: 250 },
+            removeOnComplete: { count: 100 },
+            removeOnFail: { count: 200 },
+          },
+        );
+        return String(followUp.id);
+      }
+      if (existing.data.type === 'policy-reconciliation') {
+        await (existing as Job<PolicyReconciliationJobData>).updateData({
+          ...existing.data,
+          reason,
+          queuedAt: new Date().toISOString(),
+        });
+      }
+      return String(existing.id);
+    }
+    await existing.remove().catch((error) => {
+      console.error(`[PeripheralJobs] Failed to remove stale reconciliation job ${jobId}:`, error);
+    });
+  }
+
+  const job = await queue.add(
+    'policy-reconciliation',
+    {
+      type: 'policy-reconciliation',
+      deviceId,
+      reason,
+      queuedAt: new Date().toISOString(),
+    },
+    {
+      jobId,
+      attempts: 6,
+      backoff: { type: 'exponential', delay: 250 },
+      removeOnComplete: { count: 100 },
+      removeOnFail: { count: 200 },
+    },
+  );
+  return String(job.id);
+}
+
+export async function resolvePeripheralPolicyDeviceIds(
+  policy: PeripheralPolicyTargetSnapshot,
+): Promise<string[]> {
+  if (!policy.isActive) return [];
+
+  const orgIds = policy.orgId
+    ? [policy.orgId]
+    : policy.partnerId
+      ? (await db.select({ id: organizations.id })
+        .from(organizations)
+        .where(and(
+          eq(organizations.partnerId, policy.partnerId),
+          ne(organizations.type, 'quick_support'),
+        ))).map(({ id }) => id)
+      : [];
+  if (orgIds.length === 0) return [];
+
+  const targets = policy.targetIds ?? {};
+  const conditions = [
+    inArray(devices.orgId, orgIds),
+    eq(devices.isEphemeral, false),
+  ];
+
+  if (policy.targetType === 'site') {
+    const siteIds = targets.siteIds ?? [];
+    if (siteIds.length === 0) return [];
+    conditions.push(inArray(devices.siteId, siteIds));
+  } else if (policy.targetType === 'device') {
+    const deviceIds = targets.deviceIds ?? [];
+    if (deviceIds.length === 0) return [];
+    conditions.push(inArray(devices.id, deviceIds));
+  } else if (policy.targetType === 'group') {
+    const groupIds = targets.groupIds ?? [];
+    if (groupIds.length === 0) return [];
+    const rows = await db.select({ id: devices.id })
+      .from(devices)
+      .innerJoin(deviceGroupMemberships, eq(deviceGroupMemberships.deviceId, devices.id))
+      .where(and(...conditions, inArray(deviceGroupMemberships.groupId, groupIds)));
+    return [...new Set(rows.map(({ id }) => id))].sort();
+  }
+
+  const rows = await db.select({ id: devices.id })
+    .from(devices)
+    .where(and(...conditions));
+  return [...new Set(rows.map(({ id }) => id))].sort();
+}
+
+export async function schedulePeripheralPolicyDevices(
+  deviceIds: readonly string[],
+  reason: string,
+): Promise<string[]> {
+  return Promise.all([...new Set(deviceIds)].sort().map((deviceId) =>
+    schedulePeripheralPolicyDevice(deviceId, reason)
+  ));
+}
+
+type ReconciliationSweepOptions = {
+  pageSize?: number;
+  loadPage?: (afterId: string | null, limit: number) => Promise<Array<{ id: string }>>;
+  reconcile?: typeof reconcilePeripheralPolicyDevice;
+};
+
+export async function processPeripheralPolicyReconciliationSweep(
+  options: ReconciliationSweepOptions = {},
+): Promise<{ scanned: number; queued: number; coalesced: number; incompatible: number }> {
+  const pageSize = options.pageSize ?? PERIPHERAL_POLICY_RECONCILIATION_PAGE_SIZE;
+  const loadPage = options.loadPage ?? ((afterId, limit) => runWithSystemDbAccess(() => db
+    .select({ id: devices.id })
+    .from(devices)
+    .where(and(
+      eq(devices.isEphemeral, false),
+      eq(devices.peripheralPolicyProtocolVersion, 2),
+      ...(afterId ? [gt(devices.id, afterId)] : []),
+    ))
+    .orderBy(asc(devices.id))
+    .limit(limit)));
+  const reconcile = options.reconcile ?? reconcilePeripheralPolicyDevice;
+  const counts = { scanned: 0, queued: 0, coalesced: 0, incompatible: 0 };
+  let afterId: string | null = null;
+
+  while (true) {
+    const page = await loadPage(afterId, pageSize);
+    for (const { id } of page) {
+      const outcome = await reconcile(id, 'periodic_drift');
+      counts.scanned += 1;
+      counts[outcome] += 1;
+    }
+    if (page.length < pageSize) break;
+    afterId = page[page.length - 1]?.id ?? null;
+    if (!afterId) break;
+  }
+
+  return counts;
+}
+
+export async function schedulePeripheralPolicyReconciliationSweep(
+  random: () => number = Math.random,
+): Promise<void> {
+  const queue = getPeripheralPolicyDistributionQueue();
+  const existing = await queue.getRepeatableJobs();
+  for (const job of existing) {
+    if (job.name === 'policy-reconciliation-sweep') {
+      await queue.removeRepeatableByKey(job.key);
+    }
+  }
+
+  await queue.add(
+    'policy-reconciliation-sweep',
+    { type: 'policy-reconciliation-sweep', queuedAt: new Date().toISOString() },
+    {
+      jobId: 'policy-reconciliation-sweep',
+      repeat: { every: PERIPHERAL_POLICY_RECONCILIATION_INTERVAL_MS },
+      delay: Math.floor(random() * PERIPHERAL_POLICY_RECONCILIATION_INTERVAL_MS),
+      removeOnComplete: { count: 20 },
+      removeOnFail: { count: 50 },
+    },
   );
 }
 
@@ -398,7 +586,7 @@ export async function schedulePeripheralPolicyDistribution(
         const mergedPolicyIds = Array.from(
           new Set([...(existingData.changedPolicyIds ?? []), ...normalizedPolicyIds])
         );
-        await existing.updateData({
+        await (existing as Job<PolicyDistributionJobData>).updateData({
           ...existingData,
           changedPolicyIds: mergedPolicyIds,
           reason,
@@ -465,6 +653,7 @@ export async function initializePeripheralJobs(): Promise<void> {
   });
 
   await scheduleAnomalyScan();
+  await schedulePeripheralPolicyReconciliationSweep();
   console.log('[PeripheralJobs] Peripheral anomaly + policy distribution workers initialized');
 }
 

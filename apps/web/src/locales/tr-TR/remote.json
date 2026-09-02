@@ -443,7 +443,7 @@
     "title": "Başlık"
   },
   "remoteTerminal": {
-    "connectedBang": "Bağlantılı Patlama",
+    "connectedBang": "Bağlandı!",
     "connectingTo": "{{hostname}}'ye bağlanılıyor...",
     "copySelection": "Seçimi Kopyala",
     "disconnect": "Bağlantıyı kes",

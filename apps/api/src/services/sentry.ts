@@ -133,6 +133,21 @@ const ALLOWED_TAG_NAMES = new Set([
   'binary_component',
   'release_asset_name',
   'manifest_refusal_reason',
+  // #4262: binarySync's release fetches now run through the SSRF-guarded
+  // helper, and all three of its catch sites deliberately FAIL OPEN — a
+  // transient resolver blip must not take boot down. That makes the Sentry
+  // event the only durable record that a refusal happened, and `scrubEvent`
+  // deletes `message`, so without these two tags it arrives as a contentless
+  // blank: the operator learns an exception occurred but not that the SSRF
+  // guard fired, which is the difference between "GitHub had a bad day" and
+  // "something is resolving api.github.com to an internal address".
+  // `release_sync_failure_reason` is a closed 2-value set derived from the
+  // error CLASS (never its message, which interpolates the offending host);
+  // `release_sync_context` is one of four hardcoded call-site literals.
+  // Neither carries a tenant, device, host or resolved IP — the addresses stay
+  // in the server-side log line only.
+  'release_sync_failure_reason',
+  'release_sync_context',
   // #1379/BREEZE-9: `attachWorkerObservability` sets this tag on every worker —
   // twice, in fact: on the per-job isolation scope (so anything captured DURING
   // a job inherits it) and again on the `failed` listener. It is a closed set of
@@ -214,6 +229,48 @@ const ALLOWED_TAG_NAMES = new Set([
   // so proving every current and future path passes a hardcoded literal is a
   // real sweep, not a glance. Unproven means not allowlisted.
   'dbContextOpener',
+  // #4343: which table a retention sweep left a backlog on. Without it every
+  // `retention_backlog_remaining` event from all nine call sites collapses into
+  // one issue reading "a retention job is behind" — scrubEvent deletes
+  // `message`, so the table baked into the warning text never arrives either.
+  //
+  // Structurally bounded, and checked: every caller passes one of eight
+  // hardcoded table literals (`agent_logs`, `device_change_log`,
+  // `device_event_logs`, `device_ip_history`, `snmp_metrics`,
+  // `device_reliability_history`, `user_risk_scores`, and mlOutputRetention's
+  // three-literal `PrunedTable['table']` union). Per-run detail that is NOT
+  // bounded — eventLogRetention's org id — is deliberately kept out of this tag
+  // and goes only to the console line, which is not scrubbed.
+  'retentionTarget',
+  // The AI billing calls (services/aiCostTracker.ts) are deliberately
+  // FAIL-OPEN, so the only thing separating "billing said no" from "billing
+  // never answered" is this tag. Its value is either an HTTP status rendered
+  // from `Response.status` (a 3-digit number) or one of two hardcoded literals
+  // — `transport_error` (fetch rejected: DNS, socket, timeout) and `none` (the
+  // failure happened before any request was made). Bounded by construction and
+  // carrying no tenant, partner, URL or credential; `scrubEvent` deletes
+  // `message` and `extra`, so without it a deduction that quietly dropped
+  // platform-funded spend is indistinguishable from one that succeeded.
+  'ai_billing_http_status',
+  // #3922: how many `llm_egress_events` rows the in-process audit queue shed
+  // during one DB outage. An integer produced by the recorder's own arithmetic
+  // (`queue.length - LLM_EGRESS_QUEUE_LIMIT`) — no tenant, org, host or session
+  // identifier can reach it. Allowlisted rather than left in the message text
+  // because `scrubEvent` deletes `message`, and "the audit trail has gaps" is
+  // not actionable without knowing whether that means five rows or fifty
+  // thousand. Cardinality is bounded in practice by the throttle: at most one
+  // event per outage.
+  'llm_egress_dropped',
+  // #4143: which CONTAINER produced the event. Since the api/worker role split
+  // (#4086) a droplet in split mode runs two processes off the same image,
+  // same DSN, same release — so an event from the worker was indistinguishable
+  // from one served on the request path, and "is this the scheduler or the
+  // API?" (the first question asked in both #3022 and #3214) could not be
+  // answered from Sentry at all. Set once at init from `breezeRole()`, whose
+  // return type is the closed union `'all' | 'api' | 'worker'`; anything else
+  // in BREEZE_ROLE is folded to `all` by that function, so this tag is a
+  // 3-value set by construction and carries no tenant, device or host.
+  'breeze_role',
 ]);
 const UNSAFE_TAG_CHARACTERS = /[/?#\r\n]/;
 const SAFE_STRUCTURAL_NAME = /^[A-Za-z_$<][A-Za-z0-9_.$<>:[\] ]{0,127}$/;
@@ -390,6 +447,30 @@ export function scrubTransactionEvent<T extends Record<string, any>>(event: T): 
   return event;
 }
 
+/**
+ * The `breeze_role` tag value (#4143).
+ *
+ * Deliberately re-derived from `process.env.BREEZE_ROLE` here instead of
+ * importing `breezeRole()` from `config/env`. This module is imported by ~120
+ * others including `db/index.ts` (see setConnectTimeoutClassifier above for the
+ * incident that established the rule), and `config/env` is not a leaf: it reads
+ * ~40 `process.env` values into module-scope `export const`s, so importing it
+ * from here would both grow this module's graph and pull that env SNAPSHOT
+ * forward to whenever anything first reports an error.
+ *
+ * The duplication is intentional and pinned: `sentry.breezeRole.test.ts`
+ * asserts this function agrees with `breezeRole()` over every input class,
+ * including the unrecognised-value fallback, so the two cannot drift apart
+ * silently. Unlike `breezeRole()` this one does NOT warn on an unrecognised
+ * value — that warning is the config layer's job and is already emitted once
+ * at boot; repeating it from the Sentry layer would add nothing.
+ */
+export function sentryBreezeRoleTag(): 'all' | 'api' | 'worker' {
+  const raw = (process.env.BREEZE_ROLE ?? '').trim().toLowerCase();
+  if (raw === 'api' || raw === 'worker') return raw;
+  return 'all';
+}
+
 function parseSampleRate(raw: string | undefined): number {
   if (!raw) return 0;
   const parsed = Number(raw);
@@ -422,6 +503,18 @@ export function initSentry(): void {
     beforeSend: (event) => scrubEvent(event),
     beforeSendTransaction: (event) => scrubTransactionEvent(event)
   });
+
+  // #4143. Set on the global scope so EVERY event inherits it — including the
+  // per-job isolation scopes `attachWorkerObservability` forks, and the
+  // process-level unhandledRejection/uncaughtException reports that belong to
+  // no request. Without it the two containers a split-mode droplet runs are
+  // indistinguishable in Sentry: same DSN, same release, same environment.
+  //
+  // Allowlisted in ALLOWED_TAG_NAMES above — `scrubEvent` rebuilds `tags` from
+  // that list on the way out, so an unallowlisted tag set here would be
+  // silently dropped rather than merely unused (the exact `worker`-tag
+  // regression documented there).
+  Sentry.setTag('breeze_role', sentryBreezeRoleTag());
 
   initialized = true;
 }

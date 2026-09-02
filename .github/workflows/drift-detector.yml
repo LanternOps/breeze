@@ -13,6 +13,15 @@
 # Triggered by the 2026-04-25 main-orphan incident, when ~6 days of
 # parallel-line releases shipped before the topology was noticed.
 #
+# Releases tagged on an `origin/hotfix/*` branch are NOT reachable from main —
+# the fix lands on main as an equivalent commit, never as that commit. Those
+# tags are exempted by an explicit committed row in
+# .github/release-provenance/side-branch-tags.tsv, whose recorded main-side
+# commit is re-verified as reachable on every run. The exemption is deliberately
+# a reviewed file rather than a patch-id inference: a force-push that rebased
+# history into patch-equivalent commits would satisfy an inference and report
+# green, which is the exact case this detector exists to catch (#4037).
+#
 # This is a monitor, not a required status check. Failures surface via
 # GitHub-native error markup and the standard workflow-failure email.
 # See docs/runbooks/2026-05-02-main-orphan-and-userhelper-flag.md.
@@ -59,10 +68,66 @@ jobs:
             echo "::warning::no v* tag found; skipping ancestry check"
             exit 0
           fi
-          if ! git merge-base --is-ancestor "$LATEST_TAG" origin/main; then
-            echo "::error::main has lost ancestry to latest release tag $LATEST_TAG"
-            echo "main can no longer reach $LATEST_TAG via parent links — main was probably force-pushed."
+          if git merge-base --is-ancestor "$LATEST_TAG" origin/main; then
+            echo "OK: main rooted at $EXPECTED_ROOT and reaches $LATEST_TAG"
+            exit 0
+          fi
+
+          # Unreachable. That is an OBSERVATION; the cause is not yet known, so
+          # classify reviewed candidate lineage before considering the stable
+          # side-branch fallback. The registry comes from authoritative main,
+          # even for a manual dispatch from another branch.
+          LINEAGE_OUTPUT=$(mktemp)
+          trap 'rm -f "$LINEAGE_OUTPUT"' EXIT
+          GITHUB_OUTPUT="$LINEAGE_OUTPUT" \
+            bash scripts/release/check-release-lineage.sh \
+              --tag "$LATEST_TAG" \
+              --main-ref origin/main \
+              --candidate-registry-ref origin/main \
+              --allow-unclassified
+          LINEAGE_CHANNEL=$(awk -F= '$1 == "channel" { print $2; exit }' "$LINEAGE_OUTPUT")
+          if [ "$LINEAGE_CHANNEL" = "candidate" ]; then
+            echo "OK: main rooted at $EXPECTED_ROOT"
+            echo "$LATEST_TAG has exact reviewed candidate release lineage; main does not yet reach it."
+            exit 0
+          fi
+          if [ "$LINEAGE_CHANNEL" != "unclassified" ]; then
+            echo "::error::unexpected lineage channel '$LINEAGE_CHANNEL' for unreachable tag $LATEST_TAG"
+            exit 1
+          fi
+
+          # Unclassified tags retain the existing stable side-branch fallback.
+          PROVENANCE=.github/release-provenance/side-branch-tags.tsv
+          EXPECTED_EQUIV=$(awk -v tag="$LATEST_TAG" '
+            $0 !~ /^#/ && $1 == tag { print $2; exit }' "$PROVENANCE" 2>/dev/null)
+
+          if [ -z "$EXPECTED_EQUIV" ]; then
+            echo "::error::main cannot reach latest release tag $LATEST_TAG"
+            echo "Observed: git merge-base --is-ancestor $LATEST_TAG origin/main is false."
+            echo "$LATEST_TAG is not recorded in $PROVENANCE as a side-branch release."
+            echo "Two causes produce this. Distinguish them before acting:"
+            echo "  1. main was force-pushed in a way that severed parent links (the incident case)."
+            echo "  2. the tag was cut from a branch that is not merged into main (a hotfix"
+            echo "     release). If so, merge that branch into main, or add a reviewed row to"
+            echo "     $PROVENANCE recording the main-side equivalent commit."
+            echo "Do NOT resolve this by making the check accept patch-equivalence: a force-push"
+            echo "that rebased history into equivalent patches would pass such a check."
             echo "See docs/runbooks/2026-05-02-main-orphan-and-userhelper-flag.md."
             exit 1
           fi
-          echo "OK: main rooted at $EXPECTED_ROOT and reaches $LATEST_TAG"
+
+          # Recorded as a side-branch release. The exemption is only good while
+          # the recorded main-side commit is itself still reachable, so that a
+          # stale row cannot mask a genuine loss of history.
+          if ! git merge-base --is-ancestor "$EXPECTED_EQUIV" origin/main; then
+            echo "::error::main cannot reach $LATEST_TAG, and its recorded equivalent $EXPECTED_EQUIV is also unreachable"
+            echo "$LATEST_TAG is recorded in $PROVENANCE as a side-branch release whose"
+            echo "equivalent landed on main as $EXPECTED_EQUIV — but main can no longer reach"
+            echo "that commit either. The exemption does not apply and history has genuinely moved."
+            echo "See docs/runbooks/2026-05-02-main-orphan-and-userhelper-flag.md."
+            exit 1
+          fi
+
+          echo "OK: main rooted at $EXPECTED_ROOT"
+          echo "$LATEST_TAG was released from a side branch (recorded in $PROVENANCE);"
+          echo "its main-side equivalent $EXPECTED_EQUIV is reachable from main."

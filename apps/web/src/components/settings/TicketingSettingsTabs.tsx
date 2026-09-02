@@ -9,10 +9,11 @@ import InboundEmailCard from './InboundEmailCard';
 import M365MailboxCard from './M365MailboxCard';
 import CannedResponsesCard from './CannedResponsesCard';
 import TicketFormsCard from './TicketFormsCard';
+import TimeTrackingSettingsCard from './TimeTrackingSettingsCard';
 import { useJwtClaims } from '../../lib/authScope';
 import { usePermissions } from '../../lib/permissions';
 
-const VALID_TABS = ['statuses', 'priorities', 'categories', 'forms', 'export', 'inbound', 'canned'] as const;
+const VALID_TABS = ['statuses', 'priorities', 'categories', 'forms', 'export', 'inbound', 'canned', 'timeTracking'] as const;
 type Tab = (typeof VALID_TABS)[number];
 
 // The sub-tabs that only exist for partner-scoped users. The tab list is BUILT
@@ -27,7 +28,11 @@ type Tab = (typeof VALID_TABS)[number];
 const PARTNER_ONLY_TABS: Array<{ id: Tab; labelKey: string }> = [
   { id: 'forms', labelKey: 'ticketingSettingsTabs.intakeForms' },
   { id: 'inbound', labelKey: 'ticketingSettingsTabs.inboundEmail' },
-  { id: 'canned', labelKey: 'ticketingSettingsTabs.cannedResponses' }
+  { id: 'canned', labelKey: 'ticketingSettingsTabs.cannedResponses' },
+  // W06 (#3900). Partner-only for the same reason as the three above: the
+  // setting it edits is partner-wide and PATCH /orgs/partners/me requires
+  // partner scope server-side.
+  { id: 'timeTracking', labelKey: 'ticketingSettingsTabs.timeTracking' }
 ];
 const PARTNER_ONLY_TAB_IDS: readonly Tab[] = PARTNER_ONLY_TABS.map((tab) => tab.id);
 
@@ -196,6 +201,12 @@ export default function TicketingSettingsTabs({
       )}
 
       {activeTab === 'categories' && <TicketCategoriesPage />}
+
+      {activeTab === 'timeTracking' && canManageInbound && (
+        <div data-testid="ticketing-tab-panel-timeTracking">
+          <TimeTrackingSettingsCard />
+        </div>
+      )}
 
       {activeTab === 'forms' && canManageInbound && (
         <div data-testid="ticketing-tab-panel-forms">

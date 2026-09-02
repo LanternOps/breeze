@@ -3,8 +3,13 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 
 const addTicketComment = vi.fn();
+// The real module pulls in astro-only imports through @/lib/navigation, so it
+// cannot be importActual'd here. portalAttachmentContentPath's own output is
+// pinned in src/lib/api.test.ts; this stub only lets the component render.
 vi.mock('@/lib/api', () => ({
   portalApi: { addTicketComment: (...args: unknown[]) => addTicketComment(...args) },
+  portalAttachmentContentPath: (ticketId: string, attachmentId: string) =>
+    `/api/v1/portal/tickets/${ticketId}/attachments/${attachmentId}/content`,
 }));
 
 import { TicketDetails } from './TicketDetails';
@@ -112,5 +117,45 @@ describe('ReplyComposer — draft survives a dead session', () => {
     render(<TicketDetails ticket={ticket({ id: 't2' })} />);
     fireEvent.change(screen.getByTestId('ticket-reply-input'), { target: { value: 'typing…' } });
     expect(sessionStorage.getItem('portal:reply-draft:t2')).toBe('typing…');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// W08 #3902 — render-only attachments on public comments.
+// ---------------------------------------------------------------------------
+describe('TicketDetails — comment attachments (W08 #3902)', () => {
+  const withAttachments = () =>
+    ticket({
+      comments: [
+        {
+          id: 'c1', authorName: 'Tech', authorType: 'user', content: 'here you go',
+          createdAt: '2026-08-02T00:00:00Z',
+          attachments: [
+            { id: 'a1', commentId: 'c1', contentType: 'image/png', byteSize: 1234, originalFilename: 'printer.png', createdAt: '2026-08-02T00:00:00Z' },
+            { id: 'a2', commentId: 'c1', contentType: 'application/pdf', byteSize: 4096, originalFilename: 'report.pdf', createdAt: '2026-08-02T00:00:00Z' },
+          ],
+        },
+      ],
+    });
+
+  it('renders an image thumbnail pointing at the same-origin portal content path', () => {
+    render(<TicketDetails ticket={withAttachments()} />);
+    const img = screen.getByTestId('ticket-attachment-image-a1') as HTMLImageElement;
+    // Never the SSR-internal API host — that leaks into customer HTML.
+    expect(img.getAttribute('src')).toBe('/api/v1/portal/tickets/t1/attachments/a1/content');
+    expect(img.getAttribute('alt')).toBe('printer.png');
+  });
+
+  it('renders a non-image attachment as a download link, not an <img>', () => {
+    render(<TicketDetails ticket={withAttachments()} />);
+    const link = screen.getByTestId('ticket-attachment-file-a2');
+    expect(link.getAttribute('href')).toBe('/api/v1/portal/tickets/t1/attachments/a2/content');
+    expect(link.textContent).toContain('report.pdf');
+    expect(screen.queryByTestId('ticket-attachment-image-a2')).toBeNull();
+  });
+
+  it('renders nothing extra for a comment with no attachments', () => {
+    render(<TicketDetails ticket={ticket()} />);
+    expect(screen.queryByTestId('ticket-attachment-list')).toBeNull();
   });
 });

@@ -12,7 +12,7 @@ import { randomUUID } from 'node:crypto';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import type { WorkspaceDatabase } from '../hostTypes';
 import { createContentIngestService } from '../services/contentIngestService';
-import { createEnrichmentService, type AnthropicLike } from '../services/enrichmentService';
+import { createEnrichmentService, type EnrichmentInvoke } from '../services/enrichmentService';
 import { FakeEmbedder, EMBEDDING_DIM, type Embedder } from '../content/embedder';
 import type { ContentByteReader, ContentSourceRef } from '../content/byteReader';
 
@@ -92,23 +92,17 @@ class CapturingEmbedder implements Embedder {
   }
 }
 
-/** Anthropic-like client that records the user prompt and returns a valid, minimal result. */
-class CapturingAnthropic implements AnthropicLike {
+/** Fake `invoke` that records the user prompt and returns a valid, minimal result. */
+class CapturingInvoke {
   readonly prompts: string[] = [];
-  messages = {
-    create: async (args: unknown): Promise<{ content: Array<{ type: string; text?: string }> }> => {
-      const msgs = (args as { messages?: Array<{ content?: string }> }).messages ?? [];
-      for (const m of msgs) if (typeof m.content === 'string') this.prompts.push(m.content);
-      return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify({
-            docType: 'payment record', projectKey: null, projectLabel: null,
-            docDate: null, confidence: 'low', people: [],
-          }),
-        }],
-      };
-    },
+  invoke: EnrichmentInvoke = async (input) => {
+    for (const m of input.messages) this.prompts.push(m.content);
+    return {
+      text: JSON.stringify({
+        docType: 'payment record', projectKey: null, projectLabel: null,
+        docDate: null, confidence: 'low', people: [],
+      }),
+    };
   };
 }
 
@@ -292,12 +286,12 @@ describe('DLP-on-ingest (real DB)', () => {
   });
 
   it('enrichment case: the LLM prompt is built from redacted text, never the raw value', async () => {
-    const client = new CapturingAnthropic();
-    const res = await withOrgTx((db) => createEnrichmentService(db, { client }).run(org, 10));
+    const capturing = new CapturingInvoke();
+    const res = await withOrgTx((db) => createEnrichmentService(db, { invoke: capturing.invoke }).run(org, 10));
     expect(res.errors).toEqual([]);
     // only the redacted (extracted) file is enrichable; the blocked file is not
-    expect(client.prompts.length).toBe(1);
-    const prompt = client.prompts[0];
+    expect(capturing.prompts.length).toBe(1);
+    const prompt = capturing.prompts[0];
     expect(prompt).toContain('[REDACTED:credit_card]');
     expect(prompt).not.toContain('4111');
     expect(prompt).not.toContain(RAW_CARD_DIGITS);

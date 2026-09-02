@@ -32,7 +32,7 @@ import { db } from '../db';
 import { aiSessions, aiMessages } from '../db/schema';
 import { eq } from 'drizzle-orm';
 import { PERMISSIONS } from '../services/permissions';
-import { resolveLlmConfigForOrg } from '../services/llm/llmConfigResolver';
+import { LlmUnavailableError, resolveLlmConfigForOrg } from '../services/llm/llmConfigResolver';
 
 export const scriptAiRoutes = new Hono();
 const requireScriptAiRead = requirePermission(
@@ -208,29 +208,42 @@ scriptAiRoutes.post(
     }
     const effectiveSystemPrompt = updatedSystemPrompt ?? systemPrompt;
 
-    // Get or create streaming session with script builder MCP tools
-    const activeSession = await streamingSessionManager.getOrCreate(
-      sessionId,
-      {
-        orgId: dbSession.orgId,
-        sdkSessionId: dbSession.sdkSessionId,
-        model: dbSession.model,
-        maxTurns: dbSession.maxTurns,
-        turnCount: dbSession.turnCount,
-        systemPrompt: dbSession.systemPrompt,
-      },
-      auth,
-      c,
-      effectiveSystemPrompt,
-      maxBudgetUsd,
-      resolved,
-      SCRIPT_BUILDER_MCP_TOOL_NAMES,
-      // Custom MCP server factory for script builder tools
-      (getAuth, onPreToolUse, onPostToolUse) => ({
-        server: createScriptBuilderMcpServer(getAuth, onPreToolUse, onPostToolUse),
-        name: 'script_builder',
-      }),
-    );
+    // Get or create streaming session with script builder MCP tools.
+    //
+    // The pre-flight above already turns an unavailable partner config into a
+    // 503, but it cannot see this one: `getOrCreate` resolves the WIRE model
+    // inside the manager, so a catalog revision with no verified mapping for
+    // THIS session's model fails closed only here. Same catch shape as
+    // ai.ts — otherwise it reaches `app.onError` as a 500, telling the UI "we
+    // broke" instead of the documented "reconnect your AI provider".
+    let activeSession;
+    try {
+      activeSession = await streamingSessionManager.getOrCreate(
+        sessionId,
+        {
+          orgId: dbSession.orgId,
+          sdkSessionId: dbSession.sdkSessionId,
+          model: dbSession.model,
+          maxTurns: dbSession.maxTurns,
+          turnCount: dbSession.turnCount,
+          systemPrompt: dbSession.systemPrompt,
+        },
+        auth,
+        c,
+        effectiveSystemPrompt,
+        maxBudgetUsd,
+        resolved,
+        SCRIPT_BUILDER_MCP_TOOL_NAMES,
+        // Custom MCP server factory for script builder tools
+        (getAuth, onPreToolUse, onPostToolUse) => ({
+          server: createScriptBuilderMcpServer(getAuth, onPreToolUse, onPostToolUse),
+          name: 'script_builder',
+        }),
+      );
+    } catch (err) {
+      if (err instanceof LlmUnavailableError) return c.json({ error: 'ai_unavailable' }, 503);
+      throw err;
+    }
 
     // Concurrent message guard - atomic check-and-set. If the turn is blocked
     // only on pending approval waits, settle them so the assistant can

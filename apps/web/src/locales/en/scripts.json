@@ -812,6 +812,8 @@
       "advancedFilters": "Advanced Filters",
       "executing": "Executing...",
       "started": "Started!",
+      "queued": "Queued",
+      "reviewResult": "Review result",
       "confirmExecute": "Confirm Execute",
       "execute": "Execute"
     },
@@ -825,12 +827,23 @@
     },
     "matchCount": "{{count}} match",
     "empty": {
-      "noCompatibleDevices": "No compatible devices found. This script requires {{os}}."
+      "noCompatibleDevices": "No compatible devices found. This script requires {{os}}.",
+      "offlineFiltered_one": "No {{status}} devices match. {{count}} compatible device is hidden by the status filter — show all devices to include it.",
+      "offlineFiltered_other": "No {{status}} devices match. {{count}} compatible devices are hidden by the status filter — show all devices to include them.",
+      "showAllDevices": "Show all devices"
     },
     "orSeparator": " or ",
     "progress": {
       "submitting": "Submitting to {{count}} devices...",
-      "submitted": "Submitted to {{count}} devices"
+      "submitted": "Submitted to {{count}} devices",
+      "admitted": "{{admitted}} of {{count}} devices admitted to the queue",
+      "submittingTarget": "Submitting"
+    },
+    "admission": {
+      "allAdmitted": "All selected devices were admitted and queued.",
+      "partiallyAdmitted": "Some devices were admitted and queued. Review the remaining targets.",
+      "rejected": "No devices were admitted. Review the reasons below.",
+      "queued": "Queued"
     },
     "confirm": {
       "title": "Confirm Execution",

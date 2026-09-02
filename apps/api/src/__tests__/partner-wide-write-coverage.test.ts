@@ -73,6 +73,7 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   'routes/auth/mfa.ts': 'writes the acting user\'s own MFA enrolment',
   'routes/auth/passkeys.ts': 'writes the acting user\'s own passkey credentials',
   'routes/auth/password.ts': 'writes the acting user\'s own password hash',
+  'routes/auth/ssoLinkCompletion.ts': 'SSO login completion (#4067): stamps the signing-in user\'s own last-login column',
   'routes/auth/phone.ts': 'writes the acting user\'s own phone factor',
   'routes/auth/verifyEmail.ts': 'writes the acting user\'s own email-verification state',
   'routes/system.ts': 'platform-admin/system bootstrap surface, gated on isPlatformAdmin',
@@ -114,6 +115,7 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   'services/platformAdminBootstrap.ts': 'startup-only platform-admin bootstrap (index.ts boot path); no tenant route calls it',
   'services/policyAlertBridge.ts': 'startup event subscriber creating derived alert artifacts in system context',
   'services/stripeConnectService.ts': 'Stripe-signed webhook records provider-side disconnect status; no tenant caller',
+  'services/systemScriptLibrary.ts': 'startup-only system script library seed (index.ts boot path); writes is_system rows with org_id/partner_id NULL; no tenant route calls it',
   'services/tenantOffboarding.ts': 'offboarding/erasure lifecycle — the documented system-context exemption class',
   'services/unifi/unifiSyncService.ts': 'UniFi worker sync-run telemetry (jobs/unifiWorker); no tenant route calls the mutator',
 
@@ -123,6 +125,7 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   'services/emailVerification.ts': 'verification-token lifecycle + the authenticating user\'s own columns',
   'services/officeAddin/officeAddinBindings.ts': 'per-user Entra bindings and revocation state, not partner config',
   'services/pendingEmail.ts': 'pending-email state and auth epochs for the acting user only',
+  'services/recoveryCodeAuth.ts': 'atomically consumes one recovery code belonging to the authenticating user',
 
   // --- org-axis writes reached via org-gated routes -------------------------
   'services/contacts/compat.ts': 'updates one org\'s legacy billing-contact blob by org id',
@@ -133,11 +136,19 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   'services/softwareDownloadPolicy.ts': 'writes one org\'s encrypted settings by org id',
   'services/softwarePolicyService.ts': 'flagged table is append-only policy audit evidence, not config',
   'services/timeEntryService.ts': 'technician time/billing records, org/user-axis authority',
+  // W06 (#3900). time_suggestion_decisions carries partner_id purely so the
+  // Shape-3 RLS policy has an axis to check; the ROW is per-technician —
+  // every write is `user_id = actor.userId` and every read/delete is scoped to
+  // the caller's own decisions. Gating it on canManagePartnerWidePolicies would
+  // mean only a partner admin could dismiss their own suggestion, which is the
+  // opposite of the intent. Same class as timeEntryService.ts above.
+  'services/timeSuggestionService.ts': 'per-technician suggestion decisions keyed on user_id (partner_id is only the RLS axis); never partner-wide config',
 
   // --- caller-facing, gated at the route layer (verify the gate when editing
   //     these services or adding ANY new route caller) -----------------------
   'services/aiAgents/agentService.ts': 'gated centrally in services/aiAgents/access.ts (assertAgentWriteAllowed), called before every write',
   'services/aiAgents/managedAutomation.ts': 'seeds/syncs one agent\'s own managed automation; the owner axis is copied verbatim from the ai_agents row, never chosen by the caller, and every entry point (createAgent/updateAgent/disableAgent) has already passed assertAgentWriteAllowed — which throws PartnerWideWriteDeniedError for a partner-owned agent',
+  'services/aiAgents/scheduleService.ts': 'gated centrally in services/aiAgents/access.ts (assertAgentWriteAllowed → PartnerWideWriteDeniedError) before every create/update/delete; partner rows additionally require a partner-wide triage agent under auth.partnerId (P2-2, #4189)',
   'services/automationRuntime.ts': 'manual trigger gated at routes/automations.ts; webhook path requires the provisioned automation secret',
   'services/builtinDeploymentPackages.ts': 'both callers behind requirePartnerManager (routes/huntress.ts, routes/sentinelOne.ts)',
   'services/partnerLlmConfig.ts': 'gated at routes/aiProvider.ts — canManagePartnerWidePolicies on every handler (#3889)',
@@ -156,9 +167,14 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   // --- catalog/accounting data on their own permission sets (precedent:
   //     routes/softwareInstallMethods.ts + routes/accounting/index.ts above) --
   'services/accounting/accountingConnectionService.ts': 'QBO/Xero connection lifecycle, gated by its own admin permission set (recorded exemption)',
+  'services/accounting/accountingMappingService.ts': 'accounting_entity_mappings is integration external-ref data, not a partner-wide policy table; every write route in routes/accounting/index.ts passes requireScope(partner,system) + requireMfa() + requireMappingWrite (per-entity-type admin permission), and workers/erasure run under system context',
   'services/catalogImageStorage.ts': 'catalog item images on the catalog permission set; partner-scope routes only',
   'services/catalogService.ts': 'catalog items/prices/bundles on the catalog permission set; partner-scope routes only',
   'services/pax8CatalogService.ts': 'pax8 catalog-item import on the catalog permission set; credentials live behind /pax8\'s global gate',
+
+  // --- org lifecycle (org lifecycle wave 2, #4074) --------------------------
+  'services/orgMerge.ts': 'org_merge_events writes run under system context from the merge engine; the HTTP surface is gated by routes/orgMerge.ts\'s requireScope(partner,system) + requireOrgWrite + MFA with per-org partner checks (authorizeMergePair, including auth.canAccessOrg(survivor.id) for \'selected\'-access partner members) — not a partner-wide policy table. Every write is already scoped to orgs the caller could act on individually; gating on canManagePartnerWidePolicies would incorrectly block partner members with plain org-write access from merging orgs they already manage.',
+  'services/orgArchive.ts': 'archive/restore writes run under system context from the org-lifecycle service; the HTTP surface is gated by routes/orgArchive.ts\'s requireScope(partner,system) + requireOrgWrite + MFA, partner ownership of the target, AND the caller\'s own partner_users.org_ids selection (partnerMemberMayReachOrg, fail-closed for org_access=none) — organizations is not a partner-wide policy table. Every write is scoped to one org the caller may manage; gating on canManagePartnerWidePolicies would incorrectly block partner members with plain org-write access from archiving or restoring an org they already manage.',
 };
 
 /** Table export names whose rows can be partner-owned (org_id absent or nullable). */
@@ -221,6 +237,17 @@ describe('partner-wide write coverage (security review 2026-08-16 §1.1)', () =>
     expect(tableNames).toContain('clientAiPromptTemplates');
   });
 
+  // 30s, not the 5s default. Both cases below synchronously read every .ts
+  // under src/routes and src/services (~1,100 files — see collectSourceFiles
+  // above; the scan is deliberately NOT the whole of src). That is ~2s when
+  // this file runs alone, but under a full-suite run it has been observed at
+  // 13.6s — over the default, so the job fails on a TIMEOUT that says nothing
+  // about partner-wide write safety. #3928 (80b498ece) grew the scan ~2.5x by
+  // extending it from routes/** to services/**, which moved this from
+  // comfortable to borderline.
+  //
+  // The timeout is the only thing raised here: the scan and its assertions are
+  // unchanged, so a real violation still fails exactly as before.
   it('every caller-facing partner-axis write site consults the capability helper', () => {
     const violations: string[] = [];
 
@@ -244,8 +271,9 @@ describe('partner-wide write coverage (security review 2026-08-16 §1.1)', () =>
         'with a reason.\n' +
         violations.join('\n')
     ).toEqual([]);
-  });
+  }, 30_000);
 
+  // Same full-tree scan, same reasoning as above.
   it('the allowlist has no stale entries', () => {
     // A file that stopped mutating partner-axis tables (or moved) must leave the
     // allowlist, or the exemption silently outlives the code it excused.
@@ -257,7 +285,7 @@ describe('partner-wide write coverage (security review 2026-08-16 §1.1)', () =>
 
     const stale = Object.keys(ALLOWED_WITHOUT_CAPABILITY_CHECK).filter((rel) => !stillMutating.has(rel));
     expect(stale, `Remove these from ALLOWED_WITHOUT_CAPABILITY_CHECK: ${stale.join(', ')}`).toEqual([]);
-  });
+  }, 30_000);
 
   it('every allowlist entry documents why it is exempt', () => {
     const undocumented = Object.entries(ALLOWED_WITHOUT_CAPABILITY_CHECK)

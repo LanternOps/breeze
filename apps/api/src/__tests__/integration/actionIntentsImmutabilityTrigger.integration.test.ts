@@ -213,6 +213,22 @@ describe('action_intents immutability trigger (live DB)', () => {
     approval_scope: { approvalScope: 'supervised' },
     classification_version: { classificationVersion: 99 },
     effect_digest: { effectDigest: 'c'.repeat(64) },
+    // 2026-09-23 (P2-2, #4189): scope_kind never changes post-creation.
+    scope_kind: { scopeKind: 'device' },
+    // scope_device_id's guard is conditional (see the migration + the unit
+    // suite's comment): only a transition TO a non-null value is blocked —
+    // the fixture's seeded intent starts with scope_device_id NULL, so
+    // setting it to any UUID is the blocked direction. The allowed tombstone
+    // direction (non-null -> NULL) is exercised separately in
+    // aiAgentSchedulesPartnerRls.integration.test.ts, which seeds a non-null
+    // starting value.
+    scope_device_id: { scopeDeviceId: randomUUID() },
+    // 2026-09-25 (P2-4, #4191): same conditional-guard shape as
+    // scope_device_id above. The fixture's seeded intent starts with
+    // scope_ticket_id NULL, so setting it to any UUID is the blocked
+    // direction; the allowed tombstone (non-null -> NULL) is exercised
+    // elsewhere once a Task A3/A6 fixture seeds a non-null starting value.
+    scope_ticket_id: { scopeTicketId: randomUUID() },
   };
 
   it('has a behavioral case for every column on the trigger deny-list', () => {

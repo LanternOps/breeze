@@ -10,6 +10,7 @@ import { runAction, ActionError } from '../../lib/runAction';
 import { Trans, useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import { formatDate } from '@/lib/dateTimeFormat';
+import { PRODUCT_DEFAULT_ENROLLMENT_DEVICE_COUNT } from '@breeze/shared';
 
 interface EnrollmentKey {
   id: string;
@@ -245,9 +246,17 @@ export default function EnrollmentKeyManager() {
         body.orgId = keys[0].orgId;
       }
 
-      if (formMaxUsage) {
-        body.maxUsage = parseInt(formMaxUsage, 10);
-      }
+      // A blank field must NOT fall through to the API's own `?? 1` default:
+      // that default exists for the Add Device installer flow, where max_usage
+      // on the parent key is deliberately left at 1 (the device budget lives on
+      // the installer's bootstrap token instead — see AddDeviceModal's
+      // handleDownload comment, #2992). This standalone Create Key form has no
+      // such bootstrap token, so an unset field here IS the enrollment budget,
+      // and the "Unlimited"-styled placeholder must resolve to the product
+      // default device count (#4126), not a single-use key.
+      body.maxUsage = formMaxUsage
+        ? parseInt(formMaxUsage, 10)
+        : PRODUCT_DEFAULT_ENROLLMENT_DEVICE_COUNT;
       if (formExpiresAt) {
         body.expiresAt = new Date(formExpiresAt).toISOString();
       }
@@ -895,7 +904,7 @@ export default function EnrollmentKeyManager() {
                   type="number"
                   value={formMaxUsage}
                   onChange={(e) => setFormMaxUsage(e.target.value)}
-                  placeholder={t('enrollmentKeys.unlimited')}
+                  placeholder={t('enrollmentKeys.defaultDeviceLimit')}
                   min={1}
                   className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-primary"
                 />

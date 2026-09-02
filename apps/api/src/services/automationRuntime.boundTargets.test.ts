@@ -6,6 +6,7 @@ const {
   publishEventMock,
   selectDistinctMock,
   selectMock,
+  transactionMock,
   updateMock,
 } = vi.hoisted(() => ({
   insertMock: vi.fn(),
@@ -13,18 +14,23 @@ const {
   publishEventMock: vi.fn(),
   selectDistinctMock: vi.fn(),
   selectMock: vi.fn(),
+  transactionMock: vi.fn(),
   updateMock: vi.fn(),
 }));
 
-vi.mock('../db', () => ({
-  db: {
+vi.mock('../db', () => {
+  const tx = {
     insert: insertMock,
     update: updateMock,
     select: selectMock,
     selectDistinct: selectDistinctMock,
-  },
-  runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
-}));
+  };
+  transactionMock.mockImplementation((fn: (value: typeof tx) => unknown) => fn(tx));
+  return {
+    db: { ...tx, transaction: transactionMock },
+    runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
+  };
+});
 
 vi.mock('./eventBus', () => ({
   publishEvent: publishEventMock,
@@ -68,10 +74,28 @@ function mockInsertAndUpdate() {
   publishEventMock.mockResolvedValue(undefined);
 }
 
+function mockAdmissionSelects() {
+  selectMock
+    .mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([]),
+      }),
+    })
+    .mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{ partnerId: 'partner-1' }]),
+        }),
+      }),
+    });
+}
+
 describe('createAutomationRunRecord event-target binding (#3824)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockInsertAndUpdate();
+    selectMock.mockReset();
+    mockAdmissionSelects();
   });
 
   it('boundDeviceIds bypasses resolveAutomationTargetDeviceIds', async () => {
@@ -83,11 +107,13 @@ describe('createAutomationRunRecord event-target binding (#3824)', () => {
 
     expect(result.targetDeviceIds).toEqual(['dev-1']);
     expect(insertValuesMock).toHaveBeenCalledWith(expect.objectContaining({ devicesTargeted: 1 }));
-    expect(selectMock).not.toHaveBeenCalled();
+    expect(selectMock).toHaveBeenCalledTimes(2);
+    expect(transactionMock).toHaveBeenCalledTimes(1);
   });
 
   it('without boundDeviceIds the configured target set is still resolved', async () => {
-    selectMock.mockReturnValue({
+    selectMock.mockReset();
+    selectMock.mockReturnValueOnce({
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockResolvedValue([
           { id: 'dev-1' },
@@ -96,13 +122,14 @@ describe('createAutomationRunRecord event-target binding (#3824)', () => {
         ]),
       }),
     });
+    mockAdmissionSelects();
 
     const result = await createAutomationRunRecord({
       automation: AUTOMATION,
       triggeredBy: 'event:alert.triggered',
     });
 
-    expect(selectMock).toHaveBeenCalled();
+    expect(selectMock).toHaveBeenCalledTimes(3);
     expect(result.targetDeviceIds).toEqual(['dev-1', 'dev-2', 'dev-3']);
   });
 });

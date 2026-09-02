@@ -1,60 +1,29 @@
-import { describe, it, expect } from 'vitest';
-import { applyOrganizationOrder, sanitizeOrganizationOrder } from './orgOrdering';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const orgs = [
-  { id: 'a', name: 'Alpha' },
-  { id: 'b', name: 'Bravo' },
-  { id: 'c', name: 'Charlie' },
-  { id: 'd', name: 'Delta' },
-];
+const { selectMock, updateMock } = vi.hoisted(() => ({
+  selectMock: vi.fn(),
+  updateMock: vi.fn(),
+}));
 
-describe('applyOrganizationOrder', () => {
-  it('returns input unchanged when preferred order is undefined', () => {
-    expect(applyOrganizationOrder(orgs, undefined).map((o) => o.id)).toEqual(['a', 'b', 'c', 'd']);
-  });
+vi.mock('../db', () => ({
+  db: { select: selectMock, update: updateMock },
+  runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
+  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+}));
 
-  it('returns input unchanged when preferred order is null', () => {
-    expect(applyOrganizationOrder(orgs, null).map((o) => o.id)).toEqual(['a', 'b', 'c', 'd']);
-  });
+vi.mock('../db/schema', () => ({
+  partners: { id: 'partners.id', settings: 'partners.settings' },
+}));
 
-  it('returns input unchanged when preferred order is empty', () => {
-    expect(applyOrganizationOrder(orgs, []).map((o) => o.id)).toEqual(['a', 'b', 'c', 'd']);
-  });
+vi.mock('drizzle-orm', () => ({
+  eq: vi.fn((l: unknown, r: unknown) => ({ eq: [l, r] })),
+}));
 
-  it('reorders matching orgs in the preferred order', () => {
-    expect(applyOrganizationOrder(orgs, ['c', 'a', 'd', 'b']).map((o) => o.id)).toEqual([
-      'c', 'a', 'd', 'b',
-    ]);
-  });
+vi.mock('./encryptedColumnRegistry', () => ({
+  encryptColumnValueForWrite: vi.fn((_table: string, _column: string, value: unknown) => value),
+}));
 
-  it('appends orgs missing from preferred order in original order', () => {
-    expect(applyOrganizationOrder(orgs, ['c', 'a']).map((o) => o.id)).toEqual([
-      'c', 'a', 'b', 'd',
-    ]);
-  });
-
-  it('ignores stale ids in preferred order that no longer match an org', () => {
-    expect(applyOrganizationOrder(orgs, ['stale', 'd', 'b']).map((o) => o.id)).toEqual([
-      'd', 'b', 'a', 'c',
-    ]);
-  });
-
-  it('ignores duplicates in preferred order', () => {
-    expect(applyOrganizationOrder(orgs, ['b', 'b', 'a']).map((o) => o.id)).toEqual([
-      'b', 'a', 'c', 'd',
-    ]);
-  });
-
-  it('handles a single-org list', () => {
-    expect(applyOrganizationOrder([{ id: 'x' }], ['x']).map((o) => o.id)).toEqual(['x']);
-  });
-
-  it('does not mutate the input array', () => {
-    const input = [...orgs];
-    applyOrganizationOrder(input, ['d', 'a']);
-    expect(input.map((o) => o.id)).toEqual(['a', 'b', 'c', 'd']);
-  });
-});
+import { removeOrgFromPartnerOrder, sanitizeOrganizationOrder } from './orgOrdering';
 
 describe('sanitizeOrganizationOrder', () => {
   it('keeps only ids that are in the valid set', () => {
@@ -77,5 +46,72 @@ describe('sanitizeOrganizationOrder', () => {
 
   it('returns empty array on empty input', () => {
     expect(sanitizeOrganizationOrder([], ['a', 'b'])).toEqual([]);
+  });
+});
+
+describe('removeOrgFromPartnerOrder', () => {
+  beforeEach(() => {
+    selectMock.mockReset();
+    updateMock.mockReset();
+  });
+
+  function queueSelect(rows: unknown[]) {
+    selectMock.mockReturnValueOnce({
+      from: () => ({
+        where: () => ({
+          limit: () => Promise.resolve(rows),
+        }),
+      }),
+    });
+  }
+
+  function captureUpdates(): Array<{ values: Record<string, unknown> }> {
+    const log: Array<{ values: Record<string, unknown> }> = [];
+    updateMock.mockImplementation(() => ({
+      set: (values: Record<string, unknown>) => ({
+        where: () => {
+          log.push({ values });
+          return Promise.resolve();
+        },
+      }),
+    }));
+    return log;
+  }
+
+  it('removes the org id and writes back the filtered order', async () => {
+    queueSelect([{ settings: { organizationOrder: ['a', 'b', 'c'] } }]);
+    const updates = captureUpdates();
+
+    await removeOrgFromPartnerOrder('partner-1', 'b');
+
+    expect(updates).toHaveLength(1);
+    expect(updates[0]!.values).toMatchObject({ settings: { organizationOrder: ['a', 'c'] } });
+  });
+
+  it('does nothing when the partner has no saved order', async () => {
+    queueSelect([{ settings: {} }]);
+    const updates = captureUpdates();
+
+    await removeOrgFromPartnerOrder('partner-1', 'b');
+
+    expect(updates).toHaveLength(0);
+  });
+
+  it('does nothing when the id is not present in the saved order', async () => {
+    queueSelect([{ settings: { organizationOrder: ['x', 'y'] } }]);
+    const updates = captureUpdates();
+
+    await removeOrgFromPartnerOrder('partner-1', 'b');
+
+    expect(updates).toHaveLength(0);
+  });
+
+  it('does nothing when the partner is not found', async () => {
+    queueSelect([]);
+    const updates = captureUpdates();
+
+    await removeOrgFromPartnerOrder('partner-1', 'b');
+
+    expect(updates).toHaveLength(0);
   });
 });

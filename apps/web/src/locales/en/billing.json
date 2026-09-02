@@ -694,7 +694,8 @@
         "updateLine": "Could not update the line.",
         "updateSection": "Could not update the section.",
         "uploadImage": "Could not upload the image.",
-        "noPriceForCurrency": "No {{currency}} price for this item. Add one in the catalog or enter a manual line."
+        "noPriceForCurrency": "No {{currency}} price for this item. Add one in the catalog or enter a manual line.",
+        "sectionAddedListStale": "Section added, but the list could not refresh. Reload the page to see it."
       },
       "image": {
         "alt": "Quote image",

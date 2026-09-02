@@ -144,7 +144,7 @@ describe('enrollment idempotency — real Postgres (#2764)', () => {
     expect(deviceId).toBeTruthy();
 
     const afterEnroll = await selectDevice(deviceId);
-    expect(afterEnroll?.status).toBe('online');
+    expect(afterEnroll?.status).toBe('pending');
     expect(afterEnroll?.uninstallIntentAt).toBeNull();
 
     // 2. Signal uninstall intent (token-resolved write — device auth is faked,
@@ -160,7 +160,7 @@ describe('enrollment idempotency — real Postgres (#2764)', () => {
 
     const afterIntent = await selectDevice(deviceId);
     expect(afterIntent?.uninstallIntentAt).not.toBeNull();
-    expect(afterIntent?.status).toBe('online'); // reaper hasn't run yet
+    expect(afterIntent?.status).toBe('pending'); // reaper hasn't run yet
 
     // 3. Reap. UNINSTALL_INTENT_DECOMMISSION_HOURS=0 makes the just-stamped
     // intent immediately eligible — the predicate's `< now() - interval`
@@ -194,7 +194,7 @@ describe('enrollment idempotency — real Postgres (#2764)', () => {
     expect(freshDeviceId).not.toBe(deviceId);
 
     const freshDevice = await selectDevice(freshDeviceId);
-    expect(freshDevice?.status).toBe('online');
+    expect(freshDevice?.status).toBe('pending');
     expect(freshDevice?.hostname).toBe(hostname);
 
     // The prior (reaped) row keeps its history but is renamed off the
@@ -223,7 +223,7 @@ describe('enrollment idempotency — real Postgres (#2764)', () => {
 
     const before = await selectDevice(firstDeviceId);
     expect(before).not.toBeNull();
-    expect(before?.status).toBe('online'); // fresh enroll — the online-collider rung applies
+    expect(before?.status).toBe('pending'); // fresh enrollment has not proved reachability yet
 
     // Second machine claims the SAME hostname/org/site with the SAME
     // enrollment key but no existing-device token — no way to distinguish

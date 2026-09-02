@@ -10,10 +10,10 @@
   "dependencies": { "@azure/msal-browser": "^5.18.0", "dompurify": "^3.4.11", "marked": "^18.0.5" },
   "peerDependencies": { "react": "^19.2.7", "react-dom": "^19.2.7" },
   "devDependencies": {
-    "@testing-library/react": "^16.3.2",
-    "@types/office-js": "^1.0.606",
+    "@testing-library/react": "^16.3.3",
+    "@types/office-js": "^1.0.608",
     "@types/react": "^19.2.18",
-    "@types/react-dom": "^19.2.4",
+    "@types/react-dom": "^19.2.5",
     "jsdom": "^30.0.1",
     "typescript": "^5.7.2",
     "vite": "^8.2.0",

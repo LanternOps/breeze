@@ -1,15 +1,19 @@
 import { useState, useEffect } from 'react';
 import type { FilterConditionGroup } from '@breeze/shared';
 import { fetchWithAuth } from '../stores/auth';
+import { NO_VALUE_OPERATORS } from '../components/devices/filterMigration';
 
 // A filter is worth sending to the server once it has at least one condition
 // with a real value (nested groups count as valid — the server validates the
-// leaves). Mirrors the check DeviceList used before the resolution was lifted
-// here so the list and grid share one id set (grid previously ignored the
-// advanced filter entirely).
+// leaves), OR a no-value operator (isEmpty/isNotEmpty/isNull/isNotNull —
+// e.g. the Devices page "Untagged" quick filter), which is meaningful with
+// value === '' by construction. Mirrors the check DeviceList used before the
+// resolution was lifted here so the list and grid share one id set (grid
+// previously ignored the advanced filter entirely).
 function hasValidConditions(filter: FilterConditionGroup): boolean {
   return filter.conditions.some(c => {
     if ('conditions' in c) return true;
+    if (NO_VALUE_OPERATORS.includes(c.operator)) return true;
     return c.value !== '' && c.value !== null && c.value !== undefined;
   });
 }

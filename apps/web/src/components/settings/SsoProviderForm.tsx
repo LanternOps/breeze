@@ -29,7 +29,12 @@ const createSsoProviderSchema = (t: TFunction) => z.object({
   autoProvision: z.boolean(),
   defaultRoleId: z.string().optional(),
   allowedDomains: z.string().optional(),
-  enforceSSO: z.boolean()
+  enforceSSO: z.boolean(),
+  // #4018: whether Breeze accepts the IdP's own MFA assertion (`amr: mfa` in
+  // the id_token) as satisfying MFA-gated routes. Off by default — the API
+  // schemas (createProviderSchema/updateProviderSchema) already mark it
+  // optional and default it to false; this mirrors that on the client.
+  trustsIdpMfa: z.boolean()
 });
 
 export type SsoProviderFormValues = z.infer<ReturnType<typeof createSsoProviderSchema>>;
@@ -132,6 +137,7 @@ export default function SsoProviderForm({
       defaultRoleId: '',
       allowedDomains: '',
       enforceSSO: false,
+      trustsIdpMfa: false,
       ownerScope: 'organization',
       ...defaultValues
     }
@@ -460,6 +466,7 @@ export default function SsoProviderForm({
           <label className="flex items-start gap-3">
             <input
               type="checkbox"
+              data-testid="provider-enforce-sso"
               className="mt-1 h-4 w-4 rounded border-border text-primary focus:ring-primary"
               {...register('enforceSSO')}
             />
@@ -467,6 +474,20 @@ export default function SsoProviderForm({
               <span className="text-sm font-medium">{t('ssoProviderForm.enforceSSOOnlyLogin')}</span>
               <p className="text-xs text-muted-foreground">
                 {t('ssoProviderForm.usersMustUseSSOToSignInPasswordLoginWillBeDisabled')}</p>
+            </div>
+          </label>
+
+          <label className="flex items-start gap-3">
+            <input
+              type="checkbox"
+              data-testid="provider-trusts-idp-mfa"
+              className="mt-1 h-4 w-4 rounded border-border text-primary focus:ring-primary"
+              {...register('trustsIdpMfa')}
+            />
+            <div>
+              <span className="text-sm font-medium">{t('ssoProviderForm.trustThisProvidersMFA')}</span>
+              <p className="text-xs text-muted-foreground">
+                {t('ssoProviderForm.trustThisProvidersMFAHelperText')}</p>
             </div>
           </label>
 
@@ -526,6 +547,7 @@ export default function SsoProviderForm({
             {t('ssoProviderForm.cancel')}</button>
           <button
             type="submit"
+            data-testid="provider-save"
             disabled={isLoading}
             className="flex h-11 w-full items-center justify-center rounded-md bg-primary text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto sm:px-6"
           >

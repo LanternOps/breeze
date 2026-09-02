@@ -116,7 +116,15 @@
     "internalPlaceholder": "Dahili bir not ekleyin…",
     "sending": "Gönderiliyor",
     "sendReply": "Yanıt gönder",
-    "addInternalNote": "Dahili not ekle"
+    "addInternalNote": "Dahili not ekle",
+    "attachments": {
+      "attach": "Ekle",
+      "uploading": "Yükleniyor…",
+      "retry": "Yeniden dene",
+      "remove": "Dosyayı kaldır",
+      "tooMany": "Bir yoruma en fazla {{max}} dosya ekleyebilirsiniz.",
+      "tooLarge": "{{name}} 10 MB sınırını aşıyor."
+    }
   },
   "ticketFeed": {
     "empty": "Henüz etkinlik yok.",
@@ -149,6 +157,11 @@
     "deleteDialog": {
       "title": "Yorumu sil",
       "message": "Bu yorumu silmek istediğinizden emin misiniz? Bu eylem geri alınamaz."
+    },
+    "attachments": {
+      "broken": "{{name}} yüklenemedi",
+      "open": "Eki aç",
+      "remove": "Eki kaldır"
     }
   },
   "ticketPartsCard": {
@@ -432,6 +445,17 @@
       "feedbackFailed": "Bilet önceliklendirme geri bildirimi kaydedilemedi.",
       "feedbackSaved": "Bilet önceliklendirme geri bildirimi kaydedildi"
     },
+    "aiDraft": {
+      "kindReply": "Yapay zeka tarafından hazırlanan yanıt",
+      "kindResolutionNote": "Yapay zeka tarafından hazırlanan çözüm notu",
+      "sendAsMe": "Benim adıma gönder",
+      "sending": "Gönderiliyor…",
+      "discard": "Vazgeç",
+      "sendFailed": "Yapay zeka taslağı gönderilemedi.",
+      "sent": "Taslak gönderildi",
+      "discardFailed": "Yapay zeka taslağı silinemedi.",
+      "discarded": "Taslak silindi"
+    },
     "resolve": {
       "noteLabel": "Çözüm notu (talep sahibi tarafından görülebilir)",
       "submit": "Bileti çözümle"
@@ -469,7 +493,8 @@
       "categoryUpdateFailed": "Kategori güncellemesi başarısız oldu. Tekrar dene.",
       "assigned": "Atandı",
       "unassigned": "Atanmamış",
-      "assignFailed": "Atama başarısız oldu. Tekrar dene."
+      "assignFailed": "Atama başarısız oldu. Tekrar dene.",
+      "attachmentFailed": "Ek yüklenemedi."
     },
     "delete": {
       "failed": "Silinemedi. Tekrar dene.",

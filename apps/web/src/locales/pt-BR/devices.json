@@ -111,7 +111,10 @@
     "expiryMinutes_one": "em cerca de {{count}} minuto",
     "expiryMinutes_other": "em cerca de {{count}} minutos",
     "expiryHours_one": "em cerca de {{count}} hora",
-    "expiryHours_other": "em cerca de {{count}} horas"
+    "expiryHours_other": "em cerca de {{count}} horas",
+    "mfaRequiredSsoLinks": "A autenticação multifator é necessária para gerar links. Sua organização faz seu login por meio de um provedor de identidade — peça ao administrador para habilitar a confiança de MFA para ele ou registre um fator nas configurações do seu perfil.",
+    "mfaRequiredSsoInstallers": "A autenticação multifator é necessária para gerar instaladores. Sua organização faz seu login por meio de um provedor de identidade — peça ao administrador para habilitar a confiança de MFA para ele ou registre um fator nas configurações do seu perfil.",
+    "mfaRequiredSsoTokens": "A autenticação multifator é necessária para gerar tokens de instalação. Sua organização faz seu login por meio de um provedor de identidade — peça ao administrador para habilitar a confiança de MFA para ele ou registre um fator nas configurações do seu perfil."
   },
   "changeSiteModal": {
     "failedToLoadSites": "Falha ao carregar os sites",

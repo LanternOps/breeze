@@ -18,6 +18,7 @@ import { captureException } from '../services/sentry';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { contracts } from '../db/schema';
 import { generateDueInvoice } from '../services/contractService';
+import { buildAutomationEligibleOrgPredicate } from '../services/tenantStatus';
 import { runContractRenewalSweep } from '../services/contractRenewal';
 import { issueInvoice } from '../services/invoiceService';
 import { sendInvoiceEmail } from '../services/invoicePdf';
@@ -52,7 +53,12 @@ export async function runContractBillingSweep(asOf: Date = new Date()): Promise<
         and(
           eq(contracts.status, 'active' as never),
           isNotNull(contracts.nextBillingAt),
-          lte(contracts.nextBillingAt, today)
+          lte(contracts.nextBillingAt, today),
+          // Org-lifecycle Wave 4: same gate as the renewal/overdue sweeps —
+          // an archived tenant must not keep generating (and auto-issuing +
+          // emailing) invoices from inside its purge countdown. Structurally
+          // identical to runContractRenewalSweep, so it is fixed with it.
+          buildAutomationEligibleOrgPredicate(contracts.orgId)
         )
       )
     )

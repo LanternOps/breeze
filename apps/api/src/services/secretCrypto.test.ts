@@ -1,4 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
+import { createHash, createHmac } from 'node:crypto';
 
 const ENV_KEYS = [
   'APP_ENCRYPTION_KEY',
@@ -444,6 +445,54 @@ describe('secretCrypto', () => {
       });
 
       expect(() => decryptSecret('enc:v3:bad-data', { aad: 'x' })).toThrow('Malformed encrypted secret');
+    });
+  });
+
+  describe('domain-separated key material', () => {
+    function expectedDerivedKey(source: string, domain: string): Buffer {
+      const encryptionKey = createHash('sha256').update(source).digest();
+      return createHmac('sha256', encryptionKey)
+        .update(`breeze-secret-derived-key:v1\0${domain}`)
+        .digest();
+    }
+
+    it('derives deterministic HMAC material without exposing a master key', async () => {
+      const crypto = await loadSecretCrypto({
+        APP_ENCRYPTION_KEY: 'active-key-material',
+        APP_ENCRYPTION_KEY_ID: 'active',
+      });
+
+      const first = crypto.getSecretDerivedKeyMaterials('auth-browser-binding:v1');
+      const second = crypto.getSecretDerivedKeyMaterials('auth-browser-binding:v1');
+
+      expect(first.active).toEqual({
+        keyId: 'active',
+        key: expectedDerivedKey('active-key-material', 'auth-browser-binding:v1'),
+      });
+      expect(second).toEqual(first);
+      expect(first).not.toHaveProperty('masterKey');
+      expect(JSON.stringify(first)).not.toContain('active-key-material');
+    });
+
+    it('returns active and retained materials while keeping domains isolated', async () => {
+      const crypto = await loadSecretCrypto({
+        APP_ENCRYPTION_KEY: 'current-key-material',
+        APP_ENCRYPTION_KEY_ID: 'current',
+        APP_ENCRYPTION_KEYRING: JSON.stringify({
+          old: 'old-key-material',
+          current: 'current-key-material',
+        }),
+      });
+
+      const binding = crypto.getSecretDerivedKeyMaterials('auth-browser-binding:v1');
+      const other = crypto.getSecretDerivedKeyMaterials('another-domain:v1');
+
+      expect(binding.active.keyId).toBe('current');
+      expect(binding.retained.map((material) => material.keyId).sort()).toEqual(['current', 'old']);
+      expect(binding.retained.find((material) => material.keyId === 'old')?.key).toEqual(
+        expectedDerivedKey('old-key-material', 'auth-browser-binding:v1'),
+      );
+      expect(other.active.key).not.toEqual(binding.active.key);
     });
   });
 });

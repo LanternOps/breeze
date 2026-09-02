@@ -19,7 +19,7 @@ import {
   deviceGroupMemberships,
   organizations,
 } from '../db/schema';
-import { type BreezeEvent, getEventBus } from '../services/eventBus';
+import { type BreezeEvent } from '../services/eventBus';
 import {
   type AutomationTrigger,
   type AutomationTriggerContext,
@@ -47,6 +47,10 @@ const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
   const withSystem = dbModule.withSystemDbAccessContext;
   return typeof withSystem === 'function' ? withSystem(fn) : fn();
+};
+const runOutsideDbAccess = <T>(fn: () => T): T => {
+  const outside = dbModule.runOutsideDbContext;
+  return typeof outside === 'function' ? outside(fn) : fn();
 };
 
 /** Check if a Drizzle/Postgres error is "relation does not exist" (42P01). */
@@ -84,8 +88,6 @@ type AutomationJobData = AutomationQueueJobData;
 
 let automationQueue: Queue<AutomationJobData> | null = null;
 let automationWorker: Worker<AutomationJobData> | null = null;
-
-let eventSubscription: (() => void) | null = null;
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -825,11 +827,11 @@ async function processExecuteConfigPolicyRun(
   data: ExecuteConfigPolicyRunJobData,
 ): Promise<{ runId?: string; skipped?: string }> {
   // Load the config policy automation row
-  const [cpAutomation] = await db
+  const [cpAutomation] = await runWithSystemDbAccess(() => db
     .select()
     .from(configPolicyAutomations)
     .where(eq(configPolicyAutomations.id, data.configPolicyAutomationId))
-    .limit(1);
+    .limit(1));
 
   if (!cpAutomation) {
     return { skipped: 'config_policy_automation_not_found' };
@@ -845,12 +847,25 @@ async function processExecuteConfigPolicyRun(
   return { runId: result.runId };
 }
 
-function createAutomationWorker(): Worker<AutomationJobData> {
+export function createAutomationWorker(): Worker<AutomationJobData> {
   return new Worker<AutomationJobData>(
     AUTOMATION_QUEUE,
     async (job: Job<AutomationJobData>) => {
+      const data = parseQueueJobData(AUTOMATION_QUEUE, job, automationQueueJobDataSchema);
+      // Runtime execution deliberately owns a sequence of short system
+      // contexts. Keeping the worker's historical ambient transaction here
+      // would pin one pooled connection for the whole fleet run and force the
+      // action-result seeder/reconciler either to reuse that long transaction
+      // or allocate a second connection per device.
+      if (data.type === 'execute-run') {
+        assertQueueJobName(AUTOMATION_QUEUE, job, 'execute-run');
+        return runOutsideDbAccess(() => processExecuteRun(data));
+      }
+      if (data.type === 'execute-config-policy-run') {
+        assertQueueJobName(AUTOMATION_QUEUE, job, 'execute-config-policy-run');
+        return runOutsideDbAccess(() => processExecuteConfigPolicyRun(data));
+      }
       return runWithSystemDbAccess(async () => {
-        const data = parseQueueJobData(AUTOMATION_QUEUE, job, automationQueueJobDataSchema);
         switch (data.type) {
           case 'scan-schedules':
             assertQueueJobName(AUTOMATION_QUEUE, job, 'scan-schedules');
@@ -861,15 +876,9 @@ function createAutomationWorker(): Worker<AutomationJobData> {
           case 'trigger-event':
             assertQueueJobName(AUTOMATION_QUEUE, job, 'trigger-event');
             return processTriggerEvent(data);
-          case 'execute-run':
-            assertQueueJobName(AUTOMATION_QUEUE, job, 'execute-run');
-            return processExecuteRun(data);
           case 'trigger-config-policy-schedule':
             assertQueueJobName(AUTOMATION_QUEUE, job, 'trigger-config-policy-schedule');
             return processTriggerConfigPolicySchedule(data);
-          case 'execute-config-policy-run':
-            assertQueueJobName(AUTOMATION_QUEUE, job, 'execute-config-policy-run');
-            return processExecuteConfigPolicyRun(data);
         }
       });
     },
@@ -1031,24 +1040,24 @@ export async function queueEventTriggers(event: BreezeEvent<Record<string, unkno
   }
 }
 
-function subscribeToAutomationEvents(): void {
-  if (eventSubscription) {
-    return;
+/**
+ * Dispatch one event to the automation trigger fan-out.
+ *
+ * Registered under subscriber id `automation-worker` (services/eventSubscribers.ts).
+ * MUST throw on failure — queue-mode dispatch (#4085) retries on a thrown
+ * rejection; local delivery's wrapper (eventBus.ts's invokeLocalHandlers)
+ * provides the swallow-and-log semantics the old subscriber's try/catch used
+ * to provide itself.
+ */
+export async function handleAutomationEvent(event: BreezeEvent): Promise<void> {
+  if (!isRedisAvailable()) {
+    // Retryable in queue mode; local delivery swallows this exactly as the
+    // old silent `return` did.
+    throw new Error('redis unavailable for automation trigger dispatch');
   }
 
-  const eventBus = getEventBus();
-  eventSubscription = eventBus.subscribe('*', async (event) => {
-    try {
-      if (!isRedisAvailable()) {
-        return;
-      }
-
-      await runWithSystemDbAccess(async () => {
-        await queueEventTriggers(event as BreezeEvent<Record<string, unknown>>);
-      });
-    } catch (error) {
-      console.error('[AutomationWorker] Failed handling event trigger dispatch:', error);
-    }
+  await runWithSystemDbAccess(async () => {
+    await queueEventTriggers(event as BreezeEvent<Record<string, unknown>>);
   });
 }
 
@@ -1065,17 +1074,11 @@ export async function initializeAutomationWorker(): Promise<void> {
   });
 
   await scheduleAutomationScans();
-  subscribeToAutomationEvents();
 
   console.log('[AutomationWorker] Automation worker initialized');
 }
 
 export async function shutdownAutomationWorker(): Promise<void> {
-  if (eventSubscription) {
-    eventSubscription();
-    eventSubscription = null;
-  }
-
   if (automationWorker) {
     await automationWorker.close();
     automationWorker = null;

@@ -36,6 +36,9 @@ describe('app.config.js', () => {
   it('publishes the DSN on extra for the runtime fallback', () => {
     vi.stubEnv('CONFIGURATION', 'Release');
     vi.stubEnv('EXPO_PUBLIC_SENTRY_DSN', DSN);
+    // A release build must also satisfy the API-URL gate next door
+    // (appConfigApiUrl.test.ts) before it can get as far as returning a config.
+    vi.stubEnv('EXPO_PUBLIC_API_URL', 'https://us.2breeze.app');
     const result = appConfig({ config: baseConfig() });
     expect(result.extra.sentryDsn).toBe(DSN);
     expect(result.extra.existing).toBe('kept');

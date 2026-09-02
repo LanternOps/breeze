@@ -738,6 +738,8 @@
         "recurrence": "Recurrencia",
         "startDateTime": "Fecha/hora de inicio",
         "theSpecificDateAndTimeForThis": "La fecha y hora específicas de este período de mantenimiento único.",
+        "startTime": "Hora de inicio",
+        "theTimeOfDayEachWindowOpensIn": "La hora del día en que se abre cada período de mantenimiento, en la zona horaria seleccionada. El valor predeterminado es medianoche (00:00).",
         "durationHours": "Duración (horas)",
         "timezone": "Zona horaria",
         "notifyBeforeMinutes": "Avisar antes (minutos)",

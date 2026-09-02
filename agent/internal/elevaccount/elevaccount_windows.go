@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"syscall"
 	"time"
 	"unsafe"
@@ -24,13 +25,16 @@ var (
 	procNetUserSetInfo          = netapi32.NewProc("NetUserSetInfo")
 	procNetLocalGroupAddMembers = netapi32.NewProc("NetLocalGroupAddMembers")
 	procNetLocalGroupDelMembers = netapi32.NewProc("NetLocalGroupDelMembers")
+	procNetUserGetLocalGroups   = netapi32.NewProc("NetUserGetLocalGroups")
 )
 
 const (
-	userInfoLevel1    = 1
-	userInfoLevel1003 = 1003
-	userInfoLevel1008 = 1008
-	localGroupLevel0  = 0
+	userInfoLevel1     = 1
+	userInfoLevel1003  = 1003
+	userInfoLevel1008  = 1008
+	localGroupLevel0   = 0
+	maxPreferredLength = 0xffffffff
+	lgIncludeIndirect  = 0x0001
 
 	userPrivUser = 1
 
@@ -76,6 +80,10 @@ type userInfo1008 struct {
 
 type localGroupMembersInfo0 struct {
 	SID *windows.SID
+}
+
+type localGroupUsersInfo0 struct {
+	Name *uint16
 }
 
 func (*windowsManager) EnsureProvisioned() error {
@@ -135,26 +143,49 @@ func (*windowsManager) Promote(ctx context.Context) (Credential, error) {
 }
 
 func (*windowsManager) Demote(ctx context.Context) error {
+	_, err := (&windowsManager{}).Deprovision(ctx)
+	return err
+}
+
+func (*windowsManager) Deprovision(ctx context.Context) (AccountEvidence, error) {
 	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if err := removeFromAdministrators(AccountName); err != nil {
-		return err
-	}
-	if err := ctx.Err(); err != nil {
-		return err
+		return AccountEvidence{}, err
 	}
 	password, err := GeneratePassword(defaultPasswordLength)
 	if err != nil {
-		return err
+		return AccountEvidence{}, err
 	}
 	if err := setPassword(AccountName, password); err != nil {
-		return err
+		return AccountEvidence{}, err
 	}
 	if err := ctx.Err(); err != nil {
-		return err
+		return AccountEvidence{}, err
 	}
-	return setUserFlags(AccountName, accountDisabledFlags)
+	if err := removeFromAdministrators(AccountName); err != nil {
+		return AccountEvidence{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return AccountEvidence{}, err
+	}
+	if err := setUserFlags(AccountName, accountDisabledFlags); err != nil {
+		return AccountEvidence{}, err
+	}
+	return (&windowsManager{}).VerifyClean(ctx)
+}
+
+func (*windowsManager) VerifyClean(ctx context.Context) (AccountEvidence, error) {
+	if err := ctx.Err(); err != nil {
+		return AccountEvidence{}, err
+	}
+	enabled, err := accountEnabled(AccountName)
+	if err != nil {
+		return AccountEvidence{}, err
+	}
+	inAdministrators, err := accountInAdministrators(AccountName)
+	if err != nil {
+		return AccountEvidence{}, err
+	}
+	return AccountEvidence{Enabled: enabled, InAdministrators: inAdministrators}, nil
 }
 
 func netUserAddDisabled(username, password string) error {
@@ -296,6 +327,57 @@ func administratorsGroupName() (string, error) {
 		return "", fmt.Errorf("LookupAccountSid %s returned empty account name", adminAliasSID)
 	}
 	return account, nil
+}
+
+func accountEnabled(username string) (bool, error) {
+	namePtr, err := windows.UTF16PtrFromString(username)
+	if err != nil {
+		return false, err
+	}
+	var buffer *byte
+	if err := windows.NetUserGetInfo(nil, namePtr, userInfoLevel1, &buffer); err != nil {
+		return false, fmt.Errorf("NetUserGetInfo %s failed: %w", username, err)
+	}
+	defer windows.NetApiBufferFree(buffer)
+	info := (*userInfo1)(unsafe.Pointer(buffer))
+	return info.Flags&ufAccountDisable == 0, nil
+}
+
+func accountInAdministrators(username string) (bool, error) {
+	namePtr, err := windows.UTF16PtrFromString(username)
+	if err != nil {
+		return false, err
+	}
+	adminName, err := administratorsGroupName()
+	if err != nil {
+		return false, err
+	}
+	var buffer *byte
+	var entriesRead, totalEntries uint32
+	status, _, _ := procNetUserGetLocalGroups.Call(
+		0,
+		uintptr(unsafe.Pointer(namePtr)),
+		uintptr(localGroupLevel0),
+		uintptr(lgIncludeIndirect),
+		uintptr(unsafe.Pointer(&buffer)),
+		uintptr(maxPreferredLength),
+		uintptr(unsafe.Pointer(&entriesRead)),
+		uintptr(unsafe.Pointer(&totalEntries)),
+	)
+	if uint32(status) != nerrSuccess {
+		return false, fmt.Errorf("NetUserGetLocalGroups %s failed: %w", username, syscall.Errno(status))
+	}
+	if buffer == nil {
+		return false, nil
+	}
+	defer windows.NetApiBufferFree(buffer)
+	groups := unsafe.Slice((*localGroupUsersInfo0)(unsafe.Pointer(buffer)), entriesRead)
+	for _, group := range groups {
+		if group.Name != nil && strings.EqualFold(windows.UTF16PtrToString(group.Name), adminName) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func hideAccountFromLogon(username string) error {

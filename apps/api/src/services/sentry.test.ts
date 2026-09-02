@@ -462,6 +462,8 @@ describe('scrubEvent', () => {
         binary_component: 'agent',
         release_asset_name: 'breeze-agent-darwin-arm64',
         manifest_refusal_reason: 'not-distributable',
+        release_sync_failure_reason: 'ssrf-blocked',
+        release_sync_context: 'stale-volume-fallback',
         worker: 'patchScheduler',
         worker_failure_reason: 'desktop_stop_pending',
         patch_reconcile_stage: 'enqueue_failed',
@@ -535,6 +537,12 @@ describe('scrubEvent', () => {
       binary_component: 'agent',
       release_asset_name: 'breeze-agent-darwin-arm64',
       manifest_refusal_reason: 'not-distributable',
+      // #4262: binarySync's SSRF-guard refusals fail OPEN by design, so the
+      // Sentry event is the only durable record that one happened. Dropped
+      // here, the capture arrives as a contentless blank and an operator
+      // cannot tell a guard refusal from an ordinary GitHub outage.
+      release_sync_failure_reason: 'ssrf-blocked',
+      release_sync_context: 'stale-volume-fallback',
       // #1379/BREEZE-9: attachWorkerObservability sets this on every worker,
       // and the allowlist introduced two days later (a50769487) has discarded
       // it ever since, which is why ~12k held-context events carry an empty

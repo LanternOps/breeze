@@ -204,6 +204,26 @@ describe('#1105 DB-context tripwires', () => {
       expect(capturedMessages[0]!.tags?.dbContextOpener).toEqual(expect.stringContaining('dbContextTripwire'));
     });
 
+    it('withSystemDbAccessContext(fn, label) carries the label through to the tag and message (#4276)', async () => {
+      // The two-argument form is the new surface #4276 adds — the metric
+      // rollup workers pass e.g. 'metricRollups.raw.device_metrics' through it.
+      // The unit tests only assert the label string is handed to a MOCK; this
+      // proves the real plumbing (systemDbAccessContext -> withDbAccessContext
+      // -> formatHeldContextWarning) lands it in the allowlisted tag against a
+      // real held connection.
+      process.env.DB_CONTEXT_HELD_WARN_MS = '50';
+      process.env.DB_CONTEXT_HELD_CAPTURE_THROTTLE_MS = '0';
+      __resetHeldContextCaptureThrottleForTests();
+
+      await withSystemDbAccessContext(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 90));
+      }, 'metricRollups.raw.device_metrics');
+
+      expect(capturedMessages).toHaveLength(1);
+      expect(capturedMessages[0]!.tags?.dbContextLabel).toBe('metricRollups.raw.device_metrics');
+      expect(capturedMessages[0]!.message).toContain('[metricRollups.raw.device_metrics]');
+    });
+
     it('derives a grouping label from the opener when the context is unlabelled (#3218)', async () => {
       // Supersedes the previous contract ("unlabelled callers keep byte-identical
       // message text"). That stability was deliberately traded away in #3218:

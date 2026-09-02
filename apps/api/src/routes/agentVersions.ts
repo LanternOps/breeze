@@ -14,8 +14,11 @@ import {
 import { platformAdminMiddleware } from "../middleware/platformAdmin";
 import { writeRouteAudit } from "../services/auditEvents";
 import { syncFromGitHub } from "../services/binarySync";
+import { captureException } from "../services/sentry";
+import { ResponseTooLargeError, SsrfBlockedError } from "../services/urlSafety";
 import { getBinaryEdition } from "../services/binaryEdition";
-import { getGithubReleaseVersion } from "../services/binarySource";
+import { getBinarySource, getGithubReleaseVersion } from "../services/binarySource";
+import { getPromotedComponentVersion } from "../services/promotedAgentVersion";
 import { PERMISSIONS } from "../services/permissions";
 import {
   verifyReleaseArtifactManifestAsset,
@@ -683,6 +686,15 @@ agentVersionRoutes.get(
           eq(agentVersions.edition, getBinaryEdition()),
         ),
       )
+      // MUST match the tiebreak in services/promotedAgentVersion.ts, which
+      // resolves the bytes these checksums are verified against (#3499).
+      // Nothing enforces one promoted row per (component, platform, arch,
+      // edition) — the invariant is maintained by demote-then-insert, not a
+      // unique constraint — so if only one of the two ordered, a duplicate
+      // isLatest row would make them select DIFFERENT rows and hand out a
+      // checksum for a release the download route does not serve. That is
+      // #3499 all over again, and silent.
+      .orderBy(desc(agentVersions.createdAt))
       .limit(1);
 
     if (!latestVersion) {
@@ -789,25 +801,47 @@ agentVersionRoutes.get(
 
     // breeze-backup is version-slaved to the agent but requested by EXACT
     // version (unlike agent/helper/watchdog, which always want "latest").
-    // The versionless /download/backup/:os/:arch route can only ever serve
-    // whatever the server currently considers latest (BINARY_VERSION /
-    // BREEZE_VERSION — see binarySource.getGithubReleaseVersion). Rewriting
-    // to that route for a NON-current backup version would hand an agent
-    // healing to an older pinned version newer bytes than it asked for; the
-    // updater verifies checksum+manifest against the pinned version and
-    // fails safe, but can never actually heal. So for component=backup only,
-    // rewrite exclusively when this row IS the exact version the versionless
-    // route would serve — it matches the server's own pinned version
-    // (getGithubReleaseVersion). isLatest is NOT sufficient: production runs
-    // AGENT_AUTO_PROMOTE=false, so after deploying server version Y the DB's
-    // isLatest rows can still point at the still-rolling-out fleet version X.
-    // An agent pinned to X would then get rewritten to the versionless route,
-    // which serves Y's bytes — checksum verification fails fleet-wide for the
-    // entire deploy-to-promote window. Every other component keeps the
-    // unconditional rewrite.
-    const backupVersionIsServableByVersionlessRoute =
-      versionInfo.component !== "backup" ||
-      versionInfo.version === getGithubReleaseVersion();
+    // The versionless /download/backup/:os/:arch route can only ever serve ONE
+    // release, so rewriting a NON-servable backup version to it would hand an
+    // agent healing to an older pinned version different bytes than it asked
+    // for; the updater verifies checksum+manifest against the pinned version
+    // and fails safe, but can never actually heal. So for component=backup
+    // only, rewrite exclusively when this row IS the one that route serves.
+    //
+    // WHICH row that is changed in #3499, so rather than restate the route's
+    // rule here and let the two drift, ask the route's OWN resolver what it
+    // will serve and compare. Restating it is what made this guard subtly
+    // wrong twice: it used to hardcode "the env version", correct only while
+    // the route resolved BINARY_VERSION/BREEZE_VERSION; a plain `isLatest`
+    // test would be equally wrong for a never-synced deployment, where no row
+    // is promoted and the route legitimately falls back to the env version.
+    // Deriving it keeps both cases right by construction.
+    //
+    // A resolver fault throws rather than guessing, and this endpoint is
+    // already DB-dependent (it just read versionInfo), so it surfaces as a 5xx
+    // instead of a rewrite that might not match. Every other component keeps
+    // the unconditional rewrite.
+    let backupVersionIsServableByVersionlessRoute = true;
+    if (versionInfo.component === "backup") {
+      // Mirror the route's own BINARY_SOURCE branch. Only the github branch
+      // resolves the promoted row; in local mode the route streams ONE
+      // unversioned file from disk/S3 whose version is the binaries-volume
+      // build — i.e. the env version, which is what this guard has always
+      // compared against there. Deriving the promoted row in local mode would
+      // withhold the rewrite (and cost a query) whenever the promoted row and
+      // the disk build differ, e.g. AGENT_AUTO_PROMOTE=false or after a
+      // rollback via POST /agent-versions/promote.
+      const versionlessRouteServes =
+        getBinarySource() === "github"
+          ? ((await getPromotedComponentVersion(
+              "backup",
+              dbPlatformToRouteOs(versionInfo.platform),
+              versionInfo.architecture,
+            )) ?? getGithubReleaseVersion())
+          : getGithubReleaseVersion();
+      backupVersionIsServableByVersionlessRoute =
+        versionInfo.version === versionlessRouteServes;
+    }
 
     const serverRelativeUrl = backupVersionIsServableByVersionlessRoute
       ? buildServerRelativeAgentDownloadUrl(
@@ -985,8 +1019,48 @@ agentVersionRoutes.post(
       // short registration instead of assuming a clean sync.
       return c.json(result);
     } catch (err) {
+      // A guard refusal (#4262) is not a routine sync failure: it means the
+      // release host resolved to a private/loopback/link-local address, which
+      // is a DNS-hijack signal. Left in the generic branch it became a 422 with
+      // no server-side trace at all — no log, no Sentry (writeRouteAudit only
+      // runs on success), so nobody could reconstruct it later. Log and
+      // escalate, and answer 502: the fault is upstream, not in the request.
+      // The response deliberately does NOT echo err.resolvedIps — internal
+      // addresses stay in the server-side log.
+      if (err instanceof SsrfBlockedError) {
+        console.error(
+          `[agentVersions] sync-github REFUSED by the SSRF guard (host=${err.hostname ?? "?"}, resolved=${err.resolvedIps?.join(", ") ?? "n/a"})`,
+        );
+        captureException(err, c, {
+          release_sync_failure_reason: "ssrf-blocked",
+          release_sync_context: "sync-github-route",
+        });
+        return c.json(
+          {
+            error:
+              "Release sync refused: the release host resolved to a private or link-local address. Check DNS and egress on the API host.",
+          },
+          502,
+        );
+      }
+      if (err instanceof ResponseTooLargeError) {
+        console.error(
+          `[agentVersions] sync-github aborted: response exceeded the ${err.maxBytes}-byte ceiling`,
+        );
+        captureException(err, c, {
+          release_sync_failure_reason: "response-too-large",
+          release_sync_context: "sync-github-route",
+        });
+        return c.json(
+          {
+            error: `Release sync aborted: the release host returned a body over the ${err.maxBytes}-byte limit.`,
+          },
+          502,
+        );
+      }
       const msg = err instanceof Error ? err.message : String(err);
       const status = msg.includes("GitHub API error") ? 502 : 422;
+      console.error(`[agentVersions] sync-github failed: ${msg}`);
       return c.json({ error: msg }, status);
     }
   },

@@ -30,18 +30,26 @@ vi.mock('../../db', () => ({
   runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
 }));
 
-// Keep the real enums (approvalFactorEnum et al.) — schema/elevations.ts calls
-// approvalFactorEnum() at module load, so a bare factory that omits them breaks the
-// whole schema import. Override only approvalRequests with the query stub.
-vi.mock('../../db/schema/approvals', async (importActual) => ({
-  ...(await importActual<typeof import('../../db/schema/approvals')>()),
-  approvalRequests: {
-    id: 'ar.id',
-    userId: 'ar.userId',
-    status: 'ar.status',
-    expiresAt: 'ar.expiresAt',
-  },
-}));
+// The production schema has a cycle through approvals -> actionIntents ->
+// elevations -> approvals. Importing the real approvals module from this
+// hoisted mock exposes its partially initialized exports to elevations. This
+// route only needs the table as an argument to the mocked db.insert(), so keep
+// the stub narrow while supplying the column builder elevations evaluates.
+vi.mock('../../db/schema/approvals', async () => {
+  const { text } = await vi.importActual<typeof import('drizzle-orm/pg-core')>(
+    'drizzle-orm/pg-core',
+  );
+
+  return {
+    approvalFactorEnum: (name: string) => text(name),
+    approvalRequests: {
+      id: 'ar.id',
+      userId: 'ar.userId',
+      status: 'ar.status',
+      expiresAt: 'ar.expiresAt',
+    },
+  };
+});
 
 const dispatchApprovalPushMock = vi.fn(
   async (

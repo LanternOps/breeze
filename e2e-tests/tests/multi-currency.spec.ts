@@ -1,7 +1,7 @@
 import type { APIRequestContext, Page, Request } from '@playwright/test';
 import { test, expect } from '../fixtures';
 import { clearRefreshState } from '../test-helpers';
-import { waitForAppReady } from '../pages/hydration';
+import { waitForAppReady, waitForHydration } from '../pages/hydration';
 import { OrgBillingSettingsPage } from '../pages/OrgBillingSettingsPage';
 import { InvoicesPage } from '../pages/InvoicesPage';
 import { QuotesPage } from '../pages/QuotesPage';
@@ -227,12 +227,18 @@ test.describe('multi-currency — non-USD org browser slices', () => {
         await expect(doc).not.toContainText('$');
         await expect(publicPage.getByTestId('public-quote-accept')).toBeVisible();
 
+        // Hydration guard (#3906) — see the same note in
+        // quote-contract-proposal.spec.ts: Caddy previously dropped this
+        // `client:load` island's unprefixed dev module URL into the web
+        // catch-all instead of the portal, so it never hydrated even though
+        // the SSR'd markup above looked correct. Fail loud here if that
+        // routing (docker/Caddyfile.prod's @portalDevAssets matcher)
+        // regresses.
+        await waitForHydration(publicPage, 'public-quote-accept');
+
         // Accept through the same public endpoint the "Accept & sign" button
-        // calls. PublicQuoteView is a `client:load` island served under the
-        // portal's `/portal` base path, and Astro dev-mode fails to fetch its
-        // hydration module there (project memory portal_dev_island_hydration_404),
-        // so every button on this page is inert in a dev stack regardless of
-        // selector or timing — see the same note in quote-contract-proposal.spec.ts.
+        // calls, rather than by clicking it, so this stays deterministic
+        // regardless of the signer-name input's exact UI validation.
         const acceptResponse = await publicPage.request.post(
           `${origin}/api/v1/quotes/public/${acceptToken}/accept`,
           { data: { signerName: 'Jordan Rivers' } },

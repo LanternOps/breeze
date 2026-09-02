@@ -163,6 +163,27 @@ describe('jwt service', () => {
       expect(accessDecoded?.jti).toBeUndefined();
       expect(refreshDecoded?.jti).toBeDefined();
     });
+
+    it('embeds an explicitly supplied refresh JTI for guarded family currentness', async () => {
+      const refreshJti = '33333333-3333-4333-8333-333333333333';
+
+      const result = await createTokenPair(testPayload, { refreshJti });
+
+      expect(result.refreshJti).toBe(refreshJti);
+      await expect(verifyToken(result.refreshToken)).resolves.toMatchObject({
+        type: 'refresh',
+        jti: refreshJti,
+      });
+    });
+
+    it('still generates a fresh refresh JTI when no override is supplied', async () => {
+      const first = await createTokenPair(testPayload);
+      const second = await createTokenPair(testPayload);
+
+      expect(first.refreshJti).toMatch(/^[0-9a-f-]{36}$/i);
+      expect(second.refreshJti).toMatch(/^[0-9a-f-]{36}$/i);
+      expect(second.refreshJti).not.toBe(first.refreshJti);
+    });
   });
 
   describe('signing keyring + kid header — zero-downtime rotation', () => {

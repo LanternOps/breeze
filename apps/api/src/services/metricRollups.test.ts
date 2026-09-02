@@ -1,14 +1,44 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { executeMock, shouldProduceMlOutputMock } = vi.hoisted(() => ({
-  executeMock: vi.fn(),
-  shouldProduceMlOutputMock: vi.fn(),
-}));
+type ContextTraceEvent =
+  | { type: 'escape' }
+  | { type: 'open'; label: string | undefined }
+  | { type: 'execute' }
+  | { type: 'close'; label: string | undefined };
+
+const {
+  executeMock,
+  shouldProduceMlOutputMock,
+  runOutsideDbContextMock,
+  withSystemDbAccessContextMock,
+  contextTrace,
+} = vi.hoisted(() => {
+  const contextTrace: ContextTraceEvent[] = [];
+  return {
+    contextTrace,
+    executeMock: vi.fn(),
+    shouldProduceMlOutputMock: vi.fn(),
+    runOutsideDbContextMock: vi.fn(<T>(fn: () => T): T => {
+      contextTrace.push({ type: 'escape' });
+      return fn();
+    }),
+    withSystemDbAccessContextMock: vi.fn(async (fn: () => Promise<unknown>, label?: string) => {
+      contextTrace.push({ type: 'open', label });
+      try {
+        return await fn();
+      } finally {
+        contextTrace.push({ type: 'close', label });
+      }
+    }),
+  };
+});
 
 vi.mock('../db', () => ({
   db: {
     execute: executeMock,
   },
+  runOutsideDbContext: runOutsideDbContextMock,
+  withSystemDbAccessContext: withSystemDbAccessContextMock,
 }));
 
 vi.mock('./mlFeatureFlags', () => ({
@@ -17,12 +47,23 @@ vi.mock('./mlFeatureFlags', () => ({
 
 import { rollupDeviceMetricsRange } from './metricRollups';
 
+/** Contexts opened, in order, from the recorded trace. */
+function openedLabels(): Array<string | undefined> {
+  return contextTrace.filter((event) => event.type === 'open').map((event) => event.label);
+}
+
 describe('metric rollups service', () => {
   beforeEach(() => {
+    contextTrace.length = 0;
     executeMock.mockReset();
-    executeMock.mockResolvedValue([]);
+    executeMock.mockImplementation(async () => {
+      contextTrace.push({ type: 'execute' });
+      return [];
+    });
     shouldProduceMlOutputMock.mockReset();
     shouldProduceMlOutputMock.mockResolvedValue(true);
+    runOutsideDbContextMock.mockClear();
+    withSystemDbAccessContextMock.mockClear();
   });
 
   it('gates all writes behind the metric rollups ML feature flag', async () => {
@@ -169,6 +210,136 @@ describe('metric rollups service', () => {
     const snmpHourlyStatementSql = JSON.stringify(executeMock.mock.calls[22]);
     expect(snmpHourlyStatementSql).toContain('snmp_metrics');
     expect(snmpHourlyStatementSql).toContain('sourceBucketSeconds');
+  });
+
+  // #4276 — metricRollupsWorker was the top `db_context_held_too_long` offender
+  // (983 events/7d) because all 26 statements ran inside ONE
+  // withSystemDbAccessContext, pinning a single pooled connection for 2s+ every
+  // 5 minutes. Every statement here is an idempotent upsert, so the atomic
+  // transaction bought nothing: each one now gets its own short-lived context.
+  describe('#4276 per-statement DB contexts', () => {
+    it('opens one short-lived system context per statement, never one spanning all of them', async () => {
+      await rollupDeviceMetricsRange({
+        orgId: '11111111-1111-1111-1111-111111111111',
+        from: new Date('2026-06-18T12:00:00.000Z'),
+        to: new Date('2026-06-18T13:00:00.000Z'),
+      });
+
+      // 24 upserts + the ML feature-flag gate read = 25 contexts, each closing
+      // before the next opens. A trace with two consecutive `open`s means a
+      // context spans more than one statement, which is the bug.
+      expect(openedLabels()).toHaveLength(25);
+      expect(executeMock).toHaveBeenCalledTimes(24);
+
+      let depth = 0;
+      let maxDepth = 0;
+      let executesInsideAContext = 0;
+      for (const event of contextTrace) {
+        if (event.type === 'open') {
+          depth += 1;
+          maxDepth = Math.max(maxDepth, depth);
+        } else if (event.type === 'close') {
+          depth -= 1;
+        } else if (event.type === 'execute' && depth > 0) {
+          executesInsideAContext += 1;
+        }
+      }
+      expect(maxDepth).toBe(1);
+      expect(executesInsideAContext).toBe(24);
+    });
+
+    it('escapes any ambient DB context so a wrapping caller cannot re-create the single long hold', async () => {
+      await rollupDeviceMetricsRange({
+        orgId: '11111111-1111-1111-1111-111111111111',
+        from: new Date('2026-06-18T12:00:00.000Z'),
+        to: new Date('2026-06-18T13:00:00.000Z'),
+      });
+
+      // runOutsideDbContext must precede every context; without it a caller that
+      // already holds a context makes withDbAccessContext short-circuit and all
+      // 24 statements silently rejoin the outer transaction again (the
+      // alertWorker/#3216 trap).
+      expect(runOutsideDbContextMock).toHaveBeenCalledTimes(25);
+      const escapeThenOpen = contextTrace
+        .filter((event) => event.type === 'escape' || event.type === 'open')
+        .map((event) => event.type);
+      expect(escapeThenOpen).toEqual(
+        Array.from({ length: 25 }, () => ['escape', 'open'] as const).flat(),
+      );
+    });
+
+    it('labels every context so Sentry attribution survives the tsup bundle', async () => {
+      await rollupDeviceMetricsRange({
+        orgId: '11111111-1111-1111-1111-111111111111',
+        from: new Date('2026-06-18T12:00:00.000Z'),
+        to: new Date('2026-06-18T13:00:00.000Z'),
+      });
+
+      // `parseOpenerFrame` collapses every anonymous-arrow opener in the bundled
+      // API to a bare `index`, so an unlabelled context is unattributable in
+      // Sentry. Labels stay low-cardinality (one per rollup pass) because they
+      // become the `dbContextLabel` tag AND part of the grouped message.
+      expect(openedLabels().every((label) => typeof label === 'string' && label.length > 0)).toBe(true);
+      expect(new Set(openedLabels())).toEqual(new Set([
+        'metricRollups.mlFeatureGate',
+        'metricRollups.raw.device_metrics',
+        'metricRollups.raw.device_process_samples',
+        'metricRollups.raw.snmp_metrics',
+        'metricRollups.derived.device_metrics.3600',
+        'metricRollups.derived.device_metrics.86400',
+        'metricRollups.derived.device_process_samples.3600',
+        'metricRollups.derived.device_process_samples.86400',
+        'metricRollups.derived.snmp_metrics.3600',
+        'metricRollups.derived.snmp_metrics.86400',
+      ]));
+    });
+
+    it('gates the ML feature-flag read behind its own context so it never runs on the bare pool', async () => {
+      shouldProduceMlOutputMock.mockResolvedValue(false);
+
+      await rollupDeviceMetricsRange({
+        orgId: '11111111-1111-1111-1111-111111111111',
+        from: new Date('2026-06-18T12:00:00.000Z'),
+        to: new Date('2026-06-18T12:15:00.000Z'),
+      });
+
+      // The gate reads `organizations` + `partners`, both RLS-forced: with no
+      // context the read silently returns zero rows and every org looks disabled.
+      expect(openedLabels()).toEqual(['metricRollups.mlFeatureGate']);
+      expect(shouldProduceMlOutputMock).toHaveBeenCalledTimes(1);
+    });
+
+    // The split from one atomic transaction to per-statement commits is only
+    // safe because (a) a mid-pass throw PROPAGATES — a partial pass must fail
+    // the BullMQ job / backfill, never be reported as success — and (b) the
+    // already-committed statements stay committed and are re-covered by the
+    // next run's idempotent upserts. This pins (a) and the stop-at-failure
+    // shape; the committed-stays-committed half lives in the integration
+    // suite where real transactions exist.
+    it('propagates a mid-pass statement failure and stops — no later statements, no success result', async () => {
+      const boom = new Error('relation "metric_rollups" deadlocked');
+      executeMock.mockImplementation(async () => {
+        contextTrace.push({ type: 'execute' });
+        if (executeMock.mock.calls.length === 5) throw boom;
+        return [];
+      });
+
+      await expect(
+        rollupDeviceMetricsRange({
+          orgId: '11111111-1111-1111-1111-111111111111',
+          from: new Date('2026-06-18T12:00:00.000Z'),
+          to: new Date('2026-06-18T13:00:00.000Z'),
+        }),
+      ).rejects.toThrow(boom);
+
+      // Statements 1-4 ran (and, in production, committed); statement 5 threw;
+      // 6-24 never ran. Plus the ML gate context, that is exactly 6 opens —
+      // and every context still closed, so the failure cannot leak a held
+      // connection either.
+      expect(executeMock).toHaveBeenCalledTimes(5);
+      expect(openedLabels()).toHaveLength(6);
+      expect(contextTrace.filter((event) => event.type === 'close')).toHaveLength(6);
+    });
   });
 
   it('rejects invalid ranges before executing writes', async () => {

@@ -15,19 +15,15 @@
     "patches": "Patches",
     "vulnerabilities": "Schwachstellen",
     "oneDrive": "OneDrive",
-    "fleet": "Gerätebestand",
-    "aiWorkspace": "KI-Arbeitsbereich",
     "aiForOffice": "KI für Office",
     "networkMonitor": "Netzwerküberwachung",
     "networkDiscovery": "Netzwerkerkennung",
-    "security": "Sicherheit",
     "edr": "EDR",
     "dnsSecurity": "DNS-Sicherheit",
     "pam": "PAM",
     "userRisk": "Benutzerrisiko",
     "sensitiveData": "Sensible Daten",
     "peripherals": "Peripheriegeräte",
-    "aiRiskEngine": "KI-Risiko-Engine",
     "cisBenchmarks": "CIS Benchmarks",
     "complianceBaselines": "Compliance-Baselines",
     "quotes": "Angebote",
@@ -35,12 +31,9 @@
     "contracts": "Verträge",
     "timesheets": "Zeiterfassungen",
     "productCatalog": "Produktkatalog",
-    "softwareLibrary": "Softwarebibliothek",
-    "softwarePolicies": "Softwarerichtlinien",
     "deviceGroups": "Gerätegruppen",
     "configPolicies": "Konfigurationsrichtlinien",
     "integrations": "Integrationen",
-    "backup": "Datensicherung",
     "cloudBackup": "Cloud-Backup",
     "disasterRecovery": "Notfallwiederherstellung",
     "reports": "Berichte",
@@ -51,6 +44,7 @@
     "organizations": "Organisationen",
     "aiUsageBudget": "KI-Nutzung und Budget",
     "aiAgents": "KI-Agenten",
+    "aiAgentRuns": "KI-Agenten-Läufe",
     "customFields": "Benutzerdefinierte Felder",
     "savedFilters": "Gespeicherte Filter",
     "users": "Benutzer",
@@ -61,16 +55,24 @@
     "deletionRequests": "Löschanfragen",
     "quarantinedDevices": "Geräte in Quarantäne",
     "thirdPartyCatalog": "Drittanbieterkatalog",
-    "connectedAppsAdmin": "Verbundene Apps (Admin)",
-    "sectionAiFleet": "KI und Gerätebestand",
-    "sectionMonitoring": "Überwachung",
+    "connectedAppsAdmin": "Verbundene Apps",
     "sectionSecurity": "Sicherheit",
-    "sectionOperations": "Betrieb",
     "sectionBackup": "Datensicherung",
     "sectionReporting": "Berichte",
     "sectionSettings": "Einstellungen",
     "sectionExtensions": "Erweiterungen",
-    "variables": "Variablen"
+    "variables": "Variablen",
+    "llmProviderCatalog": "LLM-Anbieterkatalog",
+    "sectionAi": "KI",
+    "sectionFleetManagement": "Flottenverwaltung",
+    "sectionBilling": "Abrechnung",
+    "sectionAdministration": "Administration",
+    "fleetOrchestration": "Flottenorchestrierung",
+    "aiAssistant": "KI-Assistent",
+    "software": "Software",
+    "securityOverview": "Übersicht",
+    "aiRisk": "KI-Risiko",
+    "deviceBackup": "Gerätesicherung"
   },
   "documentTitles": {
     "dashboard": "Dashboard",
@@ -1626,6 +1628,12 @@
         "editEntry": "Eintrag {{id}} bearbeiten",
         "total": "Gesamt: {{duration}}",
         "billableTotal": "Abrechnungsfähig: {{duration}}"
+      },
+      "sourceBadge": {
+        "timer": "Timer",
+        "location": "Aus Standort",
+        "remote_session": "Aus Remote-Sitzung",
+        "support_session": "Aus Quick Support"
       }
     },
     "snmp": {
@@ -2404,6 +2412,11 @@
     "link": "Neuigkeiten"
   },
   "money": {
-    "approximateTotal": "≈ {{amount}} ungefähr · Kurse vom {{rateDate}}"
+    "approximateTotal": "≈ {{amount}} ungefähr · Kurse vom {{rateDate}}",
+    "approximateFailed": "≈ Summe nicht verfügbar — Wechselkurse konnten nicht geladen werden",
+    "approximateUnavailableMissing": "≈ Summe nicht verfügbar — kein {{target}}-Wechselkurs für {{codes}}",
+    "approximateUnavailableStale": "≈ Summe nicht verfügbar — {{target}}-Wechselkurs für {{codes}} ist zu alt",
+    "approximateUnavailableMixed": "≈ Summe nicht verfügbar — {{codes}} konnte nicht in {{target}} umgerechnet werden",
+    "approximateUnavailableCodesOverflow": "{{codes}} und {{more}} weitere"
   }
 }

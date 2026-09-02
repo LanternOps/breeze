@@ -118,6 +118,7 @@ vi.mock('../db/schema', () => ({
     userId: 'userId', startedAt: 'startedAt', endedAt: 'endedAt',
     durationMinutes: 'durationMinutes', description: 'description',
     isBillable: 'isBillable', hourlyRate: 'hourlyRate', currencyCode: 'currencyCode', billingStatus: 'billingStatus',
+    source: 'source',
     isApproved: 'isApproved', approvedBy: 'approvedBy', approvedAt: 'approvedAt',
     createdAt: 'createdAt', updatedAt: 'updatedAt'
   },
@@ -142,7 +143,8 @@ vi.mock('../db/schema', () => ({
 import {
   computeDurationMinutes, createTimeEntry, startTimer, stopTimer,
   updateTimeEntry, deleteTimeEntry, approveTimeEntries, addTicketPart, updateTicketPart,
-  getTimesheet, getTicketBillingSummary, listBillables, entryOrgAllowed, resolveDefaultRate
+  getTimesheet, getTicketBillingSummary, listBillables, entryOrgAllowed, resolveDefaultRate,
+  resolveAndLockOrgLink, readTimeEntryById
 } from './timeEntryService';
 
 describe('entryOrgAllowed (security review #1: time_entries org-axis allowlist)', () => {
@@ -1597,5 +1599,124 @@ describe('timeEntryService currency representability guard (W6-G4-2 / W6-G4-3)',
     dbMocks.updateResult = [{ id: 'part-1' }];
     await updateTicketPart('part-1', { unitPrice: 100 }, ACTOR);
     expect(dbMocks.updateSetArgs[0]!.unitPrice).toBe('100.00');
+  });
+});
+
+// ── W06 (#3900): server-stamped provenance ──────────────────────────────────
+describe('provenance (W06 #3900)', () => {
+  const auditActor = () => ({ ...ACTOR, recordAuditMutation: vi.fn() });
+
+  it('POST-path createTimeEntry stamps source=manual by default', async () => {
+    const actor = auditActor();
+    dbMocks.insertResult = [{ id: 'e1', ticketId: null, durationMinutes: 30, isBillable: false, orgId: null, source: 'manual' }];
+    await createTimeEntry({ startedAt: new Date('2026-08-29T09:00:00Z'), endedAt: new Date('2026-08-29T09:30:00Z') }, actor);
+    expect(dbMocks.insertedValues[0]).toMatchObject({ source: 'manual' });
+    expect(emitMock).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'time_entry.created',
+      payload: expect.objectContaining({ source: 'manual' }),
+    }));
+    expect(actor.recordAuditMutation).toHaveBeenCalledWith(expect.objectContaining({ action: 'time_entry.created', source: 'manual' }));
+  });
+
+  it('startTimer stamps source=timer', async () => {
+    const actor = auditActor();
+    dbMocks.updateResult = [];   // no running entry to auto-stop
+    dbMocks.insertResult = [{ id: 'e2', ticketId: null, isBillable: false, orgId: null, source: 'timer' }];
+    await startTimer({}, actor);
+    expect(dbMocks.insertedValues[0]).toMatchObject({ source: 'timer' });
+    expect(emitMock).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'time_entry.created',
+      payload: expect.objectContaining({ source: 'timer' }),
+    }));
+  });
+
+  it('internal provenance stamps remote_session and uses the org link for org/currency', async () => {
+    dbMocks.insertResult = [{ id: 'e3', ticketId: null, durationMinutes: 38, isBillable: false, orgId: 'o1', source: 'remote_session' }];
+    await createTimeEntry(
+      { startedAt: new Date('2026-08-29T14:02:00Z'), endedAt: new Date('2026-08-29T14:40:00Z') },
+      ACTOR,
+      { source: 'remote_session', orgLink: { orgId: 'o1', currencyCode: 'EUR' } }
+    );
+    expect(dbMocks.insertedValues[0]).toMatchObject({ source: 'remote_session', orgId: 'o1', currencyCode: 'EUR' });
+  });
+
+  it('an org-linked create WITH a rate keeps the ORG currency — the partner fallback stays gated (review W06A)', async () => {
+    // The confirm path forwards a technician-entered hourlyRate alongside the
+    // org link, so this branch is reachable from POST /suggestions/confirm.
+    // Queue a partners read returning USD: if the `currencyCode == null` guard
+    // on the standalone-money fallback ever regresses, it is consumed and the
+    // row lands org_id=<EUR org> with currency_code='USD' — money denominated
+    // in a currency that customer never uses, then invoiced.
+    dbMocks.selectResults.push([{ currencyCode: 'USD' }]); // must NOT be consumed
+    dbMocks.insertResult = [{ id: 'e6', ticketId: null, durationMinutes: 38, isBillable: false, orgId: 'o1', source: 'remote_session' }];
+    await createTimeEntry(
+      { startedAt: new Date('2026-08-29T14:02:00Z'), endedAt: new Date('2026-08-29T14:40:00Z'), hourlyRate: 90 },
+      ACTOR,
+      { source: 'remote_session', orgLink: { orgId: 'o1', currencyCode: 'EUR' } }
+    );
+    expect(dbMocks.insertedValues[0]).toMatchObject({ orgId: 'o1', currencyCode: 'EUR', hourlyRate: '90.00', source: 'remote_session' });
+    expect(dbMocks.selectResults).toHaveLength(1); // getPartnerCurrency was never consulted
+  });
+
+  it('support_session provenance with no org link lands org_id NULL and currency NULL (D6)', async () => {
+    dbMocks.insertResult = [{ id: 'e4', ticketId: null, durationMinutes: 10, isBillable: false, orgId: null, source: 'support_session' }];
+    await createTimeEntry(
+      { startedAt: new Date('2026-08-29T14:02:00Z'), endedAt: new Date('2026-08-29T14:12:00Z') },
+      ACTOR,
+      { source: 'support_session', orgLink: null }
+    );
+    expect(dbMocks.insertedValues[0]).toMatchObject({ source: 'support_session', orgId: null, currencyCode: null });
+  });
+
+  it('a ticket link wins over an org link (the ticket path is the locked, authoritative one)', async () => {
+    // Same queue the existing "allows a ticket in a granted org" case uses:
+    // ticket, org system read, org SHARE barrier, ticket lock row.
+    dbMocks.selectResults.push([{ id: 't-1', partnerId: 'p-1', orgId: 'o-ticket', categoryId: null }]);
+    dbMocks.selectResults.push([{ partnerId: 'p-1', currencyCode: 'USD' }]);
+    dbMocks.selectResults.push([{ currencyCode: 'USD' }]);
+    dbMocks.selectResults.push([{ id: 't-1', orgId: 'o-ticket' }]);
+    dbMocks.insertResult = [{ id: 'e5', ticketId: 't-1', durationMinutes: 38, isBillable: false, orgId: 'o-ticket', source: 'remote_session' }];
+    await createTimeEntry(
+      { ticketId: 't-1', startedAt: new Date('2026-08-29T14:02:00Z'), endedAt: new Date('2026-08-29T14:40:00Z') },
+      ACTOR,
+      { source: 'remote_session', orgLink: { orgId: 'o-session', currencyCode: 'EUR' } }
+    );
+    // insertedValues[0] is the time entry; [1] is the ticket feed comment.
+    expect(dbMocks.insertedValues[0]).toMatchObject({ orgId: 'o-ticket', currencyCode: 'USD', source: 'remote_session' });
+  });
+
+  it('readTimeEntryById returns the same camelCase shape as createTimeEntry', async () => {
+    dbMocks.selectResults.push([{ id: 'e9', durationMinutes: 38, isBillable: true, orgId: 'o1', source: 'remote_session' }]);
+    await expect(readTimeEntryById('e9')).resolves.toMatchObject({ id: 'e9', durationMinutes: 38, source: 'remote_session' });
+  });
+
+  it('readTimeEntryById returns null when the row is invisible under RLS', async () => {
+    dbMocks.selectResults.push([]);
+    await expect(readTimeEntryById('gone')).resolves.toBeNull();
+  });
+});
+
+describe('resolveAndLockOrgLink (W06 #3900)', () => {
+  it('denies an org outside accessibleOrgIds with ORG_DENIED (403)', async () => {
+    await expect(resolveAndLockOrgLink('o9', { userId: 'u1', partnerId: 'p-1', manageAll: false, accessibleOrgIds: ['o1'] }))
+      .rejects.toMatchObject({ code: 'ORG_DENIED', status: 403 });
+  });
+  it('denies an org of another partner with ORG_DENIED', async () => {
+    dbMocks.selectResults.push([{ id: 'o2', partnerId: 'p-other' }]);
+    await expect(resolveAndLockOrgLink('o2', { userId: 'u1', partnerId: 'p-1', manageAll: false, accessibleOrgIds: null }))
+      .rejects.toMatchObject({ code: 'ORG_DENIED' });
+  });
+  it('denies an org RLS hides entirely (no row) with ORG_DENIED', async () => {
+    dbMocks.selectResults.push([]);
+    await expect(resolveAndLockOrgLink('o2', { userId: 'u1', partnerId: 'p-1', manageAll: false, accessibleOrgIds: null }))
+      .rejects.toMatchObject({ code: 'ORG_DENIED' });
+  });
+  it('locks the org FOR SHARE and returns its currency', async () => {
+    dbMocks.selectResults.push([{ id: 'o1', partnerId: 'p-1' }], [{ currencyCode: 'EUR' }]);
+    const before = dbMocks.forUpdateCalls;
+    await expect(resolveAndLockOrgLink('o1', { userId: 'u1', partnerId: 'p-1', manageAll: false, accessibleOrgIds: null }))
+      .resolves.toEqual({ orgId: 'o1', currencyCode: 'EUR' });
+    // The harness counts .for('share') and .for('update') alike.
+    expect(dbMocks.forUpdateCalls).toBe(before + 1);
   });
 });

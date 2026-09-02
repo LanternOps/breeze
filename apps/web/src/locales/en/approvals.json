@@ -10,6 +10,12 @@
   },
   "requestedBy": "Requested by {{client}}",
   "proposedByAgent": "Proposed by {{agent}} (AI agent)",
+  "targetDevice": "Target device: {{hostname}}",
+  "batch": {
+    "approveAll": "Approve all ({{count}})",
+    "declineAll": "Decline all ({{count}})",
+    "groupTitle": "{{count}} similar requests · {{tool}}"
+  },
   "risk": {
     "low": "Low risk",
     "medium": "Medium risk",
@@ -29,7 +35,11 @@
     "noApproverDevice": "Register an approver device in your profile, then try again.",
     "notSoleApprover": "Another eligible approver must decide this request.",
     "verificationFailed": "Verification was canceled or failed. Try again.",
-    "decisionFailed": "The decision could not be submitted. Try again."
+    "alreadyDecided": "This request was already decided.",
+    "expired": "This request expired before it could be decided.",
+    "decisionFailed": "The decision could not be submitted. Try again.",
+    "batchStepUp": "This batch needs a stronger sign-in. Approve the requests one at a time.",
+    "batchNotHomogeneous": "These requests can no longer be decided together."
   },
   "registerDevice": "Register device"
 }

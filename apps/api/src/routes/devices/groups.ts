@@ -10,6 +10,7 @@ import { PG_UUID_REGEX } from '../../utils/uuid';
 import { createGroupSchema, updateGroupSchema } from './schemas';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { pruneGroupMembershipsOutsideSite } from '../../services/groupMembership';
+import { schedulePeripheralPolicyDevice } from '../../jobs/peripheralJobs';
 
 export const groupsRoutes = new Hono();
 
@@ -261,6 +262,7 @@ groupsRoutes.patch(
 
     const siteChanged = data.siteId !== undefined && data.siteId !== group.siteId;
 
+    let prunedDeviceIds: string[] = [];
     const updated = await db.transaction(async (tx) => {
       const [row] = await tx
         .update(deviceGroups)
@@ -269,11 +271,24 @@ groupsRoutes.patch(
         .returning();
 
       if (siteChanged && row?.siteId) {
-        await pruneGroupMembershipsOutsideSite(groupId, row.siteId, group.orgId, tx);
+        const pruned = await pruneGroupMembershipsOutsideSite(
+          groupId,
+          row.siteId,
+          group.orgId,
+          tx,
+          { deferPeripheralReconciliation: true },
+        );
+        prunedDeviceIds = pruned.deviceIds ?? [];
       }
 
       return row;
     });
+
+    await Promise.all(prunedDeviceIds.map((deviceId) =>
+      schedulePeripheralPolicyDevice(deviceId, 'dynamic_membership_changed').catch((error) => {
+        console.error(`[deviceGroups] failed to schedule peripheral reconciliation for ${deviceId}:`, error);
+      })
+    ));
 
     writeRouteAudit(c, {
       orgId: group.orgId,
@@ -313,6 +328,11 @@ groupsRoutes.delete(
       return c.json({ error: 'Access denied' }, 403);
     }
 
+    const affectedMemberships = await db
+      .select({ deviceId: deviceGroupMemberships.deviceId })
+      .from(deviceGroupMemberships)
+      .where(eq(deviceGroupMemberships.groupId, groupId));
+
     // Delete memberships first
     await db
       .delete(deviceGroupMemberships)
@@ -322,6 +342,12 @@ groupsRoutes.delete(
     await db
       .delete(deviceGroups)
       .where(eq(deviceGroups.id, groupId));
+
+    await Promise.all(affectedMemberships.map(({ deviceId }) =>
+      schedulePeripheralPolicyDevice(deviceId, 'group_deleted').catch((error) => {
+        console.error(`[deviceGroups] failed to schedule peripheral reconciliation for ${deviceId}:`, error);
+      })
+    ));
 
     writeRouteAudit(c, {
       orgId: group.orgId,
@@ -391,7 +417,7 @@ groupsRoutes.post(
     const validDeviceIds = validDevices.map(d => d.id);
 
     // Insert memberships (ignore duplicates)
-    await db
+    const insertedMemberships = await db
       .insert(deviceGroupMemberships)
       .values(
         validDeviceIds.map(deviceId => ({
@@ -401,7 +427,14 @@ groupsRoutes.post(
           addedBy: 'manual' as const
         }))
       )
-      .onConflictDoNothing();
+      .onConflictDoNothing()
+      .returning({ deviceId: deviceGroupMemberships.deviceId });
+
+    await Promise.all(insertedMemberships.map(({ deviceId }) =>
+      schedulePeripheralPolicyDevice(deviceId, 'manual_membership_changed').catch((error) => {
+        console.error(`[deviceGroups] failed to schedule peripheral reconciliation for ${deviceId}:`, error);
+      })
+    ));
 
     writeRouteAudit(c, {
       orgId: group.orgId,
@@ -411,13 +444,13 @@ groupsRoutes.post(
       resourceName: group.name,
       details: {
         requestedCount: deviceIds.length,
-        addedCount: validDeviceIds.length
+        addedCount: insertedMemberships.length
       }
     });
 
     return c.json({
       success: true,
-      added: validDeviceIds.length
+      added: insertedMemberships.length
     });
   }
 );
@@ -476,14 +509,21 @@ groupsRoutes.delete(
       targetDeviceIds = uniqueDeviceIds;
     }
 
-    await db
+    const removedMemberships = await db
       .delete(deviceGroupMemberships)
       .where(
         and(
           eq(deviceGroupMemberships.groupId, groupId),
           inArray(deviceGroupMemberships.deviceId, targetDeviceIds)
         )
-      );
+      )
+      .returning({ deviceId: deviceGroupMemberships.deviceId });
+
+    await Promise.all(removedMemberships.map(({ deviceId }) =>
+      schedulePeripheralPolicyDevice(deviceId, 'manual_membership_changed').catch((error) => {
+        console.error(`[deviceGroups] failed to schedule peripheral reconciliation for ${deviceId}:`, error);
+      })
+    ));
 
     writeRouteAudit(c, {
       orgId: group.orgId,

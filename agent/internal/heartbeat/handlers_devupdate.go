@@ -196,6 +196,11 @@ func handleDevUpdateUserHelper(h *Heartbeat, start time.Time, downloadURL, check
 // restarts, and callers should surface that degraded state rather than report
 // unqualified success.
 func (h *Heartbeat) installUserHelperBinary(tempPath, installPath, version string) (allowlistRefreshed bool, err error) {
+	lease, acquired := updater.TryBeginProcessMutation("user-helper-update")
+	if !acquired {
+		return false, updater.ErrProcessMutationInProgress
+	}
+	defer lease.Release()
 	// Serialize installs: a manual dev_update and the periodic reconcile must
 	// not run the backup→taskkill→replace→refresh sequence concurrently and
 	// race on the shared backup target or install path.
@@ -358,6 +363,11 @@ func handleDevUpdateDesktopHelper(h *Heartbeat, start time.Time, downloadURL, ch
 	if runtime.GOOS != "darwin" {
 		return tools.NewErrorResult(fmt.Errorf("desktop-helper dev push is only implemented on darwin"), time.Since(start).Milliseconds())
 	}
+	lease, acquired := updater.TryBeginProcessMutation("desktop-helper-update")
+	if !acquired {
+		return tools.NewErrorResult(updater.ErrProcessMutationInProgress, time.Since(start).Milliseconds())
+	}
+	defer lease.Release()
 
 	u := updater.New(devUpdaterConfig(h))
 

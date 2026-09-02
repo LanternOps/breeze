@@ -32,6 +32,21 @@ export interface RemoteCustomer extends RemoteEntity {
   billAddr?: RemoteAddress;
   shipAddr?: RemoteAddress;
   active?: boolean;
+  syncToken?: string;
+}
+
+export interface RemoteItem extends RemoteEntity {
+  sku?: string;
+  description?: string;
+  type?: 'Service' | 'NonInventory' | 'Inventory' | 'Category' | string;
+  unitPrice?: number;
+  active?: boolean;
+  syncToken?: string;
+}
+
+export interface RemoteIncomeAccount extends RemoteEntity {
+  accountType: string;
+  accountSubType?: string;
 }
 
 export interface RemoteRef {
@@ -49,6 +64,8 @@ export interface AccountingEntityMapping {
 export interface AccountingCustomerPayload {
   organizationId: string;
   displayName: string;
+  companyName?: string;
+  phone?: string;
   billingEmail: string | null;
   taxId: string | null;
   billAddr?: RemoteAddress;
@@ -60,10 +77,15 @@ export interface AccountingCustomerPayload {
 export interface AccountingItemPayload {
   catalogItemId: string;
   name: string;
+  sku?: string;
   description: string | null;
+  /** Service for Breeze `service` items; NonInventory for hardware/software. */
+  type: 'Service' | 'NonInventory';
   /** Major-unit decimal string — storage stays numeric major units (spec §12). */
   unitPrice: string;
   currencyCode: string;
+  taxable: boolean;
+  active: boolean;
   incomeAccountRef?: string;
 }
 
@@ -140,7 +162,8 @@ export interface AccountingProvider {
    */
   fetchHomeCurrency(conn: AccountingConnection): Promise<string | null>;
   listRemoteCustomers(conn: AccountingConnection, query?: string): Promise<RemoteCustomer[]>;
-  listRemoteItems(conn: AccountingConnection, query?: string): Promise<RemoteEntity[]>;
+  listRemoteItems(conn: AccountingConnection, query?: string): Promise<RemoteItem[]>;
+  listRemoteIncomeAccounts(conn: AccountingConnection): Promise<RemoteIncomeAccount[]>;
   upsertCustomer(
     conn: AccountingConnection,
     customer: AccountingCustomerPayload,

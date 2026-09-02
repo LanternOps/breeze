@@ -158,6 +158,8 @@ vi.mock('../db/schema', () => ({
     id: 'devices.id',
     orgId: 'devices.orgId',
     siteId: 'devices.siteId',
+    status: 'devices.status',
+    isEphemeral: 'devices.isEphemeral',
   },
   organizations: {
     id: 'organizations.id',
@@ -511,4 +513,157 @@ describe('resolveBackupConfigForDevice partner-wide visibility', () => {
     expect(selectDepths).toEqual([0, 0, 0, 1, 0, 1]);
     expect(systemDepth.value).toBe(0);
   });
+});
+
+// A decommissioned device is a soft-deleted one (routes/devices/core.ts's
+// `DELETE /:id` only flips `status`) and an ephemeral device is a Quick Support
+// session box the reaper purges within 6h. Neither can accept a backup, yet
+// every fan-out branch used to sweep them into the assigned set: a device
+// decommissioned on 2026-08-08 kept getting a fresh `backup_jobs` row every day
+// at 04:00 UTC, each failing with `Agent not connected`, and a
+// `recovery_readiness` row scoring 0 that pinned the low-readiness alert
+// (#3968).
+describe('resolveAllBackupAssignedDevices excludes decommissioned and ephemeral devices (#3968)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    selectMock.mockReset();
+    systemDepth.value = 0;
+    selectDepths.length = 0;
+    systemStats.maxDepth = 0;
+  });
+
+  /**
+   * Renders a captured predicate tree back into readable SQL-ish text,
+   * splicing each interpolated column sentinel into its `sql` template.
+   *
+   * Asserting on the rendered predicate — rather than on rows a hand-shaped
+   * mock filtered for us — is what makes these assertions discriminating: a
+   * mock can be taught to drop decommissioned rows all by itself, but only the
+   * real predicate can put the exclusion into the SQL Postgres runs. Delete the
+   * exclusion from the resolver and this text stops containing it.
+   */
+  function renderCondition(condition: unknown): string {
+    if (condition === null || condition === undefined) return '';
+    if (typeof condition !== 'object') return String(condition);
+
+    const node = condition as Record<string, any>;
+    if (node.op === 'sql') {
+      const strings: readonly string[] = node.strings ?? [];
+      const values: unknown[] = node.values ?? [];
+      return strings
+        .map((chunk, index) => chunk + (index < values.length ? renderCondition(values[index]) : ''))
+        .join('');
+    }
+    if (node.op === 'and') {
+      return ((node.conditions ?? []) as unknown[]).map(renderCondition).join(' AND ');
+    }
+    if (node.op === 'eq') return `${renderCondition(node.column)} = ${JSON.stringify(node.value)}`;
+    if (node.op === 'inArray') return `${renderCondition(node.column)} IN (…)`;
+    return JSON.stringify(node);
+  }
+
+  /**
+   * Runs the resolver for one assignment level and returns the predicate its
+   * device-expansion query handed to Drizzle. Every level resolves through its
+   * own switch branch, so each one needs its own capture — the whole point of
+   * #3968 is that a per-branch predicate is easy to miss on one branch.
+   */
+  async function captureDeviceExpansionPredicate(
+    assignmentLevel: string,
+    assignmentTargetId: string
+  ): Promise<string> {
+    const orgId = 'org-a';
+    const partnerId = 'partner-1';
+    let captured: unknown;
+
+    selectMock
+      // org → partnerId lookup
+      .mockReturnValueOnce(makeSelectChain([{ partnerId }]))
+      // feature links + settings + assignments
+      .mockReturnValueOnce(
+        makeSelectChain([
+          {
+            backupSettings: { schedule: { frequency: 'daily', time: '01:00' } },
+            featureLinkId: 'feature-1',
+            featurePolicyId: 'config-1',
+            profileSelections: null,
+            assignmentLevel,
+            assignmentTargetId,
+            assignmentPriority: 1,
+            assignmentCreatedAt: new Date('2026-04-01T00:00:00Z'),
+          },
+        ])
+      )
+      // org default destination lookup
+      .mockReturnValueOnce(makeSelectChain([]))
+      // the device expansion for this branch
+      .mockReturnValueOnce(
+        makeSelectChain((condition: unknown) => {
+          captured = condition;
+          // `device_group` selects `deviceId`, every other branch selects `id`.
+          return [{ id: 'device-live', deviceId: 'device-live' }];
+        })
+      )
+      .mockImplementation(() =>
+        makeSelectChain([
+          {
+            siteTimezone: null,
+            orgSettings: { timezone: 'UTC' },
+            partnerId,
+            timezone: 'UTC',
+            settings: {},
+          },
+        ])
+      );
+
+    const result = await resolveAllBackupAssignedDevices(orgId);
+
+    // Guard the guard: if the branch never resolved a device the predicate
+    // capture would be silently empty and every assertion below vacuous.
+    expect(result.map((entry) => entry.deviceId)).toEqual(['device-live']);
+    expect(captured).toBeDefined();
+
+    return renderCondition(captured);
+  }
+
+  // Table-driven over EVERY branch of the switch. The resolver has five
+  // assignment levels and the bug was that none of them filtered; a test that
+  // covered only `organization` would have gone green on a four-branch fix.
+  const branches: Array<{ level: string; targetId: string }> = [
+    { level: 'device', targetId: 'device-live' },
+    { level: 'device_group', targetId: 'group-1' },
+    { level: 'site', targetId: 'site-1' },
+    { level: 'organization', targetId: 'org-a' },
+    { level: 'partner', targetId: 'partner-1' },
+  ];
+
+  it.each(branches)(
+    'excludes decommissioned devices from the $level assignment fan-out',
+    async ({ level, targetId }) => {
+      const predicate = await captureDeviceExpansionPredicate(level, targetId);
+
+      expect(predicate).toMatch(/devices\.status\s*(<>|!=)\s*'decommissioned'/);
+    }
+  );
+
+  it.each(branches)(
+    'excludes ephemeral Quick Support devices from the $level assignment fan-out',
+    async ({ level, targetId }) => {
+      const predicate = await captureDeviceExpansionPredicate(level, targetId);
+
+      expect(predicate).toMatch(/devices\.isEphemeral\s*=\s*false/);
+    }
+  );
+
+  // The exclusion must never cost the tenancy predicate it sits beside: a
+  // partner-wide policy is visible to every org under the partner, so dropping
+  // the org re-tenanting would attribute another org's devices to this one.
+  it.each(branches)(
+    'keeps the org re-tenanting predicate on the $level assignment fan-out',
+    async ({ level, targetId }) => {
+      const predicate = await captureDeviceExpansionPredicate(level, targetId);
+
+      expect(predicate).toContain('devices.orgId = "org-a"');
+    }
+  );
 });

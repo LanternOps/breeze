@@ -29,6 +29,8 @@ interface SeedHandles {
   userId: string;
   siteIdErased: string;
   siteIdControl: string;
+  accountingConnectionId: string;
+  catalogItemId: string;
 }
 
 async function seed(): Promise<SeedHandles> {
@@ -107,6 +109,36 @@ async function seed(): Promise<SeedHandles> {
     VALUES (${orgIdControl}, 'user', ${userId}, 'test.seed', 'test', 'success', now())
   `);
 
+  // QuickBooks entity mappings (Phase B). The table is partner-axis with a
+  // POLYMORPHIC (breeze_entity_type, breeze_entity_id) Breeze side — no org_id
+  // column, no FK — so it is invisible to the cascade contract test's org_id
+  // enumeration and is cleared by an explicit ASSOCIATED_SYSTEM_SCOPED_TABLES
+  // pre-clear instead. Three rows: the erased org's mapping (must go), the
+  // control org's (must survive), and a partner-scoped catalog_item mapping
+  // (must survive — it belongs to no org at all).
+  const [connection] = (await testDb.execute(sql`
+    INSERT INTO accounting_connections (partner_id, provider, environment, status, home_currency)
+    VALUES (${partnerId}, 'quickbooks', 'sandbox', 'connected', 'USD')
+    RETURNING id
+  `)) as unknown as Array<{ id: string }>;
+  const accountingConnectionId = connection!.id;
+
+  const [catalogItem] = (await testDb.execute(sql`
+    INSERT INTO catalog_items (partner_id, item_type, name, unit_price, cost_currency)
+    VALUES (${partnerId}, 'service', 'Managed Service', 100.00, 'USD')
+    RETURNING id
+  `)) as unknown as Array<{ id: string }>;
+  const catalogItemId = catalogItem!.id;
+
+  await testDb.execute(sql`
+    INSERT INTO accounting_entity_mappings
+      (integration_id, partner_id, breeze_entity_type, breeze_entity_id, remote_entity_type, remote_entity_id, link_status, sync_status)
+    VALUES
+      (${accountingConnectionId}, ${partnerId}, 'org', ${orgIdToErase}, 'Customer', 'qbo-cust-erased', 'confirmed', 'synced'),
+      (${accountingConnectionId}, ${partnerId}, 'org', ${orgIdControl}, 'Customer', 'qbo-cust-control', 'confirmed', 'synced'),
+      (${accountingConnectionId}, ${partnerId}, 'catalog_item', ${catalogItemId}, 'Item', 'qbo-item-1', 'confirmed', 'synced')
+  `);
+
   return {
     partnerId,
     orgIdToErase,
@@ -114,6 +146,8 @@ async function seed(): Promise<SeedHandles> {
     userId,
     siteIdErased,
     siteIdControl,
+    accountingConnectionId,
+    catalogItemId,
   };
 }
 
@@ -177,6 +211,34 @@ describe('cascadeDeleteOrg — end-to-end', () => {
       sql`SELECT id FROM alert_templates WHERE org_id = ${handles.orgIdControl}`,
     )) as unknown as unknown[];
     expect(controlAlertTemplateRows.length).toBe(1);
+  });
+
+  it('erases the QuickBooks entity mapping that names the erased org and keeps the others', async () => {
+    const testDb = getTestDb();
+    const stats = await cascadeDeleteOrg(handles.orgIdToErase, handles.userId);
+
+    expect(stats.tablesDeleted.accounting_entity_mappings).toBe(1);
+
+    const survivors = (await testDb.execute(sql`
+      SELECT breeze_entity_type, breeze_entity_id, remote_entity_id
+        FROM accounting_entity_mappings
+       WHERE integration_id = ${handles.accountingConnectionId}
+       ORDER BY remote_entity_id
+    `)) as unknown as Array<{
+      breeze_entity_type: string;
+      breeze_entity_id: string;
+      remote_entity_id: string;
+    }>;
+
+    // The erased org's UUID and the QuickBooks Customer id it was billed under
+    // are BOTH gone — that pairing is exactly what erasure exists to remove.
+    expect(survivors.map((r) => r.remote_entity_id)).toEqual(['qbo-cust-control', 'qbo-item-1']);
+    expect(survivors.some((r) => r.breeze_entity_id === handles.orgIdToErase)).toBe(false);
+    // The partner's catalog_item mapping belongs to no org and must not be
+    // collateral damage.
+    expect(survivors).toContainEqual(
+      expect.objectContaining({ breeze_entity_type: 'catalog_item', breeze_entity_id: handles.catalogItemId }),
+    );
   });
 
   it('writes tenant.erasure.started and tenant.erasure.completed events with org_id = NULL', async () => {

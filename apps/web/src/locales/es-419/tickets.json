@@ -116,7 +116,15 @@
     "internalPlaceholder": "Agregue una nota interna...",
     "sending": "Enviando",
     "sendReply": "Enviar respuesta",
-    "addInternalNote": "Agregar nota interna"
+    "addInternalNote": "Agregar nota interna",
+    "attachments": {
+      "attach": "Adjuntar",
+      "uploading": "Subiendo…",
+      "retry": "Reintentar",
+      "remove": "Quitar archivo",
+      "tooMany": "Puedes adjuntar como máximo {{max}} archivos a un comentario.",
+      "tooLarge": "{{name}} supera los 10 MB."
+    }
   },
   "ticketFeed": {
     "empty": "Aún no hay actividad.",
@@ -149,6 +157,11 @@
     "deleteDialog": {
       "title": "Eliminar comentario",
       "message": "¿Está seguro de que desea eliminar este comentario? Esta acción no se puede deshacer."
+    },
+    "attachments": {
+      "broken": "No se pudo cargar {{name}}",
+      "open": "Abrir adjunto",
+      "remove": "Quitar adjunto"
     }
   },
   "ticketPartsCard": {
@@ -432,6 +445,17 @@
       "feedbackFailed": "No se pudieron guardar los comentarios sobre la clasificación de tickets.",
       "feedbackSaved": "Comentarios sobre la clasificación de tickets guardados"
     },
+    "aiDraft": {
+      "kindReply": "Respuesta generada por IA",
+      "kindResolutionNote": "Nota de resolución generada por IA",
+      "sendAsMe": "Enviar como yo",
+      "sending": "Enviando…",
+      "discard": "Descartar",
+      "sendFailed": "No se pudo enviar el borrador de la IA.",
+      "sent": "Borrador enviado",
+      "discardFailed": "No se pudo descartar el borrador de la IA.",
+      "discarded": "Borrador descartado"
+    },
     "resolve": {
       "noteLabel": "Nota de resolución (visible para el solicitante)",
       "submit": "Resolver ticket"
@@ -469,7 +493,8 @@
       "categoryUpdateFailed": "Error al actualizar la categoría. Reintentar.",
       "assigned": "Asignado",
       "unassigned": "No asignado",
-      "assignFailed": "La asignación falló. Reintentar."
+      "assignFailed": "La asignación falló. Reintentar.",
+      "attachmentFailed": "No se pudo subir el adjunto."
     },
     "delete": {
       "failed": "Error al eliminar. Reintentar.",

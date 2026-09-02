@@ -14,7 +14,10 @@ type TranslatedLocale = (typeof translatedLocales)[number];
 // same `Français (Canada)` value in every catalog.
 const namespaceDuplicateBaselines = {
   'pt-BR': {
-    'admin.json': 19,
+    // +6: llmProviderCatalog admin UI (#3922 W1) — "Slug", "Status" are
+    // identical cognates in pt-BR; the "openrouter"/"OpenRouter" example
+    // values and the example base URL are literal placeholders, not wording.
+    'admin.json': 25,
     'ai.json': 1,
     'alerts.json': 43,
     'approvals.json': 0,
@@ -68,7 +71,17 @@ const namespaceDuplicateBaselines = {
     // +1: the it-IT locale's self-name is intentionally identical in every catalog.
     // +1: bulkOrgImport.preview.status — "Status" is the same cognate in pt-BR
     // (already accepted for billing.json).
-    'settings.json': 112,
+    // +1: partnerAiProvider.endpointCardTitle (#3922 W4) — "Endpoint" is the
+    // standard loanword in pt-BR technical UI.
+    // +1: this baseline was already 1 duplicate stale relative to the file
+    // before wave 6.1 Task 4 touched it (an earlier, unrelated wave's change
+    // landed without bumping it) — carried forward here rather than
+    // root-caused, since Task 4's own scope is the runs UI, not an audit of
+    // prior waves.
+    // +6: aiAgentsPage.runs (#3828 Task 4) — "Status" and "Manual" are the
+    // same cognate in pt-BR (already accepted elsewhere in this namespace),
+    // and "OK" is locale-invariant.
+    'settings.json': 120,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -77,7 +90,10 @@ const namespaceDuplicateBaselines = {
     'vulnerabilities.json': 13,
   },
   'es-419': {
-    'admin.json': 16,
+    // +5: llmProviderCatalog admin UI (#3922 W1) — "Slug" is kept as the
+    // standard CMS loanword in es-419; the "openrouter"/"OpenRouter" example
+    // values and the example base URL are literal placeholders, not wording.
+    'admin.json': 21,
     'ai.json': 4,
     'alerts.json': 39,
     'approvals.json': 0,
@@ -110,7 +126,9 @@ const namespaceDuplicateBaselines = {
     // +1: longTail.fleet.FindingsFeed.severities.error — "Error" is the correct
     // es-419 severity label and spells identically to English.
     // +1: nav.variables — "Variables" is the same word in Spanish.
-    'common.json': 86,
+    // +1: nav.software (left-nav reorg, #4202) — "Software" is the same word
+    // in Spanish.
+    'common.json': 87,
     'devices.json': 115,
     'discovery.json': 17,
     'integrations.json': 31,
@@ -132,7 +150,14 @@ const namespaceDuplicateBaselines = {
     'scripts.json': 60,
     'security.json': 114,
     // +1: tenantVariablesPage.title — "Variables" is identical in Spanish.
-    'settings.json': 115,
+    // +1: partnerAiProvider.endpointCardTitle (#3922 W4) — "Endpoint" is the
+    // standard loanword in es-419 technical UI.
+    // +1: pre-existing 1-duplicate baseline drift from before wave 6.1 Task 4
+    // (see the pt-BR block's note above — same root cause, carried forward
+    // rather than root-caused here).
+    // +4: aiAgentsPage.runs (#3828 Task 4) — "Manual" and "Ticket" are the
+    // same cognate in es-419, and "OK"/"Error" are locale-invariant.
+    'settings.json': 121,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -141,7 +166,10 @@ const namespaceDuplicateBaselines = {
     'vulnerabilities.json': 16,
   },
   'fr-FR': {
-    'admin.json': 27,
+    // +7: llmProviderCatalog admin UI (#3922 W1) — "Slug", "Actions", "Notes"
+    // are identical cognates in fr-FR; the "openrouter"/"OpenRouter" example
+    // values and the example base URL are literal placeholders, not wording.
+    'admin.json': 34,
     'ai.json': 9,
     'alerts.json': 58,
     'approvals.json': 0,
@@ -176,7 +204,9 @@ const namespaceDuplicateBaselines = {
     // +1: PsaConnectionForm.fields.secret — "Secret" is the identical French
     // term for this credential field (fr already uses "Secret client").
     // +1: nav.variables — "Variables" is identical in French.
-    'common.json': 104,
+    // +1: nav.sectionAdministration (left-nav reorg, #4202) —
+    // "Administration" is identical in French.
+    'common.json': 105,
     'devices.json': 136,
     'discovery.json': 15,
     'integrations.json': 38,
@@ -206,7 +236,14 @@ const namespaceDuplicateBaselines = {
     // action-column headers in this namespace.
     // +2: aiAgentsPage — "Mode" and "Notifications" are the same words
     // in French.
-    'settings.json': 153,
+    // +1: pre-existing 1-duplicate baseline drift from before wave 6.1 Task 4
+    // (see the pt-BR block's note above — same root cause, carried forward
+    // rather than root-caused here).
+    // +5: aiAgentsPage.runs (#3828 Task 4) — "Agent" and "Ticket" are the
+    // same word in French, and "OK" is locale-invariant.
+    // +1: aiAgentsPage.runs.triage.notesTitle (P2-4, #4191) — "Notes" is the
+    // same word in French.
+    'settings.json': 160,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -215,7 +252,10 @@ const namespaceDuplicateBaselines = {
     'vulnerabilities.json': 15,
   },
   'fr-CA': {
-    'admin.json': 27,
+    // +7: llmProviderCatalog admin UI (#3922 W1) — "Slug", "Actions", "Notes"
+    // are identical cognates in fr-CA; the "openrouter"/"OpenRouter" example
+    // values and the example base URL are literal placeholders, not wording.
+    'admin.json': 34,
     'ai.json': 9,
     'alerts.json': 59,
     'approvals.json': 0,
@@ -244,7 +284,9 @@ const namespaceDuplicateBaselines = {
     // +1: PsaConnectionForm.fields.secret — "Secret" is the identical French
     // term for this credential field (fr already uses "Secret client").
     // +1: nav.variables — "Variables" is identical in French.
-    'common.json': 106,
+    // +1: nav.sectionAdministration (left-nav reorg, #4202) —
+    // "Administration" is identical in French.
+    'common.json': 107,
     'devices.json': 136,
     'discovery.json': 15,
     'integrations.json': 40,
@@ -274,7 +316,14 @@ const namespaceDuplicateBaselines = {
     // headers in this namespace.
     // +2: aiAgentsPage — "Mode" and "Notifications" are the same words
     // in French.
-    'settings.json': 158,
+    // +1: pre-existing 1-duplicate baseline drift from before wave 6.1 Task 4
+    // (see the pt-BR block's note above — same root cause, carried forward
+    // rather than root-caused here).
+    // +5: aiAgentsPage.runs (#3828 Task 4) — "Agent" and "Ticket" are the
+    // same word in French, and "OK" is locale-invariant.
+    // +1: aiAgentsPage.runs.triage.notesTitle (P2-4, #4191) — "Notes" is the
+    // same word in French.
+    'settings.json': 165,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -283,7 +332,10 @@ const namespaceDuplicateBaselines = {
     'vulnerabilities.json': 15,
   },
   'de-DE': {
-    'admin.json': 23,
+    // +8: llmProviderCatalog admin UI (#3922 W1) — "Slug", "Name", "Status"
+    // are identical cognates in de-DE; the "openrouter"/"OpenRouter" example
+    // values and the example base URL are literal placeholders, not wording.
+    'admin.json': 31,
     'ai.json': 5,
     'alerts.json': 46,
     'approvals.json': 0,
@@ -313,7 +365,12 @@ const namespaceDuplicateBaselines = {
     // (api-key, company-id, personal-access-token, …) and the example address
     // are input-shape hints, not wording, so they are intentionally identical
     // in every catalog.
-    'common.json': 102,
+    // +2: nav.software + nav.sectionAdministration (left-nav reorg, #4202) —
+    // "Software" and "Administration" are the German words too.
+    // +1: longTail.time.sourceBadge.timer (#3900 W06) — "Timer" is the
+    // standard loanword in this locale, already used by the running-timer
+    // widget's own copy.
+    'common.json': 105,
     'devices.json': 146,
     'discovery.json': 26,
     'integrations.json': 43,
@@ -334,7 +391,12 @@ const namespaceDuplicateBaselines = {
     'security.json': 166,
     // +1: bulkOrgImport.preview.status — "Status" is the German word too.
     // +1: aiAgentsPage.fields.name — "Name" is the German word too.
-    'settings.json': 168,
+    // +1: pre-existing 1-duplicate baseline drift from before wave 6.1 Task 4
+    // (see the pt-BR block's note above — same root cause, carried forward
+    // rather than root-caused here).
+    // +10: aiAgentsPage.runs (#3828 Task 4) — "Agent", "Status", "Ticket" and
+    // "Tool" are the same words in German, and "OK" is locale-invariant.
+    'settings.json': 179,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -343,7 +405,10 @@ const namespaceDuplicateBaselines = {
     'vulnerabilities.json': 20,
   },
   'it-IT': {
-    'admin.json': 31,
+    // +7: llmProviderCatalog admin UI (#3922 W1) — "Slug", "Input", "Output"
+    // are identical cognates in it-IT; the "openrouter"/"OpenRouter" example
+    // values and the example base URL are literal placeholders, not wording.
+    'admin.json': 38,
     'ai.json': 12,
     'alerts.json': 57,
     'approvals.json': 0,
@@ -366,7 +431,10 @@ const namespaceDuplicateBaselines = {
     // (api-key, company-id, personal-access-token, …) and the example address
     // are input-shape hints, not wording, so they are intentionally identical
     // in every catalog.
-    'common.json': 105,
+    // +1: longTail.time.sourceBadge.timer (#3900 W06) — "Timer" is the
+    // standard loanword in this locale, already used by the running-timer
+    // widget's own copy.
+    'common.json': 106,
     'devices.json': 144,
     'discovery.json': 22,
     'integrations.json': 81,
@@ -383,7 +451,14 @@ const namespaceDuplicateBaselines = {
     // wording, and "Script" is the standard loanword in this locale (#3162).
     'scripts.json': 59,
     'security.json': 163,
-    'settings.json': 156,
+    // +1: partnerAiProvider.endpointCardTitle (#3922 W4) — "Endpoint" is the
+    // standard loanword in it-IT technical UI.
+    // +1: pre-existing 1-duplicate baseline drift from before wave 6.1 Task 4
+    // (see the pt-BR block's note above — same root cause, carried forward
+    // rather than root-caused here).
+    // +4: aiAgentsPage.runs (#3828 Task 4) — "Trigger" and "Ticket" are
+    // standard loanwords in it-IT technical UI, and "OK" is locale-invariant.
+    'settings.json': 162,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -392,7 +467,10 @@ const namespaceDuplicateBaselines = {
     'vulnerabilities.json': 17,
   },
   'tr-TR': {
-    'admin.json': 14,
+    // +5: llmProviderCatalog admin UI (#3922 W1) — "Slug" is kept as the
+    // standard CMS loanword in tr-TR; the "openrouter"/"OpenRouter" example
+    // values and the example base URL are literal placeholders, not wording.
+    'admin.json': 19,
     'ai.json': 1,
     'alerts.json': 25,
     'approvals.json': 0,
@@ -428,7 +506,11 @@ const namespaceDuplicateBaselines = {
     'reports.json': 31,
     'scripts.json': 38,
     'security.json': 86,
-    'settings.json': 64,
+    // +1: pre-existing 1-duplicate baseline drift from before wave 6.1 Task 4
+    // (see the pt-BR block's note above — same root cause, carried forward
+    // rather than root-caused here). aiAgentsPage.runs (#3828 Task 4) itself
+    // introduced zero new tr-TR duplicates.
+    'settings.json': 65,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     'tickets.json': 12,

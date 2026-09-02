@@ -65,6 +65,7 @@ function bind(operation: StepUpOperation) {
     authEpoch: 1,
     mfaEpoch: 2,
     sid: randomUUID(),
+    resourceDigest: '',
   };
 }
 
@@ -129,5 +130,22 @@ describe.skipIf(!SHOULD_RUN)('mfaStepUpGrant real-Redis chain (#2707)', () => {
     // subsequent SAME-operation validate below also fails.
     await expect(consumeStepUpGrant(registerId!, crossOpBindForRegisterGrant)).resolves.toBe(false);
     await expect(validateStepUpGrant(registerId!, registerBind)).resolves.toBe(false);
+  });
+
+  it('resource-binds agent rollback and allows exactly one parallel consume', async () => {
+    const rollbackBind = {
+      ...bind('agent_rollback'),
+      resourceDigest: `sha256:${'a'.repeat(64)}`,
+    };
+    const id = await mintStepUpGrant(rollbackBind);
+    expect(id).toBeTruthy();
+    await expect(validateStepUpGrant(id!, {
+      ...rollbackBind,
+      resourceDigest: `sha256:${'b'.repeat(64)}`,
+    })).resolves.toBe(false);
+    const outcomes = await Promise.all(
+      Array.from({ length: 16 }, () => consumeStepUpGrant(id!, rollbackBind)),
+    );
+    expect(outcomes.filter(Boolean)).toHaveLength(1);
   });
 });

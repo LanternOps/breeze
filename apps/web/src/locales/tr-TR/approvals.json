@@ -10,6 +10,12 @@
   },
   "requestedBy": "İsteyen: {{client}}",
   "proposedByAgent": "{{agent}} tarafından önerildi (yapay zeka temsilcisi)",
+  "targetDevice": "Hedef cihaz: {{hostname}}",
+  "batch": {
+    "approveAll": "Tümünü onayla ({{count}})",
+    "declineAll": "Tümünü reddet ({{count}})",
+    "groupTitle": "{{count}} benzer istek · {{tool}}"
+  },
   "risk": {
     "low": "Düşük risk",
     "medium": "Orta risk",
@@ -29,7 +35,11 @@
     "noApproverDevice": "Profilinizde bir onay cihazı kaydedip yeniden deneyin.",
     "notSoleApprover": "Bu isteğe başka bir yetkili onaylayıcı karar vermelidir.",
     "verificationFailed": "Doğrulama iptal edildi veya başarısız oldu. Yeniden deneyin.",
-    "decisionFailed": "Karar gönderilemedi. Yeniden deneyin."
+    "alreadyDecided": "Bu isteğe zaten karar verildi.",
+    "expired": "Bu istek, karar verilmeden önce sona erdi.",
+    "decisionFailed": "Karar gönderilemedi. Yeniden deneyin.",
+    "batchStepUp": "Bu toplu işlem için daha güçlü bir oturum açma gerekiyor. İstekleri tek tek onaylayın.",
+    "batchNotHomogeneous": "Bu isteklere artık birlikte karar verilemez."
   },
   "registerDevice": "Cihazı kaydet"
 }

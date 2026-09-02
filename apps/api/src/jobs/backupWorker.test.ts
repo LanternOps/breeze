@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import type { DispatchOutcome } from '../services/agentCommandRelay';
 
 // Mock db module — backupWorker uses `import * as dbModule from '../db'`
 // then destructures: `const { db } = dbModule;`
@@ -8,6 +9,7 @@ const mockDb = {
   where: vi.fn().mockReturnThis(),
   limit: vi.fn().mockResolvedValue([]),
   selectDistinct: vi.fn(),
+  update: vi.fn(),
 };
 
 vi.mock('../db', () => ({
@@ -37,6 +39,20 @@ const markBackupJobFailedIfInFlightMock = vi.fn();
 vi.mock('../services/backupResultPersistence', () => ({
   applyBackupCommandResultToJob: applyBackupCommandResultToJobMock,
   markBackupJobFailedIfInFlight: markBackupJobFailedIfInFlightMock,
+}));
+
+const recordDispatchedExpectationMock = vi.fn(async () => undefined);
+vi.mock('../services/agentWorkExpectation', () => ({
+  recordDispatchedExpectation: recordDispatchedExpectationMock,
+}));
+
+const agentRelayMock = {
+  isAgentConnectedAnywhere: vi.fn(async () => true),
+  dispatchCommandToAgent: vi.fn(async (): Promise<DispatchOutcome> => ({ status: 'sent', via: 'local' })),
+};
+vi.mock('../services/agentCommandRelay', () => ({
+  isAgentConnectedAnywhere: agentRelayMock.isAgentConnectedAnywhere,
+  dispatchCommandToAgent: agentRelayMock.dispatchCommandToAgent,
 }));
 
 // Must import AFTER mock so the module-level destructure picks up our mock
@@ -497,5 +513,121 @@ describe('processResults — malformed payload path rendering (#3260)', () => {
     expect(message).toMatch(/^Malformed backup result payload:/);
     expect(message).toContain('filesBackedUp');
     expect(message).not.toContain('<root>');
+  });
+});
+
+describe('processDispatchBackup (wave 3.5b #4084 — dispatch via facade)', () => {
+  const DATA = { type: 'dispatch-backup' as const, jobId: 'job-1', configId: 'config-1', orgId: 'org-1', deviceId: 'device-1' };
+  const CONFIG_ROW = { id: 'config-1', provider: 'local', providerConfig: {}, encryption: false };
+  const updateLog: Array<{ table: unknown; payload: Record<string, unknown> }> = [];
+
+  // Route every db.select() call by the shape of its column-selector argument
+  // (all these queries hit different tables/columns, real schema refs — not
+  // stringly-typed, so we key off which fields were requested).
+  function wireSelects() {
+    mockDb.select.mockImplementation(((cols?: Record<string, unknown>) => {
+      const keys = cols ? Object.keys(cols) : [];
+      let rows: unknown[];
+      if (keys.length === 0) {
+        rows = [CONFIG_ROW]; // config load: db.select() with no arg
+      } else if (keys.length === 1 && keys[0] === 'status') {
+        rows = []; // isBackupJobCancelled: never cancelled
+      } else if (keys.length === 1 && keys[0] === 'agentId') {
+        rows = [{ agentId: 'agent-1' }]; // device -> agent lookup
+      } else if (keys.includes('featureLinkId')) {
+        rows = [{ featureLinkId: null, backupMode: 'file', modeTargets: { paths: ['/data'] } }]; // job mode lookup
+      } else {
+        throw new Error(`unexpected select shape: ${JSON.stringify(keys)}`);
+      }
+      return {
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue(rows),
+          }),
+        }),
+      };
+    }) as never);
+  }
+
+  function wireUpdates() {
+    mockDb.update.mockImplementation(((table: unknown) => ({
+      set: (payload: Record<string, unknown>) => ({
+        where: async () => {
+          updateLog.push({ table, payload });
+        },
+      }),
+    })) as never);
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    updateLog.length = 0;
+    wireSelects();
+    wireUpdates();
+    agentRelayMock.isAgentConnectedAnywhere.mockResolvedValue(true);
+    agentRelayMock.dispatchCommandToAgent.mockResolvedValue({ status: 'sent', via: 'local' });
+  });
+
+  it('marks the job failed with "Agent not connected" (byte-identical to today) when no agent is connected anywhere, without calling dispatch', async () => {
+    agentRelayMock.isAgentConnectedAnywhere.mockResolvedValue(false);
+
+    const result = await __testOnly.processDispatchBackup(DATA as any);
+
+    expect(result).toEqual({ dispatched: false });
+    expect(agentRelayMock.dispatchCommandToAgent).not.toHaveBeenCalled();
+    expect(updateLog.some((u) => u.payload.errorLog === 'Agent not connected')).toBe(true);
+  });
+
+  it('dispatches normally (sentCount incremented) when the outcome is sent', async () => {
+    const result = await __testOnly.processDispatchBackup(DATA as any);
+
+    expect(result).toEqual({ dispatched: true });
+    // Final status flip to 'running' proves sentCount > 0 took the happy path.
+    expect(updateLog.some((u) => u.payload.status === 'running')).toBe(true);
+    expect(updateLog.some((u) => typeof u.payload.errorLog === 'string' && u.payload.errorLog.includes('Failed to send'))).toBe(false);
+  });
+
+  it('marks the target failed with "Failed to send ... command to agent" (today\'s message) when the outcome is offline', async () => {
+    agentRelayMock.dispatchCommandToAgent.mockResolvedValue({ status: 'offline' });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const result = await __testOnly.processDispatchBackup(DATA as any);
+
+    expect(result).toEqual({ dispatched: false });
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/^\[BackupWorker\] Failed to send backup_run command to agent for job/));
+    // Single target reuses the original jobId, so no per-target failed-row
+    // UPDATE fires (that branch only runs when commandJobId !== data.jobId);
+    // the only observable failure signal is the final markJobFailed.
+    expect(updateLog.some((u) => u.payload.errorLog === 'Failed to send command to agent')).toBe(true);
+    warn.mockRestore();
+  });
+
+  it('marks the job failed naming the outcome when indeterminate (still may have been sent)', async () => {
+    agentRelayMock.dispatchCommandToAgent.mockResolvedValue({ status: 'indeterminate' });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const result = await __testOnly.processDispatchBackup(DATA as any);
+
+    expect(result).toEqual({ dispatched: false });
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/dispatch outcome indeterminate/i));
+    // The persisted job errorLog (not just the console.warn) must name the
+    // outcome so ops/dashboards can distinguish "maybe sent" (indeterminate)
+    // from a genuine "offline" — same distinct-message contract as
+    // discoveryWorker. Single target reuses the original jobId, so the only
+    // observable failure signal is the final markJobFailed UPDATE.
+    expect(
+      updateLog.some((u) => u.payload.errorLog === 'Failed to send command to agent (dispatch outcome indeterminate)')
+    ).toBe(true);
+    expect(updateLog.some((u) => u.payload.errorLog === 'Failed to send command to agent')).toBe(false);
+    warn.mockRestore();
+  });
+
+  it('calls recordDispatchedExpectation BEFORE dispatchCommandToAgent (expectation-first, backupWorker.ts:645-651)', async () => {
+    await __testOnly.processDispatchBackup(DATA as any);
+
+    expect(recordDispatchedExpectationMock).toHaveBeenCalledWith('backup', 'device-1', 'job-1');
+    const expectationOrder = recordDispatchedExpectationMock.mock.invocationCallOrder[0] as number;
+    const dispatchOrder = agentRelayMock.dispatchCommandToAgent.mock.invocationCallOrder[0] as number;
+    expect(expectationOrder).toBeLessThan(dispatchOrder);
   });
 });

@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { HardDrive, Loader2, Server, Usb, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { extractApiError } from '@/lib/apiError';
 import { fetchWithAuth } from '../../stores/auth';
 import { useTranslation } from 'react-i18next';
-import { asList } from '@/lib/asList';
+import { useDeviceOptions } from '../../hooks/useDeviceOptions';
+import { DeviceOptionPicker } from '../filters/DeviceOptionPicker';
 import '../../lib/i18n';
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -18,11 +19,6 @@ type Vault = {
   type: VaultType;
   retentionCount?: number | null;
   [key: string]: unknown;
-};
-
-type Device = {
-  id: string;
-  hostname: string;
 };
 
 type VaultConfigDialogProps = {
@@ -46,35 +42,23 @@ export default function VaultConfigDialog({ vault, onClose }: VaultConfigDialogP
   const [vaultPath, setVaultPath] = useState(vault?.vaultPath ?? '');
   const [vaultType, setVaultType] = useState<VaultType>(vault?.type ?? 'local');
   const [retentionCount, setRetentionCount] = useState(vault?.retentionCount ?? 3);
-  const [devices, setDevices] = useState<Device[]>([]);
-  const [devicesLoading, setDevicesLoading] = useState(false);
+  const [deviceSearch, setDeviceSearch] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
-
-  useEffect(() => {
-    const fetchDevices = async () => {
-      setDevicesLoading(true);
-      try {
-        const response = await fetchWithAuth('/devices');
-        if (response.ok) {
-          const payload = await response.json();
-          const data = asList(payload);
-          setDevices(Array.isArray(data) ? data : []);
-        }
-      } catch {
-        // Silently fail; user can type device ID manually
-      } finally {
-        setDevicesLoading(false);
-      }
-    };
-    fetchDevices();
-  }, []);
+  const deviceOptions = useDeviceOptions({
+    search: deviceSearch,
+    includeIds: deviceId ? [deviceId] : [],
+  });
 
   const handleSave = useCallback(async () => {
     setError(undefined);
 
     if (!deviceId.trim()) {
       setError('Please select a device');
+      return;
+    }
+    if (!deviceOptions.canSubmit) {
+      setError('Device choice is not ready. Retry before saving.');
       return;
     }
     if (!vaultPath.trim()) {
@@ -114,7 +98,7 @@ export default function VaultConfigDialog({ vault, onClose }: VaultConfigDialogP
     } finally {
       setSaving(false);
     }
-  }, [deviceId, isEdit, onClose, retentionCount, vault?.id, vaultPath, vaultType]);
+  }, [deviceId, deviceOptions.canSubmit, isEdit, onClose, retentionCount, vault?.id, vaultPath, vaultType]);
 
   const placeholderExamples: Record<VaultType, string> = {
     local: '/mnt/backup/vault or D:\\Backups\\Vault',
@@ -149,24 +133,24 @@ export default function VaultConfigDialog({ vault, onClose }: VaultConfigDialogP
           <div>
             <label htmlFor="vault-device" className="text-xs font-medium text-muted-foreground">
               {t('vaultConfigDialog.device')} </label>
-            {devicesLoading ? (
-              <div className="mt-1 flex items-center gap-2 text-sm text-muted-foreground">
-                <Loader2 className="h-4 w-4 animate-spin" /> {t('vaultConfigDialog.loadingDevices')} </div>
+            {isEdit ? (
+              <div className="mt-1 rounded-md border bg-muted/20 px-3 py-2 text-sm">
+                {deviceOptions.state === 'loading'
+                  ? t('vaultConfigDialog.loadingDevices')
+                  : deviceOptions.state === 'error' || !deviceOptions.canSubmit
+                    ? (deviceOptions.error?.message ?? 'Selected device could not be resolved')
+                    : (deviceOptions.options[0]?.displayName ?? deviceOptions.options[0]?.hostname ?? deviceId)}
+              </div>
             ) : (
-              <select
-                id="vault-device"
-                value={deviceId}
-                onChange={(e) => setDeviceId(e.target.value)}
-                disabled={isEdit}
-                className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm disabled:opacity-60"
-              >
-                <option value="">{t('vaultConfigDialog.selectADevice')}</option>
-                {devices.map((d) => (
-                  <option key={d.id} value={d.id}>
-                    {d.hostname}
-                  </option>
-                ))}
-              </select>
+              <DeviceOptionPicker
+                className="mt-1"
+                result={deviceOptions}
+                selectedIds={deviceId ? [deviceId] : []}
+                onSelectedIdsChange={(ids) => setDeviceId(ids[0] ?? '')}
+                search={deviceSearch}
+                onSearchChange={setDeviceSearch}
+                selectionMode="single"
+              />
             )}
           </div>
 
@@ -247,7 +231,7 @@ export default function VaultConfigDialog({ vault, onClose }: VaultConfigDialogP
           <button
             type="button"
             onClick={handleSave}
-            disabled={saving}
+            disabled={saving || !deviceOptions.canSubmit}
             className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
           >
             {saving && <Loader2 className="h-4 w-4 animate-spin" />}

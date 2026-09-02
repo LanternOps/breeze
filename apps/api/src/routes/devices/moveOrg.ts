@@ -20,6 +20,7 @@ import { writeRouteAudit } from '../../services/auditEvents';
 import {
   getDeviceOrgDenormalizedTables,
   getDeviceOrgMoveDeleteTables,
+  DEVICE_ORG_FK_CASCADE_TABLES,
   DEVICE_SITE_DENORMALIZED_TABLES,
 } from './core';
 import { dissolveLinkGroupIfBelowMinimum } from '../../services/deviceLinkGroups';
@@ -31,6 +32,12 @@ import {
   TicketMoveCurrencyBlockedError,
   type MoveCurrencyGuardDetails,
 } from '../../services/ticketMoveCurrencyGuard';
+import { schedulePeripheralPolicyDevice } from '../../jobs/peripheralJobs';
+import {
+  assertPamDeviceOrgMoveAllowed,
+  PamDeviceMoveBlockedError,
+} from '../../services/pamDeviceMoveGuard';
+import { pgErrorNode } from '../../utils/pgErrors';
 
 /**
  * An organization that passed the pre-transaction existence check was gone at
@@ -197,6 +204,7 @@ moveOrgRoutes.post(
         const lockedTarget = lockedOrgs.get(targetOrgId);
         if (!lockedTarget) throw new OrgVanishedDuringMoveError('target');
         if (!lockedSource) throw new OrgVanishedDuringMoveError('source');
+        await assertPamDeviceOrgMoveAllowed(tx, { deviceId, sourceOrgId });
         const lockedSourceCurrency = lockedSource.currencyCode;
         const lockedTargetCurrency = lockedTarget.currencyCode;
 
@@ -233,19 +241,78 @@ moveOrgRoutes.post(
         // runs are not re-stamped (org_id is trigger-immutable, and re-stamping
         // would 23503 against the action_intents composite tenant FK the moment an
         // agent proposal exists). Sever ALL device-lineage links, not just
-        // device_id: alerts and ai_sessions ARE re-stamped to the target org by
-        // the loop below, so a retained source-org run keeping alert_id/session_id
-        // would point across tenants (and /ai-agents/:id/runs would serve those
-        // foreign ids to the source org). All three FKs are ON DELETE SET NULL —
-        // nullable by design.
+        // device_id: alerts, ai_sessions, and metric_anomaly_incidents ARE
+        // re-stamped to the target org by the loop below, so a retained
+        // source-org run keeping alert_id/session_id/anomaly_incident_id would
+        // point across tenants (and /ai-agents/:id/runs would serve those
+        // foreign ids to the source org). ticket_id is the fifth such FK but
+        // needs a different WHERE — see the statement below. All five FKs are
+        // ON DELETE SET NULL — nullable by design.
         await tx.execute(
-          sql`UPDATE ai_agent_runs SET device_id = NULL, alert_id = NULL, session_id = NULL
+          sql`UPDATE ai_agent_runs SET device_id = NULL, alert_id = NULL, session_id = NULL, anomaly_incident_id = NULL
               WHERE device_id = ${deviceId}::uuid`,
+        );
+
+        // ticket_id is the fifth device-lineage FK and needs its OWN statement
+        // (#4215): `tickets` is in getDeviceOrgDenormalizedTables(), so a
+        // ticket bound to this device is re-stamped to the target org by the
+        // loop below — but ticket-triggered runs are device-less
+        // (trigger_kind 'ticket' stamps ticket_id and leaves device_id NULL),
+        // so the device-keyed detach above cannot reach them and the retained
+        // source-org run would keep pointing at a now-foreign ticket. Keying
+        // off the ticket's own device_id catches BOTH the device-less ticket
+        // runs and device runs on the same ticket, and touches nothing whose
+        // ticket stays behind in the source org. Same tickets-join shape as
+        // the ticket_attachments/time_entries/ticket_parts rewrites further
+        // down; runs BEFORE the loop for the same reason the reverse pointer
+        // below does, so both sides are still read under the SOURCE org.
+        await tx.execute(
+          sql`UPDATE ai_agent_runs SET ticket_id = NULL
+              WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${deviceId}::uuid)`,
+        );
+
+        // Reverse pointer: metric_anomaly_incidents.agent_run_id (no FK) must
+        // not keep naming a source-org run once the incident row itself is
+        // re-stamped to the target org by the denormalized-table loop below —
+        // same cross-tenant-pointer class as the ai_agent_runs detach above,
+        // just the other direction of the link. Must run BEFORE that loop so
+        // it targets the incident by its still-source device_id.
+        await tx.execute(
+          sql`UPDATE metric_anomaly_incidents SET agent_run_id = NULL WHERE device_id = ${deviceId}::uuid`,
+        );
+
+        // action_intents.scope_device_id (P2-2, #4189): same cross-tenant-
+        // pointer class as the two detaches above — an intent whose target
+        // device just moved to a different org must not keep pointing at it.
+        // The immutability trigger (action_intents_block_content_update())
+        // permits exactly this transition (non-null -> NULL is the ONE
+        // allowed change to scope_device_id; see actionIntents.ts's column
+        // comment), so this UPDATE is the tombstone path, not a bypass.
+        //
+        // Scoped to LIVE statuses only (pending_approval/approved/executing):
+        // a terminal-status intent (completed/failed/rejected/expired/
+        // cancelled) is a historical record of an action already decided —
+        // its target device at decision time is a fact, not something a
+        // future release path re-validates, so leaving it alone matches how
+        // ai_agent_runs' org_id is left un-restamped for the same reason
+        // above. Only a LIVE intent can still reach the release path
+        // (intentTargetScope.ts, Task A3), which fails closed on a NULL
+        // scope_device_id (tombstone) or an org mismatch — this UPDATE is
+        // what produces that tombstone instead of leaving a dangling
+        // cross-tenant device id for release to silently act on.
+        await tx.execute(
+          sql`UPDATE action_intents SET scope_device_id = NULL
+              WHERE scope_device_id = ${deviceId}::uuid
+                AND status IN ('pending_approval', 'approved', 'executing')`,
         );
 
         // Rewrite the denormalized org_id on every device-scoped table.
         // Skipping any of these strands pre-existing rows under RLS.
         for (const table of getDeviceOrgDenormalizedTables()) {
+          // Immutable evidence revokes app-role UPDATE. Its composite FK uses
+          // ON UPDATE CASCADE, so the devices row flip above already performed
+          // the trusted org-only restamp inside this transaction.
+          if (DEVICE_ORG_FK_CASCADE_TABLES.includes(table)) continue;
           await tx.execute(
             sql`UPDATE ${sql.identifier(table)} SET org_id = ${targetOrgId}::uuid WHERE device_id = ${deviceId}::uuid`,
           );
@@ -296,6 +363,17 @@ moveOrgRoutes.post(
           sql`UPDATE ${sql.identifier('ticket_parts')} SET org_id = ${targetOrgId}::uuid WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${deviceId}::uuid)`,
         );
 
+        // ticket_attachments (W08 #3902) denormalizes org_id from its ticket and
+        // has no device_id; tickets bound to this device move org, so their
+        // attachment rows follow via the tickets join. Placed AFTER ticket_parts
+        // to extend — not reorder — the documented global lock order
+        // (tickets -> time_entries -> ticket_parts -> ticket_attachments); the
+        // moveTicketOrg loop appends it last for the same reason. S3 objects are
+        // keyed by attachment id only (spec D8) and are not touched.
+        await tx.execute(
+          sql`UPDATE ${sql.identifier('ticket_attachments')} SET org_id = ${targetOrgId}::uuid WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${deviceId}::uuid)`,
+        );
+
         // Rewrite denormalized site_id on every device-scoped table that has
         // one (currently elevation_requests — see DEVICE_SITE_DENORMALIZED_TABLES
         // in core.ts). Skipping any of these strands rows under the OLD
@@ -308,6 +386,27 @@ moveOrgRoutes.post(
         }
       });
     } catch (err) {
+      const pgNode = pgErrorNode(err);
+      if (
+        err instanceof PamDeviceMoveBlockedError
+        || (
+          pgNode?.code === '23514'
+          && pgNode.constraint_name === 'devices_pam_history_move_guard'
+        )
+      ) {
+        writeRouteAudit(c, {
+          orgId: sourceOrgId,
+          action: 'device.move_org.failed',
+          resourceType: 'device',
+          resourceId: deviceId,
+          resourceName: device.hostname,
+          details: { code: 'PAM_DEVICE_MOVE_BLOCKED' },
+        });
+        return c.json({
+          error: 'Device organization move is blocked because durable PAM lifecycle evidence exists',
+          code: 'PAM_DEVICE_MOVE_BLOCKED',
+        }, 409);
+      }
       // A currency-policy block is not a failure: the transaction rolled back
       // (device + tickets untouched), so report it and skip Sentry / the
       // failed-move audit.
@@ -337,6 +436,10 @@ moveOrgRoutes.post(
       });
       return c.json({ error: 'Failed to move device between organizations' }, 500);
     }
+
+    await schedulePeripheralPolicyDevice(deviceId, 'device_org_changed').catch((error) => {
+      console.error(`[devices.moveOrg] failed to schedule peripheral reconciliation for ${deviceId}:`, error);
+    });
 
     // Force-close any active WS so the agent reconnects with a fresh
     // handshake on the new org_id. Without this, createAgentWsHandlers

@@ -34,6 +34,7 @@
 
 import { eq, and, inArray } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { effectiveTargetDeviceId, resolveIntentTargetDevice } from './intentTargetScope';
 import {
   aiAgentRuns,
   devices,
@@ -184,7 +185,17 @@ export type IntentTargetScope =
 /**
  * Resolve the concrete target scope of a proposed agent intent. For a
  * DEVICE_COMPLETE_TARGET_TOOLS tool: the distinct site ids of every device
- * named in the tool's `deviceArgs` inputs, unioned with the run's own device.
+ * named in the tool's `deviceArgs` inputs, unioned with the intent's OWN
+ * target device.
+ *
+ * P2-2 (#4189): that third argument used to be the run row itself. It is now
+ * the resolved target — `effectiveTargetDeviceId(resolveIntentTargetDevice(
+ * intent, run))` (intentTargetScope.ts) — so a scoped intent's approvers are
+ * the humans who can reach the SCOPED device, and a device-less sweep run
+ * never drags a `null` in where a real device exists. Callers MUST pass the
+ * resolved value; passing `run` directly is the bug this parameter was
+ * renamed to make visible.
+ *
  * Every other tool — and any call where no device id can be resolved at all —
  * is `{kind:'indirect'}`, which fails closed to site-unrestricted approvers
  * (review blocker 1: deviceArgs explicitly does not cover indirect or
@@ -202,7 +213,7 @@ export type IntentTargetScope =
 export async function resolveIntentTargetScope(
   toolName: string,
   args: Record<string, unknown>,
-  run: { deviceId: string | null },
+  target: { deviceId: string | null },
   orgId: string,
 ): Promise<IntentTargetScope> {
   if (!DEVICE_COMPLETE_TARGET_TOOLS.has(toolName)) return { kind: 'indirect' };
@@ -220,10 +231,11 @@ export async function resolveIntentTargetScope(
     // A present-but-malformed value contributes nothing; if that leaves the
     // union empty we fall through to the fail-closed indirect branch below.
   }
-  if (run.deviceId) deviceIds.add(run.deviceId);
+  if (target.deviceId) deviceIds.add(target.deviceId);
 
   // No resolvable device at all (malformed args + a detached run after a
-  // device move): {kind:'devices', siteIds: []} would vacuously pass every
+  // device move, or a tombstoned scope): {kind:'devices', siteIds: []} would
+  // vacuously pass every
   // candidate's site check, so fail closed to the indirect rule instead.
   if (deviceIds.size === 0) return { kind: 'indirect' };
 
@@ -377,10 +389,18 @@ export async function resolveAgentIntentApprovers(opts: {
  * exactly like four_eyes re-checks decide authority at decision time.
  * Every failure mode returns false (fail closed), including a cited device
  * that no longer exists.
+ *
+ * P2-2 (#4189): the target device comes from `resolveIntentTargetDevice` —
+ * the intent's explicit scope when it has one, the run's device otherwise.
+ * A tombstoned scope, a scoped device that has been deleted, and a scoped
+ * device whose CURRENT org is no longer the intent's org are all `false`.
  */
 export async function isAgentIntentDecideAuthorized(
   userId: string,
-  intent: Pick<ActionIntent, 'id' | 'orgId' | 'actionName' | 'arguments' | 'requestingAgentRunId'>,
+  intent: Pick<
+    ActionIntent,
+    'id' | 'orgId' | 'actionName' | 'arguments' | 'requestingAgentRunId' | 'scopeKind' | 'scopeDeviceId' | 'scopeTicketId'
+  >,
 ): Promise<boolean> {
   const runId = intent.requestingAgentRunId;
   if (!runId) return false;
@@ -388,7 +408,14 @@ export async function isAgentIntentDecideAuthorized(
   const required = requiredPermissionsForTool(intent.actionName, intent.arguments ?? {});
   if (required === null) return false;
 
-  const { run, partnerId } = await runOutsideDbContext(() =>
+  // P2-2 (#4189): the target is resolved BEFORE the run is even consulted —
+  // a tombstoned scope (the device was deleted, or moved to another org)
+  // means nobody can decide this intent, exactly like a cited device that no
+  // longer exists.
+  const target = resolveIntentTargetDevice(intent, null);
+  if (target.kind === 'tombstone') return false;
+
+  const { run, partnerId, scopedDevice } = await runOutsideDbContext(() =>
     withSystemDbAccessContext(async () => {
       const [runRow] = await db
         .select({ orgId: aiAgentRuns.orgId, deviceId: aiAgentRuns.deviceId })
@@ -400,18 +427,36 @@ export async function isAgentIntentDecideAuthorized(
         .from(organizations)
         .where(eq(organizations.id, intent.orgId))
         .limit(1);
-      return { run: runRow ?? null, partnerId: org?.partnerId ?? null };
+      // Controller ruling (P2-2 A3): the scoped device's CURRENT org is the
+      // backstop for a device org-move that landed through the DB cascade
+      // rather than the HTTP moveOrg route (which detaches the scope
+      // itself) — a live scope_device_id pointing at another tenant's device
+      // must decide exactly like a tombstone.
+      let device: { orgId: string } | null = null;
+      if (target.kind === 'scope') {
+        const [row] = await db
+          .select({ orgId: devices.orgId })
+          .from(devices)
+          .where(eq(devices.id, target.deviceId))
+          .limit(1);
+        device = row ?? null;
+      }
+      return { run: runRow ?? null, partnerId: org?.partnerId ?? null, scopedDevice: device };
     }),
   );
   // Belt-and-braces: the composite FK already pins the run to the intent org.
   if (!run || run.orgId !== intent.orgId) return false;
+  if (target.kind === 'scope' && (!scopedDevice || scopedDevice.orgId !== intent.orgId)) return false;
 
   let targetScope: IntentTargetScope;
   try {
     targetScope = await resolveIntentTargetScope(
       intent.actionName,
       intent.arguments ?? {},
-      { deviceId: run.deviceId },
+      // Re-resolved now that the run row is loaded — `target` above was
+      // resolved against a null run purely to catch the tombstone before
+      // paying for any read. Same resolver, same answer for the scope case.
+      { deviceId: effectiveTargetDeviceId(resolveIntentTargetDevice(intent, run)) },
       intent.orgId,
     );
   } catch {

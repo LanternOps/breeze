@@ -24,6 +24,12 @@ const withSystemDbAccessContextMock = vi.fn(async (fn: () => any) => {
 });
 const updateRestoreJobByCommandIdMock = vi.fn().mockResolvedValue(true);
 const claimPendingCommandsForDeviceMock = vi.fn();
+const applyCommandAutomationTerminalMock = vi.fn().mockResolvedValue(true);
+const consumePamReconciliationRateLimitMock = vi.fn().mockResolvedValue({
+  allowed: true,
+  remaining: 119,
+  resetAt: new Date('2026-08-26T12:01:00.000Z'),
+});
 
 function chainMock(resolvedValue: unknown = []) {
   const chain: Record<string, any> = {};
@@ -108,6 +114,15 @@ vi.mock('../../services/vaultSyncPersistence', () => ({
   applyVaultSyncCommandResult: vi.fn(),
 }));
 
+vi.mock('../../services/automationTerminalEvidence', () => ({
+  applyCommandAutomationTerminal: (...args: unknown[]) =>
+    applyCommandAutomationTerminalMock(...(args as [])),
+}));
+
+vi.mock('../../services/automationActionResults', () => ({
+  applyAutomationActionTerminal: vi.fn().mockResolvedValue(true),
+}));
+
 vi.mock('./helpers', () => ({
   handleSecurityCommandResult: vi.fn(),
   handleFilesystemAnalysisCommandResult: vi.fn(),
@@ -126,12 +141,22 @@ vi.mock('../../services/auditBaselineService', () => ({
 // mock existing proves the route skips the registry by intent rather than
 // because the handler happened to be missing.
 const scriptRegistryHandlerMock = vi.fn().mockResolvedValue(undefined);
+const peripheralV2RegistryHandlerMock = vi.fn().mockResolvedValue(undefined);
+const pamRegistryHandlerMock = vi.fn().mockResolvedValue({ kind: 'pam', classification: 'applied' });
 const cisRegistryHandlerMock = vi.fn().mockResolvedValue(undefined);
 vi.mock('../../services/commandResultHandlers', () => ({
   commandResultHandlers: {
     script: (...args: unknown[]) => scriptRegistryHandlerMock(...(args as [])),
+    peripheral_policy_sync_v2: (...args: unknown[]) => peripheralV2RegistryHandlerMock(...(args as [])),
+    pam_apply_v2: (...args: unknown[]) => pamRegistryHandlerMock(...(args as [])),
+    pam_cleanup_v2: (...args: unknown[]) => pamRegistryHandlerMock(...(args as [])),
     cis_benchmark: (...args: unknown[]) => cisRegistryHandlerMock(...(args as [])),
   },
+}));
+
+vi.mock('../../services/pamReconciliationRateLimit', () => ({
+  consumePamReconciliationRateLimit: (...args: unknown[]) =>
+    consumePamReconciliationRateLimitMock(...(args as [])),
 }));
 
 vi.mock('../../services/sentry', () => ({
@@ -260,6 +285,275 @@ describe('agent commands routes', () => {
       resolvedDeviceId: 'device-1',
       stdout: 'hello from the script',
     });
+    expect(applyCommandAutomationTerminalMock).toHaveBeenCalledWith(expect.objectContaining({
+      commandId,
+      result: expect.objectContaining({ status: 'completed', exitCode: 0 }),
+      output: 'hello from the script',
+    }));
+  });
+
+  it('dispatches a peripheral v2 result to the shared handler over the HTTP path', async () => {
+    const command = {
+      id: commandId,
+      deviceId: 'device-1',
+      type: 'peripheral_policy_sync_v2',
+      status: 'sent',
+      payload: {},
+    };
+    selectMock.mockReturnValueOnce(chainMock([command]));
+    updateMock.mockReturnValueOnce(chainMock([{ id: commandId }]));
+
+    const protocolResult = {
+      schemaVersion: 2,
+      phase: 'clear_legacy',
+      revision: 1,
+      digest: `sha256:${'a'.repeat(64)}`,
+      outcome: 'applied',
+    };
+    const res = await app.request(`/agents/${agentId}/commands/${commandId}/result`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ commandId, status: 'completed', result: protocolResult }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(peripheralV2RegistryHandlerMock).toHaveBeenCalledWith(expect.objectContaining({
+      command,
+      commandId,
+      resolvedDeviceId: 'device-1',
+      result: expect.objectContaining({ result: protocolResult }),
+    }));
+  });
+
+  it.each(['pam_apply_v2', 'pam_cleanup_v2'])(
+    'dispatches %s results to the shared handler over the HTTP path',
+    async (commandType) => {
+      const command = { id: commandId, deviceId: 'device-1', type: commandType, status: 'sent', payload: {} };
+      selectMock.mockReturnValueOnce(chainMock([command]));
+      updateMock.mockReturnValueOnce(chainMock([{ id: commandId }]));
+      const protocolResult = {
+        protocolVersion: 2,
+        observationId: '11111111-1111-4111-8111-111111111111',
+        actuationId: '22222222-2222-4222-8222-222222222222',
+        generation: 2,
+        state: 'received',
+        observedAt: '2026-08-25T12:00:00.000Z',
+        evidence: { bootId: 'boot-1' },
+      };
+      const res = await app.request(`/agents/${agentId}/commands/${commandId}/result`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ commandId, status: 'completed', result: protocolResult }),
+      });
+      expect(res.status).toBe(200);
+      await expect(res.json()).resolves.toEqual({ protocolVersion: 1, classification: 'applied' });
+      expect(updateMock).toHaveBeenCalledTimes(1);
+      expect(pamRegistryHandlerMock).toHaveBeenCalledWith(expect.objectContaining({
+        command, commandId, resolvedDeviceId: 'device-1',
+        result: expect.objectContaining({ result: protocolResult }),
+      }));
+      expect(consumePamReconciliationRateLimitMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['pam_apply_v2', 'pam_cleanup_v2'])(
+    'accepts a valid supplemental %s result for a terminal row without rewriting it',
+    async (commandType) => {
+      const command = {
+        id: commandId,
+        deviceId: 'device-1',
+        type: commandType,
+        status: 'completed',
+        targetRole: 'agent',
+        payload: null,
+        result: { status: 'completed', result: { retained: true } },
+        completedAt: new Date('2026-08-25T12:00:00.000Z'),
+      };
+      const before = structuredClone(command);
+      selectMock.mockReturnValueOnce(chainMock([command]));
+      const protocolResult = {
+        protocolVersion: 2,
+        observationId: '11111111-1111-4111-8111-111111111111',
+        actuationId: '22222222-2222-4222-8222-222222222222',
+        generation: 2,
+        state: commandType === 'pam_apply_v2' ? 'verified_active' : 'cleaned',
+        observedAt: '2026-08-25T12:00:00.000Z',
+        evidence: { bootId: 'boot-1' },
+      };
+
+      const res = await app.request(`/agents/${agentId}/commands/${commandId}/result`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ commandId, status: 'completed', result: protocolResult }),
+      });
+
+      expect(res.status).toBe(200);
+      await expect(res.json()).resolves.toEqual({ protocolVersion: 1, classification: 'applied' });
+      expect(consumePamReconciliationRateLimitMock).toHaveBeenCalledWith('device-1');
+      expect(pamRegistryHandlerMock).toHaveBeenCalledTimes(1);
+      expect(pamRegistryHandlerMock).toHaveBeenCalledWith(expect.objectContaining({
+        command,
+        commandId,
+        resolvedDeviceId: 'device-1',
+        result: expect.objectContaining({ result: protocolResult }),
+      }));
+      expect(updateMock).not.toHaveBeenCalled();
+      expect(command).toEqual(before);
+    },
+  );
+
+  it('preserves the terminal short circuit for malformed PAM results', async () => {
+    selectMock.mockReturnValueOnce(chainMock([{
+      id: commandId,
+      deviceId: 'device-1',
+      type: 'pam_apply_v2',
+      status: 'completed',
+      targetRole: 'agent',
+      payload: { retained: true },
+      result: { status: 'completed' },
+    }]));
+
+    const res = await app.request(`/agents/${agentId}/commands/${commandId}/result`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ commandId, status: 'completed', result: { protocolVersion: 2 } }),
+    });
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({ success: true });
+    expect(consumePamReconciliationRateLimitMock).not.toHaveBeenCalled();
+    expect(pamRegistryHandlerMock).not.toHaveBeenCalled();
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it('rate-limits valid supplemental terminal PAM results by authenticated device', async () => {
+    consumePamReconciliationRateLimitMock.mockResolvedValueOnce({
+      allowed: false,
+      remaining: 0,
+      resetAt: new Date('2026-08-26T12:01:00.000Z'),
+    });
+    selectMock.mockReturnValueOnce(chainMock([{
+      id: commandId,
+      deviceId: 'device-1',
+      type: 'pam_apply_v2',
+      status: 'completed',
+      targetRole: 'agent',
+      payload: {},
+      result: { status: 'completed' },
+    }]));
+    const protocolResult = {
+      protocolVersion: 2,
+      observationId: '11111111-1111-4111-8111-111111111111',
+      actuationId: '22222222-2222-4222-8222-222222222222',
+      generation: 2,
+      state: 'verified_active',
+      observedAt: '2026-08-25T12:00:00.000Z',
+      evidence: { bootId: 'boot-1' },
+    };
+
+    const res = await app.request(`/agents/${agentId}/commands/${commandId}/result`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ commandId, status: 'completed', result: protocolResult }),
+    });
+
+    expect(res.status).toBe(429);
+    expect(consumePamReconciliationRateLimitMock).toHaveBeenCalledWith('device-1');
+    expect(pamRegistryHandlerMock).not.toHaveBeenCalled();
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it('treats a server-timeout PAM row as terminal supplemental evidence without rewriting it', async () => {
+    const command = {
+      id: commandId,
+      deviceId: 'device-1',
+      type: 'pam_apply_v2',
+      status: 'failed',
+      targetRole: 'agent',
+      payload: { retained: true },
+      result: { status: 'timeout', retained: true },
+      completedAt: new Date('2026-08-25T12:00:00.000Z'),
+    };
+    selectMock.mockReturnValueOnce(chainMock([command]));
+    const protocolResult = {
+      protocolVersion: 2,
+      observationId: '11111111-1111-4111-8111-111111111111',
+      actuationId: '22222222-2222-4222-8222-222222222222',
+      generation: 2,
+      state: 'verified_active',
+      observedAt: '2026-08-25T12:00:00.000Z',
+      evidence: { bootId: 'boot-1' },
+    };
+
+    const res = await app.request(`/agents/${agentId}/commands/${commandId}/result`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ commandId, status: 'completed', result: protocolResult }),
+    });
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({ protocolVersion: 1, classification: 'applied' });
+    expect(consumePamReconciliationRateLimitMock).toHaveBeenCalledWith('device-1');
+    expect(pamRegistryHandlerMock).toHaveBeenCalledTimes(1);
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it('preserves the terminal short circuit for non-PAM commands', async () => {
+    selectMock.mockReturnValueOnce(chainMock([{
+      id: commandId,
+      deviceId: 'device-1',
+      type: 'script',
+      status: 'completed',
+      targetRole: 'agent',
+      payload: {},
+      result: { status: 'completed' },
+    }]));
+
+    const res = await app.request(`/agents/${agentId}/commands/${commandId}/result`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ commandId, status: 'completed', stdout: 'late' }),
+    });
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({ success: true });
+    expect(consumePamReconciliationRateLimitMock).not.toHaveBeenCalled();
+    expect(scriptRegistryHandlerMock).not.toHaveBeenCalled();
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it('returns no acknowledgement when terminal PAM persistence throws', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    pamRegistryHandlerMock.mockRejectedValueOnce(new Error('PAM persistence unavailable'));
+    selectMock.mockReturnValueOnce(chainMock([{
+      id: commandId,
+      deviceId: 'device-1',
+      type: 'pam_apply_v2',
+      status: 'completed',
+      targetRole: 'agent',
+      payload: {},
+      result: { status: 'completed' },
+    }]));
+    const protocolResult = {
+      protocolVersion: 2,
+      observationId: '11111111-1111-4111-8111-111111111111',
+      actuationId: '22222222-2222-4222-8222-222222222222',
+      generation: 2,
+      state: 'verified_active',
+      observedAt: '2026-08-25T12:00:00.000Z',
+      evidence: { bootId: 'boot-1' },
+    };
+
+    const res = await app.request(`/agents/${agentId}/commands/${commandId}/result`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ commandId, status: 'completed', result: protocolResult }),
+    });
+
+    expect(res.status).toBe(500);
+    expect(await res.text()).not.toContain('"protocolVersion":1');
+    expect(updateMock).not.toHaveBeenCalled();
+    errorSpy.mockRestore();
   });
 
   // The other half of the contract: types this route already post-processes

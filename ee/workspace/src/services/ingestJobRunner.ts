@@ -33,6 +33,16 @@ export interface EnrichRunResult {
   processed: number;
   remaining: number;
   errors: Array<{ fileIndexId: string; relPath: string; error: string }>;
+  /**
+   * Set when the run stopped on a PERMANENT AI failure — no provider on this
+   * deployment, AI switched off for the org, a partner plan without AI, or an
+   * unpriced model id. `remaining` is reported as 0 so this phase drains and
+   * the job advances; the flag exists so a caller that asked for enrichment
+   * EXPLICITLY (the admin enrich-run route) can still answer honestly instead
+   * of "0 files, all done", and so `advance()` can leave a stats crumb saying
+   * why the phase produced nothing.
+   */
+  aiUnavailable?: true;
 }
 
 export interface AdvanceResult {
@@ -133,6 +143,23 @@ export function createIngestJobRunner(deps: {
 
         if (job.phase === 'enrich') {
           const r = await deps.enrichment.run(orgId, batch);
+          if (r.aiUnavailable) {
+            // A drained-because-AI-is-unavailable phase is otherwise
+            // INDISTINGUISHABLE from an empty queue: same remaining 0, same
+            // phase_complete, and nothing on the job saying why not one file
+            // was enriched. Mirror the enrichSkipped crumb below so the
+            // dashboard and an operator reading job stats can tell "nothing to
+            // do" from "this org has no usable AI provider".
+            deps.log(`enrich job ${job.id}: ai_unavailable for this org — draining enrich phase`);
+            await deps.jobs.recordProgress(orgId, job.id, {
+              statsPatch: { enrichSkippedReason: 'ai_unavailable' },
+            });
+            const released = await deps.jobs.release(orgId, job.id, {
+              kind: 'phase_complete',
+              nextPhase: 'crosswalk',
+            });
+            return { advanced: true, job: released };
+          }
           if (r.remaining === 0) {
             const released = await deps.jobs.release(orgId, job.id, {
               kind: 'phase_complete',

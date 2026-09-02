@@ -7,6 +7,8 @@ import {
   fdbEntrySchema,
   sensitiveDataQueueJobDataSchema,
   desktopSessionFinalizationJobDataSchema,
+  routeEventJobDataSchema,
+  deliverEventJobDataSchema,
 } from './queueSchemas';
 
 describe('desktopSessionFinalizationJobDataSchema', () => {
@@ -427,5 +429,146 @@ describe('backupProcessResultSchema — agentStatus (#3000)', () => {
       expect(parsed.success).toBe(true);
       expect(parsed.success && parsed.data.snapshotId).toBe('snap-1');
     }
+  });
+});
+
+// Wave 3.5c dispatch queue (#4085 task 5).
+describe('routeEventJobDataSchema', () => {
+  const baseEvent = {
+    id: 'evt-1',
+    type: 'device.online',
+    orgId: 'org-1',
+    source: 'unit-test',
+    priority: 'normal' as const,
+    payload: { deviceId: 'dev-1' },
+    metadata: { timestamp: '2026-08-26T00:00:00.000Z' },
+  };
+
+  it('accepts a valid shadow-mode route-event job', () => {
+    const payload = {
+      v: 1 as const,
+      mode: 'shadow' as const,
+      event: baseEvent,
+      matchedSubscriberIds: ['automation-worker', 'webhook-delivery'],
+      queueSubscriberIds: ['automation-worker', 'webhook-delivery'],
+    };
+    expect(routeEventJobDataSchema.parse(payload)).toEqual(payload);
+  });
+
+  it('accepts a valid enforce-mode job with a proper subset queueSubscriberIds', () => {
+    const payload = {
+      v: 1 as const,
+      mode: 'enforce' as const,
+      event: baseEvent,
+      matchedSubscriberIds: ['automation-worker', 'webhook-delivery'],
+      queueSubscriberIds: ['webhook-delivery'],
+    };
+    expect(routeEventJobDataSchema.parse(payload)).toEqual(payload);
+  });
+
+  it('accepts optional siteId/audienceUserId and open payload/correlation fields on the event', () => {
+    const payload = {
+      v: 1 as const,
+      mode: 'shadow' as const,
+      event: {
+        ...baseEvent,
+        siteId: 'site-1',
+        audienceUserId: 'user-1',
+        payload: { nested: { anything: true } },
+        metadata: { ...baseEvent.metadata, correlationId: 'c-1', causationId: 'ca-1', userId: 'u-1' },
+      },
+      matchedSubscriberIds: [],
+      queueSubscriberIds: [],
+    };
+    expect(() => routeEventJobDataSchema.parse(payload)).not.toThrow();
+  });
+
+  it('rejects an unknown subscriber id (drift guard against eventSubscriberIds.ts)', () => {
+    const payload = {
+      v: 1 as const,
+      mode: 'shadow' as const,
+      event: baseEvent,
+      matchedSubscriberIds: ['not-a-real-subscriber'],
+      queueSubscriberIds: [],
+    };
+    expect(() => routeEventJobDataSchema.parse(payload)).toThrow();
+  });
+
+  it('rejects an unknown top-level key (.strict())', () => {
+    const payload = {
+      v: 1 as const,
+      mode: 'shadow' as const,
+      event: baseEvent,
+      matchedSubscriberIds: [],
+      queueSubscriberIds: [],
+      unexpected: true,
+    };
+    expect(() => routeEventJobDataSchema.parse(payload)).toThrow();
+  });
+
+  it('rejects an unknown top-level key on the nested event (.strict())', () => {
+    const payload = {
+      v: 1 as const,
+      mode: 'shadow' as const,
+      event: { ...baseEvent, unexpectedField: 'nope' },
+      matchedSubscriberIds: [],
+      queueSubscriberIds: [],
+    };
+    expect(() => routeEventJobDataSchema.parse(payload)).toThrow();
+  });
+
+  it('rejects a version other than 1 and a mode outside shadow|enforce', () => {
+    expect(() =>
+      routeEventJobDataSchema.parse({
+        v: 2,
+        mode: 'shadow',
+        event: baseEvent,
+        matchedSubscriberIds: [],
+        queueSubscriberIds: [],
+      }),
+    ).toThrow();
+    expect(() =>
+      routeEventJobDataSchema.parse({
+        v: 1,
+        mode: 'off',
+        event: baseEvent,
+        matchedSubscriberIds: [],
+        queueSubscriberIds: [],
+      }),
+    ).toThrow();
+  });
+});
+
+describe('deliverEventJobDataSchema', () => {
+  const baseEvent = {
+    id: 'evt-1',
+    type: 'alert.triggered',
+    orgId: 'org-1',
+    source: 'unit-test',
+    priority: 'high' as const,
+    payload: { alertId: 'a-1' },
+    metadata: { timestamp: '2026-08-26T00:00:00.000Z' },
+  };
+
+  it('accepts a valid deliver-event job for a known subscriber', () => {
+    const payload = { v: 1 as const, subscriberId: 'webhook-delivery' as const, event: baseEvent };
+    expect(deliverEventJobDataSchema.parse(payload)).toEqual(payload);
+  });
+
+  it('rejects an unknown subscriberId', () => {
+    expect(() =>
+      deliverEventJobDataSchema.parse({ v: 1, subscriberId: 'bogus-subscriber', event: baseEvent }),
+    ).toThrow();
+  });
+
+  it('rejects an unknown top-level key (.strict())', () => {
+    expect(() =>
+      deliverEventJobDataSchema.parse({
+        v: 1,
+        subscriberId: 'webhook-delivery',
+        event: baseEvent,
+        unexpected: true,
+      }),
+    ).toThrow();
   });
 });

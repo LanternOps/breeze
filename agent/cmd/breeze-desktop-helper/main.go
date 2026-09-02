@@ -134,18 +134,41 @@ func runDesktopHelper() {
 	}
 	log.Info("desktop helper startup probe", attrs...)
 
-	client := userhelper.NewWithOptions(socketPath, desktopHelperRole(), ipc.HelperBinaryDesktopHelper, contextFlag)
-
+	// Shutdown is signalled by closing `done`, NOT by calling Stop on a
+	// captured client. The supervisor builds a fresh client per reconnect
+	// attempt, so a handler closing over one client would stop the first
+	// attempt's client and silently ignore SIGTERM from then on.
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	done := make(chan struct{})
 	go func() {
 		<-sigChan
-		client.Stop()
+		close(done)
 	}()
 
-	if err := client.Run(); err != nil {
-		log.Error("desktop helper error", "error", err)
-		os.Exit(1)
+	// Reconnect in-process instead of exiting on the first IPC failure.
+	// Before #4194 any transient failure — the agent restarting and
+	// recreating the socket, a sleep/wake gap — killed the process, and
+	// recovery depended entirely on launchd respawning it into a live Aqua
+	// session. Until that happened the device reported
+	// desktopAccess.reason = "helper_not_connected" while showing as online.
+	//
+	// Keeping the process alive also means the startup capture probe above
+	// runs once per login session rather than once per IPC blip, which stops
+	// reconnects from re-firing the macOS Screen Recording prompt.
+	sup := &userhelper.Supervisor{
+		Name:   "desktop helper",
+		Policy: desktopHelperReconnectPolicy(),
+		NewClient: func() userhelper.SupervisedClient {
+			return userhelper.NewWithOptions(socketPath, desktopHelperRole(), ipc.HelperBinaryDesktopHelper, contextFlag)
+		},
+		Log: log,
+	}
+
+	code := runSupervisedHelper(sup, done, fatalCooldown, userhelper.WaitOrShutdown)
+	if code != exitOK {
+		logging.StopShipper() // flush before os.Exit skips the deferred stop
+		os.Exit(code)
 	}
 }
 

@@ -155,6 +155,12 @@ export const ticketParamSchema = z.object({
   id: z.string().guid()
 });
 
+// W08 #3902 — portal attachment content route params.
+export const portalAttachmentParamSchema = z.object({
+  id: z.string().guid(),
+  attachmentId: z.string().guid()
+});
+
 export const ticketCommentParamSchema = z.object({
   id: z.string().guid(),
   commentId: z.string().guid()

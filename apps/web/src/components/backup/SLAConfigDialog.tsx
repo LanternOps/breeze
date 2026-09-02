@@ -5,6 +5,8 @@ import { extractApiError } from '@/lib/apiError';
 import { fetchWithAuth } from '../../stores/auth';
 import { useTranslation } from 'react-i18next';
 import { asList } from '@/lib/asList';
+import { useDeviceOptions } from '../../hooks/useDeviceOptions';
+import { DeviceOptionPicker } from '../filters/DeviceOptionPicker';
 import '../../lib/i18n';
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -21,7 +23,6 @@ type SLAConfig = {
   [key: string]: unknown;
 };
 
-type Device = { id: string; hostname: string };
 type DeviceGroup = { id: string; name: string };
 
 type SLAConfigDialogProps = {
@@ -51,23 +52,20 @@ export default function SLAConfigDialog({ config, onClose }: SLAConfigDialogProp
   const [selectedGroupIds, setSelectedGroupIds] = useState<string[]>(
     config?.targetDeviceGroupIds ?? []
   );
-  const [devices, setDevices] = useState<Device[]>([]);
+  const [deviceSearch, setDeviceSearch] = useState('');
   const [groups, setGroups] = useState<DeviceGroup[]>([]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
+  const deviceOptions = useDeviceOptions({
+    search: deviceSearch,
+    includeIds: selectedDeviceIds,
+    enabled: scopeMode === 'devices',
+  });
 
   useEffect(() => {
     const fetchOptions = async () => {
       try {
-        const [devRes, grpRes] = await Promise.all([
-          fetchWithAuth('/devices'),
-          fetchWithAuth('/device-groups'),
-        ]);
-        if (devRes.ok) {
-          const payload = await devRes.json();
-          const data = asList(payload);
-          setDevices(Array.isArray(data) ? data : []);
-        }
+        const grpRes = await fetchWithAuth('/device-groups');
         if (grpRes.ok) {
           const payload = await grpRes.json();
           const data = asList(payload);
@@ -92,6 +90,10 @@ export default function SLAConfigDialog({ config, onClose }: SLAConfigDialogProp
     }
     if (rtoMinutes < 1) {
       setError('RTO target must be at least 1 minute');
+      return;
+    }
+    if (scopeMode === 'devices' && !deviceOptions.canSubmit) {
+      setError('Device choices are not ready. Retry or finish loading devices before saving.');
       return;
     }
 
@@ -126,13 +128,7 @@ export default function SLAConfigDialog({ config, onClose }: SLAConfigDialogProp
     } finally {
       setSaving(false);
     }
-  }, [active, alertOnBreach, config?.id, isEdit, name, onClose, rpoMinutes, rtoMinutes, scopeMode, selectedDeviceIds, selectedGroupIds]);
-
-  const toggleDevice = (id: string) => {
-    setSelectedDeviceIds((prev) =>
-      prev.includes(id) ? prev.filter((d) => d !== id) : [...prev, id]
-    );
-  };
+  }, [active, alertOnBreach, config?.id, deviceOptions.canSubmit, isEdit, name, onClose, rpoMinutes, rtoMinutes, scopeMode, selectedDeviceIds, selectedGroupIds]);
 
   const toggleGroup = (id: string) => {
     setSelectedGroupIds((prev) =>
@@ -222,22 +218,15 @@ export default function SLAConfigDialog({ config, onClose }: SLAConfigDialogProp
             </div>
 
             {scopeMode === 'devices' && (
-              <div className="mt-2 max-h-32 overflow-y-auto rounded-md border bg-muted/10 p-2">
-                {devices.length === 0 ? (
-                  <p className="text-xs text-muted-foreground">{t('sLAConfigDialog.noDevicesAvailable')}</p>
-                ) : (
-                  devices.map((d) => (
-                    <label key={d.id} className="flex items-center gap-2 rounded px-2 py-1 text-sm hover:bg-muted/20">
-                      <input
-                        type="checkbox"
-                        checked={selectedDeviceIds.includes(d.id)}
-                        onChange={() => toggleDevice(d.id)}
-                        className="h-3.5 w-3.5"
-                      />
-                      <span className="text-foreground">{d.hostname}</span>
-                    </label>
-                  ))
-                )}
+              <div className="mt-2 rounded-md border bg-muted/10 p-2">
+                <DeviceOptionPicker
+                  result={deviceOptions}
+                  selectedIds={selectedDeviceIds}
+                  onSelectedIdsChange={setSelectedDeviceIds}
+                  search={deviceSearch}
+                  onSearchChange={setDeviceSearch}
+                  showSelectAll
+                />
               </div>
             )}
 
@@ -309,7 +298,7 @@ export default function SLAConfigDialog({ config, onClose }: SLAConfigDialogProp
           <button
             type="button"
             onClick={handleSave}
-            disabled={saving}
+            disabled={saving || (scopeMode === 'devices' && !deviceOptions.canSubmit)}
             className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
           >
             {saving && <Loader2 className="h-4 w-4 animate-spin" />}

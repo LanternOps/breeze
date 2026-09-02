@@ -1,18 +1,23 @@
 /**
  * Pool-health watchdog for the postgres.js connection-poisoning failure (#3214).
  *
- * THE FAILURE IT WATCHES FOR. postgres.js 3.4.9 leaves a pooled connection
- * permanently unable to flush a deferred write once its socket dies with one
- * buffered — see `db/postgresJsPoolPoisoning.test.ts`, which reproduces the
- * defect deterministically and cites the exact upstream lines. A poisoned slot
- * then reconnects forever, timing out at `connect_timeout` every time. Slots are
- * lost one at a time (in the production incident: 35 configured, 9 live after a
- * few hours) and only an API restart recovers them.
+ * THE FAILURE IT WATCHES FOR. Unpatched postgres.js 3.4.9 leaves a pooled
+ * connection permanently unable to flush a deferred write once its socket dies
+ * with one buffered. A poisoned slot then reconnects forever, timing out at
+ * `connect_timeout` every time. Slots are lost one at a time (in the production
+ * incident: 35 configured, 9 live after a few hours) and only an API restart
+ * recovers them.
  *
- * WHY A WATCHDOG AND NOT A FIX. The broken state lives inside a closure in the
- * driver; nothing outside the driver can reach it. This module cannot repair the
- * pool. What it CAN do is collapse the diagnosis — which took hours of manual
- * work during the incident — into a single automatic verdict.
+ * THAT DEFECT IS NOW REPAIRED by `patches/postgres@3.4.9.patch` (#3225), and
+ * `db/postgresJsPoolPoisoning.test.ts` asserts the repair holds. This watchdog
+ * predates the patch and stays as defense-in-depth: it detects pool
+ * degradation from ANY cause — including the patch silently ceasing to apply
+ * (e.g. a postgres version bump that drops `patchedDependencies`), which is
+ * exactly the failure the test's message warns about. If its `pool-degraded`
+ * verdict ever fires again, check the patch is still applying before assuming
+ * a new driver bug. This module cannot repair the pool; what it does is
+ * collapse the diagnosis — which took hours of manual work during the
+ * 2026-08-07 incident — into a single automatic verdict.
  *
  * THE DIAGNOSTIC TRICK. A sustained CONNECT_TIMEOUT rate on its own is
  * ambiguous: it looks identical whether the database is unreachable or the pool

@@ -7,14 +7,20 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
+	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/mgr"
 )
 
 const serviceName = "BreezeAgent"
+
+var rollbackRecoveryRestartScheduled atomic.Bool
+
+func deferRollbackSwapToRestart() bool { return true }
 
 // Restart restarts the Windows service via SCM.
 // Used for non-update restarts where no binary swap is needed.
@@ -318,3 +324,118 @@ func RestartWithHelper(agent BinaryPair, userHelper *BinaryPair, backup *BinaryP
 	log.Info("update helper spawned, agent will exit via service stop")
 	return nil
 }
+
+func startWindowsRollbackHelper(journalPath string, operation windowsRollbackOperation) error {
+	journal, err := readRollbackJournal(journalPath)
+	if err != nil {
+		return err
+	}
+	script, err := buildWindowsRollbackScript(windowsRollbackScriptOptions{JournalPath: journalPath, Journal: journal, Operation: operation})
+	if err != nil {
+		return err
+	}
+	scriptFile, err := os.CreateTemp("", "breeze-rollback-restart-*.ps1")
+	if err != nil {
+		return err
+	}
+	if _, err := scriptFile.WriteString(script); err != nil {
+		_ = scriptFile.Close()
+		_ = os.Remove(scriptFile.Name())
+		return err
+	}
+	if err := scriptFile.Close(); err != nil {
+		_ = os.Remove(scriptFile.Name())
+		return err
+	}
+	cmd := exec.Command("powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptFile.Name())
+	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP}
+	if err := cmd.Start(); err != nil {
+		_ = os.Remove(scriptFile.Name())
+		return err
+	}
+	return cmd.Process.Release()
+}
+
+// RestartAfterRollback delegates the stop/swap/start boundary to a detached
+// process. A prepared journal means the live executable set has not changed
+// yet; the helper stops every owned Windows process before applying it.
+func RestartAfterRollback(journalPath string) error {
+	if rollbackRecoveryRestartScheduled.Swap(false) {
+		return nil
+	}
+	if journalPath != "" {
+		journal, err := readRollbackJournal(journalPath)
+		if err == nil && journal.State == "prepared" {
+			return startWindowsRollbackHelper(journalPath, windowsRollbackSwap)
+		}
+		if err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+
+	scriptFile, err := os.CreateTemp("", "breeze-rollback-restart-*.ps1")
+	if err != nil {
+		return err
+	}
+	script := "Start-Sleep -Seconds 2\r\nRestart-Service -Name '" + serviceName + "' -Force\r\nRemove-Item -Path $PSCommandPath -Force -ErrorAction SilentlyContinue"
+	if _, err := scriptFile.WriteString(script); err != nil {
+		_ = scriptFile.Close()
+		_ = os.Remove(scriptFile.Name())
+		return err
+	}
+	if err := scriptFile.Close(); err != nil {
+		_ = os.Remove(scriptFile.Name())
+		return err
+	}
+	cmd := exec.Command("powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptFile.Name())
+	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP}
+	if err := cmd.Start(); err != nil {
+		_ = os.Remove(scriptFile.Name())
+		return err
+	}
+	return cmd.Process.Release()
+}
+
+func recoverRollbackSwapPlatform(journalPath string) error {
+	journal, err := readRollbackJournal(journalPath)
+	if err != nil {
+		return err
+	}
+	if journal.State == "prepared" || journal.State == "committed" {
+		// A prepared Windows journal has not touched live executables, and a
+		// committed one only retains cleanup material. Both are safe in-process.
+		if journal.State == "prepared" {
+			journal.State = "committed"
+			if err := writeRollbackJournal(journalPath, journal); err != nil {
+				return err
+			}
+		}
+		return recoverRollbackSwapInline(journalPath)
+	}
+	if journal.State != "swapping" && journal.State != "swapped" {
+		return fmt.Errorf("unsupported Windows rollback journal state %q", journal.State)
+	}
+	if err := startWindowsRollbackHelper(journalPath, windowsRollbackRecover); err != nil {
+		return err
+	}
+	rollbackRecoveryRestartScheduled.Store(true)
+	return nil
+}
+
+// replaceRollbackFile uses Windows' write-through replacement primitive so a
+// stopped component changes from old to target in one filesystem operation.
+func replaceRollbackFile(stagedPath, livePath string) error {
+	staged, err := windows.UTF16PtrFromString(stagedPath)
+	if err != nil {
+		return err
+	}
+	live, err := windows.UTF16PtrFromString(livePath)
+	if err != nil {
+		return err
+	}
+	return windows.MoveFileEx(staged, live, windows.MOVEFILE_REPLACE_EXISTING|windows.MOVEFILE_WRITE_THROUGH)
+}
+
+// MoveFileEx with MOVEFILE_WRITE_THROUGH already flushes the rename on
+// Windows. Directory handles cannot be portably flushed with os.File.Sync.
+func syncRollbackDir(_ string) error { return nil }

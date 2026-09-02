@@ -9,6 +9,17 @@ process.env.APP_ENCRYPTION_KEYRING = JSON.stringify({ current: 'current-key-mate
 import { and, eq, notInArray } from 'drizzle-orm';
 
 const updateRestoreJobFromResultMock = vi.fn().mockResolvedValue(true);
+const applyCommandAutomationTerminalMock = vi.fn().mockResolvedValue(true);
+const applyAutomationActionTerminalMock = vi.fn().mockResolvedValue(true);
+
+const { recordPamActuationResultMock } = vi.hoisted(() => ({
+  recordPamActuationResultMock: vi.fn(),
+}));
+
+vi.mock('../services/pamActuationResult', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../services/pamActuationResult')>();
+  return { ...original, recordPamActuationResult: recordPamActuationResultMock };
+});
 
 vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn) => fn()),
@@ -193,6 +204,18 @@ vi.mock('../services/redis', () => ({
   getRedis: vi.fn(() => null)
 }));
 
+// Wave 3.5b (#4084): presence lifecycle wiring. Defaults are chosen so every
+// OTHER describe block in this file — which never asserts on presence — sees
+// harmless, non-throwing behaviour: refresh "succeeds" so the self-heal branch
+// never fires unless a test explicitly arms it otherwise.
+vi.mock('../services/agentPresence', () => ({
+  setAgentPresence: vi.fn(async () => {}),
+  refreshAgentPresence: vi.fn(async () => true),
+  clearAgentPresence: vi.fn(async () => true),
+  clearAgentPresenceUnfenced: vi.fn(async () => {}),
+  readAgentPresence: vi.fn(async () => null),
+}));
+
 vi.mock('../services/viewerTokenRevocation', () => ({
   revokeViewerSession: vi.fn(async () => undefined),
   // The real terminalWs ping loop consults this; never revoked in these suites.
@@ -214,6 +237,16 @@ vi.mock('./backup/verificationService', () => ({
 vi.mock('../services/restoreResultPersistence', () => ({
   updateRestoreJobByCommandId: vi.fn(),
   updateRestoreJobFromResult: vi.fn((...args: unknown[]) => updateRestoreJobFromResultMock(...(args as []))),
+}));
+
+vi.mock('../services/automationTerminalEvidence', () => ({
+  applyCommandAutomationTerminal: (...args: unknown[]) =>
+    applyCommandAutomationTerminalMock(...(args as [])),
+}));
+
+vi.mock('../services/automationActionResults', () => ({
+  applyAutomationActionTerminal: (...args: unknown[]) =>
+    applyAutomationActionTerminalMock(...(args as [])),
 }));
 
 // sw-install orphan branch: keep the real SW_INSTALL_COMMAND_ID_REGEX (shared
@@ -301,8 +334,16 @@ import {
   __resetCrossTenantDropsForTest,
   AGENT_WS_CAPABILITIES,
 } from './agentWs';
+import { sendCommandToAgentAwaitResult } from '../services/agentCommandAwait';
 import { applySoftwareInstallResult } from '../services/softwareDeploymentResult';
 import { isRedisAvailable } from '../services/redis';
+import {
+  clearAgentPresence,
+  clearAgentPresenceUnfenced,
+  refreshAgentPresence,
+  setAgentPresence,
+} from '../services/agentPresence';
+import { INSTANCE_ID } from '../services/instanceIdentity';
 import { checkAgentCertificateBinding } from '../services/agentCertificateBinding';
 import { claimPendingCommandsForDevice } from '../services/commandDispatch';
 import { writeAuditEvent } from '../services/auditEvents';
@@ -853,6 +894,70 @@ describe('agent websocket command results', () => {
     expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
   });
 
+  it.each(['pam_apply_v2', 'pam_cleanup_v2'])(
+    'dispatches authenticated %s results through the shared PAM transaction',
+    async (commandType) => {
+      const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123' };
+      const { handlers, ws } = await connectedAgent('agent-123', preValidatedAgent);
+      const commandId = '11111111-1111-4111-8111-111111111111';
+      vi.mocked(db.select).mockReturnValueOnce(selectOwnedCommandResult([{
+        id: commandId, type: commandType, payload: {}, deviceId: 'device-123',
+      }]) as any);
+      vi.mocked(db.update).mockReturnValue(updateResult([{ id: commandId }]) as any);
+      const protocolResult = {
+        protocolVersion: 2,
+        observationId: '22222222-2222-4222-8222-222222222222',
+        actuationId: '33333333-3333-4333-8333-333333333333',
+        generation: 2,
+        state: 'received',
+        observedAt: '2026-08-25T12:00:00.000Z',
+        evidence: { bootId: 'boot-1' },
+      };
+      await handlers.onMessage({ data: JSON.stringify({
+        type: 'command_result', commandId, status: 'completed', result: protocolResult,
+      }) } as any, ws as any);
+      expect(recordPamActuationResultMock).toHaveBeenCalledTimes(1);
+      expect(recordPamActuationResultMock).toHaveBeenCalledWith({
+        agentId: 'agent-123', deviceId: 'device-123', commandId, result: protocolResult,
+      });
+    },
+  );
+
+  it('keeps terminal PAM WebSocket results on orphan handling without supplemental dispatch', async () => {
+    const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123' };
+    const { handlers, ws } = await connectedAgent('agent-123', preValidatedAgent);
+    const commandId = '11111111-1111-4111-8111-111111111111';
+
+    // The production lookup includes commandAcceptsAgentResultCondition, so a
+    // terminal command is absent here and follows the existing orphan branch.
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectOwnedCommandResult([]) as any)
+      .mockReturnValueOnce(selectAgentDevice([]) as any)
+      .mockReturnValueOnce(selectWithInnerJoin([]) as any)
+      .mockReturnValueOnce(selectWithInnerJoin([]) as any);
+    vi.mocked(db.update).mockReturnValue(updateResult() as any);
+
+    await handlers.onMessage({ data: JSON.stringify({
+      type: 'command_result',
+      commandId,
+      status: 'completed',
+      result: {
+        protocolVersion: 2,
+        observationId: '22222222-2222-4222-8222-222222222222',
+        actuationId: '33333333-3333-4333-8333-333333333333',
+        generation: 2,
+        state: 'verified_active',
+        observedAt: '2026-08-25T12:00:00.000Z',
+        evidence: { bootId: 'boot-1' },
+      },
+    }) } as any, ws as any);
+
+    expect(db.select).toHaveBeenCalledTimes(4);
+    expect(recordPamActuationResultMock).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
+    expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
+  });
+
   it('stores capture_pprof stdout byte-for-byte on the WS leg (secret redaction would corrupt the base64 profiles, #2401)', async () => {
     const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123' };
     const { handlers, ws } = await connectedAgent('agent-123', preValidatedAgent);
@@ -1384,6 +1489,10 @@ describe('agent websocket command results', () => {
     expect(commandId).toBe('66666666-6666-4666-8666-666666666666');
     expect(handed.status).toBe('failed');
     expect(handed.error).toContain('Rejected malformed backup_verify result');
+    expect(applyCommandAutomationTerminalMock).toHaveBeenCalledWith(expect.objectContaining({
+      commandId: '66666666-6666-4666-8666-666666666666',
+      result: expect.objectContaining({ status: 'failed' }),
+    }));
     expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
   });
 
@@ -2080,6 +2189,176 @@ describe('Finding #4 — one-socket-per-agent invariant', () => {
   });
 });
 
+// Wave 3.5b (#4084) — fenced presence leases maintained from the WS lifecycle.
+// A lease is an ADMISSION HINT for the command relay (services/agentCommandRelay.ts);
+// these tests pin only that the lifecycle calls the right presence primitive
+// with the right (agentId, connectionToken) pair — fencing/TTL semantics
+// themselves are covered in agentPresence.test.ts.
+describe('presence lifecycle (wave 3.5b #4084)', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(setAgentPresence).mockResolvedValue(undefined);
+    vi.mocked(refreshAgentPresence).mockResolvedValue(true);
+    vi.mocked(clearAgentPresence).mockResolvedValue(true);
+    vi.mocked(clearAgentPresenceUnfenced).mockResolvedValue(undefined);
+    vi.mocked(db.update).mockReturnValue(updateResult() as any);
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([]) as any);
+  });
+
+  function connectionTokenFromSetCall(callIndex = 0): string {
+    const call = vi.mocked(setAgentPresence).mock.calls[callIndex];
+    if (!call) throw new Error(`no setAgentPresence call at index ${callIndex}`);
+    return call[1].connectionToken;
+  }
+
+  it('onOpen sets a fenced presence lease bound to this instance with a fresh token', async () => {
+    const handlers = createAgentWsHandlers('agent-p1', { deviceId: 'device-p1', orgId: 'org-p1' });
+
+    await handlers.onOpen({}, wsMock() as any);
+
+    expect(setAgentPresence).toHaveBeenCalledTimes(1);
+    const [agentId, lease] = vi.mocked(setAgentPresence).mock.calls[0]!;
+    expect(agentId).toBe('agent-p1');
+    expect(lease.instanceId).toBe(INSTANCE_ID);
+    expect(typeof lease.connectionToken).toBe('string');
+    expect(lease.connectionToken.length).toBeGreaterThan(0);
+  });
+
+  it("a pong message refreshes the presence lease with this connection's token", async () => {
+    const handlers = createAgentWsHandlers('agent-p2', { deviceId: 'device-p2', orgId: 'org-p2' });
+    const ws = wsMock();
+    await handlers.onOpen({}, ws as any);
+    const token = connectionTokenFromSetCall();
+
+    await handlers.onMessage({ data: JSON.stringify({ type: 'pong' }) } as any, ws as any);
+
+    expect(refreshAgentPresence).toHaveBeenCalledWith('agent-p2', token);
+  });
+
+  it('a heartbeat message also refreshes the presence lease', async () => {
+    const handlers = createAgentWsHandlers('agent-p2b', { deviceId: 'device-p2b', orgId: 'org-p2b' });
+    const ws = wsMock();
+    await handlers.onOpen({}, ws as any);
+    const token = connectionTokenFromSetCall();
+
+    await handlers.onMessage({ data: JSON.stringify({ type: 'heartbeat' }) } as any, ws as any);
+
+    expect(refreshAgentPresence).toHaveBeenCalledWith('agent-p2b', token);
+  });
+
+  it('self-heals by re-setting the lease when refresh fails but this socket is still live', async () => {
+    vi.mocked(refreshAgentPresence).mockResolvedValue(false);
+    const handlers = createAgentWsHandlers('agent-p3', { deviceId: 'device-p3', orgId: 'org-p3' });
+    const ws = wsMock();
+    await handlers.onOpen({}, ws as any);
+    const token = connectionTokenFromSetCall();
+    vi.mocked(setAgentPresence).mockClear();
+
+    await handlers.onMessage({ data: JSON.stringify({ type: 'pong' }) } as any, ws as any);
+    // the refresh->self-heal chain is fire-and-forget (`void ...then(...)`) —
+    // flush microtasks so its callback has run before asserting.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(setAgentPresence).toHaveBeenCalledWith('agent-p3', { instanceId: INSTANCE_ID, connectionToken: token });
+  });
+
+  it('does NOT self-heal when the pong arrives on a superseded socket', async () => {
+    vi.mocked(refreshAgentPresence).mockResolvedValue(false);
+    const handlers = createAgentWsHandlers('agent-p4', { deviceId: 'device-p4', orgId: 'org-p4' });
+    const ws1 = wsMock();
+    const ws2 = wsMock();
+    await handlers.onOpen({}, ws1 as any);
+    await handlers.onOpen({}, ws2 as any); // supersedes ws1
+    vi.mocked(setAgentPresence).mockClear();
+
+    await handlers.onMessage({ data: JSON.stringify({ type: 'pong' }) } as any, ws1 as any);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(setAgentPresence).not.toHaveBeenCalled();
+  });
+
+  it('onClose clears the presence lease for the current socket', async () => {
+    const handlers = createAgentWsHandlers('agent-p5', { deviceId: 'device-p5', orgId: 'org-p5' });
+    const ws = wsMock();
+    await handlers.onOpen({}, ws as any);
+    const token = connectionTokenFromSetCall();
+
+    await handlers.onClose({}, ws as any);
+
+    expect(clearAgentPresence).toHaveBeenCalledWith('agent-p5', token);
+  });
+
+  it("onClose of a superseded (orphan) socket does NOT clear the live socket's lease", async () => {
+    const handlers = createAgentWsHandlers('agent-p6', { deviceId: 'device-p6', orgId: 'org-p6' });
+    const ws1 = wsMock();
+    const ws2 = wsMock();
+    await handlers.onOpen({}, ws1 as any);
+    await handlers.onOpen({}, ws2 as any); // supersedes ws1
+
+    await handlers.onClose({}, ws1 as any); // orphan's late close
+
+    expect(clearAgentPresence).not.toHaveBeenCalled();
+  });
+
+  it('onError clears the presence lease for the current socket', async () => {
+    const handlers = createAgentWsHandlers('agent-p7', { deviceId: 'device-p7', orgId: 'org-p7' });
+    const ws = wsMock();
+    await handlers.onOpen({}, ws as any);
+    const token = connectionTokenFromSetCall();
+
+    handlers.onError({}, ws as any);
+
+    expect(clearAgentPresence).toHaveBeenCalledWith('agent-p7', token);
+  });
+});
+
+// Wave 3.5b (#4084) — socket-local dispatch must fail LOUDLY in the worker
+// role rather than silently returning false/offline (the every-agent-reads-
+// offline failure mode this wave exists to kill). A worker-role process never
+// holds sockets, so these three entry points are unreachable there by design.
+describe('worker-role runtime assertions (wave 3.5b #4084)', () => {
+  const originalRole = process.env.BREEZE_ROLE;
+
+  afterEach(() => {
+    if (originalRole === undefined) delete process.env.BREEZE_ROLE;
+    else process.env.BREEZE_ROLE = originalRole;
+  });
+
+  it('sendCommandToAgent throws (never returns false) in the worker role', () => {
+    process.env.BREEZE_ROLE = 'worker';
+
+    expect(() =>
+      sendCommandToAgent('agent-role-1', { id: 'c1', type: 'ping', payload: {} } as any)
+    ).toThrow(/BREEZE_ROLE/);
+  });
+
+  it('isAgentConnected throws in the worker role', () => {
+    process.env.BREEZE_ROLE = 'worker';
+
+    expect(() => isAgentConnected('agent-role-1')).toThrow(/BREEZE_ROLE/);
+  });
+
+  it('sendCommandToAgentAwaitResult throws (never resolves as offline) in the worker role', () => {
+    process.env.BREEZE_ROLE = 'worker';
+
+    // Not `async` — the guard throws synchronously, before a Promise is ever
+    // constructed, so callers see a real throw rather than a rejected Promise.
+    expect(() =>
+      sendCommandToAgentAwaitResult('agent-role-1', { id: 'c1', type: 'ping', payload: {} }, 1_000)
+    ).toThrow(/BREEZE_ROLE/);
+  });
+
+  it('does not throw for any of the three outside the worker role', () => {
+    process.env.BREEZE_ROLE = 'all';
+    expect(() => isAgentConnected('agent-role-2')).not.toThrow();
+
+    delete process.env.BREEZE_ROLE;
+    expect(() => isAgentConnected('agent-role-2')).not.toThrow();
+  });
+});
+
 // Finding #3 — established sockets must stop acting once containment changes.
 describe('Finding #3 — lifecycle recheck on sensitive operations', () => {
   beforeEach(() => {
@@ -2205,6 +2484,11 @@ describe('Findings #8 / #5 — WS command-result audit + secret redaction', () =
       result: 'success',
       details: { commandType: 'run_script', status: 'completed', exitCode: 0 },
     });
+    expect(applyCommandAutomationTerminalMock).toHaveBeenCalledWith(expect.objectContaining({
+      commandId: '88888888-8888-4888-8888-888888888888',
+      result: expect.objectContaining({ status: 'completed', exitCode: 0 }),
+      output: 'done',
+    }));
   });
 
   it('does NOT audit when the compare-and-set no-ops (duplicate/late result)', async () => {
@@ -2227,6 +2511,7 @@ describe('Findings #8 / #5 — WS command-result audit + secret redaction', () =
     } as any, ws as any);
 
     expect(writeAuditEvent).not.toHaveBeenCalled();
+    expect(applyCommandAutomationTerminalMock).not.toHaveBeenCalled();
   });
 
   it('redacts a PEM private key from stdout, stderr, AND error before persistence (#2419)', async () => {
@@ -2927,6 +3212,12 @@ describe('#3021: command_result opens no message-level org context', () => {
     const scriptOps = observed.filter((o) => o.table === scriptExecutions);
     expect(scriptOps.map((o) => o.op)).toEqual(['update']);
     expect(scriptOps[0]!.stack).toEqual(['org:agentWs.commandResult.handler']);
+    expect(applyAutomationActionTerminalMock).toHaveBeenCalledWith(expect.objectContaining({
+      source: 'script_execution',
+      scriptExecutionId: 'row-1',
+      terminalStatus: 'succeeded',
+      output: 'ok',
+    }));
 
     // The short wrap carries the authenticated agent's org, and no context
     // anywhere in the message used the removed message-level label.
@@ -3629,7 +3920,7 @@ describe('sw-install WS orphan-result branch', () => {
 
   beforeEach(() => {
     vi.mocked(applySoftwareInstallResult).mockReset();
-    vi.mocked(applySoftwareInstallResult).mockResolvedValue(undefined);
+    vi.mocked(applySoftwareInstallResult).mockResolvedValue(null);
   });
 
   function swResult(overrides: Record<string, unknown> = {}) {

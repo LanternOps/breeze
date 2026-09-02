@@ -404,7 +404,7 @@ For rotation procedures and schedules, see [Secret Rotation](/security/secrets/)
 
 - **RTO**: < 1 hour
 - **RPO**: < 15 minutes (with WAL archiving) or last backup interval
-- **Components**: PostgreSQL, object storage (MinIO/S3), encrypted configuration
+- **Components**: PostgreSQL, object storage (MinIO/S3), encrypted configuration, and the `api_data` volume (patch compliance report files). The `api_data` volume has no backup-script flag and is copied manually, so the RPO above does not apply to it
 
 For full procedures, see [Backup and Restore](/security/backup/).
 

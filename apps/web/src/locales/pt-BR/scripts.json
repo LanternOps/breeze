@@ -812,6 +812,8 @@
       "advancedFilters": "Filtros avançados",
       "executing": "Executando...",
       "started": "Iniciado!",
+      "queued": "Na fila",
+      "reviewResult": "Revisar resultado",
       "confirmExecute": "Confirmar execução",
       "execute": "Executar"
     },
@@ -825,12 +827,23 @@
     },
     "matchCount": "{{count}} correspondência",
     "empty": {
-      "noCompatibleDevices": "Nenhum dispositivo compatível encontrado. Este script requer {{os}}."
+      "noCompatibleDevices": "Nenhum dispositivo compatível encontrado. Este script requer {{os}}.",
+      "offlineFiltered_one": "Nenhum dispositivo {{status}} corresponde. {{count}} dispositivo compatível está oculto pelo filtro de status — mostrar todos os dispositivos para incluí-lo.",
+      "offlineFiltered_other": "Nenhum dispositivo {{status}} corresponde. {{count}} dispositivos compatíveis estão ocultos pelo filtro de status — mostrar todos os dispositivos para incluí-los.",
+      "showAllDevices": "Mostrar todos os dispositivos"
     },
     "orSeparator": " ou ",
     "progress": {
       "submitting": "Enviando para {{count}} dispositivos...",
-      "submitted": "Enviado para {{count}} dispositivos"
+      "submitted": "Enviado para {{count}} dispositivos",
+      "admitted": "{{admitted}} de {{count}} dispositivos admitidos na fila",
+      "submittingTarget": "Enviando"
+    },
+    "admission": {
+      "allAdmitted": "Todos os dispositivos selecionados foram admitidos e colocados na fila.",
+      "partiallyAdmitted": "Alguns dispositivos foram admitidos e colocados na fila. Revise os destinos restantes.",
+      "rejected": "Nenhum dispositivo foi admitido. Revise os motivos abaixo.",
+      "queued": "Na fila"
     },
     "confirm": {
       "title": "Confirmar execução",

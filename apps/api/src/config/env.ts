@@ -1,3 +1,5 @@
+import { EVENT_SUBSCRIBER_IDS, isSubscriberId, type SubscriberId } from '../services/eventSubscriberIds';
+
 // The single truthy/falsey vocabulary for boolean-ish env vars. Kept as two
 // named sets rather than inline literals so a reader that must distinguish
 // "explicitly off" from "unrecognized" (abuseSignalsEnabled below) can never
@@ -96,6 +98,19 @@ export const GOOGLE_WORKSPACE_ENABLED = envFlag('GOOGLE_WORKSPACE_ENABLED', fals
 // Platform kill switch: false forces every effective agent to enabled=false.
 // Default OFF until the wave-3 runner ships.
 export const AI_AGENTS_ENABLED = envFlag('BREEZE_AI_AGENTS_ENABLED', false);
+
+// Wave 5 Part B (#3827). Sub-flag of BREEZE_AI_AGENTS_ENABLED: gates
+// attemptPolicyDecision (policyDecide.ts) — an agent-originated, supervised-
+// scope action-intent whose operation is in the operator's per-agent
+// actAssets.supervisedActionKeys ⊆ POLICY_DECIDABLE_TIER3 is authorized by
+// policy instead of human fanout. Default OFF (dark-ship): when false,
+// resolvePolicyDecisionState returns 'human_required' exactly as Part A —
+// byte-identical to the merged behavior before this wave (Global
+// Constraints, plan header). Read at CALL time, like isHosted()/breezeRole()
+// above, so a test can flip it per-case without vi.resetModules().
+export function policyDecideEnabled(): boolean {
+  return envFlag('BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED', false);
+}
 
 // Microsoft 365 identity tools. Defaults OFF everywhere; an org must also have
 // an explicit m365_connections row before any tool is usable. Gates tool
@@ -203,6 +218,48 @@ export function abuseSignalsExplicitlyDisabled(): boolean {
   return RECOGNIZED_FALSE_FLAG_VALUES.has(
     (process.env.ABUSE_SIGNALS_ENABLED ?? '').trim().toLowerCase(),
   );
+}
+
+export type EventDispatchMode = 'off' | 'shadow' | 'enforce';
+
+/** Wave 3.5c (#4085). off = today's in-process delivery only. shadow = mirror
+ * routing plans into receipts, execute nothing via the queue. enforce = the
+ * subscribers listed in EVENT_DISPATCH_QUEUE_SUBSCRIBERS deliver via BullMQ
+ * ONLY (skipped locally); everyone else stays local. Unrecognized values fall
+ * back to 'off' with a warning — a typo must never silently change delivery. */
+export function eventDispatchMode(): EventDispatchMode {
+  const raw = (process.env.EVENT_DISPATCH_MODE ?? '').trim().toLowerCase();
+  if (raw === '' || raw === 'off') return 'off';
+  if (raw === 'shadow' || raw === 'enforce') return raw;
+  console.warn(`[config] EVENT_DISPATCH_MODE="${raw}" is not off|shadow|enforce — treating as off`);
+  return 'off';
+}
+
+export function eventDispatchQueueSubscribers(): ReadonlySet<SubscriberId> {
+  const raw = (process.env.EVENT_DISPATCH_QUEUE_SUBSCRIBERS ?? '').trim();
+  const out = new Set<SubscriberId>();
+  if (raw === '') return out;
+  for (const part of raw.split(',').map((p) => p.trim()).filter(Boolean)) {
+    if (isSubscriberId(part)) out.add(part);
+    else console.warn(`[config] EVENT_DISPATCH_QUEUE_SUBSCRIBERS contains unknown id "${part}" (known: ${EVENT_SUBSCRIBER_IDS.join(', ')}) — ignoring`);
+  }
+  return out;
+}
+
+export type BreezeRole = 'all' | 'api' | 'worker';
+
+/**
+ * Process role for the 3.5d split (#4086). `all` (default) = today's
+ * all-in-one process. Introduced in 3.5b (#4084) so socket-local dispatch can
+ * fail LOUDLY in a worker-role process instead of silently reporting every
+ * agent offline.
+ */
+export function breezeRole(): BreezeRole {
+  const raw = (process.env.BREEZE_ROLE ?? '').trim().toLowerCase();
+  if (raw === '' || raw === 'all') return 'all';
+  if (raw === 'api' || raw === 'worker') return raw;
+  console.warn(`[config] BREEZE_ROLE="${raw}" is not all|api|worker — treating as all`);
+  return 'all';
 }
 
 // Recognizes an AFFIRMATIVE self-host declaration: IS_HOSTED explicitly set to
@@ -392,14 +449,49 @@ export const DELEGANT_PRINCIPAL_KID = process.env.DELEGANT_PRINCIPAL_KID ?? '';
 export function cfAccessTrustEnabled(): boolean {
   return envFlag('CF_ACCESS_TRUST_ENABLED');
 }
+
+const CF_ACCESS_TEAM_DOMAIN_PATTERN =
+  /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.cloudflareaccess\.com$/;
+
+/** Accept only the canonical bare hostname Cloudflare assigns to one team. */
+export function canonicalCfAccessTeamDomain(raw: string): string | null {
+  if (!raw || raw !== raw.trim() || !CF_ACCESS_TEAM_DOMAIN_PATTERN.test(raw)) return null;
+  try {
+    const parsed = new URL(`https://${raw}`);
+    if (
+      parsed.username
+      || parsed.password
+      || parsed.port
+      || parsed.pathname !== '/'
+      || parsed.search
+      || parsed.hash
+      || parsed.hostname !== raw
+    ) return null;
+    return parsed.hostname;
+  } catch {
+    return null;
+  }
+}
+
 export function cfAccessTeamDomain(): string {
-  return (process.env.CF_ACCESS_TEAM_DOMAIN ?? '').trim();
+  return canonicalCfAccessTeamDomain(process.env.CF_ACCESS_TEAM_DOMAIN ?? '') ?? '';
 }
 export function cfAccessAud(): string {
   return (process.env.CF_ACCESS_AUD ?? '').trim();
 }
 export function cfAccessTrustsMfa(): boolean {
   return envFlag('CF_ACCESS_TRUSTS_MFA');
+}
+
+// Browser authentication transition rollout. Both switches are deliberately
+// read at call time and default off; validation prevents terminal preparation
+// from being enabled before transition enforcement.
+export function authBrowserTransitionsEnforced(): boolean {
+  return envFlag('AUTH_BROWSER_TRANSITIONS_ENFORCED', false);
+}
+
+export function authBrowserTerminalPreparationEnabled(): boolean {
+  return envFlag('AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED', false);
 }
 
 // Emergency kill switches for ML/AI producers. These are intentionally read at

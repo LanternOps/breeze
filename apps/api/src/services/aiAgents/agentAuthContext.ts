@@ -96,10 +96,16 @@ export function buildAgentAuthContext(
     // skipped entirely and a device-bound agent could target any device in the
     // org. A run with a device pins to that device's site; a run with no device
     // pins to the empty set rather than to "unrestricted".
+    //
+    // The site pin alone is not exact: it admits every SIBLING device in the
+    // same site, not just the one device the run targets. `allowedDeviceIds`
+    // is the tightening on top — `verifyDeviceAccess` (aiTools.ts) enforces
+    // it as an exact-match allowlist alongside the site check.
     ...(run.deviceId
       ? {
           allowedSiteIds: run.deviceSiteId ? [run.deviceSiteId] : [],
           canAccessSite: siteAccessCheck(run.deviceSiteId ? [run.deviceSiteId] : []),
+          allowedDeviceIds: [run.deviceId],
         }
       : {}),
   };

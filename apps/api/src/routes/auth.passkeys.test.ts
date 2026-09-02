@@ -48,21 +48,51 @@ const {
   };
 });
 
-vi.mock('../services', () => ({
-  hashPassword: vi.fn().mockResolvedValue('$argon2id$hashed'),
-  verifyPassword: vi.fn().mockResolvedValue(true),
-  isPasswordStrong: vi.fn().mockReturnValue({ valid: true, errors: [] }),
-  createTokenPair: vi.fn().mockResolvedValue({
+vi.mock('../services', () => {
+  const createTokenPair = vi.fn().mockResolvedValue({
     accessToken: 'access-token',
     refreshToken: 'refresh-token',
     refreshJti: 'refresh-jti',
     expiresInSeconds: 900,
-  }),
+  });
+  const mintRefreshTokenFamily = vi.fn().mockResolvedValue('family-passkey');
+  const bindRefreshJtiToFamily = vi.fn().mockResolvedValue(undefined);
+  const getUserEpochs = vi.fn().mockResolvedValue({ authEpoch: 1, mfaEpoch: 1 });
+  const issueLegacy = vi.fn(async (identity: any) => {
+    const familyId = identity.legacyFamilyId ?? await mintRefreshTokenFamily(identity.userId);
+    const epochs = await getUserEpochs(identity.userId);
+    const tokens = await createTokenPair({
+      sub: identity.userId,
+      email: identity.email,
+      roleId: identity.roleId,
+      orgId: identity.orgId,
+      partnerId: identity.partnerId,
+      scope: identity.scope,
+      mfa: identity.mfa,
+      aep: epochs.authEpoch,
+      mep: epochs.mfaEpoch,
+      mdid: identity.mobileDeviceId,
+    }, { refreshFam: familyId });
+    await bindRefreshJtiToFamily(tokens.refreshJti, familyId);
+    return { ...tokens, familyId };
+  });
+  class AuthBindingRotationRequiredError extends Error {
+    status = 428;
+    constructor(readonly replacement: unknown) { super('rotation required'); }
+  }
+  class AuthBindingUnavailableError extends Error {}
+  class AuthIssuanceConflictError extends Error {}
+  class AuthIssuanceCapabilityError extends Error {}
+  return {
+  hashPassword: vi.fn().mockResolvedValue('$argon2id$hashed'),
+  verifyPassword: vi.fn().mockResolvedValue(true),
+  isPasswordStrong: vi.fn().mockReturnValue({ valid: true, errors: [] }),
+  createTokenPair,
   verifyToken: vi.fn(),
   generateMFASecret: vi.fn(),
   generateOTPAuthURL: vi.fn(),
   generateQRCode: vi.fn(),
-  generateRecoveryCodes: vi.fn(),
+  generateRecoveryCodes: vi.fn(() => ['CODE-0001', 'CODE-0002']),
   createSession: vi.fn(),
   invalidateSession: vi.fn(),
   invalidateAllUserSessions: vi.fn(),
@@ -77,9 +107,9 @@ vi.mock('../services', () => ({
   revokeFamily: vi.fn().mockResolvedValue(undefined),
   isFamilyRevoked: vi.fn().mockResolvedValue(false),
   touchFamilyLastUsed: vi.fn().mockResolvedValue(undefined),
-  mintRefreshTokenFamily: vi.fn().mockResolvedValue('family-passkey'),
-  bindRefreshJtiToFamily: vi.fn().mockResolvedValue(undefined),
-  getUserEpochs: vi.fn().mockResolvedValue({ authEpoch: 1, mfaEpoch: 1 }),
+  mintRefreshTokenFamily,
+  bindRefreshJtiToFamily,
+  getUserEpochs,
   rateLimiter: vi.fn().mockResolvedValue({ allowed: true, remaining: 4, resetAt: new Date() }),
   loginLimiter: { limit: 5, windowSeconds: 300 },
   forgotPasswordLimiter: { limit: 3, windowSeconds: 3600 },
@@ -93,8 +123,54 @@ vi.mock('../services', () => ({
   getAccountLockoutWindowSeconds: vi.fn(() => 15 * 60),
   getTrustedClientIp: vi.fn(() => '127.0.0.1'),
   getRedis: vi.fn(() => redisMock),
+  beginAuthIssuance: vi.fn(async () => ({ transitionId: 'transition-1', generation: 1 })),
+  finishAuthIssuance: vi.fn(async (_capability: unknown, callback: (tx: unknown) => Promise<unknown>) => callback({})),
+  cancelAuthIssuance: vi.fn(async () => undefined),
+  AuthBindingRotationRequiredError,
+  AuthBindingUnavailableError,
+  AuthIssuanceConflictError,
+  AuthIssuanceCapabilityError,
+  issueUserSession: vi.fn(async (identity: any) => issueLegacy(identity)),
+  completeInitialMfaEnrollment: vi.fn(async (input: any) => {
+    const tx: any = {
+      insert: vi.fn(() => ({
+        values: vi.fn(() => ({
+          returning: vi.fn(() => Promise.resolve(dbState.insertReturning)),
+        })),
+      })),
+      update: vi.fn(() => ({
+        set: vi.fn((values: Record<string, unknown>) => {
+          dbState.updateSets.push(values);
+          const whereResult: any = Promise.resolve(undefined);
+          whereResult.returning = vi.fn(() => Promise.resolve([{ id: 'user-123' }]));
+          return { where: vi.fn(() => whereResult) };
+        }),
+      })),
+    };
+    const value = await input.persistFactor(tx, input.recoveryCodeHashes);
+    return {
+      value,
+      recoveryCodes: [...input.recoveryCodes],
+      issued: {
+        accessToken: 'replacement-access-token',
+        refreshToken: 'replacement-refresh-token',
+        refreshJti: 'replacement-jti',
+        expiresInSeconds: 900,
+        familyId: 'replacement-family',
+        transitionId: 'transition-1',
+        generation: 1,
+      },
+      mfaEpoch: 2,
+      cleanup: { redisOk: true, permissionCacheOk: true, oauthOk: true, remoteSessionsTerminated: 0 },
+    };
+  }),
+  issueUserSessionLegacyDuringTransition: issueLegacy,
+  bindIssuedUserSession: vi.fn(async () => undefined),
+  authBrowserTransitionsEnforced: vi.fn(() => process.env.AUTH_BROWSER_TRANSITIONS_ENFORCED === 'true'),
+  recordAuthTransitionLegacyIssuer: vi.fn(),
   ...passkeyMocks,
-}));
+  };
+});
 
 vi.mock('../services/passkeys', () => ({
   PasskeyChallengeError: class PasskeyChallengeError extends Error {
@@ -127,6 +203,11 @@ vi.mock('../services/twilio', () => ({
 vi.mock('../services/tenantStatus', () => ({
   TenantInactiveError: class TenantInactiveError extends Error {},
   assertActiveTenantContext: vi.fn().mockResolvedValue(undefined),
+}));
+
+// #4067: passkey continuation of the link-on-first-SSO-login ceremony.
+vi.mock('./auth/ssoLinkCompletion', () => ({
+  finalizeSsoPendingLink: vi.fn(),
 }));
 
 vi.mock('./auth/ssoPolicy', () => ({
@@ -314,11 +395,24 @@ vi.mock('../middleware/auth', () => ({
   requirePermission: vi.fn(() => (_c: any, next: any) => next()),
 }));
 
-import { createTokenPair, getRedis, getUserEpochs, rateLimiter, verifyPassword } from '../services';
+import {
+  AuthIssuanceCapabilityError,
+  beginAuthIssuance,
+  cancelAuthIssuance,
+  createTokenPair,
+  finishAuthIssuance,
+  getRedis,
+  getUserEpochs,
+  issueUserSession,
+  issueUserSessionLegacyDuringTransition,
+  rateLimiter,
+  verifyPassword,
+} from '../services';
 import { PasskeyChallengeError } from '../services/passkeys';
 import { withSystemDbAccessContext } from '../db';
 import { getEffectiveMfaPolicy } from '../services/mfaPolicy';
 import { validateStepUpGrant, consumeStepUpGrant } from '../services/mfaStepUpGrant';
+import { finalizeSsoPendingLink } from './auth/ssoLinkCompletion';
 
 const user = {
   id: 'user-123',
@@ -341,20 +435,27 @@ function pendingMfaJson(overrides: Partial<{
   userId: string;
   mfaMethod: string;
   passkeyAvailable: boolean;
+  recoveryAvailable: boolean;
   authEpoch: number;
   mfaEpoch: number;
   statusExpectation: string;
   allowedMethods: { totp: boolean; sms: boolean; passkey: boolean };
+  transitionId: string;
+  browserGeneration: number;
   expiresAt: number;
+  ssoLinkTokenHash: string;
 }> = {}): string {
   return JSON.stringify({
     userId: 'user-123',
     mfaMethod: 'totp',
     passkeyAvailable: false,
+    recoveryAvailable: true,
     authEpoch: 1,
     mfaEpoch: 1,
     statusExpectation: 'active',
     allowedMethods: { totp: true, sms: true, passkey: true },
+    transitionId: 'transition-1',
+    browserGeneration: 1,
     expiresAt: Date.now() + 5 * 60 * 1000,
     ...overrides,
   });
@@ -386,6 +487,14 @@ describe('passkey MFA auth routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    delete process.env.AUTH_BROWSER_TRANSITIONS_ENFORCED;
+    vi.mocked(getUserEpochs).mockResolvedValue({ authEpoch: 1, mfaEpoch: 1 });
+    vi.mocked(rateLimiter).mockResolvedValue({ allowed: true, remaining: 4, resetAt: new Date() });
+    vi.mocked(getEffectiveMfaPolicy).mockResolvedValue({
+      required: false,
+      allowedMethods: { totp: true, sms: true, passkey: true },
+      source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: false },
+    });
     dbState.selectQueue = [];
     dbState.updateSets = [];
     dbState.insertReturning = [insertedPasskeyRow];
@@ -459,6 +568,12 @@ describe('passkey MFA auth routes', () => {
   it('returns registration options only after the current password is verified', async () => {
     vi.mocked(verifyPassword).mockResolvedValueOnce(true);
     dbState.selectQueue.push([{ passwordHash: '$argon2id$hash' }]);
+    // enforceExistingFactorStepUp's userIsMfaProtected probe. Previously
+    // omitted: the empty queue fell through to `[]` and the helper's
+    // `row?.mfaEnabled` reported the account unprotected, so this test passed
+    // through a branch it never modelled. userIsMfaProtected now raises on a
+    // missing row (that answer is the permissive one), so the row is explicit.
+    dbState.selectQueue.push([{ mfaEnabled: false, passkeyCount: 0 }]);
 
     const res = await app.request('/auth/passkeys/register/options', {
       method: 'POST',
@@ -535,6 +650,97 @@ describe('passkey MFA auth routes', () => {
     });
   });
 
+  // #4018 review finding 2: nothing at the route level proved the SSO
+  // re-auth road actually works end to end (only sso.reauth.test.ts and
+  // schemas.test.ts referenced ssoReauthGrantId, and neither calls these
+  // routes). A passwordless account (no `currentPassword` field sent, no
+  // password on the account) with zero existing factors and a fresh
+  // `enroll_first_factor` grant from GET /sso/callback (reauth mode) must be
+  // able to register a passkey as its first MFA factor; an invalid/expired
+  // grant must be rejected with the same opaque 401 the password road uses.
+  describe('#4018 SSO re-auth road on passkey registration', () => {
+    it('register/options SUCCEEDS for a passwordless, zero-factor account with a valid enrollment grant (validates, does not consume)', async () => {
+      dbState.selectQueue.push([{ passwordHash: null }]); // resolveEnrollmentStepUp probe
+      dbState.selectQueue.push([{ mfaEnabled: false, passkeyCount: 0 }]); // resolveEnrollmentStepUp's userIsMfaProtected
+      dbState.selectQueue.push([{ mfaEnabled: false, passkeyCount: 0 }]); // enforceExistingFactorStepUp's own userIsMfaProtected
+      dbState.selectQueue.push([]); // listActivePasskeys
+      vi.mocked(validateStepUpGrant).mockResolvedValueOnce(true);
+
+      const res = await app.request('/auth/passkeys/register/options', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer access-token' },
+        body: JSON.stringify({ ssoReauthGrantId: '11111111-1111-4111-8111-111111111111' }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(verifyPassword).not.toHaveBeenCalled();
+      expect(validateStepUpGrant).toHaveBeenCalledWith(
+        '11111111-1111-4111-8111-111111111111',
+        expect.objectContaining({ userId: 'user-123', operation: 'enroll_first_factor' }),
+      );
+      expect(consumeStepUpGrant).not.toHaveBeenCalled();
+      expect(passkeyMocks.generatePasskeyRegistrationOptions).toHaveBeenCalled();
+    });
+
+    it('register/options returns the opaque 401 for a passwordless account with an invalid/expired grant', async () => {
+      dbState.selectQueue.push([{ passwordHash: null }]); // resolveEnrollmentStepUp probe
+      dbState.selectQueue.push([{ mfaEnabled: false, passkeyCount: 0 }]); // resolveEnrollmentStepUp's userIsMfaProtected
+      vi.mocked(validateStepUpGrant).mockResolvedValueOnce(false);
+
+      const res = await app.request('/auth/passkeys/register/options', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer access-token' },
+        body: JSON.stringify({ ssoReauthGrantId: '11111111-1111-4111-8111-111111111111' }),
+      });
+
+      expect(res.status).toBe(401);
+      expect(await res.json()).toEqual({ error: 'Invalid credentials' });
+      expect(passkeyMocks.generatePasskeyRegistrationOptions).not.toHaveBeenCalled();
+    });
+
+    it('register/verify SUCCEEDS for a passwordless, zero-factor account with a valid enrollment grant (consumes it)', async () => {
+      dbState.selectQueue.push([{ mfaEnabled: false, passkeyCount: 0 }]); // enforceExistingFactorStepUp's userIsMfaProtected
+      dbState.selectQueue.push([{ passwordHash: null }]); // resolveEnrollmentStepUp probe
+      dbState.selectQueue.push([{ mfaEnabled: false, passkeyCount: 0 }]); // resolveEnrollmentStepUp's userIsMfaProtected
+      dbState.selectQueue.push([{ mfaSecret: null, mfaMethod: null }]); // tx hasExistingFactor check — no factor yet
+      vi.mocked(consumeStepUpGrant).mockResolvedValueOnce(true);
+
+      const res = await app.request('/auth/passkeys/register/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer access-token' },
+        body: JSON.stringify({
+          credential: { id: 'credential-1' },
+          ssoReauthGrantId: '11111111-1111-4111-8111-111111111111',
+        }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(consumeStepUpGrant).toHaveBeenCalledWith(
+        '11111111-1111-4111-8111-111111111111',
+        expect.objectContaining({ userId: 'user-123', operation: 'enroll_first_factor' }),
+      );
+    });
+
+    it('register/verify returns the opaque 401 for a passwordless account with an invalid/expired grant (no passkey written)', async () => {
+      dbState.selectQueue.push([{ mfaEnabled: false, passkeyCount: 0 }]); // enforceExistingFactorStepUp's userIsMfaProtected
+      dbState.selectQueue.push([{ passwordHash: null }]); // resolveEnrollmentStepUp probe
+      dbState.selectQueue.push([{ mfaEnabled: false, passkeyCount: 0 }]); // resolveEnrollmentStepUp's userIsMfaProtected
+      vi.mocked(consumeStepUpGrant).mockResolvedValueOnce(false);
+
+      const res = await app.request('/auth/passkeys/register/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer access-token' },
+        body: JSON.stringify({
+          credential: { id: 'credential-1' },
+          ssoReauthGrantId: '11111111-1111-4111-8111-111111111111',
+        }),
+      });
+
+      expect(res.status).toBe(401);
+      expect(await res.json()).toEqual({ error: 'Invalid credentials' });
+    });
+  });
+
   it('rejects invalid or expired passkey registration challenges', async () => {
     passkeyMocks.verifyPasskeyRegistration.mockRejectedValueOnce(
       new PasskeyChallengeError('Passkey challenge is missing or expired'),
@@ -558,7 +764,11 @@ describe('passkey MFA auth routes', () => {
     // [user] = the login user lookup; the partner-membership row lets
     // resolveCurrentUserTokenContext resolve a partner scope rather than the
     // (now-rejected) membership-less system default. (security review #2)
-    dbState.selectQueue.push([user], [{ partnerId: 'partner-1', roleId: 'role-1' }]);
+    dbState.selectQueue.push(
+      [user],
+      [{ partnerId: 'partner-1', roleId: 'role-1' }],
+      [{ id: 'credential-row-1', userId: 'user-123', disabledAt: null }],
+    );
 
     const res = await app.request('/auth/login', {
       method: 'POST',
@@ -663,16 +873,18 @@ describe('passkey MFA auth routes', () => {
   // method is totp/sms as long as the session flags a passkey as available.
   it('returns passkey options for a TOTP-primary pending session flagged passkeyAvailable', async () => {
     redisMock.get.mockResolvedValueOnce(pendingMfaJson({ mfaMethod: 'totp', passkeyAvailable: true }));
-    dbState.selectQueue.push([
-      {
+    dbState.selectQueue.push(
+      [user],
+      [{ partnerId: 'partner-123', roleId: 'role-123' }],
+      [{
         id: 'credential-row-1',
         userId: 'user-123',
         credentialId: 'credential-1',
         publicKey: 'public-key',
         counter: 0,
         transports: ['internal'],
-      },
-    ]);
+      }],
+    );
 
     const res = await app.request('/auth/mfa/passkey/options', {
       method: 'POST',
@@ -724,8 +936,98 @@ describe('passkey MFA auth routes', () => {
   // non-passkey session that does not flag a passkey as available. This is the
   // half of pendingAllowsPasskey that mints tokens — regressing it to accept
   // any session would be a bypass, so it needs its own explicit test.
-  it('rejects /mfa/passkey/verify for a TOTP session with no available passkey', async () => {
-    redisMock.get.mockResolvedValueOnce(pendingMfaJson({ mfaMethod: 'totp', passkeyAvailable: false }));
+  it('rejects /mfa/passkey/verify for a challenge that did not authorize passkey', async () => {
+    redisMock.get.mockResolvedValueOnce(pendingMfaJson({
+      mfaMethod: 'totp',
+      passkeyAvailable: false,
+      allowedMethods: { totp: true, sms: false, passkey: false },
+    }));
+
+    const res = await app.request('/auth/mfa/passkey/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-breeze-auth-transition': 'v1' },
+      body: JSON.stringify({
+        tempToken: 'temp-token',
+        credential: { id: 'credential-1', response: {} },
+      }),
+    });
+
+    expect(res.status).toBe(401);
+    expect(createTokenPair).not.toHaveBeenCalled();
+    expect(rateLimiter).not.toHaveBeenCalled();
+    expect(redisMock.del).not.toHaveBeenCalled();
+  });
+
+  it('treats allowedMethods.passkey as authoritative even when the legacy compatibility flag is true', async () => {
+    redisMock.get.mockResolvedValue(pendingMfaJson({
+      mfaMethod: 'totp',
+      passkeyAvailable: true,
+      allowedMethods: { totp: true, sms: false, passkey: false },
+    }));
+
+    const options = await app.request('/auth/mfa/passkey/options', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tempToken: 'temp-token' }),
+    });
+    const verify = await app.request('/auth/mfa/passkey/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        tempToken: 'temp-token',
+        credential: { id: 'credential-1', response: {} },
+      }),
+    });
+
+    expect(options.status).toBe(401);
+    expect(verify.status).toBe(401);
+    expect(passkeyMocks.generatePasskeyAuthenticationOptions).not.toHaveBeenCalled();
+    expect(passkeyMocks.verifyPasskeyAuthentication).not.toHaveBeenCalled();
+    expect(redisMock.del).not.toHaveBeenCalled();
+  });
+
+  it('consumes an epoch-drifted challenge before issuing passkey options', async () => {
+    redisMock.get.mockResolvedValueOnce(pendingMfaJson({
+      mfaMethod: 'passkey',
+      allowedMethods: { totp: false, sms: false, passkey: true },
+    }));
+    dbState.selectQueue.push([user]);
+    vi.mocked(getUserEpochs).mockResolvedValueOnce({ authEpoch: 1, mfaEpoch: 2 });
+
+    const res = await app.request('/auth/mfa/passkey/options', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tempToken: 'temp-token' }),
+    });
+
+    expect(res.status).toBe(401);
+    expect(redisMock.del).toHaveBeenCalledWith('mfa:pending:temp-token');
+    expect(passkeyMocks.generatePasskeyAuthenticationOptions).not.toHaveBeenCalled();
+  });
+
+  it('consumes a challenge when live policy no longer permits passkey verification', async () => {
+    redisMock.get.mockResolvedValueOnce(pendingMfaJson({
+      mfaMethod: 'passkey',
+      allowedMethods: { totp: false, sms: false, passkey: true },
+    }));
+    dbState.selectQueue.push(
+      [user],
+      [{
+        id: 'credential-row-1',
+        userId: 'user-123',
+        credentialId: 'credential-1',
+        publicKey: 'public-key',
+        counter: 0,
+        transports: ['internal'],
+        disabledAt: null,
+      }],
+      [{ partnerId: 'partner-123', roleId: 'role-123' }],
+    );
+    vi.mocked(getEffectiveMfaPolicy).mockResolvedValueOnce({
+      required: false,
+      allowedMethods: { totp: true, sms: true, passkey: false },
+      source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: false },
+    });
 
     const res = await app.request('/auth/mfa/passkey/verify', {
       method: 'POST',
@@ -736,11 +1038,12 @@ describe('passkey MFA auth routes', () => {
       }),
     });
 
-    expect(res.status).toBe(400);
-    expect(await res.json()).toMatchObject({ error: expect.stringMatching(/passkey mfa is not configured/i) });
+    expect(res.status).toBe(401);
+    expect(redisMock.del).toHaveBeenCalledWith('mfa:pending:temp-token');
+    // Live policy is checked after the local WebAuthn proof so an acquired
+    // capability lease can be cancelled, but before any session is minted.
+    expect(passkeyMocks.verifyPasskeyAuthentication).toHaveBeenCalledOnce();
     expect(createTokenPair).not.toHaveBeenCalled();
-    expect(rateLimiter).not.toHaveBeenCalled();
-    expect(redisMock.del).not.toHaveBeenCalled();
   });
 
   // SR2-06: parsePendingMfa is STRICT — a legacy pre-rollout pending token
@@ -766,16 +1069,18 @@ describe('passkey MFA auth routes', () => {
 
   it('returns passkey authentication options for a pending passkey MFA login', async () => {
     redisMock.get.mockResolvedValueOnce(pendingMfaJson({ mfaMethod: 'passkey' }));
-    dbState.selectQueue.push([
-      {
+    dbState.selectQueue.push(
+      [user],
+      [{ partnerId: 'partner-123', roleId: 'role-123' }],
+      [{
         id: 'credential-row-1',
         userId: 'user-123',
         credentialId: 'credential-1',
         publicKey: 'public-key',
         counter: 0,
         transports: ['internal'],
-      },
-    ]);
+      }],
+    );
 
     const res = await app.request('/auth/mfa/passkey/options', {
       method: 'POST',
@@ -832,6 +1137,115 @@ describe('passkey MFA auth routes', () => {
     });
     expect(redisMock.del).toHaveBeenCalledWith('mfa:pending:temp-token');
     expect(vi.mocked(withSystemDbAccessContext).mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('does not update the passkey counter, last login, pending key, or cookie when logout wins finalization', async () => {
+    redisMock.get.mockResolvedValueOnce(pendingMfaJson({ mfaMethod: 'passkey' }));
+    dbState.selectQueue.push(
+      [user],
+      [{
+        id: 'credential-row-1',
+        userId: 'user-123',
+        credentialId: 'credential-1',
+        publicKey: 'public-key',
+        counter: 0,
+        transports: ['internal'],
+      }],
+      [{ partnerId: 'partner-123', roleId: 'role-123' }],
+    );
+    vi.mocked(finishAuthIssuance).mockRejectedValueOnce(new AuthIssuanceCapabilityError());
+
+    const res = await app.request('/auth/mfa/passkey/verify', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-breeze-auth-transition': 'v1',
+      },
+      body: JSON.stringify({
+        tempToken: 'temp-token',
+        credential: { id: 'credential-1', response: {} },
+      }),
+    });
+
+    expect(res.status).toBe(409);
+    expect(issueUserSession).not.toHaveBeenCalled();
+    expect(issueUserSessionLegacyDuringTransition).not.toHaveBeenCalled();
+    expect(dbState.updateSets).toEqual([]);
+    expect(redisMock.del).not.toHaveBeenCalled();
+    expect(res.headers.get('set-cookie')).toBeNull();
+  });
+
+  it('releases the issuance lease when tenant context resolution fails after factor proof', async () => {
+    redisMock.get.mockResolvedValueOnce(pendingMfaJson({ mfaMethod: 'passkey' }));
+    dbState.selectQueue.push(
+      [user],
+      [{
+        id: 'credential-row-1',
+        userId: 'user-123',
+        credentialId: 'credential-1',
+        publicKey: 'public-key',
+        counter: 0,
+        transports: ['internal'],
+      }],
+      [],
+    );
+
+    const res = await app.request('/auth/mfa/passkey/verify', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-breeze-auth-transition': 'v1',
+      },
+      body: JSON.stringify({
+        tempToken: 'temp-token',
+        credential: { id: 'credential-1', response: {} },
+      }),
+    });
+
+    expect(res.status).toBe(500);
+    expect(beginAuthIssuance).toHaveBeenCalledOnce();
+    expect(cancelAuthIssuance).toHaveBeenCalledOnce();
+    expect(issueUserSession).not.toHaveBeenCalled();
+    expect(dbState.updateSets).toEqual([]);
+    expect(redisMock.del).not.toHaveBeenCalled();
+    expect(res.headers.get('set-cookie')).toBeNull();
+  });
+
+  it('releases the issuance lease when verified passkey metadata cannot be normalized', async () => {
+    redisMock.get.mockResolvedValueOnce(pendingMfaJson({ mfaMethod: 'passkey' }));
+    dbState.selectQueue.push(
+      [user],
+      [{
+        id: 'credential-row-1',
+        userId: 'user-123',
+        credentialId: 'credential-1',
+        publicKey: 'public-key',
+        counter: 0,
+        transports: ['internal'],
+      }],
+    );
+    passkeyMocks.authenticationInfoToPasskeyUpdateFields.mockImplementationOnce(() => {
+      throw new Error('invalid authenticator metadata');
+    });
+
+    const res = await app.request('/auth/mfa/passkey/verify', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-breeze-auth-transition': 'v1',
+      },
+      body: JSON.stringify({
+        tempToken: 'temp-token',
+        credential: { id: 'credential-1', response: {} },
+      }),
+    });
+
+    expect(res.status).toBe(500);
+    expect(cancelAuthIssuance).toHaveBeenCalledOnce();
+    expect(issueUserSession).not.toHaveBeenCalled();
+    expect(dbState.updateSets).toEqual([]);
+    expect(redisMock.del).not.toHaveBeenCalled();
+    expect(res.headers.get('set-cookie')).toBeNull();
   });
 
   it('rejects a passkey credential that belongs to another user', async () => {
@@ -929,6 +1343,7 @@ describe('passkey MFA auth routes', () => {
         transports: ['internal'],
         disabledAt: null,
       }],
+      [{ partnerId: 'partner-123', roleId: 'role-123' }],
     );
     passkeyMocks.verifyPasskeyAuthentication.mockResolvedValueOnce({ verified: false });
 
@@ -1035,7 +1450,7 @@ describe('passkey MFA auth routes', () => {
     expect(res.status).toBe(401);
     expect(await res.json()).toMatchObject({ error: expect.stringMatching(/invalid or expired/i) });
     expect(createTokenPair).not.toHaveBeenCalled();
-    expect(redisMock.del).not.toHaveBeenCalled();
+    expect(redisMock.del).toHaveBeenCalledWith('mfa:pending:temp-token');
   });
 
   // SR2-06: a factor change (mfa_epoch bump) during the 5-minute MFA window
@@ -1065,9 +1480,100 @@ describe('passkey MFA auth routes', () => {
     expect(redisMock.del).toHaveBeenCalledWith('mfa:pending:temp-token');
   });
 
+  // #4067: pending records carrying ssoLinkTokenHash finalize the SSO link
+  // ceremony (SSO-style mint) instead of the password-login mint.
+  it('finalizes the SSO link ceremony on a verified passkey when the pending record carries ssoLinkTokenHash', async () => {
+    redisMock.get.mockResolvedValueOnce(pendingMfaJson({ mfaMethod: 'passkey', ssoLinkTokenHash: 'link-hash-1' }));
+    dbState.selectQueue.push(
+      [user],
+      [{
+        id: 'credential-row-1',
+        userId: 'user-123',
+        credentialId: 'credential-1',
+        publicKey: 'public-key',
+        counter: 0,
+        transports: ['internal'],
+        disabledAt: null,
+      }],
+      [{ partnerId: 'partner-123', roleId: 'role-123' }],
+    );
+    vi.mocked(finalizeSsoPendingLink).mockResolvedValue({
+      ok: true,
+      accessToken: 'sso-access',
+      refreshToken: 'sso-refresh',
+      expiresInSeconds: 900,
+      mfa: true,
+      session: { refreshToken: 'sso-refresh' },
+      redirectPath: '/dashboard',
+    } as any);
+
+    const res = await app.request('/auth/mfa/passkey/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-breeze-auth-transition': 'v1' },
+      body: JSON.stringify({
+        tempToken: 'temp-token',
+        credential: { id: 'credential-1', response: {} },
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      mfaRequired: false,
+      tokens: { accessToken: 'sso-access', expiresInSeconds: 900 },
+      redirectPath: '/dashboard',
+    });
+    expect(finalizeSsoPendingLink).toHaveBeenCalledWith(
+      expect.anything(),
+      'link-hash-1',
+      {
+        breezeMfaVerified: true,
+        expectedUserId: 'user-123',
+        capability: expect.objectContaining({ transitionId: 'transition-1', generation: 1 }),
+      },
+    );
+    // The temp token was consumed; the password-login mint must NOT run.
+    expect(redisMock.del).toHaveBeenCalledWith('mfa:pending:temp-token');
+    expect(createTokenPair).not.toHaveBeenCalled();
+  });
+
+  it('rejects the passkey link continuation with the distinct sso_link_expired code when the finalizer refuses', async () => {
+    redisMock.get.mockResolvedValueOnce(pendingMfaJson({ mfaMethod: 'passkey', ssoLinkTokenHash: 'link-hash-1' }));
+    dbState.selectQueue.push(
+      [user],
+      [{
+        id: 'credential-row-1',
+        userId: 'user-123',
+        credentialId: 'credential-1',
+        publicKey: 'public-key',
+        counter: 0,
+        transports: ['internal'],
+        disabledAt: null,
+      }],
+      [{ partnerId: 'partner-123', roleId: 'role-123' }],
+    );
+    vi.mocked(finalizeSsoPendingLink).mockResolvedValue({ ok: false, error: 'link_expired' } as any);
+
+    const res = await app.request('/auth/mfa/passkey/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        tempToken: 'temp-token',
+        credential: { id: 'credential-1', response: {} },
+      }),
+    });
+
+    expect(res.status).toBe(401);
+    expect(await res.json()).toMatchObject({ error: 'sso_link_expired' });
+    expect(createTokenPair).not.toHaveBeenCalled();
+  });
+
   // (e) /mfa/passkey/options guards.
-  it('returns 400 from passkey options when the pending session is not a passkey session', async () => {
-    redisMock.get.mockResolvedValueOnce(pendingMfaJson({ mfaMethod: 'totp', passkeyAvailable: false }));
+  it('returns 401 from passkey options when the pending challenge did not authorize passkey', async () => {
+    redisMock.get.mockResolvedValueOnce(pendingMfaJson({
+      mfaMethod: 'totp',
+      passkeyAvailable: false,
+      allowedMethods: { totp: true, sms: false, passkey: false },
+    }));
 
     const res = await app.request('/auth/mfa/passkey/options', {
       method: 'POST',
@@ -1075,14 +1581,17 @@ describe('passkey MFA auth routes', () => {
       body: JSON.stringify({ tempToken: 'temp-token' }),
     });
 
-    expect(res.status).toBe(400);
-    expect(await res.json()).toMatchObject({ error: expect.stringMatching(/passkey mfa is not configured/i) });
+    expect(res.status).toBe(401);
     expect(passkeyMocks.generatePasskeyAuthenticationOptions).not.toHaveBeenCalled();
   });
 
   it('returns 400 from passkey options when the account has no registered passkeys', async () => {
     redisMock.get.mockResolvedValueOnce(pendingMfaJson({ mfaMethod: 'passkey' }));
-    dbState.selectQueue.push([]);
+    dbState.selectQueue.push(
+      [user],
+      [{ partnerId: 'partner-123', roleId: 'role-123' }],
+      [],
+    );
 
     const res = await app.request('/auth/mfa/passkey/options', {
       method: 'POST',
@@ -1099,10 +1608,13 @@ describe('passkey MFA auth routes', () => {
   it('does not overwrite an existing TOTP factor method when registering a passkey', async () => {
     // SR2-20: this account is already MFA-protected (has TOTP), so
     // register/verify requires a fresh existing-factor step-up grant.
-    // Query order: userIsMfaProtected (gate) first, then the transaction's
-    // own "current MFA" read (hasExistingFactor check) second.
+    // Query order: userIsMfaProtected (gate) first, then #4018's
+    // resolveEnrollmentStepUp terminal read (passwordHash — this is a password
+    // account, so it is a no-op), then the terminal route's live enrollment
+    // state read.
     dbState.selectQueue.push([{ mfaEnabled: true, passkeyCount: 0 }]);
-    dbState.selectQueue.push([{ mfaSecret: 'enc-secret', mfaMethod: 'totp' }]);
+    dbState.selectQueue.push([{ passwordHash: '$argon2id$hash' }]);
+    dbState.selectQueue.push([{ mfaEnabled: true, mfaSecret: 'enc-secret', mfaMethod: 'totp' }]);
     vi.mocked(consumeStepUpGrant).mockResolvedValueOnce(true);
 
     const res = await app.request('/auth/passkeys/register/verify', {
@@ -1140,8 +1652,10 @@ describe('passkey MFA auth routes', () => {
 
   it('makes passkey the primary MFA method when the user has no existing factor', async () => {
     // SR2-20: no-factor account — initial enrollment stays password-only, no
-    // step-up grant required.
+    // step-up grant required. #4018 adds the passwordHash read between the
+    // gate and the transaction's own "current MFA" read.
     dbState.selectQueue.push([{ mfaEnabled: false, passkeyCount: 0 }]);
+    dbState.selectQueue.push([{ passwordHash: '$argon2id$hash' }]);
     dbState.selectQueue.push([{ mfaSecret: null, mfaMethod: null }]);
 
     const res = await app.request('/auth/passkeys/register/verify', {

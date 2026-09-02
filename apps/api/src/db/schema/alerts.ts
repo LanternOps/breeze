@@ -231,12 +231,27 @@ export const escalationPolicies = pgTable('escalation_policies', {
   partnerIdIdx: index('escalation_policies_partner_id_idx').on(table.partnerId),
 }));
 
+// Send identity (wave 3.5c, #4085): a send is uniquely identified by
+// (alertId, channelId, escalationStep) — step 0 is the baseline fan-out, 1..N
+// are escalation waves (scheduleEscalation, notificationDispatcher.ts). The
+// unique index backs a claim-style state machine in processSendNotification:
+// insert-onConflictDoNothing on this triple, then either skip (already
+// 'sent') or reclaim the existing row for a retry. No org_id column — tenant
+// scope is derived transitively via alertId, so this table needs no cascade/
+// export registration of its own. It DOES have RLS: FORCE ROW LEVEL SECURITY
+// with EXISTS-join policies over alerts.org_id (migration
+// 2026-05-30-fk-child-tables-rls.sql), registered as an alert-join table in
+// rls-coverage.integration.test.ts — "no org_id column" is not "no RLS".
 export const alertNotifications = pgTable('alert_notifications', {
   id: uuid('id').primaryKey().defaultRandom(),
   alertId: uuid('alert_id').notNull().references(() => alerts.id),
   channelId: uuid('channel_id').notNull().references(() => notificationChannels.id),
+  escalationStep: integer('escalation_step').notNull().default(0),
   status: varchar('status', { length: 20 }).notNull().default('pending'),
   sentAt: timestamp('sent_at'),
   errorMessage: text('error_message'),
   createdAt: timestamp('created_at').defaultNow().notNull()
-});
+}, (table) => ({
+  sendIdentityUniq: uniqueIndex('alert_notifications_send_identity_uq')
+    .on(table.alertId, table.channelId, table.escalationStep)
+}));

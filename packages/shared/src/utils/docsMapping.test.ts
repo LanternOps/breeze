@@ -9,6 +9,18 @@ describe('getDocsForPath', () => {
       expect(result.url).toBe(`${DOCS_BASE_URL}/features/devices/`);
     });
 
+    it('/settings/ai-agents maps to AI Agents docs (not the generic AI page)', () => {
+      const result = getDocsForPath('/settings/ai-agents');
+      expect(result.label).toBe('AI Agents');
+      expect(result.url).toBe(`${DOCS_BASE_URL}/features/ai-agents/`);
+    });
+
+    it('/approvals maps to AI Agents docs', () => {
+      const result = getDocsForPath('/approvals');
+      expect(result.label).toBe('Approvals');
+      expect(result.url).toContain('/features/ai-agents/');
+    });
+
     it('/alerts maps to alerts docs', () => {
       const result = getDocsForPath('/alerts');
       expect(result.label).toBe('Alerts');

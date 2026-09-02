@@ -31,6 +31,10 @@ vi.mock('../db', () => {
   };
 });
 
+import { SQL } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { Mock } from 'vitest';
+import { db } from '../db';
 import { runContractBillingSweep } from './contractWorker';
 
 describe('runContractBillingSweep price-book gap logging (#3775)', () => {
@@ -68,5 +72,28 @@ describe('runContractBillingSweep price-book gap logging (#3775)', () => {
     } finally {
       warn.mockRestore();
     }
+  });
+});
+
+// ── billing sweep tenant scope (org-lifecycle Wave 4 review fix C-A.2) ──────
+// Structurally identical to the overdue/renewal sweeps: fleet-wide select
+// under a system context, so an ARCHIVED tenant would keep generating (and
+// auto-issuing + emailing) invoices from inside its purge countdown.
+describe('runContractBillingSweep tenant scope', () => {
+  const dialect = new PgDialect();
+
+  beforeEach(() => { vi.clearAllMocks(); dueRows.length = 0; });
+
+  it('restricts the due-contract select to automation-eligible orgs (compiled SQL)', async () => {
+    await runContractBillingSweep(new Date('2026-08-26T06:00:00Z'));
+
+    const whereArg = (db as unknown as { where: Mock }).where.mock.calls[0]![0] as SQL;
+    const { sql, params } = dialect.sqlToQuery(whereArg);
+    expect(sql).toContain('automation_eligible_org.id = "contracts"."org_id"');
+    expect(params).not.toContain('archived');
+    expect(params).not.toContain('purging');
+    expect(params).not.toContain('merging');
+    // Pre-existing predicates survive alongside it.
+    expect(sql).toContain('"contracts"."next_billing_at" <=');
   });
 });

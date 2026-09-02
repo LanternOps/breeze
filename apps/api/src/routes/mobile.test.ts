@@ -1044,7 +1044,10 @@ describe('mobile routes', () => {
         body: JSON.stringify({ note: 'done' })
       });
 
-      expect(res.status).toBe(400);
+      // 409, not 400, since #4094. The identical outcome is also reachable by
+      // LOSING the compare-and-swap a moment later, and one user action must not
+      // return two different status codes depending purely on timing.
+      expect(res.status).toBe(409);
       expect(emitAlertStateFeedbackMock).not.toHaveBeenCalled();
     });
 
@@ -1340,6 +1343,27 @@ describe('mobile routes', () => {
   });
 
   describe('POST /mobile/devices/:id/actions', () => {
+    const mobileDeviceId = '11111111-2222-4333-8444-555555555555';
+    const mobileScriptId = '22222222-2222-2222-2222-222222222222';
+    const admittedScriptResult = (ignoredParameters: string[] = []) => ({
+      ok: true,
+      admission: {
+        requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        status: 'queued' as const,
+        targets: [{
+          requestedDeviceId: mobileDeviceId,
+          admission: 'admitted' as const,
+          executionId: 'exec-1',
+          commandId: 'cmd-1',
+          batchId: 'batch-1',
+        }],
+      },
+      script: { id: mobileScriptId } as any,
+      ignoredParameters,
+      triggerType: 'manual' as const,
+      runAs: 'system',
+      auditOrgId: 'org-123',
+    });
     // #2968: this route used to resolve devices through a private copy of
     // `getDeviceWithOrgCheck` living in mobile.ts, so the uuid guard added to the
     // shared helper did not apply here and a malformed `:id` still reached
@@ -1474,21 +1498,31 @@ describe('mobile routes', () => {
       expect(writeRouteAuditMock).not.toHaveBeenCalled();
     });
 
-    it('surfaces a 409 from executeScriptOnDevices (e.g. maintenance-window suppression)', async () => {
+    it('returns 409 for a maintenance-suppressed typed admission without auditing success', async () => {
       // Reachable from mobile now that this route delegates entirely to
       // executeScriptOnDevices (#3409 PR0 Task 3) — the maintenance-window
-      // suppression branch (409 + maintenanceSuppressedDeviceIds) is newly
-      // exercisable from this caller and existing tests only covered 403/404.
+      // suppression remains a deliberate 409 at this single-device wrapper.
       vi.mocked(db.select).mockReturnValue(
         mockSelectLimitChain([
           { id: '11111111-2222-4333-8444-555555555555', orgId: 'org-123', status: 'online', osType: 'linux', siteId: null }
         ]) as any
       );
       executeScriptOnDevicesMock.mockResolvedValueOnce({
-        ok: false,
-        status: 409,
-        error: 'All target devices are in a maintenance window with script execution suppressed',
-        maintenanceSuppressedDeviceIds: ['11111111-2222-4333-8444-555555555555'],
+        ok: true,
+        admission: {
+          requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+          status: 'rejected',
+          targets: [{
+            requestedDeviceId: mobileDeviceId,
+            admission: 'suppressed',
+            reasonCode: 'maintenance_suppressed',
+          }],
+        },
+        script: { id: mobileScriptId },
+        ignoredParameters: [],
+        triggerType: 'manual',
+        runAs: 'system',
+        auditOrgId: 'org-123',
       });
 
       const res = await app.request('/mobile/devices/11111111-2222-4333-8444-555555555555/actions', {
@@ -1499,16 +1533,11 @@ describe('mobile routes', () => {
 
       expect(res.status).toBe(409);
       const body = await res.json();
-      expect(body.error).toBe('All target devices are in a maintenance window with script execution suppressed');
+      expect(body).toEqual({ admission: 'suppressed', reasonCode: 'maintenance_suppressed' });
       expect(writeRouteAuditMock).not.toHaveBeenCalled();
     });
 
     it('returns 422 with the per-device reason when the only device failed to dispatch', async () => {
-      // #3409 PR2 gave executeScriptOnDevices a per-device failure channel: a
-      // device can now fail (e.g. an unresolved {{var.*}} token) while the
-      // call still reports ok:true with executions:[] and failures:[...].
-      // This route indexed executions[0] unconditionally, so that combination
-      // threw a TypeError and turned a user-fixable problem into a 500.
       vi.mocked(db.select).mockReturnValue(
         mockSelectLimitChain([
           { id: '11111111-2222-4333-8444-555555555555', orgId: 'org-123', status: 'online', osType: 'linux', siteId: null }
@@ -1516,13 +1545,20 @@ describe('mobile routes', () => {
       );
       executeScriptOnDevicesMock.mockResolvedValueOnce({
         ok: true,
-        scriptId: '22222222-2222-2222-2222-222222222222',
-        executions: [],
-        failures: [{
-          deviceId: '11111111-2222-4333-8444-555555555555',
-          code: 'unresolved_variables',
-          error: 'Unresolved tenant variable(s): no value set for {{var.api_key}}',
-        }],
+        admission: {
+          requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+          status: 'rejected',
+          targets: [{
+            requestedDeviceId: mobileDeviceId,
+            admission: 'excluded',
+            reasonCode: 'unresolved_variables',
+          }],
+        },
+        script: { id: mobileScriptId },
+        ignoredParameters: [],
+        triggerType: 'manual',
+        runAs: 'system',
+        auditOrgId: 'org-123',
       });
 
       const res = await app.request('/mobile/devices/11111111-2222-4333-8444-555555555555/actions', {
@@ -1533,7 +1569,7 @@ describe('mobile routes', () => {
 
       expect(res.status).toBe(422);
       const body = await res.json();
-      expect(body.error).toBe('Unresolved tenant variable(s): no value set for {{var.api_key}}');
+      expect(body).toEqual({ admission: 'excluded', reasonCode: 'unresolved_variables' });
       // Nothing ran, so no success audit.
       expect(writeRouteAuditMock).not.toHaveBeenCalled();
     });
@@ -1544,23 +1580,7 @@ describe('mobile routes', () => {
           { id: '11111111-2222-4333-8444-555555555555', orgId: 'org-123', status: 'online', osType: 'linux', siteId: null }
         ]) as any
       );
-      executeScriptOnDevicesMock.mockResolvedValueOnce({
-        ok: true,
-        batchId: 'batch-1',
-        scriptId: '22222222-2222-2222-2222-222222222222',
-        script: { id: '22222222-2222-2222-2222-222222222222' } as any,
-        devicesTargeted: 1,
-        maintenanceSuppressedDeviceIds: [],
-        executions: [
-          { executionId: 'exec-1', deviceId: '11111111-2222-4333-8444-555555555555', commandId: 'cmd-1' }
-        ],
-        failures: [],
-        ignoredParameters: [],
-        status: 'queued',
-        triggerType: 'manual',
-        runAs: 'system',
-        auditOrgId: 'org-123'
-      });
+      executeScriptOnDevicesMock.mockResolvedValueOnce(admittedScriptResult());
 
       const res = await app.request('/mobile/devices/11111111-2222-4333-8444-555555555555/actions', {
         method: 'POST',
@@ -1611,23 +1631,7 @@ describe('mobile routes', () => {
           { id: '11111111-2222-4333-8444-555555555555', orgId: 'org-123', status: 'online', osType: 'linux', siteId: null }
         ]) as any
       );
-      executeScriptOnDevicesMock.mockResolvedValueOnce({
-        ok: true,
-        batchId: 'batch-1',
-        scriptId: '22222222-2222-2222-2222-222222222222',
-        script: { id: '22222222-2222-2222-2222-222222222222' } as any,
-        devicesTargeted: 1,
-        maintenanceSuppressedDeviceIds: [],
-        executions: [
-          { executionId: 'exec-1', deviceId: '11111111-2222-4333-8444-555555555555', commandId: 'cmd-1' }
-        ],
-        failures: [],
-        ignoredParameters: ['api_key'],
-        status: 'queued',
-        triggerType: 'manual',
-        runAs: 'system',
-        auditOrgId: 'org-123'
-      });
+      executeScriptOnDevicesMock.mockResolvedValueOnce(admittedScriptResult(['api_key']));
 
       const res = await app.request('/mobile/devices/11111111-2222-4333-8444-555555555555/actions', {
         method: 'POST',
@@ -1659,23 +1663,7 @@ describe('mobile routes', () => {
           { id: '11111111-2222-4333-8444-555555555555', orgId: 'org-123', status: 'online', osType: 'linux', siteId: null }
         ]) as any
       );
-      executeScriptOnDevicesMock.mockResolvedValueOnce({
-        ok: true,
-        batchId: 'batch-1',
-        scriptId: '22222222-2222-2222-2222-222222222222',
-        script: { id: '22222222-2222-2222-2222-222222222222' } as any,
-        devicesTargeted: 1,
-        maintenanceSuppressedDeviceIds: [],
-        executions: [
-          { executionId: 'exec-1', deviceId: '11111111-2222-4333-8444-555555555555', commandId: 'cmd-1' }
-        ],
-        failures: [],
-        ignoredParameters: [],
-        status: 'queued',
-        triggerType: 'manual',
-        runAs: 'system',
-        auditOrgId: 'org-123'
-      });
+      executeScriptOnDevicesMock.mockResolvedValueOnce(admittedScriptResult());
 
       const res = await app.request('/mobile/devices/11111111-2222-4333-8444-555555555555/actions', {
         method: 'POST',
@@ -1751,13 +1739,21 @@ describe('mobile routes', () => {
         );
       };
 
-      it('rejects running an org A script on an org B device (error passthrough, no audit)', async () => {
+      it('rejects running an org A script on an org B device through typed admission', async () => {
         useMultiOrgPartnerAuth();
         mockDeviceLookup();
         executeScriptOnDevicesMock.mockResolvedValueOnce({
-          ok: false,
-          status: 403,
-          error: 'Script and device must belong to the same organization'
+          ok: true,
+          admission: {
+            requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+            status: 'rejected',
+            targets: [{ requestedDeviceId: DEVICE_ID, admission: 'denied', reasonCode: 'script_org_mismatch' }],
+          },
+          script: { id: SCRIPT_ID },
+          ignoredParameters: [],
+          triggerType: 'manual',
+          runAs: 'system',
+          auditOrgId: DEVICE_ORG,
         });
 
         const res = await app.request(`/mobile/devices/${DEVICE_ID}/actions`, {
@@ -1766,9 +1762,9 @@ describe('mobile routes', () => {
           body: JSON.stringify({ action: 'run_script', scriptId: SCRIPT_ID })
         });
 
-        expect(res.status).toBe(403);
+        expect(res.status).toBe(422);
         const body = await res.json();
-        expect(body.error).toBe('Script and device must belong to the same organization');
+        expect(body).toEqual({ admission: 'denied', reasonCode: 'script_org_mismatch' });
         expect(writeRouteAuditMock).not.toHaveBeenCalled();
       });
 
@@ -1776,19 +1772,10 @@ describe('mobile routes', () => {
         useMultiOrgPartnerAuth();
         mockDeviceLookup();
         executeScriptOnDevicesMock.mockResolvedValueOnce({
-          ok: true,
-          batchId: 'batch-1',
-          scriptId: SCRIPT_ID,
-          script: { id: SCRIPT_ID } as any,
-          devicesTargeted: 1,
-          maintenanceSuppressedDeviceIds: [],
-          executions: [{ executionId: 'exec-1', deviceId: DEVICE_ID, commandId: 'cmd-1' }],
-          failures: [],
-          ignoredParameters: [],
-          status: 'queued',
-          triggerType: 'manual',
-          runAs: 'system',
-          auditOrgId: DEVICE_ORG
+          ...admittedScriptResult(),
+          admission: { ...admittedScriptResult().admission, targets: [{ requestedDeviceId: DEVICE_ID, admission: 'admitted', executionId: 'exec-1', commandId: 'cmd-1' }] },
+          script: { id: SCRIPT_ID },
+          auditOrgId: DEVICE_ORG,
         });
 
         const res = await app.request(`/mobile/devices/${DEVICE_ID}/actions`, {
@@ -1807,19 +1794,10 @@ describe('mobile routes', () => {
         useMultiOrgPartnerAuth();
         mockDeviceLookup();
         executeScriptOnDevicesMock.mockResolvedValueOnce({
-          ok: true,
-          batchId: null,
-          scriptId: SCRIPT_ID,
-          script: { id: SCRIPT_ID } as any,
-          devicesTargeted: 1,
-          maintenanceSuppressedDeviceIds: [],
-          executions: [{ executionId: 'exec-1', deviceId: DEVICE_ID, commandId: 'cmd-1' }],
-          failures: [],
-          ignoredParameters: [],
-          status: 'queued',
-          triggerType: 'manual',
-          runAs: 'system',
-          auditOrgId: null
+          ...admittedScriptResult(),
+          admission: { ...admittedScriptResult().admission, targets: [{ requestedDeviceId: DEVICE_ID, admission: 'admitted', executionId: 'exec-1', commandId: 'cmd-1' }] },
+          script: { id: SCRIPT_ID },
+          auditOrgId: null,
         });
 
         const res = await app.request(`/mobile/devices/${DEVICE_ID}/actions`, {

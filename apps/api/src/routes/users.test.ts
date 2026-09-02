@@ -167,6 +167,12 @@ vi.mock('../db/schema', () => ({
   sensitiveDataPolicies: {},
   peripheralPolicies: {},
   discoveredAssetTypeEnum: { enumValues: ['workstation', 'server', 'printer', 'unknown'] },
+  ticketPushPreferences: {
+    userId: { __column: 'ticket_push_preferences.user_id' },
+    assignedEnabled: { __column: 'ticket_push_preferences.assigned_enabled' },
+    slaScope: { __column: 'ticket_push_preferences.sla_scope' },
+    updatedAt: { __column: 'ticket_push_preferences.updated_at' },
+  },
 }));
 
 vi.mock('drizzle-orm', async (importOriginal) => {
@@ -207,6 +213,13 @@ vi.mock('../services/sentry', () => ({
 
 vi.mock('../services/auditService', () => ({
   createAuditLogAsync: createAuditLogAsyncMock
+}));
+
+// W07 (#3901): the ticket push preference PATCH audits through writeRouteAudit.
+const { writeRouteAuditMock } = vi.hoisted(() => ({ writeRouteAuditMock: vi.fn() }));
+vi.mock('../services/auditEvents', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/auditEvents')>()),
+  writeRouteAudit: writeRouteAuditMock,
 }));
 
 vi.mock('../services/clientIp', () => ({
@@ -600,6 +613,61 @@ describe('user routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json() as { isPlatformAdmin?: boolean };
       expect(body.isPlatformAdmin).toBe(true);
+    });
+
+    // #4018: this endpoint is what populates the WEB AUTH STORE's user object
+    // (stores/auth.ts completeBootstrapLogin + fetchAndApplyPreferences), so
+    // `hasPassword` here is the ONLY thing that makes
+    // `useAuthStore(s => s.user?.hasPassword) === false` reachable in
+    // production. Without it the SSO branches in the UI are dead code that
+    // still passes a unit test which injects the store value directly.
+    const meRow = (overrides: Record<string, unknown> = {}) => ({
+      id: 'user-123',
+      email: 'admin@example.com',
+      name: 'Admin',
+      avatarUrl: null,
+      status: 'active',
+      mfaEnabled: false,
+      isPlatformAdmin: false,
+      createdAt: new Date(),
+      lastLoginAt: new Date(),
+      setupCompletedAt: new Date(),
+      passwordChangedAt: new Date(),
+      preferences: {},
+      ...overrides,
+    });
+
+    const mockMeRow = (row: Record<string, unknown>) => {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([row])
+          })
+        })
+      } as any);
+    };
+
+    it('reports hasPassword false for an SSO-provisioned (passwordless) user', async () => {
+      mockMeRow(meRow({ passwordHash: null }));
+
+      const res = await app.request('/users/me', {
+        headers: { Authorization: 'Bearer token' }
+      });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ hasPassword: false });
+    });
+
+    it('reports hasPassword true for a password user and never leaks the hash', async () => {
+      mockMeRow(meRow({ passwordHash: '$argon2id$v=19$m=65536$abc' }));
+
+      const res = await app.request('/users/me', {
+        headers: { Authorization: 'Bearer token' }
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json() as Record<string, unknown>;
+      expect(body.hasPassword).toBe(true);
+      expect(body).not.toHaveProperty('passwordHash');
+      expect(JSON.stringify(body)).not.toContain('argon2id');
     });
 
     // The web app hides billing nav and action buttons off this list. If /me
@@ -2667,6 +2735,59 @@ describe('user routes', () => {
       expect(res.status).toBe(200);
     });
 
+    // W07 (#3901): the ticket push preference routes are self-service — the
+    // subject is always auth.user.id and the body schema is .strict(), so a
+    // smuggled userId is a 400, never an escalation. They must therefore be
+    // exempt from the partner-wide MANAGEMENT gate, exactly as /me is. The
+    // technician this feature targets is a 'selected'-access partner user; if
+    // the gate applies, the whole wave is unreachable for them.
+    it('exempts GET /me/ticket-push-preferences for a non-all partner admin', async () => {
+      seedMembership('selected');
+      authAsPartner();
+      // Only select is the preference lookup (no row) — the gate must NOT run
+      // its partnerUsers membership query on a self-service path.
+      vi.mocked(db.select).mockReset().mockReturnValue({
+        from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(() => Promise.resolve([])) })) })),
+      } as any);
+
+      const res = await app.request('/users/me/ticket-push-preferences', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ settings: { assignedEnabled: true, slaScope: 'owned' } });
+    });
+
+    it('exempts PATCH /me/ticket-push-preferences for a non-all partner admin', async () => {
+      seedMembership('none');
+      authAsPartner();
+      vi.mocked(db.insert).mockReturnValueOnce({
+        values: vi.fn(() => ({
+          onConflictDoUpdate: vi.fn(() => ({
+            returning: vi.fn(() => Promise.resolve([{ assignedEnabled: true, slaScope: 'any' }])),
+          })),
+        })),
+      } as never);
+
+      const res = await app.request('/users/me/ticket-push-preferences', {
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slaScope: 'any' }),
+      });
+
+      expect(res.status).toBe(200);
+    });
+
+    // Control: the gate itself must still bite on partner-wide MANAGEMENT.
+    // Without this, widening the regex to something too broad passes silently.
+    it("still denies a 'selected' partner-admin on partner-wide user management", async () => {
+      seedMembership('selected');
+      authAsPartner();
+      const res = await app.request('/users', { method: 'GET', headers: { Authorization: 'Bearer token' } });
+      expect(res.status).toBe(403);
+    });
+
     it('exempts self-service GET /me from the management gate for non-all admins', async () => {
       // A 'selected'/'none' partner admin (accessibleOrgIds IS an array, so the
       // shape early-return does NOT fire) must still reach their own profile —
@@ -2692,5 +2813,88 @@ describe('user routes', () => {
 
       expect(res.status).toBe(200);
     });
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// W07 (#3901): /me/ticket-push-preferences
+// ---------------------------------------------------------------------------
+
+/**
+ * Earlier describes in this file leave `authMiddleware` mocked as a partner
+ * user WITH accessibleOrgIds (the gate suite). Reset it to the file's default
+ * so these route tests are order-independent; the gate-exemption behaviour is
+ * asserted separately inside `full partner access gate (orgAccess===all)`.
+ */
+function authAsDefaultPartner(): void {
+  vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+    c.set('auth', {
+      scope: 'partner',
+      partnerId: 'partner-123',
+      orgId: null,
+      user: { id: 'user-123', email: 'test@example.com' }
+    });
+    return next();
+  });
+}
+
+describe('GET /me/ticket-push-preferences', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    authAsDefaultPartner();
+    vi.mocked(db.select).mockReset().mockReturnValue({
+      from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(() => Promise.resolve([])) })) })),
+    } as never);
+  });
+
+  it('returns defaults when no row exists and does not insert', async () => {
+    const app = new Hono().route('/users', userRoutes);
+    const res = await app.request('/users/me/ticket-push-preferences');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ settings: { assignedEnabled: true, slaScope: 'owned' } });
+    expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+  });
+
+  it('returns the stored row', async () => {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: () => ({ where: () => ({ limit: () => Promise.resolve([{ assignedEnabled: false, slaScope: 'any' }]) }) }),
+    } as never);
+    const app = new Hono().route('/users', userRoutes);
+    const res = await app.request('/users/me/ticket-push-preferences');
+    expect(await res.json()).toEqual({ settings: { assignedEnabled: false, slaScope: 'any' } });
+  });
+});
+
+describe('PATCH /me/ticket-push-preferences', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    authAsDefaultPartner();
+  });
+
+  const patch = (body: unknown) =>
+    new Hono().route('/users', userRoutes).request('/users/me/ticket-push-preferences', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+
+  it('400 on empty body', async () => { expect((await patch({})).status).toBe(400); });
+  it('400 on unknown key (strict) — userId can never come from the body', async () => {
+    expect((await patch({ userId: 'someone-else', slaScope: 'off' })).status).toBe(400);
+  });
+  it('400 on invalid scope', async () => { expect((await patch({ slaScope: 'all' })).status).toBe(400); });
+
+  it('upserts only the provided fields for auth.user.id and audits', async () => {
+    const valuesMock = vi.fn((_v: Record<string, unknown>) => ({
+      onConflictDoUpdate: vi.fn(() => ({ returning: vi.fn(() => Promise.resolve([{ assignedEnabled: true, slaScope: 'any' }])) })),
+    }));
+    vi.mocked(db.insert).mockReturnValueOnce({ values: valuesMock } as never);
+    const res = await patch({ slaScope: 'any' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ settings: { assignedEnabled: true, slaScope: 'any' } });
+    expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({ userId: 'user-123', slaScope: 'any' }));
+    expect(valuesMock.mock.calls[0]![0]).not.toHaveProperty('assignedEnabled');
+    expect(writeRouteAuditMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'user.ticket_push_preferences.update', resourceId: 'user-123',
+    }));
   });
 });

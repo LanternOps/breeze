@@ -2,6 +2,13 @@ import { jsPDF } from 'jspdf';
 import autoTable, { type CellHookData } from 'jspdf-autotable';
 import type { PostureControls, PostureProduct, PostureSummary } from '../types/postureReport';
 import type { ExecutiveSummary } from '../types/executiveSummaryReport';
+import {
+  NARRATIVE_BULLET_MAX_CHARS,
+  NARRATIVE_HEADLINE_MAX_CHARS,
+  NARRATIVE_SECTION_KEYS,
+  NARRATIVE_SECTION_TITLES,
+  type OrgNarrativeReportSummary,
+} from '../types/orgNarrativeReport';
 
 /**
  * Branded PDF design system for Breeze reports.
@@ -52,7 +59,7 @@ export type BuildOpts = {
   generatedAt: string;
   /** IANA timezone for formatting ISO date cells in generic tables. */
   timezone: string;
-  summary?: PostureSummary | ExecutiveSummary;
+  summary?: PostureSummary | ExecutiveSummary | OrgNarrativeReportSummary;
   /** Slim baseline from the previous completed run, when the caller supplied
    * one (report_runs.result.previous) — drives the scorecard trend chip and
    * its "since <date>" label. */
@@ -76,6 +83,7 @@ const titleCase = (s: string): string =>
 // (the band label must match the page-1 H1, ampersand included).
 const REPORT_TYPE_LABELS: Record<string, string> = {
   security_compliance_posture: 'Security & Compliance Posture',
+  ai_org_narrative: 'Weekly AI Operations Narrative',
 };
 
 const reportTypeLabel = (t: string): string => REPORT_TYPE_LABELS[t] ?? titleCase(t);
@@ -902,6 +910,162 @@ function renderExecutiveSummaryCover(doc: jsPDF, summary: ExecutiveSummary, opts
 }
 
 // ----------------------------------------------------------------------------
+// Weekly AI narrative: title block + headline + one heading per section (in
+// the server-fixed NARRATIVE_SECTION_KEYS order, using NARRATIVE_SECTION_TITLES
+// — never a stored title, never an unknown key) with wrapped, page-break-aware
+// bullets. Unlike the posture/exec covers (bounded to one page by construction)
+// a narrative's bullet volume is model-authored and unbounded up to the schema
+// caps, so this arm draws its OWN chrome per page as it paginates, exactly like
+// `renderGenericReport`'s autoTable path — `buildReportPdf` does not draw
+// header/footer again after calling it.
+// ----------------------------------------------------------------------------
+
+/** Everything under `OrgNarrativeReportSummary.narrative`, non-optional. */
+type NarrativeSnapshot = NonNullable<OrgNarrativeReportSummary['narrative']>;
+
+const NARRATIVE_LINE_H = 4.3; // wrapped body-line height at fontSize 9
+const NARRATIVE_HEADLINE_LINE_H = 5.4; // wrapped headline-line height at fontSize 10.5
+const NARRATIVE_BULLET_INDENT = 5; // marker + gap before bullet text, matches drawPostureProductRow
+const NARRATIVE_BULLET_GAP = 1.6; // vertical gap after a bullet block, before the next bullet
+const NARRATIVE_SECTION_GAP = 2.5; // vertical gap after a section's last bullet, before the next heading
+const NARRATIVE_CONTENT_BOTTOM = PAGE.footY - 8; // keep clear of the footnote line above the footer rule
+// org/agent display names come from the same unvalidated jsonb summary blob as
+// bullets (legacy/hand-built snapshots included), so they get the same
+// sanitizeNarrativeText treatment before reaching the header chrome — a
+// generous cap since these are short display names, not prose.
+const NARRATIVE_NAME_MAX_CHARS = 120;
+
+/**
+ * Collapse one model-authored (or legacy/hand-built) narrative string to a
+ * safe, single-line, length-bounded value for direct rendering.
+ *
+ * Every `\p{C}` codepoint (C0/C1 controls, zero-width chars, the U+202E RTL
+ * override) becomes a space so an embedded newline — e.g. a bullet reading
+ * `"Deployed patch\n- injected"` — can never introduce a real line break and
+ * masquerade as a second, visually indistinguishable bullet; runs of
+ * whitespace then collapse so the result reads as one continuous line.
+ * Mirrors `flattenNarrativeLine` in `validators/orgNarrative.ts` (same
+ * threat, same fix) without importing zod into this dependency-free
+ * rendering module.
+ *
+ * The length cap applies to the FLATTENED result, not the raw input: this is
+ * a render-time belt-and-braces behind the intake schema's own cap, guarding
+ * the sections/markdown a legacy snapshot or hand-built `NarrativeSection[]`
+ * may carry without ever having gone through `narrativeSubmissionSchema`.
+ */
+export function sanitizeNarrativeText(value: unknown, maxChars: number): string {
+  if (typeof value !== 'string') return '';
+  const flat = value.replace(/\p{C}/gu, ' ').replace(/\s+/g, ' ').trim();
+  return flat.length > maxChars ? flat.slice(0, maxChars).trim() : flat;
+}
+
+function formatNarrativeIsoDate(iso: unknown, timezone: string): string | null {
+  if (typeof iso !== 'string' || iso.trim() === '') return null;
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return null;
+  return new Intl.DateTimeFormat('en-US', { timeZone: timezone, month: 'short', day: 'numeric', year: 'numeric' }).format(d);
+}
+
+function narrativePeriodLabel(narrative: NarrativeSnapshot, timezone: string): string {
+  const start = formatNarrativeIsoDate(narrative.periodStart, timezone);
+  const end = formatNarrativeIsoDate(narrative.periodEnd, timezone);
+  if (start && end) return `${start} - ${end}`;
+  return start ?? end ?? '';
+}
+
+function drawNarrativeFootnote(doc: jsPDF): void {
+  set.text(doc, C.faint);
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(7);
+  doc.text(
+    'Generated by an AI agent from the previous 7 days of Breeze data; numbers are as recorded, narrative is model-authored.',
+    PAGE.mx,
+    PAGE.footY - 2,
+  );
+}
+
+/** Finish the outgoing page's chrome, start a fresh one, and return its content-start y. */
+function narrativePageBreak(doc: jsPDF, opts: BuildOpts): number {
+  drawHeaderBand(doc, opts);
+  drawFooter(doc, opts);
+  drawNarrativeFootnote(doc);
+  doc.addPage();
+  return PAGE.bandH + 10;
+}
+
+/** Page-break-aware vertical budget check: rolls onto a fresh page (with chrome
+ * drawn on the outgoing one) when `neededH` would run into the footer zone. */
+function ensureNarrativeRoom(doc: jsPDF, opts: BuildOpts, y: number, neededH: number): number {
+  return y + neededH > NARRATIVE_CONTENT_BOTTOM ? narrativePageBreak(doc, opts) : y;
+}
+
+function renderNarrativeReport(doc: jsPDF, narrative: NarrativeSnapshot, opts: BuildOpts): void {
+  const orgName = sanitizeNarrativeText(narrative.orgName, NARRATIVE_NAME_MAX_CHARS);
+  const agentName = sanitizeNarrativeText(narrative.agentName, NARRATIVE_NAME_MAX_CHARS);
+  const period = narrativePeriodLabel(narrative, opts.timezone);
+
+  const metaParts = [`Generated ${opts.generatedAt}`];
+  if (period) metaParts.push(period);
+  if (agentName) metaParts.push(`Agent: ${agentName}`);
+
+  let y = drawTitleBlock(doc, 'Weekly AI Operations Narrative', orgName, metaParts.join('   ·   '), PAGE.bandH + 8);
+
+  const headline = sanitizeNarrativeText(narrative.headline, NARRATIVE_HEADLINE_MAX_CHARS);
+  if (headline) {
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(10.5);
+    const wrapped = doc.splitTextToSize(headline, PAGE.w - PAGE.mx * 2) as string[];
+    const blockH = wrapped.length * NARRATIVE_HEADLINE_LINE_H;
+    y = ensureNarrativeRoom(doc, opts, y, blockH);
+    set.text(doc, C.ink);
+    doc.text(wrapped, PAGE.mx, y);
+    y += blockH + 3;
+  }
+
+  // Closed, exhaustive iteration over NARRATIVE_SECTION_KEYS (never the stored
+  // `sections` array order) is what makes an unknown/renamed key structurally
+  // unrenderable — a section this loop never visits can never draw a heading
+  // or a bullet, regardless of what a legacy or hand-built snapshot contains.
+  const sectionsByKey = new Map<string, { bullets: unknown }>();
+  const rawSections = Array.isArray(narrative.sections) ? narrative.sections : [];
+  for (const section of rawSections) {
+    if (section && typeof section.key === 'string' && !sectionsByKey.has(section.key)) {
+      sectionsByKey.set(section.key, section);
+    }
+  }
+
+  for (const key of NARRATIVE_SECTION_KEYS) {
+    const bullets = sectionsByKey.get(key)?.bullets;
+    if (!Array.isArray(bullets) || bullets.length === 0) continue;
+
+    y = ensureNarrativeRoom(doc, opts, y, 5 + NARRATIVE_LINE_H);
+    y = drawSectionHeading(doc, NARRATIVE_SECTION_TITLES[key], y);
+
+    for (const rawBullet of bullets) {
+      const text = sanitizeNarrativeText(rawBullet, NARRATIVE_BULLET_MAX_CHARS);
+      if (!text) continue;
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(9);
+      const wrapped = doc.splitTextToSize(text, PAGE.w - PAGE.mx * 2 - NARRATIVE_BULLET_INDENT) as string[];
+      const blockH = wrapped.length * NARRATIVE_LINE_H;
+      y = ensureNarrativeRoom(doc, opts, y, blockH);
+      set.fill(doc, C.teal);
+      doc.circle(PAGE.mx + 1.2, y - 1.4, 0.9, 'F');
+      set.text(doc, C.ink);
+      doc.text(wrapped, PAGE.mx + NARRATIVE_BULLET_INDENT, y);
+      y += blockH + NARRATIVE_BULLET_GAP;
+    }
+    y += NARRATIVE_SECTION_GAP;
+  }
+
+  // Chrome for the final page — every earlier page got its chrome from
+  // narrativePageBreak() when we rolled off of it.
+  drawHeaderBand(doc, opts);
+  drawFooter(doc, opts);
+  drawNarrativeFootnote(doc);
+}
+
+// ----------------------------------------------------------------------------
 // Per-device detail table (curated columns + per-cell colour for posture).
 // ----------------------------------------------------------------------------
 
@@ -1304,6 +1468,16 @@ export function buildReportPdf(rows: unknown[], opts: BuildOpts): jsPDF {
     renderExecutiveSummaryCover(doc, opts.summary as ExecutiveSummary, opts);
     drawHeaderBand(doc, opts);
     drawFooter(doc, opts);
+  } else if (
+    opts.reportType === 'ai_org_narrative'
+    && opts.summary
+    && (opts.summary as OrgNarrativeReportSummary).narrative
+  ) {
+    // Fully self-contained w.r.t. chrome (like the generic/autoTable path
+    // below) because a narrative's bullet volume is unbounded up to the
+    // schema caps and may paginate; buildReportPdf must not draw a second,
+    // conflicting header/footer over whatever page rendering left current.
+    renderNarrativeReport(doc, (opts.summary as OrgNarrativeReportSummary).narrative!, opts);
   } else {
     renderGenericReport(doc, records, opts);
   }

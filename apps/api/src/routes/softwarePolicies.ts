@@ -19,6 +19,7 @@ import {
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
 import { captureException } from '../services/sentry';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
+import { requestPamCleanup } from '../services/pamActuationLifecycle';
 
 export const softwarePoliciesRoutes = new Hono();
 const requireSoftwarePolicyRead = requirePermission(
@@ -174,6 +175,40 @@ function softwarePolicyAccessCondition(auth: AuthContext): SQL | undefined {
     return sql`(${orgCond} OR (${softwarePolicies.orgId} IS NULL AND ${softwarePolicies.partnerId} = ${auth.partnerId}))`;
   }
   return orgCond;
+}
+
+type SoftwarePolicyTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+export async function cleanupSoftwarePolicyElevations(
+  tx: SoftwarePolicyTx,
+  policyId: string,
+): Promise<number> {
+  const result = await tx.execute<{ id: string }>(sql`
+    WITH matching AS (
+      SELECT id
+      FROM elevation_requests
+      WHERE metadata->>'software_policy_match_id' = ${policyId}
+        AND status IN ('approved', 'auto_approved', 'actuating')
+      FOR UPDATE
+    )
+    UPDATE elevation_requests AS request
+    SET status = 'revoked',
+        revoked_at = now(),
+        revision = request.revision + 1,
+        updated_at = now()
+    FROM matching
+    WHERE request.id = matching.id
+      AND request.status IN ('approved', 'auto_approved', 'actuating')
+    RETURNING request.id
+  `);
+  const rows = (result as { rows?: Array<{ id: string }> }).rows ?? [];
+  for (const row of rows) {
+    await requestPamCleanup(tx, {
+      elevationRequestId: row.id,
+      cause: 'policy_removed',
+    });
+  }
+  return rows.length;
 }
 
 async function getPolicyWithAccess(policyId: string, auth: AuthContext) {
@@ -510,11 +545,24 @@ softwarePoliciesRoutes.patch(
       updates.rules = normalizedRules;
     }
 
-    const [updated] = await db
-      .update(softwarePolicies)
-      .set(updates)
-      .where(eq(softwarePolicies.id, policy.id))
-      .returning();
+    let updated: typeof policy | undefined;
+    try {
+      updated = await db.transaction(async (tx) => {
+        const [next] = await tx
+          .update(softwarePolicies)
+          .set(updates)
+          .where(eq(softwarePolicies.id, policy.id))
+          .returning();
+        if (policy.isActive && payload.isActive === false) {
+          await cleanupSoftwarePolicyElevations(tx, policy.id);
+        }
+        return next;
+      });
+    } catch (error) {
+      console.error(`[softwarePolicies] Failed to update policy ${id}:`, error);
+      captureException(error);
+      return c.json({ error: 'Failed to update policy' }, 500);
+    }
 
     let scheduleWarning: string | undefined;
     try {
@@ -582,6 +630,7 @@ softwarePoliciesRoutes.delete(
           .update(softwarePolicies)
           .set({ isActive: false, updatedAt: new Date() })
           .where(eq(softwarePolicies.id, id));
+        await cleanupSoftwarePolicyElevations(tx, id);
         await tx
           .delete(softwareComplianceStatus)
           .where(eq(softwareComplianceStatus.policyId, id));

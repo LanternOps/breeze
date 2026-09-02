@@ -947,7 +947,17 @@ describe('MCP transport integration', () => {
   // Fix: on `initialize` we ignore any client-supplied value and mint
   // `mcp-<hex>` server-side, persisting `(sessionId → principalKey)` to Redis.
   // On every subsequent JSON-RPC method we require the server-prefixed
-  // `Mcp-Session-Id` header AND principal-equality, else 403.
+  // `Mcp-Session-Id` header AND principal-equality.
+  //
+  // A missing/malformed header is still a 400 (the client sent something the
+  // transport cannot use). A header that is well-formed but does not resolve
+  // to a session this principal owns — unknown, expired, or owned by someone
+  // else — is a uniform 404 (issue #3744): MCP Streamable HTTP Session
+  // Management rules 3-4 make 404 the signal that tells a client to
+  // re-initialize, and answering the "owned by someone else" case identically
+  // avoids leaking whether a given session id is live. MED-1's property is
+  // unchanged — the request is still rejected before dispatch, and the
+  // mismatch is still recorded server-side.
 
   it('MED-1 initialize: ignores client-supplied Mcp-Session-Id, mints server-prefixed value', async () => {
     delete process.env.IS_HOSTED;
@@ -1021,9 +1031,15 @@ describe('MCP transport integration', () => {
       },
       body: JSON.stringify({ jsonrpc: '2.0', method: 'tools/list', id: 2 }),
     });
-    expect(stolen.status).toBe(403);
+    // Rejected before dispatch. #3744: the status is 404, not 403 — a caller
+    // presenting a session it does not own is told the same thing as a caller
+    // presenting an expired one ("no such session, re-initialize"), so the
+    // response cannot be used to probe whether a leaked session id is live.
+    expect(stolen.status).toBe(404);
     const stolenBody = await stolen.json();
     expect(stolenBody.error?.message).toMatch(/session/i);
+    // MED-1's actual property: B never reached the tool dispatcher.
+    expect(stolenBody.result).toBeUndefined();
   });
 
   it('MED-1 same-principal: originating caller can reuse the minted session id', async () => {

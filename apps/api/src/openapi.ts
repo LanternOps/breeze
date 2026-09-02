@@ -482,6 +482,32 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
           total: { type: 'integer' }
         }
       },
+      ScriptAdmissionTarget: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['requestedDeviceId', 'admission'],
+        properties: {
+          requestedDeviceId: { type: 'string', format: 'uuid' },
+          admission: { type: 'string', enum: ['admitted', 'excluded', 'suppressed', 'denied'] },
+          reasonCode: { type: 'string' },
+          executionId: { type: 'string', format: 'uuid' },
+          commandId: { type: 'string', format: 'uuid' },
+          batchId: { type: 'string', format: 'uuid' }
+        }
+      },
+      ScriptAdmissionResult: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['requestId', 'status', 'targets'],
+        properties: {
+          requestId: { type: 'string', format: 'uuid' },
+          status: { type: 'string', enum: ['queued', 'partially_queued', 'rejected'] },
+          targets: {
+            type: 'array',
+            items: { $ref: '#/components/schemas/ScriptAdmissionTarget' }
+          }
+        }
+      },
 
       // Automation schemas
       Automation: {
@@ -2574,8 +2600,8 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
       post: {
         operationId: 'executeScript',
         tags: ['Scripts'],
-        summary: 'Execute script',
-        description: 'Execute script on one or more devices. Creates a batch if multiple devices. Commands are delivered via WebSocket for immediate execution. Requires MFA.',
+        summary: 'Queue script execution',
+        description: 'Authorize and admit a script for one or more devices. A 201 response reports queue admission per distinct requested target and is not evidence of terminal execution success. Requires MFA.',
         parameters: [{ $ref: '#/components/parameters/idParam' }],
         requestBody: {
           required: true,
@@ -2600,19 +2626,10 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         },
         responses: {
           '201': {
-            description: 'Execution started',
+            description: 'Per-target queue admission result',
             content: {
               'application/json': {
-                schema: {
-                  type: 'object',
-                  properties: {
-                    batchId: { type: 'string', format: 'uuid', nullable: true },
-                    scriptId: { type: 'string', format: 'uuid' },
-                    devicesTargeted: { type: 'integer' },
-                    executions: { type: 'array', items: { type: 'object' } },
-                    status: { type: 'string' }
-                  }
-                }
+                schema: { $ref: '#/components/schemas/ScriptAdmissionResult' }
               }
             }
           }
@@ -2804,6 +2821,27 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
             content: {
               'application/json': {
                 schema: { $ref: '#/components/schemas/Alert' }
+              }
+            }
+          },
+          '400': {
+            description: 'Alert is dismissed and cannot be resolved',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/Error' }
+              }
+            }
+          },
+          '409': {
+            description:
+              'The alert already reached a terminal status (resolved or dismissed) — ' +
+              'either before this request, or because a concurrent caller won the ' +
+              'compare-and-swap in between. This request did not perform the transition, ' +
+              'so no alert.resolved event was published on its behalf. Re-read the alert ' +
+              'to see which terminal status it landed in.',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/Error' }
               }
             }
           }

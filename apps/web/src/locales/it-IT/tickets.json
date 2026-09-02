@@ -116,7 +116,15 @@
     "internalPlaceholder": "Aggiungi una nota interna...",
     "sending": "Invio",
     "sendReply": "Invia risposta",
-    "addInternalNote": "Aggiungi nota interna"
+    "addInternalNote": "Aggiungi nota interna",
+    "attachments": {
+      "attach": "Allega",
+      "uploading": "Caricamento…",
+      "retry": "Riprova",
+      "remove": "Rimuovi file",
+      "tooMany": "Puoi allegare al massimo {{max}} file a un commento.",
+      "tooLarge": "{{name}} supera i 10 MB."
+    }
   },
   "ticketFeed": {
     "empty": "Ancora nessuna attività.",
@@ -149,6 +157,11 @@
     "deleteDialog": {
       "title": "Elimina commento",
       "message": "Vuoi davvero eliminare questo commento? Questa azione non può essere annullata."
+    },
+    "attachments": {
+      "broken": "Impossibile caricare {{name}}",
+      "open": "Apri allegato",
+      "remove": "Rimuovi allegato"
     }
   },
   "ticketPartsCard": {
@@ -432,6 +445,17 @@
       "feedbackFailed": "Impossibile salvare il feedback sul triage del ticket.",
       "feedbackSaved": "Feedback sul triage del ticket salvato"
     },
+    "aiDraft": {
+      "kindReply": "Risposta redatta dall’IA",
+      "kindResolutionNote": "Nota di risoluzione redatta dall’IA",
+      "sendAsMe": "Invia come me",
+      "sending": "Invio in corso…",
+      "discard": "Scarta",
+      "sendFailed": "Impossibile inviare la bozza dell’IA.",
+      "sent": "Bozza inviata",
+      "discardFailed": "Impossibile scartare la bozza dell’IA.",
+      "discarded": "Bozza scartata"
+    },
     "resolve": {
       "noteLabel": "Nota di risoluzione (visibile al richiedente)",
       "submit": "Risolvi ticket"
@@ -469,7 +493,8 @@
       "categoryUpdateFailed": "Aggiornamento della categoria non riuscito. Riprova.",
       "assigned": "Assegnato",
       "unassigned": "Non assegnato",
-      "assignFailed": "Assegnazione non riuscita. Riprova."
+      "assignFailed": "Assegnazione non riuscita. Riprova.",
+      "attachmentFailed": "Impossibile caricare l'allegato."
     },
     "delete": {
       "failed": "Eliminazione non riuscita. Riprova.",

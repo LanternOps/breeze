@@ -29,9 +29,15 @@ const { schema, dbState, permState } = vi.hoisted(() => {
   };
   const organizationsTbl = { id: col('id'), partnerId: col('partner_id') };
   const devicesTbl = { id: col('id'), siteId: col('site_id') };
+  const ticketsTbl = {
+    id: col('id'),
+    orgId: col('org_id'),
+    status: col('status'),
+    deletedAt: col('deleted_at'),
+  };
 
   return {
-    schema: { usersTbl, apiKeysTbl, aiAgentRunsTbl, aiAgentsTbl, organizationsTbl, devicesTbl },
+    schema: { usersTbl, apiKeysTbl, aiAgentRunsTbl, aiAgentsTbl, organizationsTbl, devicesTbl, ticketsTbl },
     dbState: {
       selectUsersResults: [] as unknown[][],
       selectApiKeysResults: [] as unknown[][],
@@ -39,6 +45,7 @@ const { schema, dbState, permState } = vi.hoisted(() => {
       selectAgentsResults: [] as unknown[][],
       selectOrgsResults: [] as unknown[][],
       selectDevicesResults: [] as unknown[][],
+      selectTicketsResults: [] as unknown[][],
     },
     permState: {
       getUserPermissions: vi.fn(),
@@ -75,6 +82,9 @@ vi.mock('../../db', () => ({
           if (table === schema.devicesTbl) {
             return resultBox(() => dbState.selectDevicesResults.shift() ?? []);
           }
+          if (table === schema.ticketsTbl) {
+            return resultBox(() => dbState.selectTicketsResults.shift() ?? []);
+          }
           throw new Error('unexpected select table in mock');
         }),
       })),
@@ -92,6 +102,7 @@ vi.mock('../../db/schema/aiAgents', () => ({
 }));
 vi.mock('../../db/schema/orgs', () => ({ organizations: schema.organizationsTbl }));
 vi.mock('../../db/schema/devices', () => ({ devices: schema.devicesTbl }));
+vi.mock('../../db/schema/portal', () => ({ tickets: schema.ticketsTbl }));
 
 vi.mock('../permissions', () => ({
   getUserPermissions: permState.getUserPermissions,
@@ -145,6 +156,7 @@ vi.mock('drizzle-orm', () => ({
 // ---------------------------------------------------------------------------
 
 import { buildAuthContextForIntent, originPrincipalFor } from './actorContext';
+import { IntentScopeLostError } from './intentTargetScope';
 import type { ActionIntent } from '../../db/schema/actionIntents';
 
 function baseIntent(overrides: Partial<ActionIntent> = {}): ActionIntent {
@@ -456,6 +468,133 @@ describe('buildAuthContextForIntent — agent-owned intents (wave 3b)', () => {
     dbState.selectDevicesResults.push([{ siteId: 'site-1' }]);
 
     expect(await buildAuthContextForIntent(agentIntent())).toBeNull();
+  });
+
+  // -------------------------------------------------------------------------
+  // P2-2 (Task A3, #4189): explicit device scope
+  // -------------------------------------------------------------------------
+
+  /** A SWEEP-minted intent: device-less run, target from `scope_device_id`. */
+  const scopedIntent = (overrides: Partial<ActionIntent> = {}) => agentIntent({
+    scopeKind: 'device',
+    scopeDeviceId: 'dev-scope',
+    ...overrides,
+  } as Partial<ActionIntent>);
+
+  /** The scope branch projects `org_id` alongside `site_id` (the run-device
+   *  branch only ever needed the site), so the device row shape differs. */
+  function seedScoped(device: unknown[] = [{ orgId: 'org-1', siteId: 'site-scope' }]) {
+    dbState.selectAgentRunsResults.push([{ ...runRow, deviceId: null }]);
+    dbState.selectAgentsResults.push([agentRow]);
+    dbState.selectOrgsResults.push([{ partnerId: 'partner-1' }]);
+    dbState.selectDevicesResults.push(device);
+  }
+
+  it('pins the rebuilt context to the SCOPE device and its CURRENT site, not the run', async () => {
+    seedScoped();
+
+    const result = await buildAuthContextForIntent(scopedIntent());
+
+    expect(result).not.toBeNull();
+    // The run carries NO device — every one of these comes from the scope.
+    expect(result!.allowedDeviceIds).toEqual(['dev-scope']);
+    expect(result!.allowedSiteIds).toEqual(['site-scope']);
+    expect(result!.canAccessSite!('site-scope')).toBe(true);
+    expect(result!.canAccessSite!('site-1')).toBe(false);
+  });
+
+  it('throws IntentScopeLostError (not null) when the scope was tombstoned', async () => {
+    dbState.selectAgentRunsResults.push([{ ...runRow, deviceId: null }]);
+    dbState.selectAgentsResults.push([agentRow]);
+    dbState.selectOrgsResults.push([{ partnerId: 'partner-1' }]);
+
+    // Distinct from `null`/actor_invalid on purpose: revalidateRelease maps
+    // this to the terminal `agent_scope_lost` errorCode.
+    await expect(
+      buildAuthContextForIntent(scopedIntent({ scopeDeviceId: null } as Partial<ActionIntent>)),
+    ).rejects.toBeInstanceOf(IntentScopeLostError);
+  });
+
+  it('throws IntentScopeLostError when the scoped device is gone', async () => {
+    seedScoped([]);
+
+    await expect(buildAuthContextForIntent(scopedIntent())).rejects.toBeInstanceOf(IntentScopeLostError);
+  });
+
+  it('throws IntentScopeLostError when the scoped device moved to another org', async () => {
+    seedScoped([{ orgId: 'org-2', siteId: 'site-scope' }]);
+
+    await expect(buildAuthContextForIntent(scopedIntent())).rejects.toBeInstanceOf(IntentScopeLostError);
+  });
+
+  // -------------------------------------------------------------------------
+  // P2-4 (Task A3, #4191): explicit ticket scope
+  // -------------------------------------------------------------------------
+
+  /** A ticket-triage-minted intent: device-less run, target from `scope_ticket_id`. */
+  const ticketScopedIntent = (overrides: Partial<ActionIntent> = {}) => agentIntent({
+    scopeKind: 'ticket',
+    scopeTicketId: 'ticket-scope',
+    ...overrides,
+  } as Partial<ActionIntent>);
+
+  function seedTicketScoped(ticket: unknown[]) {
+    dbState.selectAgentRunsResults.push([{ ...runRow, deviceId: null }]);
+    dbState.selectAgentsResults.push([agentRow]);
+    dbState.selectOrgsResults.push([{ partnerId: 'partner-1' }]);
+    dbState.selectTicketsResults.push(ticket);
+  }
+
+  it('throws IntentScopeLostError immediately when the ticket scope was tombstoned (no DB read)', async () => {
+    dbState.selectAgentRunsResults.push([{ ...runRow, deviceId: null }]);
+    dbState.selectAgentsResults.push([agentRow]);
+    dbState.selectOrgsResults.push([{ partnerId: 'partner-1' }]);
+
+    await expect(
+      buildAuthContextForIntent(ticketScopedIntent({ scopeTicketId: null } as Partial<ActionIntent>)),
+    ).rejects.toBeInstanceOf(IntentScopeLostError);
+    expect(dbState.selectTicketsResults.length).toBe(0);
+  });
+
+  it('throws IntentScopeLostError when the scoped ticket is missing', async () => {
+    seedTicketScoped([]);
+
+    await expect(buildAuthContextForIntent(ticketScopedIntent())).rejects.toBeInstanceOf(IntentScopeLostError);
+  });
+
+  it('throws IntentScopeLostError when the scoped ticket was soft-deleted', async () => {
+    seedTicketScoped([{ id: 'ticket-scope', orgId: 'org-1', status: 'open', deletedAt: new Date() }]);
+
+    await expect(buildAuthContextForIntent(ticketScopedIntent())).rejects.toBeInstanceOf(IntentScopeLostError);
+  });
+
+  it('throws IntentScopeLostError when the scoped ticket moved to another org', async () => {
+    seedTicketScoped([{ id: 'ticket-scope', orgId: 'org-2', status: 'open', deletedAt: null }]);
+
+    await expect(buildAuthContextForIntent(ticketScopedIntent())).rejects.toBeInstanceOf(IntentScopeLostError);
+  });
+
+  it('throws IntentScopeLostError when the scoped ticket is closed', async () => {
+    seedTicketScoped([{ id: 'ticket-scope', orgId: 'org-1', status: 'closed', deletedAt: null }]);
+
+    await expect(buildAuthContextForIntent(ticketScopedIntent())).rejects.toBeInstanceOf(IntentScopeLostError);
+  });
+
+  it('builds an AuthContext for a resolved ticket — resolution-note drafts execute on resolved tickets', async () => {
+    seedTicketScoped([{ id: 'ticket-scope', orgId: 'org-1', status: 'resolved', deletedAt: null }]);
+
+    const result = await buildAuthContextForIntent(ticketScopedIntent());
+
+    expect(result).not.toBeNull();
+    expect(result!.orgId).toBe('org-1');
+  });
+
+  it('builds an AuthContext for every other live status (open)', async () => {
+    seedTicketScoped([{ id: 'ticket-scope', orgId: 'org-1', status: 'open', deletedAt: null }]);
+
+    const result = await buildAuthContextForIntent(ticketScopedIntent());
+
+    expect(result).not.toBeNull();
   });
 });
 

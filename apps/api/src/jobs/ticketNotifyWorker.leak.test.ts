@@ -123,7 +123,11 @@ const TICKET_ROW = {
   internalNumber: 'T-2026-0001',
   subject: 'Printer is down',
   submitterEmail: 'jane@customer.example',
-  emailThreadKey: null
+  emailThreadKey: null,
+  // #3828 wave-6-3 task 2 review fix: the resolved status_changed branch now
+  // guards on ticket.status === 'resolved' (freshness check) — this shared
+  // fixture is committed/fresh in every branch that exercises it.
+  status: 'resolved'
 };
 
 const PARTNER_ROW = { slug: 'acme', settings: {} };

@@ -19,6 +19,385 @@ x-healthcheck-defaults: &healthcheck
   timeout: 10s
   retries: 3
 
+x-api-env: &api-env
+  NODE_ENV: production
+  API_PORT: 3001
+  DATABASE_URL: postgresql://${POSTGRES_USER:-breeze}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-breeze}
+  # The request pool derives its breeze_app URL from DATABASE_URL and the same
+  # effective password ensureAppRole uses to CREATE/ALTER that unprivileged role.
+  # DATABASE_URL_APP takes precedence and is required for multi-host/HA URLs,
+  # which cannot be derived. All three must be mapped here — compose only
+  # interpolates vars listed in this block, so omitting one makes a value set
+  # in .env silently inert.
+  DATABASE_URL_APP: ${DATABASE_URL_APP:-}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+  BREEZE_APP_DB_PASSWORD: ${BREEZE_APP_DB_PASSWORD:-}
+  # Pool-health watchdog (#3214). Threaded because deploy/environment.mdx
+  # documents these as working knobs, and an unmapped var set in .env is
+  # silently inert — the IS_HOSTED / #570 failure mode. All optional: an
+  # empty value reads as unset and the code applies its own defaults.
+  DB_POOL_HEALTH_DISABLED: ${DB_POOL_HEALTH_DISABLED:-}
+  DB_POOL_HEALTH_INTERVAL_MS: ${DB_POOL_HEALTH_INTERVAL_MS:-}
+  DB_POOL_HEALTH_WINDOW_MS: ${DB_POOL_HEALTH_WINDOW_MS:-}
+  DB_POOL_HEALTH_MIN_TIMEOUTS: ${DB_POOL_HEALTH_MIN_TIMEOUTS:-}
+  DB_POOL_HEALTH_PROBE_TIMEOUT_MS: ${DB_POOL_HEALTH_PROBE_TIMEOUT_MS:-}
+  DB_POOL_HEALTH_CAPTURE_THROTTLE_MS: ${DB_POOL_HEALTH_CAPTURE_THROTTLE_MS:-}
+  # Event-loop lag monitor (#3024). Same reasoning as the pool-health block
+  # above: deploy/environment.mdx documents these as working knobs, and an
+  # unmapped var set in .env is silently inert. The monitor runs on its
+  # defaults either way, so this only ever blocked tuning — but an operator
+  # raising the warn threshold to cut noise, or setting DISABLED to turn it
+  # off, saw no change and no error. All optional: an empty value reads as
+  # unset and the code applies its own defaults.
+  EVENT_LOOP_MONITOR_INTERVAL_MS: ${EVENT_LOOP_MONITOR_INTERVAL_MS:-}
+  EVENT_LOOP_STARVATION_WARN_MS: ${EVENT_LOOP_STARVATION_WARN_MS:-}
+  EVENT_LOOP_MONITOR_DISABLED: ${EVENT_LOOP_MONITOR_DISABLED:-}
+  REDIS_HOST: redis
+  REDIS_PORT: 6379
+  REDIS_PASSWORD_FILE: /run/secrets/redis_password
+  REMOTE_ACCESS_ADMISSION_MODE: ${REMOTE_ACCESS_ADMISSION_MODE:?Set REMOTE_ACCESS_ADMISSION_MODE to open or closed}
+  REMOTE_WS_AUTH_MODE: ${REMOTE_WS_AUTH_MODE:?Set REMOTE_WS_AUTH_MODE to post_upgrade or pre_upgrade}
+  REMOTE_WS_REDIS_TOPOLOGY: ${REMOTE_WS_REDIS_TOPOLOGY:?Set REMOTE_WS_REDIS_TOPOLOGY to standalone-single-primary}
+  REMOTE_WS_LEGACY_TICKET_WRITER_DRAINED_AT: ${REMOTE_WS_LEGACY_TICKET_WRITER_DRAINED_AT:-}
+  REMOTE_WS_LEGACY_VIEWER_ISSUER_DRAINED_AT: ${REMOTE_WS_LEGACY_VIEWER_ISSUER_DRAINED_AT:-}
+  JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
+  PARTNER_API_CURSOR_SIGNING_KEY: ${PARTNER_API_CURSOR_SIGNING_KEY:?Set PARTNER_API_CURSOR_SIGNING_KEY in .env}
+  AGENT_ENROLLMENT_SECRET: ${AGENT_ENROLLMENT_SECRET:?Set AGENT_ENROLLMENT_SECRET in .env}
+  # Backup control-plane URL pushed to agents via heartbeat (#2288);
+  # see docs/deploy/agent-server-url-migration.md
+  AGENT_BACKUP_SERVER_URL: ${AGENT_BACKUP_SERVER_URL:-}
+  BREEZE_BOOTSTRAP_ADMIN_EMAIL: ${BREEZE_BOOTSTRAP_ADMIN_EMAIL:-}
+  BREEZE_BOOTSTRAP_ADMIN_PASSWORD: ${BREEZE_BOOTSTRAP_ADMIN_PASSWORD:-}
+  BREEZE_BOOTSTRAP_ADMIN_NAME: ${BREEZE_BOOTSTRAP_ADMIN_NAME:-}
+  CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-https://${BREEZE_DOMAIN}}
+  PUBLIC_APP_URL: ${PUBLIC_APP_URL:-https://${BREEZE_DOMAIN}}
+  DASHBOARD_URL: ${DASHBOARD_URL:-https://${BREEZE_DOMAIN}}
+  PUBLIC_API_URL: ${PUBLIC_API_URL:-https://${BREEZE_DOMAIN}}
+  # Public origin for customer-portal links (e.g. quote accept emails). The
+  # portal is served under /portal on the main domain; falls back to PUBLIC_APP_URL.
+  PUBLIC_PORTAL_URL: ${PUBLIC_PORTAL_URL:-https://${BREEZE_DOMAIN}/portal}
+  API_URL: ${API_URL:-}
+  FORCE_HTTPS: ${FORCE_HTTPS:-true}
+  # The bundled Caddy is the only trusted peer, and we pin its address
+  # ourselves (see the caddy service). Anything else reaching the API
+  # directly is untrusted and falls back to its raw socket peer. Operators
+  # who front the API with their own proxy must point TRUSTED_PROXY_CIDRS at
+  # it — a CIDR that matches nothing simply means no headers are trusted.
+  TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-true}
+  TRUSTED_PROXY_CIDRS: ${TRUSTED_PROXY_CIDRS:-${BREEZE_CADDY_IP:-172.31.0.10}/32}
+  # Only trust CF-Connecting-IP when this deployment is genuinely fronted by
+  # Cloudflare — a non-CF reverse proxy does not strip the header, so a
+  # client could otherwise spoof it. Off by default; set true in .env only
+  # if you front Breeze with Cloudflare.
+  TRUST_CF_CONNECTING_IP: ${TRUST_CF_CONNECTING_IP:-}
+  # off is the safe mixed-version and self-hosted default: the edge
+  # certificate assertion is never consulted, so leaving this unset is a
+  # no-op. Never inferred from NODE_ENV/IS_HOSTED/CF_MTLS_* — the operator
+  # must opt in explicitly. See docs/operations/cloudflare-mtls-setup.md.
+  AGENT_MTLS_BINDING_MODE: ${AGENT_MTLS_BINDING_MODE:-off}
+  # Wave 6 security remediation rollout controls. Default-bearing form so
+  # a missing value cannot make the stack refuse to start — both are
+  # compatibility controls whose defaults are the safe state. See
+  # docs/operations/agent-network-and-manifest-rollout.md before setting
+  # either to anything other than its default in production.
+  #
+  # AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID: NOT a no-op and NOT fleet-wide.
+  # A capable agent (this build or newer) applies a pushed `true`/`false`
+  # on its next update check (re-read at updater-construction time; its
+  # helper-manager needs a restart to pick up the change, same limitation
+  # as backup_server_url). An agent build older than this one ignores the
+  # pushed value entirely and keeps accepting ID-less manifests.
+  # The key is always sent, as true or false, so reverting this variable
+  # rolls capable agents back on their next heartbeat.
+  AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID: ${AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID:-false}
+  MANAGED_SOFTWARE_POLICY_MODE: ${MANAGED_SOFTWARE_POLICY_MODE:-compat}
+  APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:?Set APP_ENCRYPTION_KEY in .env}
+  # Optional, but required once M365_GRAPH_ACTIONS_TOOLS_ENABLED=true below —
+  # boot refuses to start without it (see that var's comment). Must be set
+  # here AND in .env; compose only interpolates vars listed in this block.
+  APP_ENCRYPTION_KEY_ID: ${APP_ENCRYPTION_KEY_ID:-}
+  MFA_ENCRYPTION_KEY: ${MFA_ENCRYPTION_KEY:?Set MFA_ENCRYPTION_KEY in .env}
+  ENROLLMENT_KEY_PEPPER: ${ENROLLMENT_KEY_PEPPER:?Set ENROLLMENT_KEY_PEPPER in .env}
+  MFA_RECOVERY_CODE_PEPPER: ${MFA_RECOVERY_CODE_PEPPER:?Set MFA_RECOVERY_CODE_PEPPER in .env}
+  PATCH_REPORT_STORAGE_PATH: /data/patch-reports
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+  LOG_JSON: ${LOG_JSON:-true}
+  METRICS_SCRAPE_TOKEN: ${METRICS_SCRAPE_TOKEN:-}
+  # Platform-operator abuse alerts (all optional; unset = feature disabled)
+  OPS_ALERT_WEBHOOK_URL: ${OPS_ALERT_WEBHOOK_URL:-}
+  OPS_ALERT_EMAIL: ${OPS_ALERT_EMAIL:-}
+  OPS_ALERT_LABEL: ${OPS_ALERT_LABEL:-}
+  ABUSE_SIGNAL_OVERRIDES: ${ABUSE_SIGNAL_OVERRIDES:-}
+  ABUSE_SCRIPT_INDICATORS: ${ABUSE_SCRIPT_INDICATORS:-}
+  ABUSE_HOSTNAME_INDICATORS: ${ABUSE_HOSTNAME_INDICATORS:-}
+  ABUSE_SIGNALS_ENABLED: ${ABUSE_SIGNALS_ENABLED:-}
+  # Durable event dispatch (wave 3.5c, #4085; optional, defaults to off).
+  EVENT_DISPATCH_MODE: ${EVENT_DISPATCH_MODE:-off}
+  EVENT_DISPATCH_QUEUE_SUBSCRIBERS: ${EVENT_DISPATCH_QUEUE_SUBSCRIBERS:-}
+  # Native APNs push for the iOS app (all optional; unset = push disabled).
+  # All-or-none: setting ANY of these makes the four credentials required,
+  # so a half-configured relay fails at boot instead of silently at first
+  # send. Empty values are treated as unset.
+  APNS_AUTH_KEY: ${APNS_AUTH_KEY:-}
+  APNS_KEY_ID: ${APNS_KEY_ID:-}
+  APNS_TEAM_ID: ${APNS_TEAM_ID:-}
+  APNS_BUNDLE_ID: ${APNS_BUNDLE_ID:-}
+  APNS_ENVIRONMENT: ${APNS_ENVIRONMENT:-}
+  SENTRY_DSN: ${SENTRY_DSN:-}
+  SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-production}
+  SENTRY_RELEASE: ${SENTRY_RELEASE:-}
+  SENTRY_TRACES_SAMPLE_RATE: ${SENTRY_TRACES_SAMPLE_RATE:-0}
+  ENABLE_REGISTRATION: ${ENABLE_REGISTRATION:-false}
+  EMAIL_PROVIDER: ${EMAIL_PROVIDER:-auto}
+  RESEND_API_KEY: ${RESEND_API_KEY:-}
+  EMAIL_FROM: ${EMAIL_FROM:-noreply@breeze.local}
+  SMTP_HOST: ${SMTP_HOST:-}
+  SMTP_PORT: ${SMTP_PORT:-587}
+  SMTP_USER: ${SMTP_USER:-}
+  SMTP_PASS: ${SMTP_PASS:-}
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  # Breeze AI for Office (Excel add-in). Entra app-registration client ID that
+  # gates the /client-ai exchange + admin surface. Empty/unmapped = surface
+  # stays dark (env.ts defaults to ''), so this must be threaded through compose
+  # for self-host/droplet deploys to enable it. Same compose-interpolation gap
+  # class as IS_HOSTED / RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS.
+  CLIENT_AI_ENTRA_CLIENT_ID: ${CLIENT_AI_ENTRA_CLIENT_ID:-}
+  # Optional customer Graph-read onboarding. The executor is intentionally
+  # not part of this generic Compose stack: deploy it separately with a
+  # workload identity, private ingress, and controlled HTTPS egress.
+  M365_CUSTOMER_GRAPH_READ_ONBOARDING_ENABLED: ${M365_CUSTOMER_GRAPH_READ_ONBOARDING_ENABLED:-false}
+  M365_CUSTOMER_GRAPH_READ_ONBOARDING_ORG_IDS: ${M365_CUSTOMER_GRAPH_READ_ONBOARDING_ORG_IDS:-}
+  M365_CUSTOMER_GRAPH_READ_CLIENT_ID: ${M365_CUSTOMER_GRAPH_READ_CLIENT_ID:-}
+  M365_CUSTOMER_GRAPH_READ_CALLBACK_URL: ${M365_CUSTOMER_GRAPH_READ_CALLBACK_URL:-}
+  M365_CUSTOMER_GRAPH_READ_CREDENTIAL_VERSION: ${M365_CUSTOMER_GRAPH_READ_CREDENTIAL_VERSION:-}
+  M365_CUSTOMER_GRAPH_READ_VAULT_REF: ${M365_CUSTOMER_GRAPH_READ_VAULT_REF:-}
+  M365_GRAPH_READ_EXECUTOR_URL: ${M365_GRAPH_READ_EXECUTOR_URL:-}
+  M365_GRAPH_READ_EXECUTOR_AUDIENCE: ${M365_GRAPH_READ_EXECUTOR_AUDIENCE:-m365-graph-read-executor}
+  M365_GRAPH_READ_EXECUTOR_SIGNING_KID: ${M365_GRAPH_READ_EXECUTOR_SIGNING_KID:-}
+  M365_GRAPH_READ_EXECUTOR_SIGNING_PRIVATE_JWK_FILE: /run/secrets/m365_graph_read_executor_signing_private_jwk
+  # Optional customer Graph-actions (write) executor. Same isolation model
+  # as the Graph-read executor above: intentionally not part of this
+  # generic Compose stack — deploy it separately with a workload identity,
+  # private ingress, and controlled HTTPS egress. Disabled by default.
+  # ONBOARDING_ENABLED gates the org-facing consent card; TOOLS_ENABLED
+  # (below) independently gates the AI tools/headless execution — either
+  # one enabled forces full executor descriptor validation at boot, which
+  # in production also requires PUBLIC_APP_URL/PUBLIC_API_URL (or
+  # PUBLIC_URL) to derive the consent callback origin.
+  M365_CUSTOMER_GRAPH_ACTIONS_ONBOARDING_ENABLED: ${M365_CUSTOMER_GRAPH_ACTIONS_ONBOARDING_ENABLED:-false}
+  M365_CUSTOMER_GRAPH_ACTIONS_ONBOARDING_ORG_IDS: ${M365_CUSTOMER_GRAPH_ACTIONS_ONBOARDING_ORG_IDS:-}
+  # Enabling this also requires APP_ENCRYPTION_KEY_ID above — boot refuses
+  # to start without it, because the m365_reset_password reveal-secret
+  # path seals its temp credential with AAD-bound v3 ciphertext.
+  M365_GRAPH_ACTIONS_TOOLS_ENABLED: ${M365_GRAPH_ACTIONS_TOOLS_ENABLED:-false}
+  M365_GRAPH_ACTIONS_TOOLS_ORG_IDS: ${M365_GRAPH_ACTIONS_TOOLS_ORG_IDS:-}
+  M365_CUSTOMER_GRAPH_ACTIONS_CLIENT_ID: ${M365_CUSTOMER_GRAPH_ACTIONS_CLIENT_ID:-}
+  M365_CUSTOMER_GRAPH_ACTIONS_CREDENTIAL_VERSION: ${M365_CUSTOMER_GRAPH_ACTIONS_CREDENTIAL_VERSION:-}
+  M365_CUSTOMER_GRAPH_ACTIONS_VAULT_REF: ${M365_CUSTOMER_GRAPH_ACTIONS_VAULT_REF:-}
+  M365_GRAPH_ACTIONS_EXECUTOR_URL: ${M365_GRAPH_ACTIONS_EXECUTOR_URL:-}
+  M365_GRAPH_ACTIONS_EXECUTOR_AUDIENCE: ${M365_GRAPH_ACTIONS_EXECUTOR_AUDIENCE:-m365-graph-actions-executor}
+  M365_GRAPH_ACTIONS_EXECUTOR_SIGNING_KID: ${M365_GRAPH_ACTIONS_EXECUTOR_SIGNING_KID:-}
+  M365_GRAPH_ACTIONS_EXECUTOR_SIGNING_PRIVATE_JWK_FILE: /run/secrets/m365_graph_actions_executor_signing_private_jwk
+  # M365 communications-delegated. Gated per USER, not per org — a delegated
+  # mailbox connection is owned by one human. No vault vars here on purpose:
+  # the API never touches the comms vault (the client certificate and the
+  # token-cache KEK belong to the executor, which is the only identity that
+  # can decrypt the cache).
+  M365_COMMS_ONBOARDING_ENABLED: ${M365_COMMS_ONBOARDING_ENABLED:-false}
+  M365_COMMS_ONBOARDING_USER_IDS: ${M365_COMMS_ONBOARDING_USER_IDS:-}
+  M365_COMMS_TOOLS_ENABLED: ${M365_COMMS_TOOLS_ENABLED:-false}
+  M365_COMMS_TOOLS_USER_IDS: ${M365_COMMS_TOOLS_USER_IDS:-}
+  M365_COMMS_CLIENT_ID: ${M365_COMMS_CLIENT_ID:-}
+  M365_COMMS_EXECUTOR_URL: ${M365_COMMS_EXECUTOR_URL:-}
+  M365_COMMS_EXECUTOR_AUDIENCE: ${M365_COMMS_EXECUTOR_AUDIENCE:-m365-communications-executor}
+  M365_COMMS_EXECUTOR_SIGNING_KID: ${M365_COMMS_EXECUTOR_SIGNING_KID:-}
+  M365_COMMS_EXECUTOR_SIGNING_PRIVATE_JWK_FILE: /run/secrets/m365_comms_executor_signing_private_jwk
+  APP_VERSION: ${BREEZE_VERSION:-dev}
+  BREEZE_VERSION: ${BREEZE_VERSION:?Set BREEZE_VERSION in .env}
+  BINARY_SOURCE: ${BINARY_SOURCE:-github}
+  RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: ${RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS:-}
+  # BYO signing: override the GitHub repository that releases are pulled
+  # from (default lanternops/breeze). Pair with
+  # RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS set to YOUR release manifest key.
+  BINARY_GITHUB_REPOSITORY: ${BINARY_GITHUB_REPOSITORY:-}
+  # Binary edition served by this deployment: self-host (default,
+  # unchanged behavior) or hosted (production requires
+  # BINARY_SOURCE=local + a manifest trust root — see .env.example).
+  BINARY_EDITION: ${BINARY_EDITION:-self-host}
+  # Hosted SaaS gate. Compose defaults to false so self-hosters upgrade
+  # without touching their .env. Hosted operators must set IS_HOSTED=true
+  # in .env so this interpolates to true. The API config validator (#570)
+  # refuses to start in production if the container env value is missing
+  # or non-boolean, so a hand-edited compose that drops this line still
+  # fails loud rather than silently bypassing the email-verification gate.
+  IS_HOSTED: ${IS_HOSTED:-false}
+  AGENT_BINARY_DIR: /data/binaries/agent
+  VIEWER_BINARY_DIR: /data/binaries/viewer
+  HELPER_BINARY_DIR: /data/binaries/helper
+  BINARY_VERSION_FILE: /data/binaries/VERSION
+  S3_ENDPOINT: ${S3_ENDPOINT:-}
+  S3_ACCESS_KEY: ${S3_ACCESS_KEY:-}
+  S3_SECRET_KEY: ${S3_SECRET_KEY:-}
+  S3_BUCKET: ${S3_BUCKET:-}
+  S3_REGION: ${S3_REGION:-}
+  S3_PRESIGN_TTL: ${S3_PRESIGN_TTL:-900}
+  TURN_HOST: ${TURN_HOST:-}
+  TURN_PORT: ${TURN_PORT:-3478}
+  TURN_SECRET: ${TURN_SECRET:-}
+  TURN_CREDENTIAL_TTL_SECONDS: ${TURN_CREDENTIAL_TTL_SECONDS:-600}
+  E2E_MODE: ${E2E_MODE:-}
+  # Built-in extensions ship inside the API image but load only when the
+  # deployment switches them on (default off). Workspace additionally needs
+  # a pgvector-capable Postgres — see POSTGRES_IMAGE_REF in .env.example.
+  BREEZE_WORKSPACE_ENABLED: ${BREEZE_WORKSPACE_ENABLED:-false}
+  BREEZE_AI_AGENTS_ENABLED: ${BREEZE_AI_AGENTS_ENABLED:-false}
+  # Wave 5 Part B (#3827) sub-flag — see .env.example for what it gates.
+  BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED: ${BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED:-false}
+  # BYO-LLM partner provider catalog (#3922 W01–W04) — off by default.
+  LLM_PROVIDER_CATALOG_ENABLED: ${LLM_PROVIDER_CATALOG_ENABLED:-false}
+  # MCP OAuth (off by default, opt-in via env)
+  MCP_OAUTH_ENABLED: ${MCP_OAUTH_ENABLED:-false}
+  OAUTH_ISSUER: ${OAUTH_ISSUER:-}
+  OAUTH_RESOURCE_URL: ${OAUTH_RESOURCE_URL:-}
+  OAUTH_AUTH_EPOCH_ENFORCE_AFTER: ${OAUTH_AUTH_EPOCH_ENFORCE_AFTER:-}
+  EVENT_PERMISSION_EPOCH_MODE: ${EVENT_PERMISSION_EPOCH_MODE:?Set EVENT_PERMISSION_EPOCH_MODE to compat or enforce}
+  OAUTH_COOKIE_SECRET: ${OAUTH_COOKIE_SECRET:-}
+  OAUTH_JWKS_PRIVATE_JWK: ${OAUTH_JWKS_PRIVATE_JWK:-}
+  OAUTH_JWKS_PUBLIC_JWK: ${OAUTH_JWKS_PUBLIC_JWK:-}
+  OAUTH_CONSENT_URL_BASE: ${OAUTH_CONSENT_URL_BASE:-}
+  # --- Additional API runtime settings ---------------------------------
+  # These are documented in .env.example and read by the API, but were not
+  # previously threaded through Compose, so setting them in .env did nothing
+  # (the #570 / IS_HOSTED gap class). Every value uses `${VAR:-}`: an empty
+  # string is falsy to the API's envFlag/envInt helpers, which then fall
+  # back to their in-code default — so mapping them here is non-regressive
+  # (unset behaves exactly as before) and never drifts from the code default.
+  # Parity between .env.example and this block is enforced by
+  # apps/api/src/config/envComposeParity.test.ts.
+  # Auth / security / session
+  ENABLE_2FA: ${ENABLE_2FA:-}
+  # Optional per-refresh-token-family budget for POST /auth/refresh (#3696).
+  # Mapped so the knob is actually reachable inside the container — a value
+  # present only in .env is inert unless it is listed here.
+  AUTH_REFRESH_RATE_LIMIT: ${AUTH_REFRESH_RATE_LIMIT:-}
+  AUTH_REFRESH_RATE_WINDOW_SECONDS: ${AUTH_REFRESH_RATE_WINDOW_SECONDS:-}
+  BREEZE_PLATFORM_ADMINS: ${BREEZE_PLATFORM_ADMINS:-}
+  SESSION_SECRET: ${SESSION_SECRET:-}
+  IP_ALLOWLIST_ENFORCEMENT_MODE: ${IP_ALLOWLIST_ENFORCEMENT_MODE:-}
+  JWT_SIGNING_KEYRING: ${JWT_SIGNING_KEYRING:-}
+  JWT_ACTIVE_KID: ${JWT_ACTIVE_KID:-}
+  WS_TICKET_BIND_IP: ${WS_TICKET_BIND_IP:-}
+  ENROLLMENT_KEY_DEFAULT_TTL_MINUTES: ${ENROLLMENT_KEY_DEFAULT_TTL_MINUTES:-}
+  # Real defaults, not `:-}` — an unset var rendered as `VAR: ""` reaches the
+  # container SET to an empty string, and any reader doing
+  # `Number(process.env.X ?? default)` then gets 0 (`??` skips '', and
+  # Number('') is 0). The readers all use utils/envInt now, which treats ''
+  # as absent; these baked defaults are the second line of defence (#2776).
+  CHILD_ENROLLMENT_KEY_TTL_MINUTES: ${CHILD_ENROLLMENT_KEY_TTL_MINUTES:-1440}
+  INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES: ${INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES:-1440}
+  INSTALLER_PARENT_MIN_REMAINING_SECONDS: ${INSTALLER_PARENT_MIN_REMAINING_SECONDS:-60}
+  ENROLLMENT_KEY_CLEANUP_ENABLED: ${ENROLLMENT_KEY_CLEANUP_ENABLED:-true}
+  ENROLLMENT_KEY_PURGE_AFTER_DAYS: ${ENROLLMENT_KEY_PURGE_AFTER_DAYS:-7}
+  AUTOMATION_WEBHOOK_ALLOW_LEGACY_SECRET: ${AUTOMATION_WEBHOOK_ALLOW_LEGACY_SECRET:-}
+  # Email — SMTP extras + Mailgun provider
+  SMTP_FROM: ${SMTP_FROM:-}
+  SMTP_SECURE: ${SMTP_SECURE:-}
+  MAILGUN_API_KEY: ${MAILGUN_API_KEY:-}
+  MAILGUN_DOMAIN: ${MAILGUN_DOMAIN:-}
+  MAILGUN_FROM: ${MAILGUN_FROM:-}
+  MAILGUN_BASE_URL: ${MAILGUN_BASE_URL:-}
+  # Inbound email-to-ticket (native address; separate from the M365 mailbox path)
+  TICKETS_INBOUND_DOMAIN: ${TICKETS_INBOUND_DOMAIN:-}
+  MAILGUN_INBOUND_SIGNING_KEY: ${MAILGUN_INBOUND_SIGNING_KEY:-}
+  # SMS MFA + alert notifications (Twilio)
+  TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:-}
+  TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:-}
+  TWILIO_VERIFY_SERVICE_SID: ${TWILIO_VERIFY_SERVICE_SID:-}
+  TWILIO_MESSAGING_SERVICE_SID: ${TWILIO_MESSAGING_SERVICE_SID:-}
+  TWILIO_PHONE_NUMBER: ${TWILIO_PHONE_NUMBER:-}
+  # MCP OAuth Dynamic Client Registration
+  OAUTH_DCR_ENABLED: ${OAUTH_DCR_ENABLED:-}
+  OAUTH_DCR_REQUIRE_IAT: ${OAUTH_DCR_REQUIRE_IAT:-}
+  OAUTH_DCR_ALLOW_ANONYMOUS: ${OAUTH_DCR_ALLOW_ANONYMOUS:-}
+  # M365 ticket mailbox + C2C backup app + Graph-read AI tools
+  TICKET_MAILBOX_M365_CLIENT_ID: ${TICKET_MAILBOX_M365_CLIENT_ID:-}
+  TICKET_MAILBOX_M365_CLIENT_SECRET: ${TICKET_MAILBOX_M365_CLIENT_SECRET:-}
+  C2C_M365_CLIENT_ID: ${C2C_M365_CLIENT_ID:-}
+  C2C_M365_CLIENT_SECRET: ${C2C_M365_CLIENT_SECRET:-}
+  M365_GRAPH_READ_TOOLS_ENABLED: ${M365_GRAPH_READ_TOOLS_ENABLED:-}
+  M365_GRAPH_READ_TOOLS_ORG_IDS: ${M365_GRAPH_READ_TOOLS_ORG_IDS:-}
+  # Cloudflare mTLS (API Shield client certificates)
+  CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN:-}
+  CLOUDFLARE_ZONE_ID: ${CLOUDFLARE_ZONE_ID:-}
+  # Remote-session concurrency caps
+  MAX_ACTIVE_REMOTE_SESSIONS_PER_ORG: ${MAX_ACTIVE_REMOTE_SESSIONS_PER_ORG:-}
+  MAX_ACTIVE_REMOTE_SESSIONS_PER_USER: ${MAX_ACTIVE_REMOTE_SESSIONS_PER_USER:-}
+  # Metrics label controls
+  METRICS_INCLUDE_ORG_ID: ${METRICS_INCLUDE_ORG_ID:-}
+  METRICS_SCRAPE_IP_ALLOWLIST: ${METRICS_SCRAPE_IP_ALLOWLIST:-}
+  # Hosted billing redirect
+  BILLING_URL: ${BILLING_URL:-}
+  # --- Optional knobs documented as COMMENTED-OUT defaults ---------------
+  # Everything below is documented in .env.example the way this repo
+  # documents an optional tuning knob: commented out, showing its default.
+  # The parity guard used to read only UNCOMMENTED assignments, so this
+  # entire class was exempt from it and quietly never reached a container
+  # (#3239; #3236 was one instance of the same shape). All are `${VAR:-}`
+  # for the reason spelled out above — '' reads as absent to envStr /
+  # envFlag / envInt, so an unset knob still gets its in-code default.
+  # Booking link on the pending-account screen, shown beside BILLING_URL's
+  # CTA so stopping at the payment step isn't a dead end. Operator-set and
+  # changeable without a redeploy; the API drops non-http(s) URLs.
+  PENDING_ACCOUNT_MEETING_URL: ${PENDING_ACCOUNT_MEETING_URL:-}
+  PENDING_ACCOUNT_MEETING_LABEL: ${PENDING_ACCOUNT_MEETING_LABEL:-}
+  # Auth cookie + CORS hardening. AUTH_/PORTAL_-prefixed names override the
+  # generic COOKIE_* pair; that precedence is resolved with envStr (NOT `??`)
+  # precisely because '' must fall through rather than shadow — see
+  # resolveAuthCookieSameSite() in routes/auth/helpers.ts.
+  COOKIE_SAME_SITE: ${COOKIE_SAME_SITE:-}
+  COOKIE_FORCE_SECURE: ${COOKIE_FORCE_SECURE:-}
+  AUTH_COOKIE_SAME_SITE: ${AUTH_COOKIE_SAME_SITE:-}
+  AUTH_COOKIE_FORCE_SECURE: ${AUTH_COOKIE_FORCE_SECURE:-}
+  AUTH_BROWSER_TRANSITIONS_ENFORCED: ${AUTH_BROWSER_TRANSITIONS_ENFORCED:-false}
+  AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED: ${AUTH_BROWSER_TERMINAL_PREPARATION_ENABLED:-false}
+  PORTAL_COOKIE_SAME_SITE: ${PORTAL_COOKIE_SAME_SITE:-}
+  PORTAL_COOKIE_FORCE_SECURE: ${PORTAL_COOKIE_FORCE_SECURE:-}
+  CORS_INCLUDE_DEFAULT_ORIGINS: ${CORS_INCLUDE_DEFAULT_ORIGINS:-}
+  REFRESH_ROTATION_GRACE_SECONDS: ${REFRESH_ROTATION_GRACE_SECONDS:-}
+  # Customer-portal session store
+  PORTAL_STATE_BACKEND: ${PORTAL_STATE_BACKEND:-}
+  # MCP server rate limits + execute-tool gating
+  MCP_REQUIRE_EXECUTE_ADMIN: ${MCP_REQUIRE_EXECUTE_ADMIN:-}
+  MCP_EXECUTE_TOOL_ALLOWLIST: ${MCP_EXECUTE_TOOL_ALLOWLIST:-}
+  MCP_SSE_RATE_LIMIT_PER_MINUTE: ${MCP_SSE_RATE_LIMIT_PER_MINUTE:-}
+  MCP_MESSAGE_RATE_LIMIT_PER_MINUTE: ${MCP_MESSAGE_RATE_LIMIT_PER_MINUTE:-}
+  MCP_MAX_SSE_SESSIONS_PER_KEY: ${MCP_MAX_SSE_SESSIONS_PER_KEY:-}
+  # AI provider overrides (ANTHROPIC_API_KEY is mapped further up)
+  ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-}
+  ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:-}
+  ANTHROPIC_AUTH_TOKEN: ${ANTHROPIC_AUTH_TOKEN:-}
+  # External billing service (hosted only; empty on self-host)
+  BREEZE_BILLING_URL: ${BREEZE_BILLING_URL:-}
+  BREEZE_BILLING_API_KEY: ${BREEZE_BILLING_API_KEY:-}
+  BILLING_SERVICE_URL: ${BILLING_SERVICE_URL:-}
+  BILLING_SERVICE_API_KEY: ${BILLING_SERVICE_API_KEY:-}
+  # Reporting-only FX (#3779). Empty === unset for both readers, so the
+  # `${VAR:-}` form keeps the code defaults (feed ON, public Frankfurter).
+  EXCHANGE_RATE_SYNC_ENABLED: ${EXCHANGE_RATE_SYNC_ENABLED:-}
+  FRANKFURTER_BASE_URL: ${FRANKFURTER_BASE_URL:-}
+  # Readiness cache + dependency-probe bounds. Empty === unset, so the
+  # `${VAR:-}` form keeps the clamped code defaults (5000 / 3000 ms). Both
+  # MUST be listed here: compose only interpolates vars named in this block,
+  # so a value set in .env alone is a silent no-op.
+  READINESS_CACHE_TTL_MS: ${READINESS_CACHE_TTL_MS:-}
+  READINESS_PROBE_TIMEOUT_MS: ${READINESS_PROBE_TIMEOUT_MS:-}
+  # Startup + agent-fleet behaviour
+  AUTO_MIGRATE: ${AUTO_MIGRATE:-}
+  AGENT_AUTO_PROMOTE: ${AGENT_AUTO_PROMOTE:-}
+  AGENT_EDITION_AUTO_MIGRATE_ENABLED: ${AGENT_EDITION_AUTO_MIGRATE_ENABLED:-}
+  ENABLE_API_DOCS_UI: ${ENABLE_API_DOCS_UI:-}
+  PUBLIC_ACTIVATION_BASE_URL: ${PUBLIC_ACTIVATION_BASE_URL:-}
+
 services:
   binaries-init:
     image: ${BREEZE_BINARIES_IMAGE_REF:?Set BREEZE_BINARIES_IMAGE_REF to a digest-pinned image ref}
@@ -80,373 +459,12 @@ services:
     tmpfs:
       - /tmp:size=64m,mode=1777
     environment:
-      NODE_ENV: production
-      API_PORT: 3001
-      DATABASE_URL: postgresql://${POSTGRES_USER:-breeze}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-breeze}
-      # The request pool derives its breeze_app URL from DATABASE_URL and the same
-      # effective password ensureAppRole uses to CREATE/ALTER that unprivileged role.
-      # DATABASE_URL_APP takes precedence and is required for multi-host/HA URLs,
-      # which cannot be derived. All three must be mapped here — compose only
-      # interpolates vars listed in this block, so omitting one makes a value set
-      # in .env silently inert.
-      DATABASE_URL_APP: ${DATABASE_URL_APP:-}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
-      BREEZE_APP_DB_PASSWORD: ${BREEZE_APP_DB_PASSWORD:-}
-      # Pool-health watchdog (#3214). Threaded because deploy/environment.mdx
-      # documents these as working knobs, and an unmapped var set in .env is
-      # silently inert — the IS_HOSTED / #570 failure mode. All optional: an
-      # empty value reads as unset and the code applies its own defaults.
-      DB_POOL_HEALTH_DISABLED: ${DB_POOL_HEALTH_DISABLED:-}
-      DB_POOL_HEALTH_INTERVAL_MS: ${DB_POOL_HEALTH_INTERVAL_MS:-}
-      DB_POOL_HEALTH_WINDOW_MS: ${DB_POOL_HEALTH_WINDOW_MS:-}
-      DB_POOL_HEALTH_MIN_TIMEOUTS: ${DB_POOL_HEALTH_MIN_TIMEOUTS:-}
-      DB_POOL_HEALTH_PROBE_TIMEOUT_MS: ${DB_POOL_HEALTH_PROBE_TIMEOUT_MS:-}
-      DB_POOL_HEALTH_CAPTURE_THROTTLE_MS: ${DB_POOL_HEALTH_CAPTURE_THROTTLE_MS:-}
-      # Event-loop lag monitor (#3024). Same reasoning as the pool-health block
-      # above: deploy/environment.mdx documents these as working knobs, and an
-      # unmapped var set in .env is silently inert. The monitor runs on its
-      # defaults either way, so this only ever blocked tuning — but an operator
-      # raising the warn threshold to cut noise, or setting DISABLED to turn it
-      # off, saw no change and no error. All optional: an empty value reads as
-      # unset and the code applies its own defaults.
-      EVENT_LOOP_MONITOR_INTERVAL_MS: ${EVENT_LOOP_MONITOR_INTERVAL_MS:-}
-      EVENT_LOOP_STARVATION_WARN_MS: ${EVENT_LOOP_STARVATION_WARN_MS:-}
-      EVENT_LOOP_MONITOR_DISABLED: ${EVENT_LOOP_MONITOR_DISABLED:-}
-      REDIS_HOST: redis
-      REDIS_PORT: 6379
-      REDIS_PASSWORD_FILE: /run/secrets/redis_password
-      REMOTE_ACCESS_ADMISSION_MODE: ${REMOTE_ACCESS_ADMISSION_MODE:?Set REMOTE_ACCESS_ADMISSION_MODE to open or closed}
-      REMOTE_WS_AUTH_MODE: ${REMOTE_WS_AUTH_MODE:?Set REMOTE_WS_AUTH_MODE to post_upgrade or pre_upgrade}
-      REMOTE_WS_REDIS_TOPOLOGY: ${REMOTE_WS_REDIS_TOPOLOGY:?Set REMOTE_WS_REDIS_TOPOLOGY to standalone-single-primary}
-      REMOTE_WS_LEGACY_TICKET_WRITER_DRAINED_AT: ${REMOTE_WS_LEGACY_TICKET_WRITER_DRAINED_AT:-}
-      REMOTE_WS_LEGACY_VIEWER_ISSUER_DRAINED_AT: ${REMOTE_WS_LEGACY_VIEWER_ISSUER_DRAINED_AT:-}
-      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
-      PARTNER_API_CURSOR_SIGNING_KEY: ${PARTNER_API_CURSOR_SIGNING_KEY:?Set PARTNER_API_CURSOR_SIGNING_KEY in .env}
-      AGENT_ENROLLMENT_SECRET: ${AGENT_ENROLLMENT_SECRET:?Set AGENT_ENROLLMENT_SECRET in .env}
-      # Backup control-plane URL pushed to agents via heartbeat (#2288);
-      # see docs/deploy/agent-server-url-migration.md
-      AGENT_BACKUP_SERVER_URL: ${AGENT_BACKUP_SERVER_URL:-}
-      BREEZE_BOOTSTRAP_ADMIN_EMAIL: ${BREEZE_BOOTSTRAP_ADMIN_EMAIL:-}
-      BREEZE_BOOTSTRAP_ADMIN_PASSWORD: ${BREEZE_BOOTSTRAP_ADMIN_PASSWORD:-}
-      BREEZE_BOOTSTRAP_ADMIN_NAME: ${BREEZE_BOOTSTRAP_ADMIN_NAME:-}
-      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-https://${BREEZE_DOMAIN}}
-      PUBLIC_APP_URL: ${PUBLIC_APP_URL:-https://${BREEZE_DOMAIN}}
-      DASHBOARD_URL: ${DASHBOARD_URL:-https://${BREEZE_DOMAIN}}
-      PUBLIC_API_URL: ${PUBLIC_API_URL:-https://${BREEZE_DOMAIN}}
-      # Public origin for customer-portal links (e.g. quote accept emails). The
-      # portal is served under /portal on the main domain; falls back to PUBLIC_APP_URL.
-      PUBLIC_PORTAL_URL: ${PUBLIC_PORTAL_URL:-https://${BREEZE_DOMAIN}/portal}
-      API_URL: ${API_URL:-}
-      FORCE_HTTPS: ${FORCE_HTTPS:-true}
-      # The bundled Caddy is the only trusted peer, and we pin its address
-      # ourselves (see the caddy service). Anything else reaching the API
-      # directly is untrusted and falls back to its raw socket peer. Operators
-      # who front the API with their own proxy must point TRUSTED_PROXY_CIDRS at
-      # it — a CIDR that matches nothing simply means no headers are trusted.
-      TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-true}
-      TRUSTED_PROXY_CIDRS: ${TRUSTED_PROXY_CIDRS:-${BREEZE_CADDY_IP:-172.31.0.10}/32}
-      # Only trust CF-Connecting-IP when this deployment is genuinely fronted by
-      # Cloudflare — a non-CF reverse proxy does not strip the header, so a
-      # client could otherwise spoof it. Off by default; set true in .env only
-      # if you front Breeze with Cloudflare.
-      TRUST_CF_CONNECTING_IP: ${TRUST_CF_CONNECTING_IP:-}
-      # off is the safe mixed-version and self-hosted default: the edge
-      # certificate assertion is never consulted, so leaving this unset is a
-      # no-op. Never inferred from NODE_ENV/IS_HOSTED/CF_MTLS_* — the operator
-      # must opt in explicitly. See docs/operations/cloudflare-mtls-setup.md.
-      AGENT_MTLS_BINDING_MODE: ${AGENT_MTLS_BINDING_MODE:-off}
-      # Wave 6 security remediation rollout controls. Default-bearing form so
-      # a missing value cannot make the stack refuse to start — both are
-      # compatibility controls whose defaults are the safe state. See
-      # docs/operations/agent-network-and-manifest-rollout.md before setting
-      # either to anything other than its default in production.
-      #
-      # AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID: NOT a no-op and NOT fleet-wide.
-      # A capable agent (this build or newer) applies a pushed `true`/`false`
-      # on its next update check (re-read at updater-construction time; its
-      # helper-manager needs a restart to pick up the change, same limitation
-      # as backup_server_url). An agent build older than this one ignores the
-      # pushed value entirely and keeps accepting ID-less manifests.
-      # The key is always sent, as true or false, so reverting this variable
-      # rolls capable agents back on their next heartbeat.
-      AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID: ${AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID:-false}
-      MANAGED_SOFTWARE_POLICY_MODE: ${MANAGED_SOFTWARE_POLICY_MODE:-compat}
-      APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:?Set APP_ENCRYPTION_KEY in .env}
-      # Optional, but required once M365_GRAPH_ACTIONS_TOOLS_ENABLED=true below —
-      # boot refuses to start without it (see that var's comment). Must be set
-      # here AND in .env; compose only interpolates vars listed in this block.
-      APP_ENCRYPTION_KEY_ID: ${APP_ENCRYPTION_KEY_ID:-}
-      MFA_ENCRYPTION_KEY: ${MFA_ENCRYPTION_KEY:?Set MFA_ENCRYPTION_KEY in .env}
-      ENROLLMENT_KEY_PEPPER: ${ENROLLMENT_KEY_PEPPER:?Set ENROLLMENT_KEY_PEPPER in .env}
-      MFA_RECOVERY_CODE_PEPPER: ${MFA_RECOVERY_CODE_PEPPER:?Set MFA_RECOVERY_CODE_PEPPER in .env}
-      PATCH_REPORT_STORAGE_PATH: /data/patch-reports
-      LOG_LEVEL: ${LOG_LEVEL:-info}
-      LOG_JSON: ${LOG_JSON:-true}
-      METRICS_SCRAPE_TOKEN: ${METRICS_SCRAPE_TOKEN:-}
-      # Platform-operator abuse alerts (all optional; unset = feature disabled)
-      OPS_ALERT_WEBHOOK_URL: ${OPS_ALERT_WEBHOOK_URL:-}
-      OPS_ALERT_EMAIL: ${OPS_ALERT_EMAIL:-}
-      OPS_ALERT_LABEL: ${OPS_ALERT_LABEL:-}
-      ABUSE_SIGNAL_OVERRIDES: ${ABUSE_SIGNAL_OVERRIDES:-}
-      ABUSE_SCRIPT_INDICATORS: ${ABUSE_SCRIPT_INDICATORS:-}
-      ABUSE_HOSTNAME_INDICATORS: ${ABUSE_HOSTNAME_INDICATORS:-}
-      ABUSE_SIGNALS_ENABLED: ${ABUSE_SIGNALS_ENABLED:-}
-      # Native APNs push for the iOS app (all optional; unset = push disabled).
-      # All-or-none: setting ANY of these makes the four credentials required,
-      # so a half-configured relay fails at boot instead of silently at first
-      # send. Empty values are treated as unset.
-      APNS_AUTH_KEY: ${APNS_AUTH_KEY:-}
-      APNS_KEY_ID: ${APNS_KEY_ID:-}
-      APNS_TEAM_ID: ${APNS_TEAM_ID:-}
-      APNS_BUNDLE_ID: ${APNS_BUNDLE_ID:-}
-      APNS_ENVIRONMENT: ${APNS_ENVIRONMENT:-}
-      SENTRY_DSN: ${SENTRY_DSN:-}
-      SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-production}
-      SENTRY_RELEASE: ${SENTRY_RELEASE:-}
-      SENTRY_TRACES_SAMPLE_RATE: ${SENTRY_TRACES_SAMPLE_RATE:-0}
-      ENABLE_REGISTRATION: ${ENABLE_REGISTRATION:-false}
-      EMAIL_PROVIDER: ${EMAIL_PROVIDER:-auto}
-      RESEND_API_KEY: ${RESEND_API_KEY:-}
-      EMAIL_FROM: ${EMAIL_FROM:-noreply@breeze.local}
-      SMTP_HOST: ${SMTP_HOST:-}
-      SMTP_PORT: ${SMTP_PORT:-587}
-      SMTP_USER: ${SMTP_USER:-}
-      SMTP_PASS: ${SMTP_PASS:-}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      # Breeze AI for Office (Excel add-in). Entra app-registration client ID that
-      # gates the /client-ai exchange + admin surface. Empty/unmapped = surface
-      # stays dark (env.ts defaults to ''), so this must be threaded through compose
-      # for self-host/droplet deploys to enable it. Same compose-interpolation gap
-      # class as IS_HOSTED / RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS.
-      CLIENT_AI_ENTRA_CLIENT_ID: ${CLIENT_AI_ENTRA_CLIENT_ID:-}
-      # Optional customer Graph-read onboarding. The executor is intentionally
-      # not part of this generic Compose stack: deploy it separately with a
-      # workload identity, private ingress, and controlled HTTPS egress.
-      M365_CUSTOMER_GRAPH_READ_ONBOARDING_ENABLED: ${M365_CUSTOMER_GRAPH_READ_ONBOARDING_ENABLED:-false}
-      M365_CUSTOMER_GRAPH_READ_ONBOARDING_ORG_IDS: ${M365_CUSTOMER_GRAPH_READ_ONBOARDING_ORG_IDS:-}
-      M365_CUSTOMER_GRAPH_READ_CLIENT_ID: ${M365_CUSTOMER_GRAPH_READ_CLIENT_ID:-}
-      M365_CUSTOMER_GRAPH_READ_CALLBACK_URL: ${M365_CUSTOMER_GRAPH_READ_CALLBACK_URL:-}
-      M365_CUSTOMER_GRAPH_READ_CREDENTIAL_VERSION: ${M365_CUSTOMER_GRAPH_READ_CREDENTIAL_VERSION:-}
-      M365_CUSTOMER_GRAPH_READ_VAULT_REF: ${M365_CUSTOMER_GRAPH_READ_VAULT_REF:-}
-      M365_GRAPH_READ_EXECUTOR_URL: ${M365_GRAPH_READ_EXECUTOR_URL:-}
-      M365_GRAPH_READ_EXECUTOR_AUDIENCE: ${M365_GRAPH_READ_EXECUTOR_AUDIENCE:-m365-graph-read-executor}
-      M365_GRAPH_READ_EXECUTOR_SIGNING_KID: ${M365_GRAPH_READ_EXECUTOR_SIGNING_KID:-}
-      M365_GRAPH_READ_EXECUTOR_SIGNING_PRIVATE_JWK_FILE: /run/secrets/m365_graph_read_executor_signing_private_jwk
-      # Optional customer Graph-actions (write) executor. Same isolation model
-      # as the Graph-read executor above: intentionally not part of this
-      # generic Compose stack — deploy it separately with a workload identity,
-      # private ingress, and controlled HTTPS egress. Disabled by default.
-      # ONBOARDING_ENABLED gates the org-facing consent card; TOOLS_ENABLED
-      # (below) independently gates the AI tools/headless execution — either
-      # one enabled forces full executor descriptor validation at boot, which
-      # in production also requires PUBLIC_APP_URL/PUBLIC_API_URL (or
-      # PUBLIC_URL) to derive the consent callback origin.
-      M365_CUSTOMER_GRAPH_ACTIONS_ONBOARDING_ENABLED: ${M365_CUSTOMER_GRAPH_ACTIONS_ONBOARDING_ENABLED:-false}
-      M365_CUSTOMER_GRAPH_ACTIONS_ONBOARDING_ORG_IDS: ${M365_CUSTOMER_GRAPH_ACTIONS_ONBOARDING_ORG_IDS:-}
-      # Enabling this also requires APP_ENCRYPTION_KEY_ID above — boot refuses
-      # to start without it, because the m365_reset_password reveal-secret
-      # path seals its temp credential with AAD-bound v3 ciphertext.
-      M365_GRAPH_ACTIONS_TOOLS_ENABLED: ${M365_GRAPH_ACTIONS_TOOLS_ENABLED:-false}
-      M365_GRAPH_ACTIONS_TOOLS_ORG_IDS: ${M365_GRAPH_ACTIONS_TOOLS_ORG_IDS:-}
-      M365_CUSTOMER_GRAPH_ACTIONS_CLIENT_ID: ${M365_CUSTOMER_GRAPH_ACTIONS_CLIENT_ID:-}
-      M365_CUSTOMER_GRAPH_ACTIONS_CREDENTIAL_VERSION: ${M365_CUSTOMER_GRAPH_ACTIONS_CREDENTIAL_VERSION:-}
-      M365_CUSTOMER_GRAPH_ACTIONS_VAULT_REF: ${M365_CUSTOMER_GRAPH_ACTIONS_VAULT_REF:-}
-      M365_GRAPH_ACTIONS_EXECUTOR_URL: ${M365_GRAPH_ACTIONS_EXECUTOR_URL:-}
-      M365_GRAPH_ACTIONS_EXECUTOR_AUDIENCE: ${M365_GRAPH_ACTIONS_EXECUTOR_AUDIENCE:-m365-graph-actions-executor}
-      M365_GRAPH_ACTIONS_EXECUTOR_SIGNING_KID: ${M365_GRAPH_ACTIONS_EXECUTOR_SIGNING_KID:-}
-      M365_GRAPH_ACTIONS_EXECUTOR_SIGNING_PRIVATE_JWK_FILE: /run/secrets/m365_graph_actions_executor_signing_private_jwk
-      # M365 communications-delegated. Gated per USER, not per org — a delegated
-      # mailbox connection is owned by one human. No vault vars here on purpose:
-      # the API never touches the comms vault (the client certificate and the
-      # token-cache KEK belong to the executor, which is the only identity that
-      # can decrypt the cache).
-      M365_COMMS_ONBOARDING_ENABLED: ${M365_COMMS_ONBOARDING_ENABLED:-false}
-      M365_COMMS_ONBOARDING_USER_IDS: ${M365_COMMS_ONBOARDING_USER_IDS:-}
-      M365_COMMS_TOOLS_ENABLED: ${M365_COMMS_TOOLS_ENABLED:-false}
-      M365_COMMS_TOOLS_USER_IDS: ${M365_COMMS_TOOLS_USER_IDS:-}
-      M365_COMMS_CLIENT_ID: ${M365_COMMS_CLIENT_ID:-}
-      M365_COMMS_EXECUTOR_URL: ${M365_COMMS_EXECUTOR_URL:-}
-      M365_COMMS_EXECUTOR_AUDIENCE: ${M365_COMMS_EXECUTOR_AUDIENCE:-m365-communications-executor}
-      M365_COMMS_EXECUTOR_SIGNING_KID: ${M365_COMMS_EXECUTOR_SIGNING_KID:-}
-      M365_COMMS_EXECUTOR_SIGNING_PRIVATE_JWK_FILE: /run/secrets/m365_comms_executor_signing_private_jwk
-      APP_VERSION: ${BREEZE_VERSION:-dev}
-      BREEZE_VERSION: ${BREEZE_VERSION:?Set BREEZE_VERSION in .env}
-      BINARY_SOURCE: ${BINARY_SOURCE:-github}
-      RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: ${RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS:-}
-      # BYO signing: override the GitHub repository that releases are pulled
-      # from (default lanternops/breeze). Pair with
-      # RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS set to YOUR release manifest key.
-      BINARY_GITHUB_REPOSITORY: ${BINARY_GITHUB_REPOSITORY:-}
-      # Binary edition served by this deployment: self-host (default,
-      # unchanged behavior) or hosted (production requires
-      # BINARY_SOURCE=local + a manifest trust root — see .env.example).
-      BINARY_EDITION: ${BINARY_EDITION:-self-host}
-      # Hosted SaaS gate. Compose defaults to false so self-hosters upgrade
-      # without touching their .env. Hosted operators must set IS_HOSTED=true
-      # in .env so this interpolates to true. The API config validator (#570)
-      # refuses to start in production if the container env value is missing
-      # or non-boolean, so a hand-edited compose that drops this line still
-      # fails loud rather than silently bypassing the email-verification gate.
-      IS_HOSTED: ${IS_HOSTED:-false}
-      AGENT_BINARY_DIR: /data/binaries/agent
-      VIEWER_BINARY_DIR: /data/binaries/viewer
-      HELPER_BINARY_DIR: /data/binaries/helper
-      BINARY_VERSION_FILE: /data/binaries/VERSION
-      S3_ENDPOINT: ${S3_ENDPOINT:-}
-      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-}
-      S3_SECRET_KEY: ${S3_SECRET_KEY:-}
-      S3_BUCKET: ${S3_BUCKET:-}
-      S3_REGION: ${S3_REGION:-}
-      S3_PRESIGN_TTL: ${S3_PRESIGN_TTL:-900}
-      TURN_HOST: ${TURN_HOST:-}
-      TURN_PORT: ${TURN_PORT:-3478}
-      TURN_SECRET: ${TURN_SECRET:-}
-      TURN_CREDENTIAL_TTL_SECONDS: ${TURN_CREDENTIAL_TTL_SECONDS:-600}
-      E2E_MODE: ${E2E_MODE:-}
-      # Built-in extensions ship inside the API image but load only when the
-      # deployment switches them on (default off). Workspace additionally needs
-      # a pgvector-capable Postgres — see POSTGRES_IMAGE_REF in .env.example.
-      BREEZE_WORKSPACE_ENABLED: ${BREEZE_WORKSPACE_ENABLED:-false}
-      BREEZE_AI_AGENTS_ENABLED: ${BREEZE_AI_AGENTS_ENABLED:-false}
-      # MCP OAuth (off by default, opt-in via env)
-      MCP_OAUTH_ENABLED: ${MCP_OAUTH_ENABLED:-false}
-      OAUTH_ISSUER: ${OAUTH_ISSUER:-}
-      OAUTH_RESOURCE_URL: ${OAUTH_RESOURCE_URL:-}
-      OAUTH_AUTH_EPOCH_ENFORCE_AFTER: ${OAUTH_AUTH_EPOCH_ENFORCE_AFTER:-}
-      EVENT_PERMISSION_EPOCH_MODE: ${EVENT_PERMISSION_EPOCH_MODE:?Set EVENT_PERMISSION_EPOCH_MODE to compat or enforce}
-      OAUTH_COOKIE_SECRET: ${OAUTH_COOKIE_SECRET:-}
-      OAUTH_JWKS_PRIVATE_JWK: ${OAUTH_JWKS_PRIVATE_JWK:-}
-      OAUTH_JWKS_PUBLIC_JWK: ${OAUTH_JWKS_PUBLIC_JWK:-}
-      OAUTH_CONSENT_URL_BASE: ${OAUTH_CONSENT_URL_BASE:-}
-      # --- Additional API runtime settings ---------------------------------
-      # These are documented in .env.example and read by the API, but were not
-      # previously threaded through Compose, so setting them in .env did nothing
-      # (the #570 / IS_HOSTED gap class). Every value uses `${VAR:-}`: an empty
-      # string is falsy to the API's envFlag/envInt helpers, which then fall
-      # back to their in-code default — so mapping them here is non-regressive
-      # (unset behaves exactly as before) and never drifts from the code default.
-      # Parity between .env.example and this block is enforced by
-      # apps/api/src/config/envComposeParity.test.ts.
-      # Auth / security / session
-      ENABLE_2FA: ${ENABLE_2FA:-}
-      # Optional per-refresh-token-family budget for POST /auth/refresh (#3696).
-      # Mapped so the knob is actually reachable inside the container — a value
-      # present only in .env is inert unless it is listed here.
-      AUTH_REFRESH_RATE_LIMIT: ${AUTH_REFRESH_RATE_LIMIT:-}
-      AUTH_REFRESH_RATE_WINDOW_SECONDS: ${AUTH_REFRESH_RATE_WINDOW_SECONDS:-}
-      BREEZE_PLATFORM_ADMINS: ${BREEZE_PLATFORM_ADMINS:-}
-      SESSION_SECRET: ${SESSION_SECRET:-}
-      IP_ALLOWLIST_ENFORCEMENT_MODE: ${IP_ALLOWLIST_ENFORCEMENT_MODE:-}
-      JWT_SIGNING_KEYRING: ${JWT_SIGNING_KEYRING:-}
-      JWT_ACTIVE_KID: ${JWT_ACTIVE_KID:-}
-      WS_TICKET_BIND_IP: ${WS_TICKET_BIND_IP:-}
-      ENROLLMENT_KEY_DEFAULT_TTL_MINUTES: ${ENROLLMENT_KEY_DEFAULT_TTL_MINUTES:-}
-      # Real defaults, not `:-}` — an unset var rendered as `VAR: ""` reaches the
-      # container SET to an empty string, and any reader doing
-      # `Number(process.env.X ?? default)` then gets 0 (`??` skips '', and
-      # Number('') is 0). The readers all use utils/envInt now, which treats ''
-      # as absent; these baked defaults are the second line of defence (#2776).
-      CHILD_ENROLLMENT_KEY_TTL_MINUTES: ${CHILD_ENROLLMENT_KEY_TTL_MINUTES:-1440}
-      INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES: ${INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES:-1440}
-      INSTALLER_PARENT_MIN_REMAINING_SECONDS: ${INSTALLER_PARENT_MIN_REMAINING_SECONDS:-60}
-      ENROLLMENT_KEY_CLEANUP_ENABLED: ${ENROLLMENT_KEY_CLEANUP_ENABLED:-true}
-      ENROLLMENT_KEY_PURGE_AFTER_DAYS: ${ENROLLMENT_KEY_PURGE_AFTER_DAYS:-7}
-      AUTOMATION_WEBHOOK_ALLOW_LEGACY_SECRET: ${AUTOMATION_WEBHOOK_ALLOW_LEGACY_SECRET:-}
-      # Email — SMTP extras + Mailgun provider
-      SMTP_FROM: ${SMTP_FROM:-}
-      SMTP_SECURE: ${SMTP_SECURE:-}
-      MAILGUN_API_KEY: ${MAILGUN_API_KEY:-}
-      MAILGUN_DOMAIN: ${MAILGUN_DOMAIN:-}
-      MAILGUN_FROM: ${MAILGUN_FROM:-}
-      MAILGUN_BASE_URL: ${MAILGUN_BASE_URL:-}
-      # Inbound email-to-ticket (native address; separate from the M365 mailbox path)
-      TICKETS_INBOUND_DOMAIN: ${TICKETS_INBOUND_DOMAIN:-}
-      MAILGUN_INBOUND_SIGNING_KEY: ${MAILGUN_INBOUND_SIGNING_KEY:-}
-      # SMS MFA + alert notifications (Twilio)
-      TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:-}
-      TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:-}
-      TWILIO_VERIFY_SERVICE_SID: ${TWILIO_VERIFY_SERVICE_SID:-}
-      TWILIO_MESSAGING_SERVICE_SID: ${TWILIO_MESSAGING_SERVICE_SID:-}
-      TWILIO_PHONE_NUMBER: ${TWILIO_PHONE_NUMBER:-}
-      # MCP OAuth Dynamic Client Registration
-      OAUTH_DCR_ENABLED: ${OAUTH_DCR_ENABLED:-}
-      OAUTH_DCR_REQUIRE_IAT: ${OAUTH_DCR_REQUIRE_IAT:-}
-      OAUTH_DCR_ALLOW_ANONYMOUS: ${OAUTH_DCR_ALLOW_ANONYMOUS:-}
-      # M365 ticket mailbox + C2C backup app + Graph-read AI tools
-      TICKET_MAILBOX_M365_CLIENT_ID: ${TICKET_MAILBOX_M365_CLIENT_ID:-}
-      TICKET_MAILBOX_M365_CLIENT_SECRET: ${TICKET_MAILBOX_M365_CLIENT_SECRET:-}
-      C2C_M365_CLIENT_ID: ${C2C_M365_CLIENT_ID:-}
-      C2C_M365_CLIENT_SECRET: ${C2C_M365_CLIENT_SECRET:-}
-      M365_GRAPH_READ_TOOLS_ENABLED: ${M365_GRAPH_READ_TOOLS_ENABLED:-}
-      M365_GRAPH_READ_TOOLS_ORG_IDS: ${M365_GRAPH_READ_TOOLS_ORG_IDS:-}
-      # Cloudflare mTLS (API Shield client certificates)
-      CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN:-}
-      CLOUDFLARE_ZONE_ID: ${CLOUDFLARE_ZONE_ID:-}
-      # Remote-session concurrency caps
-      MAX_ACTIVE_REMOTE_SESSIONS_PER_ORG: ${MAX_ACTIVE_REMOTE_SESSIONS_PER_ORG:-}
-      MAX_ACTIVE_REMOTE_SESSIONS_PER_USER: ${MAX_ACTIVE_REMOTE_SESSIONS_PER_USER:-}
-      # Metrics label controls
-      METRICS_INCLUDE_ORG_ID: ${METRICS_INCLUDE_ORG_ID:-}
-      METRICS_SCRAPE_IP_ALLOWLIST: ${METRICS_SCRAPE_IP_ALLOWLIST:-}
-      # Hosted billing redirect
-      BILLING_URL: ${BILLING_URL:-}
-      # --- Optional knobs documented as COMMENTED-OUT defaults ---------------
-      # Everything below is documented in .env.example the way this repo
-      # documents an optional tuning knob: commented out, showing its default.
-      # The parity guard used to read only UNCOMMENTED assignments, so this
-      # entire class was exempt from it and quietly never reached a container
-      # (#3239; #3236 was one instance of the same shape). All are `${VAR:-}`
-      # for the reason spelled out above — '' reads as absent to envStr /
-      # envFlag / envInt, so an unset knob still gets its in-code default.
-      # Booking link on the pending-account screen, shown beside BILLING_URL's
-      # CTA so stopping at the payment step isn't a dead end. Operator-set and
-      # changeable without a redeploy; the API drops non-http(s) URLs.
-      PENDING_ACCOUNT_MEETING_URL: ${PENDING_ACCOUNT_MEETING_URL:-}
-      PENDING_ACCOUNT_MEETING_LABEL: ${PENDING_ACCOUNT_MEETING_LABEL:-}
-      # Auth cookie + CORS hardening. AUTH_/PORTAL_-prefixed names override the
-      # generic COOKIE_* pair; that precedence is resolved with envStr (NOT `??`)
-      # precisely because '' must fall through rather than shadow — see
-      # resolveAuthCookieSameSite() in routes/auth/helpers.ts.
-      COOKIE_SAME_SITE: ${COOKIE_SAME_SITE:-}
-      COOKIE_FORCE_SECURE: ${COOKIE_FORCE_SECURE:-}
-      AUTH_COOKIE_SAME_SITE: ${AUTH_COOKIE_SAME_SITE:-}
-      AUTH_COOKIE_FORCE_SECURE: ${AUTH_COOKIE_FORCE_SECURE:-}
-      PORTAL_COOKIE_SAME_SITE: ${PORTAL_COOKIE_SAME_SITE:-}
-      PORTAL_COOKIE_FORCE_SECURE: ${PORTAL_COOKIE_FORCE_SECURE:-}
-      CORS_INCLUDE_DEFAULT_ORIGINS: ${CORS_INCLUDE_DEFAULT_ORIGINS:-}
-      REFRESH_ROTATION_GRACE_SECONDS: ${REFRESH_ROTATION_GRACE_SECONDS:-}
-      # Customer-portal session store
-      PORTAL_STATE_BACKEND: ${PORTAL_STATE_BACKEND:-}
-      # MCP server rate limits + execute-tool gating
-      MCP_REQUIRE_EXECUTE_ADMIN: ${MCP_REQUIRE_EXECUTE_ADMIN:-}
-      MCP_EXECUTE_TOOL_ALLOWLIST: ${MCP_EXECUTE_TOOL_ALLOWLIST:-}
-      MCP_SSE_RATE_LIMIT_PER_MINUTE: ${MCP_SSE_RATE_LIMIT_PER_MINUTE:-}
-      MCP_MESSAGE_RATE_LIMIT_PER_MINUTE: ${MCP_MESSAGE_RATE_LIMIT_PER_MINUTE:-}
-      MCP_MAX_SSE_SESSIONS_PER_KEY: ${MCP_MAX_SSE_SESSIONS_PER_KEY:-}
-      # AI provider overrides (ANTHROPIC_API_KEY is mapped further up)
-      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-}
-      ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:-}
-      ANTHROPIC_AUTH_TOKEN: ${ANTHROPIC_AUTH_TOKEN:-}
-      # External billing service (hosted only; empty on self-host)
-      BREEZE_BILLING_URL: ${BREEZE_BILLING_URL:-}
-      BREEZE_BILLING_API_KEY: ${BREEZE_BILLING_API_KEY:-}
-      BILLING_SERVICE_URL: ${BILLING_SERVICE_URL:-}
-      BILLING_SERVICE_API_KEY: ${BILLING_SERVICE_API_KEY:-}
-      # Reporting-only FX (#3779). Empty === unset for both readers, so the
-      # `${VAR:-}` form keeps the code defaults (feed ON, public Frankfurter).
-      EXCHANGE_RATE_SYNC_ENABLED: ${EXCHANGE_RATE_SYNC_ENABLED:-}
-      FRANKFURTER_BASE_URL: ${FRANKFURTER_BASE_URL:-}
-      # Readiness cache + dependency-probe bounds. Empty === unset, so the
-      # `${VAR:-}` form keeps the clamped code defaults (5000 / 3000 ms). Both
-      # MUST be listed here: compose only interpolates vars named in this block,
-      # so a value set in .env alone is a silent no-op.
-      READINESS_CACHE_TTL_MS: ${READINESS_CACHE_TTL_MS:-}
-      READINESS_PROBE_TIMEOUT_MS: ${READINESS_PROBE_TIMEOUT_MS:-}
-      # Startup + agent-fleet behaviour
-      AUTO_MIGRATE: ${AUTO_MIGRATE:-}
-      AGENT_AUTO_PROMOTE: ${AGENT_AUTO_PROMOTE:-}
-      ENABLE_API_DOCS_UI: ${ENABLE_API_DOCS_UI:-}
-      PUBLIC_ACTIVATION_BASE_URL: ${PUBLIC_ACTIVATION_BASE_URL:-}
+      <<: *api-env
+      # Compose-side indirection (wave 3.5d-b, #4086): the process still reads
+      # BREEZE_ROLE; BREEZE_API_ROLE only controls what this container maps it
+      # to, so flipping the api container's role can never accidentally change
+      # the worker container (which hardcodes BREEZE_ROLE: worker below).
+      BREEZE_ROLE: ${BREEZE_API_ROLE:-all}
     volumes:
       - api_data:/data
       - binaries:/data/binaries:ro
@@ -480,6 +498,49 @@ services:
       <<: *healthcheck
       test: ['CMD', 'wget', '--no-verbose', '--tries=1', '--spider', 'http://127.0.0.1:3001/health']
       start_period: 40s
+    networks:
+      - breeze
+
+  # Optional worker-role process for the 3.5d-b role split (#4086). Runs the
+  # global background workers with no HTTP route graph and no agent sockets.
+  # Opt-in via: docker compose --profile worker-split up -d worker
+  # See docs/deploy/worker-split.md for the rollout/rollback runbook.
+  worker:
+    image: ${BREEZE_API_IMAGE_REF:?Set BREEZE_API_IMAGE_REF to a digest-pinned image ref}
+    platform: ${DOCKER_PLATFORM:-linux/amd64}
+    container_name: breeze-worker
+    restart: unless-stopped
+    profiles: ["worker-split"]
+    command: ["node", "dist/worker.cjs"]
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    environment:
+      <<: *api-env
+      BREEZE_ROLE: worker        # hardcoded — never variable-driven
+    volumes:
+      - api_data:/data
+    secrets:
+      - redis_password
+      - source: m365_graph_read_executor_signing_private_jwk
+        target: m365_graph_read_executor_signing_private_jwk
+      - source: m365_graph_actions_executor_signing_private_jwk
+        target: m365_graph_actions_executor_signing_private_jwk
+      - source: m365_comms_executor_signing_private_jwk
+        target: m365_comms_executor_signing_private_jwk
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      <<: *healthcheck
+      test: ['CMD', 'wget', '--no-verbose', '--tries=1', '--spider', 'http://127.0.0.1:3001/health/ready']
+      start_period: 60s
+    stop_grace_period: 90s
     networks:
       - breeze
 

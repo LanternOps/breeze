@@ -775,8 +775,6 @@ ExecStop=$(shell_quote "${SYSTEMD_HELPER_FILE}") down
 RemainAfterExit=yes
 TimeoutStartSec=15min
 TimeoutStopSec=3min
-Restart=on-failure
-RestartSec=30
 
 [Install]
 WantedBy=multi-user.target

@@ -1,6 +1,6 @@
 import type Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
-import { getAnthropicClientForPartner } from '../llm/llmConfigResolver';
+import { getAnthropicClientForPartner, resolveWireModel } from '../llm/llmConfigResolver';
 
 /**
  * AI email -> ticket draft (spec Task 19, Outlook tech add-in).
@@ -21,6 +21,12 @@ export interface EmailDraftInput {
   threadContext?: string | null;
   model: string;
   partnerId: string | null;
+  /**
+   * Tenant axis for the LLM egress audit when this function has to resolve its
+   * own client (#3922). Callers that pass `client` have already attributed the
+   * call themselves.
+   */
+  orgId?: string | null;
   client?: Anthropic;
 }
 
@@ -86,7 +92,19 @@ export class EmailDraftFailedError extends Error {
 }
 
 export async function draftTicketFromEmail(input: EmailDraftInput): Promise<EmailDraftResult> {
-  const client = input.client ?? (await getAnthropicClientForPartner(input.partnerId)).client;
+  // `input.model` is the WIRE model when the caller supplies its own client
+  // (the caller already translated it via `resolveWireModel`). On the fallback
+  // path we resolve the client here, so we must translate it here too.
+  let client = input.client;
+  let wireModel = input.model;
+  if (!client) {
+    const llm = await getAnthropicClientForPartner(input.partnerId, {
+      surface: 'one_shot_email_draft',
+      orgId: input.orgId ?? null,
+    });
+    client = llm.client;
+    wireModel = resolveWireModel(llm.resolved, input.model).model;
+  }
   const userContent = buildUserContent(input);
   const attemptErrors: string[] = [];
   // Accumulated across attempts: a successful retry still reports (and the
@@ -108,7 +126,7 @@ export async function draftTicketFromEmail(input: EmailDraftInput): Promise<Emai
     let resp;
     try {
       resp = await client.messages.create({
-        model: input.model,
+        model: wireModel,
         max_tokens: 1024,
         system: SYSTEM_PROMPT,
         messages: [{ role: 'user', content: userContent }],

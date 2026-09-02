@@ -15,19 +15,15 @@
     "patches": "Parches",
     "vulnerabilities": "Vulnerabilidades",
     "oneDrive": "OneDrive",
-    "fleet": "Flota",
-    "aiWorkspace": "AI Espacio de trabajo",
     "aiForOffice": "AI para Office",
     "networkMonitor": "Monitor de red",
     "networkDiscovery": "Descubrimiento de red",
-    "security": "Seguridad",
     "edr": "EDR",
     "dnsSecurity": "DNS Seguridad",
     "pam": "PAM",
     "userRisk": "Riesgo del usuario",
     "sensitiveData": "Datos confidenciales",
     "peripherals": "Periféricos",
-    "aiRiskEngine": "AI Motor de riesgos",
     "cisBenchmarks": "CIS Benchmarks",
     "complianceBaselines": "Líneas base de cumplimiento",
     "quotes": "Cotizaciones",
@@ -35,12 +31,9 @@
     "contracts": "Contratos",
     "timesheets": "Hojas de tiempo",
     "productCatalog": "Catálogo de productos",
-    "softwareLibrary": "Biblioteca de software",
-    "softwarePolicies": "Políticas de software",
     "deviceGroups": "Grupos de dispositivos",
     "configPolicies": "Políticas de configuración",
     "integrations": "Integraciones",
-    "backup": "Respaldo",
     "cloudBackup": "Copia de seguridad en la nube",
     "disasterRecovery": "Recuperación ante desastres",
     "reports": "Informes",
@@ -51,6 +44,7 @@
     "organizations": "Organizaciones",
     "aiUsageBudget": "AI Uso y presupuesto",
     "aiAgents": "Agentes de IA",
+    "aiAgentRuns": "Ejecuciones de agentes de IA",
     "customFields": "Campos personalizados",
     "savedFilters": "Filtros guardados",
     "users": "Usuarios",
@@ -61,16 +55,24 @@
     "deletionRequests": "Solicitudes de eliminación",
     "quarantinedDevices": "Dispositivos en cuarentena",
     "thirdPartyCatalog": "Catálogo de terceros",
-    "connectedAppsAdmin": "Aplicaciones conectadas (administrador)",
-    "sectionAiFleet": "AI y flota",
-    "sectionMonitoring": "Monitoreo",
+    "connectedAppsAdmin": "Aplicaciones conectadas",
     "sectionSecurity": "Seguridad",
-    "sectionOperations": "Operaciones",
     "sectionBackup": "Respaldo",
     "sectionReporting": "Informes",
     "sectionSettings": "Configuración",
     "sectionExtensions": "Extensiones",
-    "variables": "Variables"
+    "variables": "Variables",
+    "llmProviderCatalog": "Catálogo de proveedores de LLM",
+    "sectionAi": "IA",
+    "sectionFleetManagement": "Gestión de flota",
+    "sectionBilling": "Facturación",
+    "sectionAdministration": "Administración",
+    "fleetOrchestration": "Orquestación de flota",
+    "aiAssistant": "Asistente de IA",
+    "software": "Software",
+    "securityOverview": "Resumen",
+    "aiRisk": "Riesgo de IA",
+    "deviceBackup": "Respaldo de dispositivos"
   },
   "documentTitles": {
     "dashboard": "Panel",
@@ -1626,6 +1628,12 @@
         "editEntry": "Editar entrada {{id}}",
         "total": "Total: {{duration}}",
         "billableTotal": "Facturable: {{duration}}"
+      },
+      "sourceBadge": {
+        "timer": "Temporizador",
+        "location": "Desde ubicación",
+        "remote_session": "Desde sesión remota",
+        "support_session": "Desde Quick Support"
       }
     },
     "snmp": {
@@ -2404,6 +2412,11 @@
     "link": "Novedades"
   },
   "money": {
-    "approximateTotal": "≈ {{amount}} aproximado · tipos de cambio del {{rateDate}}"
+    "approximateTotal": "≈ {{amount}} aproximado · tipos de cambio del {{rateDate}}",
+    "approximateFailed": "≈ total no disponible — no se pudieron cargar los tipos de cambio",
+    "approximateUnavailableMissing": "≈ total no disponible — no hay tipo de cambio a {{target}} para {{codes}}",
+    "approximateUnavailableStale": "≈ total no disponible — el tipo de cambio a {{target}} para {{codes}} es demasiado antiguo",
+    "approximateUnavailableMixed": "≈ total no disponible — {{codes}} no se pudo convertir a {{target}}",
+    "approximateUnavailableCodesOverflow": "{{codes}} y {{more}} más"
   }
 }

@@ -89,10 +89,14 @@ export interface AuthorizationUrlParams {
   nonce: string;
   redirectUri: string;
   pkce?: PKCEChallenge;
+  /** OIDC `prompt`. Pass 'login' to force the IdP to re-authenticate. */
+  prompt?: string;
+  /** OIDC `max_age` in seconds. 0 demands a fresh authentication. */
+  maxAge?: number;
 }
 
 export function buildAuthorizationUrl(params: AuthorizationUrlParams): string {
-  const { config, state, nonce, redirectUri, pkce } = params;
+  const { config, state, nonce, redirectUri, pkce, prompt, maxAge } = params;
 
   const url = new URL(config.authorizationUrl);
   url.searchParams.set('client_id', config.clientId);
@@ -105,6 +109,15 @@ export function buildAuthorizationUrl(params: AuthorizationUrlParams): string {
   if (pkce) {
     url.searchParams.set('code_challenge', pkce.codeChallenge);
     url.searchParams.set('code_challenge_method', pkce.codeChallengeMethod);
+  }
+
+  if (prompt) {
+    url.searchParams.set('prompt', prompt);
+  }
+  // `!= null`, NOT a truthy check: max_age=0 is the value that actually forces
+  // a re-authentication, and `if (maxAge)` would silently drop it.
+  if (maxAge != null) {
+    url.searchParams.set('max_age', String(maxAge));
   }
 
   return url.toString();
@@ -242,6 +255,9 @@ export interface IDTokenClaims {
   // authentication methods the IdP used; `mfa` means multi-factor was performed.
   amr?: string[];
   acr?: string;
+  /** OIDC Core §2: seconds since epoch of the END-USER's authentication.
+   * Required in the id_token whenever the request carried `max_age`. */
+  auth_time?: number;
   [key: string]: unknown;
 }
 
@@ -254,6 +270,79 @@ export interface IDTokenClaims {
  */
 export function idpAssertedMfa(claims: Pick<IDTokenClaims, 'amr'>): boolean {
   return Array.isArray(claims.amr) && claims.amr.includes('mfa');
+}
+
+/** Tolerance for an IdP clock running ahead of ours. */
+const AUTH_TIME_SKEW_SECONDS = 120;
+
+/**
+ * Convert a Date that postgres.js produced from a `timestamp without time
+ * zone` column into a true UTC epoch in milliseconds.
+ *
+ * postgres.js parses OIDs 1082/1114/1184 with a bare `new Date(x)`
+ * (postgres/src/types.js). For an offsetless column (1114) the wire value is
+ * `2026-08-25 18:34:15.123` — no zone marker — and V8 reads an offsetless
+ * date-time as LOCAL time. So on a host running America/Denver the resulting
+ * Date sits SIX HOURS from the instant the row actually records. Drizzle does
+ * have a UTC-correct path for exactly this (`value + '+0000'`), but it only
+ * fires when the driver hands it a string; postgres.js has already produced a
+ * Date by then, so the value passes straight through unconverted.
+ *
+ * Everywhere else in this codebase that is invisible, because DB-derived
+ * timestamps are only ever compared against other DB-derived timestamps and
+ * the offset cancels on both sides. It stops being invisible the moment one is
+ * compared against an epoch that originated OUTSIDE the database — an OIDC
+ * `auth_time`, say — which is what `assertFreshIdpAuthentication` does below.
+ * Under UTC (every container, hence all hosted production) the offset is zero
+ * and the defect is dormant; a US host then fails 100% closed, and an EU host
+ * silently WIDENS the freshness window by its offset.
+ *
+ * PRECONDITION: the column holds a UTC wall clock. That is true here because
+ * the row is written by `now()` against a Postgres whose TimeZone is UTC, and
+ * any Date the API writes is serialized by Drizzle as `toISOString()`.
+ *
+ * Do NOT use this on a `timestamptz` (1184) column: postgres.js resolves those
+ * to the correct instant already, and this would corrupt them.
+ */
+export function utcMsFromOffsetlessTimestamp(value: Date): number {
+  return value.getTime() - value.getTimezoneOffset() * 60_000;
+}
+
+/**
+ * Verify the IdP actually re-authenticated the user for THIS transaction.
+ *
+ * Two independent bounds, both required:
+ *
+ *  - `auth_time` must EXIST. OIDC Core requires the claim whenever the
+ *    authorization request carried `max_age`, but real IdPs vary: some ignore
+ *    `prompt=login` and replay a cached session, and one that does so while
+ *    omitting `auth_time` would otherwise mint an enrollment grant off a
+ *    months-old browser session. Absent claim === no proof of freshness.
+ *  - `auth_time` must be at or after `startedAtMs` (the sso_sessions row's
+ *    created_at), minus skew. A window measured from NOW would happily accept
+ *    an authentication that predates the user's click — precisely the cached
+ *    session this is meant to reject.
+ *
+ * `iat` is never a substitute: a fresh token can be minted from an old login.
+ */
+export function assertFreshIdpAuthentication(
+  claims: Pick<IDTokenClaims, 'auth_time'>,
+  startedAtMs: number,
+  nowMs: number = Date.now(),
+): { ok: true } | { ok: false; reason: 'auth_time_missing' | 'auth_time_stale' | 'auth_time_future' } {
+  const authTime = claims.auth_time;
+  if (typeof authTime !== 'number' || !Number.isFinite(authTime)) {
+    return { ok: false, reason: 'auth_time_missing' };
+  }
+  const nowSeconds = Math.floor(nowMs / 1000);
+  const startedAtSeconds = Math.floor(startedAtMs / 1000);
+  if (authTime > nowSeconds + AUTH_TIME_SKEW_SECONDS) {
+    return { ok: false, reason: 'auth_time_future' };
+  }
+  if (authTime < startedAtSeconds - AUTH_TIME_SKEW_SECONDS) {
+    return { ok: false, reason: 'auth_time_stale' };
+  }
+  return { ok: true };
 }
 
 export function decodeIdToken(idToken: string): IDTokenClaims {

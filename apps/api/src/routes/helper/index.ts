@@ -35,7 +35,7 @@ import { getRedis, rateLimiter } from '../../services';
 import { createSessionPreToolUse, createSessionPostToolUse, settleBlockedTurnForNewMessage } from '../../services/aiAgentSdk';
 import { helperAuth, type HelperDevice } from '../../middleware/helperAuth';
 import type { ActiveSession } from '../../services/streamingSessionManager';
-import { resolveLlmConfig, type UsableLlmConfig } from '../../services/llm/llmConfigResolver';
+import { LlmUnavailableError, resolveLlmConfig, type UsableLlmConfig } from '../../services/llm/llmConfigResolver';
 import { captureException } from '../../services/sentry';
 
 const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -302,25 +302,37 @@ helperRoutes.post(
         })
       : undefined;
 
-    // Get or create streaming session
-    const activeSession = await streamingSessionManager.getOrCreate(
-      sessionId,
-      {
-        orgId: dbSession.orgId,
-        sdkSessionId: dbSession.sdkSessionId,
-        model: dbSession.model,
-        maxTurns: dbSession.maxTurns,
-        turnCount: dbSession.turnCount,
-        systemPrompt: dbSession.systemPrompt,
-      },
-      auth,
-      c,
-      systemPrompt,
-      maxBudgetUsd,
-      resolved,
-      allowedTools,
-      mcpServerFactory as Parameters<typeof streamingSessionManager.getOrCreate>[8],
-    );
+    // Get or create streaming session.
+    //
+    // The `resolveLlmConfig` check earlier in this handler already 503s an
+    // unavailable partner config, but it cannot see this one: `getOrCreate`
+    // resolves the WIRE model inside the manager, so a catalog revision with no
+    // verified mapping for THIS session's model fails closed only here. Same
+    // catch shape as ai.ts — otherwise it reaches `app.onError` as a 500.
+    let activeSession;
+    try {
+      activeSession = await streamingSessionManager.getOrCreate(
+        sessionId,
+        {
+          orgId: dbSession.orgId,
+          sdkSessionId: dbSession.sdkSessionId,
+          model: dbSession.model,
+          maxTurns: dbSession.maxTurns,
+          turnCount: dbSession.turnCount,
+          systemPrompt: dbSession.systemPrompt,
+        },
+        auth,
+        c,
+        systemPrompt,
+        maxBudgetUsd,
+        resolved,
+        allowedTools,
+        mcpServerFactory as Parameters<typeof streamingSessionManager.getOrCreate>[8],
+      );
+    } catch (err) {
+      if (err instanceof LlmUnavailableError) return c.json({ error: 'ai_unavailable' }, 503);
+      throw err;
+    }
 
     // Concurrent message guard. If the turn is blocked only on pending
     // approval waits (PAM-gated helper tools), settle them so the assistant

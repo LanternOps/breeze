@@ -265,6 +265,7 @@
       },
       "refresh": "Aktualisieren",
       "reportTypes": {
+        "ai_org_narrative": "Wöchentlicher KI-Betriebsbericht",
         "alert_summary": "Warnungszusammenfassung",
         "compliance": "Compliance-Bericht",
         "device_inventory": "Geräteinventar",
@@ -290,6 +291,10 @@
         "generateNow": "Jetzt generieren"
       },
       "adhocReport": "Ad-hoc-Bericht",
+      "aiNarrative": {
+        "managedBySchedule": "Vom KI-Zeitplan verwaltet",
+        "openLatest": "Neuesten öffnen"
+      },
       "confirmDelete": "Sind Sie sicher, dass Sie „{{name}}“ löschen möchten?",
       "createReport": "Bericht erstellen",
       "description": "Erstellen und planen Sie Berichte für Ihre Infrastruktur.",
@@ -304,7 +309,8 @@
         "downloadFailed": "Der Download ist fehlgeschlagen",
         "fetchReports": "Berichte konnten nicht abgerufen werden",
         "generateReport": "Bericht konnte nicht erstellt werden",
-        "generic": "Es ist ein Fehler aufgetreten"
+        "generic": "Es ist ein Fehler aufgetreten",
+        "noCompletedRun": "Noch kein abgeschlossener Bericht zum Öffnen vorhanden"
       },
       "formats": {
         "csv": "CSV",
@@ -316,6 +322,7 @@
       "newReport": "Neuer Bericht",
       "nextOccurrence": "Weiter: {{next}}",
       "reportTypes": {
+        "ai_org_narrative": "Wöchentlicher KI-Betriebsbericht",
         "alert_summary": "Warnungszusammenfassung",
         "compliance": "Compliance-Bericht",
         "device_inventory": "Geräteinventar",
@@ -770,6 +777,10 @@
         }
       },
       "selectedFields": "Ausgewählte Felder",
+      "success": {
+        "created": "Bericht „{{name}}“ gespeichert.",
+        "updated": "Bericht „{{name}}“ aktualisiert."
+      },
       "values": {
         "enabled": "Aktiviert",
         "off": "Aus",
@@ -805,6 +816,7 @@
       "previewAlt": "{{name}} Vorschau",
       "reportTypes": {
         "activity": "Aktivität",
+        "ai_org_narrative": "Wöchentlicher KI-Betriebsbericht",
         "alert_summary": "Warnungszusammenfassung",
         "alerts": "Warnungen",
         "compliance": "Compliance-Bericht",

@@ -738,6 +738,8 @@
         "recurrence": "Recorrência",
         "startDateTime": "Data/hora de início",
         "theSpecificDateAndTimeForThis": "A data e a hora específicas desta janela de manutenção única.",
+        "startTime": "Hora de início",
+        "theTimeOfDayEachWindowOpensIn": "A hora do dia em que cada janela de manutenção é aberta, no fuso horário selecionado. O padrão é meia-noite (00:00).",
         "durationHours": "Duração (horas)",
         "timezone": "Fuso horário",
         "notifyBeforeMinutes": "Notificar antes (minutos)",

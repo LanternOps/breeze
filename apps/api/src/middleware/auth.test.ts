@@ -98,7 +98,7 @@ vi.mock('../db/schema', () => ({
 }));
 
 import { Hono } from 'hono';
-import { authMiddleware, requireScope, requirePermission, requireMfa, requireOrg, requirePartner, requireOrgAccess, resolveOrgAccess, AuthContext } from './auth';
+import { authMiddleware, requireScope, requirePermission, requireMfa, requireOrg, requirePartner, requireOrgAccess, resolveOrgAccess, isMfaEnrollmentExemptPath, AuthContext } from './auth';
 import { verifyToken } from '../services/jwt';
 import { isTokenIssuedBeforePasswordChange, isUserTokenRevoked } from '../services/tokenRevocation';
 import { db, withDbAccessContext } from '../db';
@@ -520,6 +520,28 @@ describe('authMiddleware', () => {
     expect(vi.mocked(getEffectiveMfaPolicy)).not.toHaveBeenCalled();
   });
 
+  it('allows an unenrolled user to load /auth/mfa/enrollment-options through the 428 gate', async () => {
+    const app = new Hono();
+    app.use(authMiddleware);
+    app.get('/api/v1/auth/mfa/enrollment-options', (c) => c.json({ allowedMethods: {} }));
+
+    vi.mocked(verifyToken).mockResolvedValue({
+      ...basePayload,
+      scope: 'partner',
+      orgId: null,
+    });
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectWithLimit([unenrolledUser]) as any)
+      .mockReturnValueOnce(selectWithLimit([{ orgAccess: 'none', orgIds: null }]) as any);
+
+    const res = await app.request('/api/v1/auth/mfa/enrollment-options', {
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(vi.mocked(getEffectiveMfaPolicy)).not.toHaveBeenCalled();
+  });
+
   // I6: passkey registration is an enrollment action (passkey is the always-
   // allowed, phishing-resistant factor). A policy-required-but-unenrolled user
   // MUST be able to reach /auth/passkeys/register/* — otherwise the broadened
@@ -547,6 +569,19 @@ describe('authMiddleware', () => {
     expect(res.status).not.toBe(428);
     expect(res.status).toBe(200);
     expect(vi.mocked(getEffectiveMfaPolicy)).not.toHaveBeenCalled();
+  });
+
+  it('exempts /sso/reauth/* from forced MFA enrollment', () => {
+    // A policy-required, unenrolled, passwordless SSO user is the entire target
+    // population. Without this exemption authMiddleware 428s them before the
+    // handler runs and the enrollment flow can never start.
+    expect(isMfaEnrollmentExemptPath('/api/v1/sso/reauth/start')).toBe(true);
+    expect(isMfaEnrollmentExemptPath('/sso/reauth/start')).toBe(true);
+  });
+
+  it('does not exempt other /sso paths', () => {
+    expect(isMfaEnrollmentExemptPath('/api/v1/sso/providers')).toBe(false);
+    expect(isMfaEnrollmentExemptPath('/api/v1/sso/link/start/abc')).toBe(false);
   });
 
   it('permits an enrolled user without consulting the resolver at all', async () => {

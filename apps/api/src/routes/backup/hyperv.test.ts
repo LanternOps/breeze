@@ -3,13 +3,13 @@ import { Hono } from 'hono';
 import { hypervRoutes } from './hyperv';
 
 const ORG_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
-const OTHER_ORG_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
 const DEVICE_ID = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
 const VM_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 
 vi.mock('../../services', () => ({}));
 
 const executeCommandMock = vi.fn();
+const authorizeResilienceResourcesMock = vi.fn();
 const resolveAllBackupAssignedDevicesMock = vi.fn();
 
 function chainMock(resolvedValue: unknown = []) {
@@ -25,6 +25,7 @@ const selectMock = vi.fn(() => chainMock([]));
 const insertMock = vi.fn(() => chainMock([]));
 const updateMock = vi.fn(() => chainMock([]));
 let authState = {
+  principal: { kind: 'user_session' as const },
   user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
   scope: 'organization' as const,
   partnerId: null,
@@ -106,6 +107,14 @@ vi.mock('../../services/commandQueue', () => ({
   },
 }));
 
+vi.mock('../../services/resilienceSiteAuthorization', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/resilienceSiteAuthorization')>();
+  return {
+    ...actual,
+    authorizeResilienceResources: (...args: unknown[]) => authorizeResilienceResourcesMock(...args),
+  };
+});
+
 vi.mock('../../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
     c.set('auth', authState);
@@ -117,19 +126,24 @@ vi.mock('../../middleware/auth', () => ({
 }));
 
 import { authMiddleware } from '../../middleware/auth';
+import { ResilienceAuthorizationError } from '../../services/resilienceSiteAuthorization';
 
 describe('hyperv routes', () => {
   let app: Hono;
 
   beforeEach(() => {
     vi.clearAllMocks();
+    selectMock.mockReset();
+    selectMock.mockImplementation(() => chainMock([]));
     authState = {
+      principal: { kind: 'user_session' },
       user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
       scope: 'organization',
       partnerId: null,
       orgId: ORG_ID,
       token: { sub: 'user-123' },
     };
+    authorizeResilienceResourcesMock.mockResolvedValue({ resources: [] });
     resolveBackupConfigForDeviceMock.mockResolvedValue({
       configId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
       featureLinkId: '99999999-9999-4999-8999-999999999999',
@@ -146,6 +160,29 @@ describe('hyperv routes', () => {
     app = new Hono();
     app.use('*', authMiddleware);
     app.route('/backup/hyperv', hypervRoutes);
+  });
+
+  it('denies a source-site Hyper-V restore before metadata or command side effects', async () => {
+    authorizeResilienceResourcesMock.mockRejectedValueOnce(
+      new ResilienceAuthorizationError(403, 'site_access_denied')
+    );
+
+    const res = await app.request('/backup/hyperv/restore', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({
+        deviceId: DEVICE_ID,
+        snapshotId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        vmName: 'Recovered VM',
+        generateNewId: true,
+      }),
+    });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'site_access_denied' });
+    expect(selectMock).not.toHaveBeenCalled();
+    expect(insertMock).not.toHaveBeenCalled();
+    expect(executeCommandMock).not.toHaveBeenCalled();
   });
 
   it('returns an empty Hyper-V VM list', async () => {
@@ -207,7 +244,6 @@ describe('hyperv routes', () => {
   });
 
   it('dispatches Hyper-V discovery for a device', async () => {
-    selectMock.mockReturnValueOnce(chainMock([{ id: DEVICE_ID, orgId: ORG_ID }]));
     executeCommandMock.mockResolvedValueOnce({
       status: 'completed',
       stdout: JSON.stringify([]),
@@ -237,7 +273,6 @@ describe('hyperv routes', () => {
   });
 
   it('dispatches provider-backed Hyper-V backup without an export path', async () => {
-    selectMock.mockReturnValueOnce(chainMock([{ id: DEVICE_ID, orgId: ORG_ID }]));
     insertMock.mockReturnValueOnce(
       chainMock([{ id: '44444444-4444-4444-8444-444444444444' }])
     );
@@ -282,17 +317,15 @@ describe('hyperv routes', () => {
   });
 
   it('dispatches Hyper-V restore using a backup_snapshots UUID', async () => {
-    selectMock
-      .mockReturnValueOnce(chainMock([{ id: DEVICE_ID, orgId: ORG_ID }]))
-      .mockReturnValueOnce(
-        chainMock([
+    selectMock.mockReturnValueOnce(
+      chainMock([
           {
             id: '55555555-5555-4555-8555-555555555555',
             providerSnapshotId: 'hyperv-accounting-1',
             metadata: { backupKind: 'hyperv_export' },
           },
-        ])
-      );
+      ])
+    );
     executeCommandMock.mockResolvedValueOnce({
       status: 'completed',
       stdout: JSON.stringify({ status: 'completed' }),
@@ -333,7 +366,9 @@ describe('hyperv routes', () => {
   });
 
   it('rejects cross-org Hyper-V discovery', async () => {
-    selectMock.mockReturnValueOnce(chainMock([{ id: DEVICE_ID, orgId: OTHER_ORG_ID }]));
+    authorizeResilienceResourcesMock.mockRejectedValueOnce(
+      new ResilienceAuthorizationError(404, 'resource_not_found')
+    );
 
     const res = await app.request(`/backup/hyperv/discover/${DEVICE_ID}`, {
       method: 'POST',
@@ -345,9 +380,7 @@ describe('hyperv routes', () => {
   });
 
   it('dispatches VM state changes using targetState for the agent payload', async () => {
-    selectMock
-      .mockReturnValueOnce(chainMock([{ id: DEVICE_ID, orgId: ORG_ID }]))
-      .mockReturnValueOnce(chainMock([{ vmName: 'Accounting VM' }]));
+    selectMock.mockReturnValueOnce(chainMock([{ vmName: 'Accounting VM' }]));
     executeCommandMock.mockResolvedValueOnce({
       status: 'completed',
       stdout: JSON.stringify({ status: 'completed' }),

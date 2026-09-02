@@ -1,7 +1,15 @@
-import { and, asc, eq, inArray } from 'drizzle-orm';
-import { db } from '../db';
-import { deviceCommands, drExecutions, drPlanGroups } from '../db/schema';
+import { and, asc, eq, inArray, or, sql } from 'drizzle-orm';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { backupSnapshots, deviceCommands, drExecutions, drPlanGroups } from '../db/schema';
+import type { AuthContext } from '../middleware/auth';
 import { CommandTypes, queueCommandForExecution } from './commandQueue';
+import {
+  authorizeQueuedRecoveryWork,
+  captureRecoveryAuthorizationSubject,
+  type RecoveryAuthorizationIntent,
+  type RecoveryAuthorizationSubjectRow,
+} from './recoveryAuthorizationSubject';
+import type { ResilienceResourceRef } from './resilienceSiteAuthorization';
 
 const DR_ALLOWED_COMMAND_TYPES = new Set<string>([
   CommandTypes.VM_RESTORE_FROM_BACKUP,
@@ -14,6 +22,20 @@ const DR_ALLOWED_COMMAND_TYPES = new Set<string>([
 export type DrPlanGroupRecord = typeof drPlanGroups.$inferSelect;
 type DrExecutionRecord = typeof drExecutions.$inferSelect;
 type DeviceCommandRecord = typeof deviceCommands.$inferSelect;
+type DbTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
+type DrDb = typeof db | DbTransaction;
+
+export const DR_RECOVERY_AUTHORIZATION_INTENT: RecoveryAuthorizationIntent = {
+  operation: 'restore',
+  requiredPermission: { resource: 'devices', action: 'execute' },
+  requiredDelegatedScopesAny: ['ai:execute', 'devices:execute'],
+  requiredAiTool: 'execute_dr_plan',
+};
+
+export type DrReconcileOutcome = {
+  execution: DrExecutionRecord | null;
+  nextDelayMs: number | null;
+};
 
 type PlannedGroup = {
   id: string;
@@ -72,22 +94,9 @@ export type DrExecutionResults = {
   groupResults: GroupResult[];
   activeGroupId?: string | null;
   haltReason?: string | null;
-  /**
-   * Site-scope authorization snapshot captured at enqueue time. `null` means the
-   * initiating caller was NOT site-restricted (dispatch to any device in the
-   * plan's groups). A `string[]` is the exact set of device IDs the caller was
-   * authorized to reach — the worker (system DB context, no auth) MUST refuse to
-   * dispatch to any device outside this set even if the plan's groups are later
-   * edited to add out-of-scope devices. See `dispatchGroup`.
-   */
+  /** Historical audit context only. Never authorization authority. */
   authorizedDeviceIds?: string[] | null;
 };
-
-/** Normalize a persisted `authorizedDeviceIds` value → string[] | null (legacy/undefined → null = unrestricted). */
-function normalizeAuthorizedDeviceIds(value: unknown): string[] | null {
-  if (!Array.isArray(value)) return null;
-  return value.filter((entry): entry is string => typeof entry === 'string');
-}
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value)
@@ -258,12 +267,132 @@ function computeGroupResults(
   });
 }
 
-async function loadDrPlanGroups(planId: string, orgId: string): Promise<DrPlanGroupRecord[]> {
-  return db
+async function loadDrPlanGroups(planId: string, orgId: string, tx: DrDb = db): Promise<DrPlanGroupRecord[]> {
+  return tx
     .select()
     .from(drPlanGroups)
     .where(and(eq(drPlanGroups.planId, planId), eq(drPlanGroups.orgId, orgId)))
     .orderBy(asc(drPlanGroups.sequence));
+}
+
+class DrRecoveryAuthorizationDeniedError extends Error {
+  readonly retriable = false;
+
+  constructor(readonly code: string) {
+    super(code);
+    this.name = 'DrRecoveryAuthorizationDeniedError';
+  }
+}
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+type DrAuthorizationRefDependencies = {
+  resolveProviderSnapshotId(orgId: string, snapshotId: string): Promise<string>;
+};
+
+async function resolveProviderSnapshotIdWithDb(
+  orgId: string,
+  snapshotId: string,
+  tx: DrDb = db,
+): Promise<string> {
+  const rows = await tx
+    .select({ id: backupSnapshots.id, snapshotId: backupSnapshots.snapshotId })
+    .from(backupSnapshots)
+    .where(and(
+      eq(backupSnapshots.orgId, orgId),
+      UUID_PATTERN.test(snapshotId)
+        ? or(eq(backupSnapshots.id, snapshotId), eq(backupSnapshots.snapshotId, snapshotId))
+        : eq(backupSnapshots.snapshotId, snapshotId),
+    ));
+
+  const internal = rows.filter((row) => row.id === snapshotId);
+  if (internal.length === 1) return internal[0]!.id;
+  const external = rows.filter((row) => row.snapshotId === snapshotId);
+  if (external.length !== 1) {
+    throw new DrRecoveryAuthorizationDeniedError(
+      external.length > 1 ? 'ambiguous_snapshot_reference' : 'resource_not_found',
+    );
+  }
+  return external[0]!.id;
+}
+
+const EXPLICIT_SOURCE_FIELDS: ReadonlyArray<{
+  field: string;
+  kind: ResilienceResourceRef['kind'];
+}> = [
+  { field: 'sourceSnapshotId', kind: 'snapshot' },
+  { field: 'restoreJobId', kind: 'restore_job' },
+  { field: 'recoveryTokenId', kind: 'recovery_token' },
+  { field: 'mediaArtifactId', kind: 'media_artifact' },
+  { field: 'bootMediaArtifactId', kind: 'boot_media_artifact' },
+];
+
+/** Parse only identity fields; payload metadata and provider secrets stay unread. */
+export async function resolveDrGroupAuthorizationRefs(
+  group: Pick<DrPlanGroupRecord, 'devices' | 'restoreConfig'>,
+  orgId: string,
+  deps: DrAuthorizationRefDependencies = {
+    resolveProviderSnapshotId: (ownerOrgId, snapshotId) => resolveProviderSnapshotIdWithDb(ownerOrgId, snapshotId),
+  },
+): Promise<ResilienceResourceRef[]> {
+  const rawDeviceIds = Array.isArray(group.devices) ? group.devices : [];
+  if (
+    rawDeviceIds.length === 0
+    || rawDeviceIds.some((value) => typeof value !== 'string' || !UUID_PATTERN.test(value))
+  ) {
+    throw new DrRecoveryAuthorizationDeniedError('resource_not_found');
+  }
+  const deviceIds = [...new Set(rawDeviceIds as string[])];
+
+  const restoreConfig = asRecord(group.restoreConfig);
+  const payload = asRecord(restoreConfig.payload);
+  const refs: ResilienceResourceRef[] = deviceIds.map((id) => ({ kind: 'device', id, role: 'target' }));
+  const sourceKeys = new Set<string>();
+  const addSource = (kind: ResilienceResourceRef['kind'], id: string) => {
+    const key = `${kind}:${id}`;
+    if (!sourceKeys.has(key)) {
+      sourceKeys.add(key);
+      refs.push({ kind, id, role: 'source' });
+    }
+  };
+
+  for (const { field, kind } of EXPLICIT_SOURCE_FIELDS) {
+    for (const container of [restoreConfig, payload]) {
+      const value = container[field];
+      if (value === undefined) continue;
+      if (typeof value !== 'string' || !UUID_PATTERN.test(value)) {
+        throw new DrRecoveryAuthorizationDeniedError('resource_not_found');
+      }
+      addSource(kind, value);
+    }
+  }
+
+  if (payload.snapshotId !== undefined) {
+    if (typeof payload.snapshotId !== 'string' || !payload.snapshotId.trim()) {
+      throw new DrRecoveryAuthorizationDeniedError('resource_not_found');
+    }
+    addSource('snapshot', await deps.resolveProviderSnapshotId(orgId, payload.snapshotId));
+  }
+
+  if (sourceKeys.size === 0) {
+    throw new DrRecoveryAuthorizationDeniedError('resource_not_found');
+  }
+  return refs;
+}
+
+async function resolveAllExecutionRefs(
+  groups: readonly DrPlanGroupRecord[],
+  orgId: string,
+  tx: DrDb,
+): Promise<ResilienceResourceRef[]> {
+  const refs: ResilienceResourceRef[] = [];
+  for (const group of groups) {
+    refs.push(...await resolveDrGroupAuthorizationRefs(group, orgId, {
+      resolveProviderSnapshotId: (ownerOrgId, snapshotId) =>
+        resolveProviderSnapshotIdWithDb(ownerOrgId, snapshotId, tx),
+    }));
+  }
+  return refs;
 }
 
 export async function createDrExecutionAndEnqueue(input: {
@@ -271,34 +400,39 @@ export async function createDrExecutionAndEnqueue(input: {
   orgId: string;
   executionType: 'rehearsal' | 'failover' | 'failback';
   initiatedBy?: string | null;
-  /**
-   * Site-scope authorization snapshot from the initiating caller. `null` (or
-   * omitted) = unrestricted caller; a `string[]` pins the exact devices the
-   * worker is allowed to dispatch to (see `DrExecutionResults.authorizedDeviceIds`).
-   */
-  authorizedDeviceIds?: string[] | null;
+  auth: AuthContext;
 }): Promise<DrExecutionRecord | null> {
-  const groups = await loadDrPlanGroups(input.planId, input.orgId);
+  const subject = await captureRecoveryAuthorizationSubject(
+    input.auth,
+    input.orgId,
+    DR_RECOVERY_AUTHORIZATION_INTENT,
+  );
   const now = new Date();
-  const initialResults = buildInitialResults(groups, now);
-  initialResults.authorizedDeviceIds = input.authorizedDeviceIds ?? null;
-  const [execution] = await db
-    .insert(drExecutions)
-    .values({
-      planId: input.planId,
-      orgId: input.orgId,
-      executionType: input.executionType,
-      status: 'pending',
-      startedAt: now,
-      initiatedBy: input.initiatedBy ?? null,
-      results: initialResults,
-      createdAt: now,
-    })
-    .returning();
+  const execution = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+    const tx = db;
+    const groups = await loadDrPlanGroups(input.planId, input.orgId, tx);
+    const refs = await resolveAllExecutionRefs(groups, input.orgId, tx);
+    await authorizeQueuedRecoveryWork(subject, input.orgId, refs, DR_RECOVERY_AUTHORIZATION_INTENT);
+    const [created] = await tx
+      .insert(drExecutions)
+      .values({
+        planId: input.planId,
+        orgId: input.orgId,
+        executionType: input.executionType,
+        status: 'pending',
+        startedAt: now,
+        initiatedBy: input.initiatedBy ?? null,
+        results: buildInitialResults(groups, now),
+        createdAt: now,
+        ...subject,
+      })
+      .returning();
+    return created ?? null;
+  }));
 
   if (!execution) return null;
   const { enqueueDrExecutionReconcile } = await import('../jobs/drExecutionWorker');
-  await enqueueDrExecutionReconcile(execution.id);
+  await runOutsideDbContext(() => enqueueDrExecutionReconcile(execution.id));
   return execution;
 }
 
@@ -367,25 +501,8 @@ async function dispatchGroup(
       .map((entry) => entry.deviceId),
   );
 
-  // Site-scope authorization snapshot the initiating caller was granted at
-  // enqueue time. `null` = unrestricted. The worker runs in a system DB context
-  // (no auth), so this is the ONLY defense against dispatching to an out-of-site
-  // device that was added to the plan's groups after authorization.
-  const authorizedDeviceIds = currentResults.authorizedDeviceIds ?? null;
-
   for (const deviceId of deviceIds) {
     if (alreadyQueued.has(deviceId)) {
-      continue;
-    }
-
-    if (authorizedDeviceIds && !authorizedDeviceIds.includes(deviceId)) {
-      nextResults.failedDispatches.push({
-        groupId: group.id,
-        groupName: group.name,
-        deviceId,
-        commandType,
-        error: 'Device is outside the initiating caller\'s site authorization',
-      });
       continue;
     }
 
@@ -422,6 +539,7 @@ async function dispatchGroup(
       commandType,
       status: command.status,
     });
+    alreadyQueued.add(deviceId);
   }
 
   if (nextResults.failedDispatches.some((entry) => entry.groupId === group.id)) {
@@ -455,7 +573,54 @@ function pickNextGroup(groups: DrPlanGroupRecord[], groupResults: GroupResult[])
   return null;
 }
 
-export async function reconcileDrExecution(executionId: string): Promise<DrExecutionRecord | null> {
+function isKnownAuthorizationDenial(error: unknown): error is Error & { retriable: false; code?: string } {
+  return error instanceof Error
+    && 'retriable' in error
+    && (error as { retriable?: unknown }).retriable === false;
+}
+
+async function persistDrAuthorizationDenial(
+  execution: DrExecutionRecord,
+  code: string,
+  checkedAt: Date,
+): Promise<DrExecutionRecord> {
+  const currentResults = asRecord(execution.results);
+  const legacyUnknown = execution.authorizationPrincipalKind === 'unknown'
+    || execution.authorizationState === 'quarantined_authorization_unknown';
+  const [updated] = await db
+    .update(drExecutions)
+    .set({
+      ...(legacyUnknown ? {} : {
+        status: 'failed',
+        completedAt: checkedAt,
+        results: {
+          ...currentResults,
+          dispatchStatus: 'failed',
+          haltReason: `DR authorization denied: ${code}`,
+        },
+      }),
+      authorizationState: legacyUnknown ? 'quarantined_authorization_unknown' : 'denied',
+      authorizationDenialCode: legacyUnknown ? 'authorization_subject_unknown' : code,
+      authorizationCheckedAt: checkedAt,
+    })
+    .where(eq(drExecutions.id, execution.id))
+    .returning();
+  return updated ?? execution;
+}
+
+async function authorizeDrGroup(execution: DrExecutionRecord, group: DrPlanGroupRecord): Promise<Date> {
+  const refs = await resolveDrGroupAuthorizationRefs(group, execution.orgId);
+  await authorizeQueuedRecoveryWork(
+    execution as RecoveryAuthorizationSubjectRow,
+    execution.orgId,
+    refs,
+    DR_RECOVERY_AUTHORIZATION_INTENT,
+  );
+  return new Date();
+}
+
+export async function reconcileDrExecution(executionId: string): Promise<DrReconcileOutcome> {
+  await db.execute(sql`SELECT id FROM dr_executions WHERE id = ${executionId} FOR UPDATE`);
   const [execution] = await db
     .select()
     .from(drExecutions)
@@ -463,7 +628,21 @@ export async function reconcileDrExecution(executionId: string): Promise<DrExecu
     .limit(1);
 
   if (!execution || ['completed', 'failed', 'aborted'].includes(execution.status)) {
-    return execution ?? null;
+    return { execution: execution ?? null, nextDelayMs: null };
+  }
+
+  if (
+    execution.authorizationPrincipalKind === 'unknown'
+    || execution.authorizationState === 'quarantined_authorization_unknown'
+  ) {
+    return {
+      execution: await persistDrAuthorizationDenial(
+        execution,
+        'authorization_subject_unknown',
+        new Date(),
+      ),
+      nextDelayMs: null,
+    };
   }
 
   const groups = await loadDrPlanGroups(execution.planId, execution.orgId);
@@ -474,9 +653,6 @@ export async function reconcileDrExecution(executionId: string): Promise<DrExecu
     plannedGroups: normalizePlannedGroups(groups),
     queuedCommands: normalizeQueuedCommands(currentResultsRecord.queuedCommands),
     failedDispatches: normalizeFailedDispatches(currentResultsRecord.failedDispatches),
-    // Carry the caller's site-scope authorization forward across reconciles so
-    // the worker keeps honoring it on every dispatch.
-    authorizedDeviceIds: normalizeAuthorizedDeviceIds(currentResultsRecord.authorizedDeviceIds),
   };
 
   const commandIds = results.queuedCommands.map((entry) => entry.commandId);
@@ -493,6 +669,23 @@ export async function reconcileDrExecution(executionId: string): Promise<DrExecu
   const hasRunningGroup = results.groupResults.some((group) => group.status === 'running');
   const failedGroup = results.groupResults.find((group) => group.status === 'failed');
   const allCompleted = results.groupResults.length > 0 && results.groupResults.every((group) => group.status === 'completed');
+
+  const activeResult = results.groupResults.find((group) => group.status === 'running');
+  const activeGroup = activeResult ? groups.find((group) => group.id === activeResult.groupId) : null;
+  let authorizationCheckedAt: Date | null = null;
+  try {
+    if (activeGroup) authorizationCheckedAt = await authorizeDrGroup(execution, activeGroup);
+  } catch (error) {
+    if (!isKnownAuthorizationDenial(error)) throw error;
+    return {
+      execution: await persistDrAuthorizationDenial(
+        execution,
+        error.code ?? error.message,
+        new Date(),
+      ),
+      nextDelayMs: null,
+    };
+  }
 
   let nextStatus: DrExecutionRecord['status'] = hasRunningGroup ? 'running' : 'pending';
   let completedAt: Date | null = null;
@@ -518,6 +711,19 @@ export async function reconcileDrExecution(executionId: string): Promise<DrExecu
   } else if (!hasRunningGroup) {
     const nextGroup = pickNextGroup(groups, results.groupResults);
     if (nextGroup) {
+      try {
+        authorizationCheckedAt = await authorizeDrGroup(execution, nextGroup);
+      } catch (error) {
+        if (!isKnownAuthorizationDenial(error)) throw error;
+        return {
+          execution: await persistDrAuthorizationDenial(
+            execution,
+            error.code ?? error.message,
+            new Date(),
+          ),
+          nextDelayMs: null,
+        };
+      }
       results = await dispatchGroup(execution, nextGroup, results);
       nextStatus = results.dispatchStatus === 'failed' ? 'failed' : 'running';
       results.groupResults = computeGroupResults(groups, results.queuedCommands, results.failedDispatches, new Map(commands.map((command) => [command.id, command])));
@@ -542,14 +748,20 @@ export async function reconcileDrExecution(executionId: string): Promise<DrExecu
       status: nextStatus,
       completedAt,
       results,
+      ...(authorizationCheckedAt ? {
+        authorizationState: 'authorized' as const,
+        authorizationDenialCode: null,
+        authorizationCheckedAt,
+      } : {}),
     })
     .where(eq(drExecutions.id, execution.id))
     .returning();
 
-  if (updated && ['pending', 'running'].includes(updated.status)) {
-    const { enqueueDrExecutionReconcile } = await import('../jobs/drExecutionWorker');
-    await enqueueDrExecutionReconcile(updated.id, hasRunningGroup ? 10_000 : 2_000);
-  }
-
-  return updated ?? execution;
+  const finalExecution = updated ?? execution;
+  return {
+    execution: finalExecution,
+    nextDelayMs: ['pending', 'running'].includes(finalExecution.status)
+      ? (hasRunningGroup ? 10_000 : 2_000)
+      : null,
+  };
 }

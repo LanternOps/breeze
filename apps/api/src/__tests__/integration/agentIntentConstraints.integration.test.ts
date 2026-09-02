@@ -30,7 +30,7 @@ import { eq, sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
 import { actionIntents, aiAgents, aiAgentRuns, auditLogs } from '../../db/schema';
 import type { NewActionIntent } from '../../db/schema/actionIntents';
-import { createOrganization, createPartner, createUser } from './db-utils';
+import { createOrganization, createPartner, createUser, reapplyOrgIdFkDeferrability } from './db-utils';
 
 describe('agent-originated action_intents constraints', () => {
   let orgId: string;
@@ -372,6 +372,12 @@ describe('agent-originated action_intents constraints', () => {
       'utf8',
     );
     await getTestDb().execute(sql.raw(enumMigrationSql));
+    // 2026-09-05-a's unconditional DROP+ADD of
+    // action_intents_requesting_agent_run_id_org_id_fkey carries no DEFERRABLE
+    // clause, so replaying it here undoes the org-lifecycle branch's
+    // deferrable-FK contract (migrations/2026-09-12-100001-org-lifecycle-foundations.sql
+    // Section 2). Restore it rather than editing the shipped migration.
+    await reapplyOrgIdFkDeferrability(getTestDb());
 
     // The re-added composite FK validated existing rows; the pre-existing
     // agent intent must have survived, and the constraints must still fire.

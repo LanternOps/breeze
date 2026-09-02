@@ -125,9 +125,12 @@ describe('executeScriptOnDevices — cross-org isolation', () => {
       auth: multiOrgAuth,
     });
 
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.status).toBe(400);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.admission).toMatchObject({
+        status: 'rejected',
+        targets: [{ requestedDeviceId: 'device-1', admission: 'denied', reasonCode: 'script_org_mismatch' }],
+      });
     }
     // No dispatch for the cross-org device.
     expect(dispatchScriptToDevice).not.toHaveBeenCalled();
@@ -146,8 +149,9 @@ describe('executeScriptOnDevices — cross-org isolation', () => {
 
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.executions).toHaveLength(1);
-      expect(result.executions[0]!.deviceId).toBe('device-1');
+      expect(result.admission.targets).toEqual([expect.objectContaining({
+        requestedDeviceId: 'device-1', admission: 'admitted',
+      })]);
     }
   });
 
@@ -164,7 +168,7 @@ describe('executeScriptOnDevices — cross-org isolation', () => {
 
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.executions).toHaveLength(1);
+      expect(result.admission.targets[0]).toMatchObject({ requestedDeviceId: 'device-1', admission: 'admitted' });
     }
   });
 
@@ -186,9 +190,10 @@ describe('executeScriptOnDevices — cross-org isolation', () => {
 
     expect(result.ok).toBe(true);
     if (result.ok) {
-      const targetedIds = result.executions.map((e) => e.deviceId);
-      expect(targetedIds).toContain('device-a');
-      expect(targetedIds).not.toContain('device-b');
+      expect(result.admission.targets).toEqual([
+        expect.objectContaining({ requestedDeviceId: 'device-a', admission: 'admitted' }),
+        { requestedDeviceId: 'device-b', admission: 'denied', reasonCode: 'script_org_mismatch' },
+      ]);
     }
   });
 
@@ -215,12 +220,9 @@ describe('executeScriptOnDevices — cross-org isolation', () => {
 
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.batchIds).toHaveLength(2);
-      expect(result.batchIds).toEqual(['batch-org-a', 'batch-org-b']);
-      // A multi-org run has no single batch that represents the whole run —
-      // `batchId` (the legacy scalar) must stay null rather than silently
-      // pointing at one arbitrary org's slice. `batchIds` is the complete list.
-      expect(result.batchId).toBeNull();
+      expect(result.admission.targets.map((target) => target.batchId)).toEqual([
+        'batch-org-a', 'batch-org-a', 'batch-org-b',
+      ]);
     }
 
     // Two batch inserts: org-a with 2 devices targeted, org-b with 1.
@@ -276,12 +278,11 @@ describe('executeScriptOnDevices — per-device dispatch failures (#3409 PR2 Tas
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.executions.map((e) => e.deviceId)).toEqual(['device-a', 'device-c']);
-    expect(result.failures).toEqual([
-      { deviceId: 'device-b', code: 'unresolved_variables', error: expect.any(String) },
+    expect(result.admission.targets).toEqual([
+      expect.objectContaining({ requestedDeviceId: 'device-a', admission: 'admitted' }),
+      expect.objectContaining({ requestedDeviceId: 'device-b', admission: 'excluded', reasonCode: 'unresolved_variables' }),
+      expect.objectContaining({ requestedDeviceId: 'device-c', admission: 'admitted' }),
     ]);
-    // Still targeted all three — the failure didn't truncate the fan-out.
-    expect(result.devicesTargeted).toBe(3);
   });
 
   it('writes a failed script_executions row for the failed device, not nothing', async () => {
@@ -338,9 +339,8 @@ describe('executeScriptOnDevices — per-device dispatch failures (#3409 PR2 Tas
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    // devicesTargeted was set once at batch-creation time (both devices were
-    // targeted) and must not be decremented by a later per-device failure.
-    expect(result.devicesTargeted).toBe(2);
+    expect(result.admission.targets).toHaveLength(2);
+    expect(result.admission.status).toBe('partially_queued');
 
     // db.update calls: one devicesFailed increment for the failed device's
     // batch, plus the final batch-status update.
@@ -399,12 +399,10 @@ describe('executeScriptOnDevices — dispatch codes the gate already recorded', 
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    // The operator still learns the device failed and why.
-    expect(result.failures).toEqual([
-      { deviceId: 'device-b', code: 'agent_upgrade_required_recorded', error: expect.any(String) },
+    expect(result.admission.targets).toEqual([
+      expect.objectContaining({ requestedDeviceId: 'device-a', admission: 'admitted' }),
+      expect.objectContaining({ requestedDeviceId: 'device-b', admission: 'excluded', reasonCode: 'agent_upgrade_required_recorded' }),
     ]);
-    expect(result.executions.map((e) => e.deviceId)).toEqual(['device-a']);
-    expect(result.devicesTargeted).toBe(2);
 
     // db.insert's chain is a single shared mock: call 0 is the batch insert.
     // A second `.values(...)` call would be the duplicate failed-execution row.
@@ -442,9 +440,9 @@ describe('executeScriptOnDevices — dispatch codes the gate already recorded', 
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.failures).toEqual([
-      { deviceId: 'device-b', code: 'agent_upgrade_required', error: expect.any(String) },
-    ]);
+    expect(result.admission.targets[1]).toMatchObject({
+      requestedDeviceId: 'device-b', admission: 'excluded', reasonCode: 'agent_upgrade_required',
+    });
 
     const insertChain = vi.mocked(db.insert).mock.results[0]!.value;
     expect(insertChain.values.mock.calls).toHaveLength(2);
@@ -503,9 +501,9 @@ describe('executeScriptOnDevices — dispatch codes the gate already recorded', 
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.failures).toEqual([
-      { deviceId: 'device-b', code: 'secret_delivery_unavailable', error: expect.any(String) },
-    ]);
+    expect(result.admission.targets[1]).toMatchObject({
+      requestedDeviceId: 'device-b', admission: 'excluded', reasonCode: 'secret_delivery_unavailable',
+    });
 
     const insertChain = vi.mocked(db.insert).mock.results[0]!.value;
     expect(insertChain.values.mock.calls).toHaveLength(2);
@@ -597,7 +595,7 @@ describe('executeScriptOnDevices — ignored bound parameters (#3409 PR3 §2.2)'
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.ignoredParameters).toEqual(['api_key']);
-    expect(result.failures).toHaveLength(1);
+    expect(result.admission.targets[0]).toMatchObject({ admission: 'excluded', reasonCode: 'unresolved_parameters' });
   });
 });
 
@@ -739,7 +737,7 @@ describe('executeScriptOnDevices — maintenance window suppression', () => {
     vi.mocked(checkDeviceMaintenanceWindow).mockResolvedValue(maintenanceStatus({ active: false, suppressScripts: false }));
   });
 
-  it('returns 409 with maintenanceSuppressedDeviceIds when every target device is in a script-suppressing maintenance window', async () => {
+  it('returns a typed rejection when every target device is in a script-suppressing maintenance window', async () => {
     vi.mocked(db.select)
       .mockReturnValueOnce(scriptSelectChain([baseScript({ orgId: 'org-b' })]) as any)
       .mockReturnValueOnce(devicesSelectChain([baseDevice({ id: 'device-1', orgId: 'org-b' })]) as any);
@@ -751,11 +749,11 @@ describe('executeScriptOnDevices — maintenance window suppression', () => {
       auth: multiOrgAuth,
     });
 
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.status).toBe(409);
-      expect(result.maintenanceSuppressedDeviceIds).toEqual(['device-1']);
-    }
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.admission).toMatchObject({
+      status: 'rejected',
+      targets: [{ requestedDeviceId: 'device-1', admission: 'suppressed', reasonCode: 'maintenance_suppressed' }],
+    });
     expect(dispatchScriptToDevice).not.toHaveBeenCalled();
   });
 
@@ -780,8 +778,11 @@ describe('executeScriptOnDevices — maintenance window suppression', () => {
 
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.maintenanceSuppressedDeviceIds).toEqual(['device-1']);
-      expect(result.executions.map((e) => e.deviceId)).toEqual(['device-2']);
+      expect(result.admission.status).toBe('partially_queued');
+      expect(result.admission.targets).toEqual([
+        { requestedDeviceId: 'device-1', admission: 'suppressed', reasonCode: 'maintenance_suppressed' },
+        expect.objectContaining({ requestedDeviceId: 'device-2', admission: 'admitted' }),
+      ]);
     }
   });
 });

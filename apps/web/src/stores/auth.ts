@@ -13,6 +13,12 @@ import { resetPartnerCurrencyCache } from '@/lib/partnerCurrencyCache';
 import { resetApproximateTotalCache } from '@/lib/approximateTotalCache';
 import { getSafeNext, loginPathWithNext } from '@/lib/authNext';
 import {
+  parseMfaChallengeResponse,
+  type MfaChallenge,
+  type MfaMethod,
+} from '@/lib/mfaChallenge';
+export type { MfaAllowedMethods, MfaChallenge, MfaMethod } from '@/lib/mfaChallenge';
+import {
   applyAppearancePreferences,
   applyResolvedLocalePreferences,
   type Density,
@@ -66,6 +72,18 @@ export interface User {
   // sessions persisted before this field (treat absent as capable; the server
   // enforces regardless).
   canManagePartnerWide?: boolean;
+  // #4018: whether the account has a password set. False for an SSO-provisioned
+  // (JIT) account, which therefore cannot satisfy any password step-up — UI that
+  // would otherwise tell such a user to "set up MFA and sign in again" has to
+  // point them at their identity provider instead.
+  //
+  // Populated by `GET /users/me` (routes/users.ts), which is what
+  // completeBootstrapLogin stores wholesale and what fetchAndApplyPreferences
+  // merges below. Still OPTIONAL because a session persisted before the field
+  // existed has no value until its next /users/me refresh: treat absent as
+  // UNKNOWN, never as "has a password" — always compare with `=== false`, never
+  // `!user?.hasPassword`.
+  hasPassword?: boolean;
   preferences?: UserPreferences;
 }
 
@@ -93,6 +111,7 @@ interface AuthState {
   // never paint as an empty-but-loaded page. NOT persisted: a stale throttle
   // must never survive a reload.
   authThrottledUntil: number | null;
+  sessionGeneration: number;
 
   // Actions
   setUser: (user: User | null) => void;
@@ -102,6 +121,7 @@ interface AuthState {
   login: (user: User, tokens: Tokens) => void;
   logout: () => void;
   updateUser: (user: Partial<User>) => void;
+  commitMfaEnrollmentIfCurrent: (generation: number, tokens: Tokens) => boolean;
   setAuthThrottledUntil: (until: number | null) => void;
 }
 
@@ -123,8 +143,15 @@ export const useAuthStore = create<AuthState>()(
       mfaTempToken: null,
       sessionExpiredReason: null,
       authThrottledUntil: null,
+      sessionGeneration: 0,
 
-      setUser: (user) => set({ user, isAuthenticated: !!user }),
+      setUser: (user) => set((state) => ({
+        user,
+        isAuthenticated: !!user,
+        sessionGeneration: state.user?.id === user?.id
+          ? state.sessionGeneration
+          : state.sessionGeneration + 1,
+      })),
 
       setAuthThrottledUntil: (until) => set({ authThrottledUntil: until }),
 
@@ -141,7 +168,7 @@ export const useAuthStore = create<AuthState>()(
         // Re-login clears any stale expiry state and re-arms
         // handleSessionExpired for the new session.
         sessionExpiryInFlight = false;
-        set({
+        set((state) => ({
           user,
           tokens,
           isAuthenticated: true,
@@ -149,8 +176,9 @@ export const useAuthStore = create<AuthState>()(
           mfaPending: false,
           mfaTempToken: null,
           sessionExpiredReason: null,
-          authThrottledUntil: null
-        });
+          authThrottledUntil: null,
+          sessionGeneration: state.sessionGeneration + 1,
+        }));
       },
 
       // Deliberately does NOT clear `sessionExpiredReason`: handleSessionExpired
@@ -165,7 +193,7 @@ export const useAuthStore = create<AuthState>()(
         // currency (lib/useApproximateTotal), so they must not outlive the
         // session either.
         resetApproximateTotalCache();
-        set({
+        set((state) => ({
           user: null,
           tokens: null,
           isAuthenticated: false,
@@ -173,13 +201,31 @@ export const useAuthStore = create<AuthState>()(
           mfaTempToken: null,
           // An evicted session is not "waiting out a throttle" — drop the mask
           // so the expiry overlay/redirect is what the user sees (#3696).
-          authThrottledUntil: null
-        });
+          authThrottledUntil: null,
+          sessionGeneration: state.sessionGeneration + 1,
+        }));
       },
 
       updateUser: (updates) => set((state) => ({
         user: state.user ? { ...state.user, ...updates } : null
-      }))
+      })),
+
+      commitMfaEnrollmentIfCurrent: (generation, tokens) => {
+        let committed = false;
+        set((state) => {
+          if (
+            state.sessionGeneration !== generation
+            || !state.isAuthenticated
+            || !state.user
+          ) return state;
+          committed = true;
+          return {
+            tokens,
+            user: { ...state.user, mfaEnabled: true },
+          };
+        });
+        return committed;
+      },
     }),
     {
       name: 'breeze-auth',
@@ -347,6 +393,18 @@ type RefreshOutcome =
 
 const REFRESH_LOCK_NAME = 'breeze-token-refresh';
 
+async function fetchAuthIssuerWithBindingRetry(
+  input: RequestInfo | URL,
+  init: RequestInit,
+): Promise<Response> {
+  const headers = new Headers(init.headers);
+  headers.set('x-breeze-auth-transition', 'v1');
+  const capableInit = { ...init, headers };
+  const first = await fetch(input, capableInit);
+  if (first.status !== 428) return first;
+  return fetch(input, capableInit);
+}
+
 // One low-level /auth/refresh attempt. Returns the new tokens on success, or a
 // discriminated result so the caller can tell three cases apart:
 //   - raced:     a benign concurrent race (server reason 'refresh_raced',
@@ -425,7 +483,7 @@ async function refreshFetchOnce(): Promise<RefreshFetchResult> {
 
   let refreshResponse: Response;
   try {
-    refreshResponse = await fetch(buildApiUrl('/auth/refresh'), {
+    refreshResponse = await fetchAuthIssuerWithBindingRetry(buildApiUrl('/auth/refresh'), {
       method: 'POST',
       headers,
       credentials: 'include',
@@ -450,6 +508,17 @@ async function refreshFetchOnce(): Promise<RefreshFetchResult> {
     if (body?.reason === 'refresh_raced') {
       return { tokens: null, raced: true, transient: false };
     }
+  }
+
+  // Same benign race, second shape. #4097's per-binding issuance lease
+  // (apps/api/src/services/authBrowserTransition.ts) rejects the LOSER of two
+  // concurrent refreshes with a retryable AuthIssuanceConflictError, flattened
+  // to a bare 409 with no `reason` — no verdict was reached on the refresh
+  // cookie, so this is the raced path, not an expired session. An org switch
+  // hits it every time (reload → bootstrap refresh racing the pre-reload one
+  // the unload aborted client-side but the server is still executing).
+  if (refreshResponse.status === 409) {
+    return { tokens: null, raced: true, transient: false };
   }
 
   // 429 means the rate limiter rejected the request before the refresh cookie
@@ -531,9 +600,16 @@ async function requestTokenRefresh(): Promise<RefreshOutcome> {
         if (retry.throttledForMs !== undefined) {
           return { kind: 'throttled', retryAfterMs: retry.throttledForMs };
         }
-        // If the race-retry itself hit a transient blip, fall through to the
-        // backoff path below; otherwise the session is genuinely gone.
-        if (!retry.transient) return { kind: 'auth-failed' };
+        // If the race-retry hit a transient blip — or raced AGAIN — fall
+        // through to the backoff path below; otherwise the session is
+        // genuinely gone. A second consecutive race is still not a verdict on
+        // the refresh cookie: the fixed 200ms above simply wasn't long enough
+        // for the winner's issuance transaction to commit and release the
+        // #4097 lease (reachable under DB/pool contention), and evicting there
+        // was the same org-switch logout, just rarer. Deliberately reuses the
+        // existing bounded ladder rather than adding a second counter — the
+        // whole loop stays capped at MAX_TRANSIENT_REFRESH_RETRIES passes.
+        if (!retry.transient && !retry.raced) return { kind: 'auth-failed' };
       } else if (!result.transient) {
         // Hard failure (expired/reused refresh cookie, real 401/403): the
         // session is unrecoverable — evict.
@@ -1132,14 +1208,15 @@ export async function fetchWithAuth(rawUrl: string, options: FetchWithAuthOption
   return response;
 }
 
-export type MfaMethod = 'totp' | 'sms' | 'passkey';
-
 type ApiAuthSuccess = {
   success: boolean;
   user?: User;
   tokens?: Tokens;
   requiresSetup?: boolean;
   error?: string;
+  // #4067: present when the completed step was the link-on-first-SSO-login
+  // ceremony — the sanitized post-login relay target from the SSO initiation.
+  redirectPath?: string;
 };
 
 export type PasskeyRegistrationOptions = PublicKeyCredentialCreationOptionsJSON;
@@ -1162,17 +1239,18 @@ export async function getPasskeyCredential(
 export async function apiLogin(email: string, password: string): Promise<{
   success: boolean;
   mfaRequired?: boolean;
+  challenge?: MfaChallenge;
   tempToken?: string;
   mfaMethod?: MfaMethod;
   passkeyAvailable?: boolean;
-  phoneLast4?: string;
+  phoneLast4?: string | null;
   user?: User;
   tokens?: Tokens;
   requiresSetup?: boolean;
   error?: string;
 }> {
   try {
-    const response = await fetch(buildApiUrl('/auth/login'), {
+    const response = await fetchAuthIssuerWithBindingRetry(buildApiUrl('/auth/login'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
@@ -1186,15 +1264,20 @@ export async function apiLogin(email: string, password: string): Promise<{
     }
 
     if (data.mfaRequired) {
+      const challenge = parseMfaChallengeResponse(data);
+      if (!challenge) {
+        return { success: false, error: 'Invalid MFA challenge response' };
+      }
       return {
         success: true,
         mfaRequired: true,
-        tempToken: data.tempToken,
-        mfaMethod: data.mfaMethod || 'totp',
+        challenge,
+        tempToken: challenge.tempToken,
+        mfaMethod: challenge.primary,
         // #2153: whether a passkey can be used as an alternate factor for this
         // login even when the primary method is totp/sms.
-        passkeyAvailable: data.passkeyAvailable === true,
-        phoneLast4: data.phoneLast4
+        passkeyAvailable: challenge.allowedMethods.passkey,
+        phoneLast4: challenge.phoneLast4
       };
     }
 
@@ -1204,16 +1287,21 @@ export async function apiLogin(email: string, password: string): Promise<{
       success: true,
       user,
       tokens: data.tokens,
-      requiresSetup: !!data.requiresSetup
+      requiresSetup: !!data.requiresSetup,
+      ...(typeof data.redirectPath === 'string' ? { redirectPath: data.redirectPath } : {})
     };
   } catch {
     return { success: false, error: 'Network error' };
   }
 }
 
-export async function apiVerifyMFA(code: string, tempToken: string, method?: MfaMethod): Promise<ApiAuthSuccess> {
+export async function apiVerifyMFA(
+  code: string,
+  tempToken: string,
+  method?: Exclude<MfaMethod, 'passkey'>,
+): Promise<ApiAuthSuccess> {
   try {
-    const response = await fetch(buildApiUrl('/auth/mfa/verify'), {
+    const response = await fetchAuthIssuerWithBindingRetry(buildApiUrl('/auth/mfa/verify'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
@@ -1232,7 +1320,8 @@ export async function apiVerifyMFA(code: string, tempToken: string, method?: Mfa
       success: true,
       user,
       tokens: data.tokens,
-      requiresSetup: !!data.requiresSetup
+      requiresSetup: !!data.requiresSetup,
+      ...(typeof data.redirectPath === 'string' ? { redirectPath: data.redirectPath } : {})
     };
   } catch {
     return { success: false, error: 'Network error' };
@@ -1257,7 +1346,7 @@ export async function apiVerifyPasskeyMFA(tempToken: string): Promise<ApiAuthSuc
     const optionsJSON = optionsData.options ?? optionsData.optionsJSON;
     const credential = await getPasskeyCredential(optionsJSON);
 
-    const verifyResponse = await fetch(buildApiUrl('/auth/mfa/passkey/verify'), {
+    const verifyResponse = await fetchAuthIssuerWithBindingRetry(buildApiUrl('/auth/mfa/passkey/verify'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
@@ -1278,7 +1367,8 @@ export async function apiVerifyPasskeyMFA(tempToken: string): Promise<ApiAuthSuc
       success: true,
       user,
       tokens: verifyData.tokens,
-      requiresSetup: !!verifyData.requiresSetup
+      requiresSetup: !!verifyData.requiresSetup,
+      ...(typeof verifyData.redirectPath === 'string' ? { redirectPath: verifyData.redirectPath } : {})
     };
   } catch (error) {
     if (error instanceof Error && error.name === 'NotAllowedError') {
@@ -1286,6 +1376,78 @@ export async function apiVerifyPasskeyMFA(tempToken: string): Promise<ApiAuthSuc
     }
     console.warn('[apiVerifyPasskeyMFA] passkey MFA verification failed:', error);
     return { success: false, error: 'Network error' };
+  }
+}
+
+// ── #4067: link-on-first-SSO-login ceremony ─────────────────────────────────
+// The SSO callback parked the verified IdP identity server-side and bound the
+// ceremony to this browser via an HttpOnly cookie scoped to the API's
+// /sso/link endpoints (the API owns the exact path), so both calls just need
+// credentials: 'include'.
+
+export async function apiSsoLinkPending(): Promise<
+  | { success: true; email: string; providerName: string | null }
+  | { success: false; expired: boolean; error?: string }
+> {
+  try {
+    const response = await fetch(buildApiUrl('/sso/link/pending'), {
+      method: 'GET',
+      credentials: 'include'
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      return { success: false, expired: response.status === 404, error: extractApiError(data, 'Ceremony unavailable') };
+    }
+    return { success: true, email: String(data.email ?? ''), providerName: data.providerName ?? null };
+  } catch {
+    return { success: false, expired: false, error: 'Network error' };
+  }
+}
+
+export type SsoLinkConfirmResult =
+  | { state: 'mfa'; challenge: MfaChallenge }
+  | { state: 'complete'; user: User; tokens: Tokens; requiresSetup: boolean; redirectPath?: string }
+  | { state: 'failed'; reason: 'expired' | 'identity_in_use' | 'completion_failed' | 'other'; error?: string };
+
+export async function apiSsoLinkConfirm(password: string): Promise<SsoLinkConfirmResult> {
+  try {
+    const response = await fetch(buildApiUrl('/sso/link/confirm'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ password })
+    });
+    const data = await response.json();
+
+    if (!response.ok) {
+      if (response.status === 409) return { state: 'failed', reason: 'identity_in_use' };
+      if (data?.error === 'sso_link_expired') return { state: 'failed', reason: 'expired' };
+      if (data?.error === 'completion_failed') return { state: 'failed', reason: 'completion_failed' };
+      return { state: 'failed', reason: 'other', error: extractApiError(data, 'Confirmation failed') };
+    }
+
+    if (data.mfaRequired) {
+      const challenge = parseMfaChallengeResponse(data);
+      if (!challenge) {
+        return { state: 'failed', reason: 'other', error: 'Confirmation failed' };
+      }
+      return { state: 'mfa', challenge };
+    }
+
+    if (data.user && data.tokens) {
+      return {
+        state: 'complete',
+        user: data.user,
+        tokens: data.tokens,
+        requiresSetup: !!data.requiresSetup,
+        ...(typeof data.redirectPath === 'string' ? { redirectPath: data.redirectPath } : {})
+      };
+    }
+
+    // 200 without a recognizable shape — API drift; surface, don't strand.
+    return { state: 'failed', reason: 'other', error: 'Confirmation failed' };
+  } catch {
+    return { state: 'failed', reason: 'other', error: 'Network error' };
   }
 }
 
@@ -1356,22 +1518,85 @@ export async function apiRegisterPartner(
 // refreshFetchOnce above.
 const LOGOUT_TIMEOUT_MS = 8000;
 
-export async function apiLogout(): Promise<void> {
-  const { tokens, logout } = useAuthStore.getState();
+export type LogoutOutcome =
+  | Readonly<{ kind: 'complete' }>
+  | Readonly<{ kind: 'partial'; message: string }>;
 
-  if (tokens?.accessToken) {
+export type CfTerminalLogoutPreparationOutcome =
+  | Readonly<{ kind: 'ready'; navigationUrl: string }>
+  | Readonly<{ kind: 'partial'; message: string }>;
+
+function evictLocalAuthState(): void {
+  useAuthStore.getState().logout();
+  try {
+    localStorage.removeItem('breeze-auth');
+    localStorage.removeItem('breeze-org');
+    localStorage.removeItem('breeze-ai-chat');
+  } catch {
+    // localStorage may be unavailable
+  }
+}
+
+function terminalLogoutHeaders(accessToken: string): Headers {
+  const headers = new Headers({
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${accessToken}`,
+    'x-breeze-auth-transition': 'v1',
+  });
+  const csrfToken = readCookie(CSRF_COOKIE_NAME);
+  if (csrfToken) headers.set(CSRF_HEADER_NAME, csrfToken);
+  return headers;
+}
+
+export function validateCfTerminalNavigationUrl(raw: unknown): string | null {
+  if (typeof raw !== 'string' || typeof window === 'undefined') return null;
+  try {
+    const url = new URL(raw, window.location.origin);
+    if (
+      url.origin !== window.location.origin
+      || url.username !== ''
+      || url.password !== ''
+      || url.pathname !== '/api/v1/auth/cf-access-logout'
+      || url.hash !== ''
+    ) return null;
+    const entries = [...url.searchParams.entries()];
+    if (entries.length !== 1 || entries[0]?.[0] !== 'ticket' || !entries[0][1]) return null;
+    return `${url.pathname}?ticket=${encodeURIComponent(entries[0][1])}`;
+  } catch {
+    return null;
+  }
+}
+
+export async function apiLogout(retainedAccessToken?: string): Promise<LogoutOutcome> {
+  const { tokens } = useAuthStore.getState();
+  const accessToken = retainedAccessToken ?? tokens?.accessToken;
+  let outcome: LogoutOutcome = {
+    kind: 'partial',
+    message: 'Your local session was cleared, but durable server sign-out could not be confirmed.',
+  };
+
+  if (accessToken) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), LOGOUT_TIMEOUT_MS);
     try {
-      await fetch(buildApiUrl('/auth/logout'), {
+      const response = await fetch(buildApiUrl('/auth/logout'), {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${tokens.accessToken}`
-        },
+        headers: terminalLogoutHeaders(accessToken),
         credentials: 'include',
         signal: controller.signal
       });
+      if (response.ok) {
+        const body: unknown = await response.json();
+        if (
+          typeof body === 'object'
+          && body !== null
+          && !Array.isArray(body)
+          && Object.keys(body).length === 1
+          && (body as { success?: unknown }).success === true
+        ) {
+          outcome = { kind: 'complete' };
+        }
+      }
     } catch (err) {
       // Network error, offline, or the 8s abort fired. Ignored on purpose —
       // the refresh-token family may survive server-side, but the client must
@@ -1382,16 +1607,42 @@ export async function apiLogout(): Promise<void> {
     }
   }
 
-  logout();
+  evictLocalAuthState();
+  return outcome;
+}
 
-  // Clear all persisted store data to prevent stale state on next login
-  try {
-    localStorage.removeItem('breeze-auth');
-    localStorage.removeItem('breeze-org');
-    localStorage.removeItem('breeze-ai-chat');
-  } catch {
-    // localStorage may be unavailable
+export async function apiPrepareCfTerminalLogout(
+  retainedAccessToken?: string,
+): Promise<CfTerminalLogoutPreparationOutcome> {
+  const { tokens } = useAuthStore.getState();
+  const accessToken = retainedAccessToken ?? tokens?.accessToken;
+  let outcome: CfTerminalLogoutPreparationOutcome = {
+    kind: 'partial',
+    message: 'Your local session was cleared, but Cloudflare sign-out could not be prepared.',
+  };
+  if (accessToken) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), LOGOUT_TIMEOUT_MS);
+    try {
+      const response = await fetch(buildApiUrl('/auth/cf-access-logout/prepare'), {
+        method: 'POST',
+        headers: terminalLogoutHeaders(accessToken),
+        credentials: 'include',
+        signal: controller.signal,
+      });
+      if (response.ok) {
+        const body = await response.json().catch(() => null) as { navigationUrl?: unknown } | null;
+        const navigationUrl = validateCfTerminalNavigationUrl(body?.navigationUrl);
+        if (navigationUrl) outcome = { kind: 'ready', navigationUrl };
+      }
+    } catch (error) {
+      console.warn('[apiLogout] Cloudflare terminal preparation failed; evicting locally', error);
+    } finally {
+      clearTimeout(timeout);
+    }
   }
+  evictLocalAuthState();
+  return outcome;
 }
 
 export async function fetchAndApplyPreferences(): Promise<void> {
@@ -1416,6 +1667,14 @@ export async function fetchAndApplyPreferences(): Promise<void> {
     // the field existed still pick up their grants without a re-login.
     if (Array.isArray(data.permissions)) {
       useAuthStore.getState().updateUser({ permissions: data.permissions });
+    }
+    // #4018: same rationale — the password-login path stores `data.user` from
+    // /auth/login, which carries no hasPassword, and sessions persisted before
+    // the field existed carry none either. This refresh (run on every login and
+    // on the SSO bootstrap) is what makes `user.hasPassword === false` a real
+    // runtime signal rather than a permanently-absent field.
+    if (typeof data.hasPassword === 'boolean') {
+      useAuthStore.getState().updateUser({ hasPassword: data.hasPassword });
     }
     if (typeof data.canManagePartnerWide === 'boolean') {
       useAuthStore.getState().updateUser({ canManagePartnerWide: data.canManagePartnerWide });
@@ -1501,7 +1760,7 @@ export async function apiVerifyEmail(token: string): Promise<{
   redirectUrl?: string;
 }> {
   try {
-    const response = await fetch(buildApiUrl('/auth/verify-email'), {
+    const response = await fetchAuthIssuerWithBindingRetry(buildApiUrl('/auth/verify-email'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
@@ -1582,6 +1841,97 @@ export async function apiSendSmsMfaCode(tempToken: string): Promise<{
   }
 }
 
+export interface MfaEnrollmentOptions {
+  allowedMethods: { totp: boolean; sms: boolean; passkey: boolean };
+  phoneConfigured: boolean;
+}
+
+export type MfaEnrollmentCompletion =
+  | { success: true; recoveryCodes: string[]; tokens: Tokens }
+  | { success: false; error: string };
+
+function parseMfaEnrollmentCompletion(data: unknown): MfaEnrollmentCompletion | null {
+  if (!data || typeof data !== 'object') return null;
+  const value = data as Record<string, unknown>;
+  const tokens = value.tokens as Record<string, unknown> | undefined;
+  if (
+    !Array.isArray(value.recoveryCodes)
+    || value.recoveryCodes.some((code) => typeof code !== 'string')
+    || !tokens
+    || typeof tokens.accessToken !== 'string'
+    || typeof tokens.expiresInSeconds !== 'number'
+  ) return null;
+  return { success: true, recoveryCodes: value.recoveryCodes, tokens: tokens as unknown as Tokens };
+}
+
+export async function apiGetMfaEnrollmentOptions(): Promise<
+  | { success: true; options: MfaEnrollmentOptions }
+  | { success: false; error: string }
+> {
+  try {
+    const response = await fetchWithAuth('/auth/mfa/enrollment-options');
+    const data = await response.json().catch(() => null);
+    if (!response.ok) return { success: false, error: extractApiError(data, 'Could not load MFA options') };
+    if (
+      !data
+      || typeof data.allowedMethods?.totp !== 'boolean'
+      || typeof data.allowedMethods?.sms !== 'boolean'
+      || typeof data.allowedMethods?.passkey !== 'boolean'
+      || typeof data.phoneConfigured !== 'boolean'
+    ) return { success: false, error: 'Invalid MFA enrollment options' };
+    return { success: true, options: data as MfaEnrollmentOptions };
+  } catch {
+    return { success: false, error: 'Network error' };
+  }
+}
+
+export async function apiEnableTotpMfa(code: string, currentPassword: string): Promise<MfaEnrollmentCompletion> {
+  try {
+    const response = await fetchWithAuth('/auth/mfa/enable', {
+      method: 'POST',
+      // #4413: a rejected TOTP comes back as 401, same status the bearer guard
+      // uses. Without this the generic 401 path replays the code, or evicts the
+      // session outright — on the forced-enrollment page that strands the user
+      // with no way back in. The caller already renders the raw error.
+      skipUnauthorizedRetry: true,
+      body: JSON.stringify({ code, currentPassword }),
+    });
+    const data = await response.json().catch(() => null);
+    if (!response.ok) return { success: false, error: extractApiError(data, 'Failed to enable MFA') };
+    return parseMfaEnrollmentCompletion(data) ?? { success: false, error: 'Invalid MFA enrollment response' };
+  } catch {
+    return { success: false, error: 'Network error' };
+  }
+}
+
+export async function apiEnrollPasskey(currentPassword: string): Promise<MfaEnrollmentCompletion> {
+  try {
+    const optionsResponse = await fetchWithAuth('/auth/passkeys/register/options', {
+      method: 'POST',
+      body: JSON.stringify({ currentPassword }),
+    });
+    const optionsData = await optionsResponse.json().catch(() => null);
+    if (!optionsResponse.ok) {
+      return { success: false, error: extractApiError(optionsData, 'Failed to start passkey enrollment') };
+    }
+    const credential = await createPasskeyCredential(optionsData.options ?? optionsData.optionsJSON);
+    const verifyResponse = await fetchWithAuth('/auth/passkeys/register/verify', {
+      method: 'POST',
+      body: JSON.stringify({ credential }),
+    });
+    const verifyData = await verifyResponse.json().catch(() => null);
+    if (!verifyResponse.ok) {
+      return { success: false, error: extractApiError(verifyData, 'Failed to enroll passkey') };
+    }
+    return parseMfaEnrollmentCompletion(verifyData) ?? { success: false, error: 'Invalid MFA enrollment response' };
+  } catch (error) {
+    if (error instanceof Error && error.name === 'NotAllowedError') {
+      return { success: false, error: 'Passkey enrollment was canceled or timed out' };
+    }
+    return { success: false, error: 'Network error' };
+  }
+}
+
 export async function apiVerifyPhone(phoneNumber: string, currentPassword: string): Promise<{
   success: boolean;
   error?: string;
@@ -1626,11 +1976,7 @@ export async function apiConfirmPhone(phoneNumber: string, code: string, current
   }
 }
 
-export async function apiEnableSmsMfa(currentPassword: string): Promise<{
-  success: boolean;
-  recoveryCodes?: string[];
-  error?: string;
-}> {
+export async function apiEnableSmsMfa(currentPassword: string): Promise<MfaEnrollmentCompletion> {
   try {
     const response = await fetchWithAuth('/auth/mfa/sms/enable', {
       method: 'POST',
@@ -1643,7 +1989,7 @@ export async function apiEnableSmsMfa(currentPassword: string): Promise<{
       return { success: false, error: extractApiError(data, 'Failed to enable SMS MFA') };
     }
 
-    return { success: true, recoveryCodes: data.recoveryCodes };
+    return parseMfaEnrollmentCompletion(data) ?? { success: false, error: 'Invalid MFA enrollment response' };
   } catch {
     return { success: false, error: 'Network error' };
   }
@@ -1690,7 +2036,7 @@ export async function apiAcceptInvite(token: string, password: string): Promise<
   error?: string;
 }> {
   try {
-    const response = await fetch(buildApiUrl('/auth/accept-invite'), {
+    const response = await fetchAuthIssuerWithBindingRetry(buildApiUrl('/auth/accept-invite'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',

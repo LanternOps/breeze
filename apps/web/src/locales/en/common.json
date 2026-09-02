@@ -15,19 +15,15 @@
     "patches": "Patches",
     "vulnerabilities": "Vulnerabilities",
     "oneDrive": "OneDrive",
-    "fleet": "Fleet",
-    "aiWorkspace": "AI Workspace",
     "aiForOffice": "AI for Office",
     "networkMonitor": "Network Monitor",
     "networkDiscovery": "Network Discovery",
-    "security": "Security",
     "edr": "EDR",
     "dnsSecurity": "DNS Security",
     "pam": "PAM",
     "userRisk": "User Risk",
     "sensitiveData": "Sensitive Data",
     "peripherals": "Peripherals",
-    "aiRiskEngine": "AI Risk Engine",
     "cisBenchmarks": "CIS Benchmarks",
     "complianceBaselines": "Compliance Baselines",
     "quotes": "Quotes",
@@ -35,12 +31,9 @@
     "contracts": "Contracts",
     "timesheets": "Timesheets",
     "productCatalog": "Product Catalog",
-    "softwareLibrary": "Software Library",
-    "softwarePolicies": "Software Policies",
     "deviceGroups": "Device Groups",
     "configPolicies": "Config Policies",
     "integrations": "Integrations",
-    "backup": "Backup",
     "cloudBackup": "Cloud Backup",
     "disasterRecovery": "Disaster Recovery",
     "reports": "Reports",
@@ -51,6 +44,7 @@
     "organizations": "Organizations",
     "aiUsageBudget": "AI Usage & Budget",
     "aiAgents": "AI Agents",
+    "aiAgentRuns": "AI Agent Runs",
     "customFields": "Custom Fields",
     "variables": "Variables",
     "savedFilters": "Saved Filters",
@@ -59,18 +53,26 @@
     "sso": "SSO",
     "accessReviews": "Access Reviews",
     "enrollmentKeys": "Enrollment Keys",
-    "deletionRequests": "Deletion requests",
+    "deletionRequests": "Deletion Requests",
     "quarantinedDevices": "Quarantined Devices",
     "thirdPartyCatalog": "Third-Party Catalog",
-    "connectedAppsAdmin": "Connected Apps (admin)",
-    "sectionAiFleet": "AI & Fleet",
-    "sectionMonitoring": "Monitoring",
+    "connectedAppsAdmin": "Connected Apps",
     "sectionSecurity": "Security",
-    "sectionOperations": "Operations",
     "sectionBackup": "Backup",
     "sectionReporting": "Reporting",
     "sectionSettings": "Settings",
-    "sectionExtensions": "Extensions"
+    "sectionExtensions": "Extensions",
+    "llmProviderCatalog": "LLM Provider Catalog",
+    "sectionAi": "AI",
+    "sectionFleetManagement": "Fleet Management",
+    "sectionBilling": "Billing",
+    "sectionAdministration": "Administration",
+    "fleetOrchestration": "Fleet Orchestration",
+    "aiAssistant": "AI Assistant",
+    "software": "Software",
+    "securityOverview": "Overview",
+    "aiRisk": "AI Risk",
+    "deviceBackup": "Device Backup"
   },
   "documentTitles": {
     "dashboard": "Dashboard",
@@ -1626,6 +1628,12 @@
         "editEntry": "Edit entry {{id}}",
         "total": "Total: {{duration}}",
         "billableTotal": "Billable: {{duration}}"
+      },
+      "sourceBadge": {
+        "timer": "Timer",
+        "location": "From location",
+        "remote_session": "From remote session",
+        "support_session": "From Quick Support"
       }
     },
     "snmp": {
@@ -2404,6 +2412,11 @@
     "link": "What's new"
   },
   "money": {
-    "approximateTotal": "≈ {{amount}} approximate · rates as of {{rateDate}}"
+    "approximateTotal": "≈ {{amount}} approximate · rates as of {{rateDate}}",
+    "approximateFailed": "≈ total unavailable — could not load exchange rates",
+    "approximateUnavailableMissing": "≈ total unavailable — no {{target}} exchange rate for {{codes}}",
+    "approximateUnavailableStale": "≈ total unavailable — {{target}} exchange rate too old for {{codes}}",
+    "approximateUnavailableMixed": "≈ total unavailable — {{codes}} could not be converted to {{target}}",
+    "approximateUnavailableCodesOverflow": "{{codes}} and {{more}} more"
   }
 }

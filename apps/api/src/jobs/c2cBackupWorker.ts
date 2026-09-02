@@ -11,11 +11,8 @@ import { Worker, Job } from 'bullmq';
 import * as dbModule from '../db';
 import {
   c2cBackupConfigs,
-  c2cBackupItems,
-  c2cBackupJobs,
-  c2cConnections,
 } from '../db/schema';
-import { and, eq, sql } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { getBullMQConnection } from '../services/redis';
 import { attachWorkerObservability } from './workerObservability';
 import {
@@ -26,6 +23,11 @@ import {
   type RunSyncData,
 } from './c2cEnqueue';
 import { createC2cSyncJobIfIdle } from '../services/c2cJobCreation';
+import {
+  authorizeAndFinalizeC2cQueuedWork,
+  type C2cQueuedAuthorizationDependencies,
+  type C2cQueuedWorkData,
+} from '../services/c2cQueuedAuthorization';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -54,9 +56,9 @@ export function createC2cWorker(): Worker<C2cJobData> {
           case 'check-schedules':
             return await processCheckSchedules();
           case 'run-sync':
-            return await processRunSync(job.data);
+            return await processC2cQueuedJob(job.data);
           case 'process-restore':
-            return await processRestore(job.data);
+            return await processC2cQueuedJob(job.data);
           default:
             throw new Error(
               `Unknown C2C job type: ${(job.data as { type: string }).type}`
@@ -104,6 +106,17 @@ async function processCheckSchedules(): Promise<{ enqueued: number }> {
       orgId: config.orgId,
       configId: config.id,
       createdAt: now,
+      auth: {
+        principal: { kind: 'system', reason: 'c2c-sync-scheduler' },
+        user: { id: 'system', email: 'system@localhost', name: 'System', isPlatformAdmin: true },
+        token: null,
+        partnerId: null,
+        orgId: config.orgId,
+        scope: 'system',
+        accessibleOrgIds: null,
+        orgCondition: () => undefined,
+        canAccessOrg: () => true,
+      },
     });
     const c2cJob = created?.job;
     if (!c2cJob || !created.created) continue;
@@ -145,184 +158,13 @@ function isScheduleDue(schedule: C2cSchedule, now: Date): boolean {
   return true;
 }
 
-// ── run-sync ─────────────────────────────────────────────────────────────────
+// ── queued operation boundary ───────────────────────────────────────────────
 
-async function processRunSync(
-  data: RunSyncData
-): Promise<{ synced: boolean; skipped?: boolean; reason?: string }> {
-  const claimed = await db
-    .update(c2cBackupJobs)
-    .set({ status: 'running', startedAt: new Date(), updatedAt: new Date() })
-    .where(
-      and(
-        eq(c2cBackupJobs.id, data.jobId),
-        eq(c2cBackupJobs.orgId, data.orgId),
-        eq(c2cBackupJobs.configId, data.configId),
-        eq(c2cBackupJobs.status, 'pending')
-      )
-    )
-    .returning({ id: c2cBackupJobs.id });
-
-  if (claimed.length === 0) {
-    return {
-      synced: false,
-      skipped: true,
-      reason: 'Job not pending for queued org/config',
-    };
-  }
-
-  // TODO: In production, this would:
-  // 1. Load the connection credentials from c2c_connections
-  // 2. Refresh OAuth tokens if expired
-  // 3. Use MS Graph API / Google APIs to fetch delta changes
-  // 4. Store items in c2c_backup_items
-  // 5. Upload content to the configured storage provider
-  // 6. Update delta_token for incremental sync
-
-  const errorLog = 'C2C sync not yet implemented';
-  await db
-    .update(c2cBackupJobs)
-    .set({
-      status: 'failed',
-      completedAt: new Date(),
-      errorLog,
-      updatedAt: new Date(),
-    })
-    .where(
-      and(
-        eq(c2cBackupJobs.id, data.jobId),
-        eq(c2cBackupJobs.orgId, data.orgId),
-        eq(c2cBackupJobs.configId, data.configId),
-        eq(c2cBackupJobs.status, 'running')
-      )
-    );
-
-  console.log(
-    `[C2CBackupWorker] Sync job ${data.jobId} failed: ${errorLog}`
-  );
-  return { synced: false };
-}
-
-// ── process-restore ──────────────────────────────────────────────────────────
-
-async function processRestore(
-  data: ProcessRestoreData
-): Promise<{ restored: boolean; skipped?: boolean; reason?: string }> {
-  const [pendingJob] = await db
-    .select({ id: c2cBackupJobs.id, configId: c2cBackupJobs.configId })
-    .from(c2cBackupJobs)
-    .where(
-      and(
-        eq(c2cBackupJobs.id, data.restoreJobId),
-        eq(c2cBackupJobs.orgId, data.orgId),
-        eq(c2cBackupJobs.status, 'pending')
-      )
-    )
-    .limit(1);
-
-  if (!pendingJob) {
-    return {
-      restored: false,
-      skipped: true,
-      reason: 'Restore job not pending for queued org',
-    };
-  }
-
-  if (data.targetConnectionId) {
-    const [targetConnection] = await db
-      .select({ id: c2cConnections.id })
-      .from(c2cConnections)
-      .where(
-        and(
-          eq(c2cConnections.id, data.targetConnectionId),
-          eq(c2cConnections.orgId, data.orgId)
-        )
-      )
-      .limit(1);
-
-    if (!targetConnection) {
-      return {
-        restored: false,
-        skipped: true,
-        reason: 'Target connection is not in queued org',
-      };
-    }
-  }
-
-  const requestedItemIds = [...new Set(data.itemIds)];
-  if (requestedItemIds.length === 0) {
-    return { restored: false, skipped: true, reason: 'No restore items queued' };
-  }
-
-  const [itemMatch] = await db
-    .select({ count: sql<number>`count(*)::int` })
-    .from(c2cBackupItems)
-    .where(
-      and(
-        eq(c2cBackupItems.orgId, data.orgId),
-        eq(c2cBackupItems.configId, pendingJob.configId),
-        sql`${c2cBackupItems.id} = ANY(${requestedItemIds}::uuid[])`
-      )
-    );
-
-  if ((itemMatch?.count ?? 0) !== requestedItemIds.length) {
-    return {
-      restored: false,
-      skipped: true,
-      reason: 'Queued restore items do not match restore job org/config',
-    };
-  }
-
-  const claimed = await db
-    .update(c2cBackupJobs)
-    .set({ status: 'running', startedAt: new Date(), updatedAt: new Date() })
-    .where(
-      and(
-        eq(c2cBackupJobs.id, data.restoreJobId),
-        eq(c2cBackupJobs.orgId, data.orgId),
-        eq(c2cBackupJobs.configId, pendingJob.configId),
-        eq(c2cBackupJobs.status, 'pending')
-      )
-    )
-    .returning({ id: c2cBackupJobs.id });
-
-  if (claimed.length === 0) {
-    return {
-      restored: false,
-      skipped: true,
-      reason: 'Restore job was already claimed',
-    };
-  }
-
-  // TODO: In production, this would:
-  // 1. Load items from c2c_backup_items by itemIds
-  // 2. Download content from storage
-  // 3. Upload back to the target provider (MS Graph / Google API)
-  // 4. Update item status
-
-  const errorLog = 'C2C restore not yet implemented';
-  await db
-    .update(c2cBackupJobs)
-    .set({
-      status: 'failed',
-      completedAt: new Date(),
-      itemsProcessed: requestedItemIds.length,
-      errorLog,
-      updatedAt: new Date(),
-    })
-    .where(
-      and(
-        eq(c2cBackupJobs.id, data.restoreJobId),
-        eq(c2cBackupJobs.orgId, data.orgId),
-        eq(c2cBackupJobs.configId, pendingJob.configId),
-        eq(c2cBackupJobs.status, 'running')
-      )
-    );
-
-  console.log(
-    `[C2CBackupWorker] Restore job ${data.restoreJobId} failed: ${errorLog}`
-  );
-  return { restored: false };
+export function processC2cQueuedJob(
+  data: C2cQueuedWorkData,
+  dependencies?: C2cQueuedAuthorizationDependencies,
+) {
+  return authorizeAndFinalizeC2cQueuedWork(data, dependencies);
 }
 
 // ── Lifecycle ────────────────────────────────────────────────────────────────

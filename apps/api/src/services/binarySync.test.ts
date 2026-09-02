@@ -32,6 +32,29 @@ vi.mock("../db", () => ({
     transaction: dbMocks.transaction,
     select: dbMocks.select,
   },
+  // urlSafety's safeFetch calls this (#1105 tripwire); the real `../db` is
+  // mocked away, so the named export has to exist or the import fails.
+  assertOutsideHeldDbContext: vi.fn(),
+}));
+
+// binarySync's outbound calls now go through the SSRF-guarded
+// `safeFetchFollowingRedirects` (#4262), which dials Node's http/https directly
+// so it can DNS-resolve and IP-pin each hop — it never touches global `fetch`.
+// Without this bridge every `vi.stubGlobal("fetch", …)` below would stop
+// intercepting and these cases would make REAL network calls (that is exactly
+// how PR #4255's installerBuilder cases went unhooked). Route the helper back
+// to the stubbed global; the guard's real redirect/SSRF semantics are covered
+// by `binarySync.redirect.test.ts` and `urlSafety.test.ts`, and that binarySync
+// actually adopts it by the source scan in `binarySync.redirect.test.ts`.
+vi.mock("./urlSafety", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./urlSafety")>()),
+  // Typed against SafeFetchInit (not RequestInit) so a call site's `maxBytes` /
+  // `timeoutMs` survive the bridge instead of being silently dropped, and a
+  // vi.fn() so a suite CAN assert on what binarySync passed the helper.
+  safeFetchFollowingRedirects: vi.fn(
+    (url: string, init?: import("./urlSafety").SafeFetchInit) =>
+      globalThis.fetch(url, init as RequestInit),
+  ),
 }));
 
 // Capture eq/and so a test can inspect the WHERE built for the per-component
@@ -2581,8 +2604,14 @@ describe("unpublished pinned release is loud, not a /releases/latest fallback (#
 
     await expect(syncBinaries()).rejects.toThrow(/GitHub API error: 404/);
 
+    // The remedy wording changed with #3499: a failed sync no longer leaves the
+    // download redirect disagreeing with agent_versions (the redirect follows
+    // the promoted row now), so the hint says the fleet simply will not advance
+    // rather than promising that setting BINARY_VERSION realigns the redirect.
+    // It must still name BINARY_VERSION as the lever and still refuse the
+    // /releases/latest fallback.
     expect(errorSpy).toHaveBeenCalledWith(
-      expect.stringMatching(/pinned release v0\.106\.0 FAILED.*set BINARY_VERSION to the last PUBLISHED release/s),
+      expect.stringMatching(/pinned release v0\.106\.0 FAILED.*set BINARY_VERSION to a PUBLISHED release/s),
     );
     expect(fetchSpy).not.toHaveBeenCalledWith(
       `${apiBase}/releases/latest`,

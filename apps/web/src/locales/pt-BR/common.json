@@ -15,19 +15,15 @@
     "patches": "Correções",
     "vulnerabilities": "Vulnerabilidades",
     "oneDrive": "OneDrive",
-    "fleet": "Frota",
-    "aiWorkspace": "Espaço de Trabalho de IA",
     "aiForOffice": "IA para Office",
     "networkMonitor": "Monitoramento de Rede",
     "networkDiscovery": "Descoberta de Rede",
-    "security": "Segurança",
     "edr": "EDR",
     "dnsSecurity": "Segurança de DNS",
     "pam": "PAM",
     "userRisk": "Risco do Usuário",
     "sensitiveData": "Dados Confidenciais",
     "peripherals": "Periféricos",
-    "aiRiskEngine": "Mecanismo de Risco de IA",
     "cisBenchmarks": "Referenciais CIS",
     "complianceBaselines": "Linhas de Base de Conformidade",
     "quotes": "Orçamentos",
@@ -35,12 +31,9 @@
     "contracts": "Contratos",
     "timesheets": "Folhas de Horas",
     "productCatalog": "Catálogo de Produtos",
-    "softwareLibrary": "Biblioteca de Software",
-    "softwarePolicies": "Políticas de Software",
     "deviceGroups": "Grupos de dispositivos",
     "configPolicies": "Políticas de Configuração",
     "integrations": "Integrações",
-    "backup": "Backup",
     "cloudBackup": "Backup em Nuvem",
     "disasterRecovery": "Recuperação de Desastres",
     "reports": "Relatórios",
@@ -51,6 +44,7 @@
     "organizations": "Organizações",
     "aiUsageBudget": "Uso e Orçamento de IA",
     "aiAgents": "Agentes de IA",
+    "aiAgentRuns": "Execuções de Agentes de IA",
     "customFields": "Campos Personalizados",
     "savedFilters": "Filtros Salvos",
     "users": "Usuários",
@@ -61,16 +55,24 @@
     "deletionRequests": "Solicitações de Exclusão",
     "quarantinedDevices": "Dispositivos em Quarentena",
     "thirdPartyCatalog": "Catálogo de Terceiros",
-    "connectedAppsAdmin": "Aplicativos Conectados (admin)",
-    "sectionAiFleet": "IA e Frota",
-    "sectionMonitoring": "Monitoramento",
+    "connectedAppsAdmin": "Aplicativos Conectados",
     "sectionSecurity": "Segurança",
-    "sectionOperations": "Operações",
     "sectionBackup": "Backup",
     "sectionReporting": "Relatórios",
     "sectionSettings": "Configurações",
     "sectionExtensions": "Extensões",
-    "variables": "Variáveis"
+    "variables": "Variáveis",
+    "llmProviderCatalog": "Catálogo de Provedores de LLM",
+    "sectionAi": "IA",
+    "sectionFleetManagement": "Gestão de Frota",
+    "sectionBilling": "Faturamento",
+    "sectionAdministration": "Administração",
+    "fleetOrchestration": "Orquestração de Frota",
+    "aiAssistant": "Assistente de IA",
+    "software": "Software",
+    "securityOverview": "Visão Geral",
+    "aiRisk": "Risco de IA",
+    "deviceBackup": "Backup de Dispositivos"
   },
   "documentTitles": {
     "dashboard": "Painel",
@@ -1626,6 +1628,12 @@
         "editEntry": "Editar entrada {{id}}",
         "total": "Total: {{duration}}",
         "billableTotal": "Faturável: {{duration}}"
+      },
+      "sourceBadge": {
+        "timer": "Cronômetro",
+        "location": "De localização",
+        "remote_session": "De sessão remota",
+        "support_session": "De Quick Support"
       }
     },
     "snmp": {
@@ -2404,6 +2412,11 @@
     "link": "Novidades"
   },
   "money": {
-    "approximateTotal": "≈ {{amount}} aproximado · taxas de {{rateDate}}"
+    "approximateTotal": "≈ {{amount}} aproximado · taxas de {{rateDate}}",
+    "approximateFailed": "≈ total indisponível — não foi possível carregar as taxas de câmbio",
+    "approximateUnavailableMissing": "≈ total indisponível — sem taxa de câmbio para {{target}} em {{codes}}",
+    "approximateUnavailableStale": "≈ total indisponível — a taxa de câmbio para {{target}} em {{codes}} está desatualizada",
+    "approximateUnavailableMixed": "≈ total indisponível — não foi possível converter {{codes}} em {{target}}",
+    "approximateUnavailableCodesOverflow": "{{codes}} e mais {{more}}"
   }
 }

@@ -128,3 +128,14 @@ export async function initializeTicketMailboxPollWorker(): Promise<void> {
   });
   console.log('[mailboxPoll] worker initialized');
 }
+
+export async function shutdownTicketMailboxPollWorker(): Promise<void> {
+  if (worker) {
+    await worker.close();
+    worker = null;
+  }
+  if (queue) {
+    await queue.close();
+    queue = null;
+  }
+}

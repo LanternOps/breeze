@@ -554,6 +554,10 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
           },
           deviceId: { type: 'string', description: 'The device UUID' },
           processId: { type: 'string', description: 'The PID of the process to kill (required for kill action)' },
+          processName: {
+            type: 'string',
+            description: 'The name of the process being killed, from a prior list_processes/manage_services:list read (e.g. "notepad.exe"). Recommended alongside processId for kill: a bare PID gets reused by the OS the instant a process exits, so including the name lets a reviewer verify what a kill call actually targets. This is used for verification/filtering, not a same-process guarantee — it is not re-checked against the live process list at dispatch time.'
+          },
           search: { type: 'string', description: 'Filter process list by name' },
           sortBy: {
             type: 'string',

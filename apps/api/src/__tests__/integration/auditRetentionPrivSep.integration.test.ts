@@ -96,6 +96,57 @@ describe('#915 audit-retention privilege separation', () => {
     expect(after[0]?.n).toBe(0);
   });
 
+  // The dedicated pool is the PRODUCTION path, but every batching/ceiling case
+  // lives in the legacy-path file (the unit tests leave AUDIT_ADMIN_DATABASE_URL
+  // unset, so `pruneOrg` takes the breeze_app branch there). `deleteChainPrefix`
+  // is executor-agnostic, but "agnostic" is a claim until it is exercised: the
+  // dedicated pool sets its own system-scope GUCs, so a batch loop or the
+  // hoisted cutoff SELECT could behave differently here and nothing would know.
+  it('batches the prefix cut and honours the ceiling on the dedicated pool too', async () => {
+    process.env.AUDIT_ADMIN_DATABASE_URL = buildAuditAdminUrl();
+    await closeAuditAdminPool();
+    expect(hasDedicatedAuditAdminPool()).toBe(true);
+
+    await getTestDb().execute(sql`
+      INSERT INTO audit_retention_policies (org_id, retention_days)
+      VALUES (${orgId}, 30)
+    `);
+    // Each execute is its own transaction, so statement order == chain_seq order.
+    for (const days of [95, 94, 93, 92, 91]) {
+      await getTestDb().execute(sql`
+        INSERT INTO audit_logs (org_id, actor_type, actor_id, action, resource_type, result, timestamp)
+        VALUES (${orgId}, 'system', gen_random_uuid(), ${`old-${days}`}, 'test', 'success',
+                now() - (${days}::int * interval '1 day'))
+      `);
+    }
+    await getTestDb().execute(sql`
+      INSERT INTO audit_logs (org_id, actor_type, actor_id, action, resource_type, result, timestamp)
+      VALUES (${orgId}, 'system', gen_random_uuid(), 'young', 'test', 'success', now() - interval '1 day')
+    `);
+
+    // 2 batches x 2 rows = 4 of the 5 expired rows; the ceiling stops the loop.
+    const capped = await pruneExpiredAuditLogs({ batchSize: 2, maxBatches: 2 });
+    expect(capped.errors).toBe(0);
+    expect(capped.rowsDeleted).toBe(4);
+    expect(capped.orgsWithBacklog).toBe(1);
+    expect(capped.backloggedOrgIds).toContain(orgId);
+
+    // Ordered batches leave a contiguous suffix, so the chain still verifies.
+    const breaks = (await getTestDb().execute(
+      sql`SELECT count(*)::int AS n FROM audit_log_verify_chain(${orgId})`,
+    )) as unknown as Array<{ n: number }>;
+    expect(breaks[0]?.n).toBe(0);
+
+    const rest = await pruneExpiredAuditLogs({ batchSize: 2, maxBatches: 50 });
+    expect(rest.rowsDeleted).toBe(1);
+    expect(rest.orgsWithBacklog).toBe(0);
+
+    const survivors = (await getTestDb().execute(
+      sql`SELECT action FROM audit_logs WHERE org_id = ${orgId}`,
+    )) as unknown as Array<{ action: string }>;
+    expect(survivors.map((r) => r.action)).toEqual(['young']);
+  });
+
   it('after REVOKE, breeze_app can no longer SET ROLE breeze_audit_admin', async () => {
     // Open a short-lived breeze_app connection so we can prove the
     // privilege boundary directly, independent of the app pool.

@@ -15,6 +15,7 @@ const {
   syncEndpointFingerprints,
   loadRecidivistMatches,
   computeRecidivistSignals,
+  loadOriginIpAggregates,
   persistSignals,
   markDelivered,
   sendOpsAlert,
@@ -32,6 +33,7 @@ const {
   syncEndpointFingerprints: vi.fn(),
   loadRecidivistMatches: vi.fn(),
   computeRecidivistSignals: vi.fn(),
+  loadOriginIpAggregates: vi.fn(),
   persistSignals: vi.fn(),
   markDelivered: vi.fn(),
   sendOpsAlert: vi.fn(),
@@ -57,6 +59,13 @@ vi.mock('./recidivistEndpoint', () => ({
   syncEndpointFingerprints,
   loadRecidivistMatches,
   computeRecidivistSignals,
+}));
+// computeOriginIpSignals is deliberately NOT mocked — the wiring test below
+// proves the real scorer runs inside the sweep and its output reaches
+// persistSignals and the corroborator.
+vi.mock('./originIp', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./originIp')>()),
+  loadOriginIpAggregates,
 }));
 vi.mock('./persistence', () => ({ persistSignals, markDelivered }));
 vi.mock('../opsAlerts', () => ({ sendOpsAlert, isOpsAlertingConfigured: vi.fn(() => true) }));
@@ -115,6 +124,11 @@ beforeEach(() => {
   syncEndpointFingerprints.mockResolvedValue(undefined);
   loadRecidivistMatches.mockResolvedValue({ matches: [], scannedPartnerIds: [] });
   computeRecidivistSignals.mockReturnValue([]);
+  loadOriginIpAggregates.mockResolvedValue({
+    aggregates: [],
+    corpus: { suspendedIps: new Map(), probes: [] },
+    scannedPartnerIds: [],
+  });
   persistSignals.mockResolvedValue({ toNotify: [] });
   markDelivered.mockResolvedValue(undefined);
 });
@@ -273,5 +287,132 @@ describe('runAbuseSweep', () => {
 
     const evaluatedPartnerIds = persistSignals.mock.calls[0]![2] as Set<string>;
     expect([...evaluatedPartnerIds].sort()).toEqual(['pA', 'pRecidivist']);
+  });
+});
+
+describe('runAbuseSweep — corroboration wiring', () => {
+  // The pure scorer is covered in corroboration.test.ts; these prove the sweep
+  // actually feeds it every detector's output and persists what it returns.
+  // './corroboration' is deliberately NOT mocked here.
+  function watch(signalKey: string, score: number, partnerId = 'p1'): ComputedSignal {
+    return { partnerId, signalKey, score, severity: 'watch', evidence: { partnerName: 'Acme' } };
+  }
+
+  it('emits a corroborated alert from watch signals produced by DIFFERENT detectors', async () => {
+    // session_intensity comes from heuristics, cardholder_name_mismatch from
+    // billingIdentity — the cross-detector case that motivated this.
+    computeHeuristicSignals.mockReturnValue([watch('rmm.session_intensity', 65)]);
+    computeBillingIdentitySignals.mockReturnValue([watch('billing.cardholder_name_mismatch', 55)]);
+
+    await runAbuseSweep();
+
+    const persisted = persistSignals.mock.calls[0]![0] as ComputedSignal[];
+    const corroborated = persisted.filter((s) => s.signalKey === 'fraud.corroborated_watch');
+    expect(corroborated).toHaveLength(1);
+    expect(corroborated[0]!.severity).toBe('alert');
+    expect(corroborated[0]!.partnerId).toBe('p1');
+    // The underlying signals are still persisted at their own honest severity.
+    expect(persisted.filter((s) => s.severity === 'watch')).toHaveLength(2);
+  });
+
+  it('does not corroborate when only one axis fires', async () => {
+    computeHeuristicSignals.mockReturnValue([watch('rmm.session_intensity', 65)]);
+
+    await runAbuseSweep();
+
+    const persisted = persistSignals.mock.calls[0]![0] as ComputedSignal[];
+    expect(persisted.some((s) => s.signalKey === 'fraud.corroborated_watch')).toBe(false);
+  });
+
+  it('counts the corroborated signal in the fired total and the severity metric', async () => {
+    computeHeuristicSignals.mockReturnValue([watch('rmm.session_intensity', 65)]);
+    computeBillingIdentitySignals.mockReturnValue([watch('billing.cardholder_name_mismatch', 55)]);
+
+    const result = await runAbuseSweep();
+
+    expect(result.fired).toBe(3);
+    expect(recordAbuseSignalFired).toHaveBeenCalledWith('alert');
+  });
+});
+
+describe('runAbuseSweep — origin-IP detector wiring', () => {
+  it('reproduces the 08-31 re-establishment: a /24 probe match plus a billing mismatch pages', async () => {
+    // The account that got away. The operator probed a SUSPENDED partner's
+    // login from 192.0.2.72, signed up minutes later from a clean residential
+    // address (so the signup gate saw nothing), then worked the new account
+    // from 192.0.2.61. Its only signal was a capped billing watch, which
+    // notified nobody, and $99 was captured before anyone looked.
+    //
+    // Origin-IP contributes a second INDEPENDENT axis, and the pair clears
+    // severity.alert_score through the existing corroborator.
+    loadOriginIpAggregates.mockResolvedValue({
+      aggregates: [
+        {
+          partnerId: 'p1',
+          partnerName: 'Nordvane',
+          partnerStatus: 'active' as const,
+          originIps: ['192.0.2.61'],
+        },
+      ],
+      corpus: {
+        suspendedIps: new Map(),
+        probes: [{ ip: '192.0.2.72', partnerName: 'Techlace', at: new Date() }],
+      },
+      scannedPartnerIds: ['p1'],
+    });
+    computeBillingIdentitySignals.mockReturnValue([
+      {
+        partnerId: 'p1',
+        signalKey: 'billing.cardholder_name_mismatch',
+        score: 55,
+        severity: 'watch',
+        evidence: { partnerName: 'Nordvane' },
+      },
+    ]);
+
+    await runAbuseSweep();
+
+    const persisted = persistSignals.mock.calls[0]![0] as ComputedSignal[];
+    const byKey = new Map(persisted.map((s) => [s.signalKey, s]));
+
+    // The detector itself stays honest at watch — a /24 is a weaker tie than
+    // an exact address.
+    expect(byKey.get('fraud.dead_account_probe_origin')?.severity).toBe('watch');
+    // ...and the two axes together reach alert, which is what pages.
+    const corroborated = byKey.get('fraud.corroborated_watch');
+    expect(corroborated?.severity).toBe('alert');
+    expect(corroborated?.evidence.axisCount).toBe(2);
+
+    // Origin-IP-scanned partners must join the evaluated set, or their rows can
+    // never stale-resolve once the operator's infrastructure goes quiet.
+    const evaluated = persistSignals.mock.calls[0]![2] as Set<string>;
+    expect(evaluated.has('p1')).toBe(true);
+  });
+
+  it('does not double-count the two origin-IP signals as independent axes', async () => {
+    // Both signals restate one observation. An exact match already suppresses
+    // the /24 row, but even if both were present they share an axis and must
+    // not manufacture an alert between themselves.
+    loadOriginIpAggregates.mockResolvedValue({
+      aggregates: [
+        {
+          partnerId: 'p1',
+          partnerName: 'Nordvane',
+          partnerStatus: 'pending' as const,
+          originIps: ['192.0.2.61'],
+        },
+      ],
+      corpus: {
+        suspendedIps: new Map(),
+        probes: [{ ip: '192.0.2.72', partnerName: 'Techlace', at: new Date() }],
+      },
+      scannedPartnerIds: ['p1'],
+    });
+
+    await runAbuseSweep();
+
+    const persisted = persistSignals.mock.calls[0]![0] as ComputedSignal[];
+    expect(persisted.map((s) => s.signalKey)).toEqual(['fraud.dead_account_probe_origin']);
+    expect(persisted.some((s) => s.signalKey === 'fraud.corroborated_watch')).toBe(false);
   });
 });

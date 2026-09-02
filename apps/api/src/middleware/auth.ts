@@ -146,6 +146,18 @@ export interface AuthContext {
   canAccessSite?: (siteId: string | null | undefined) => boolean;
 
   /**
+   * Device-axis allowlist — pins a caller to an EXACT set of device ids,
+   * tighter than `allowedSiteIds` (which admits every device in the site).
+   * `undefined` = no device restriction. Set only for a device-bound AI
+   * agent run (`agentAuthContext.buildAgentAuthContext`); every other
+   * AuthContext construction site never sets it, so behavior for
+   * interactive/user/helper/MCP callers is unchanged. Enforced in
+   * `verifyDeviceAccess` (services/aiTools.ts) — the chokepoint every
+   * per-deviceId tool call routes through.
+   */
+  allowedDeviceIds?: readonly string[];
+
+  /**
    * Set ONLY for Breeze Helper sessions (helperAuth). When present, the
    * AI-tools executeTool gate forces every tool's device input to this device
    * id and denies org-wide tools — the Helper can act only on its own device.
@@ -197,7 +209,7 @@ export function siteAccessCheck(
  *
  * Path is the API path *after* the `/api/v1` mount, e.g. `/auth/mfa/setup`.
  */
-function isMfaEnrollmentExemptPath(path: string): boolean {
+export function isMfaEnrollmentExemptPath(path: string): boolean {
   // Strip the /api/v1 prefix if present so the check works whether Hono
   // gives us the absolute path or a sub-app path.
   const rel = path.startsWith('/api/v1') ? path.slice('/api/v1'.length) : path;
@@ -217,6 +229,11 @@ function isMfaEnrollmentExemptPath(path: string): boolean {
   // phishing-resistant factor). Without this, a policy-required-but-unenrolled
   // user is 428'd on /auth/passkeys/register/* and can never enroll a passkey.
   if (rel.startsWith('/auth/passkeys/')) return true;
+  // Starting an IdP re-authentication is an enrollment action for a
+  // PASSWORDLESS SSO account (#4018) — it is how such a user proves identity
+  // to install a first factor, since they have no password to prove. The route
+  // changes no account state on its own; it only begins an OIDC round trip.
+  if (rel.startsWith('/sso/reauth/')) return true;
   return false;
 }
 

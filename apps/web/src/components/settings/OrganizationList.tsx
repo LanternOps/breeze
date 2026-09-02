@@ -6,16 +6,34 @@ import { ResponsiveTable, DataCard, CardField, CardActions } from '../shared/Res
 export type Organization = {
   id: string;
   name: string;
-  status: 'active' | 'trial' | 'suspended' | 'churned' | 'offboarding';
+  status: 'active' | 'trial' | 'suspended' | 'churned' | 'offboarding' | 'merging' | 'archived' | 'purging';
   /**
    * Absent when the caller is organization-scoped: that branch of
    * `GET /orgs/organizations` returns a deliberately minimal projection
    * (id/name/slug/status) because those users reach the route without
    * `organizations:read`. Optional here so the renderer has to decide what to
    * show rather than interpolating `undefined` into a label (#3699).
+   *
+   * Mirrors `org_type` (apps/api/src/db/schema/orgs.ts). The partner/system
+   * branch of `GET /orgs/organizations` spreads the full row so this is
+   * present in practice for that branch; kept optional because the
+   * organization-scoped projection above omits it. Consumers that need to
+   * exclude the hidden `quick_support` org (e.g. the merge survivor picker)
+   * check this rather than assuming the list already filtered it out.
    */
+  type?: 'customer' | 'internal' | 'quick_support';
   deviceCount?: number;
   createdAt: string;
+  /**
+   * Set (`true`) only on rows read through the archived-org list/detail door
+   * (`GET /orgs/organizations?includeArchived=true`, `archivedOrgReads.ts`).
+   * Absent on every ordinary live row — never `false` — so a plain
+   * `org.archived` truthiness check is the same test as `status === 'archived'`
+   * without re-deriving it from the status string at every call site.
+   */
+  archived?: true;
+  /** ISO timestamp, or `null` for "kept indefinitely" — only meaningful when `archived`. */
+  purgeAt?: string | null;
 };
 
 type OrganizationListProps = {
@@ -25,12 +43,16 @@ type OrganizationListProps = {
   onDelete?: (organization: Organization) => void;
 };
 
-const STATUS_LABEL_KEYS: Record<Organization['status'], string> = {
+// Exported for test — see OrganizationsPage.statusMaps.test.tsx.
+export const STATUS_LABEL_KEYS: Record<Organization['status'], string> = {
   active: 'organizationList.status.active',
   trial: 'organizationList.status.trial',
   suspended: 'organizationList.status.suspended',
   churned: 'organizationList.status.churned',
   offboarding: 'organizationList.status.offboarding',
+  merging: 'organizationList.status.merging',
+  archived: 'organizationList.status.archived',
+  purging: 'organizationList.status.purging',
 };
 
 export default function OrganizationList({

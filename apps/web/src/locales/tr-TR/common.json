@@ -15,19 +15,15 @@
     "patches": "Yamalar",
     "vulnerabilities": "Güvenlik Açıkları",
     "oneDrive": "OneDrive",
-    "fleet": "Filo",
-    "aiWorkspace": "Yapay Zeka Çalışma Alanı",
     "aiForOffice": "Office için AI",
     "networkMonitor": "Ağ İzleyicisi",
     "networkDiscovery": "Ağ Keşfi",
-    "security": "Güvenlik",
     "edr": "EDR",
     "dnsSecurity": "DNS Güvenlik",
     "pam": "PAM",
     "userRisk": "Kullanıcı Riski",
     "sensitiveData": "Hassas Veriler",
     "peripherals": "Çevre Birimleri",
-    "aiRiskEngine": "Yapay Zeka Risk Motoru",
     "cisBenchmarks": "CIS Benchmarks",
     "complianceBaselines": "Uyumluluk Esasları",
     "quotes": "Alıntılar",
@@ -35,12 +31,9 @@
     "contracts": "Sözleşmeler",
     "timesheets": "Zaman Çizelgeleri",
     "productCatalog": "Ürün Kataloğu",
-    "softwareLibrary": "Yazılım Kitaplığı",
-    "softwarePolicies": "Yazılım Politikaları",
     "deviceGroups": "Cihaz Grupları",
     "configPolicies": "Yapılandırma Politikaları",
     "integrations": "Entegrasyonlar",
-    "backup": "Yedekleme",
     "cloudBackup": "Bulut Yedekleme",
     "disasterRecovery": "Olağanüstü Durum Kurtarma",
     "reports": "Raporlar",
@@ -51,6 +44,7 @@
     "organizations": "Organizasyonlar",
     "aiUsageBudget": "Yapay Zeka Kullanımı ve Bütçe",
     "aiAgents": "Yapay Zeka Aracıları",
+    "aiAgentRuns": "Yapay Zeka Ajan Çalıştırmaları",
     "customFields": "Özel Alanlar",
     "variables": "Değişkenler",
     "savedFilters": "Kayıtlı Filtreler",
@@ -59,18 +53,26 @@
     "sso": "TOA",
     "accessReviews": "İncelemelere Erişim",
     "enrollmentKeys": "Kayıt Anahtarları",
-    "deletionRequests": "Silme istekleri",
+    "deletionRequests": "Silme Talepleri",
     "quarantinedDevices": "Karantinaya Alınmış Cihazlar",
     "thirdPartyCatalog": "Üçüncü Taraf Kataloğu",
-    "connectedAppsAdmin": "Bağlantılı Uygulamalar (yönetici)",
-    "sectionAiFleet": "Yapay Zeka ve Filo",
-    "sectionMonitoring": "İzleme",
+    "connectedAppsAdmin": "Bağlı Uygulamalar",
     "sectionSecurity": "Güvenlik",
-    "sectionOperations": "İşlemler",
     "sectionBackup": "Yedekleme",
     "sectionReporting": "Raporlama",
     "sectionSettings": "Ayarlar",
-    "sectionExtensions": "Uzantılar"
+    "sectionExtensions": "Uzantılar",
+    "llmProviderCatalog": "LLM Sağlayıcı Kataloğu",
+    "sectionAi": "Yapay Zeka",
+    "sectionFleetManagement": "Filo Yönetimi",
+    "sectionBilling": "Faturalama",
+    "sectionAdministration": "Yönetim",
+    "fleetOrchestration": "Filo Orkestrasyonu",
+    "aiAssistant": "Yapay Zeka Asistanı",
+    "software": "Yazılım",
+    "securityOverview": "Genel Bakış",
+    "aiRisk": "Yapay Zeka Riski",
+    "deviceBackup": "Cihaz Yedekleme"
   },
   "documentTitles": {
     "dashboard": "Kontrol Paneli",
@@ -1626,6 +1628,12 @@
         "editEntry": "Girişi düzenle {{id}}",
         "total": "Toplam: {{duration}}",
         "billableTotal": "Faturalandırılabilir: {{duration}}"
+      },
+      "sourceBadge": {
+        "timer": "Zamanlayıcı",
+        "location": "Konumdan",
+        "remote_session": "Uzak oturumdan",
+        "support_session": "Quick Support'tan"
       }
     },
     "snmp": {
@@ -2404,6 +2412,11 @@
     "link": "Yenilikler"
   },
   "money": {
-    "approximateTotal": "≈ {{amount}} yaklaşık · {{rateDate}} tarihli kurlarla"
+    "approximateTotal": "≈ {{amount}} yaklaşık · {{rateDate}} tarihli kurlarla",
+    "approximateFailed": "≈ toplam kullanılamıyor — döviz kurları yüklenemedi",
+    "approximateUnavailableMissing": "≈ toplam kullanılamıyor — {{codes}} için {{target}} döviz kuru yok",
+    "approximateUnavailableStale": "≈ toplam kullanılamıyor — {{codes}} için {{target}} döviz kuru çok eski",
+    "approximateUnavailableMixed": "≈ toplam kullanılamıyor — {{codes}} birimi {{target}} para birimine çevrilemedi",
+    "approximateUnavailableCodesOverflow": "{{codes}} ve {{more}} tane daha"
   }
 }

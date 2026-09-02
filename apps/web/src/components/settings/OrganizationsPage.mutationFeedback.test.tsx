@@ -10,6 +10,16 @@ vi.mock('../../stores/auth', () => ({
   handleSessionExpired: vi.fn()
 }));
 
+// OrganizationsPage reads useJwtClaims() to gate the merge-org launcher button
+// (partner-scope only). It subscribes to useAuthStore directly, which the
+// mock above does not export — stub the module's own public surface instead
+// of wiring up a fake zustand store. 'unresolved' just hides the button,
+// which is irrelevant to these reorder/redirect assertions.
+vi.mock('../../lib/authScope', () => ({
+  useJwtClaims: () => ({ status: 'unresolved' as const }),
+  getJwtClaims: () => ({ scope: null, orgId: null, partnerId: null }),
+}));
+
 const navigateTo = vi.fn();
 vi.mock('@/lib/navigation', () => ({ navigateTo: (...args: unknown[]) => navigateTo(...args) }));
 

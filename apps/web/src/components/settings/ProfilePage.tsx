@@ -16,6 +16,13 @@ import type { PasskeyRegistrationOptions, UserPreferences } from '../../stores/a
 import { navigateTo } from '@/lib/navigation';
 import { useAvatarBlobUrl } from '@/lib/avatarBlobCache';
 import { formatNumber } from '@/lib/i18n/format';
+import { runAction } from '@/lib/runAction';
+import { showToast } from '../shared/Toast';
+import {
+  stashSsoReauthIntent,
+  takeSsoReauthIntent,
+  type SsoReauthIntent,
+} from '@/lib/ssoReauthIntent';
 
 const createProfileSchema = (t: TFunction) => z.object({
   name: z.string().min(2, t('profilePage.nameMustBeAtLeast2Characters')),
@@ -30,8 +37,75 @@ type User = {
   avatarUrl?: string;
   mfaEnabled?: boolean;
   mfaMethod?: string | null;
+  // #4018: surfaced by GET /users/me. `false` means an SSO-provisioned account
+  // with no password, which cannot satisfy the password step-up the MFA
+  // enrollment endpoints normally demand. Absent = unknown → password road.
+  hasPassword?: boolean;
   preferences?: UserPreferences;
 };
+
+// Typed reason codes the SSO re-auth callback redirects back with
+// (`/settings/profile?ssoReauthError=<code>`). Anything not listed falls back
+// to the generic copy — the server is free to add codes without this going
+// silent.
+//
+// NAMESPACED, matching ConnectSsoCard's `ssoLinkError`. A bare `error` param is
+// a name every other feature on this page could reasonably claim, and this
+// handler would toast SSO copy for any of them.
+const SSO_REAUTH_ERROR_PARAM = 'ssoReauthError';
+const SSO_REAUTH_ERROR_KEYS: Record<string, string> = {
+  // The IdP answered without honouring prompt=login / max_age=0, so nothing was
+  // actually re-verified. This is the one an admin can fix, so it says so.
+  reauth_not_fresh: 'profilePage.ssoReauthNotFresh',
+  identity_mismatch: 'profilePage.ssoReauthIdentityMismatch',
+  session_invalid: 'profilePage.ssoReauthSessionInvalid',
+  password_set: 'profilePage.ssoReauthPasswordSet',
+  reauth_unavailable: 'profilePage.ssoReauthUnavailable',
+  // Reached when the provider is disabled, or its config_version is bumped by
+  // an admin edit mid-flight — both now land here instead of on /login.
+  provider_inactive: 'profilePage.ssoReauthProviderInactive',
+  config_changed: 'profilePage.ssoReauthConfigChanged',
+  email_unverified: 'profilePage.ssoReauthEmailUnverified',
+};
+
+/** Reads and CONSUMES `?ssoReauthError=<code>` from the query string.
+ *
+ *  Stripping is not cosmetic: `showToast` has no dedupe by design, so a handler
+ *  that leaves the param in place re-toasts on every reload and on every shared
+ *  link — and, because react-i18next swaps `t`'s identity once its resources
+ *  finish loading, fires TWICE on a single page load. Consuming the param makes
+ *  the effect idempotent regardless of how often it runs. Same pattern as
+ *  M365MailboxCard's `ticketMailbox`. The fragment and every other query param
+ *  are preserved — only ours is removed. */
+function takeSsoReauthErrorFromQuery(): string | null {
+  if (typeof window === 'undefined') return null;
+  const params = new URLSearchParams(window.location.search);
+  const code = params.get(SSO_REAUTH_ERROR_PARAM);
+  if (!code) return null;
+  params.delete(SSO_REAUTH_ERROR_PARAM);
+  const qs = params.toString();
+  window.history.replaceState(
+    null,
+    '',
+    `${window.location.pathname}${qs ? `?${qs}` : ''}${window.location.hash}`,
+  );
+  return code;
+}
+
+/** Reads and CONSUMES the `#ssoReauthGrant=<id>` fragment the SSO callback
+ *  redirects back with. The grant is single-use, so the fragment is stripped in
+ *  the same tick it is read: leaving it in the address bar invites a confusing
+ *  second attempt against a proof that has already been spent (a reload would
+ *  replay it and fail). The query string is preserved — only the fragment is
+ *  ours to clear. */
+function takeSsoReauthGrantFromHash(): string | null {
+  if (typeof window === 'undefined') return null;
+  const match = /^#ssoReauthGrant=(.+)$/.exec(window.location.hash);
+  if (!match) return null;
+  const grantId = decodeURIComponent(match[1]);
+  window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
+  return grantId;
+}
 
 type PasskeySummary = {
   id: string;
@@ -86,6 +160,21 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
   const [isUpdatingProfile, setIsUpdatingProfile] = useState(false);
   const [isChangingPassword, setIsChangingPassword] = useState(false);
   const [mfaLoading, setMfaLoading] = useState(false);
+  // #4018: the SSO re-auth grant picked up from the redirect fragment. Held for
+  // the rest of the enrollment flow because /mfa/setup consumes it
+  // non-destructively and the terminal /mfa/enable burns it — one IdP
+  // round-trip covers both calls.
+  const [ssoReauthGrantId, setSsoReauthGrantId] = useState<string | null>(null);
+  const [ssoSetupReady, setSsoSetupReady] = useState(false);
+  const [isStartingSsoReauth, setIsStartingSsoReauth] = useState(false);
+  // #4055: this page load IS the return leg of a round-trip the PASSKEY card
+  // started, so the passkey card — not the TOTP one — is where the user must be
+  // put down. Distinct from `hasSsoReauthGrant`, which only says a grant is in
+  // hand and stays true for the rest of the flow: this fires the one-shot
+  // "bring the card to the user" landing and then stops mattering.
+  const [passkeyReauthReturn, setPasskeyReauthReturn] = useState(false);
+  const passkeyNameRef = useRef<HTMLInputElement | null>(null);
+  const passkeyLandingDone = useRef(false);
 
   // Avatar upload state
   const [avatarFile, setAvatarFile] = useState<File | null>(null);
@@ -363,44 +452,213 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
     }
   };
 
-  const handleMfaRequestSetup = async (currentPassword: string): Promise<boolean> => {
+  // The enrollment endpoints accept EITHER proof (#4018): a password, or an
+  // SSO re-auth grant for an account that has no password. Exactly one is sent.
+  const requestMfaSetup = useCallback(
+    async (proof: { currentPassword: string } | { ssoReauthGrantId: string }): Promise<boolean> => {
+      setMfaError(undefined);
+      setMfaSuccess(undefined);
+      // Clear any QR code from a prior aborted attempt before issuing a new one.
+      setQrCodeDataUrl(undefined);
+      try {
+        setMfaLoading(true);
+        const response = await fetchWithAuth('/auth/mfa/setup', {
+          method: 'POST',
+          body: JSON.stringify(proof)
+        });
+
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({}));
+          throw new Error(
+            errorData.error ?? errorData.message ?? t('profilePage.failedToStartMfaHttp', { status: response.status })
+          );
+        }
+
+        const data = await response.json();
+        setQrCodeDataUrl(data.qrCodeDataUrl);
+        return true;
+      } catch (error) {
+        setMfaError(error instanceof Error ? error.message : t('profilePage.failedToStartMFASetup'));
+        return false;
+      } finally {
+        setMfaLoading(false);
+      }
+    },
+    [t]
+  );
+
+  const handleMfaRequestSetup = (currentPassword: string): Promise<boolean> =>
+    requestMfaSetup({ currentPassword });
+
+  // #4018, ONE source of truth for both enrollment roads on this page (TOTP via
+  // MFASettings, passkeys via the card below). `undefined` is UNKNOWN — a
+  // session persisted before /users/me carried the field — and must keep the
+  // password road, which is the fail-safe direction: the server rejects a wrong
+  // password, whereas wrongly hiding the prompt strands a password user.
+  const isPasswordless = user?.hasPassword === false;
+  // The grant is minted by the SSO re-auth callback and held only here. Both
+  // register/options (validate, non-consuming) and register/verify (consume)
+  // take the SAME id, so one IdP round-trip installs exactly one factor —
+  // whichever road spends it first.
+  const hasSsoReauthGrant = ssoReauthGrantId !== null;
+
+  // Consume an `#ssoReauthGrant=<id>` handed back by the SSO callback: the user
+  // has just re-proved their identity at the IdP. Mount-only by design — the
+  // fragment is stripped as it is read, so this can never fire twice.
+  //
+  // #4055: BOTH the TOTP card and the passkey card start the same round-trip
+  // and the callback returns everyone to the same fragment, so the return leg
+  // has to be told which card to go back to. It used to run /mfa/setup
+  // unconditionally, which dropped a user who wanted a PASSKEY onto the TOTP QR
+  // screen and minted a TOTP secret nobody asked for — one that then sits in
+  // Redis under `mfa:setup:<userId>` until its TTL expires, because only the
+  // TOTP confirm step clears it.
+  useEffect(() => {
+    const grantId = takeSsoReauthGrantFromHash();
+    // Consumed unconditionally, grant or not: an error return
+    // (`?ssoReauthError=`) has nothing to route, and an intent left behind
+    // would misroute the NEXT round-trip instead.
+    const intent = takeSsoReauthIntent();
+    if (!grantId) return;
+    setSsoReauthGrantId(grantId);
+    if (intent === 'passkey') {
+      // Deliberately NO /mfa/setup here. The passkey road spends the same grant
+      // on register/options + register/verify, which the card below already
+      // knows how to do once `hasSsoReauthGrant` is true.
+      setPasskeyReauthReturn(true);
+      return;
+    }
+    // `null` (nothing recorded — storage blocked, or a link from before #4055)
+    // keeps the historical TOTP road rather than stranding the user on a page
+    // where neither card does anything.
+    void requestMfaSetup({ ssoReauthGrantId: grantId }).then((ok) => {
+      // Only open the QR view when the server actually issued a secret. On
+      // failure the error banner is already set and the user stays on the
+      // status card, which is where the retry button lives.
+      if (ok) setSsoSetupReady(true);
+    });
+    // Empty deps ON PURPOSE: `requestMfaSetup` is deliberately excluded so a
+    // re-created callback identity can never re-fire this. It is safe either
+    // way — the fragment is stripped as it is read — but re-running would burn
+    // a second /mfa/setup call for nothing.
+  }, []);
+
+  // #4055: the IdP trip is a full-page navigation, so the browser puts the user
+  // back at the TOP of a long settings page while the passkey card they left
+  // from sits below the fold. Routing them back to it means actually taking
+  // them there. Focus does the same job for keyboard and screen-reader users,
+  // and lands on the one field they still have to fill in.
+  //
+  // A CALLBACK ref, keyed on the flag, rather than an effect over an object
+  // ref. The real page is `<ProfilePage client:load />` with no `initialUser`,
+  // so the component sits behind the `isLoadingUser` early return below while
+  // GET /users/me is in flight — the card does not exist in the DOM at the
+  // moment the mount effect sets the flag, and an effect keyed only on the flag
+  // would find a null ref and never run again. React re-invokes a callback ref
+  // whose identity changed, so this fires whichever way the race lands: card
+  // already mounted (identity change re-invokes it) or card mounted later (the
+  // attach invokes it). Child refs attach before parents, so the name input is
+  // already populated by the time this runs. The latch keeps it one-shot.
+  const passkeyCardRef = useCallback((node: HTMLDivElement | null) => {
+    if (!node || !passkeyReauthReturn || passkeyLandingDone.current) return;
+    passkeyLandingDone.current = true;
+    // jsdom has no layout and so no `scrollIntoView`; optional-call it.
+    node.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
+    passkeyNameRef.current?.focus?.();
+  }, [passkeyReauthReturn]);
+
+  // Surface the callback's failure codes
+  // (`/settings/profile?ssoReauthError=<code>`), exactly once.
+  //
+  // Mount-only, and the param is consumed as it is read. Both matter: this used
+  // to depend on `[t]`, and react-i18next hands back a NEW `t` identity once its
+  // resources finish loading async, so the effect re-ran and — showToast having
+  // no dedupe — the user saw the same error toast twice. Leaving the param in
+  // the URL also re-toasted on every reload, forever.
+  useEffect(() => {
+    const code = takeSsoReauthErrorFromQuery();
+    if (!code) return;
+    const key = SSO_REAUTH_ERROR_KEYS[code];
+    // An unrecognized code must still say SOMETHING — a silent no-op here would
+    // leave the user staring at an unchanged page after a failed IdP trip.
+    showToast({
+      type: 'error',
+      message: key ? t(/* i18n-dynamic */ key) : t('profilePage.ssoReauthFailed'),
+    });
+    // Empty deps ON PURPOSE — see above. `t` is read at first render, which is
+    // the correct language for a toast fired at mount. No eslint-disable here:
+    // this repo's web eslint config carries no react-hooks plugin, so a
+    // directive for `exhaustive-deps` is itself an error ("Definition for rule
+    // ... was not found") and fails the Lint job.
+  }, []);
+
+  // #4055: `intent` is the CARD this trip started from. Every scrap of React
+  // state dies at the navigation below and the callback's return URL is minted
+  // server-side, so the only way the return leg can know where to put the user
+  // down is to write it somewhere that survives the trip.
+  const handleSsoReauthStart = async (intent: SsoReauthIntent) => {
     setMfaError(undefined);
     setMfaSuccess(undefined);
-    // Clear any QR code from a prior aborted attempt before issuing a new one.
-    setQrCodeDataUrl(undefined);
+    setIsStartingSsoReauth(true);
     try {
-      setMfaLoading(true);
-      const response = await fetchWithAuth('/auth/mfa/setup', {
-        method: 'POST',
-        body: JSON.stringify({ currentPassword })
+      const body = await runAction<{ authUrl: string }>({
+        request: () => fetchWithAuth('/sso/reauth/start', { method: 'POST' }),
+        errorFallback: t('profilePage.couldNotStartIdentityProviderVerification'),
       });
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(
-          errorData.error ?? errorData.message ?? t('profilePage.failedToStartMfaHttp', { status: response.status })
-        );
+      if (body?.authUrl) {
+        // Recorded only once there is somewhere to go: a failed start never
+        // leaves the page, so writing it earlier would just leave a stale value
+        // for a trip that did not happen.
+        stashSsoReauthIntent(intent);
+        // External IdP URL — a full-page navigation, not the SPA router (which
+        // rejects an off-origin path as an open redirect).
+        window.location.assign(body.authUrl);
+        return;
       }
-
-      const data = await response.json();
-      setQrCodeDataUrl(data.qrCodeDataUrl);
-      return true;
-    } catch (error) {
-      setMfaError(error instanceof Error ? error.message : t('profilePage.failedToStartMFASetup'));
-      return false;
-    } finally {
-      setMfaLoading(false);
+      // 200 with no authUrl: nothing to navigate to, and runAction saw a
+      // success. Say so rather than leaving the button spinning silently.
+      showToast({ type: 'error', message: t('profilePage.couldNotStartIdentityProviderVerification') });
+      setIsStartingSsoReauth(false);
+    } catch {
+      // runAction already toasted the failure.
+      setIsStartingSsoReauth(false);
     }
   };
 
-  const handleMfaEnable = async (code: string, currentPassword: string) => {
+  /**
+   * #4413: returns FALSE when the write was rejected. MFASettings keeps the QR
+   * view (and the password behind it) open on `false`, so a mistyped code costs
+   * one retry instead of a whole re-enrollment against a fresh secret.
+   */
+  const handleMfaEnable = async (code: string, currentPassword: string): Promise<boolean> => {
     setMfaError(undefined);
     setMfaSuccess(undefined);
     try {
       setMfaLoading(true);
+      // Mirror the setup call: send whichever proof this account actually has.
+      // A passwordless account with no grant left has NOTHING to send, and the
+      // server answers `enrollment_proof_required`. MFASettings withholds the
+      // submit in that state (it shows the IdP re-verify CTA instead), so this
+      // is the belt-and-braces half of the same rule.
+      if (!currentPassword && !ssoReauthGrantId && isPasswordless) {
+        setMfaError(t('profilePage.ssoReauthProofExpired'));
+        return false;
+      }
+      const proof = currentPassword
+        ? { currentPassword }
+        : ssoReauthGrantId
+          ? { ssoReauthGrantId }
+          : {};
       const response = await fetchWithAuth('/auth/mfa/enable', {
         method: 'POST',
-        body: JSON.stringify({ code, currentPassword })
+        // #4413: this endpoint answers 401 for "that TOTP is wrong", not for
+        // "your bearer expired". Handing that to fetchWithAuth's generic 401
+        // path either replays a single-use code or — when the refresh does not
+        // restore — signs the user out mid-enrollment (auth.ts handleSessionExpired).
+        // Take the raw 401 and render it ourselves. The durable fix is on the
+        // API side (400/422 + a stable code for a rejected factor proof).
+        skipUnauthorizedRetry: true,
+        body: JSON.stringify({ code, ...proof })
       });
 
       if (!response.ok) {
@@ -415,20 +673,29 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       setRecoveryCodes(data.recoveryCodes);
       setMfaSuccess(t('profilePage.multiFactorAuthenticationEnabledSuccessfully'));
       setQrCodeDataUrl(undefined);
+      // /mfa/enable is the terminal write that BURNS the grant. Drop it so a
+      // later action on this page can't retry with a proof the server has
+      // already spent.
+      setSsoReauthGrantId(null);
+      setSsoSetupReady(false);
+      return true;
     } catch (error) {
       setMfaError(error instanceof Error ? error.message : t('profilePage.failedToEnableMFA'));
+      return false;
     } finally {
       setMfaLoading(false);
     }
   };
 
-  const handleMfaDisable = async (code: string, currentPassword: string) => {
+  const handleMfaDisable = async (code: string, currentPassword: string): Promise<boolean> => {
     setMfaError(undefined);
     setMfaSuccess(undefined);
     try {
       setMfaLoading(true);
       const response = await fetchWithAuth('/auth/mfa/disable', {
         method: 'POST',
+        // Same overloaded 401 as /mfa/enable above — see the comment there.
+        skipUnauthorizedRetry: true,
         body: JSON.stringify({ code, currentPassword })
       });
 
@@ -442,48 +709,92 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       setUser(prev => (prev ? { ...prev, mfaEnabled: false } : null));
       setRecoveryCodes(undefined);
       setMfaSuccess(t('profilePage.multiFactorAuthenticationDisabled'));
+      return true;
     } catch (error) {
       setMfaError(error instanceof Error ? error.message : t('profilePage.failedToDisableMFA'));
+      return false;
     } finally {
       setMfaLoading(false);
     }
   };
 
-  const handleGenerateRecoveryCodes = async (currentPassword: string) => {
+  /**
+   * #4414: this endpoint REGENERATES — it invalidates every code the user
+   * already holds. MFASettings gates it behind an explicit confirm and only
+   * reveals codes when this resolves `true`, so a failed call can never
+   * re-display the previous set as though it were the new one.
+   */
+  const handleGenerateRecoveryCodes = async (currentPassword: string): Promise<boolean> => {
     setMfaError(undefined);
     setMfaSuccess(undefined);
     try {
       setMfaLoading(true);
       const response = await fetchWithAuth('/auth/mfa/recovery-codes', {
         method: 'POST',
+        // Same overloaded 401 as /mfa/enable above — a wrong password here is a
+        // rejected proof, not an expired session.
+        skipUnauthorizedRetry: true,
         body: JSON.stringify({ currentPassword })
       });
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.message ?? t('profilePage.failedToGenerateRecoveryCodes'));
+        throw new Error(
+          errorData.error ?? errorData.message ?? t('profilePage.failedToGenerateRecoveryCodes')
+        );
       }
 
       const data = await response.json();
       setRecoveryCodes(data.recoveryCodes);
       setMfaSuccess(t('profilePage.newRecoveryCodesGenerated'));
+      return true;
     } catch (error) {
       setMfaError(error instanceof Error ? error.message : t('profilePage.failedToGenerateRecoveryCodes'));
+      return false;
     } finally {
       setMfaLoading(false);
     }
   };
 
   const handleAddPasskey = async () => {
-    if (!passkeyPassword || isAddingPasskey) return;
+    if (isAddingPasskey) return;
+    // #4018: a passwordless SSO account proves identity with a fresh forced IdP
+    // round-trip instead of a password it does not have. Without this the
+    // handler hard-returned on `!passkeyPassword` and a passwordless user could
+    // never register a passkey at all — the exact dead end this feature exists
+    // to remove, with the API side already accepting the grant and no caller.
+    if (isPasswordless) {
+      if (!ssoReauthGrantId) {
+        // Belt-and-braces: the card renders the re-verify CTA instead of a
+        // submit in this state, so this is only reachable programmatically.
+        setPasskeyError(t('profilePage.passkeyIdpVerificationRequired'));
+        return;
+      }
+    } else if (!passkeyPassword) {
+      return;
+    }
     setPasskeyError(undefined);
     setPasskeySuccess(undefined);
     try {
       setIsAddingPasskey(true);
       const label = passkeyName.trim() || 'Passkey';
+      // The SAME grant id goes to BOTH calls: register/options only VALIDATES
+      // it, register/verify CONSUMES it. Minting a second grant in between
+      // would fail the consume — each is bound to the epochs + sid captured at
+      // mint time — and burn the user's round trip for nothing.
+      //
+      // The password road is deliberately asymmetric: it proves itself ONCE at
+      // register/options. registerVerifySchema carries no password field at all
+      // (the server calls resolveEnrollmentStepUp there with
+      // `passwordAlreadyProven`), so re-sending the plaintext password would be
+      // a second exposure buying nothing.
+      const optionsProof = isPasswordless
+        ? { ssoReauthGrantId }
+        : { currentPassword: passkeyPassword };
+      const verifyProof = isPasswordless ? { ssoReauthGrantId } : {};
       const optionsResponse = await fetchWithAuth('/auth/passkeys/register/options', {
         method: 'POST',
-        body: JSON.stringify({ currentPassword: passkeyPassword, name: label })
+        body: JSON.stringify({ ...optionsProof, name: label })
       });
 
       const optionsData = await optionsResponse.json().catch(() => ({}));
@@ -497,7 +808,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       const credential = await createPasskeyCredential(optionsJSON);
       const verifyResponse = await fetchWithAuth('/auth/passkeys/register/verify', {
         method: 'POST',
-        body: JSON.stringify({ name: label, credential })
+        body: JSON.stringify({ name: label, credential, ...verifyProof })
       });
 
       const verifyData = await verifyResponse.json().catch(() => ({}));
@@ -510,6 +821,11 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       setUser(prev => (prev ? { ...prev, mfaEnabled: true } : null));
       setPasskeyName('');
       setPasskeyPassword('');
+      // register/verify is the terminal write that BURNS the grant. Drop it so
+      // a later action on this page can't retry with a proof the server has
+      // already spent — same rule as the TOTP terminal write.
+      setSsoReauthGrantId(null);
+      setSsoSetupReady(false);
       if (Array.isArray(verifyData.recoveryCodes)) {
         setRecoveryCodes(verifyData.recoveryCodes);
       }
@@ -755,6 +1071,10 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       {/* MFA Settings */}
       <MFASettings
         enabled={user?.mfaEnabled ?? false}
+        hasPassword={user?.hasPassword}
+        onSsoReauth={() => handleSsoReauthStart('totp')}
+        ssoSetupReady={ssoSetupReady}
+        ssoReauthGrantAvailable={hasSsoReauthGrant}
         qrCodeDataUrl={qrCodeDataUrl}
         recoveryCodes={recoveryCodes}
         onRequestSetup={handleMfaRequestSetup}
@@ -763,14 +1083,18 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
         onGenerateRecoveryCodes={handleGenerateRecoveryCodes}
         errorMessage={mfaError}
         successMessage={mfaSuccess}
-        loading={mfaLoading}
+        loading={mfaLoading || isStartingSsoReauth}
       />
 
       {/* Connect SSO (self-service identity linking, #2183) */}
       <ConnectSsoCard />
 
       {/* Passkeys */}
-      <div className="space-y-6 rounded-lg border bg-card p-6 shadow-xs">
+      <div
+        ref={passkeyCardRef}
+        data-testid="passkey-card"
+        className="space-y-6 rounded-lg border bg-card p-6 shadow-xs"
+      >
         <div className="space-y-1">
           <h2 className="text-lg font-semibold">{t('profilePage.passkeys')}</h2>
           <p className="text-sm text-muted-foreground">
@@ -862,13 +1186,21 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
           <div className="space-y-1">
             <h3 className="text-sm font-medium">{t('profilePage.addPasskey')}</h3>
             <p className="text-xs text-muted-foreground">
-              {t('profilePage.reEnterYourAccountPasswordBeforeAddingOrDeletingAPasskey')}</p>
+              {/* #4055: "re-verify BEFORE adding a passkey" is stale the moment
+                  the grant lands — saying it to someone who just completed the
+                  round-trip reads as a failed trip. */}
+              {isPasswordless
+                ? hasSsoReauthGrant
+                  ? t('profilePage.yourIdentityIsVerifiedNameThisPasskeyAndContinue')
+                  : t('profilePage.thisAccountSignsInThroughAnIdentityProviderVerifyBeforeAddingAPasskey')
+                : t('profilePage.reEnterYourAccountPasswordBeforeAddingOrDeletingAPasskey')}</p>
           </div>
           <div className="space-y-2">
             <label className="text-sm font-medium" htmlFor="passkey-name">
               {t('profilePage.passkeyName')}</label>
             <input
               id="passkey-name"
+              ref={passkeyNameRef}
               type="text"
               value={passkeyName}
               onChange={event => setPasskeyName(event.target.value)}
@@ -877,27 +1209,44 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
               disabled={isAddingPasskey}
             />
           </div>
-          <div className="space-y-2">
-            <label className="text-sm font-medium" htmlFor="passkey-password">
-              {t('profilePage.currentPassword')}</label>
-            <input
-              id="passkey-password"
-              type="password"
-              autoComplete="current-password"
-              value={passkeyPassword}
-              onChange={event => setPasskeyPassword(event.target.value)}
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm"
-              disabled={isAddingPasskey}
-            />
-          </div>
-          <button
-            type="button"
-            onClick={handleAddPasskey}
-            disabled={isAddingPasskey || !passkeyPassword}
-            className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {isAddingPasskey ? t('profilePage.adding') : t('profilePage.addPasskey')}
-          </button>
+          {/* #4018: no password field for an account that has no password —
+              the proof is a fresh IdP round-trip instead. */}
+          {!isPasswordless && (
+            <div className="space-y-2">
+              <label className="text-sm font-medium" htmlFor="passkey-password">
+                {t('profilePage.currentPassword')}</label>
+              <input
+                id="passkey-password"
+                type="password"
+                autoComplete="current-password"
+                value={passkeyPassword}
+                onChange={event => setPasskeyPassword(event.target.value)}
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+                disabled={isAddingPasskey}
+              />
+            </div>
+          )}
+          {isPasswordless && !hasSsoReauthGrant ? (
+            <button
+              type="button"
+              data-testid="passkey-sso-reauth"
+              onClick={() => { void handleSsoReauthStart('passkey'); }}
+              disabled={isAddingPasskey || isStartingSsoReauth}
+              className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {t('profilePage.verifyWithYourIdentityProvider')}
+            </button>
+          ) : (
+            <button
+              type="button"
+              data-testid="passkey-add"
+              onClick={handleAddPasskey}
+              disabled={isAddingPasskey || (!isPasswordless && !passkeyPassword)}
+              className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {isAddingPasskey ? t('profilePage.adding') : t('profilePage.addPasskey')}
+            </button>
+          )}
         </div>
 
         {passkeySuccess && (

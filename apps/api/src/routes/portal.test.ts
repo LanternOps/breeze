@@ -51,6 +51,22 @@ vi.mock('../db', () => ({
 
 // Portal ticket creation routes through the ticket service (stamps partner_id,
 // allocates internal numbers, emits lifecycle events) — mock the service here.
+// Org-status gate (org-lifecycle Wave 2): `portalAuthMiddleware` now refuses a
+// session whose ORG is not usable — suspended, offboarded, archived, or fenced
+// into `merging` for a merge. It delegates that question to
+// `services/tenantStatus`, which opens its own system-scope DB read, so these
+// suites' `../db` mock cannot satisfy it (the real module reaches for
+// `getCurrentDbAccessContext`, which the mock does not export, and its query
+// would return no rows anyway and 403 every request).
+//
+// Mock the tenant-status BOUNDARY, exactly as `middleware/clientAiAuth.test.ts`
+// does for the sibling gate: default to "usable" so these tests keep asserting
+// what they are about. Do NOT relax the gate itself — it is covered directly by
+// `routes/portal/authOrgStatusGate.test.ts`.
+vi.mock('../services/tenantStatus', () => ({
+  getActiveOrgTenant: vi.fn(async (orgId: string) => ({ orgId, partnerId: 'partner-1' })),
+}));
+
 vi.mock('../services/ticketService', () => ({
   createTicket: createTicketMock,
   TicketServiceError: class TicketServiceError extends Error {
@@ -689,7 +705,10 @@ describe('portal routes', () => {
               createdAt: new Date()
             }
           ]) as any
-        );
+        )
+        // W08 #3902 — the detail handler now runs a 6th SELECT for the
+        // attachments hanging off the (already public/non-deleted) comment ids.
+        .mockReturnValueOnce(mockSelectWhere([]) as any);
 
       vi.mocked(db.update).mockReturnValueOnce({
         set: vi.fn().mockReturnValue({
@@ -707,6 +726,8 @@ describe('portal routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.ticket.comments).toHaveLength(1);
+      // Every comment carries an attachments array, empty here.
+      expect(body.ticket.comments[0].attachments).toEqual([]);
     });
 
     it('should return 404 when ticket is missing', async () => {

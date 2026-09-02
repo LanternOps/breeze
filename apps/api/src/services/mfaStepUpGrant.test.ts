@@ -22,7 +22,7 @@ const { redisMock, redisStore, ttls, getRedisMock } = vi.hoisted(() => {
 
 vi.mock('./redis', () => ({ getRedis: getRedisMock }));
 
-import { mintStepUpGrant, validateStepUpGrant, consumeStepUpGrant } from './mfaStepUpGrant';
+import { mintStepUpGrant, validateStepUpGrant, consumeStepUpGrant, rollbackResourceDigest } from './mfaStepUpGrant';
 
 const bind = (operation: 'add_factor' | 'register_approver_device') => ({
   userId: 'user-1',
@@ -30,6 +30,14 @@ const bind = (operation: 'add_factor' | 'register_approver_device') => ({
   authEpoch: 1,
   mfaEpoch: 2,
   sid: 'sid-1',
+	resourceDigest: '',
+});
+
+describe('rollbackResourceDigest', () => {
+  it('hashes canonical rollback identity bytes', () => {
+    expect(rollbackResourceDigest({ deviceId: 'device-1', currentVersion: '2.0.0', targetVersion: '1.9.0', reason: 'incident rollback' }))
+      .toBe('sha256:2debd6cc76cd6b29a8a60e445bb2241e462a264a2448e2a59b7f9c72e282829f');
+  });
 });
 
 describe('mfaStepUpGrant', () => {
@@ -56,6 +64,11 @@ describe('mfaStepUpGrant', () => {
       const id = await mintStepUpGrant(bind('add_factor'));
       expect(id).toBeNull();
     });
+
+    it('fails closed when the Redis write rejects', async () => {
+      redisMock.setex.mockRejectedValueOnce(new Error('redis write failed'));
+      await expect(mintStepUpGrant(bind('add_factor'))).resolves.toBeNull();
+    });
   });
 
   describe('validateStepUpGrant', () => {
@@ -81,6 +94,14 @@ describe('mfaStepUpGrant', () => {
       const ok = await validateStepUpGrant(id!, bind('add_factor'));
       expect(ok).toBe(false);
     });
+
+    it('fails closed after expiry and on a Redis read error', async () => {
+      const id = await mintStepUpGrant(bind('add_factor'));
+      redisStore.delete(`mfa:stepup:${id}`);
+      await expect(validateStepUpGrant(id!, bind('add_factor'))).resolves.toBe(false);
+      redisMock.get.mockRejectedValueOnce(new Error('redis read failed'));
+      await expect(validateStepUpGrant('any-id', bind('add_factor'))).resolves.toBe(false);
+    });
   });
 
   describe('consumeStepUpGrant', () => {
@@ -90,11 +111,24 @@ describe('mfaStepUpGrant', () => {
       expect(ok).toBe(false);
     });
 
+		it('binds an agent rollback grant to the exact resource and consumes it once under parallel replay', async () => {
+			const rollbackBind = { ...bind('add_factor'), operation: 'agent_rollback' as const, resourceDigest: 'sha256:resource-a' };
+			const id = await mintStepUpGrant(rollbackBind);
+			await expect(validateStepUpGrant(id!, { ...rollbackBind, resourceDigest: 'sha256:resource-b' })).resolves.toBe(false);
+			const outcomes = await Promise.all(Array.from({ length: 8 }, () => consumeStepUpGrant(id!, rollbackBind)));
+			expect(outcomes.filter(Boolean)).toHaveLength(1);
+		});
+
     it('returns false when Redis is null', async () => {
       const id = await mintStepUpGrant(bind('add_factor'));
       getRedisMock.mockReturnValue(null);
       const ok = await consumeStepUpGrant(id!, bind('add_factor'));
       expect(ok).toBe(false);
+    });
+
+    it('fails closed when Redis getdel rejects', async () => {
+      redisMock.getdel.mockRejectedValueOnce(new Error('redis consume failed'));
+      await expect(consumeStepUpGrant('any-id', bind('add_factor'))).resolves.toBe(false);
     });
   });
 });

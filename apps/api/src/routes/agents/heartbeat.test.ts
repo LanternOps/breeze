@@ -7,11 +7,17 @@ const selectMock = vi.fn();
 const updateMock = vi.fn();
 const insertMock = vi.fn();
 const runOutsideDbContextMock = vi.fn(async (fn: () => unknown) => fn());
+const ingestRollbackObservationMock = vi.hoisted(() => vi.fn());
 
 // Records the order of key lifecycle events so a test can assert the
 // manifest-trust-keyset fetch happens AFTER the org DB context closes
 // (the #1105 pool-poison fix). Reset per test.
 const callOrder: string[] = [];
+
+const recordAgentHealthObservationMock = vi.hoisted(() => vi.fn(async (_input: unknown) => ({
+  observationId: 'health-observation-1',
+  becameLatest: true,
+})));
 
 // Default pass-through behaviour for withSystemDbAccessContext — extracted so
 // it can be reinstalled via mockImplementationOnce for calls a test doesn't
@@ -171,6 +177,10 @@ vi.mock('./helpers', () => ({
   // upgrade tests: the resolver returns the candidate target version, and the
   // gate + compareAgentVersions (default 0 = no newer) decide whether to send it.
   resolvePinnedUpgradeTarget: vi.fn(async () => '0.66.0'),
+  // #4072 — permissive default so the edition gate is transparent to tests
+  // that don't exercise it. The edition-gate describe overrides per-test and
+  // restores this implementation in afterEach (clearAllMocks does not).
+  agentAcceptsServedEdition: vi.fn(() => true),
 }));
 
 vi.mock('../../services/auditEvents', () => ({
@@ -198,6 +208,10 @@ vi.mock('../../services/eventBus', () => ({
   publishEvent: vi.fn(async () => undefined),
 }));
 
+vi.mock('../../services/agentRollbackResult', () => ({
+  ingestRollbackObservation: ingestRollbackObservationMock,
+}));
+
 vi.mock('../../middleware/agentAuth', () => ({
   isAgentTokenRotationDue: vi.fn(() => false),
   // #3986 — the ONE definition of the drain claim allowlist. heartbeat.ts reads
@@ -207,8 +221,19 @@ vi.mock('../../middleware/agentAuth', () => ({
   DRAIN_CLAIM_TYPE_ALLOWLIST: ['self_uninstall'] as const,
 }));
 
+vi.mock('../../services/agentEditionAutoMigrate', () => ({
+  maybeDispatchEditionMigration: vi.fn().mockResolvedValue(undefined),
+  // Permissive default so the launch-gating tests below control it explicitly.
+  shouldConsiderEditionMigration: vi.fn(() => true),
+}));
+
 vi.mock('../../services/sentry', () => ({
   captureException: vi.fn(),
+}));
+
+vi.mock('../../services/agentHealthObservations', () => ({
+  recordAgentHealthObservation: (...args: unknown[]) =>
+    recordAgentHealthObservationMock(...(args as [any])),
 }));
 
 vi.mock('../../services/remoteAccessPolicy', () => ({
@@ -365,6 +390,18 @@ const minimalHeartbeatBody = {
   },
 };
 
+const healthObservation = {
+  schemaVersion: 1,
+  deviceId: 'device-1',
+  agentVersion: '0.65.10',
+  overall: 'warning',
+  metricsAvailable: true,
+  components: {
+    metrics: { state: 'warning', reason: 'disk pressure' },
+  },
+  observedAt: '2026-08-24T12:00:00.000Z',
+};
+
 const originalAgentBackupServerUrl = process.env.AGENT_BACKUP_SERVER_URL;
 const originalAgentRequireManifestSigningKeyId = process.env.AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID;
 
@@ -379,6 +416,213 @@ afterEach(() => {
   } else {
     process.env.AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID = originalAgentRequireManifestSigningKeyId;
   }
+});
+
+describe('POST /agents/:id/heartbeat — reachability ownership', () => {
+  const pendingDevice = {
+    id: 'device-1',
+    orgId: 'org-1',
+    siteId: 'site-1',
+    hostname: 'host-1',
+    osType: 'linux',
+    osVersion: 'Ubuntu 22.04',
+    osBuild: null,
+    architecture: 'amd64',
+    agentVersion: '0.65.10',
+    deviceRole: 'server',
+    deviceRoleSource: 'auto',
+    agentTokenHash: 'hash',
+    tokenIssuedAt: new Date('2026-08-01T00:00:00.000Z'),
+    status: 'pending',
+    lastSeenAt: null,
+    mainAgentSilentSince: null,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    selectMock.mockReset();
+    updateMock.mockReset();
+    insertMock.mockReset();
+    getActiveTrustKeysetMock.mockResolvedValue([]);
+    getActiveManifestKeyDelegationsMock.mockResolvedValue([]);
+  });
+
+  it('an authenticated main-agent heartbeat promotes pending to online and advances lastSeenAt', async () => {
+    selectMock.mockReturnValueOnce(selectChainResolving([pendingDevice]));
+    selectMock.mockReturnValue(selectChainResolving([]));
+    const setSpy = vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) }));
+    updateMock.mockReturnValue({ set: setSpy });
+    insertMock.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
+
+    const response = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+
+    expect(response.status).toBe(200);
+    const update = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    expect(update.status).toBe('online');
+    expect(update.lastSeenAt).toBeInstanceOf(Date);
+  });
+
+  it('records valid v1 health only after the main heartbeat DB context is released', async () => {
+    selectMock.mockReturnValueOnce(selectChainResolving([pendingDevice]));
+    selectMock.mockReturnValue(selectChainResolving([]));
+    updateMock.mockReturnValue({
+      set: vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) })),
+    });
+    insertMock.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
+    callOrder.length = 0;
+    recordAgentHealthObservationMock.mockImplementationOnce(async () => {
+      callOrder.push('health:persisted');
+      return { observationId: 'health-observation-1', becameLatest: true };
+    });
+
+    const response = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...minimalHeartbeatBody, healthStatus: healthObservation }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(recordAgentHealthObservationMock).toHaveBeenCalledWith({
+      device: { id: 'device-1', orgId: 'org-1' },
+      observation: healthObservation,
+      receivedAt: expect.any(Date),
+    });
+    expect(callOrder.indexOf('dbContext:released')).toBeLessThan(
+      callOrder.indexOf('health:persisted'),
+    );
+  });
+
+  it('does not record a health observation when an old main agent omits it', async () => {
+    selectMock.mockReturnValueOnce(selectChainResolving([pendingDevice]));
+    selectMock.mockReturnValue(selectChainResolving([]));
+    updateMock.mockReturnValue({
+      set: vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) })),
+    });
+    insertMock.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
+
+    const response = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+
+    expect(response.status).toBe(200);
+    expect(recordAgentHealthObservationMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps reachability successful and captures a health persistence failure', async () => {
+    selectMock.mockReturnValueOnce(selectChainResolving([pendingDevice]));
+    selectMock.mockReturnValue(selectChainResolving([]));
+    const setSpy = vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) }));
+    updateMock.mockReturnValue({ set: setSpy });
+    insertMock.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
+    const failure = new Error('health store unavailable');
+    recordAgentHealthObservationMock.mockRejectedValueOnce(failure);
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const { captureException } = await import('../../services/sentry');
+
+    const response = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...minimalHeartbeatBody, healthStatus: healthObservation }),
+    });
+
+    expect(response.status).toBe(200);
+    expect((setSpy.mock.calls as any[])[0]?.[0]).toMatchObject({ status: 'online' });
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('failed to persist health observation'),
+      failure,
+    );
+    expect(vi.mocked(captureException)).toHaveBeenCalledWith(failure);
+    errorSpy.mockRestore();
+  });
+
+  it('drops an explicit mismatched health device identity without calling persistence', async () => {
+    selectMock.mockReturnValueOnce(selectChainResolving([pendingDevice]));
+    selectMock.mockReturnValue(selectChainResolving([]));
+    updateMock.mockReturnValue({
+      set: vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) })),
+    });
+    insertMock.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const { captureException } = await import('../../services/sentry');
+
+    const response = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        ...minimalHeartbeatBody,
+        healthStatus: { ...healthObservation, deviceId: 'device-2' },
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(recordAgentHealthObservationMock).not.toHaveBeenCalled();
+    expect(vi.mocked(captureException)).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining('identity mismatch') }),
+    );
+    errorSpy.mockRestore();
+  });
+
+  it('an authenticated watchdog heartbeat updates watchdog fields without changing main reachability', async () => {
+    selectMock.mockReturnValueOnce(selectChainResolving([pendingDevice]));
+    selectMock.mockReturnValue(selectChainResolving([]));
+    const setSpy = vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) }));
+    updateMock.mockReturnValue({ set: setSpy });
+
+    const response = await buildWatchdogApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        agentVersion: '0.65.10',
+        role: 'watchdog',
+        watchdogState: 'MONITORING',
+        healthStatus: healthObservation,
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    const update = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    expect(update).toMatchObject({
+      watchdogStatus: 'connected',
+      watchdogVersion: '0.65.10',
+      watchdogLastSeen: expect.any(Date),
+    });
+    expect(update).not.toHaveProperty('status');
+    expect(update).not.toHaveProperty('lastSeenAt');
+    expect(recordAgentHealthObservationMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a missing authenticated agent context without a reachability write', async () => {
+    const app = new Hono();
+    app.route('/agents', heartbeatRoutes);
+
+    const response = await app.request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+
+    expect(response.status).toBe(401);
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a watchdog credential declaring the main-agent role without a reachability write', async () => {
+    selectMock.mockReturnValueOnce(selectChainResolving([pendingDevice]));
+
+    const response = await buildWatchdogApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ agentVersion: '0.65.10', role: 'agent' }),
+    });
+
+    expect(response.status).toBe(401);
+    expect(updateMock).not.toHaveBeenCalled();
+  });
 });
 
 describe('POST /agents/:id/heartbeat — manifestTrustKeys delivery (#639)', () => {
@@ -461,6 +705,36 @@ describe('POST /agents/:id/heartbeat — manifestTrustKeys delivery (#639)', () 
     expect(resp.status).toBe(200);
     const body = (await resp.json()) as Record<string, unknown>;
     expect(body.manifestTrustKeys).toEqual([]);
+  });
+
+  it('acknowledges a durably ingested rollback observation after the device update commits', async () => {
+    const rollbackObservation = {
+      schemaVersion: 1,
+      observationId: 'a'.repeat(64),
+      rollbackId: '10000000-0000-4000-8000-000000000001',
+      deviceId: 'device-1',
+      phase: 'restart_requested',
+      currentVersion: '2.0.0',
+      componentVersions: { agent: '1.9.0' },
+      observedAt: '2026-08-25T12:00:00Z',
+    };
+    ingestRollbackObservationMock.mockResolvedValueOnce({
+      acknowledgedObservationId: rollbackObservation.observationId,
+    });
+    getActiveTrustKeysetMock.mockResolvedValue([]);
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...minimalHeartbeatBody, rollbackObservation }),
+    });
+
+    expect(resp.status).toBe(200);
+    expect(ingestRollbackObservationMock).toHaveBeenCalledWith('device-1', rollbackObservation);
+    expect(callOrder.indexOf('dbContext:released')).toBeLessThan(callOrder.lastIndexOf('dbContext:opened'));
+    await expect(resp.json()).resolves.toMatchObject({
+      acknowledgedRollbackObservationId: rollbackObservation.observationId,
+    });
   });
 
   it('always includes backup_server_url in configUpdate — value when env set', async () => {
@@ -1562,6 +1836,410 @@ describe('POST /agents/:id/heartbeat — controlled fleet rollout (promotion gat
   });
 });
 
+// ---------------------------------------------------------------------
+// #4072 — artifact-edition offer gate. An agent build that would refuse the
+// served artifact edition (updater-side check, post-download) must not be
+// OFFERED the version at all: the refusal loop retries every ~60s forever
+// with the device stuck in 'updating'. These tests pin the wiring — every
+// offer path consults agentAcceptsServedEdition with THIS beat's payload
+// values and withholds on false. The predicate's own logic is unit-tested in
+// helpers.agentUpdatePolicy.test.ts.
+// ---------------------------------------------------------------------
+describe('POST /agents/:id/heartbeat — artifact-edition offer gate (#4072)', () => {
+  const agentDeviceRow = {
+    id: 'device-1',
+    orgId: 'org-1',
+    siteId: 'site-1',
+    hostname: 'host-1',
+    osType: 'windows',
+    osVersion: 'Windows 11',
+    osBuild: null,
+    architecture: 'amd64',
+    agentVersion: '0.105.1',
+    deviceRole: 'workstation',
+    deviceRoleSource: 'auto',
+    agentTokenHash: 'hash',
+    tokenIssuedAt: new Date(),
+    mainAgentSilentSince: null,
+  };
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    selectMock.mockReset();
+    updateMock.mockReset();
+    insertMock.mockReset();
+    getActiveTrustKeysetMock.mockReset();
+    getActiveTrustKeysetMock.mockResolvedValue([]);
+    updateMock.mockReturnValue({
+      set: vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) })),
+    });
+    insertMock.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
+    const { agentAcceptsServedEdition, compareAgentVersions } = await import('./helpers');
+    vi.mocked(agentAcceptsServedEdition).mockImplementation(() => true);
+    vi.mocked(compareAgentVersions).mockReturnValue(1); // target > reported everywhere
+  });
+
+  afterEach(async () => {
+    // Restore the permissive default for the rest of the file — clearAllMocks
+    // clears calls, not implementations, so a leaked `false` would silently
+    // withhold offers in every later upgrade test.
+    const { agentAcceptsServedEdition, compareAgentVersions } = await import('./helpers');
+    vi.mocked(agentAcceptsServedEdition).mockImplementation(() => true);
+    vi.mocked(compareAgentVersions).mockReturnValue(0);
+  });
+
+  function prime(versionRows: unknown[]) {
+    selectMock.mockReturnValueOnce(selectChainResolving([agentDeviceRow]));
+    selectMock.mockReturnValue(selectChainResolving(versionRows));
+  }
+
+  async function beat(extra: Record<string, unknown> = {}) {
+    return buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...minimalHeartbeatBody, agentVersion: '0.105.1', ...extra }),
+    });
+  }
+
+  type OfferBody = { upgradeTo?: string; helperUpgradeTo?: string; watchdogUpgradeTo?: string };
+
+  it('withholds the agent upgrade offer when the build cannot accept the served edition', async () => {
+    const { agentAcceptsServedEdition } = await import('./helpers');
+    vi.mocked(agentAcceptsServedEdition).mockImplementation(() => false);
+    prime([{ version: '0.66.0' }]);
+
+    const resp = await beat();
+    expect(resp.status).toBe(200);
+    // Main-branch "no offer" serializes as null (matching the un-promoted
+    // rollout contract above), which agents treat the same as absent.
+    const body = (await resp.json()) as OfferBody;
+    expect(body.upgradeTo).toBeFalsy();
+  });
+
+  it('withholds the helper offer — including the ungated bootstrap install (no helperVersion reported)', async () => {
+    const { agentAcceptsServedEdition } = await import('./helpers');
+    vi.mocked(agentAcceptsServedEdition).mockImplementation(() => false);
+    prime([{ version: '0.66.0' }]);
+
+    const resp = await beat(); // no helperVersion → would bootstrap-offer latest
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as OfferBody;
+    expect(body.helperUpgradeTo).toBeUndefined();
+  });
+
+  it('withholds the watchdog offer — including the ungated bootstrap install', async () => {
+    const { agentAcceptsServedEdition } = await import('./helpers');
+    vi.mocked(agentAcceptsServedEdition).mockImplementation(() => false);
+    prime([{ version: '0.66.0' }]); // watchdogVersion absent on row + beat → bootstrap path
+
+    const resp = await beat();
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as OfferBody;
+    expect(body.watchdogUpgradeTo).toBeUndefined();
+  });
+
+  it('hands the withheld device to the auto edition migration hook (fire-and-forget)', async () => {
+    const { agentAcceptsServedEdition } = await import('./helpers');
+    vi.mocked(agentAcceptsServedEdition).mockImplementation(() => false);
+    const { maybeDispatchEditionMigration } = await import('../../services/agentEditionAutoMigrate');
+    prime([{ version: '0.66.0' }]);
+
+    const resp = await beat();
+    expect(resp.status).toBe(200);
+    expect(vi.mocked(maybeDispatchEditionMigration)).toHaveBeenCalledTimes(1);
+    const args = vi.mocked(maybeDispatchEditionMigration).mock.calls[0]![0];
+    expect(args.device.id).toBe('device-1');
+    expect(args.reportedAgentVersion).toBe('0.105.1');
+    expect(args.normalizedArch).toBe('amd64');
+    expect(typeof args.updateGateAllows).toBe('boolean');
+    expect(typeof args.resolveTarget).toBe('function');
+  });
+
+  it('does NOT launch the dispatch when the cheap precheck says no (flag off / non-candidate)', async () => {
+    const { agentAcceptsServedEdition } = await import('./helpers');
+    vi.mocked(agentAcceptsServedEdition).mockImplementation(() => false);
+    const { maybeDispatchEditionMigration, shouldConsiderEditionMigration } = await import(
+      '../../services/agentEditionAutoMigrate'
+    );
+    // Once-only: clearAllMocks clears calls, not implementations, so a
+    // persistent false here would leak into every later hook test.
+    vi.mocked(shouldConsiderEditionMigration).mockReturnValueOnce(false);
+    prime([{ version: '0.66.0' }]);
+
+    const resp = await beat();
+    expect(resp.status).toBe(200);
+    expect(vi.mocked(maybeDispatchEditionMigration)).not.toHaveBeenCalled();
+  });
+
+  it('does NOT invoke the auto edition migration hook when the build accepts the served edition', async () => {
+    const { maybeDispatchEditionMigration } = await import('../../services/agentEditionAutoMigrate');
+    prime([{ version: '0.66.0' }]);
+
+    const resp = await beat();
+    expect(resp.status).toBe(200);
+    expect(vi.mocked(maybeDispatchEditionMigration)).not.toHaveBeenCalled();
+  });
+
+  it('a rejected auto-migration promise never fails the heartbeat', async () => {
+    const { agentAcceptsServedEdition } = await import('./helpers');
+    vi.mocked(agentAcceptsServedEdition).mockImplementation(() => false);
+    const { maybeDispatchEditionMigration } = await import('../../services/agentEditionAutoMigrate');
+    vi.mocked(maybeDispatchEditionMigration).mockRejectedValueOnce(new Error('dispatch exploded'));
+    prime([{ version: '0.66.0' }]);
+
+    const resp = await beat();
+    expect(resp.status).toBe(200);
+  });
+
+  it('offers normally when the build accepts the served edition (gate true)', async () => {
+    prime([{ version: '0.66.0' }]);
+
+    const resp = await beat();
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as OfferBody;
+    expect(body.upgradeTo).toBe('0.66.0');
+  });
+
+  it('consults the gate with THIS beat’s payload values (reported edition + version), not stored columns', async () => {
+    const { agentAcceptsServedEdition } = await import('./helpers');
+    prime([{ version: '0.66.0' }]);
+
+    const resp = await beat({ agentEdition: 'self-host' });
+    expect(resp.status).toBe(200);
+    expect(vi.mocked(agentAcceptsServedEdition)).toHaveBeenCalledWith({
+      reportedEdition: 'self-host',
+      agentVersion: '0.105.1',
+    });
+  });
+
+  it('logs the withhold once per device per process, not per heartbeat', async () => {
+    const { agentAcceptsServedEdition } = await import('./helpers');
+    vi.mocked(agentAcceptsServedEdition).mockImplementation(() => false);
+    const { __resetEditionWithheldWarnCacheForTests } = await import('./heartbeat');
+    __resetEditionWithheldWarnCacheForTests();
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      prime([{ version: '0.66.0' }]);
+      await beat();
+      prime([{ version: '0.66.0' }]);
+      await beat();
+      const withheldWarns = warnSpy.mock.calls.filter((c) => String(c[0]).includes('#4072'));
+      expect(withheldWarns).toHaveLength(1);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('routes the withhold to Sentry once per process (fleet-freeze observability parity with the pin-miss path)', async () => {
+    const { agentAcceptsServedEdition } = await import('./helpers');
+    const { captureException } = await import('../../services/sentry');
+    vi.mocked(agentAcceptsServedEdition).mockImplementation(() => false);
+    const { __resetEditionWithheldWarnCacheForTests } = await import('./heartbeat');
+    __resetEditionWithheldWarnCacheForTests();
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      prime([{ version: '0.66.0' }]);
+      await beat();
+      prime([{ version: '0.66.0' }]);
+      await beat();
+      const withheldCaptures = vi
+        .mocked(captureException)
+        .mock.calls.filter((c) => String((c[0] as Error)?.message ?? c[0]).includes('#4072'));
+      expect(withheldCaptures).toHaveLength(1);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('re-arms the per-device warn once the device accepts again (a later regression must re-log)', async () => {
+    const { agentAcceptsServedEdition } = await import('./helpers');
+    vi.mocked(agentAcceptsServedEdition).mockImplementation(() => false);
+    const { __resetEditionWithheldWarnCacheForTests } = await import('./heartbeat');
+    __resetEditionWithheldWarnCacheForTests();
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      prime([{ version: '0.66.0' }]);
+      await beat(); // withheld → warns
+      vi.mocked(agentAcceptsServedEdition).mockImplementation(() => true);
+      prime([{ version: '0.66.0' }]);
+      await beat(); // accepting → clears the dedupe entry
+      vi.mocked(agentAcceptsServedEdition).mockImplementation(() => false);
+      prime([{ version: '0.66.0' }]);
+      await beat(); // regressed → must warn AGAIN
+      const withheldWarns = warnSpy.mock.calls.filter((c) => String(c[0]).includes('#4072'));
+      expect(withheldWarns).toHaveLength(2);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  describe('watchdog failover branch', () => {
+    const sixteenMinutesAgo = new Date(Date.now() - 16 * 60 * 1000);
+
+    function primeWatchdog() {
+      selectMock.mockReturnValueOnce(
+        selectChainResolving([
+          {
+            id: 'device-1', orgId: 'org-1', hostname: 'host', osType: 'windows',
+            architecture: 'amd64', agentVersion: '0.65.10', watchdogVersion: '0.65.20',
+            lastSeenAt: sixteenMinutesAgo, mainAgentSilentSince: new Date(),
+          },
+        ]),
+      );
+      selectMock.mockReturnValue(selectChainResolving([{ version: '0.66.0' }]));
+    }
+
+    async function watchdogBeat() {
+      return buildWatchdogApp().request('/agents/device-1/heartbeat', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          role: 'watchdog', agentVersion: '0.65.20', agentEdition: 'hosted', watchdogState: 'FAILOVER',
+        }),
+      });
+    }
+
+    it('withholds BOTH the watchdog self-update and the agent recovery offer when the watchdog build cannot accept the served edition', async () => {
+      const { agentAcceptsServedEdition } = await import('./helpers');
+      vi.mocked(agentAcceptsServedEdition).mockImplementation(() => false);
+      primeWatchdog();
+
+      const resp = await watchdogBeat();
+      expect(resp.status).toBe(200);
+      const body = (await resp.json()) as OfferBody;
+      expect(body.watchdogUpgradeTo).toBeUndefined();
+      expect(body.upgradeTo).toBeUndefined();
+    });
+
+    it('consults the gate with the WATCHDOG’s own payload (it is the binary that downloads in failover)', async () => {
+      const { agentAcceptsServedEdition } = await import('./helpers');
+      primeWatchdog();
+
+      const resp = await watchdogBeat();
+      expect(resp.status).toBe(200);
+      expect(vi.mocked(agentAcceptsServedEdition)).toHaveBeenCalledWith({
+        reportedEdition: 'hosted',
+        agentVersion: '0.65.20',
+      });
+      const body = (await resp.json()) as OfferBody;
+      expect(body.watchdogUpgradeTo).toBe('0.66.0');
+      expect(body.upgradeTo).toBe('0.66.0');
+    });
+
+    it('a SILENT watchdog falls back to the device row’s stored agentEdition — deployed watchdogs predate edition reporting, and withholding recovery from the whole hosted fleet would be the regression', async () => {
+      const { agentAcceptsServedEdition } = await import('./helpers');
+      selectMock.mockReturnValueOnce(
+        selectChainResolving([
+          {
+            id: 'device-1', orgId: 'org-1', hostname: 'host', osType: 'windows',
+            architecture: 'amd64', agentVersion: '0.107.1', watchdogVersion: '0.107.1',
+            agentEdition: 'hosted',
+            lastSeenAt: sixteenMinutesAgo, mainAgentSilentSince: new Date(),
+          },
+        ]),
+      );
+      selectMock.mockReturnValue(selectChainResolving([{ version: '0.66.0' }]));
+
+      // Watchdog beat WITHOUT agentEdition — every watchdog in the field today.
+      const resp = await buildWatchdogApp().request('/agents/device-1/heartbeat', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ role: 'watchdog', agentVersion: '0.107.1', watchdogState: 'FAILOVER' }),
+      });
+      expect(resp.status).toBe(200);
+      expect(vi.mocked(agentAcceptsServedEdition)).toHaveBeenCalledWith({
+        reportedEdition: 'hosted',
+        agentVersion: '0.107.1',
+      });
+    });
+
+    it('a withheld RECOVERY (main agent silent) logs at error level and captures to Sentry — a device stuck offline must never be silent', async () => {
+      const { agentAcceptsServedEdition } = await import('./helpers');
+      const { captureException } = await import('../../services/sentry');
+      vi.mocked(agentAcceptsServedEdition).mockImplementation(() => false);
+      const { __resetEditionWithheldWarnCacheForTests } = await import('./heartbeat');
+      __resetEditionWithheldWarnCacheForTests();
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        primeWatchdog();
+        await watchdogBeat();
+        primeWatchdog();
+        await watchdogBeat();
+        const recoveryErrors = errorSpy.mock.calls.filter(
+          (c) => String(c[0]).includes('#4072') && String(c[0]).toLowerCase().includes('recovery'),
+        );
+        // Deduped per device per process — once, not per failover beat.
+        expect(recoveryErrors).toHaveLength(1);
+        const recoveryCaptures = vi
+          .mocked(captureException)
+          .mock.calls.filter((c) => String((c[0] as Error)?.message ?? c[0]).includes('recovery withheld'));
+        expect(recoveryCaptures).toHaveLength(1);
+      } finally {
+        errorSpy.mockRestore();
+      }
+    });
+
+    it('a MAIN-agent beat re-arms the recovery error — a second wedge weeks later must alert again', async () => {
+      const { agentAcceptsServedEdition } = await import('./helpers');
+      vi.mocked(agentAcceptsServedEdition).mockImplementation(() => false);
+      const { __resetEditionWithheldWarnCacheForTests } = await import('./heartbeat');
+      __resetEditionWithheldWarnCacheForTests();
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        primeWatchdog();
+        await watchdogBeat(); // wedge #1 → recovery error
+        // Main agent comes back and beats (proof of recovery) — clears the entry.
+        prime([{ version: '0.66.0' }]);
+        await beat();
+        primeWatchdog();
+        await watchdogBeat(); // wedge #2 → must error AGAIN
+        const recoveryErrors = errorSpy.mock.calls.filter(
+          (c) => String(c[0]).includes('#4072') && String(c[0]).toLowerCase().includes('recovery'),
+        );
+        expect(recoveryErrors).toHaveLength(2);
+      } finally {
+        errorSpy.mockRestore();
+        warnSpy.mockRestore();
+      }
+    });
+
+    it('a silent watchdog whose withhold came from the STORED edition reports that stored value in the log, not "none"', async () => {
+      const { agentAcceptsServedEdition } = await import('./helpers');
+      vi.mocked(agentAcceptsServedEdition).mockImplementation(() => false);
+      const { __resetEditionWithheldWarnCacheForTests } = await import('./heartbeat');
+      __resetEditionWithheldWarnCacheForTests();
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        selectMock.mockReturnValueOnce(
+          selectChainResolving([
+            {
+              id: 'device-1', orgId: 'org-1', hostname: 'host', osType: 'windows',
+              architecture: 'amd64', agentVersion: '0.107.1', watchdogVersion: '0.107.1',
+              agentEdition: 'hosted',
+              lastSeenAt: sixteenMinutesAgo, mainAgentSilentSince: new Date(),
+            },
+          ]),
+        );
+        selectMock.mockReturnValue(selectChainResolving([{ version: '0.66.0' }]));
+        const resp = await buildWatchdogApp().request('/agents/device-1/heartbeat', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ role: 'watchdog', agentVersion: '0.107.1', watchdogState: 'FAILOVER' }),
+        });
+        expect(resp.status).toBe(200);
+        const recoveryErrors = errorSpy.mock.calls.filter((c) => String(c[0]).includes('#4072'));
+        expect(recoveryErrors.length).toBeGreaterThan(0);
+        // The decision used the stored 'hosted' fallback — the log must print
+        // the value that decided, not the silent payload.
+        expect(String(recoveryErrors[0]?.[0])).toContain('reported edition=hosted');
+      } finally {
+        errorSpy.mockRestore();
+      }
+    });
+  });
+});
+
 describe('detectWatchdogStateCollapse (#1121)', () => {
   it('reports a collapse when raw body carried watchdogState but validation dropped it', async () => {
     const { detectWatchdogStateCollapse } = await import('./heartbeat');
@@ -1923,6 +2601,101 @@ describe('outboundNetworkPolicyVersion capability handshake (Wave 6)', () => {
     expect(resp.status).toBe(200);
     const updateArg = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
     expect(updateArg.scriptSecretEnvVersion).toBe(0);
+  });
+
+  it('drops malformed PAM reconciliation telemetry without dropping capability versions', async () => {
+    const setSpy = vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) }));
+    await setupMocks(setSpy);
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ...minimalHeartbeatBody,
+        securityCapabilities: {
+          peripheralPolicyProtocolVersion: 2,
+          pamLifetimeProtocolVersion: 2,
+          pamReconciliation: {
+            unresolvedCount: -1,
+            quarantinedCount: 0,
+            awaitingAcknowledgementCount: 0,
+          },
+        },
+      }),
+    });
+
+    expect(resp.status).toBe(200);
+    const updateArg = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    expect(updateArg.peripheralPolicyProtocolVersion).toBe(2);
+    expect(updateArg.pamLifetimeProtocolVersion).toBe(2);
+  });
+
+  it.each([
+    {
+      name: 'recognized exact integers',
+      capabilities: { peripheralPolicyProtocolVersion: 2, rollbackProtocolVersion: 1, pamLifetimeProtocolVersion: 2 },
+      expectedPeripheral: 2,
+      expectedRollback: 1,
+      expectedPam: 2,
+    },
+    {
+      name: 'omitted capability object',
+      capabilities: undefined,
+      expectedPeripheral: 0,
+      expectedRollback: 0,
+      expectedPam: 0,
+    },
+    {
+      name: 'explicit zero downgrade',
+      capabilities: { peripheralPolicyProtocolVersion: 0, rollbackProtocolVersion: 0, pamLifetimeProtocolVersion: 0 },
+      expectedPeripheral: 0,
+      expectedRollback: 0,
+      expectedPam: 0,
+    },
+    {
+      name: 'unknown integer versions',
+      capabilities: { peripheralPolicyProtocolVersion: 3, rollbackProtocolVersion: 2, pamLifetimeProtocolVersion: 3 },
+      expectedPeripheral: 0,
+      expectedRollback: 0,
+      expectedPam: 0,
+    },
+    {
+      name: 'fractional versions',
+      capabilities: { peripheralPolicyProtocolVersion: 2.5, rollbackProtocolVersion: 1.5, pamLifetimeProtocolVersion: 2.5 },
+      expectedPeripheral: 0,
+      expectedRollback: 0,
+      expectedPam: 0,
+    },
+    {
+      name: 'string versions',
+      capabilities: { peripheralPolicyProtocolVersion: '2', rollbackProtocolVersion: '1', pamLifetimeProtocolVersion: '2' },
+      expectedPeripheral: 0,
+      expectedRollback: 0,
+      expectedPam: 0,
+    },
+  ])('persists tolerant non-sticky control protocol capabilities: $name', async ({
+    capabilities,
+    expectedPeripheral,
+    expectedRollback,
+    expectedPam,
+  }) => {
+    const setSpy = vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) }));
+    await setupMocks(setSpy);
+
+    const body = capabilities === undefined
+      ? minimalHeartbeatBody
+      : { ...minimalHeartbeatBody, securityCapabilities: capabilities };
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+    expect(resp.status).toBe(200);
+    const updateArg = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    expect(updateArg.peripheralPolicyProtocolVersion).toBe(expectedPeripheral);
+    expect(updateArg.rollbackProtocolVersion).toBe(expectedRollback);
+    expect(updateArg.pamLifetimeProtocolVersion).toBe(expectedPam);
   });
 });
 
@@ -2965,6 +3738,57 @@ describe('POST /agents/:id/heartbeat — backupVersion telemetry', () => {
   });
 });
 
+describe('POST /agents/:id/heartbeat — rollback component inventory', () => {
+  const deviceRow = {
+    id: 'device-1', orgId: 'org-1', siteId: 'site-1', hostname: 'host',
+    osType: 'windows', architecture: 'amd64', agentVersion: '0.66.0',
+    deviceRoleSource: 'auto', lastSeenAt: new Date(), mainAgentSilentSince: null,
+  };
+
+  function arrange(setSpy: ReturnType<typeof vi.fn>) {
+    vi.clearAllMocks();
+    getActiveTrustKeysetMock.mockResolvedValue([]);
+    selectMock.mockReturnValueOnce(selectChainResolving([deviceRow]));
+    selectMock.mockReturnValue(selectChainResolving([{ version: '0.66.0' }]));
+    updateMock.mockReturnValue({ set: setSpy });
+    insertMock.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
+  }
+
+  async function post(body: Record<string, unknown>) {
+    return buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ role: 'agent', metrics: minimalHeartbeatBody.metrics, ...body }),
+    });
+  }
+
+  it('persists the complete claimed inventory', async () => {
+    const setSpy = vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) }));
+    arrange(setSpy);
+    const inventory = { agent: '0.66.0', helper: '0.66.0', 'user-helper': '0.66.0' };
+    const resp = await post({
+      agentVersion: '0.66.0',
+      securityCapabilities: { rollbackProtocolVersion: 1 },
+      rollbackComponentVersions: inventory,
+    });
+    expect(resp.status).toBe(200);
+    const updateArg = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    expect(updateArg.rollbackComponentVersions).toEqual(inventory);
+  });
+
+  it('clears stale inventory when a protocol-v1 agent cannot prove completeness', async () => {
+    const setSpy = vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) }));
+    arrange(setSpy);
+    const resp = await post({
+      agentVersion: '0.66.0',
+      securityCapabilities: { rollbackProtocolVersion: 1 },
+    });
+    expect(resp.status).toBe(200);
+    const updateArg = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    expect(updateArg.rollbackComponentVersions).toBeNull();
+  });
+});
+
 // ---------------------------------------------------------------------
 // #2288 — active control-plane URL persistence
 // ---------------------------------------------------------------------
@@ -3708,7 +4532,10 @@ describe('POST /agents/:id/heartbeat — undecryptable claimed commands are rele
     const resp = await buildApp().request('/agents/device-1/heartbeat', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(minimalHeartbeatBody),
+      body: JSON.stringify({
+        ...minimalHeartbeatBody,
+        securityCapabilities: { peripheralPolicyProtocolVersion: 2, rollbackProtocolVersion: 1, pamLifetimeProtocolVersion: 2 },
+      }),
     });
 
     expect(resp.status).toBe(200);
@@ -3717,6 +4544,10 @@ describe('POST /agents/:id/heartbeat — undecryptable claimed commands are rele
       { id: 'cmd-good', type: 'run_script', payload: { scriptId: 'script-1' } },
     ]);
     expect(releaseClaimedCommandDeliveryMock).not.toHaveBeenCalled();
+    expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith(
+      'device-1', 10, 'agent', undefined,
+      { peripheralPolicyProtocolVersion: 2, rollbackProtocolVersion: 1, pamLifetimeProtocolVersion: 2 },
+    );
   });
 
   // #2774 — the heartbeat is the PRIMARY command carrier (the GET poll is
@@ -3749,9 +4580,13 @@ describe('POST /agents/:id/heartbeat — undecryptable claimed commands are rele
     });
 
     expect(resp.status).toBe(200);
-    expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith('device-1', 10, 'agent', [
-      'self_uninstall',
-    ]);
+    expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith(
+      'device-1',
+      10,
+      'agent',
+      ['self_uninstall'],
+      { peripheralPolicyProtocolVersion: 0, rollbackProtocolVersion: 0, pamLifetimeProtocolVersion: 0 },
+    );
   });
 
   // #3409 PR4c-2 Amendment A — the claim gate trusts the capability THIS

@@ -35,6 +35,8 @@ import {
   aiSessions,
   alerts,
   devices,
+  metricAnomalyIncidents,
+  tickets,
 } from '../../db/schema';
 import type { NewActionIntent } from '../../db/schema/actionIntents';
 import { createAccessToken } from '../../services/jwt';
@@ -322,5 +324,225 @@ describe('agent-run move semantics (owner decision 2026-08-23)', () => {
     const [intent] = await adminDb.select().from(actionIntents).where(eq(actionIntents.id, intentId));
     expect(intent.orgId).toBe(orgA.id);
     expect(intent.requestingAgentRunId).toBe(lineage.run.id);
+  });
+
+  it('#3828 branch-review blocker 2: the REAL move route detaches anomaly_incident_id and nulls the reverse pointer', async () => {
+    // Same shape as the previous test, but exercises the anomaly-incident
+    // lineage pair (ai_agent_runs.anomaly_incident_id <-> metric_anomaly_
+    // incidents.agent_run_id) added by wave 6 PR 4 (#3828). Before this fix,
+    // moveOrg.ts's detach statement and breeze_cascade_device_org_id() both
+    // stopped at device_id/alert_id/session_id, so the source-org run kept
+    // anomaly_incident_id pointing at an incident re-stamped to the target
+    // org, and the incident's agent_run_id kept naming a source-org run.
+    const adminDb = getTestDb() as any;
+    const env = await setupTestEnvironment({ scope: 'partner' });
+    const { partner, organization: orgA, site: siteA, user, role } = env;
+    const orgB = await createOrganization({ partnerId: partner.id });
+    const siteB = await createSite({ orgId: orgB.id });
+
+    const device = await insertDevice(orgA.id, siteA.id);
+    const [agent] = await withSystemDbAccessContext(() =>
+      db
+        .insert(aiAgents)
+        .values({ orgId: orgA.id, partnerId: null, kind: 'triage', name: 'Triage', createdBy: user.id })
+        .returning(),
+    );
+    const now = new Date();
+    const [incident] = await adminDb
+      .insert(metricAnomalyIncidents)
+      .values({
+        orgId: orgA.id,
+        deviceId: device.id,
+        anomalyType: 'cpu_spike',
+        bucketSeconds: 300,
+        windowStart: now,
+        firstSeenAt: now,
+        lastSeenAt: now,
+        peakScore: '3.2',
+      })
+      .returning();
+    const [run] = await withSystemDbAccessContext(() =>
+      db
+        .insert(aiAgentRuns)
+        .values({
+          ...runValues(agent!.id, orgA.id, `run-move-anomaly-${randomUUID()}`),
+          triggerKind: 'anomaly',
+          deviceId: device.id,
+          anomalyIncidentId: incident!.id,
+        })
+        .returning(),
+    );
+    // The dispatch marker's best-effort back-link, stamped by the subscriber
+    // on admission (Task 3) — set directly here since this test targets only
+    // the move-org detach, not the subscriber.
+    await adminDb
+      .update(metricAnomalyIncidents)
+      .set({ agentRunId: run!.id })
+      .where(eq(metricAnomalyIncidents.id, incident!.id));
+
+    const token = await createAccessToken({
+      sub: user.id,
+      email: user.email,
+      roleId: role.id,
+      orgId: null,
+      partnerId: partner.id,
+      scope: 'partner',
+      mfa: true,
+      aep: 1,
+      mep: 1,
+      sid: randomUUID(),
+    });
+
+    const app = new Hono();
+    app.route('/devices', moveOrgRoutes);
+    const res = await app.request(`/devices/${device.id}/move-org`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ orgId: orgB.id, siteId: siteB.id }),
+    });
+    expect(res.status, JSON.stringify(await res.clone().json())).toBe(200);
+
+    // The incident followed the device to the target org (it's in
+    // getDeviceOrgDenormalizedTables()).
+    const [movedIncident] = await adminDb
+      .select()
+      .from(metricAnomalyIncidents)
+      .where(eq(metricAnomalyIncidents.id, incident!.id));
+    expect(movedIncident.orgId).toBe(orgB.id);
+    // Reverse pointer nulled — it must not keep naming a source-org run now
+    // that the incident lives in the target org.
+    expect(movedIncident.agentRunId).toBeNull();
+
+    // The run stayed home in the source org, with anomaly_incident_id
+    // detached — no cross-tenant reference left.
+    const [movedRun] = await adminDb.select().from(aiAgentRuns).where(eq(aiAgentRuns.id, run!.id));
+    expect(movedRun.orgId).toBe(orgA.id);
+    expect(movedRun.anomalyIncidentId).toBeNull();
+    expect(movedRun.deviceId).toBeNull();
+  });
+
+  it('#4215: the REAL move route detaches ticket_id on device-less ticket runs, and only those', async () => {
+    // The fifth device-lineage FK. Unlike the four above it is unreachable
+    // from `WHERE device_id = <moved>`: a triage run on a ticket carries
+    // ticket_id with a NULL device_id (trigger_kind 'ticket'), so the
+    // device-keyed detach never sees it while `tickets` IS in
+    // getDeviceOrgDenormalizedTables() — the ticket follows the device to the
+    // target org and the retained source-org run is left naming a foreign
+    // ticket. Both the route and breeze_cascade_device_org_id() now run a
+    // second, ticket-keyed statement; this drives the route end to end.
+    //
+    // The second run/ticket pair is the discriminator: a ticket NOT bound to
+    // the moved device stays in the source org, so its run must keep its
+    // ticket_id. Without it a detach that simply nulled every ticket_id would
+    // pass this test.
+    const adminDb = getTestDb() as any;
+    const env = await setupTestEnvironment({ scope: 'partner' });
+    const { partner, organization: orgA, site: siteA, user, role } = env;
+    const orgB = await createOrganization({ partnerId: partner.id });
+    const siteB = await createSite({ orgId: orgB.id });
+
+    const device = await insertDevice(orgA.id, siteA.id);
+    const [agent] = await withSystemDbAccessContext(() =>
+      db
+        .insert(aiAgents)
+        .values({ orgId: orgA.id, partnerId: null, kind: 'triage', name: 'Triage', createdBy: user.id })
+        .returning(),
+    );
+
+    const unique = randomUUID().slice(0, 8);
+    const [ticketOnDevice] = await adminDb
+      .insert(tickets)
+      .values({
+        orgId: orgA.id,
+        partnerId: partner.id,
+        deviceId: device.id,
+        ticketNumber: `RUNMOVE-DEV-${unique}`,
+        subject: 'ticket bound to the moving device',
+        source: 'manual',
+      })
+      .returning();
+    const [ticketElsewhere] = await adminDb
+      .insert(tickets)
+      .values({
+        orgId: orgA.id,
+        partnerId: partner.id,
+        deviceId: null,
+        ticketNumber: `RUNMOVE-OTHER-${unique}`,
+        subject: 'ticket that stays in the source org',
+        source: 'manual',
+      })
+      .returning();
+
+    const [movingTicketRun, stayingTicketRun] = await withSystemDbAccessContext(() =>
+      db
+        .insert(aiAgentRuns)
+        .values([
+          {
+            ...runValues(agent!.id, orgA.id, `run-move-ticket-${randomUUID()}`),
+            triggerKind: 'ticket',
+            deviceId: null,
+            ticketId: ticketOnDevice.id,
+          },
+          {
+            ...runValues(agent!.id, orgA.id, `run-stay-ticket-${randomUUID()}`),
+            triggerKind: 'ticket',
+            deviceId: null,
+            ticketId: ticketElsewhere.id,
+          },
+        ])
+        .returning(),
+    );
+    // Guard the fixture itself: a device-less ticket run is the whole point.
+    expect(movingTicketRun!.deviceId).toBeNull();
+
+    const token = await createAccessToken({
+      sub: user.id,
+      email: user.email,
+      roleId: role.id,
+      orgId: null,
+      partnerId: partner.id,
+      scope: 'partner',
+      mfa: true,
+      aep: 1,
+      mep: 1,
+      sid: randomUUID(),
+    });
+
+    const app = new Hono();
+    app.route('/devices', moveOrgRoutes);
+    const res = await app.request(`/devices/${device.id}/move-org`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ orgId: orgB.id, siteId: siteB.id }),
+    });
+    expect(res.status, JSON.stringify(await res.clone().json())).toBe(200);
+
+    // The device's ticket followed it; the unrelated one did not.
+    const [movedTicket] = await adminDb
+      .select()
+      .from(tickets)
+      .where(eq(tickets.id, ticketOnDevice.id));
+    expect(movedTicket.orgId).toBe(orgB.id);
+    const [stayedTicket] = await adminDb
+      .select()
+      .from(tickets)
+      .where(eq(tickets.id, ticketElsewhere.id));
+    expect(stayedTicket.orgId).toBe(orgA.id);
+
+    // The run stayed home with ticket_id severed — no cross-tenant pointer.
+    const [detached] = await adminDb
+      .select()
+      .from(aiAgentRuns)
+      .where(eq(aiAgentRuns.id, movingTicketRun!.id));
+    expect(detached.orgId).toBe(orgA.id);
+    expect(detached.ticketId).toBeNull();
+
+    // ...and the run whose ticket never left is untouched.
+    const [untouched] = await adminDb
+      .select()
+      .from(aiAgentRuns)
+      .where(eq(aiAgentRuns.id, stayingTicketRun!.id));
+    expect(untouched.orgId).toBe(orgA.id);
+    expect(untouched.ticketId).toBe(ticketElsewhere.id);
   });
 });

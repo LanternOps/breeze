@@ -15,12 +15,16 @@ export const PERMISSION_GRANTS = {
   // Backup / recovery
   BACKUP_READ: { resource: 'backup', action: 'read' },
   BACKUP_WRITE: { resource: 'backup', action: 'write' },
+  BACKUP_CROSS_SITE_RESTORE: { resource: 'backup', action: 'cross_site_restore' },
 
   // Devices
   DEVICES_READ: { resource: 'devices', action: 'read' },
   DEVICES_WRITE: { resource: 'devices', action: 'write' },
   DEVICES_DELETE: { resource: 'devices', action: 'delete' },
   DEVICES_EXECUTE: { resource: 'devices', action: 'execute' },
+
+  // Signed, resource-bound rollback of customer-machine agent components.
+  AGENT_ROLLBACK_CREATE: { resource: 'agent_rollback', action: 'create' },
 
   // Network topology (discovery topology view + saved layout — #1728)
   TOPOLOGY_READ: { resource: 'topology', action: 'read' },

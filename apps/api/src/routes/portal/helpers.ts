@@ -641,3 +641,61 @@ export async function consumePortalInviteToken(rawToken: string): Promise<string
   if (stored && stored.expiresAt.getTime() > Date.now()) return stored.portalUserId;
   return null;
 }
+
+/**
+ * Drop every live portal session belonging to a set of portal users, across
+ * both storage backends. Used by the org-merge fence
+ * (`services/orgMerge.ts`) so portal principals stop writing under an org the
+ * moment it is fenced, instead of at the end of their sliding session TTL.
+ *
+ * The `userSessions` set is the index the login path maintains
+ * (`auth.ts` sadd's each token into it), so it is the only way to find a
+ * user's tokens without scanning the keyspace. Deleting the set itself as
+ * well leaves no dangling index entries behind.
+ *
+ * Lives here rather than in the merge engine because this module owns the key
+ * layout and the in-memory map; a copy in the engine would rot the first time
+ * either changes. Best-effort by design — the durable control is the
+ * org-status gate in `portalAuthMiddleware`, which rejects a surviving session
+ * on its next request regardless of what this purge managed to delete.
+ */
+export async function purgePortalSessionsForUsers(portalUserIds: string[]): Promise<number> {
+  if (portalUserIds.length === 0) return 0;
+  const targets = new Set(portalUserIds);
+  let purged = 0;
+
+  if (PORTAL_USE_REDIS) {
+    const redis = getRedis();
+    if (redis) {
+      for (const userId of targets) {
+        try {
+          const indexKey = PORTAL_REDIS_KEYS.userSessions(userId);
+          const tokens = await redis.smembers(indexKey);
+          const keys = tokens.map((t) => PORTAL_REDIS_KEYS.session(t));
+          if (keys.length > 0) {
+            await redis.del(...keys);
+            purged += keys.length;
+          }
+          await redis.del(indexKey);
+        } catch (err) {
+          console.error('[portal] Failed to purge sessions for portal user:', {
+            portalUserId: userId,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+    }
+  }
+
+  // The in-memory map is authoritative only when Redis is disabled, but sweep
+  // it unconditionally: a deployment that flips PORTAL_USE_REDIS mid-process
+  // would otherwise leave live entries behind.
+  for (const [token, session] of portalSessions) {
+    if (targets.has(session.portalUserId)) {
+      portalSessions.delete(token);
+      purged++;
+    }
+  }
+
+  return purged;
+}

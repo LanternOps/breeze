@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/hostpolicy"
 )
 
 // TestFailoverHeartbeat verifies that SendHeartbeat sets X-Breeze-Role: watchdog,
@@ -164,6 +166,46 @@ func TestSendHeartbeatIncludesRestartStats(t *testing.T) {
 	}
 	if got := captured["flapDetected"]; got != false {
 		t.Errorf("flapDetected: want false, got %v", got)
+	}
+}
+
+// TestSendHeartbeatReportsAgentEdition pins the #4072 edition-capability
+// signal on the failover heartbeat: the server withholds update offers from
+// watchdogs that would refuse the served artifact edition, and a REPORTED
+// edition (either value) is what marks this binary as carrying the one-way
+// self-host → hosted allowance. A silent watchdog falls back to server-side
+// version-band inference, so dropping this field would make every future
+// self-host watchdog look transition-incapable during failover.
+func TestSendHeartbeatReportsAgentEdition(t *testing.T) {
+	var captured map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if err := json.Unmarshal(body, &captured); err != nil {
+			t.Fatalf("server: unmarshal body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{}`)) //nolint:errcheck
+	}))
+	defer server.Close()
+
+	fc := NewFailoverClient(server.URL, "agent-xyz", "token", nil)
+
+	// Repo-default build: hostpolicy not enforced → self-host.
+	if _, err := fc.SendHeartbeat("0.109.0", StateFailover, RestartStats{}); err != nil {
+		t.Fatalf("SendHeartbeat: %v", err)
+	}
+	if got, _ := captured["agentEdition"].(string); got != "self-host" {
+		t.Errorf("self-host build: agentEdition = %v, want %q", captured["agentEdition"], "self-host")
+	}
+
+	// Allowlist-injected hosted build.
+	restore := hostpolicy.SetAllowedHostsForTest("hosted-a.example")
+	defer restore()
+	if _, err := fc.SendHeartbeat("0.109.0", StateFailover, RestartStats{}); err != nil {
+		t.Fatalf("SendHeartbeat (hosted): %v", err)
+	}
+	if got, _ := captured["agentEdition"].(string); got != "hosted" {
+		t.Errorf("hosted build: agentEdition = %v, want %q", captured["agentEdition"], "hosted")
 	}
 }
 

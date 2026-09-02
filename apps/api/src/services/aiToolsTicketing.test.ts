@@ -63,7 +63,8 @@ vi.mock('../db', () => ({
 // auth middleware dependency tree (jwt/permissions/token revocation).
 vi.mock('../middleware/auth', () => ({
   siteAccessCheck: (allowed: string[]) => (siteId?: string | null) =>
-    !!siteId && allowed.includes(siteId)
+    !!siteId && allowed.includes(siteId),
+  isAiAgentPrincipal: (auth: { principal?: { kind?: string } }) => auth?.principal?.kind === 'ai_agent'
 }));
 
 vi.mock('../db/schema', async (importOriginal) => {

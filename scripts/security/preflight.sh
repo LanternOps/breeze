@@ -148,18 +148,25 @@ else
 fi
 
 # 6) Trivy image scan — CI: security.yml job trivy-image-scan
-# Builds API + Web images then scans them. Slow (~5-10 min on a cold cache),
-# skipped under --fast.
+# Builds the shipped API + Web images then scans them. Slow (~5-10 min on a cold
+# cache), skipped under --fast.
+#
+# These are the Dockerfiles release.yml and hosted-images.yml actually publish.
+# This step used to build docker/Dockerfile.api|web instead — files nothing
+# ships — so a local green here said nothing about the images customers run
+# (issues #4273 / #4260). CI's matrix covers the compose variants, portal and
+# the three M365 executors as well; this local mirror stays at the two heaviest
+# shipped images to keep the run bounded.
 if [ "$FAST_MODE" = "1" ]; then
   skip "trivy image scan (api+web)" "--fast skipped; run without --fast to include"
 elif ! command -v docker >/dev/null 2>&1; then
   skip "trivy image scan (api+web)" "docker not on PATH"
 else
   step "build breeze-api image (security-scan tag)" bash -c '
-    docker build -f docker/Dockerfile.api -t breeze-api:security-scan .
+    docker build -f apps/api/Dockerfile -t breeze-api:security-scan .
   '
   step "build breeze-web image (security-scan tag)" bash -c '
-    docker build -f docker/Dockerfile.web -t breeze-web:security-scan .
+    docker build -f apps/web/Dockerfile -t breeze-web:security-scan .
   '
   TRIVY_IMG_CMD=(trivy image --severity HIGH,CRITICAL --exit-code 1)
   if command -v trivy >/dev/null 2>&1; then

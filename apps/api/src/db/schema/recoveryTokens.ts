@@ -7,10 +7,15 @@ import {
   index,
   uniqueIndex,
 } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 import { organizations } from './orgs';
 import { devices } from './devices';
 import { users } from './users';
 import { backupSnapshots } from './backup';
+import {
+  recoveryAuthorizationSubjectChecks,
+  recoveryAuthorizationSubjectColumns,
+} from './recoveryAuthorizationSubject';
 
 export const recoveryTokens = pgTable(
   'recovery_tokens',
@@ -35,11 +40,16 @@ export const recoveryTokens = pgTable(
     authenticatedAt: timestamp('authenticated_at'),
     completedAt: timestamp('completed_at'),
     usedAt: timestamp('used_at'),
+    ...recoveryAuthorizationSubjectColumns(),
   },
   (table) => ({
     orgIdx: index('recovery_tokens_org_idx').on(table.orgId),
     hashIdx: index('recovery_tokens_hash_idx').on(table.tokenHash),
     statusIdx: index('recovery_tokens_status_idx').on(table.status),
+    authorizationClaimIdx: index('recovery_tokens_authorization_claim_idx')
+      .on(table.status, table.authorizationState)
+      .where(sql`${table.status} IN ('active', 'authenticated')`),
+    ...recoveryAuthorizationSubjectChecks('recovery_tokens', table),
   })
 );
 
@@ -70,17 +80,22 @@ export const recoveryMediaArtifacts = pgTable(
     createdAt: timestamp('created_at').defaultNow().notNull(),
     signedAt: timestamp('signed_at'),
     completedAt: timestamp('completed_at'),
+    ...recoveryAuthorizationSubjectColumns(),
   },
   (table) => ({
     orgIdx: index('recovery_media_artifacts_org_idx').on(table.orgId),
     tokenIdx: index('recovery_media_artifacts_token_idx').on(table.tokenId),
     snapshotIdx: index('recovery_media_artifacts_snapshot_idx').on(table.snapshotId),
     statusIdx: index('recovery_media_artifacts_status_idx').on(table.status),
+    authorizationClaimIdx: index('recovery_media_artifacts_authorization_claim_idx')
+      .on(table.status, table.authorizationState)
+      .where(sql`${table.status} IN ('pending', 'building')`),
     tokenPlatformArchIdx: uniqueIndex('recovery_media_artifacts_token_platform_arch_uniq').on(
       table.tokenId,
       table.platform,
       table.architecture
     ),
+    ...recoveryAuthorizationSubjectChecks('recovery_media_artifacts', table),
   })
 );
 
@@ -115,6 +130,7 @@ export const recoveryBootMediaArtifacts = pgTable(
     createdAt: timestamp('created_at').defaultNow().notNull(),
     signedAt: timestamp('signed_at'),
     completedAt: timestamp('completed_at'),
+    ...recoveryAuthorizationSubjectColumns(),
   },
   (table) => ({
     orgIdx: index('recovery_boot_media_artifacts_org_idx').on(table.orgId),
@@ -122,11 +138,15 @@ export const recoveryBootMediaArtifacts = pgTable(
     snapshotIdx: index('recovery_boot_media_artifacts_snapshot_idx').on(table.snapshotId),
     bundleIdx: index('recovery_boot_media_artifacts_bundle_idx').on(table.bundleArtifactId),
     statusIdx: index('recovery_boot_media_artifacts_status_idx').on(table.status),
+    authorizationClaimIdx: index('recovery_boot_media_artifacts_authorization_claim_idx')
+      .on(table.status, table.authorizationState)
+      .where(sql`${table.status} IN ('pending', 'building')`),
     tokenMediaTypeIdx: uniqueIndex('recovery_boot_media_artifacts_token_media_type_uniq').on(
       table.tokenId,
       table.platform,
       table.architecture,
       table.mediaType
     ),
+    ...recoveryAuthorizationSubjectChecks('recovery_boot_media_artifacts', table),
   })
 );

@@ -58,8 +58,17 @@ import {
   reportRuns,
 } from '../db/schema/reports';
 import { devices, sites } from '../db/schema';
+import { schedulePeripheralPolicyDevice } from '../jobs/peripheralJobs';
 import { eq, and, desc, sql, inArray, gte, lte, isNull, or, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
+
+async function scheduleAiGroupPeripheralReconciliation(deviceIds: readonly string[]): Promise<void> {
+  await Promise.all([...new Set(deviceIds)].map((deviceId) =>
+    schedulePeripheralPolicyDevice(deviceId, 'ai_group_membership_changed').catch((error) => {
+      console.error(`[aiToolsFleet] failed to schedule peripheral reconciliation for ${deviceId}:`, error);
+    })
+  ));
+}
 import type { AiTool } from './aiTools';
 import type { UserPermissions } from './permissions';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from './partnerWideAccess';
@@ -124,6 +133,7 @@ const aiReportDefinitionMetadataProjection = {
   executionScopeUserId: reports.executionScopeUserId,
   executionScopeFingerprint: reports.executionScopeFingerprint,
   executionScopeCapturedAt: reports.executionScopeCapturedAt,
+  executionScopePrincipalKind: reports.executionScopePrincipalKind,
 };
 
 const aiReportRunMetadataProjection = {
@@ -136,6 +146,7 @@ const aiReportRunMetadataProjection = {
   executionScopeUserId: reportRuns.executionScopeUserId,
   executionScopeFingerprint: reportRuns.executionScopeFingerprint,
   executionScopeCapturedAt: reportRuns.executionScopeCapturedAt,
+  executionScopePrincipalKind: reportRuns.executionScopePrincipalKind,
 };
 
 async function aiLiveReportAuthority(
@@ -1245,11 +1256,16 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         // Site axis (app-layer only; RLS does NOT enforce it).
         if (deviceSiteDenied(auth, existing.siteId)) return JSON.stringify({ error: 'Group not found or access denied' });
 
+        const affectedMemberships = await db.select({ deviceId: deviceGroupMemberships.deviceId })
+          .from(deviceGroupMemberships)
+          .where(eq(deviceGroupMemberships.groupId, existing.id));
+
         await db.transaction(async (tx) => {
           await tx.delete(deviceGroupMemberships).where(eq(deviceGroupMemberships.groupId, existing.id));
           await tx.delete(groupMembershipLog).where(eq(groupMembershipLog.groupId, existing.id));
           await tx.delete(deviceGroups).where(eq(deviceGroups.id, existing.id));
         });
+        await scheduleAiGroupPeripheralReconciliation(affectedMemberships.map(({ deviceId }) => deviceId));
         return JSON.stringify({ success: true, message: `Group "${existing.name}" deleted` });
       }
 
@@ -1286,6 +1302,8 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           .onConflictDoNothing()
           .returning({ deviceId: deviceGroupMemberships.deviceId });
 
+        await scheduleAiGroupPeripheralReconciliation(results.map(({ deviceId }) => deviceId));
+
         const skipped = deviceIdList.length - insertableIds.length;
         return JSON.stringify({ success: true, added: results.length, ...(skipped > 0 ? { skipped } : {}), message: `${results.length} device(s) added to group "${group.name}"${skipped > 0 ? ` (${skipped} skipped — outside org/site scope)` : ''}` });
       }
@@ -1315,13 +1333,16 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({ success: true, removed: 0, ...(skipped > 0 ? { skipped } : {}), message: 'No in-scope devices to remove' });
         }
 
-        await db.delete(deviceGroupMemberships)
+        const removedMemberships = await db.delete(deviceGroupMemberships)
           .where(and(
             eq(deviceGroupMemberships.groupId, group.id),
             inArray(deviceGroupMemberships.deviceId, removableIds),
-          ));
+          ))
+          .returning({ deviceId: deviceGroupMemberships.deviceId });
 
-        return JSON.stringify({ success: true, removed: removableIds.length, ...(skipped > 0 ? { skipped } : {}), message: `Device(s) removed from group "${group.name}"${skipped > 0 ? ` (${skipped} skipped — outside org/site scope)` : ''}` });
+        await scheduleAiGroupPeripheralReconciliation(removedMemberships.map(({ deviceId }) => deviceId));
+
+        return JSON.stringify({ success: true, removed: removedMemberships.length, ...(skipped > 0 ? { skipped } : {}), message: `Device(s) removed from group "${group.name}"${skipped > 0 ? ` (${skipped} skipped — outside org/site scope)` : ''}` });
       }
 
       return JSON.stringify({ error: `Unknown action: ${action}` });
@@ -2458,6 +2479,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           executionScopeUserId: reportRuns.executionScopeUserId,
           executionScopeFingerprint: reportRuns.executionScopeFingerprint,
           executionScopeCapturedAt: reportRuns.executionScopeCapturedAt,
+          executionScopePrincipalKind: reportRuns.executionScopePrincipalKind,
         }).from(reportRuns)
           .innerJoin(reports, eq(reportRuns.reportId, reports.id))
           .where(and(

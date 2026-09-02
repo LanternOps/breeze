@@ -2,10 +2,17 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // db is mocked so the handler never touches Postgres. The insert/update mocks
 // double as spies that assert we never WRITE a fail-open autoApprove shape.
-const { insertMock, updateMock, selectMock } = vi.hoisted(() => ({
+const { insertMock, updateMock, selectMock, resolvePolicyDeviceIdsMock, schedulePolicyDevicesMock } = vi.hoisted(() => ({
   insertMock: vi.fn(),
   updateMock: vi.fn(),
   selectMock: vi.fn(),
+  resolvePolicyDeviceIdsMock: vi.fn().mockResolvedValue(['device-1']),
+  schedulePolicyDevicesMock: vi.fn().mockResolvedValue(['job-1']),
+}));
+
+vi.mock('../jobs/peripheralJobs', () => ({
+  resolvePeripheralPolicyDeviceIds: resolvePolicyDeviceIdsMock,
+  schedulePeripheralPolicyDevices: schedulePolicyDevicesMock,
 }));
 
 vi.mock('../db', () => ({
@@ -663,6 +670,7 @@ describe('manage_peripheral_policies create (#2814 — first reachable)', () => 
     expect(values.action).toBe('block');
     expect(values.deviceClass).toBe('storage');
     expect(values.orgId).toBe(ORG_ID);
+    expect(schedulePolicyDevicesMock).toHaveBeenCalledWith(['device-1'], 'ai-prereq-create');
   });
 
   it('refuses to create without action_type rather than defaulting the enforcement mode', async () => {

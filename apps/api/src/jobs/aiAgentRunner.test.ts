@@ -10,9 +10,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const shared = vi.hoisted(() => {
   const executeAgentRun = vi.fn(async (_runId: string) => undefined);
-  // Recorded OUTSIDE the mock's call log: registration happens once at module
-  // import, long before any beforeEach `vi.clearAllMocks()` runs.
-  const registeredEnqueuers: unknown[] = [];
   return {
     getJobMock: vi.fn(),
     addMock: vi.fn(),
@@ -24,10 +21,8 @@ const shared = vi.hoisted(() => {
       processor: (job: unknown) => Promise<unknown>;
       opts: Record<string, unknown>;
     }>,
-    registeredEnqueuers,
-    registerAgentRunEnqueuer: vi.fn((enqueuer: unknown) => {
-      registeredEnqueuers.push(enqueuer);
-    }),
+    registerAgentRunEnqueuer: vi.fn(),
+    aiAgentsEnabled: true,
     attachWorkerObservability: vi.fn(),
     isRedisAvailable: vi.fn(() => true),
     executeAgentRun,
@@ -66,9 +61,9 @@ vi.mock('../services/redis', () => ({
   isRedisAvailable: shared.isRedisAvailable,
 }));
 
-// The runner registers its enqueuer with the admission gate at MODULE SCOPE so
-// a process that never boots the worker (the manual-trigger route) can still
-// enqueue. Mocked so this suite does not drag runService's whole module graph in.
+// Transitively required by ./aiAgentEnqueuer (imported by aiAgentRunner.ts for
+// the re-exported enqueue helpers): this suite does not drag runService's
+// whole module graph in for that.
 vi.mock('../services/aiAgents/runService', () => ({
   registerAgentRunEnqueuer: shared.registerAgentRunEnqueuer,
 }));
@@ -88,6 +83,12 @@ vi.mock('../services/sentry', () => ({
   captureMessage: vi.fn(),
 }));
 
+// The platform kill switch. A const evaluated at import time in the real
+// module, so it is mocked here rather than stubbed through the environment.
+vi.mock('../config/env', () => ({
+  get AI_AGENTS_ENABLED() { return shared.aiAgentsEnabled; },
+}));
+
 import { parseQueueJobData } from '../services/bullmqValidation';
 import { aiAgentQueueJobDataSchema } from './queueSchemas';
 import {
@@ -95,11 +96,9 @@ import {
   AI_AGENT_RUN_JOB_NAME,
   enqueueAgentRunJob,
   executeAgentRun,
-  getAiAgentRunJobId,
   initializeAiAgentRunner,
   shutdownAiAgentRunner,
 } from './aiAgentRunner';
-import { registerAgentRunEnqueuer } from '../services/aiAgents/runService';
 
 function fakeJob(data: unknown, name = AI_AGENT_RUN_JOB_NAME) {
   return { id: 'job-1', name, data };
@@ -140,119 +139,38 @@ describe('ai-agent queue job schema', () => {
   });
 });
 
-describe('enqueueAgentRunJob', () => {
-  beforeEach(async () => {
-    shared.workerCalls.length = 0;
-    vi.clearAllMocks();
-    shared.isRedisAvailable.mockReturnValue(true);
-    shared.getJobMock.mockResolvedValue(null);
-    shared.addMock.mockResolvedValue({ id: 'queue-job-1' });
-    await shutdownAiAgentRunner();
-  });
-
-  it('adds a durable, stable-jobId job with no retries', async () => {
-    const result = await enqueueAgentRunJob('run-1');
-
-    expect(result).toEqual({ enqueued: true, jobId: 'queue-job-1' });
-    expect(shared.addMock).toHaveBeenCalledWith(
-      'execute-agent-run',
-      { type: 'execute-agent-run', runId: 'run-1' },
-      expect.objectContaining({
-        jobId: 'ai-agent-run-run-1',
-        attempts: 1,
-        removeOnComplete: { count: 200 },
-        removeOnFail: { count: 500 },
-      }),
-    );
-    // #1101: BullMQ rejects a custom jobId whose ':'-split length !== 3.
-    expect(getAiAgentRunJobId('run-1')).not.toContain(':');
-  });
-
-  it('never sets a backoff/retry policy — a crashed run must not silently re-run tools', async () => {
-    await enqueueAgentRunJob('run-1');
-    const opts = shared.addMock.mock.calls[0]![2] as Record<string, unknown>;
-    expect(opts.attempts).toBe(1);
-    expect(opts.backoff).toBeUndefined();
-  });
-
-  it('reuses an already-queued job for the same run id instead of double-enqueueing', async () => {
-    shared.getJobMock.mockResolvedValue({
-      id: 'existing-job',
-      getState: vi.fn().mockResolvedValue('delayed'),
-      remove: vi.fn(),
-    });
-
-    const result = await enqueueAgentRunJob('run-1');
-
-    expect(result).toEqual({ enqueued: true, jobId: 'existing-job' });
-    expect(shared.addMock).not.toHaveBeenCalled();
-  });
-
-  it('removes a terminal leftover job before re-adding', async () => {
-    const remove = vi.fn().mockResolvedValue(undefined);
-    shared.getJobMock.mockResolvedValue({
-      id: 'existing-job',
-      getState: vi.fn().mockResolvedValue('completed'),
-      remove,
-    });
-
-    const result = await enqueueAgentRunJob('run-1');
-
-    expect(remove).toHaveBeenCalled();
-    expect(shared.addMock).toHaveBeenCalledTimes(1);
-    expect(result.enqueued).toBe(true);
-  });
-
-  it('refuses to enqueue when Redis is down, without touching the queue', async () => {
-    shared.isRedisAvailable.mockReturnValue(false);
-
-    const result = await enqueueAgentRunJob('run-1');
-
-    expect(result).toEqual({ enqueued: false });
-    expect(shared.getJobMock).not.toHaveBeenCalled();
-    expect(shared.addMock).not.toHaveBeenCalled();
-  });
-
-  it('has NO inline fallback: an enqueue failure never defers the run in-process', async () => {
-    // The automation worker answers a dead queue by scheduling
-    // `setImmediate(executeRunInline)`. An agent run must NOT: a headless run
-    // with no durability guarantee is worse than a skipped one, so the only
-    // outcome is `{enqueued:false}` and a `failed` run row the human re-triggers.
-    const setImmediateSpy = vi.spyOn(globalThis, 'setImmediate');
-    shared.addMock.mockRejectedValue(new Error('redis exploded'));
-
-    const result = await enqueueAgentRunJob('run-1');
-
-    expect(result).toEqual({ enqueued: false });
-    expect(setImmediateSpy).not.toHaveBeenCalled();
-    setImmediateSpy.mockRestore();
-  });
-
-  it('refuses a malformed runId without touching the queue', async () => {
-    const result = await enqueueAgentRunJob('');
-
-    expect(result).toEqual({ enqueued: false });
-    expect(shared.addMock).not.toHaveBeenCalled();
-  });
-});
+// `enqueueAgentRunJob`'s own behavior (dedup, CAS-free reuse/removal, no
+// inline fallback) is covered in `aiAgentEnqueuer.test.ts` — the module it now
+// lives in (wave 3.5d-b, #4086). It is re-exported here and exercised below
+// only insofar as the consumer shell touches it (shutdown closing the queue).
 
 describe('ai-agent runner bootstrap', () => {
   beforeEach(async () => {
     shared.workerCalls.length = 0;
     vi.clearAllMocks();
     shared.isRedisAvailable.mockReturnValue(true);
+    shared.aiAgentsEnabled = true;
     await shutdownAiAgentRunner();
     shared.workerCalls.length = 0;
     shared.closeWorkerMock.mockClear();
     shared.closeQueueMock.mockClear();
   });
 
-  it('registers its enqueuer with the admission gate at module scope', () => {
-    // Must NOT be deferred to initializeAiAgentRunner(): the manual-trigger
-    // route has to be able to enqueue in a process that never boots the worker.
-    expect(registerAgentRunEnqueuer).toBe(shared.registerAgentRunEnqueuer);
-    expect(shared.registeredEnqueuers).toContain(enqueueAgentRunJob);
+  it('does NOT construct the worker when the platform kill switch is off (#3977)', () => {
+    shared.aiAgentsEnabled = false;
+
+    initializeAiAgentRunner();
+
+    // A BullMQ Worker opens a BLOCKING Redis connection and holds it for the
+    // life of the process. Booting one for a feature that can never run costs
+    // a permanent connection per process, per region, for nothing.
+    expect(shared.workerCalls).toHaveLength(0);
   });
+
+  // Enqueuer registration (module-scope in the pre-3.5d-b design; explicit via
+  // `registerAiAgentEnqueuer()` now) is covered in `aiAgentEnqueuer.test.ts` —
+  // gating the worker must not disarm the manual-trigger route either way, but
+  // that property no longer lives in this file.
 
   it('constructs the worker with the agent-run concurrency and lock settings', () => {
     initializeAiAgentRunner();

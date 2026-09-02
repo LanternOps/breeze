@@ -18,7 +18,7 @@ import {
   organizations,
   partners
 } from '../db/schema';
-import { eq, and, inArray, asc, isNull, or, type SQL, type Column } from 'drizzle-orm';
+import { eq, and, ne, inArray, asc, isNull, or, type SQL, type Column } from 'drizzle-orm';
 import { getRedis, getBullMQConnection, isRedisAvailable } from './redis';
 import { rateLimiter } from './rate-limit';
 import { checkNotificationThrottle } from './notificationThrottle';
@@ -38,7 +38,7 @@ import {
   type AlertSeverity
 } from './notificationSenders';
 import { sendSmsNotification, type SmsChannelConfig } from './notificationSenders/smsSender';
-import { getEventBus } from './eventBus';
+import type { BreezeEvent } from './eventBus';
 import { decryptNotificationChannelConfig } from './notificationChannelSecrets';
 import { attachWorkerObservability } from '../jobs/workerObservability';
 
@@ -67,7 +67,7 @@ export function getNotificationQueue(): Queue {
 }
 
 // Job data types
-interface SendNotificationJobData {
+export interface SendNotificationJobData {
   type: 'send';
   alertId: string;
   channelId: string;
@@ -152,6 +152,39 @@ function railOwnershipCondition(
 }
 
 /**
+ * Failed-job recovery (#4085): `queue.add`/`queue.addBulk` return the
+ * EXISTING job for a duplicate id WITHOUT enqueuing a new one — including
+ * when that existing job already reached the 'failed' state. A stable jobId
+ * (baseline sends, escalation steps, process-alert) is only a double-send
+ * guard while its failed-job hash exists in Redis; the moment a send fails,
+ * that hash occupies the id for the rest of its `removeOnFail` window
+ * (count- or age-bounded), and every later add for that identity — a
+ * process-alert retry, a redelivered alert.triggered, a rescheduled
+ * escalation — would otherwise silently return the dead job without
+ * enqueuing, while the caller's `queued`/success count keeps reporting as if
+ * it worked. Explicitly retry a duplicate-id job that is already 'failed' so
+ * redelivery actually recovers instead of no-oping.
+ *
+ * Benign races only warn, never throw: the job can be removed/reaped between
+ * `getState()` and `retry()` (e.g. a `removeOnFail` count/age purge), or
+ * `getState()` itself can transiently fail — neither should fail the
+ * caller's dispatch.
+ */
+async function retryIfFailedJob(job: Job<NotificationJobData>, context: string): Promise<void> {
+  try {
+    const state = await job.getState();
+    if (state === 'failed') {
+      await job.retry();
+    }
+  } catch (err) {
+    console.warn(
+      `[NotificationDispatcher] Failed to retry job ${job.id} (${context}) after duplicate-id failed-state check:`,
+      err
+    );
+  }
+}
+
+/**
  * Process an alert and queue notifications to all configured channels.
  * Exported for the notificationRailsPartnerRls integration suite, which
  * proves the partner-wide rail fan-out (#2130) against real Postgres — every
@@ -172,6 +205,17 @@ export async function processAlertNotifications(data: ProcessAlertJobData): Prom
     .limit(1);
 
   if (!alert) {
+    return { queued: 0, inAppSent: false, durationMs: Date.now() - startTime };
+  }
+
+  // Durable status guard (#4085): `cancelAlertEscalations` only removes jobs
+  // that are DELAYED at the moment it runs — an optimization, not the
+  // correctness mechanism. Under queue delivery, `alert.resolved` can
+  // process before a retried `alert.triggered` delivery, which would
+  // otherwise re-fan-out the whole baseline notification set for an alert
+  // that is already closed. Acknowledged still gets the baseline — only
+  // escalations are cancelled on ack (today's semantics, preserved).
+  if (alert.status === 'resolved') {
     return { queued: 0, inAppSent: false, durationMs: Date.now() - startTime };
   }
 
@@ -297,10 +341,29 @@ export async function processAlertNotifications(data: ProcessAlertJobData): Prom
       backoff: { type: 'exponential' as const, delay: 30_000 }, // 30s, 60s (2 retries)
       removeOnComplete: true,
       removeOnFail: { count: 100 },
+      // Stable per-(alert, channel) id for the baseline (step 0) send (#4085):
+      // without this, a retried `process-alert` job (attempts:3 on the
+      // process-alert job itself) re-runs this whole addBulk and duplicates
+      // the entire baseline fan-out — every channel gets a second email/SMS/
+      // Slack/webhook/PagerDuty/Pushover send. BullMQ returns the existing
+      // job for a duplicate id instead of enqueuing a second one, so the
+      // retry collapses onto the same job. Escalation sends already have a
+      // stable jobId (`escalation-<alertId>-step<n>-<channelId>`) — this
+      // gives baseline sends the same property.
+      //
+      // This jobId collapse is only a FAST PATH, and only while the job hash
+      // still exists — see `retryIfFailedJob` below for what happens once it
+      // reaches 'failed'. Task 8's durable (alertId, channelId, escalationStep)
+      // row identity in `alert_notifications` (unique index; see
+      // `buildAlertNotificationClaimCas`) is the actual double-send backstop.
+      jobId: `alert-send-${data.alertId}-${channelId}-0`
     }
   }));
 
-  await queue.addBulk(jobs);
+  const addedJobs = await queue.addBulk(jobs);
+  await Promise.all(
+    addedJobs.map((job) => retryIfFailedJob(job, `alert ${data.alertId} baseline send`))
+  );
 
   // Check for escalation policy (only applicable to rule-based alerts)
   const escalationPolicyId = ruleOverrides?.escalationPolicyId as string | undefined;
@@ -335,6 +398,23 @@ type PrepareSendResult =
     };
 
 /**
+ * The claim / success CAS for a send-identity row (wave 3.5c, #4085): this
+ * row, unless it has already reached 'sent'. Used both to reclaim an
+ * orphaned 'pending' row for a retry (a prior attempt crashed between the
+ * insert and the final update) and to CAS the eventual send outcome to
+ * 'sent' — either way, a row that already recorded a successful send must
+ * never be clobbered back to 'pending' by a stale/racing attempt.
+ *
+ * Exported so tests can assert the COMPILED SQL rather than substring-match
+ * column names against a mocked drizzle-orm (vacuous-Drizzle-assertion
+ * rule) — swapping `ne` for `eq` here silently turns the dedupe backstop
+ * into a no-op (every row becomes reclaimable, including already-sent ones).
+ */
+export function buildAlertNotificationClaimCas(id: string): SQL {
+  return and(eq(alertNotifications.id, id), ne(alertNotifications.status, 'sent'))!;
+}
+
+/**
  * Send a notification through a specific channel.
  *
  * Split into three phases to avoid holding a pooled DB connection across the
@@ -353,13 +433,14 @@ type PrepareSendResult =
  * the pending insert and the final update would roll back the whole thing —
  * a BullMQ retry would insert a fresh pending row and try again cleanly. Now
  * step 1 commits before the send runs, so the same crash instead leaves an
- * orphaned 'pending' row (retry still inserts a fresh row and resends,
- * exactly as before). That failure mode already existed for a crash on the
- * old code's own final `db.update` (rollback of an already-sent message), so
- * this does not introduce a new double-send risk — it only adds a harmless
- * orphaned 'pending' row on the rare mid-send crash case.
+ * orphaned 'pending' row. Wave 3.5c (#4085) closed the double-send/orphan gap
+ * this used to leave open: sends are keyed by a durable
+ * (alertId, channelId, escalationStep) identity (unique index; see
+ * `buildAlertNotificationClaimCas`), so a retry after a mid-send crash
+ * RECLAIMS that same row instead of inserting a fresh one, and a retry after
+ * a row already reached 'sent' is a dedupe skip with no egress call at all.
  */
-async function processSendNotification(data: SendNotificationJobData): Promise<{
+export async function processSendNotification(data: SendNotificationJobData): Promise<{
   success: boolean;
   channelType: string;
   error?: string;
@@ -379,6 +460,29 @@ async function processSendNotification(data: SendNotificationJobData): Promise<{
       return {
         send: false,
         result: { success: false, channelType: 'unknown', error: 'Alert not found' }
+      } satisfies PrepareSendResult;
+    }
+
+    // Durable status guard for escalation sends (#4085): `cancelAlertEscalations`
+    // only removes jobs that are DELAYED at the moment it runs — an
+    // optimization, not the correctness mechanism. An escalation step is a
+    // delayed job scheduled minutes/hours ahead; by the time it fires, the
+    // alert may have been acknowledged (that is what cancel-on-ack is meant
+    // to express) or resolved. Re-load the alert fresh right here (the
+    // select above IS that reload — no second query needed) and skip egress
+    // for anything but 'active'. This runs BEFORE the send-identity
+    // insert/claim below, so a skipped escalation never touches or creates
+    // an alert_notifications row. `success: true` resolves the BullMQ job
+    // cleanly — this is an intentional skip, not a failure to retry.
+    const escalationStep = data.escalationStep ?? 0;
+    if (escalationStep >= 1 && alert.status !== 'active') {
+      console.log(
+        `[NotificationDispatcher] Skipping escalation step ${escalationStep} for alert ${data.alertId} `
+        + `— status is '${alert.status}', not 'active'`
+      );
+      return {
+        send: false,
+        result: { success: true, channelType: 'unknown' }
       } satisfies PrepareSendResult;
     }
 
@@ -412,15 +516,73 @@ async function processSendNotification(data: SendNotificationJobData): Promise<{
       } satisfies PrepareSendResult;
     }
 
-    // Create notification record (pending)
-    const [notificationRecord] = await db
+    // Send identity: (alertId, channelId, escalationStep). `?? 0` is
+    // load-bearing — an explicit `escalationStep: null` must still collapse
+    // onto step 0; a schema column default alone would not stop it, because
+    // Drizzle sends the literal `null` rather than omitting the key (#4085).
+    // (`escalationStep` itself is computed above, ahead of the status guard.)
+    const [insertedRecord] = await db
       .insert(alertNotifications)
       .values({
         alertId: data.alertId,
         channelId: data.channelId,
+        escalationStep,
         status: 'pending'
       })
+      .onConflictDoNothing({
+        target: [alertNotifications.alertId, alertNotifications.channelId, alertNotifications.escalationStep]
+      })
       .returning();
+
+    let notificationRecord = insertedRecord;
+
+    if (!notificationRecord) {
+      // Conflict: a row for this exact (alert, channel, step) identity
+      // already exists — either a durable dedupe win (already sent) or an
+      // orphaned 'pending'/'failed' row from a prior crashed/failed attempt.
+      const [existing] = await db
+        .select()
+        .from(alertNotifications)
+        .where(
+          and(
+            eq(alertNotifications.alertId, data.alertId),
+            eq(alertNotifications.channelId, data.channelId),
+            eq(alertNotifications.escalationStep, escalationStep)
+          )
+        )
+        .limit(1);
+
+      if (existing?.status === 'sent') {
+        // Durable per-channel backstop: this exact send already succeeded.
+        // Resolve success with NO egress call — the job completes cleanly.
+        return {
+          send: false,
+          result: { success: true, channelType: channel.type }
+        } satisfies PrepareSendResult;
+      }
+
+      if (existing) {
+        // CLAIM: reuse the existing row for this attempt. Guarded by the
+        // same CAS used for the eventual success write, so a concurrent
+        // attempt that already reached 'sent' between the select above and
+        // this update can never be clobbered back to 'pending'.
+        const [claimed] = await db
+          .update(alertNotifications)
+          .set({ status: 'pending', errorMessage: null })
+          .where(buildAlertNotificationClaimCas(existing.id))
+          .returning();
+        notificationRecord = claimed;
+
+        if (!claimed) {
+          // Lost the race: the row reached 'sent' between the select and the
+          // claim update. Same outcome as the sent-skip above.
+          return {
+            send: false,
+            result: { success: true, channelType: channel.type }
+          } satisfies PrepareSendResult;
+        }
+      }
+    }
 
     if (!notificationRecord) {
       return {
@@ -453,11 +615,29 @@ async function processSendNotification(data: SendNotificationJobData): Promise<{
       const rateLimitResult = await rateLimiter(redis, rateKey, 60, 300); // 60 per 5 min
       if (!rateLimitResult.allowed) {
         console.warn(`[NotificationDispatcher] Rate limited for ${channel.type} channel in org ${alert.orgId}. Remaining: ${rateLimitResult.remaining}`);
-        // Update pending record to reflect rate limiting
+        // Update pending record to reflect rate limiting — guarded by the
+        // same claim CAS as every other terminal write on this row (#4085):
+        // two concurrent attempts can share one row id after the
+        // conflict-claim path above, so an unconditional `WHERE id = ?` here
+        // could stomp a 'sent' row written by the OTHER attempt back to
+        // 'failed', and a subsequent retry would then see a non-'sent' row
+        // and re-send.
         if (notificationRecord?.id) {
-          await db.update(alertNotifications)
-            .set({ status: 'failed', errorMessage: 'Rate limited' })
-            .where(eq(alertNotifications.id, notificationRecord.id));
+          const [written] = await db.update(alertNotifications)
+            .set({ status: 'failed', sentAt: null, errorMessage: 'Rate limited' })
+            .where(buildAlertNotificationClaimCas(notificationRecord.id))
+            .returning();
+          if (!written) {
+            // Zero rows: the only status the CAS excludes is 'sent', so this
+            // can only mean another attempt already delivered this exact
+            // send identity between our read and this write. That attempt's
+            // outcome stands — resolve success/skip rather than reporting a
+            // rate-limit failure that no longer reflects reality.
+            return {
+              send: false,
+              result: { success: true, channelType: channel.type }
+            } satisfies PrepareSendResult;
+          }
         }
         return {
           send: false,
@@ -488,12 +668,29 @@ async function processSendNotification(data: SendNotificationJobData): Promise<{
         // The alert_notifications.status column carries pending/sent/failed only;
         // 'suppressed' belongs to the separate alertStatusEnum and would render
         // as a phantom value here. (See #796 review.)
-        await db.update(alertNotifications)
+        //
+        // Guarded by the same claim CAS as every other terminal write on this
+        // row (#4085) — see the rate-limit write above for why an
+        // unconditional `WHERE id = ?` is unsafe here.
+        const [written] = await db.update(alertNotifications)
           .set({
             status: 'failed',
+            sentAt: null,
             errorMessage: throttleMessage
           })
-          .where(eq(alertNotifications.id, notificationRecord.id));
+          .where(buildAlertNotificationClaimCas(notificationRecord.id))
+          .returning();
+
+        if (!written) {
+          // Zero rows: another attempt already delivered this exact send
+          // identity. Nothing was actually suppressed by this throttle
+          // check anymore — skip the audit log and resolve success/skip.
+          return {
+            send: false,
+            result: { success: true, channelType: channel.type }
+          } satisfies PrepareSendResult;
+        }
+
         // Operator-visible audit event so a misconfigured cap silently eating
         // alerts is investigable instead of buried in stdout. (See #796 review.)
         createAuditLogAsync({
@@ -653,29 +850,62 @@ async function processSendNotification(data: SendNotificationJobData): Promise<{
 
   // Persist the final result — short DB context, AFTER the send completes
   // ("record-result after send"), so the transaction never spans the send.
-  await runWithSystemDbAccess(() =>
-    db
-      .update(alertNotifications)
-      .set({
-        status: success ? 'sent' : 'failed',
-        sentAt: success ? new Date() : null,
-        errorMessage: error || null
-      })
-      .where(eq(alertNotifications.id, notificationRecord.id))
-  );
-
   if (success) {
+    // CAS to 'sent' rather than an unconditional update: a racing/stale
+    // attempt on the same send identity (see buildAlertNotificationClaimCas)
+    // must never re-open a row that another attempt already finished.
+    await runWithSystemDbAccess(() =>
+      db
+        .update(alertNotifications)
+        .set({ status: 'sent', sentAt: new Date(), errorMessage: null })
+        .where(buildAlertNotificationClaimCas(notificationRecord.id))
+    );
+
     console.log(`[NotificationDispatcher] Sent ${channel.type} notification for alert ${data.alertId}`);
-  } else {
-    console.error(`[NotificationDispatcher] Failed to send ${channel.type} notification: ${error}`);
+
+    return {
+      success: true,
+      channelType: channel.type,
+      error: undefined,
+      durationMs: Date.now() - startTime
+    };
   }
 
-  return {
-    success,
-    channelType: channel.type,
-    error,
-    durationMs: Date.now() - startTime
-  };
+  // Guarded by the same claim CAS as the success write above: two
+  // concurrent attempts can share one row id after the conflict-claim path,
+  // so an unconditional `WHERE id = ?` here could stomp a 'sent' row written
+  // by the OTHER (winning) attempt back to 'failed' — and a subsequent
+  // retry would then see a non-'sent' row, re-claim it, and RE-SEND (#4085).
+  const [failedRow] = await runWithSystemDbAccess(() =>
+    db
+      .update(alertNotifications)
+      .set({ status: 'failed', sentAt: null, errorMessage: error || null })
+      .where(buildAlertNotificationClaimCas(notificationRecord.id))
+      .returning()
+  );
+
+  console.error(`[NotificationDispatcher] Failed to send ${channel.type} notification: ${error}`);
+
+  if (!failedRow) {
+    // Zero rows: the CAS excludes only 'sent', so this can only mean another
+    // attempt already delivered this exact send identity between our claim
+    // and this write. That attempt's outcome stands — a spurious 'failed'
+    // job here would only trigger a pointless BullMQ retry, so resolve
+    // success instead of throwing.
+    return {
+      success: true,
+      channelType: channel.type,
+      error: undefined,
+      durationMs: Date.now() - startTime
+    };
+  }
+
+  // Throw so BullMQ's attempts+backoff actually retries a transport failure.
+  // This path used to return a resolved {success:false}, which BullMQ treats
+  // as a completed job and never retries (#4085 — codex-flagged defect: with
+  // attempts:3, transport failures were never actually retried). The row is
+  // reclaimed on the next attempt via the send-identity claim path above.
+  throw new Error(error || `Unknown error sending ${channel.type} notification`);
 }
 
 /**
@@ -1055,7 +1285,7 @@ async function scheduleEscalation(alertId: string, policyId: string, orgId: stri
     const stepChannelIds = (step.channelIds || []).filter((channelId) => validChannelIdSet.has(channelId));
 
     for (const channelId of stepChannelIds) {
-      await queue.add(
+      const job = await queue.add(
         'send',
         {
           type: 'send',
@@ -1065,9 +1295,24 @@ async function scheduleEscalation(alertId: string, policyId: string, orgId: stri
         },
         {
           delay: delayMs,
-          jobId: `escalation-${alertId}-step${i + 1}-${channelId}`
+          jobId: `escalation-${alertId}-step${i + 1}-${channelId}`,
+          // Carried from the Task 8 review (#4085): now that a transport
+          // failure in processSendNotification THROWS (so BullMQ's
+          // attempts+backoff can actually retry it), a failing escalation
+          // send with no `attempts`/`removeOnFail` of its own becomes a
+          // permanently-retained failed job hash with ZERO retries — the
+          // stable jobId then stays occupied forever and nothing ever
+          // re-fires that escalation step.
+          attempts: 3,
+          backoff: { type: 'exponential', delay: 30_000 },
+          removeOnComplete: true,
+          removeOnFail: { age: 3600 }
         }
       );
+      // Same exposure as the baseline sends above: a duplicate add against a
+      // failed escalation-step hash would otherwise silently no-op for the
+      // whole 1-hour removeOnFail window.
+      await retryIfFailedJob(job, `alert ${alertId} escalation step ${i + 1}`);
     }
   }
 
@@ -1102,62 +1347,92 @@ export async function cancelAlertEscalations(alertId: string): Promise<number> {
  * Dispatch notifications for a new alert
  * Call this when an alert is created
  */
-export async function dispatchAlertNotifications(alertId: string): Promise<void> {
+export async function dispatchAlertNotifications(
+  alertId: string,
+  dedupeToken: string = alertId
+): Promise<void> {
   const queue = getNotificationQueue();
 
-  await queue.add(
+  const job = await queue.add(
     'process-alert',
     {
       type: 'process-alert',
       alertId
     },
     {
+      // A redelivered alert.triggered must not fan out a second notification
+      // set — email, SMS, Slack, Teams, PagerDuty and Pushover all hang off
+      // this one job. BullMQ does NOT reject a duplicate jobId: it returns the
+      // existing job and resolves normally (addStandardJob -> handleDuplicatedJob),
+      // which is the behaviour relied on here. The token must therefore be
+      // STABLE for one (alert, event) pair: never randomised, never timestamped.
+      // The subscriber below supplies `event.id`.
+      //
+      // Retention-bounded on the SUCCESS path only: `removeOnComplete: true`
+      // deletes the job key and frees the id. A FAILED job is the dangerous
+      // case — its hash is retained, so the id stays occupied and any later
+      // add for that (alert, event) is silently swallowed, meaning the
+      // redelivery that exists to recover the failure never notifies anyone.
+      // Hence `attempts` (so a transient blip doesn't burn the id at all) and
+      // an AGE-bounded removeOnFail (so a permanent failure self-clears rather
+      // than suppressing that alert forever).
+      //
+      // None of this is durable dedupe: `alert_notifications` carries no unique
+      // constraint, so there is no per-channel backstop for the six external
+      // channels. That belongs in wave 3.5c (#4085) alongside at-least-once
+      // delivery; the in-app row's dedupe key covers in-app only.
+      jobId: `process-alert-${alertId}-${dedupeToken}`,
+      attempts: 3,
+      backoff: { type: 'exponential', delay: 5_000 },
       removeOnComplete: true,
-      removeOnFail: false
+      removeOnFail: { age: 3600 }
     }
   );
+
+  // Failed-job recovery (#4085): see `retryIfFailedJob` above. A redelivered
+  // alert.triggered landing on a previously-FAILED process-alert hash (still
+  // retained for up to an hour by the age-bounded removeOnFail above) was a
+  // silent permanent drop before this — the redelivery that exists
+  // specifically to recover the failure never notified anyone.
+  await retryIfFailedJob(job, `alert ${alertId} process-alert`);
 }
 
 /**
- * Subscribe to alert events and dispatch notifications automatically
+ * Handle one alert lifecycle event (`alert.triggered` / `alert.acknowledged` /
+ * `alert.resolved`).
+ *
+ * Registered under subscriber id `notification-dispatcher` (services/eventSubscribers.ts).
+ * MUST throw on failure — queue-mode dispatch (#4085) retries on a thrown
+ * rejection; local delivery's wrapper (eventBus.ts's invokeLocalHandlers)
+ * provides the swallow-and-log semantics the old subscribers' try/catch used
+ * to provide themselves.
  */
-export function subscribeToAlertEvents(): void {
-  const eventBus = getEventBus();
+export async function handleAlertLifecycleEvent(event: BreezeEvent): Promise<void> {
+  const payload = event.payload as { alertId?: string };
+  if (!payload.alertId) {
+    // Kept as a guard, not a silent no-op (#4085): these events should always
+    // carry an alertId, so a missing one is worth a trace even though there is
+    // nothing actionable to do about it here.
+    console.warn(
+      `[NotificationDispatcher] ${event.type} event missing alertId; skipping`,
+      JSON.stringify({ eventId: event.id, orgId: event.orgId })
+    );
+    return;
+  }
 
-  eventBus.subscribe('alert.triggered', async (event) => {
-    try {
-      const payload = event.payload as { alertId?: string };
-      if (payload.alertId) {
-        await dispatchAlertNotifications(payload.alertId);
-      }
-    } catch (error) {
-      console.error('Failed to dispatch alert notifications:', error);
-    }
-  });
-
-  eventBus.subscribe('alert.acknowledged', async (event) => {
-    try {
-      const payload = event.payload as { alertId?: string };
-      if (payload.alertId) {
-        await cancelAlertEscalations(payload.alertId);
-      }
-    } catch (error) {
-      console.error('Failed to cancel escalations on acknowledge:', error);
-    }
-  });
-
-  eventBus.subscribe('alert.resolved', async (event) => {
-    try {
-      const payload = event.payload as { alertId?: string };
-      if (payload.alertId) {
-        await cancelAlertEscalations(payload.alertId);
-      }
-    } catch (error) {
-      console.error('Failed to cancel escalations on resolve:', error);
-    }
-  });
-
-  console.log('[NotificationDispatcher] Subscribed to alert events');
+  switch (event.type) {
+    case 'alert.triggered':
+      // Pass the event id so a redelivered alert.triggered collapses onto the
+      // same job rather than notifying every on-call tech twice.
+      await dispatchAlertNotifications(payload.alertId, event.id);
+      return;
+    case 'alert.acknowledged':
+    case 'alert.resolved':
+      await cancelAlertEscalations(payload.alertId);
+      return;
+    default:
+      return;
+  }
 }
 
 // Worker instance
@@ -1181,9 +1456,6 @@ export async function initializeNotificationDispatcher(): Promise<void> {
     notificationWorker.on('failed', (job, error) => {
       console.error(`[NotificationDispatcher] Job ${job?.id} failed:`, error);
     });
-
-    // Subscribe to alert events
-    subscribeToAlertEvents();
 
     console.log('[NotificationDispatcher] Notification dispatcher initialized');
   } catch (error) {

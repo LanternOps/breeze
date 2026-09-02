@@ -1,5 +1,14 @@
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
+
+const { safeFetchFollowingRedirectsMock } = vi.hoisted(() => ({
+  safeFetchFollowingRedirectsMock: vi.fn(),
+}));
+
+vi.mock("./urlSafety", () => ({
+  safeFetchFollowingRedirects: safeFetchFollowingRedirectsMock,
+}));
+
 import {
   verifyGithubReleaseArtifactBuffer,
   verifyReleaseArtifactManifestAsset,
@@ -56,6 +65,7 @@ describe("releaseArtifactManifest", () => {
 
   beforeEach(() => {
     process.env = { ...originalEnv };
+    safeFetchFollowingRedirectsMock.mockReset();
   });
 
   afterEach(() => {
@@ -267,8 +277,6 @@ describe("releaseArtifactManifest", () => {
   });
 
   it("skips GitHub manifest fetches when no API trust root is configured", async () => {
-    const fetchMock = vi.fn();
-    vi.stubGlobal("fetch", fetchMock);
     process.env.NODE_ENV = "test";
 
     await expect(
@@ -280,12 +288,10 @@ describe("releaseArtifactManifest", () => {
           "https://example.com/release-artifact-manifest.json.ed25519",
       }),
     ).resolves.toBeNull();
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(safeFetchFollowingRedirectsMock).not.toHaveBeenCalled();
   });
 
   it("fails closed for GitHub fallback verification in production without a trust root", async () => {
-    const fetchMock = vi.fn();
-    vi.stubGlobal("fetch", fetchMock);
     process.env.NODE_ENV = "production";
 
     await expect(
@@ -297,7 +303,7 @@ describe("releaseArtifactManifest", () => {
           "https://example.com/release-artifact-manifest.json.ed25519",
       }),
     ).rejects.toThrow("public key is required");
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(safeFetchFollowingRedirectsMock).not.toHaveBeenCalled();
   });
 
   it("fetches and verifies GitHub manifest assets when a trust root is configured", async () => {
@@ -307,21 +313,22 @@ describe("releaseArtifactManifest", () => {
       assetBuffer: asset,
     });
     process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (url: string) => {
-        if (url.endsWith(".ed25519")) return new Response(signed.signature);
-        return new Response(signed.manifest);
-      }),
-    );
+    safeFetchFollowingRedirectsMock.mockImplementation(async (url: string) => {
+      if (url.endsWith(".ed25519")) return new Response(signed.signature);
+      return new Response(signed.manifest);
+    });
+
+    const manifestUrl =
+      "https://example.com/release-artifact-manifest.json";
+    const signatureUrl =
+      "https://example.com/release-artifact-manifest.json.ed25519";
 
     await expect(
       verifyGithubReleaseArtifactBuffer({
         assetName: "breeze-agent.msi",
         assetBuffer: asset,
-        manifestUrl: "https://example.com/release-artifact-manifest.json",
-        signatureUrl:
-          "https://example.com/release-artifact-manifest.json.ed25519",
+        manifestUrl,
+        signatureUrl,
         expectedRepository: "lanternops/breeze",
         expectedRelease: "v1.2.3",
       }),
@@ -329,6 +336,16 @@ describe("releaseArtifactManifest", () => {
       expect.objectContaining({
         sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
       }),
+    );
+    expect(safeFetchFollowingRedirectsMock).toHaveBeenNthCalledWith(
+      1,
+      manifestUrl,
+      { maxBytes: 1024 * 1024 },
+    );
+    expect(safeFetchFollowingRedirectsMock).toHaveBeenNthCalledWith(
+      2,
+      signatureUrl,
+      { maxBytes: 1024 * 1024 },
     );
   });
 

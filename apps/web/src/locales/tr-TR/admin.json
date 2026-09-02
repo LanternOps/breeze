@@ -391,6 +391,127 @@
         "blocking": "Engelleniyor…",
         "blockDevice": "Cihazı engelle"
       }
+    },
+    "llmProviderCatalog": {
+      "title": "LLM Sağlayıcı Kataloğu",
+      "description": "Ortakların yapay zekâ trafiğini yönlendirebileceği, platform tarafından onaylanmış uç noktalar.",
+      "totalEntries": "Toplam kayıt:",
+      "refresh": "Yenile",
+      "addEntry": "Sağlayıcı ekle",
+      "loading": "Katalog yükleniyor…",
+      "empty": "Henüz katalog kaydı yok.",
+      "dismiss": "Kapat",
+      "platformAdmin": {
+        "title": "Platform yöneticisi erişimi gerekli",
+        "prefix": "LLM sağlayıcı kataloğu Breeze platform yöneticileri tarafından yönetilir. Hesabınız",
+        "role": "bir organizasyon/ortak yöneticisi",
+        "suffix": "onu doğrudan görüntüleyemez veya düzenleyemez."
+      },
+      "errors": {
+        "load": "Katalog yüklenemedi",
+        "generic": "Bir hata oluştu",
+        "createEntry": "Sağlayıcı oluşturulamadı",
+        "createRevision": "Revizyon oluşturulamadı",
+        "activate": "Revizyon etkinleştirilemedi",
+        "setStatus": "Durum güncellenemedi",
+        "verify": "Doğrulama isteği başarısız oldu"
+      },
+      "notice": {
+        "entryCreated": "\"{{name}}\" sağlayıcısı oluşturuldu.",
+        "revisionCreated": "\"{{name}}\" için yeni revizyon oluşturuldu.",
+        "activated": "Revizyon etkinleştirildi.",
+        "statusUpdated": "Durum {{status}} olarak güncellendi."
+      },
+      "status": {
+        "draft": "Taslak",
+        "listed": "Listelendi",
+        "delisted": "Listeden kaldırıldı"
+      },
+      "table": {
+        "slug": "Slug",
+        "name": "Ad",
+        "status": "Durum",
+        "activeRevision": "Etkin revizyon",
+        "revisions": "Revizyonlar",
+        "actions": "İşlemler"
+      },
+      "actions": {
+        "expand": "Revizyonları göster",
+        "collapse": "Revizyonları gizle",
+        "addRevision": "Revizyon ekle",
+        "activate": "Etkinleştir",
+        "list": "Listele",
+        "delist": "Listeden kaldır",
+        "verify": "Doğrulamayı çalıştır"
+      },
+      "confirmDelist": "\"{{name}}\" listeden kaldırılsın mı? Bunu zaten kullanan ortaklar çalışmaya devam eder, ancak yeni kurulumlar için seçim listesinden kalkar.",
+      "revision": {
+        "baseUrl": "Temel URL",
+        "authMode": "Kimlik doğrulama modu",
+        "dataNote": "Veri işleme notu",
+        "createdAt": "Oluşturuldu",
+        "notVerified": "Doğrulanmadı",
+        "verified": "Doğrulandı",
+        "activateBlocked": "Bu revizyon etkinleştirilmeden önce eşlenen her modelin doğrulamayı geçmesi gerekir.",
+        "listBlocked": "Bu sağlayıcı listelenmeden önce etkin revizyondaki eşlenen her modelin doğrulamayı geçmesi gerekir."
+      },
+      "authModeOptions": {
+        "x-api-key": "API anahtarı başlığı",
+        "bearer": "Bearer belirteci"
+      },
+      "entryForm": {
+        "title": "Sağlayıcı ekle",
+        "fields": {
+          "slug": "Slug",
+          "name": "Ad",
+          "notes": "Notlar"
+        },
+        "placeholders": {
+          "slug": "openrouter",
+          "name": "OpenRouter",
+          "notes": "Bu sağlayıcı hakkında dahili notlar…"
+        },
+        "submit": "Sağlayıcı oluştur",
+        "cancel": "Vazgeç"
+      },
+      "revisionForm": {
+        "title": "\"{{name}}\" için revizyon ekle",
+        "fields": {
+          "baseUrl": "Temel URL",
+          "authMode": "Kimlik doğrulama modu",
+          "dataNote": "Veri işleme notu"
+        },
+        "placeholders": {
+          "baseUrl": "https://openrouter.ai/api/anthropic",
+          "dataNote": "Bu uç noktanın istek verileriyle ne yaptığı…"
+        },
+        "modelMap": {
+          "title": "Model eşleme ve fiyatlandırma",
+          "description": "Yalnızca eşlenen modeller ortaklar tarafından seçilebilir. Fiyatlar milyon jeton başına sent cinsindendir.",
+          "included": "Bu modeli dahil et",
+          "providerModel": "Sağlayıcı model kimliği",
+          "inputPrice": "Girdi",
+          "outputPrice": "Çıktı",
+          "cacheReadPrice": "Önbellek okuma",
+          "cacheWritePrice": "Önbellek yazma"
+        },
+        "submit": "Revizyon oluştur",
+        "cancel": "Vazgeç",
+        "errors": {
+          "noModelsMapped": "Bir revizyon oluşturmadan önce en az bir modeli eşleyin."
+        }
+      },
+      "verifyForm": {
+        "title": "Doğrulamayı çalıştır — {{model}}",
+        "description": "Anahtar yalnızca bu istek için kullanılır ve asla saklanmaz.",
+        "apiKeyLabel": "Test API anahtarı",
+        "apiKeyPlaceholder": "Geçici bir test anahtarı yapıştırın",
+        "submit": "Çalıştır",
+        "cancel": "Vazgeç",
+        "running": "Çalışıyor…",
+        "passed": "Geçti",
+        "failed": "Başarısız"
+      }
     }
   },
   "audit": {

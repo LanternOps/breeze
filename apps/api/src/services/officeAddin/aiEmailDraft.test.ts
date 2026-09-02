@@ -1,14 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const createMock = vi.fn();
-const { getAnthropicClientForPartnerMock } = vi.hoisted(() => ({
+const { getAnthropicClientForPartnerMock, resolveWireModelMock } = vi.hoisted(() => ({
   getAnthropicClientForPartnerMock: vi.fn(),
+  resolveWireModelMock: vi.fn<(resolved: unknown, model: string) => { model: string; catalogPricing?: unknown }>((_resolved: unknown, model: string) => ({ model })),
 }));
 vi.mock('@anthropic-ai/sdk', () => ({
   default: class { messages = { create: createMock }; },
 }));
 vi.mock('../llm/llmConfigResolver', () => ({
   getAnthropicClientForPartner: getAnthropicClientForPartnerMock,
+  resolveWireModel: resolveWireModelMock,
 }));
 
 import { draftTicketFromEmail, EmailDraftFailedError } from './aiEmailDraft';
@@ -27,6 +29,11 @@ const baseInput = {
 
 beforeEach(() => {
   createMock.mockReset();
+  // Identity by default so the rest of the suite reads plainly; the two
+  // wire-translation tests below override it with a NON-identity mapping,
+  // which is the only way a `model: input.model` regression is observable.
+  resolveWireModelMock.mockReset();
+  resolveWireModelMock.mockImplementation((_resolved: unknown, model: string) => ({ model }));
   getAnthropicClientForPartnerMock.mockReset();
   getAnthropicClientForPartnerMock.mockResolvedValue({
     client: { messages: { create: createMock } },
@@ -45,7 +52,7 @@ describe('draftTicketFromEmail', () => {
     expect(r.suggestedTimeMinutes).toBe(20);
     expect(r.inputTokens).toBe(100);
     expect(r.outputTokens).toBe(50);
-    expect(getAnthropicClientForPartnerMock).toHaveBeenCalledWith('partner-1');
+    expect(getAnthropicClientForPartnerMock).toHaveBeenCalledWith('partner-1', { surface: 'one_shot_email_draft', orgId: null });
   });
 
   it('uses an injected resolved client without resolving a second time', async () => {
@@ -63,6 +70,61 @@ describe('draftTicketFromEmail', () => {
     });
 
     expect(getAnthropicClientForPartnerMock).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The self-resolving branch owns the wire translation (#3922 W3 review round
+   * 2). Every other test here leaves `resolveWireModel` as an identity stub, so
+   * a regression to `model: input.model` would sail through all of them — the
+   * translated id and the logical id are the same string. These two pin the
+   * branch with a NON-identity translation, which is the only way the
+   * substitution is observable.
+   */
+  it('sends the RESOLVED wire model to the provider when it resolves its own client', async () => {
+    resolveWireModelMock.mockReturnValueOnce({ model: 'anthropic/claude-x-wire' });
+    createMock.mockResolvedValueOnce(
+      reply({
+        subject: 'Outlook crashes on launch',
+        summary: 'The customer reports Outlook crashes whenever it opens and needs support.',
+        suggestedTimeMinutes: 20,
+      }),
+    );
+
+    await draftTicketFromEmail(baseInput);
+
+    // Translated against the config this call actually resolved, keyed on the
+    // caller's LOGICAL model id.
+    expect(resolveWireModelMock).toHaveBeenCalledWith(
+      expect.objectContaining({ source: 'partner', partnerId: 'partner-1' }),
+      'claude-x',
+    );
+    // …and it is the translated id that reaches the third-party endpoint. A
+    // catalog endpoint 404s on the platform-logical id.
+    expect(createMock).toHaveBeenCalledWith(
+      expect.objectContaining({ model: 'anthropic/claude-x-wire' }),
+    );
+  });
+
+  it('sends an injected client the caller-supplied model verbatim, translating nothing', async () => {
+    resolveWireModelMock.mockReturnValue({ model: 'anthropic/never-used' });
+    createMock.mockResolvedValueOnce(
+      reply({
+        subject: 'Outlook crashes on launch',
+        summary: 'The customer reports Outlook crashes whenever it opens and needs support.',
+        suggestedTimeMinutes: 20,
+      }),
+    );
+
+    await draftTicketFromEmail({
+      ...baseInput,
+      client: { messages: { create: createMock } } as any,
+    });
+
+    // `input.model` is ALREADY the wire id on this path — the caller translated
+    // it against its own resolved config. Translating a second time would
+    // double-map it into an id no provider knows.
+    expect(resolveWireModelMock).not.toHaveBeenCalled();
+    expect(createMock).toHaveBeenCalledWith(expect.objectContaining({ model: 'claude-x' }));
   });
 
   it('recovers when the retry returns valid JSON', async () => {

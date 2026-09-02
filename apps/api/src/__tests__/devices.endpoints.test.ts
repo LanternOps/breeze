@@ -113,6 +113,8 @@ vi.mock('../db/schema', () => ({
   softwarePolicies: {},
   sensitiveDataPolicies: {},
   peripheralPolicies: {},
+  deviceStatusEnum: { enumValues: ['online', 'offline', 'maintenance', 'decommissioned', 'quarantined', 'updating', 'pending'] },
+  osTypeEnum: { enumValues: ['windows', 'macos', 'linux'] },
   discoveredAssetTypeEnum: { enumValues: ['workstation', 'server', 'printer', 'unknown'] }
 }));
 

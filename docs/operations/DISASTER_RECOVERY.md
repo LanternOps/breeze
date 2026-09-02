@@ -93,6 +93,8 @@ Services    (10,000+)
 | **Object storage** | S3 cross-region replication or daily `rclone sync` | Daily | 30 days |
 | **Configuration** | Encrypted backup of `.env`, certs, and secrets | On every change | 90 days |
 | **TLS/mTLS certificates** | Backup private keys and cert files | On every change | Until expiry + 30 days |
+| **`api_data` volume** | `docker run` + `tar` (no script flag) | Daily | Match the database retention |
+| **`redis_data` volume** | Do not back up | N/A | Rebuildable. Preserve the volume, but never restore a stale snapshot over a live database |
 | **Go agents** | No backup needed | N/A | Agents auto-reconnect and re-sync |
 
 ### PostgreSQL Backup Commands

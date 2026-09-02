@@ -15,6 +15,7 @@ import { draftTicketFromEmail, EmailDraftFailedError } from '../../services/offi
 import {
   getAnthropicClientForPartner,
   LlmUnavailableError,
+  resolveWireModel,
 } from '../../services/llm/llmConfigResolver';
 import { claimMessageLink, findLinkByMessageId, normalizeMessageId } from '../../services/ticketEmailLinks';
 import {
@@ -308,7 +309,10 @@ officeAddinTicketRoutes.post(
 
     let llm: Awaited<ReturnType<typeof getAnthropicClientForPartner>>;
     try {
-      llm = await getAnthropicClientForPartner(auth.partnerId);
+      llm = await getAnthropicClientForPartner(auth.partnerId, {
+        surface: 'one_shot_email_draft',
+        orgId: input.orgId,
+      });
     } catch (err) {
       if (err instanceof LlmUnavailableError) {
         return c.json({ error: 'ai_unavailable' }, 503);
@@ -323,14 +327,27 @@ officeAddinTicketRoutes.post(
       return c.json({ error: 'dlp_blocked' }, 422);
     }
 
+    // `model` stays the platform-logical id for metering/budgets; `wire.model`
+    // is what the resolved endpoint speaks (a catalog endpoint 404s on the
+    // platform id), and `wire.catalogPricing` is what meters catalog traffic.
     const model = llmConfig.model;
+    let wire;
+    try {
+      wire = resolveWireModel(llmConfig, model);
+    } catch (err) {
+      if (err instanceof LlmUnavailableError) {
+        return c.json({ error: 'ai_unavailable' }, 503);
+      }
+      throw err;
+    }
     try {
       const draft = await withTimeout(
         draftTicketFromEmail({
           subject: input.subject,
           bodyText: dlpResult.text ?? input.bodyText,
-          model,
+          model: wire.model,
           partnerId: auth.partnerId,
+          orgId: input.orgId,
           client,
         }),
         DRAFT_TIMEOUT_MS
@@ -351,6 +368,7 @@ officeAddinTicketRoutes.post(
           draft.outputTokens,
           false,
           llmConfig.source === 'partner' ? 'partner_key' : 'platform',
+          wire.catalogPricing,
         );
       } catch (err) {
         console.error('[office-addin] draft usage accounting failed', err);
@@ -373,6 +391,7 @@ officeAddinTicketRoutes.post(
             err.outputTokens,
             false,
             llmConfig.source === 'partner' ? 'partner_key' : 'platform',
+            wire.catalogPricing,
           );
         } catch (meterErr) {
           console.error('[office-addin] draft usage accounting failed', meterErr);

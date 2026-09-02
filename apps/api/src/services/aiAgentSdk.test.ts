@@ -340,6 +340,25 @@ describe('runPreFlightChecks', () => {
     expect(mockSanitizeUserMessage).not.toHaveBeenCalled();
   });
 
+  // #3922 phase 2: a partner pinned to a catalog endpoint that the platform
+  // delists resolves as unavailable, and the turn must 503 rather than fall
+  // back to the platform key or to api.anthropic.com with the partner's key.
+  it.each(['provider_delisted', 'catalog_disabled', 'model_unverified'] as const)(
+    'returns the ai_unavailable 503 contract for catalog reason %s',
+    async (reason) => {
+      mockResolveLlmConfigForOrg.mockResolvedValue({
+        source: 'unavailable',
+        partnerId: 'partner-1',
+        reason,
+      });
+
+      const result = await runPreFlightChecks('session-1', 'hello', auth);
+
+      expect(result).toEqual({ ok: false, error: 'ai_unavailable', status: 503 });
+      expect(mockCheckBudget).not.toHaveBeenCalled();
+    },
+  );
+
   it('captures resolver failures and returns a generic retryable 503', async () => {
     const error = new Error('raw resolver failure');
     mockResolveLlmConfigForOrg.mockRejectedValueOnce(error);

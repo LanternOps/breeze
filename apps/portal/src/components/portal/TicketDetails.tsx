@@ -4,7 +4,9 @@ import React, { useEffect, useState } from 'react';
 import { ArrowLeft, AlertCircle, Loader2 } from 'lucide-react';
 import {
   portalApi,
+  portalAttachmentContentPath,
   type TicketComment,
+  type TicketCommentAttachment,
   type TicketDetails as TicketDetailsType,
   type TicketStatus,
 } from '@/lib/api';
@@ -42,6 +44,57 @@ interface TicketDetailsProps {
   error?: string | null;
   /** HTTP status of the failed load: 404 reads as \"not found\"; anything else is an outage. */
   statusCode?: number;
+}
+
+/**
+ * Render-only attachment strip under a public comment (W08 #3902). Images are
+ * plain <img> tags: the request is same-origin and the portal session cookie
+ * rides along, so no blob fetch is needed. Anything else is a download link.
+ */
+function CommentAttachments({
+  ticketId,
+  attachments,
+}: {
+  ticketId: string;
+  attachments?: TicketCommentAttachment[];
+}) {
+  if (!attachments || attachments.length === 0) return null;
+  return (
+    <ul className="mt-2.5 flex flex-wrap gap-2" data-testid="ticket-attachment-list">
+      {attachments.map((a) =>
+        a.contentType.startsWith('image/') ? (
+          <li key={a.id}>
+            <a
+              href={portalAttachmentContentPath(ticketId, a.id)}
+              target="_blank"
+              rel="noreferrer"
+              data-testid={`ticket-attachment-link-${a.id}`}
+            >
+              <img
+                src={portalAttachmentContentPath(ticketId, a.id)}
+                alt={a.originalFilename}
+                loading="lazy"
+                className="h-24 w-24 rounded border border-border/70 object-cover"
+                data-testid={`ticket-attachment-image-${a.id}`}
+              />
+            </a>
+          </li>
+        ) : (
+          <li key={a.id}>
+            <a
+              href={portalAttachmentContentPath(ticketId, a.id)}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1.5 rounded border border-border/70 px-2.5 py-1.5 text-xs text-foreground hover:bg-muted"
+              data-testid={`ticket-attachment-file-${a.id}`}
+            >
+              {a.originalFilename}
+            </a>
+          </li>
+        ),
+      )}
+    </ul>
+  );
 }
 
 /** The reply box that closes the loop the create-form promises ("say so in the
@@ -275,6 +328,7 @@ export function TicketDetails({ ticket, error, statusCode }: TicketDetailsProps)
                 <div className="mt-1.5 whitespace-pre-wrap text-sm leading-relaxed text-foreground">
                   {c.content}
                 </div>
+                <CommentAttachments ticketId={ticket.id} attachments={c.attachments} />
               </li>
             ))}
           </ol>

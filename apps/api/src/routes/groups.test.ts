@@ -9,6 +9,10 @@ vi.mock('../services/auditEvents', () => ({
   writeAuditEvent: vi.fn()
 }));
 
+vi.mock('../jobs/peripheralJobs', () => ({
+  schedulePeripheralPolicyDevice: vi.fn().mockResolvedValue('job-id'),
+}));
+
 vi.mock('../services/filterEngine', () => ({
   evaluateFilterWithPreview: vi.fn(),
   extractFieldsFromFilter: vi.fn(() => []),

@@ -116,7 +116,15 @@
     "internalPlaceholder": "Eine interne Notiz hinzufügen…",
     "sending": "Senden",
     "sendReply": "Antwort senden",
-    "addInternalNote": "Interne Notiz hinzufügen"
+    "addInternalNote": "Interne Notiz hinzufügen",
+    "attachments": {
+      "attach": "Anhängen",
+      "uploading": "Wird hochgeladen…",
+      "retry": "Erneut versuchen",
+      "remove": "Datei entfernen",
+      "tooMany": "Sie können höchstens {{max}} Dateien an einen Kommentar anhängen.",
+      "tooLarge": "{{name}} ist größer als 10 MB."
+    }
   },
   "ticketFeed": {
     "empty": "Noch keine Aktivität.",
@@ -149,6 +157,11 @@
     "deleteDialog": {
       "title": "Kommentar löschen",
       "message": "Sind Sie sicher, dass Sie diesen Kommentar löschen möchten? Diese Aktion kann nicht rückgängig gemacht werden."
+    },
+    "attachments": {
+      "broken": "{{name}} konnte nicht geladen werden",
+      "open": "Anhang öffnen",
+      "remove": "Anhang entfernen"
     }
   },
   "ticketPartsCard": {
@@ -432,6 +445,17 @@
       "feedbackFailed": "Ticket-Triage-Feedback konnte nicht gespeichert werden.",
       "feedbackSaved": "Ticket-Triage-Feedback gespeichert"
     },
+    "aiDraft": {
+      "kindReply": "KI-Antwortentwurf",
+      "kindResolutionNote": "KI-Entwurf des Lösungsvermerks",
+      "sendAsMe": "Als ich senden",
+      "sending": "Wird gesendet…",
+      "discard": "Verwerfen",
+      "sendFailed": "KI-Entwurf konnte nicht gesendet werden.",
+      "sent": "Entwurf gesendet",
+      "discardFailed": "KI-Entwurf konnte nicht verworfen werden.",
+      "discarded": "Entwurf verworfen"
+    },
     "resolve": {
       "noteLabel": "Lösungsvermerk (sichtbar für den Antragsteller)",
       "submit": "Ticket lösen"
@@ -469,7 +493,8 @@
       "categoryUpdateFailed": "Die Kategorieaktualisierung ist fehlgeschlagen. Wiederholen.",
       "assigned": "Zugewiesen",
       "unassigned": "Nicht zugewiesen",
-      "assignFailed": "Zuweisung fehlgeschlagen. Wiederholen."
+      "assignFailed": "Zuweisung fehlgeschlagen. Wiederholen.",
+      "attachmentFailed": "Der Anhang konnte nicht hochgeladen werden."
     },
     "delete": {
       "failed": "Das Löschen ist fehlgeschlagen. Wiederholen.",

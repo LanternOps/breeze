@@ -32,6 +32,7 @@ const {
   mockEvaluateFilter,
   mockHasDbAccessContext,
   mockGetCurrentDbAccessContext,
+  mockSchedulePeripheralPolicyDevice,
 } = vi.hoisted(() => ({
   mockSelect: vi.fn(),
   mockInsert: vi.fn(),
@@ -40,6 +41,11 @@ const {
   mockEvaluateFilter: vi.fn(),
   mockHasDbAccessContext: vi.fn(),
   mockGetCurrentDbAccessContext: vi.fn(),
+  mockSchedulePeripheralPolicyDevice: vi.fn().mockResolvedValue('job'),
+}));
+
+vi.mock('../jobs/peripheralJobs', () => ({
+  schedulePeripheralPolicyDevice: mockSchedulePeripheralPolicyDevice,
 }));
 
 vi.mock('../db', () => ({
@@ -198,6 +204,8 @@ describe('evaluateGroupMembership — silent-failure diagnostics', () => {
       { deviceId: 'dev-1', groupId: 'group-1', orgId: 'org-a', addedBy: 'dynamic_rule' },
       { deviceId: 'dev-2', groupId: 'group-1', orgId: 'org-a', addedBy: 'dynamic_rule' },
     ]);
+    expect(mockSchedulePeripheralPolicyDevice).toHaveBeenCalledWith('dev-1', 'dynamic_membership_changed');
+    expect(mockSchedulePeripheralPolicyDevice).toHaveBeenCalledWith('dev-2', 'dynamic_membership_changed');
   });
 
   it('counts a pinned non-matching member towards the expected total', async () => {

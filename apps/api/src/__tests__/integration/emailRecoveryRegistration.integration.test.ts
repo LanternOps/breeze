@@ -523,12 +523,12 @@ describe('SR2-21 pending registration — real Postgres + real Redis', () => {
     const email = `racereg-${marker}@example.com`;
     const { rawToken } = await park(companyName, email);
 
-    // Actually RACE the two clicks — consumePendingRegistration is a single-winner
-    // GETDEL, so exactly one click builds the tenant.
+    // Actually RACE the two clicks. One request creates the tenant; the loser
+    // reconciles to that committed account so a mail-client double navigation
+    // remains an idempotent success.
     const [r1, r2] = await Promise.all([verify(rawToken), verify(rawToken)]);
     const statuses = [r1.status, r2.status].sort();
-    // One 200 (created), one 400 (loser fell through to an invalid token).
-    expect(statuses).toEqual([200, 400]);
+    expect(statuses).toEqual([200, 200]);
 
     // Exactly ONE partner for this company — scoped, not a global count.
     expect(await countPartnersByName(companyName)).toBe(1);

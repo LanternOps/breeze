@@ -63,6 +63,7 @@ vi.mock('./invoiceAssembly', async (importOriginal) => ({
 vi.mock('../jobs/invoiceWorker', () => ({ enqueueInvoicePdfRender: vi.fn().mockResolvedValue(undefined) }));
 
 import { SQL } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
 import type { Mock } from 'vitest';
 import * as svc from './invoiceService';
 import { db } from '../db';
@@ -1510,5 +1511,46 @@ describe('invoiceService currency representability guard (W6-G1-1)', () => {
       svc.addContractLine('i1', { description: 'x', quantity: '1', unitPrice: '100.5', taxable: false, contractId: 'ct1' }, actor)
     ).rejects.toMatchObject({ code: 'PRICE_NOT_REPRESENTABLE', status: 400 });
     expect((db as unknown as { insert: Mock }).insert).not.toHaveBeenCalled();
+  });
+});
+
+// ── overdue sweep tenant scope (org-lifecycle Wave 4 review fix C-A.2) ──────
+// The sweep runs fleet-wide under a SYSTEM context, so RLS answers nothing
+// here: without an explicit org-status predicate it flips an ARCHIVED tenant's
+// invoices to overdue (and emits invoice.overdue → notifications/webhooks) for
+// the entire retention window, inside a tenant nobody can open.
+describe('runOverdueSweep tenant scope', () => {
+  const dialect = new PgDialect();
+
+  beforeEach(() => {
+    results.length = 0;
+    vi.clearAllMocks();
+  });
+
+  it('restricts the due-invoice select to automation-eligible orgs (compiled SQL)', async () => {
+    queueResult([]); // no due invoices — only the WHERE clause is under test
+
+    await svc.runOverdueSweep(new Date('2026-08-26T00:00:00Z'));
+
+    const whereArg = (db as unknown as { where: Mock }).where.mock.calls[0]![0] as SQL;
+    const { sql, params } = dialect.sqlToQuery(whereArg);
+    expect(sql).toContain('automation_eligible_org.id = "invoices"."org_id"');
+    expect(sql).toContain('automation_eligible_org.status::text IN');
+    // The frozen statuses are the ones that must NOT be admitted.
+    expect(params).toEqual(expect.arrayContaining(['active', 'trial', 'suspended', 'churned', 'offboarding']));
+    expect(params).not.toContain('archived');
+    expect(params).not.toContain('purging');
+    expect(params).not.toContain('merging');
+  });
+
+  it('still carries the pre-existing due/balance predicates alongside it', async () => {
+    queueResult([]);
+
+    await svc.runOverdueSweep(new Date('2026-08-26T00:00:00Z'));
+
+    const whereArg = (db as unknown as { where: Mock }).where.mock.calls[0]![0] as SQL;
+    const { sql } = dialect.sqlToQuery(whereArg);
+    expect(sql).toContain('"invoices"."due_date" <');
+    expect(sql).toContain('"invoices"."balance" > 0');
   });
 });

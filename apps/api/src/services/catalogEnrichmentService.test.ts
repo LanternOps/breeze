@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { create, checkBudget, checkAiRateLimit, checkUserAiRateLimit, recordUsage, captureException, captureMessage, getAnthropicClientForPartner } = vi.hoisted(() => ({
+const { create, checkBudget, checkAiRateLimit, checkUserAiRateLimit, recordUsage, captureException, captureMessage, getAnthropicClientForPartner, resolveWireModel } = vi.hoisted(() => ({
   create: vi.fn(),
   checkBudget: vi.fn(async (): Promise<string | null> => null),
   checkAiRateLimit: vi.fn(async (): Promise<string | null> => null),
@@ -9,6 +9,7 @@ const { create, checkBudget, checkAiRateLimit, checkUserAiRateLimit, recordUsage
   captureException: vi.fn(),
   captureMessage: vi.fn(),
   getAnthropicClientForPartner: vi.fn(),
+  resolveWireModel: vi.fn<(resolved: unknown, model: string) => { model: string; catalogPricing?: unknown }>((_resolved: unknown, model: string) => ({ model })),
 }));
 vi.mock('@anthropic-ai/sdk', () => ({
   default: class { messages = { create }; },
@@ -18,6 +19,7 @@ vi.mock('./aiCostTracker', () => ({ checkBudget, checkAiRateLimit, checkUserAiRa
 vi.mock('./sentry', () => ({ captureException, captureMessage }));
 vi.mock('./llm/llmConfigResolver', () => ({
   getAnthropicClientForPartner,
+  resolveWireModel,
   LlmUnavailableError: class LlmUnavailableError extends Error {
     constructor() {
       super('AI is unavailable for this partner.');
@@ -49,6 +51,8 @@ beforeEach(() => {
   captureMessage.mockClear();
   captureException.mockClear();
   checkBudget.mockClear(); checkAiRateLimit.mockClear(); checkUserAiRateLimit.mockClear(); recordUsage.mockClear();
+  resolveWireModel.mockReset();
+  resolveWireModel.mockImplementation((_resolved: unknown, model: string) => ({ model }));
   checkBudget.mockResolvedValue(null); checkAiRateLimit.mockResolvedValue(null); checkUserAiRateLimit.mockResolvedValue(null);
 });
 
@@ -78,8 +82,40 @@ describe('enrichCatalogItem', () => {
       50,
       true,
       'partner_key',
+      undefined,
     );
-    expect(getAnthropicClientForPartner).toHaveBeenCalledWith('p1');
+    expect(getAnthropicClientForPartner).toHaveBeenCalledWith('p1', { surface: 'one_shot_catalog_enrichment', orgId: 'o1' });
+  });
+
+  it('sends the WIRE model to the provider and meters at the revision rates', async () => {
+    const CATALOG_PRICING = {
+      catalogEntryId: 'entry-1',
+      revisionId: 'rev-1',
+      inputCentsPerM: 300,
+      outputCentsPerM: 1500,
+      cacheReadCentsPerM: 30,
+      cacheWriteCentsPerM: 375,
+    };
+    resolveWireModel.mockReturnValue({
+      model: 'anthropic/claude-sonnet-4-6',
+      catalogPricing: CATALOG_PRICING,
+    });
+    create.mockResolvedValueOnce(aiMessage({
+      name: 'APC Back-UPS 600VA', description: 'Battery backup',
+      itemType: 'hardware', unitOfMeasure: 'each', taxable: true, taxCategory: null,
+      priceLow: 80, priceHigh: 120, currency: 'USD', confidence: 0.8, notes: '',
+    }));
+
+    await enrichCatalogItem('apc 600va ups', undefined, actor);
+
+    // A catalog gateway 404s on the platform-logical id.
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({ model: 'anthropic/claude-sonnet-4-6' }),
+    );
+    // …while the ledger keeps the logical id and prices from the revision.
+    expect(recordUsage).toHaveBeenCalledWith(
+      null, 'o1', 'claude-sonnet-4-6', 100, 50, true, 'partner_key', CATALOG_PRICING,
+    );
   });
 
   it('maps an unavailable partner LLM config to the typed 503 service error', async () => {
@@ -345,7 +381,7 @@ describe('polishCatalogText', () => {
     expect(res.description).toMatch(/7 outlets/);
     expect(res.changed).toBe(true);
     expect(res.factChanges).toBeNull();
-    expect(getAnthropicClientForPartner).toHaveBeenCalledWith('p1');
+    expect(getAnthropicClientForPartner).toHaveBeenCalledWith('p1', { surface: 'one_shot_catalog_enrichment', orgId: 'o1' });
   });
 
   it('maps an unavailable partner LLM config to the typed 503 service error', async () => {
@@ -357,6 +393,83 @@ describe('polishCatalogText', () => {
       status: 503,
     });
     expect(create).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Mirrors the `enrichCatalogItem` case above. Polish is a SECOND outbound
+   * surface in this service with its own turn runner (`runPolishTurn`) and its
+   * own `recordUsage` call in a `finally`, so it can regress independently of
+   * enrich — and did not have a wire-model test at all (#3922 W3 review round 2).
+   */
+  it('sends the WIRE model to the provider and meters at the revision rates', async () => {
+    const CATALOG_PRICING = {
+      catalogEntryId: 'entry-1',
+      revisionId: 'rev-1',
+      inputCentsPerM: 300,
+      outputCentsPerM: 1500,
+      cacheReadCentsPerM: 30,
+      cacheWriteCentsPerM: 375,
+    };
+    resolveWireModel.mockReturnValue({
+      model: 'anthropic/claude-sonnet-4-6',
+      catalogPricing: CATALOG_PRICING,
+    });
+    create.mockResolvedValueOnce(aiMessage({
+      name: 'APC Back-UPS 600VA UPS',
+      description: 'APC Back-UPS 600VA battery backup with 7 outlets.',
+    }));
+
+    await polishCatalogText(
+      { name: 'spl apc back-ups 600va disti', description: 'apc backups 600va,7 outlets' },
+      actor,
+    );
+
+    // Translated against the config this call resolved, keyed on the LOGICAL id.
+    expect(resolveWireModel).toHaveBeenCalledWith(
+      expect.objectContaining({ source: 'partner', partnerId: 'p1' }),
+      'claude-sonnet-4-6',
+    );
+    // A catalog gateway 404s on the platform-logical id.
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({ model: 'anthropic/claude-sonnet-4-6' }),
+    );
+    // …while the ledger keeps the logical id and prices from the revision, NOT
+    // Anthropic list rates.
+    expect(recordUsage).toHaveBeenCalledWith(
+      null, 'o1', 'claude-sonnet-4-6', 100, 50, true, 'partner_key', CATALOG_PRICING,
+    );
+  });
+
+  it('meters the stricter RETRY turn at the revision rates too', async () => {
+    const CATALOG_PRICING = {
+      catalogEntryId: 'entry-1',
+      revisionId: 'rev-1',
+      inputCentsPerM: 300,
+      outputCentsPerM: 1500,
+      cacheReadCentsPerM: 30,
+      cacheWriteCentsPerM: 375,
+    };
+    resolveWireModel.mockReturnValue({
+      model: 'anthropic/claude-sonnet-4-6',
+      catalogPricing: CATALOG_PRICING,
+    });
+    // Both turns drift, so both run and both spend.
+    create
+      .mockResolvedValueOnce(aiMessage({ name: 'APC Back-UPS 650VA', description: null }))
+      .mockResolvedValueOnce(aiMessage({ name: 'APC Back-UPS 650VA', description: null }));
+
+    await polishCatalogText({ name: 'apc back-ups 600va' }, actor);
+
+    expect(create).toHaveBeenCalledTimes(2);
+    // Both turns went to the wire id…
+    expect(create).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      model: 'anthropic/claude-sonnet-4-6',
+    }));
+    // …and the single accumulated `recordUsage` in the `finally` prices the
+    // combined spend from the revision snapshot.
+    expect(recordUsage).toHaveBeenCalledWith(
+      null, 'o1', 'claude-sonnet-4-6', 200, 100, true, 'partner_key', CATALOG_PRICING,
+    );
   });
 
   it('warns (does not block) when a number CHANGES, after retrying for a clean version', async () => {
@@ -602,6 +715,7 @@ describe('polishCatalogText', () => {
       100,
       true,
       'partner_key',
+      undefined,
     );
   });
 });

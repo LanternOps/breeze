@@ -273,6 +273,31 @@ Click the stop icon in the header widget to open the stop popover, where you can
 
 Click **Log time** in the ticket's Time & Billing rail to open the quick-add form. Enter the number of minutes, an optional description, and whether the entry is billable, then click **Save**. The entry is back-dated so the end time is now and the start time is now minus the minutes you entered.
 
+### Suggested time entries
+
+When a remote session ends, Breeze can offer it as a one-tap time entry: *"You ran a 38-minute desktop session on ACME-DC01 and closed T-2026-1041 -- log it?"* Nothing is ever written until you tap it.
+
+<Aside type="caution" title="Mobile app only">
+  The suggestion list, the one-tap confirm and the dismiss/restore control live in the **Breeze mobile app** and ship with it. In the web app this release adds only the partner setting described below and the provenance badge described at the end of this section -- there is no web suggestions panel. Turning the setting on changes nothing a technician sees on **/timesheet**.
+</Aside>
+
+**Turning it on.** Go to **Settings → Ticketing → Time Tracking** and enable **Suggest time entries from remote sessions**. The setting is off by default and applies partner-wide, to every technician in your organization. Two thresholds sit beside it:
+
+- **Minimum session length** (default 120 seconds) -- sessions shorter than this are never suggested, so a mistyped connection does not become a billable line.
+- **Merge gap** (default 10 minutes) -- back-to-back sessions on the same device within this gap are combined into a single suggestion rather than offered separately.
+
+**What gets suggested.** Ended remote sessions -- terminal, desktop and file transfer -- from the day you are looking at, attributed to the technician who ran them, with the session's recorded duration. Back-to-back sessions on one device inside the merge gap are combined into a single suggestion, and suggestions never overlap each other. Quick Support sessions appear with their attribution label and no organization until you attach a ticket.
+
+**What does not.** Work you already logged (a session already covered by one of your own time entries is hidden), sessions you dismissed, sessions still running, and anything under the minimum length.
+
+**Accuracy.** A session whose duration was recorded exactly shows that duration. One whose end time had to be reconstructed shows an estimate. One closed by the server's stale-session reaper is marked unreliable and asks you to enter the end time yourself before it will log anything.
+
+**Ticket pairing.** A ticket you closed on that device around the same time is pre-selected. If two are equally likely, none is, and you pick. Changing the ticket can change the organization and therefore the currency the entry is priced in, so the picker shows the organization beside each ticket.
+
+**Dismiss and restore.** Dismissing a suggestion hides it; **Show dismissed → Restore** puts it back. Deleting a time entry that came from a suggestion does *not* re-suggest the session -- restore it explicitly if you want it offered again.
+
+**Where the provenance shows.** Entries created this way carry a small badge on the timesheet row and in the ticket's Time & Billing rail -- in the web app as well as on mobile -- so you can tell at a glance which entries were typed and which came from a session. That badge is the part of this feature the web app shows today.
+
 ### Parts
 
 The Parts card on the ticket rail lets you record physical or consumable items used on a job. Each part has a **description**, **quantity**, **unit price**, and an optional **cost basis** for margin tracking. Parts default to billable; uncheck the box for internal-only consumables.
@@ -282,6 +307,8 @@ The Parts card on the ticket rail lets you record physical or consumable items u
 Open **/timesheet** from the sidebar to see a week-at-a-glance view of all your time entries, grouped by day with billable totals. Billable amounts -- here and in the ticket's Time & Billing rail -- are totalled **per currency**; if a technician's week spans organizations that bill in different currencies, you see one total per currency rather than a single combined figure. Use the week navigation buttons to move backwards and forwards. Technicians with a wildcard-permission admin role can switch to any other technician's timesheet via the dropdown.
 
 Admins can select one or more completed entries and click **Approve selected** to mark them approved. Approved entries become immutable for non-admins.
+
+Entries that were logged from a remote session carry a provenance badge on the row. The [suggested time entries](#suggested-time-entries) list itself -- the unlogged sessions waiting to be confirmed -- is a Breeze mobile app screen; the web timesheet does not show it.
 
 ### Billables export
 

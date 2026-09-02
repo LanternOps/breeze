@@ -103,6 +103,31 @@ func TestResolveSubjectSessionWith(t *testing.T) {
 	}
 }
 
+func TestResolveSubjectSessionStrictWithNeverFallsBackToConsole(t *testing.T) {
+	lookup := func(name string) (uint32, bool) {
+		if name == `CORP\alice` {
+			return 12, true
+		}
+		return 0, false
+	}
+
+	id, source, err := resolveSubjectSessionStrictWith(Request{SubjectUsername: `CORP\alice`}, lookup)
+	if err != nil || id != 12 || source != "username_lookup" {
+		t.Fatalf("strict subject resolution = (%d, %q, %v), want (12, username_lookup, nil)", id, source, err)
+	}
+
+	for _, req := range []Request{
+		{},
+		{SubjectUsername: "bob"},
+		{SubjectUsername: "alice", SubjectSessionID: 99},
+	} {
+		id, source, err = resolveSubjectSessionStrictWith(req, func(string) (uint32, bool) { return 0, false })
+		if err == nil || id != 0 || source != "subject_session_required" {
+			t.Fatalf("strict missing subject session for %+v = (%d, %q, %v), want fail closed", req, id, source, err)
+		}
+	}
+}
+
 func TestBareUsername(t *testing.T) {
 	cases := map[string]string{
 		`CORP\alice`:         "alice",

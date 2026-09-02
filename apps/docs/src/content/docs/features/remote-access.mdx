@@ -522,6 +522,41 @@ export APPIMAGE_EXTRACT_AND_RUN=1
 
 Extract-and-run unpacks the whole bundle on every launch, so sessions start noticeably slower and each launch writes to `$TMPDIR`. Installing FUSE 2 is the better outcome where it is allowed.
 
+### WebRTC needs webkit2gtk built with the GStreamer plugins
+
+The Linux viewer renders in webkit2gtk, the system WebView, rather than bundling its own browser engine. Whether WebRTC is available therefore depends on how your distribution compiled webkit2gtk and which GStreamer plugins are installed. This shows up two ways: on some builds `RTCPeerConnection` is not exposed at all, and on others it exists but fails the moment a connection is actually created.
+
+The viewer handles both. The first is detected before connecting, so WebRTC is skipped outright; the second is discovered on the first attempt, after which the viewer stops retrying WebRTC for the rest of the session. Either way it falls back to the WebSocket (JPEG) transport, a notice in the session window explains the switch, and the toolbar badge reads **WS** rather than **WebRTC**. The session still works; you lose the WebRTC-only features:
+
+| Available on WebSocket | Not available on WebSocket |
+|---|---|
+| Screen view, keyboard, mouse | Remote audio |
+| Paste as keystrokes | Clipboard sync |
+| Quality, scale and FPS limit | Multi-monitor switching |
+| Reconnect, session end | Bitrate control |
+| | Secure attention sequence (Ctrl+Alt+Del) |
+| | Switching between user sessions |
+| | Low-latency cursor streaming |
+
+To get WebRTC, install the GStreamer plugin sets webkit2gtk uses for it, then relaunch the viewer:
+
+```bash
+# Debian / Ubuntu
+sudo apt install gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
+  gstreamer1.0-plugins-bad gstreamer1.0-libav
+
+# Fedora / RHEL
+sudo dnf install gstreamer1-plugins-base gstreamer1-plugins-good \
+  gstreamer1-plugins-bad-free gstreamer1-libav
+
+# Arch
+sudo pacman -S gst-plugins-base gst-plugins-good gst-plugins-bad gst-libav
+```
+
+<Aside type="note">
+  Some distributions ship a webkit2gtk built without WebRTC support regardless of which GStreamer plugins are present. If the viewer still reports no WebRTC after installing them, the WebSocket transport is the expected behavior on that host — remote desktop keeps working, at lower video quality.
+</Aside>
+
 ### Viewer launches but no window appears
 
 If the process shows up in `ps` but nothing is drawn, FUSE is working and the problem is the desktop stack, not packaging — typically a host GTK module or `gvfs` build that is incompatible with the bundled runtime. Run the AppImage from a terminal and read the messages: `Failed to load module` and `undefined symbol` lines name the offending host library. Starting with a clean environment (`env -i DISPLAY=$DISPLAY HOME=$HOME ~/Downloads/breeze-viewer-linux.AppImage`) confirms whether a host module is being injected.
@@ -532,6 +567,9 @@ If the process shows up in `ps` but nothing is drawn, FUSE is working and the pr
 
 **Linux viewer does nothing when run.**
 The AppImage needs FUSE 2 to mount itself. On Debian 13 / Ubuntu 24.04+ the package is `libfuse2t64`, not `libfuse2`. See [Linux viewer (AppImage)](#linux-viewer-appimage) for the per-distribution package names and the `--appimage-extract-and-run` fallback.
+
+**Linux viewer always connects on the WebSocket transport, never WebRTC.**
+The host's webkit2gtk build does not expose `RTCPeerConnection`, so the viewer skips WebRTC and uses the WebSocket (JPEG) transport. The session window shows a notice saying so, and the browser console logs `WebRTC is unavailable in this WebView (no RTCPeerConnection global)`. Installing the GStreamer plugin sets usually restores it — see [WebRTC needs webkit2gtk built with the GStreamer plugins](#webrtc-needs-webkit2gtk-built-with-the-gstreamer-plugins). This is a property of the host, not of the device you are connecting to.
 
 **Session stuck in `connecting`.**
 WebRTC negotiation failed and the viewer has not yet fallen back to WebSocket. Confirm the device is online and the agent WebSocket connection is active (check the device detail page). Common causes:

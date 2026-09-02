@@ -1,6 +1,6 @@
 // Sourced from the shared Zod enums so the UI can't drift from the validators.
-import type { TicketStatus, TicketPriority } from '@breeze/shared';
-export type { TicketStatus, TicketPriority };
+import type { TicketStatus, TicketPriority, TicketAttachmentMeta } from '@breeze/shared';
+export type { TicketStatus, TicketPriority, TicketAttachmentMeta };
 
 export interface TicketSummary {
   id: string;
@@ -50,6 +50,9 @@ export interface TicketComment {
   createdAt: string;
   editedAt?: string | null;
   deleted?: boolean;
+  /** W08 #3902 — photo/PDF attachments on this comment. Absent on older
+   *  payloads and always [] for a soft-deleted comment. */
+  attachments?: TicketAttachmentMeta[];
 }
 
 export interface TicketDetail extends TicketSummary {

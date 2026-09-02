@@ -1,29 +1,36 @@
 /**
  * Agent Log Retention Worker
  *
- * BullMQ worker that prunes old agent diagnostic logs.
- * Default retention: 7 days (configurable via AGENT_LOG_RETENTION_DAYS env var).
+ * BullMQ worker that prunes old agent diagnostic logs in bounded ctid batches.
+ * Default retention: 7 days (configurable via AGENT_LOG_RETENTION_DAYS, clamped
+ * to 1..365). Batch bounds: AGENT_LOG_RETENTION_BATCH_SIZE /
+ * AGENT_LOG_RETENTION_MAX_BATCHES.
+ *
+ * `agent_logs` is a hot agent-write table, so this used to be the worst kind of
+ * sweeper: a single unbounded DELETE holding a pooled connection (and row locks
+ * on a table the agent path is inserting into) for the whole statement (#4343).
+ * Pruning rides `agent_logs_timestamp_idx`.
  */
 
 import { Queue, Worker, Job } from 'bullmq';
-import * as dbModule from '../db';
-import { agentLogs } from '../db/schema';
-import { lt } from 'drizzle-orm';
+import { sql } from 'drizzle-orm';
 import { getBullMQConnection } from '../services/redis';
+import { recordRetentionRun } from '../services/retentionMetrics';
 import { attachWorkerObservability } from './workerObservability';
 import { jobSchedule } from './scheduleRegistry';
+import {
+  parsePositiveIntEnv,
+  pruneInCtidBatches,
+  resolveRetentionDays,
+  warnOnRetentionBacklog,
+} from './retentionBatch';
 
-const { db } = dbModule;
-const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
-  const withSystem = dbModule.withSystemDbAccessContext;
-  if (typeof withSystem !== 'function') {
-    console.error('[AgentLogRetention] withSystemDbAccessContext is not available — running without access context');
-  }
-  return typeof withSystem === 'function' ? withSystem(fn) : fn();
-};
-
+const LOG_PREFIX = '[AgentLogRetention]';
 const QUEUE_NAME = 'agent-log-retention';
-const DEFAULT_RETENTION_DAYS = parseInt(process.env.AGENT_LOG_RETENTION_DAYS || '7', 10);
+const MAX_RETENTION_DAYS = 365;
+const DEFAULT_RETENTION_DAYS = resolveRetentionDays(process.env.AGENT_LOG_RETENTION_DAYS, 7, MAX_RETENTION_DAYS, LOG_PREFIX);
+const BATCH_SIZE = parsePositiveIntEnv(LOG_PREFIX, 'AGENT_LOG_RETENTION_BATCH_SIZE', 10000);
+const MAX_BATCHES = parsePositiveIntEnv(LOG_PREFIX, 'AGENT_LOG_RETENTION_MAX_BATCHES', 200);
 
 let retentionQueue: Queue | null = null;
 
@@ -38,34 +45,37 @@ export function getAgentLogRetentionQueue(): Queue {
 
 interface RetentionJobData {
   retentionDays?: number;
+  batchSize?: number;
+  maxBatches?: number;
 }
 
 export function createAgentLogRetentionWorker(): Worker<RetentionJobData> {
   return new Worker<RetentionJobData>(
     QUEUE_NAME,
+    // No context wrapper here: pruneInCtidBatches opens one per batch, so that
+    // each batch commits and releases its locks (see retentionBatch.ts).
     async (job: Job<RetentionJobData>) => {
-      return runWithSystemDbAccess(async () => {
-        const startTime = Date.now();
-        const retentionDays = Math.max(1, job.data.retentionDays ?? DEFAULT_RETENTION_DAYS);
-        const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
+      const startTime = Date.now();
+      const retentionDays = resolveRetentionDays(job.data.retentionDays, DEFAULT_RETENTION_DAYS, MAX_RETENTION_DAYS);
+      const batchSize = Math.max(1, job.data.batchSize ?? BATCH_SIZE);
+      const maxBatches = Math.max(1, job.data.maxBatches ?? MAX_BATCHES);
+      // postgres-js does not coerce JS Date in template-literal params; pass an ISO string.
+      const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000).toISOString();
 
-        const result = await db
-          .delete(agentLogs)
-          .where(lt(agentLogs.timestamp, cutoff));
-
-        // Drizzle returns different shapes per driver; try common patterns.
-        const raw = result as unknown as Record<string, unknown>;
-        const deletedCount = typeof raw?.rowCount === 'number'
-          ? raw.rowCount
-          : typeof raw?.count === 'number'
-            ? raw.count
-            : Array.isArray(result) ? (result as unknown[]).length : 'unknown';
-
-        const durationMs = Date.now() - startTime;
-        console.log(`[AgentLogRetention] Pruned ${deletedCount} agent logs older than ${retentionDays} days in ${durationMs}ms`);
-
-        return { durationMs, deletedCount };
+      const { deleted: deletedCount, batches, hasMore } = await pruneInCtidBatches({
+        table: 'agent_logs',
+        where: sql`"timestamp" < ${cutoff}`,
+        batchSize,
+        maxBatches,
+        label: 'agentLogRetention.prune',
       });
+
+      const durationMs = Date.now() - startTime;
+      console.log(`${LOG_PREFIX} Pruned ${deletedCount} agent logs older than ${retentionDays} days (batches=${batches}) in ${durationMs}ms`);
+      warnOnRetentionBacklog(LOG_PREFIX, 'agent_logs', { deleted: deletedCount, batches, hasMore });
+      recordRetentionRun('agent_log_retention', { rowsDeleted: deletedCount, incomplete: hasMore });
+
+      return { durationMs, deletedCount, retentionDays, batches, hasMore };
     },
     {
       connection: getBullMQConnection(),
@@ -96,7 +106,7 @@ export async function initializeAgentLogRetention(): Promise<void> {
     // Daily at a registry-allocated slot (jobs/scheduleRegistry.ts).
     await queue.add(
       'cleanup',
-      { retentionDays: DEFAULT_RETENTION_DAYS },
+      { retentionDays: DEFAULT_RETENTION_DAYS, batchSize: BATCH_SIZE, maxBatches: MAX_BATCHES },
       {
         // Daily at a registry-allocated slot. NOT `every: 24h` — BullMQ anchors
         // `every` to the Unix epoch, so every 24h job fires at 00:00:00.000 UTC
@@ -124,3 +134,10 @@ export async function shutdownAgentLogRetention(): Promise<void> {
     retentionQueue = null;
   }
 }
+
+export const __testOnly = {
+  QUEUE_NAME,
+  DEFAULT_RETENTION_DAYS,
+  BATCH_SIZE,
+  MAX_BATCHES,
+};

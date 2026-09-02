@@ -1121,6 +1121,8 @@ async function recordDeviceExecution(
       patchId?: string;
       externalId?: string;
       success?: boolean;
+      /** Agent's per-patch outcome: 'installed' | 'failed' | 'rolled_back'. */
+      status?: string;
       error?: string;
       rebootRequired?: boolean;
     }>;
@@ -1129,11 +1131,26 @@ async function recordDeviceExecution(
     failedCount?: number;
   } | null = null;
 
+  // A well-formed agent ALWAYS emits the install summary as JSON
+  // (`executePatchInstallCommand` marshals it on both the success and the
+  // failure return), so unparsable stdout is an anomaly, not a shrug. It also
+  // became load-bearing with #4228: the reboot decision is now read out of this
+  // payload, so a parse failure is the one way a genuine partial success can
+  // still look like "nothing installed". It must leave a trail.
+  let resultUnparsable = false;
   if (commandResult?.stdout) {
     try {
       parsedResult = JSON.parse(commandResult.stdout);
-    } catch {
-      // Non-JSON stdout
+    } catch (err) {
+      resultUnparsable = true;
+      console.warn(
+        `[PatchJobExecutor] unparsable patch result stdout for job ${patchJobId} device ${deviceId}: ${String(err)}`
+      );
+      captureException(
+        new Error(
+          `[PatchJobExecutor] unparsable patch install result for job ${patchJobId} device ${deviceId}`
+        )
+      );
     }
   }
 
@@ -1141,8 +1158,31 @@ async function recordDeviceExecution(
     (parsedResult?.success ?? true) &&
     (typeof commandResult?.exitCode !== 'number' || commandResult.exitCode === 0);
 
+  // Did the run actually change anything on the device? Deliberately NOT
+  // `overallSuccess`: the agent returns Status "failed" / exit 1 the moment ONE
+  // patch in the batch fails, while the other twelve are installed and pending a
+  // reboot (#4228). `installedCount` is the agent's own count of successful
+  // installs/rollbacks; the per-patch array is the fallback for a payload that
+  // omits it. A total failure, or a command that never came back, leaves both
+  // empty.
+  const installedCount = parsedResult?.installedCount;
+  const anyPatchInstalled =
+    (typeof installedCount === 'number' && installedCount > 0) ||
+    (parsedResult?.results?.some(
+      (r) => r.success === true || r.status === 'installed' || r.status === 'rolled_back',
+    ) ?? false);
+
+  // The agent ORs `rebootRequired` across every SUCCESSFUL install, so a partial
+  // failure still carries an accurate value — use it verbatim, including a
+  // reported `false`.
+  //
+  // The fallback only covers a result we could not parse at all (non-JSON
+  // stdout, or no stdout). Reading the static `requiresReboot` flags off the
+  // approved set assumes every one of them installed, which is only sound for a
+  // success-shaped run: on a failed or timed-out command we have no idea which
+  // patches landed, so those flags must not manufacture a reboot.
   const anyRebootRequired = parsedResult?.rebootRequired ??
-    approvedPatches.some((p) => p.requiresReboot);
+    (overallSuccess ? approvedPatches.some((p) => p.requiresReboot) : false);
 
   // 6. Insert patchJobResults per patch
   for (const patch of approvedPatches) {
@@ -1171,16 +1211,51 @@ async function recordDeviceExecution(
   }
 
   // 7. Evaluate reboot policy
+  //
+  // This used to sit inside `if (overallSuccess)`. A 13-patch job with a single
+  // failed patch reports `success: false` / exit 1 from the agent, so the policy
+  // was never consulted at all and the reboot the other twelve installs needed
+  // was dropped — silently, with not one log line to explain the
+  // `Reboot Required: Yes` the UI kept showing (#4228). Whether a reboot is
+  // needed is a property of what actually installed, not of the job's aggregate
+  // status, so the policy is now evaluated whenever at least one patch landed.
+  //
+  // A run that installed NOTHING still skips: there is nothing to finalize, and
+  // an `always` policy would otherwise reboot a device the job never changed.
+  //
+  // Every branch below logs. The pre-#4228 silence is what made this bug
+  // invisible in production, so "no reboot" must be as traceable as a dispatch.
   const rebootPolicy = targets?.deployment?.rebootPolicy ?? 'if_required';
-  if (overallSuccess) {
+  const rebootLog = `[PatchJobExecutor] job ${patchJobId} device ${deviceId} reboot policy "${rebootPolicy}"`;
+
+  if (!overallSuccess && !anyPatchInstalled) {
+    // Say which of the two it is. "No patch installed" is a fact when the agent
+    // told us so; when its output was unparsable it is an assumption, and an
+    // operator chasing a device that did not reboot needs to tell them apart.
+    console.log(
+      `${rebootLog}: not evaluated — ${resultUnparsable
+        ? 'result unparsable, cannot confirm any install (see prior warning)'
+        : 'no patch installed successfully'} (rebootRequired=${anyRebootRequired})`
+    );
+  } else {
     const rebootEval = await evaluateRebootPolicy(deviceId, rebootPolicy, anyRebootRequired);
-    if (rebootEval.shouldReboot) {
+    if (!rebootEval.shouldReboot) {
+      console.log(
+        `${rebootLog}: no reboot — ${rebootEval.reason}${rebootEval.deferred ? ' (deferred)' : ''}`
+      );
+    } else {
       // No delay passed: executeReboot resolves it from the device's effective
       // patch policy (#3197). It used to default to 5 minutes, which reached
       // none of the agent's warning thresholds, so the user got no notice.
       const rebootResult = await executeReboot(deviceId, rebootEval.reason, {
         expectedOrgId: orgId,
       });
+      // A partially failed job that still reboots is the #4228 path — name it in
+      // the log so an operator reading "the job failed but the box rebooted" can
+      // tell intent from accident.
+      const partialSuffix = overallSuccess
+        ? ''
+        : ' (job partially failed; successfully installed patches still require a reboot)';
       if (!rebootResult.success) {
         // captureException, not just a console line: this is the post-patch
         // reboot — the path #3197 is about — and a failure here leaves the device
@@ -1197,7 +1272,7 @@ async function recordDeviceExecution(
         );
       } else {
         console.log(
-          `[PatchJobExecutor] scheduled reboot for device ${deviceId} in ${rebootResult.delayMinutes}m`
+          `${rebootLog}: scheduled reboot in ${rebootResult.delayMinutes}m — ${rebootEval.reason}${partialSuffix}`
         );
       }
     }

@@ -198,6 +198,17 @@ vi.mock('./helpers', () => ({
   ensureOrgAccess: vi.fn(() => true),
   getAlertWithOrgCheck: vi.fn(),
 }));
+// Phase 2 wave P2-1 (alert verdicts), Task 14 — `alerts.ts` now imports
+// `latestVerdictsForAlerts`/`projectAlertAiVerdictSummary`. Unmocked, the
+// real module drags in `createActionIntent` (services/actionIntents/
+// intentService.ts) and its own transitive graph (aiTools/aiToolSchemas,
+// commandQueue, …), which this file's other partial mocks were never built
+// to cover. Mocked here purely to sever that transitive chain — this suite
+// doesn't exercise aiVerdict at all.
+vi.mock('../../services/aiAgents/alertVerdicts', () => ({
+  latestVerdictsForAlerts: vi.fn(async () => new Map()),
+  projectAlertAiVerdictSummary: vi.fn(),
+}));
 
 import { alertsRoutes, attachAlertCorrelationSummaries } from './alerts';
 import { getAlertWithOrgCheck } from './helpers';
@@ -708,12 +719,17 @@ describe('alert dismiss', () => {
     expect(row.dismissedBy).toBe('u-1');
   });
 
-  it('400 when the alert is already dismissed', async () => {
+  it('409 when the alert is already dismissed', async () => {
     (getAlertWithOrgCheck as ReturnType<typeof vi.fn>).mockResolvedValue(
       state.alerts.find((a) => a.id === ALERT_DISMISSED)
     );
     const res = await makeApp().request(`/alerts/${ALERT_DISMISSED}/dismiss`, { method: 'POST' });
-    expect(res.status).toBe(400);
+    // 409, not the 400 this returned before #4293. Once the UPDATE became a
+    // compare-and-swap that answers 409 when it loses, keeping this branch at 400
+    // would have made the response code depend purely on whether the other dismissal
+    // landed before or after this request's pre-read — the split #4099 and #4288
+    // removed from resolve and acknowledge respectively.
+    expect(res.status).toBe(409);
     expect(await res.json()).toEqual({ error: 'Alert is already dismissed' });
   });
 

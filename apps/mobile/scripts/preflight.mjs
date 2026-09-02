@@ -9,13 +9,15 @@
  * while the breeze-mobile Sentry project recorded zero events, because nobody
  * ever ran it. A check that a human has to remember is not a check.
  *
- * The DSN is therefore now enforced where it CANNOT be skipped:
- * `app.config.js` → `src/config/sentryDsn.js`, evaluated by an expo-constants
- * Xcode build phase on every single build. The DSN check below is kept as a
- * fast local echo of that failure, but it is no longer what protects a release.
+ * The DSN and the API URL are therefore now enforced where they CANNOT be
+ * skipped: `app.config.js` → `src/config/sentryDsn.js` and
+ * `src/config/apiUrl.js`, evaluated by an expo-constants Xcode build phase on
+ * every single build. Those two checks below are kept as a fast local echo of
+ * the same failure, and the API URL one calls the very same rule function so
+ * the two can never disagree — but neither is what protects a release any more.
  *
- * What this script is still uniquely worth running for is the OTHER two checks
- * — the API URL and the auth token — which have no equivalent build-time guard.
+ * What this script is still uniquely worth running for is the auth token, which
+ * has no equivalent build-time guard.
  *
  * Everything this guards is a SILENT failure: the app boots fine, passes review,
  * and only misbehaves in ways nobody can see from a TestFlight install.
@@ -24,6 +26,7 @@
  *     `captureMessage` calls for otherwise-invisible failures go nowhere.
  *     (Now also caught at build time; see above.)
  *   - localhost API  → every request fails on a real device.
+ *     (Now also caught at build time; see above.)
  *
  * The Sentry auth token is the exception: a missing one is NOT silent, it fails
  * the Xcode Archive from inside a build phase. It is checked here anyway so the
@@ -39,6 +42,14 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+// The build gate's own rules, so this script and the thing that actually fails
+// the build can never drift apart. CommonJS on the other side; Node resolves
+// the named export through cjs-module-lexer.
+import {
+  ALLOW_PRIVATE_API_URL_VAR,
+  describeApiUrlProblem,
+} from '../src/config/apiUrl.js';
 
 const isDev = process.argv.includes('--dev') || process.env.BREEZE_MOBILE_DEV === '1';
 
@@ -87,12 +98,10 @@ const checks = [
   {
     name: 'EXPO_PUBLIC_API_URL',
     value: env('EXPO_PUBLIC_API_URL'),
-    problem: (v) => {
-      if (!v) return 'not set — the app falls back to http://localhost:3001 until a server is picked';
-      if (/localhost|127\.0\.0\.1/.test(v)) return `points at ${v}, which no device can reach`;
-      if (v.startsWith('http://')) return `uses plaintext http (${v}); iOS ATS will block it`;
-      return null;
-    },
+    problem: (v) =>
+      describeApiUrlProblem(v, {
+        allowPrivate: env(ALLOW_PRIVATE_API_URL_VAR) === '1',
+      }),
   },
   {
     name: 'SENTRY_AUTH_TOKEN',

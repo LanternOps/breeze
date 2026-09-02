@@ -1,5 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+const { mockSchedulePeripheralPolicyDevice } = vi.hoisted(() => ({
+  mockSchedulePeripheralPolicyDevice: vi.fn().mockResolvedValue('job-id'),
+}));
+
+vi.mock('../jobs/peripheralJobs', () => ({
+  schedulePeripheralPolicyDevice: mockSchedulePeripheralPolicyDevice,
+}));
+
 // Mock all DB and service dependencies so we can test registration without a database
 vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn) => fn()),
@@ -275,6 +283,61 @@ describe('registerFleetTools', () => {
       // Should be valid JSON
       expect(() => JSON.parse(result)).not.toThrow();
     }
+  });
+});
+
+describe('manage_groups peripheral reconciliation', () => {
+  const toolMap = new Map<string, AiTool>();
+  registerFleetTools(toolMap);
+  const tool = toolMap.get('manage_groups')!;
+  const auth = {
+    user: { id: 'u1', email: 'test@test.com', name: 'Test' },
+    orgId: 'org-1',
+    partnerId: null,
+    scope: 'organization',
+    accessibleOrgIds: ['org-1'],
+    canAccessOrg: (id: string) => id === 'org-1',
+    orgCondition: () => undefined,
+  } as any;
+
+  it('schedules exactly the memberships inserted by the direct AI path', async () => {
+    let selectCall = 0;
+    vi.mocked(db.select).mockImplementation(() => {
+      selectCall += 1;
+      const rows = selectCall === 1
+        ? [{ id: 'group-1', orgId: 'org-1', siteId: null, name: 'Servers' }]
+        : [{ id: 'device-1', siteId: 'site-1' }, { id: 'device-2', siteId: 'site-1' }];
+      return {
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue(rows),
+            then: (resolve: (value: unknown[]) => unknown) => Promise.resolve(rows).then(resolve),
+          }),
+        }),
+      } as any;
+    });
+    vi.mocked(db.insert).mockReturnValue({
+      values: vi.fn().mockReturnValue({
+        onConflictDoNothing: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([
+            { deviceId: 'device-1' },
+            { deviceId: 'device-2' },
+          ]),
+        }),
+      }),
+    } as any);
+
+    const result = JSON.parse(await tool.handler({
+      action: 'add_devices',
+      groupId: 'group-1',
+      deviceIds: ['device-1', 'device-2'],
+    }, auth));
+
+    expect(result.success).toBe(true);
+    expect(mockSchedulePeripheralPolicyDevice.mock.calls).toEqual([
+      ['device-1', 'ai_group_membership_changed'],
+      ['device-2', 'ai_group_membership_changed'],
+    ]);
   });
 });
 

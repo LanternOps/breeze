@@ -17,6 +17,7 @@
     "test:override-floors": "node --test scripts/security/check-override-floors.test.mjs",
     "check:override-floors": "node scripts/security/check-override-floors.mjs",
     "test:release-trust-allowlist": "node --test scripts/security/check-release-trust-allowlist.test.mjs",
+    "test:release-lineage": "node --test scripts/release/check-release-lineage.test.mjs scripts/check-migration-immutability.test.mjs",
     "check:release-trust-allowlist": "node scripts/security/check-release-trust-allowlist.mjs",
     "check:agent-mtls-edge-policy": "bash scripts/check-agent-mtls-edge-policy.sh",
     "check:agent-binary-signatures": "bash scripts/security/check-agent-binary-signatures.sh --source",
@@ -33,7 +34,7 @@
   },
   "devDependencies": {
     "@typescript-eslint/parser": "^8.65.0",
-    "eslint": "^10.9.0",
+    "eslint": "^10.9.1",
     "tsx": "^4.23.12",
     "turbo": "^2.10.5",
     "typescript": "^5.7.2"
@@ -101,7 +102,11 @@
       "@grpc/grpc-js@<1.14.4": ">=1.14.4",
       "js-yaml@>=4.0.0 <4.3.1": ">=4.3.1 <5.0.0",
       "nanoid@<3.3.18": ">=3.3.18 <4.0.0",
-    "deepmerge-ts@<8.0.0": ">=8.0.1 <9.0.0"
-    }
+      "deepmerge-ts@<8.0.0": ">=8.0.1 <9.0.0"
+    },
+    "patchedDependencies": {
+      "postgres@3.4.9": "patches/postgres@3.4.9.patch"
+    },
+    "allowUnusedPatches": true
   }
 }

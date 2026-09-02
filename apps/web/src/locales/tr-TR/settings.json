@@ -159,7 +159,22 @@
     "disconnectFailed": "Anthropic anahtarının bağlantısı kesilemedi.",
     "permissionDenied": "Yapay zeka sağlayıcısını yönetmek için faturalama izinleri ve tüm kuruluşlara erişim gerekir.",
     "loadFailed": "Yapay zeka sağlayıcısı yapılandırması yüklenemedi.",
-    "workspaceDisclosure": "Workspace içerik zenginleştirme şu anda platform anahtarını kullanıyor."
+    "workspaceDisclosure": "Workspace içerik zenginleştirme, yapılandırdığınız AI sağlayıcısını kullanır ve AI kullanımınızda görünür.",
+    "endpointCardTitle": "Uç Nokta",
+    "endpointCardSubtitle": "Yapay zeka trafiğinizin nereye gönderileceğini seçin. Breeze her seçeneği burada görünmeden önce denetler.",
+    "directOptionLabel": "Anthropic (doğrudan)",
+    "verifiedModelsLabel": "Doğrulanmış modeller: {{models}}",
+    "noVerifiedModels": "Henüz doğrulanmış model yok",
+    "viewDataNote": "Veri işleme notunu görüntüle",
+    "hideDataNote": "Veri işleme notunu gizle",
+    "confirmDialogTitle": "{{name}} olarak değiştirilsin mi?",
+    "confirmDialogMessageWithNote": "Yapay zeka trafiğiniz {{name}} üzerinden geçmeden önce verilerinizin nasıl işlendiğini gözden geçirin:",
+    "confirmDialogMessageNoNote": "Yapay zeka trafiğiniz {{name}} olarak değiştirilsin mi?",
+    "consentCheckboxLabel": "Yapay zeka trafiğimin ve içeriğimin {{name}} tarafından işleneceğini anlıyorum",
+    "endpointUpdated": "Yapay zeka uç noktası güncellendi.",
+    "endpointUpdateFailed": "Yapay zeka uç noktası güncellenemedi.",
+    "endpointDelistedBanner": "Bu uç nokta Breeze tarafından listeden kaldırıldı — başka birini seçene kadar yapay zeka duraklatıldı",
+    "endpointModelUnverifiedBanner": "{{model}} modeli bu uç noktada doğrulanmadı. Yapay zekayı sürdürmek için farklı bir model veya uç nokta seçin."
   },
   "partnerDefaults": {
     "notSet": "Ayarlanmadı — kuruluşlar ayrı ayrı yapılandırılır",
@@ -604,7 +619,7 @@
     "retrySites": "Tekrar dene",
     "createASite": "Bir site oluşturun",
     "maxUsage": "Maksimum Kullanım (isteğe bağlı)",
-    "unlimited": "Sınırsız",
+    "defaultDeviceLimit": "50 (varsayılan)",
     "maxUsageHelp": "Bu anahtarla kaydolabilecek maksimum temsilci sayısı.",
     "expiresAt": "Sona Erme Tarihi (isteğe bağlı)",
     "creating": "Oluşturuluyor...",
@@ -1305,9 +1320,74 @@
     "tier2ToolsAutoExecuteWithAuditLoggingTier3ToolsStillRequ": "Tier 2 araçları, denetim günlüğüyle otomatik olarak yürütülür. 3. Katman araçlarının hâlâ onaylanması gerekiyor.",
     "likeActionPlanPlusLiveScreenshotsBetweenStepsAndAPersist": "Eylem Planını beğenin, artı adımlar arasında canlı ekran görüntüleri ve kalıcı Durdur düğmesi.",
     "untitled": "Başlıksız",
-    "billedToPartnerKey": "Anahtarınıza faturalandırılır — yapay zeka kullanımı Breeze yapay zeka kredilerine değil, kendi Anthropic hesabınıza yansır"
+    "billedToPartnerKey": "Anahtarınıza faturalandırılır — yapay zeka kullanımı Breeze yapay zeka kredilerine değil, kendi Anthropic hesabınıza yansır",
+    "billedToPartnerKeyViaEndpoint": "{{name}} üzerinden anahtarınıza faturalandırılır — yapay zeka kullanımı Breeze yapay zeka kredilerine değil, kendi Anthropic hesabınıza yansır"
   },
   "aiAgentsPage": {
+    "schedules": {
+      "title": "Zamanlanmış taramalar",
+      "description": "Bu aracının filo taramasını çalıştıran cron zamanlamaları. Temel çizgiyi iş ortakları belirler; kuruluşlar yalnızca daraltabilir.",
+      "partnerOnly": "Tarama zamanlamaları yalnızca iş ortağı genelindeki bir aracıya eklenebilir.",
+      "loading": "Zamanlamalar yükleniyor…",
+      "loadFailed": "Tarama zamanlamaları yüklenemedi.",
+      "empty": "Henüz tarama zamanlaması yok.",
+      "add": "Zamanlama ekle",
+      "edit": "Düzenle",
+      "save": "Zamanlamayı kaydet",
+      "cancel": "İptal",
+      "delete": "Zamanlamayı sil",
+      "deleteOverride": "Geçersiz kılmayı kaldır",
+      "confirmDelete": "Silmeyi onayla",
+      "cron": "Cron ifadesi",
+      "cronHint": "Beş alan: dakika saat ayın-günü ay haftanın-günü. Örneğin 0 3 * * * her gün 03:00'te çalışır.",
+      "cronInvalid": "Kaydetmeden önce geçerli, beş alanlı bir cron ifadesi girin.",
+      "timezone": "Saat dilimi",
+      "kinds": {
+        "sweep": "Tarama",
+        "narrative": "Haftalık rapor"
+      },
+      "kindsLabel": "Çalıştırılacak denetimler",
+      "kind": "Zamanlama türü",
+      "weeklyOnlyHint": "Haftalık rapor haftada tam olarak bir kez çalışır: sabit dakika ve saat, ayın-günü ve ay için * ve 0-6 arasında tek bir haftanın günü. Örneğin 0 7 * * 1 her pazartesi 07:00'de çalışır.",
+      "kindsRequired": "En az bir denetim seçin.",
+      "enabled": "Etkin",
+      "override": "Bu kuruluş için geçersiz kıl",
+      "editOverride": "Bu kuruluşun geçersiz kılmasını düzenle",
+      "overrideHint": "Bu kuruluşun, iş ortağı temel çizgisini geçersiz kılması. Her zaman temel çizginin sıklığıyla çalışır.",
+      "overrideSummary": "Bu kuruluş: {{state}} · {{kinds}}",
+      "overrideSummaryNarrative": "Bu kuruluş: {{state}}",
+      "tightenOnly": "Geçersiz kılma temel çizgiyi yalnızca daraltabilir: taramayı kapatabilir veya denetim çıkarabilir, asla ekleyemez.",
+      "noKinds": "Denetim yok",
+      "lastRun": "Son çalışma {{at}} · {{total}} kuruluştan {{admitted}} tanesi tarandı, {{skipped}} atlandı.",
+      "kindLabels": {
+        "disk_pressure": "Disk baskısı",
+        "stale_agents": "Eskimiş aracılar",
+        "pending_reboots": "Bekleyen yeniden başlatmalar",
+        "failed_backups": "Başarısız yedeklemeler",
+        "service_down": "Durdurulmuş hizmet",
+        "unpatched_critical": "Yamalanmamış kritik güvenlik açıkları"
+      },
+      "toasts": {
+        "saved": "Zamanlama kaydedildi",
+        "saveFailed": "Zamanlama kaydedilemedi.",
+        "deleted": "Zamanlama silindi",
+        "deleteFailed": "Zamanlama silinemedi."
+      },
+      "errors": {
+        "invalidCron": "Bu cron ifadesi geçerli değil. Beş alan kullanın, örneğin 0 3 * * *.",
+        "invalidTimezone": "Bu geçerli bir IANA saat dilimi değil.",
+        "kindsNotSubset": "Geçersiz kılma temel çizgiyi yalnızca daraltabilir. İş ortağı temel çizgisinin çalıştırmadığı denetimleri kaldırın.",
+        "overrideExists": "Bu kuruluş o temel çizgiyi zaten geçersiz kılıyor. Mevcut olanı düzenleyin.",
+        "baselineWrongPartner": "O temel çizgi başka bir iş ortağına ait.",
+        "baselineIsOverride": "O zamanlama zaten bir geçersiz kılma. Geçersiz kılmalar zincirlenemez.",
+        "baselineNotPartnerRow": "O temel çizginin sahibi yok ve geçersiz kılınamaz.",
+        "baselineAgentMismatch": "O temel çizgi başka bir aracıya ait.",
+        "agentNotPartnerWide": "Tarama zamanlamaları iş ortağı genelinde bir aracı gerektirir.",
+        "agentKindNotTriage": "Yalnızca bir triyaj aracısı zamanlanabilir.",
+        "kindsNotEmpty": "Haftalık rapor zamanlaması denetim çalıştırmaz. Kaydetmeden önce seçili denetimleri kaldırın.",
+        "invalidCronForKind": "Haftalık rapor haftada tam olarak bir kez çalışmalıdır. Sabit dakika ve saat, ayın-günü ve ay için * ve tek bir haftanın günü kullanın."
+      }
+    },
     "title": "Yapay Zeka Aracıları",
     "description": "Bir politikaya sahip, adlandırılmış yapay zeka çalışanları. Temel çizgiyi iş ortakları belirler; kuruluşlar yalnızca daraltabilir.",
     "empty": "Henüz aracı yok.",
@@ -1318,7 +1398,12 @@
     "errors": {
       "load": "Aracılar yüklenemedi.",
       "kindExists": "Bu sahip için bu türde bir aracı zaten var. Var olanı düzenleyin veya önce devre dışı bırakın.",
-      "modeNotSupported": "Bu mod henüz kullanılamıyor. Aracılar şimdilik inceleyip önerebilir, ancak uygulayamaz."
+      "modeNotSupported": "Bu mod henüz kullanılamıyor. Aracılar şimdilik inceleyip önerebilir, ancak uygulayamaz.",
+      "actPrerequisitesNotMet": "Bu aracı uygula modu için henüz hazır değil.",
+      "actMissingRecipient": "Uygula modunu etkinleştirmeden önce en az bir bildirim alıcısı ekleyin.",
+      "actMissingTool": "Uygula modunu etkinleştirmeden önce en az bir uygulanabilir aracı izin verin veya bir betiği yetkilendirin.",
+      "invalidSupervisedActionKeys": "Seçilen işlemlerden biri veya birkaçı politika tarafından yetkilendirilemez.",
+      "supervisedKeyRejected": "{{key}}: {{reason}}"
     },
     "actions": {
       "add": "Yeni aracı",
@@ -1351,6 +1436,7 @@
     "sections": {
       "scope": "Ne zaman çalışır",
       "permissions": "İzinler",
+      "policyDecide": "Gözetimsiz politika yetkilendirmesi",
       "limits": "Sınırlar",
       "notifications": "Bildirimler",
       "instructions": "Yönergeler"
@@ -1363,7 +1449,16 @@
     "modes": {
       "off": "Kapalı",
       "shadow": "Gölge — yalnızca inceler ve önerir",
-      "act": "Uygula — sonraki bir sürümde kullanılabilir"
+      "act": "Uygula — eşleşen işlemleri doğrulamayla, insan gözetimi olmadan yürütür"
+    },
+    "actWarning": {
+      "title": "Uygula modu, bir kişi onaylamadan yürütülür",
+      "unattended": "Yeniden doğrulandıktan sonra eşleşen, kurala eşdeğer işlemler insan gözetimi olmadan çalışır — hiç kimse anında onay vermez.",
+      "verification": "Temiz bir yürütmeden sonra bile doğrulama başarısız olabilir. Her çalıştırmadan sonra bildirimleri kontrol edin.",
+      "noRollback": "Otomatik geri alma yoktur. Bir şeyin geri alınması gerekiyorsa bunu bir kişi yapar.",
+      "singleDevice": "Her çalıştırma yalnızca bir cihaz üzerinde işlem yapar.",
+      "actionCap": "Bir çalıştırma, yapılandırılmış işlem sınırına ulaştığında işlem yapmayı durdurur.",
+      "ack": "Uygula modunun insan gözetimi olmadan yürütüldüğünü, doğrulamanın başarısız olabileceğini ve geri alma olmadığını anlıyorum."
     },
     "severities": {
       "critical": "Kritik",
@@ -1395,9 +1490,220 @@
       "recipientRolesEmpty": "Kullanılabilir rol yok.",
       "instructionsHint": "Yalnızca yönlendirme — üslup, önce neyin denetleneceği, kurum içi teamüller. Asla izin vermez.",
       "charactersLeft": "{{count}} karakter kaldı",
-      "recipientRolesFailed": "Roller yüklenemedi, bu nedenle bildirim alıcıları şu anda değiştirilemiyor."
+      "recipientRolesFailed": "Roller yüklenemedi, bu nedenle bildirim alıcıları şu anda değiştirilemiyor.",
+      "supervisedActionKeysHint": "Eşleşen bir politika varsa ve kuruluşun maruziyet sınırında yer varsa, bu aracının bir insan onaylamadan gerçekleştirebileceği işlemler. Her biri yürütme anında yine de canlı korumalardan, kapatma anahtarından ve kuruluş başına sınırlardan geçer.",
+      "supervisedActionKeysEmpty": "Politikayla karar verilebilecek işlem kayıtlı değil.",
+      "supervisedActionKeysFailed": "Politikayla karar verilebilecek işlem listesi yüklenemedi, bu nedenle gözetimsiz yetkilendirme şu anda değiştirilemiyor.",
+      "ticketAutonomousWrites": "Otonom talep yazmaları",
+      "ticketAutonomousWritesHint": "Yalnızca organizasyon geçersiz kılması — otonom talep yazmaları eylem modunu ve bu organizasyon düzeyindeki katılımı gerektirir"
     },
-    "loading": "Aracılar yükleniyor…"
+    "loading": "Aracılar yükleniyor…",
+    "runs": {
+      "title": "Aracı çalıştırmaları",
+      "description": "Erişebildiğiniz tüm organizasyonlardaki her çalıştırma, en yeniden en eskiye.",
+      "filters": {
+        "agent": "Aracı",
+        "allAgents": "Tüm aracılar",
+        "status": "Durum",
+        "allStatuses": "Tüm durumlar"
+      },
+      "columns": {
+        "agent": "Aracı",
+        "status": "Durum",
+        "trigger": "Tetikleyici",
+        "verdict": "Sonuç",
+        "queued": "Sıraya alındı",
+        "finished": "Tamamlandı",
+        "cost": "Maliyet"
+      },
+      "statuses": {
+        "queued": "Sırada",
+        "running": "Çalışıyor",
+        "awaiting_approval": "Onay bekliyor",
+        "completed": "Tamamlandı",
+        "failed": "Başarısız",
+        "cancelled": "İptal edildi",
+        "expired": "Süresi doldu",
+        "skipped": "Atlandı"
+      },
+      "verdicts": {
+        "remediated": "Giderildi",
+        "needs_attention": "Dikkat gerektiriyor",
+        "partial": "Kısmi",
+        "no_action": "Eylem gerekmiyor",
+        "pending": "Bekliyor"
+      },
+      "triggers": {
+        "alert": "Uyarı",
+        "manual": "Manuel",
+        "schedule": "Zamanlanmış",
+        "ticket": "Talep",
+        "anomaly": "Anormallik"
+      },
+      "profile": {
+        "sweep": "Tarama",
+        "narrative": "Haftalık rapor",
+        "triage": "Talep önceliklendirme"
+      },
+      "sweep": {
+        "title": "Tarama bulguları",
+        "kindsLabel": "Kontroller: {{kinds}}",
+        "empty": "Bildirilen bulgu yok.",
+        "evidenceTruncated": "Kanıtlar kısaltıldı: eşleşen tüm satırlar aracıya gösterilmedi.",
+        "proposalCreated": "Onay istendi",
+        "columns": {
+          "kind": "Kontrol",
+          "severity": "Önem düzeyi",
+          "device": "Cihaz",
+          "title": "Bulgu",
+          "detail": "Ayrıntı",
+          "proposal": "Öneri"
+        },
+        "kinds": {
+          "disk_pressure": "Disk baskısı",
+          "stale_agents": "Sessiz aracılar",
+          "pending_reboots": "Bekleyen yeniden başlatmalar",
+          "failed_backups": "Başarısız yedeklemeler",
+          "service_down": "Servis durdu",
+          "unpatched_critical": "Yamalanmamış kritik açıklar"
+        },
+        "severities": {
+          "critical": "Kritik",
+          "high": "Yüksek",
+          "medium": "Orta",
+          "low": "Düşük",
+          "info": "Bilgi"
+        },
+        "reasons": {
+          "device_not_in_evidence": "Cihaz tarama kanıtlarında yok",
+          "device_not_in_org": "Cihaz bu organizasyona ait değil",
+          "not_allowlisted": "Bu aracı için araç izinli değil",
+          "no_eligible_approvers": "Uygun onaylayıcı yok",
+          "intent_error": "Onay oluşturulamadı",
+          "max_actions_per_run": "Bu çalıştırma için eylem sınırına ulaşıldı"
+        }
+      },
+      "narrative": {
+        "title": "Haftalık anlatı",
+        "period": "{{start}} - {{end}} arasını kapsar",
+        "truncatedNote": "Aracının bağlamı kısaltıldı: bu anlatı haftanın tamamını görmedi.",
+        "openReport": "Raporu aç",
+        "download": "PDF'yi indir",
+        "downloadFailed": "PDF indirilemedi."
+      },
+      "noAgent": "Bilinmeyen aracı",
+      "loading": "Çalıştırmalar yükleniyor…",
+      "empty": "Henüz çalıştırma yok.",
+      "emptyFiltered": "Bu filtrelerle eşleşen çalıştırma yok.",
+      "loadMore": "Daha fazla yükle",
+      "retry": "Yeniden dene",
+      "errors": {
+        "load": "Çalıştırmalar yüklenemedi.",
+        "loadMore": "Daha fazla çalıştırma yüklenemedi."
+      },
+      "detail": {
+        "title": "Çalıştırma ayrıntısı",
+        "back": "Çalıştırmalara dön",
+        "notFound": "Çalıştırma bulunamadı.",
+        "loading": "Çalıştırma yükleniyor…",
+        "errors": {
+          "load": "Bu çalıştırma yüklenemedi.",
+          "notFound": "Çalıştırma bulunamadı."
+        },
+        "labels": {
+          "agent": "Aracı",
+          "device": "Cihaz",
+          "noDevice": "Cihaz yok",
+          "status": "Durum",
+          "verdict": "Sonuç",
+          "cost": "Maliyet",
+          "duration": "Süre",
+          "trigger": "Tetikleyici",
+          "queuedAt": "Sıraya alındı",
+          "startedAt": "Başladı",
+          "finishedAt": "Tamamlandı",
+          "turnCount": "Tur sayısı",
+          "summary": "Özet"
+        },
+        "flags": {
+          "budgetExceeded": "Bütçe aşıldı",
+          "wallClockExceeded": "Süre sınırını aştı",
+          "maxTurnsExceeded": "Tur sınırına ulaştı"
+        },
+        "trace": {
+          "title": "Yürütme izi",
+          "empty": "Kaydedilmiş iz girdisi yok.",
+          "kinds": {
+            "executed": "Yürütüldü",
+            "proposed": "Önerildi",
+            "denied": "Reddedildi"
+          },
+          "result": {
+            "ok": "Tamam",
+            "failed": "Başarısız"
+          },
+          "execution": {
+            "succeeded": "Başarılı",
+            "failed": "Başarısız",
+            "timeout": "Zaman aşımı",
+            "unknown": "Bilinmiyor"
+          },
+          "verification": {
+            "passed": "Doğrulandı",
+            "failed": "Doğrulama başarısız",
+            "inconclusive": "Doğrulama belirsiz",
+            "skipped": "Doğrulama atlandı"
+          },
+          "viewApproval": "Onaylar'da incele"
+        },
+        "ledger": {
+          "title": "Araç yürütmeleri",
+          "empty": "Kaydedilmiş araç yürütmesi yok.",
+          "columns": {
+            "tool": "Araç",
+            "status": "Durum",
+            "duration": "Süre",
+            "started": "Başladı",
+            "error": "Hata"
+          }
+        },
+        "intents": {
+          "title": "Bağlantılı onaylar",
+          "empty": "Bağlantılı onay yok.",
+          "viewAll": "Onaylar'da incele"
+        },
+        "anomalyLink": "Açık cihaz anormallikleri",
+        "budget": {
+          "title": "Maruziyet bütçesi",
+          "caption": "Kaydedilen maruziyet — son {{hours}} saat",
+          "devices": "{{allowance}} cihazdan {{count}}",
+          "decisionsToday": "Bugün {{max}} politika kararından {{count}}",
+          "partialNote": "Gözetimsiz politika yetkilendirmesi devre dışıyken kısmi muhasebeleştirme yapılır — bu, gerçek maruziyeti olduğundan az gösterebilir.",
+          "unavailable": "Bu çalıştırmanın organizasyonu için etkin bir aracı politikası yok.",
+          "loading": "Bütçe yükleniyor…"
+        }
+      },
+      "triage": {
+        "title": "Talep önceliklendirme",
+        "fieldsTitle": "Önerilen alanlar",
+        "fields": {
+          "categoryIdLabel": "Kategori Kimliği",
+          "priority": "Öncelik"
+        },
+        "confidence": "{{value}}% güven",
+        "device": "Eşleşen cihaz: {{value}}",
+        "draftReplyTitle": "Yanıt taslağı",
+        "draftResolutionTitle": "Çözüm notu taslağı",
+        "notesTitle": "Notlar",
+        "intentsTitle": "Önerilen talep değişiklikleri",
+        "intentUnknown": "Durum kullanılamıyor",
+        "draftsWrittenTitle": "Oluşturulan taslaklar",
+        "draftKinds": {
+          "reply": "Yanıt taslağı",
+          "resolutionNote": "Çözüm notu taslağı"
+        }
+      }
+    }
   },
   "apiKeyForm": {
     "devicesRead": "Cihazlar: Okuma",
@@ -1822,7 +2128,12 @@
     "phoneVerifiedLast4": "(telefon doğrulandı: ...{{last4}})",
     "recoveryCodes": "Kurtarma kodları",
     "useTheseCodesToAccessYourAccountIfYouLoseYourAuthenticat": "Kimlik doğrulayıcınızı kaybederseniz hesabınıza erişmek için bu kodları kullanın.",
-    "viewCodes": "Kodları görüntüle",
+    "recoveryCodesAreShownOnceAndCannotBeDisplayedAgain": "Kurtarma kodları yalnızca bir kez gösterilir ve sonradan yeniden görüntülenemez.",
+    "regenerateRecoveryCodes": "Kurtarma kodlarını yeniden oluştur",
+    "existingCodesCannotBeDisplayedAgainRegeneratingIssuesA": "Mevcut kodlar yeniden görüntülenemez. Yeniden oluşturmak yeni bir set üretir ve eskisini anında geçersiz kılar.",
+    "regenerateRecoveryCodesQuestion": "Kurtarma kodları yeniden oluşturulsun mu?",
+    "regeneratingImmediatelyInvalidatesEveryRecoveryCodeYou": "Yeniden oluşturma, yazdırılmış kopyalar dahil kaydettiğiniz tüm kurtarma kodlarını anında geçersiz kılar. Yeni kodlar, oluşturulduktan hemen sonra yalnızca bir kez gösterilir.",
+    "thatCodeWasNotAcceptedYourQRCodeIsStillValidWaitForThe": "Bu kod kabul edilmedi. QR kodunuz hâlâ geçerli; kimlik doğrulayıcınızdaki bir sonraki kodu bekleyip yeniden deneyin.",
     "confirmYourPassword": "Şifrenizi doğrulayın",
     "reEnterYourAccountPasswordToStartSettingUpAnAuthenticato": "Kimlik doğrulama uygulaması kurmaya başlamak için hesap şifrenizi yeniden girin.",
     "setUpAuthenticator": "Kimlik doğrulayıcıyı ayarla",
@@ -1834,7 +2145,8 @@
     "reEnterYourAccountPasswordToConfirmThisChange": "Bu değişikliği onaylamak için hesap şifrenizi yeniden girin.",
     "saveTheseCodesInASafePlaceYouCanUseThemToAccessYourAccou": "Bu kodları güvenli bir yere kaydedin. Kimlik doğrulayıcı cihazınızı kaybederseniz hesabınıza erişmek için bunları kullanabilirsiniz.",
     "copyCodes": "Kodları kopyala",
-    "clickTheButtonBelowToViewOrGenerateNewRecoveryCodes": "Yeni kurtarma kodlarını görüntülemek veya oluşturmak için aşağıdaki düğmeye tıklayın.",
+    "copiedCodes": "Kopyalandı",
+    "copyCodesFailed": "Panoya kopyalanamadı. Yukarıdaki kodları seçip elle kopyalayın.",
     "eachCodeCanOnlyBeUsedOnceGeneratingNewCodesWillInvalidat": "Her kod yalnızca bir kez kullanılabilir. Yeni kodların oluşturulması önceden oluşturulmuş kodları geçersiz kılacaktır.",
     "back": "Geri",
     "smsSentToPhone": "{{last4}} ile biten telefona SMS kodları gönderildi.",
@@ -1858,7 +2170,10 @@
     "disabling": "Devre dışı bırakılıyor...",
     "generating": "Oluşturuluyor...",
     "regenerateCodes": "Kodları yeniden oluştur",
-    "showRecoveryCodes": "Kurtarma kodlarını göster"
+    "verifyYourIdentity": "Kimliğinizi doğrulayın",
+    "thisAccountSignsInThroughAnIdentityProviderAndHasNoPassw": "Bu hesap bir kimlik sağlayıcısı üzerinden oturum açar ve parolası yoktur. Kimlik doğrulayıcı uygulama kurulumuna başlamak için sağlayıcınızda kimliğinizi yeniden doğrulayın.",
+    "verifyWithYourIdentityProvider": "Kimlik sağlayıcınızla doğrulayın",
+    "ssoReauthProofExpired": "Kimlik sağlayıcısı doğrulamanızın süresi doldu. Kimlik doğrulayıcı uygulamanızın kurulumunu tamamlamak için yeniden doğrulayın."
   },
   "pax8CatalogDrawer": {
     "importFromPax8": "Pax8'den içe aktar",
@@ -1945,7 +2260,22 @@
     "failedToEnableMfaHttp": "MFA etkinleştirilemedi (HTTP {{status}})",
     "failedToDisableMfaHttp": "MFA devre dışı bırakılamadı (HTTP {{status}})",
     "failedToStartPasskeyHttp": "Şifre kurulumu başlatılamadı (HTTP {{status}})",
-    "failedToSavePasskeyHttp": "Şifre kaydedilemedi (HTTP {{status}})"
+    "failedToSavePasskeyHttp": "Şifre kaydedilemedi (HTTP {{status}})",
+    "ssoReauthNotFresh": "Kimlik sağlayıcınız oturum açmanızı yeniden doğrulamadı. Tekrar deneyin veya yöneticinizden yeniden kimlik doğrulama istemlerine izin vermesini isteyin.",
+    "ssoReauthIdentityMismatch": "Bu kimlik sağlayıcısı hesabı bu profile bağlı olan hesap değil. Kendi hesabınızla oturum açıp tekrar deneyin.",
+    "ssoReauthSessionInvalid": "Doğrulama sırasında oturumunuz değişti. Yeniden oturum açıp tekrar deneyin.",
+    "ssoReauthPasswordSet": "Bu hesabın artık bir parolası var. Çok faktörlü kimlik doğrulamayı kurmak için onu kullanın.",
+    "ssoReauthUnavailable": "Kimlik sağlayıcısı doğrulaması geçici olarak kullanılamıyor. Lütfen kısa süre sonra tekrar deneyin.",
+    "ssoReauthProviderInactive": "Çoklu oturum açma bu hesap için artık kullanılamıyor. Yöneticinize danışın, sonra tekrar deneyin.",
+    "ssoReauthConfigChanged": "Doğrulama sırasında çoklu oturum açma ayarlarınız değişti. Doğrulamayı yeniden başlatın.",
+    "ssoReauthEmailUnverified": "Kimlik sağlayıcınız e-posta adresinizin doğrulanmadığını bildiriyor. Adresi orada doğrulayıp tekrar deneyin.",
+    "ssoReauthProofExpired": "Kimlik sağlayıcısı doğrulamanızın süresi doldu. Çok faktörlü kimlik doğrulama kurulumunu tamamlamak için yeniden doğrulayın.",
+    "thisAccountSignsInThroughAnIdentityProviderVerifyBeforeAddingAPasskey": "Bu hesap bir kimlik sağlayıcı üzerinden oturum açıyor ve parolası yok. Geçiş anahtarı eklemeden önce sağlayıcınızda yeniden doğrulayın.",
+    "yourIdentityIsVerifiedNameThisPasskeyAndContinue": "Kimliğiniz doğrulandı. Bu geçiş anahtarına bir ad verin ve devam edin.",
+    "verifyWithYourIdentityProvider": "Kimlik sağlayıcınızla doğrulayın",
+    "passkeyIdpVerificationRequired": "Geçiş anahtarı eklemeden önce kimlik sağlayıcınızla doğrulayın.",
+    "ssoReauthFailed": "Kimlik sağlayıcınızla doğrulanamadı. Lütfen tekrar deneyin.",
+    "couldNotStartIdentityProviderVerification": "Kimlik sağlayıcısı doğrulaması başlatılamadı."
   },
   "roleManager": {
     "roles": "Roller",
@@ -2110,6 +2440,8 @@
     "securitySettings": "Güvenlik Ayarları",
     "enforceSSOOnlyLogin": "Yalnızca SSO oturum açmayı zorunlu kıl",
     "usersMustUseSSOToSignInPasswordLoginWillBeDisabled": "Kullanıcılar oturum açmak için SSO'yu kullanmalıdır. Şifreyle oturum açma devre dışı bırakılacaktır.",
+    "trustThisProvidersMFA": "Bu sağlayıcının MFA'sına güven",
+    "trustThisProvidersMFAHelperText": "Kimlik sağlayıcınız çok faktörlü kimlik doğrulamanın kullanıldığını bildirdiğinde (`amr: mfa`), Breeze'de MFA karşılanmış sayılır. IdP'niz, kimlik belirtecinde `amr` talebini içermelidir — çoğu bunun açıkça etkinleştirilmesini gerektirir. Varsayılan olarak kapalıdır.",
     "warningSSOEnforcementEnabled": "Uyarı: SSO uygulaması etkinleştirildi",
     "usersWillNotBeAbleToSignInWithPasswordsMakeSureYourSSOCo": "Kullanıcılar şifrelerle oturum açamayacaktır. Bu seçeneği etkinleştirmeden önce SSO yapılandırmanızın doğru çalıştığından emin olun. Acil durum erişimi için SSO'yu atlayabilecek en az bir yönetici hesabına sahip olmayı düşünün.",
     "testing": "Test ediliyor...",
@@ -2182,7 +2514,21 @@
     "unableToConnectToTheIdentityProvider": "Kimlik sağlayıcıya bağlanılamıyor.",
     "testFailed": "Test başarısız oldu",
     "createProvider": "Sağlayıcı oluştur",
-    "saveChanges": "Değişiklikleri kaydet"
+    "saveChanges": "Değişiklikleri kaydet",
+    "enforceLockoutTitle": "Kullanıcıların erişimi engellenecek",
+    "enforceLockoutSummary": "{{total}} etkin kullanıcıdan {{unlinked}} tanesi SSO bağlantısı yapmadı ve SSO zorunluluğu etkinleştiğinde oturum açamayacak:",
+    "enforceLockoutSelfBadge": "sizin hesabınız",
+    "enforceLockoutHasPasskey": "geçiş anahtarı var",
+    "enforceLockoutTruncated": "…ve gösterilmeyen diğerleri.",
+    "enforceLockoutSelfWarning": "Kendi hesabınız bağlı değil — kendinizi kilitlemiş olursunuz.",
+    "enforceLockoutAcknowledge": "Bu kullanıcıların SSO bağlantısı yapana kadar oturum açamayacağını anlıyorum",
+    "enforceLockoutConfirm": "Zorunluluğu etkinleştir",
+    "enforceLockoutConfirmationNeeded": "SSO zorunluluğunu etkinleştirmek için kilitleme uyarısını onaylayın.",
+    "providerCreated": "Sağlayıcı oluşturuldu",
+    "providerUpdated": "Sağlayıcı güncellendi",
+    "providerDeleted": "Sağlayıcı silindi",
+    "providerEnabled": "Sağlayıcı etkinleştirildi",
+    "providerDisabled": "Sağlayıcı devre dışı bırakıldı"
   },
   "tdSynnexCatalogPanel": {
     "marginUnavailableCostIn": "Maliyet {{currency}} cinsinden — marj kullanılamıyor",
@@ -2473,7 +2819,8 @@
     "export": "Dışa aktar",
     "inboundEmail": "Gelen E-posta",
     "cannedResponses": "Hazır yanıtlar",
-    "checkingAccess": "Erişiminiz kontrol ediliyor..."
+    "checkingAccess": "Erişiminiz kontrol ediliyor...",
+    "timeTracking": "Zaman Takibi"
   },
   "ticketFormsCard": {
     "heading": "Başvuru formları",
@@ -2633,6 +2980,12 @@
     "noOrganization": {
       "title": "Kuruluş Seçilmedi",
       "description": "Ayarları görüntülemek için lütfen başlıktaki değiştiriciden bir kuruluş seçin."
+    },
+    "archived": {
+      "banner": "Bu kuruluş arşivlendi ve salt okunur durumda. Değişiklik yapmak için geri yükleyin.",
+      "bannerWithDate": "Bu kuruluş arşivlendi — silme işlemi {{date}} tarihinde planlandı. Değişiklik yapmak için geri yükleyin.",
+      "restoreLink": "Bu kuruluşu geri yükle",
+      "saveBlocked": "Bu kuruluş arşivlendi ve düzenlenemez. Önce geri yükleyin."
     },
     "actions": {
       "save": "Kaydet",
@@ -2953,7 +3306,10 @@
       "trial": "Deneme",
       "suspended": "Askıya alındı",
       "churned": "Çalkalanmış",
-      "offboarding": "Ayrılma"
+      "offboarding": "Ayrılma",
+      "merging": "Birleştirme",
+      "archived": "Arşivlendi",
+      "purging": "Temizleme"
     },
     "columns": {
       "devices": "Cihazlar"
@@ -3029,7 +3385,7 @@
       "addOrganization": "Organizasyon ekle",
       "tryAgain": "Tekrar deneyin",
       "editOrganization": "Organizasyonu düzenle",
-      "deleteOrganization": "Kuruluşu sil",
+      "archiveOrganization": "Kuruluşu arşivle",
       "deleting": "Siliniyor..."
     },
     "errors": {
@@ -3037,7 +3393,6 @@
       "generic": "Bir hata oluştu",
       "saveOrder": "Organizasyon sırası kaydedilemedi",
       "saveOrganization": "Kuruluş kaydedilemedi",
-      "deleteOrganization": "Kuruluş silinemedi",
       "saveSite": "Site kaydedilemedi ({{status}})",
       "deleteSite": "Site silinemedi"
     },
@@ -3046,7 +3401,10 @@
       "trial": "Deneme",
       "suspended": "Askıya alındı",
       "churned": "Çalkalanmış",
-      "offboarding": "Ayrılma"
+      "offboarding": "Ayrılma",
+      "merging": "Birleştirme",
+      "archived": "Arşivlendi",
+      "purging": "Temizleme"
     },
     "deviceCount": "{{count}} cihazlar",
     "list": {
@@ -3068,11 +3426,6 @@
       "description": "Aşağıdaki ayrıntılarla yeni bir organizasyon oluşturun.",
       "submit": "Organizasyon oluştur"
     },
-    "delete": {
-      "title": "Kuruluşu Sil",
-      "messagePrefix": "Silmek istediğinizden emin misiniz?",
-      "messageSuffix": "Bu işlem geri alınamaz."
-    },
     "siteModal": {
       "editTitle": "Siteyi Düzenle",
       "editDescription": "Aşağıdaki site ayrıntılarını güncelleyin.",
@@ -3089,6 +3442,104 @@
       "title": "Siteyi Sil",
       "messagePrefix": "Silmek istediğinizden emin misiniz?",
       "messageSuffix": "Bu işlem geri alınamaz."
+    },
+    "merge": {
+      "openButton": "Başka bir kuruluşla birleştir",
+      "title": "Kuruluşu birleştir",
+      "description": "{{name}} kuruluşunun verilerini hayatta kalan bir kuruluşa taşıyın. {{name}} bundan sonra kalıcı olarak kapatılır ve geri alınamaz.",
+      "survivorLabel": "Şununla birleştir",
+      "survivorPlaceholder": "Hayatta kalan bir kuruluş seçin...",
+      "noEligibleSurvivors": "Birleştirilebilecek uygun kuruluş yok.",
+      "previewLoading": "Neyin taşınacağı hesaplanıyor...",
+      "totalMovableRows": "{{count}} satır taşınacak",
+      "tablesHeading": "Etkilenen tablolar",
+      "tableRowSummary": "{{table}}: {{loserRows}} satır, {{wouldDrop}} satır bırakılacak",
+      "warningsHeading": "Uyarılar",
+      "tooLarge": "Bu birleştirme, otomatik olarak çalıştırılamayacak kadar çok satır taşır. Manuel bir birleştirme planlamak için destek ekibiyle iletişime geçin.",
+      "confirmLabel": "Onaylamak için \"{{name}}\" yazın",
+      "cancel": "İptal",
+      "confirmButton": "Kuruluşu birleştir",
+      "merging": "Birleştiriliyor...",
+      "progressTitle": "Birleştirme devam ediyor",
+      "progressDescription": "Bu işlem birkaç dakika sürebilir.",
+      "doneTitle": "Birleştirme tamamlandı",
+      "resultSummary": "{{moved}} satır taşındı, {{dropped}} satır bırakıldı",
+      "close": "Kapat",
+      "failedTitle": "Birleştirme başarısız oldu",
+      "retry": "Birleştirmeyi yeniden dene",
+      "retrying": "Yeniden deneniyor...",
+      "errors": {
+        "preview": "Birleştirme önizlemesi başarısız oldu",
+        "merge": "Birleştirme başlatılamadı",
+        "missingResult": "Birleştirme tamamlandı ancak sonuç verisi döndürmedi. Tekrar deneyin.",
+        "mfaRequired": "Kuruluşları birleştirmek çok faktörlü kimlik doğrulama gerektirir. Profil güvenlik ayarlarınızda MFA'yı etkinleştirin ve tekrar deneyin."
+      }
+    },
+    "archive": {
+      "title": "Kuruluşu arşivle",
+      "description": "{{name}} kuruluşunu arşivlemek, hiçbir şeyi silmeden onu etkin listenizden gizler. Daha sonra geri yükleyebilirsiniz.",
+      "consequencesHeading": "Arşivlediğinizde neler olur:",
+      "consequences": {
+        "hidden": "Kuruluş listenizden ve aramadan gizlenir",
+        "readOnly": "Mevcut veriler bozulmadan ve salt okunur olarak kalır",
+        "agentsUninstalled": "Cihazlarındaki ajanlar kaldırılır",
+        "billingStops": "Bu kuruluş için faturalandırma durur",
+        "purgeScheduled": "Önce geri yüklemezseniz saklama süresinden sonra kalıcı olarak silinir",
+        "purgeNever": "Siz silene kadar saklanır — asla otomatik olarak temizlenmez"
+      },
+      "restoreNote": "{{name}} kuruluşunu geri yüklemek bu işlemi geri alır ve kalıcı olarak silinmeden önce her zaman kullanılabilir.",
+      "retentionLabel": "Arşivlenen verileri şu süre boyunca sakla",
+      "retentionOptions": {
+        "days30": "30 gün",
+        "days90": "90 gün (önerilen)",
+        "days365": "365 gün",
+        "never": "Asla — süresiz sakla",
+        "custom": "Özel"
+      },
+      "customDaysLabel": "Gün sayısı (1–3650)",
+      "customError": "1 ile 3650 arasında bir gün sayısı girin.",
+      "cancel": "İptal",
+      "confirmButton": "Kuruluşu arşivle",
+      "archiving": "Arşivleniyor...",
+      "doneOffboardingTitle": "Arşivleme başladı",
+      "doneOffboardingDescription": "{{name}} arşivleniyor — ajanları şu anda kaldırılıyor. Bu işlem birkaç dakika içinde otomatik olarak tamamlanır.",
+      "doneArchivedTitle": "Kuruluş arşivlendi",
+      "doneArchivedDescription": "{{name}} arşivlendi.",
+      "donePurgeScheduled": "{{date}} tarihinde kalıcı olarak silinecek şekilde planlandı.",
+      "donePurgeNever": "Verileri siz silene kadar saklanacak.",
+      "close": "Kapat",
+      "errors": {
+        "archive": "Kuruluş arşivlenemedi",
+        "mfaRequired": "Kuruluşları arşivlemek çok faktörlü kimlik doğrulama gerektirir. Profil güvenlik ayarlarınızda MFA'yı etkinleştirin ve tekrar deneyin."
+      }
+    },
+    "archived": {
+      "sectionTitle": "Arşivlenenler",
+      "loading": "Arşivlenen kuruluşlar yükleniyor...",
+      "empty": "Arşivlenmiş kuruluş yok.",
+      "noMatches": "Aramanızla eşleşen arşivlenmiş kuruluş yok.",
+      "badge": "Arşivlendi",
+      "keptIndefinitely": "Süresiz olarak saklanıyor",
+      "purgeToday": "Bugün kalıcı olarak silinecek",
+      "purgeCountdown_one": "{{count}} gün içinde kalıcı olarak silinecek",
+      "purgeCountdown_other": "{{count}} gün içinde kalıcı olarak silinecek",
+      "truncatedNote": "İlk {{count}} arşivlenmiş kuruluş gösteriliyor. Listeyi daraltmak için arama yapın.",
+      "readOnlyNotice": "Bu kuruluş arşivlendi ve salt okunur durumda. Normal erişimi sürdürmek için geri yükleyin.",
+      "errors": {
+        "fetch": "Arşivlenen kuruluşlar yüklenemedi"
+      }
+    },
+    "restore": {
+      "action": "Geri yükle",
+      "restoring": "Geri yükleniyor...",
+      "success": "{{name}} geri yüklendi — durum: {{status}}.",
+      "recreateRequiredNote": "Tekrar tam olarak kullanılabilir olmadan önce: {{items}}",
+      "suspendedNote": "Arşivlenmeden önce askıya alınmıştı, bu nedenle askıya alınmış olarak geri yüklendi — normal erişimi sürdürmeden önce bunu çözün.",
+      "errors": {
+        "restore": "Kuruluş geri yüklenemedi",
+        "mfaRequired": "Kuruluşları geri yüklemek çok faktörlü kimlik doğrulama gerektirir. Profil güvenlik ayarlarınızda MFA'yı etkinleştirin ve tekrar deneyin.",
+        "purging": "Bu kuruluş zaten kalıcı olarak siliniyor ve artık geri yüklenemez."
+      }
     }
   },
   "siteDetailPage": {
@@ -3516,5 +3967,17 @@
     "confirmBody": "Bu işlem {{name}} kullanıcısının Outlook teknisyen eklentisi oturumunu tüm cihazlarda kapatır. Yeniden oturum açarak tekrar bağlanabilirler.",
     "cancel": "İptal",
     "confirmRevoke": "Bağlamayı iptal et"
+  },
+  "timeTrackingSettingsCard": {
+    "heading": "Önerilen zaman kayıtları",
+    "subheading": "Bir uzak oturum sona erdiğinde, Breeze mobil uygulamasında tek dokunuşluk bir zaman kaydı olarak sunulur. Bu dokunuş olmadan hiçbir şey kaydedilmez. Web zaman çizelgesinde öneri listesi görünmez.",
+    "enabledLabel": "Uzak oturumlardan zaman kayıtları öner",
+    "minSessionLabel": "Minimum oturum süresi (saniye)",
+    "mergeGapLabel": "Birleştirme aralığı (dakika)",
+    "save": "Kaydet",
+    "saved": "Zaman takibi ayarları kaydedildi",
+    "saveFailed": "Zaman takibi ayarları kaydedilemedi",
+    "minSessionRange": "Minimum oturum süresi {{min}} ile {{max}} saniye arasında olmalıdır",
+    "mergeGapRange": "Birleştirme aralığı {{min}} ile {{max}} dakika arasında olmalıdır"
   }
 }

@@ -33,6 +33,7 @@
     "test:rls-coverage": "vitest run --config vitest.config.rls-coverage.ts",
     "test:request-db-role": "vitest run --config vitest.config.request-db-role.ts",
     "test:site-scope-coverage": "vitest run --config vitest.config.site-scope-coverage.ts",
+    "test:tz": "vitest run --config vitest.config.tz.ts",
     "test:run": "vitest run"
   },
   "dependencies": {
@@ -64,7 +65,7 @@
     "fast-xml-parser": "^5.9.3",
     "firebase-admin": "^13.7.0",
     "google-auth-library": "^10.9.1",
-    "hono": "^4.13.3",
+    "hono": "^4.13.5",
     "ioredis": "^5.11.1",
     "jose": "^6.2.3",
     "js-yaml": "^5.2.2",
@@ -92,7 +93,7 @@
   "devDependencies": {
     "@types/archiver": "^7.0.0",
     "@types/js-yaml": "^4.0.9",
-    "@types/node": "^26.2.0",
+    "@types/node": "^26.4.0",
     "@types/nodemailer": "^8.0.1",
     "@types/oidc-provider": "^9.5.0",
     "@types/pdfkit": "^0.17.6",

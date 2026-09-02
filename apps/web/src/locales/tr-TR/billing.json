@@ -702,7 +702,8 @@
         "updateLine": "Hat güncellenemedi.",
         "updateSection": "Bölüm güncellenemedi.",
         "uploadImage": "Resim yüklenemedi.",
-        "noPriceForCurrency": "Bu öğenin {{currency}} fiyatı yok. Katalogda bir fiyat ekleyin veya manuel bir hat girin."
+        "noPriceForCurrency": "Bu öğenin {{currency}} fiyatı yok. Katalogda bir fiyat ekleyin veya manuel bir hat girin.",
+        "sectionAddedListStale": "Bölüm eklendi ancak liste yenilenemedi. Görmek için sayfayı yeniden yükleyin."
       },
       "image": {
         "alt": "Alıntı görseli",

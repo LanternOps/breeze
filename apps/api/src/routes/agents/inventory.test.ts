@@ -20,6 +20,72 @@ vi.mock('../../db/schema', async (importOriginal) => {
   return { ...actual };
 });
 
+describe('agent software inventory observation route', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('passes authenticated device identity and a validated v2 report to the acceptance service', async () => {
+    mockDeviceLookup({ id: 'device-1', orgId: 'org-1', agentVersion: '0.105.1' });
+    vi.mocked(ingestSoftwareInventoryReport).mockResolvedValue({
+      observationId: V2_REPORT.observationId,
+      acceptedForInventory: true,
+      absenceResolutionEligible: true,
+      reasonCode: 'accepted_complete',
+      visibleItemCount: 1,
+    });
+
+    const res = await makeApp().request('/agents/agent-1/software', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(V2_REPORT),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      success: true,
+      observationId: V2_REPORT.observationId,
+      acceptedForInventory: true,
+      absenceResolutionEligible: true,
+      reasonCode: 'accepted_complete',
+      visibleItemCount: 1,
+    });
+    expect(ingestSoftwareInventoryReport).toHaveBeenCalledWith(expect.objectContaining({
+      device: { id: 'device-1', orgId: 'org-1', agentVersion: '0.105.1' },
+      report: V2_REPORT,
+    }));
+  });
+
+  it('returns 400 for malformed source accounting without calling the service', async () => {
+    const res = await makeApp().request('/agents/agent-1/software', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...V2_REPORT, expectedSources: ['a', 'b'], succeededSources: ['a'] }),
+    });
+    expect(res.status).toBe(400);
+    expect(ingestSoftwareInventoryReport).not.toHaveBeenCalled();
+  });
+
+  it('returns 404 and does not retain evidence when authenticated agent identity is unknown', async () => {
+    mockDeviceLookup(null);
+    const res = await makeApp().request('/agents/agent-1/software', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(V2_REPORT),
+    });
+    expect(res.status).toBe(404);
+    expect(ingestSoftwareInventoryReport).not.toHaveBeenCalled();
+  });
+
+  it('maps an observation identity collision to a stable 409', async () => {
+    mockDeviceLookup({ id: 'device-1', orgId: 'org-1', agentVersion: '0.105.1' });
+    vi.mocked(ingestSoftwareInventoryReport).mockRejectedValue(
+      new SoftwareInventoryObservationConflictError(),
+    );
+    const res = await makeApp().request('/agents/agent-1/software', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(V2_REPORT),
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'Software inventory observation conflict' });
+  });
+});
+
 vi.mock('../../services/warrantySync', () => ({
   upsertAgentWarranty: vi.fn(),
 }));
@@ -28,10 +94,32 @@ vi.mock('../../services/warrantyWorker', () => ({
   queueWarrantySyncForDevice: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock('../../services/softwareInventoryObservations', () => ({
+  ingestSoftwareInventoryReport: vi.fn(),
+  SoftwareInventoryObservationConflictError: class SoftwareInventoryObservationConflictError extends Error {},
+}));
+
 import { db } from '../../db';
-import * as schema from '../../db/schema';
 import { queueWarrantySyncForDevice } from '../../services/warrantyWorker';
+import {
+  ingestSoftwareInventoryReport,
+  SoftwareInventoryObservationConflictError,
+} from '../../services/softwareInventoryObservations';
 import { inventoryRoutes } from './inventory';
+
+const V2_REPORT = {
+  schemaVersion: 2,
+  observationId: '11111111-1111-4111-8111-111111111111',
+  collectorVersion: '0.105.1',
+  observedAt: '2026-08-24T12:00:00.000Z',
+  completeness: 'complete',
+  expectedSources: ['windows:registry:hklm64'],
+  succeededSources: ['windows:registry:hklm64'],
+  failedSources: [],
+  truncated: false,
+  itemCount: 1,
+  items: [{ name: 'Breeze Agent', version: '0.105.1' }],
+} as const;
 
 function mockDeviceLookup(device: { id: string; orgId: string; agentVersion?: string | null } | null) {
   vi.mocked(db.select).mockReturnValueOnce({
@@ -184,319 +272,5 @@ describe('agent hardware inventory — warranty sync re-trigger (#1732)', () => 
 
     expect(res.status).toBe(200);
     expect(queueWarrantySyncForDevice).toHaveBeenCalledTimes(1);
-  });
-});
-
-// The software report wipes and reinserts software_inventory rows. Vuln
-// findings reference those rows (FK now ON DELETE SET NULL — BREEZE-3), and
-// the fleet aggregation layer displays a NULL-linked finding as an OS finding,
-// so the route must re-point each finding at the replacement row for the same
-// (name, vendor).
-describe('agent software inventory — vuln finding re-link (BREEZE-3)', () => {
-  type TxUpdateCall = { set?: Record<string, unknown>; where?: unknown };
-
-  function mockSoftwareTx(opts: {
-    linkedFindings: Array<{ findingId: string; name: string; vendor: string | null }>;
-    replacementRows: Array<{ id: string; name: string; vendor: string | null }>;
-  }) {
-    const updateCalls: TxUpdateCall[] = [];
-    const deleteWhere = vi.fn().mockResolvedValue(undefined);
-    const insertValues = vi.fn().mockResolvedValue(undefined);
-    // The linked-findings select must lock its rows in a deterministic order —
-    // that is the BREEZE-3/BREEZE-W deadlock fix. Capture the chain so a
-    // regression that drops `.orderBy(...).for('update')` fails a test instead
-    // of silently reintroducing the lock-order inversion.
-    const linkedFindingsOrderBy = vi.fn();
-    const linkedFindingsFor = vi.fn();
-    const tx = {
-      // Two select shapes: the linked-findings join
-      // (select().from().innerJoin().where().orderBy().for()) and the
-      // post-insert replacement row lookup (select().from().where()).
-      select: vi.fn().mockReturnValue({
-        from: vi.fn().mockReturnValue({
-          innerJoin: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              orderBy: linkedFindingsOrderBy.mockReturnValue({
-                for: linkedFindingsFor.mockResolvedValue(opts.linkedFindings),
-              }),
-            }),
-          }),
-          where: vi.fn().mockResolvedValue(opts.replacementRows),
-        }),
-      }),
-      delete: vi.fn().mockReturnValue({ where: deleteWhere }),
-      insert: vi.fn().mockReturnValue({ values: insertValues }),
-      update: vi.fn(() => {
-        const call: TxUpdateCall = {};
-        updateCalls.push(call);
-        return {
-          set: vi.fn((set: Record<string, unknown>) => {
-            call.set = set;
-            return {
-              where: vi.fn((where: unknown) => {
-                call.where = where;
-                return Promise.resolve(undefined);
-              }),
-            };
-          }),
-        };
-      }),
-    };
-    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(tx));
-    return { tx, updateCalls, deleteWhere, insertValues, linkedFindingsOrderBy, linkedFindingsFor };
-  }
-
-  async function putSoftware(app: Hono, software: Array<Record<string, unknown>>) {
-    return app.request('/agents/agent-1/software', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ software }),
-    });
-  }
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it('locks the findings it will re-link in id order (BREEZE-3 deadlock fix)', async () => {
-    mockDeviceLookup({ id: 'device-1', orgId: 'org-1' });
-    const { linkedFindingsOrderBy, linkedFindingsFor } = mockSoftwareTx({
-      linkedFindings: [{ findingId: 'finding-1', name: 'Google Chrome', vendor: 'Google LLC' }],
-      replacementRows: [{ id: 'new-1', name: 'Google Chrome', vendor: 'Google LLC' }],
-    });
-
-    const res = await putSoftware(makeApp(), [{ name: 'Google Chrome', vendor: 'Google LLC', version: '2.0' }]);
-    expect(res.status).toBe(200);
-
-    // Ordered by device_vulnerabilities.id, and locked. The FK cascade from the
-    // DELETE would otherwise take these row locks in software_inventory order
-    // while refreshRiskScores takes them in id order — opposite directions on
-    // the same rows is the deadlock. Both sides must ascend by id.
-    expect(linkedFindingsOrderBy).toHaveBeenCalledTimes(1);
-    expect(linkedFindingsOrderBy.mock.calls[0]?.[0]).toBe(schema.deviceVulnerabilities.id);
-    expect(linkedFindingsFor).toHaveBeenCalledWith('update', { of: schema.deviceVulnerabilities });
-  });
-
-  it('retries the transaction when it loses a lock race instead of dropping the report', async () => {
-    mockDeviceLookup({ id: 'device-1', orgId: 'org-1' });
-    const { tx } = mockSoftwareTx({
-      linkedFindings: [],
-      replacementRows: [],
-    });
-
-    // First attempt deadlocks the way BREEZE-3 did; the report must still land.
-    // Before the retry this propagated to the global handler as a 500 and the
-    // agent's entire software list was discarded (~4k reports in 6 days).
-    const deadlock = Object.assign(new Error('deadlock detected'), { code: '40P01' });
-    let attempts = 0;
-    vi.mocked(db.transaction).mockImplementation(async (fn: any) => {
-      attempts += 1;
-      if (attempts === 1) throw deadlock;
-      return fn(tx);
-    });
-
-    const res = await putSoftware(makeApp(), [{ name: 'Google Chrome', vendor: 'Google LLC', version: '2.0' }]);
-
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ success: true, count: 1 });
-    expect(attempts).toBe(2);
-  });
-
-  it('gives up after the retry budget and does not mask a non-lock error', async () => {
-    mockDeviceLookup({ id: 'device-1', orgId: 'org-1' });
-    mockSoftwareTx({ linkedFindings: [], replacementRows: [] });
-
-    // A constraint violation is not a lost lock race — it must surface on the
-    // FIRST throw rather than being retried into extra load.
-    const notALockError = Object.assign(new Error('null value violates not-null'), { code: '23502' });
-    let attempts = 0;
-    vi.mocked(db.transaction).mockImplementation(async () => {
-      attempts += 1;
-      throw notALockError;
-    });
-
-    const res = await putSoftware(makeApp(), [{ name: 'Google Chrome', vendor: 'Google LLC', version: '2.0' }]);
-    expect(res.status).toBe(500);
-    expect(attempts).toBe(1);
-  });
-
-  it('re-links findings to the replacement rows matching (name, vendor)', async () => {
-    mockDeviceLookup({ id: 'device-1', orgId: 'org-1' });
-    const { tx, updateCalls } = mockSoftwareTx({
-      linkedFindings: [
-        { findingId: 'finding-1', name: 'Google Chrome', vendor: 'Google LLC' },
-        { findingId: 'finding-2', name: 'Google Chrome', vendor: 'Google LLC' },
-        { findingId: 'finding-3', name: '7-Zip', vendor: null },
-      ],
-      replacementRows: [
-        { id: 'sw-new-1', name: 'Google Chrome', vendor: 'Google LLC' },
-        { id: 'sw-new-2', name: '7-Zip', vendor: null },
-      ],
-    });
-
-    const res = await putSoftware(makeApp(), [
-      { name: 'Google Chrome', version: '127.0', vendor: 'Google LLC' },
-      { name: '7-Zip', version: '24.06' },
-    ]);
-
-    expect(res.status).toBe(200);
-    expect(tx.delete).toHaveBeenCalledTimes(1);
-    expect(tx.insert).toHaveBeenCalledTimes(1);
-    // One UPDATE per replacement row; both Chrome findings batched together.
-    expect(updateCalls).toHaveLength(2);
-    const sets = updateCalls.map((c) => c.set?.softwareInventoryId).sort();
-    expect(sets).toEqual(['sw-new-1', 'sw-new-2']);
-  });
-
-  it('re-links across casing/whitespace changes in name and vendor (correlation-normalized matching)', async () => {
-    mockDeviceLookup({ id: 'device-1', orgId: 'org-1' });
-    const { updateCalls } = mockSoftwareTx({
-      linkedFindings: [
-        { findingId: 'finding-1', name: 'GOOGLE Chrome ', vendor: 'GOOGLE LLC' },
-      ],
-      replacementRows: [
-        { id: 'sw-new-1', name: 'Google Chrome', vendor: ' Google LLC' },
-      ],
-    });
-
-    const res = await putSoftware(makeApp(), [
-      { name: 'Google Chrome', vendor: ' Google LLC' },
-    ]);
-
-    expect(res.status).toBe(200);
-    expect(updateCalls).toHaveLength(1);
-    expect(updateCalls[0]!.set?.softwareInventoryId).toBe('sw-new-1');
-  });
-
-  it('does not match on name alone when the vendor differs', async () => {
-    mockDeviceLookup({ id: 'device-1', orgId: 'org-1' });
-    const { updateCalls } = mockSoftwareTx({
-      linkedFindings: [
-        { findingId: 'finding-1', name: 'Agent', vendor: 'Vendor A' },
-      ],
-      replacementRows: [
-        { id: 'sw-new-1', name: 'Agent', vendor: 'Vendor B' },
-      ],
-    });
-
-    const res = await putSoftware(makeApp(), [{ name: 'Agent', vendor: 'Vendor B' }]);
-
-    expect(res.status).toBe(200);
-    expect(updateCalls).toHaveLength(0);
-  });
-
-  it('leaves findings for uninstalled software unlinked (resolved by next correlation pass)', async () => {
-    mockDeviceLookup({ id: 'device-1', orgId: 'org-1' });
-    const { updateCalls } = mockSoftwareTx({
-      linkedFindings: [
-        { findingId: 'finding-1', name: 'Old App', vendor: 'Gone Inc.' },
-      ],
-      replacementRows: [
-        { id: 'sw-new-1', name: 'Google Chrome', vendor: 'Google LLC' },
-      ],
-    });
-
-    const res = await putSoftware(makeApp(), [
-      { name: 'Google Chrome', vendor: 'Google LLC' },
-    ]);
-
-    expect(res.status).toBe(200);
-    expect(updateCalls).toHaveLength(0);
-  });
-
-  it('skips re-linking entirely when the device has no linked findings', async () => {
-    mockDeviceLookup({ id: 'device-1', orgId: 'org-1' });
-    const { tx, updateCalls } = mockSoftwareTx({
-      linkedFindings: [],
-      replacementRows: [{ id: 'sw-new-1', name: 'Google Chrome', vendor: 'Google LLC' }],
-    });
-
-    const res = await putSoftware(makeApp(), [
-      { name: 'Google Chrome', vendor: 'Google LLC' },
-    ]);
-
-    expect(res.status).toBe(200);
-    expect(tx.insert).toHaveBeenCalledTimes(1);
-    expect(updateCalls).toHaveLength(0);
-  });
-
-  it('handles an empty software list: wipes rows, inserts nothing, re-links nothing', async () => {
-    mockDeviceLookup({ id: 'device-1', orgId: 'org-1' });
-    const { tx, updateCalls } = mockSoftwareTx({
-      linkedFindings: [
-        { findingId: 'finding-1', name: 'Google Chrome', vendor: 'Google LLC' },
-      ],
-      replacementRows: [],
-    });
-
-    const res = await putSoftware(makeApp(), []);
-
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ success: true, count: 0 });
-    expect(tx.delete).toHaveBeenCalledTimes(1);
-    expect(tx.insert).not.toHaveBeenCalled();
-    expect(updateCalls).toHaveLength(0);
-  });
-
-  it('returns 404 without opening a transaction when the device is unknown', async () => {
-    mockDeviceLookup(null);
-
-    const res = await putSoftware(makeApp(), [{ name: 'Google Chrome' }]);
-
-    expect(res.status).toBe(404);
-    expect(db.transaction).not.toHaveBeenCalled();
-  });
-
-  // The agent's own inventory entry is sourced from the MSI's Uninstall
-  // registry key, which a binary self-update never rewrites. Stored verbatim it
-  // freezes at the originally-installed version while devices.agent_version
-  // moves on, and Software Policy evaluation then flags every current device as
-  // running outdated software (#3591).
-  describe('Breeze Agent self-version normalization (#3591)', () => {
-    function insertedRows(insertValues: ReturnType<typeof vi.fn>) {
-      return insertValues.mock.calls[0]?.[0] as Array<{ name: string; version: string | null }>;
-    }
-
-    it('stores the live agent version for the agent entry, not the frozen MSI version', async () => {
-      mockDeviceLookup({ id: 'device-1', orgId: 'org-1', agentVersion: '0.105.1' });
-      const { insertValues } = mockSoftwareTx({ linkedFindings: [], replacementRows: [] });
-
-      const res = await putSoftware(makeApp(), [
-        { name: 'Breeze Agent', version: '0.100.0', vendor: 'LanternOps' },
-        { name: 'Google Chrome', version: '127.0', vendor: 'Google LLC' },
-      ]);
-
-      expect(res.status).toBe(200);
-      const rows = insertedRows(insertValues);
-      expect(rows.find((r) => r.name === 'Breeze Agent')?.version).toBe('0.105.1');
-      // Everything else is stored exactly as reported.
-      expect(rows.find((r) => r.name === 'Google Chrome')?.version).toBe('127.0');
-    });
-
-    it('normalizes the self-hosted edition entry too', async () => {
-      mockDeviceLookup({ id: 'device-1', orgId: 'org-1', agentVersion: '0.105.1' });
-      const { insertValues } = mockSoftwareTx({ linkedFindings: [], replacementRows: [] });
-
-      const res = await putSoftware(makeApp(), [
-        { name: 'Breeze Agent (Self-Hosted)', version: '0.101.0' },
-      ]);
-
-      expect(res.status).toBe(200);
-      expect(insertedRows(insertValues)[0]?.version).toBe('0.105.1');
-    });
-
-    it('keeps the reported version while the device still holds the provisioning sentinel', async () => {
-      // devices.agent_version is NOT NULL; provisioning seeds '0.0.0' until the
-      // first heartbeat lands, and the agent's software report is not ordered
-      // against that heartbeat. Storing the sentinel would sort the agent below
-      // every real version and fail every min-version policy check.
-      mockDeviceLookup({ id: 'device-1', orgId: 'org-1', agentVersion: '0.0.0' });
-      const { insertValues } = mockSoftwareTx({ linkedFindings: [], replacementRows: [] });
-
-      const res = await putSoftware(makeApp(), [{ name: 'Breeze Agent', version: '0.100.0' }]);
-
-      expect(res.status).toBe(200);
-      expect(insertedRows(insertValues)[0]?.version).toBe('0.100.0');
-    });
   });
 });

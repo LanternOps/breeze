@@ -59,19 +59,6 @@ async function loadPlanWithAccess(planId: string, auth: AuthContext) {
   return plan ?? null;
 }
 
-/** Collect the distinct in-plan device IDs across a set of DR plan groups. */
-function collectGroupDeviceIds(groups: Array<{ devices: unknown }>): string[] {
-  const ids = new Set<string>();
-  for (const group of groups) {
-    if (Array.isArray(group.devices)) {
-      for (const deviceId of group.devices) {
-        if (typeof deviceId === 'string') ids.add(deviceId);
-      }
-    }
-  }
-  return [...ids];
-}
-
 // ============================================
 // Register all DR tools into the aiTools Map
 // ============================================
@@ -343,31 +330,12 @@ export function registerDRTools(aiTools: Map<string, AiTool>): void {
         .where(and(...groupConditions))
         .orderBy(asc(drPlanGroups.sequence));
 
-      // Site axis (app-layer only; RLS enforces org, NOT site). This Tier-3 tool
-      // has no deviceArgs — the devices live in the group JSON arrays, so the
-      // central per-device site gate never sees them. A site-restricted caller
-      // may execute a plan only if EVERY device across all its groups is within
-      // their site scope; deny otherwise. The authorized set is then pinned onto
-      // the execution so the (system-context) worker refuses to dispatch to any
-      // out-of-scope device even if the plan's groups are later edited.
-      const planDeviceIds = collectGroupDeviceIds(groups);
-      let authorizedDeviceIds: string[] | null = null;
-      const partition = await resolveSiteDevicePartition(plan.orgId, auth);
-      if (partition) {
-        const allowed = new Set(partition.allowed);
-        const outOfScope = planDeviceIds.filter((id) => !allowed.has(id));
-        if (outOfScope.length > 0) {
-          return JSON.stringify({ error: 'DR plan includes devices outside your site access' });
-        }
-        authorizedDeviceIds = planDeviceIds;
-      }
-
       const execution = await createDrExecutionAndEnqueue({
         planId: plan.id,
         orgId: plan.orgId,
         executionType: executionType as 'rehearsal' | 'failover' | 'failback',
         initiatedBy: auth.user?.id ?? null,
-        authorizedDeviceIds,
+        auth,
       });
       if (!execution) return JSON.stringify({ error: 'Failed to create DR execution record' });
 

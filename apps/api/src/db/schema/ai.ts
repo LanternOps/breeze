@@ -33,6 +33,8 @@ export const aiSessions = pgTable('ai_sessions', {
   title: varchar('title', { length: 255 }),
   model: varchar('model', { length: 100 }).notNull().default('claude-sonnet-4-5-20250929'),
   billingSource: text('billing_source', { enum: ['platform', 'partner_key'] }).notNull().default('platform'),
+  catalogEntryId: uuid('catalog_entry_id'),
+  catalogRevisionId: uuid('catalog_revision_id'),
   systemPrompt: text('system_prompt'),
   contextSnapshot: jsonb('context_snapshot'),
   // TOTAL input across the session — uncached + cache-read + cache-creation.

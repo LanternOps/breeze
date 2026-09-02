@@ -10,6 +10,12 @@
   },
   "requestedBy": "Richiesto da {{client}}",
   "proposedByAgent": "Proposto da {{agent}} (agente IA)",
+  "targetDevice": "Dispositivo di destinazione: {{hostname}}",
+  "batch": {
+    "approveAll": "Approva tutto ({{count}})",
+    "declineAll": "Rifiuta tutto ({{count}})",
+    "groupTitle": "{{count}} richieste simili · {{tool}}"
+  },
   "risk": {
     "low": "Rischio basso",
     "medium": "Rischio medio",
@@ -29,7 +35,11 @@
     "noApproverDevice": "Registra un dispositivo di approvazione nel profilo e riprova.",
     "notSoleApprover": "Un’altra persona autorizzata deve decidere su questa richiesta.",
     "verificationFailed": "La verifica è stata annullata o non è riuscita. Riprova.",
-    "decisionFailed": "Impossibile inviare la decisione. Riprova."
+    "alreadyDecided": "Questa richiesta è già stata decisa.",
+    "expired": "Questa richiesta è scaduta prima che si potesse decidere.",
+    "decisionFailed": "Impossibile inviare la decisione. Riprova.",
+    "batchStepUp": "Questo gruppo richiede un accesso più sicuro. Approva le richieste una alla volta.",
+    "batchNotHomogeneous": "Non è più possibile decidere queste richieste insieme."
   },
   "registerDevice": "Registra dispositivo"
 }

@@ -12,7 +12,9 @@ import { recordActionIntentEvent, recordActionIntentMetric } from '../services/a
 import { createNotification } from '../services/userNotifications';
 import { resolveRecipientUserIds } from '../services/aiAgents/recipients';
 import { transitionIntent } from '../services/actionIntents/intentService';
+import { attemptPolicyDecision, PolicyDecisionTransientError } from '../services/actionIntents/policyDecide';
 import { revalidateApprovedIntentForRelease } from '../services/actionIntents/revalidateRelease';
+import { readAiKillState } from '../services/aiKillState';
 import { computeEffectDigestForRelease, hasPinnedDigest } from '../services/actionIntents/effectDigest';
 import type { ToolExecutionContext } from '../services/toolExecutionContext';
 import { executeTool, requiresLiveSession } from '../services/aiTools';
@@ -55,9 +57,11 @@ import { attachWorkerObservability } from './workerObservability';
  * categorized `error_code` and skips execution entirely. Never a silent
  * no-op, never a downgrade to "execute anyway."
  *
- * Job data: `{ intentId, eventType }`. Only `eventType === 'intent_approved'`
- * is acted on; anything else is acknowledged as a no-op (forward-compat with
- * `intent_created`, which this worker does not consume).
+ * Job data: `{ intentId, eventType }`. `eventType === 'intent_approved'` is
+ * the release trigger; `intent_created` is the wave 5 Part B (#3827)
+ * policy-decide recovery hook (NOT flag-gated at this call site —
+ * `attemptPolicyDecision` itself is the single source of truth for flag-off
+ * inertness, see its own header); anything else is acknowledged as a no-op.
  *
  * CAS-idempotent by construction: the `approved -> executing` transition at
  * step 1 is a single-use release guard (mirrors the PAM `actuating` pattern).
@@ -99,6 +103,35 @@ function normalizeToolResult(raw: string): Record<string, unknown> {
   } catch {
     return { raw };
   }
+}
+
+/**
+ * Wave-5A review fix (#3827): CAS `executing -> approved` (undoing the claim
+ * `releaseApprovedIntent` took at step 1) instead of `failIntent`'s
+ * `executing -> failed`. `agentReleaseAuthority.ts`'s 'kill_switch_engaged'
+ * errorCode is deliberately distinct from 'agent_policy_denied' for exactly
+ * this reason: a kill-derived denial (a real DB kill-switch flip, or the
+ * fail-closed synthetic state a transient DB read failure produces) must
+ * never terminally fail an already-human-approved intent. Leaving the row
+ * `approved` means it stays claimable by the next `intent_approved` job
+ * delivery/retry, and — if nothing ever releases it — is reaped into
+ * `expired` by `jobs/intentExpiryReaper.ts` once its `release_by` lease
+ * passes, same as any other still-`approved` intent. That is a normal,
+ * non-destructive terminal state, unlike `failed`.
+ *
+ * Lost CAS (`won === false`) mirrors `failIntent`'s own race handling: some
+ * other delivery already moved this row (e.g. the stale-executing reaper
+ * already reaped it to `failed:execution_lost`) — nothing further to do.
+ */
+async function pauseIntentForKillSwitch(
+  intent: ActionIntent,
+  details?: Record<string, unknown>,
+): Promise<void> {
+  const won = await transitionIntent(intent.id, 'executing', 'approved');
+  if (!won) return;
+  const message = `[IntentReleaseWorker] intent ${intent.id} release paused — kill switch engaged`;
+  console.warn(message, details);
+  captureException(new Error(message));
 }
 
 /**
@@ -299,6 +332,14 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
   // (DB-only work gets its own short context; the network/tool-execution
   // step below runs in its own, entirely separate, context boundary so a
   // slow external call never pins a pooled connection idle-in-transaction).
+  //
+  // `intentRow` is a bare `select()` — every column rides along, including
+  // Wave 5 Part B's (#3827) `policy_*` provenance columns and `decided_via`.
+  // For a policy-decided intent `approvalRow` comes back null (there is no
+  // `approval_requests` row by construction — see revalidateRelease.ts's
+  // header), which is exactly what `revalidateApprovedIntentForRelease`
+  // reads off `intent` itself to take its policy-evidence branch; no second
+  // query is needed to "load the policy columns" separately.
   const { intent, winningApproval } = await withSystemDbAccessContext(async () => {
     const [intentRow] = await db
       .select()
@@ -336,6 +377,16 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
   // calling executeTool. The rebuilt `auth` is what this worker executes under.
   const revalidation = await revalidateApprovedIntentForRelease(intent, winningApproval);
   if (!revalidation.ok) {
+    // Wave-5A review fix (#3827): a kill-derived denial PAUSES, never
+    // terminally fails, an already-human-approved intent — see
+    // `pauseIntentForKillSwitch`'s header. Every other revalidation stop
+    // (digest mismatch, tier escalated, actor/org invalid, rbac denied, a
+    // non-kill structural policy denial, …) is unchanged: CAS straight to
+    // `failed`.
+    if (revalidation.errorCode === 'kill_switch_engaged') {
+      await pauseIntentForKillSwitch(intent, revalidation.details);
+      return;
+    }
     await failIntent(intent, revalidation.errorCode, { details: revalidation.details });
     return;
   }
@@ -448,6 +499,36 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
   if (isSessionRequiredForRelease(intent.actionName)) {
     await failIntent(intent, 'session_required', { details: { actionName: intent.actionName } });
     return;
+  }
+
+  // Wave 5 Part B (#3827) final pre-effect kill read: one more fresh
+  // `readAiKillState()` immediately before dispatch, for AGENT-ORIGINATED
+  // releases only (review fix: an earlier version ran this unconditionally,
+  // which reached human-approved chat/mcp_api releases that have never
+  // consulted the kill switch and made the flag-off/human lane non-inert —
+  // see the plan's dark-ship constraint). The kill switch governs autonomous
+  // agent action (`checkAgentReleaseAuthority` is agent-only, and is the
+  // only OTHER caller of `readAiKillState` on this path); a human who
+  // clicked Approve is not "the agent" and this read must not be able to
+  // pause their release. Scoped this way, everything above this line
+  // (revalidation, the effect-digest recompute, its own I/O) can still take
+  // real wall-clock time, during which an operator's emergency kill can land
+  // — `checkAgentReleaseAuthority`'s own kill read (agentReleaseAuthority.ts)
+  // only covers the window up through step 2's revalidation, not the gap
+  // between there and the tool actually dispatching. Same pause semantics as
+  // that read: a real kill (or a transient read failure, which
+  // `readAiKillState` maps fail-closed to `killed: true`) PAUSES the intent
+  // back to `approved` rather than terminally failing it — see
+  // `pauseIntentForKillSwitch`'s header.
+  if (intent.requestingAgentRunId) {
+    const preDispatchKillState = await readAiKillState();
+    if (preDispatchKillState.killed) {
+      await pauseIntentForKillSwitch(intent, {
+        epoch: preDispatchKillState.epoch,
+        stage: 'pre_dispatch',
+      });
+      return;
+    }
   }
 
   // Step 3: execute with the rebuilt context. Escape any inherited DB context,
@@ -871,8 +952,15 @@ async function notifyRequesterOfOutcome(
  *
  * `intent_approved` is the release trigger AND an outcome to report.
  * `intent_rejected` / `intent_expired` are outcome-only. `intent_created` is
- * acknowledged as a no-op rather than thrown on, so it doesn't retry forever
- * (intentOutboxPublisher.ts shares this queue but not this consumer role).
+ * the policy-decide recovery hook (wave 5 Part B, #3827) — deliberately NOT
+ * flag-gated at this call site (see the comment on that branch below for
+ * why) and NOT unconditionally acknowledged: a DETERMINISTIC outcome from
+ * `attemptPolicyDecision` (it returns normally either way) always acks, but
+ * a TRANSIENT failure (it throws `PolicyDecisionTransientError`, review fix
+ * #3827) is rethrown so BullMQ redelivers the job — this queue's outbox
+ * publisher (intentOutboxPublisher.ts) is a separate producer role, not this
+ * consumer's retry policy, but this IS the branch that relies on BullMQ's
+ * own per-job retry policy to make that redelivery real.
  */
 export async function processIntentReleaseJob(data: IntentReleaseJobData): Promise<{ released: boolean }> {
   if (data.eventType === 'intent_rejected' || data.eventType === 'intent_expired') {
@@ -880,20 +968,115 @@ export async function processIntentReleaseJob(data: IntentReleaseJobData): Promi
     return { released: false };
   }
 
+  // Wave 5 Part B (#3827) — the outbox at-least-once recovery branch for a
+  // policy-decide attempt that never ran (the creation-time fire-and-forget
+  // trigger was dropped by a crash/restart), that only got as far as a
+  // TRANSIENT failure (left `unattempted` on purpose — see
+  // policyDecide.ts's header), or that never got attempted because the flag
+  // was off at creation and has since been flipped back on.
+  //
+  // Deliberately NOT flag-gated here (review fix, #3827): this is the ONLY
+  // durable caller of `attemptPolicyDecision` — the creation-time trigger is
+  // fire-and-forget and does not survive a restart — so gating the call site
+  // too would strand every intent left `unattempted` by an operator's
+  // emergency flag-off: with nothing left to move it out of `unattempted`,
+  // it would sit with zero `approval_requests` rows and zero notifications,
+  // invisible until the expiry reaper eventually cancels it.
+  // `attemptPolicyDecision` itself is the single source of truth for flag-off
+  // behavior: it checks the intent is genuinely `unattempted` BEFORE reading
+  // the flag, and degrades a flag-off `unattempted` intent to human review
+  // rather than leaving it stranded. It also re-derives every other
+  // precondition itself (status === 'pending_approval', agent-originated),
+  // so a human-authored or already-decided intent's `intent_created` event
+  // reaches it and no-ops — this call site does not need to duplicate those
+  // checks.
+  //
+  // Review fix (#3827): a DETERMINISTIC outcome (every no-op above, a
+  // degrade-to-human, or a clean authorize — `attemptPolicyDecision` returns
+  // normally in all of them) still acks unconditionally, same as before. A
+  // TRANSIENT failure now throws `PolicyDecisionTransientError` instead of
+  // being swallowed — rethrown here rather than acked, this is what turns
+  // "left `unattempted`" into REAL at-least-once recovery: BullMQ redelivers
+  // the job per this job's retry policy instead of the event being marked
+  // processed and gone forever. Any OTHER error shape reaching this catch
+  // would mean `attemptPolicyDecision` grew an exit path that neither
+  // returns nor throws the discriminated signal — a bug in that function,
+  // not something retrying here can fix — so it stays logged-and-acked
+  // rather than retried forever.
+  if (data.eventType === 'intent_created') {
+    // P2-4 Task A3 (#4191): a `decidedVia: 'ticket_autonomy'` row was
+    // ALREADY approved inside `createActionIntent`'s own transaction — its
+    // `policyDecisionState` is 'human_required' (the `resolvePolicyDecisionState`
+    // stub forces that for every scoped intent), never 'unattempted', so
+    // `attemptPolicyDecision`'s own precondition would silently no-op it
+    // regardless. Route it straight to release instead: this `intent_created`
+    // delivery is a SECOND, independent recovery path alongside the
+    // `intent_approved` outbox row `createActionIntent` also wrote for it
+    // (see that module's header) — a backstop for the case where that
+    // sibling row's own publish is the one that gets stuck.
+    const decidedVia = await loadIntentDecidedVia(data.intentId);
+    if (decidedVia === 'ticket_autonomy') {
+      return releaseAndNotify(data.intentId);
+    }
+    try {
+      await attemptPolicyDecision(data.intentId);
+    } catch (err) {
+      if (err instanceof PolicyDecisionTransientError) {
+        console.error(
+          `[IntentReleaseWorker] attemptPolicyDecision transient failure for intent ${data.intentId} — rethrowing for BullMQ retry:`,
+          err,
+        );
+        throw err;
+      }
+      console.error(`[IntentReleaseWorker] attemptPolicyDecision failed for intent ${data.intentId}:`, err);
+      captureException(err instanceof Error ? err : new Error(String(err)));
+    }
+    return { released: false };
+  }
+
   if (data.eventType !== 'intent_approved') {
     return { released: false };
   }
 
-  await releaseApprovedIntent(data.intentId);
+  return releaseAndNotify(data.intentId);
+}
+
+/**
+ * Narrow, defensive read used ONLY to route the `intent_created` recovery
+ * branch above — `null` (missing row, or any read fault) falls through to
+ * the ordinary `attemptPolicyDecision` call, which is itself a safe no-op
+ * for a row it does not recognize as `unattempted`.
+ */
+async function loadIntentDecidedVia(intentId: string): Promise<string | null> {
+  const [row] = await withSystemDbAccessContext(() =>
+    db
+      .select({ decidedVia: actionIntents.decidedVia })
+      .from(actionIntents)
+      .where(eq(actionIntents.id, intentId))
+      .limit(1),
+  );
+  return row?.decidedVia ?? null;
+}
+
+/**
+ * Shared release + best-effort outcome notification, extracted so the
+ * `intent_approved` release trigger and the `ticket_autonomy` `intent_created`
+ * recovery branch above run the IDENTICAL sequence. `releaseApprovedIntent`
+ * is itself CAS-guarded (`approved -> executing`), so calling this twice for
+ * the same intent (once from each event) is safe — the loser finds the
+ * intent already claimed and returns without executing anything twice.
+ */
+async function releaseAndNotify(intentId: string): Promise<{ released: boolean }> {
+  await releaseApprovedIntent(intentId);
 
   // AFTER the release, and deliberately not allowed to undo it. The release
   // already committed; throwing here would retry the whole job and re-run
   // releaseApprovedIntent, which is why the notification is swallowed and the
   // CAS inside the release path is what makes a retry safe.
   try {
-    await notifyRequesterOfOutcome(data.intentId, 'intent_approved');
+    await notifyRequesterOfOutcome(intentId, 'intent_approved');
   } catch (err) {
-    console.error(`[IntentReleaseWorker] outcome notification failed for intent ${data.intentId}:`, err);
+    console.error(`[IntentReleaseWorker] outcome notification failed for intent ${intentId}:`, err);
     captureException(err instanceof Error ? err : new Error(String(err)));
   }
 

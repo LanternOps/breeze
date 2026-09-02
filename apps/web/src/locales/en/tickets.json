@@ -116,7 +116,15 @@
     "internalPlaceholder": "Add an internal note…",
     "sending": "Sending",
     "sendReply": "Send reply",
-    "addInternalNote": "Add internal note"
+    "addInternalNote": "Add internal note",
+    "attachments": {
+      "attach": "Attach",
+      "uploading": "Uploading…",
+      "retry": "Retry",
+      "remove": "Remove file",
+      "tooMany": "You can attach at most {{max}} files to one comment.",
+      "tooLarge": "{{name}} is larger than 10 MB."
+    }
   },
   "ticketFeed": {
     "empty": "No activity yet.",
@@ -149,6 +157,11 @@
     "deleteDialog": {
       "title": "Delete comment",
       "message": "Are you sure you want to delete this comment? This action cannot be undone."
+    },
+    "attachments": {
+      "broken": "Couldn't load {{name}}",
+      "open": "Open attachment",
+      "remove": "Remove attachment"
     }
   },
   "ticketPartsCard": {
@@ -432,6 +445,17 @@
       "feedbackFailed": "Could not save ticket triage feedback.",
       "feedbackSaved": "Ticket triage feedback saved"
     },
+    "aiDraft": {
+      "kindReply": "AI-drafted reply",
+      "kindResolutionNote": "AI-drafted resolution note",
+      "sendAsMe": "Send as me",
+      "sending": "Sending…",
+      "discard": "Discard",
+      "sendFailed": "Could not send the AI draft.",
+      "sent": "Draft sent",
+      "discardFailed": "Could not discard the AI draft.",
+      "discarded": "Draft discarded"
+    },
     "resolve": {
       "noteLabel": "Resolution note (visible to requester)",
       "submit": "Resolve ticket"
@@ -469,7 +493,8 @@
       "categoryUpdateFailed": "Category update failed. Retry.",
       "assigned": "Assigned",
       "unassigned": "Unassigned",
-      "assignFailed": "Assign failed. Retry."
+      "assignFailed": "Assign failed. Retry.",
+      "attachmentFailed": "Could not upload the attachment."
     },
     "delete": {
       "failed": "Delete failed. Retry.",

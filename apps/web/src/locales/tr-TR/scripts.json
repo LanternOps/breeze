@@ -812,6 +812,8 @@
       "advancedFilters": "Gelişmiş Filtreler",
       "executing": "Yürütülüyor...",
       "started": "Başladı!",
+      "queued": "Kuyruğa alındı",
+      "reviewResult": "Sonucu incele",
       "confirmExecute": "Yürütmeyi Onayla",
       "execute": "Yürüt"
     },
@@ -825,12 +827,23 @@
     },
     "matchCount": "{{count}} eşleşmesi",
     "empty": {
-      "noCompatibleDevices": "Uyumlu cihaz bulunamadı. Bu komut dosyası {{os}} gerektirir."
+      "noCompatibleDevices": "Uyumlu cihaz bulunamadı. Bu komut dosyası {{os}} gerektirir.",
+      "offlineFiltered_one": "Hiçbir {{status}} cihaz eşleşmiyor. {{count}} uyumlu cihaz durum filtresi tarafından gizleniyor — dahil etmek için tüm cihazları göster.",
+      "offlineFiltered_other": "Hiçbir {{status}} cihaz eşleşmiyor. {{count}} uyumlu cihaz durum filtresi tarafından gizleniyor — dahil etmek için tüm cihazları göster.",
+      "showAllDevices": "Tüm cihazları göster"
     },
     "orSeparator": "veya ",
     "progress": {
       "submitting": "{{count}} cihazlara gönderiliyor...",
-      "submitted": "{{count}} cihazlara gönderildi"
+      "submitted": "{{count}} cihazlara gönderildi",
+      "admitted": "{{count}} cihazdan {{admitted}} tanesi kuyruğa kabul edildi",
+      "submittingTarget": "Gönderiliyor"
+    },
+    "admission": {
+      "allAdmitted": "Seçilen tüm cihazlar kabul edildi ve kuyruğa alındı.",
+      "partiallyAdmitted": "Bazı cihazlar kabul edildi ve kuyruğa alındı. Kalan hedefleri inceleyin.",
+      "rejected": "Hiçbir cihaz kabul edilmedi. Aşağıdaki nedenleri inceleyin.",
+      "queued": "Kuyruğa alındı"
     },
     "confirm": {
       "title": "Yürütmeyi Onayla",

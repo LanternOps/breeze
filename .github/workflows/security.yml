@@ -128,7 +128,7 @@ jobs:
           exit-code: '0'
 
       - name: Upload Trivy filesystem SARIF
-        uses: github/codeql-action/upload-sarif@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4
+        uses: github/codeql-action/upload-sarif@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28 # v4
         if: always()
         with:
           sarif_file: 'trivy-fs.sarif'
@@ -157,77 +157,61 @@ jobs:
           format: 'table'
           exit-code: '1'
 
+  # Builds and scans every container image this repo publishes, using the SAME
+  # Dockerfile the release lanes ship.
+  #
+  # This list used to be hand-maintained beside the publish lists in release.yml
+  # and hosted-images.yml, and the two drifted: the job built the
+  # `docker/Dockerfile.api|web` compose variants while release/hosted shipped
+  # `apps/api|web/Dockerfile`, so the two most widely deployed images in the
+  # product were gated by nothing and shipped a known HIGH CVE
+  # (issues #4273 / #4260). `apps/api/src/config/dockerfileImageScanCoverage.test.ts`
+  # now derives the published set from those workflows and fails if anything
+  # published is missing from the matrix below.
   trivy-image-scan:
-    name: Trivy Image Scan
+    name: Trivy Image Scan (${{ matrix.image }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # --- Published to GHCR by release.yml and hosted-images.yml ---
+          - image: api
+            dockerfile: apps/api/Dockerfile
+          - image: web
+            dockerfile: apps/web/Dockerfile
+          - image: portal
+            dockerfile: apps/portal/Dockerfile
+          - image: m365-graph-read-executor
+            dockerfile: apps/m365-graph-read-executor/Dockerfile
+          - image: m365-graph-actions-executor
+            dockerfile: apps/m365-graph-actions-executor/Dockerfile
+          - image: m365-communications-executor
+            dockerfile: apps/m365-communications-executor/Dockerfile
+          # --- Never published, but built from source by CI and by users ---
+          # ci.yml's smoke test builds these via docker-compose.override.yml.ci,
+          # and self-hosters build them via docker-compose.override.yml.local-build,
+          # so they stay gated too.
+          - image: api-compose
+            dockerfile: docker/Dockerfile.api
+          - image: web-compose
+            dockerfile: docker/Dockerfile.web
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
-      - name: Build API image
-        run: docker build -f docker/Dockerfile.api -t breeze-api:security-scan .
+      - name: Build image
+        env:
+          DOCKERFILE: ${{ matrix.dockerfile }}
+          IMAGE: ${{ matrix.image }}
+        run: docker build -f "$DOCKERFILE" -t "breeze-${IMAGE}:security-scan" .
 
-      - name: Build Web image
-        run: docker build -f docker/Dockerfile.web -t breeze-web:security-scan .
-
-      - name: Build Portal image
-        run: docker build -f apps/portal/Dockerfile -t breeze-portal:security-scan .
-
-      - name: Build M365 Graph Read Executor image
-        run: docker build -f apps/m365-graph-read-executor/Dockerfile -t breeze-m365-graph-read-executor:security-scan .
-
-      - name: Build M365 Graph Actions Executor image
-        run: docker build -f apps/m365-graph-actions-executor/Dockerfile -t breeze-m365-graph-actions-executor:security-scan .
-
-      - name: Build M365 Communications Executor image
-        run: docker build -f apps/m365-communications-executor/Dockerfile -t breeze-m365-communications-executor:security-scan .
-
-      - name: Scan API image
+      - name: Scan image
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          image-ref: 'breeze-api:security-scan'
-          severity: 'HIGH,CRITICAL'
-          format: 'table'
-          exit-code: '1'
-
-      - name: Scan Web image
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          image-ref: 'breeze-web:security-scan'
-          severity: 'HIGH,CRITICAL'
-          format: 'table'
-          exit-code: '1'
-
-      - name: Scan Portal image
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          image-ref: 'breeze-portal:security-scan'
-          severity: 'HIGH,CRITICAL'
-          format: 'table'
-          exit-code: '1'
-
-      - name: Scan M365 Graph Read Executor image
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          image-ref: 'breeze-m365-graph-read-executor:security-scan'
-          severity: 'HIGH,CRITICAL'
-          format: 'table'
-          exit-code: '1'
-
-      - name: Scan M365 Graph Actions Executor image
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          image-ref: 'breeze-m365-graph-actions-executor:security-scan'
-          severity: 'HIGH,CRITICAL'
-          format: 'table'
-          exit-code: '1'
-
-      - name: Scan M365 Communications Executor image
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          image-ref: 'breeze-m365-communications-executor:security-scan'
+          image-ref: 'breeze-${{ matrix.image }}:security-scan'
           severity: 'HIGH,CRITICAL'
           format: 'table'
           exit-code: '1'

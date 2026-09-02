@@ -341,7 +341,10 @@ Breeze also supports push notifications to registered mobile devices via Firebas
 Push notifications subscribe to the same `alert.triggered` event bus and run in parallel with the notification dispatcher. Delivery status is tracked in the `push_notifications` table with states: `pending`, `sent`, `stubbed`, `failed`.
 
 <Aside type="note">
-  APNS (iOS) push delivery is currently stubbed and not yet fully implemented. Android push via FCM is functional when `FIREBASE_SERVICE_ACCOUNT` is configured.
+  APNs (iOS) delivery is live: it powers approval requests and ticket push
+  categories. Android push via FCM is functional when `FIREBASE_SERVICE_ACCOUNT`
+  is configured; ticket push categories are iOS-only today — the server logs and
+  skips FCM tokens for them.
 </Aside>
 
 ---
@@ -575,6 +578,8 @@ POST /alerts/channels/:id/test
 
 The test endpoint sends a real notification with a test payload through the selected channel type and returns the result:
 
+The outcome is also recorded on the channel itself, so a failure stays visible after you navigate away. The channel keeps `lastTestedAt`, `lastTestStatus`, and — when the test failed — `lastTestError`, which holds the reason the send was rejected (a bad token, a refused recipient, an unreachable endpoint). The channel list surfaces that reason rather than a bare failure icon, so a broken channel can be diagnosed without re-running the test blind.
+
 ```json
 {
   "channelId": "uuid",
@@ -595,6 +600,11 @@ The test endpoint sends a real notification with a test payload through the sele
   "testedBy": "user-uuid"
 }
 ```
+
+
+<Aside type="note">
+  Credentials are redacted from `lastTestError` before the message is composed, so a stored failure reason never contains the token or password that caused it.
+</Aside>
 
 ---
 

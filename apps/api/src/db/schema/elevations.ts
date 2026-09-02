@@ -2,6 +2,7 @@ import {
   foreignKey,
   index,
   inet,
+  integer,
   jsonb,
   pgEnum,
   pgTable,
@@ -106,6 +107,7 @@ export const elevationRequests = pgTable(
     targetPublisher: varchar('target_publisher', { length: 255 }),
 
     status: elevationStatusEnum('status').notNull().default('pending'),
+    revision: integer('revision').notNull().default(1),
 
     // Lifecycle (first-class timestamps per Todd).
     requestedAt: timestamp('requested_at', { withTimezone: true }).notNull().defaultNow(),
@@ -181,8 +183,109 @@ export const elevationRequests = pgTable(
   }),
 );
 
+export const pamDesiredStateEnum = ['active', 'cleanup'] as const;
+export type PamDesiredState = (typeof pamDesiredStateEnum)[number];
+
+export const pamObservedStateEnum = [
+  'pending_dispatch', 'dispatched', 'received', 'verified_active',
+  'cleanup_pending', 'cleaned', 'failed', 'legacy_untracked',
+] as const;
+export type PamObservedState = (typeof pamObservedStateEnum)[number];
+
+export const pamResultKindEnum = ['received', 'verified_active', 'cleaned', 'failed'] as const;
+export type PamResultKind = (typeof pamResultKindEnum)[number];
+
+export const pamActuations = pgTable(
+  'pam_actuations',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orgId: uuid('org_id').notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+    deviceId: uuid('device_id').notNull(),
+    elevationRequestId: uuid('elevation_request_id').notNull(),
+    requestRevision: integer('request_revision').notNull(),
+    generation: integer('generation').notNull(),
+    desiredState: text('desired_state').notNull().$type<PamDesiredState>(),
+    observedState: text('observed_state').notNull().$type<PamObservedState>(),
+    currentCommandId: uuid('current_command_id'),
+    targetExecutablePath: text('target_executable_path').notNull(),
+    targetExecutableHash: varchar('target_executable_hash', { length: 64 }),
+    subjectUsername: varchar('subject_username', { length: 255 }).notNull(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }),
+    cleanupRequestedAt: timestamp('cleanup_requested_at', { withTimezone: true }),
+    cleanedAt: timestamp('cleaned_at', { withTimezone: true }),
+    failureCode: varchar('failure_code', { length: 128 }),
+    latestEvidence: jsonb('latest_evidence').$type<Record<string, unknown>>().notNull().default({}),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    requestRevisionUq: unique('pam_actuations_request_revision_key').on(
+      table.elevationRequestId,
+      table.requestRevision,
+    ),
+    idOrgUq: unique('pam_actuations_id_org_id_key').on(table.id, table.orgId),
+    deviceOrgFk: foreignKey({
+      columns: [table.deviceId, table.orgId],
+      foreignColumns: [devices.id, devices.orgId],
+      name: 'pam_actuations_device_id_org_id_fkey',
+    }).onDelete('cascade'),
+    requestOrgFk: foreignKey({
+      columns: [table.elevationRequestId, table.orgId],
+      foreignColumns: [elevationRequests.id, elevationRequests.orgId],
+      name: 'pam_actuations_elevation_request_id_org_id_fkey',
+    }).onDelete('cascade'),
+    deviceGenerationIdx: index('pam_actuations_device_generation_idx').on(
+      table.deviceId,
+      table.generation,
+    ),
+  }),
+);
+
+export const pamActuationResults = pgTable(
+  'pam_actuation_results',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    observationId: uuid('observation_id').notNull(),
+    orgId: uuid('org_id').notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+    deviceId: uuid('device_id').notNull(),
+    actuationId: uuid('actuation_id').notNull(),
+    generation: integer('generation').notNull(),
+    resultKind: text('result_kind').notNull().$type<PamResultKind>(),
+    failureCode: varchar('failure_code', { length: 128 }),
+    evidence: jsonb('evidence').$type<Record<string, unknown>>().notNull().default({}),
+    observedAt: timestamp('observed_at', { withTimezone: true }).notNull(),
+    receivedAt: timestamp('received_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    observationUq: unique('pam_actuation_results_observation_key').on(
+      table.actuationId,
+      table.generation,
+      table.resultKind,
+      table.observationId,
+    ),
+    actuationOrgFk: foreignKey({
+      columns: [table.actuationId, table.orgId],
+      foreignColumns: [pamActuations.id, pamActuations.orgId],
+      name: 'pam_actuation_results_actuation_id_org_id_fkey',
+    }).onDelete('cascade'),
+    deviceOrgFk: foreignKey({
+      columns: [table.deviceId, table.orgId],
+      foreignColumns: [devices.id, devices.orgId],
+      name: 'pam_actuation_results_device_id_org_id_fkey',
+    }).onDelete('cascade'),
+    actuationGenerationIdx: index('pam_actuation_results_actuation_generation_idx').on(
+      table.actuationId,
+      table.generation,
+    ),
+  }),
+);
+
 export type ElevationRequest = typeof elevationRequests.$inferSelect;
 export type NewElevationRequest = typeof elevationRequests.$inferInsert;
+export type PamActuation = typeof pamActuations.$inferSelect;
+export type NewPamActuation = typeof pamActuations.$inferInsert;
+export type PamActuationResult = typeof pamActuationResults.$inferSelect;
+export type NewPamActuationResult = typeof pamActuationResults.$inferInsert;
 
 export const elevationAudit = pgTable(
   'elevation_audit',

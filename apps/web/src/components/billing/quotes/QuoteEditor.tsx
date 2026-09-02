@@ -119,7 +119,14 @@ function unresolvedNamesFromMessage(message: string, knownNames: string[]): stri
 
 interface Props {
   detail: QuoteDetailData;
-  onChanged: () => void;
+  /** Ask the parent to refetch the quote. May report whether the refetch
+   *  actually landed: `false` means the canvas is still showing pre-mutation
+   *  data. Mounts that can't tell (standalone renders, tests) return void, and
+   *  the editor treats that as "caught up" so it never cries wolf. The editor
+   *  needs the answer because several mutations have no toast of their own —
+   *  their success signal is the result APPEARING, which a failed refetch turns
+   *  into silence (#3519). */
+  onChanged: () => void | Promise<boolean | void>;
   /** Fires whenever the editor's save state changes: true while any mutation is
    *  in flight or the terms field sits dirty. The workspace uses it to hold
    *  Send until the quote is quiescent, so the irreversible money-moment
@@ -373,6 +380,10 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
   const [richText, setRichText] = useState('');
   const [tableLabel, setTableLabel] = useState('');
   const [imageFile, setImageFile] = useState<File | null>(null);
+  // The file input is uncontrolled (a File can't round-trip through `value`),
+  // so the post-submit reset has to clear the element itself — otherwise the
+  // filename stays on screen after a successful add. See finishBlockCreate.
+  const imageFileInputRef = useRef<HTMLInputElement>(null);
   const [imageCaption, setImageCaption] = useState('');
   const [imageSource, setImageSource] = useState<'file' | 'url'>('file');
   const [imageUrl, setImageUrl] = useState('');
@@ -436,25 +447,43 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const refreshTrailing = useRef(false);
   useEffect(() => () => { if (refreshTimer.current) clearTimeout(refreshTimer.current); }, []);
+  // One un-throttled refetch, reporting whether the canvas actually caught up.
+  // A parent that returns void can't tell us, and "can't tell" must read as
+  // caught-up: warning on every legacy mount would train users to ignore the
+  // one warning that matters. Never throws — a rejected refetch is simply a
+  // canvas that did not catch up.
+  const resync = useCallback(async (): Promise<boolean> => {
+    try {
+      return (await onChanged()) !== false;
+    } catch (err) {
+      // Today's only production parent (QuoteWorkspace.fetchDetail) catches
+      // internally and resolves false, so this branch is unreachable from the
+      // app. Keep the breadcrumb anyway: the moment some future parent throws
+      // instead, a bare `return false` would erase the reason, which is the
+      // failure mode this whole change exists to stop.
+      console.error('[QuoteEditor] refetch threw while resyncing the canvas', err);
+      return false;
+    }
+  }, [onChanged]);
   const refresh = useCallback(() => {
     if (refreshTimer.current) {
       // Inside the cooldown window — remember to fire once more when it closes.
       refreshTrailing.current = true;
       return;
     }
-    onChanged(); // leading edge: refetch now
+    void resync(); // leading edge: refetch now
     const openWindow = () => {
       refreshTimer.current = setTimeout(function close() {
         refreshTimer.current = null;
         if (refreshTrailing.current) {
           refreshTrailing.current = false;
-          onChanged();
+          void resync();
           openWindow(); // reopen so a fresh burst keeps coalescing
         }
       }, 300);
     };
     openWindow();
-  }, [onChanged]);
+  }, [resync]);
 
   const saveTerms = useCallback(async () => {
     if (!termsDirty) return;
@@ -1191,6 +1220,58 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
     } catch { /* toasted; the new section simply lands at the end */ }
   }, [insertAt, sortedBlocks, quote.id, withPendingDeletedBlockIds, t]);
 
+  /**
+   * The tail every add-block branch runs AFTER the POST has already created the
+   * block server-side: reposition it, clear the form, resync the canvas. Two
+   * rules close #3519 for every branch that routes through here — which is the
+   * catch: nothing enforces that routing, so a NEW block type must call this
+   * helper rather than re-inlining `positionNewBlock` + reset + `refresh()`,
+   * or it reopens the bug. (Line creation still has the unfixed twin of this
+   * problem; see the note on `doAddCatalog`.)
+   *
+   * 1. It never throws. A throw would escape into `runScoped`'s catch and toast
+   *    "Could not add the section" over a block that DOES exist — the copy that
+   *    invites a re-submit, which is how four uploads became ~10 duplicate
+   *    image blocks in production.
+   * 2. If the canvas does not catch up, it says so. Add-block deliberately has
+   *    no success toast because "the new section visibly appears" IS the
+   *    signal; when the refetch fails that signal degrades to silence, and
+   *    silence is what the user reads as "nothing happened".
+   *
+   * The form reset sits in a `finally` so a failed reposition can't leave the
+   * picked file and the open insert-gap sitting there looking like work still
+   * in flight.
+   *
+   * The resync deliberately goes through `resync()` rather than the coalescing
+   * `refresh()`: adding a section is a one-shot action, not the tab-through
+   * burst the throttle exists to cap, and its outcome report must not sit
+   * behind a cooldown window. Worst case this costs one extra GET per add,
+   * when an unrelated edit already has the window open.
+   */
+  const finishBlockCreate = useCallback(async (
+    created: { id?: string } | undefined,
+    resetForm: () => void,
+  ): Promise<void> => {
+    let resynced = false;
+    try {
+      try {
+        // Best-effort and self-toasting — see `positionNewBlock`.
+        await positionNewBlock(created);
+      } finally {
+        resetForm();
+        setInsertAt(null);
+      }
+      resynced = await resync();
+    } catch (err) {
+      // Rule 1 above. Keep the breadcrumb — the honest toast below is what the
+      // user gets, but a silent catch would hide why the tail broke.
+      console.error('[QuoteEditor] post-create tail failed after the block was created', err);
+    }
+    if (!resynced) {
+      showToast({ message: t('quotes.editor.errors.sectionAddedListStale'), type: 'warning' });
+    }
+  }, [positionNewBlock, resync, t]);
+
   const submitBlock = useCallback(async () => {
     // Image blocks have no block-update endpoint, so the file must exist before
     // the block: upload it (POST /:id/images → { data: { imageId } }), then add
@@ -1233,10 +1314,14 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
           onUnauthorized: UNAUTHORIZED,
           parseSuccess: (d) => { notifyStrippedMarkup(d); return (d as { data: { id?: string } }).data; },
         });
-        await positionNewBlock(createdImg);
-        setImageFile(null); setImageCaption(''); setImageUrl('');
-        setInsertAt(null);
-        refresh();
+        await finishBlockCreate(createdImg, () => {
+          setImageFile(null); setImageCaption(''); setImageUrl('');
+          // The file input is uncontrolled, so clearing React state alone
+          // leaves the chosen filename on screen beside a button that has gone
+          // disabled ("no file picked") — visually identical to a submit still
+          // in flight, which is half of what #3519 felt like from the outside.
+          if (imageFileInputRef.current) imageFileInputRef.current.value = '';
+        });
       }, t('quotes.editor.errors.addImageSection'));
       return;
     }
@@ -1287,10 +1372,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
           }
           throw err;
         }
-        await positionNewBlock(createdContract);
-        resetContractForm();
-        setInsertAt(null);
-        refresh();
+        await finishBlockCreate(createdContract, resetContractForm);
       }, t('quotes.editor.errors.addContractSection'));
       return;
     }
@@ -1307,10 +1389,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
           onUnauthorized: UNAUTHORIZED,
           parseSuccess: (d) => { notifyStrippedMarkup(d); return (d as { data: { id?: string } }).data; },
         });
-        await positionNewBlock(created);
-        resetTableForm();
-        setInsertAt(null);
-        refresh();
+        await finishBlockCreate(created, resetTableForm);
       }, t('quotes.editor.errors.addSection'));
       return;
     }
@@ -1328,10 +1407,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
           onUnauthorized: UNAUTHORIZED,
           parseSuccess: (d) => { notifyStrippedMarkup(d); return (d as { data: { id?: string } }).data; },
         });
-        await positionNewBlock(created);
-        resetCalloutForm();
-        setInsertAt(null);
-        refresh();
+        await finishBlockCreate(created, resetCalloutForm);
       }, t('quotes.editor.errors.addSection'));
       return;
     }
@@ -1357,12 +1433,11 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
         onUnauthorized: UNAUTHORIZED,
         parseSuccess: (d) => { notifyStrippedMarkup(d); return (d as { data: { id?: string } }).data; },
       });
-      await positionNewBlock(created);
-      setHeadingText(''); setRichText(''); setTableLabel('');
-      setInsertAt(null);
-      refresh();
+      await finishBlockCreate(created, () => {
+        setHeadingText(''); setRichText(''); setTableLabel('');
+      });
     }, t('quotes.editor.errors.addSection'));
-  }, [addType, headingText, richText, tableLabel, imageFile, imageCaption, imageSource, imageUrl, contractTemplateId, contractVersion, contractVarValues, contractLabel, resetContractForm, tableFormState, resetTableForm, calloutFormState, resetCalloutForm, positionNewBlock, quote.id, refresh, runScoped, t]);
+  }, [addType, headingText, richText, tableLabel, imageFile, imageCaption, imageSource, imageUrl, contractTemplateId, contractVersion, contractVarValues, contractLabel, resetContractForm, tableFormState, resetTableForm, calloutFormState, resetCalloutForm, finishBlockCreate, quote.id, runScoped, t]);
 
 
   // Removing a line_items block cascades to every line under it (server-side), so
@@ -1390,6 +1465,15 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
   [quote.id, refresh, runScoped, t]);
 
   // ---- line mutations (scoped to a line_items block) ----------------------
+  // KNOWN GAP (#3519's unfixed twin, deliberately out of scope here): every line
+  // creation below rests on the same premise the block path just stopped
+  // trusting — "no success toast, the appended row and the moving totals ARE the
+  // feedback" — and ends with the fire-and-forget `refresh()` rather than the
+  // honest `finishBlockCreate` tail. So a line POST that succeeds while its
+  // quiet refetch fails is still completely silent, and a tech on a flaky link
+  // can re-add the same line the way the reporter re-uploaded the same image.
+  // Fixing it needs its own copy, its own 8 locales and its own tests, so it is
+  // filed separately rather than smuggled into this change.
   const doAddCatalog = useCallback(async (blockId: string, item: CatalogItem) => {
     await runAction({
       request: () => addCatalogLine(quote.id, { catalogItemId: item.id, quantity: 1, blockId }),
@@ -2132,6 +2216,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
                 </div>
                 {imageSource === 'file' ? (
                   <input
+                    ref={imageFileInputRef}
                     type="file"
                     accept="image/png,image/jpeg,image/webp"
                     onChange={(e) => setImageFile(e.target.files?.[0] ?? null)}

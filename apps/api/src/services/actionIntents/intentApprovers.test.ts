@@ -542,6 +542,12 @@ describe('isAgentIntentDecideAuthorized', () => {
     actionName: 'execute_command',
     arguments: { deviceId: 'dev-1' } as Record<string, unknown>,
     requestingAgentRunId: 'run-1',
+    // P2-2 (#4189): unscoped — every pre-existing case in this describe block
+    // resolves its target from the RUN, exactly as before the scope columns
+    // existed. The scoped cases live in the block below.
+    scopeKind: null as 'device' | 'ticket' | null,
+    scopeDeviceId: null as string | null,
+    scopeTicketId: null as string | null,
   };
 
   /**
@@ -645,6 +651,68 @@ describe('isAgentIntentDecideAuthorized', () => {
     expect(where).toHaveBeenCalledWith(
       and(inArray(devices.id as never, ['dev-1']), eq(devices.orgId as never, 'org-1')),
     );
+  });
+
+  // -------------------------------------------------------------------------
+  // P2-2 (Task A3, #4189): explicit device scope
+  // -------------------------------------------------------------------------
+
+  const scopedIntent = { ...intent, scopeKind: 'device' as const, scopeDeviceId: 'dev-scope' };
+
+  /** Scoped select order: 1. run, 2. org partner, 3. the scoped device's
+   *  CURRENT org, 4. device sites. */
+  function queueScopedDecideSelects(opts: {
+    run?: Array<{ orgId: string; deviceId: string | null }>;
+    scopedDevice?: Array<{ orgId: string }>;
+    deviceSites?: Array<{ id: string; siteId: string }>;
+  }) {
+    queueDecideSelects({
+      run: opts.run ?? [{ orgId: 'org-1', deviceId: null }],
+      org: [{ partnerId: 'partner-1' }],
+    });
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(opts.scopedDevice ?? []) }),
+      }),
+    } as any);
+    if (opts.deviceSites) queueDeviceSiteSelect(opts.deviceSites);
+  }
+
+  it('authorizes against the SCOPE device when the run has none', async () => {
+    queueScopedDecideSelects({
+      scopedDevice: [{ orgId: 'org-1' }],
+      // The tool's own deviceArgs still resolve; the scope contributes
+      // dev-scope, which the arguments must already match (creation-time
+      // assertArgsMatchScope) — here both are seeded so the union is a
+      // single site.
+      deviceSites: [{ id: 'dev-1', siteId: 'site-1' }, { id: 'dev-scope', siteId: 'site-1' }],
+    });
+    stubPermsByUser({ 'u-a': makePerms({ allowedSiteIds: ['site-1'] }) });
+
+    await expect(isAgentIntentDecideAuthorized('u-a', scopedIntent)).resolves.toBe(true);
+  });
+
+  it('fails closed for a tombstoned scope — without touching the DB at all', async () => {
+    await expect(
+      isAgentIntentDecideAuthorized('u-a', { ...scopedIntent, scopeDeviceId: null }),
+    ).resolves.toBe(false);
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the scoped device no longer exists', async () => {
+    queueScopedDecideSelects({ scopedDevice: [] });
+    stubPermsByUser({ 'u-a': makePerms() });
+
+    await expect(isAgentIntentDecideAuthorized('u-a', scopedIntent)).resolves.toBe(false);
+  });
+
+  it('fails closed when the scoped device now belongs to another org', async () => {
+    // Controller ruling: the DB-side cascade org-move leaves scope_device_id
+    // live; decide is one of the two backstops (release is the other).
+    queueScopedDecideSelects({ scopedDevice: [{ orgId: 'org-2' }] });
+    stubPermsByUser({ 'u-a': makePerms() });
+
+    await expect(isAgentIntentDecideAuthorized('u-a', scopedIntent)).resolves.toBe(false);
   });
 });
 

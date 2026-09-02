@@ -812,6 +812,8 @@
       "advancedFilters": "Filtres avancés",
       "executing": "Exécution...",
       "started": "Démarré !",
+      "queued": "En file d’attente",
+      "reviewResult": "Examiner le résultat",
       "confirmExecute": "Confirmer l’exécution",
       "execute": "Exécuter"
     },
@@ -825,12 +827,23 @@
     },
     "matchCount": "{{count}} correspondance",
     "empty": {
-      "noCompatibleDevices": "Aucun appareil compatible trouvé. Ce script nécessite {{os}}."
+      "noCompatibleDevices": "Aucun appareil compatible trouvé. Ce script nécessite {{os}}.",
+      "offlineFiltered_one": "Aucun appareil {{status}} ne correspond. {{count}} appareil compatible est masqué par le filtre de statut — afficher tous les appareils pour l'inclure.",
+      "offlineFiltered_other": "Aucun appareil {{status}} ne correspond. {{count}} appareils compatibles sont masqués par le filtre de statut — afficher tous les appareils pour les inclure.",
+      "showAllDevices": "Afficher tous les appareils"
     },
     "orSeparator": " ou ",
     "progress": {
       "submitting": "Envoi à {{count}} appareils...",
-      "submitted": "Envoyé à {{count}} appareils"
+      "submitted": "Envoyé à {{count}} appareils",
+      "admitted": "{{admitted}} appareils sur {{count}} admis dans la file d’attente",
+      "submittingTarget": "Envoi en cours"
+    },
+    "admission": {
+      "allAdmitted": "Tous les appareils sélectionnés ont été admis et placés en file d’attente.",
+      "partiallyAdmitted": "Certains appareils ont été admis et placés en file d’attente. Examinez les cibles restantes.",
+      "rejected": "Aucun appareil n’a été admis. Examinez les raisons ci-dessous.",
+      "queued": "En file d’attente"
     },
     "confirm": {
       "title": "Confirmer l’exécution",

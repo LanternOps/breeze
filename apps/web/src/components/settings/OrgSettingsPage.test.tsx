@@ -414,3 +414,63 @@ describe('OrgSettingsPage sidebar nav & save-state honesty', () => {
     expect(select.value).toBe('general');
   });
 });
+
+describe('OrgSettingsPage — archived organization (2026-08-28 pre-release sweep)', () => {
+  // The API's GET returns the full row plus `archived: true` for an archived
+  // org (see orgs.ts) — it does NOT 404. The PATCH does 404, via the
+  // LIFECYCLE_FROZEN_ORG_STATUSES guard, so the page must go read-only on
+  // its own signal rather than let the user hit that 404 on Save.
+  const archivedOrgDetails = {
+    id: 'org-1',
+    name: 'Acme Systems',
+    slug: 'acme',
+    status: 'archived',
+    archived: true,
+    purgeAt: '2026-11-24T12:00:00.000Z',
+    createdAt: '2026-01-01T00:00:00.000Z',
+    settings: {}
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    window.location.hash = '';
+    useOrgStoreMock.mockReturnValue({ currentOrgId: 'org-1', organizations: [] } as never);
+    fetchWithAuthMock.mockImplementation((url: string) => {
+      if (url.endsWith('/effective-settings')) return Promise.resolve(makeJsonResponse({ locked: [] }));
+      return Promise.resolve(makeJsonResponse(archivedOrgDetails));
+    });
+  });
+
+  it('shows an archived read-only banner with the purge date and a restore link', async () => {
+    render(<OrgSettingsPage orgId="org-1" />);
+
+    await screen.findByTestId('org-name-input');
+
+    const banner = screen.getByTestId('org-archived-banner');
+    expect(banner.textContent).toMatch(/archived/i);
+    // Purge date should be rendered somewhere in the banner.
+    expect(banner.textContent).toMatch(/2026/);
+
+    const restoreLink = screen.getByTestId('org-archived-restore-link') as HTMLAnchorElement;
+    expect(restoreLink.getAttribute('href')).toBe('/settings/organizations#org-1');
+  });
+
+  it('disables the name and type Save controls so the page cannot 404 on save', async () => {
+    render(<OrgSettingsPage orgId="org-1" />);
+
+    await screen.findByTestId('org-name-input');
+
+    const nameInput = screen.getByTestId('org-name-input') as HTMLInputElement;
+    const nameSave = screen.getByTestId('org-name-save') as HTMLButtonElement;
+    const typeSelect = screen.getByTestId('org-type-select') as HTMLSelectElement;
+    const typeSave = screen.getByTestId('org-type-save') as HTMLButtonElement;
+
+    expect(nameInput.disabled).toBe(true);
+    expect(nameSave.disabled).toBe(true);
+    expect(typeSelect.disabled).toBe(true);
+    expect(typeSave.disabled).toBe(true);
+
+    // No PATCH should ever be issued for an archived org.
+    expect(fetchWithAuthMock.mock.calls.some(([, init]) => init?.method === 'PATCH')).toBe(false);
+  });
+});

@@ -812,6 +812,8 @@
       "advancedFilters": "Filtri avanzati",
       "executing": "Esecuzione...",
       "started": "Avviato!",
+      "queued": "In coda",
+      "reviewResult": "Rivedi risultato",
       "confirmExecute": "Conferma esecuzione",
       "execute": "Esegui"
     },
@@ -825,12 +827,23 @@
     },
     "matchCount": "{{count}} corrispondenza",
     "empty": {
-      "noCompatibleDevices": "Nessun dispositivo compatibile trovato. Questo script richiede {{os}}."
+      "noCompatibleDevices": "Nessun dispositivo compatibile trovato. Questo script richiede {{os}}.",
+      "offlineFiltered_one": "Nessun dispositivo {{status}} corrisponde. {{count}} dispositivo compatibile è nascosto dal filtro di stato — mostra tutti i dispositivi per includerlo.",
+      "offlineFiltered_other": "Nessun dispositivo {{status}} corrisponde. {{count}} dispositivi compatibili sono nascosti dal filtro di stato — mostra tutti i dispositivi per includerli.",
+      "showAllDevices": "Mostra tutti i dispositivi"
     },
     "orSeparator": " oppure ",
     "progress": {
       "submitting": "Invio a {{count}} dispositivi...",
-      "submitted": "Inviato a {{count}} dispositivi"
+      "submitted": "Inviato a {{count}} dispositivi",
+      "admitted": "{{admitted}} dispositivi su {{count}} ammessi alla coda",
+      "submittingTarget": "Invio in corso"
+    },
+    "admission": {
+      "allAdmitted": "Tutti i dispositivi selezionati sono stati ammessi e messi in coda.",
+      "partiallyAdmitted": "Alcuni dispositivi sono stati ammessi e messi in coda. Esamina le destinazioni rimanenti.",
+      "rejected": "Nessun dispositivo è stato ammesso. Esamina i motivi qui sotto.",
+      "queued": "In coda"
     },
     "confirm": {
       "title": "Conferma esecuzione",

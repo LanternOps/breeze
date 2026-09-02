@@ -1,16 +1,37 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 
-const { selectMock, updateMock, insertMock, getCurrentDbAccessContextMock } = vi.hoisted(() => ({
+const {
+  selectMock,
+  updateMock,
+  insertMock,
+  executeMock,
+  getCurrentDbAccessContextMock,
+  enqueueTenantErasureMock,
+  getOrgMergeQueueMock,
+  getMergeJobMock,
+  getEmailServiceMock,
+  sendEmailMock,
+} = vi.hoisted(() => ({
   selectMock: vi.fn(),
   updateMock: vi.fn(),
   insertMock: vi.fn(),
+  // Task 4 — the sweeper's unfence step is a single atomic `db.execute(sql
+  // \`...\`)`, mirroring `unfenceLoser` (services/orgMerge.ts), so it never
+  // goes through the update()/set()/where() builder mock below.
+  executeMock: vi.fn(),
   // #2877 — default undefined (no ambient context; background-caller shape).
   // Ambient-context tests set a context object and restore in afterEach.
   getCurrentDbAccessContextMock: vi.fn<() => Record<string, unknown> | undefined>(() => undefined),
+  // Task 4 — org-merge sweeper backstop.
+  enqueueTenantErasureMock: vi.fn(),
+  getOrgMergeQueueMock: vi.fn(),
+  getMergeJobMock: vi.fn(),
+  getEmailServiceMock: vi.fn(),
+  sendEmailMock: vi.fn(),
 }));
 
 vi.mock('../db', () => {
-  const surface = { select: selectMock, update: updateMock, insert: insertMock };
+  const surface = { select: selectMock, update: updateMock, insert: insertMock, execute: executeMock };
   return {
     db: {
       ...surface,
@@ -45,6 +66,26 @@ vi.mock('../db/schema', () => ({
     status: 'organizations.status',
     deletedAt: 'organizations.deletedAt',
     offboardingStartedAt: 'organizations.offboardingStartedAt',
+    archivedAt: 'organizations.archivedAt',
+    purgeAt: 'organizations.purgeAt',
+    offboardingTarget: 'organizations.offboardingTarget',
+    updatedAt: 'organizations.updatedAt',
+    settings: 'organizations.settings',
+  },
+  partnerUsers: {
+    partnerId: 'partnerUsers.partnerId',
+    userId: 'partnerUsers.userId',
+    roleId: 'partnerUsers.roleId',
+    orgAccess: 'partnerUsers.orgAccess',
+  },
+  roles: {
+    id: 'roles.id',
+    name: 'roles.name',
+  },
+  users: {
+    id: 'users.id',
+    email: 'users.email',
+    status: 'users.status',
   },
   partners: {
     id: 'partners.id',
@@ -57,9 +98,30 @@ vi.mock('../db/schema', () => ({
 vi.mock('./auditEvents', () => ({
   writeAuditEvent: vi.fn(),
   requestLikeFromSnapshot: vi.fn(() => ({})),
+  ANONYMOUS_ACTOR_ID: '00000000-0000-0000-0000-000000000000',
 }));
 
 vi.mock('./sentry', () => ({ captureException: vi.fn() }));
+
+vi.mock('../jobs/tenantErasure', () => ({
+  enqueueTenantErasure: (...args: unknown[]) => enqueueTenantErasureMock(...(args as [])),
+}));
+
+vi.mock('../jobs/orgMerge', () => ({
+  getOrgMergeQueue: (...args: unknown[]) => getOrgMergeQueueMock(...(args as [])),
+}));
+
+vi.mock('./email', () => ({
+  getEmailService: (...args: unknown[]) => getEmailServiceMock(...(args as [])),
+}));
+
+// The sweeper imports this one constant from the merge engine (drift-guard,
+// Task 4 review) rather than hand-duplicating it — mocked here to keep this
+// file's dependency graph shallow, matching how `../jobs/orgMerge` above is
+// mocked down to just the one function this file actually calls.
+vi.mock('./orgMerge', () => ({
+  MERGE_PRIOR_STATUS_KEY: 'mergePriorStatus',
+}));
 
 const REVOCATION_RESULT = {
   apiKeysRevoked: 0,
@@ -96,6 +158,9 @@ vi.mock('./tenantLifecycle', () => ({
     agentTokensSuspended: 0,
     enrollmentKeysInvalidated: 0,
   })),
+  suspendOrganizationTenantAccessReversibly: vi.fn(async () => ({
+    agentTokensSuspended: 0,
+  })),
 }));
 
 vi.mock('./tenantStatus', () => ({ invalidateAgentTenantCache: vi.fn(async () => undefined) }));
@@ -111,7 +176,12 @@ vi.mock('drizzle-orm', () => ({
   isNotNull: vi.fn((c) => ({ isNotNull: c })),
   ne: vi.fn((l, r) => ({ ne: [l, r] })),
   // Tagged-template tag: sql`now()` → { sql: 'now()' } (see DB_NOW, #2877).
-  sql: vi.fn((strings: TemplateStringsArray) => ({ sql: strings.join('') })),
+  // `.raw` is used by the purging-recovery attempt counter's jsonb path
+  // literal; the real drizzle exposes it on the tag, so the mock must too.
+  sql: Object.assign(
+    vi.fn((strings: TemplateStringsArray) => ({ sql: strings.join('') })),
+    { raw: vi.fn((value: string) => ({ sql: value })) }
+  ),
 }));
 
 // The marker DB_NOW (sql`now()`) resolves to under the drizzle-orm mock above.
@@ -126,6 +196,7 @@ import {
   revokeOrganizationTenantAccess,
   revokePartnerTenantAccess,
   severAgentCredentialsForOrgIds,
+  suspendOrganizationTenantAccessReversibly,
 } from './tenantLifecycle';
 import { invalidateAgentTenantCache } from './tenantStatus';
 import {
@@ -136,12 +207,26 @@ import {
   finalizeOrganizationOffboarding,
   finalizePartnerOffboarding,
   sweepOffboardingTenants,
+  ARCHIVE_PURGING_RECOVERY_MAX_ATTEMPTS,
   OFFBOARDING_DRAIN_WINDOW_HOURS,
 } from './tenantOffboarding';
 
 const updateLog: { table: unknown; values: Record<string, unknown>; where: unknown }[] = [];
 const insertLog: { table: unknown; rows: Record<string, unknown>[] }[] = [];
 let updateReturningQueue: unknown[][];
+// Task 4 — captures the joined literal SQL text of every raw
+// `db.execute(sql\`...\`)` call (the fake `sql` tag above joins the
+// template's static segments; see the drizzle-orm mock). `executeQueue`
+// scripts the (RETURNING) rows each call resolves to, FIFO, same shape as
+// `updateReturningQueue`.
+const executedSqlLog: string[] = [];
+let executeQueue: unknown[][];
+// Every `.where(...)` predicate a candidate SELECT was built with, in call
+// order. Cases 2 and 3 of the org-merge backstop are distinguished ONLY by an
+// (NOT) EXISTS guard against org_merge_events, and getting it backwards
+// resurrects an already-emptied org — so the guards are asserted on the
+// predicate itself, not inferred from which rows the mock happened to return.
+const selectWhereLog: unknown[] = [];
 
 // Both `await ...where(...)` and `await ...where(...).returning(...)` shapes
 // are used; the mock supports both. `.returning()` results pop from a FIFO
@@ -150,6 +235,9 @@ function setupWrites() {
   updateLog.length = 0;
   insertLog.length = 0;
   updateReturningQueue = [];
+  executedSqlLog.length = 0;
+  executeQueue = [];
+  selectWhereLog.length = 0;
   updateMock.mockImplementation(
     (table: any) =>
       ({
@@ -172,6 +260,11 @@ function setupWrites() {
         }),
       }) as any
   );
+  executeMock.mockImplementation((q: { sql?: string }) => {
+    executedSqlLog.push(q?.sql ?? '');
+    const rows = executeQueue.length > 0 ? executeQueue.shift()! : [];
+    return Promise.resolve(rows);
+  });
 }
 
 // One flexible chain covering every select shape in this module:
@@ -179,7 +272,10 @@ function setupWrites() {
 function queueSelect(rows: unknown[]) {
   const chain: Record<string, any> = {};
   for (const method of ['from', 'innerJoin', 'where', 'for', 'limit', 'orderBy']) {
-    chain[method] = vi.fn(() => Object.assign(Promise.resolve(rows), chain));
+    chain[method] = vi.fn((...args: unknown[]) => {
+      if (method === 'where') selectWhereLog.push(args[0]);
+      return Object.assign(Promise.resolve(rows), chain);
+    });
   }
   selectMock.mockReturnValueOnce(Object.assign(Promise.resolve(rows), chain));
 }
@@ -212,6 +308,27 @@ describe('beginOrganizationOffboarding', () => {
     // window must include the entry's own commands (#2877 clock skew).
     expect(stamp.values.offboardingStartedAt).toEqual(SQL_NOW);
     expect(JSON.stringify(stamp.where)).toContain('isNull');
+  });
+
+  it('stores the archive target and purge timestamp without hard-revoking credentials', async () => {
+    const purgeAt = new Date('2027-01-24T00:00:00.000Z');
+    queueSelect([]); // devices
+
+    await beginOrganizationOffboarding('org-1', 'user-1', {
+      target: 'archive',
+      purgeAt,
+    });
+
+    const stamp = updatesFor(organizations)[0]!;
+    expect(stamp.values).toMatchObject({
+      offboardingTarget: 'archive',
+      purgeAt,
+    });
+    expect(revokeOrganizationTenantAccess).not.toHaveBeenCalled();
+    expect(prepareAgentDrainForOrgIds).toHaveBeenCalledWith(
+      ['org-1'],
+      { preserveEnrollmentKeys: true }
+    );
   });
 
   it('cancels other pending/sent commands, MERGES its reason into an existing device-remove uninstall, and queues a fresh row for the rest', async () => {
@@ -632,6 +749,33 @@ describe('finalizeOrganizationOffboarding', () => {
       })
     );
     expect(severAgentCredentialsForOrgIds).toHaveBeenCalledWith(['org-1']);
+    expect(suspendOrganizationTenantAccessReversibly).not.toHaveBeenCalled();
+  });
+
+  it('finalizes an archive target to archived, stamps archived_at, and suspends reversibly', async () => {
+    const purgeAt = new Date('2027-01-24T00:00:00.000Z');
+    queueSelect([{ startedAt: DRAIN_START, target: 'archive', purgeAt }]);
+    updateReturningQueue.push([{ id: 'org-1' }]); // CAS wins
+    queueSelect([]); // terminal
+    queueSelect([]); // outstanding
+    queueSelect([{ status: 'archived' }]); // pre-suspend status re-check
+
+    const before = Date.now();
+    const report = await finalizeOrganizationOffboarding('org-1', { forcedByDeadline: false });
+    const after = Date.now();
+
+    expect(report).not.toBeNull();
+    const flip = updatesFor(organizations)[0]!;
+    expect(flip.values.status).toBe('archived');
+    expect(flip.values.offboardingStartedAt).toBeNull();
+    expect(flip.values.archivedAt).toBeInstanceOf(Date);
+    expect((flip.values.archivedAt as Date).getTime()).toBeGreaterThanOrEqual(before);
+    expect((flip.values.archivedAt as Date).getTime()).toBeLessThanOrEqual(after);
+    expect(flip.values.purgeAt).toBe(purgeAt);
+    expect(JSON.stringify(flip.where)).toContain('offboarding');
+    expect(JSON.stringify(flip.where)).toContain('archive');
+    expect(suspendOrganizationTenantAccessReversibly).toHaveBeenCalledWith('org-1');
+    expect(severAgentCredentialsForOrgIds).not.toHaveBeenCalled();
   });
 
   // Fix round 1: collectAndCancelOutstanding used to cancel/report EVERY
@@ -799,6 +943,13 @@ describe('sweepOffboardingTenants', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     setupWrites();
+    // Task 4 defaults: no committed-merge erasure backlog, no stuck fences,
+    // and (when a case does reach the liveness check) no live BullMQ job.
+    enqueueTenantErasureMock.mockResolvedValue({ id: 'tenant-erasure-org-x' });
+    getMergeJobMock.mockResolvedValue(null);
+    getOrgMergeQueueMock.mockReturnValue({ getJob: getMergeJobMock });
+    sendEmailMock.mockResolvedValue(undefined);
+    getEmailServiceMock.mockReturnValue({ sendEmail: sendEmailMock });
   });
 
   const NOW = new Date('2026-07-24T12:00:00Z');
@@ -807,11 +958,30 @@ describe('sweepOffboardingTenants', () => {
     NOW.getTime() - (OFFBOARDING_DRAIN_WINDOW_HOURS + 1) * 60 * 60 * 1000
   );
 
-  // Candidate lists are read up-front (orgs, then partners) before any
-  // per-tenant work begins.
-  function queueCandidates(orgs: unknown[], ptrs: unknown[]) {
+  // Candidate lists are read up-front (orgs, partners, then the three Task-4
+  // org-merge backstop lists) before any per-tenant work begins. The merge
+  // lists default to empty so every pre-existing call site here (which only
+  // supplies orgs/ptrs) exercises no backstop case.
+  function queueCandidates(
+    orgs: unknown[],
+    ptrs: unknown[],
+    mergeErasurePending: unknown[] = [],
+    mergeUnfenceCandidates: unknown[] = [],
+    mergeShellStampPending: unknown[] = [],
+    archivePurgeCandidates: unknown[] = [],
+    archiveWarn14Candidates: unknown[] = [],
+    archiveWarn1Candidates: unknown[] = [],
+    archivePurgingCandidates: unknown[] = []
+  ) {
     queueSelect(orgs);
     queueSelect(ptrs);
+    queueSelect(mergeErasurePending);
+    queueSelect(mergeUnfenceCandidates);
+    queueSelect(mergeShellStampPending);
+    queueSelect(archivePurgeCandidates);
+    queueSelect(archiveWarn14Candidates);
+    queueSelect(archiveWarn1Candidates);
+    queueSelect(archivePurgingCandidates);
   }
 
   it('finalizes an org whose fleet fully drained (before the deadline)', async () => {
@@ -848,9 +1018,15 @@ describe('sweepOffboardingTenants', () => {
 
     await sweepOffboardingTenants(NOW);
 
-    // Select call index 2 (0: orgs candidates, 1: partner candidates,
-    // 2: this org's countOutstandingUninstalls call).
-    const outstandingWhere = selectMock.mock.results[2]!.value.where.mock.calls[0][0];
+    // Located by CONTENT, not by call index: the candidate lists read up-front
+    // grew from two to five when Wave 2 added the org-merge backstop sweeps,
+    // and a hard-coded index silently retargets this assertion at whatever
+    // query lands in the slot instead of failing. Match the one query that
+    // touches device_commands — countOutstandingUninstalls is the only one.
+    const outstandingWhere = selectMock.mock.results
+      .map((r) => r.value?.where?.mock?.calls?.[0]?.[0])
+      .find((w: unknown) => w !== undefined && JSON.stringify(w).includes('deviceCommands.uninstallReasons'));
+    expect(outstandingWhere, 'no select() issued a where() touching deviceCommands.uninstallReasons').toBeDefined();
     const whereJson = JSON.stringify(outstandingWhere);
     expect(whereJson).toContain('self_uninstall');
     expect(whereJson).toContain('"or"');
@@ -905,7 +1081,7 @@ describe('sweepOffboardingTenants', () => {
   // indistinguishable from a clean drain (the #2774 false-confidence bug).
   it('repairs an incomplete entry (queues uninstalls) instead of finalizing it', async () => {
     queueCandidates([{ id: 'org-1', startedAt: null }], []);
-    queueSelect([{ id: 'org-1' }]); // tenant row FOR UPDATE (lock-order guard, #2877)
+    queueSelect([{ status: 'offboarding', startedAt: null }]); // tenant row FOR UPDATE — now also the #4022 precondition recheck
     queueSelect([{ id: 'd1' }]); // devices to queue
     queueSelect([]); // no existing uninstalls
 
@@ -932,7 +1108,7 @@ describe('sweepOffboardingTenants', () => {
       return { enrollmentKeysInvalidated: 0, agentTokensRestored: 0 };
     });
     queueCandidates([{ id: 'org-1', startedAt: null }], []);
-    queueSelect([{ id: 'org-1' }]); // tenant row FOR UPDATE (lock-order guard, #2877)
+    queueSelect([{ status: 'offboarding', startedAt: null }]); // tenant row FOR UPDATE — now also the #4022 precondition recheck
     queueSelect([{ id: 'd1' }]); // devices to queue
     queueSelect([]); // no existing uninstalls
 
@@ -943,6 +1119,19 @@ describe('sweepOffboardingTenants', () => {
     expect(insertsAtPrepareTime).toBe(0);
     // ...and the uninstall was queued after it, not skipped.
     expect(insertLog[0]!.rows[0]).toMatchObject({ deviceId: 'd1', type: 'self_uninstall' });
+  });
+
+  it('preserves enrollment keys when repairing an incomplete archive entry', async () => {
+    queueCandidates([{ id: 'org-1', startedAt: null }], []);
+    queueSelect([{ status: 'offboarding', startedAt: null, target: 'archive' }]);
+    queueSelect([]); // no devices
+
+    await sweepOffboardingTenants(NOW);
+
+    expect(prepareAgentDrainForOrgIds).toHaveBeenCalledWith(
+      ['org-1'],
+      { preserveEnrollmentKeys: true }
+    );
   });
 
   // One bad tenant must not starve every other draining tenant's finalization
@@ -983,5 +1172,667 @@ describe('sweepOffboardingTenants', () => {
 
     expect(result.partnersFinalized).toBe(1);
     expect(severAgentCredentialsForOrgIds).toHaveBeenCalledWith(['org-1']);
+  });
+
+  describe('archive purge lifecycle', () => {
+    const PURGE_AT = new Date('2026-07-25T12:00:00.000Z');
+
+    it('CASes an overdue archived org to purging, enqueues erasure, and writes an org-less audit', async () => {
+      queueCandidates(
+        [], [], [], [], [],
+        [{ id: 'org-archive-1', partnerId: 'partner-1', name: 'Acme', purgeAt: PURGE_AT }]
+      );
+      executeQueue.push([{ id: 'org-archive-1' }]);
+      enqueueTenantErasureMock.mockResolvedValueOnce({ id: 'tenant-erasure-org-archive-1' });
+
+      const result = await sweepOffboardingTenants(NOW);
+
+      expect(enqueueTenantErasureMock).toHaveBeenCalledWith({
+        orgId: 'org-archive-1',
+        performedBy: '00000000-0000-0000-0000-000000000000',
+      });
+      expect(writeAuditEvent).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          orgId: null,
+          action: 'org.archive.purge_enqueued',
+          resourceType: 'organization',
+          resourceId: 'org-archive-1',
+          actorType: 'system',
+          details: expect.objectContaining({
+            partnerId: 'partner-1',
+            erasureJobId: 'tenant-erasure-org-archive-1',
+          }),
+        })
+      );
+      expect(result.archivePurgesEnqueued).toBe(1);
+      expect(result.failures).toBe(0);
+    });
+
+    it('does nothing when restore wins between candidate SELECT and the archived-only CAS', async () => {
+      queueCandidates(
+        [], [], [], [], [],
+        [{ id: 'org-restored', partnerId: 'partner-1', name: 'Restored', purgeAt: PURGE_AT }]
+      );
+      executeQueue.push([]);
+
+      const result = await sweepOffboardingTenants(NOW);
+
+      expect(enqueueTenantErasureMock).not.toHaveBeenCalled();
+      expect(writeAuditEvent).not.toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ action: 'org.archive.purge_enqueued' })
+      );
+      expect(result.archivePurgesEnqueued).toBe(0);
+    });
+
+    it('isolates a failed erasure handoff and continues with the next purge candidate', async () => {
+      queueCandidates(
+        [], [], [], [], [],
+        [
+          { id: 'org-purge-bad', partnerId: 'partner-1', name: 'Bad', purgeAt: PURGE_AT },
+          { id: 'org-purge-good', partnerId: 'partner-1', name: 'Good', purgeAt: PURGE_AT },
+        ]
+      );
+      executeQueue.push([{ id: 'org-purge-bad' }], [{ id: 'org-purge-good' }]);
+      enqueueTenantErasureMock
+        .mockRejectedValueOnce(new Error('queue unavailable'))
+        .mockResolvedValueOnce({ id: 'tenant-erasure-org-purge-good' });
+
+      const result = await sweepOffboardingTenants(NOW);
+
+      expect(enqueueTenantErasureMock).toHaveBeenCalledTimes(2);
+      expect(result.archivePurgesEnqueued).toBe(1);
+      expect(result.failures).toBe(1);
+    });
+
+    it('retries the erasure handoff on the next sweep when the archived-to-purging CAS committed before enqueue failed', async () => {
+      const candidate = {
+        id: 'org-purge-recovery',
+        partnerId: 'partner-1',
+        name: 'Recovery',
+        purgeAt: PURGE_AT,
+      };
+      queueCandidates([], [], [], [], [], [candidate]);
+      executeQueue.push([{ id: candidate.id }]);
+      enqueueTenantErasureMock.mockRejectedValueOnce(new Error('queue unavailable'));
+
+      const first = await sweepOffboardingTenants(NOW);
+
+      expect(first).toMatchObject({ archivePurgesEnqueued: 0, failures: 1 });
+
+      // The first CAS left the row at `purging`; a second sweep must still
+      // pass it through the stale-job-aware enqueue helper. Review fix I-5:
+      // the recovery loop first claims an attempt (atomic jsonb increment)
+      // and only re-enqueues while the count is inside the ceiling.
+      queueCandidates([], [], [], [], [], [], [], [], [candidate]);
+      executeQueue.push([{ attempts: 1 }]); // attempt counter increment
+      enqueueTenantErasureMock.mockResolvedValueOnce({ id: 'tenant-erasure-org-purge-recovery' });
+
+      const second = await sweepOffboardingTenants(NOW);
+
+      expect(second.failures).toBe(0);
+      expect(enqueueTenantErasureMock).toHaveBeenCalledTimes(2);
+      expect(enqueueTenantErasureMock).toHaveBeenLastCalledWith({
+        orgId: candidate.id,
+        performedBy: '00000000-0000-0000-0000-000000000000',
+      });
+      // Review hardening (I3): the recovery backstop owns its own counter and
+      // audit — separate from `archivePurgesEnqueued`, which only the initial
+      // CAS path increments.
+      expect(second.purgingRecoveryReenqueued).toBe(1);
+      expect(writeAuditEvent).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          orgId: null,
+          action: 'org.archive.purge_recovery_reenqueued',
+          resourceType: 'organization',
+          resourceId: candidate.id,
+          actorType: 'system',
+          result: 'success',
+        })
+      );
+    });
+
+    // ── bounded recovery (review fix I-5) ─────────────────────────────────
+    // Before this the backstop re-ran a permanently failing cascade on EVERY
+    // 5-minute sweep forever: ~288 erasure jobs, 288 audit rows and 288 Sentry
+    // captures per day per wedged org, with the tenant neither erased nor
+    // visible nor restorable.
+    describe('bounded purging recovery', () => {
+      const candidate = { id: 'org-wedged' };
+
+      it('gives up ONCE past the attempt ceiling: no enqueue, an exhausted audit, one console.error', async () => {
+        queueCandidates([], [], [], [], [], [], [], [], [candidate]);
+        executeQueue.push([{ attempts: ARCHIVE_PURGING_RECOVERY_MAX_ATTEMPTS + 1 }]);
+        const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+        try {
+          const result = await sweepOffboardingTenants(NOW);
+
+          expect(enqueueTenantErasureMock).not.toHaveBeenCalled();
+          expect(result.purgingRecoveryReenqueued).toBe(0);
+          expect(result.purgingRecoveryExhausted).toBe(1);
+          expect(result.failures).toBe(0); // giving up is not a sweep failure
+          expect(err).toHaveBeenCalledTimes(1);
+          expect(writeAuditEvent).toHaveBeenCalledWith(
+            expect.anything(),
+            expect.objectContaining({
+              orgId: null,
+              action: 'org.archive.purge_recovery_exhausted',
+              resourceId: candidate.id,
+              actorType: 'system',
+              result: 'failure',
+              details: expect.objectContaining({
+                attempts: ARCHIVE_PURGING_RECOVERY_MAX_ATTEMPTS + 1,
+                maxAttempts: ARCHIVE_PURGING_RECOVERY_MAX_ATTEMPTS,
+              }),
+            })
+          );
+        } finally {
+          err.mockRestore();
+        }
+      });
+
+      it('still recovers on the LAST attempt inside the ceiling', async () => {
+        queueCandidates([], [], [], [], [], [], [], [], [candidate]);
+        executeQueue.push([{ attempts: ARCHIVE_PURGING_RECOVERY_MAX_ATTEMPTS }]);
+        enqueueTenantErasureMock.mockResolvedValueOnce({ id: 'job' });
+
+        const result = await sweepOffboardingTenants(NOW);
+
+        expect(enqueueTenantErasureMock).toHaveBeenCalledTimes(1);
+        expect(result.purgingRecoveryReenqueued).toBe(1);
+        expect(result.purgingRecoveryExhausted).toBe(0);
+      });
+
+      it('skips a row that left purging between the snapshot and the attempt claim', async () => {
+        queueCandidates([], [], [], [], [], [], [], [], [candidate]);
+        executeQueue.push([]); // the status-guarded increment matched nothing
+
+        const result = await sweepOffboardingTenants(NOW);
+
+        expect(enqueueTenantErasureMock).not.toHaveBeenCalled();
+        expect(result.purgingRecoveryReenqueued).toBe(0);
+        expect(result.purgingRecoveryExhausted).toBe(0);
+      });
+    });
+
+    // Review hardening (I5): replaces the old "both send" expectation. An
+    // outage catch-up pass can find the SAME org qualifying for both buckets
+    // (both markers absent, purge_at already inside the 1-day window) — only
+    // the more urgent (1-day) copy should ever reach a recipient, but the
+    // 14-day marker must still be claimed so it can't re-fire on a later
+    // sweep once the 1-day marker is claimed and this org drops off THAT
+    // candidate list.
+    it('suppresses the less-urgent 14-day send when the 1-day bucket also fires, but still claims its marker', async () => {
+      const candidate = {
+        id: 'org-warning',
+        partnerId: 'partner-1',
+        name: 'Acme <Ops>',
+        purgeAt: PURGE_AT,
+      };
+      queueCandidates([], [], [], [], [], [], [candidate], [candidate]);
+      // 14-day group: suppressed — claims its own marker directly, with no
+      // recipient lookup at all.
+      executeQueue.push([{ id: candidate.id }]);
+      // 1-day group: the normal recipient-lookup -> claim -> send flow.
+      queueSelect([{ email: 'admin@msp.test' }]);
+      executeQueue.push([{ id: candidate.id, claimed_value: NOW.toISOString() }]);
+
+      const result = await sweepOffboardingTenants(NOW);
+
+      expect(result.failures).toBe(0);
+      expect(sendEmailMock).toHaveBeenCalledTimes(1);
+      const [mail] = sendEmailMock.mock.calls[0]!;
+      expect(mail).toMatchObject({
+        to: ['admin@msp.test'],
+        subject: 'Organization purge in 1 day: Acme <Ops>',
+      });
+      expect(mail.html).toContain('Acme &lt;Ops&gt;');
+      expect(writeAuditEvent).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: 'org.archive.purge_warning_sent',
+          details: expect.objectContaining({ bucketDays: 1, days: 1 }),
+        })
+      );
+      // The suppressed 14-day bucket claimed its marker but never audited a
+      // send for it.
+      expect(writeAuditEvent).not.toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: 'org.archive.purge_warning_sent',
+          details: expect.objectContaining({ bucketDays: 14 }),
+        })
+      );
+    });
+
+    it('derives the warning label from actual days remaining, not the fixed bucket', async () => {
+      const candidate = {
+        id: 'org-warning-10d',
+        partnerId: 'partner-1',
+        name: 'Acme',
+        purgeAt: new Date(NOW.getTime() + 10 * 24 * 60 * 60 * 1000), // 10 days out
+      };
+      queueCandidates([], [], [], [], [], [], [candidate]);
+      queueSelect([{ email: 'admin@msp.test' }]);
+      executeQueue.push([{ id: candidate.id, claimed_value: NOW.toISOString() }]);
+
+      await sweepOffboardingTenants(NOW);
+
+      expect(sendEmailMock).toHaveBeenCalledWith(
+        expect.objectContaining({ subject: 'Organization purge in 10 days: Acme' })
+      );
+      expect(writeAuditEvent).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: 'org.archive.purge_warning_sent',
+          details: expect.objectContaining({ days: 10, bucketDays: 14, orgId: candidate.id }),
+        })
+      );
+    });
+
+    it('selects recipients by the established Partner Admin role rather than org-access breadth', async () => {
+      const candidate = {
+        id: 'org-warning-admins',
+        partnerId: 'partner-1',
+        name: 'Acme',
+        purgeAt: PURGE_AT,
+      };
+      queueCandidates([], [], [], [], [], [], [candidate]);
+      queueSelect([{ email: 'selected-access-admin@msp.test' }]);
+      executeQueue.push([{ id: candidate.id, claimed_value: NOW.toISOString() }]);
+
+      await sweepOffboardingTenants(NOW);
+
+      const recipientWhere = selectWhereLog.find((where) => {
+        const encoded = JSON.stringify(where);
+        return encoded.includes('partnerUsers.partnerId') && encoded.includes('roles.name');
+      });
+      expect(recipientWhere).toBeDefined();
+      expect(JSON.stringify(recipientWhere)).toContain('Partner Admin');
+      expect(JSON.stringify(recipientWhere)).not.toContain('partnerUsers.orgAccess');
+      expect(sendEmailMock).toHaveBeenCalledWith(
+        expect.objectContaining({ to: ['selected-access-admin@msp.test'] })
+      );
+    });
+
+    it('releases its exact marker claim after an email failure so the next sweep retries', async () => {
+      const candidate = {
+        id: 'org-warning-retry',
+        partnerId: 'partner-1',
+        name: 'Acme',
+        purgeAt: PURGE_AT,
+      };
+      const firstClaim = '2026-07-24T12:00:00.000000+00:00';
+      queueCandidates([], [], [], [], [], [], [candidate]);
+      queueSelect([{ email: 'admin@msp.test' }]);
+      executeQueue.push(
+        [{ id: candidate.id, claimed_value: firstClaim }],
+        [{ id: candidate.id }],
+      );
+      sendEmailMock.mockRejectedValueOnce(new Error('email unavailable'));
+
+      const first = await sweepOffboardingTenants(NOW);
+
+      expect(first.failures).toBe(1);
+      expect(executedSqlLog.some((statement) =>
+        statement.includes("settings = COALESCE(settings, '{}'::jsonb) -")
+        && statement.includes('settings->>')
+      )).toBe(true);
+
+      queueCandidates([], [], [], [], [], [], [candidate]);
+      queueSelect([{ email: 'admin@msp.test' }]);
+      executeQueue.push([{ id: candidate.id, claimed_value: '2026-07-24T12:05:00.000000+00:00' }]);
+
+      const second = await sweepOffboardingTenants(NOW);
+
+      expect(second.failures).toBe(0);
+      expect(sendEmailMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('dedupes a warning when another sweeper already claimed its atomic settings marker', async () => {
+      const candidate = {
+        id: 'org-warning-race',
+        partnerId: 'partner-1',
+        name: 'Acme',
+        purgeAt: PURGE_AT,
+      };
+      queueCandidates([], [], [], [], [], [], [candidate]);
+      queueSelect([{ email: 'admin@msp.test' }]);
+      executeQueue.push([]); // marker UPDATE lost: another sweep already claimed it
+
+      await sweepOffboardingTenants(NOW);
+
+      expect(sendEmailMock).not.toHaveBeenCalled();
+    });
+
+    // Review hardening (I4): the two skip paths ahead of the marker claim
+    // must never claim it (a later sweep with a real email service /
+    // recipients must still get a chance to send), but they must not fail
+    // silently either.
+    it('warns (without claiming the marker) when no email service is configured', async () => {
+      const candidate = {
+        id: 'org-warning-no-email-service',
+        partnerId: 'partner-1',
+        name: 'Acme',
+        purgeAt: PURGE_AT,
+      };
+      getEmailServiceMock.mockReturnValueOnce(null);
+      queueCandidates([], [], [], [], [], [], [candidate]);
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+      const result = await sweepOffboardingTenants(NOW);
+
+      expect(result.failures).toBe(0);
+      expect(sendEmailMock).not.toHaveBeenCalled();
+      expect(executeMock).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining(candidate.id));
+    });
+
+    it('warns (without claiming the marker) when there are zero active Partner Admin recipients', async () => {
+      const candidate = {
+        id: 'org-warning-no-recipients',
+        partnerId: 'partner-1',
+        name: 'Acme',
+        purgeAt: PURGE_AT,
+      };
+      queueCandidates([], [], [], [], [], [], [candidate]);
+      queueSelect([]); // no active Partner Admins
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+      const result = await sweepOffboardingTenants(NOW);
+
+      expect(result.failures).toBe(0);
+      expect(sendEmailMock).not.toHaveBeenCalled();
+      expect(executeMock).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining(candidate.id));
+    });
+
+    it('audits a successful warning send org-less, with the org id and computed days in details', async () => {
+      const candidate = {
+        id: 'org-warning-audit',
+        partnerId: 'partner-1',
+        name: 'Acme',
+        purgeAt: PURGE_AT,
+      };
+      queueCandidates([], [], [], [], [], [], [], [candidate]);
+      queueSelect([{ email: 'admin@msp.test' }]);
+      executeQueue.push([{ id: candidate.id, claimed_value: NOW.toISOString() }]);
+
+      await sweepOffboardingTenants(NOW);
+
+      expect(writeAuditEvent).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          orgId: null,
+          action: 'org.archive.purge_warning_sent',
+          resourceType: 'organization',
+          resourceId: candidate.id,
+          actorType: 'system',
+          result: 'success',
+          details: expect.objectContaining({ orgId: candidate.id, days: 1, bucketDays: 1 }),
+        })
+      );
+    });
+  });
+
+  // Task 4 — org-merge sweeper backstop. Two independent recovery cases the
+  // job (jobs/orgMerge.ts) cannot self-heal once it's dead: Phase B committed
+  // (loser deleted_at stamped) but Phase C (erasure enqueue) never ran; or
+  // Phase A fenced the loser but the whole job died before Phase B ever
+  // opened its transaction.
+  describe('org-merge backstop', () => {
+    it('re-enqueues tenant erasure for a merge that committed but never enqueued it', async () => {
+      queueCandidates([], [], [{ id: 'org-merged-1' }], []);
+
+      const result = await sweepOffboardingTenants(NOW);
+
+      expect(enqueueTenantErasureMock).toHaveBeenCalledWith(
+        expect.objectContaining({ orgId: 'org-merged-1' })
+      );
+      expect(result.mergeErasureReenqueued).toBe(1);
+      expect(result.failures).toBe(0);
+    });
+
+    // The erasure payload's performedBy lands in the REAL worker's audit
+    // rows as a uuid actor_id column — a sweeper-synthesized non-uuid string
+    // there would abort the erasure cascade the very first time it tried to
+    // write its own audit row.
+    it('re-enqueues erasure with a valid uuid-shaped system actor', async () => {
+      queueCandidates([], [], [{ id: 'org-merged-1' }], []);
+
+      await sweepOffboardingTenants(NOW);
+
+      const [payload] = enqueueTenantErasureMock.mock.calls[0]!;
+      expect(payload.performedBy).toMatch(/^[0-9a-f-]{36}$/i);
+    });
+
+    it('isolates a failing erasure re-enqueue from other merge candidates', async () => {
+      queueCandidates([], [], [{ id: 'org-bad' }, { id: 'org-good' }], []);
+      enqueueTenantErasureMock
+        .mockRejectedValueOnce(new Error('queue unavailable'))
+        .mockResolvedValueOnce({ id: 'tenant-erasure-org-good' });
+
+      const result = await sweepOffboardingTenants(NOW);
+
+      expect(enqueueTenantErasureMock).toHaveBeenCalledTimes(2);
+      expect(result.mergeErasureReenqueued).toBe(1);
+      expect(result.failures).toBe(1);
+    });
+
+    // The unfence write must be a SINGLE atomic UPDATE mirroring
+    // `unfenceLoser` (services/orgMerge.ts:443-459) exactly: the restore CASE
+    // and the jsonb key-delete both run INSIDE the statement. Asserted
+    // against the compiled SQL text (the fake `sql` tag above joins the
+    // template's static segments — see the drizzle-orm mock), same
+    // convention `services/orgMerge.test.ts` uses for its own inline
+    // `db.execute(sql\`...\`)` calls. A prior version of this code read
+    // `settings` in JS and wrote the whole column back via the
+    // update()/set() builder — that silently reverted any concurrent
+    // settings write (a platform-admin PATCH, an AI-tool write) landing
+    // between the candidate SELECT and this UPDATE. Asserting there's no
+    // `updatesFor(organizations)` entry proves that builder path is gone.
+    it('unfences a stuck merge fence via a single atomic UPDATE when no BullMQ job is live', async () => {
+      queueCandidates([], [], [], [{ id: 'org-fenced-1', partnerId: 'partner-1' }]);
+      getMergeJobMock.mockResolvedValue(null);
+      executeQueue.push([{ id: 'org-fenced-1', restored_status: 'active' }]);
+
+      const result = await sweepOffboardingTenants(NOW);
+
+      expect(getOrgMergeQueueMock).toHaveBeenCalled();
+      expect(getMergeJobMock).toHaveBeenCalledWith('org-merge-org-fenced-1');
+
+      const executedSql = executedSqlLog.join(' ');
+      // Atomic jsonb key-delete — never a JS-assembled full settings object.
+      expect(executedSql).toContain("COALESCE(settings, '{}'::jsonb) -");
+      // The WHERE guard: only a still-fenced, not-yet-deleted org qualifies.
+      expect(executedSql).toMatch(/status\s*=\s*'merging'/);
+      expect(executedSql).toContain('deleted_at IS NULL');
+      expect(executedSql).toContain('RETURNING id, status::text AS restored_status');
+      // No full-column overwrite via the update()/set() builder anywhere.
+      expect(updatesFor(organizations)).toHaveLength(0);
+
+      expect(writeAuditEvent).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          orgId: null,
+          action: 'org.merge.unfenced_by_sweeper',
+          resourceType: 'organization',
+          resourceId: 'org-fenced-1',
+          details: expect.objectContaining({ partnerId: 'partner-1', restoredStatus: 'active' }),
+        })
+      );
+      expect(result.mergeUnfenced).toBe(1);
+    });
+
+    // The default-to-suspended behavior lives entirely in the UPDATE's own
+    // CASE/ELSE — asserted on the compiled SQL shape, not faked at the mock
+    // layer (a mocked `db.execute` can't run real Postgres CASE logic; the
+    // CASE's actual runtime behavior is an integration-test concern).
+    it('encodes default-to-suspended for a missing/invalid prior status in the UPDATE itself', async () => {
+      queueCandidates([], [], [], [{ id: 'org-fenced-2', partnerId: 'partner-1' }]);
+      executeQueue.push([{ id: 'org-fenced-2', restored_status: 'suspended' }]);
+
+      await sweepOffboardingTenants(NOW);
+
+      const executedSql = executedSqlLog.join(' ');
+      expect(executedSql).toContain("IN ('active', 'trial', 'suspended')");
+      expect(executedSql).toContain("ELSE 'suspended'");
+    });
+
+    // A legitimately long merge must never be unfenced mid-transaction — its
+    // writers would then race the merge's own re-tenant statements.
+    it('SKIPS unfencing while the merge job is still active/waiting/delayed', async () => {
+      queueCandidates([], [], [], [{ id: 'org-fenced-3', partnerId: 'partner-1' }]);
+      getMergeJobMock.mockResolvedValue({ getState: vi.fn().mockResolvedValue('active') });
+
+      const result = await sweepOffboardingTenants(NOW);
+
+      expect(executedSqlLog).toHaveLength(0);
+      expect(writeAuditEvent).not.toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ action: 'org.merge.unfenced_by_sweeper' })
+      );
+      expect(result.mergeUnfenced).toBe(0);
+      expect(result.failures).toBe(0);
+    });
+
+    it('SKIPS unfencing (fail safe) when the BullMQ queue cannot be reached', async () => {
+      queueCandidates([], [], [], [{ id: 'org-fenced-4', partnerId: 'partner-1' }]);
+      getOrgMergeQueueMock.mockImplementationOnce(() => {
+        throw new Error('redis unavailable');
+      });
+
+      const result = await sweepOffboardingTenants(NOW);
+
+      expect(executedSqlLog).toHaveLength(0);
+      // A fail-safe skip is expected steady-state behavior, not an error to
+      // surface as an operational failure count.
+      expect(result.failures).toBe(0);
+      expect(result.mergeUnfenced).toBe(0);
+    });
+
+    it('isolates a failing liveness check from other merge candidates', async () => {
+      queueCandidates([], [], [], [
+        { id: 'org-fenced-bad', partnerId: 'partner-1' },
+        { id: 'org-fenced-good', partnerId: 'partner-1' },
+      ]);
+      getMergeJobMock
+        .mockRejectedValueOnce(new Error('boom'))
+        .mockResolvedValueOnce(null);
+      executeQueue.push([{ id: 'org-fenced-good', restored_status: 'suspended' }]);
+
+      const result = await sweepOffboardingTenants(NOW);
+
+      // The liveness-check failure for org-fenced-bad is a fail-safe SKIP
+      // (not a counted failure) — but org-fenced-good must still proceed and
+      // get its own atomic UPDATE.
+      expect(result.mergeUnfenced).toBe(1);
+      expect(result.failures).toBe(0);
+      expect(executedSqlLog).toHaveLength(1);
+    });
+
+    // --- case 3: merge committed, terminal-shell stamp never landed --------
+    //
+    // The state cases 2 and 3 share is `status='merging' AND deleted_at IS
+    // NULL`. Phase B commits and a SEPARATE transaction stamps `deleted_at`
+    // (services/orgMerge.ts `stampTerminalShell` explains why it cannot be the
+    // same one), so a process death in that gap leaves an EMPTIED org looking
+    // exactly like a never-started merge — except for the `org_merge_events`
+    // row Phase B wrote. Unfencing it would restore `mergePriorStatus` and
+    // hand the partner back a permanently wedged ghost org whose every row now
+    // lives under the survivor.
+    describe('committed-but-unstamped merge (case 3)', () => {
+      // The guards are asserted on the PREDICATES, not on which rows the mock
+      // returns: the mock would happily feed the same row to either case, so
+      // only the compiled `(NOT) EXISTS` proves the two lists cannot overlap.
+      it('scopes case 2 to orgs with NO merge event and case 3 to orgs WITH one', async () => {
+        queueCandidates([], [], [], [], []);
+
+        await sweepOffboardingTenants(NOW);
+
+        const predicates = JSON.stringify(selectWhereLog);
+        expect(predicates).toContain('NOT EXISTS (SELECT 1 FROM org_merge_events e WHERE e.loser_org_id = ');
+        // The case-3 twin, without the NOT — present exactly once each.
+        const exists = predicates.split('EXISTS (SELECT 1 FROM org_merge_events').length - 1;
+        const notExists = predicates.split('NOT EXISTS (SELECT 1 FROM org_merge_events').length - 1;
+        expect(exists).toBe(2); // one bare EXISTS + the one inside NOT EXISTS
+        expect(notExists).toBe(1);
+      });
+
+      it('stamps the shell and hands it to erasure instead of unfencing it', async () => {
+        queueCandidates([], [], [], [], [{ id: 'org-unstamped-1', partnerId: 'partner-1' }]);
+        executeQueue.push([{ id: 'org-unstamped-1' }]);
+
+        const result = await sweepOffboardingTenants(NOW);
+
+        const executedSql = executedSqlLog.join(' ');
+        expect(executedSql).toContain('SET deleted_at = now(), updated_at = now()');
+        expect(executedSql).toMatch(/status\s*=\s*'merging'/);
+        expect(executedSql).toContain('deleted_at IS NULL');
+        expect(executedSql).toContain('RETURNING id');
+        // Emphatically NOT the unfence write: no prior-status restore, no
+        // jsonb key-delete. Restoring this org would resurrect it.
+        expect(executedSql).not.toContain('mergePriorStatus');
+        expect(executedSql).not.toContain("COALESCE(settings, '{}'::jsonb) -");
+        expect(updatesFor(organizations)).toHaveLength(0);
+
+        expect(enqueueTenantErasureMock).toHaveBeenCalledWith(
+          expect.objectContaining({ orgId: 'org-unstamped-1' })
+        );
+        expect(writeAuditEvent).toHaveBeenCalledWith(
+          expect.anything(),
+          expect.objectContaining({
+            orgId: null,
+            action: 'org.merge.stamped_by_sweeper',
+            resourceType: 'organization',
+            resourceId: 'org-unstamped-1',
+            details: expect.objectContaining({ partnerId: 'partner-1' }),
+          })
+        );
+        expect(writeAuditEvent).not.toHaveBeenCalledWith(
+          expect.anything(),
+          expect.objectContaining({ action: 'org.merge.unfenced_by_sweeper' })
+        );
+        expect(result.mergeShellsStamped).toBe(1);
+        expect(result.mergeUnfenced).toBe(0);
+        expect(result.failures).toBe(0);
+      });
+
+      // The merge's own retry can win the race between the candidate SELECT
+      // and this UPDATE. RETURNING no row means someone else stamped it, and
+      // claiming the work (audit + counter) would be a lie.
+      it('claims nothing when the stamp matched no row', async () => {
+        queueCandidates([], [], [], [], [{ id: 'org-unstamped-2', partnerId: 'partner-1' }]);
+        executeQueue.push([]);
+
+        const result = await sweepOffboardingTenants(NOW);
+
+        expect(enqueueTenantErasureMock).not.toHaveBeenCalled();
+        expect(writeAuditEvent).not.toHaveBeenCalledWith(
+          expect.anything(),
+          expect.objectContaining({ action: 'org.merge.stamped_by_sweeper' })
+        );
+        expect(result.mergeShellsStamped).toBe(0);
+        expect(result.failures).toBe(0);
+      });
+
+      it('isolates a failing erasure handoff from other stamp candidates', async () => {
+        queueCandidates([], [], [], [], [
+          { id: 'org-unstamped-bad', partnerId: 'partner-1' },
+          { id: 'org-unstamped-good', partnerId: 'partner-1' },
+        ]);
+        executeQueue.push([{ id: 'org-unstamped-bad' }], [{ id: 'org-unstamped-good' }]);
+        enqueueTenantErasureMock
+          .mockRejectedValueOnce(new Error('queue unavailable'))
+          .mockResolvedValueOnce({ id: 'tenant-erasure-org-unstamped-good' });
+
+        const result = await sweepOffboardingTenants(NOW);
+
+        expect(result.mergeShellsStamped).toBe(1);
+        expect(result.failures).toBe(1);
+      });
+    });
   });
 });

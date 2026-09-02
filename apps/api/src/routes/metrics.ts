@@ -7,25 +7,23 @@
 import { Hono } from 'hono';
 import { routePath as honoRoutePath } from 'hono/route';
 import { avg, and, eq, gte, inArray, sql } from 'drizzle-orm';
-import { Counter, Gauge, Histogram, Registry } from 'prom-client';
-import { createHash, timingSafeEqual } from 'crypto';
+import { Counter, Gauge, Histogram } from 'prom-client';
 
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { deviceMetrics, devices, metricRollups, recoveryReadiness as recoveryReadinessTable, remoteSessions } from '../db/schema';
 import { authMiddleware, requirePermission, requireScope } from '../middleware/auth';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
-import { getEventLoopLagStats, readLatestEventLoopLag } from '../services/eventLoopMonitor';
+import { metricsRegistry } from '../services/metricsRegistry';
 import {
-  getDbConnectTimeoutStats,
-  setDbConnectTimeoutMetricsRecorder,
-} from '../services/dbConnectTimeoutStats';
+  bindRuntimeMetricsRecorders,
+  initializeRuntimeMetricDefaults,
+  updateRuntimeMetrics,
+} from '../services/metricsRuntime';
 import {
-  DB_POOL_HEALTH_VERDICTS,
-  getDbPoolHealthCheckFailures,
-  getDbPoolHealthProbeCloseFailures,
-  getDbPoolHealthWindowMs,
-  getLastDbPoolHealthAssessment,
-} from '../db/dbPoolHealthMonitor';
+  evaluateMetricsScrapeAuth,
+  parseMetricsScrapeIpAllowlist,
+  resolveMetricsScrapeToken,
+} from '../services/metricsScrapeAuth';
 import { PERMISSIONS, type UserPermissions } from '../services/permissions';
 import { BACKUP_LOW_READINESS_THRESHOLD } from './backup/constants';
 import {
@@ -43,6 +41,7 @@ import {
   setS1MetricsRecorder
 } from '../services/sentinelOne/metrics';
 import { setAnomalyMetricsRecorder } from '../services/anomalyMetrics';
+import { setAuthTransitionMetricsRecorder } from '../services/authTransitionMetrics';
 import { setAbuseMetricsRecorder } from '../services/abuseMetrics';
 import { setProxyTrustMetricsRecorder } from '../services/clientIp';
 import { setSupportCodeMetricsRecorder } from '../services/supportCodeMissBudget';
@@ -54,6 +53,7 @@ import { registerM365GraphReadActionPrometheusCounter } from '../services/m365Co
 import { registerM365GraphActionsPrometheusCounter } from '../services/m365ControlPlane/writeActionMetrics';
 import { registerActionIntentPrometheusCounter } from '../services/actionIntents/metrics';
 import { registerAgentCertificateBindingPrometheusCounter } from '../services/agentCertificateBinding';
+import { registerRetentionPrometheusMetrics } from '../services/retentionMetrics';
 import { setExtensionMetricsRecorder } from '../extensions/metrics';
 import { envFloat } from '../utils/envFloat';
 
@@ -69,14 +69,6 @@ export {
 export const metricsRoutes = new Hono();
 const requireMetricsRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
 
-function resolveMetricsScrapeToken(): string | undefined {
-  const rawToken = process.env.METRICS_SCRAPE_TOKEN?.trim();
-  // Production hardening: refuse to run with obvious placeholder tokens.
-  return (process.env.NODE_ENV ?? 'development') === 'production' && (!rawToken || rawToken === 'REDACTED_DEV_TOKEN')
-    ? undefined
-    : rawToken;
-}
-
 let METRICS_SCRAPE_TOKEN = resolveMetricsScrapeToken();
 
 function envFlag(name: string, fallback: boolean): boolean {
@@ -84,17 +76,6 @@ function envFlag(name: string, fallback: boolean): boolean {
   if (!raw) return fallback;
   const normalized = raw.trim().toLowerCase();
   return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on';
-}
-
-function parseCsvSet(raw: string | undefined): Set<string> {
-  if (!raw) return new Set();
-  return new Set(raw.split(',').map((s) => s.trim()).filter((s) => s.length > 0));
-}
-
-function safeEqual(a: string, b: string): boolean {
-  const ha = createHash('sha256').update(a).digest();
-  const hb = createHash('sha256').update(b).digest();
-  return timingSafeEqual(ha, hb);
 }
 
 // Default: hide org IDs in Prometheus labels in production (they can leak tenant identifiers).
@@ -107,15 +88,21 @@ function resolveMetricsIncludeOrgId(): boolean {
 
 let METRICS_INCLUDE_ORG_ID = resolveMetricsIncludeOrgId();
 
-let METRICS_SCRAPE_IP_ALLOWLIST = parseCsvSet(process.env.METRICS_SCRAPE_IP_ALLOWLIST);
+let METRICS_SCRAPE_IP_ALLOWLIST = parseMetricsScrapeIpAllowlist();
 
-const register = new Registry();
+// The Registry itself now lives in the leaf `services/metricsRegistry` (#4143)
+// so `worker.ts` can render a scrape without importing this route file — see
+// that module's header for why the extraction was load-bearing rather than
+// cosmetic. Aliased to `register` so every series declaration below reads
+// unchanged.
+const register = metricsRegistry;
 registerM365CustomerGraphReadPrometheusCounter(register);
 registerM365CustomerGraphActionsPrometheusCounter(register);
 registerM365GraphReadActionPrometheusCounter(register);
 registerM365GraphActionsPrometheusCounter(register);
 registerActionIntentPrometheusCounter(register);
 registerAgentCertificateBindingPrometheusCounter(register);
+registerRetentionPrometheusMetrics(register);
 
 /**
  * Route label for a request that never reached a registered handler — a 404, or
@@ -357,6 +344,13 @@ const failedLoginsTotal = new Counter({
   registers: [register]
 });
 
+const authTransitionLegacyIssuerTotal = new Counter({
+  name: 'auth_transition_legacy_issuer_total',
+  help: 'Temporary pre-enforcement user-session issuance by issuer and client class',
+  labelNames: ['issuer', 'client_class'] as const,
+  registers: [register],
+});
+
 const agentEnrollmentsTotal = new Counter({
   name: 'breeze_agent_enrollments_total',
   help: 'Agent enrollment attempts by result and tenant (partner)',
@@ -486,148 +480,6 @@ const extensionJobOutcomeTotal = new Counter({
   registers: [register],
 });
 
-const processStartTimeGauge = new Gauge({
-  name: 'process_start_time_seconds',
-  help: 'Start time of the process since unix epoch in seconds',
-  registers: [register]
-});
-
-const nodejsVersionInfoGauge = new Gauge({
-  name: 'nodejs_version_info',
-  help: 'Node.js version info',
-  labelNames: ['version'] as const,
-  registers: [register]
-});
-
-// #3022 — event-loop lag as a scrapable series. This is the metric whose
-// absence made the original incident a manual investigation: three unrelated
-// Sentry signatures, all downstream of a stalled main thread, and nothing in
-// the dashboards that showed the stall itself.
-//
-// Seconds, per Prometheus base-unit convention. The `breeze_` prefix is
-// deliberate — prom-client's `collectDefaultMetrics()` is not called anywhere in
-// this API, so there is no upstream `nodejs_eventloop_lag_*` series to collide
-// with or to inherit alert rules from. These are ours and are named as such.
-//
-// `_lag_max_seconds` is INSTANTANEOUS (last completed sampling interval plus any
-// in-flight stall), matching upstream's reset-per-collection semantics. Feeding
-// it from the retained high-water mark instead would keep a 1.2s blip elevated
-// for the full retention window, so `starved == 1 for 1m` would fire on a
-// momentary spike and `max_over_time` would count one stall many times. The
-// high-water mark is still published, under a name that says so.
-const eventLoopLagMaxGauge = new Gauge({
-  name: 'breeze_nodejs_eventloop_lag_max_seconds',
-  help: 'Event-loop delay over the last completed sampling interval, including any in-flight stall',
-  registers: [register]
-});
-
-const eventLoopLagWindowMaxGauge = new Gauge({
-  name: 'breeze_nodejs_eventloop_lag_window_max_seconds',
-  help: 'Worst event-loop delay retained across the whole sampling window (high-water mark)',
-  registers: [register]
-});
-
-// Named `_window_` to match its time base. It summarises the retained window,
-// while `_lag_max_seconds` is instantaneous — leaving it as a bare `_lag_mean_`
-// made the two read as a matched max/mean pair that they are not, and a
-// recovered loop could publish a max BELOW its mean (0.005 vs 0.011), which on
-// a dashboard reads as an instrumentation bug.
-const eventLoopLagWindowMeanGauge = new Gauge({
-  name: 'breeze_nodejs_eventloop_lag_window_mean_seconds',
-  help: 'Mean event-loop delay across the retained sampling window',
-  registers: [register]
-});
-
-// Derived from the INSTANTANEOUS lag so it clears as soon as the loop recovers.
-// Exposed as its own series rather than left to a `> threshold` alert
-// expression so the API's own starvation threshold — configurable via
-// EVENT_LOOP_STARVATION_WARN_MS — stays the single definition of "starved",
-// instead of being restated (and drifting) in the alerting rules.
-const eventLoopStarvedGauge = new Gauge({
-  name: 'breeze_nodejs_eventloop_starved',
-  help: '1 when the current event-loop lag is at or above the configured starvation threshold, else 0',
-  registers: [register]
-});
-
-// 0 whenever the monitor is disabled or not yet started. Without this, the
-// gauges above sit at 0 in exactly that case and read as a perfectly healthy
-// loop — alert on `monitored == 0` to catch a blind instance.
-const eventLoopMonitoredGauge = new Gauge({
-  name: 'breeze_nodejs_eventloop_monitored',
-  help: '1 when event-loop lag instrumentation is running, else 0',
-  registers: [register]
-});
-
-// #3214 — Postgres CONNECT_TIMEOUT as a first-class series. During the incident
-// this signal existed only as individual Sentry events and console lines, so the
-// thing that actually mattered — the RATE, sustained at ~144/min for hours while
-// the pool decayed from 35 live connections to 9 — was invisible. `cause` comes
-// from services/postgresConnectTimeout.ts, so a starved event loop (#3022) can
-// be told apart from a genuine connect failure on the same chart.
-const dbConnectTimeoutsTotal = new Counter({
-  name: 'breeze_db_connect_timeouts_total',
-  help: 'Total Postgres CONNECT_TIMEOUT errors observed, by diagnosed cause',
-  labelNames: ['cause'] as const,
-  registers: [register]
-});
-
-// The same rate the watchdog evaluates, republished so an alert rule and the
-// warning in the logs derive from one number instead of two definitions that can
-// drift apart.
-const dbConnectTimeoutRateGauge = new Gauge({
-  name: 'breeze_db_connect_timeout_rate_per_min',
-  help: 'Postgres CONNECT_TIMEOUT errors per minute over the pool-health window',
-  registers: [register]
-});
-
-// Enum-style gauge: exactly one verdict carries 1, the rest carry 0. Modelled as
-// a label rather than a numeric code because the operational response differs per
-// verdict and an alert must be able to name which — `pool-degraded` means restart
-// the API (the pool cannot self-heal, #3214), `database-unreachable` means do NOT
-// restart, the fault is downstream. Before the first evaluation, whenever the
-// watchdog is disabled, and after a failed evaluation, ALL series stay 0.
-//
-// Note there is no `healthy` verdict to publish — the quiet one is
-// `below-threshold`, because the underlying count is a floor and pool occupancy
-// is never observed. Alert on `verdict="pool-degraded" == 1`, never on the
-// negation of a healthy series.
-const dbPoolHealthGauge = new Gauge({
-  name: 'breeze_db_pool_health',
-  help: '1 for the pool-health watchdog current verdict, 0 for the others (all 0 before the first evaluation)',
-  labelNames: ['verdict'] as const,
-  registers: [register]
-});
-
-// Freshness, without which the gauge above cannot be trusted. A watchdog that
-// starts throwing every tick would otherwise leave its last verdict asserted
-// indefinitely; `lastAssessment` is cleared on failure so the verdict series go
-// to 0, and this timestamp is what lets an alert require recency rather than
-// merely a value. 0 = never evaluated.
-const dbPoolHealthLastCheckGauge = new Gauge({
-  name: 'breeze_db_pool_health_last_check_timestamp_seconds',
-  help: 'Unix time of the last completed pool-health evaluation (0 = never)',
-  registers: [register]
-});
-
-// Gauges, not Counters, and therefore deliberately WITHOUT the `_total` suffix
-// (which OpenMetrics reserves for counters). The underlying values are
-// process-lifetime totals owned by dbPoolHealthMonitor and read absolutely on
-// each scrape, so there is no per-event increment to drive a Counter with.
-const dbPoolHealthCheckFailuresGauge = new Gauge({
-  name: 'breeze_db_pool_health_check_failures',
-  help: 'Pool-health evaluations that threw before producing a verdict, since process start',
-  registers: [register]
-});
-
-// Each failed close is a probe socket that may have been leaked — against the
-// database the watchdog is diagnosing. Surfaced so the watchdog cannot quietly
-// become a contributor to connection exhaustion.
-const dbPoolHealthProbeCloseFailuresGauge = new Gauge({
-  name: 'breeze_db_pool_health_probe_close_failures',
-  help: 'Pool-health probe clients whose end() failed since process start, each a possible leaked connection',
-  registers: [register]
-});
-
 function initializeMetricDefaults(): void {
   httpRequestsInFlight.set(0);
   // Seeded so `sum(rate(http_requests_total{...}))` has a denominator from the
@@ -671,26 +523,10 @@ function initializeMetricDefaults(): void {
   extensionRequestErrorsTotal.labels('unknown', 'unknown').inc(0);
   extensionJobsTotal.labels('unknown', 'unknown').inc(0);
   extensionJobOutcomeTotal.labels('unknown', 'unknown', 'success').inc(0);
-  nodejsVersionInfoGauge.labels(process.version).set(1);
-  // Publish the event-loop series from process start so a dashboard or alert
-  // rule referencing them is never querying a metric that does not exist yet.
-  eventLoopMonitoredGauge.set(0);
-  eventLoopLagMaxGauge.set(0);
-  eventLoopLagWindowMaxGauge.set(0);
-  eventLoopLagWindowMeanGauge.set(0);
-  eventLoopStarvedGauge.set(0);
-  // #3214. Seeded at 0 for the same reason: an alert on the connect-timeout rate
-  // must not silently match nothing on an instance that has not yet timed out.
-  dbConnectTimeoutsTotal.labels('event-loop-starvation').inc(0);
-  dbConnectTimeoutsTotal.labels('connectivity').inc(0);
-  dbConnectTimeoutsTotal.labels('unknown').inc(0);
-  dbConnectTimeoutRateGauge.set(0);
-  for (const verdict of DB_POOL_HEALTH_VERDICTS) {
-    dbPoolHealthGauge.labels(verdict).set(0);
-  }
-  dbPoolHealthLastCheckGauge.set(0);
-  dbPoolHealthCheckFailuresGauge.set(0);
-  dbPoolHealthProbeCloseFailuresGauge.set(0);
+  // Process identity, event-loop (#3022) and pool-health (#3214) series moved
+  // to the leaf `services/metricsRuntime` for #4143 so the worker role can
+  // publish them too; their seeds move with them.
+  initializeRuntimeMetricDefaults();
 }
 
 initializeMetricDefaults();
@@ -802,55 +638,6 @@ function normalizeMetricLabel(value: string, fallback: string): string {
     .replace(/[^a-z0-9]+/g, '_')
     .replace(/^_+|_+$/g, '');
   return normalized.length > 0 ? normalized : fallback;
-}
-
-function updateProcessMetrics(): void {
-  processStartTimeGauge.set(Math.floor(Date.now() / 1000 - process.uptime()));
-  updateEventLoopMetrics();
-  updateDbPoolHealthMetrics();
-}
-
-/**
- * Republishes the watchdog's latest verdict (#3214). Read on scrape rather than
- * pushed on evaluation so a scrape always reflects the most recent check even if
- * the watchdog interval and the scrape interval differ.
- *
- * The rate is recomputed here over the SAME window the watchdog uses, so the
- * gauge and the log warning cannot disagree. When no verdict exists yet, every
- * verdict series is left at 0 — see the gauge's declaration for why "not
- * observed" must not collapse into "healthy".
- */
-function updateDbPoolHealthMetrics(): void {
-  dbConnectTimeoutRateGauge.set(getDbConnectTimeoutStats(getDbPoolHealthWindowMs()).ratePerMin);
-  const assessment = getLastDbPoolHealthAssessment();
-  for (const verdict of DB_POOL_HEALTH_VERDICTS) {
-    dbPoolHealthGauge.labels(verdict).set(assessment?.verdict === verdict ? 1 : 0);
-  }
-  dbPoolHealthLastCheckGauge.set(assessment ? Math.floor(assessment.at / 1000) : 0);
-  dbPoolHealthCheckFailuresGauge.set(getDbPoolHealthCheckFailures());
-  dbPoolHealthProbeCloseFailuresGauge.set(getDbPoolHealthProbeCloseFailures());
-}
-
-function updateEventLoopMetrics(): void {
-  const stats = getEventLoopLagStats();
-  const latest = readLatestEventLoopLag();
-  eventLoopMonitoredGauge.set(stats.monitored ? 1 : 0);
-  // `worstLagMs` on both, rather than the sampled max: it folds in a stall that
-  // is still in flight and has therefore not been recorded as a sample yet. A
-  // scrape landing mid-stall must not report the loop as healthy.
-  eventLoopLagMaxGauge.set(latest.worstLagMs / 1000);
-  eventLoopLagWindowMaxGauge.set(stats.worstLagMs / 1000);
-  eventLoopLagWindowMeanGauge.set(stats.meanLagMs / 1000);
-  // Uses the RAW EVENT_LOOP_STARVATION_WARN_MS, not the connect-window cap that
-  // services/postgresConnectTimeout.ts applies. Deliberate: this gauge tracks
-  // "is the loop unhealthy by the operator's own definition", whereas the cap
-  // exists solely so a raised warn threshold cannot mis-attribute a specific
-  // Postgres timeout. With EVENT_LOOP_STARVATION_WARN_MS above 10s the two can
-  // disagree for the same stall — the gauge reads 0 while Sentry says
-  // event-loop-starvation — and that is the intended reading of each.
-  eventLoopStarvedGauge.set(
-    latest.monitored && latest.worstLagMs >= stats.starvationThresholdMs ? 1 : 0,
-  );
 }
 
 function upsertCounterState(state: Map<string, CounterValue>, labels: Record<string, string>, amount = 1): void {
@@ -1128,14 +915,14 @@ function recordExtensionJobMetric(
 }
 
 function bindMetricsRecorders(): void {
-  // #3214. The stats module is a zero-import leaf (it sits in the graph of
-  // services/sentry.ts), so the Prometheus counter is pushed IN from here rather
-  // than pulled by it — same inversion as setConnectTimeoutClassifier.
-  setDbConnectTimeoutMetricsRecorder({
-    onConnectTimeout: (cause) => {
-      dbConnectTimeoutsTotal.labels(cause).inc();
-    },
-  });
+  // #3214's `setDbConnectTimeoutMetricsRecorder` binding moved to the leaf
+  // `services/metricsRuntime` (#4143): the recorder is a single global slot,
+  // and binding it here left a worker-role process — which never loads this
+  // file — counting no CONNECT_TIMEOUTs while its own pool-health watchdog
+  // alerted on the rate derived from them. Still re-called from here so
+  // `resetMetricsForTesting()` keeps restoring the slot that
+  // `__resetDbConnectTimeoutStatsForTests()` nulls.
+  bindRuntimeMetricsRecorders();
 
   setS1MetricsRecorder({
     onSyncRun: (job, outcome, durationMs) => {
@@ -1166,6 +953,12 @@ function bindMetricsRecorders(): void {
     onCommandDispatch: recordCommandDispatchMetric,
   });
 
+  setAuthTransitionMetricsRecorder({
+    legacyIssuer: (issuer, clientClass) => {
+      authTransitionLegacyIssuerTotal.labels(issuer, clientClass).inc();
+    },
+  });
+
   setAbuseMetricsRecorder({
     onSignalFired: (severity) => abuseSignalsFiredTotal.labels(normalizeMetricLabel(severity, 'unknown')).inc(),
     onSweepRun: (result) => abuseSweepRunsTotal.labels(result).inc(),
@@ -1194,7 +987,7 @@ bindMetricsRecorders();
 export function resetMetricsForTesting(): void {
   METRICS_SCRAPE_TOKEN = resolveMetricsScrapeToken();
   METRICS_INCLUDE_ORG_ID = resolveMetricsIncludeOrgId();
-  METRICS_SCRAPE_IP_ALLOWLIST = parseCsvSet(process.env.METRICS_SCRAPE_IP_ALLOWLIST);
+  METRICS_SCRAPE_IP_ALLOWLIST = parseMetricsScrapeIpAllowlist();
 
   resetS1MetricsForTesting();
   register.resetMetrics();
@@ -1290,9 +1083,12 @@ function timeoutAfter(ms: number): { promise: Promise<never>; cancel: () => void
  * per-gauge transaction on every scrape is real pressure from the endpoint whose
  * whole job is to observe that pressure.
  *
- * Ephemeral Quick Support devices and decommissioned records are excluded, the
- * same exclusions `GET /metrics/` applies, so the gauge and the dashboard count
- * the same fleet.
+ * Ephemeral Quick Support devices and decommissioned records are excluded from
+ * BOTH queries — the device counts and the low-readiness count — which is the
+ * same exclusion pair `GET /metrics/` applies, so the gauges and the dashboard
+ * count the same fleet. The readiness query has to join `devices` to say that;
+ * it originally shipped as a bare count that contradicted this paragraph
+ * (#3969). Keep the two in step: an exclusion added to one belongs on the other.
  */
 async function readFleetGauges(nowMs: number): Promise<void> {
   const activeSince = new Date(
@@ -1320,10 +1116,28 @@ async function readFleetGauges(nowMs: number): Promise<void> {
     // and lands in the failure counter below.
     if (!fleetRow) throw new Error('[metrics] fleet gauge query returned no rows');
 
+    // Joined to `devices` so the SAME exclusion pair the fleet query above uses
+    // applies here too (#3969). Without the join this was a bare count over
+    // `recovery_readiness`, and since decommissioning is a soft delete the row
+    // for a device retired 16 days earlier still scored 0 and still pinned the
+    // BreezeBackupLowReadinessDevices warning — while the doc comment on this
+    // function promised the opposite.
+    //
+    // INNER is the right join: `recovery_readiness.device_id` is NOT NULL with
+    // an FK to `devices.id`, and the row is removed with the device by
+    // `deleteDeviceCascade` (app-level — the FK itself is NO ACTION, so don't go
+    // looking for an ON DELETE CASCADE in the DDL). A readiness row therefore
+    // never outlives its device, and this join can never drop one that should
+    // have been counted.
     const [readinessRow] = await db
       .select({ count: sql<number>`count(*)` })
       .from(recoveryReadinessTable)
-      .where(sql`${recoveryReadinessTable.readinessScore} < ${BACKUP_LOW_READINESS_THRESHOLD}`);
+      .innerJoin(devices, eq(devices.id, recoveryReadinessTable.deviceId))
+      .where(
+        sql`${recoveryReadinessTable.readinessScore} < ${BACKUP_LOW_READINESS_THRESHOLD}
+            AND ${devices.isEphemeral} = false
+            AND ${devices.status} <> 'decommissioned'`
+      );
     if (!readinessRow) throw new Error('[metrics] readiness gauge query returned no rows');
 
     updateBusinessMetrics({
@@ -1389,7 +1203,7 @@ async function metricsResponse(c: any): Promise<Response> {
   // `up` flips to 0 so it reads as a dead API rather than a sick database.
   // `refreshFleetGauges` is internally timeout-bounded and never rejects.
   await refreshFleetGauges();
-  updateProcessMetrics();
+  updateRuntimeMetrics();
   const metrics = await register.metrics();
 
   return c.text(metrics, 200, {
@@ -1618,21 +1432,23 @@ metricsRoutes.get('/trends', authMiddleware, requireScope('organization', 'partn
 });
 
 metricsRoutes.get('/scrape', async (c) => {
-  if (!METRICS_SCRAPE_TOKEN) {
-    return c.json({ error: 'Metrics scrape token is not configured' }, 503);
-  }
-
-  if (METRICS_SCRAPE_IP_ALLOWLIST.size > 0) {
-    const ip = getTrustedClientIpOrUndefined(c);
-    if (!ip || !METRICS_SCRAPE_IP_ALLOWLIST.has(ip)) {
-      return c.json({ error: 'Forbidden' }, 403);
-    }
-  }
-
-  const authHeader = c.req.header('Authorization');
-  const expectedHeader = `Bearer ${METRICS_SCRAPE_TOKEN}`;
-  if (!safeEqual(authHeader ?? '', expectedHeader)) {
-    return c.json({ error: 'Unauthorized' }, 401);
+  // The three rules (configured token -> source-IP allowlist -> constant-time
+  // bearer compare) live in the leaf `services/metricsScrapeAuth` so the
+  // worker role's raw-node:http `/metrics` enforces the SAME gate rather than
+  // a second, independently drifting copy of it (#4143).
+  //
+  // `getTrustedClientIpOrUndefined` is still resolved here and only when the
+  // allowlist is non-empty: it is the api-role-specific half (it consults
+  // forwarded headers against this process's trusted-proxy configuration,
+  // which the worker's port does not have).
+  const denial = evaluateMetricsScrapeAuth({
+    token: METRICS_SCRAPE_TOKEN,
+    ipAllowlist: METRICS_SCRAPE_IP_ALLOWLIST,
+    authHeader: c.req.header('Authorization'),
+    clientIp: METRICS_SCRAPE_IP_ALLOWLIST.size > 0 ? getTrustedClientIpOrUndefined(c) : undefined,
+  });
+  if (denial) {
+    return c.json({ error: denial.error }, denial.status);
   }
 
   return metricsResponse(c);

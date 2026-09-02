@@ -157,6 +157,8 @@ vi.mock('../db/schema', () => ({
   sites: { id: 'id', orgId: 'orgId' },
   organizations: { id: 'id' },
   enrollmentKeys: { id: 'id', key: 'key', orgId: 'orgId' },
+  deviceStatusEnum: { enumValues: ['online', 'offline', 'maintenance', 'decommissioned', 'quarantined', 'updating', 'pending'] },
+  osTypeEnum: { enumValues: ['windows', 'macos', 'linux'] },
   discoveredAssetTypeEnum: { enumValues: ['workstation', 'server', 'printer', 'unknown'] },
   patchPolicies: {},
   alertRules: {},
@@ -467,7 +469,7 @@ describe('device routes', () => {
       }
     });
 
-    it('defaults the token TTL to 60 minutes and honors a supplied ttlMinutes (#1108)', async () => {
+    it('defaults the token TTL to 30 days and honors a supplied ttlMinutes (#1108)', async () => {
       vi.stubEnv('AGENT_ENROLLMENT_SECRET', '');
 
       const captureExpiry = () => {
@@ -488,15 +490,19 @@ describe('device routes', () => {
         return Math.round((expiresAt.getTime() - Date.now()) / 60000);
       };
 
-      // Default (no ttlMinutes) → 60 min.
+      // Default (no ttlMinutes) → the ENROLLMENT_KEY_DEFAULT_TTL_MINUTES
+      // fallback, 30 days. This route mints a real `enrollment_keys` row, so it
+      // moved with the rest of the enrollment defaults: a token pasted into
+      // deployment tooling has to outlive the download day, which the old
+      // 60-minute window did not (US trial mass deploy, 2026-08-26).
       let valuesMock = captureExpiry();
       let res = await app.request('/devices/onboarding-token', {
         method: 'POST',
         headers: { Authorization: 'Bearer token' }
       });
       expect(res.status).toBe(200);
-      expect(expiryMinutesFrom(valuesMock)).toBeGreaterThanOrEqual(59);
-      expect(expiryMinutesFrom(valuesMock)).toBeLessThanOrEqual(61);
+      expect(expiryMinutesFrom(valuesMock)).toBeGreaterThanOrEqual(43_199);
+      expect(expiryMinutesFrom(valuesMock)).toBeLessThanOrEqual(43_201);
 
       // Supplied 1440 → ~24h.
       valuesMock = captureExpiry();
@@ -625,7 +631,7 @@ describe('device routes', () => {
     // `Content-Type: application/json` unconditionally. Under a plain
     // zValidator('json', ...) that combination 400s with a plain-text
     // "Malformed JSON in request body" and onboarding dies at the last step.
-    // The route must still mint a default 60-minute single-use token.
+    // The route must still mint a default-TTL single-use token.
     it('accepts a bodyless POST that still carries a JSON content-type (#2777)', async () => {
       vi.stubEnv('AGENT_ENROLLMENT_SECRET', '');
       const valuesMock = vi.fn().mockResolvedValue(undefined);
@@ -652,8 +658,8 @@ describe('device routes', () => {
       };
       expect(maxUsage).toBe(1);
       const minutes = Math.round((expiresAt.getTime() - Date.now()) / 60000);
-      expect(minutes).toBeGreaterThanOrEqual(59);
-      expect(minutes).toBeLessThanOrEqual(61);
+      expect(minutes).toBeGreaterThanOrEqual(43_199);
+      expect(minutes).toBeLessThanOrEqual(43_201);
     });
 
     // Same shape, but with an explicitly empty string body (what a

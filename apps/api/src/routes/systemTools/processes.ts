@@ -7,6 +7,11 @@ import { createAuditLog } from '../../services/auditService';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED, getPagination } from './helpers';
 import { deviceIdParamSchema, pidParamSchema, paginationQuerySchema } from './schemas';
+import {
+  isCommandFailure,
+  buildCommandFailureResponse,
+  auditErrorMessage,
+} from './fileBrowserHelpers';
 
 const processListQuerySchema = z.object({
   page: z.string().optional(),
@@ -45,8 +50,9 @@ processesRoutes.get(
       search
     }, { userId: auth.user?.id, timeoutMs: 60000 });
 
-    if (result.status === 'failed') {
-      return c.json({ error: result.error || 'Failed to get processes' }, 500);
+    if (isCommandFailure(result)) {
+      const failure = buildCommandFailureResponse(result, 'Failed to get processes');
+      return c.json(failure.body, failure.status);
     }
 
     try {
@@ -91,9 +97,9 @@ processesRoutes.get(
       pid
     }, { userId: auth.user?.id, timeoutMs: 30000 });
 
-    if (result.status === 'failed') {
-      const error = result.error || 'Failed to get process details';
-      return c.json({ error }, error.toLowerCase().includes('not found') ? 404 : 500);
+    if (isCommandFailure(result)) {
+      const failure = buildCommandFailureResponse(result, 'Failed to get process details');
+      return c.json(failure.body, failure.status);
     }
 
     try {
@@ -149,12 +155,13 @@ processesRoutes.post(
         result: result.status
       },
       ipAddress: getTrustedClientIpOrUndefined(c),
-      result: result.status === 'completed' ? 'success' : 'failure',
-      errorMessage: result.error
+      result: isCommandFailure(result) ? 'failure' : 'success',
+      errorMessage: auditErrorMessage(result)
     });
 
-    if (result.status === 'failed') {
-      return c.json({ error: result.error || 'Failed to kill process' }, 500);
+    if (isCommandFailure(result)) {
+      const failure = buildCommandFailureResponse(result, 'Failed to kill process', { mutating: true });
+      return c.json(failure.body, failure.status);
     }
 
     try {
@@ -163,7 +170,15 @@ processesRoutes.post(
         success: true,
         message: `Process ${pid} (${data.name || 'unknown'}) terminated successfully`
       });
-    } catch {
+    } catch (parseError) {
+      // The kill itself is confirmed — `isCommandFailure` above already ruled
+      // out failed/timeout, so `status` is 'completed' and the agent acked the
+      // termination. Only the metadata used to prettify the message failed to
+      // parse, so reporting success is correct here. Logged rather than
+      // swallowed: a bare catch in THIS handler is what let #4025 read as
+      // routine, and an unparseable payload from a completed kill still says
+      // something is wrong with the agent's response shape.
+      console.error('Failed to parse agent response for process kill:', parseError);
       return c.json({
         success: true,
         message: `Process ${pid} terminated successfully`

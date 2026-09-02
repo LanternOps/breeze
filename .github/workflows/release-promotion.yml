@@ -1,0 +1,72 @@
+name: Promote Draft Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Exact existing draft release tag to publish
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  publish-release:
+    name: Verify lineage and publish draft
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout authoritative main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: main
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Resolve authoritative main ref
+        run: |
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          git rev-parse --verify 'origin/main^{commit}'
+
+      - name: Require mainline release lineage
+        id: lineage
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          bash scripts/release/check-release-lineage.sh \
+            --tag "$TAG" \
+            --main-ref origin/main \
+            --candidate-registry-ref origin/main \
+            --require-mainline
+
+      - name: Verify exact draft and publish
+        env:
+          EXPECTED_TAG_SHA: ${{ steps.lineage.outputs.tag_sha }}
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          RELEASE_JSON=$(gh release view "$TAG" --json isDraft,tagName)
+          RELEASE_TAG=$(jq -r '.tagName' <<< "$RELEASE_JSON")
+          IS_DRAFT=$(jq -r '.isDraft' <<< "$RELEASE_JSON")
+          if [ "$RELEASE_TAG" != "$TAG" ]; then
+            echo "::error::release tag mismatch: requested '$TAG', received '$RELEASE_TAG'"
+            exit 1
+          fi
+          if [ "$IS_DRAFT" != "true" ]; then
+            echo "::error::release '$TAG' is not a draft"
+            exit 1
+          fi
+
+          # Refresh only the already-validated tag, then re-peel it so a moved
+          # tag cannot be published using the classifier's earlier decision.
+          git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
+          CURRENT_TAG_SHA=$(git rev-parse "$TAG^{commit}")
+          if [ "$CURRENT_TAG_SHA" != "$EXPECTED_TAG_SHA" ]; then
+            echo "::error::tag '$TAG' moved during promotion: expected $EXPECTED_TAG_SHA, got $CURRENT_TAG_SHA"
+            exit 1
+          fi
+
+          gh release edit "$TAG" --draft=false
