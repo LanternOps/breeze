@@ -94,6 +94,67 @@ test('rejects a URL missing a database name', () => {
   assert.match(vars.error, /missing a database name/);
 });
 
+test('parses a bracketed IPv6 host, stripping the brackets for PGHOST', () => {
+  const vars = parseUrl('postgresql://user:pass@[::1]:5432/breeze');
+  assert.equal(vars.PGHOST, '::1');
+  assert.equal(vars.PGPORT, '5432');
+  assert.equal(vars.PGUSER, 'user');
+  assert.equal(vars.PGDATABASE, 'breeze');
+});
+
+test('parses a bracketed IPv6 host with no explicit port', () => {
+  const vars = parseUrl('postgresql://user@[2001:db8::1]/breeze');
+  assert.equal(vars.PGHOST, '2001:db8::1');
+  assert.equal(vars.PGDATABASE, 'breeze');
+});
+
+test('rejects a password with a truncated percent-escape instead of silently mangling it', () => {
+  // A trailing bare '%' used to reach `printf %b` unchecked, which either
+  // errored non-obviously or (platform-dependent) produced a corrupted
+  // PGPASSWORD value while pg_url_to_env still reported success.
+  const vars = parseUrl('postgresql://user:abc%@host:5432/db');
+  assert.equal(vars.status, 1);
+  assert.match(vars.error, /invalid password/);
+});
+
+test('rejects a password with non-hex percent-escape digits', () => {
+  const vars = parseUrl('postgresql://user:abc%zzpass@host:5432/db');
+  assert.equal(vars.status, 1);
+  assert.match(vars.error, /invalid password/);
+});
+
+test('warns (but still connects) when the query string has parameters beyond sslmode', () => {
+  const script = `
+    set -euo pipefail
+    source "${LIB}"
+    pg_url_to_env "$1"
+    printf 'PGHOST=%s\\n' "\${PGHOST:-}"
+  `;
+  const result = spawnSync(
+    'bash',
+    ['-c', script, 'bash', 'postgresql://user:pass@host:5432/db?sslmode=require&connect_timeout=10'],
+    { encoding: 'utf8' },
+  );
+  assert.equal(result.status, 0);
+  assert.match(result.stdout, /PGHOST=host/);
+  assert.match(result.stderr, /ignoring unsupported connection URL parameter.*connect_timeout/);
+});
+
+test('does not warn when the query string only has sslmode', () => {
+  const script = `
+    set -euo pipefail
+    source "${LIB}"
+    pg_url_to_env "$1"
+  `;
+  const result = spawnSync(
+    'bash',
+    ['-c', script, 'bash', 'postgresql://user:pass@host:5432/db?sslmode=require'],
+    { encoding: 'utf8' },
+  );
+  assert.equal(result.status, 0);
+  assert.equal(result.stderr, '');
+});
+
 // --- Static regression guard -----------------------------------------------
 //
 // Mirrors the philosophy of scripts/check-selfhost-db-urls.sh: assert the
