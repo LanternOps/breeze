@@ -321,6 +321,14 @@ aiAgentsRoutes.get('/policy-decidable-keys', scopes, requireAiRead, async (c) =>
  * No `requireMfa()` — this raises a request that a second human must still
  * approve; the MFA/assurance bar belongs to that approval (riskTier 'high'
  * floors it at L3), not to asking for it.
+ *
+ * A key the org ALREADY holds is not rejected here: eligibility is
+ * re-established at RELEASE time, not at request time, and a pre-check would
+ * be TOCTOU comfort rather than a guarantee. A duplicate therefore surfaces
+ * as the intent terminalizing `failed` with reason `already_granted` — the
+ * "nothing to do, the key is already live" signal, deliberately not a false
+ * success (`services/aiAgents/supervisedKeyGrant.ts` gives the full
+ * reasoning, including why the provenance columns are not re-stamped).
  */
 aiAgentsRoutes.post(
   '/graduation/promote',

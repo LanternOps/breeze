@@ -26,6 +26,32 @@
  * paths terminalize as `failed:tool_returned_error` rather than recording a
  * grant that never happened as a success.
  *
+ * A DUPLICATE REQUEST IS A REFUSAL TOO, and it is the one refusal whose
+ * observable outcome an operator will actually meet, so it is spelled out
+ * here for the approvals UI (Tasks 17/18): a second approved intent naming a
+ * key this org already holds terminalizes `failed` with reason
+ * `already_granted`. The array invariant the plan asks for ("a duplicate key
+ * => idempotent, one entry") holds either way — the key is never appended
+ * twice — but the two readings differ in what the RECORD says, and the
+ * refusal is the one that keeps it honest:
+ *
+ *   - `ai_agent_graduation.promoted_intent_id` / `promoted_at` keep naming
+ *     the approval that ACTUALLY granted the key. Completing the duplicate
+ *     would either overwrite that provenance or complete an intent with no
+ *     audit row behind it — a hole in the trail for an authority grant.
+ *   - there is exactly ONE `ai.agent.supervised_key.authorized` audit row per
+ *     real grant, never one per approval of it.
+ *   - no legitimate retry is ever mis-reported as a duplicate: this executor
+ *     cannot be re-entered for the same intent. The release worker claims the
+ *     row with a CAS `approved -> executing` before calling any tool, a BullMQ
+ *     redelivery loses that CAS and exits without executing, and the
+ *     stale-executing reaper (`jobs/intentExpiryReaper.ts`) TERMINALIZES a
+ *     stuck row rather than re-releasing it. `already_granted` therefore only
+ *     ever means a genuinely second request.
+ *
+ * A UI that wants to soften this should render the reason, not re-run the
+ * grant: `already_granted` is the "nothing to do, the key is live" signal.
+ *
  * TENANCY. The whole executor runs in ONE system transaction (the partner
  * baseline row is invisible to an org-scoped reader), so — per this repo's
  * invariant — every statement predicates on `org_id`/`partner_id` explicitly

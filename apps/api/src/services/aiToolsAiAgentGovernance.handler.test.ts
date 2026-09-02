@@ -141,6 +141,30 @@ describe('manage_ai_agents handler', () => {
     expect(body).not.toHaveProperty('data');
   });
 
+  /**
+   * The duplicate-request outcome, pinned because it is the one refusal an
+   * operator actually meets and Tasks 17/18 have to render it. A second
+   * approved intent for a key this org already holds is a REFUSAL, not a
+   * quiet success: completing it would either overwrite
+   * `ai_agent_graduation.promoted_intent_id` (which must keep naming the
+   * approval that really granted the key) or complete an authority-grant
+   * intent with no audit row behind it.
+   */
+  it('renders a duplicate request as failed:already_granted, never a false success', async () => {
+    authorizeSupervisedKeyMock.mockRejectedValue(
+      new SupervisedKeyGrantError('already_granted', `"${OP_KEY}" is already authorized`),
+    );
+
+    const body = await call();
+
+    expect(body).toEqual({
+      error: 'already_granted',
+      message: `"${OP_KEY}" is already authorized`,
+    });
+    expect(body).not.toHaveProperty('success');
+    expect(body).not.toHaveProperty('data');
+  });
+
   it('lets an unexpected failure THROW so the release records execution_error', async () => {
     authorizeSupervisedKeyMock.mockRejectedValue(new Error('connection terminated'));
 

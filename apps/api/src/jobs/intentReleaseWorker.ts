@@ -854,6 +854,19 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
           // semantics, so no existing handler observes a change: it reads
           // `context?.verifiedRunScript`, which is still undefined here
           // unless the effect-digest recompute produced one.
+          //
+          // Gating the bag on the tool name was considered and rejected:
+          // passing it unconditionally is structurally unobservable to every
+          // other tool, while a name gate would have to be edited by the next
+          // consumer. Exactly TWO core handlers declare a third parameter at
+          // all — `run_script` (`aiToolsScripts.ts`, reads `verifiedRunScript`)
+          // and `manage_ai_agents`; every other core handler is a
+          // two-parameter function, which ignores a third argument
+          // structurally, and EXTENSION handlers are called with exactly two
+          // arguments by construction (`aiTools.ts`, "Only CORE handlers
+          // receive the execution context"). The no-verified-material case in
+          // this file's suite asserts the bag's EXACT shape, so a future field
+          // cannot ride along unnoticed.
           () =>
             executeTool(intent.actionName, intent.arguments, auth, {
               context: { ...verifiedContext, actionIntentId: intent.id },
