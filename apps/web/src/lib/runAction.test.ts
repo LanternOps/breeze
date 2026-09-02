@@ -140,7 +140,49 @@ describe('runAction', () => {
     expect(showToast).toHaveBeenCalledWith({ message: 'Use Touch ID to approve', type: 'error' });
   });
 
-  it('dispatches trust denials and suppresses the generic error toast', async () => {
+  it('dispatches trust denials and suppresses the generic error toast when a listener claims it', async () => {
+    const denial = {
+      error: 'TRUST_PROBATION',
+      capability: 'remote_control',
+      reason: 'probation_default_deny',
+      reviewRequested: false,
+      meetingUrl: null,
+    };
+    // Mirrors TrustProbationBanner's handler: claims the event so runAction
+    // doesn't also show a generic toast on top of the banner.
+    const listener = vi.fn((event: Event) => event.preventDefault());
+    window.addEventListener(TRUST_DENIED_EVENT, listener);
+
+    await expect(runAction({
+      request: async () => res(denial, 403),
+      errorFallback: 'Remote control failed',
+    })).rejects.toMatchObject({ status: 403, body: denial });
+
+    expect(listener).toHaveBeenCalledOnce();
+    expect((listener.mock.calls[0]![0] as CustomEvent).detail).toEqual(denial);
+    expect(showToast).not.toHaveBeenCalled();
+    window.removeEventListener(TRUST_DENIED_EVENT, listener);
+  });
+
+  it('falls back to the generic error toast when nothing handles the trust-denied event', async () => {
+    const denial = {
+      error: 'TRUST_PROBATION',
+      capability: 'remote_control',
+      reason: 'probation_default_deny',
+      reviewRequested: false,
+      meetingUrl: null,
+    };
+    // No listener at all — simulates a page where TrustProbationBanner isn't
+    // mounted. The failure must not be silently swallowed.
+    await expect(runAction({
+      request: async () => res(denial, 403),
+      errorFallback: 'Remote control failed',
+    })).rejects.toMatchObject({ status: 403, body: denial });
+
+    expect(showToast).toHaveBeenCalledWith({ message: expect.any(String), type: 'error' });
+  });
+
+  it('falls back to the generic error toast when a listener observes but does not claim the trust-denied event', async () => {
     const denial = {
       error: 'TRUST_PROBATION',
       capability: 'remote_control',
@@ -157,8 +199,7 @@ describe('runAction', () => {
     })).rejects.toMatchObject({ status: 403, body: denial });
 
     expect(listener).toHaveBeenCalledOnce();
-    expect((listener.mock.calls[0]![0] as CustomEvent).detail).toEqual(denial);
-    expect(showToast).not.toHaveBeenCalled();
+    expect(showToast).toHaveBeenCalledWith({ message: expect.any(String), type: 'error' });
     window.removeEventListener(TRUST_DENIED_EVENT, listener);
   });
 

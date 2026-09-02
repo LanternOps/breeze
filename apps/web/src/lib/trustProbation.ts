@@ -33,7 +33,16 @@ export function isTrustDenial(body: unknown): body is TrustDenial {
     && (value.meetingUrl === null || typeof value.meetingUrl === 'string');
 }
 
-export function dispatchTrustDenied(detail: TrustDenial): void {
-  if (typeof window === 'undefined') return;
-  window.dispatchEvent(new CustomEvent<TrustDenial>(TRUST_DENIED_EVENT, { detail }));
+/**
+ * Dispatches the trust-denied event and reports whether something actually
+ * handled it. `TrustProbationBanner` calls `event.preventDefault()` when it
+ * shows the denial; if nothing does that (the banner isn't mounted on this
+ * page, or was removed), the caller (`runAction`) falls back to a normal
+ * error toast instead of silently swallowing the failure.
+ */
+export function dispatchTrustDenied(detail: TrustDenial): boolean {
+  if (typeof window === 'undefined') return false;
+  const event = new CustomEvent<TrustDenial>(TRUST_DENIED_EVENT, { detail, cancelable: true });
+  window.dispatchEvent(event);
+  return event.defaultPrevented;
 }

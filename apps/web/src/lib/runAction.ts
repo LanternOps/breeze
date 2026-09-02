@@ -83,7 +83,13 @@ export async function runAction<T = unknown>(opts: RunActionOptions<T>): Promise
       if (friendly) message = friendly;
     }
     if (response.status === 403 && isTrustDenial(data)) {
-      dispatchTrustDenied(data);
+      // Best-effort UI handoff: if a mounted TrustProbationBanner picks this
+      // up (it calls preventDefault()), it owns showing the denial and a
+      // generic toast on top would be redundant noise. If nothing handled
+      // it — the banner isn't mounted on this page — fall back to the
+      // normal error toast so the failure is never silent.
+      const handled = dispatchTrustDenied(data);
+      if (!handled) showToast({ message, type: 'error' });
     } else {
       showToast({ message, type: 'error' });
     }

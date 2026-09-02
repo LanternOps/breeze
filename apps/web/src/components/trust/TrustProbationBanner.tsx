@@ -13,7 +13,6 @@ interface TrustStatus {
     ageOk: boolean;
     emailVerified: boolean;
     cardSettled: boolean | null;
-    signupIpOk: boolean;
   };
   reviewRequestedAt: string | null;
   meetingUrl: string | null;
@@ -26,7 +25,6 @@ const CHECKLIST_ITEMS: ReadonlyArray<{
   { key: 'ageOk', label: '24 hours since signup' },
   { key: 'emailVerified', label: 'Email verified' },
   { key: 'cardSettled', label: 'Card payment settled' },
-  { key: 'signupIpOk', label: 'Account details verified' },
 ];
 
 const CAPABILITY_LABELS: Record<TrustDenial['capability'], string> = {
@@ -59,6 +57,9 @@ export default function TrustProbationBanner() {
 
   useEffect(() => {
     const handleTrustDenied = (event: Event) => {
+      // Claims this denial so runAction knows not to also show a generic
+      // error toast on top of the banner (see dispatchTrustDenied).
+      event.preventDefault();
       const detail = (event as CustomEvent<TrustDenial>).detail;
       const sequence = ++requestSequence.current;
       setDenial(detail);

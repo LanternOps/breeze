@@ -30,4 +30,22 @@ describe('trustProbation', () => {
     expect((listener.mock.calls[0]![0] as CustomEvent).detail).toBe(denial);
     window.removeEventListener(TRUST_DENIED_EVENT, listener);
   });
+
+  it('returns true when a listener calls preventDefault (handled)', () => {
+    const listener = vi.fn((event: Event) => event.preventDefault());
+    window.addEventListener(TRUST_DENIED_EVENT, listener);
+    expect(dispatchTrustDenied(denial)).toBe(true);
+    window.removeEventListener(TRUST_DENIED_EVENT, listener);
+  });
+
+  it('returns false when no listener claims the event', () => {
+    expect(dispatchTrustDenied(denial)).toBe(false);
+  });
+
+  it('returns false when a listener observes but does not call preventDefault', () => {
+    const listener = vi.fn();
+    window.addEventListener(TRUST_DENIED_EVENT, listener);
+    expect(dispatchTrustDenied(denial)).toBe(false);
+    window.removeEventListener(TRUST_DENIED_EVENT, listener);
+  });
 });

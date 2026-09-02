@@ -15,7 +15,6 @@ const status = {
     ageOk: true,
     emailVerified: true,
     cardSettled: false,
-    signupIpOk: false,
   },
   reviewRequestedAt: null,
   meetingUrl: 'https://meet.example.test/trust',
@@ -39,8 +38,10 @@ function deny(overrides: Partial<TrustDenial> = {}): TrustDenial {
   };
 }
 
-function dispatch(detail: TrustDenial) {
-  window.dispatchEvent(new CustomEvent(TRUST_DENIED_EVENT, { detail }));
+function dispatch(detail: TrustDenial): CustomEvent<TrustDenial> {
+  const event = new CustomEvent(TRUST_DENIED_EVENT, { detail, cancelable: true });
+  window.dispatchEvent(event);
+  return event;
 }
 
 beforeEach(() => {
@@ -139,5 +140,15 @@ describe('TrustProbationBanner', () => {
     const cardItem = within(checklist).getByText('Card payment settled').parentElement;
     expect(cardItem).toHaveTextContent('pending');
     expect(cardItem).not.toHaveTextContent('complete');
+  });
+
+  it('claims the trust-denied event via preventDefault so runAction skips its fallback toast', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(response(status));
+    render(<TrustProbationBanner />);
+
+    const event = dispatch(deny());
+
+    await screen.findByTestId('trust-probation-banner');
+    expect(event.defaultPrevented).toBe(true);
   });
 });
