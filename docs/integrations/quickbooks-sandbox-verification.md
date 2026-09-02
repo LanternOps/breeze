@@ -279,6 +279,59 @@ assigns the sandbox company, e.g. "Breeze QBO Sandbox 1"), never the realm ID.
    the connection lifecycle as designed.**
    Result: PENDING. Visible status: _______
 
+### Phase C checklist (invoice push)
+
+Issued-invoice push, void, and the multi-currency seams (Phase C, migration
+`apps/api/migrations/2026-09-29-quickbooks-invoice-push.sql`). Same rules as
+Section 2 above: dedicated sandbox company, no credentials or realm IDs
+committed to this repository.
+
+10. **Push an invoice that mixes a mapped catalog line and an ad-hoc
+    (unmapped) line; verify the QBO Invoice has a `SalesItemLineDetail` line
+    with an `ItemRef` for the mapped item and one with no `ItemRef` for the
+    ad-hoc line, and that both lines' amounts/quantities/descriptions match
+    the Breeze invoice.**
+    Result: PENDING. Visible status: _______
+
+11. **With the connection's default tax code set, push a taxable invoice and
+    confirm the `TxnTaxDetail` override lands on the QBO Invoice (not QBO's
+    own tax engine total); then push an invoice where QBO's returned
+    `TxnTaxDetail.TotalTax` differs from Breeze's `tax_total` by more than 1¢
+    and verify Breeze flags it `synced_with_tax_variance` rather than plain
+    `synced`.**
+    Result: PENDING. Visible status: _______
+
+12. **Push two invoices that collide on `DocNumber` (e.g. by reusing a number
+    already present in the sandbox company) and verify Breeze retries once
+    without `DocNumber`, then records the QBO-assigned `DocNumber` — not the
+    Breeze invoice number — on the mapping row.**
+    Result: PENDING. Visible status: _______
+
+13. **Void a previously-pushed invoice and confirm the QBO Invoice shows
+    Voided; also void an invoice that was never pushed and confirm Breeze
+    resolves without contacting QBO (no mapping row, or one with no
+    `remoteEntityId`).**
+    Result: PENDING. Visible status: _______
+
+14. **Fetch realm settings (Preferences) against both a multi-currency-enabled
+    sandbox company and a single-currency one; confirm
+    `MultiCurrencyEnabled` is visible and correctly read as `true`/`false`
+    (not just "present") on both realm types.**
+    Result: PENDING. Visible status: _______
+
+15. **Attempt to push a foreign-currency invoice (an invoice whose
+    `currency_code` differs from the realm's home currency) into a
+    single-currency realm and confirm Breeze returns a typed error
+    (`currency_mismatch` / `home_currency_unknown`) — never a 1:1 silent
+    booking at the wrong currency.**
+    Result: PENDING. Visible status: _______
+
+16. **Map an organization to a QuickBooks customer whose `CurrencyRef` is a
+    different currency than the Breeze invoice being pushed (a
+    customer-currency mismatch, distinct from the realm-level mismatch above)
+    and capture the exact fault text Breeze surfaces.**
+    Result: PENDING. Visible status: _______
+
 ### How to fill this in on the next run
 
 1. Copy the "Evidence header" and "Checklist" blocks above into a new
@@ -292,8 +345,9 @@ assigns the sandbox company, e.g. "Breeze QBO Sandbox 1"), never the realm ID.
 3. Confirm no credentials, tokens, or QuickBooks realm IDs were written
    anywhere in this repository as part of the run (grep the diff before
    committing).
-4. Migration referenced by this feature:
-   `apps/api/migrations/2026-09-28-quickbooks-entity-mappings.sql`.
+4. Migrations referenced by this feature:
+   `apps/api/migrations/2026-09-28-quickbooks-entity-mappings.sql` (Phase B),
+   `apps/api/migrations/2026-09-29-quickbooks-invoice-push.sql` (Phase C).
 
 ---
 
