@@ -303,6 +303,56 @@ describe('tier-3 approval scope classification', () => {
     expect(check.description).not.toContain('undefined');
   });
 
+  // Review finding (fix round 2): the description named only the contact and
+  // the organization. `isPrimary` and `siteId` are the ONLY two add_contact
+  // inputs with an effect beyond inserting a row — `isPrimary: true` demotes
+  // whoever currently holds the scope's primary slot and REPLACES
+  // `organizations.billing_contact` (or `sites.contact` when a site is named),
+  // which is a public partner-API DTO. An approver shown neither could not
+  // tell "file a new contact" apart from "overwrite this customer's billing
+  // contact". These pin the exact rendering of all four combinations.
+  const CONTACT_ORG = '11112222-1111-4111-8111-111111111111';
+  const CONTACT_SITE = '22223333-2222-4222-8222-222222222222';
+
+  it('add_contact approval description names the primary takeover at the ORG level', () => {
+    const check = checkGuardrails('manage_organizations', {
+      action: 'add_contact', orgId: CONTACT_ORG, name: 'Jane Doe', isPrimary: true,
+    });
+    expect(check.description).toBe(
+      'Add contact "Jane Doe" to organization 11112222... '
+      + 'as PRIMARY contact (replaces the current billing contact)',
+    );
+  });
+
+  it('add_contact approval description names the SITE and the site-contact takeover together', () => {
+    const check = checkGuardrails('manage_organizations', {
+      action: 'add_contact', orgId: CONTACT_ORG, siteId: CONTACT_SITE,
+      name: 'Jane Doe', isPrimary: true,
+    });
+    expect(check.description).toBe(
+      'Add contact "Jane Doe" to organization 11112222... on site 22223333... '
+      + "as PRIMARY contact (replaces the site's current contact)",
+    );
+  });
+
+  it('add_contact approval description names the site pin on its own', () => {
+    const check = checkGuardrails('manage_organizations', {
+      action: 'add_contact', orgId: CONTACT_ORG, siteId: CONTACT_SITE, name: 'Jane Doe',
+    });
+    expect(check.description).toBe(
+      'Add contact "Jane Doe" to organization 11112222... on site 22223333...',
+    );
+  });
+
+  it('add_contact approval description is unchanged for a plain org-level contact', () => {
+    const check = checkGuardrails('manage_organizations', {
+      action: 'add_contact', orgId: CONTACT_ORG, name: 'Jane Doe', email: 'jane@customer.example',
+    });
+    expect(check.description).toBe(
+      'Add contact "Jane Doe" (email: jane@customer.example) to organization 11112222...',
+    );
+  });
+
   it('s1_isolate_device is input-aware: exempt from the static whole-tool sets', () => {
     expect(TIER3_INPUT_AWARE_TOOLS.has('s1_isolate_device')).toBe(true);
     expect(TIER3_FOUR_EYES_TOOLS.has('s1_isolate_device')).toBe(false);

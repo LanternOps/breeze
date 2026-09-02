@@ -2204,6 +2204,21 @@ function buildApprovalDescription(
         parts.push(
           `Add contact "${acHeadline}"${acOthers.length ? ` (${acOthers.join(', ')})` : ''} to organization ${(input.orgId as string)?.slice(0, 8) ?? '(own org)'}...`
         );
+        // Review finding (fix round 2): `siteId` and `isPrimary` are the only
+        // two add_contact inputs whose effect reaches beyond inserting a row,
+        // and neither was shown. `isPrimary: true` DEMOTES whoever currently
+        // holds the scope's primary slot and REPLACES the legacy projection —
+        // organizations.billing_contact, or sites.contact when a site is
+        // pinned, which is a public partner-API DTO. Without these the
+        // approver cannot tell "file a new contact" (routine, hence
+        // supervised) apart from "overwrite this customer's billing contact".
+        const acSiteId = typeof input.siteId === 'string' ? input.siteId : undefined;
+        if (acSiteId) parts.push(`on site ${acSiteId.slice(0, 8)}...`);
+        if (input.isPrimary === true) {
+          parts.push(
+            `as PRIMARY contact (replaces the ${acSiteId ? "site's current contact" : 'current billing contact'})`
+          );
+        }
       } else parts.push(`Organizations: ${action}`);
       break;
 
