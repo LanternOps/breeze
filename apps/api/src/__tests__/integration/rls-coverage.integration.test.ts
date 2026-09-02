@@ -13,6 +13,15 @@ import { configurationPolicies } from '../../db/schema/configurationPolicies';
 import { scripts, scriptExecutionBatches } from '../../db/schema/scripts';
 import { unifiIntegrations, unifiDevices } from '../../db/schema/unifi';
 import { oauthRevocationRetries } from '../../db/schema/oauth';
+import {
+  coveredCommands,
+  predicateCoversOrgAxis,
+  predicateCoversParents,
+  type Cmd,
+  type ParentRule,
+  type PolicyRow,
+  type PredicateSlot,
+} from '../../db/rlsPolicyShape';
 
 /**
  * Contract test: every tenant-scoped public table must have RLS enabled and
@@ -769,6 +778,63 @@ const UNREVIEWED_RLS_CLASSIFICATION_DEBT: ReadonlyMap<string, string> = new Map<
   ['snmp_alert_thresholds', 'device_id -> snmp_devices rows; RLS on/forced, join-through-snmp_devices policies (2026-04-11-bucket-c-dead-cleanup-rls.sql); in no allowlist — candidate PARENT_FK_JOIN_POLICY_TABLES (snmp_devices) after review.'],
 ]);
 
+// Per-command parent requirements that are STRICTER than PARENT_FK_JOIN_
+// POLICY_TABLES' default "helper on any one declared parent alias". Keyed by
+// table, then command, then predicate slot. A slot that is absent falls back
+// to the default any-of rule over the table's declared parents.
+//
+// script_to_tags (RMM-QA-220, advisor quorum §9 point 6): a link is readable
+// only when BOTH the script and the tag are visible, insertable only when the
+// script is writable AND the tag is visible, re-pointable (UPDATE WITH CHECK)
+// under the same both-parent rule, but unlinkable (UPDATE USING / DELETE) on
+// script write authority alone — tag visibility must not confer unlink rights
+// on another org's script.
+type PerCommandParentRules = Readonly<Partial<Record<Cmd, Readonly<Partial<Record<PredicateSlot, ParentRule>>>>>>;
+// Explicit type arguments on `new Map` keep the 'all-of' / 'any-of' string
+// literals narrow inside the nested object literals (otherwise TS widens them
+// to `string` and the assignment to ParentRule fails).
+const PARENT_FK_REQUIRED_PARENTS_PER_COMMAND: ReadonlyMap<string, PerCommandParentRules> = new Map<string, PerCommandParentRules>([
+  [
+    'script_to_tags',
+    {
+      SELECT: { qual: { kind: 'all-of', parents: ['scripts', 'script_tags'] } },
+      INSERT: { with_check: { kind: 'all-of', parents: ['scripts', 'script_tags'] } },
+      UPDATE: {
+        qual: { kind: 'any-of', parents: ['scripts'] },
+        with_check: { kind: 'all-of', parents: ['scripts', 'script_tags'] },
+      },
+      DELETE: { qual: { kind: 'any-of', parents: ['scripts'] } },
+    },
+  ],
+]);
+
+async function loadPublicPolicies(): Promise<Map<string, PolicyRow[]>> {
+  const rows = (await db.execute(sql`
+    SELECT tablename, policyname, cmd, permissive, qual, with_check
+    FROM pg_policies
+    WHERE schemaname = 'public'
+    ORDER BY tablename, policyname;
+  `)) as unknown as Array<PolicyRow & { tablename: string }>;
+  const byTable = new Map<string, PolicyRow[]>();
+  for (const r of rows) {
+    const list = byTable.get(r.tablename) ?? [];
+    list.push({ policyname: r.policyname, cmd: r.cmd, permissive: r.permissive, qual: r.qual, with_check: r.with_check });
+    byTable.set(r.tablename, list);
+  }
+  return byTable;
+}
+
+/** relname -> relrowsecurity for every public base table (r/p). Absent name = table missing. */
+async function loadRlsState(): Promise<Map<string, boolean>> {
+  const rows = (await db.execute(sql`
+    SELECT c.relname AS table_name, c.relrowsecurity AS rls_on
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p');
+  `)) as unknown as Array<{ table_name: string; rls_on: boolean }>;
+  return new Map(rows.map((r) => [r.table_name, r.rls_on]));
+}
+
 const REQUIRED_CMDS = ['SELECT', 'INSERT', 'UPDATE', 'DELETE'] as const;
 
 interface TableRow {
@@ -1233,6 +1299,63 @@ describe('RLS coverage contract', () => {
     ).toEqual([]);
   });
 
+  // RMM-QA-220 (D6b): command-specific version of the org-axis assertion
+  // above, over the SAME table set (org_id tables minus
+  // ORG_AXIS_POLICY_EXCLUDED_TABLES, plus ORG_ID_KEYED_TENANT_TABLES, minus
+  // EXEMPT_TABLES via offendersFrom's filter). Requires
+  // breeze_has_org_access([<table>.]org_id) — or ([<table>.]id) for id-keyed
+  // tables — in USING for SELECT/DELETE, WITH CHECK for INSERT, both for UPDATE.
+  it('every org-tenant public table has command-specific USING/WITH CHECK coverage by breeze_has_org_access on its own org_id', async () => {
+    const idKeyedList = Array.from(ORG_ID_KEYED_TENANT_TABLES);
+    const rows = (await db.execute(sql`
+      WITH org_id_tables AS (
+        SELECT DISTINCT c.relname, c.relrowsecurity, false AS id_keyed
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        JOIN information_schema.columns col
+          ON col.table_schema = n.nspname AND col.table_name = c.relname
+        WHERE n.nspname = 'public'
+          AND c.relkind = 'r'
+          AND col.column_name = 'org_id'
+          AND c.relname <> ALL(${sql.raw(
+            `ARRAY[${Array.from(ORG_AXIS_POLICY_EXCLUDED_TABLES).map((t) => `'${t}'`).join(',')}]::text[]`,
+          )})
+      ),
+      id_keyed_tables AS (
+        SELECT c.relname, c.relrowsecurity, true AS id_keyed
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public'
+          AND c.relkind = 'r'
+          AND c.relname = ANY(${sql.raw(
+            `ARRAY[${idKeyedList.map((t) => `'${t}'`).join(',')}]::text[]`,
+          )})
+      )
+      SELECT relname AS table_name, relrowsecurity AS rls_on, id_keyed FROM org_id_tables
+      UNION ALL
+      SELECT relname AS table_name, relrowsecurity AS rls_on, id_keyed FROM id_keyed_tables
+      ORDER BY 1;
+    `)) as unknown as Array<{ table_name: string; rls_on: boolean; id_keyed: boolean }>;
+
+    const policiesByTable = await loadPublicPolicies();
+    const tableRows: TableRow[] = rows.map((r) => {
+      const covered = coveredCommands(policiesByTable.get(r.table_name) ?? [], (pred) =>
+        predicateCoversOrgAxis(pred, r.table_name, r.id_keyed),
+      );
+      return { table_name: r.table_name, rls_on: r.rls_on, covered_cmds: [...covered] };
+    });
+    const offenders = offendersFrom(tableRows);
+
+    expect(
+      offenders,
+      `Org-tenant tables whose policies do not call breeze_has_org_access on the table's own org_id (or id) in the ` +
+        `slot Postgres evaluates for each command:\n${JSON.stringify(offenders, null, 2)}\n\n` +
+        `Fix: USING for SELECT/DELETE, WITH CHECK for INSERT, both for UPDATE; the argument must be this table's ` +
+        `org_id (id for ORG_ID_KEYED_TENANT_TABLES). A table whose tenancy axis is NOT its org_id column belongs in ` +
+        `ORG_AXIS_POLICY_EXCLUDED_TABLES with a comment (see ticket_form_org_links). Matcher: src/db/rlsPolicyShape.ts.`
+    ).toEqual([]);
+  });
+
   it('every partner-tenant public table has RLS on and all four DML commands covered by breeze_has_partner_access', async () => {
     const partnerTables = Array.from(PARTNER_TENANT_TABLES.keys());
 
@@ -1461,6 +1584,40 @@ describe('RLS coverage contract', () => {
         `breeze_has_org_access(parent.org_id), e.g.: ` +
         `EXISTS (SELECT 1 FROM automations a WHERE a.id = automation_runs.automation_id AND breeze_has_org_access(a.org_id)). ` +
         `See 2026-05-30-fk-child-tables-rls.sql for the canonical shape and the PARENT_FK_JOIN_POLICY_TABLES allowlist.`
+    ).toEqual([]);
+  });
+
+  // RMM-QA-220 (D6a): command-specific version of the assertion above. The
+  // legacy check accepts a helper NAME anywhere in qual OR with_check plus
+  // `LIKE '%FROM parent%'`; this one requires, per command, the helper on the
+  // declared parent's alias in the slot Postgres actually evaluates
+  // (SELECT/DELETE: USING; INSERT: WITH CHECK; UPDATE: both). Either
+  // breeze_has_org_access(<alias>.org_id) or breeze_has_partner_access(
+  // <alias>.partner_id) counts, so dual-axis parents fit. Tables in
+  // PARENT_FK_REQUIRED_PARENTS_PER_COMMAND must satisfy their overlay.
+  it('every parent-FK join-policy table has command-specific USING/WITH CHECK coverage on the declared parent alias', async () => {
+    const policiesByTable = await loadPublicPolicies();
+    const rlsState = await loadRlsState();
+    const offenders: Array<{ table: string; rls_on: boolean; missing_cmds: string[] }> = [];
+
+    for (const [table, parents] of PARENT_FK_JOIN_POLICY_TABLES) {
+      const overlay = PARENT_FK_REQUIRED_PARENTS_PER_COMMAND.get(table);
+      const covered = coveredCommands(policiesByTable.get(table) ?? [], (pred, cmd, slot) => {
+        const rule: ParentRule = overlay?.[cmd]?.[slot] ?? { kind: 'any-of', parents };
+        return predicateCoversParents(pred, rule);
+      });
+      const missing = REQUIRED_CMDS.filter((cmd) => !covered.has(cmd));
+      const rlsOn = rlsState.get(table) ?? false;
+      if (!rlsOn || missing.length > 0) offenders.push({ table, rls_on: rlsOn, missing_cmds: missing });
+    }
+
+    expect(
+      offenders,
+      `Parent-FK join-policy tables whose policies do not guard each command in the slot Postgres evaluates:\n` +
+        `${JSON.stringify(offenders, null, 2)}\n\n` +
+        `Fix: SELECT/DELETE need the parent-alias helper in USING, INSERT in WITH CHECK, UPDATE in BOTH. ` +
+        `Tables listed in PARENT_FK_REQUIRED_PARENTS_PER_COMMAND must satisfy every parent in their all-of rules. ` +
+        `Shape reference: 2026-05-30-fk-child-tables-rls.sql; matcher: src/db/rlsPolicyShape.ts.`
     ).toEqual([]);
   });
 
