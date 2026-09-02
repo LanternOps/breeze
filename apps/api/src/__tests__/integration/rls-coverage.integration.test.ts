@@ -758,7 +758,8 @@ const PLATFORM_INFRASTRUCTURE_TABLES: ReadonlySet<string> = new Set<string>([
 // handed to QA. The bucket is shrink-only — an entry may leave ONLY by moving
 // the table into a real bucket (a shape allowlist, INTENTIONAL_UNSCOPED with
 // a plan-doc entry, or PLATFORM_INFRASTRUCTURE_TABLES). A stale name (table
-// dropped) fails the test so the list cannot rot.
+// dropped) fails the test so the list cannot rot. Shrink-only is ENFORCED by
+// the ceiling + frozen name set directly below.
 const UNREVIEWED_RLS_CLASSIFICATION_DEBT: ReadonlyMap<string, string> = new Map<string, string>([
   // Surfaced by RMM-QA-220's exhaustive classification (2026-09). Candidate
   // findings handed to QA — NOT reviewed, NOT blessed. Descriptions are the
@@ -776,6 +777,29 @@ const UNREVIEWED_RLS_CLASSIFICATION_DEBT: ReadonlyMap<string, string> = new Map<
   // appear in no allowlist, so no per-shape assertion in this file checks them.
   ['sessions', 'user_id + token_hash session rows; RLS on/forced, policies user_id = breeze_current_user_id() OR system scope; in no allowlist — candidate USER_ID_SCOPED_TABLES after review.'],
   ['snmp_alert_thresholds', 'device_id -> snmp_devices rows; RLS on/forced, join-through-snmp_devices policies (2026-04-11-bucket-c-dead-cleanup-rls.sql); in no allowlist — candidate PARENT_FK_JOIN_POLICY_TABLES (snmp_devices) after review.'],
+]);
+
+// Enforced shrink-only ratchet for the bucket above (independent-review
+// finding on RMM-QA-220: "documented shrink-only, nothing enforces it"). The
+// ceiling and the frozen name set were fixed at the 2026-09-01 review. LOWER
+// the ceiling when a table leaves the bucket; NEVER raise it, and NEVER add a
+// name to the frozen set — a table that is new to this catalog must be
+// classified into a real bucket (see the D5 failure message), not parked
+// here. Both constants are asserted by 'the unreviewed classification debt
+// bucket only shrinks' below.
+const UNREVIEWED_RLS_CLASSIFICATION_DEBT_CEILING = 11;
+const UNREVIEWED_RLS_CLASSIFICATION_DEBT_FROZEN_NAMES: ReadonlySet<string> = new Set<string>([
+  'device_software',
+  'mobile_sessions',
+  'software_compliance_status',
+  'agent_versions',
+  'cis_check_catalog',
+  'patches',
+  'permissions',
+  'plugin_catalog',
+  'script_templates',
+  'sessions',
+  'snmp_alert_thresholds',
 ]);
 
 // Per-command parent requirements that are STRICTER than PARENT_FK_JOIN_
@@ -1113,12 +1137,37 @@ describe('RLS coverage contract', () => {
       { unclassified, stale, overlapping },
       `Every public base table must be classified. Unclassified tables have neither an org_id column nor an ` +
         `entry in any shape allowlist (ORG_ID_KEYED / PARTNER / DUAL_AXIS / DEVICE_ID_JOIN / PARENT_FK_JOIN / ` +
-        `USER_ID_SCOPED), INTENTIONAL_UNSCOPED, EXEMPT_TABLES, PLATFORM_INFRASTRUCTURE_TABLES or the shrink-only ` +
-        `UNREVIEWED_RLS_CLASSIFICATION_DEBT bucket. Pick a shape (CLAUDE.md "Six tenancy shapes"), add policies in a ` +
-        `migration, and register the table. 'stale' names no longer exist and must be removed; 'overlapping' names ` +
-        `are in a debt/infrastructure bucket AND a real bucket — remove them from the debt bucket.\n` +
+        `USER_ID_SCOPED), INTENTIONAL_UNSCOPED, EXEMPT_TABLES or PLATFORM_INFRASTRUCTURE_TABLES. ` +
+        `Fix: pick a shape (CLAUDE.md "Six tenancy shapes"), add policies in a migration, and register the table. ` +
+        `UNREVIEWED_RLS_CLASSIFICATION_DEBT is frozen (shrink-only, enforced) and is NOT a valid destination for a ` +
+        `new table. 'stale' names no longer exist and must be removed; 'overlapping' names are in a ` +
+        `debt/infrastructure bucket AND a real bucket — remove them from the debt bucket.\n` +
         JSON.stringify({ unclassified, stale, overlapping }, null, 2)
     ).toEqual({ unclassified: [], stale: [], overlapping: [] });
+  });
+
+  // RMM-QA-220 review finding: the debt bucket was documented shrink-only but
+  // nothing enforced it, so a future author facing `unclassified: [x]` could
+  // add one Map entry and go green — the same silent-omission class this
+  // contract exists to close. No database needed: this is a pure ratchet on
+  // the two constants above.
+  it('the unreviewed classification debt bucket only shrinks', () => {
+    const names = [...UNREVIEWED_RLS_CLASSIFICATION_DEBT.keys()];
+    const added = names.filter((name) => !UNREVIEWED_RLS_CLASSIFICATION_DEBT_FROZEN_NAMES.has(name));
+    expect(
+      { added, size: names.length, ceiling: UNREVIEWED_RLS_CLASSIFICATION_DEBT_CEILING },
+      `UNREVIEWED_RLS_CLASSIFICATION_DEBT is shrink-only. Names not in the frozen 2026-09-01 set: ` +
+        `${JSON.stringify(added)}. A table new to this catalog must be classified into a real bucket ` +
+        `(a shape allowlist, INTENTIONAL_UNSCOPED with a plan-doc entry, or PLATFORM_INFRASTRUCTURE_TABLES) — ` +
+        `never parked here. When a table leaves the bucket, remove it from both the Map and the frozen set ` +
+        `and LOWER the ceiling; never raise it.`
+    ).toEqual({ added: [], size: names.length, ceiling: UNREVIEWED_RLS_CLASSIFICATION_DEBT_CEILING });
+    expect(names.length).toBeLessThanOrEqual(UNREVIEWED_RLS_CLASSIFICATION_DEBT_CEILING);
+    // The frozen set must not outgrow the ceiling either (guards against
+    // "add the name to both places" without touching the number).
+    expect(UNREVIEWED_RLS_CLASSIFICATION_DEBT_FROZEN_NAMES.size).toBeLessThanOrEqual(
+      UNREVIEWED_RLS_CLASSIFICATION_DEBT_CEILING
+    );
   });
 
   it('deployment_invites has a database invariant tying org_id to partner_id', async () => {
