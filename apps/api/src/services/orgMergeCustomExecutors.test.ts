@@ -87,12 +87,38 @@ describe('mergeAiAgents — clears graduated supervised keys before repointing (
     const clearKeysStatement = executeMock.mock.calls[1]?.[0] as SQL;
     const compiled = dialect.sqlToQuery(clearKeysStatement);
 
-    expect(compiled.sql).toMatch(/supervisedActionKeys/);
+    // Pin the exact write shape — a wrong jsonb_set path, a wrong replacement
+    // value, or a missing/relocated array-length guard must fail this test
+    // even though it would still satisfy a loose `/supervisedActionKeys/`
+    // match.
+    expect(compiled.sql).toMatch(/jsonb_set\(coalesce\(act_assets,\s*'\{\}'::jsonb\)/);
+    expect(compiled.sql).toMatch(/'\{supervisedActionKeys\}',\s*'\[\]'::jsonb\)/);
+    expect(compiled.sql).toMatch(/jsonb_array_length\(coalesce\(act_assets\s*->\s*'supervisedActionKeys',\s*'\[\]'::jsonb\)\)\s*>\s*0/);
     expect(compiled.sql).toMatch(/org_id\s*=\s*\$1::uuid/);
     expect(compiled.params[0]).toBe(L);
     // The predicate must be an equality on the loser org, never an
     // `org_id IS NULL` branch that would reach partner-wide rows.
     expect(compiled.sql).not.toMatch(/org_id\s+is\s+null/i);
     expect(compiled.sql).not.toMatch(/partner_id/i);
+  });
+
+  it('clears keys on an agent the SAME call just disabled — the clear-keys UPDATE carries no disabled_at predicate', async () => {
+    executeMock
+      .mockResolvedValueOnce({ rowCount: 1 }) // disable-collision — this agent gets disabled
+      .mockResolvedValueOnce({ rowCount: 1 }) // clear-supervised-keys — the SAME agent, disabled or not
+      .mockResolvedValueOnce({ rowCount: 2 });
+
+    const outcome = await mergeAiAgents(L, S);
+
+    // Both the disable-count and the clear-count are 1 for what is, in the
+    // real-Postgres case this models, the SAME row: a disabled agent's
+    // graduated keys must still be cleared before the repoint, or the
+    // survivor inherits an authority nobody on the survivor earned.
+    expect(outcome.notes.join('\n')).toMatch(/disabled 1 agent/);
+    expect(outcome.notes.join('\n')).toMatch(/cleared graduated supervised action keys on 1 agent/);
+
+    const clearKeysStatement = executeMock.mock.calls[1]?.[0] as SQL;
+    const compiled = dialect.sqlToQuery(clearKeysStatement);
+    expect(compiled.sql).not.toMatch(/disabled_at/i);
   });
 });

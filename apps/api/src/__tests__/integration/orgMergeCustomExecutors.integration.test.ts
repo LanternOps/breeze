@@ -438,11 +438,18 @@ describe('org merge engine SQL against real Postgres', () => {
         // that table is `leave-for-erasure` (its org_id is trigger-immutable),
         // and its agent_id FK is ON DELETE RESTRICT, so this row is exactly
         // what makes a dedupe DELETE impossible and the disable path necessary.
+        //
+        // Task 17 (A2-7, #4192): BOTH loser agents carry graduated
+        // `act_assets.supervisedActionKeys`. `agentLTriage` collides and gets
+        // disabled by the merge in the same call — it must STILL lose its
+        // keys (that's the whole point of not scoping the clear-keys UPDATE
+        // to `disabled_at IS NULL`). `agentLPatch` is never disabled and
+        // exercises the plain non-zero-row clear path.
         await db.execute(sql`
-          INSERT INTO ai_agents (id, org_id, kind, name, created_by, enabled, mode) VALUES
-            (${agentLTriage}::uuid, ${L}::uuid, 'triage',   'L triage', ${U}::uuid, true, 'act'),
-            (${agentLPatch}::uuid,  ${L}::uuid, 'patch',    'L patch',  ${U}::uuid, true, 'act'),
-            (${agentSTriage}::uuid, ${S}::uuid, 'triage',   'S triage', ${U}::uuid, true, 'act')`);
+          INSERT INTO ai_agents (id, org_id, kind, name, created_by, enabled, mode, act_assets) VALUES
+            (${agentLTriage}::uuid, ${L}::uuid, 'triage',   'L triage', ${U}::uuid, true, 'act', '{"supervisedActionKeys":["manage_services:restart","x:y"]}'::jsonb),
+            (${agentLPatch}::uuid,  ${L}::uuid, 'patch',    'L patch',  ${U}::uuid, true, 'act', '{"supervisedActionKeys":["patch:apply"]}'::jsonb),
+            (${agentSTriage}::uuid, ${S}::uuid, 'triage',   'S triage', ${U}::uuid, true, 'act', '{}'::jsonb)`);
         await db.execute(sql`
           INSERT INTO ai_agent_runs (id, agent_id, org_id, trigger_kind, dedupe_key, mode_at_start, policy_snapshot)
           VALUES (${runL}::uuid, ${agentLTriage}::uuid, ${L}::uuid, 'manual', ${`dk-${suffix}`}, 'act', '{}'::jsonb)`);
@@ -513,6 +520,23 @@ describe('org merge engine SQL against real Postgres', () => {
         expect(agents.moved).toBe(2); // both loser agents move; NEITHER is deleted
         expect(agents.dropped).toBe(0);
         expect(agents.notes.join('\n')).toMatch(/disabled 1 agent/);
+        // Both loser agents carried graduated keys (one of them on the agent
+        // this SAME call just disabled) — the note must report 2, and it must
+        // be reported even though one of the two rows is disabled.
+        expect(agents.notes.join('\n')).toMatch(
+          /cleared graduated supervised action keys on 2 agent\(s\) from the merged-away org — a survivor org must re-earn them \(evidence is leave-for-erasure\)/,
+        );
+        const clearedKeyRows = (await db.execute(sql`
+          SELECT id, act_assets -> 'supervisedActionKeys' AS keys
+            FROM ai_agents WHERE id IN (${agentLTriage}::uuid, ${agentLPatch}::uuid) ORDER BY id`)) as unknown as Array<{
+          id: string; keys: unknown;
+        }>;
+        // Real-Postgres proof of the non-zero-row path: both rows — the
+        // disabled one AND the active one — now read an empty array, not
+        // just a non-zero row count from the mock.
+        for (const row of clearedKeyRows) {
+          expect(row.keys).toEqual([]);
+        }
         const agentRows = (await db.execute(sql`
           SELECT kind, count(*)::int AS total, count(*) FILTER (WHERE disabled_at IS NULL)::int AS active
             FROM ai_agents WHERE org_id = ${S}::uuid GROUP BY 1 ORDER BY 1`)) as unknown as Array<{

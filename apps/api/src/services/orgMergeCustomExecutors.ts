@@ -674,12 +674,19 @@ const mergeAiAgents: CustomMergeExecutor = async (loser, survivor) => {
             AND s.disabled_at IS NULL
             AND s.kind = t.kind
        )`);
+  // Deliberately NOT scoped to `disabled_at IS NULL`: the disable-collision
+  // UPDATE immediately above excludes any agent it just disabled (and any
+  // agent disabled before the merge) from THIS statement if it were, and
+  // `buildRepoint` below repoints every loser-org agent unconditionally
+  // regardless of disabled_at — so a disabled agent's graduated keys would
+  // otherwise ride into the survivor org untouched, evidence and all, while
+  // the operator note above tells them to "re-enable it manually". Every
+  // loser-org agent's keys must be cleared, disabled or not.
   const clearedKeys = await run(sql`
     UPDATE ai_agents
        SET act_assets = jsonb_set(coalesce(act_assets, '{}'::jsonb), '{supervisedActionKeys}', '[]'::jsonb),
            updated_at = now()
      WHERE org_id = ${uuid(loser)}
-       AND disabled_at IS NULL
        AND jsonb_array_length(coalesce(act_assets -> 'supervisedActionKeys', '[]'::jsonb)) > 0`);
   const moved = await run(buildRepoint('ai_agents', loser, survivor));
   return {
