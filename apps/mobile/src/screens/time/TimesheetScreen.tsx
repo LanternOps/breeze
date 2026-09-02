@@ -274,7 +274,10 @@ export function TimesheetScreen({ navigation }: TimesheetProps = {}) {
         <View style={styles.entryHeader}>
           <Text style={styles.entryRef}>
             {entry.ticketId
-              ? (ticketRef({ internalNumber: ticket?.internalNumber ?? null }) ?? ticket?.subject ?? 'Ticket')
+              ? (ticketRef({ internalNumber: entry.ticketNumber ?? ticket?.internalNumber ?? null }) ??
+                entry.ticketSubject ??
+                ticket?.subject ??
+                'Ticket')
               : 'No ticket'}
           </Text>
           <Text style={styles.entryDuration}>{formatMinutes(entry.durationMinutes)}</Text>

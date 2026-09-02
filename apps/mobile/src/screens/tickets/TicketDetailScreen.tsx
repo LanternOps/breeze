@@ -691,7 +691,10 @@ export function TicketDetailScreen() {
         <Text style={styles.sectionHeader}>
           ACTIVITY{activityCount ? ` (${activityCount})` : ''}
         </Text>
-        {ticket.comments.length === 0 ? (
+        {/* Gate on the rendered count, not the raw array: a ticket whose only
+            rows are blank system entries would otherwise show the header over
+            nothing at all. */}
+        {activityCount === 0 ? (
           <Text style={styles.metaDim}>No comments yet.</Text>
         ) : (
           ticket.comments.map((c) => {
