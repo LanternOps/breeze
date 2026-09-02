@@ -641,6 +641,14 @@ const PARENT_FK_JOIN_POLICY_TABLES: ReadonlyMap<string, readonly string[]> = new
   // breeze_has_org_access(parent.org_id) join would be WRONG because the
   // parent's org_id is NULL for the partner-wide forms this table scopes.
   ['ticket_form_org_links', ['ticket_forms']],
+  // RMM-QA-220: script_versions (script content history) and script_to_tags
+  // (script↔tag join) shipped in the baseline with NO rls and reach their
+  // tenant only through scripts (dual-axis, nullable org_id, is_system) and
+  // script_tags (dual-axis). See 2026-09-30-100000-script-children-rls.sql.
+  // script_to_tags additionally carries a per-command both-parents overlay
+  // (PARENT_FK_REQUIRED_PARENTS_PER_COMMAND below).
+  ['script_versions', ['scripts']],
+  ['script_to_tags', ['scripts', 'script_tags']],
 ]);
 
 // Tables scoped to the calling user via breeze_current_user_id().
@@ -724,6 +732,41 @@ const USER_ID_SCOPED_TABLES: ReadonlySet<string> = new Set<string>([
   // Request paths are limited to the exact user owner; the explicit system
   // branch lets the bounded retry worker drain work for every user.
   'oauth_revocation_retries',
+]);
+
+// Platform bookkeeping tables that hold no tenant data and are not a tenancy
+// shape. Exactly one entry today. Adding here requires the same justification
+// as INTENTIONAL_UNSCOPED (a plan-doc entry per CLAUDE.md "Intentionally
+// system-scoped").
+const PLATFORM_INFRASTRUCTURE_TABLES: ReadonlySet<string> = new Set<string>([
+  'breeze_migrations', // autoMigrate's applied-migration ledger (filename + checksum). No tenant data. See apps/api/src/db/autoMigrate.ts MIGRATION_TABLE.
+]);
+
+// Tables that carry NO tenancy classification in this catalog (most also
+// have no row-level security at all; two carry policies but sit in no
+// allowlist) and were NOT reviewed by RMM-QA-220. Inclusion is a TRACKING FACT, not a
+// security review, and not a blessing: each name is a candidate finding
+// handed to QA. The bucket is shrink-only — an entry may leave ONLY by moving
+// the table into a real bucket (a shape allowlist, INTENTIONAL_UNSCOPED with
+// a plan-doc entry, or PLATFORM_INFRASTRUCTURE_TABLES). A stale name (table
+// dropped) fails the test so the list cannot rot.
+const UNREVIEWED_RLS_CLASSIFICATION_DEBT: ReadonlyMap<string, string> = new Map<string, string>([
+  // Surfaced by RMM-QA-220's exhaustive classification (2026-09). Candidate
+  // findings handed to QA — NOT reviewed, NOT blessed. Descriptions are the
+  // column / catalog facts that a reviewer needs, nothing more.
+  ['device_software', 'device_id-keyed inventory rows, no RLS; candidate shape 5 (device-join) or denormalised org_id.'],
+  ['mobile_sessions', 'user_id / refresh-token session rows, no RLS; candidate shape 6 (breeze_current_user_id). Deferred in 2026-04-11-bucket-c-dead-cleanup-rls.sql.'],
+  ['software_compliance_status', 'device_id + policy_id rows, no RLS; candidate shape 5 (device-join).'],
+  ['agent_versions', 'Global agent release reference data, no RLS; candidate INTENTIONAL_UNSCOPED after review.'],
+  ['cis_check_catalog', 'Global CIS benchmark check catalog; RLS OFF, so its 3 system-only write policies are inert; candidate INTENTIONAL_UNSCOPED after review.'],
+  ['patches', 'Global patch reference data, no RLS; candidate INTENTIONAL_UNSCOPED after review.'],
+  ['permissions', 'Global permission catalog, no RLS; candidate INTENTIONAL_UNSCOPED after review.'],
+  ['plugin_catalog', 'Global plugin catalog, no RLS; candidate INTENTIONAL_UNSCOPED after review.'],
+  ['script_templates', 'Global script template library, no RLS; candidate INTENTIONAL_UNSCOPED after review.'],
+  // The two below DO have RLS enabled + forced with four policies each but
+  // appear in no allowlist, so no per-shape assertion in this file checks them.
+  ['sessions', 'user_id + token_hash session rows; RLS on/forced, policies user_id = breeze_current_user_id() OR system scope; in no allowlist — candidate USER_ID_SCOPED_TABLES after review.'],
+  ['snmp_alert_thresholds', 'device_id -> snmp_devices rows; RLS on/forced, join-through-snmp_devices policies (2026-04-11-bucket-c-dead-cleanup-rls.sql); in no allowlist — candidate PARENT_FK_JOIN_POLICY_TABLES (snmp_devices) after review.'],
 ]);
 
 const REQUIRED_CMDS = ['SELECT', 'INSERT', 'UPDATE', 'DELETE'] as const;
@@ -945,6 +988,71 @@ describe('RLS coverage contract', () => {
       `Tenant-scoped tables missing from the database or missing FORCE ROW LEVEL SECURITY:\n${JSON.stringify([...offenders, ...missingExplicitTables], null, 2)}\n\n` +
         `Fix: add an idempotent migration that runs ALTER TABLE ... FORCE ROW LEVEL SECURITY for each offender.`
     ).toEqual([]);
+  });
+
+  // RMM-QA-220: every assertion above enumerates ONE shape at a time, so a
+  // tenant child that is in no allowlist and has no org_id column (the exact
+  // way script_versions / script_to_tags shipped) is invisible to all of them.
+  // This test enumerates every public base table and demands a classification.
+  it('every public base table is classified by exactly one tenancy bucket', async () => {
+    // relkind 'r' (ordinary) + 'p' (partitioned parent, e.g. metric_rollups);
+    // NOT relispartition — metric_rollups partitions are created at runtime
+    // by breeze_ensure_metric_rollup_partition and would make this
+    // non-deterministic. The partitioned parent is classified once.
+    const rows = (await db.execute(sql`
+      SELECT
+        c.relname AS table_name,
+        EXISTS (
+          SELECT 1 FROM information_schema.columns col
+          WHERE col.table_schema = n.nspname AND col.table_name = c.relname AND col.column_name = 'org_id'
+        ) AS has_org_id
+      FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = 'public'
+        AND c.relkind IN ('r', 'p')
+        AND NOT c.relispartition
+      ORDER BY c.relname;
+    `)) as unknown as Array<{ table_name: string; has_org_id: boolean }>;
+
+    const existing = new Map(rows.map((r) => [r.table_name, r.has_org_id]));
+    const shapeLists: ReadonlyArray<{ has(name: string): boolean }> = [
+      ORG_ID_KEYED_TENANT_TABLES,
+      PARTNER_TENANT_TABLES,
+      DUAL_AXIS_TENANT_TABLES,
+      DEVICE_ID_JOIN_POLICY_TABLES,
+      PARENT_FK_JOIN_POLICY_TABLES,
+      USER_ID_SCOPED_TABLES,
+      INTENTIONAL_UNSCOPED,
+      EXEMPT_TABLES,
+    ];
+    const classifiedByShape = (name: string): boolean =>
+      (existing.get(name) ?? false) || shapeLists.some((list) => list.has(name));
+
+    const unclassified = rows
+      .map((r) => r.table_name)
+      .filter((name) => !classifiedByShape(name))
+      .filter((name) => !PLATFORM_INFRASTRUCTURE_TABLES.has(name))
+      .filter((name) => !UNREVIEWED_RLS_CLASSIFICATION_DEBT.has(name));
+
+    const bucketNames = [...PLATFORM_INFRASTRUCTURE_TABLES, ...UNREVIEWED_RLS_CLASSIFICATION_DEBT.keys()];
+    // Shrink-only ratchet: a name that no longer exists must be removed.
+    const stale = bucketNames.filter((name) => !existing.has(name));
+    // Buckets 3 and 4 are disjoint from every shape list and from each other.
+    const overlapping = [
+      ...bucketNames.filter((name) => existing.has(name) && classifiedByShape(name)),
+      ...[...PLATFORM_INFRASTRUCTURE_TABLES].filter((name) => UNREVIEWED_RLS_CLASSIFICATION_DEBT.has(name)),
+    ];
+
+    expect(
+      { unclassified, stale, overlapping },
+      `Every public base table must be classified. Unclassified tables have neither an org_id column nor an ` +
+        `entry in any shape allowlist (ORG_ID_KEYED / PARTNER / DUAL_AXIS / DEVICE_ID_JOIN / PARENT_FK_JOIN / ` +
+        `USER_ID_SCOPED), INTENTIONAL_UNSCOPED, EXEMPT_TABLES, PLATFORM_INFRASTRUCTURE_TABLES or the shrink-only ` +
+        `UNREVIEWED_RLS_CLASSIFICATION_DEBT bucket. Pick a shape (CLAUDE.md "Six tenancy shapes"), add policies in a ` +
+        `migration, and register the table. 'stale' names no longer exist and must be removed; 'overlapping' names ` +
+        `are in a debt/infrastructure bucket AND a real bucket — remove them from the debt bucket.\n` +
+        JSON.stringify({ unclassified, stale, overlapping }, null, 2)
+    ).toEqual({ unclassified: [], stale: [], overlapping: [] });
   });
 
   it('deployment_invites has a database invariant tying org_id to partner_id', async () => {
