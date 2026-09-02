@@ -630,6 +630,7 @@ describe('listPendingWatchesForRecovery', () => {
     const before = Date.now();
 
     const rows = await listPendingWatchesForRecovery(120_000);
+    const after = Date.now();
 
     expect(rows.map((row) => row.id)).toEqual([WATCH_ID, 'watch-2']);
     const compiled = dialect.sqlToQuery(state.selectWheres[0] as SQL);
@@ -644,7 +645,11 @@ describe('listPendingWatchesForRecovery', () => {
     const cutoffParam = compiled.params.find((param) => param !== 'pending');
     const cutoff = new Date(String(cutoffParam));
     expect(Number.isNaN(cutoff.getTime())).toBe(false);
-    expect(cutoff.getTime()).toBeLessThanOrEqual(before - 120_000);
+    // Bracket the cutoff between the clock readings taken around the call: the
+    // lower bound proves the reader did not use a stale clock, the upper bound
+    // proves the subtraction happened (a dropped one would land near `after`).
+    expect(cutoff.getTime()).toBeGreaterThanOrEqual(before - 120_000);
+    expect(cutoff.getTime()).toBeLessThanOrEqual(after - 120_000);
   });
 
   it('reads one PAGE, ordered (created_at, id) — the tuple the cursor compares', async () => {
