@@ -383,6 +383,7 @@ describe('QuickBooks payment applier — real Postgres', () => {
 
     await applyAccountingPayment(
       fx.conn, paymentLine({ remotePaymentId: '181', paymentRefNum: '10442' }), systemRunner,
+      fx.conn.realmIdFingerprint,
     );
 
     const [kept] = await loadMappings(fx, 'invoice');

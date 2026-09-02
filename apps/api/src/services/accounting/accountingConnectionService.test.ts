@@ -710,8 +710,8 @@ describe('accountingConnectionService', () => {
 
   describe('stampReconcileRunError (finding H)', () => {
     function makeStampDb() {
-      const whereMock = vi.fn((_cond: SQL) => ({ returning: vi.fn(async () => [{ id: 'c1' }]) }));
-      const setMock = vi.fn(() => ({ where: whereMock }));
+      const whereMock = vi.fn((..._args: [SQL]) => ({ returning: vi.fn(async () => [{ id: 'c1' }]) }));
+      const setMock = vi.fn((..._args: [Record<string, unknown>]) => ({ where: whereMock }));
       const db = { update: vi.fn(() => ({ set: setMock })), select: vi.fn(), insert: vi.fn(), delete: vi.fn() };
       return { db, setMock, whereMock };
     }

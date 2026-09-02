@@ -761,7 +761,7 @@ export class QuickbooksProvider implements AccountingProvider {
           + 'changes in that range cannot be reconciled',
         ),
         undefined,
-        { service: 'quickbooksProvider', op: 'reconcileChanges', connectionId: conn.id, skippedDays },
+        { service: 'quickbooksProvider', op: 'reconcileChanges', connectionId: conn.id, skippedDays: String(skippedDays) },
       );
     }
 
