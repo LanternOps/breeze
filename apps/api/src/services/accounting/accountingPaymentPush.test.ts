@@ -269,8 +269,17 @@ function mappingMatches(row: MapRow, cond: unknown): boolean {
   const text = compiledSql(cond);
   const params = paramsOf(cond);
   const refs = (col: string): boolean => text.includes(`"accounting_entity_mappings"."${col}"`);
-  const eqOn = (col: string, value: unknown): boolean =>
-    !refs(col) || (value !== null && params.includes(value));
+  // `IS NULL` is an UNBOUND predicate — it has no parameter to match on — so it
+  // has to be read off the compiled SQL. Without this arm the re-own CAS's
+  // `remote_entity_id IS NULL` would EXCLUDE exactly the rows it selects for
+  // (`eqOn` rejects a null value), and the test would pass for the wrong reason.
+  // `is not null` cannot be confused with it: the substring differs.
+  const isNullOn = (col: string): boolean =>
+    text.includes(`"accounting_entity_mappings"."${col}" is null`);
+  const eqOn = (col: string, value: unknown): boolean => {
+    if (isNullOn(col)) return value === null;
+    return !refs(col) || (value !== null && params.includes(value));
+  };
 
   if (!eqOn('id', row.id)) return false;
   if (!eqOn('partner_id', row.partnerId)) return false;
@@ -279,6 +288,7 @@ function mappingMatches(row: MapRow, cond: unknown): boolean {
   if (!eqOn('breeze_entity_id', row.breezeEntityId)) return false;
   if (!eqOn('remote_entity_id', row.remoteEntityId)) return false;
   if (!eqOn('pending_op', row.pendingOp)) return false;
+  if (!eqOn('breeze_origin', row.breezeOrigin)) return false;
   if (refs('claimed_at')) {
     const cutoff = cutoffFor(text, params, 'claimed_at');
     if (!(row.claimedAt === null || (cutoff !== null && row.claimedAt < cutoff))) return false;
@@ -1218,6 +1228,67 @@ describe('fanOutOwedPayments', () => {
 
     await expect(fanOutOwedPayments(INVOICE, PARTNER, runCtx)).resolves.toHaveLength(1);
     expect(stmtsOf('insert', 'accounting_entity_mappings')[0]!.values!.breezeEntityId).toBe('pay-2');
+  });
+
+  it('RE-OWNS a Breeze-origin mapping QuickBooks deleted, instead of trying to insert a second one', async () => {
+    // `breeze_origin_removed_remotely` leaves the row with no remote id and
+    // nothing owed. `accounting_entity_mappings_breeze_uniq` makes a second
+    // insert impossible, so without this the payment is un-re-pushable forever.
+    currentMappings = [invoiceMapRow(), orgMapRow(), paymentMapRow({
+      breezeOrigin: true, remoteEntityId: null, remoteSyncToken: null,
+      pendingOp: null, syncStatus: 'error', lastError: 'Deleted in QuickBooks',
+    })];
+
+    await expect(fanOutOwedPayments(INVOICE, PARTNER, runCtx)).resolves.toEqual([MAPPING]);
+
+    expect(stmtsOf('insert', 'accounting_entity_mappings')).toHaveLength(0);
+    expect(mapping()).toMatchObject({
+      pendingOp: 'push', syncStatus: 'pending', lastError: null, claimedAt: null,
+    });
+  });
+
+  it('guards the re-own on the whole removed-remotely state, so a racing stamp wins', async () => {
+    currentMappings = [invoiceMapRow(), orgMapRow(), paymentMapRow({
+      breezeOrigin: true, remoteEntityId: null, pendingOp: null, syncStatus: 'error',
+    })];
+
+    await fanOutOwedPayments(INVOICE, PARTNER, runCtx);
+
+    const reown = stmtsOf('update', 'accounting_entity_mappings')[0]!;
+    const sql = compiledSql(reown.where);
+    expect(sql).toMatch(/"remote_entity_id" is null/);
+    expect(sql).toMatch(/"pending_op" is null/);
+    expect(sql).toMatch(/"breeze_origin" = \$\d+/);
+    expect(paramsOf(reown.where)).toEqual(expect.arrayContaining([MAPPING, PARTNER, true]));
+  });
+
+  it('does NOT re-own a synced mapping — re-owing one would create a DUPLICATE Payment', async () => {
+    currentMappings = [invoiceMapRow(), orgMapRow(), paymentMapRow({
+      breezeOrigin: true, remoteEntityId: '181/145', remoteSyncToken: '0',
+      pendingOp: null, syncStatus: 'synced',
+    })];
+
+    await expect(fanOutOwedPayments(INVOICE, PARTNER, runCtx)).resolves.toEqual([]);
+    expect(stmtsOf('update', 'accounting_entity_mappings')).toHaveLength(0);
+    expect(stmtsOf('insert', 'accounting_entity_mappings')).toHaveLength(0);
+  });
+
+  it('does NOT re-own a mapping that already owes a delete', async () => {
+    currentMappings = [invoiceMapRow(), orgMapRow(), paymentMapRow({
+      breezeOrigin: true, remoteEntityId: null, pendingOp: 'delete', syncStatus: 'pending',
+    })];
+
+    await expect(fanOutOwedPayments(INVOICE, PARTNER, runCtx)).resolves.toEqual([]);
+    expect(stmtsOf('update', 'accounting_entity_mappings')).toHaveLength(0);
+  });
+
+  it('does NOT re-own a QuickBooks-ORIGIN mapping — it is not ours to push', async () => {
+    currentMappings = [invoiceMapRow(), orgMapRow(), paymentMapRow({
+      breezeOrigin: false, remoteEntityId: null, pendingOp: null, syncStatus: 'error',
+    })];
+
+    await expect(fanOutOwedPayments(INVOICE, PARTNER, runCtx)).resolves.toEqual([]);
+    expect(stmtsOf('update', 'accounting_entity_mappings')).toHaveLength(0);
   });
 
   it('returns nothing when push_payments is off', async () => {

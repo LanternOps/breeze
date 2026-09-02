@@ -1243,6 +1243,18 @@ describe('adoption of a Breeze-created Payment (spec decision 3)', () => {
       .resolves.toMatchObject({ outcome: 'skipped_breeze_origin' });
   });
 
+  it('does NOT report an edit for a split-Payment line on a row that is only awaiting its delete', async () => {
+    currentPayments = [];
+    currentMappings = [invoiceMappingRow(), breezeOriginMapping({
+      remoteEntityId: `${QBO_PAYMENT_ID}/999`, pendingOp: 'delete', syncStatus: 'pending',
+    })];
+
+    const r = await applyAccountingPayment(conn(), markedLine(), runCtx, REALM_FP);
+
+    expect(r.outcome).toBe('skipped_breeze_origin');
+    expect(currentMappings[1]).toMatchObject({ syncStatus: 'pending', lastError: null, pendingOp: 'delete' });
+  });
+
   it('reports a divergence when QuickBooks MOVED a Breeze payment to another invoice', async () => {
     currentPayments = [breezePaymentRow()];
     currentMappings = [invoiceMappingRow(), breezeOriginMapping({ remoteEntityId: `${QBO_PAYMENT_ID}/999` })];
@@ -1365,6 +1377,25 @@ describe('pull disabled (spec decision 6, #4543)', () => {
     }
   });
 
+  it('suppresses a MALFORMED QuickBooks-origin line instead of throwing and holding the cursor', async () => {
+    // A line with no TxnDate normally throws so the window replays. With pull
+    // off there is nothing to replay FOR: the import is discarded either way,
+    // and throwing would pin the CDC cursor forever on a connection that is not
+    // importing.
+    currentMappings = [invoiceMappingRow()];
+
+    await expect(applyAccountingPayment(
+      conn({ pullPayments: false }), { ...LINE, txnDate: '  ' }, runCtx, REALM_FP,
+    )).resolves.toMatchObject({ outcome: 'skipped_pull_disabled' });
+  });
+
+  it('still THROWS on a malformed line when pull is ON', async () => {
+    currentMappings = [invoiceMappingRow()];
+
+    await expect(applyAccountingPayment(conn(), { ...LINE, txnDate: '  ' }, runCtx, REALM_FP))
+      .rejects.toThrow(/no transaction date/);
+  });
+
   it('still ADOPTS a Breeze-created Payment with pull off — push and pull are separate switches', async () => {
     currentPayments = [breezePaymentRow()];
     currentMappings = [invoiceMappingRow(), pendingPushMapping()];
@@ -1418,13 +1449,72 @@ describe('a Breeze-origin Payment deleted in QuickBooks (spec decision 5)', () =
     expect(deleteMock).not.toHaveBeenCalled();
   });
 
-  it('leaves pending_op alone so work the row still owes QuickBooks survives', async () => {
+  it('DROPS the mapping when the remote deletion satisfies an owed delete', async () => {
+    // Breeze already wanted this Payment gone; QuickBooks got there first. The
+    // owed delete is now satisfied, so the outbox row must go — leaving it with
+    // a nulled remote id would park the delete worker on `awaiting_remote_ref`
+    // for the whole grace window and then raise a false "orphaned Payment"
+    // alarm for a Payment that demonstrably no longer exists.
+    currentPayments = [];
+    currentMappings = [invoiceMappingRow(), breezeOriginMapping({
+      pendingOp: 'delete', syncStatus: 'pending', claimedAt: null,
+    })];
+
+    const results = await reverseAccountingPayment(conn(), QBO_PAYMENT_ID, runCtx, REALM_FP);
+
+    expect(results.map((r) => r.outcome)).toEqual(['breeze_origin_removed_remotely']);
+    expect(currentMappings.map((m) => m.id)).toEqual(['map-invoice-1']);
+    expect(writeAuditEventMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'accounting.payment.removed_remotely',
+      orgId: ORG,
+      resourceType: 'invoice',
+      resourceId: INVOICE_ID,
+      details: expect.objectContaining({ deleteSatisfied: true, invoicePaymentId: BREEZE_PAY }),
+    }));
+  });
+
+  it('audits the nothing-owed removal as deleteSatisfied:false and keeps the row', async () => {
     currentPayments = [breezePaymentRow()];
-    currentMappings = [invoiceMappingRow(), breezeOriginMapping({ pendingOp: 'delete', claimedAt: null })];
+    currentMappings = [invoiceMappingRow(), breezeOriginMapping({ pendingOp: null })];
 
     await reverseAccountingPayment(conn(), QBO_PAYMENT_ID, runCtx, REALM_FP);
 
-    expect(currentMappings[1]!.pendingOp).toBe('delete');
+    expect(currentMappings).toHaveLength(2);
+    expect(writeAuditEventMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'accounting.payment.removed_remotely',
+      details: expect.objectContaining({ deleteSatisfied: false }),
+    }));
+  });
+
+  it('treats a push-pending row with a remote id like nothing-owed — it must not vanish', async () => {
+    // Unreachable in practice (the stamp clears `pending_op`), but an
+    // unexpected row must still land in a recorded, operator-visible state
+    // rather than being dropped as if a delete had been satisfied.
+    currentPayments = [breezePaymentRow()];
+    currentMappings = [invoiceMappingRow(), breezeOriginMapping({ pendingOp: 'push' })];
+
+    await reverseAccountingPayment(conn(), QBO_PAYMENT_ID, runCtx, REALM_FP);
+
+    expect(currentMappings).toHaveLength(2);
+    expect(currentMappings[1]).toMatchObject({
+      syncStatus: 'error', lastError: 'Deleted in QuickBooks', remoteEntityId: null, pendingOp: 'push',
+    });
+  });
+
+  it('audits against the mapping row when the invoice cannot be resolved', async () => {
+    // An erased org: the mapping outlived its invoice, and an audit event with
+    // resourceType 'invoice' pointing at nothing would be a lie.
+    currentInvoices = [];
+    currentPayments = [breezePaymentRow()];
+    currentMappings = [breezeOriginMapping()];
+
+    await reverseAccountingPayment(conn(), QBO_PAYMENT_ID, runCtx, REALM_FP);
+
+    expect(writeAuditEventMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      orgId: null,
+      resourceType: 'accounting_entity_mapping',
+      resourceId: 'map-payment-1',
+    }));
   });
 
   it('treats a dropped allocation on a Breeze-origin payment as divergence, not reversal', async () => {

@@ -743,6 +743,16 @@ export async function listOwedPaymentMappings(
  * at all, and in `auto` it catches payments recorded while the invoice push was
  * still pending (their `requestPaymentPush` returned null because the invoice
  * had no remote id yet). Returns the mapping ids the caller must enqueue.
+ *
+ * A payment with NO mapping gets one inserted. A payment that already has one is
+ * skipped — EXCEPT the one state that means "Breeze wants this in QuickBooks and
+ * it is not there": a Breeze-origin row with no remote id and nothing owed, which
+ * is exactly what `accountingPaymentPull`'s `breeze_origin_removed_remotely`
+ * leaves behind when somebody deletes a Breeze-created Payment in QuickBooks.
+ * That row is RE-OWNED here rather than re-inserted, because
+ * `accounting_entity_mappings_breeze_uniq` makes a second insert for the same
+ * payment impossible — which is why this fan-out, not the insert path, is the
+ * re-push mechanism the pull's removal branch depends on.
  */
 export async function fanOutOwedPayments(
   invoiceId: string,
@@ -764,7 +774,13 @@ export async function fanOutOwedPayments(
     if (payments.length === 0) return [];
 
     const claimed = await db
-      .select({ breezeEntityId: accountingEntityMappings.breezeEntityId })
+      .select({
+        id: accountingEntityMappings.id,
+        breezeEntityId: accountingEntityMappings.breezeEntityId,
+        breezeOrigin: accountingEntityMappings.breezeOrigin,
+        remoteEntityId: accountingEntityMappings.remoteEntityId,
+        pendingOp: accountingEntityMappings.pendingOp,
+      })
       .from(accountingEntityMappings)
       .where(and(
         eq(accountingEntityMappings.integrationId, conn.id),
@@ -772,16 +788,66 @@ export async function fanOutOwedPayments(
         eq(accountingEntityMappings.breezeEntityType, 'payment'),
         inArray(accountingEntityMappings.breezeEntityId, payments.map((p) => p.id)),
       ));
-    const owned = new Set(claimed.map((r) => r.breezeEntityId));
+    const owned = new Map(claimed.map((r) => [r.breezeEntityId, r]));
 
     const enqueue: string[] = [];
     for (const payment of payments) {
-      if (owned.has(payment.id)) continue;
-      const mappingId = await insertPendingPushMapping(db, conn.id, partnerId, payment.id);
-      if (mappingId) enqueue.push(mappingId);
+      const existing = owned.get(payment.id);
+      if (!existing) {
+        const mappingId = await insertPendingPushMapping(db, conn.id, partnerId, payment.id);
+        if (mappingId) enqueue.push(mappingId);
+        continue;
+      }
+      // Re-ownable ONLY in the removed-remotely state. A row with a remote id is
+      // already in QuickBooks (re-owing it would CREATE a duplicate Payment,
+      // since the push is create-only); a row with a `pending_op` is already
+      // owed to a worker; a QuickBooks-origin row is not ours to push.
+      const removedRemotely = existing.breezeOrigin
+        && existing.remoteEntityId === null
+        && existing.pendingOp === null;
+      if (!removedRemotely) continue;
+      await reownPushMapping(existing.id, partnerId);
+      enqueue.push(existing.id);
     }
     return enqueue;
   });
+}
+
+/**
+ * Put a Breeze-origin mapping back on the outbox after QuickBooks lost its
+ * Payment (`accountingPaymentPull`'s `breeze_origin_removed_remotely`).
+ *
+ * The WHERE re-asserts the whole re-ownable state, not just the id: a concurrent
+ * adoption or push that stamped a remote id between this transaction's read and
+ * this write MUST win, because the push is create-only and re-owing a stamped
+ * row would create a SECOND QuickBooks Payment for the same money. Zero rows is
+ * therefore a throw, and the caller (`accountingInvoicePush`) already treats the
+ * whole fan-out as best-effort behind a Sentry capture.
+ */
+async function reownPushMapping(mappingId: string, partnerId: string): Promise<void> {
+  const rows = await db
+    .update(accountingEntityMappings)
+    .set({
+      pendingOp: 'push',
+      syncStatus: 'pending',
+      lastError: null,
+      claimedAt: null,
+      updatedAt: new Date(),
+    })
+    .where(and(
+      eq(accountingEntityMappings.id, mappingId),
+      eq(accountingEntityMappings.partnerId, partnerId),
+      eq(accountingEntityMappings.breezeOrigin, true),
+      isNull(accountingEntityMappings.remoteEntityId),
+      isNull(accountingEntityMappings.pendingOp),
+    ))
+    .returning({ id: accountingEntityMappings.id });
+  if (rows.length !== 1) {
+    throw new Error(
+      `accountingPaymentPush: re-owning mapping ${mappingId} for a re-push matched no row; `
+      + 'another writer claimed it, so it is NOT safe to enqueue a create for this payment',
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
