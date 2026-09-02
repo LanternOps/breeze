@@ -257,6 +257,7 @@ beforeEach(() => {
   });
   advanceReconcileCursorMock.mockImplementation(async () => {
     record('advanceReconcileCursor');
+    return true;
   });
   backfillRealmFingerprintsMock.mockImplementation(async () => {
     record('backfillRealmFingerprints');
@@ -429,7 +430,9 @@ describe('processReconcileConnectionJob: cursor', () => {
     const summary = await processReconcileConnectionJob(JOB);
 
     expect(advanceReconcileCursorMock).toHaveBeenCalledTimes(1);
-    expect(advanceReconcileCursorMock).toHaveBeenCalledWith({}, CONN_ID, PARTNER_ID, changes.cursor, expect.any(Date));
+    expect(advanceReconcileCursorMock).toHaveBeenCalledWith(
+      {}, CONN_ID, PARTNER_ID, 'fp1:legacy:abc', changes.cursor, expect.any(Date),
+    );
     expect(summary).toEqual({
       applied: 1,
       updated: 0,
@@ -438,6 +441,7 @@ describe('processReconcileConnectionJob: cursor', () => {
       skippedUnmapped: 1,
       currencyMismatch: 1,
       invoiceVoid: 1,
+      realmChanged: 0,
       failed: 0,
       invoicesMarkedDeleted: 0,
       cursorBefore: CURSOR_BEFORE,
@@ -506,8 +510,8 @@ describe('processReconcileConnectionJob: cursor', () => {
 
     // Once per PAYMENT, not once per line, with that payment's full current set.
     expect(reverseStaleMock).toHaveBeenCalledTimes(2);
-    expect(reverseStaleMock).toHaveBeenCalledWith(expect.anything(), '180', ['145'], expect.any(Function));
-    expect(reverseStaleMock).toHaveBeenCalledWith(expect.anything(), '181', ['146', '147'], expect.any(Function));
+    expect(reverseStaleMock).toHaveBeenCalledWith(expect.anything(), '180', ['145'], expect.any(Function), 'fp1:legacy:abc');
+    expect(reverseStaleMock).toHaveBeenCalledWith(expect.anything(), '181', ['146', '147'], expect.any(Function), 'fp1:legacy:abc');
     expect(summary?.reversed).toBe(1);
     expect(summary?.applied).toBe(3);
     // Stale reversal runs AFTER that payment's own lines are applied.
@@ -528,6 +532,44 @@ describe('processReconcileConnectionJob: cursor', () => {
     await expect(processReconcileConnectionJob(JOB)).rejects.toThrow(/failed item/);
 
     expect(advanceReconcileCursorMock).not.toHaveBeenCalled();
+  });
+
+  it('passes the run-start realm fingerprint to every applier (finding C)', async () => {
+    reconcileChangesMock.mockResolvedValue({
+      ...EMPTY_CHANGESET, payments: [line()], deletedPayments: ['181'], deletedInvoices: ['145'],
+    });
+    reverseReturns('reversed');
+
+    await processReconcileConnectionJob(JOB);
+
+    expect(applyMock).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.any(Function), 'fp1:legacy:abc');
+    expect(reverseMock).toHaveBeenCalledWith(expect.anything(), '181', expect.any(Function), 'fp1:legacy:abc');
+    expect(markInvoiceDeletedMock).toHaveBeenCalledWith(expect.anything(), '145', expect.any(Function), 'fp1:legacy:abc');
+    expect(reverseStaleMock).toHaveBeenCalledWith(expect.anything(), '180', ['145'], expect.any(Function), 'fp1:legacy:abc');
+  });
+
+  it('logs and skips — never throws — when the cursor CAS loses to a realm reconnect', async () => {
+    reconcileChangesMock.mockResolvedValue({ ...EMPTY_CHANGESET, payments: [line()] });
+    advanceReconcileCursorMock.mockImplementation(async () => {
+      record('advanceReconcileCursor');
+      return false;
+    });
+
+    const summary = await processReconcileConnectionJob(JOB);
+
+    // The run completed; only the watermark was not claimed.
+    expect(summary?.applied).toBe(1);
+    expect(summary?.cursorAfter).toBeNull();
+  });
+
+  it('counts a realm_changed item as clean and still lets the run finish', async () => {
+    reconcileChangesMock.mockResolvedValue({ ...EMPTY_CHANGESET, payments: [line()] });
+    applyReturns('realm_changed');
+
+    const summary = await processReconcileConnectionJob(JOB);
+
+    expect(summary?.realmChanged).toBe(1);
+    expect(summary?.failed).toBe(0);
   });
 
   it('holds the cursor and rethrows when the CDC window could not be fully enumerated', async () => {

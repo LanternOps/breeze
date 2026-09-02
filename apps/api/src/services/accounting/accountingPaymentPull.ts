@@ -78,6 +78,7 @@ import { and, eq, like } from 'drizzle-orm';
 import { db } from '../../db';
 import { accountingEntityMappings, invoicePayments, invoices } from '../../db/schema';
 import type { AccountingEntityMapping as AccountingEntityMappingRow } from '../../db/schema';
+import { accountingConnections } from '../../db/schema';
 import { assertNoAmbientDbContext, type DbContextRunner } from './dbContextGuard';
 import { AccountingCurrencyContractError, normalizeAccountingPayment } from './accountingCurrency';
 import type { AccountingConnection } from './accountingConnectionService';
@@ -99,6 +100,12 @@ export type PaymentPullOutcome =
   // the divergence is recorded on the invoice mapping row for a human, and the
   // void header's amount_paid/balance are deliberately left untouched.
   | 'invoice_void'
+  // The connection was re-authorised against a DIFFERENT QuickBooks realm while
+  // this run was in flight, so the item in hand describes a company this
+  // connection no longer points at. NO WRITE happens; the outcome is CLEAN for
+  // the run's own error accounting (nothing failed), and the worker's
+  // compare-and-set on the same fingerprint is what stops the cursor.
+  | 'realm_changed'
   // Produced by the CDC WORKER, never by this module: anything unexpected here
   // throws so the caller's transaction rolls back rather than half-applying, and
   // the worker classifies the throw, leaves the cursor and rethrows.
@@ -262,6 +269,33 @@ async function lockOwnedInvoice(invoiceId: string, partnerId: string): Promise<I
   return (rows as InvoiceRow[])[0] ?? null;
 }
 
+/**
+ * Is this connection still pointed at the realm the run started against?
+ *
+ * Re-read INSIDE the caller's transaction, immediately before any write. A
+ * reconnect to another QuickBooks company reuses the same
+ * `accounting_connections` row (the upsert keys on partner+provider), so a job
+ * already holding a decrypted token and a parsed CDC window would otherwise
+ * stamp the OLD realm's payments onto a connection that now means something
+ * else. A vanished row answers false too: there is nothing left to write for.
+ */
+async function realmStillMatches(
+  conn: AccountingConnection,
+  expectedRealmFingerprint: string | null,
+): Promise<boolean> {
+  const rows = await db
+    .select({ realmIdFingerprint: accountingConnections.realmIdFingerprint })
+    .from(accountingConnections)
+    .where(and(
+      eq(accountingConnections.id, conn.id),
+      eq(accountingConnections.partnerId, conn.partnerId),
+    ))
+    .limit(1);
+  const row = (rows as Array<{ realmIdFingerprint: string | null }>)[0];
+  if (!row) return false;
+  return (row.realmIdFingerprint ?? null) === expectedRealmFingerprint;
+}
+
 async function loadPaymentRow(invoicePaymentId: string): Promise<PaymentRow | null> {
   const rows = await db
     .select()
@@ -284,6 +318,7 @@ export async function applyAccountingPayment(
   conn: AccountingConnection,
   line: ChangeSetPaymentLine,
   runInDbContext: DbContextRunner,
+  expectedRealmFingerprint: string | null,
 ): Promise<PaymentPullResult> {
   assertNoAmbientDbContext('applyAccountingPayment');
 
@@ -293,7 +328,7 @@ export async function applyAccountingPayment(
   try {
     // ONE short, self-committing context — that invocation IS the transaction,
     // so every statement below shares it and commits together.
-    outcome = await runInDbContext(() => applyInsideTransaction(conn, line, remoteMappingId));
+    outcome = await runInDbContext(() => applyInsideTransaction(conn, line, remoteMappingId, expectedRealmFingerprint));
   } catch (err) {
     if (!isPgUniqueViolation(err, 'accounting_entity_mappings_remote_uniq')) throw err;
     // A concurrent webhook and sweep raced for the same (payment, invoice) pair
@@ -333,8 +368,14 @@ async function applyInsideTransaction(
   conn: AccountingConnection,
   line: ChangeSetPaymentLine,
   remoteMappingId: string,
+  expectedRealmFingerprint: string | null,
 ): Promise<ApplyOutcome> {
   const noAudit = (r: PaymentPullResult): ApplyOutcome => ({ result: r, audit: null });
+
+  // (0) Realm guard, BEFORE anything is read or written (finding C).
+  if (!await realmStillMatches(conn, expectedRealmFingerprint)) {
+    return noAudit(result('realm_changed', line.remotePaymentId, line.remoteInvoiceId));
+  }
 
   // (a) Unlocked discovery read — resolves WHICH invoice to lock. NOT
   // authoritative; the invoice row itself is re-read under the lock below.
@@ -574,11 +615,12 @@ export async function reverseAccountingPayment(
   conn: AccountingConnection,
   remotePaymentId: string,
   runInDbContext: DbContextRunner,
+  expectedRealmFingerprint: string | null,
 ): Promise<PaymentPullResult[]> {
   assertNoAmbientDbContext('reverseAccountingPayment');
 
   const candidates = await loadPaymentMappingCandidates(conn, remotePaymentId, runInDbContext);
-  return reverseCandidates(conn, remotePaymentId, candidates, runInDbContext);
+  return reverseCandidates(conn, remotePaymentId, candidates, runInDbContext, expectedRealmFingerprint);
 }
 
 /**
@@ -605,6 +647,7 @@ export async function reverseStaleAllocations(
   remotePaymentId: string,
   keepRemoteInvoiceIds: readonly string[],
   runInDbContext: DbContextRunner,
+  expectedRealmFingerprint: string | null,
 ): Promise<PaymentPullResult[]> {
   assertNoAmbientDbContext('reverseStaleAllocations');
 
@@ -614,7 +657,7 @@ export async function reverseStaleAllocations(
     .filter((row) => !keep.has(row.remoteEntityId?.slice(prefixLength) ?? ''));
   if (candidates.length === 0) return [];
 
-  return reverseCandidates(conn, remotePaymentId, candidates, runInDbContext);
+  return reverseCandidates(conn, remotePaymentId, candidates, runInDbContext, expectedRealmFingerprint);
 }
 
 /** Every `payment` mapping row for one QBO Payment id, scoped to this connection. */
@@ -646,10 +689,19 @@ async function reverseCandidates(
   remotePaymentId: string,
   candidates: readonly MappingRow[],
   runInDbContext: DbContextRunner,
+  expectedRealmFingerprint: string | null,
 ): Promise<PaymentPullResult[]> {
   const results: PaymentPullResult[] = [];
   for (const candidate of candidates) {
-    const reversed = await runInDbContext(() => reverseOneInsideTransaction(conn, remotePaymentId, candidate));
+    const reversed = await runInDbContext(
+      () => reverseOneInsideTransaction(conn, remotePaymentId, candidate, expectedRealmFingerprint),
+    );
+    // The realm moved under us: stop, and report it ONCE rather than per
+    // candidate. Every remaining candidate would answer identically.
+    if (reversed === REALM_CHANGED) {
+      results.push(result('realm_changed', remotePaymentId, null));
+      break;
+    }
     if (!reversed) continue;
     results.push(reversed.result);
     if (reversed.audit) fireAudit(conn, reversed.audit);
@@ -657,11 +709,17 @@ async function reverseCandidates(
   return results;
 }
 
+/** Sentinel: the connection's realm changed, so this transaction wrote nothing. */
+const REALM_CHANGED = Symbol('realm_changed');
+
 async function reverseOneInsideTransaction(
   conn: AccountingConnection,
   remotePaymentId: string,
   mapping: MappingRow,
-): Promise<ApplyOutcome | null> {
+  expectedRealmFingerprint: string | null,
+): Promise<ApplyOutcome | null | typeof REALM_CHANGED> {
+  if (!await realmStillMatches(conn, expectedRealmFingerprint)) return REALM_CHANGED;
+
   const remoteInvoiceId = mapping.remoteEntityId?.slice(remotePaymentId.length + 1) ?? null;
 
   // Unlocked discovery read: which invoice owns the mapped payment row?
@@ -756,10 +814,12 @@ export async function markInvoiceDeletedRemotely(
   conn: AccountingConnection,
   remoteInvoiceId: string,
   runInDbContext: DbContextRunner,
-): Promise<'marked' | 'skipped_unmapped'> {
+  expectedRealmFingerprint: string | null,
+): Promise<'marked' | 'skipped_unmapped' | 'realm_changed'> {
   assertNoAmbientDbContext('markInvoiceDeletedRemotely');
 
   return runInDbContext(async () => {
+    if (!await realmStillMatches(conn, expectedRealmFingerprint)) return 'realm_changed';
     const mapping = await loadMappingByRemoteId(conn, 'invoice', 'Invoice', remoteInvoiceId);
     if (!mapping) return 'skipped_unmapped';
     await markInvoiceMappingError(conn, mapping.id, 'Deleted in QuickBooks');

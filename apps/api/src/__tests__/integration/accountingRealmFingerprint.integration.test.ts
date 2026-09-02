@@ -3,21 +3,23 @@
  * contract: `backfillRealmFingerprints` re-fingerprints stale/null rows
  * idempotently (a re-run finds nothing left to do), a fingerprint round-trips
  * back to the owning connection through `findConnectionByRealmFingerprint`,
- * and `advanceReconcileCursor`'s guarded UPDATE throws rather than silently
- * no-opping when the (id, partnerId) pair doesn't match — the scenario the
- * mocked unit suite can only simulate via a zero-row mock, not prove against
- * the real partner-scoped predicate.
+ * and `advanceReconcileCursor`'s guarded UPDATE reports a miss rather than
+ * silently no-opping when the (id, partnerId, realm fingerprint) triple doesn't
+ * match — the scenario the mocked unit suite can only simulate via a zero-row
+ * mock, not prove against the real predicate. Also covers finding C's
+ * `resetConnectionForRealmChange`.
  */
 import './setup';
 import { describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
-import { accountingConnections } from '../../db/schema';
-import { createPartner } from './db-utils';
+import { accountingConnections, accountingEntityMappings } from '../../db/schema';
+import { createOrganization, createPartner } from './db-utils';
 import {
   advanceReconcileCursor,
   backfillRealmFingerprints,
   findConnectionByRealmFingerprint,
+  resetConnectionForRealmChange,
   upsertConnection,
 } from '../../services/accounting/accountingConnectionService';
 import { hmacFingerprint } from '../../services/secretCrypto';
@@ -57,12 +59,61 @@ describe('accountingRealmFingerprint (Phase D Task 1)', () => {
     expect(row!.realmIdFingerprint).toBe(hmacFingerprint('realm-rotated'));
   });
 
-  runDb('advanceReconcileCursor throws when the connection is not this partner\'s', async () => {
+  runDb('advanceReconcileCursor reports a miss when the connection is not this partner\'s', async () => {
     const [a, b] = [await createPartner(), await createPartner()];
     const conn = await withSystemDbAccessContext(() => upsertConnection(db, a.id, 'quickbooks', { realmId: 'realm-cursor' }));
 
     await expect(withSystemDbAccessContext(() =>
-      advanceReconcileCursor(db, conn.id, b.id, new Date(), new Date()),
-    )).rejects.toThrow(/matched no accounting_connections row/);
+      advanceReconcileCursor(db, conn.id, b.id, conn.realmIdFingerprint, new Date(), new Date()),
+    )).resolves.toBe(false);
+  });
+
+  runDb('advanceReconcileCursor writes under the matching realm fingerprint and refuses a stale one', async () => {
+    const partner = await createPartner();
+    const conn = await withSystemDbAccessContext(() => upsertConnection(db, partner.id, 'quickbooks', { realmId: 'realm-cas' }));
+    const cursor = new Date('2026-09-02T20:10:00.000Z');
+
+    await expect(withSystemDbAccessContext(() =>
+      advanceReconcileCursor(db, conn.id, partner.id, conn.realmIdFingerprint, cursor, new Date()),
+    )).resolves.toBe(true);
+
+    // Finding C: the same job's write is refused once the realm has moved on.
+    await expect(withSystemDbAccessContext(() =>
+      advanceReconcileCursor(db, conn.id, partner.id, hmacFingerprint('realm-somewhere-else'), new Date(), new Date()),
+    )).resolves.toBe(false);
+
+    const [row] = await withSystemDbAccessContext(() =>
+      db.select().from(accountingConnections).where(eq(accountingConnections.id, conn.id)));
+    expect(row!.cdcCursor?.toISOString()).toBe(cursor.toISOString());
+  });
+
+  runDb('resetConnectionForRealmChange wipes the mappings and nulls the CDC watermark', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const conn = await withSystemDbAccessContext(() => upsertConnection(db, partner.id, 'quickbooks', { realmId: 'realm-old' }));
+    await withSystemDbAccessContext(async () => {
+      await db.insert(accountingEntityMappings).values({
+        integrationId: conn.id,
+        partnerId: partner.id,
+        breezeEntityType: 'org',
+        breezeEntityId: org.id,
+        remoteEntityType: 'Customer',
+        remoteEntityId: '58',
+        linkStatus: 'confirmed',
+        syncStatus: 'synced',
+      });
+      await advanceReconcileCursor(db, conn.id, partner.id, conn.realmIdFingerprint, new Date(), new Date());
+    });
+
+    const out = await withSystemDbAccessContext(() => resetConnectionForRealmChange(db, conn.id, partner.id));
+
+    expect(out.mappingsDeleted).toBe(1);
+    const remaining = await withSystemDbAccessContext(() => db.select().from(accountingEntityMappings)
+      .where(eq(accountingEntityMappings.integrationId, conn.id)));
+    expect(remaining).toHaveLength(0);
+    const [row] = await withSystemDbAccessContext(() =>
+      db.select().from(accountingConnections).where(eq(accountingConnections.id, conn.id)));
+    expect(row!.cdcCursor).toBeNull();
+    expect(row!.lastReconcileAt).toBeNull();
   });
 });

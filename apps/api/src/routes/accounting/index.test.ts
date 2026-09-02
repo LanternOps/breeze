@@ -43,6 +43,7 @@ const { authState, mocks, AccountingConnectionErrorClass } = vi.hoisted(() => {
       updateHomeCurrency: vi.fn(async () => HOME_CURRENCY_WRITTEN_AT),
       updateMultiCurrencyEnabled: vi.fn(),
       refreshRealmSettings: vi.fn(),
+      resetConnectionForRealmChange: vi.fn(async () => ({ mappingsDeleted: 0 })),
       captureException: vi.fn(),
       captureMessage: vi.fn(),
       writeRouteAudit: vi.fn(),
@@ -117,6 +118,7 @@ vi.mock('../../services/accounting/accountingConnectionService', () => ({
   updateHomeCurrency: mocks.updateHomeCurrency,
   updateMultiCurrencyEnabled: mocks.updateMultiCurrencyEnabled,
   refreshRealmSettings: mocks.refreshRealmSettings,
+  resetConnectionForRealmChange: mocks.resetConnectionForRealmChange,
   AccountingConnectionError: AccountingConnectionErrorClass,
   // Real implementation, not a mock: the route's benign-race branch must key on
   // the error CODE, so the test exercises the real predicate.
@@ -411,6 +413,54 @@ describe('accounting routes', () => {
     expect(res.status).toBe(302);
     const fields = mocks.upsertConnection.mock.calls[0]![3] as Record<string, unknown>;
     expect(fields.homeCurrency).toBeNull();
+  });
+
+  it('different-realm reconnect wipes the mappings and the CDC watermark, and audits it (finding C)', async () => {
+    // The upsert keys on (partner, provider), so re-authorising against another
+    // QuickBooks company REUSES this row — every mapping under it still points
+    // at the OLD realm's entity ids and the stored cursor is a watermark in the
+    // old realm's change stream.
+    mocks.getConnection.mockResolvedValueOnce({ id: CONNECTION_ID, realmId: 'realm-A', homeCurrency: 'CAD' });
+    mocks.exchangeCode.mockResolvedValueOnce(exchangedTokens('realm-B'));
+    mocks.resetConnectionForRealmChange.mockResolvedValueOnce({ mappingsDeleted: 7 });
+
+    const res = await runCallback(app, 'realm-B');
+
+    expect(res.status).toBe(302);
+    expect(mocks.resetConnectionForRealmChange).toHaveBeenCalledWith(
+      expect.anything(), CONNECTION_ID, authState.partnerId,
+    );
+    const audit = mocks.writeRouteAudit.mock.calls
+      .map(([, event]) => event as Record<string, unknown>)
+      .find((event) => event.action === 'accounting.connection.realm_changed');
+    expect(audit).toMatchObject({ details: expect.objectContaining({ mappingsDeleted: 7 }) });
+  });
+
+  it('same-realm reconnect keeps the mappings and the CDC watermark', async () => {
+    mocks.getConnection.mockResolvedValueOnce({ id: CONNECTION_ID, realmId: 'realm-A', homeCurrency: 'CAD' });
+    mocks.exchangeCode.mockResolvedValueOnce(exchangedTokens('realm-A'));
+
+    await runCallback(app, 'realm-A');
+
+    expect(mocks.resetConnectionForRealmChange).not.toHaveBeenCalled();
+  });
+
+  it('a FIRST connect (no prior realm) wipes nothing', async () => {
+    mocks.getConnection.mockResolvedValueOnce(null);
+    mocks.exchangeCode.mockResolvedValueOnce(exchangedTokens('realm-A'));
+
+    await runCallback(app, 'realm-A');
+
+    expect(mocks.resetConnectionForRealmChange).not.toHaveBeenCalled();
+  });
+
+  it('an unreadable prior realm wipes nothing (never destroy a healthy mapping set on a guess)', async () => {
+    mocks.getConnection.mockRejectedValueOnce(new Error('db down'));
+    mocks.exchangeCode.mockResolvedValueOnce(exchangedTokens('realm-B'));
+
+    await runCallback(app, 'realm-B');
+
+    expect(mocks.resetConnectionForRealmChange).not.toHaveBeenCalled();
   });
 
   it('nulls the currency when the pre-upsert realm read fails (fail closed, still connects)', async () => {

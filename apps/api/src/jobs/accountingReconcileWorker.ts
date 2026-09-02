@@ -107,6 +107,13 @@ export interface ReconcileRunSummary {
    * for cursor purposes, exactly like `currencyMismatch`.
    */
   invoiceVoid: number;
+  /**
+   * The connection was re-authorised against a DIFFERENT QuickBooks realm while
+   * this run was in flight, so the applier declined to write (finding C). CLEAN
+   * for the run's error accounting — nothing failed, and the cursor is held by
+   * the compare-and-set below, not by this counter.
+   */
+  realmChanged: number;
   failed: number;
   invoicesMarkedDeleted: number;
   cursorBefore: Date | null;
@@ -139,6 +146,7 @@ function emptySummary(cursorBefore: Date | null): ReconcileRunSummary {
     skippedUnmapped: 0,
     currencyMismatch: 0,
     invoiceVoid: 0,
+    realmChanged: 0,
     failed: 0,
     invoicesMarkedDeleted: 0,
     cursorBefore,
@@ -161,6 +169,7 @@ function tally(summary: ReconcileRunSummary, outcome: PaymentPullOutcome): void 
     case 'skipped_unmapped': summary.skippedUnmapped++; break;
     case 'currency_mismatch': summary.currencyMismatch++; break;
     case 'invoice_void': summary.invoiceVoid++; break;
+    case 'realm_changed': summary.realmChanged++; break;
     case 'failed': summary.failed++; break;
   }
 }
@@ -194,6 +203,7 @@ function logRunLine(data: ReconcileConnectionJobData, summary: ReconcileRunSumma
     `skippedUnmapped=${summary.skippedUnmapped}`,
     `currencyMismatch=${summary.currencyMismatch}`,
     `invoiceVoid=${summary.invoiceVoid}`,
+    `realmChanged=${summary.realmChanged}`,
     `failed=${summary.failed}`,
     `invoicesMarkedDeleted=${summary.invoicesMarkedDeleted}`,
     `cursorBefore=${summary.cursorBefore?.toISOString() ?? 'null'}`,
@@ -228,6 +238,11 @@ export async function processReconcileConnectionJob(
     if (!conn || conn.id !== data.connectionId || conn.status !== 'connected' || !conn.pullPayments) return null;
 
     const { conn: fresh, liveConn } = await resolveConnectionAndToken(data.partnerId, 'quickbooks', runInDbContext);
+    // The realm generation this ENTIRE run is staked on (finding C). Reconnecting
+    // to a different QuickBooks company reuses this same connection row, so every
+    // write below re-checks this value inside its own transaction and the final
+    // cursor write is a compare-and-set on it.
+    const expectedRealmFingerprint = fresh.realmIdFingerprint;
     const provider = getAccountingProvider(fresh.provider);
     const changes = await runOutsideDbContext(() => provider.reconcileChanges(liveConn, fresh.cdcCursor));
 
@@ -236,11 +251,11 @@ export async function processReconcileConnectionJob(
     // Deletions BEFORE additions (decision 4): a delete-and-recreate inside one
     // CDC window must not resurrect-then-delete.
     for (const remoteInvoiceId of changes.deletedInvoices) {
-      const outcome = await markInvoiceDeletedRemotely(fresh, remoteInvoiceId, runInDbContext);
+      const outcome = await markInvoiceDeletedRemotely(fresh, remoteInvoiceId, runInDbContext, expectedRealmFingerprint);
       if (outcome === 'marked') summary.invoicesMarkedDeleted++;
     }
     for (const remotePaymentId of changes.deletedPayments) {
-      for (const reversal of await reverseAccountingPayment(fresh, remotePaymentId, runInDbContext)) {
+      for (const reversal of await reverseAccountingPayment(fresh, remotePaymentId, runInDbContext, expectedRealmFingerprint)) {
         tally(summary, reversal.outcome);
       }
     }
@@ -253,7 +268,7 @@ export async function processReconcileConnectionJob(
     for (const [remotePaymentId, lines] of groupPaymentsById(changes.payments)) {
       for (const line of lines) {
         try {
-          tally(summary, (await applyAccountingPayment(fresh, line, runInDbContext)).outcome);
+          tally(summary, (await applyAccountingPayment(fresh, line, runInDbContext, expectedRealmFingerprint)).outcome);
         } catch (err) {
           // Collected, not rethrown here: one poisonous payment must not skip
           // the rest of the window. The `failed` counter below turns the whole
@@ -277,7 +292,7 @@ export async function processReconcileConnectionJob(
       // no longer does. Runs even when a line above failed — the current line
       // set comes from QuickBooks, not from whether Breeze could apply it.
       for (const stale of await reverseStaleAllocations(
-        fresh, remotePaymentId, lines.map((l) => l.remoteInvoiceId), runInDbContext,
+        fresh, remotePaymentId, lines.map((l) => l.remoteInvoiceId), runInDbContext, expectedRealmFingerprint,
       )) {
         tally(summary, stale.outcome);
       }
@@ -308,8 +323,22 @@ export async function processReconcileConnectionJob(
       throw new Error(`accounting reconcile for connection ${fresh.id} had ${summary.failed} failed item(s)`);
     }
 
+    const advanced = await runInDbContext(() => advanceReconcileCursor(
+      db, fresh.id, data.partnerId, expectedRealmFingerprint, changes.cursor, new Date(),
+    ));
+    if (!advanced) {
+      // The connection was re-authorised against a different realm mid-run
+      // (finding C). Not an error: the OAuth callback already wiped the
+      // mappings and nulled this cursor, so claiming it here would hand the NEW
+      // realm a watermark taken from the OLD realm's change stream and skip its
+      // first window. Log and let the next sweep start the new realm cleanly.
+      console.warn(
+        '[AccountingReconcileWorker] cursor CAS lost — realm changed during the run',
+        `connectionId=${fresh.id}`, `trigger=${data.trigger}`,
+      );
+      return summary;
+    }
     summary.cursorAfter = changes.cursor;
-    await runInDbContext(() => advanceReconcileCursor(db, fresh.id, data.partnerId, changes.cursor, new Date()));
     return summary;
   });
 }

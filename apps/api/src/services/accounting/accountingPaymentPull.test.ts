@@ -67,7 +67,7 @@ vi.mock('../sentry', () => ({ captureException: captureExceptionMock }));
 
 import type { SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
-import { accountingEntityMappings, invoicePayments, invoices } from '../../db/schema';
+import { accountingConnections, accountingEntityMappings, invoicePayments, invoices } from '../../db/schema';
 import { db } from '../../db';
 import type { AccountingConnection } from './accountingConnectionService';
 import type { ChangeSetPaymentLine } from './types';
@@ -87,6 +87,7 @@ const CONN_ID = 'conn-1';
 const INVOICE_ID = 'invoice-1';
 const QBO_INVOICE_ID = '145';
 const QBO_PAYMENT_ID = '180';
+const REALM_FP = 'fp1:k1:realm-a';
 
 const LINE: ChangeSetPaymentLine = {
   remoteInvoiceId: QBO_INVOICE_ID,
@@ -119,7 +120,7 @@ function conn(overrides: Partial<AccountingConnection> = {}): AccountingConnecti
     createdAt: null,
     updatedAt: null,
     lastError: null,
-    realmIdFingerprint: null,
+    realmIdFingerprint: REALM_FP,
     pullPayments: true,
     lastReconcileAt: null,
     cdcCursor: null,
@@ -177,8 +178,11 @@ let mappingInsertViolation: string | null = null;
 /** The mapping row a racing writer "committed" while our transaction aborted. */
 let racerMappingRow: MappingRow | null = null;
 let paymentInsertReturnsZeroRows = false;
+/** What the connection row's realm fingerprint reads as INSIDE the transaction. */
+let storedRealmFingerprint: string | null = REALM_FP;
 
 function tableName(table: unknown): string {
+  if (table === accountingConnections) return 'accounting_connections';
   if (table === invoices) return 'invoices';
   if (table === invoicePayments) return 'invoice_payments';
   if (table === accountingEntityMappings) return 'accounting_entity_mappings';
@@ -231,6 +235,11 @@ function paymentRow(overrides: Partial<PaymentRow> = {}): PaymentRow {
  * differently here rather than silently returning the same rows.
  */
 function selectRows(table: unknown, cond: unknown): unknown[] {
+  if (table === accountingConnections) {
+    return boundTo(cond, CONN_ID) && boundTo(cond, PARTNER)
+      ? [{ realmIdFingerprint: storedRealmFingerprint }]
+      : [];
+  }
   if (!boundTo(cond, PARTNER) && table !== invoicePayments) {
     throw new Error('query issued without partner scoping — every mapping/invoice read must filter by partnerId');
   }
@@ -398,6 +407,7 @@ beforeEach(() => {
   mappingInsertViolation = null;
   racerMappingRow = null;
   paymentInsertReturnsZeroRows = false;
+  storedRealmFingerprint = REALM_FP;
   currentInvoices = [invoiceRow()];
   currentPayments = [];
   currentMappings = [invoiceMappingRow()];
@@ -450,14 +460,14 @@ describe('paymentMappingRemoteId', () => {
 
 describe('applyAccountingPayment', () => {
   it('refuses to run inside an ambient DB access context', async () => {
-    await expect(runCtx(() => applyAccountingPayment(conn(), LINE, runCtx)))
+    await expect(runCtx(() => applyAccountingPayment(conn(), LINE, runCtx, REALM_FP)))
       .rejects.toThrow(/must run with NO ambient DB access context/);
   });
 
   it('returns skipped_unmapped and writes nothing when the invoice was never pushed', async () => {
     currentMappings = [];
 
-    const result = await applyAccountingPayment(conn(), LINE, runCtx);
+    const result = await applyAccountingPayment(conn(), LINE, runCtx, REALM_FP);
 
     expect(result).toMatchObject({
       outcome: 'skipped_unmapped',
@@ -475,21 +485,24 @@ describe('applyAccountingPayment', () => {
   it('returns skipped_unmapped when the mapped invoice row is gone (erased org)', async () => {
     currentInvoices = [];
 
-    const result = await applyAccountingPayment(conn(), LINE, runCtx);
+    const result = await applyAccountingPayment(conn(), LINE, runCtx, REALM_FP);
 
     expect(result.outcome).toBe('skipped_unmapped');
     expect(insertMock).not.toHaveBeenCalled();
   });
 
   it('locks the invoice row FOR UPDATE before reading the payment mapping, writing, or recomputing', async () => {
-    await applyAccountingPayment(conn(), LINE, runCtx);
+    await applyAccountingPayment(conn(), LINE, runCtx, REALM_FP);
 
     const lockIdx = indexOfStmt((s) => s.kind === 'select' && s.table === 'invoices' && s.forUpdate === true);
     expect(lockIdx).toBeGreaterThanOrEqual(0);
 
-    // The only statement allowed before the lock is the unlocked discovery read
-    // that resolves WHICH invoice to lock (mirrors recordStripePayment).
+    // Only two statements are allowed before the lock, both read-only: the
+    // realm-fingerprint guard (finding C — it must precede every write, and it
+    // takes no lock) and the unlocked discovery read that resolves WHICH
+    // invoice to lock (mirrors recordStripePayment).
     expect(stmts.slice(0, lockIdx)).toEqual([
+      expect.objectContaining({ kind: 'select', table: 'accounting_connections' }),
       expect.objectContaining({ kind: 'select', table: 'accounting_entity_mappings' }),
     ]);
 
@@ -506,7 +519,7 @@ describe('applyAccountingPayment', () => {
   });
 
   it('locks the invoice by id AND partner id', async () => {
-    await applyAccountingPayment(conn(), LINE, runCtx);
+    await applyAccountingPayment(conn(), LINE, runCtx, REALM_FP);
 
     const lock = stmts.find((s) => s.kind === 'select' && s.table === 'invoices' && s.forUpdate === true)!;
     expect(compiledSql(lock.where)).toMatch(/"invoices"\."id" = \$\d+ and "invoices"\."partner_id" = \$\d+/i);
@@ -514,7 +527,7 @@ describe('applyAccountingPayment', () => {
   });
 
   it('applies a new payment: inserts the payment row, claims the mapping, recomputes and audits', async () => {
-    const result = await applyAccountingPayment(conn(), LINE, runCtx);
+    const result = await applyAccountingPayment(conn(), LINE, runCtx, REALM_FP);
 
     expect(result).toMatchObject({
       outcome: 'applied',
@@ -561,7 +574,7 @@ describe('applyAccountingPayment', () => {
   });
 
   it('falls back to the QBO payment id as the reference when PaymentRefNum is absent', async () => {
-    const result = await applyAccountingPayment(conn(), { ...LINE, paymentRefNum: null }, runCtx);
+    const result = await applyAccountingPayment(conn(), { ...LINE, paymentRefNum: null }, runCtx, REALM_FP);
 
     expect(result.outcome).toBe('applied');
     const paymentInsert = stmts.find((s) => s.kind === 'insert' && s.table === 'invoice_payments')!;
@@ -572,7 +585,7 @@ describe('applyAccountingPayment', () => {
     currentPayments = [paymentRow()];
     currentMappings = [invoiceMappingRow(), paymentMappingRow({ remoteSyncToken: '0' })];
 
-    const result = await applyAccountingPayment(conn(), LINE, runCtx);
+    const result = await applyAccountingPayment(conn(), LINE, runCtx, REALM_FP);
 
     expect(result).toMatchObject({
       outcome: 'replayed',
@@ -589,7 +602,7 @@ describe('applyAccountingPayment', () => {
     currentPayments = [paymentRow({ amount: '10.00', receivedAt: '2026-08-01' })];
     currentMappings = [invoiceMappingRow(), paymentMappingRow({ remoteSyncToken: '0' })];
 
-    const result = await applyAccountingPayment(conn(), { ...LINE, remotePaymentSyncToken: '1' }, runCtx);
+    const result = await applyAccountingPayment(conn(), { ...LINE, remotePaymentSyncToken: '1' }, runCtx, REALM_FP);
 
     expect(result).toMatchObject({ outcome: 'updated', invoiceId: INVOICE_ID, invoicePaymentId: 'pay-qbo-1' });
 
@@ -609,7 +622,7 @@ describe('applyAccountingPayment', () => {
   });
 
   it('records a currency mismatch on the invoice mapping and writes no payment row', async () => {
-    const result = await applyAccountingPayment(conn(), { ...LINE, currency: 'EUR' }, runCtx);
+    const result = await applyAccountingPayment(conn(), { ...LINE, currency: 'EUR' }, runCtx, REALM_FP);
 
     expect(result).toMatchObject({ outcome: 'currency_mismatch', invoiceId: INVOICE_ID, invoicePaymentId: null });
 
@@ -628,7 +641,7 @@ describe('applyAccountingPayment', () => {
   it('refuses a payment against a voided invoice and marks the invoice mapping instead', async () => {
     currentInvoices = [invoiceRow({ status: 'void' })];
 
-    const result = await applyAccountingPayment(conn(), LINE, runCtx);
+    const result = await applyAccountingPayment(conn(), LINE, runCtx, REALM_FP);
 
     expect(result).toMatchObject({
       outcome: 'invoice_void',
@@ -655,7 +668,7 @@ describe('applyAccountingPayment', () => {
     currentPayments = [paymentRow()];
     currentMappings = [invoiceMappingRow(), paymentMappingRow({ remoteSyncToken: '0' })];
 
-    const result = await applyAccountingPayment(conn(), LINE, runCtx);
+    const result = await applyAccountingPayment(conn(), LINE, runCtx, REALM_FP);
 
     expect(result.outcome).toBe('invoice_void');
     expect(stmts.some((s) => s.kind === 'update' && s.table === 'invoice_payments')).toBe(false);
@@ -664,7 +677,7 @@ describe('applyAccountingPayment', () => {
   it('throws rather than reporting applied when the payment insert returns no row', async () => {
     paymentInsertReturnsZeroRows = true;
 
-    await expect(applyAccountingPayment(conn(), LINE, runCtx))
+    await expect(applyAccountingPayment(conn(), LINE, runCtx, REALM_FP))
       .rejects.toThrow(/refusing to record a QuickBooks payment/);
     expect(recomputeMock).not.toHaveBeenCalled();
     expect(writeAuditEventMock).not.toHaveBeenCalled();
@@ -680,7 +693,7 @@ describe('applyAccountingPayment', () => {
     // between our under-lock read and our insert, which is what trips the index.
     currentPayments = [paymentRow({ id: 'pay-racer' })];
 
-    const result = await applyAccountingPayment(conn(), LINE, runCtx);
+    const result = await applyAccountingPayment(conn(), LINE, runCtx, REALM_FP);
 
     expect(result).toMatchObject({ outcome: 'replayed', invoiceId: INVOICE_ID, invoicePaymentId: 'pay-racer' });
     // Our own invoice_payments insert must not have survived the rollback.
@@ -695,13 +708,13 @@ describe('applyAccountingPayment', () => {
     mappingInsertViolation = 'accounting_entity_mappings_remote_uniq';
     racerMappingRow = null;
 
-    await expect(applyAccountingPayment(conn(), LINE, runCtx))
+    await expect(applyAccountingPayment(conn(), LINE, runCtx, REALM_FP))
       .rejects.toThrow(/claimed .*180\/145.* but no mapping row remains/i);
     expect(writeAuditEventMock).not.toHaveBeenCalled();
   });
 
   it('uses exactly one short DB context per apply and leaves no context open', async () => {
-    await applyAccountingPayment(conn(), LINE, runCtx);
+    await applyAccountingPayment(conn(), LINE, runCtx, REALM_FP);
 
     expect(ctx.events).toEqual(['ctx:enter', 'ctx:exit']);
     expect(ctx.depth).toBe(0);
@@ -710,7 +723,7 @@ describe('applyAccountingPayment', () => {
 
 describe('reverseAccountingPayment', () => {
   it('refuses to run inside an ambient DB access context', async () => {
-    await expect(runCtx(() => reverseAccountingPayment(conn(), QBO_PAYMENT_ID, runCtx)))
+    await expect(runCtx(() => reverseAccountingPayment(conn(), QBO_PAYMENT_ID, runCtx, REALM_FP)))
       .rejects.toThrow(/must run with NO ambient DB access context/);
   });
 
@@ -728,7 +741,7 @@ describe('reverseAccountingPayment', () => {
       paymentMappingRow({ id: 'map-b', breezeEntityId: 'pay-qbo-b', remoteEntityId: `${QBO_PAYMENT_ID}/146` }),
     ];
 
-    const results = await reverseAccountingPayment(conn(), QBO_PAYMENT_ID, runCtx);
+    const results = await reverseAccountingPayment(conn(), QBO_PAYMENT_ID, runCtx, REALM_FP);
 
     expect(results).toHaveLength(2);
     expect(results.map((r) => r.outcome)).toEqual(['reversed', 'reversed']);
@@ -760,7 +773,7 @@ describe('reverseAccountingPayment', () => {
   });
 
   it('returns an empty list and deletes nothing when the payment was never pulled', async () => {
-    const results = await reverseAccountingPayment(conn(), QBO_PAYMENT_ID, runCtx);
+    const results = await reverseAccountingPayment(conn(), QBO_PAYMENT_ID, runCtx, REALM_FP);
 
     expect(results).toEqual([]);
     expect(deleteMock).not.toHaveBeenCalled();
@@ -774,10 +787,64 @@ describe('reverseAccountingPayment', () => {
       paymentMappingRow({ id: 'map-neighbour', breezeEntityId: 'pay-1800', remoteEntityId: '1800/145' }),
     ];
 
-    const results = await reverseAccountingPayment(conn(), QBO_PAYMENT_ID, runCtx);
+    const results = await reverseAccountingPayment(conn(), QBO_PAYMENT_ID, runCtx, REALM_FP);
 
     expect(results).toEqual([]);
     expect(currentPayments.map((p) => p.id)).toEqual(['pay-1800']);
+  });
+});
+
+describe('realm-change guard (finding C)', () => {
+  it('applyAccountingPayment writes nothing and reports realm_changed when the realm moved', async () => {
+    // A reconnect to a DIFFERENT QuickBooks company landed while this job was
+    // in flight. Stamping the old realm's payment onto this connection would
+    // record a stranger's money against a Breeze invoice.
+    storedRealmFingerprint = 'fp1:k1:realm-b';
+
+    const outcome = await applyAccountingPayment(conn(), LINE, runCtx, REALM_FP);
+
+    expect(outcome.outcome).toBe('realm_changed');
+    expect(insertMock).not.toHaveBeenCalled();
+    expect(updateMock).not.toHaveBeenCalled();
+    expect(currentPayments).toEqual([]);
+    expect(recomputeMock).not.toHaveBeenCalled();
+    expect(writeAuditEventMock).not.toHaveBeenCalled();
+  });
+
+  it('applyAccountingPayment reports realm_changed when the connection row is gone', async () => {
+    currentInvoices = [];
+    const outcome = await applyAccountingPayment(
+      { ...conn(), id: 'conn-vanished' } as AccountingConnection, LINE, runCtx, REALM_FP,
+    );
+
+    expect(outcome.outcome).toBe('realm_changed');
+    expect(insertMock).not.toHaveBeenCalled();
+  });
+
+  it('reverseAccountingPayment destroys nothing when the realm moved', async () => {
+    currentPayments = [paymentRow()];
+    currentMappings = [invoiceMappingRow(), paymentMappingRow()];
+    storedRealmFingerprint = 'fp1:k1:realm-b';
+
+    const results = await reverseAccountingPayment(conn(), QBO_PAYMENT_ID, runCtx, REALM_FP);
+
+    expect(results.map((r) => r.outcome)).toEqual(['realm_changed']);
+    expect(currentPayments.map((p) => p.id)).toEqual(['pay-qbo-1']);
+    expect(currentMappings).toHaveLength(2);
+  });
+
+  it('markInvoiceDeletedRemotely marks nothing when the realm moved', async () => {
+    storedRealmFingerprint = 'fp1:k1:realm-b';
+
+    await expect(markInvoiceDeletedRemotely(conn(), QBO_INVOICE_ID, runCtx, REALM_FP))
+      .resolves.toBe('realm_changed');
+
+    expect(currentMappings[0]).toMatchObject({ syncStatus: 'synced', lastError: null });
+  });
+
+  it('proceeds normally when the stored fingerprint still matches', async () => {
+    const outcome = await applyAccountingPayment(conn(), LINE, runCtx, REALM_FP);
+    expect(outcome.outcome).toBe('applied');
   });
 });
 
@@ -798,7 +865,7 @@ describe('reverseStaleAllocations', () => {
   }
 
   it('refuses to run inside an ambient DB access context', async () => {
-    await expect(runCtx(() => reverseStaleAllocations(conn(), QBO_PAYMENT_ID, ['145'], runCtx)))
+    await expect(runCtx(() => reverseStaleAllocations(conn(), QBO_PAYMENT_ID, ['145'], runCtx, REALM_FP)))
       .rejects.toThrow(/must run with NO ambient DB access context/);
   });
 
@@ -808,7 +875,7 @@ describe('reverseStaleAllocations', () => {
     // leaves the Breeze payment row for 146 behind forever.
     splitPaymentFixture();
 
-    const results = await reverseStaleAllocations(conn(), QBO_PAYMENT_ID, ['145'], runCtx);
+    const results = await reverseStaleAllocations(conn(), QBO_PAYMENT_ID, ['145'], runCtx, REALM_FP);
 
     expect(results.map((r) => r.outcome)).toEqual(['reversed']);
     expect(results[0]?.invoicePaymentId).toBe('pay-qbo-b');
@@ -821,7 +888,7 @@ describe('reverseStaleAllocations', () => {
   it('reverses nothing when every existing allocation is still in the current line set', async () => {
     splitPaymentFixture();
 
-    const results = await reverseStaleAllocations(conn(), QBO_PAYMENT_ID, ['145', '146'], runCtx);
+    const results = await reverseStaleAllocations(conn(), QBO_PAYMENT_ID, ['145', '146'], runCtx, REALM_FP);
 
     expect(results).toEqual([]);
     expect(deleteMock).not.toHaveBeenCalled();
@@ -835,7 +902,7 @@ describe('reverseStaleAllocations', () => {
       id: 'map-other', breezeEntityId: 'pay-other', remoteEntityId: '999/146',
     }));
 
-    await reverseStaleAllocations(conn(), QBO_PAYMENT_ID, ['145'], runCtx);
+    await reverseStaleAllocations(conn(), QBO_PAYMENT_ID, ['145'], runCtx, REALM_FP);
 
     expect(currentPayments.map((p) => p.id).sort()).toEqual(['pay-other', 'pay-qbo-a']);
     expect(currentMappings.some((m) => m.id === 'map-other')).toBe(true);
@@ -844,7 +911,7 @@ describe('reverseStaleAllocations', () => {
 
 describe('markInvoiceDeletedRemotely', () => {
   it('flips the invoice mapping to error without touching the remote link', async () => {
-    const outcome = await markInvoiceDeletedRemotely(conn(), QBO_INVOICE_ID, runCtx);
+    const outcome = await markInvoiceDeletedRemotely(conn(), QBO_INVOICE_ID, runCtx, REALM_FP);
 
     expect(outcome).toBe('marked');
     const update = stmts.find((s) => s.kind === 'update' && s.table === 'accounting_entity_mappings')!;
@@ -856,14 +923,14 @@ describe('markInvoiceDeletedRemotely', () => {
   it('returns skipped_unmapped when the invoice has no mapping row', async () => {
     currentMappings = [];
 
-    const outcome = await markInvoiceDeletedRemotely(conn(), QBO_INVOICE_ID, runCtx);
+    const outcome = await markInvoiceDeletedRemotely(conn(), QBO_INVOICE_ID, runCtx, REALM_FP);
 
     expect(outcome).toBe('skipped_unmapped');
     expect(updateMock).not.toHaveBeenCalled();
   });
 
   it('refuses to run inside an ambient DB access context', async () => {
-    await expect(runCtx(() => markInvoiceDeletedRemotely(conn(), QBO_INVOICE_ID, runCtx)))
+    await expect(runCtx(() => markInvoiceDeletedRemotely(conn(), QBO_INVOICE_ID, runCtx, REALM_FP)))
       .rejects.toThrow(/must run with NO ambient DB access context/);
   });
 });

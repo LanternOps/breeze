@@ -20,6 +20,7 @@ import {
   updateHomeCurrency,
   updateMultiCurrencyEnabled,
   upsertConnection,
+  resetConnectionForRealmChange,
 } from '../../services/accounting/accountingConnectionService';
 import type { AccountingConnection } from '../../services/accounting/accountingConnectionService';
 import {
@@ -434,6 +435,41 @@ accountingRoutes.get('/:provider/callback', zValidator('param', providerParamSch
     console.error('[accounting] QuickBooks connection persist failed', { partnerId: state.partnerId, provider });
     deleteCookie(c, ACCOUNTING_STATE_COOKIE, { path: '/' });
     return c.redirect('/integrations?accounting=quickbooks&error=persist_failed#accounting');
+  }
+
+  // A reconnect that landed on a DIFFERENT QuickBooks company gets DISCONNECT
+  // SEMANTICS (finding C): every `accounting_entity_mappings` row under this
+  // connection still names the OLD realm's Customer/Item/Invoice/Payment ids,
+  // and `cdc_cursor` is a watermark in the old realm's change stream. Left
+  // alone, the next push would "update" a stranger's invoice and the next pull
+  // would skip the new realm's first window as already read.
+  //
+  // Only fires on a POSITIVELY KNOWN change: `priorRealmKnown` false means the
+  // pre-upsert read failed, and destroying a healthy connection's entire
+  // mapping set on a guess is far worse than the divergence it would prevent.
+  // Non-fatal for the same reason the currency capture is: the grant is already
+  // live, and a reconcile job that arrives before this lands is caught by the
+  // worker's own compare-and-set on the fingerprint.
+  const realmChanged = priorRealmKnown && priorRealmId !== null && priorRealmId !== tokens.realmId;
+  if (realmChanged) {
+    try {
+      const { mappingsDeleted } = await withSystemDbAccessContext(
+        () => resetConnectionForRealmChange(db, connection.id, state.partnerId),
+      );
+      console.warn('[accounting] QuickBooks realm changed on reconnect; mappings and CDC cursor cleared', {
+        partnerId: state.partnerId, provider, mappingsDeleted,
+      });
+      writeRouteAudit(c, {
+        orgId: null,
+        action: 'accounting.connection.realm_changed',
+        resourceType: 'accounting_connection',
+        resourceId: connection.id,
+        details: { provider, mappingsDeleted },
+      });
+    } catch (err) {
+      captureException(err instanceof Error ? err : new Error(String(err)), c);
+      console.error('[accounting] QuickBooks realm-change cleanup failed', { partnerId: state.partnerId, provider });
+    }
   }
 
   // Capture the realm's home currency (multi-currency §11). NON-FATAL by design:

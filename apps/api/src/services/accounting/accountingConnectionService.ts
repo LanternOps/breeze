@@ -1,5 +1,5 @@
-import { and, eq, isNotNull } from 'drizzle-orm';
-import { accountingConnections } from '../../db/schema';
+import { and, eq, isNotNull, isNull } from 'drizzle-orm';
+import { accountingConnections, accountingEntityMappings } from '../../db/schema';
 import { decryptSecret, encryptSecret, getActiveSecretEncryptionKeyId, hmacFingerprint } from '../secretCrypto';
 import { db, withSystemDbAccessContext } from '../../db';
 import { assertNoAmbientDbContext, type DbContextRunner } from './dbContextGuard';
@@ -353,17 +353,29 @@ export async function listReconcilableConnections(
 }
 
 /**
- * Advance the CDC watermark and stamp last_reconcile_at. Guarded UPDATE (no
- * CAS — the worker's shared jobId makes concurrent runs for one connection
- * impossible); zero rows THROWS, because that means the DB context is wrong.
+ * Advance the CDC watermark and stamp last_reconcile_at, COMPARE-AND-SET on the
+ * realm fingerprint the run started against (finding C).
+ *
+ * A reconnect to a DIFFERENT QuickBooks realm can land while a reconcile job is
+ * mid-flight. Without the CAS, that job's final write would stamp a cursor
+ * derived from the OLD realm's CDC window onto the NEW realm's connection row,
+ * and the new realm's first 30 days would then be skipped as "already read".
+ *
+ * Returns whether the write landed. Zero rows is NOT a throw here: the realm
+ * legitimately moved on, the caller logs and skips, and the next sweep
+ * reconciles the new realm from the null cursor `resetConnectionForRealmChange`
+ * left behind. A wrong DB context surfaces the same way, one sweep later,
+ * rather than as a job that retries forever against a connection that no longer
+ * matches.
  */
 export async function advanceReconcileCursor(
   dbc: DbExecutor,
   connectionId: string,
   partnerId: string,
+  expectedRealmFingerprint: string | null,
   cursor: Date,
   reconciledAt: Date,
-): Promise<void> {
+): Promise<boolean> {
   const updated = await dbc
     .update(accountingConnections)
     .set({
@@ -374,12 +386,58 @@ export async function advanceReconcileCursor(
     .where(and(
       eq(accountingConnections.id, connectionId),
       eq(accountingConnections.partnerId, partnerId),
+      // `eq(col, null)` compiles to `= NULL`, which is never true. A connection
+      // whose fingerprint has not been backfilled yet must still be able to
+      // advance its cursor.
+      expectedRealmFingerprint === null
+        ? isNull(accountingConnections.realmIdFingerprint)
+        : eq(accountingConnections.realmIdFingerprint, expectedRealmFingerprint),
     ))
     .returning({ id: accountingConnections.id });
 
-  if (updated.length === 0) {
-    throw new Error(`advanceReconcileCursor matched no accounting_connections row (id=${connectionId}); refusing to silently drop the CDC watermark`);
-  }
+  return updated.length > 0;
+}
+
+/**
+ * DISCONNECT SEMANTICS for a reconnect that lands on a DIFFERENT realm
+ * (finding C).
+ *
+ * `upsertConnection` keys on `(partner_id, provider)`, so re-authorising
+ * against another QuickBooks company REUSES the same connection row — and every
+ * `accounting_entity_mappings` row hanging off it still points at the OLD
+ * realm's Customer/Item/Invoice/Payment ids. Left in place, the next push would
+ * "update" a stranger's invoice and the next CDC pull would apply the new
+ * realm's payments against mappings that mean nothing there. The stored cursor
+ * is equally poisoned: it is a watermark in the old realm's change stream.
+ *
+ * So a realm change wipes the mappings and the watermark — the same state a
+ * disconnect/reconnect leaves — and the new realm re-imports and re-maps from
+ * scratch. Deliberately NOT called when the prior realm could not be read: the
+ * cost of guessing wrong is destroying a healthy connection's whole mapping set.
+ */
+export async function resetConnectionForRealmChange(
+  dbc: DbExecutor,
+  connectionId: string,
+  partnerId: string,
+): Promise<{ mappingsDeleted: number }> {
+  const deleted = await dbc
+    .delete(accountingEntityMappings)
+    .where(and(
+      eq(accountingEntityMappings.integrationId, connectionId),
+      eq(accountingEntityMappings.partnerId, partnerId),
+    ))
+    .returning({ id: accountingEntityMappings.id });
+
+  await dbc
+    .update(accountingConnections)
+    .set({ cdcCursor: null, lastReconcileAt: null, updatedAt: new Date() })
+    .where(and(
+      eq(accountingConnections.id, connectionId),
+      eq(accountingConnections.partnerId, partnerId),
+    ))
+    .returning({ id: accountingConnections.id });
+
+  return { mappingsDeleted: deleted.length };
 }
 
 export async function updateTokens(

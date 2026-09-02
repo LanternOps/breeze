@@ -650,7 +650,7 @@ describe('accountingConnectionService', () => {
       const { db, setMock } = makeReconcileDb();
       const { advanceReconcileCursor } = await import('./accountingConnectionService');
 
-      await advanceReconcileCursor(db, 'c1', 'p1', CURSOR, STAMP);
+      await advanceReconcileCursor(db, 'c1', 'p1', 'fp1:k1:abc', CURSOR, STAMP);
 
       expect(setMock.mock.calls.at(-1)![0]).toEqual({
         cdcCursor: CURSOR,
@@ -658,13 +658,84 @@ describe('accountingConnectionService', () => {
         updatedAt: expect.any(Date),
       });
     });
+  });
 
-    it('throws when the guarded update matches no row (wrong DB context)', async () => {
-      const { db } = makeReconcileDb([]);
+  describe('advanceReconcileCursor: realm compare-and-set (finding C)', () => {
+    const CURSOR = new Date('2026-09-02T20:10:00.000Z');
+    const STAMP = new Date('2026-09-02T20:10:01.000Z');
+
+    function makeCasDb(returningRows: Array<{ id: string }> = [{ id: 'c1' }]) {
+      const whereMock = vi.fn((_cond: SQL) => ({ returning: vi.fn(async () => returningRows) }));
+      const db = {
+        update: vi.fn(() => ({ set: vi.fn(() => ({ where: whereMock })) })),
+        select: vi.fn(), insert: vi.fn(), delete: vi.fn(),
+      };
+      return { db, whereMock };
+    }
+
+    it('binds the expected realm fingerprint into the guarded UPDATE', async () => {
+      const { db, whereMock } = makeCasDb();
       const { advanceReconcileCursor } = await import('./accountingConnectionService');
 
-      await expect(advanceReconcileCursor(db, 'c1', 'p1', CURSOR, STAMP))
-        .rejects.toThrow(/matched no accounting_connections row/);
+      const advanced = await advanceReconcileCursor(db, 'c1', 'p1', 'fp1:k1:abc', CURSOR, STAMP);
+
+      expect(advanced).toBe(true);
+      const { sql, params } = new PgDialect().sqlToQuery(whereMock.mock.calls.at(-1)![0] as SQL);
+      expect(sql).toMatch(/"realm_id_fingerprint" = \$\d+/i);
+      expect(params).toEqual(['c1', 'p1', 'fp1:k1:abc']);
+    });
+
+    it('matches a NULL fingerprint with IS NULL, never `= NULL`', async () => {
+      const { db, whereMock } = makeCasDb();
+      const { advanceReconcileCursor } = await import('./accountingConnectionService');
+
+      await advanceReconcileCursor(db, 'c1', 'p1', null, CURSOR, STAMP);
+
+      const { sql, params } = new PgDialect().sqlToQuery(whereMock.mock.calls.at(-1)![0] as SQL);
+      expect(sql).toMatch(/"realm_id_fingerprint" is null/i);
+      expect(params).toEqual(['c1', 'p1']);
+    });
+
+    it('returns false instead of throwing when the realm changed under the run', async () => {
+      // A reconnect to a DIFFERENT realm landed mid-run. Throwing would fail
+      // the job and retry it forever against a connection that has legitimately
+      // moved on; the next sweep reconciles the new realm from a null cursor.
+      const { db } = makeCasDb([]);
+      const { advanceReconcileCursor } = await import('./accountingConnectionService');
+
+      await expect(advanceReconcileCursor(db, 'c1', 'p1', 'fp1:k1:stale', CURSOR, STAMP))
+        .resolves.toBe(false);
+    });
+  });
+
+  describe('resetConnectionForRealmChange (finding C)', () => {
+    function makeResetDb(mappingRows: Array<{ id: string }>) {
+      const deleteWhereMock = vi.fn((_cond: SQL) => ({ returning: vi.fn(async () => mappingRows) }));
+      const updateSetMock = vi.fn((_patch: Record<string, unknown>) => ({
+        where: vi.fn(() => ({ returning: vi.fn(async () => [{ id: 'c1' }]) })),
+      }));
+      const db = {
+        delete: vi.fn(() => ({ where: deleteWhereMock })),
+        update: vi.fn(() => ({ set: updateSetMock })),
+        select: vi.fn(), insert: vi.fn(),
+      };
+      return { db, deleteWhereMock, updateSetMock };
+    }
+
+    it('deletes every mapping row for the connection and nulls the CDC watermark', async () => {
+      const { db, deleteWhereMock, updateSetMock } = makeResetDb([{ id: 'm1' }, { id: 'm2' }]);
+      const { resetConnectionForRealmChange } = await import('./accountingConnectionService');
+
+      const out = await resetConnectionForRealmChange(db, 'c1', 'p1');
+
+      expect(out).toEqual({ mappingsDeleted: 2 });
+      const del = new PgDialect().sqlToQuery(deleteWhereMock.mock.calls.at(-1)![0] as SQL);
+      expect(del.params).toEqual(['c1', 'p1']);
+      expect(updateSetMock.mock.calls.at(-1)![0]).toEqual({
+        cdcCursor: null,
+        lastReconcileAt: null,
+        updatedAt: expect.any(Date),
+      });
     });
   });
 
