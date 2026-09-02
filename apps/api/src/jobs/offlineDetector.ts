@@ -19,6 +19,7 @@ import { attachWorkerObservability } from './workerObservability';
 import { envInt } from '../utils/envInt';
 import { createAuditLogAsync } from '../services/auditService';
 import { ANONYMOUS_ACTOR_ID } from '../services/auditEvents';
+import { DEFAULT_OFFLINE_THRESHOLD_MINUTES } from '../services/deviceLiveness';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -32,9 +33,6 @@ const ON_DEMAND_OFFLINE_DEDUPE_WINDOW_MS = 30 * 1000;
 
 // Singleton queue instance
 let offlineQueue: Queue | null = null;
-
-// Default offline threshold in minutes
-const DEFAULT_OFFLINE_THRESHOLD_MINUTES = 5;
 
 // Task 5 (#2764) — how long an uninstall-intent stamp (devices.uninstall_intent_at,
 // set by POST /agents/:id/uninstall-intent) may sit with no heartbeat before the
