@@ -488,7 +488,7 @@ describe('commitContactImport', () => {
     });
     const summary = await commitContactImport([{
       organizationId: ORG, name: 'Jane Ops', email: 'jane@acme.example', phone: '555-0100',
-      expectedAnnotation: 'email-match',
+      expectedAnnotation: 'email-match', expectedContactId: EXISTING,
     }], CTX, ACTOR);
 
     expect(summary.updated).toHaveLength(1);
@@ -508,7 +508,7 @@ describe('commitContactImport', () => {
     });
     await commitContactImport([{
       organizationId: ORG, name: 'Jane Ops', email: 'jane@acme.example', phone: '555-0100',
-      expectedAnnotation: 'email-match',
+      expectedAnnotation: 'email-match', expectedContactId: EXISTING,
     }], CTX, ACTOR);
     expect(updated.filter((u) => u.table === organizations)).toHaveLength(0);
   });
@@ -540,7 +540,7 @@ describe('commitContactImport', () => {
     expect(contactInserts()).toHaveLength(0);
   });
 
-  it('refuses a name-match without the echoed acknowledgement, and applies it with one', async () => {
+  it('refuses a name-match without the echoed acknowledgement, and applies it when PINNED', async () => {
     const state = { contacts: [{ id: EXISTING, orgId: ORG, siteId: null, name: 'Jane Ops', email: null }] };
     stubState(state);
     const refused = await commitContactImport(
@@ -548,12 +548,65 @@ describe('commitContactImport', () => {
     );
     expect(refused.errors[0]).toMatchObject({ code: 'match-unconfirmed' });
 
-    stubState({ ...state, then: [[storedContact({ email: null })]] });
-    const accepted = await commitContactImport(
+    // An acknowledgement with NO expectedContactId is no longer enough: the
+    // annotation alone does not say WHICH contact was acknowledged, so a match
+    // that moved between preview and commit would be applied to a stranger.
+    stubState(state);
+    const unpinned = await commitContactImport(
       [{ organizationId: ORG, name: 'Jane Ops', title: 'Controller', expectedAnnotation: 'name-match' }],
       CTX, ACTOR,
     );
+    expect(unpinned.errors[0]).toMatchObject({ code: 'match-unconfirmed' });
+    expect(unpinned.updated).toEqual([]);
+    expect(updated.filter((u) => u.table === contacts)).toHaveLength(0);
+
+    stubState({ ...state, then: [[storedContact({ email: null })]] });
+    const accepted = await commitContactImport(
+      [{
+        organizationId: ORG, name: 'Jane Ops', title: 'Controller',
+        expectedAnnotation: 'name-match', expectedContactId: EXISTING,
+      }],
+      CTX, ACTOR,
+    );
     expect(accepted.updated).toHaveLength(1);
+  });
+
+  it('refuses an unpinned email-match acknowledgement too', async () => {
+    stubState({ contacts: [{ id: EXISTING, orgId: ORG, siteId: null, name: 'Jane Ops', email: 'jane@acme.example' }] });
+    const summary = await commitContactImport([{
+      organizationId: ORG, name: 'Jane Ops', email: 'jane@acme.example',
+      expectedAnnotation: 'email-match',
+    }], CTX, ACTOR);
+    expect(summary.errors[0]).toMatchObject({ code: 'match-unconfirmed' });
+    expect(summary.errors[0]!.error).toMatch(/expectedContactId/);
+    expect(updated.filter((u) => u.table === contacts)).toHaveLength(0);
+  });
+
+  it('a `create` acknowledgement needs no expectedContactId', async () => {
+    stubState();
+    const summary = await commitContactImport(
+      [{ organizationId: ORG, name: 'Fresh Person', expectedAnnotation: 'create' }], CTX, ACTOR,
+    );
+    expect(summary.imported).toHaveLength(1);
+  });
+
+  it('every preview row that matches carries the contact id a client must echo', async () => {
+    stubState({
+      contacts: [
+        { id: EXISTING, orgId: ORG, siteId: null, name: 'Jane Ops', email: 'jane@acme.example' },
+        { id: OTHER_EXISTING, orgId: ORG, siteId: null, name: 'Sam Site', email: null },
+      ],
+      links: [{ contactId: OTHER_EXISTING, orgId: ORG, system: 'csv', externalId: 'CT-10' }],
+    });
+    const rows = await previewContactImport([
+      { organizationId: ORG, name: 'J. Ops', email: 'jane@acme.example' },
+      { organizationId: ORG, name: 'Sam Site' },
+      { organizationId: ORG, name: 'Sam Site', externalId: 'CT-10' },
+    ], CTX);
+
+    expect(rows.map((r) => r.annotation)).toEqual(['email-match', 'name-match', 'link-match']);
+    // Without this the pinning requirement would be unsatisfiable.
+    expect(rows.map((r) => r.contactId)).toEqual([EXISTING, OTHER_EXISTING, OTHER_EXISTING]);
   });
 
   it('rejects a row whose annotation moved since preview', async () => {
@@ -652,7 +705,7 @@ describe('commitContactImport', () => {
 
     const summary = await commitContactImport([{
       organizationId: ORG, site: 'HQ', name: 'Jane Ops', email: 'jane@acme.example',
-      expectedAnnotation: 'email-match',
+      expectedAnnotation: 'email-match', expectedContactId: EXISTING,
     }], CTX, ACTOR);
 
     expect(summary.updated).toHaveLength(1);
@@ -673,7 +726,7 @@ describe('commitContactImport', () => {
     });
     await commitContactImport([{
       organizationId: ORG, name: 'Jane Ops', email: 'jane@acme.example', phone: '555-0100',
-      expectedAnnotation: 'email-match',
+      expectedAnnotation: 'email-match', expectedContactId: EXISTING,
     }], CTX, ACTOR);
 
     const patch = updated.find((u) => u.table === contacts);

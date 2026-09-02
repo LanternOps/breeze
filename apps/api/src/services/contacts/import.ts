@@ -511,13 +511,28 @@ function checkExpectation(
       error: 'Match changed since preview: the previously matched contact no longer matches — re-run preview',
     };
   }
-  if ((derived === 'email-match' || derived === 'name-match') && row.expectedAnnotation !== derived) {
-    return {
-      code: 'match-unconfirmed',
-      error: `Row matches existing contact "${matchedName ?? 'unnamed'}" by `
-        + `${derived === 'email-match' ? 'email address' : 'name'}`
-        + ` — confirm by committing with expectedAnnotation "${derived}"`,
-    };
+  if (derived === 'email-match' || derived === 'name-match') {
+    const by = derived === 'email-match' ? 'email address' : 'name';
+    if (row.expectedAnnotation !== derived) {
+      return {
+        code: 'match-unconfirmed',
+        error: `Row matches existing contact "${matchedName ?? 'unnamed'}" by ${by}`
+          + ` — confirm by committing with expectedAnnotation "${derived}"`
+          + ' and expectedContactId set to the matched contact',
+      };
+    }
+    // A fuzzy acknowledgement is only meaningful when it names the contact it
+    // was given for. `commitContactImportRowSchema` requires the pin at the
+    // wire, so this is unreachable from the routes — it is here because the
+    // service is also reached directly, and an unpinned acknowledgement is
+    // exactly the transfer the pinning above exists to refuse.
+    if (!row.expectedContactId) {
+      return {
+        code: 'match-unconfirmed',
+        error: `Row matches existing contact "${matchedName ?? 'unnamed'}" by ${by}`
+          + ' — the acknowledgement must also carry expectedContactId naming that contact',
+      };
+    }
   }
   return null;
 }

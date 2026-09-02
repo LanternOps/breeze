@@ -83,6 +83,12 @@ const importRowFields = z
 export const contactImportRowSchema = importRowFields
   .refine(hasIdentifier, { message: IDENTIFIER_REQUIRED_MESSAGE });
 
+/** The two annotations that are HINTS: never applied without an acknowledgement. */
+export const FUZZY_CONTACT_ANNOTATIONS = ['email-match', 'name-match'] as const;
+
+export const FUZZY_ACK_NEEDS_CONTACT_ID_MESSAGE =
+  'expectedContactId is required when expectedAnnotation is "email-match" or "name-match"';
+
 /**
  * A row as submitted to a COMMIT: the annotation the client saw, and the
  * contact it saw the row match. Both are checked against freshly re-derived
@@ -90,10 +96,22 @@ export const contactImportRowSchema = importRowFields
  *
  * `conflict` and `org-not-found` are absent from the enum on purpose — neither
  * is a state a client can acknowledge into a write.
+ *
+ * `expectedContactId` is REQUIRED for the two fuzzy annotations. Without it the
+ * acknowledgement says "apply this match" without saying to WHOM, so an
+ * acknowledgement the user gave for contact A would be applied to contact B if
+ * the match target changed between preview and commit — which is exactly the
+ * transfer `checkExpectation`'s identity pinning exists to prevent. Every
+ * preview row that matches carries the id, so the pin is always available.
  */
 export const commitContactImportRowSchema = importRowFields
   .extend({
     expectedAnnotation: z.enum(['create', 'link-match', 'email-match', 'name-match']).optional(),
     expectedContactId: z.string().guid().optional(),
   })
-  .refine(hasIdentifier, { message: IDENTIFIER_REQUIRED_MESSAGE });
+  .refine(hasIdentifier, { message: IDENTIFIER_REQUIRED_MESSAGE })
+  .refine(
+    (value) => !(FUZZY_CONTACT_ANNOTATIONS as readonly string[]).includes(value.expectedAnnotation ?? '')
+      || value.expectedContactId !== undefined,
+    { message: FUZZY_ACK_NEEDS_CONTACT_ID_MESSAGE, path: ['expectedContactId'] },
+  );

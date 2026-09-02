@@ -634,6 +634,32 @@ describe('POST /contacts/import', () => {
     expect(importMocks.commitContactImport).not.toHaveBeenCalled();
   });
 
+  it('400s a fuzzy acknowledgement that names no contact', async () => {
+    // An `email-match`/`name-match` acknowledgement without expectedContactId
+    // says "yes, apply this match" without saying to WHOM — so a match that
+    // moved between preview and commit would be applied to a stranger.
+    for (const expectedAnnotation of ['email-match', 'name-match']) {
+      const res = await makeApp().request('/contacts/import', json({
+        rows: [{ organizationId: ORG, name: 'Jane', expectedAnnotation }],
+      }));
+      expect(res.status).toBe(400);
+    }
+    expect(importMocks.commitContactImport).not.toHaveBeenCalled();
+  });
+
+  it('accepts a pinned fuzzy acknowledgement, and an unpinned `create` one', async () => {
+    importMocks.commitContactImport.mockResolvedValue({ imported: [], updated: [], skipped: [], errors: [] });
+    const pinned = await makeApp().request('/contacts/import', json({
+      rows: [{ organizationId: ORG, name: 'Jane', expectedAnnotation: 'email-match', expectedContactId: CONTACT }],
+    }));
+    expect(pinned.status).toBe(200);
+
+    const created = await makeApp().request('/contacts/import', json({
+      rows: [{ organizationId: ORG, name: 'Jane', expectedAnnotation: 'create' }],
+    }));
+    expect(created.status).toBe(200);
+  });
+
   it('400s a system-scope caller with no partner to resolve names within', async () => {
     setAuth({ scope: 'system', partnerId: null, accessibleOrgIds: null, canAccessOrg: () => true });
     const res = await makeApp().request('/contacts/import', json({ rows: [{ organizationId: ORG, name: 'Jane' }] }));
