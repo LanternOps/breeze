@@ -3,7 +3,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { audit, publish, state } = vi.hoisted(() => ({
+const { audit, publish, state, tryAutoPromote } = vi.hoisted(() => ({
   audit: vi.fn(async () => {}),
   publish: vi.fn(async () => 1),
   state: {
@@ -11,6 +11,7 @@ const { audit, publish, state } = vi.hoisted(() => ({
     probationEnrollments: 0,
     trustReviewRequestedAt: null as Date | null,
   },
+  tryAutoPromote: vi.fn(async () => false),
 }));
 
 vi.mock('./auditService', () => ({ createAuditLog: audit }));
@@ -26,6 +27,7 @@ vi.mock('./partnerTrust.repo', () => ({
   writeTrust: vi.fn(async () => {}),
   partnerForDevice: vi.fn(async () => 'p1'),
 }));
+vi.mock('./partnerTrustPromotion', () => ({ tryAutoPromote }));
 
 import { partnerTrustMode } from '../config/partnerTrustMode';
 import {
@@ -146,6 +148,7 @@ function agentDispatcherCommandTypes(): { commandTypes: string[]; unresolvedCons
 beforeEach(() => {
   audit.mockClear();
   publish.mockClear();
+  tryAutoPromote.mockClear();
   vi.mocked(writeTrust).mockClear();
   state.trustState = 'probation';
   state.probationEnrollments = 0;
@@ -178,10 +181,18 @@ describe('evaluateCapability', () => {
     },
   );
 
+  it('starts a lazy promotion attempt after auditing a probation denial', async () => {
+    await evaluateCapability('remote_control', { partnerId: 'p1' });
+
+    expect(tryAutoPromote).toHaveBeenCalledWith('p1');
+    expect(audit.mock.invocationCallOrder[0]).toBeLessThan(tryAutoPromote.mock.invocationCallOrder[0]!);
+  });
+
   it('denies with TRUST_RESTRICTED when restricted', async () => {
     state.trustState = 'restricted';
     expect(await evaluateCapability('remote_control', { partnerId: 'p1' }))
       .toMatchObject({ allow: false, code: 'TRUST_RESTRICTED' });
+    expect(tryAutoPromote).not.toHaveBeenCalled();
   });
 
   it('denies an unresolved partner in enforce mode and audits the denial', async () => {

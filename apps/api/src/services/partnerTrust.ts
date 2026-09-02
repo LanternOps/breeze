@@ -5,6 +5,7 @@ import { ANONYMOUS_ACTOR_ID } from './auditEvents';
 import { createAuditLog } from './auditService';
 import { partnerForDevice, readTrust, writeTrust } from './partnerTrust.repo';
 import { getRedis } from './redis';
+import { tryAutoPromote } from './partnerTrustPromotion';
 
 export type GatedCapability = 'remote_control' | 'device_execute' | 'installer_distribute' | 'agent_enroll';
 export type TrustDenyCode = 'TRUST_PROBATION' | 'TRUST_RESTRICTED';
@@ -252,6 +253,9 @@ export async function evaluateCapability(cap: GatedCapability, ctx: GateContext)
       route: typeof ctx.detail?.route === 'string' ? ctx.detail.route : null,
     },
   });
+  if (denial.code === 'TRUST_PROBATION') {
+    void tryAutoPromote(ctx.partnerId).catch(() => undefined);
+  }
   if (mode === 'shadow') return { allow: true, shadowDenied: denial };
   return { allow: false, code: denial.code, capability: cap, reason: denial.reason };
 }

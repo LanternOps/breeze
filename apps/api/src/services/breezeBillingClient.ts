@@ -5,6 +5,20 @@ export interface CancelSubscriptionResult {
   immediate: boolean;
 }
 
+export interface SettledCardCharge {
+  chargeId: string;
+  settledAt: Date;
+  paymentMethodType: string;
+  threeDsAuthenticated: boolean;
+  cardholderName: string;
+  disputed: boolean;
+  refunded: boolean;
+}
+
+export interface SignupRiskHold {
+  status: string;
+}
+
 export interface BreezeBillingClient {
   createSetupIntent(input: {
     partnerId: string;
@@ -21,6 +35,9 @@ export interface BreezeBillingClient {
     partnerId: string;
     immediate?: boolean;
   }): Promise<CancelSubscriptionResult>;
+
+  getSettledCardCharge(partnerId: string): Promise<SettledCardCharge | null>;
+  getSignupRiskHold(partnerId: string): Promise<SignupRiskHold | null>;
 }
 
 export class BillingError extends Error {
@@ -34,6 +51,31 @@ export function createBreezeBillingClient(opts: {
   fetch?: typeof fetch;
 }): BreezeBillingClient {
   const doFetch = opts.fetch ?? fetch;
+  const internalGet = async <T>(partnerId: string, resource: string): Promise<T | null> => {
+    const headers: Record<string, string> = {};
+    const billingKey = process.env.BREEZE_BILLING_API_KEY;
+    if (billingKey) headers.Authorization = `Bearer ${billingKey}`;
+    const url = `${opts.baseUrl}/internal/partners/${encodeURIComponent(partnerId)}/${resource}`;
+    try {
+      const res = await doFetch(url, { method: 'GET', headers });
+      if (res.status === 404) {
+        console.warn(`[breezeBillingClient] ${resource} unavailable for partner ${partnerId}: 404`);
+        return null;
+      }
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        throw new BillingError(
+          'BILLING_UNAVAILABLE',
+          `Billing service returned ${res.status}: ${body.slice(0, 200)}`,
+        );
+      }
+      return (await res.json()) as T;
+    } catch (error) {
+      if (error instanceof BillingError) throw error;
+      console.warn(`[breezeBillingClient] ${resource} request failed for partner ${partnerId}`, error);
+      return null;
+    }
+  };
   return {
     async createSetupIntent({ partnerId, returnUrl }) {
       // Service-to-service auth to breeze-billing. The boot validator
@@ -89,6 +131,23 @@ export function createBreezeBillingClient(opts: {
         stripeSubscriptionId: json.stripeSubscriptionId,
         immediate: json.immediate,
       };
+    },
+
+    async getSettledCardCharge(partnerId) {
+      const row = await internalGet<{
+        chargeId: string;
+        settledAt: string;
+        paymentMethodType: string;
+        threeDsAuthenticated: boolean;
+        cardholderName: string;
+        disputed: boolean;
+        refunded: boolean;
+      }>(partnerId, 'settled-card-charge');
+      return row ? { ...row, settledAt: new Date(row.settledAt) } : null;
+    },
+
+    async getSignupRiskHold(partnerId) {
+      return internalGet<SignupRiskHold>(partnerId, 'signup-risk-hold');
     },
   };
 }

@@ -1,19 +1,38 @@
 import type { Queue } from 'bullmq';
-import { eq } from 'drizzle-orm';
+import { and, asc, eq, gt } from 'drizzle-orm';
 
 import { partnerTrustMode } from '../config/partnerTrustMode';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { devices, partners } from '../db/schema';
 import { classifyIp, type IpClassifyTarget } from '../services/ipClassify';
+import { tryAutoPromote } from '../services/partnerTrustPromotion';
 import { jobSchedule } from './scheduleRegistry';
 
 export const IP_CLASSIFY_JOB = 'ip-classify';
 export const PARTNER_TRUST_PROMOTE_JOB = 'partner-trust-promote';
 const PROMOTE_REPEAT_ID = 'partner-trust-promote-repeat';
 
-/** Task 5.2 replaces this hook with the promotion sweep body. */
-export async function runPartnerTrustPromote(): Promise<Record<string, never>> {
-  return {};
+export async function runPartnerTrustPromote(): Promise<{ processed: number; promoted: number }> {
+  let cursor: string | undefined;
+  let processed = 0;
+  let promoted = 0;
+  do {
+    const batch = await runOutsideDbContext(() => withSystemDbAccessContext(() => db
+      .select({ id: partners.id })
+      .from(partners)
+      .where(cursor
+        ? and(eq(partners.trustState, 'probation'), gt(partners.id, cursor))
+        : eq(partners.trustState, 'probation'))
+      .orderBy(asc(partners.id))
+      .limit(200), 'partnerTrustJobs.promote'));
+    for (const partner of batch) {
+      processed += 1;
+      if (await tryAutoPromote(partner.id)) promoted += 1;
+    }
+    cursor = batch.at(-1)?.id;
+    if (batch.length < 200) break;
+  } while (cursor);
+  return { processed, promoted };
 }
 
 export async function processPartnerTrustJob(
