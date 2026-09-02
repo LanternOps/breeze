@@ -523,6 +523,7 @@ accountingRoutes.get('/:provider', authMiddleware, partnerScopes, zValidator('pa
       connectedAt: null,
       lastError: null,
       homeCurrency: null,
+      multiCurrencyEnabled: null,
     });
   }
   return c.json({
@@ -537,6 +538,8 @@ accountingRoutes.get('/:provider', authMiddleware, partnerScopes, zValidator('pa
     // capture succeeded. Deliberately absent from settingsSchema — PATCH must never
     // accept it.
     homeCurrency: connection.homeCurrency,
+    // Same story: captured at connect / settings refresh, read-only here.
+    multiCurrencyEnabled: connection.multiCurrencyEnabled,
   });
 });
 

@@ -204,6 +204,7 @@ describe('accounting routes', () => {
       refreshTokenExpiresAt: new Date(),
       environment: 'production',
       homeCurrency: null,
+      multiCurrencyEnabled: true,
       defaultIncomeAccountRef: null,
       defaultTaxCodeRef: null,
       pushMode: 'auto',
@@ -218,6 +219,9 @@ describe('accounting routes', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.status).toBe('connected');
+    // Captured realm fact (Phase C): exposed on status so the web card need not
+    // wait for a settings refresh to render the multi-currency line.
+    expect(body.multiCurrencyEnabled).toBe(true);
     expect(body.accessToken).toBeUndefined();
     expect(body.refreshToken).toBeUndefined();
     expect(JSON.stringify(body)).not.toContain('secret-access-token');
