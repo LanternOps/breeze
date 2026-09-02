@@ -3,17 +3,22 @@ import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import { zValidator } from '../../lib/validation';
 import { z } from 'zod';
 import { createHmac, randomBytes, timingSafeEqual } from 'crypto';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
-import { accountingConnections } from '../../db/schema';
-import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../../middleware/auth';
+import { accountingConnections, invoices } from '../../db/schema';
+import {
+  authMiddleware, requireMfa, requirePermission, requireScope, withAuthDbAccessContext, type AuthContext,
+} from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import { QBO_CLIENT_ID, QBO_CLIENT_SECRET, QBO_ENVIRONMENT, QBO_REDIRECT_URI } from '../../config/env';
 import {
+  AccountingConnectionError,
   deleteConnection,
   getConnection,
   isHomeCurrencyCasAbort,
+  refreshRealmSettings,
   updateHomeCurrency,
+  updateMultiCurrencyEnabled,
   upsertConnection,
 } from '../../services/accounting/accountingConnectionService';
 import type { AccountingConnection } from '../../services/accounting/accountingConnectionService';
@@ -26,11 +31,14 @@ import {
   AccountingMappingError,
   listMappingProposals,
   listRemoteIncomeAccountsForPartner,
+  resolveConnectionAndToken,
   saveMappingDecision,
   syncMappedEntity,
   type MappingDecision,
   type MappingEntityType,
 } from '../../services/accounting/accountingMappingService';
+import { AccountingInvoicePushError, pushInvoiceToAccounting } from '../../services/accounting/accountingInvoicePush';
+import { enqueueAccountingInvoicePush } from '../../jobs/accountingSyncWorker';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { getAccountingProvider } from '../../services/accounting/providerRegistry';
 import { captureException, captureMessage } from '../../services/sentry';
@@ -114,6 +122,16 @@ const mappingSyncSchema = z.object({
   breezeEntityId: z.string().guid(),
 });
 
+// Phase C, Task 5 — invoice push routes.
+const invoicePushParamSchema = z.object({ provider: z.enum(['quickbooks']), invoiceId: z.string().guid() });
+const invoicePushBulkSchema = z.object({
+  invoiceIds: z.array(z.string().guid()).min(1).max(100),
+});
+const remoteCandidatesQuerySchema = partnerQuerySchema.extend({
+  entityType: z.enum(['org', 'catalog_item']),
+  q: z.string().max(255).optional(),
+});
+
 function handleImportError(c: { json: (b: unknown, s: number) => Response }, err: unknown): Response {
   // QbImportError.status is a narrowed literal union (400|404|409|502), so no cast.
   if (err instanceof QbImportError) return c.json({ error: err.message, code: err.code }, err.status);
@@ -125,6 +143,24 @@ function handleMappingError(c: { json: (b: unknown, s: number) => Response }, er
   // no cast, and every current/future code (including item_price_required)
   // flows through generically — the route never re-enumerates codes.
   if (err instanceof AccountingMappingError) return c.json({ error: err.message, code: err.code }, err.status);
+  throw err;
+}
+
+/**
+ * Deliberately a DIFFERENT body shape from `handleMappingError` above
+ * (`{ error: code, message }`, not `{ error: message, code }`) — the invoice
+ * push coordinator's error taxonomy (Phase C, Task 3) is a separate typed
+ * class from the mapping workbench's, and this shape is what Task 5's spec
+ * calls for.
+ */
+function handleInvoicePushError(c: { json: (b: unknown, s: number) => Response }, err: unknown): Response {
+  // AccountingInvoicePushError.status is a narrowed literal union (404|409|502), so no cast.
+  if (err instanceof AccountingInvoicePushError) return c.json({ error: err.code, message: err.message }, err.status);
+  throw err;
+}
+
+function handleConnectionError(c: { json: (b: unknown, s: number) => Response }, err: unknown): Response {
+  if (err instanceof AccountingConnectionError) return c.json({ error: err.message, code: err.code }, err.status);
   throw err;
 }
 
@@ -168,6 +204,15 @@ function toMappingResponse(mapping: {
 // auth.partnerId/orgId, which a system-scope token never carries).
 const requireCustomerMappingWrite = requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action);
 const requireItemMappingWrite = requirePermission(PERMISSIONS.CATALOG_WRITE.resource, PERMISSIONS.CATALOG_WRITE.action);
+
+// Phase C, Task 5 — the manual/bulk invoice push routes below gate on
+// INVOICES_WRITE directly (not an entity-aware split like the two mapping
+// mutation routes above: an invoice push is always an invoice-shaped write).
+// Wrapped in `partnerScopedPermission` for the same system-scope bypass as
+// `requireImportPermissions` above — see that constant's comment.
+const requireInvoicePush = partnerScopedPermission(
+  requirePermission(PERMISSIONS.INVOICES_WRITE.resource, PERMISSIONS.INVOICES_WRITE.action),
+);
 
 // Typed against the validated `json` env — matching `optionalJsonValidator`'s
 // idiom (lib/validation.ts) for a standalone middleware that reads
@@ -391,17 +436,24 @@ accountingRoutes.get('/:provider/callback', zValidator('param', providerParamSch
   // outage must never turn a successful OAuth grant into a connect error.
   // The QBO call runs with no ambient DB context; the write is a short
   // compare-and-set on the row we just persisted.
+  let capturedSettings: { homeCurrency: string | null; multiCurrencyEnabled: boolean | null } | null = null;
+  // The generation both realm-derived writes below stake their compare-and-set
+  // on. `updateHomeCurrency` BUMPS it, so it hands back the new one for the
+  // multi-currency write to chain onto; a lost CAS clears it, which skips the
+  // second write rather than issuing it against a claim we know has expired.
+  let generation: Date | null = connection.updatedAt;
   try {
-    const homeCurrency = await runOutsideDbContext(() => providerClient.fetchHomeCurrency(connection));
-    if (homeCurrency && connection.updatedAt) {
+    capturedSettings = await runOutsideDbContext(() => providerClient.fetchRealmSettings(connection));
+    const { homeCurrency } = capturedSettings;
+    if (homeCurrency && generation) {
       // The generation this capture belongs to: the row as we just wrote it
       // (updatedAt) AND the realm we just exchanged for. A reconnect to another
       // realm in between — even inside the same millisecond — aborts the write.
-      await withSystemDbAccessContext(() => updateHomeCurrency(
+      generation = await withSystemDbAccessContext(() => updateHomeCurrency(
         db,
         connection.id,
         state.partnerId,
-        { updatedAt: connection.updatedAt as Date, realmId: tokens.realmId },
+        { updatedAt: generation as Date, realmId: tokens.realmId },
         homeCurrency,
       ));
     } else if (!homeCurrency) {
@@ -422,6 +474,7 @@ accountingRoutes.get('/:provider/callback', zValidator('param', providerParamSch
     // the generation that survived. Report it as a warning so it stops filing
     // Sentry issues on a normal user action; genuine failures stay exceptions.
     if (isHomeCurrencyCasAbort(err)) {
+      generation = null;
       captureMessage('[accounting] QuickBooks home currency capture lost the compare-and-set', {
         eventCode: 'accounting_home_currency_cas_lost',
       });
@@ -429,6 +482,32 @@ accountingRoutes.get('/:provider/callback', zValidator('param', providerParamSch
     } else {
       captureException(err instanceof Error ? err : new Error(String(err)), c);
       console.warn('[accounting] QuickBooks home currency capture failed', { partnerId: state.partnerId, provider });
+    }
+  }
+
+  // Persist the realm's multi-currency flag, under the SAME realm+generation
+  // compare-and-set as the home currency (a reconnect to a different realm
+  // must not be stamped with the old realm's flag). It runs AFTER the block
+  // above and chains onto the generation that write returned — both writes
+  // bump updated_at, so ordering and chaining are both load-bearing.
+  // A null flag is left untouched (unknown must never blank a previously
+  // captured true/false), matching the home-currency "never blank" rule above.
+  if (typeof capturedSettings?.multiCurrencyEnabled === 'boolean' && generation) {
+    try {
+      await withSystemDbAccessContext(() => updateMultiCurrencyEnabled(
+        db,
+        connection.id,
+        state.partnerId,
+        { updatedAt: generation as Date, realmId: tokens.realmId },
+        capturedSettings!.multiCurrencyEnabled,
+      ));
+    } catch (err) {
+      if (isHomeCurrencyCasAbort(err)) {
+        console.warn('[accounting] QuickBooks multi-currency flag capture lost the compare-and-set', { partnerId: state.partnerId, provider });
+      } else {
+        captureException(err instanceof Error ? err : new Error(String(err)), c);
+        console.warn('[accounting] QuickBooks multi-currency flag capture failed', { partnerId: state.partnerId, provider });
+      }
     }
   }
 
@@ -458,6 +537,7 @@ accountingRoutes.get('/:provider', authMiddleware, partnerScopes, zValidator('pa
       connectedAt: null,
       lastError: null,
       homeCurrency: null,
+      multiCurrencyEnabled: null,
     });
   }
   return c.json({
@@ -472,6 +552,8 @@ accountingRoutes.get('/:provider', authMiddleware, partnerScopes, zValidator('pa
     // capture succeeded. Deliberately absent from settingsSchema — PATCH must never
     // accept it.
     homeCurrency: connection.homeCurrency,
+    // Same story: captured at connect / settings refresh, read-only here.
+    multiCurrencyEnabled: connection.multiCurrencyEnabled,
   });
 });
 
@@ -561,20 +643,67 @@ accountingRoutes.patch('/:provider/settings', authMiddleware, partnerScopes, req
   return c.json(updated);
 });
 
+// On-demand realm settings refresh (multi-currency §11 / Phase C). Write +
+// MFA-gated (same tier as PATCH /:provider/settings above — it makes a real
+// outbound QuickBooks call and persists the result). The service call makes a
+// live QBO HTTP request, so this route also carries the
+// SELF_MANAGED_DB_CONTEXT_ROUTES registration (middleware/selfManagedDbContextRoutes.ts)
+// — no ambient request transaction, so `refreshRealmSettings`'s ambient-`db`
+// reads/writes need an explicit context. The route supplies a RUNNER, not a
+// wrapper: the service re-enters it per DB phase and asserts nothing is
+// already open, so no connection is pinned across the QuickBooks round trip
+// and each phase commits on its own (services/accounting/dbContextGuard.ts).
+// The same applies to the four mapping-workbench routes below.
+accountingRoutes.post('/:provider/settings/refresh', authMiddleware, partnerScopes, requireMfa(), zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), async (c) => {
+  const { provider } = c.req.valid('param');
+  const configError = validateProviderConfig(provider);
+  if (configError) return c.json({ error: configError }, 400);
+  const auth = c.get('auth');
+  const partner = resolvePartnerId(auth, c.req.valid('query').partnerId);
+  if ('error' in partner) return c.json({ error: partner.error }, partner.status);
+
+  let settings;
+  try {
+    settings = await refreshRealmSettings(partner.partnerId, provider, (fn) => withAuthDbAccessContext(auth, fn));
+  } catch (err) {
+    return handleConnectionError(c, err);
+  }
+
+  writeRouteAudit(c, {
+    orgId: null,
+    action: 'accounting.settings.refresh',
+    resourceType: 'accounting_connection',
+    resourceId: null,
+    details: {
+      provider,
+      homeCurrency: settings.homeCurrency,
+      multiCurrencyEnabled: settings.multiCurrencyEnabled,
+    },
+  });
+
+  return c.json(settings);
+});
+
 // Mapping proposals (reconciliation) — read-only, so partner/system scope is
 // the whole gate, same as GET /:provider/customers above. The service performs
 // QuickBooks HTTP inside, so this route is registered in
-// SELF_MANAGED_DB_CONTEXT_ROUTES (middleware/selfManagedDbContextRoutes.ts).
+// SELF_MANAGED_DB_CONTEXT_ROUTES (middleware/selfManagedDbContextRoutes.ts) —
+// no ambient request transaction, so the service's ambient-`db` reads need an
+// explicit context (Task 5 review fix — see the settings/refresh comment above).
 accountingRoutes.get('/:provider/mappings', authMiddleware, partnerScopes, zValidator('param', providerParamSchema), zValidator('query', mappingEntityQuerySchema), async (c) => {
   const { provider } = c.req.valid('param');
   const configError = validateProviderConfig(provider);
   if (configError) return c.json({ error: configError }, 400);
-  const partner = resolvePartnerId(c.get('auth'), c.req.valid('query').partnerId);
+  const auth = c.get('auth');
+  const partner = resolvePartnerId(auth, c.req.valid('query').partnerId);
   if ('error' in partner) return c.json({ error: partner.error }, partner.status);
   const { entityType } = c.req.valid('query');
 
   try {
-    const data = await listMappingProposals({ partnerId: partner.partnerId, provider, entityType });
+    const data = await listMappingProposals(
+      { partnerId: partner.partnerId, provider, entityType },
+      (fn) => withAuthDbAccessContext(auth, fn),
+    );
     return c.json({ data });
   } catch (err) {
     return handleMappingError(c, err);
@@ -582,16 +711,21 @@ accountingRoutes.get('/:provider/mappings', authMiddleware, partnerScopes, zVali
 });
 
 // Remote income account selector for item mapping — read-only. Also QBO-HTTP
-// backed, so it carries the same SELF_MANAGED_DB_CONTEXT_ROUTES registration.
+// backed, so it carries the same SELF_MANAGED_DB_CONTEXT_ROUTES registration
+// (and the same explicit-context requirement — Task 5 review fix).
 accountingRoutes.get('/:provider/income-accounts', authMiddleware, partnerScopes, zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), async (c) => {
   const { provider } = c.req.valid('param');
   const configError = validateProviderConfig(provider);
   if (configError) return c.json({ error: configError }, 400);
-  const partner = resolvePartnerId(c.get('auth'), c.req.valid('query').partnerId);
+  const auth = c.get('auth');
+  const partner = resolvePartnerId(auth, c.req.valid('query').partnerId);
   if ('error' in partner) return c.json({ error: partner.error }, partner.status);
 
   try {
-    const data = await listRemoteIncomeAccountsForPartner({ partnerId: partner.partnerId, provider });
+    const data = await listRemoteIncomeAccountsForPartner(
+      { partnerId: partner.partnerId, provider },
+      (fn) => withAuthDbAccessContext(auth, fn),
+    );
     return c.json({ data });
   } catch (err) {
     return handleMappingError(c, err);
@@ -601,12 +735,14 @@ accountingRoutes.get('/:provider/income-accounts', authMiddleware, partnerScopes
 // Confirm/create/unlink a single mapping. Write + MFA-gated, entity-aware
 // permission (ORGS_WRITE for org, CATALOG_WRITE for catalog_item) — the
 // `confirmed` path calls the provider list to verify the remote entity, so
-// this route also carries the SELF_MANAGED_DB_CONTEXT_ROUTES registration.
+// this route also carries the SELF_MANAGED_DB_CONTEXT_ROUTES registration
+// (and the same explicit-context requirement — Task 5 review fix).
 accountingRoutes.put('/:provider/mappings', authMiddleware, partnerScopes, requireMfa(), zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), zValidator('json', mappingDecisionSchema), requireMappingWrite, async (c) => {
   const { provider } = c.req.valid('param');
   const configError = validateProviderConfig(provider);
   if (configError) return c.json({ error: configError }, 400);
-  const partner = resolvePartnerId(c.get('auth'), c.req.valid('query').partnerId);
+  const auth = c.get('auth');
+  const partner = resolvePartnerId(auth, c.req.valid('query').partnerId);
   if ('error' in partner) return c.json({ error: partner.error }, partner.status);
   const body = c.req.valid('json');
 
@@ -619,7 +755,7 @@ accountingRoutes.put('/:provider/mappings', authMiddleware, partnerScopes, requi
       breezeEntityId: body.breezeEntityId,
       decision: body.decision as MappingDecision,
       remoteEntityId: body.remoteEntityId,
-    });
+    }, (fn) => withAuthDbAccessContext(auth, fn));
   } catch (err) {
     return handleMappingError(c, err);
   }
@@ -644,12 +780,14 @@ accountingRoutes.put('/:provider/mappings', authMiddleware, partnerScopes, requi
 // Push a confirmed/create_new mapping to QuickBooks. Write + MFA-gated, same
 // entity-aware permission guard as PUT above, and the same
 // SELF_MANAGED_DB_CONTEXT_ROUTES registration (the provider upsert call is
-// real QuickBooks HTTP).
+// real QuickBooks HTTP) — and the same explicit-context requirement (Task 5
+// review fix).
 accountingRoutes.post('/:provider/mappings/sync', authMiddleware, partnerScopes, requireMfa(), zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), zValidator('json', mappingSyncSchema), requireMappingWrite, async (c) => {
   const { provider } = c.req.valid('param');
   const configError = validateProviderConfig(provider);
   if (configError) return c.json({ error: configError }, 400);
-  const partner = resolvePartnerId(c.get('auth'), c.req.valid('query').partnerId);
+  const auth = c.get('auth');
+  const partner = resolvePartnerId(auth, c.req.valid('query').partnerId);
   if ('error' in partner) return c.json({ error: partner.error }, partner.status);
   const body = c.req.valid('json');
 
@@ -660,7 +798,7 @@ accountingRoutes.post('/:provider/mappings/sync', authMiddleware, partnerScopes,
       provider,
       breezeEntityType: body.breezeEntityType,
       breezeEntityId: body.breezeEntityId,
-    });
+    }, (fn) => withAuthDbAccessContext(auth, fn));
   } catch (err) {
     return handleMappingError(c, err);
   }
@@ -680,3 +818,162 @@ accountingRoutes.post('/:provider/mappings/sync', authMiddleware, partnerScopes,
 
   return c.json({ data: toMappingResponse(mapping) });
 });
+
+
+// ---------------------------------------------------------------------------
+// Phase C, Task 5 (2026-09-01-quickbooks-phase-c-invoice-push) — manual/bulk
+// invoice push and remote-candidate search.
+// ---------------------------------------------------------------------------
+
+// Manual, synchronous invoice push. Write + MFA-gated on INVOICES_WRITE
+// (system scope bypasses the role lookup — see `requireInvoicePush`).
+// `pushInvoiceToAccounting` makes REAL outbound QuickBooks calls and must be
+// entered with NO ambient DB context (it asserts that): this route therefore
+// carries the SELF_MANAGED_DB_CONTEXT_ROUTES registration
+// (middleware/selfManagedDbContextRoutes.ts) and hands the coordinator a
+// `runInDbContext` runner it re-enters per phase — exactly mirroring how
+// `processAccountingSyncJob` (jobs/accountingSyncWorker.ts) hands it a SYSTEM
+// runner off the request path. Wrapping the call instead would hold one
+// transaction across every QuickBooks call AND roll back the coordinator's
+// error markers whenever it throws.
+accountingRoutes.post(
+  '/:provider/invoices/:invoiceId/push',
+  authMiddleware,
+  partnerScopes,
+  requireMfa(),
+  requireInvoicePush,
+  zValidator('param', invoicePushParamSchema),
+  zValidator('query', partnerQuerySchema),
+  async (c) => {
+    const { provider, invoiceId } = c.req.valid('param');
+    const configError = validateProviderConfig(provider);
+    if (configError) return c.json({ error: configError }, 400);
+    const auth = c.get('auth');
+    const partner = resolvePartnerId(auth, c.req.valid('query').partnerId);
+    if ('error' in partner) return c.json({ error: partner.error }, partner.status);
+
+    let outcome;
+    try {
+      outcome = await pushInvoiceToAccounting(invoiceId, partner.partnerId, (fn) => withAuthDbAccessContext(auth, fn));
+    } catch (err) {
+      return handleInvoicePushError(c, err);
+    }
+
+    writeRouteAudit(c, {
+      orgId: null,
+      action: 'accounting.invoice.push',
+      resourceType: 'accounting_mapping',
+      resourceId: outcome.mappingId,
+      details: {
+        provider,
+        invoiceId,
+        remoteEntityId: outcome.remoteEntityId,
+        docNumber: outcome.docNumber,
+        syncStatus: outcome.syncStatus,
+        taxVarianceCents: outcome.taxVarianceCents,
+      },
+    });
+
+    return c.json({ syncStatus: outcome.syncStatus, docNumber: outcome.docNumber, taxVarianceCents: outcome.taxVarianceCents });
+  },
+);
+
+// Bulk enqueue. Same gates as the manual push route above, but this one only
+// ever touches Redis (`enqueueAccountingInvoicePush` is fire-and-forget and
+// never calls QuickBooks itself — the actual push happens later on the
+// accounting-sync worker), so it keeps the normal ambient request
+// transaction and carries NO SELF_MANAGED_DB_CONTEXT_ROUTES entry.
+accountingRoutes.post(
+  '/:provider/invoices/push-bulk',
+  authMiddleware,
+  partnerScopes,
+  requireMfa(),
+  requireInvoicePush,
+  zValidator('param', providerParamSchema),
+  zValidator('query', partnerQuerySchema),
+  zValidator('json', invoicePushBulkSchema),
+  async (c) => {
+    const { provider } = c.req.valid('param');
+    const configError = validateProviderConfig(provider);
+    if (configError) return c.json({ error: configError }, 400);
+    const partner = resolvePartnerId(c.get('auth'), c.req.valid('query').partnerId);
+    if ('error' in partner) return c.json({ error: partner.error }, partner.status);
+    const { invoiceIds } = c.req.valid('json');
+
+    // Ownership filter: one `inArray` select rather than N per-id lookups. An
+    // id that isn't this partner's (wrong partner, or doesn't exist at all)
+    // is silently counted into `skipped` — this is a bulk convenience action,
+    // not a per-id validation surface.
+    const owned = await db
+      .select({ id: invoices.id })
+      .from(invoices)
+      .where(and(inArray(invoices.id, invoiceIds), eq(invoices.partnerId, partner.partnerId)));
+    const ownedIds = new Set(owned.map((row) => row.id));
+
+    // `enqueued` counts jobs the queue actually ACCEPTED. It used to count
+    // every owned id regardless — `enqueueAccountingInvoicePush` swallows a
+    // Redis outage by design, so a total queue failure still reported "all
+    // enqueued" and the operator had no signal at all. Failures now get their
+    // own count and their own line in the audit record.
+    let enqueued = 0;
+    let failed = 0;
+    let skipped = 0;
+    for (const invoiceId of invoiceIds) {
+      if (!ownedIds.has(invoiceId)) { skipped++; continue; }
+      if (await enqueueAccountingInvoicePush(invoiceId, partner.partnerId)) enqueued++;
+      else failed++;
+    }
+
+    writeRouteAudit(c, {
+      orgId: null,
+      action: 'accounting.invoice.push_bulk',
+      resourceType: 'accounting_mapping',
+      resourceId: null,
+      details: { provider, requested: invoiceIds.length, enqueued, skipped, failed },
+    });
+
+    return c.json({ enqueued, skipped, failed });
+  },
+);
+
+// Remote candidate search (Phase B follow-up, surfaced by Task 5): replaces
+// manual remote-ID entry in the mapping workbench. Read-only — same gate
+// shape as GET /:provider/customers above (no MFA/permission; see that
+// route's comment for why). Makes a real outbound QuickBooks call via
+// `resolveConnectionAndToken` + `listRemoteCustomers`/`listRemoteItems`, so it
+// carries the same SELF_MANAGED_DB_CONTEXT_ROUTES + `runInDbContext` runner
+// treatment as the push route above. Wraps its response in `{ data }` —
+// review ruling (Task 5 fix round): every sibling list route in this file
+// (`/customers`, `/mappings`, `/income-accounts`) uses that envelope, and
+// Task 7's web layer consumes it the same way.
+accountingRoutes.get(
+  '/:provider/remote-candidates',
+  authMiddleware,
+  partnerScopes,
+  zValidator('param', providerParamSchema),
+  zValidator('query', remoteCandidatesQuerySchema),
+  async (c) => {
+    const { provider } = c.req.valid('param');
+    const configError = validateProviderConfig(provider);
+    if (configError) return c.json({ error: configError }, 400);
+    const auth = c.get('auth');
+    const partner = resolvePartnerId(auth, c.req.valid('query').partnerId);
+    if ('error' in partner) return c.json({ error: partner.error }, partner.status);
+    const { entityType, q } = c.req.valid('query');
+
+    try {
+      const { liveConn } = await resolveConnectionAndToken(partner.partnerId, provider, (fn) => withAuthDbAccessContext(auth, fn));
+      const providerImpl = getAccountingProvider(provider);
+      const data = entityType === 'org'
+        ? (await runOutsideDbContext(() => providerImpl.listRemoteCustomers(liveConn, q))).map((r) => ({
+          id: r.id, displayName: r.displayName, email: r.email ?? null, currencyCode: r.currencyCode ?? null,
+        }))
+        : (await runOutsideDbContext(() => providerImpl.listRemoteItems(liveConn, q))).map((r) => ({
+          id: r.id, displayName: r.displayName, sku: r.sku ?? null,
+        }));
+      return c.json({ data });
+    } catch (err) {
+      return handleMappingError(c, err);
+    }
+  },
+);

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { fetchWithAuth } from "../../stores/auth";
 import { runAction, handleActionError, ActionError } from "../../lib/runAction";
@@ -15,7 +15,19 @@ type MappingConfidence =
   | "none"
   | "ambiguous";
 type MappingLinkStatus = "suggested" | "confirmed" | "create_new" | "unlinked";
-type MappingSyncStatus = "pending" | "synced" | "error";
+/**
+ * Mirrors `MappingSyncStatus` in
+ * apps/api/src/services/accounting/accountingMappingService.ts.
+ * `synced_with_tax_variance` is a Phase C invoice-push outcome that org/item
+ * rows never produce themselves — but the API's union is one union, so a
+ * missing arm here would have fallen through to the `pending` default and told
+ * the operator a synced row was still waiting.
+ */
+type MappingSyncStatus =
+  | "pending"
+  | "synced"
+  | "error"
+  | "synced_with_tax_variance";
 type MappingDecision = "confirmed" | "create_new" | "unlinked";
 
 interface MappingProposal {
@@ -51,7 +63,21 @@ interface RemoteIncomeAccount {
   accountSubType?: string;
 }
 
-const MANUAL_REMOTE_OPTION = "__manual__";
+/** A QuickBooks record returned by GET /accounting/quickbooks/remote-candidates. */
+interface RemoteCandidate {
+  id: string;
+  displayName: string;
+  email?: string | null;
+  sku?: string | null;
+  currencyCode?: string | null;
+}
+
+/** Long enough that per-keystroke typing doesn't hammer a real QuickBooks API
+ *  (every candidate search is an outbound QBO call), short enough to feel live. */
+const SEARCH_DEBOUNCE_MS = 300;
+/** A one-character query matches most of a company file — not worth a round trip. */
+const MIN_SEARCH_LENGTH = 2;
+
 const TABS = ["quickbooks-customers", "quickbooks-items"] as const;
 type WorkbenchTab = (typeof TABS)[number];
 
@@ -78,7 +104,6 @@ export default function QuickbooksMappingWorkbench({
   const [loading, setLoading] = useState(false);
 
   const [remoteSelection, setRemoteSelection] = useState<Record<string, string>>({});
-  const [manualRemoteId, setManualRemoteId] = useState<Record<string, string>>({});
   const [rowBusy, setRowBusy] = useState<Record<string, boolean>>({});
   const [rowError, setRowError] = useState<Record<string, string | null>>({});
 
@@ -103,7 +128,6 @@ export default function QuickbooksMappingWorkbench({
   // re-pick the value already on screen.
   function remoteIdFor(id: string, p: MappingProposal): string {
     const selected = remoteSelection[id];
-    if (selected === MANUAL_REMOTE_OPTION) return (manualRemoteId[id] ?? "").trim();
     if (selected !== undefined) return selected;
     return p.proposedRemoteId ?? "";
   }
@@ -390,11 +414,12 @@ export default function QuickbooksMappingWorkbench({
               const statusLabel =
                 p.syncStatus === "synced"
                   ? t("quickbooksMapping.synced")
-                  : p.syncStatus === "error"
-                    ? t("quickbooksMapping.syncError")
-                    : t("quickbooksMapping.pending");
+                  : p.syncStatus === "synced_with_tax_variance"
+                    ? t("quickbooksMapping.syncedWithTaxVariance")
+                    : p.syncStatus === "error"
+                      ? t("quickbooksMapping.syncError")
+                      : t("quickbooksMapping.pending");
               const remoteValue = remoteSelection[id] ?? (p.proposedRemoteId ? p.proposedRemoteId : "");
-              const isManual = remoteValue === MANUAL_REMOTE_OPTION;
               const syncGated = syncGatedFor(p);
               const error = rowError[id];
 
@@ -422,35 +447,21 @@ export default function QuickbooksMappingWorkbench({
                     <span data-testid={`quickbooks-mapping-confidence-${id}`}>{confidenceLabel}</span>
                   </td>
                   <td className="py-2 pr-2">
-                    <select
-                      data-testid={`quickbooks-mapping-remote-${id}`}
-                      value={remoteValue}
+                    <RemoteCandidatePicker
+                      rowId={id}
+                      entityType={entityType}
                       disabled={busy}
-                      onChange={(e) =>
-                        setRemoteSelection((prev) => ({ ...prev, [id]: e.target.value }))
+                      value={remoteValue}
+                      proposed={
+                        p.proposedRemoteId
+                          ? { id: p.proposedRemoteId, displayName: p.proposedRemoteName ?? p.proposedRemoteId }
+                          : null
                       }
-                      className="rounded-md border px-2 py-1"
-                    >
-                      <option value="">—</option>
-                      {p.proposedRemoteId && (
-                        <option value={p.proposedRemoteId}>
-                          {p.proposedRemoteName ?? p.proposedRemoteId}
-                        </option>
-                      )}
-                      <option value={MANUAL_REMOTE_OPTION}>{t("quickbooksMapping.manualEntry")}</option>
-                    </select>
-                    {isManual && (
-                      <input
-                        type="text"
-                        data-testid={`quickbooks-mapping-remote-manual-${id}`}
-                        value={manualRemoteId[id] ?? ""}
-                        onChange={(e) =>
-                          setManualRemoteId((prev) => ({ ...prev, [id]: e.target.value }))
-                        }
-                        placeholder={t("quickbooksMapping.manualEntry")}
-                        className="ml-2 rounded-md border px-2 py-1"
-                      />
-                    )}
+                      onSelect={(remoteId) =>
+                        setRemoteSelection((prev) => ({ ...prev, [id]: remoteId }))
+                      }
+                      onUnauthorized={onUnauthorized}
+                    />
                   </td>
                   <td className="space-x-1 py-2">
                     <button
@@ -503,6 +514,141 @@ export default function QuickbooksMappingWorkbench({
             })}
           </tbody>
         </table>
+      )}
+    </div>
+  );
+}
+
+interface PickerProps {
+  rowId: string;
+  entityType: MappingEntityType;
+  disabled: boolean;
+  /** The remote id currently chosen for this row (may be the API's suggestion). */
+  value: string;
+  /** The API's own suggested match, kept selectable even before any search. */
+  proposed: { id: string; displayName: string } | null;
+  onSelect: (remoteId: string) => void;
+  onUnauthorized?: () => void;
+}
+
+/**
+ * Live QuickBooks lookup for one mapping row, replacing the old "enter the
+ * remote ID by hand" escape hatch (Phase B follow-up #4). Own component so the
+ * debounce timer and result list are per-row state rather than four parallel
+ * `Record<string, …>` maps in the parent — and so an unmounted row's in-flight
+ * search can't write back.
+ */
+function RemoteCandidatePicker({
+  rowId,
+  entityType,
+  disabled,
+  value,
+  proposed,
+  onSelect,
+  onUnauthorized,
+}: PickerProps) {
+  const { t } = useTranslation("integrations");
+  const [term, setTerm] = useState("");
+  const [candidates, setCandidates] = useState<RemoteCandidate[] | null>(null);
+  const [searching, setSearching] = useState(false);
+
+  useEffect(() => {
+    const q = term.trim();
+    if (q.length < MIN_SEARCH_LENGTH) {
+      setCandidates(null);
+      setSearching(false);
+      return;
+    }
+    let cancelled = false;
+    setSearching(true);
+    const handle = setTimeout(() => {
+      void (async () => {
+        try {
+          const res = await runAction<{ data: RemoteCandidate[] }>({
+            request: () =>
+              fetchWithAuth(
+                `/accounting/quickbooks/remote-candidates?entityType=${entityType}&q=${encodeURIComponent(q)}`,
+              ),
+            errorFallback: t("quickbooksMapping.failedToSearchCandidates"),
+            onUnauthorized,
+          });
+          if (!cancelled) setCandidates(res.data);
+        } catch (err) {
+          // runAction has already toasted anything but a 401; keep the row
+          // usable (the suggested option is still selectable) instead of
+          // wedging it behind a permanent spinner.
+          if (!cancelled) setCandidates([]);
+          handleActionError(err, t("quickbooksMapping.failedToSearchCandidates"));
+        } finally {
+          if (!cancelled) setSearching(false);
+        }
+      })();
+    }, SEARCH_DEBOUNCE_MS);
+    return () => {
+      cancelled = true;
+      clearTimeout(handle);
+    };
+  }, [term, entityType, onUnauthorized, t]);
+
+  // Suggested match first, then search hits, de-duplicated by remote id. The
+  // currently selected id is always present as an option even when it is in
+  // neither list (a stale suggestion, or a search that has since been cleared),
+  // so the controlled <select> never points at an option that doesn't exist.
+  const options: { id: string; label: string }[] = [];
+  const seen = new Set<string>();
+  for (const candidate of [
+    ...(proposed ? [{ id: proposed.id, displayName: proposed.displayName }] : []),
+    ...(candidates ?? []),
+  ]) {
+    if (seen.has(candidate.id)) continue;
+    seen.add(candidate.id);
+    const suffix = "sku" in candidate && candidate.sku ? ` (${candidate.sku})`
+      : "email" in candidate && candidate.email ? ` (${candidate.email})` : "";
+    options.push({ id: candidate.id, label: `${candidate.displayName}${suffix}` });
+  }
+  if (value && !seen.has(value)) options.unshift({ id: value, label: value });
+
+  return (
+    <div className="space-y-1">
+      <input
+        type="search"
+        data-testid={`quickbooks-mapping-search-${rowId}`}
+        value={term}
+        disabled={disabled}
+        onChange={(e) => setTerm(e.target.value)}
+        placeholder={t("quickbooksMapping.searchPlaceholder")}
+        aria-label={t("quickbooksMapping.searchPlaceholder")}
+        className="w-48 rounded-md border px-2 py-1"
+      />
+      <select
+        data-testid={`quickbooks-mapping-remote-${rowId}`}
+        value={value}
+        disabled={disabled}
+        onChange={(e) => onSelect(e.target.value)}
+        className="block w-48 rounded-md border px-2 py-1"
+      >
+        <option value="">—</option>
+        {options.map((option) => (
+          <option key={option.id} value={option.id}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+      {searching && (
+        <p
+          data-testid={`quickbooks-mapping-searching-${rowId}`}
+          className="text-xs text-muted-foreground"
+        >
+          {t("quickbooksMapping.searching")}
+        </p>
+      )}
+      {!searching && candidates?.length === 0 && (
+        <p
+          data-testid={`quickbooks-mapping-no-candidates-${rowId}`}
+          className="text-xs text-muted-foreground"
+        >
+          {t("quickbooksMapping.noCandidates")}
+        </p>
       )}
     </div>
   );

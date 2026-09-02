@@ -107,6 +107,21 @@ export interface InvoiceBranding {
   seller: SellerSnapshot | null;
 }
 
+/**
+ * QuickBooks push status for this invoice (Phase C, Task 5). Read-only: the
+ * web never calls QuickBooks and never derives this itself — it mirrors
+ * `accounting_entity_mappings` via a partner-scoped read, so it is `null`
+ * whenever there is no connection/mapping yet OR the caller's ambient RLS
+ * context can't see the (partner-axis) mapping row.
+ */
+export interface AccountingSyncSummary {
+  provider: 'quickbooks';
+  syncStatus: 'pending' | 'synced' | 'error' | 'synced_with_tax_variance';
+  lastSyncedAt: string | null;
+  lastError: string | null;
+  remoteDocNumber: string | null;
+}
+
 export interface InvoiceDetail {
   invoice: InvoiceSummary;
   lines: InvoiceLine[];
@@ -121,6 +136,8 @@ export interface InvoiceDetail {
   /** Warn-don't-block (multi-currency #3777): set by the API when the invoice
    *  currency differs from `stripeAccountCurrency`. Never blocks the pay link. */
   currencyWarning?: StripeCurrencyWarning | null;
+  /** See `AccountingSyncSummary`. Absent on older API responses. */
+  accountingSync?: AccountingSyncSummary | null;
 }
 
 export interface InvoicePayment {

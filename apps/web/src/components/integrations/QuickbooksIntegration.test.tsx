@@ -166,4 +166,64 @@ describe("QuickbooksIntegration", () => {
     expect(await screen.findByTestId("quickbooks-org-scope")).toBeTruthy();
     expect(fetchWithAuth).not.toHaveBeenCalled();
   });
+
+  it("renders the home currency and an unknown multi-currency line before a refresh", async () => {
+    fetchWithAuth.mockImplementation(async (url: string) => {
+      if (url === "/accounting/quickbooks")
+        return jsonResponse({ ...connected, homeCurrency: "USD" });
+      return jsonResponse({}, 404);
+    });
+
+    render(<QuickbooksIntegration />);
+
+    expect(await screen.findByTestId("quickbooks-home-currency")).toHaveTextContent("USD");
+    // GET /accounting/quickbooks does not carry the realm flag — it is only
+    // learned from a settings refresh, so "unknown" is the honest initial read.
+    expect(screen.getByTestId("quickbooks-multi-currency")).toHaveTextContent("Unknown");
+  });
+
+  it("Refresh settings POSTs the refresh route and re-renders currency + multi-currency", async () => {
+    fetchWithAuth.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === "/accounting/quickbooks/settings/refresh" && init?.method === "POST") {
+        return jsonResponse({ homeCurrency: "GBP", multiCurrencyEnabled: true });
+      }
+      if (url === "/accounting/quickbooks")
+        return jsonResponse({ ...connected, homeCurrency: "USD" });
+      return jsonResponse({}, 404);
+    });
+
+    render(<QuickbooksIntegration />);
+    fireEvent.click(await screen.findByTestId("quickbooks-settings-refresh"));
+
+    await waitFor(() =>
+      expect(fetchWithAuth).toHaveBeenCalledWith(
+        "/accounting/quickbooks/settings/refresh",
+        expect.objectContaining({ method: "POST" }),
+      ),
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("quickbooks-home-currency")).toHaveTextContent("GBP"),
+    );
+    expect(screen.getByTestId("quickbooks-multi-currency")).toHaveTextContent("Yes");
+    expect(showToast).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "success" }),
+    );
+  });
+
+  it("renders a multi-currency No when the realm reports the feature off", async () => {
+    fetchWithAuth.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === "/accounting/quickbooks/settings/refresh" && init?.method === "POST") {
+        return jsonResponse({ homeCurrency: "USD", multiCurrencyEnabled: false });
+      }
+      if (url === "/accounting/quickbooks") return jsonResponse(connected);
+      return jsonResponse({}, 404);
+    });
+
+    render(<QuickbooksIntegration />);
+    fireEvent.click(await screen.findByTestId("quickbooks-settings-refresh"));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("quickbooks-multi-currency")).toHaveTextContent("No"),
+    );
+  });
 });

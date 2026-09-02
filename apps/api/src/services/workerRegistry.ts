@@ -1078,6 +1078,20 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // QuickBooks Phase C, Task 4 (invoice push worker). `global`, verified by
+    // `workerEntrypointClosure.contract.test.ts`'s per-entry check: this
+    // module's runtime closure (accountingConnectionService, accountingTokens,
+    // accountingInvoicePush, the QuickBooks provider) never reaches
+    // `routes/agentWs.ts` or `services/agentCommandAwait.ts` — no socket
+    // ownership, no agent involvement at all.
+    name: 'accountingSyncWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/accountingSyncWorker');
+      return { init: m.initializeAccountingSyncWorkers, shutdown: m.shutdownAccountingSyncWorkers };
+    },
+  },
+  {
     // Phase 2 wave P2-6 (value accounting), task A5: nightly scan + per-org
     // impact rollup fan-out.
     //
