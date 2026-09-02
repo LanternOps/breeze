@@ -37,6 +37,8 @@ import {
   raiseDeviceIdentityCollisionAlert,
   type DeviceIdentityCollisionAlertInput,
 } from '../../services/deviceIdentityCollisionAlert';
+import { partnerTrustMode } from '../../config/partnerTrustMode';
+import { evaluateCapability, trustDenyBody } from '../../services/partnerTrust';
 
 export const enrollmentRoutes = new Hono();
 const ENROLLMENT_RATE_LIMIT = 10;
@@ -417,6 +419,7 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
     const enrollmentPartnerId = org?.partnerId ?? null;
 
     if (org) {
+      deviceLimitPartnerId = org.partnerId;
       const [partner] = await db
         .select({ maxDevices: partners.maxDevices })
         .from(partners)
@@ -424,7 +427,6 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
         .limit(1);
 
       if (partner?.maxDevices != null) {
-        deviceLimitPartnerId = org.partnerId;
         maxDevices = partner.maxDevices;
       }
     }
@@ -692,6 +694,43 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
     let device;
     try {
       device = await db.transaction(async (tx) => {
+      if (partnerTrustMode() !== 'off' && deviceLimitPartnerId) {
+        const [trustRow] = await tx
+          .select({
+            trustState: partners.trustState,
+            probationEnrollments: partners.probationEnrollments,
+          })
+          .from(partners)
+          .where(eq(partners.id, deviceLimitPartnerId))
+          .for('update');
+
+        if (trustRow && trustRow.trustState !== 'trusted') {
+          const decision = await evaluateCapability('agent_enroll', {
+            partnerId: deviceLimitPartnerId,
+            orgId: key.orgId,
+            detail: { probationEnrollments: trustRow.probationEnrollments },
+          });
+          if (!decision.allow) {
+            writeAuditEvent(c, {
+              orgId: key.orgId,
+              action: 'agent.enroll',
+              resourceType: 'device',
+              result: 'denied',
+              details: { reason: decision.reason },
+            });
+            throw new HTTPException(403, {
+              message: JSON.stringify(trustDenyBody(decision, false)),
+            });
+          }
+          await tx
+            .update(partners)
+            .set({ probationEnrollments: sql`${partners.probationEnrollments} + 1` })
+            .where(eq(partners.id, deviceLimitPartnerId));
+        }
+      }
+
+      // TODO(Task 5.1): enqueue ip-classify for the new device's enrollmentIp.
+
       // Device limit check inside transaction to prevent TOCTOU race.
       // Runs when no existing row OR when the decom-bypass-fresh-id path
       // (#914) is going to INSERT a new active row — both grow net active
@@ -984,6 +1023,13 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
           error: 'Enrollment key was just exhausted or expired — regenerate a fresh key or installer link',
           reason: 'enrollment_key_race_lost',
         }, 401);
+      }
+      if (err instanceof HTTPException) {
+        try {
+          return c.json(JSON.parse(err.message), err.status);
+        } catch {
+          // Preserve non-JSON HTTPExceptions for the application's normal handler.
+        }
       }
       throw err;
     }
