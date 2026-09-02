@@ -529,15 +529,15 @@ export async function createIntegrationTestClient(
 
 /**
  * Restores the org-lifecycle deferrable-FK contract
- * (`migrations/2026-09-12-100001-org-lifecycle-foundations.sql` Section 2):
- * every composite FK referencing an `org_id` column must be
- * `DEFERRABLE INITIALLY IMMEDIATE`, because the org-merge transaction
- * (Wave 2) runs `SET CONSTRAINTS ALL DEFERRED` and re-points parent+child
- * `org_id` in separate statements — a non-deferrable composite FK breaks it.
- * `orgLifecycleFoundations.integration.test.ts` asserts this against live
- * `pg_constraint` state at test-run time, so it cannot distinguish "never
- * fixed" from "fixed, then un-fixed by a later migration replay in the same
- * shared test DB."
+ * (`migrations/2026-09-12-100001-org-lifecycle-foundations.sql` Section 2)
+ * for the NAMED constraints only: every composite FK referencing an `org_id`
+ * column must be `DEFERRABLE INITIALLY IMMEDIATE`, because the org-merge
+ * transaction (Wave 2) runs `SET CONSTRAINTS ALL DEFERRED` and re-points
+ * parent+child `org_id` in separate statements — a non-deferrable composite
+ * FK breaks it. `orgLifecycleFoundations.integration.test.ts` asserts this
+ * against live `pg_constraint` state at test-run time, so it cannot
+ * distinguish "never fixed" from "fixed, then un-fixed by a later migration
+ * replay in the same shared test DB."
  *
  * A handful of already-shipped migrations, replayed raw by other integration
  * suites for their own idempotency/regression coverage, unconditionally
@@ -546,40 +546,63 @@ export async function createIntegrationTestClient(
  * hardening migration, and unconditional `DROP CONSTRAINT` + `ADD CONSTRAINT`
  * (with no `DEFERRABLE` clause) in the m365 graph-read-consent and
  * agent-originated-intents migrations. Per CLAUDE.md, never edit a shipped
- * migration to "fix" this — and never re-run the org-lifecycle migration's DO
- * block from inside `orgLifecycleFoundations.integration.test.ts` itself,
- * which would silently paper over genuinely new non-deferrable composite FKs
- * from unrelated future PRs. Instead, every suite that replays one of these
- * migrations raw must call this helper immediately after, to restore the
- * contract the replay just undid.
+ * migration to "fix" this. Instead, every suite that replays one of these
+ * migrations raw must call this helper immediately after, naming the
+ * constraint(s) its own replay just un-deferred.
  *
- * The DO block below is copied verbatim from that migration file's Section 2
- * — keep it in sync if that block ever changes.
+ * `constraintNames` is REQUIRED and the repair is scoped to it. This helper
+ * used to run the migration's whole-database sweep, which repaired every
+ * non-deferrable composite `org_id` FK it found — including ones no replay
+ * had touched. That silently papered over a genuine defect: the three FKs
+ * added non-deferrable by `2026-10-01-100000-ai-agents-graduation-evidence.sql`
+ * were repaired by `m365ConnectionsRls` and `agentIntentConstraints` running
+ * earlier in the same CI shard, so the contract test read GREEN in CI for
+ * days while failing on any fresh database. A blanket sweep here cannot tell
+ * "damaged by the replay I just ran" from "shipped broken", and the second is
+ * exactly what the contract test exists to catch — so it must not be repaired.
+ *
+ * Throws when a named constraint does not exist, so a rename fails loudly here
+ * instead of silently leaving the contract un-restored.
  */
-export async function reapplyOrgIdFkDeferrability(db: TestDatabase = getTestDb()): Promise<void> {
-  await db.execute(sql`
-    DO $$
-    DECLARE
-      fk record;
-      n integer := 0;
-    BEGIN
-      FOR fk IN
-        SELECT con.conname, con.conrelid::regclass AS child_table
-        FROM pg_constraint con
-        WHERE con.contype = 'f'
-          AND con.condeferrable = false
-          AND con.connamespace = 'public'::regnamespace
-          AND EXISTS (
-            SELECT 1 FROM unnest(con.confkey) AS ck(attnum)
-            JOIN pg_attribute a ON a.attrelid = con.confrelid AND a.attnum = ck.attnum
-            WHERE a.attname = 'org_id'
-          )
-        ORDER BY con.conrelid::regclass::text, con.conname
-      LOOP
-        EXECUTE format('ALTER TABLE %s ALTER CONSTRAINT %I DEFERRABLE INITIALLY IMMEDIATE',
-                       fk.child_table, fk.conname);
-        n := n + 1;
-      END LOOP;
-    END $$;
-  `);
+export async function reapplyOrgIdFkDeferrability(
+  db: TestDatabase,
+  constraintNames: readonly string[],
+): Promise<void> {
+  if (constraintNames.length === 0) {
+    throw new Error(
+      'reapplyOrgIdFkDeferrability: name the constraint(s) your migration replay un-deferred. ' +
+        'A blanket sweep would hide genuinely non-deferrable composite org_id FKs from ' +
+        'orgLifecycleFoundations.integration.test.ts.',
+    );
+  }
+
+  const rows = (await db.execute(sql`
+    SELECT con.conname, con.conrelid::regclass::text AS child_table
+    FROM pg_constraint con
+    WHERE con.contype = 'f'
+      AND con.connamespace = 'public'::regnamespace
+      AND con.conname IN (${sql.join(
+        constraintNames.map((name) => sql`${name}`),
+        sql`, `,
+      )})
+  `)) as unknown as Array<{ conname: string; child_table: string }>;
+
+  const byName = new Map(rows.map((row) => [row.conname, row.child_table]));
+  const missing = constraintNames.filter((name) => !byName.has(name));
+  if (missing.length > 0) {
+    throw new Error(
+      `reapplyOrgIdFkDeferrability: no such foreign-key constraint(s) in public: ${missing.join(', ')}. ` +
+        'Was one renamed by a later migration? Update the caller.',
+    );
+  }
+
+  for (const [conname, childTable] of byName) {
+    // `child_table` comes from regclass::text, which Postgres already quotes
+    // when the identifier needs it; conname is quoted here for the same reason.
+    await db.execute(
+      sql.raw(
+        `ALTER TABLE ${childTable} ALTER CONSTRAINT "${conname}" DEFERRABLE INITIALLY IMMEDIATE`,
+      ),
+    );
+  }
 }
