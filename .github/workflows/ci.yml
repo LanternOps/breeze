@@ -2107,6 +2107,14 @@ jobs:
           # hosted SaaS from self-hosted, gates the email-verification flow on
           # /auth/register-partner. CI runs in self-hosted mode.
           IS_HOSTED=false
+          # RMM-QA-164: fresh installs now seed the system Partner Admin role
+          # with force_mfa=true, so the bootstrap admin would be minted
+          # mfa=false and get 428 mfa_enrollment_required on every
+          # authMiddleware-gated GET below. This sweep is about endpoint
+          # reachability, not the MFA wall (proven by the real-Postgres
+          # suites), so use the documented relief valve. The stored flag is
+          # still asserted with the valve off — see the step after login.
+          MFA_FORCE_FOR_PARTNER_ADMIN=false
           # Required in production by the Wave 3 live-authorization epoch
           # rollout — compat until the fleet drains version-one writers.
           EVENT_PERMISSION_EPOCH_MODE=compat
@@ -2170,7 +2178,30 @@ jobs:
           fi
           echo "::add-mask::${TOKEN}"
           echo "token=${TOKEN}" >> "$GITHUB_OUTPUT"
+          # RMM-QA-164: with MFA_FORCE_FOR_PARTNER_ADMIN=false in this stack's
+          # .env the role-force component must be suppressed end to end
+          # (proves the root compose actually threads the valve, D6).
+          ENROLL=$(echo "${RESPONSE}" | jq -r '.mfaEnrollmentRequired')
+          echo "mfaEnrollmentRequired=${ENROLL} (expected false: relief valve set in .env)"
+          if [ "${ENROLL}" != "false" ]; then
+            echo "ERROR: relief valve MFA_FORCE_FOR_PARTNER_ADMIN=false was not honoured by the api container"
+            exit 1
+          fi
           echo "Login successful."
+
+      - name: Assert seeded Partner Admin stores force_mfa=true (RMM-QA-164)
+        run: |
+          # The finding's headline symptom was "fresh stack stored false".
+          # This reads the seeded global template straight from Postgres,
+          # independent of the relief valve (which only affects enforcement).
+          STORED=$(docker compose -f docker-compose.yml -f docker-compose.override.yml.ci \
+            exec -T postgres psql -U breeze -d breeze -tAc \
+            "SELECT force_mfa FROM roles WHERE name = 'Partner Admin' AND is_system AND partner_id IS NULL")
+          echo "roles.force_mfa for the seeded system Partner Admin template: '${STORED}'"
+          if [ "${STORED}" != "t" ]; then
+            echo "ERROR: fresh-stack seed stored force_mfa='${STORED}' (expected 't')"
+            exit 1
+          fi
 
       - name: Smoke test API endpoints
         env:
