@@ -35,7 +35,12 @@ export type StepUpOperation =
   | 'add_factor'
   | 'register_approver_device'
   | 'agent_rollback'
-  | 'enroll_first_factor';
+  | 'enroll_first_factor'
+  // RMM-QA-176: entering or EXTENDING device maintenance mode. Bound by
+  // resourceDigest to the exact { deviceIds, reason, durationHours } the
+  // technician was shown, so a grant can never be replayed against a
+  // different device set or a longer window.
+  | 'device_maintenance';
 
 export interface StepUpGrant {
   id: string;
@@ -73,6 +78,40 @@ export function rollbackResourceDigest(input: {
     deviceId: input.deviceId,
     reason: input.reason,
     targetVersion: input.targetVersion,
+  });
+  return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
+}
+
+/**
+ * Shared maxima for the device-maintenance operation. Single owner on purpose:
+ * the step-up mint schema (routes/auth/schemas.ts), the device route schemas
+ * (routes/devices/schemas.ts) and the bulk route all bound the SAME numbers,
+ * and a drift between the schema that accepts a value and the digest that
+ * binds it would be a silent authorization hole.
+ */
+export const MAINTENANCE_MAX_DURATION_HOURS = 168;
+export const MAINTENANCE_MAX_BULK_DEVICES = 500;
+
+/**
+ * Canonical digest for a device-maintenance grant.
+ *
+ * Canonicalization is part of the security contract, not a convenience: the
+ * mint route and the maintenance routes must produce byte-identical input for
+ * the same operator intent, so `deviceIds` is deduplicated and sorted and
+ * `reason` is trimmed here — in ONE function both callers use — rather than at
+ * each call site. Keys are emitted in a fixed alphabetical order because
+ * JSON.stringify preserves insertion order, which would otherwise let two
+ * equivalent objects hash differently.
+ */
+export function maintenanceResourceDigest(input: {
+  deviceIds: string[];
+  reason: string;
+  durationHours: number;
+}): `sha256:${string}` {
+  const canonical = JSON.stringify({
+    deviceIds: [...new Set(input.deviceIds)].sort(),
+    durationHours: input.durationHours,
+    reason: input.reason.trim(),
   });
   return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
 }

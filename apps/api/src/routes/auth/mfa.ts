@@ -36,11 +36,11 @@ import {
 import { getTwilioService } from '../../services/twilio';
 import { readMobileDeviceId } from '../../services/mobileDeviceBinding';
 import { authMiddleware, type AuthContext } from '../../middleware/auth';
-import { ENABLE_2FA, mfaVerifySchema, mfaEnableSchema, mfaStepUpSchema } from './schemas';
+import { ENABLE_2FA, mfaVerifySchema, mfaEnableSchema, mfaStepUpSchema, maintenanceStepUpResource, rollbackStepUpResource } from './schemas';
 import { getEffectiveMfaPolicy } from '../../services/mfaPolicy';
 import { invalidateMfaAssuranceAfterFactorChange } from '../../services/mfaAssurance';
 import { TEARDOWN_FAILED } from '../../services/remoteSessionTeardown';
-import { mintStepUpGrant, rollbackResourceDigest } from '../../services/mfaStepUpGrant';
+import { maintenanceResourceDigest, mintStepUpGrant, rollbackResourceDigest } from '../../services/mfaStepUpGrant';
 import { verifyStepUpPasskeyAssertion } from './passkeys';
 import {
   getClientIP,
@@ -1091,6 +1091,19 @@ mfaRoutes.post('/mfa/enable', authMiddleware, zValidator('json', mfaEnableWithSt
 // on an already-protected account. The passkey branch expects the client to
 // have already called `POST /auth/mfa/step-up/options` (passkeys.ts) to get
 // a fresh WebAuthn challenge.
+/**
+ * Operations whose grant MUST carry a resource binding, and the schema that
+ * binding must satisfy. An operation in this map with a missing or wrongly
+ * shaped resource is a 400 BEFORE any factor is verified; an operation NOT in
+ * this map must carry no resource at all. Replaces the pair of agent_rollback
+ * `if`s so adding a bound operation is a map entry, not a third branch that
+ * can be forgotten (RMM-QA-176 D11).
+ */
+const RESOURCE_BOUND_OPERATIONS = {
+  agent_rollback: rollbackStepUpResource,
+  device_maintenance: maintenanceStepUpResource,
+} as const;
+
 mfaRoutes.post('/mfa/step-up', authMiddleware, zValidator('json', mfaStepUpSchema), async (c) => {
   if (!ENABLE_2FA) {
     return mfaDisabledResponse(c);
@@ -1098,11 +1111,16 @@ mfaRoutes.post('/mfa/step-up', authMiddleware, zValidator('json', mfaStepUpSchem
 
   const auth = c.get('auth');
   const body = c.req.valid('json');
-  if (body.operation === 'agent_rollback' && !body.resource) {
-    return c.json({ error: 'Rollback resource binding is required' }, 400);
-  }
-  if (body.operation !== 'agent_rollback' && body.resource) {
-    return c.json({ error: 'Resource binding is only valid for agent rollback' }, 400);
+  const resourceSchema = RESOURCE_BOUND_OPERATIONS[body.operation as keyof typeof RESOURCE_BOUND_OPERATIONS];
+  let boundResource: z.infer<typeof rollbackStepUpResource> | z.infer<typeof maintenanceStepUpResource> | undefined;
+  if (resourceSchema) {
+    const parsedResource = resourceSchema.safeParse(body.resource);
+    if (!parsedResource.success) {
+      return c.json({ error: `A valid ${body.operation} resource binding is required` }, 400);
+    }
+    boundResource = parsedResource.data;
+  } else if (body.resource) {
+    return c.json({ error: 'Resource binding is only valid for resource-bound operations' }, 400);
   }
 
   // Rate-limit per user (I2). Every other MFA-verification endpoint throttles
@@ -1178,9 +1196,12 @@ mfaRoutes.post('/mfa/step-up', authMiddleware, zValidator('json', mfaStepUpSchem
     authEpoch: epochs.authEpoch,
     mfaEpoch: epochs.mfaEpoch,
     sid: auth.token.sid,
-    resourceDigest: body.operation === 'agent_rollback'
-      ? rollbackResourceDigest(body.resource!)
-      : '',
+    resourceDigest:
+      body.operation === 'agent_rollback'
+        ? rollbackResourceDigest(boundResource as z.infer<typeof rollbackStepUpResource>)
+        : body.operation === 'device_maintenance'
+          ? maintenanceResourceDigest(boundResource as z.infer<typeof maintenanceStepUpResource>)
+          : '',
   });
   if (!grantId) {
     return c.json({ error: 'Service temporarily unavailable' }, 503);
