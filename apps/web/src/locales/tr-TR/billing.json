@@ -1738,6 +1738,7 @@
       "quickbooks": "QuickBooks'a gönder",
       "quickbooksQueued": "{{enqueued}} kayıt QuickBooks kuyruğunda",
       "quickbooksQueuedPartial": "{{enqueued}} kayıt QuickBooks kuyruğunda, {{skipped}} atlandı",
+      "quickbooksQueuedFailed": "{{enqueued}} kayıt QuickBooks kuyruğunda, {{skipped}} atlandı, {{failed}} kuyruğa alınamadı",
       "quickbooksFailed": "QuickBooks gönderimi kuyruğa alınamadı. Yeniden deneyin."
     },
     "bulkDelete": {

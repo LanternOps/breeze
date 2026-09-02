@@ -1738,6 +1738,7 @@
       "quickbooks": "Enviar ao QuickBooks",
       "quickbooksQueued": "{{enqueued}} na fila para o QuickBooks",
       "quickbooksQueuedPartial": "{{enqueued}} na fila para o QuickBooks, {{skipped}} ignoradas",
+      "quickbooksQueuedFailed": "{{enqueued}} na fila para o QuickBooks, {{skipped}} ignoradas, {{failed}} não enfileiradas",
       "quickbooksFailed": "Falha ao enfileirar o envio ao QuickBooks. Tente novamente."
     },
     "bulkDelete": {

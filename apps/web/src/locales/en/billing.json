@@ -1738,6 +1738,7 @@
       "quickbooks": "Push to QuickBooks",
       "quickbooksQueued": "{{enqueued}} queued for QuickBooks",
       "quickbooksQueuedPartial": "{{enqueued}} queued for QuickBooks, {{skipped}} skipped",
+      "quickbooksQueuedFailed": "{{enqueued}} queued for QuickBooks, {{skipped}} skipped, {{failed}} failed to queue",
       "quickbooksFailed": "Failed to queue the QuickBooks push. Retry."
     },
     "bulkDelete": {

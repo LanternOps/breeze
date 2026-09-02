@@ -1738,6 +1738,7 @@
       "quickbooks": "Envoyer vers QuickBooks",
       "quickbooksQueued": "{{enqueued}} en file d'attente pour QuickBooks",
       "quickbooksQueuedPartial": "{{enqueued}} en file d'attente pour QuickBooks, {{skipped}} ignorées",
+      "quickbooksQueuedFailed": "{{enqueued}} en file d'attente pour QuickBooks, {{skipped}} ignorées, {{failed}} n'ont pas pu être mises en file d'attente",
       "quickbooksFailed": "Échec de la mise en file d'attente de l'envoi QuickBooks. Réessayez."
     },
     "bulkDelete": {

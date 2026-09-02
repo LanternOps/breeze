@@ -1738,6 +1738,7 @@
       "quickbooks": "An QuickBooks übertragen",
       "quickbooksQueued": "{{enqueued}} für QuickBooks eingereiht",
       "quickbooksQueuedPartial": "{{enqueued}} für QuickBooks eingereiht, {{skipped}} übersprungen",
+      "quickbooksQueuedFailed": "{{enqueued}} für QuickBooks eingereiht, {{skipped}} übersprungen, {{failed}} konnten nicht eingereiht werden",
       "quickbooksFailed": "Die QuickBooks-Übertragung konnte nicht eingereiht werden. Erneut versuchen."
     },
     "bulkDelete": {

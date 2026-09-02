@@ -1738,6 +1738,7 @@
       "quickbooks": "Enviar a QuickBooks",
       "quickbooksQueued": "{{enqueued}} en cola para QuickBooks",
       "quickbooksQueuedPartial": "{{enqueued}} en cola para QuickBooks, {{skipped}} omitidas",
+      "quickbooksQueuedFailed": "{{enqueued}} en cola para QuickBooks, {{skipped}} omitidas, {{failed}} no se pudieron poner en cola",
       "quickbooksFailed": "No se pudo poner en cola el envío a QuickBooks. Reintenta."
     },
     "bulkDelete": {

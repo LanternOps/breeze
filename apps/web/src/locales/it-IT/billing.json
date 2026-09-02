@@ -1738,6 +1738,7 @@
       "quickbooks": "Invia a QuickBooks",
       "quickbooksQueued": "{{enqueued}} in coda per QuickBooks",
       "quickbooksQueuedPartial": "{{enqueued}} in coda per QuickBooks, {{skipped}} ignorate",
+      "quickbooksQueuedFailed": "{{enqueued}} in coda per QuickBooks, {{skipped}} ignorate, {{failed}} non accodate",
       "quickbooksFailed": "Impossibile accodare l'invio a QuickBooks. Riprova."
     },
     "bulkDelete": {
