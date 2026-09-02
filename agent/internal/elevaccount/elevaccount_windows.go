@@ -146,12 +146,6 @@ func (*windowsManager) Demote(ctx context.Context) error {
 	return err
 }
 
-// absentAccountEvidence is what an account that does not exist proves: it
-// cannot be enabled and it cannot be in Administrators. See IsAccountAbsent.
-func absentAccountEvidence() AccountEvidence {
-	return AccountEvidence{Enabled: false, InAdministrators: false}
-}
-
 func (*windowsManager) Deprovision(ctx context.Context) (AccountEvidence, error) {
 	if err := ctx.Err(); err != nil {
 		return AccountEvidence{}, err
@@ -161,10 +155,7 @@ func (*windowsManager) Deprovision(ctx context.Context) (AccountEvidence, error)
 		return AccountEvidence{}, err
 	}
 	if err := setPassword(AccountName, password); err != nil {
-		if IsAccountAbsent(err) {
-			return absentAccountEvidence(), nil
-		}
-		return AccountEvidence{}, err
+		return cleanIfAbsent(err)
 	}
 	if err := ctx.Err(); err != nil {
 		return AccountEvidence{}, err
@@ -177,10 +168,7 @@ func (*windowsManager) Deprovision(ctx context.Context) (AccountEvidence, error)
 		return AccountEvidence{}, err
 	}
 	if err := setUserFlags(AccountName, accountDisabledFlags); err != nil {
-		if IsAccountAbsent(err) {
-			return absentAccountEvidence(), nil
-		}
-		return AccountEvidence{}, err
+		return cleanIfAbsent(err)
 	}
 	return (&windowsManager{}).VerifyClean(ctx)
 }
@@ -191,17 +179,11 @@ func (*windowsManager) VerifyClean(ctx context.Context) (AccountEvidence, error)
 	}
 	enabled, err := accountEnabled(AccountName)
 	if err != nil {
-		if IsAccountAbsent(err) {
-			return absentAccountEvidence(), nil
-		}
-		return AccountEvidence{}, err
+		return cleanIfAbsent(err)
 	}
 	inAdministrators, err := accountInAdministrators(AccountName)
 	if err != nil {
-		if IsAccountAbsent(err) {
-			return absentAccountEvidence(), nil
-		}
-		return AccountEvidence{}, err
+		return cleanIfAbsent(err)
 	}
 	return AccountEvidence{Enabled: enabled, InAdministrators: inAdministrators}, nil
 }

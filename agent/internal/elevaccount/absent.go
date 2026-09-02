@@ -44,3 +44,27 @@ func IsAccountAbsent(err error) bool {
 	return errors.Is(err, syscall.Errno(nerrUserNotFound)) ||
 		errors.Is(err, syscall.Errno(errorNoneMapped))
 }
+
+// cleanIfAbsent decides what a FAILED account probe means for the caller.
+//
+// When the failure means the account does not exist, that is positive proof of
+// a clean state rather than a cleanup failure, so it yields clean evidence and
+// no error. Every other failure is passed through untouched.
+//
+// All four probe sites in Deprovision and VerifyClean route through this one
+// function so the tolerance is defined — and tested — in a single place. Only
+// the first probe in each of those functions is reachable in the
+// never-provisioned case that motivated it, so per-site copies of this
+// decision would ship unexercised.
+func cleanIfAbsent(err error) (AccountEvidence, error) {
+	switch {
+	case err == nil:
+		// Misuse: this helper interprets a failure, so a nil error here means
+		// a caller is about to claim a clean account it never probed.
+		return AccountEvidence{}, errors.New("elevaccount: cleanIfAbsent called without a probe failure")
+	case IsAccountAbsent(err):
+		return AccountEvidence{Enabled: false, InAdministrators: false}, nil
+	default:
+		return AccountEvidence{}, err
+	}
+}

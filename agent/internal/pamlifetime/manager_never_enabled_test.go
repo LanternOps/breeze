@@ -57,14 +57,19 @@ func managerState(t *testing.T, m *lifecycleManager) (enabled, admissionOpen, av
 	return m.enabled, m.admissionOpen, m.available, len(m.unresolved)
 }
 
-// TestSetEnabledFalseOnNeverProvisionedAgentIsAQuietIdempotentNoOp is the
-// manager half of issue #4587. The manager is constructed enabled:true, and
-// every heartbeat with no UAC-interception policy calls SetEnabled(ctx, false).
-// With an empty ledger that runs verifyAccountClean against an account that was
-// never provisioned. That must settle on the FIRST call — returning nil and
-// clearing m.enabled — because m.enabled is only cleared on success: as long as
-// it fails, the next heartbeat repeats the whole cleanup and logs the failure
-// at ERROR again, forever.
+// TestSetEnabledFalseOnNeverProvisionedAgentIsAQuietIdempotentNoOp pins the
+// amplifier that turned one failed probe into issue #4587's unbounded ERROR
+// stream. The manager is constructed enabled:true, and every heartbeat with no
+// UAC-interception policy calls SetEnabled(ctx, false); with an empty ledger
+// that runs verifyAccountClean. Because m.enabled is only cleared on success,
+// the disable has to settle on the FIRST call — returning nil, clearing
+// m.enabled and leaving the manager available — or the next heartbeat repeats
+// the whole cleanup and logs again, forever.
+//
+// This test passes with and without the absent-account fix: given clean
+// evidence it exercises the idempotence contract, not the tolerance. The
+// regression detector for the fix itself is
+// TestSetEnabledFalseToleratesUnresolvableAccountNameInTokenScan below.
 func TestSetEnabledFalseOnNeverProvisionedAgentIsAQuietIdempotentNoOp(t *testing.T) {
 	account := &fakeAccountLifecycle{}
 	manager := newNeverEnabledManager(t, account, nil)

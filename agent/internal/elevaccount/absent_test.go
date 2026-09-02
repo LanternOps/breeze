@@ -79,3 +79,56 @@ func TestIsAccountAbsentClassifiesOnlyMissingAccountStatuses(t *testing.T) {
 		})
 	}
 }
+
+// TestCleanIfAbsentConvertsOnlyAbsenceIntoCleanEvidence covers the decision
+// every probe site in Deprovision and VerifyClean delegates to. Only the first
+// probe in each of those functions is reachable on a never-provisioned host,
+// so exercising the shared helper here is what keeps the later sites from
+// shipping unverified.
+func TestCleanIfAbsentConvertsOnlyAbsenceIntoCleanEvidence(t *testing.T) {
+	t.Run("absent account becomes clean evidence", func(t *testing.T) {
+		evidence, err := cleanIfAbsent(wrappedSetInfoErr(nerrUserNotFound))
+		if err != nil {
+			t.Fatalf("cleanIfAbsent(absent) error = %v, want nil", err)
+		}
+		if evidence.Enabled || evidence.InAdministrators {
+			t.Fatalf("cleanIfAbsent(absent) evidence = %+v, want both false", evidence)
+		}
+	})
+
+	t.Run("unresolvable name becomes clean evidence", func(t *testing.T) {
+		evidence, err := cleanIfAbsent(syscall.Errno(errorNoneMapped))
+		if err != nil {
+			t.Fatalf("cleanIfAbsent(none mapped) error = %v, want nil", err)
+		}
+		if evidence.Enabled || evidence.InAdministrators {
+			t.Fatalf("cleanIfAbsent(none mapped) evidence = %+v, want both false", evidence)
+		}
+	})
+
+	t.Run("every other failure passes through unchanged", func(t *testing.T) {
+		for _, probeErr := range []error{
+			wrappedSetInfoErr(5),    // ERROR_ACCESS_DENIED
+			wrappedGetInfoErr(2224), // NERR_UserExists
+			errors.New("SAM database is locked"),
+		} {
+			evidence, err := cleanIfAbsent(probeErr)
+			if !errors.Is(err, probeErr) {
+				t.Fatalf("cleanIfAbsent(%v) error = %v, want the original failure", probeErr, err)
+			}
+			if evidence != (AccountEvidence{}) {
+				t.Fatalf("cleanIfAbsent(%v) evidence = %+v, want zero evidence alongside a real error", probeErr, evidence)
+			}
+		}
+	})
+
+	// Misuse must fail closed rather than manufacture a clean result: this
+	// helper interprets a failure, so a nil error means the caller is about to
+	// claim an account state it never probed.
+	t.Run("nil probe failure is refused", func(t *testing.T) {
+		evidence, err := cleanIfAbsent(nil)
+		if err == nil {
+			t.Fatalf("cleanIfAbsent(nil) returned evidence %+v and no error; it must not invent a clean result", evidence)
+		}
+	})
+}
