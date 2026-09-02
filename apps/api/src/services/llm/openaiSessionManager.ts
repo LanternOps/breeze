@@ -263,6 +263,14 @@ export class OpenAISessionManager {
               break;
             case 'error':
               hadError = true;
+              // Mirror the catch block below: this is the same failure surface
+              // (a stream error), just reported by the provider as a yielded
+              // event instead of a thrown exception. `event.message` is already
+              // the client-facing text (see openaiCompatibleProvider.ts — it is
+              // never raw provider/response text beyond what already reaches
+              // the client via the publish() below), so no separate
+              // sanitization step is needed before sending it to Sentry.
+              captureException(new Error(`LLM stream error: ${event.message}`));
               session.eventBus.publish({ type: 'error', message: event.message });
               break;
             case 'message_start':
