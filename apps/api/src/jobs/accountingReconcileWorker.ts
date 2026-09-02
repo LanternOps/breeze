@@ -299,7 +299,10 @@ export async function processReconcileConnectionJob(
       }
     }
 
-    logRunLine(data, summary, Date.now() - startedAt);
+    // The run line is emitted by `finish()` below, AFTER the cursor CAS, so
+    // `cursorAfter` reflects what was actually claimed (null on a throw or a
+    // lost CAS). Logging it here printed `cursorAfter=null` on every run.
+    const finish = (): void => logRunLine(data, summary, Date.now() - startedAt);
 
     // Surface the run's outcome ON THE CONNECTION (finding H). Without this a
     // failing run left nothing an operator could see: the job retried, gave up
@@ -328,12 +331,14 @@ export async function processReconcileConnectionJob(
       captureException(err, undefined, {
         service: 'accountingReconcileWorker', connectionId: fresh.id, trigger: data.trigger,
       });
+      finish();
       throw err;
     }
 
     if (summary.failed > 0) {
       // Leave the cursor exactly where it was and rethrow so BullMQ retries the
       // whole window. Advancing past a failed item loses it permanently.
+      finish();
       throw new Error(`accounting reconcile for connection ${fresh.id} had ${summary.failed} failed item(s)`);
     }
 
@@ -355,9 +360,11 @@ export async function processReconcileConnectionJob(
         undefined,
         { service: 'accountingReconcileWorker', connectionId: fresh.id, trigger: data.trigger },
       );
+      finish();
       return summary;
     }
     summary.cursorAfter = changes.cursor;
+    finish();
     return summary;
   });
 }

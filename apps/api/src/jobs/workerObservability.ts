@@ -88,6 +88,8 @@ export const WORKER_FAILURE_REASONS = [
   'desktop_stop_pending',
   /** desktopSessionFinalizationWorker: another finalizer already released the intent. */
   'desktop_intent_already_released',
+  /** aiBudgetAlertDelivery: the event row is not committed/visible yet (#4388). */
+  'ai_budget_alert_event_not_visible',
 ] as const;
 
 export type WorkerFailureReason = (typeof WORKER_FAILURE_REASONS)[number];

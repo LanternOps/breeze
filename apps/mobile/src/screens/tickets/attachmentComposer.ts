@@ -140,11 +140,18 @@ export function canSend(input: {
 export function sendButtonLabel(input: {
   chips: readonly AttachmentChip[];
   busy: boolean;
+  /**
+   * Idle copy. The composer passes the mode-specific label ("Send reply" /
+   * "Add internal note") so the button names the consequence of the tap; the
+   * in-flight strings above stay generic because by then the visibility is
+   * already decided. Omitted, it falls back to the original wording.
+   */
+  idleLabel?: string;
 }): string {
   const uploading = input.chips.filter((chip) => chip.status === 'uploading').length;
   if (uploading > 0) return `Sending ${uploading} of ${input.chips.length}…`;
   if (input.busy) return 'Working…';
-  return 'Post comment';
+  return input.idleLabel ?? 'Post comment';
 }
 
 /** Why the attach button is unavailable, or null when it is available. */

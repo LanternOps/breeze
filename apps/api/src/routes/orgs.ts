@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import type { Context, Next } from 'hono';
@@ -15,6 +16,7 @@ import { authMiddleware, requireMfa, requirePermission, requireScope, requirePar
 import { writeAuditEvent, writeRouteAudit } from '../services/auditEvents';
 import { getEffectiveOrgSettings, assertNotLocked } from '../services/effectiveSettings';
 import { normalizeAlertThresholds } from '../services/aiBudgetAlerts';
+import { enqueueAiBudgetEvaluationForPartner } from '../jobs/aiBudgetAlertDelivery';
 import { clearPartnerScopePolicyCache } from '../oauth/partnerScopePolicy';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
 import {
@@ -1031,6 +1033,21 @@ orgRoutes.patch(
   // next token mint without waiting for the 60s TTL.
   clearPartnerScopePolicyCache(partner.id);
   clearPartnerAllowlistCache(partner.id);
+
+  // Caps or rungs changed fleet-wide: re-evaluate every org off-request (spec
+  // §4.2 #3). Compare the value actually PERSISTED (post-normalisation) against
+  // what was stored, not merely `!== undefined`: the settings card re-posts the
+  // whole aiBudgets block on every save, so a presence check fans a full
+  // partner-wide evaluation — one per org, each opening its own DB context —
+  // out of an edit to some unrelated field. `isDeepStrictEqual` matches the
+  // comparison `assertNotLocked` (services/effectiveSettings.ts) already uses
+  // on this same JSONB, and normalisation above makes a reordered rung array a
+  // true no-op rather than a spurious change.
+  if (body.settings?.aiBudgets !== undefined && !isDeepStrictEqual(newSettings.aiBudgets, currentSettings.aiBudgets)) {
+    void enqueueAiBudgetEvaluationForPartner(auth.partnerId as string).catch((err: unknown) => {
+      console.error('[orgs] aiBudgets fan-out enqueue failed:', err instanceof Error ? err.message : err);
+    });
+  }
 
   const auditOrgId = await resolveAuditOrgIdForPartner(auth.partnerId);
   writeRouteAudit(c, {
