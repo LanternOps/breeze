@@ -14,7 +14,18 @@
  */
 
 /** Route prefixes a customer can be sent back to after signing in. */
-const ALLOWED_PREFIXES = ['/quotes', '/invoices', '/tickets', '/devices', '/assets', '/profile'];
+const ALLOWED_PREFIXES = [
+  '/quotes',
+  '/invoices',
+  '/tickets',
+  '/devices',
+  '/assets',
+  '/profile',
+  '/dashboard',
+  '/security',
+  '/backups',
+  '/reports'
+];
 
 /** Control characters can smuggle a scheme past naive prefix checks. */
 const CONTROL_OR_SPACE = /[\u0000-\u0020\u007f]/;

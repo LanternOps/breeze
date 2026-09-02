@@ -693,6 +693,11 @@ export interface BrandingConfig {
   enableAssetCheckout?: boolean;
   enableSelfService?: boolean;
   enablePasswordReset?: boolean;
+  enableDashboard?: boolean;
+  enableSecurity?: boolean;
+  enableBackups?: boolean;
+  enableReports?: boolean;
+  enableSupportUsage?: boolean;
 }
 
 export interface ListParams {
@@ -937,6 +942,31 @@ export const portalApi = {
 
   getBranding: async (config: ApiRequestConfig = {}): Promise<ApiResponse<BrandingConfig>> => {
     const response = await apiGet<{ branding: BrandingConfig }>('/portal/branding', config);
+    if (!response.data) {
+      return {
+        error: response.error,
+        statusCode: response.statusCode,
+        headers: response.headers
+      };
+    }
+
+    return {
+      data: response.data.branding,
+      statusCode: response.statusCode,
+      headers: response.headers
+    };
+  },
+
+  // Public (unauthenticated) branding lookup by custom domain / forwarded host —
+  // used for the anonymous landing/redirect path before a portal session exists.
+  getBrandingByDomain: async (
+    domain: string,
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<BrandingConfig>> => {
+    const response = await apiGet<{ branding: BrandingConfig }>(
+      `/portal/branding/${encodeURIComponent(domain)}`,
+      config
+    );
     if (!response.data) {
       return {
         error: response.error,

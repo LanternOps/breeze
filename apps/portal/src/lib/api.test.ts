@@ -89,3 +89,29 @@ describe('portalAttachmentContentPath', () => {
     expect(path.startsWith('http')).toBe(false);
   });
 });
+
+describe('portalApi.getBrandingByDomain', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('loads public branding by encoded domain', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({
+        branding: { name: 'Customer Portal' },
+      }),
+      { status: 200 },
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await portalApi.getBrandingByDomain(
+      'customer portal.example',
+    );
+
+    expect(String(fetchMock.mock.calls[0][0])).toContain(
+      '/portal/branding/customer%20portal.example',
+    );
+    expect(result.data).toEqual({ name: 'Customer Portal' });
+    vi.unstubAllGlobals();
+  });
+});
