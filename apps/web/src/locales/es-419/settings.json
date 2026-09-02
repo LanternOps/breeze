@@ -1721,7 +1721,8 @@
         "load": "No se pudo cargar el informe de impacto.",
         "rebuild": "No se pudo poner en cola la reconstrucción del informe.",
         "tooManyOrgs": "Esta reconstrucción abarca más de {{limit}} organizaciones. Elija una sola organización en el selector de organizaciones e inténtelo de nuevo.",
-        "orgIdRequired": "Elija una sola organización en el selector de organizaciones antes de reconstruir el informe de impacto."
+        "orgIdRequired": "Elija una sola organización en el selector de organizaciones antes de reconstruir el informe de impacto.",
+        "exportPdf": "No se pudo generar la exportación a PDF."
       },
       "toasts": {
         "rebuildQueued": "Reconstrucción del informe puesta en cola.",
@@ -1771,7 +1772,47 @@
       "freshness": "Datos hasta {{through}} (UTC) · reconstruido {{rebuiltAt}}",
       "freshnessNeverRebuilt": "Datos hasta {{through}} (UTC) · nunca reconstruido",
       "positiveFeedbackRate": "Tasa de comentarios positivos",
-      "positiveFeedbackDetail": "{{up}} útiles, {{down}} no útiles"
+      "positiveFeedbackDetail": "{{up}} útiles, {{down}} no útiles",
+      "editWeights": "Editar ponderaciones",
+      "exportPdf": "Exportar PDF",
+      "weightsDrawer": {
+        "title": "Editar ponderaciones de tiempo ahorrado",
+        "description": "Define cuántos segundos de tiempo humano se acreditan a cada resultado. Estas ponderaciones solo cambian la estimación, nunca lo que hacen tus agentes de IA.",
+        "save": "Guardar",
+        "saving": "Guardando…",
+        "reset": "Restablecer valores predeterminados",
+        "resetting": "Restableciendo…",
+        "customized": "Personalizado",
+        "errors": {
+          "save": "No se pudieron guardar las ponderaciones.",
+          "reset": "No se pudieron restablecer las ponderaciones."
+        },
+        "toasts": {
+          "saved": "Ponderaciones guardadas.",
+          "reset": "Ponderaciones restablecidas a los valores predeterminados."
+        }
+      },
+      "pdf": {
+        "metrics": {
+          "alertsJudged": "Alertas evaluadas",
+          "noiseFlagged": "Marcadas como ruido",
+          "suppressionsApplied": "Supresiones aplicadas",
+          "ticketsTriaged": "Tickets clasificados",
+          "draftsSent": "Borradores enviados",
+          "fixesProposed": "Correcciones propuestas",
+          "fixesExecuted": "Correcciones ejecutadas",
+          "fixWatchesHeld": "Monitoreos de corrección retenidos",
+          "fixWatchesRecurred": "Monitoreos de corrección recurrentes",
+          "narrativesDelivered": "Informes semanales entregados",
+          "estTimeSaved": "Tiempo ahorrado estimado",
+          "llmSpend": "Gasto en LLM",
+          "window": "Ventana del informe (días)",
+          "through": "Datos hasta (UTC)",
+          "rebuiltAt": "Última reconstrucción"
+        },
+        "weightRowLabel": "{{label}} (segundos acreditados)",
+        "neverRebuilt": "Nunca reconstruido"
+      }
     }
   },
   "apiKeyForm": {

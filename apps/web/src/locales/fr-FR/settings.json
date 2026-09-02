@@ -1721,7 +1721,8 @@
         "load": "Impossible de charger le rapport d’impact.",
         "rebuild": "Impossible de mettre la reconstruction du rapport en file d’attente.",
         "tooManyOrgs": "Cette reconstruction couvre plus de {{limit}} organisations. Choisissez une seule organisation dans le sélecteur d’organisation, puis réessayez.",
-        "orgIdRequired": "Choisissez une seule organisation dans le sélecteur d’organisation avant de reconstruire le rapport d’impact."
+        "orgIdRequired": "Choisissez une seule organisation dans le sélecteur d’organisation avant de reconstruire le rapport d’impact.",
+        "exportPdf": "L'export PDF n'a pas pu être généré."
       },
       "toasts": {
         "rebuildQueued": "Reconstruction du rapport mise en file d’attente.",
@@ -1771,7 +1772,47 @@
       "freshness": "Données jusqu’au {{through}} (UTC) · reconstruit {{rebuiltAt}}",
       "freshnessNeverRebuilt": "Données jusqu’au {{through}} (UTC) · jamais reconstruit",
       "positiveFeedbackRate": "Taux d’avis positifs",
-      "positiveFeedbackDetail": "{{up}} utiles, {{down}} non utiles"
+      "positiveFeedbackDetail": "{{up}} utiles, {{down}} non utiles",
+      "editWeights": "Modifier les pondérations",
+      "exportPdf": "Exporter en PDF",
+      "weightsDrawer": {
+        "title": "Modifier les pondérations de temps gagné",
+        "description": "Définissez le nombre de secondes de temps humain crédité pour chaque résultat. Ces pondérations ne modifient que l'estimation — jamais ce que font vos agents IA.",
+        "save": "Enregistrer",
+        "saving": "Enregistrement…",
+        "reset": "Rétablir les valeurs par défaut",
+        "resetting": "Rétablissement…",
+        "customized": "Personnalisé",
+        "errors": {
+          "save": "Les pondérations n'ont pas pu être enregistrées.",
+          "reset": "Les pondérations n'ont pas pu être réinitialisées."
+        },
+        "toasts": {
+          "saved": "Pondérations enregistrées.",
+          "reset": "Pondérations réinitialisées aux valeurs par défaut."
+        }
+      },
+      "pdf": {
+        "metrics": {
+          "alertsJudged": "Alertes évaluées",
+          "noiseFlagged": "Signalées comme bruit",
+          "suppressionsApplied": "Suppressions appliquées",
+          "ticketsTriaged": "Tickets triés",
+          "draftsSent": "Brouillons envoyés",
+          "fixesProposed": "Correctifs proposés",
+          "fixesExecuted": "Correctifs appliqués",
+          "fixWatchesHeld": "Surveillances de correctif maintenues",
+          "fixWatchesRecurred": "Surveillances de correctif récurrentes",
+          "narrativesDelivered": "Rapports hebdomadaires livrés",
+          "estTimeSaved": "Temps gagné estimé",
+          "llmSpend": "Dépenses LLM",
+          "window": "Fenêtre du rapport (jours)",
+          "through": "Données jusqu'au (UTC)",
+          "rebuiltAt": "Dernière reconstruction"
+        },
+        "weightRowLabel": "{{label}} (secondes créditées)",
+        "neverRebuilt": "Jamais reconstruit"
+      }
     }
   },
   "apiKeyForm": {

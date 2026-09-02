@@ -1721,7 +1721,8 @@
         "load": "Não foi possível carregar o relatório de impacto.",
         "rebuild": "Não foi possível enfileirar a reconstrução do relatório.",
         "tooManyOrgs": "Esta reconstrução abrange mais de {{limit}} organizações. Escolha uma única organização no seletor de organizações e tente novamente.",
-        "orgIdRequired": "Escolha uma única organização no seletor de organizações antes de reconstruir o relatório de impacto."
+        "orgIdRequired": "Escolha uma única organização no seletor de organizações antes de reconstruir o relatório de impacto.",
+        "exportPdf": "Não foi possível gerar a exportação em PDF."
       },
       "toasts": {
         "rebuildQueued": "Reconstrução do relatório enfileirada.",
@@ -1771,7 +1772,47 @@
       "freshness": "Dados até {{through}} (UTC) · reconstruído {{rebuiltAt}}",
       "freshnessNeverRebuilt": "Dados até {{through}} (UTC) · nunca reconstruído",
       "positiveFeedbackRate": "Taxa de retorno positivo",
-      "positiveFeedbackDetail": "{{up}} úteis, {{down}} não úteis"
+      "positiveFeedbackDetail": "{{up}} úteis, {{down}} não úteis",
+      "editWeights": "Editar pesos",
+      "exportPdf": "Exportar PDF",
+      "weightsDrawer": {
+        "title": "Editar pesos de tempo economizado",
+        "description": "Defina quantos segundos de tempo humano cada resultado deve receber de crédito. Esses pesos alteram apenas a estimativa — nunca o que seus agentes de IA fazem.",
+        "save": "Salvar",
+        "saving": "Salvando…",
+        "reset": "Restaurar padrões",
+        "resetting": "Restaurando…",
+        "customized": "Personalizado",
+        "errors": {
+          "save": "Não foi possível salvar os pesos.",
+          "reset": "Não foi possível restaurar os pesos."
+        },
+        "toasts": {
+          "saved": "Pesos salvos.",
+          "reset": "Pesos restaurados para os padrões."
+        }
+      },
+      "pdf": {
+        "metrics": {
+          "alertsJudged": "Alertas avaliados",
+          "noiseFlagged": "Marcados como ruído",
+          "suppressionsApplied": "Supressões aplicadas",
+          "ticketsTriaged": "Chamados triados",
+          "draftsSent": "Rascunhos enviados",
+          "fixesProposed": "Correções propostas",
+          "fixesExecuted": "Correções executadas",
+          "fixWatchesHeld": "Observações de correção mantidas",
+          "fixWatchesRecurred": "Observações de correção reincidentes",
+          "narrativesDelivered": "Relatórios semanais entregues",
+          "estTimeSaved": "Tempo economizado estimado",
+          "llmSpend": "Gasto com LLM",
+          "window": "Janela do relatório (dias)",
+          "through": "Dados até (UTC)",
+          "rebuiltAt": "Última reconstrução"
+        },
+        "weightRowLabel": "{{label}} (segundos creditados)",
+        "neverRebuilt": "Nunca reconstruído"
+      }
     }
   },
   "apiKeyForm": {

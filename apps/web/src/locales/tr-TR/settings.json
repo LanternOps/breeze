@@ -1721,7 +1721,8 @@
         "load": "Etki raporu yüklenemedi.",
         "rebuild": "Etki raporunun yeniden oluşturulması sıraya alınamadı.",
         "tooManyOrgs": "Bu yeniden oluşturma {{limit}} kuruluştan fazlasını kapsıyor. Organizasyon değiştiriciden tek bir organizasyon seçip yeniden deneyin.",
-        "orgIdRequired": "Etki raporunu yeniden oluşturmadan önce organizasyon değiştiriciden tek bir organizasyon seçin."
+        "orgIdRequired": "Etki raporunu yeniden oluşturmadan önce organizasyon değiştiriciden tek bir organizasyon seçin.",
+        "exportPdf": "PDF dışa aktarımı oluşturulamadı."
       },
       "toasts": {
         "rebuildQueued": "Etki raporunun yeniden oluşturulması sıraya alındı.",
@@ -1771,7 +1772,47 @@
       "freshness": "{{through}} tarihine kadar olan veriler (UTC) · yeniden oluşturuldu: {{rebuiltAt}}",
       "freshnessNeverRebuilt": "{{through}} tarihine kadar olan veriler (UTC) · hiç yeniden oluşturulmadı",
       "positiveFeedbackRate": "Olumlu geri bildirim oranı",
-      "positiveFeedbackDetail": "{{up}} yararlı, {{down}} yararsız"
+      "positiveFeedbackDetail": "{{up}} yararlı, {{down}} yararsız",
+      "editWeights": "Ağırlıkları düzenle",
+      "exportPdf": "PDF olarak dışa aktar",
+      "weightsDrawer": {
+        "title": "Kazanılan zaman ağırlıklarını düzenle",
+        "description": "Her sonuç için kaç saniye insan zamanı kredilendirileceğini belirleyin. Bu ağırlıklar yalnızca tahmini değiştirir — yapay zeka ajanlarınızın yaptıklarını asla değiştirmez.",
+        "save": "Kaydet",
+        "saving": "Kaydediliyor…",
+        "reset": "Varsayılanlara sıfırla",
+        "resetting": "Sıfırlanıyor…",
+        "customized": "Özelleştirildi",
+        "errors": {
+          "save": "Ağırlıklar kaydedilemedi.",
+          "reset": "Ağırlıklar sıfırlanamadı."
+        },
+        "toasts": {
+          "saved": "Ağırlıklar kaydedildi.",
+          "reset": "Ağırlıklar varsayılanlara sıfırlandı."
+        }
+      },
+      "pdf": {
+        "metrics": {
+          "alertsJudged": "Değerlendirilen uyarılar",
+          "noiseFlagged": "Gürültü olarak işaretlenenler",
+          "suppressionsApplied": "Uygulanan bastırmalar",
+          "ticketsTriaged": "Sınıflandırılan biletler",
+          "draftsSent": "Gönderilen taslaklar",
+          "fixesProposed": "Önerilen düzeltmeler",
+          "fixesExecuted": "Uygulanan düzeltmeler",
+          "fixWatchesHeld": "Tutulan düzeltme izlemeleri",
+          "fixWatchesRecurred": "Tekrarlanan düzeltme izlemeleri",
+          "narrativesDelivered": "Teslim edilen haftalık raporlar",
+          "estTimeSaved": "Tahmini kazanılan zaman",
+          "llmSpend": "LLM harcaması",
+          "window": "Rapor penceresi (gün)",
+          "through": "Veriler (UTC) itibarıyla",
+          "rebuiltAt": "Son yeniden oluşturma"
+        },
+        "weightRowLabel": "{{label}} (kredilendirilen saniye)",
+        "neverRebuilt": "Hiç yeniden oluşturulmadı"
+      }
     }
   },
   "apiKeyForm": {

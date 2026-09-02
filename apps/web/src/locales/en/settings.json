@@ -1721,7 +1721,8 @@
         "load": "The impact report could not be loaded.",
         "rebuild": "The impact rebuild could not be queued.",
         "tooManyOrgs": "This rebuild covers more than {{limit}} organizations. Choose a single organization in the organization switcher and try again.",
-        "orgIdRequired": "Choose a single organization in the organization switcher before rebuilding the impact report."
+        "orgIdRequired": "Choose a single organization in the organization switcher before rebuilding the impact report.",
+        "exportPdf": "The PDF export could not be generated."
       },
       "toasts": {
         "rebuildQueued": "Impact rebuild queued.",
@@ -1771,7 +1772,47 @@
       "freshness": "Data through {{through}} (UTC) · rebuilt {{rebuiltAt}}",
       "freshnessNeverRebuilt": "Data through {{through}} (UTC) · never rebuilt",
       "positiveFeedbackRate": "Positive feedback rate",
-      "positiveFeedbackDetail": "{{up}} helpful, {{down}} not helpful"
+      "positiveFeedbackDetail": "{{up}} helpful, {{down}} not helpful",
+      "editWeights": "Edit weights",
+      "exportPdf": "Export PDF",
+      "weightsDrawer": {
+        "title": "Edit time-saved weights",
+        "description": "Set how many seconds of human time each outcome is credited with. These weights only change the estimate — they never change what your AI agents do.",
+        "save": "Save",
+        "saving": "Saving…",
+        "reset": "Reset to defaults",
+        "resetting": "Resetting…",
+        "customized": "Customized",
+        "errors": {
+          "save": "The weights could not be saved.",
+          "reset": "The weights could not be reset."
+        },
+        "toasts": {
+          "saved": "Weights saved.",
+          "reset": "Weights reset to defaults."
+        }
+      },
+      "pdf": {
+        "metrics": {
+          "alertsJudged": "Alerts judged",
+          "noiseFlagged": "Flagged as noise",
+          "suppressionsApplied": "Suppressions applied",
+          "ticketsTriaged": "Tickets triaged",
+          "draftsSent": "Drafts sent",
+          "fixesProposed": "Fixes proposed",
+          "fixesExecuted": "Fixes executed",
+          "fixWatchesHeld": "Fix watches held",
+          "fixWatchesRecurred": "Fix watches recurred",
+          "narrativesDelivered": "Weekly reports delivered",
+          "estTimeSaved": "Estimated time saved",
+          "llmSpend": "LLM spend",
+          "window": "Reporting window (days)",
+          "through": "Data through (UTC)",
+          "rebuiltAt": "Last rebuilt"
+        },
+        "weightRowLabel": "{{label}} (seconds credited)",
+        "neverRebuilt": "Never rebuilt"
+      }
     }
   },
   "apiKeyForm": {

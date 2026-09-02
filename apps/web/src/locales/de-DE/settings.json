@@ -1721,7 +1721,8 @@
         "load": "Der Wirkungsbericht konnte nicht geladen werden.",
         "rebuild": "Der Neuaufbau des Wirkungsberichts konnte nicht eingeplant werden.",
         "tooManyOrgs": "Dieser Neuaufbau umfasst mehr als {{limit}} Organisationen. Wählen Sie im Organisations-Umschalter eine einzelne Organisation aus und versuchen Sie es erneut.",
-        "orgIdRequired": "Wählen Sie im Organisations-Umschalter eine einzelne Organisation aus, bevor Sie den Wirkungsbericht neu aufbauen."
+        "orgIdRequired": "Wählen Sie im Organisations-Umschalter eine einzelne Organisation aus, bevor Sie den Wirkungsbericht neu aufbauen.",
+        "exportPdf": "Der PDF-Export konnte nicht erstellt werden."
       },
       "toasts": {
         "rebuildQueued": "Neuaufbau des Wirkungsberichts eingeplant.",
@@ -1771,7 +1772,47 @@
       "freshness": "Daten bis {{through}} (UTC) · neu aufgebaut {{rebuiltAt}}",
       "freshnessNeverRebuilt": "Daten bis {{through}} (UTC) · nie neu aufgebaut",
       "positiveFeedbackRate": "Quote positiver Rückmeldungen",
-      "positiveFeedbackDetail": "{{up}} hilfreich, {{down}} nicht hilfreich"
+      "positiveFeedbackDetail": "{{up}} hilfreich, {{down}} nicht hilfreich",
+      "editWeights": "Gewichtungen bearbeiten",
+      "exportPdf": "Als PDF exportieren",
+      "weightsDrawer": {
+        "title": "Gewichtungen für Zeitersparnis bearbeiten",
+        "description": "Legen Sie fest, wie viele Sekunden menschlicher Zeit jedem Ergebnis angerechnet werden. Diese Gewichtungen ändern nur die Schätzung — niemals, was Ihre KI-Agenten tun.",
+        "save": "Speichern",
+        "saving": "Wird gespeichert…",
+        "reset": "Auf Standardwerte zurücksetzen",
+        "resetting": "Wird zurückgesetzt…",
+        "customized": "Angepasst",
+        "errors": {
+          "save": "Die Gewichtungen konnten nicht gespeichert werden.",
+          "reset": "Die Gewichtungen konnten nicht zurückgesetzt werden."
+        },
+        "toasts": {
+          "saved": "Gewichtungen gespeichert.",
+          "reset": "Gewichtungen auf Standardwerte zurückgesetzt."
+        }
+      },
+      "pdf": {
+        "metrics": {
+          "alertsJudged": "Bewertete Warnmeldungen",
+          "noiseFlagged": "Als Rauschen markiert",
+          "suppressionsApplied": "Angewendete Unterdrückungen",
+          "ticketsTriaged": "Sortierte Tickets",
+          "draftsSent": "Gesendete Entwürfe",
+          "fixesProposed": "Vorgeschlagene Behebungen",
+          "fixesExecuted": "Ausgeführte Behebungen",
+          "fixWatchesHeld": "Gehaltene Behebungsüberwachungen",
+          "fixWatchesRecurred": "Wiederkehrende Behebungsüberwachungen",
+          "narrativesDelivered": "Gelieferte Wöchentliche Berichte",
+          "estTimeSaved": "Geschätzte Zeitersparnis",
+          "llmSpend": "LLM-Ausgaben",
+          "window": "Berichtszeitraum (Tage)",
+          "through": "Daten bis (UTC)",
+          "rebuiltAt": "Zuletzt neu erstellt"
+        },
+        "weightRowLabel": "{{label}} (angerechnete Sekunden)",
+        "neverRebuilt": "Nie neu erstellt"
+      }
     }
   },
   "apiKeyForm": {

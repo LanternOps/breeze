@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
-import { RefreshCw, TrendingUp } from 'lucide-react';
+import { Download, RefreshCw, Settings2, TrendingUp } from 'lucide-react';
 import {
   Bar,
   BarChart,
@@ -19,8 +19,11 @@ import { ActionError, runAction } from '@/lib/runAction';
 import { useHashState } from '@/lib/useHashState';
 import { formatCurrency, formatNumber, formatPercent } from '@/lib/i18n/format';
 import { formatDateTime } from '@/lib/dateTimeFormat';
+import { exportReport } from '../reports/reportExport';
+import ImpactWeightsDrawer from './ImpactWeightsDrawer';
 import {
   AI_AGENT_IMPACT_BY_ORG_LIMIT,
+  AI_AGENT_IMPACT_COUNTER_KEYS,
   AI_AGENT_IMPACT_REBUILD_MAX_ORGS,
   AI_AGENT_IMPACT_WINDOWS,
   DEFAULT_IMPACT_WEIGHTS,
@@ -28,6 +31,7 @@ import {
 } from '@breeze/shared';
 import type {
   AiAgentImpactBucketDto,
+  AiAgentImpactCounterKey,
   AiAgentImpactDto,
   AiAgentImpactWindow,
   ImpactWeights,
@@ -113,6 +117,92 @@ function weightLabel(t: (key: string) => string, key: (typeof IMPACT_WEIGHT_KEYS
     default:
       return key;
   }
+}
+
+// Same literal-key idiom as windowLabel/weightLabel above — the PDF export
+// covers all ten counters (six have no tile on this page, e.g.
+// suppressionsApplied), so it needs its own complete label set.
+function counterMetricLabel(t: (key: string) => string, key: AiAgentImpactCounterKey): string {
+  switch (key) {
+    case 'alertsJudged':
+      return t('aiAgentsPage.impact.pdf.metrics.alertsJudged');
+    case 'noiseFlagged':
+      return t('aiAgentsPage.impact.pdf.metrics.noiseFlagged');
+    case 'suppressionsApplied':
+      return t('aiAgentsPage.impact.pdf.metrics.suppressionsApplied');
+    case 'ticketsTriaged':
+      return t('aiAgentsPage.impact.pdf.metrics.ticketsTriaged');
+    case 'draftsSent':
+      return t('aiAgentsPage.impact.pdf.metrics.draftsSent');
+    case 'fixesProposed':
+      return t('aiAgentsPage.impact.pdf.metrics.fixesProposed');
+    case 'fixesExecuted':
+      return t('aiAgentsPage.impact.pdf.metrics.fixesExecuted');
+    case 'fixWatchesHeld':
+      return t('aiAgentsPage.impact.pdf.metrics.fixWatchesHeld');
+    case 'fixWatchesRecurred':
+      return t('aiAgentsPage.impact.pdf.metrics.fixWatchesRecurred');
+    case 'narrativesDelivered':
+      return t('aiAgentsPage.impact.pdf.metrics.narrativesDelivered');
+    default:
+      return key;
+  }
+}
+
+/**
+ * Uniform `{ metric, value }` rows for the PDF export — MANDATORY shape, not
+ * a style choice: `renderGenericReport` derives its columns solely from
+ * `Object.keys(rows[0])`, so a heterogeneous "summary header row" would
+ * silently truncate every later row's extra fields
+ * (`packages/shared/src/reportPdf/reportPdf.ts:1405`).
+ *
+ * One row per counter (all ten, not just the seven with a tile), then the
+ * estimate, the one actually-measured number (LLM spend), the window,
+ * `through`, `rebuiltAt`, and each of the six effective weights that
+ * produced the estimate — so the PDF is reproducible evidence of how the
+ * number was computed, not just the number itself.
+ */
+export function buildImpactPdfRows(
+  dto: AiAgentImpactDto,
+  t: (key: string, opts?: Record<string, unknown>) => string,
+): Array<{ metric: string; value: string }> {
+  const rows: Array<{ metric: string; value: string }> = [];
+
+  for (const key of AI_AGENT_IMPACT_COUNTER_KEYS) {
+    rows.push({ metric: counterMetricLabel(t, key), value: formatNumber(dto.totals[key]) });
+  }
+
+  rows.push({
+    metric: t('aiAgentsPage.impact.pdf.metrics.estTimeSaved'),
+    value: t('aiAgentsPage.impact.tiles.estTimeSavedValue', {
+      hours: formatNumber(dto.totals.estSecondsSaved / 3600, { maximumFractionDigits: 1 }),
+    }),
+  });
+  rows.push({
+    metric: t('aiAgentsPage.impact.pdf.metrics.llmSpend'),
+    value: formatCurrency(dto.totals.llmCents / 100),
+  });
+  rows.push({ metric: t('aiAgentsPage.impact.pdf.metrics.window'), value: String(dto.window) });
+  rows.push({ metric: t('aiAgentsPage.impact.pdf.metrics.through'), value: dto.through });
+  rows.push({
+    metric: t('aiAgentsPage.impact.pdf.metrics.rebuiltAt'),
+    // Pinned to UTC — the PDF as a whole is a UTC document (every bucket is a
+    // UTC day, and `generatedAt` in reportExport.ts is stamped `timezone:
+    // 'UTC'`), so this cell must not silently switch to the exporting
+    // browser's local zone.
+    value: dto.rebuiltAt
+      ? formatDateTime(dto.rebuiltAt, { timeZone: 'UTC' })
+      : t('aiAgentsPage.impact.pdf.neverRebuilt'),
+  });
+
+  for (const key of IMPACT_WEIGHT_KEYS) {
+    rows.push({
+      metric: t('aiAgentsPage.impact.pdf.weightRowLabel', { label: weightLabel(t, key) }),
+      value: String(dto.weights.effective[key]),
+    });
+  }
+
+  return rows;
 }
 
 function Tile({
@@ -272,6 +362,32 @@ export default function ImpactPage() {
     setPoll({ startedAt: Date.now(), rebuiltAt: baselineRebuiltAt });
   }, [dto?.rebuiltAt, t]);
 
+  const [weightsDrawerOpen, setWeightsDrawerOpen] = useState(false);
+
+  // The drawer re-prices the estimate with no rollup re-run, so on a
+  // successful save/reset the page just needs the fresh DTO (same
+  // reloadToken mechanism the error-state Retry button uses) — not a
+  // rebuild.
+  const handleWeightsSaved = useCallback(() => {
+    setWeightsDrawerOpen(false);
+    setReloadToken((token) => token + 1);
+  }, []);
+
+  const handleExportPdf = useCallback(async () => {
+    if (!dto) return;
+    try {
+      await exportReport(buildImpactPdfRows(dto, t), {
+        format: 'pdf',
+        reportType: 'ai_agent_impact',
+        // Pinned to UTC, not the browser's zone — every bucket in this report
+        // is a UTC day (see the plan's UTC-everywhere rule).
+        timezone: 'UTC',
+      });
+    } catch {
+      showToast({ message: t('aiAgentsPage.impact.errors.exportPdf'), type: 'error' });
+    }
+  }, [dto, t]);
+
   const weights: ImpactWeights = dto?.weights.effective ?? DEFAULT_IMPACT_WEIGHTS;
   const weightsTooltip = useMemo(
     () =>
@@ -337,8 +453,43 @@ export default function ImpactPage() {
             <RefreshCw className={`h-4 w-4 ${poll ? 'animate-spin' : ''}`} />
             {poll ? t('aiAgentsPage.impact.refreshing') : t('aiAgentsPage.impact.refresh')}
           </button>
+
+          {dto && (
+            <button
+              type="button"
+              data-testid="ai-impact-export-pdf"
+              onClick={() => void handleExportPdf()}
+              className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm hover:bg-muted"
+            >
+              <Download className="h-4 w-4" />
+              {t('aiAgentsPage.impact.exportPdf')}
+            </button>
+          )}
+
+          {/* The server 403s a caller without canManagePartnerWidePolicies —
+              hiding the button for that case is a UX convenience, not the
+              real gate. */}
+          {dto?.canEditWeights && (
+            <button
+              type="button"
+              data-testid="ai-impact-edit-weights"
+              onClick={() => setWeightsDrawerOpen(true)}
+              className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm hover:bg-muted"
+            >
+              <Settings2 className="h-4 w-4" />
+              {t('aiAgentsPage.impact.editWeights')}
+            </button>
+          )}
         </div>
       </div>
+
+      <ImpactWeightsDrawer
+        open={weightsDrawerOpen}
+        effective={weights}
+        overrides={dto?.weights.overrides ?? null}
+        onClose={() => setWeightsDrawerOpen(false)}
+        onSaved={handleWeightsSaved}
+      />
 
       {loading && (
         <p className="text-sm text-muted-foreground" data-testid="ai-impact-loading">

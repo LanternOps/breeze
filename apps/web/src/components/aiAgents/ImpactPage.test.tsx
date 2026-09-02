@@ -42,6 +42,32 @@ vi.mock('../shared/Toast', () => ({
   },
 }));
 
+const exportReportCalls: Array<{ rows: unknown[]; opts: Record<string, unknown> }> = [];
+vi.mock('../reports/reportExport', () => ({
+  exportReport: (rows: unknown[], opts: Record<string, unknown>) => {
+    exportReportCalls.push({ rows, opts });
+    return Promise.resolve();
+  },
+}));
+
+// The drawer has its own full test suite (ImpactWeightsDrawer.test.tsx) —
+// stub it here to a thin marker so this page's tests exercise only the
+// gating (canEditWeights) and the open/close wiring, not the drawer's own
+// save/reset behavior.
+vi.mock('./ImpactWeightsDrawer', () => ({
+  default: ({ open, onClose, onSaved }: { open: boolean; onClose: () => void; onSaved: () => void }) =>
+    open ? (
+      <div data-testid="ai-impact-weights-drawer-stub">
+        <button type="button" data-testid="stub-drawer-close" onClick={onClose}>
+          close
+        </button>
+        <button type="button" data-testid="stub-drawer-saved" onClick={onSaved}>
+          saved
+        </button>
+      </div>
+    ) : null,
+}));
+
 import ImpactPage from './ImpactPage';
 import { fetchWithAuth } from '../../stores/auth';
 
@@ -141,6 +167,7 @@ beforeEach(() => {
   fetchMock.mockReset();
   chartDataCalls.length = 0;
   toasts.length = 0;
+  exportReportCalls.length = 0;
   mockCurrentOrgId = 'org-1';
   mockAllOrgs = false;
   window.location.hash = '';
@@ -483,5 +510,88 @@ describe('ImpactPage', () => {
     mockImpact(dto());
     fireEvent.click(screen.getByTestId('ai-impact-retry'));
     await waitFor(() => expect(screen.getByTestId('ai-impact-tile-alerts-judged')).toBeInTheDocument());
+  });
+
+  it('shows the edit-weights button only when canEditWeights is true', async () => {
+    mockImpact(dto({ canEditWeights: false }));
+    const view = render(<ImpactPage />);
+    await waitFor(() => expect(screen.getByTestId('ai-impact-tile-alerts-judged')).toBeInTheDocument());
+    expect(screen.queryByTestId('ai-impact-edit-weights')).not.toBeInTheDocument();
+    view.unmount();
+
+    mockImpact(dto({ canEditWeights: true }));
+    render(<ImpactPage />);
+    await waitFor(() => expect(screen.getByTestId('ai-impact-edit-weights')).toBeInTheDocument());
+  });
+
+  it('opens the weights drawer, and a save refetches the DTO', async () => {
+    mockImpact(dto({ canEditWeights: true }));
+    render(<ImpactPage />);
+    await waitFor(() => expect(screen.getByTestId('ai-impact-edit-weights')).toBeInTheDocument());
+
+    expect(screen.queryByTestId('ai-impact-weights-drawer-stub')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('ai-impact-edit-weights'));
+    expect(screen.getByTestId('ai-impact-weights-drawer-stub')).toBeInTheDocument();
+
+    const afterOpen = fetchMock.mock.calls.length;
+    fireEvent.click(screen.getByTestId('stub-drawer-saved'));
+    await waitFor(() => expect(fetchMock.mock.calls.length).toBeGreaterThan(afterOpen));
+    // onSaved also closes the drawer.
+    await waitFor(() =>
+      expect(screen.queryByTestId('ai-impact-weights-drawer-stub')).not.toBeInTheDocument(),
+    );
+  });
+
+  it('closes the weights drawer on close without refetching', async () => {
+    mockImpact(dto({ canEditWeights: true }));
+    render(<ImpactPage />);
+    await waitFor(() => expect(screen.getByTestId('ai-impact-edit-weights')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('ai-impact-edit-weights'));
+    expect(screen.getByTestId('ai-impact-weights-drawer-stub')).toBeInTheDocument();
+
+    const beforeClose = fetchMock.mock.calls.length;
+    fireEvent.click(screen.getByTestId('stub-drawer-close'));
+    expect(screen.queryByTestId('ai-impact-weights-drawer-stub')).not.toBeInTheDocument();
+    expect(fetchMock.mock.calls.length).toBe(beforeClose);
+  });
+
+  it('exports the PDF with reportType ai_agent_impact, UTC timezone, and uniform metric/value rows', async () => {
+    mockImpact(dto());
+    render(<ImpactPage />);
+    await waitFor(() => expect(screen.getByTestId('ai-impact-export-pdf')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('ai-impact-export-pdf'));
+
+    await waitFor(() => expect(exportReportCalls.length).toBe(1));
+    const call = exportReportCalls[0]!;
+    expect(call.opts).toMatchObject({ format: 'pdf', reportType: 'ai_agent_impact', timezone: 'UTC' });
+    expect(call.rows.length).toBeGreaterThan(0);
+    for (const row of call.rows) {
+      expect(Object.keys(row as Record<string, unknown>).sort()).toEqual(['metric', 'value']);
+    }
+  });
+});
+
+describe('buildImpactPdfRows', () => {
+  it('returns one row per counter, plus estimate/spend/window/through/rebuiltAt, plus the six weights', async () => {
+    const { buildImpactPdfRows } = await import('./ImpactPage');
+    const t = (key: string) => key;
+    const rows = buildImpactPdfRows(dto(), t);
+    // 10 counters + estTimeSaved + llmSpend + window + through + rebuiltAt + 6 weights = 21
+    expect(rows).toHaveLength(21);
+    for (const row of rows) {
+      expect(Object.keys(row).sort()).toEqual(['metric', 'value']);
+      expect(typeof row.metric).toBe('string');
+      expect(typeof row.value).toBe('string');
+    }
+  });
+
+  it('renders "never rebuilt" copy when rebuiltAt is null, not a blank/NaN value', async () => {
+    const { buildImpactPdfRows } = await import('./ImpactPage');
+    const t = (key: string) => key;
+    const rows = buildImpactPdfRows(dto({ rebuiltAt: null }), t);
+    const rebuiltRow = rows.find((row) => row.metric === 'aiAgentsPage.impact.pdf.metrics.rebuiltAt');
+    expect(rebuiltRow?.value).toBe('aiAgentsPage.impact.pdf.neverRebuilt');
   });
 });
