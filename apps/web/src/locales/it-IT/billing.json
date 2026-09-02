@@ -557,7 +557,7 @@
       "addSection": {
         "captionPlaceholder": "Didascalia (facoltativa)",
         "headingPlaceholder": "Testo intestazione",
-        "imageHelp": "PNG, JPEG o WebP, fino a 5 MB.",
+        "imageHelp": "PNG o JPEG, fino a 5 MB.",
         "imageUrlPlaceholder": "https://example.com/photo.png",
         "insertHere": "Aggiungi sezione",
         "richTextPlaceholder": "Testo della proposta…",
@@ -675,7 +675,8 @@
         "updateSection": "Impossibile aggiornare la sezione.",
         "uploadImage": "Impossibile caricare l'immagine.",
         "noPriceForCurrency": "Nessun prezzo in {{currency}} per questo elemento. Aggiungine uno nel catalogo o inserisci una riga manuale.",
-        "sectionAddedListStale": "Sezione aggiunta, ma non è stato possibile aggiornare l'elenco. Ricarica la pagina per vederla."
+        "sectionAddedListStale": "Sezione aggiunta, ma non è stato possibile aggiornare l'elenco. Ricarica la pagina per vederla.",
+        "lineAddedListStale": "Riga aggiunta, ma non è stato possibile aggiornare l'elenco. Ricarica la pagina per vederla."
       },
       "image": {
         "alt": "Immagine del preventivo",
@@ -838,7 +839,7 @@
         "preparedForPlaceholder": "Sostituisci il nome del cliente",
         "showPreparedBy": "Mostra “preparata da” (la tua azienda)",
         "imageLabel": "Immagine copertina",
-        "imageHelp": "PNG, JPEG o WebP, fino a 5 MB.",
+        "imageHelp": "PNG o JPEG, fino a 5 MB.",
         "removeImage": "Rimuovi immagine"
       },
       "ghost": {
@@ -1622,6 +1623,8 @@
       "stripeNudge": "Collega Stripe per accettare pagamenti online con carta.",
       "title": "Pagamenti",
       "viaStripe": "tramite Stripe",
+      "quickbooks": "QuickBooks",
+      "viaQuickbooks": "tramite QuickBooks",
       "currencyUnknown": "La valuta di regolamento del tuo account Stripe non è ancora in cache, quindi non è stato possibile confrontarla con questa fattura in {{documentCurrency}}. Aggiorna i dettagli dell'account Stripe in Impostazioni → Integrazioni per abilitare il controllo."
     },
     "requestPayment": {
@@ -1660,6 +1663,21 @@
       "confirm": "Reimposta link",
       "success": "Link reimpostato — i link precedenti non funzionano più",
       "error": "Impossibile reimpostare il link"
+    },
+    "accountingSync": {
+      "title": "Sincronizzazione QuickBooks",
+      "status": {
+        "pending": "Non ancora inviata",
+        "synced": "Sincronizzata",
+        "error": "Sincronizzazione non riuscita",
+        "synced_with_tax_variance": "Sincronizzata con differenza d'imposta"
+      },
+      "taxVarianceHint": "QuickBooks ha calcolato un totale imposte diverso. Confronta entrambi i record prima di chiudere il periodo.",
+      "docNumber": "Documento QuickBooks {{docNumber}}",
+      "lastSynced": "Ultima sincronizzazione: {{when}}",
+      "push": "Invia a QuickBooks",
+      "pushed": "Fattura inviata a QuickBooks.",
+      "pushFailed": "Impossibile inviare la fattura a QuickBooks."
     }
   },
   "invoiceDocument": {
@@ -1719,7 +1737,12 @@
       "partial": "{{succeeded}} {{verb}}, {{skipped}} ignorate{{failedText}}",
       "success": "{{succeeded}} {{verb}}",
       "void": "Storna",
-      "voidedVerb": "stornate"
+      "voidedVerb": "stornate",
+      "quickbooks": "Invia a QuickBooks",
+      "quickbooksQueued": "{{enqueued}} in coda per QuickBooks",
+      "quickbooksQueuedPartial": "{{enqueued}} in coda per QuickBooks, {{skipped}} ignorate",
+      "quickbooksQueuedFailed": "{{enqueued}} in coda per QuickBooks, {{skipped}} ignorate, {{failed}} non accodate",
+      "quickbooksFailed": "Impossibile accodare l'invio a QuickBooks. Riprova."
     },
     "bulkDelete": {
       "message": "Eliminare {{count}} fatture selezionate? Verranno eliminate solo le fatture in stato DRAFT; l'operazione non può essere annullata.",

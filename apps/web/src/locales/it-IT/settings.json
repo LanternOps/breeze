@@ -1703,6 +1703,116 @@
           "resolutionNote": "Bozza della nota di risoluzione"
         }
       }
+    },
+    "impact": {
+      "title": "Impatto IA",
+      "description": "Ciò che i vostri agenti IA hanno gestito nelle organizzazioni visibili e il tempo di lavoro che si stima valga.",
+      "windowLabel": "Periodo del report",
+      "windows": {
+        "d7": "Ultimi 7 giorni",
+        "d30": "Ultimi 30 giorni",
+        "d90": "Ultimi 90 giorni"
+      },
+      "loading": "Caricamento del report di impatto…",
+      "refresh": "Aggiorna",
+      "refreshing": "Ricostruzione in corso…",
+      "retry": "Riprova",
+      "errors": {
+        "load": "Impossibile caricare il report di impatto.",
+        "rebuild": "Impossibile accodare la ricostruzione del report.",
+        "tooManyOrgs": "Questa ricostruzione riguarda più di {{limit}} organizzazioni. Scegliete una sola organizzazione nel selettore delle organizzazioni e riprovate.",
+        "orgIdRequired": "Scegliete una sola organizzazione nel selettore delle organizzazioni prima di ricostruire il report di impatto.",
+        "exportPdf": "Non è stato possibile generare l'esportazione PDF."
+      },
+      "toasts": {
+        "rebuildQueued": "Ricostruzione del report accodata.",
+        "rebuildComplete": "Il report di impatto è stato ricostruito.",
+        "rebuildStillRunning": "La ricostruzione è ancora in corso. Ricaricate questa pagina tra qualche minuto per vedere i nuovi dati."
+      },
+      "tiles": {
+        "alertsJudged": "Avvisi valutati",
+        "noiseFlagged": "Contrassegnati come rumore",
+        "ticketsTriaged": "Ticket smistati",
+        "draftsSent": "Bozze inviate",
+        "fixesExecuted": "Correzioni eseguite",
+        "estTimeSaved": "Tempo risparmiato stimato",
+        "estTimeSavedValue": "{{hours}} ore",
+        "llmSpend": "Spesa LLM"
+      },
+      "weightsTooltipTitle": "Solo una stima — a ogni risultato viene accreditato un tempo fisso:",
+      "weightsTooltipLine": "{{label}}: {{minutes}} min accreditati per risultato",
+      "weightLabels": {
+        "alertJudged": "Avviso valutato",
+        "noiseFlagged": "Contrassegnato come rumore",
+        "ticketTriaged": "Ticket smistato",
+        "draftSent": "Bozza inviata",
+        "fixExecuted": "Correzione eseguita",
+        "narrativeDelivered": "Report settimanale consegnato"
+      },
+      "chart": {
+        "title": "Risultati per giorno",
+        "empty": "Nessun risultato registrato in questo periodo.",
+        "noiseFlagged": "Contrassegnati come rumore",
+        "alertsJudgedNet": "Avvisi valutati, rumore escluso",
+        "ticketsTriaged": "Ticket smistati",
+        "fixesExecuted": "Correzioni eseguite"
+      },
+      "byOrg": {
+        "title": "Per organizzazione",
+        "truncated": "Sono mostrate le {{limit}} organizzazioni con il maggior tempo risparmiato stimato.",
+        "columns": {
+          "organization": "Organizzazione",
+          "alertsJudged": "Avvisi valutati",
+          "ticketsTriaged": "Ticket smistati",
+          "fixesExecuted": "Correzioni eseguite",
+          "estTimeSaved": "Tempo risparmiato stimato",
+          "llmSpend": "Spesa LLM"
+        }
+      },
+      "freshness": "Dati fino al {{through}} (UTC) · ricostruito {{rebuiltAt}}",
+      "freshnessNeverRebuilt": "Dati fino al {{through}} (UTC) · mai ricostruito",
+      "positiveFeedbackRate": "Percentuale di riscontri positivi",
+      "positiveFeedbackDetail": "{{up}} utili, {{down}} non utili",
+      "editWeights": "Modifica pesi",
+      "exportPdf": "Esporta PDF",
+      "weightsDrawer": {
+        "title": "Modifica i pesi del tempo risparmiato",
+        "description": "Imposta quanti secondi di tempo umano vengono accreditati a ciascun risultato. Questi pesi modificano solo la stima — mai ciò che fanno i tuoi agenti IA.",
+        "save": "Salva",
+        "saving": "Salvataggio…",
+        "reset": "Ripristina predefiniti",
+        "resetting": "Ripristino…",
+        "customized": "Personalizzato",
+        "errors": {
+          "save": "Non è stato possibile salvare i pesi.",
+          "reset": "Non è stato possibile ripristinare i pesi."
+        },
+        "toasts": {
+          "saved": "Pesi salvati.",
+          "reset": "Pesi ripristinati ai valori predefiniti."
+        }
+      },
+      "pdf": {
+        "metrics": {
+          "alertsJudged": "Avvisi valutati",
+          "noiseFlagged": "Contrassegnati come rumore",
+          "suppressionsApplied": "Soppressioni applicate",
+          "ticketsTriaged": "Ticket smistati",
+          "draftsSent": "Bozze inviate",
+          "fixesProposed": "Correzioni proposte",
+          "fixesExecuted": "Correzioni eseguite",
+          "fixWatchesHeld": "Monitoraggi di correzione mantenuti",
+          "fixWatchesRecurred": "Monitoraggi di correzione ricorrenti",
+          "narrativesDelivered": "Report settimanali consegnati",
+          "estTimeSaved": "Tempo risparmiato stimato",
+          "llmSpend": "Spesa LLM",
+          "window": "Finestra del report (giorni)",
+          "through": "Dati fino al (UTC)",
+          "rebuiltAt": "Ultima ricostruzione"
+        },
+        "weightRowLabel": "{{label}} (secondi accreditati)",
+        "neverRebuilt": "Mai ricostruito"
+      }
     }
   },
   "apiKeyForm": {
@@ -2123,7 +2233,12 @@
     "phoneVerifiedLast4": "(telefono verificato: ...{{last4}})",
     "recoveryCodes": "Codici di recupero",
     "useTheseCodesToAccessYourAccountIfYouLoseYourAuthenticat": "Usa questi codici per accedere al tuo account se perdi l'accesso all'app authenticator.",
-    "viewCodes": "Visualizza codici",
+    "recoveryCodesAreShownOnceAndCannotBeDisplayedAgain": "I codici di recupero vengono mostrati una sola volta e non possono essere visualizzati di nuovo.",
+    "regenerateRecoveryCodes": "Rigenera i codici di recupero",
+    "existingCodesCannotBeDisplayedAgainRegeneratingIssuesA": "I codici esistenti non possono essere visualizzati di nuovo. La rigenerazione emette una nuova serie e invalida immediatamente quella precedente.",
+    "regenerateRecoveryCodesQuestion": "Rigenerare i codici di recupero?",
+    "regeneratingImmediatelyInvalidatesEveryRecoveryCodeYou": "La rigenerazione invalida immediatamente tutti i codici di recupero che hai salvato, comprese le copie stampate. I nuovi codici vengono mostrati una sola volta, subito dopo la generazione.",
+    "thatCodeWasNotAcceptedYourQRCodeIsStillValidWaitForThe": "Il codice non è stato accettato. Il tuo codice QR è ancora valido: attendi il codice successivo dell’app authenticator e riprova.",
     "confirmYourPassword": "Conferma la password",
     "reEnterYourAccountPasswordToStartSettingUpAnAuthenticato": "Reinserisci la password dell'account per iniziare a configurare un'app authenticator.",
     "setUpAuthenticator": "Configura authenticator",
@@ -2135,7 +2250,8 @@
     "reEnterYourAccountPasswordToConfirmThisChange": "Reinserisci la password dell'account per confermare questa modifica.",
     "saveTheseCodesInASafePlaceYouCanUseThemToAccessYourAccou": "Salva questi codici in un luogo sicuro. Puoi usarli per accedere al tuo account se perdi il dispositivo authenticator.",
     "copyCodes": "Copia codici",
-    "clickTheButtonBelowToViewOrGenerateNewRecoveryCodes": "Fai clic sul pulsante qui sotto per visualizzare o generare nuovi codici di recupero.",
+    "copiedCodes": "Copiato",
+    "copyCodesFailed": "Impossibile copiare negli appunti. Seleziona i codici qui sopra e copiali manualmente.",
     "eachCodeCanOnlyBeUsedOnceGeneratingNewCodesWillInvalidat": "Ogni codice può essere usato una sola volta. Generare nuovi codici invaliderà quelli creati in precedenza.",
     "back": "Indietro",
     "smsSentToPhone": "Codici SMS inviati al telefono che termina con {{last4}}.",
@@ -2159,7 +2275,6 @@
     "disabling": "Disabilitazione...",
     "generating": "Generazione...",
     "regenerateCodes": "Rigenera codici",
-    "showRecoveryCodes": "Mostra codici di recupero",
     "verifyYourIdentity": "Verifica la tua identità",
     "thisAccountSignsInThroughAnIdentityProviderAndHasNoPassw": "Questo account accede tramite un provider di identità e non ha una password. Verificati nuovamente presso il tuo provider per iniziare a configurare un'app di autenticazione.",
     "verifyWithYourIdentityProvider": "Verifica con il tuo provider di identità",

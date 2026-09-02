@@ -1,6 +1,7 @@
 /**
- * Guard: in the targeted set, every *mutating* fetchWithAuth call site must be
- * lexically wrapped by `runAction(...)` OR carry an explicit, reasoned
+ * Guard: in the targeted set, every *mutating* fetchWithAuth call site — direct
+ * or reached through an imported `src/lib/api/*` wrapper — must be lexically
+ * wrapped by `runAction(...)` OR carry an explicit, reasoned
  * `// runaction-exempt:` marker (for the legitimate aggregate / inline-feedback
  * handlers). Whole-file allowlist entries (typed service layers, transport
  * stores) are still skipped via RUN_ACTION_ALLOWLIST.
@@ -11,11 +12,13 @@
  * runAction usage passed unconditionally, and `{ method: opts.method }` /
  * `{ method }` / parenthesised URL args were never matched at all. It had no
  * teeth for the realistic regression. This one is call-local and conservative:
- * a non-literal `method` is treated as potentially-mutating.
+ * a non-literal `method` is treated as potentially-mutating. Imported API
+ * wrappers are resolved through TypeScript symbols, including aliases and
+ * re-exports, instead of relying on a hand-maintained wrapper-name list.
  */
 import { describe, it, expect } from 'vitest';
 import { readFileSync, statSync } from 'node:fs';
-import { resolve, dirname } from 'node:path';
+import { resolve, dirname, sep, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 import { RUN_ACTION_ALLOWLIST, RUN_ACTION_MIGRATION_BACKLOG } from '../runActionAllowlist';
@@ -24,6 +27,8 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const SRC_ROOT = resolve(__dirname, '../..'); // apps/web/src
 const WEB_ROOT = SRC_ROOT;
 const REPO_ROOT = resolve(WEB_ROOT, '../../..');
+const API_ROOT = resolve(SRC_ROOT, 'lib/api');
+const FIXTURE_ROOT = resolve(__dirname, 'fixtures/no-silent-mutations/src');
 
 // WS-A "targeted set": files that have ADOPTED runAction and must not regress
 // to silent mutations. Grows as more handlers migrate (see the backlog).
@@ -67,6 +72,15 @@ const TARGET_GLOBS = [
   // cron, unattended. A silent create/update/delete here is invisible until the
   // next occurrence fires — or fails to.
   'src/components/settings/AiAgentSchedulesSection.tsx',
+  // P2-6 (#4193): Refresh enqueues a fleet-wide 90-day rebuild and the weights
+  // drawer re-prices every estimate the MSP shows its customers — a silent
+  // failure here is invisible until someone quotes a wrong number.
+  'src/components/aiAgents/ImpactPage.tsx',
+  // P2-6 Task 11 (#4193): the weights drawer's own PUT/DELETE against
+  // /impact/weights are a separate file from ImpactPage.tsx above — this
+  // guard's TARGET_GLOBS is a literal file list, not directory-wide, so the
+  // drawer needs its own entry or its mutations are invisible to it.
+  'src/components/aiAgents/ImpactWeightsDrawer.tsx',
   'src/components/devices/DeviceInfoTab.tsx',
   'src/components/devices/DevicePatchStatusTab.tsx',
   'src/components/dnsSecurity/DnsSecurityIntegrationsTab.tsx',
@@ -102,6 +116,11 @@ const TARGET_GLOBS = [
   'src/components/billing/InvoicesPage.tsx',
   'src/components/billing/InvoiceEditor.tsx',
   'src/components/billing/InvoiceDetail.tsx',
+  // Invoice → QuickBooks push (Phase C): the button's whole job is to reach an
+  // external system of record. A silent failure here reads as "pushed" while
+  // the books stay short an invoice, so this file is in the guarded set from
+  // its first commit rather than after the first regression.
+  'src/components/billing/AccountingSyncCard.tsx',
   'src/components/billing/PartnerBillingSettings.tsx',
   'src/components/billing/OrgBillingSettings.tsx',
   'src/components/contracts/ContractEditor.tsx',
@@ -199,6 +218,12 @@ const TARGET_GLOBS = [
   // so a slow response invited a duplicate-creating double click. The mount at
   // /reports/builder passed no onSubmit, the only success path.
   'src/components/reports/ReportBuilder.tsx',
+  // QuickBooks connection panel (Phase D): connect/disconnect/push-mode/settings
+  // -refresh already routed through runAction, but the file was never guarded —
+  // so the pull-payments PATCH and the "Sync now" enqueue would have shipped
+  // unguarded next to them. A silent failure on either reads as "payment sync
+  // is on / a sync is running" while the books and Breeze quietly diverge.
+  'src/components/integrations/QuickbooksIntegration.tsx',
 ];
 
 const absoluteFiles: string[] = TARGET_GLOBS.map((rel) => resolve(WEB_ROOT, '..', rel));
@@ -208,6 +233,11 @@ const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
 type Violation = { line: number; snippet: string };
+type TypeAwareContext = {
+  sourceFile: ts.SourceFile;
+  checker: ts.TypeChecker;
+  apiRoot: string;
+};
 
 function calleeName(expr: ts.Expression): string | null {
   if (ts.isIdentifier(expr)) return expr.text;
@@ -268,6 +298,52 @@ function isWrappedByRunAction(node: ts.Node): boolean {
   return false;
 }
 
+function resolvedSymbolAt(node: ts.Node, checker: ts.TypeChecker): ts.Symbol | undefined {
+  let symbol = checker.getSymbolAtLocation(node);
+  const seen = new Set<ts.Symbol>();
+  while (symbol && symbol.flags & ts.SymbolFlags.Alias && !seen.has(symbol)) {
+    seen.add(symbol);
+    const target = checker.getAliasedSymbol(symbol);
+    if (target === symbol) break;
+    symbol = target;
+  }
+  return symbol;
+}
+
+function isInside(root: string, file: string): boolean {
+  const normalizedRoot = resolve(root);
+  const normalizedFile = resolve(file);
+  return normalizedFile === normalizedRoot || normalizedFile.startsWith(`${normalizedRoot}${sep}`);
+}
+
+/** Whether an imported lib/api export's implementation issues a mutation. */
+function isMutatingApiWrapper(call: ts.CallExpression, context: TypeAwareContext): boolean {
+  const symbol = resolvedSymbolAt(call.expression, context.checker);
+  if (!symbol) return false;
+
+  return (symbol.declarations ?? []).some((declaration) => {
+    if (!isInside(context.apiRoot, declaration.getSourceFile().fileName)) return false;
+
+    let mutates = false;
+    const visit = (node: ts.Node): void => {
+      if (mutates) return;
+      if (
+        ts.isCallExpression(node) &&
+        calleeName(node.expression) === 'fetchWithAuth' &&
+        isMutatingCall(node) &&
+        !isWrappedByRunAction(node) &&
+        !isExempt(declaration.getSourceFile().text, node)
+      ) {
+        mutates = true;
+        return;
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(declaration);
+    return mutates;
+  });
+}
+
 function enclosingStatementStart(node: ts.Node): number {
   let cur: ts.Node = node;
   while (
@@ -292,13 +368,25 @@ function isExempt(src: string, node: ts.Node): boolean {
   return /runaction-exempt/i.test(window);
 }
 
-function findViolations(src: string, label = 'sample.tsx'): Violation[] {
-  const sf = ts.createSourceFile(label, src, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+function findViolations(
+  src: string,
+  label = 'sample.tsx',
+  context?: TypeAwareContext,
+): Violation[] {
+  const sf = context?.sourceFile ??
+    ts.createSourceFile(label, src, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
   const violations: Violation[] = [];
 
   const visit = (node: ts.Node): void => {
-    if (ts.isCallExpression(node) && calleeName(node.expression) === 'fetchWithAuth') {
-      if (isMutatingCall(node) && !isWrappedByRunAction(node) && !isExempt(src, node)) {
+    if (ts.isCallExpression(node)) {
+      const directMutation =
+        calleeName(node.expression) === 'fetchWithAuth' && isMutatingCall(node);
+      const wrapperMutation = Boolean(context && isMutatingApiWrapper(node, context));
+      if (
+        (directMutation || wrapperMutation) &&
+        !isWrappedByRunAction(node) &&
+        !isExempt(src, node)
+      ) {
         const { line } = sf.getLineAndCharacterOfPosition(node.getStart());
         violations.push({
           line: line + 1,
@@ -371,6 +459,29 @@ describe('guard self-checks (AST analyzer)', () => {
     expect(entry).toBeDefined();
     expect(allowAbsolute.has(resolve(REPO_ROOT, entry.file))).toBe(true);
   });
+
+  it('flags an imported typed mutation wrapper through aliases and API re-exports', () => {
+    const componentPath = resolve(FIXTURE_ROOT, 'components/QuoteActions.tsx');
+    const apiRoot = resolve(FIXTURE_ROOT, 'lib/api');
+    const program = ts.createProgram({
+      rootNames: [componentPath],
+      options: {
+        module: ts.ModuleKind.ESNext,
+        moduleResolution: ts.ModuleResolutionKind.Bundler,
+        target: ts.ScriptTarget.ES2022,
+        jsx: ts.JsxEmit.ReactJSX,
+      },
+    });
+    const sourceFile = program.getSourceFile(componentPath);
+    expect(sourceFile).toBeDefined();
+    expect(
+      findViolations(sourceFile!.text, componentPath, {
+        sourceFile: sourceFile!,
+        checker: program.getTypeChecker(),
+        apiRoot,
+      }),
+    ).toHaveLength(1);
+  });
 });
 
 // ─── Backlog integrity check ─────────────────────────────────────────────────
@@ -389,14 +500,34 @@ describe('migration backlog integrity', () => {
 
 // ─── Main guard ─────────────────────────────────────────────────────────────
 describe('no silent mutations in targeted set', () => {
+  const configPath = resolve(WEB_ROOT, '..', 'tsconfig.json');
+  const config = ts.readConfigFile(configPath, ts.sys.readFile);
+  if (config.error) {
+    throw new Error(ts.flattenDiagnosticMessageText(config.error.messageText, '\n'));
+  }
+  const parsedConfig = ts.parseJsonConfigFileContent(config.config, ts.sys, dirname(configPath));
+  // .astro files aren't a script kind the TS compiler recognizes, so it never
+  // includes them in the program — only feed it files TS can natively parse
+  // (.ts/.tsx). Anything else (e.g. .astro) falls back to the legacy
+  // no-program, no-wrapper-resolution scan below.
+  const TS_NATIVE_EXTENSIONS = new Set(['.ts', '.tsx']);
+  const programFiles = absoluteFiles.filter((f) => TS_NATIVE_EXTENSIONS.has(extname(f)));
+  const program = ts.createProgram({ rootNames: programFiles, options: parsedConfig.options });
+  const checker = program.getTypeChecker();
+
   it('finds files to scan', () => {
-    // 104: 99 since #3989 added OrganizationsPage.tsx, plus MergeOrgModal.tsx
+    // 106: 99 since #3989 added OrganizationsPage.tsx, plus MergeOrgModal.tsx
     // (org-lifecycle Wave 3), plus ArchiveOrgModal.tsx (org-lifecycle Wave 5),
     // plus SsoProvidersPage.tsx and ReportBuilder.tsx (2026-08-28 pre-release sweep),
     // plus AlertVerdictBadge.tsx (P2-1 Task 15), plus
     // AiAgentSchedulesSection.tsx (P2-2 Task 13, #4189), plus
-    // QuickbooksMappingWorkbench.tsx (QuickBooks entity mapping, Task 6).
-    expect(absoluteFiles.length).toBe(104);
+    // QuickbooksMappingWorkbench.tsx (QuickBooks entity mapping, Task 6), plus
+    // ImpactPage.tsx (P2-6 Task 10, #4193), plus ImpactWeightsDrawer.tsx
+    // (P2-6 Task 11, #4193), plus AccountingSyncCard.tsx (QuickBooks invoice
+    // push, Phase C Task 7), plus QuickbooksIntegration.tsx (QuickBooks payment
+    // pull-back, Phase D Task 7 — the pull-payments PATCH and the "Sync now"
+    // enqueue joined four pre-existing unguarded mutations in that file).
+    expect(absoluteFiles.length).toBe(108);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }
@@ -407,8 +538,13 @@ describe('no silent mutations in targeted set', () => {
     if (allowAbsolute.has(absPath)) continue; // whole-file allowlisted — skip
 
     it(`${webRelLabel}: every mutating fetchWithAuth is wrapped by runAction or explicitly exempt`, () => {
-      const src = readFileSync(absPath, 'utf8');
-      const violations = findViolations(src, webRelLabel);
+      const sourceFile = program.getSourceFile(absPath);
+      // Files the TS compiler doesn't natively parse (e.g. .astro) are never
+      // in the program — fall back to the legacy standalone-parse scan
+      // (direct fetchWithAuth calls only, no lib/api wrapper resolution).
+      const violations = sourceFile
+        ? findViolations(sourceFile.text, webRelLabel, { sourceFile, checker, apiRoot: API_ROOT })
+        : findViolations(readFileSync(absPath, 'utf8'), webRelLabel);
       expect(
         violations,
         violations.length

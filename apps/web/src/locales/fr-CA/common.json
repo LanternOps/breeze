@@ -45,6 +45,7 @@
     "aiUsageBudget": "Utilisation et budget de l’IA",
     "aiAgents": "Agents IA",
     "aiAgentRuns": "Exécutions des agents IA",
+    "aiImpact": "Impact de l’IA",
     "customFields": "Champs personnalisés",
     "savedFilters": "Filtres enregistrés",
     "users": "Utilisateurs",
@@ -2412,6 +2413,11 @@
     "link": "Nouveautés"
   },
   "money": {
-    "approximateTotal": "≈ {{amount}} approximatif · taux au {{rateDate}}"
+    "approximateTotal": "≈ {{amount}} approximatif · taux au {{rateDate}}",
+    "approximateFailed": "≈ total non disponible — impossible de charger les taux de change",
+    "approximateUnavailableMissing": "≈ total non disponible — aucun taux de change vers {{target}} pour {{codes}}",
+    "approximateUnavailableStale": "≈ total non disponible — le taux de change vers {{target}} pour {{codes}} est trop ancien",
+    "approximateUnavailableMixed": "≈ total non disponible — impossible de convertir {{codes}} en {{target}}",
+    "approximateUnavailableCodesOverflow": "{{codes}} et {{more}} de plus"
   }
 }

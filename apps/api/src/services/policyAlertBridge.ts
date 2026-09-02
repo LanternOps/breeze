@@ -211,9 +211,11 @@ export async function handlePolicyViolation(orgId: string, payload: PolicyEventP
       eq(automationPolicyCompliance.policyId, payload.policyId),
       eq(automationPolicyCompliance.deviceId, payload.deviceId),
     ))
-    // Duplicate (policy, device) compliance rows exist in the wild — without
-    // an explicit order, an arbitrary stale 'compliant' row can suppress a
-    // real violation. Most-recently-updated row wins.
+    // Duplicate (policy, device) rows are no longer reachable: #4122 deduped
+    // the table and added the partial unique index `apc_policy_device_uq`, and
+    // the evaluation writes are now ON CONFLICT upserts. The ordering stays as
+    // defence-in-depth — it costs nothing on a single row, and it keeps this
+    // read deterministic rather than depending on the index for correctness.
     .orderBy(desc(automationPolicyCompliance.updatedAt))
     .limit(1);
   if (compliance && compliance.status !== 'non_compliant') {

@@ -27,6 +27,7 @@ import { Counter, Gauge, Histogram, type Registry } from 'prom-client';
  */
 export const RETENTION_JOB_NAMES = [
   'agent_log_retention',
+  'ai_agent_op_evidence_retention',
   'ai_unattended_exposure_retention',
   'audit_retention',
   'change_log_retention',

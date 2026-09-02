@@ -76,6 +76,16 @@ if [[ "${1:-}" == "--check-apk" ]]; then
   exit 0
 fi
 
+# Unlike --check-apk (which only exercises the "no unaudited apk invocation"
+# half via reject_unaudited_apk), this exercises the full credential-boundary
+# rule including the "the audited upgrade line is actually present" half
+# (require_grep inside require_audited_openssl_upgrade) — see issue #4271.
+if [[ "${1:-}" == "--require-openssl-upgrade" ]]; then
+  [[ -n "${2:-}" && -f "${2:-}" && -r "${2:-}" ]] || fail "--require-openssl-upgrade needs a readable Dockerfile"
+  require_audited_openssl_upgrade "$2"
+  exit 0
+fi
+
 extract_yaml_job() {
   local job="$1"
   local workflow="$2"
@@ -353,6 +363,30 @@ require_order 'id: push-executor-digest' 'name: Scan exact executor digest' "$ac
 require_order 'name: Scan exact executor digest' 'name: Promote scanned executor digest' "$actions_release_block" \
   "actions-executor release promotion must occur only after its exact digest passes scanning"
 
+# The ACTIONS executor's Dockerfile gets the same shape block as its read
+# sibling. It holds Microsoft Graph *mutation* credentials — the highest
+# blast radius of the three executors — so it must be at least as
+# constrained as the ones with lower privilege, not less (#4272, dup #4264).
+ACTIONS_EXECUTOR_DOCKERFILE=apps/m365-graph-actions-executor/Dockerfile
+[[ -f "$ACTIONS_EXECUTOR_DOCKERFILE" ]] || fail "$ACTIONS_EXECUTOR_DOCKERFILE must package the isolated Graph-actions executor"
+require_grep '^FROM[[:space:]]+node:24-alpine@sha256:[0-9a-f]{64}[[:space:]]+AS[[:space:]]+build' "$ACTIONS_EXECUTOR_DOCKERFILE" \
+  "actions-executor build stage must digest-pin Node while retaining the tag"
+require_grep '^FROM[[:space:]]+node:24-alpine@sha256:[0-9a-f]{64}[[:space:]]+AS[[:space:]]+runner' "$ACTIONS_EXECUTOR_DOCKERFILE" \
+  "actions-executor runtime stage must digest-pin Node while retaining the tag"
+require_grep '^USER[[:space:]]+node$' "$ACTIONS_EXECUTOR_DOCKERFILE" \
+  "actions-executor runtime must run as the non-root node user"
+require_grep '^HEALTHCHECK .*\/healthz' "$ACTIONS_EXECUTOR_DOCKERFILE" \
+  "actions-executor image must declare its bounded health endpoint"
+require_grep '^CMD[[:space:]]+\["node",[[:space:]]*"dist/index\.cjs"\]' "$ACTIONS_EXECUTOR_DOCKERFILE" \
+  "actions-executor image must start only its compiled bounded runtime"
+require_audited_openssl_upgrade "$ACTIONS_EXECUTOR_DOCKERFILE"
+reject_grep '^(COPY|ADD)[[:space:]].*(\.env|\.pem|\.key|secret)' "$ACTIONS_EXECUTOR_DOCKERFILE" \
+  "actions-executor image must not copy env, certificate, key, or secret files"
+reject_grep '^COPY[[:space:]]+\.[[:space:]]+\.' "$ACTIONS_EXECUTOR_DOCKERFILE" \
+  "actions-executor image must use an explicit deterministic build context allowlist"
+require_grep 'directory: "/apps/m365-graph-actions-executor"' .github/dependabot.yml \
+  "Dependabot must maintain the actions-executor Dockerfile's digest-pinned base image"
+
 # The COMMUNICATIONS executor's release image gets the same digest-first shape.
 comms_release_block="$GUARD_TMP_DIR/communications-executor-release.yml"
 extract_yaml_job build-docker-m365-communications-executor .github/workflows/release.yml "$comms_release_block"
@@ -388,8 +422,7 @@ require_grep 'directory: "/apps/m365-communications-executor"' .github/dependabo
   "Dependabot must maintain the communications-executor Dockerfile's digest-pinned base image"
 
 # The communications executor's Dockerfile gets the same shape block as the
-# read executor's. (The actions executor never got one — an acknowledged
-# inconsistency; the comms clone starts consistent.)
+# read and actions executors' (see ACTIONS_EXECUTOR_DOCKERFILE above).
 COMMS_EXECUTOR_DOCKERFILE=apps/m365-communications-executor/Dockerfile
 [[ -f "$COMMS_EXECUTOR_DOCKERFILE" ]] || fail "$COMMS_EXECUTOR_DOCKERFILE must package the isolated communications executor"
 require_grep '^FROM[[:space:]]+node:24-alpine@sha256:[0-9a-f]{64}[[:space:]]+AS[[:space:]]+build' "$COMMS_EXECUTOR_DOCKERFILE" \
@@ -678,6 +711,28 @@ require_grep 'metrics_scrape_token:' docker-compose.monitoring.yml \
   "monitoring compose must define the metrics scrape token secret"
 require_grep 'environment: METRICS_SCRAPE_TOKEN' docker-compose.monitoring.yml \
   "monitoring compose must source metrics scrape token from the environment"
+
+# docker-compose.monitoring.yml must compose cleanly on top of BOTH base
+# stacks: the self-host root docker-compose.yml (which runs a local `postgres`
+# service) and deploy/docker-compose.prod.yml (which has no local Postgres —
+# managed database only). A `depends_on` on a service name that exists in only
+# one of the two makes the combined project invalid for the other (#4362).
+# Behavioral proof, requires Docker — advisory when unavailable, matching
+# check-relay-edge-hardening.sh's coturn probe.
+if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+  monitoring_err="$(mktemp)"
+  if ! docker compose --env-file .env.example -f docker-compose.yml -f docker-compose.monitoring.yml config >/dev/null 2>"$monitoring_err"; then
+    cat "$monitoring_err" >&2
+    rm -f "$monitoring_err"
+    fail "docker-compose.monitoring.yml does not compose cleanly with the root docker-compose.yml (dev)"
+  fi
+  if ! docker compose --env-file deploy/compose-config-test.env -f deploy/docker-compose.prod.yml -f docker-compose.monitoring.yml config >/dev/null 2>"$monitoring_err"; then
+    cat "$monitoring_err" >&2
+    rm -f "$monitoring_err"
+    fail "docker-compose.monitoring.yml does not compose cleanly with deploy/docker-compose.prod.yml (#4362)"
+  fi
+  rm -f "$monitoring_err"
+fi
 
 require_grep 'envFlag..ENABLE_REGISTRATION., false' apps/api/src/routes/system.ts \
   "system config status must default registration to disabled"

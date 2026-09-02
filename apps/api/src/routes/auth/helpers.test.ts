@@ -44,12 +44,19 @@ function makeContext(headers: Record<string, string | undefined>, remoteAddress?
   } as RequestLike;
 }
 
-function makeCsrfContext(headers: Record<string, string>): Context {
+function makeCsrfContext(
+  headers: Record<string, string>,
+  opts: { url?: string } = {},
+): Context {
   const normalized = Object.fromEntries(
     Object.entries(headers).map(([name, value]) => [name.toLowerCase(), value]),
   );
   return {
-    req: { header: (name: string) => normalized[name.toLowerCase()] },
+    req: {
+      header: (name: string) => normalized[name.toLowerCase()],
+      // Default to an internal hop URL so nothing matches a browser origin by accident.
+      url: opts.url ?? 'http://api:3001/api/v1/auth/refresh',
+    },
   } as unknown as Context;
 }
 
@@ -88,7 +95,7 @@ describe('terminal strict cookie CSRF boundary', () => {
   it.each([
     [{ cookie: 'breeze_csrf_token=csrf', 'x-breeze-csrf': 'different', origin: 'https://breeze.example.com', 'sec-fetch-site': 'same-origin' }, 'Invalid CSRF token'],
     [{ cookie: 'breeze_csrf_token=csrf', 'x-breeze-csrf': 'csrf', 'sec-fetch-site': 'same-origin' }, 'Missing request origin'],
-    [{ cookie: 'breeze_csrf_token=csrf', 'x-breeze-csrf': 'csrf', origin: 'https://evil.example', 'sec-fetch-site': 'same-origin' }, 'Invalid request origin'],
+    [{ cookie: 'breeze_csrf_token=csrf', 'x-breeze-csrf': 'csrf', origin: 'https://evil.example', 'sec-fetch-site': 'same-site' }, 'Invalid request origin'],
     [{ cookie: 'breeze_csrf_token=csrf', 'x-breeze-csrf': 'csrf', origin: 'https://breeze.example.com', 'sec-fetch-site': 'cross-site' }, 'Cross-site request blocked'],
   ])('rejects malformed strict terminal request %#', (headers, expected) => {
     expect(validateStrictCookieCsrfRequest(makeCsrfContext(headers))).toBe(expected);
@@ -102,6 +109,46 @@ describe('terminal strict cookie CSRF boundary', () => {
       'sec-fetch-site': 'same-site',
     });
     expect(validateStrictCookieCsrfRequest(c)).toBeNull();
+  });
+
+  // Self-hosters reach the bundled Caddy through an SSH tunnel / LAN name that
+  // is not the configured origin (quickstart: https://localhost:8443 while
+  // CORS_ALLOWED_ORIGINS=https://localhost). Every such request is same-origin —
+  // browser and API share one origin behind Caddy — so it must not be treated
+  // as CSRF. Proof is either the browser's own Sec-Fetch-Site: same-origin or
+  // Origin equalling the request's effective scheme + Host.
+  describe('same-origin requests outside CORS_ALLOWED_ORIGINS', () => {
+    const tokens = { cookie: 'breeze_csrf_token=csrf', 'x-breeze-csrf': 'csrf' };
+
+    it('accepts the tunnel origin when the browser asserts Sec-Fetch-Site: same-origin (strict + non-strict)', () => {
+      const c = makeCsrfContext({ ...tokens, origin: 'https://localhost:8443', 'sec-fetch-site': 'same-origin' });
+      expect(validateStrictCookieCsrfRequest(c)).toBeNull();
+      expect(validateCookieCsrfRequest(c)).toBeNull();
+    });
+
+    it('accepts the tunnel origin when it equals the request scheme + Host and no fetch metadata is present', () => {
+      const c = makeCsrfContext(
+        { ...tokens, origin: 'https://localhost:8443', host: 'localhost:8443' },
+        { url: 'https://localhost:8443/api/v1/auth/refresh' },
+      );
+      expect(validateStrictCookieCsrfRequest(c)).toBeNull();
+      expect(validateCookieCsrfRequest(c)).toBeNull();
+    });
+
+    it('still rejects a foreign origin that matches neither the allowlist nor the request host', () => {
+      const c = makeCsrfContext(
+        { ...tokens, origin: 'https://evil.example', 'sec-fetch-site': 'same-site', host: 'localhost:8443' },
+        { url: 'https://localhost:8443/api/v1/auth/refresh' },
+      );
+      expect(validateStrictCookieCsrfRequest(c)).toBe('Invalid request origin');
+      expect(validateCookieCsrfRequest(c)).toBe('Invalid request origin');
+    });
+
+    it('rejects Origin: null even with Sec-Fetch-Site: same-origin', () => {
+      const c = makeCsrfContext({ ...tokens, origin: 'null', 'sec-fetch-site': 'same-origin', host: 'localhost:8443' });
+      expect(validateStrictCookieCsrfRequest(c)).toBe('Invalid request origin');
+      expect(validateCookieCsrfRequest(c)).toBe('Invalid request origin');
+    });
   });
 });
 

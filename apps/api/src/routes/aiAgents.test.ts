@@ -4,7 +4,24 @@ import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
-import { AI_AGENT_LIMIT_DEFAULTS, AI_AGENT_RUN_LEAK_TRIPWIRE_KEYS } from '@breeze/shared';
+import {
+  AI_AGENT_GRADUATION_BY_ORG_LIMIT,
+  AI_AGENT_IMPACT_REBUILD_DAYS,
+  AI_AGENT_IMPACT_REBUILD_MAX_ORGS,
+  AI_AGENT_LIMIT_DEFAULTS,
+  AI_AGENT_RUN_LEAK_TRIPWIRE_KEYS,
+  DEFAULT_IMPACT_WEIGHTS,
+  type AiAgentImpactDto,
+} from '@breeze/shared';
+// Real (unmocked) — pure UTC day math, no DB call. Task 8 tests compute the
+// same expected from/through the route does rather than re-mocking date
+// generation; see the '../jobs/aiAgentImpactRollup' mock comment below.
+import { lastCompleteUtcDay, shiftUtcDay } from '../services/aiAgents/impactRollup';
+import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
+// Review round 1 (Task 18): the REAL closure-builder, not a hand-rolled
+// stand-in — proves the byOrg org listing's tenancy pin is the same
+// eq/inArray shape authMiddleware actually installs on `auth.orgCondition`.
+import { buildOrgAccessClosures } from '../middleware/auth';
 
 const {
   selectMock,
@@ -18,6 +35,13 @@ const {
   getCircuitStateMock,
   resetCircuitMock,
   recordVerdictFeedbackMock,
+  loadImpactSummaryMock,
+  enqueueImpactRollupForOrgsMock,
+  saveImpactWeightsMock,
+  resolveImpactPartnerIdMock,
+  resolveEffectiveAgentSystemMock,
+  loadGraduationRowsMock,
+  loadActOpReliabilityMock,
 } = vi.hoisted(() => ({
   selectMock: vi.fn(),
   // Explicit generic: vitest infers a zero-arg tuple from a bare `() => true`
@@ -38,21 +62,45 @@ const {
   recordVerdictFeedbackMock: vi.fn<(auth: unknown, verdictId: string, feedback: string) => Promise<
     { status: 'ok'; orgId: string } | { status: 'not_found' } | { status: 'conflict'; orgId: string }
   >>(),
+  // Task 8 (#4193 A8) — the impact routes. Service-layer functions mocked
+  // here have their own full unit coverage (A5/A6/A7); these route tests
+  // exercise only routing/auth/validation, the same convention as
+  // createAndEnqueueAgentRun/getAgent/recordVerdictFeedback above.
+  loadImpactSummaryMock: vi.fn(),
+  enqueueImpactRollupForOrgsMock: vi.fn(),
+  saveImpactWeightsMock: vi.fn(),
+  resolveImpactPartnerIdMock: vi.fn(),
+  // Task A2-8 (#4192) — the graduation read route. `resolveEffectiveAgentSystem`
+  // and `graduationService`'s two loaders have their own full unit coverage
+  // (Task 11/effectivePolicy.test.ts, Task 12/graduationService.test.ts);
+  // these route tests exercise only routing/auth/validation, same convention
+  // as loadImpactSummary above.
+  resolveEffectiveAgentSystemMock: vi.fn(),
+  loadGraduationRowsMock: vi.fn(),
+  loadActOpReliabilityMock: vi.fn(),
 }));
 
-vi.mock('../middleware/auth', () => ({
-  authMiddleware: async (_c: unknown, next: () => Promise<void>) => next(),
-  requireScope: () => async (_c: unknown, next: () => Promise<void>) => next(),
-  requireMfa: () => async (c: { json: (body: unknown, status: number) => Response }, next: () => Promise<void>) => (
-    mfaOkMock() ? next() : c.json({ error: 'MFA required', code: 'MFA_REQUIRED' }, 403)
-  ),
-  requirePermission: (resource: string, action: string) => async (
-    c: { json: (body: unknown, status: number) => Response },
-    next: () => Promise<void>,
-  ) => (
-    hasPermMock(resource, action) ? next() : c.json({ error: 'Permission denied' }, 403)
-  ),
-}));
+vi.mock('../middleware/auth', async (importOriginal) => {
+  // Review round 1 (Task 18): `buildOrgAccessClosures` is the REAL
+  // implementation (via importOriginal), not a hand-rolled stand-in — a test
+  // wiring `auth.orgCondition` through it exercises the exact eq/inArray
+  // shape authMiddleware installs, not a test-only approximation of it.
+  const actual = await importOriginal<typeof import('../middleware/auth')>();
+  return {
+    authMiddleware: async (_c: unknown, next: () => Promise<void>) => next(),
+    requireScope: () => async (_c: unknown, next: () => Promise<void>) => next(),
+    requireMfa: () => async (c: { json: (body: unknown, status: number) => Response }, next: () => Promise<void>) => (
+      mfaOkMock() ? next() : c.json({ error: 'MFA required', code: 'MFA_REQUIRED' }, 403)
+    ),
+    requirePermission: (resource: string, action: string) => async (
+      c: { json: (body: unknown, status: number) => Response },
+      next: () => Promise<void>,
+    ) => (
+      hasPermMock(resource, action) ? next() : c.json({ error: 'Permission denied' }, 403)
+    ),
+    buildOrgAccessClosures: actual.buildOrgAccessClosures,
+  };
+});
 
 const { ActPrerequisitesNotMetError, InvalidSupervisedActionKeysError } = vi.hoisted(() => ({
   ActPrerequisitesNotMetError: class ActPrerequisitesNotMetError extends Error {
@@ -116,25 +164,94 @@ vi.mock('../services/aiTools', () => ({
   verifyDeviceAccess: verifyDeviceAccessMock,
 }));
 
+// Task 8 (#4193 A8): '../jobs/aiAgentImpactRollup' is mocked (the manual
+// rebuild producer, A5); '../services/aiAgents/impactRollup' (lastCompleteUtcDay/
+// shiftUtcDay, A4) is deliberately left REAL — those two functions are pure
+// date math with no DB call, so these tests compute the same expected
+// from/through the route does instead of re-mocking date generation.
+vi.mock('../jobs/aiAgentImpactRollup', () => ({
+  enqueueImpactRollupForOrgs: enqueueImpactRollupForOrgsMock,
+}));
+
+vi.mock('../services/aiAgents/impactQuery', () => ({
+  loadImpactSummary: loadImpactSummaryMock,
+}));
+
+const { ImpactPartnerUnresolvedError, ImpactPartnerNotFoundError } = vi.hoisted(() => ({
+  ImpactPartnerUnresolvedError: class ImpactPartnerUnresolvedError extends Error {
+    constructor(message = 'Unable to resolve a single partner for this impact request') {
+      super(message);
+      this.name = 'ImpactPartnerUnresolvedError';
+    }
+  },
+  ImpactPartnerNotFoundError: class ImpactPartnerNotFoundError extends Error {
+    constructor(message = 'Partner not found or not writable by this caller') {
+      super(message);
+      this.name = 'ImpactPartnerNotFoundError';
+    }
+  },
+}));
+
+vi.mock('../services/aiAgents/impactWeights', () => ({
+  saveImpactWeights: saveImpactWeightsMock,
+  resolveImpactPartnerId: resolveImpactPartnerIdMock,
+  ImpactPartnerUnresolvedError,
+  ImpactPartnerNotFoundError,
+}));
+
 vi.mock('../services/auditEvents', () => ({
   writeRouteAudit: writeRouteAuditMock,
 }));
 
+// P2-5 (#4192, Task A2-5): POST /graduation/promote RAISES a four-eyes intent
+// and grants nothing. `createActionIntent` has its own extensive coverage
+// (intentService.*.test.ts) and reaches the whole guardrail/approver-fanout
+// graph, so it is mocked here — these tests exercise routing, the flag gate,
+// RBAC and the argument the route hands it, same convention as
+// createAndEnqueueAgentRun above.
+const { createActionIntentMock, ActionIntentError } = vi.hoisted(() => ({
+  createActionIntentMock: vi.fn(),
+  ActionIntentError: class ActionIntentError extends Error {
+    constructor(message: string, public code: string) {
+      super(message);
+      this.name = 'ActionIntentError';
+    }
+  },
+}));
+
+vi.mock('../services/actionIntents/intentService', () => ({
+  createActionIntent: createActionIntentMock,
+  ActionIntentError,
+}));
+
+// `withSystemDbAccessContext` is a countable pass-through spy, not a bare
+// arrow: the byOrg fan-out's guarantee is that it opens a BOUNDED number of
+// system contexts (one per batch), which is only observable by counting the
+// calls. Pass-through semantics are unchanged for every other suite.
+const dbCtxMock = vi.hoisted(() => ({
+  withSystemDbAccessContext: vi.fn((fn: () => unknown) => fn()),
+}));
 vi.mock('../db', () => ({
   db: { select: selectMock },
   runOutsideDbContext: (fn: () => unknown) => fn(),
-  withSystemDbAccessContext: (fn: () => unknown) => fn(),
+  withSystemDbAccessContext: dbCtxMock.withSystemDbAccessContext,
   getCurrentDbAccessContext: () => undefined,
 }));
 
 vi.mock('../services/aiAgents/effectivePolicy', () => ({
   resolveEffectiveAgent: resolveEffectiveAgentMock,
+  resolveEffectiveAgentSystem: resolveEffectiveAgentSystemMock,
+}));
+
+vi.mock('../services/aiAgents/graduationService', () => ({
+  loadGraduationRows: loadGraduationRowsMock,
+  loadActOpReliability: loadActOpReliabilityMock,
 }));
 
 const envMock = vi.hoisted(() => ({ policyDecideEnabled: vi.fn(() => true) }));
 vi.mock('../config/env', () => ({ policyDecideEnabled: envMock.policyDecideEnabled }));
 
-import { aiAgentsRoutes, mapError } from './aiAgents';
+import { AI_AGENT_GRADUATION_BY_ORG_BATCH, aiAgentsRoutes, mapError } from './aiAgents';
 
 const AGENT_ID = '11111111-1111-4111-8111-111111111111';
 const DEVICE_ID = '22222222-2222-4222-8222-222222222222';
@@ -143,6 +260,7 @@ const OTHER_ORG_ID = '44444444-4444-4444-8444-444444444444';
 const PARTNER_ID = '55555555-5555-4555-8555-555555555555';
 const RUN_ID = '66666666-6666-4666-8666-666666666666';
 const USER_ID = '77777777-7777-4777-8777-777777777777';
+const INTENT_ID = '88888888-8888-4888-8888-888888888888';
 
 function agent(overrides: Record<string, unknown> = {}) {
   return {
@@ -155,7 +273,31 @@ function agent(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function buildApp(withGlobalErrorHandler = false): Hono {
+const ZERO_COUNTERS = {
+  alertsJudged: 0, noiseFlagged: 0, suppressionsApplied: 0, ticketsTriaged: 0, draftsSent: 0,
+  fixesProposed: 0, fixesExecuted: 0, fixWatchesHeld: 0, fixWatchesRecurred: 0, narrativesDelivered: 0,
+};
+
+/** Task 8 (#4193 A8): a structurally-valid AiAgentImpactDto for route tests — the DTO's own field-by-field correctness is A7's unit coverage, not this file's. */
+function minimalImpactDto(overrides: Partial<AiAgentImpactDto> = {}): AiAgentImpactDto {
+  return {
+    schemaVersion: 1,
+    window: 30,
+    through: '2026-08-31',
+    rebuiltAt: null,
+    totals: { ...ZERO_COUNTERS, llmCents: 0, estSecondsSaved: 0 },
+    series: [],
+    byOrg: [],
+    byOrgTruncated: false,
+    positiveFeedback: { up: 0, down: 0, rate: null },
+    promoteEligibleCount: null,
+    weights: { effective: { ...DEFAULT_IMPACT_WEIGHTS }, overrides: null },
+    canEditWeights: false,
+    ...overrides,
+  };
+}
+
+function buildApp(withGlobalErrorHandler = false, authOverrides: Record<string, unknown> = {}): Hono {
   const app = new Hono();
   app.use('*', async (c, next) => {
     c.set('auth', {
@@ -166,6 +308,7 @@ function buildApp(withGlobalErrorHandler = false): Hono {
       user: { id: USER_ID, email: 'tech@example.com', name: 'Tech' },
       canAccessOrg: () => true,
       orgCondition: () => undefined,
+      ...authOverrides,
     } as never);
     await next();
   });
@@ -202,7 +345,16 @@ beforeEach(() => {
     run: { id: RUN_ID, status: 'queued' },
   });
   envMock.policyDecideEnabled.mockReturnValue(true);
+  createActionIntentMock.mockResolvedValue({ id: INTENT_ID });
   recordVerdictFeedbackMock.mockResolvedValue({ status: 'ok', orgId: ORG_ID });
+  loadImpactSummaryMock.mockResolvedValue(minimalImpactDto());
+  enqueueImpactRollupForOrgsMock.mockImplementation(async (orgIds: string[]) => orgIds.length);
+  resolveImpactPartnerIdMock.mockResolvedValue(PARTNER_ID);
+  saveImpactWeightsMock.mockResolvedValue({
+    before: null,
+    after: { fixExecuted: 1200 },
+    effective: { ...DEFAULT_IMPACT_WEIGHTS, fixExecuted: 1200 },
+  });
 });
 
 describe('POST /ai-agents/:id/runs', () => {
@@ -562,7 +714,11 @@ describe('GET /ai-agents/exposure-budget (recorded exposure readout, #3828)', ()
  * runsListCursor.ts/runTrace.ts's own suites and by the RLS/integration
  * contract tests.
  */
-function selectChain<T>(rows: T, onWhere?: (predicate: unknown) => void) {
+function selectChain<T>(
+  rows: T,
+  onWhere?: (predicate: unknown) => void,
+  onLimit?: (n: number) => void,
+) {
   const chain = {
     from: () => chain,
     innerJoin: () => chain,
@@ -573,7 +729,11 @@ function selectChain<T>(rows: T, onWhere?: (predicate: unknown) => void) {
     // merely naming the `org_id` column.
     where: (predicate: unknown) => { onWhere?.(predicate); return chain; },
     orderBy: () => chain,
-    limit: () => chain,
+    // `onLimit` (final review, P2-5) is the same idea for a row cap: the mock
+    // returns whatever rows it was handed regardless, so slicing in the route
+    // would pass a length assertion even with NO `.limit()` in the SQL. Only
+    // capturing the argument proves the bound reaches Postgres.
+    limit: (n: number) => { onLimit?.(n); return chain; },
     offset: () => chain,
     then: (resolve: (v: T) => unknown, reject?: (e: unknown) => unknown) =>
       Promise.resolve(rows).then(resolve, reject),
@@ -1860,5 +2020,705 @@ describe('mapError — create-race unique violation (#4020)', () => {
 
     expect(threw).toBe(wrapped);
     expect(jsonMock).not.toHaveBeenCalled();
+  });
+});
+
+// Task 8 (#4193 A8) — GET /impact, POST /impact/rebuild, PUT/DELETE
+// /impact/weights. Registered ahead of GET /:id (line 716) for the same
+// reason as /effective, /policy-decidable-keys and /runs/:runId above it —
+// a literal path segment must not fall into the `:id` param route.
+describe('AI agents impact routes — registration order (#4193 A8)', () => {
+  it('GET /ai-agents/impact resolves the impact handler, not GET /:id', async () => {
+    const app = buildApp();
+
+    const res = await app.request('/ai-agents/impact');
+
+    expect(res.status).toBe(200);
+    expect(loadImpactSummaryMock).toHaveBeenCalledTimes(1);
+    expect(getAgentMock).not.toHaveBeenCalled();
+  });
+
+  it('GET /ai-agents/:id still resolves the agent handler for a literal uuid', async () => {
+    // A fuller fixture than the shared `agent()` helper — mapRow (the GET
+    // /:id wire mapper) reads createdAt/updatedAt directly, which the other
+    // fixtures never exercise since every other test on this file mocks
+    // getAgent as an authorization/visibility handle, not a rendered row.
+    getAgentMock.mockResolvedValue({
+      ...agent(),
+      enabled: true,
+      mode: 'supervised',
+      model: 'default',
+      toolAllowlist: [],
+      protectedResources: [],
+      limits: AI_AGENT_LIMIT_DEFAULTS,
+      triggers: [],
+      recipients: [],
+      actAssets: {},
+      instructions: null,
+      cooldownSeconds: 0,
+      disabledAt: null,
+      createdAt: new Date('2026-08-01T00:00:00.000Z'),
+      updatedAt: new Date('2026-08-01T00:00:00.000Z'),
+    });
+    const app = buildApp();
+
+    const res = await app.request(`/ai-agents/${AGENT_ID}`);
+
+    expect(res.status).toBe(200);
+    expect(getAgentMock).toHaveBeenCalledWith(expect.anything(), AGENT_ID);
+    expect(loadImpactSummaryMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('GET /ai-agents/impact', () => {
+  it('defaults the window to 30 and passes orgId through as undefined', async () => {
+    const app = buildApp();
+
+    const res = await app.request('/ai-agents/impact');
+
+    expect(res.status).toBe(200);
+    expect(loadImpactSummaryMock).toHaveBeenCalledWith(
+      expect.anything(),
+      { window: 30, orgId: undefined },
+    );
+  });
+
+  it('passes ?window=90 through to loadImpactSummary', async () => {
+    const app = buildApp();
+
+    const res = await app.request('/ai-agents/impact?window=90');
+
+    expect(res.status).toBe(200);
+    expect(loadImpactSummaryMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ window: 90 }),
+    );
+  });
+
+  it('rejects an unsupported window', async () => {
+    const app = buildApp();
+
+    const res = await app.request('/ai-agents/impact?window=1');
+
+    expect(res.status).toBe(400);
+    expect(loadImpactSummaryMock).not.toHaveBeenCalled();
+  });
+
+  it('requires an orgId for a system-scoped caller', async () => {
+    const app = buildApp(false, { scope: 'system', partnerId: null });
+
+    const res = await app.request('/ai-agents/impact');
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'org_id_required',
+      message: 'A system-scoped impact query must name one organization — one weight set belongs to one partner.',
+    });
+    expect(loadImpactSummaryMock).not.toHaveBeenCalled();
+  });
+
+  it('answers 200 for a system-scoped caller that names an accessible org', async () => {
+    const app = buildApp(false, { scope: 'system', partnerId: null, canAccessOrg: () => true });
+
+    const res = await app.request(`/ai-agents/impact?orgId=${OTHER_ORG_ID}`);
+
+    expect(res.status).toBe(200);
+    expect(loadImpactSummaryMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ orgId: OTHER_ORG_ID }),
+    );
+  });
+
+  it('rejects an inaccessible orgId with 403', async () => {
+    const app = buildApp(false, { canAccessOrg: () => false });
+
+    const res = await app.request(`/ai-agents/impact?orgId=${OTHER_ORG_ID}`);
+
+    expect(res.status).toBe(403);
+    expect(loadImpactSummaryMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /ai-agents/impact/rebuild', () => {
+  it('answers 409 too_many_orgs when the accessible set exceeds the cap', async () => {
+    const orgIds = Array.from({ length: AI_AGENT_IMPACT_REBUILD_MAX_ORGS + 1 }, (_, i) => `org-${i}`);
+    const app = buildApp(false, { accessibleOrgIds: orgIds });
+
+    const res = await app.request('/ai-agents/impact/rebuild', { method: 'POST' });
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error: 'too_many_orgs',
+      limit: AI_AGENT_IMPACT_REBUILD_MAX_ORGS,
+      count: orgIds.length,
+    });
+    expect(enqueueImpactRollupForOrgsMock).not.toHaveBeenCalled();
+  });
+
+  it('enqueues a 90-day rebuild ending at the last complete UTC day and audits it', async () => {
+    const orgIds = [ORG_ID, OTHER_ORG_ID, 'third-org-id'];
+    const app = buildApp(false, { accessibleOrgIds: orgIds });
+
+    const res = await app.request('/ai-agents/impact/rebuild', { method: 'POST' });
+
+    const through = lastCompleteUtcDay();
+    const from = shiftUtcDay(through, -(AI_AGENT_IMPACT_REBUILD_DAYS - 1));
+
+    expect(res.status).toBe(202);
+    expect(await res.json()).toEqual({ queued: 3, from, through });
+    expect(enqueueImpactRollupForOrgsMock).toHaveBeenCalledWith(orgIds, from, through);
+    expect(writeRouteAuditMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: 'ai_agent_impact.rebuild_requested',
+        details: { orgCount: 3, from, through },
+      }),
+    );
+  });
+
+  it('rejects a rebuild request for an inaccessible org', async () => {
+    const app = buildApp(false, { canAccessOrg: () => false });
+
+    const res = await app.request(`/ai-agents/impact/rebuild?orgId=${OTHER_ORG_ID}`, { method: 'POST' });
+
+    expect(res.status).toBe(403);
+    expect(enqueueImpactRollupForOrgsMock).not.toHaveBeenCalled();
+  });
+
+  it('requires an orgId for a system-scoped caller with no accessible-org list', async () => {
+    const app = buildApp(false, { scope: 'system', partnerId: null, accessibleOrgIds: null });
+
+    const res = await app.request('/ai-agents/impact/rebuild', { method: 'POST' });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual(expect.objectContaining({ error: 'org_id_required' }));
+    expect(enqueueImpactRollupForOrgsMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('PUT /ai-agents/impact/weights', () => {
+  const validBody = { fixExecuted: 1200 };
+
+  it('denies a selected-access partner member', async () => {
+    const app = buildApp(false, { scope: 'partner', partnerId: PARTNER_ID, partnerOrgAccess: 'selected' });
+
+    const res = await app.request('/ai-agents/impact/weights', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(validBody),
+    });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
+    expect(saveImpactWeightsMock).not.toHaveBeenCalled();
+  });
+
+  it('denies an organization-scoped caller', async () => {
+    const app = buildApp();
+
+    const res = await app.request('/ai-agents/impact/weights', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(validBody),
+    });
+
+    expect(res.status).toBe(403);
+    expect(saveImpactWeightsMock).not.toHaveBeenCalled();
+  });
+
+  it('accepts a full-partner-admin write and audits before/after', async () => {
+    const app = buildApp(false, { scope: 'partner', partnerId: PARTNER_ID, partnerOrgAccess: 'all' });
+
+    const res = await app.request('/ai-agents/impact/weights', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(validBody),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      data: { effective: { ...DEFAULT_IMPACT_WEIGHTS, fixExecuted: 1200 }, overrides: { fixExecuted: 1200 } },
+    });
+    expect(saveImpactWeightsMock).toHaveBeenCalledWith(expect.anything(), PARTNER_ID, validBody);
+    expect(writeRouteAuditMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        orgId: null,
+        action: 'ai_agent_impact_weights.updated',
+        details: { before: null, after: { fixExecuted: 1200 } },
+      }),
+    );
+  });
+
+  it('rejects an out-of-range weight value', async () => {
+    const app = buildApp(false, { scope: 'partner', partnerId: PARTNER_ID, partnerOrgAccess: 'all' });
+
+    const res = await app.request('/ai-agents/impact/weights', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ fixExecuted: 86401 }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(saveImpactWeightsMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects an unrecognized key (strict schema)', async () => {
+    const app = buildApp(false, { scope: 'partner', partnerId: PARTNER_ID, partnerOrgAccess: 'all' });
+
+    const res = await app.request('/ai-agents/impact/weights', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ bogus: 1 }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(saveImpactWeightsMock).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Review round 1 finding: mapError's ImpactPartnerUnresolvedError branch
+   * (aiAgents.ts) was previously untested despite being reachable — a
+   * system-scoped caller that clears canManagePartnerWidePolicies still
+   * calls resolveImpactPartnerId(auth) with no orgId, which throws this for
+   * any auth.scope === 'system' caller (impactWeights.ts:71-79). A
+   * partner-admin fixture exercises the same catch branch since the route
+   * never passes an orgId on this path either way.
+   */
+  it('maps a resolveImpactPartnerId ImpactPartnerUnresolvedError to 400 org_id_required', async () => {
+    resolveImpactPartnerIdMock.mockRejectedValue(new ImpactPartnerUnresolvedError());
+    const app = buildApp(false, { scope: 'partner', partnerId: PARTNER_ID, partnerOrgAccess: 'all' });
+
+    const res = await app.request('/ai-agents/impact/weights', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(validBody),
+    });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual(expect.objectContaining({ error: 'org_id_required' }));
+    expect(saveImpactWeightsMock).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Review round 1 finding: the ImpactPartnerNotFoundError branch (zero-row
+   * UPDATE / RLS-decline guard, impactWeights.ts:148-149) was untested. This
+   * asserts the route's mapError call actually reaches it — not just that
+   * mapError itself maps the class to 404 in isolation.
+   */
+  it('maps a saveImpactWeights ImpactPartnerNotFoundError to 404', async () => {
+    saveImpactWeightsMock.mockRejectedValue(new ImpactPartnerNotFoundError());
+    const app = buildApp(false, { scope: 'partner', partnerId: PARTNER_ID, partnerOrgAccess: 'all' });
+
+    const res = await app.request('/ai-agents/impact/weights', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(validBody),
+    });
+
+    expect(res.status).toBe(404);
+  });
+});
+
+describe('DELETE /ai-agents/impact/weights', () => {
+  it('resets to defaults for a full-partner-admin', async () => {
+    saveImpactWeightsMock.mockResolvedValue({
+      before: { fixExecuted: 1200 },
+      after: null,
+      effective: { ...DEFAULT_IMPACT_WEIGHTS },
+    });
+    const app = buildApp(false, { scope: 'partner', partnerId: PARTNER_ID, partnerOrgAccess: 'all' });
+
+    const res = await app.request('/ai-agents/impact/weights', { method: 'DELETE' });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: { effective: DEFAULT_IMPACT_WEIGHTS, overrides: null } });
+    expect(saveImpactWeightsMock).toHaveBeenCalledWith(expect.anything(), PARTNER_ID, null);
+    expect(writeRouteAuditMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: 'ai_agent_impact_weights.updated',
+        details: { before: { fixExecuted: 1200 }, after: null },
+      }),
+    );
+  });
+
+  it('denies a non-full-partner caller', async () => {
+    const app = buildApp();
+
+    const res = await app.request('/ai-agents/impact/weights', { method: 'DELETE' });
+
+    expect(res.status).toBe(403);
+    expect(saveImpactWeightsMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /ai-agents/graduation/promote', () => {
+  const body = { orgId: ORG_ID, kind: 'triage', opKey: 'manage_services:restart' };
+
+  function promote(app: Hono, payload: unknown = body) {
+    return app.request('/ai-agents/graduation/promote', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  }
+
+  it('raises the four-eyes intent and returns its id', async () => {
+    const res = await promote(buildApp());
+
+    expect(res.status).toBe(201);
+    expect(await res.json()).toEqual({ intentId: INTENT_ID });
+    expect(createActionIntentMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        toolName: 'manage_ai_agents',
+        orgId: ORG_ID,
+        source: 'mcp_api',
+        // The orgId ARGUMENT is the authenticated org, never a caller-chosen
+        // target: createActionIntent rejects any disagreement with the org it
+        // resolves the intent to.
+        input: {
+          action: 'authorize_supervised_key',
+          kind: 'triage',
+          opKey: 'manage_services:restart',
+          orgId: ORG_ID,
+        },
+      }),
+    );
+  });
+
+  it('409s while BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED is off, without raising anything', async () => {
+    envMock.policyDecideEnabled.mockReturnValue(false);
+
+    const res = await promote(buildApp());
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'policy_decide_disabled' });
+    expect(createActionIntentMock).not.toHaveBeenCalled();
+  });
+
+  it('denies a caller without ai_agents:write', async () => {
+    hasPermMock.mockImplementation((resource: string, action: string) => (
+      !(resource === 'ai_agents' && action === 'write')
+    ));
+
+    const res = await promote(buildApp());
+
+    expect(res.status).toBe(403);
+    expect(createActionIntentMock).not.toHaveBeenCalled();
+  });
+
+  it('denies an org the caller cannot reach', async () => {
+    const res = await promote(
+      buildApp(false, { canAccessOrg: (id: string) => id === ORG_ID }),
+      { ...body, orgId: OTHER_ORG_ID },
+    );
+
+    expect(res.status).toBe(403);
+    expect(createActionIntentMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a dot-form act-op key (only colon keys are promotable)', async () => {
+    const res = await promote(buildApp(), { ...body, opKey: 'manage_services.restart' });
+
+    expect(res.status).toBe(400);
+    expect(createActionIntentMock).not.toHaveBeenCalled();
+  });
+
+  it('answers an ActionIntentError with its code, not a 500', async () => {
+    createActionIntentMock.mockRejectedValue(
+      new ActionIntentError('must name the authorized organization', 'org_argument_mismatch'),
+    );
+
+    const res = await promote(buildApp());
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: 'org_argument_mismatch' });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P2-5 (#4192, Task A2-8) — graduation read route
+// ---------------------------------------------------------------------------
+
+describe('GET /ai-agents/graduation', () => {
+  const graduationQuery = `orgId=${ORG_ID}&kind=triage`;
+
+  function mockResolvedAgent(overrides: Record<string, unknown> = {}) {
+    resolveEffectiveAgentSystemMock.mockResolvedValue({
+      schemaVersion: 9,
+      agentId: AGENT_ID,
+      kind: 'triage',
+      effective: { limits: { promoteThreshold: 20 } },
+      ...overrides,
+    });
+  }
+
+  function graduationRow(overrides: Record<string, unknown> = {}) {
+    return {
+      opKey: 'manage_services:restart',
+      namespace: 'policy_key',
+      state: 'eligible',
+      window: { executed: 25, verified: 25, failed: 0, recurred: 0, firstVerifiedAt: '2026-08-01T00:00:00.000Z' },
+      blockedReason: null,
+      promotedAt: null,
+      demotedAt: null,
+      demoteReason: null,
+      ...overrides,
+    };
+  }
+
+  const actOpReliability = [
+    { opKey: 'restart_service', executed: 10, verified: 9, failed: 1, recurred: 0 },
+  ];
+
+  beforeEach(() => {
+    mockResolvedAgent();
+    loadGraduationRowsMock.mockResolvedValue([graduationRow()]);
+    loadActOpReliabilityMock.mockResolvedValue(actOpReliability);
+    // No org override by default — the ownerScope existence check
+    // (`db.select` against `ai_agents`) comes back empty.
+    selectMock.mockReturnValue(selectChain([]));
+  });
+
+  it('is gated on ai_agents:read', async () => {
+    hasPermMock.mockReturnValue(false);
+
+    const res = await buildApp().request(`/ai-agents/graduation?${graduationQuery}`);
+
+    expect(res.status).toBe(403);
+    expect(resolveEffectiveAgentSystemMock).not.toHaveBeenCalled();
+  });
+
+  it('returns version 1 with rows and actOpReliability for an org-scope call', async () => {
+    const res = await buildApp().request(`/ai-agents/graduation?${graduationQuery}`);
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      version: 1,
+      agentId: AGENT_ID,
+      ownerScope: 'partner',
+      rows: [graduationRow()],
+      actOpReliability,
+      promoteThreshold: 20,
+      policyDecideEnabled: true,
+    });
+    expect(resolveEffectiveAgentSystemMock).toHaveBeenCalledWith(ORG_ID, 'triage');
+    expect(loadGraduationRowsMock).toHaveBeenCalledWith(ORG_ID, AGENT_ID);
+    expect(loadActOpReliabilityMock).toHaveBeenCalledWith(ORG_ID, AGENT_ID);
+  });
+
+  it('reports ownerScope organization when an org override row exists', async () => {
+    selectMock.mockReturnValueOnce(selectChain([{ id: AGENT_ID }]));
+
+    const res = await buildApp().request(`/ai-agents/graduation?${graduationQuery}`);
+
+    expect((await res.json() as { ownerScope: string }).ownerScope).toBe('organization');
+  });
+
+  it("ignores a caller-supplied agentId — the response agent id is the resolver's", async () => {
+    const res = await buildApp().request(
+      `/ai-agents/graduation?${graduationQuery}&agentId=99999999-9999-4999-8999-999999999999`,
+    );
+
+    expect(res.status).toBe(200);
+    expect((await res.json() as { agentId: string }).agentId).toBe(AGENT_ID);
+  });
+
+  it('returns 404 when there is no active agent policy for the org/kind', async () => {
+    resolveEffectiveAgentSystemMock.mockResolvedValue(null);
+
+    const res = await buildApp().request(`/ai-agents/graduation?${graduationQuery}`);
+
+    expect(res.status).toBe(404);
+    expect(selectMock).not.toHaveBeenCalled();
+    expect(loadGraduationRowsMock).not.toHaveBeenCalled();
+  });
+
+  it('denies a cross-org orgId', async () => {
+    const app = buildApp(false, { canAccessOrg: (id: string) => id === ORG_ID });
+
+    const res = await app.request(`/ai-agents/graduation?orgId=${OTHER_ORG_ID}&kind=triage`);
+
+    expect(res.status).toBe(403);
+    expect(resolveEffectiveAgentSystemMock).not.toHaveBeenCalled();
+  });
+
+  it('is 400 for an org-scope caller omitting orgId', async () => {
+    const res = await buildApp().request('/ai-agents/graduation?kind=triage');
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual(expect.objectContaining({ error: 'org_id_required' }));
+    expect(resolveEffectiveAgentSystemMock).not.toHaveBeenCalled();
+  });
+
+  it('is 400 for a system-scoped caller with no orgId (no partner axis to fan out over)', async () => {
+    const app = buildApp(false, { scope: 'system', partnerId: null });
+
+    const res = await app.request('/ai-agents/graduation?kind=triage');
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual(expect.objectContaining({ error: 'org_id_required' }));
+  });
+
+  it('works with the policy-decide flag off — 200, policyDecideEnabled: false', async () => {
+    envMock.policyDecideEnabled.mockReturnValue(false);
+
+    const res = await buildApp().request(`/ai-agents/graduation?${graduationQuery}`);
+
+    expect(res.status).toBe(200);
+    expect((await res.json() as { policyDecideEnabled: boolean }).policyDecideEnabled).toBe(false);
+  });
+
+  it('returns byOrg for a partner-scope call with no orgId', async () => {
+    const app = buildApp(false, { scope: 'partner', partnerId: PARTNER_ID });
+    selectMock.mockReturnValueOnce(selectChain([{ id: ORG_ID, name: 'Acme Corp' }]));
+
+    const res = await app.request('/ai-agents/graduation?kind=triage');
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      version: 1,
+      promoteThreshold: 20,
+      policyDecideEnabled: true,
+      byOrgTruncated: false,
+      byOrg: [
+        {
+          orgId: ORG_ID,
+          orgName: 'Acme Corp',
+          agentId: AGENT_ID,
+          rows: [graduationRow()],
+          actOpReliability,
+        },
+      ],
+    });
+  });
+
+  // Review round 1 (Task 18, Important): buildApp's default auth stub
+  // (`orgCondition: () => undefined`) and a bare `selectChain` with no
+  // `onWhere` both let a dropped tenancy pin on the byOrg org listing pass
+  // silently — this test wires a REAL orgCondition closure (the same shape
+  // authMiddleware installs for a partner-scoped, `partnerOrgAccess:
+  // 'selected'`-restricted token) and asserts the compiled `.where()`
+  // predicate's bound params, so deleting `auth.orgCondition(organizations.id)`
+  // from the route fails this test even though the DTO shape is unaffected.
+  it('binds the byOrg org listing to the caller\'s accessible orgs, not every org under the partner', async () => {
+    const { orgCondition } = buildOrgAccessClosures([ORG_ID, OTHER_ORG_ID]);
+    const app = buildApp(false, { scope: 'partner', partnerId: PARTNER_ID, orgCondition });
+    let orgListWhere: unknown;
+    selectMock.mockReturnValueOnce(
+      selectChain(
+        [{ id: ORG_ID, name: 'Acme Corp' }, { id: OTHER_ORG_ID, name: 'Beta LLC' }],
+        (predicate) => { orgListWhere = predicate; },
+      ),
+    );
+
+    const res = await app.request('/ai-agents/graduation?kind=triage');
+
+    expect(res.status).toBe(200);
+    const params = sqlParams(orgListWhere);
+    // The restricted set is bound in — proves the pin binds the RIGHT org
+    // ids, not merely that some `org_id`/`id` column is named.
+    expect(params).toContain(ORG_ID);
+    expect(params).toContain(OTHER_ORG_ID);
+    // Never the partner id itself: a pin that degraded to a partner-wide
+    // filter (every org under the partner, ignoring `partnerOrgAccess:
+    // 'selected'`) would still pass a same-column-name assertion but binds a
+    // different value.
+    expect(params).not.toContain(PARTNER_ID);
+  });
+
+  it('omits an org with no active agent for kind from byOrg', async () => {
+    const app = buildApp(false, { scope: 'partner', partnerId: PARTNER_ID });
+    selectMock.mockReturnValueOnce(
+      selectChain([{ id: ORG_ID, name: 'Acme Corp' }, { id: OTHER_ORG_ID, name: 'Beta LLC' }]),
+    );
+    resolveEffectiveAgentSystemMock
+      .mockResolvedValueOnce({
+        schemaVersion: 9, agentId: AGENT_ID, kind: 'triage', effective: { limits: { promoteThreshold: 20 } },
+      })
+      .mockResolvedValueOnce(null);
+
+    const res = await app.request('/ai-agents/graduation?kind=triage');
+
+    const body = (await res.json()) as { byOrg: Array<{ orgId: string }> };
+    expect(body.byOrg).toHaveLength(1);
+    expect(body.byOrg[0]?.orgId).toBe(ORG_ID);
+  });
+
+  // ---------------------------------------------------------------------
+  // Final review (Important): the byOrg fan-out was the ONLY unbounded
+  // per-org workload on this router — no cap, no pagination, and every org's
+  // resolve + two ledger reads run sequentially inside ONE long-lived system
+  // transaction while the request's own auth transaction holds a second
+  // pooled connection. A partner with a few hundred orgs opening the
+  // graduation panel is then N x ~7 sequential round trips against two
+  // pinned connections: the pool-starvation shape this codebase has already
+  // hit in production. Both halves are pinned below — the cap AND the
+  // bounded transaction lifetime — because either alone leaves the shape.
+  // ---------------------------------------------------------------------
+
+  /** `n` org listing rows, name-ordered the way the route's query returns them. */
+  function orgListing(n: number) {
+    return Array.from({ length: n }, (_, i) => ({
+      id: `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`,
+      name: `Org ${String(i).padStart(4, '0')}`,
+    }));
+  }
+
+  it('bounds the org listing in SQL — limit is the cap plus one, not unbounded', async () => {
+    const app = buildApp(false, { scope: 'partner', partnerId: PARTNER_ID });
+    let orgListLimit: number | undefined;
+    selectMock.mockReturnValueOnce(
+      selectChain(orgListing(3), undefined, (n) => { orgListLimit = n; }),
+    );
+
+    const res = await app.request('/ai-agents/graduation?kind=triage');
+
+    expect(res.status).toBe(200);
+    // +1 is the probe row: it is how the route learns there IS more without
+    // paying for a second COUNT query.
+    expect(orgListLimit).toBe(AI_AGENT_GRADUATION_BY_ORG_LIMIT + 1);
+  });
+
+  it('caps byOrg at AI_AGENT_GRADUATION_BY_ORG_LIMIT and reports byOrgTruncated', async () => {
+    const app = buildApp(false, { scope: 'partner', partnerId: PARTNER_ID });
+    selectMock.mockReturnValueOnce(selectChain(orgListing(AI_AGENT_GRADUATION_BY_ORG_LIMIT + 1)));
+
+    const res = await app.request('/ai-agents/graduation?kind=triage');
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { byOrg: unknown[]; byOrgTruncated: boolean };
+    expect(body.byOrg).toHaveLength(AI_AGENT_GRADUATION_BY_ORG_LIMIT);
+    expect(body.byOrgTruncated).toBe(true);
+    // The probe row is DROPPED, never resolved: a cap that still did the work
+    // for the overflow org would report a bound it does not honour.
+    expect(resolveEffectiveAgentSystemMock).toHaveBeenCalledTimes(AI_AGENT_GRADUATION_BY_ORG_LIMIT);
+  });
+
+  it('holds no single transaction across the whole fan-out — one system context per batch', async () => {
+    const orgCount = AI_AGENT_GRADUATION_BY_ORG_BATCH * 3 + 1;
+    const app = buildApp(false, { scope: 'partner', partnerId: PARTNER_ID });
+    selectMock.mockReturnValueOnce(selectChain(orgListing(orgCount)));
+
+    const res = await app.request('/ai-agents/graduation?kind=triage');
+
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { byOrg: unknown[] }).byOrg).toHaveLength(orgCount);
+    // Exactly ceil(N / batch): one held transaction for the whole loop (the
+    // shape the finding flagged) would be 1, and a context per org (the shape
+    // review round 1 collapsed) would be N.
+    expect(dbCtxMock.withSystemDbAccessContext).toHaveBeenCalledTimes(
+      Math.ceil(orgCount / AI_AGENT_GRADUATION_BY_ORG_BATCH),
+    );
+  });
+
+  it('the single-org form is never capped or batched — one context, no truncation flag', async () => {
+    const res = await buildApp().request(`/ai-agents/graduation?${graduationQuery}`);
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).not.toHaveProperty('byOrgTruncated');
+    expect(dbCtxMock.withSystemDbAccessContext).not.toHaveBeenCalled();
   });
 });

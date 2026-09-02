@@ -216,7 +216,7 @@ pre-existing `tsc` error.
 
 ## 2. Sandbox walkthrough checklist
 
-**Status: PENDING — to be executed against a live Intuit sandbox company
+**Status: EXECUTED 2026-09-01 against a live Intuit sandbox company (results inline below; items 12 and 16 need a second realm) — originally: to be executed against a live Intuit sandbox company
 before Phase B is declared shipped.** No Intuit sandbox credentials or
 interactive browser session were available in this task's execution
 environment, so the walkthrough below was not performed; only the automated
@@ -235,49 +235,191 @@ assigns the sandbox company, e.g. "Breeze QBO Sandbox 1"), never the realm ID.
 
 | Field | Value |
 |---|---|
-| Date | PENDING |
-| Breeze build SHA | PENDING |
-| Hosted region | PENDING (US / EU / self-hosted) |
-| Intuit app environment | PENDING (sandbox / production) |
-| Sandbox company realm label | PENDING (label only — never the realm ID) |
-| Tester | PENDING |
+| Date | 2026-09-01 (evening MDT) |
+| Breeze build SHA | a8e6c0ac5 (PR #4492, post-merge of main) |
+| Hosted region | self-hosted (per-worktree dev stack, Caddy pinned to localhost:3001) |
+| Intuit app environment | sandbox |
+| Sandbox company realm label | Intuit default "Sandbox Company_US" (single-currency, USD home, AST sales tax on) |
+| Tester | Todd Hebebrand (OAuth consent) + Claude (API/DB/QBO-query driven steps) |
 
 ### Checklist (pass/fail + visible Breeze status after each action)
 
 1. **Connect the sandbox company and verify no credentials appear in UI/API
    logs.**
-   Result: PENDING. Visible status: _______
+   Result: PASS. Visible status: card `Active`, environment `sandbox`, home currency `USD`, multi-currency `No`. `GET /accounting/quickbooks` carries no token fields; `accounting_connections` stores `realm_id_encrypted` / `access_token_encrypted` / `refresh_token_encrypted` only; API access log shows routes, never bodies.
 
 2. **Select and save an active QuickBooks income account.**
-   Result: PENDING. Visible status: _______
+   Result: PASS. Visible status: settings PATCH returned `defaultIncomeAccountRef: "5"` (Fees Billed); income-account list came live from the realm (`GET .../income-accounts`, 20 Income accounts).
 
 3. **Reconcile one existing customer by email and confirm it; verify QBO is
    unchanged.**
-   Result: PENDING. Visible status: _______
+   Result: PASS. Visible status: org with billing email `surf@example.com` was proposed to QBO customer 2 with confidence `exact_email`; confirm + sync → `confirmed / synced`, `remote_entity_id=2`, `remote_sync_token=1`, `remote_currency_code=USD`. QBO customer 2 was sparse-updated (DisplayName now follows the Breeze org name).
 
 4. **Choose create-new for a second organization; sync twice; verify one QBO
    Customer exists and the second sync updates it without duplication.**
-   Result: PENDING. Visible status: _______
+   Result: PASS. Visible status: `create_new` + two consecutive syncs → one QBO customer (Id 58), `remote_sync_token=0` after both; candidate search shows exactly one "Breeze Create-New Co".
 
 5. **Reconcile one existing Item by SKU and confirm it.**
-   Result: PENDING. Visible status: _______
+   Result: PASS (by candidate search, not SKU). Visible status: sandbox items carry no SKU, so the SKU proposal is `none`; picked "Hours" (Id 2) through the workbench candidate search, confirm + sync → `confirmed / synced`, `remote_entity_id=2`, token 1. QBO item 2 now carries the Breeze SKU `HOURS`.
 
 6. **Choose create-new for a second catalog item; verify Service or
    NonInventory type, price, taxability, SKU, income account, remote ID, and
    SyncToken.**
-   Result: PENDING. Visible status: _______
+   Result: PASS. Visible status: `create_new` + sync → QBO Service item Id 19 "Breeze Managed Workstation" with `Sku=BRZ-MWS`; `remote_sync_token=0`.
 
 7. **Change the Breeze org/item, sync again, and verify a sparse QBO update
    plus incremented persisted SyncToken.**
-   Result: PENDING. Visible status: _______
+   Result: PASS. Visible status: renamed the item to "… v2", sync → still `remote_entity_id=19`, QBO item name updated (sparse update, no second item).
 
 8. **Attempt a duplicate remote claim and verify Breeze returns a visible
    conflict without changing QBO.**
-   Result: PENDING. Visible status: _______
+   Result: PASS. Visible status: confirming Default Organization against already-claimed customer 2 → HTTP 409 `{ error: "This QuickBooks record is already mapped to a different Breeze entity", code: "mapping_conflict" }`.
 
 9. **Disconnect/reconnect the same sandbox and verify mappings remain tied to
    the connection lifecycle as designed.**
-   Result: PENDING. Visible status: _______
+   Result: PASS (as designed). Visible status: `POST .../disconnect` deleted the connection row and CASCADEd all 8 mapping rows (orgs, items, invoices). Reconnect via OAuth created a fresh row (`connectedAt` new, settings back to null), 0 mappings, and email suggestions immediately re-proposed customers 2 and 58. Design consequence worth knowing: previously pushed invoices show `accountingSync: null` after a reconnect; a re-push relies on the provider's DocNumber lookup to avoid a duplicate. Also: a card left open across an out-of-band disconnect keeps its stale `Active` state until Refresh/reload (not a bug, no live subscription).
+
+### Phase C checklist (invoice push)
+
+Issued-invoice push, void, and the multi-currency seams (Phase C, migration
+`apps/api/migrations/2026-09-30-quickbooks-invoice-push.sql`). Same rules as
+Section 2 above: dedicated sandbox company, no credentials or realm IDs
+committed to this repository.
+
+10. **Push an invoice that mixes a mapped catalog line and an ad-hoc
+    (unmapped) line; verify the QBO Invoice has a `SalesItemLineDetail` line
+    with an `ItemRef` for the mapped item and one with no `ItemRef` for the
+    ad-hoc line, and that both lines' amounts/quantities/descriptions match
+    the Breeze invoice.**
+    Result: PASS. Visible status: INV-2026-0001 (org 2, 3× mapped "Hours" + one ad-hoc line, 455.00 USD) auto-pushed on issue by the `accounting-sync` worker → invoice detail `accountingSync.syncStatus = synced`, `remoteDocNumber = null` (QBO kept our DocNumber). QBO Invoice 145: mapped line `ItemRef=2`, ad-hoc line landed with the realm's default item `ItemRef=1` ("Services") — the no-ItemRef payload is accepted and QBO fills its default.
+
+11. **With the connection's default tax code set, push a taxable invoice and
+    confirm the `TxnTaxDetail` override lands on the QBO Invoice (not QBO's
+    own tax engine total); then push an invoice where QBO's returned
+    `TxnTaxDetail.TotalTax` differs from Breeze's `tax_total` by more than 1¢
+    and verify Breeze flags it `synced_with_tax_variance` rather than plain
+    `synced`.**
+    Result: PASS (variance path). Visible status: with `defaultTaxCodeRef=TAX` and Breeze tax 8.5%, INV-2026-0005 (198.00 + 16.83 tax) pushed → `syncStatus = synced_with_tax_variance`; QBO Invoice 148 shows `TotalTax 0` (AST realm computed 0 for a customer with no address) with lines at `TaxCodeRef=TAX`. QBO does not echo `TxnTaxCodeRef` back on an AST realm, so the override itself is verified only by the request shape, not the response. Earlier untaxed pushes (INV-2026-0002/0004) synced with no variance.
+
+12. **Push two invoices that collide on `DocNumber` (e.g. by reusing a number
+    already present in the sandbox company) and verify Breeze retries once
+    without `DocNumber`, then records the QBO-assigned `DocNumber` — not the
+    Breeze invoice number — on the mapping row.**
+    Result: NOT REPRODUCIBLE in this realm. `Preferences.SalesFormsPrefs.CustomTxnNumbers = false`, so QBO never raises `Duplicate Document Number` and the strip-DocNumber retry cannot fire. What WAS verified: deleting INV-2026-0002's mapping row and pushing again (CREATE path) reused QBO Invoice 146 (provider DocNumber lookup idempotency) — no duplicate invoice. Re-run against a realm with custom transaction numbers on.
+
+13. **Void a previously-pushed invoice and confirm the QBO Invoice shows
+    Voided; also void an invoice that was never pushed and confirm Breeze
+    resolves without contacting QBO (no mapping row, or one with no
+    `remoteEntityId`).**
+    Result: PASS. Visible status: `POST /invoices/:id/void` → void job processed → QBO Invoice 145 `TotalAmt 0`, `Balance 0`, `PrivateNote "Voided"`, `SyncToken 1`. The mapping row is left as-is (`synced`, remote 145); Breeze `status=void` is the source of truth.
+
+14. **Fetch realm settings (Preferences) against both a multi-currency-enabled
+    sandbox company and a single-currency one; confirm
+    `MultiCurrencyEnabled` is visible and correctly read as `true`/`false`
+    (not just "present") on both realm types.**
+    Result: PASS (single-currency realm only). Visible status: `POST .../settings/refresh` → `{ homeCurrency: "USD", multiCurrencyEnabled: false }`, matching `Preferences.CurrencyPrefs` read straight from QBO; the integration card renders Home currency USD / Multi-currency No after refresh and on cold load (`GET /:provider` now carries the flag). A multi-currency realm was not available this run.
+
+15. **Attempt to push a foreign-currency invoice (an invoice whose
+    `currency_code` differs from the realm's home currency) into a
+    single-currency realm and confirm Breeze returns a typed error
+    (`currency_mismatch` / `home_currency_unknown`) — never a 1:1 silent
+    booking at the wrong currency.**
+    Result: PASS. Visible status: INV-2026-0003 switched to EUR (`POST /invoices/:id/currency`) and issued. Worker: `terminal failure, not retrying … code=currency_mismatch`, no mapping row created, nothing sent to QBO. Manual push → HTTP 409 `{ error: "currency_mismatch", message: "Invoice currency EUR does not match the connected QuickBooks home currency USD. Cross-currency accounting pushes are not supported. Enable multi-currency in QuickBooks or invoice in USD." }`. UX gap (follow-up): with no mapping row, the invoice detail card renders nothing for the auto-push failure — only the manual push surfaces the error.
+
+16. **Map an organization to a QuickBooks customer whose `CurrencyRef` is a
+    different currency than the Breeze invoice being pushed (a
+    customer-currency mismatch, distinct from the realm-level mismatch above)
+    and capture the exact fault text Breeze surfaces.**
+    Result: NOT TESTABLE in this realm (single-currency; every customer is USD, so no non-home `CurrencyRef` exists). Customer currency capture itself is verified: `remote_currency_code=USD` persisted on both org mappings. Re-run against a multi-currency realm.
+
+### Phase D checklist (payment pull-back)
+
+**Status: PENDING.** Not yet executed against a live Intuit sandbox company —
+these items require a tunnel (for the webhook) and cannot be run from the
+automated gate alone. Same rules as Sections 2/2a above: dedicated sandbox
+company, no credentials or realm IDs committed to this repository.
+
+Payment pull-back (Phase D, migration
+`apps/api/migrations/2026-10-01-quickbooks-payment-pullback.sql`): QBO-origin
+payments mirror into Breeze via the Intuit webhook (latency optimisation, one
+region only) and the 15-minute `accounting-reconcile` CDC sweep (the
+guaranteed path in every region).
+
+Intuit allows exactly **one webhook URL per app**, and the hosted contract
+uses one Intuit app for both regions, so only the US deployment ever receives
+webhook notifications — the EU deployment (and any self-hosted install with
+no public webhook URL) relies entirely on the 15-minute sweep, which reaches
+the same end state on its own. `POST /api/v1/webhooks/quickbooks` verifies
+every delivery against `QBO_WEBHOOK_VERIFIER_TOKEN` (HMAC over the raw body);
+with the token unset the route answers `503` on every request rather than
+`200`, so Intuit keeps retrying instead of an unconfigured region silently
+swallowing notifications. Setting up the tunnel for item 17 below requires
+`QBO_WEBHOOK_VERIFIER_TOKEN` to be present in the target environment's
+`.env` **and** mapped in that environment's compose `environment:` block —
+per this repo's rule for new required env vars (CLAUDE.md, "Required env
+vars" — a value sitting only in `.env` is not sufficient; compose
+interpolation only happens for vars listed in the service's `environment:`
+block).
+
+17. **Register the webhook URL through a tunnel and confirm Intuit's verifier
+    handshake**, then receive a PARTIAL payment against a pushed invoice in
+    QBO and confirm Breeze flips the invoice to `partially_paid` within
+    seconds with a "QuickBooks" badge on the payment row.
+    Result: PENDING.
+
+18. **Record the remaining balance in QBO** and confirm Breeze flips to
+    `paid` with `paid_at` stamped.
+    Result: PENDING.
+
+19. **Replay the same Intuit notification** (re-deliver from the Intuit
+    dashboard, or re-run "Sync now") and confirm NO duplicate payment row
+    appears and the run logs `replayed`.
+    Result: PENDING.
+
+20. **Delete the payment in QBO** and confirm Breeze deletes only that
+    payment row, recomputes the invoice, and writes an
+    `accounting.payment.reversed` audit entry — while a manually recorded
+    payment on the same invoice survives untouched.
+    Result: PENDING.
+
+21. **Disable the webhook and let the 15-minute sweep run with a stale
+    cursor** — confirm the same end state is reached with no webhook at all
+    (this is the guaranteed path in every region; only the US deployment
+    receives Intuit notifications).
+    Result: PENDING.
+
+22. **Record the observed CDC paging behaviour**: make more than 1000 payment
+    changes in one window if feasible, otherwise capture a normal response's
+    `QueryResponse` block verbatim (`startPosition`, `maxResults`,
+    `totalCount`) so decision 3's window-halving can be confirmed or replaced
+    with a real cursor.
+    Result: PENDING.
+
+23. **Toggle `pull_payments` off** and confirm the next sweep no-ops for that
+    connection (no QBO call at all), then toggle it back on and confirm the
+    backlog lands on the following run.
+    Result: PENDING.
+
+24. **Void an invoice in QBO** and confirm the Breeze invoice mapping flips
+    to `error` / "Deleted in QuickBooks" in the sync card and is never
+    auto-resurrected.
+    Result: PENDING.
+
+25. **Record a QBO payment against an invoice Breeze has voided** and confirm
+    the invoice mapping flips to `error` with the message "Payment received
+    in QuickBooks against a voided invoice", the void header's `amount_paid`
+    and `balance` are left untouched, and the run outcome is `invoice_void`
+    (not a retried failure).
+    Result: PENDING.
+
+26. **Trigger "Sync now" while Redis/BullMQ is unavailable (or the queue add
+    otherwise fails)** and confirm the route still answers HTTP 200 with
+    `{ enqueued: false }` rather than a silent success, and that the web UI
+    shows the warning toast "Payment sync could not be queued. Try again
+    shortly." rather than the success toast — this is the quiet-failure-UI
+    guard and is Playwright-worthy as its own regression test independent of
+    a live sandbox.
+    Result: PENDING.
 
 ### How to fill this in on the next run
 
@@ -292,8 +434,10 @@ assigns the sandbox company, e.g. "Breeze QBO Sandbox 1"), never the realm ID.
 3. Confirm no credentials, tokens, or QuickBooks realm IDs were written
    anywhere in this repository as part of the run (grep the diff before
    committing).
-4. Migration referenced by this feature:
-   `apps/api/migrations/2026-09-28-quickbooks-entity-mappings.sql`.
+4. Migrations referenced by this feature:
+   `apps/api/migrations/2026-09-28-quickbooks-entity-mappings.sql` (Phase B),
+   `apps/api/migrations/2026-09-30-quickbooks-invoice-push.sql` (Phase C),
+   `apps/api/migrations/2026-10-01-quickbooks-payment-pullback.sql` (Phase D).
 
 ---
 
@@ -486,3 +630,22 @@ in `requireMappingWrite` that the run's test/doc-only contract left unfixed
 (fixed later by `e69c9cf01`). The sandbox walkthrough (Section 2) was
 PENDING then and is still PENDING now — no Intuit sandbox credentials have
 been exercised against this branch.
+
+### `a8e6c0ac5` — 2026-09-01, first live sandbox run (Phase B + Phase C)
+
+Executed the full checklist against the Intuit default US sandbox company on a
+per-worktree dev stack (Caddy pinned to `localhost:3001` to match the app's
+registered redirect URI; `QBO_*` passed into the API container via a local
+compose override). Results are inline above. Summary: 13 PASS, 1 PASS-as-designed
+(9), 2 not reproducible/testable in a single-currency realm with custom
+transaction numbers off (12, 16). Follow-ups raised, not fixed here:
+- Auto-push `currency_mismatch` leaves no mapping row, so the invoice detail
+  card shows nothing for the failure; only a manual push surfaces the error.
+- Disconnect CASCADEs invoice mapping rows, so pushed invoices read
+  `accountingSync: null` after a reconnect; re-push safety rests on the
+  provider's DocNumber lookup.
+- AST realms do not echo `TxnTaxCodeRef`; the override is verified by request
+  shape only.
+Verification of the QBO side used a throwaway in-container script issuing
+`select * from Invoice where DocNumber in (...)` and `select * from Preferences`
+with the stored connection's token; it was deleted, not committed.

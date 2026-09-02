@@ -180,6 +180,12 @@ export const aiAgentRuns = pgTable('ai_agent_runs', {
   // ai_agent_runs_schedule_idx.
   scheduleIdx: index('ai_agent_runs_schedule_idx')
     .on(table.scheduleId).where(sql`${table.scheduleId} IS NOT NULL`),
+  // P2-6 (#4193, migrations/2026-09-30-ai-agents-impact.sql): serves the
+  // rollup's tickets_triaged/narratives_delivered/full-profile scans — one
+  // index covers all four passes (equality on profile, range on
+  // finished_at).
+  orgProfileFinishedIdx: index('ai_agent_runs_org_profile_finished_idx')
+    .on(table.orgId, table.profile, table.finishedAt).where(sql`${table.finishedAt} IS NOT NULL`),
 }));
 
 export type AiAgentRow = typeof aiAgents.$inferSelect;

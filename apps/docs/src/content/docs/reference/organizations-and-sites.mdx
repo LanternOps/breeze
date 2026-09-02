@@ -141,6 +141,10 @@ An **Organisation** represents a customer or internal team managed by a partner.
 | `suspended` | Access is restricted. Devices may still report but management actions are limited. |
 | `trial` | Evaluation period. |
 | `churned` | Customer has left. Retained for historical data. |
+| `offboarding` | Being wound down. |
+| `merging` | A merge into a surviving organisation is in progress. |
+| `archived` | Hidden from the active list and read-only. Restorable. |
+| `purging` | Archived data is being permanently deleted. |
 
 ### Organisation Fields
 
@@ -206,6 +210,41 @@ Returns the created organisation object with a `201` status.
 ### Soft Deletes for Organisations
 
 Like partners, organisations use soft deletes. Deleting an organisation sets the `deletedAt` timestamp. All queries exclude soft-deleted records.
+
+### Archiving an Organisation
+
+Archiving retires an organisation without erasing it. It is distinct from a soft delete: the organisation moves to `archived` status, and the API blocks writes against it until it is restored.
+
+Archiving an organisation:
+
+- Hides it from the organisation list and search.
+- Leaves existing data intact but **read-only** — the organisation's settings page shows a banner and refuses saves.
+- **Uninstalls the agents on its devices.**
+- Stops billing for that organisation.
+- Optionally schedules a permanent purge after a retention period you choose. You can also keep the data indefinitely, in which case it is never purged automatically.
+
+Restoring is the undo, available any time before the purge runs.
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/orgs/organizations/:id/archive` | Archive the organisation. Accepts the retention choice. |
+| `POST` | `/orgs/organizations/:id/restore` | Restore an archived organisation to `active`. |
+
+Both require partner scope, `organizations:write`, **and a satisfied MFA challenge** — an API key or session without MFA is rejected.
+
+### Merging Organisations
+
+Merging moves one organisation's data into a surviving organisation. Unlike archiving, it is **permanent**: the merged organisation is retired and cannot be recovered.
+
+Preview first. The preview reports how many rows would move and which would be dropped, so you can see the shape of the merge before committing. A merge above the automatic size limit is refused and needs to be scheduled manually with support.
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/orgs/organizations/:id/merge-preview` | Report what a merge into a chosen survivor would move and drop. Changes nothing. |
+| `POST` | `/orgs/organizations/:id/merge` | Run the merge. Returns a job to poll. |
+| `GET` | `/orgs/organizations/merge-runs/:jobId` | Poll a running merge. |
+
+Merging carries the same partner-scope, `organizations:write` and MFA requirements as archiving. In the dashboard you must also type the organisation's name to confirm.
 
 ---
 

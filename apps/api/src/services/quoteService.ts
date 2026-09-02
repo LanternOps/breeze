@@ -1248,7 +1248,7 @@ async function repriceQuoteCatalogLines(
   const repriceable = lines.filter((l) => l.sourceType === 'catalog' && l.catalogItemId !== null && l.parentLineId === null);
   const rest = lines.length - repriceable.length;
   if (rest > 0) {
-    throw new QuoteServiceError(`${rest} non-catalog line(s) cannot be repriced — pass clearLines instead`, 409, 'CURRENCY_LOCKED');
+    throw new QuoteServiceError(`${rest} non-catalog line(s) have no price in the new currency — remove all lines first, or keep the current currency`, 409, 'CURRENCY_LOCKED');
   }
   const catalogActor = { userId: actor.userId, partnerId: q.partnerId, accessibleOrgIds: actor.accessibleOrgIds };
   for (const line of repriceable) {

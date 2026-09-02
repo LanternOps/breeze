@@ -45,6 +45,7 @@
     "aiUsageBudget": "AI Usage & Budget",
     "aiAgents": "AI Agents",
     "aiAgentRuns": "AI Agent Runs",
+    "aiImpact": "AI Impact",
     "customFields": "Custom Fields",
     "variables": "Variables",
     "savedFilters": "Saved Filters",
@@ -2412,6 +2413,11 @@
     "link": "What's new"
   },
   "money": {
-    "approximateTotal": "≈ {{amount}} approximate · rates as of {{rateDate}}"
+    "approximateTotal": "≈ {{amount}} approximate · rates as of {{rateDate}}",
+    "approximateFailed": "≈ total unavailable — could not load exchange rates",
+    "approximateUnavailableMissing": "≈ total unavailable — no {{target}} exchange rate for {{codes}}",
+    "approximateUnavailableStale": "≈ total unavailable — {{target}} exchange rate too old for {{codes}}",
+    "approximateUnavailableMixed": "≈ total unavailable — {{codes}} could not be converted to {{target}}",
+    "approximateUnavailableCodesOverflow": "{{codes}} and {{more}} more"
   }
 }

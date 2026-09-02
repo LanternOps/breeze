@@ -1703,6 +1703,116 @@
           "resolutionNote": "Entwurf der Lösungsnotiz"
         }
       }
+    },
+    "impact": {
+      "title": "KI-Wirkung",
+      "description": "Was Ihre KI-Agenten in den für Sie sichtbaren Organisationen erledigt haben — und wie viel Arbeitszeit das schätzungsweise wert ist.",
+      "windowLabel": "Berichtszeitraum",
+      "windows": {
+        "d7": "Letzte 7 Tage",
+        "d30": "Letzte 30 Tage",
+        "d90": "Letzte 90 Tage"
+      },
+      "loading": "Wirkungsbericht wird geladen…",
+      "refresh": "Aktualisieren",
+      "refreshing": "Wird neu aufgebaut…",
+      "retry": "Erneut versuchen",
+      "errors": {
+        "load": "Der Wirkungsbericht konnte nicht geladen werden.",
+        "rebuild": "Der Neuaufbau des Wirkungsberichts konnte nicht eingeplant werden.",
+        "tooManyOrgs": "Dieser Neuaufbau umfasst mehr als {{limit}} Organisationen. Wählen Sie im Organisations-Umschalter eine einzelne Organisation aus und versuchen Sie es erneut.",
+        "orgIdRequired": "Wählen Sie im Organisations-Umschalter eine einzelne Organisation aus, bevor Sie den Wirkungsbericht neu aufbauen.",
+        "exportPdf": "Der PDF-Export konnte nicht erstellt werden."
+      },
+      "toasts": {
+        "rebuildQueued": "Neuaufbau des Wirkungsberichts eingeplant.",
+        "rebuildComplete": "Der Wirkungsbericht wurde neu aufgebaut.",
+        "rebuildStillRunning": "Der Neuaufbau läuft noch. Laden Sie diese Seite in einigen Minuten neu, um die neuen Zahlen zu sehen."
+      },
+      "tiles": {
+        "alertsJudged": "Bewertete Warnmeldungen",
+        "noiseFlagged": "Als Rauschen markiert",
+        "ticketsTriaged": "Sortierte Tickets",
+        "draftsSent": "Gesendete Entwürfe",
+        "fixesExecuted": "Ausgeführte Behebungen",
+        "estTimeSaved": "Geschätzte Zeitersparnis",
+        "estTimeSavedValue": "{{hours}} Std.",
+        "llmSpend": "LLM-Ausgaben"
+      },
+      "weightsTooltipTitle": "Nur eine Schätzung — jedem Ergebnis wird ein fester Zeitwert gutgeschrieben:",
+      "weightsTooltipLine": "{{label}}: {{minutes}} Min. pro Ergebnis",
+      "weightLabels": {
+        "alertJudged": "Warnmeldung bewertet",
+        "noiseFlagged": "Als Rauschen markiert",
+        "ticketTriaged": "Ticket sortiert",
+        "draftSent": "Entwurf gesendet",
+        "fixExecuted": "Behebung ausgeführt",
+        "narrativeDelivered": "Wochenbericht zugestellt"
+      },
+      "chart": {
+        "title": "Ergebnisse pro Tag",
+        "empty": "In diesem Zeitraum wurden keine Ergebnisse erfasst.",
+        "noiseFlagged": "Als Rauschen markiert",
+        "alertsJudgedNet": "Bewertete Warnmeldungen, ohne Rauschen",
+        "ticketsTriaged": "Sortierte Tickets",
+        "fixesExecuted": "Ausgeführte Behebungen"
+      },
+      "byOrg": {
+        "title": "Nach Organisation",
+        "truncated": "Angezeigt werden die {{limit}} Organisationen mit der höchsten geschätzten Zeitersparnis.",
+        "columns": {
+          "organization": "Organisation",
+          "alertsJudged": "Bewertete Warnmeldungen",
+          "ticketsTriaged": "Sortierte Tickets",
+          "fixesExecuted": "Ausgeführte Behebungen",
+          "estTimeSaved": "Geschätzte Zeitersparnis",
+          "llmSpend": "LLM-Ausgaben"
+        }
+      },
+      "freshness": "Daten bis {{through}} (UTC) · neu aufgebaut {{rebuiltAt}}",
+      "freshnessNeverRebuilt": "Daten bis {{through}} (UTC) · nie neu aufgebaut",
+      "positiveFeedbackRate": "Quote positiver Rückmeldungen",
+      "positiveFeedbackDetail": "{{up}} hilfreich, {{down}} nicht hilfreich",
+      "editWeights": "Gewichtungen bearbeiten",
+      "exportPdf": "Als PDF exportieren",
+      "weightsDrawer": {
+        "title": "Gewichtungen für Zeitersparnis bearbeiten",
+        "description": "Legen Sie fest, wie viele Sekunden menschlicher Zeit jedem Ergebnis angerechnet werden. Diese Gewichtungen ändern nur die Schätzung — niemals, was Ihre KI-Agenten tun.",
+        "save": "Speichern",
+        "saving": "Wird gespeichert…",
+        "reset": "Auf Standardwerte zurücksetzen",
+        "resetting": "Wird zurückgesetzt…",
+        "customized": "Angepasst",
+        "errors": {
+          "save": "Die Gewichtungen konnten nicht gespeichert werden.",
+          "reset": "Die Gewichtungen konnten nicht zurückgesetzt werden."
+        },
+        "toasts": {
+          "saved": "Gewichtungen gespeichert.",
+          "reset": "Gewichtungen auf Standardwerte zurückgesetzt."
+        }
+      },
+      "pdf": {
+        "metrics": {
+          "alertsJudged": "Bewertete Warnmeldungen",
+          "noiseFlagged": "Als Rauschen markiert",
+          "suppressionsApplied": "Angewendete Unterdrückungen",
+          "ticketsTriaged": "Sortierte Tickets",
+          "draftsSent": "Gesendete Entwürfe",
+          "fixesProposed": "Vorgeschlagene Behebungen",
+          "fixesExecuted": "Ausgeführte Behebungen",
+          "fixWatchesHeld": "Gehaltene Behebungsüberwachungen",
+          "fixWatchesRecurred": "Wiederkehrende Behebungsüberwachungen",
+          "narrativesDelivered": "Gelieferte Wöchentliche Berichte",
+          "estTimeSaved": "Geschätzte Zeitersparnis",
+          "llmSpend": "LLM-Ausgaben",
+          "window": "Berichtszeitraum (Tage)",
+          "through": "Daten bis (UTC)",
+          "rebuiltAt": "Zuletzt neu erstellt"
+        },
+        "weightRowLabel": "{{label}} (angerechnete Sekunden)",
+        "neverRebuilt": "Nie neu erstellt"
+      }
     }
   },
   "apiKeyForm": {
@@ -2128,7 +2238,12 @@
     "phoneVerifiedLast4": "(Telefon verifiziert: ...{{last4}})",
     "recoveryCodes": "Wiederherstellungscodes",
     "useTheseCodesToAccessYourAccountIfYouLoseYourAuthenticat": "Verwenden Sie diese Codes, um auf Ihr Konto zuzugreifen, wenn Sie Ihren Authentifikator verlieren.",
-    "viewCodes": "Codes ansehen",
+    "recoveryCodesAreShownOnceAndCannotBeDisplayedAgain": "Wiederherstellungscodes werden nur einmal angezeigt und können danach nicht erneut eingesehen werden.",
+    "regenerateRecoveryCodes": "Wiederherstellungscodes neu generieren",
+    "existingCodesCannotBeDisplayedAgainRegeneratingIssuesA": "Vorhandene Codes können nicht erneut angezeigt werden. Beim Neugenerieren wird ein neuer Satz ausgestellt und der alte sofort ungültig.",
+    "regenerateRecoveryCodesQuestion": "Wiederherstellungscodes neu generieren?",
+    "regeneratingImmediatelyInvalidatesEveryRecoveryCodeYou": "Durch das Neugenerieren wird jeder von Ihnen gespeicherte Wiederherstellungscode sofort ungültig, auch ausgedruckte Kopien. Die neuen Codes werden unmittelbar danach ein einziges Mal angezeigt.",
+    "thatCodeWasNotAcceptedYourQRCodeIsStillValidWaitForThe": "Dieser Code wurde nicht akzeptiert. Ihr QR-Code ist weiterhin gültig. Warten Sie auf den nächsten Code Ihrer Authenticator-App und versuchen Sie es erneut.",
     "confirmYourPassword": "Bestätigen Sie Ihr Passwort",
     "reEnterYourAccountPasswordToStartSettingUpAnAuthenticato": "Geben Sie Ihr Kontopasswort erneut ein, um mit der Einrichtung einer Authentifizierungs-App zu beginnen.",
     "setUpAuthenticator": "Authentifikator einrichten",
@@ -2140,7 +2255,8 @@
     "reEnterYourAccountPasswordToConfirmThisChange": "Geben Sie Ihr Kontopasswort erneut ein, um diese Änderung zu bestätigen.",
     "saveTheseCodesInASafePlaceYouCanUseThemToAccessYourAccou": "Bewahren Sie diese Codes an einem sicheren Ort auf. Sie können damit auf Ihr Konto zugreifen, wenn Sie Ihr Authentifizierungsgerät verlieren.",
     "copyCodes": "Codes kopieren",
-    "clickTheButtonBelowToViewOrGenerateNewRecoveryCodes": "Klicken Sie auf die Schaltfläche unten, um neue Wiederherstellungscodes anzuzeigen oder zu generieren.",
+    "copiedCodes": "Kopiert",
+    "copyCodesFailed": "Kopieren in die Zwischenablage nicht möglich. Markieren Sie die Codes oben und kopieren Sie sie manuell.",
     "eachCodeCanOnlyBeUsedOnceGeneratingNewCodesWillInvalidat": "Jeder Code kann nur einmal verwendet werden. Durch die Generierung neuer Codes werden alle zuvor generierten Codes ungültig.",
     "back": "Zurück",
     "smsSentToPhone": "An das Telefon gesendete SMS-Codes mit der Endung {{last4}}.",
@@ -2164,7 +2280,6 @@
     "disabling": "Deaktivieren...",
     "generating": "Generieren...",
     "regenerateCodes": "Codes neu generieren",
-    "showRecoveryCodes": "Wiederherstellungscodes anzeigen",
     "verifyYourIdentity": "Bestätigen Sie Ihre Identität",
     "thisAccountSignsInThroughAnIdentityProviderAndHasNoPassw": "Dieses Konto meldet sich über einen Identitätsanbieter an und hat kein Passwort. Bestätigen Sie sich erneut bei Ihrem Anbieter, um die Einrichtung einer Authenticator-App zu starten.",
     "verifyWithYourIdentityProvider": "Mit Ihrem Identitätsanbieter bestätigen",

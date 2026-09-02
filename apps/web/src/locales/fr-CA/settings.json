@@ -1703,6 +1703,116 @@
           "resolutionNote": "Brouillon de note de résolution"
         }
       }
+    },
+    "impact": {
+      "title": "Impact de l’IA",
+      "description": "Ce que vos agents IA ont traité dans les organisations que vous pouvez voir, et le temps de travail que cela représente selon l’estimation.",
+      "windowLabel": "Période du rapport",
+      "windows": {
+        "d7": "7 derniers jours",
+        "d30": "30 derniers jours",
+        "d90": "90 derniers jours"
+      },
+      "loading": "Chargement du rapport d’impact…",
+      "refresh": "Actualiser",
+      "refreshing": "Reconstruction en cours…",
+      "retry": "Réessayer",
+      "errors": {
+        "load": "Impossible de charger le rapport d’impact.",
+        "rebuild": "Impossible de mettre la reconstruction du rapport en file d’attente.",
+        "tooManyOrgs": "Cette reconstruction couvre plus de {{limit}} organisations. Choisissez une seule organisation dans le sélecteur d’organisation, puis réessayez.",
+        "orgIdRequired": "Choisissez une seule organisation dans le sélecteur d’organisation avant de reconstruire le rapport d’impact.",
+        "exportPdf": "L'export PDF n'a pas pu être généré."
+      },
+      "toasts": {
+        "rebuildQueued": "Reconstruction du rapport mise en file d’attente.",
+        "rebuildComplete": "Le rapport d’impact a été reconstruit.",
+        "rebuildStillRunning": "La reconstruction est toujours en cours. Rechargez cette page dans quelques minutes pour voir les nouveaux chiffres."
+      },
+      "tiles": {
+        "alertsJudged": "Alertes évaluées",
+        "noiseFlagged": "Signalées comme bruit",
+        "ticketsTriaged": "Tickets triés",
+        "draftsSent": "Brouillons envoyés",
+        "fixesExecuted": "Correctifs appliqués",
+        "estTimeSaved": "Temps gagné estimé",
+        "estTimeSavedValue": "{{hours}} heures",
+        "llmSpend": "Dépenses LLM"
+      },
+      "weightsTooltipTitle": "Une estimation uniquement — chaque résultat est crédité d’une durée fixe :",
+      "weightsTooltipLine": "{{label}} : {{minutes}} min créditées par résultat",
+      "weightLabels": {
+        "alertJudged": "Alerte évaluée",
+        "noiseFlagged": "Signalée comme bruit",
+        "ticketTriaged": "Ticket trié",
+        "draftSent": "Brouillon envoyé",
+        "fixExecuted": "Correctif appliqué",
+        "narrativeDelivered": "Rapport hebdomadaire livré"
+      },
+      "chart": {
+        "title": "Résultats par jour",
+        "empty": "Aucun résultat n’a été enregistré sur cette période.",
+        "noiseFlagged": "Signalées comme bruit",
+        "alertsJudgedNet": "Alertes évaluées, hors bruit",
+        "ticketsTriaged": "Tickets triés",
+        "fixesExecuted": "Correctifs appliqués"
+      },
+      "byOrg": {
+        "title": "Par organisation",
+        "truncated": "Affichage des {{limit}} organisations ayant le temps gagné estimé le plus élevé.",
+        "columns": {
+          "organization": "Organisation",
+          "alertsJudged": "Alertes évaluées",
+          "ticketsTriaged": "Tickets triés",
+          "fixesExecuted": "Correctifs appliqués",
+          "estTimeSaved": "Temps gagné estimé",
+          "llmSpend": "Dépenses LLM"
+        }
+      },
+      "freshness": "Données jusqu’au {{through}} (UTC) · reconstruit {{rebuiltAt}}",
+      "freshnessNeverRebuilt": "Données jusqu’au {{through}} (UTC) · jamais reconstruit",
+      "positiveFeedbackRate": "Taux d’avis positifs",
+      "positiveFeedbackDetail": "{{up}} utiles, {{down}} non utiles",
+      "editWeights": "Modifier les pondérations",
+      "exportPdf": "Exporter en PDF",
+      "weightsDrawer": {
+        "title": "Modifier les pondérations de temps gagné",
+        "description": "Définissez le nombre de secondes de temps humain crédité pour chaque résultat. Ces pondérations ne modifient que l'estimation — jamais ce que font vos agents IA.",
+        "save": "Enregistrer",
+        "saving": "Enregistrement…",
+        "reset": "Rétablir les valeurs par défaut",
+        "resetting": "Rétablissement…",
+        "customized": "Personnalisé",
+        "errors": {
+          "save": "Les pondérations n'ont pas pu être enregistrées.",
+          "reset": "Les pondérations n'ont pas pu être réinitialisées."
+        },
+        "toasts": {
+          "saved": "Pondérations enregistrées.",
+          "reset": "Pondérations réinitialisées aux valeurs par défaut."
+        }
+      },
+      "pdf": {
+        "metrics": {
+          "alertsJudged": "Alertes évaluées",
+          "noiseFlagged": "Signalées comme bruit",
+          "suppressionsApplied": "Suppressions appliquées",
+          "ticketsTriaged": "Tickets triés",
+          "draftsSent": "Brouillons envoyés",
+          "fixesProposed": "Correctifs proposés",
+          "fixesExecuted": "Correctifs appliqués",
+          "fixWatchesHeld": "Surveillances de correctif maintenues",
+          "fixWatchesRecurred": "Surveillances de correctif récurrentes",
+          "narrativesDelivered": "Rapports hebdomadaires livrés",
+          "estTimeSaved": "Temps gagné estimé",
+          "llmSpend": "Dépenses LLM",
+          "window": "Fenêtre du rapport (jours)",
+          "through": "Données jusqu'au (UTC)",
+          "rebuiltAt": "Dernière reconstruction"
+        },
+        "weightRowLabel": "{{label}} (secondes créditées)",
+        "neverRebuilt": "Jamais reconstruit"
+      }
     }
   },
   "apiKeyForm": {
@@ -2123,7 +2233,12 @@
     "phoneVerifiedLast4": "(téléphone vérifié : ...{{last4}})",
     "recoveryCodes": "Codes de récupération",
     "useTheseCodesToAccessYourAccountIfYouLoseYourAuthenticat": "Utilisez ces codes pour accéder à votre compte si vous perdez votre authentificateur.",
-    "viewCodes": "Voir les codes",
+    "recoveryCodesAreShownOnceAndCannotBeDisplayedAgain": "Les codes de récupération ne s’affichent qu’une fois et ne peuvent pas être réaffichés.",
+    "regenerateRecoveryCodes": "Régénérer les codes de récupération",
+    "existingCodesCannotBeDisplayedAgainRegeneratingIssuesA": "Les codes existants ne peuvent pas être réaffichés. La régénération émet une nouvelle série et invalide immédiatement l’ancienne.",
+    "regenerateRecoveryCodesQuestion": "Régénérer les codes de récupération?",
+    "regeneratingImmediatelyInvalidatesEveryRecoveryCodeYou": "La régénération invalide immédiatement tous les codes de récupération que vous avez conservés, y compris les copies imprimées. Les nouveaux codes s’affichent une seule fois, juste après leur génération.",
+    "thatCodeWasNotAcceptedYourQRCodeIsStillValidWaitForThe": "Ce code a été refusé. Votre code QR demeure valide : attendez le prochain code de votre authentificateur, puis réessayez.",
     "confirmYourPassword": "Confirmez votre mot de passe",
     "reEnterYourAccountPasswordToStartSettingUpAnAuthenticato": "Saisissez à nouveau votre mot de passe de compte pour commencer à configurer une application d’authentification.",
     "setUpAuthenticator": "Configurez l’authentificateur",
@@ -2135,7 +2250,8 @@
     "reEnterYourAccountPasswordToConfirmThisChange": "Saisissez à nouveau votre mot de passe de compte pour confirmer ce changement.",
     "saveTheseCodesInASafePlaceYouCanUseThemToAccessYourAccou": "Enregistrez ces codes dans un endroit sûr. Vous pouvez les utiliser pour accéder à votre compte si vous perdez votre appareil authentificateur.",
     "copyCodes": "Copier les codes",
-    "clickTheButtonBelowToViewOrGenerateNewRecoveryCodes": "Cliquez sur le bouton ci-dessous pour voir ou générer de nouveaux codes de récupération.",
+    "copiedCodes": "Copié",
+    "copyCodesFailed": "Impossible de copier dans le presse-papiers. Sélectionnez les codes ci-dessus et copiez-les manuellement.",
     "eachCodeCanOnlyBeUsedOnceGeneratingNewCodesWillInvalidat": "Chaque code ne peut être utilisé qu’une seule fois. Générer de nouveaux codes invalidera tout code déjà généré.",
     "back": "Retour",
     "smsSentToPhone": "Des codes SMS envoyés au téléphone se terminant par {{last4}}.",
@@ -2159,7 +2275,6 @@
     "disabling": "Désactivant...",
     "generating": "Générer...",
     "regenerateCodes": "Régénération des codes",
-    "showRecoveryCodes": "Afficher les codes de récupération",
     "verifyYourIdentity": "Vérifiez votre identité",
     "thisAccountSignsInThroughAnIdentityProviderAndHasNoPassw": "Ce compte ouvre une session par l'entremise d'un fournisseur d'identité et n'a pas de mot de passe. Vérifiez de nouveau votre identité auprès de votre fournisseur pour commencer à configurer une application d'authentification.",
     "verifyWithYourIdentityProvider": "Vérifier avec votre fournisseur d'identité",

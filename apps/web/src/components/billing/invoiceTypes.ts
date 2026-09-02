@@ -107,6 +107,21 @@ export interface InvoiceBranding {
   seller: SellerSnapshot | null;
 }
 
+/**
+ * QuickBooks push status for this invoice (Phase C, Task 5). Read-only: the
+ * web never calls QuickBooks and never derives this itself — it mirrors
+ * `accounting_entity_mappings` via a partner-scoped read, so it is `null`
+ * whenever there is no connection/mapping yet OR the caller's ambient RLS
+ * context can't see the (partner-axis) mapping row.
+ */
+export interface AccountingSyncSummary {
+  provider: 'quickbooks';
+  syncStatus: 'pending' | 'synced' | 'error' | 'synced_with_tax_variance';
+  lastSyncedAt: string | null;
+  lastError: string | null;
+  remoteDocNumber: string | null;
+}
+
 export interface InvoiceDetail {
   invoice: InvoiceSummary;
   lines: InvoiceLine[];
@@ -121,6 +136,8 @@ export interface InvoiceDetail {
   /** Warn-don't-block (multi-currency #3777): set by the API when the invoice
    *  currency differs from `stripeAccountCurrency`. Never blocks the pay link. */
   currencyWarning?: StripeCurrencyWarning | null;
+  /** See `AccountingSyncSummary`. Absent on older API responses. */
+  accountingSync?: AccountingSyncSummary | null;
 }
 
 export interface InvoicePayment {
@@ -133,8 +150,12 @@ export interface InvoicePayment {
   note: string | null;
   createdAt: string;
   /** Origin of the payment: 'stripe' = collected via online checkout (refund
-   *  through Stripe, no manual void), 'manual' = recorded by an operator. */
-  source?: 'stripe' | 'manual';
+   *  through Stripe, no manual void), 'manual' = recorded by an operator,
+   *  'quickbooks' = pulled back from QuickBooks by the accounting-reconcile
+   *  worker (Phase D). QuickBooks is the system of record for those, so they
+   *  are not hand-voidable either — a Breeze-side reverse would not touch the
+   *  books and the next reconcile would pull the payment straight back in. */
+  source?: 'stripe' | 'manual' | 'quickbooks';
 }
 
 export const STATUS_LABELS: Record<InvoiceStatus, string> = {

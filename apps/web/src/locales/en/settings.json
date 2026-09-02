@@ -1703,6 +1703,116 @@
           "resolutionNote": "Resolution-note draft"
         }
       }
+    },
+    "impact": {
+      "title": "AI impact",
+      "description": "What your AI agents handled across the organizations you can see, and the human time that is estimated to be worth.",
+      "windowLabel": "Reporting window",
+      "windows": {
+        "d7": "Last 7 days",
+        "d30": "Last 30 days",
+        "d90": "Last 90 days"
+      },
+      "loading": "Loading the impact report…",
+      "refresh": "Refresh",
+      "refreshing": "Rebuilding…",
+      "retry": "Try again",
+      "errors": {
+        "load": "The impact report could not be loaded.",
+        "rebuild": "The impact rebuild could not be queued.",
+        "tooManyOrgs": "This rebuild covers more than {{limit}} organizations. Choose a single organization in the organization switcher and try again.",
+        "orgIdRequired": "Choose a single organization in the organization switcher before rebuilding the impact report.",
+        "exportPdf": "The PDF export could not be generated."
+      },
+      "toasts": {
+        "rebuildQueued": "Impact rebuild queued.",
+        "rebuildComplete": "The impact report has been rebuilt.",
+        "rebuildStillRunning": "The rebuild is still running. Reload this page in a few minutes to see the new figures."
+      },
+      "tiles": {
+        "alertsJudged": "Alerts judged",
+        "noiseFlagged": "Flagged as noise",
+        "ticketsTriaged": "Tickets triaged",
+        "draftsSent": "Drafts sent",
+        "fixesExecuted": "Fixes executed",
+        "estTimeSaved": "Estimated time saved",
+        "estTimeSavedValue": "{{hours}} hours",
+        "llmSpend": "LLM spend"
+      },
+      "weightsTooltipTitle": "An estimate only — each outcome is credited with a fixed allowance:",
+      "weightsTooltipLine": "{{label}}: {{minutes}} min credited per outcome",
+      "weightLabels": {
+        "alertJudged": "Alert judged",
+        "noiseFlagged": "Flagged as noise",
+        "ticketTriaged": "Ticket triaged",
+        "draftSent": "Draft sent",
+        "fixExecuted": "Fix executed",
+        "narrativeDelivered": "Weekly report delivered"
+      },
+      "chart": {
+        "title": "Outcomes per day",
+        "empty": "No outcomes were recorded in this window.",
+        "noiseFlagged": "Flagged as noise",
+        "alertsJudgedNet": "Alerts judged, excluding noise",
+        "ticketsTriaged": "Tickets triaged",
+        "fixesExecuted": "Fixes executed"
+      },
+      "byOrg": {
+        "title": "By organization",
+        "truncated": "Showing the top {{limit}} organizations by estimated time saved.",
+        "columns": {
+          "organization": "Organization",
+          "alertsJudged": "Alerts judged",
+          "ticketsTriaged": "Tickets triaged",
+          "fixesExecuted": "Fixes executed",
+          "estTimeSaved": "Estimated time saved",
+          "llmSpend": "LLM spend"
+        }
+      },
+      "freshness": "Data through {{through}} (UTC) · rebuilt {{rebuiltAt}}",
+      "freshnessNeverRebuilt": "Data through {{through}} (UTC) · never rebuilt",
+      "positiveFeedbackRate": "Positive feedback rate",
+      "positiveFeedbackDetail": "{{up}} helpful, {{down}} not helpful",
+      "editWeights": "Edit weights",
+      "exportPdf": "Export PDF",
+      "weightsDrawer": {
+        "title": "Edit time-saved weights",
+        "description": "Set how many seconds of human time each outcome is credited with. These weights only change the estimate — they never change what your AI agents do.",
+        "save": "Save",
+        "saving": "Saving…",
+        "reset": "Reset to defaults",
+        "resetting": "Resetting…",
+        "customized": "Customized",
+        "errors": {
+          "save": "The weights could not be saved.",
+          "reset": "The weights could not be reset."
+        },
+        "toasts": {
+          "saved": "Weights saved.",
+          "reset": "Weights reset to defaults."
+        }
+      },
+      "pdf": {
+        "metrics": {
+          "alertsJudged": "Alerts judged",
+          "noiseFlagged": "Flagged as noise",
+          "suppressionsApplied": "Suppressions applied",
+          "ticketsTriaged": "Tickets triaged",
+          "draftsSent": "Drafts sent",
+          "fixesProposed": "Fixes proposed",
+          "fixesExecuted": "Fixes executed",
+          "fixWatchesHeld": "Fix watches held",
+          "fixWatchesRecurred": "Fix watches recurred",
+          "narrativesDelivered": "Weekly reports delivered",
+          "estTimeSaved": "Estimated time saved",
+          "llmSpend": "LLM spend",
+          "window": "Reporting window (days)",
+          "through": "Data through (UTC)",
+          "rebuiltAt": "Last rebuilt"
+        },
+        "weightRowLabel": "{{label}} (seconds credited)",
+        "neverRebuilt": "Never rebuilt"
+      }
     }
   },
   "apiKeyForm": {
@@ -2128,7 +2238,12 @@
     "phoneVerifiedLast4": "(phone verified: ...{{last4}})",
     "recoveryCodes": "Recovery codes",
     "useTheseCodesToAccessYourAccountIfYouLoseYourAuthenticat": "Use these codes to access your account if you lose your authenticator.",
-    "viewCodes": "View codes",
+    "recoveryCodesAreShownOnceAndCannotBeDisplayedAgain": "Recovery codes are shown once and cannot be displayed again.",
+    "regenerateRecoveryCodes": "Regenerate recovery codes",
+    "existingCodesCannotBeDisplayedAgainRegeneratingIssuesA": "Existing codes cannot be displayed again. Regenerating issues a new set and immediately invalidates the old one.",
+    "regenerateRecoveryCodesQuestion": "Regenerate recovery codes?",
+    "regeneratingImmediatelyInvalidatesEveryRecoveryCodeYou": "Regenerating immediately invalidates every recovery code you have saved, including printed copies. The replacements are shown once, right after they are generated.",
+    "thatCodeWasNotAcceptedYourQRCodeIsStillValidWaitForThe": "That code was not accepted. Your QR code is still valid, so wait for the next code from your authenticator and try again.",
     "confirmYourPassword": "Confirm your password",
     "reEnterYourAccountPasswordToStartSettingUpAnAuthenticato": "Re-enter your account password to start setting up an authenticator app.",
     "setUpAuthenticator": "Set up authenticator",
@@ -2140,7 +2255,8 @@
     "reEnterYourAccountPasswordToConfirmThisChange": "Re-enter your account password to confirm this change.",
     "saveTheseCodesInASafePlaceYouCanUseThemToAccessYourAccou": "Save these codes in a safe place. You can use them to access your account if you lose your authenticator device.",
     "copyCodes": "Copy codes",
-    "clickTheButtonBelowToViewOrGenerateNewRecoveryCodes": "Click the button below to view or generate new recovery codes.",
+    "copiedCodes": "Copied",
+    "copyCodesFailed": "Couldn't copy to the clipboard. Select the codes above and copy them by hand.",
     "eachCodeCanOnlyBeUsedOnceGeneratingNewCodesWillInvalidat": "Each code can only be used once. Generating new codes will invalidate any previously generated codes.",
     "back": "Back",
     "smsSentToPhone": "SMS codes sent to phone ending in {{last4}}.",
@@ -2164,7 +2280,6 @@
     "disabling": "Disabling...",
     "generating": "Generating...",
     "regenerateCodes": "Regenerate codes",
-    "showRecoveryCodes": "Show recovery codes",
     "verifyYourIdentity": "Verify your identity",
     "thisAccountSignsInThroughAnIdentityProviderAndHasNoPassw": "This account signs in through an identity provider and has no password. Re-verify with your provider to start setting up an authenticator app.",
     "verifyWithYourIdentityProvider": "Verify with your identity provider",

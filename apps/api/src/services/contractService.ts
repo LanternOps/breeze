@@ -743,7 +743,7 @@ export async function changeContractCurrency(
         const repriceable = lineRows.filter((l) => l.catalogItemId !== null);
         const rest = lineRows.length - repriceable.length;
         if (rest > 0) {
-          throw new ContractServiceError(`${rest} non-catalog line(s) cannot be repriced — pass clearLines instead`, 409, 'CURRENCY_LOCKED');
+          throw new ContractServiceError(`${rest} non-catalog line(s) have no price in the new currency — remove all lines first, or keep the current currency`, 409, 'CURRENCY_LOCKED');
         }
         const catalogActor = { userId: actor.userId, partnerId: c.partnerId, accessibleOrgIds: actor.accessibleOrgIds };
         for (const line of repriceable) {
