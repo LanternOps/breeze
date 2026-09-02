@@ -1302,6 +1302,11 @@
     "alertThresholds": "Warnen bei (% des Budgets)",
     "alertThresholdsHelp": "Benachrichtigungen gehen an Partner-Admins mit Abrechnungszugriff. 100% (Obergrenze erreicht) wird immer gesendet.",
     "firedRung": "{{pct}}% {{period}}-Warnung gesendet am {{date}}",
+    "alertThresholdsPlaceholder": "50, 80, 95",
+    "periodLabel": {
+      "daily": "täglich",
+      "monthly": "monatlich"
+    },
     "maxTurnsPerSession": "Maximale Umdrehungen pro Sitzung",
     "msgsMinPerUser": "Nachrichten/Minute pro Benutzer",
     "msgsHrPerOrg": "Nachrichten/Std. pro Organisation",

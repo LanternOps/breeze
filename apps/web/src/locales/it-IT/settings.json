@@ -1302,6 +1302,11 @@
     "alertThresholds": "Avvisa al (% del budget)",
     "alertThresholdsHelp": "Gli avvisi vengono inviati agli admin partner con accesso alla fatturazione. Il 100% (limite raggiunto) viene sempre inviato.",
     "firedRung": "Avviso {{pct}}% {{period}} inviato il {{date}}",
+    "alertThresholdsPlaceholder": "50, 80, 95",
+    "periodLabel": {
+      "daily": "giornaliero",
+      "monthly": "mensile"
+    },
     "maxTurnsPerSession": "Turni massimi per sessione",
     "msgsMinPerUser": "Messaggi/min per utente",
     "msgsHrPerOrg": "Messaggi/ora per organizzazione",

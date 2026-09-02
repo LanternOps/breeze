@@ -1302,6 +1302,11 @@
     "alertThresholds": "Avertir à (% du budget)",
     "alertThresholdsHelp": "Les alertes sont envoyées aux administrateurs partenaires ayant accès à la facturation. 100% (plafond atteint) est toujours envoyé.",
     "firedRung": "Alerte {{pct}}% {{period}} envoyée le {{date}}",
+    "alertThresholdsPlaceholder": "50, 80, 95",
+    "periodLabel": {
+      "daily": "quotidienne",
+      "monthly": "mensuelle"
+    },
     "maxTurnsPerSession": "Nombre maximal de tours par session",
     "msgsMinPerUser": "Messages par Min par utilisateur",
     "msgsHrPerOrg": "Messages et RH par organisation",

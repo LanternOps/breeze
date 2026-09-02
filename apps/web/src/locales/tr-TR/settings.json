@@ -1302,6 +1302,11 @@
     "alertThresholds": "Uyar (bütçenin %'si)",
     "alertThresholdsHelp": "Uyarılar, faturalama erişimine sahip partner yöneticilerine gönderilir. %100 (limite ulaşıldı) her zaman gönderilir.",
     "firedRung": "%{{pct}} {{period}} uyarısı {{date}} tarihinde gönderildi",
+    "alertThresholdsPlaceholder": "50, 80, 95",
+    "periodLabel": {
+      "daily": "günlük",
+      "monthly": "aylık"
+    },
     "maxTurnsPerSession": "Oturum Başına Maksimum Dönüş Sayısı",
     "msgsMinPerUser": "Mesaj/Kullanıcı Başına Min",
     "msgsHrPerOrg": "Kuruluş Başına Mesaj/Saat",

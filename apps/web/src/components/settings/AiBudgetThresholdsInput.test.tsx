@@ -30,4 +30,53 @@ describe('AiBudgetThresholdsInput', () => {
     fireEvent.blur(screen.getByTestId('thresholds-input'));
     expect(onChange).toHaveBeenLastCalledWith(undefined);
   });
+
+  it('rejects more than five values with an inline error and does not emit', () => {
+    const onChange = vi.fn();
+    render(<AiBudgetThresholdsInput value={[]} onChange={onChange} testId="thresholds" />);
+    const input = screen.getByTestId('thresholds-input');
+    fireEvent.change(input, { target: { value: '10, 20, 30, 40, 50, 60' } });
+    fireEvent.blur(input);
+    expect(screen.getByTestId('thresholds-error')).toBeInTheDocument();
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it('dedupes duplicate values within the same input', () => {
+    const onChange = vi.fn();
+    render(<AiBudgetThresholdsInput value={[]} onChange={onChange} testId="thresholds" />);
+    const input = screen.getByTestId('thresholds-input');
+    fireEvent.change(input, { target: { value: '50, 50, 80' } });
+    fireEvent.blur(input);
+    expect(onChange).toHaveBeenLastCalledWith([50, 80]);
+  });
+
+  it('commits on Enter without requiring blur', () => {
+    const onChange = vi.fn();
+    render(<AiBudgetThresholdsInput value={[]} onChange={onChange} testId="thresholds" />);
+    const input = screen.getByTestId('thresholds-input');
+    fireEvent.change(input, { target: { value: '50, 80' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onChange).toHaveBeenLastCalledWith([50, 80]);
+  });
+
+  it('clears a stale inline error as soon as the user edits the text again', () => {
+    const onChange = vi.fn();
+    render(<AiBudgetThresholdsInput value={[]} onChange={onChange} testId="thresholds" />);
+    const input = screen.getByTestId('thresholds-input');
+    fireEvent.change(input, { target: { value: '100' } });
+    fireEvent.blur(input);
+    expect(screen.getByTestId('thresholds-error')).toBeInTheDocument();
+    fireEvent.change(input, { target: { value: '50' } });
+    expect(screen.queryByTestId('thresholds-error')).not.toBeInTheDocument();
+  });
+
+  it('does not commit a disabled input', () => {
+    const onChange = vi.fn();
+    render(<AiBudgetThresholdsInput value={[50]} onChange={onChange} disabled testId="thresholds" />);
+    const input = screen.getByTestId('thresholds-input') as HTMLInputElement;
+    expect(input.disabled).toBe(true);
+    fireEvent.change(input, { target: { value: '80' } });
+    fireEvent.blur(input);
+    expect(onChange).not.toHaveBeenCalled();
+  });
 });

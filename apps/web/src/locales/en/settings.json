@@ -1302,6 +1302,11 @@
     "alertThresholds": "Warn at (% of budget)",
     "alertThresholdsHelp": "Alerts go to partner admins with billing access. 100% (cap reached) is always sent.",
     "firedRung": "{{pct}}% {{period}} alert sent {{date}}",
+    "alertThresholdsPlaceholder": "50, 80, 95",
+    "periodLabel": {
+      "daily": "daily",
+      "monthly": "monthly"
+    },
     "maxTurnsPerSession": "Max Turns Per Session",
     "msgsMinPerUser": "Msgs/Min Per User",
     "msgsHrPerOrg": "Msgs/Hr Per Org",

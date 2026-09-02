@@ -28,6 +28,7 @@ export default function AiBudgetThresholdsInput({ value, onChange, disabled, pla
   useEffect(() => { setText(value?.join(', ') ?? ''); }, [value]);
 
   const commit = () => {
+    if (disabled) return;
     const parsed = parseThresholds(text);
     if (!parsed.ok) { setInvalid(true); return; }
     setInvalid(false);
@@ -48,7 +49,7 @@ export default function AiBudgetThresholdsInput({ value, onChange, disabled, pla
         value={text}
         disabled={disabled}
         placeholder={placeholder}
-        onChange={(e) => setText(e.target.value)}
+        onChange={(e) => { setText(e.target.value); setInvalid(false); }}
         onBlur={commit}
         onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); commit(); } }}
         className={`h-10 w-full rounded-md border bg-background px-3 text-sm ${disabled ? 'opacity-60 cursor-not-allowed' : ''}`}

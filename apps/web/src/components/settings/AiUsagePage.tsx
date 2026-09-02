@@ -238,7 +238,11 @@ export default function AiUsagePage() {
 
       {usage?.alerts?.fired?.length ? (
         <p data-testid="ai-budget-fired-rungs" className="text-xs text-muted-foreground">
-          {usage.alerts.fired.map((f) => t('aiUsagePage.firedRung', { pct: f.thresholdPct, period: f.period, date: new Date(f.createdAt).toLocaleDateString() })).join(' · ')}
+          {usage.alerts.fired.map((f) => t('aiUsagePage.firedRung', {
+            pct: f.thresholdPct,
+            period: t(`aiUsagePage.periodLabel.${f.period}`, { defaultValue: f.period }),
+            date: new Date(f.createdAt).toLocaleDateString(),
+          })).join(' · ')}
         </p>
       ) : null}
 
@@ -324,7 +328,7 @@ export default function AiUsagePage() {
               value={budget.alertThresholdPercents}
               onChange={(v) => setBudget({ ...budget, alertThresholdPercents: v })}
               disabled={isLocked('alertThresholdPercents')}
-              placeholder="50, 80, 95"
+              placeholder={t('aiUsagePage.alertThresholdsPlaceholder')}
               testId="ai-budget-thresholds"
             />
             {isLocked('alertThresholdPercents') && (
