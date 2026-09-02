@@ -281,7 +281,7 @@ describe('portal attachment read path (REAL route, real Postgres)', () => {
 
   /** GETs the byte route as `user`, inside the portal's own org RLS context. */
   async function getContent(
-    user: { id: string; orgId: string },
+    user: { id: string; orgId: string; contactId: string | null },
     ticketId: string,
     attachmentId: string,
   ): Promise<Response> {
@@ -314,7 +314,7 @@ describe('portal attachment read path (REAL route, real Postgres)', () => {
     const f = await seed();
     const portalUserId = await seedPortalUser(f.orgA);
     await setSubmitter(f.ticketA, portalUserId);
-    const user = { id: portalUserId, orgId: f.orgA };
+    const user = { id: portalUserId, orgId: f.orgA, contactId: null };
 
     const publicComment = await seedComment(f.ticketA, f.userId, true);
     const internalComment = await seedComment(f.ticketA, f.userId, false);
@@ -345,7 +345,7 @@ describe('portal attachment read path (REAL route, real Postgres)', () => {
     const comment = await seedComment(f.ticketA, f.userId, true);
     const att = await seedAttachment({ orgId: f.orgA, ticketId: f.ticketA, commentId: comment });
 
-    const res = await getContent({ id: mine, orgId: f.orgA }, f.ticketA, att);
+    const res = await getContent({ id: mine, orgId: f.orgA, contactId: null }, f.ticketA, att);
     expect(res.status).toBe(404);
   });
 
@@ -357,7 +357,7 @@ describe('portal attachment read path (REAL route, real Postgres)', () => {
     const att = await seedAttachment({ orgId: f.orgB, ticketId: f.ticketB, commentId: comment });
 
     // Session is scoped to org A; the ticket lookup's org_id rung must reject.
-    const res = await getContent({ id: portalUserId, orgId: f.orgA }, f.ticketB, att);
+    const res = await getContent({ id: portalUserId, orgId: f.orgA, contactId: null }, f.ticketB, att);
     expect(res.status).toBe(404);
   });
 
@@ -369,7 +369,7 @@ describe('portal attachment read path (REAL route, real Postgres)', () => {
     const comment = await seedComment(f.ticketA, f.userId, true);
     const att = await seedAttachment({ orgId: f.orgA, ticketId: f.ticketA, commentId: comment });
 
-    const res = await getContent({ id: portalUserId, orgId: f.orgA }, f.ticketA, att);
+    const res = await getContent({ id: portalUserId, orgId: f.orgA, contactId: null }, f.ticketA, att);
     expect(res.status).toBe(404);
   });
 });

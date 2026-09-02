@@ -6,12 +6,18 @@ import { portalUsers } from '../../db/schema/portal';
  * Create (or reuse) a password-less portal-user contact for the Outlook tech
  * add-in's "create contact" requester option (spec §3.2, Task 16).
  *
- * Deliberately NOT `inboundEmail/resolveOrg.findOrCreateEmailContact`: that one
- * is an ingest side-effect on the poller path, where contact creation is an
- * automatic consequence of a message arriving. Here it is a TECHNICIAN-CONFIRMED
- * action inside a request — the tech explicitly chose "create a contact for this
- * sender" in the pane — so it lives on the add-in's own service surface and can
- * evolve (audit, contact linkage) without changing ingest behaviour.
+ * Deliberately NOT `inboundEmail/resolveOrg.resolveEmailRequester` (formerly
+ * `findOrCreateEmailContact`): that one is an ingest side-effect on the poller
+ * path, where contact creation is an automatic consequence of a message
+ * arriving. Here it is a TECHNICIAN-CONFIRMED action inside a request — the
+ * tech explicitly chose "create a contact for this sender" in the pane — so it
+ * lives on the add-in's own service surface and can evolve (audit, contact
+ * linkage) without changing ingest behaviour.
+ *
+ * KNOWN GAP (#3258 W03, deliberately out of scope): this path still creates a
+ * contact-less `portal_users` row, so an add-in-confirmed requester has a login
+ * with no `contacts` row behind it. Same for the Entra SSO provisioning in
+ * `clientAiExchange.ts`. Repointing both is follow-up work.
  *
  * Runs in-request, so it executes under the caller's partner-scope RLS context
  * (the middleware's transaction). A null `passwordHash` is inherently non-login,

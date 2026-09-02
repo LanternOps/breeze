@@ -397,6 +397,73 @@ export async function findContactScope(
   return (row as { orgId: string; siteId: string | null } | undefined) ?? null;
 }
 
+/**
+ * How an email address resolved to ONE of the org's contacts (#3258 W03).
+ *
+ * `no-match` is kept separate from `none` because the two callers disagree
+ * about what it means: inbound email ONBOARDS the sender (it creates the
+ * contact), while a staff requester edit just leaves the ticket unlinked.
+ * Collapsing them would force one of the two to guess.
+ */
+export type ContactAddressMatch =
+  | { kind: 'contact'; contactId: string }
+  | { kind: 'no-match' }
+  | { kind: 'none'; reason: 'unusable-address' | 'shared-mailbox' | 'vanished' };
+
+/**
+ * Resolve an email address to exactly one contact of `orgId`, or say why it
+ * could not (#3258 W03). The shared core behind BOTH requester paths: inbound
+ * email (`inboundEmail/resolveOrg.resolveEmailRequester`) and the staff
+ * requester edit (`ticketService.updateTicketFields`).
+ *
+ * Several contacts on one address is a real, supported state — a shared
+ * `support@` / `ap@` mailbox — so `contacts_org_email_idx` is deliberately
+ * NON-unique and there is no honest way to pick one. Picking by display name
+ * would key attribution off a header the sender controls; picking oldest or
+ * newest is a coin flip wearing a rule. `limit(2)` is therefore all the
+ * arithmetic this needs: one row means one contact, two rows mean "at least
+ * two".
+ *
+ * The single match is pinned with FOR KEY SHARE before it is returned, because
+ * every caller is about to write a `tickets.requester_contact_id` FK against
+ * it and that write takes the same lock on the same parent anyway (#3911) —
+ * taking it here keeps the acquisition order identical on every path. A
+ * concurrent DELETE that already committed between the probe and the lock
+ * yields zero rows, which is the `vanished` outcome: returning the id anyway
+ * would hand the caller a dangling FK.
+ *
+ * Takes NO advisory lock. Serialising is only needed where a miss CREATES a
+ * row (the inbound path does that, and takes the lock itself before calling
+ * here); a pure lookup has nothing to race with.
+ */
+export async function matchContactByEmail(
+  exec: ContactExecutor,
+  orgId: string,
+  email: string | null | undefined,
+): Promise<ContactAddressMatch> {
+  const normalized = normalizeContactEmail(email);
+  if (!normalized) return { kind: 'none', reason: 'unusable-address' };
+
+  const found = await exec
+    .select({ id: contacts.id })
+    .from(contacts)
+    .where(and(eq(contacts.orgId, orgId), sql`lower(${contacts.email}) = ${normalized}`))
+    .limit(2);
+
+  if (found.length === 0) return { kind: 'no-match' };
+  if (found.length > 1) return { kind: 'none', reason: 'shared-mailbox' };
+
+  const contactId = (found[0] as { id: string }).id;
+  const pinned = await exec
+    .select({ id: contacts.id })
+    .from(contacts)
+    .where(eq(contacts.id, contactId))
+    .for('key share')
+    .limit(1);
+  if (pinned.length === 0) return { kind: 'none', reason: 'vanished' };
+  return { kind: 'contact', contactId };
+}
+
 export async function createContact(
   exec: ContactExecutor,
   input: CreateContactInput,
