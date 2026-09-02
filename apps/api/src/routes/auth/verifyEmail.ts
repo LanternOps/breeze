@@ -675,16 +675,23 @@ async function finalizePendingRegistration(
 
   try {
     if (facts.partnerRow.trustState === 'probation') {
-      await createAuditLog({
-        orgId: null,
-        actorType: 'system',
-        actorId: ANONYMOUS_ACTOR_ID,
-        action: 'partner.trust.probation',
-        resourceType: 'partner',
-        resourceId: facts.created.partnerId,
-        result: 'success',
-        details: { reason: 'signup', from: null, to: 'probation' },
-      });
+      try {
+        await createAuditLog({
+          orgId: null,
+          actorType: 'system',
+          actorId: ANONYMOUS_ACTOR_ID,
+          action: 'partner.trust.probation',
+          resourceType: 'partner',
+          resourceId: facts.created.partnerId,
+          result: 'success',
+          details: { reason: 'signup', from: null, to: 'probation' },
+        });
+      } catch (auditErr) {
+        console.error('[VerifyEmail] trust probation audit write failed', {
+          partnerId: facts.created.partnerId,
+          error: auditErr instanceof Error ? auditErr.message : String(auditErr),
+        });
+      }
     }
 
     // External webhook work is deliberately post-commit: no transition, user,

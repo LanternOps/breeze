@@ -599,6 +599,34 @@ describe('POST /verify-email — SR2-21 pending-registration finalization (step 
     }
   });
 
+  it('returns 200 with successful response and cookies when probation audit log write fails', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const previousMode = process.env.PARTNER_TRUST_MODE;
+    try {
+      process.env.PARTNER_TRUST_MODE = 'enforce';
+      vi.mocked(peekPendingRegistration).mockResolvedValueOnce({ ...PENDING_RECORD, rawToken: 'raw' });
+      primeFinalizeSelects([], 'probation');
+      vi.mocked(createAuditLog).mockRejectedValueOnce(new Error('audit service down'));
+
+      const res = await postJson('/verify-email', { token: 'raw' }, { 'x-breeze-auth-transition': 'v1' });
+
+      expect(res.status).toBe(200);
+      expect(transitionState.cookieKind).toBe('guarded');
+      expect(transitionState.installedFamilyId).toBe('guarded-family-1');
+      const body = await res.json();
+      expect(body.verified).toBe(true);
+      expect(body.user.id).toBe('u-1');
+      expect(consoleError).toHaveBeenCalledWith(
+        '[VerifyEmail] trust probation audit write failed',
+        expect.anything(),
+      );
+    } finally {
+      if (previousMode === undefined) delete process.env.PARTNER_TRUST_MODE;
+      else process.env.PARTNER_TRUST_MODE = previousMode;
+      consoleError.mockRestore();
+    }
+  });
+
   it('a pending-registration token creates the partner with the STEP-1 attribution, not the click IP', async () => {
     vi.mocked(peekPendingRegistration).mockResolvedValueOnce({ ...PENDING_RECORD, rawToken: 'raw' });
     primeFinalizeSelects([]);
