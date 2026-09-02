@@ -1,3 +1,7 @@
+---
+tracking_issue: LanternOps/breeze#4549
+---
+
 # Partner Trust Probation — Design
 
 **Date:** 2026-09-02
