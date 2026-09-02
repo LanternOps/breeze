@@ -1,9 +1,10 @@
 import { createHash } from 'node:crypto';
 import { and, eq, isNull } from 'drizzle-orm';
+import { AI_AGENT_KINDS, type AiAgentKind } from '@breeze/shared';
 import type { Database } from '../../db';
 import {
   quotes, quoteLines, invoices, invoicePayments, contracts, organizations,
-  tickets, drPlans, partners,
+  tickets, drPlans, partners, aiAgents,
 } from '../../db/schema';
 import { buildRunScriptSnapshot, runScriptDigestMaterial } from './runScriptSnapshot';
 import type { ToolExecutionContext, VerifiedRunScript } from '../toolExecutionContext';
@@ -234,6 +235,77 @@ const EFFECT_DIGEST_RESOLVERS: Record<
   // manage_contracts activate/cancel: pin the contract's revision.
   'manage_contracts:activate': async (args, database) => resolveContractUpdatedAt(args.contractId, database),
   'manage_contracts:cancel': async (args, database) => resolveContractUpdatedAt(args.contractId, database),
+
+  // manage_ai_agents (P2-5, #4192) — registered under the WHOLE-TOOL key, not
+  // `manage_ai_agents:authorize_supervised_key`. The tool is a member of BOTH
+  // TIER3_FOUR_EYES_ACTIONS and the whole-tool TIER3_FOUR_EYES_TOOLS fail-safe,
+  // so effectDigestCoverage.contract.test.ts enumerates TWO surfaces; the
+  // action→tool fallback in effectDigestResolverKey means one whole-tool entry
+  // covers both, and any future action of this tool is pinned by default rather
+  // than shipping unpinned.
+  //
+  // The TOCTOU: the approver signs off on "grant <opKey> to org X's <kind>
+  // agent". The arguments stay byte-identical for the whole (up to 24h, mcp_api)
+  // approval window while the authority set underneath them moves — somebody
+  // edits `actAssets.supervisedActionKeys`, or the org row is created/disabled
+  // so the grant lands on a DIFFERENT row than the one reviewed. Pinning the
+  // org row's identity plus its sorted key list makes exactly those drifts a
+  // `content_changed` failure. Sorted because array order in jsonb is
+  // storage-incidental, and a reorder is not a change of authority.
+  //
+  // A MISSING org row is pinned as `orgAgentId: null`, NOT reported as
+  // TARGET_ABSENT: "this org has no row of its own and runs off the partner
+  // baseline" is a real, reviewable state, and the grant's first act is to
+  // clone a row into it (Task 15). Returning TARGET_ABSENT would store NULL and
+  // leave precisely the appear-under-the-approval case undetected.
+  //
+  // ORG AXIS ONLY, one read, on the caller's own connection. The PARTNER
+  // ceiling is deliberately NOT pinned: reading an `org_id IS NULL` row needs
+  // `readWithPartnerAxisVisibility`, which opens a SECOND pooled connection
+  // while the creation transaction still holds the first (the #1105 class this
+  // module's header forbids), and it is invisible to an org-scoped creator
+  // anyway — it would pin as "absent" at creation and as "present" at release,
+  // failing every promotion. The ceiling is re-checked fail-closed at execution
+  // under the graduation advisory lock, together with the feature flag, the
+  // human origin and live eligibility (Task 15), so it is covered by a live
+  // re-validation rather than by this pin.
+  //
+  // `args.orgId` is an ADDRESS, never an authority: it is set from the
+  // authenticated org at creation, creation rejects `args.orgId !== intent.orgId`,
+  // and the executor re-asserts the same equality before writing. It exists
+  // here only because a resolver receives `(args, database)` and has no other
+  // way to name the org whose keys are being changed — both release paths
+  // recompute inside `withSystemDbAccessContext`, which carries no ambient org.
+  // The read predicates on org_id explicitly for the same reason every loader
+  // in this codebase does: RLS passes unconditionally under a system context.
+  manage_ai_agents: async (args, database) => {
+    const orgId = typeof args.orgId === 'string' && args.orgId.length > 0 ? args.orgId : null;
+    const kind = typeof args.kind === 'string' && (AI_AGENT_KINDS as readonly string[]).includes(args.kind)
+      ? (args.kind as AiAgentKind)
+      : null;
+    const opKey = typeof args.opKey === 'string' && args.opKey.length > 0 ? args.opKey : null;
+    if (!orgId || !kind || !opKey) return MISSING_ARG;
+
+    const [orgAgent] = await database
+      .select({ id: aiAgents.id, actAssets: aiAgents.actAssets })
+      .from(aiAgents)
+      .where(and(
+        eq(aiAgents.orgId, orgId),
+        eq(aiAgents.kind, kind),
+        isNull(aiAgents.disabledAt),
+      ))
+      .limit(1);
+
+    return material(JSON.stringify({
+      orgId,
+      kind,
+      opKey,
+      orgAgentId: orgAgent?.id ?? null,
+      // `supervisedActionKeys` is OPTIONAL (#3827) — a row written before that
+      // wave carries no such key and must read as "authorizes nothing".
+      orgKeys: [...(orgAgent?.actAssets?.supervisedActionKeys ?? [])].sort(),
+    }));
+  },
 
   // manage_organizations:update_org: pin the org's CURRENT status — the
   // field an approver's mental model of "what am I updating" is most likely

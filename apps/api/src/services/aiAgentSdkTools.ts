@@ -27,7 +27,7 @@ import {
   peripheralPolicyActionEnum,
 } from '../db/schema';
 import { CONFIG_FEATURE_TYPES } from './configFeatureTypes';
-import { ACTOR_TYPES, INVOICE_STATUSES } from '@breeze/shared';
+import { ACTOR_TYPES, AI_AGENT_KINDS, INVOICE_STATUSES } from '@breeze/shared';
 import { getToolTimeout, withToolTimeout } from './toolTimeouts';
 import {
   m365LookupUserHandler, m365RecentSigninsHandler, m365ListGroupMembershipsHandler,
@@ -219,6 +219,9 @@ export const TOOL_TIERS = {
   // Org lifecycle tools (issue #2366) — new-customer intake (org → site → quote)
   list_organizations: 1,
   manage_organizations: 2,      // create_org/update_org/create_site escalate to 3 in guardrails
+  // AI agent governance (P2-5, #4192). Base tier 3 — there is no lower-tier
+  // action on this tool, and its single action is four_eyes in guardrails.
+  manage_ai_agents: 3,
   // Billing / quoting / catalog / contracts (#3156). Same #2605 failure mode as
   // the vulnerability tools: registered in the aiTools execution registry (all
   // Tier 2 there) and reachable by external MCP clients, but never listed here
@@ -2250,6 +2253,22 @@ export function createBreezeMcpServer(
         email: z.string().email().max(255).optional(),
       },
       makeHandler('manage_organizations', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_ai_agents',
+      'Govern the autonomous AI agents for the current organization. Action: authorize_supervised_key — grant the organization\'s agent of the given kind a pre-authorized action key (opKey, e.g. "manage_services:restart") so future agent runs may execute it without raising an approval. The key must already sit inside the partner baseline ceiling and the agent must have earned it on recent evidence. Requires a SECOND approver (four-eyes). orgId must be the CURRENT organization — it is not a target selector, and naming any other organization is rejected both when the approval is raised and again before it executes.',
+      {
+        action: z.enum(['authorize_supervised_key']),
+        kind: z.enum(AI_AGENT_KINDS),
+        opKey: z.string().min(3).max(120),
+        // Required, and re-checked against the intent's own org at creation and
+        // again at execution. It is here so the approval can PIN this org's
+        // authorized-key list (services/actionIntents/effectDigest.ts), not so
+        // a caller can choose a target.
+        orgId: uuid,
+      },
+      makeHandler('manage_ai_agents', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     // Billing, quoting, catalog and contract tools (#3156). Identical failure
