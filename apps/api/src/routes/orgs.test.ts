@@ -13,6 +13,13 @@ vi.mock('../services/clientIp', () => ({
   getTrustedClientIpOrUndefined: vi.fn()
 }));
 
+// PATCH /partners/me fans a partner-wide aiBudgets change out to every org's
+// budget evaluation (#4388 W02) — mocked so these route tests pin the CALL,
+// not the queue/worker machinery (covered by jobs/aiBudgetAlertDelivery.test.ts).
+vi.mock('../jobs/aiBudgetAlertDelivery', () => ({
+  enqueueAiBudgetEvaluationForPartner: vi.fn().mockResolvedValue(undefined),
+}));
+
 // GET /orgs/sites rides the org's resolved enrollment defaults along for the
 // Add Device modal (#2776). Mocked so these route tests don't depend on the
 // org⋈partner settings join.
@@ -294,6 +301,7 @@ import {
 } from '../services/tenantOffboarding';
 import { captureException } from '../services/sentry';
 import { seedSystemTicketStatuses } from '../services/ticketConfigService';
+import { enqueueAiBudgetEvaluationForPartner } from '../jobs/aiBudgetAlertDelivery';
 
 describe('org routes', () => {
   let app: Hono;
@@ -5033,6 +5041,74 @@ describe('org routes', () => {
 
       expect(res.status).toBe(200);
       expect(persistedSettings?.aiBudgets).toMatchObject({ alertThresholdPercents: [50, 95] });
+    });
+
+    // spec §4.2 #3: a partner-wide cap/rung change must be re-evaluated for
+    // every org off-request, since the effective budget for orgs with no
+    // org-level override changes the instant the partner-wide default does.
+    it('enqueues a partner-wide budget re-evaluation when aiBudgets change (#4388)', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      const currentPartner = { id: 'partner-123', name: 'Acme MSP', settings: {} };
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([currentPartner]),
+          }),
+        }),
+      } as any);
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ ...currentPartner, settings: { aiBudgets: { monthlyBudgetCents: 5000 } } }]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request('/orgs/partners/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ settings: { aiBudgets: { monthlyBudgetCents: 5000 } } }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(enqueueAiBudgetEvaluationForPartner).toHaveBeenCalledWith('partner-123');
+    });
+
+    // NOTE: `updatePartnerSettingsSchema`'s `aiBudgets` field is
+    // `z.object({...}).optional()`, not `.nullable()` — an explicit
+    // `{ aiBudgets: null }` is rejected by zValidator before the handler ever
+    // runs (confirmed: zod's `invalid_type` on `null` for an optional object).
+    // So the `!== undefined` check in the handler (rather than a truthy check)
+    // is written to also cover a future null-clearing payload once the schema
+    // allows one, but that scenario isn't reachable through this route today
+    // and isn't exercised here — only the two reachable cases are.
+
+    it('does NOT enqueue a partner-wide budget re-evaluation on a PATCH that does not touch aiBudgets', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      const currentPartner = { id: 'partner-123', name: 'Acme MSP', settings: {} };
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([currentPartner]),
+          }),
+        }),
+      } as any);
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ ...currentPartner, name: 'Acme Managed Services' }]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request('/orgs/partners/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Acme Managed Services' }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(enqueueAiBudgetEvaluationForPartner).not.toHaveBeenCalled();
     });
 
     // issue #2124: a partner-locked pin can freeze every child org's fleet, so an

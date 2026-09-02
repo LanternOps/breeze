@@ -15,6 +15,7 @@ import { authMiddleware, requireMfa, requirePermission, requireScope, requirePar
 import { writeAuditEvent, writeRouteAudit } from '../services/auditEvents';
 import { getEffectiveOrgSettings, assertNotLocked } from '../services/effectiveSettings';
 import { normalizeAlertThresholds } from '../services/aiBudgetAlerts';
+import { enqueueAiBudgetEvaluationForPartner } from '../jobs/aiBudgetAlertDelivery';
 import { clearPartnerScopePolicyCache } from '../oauth/partnerScopePolicy';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
 import {
@@ -1031,6 +1032,13 @@ orgRoutes.patch(
   // next token mint without waiting for the 60s TTL.
   clearPartnerScopePolicyCache(partner.id);
   clearPartnerAllowlistCache(partner.id);
+
+  if (body.settings?.aiBudgets !== undefined) {
+    // Caps or rungs changed fleet-wide: re-evaluate every org off-request (spec §4.2 #3).
+    void enqueueAiBudgetEvaluationForPartner(auth.partnerId as string).catch((err: unknown) => {
+      console.error('[orgs] aiBudgets fan-out enqueue failed:', err instanceof Error ? err.message : err);
+    });
+  }
 
   const auditOrgId = await resolveAuditOrgIdForPartner(auth.partnerId);
   writeRouteAudit(c, {
