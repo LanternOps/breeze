@@ -47,6 +47,7 @@ import {
   BootstrapTokenIssuanceError,
 } from "../services/installerBootstrapTokenIssuance";
 import { assertTtlWithinCap, clampTtlToCap } from "../services/enrollmentDefaults";
+import { getDefaultEnrollmentKeyTtlMinutes } from "../services/enrollmentKeyTtlDefault";
 import {
   hasLiveUnexhaustedCapacityToken,
   hasNoLiveUnexhaustedCapacityToken,
@@ -97,10 +98,13 @@ function envInt(name: string, defaultValue: number): number {
 // 30 days by default: techs stage installers through deploy tooling and expect
 // them to keep working well past the download day. Must stay in step with
 // PRODUCT_DEFAULT_ENROLLMENT_TTL_MINUTES (packages/shared enrollmentDefaults).
-const DEFAULT_ENROLLMENT_KEY_TTL_MINUTES = envInt(
-  "ENROLLMENT_KEY_DEFAULT_TTL_MINUTES",
-  60 * 24 * 30,
-);
+//
+// Sourced from the shared enrollmentKeyTtlDefault.ts (#4126 follow-up) so the
+// Partner-API provisioning route (services/enrollmentKeySecurity.ts) and the
+// installer child-key redemption route (routes/installer.ts) can never drift
+// from this route's fallback again — both used to hard-code their own
+// (smaller) numbers.
+const DEFAULT_ENROLLMENT_KEY_TTL_MINUTES = getDefaultEnrollmentKeyTtlMinutes();
 
 // Child enrollment keys (installer downloads, installer-link downloads, and
 // short-link redemptions) get a fresh, independent TTL rather than inheriting
