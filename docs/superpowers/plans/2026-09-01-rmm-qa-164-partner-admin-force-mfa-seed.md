@@ -948,6 +948,12 @@ set -a; . ./.env.test; set +a
 PGPORT=$(node -e 'console.log(new URL(process.env.DATABASE_URL).port)')
 psql "postgresql://breeze_test:breeze_test@localhost:${PGPORT}/postgres" -v ON_ERROR_STOP=1 \
   -c 'DROP DATABASE IF EXISTS breeze_test_fresh' -c 'CREATE DATABASE breeze_test_fresh'
+# `env -u DATABASE_URL_APP`: `. ./.env.test` above exported DATABASE_URL_APP
+# (breeze_app @ breeze_test). db/index.ts opens the request pool from it, so
+# without the scrub check:migrations migrates the fresh DB but seed() writes
+# into breeze_test (fix round 2 found this: the seed printed "Role reconciled"
+# against the private stack and the fresh DB ended with zero seeded roles).
+env -u DATABASE_URL_APP \
 DATABASE_URL="postgresql://breeze_test:breeze_test@localhost:${PGPORT}/breeze_test_fresh" \
 POSTGRES_PASSWORD=breeze_test BREEZE_APP_DB_PASSWORD=breeze_test \
 JWT_SECRET=local-check-migrations-jwt-secret-not-used-anywhere-32chars \
@@ -1346,3 +1352,43 @@ Report: PR URL, head SHA, the evidence directory path, and any clause recorded a
 **Placeholders:** the only `<...>` tokens are evidence values that exist only after execution (log lines, SHAs, PR URL) — every code, SQL, YAML, and command block is complete.
 
 **Type consistency:** `SystemRoleDefinition.forceMfa: boolean` (Task 1) is read as `roleDef.forceMfa` (Task 2); `roles.forceMfa` (Drizzle column, `schema/users.ts:97`) is used in Tasks 2–4; migration filename is identical in Task 4 Steps 0, 1, 3, 9 and the PR body; env var name `MFA_FORCE_FOR_PARTNER_ADMIN` identical in Tasks 3, 5, 6, 7, 8; the notice strings in the migration (`flipped % system Partner Admin role(s)`, `0 rows needed flipping`) match T5's regexes.
+
+---
+
+## Execution notes — fix round 2 (2026-09-01, after the independent review)
+
+Recorded so the plan matches what shipped; the PR body carries the evidence.
+
+1. **Review payload was empty.** The independent review handed back for this round
+   contained no findings — only the reviewer's in-flight status line. The reviewer's
+   workspace showed: unit 394/394 green, integration baseline 13/13 green, `tsc`
+   crashed with `FATAL ERROR: ... JavaScript heap out of memory` (exit 134 — run
+   without the plan's `NODE_OPTIONS=--max-old-space-size=8192`), and an 11-mutation
+   control script that never produced its log. Refuted by re-running `tsc` with the
+   plan's flag (exit 0) and by running the reviewer's own script to completion
+   (11/11 discriminate). A bounded read-only Codex pass was then run as the round's
+   independent review; its findings are items 3 and 4.
+2. **Migration renamed again** to `2026-10-01-200000-…`: `origin/main` gained
+   `2026-10-01-100000-ai-agents-graduation-evidence.sql` after the branch was pushed
+   (rule 3 of `check-migration-naming.sh`; comparator evidence in the commit). Never
+   shipped; private-stack ledger row deleted and re-recorded.
+3. **IMPORTANT (Codex, confirmed): the reconcile UPDATE was RLS-blind.** `roles` is
+   FORCE RLS and `breeze_current_scope()` defaults to `'none'`, so on managed
+   Postgres (non-superuser `DATABASE_URL`) the UPDATE matched zero rows and the
+   ledger still recorded the file — the trap `2026-09-30-100000-rls-scoped-backfill-replay.sql`
+   documents. Fixed with `SELECT set_config('breeze.scope','system', true);` (repo
+   convention); RED-first via a `breeze_app` (NOSUPERUSER NOBYPASSRLS, asserted)
+   replay in `partnerAdminForceMfaMigration.integration.test.ts`. Adds to Task 4's
+   mutation list: set_config removed → `0 rows needed flipping` on the non-bypass
+   apply while the superuser case stays green (the masking, demonstrated).
+4. **MINOR ×2 (Codex, both taken): `seedRoles()` lookup pins `scope`.** The
+   migration's ownership boundary is `scope='partner' AND is_system`; the seed
+   lookup was looser (name + is_system + null tenant axes). Test (f) in
+   `seedPartnerAdminForceMfa.integration.test.ts` covers an organization-scope
+   global system row AND a tenant-copy-only collision with the template absent, so
+   `scope` and `partner_id IS NULL` are each pinned by their own mutation.
+5. **Task 7 Step 4 executed this round** (ports were free): blank compose stack,
+   valve ON — `mfaEnrollmentRequired:true`, claim `mfa=false`, `GET /devices` 428,
+   command-free `POST /scripts {}` 428 (`mfa_enrollment_required`, before any
+   handler), stored template `t`.
+
