@@ -128,6 +128,12 @@ function validationResponse(c: any, err: unknown): Response | null {
 }
 
 export function registerOrgContactsRoutes(orgRoutes: Hono) {
+  // RULING (review round 2): the gate is ORGS_READ / ORGS_WRITE plus MFA on
+  // every write, per spec S4 — deliberately NOT a `requireOrgReadUnlessOwnOrg`
+  // shortcut that would admit any organization-scoped caller to their own org's
+  // contacts regardless of grants. Contacts are customer PII, so an org user
+  // who was never granted organizations:read gets an honest, fail-closed 403
+  // rather than an implicit grant derived from their token's scope.
   const requireOrgRead = requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action);
   const requireOrgWrite = requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action);
 

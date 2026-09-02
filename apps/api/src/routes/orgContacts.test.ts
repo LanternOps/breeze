@@ -1,9 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 
-const { authRef, orgLookup, crudMocks, importMocks, auditSpy } = vi.hoisted(() => ({
+const { authRef, orgLookup, crudMocks, importMocks, auditSpy, gateState } = vi.hoisted(() => ({
   authRef: { current: null as Record<string, unknown> | null },
   orgLookup: vi.fn(),
+  // Functional permission/MFA gates, copied from routes/orgs.test.ts:265-271.
+  // A pass-through stub would let an "org scope is admitted" assertion pass on
+  // a route that had no gate at all.
+  gateState: { granted: true, denied: new Set<string>(), mfaSatisfied: true },
   crudMocks: {
     listContacts: vi.fn(),
     createContact: vi.fn(),
@@ -30,8 +34,16 @@ vi.mock('../middleware/auth', () => ({
     if (!scopes.includes(auth.scope)) return c.json({ error: 'Forbidden' }, 403);
     await next();
   },
-  requirePermission: () => async (_c: any, next: any) => next(),
-  requireMfa: () => async (_c: any, next: any) => next(),
+  requirePermission: (resource: string, action: string) => async (c: any, next: any) => {
+    if (!gateState.granted || gateState.denied.has(`${resource}:${action}`)) {
+      return c.json({ error: 'Permission denied' }, 403);
+    }
+    return next();
+  },
+  requireMfa: () => async (c: any, next: any) => {
+    if (!gateState.mfaSatisfied) return c.json({ error: 'MFA required' }, 403);
+    return next();
+  },
 }));
 
 vi.mock('../db', () => ({
@@ -125,7 +137,66 @@ const json = (body: unknown, method = 'POST') => ({
 beforeEach(() => {
   vi.clearAllMocks();
   setAuth();
+  gateState.granted = true;
+  gateState.denied.clear();
+  gateState.mfaSatisfied = true;
   orgLookup.mockResolvedValue([{ id: ORG }]);
+});
+
+describe('permission and MFA gating', () => {
+  const writeRequests: Array<[string, string, RequestInit]> = [
+    ['POST /organizations/:id/contacts', `/organizations/${ORG}/contacts`, json({ name: 'Jane' })],
+    ['PATCH /contacts/:contactId', `/contacts/${CONTACT}`, json({ title: 'CFO' }, 'PATCH')],
+    ['DELETE /contacts/:contactId', `/contacts/${CONTACT}`, { method: 'DELETE' }],
+    ['POST /contacts/import/preview', '/contacts/import/preview', json({ rows: [{ organizationId: ORG, name: 'Jane' }] })],
+    ['POST /contacts/import', '/contacts/import', json({ rows: [{ organizationId: ORG, name: 'Jane' }] })],
+  ];
+
+  it.each(writeRequests)('403s %s without organizations:write', async (_label, path, init) => {
+    crudMocks.findContactOrgId.mockResolvedValue(ORG);
+    gateState.denied.add('organizations:write');
+    const res = await makeApp().request(path, init);
+    expect(res.status).toBe(403);
+    expect(crudMocks.createContact).not.toHaveBeenCalled();
+    expect(crudMocks.updateContact).not.toHaveBeenCalled();
+    expect(crudMocks.deleteContact).not.toHaveBeenCalled();
+    expect(importMocks.previewContactImport).not.toHaveBeenCalled();
+    expect(importMocks.commitContactImport).not.toHaveBeenCalled();
+  });
+
+  it('403s GET /organizations/:id/contacts without organizations:read', async () => {
+    gateState.denied.add('organizations:read');
+    const res = await makeApp().request(`/organizations/${ORG}/contacts`);
+    expect(res.status).toBe(403);
+    expect(crudMocks.listContacts).not.toHaveBeenCalled();
+  });
+
+  it.each(writeRequests)('403s %s when MFA is not satisfied', async (_label, path, init) => {
+    crudMocks.findContactOrgId.mockResolvedValue(ORG);
+    gateState.mfaSatisfied = false;
+    const res = await makeApp().request(path, init);
+    expect(res.status).toBe(403);
+    expect(crudMocks.createContact).not.toHaveBeenCalled();
+    expect(crudMocks.updateContact).not.toHaveBeenCalled();
+    expect(crudMocks.deleteContact).not.toHaveBeenCalled();
+    expect(importMocks.commitContactImport).not.toHaveBeenCalled();
+  });
+
+  it('admits an org-scoped caller holding organizations:read on GET', async () => {
+    // The RULING: the gate stays ORGS_READ / ORGS_WRITE + MFA per spec §4. An
+    // org user WITH the grants is admitted; one without gets an honest 403.
+    setAuth({ scope: 'organization', orgId: ORG, accessibleOrgIds: [ORG] });
+    crudMocks.listContacts.mockResolvedValue([CONTACT_ROW]);
+    const res = await makeApp().request(`/organizations/${ORG}/contacts`);
+    expect(res.status).toBe(200);
+  });
+
+  it('admits an org-scoped caller holding organizations:write on POST', async () => {
+    setAuth({ scope: 'organization', orgId: ORG, accessibleOrgIds: [ORG] });
+    crudMocks.createContact.mockResolvedValue(CONTACT_ROW);
+    const res = await makeApp().request(`/organizations/${ORG}/contacts`, json({ name: 'Jane Ops' }));
+    expect(res.status).toBe(201);
+  });
 });
 
 describe('GET /organizations/:id/contacts', () => {
