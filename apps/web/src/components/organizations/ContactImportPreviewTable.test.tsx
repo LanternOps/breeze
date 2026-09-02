@@ -234,12 +234,37 @@ describe('ContactImportPreviewTable', () => {
     expect([...nextSelection(onSelectedChange, [0, 1])].sort()).toEqual([0, 1, 2]);
   });
 
-  it('never adds an unselectable row even when clicked', () => {
+  it('never adds an unselectable row even when its own checkbox fires', () => {
     const { onSelectedChange } = renderTable();
-    // The checkbox is disabled, so drive the handler the way a stale host would.
-    fireEvent.click(screen.getByTestId('x-contacts-select-0'));
+    // Row 4 is the `conflict` row. Its checkbox is disabled, so a real click
+    // emits nothing — clear the disabled property to drive the row's OWN
+    // onChange, which is what a stale or re-rendered host would reach.
+    const conflictBox = screen.getByTestId('x-contacts-select-4') as HTMLInputElement;
+    conflictBox.disabled = false;
+    fireEvent.click(conflictBox);
+
     const updater = onSelectedChange.mock.calls.at(-1)![0] as (p: Set<number>) => Set<number>;
-    expect([...updater(new Set([4]))].sort()).toEqual([0, 4]);
+    // `conflict` is absent from the server's commit enum: acknowledging one
+    // fails Zod and rejects the WHOLE batch, not just this row.
+    expect([...updater(new Set([0, 1]))].sort()).toEqual([0, 1]);
+  });
+
+  it('always allows un-ticking an unselectable row a stale host handed it', () => {
+    const { onSelectedChange } = renderTable();
+    const orgMissingBox = screen.getByTestId('x-contacts-select-5') as HTMLInputElement;
+    orgMissingBox.disabled = false;
+    fireEvent.click(orgMissingBox);
+
+    const updater = onSelectedChange.mock.calls.at(-1)![0] as (p: Set<number>) => Set<number>;
+    expect([...updater(new Set([0, 5]))].sort()).toEqual([0]);
+  });
+
+  it('leaves select-all unchecked when no row is bulk-selectable', () => {
+    const fuzzyOnly = ROWS.filter((r) => r.annotation === 'email-match' || r.annotation === 'conflict');
+    render(<StatefulTable rows={fuzzyOnly} initial={new Set([2])} />);
+    // An empty bulk set must not render as "everything is selected" — `every`
+    // on an empty array is vacuously true.
+    expect(screen.getByTestId('x-contacts-select-all')).not.toBeChecked();
   });
 
   it('select-all spans only create + link-match, leaving acknowledged hints alone', () => {

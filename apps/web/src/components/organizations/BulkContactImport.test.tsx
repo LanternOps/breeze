@@ -46,6 +46,26 @@ async function uploadCsv(csv = CSV) {
   );
 }
 
+/** Uploads a file without waiting for the mapping grid — for files that produce none. */
+function uploadRaw(csv: string, name = 'contacts.csv') {
+  const file = new File([csv], name, { type: 'text/csv' });
+  Object.defineProperty(file, 'text', { value: () => Promise.resolve(csv) });
+  fireEvent.change(screen.getByTestId('bulk-contact-import-file-input'), {
+    target: { files: [file] },
+  });
+}
+
+/** A file whose `text()` rejects, the way a revoked/renamed local file does. */
+function uploadUnreadableFile() {
+  const file = new File(['x'], 'contacts.csv', { type: 'text/csv' });
+  Object.defineProperty(file, 'text', {
+    value: () => Promise.reject(new Error('NotReadableError')),
+  });
+  fireEvent.change(screen.getByTestId('bulk-contact-import-file-input'), {
+    target: { files: [file] },
+  });
+}
+
 const PREVIEW_ROWS: AnnotatedContactRow[] = [
   {
     index: 0, name: 'Ada Byron', email: 'ada@acme.test', site: 'HQ', externalId: 'cw-1',
@@ -306,5 +326,246 @@ describe('BulkContactImport', () => {
     await uploadCsv('Site,Contact ID\nHQ,cw-1\n');
     expect(screen.getByTestId('bulk-contact-import-preview')).toBeDisabled();
     expect(screen.getByTestId('bulk-contact-import-identifier-hint')).toBeInTheDocument();
+  });
+});
+
+describe('BulkContactImport failure attribution', () => {
+  it('names the contact the server actually refused, not the row at that preview index', async () => {
+    render(<BulkContactImport orgId={ORG_ID} />);
+    await uploadAndPreview();
+
+    // Drop the first pre-checked row and opt the fuzzy row in, so the SUBMITTED
+    // array is [Grace H, Alan T] — preview indexes 1 and 2, submitted 0 and 1.
+    fireEvent.click(screen.getByTestId('bulk-contact-import-select-0'));
+    fireEvent.click(screen.getByTestId('bulk-contact-import-select-2'));
+
+    fetchWithAuthMock.mockReturnValueOnce(
+      jsonResponse({
+        imported: [{ index: 0, organizationId: ORG_ID, contactId: 'c-grace', name: 'Grace H', createdLink: false }],
+        updated: [],
+        skipped: [],
+        // Submitted position 1 is Alan T, NOT the preview row with index 1.
+        errors: [{ index: 1, error: 'Match changed since preview', code: 'match-changed' }],
+      }),
+    );
+    fireEvent.click(screen.getByTestId('bulk-contact-import-submit'));
+
+    await waitFor(() =>
+      expect(screen.getByTestId('bulk-contact-import-failure-1')).toBeInTheDocument(),
+    );
+    const failure = screen.getByTestId('bulk-contact-import-failure-1');
+    expect(failure).toHaveTextContent('Alan T');
+    expect(failure).not.toHaveTextContent('Grace H');
+  });
+});
+
+describe('BulkContactImport dropped rows', () => {
+  it('says how many rows were dropped for having no identifier', async () => {
+    render(<BulkContactImport orgId={ORG_ID} />);
+    await uploadCsv();
+    // The trailing all-comma line satisfies no identifier and never leaves the
+    // browser; silently shrinking the count is how an operator loses a row.
+    expect(screen.getByTestId('bulk-contact-import-dropped')).toHaveTextContent('1 row');
+    expect(screen.getByTestId('bulk-contact-import-dropped')).toHaveTextContent('no name');
+  });
+
+  it('explains a file whose every row was dropped rather than offering "Check 0 rows"', async () => {
+    render(<BulkContactImport orgId={ORG_ID} />);
+    await uploadCsv('Full Name,Site\n,HQ\n,Depot\n');
+    expect(screen.getByTestId('bulk-contact-import-preview')).toBeDisabled();
+    expect(screen.getByTestId('bulk-contact-import-dropped')).toHaveTextContent('2 rows');
+  });
+
+  it('shows no dropped notice when every row carries an identifier', async () => {
+    render(<BulkContactImport orgId={ORG_ID} />);
+    await uploadCsv('Full Name,Email Address\nAda,ada@acme.test\n');
+    expect(screen.queryByTestId('bulk-contact-import-dropped')).not.toBeInTheDocument();
+  });
+
+  it('refuses to preview a file past the server row cap', async () => {
+    const rows = Array.from({ length: 1001 }, (_, i) => `Person ${i},p${i}@acme.test`);
+    render(<BulkContactImport orgId={ORG_ID} />);
+    await uploadCsv(['Full Name,Email Address', ...rows].join('\n') + '\n');
+    expect(screen.getByTestId('bulk-contact-import-too-many')).toHaveTextContent('1000');
+    expect(screen.getByTestId('bulk-contact-import-preview')).toBeDisabled();
+  });
+});
+
+describe('BulkContactImport file failures', () => {
+  it('toasts a file that cannot be read instead of going silent', async () => {
+    render(<BulkContactImport orgId={ORG_ID} />);
+    uploadUnreadableFile();
+    await waitFor(() =>
+      expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })),
+    );
+    // The panel resets rather than keeping a half-loaded file on screen.
+    expect(screen.queryByTestId('bulk-contact-import-map-name')).not.toBeInTheDocument();
+  });
+
+  it('explains a file that parses to no columns at all', async () => {
+    render(<BulkContactImport orgId={ORG_ID} />);
+    uploadRaw('\n\n');
+    await waitFor(() =>
+      expect(screen.getByTestId('bulk-contact-import-no-columns')).toBeInTheDocument(),
+    );
+    expect(screen.queryByTestId('bulk-contact-import-map-name')).not.toBeInTheDocument();
+  });
+});
+
+describe('BulkContactImport commit outcomes', () => {
+  it('does not call a commit that wrote nothing a success', async () => {
+    const onImported = vi.fn();
+    render(<BulkContactImport orgId={ORG_ID} onImported={onImported} />);
+    await uploadAndPreview();
+
+    // The default re-import path: link-match rows are pre-ticked and skip mode
+    // leaves them alone, so the server writes nothing at all.
+    fetchWithAuthMock.mockReturnValueOnce(
+      jsonResponse({
+        imported: [],
+        updated: [],
+        skipped: [
+          { index: 0, organizationId: ORG_ID, contactId: 'c-ada', reason: 'already_linked' },
+          { index: 1, organizationId: ORG_ID, contactId: 'c-grace', reason: 'already_linked' },
+        ],
+        errors: [],
+      }),
+    );
+    fireEvent.click(screen.getByTestId('bulk-contact-import-submit'));
+    await waitFor(() => expect(showToastMock).toHaveBeenCalled());
+
+    expect(showToastMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+    expect(showToastMock).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining('Nothing imported') }),
+    );
+    expect(onImported).not.toHaveBeenCalled();
+  });
+
+  it('lists every skipped row with its contact and a translated reason', async () => {
+    render(<BulkContactImport orgId={ORG_ID} />);
+    await uploadAndPreview();
+
+    fetchWithAuthMock.mockReturnValueOnce(
+      jsonResponse({
+        imported: [{ index: 0, organizationId: ORG_ID, contactId: 'c-ada', name: 'Ada Byron', createdLink: true }],
+        updated: [],
+        // Submitted position 1 is Grace H (the pre-ticked link-match).
+        skipped: [{ index: 1, organizationId: ORG_ID, contactId: 'c-grace', reason: 'already_linked' }],
+        errors: [],
+      }),
+    );
+    fireEvent.click(screen.getByTestId('bulk-contact-import-submit'));
+
+    await waitFor(() =>
+      expect(screen.getByTestId('bulk-contact-import-skipped')).toBeInTheDocument(),
+    );
+    const row = screen.getByTestId('bulk-contact-import-skipped-1');
+    expect(row).toHaveTextContent('Grace H');
+    expect(row).toHaveTextContent('already linked to an existing contact');
+    // The raw server token is never the thing the operator reads.
+    expect(row).not.toHaveTextContent('already_linked');
+  });
+
+  it('translates a server error code and keeps the server text as detail', async () => {
+    render(<BulkContactImport orgId={ORG_ID} />);
+    await uploadAndPreview();
+
+    fetchWithAuthMock.mockReturnValueOnce(
+      jsonResponse({
+        imported: [{ index: 0, organizationId: ORG_ID, contactId: 'c-ada', name: 'Ada Byron', createdLink: true }],
+        updated: [],
+        skipped: [],
+        errors: [{
+          index: 1,
+          error: 'expectedContactId is required for an email-match acknowledgement',
+          code: 'match-unconfirmed',
+        }],
+      }),
+    );
+    fireEvent.click(screen.getByTestId('bulk-contact-import-submit'));
+
+    await waitFor(() =>
+      expect(screen.getByTestId('bulk-contact-import-failure-1')).toBeInTheDocument(),
+    );
+    const failure = screen.getByTestId('bulk-contact-import-failure-1');
+    // The remedy the operator can act on, not the server's field name.
+    expect(failure).toHaveTextContent('Tick the row and import again');
+    // Nothing is lost: the server's own words stay available as detail.
+    expect(screen.getByTestId('bulk-contact-import-failure-detail-1'))
+      .toHaveTextContent('expectedContactId is required');
+  });
+
+  it('falls back to the server text for a code it does not know', async () => {
+    render(<BulkContactImport orgId={ORG_ID} />);
+    await uploadAndPreview();
+
+    fetchWithAuthMock.mockReturnValueOnce(
+      jsonResponse({
+        imported: [],
+        updated: [],
+        skipped: [],
+        errors: [{ index: 0, error: 'Something new went wrong', code: 'brand-new-code' }],
+      }),
+    );
+    fireEvent.click(screen.getByTestId('bulk-contact-import-submit'));
+
+    await waitFor(() =>
+      expect(screen.getByTestId('bulk-contact-import-failure-0')).toBeInTheDocument(),
+    );
+    expect(screen.getByTestId('bulk-contact-import-failure-0'))
+      .toHaveTextContent('Something new went wrong');
+  });
+});
+
+describe('parseRoles normalisation', () => {
+  it('accepts comma, semicolon and pipe separators and normalises the labels', async () => {
+    render(<BulkContactImport orgId={ORG_ID} />);
+    await uploadCsv('Full Name,Roles\nAda,"After Hours;portal|billing"\n');
+    fetchWithAuthMock.mockReturnValueOnce(jsonResponse({ rows: [] }));
+    fireEvent.click(screen.getByTestId('bulk-contact-import-preview'));
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledTimes(1));
+    expect(commitBody(0).rows[0].roles).toEqual(['after_hours', 'portal', 'billing']);
+  });
+
+  it('sends an unrecognised role through untouched rather than guessing a near one', async () => {
+    render(<BulkContactImport orgId={ORG_ID} />);
+    await uploadCsv('Full Name,Roles\nAda,Chief Vibes\n');
+    fetchWithAuthMock.mockReturnValueOnce(jsonResponse({ rows: [] }));
+    fireEvent.click(screen.getByTestId('bulk-contact-import-preview'));
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledTimes(1));
+    expect(commitBody(0).rows[0].roles).toEqual(['chief_vibes']);
+  });
+});
+
+describe('BulkContactImport preview lifecycle', () => {
+  it('clears a stale preview when the mapping changes', async () => {
+    render(<BulkContactImport orgId={ORG_ID} />);
+    await uploadAndPreview();
+    expect(screen.getByTestId('bulk-contact-import-table')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByTestId('bulk-contact-import-map-title'), {
+      target: { value: '' },
+    });
+    expect(screen.queryByTestId('bulk-contact-import-table')).not.toBeInTheDocument();
+  });
+
+  it('clears the preview after a successful commit and leaves a summary line', async () => {
+    render(<BulkContactImport orgId={ORG_ID} />);
+    await uploadAndPreview();
+
+    fetchWithAuthMock.mockReturnValueOnce(
+      jsonResponse({
+        imported: [{ index: 0, organizationId: ORG_ID, contactId: 'c-ada', name: 'Ada Byron', createdLink: true }],
+        updated: [],
+        skipped: [],
+        errors: [],
+      }),
+    );
+    fireEvent.click(screen.getByTestId('bulk-contact-import-submit'));
+
+    await waitFor(() =>
+      expect(screen.getByTestId('bulk-contact-import-summary')).toBeInTheDocument(),
+    );
+    expect(screen.queryByTestId('bulk-contact-import-table')).not.toBeInTheDocument();
   });
 });

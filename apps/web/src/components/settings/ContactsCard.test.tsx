@@ -75,11 +75,25 @@ function mockApi(options: {
   });
 }
 
-/** Every contacts-list URL requested so far, oldest first. */
+const LIST_PREFIX = `/orgs/organizations/${ORG_ID}/contacts`;
+
+/**
+ * Every contacts-LIST GET requested so far, oldest first.
+ *
+ * Deliberately not "every URL containing /contacts": the create POST shares this
+ * exact URL and the delete DELETE also matches that substring, so a looser
+ * filter counts the mutation itself as the refetch and the "refetches" assertion
+ * passes even with the refetch deleted.
+ */
 function listCalls(): string[] {
   return fetchWithAuthMock.mock.calls
-    .map((c) => c[0] as string)
-    .filter((u) => u.includes('/contacts') && !u.startsWith('/orgs/sites'));
+    .filter((c) => {
+      const url = c[0] as string;
+      if (!url.startsWith(LIST_PREFIX)) return false;
+      const method = (c[1] as RequestInit | undefined)?.method;
+      return method === undefined || method.toUpperCase() === 'GET';
+    })
+    .map((c) => c[0] as string);
 }
 
 function mutationCalls(): Array<[string, RequestInit]> {
@@ -226,26 +240,77 @@ describe('ContactsCard mutations', () => {
     await waitFor(() => expect(listCalls().length).toBeGreaterThan(listsBefore));
   });
 
-  it('updates a contact through the contact-scoped PATCH path', async () => {
+  it('updates a contact through the contact-scoped PATCH path, sending the whole form', async () => {
     mockApi();
     await renderCard();
-    fireEvent.click(screen.getByTestId('org-contacts-edit-c-alan'));
+    // c-ada carries roles and isPrimary, so a partial assertion here would miss
+    // the fields the PATCH actually overwrites — the whole draft is sent.
+    fireEvent.click(screen.getByTestId('org-contacts-edit-c-ada'));
     await waitFor(() => expect(screen.getByTestId('contact-form')).toBeInTheDocument());
 
-    expect(screen.getByTestId('contact-form-name-input')).toHaveValue('Alan Turing');
-    fireEvent.change(screen.getByTestId('contact-form-title-input'), { target: { value: 'Cryptanalyst' } });
+    expect(screen.getByTestId('contact-form-name-input')).toHaveValue('Ada Byron');
+    fireEvent.change(screen.getByTestId('contact-form-title-input'), { target: { value: 'Chief Analyst' } });
     fireEvent.click(screen.getByTestId('contact-form-submit'));
 
     await waitFor(() => expect(mutationCalls().length).toBe(1));
     const [url, init] = mutationCalls()[0]!;
     // The update route carries no organization — reach is re-asserted server-side.
-    expect(url).toBe('/orgs/contacts/c-alan');
+    expect(url).toBe('/orgs/contacts/c-ada');
     expect(init.method).toBe('PATCH');
-    expect(JSON.parse(init.body as string)).toMatchObject({
-      title: 'Cryptanalyst',
-      name: 'Alan Turing',
-      siteId: SITE_DEPOT,
+    expect(JSON.parse(init.body as string)).toEqual({
+      siteId: null,
+      name: 'Ada Byron',
+      email: 'ada@acme.test',
+      phone: '555-0100',
+      mobile: null,
+      title: 'Chief Analyst',
+      notes: null,
+      roles: ['technical', 'escalation'],
+      isPrimary: true,
     });
+  });
+
+  it('un-pins a site-scoped contact to organization level with an explicit null', async () => {
+    mockApi();
+    await renderCard();
+    fireEvent.click(screen.getByTestId('org-contacts-edit-c-grace'));
+    await waitFor(() => expect(screen.getByTestId('contact-form')).toBeInTheDocument());
+    expect(screen.getByTestId('contact-form-site-select')).toHaveValue(SITE_HQ);
+
+    fireEvent.change(screen.getByTestId('contact-form-site-select'), { target: { value: '' } });
+    fireEvent.click(screen.getByTestId('contact-form-submit'));
+
+    await waitFor(() => expect(mutationCalls().length).toBe(1));
+    const body = JSON.parse(mutationCalls()[0]![1].body as string);
+    expect(body.siteId).toBeNull();
+    // Un-pinning must not quietly drop the rest of the person.
+    expect(body.roles).toEqual(['site']);
+    expect(body.isPrimary).toBe(true);
+  });
+
+  it('refetches after an isPrimary toggle, because the server demotes the old primary', async () => {
+    mockApi();
+    await renderCard();
+    const listsBefore = listCalls().length;
+    fireEvent.click(screen.getByTestId('org-contacts-edit-c-alan'));
+    await waitFor(() => expect(screen.getByTestId('contact-form')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('contact-form-primary-input'));
+    fireEvent.click(screen.getByTestId('contact-form-submit'));
+
+    await waitFor(() => expect(mutationCalls().length).toBe(1));
+    expect(JSON.parse(mutationCalls()[0]![1].body as string).isPrimary).toBe(true);
+    await waitFor(() => expect(listCalls().length).toBeGreaterThan(listsBefore));
+  });
+
+  it('closes the form once a create succeeds', async () => {
+    mockApi();
+    await renderCard();
+    fireEvent.click(screen.getByTestId('org-contacts-add-button'));
+    await waitFor(() => expect(screen.getByTestId('contact-form')).toBeInTheDocument());
+    fireEvent.change(screen.getByTestId('contact-form-name-input'), { target: { value: 'Katherine Johnson' } });
+    fireEvent.click(screen.getByTestId('contact-form-submit'));
+    await waitFor(() => expect(screen.queryByTestId('contact-form')).not.toBeInTheDocument());
   });
 
   it('clears a field with an explicit null rather than an empty string', async () => {
@@ -336,7 +401,7 @@ describe('ContactsCard mutations', () => {
 });
 
 describe('ContactsCard import panel', () => {
-  it('toggles the CSV importer inline and refetches once it imports', async () => {
+  it('toggles the CSV importer inline', async () => {
     mockApi();
     await renderCard();
     expect(screen.queryByTestId('bulk-contact-import-panel')).not.toBeInTheDocument();
@@ -350,5 +415,193 @@ describe('ContactsCard import panel', () => {
     await waitFor(() =>
       expect(screen.queryByTestId('bulk-contact-import-panel')).not.toBeInTheDocument(),
     );
+  });
+
+  it('refetches the list once the embedded importer actually writes', async () => {
+    mockApi();
+    await renderCard();
+    fireEvent.click(screen.getByTestId('org-contacts-import-button'));
+    await waitFor(() =>
+      expect(screen.getByTestId('bulk-contact-import-panel')).toBeInTheDocument(),
+    );
+
+    const csv = 'Full Name,Email Address\nAda Byron,ada@acme.test\n';
+    const file = new File([csv], 'contacts.csv', { type: 'text/csv' });
+    Object.defineProperty(file, 'text', { value: () => Promise.resolve(csv) });
+    fireEvent.change(screen.getByTestId('bulk-contact-import-file-input'), {
+      target: { files: [file] },
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId('bulk-contact-import-map-name')).toBeInTheDocument(),
+    );
+
+    fetchWithAuthMock.mockReturnValueOnce(jsonResponse({
+      rows: [{
+        index: 0, name: 'Ada Byron', email: 'ada@acme.test', annotation: 'create',
+        organizationId: ORG_ID, siteId: null, contactId: null,
+      }],
+    }));
+    fireEvent.click(screen.getByTestId('bulk-contact-import-preview'));
+    await waitFor(() =>
+      expect(screen.getByTestId('bulk-contact-import-table')).toBeInTheDocument(),
+    );
+
+    const listsBefore = listCalls().length;
+    fetchWithAuthMock.mockReturnValueOnce(jsonResponse({
+      imported: [{ index: 0, organizationId: ORG_ID, contactId: 'c-new', name: 'Ada Byron', createdLink: false }],
+      updated: [], skipped: [], errors: [],
+    }));
+    fireEvent.click(screen.getByTestId('bulk-contact-import-submit'));
+
+    // onImported fires only when the commit actually wrote something.
+    await waitFor(() => expect(listCalls().length).toBeGreaterThan(listsBefore));
+  });
+});
+
+describe('ContactsCard sites', () => {
+  it('keeps the contact list usable and says so when the sites call fails', async () => {
+    mockApi({ sites: { error: 'boom' }, sitesStatus: 500 });
+    await renderCard();
+
+    expect(screen.getByTestId('org-contacts-sites-error')).toBeInTheDocument();
+    // The contacts themselves are org-scoped and unaffected.
+    expect(screen.getByTestId('org-contacts-row-c-ada')).toHaveTextContent('Ada Byron');
+    // A site whose name never arrived reads as unavailable, not as a permission
+    // verdict — the server already intersected the caller's allowed sites.
+    expect(screen.getByTestId('org-contacts-site-c-grace')).toHaveTextContent('Site unavailable');
+  });
+
+  it('re-requests the sites when the notice is retried', async () => {
+    mockApi({ sites: { error: 'boom' }, sitesStatus: 500 });
+    await renderCard();
+    const sitesBefore = fetchWithAuthMock.mock.calls
+      .filter((c) => (c[0] as string).startsWith('/orgs/sites')).length;
+
+    mockApi();
+    fireEvent.click(screen.getByTestId('org-contacts-sites-retry'));
+    await waitFor(() =>
+      expect(screen.queryByTestId('org-contacts-sites-error')).not.toBeInTheDocument(),
+    );
+    expect(
+      fetchWithAuthMock.mock.calls.filter((c) => (c[0] as string).startsWith('/orgs/sites')).length,
+    ).toBeGreaterThan(sitesBefore);
+    expect(screen.getByTestId('org-contacts-site-c-grace')).toHaveTextContent('HQ');
+  });
+});
+
+describe('ContactsCard pagination', () => {
+  it('summarises the range and disables the bound the page sits on', async () => {
+    mockApi({ contacts: { data: CONTACTS, pagination: { page: 1, limit: 25, total: 60 } } });
+    await renderCard();
+    expect(screen.getByTestId('org-contacts-page')).toHaveTextContent('Showing 1 to 25 of 60');
+    expect(screen.getByTestId('org-contacts-prev')).toBeDisabled();
+    expect(screen.getByTestId('org-contacts-next')).toBeEnabled();
+
+    fireEvent.click(screen.getByTestId('org-contacts-next'));
+    await waitFor(() => expect(listCalls().at(-1)).toContain('page=2'));
+    fireEvent.click(screen.getByTestId('org-contacts-next'));
+    await waitFor(() => expect(listCalls().at(-1)).toContain('page=3'));
+    expect(screen.getByTestId('org-contacts-next')).toBeDisabled();
+    expect(screen.getByTestId('org-contacts-prev')).toBeEnabled();
+  });
+
+  it('falls back to the last page when a delete empties the page it was on', async () => {
+    const filler = Array.from({ length: 25 }, (_, i) => ({
+      ...CONTACTS[2]!, id: `c-filler-${i}`, name: `Person ${i}`,
+    }));
+    const last = { ...CONTACTS[2]!, id: 'c-last', name: 'Last Person' };
+    let deleted = false;
+    fetchWithAuthMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url.startsWith('/orgs/sites')) {
+        return jsonResponse({ data: SITES, pagination: { page: 1, limit: 50, total: SITES.length } });
+      }
+      if (init?.method === 'DELETE') {
+        deleted = true;
+        return jsonResponse({ success: true });
+      }
+      const page = new URLSearchParams(url.slice(url.indexOf('?') + 1)).get('page');
+      const total = deleted ? 25 : 26;
+      const data = page === '2' ? (deleted ? [] : [last]) : filler;
+      return jsonResponse({ data, pagination: { page: Number(page), limit: 25, total } });
+    });
+
+    await renderCard();
+    fireEvent.click(screen.getByTestId('org-contacts-next'));
+    await waitFor(() => expect(screen.getByTestId('org-contacts-row-c-last')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('org-contacts-delete-c-last'));
+
+    // An empty page 2 must send the operator back to page 1, not to "No contacts yet".
+    await waitFor(() => expect(listCalls().at(-1)).toContain('page=1'));
+    await waitFor(() => expect(screen.getAllByTestId(/^org-contacts-row-/)).toHaveLength(25));
+    expect(screen.queryByTestId('org-contacts-empty')).not.toBeInTheDocument();
+  });
+});
+
+describe('ContactsCard in-flight states', () => {
+  it('marks the first load so a slow list is distinguishable from an empty one', async () => {
+    fetchWithAuthMock.mockImplementation((url: string) => {
+      if (url.startsWith('/orgs/sites')) {
+        return jsonResponse({ data: SITES, pagination: { page: 1, limit: 50, total: SITES.length } });
+      }
+      return new Promise<Response>(() => { /* never settles */ });
+    });
+    render(<ContactsCard orgId={ORG_ID} />);
+    await waitFor(() => expect(screen.getByTestId('org-contacts-loading')).toBeInTheDocument());
+    expect(screen.queryByTestId('org-contacts-empty')).not.toBeInTheDocument();
+  });
+
+  it('disables the row delete button while its DELETE is in flight', async () => {
+    let releaseDelete: ((r: Response) => void) | undefined;
+    fetchWithAuthMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url.startsWith('/orgs/sites')) {
+        return jsonResponse({ data: SITES, pagination: { page: 1, limit: 50, total: SITES.length } });
+      }
+      if (init?.method === 'DELETE') {
+        return new Promise<Response>((resolve) => { releaseDelete = resolve; });
+      }
+      return jsonResponse({ data: CONTACTS, pagination: { page: 1, limit: 25, total: CONTACTS.length } });
+    });
+    await renderCard();
+
+    fireEvent.click(screen.getByTestId('org-contacts-delete-c-alan'));
+    await waitFor(() => expect(screen.getByTestId('org-contacts-delete-c-alan')).toBeDisabled());
+    // A second click while the first is in flight would delete nothing but toast twice.
+    fireEvent.click(screen.getByTestId('org-contacts-delete-c-alan'));
+    expect(mutationCalls()).toHaveLength(1);
+
+    releaseDelete?.(new Response(JSON.stringify({ success: true }), {
+      status: 200, headers: { 'Content-Type': 'application/json' },
+    }));
+    await waitFor(() => expect(screen.getByTestId('org-contacts-delete-c-alan')).toBeEnabled());
+  });
+});
+
+describe('ContactsCard roles', () => {
+  it('renders a role token it does not know rather than dropping it', async () => {
+    mockApi({
+      contacts: {
+        data: [{ ...CONTACTS[0]!, roles: ['technical', 'chief_vibes'] }],
+        pagination: { page: 1, limit: 25, total: 1 },
+      },
+    });
+    await renderCard();
+    const roles = screen.getByTestId('org-contacts-roles-c-ada');
+    expect(roles).toHaveTextContent('Technical');
+    expect(roles).toHaveTextContent('chief_vibes');
+  });
+});
+
+describe('ContactsCard load failures', () => {
+  it('re-requests the list when the error notice is retried', async () => {
+    mockApi({ contacts: { error: 'boom' }, contactsStatus: 500 });
+    render(<ContactsCard orgId={ORG_ID} />);
+    await waitFor(() => expect(screen.getByTestId('org-contacts-load-error')).toBeInTheDocument());
+    const before = listCalls().length;
+
+    mockApi();
+    fireEvent.click(screen.getByText('Try again'));
+    await waitFor(() => expect(screen.getByTestId('org-contacts-table')).toBeInTheDocument());
+    expect(listCalls().length).toBeGreaterThan(before);
   });
 });
