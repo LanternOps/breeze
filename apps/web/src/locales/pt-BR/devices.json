@@ -2086,8 +2086,8 @@
   "maintenanceModeDialog": {
     "title": "Ativar o modo de manutenção",
     "titleMany": "Ativar o modo de manutenção em {{deviceCount}} dispositivos",
-    "description": "Os alertas e o monitoramento de {{hostname}} ficam suspensos até o fim da janela.",
-    "descriptionMany": "Os alertas e o monitoramento dos dispositivos selecionados ficam suspensos até o fim da janela.",
+    "description": "Registra uma janela de manutenção em {{hostname}} e indica quem a iniciou. Alertas, monitoramento, patches, scripts e reinicializações continuam normalmente.",
+    "descriptionMany": "Registra uma janela de manutenção nos dispositivos selecionados e indica quem a iniciou. Alertas, monitoramento, patches, scripts e reinicializações continuam normalmente.",
     "reasonLabel": "Motivo",
     "reasonPlaceholder": "Por que entrará em manutenção?",
     "reasonHint": "De 3 a 500 caracteres. Registrado no dispositivo e na trilha de auditoria.",

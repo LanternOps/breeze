@@ -2086,8 +2086,8 @@
   "maintenanceModeDialog": {
     "title": "Activer le mode maintenance",
     "titleMany": "Activer le mode maintenance sur {{deviceCount}} appareils",
-    "description": "Les alertes et la surveillance de {{hostname}} sont suspendues jusqu'à la fin de la fenêtre.",
-    "descriptionMany": "Les alertes et la surveillance des appareils sélectionnés sont suspendues jusqu'à la fin de la fenêtre.",
+    "description": "Enregistre une fenêtre de maintenance sur {{hostname}} et indique qui l'a démarrée. Les alertes, la surveillance, les correctifs, les scripts et les redémarrages se poursuivent normalement.",
+    "descriptionMany": "Enregistre une fenêtre de maintenance sur les appareils sélectionnés et indique qui l'a démarrée. Les alertes, la surveillance, les correctifs, les scripts et les redémarrages se poursuivent normalement.",
     "reasonLabel": "Motif",
     "reasonPlaceholder": "Pourquoi passer en maintenance ?",
     "reasonHint": "De 3 à 500 caractères. Consigné sur l'appareil et dans la piste d'audit.",

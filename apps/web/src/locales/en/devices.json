@@ -2086,8 +2086,8 @@
   "maintenanceModeDialog": {
     "title": "Enter maintenance mode",
     "titleMany": "Enter maintenance mode on {{deviceCount}} devices",
-    "description": "Alerts and monitoring for {{hostname}} are suppressed until the window ends.",
-    "descriptionMany": "Alerts and monitoring for the selected devices are suppressed until the window ends.",
+    "description": "Records a maintenance window on {{hostname}} and notes who started it. Alerts, monitoring, patching, scripts and reboots continue as usual.",
+    "descriptionMany": "Records a maintenance window on the selected devices and notes who started it. Alerts, monitoring, patching, scripts and reboots continue as usual.",
     "reasonLabel": "Reason",
     "reasonPlaceholder": "Why is this going into maintenance?",
     "reasonHint": "3–500 characters. Recorded on the device and in the audit trail.",

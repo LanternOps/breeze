@@ -2086,8 +2086,8 @@
   "maintenanceModeDialog": {
     "title": "Wartungsmodus aktivieren",
     "titleMany": "Wartungsmodus für {{deviceCount}} Geräte aktivieren",
-    "description": "Warnungen und Überwachung für {{hostname}} werden bis zum Ende des Zeitfensters unterdrückt.",
-    "descriptionMany": "Warnungen und Überwachung für die ausgewählten Geräte werden bis zum Ende des Zeitfensters unterdrückt.",
+    "description": "Erfasst ein Wartungsfenster für {{hostname}} und hält fest, wer es gestartet hat. Warnungen, Überwachung, Patches, Skripte und Neustarts laufen unverändert weiter.",
+    "descriptionMany": "Erfasst ein Wartungsfenster für die ausgewählten Geräte und hält fest, wer es gestartet hat. Warnungen, Überwachung, Patches, Skripte und Neustarts laufen unverändert weiter.",
     "reasonLabel": "Grund",
     "reasonPlaceholder": "Warum wird die Wartung durchgeführt?",
     "reasonHint": "3–500 Zeichen. Wird am Gerät und im Audit-Protokoll gespeichert.",

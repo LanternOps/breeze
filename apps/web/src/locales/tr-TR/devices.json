@@ -2086,8 +2086,8 @@
   "maintenanceModeDialog": {
     "title": "Bakım modunu başlat",
     "titleMany": "{{deviceCount}} cihazda bakım modunu başlat",
-    "description": "{{hostname}} için uyarılar ve izleme, pencere bitene kadar bastırılır.",
-    "descriptionMany": "Seçili cihazlar için uyarılar ve izleme, pencere bitene kadar bastırılır.",
+    "description": "{{hostname}} için bir bakım penceresi kaydeder ve bunu kimin başlattığını not eder. Uyarılar, izleme, yamalar, komut dosyaları ve yeniden başlatmalar normal şekilde devam eder.",
+    "descriptionMany": "Seçili cihazlar için bir bakım penceresi kaydeder ve bunu kimin başlattığını not eder. Uyarılar, izleme, yamalar, komut dosyaları ve yeniden başlatmalar normal şekilde devam eder.",
     "reasonLabel": "Gerekçe",
     "reasonPlaceholder": "Neden bakıma alınıyor?",
     "reasonHint": "3–500 karakter. Cihazda ve denetim kaydında saklanır.",

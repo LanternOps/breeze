@@ -2086,8 +2086,8 @@
   "maintenanceModeDialog": {
     "title": "Activar el modo de mantenimiento",
     "titleMany": "Activar el modo de mantenimiento en {{deviceCount}} dispositivos",
-    "description": "Las alertas y el monitoreo de {{hostname}} se suprimen hasta que termine la ventana.",
-    "descriptionMany": "Las alertas y el monitoreo de los dispositivos seleccionados se suprimen hasta que termine la ventana.",
+    "description": "Registra una ventana de mantenimiento en {{hostname}} y deja constancia de quién la inició. Las alertas, el monitoreo, los parches, los scripts y los reinicios continúan con normalidad.",
+    "descriptionMany": "Registra una ventana de mantenimiento en los dispositivos seleccionados y deja constancia de quién la inició. Las alertas, el monitoreo, los parches, los scripts y los reinicios continúan con normalidad.",
     "reasonLabel": "Motivo",
     "reasonPlaceholder": "¿Por qué entra en mantenimiento?",
     "reasonHint": "De 3 a 500 caracteres. Se registra en el dispositivo y en la pista de auditoría.",

@@ -2086,8 +2086,8 @@
   "maintenanceModeDialog": {
     "title": "Attiva la modalità manutenzione",
     "titleMany": "Attiva la modalità manutenzione su {{deviceCount}} dispositivi",
-    "description": "Gli avvisi e il monitoraggio di {{hostname}} sono sospesi fino al termine della finestra.",
-    "descriptionMany": "Gli avvisi e il monitoraggio dei dispositivi selezionati sono sospesi fino al termine della finestra.",
+    "description": "Registra una finestra di manutenzione su {{hostname}} e indica chi l'ha avviata. Avvisi, monitoraggio, patch, script e riavvii proseguono normalmente.",
+    "descriptionMany": "Registra una finestra di manutenzione sui dispositivi selezionati e indica chi l'ha avviata. Avvisi, monitoraggio, patch, script e riavvii proseguono normalmente.",
     "reasonLabel": "Motivo",
     "reasonPlaceholder": "Perché va in manutenzione?",
     "reasonHint": "Da 3 a 500 caratteri. Registrato sul dispositivo e nella traccia di audit.",
