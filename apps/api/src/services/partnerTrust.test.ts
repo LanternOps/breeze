@@ -88,6 +88,57 @@ function dispatchedCommandTypeLiterals(): string[] {
   return [...commandTypes].sort();
 }
 
+function agentDispatcherCommandTypes(): { commandTypes: string[]; unresolvedConstants: string[]; files: string[] } {
+  const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
+  const heartbeatDirectory = join(repoRoot, 'agent', 'internal', 'heartbeat');
+  const toolsTypesFile = join(repoRoot, 'agent', 'internal', 'remote', 'tools', 'types.go');
+  const handlerFiles = readdirSync(heartbeatDirectory)
+    .filter((name) => /^handlers(?:_.*)?\.go$/.test(name) && !name.endsWith('_test.go'))
+    .map((name) => join(heartbeatDirectory, name));
+  const constantValues = new Map<string, string>();
+
+  for (const file of [toolsTypesFile, ...handlerFiles]) {
+    const source = readFileSync(file, 'utf8');
+    for (const match of source.matchAll(/\b(Cmd[A-Za-z0-9_]+)\s*=\s*"([a-z][a-z0-9_]*)"/g)) {
+      if (match[1] && match[2]) constantValues.set(match[1], match[2]);
+    }
+  }
+
+  const referencedConstants = new Set<string>();
+  const commandTypes = new Set<string>();
+  for (const file of handlerFiles) {
+    const source = readFileSync(file, 'utf8');
+    // handlers.go contains the primary dispatcher map; handlers_*.go extend it in init().
+    const registryMap = source.match(
+      /var handlerRegistry\s*=\s*map\[string\]CommandHandler\s*\{([\s\S]*?)^\}/m,
+    )?.[1] ?? '';
+    addMatches(registryMap, /^\s*"([a-z][a-z0-9_]*)"\s*:/gm, commandTypes);
+    addMatches(source, /handlerRegistry\[\s*"([a-z][a-z0-9_]*)"\s*\]/g, commandTypes);
+    for (const registrySource of [registryMap, source]) {
+      const pattern = registrySource === registryMap
+        ? /^\s*(?:tools\.)?(Cmd[A-Za-z0-9_]+)\s*:/gm
+        : /handlerRegistry\[\s*(?:tools\.)?(Cmd[A-Za-z0-9_]+)\s*\]/g;
+      for (const match of registrySource.matchAll(pattern)) {
+        if (match[1]) referencedConstants.add(match[1]);
+      }
+    }
+  }
+
+  const unresolvedConstants = [...referencedConstants]
+    .filter((name) => !constantValues.has(name))
+    .sort();
+  for (const name of referencedConstants) {
+    const commandType = constantValues.get(name);
+    if (commandType) commandTypes.add(commandType);
+  }
+
+  return {
+    commandTypes: [...commandTypes].sort(),
+    unresolvedConstants,
+    files: [toolsTypesFile, ...handlerFiles],
+  };
+}
+
 beforeEach(() => {
   audit.mockClear();
   state.trustState = 'probation';
@@ -190,9 +241,19 @@ describe('evaluateCapability', () => {
 });
 
 describe('command allowlist', () => {
-  const realCommandTypes = dispatchedCommandTypeLiterals();
+  const apiCommandTypes = dispatchedCommandTypeLiterals();
+  const agentDispatcher = agentDispatcherCommandTypes();
+  const realCommandTypes = [...new Set([...apiCommandTypes, ...agentDispatcher.commandTypes])].sort();
 
   it('classifies every known command type exactly once', () => {
+    expect(
+      agentDispatcher.commandTypes.length,
+      `expected command types parsed from Go dispatcher files: ${agentDispatcher.files.join(', ')}`,
+    ).toBeGreaterThan(0);
+    expect(
+      agentDispatcher.unresolvedConstants,
+      'every Go dispatcher Cmd constant must resolve to a string value',
+    ).toEqual([]);
     const lifecycle = new Set<string>(LIFECYCLE_COMMAND_TYPES);
     const gated = new Set<string>(GATED_COMMAND_TYPES);
     expect(LIFECYCLE_COMMAND_TYPES.filter((type) => gated.has(type))).toEqual([]);
