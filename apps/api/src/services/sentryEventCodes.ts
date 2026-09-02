@@ -106,6 +106,8 @@ export const SENTRY_EVENT_CODES = [
    * the caller; a sustained stream means real capacity exhaustion.
    */
   'ai_session_cap_all_in_flight',
+  /** A crossed AI budget rung (#4388) resolved to zero notifiable recipients. */
+  'ai_budget_alert_no_recipients',
 
   // --- backup -----------------------------------------------------------
   /** A backup result matched no job row (deleted, or invisible under RLS). */

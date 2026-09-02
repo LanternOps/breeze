@@ -11,8 +11,10 @@ vi.mock('../db', () => ({
 vi.mock('./effectiveSettings', () => ({ getEffectiveAiBudget: vi.fn(), DEFAULT_AI_ALERT_THRESHOLD_PERCENTS: [50, 80, 95] }));
 vi.mock('./llm/llmConfigResolver', () => ({ getLlmBillingSourceForOrg: vi.fn() }));
 vi.mock('./sentry', () => ({ captureException: vi.fn() }));
+vi.mock('../jobs/aiBudgetAlertDelivery', () => ({ enqueueAiBudgetAlertDelivery: vi.fn().mockResolvedValue(undefined) }));
 
 import { computeBudgetPct, evaluateAiBudgetThresholds, normalizeAlertThresholds, periodKeysFor, pickRung } from './aiBudgetAlerts';
+import { enqueueAiBudgetAlertDelivery } from '../jobs/aiBudgetAlertDelivery';
 import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { getEffectiveAiBudget } from './effectiveSettings';
 import { getLlmBillingSourceForOrg } from './llm/llmConfigResolver';
@@ -89,6 +91,7 @@ describe('evaluateAiBudgetThresholds', () => {
     expect(created).toEqual([{ id: 'evt-1', period: 'monthly', thresholdPct: 95 }]);
     expect(executed.join('\n')).toContain('threshold_pct >=');
     expect(executed.join('\n')).toContain('ON CONFLICT');
+    expect(enqueueAiBudgetAlertDelivery).toHaveBeenCalledWith('evt-1');
   });
 
   it('returns nothing when the insert is suppressed (rung already fired)', async () => {

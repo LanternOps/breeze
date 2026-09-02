@@ -55,8 +55,14 @@ export function periodKeysFor(now: Date): { daily: string; monthly: string } {
  * rung (highest only; monotonic per period — see spec §4.2). Never throws
  * into the caller: the recorder path is fire-and-forget and must not fail a turn.
  *
- * Task 8 (later wave) enqueues delivery after each inserted row — that call
- * belongs right after `created.push(...)` below.
+ * Delivery is enqueued once, after BOTH periods' `db.transaction` calls have
+ * resolved (i.e. every row this call is going to insert is already committed),
+ * never from inside a transaction callback. Enqueuing per-row before the next
+ * period's read/insert has run would let a later period's failure strand an
+ * already-queued job pointed at a row that in fact committed fine — moving the
+ * enqueue loop after the whole evaluation removes that ordering dependency
+ * entirely: every enqueue in the loop refers to an already-durable row
+ * regardless of what any other period did.
  */
 export async function evaluateAiBudgetThresholds(orgId: string, now = new Date()): Promise<CreatedAlertEvent[]> {
   const run = async (): Promise<CreatedAlertEvent[]> => {
@@ -114,6 +120,20 @@ export async function evaluateAiBudgetThresholds(orgId: string, now = new Date()
       const id = inserted[0]?.id;
       if (id) created.push({ id, period, thresholdPct: rung });
     }
+
+    if (created.length > 0) {
+      // Lazy import breaks the jobs → services → jobs cycle: this module
+      // enqueues into the delivery worker, and the delivery worker's
+      // partner-fan-out job calls back into this module's evaluator.
+      const { enqueueAiBudgetAlertDelivery } = await import('../jobs/aiBudgetAlertDelivery');
+      for (const event of created) {
+        await enqueueAiBudgetAlertDelivery(event.id).catch((err: unknown) => {
+          // The reconcile job picks up any row left undelivered.
+          console.error(`[AI] budget alert enqueue failed for event ${event.id}:`, err instanceof Error ? err.message : err);
+        });
+      }
+    }
+
     return created;
   };
 
