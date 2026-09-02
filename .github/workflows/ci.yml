@@ -2365,6 +2365,44 @@ jobs:
       - name: Run the guided installer end to end
         run: bash scripts/smoke-guided-setup.sh
 
+      - name: Assert self-hosted trust mode does not deny remote sessions
+        run: |
+          set -euo pipefail
+          DEVICE_ID=8d93bc26-30d6-4b76-a7df-f8cc79d2dd98
+          docker exec breeze-postgres psql -v ON_ERROR_STOP=1 -U breeze -d breeze <<SQL
+          INSERT INTO devices (id, org_id, site_id, agent_id, hostname, os_type, os_version, architecture, agent_version, status)
+          SELECT '${DEVICE_ID}', o.id, s.id, 'guided-smoke-offline-agent', 'guided-smoke-offline', 'linux', 'test', 'amd64', '0.0.0-test', 'offline'
+          FROM organizations o
+          JOIN sites s ON s.org_id = o.id
+          WHERE o.slug = 'default-organization'
+          ORDER BY s.created_at
+          LIMIT 1
+          ON CONFLICT (id) DO UPDATE SET status = 'offline';
+          SQL
+          SEEDED_DEVICE=$(docker exec breeze-postgres psql -At -U breeze -d breeze \
+            -c "SELECT id FROM devices WHERE id = '${DEVICE_ID}'")
+          [ "${SEEDED_DEVICE}" = "${DEVICE_ID}" ] || { echo "ERROR: guided smoke device was not seeded"; exit 1; }
+          LOGIN_BODY=$(curl -skf -X POST https://localhost/api/v1/auth/login \
+            -H 'Content-Type: application/json' \
+            -H 'Origin: https://localhost' \
+            --data '{"email":"ci-admin@breeze.local","password":"ci-smoke-bootstrap-credential-32-chars"}')
+          TOKEN=$(jq -er '.tokens.accessToken' <<<"${LOGIN_BODY}")
+          RESPONSE=$(curl -sk -o /tmp/guided-trust-response -w '%{http_code}' \
+            -X POST https://localhost/api/v1/remote/sessions \
+            -H "Authorization: Bearer ${TOKEN}" \
+            -H 'Content-Type: application/json' \
+            --data "{\"deviceId\":\"${DEVICE_ID}\",\"type\":\"desktop\"}")
+          BODY=$(cat /tmp/guided-trust-response)
+          if [ "${RESPONSE}" = "403" ] && grep -q 'TRUST_' <<<"${BODY}"; then
+            echo "ERROR: self-hosted POST /remote/sessions was blocked by partner trust (${RESPONSE}): ${BODY}"
+            exit 1
+          fi
+          case "${RESPONSE}" in
+            2??|400|404) ;;
+            *) echo "ERROR: unexpected POST /remote/sessions response (${RESPONSE}): ${BODY}"; exit 1 ;;
+          esac
+          echo "Remote session trust smoke passed (${RESPONSE})."
+
       - name: Diagnostics on failure
         if: failure()
         run: bash scripts/smoke-guided-setup.sh logs || true
