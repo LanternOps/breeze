@@ -15,6 +15,9 @@ const WATCH_ID = '00000000-0000-4000-8000-0000000000d8';
 const USER_ID = '00000000-0000-4000-8000-0000000000d9';
 const RECURRENCE_ALERT_ID = '00000000-0000-4000-8000-0000000000da';
 const INTENT_ID = '00000000-0000-4000-8000-0000000000db';
+/** A SECOND watch of the SAME run — one run releases N intent-anchored
+ *  watches (P2-5, #4192), and all of them denormalize the same alert. */
+const SIBLING_WATCH_ID = '00000000-0000-4000-8000-0000000000dc';
 /** A colon key — `canonicalPolicyKey`'s shape for a released intent, as
  *  opposed to the dot keys an act manifest uses. */
 const OP_KEY = 'manage_services:restart';
@@ -186,6 +189,10 @@ const dialect = new PgDialect();
 
 function sqlText(value: unknown): string {
   return dialect.sqlToQuery(value as SQL).sql;
+}
+
+function sqlParams(value: unknown): unknown[] {
+  return dialect.sqlToQuery(value as SQL).params;
 }
 
 function finishedRun(overrides: Partial<FinishedRunForWatch> = {}): FinishedRunForWatch {
@@ -781,6 +788,7 @@ describe('checkFixWatchPhase2', () => {
       [{ id: RECURRENCE_ALERT_ID }], // recurrence query
       [{ name: 'Disk Cleaner', orgId: null, partnerId: PARTNER_ID }], // agent
       [{ policySnapshot: { effective: { recipients: { userIds: [USER_ID] } } } }], // run
+      [], // episode guard: no attention alert raised for this episode yet
     );
 
     const result = await checkFixWatchPhase2(WATCH_ID);
@@ -801,7 +809,7 @@ describe('checkFixWatchPhase2', () => {
       userId: USER_ID,
       orgId: ORG_ID,
       priority: 'high',
-      dedupeKey: `fix-watch-${WATCH_ID}-recurred`,
+      dedupeKey: `fix-watch-${RUN_ID}-${RECURRENCE_ALERT_ID}-recurred`,
     });
 
     expect(state.insertValues).toHaveLength(1);
@@ -827,6 +835,7 @@ describe('checkFixWatchPhase2', () => {
       [{ id: RECURRENCE_ALERT_ID }],
       [{ name: 'Service Restarter', orgId: null, partnerId: PARTNER_ID }],
       [{ policySnapshot: { effective: { recipients: {} } } }],
+      [], // episode guard
     );
     resolveRecipientUserIdsMock.mockResolvedValueOnce([]);
 
@@ -909,6 +918,89 @@ describe('checkFixWatchPhase2', () => {
     expect(state.insertCount).toBe(0);
   });
 
+  // ---------------------------------------------------------------------
+  // Review fix (P2-5, #4192): one run now releases N intent-anchored watches
+  // (`createIntentFixWatchRow`), and every one of them denormalizes the SAME
+  // `alertId`/`ruleId`/`deviceId` off the triggering alert. A single
+  // recurrence therefore wins N independent `watching -> recurred` CAS races
+  // and reaches `sendRecurrenceNotifications` N times. Both operator-facing
+  // artifacts must collapse to ONE per EPISODE (run + recurrence alert),
+  // never one per watch.
+  // ---------------------------------------------------------------------
+  it('dedupes the recurrence notification on the RUN + recurrence alert, so sibling watches share one key', async () => {
+    const recoveredAt = new Date('2026-08-28T00:00:00Z');
+    const queueOneRecurrence = (watchId: string) => {
+      state.selectQueue.push(
+        [watchRow({ id: watchId, state: 'watching', recoveryObservedAt: recoveredAt })],
+        [{ id: RECURRENCE_ALERT_ID }],
+        [{ name: 'Disk Cleaner', orgId: null, partnerId: PARTNER_ID }],
+        [{ policySnapshot: { effective: { recipients: { userIds: [USER_ID] } } } }],
+        [], // no attention alert yet for this episode
+      );
+    };
+
+    queueOneRecurrence(WATCH_ID);
+    await checkFixWatchPhase2(WATCH_ID);
+    queueOneRecurrence(SIBLING_WATCH_ID);
+    await checkFixWatchPhase2(SIBLING_WATCH_ID);
+
+    const episodeKey = `fix-watch-${RUN_ID}-${RECURRENCE_ALERT_ID}-recurred`;
+    expect(createNotificationMock).toHaveBeenCalledTimes(2);
+    expect(createNotificationMock.mock.calls[0]![0]).toMatchObject({ dedupeKey: episodeKey });
+    // The SIBLING must present the identical key — that is what makes
+    // `createNotification`'s (user_id, dedupe_key) unique index collapse it.
+    expect(createNotificationMock.mock.calls[1]![0]).toMatchObject({ dedupeKey: episodeKey });
+  });
+
+  it('raises the attention alert only for the FIRST sibling of an episode', async () => {
+    const recoveredAt = new Date('2026-08-28T00:00:00Z');
+    state.selectQueue.push(
+      [watchRow({ id: SIBLING_WATCH_ID, state: 'watching', recoveryObservedAt: recoveredAt })],
+      [{ id: RECURRENCE_ALERT_ID }],
+      [{ name: 'Disk Cleaner', orgId: null, partnerId: PARTNER_ID }],
+      [{ policySnapshot: { effective: { recipients: { userIds: [USER_ID] } } } }],
+      // An earlier sibling of the SAME episode already raised it.
+      [{ id: '00000000-0000-4000-8000-0000000000e0' }],
+    );
+
+    const result = await checkFixWatchPhase2(SIBLING_WATCH_ID);
+
+    expect(result).toEqual({ action: 'recurred' });
+    // The notification still goes out (its own dedupe key absorbs it); the
+    // rule-less attention alert — which has NO dedupe key of its own — does
+    // not fire a second time.
+    expect(createNotificationMock).toHaveBeenCalledTimes(1);
+    expect(state.insertCount).toBe(0);
+  });
+
+  it('keys the attention-alert guard on the episode identifiers in `context`, predicated on the device', async () => {
+    const recoveredAt = new Date('2026-08-28T00:00:00Z');
+    state.selectQueue.push(
+      [watchRow({ state: 'watching', recoveryObservedAt: recoveredAt })],
+      [{ id: RECURRENCE_ALERT_ID }],
+      [{ name: 'Disk Cleaner', orgId: null, partnerId: PARTNER_ID }],
+      [{ policySnapshot: { effective: { recipients: { userIds: [USER_ID] } } } }],
+      [],
+    );
+
+    await checkFixWatchPhase2(WATCH_ID);
+
+    // selects: watch, recurrence, agent, run, attention-alert guard.
+    const guardWhere = state.selectWheres[4];
+    const guardSql = sqlText(guardWhere);
+    expect(guardSql).toContain('config_item_name');
+    // `device_id` keeps the probe on `idx_alerts_device_triggered` rather
+    // than a full-table jsonb scan.
+    expect(guardSql).toContain('device_id');
+    expect(guardSql).toContain(`->>'runId'`);
+    expect(guardSql).toContain(`->>'recurrenceAlertId'`);
+    // Bound to the EPISODE, never to the watch that happens to be asking.
+    const guardParams = sqlParams(guardWhere);
+    expect(guardParams).toContain(RUN_ID);
+    expect(guardParams).toContain(RECURRENCE_ALERT_ID);
+    expect(guardParams).not.toContain(WATCH_ID);
+  });
+
   it('a notify with no resolvable agent/run skips notification without failing the result', async () => {
     const recoveredAt = new Date('2026-08-28T00:00:00Z');
     state.selectQueue.push(
@@ -938,6 +1030,7 @@ describe('checkFixWatchPhase2 — P2-5 watch-verdict op evidence', () => {
       [{ id: RECURRENCE_ALERT_ID }],
       [{ name: 'Disk Cleaner', orgId: null, partnerId: PARTNER_ID }],
       [{ policySnapshot: { effective: { recipients: { userIds: [USER_ID] } } } }],
+      [], // episode guard
     );
 
     const result = await checkFixWatchPhase2(WATCH_ID);

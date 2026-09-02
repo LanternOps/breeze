@@ -40,7 +40,7 @@
 import './setup';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
-import { asc, eq, sql } from 'drizzle-orm';
+import { and, asc, eq, sql } from 'drizzle-orm';
 import { Hono } from 'hono';
 
 // The ONLY fake in this file: the tool-execution boundary, partially mocked
@@ -557,9 +557,15 @@ describe('ai_agent_op_evidence — atomicity against a real transaction scope', 
 // ===========================================================================
 
 describe('ai_agent_op_evidence — fix-watch fan-out over op_keys', () => {
-  /** A `watching` watch whose triggering alert has already recurred, so
-   *  phase 2 takes the `recurred` branch on its first call. */
-  async function seedRecurringWatch(opKeys: string[]): Promise<string> {
+  interface RecurrenceEpisode {
+    triggeringAlertId: string;
+    recurrenceAlertId: string;
+    recoveryObservedAt: Date;
+  }
+
+  /** One alert that fired, recovered, and then recurred — the single
+   *  real-world event every watch of the run is grading. */
+  async function seedRecurrenceEpisode(): Promise<RecurrenceEpisode> {
     const adminDb = getTestDb();
     const recoveryObservedAt = new Date(Date.now() - 60 * 60 * 1000);
 
@@ -579,17 +585,33 @@ describe('ai_agent_op_evidence — fix-watch fan-out over op_keys', () => {
 
     // The recurrence: same device, same rule-less + config_item_name shape,
     // triggered strictly AFTER recovery was observed.
-    await adminDb.insert(alerts).values({
-      orgId: s.orgId,
-      deviceId: s.deviceId,
-      ruleId: null,
-      configItemName: 'cpu_high',
-      severity: 'high',
-      title: 'CPU high again',
-      status: 'active',
-      triggeredAt: new Date(recoveryObservedAt.getTime() + 10 * 60 * 1000),
-    });
+    const [recurrence] = await adminDb
+      .insert(alerts)
+      .values({
+        orgId: s.orgId,
+        deviceId: s.deviceId,
+        ruleId: null,
+        configItemName: 'cpu_high',
+        severity: 'high',
+        title: 'CPU high again',
+        status: 'active',
+        triggeredAt: new Date(recoveryObservedAt.getTime() + 10 * 60 * 1000),
+      })
+      .returning({ id: alerts.id });
 
+    return {
+      triggeringAlertId: triggering!.id,
+      recurrenceAlertId: recurrence!.id,
+      recoveryObservedAt,
+    };
+  }
+
+  /** A `watching` watch on an already-recurred episode, so phase 2 takes the
+   *  `recurred` branch on its first call. */
+  async function insertWatch(
+    episode: RecurrenceEpisode,
+    opts: { opKeys: string[]; sourceKind: 'act_run' | 'intent'; intentId?: string },
+  ): Promise<string> {
     const [watch] = await withSystemDbAccessContext(() =>
       db
         .insert(aiAgentFixWatches)
@@ -598,19 +620,35 @@ describe('ai_agent_op_evidence — fix-watch fan-out over op_keys', () => {
           partnerId: s.partnerId,
           agentId: s.agentId,
           runId: s.runId,
-          alertId: triggering!.id,
+          alertId: episode.triggeringAlertId,
           ruleId: null,
           deviceId: s.deviceId,
           configItemName: 'cpu_high',
           state: 'watching',
-          recoveryObservedAt,
+          recoveryObservedAt: episode.recoveryObservedAt,
           dueAt: new Date(Date.now() - 30 * 60 * 1000),
-          sourceKind: 'act_run',
-          opKeys,
+          sourceKind: opts.sourceKind,
+          intentId: opts.intentId ?? null,
+          opKeys: opts.opKeys,
         })
         .returning({ id: aiAgentFixWatches.id }),
     );
     return watch!.id;
+  }
+
+  async function seedRecurringWatch(opKeys: string[]): Promise<string> {
+    return insertWatch(await seedRecurrenceEpisode(), { opKeys, sourceKind: 'act_run' });
+  }
+
+  /** Every rule-less "fix did not hold" alert this org has, newest last. */
+  async function attentionAlertsFor(orgId: string) {
+    return withSystemDbAccessContext(() =>
+      db
+        .select({ id: alerts.id, context: alerts.context })
+        .from(alerts)
+        .where(and(eq(alerts.orgId, orgId), eq(alerts.configItemName, 'ai_agent_fix_watch')))
+        .orderBy(asc(alerts.triggeredAt)),
+    );
   }
 
   it('a two-key watch reaching recurred writes exactly two rows, and a replay writes no third', async () => {
@@ -648,6 +686,46 @@ describe('ai_agent_op_evidence — fix-watch fan-out over op_keys', () => {
     // CAS finds nothing and the whole branch stands down.
     expect((await checkFixWatchPhase2(watchId)).action).toBe('not_found');
     expect(await evidenceFor(s.orgId)).toHaveLength(2);
+  });
+
+  // Review fix (P2-5, #4192). Before this wave a run had exactly ONE watch,
+  // so "one attention alert per watch" and "one per recurrence" were the same
+  // sentence. `createIntentFixWatchRow` broke that: N released intents give
+  // one run N watches, every one of them denormalizing the SAME triggering
+  // alert, so ONE recurrence wins N separate CAS races and reaches the
+  // notify/alert fan-out N times. The evidence ledger is deliberately
+  // per-watch (each grades its own op keys); the operator-facing alert must
+  // not be.
+  it('N sibling watches of one run raise exactly ONE attention alert for a single recurrence', async () => {
+    const episode = await seedRecurrenceEpisode();
+    const intentId = await createAndApproveAgentIntent(s);
+    const actWatchId = await insertWatch(episode, { opKeys: ['service:restart'], sourceKind: 'act_run' });
+    const intentWatchId = await insertWatch(episode, {
+      opKeys: [EXPECTED_OP_KEY], sourceKind: 'intent', intentId,
+    });
+
+    expect((await checkFixWatchPhase2(actWatchId)).action).toBe('recurred');
+    expect((await checkFixWatchPhase2(intentWatchId)).action).toBe('recurred');
+
+    // Both watches DID grade their own key — the collapse is on the alert,
+    // not on the ledger.
+    // Sorted in JS on BOTH sides — the DB's own text collation must not be
+    // what decides whether this assertion holds.
+    const graded = (await evidenceFor(s.orgId)).map((r) => `${r.sourceId}|${r.metric}`).sort();
+    expect(graded).toEqual([
+      `${watchEvidenceSourceId(actWatchId, 'service:restart')}|recurred`,
+      `${watchEvidenceSourceId(intentWatchId, EXPECTED_OP_KEY)}|recurred`,
+    ].sort());
+
+    // ...and the org gets ONE alert, stamped with the episode both watches
+    // observed, not one alert per released intent.
+    const attention = await attentionAlertsFor(s.orgId);
+    expect(attention).toHaveLength(1);
+    expect(attention[0]!.context).toMatchObject({
+      source: 'ai_agent_fix_watch',
+      runId: s.runId,
+      recurrenceAlertId: episode.recurrenceAlertId,
+    });
   });
 });
 

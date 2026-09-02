@@ -552,6 +552,25 @@ async function recordWatchVerdictEvidence(watch: AiAgentFixWatch, metric: 'recur
 }
 
 /**
+ * `config_item_name` of the rule-less attention alert this module raises. One
+ * definition because the episode guard below and the insert it guards MUST
+ * agree — a drift between them silently disables the guard.
+ */
+const FIX_WATCH_ALERT_CONFIG_ITEM = 'ai_agent_fix_watch';
+
+/**
+ * The recurrence notification's dedupe key. Module-private on purpose: the
+ * covering test states the key SHAPE literally rather than importing this,
+ * so a change here has to be a deliberate one. `recurrenceAlertId` is in the
+ * key because a run whose watches were re-armed for a LATER episode must
+ * still be able to page — a second, genuinely distinct recurrence carries a
+ * different alert id.
+ */
+function recurrenceEpisodeDedupeKey(runId: string, recurrenceAlertId: string): string {
+  return `fix-watch-${runId}-${recurrenceAlertId}-recurred`;
+}
+
+/**
  * Sends the recurrence notification + rule-less attention alert. Deliberately
  * a SEPARATE `inSystemDbContext` call from `checkFixWatchPhase2`'s own
  * detection/write transaction (same pattern as `agentCircuit.ts`'s
@@ -559,6 +578,19 @@ async function recordWatchVerdictEvidence(watch: AiAgentFixWatch, metric: 'recur
  * update so a slow recipient-resolution or notification write can never hold
  * a pooled connection across it, and so a failure here can never roll back
  * the watch's already-committed `recurred` state).
+ *
+ * **Both artifacts are keyed on the EPISODE, not on the watch** (review fix,
+ * P2-5 #4192). Until this wave a run produced exactly ONE watch, so
+ * "one per watch" and "one per recurrence" were the same statement. They are
+ * not any more: `createIntentFixWatchRow` gives every released intent its own
+ * watch, and all N watches of a run denormalize the SAME
+ * `alertId`/`ruleId`/`deviceId` off `loadWatchAnchor`. One underlying
+ * recurrence therefore wins N independent `watching -> recurred` CAS races
+ * and arrives here N times — which without episode keying would page the
+ * on-call tech N times and leave the org N duplicate active alerts for one
+ * event. That is the same operator-facing double-fire the phase-2 CAS-loser
+ * stand-down at `checkFixWatchPhase2` exists to prevent, re-opened through a
+ * different door.
  */
 async function sendRecurrenceNotifications(watch: AiAgentFixWatch, recurrenceAlertId: string): Promise<void> {
   await inSystemDbContext(async () => {
@@ -600,12 +632,42 @@ async function sendRecurrenceNotifications(watch: AiAgentFixWatch, recurrenceAle
         metadata: {
           watchId: watch.id, runId: watch.runId, agentId: watch.agentId, recurrenceAlertId,
         },
-        // Discriminated by the WATCH, not just the agent — one dedupe key
-        // per watch episode (a watch is terminal-once, so this never
-        // re-fires for the same watch id).
-        dedupeKey: `fix-watch-${watch.id}-recurred`,
+        // Discriminated by the EPISODE — the run plus the recurrence alert
+        // that ended it — not by the watch. N sibling watches of one run all
+        // present this identical key, so `createNotification`'s
+        // (user_id, dedupe_key) partial unique index collapses them into the
+        // one notification the recipient should actually get.
+        dedupeKey: recurrenceEpisodeDedupeKey(watch.runId, recurrenceAlertId),
       });
     }
+
+    // The attention alert has NO dedupe key of its own, so the episode
+    // collapse has to be an explicit guard: skip when an earlier sibling of
+    // this same episode already raised it. Keyed on the two identifiers the
+    // insert below already writes into `context`, and predicated on
+    // `device_id` so the probe rides `idx_alerts_device_triggered`
+    // (2026-05-17-b) instead of scanning jsonb across the table.
+    //
+    // Check-then-insert rather than a unique index over a jsonb expression:
+    // `alerts` is one of the hottest tables in the schema, and such an index
+    // would have to be built over every historical row for a guard whose
+    // failure mode is cosmetic. Two siblings whose statements interleave
+    // inside one READ COMMITTED window can therefore still both insert —
+    // that bounds the duplicates by the number of genuinely concurrent
+    // phase-2 workers (`concurrency: 5`) instead of by the number of intents
+    // the run released, and never affects a ledger fact.
+    const [alreadyRaised] = await db
+      .select({ id: alerts.id })
+      .from(alerts)
+      .where(and(
+        eq(alerts.orgId, watch.orgId),
+        eq(alerts.deviceId, watch.deviceId),
+        eq(alerts.configItemName, FIX_WATCH_ALERT_CONFIG_ITEM),
+        sql`${alerts.context}->>'runId' = ${watch.runId}`,
+        sql`${alerts.context}->>'recurrenceAlertId' = ${recurrenceAlertId}`,
+      ))
+      .limit(1);
+    if (alreadyRaised) return;
 
     // Rule-less attention alert — mirrors `actVerify.ts`'s
     // `recordActVerifyFailureAlert` direct-insert pattern (`ruleId: null`,
@@ -616,7 +678,7 @@ async function sendRecurrenceNotifications(watch: AiAgentFixWatch, recurrenceAle
       deviceId: watch.deviceId,
       orgId: watch.orgId,
       configPolicyId: null,
-      configItemName: 'ai_agent_fix_watch',
+      configItemName: FIX_WATCH_ALERT_CONFIG_ITEM,
       severity: 'high',
       title: `Agent fix did not hold: ${agentRow.name}`,
       message:
