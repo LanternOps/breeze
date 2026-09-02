@@ -1471,11 +1471,12 @@ vncViewerRoutes.get('/desktop-access', async (c) => {
 // sessionId + token to drive the standard `/desktop-ws/:sessionId/viewer/*`
 // endpoints for ICE, offer, ws-ticket, etc.
 vncViewerRoutes.post('/upgrade-to-webrtc', async (c) => {
-  const transitionSessionId = randomUUID();
-  const auth = await requireViewerToken(c, {
-    requireAssuredTransition: true,
-    descendantSessionId: transitionSessionId,
-  });
+  // The descendant viewer token is minted below, once the gated session
+  // create (createRemoteSession('remote', ...)) returns a real id — that
+  // service always lets Postgres generate the row's id, so unlike the other
+  // transition routes in this file we can no longer pre-compute the id and
+  // bind the token to it up front.
+  const auth = await requireViewerToken(c, { requireAssuredTransition: true });
   if (auth instanceof Response) return auth;
 
   const bound = await withSystemDbAccessContext(async () => {
@@ -1520,38 +1521,47 @@ vncViewerRoutes.post('/upgrade-to-webrtc', async (c) => {
   }
 
   // Reuse the same pattern as /sessions: terminate stragglers first, insert
-  // new pending row, return its id.
-  const session = await withSystemDbAccessContext(async () => {
-    await db
-      .update(remoteSessions)
-      .set({ status: 'disconnected', endedAt: new Date() })
-      .where(
-        and(
-          eq(remoteSessions.deviceId, bound.deviceId),
-          eq(remoteSessions.type, 'desktop'),
-          inArray(remoteSessions.status, ['pending', 'connecting', 'active'])
-        )
-      );
-    const [row] = await db
-      .insert(remoteSessions)
-      .values({
-        id: transitionSessionId,
+  // new pending row via the partner-trust-gated service, return its id.
+  let session: typeof remoteSessions.$inferSelect;
+  try {
+    session = await withSystemDbAccessContext(async () => {
+      await db
+        .update(remoteSessions)
+        .set({ status: 'disconnected', endedAt: new Date() })
+        .where(
+          and(
+            eq(remoteSessions.deviceId, bound.deviceId),
+            eq(remoteSessions.type, 'desktop'),
+            inArray(remoteSessions.status, ['pending', 'connecting', 'active'])
+          )
+        );
+      return createRemoteSession('remote', {
         deviceId: bound.deviceId,
         orgId: bound.tunnelOrgId,
         userId: bound.tunnelUserId,
         type: 'desktop',
-        status: 'pending',
-        iceCandidates: [],
-      })
-      .returning();
-    return row;
-  });
+      });
+    }) as typeof remoteSessions.$inferSelect;
+  } catch (e) {
+    if (e instanceof RemoteSessionDeniedError) {
+      return c.json(trustDenyBody({ allow: false, code: e.code, capability: 'remote_control', reason: e.reason }, false), 403);
+    }
+    throw e;
+  }
 
   if (!session) {
     return c.json({ error: 'Failed to create desktop session' }, 500);
   }
 
-  const accessToken = auth.descendantAccessToken!;
+  // Minted here (not up front like the sibling transition routes) because the
+  // service above generates the session id — we can't bind a descendant token
+  // to it until it exists.
+  let accessToken: string;
+  try {
+    accessToken = await createViewerDescendantAccessToken(auth, { sessionId: session.id });
+  } catch {
+    return c.json({ error: 'Invalid or expired token' }, 401);
+  }
 
   // Viewer-token auth — no JWT actor. Attribute the upgrade to the tunnel-bound
   // owner (the user who opened the originating VNC tunnel) so the credential
@@ -1559,7 +1569,7 @@ vncViewerRoutes.post('/upgrade-to-webrtc', async (c) => {
   await logTunnelAudit(
     'tunnel.upgrade_webrtc',
     'tunnel_session',
-    transitionSessionId,
+    session.id,
     bound.tunnelUserId,
     bound.tunnelOrgId,
     { deviceId: bound.deviceId, type: 'desktop', fromTunnelId: auth.sessionId },
@@ -1567,7 +1577,7 @@ vncViewerRoutes.post('/upgrade-to-webrtc', async (c) => {
   );
 
   return c.json({
-    sessionId: transitionSessionId,
+    sessionId: session.id,
     accessToken,
     expiresInSeconds: getViewerAccessTokenExpirySeconds(),
   });

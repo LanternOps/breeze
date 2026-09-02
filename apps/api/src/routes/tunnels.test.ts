@@ -614,6 +614,36 @@ describe('POST /tunnels/proxy-connect', () => {
     expect(body.tunnel).toMatchObject({ type: 'proxy', targetHost: '10.0.5.20', targetPort: 8080 });
     expect(body).not.toHaveProperty('ticket');
   });
+
+  it('maps partner-trust denial to a 403 without creating a tunnel session (allowlist rule still created)', async () => {
+    partnerTrustMode.mockReturnValueOnce('enforce');
+    evaluateCapability.mockResolvedValueOnce({
+      allow: false,
+      code: 'TRUST_RESTRICTED',
+      capability: 'remote_control',
+      reason: 'restricted',
+    });
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce(makeSelectChain([onlineDevice]) as any)
+      .mockReturnValueOnce(makeSelectChain([assetRow]) as any)
+      .mockReturnValueOnce(makeSelectChain([]) as any);
+
+    vi.mocked(db.insert)
+      .mockReturnValueOnce(makeInsertChain([newRule]) as any)
+      .mockReturnValueOnce(makeAuditAwareInsertChain([]) as any);
+
+    const res = await app.request('/tunnels/proxy-connect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(requestBody),
+    });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual(expect.objectContaining({ error: 'TRUST_RESTRICTED' }));
+    // Only the allowlist-create insert + its audit row happened — no session insert.
+    expect(db.insert).toHaveBeenCalledTimes(2);
+  });
 });
 
 // ─── Malformed params/query ───────────────────────────────────────────────────
@@ -1369,7 +1399,7 @@ describe('POST /vnc-viewer/upgrade-to-webrtc', () => {
     expect(db.insert).not.toHaveBeenCalled();
   });
 
-  it('fails descendant issuance before creating or changing a desktop session', async () => {
+  it('fails descendant issuance after the desktop session already exists (the token can only be bound to a real, service-generated id)', async () => {
     vi.mocked(verifyViewerAccessToken).mockResolvedValueOnce({
       sub: USER_ID,
       email: 'test@example.com',
@@ -1381,6 +1411,20 @@ describe('POST /vnc-viewer/upgrade-to-webrtc', () => {
       mfaSatisfied: true,
       assuranceAbsoluteExpiresAt: 2_000,
     });
+    vi.mocked(db.select).mockReturnValueOnce(makeJoinedSelectChain([{
+      tunnelUserId: USER_ID,
+      tunnelOrgId: ORG_ID,
+      deviceId: DEVICE_ID,
+      tunnelType: 'vnc',
+      tunnelStatus: 'pending',
+      deviceStatus: 'online',
+      agentId: 'agent-abc',
+      userEmail: 'test@example.com',
+    }]) as any);
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
+    } as any);
+    vi.mocked(db.insert).mockReturnValue(makeInsertChain([{ id: 'ffffffff-ffff-4fff-8fff-fffffffffff1' }]) as any);
     vi.mocked(createViewerDescendantAccessToken).mockRejectedValueOnce(
       new Error('Viewer token lineage has expired'),
     );
@@ -1391,11 +1435,63 @@ describe('POST /vnc-viewer/upgrade-to-webrtc', () => {
     });
 
     expect(res.status).toBe(401);
-    expect(db.select).not.toHaveBeenCalled();
-    expect(db.update).not.toHaveBeenCalled();
-    expect(db.insert).not.toHaveBeenCalled();
+    // Unlike the sibling transition routes, the session must already exist
+    // (createRemoteSession('remote', ...) generates its own id) before we
+    // can mint a descendant token bound to it — so select/update/insert DID
+    // run by the time issuance fails.
+    expect(db.select).toHaveBeenCalled();
+    expect(db.update).toHaveBeenCalled();
+    expect(db.insert).toHaveBeenCalled();
     expect(sendCommandToAgent).not.toHaveBeenCalled();
     expect(createWsTicket).not.toHaveBeenCalled();
+  });
+
+  it('maps partner-trust denial to a 403 without creating a desktop session', async () => {
+    partnerTrustMode.mockReturnValueOnce('enforce');
+    evaluateCapability.mockResolvedValueOnce({
+      allow: false,
+      code: 'TRUST_RESTRICTED',
+      capability: 'remote_control',
+      reason: 'restricted',
+    });
+    vi.mocked(verifyViewerAccessToken).mockResolvedValueOnce({
+      sub: USER_ID,
+      email: 'test@example.com',
+      sessionId: SESSION_ID,
+      purpose: 'viewer',
+      jti: 'viewer-jti-deny',
+      iat: 1_000,
+      exp: 2_000,
+      mfaSatisfied: true,
+      assuranceAbsoluteExpiresAt: 2_000,
+    });
+    vi.mocked(db.select).mockReturnValueOnce(makeJoinedSelectChain([{
+      tunnelUserId: USER_ID,
+      tunnelOrgId: ORG_ID,
+      deviceId: DEVICE_ID,
+      tunnelType: 'vnc',
+      tunnelStatus: 'pending',
+      deviceStatus: 'online',
+      agentId: 'agent-abc',
+      userEmail: 'test@example.com',
+    }]) as any);
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
+    } as any);
+
+    const res = await app.request('/vnc-viewer/upgrade-to-webrtc', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer viewer-token' },
+    });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual(expect.objectContaining({ error: 'TRUST_RESTRICTED' }));
+    // The gate lives inside createRemoteSession('remote', ...), so the
+    // straggler-disconnect update (which precedes the service call) has
+    // already run — only the session insert and the token mint are blocked.
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(createViewerDescendantAccessToken).not.toHaveBeenCalled();
+    expect(sendCommandToAgent).not.toHaveBeenCalled();
   });
 });
 
@@ -1459,6 +1555,48 @@ describe('POST /vnc-viewer/downgrade-to-vnc assurance', () => {
     expect(db.insert).not.toHaveBeenCalled();
     expect(sendCommandToAgent).not.toHaveBeenCalled();
     expect(createWsTicket).not.toHaveBeenCalled();
+  });
+
+  it('maps partner-trust denial to a 403 without creating a tunnel or sending an agent command', async () => {
+    vi.clearAllMocks();
+    const app = new Hono();
+    app.route('/vnc-viewer', vncViewerRoutes);
+    partnerTrustMode.mockReturnValueOnce('enforce');
+    evaluateCapability.mockResolvedValueOnce({
+      allow: false,
+      code: 'TRUST_RESTRICTED',
+      capability: 'remote_control',
+      reason: 'restricted',
+    });
+    vi.mocked(verifyViewerAccessToken).mockResolvedValueOnce({
+      sub: USER_ID,
+      email: 'test@example.com',
+      sessionId: SESSION_ID,
+      purpose: 'viewer',
+      jti: 'viewer-jti-deny',
+      iat: 1_000,
+      exp: 2_000,
+      mfaSatisfied: true,
+      assuranceAbsoluteExpiresAt: 2_000,
+    });
+    vi.mocked(db.select).mockReturnValueOnce(makeJoinedSelectChain([{
+      userId: USER_ID,
+      orgId: ORG_ID,
+      deviceId: DEVICE_ID,
+      deviceStatus: 'online',
+      agentId: 'agent-abc',
+      userEmail: 'test@example.com',
+    }]) as any);
+
+    const res = await app.request('/vnc-viewer/downgrade-to-vnc', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer viewer-token' },
+    });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual(expect.objectContaining({ error: 'TRUST_RESTRICTED' }));
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(sendCommandToAgent).not.toHaveBeenCalled();
   });
 });
 
