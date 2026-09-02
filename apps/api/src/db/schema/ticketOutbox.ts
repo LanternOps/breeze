@@ -64,6 +64,10 @@ export const ticketOutbox = pgTable(
   (table) => ({
     orgIdx: index('ticket_outbox_org_id_idx').on(table.orgId),
     ticketIdIdx: index('ticket_outbox_ticket_id_idx').on(table.ticketId),
+    // #4210 — supports ticketOutboxRetention.ts's delivered-row cutoff scan
+    // (published_at < cutoff), the mirror image of the unpublished partial
+    // index below.
+    publishedAtIdx: index('ticket_outbox_published_at_idx').on(table.publishedAt),
     // Note: the partial index ticket_outbox_unpublished_idx (WHERE
     // published_at IS NULL, on (published_at, id) per the plan) is declared
     // in the SQL migration only — Drizzle's index DSL doesn't model partial
