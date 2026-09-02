@@ -1,4 +1,12 @@
 #!/usr/bin/env tsx
+// Partner trust evidence card backfill. Run AFTER partner-trust-backfill.sql:
+//   curl -s -H "Authorization: Bearer $ADMIN_TOKEN" "$API/admin/trust/queue?limit=200" | \
+//     jq -r '.partners[].id' | \
+//     pnpm --filter @breeze/api partner-trust:backfill-cards
+//
+// Reads partner UUIDs from stdin, one per line (or whitespace-separated),
+// and queues an evidence card for each (probation_watch type).
+
 import { closeDb, withSystemDbAccessContext } from '../src/db';
 import { sendEvidenceCard } from '../src/services/partnerTrustEvidenceCard';
 

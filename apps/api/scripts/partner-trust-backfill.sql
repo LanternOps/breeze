@@ -19,6 +19,14 @@
 --   4. Run this script in that same session:
 --        \i apps/api/scripts/partner-trust-backfill.sql
 --
+-- After running this script:
+--   5. Export partner IDs to the cards script:
+--        curl -s -H "Authorization: Bearer $ADMIN_TOKEN" "$API/admin/trust/queue?limit=200" | \
+--          jq -r '.partners[].id' | \
+--          pnpm --filter @breeze/api partner-trust:backfill-cards
+--      This queues evidence cards for each moved partner. Repeat with cursor
+--      pagination if more than 200 partners were moved.
+--
 -- Dry run first: replace the final COMMIT with ROLLBACK, inspect the warning
 -- count and rows, then restore COMMIT for the reviewed execution.
 
@@ -49,7 +57,7 @@ SET
   trust_state = 'probation',
   trust_reason = 'backfill:2026-09',
   trust_changed_at = now(),
-  trust_changed_by = NULL
+  trust_changed_by = NULL  -- system-initiated, no user actor
 FROM bf
 WHERE p.id = bf.id;
 

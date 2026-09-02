@@ -2398,7 +2398,7 @@ jobs:
             exit 1
           fi
           case "${RESPONSE}" in
-            2??|400|404) ;;
+            2??|400|404) ;; # 404 is expected if seeded device offline status is not yet resolved by the API
             *) echo "ERROR: unexpected POST /remote/sessions response (${RESPONSE}): ${BODY}"; exit 1 ;;
           esac
           echo "Remote session trust smoke passed (${RESPONSE})."
