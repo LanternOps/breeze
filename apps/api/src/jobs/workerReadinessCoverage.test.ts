@@ -85,13 +85,18 @@ function attachmentNames(file: string): string[] {
   return names;
 }
 
+// The two scans below parse every production module under jobs/, services/
+// and workers/ with the TypeScript compiler (~3 s idle); on a loaded runner
+// they overrun vitest's 5 s default, so they get an explicit 30 s budget.
+const AST_SCAN_TIMEOUT_MS = 30_000;
+
 describe('production BullMQ consumer readiness coverage', () => {
   it('attaches observability exactly once for every Worker construction site', () => {
     expect(
       productionCoverage(),
       'Each entry is a complete missing/duplicate attachment site list',
     ).toEqual([]);
-  });
+  }, AST_SCAN_TIMEOUT_MS);
 
   it('matches every attached stable name to the manifest exactly once', () => {
     const attached = SCAN_ROOTS
@@ -102,7 +107,7 @@ describe('production BullMQ consumer readiness coverage', () => {
       entry.kind === 'consumers' ? [...entry.consumers] : [],
     ).sort();
     expect(attached).toEqual(declared);
-  });
+  }, AST_SCAN_TIMEOUT_MS);
 
   it('fails closed when an initializer silently succeeds without attaching its Worker', () => {
     const source = `
