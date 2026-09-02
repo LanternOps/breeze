@@ -230,17 +230,36 @@ export const DEFAULT_PERMISSIONS = [
 
 // Default system roles
 // Exported for the seed↔registry consistency test (seed.test.ts).
-export const SYSTEM_ROLES = [
+export interface SystemRoleDefinition {
+  name: string;
+  scope: 'partner' | 'organization';
+  description: string;
+  permissions: string[];
+  /**
+   * Stored on roles.force_mfa at seed time and reconciled false→true on
+   * re-seed (never lowered — see seedRoles()). RMM-QA-164: the
+   * 2026-05-25-f migration promised force_mfa=true for the system Partner
+   * Admin role, but on a fresh database it ran before seed() created the
+   * row, so the definition must carry the flag itself. Only Partner Admin
+   * is forced; every other system role is an MSP opt-in per that
+   * migration's header (D9).
+   */
+  forceMfa: boolean;
+}
+
+export const SYSTEM_ROLES: readonly SystemRoleDefinition[] = [
   {
     name: 'Partner Admin',
     scope: 'partner' as const,
     description: 'Full access to partner and all organizations',
+    forceMfa: true,
     permissions: ['*:*']
   },
   {
     name: 'Partner Technician',
     scope: 'partner' as const,
     description: 'Access to assigned organizations, can execute scripts',
+    forceMfa: false,
     permissions: [
       'backup:read', 'backup:write',
       'devices:read', 'devices:execute',
@@ -262,6 +281,7 @@ export const SYSTEM_ROLES = [
     name: 'Partner Viewer',
     scope: 'partner' as const,
     description: 'Read-only access to assigned organizations',
+    forceMfa: false,
     permissions: [
       'devices:read',
       'scripts:read',
@@ -277,6 +297,7 @@ export const SYSTEM_ROLES = [
     name: 'Partner Billing',
     scope: 'partner' as const,
     description: 'Full access to product catalog, quotes, invoices, and contracts',
+    forceMfa: false,
     permissions: [
       'catalog:read', 'catalog:write', 'catalog:delete',
       'quotes:read', 'quotes:write', 'quotes:send',
@@ -288,6 +309,7 @@ export const SYSTEM_ROLES = [
     name: 'Partner Billing Viewer',
     scope: 'partner' as const,
     description: 'Read-only access to product catalog, quotes, invoices, and contracts',
+    forceMfa: false,
     permissions: [
       'catalog:read',
       'quotes:read',
@@ -299,6 +321,7 @@ export const SYSTEM_ROLES = [
     name: 'Org Admin',
     scope: 'organization' as const,
     description: 'Full access within organization',
+    forceMfa: false,
     permissions: [
       'backup:read', 'backup:write', 'backup:cross_site_restore',
       'devices:read', 'devices:write', 'devices:delete', 'devices:execute',
@@ -329,6 +352,7 @@ export const SYSTEM_ROLES = [
     name: 'Org Technician',
     scope: 'organization' as const,
     description: 'Execute scripts and manage devices',
+    forceMfa: false,
     permissions: [
       'devices:read', 'devices:write', 'devices:execute',
       'scripts:read', 'scripts:execute',
@@ -347,6 +371,7 @@ export const SYSTEM_ROLES = [
     name: 'Org Viewer',
     scope: 'organization' as const,
     description: 'Read-only access within organization',
+    forceMfa: false,
     permissions: [
       'devices:read',
       'scripts:read',
@@ -361,6 +386,7 @@ export const SYSTEM_ROLES = [
     name: 'Security Approver',
     scope: 'organization' as const,
     description: 'Review and waive (accept risk) / reopen vulnerability findings',
+    forceMfa: false,
     permissions: [
       'devices:read',
       'vulnerabilities:accept_risk'
@@ -370,6 +396,7 @@ export const SYSTEM_ROLES = [
     name: 'Partner Security Approver',
     scope: 'partner' as const,
     description: 'Review and waive (accept risk) / reopen vulnerability findings across assigned organizations',
+    forceMfa: false,
     permissions: [
       'devices:read',
       'organizations:read',

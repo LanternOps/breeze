@@ -334,3 +334,21 @@ describe('technician ticket + time-entry RBAC (#4251)', () => {
     expect(seeded.has('time_entries:write')).toBe(true);
   });
 });
+
+describe('system role MFA posture (RMM-QA-164)', () => {
+  // The stored roles.force_mfa flag is what services/mfaPolicy.ts reads; the
+  // 2026-05-25-f migration only ever flipped rows that existed when it ran,
+  // and on a fresh database autoMigrate applies it BEFORE seed(). The seed
+  // definition is therefore the source of truth for a fresh install, and it
+  // must state the posture of every role explicitly rather than leave the
+  // column to its DEFAULT false.
+  it('every system role declares forceMfa as a boolean', () => {
+    for (const role of SYSTEM_ROLES) {
+      expect(typeof role.forceMfa, `role "${role.name}" must declare forceMfa`).toBe('boolean');
+    }
+  });
+
+  it('forces MFA for Partner Admin and for no other system role (D9: Org Admin stays MSP opt-in)', () => {
+    expect(SYSTEM_ROLES.filter((role) => role.forceMfa).map((role) => role.name)).toEqual(['Partner Admin']);
+  });
+});
