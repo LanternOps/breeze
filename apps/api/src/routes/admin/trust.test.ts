@@ -10,6 +10,10 @@ const state = vi.hoisted(() => ({
 }));
 
 const writeTrust = vi.hoisted(() => vi.fn(async () => undefined));
+const buildEvidenceCard = vi.hoisted(() => vi.fn(async (partnerId: string) => ({
+  partner: { id: partnerId, name: 'Card MSP', plan: 'pro', status: 'active', trustState: 'probation' },
+  devices: [],
+})));
 
 vi.mock('../../services/partnerTrust.repo', () => ({
   readTrust: vi.fn(async () => state.trust),
@@ -22,6 +26,8 @@ vi.mock('../../services/redis', () => ({ getRedis: vi.fn(() => null) }));
 vi.mock('../../services/auditService', () => ({
   createAuditLog: vi.fn(async () => undefined),
 }));
+
+vi.mock('../../services/partnerTrustEvidenceCard', () => ({ buildEvidenceCard }));
 
 vi.mock('../../db', () => ({
   db: {
@@ -197,5 +203,30 @@ describe('admin partner trust routes', () => {
       trustChangedAt: changedAt.toISOString(),
       id: '22222222-2222-4222-8222-222222222222',
     });
+  });
+
+  it('adds evidence cards only when the queue caller opts in with card=1', async () => {
+    state.queueRows = [{
+      id: '22222222-2222-4222-8222-222222222222',
+      name: 'Probation MSP',
+      slug: 'probation-msp',
+      plan: 'pro',
+      status: 'active',
+      trustState: 'probation',
+      trustReason: 'signup',
+      trustChangedAt: null,
+      trustReviewRequestedAt: null,
+      createdAt: new Date('2026-08-30T12:00:00.000Z'),
+      signupIp: '192.0.2.1',
+      signupIpClass: 'business',
+      signupIpAsn: 64500,
+      deviceCount: 1,
+    }];
+
+    const response = await buildApp().request('/admin/trust/queue?card=1');
+    const body = await response.json() as { partners: Array<{ card: { partner: { id: string } } }> };
+    expect(response.status).toBe(200);
+    expect(body.partners[0]?.card.partner.id).toBe('22222222-2222-4222-8222-222222222222');
+    expect(buildEvidenceCard).toHaveBeenCalledWith('22222222-2222-4222-8222-222222222222');
   });
 });

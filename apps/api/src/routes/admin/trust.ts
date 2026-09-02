@@ -7,6 +7,7 @@ import type { PartnerTrustState } from '../../db/schema/orgs';
 import { zValidator } from '../../lib/validation';
 import { requireMfa } from '../../middleware/auth';
 import { loadTrustState, setTrustState } from '../../services/partnerTrust';
+import { buildEvidenceCard, type EvidenceCard } from '../../services/partnerTrustEvidenceCard';
 
 export const trustAdminRoutes = new Hono();
 
@@ -18,6 +19,9 @@ const trustChangeSchema = z.object({
 const queueQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(200).default(50),
   cursor: z.string().min(1).optional(),
+  // Evidence cards include a bounded DNS MX lookup, so callers opt in rather
+  // than making the normal queue fan out external work for every row.
+  card: z.enum(['0', '1']).default('0'),
 });
 
 type TrustQueueCursor = {
@@ -91,6 +95,12 @@ export function mapTrustQueueRow(row: TrustQueueRow): TrustQueueRow {
   };
 }
 
+export async function mapTrustQueueRowWithCard(
+  row: TrustQueueRow,
+): Promise<TrustQueueRow & { card: EvidenceCard }> {
+  return { ...mapTrustQueueRow(row), card: await buildEvidenceCard(row.id) };
+}
+
 async function changeTrustState(
   c: Context,
   partnerId: string,
@@ -126,7 +136,7 @@ trustAdminRoutes.post(
 );
 
 trustAdminRoutes.get('/trust/queue', zValidator('query', queueQuerySchema), async (c) => {
-  const { limit, cursor: rawCursor } = c.req.valid('query');
+  const { limit, cursor: rawCursor, card } = c.req.valid('query');
   const cursor = rawCursor ? decodeQueueCursor(rawCursor) : null;
   if (rawCursor && !cursor) return c.json({ error: 'invalid cursor' }, 400);
 
@@ -169,7 +179,10 @@ trustAdminRoutes.get('/trust/queue', zValidator('query', queueQuerySchema), asyn
     .limit(limit + 1));
 
   const hasMore = rows.length > limit;
-  const page = rows.slice(0, limit).map(mapTrustQueueRow);
+  const visibleRows = rows.slice(0, limit);
+  const page = card === '1'
+    ? await Promise.all(visibleRows.map(mapTrustQueueRowWithCard))
+    : visibleRows.map(mapTrustQueueRow);
   const last = page.at(-1);
   return c.json({
     partners: page,
