@@ -50,6 +50,7 @@ import {
 } from './tenantLifecycle';
 import { abortOrganizationOffboarding } from './tenantOffboarding';
 import { createContact, ContactValidationError } from './contacts/crud';
+import { contactCreateAuditEvent } from './contacts/audit';
 import { CONTACT_ROLES } from './contacts/types';
 
 // Mirrors the org PATCH route's status set (schema orgStatusEnum). Kept as a
@@ -511,14 +512,10 @@ async function handleAddContact(
     throw err;
   }
 
-  auditOrgToolEvent(auth, {
-    orgId: contact.orgId,
-    action: 'contact.create',
-    resourceType: 'contact',
-    resourceId: contact.id,
-    resourceName: contact.name ?? undefined,
-    details: { isPrimary: contact.isPrimary, roles: contact.roles },
-  });
+  // Built from the same contactCreateAuditEvent the /organizations/:id/contacts
+  // route uses, so the AI-path and route-path CREATE audit payloads cannot
+  // drift out of sync with each other (review finding).
+  auditOrgToolEvent(auth, { orgId: contact.orgId, ...contactCreateAuditEvent(contact) });
 
   return JSON.stringify({ contact });
 }

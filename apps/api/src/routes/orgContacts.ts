@@ -17,7 +17,7 @@ import {
   updateContact,
 } from '../services/contacts/crud';
 import { commitContactImport, previewContactImport } from '../services/contacts/import';
-import { writeContactAudit, writeContactImportAudits } from '../services/contacts/audit';
+import { contactCreateAuditEvent, writeContactAudit, writeContactImportAudits } from '../services/contacts/audit';
 import {
   commitContactImportRowSchema,
   contactImportRowSchema,
@@ -215,12 +215,15 @@ export function registerOrgContactsRoutes(orgRoutes: Hono) {
         return validationResponse(c, err) ?? Promise.reject(err);
       }
 
+      // Shared with the add_contact AI tool via contactCreateAuditEvent, so
+      // the two CREATE audit payloads cannot drift (review finding).
+      const createEvent = contactCreateAuditEvent(contact);
       writeContactAudit(c, {
         orgId: org.id,
-        action: 'contact.create',
-        contactId: contact.id,
-        contactName: contact.name,
-        details: { isPrimary: contact.isPrimary, roles: contact.roles },
+        action: createEvent.action,
+        contactId: createEvent.resourceId,
+        contactName: createEvent.resourceName,
+        details: createEvent.details,
       });
       return c.json({ data: contact }, 201);
     },

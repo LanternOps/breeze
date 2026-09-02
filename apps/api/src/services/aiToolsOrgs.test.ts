@@ -173,6 +173,14 @@ describe('org tools registration', () => {
     expect(validateToolInput('manage_organizations', { action: 'create_org', name: 'Acme Dental' }).success).toBe(true);
     expect(validateToolInput('manage_organizations', { action: 'drop_all_orgs' }).success).toBe(false);
     expect(validateToolInput('manage_organizations', { action: 'update_org', orgId: 'not-a-uuid' }).success).toBe(false);
+    // add_contact's roles/siteId fields are validated by the same shared schema
+    // (isolated from orgId so each failure is unambiguously about ITS field).
+    expect(
+      validateToolInput('manage_organizations', { action: 'add_contact', name: 'Pat', roles: ['owner'] }).success
+    ).toBe(false);
+    expect(
+      validateToolInput('manage_organizations', { action: 'add_contact', name: 'Pat', siteId: 'not-a-uuid' }).success
+    ).toBe(false);
     expect(validateToolInput('list_organizations', { search: 'acme', limit: 10 }).success).toBe(true);
     expect(validateToolInput('list_organizations', { limit: 0 }).success).toBe(false);
   });
@@ -586,9 +594,13 @@ describe('manage_organizations add_contact', () => {
 
     expect(writeAuditEvent).toHaveBeenCalledTimes(1);
     const [, auditEntry] = (writeAuditEvent as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    // `details` pinned too (review finding): it was previously unasserted, so
+    // { isPrimary, roles } silently going missing or drifting from the CRUD
+    // service's real values would have gone undetected.
     expect(auditEntry).toMatchObject({
       orgId: ORG_1, action: 'contact.create', resourceType: 'contact',
       resourceId: CONTACT_ID, resourceName: 'Pat Lee',
+      details: { isPrimary: false, roles: ['billing'] },
     });
   });
 

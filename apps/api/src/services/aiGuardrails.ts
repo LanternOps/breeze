@@ -2115,8 +2115,29 @@ function buildApprovalDescription(
       if (action === 'create_org') parts.push(`Create organization "${input.name}" (with a default Main Office site)`);
       else if (action === 'update_org') parts.push(`Update organization ${(input.orgId as string)?.slice(0, 8)}...${input.status ? ` (status → ${input.status})` : ''}`);
       else if (action === 'create_site') parts.push(`Create site "${input.name}" in organization ${(input.orgId as string)?.slice(0, 8) ?? '(own org)'}...`);
-      else if (action === 'add_contact') parts.push(`Add contact "${input.name}" (${input.email ?? 'no email'}) to organization ${(input.orgId as string)?.slice(0, 8) ?? '(own org)'}...`);
-      else parts.push(`Organizations: ${action}`);
+      else if (action === 'add_contact') {
+        // Review finding (fix round 1): `input.name` had no `??` fallback, so
+        // a phone/mobile-only contact (legal since contacts_identifiable_chk
+        // only needs ONE of name/email/phone/mobile) rendered literally as
+        // `Add contact "undefined"` — the approver saw nothing identifying,
+        // the exact failure spec §5 created this branch to prevent. Falls
+        // back through the same priority order createContact accepts, and
+        // lists every OTHER present identifier alongside it so the approver
+        // sees everything supplied, not just whichever field won the fallback.
+        const acName = typeof input.name === 'string' ? input.name : undefined;
+        const acEmail = typeof input.email === 'string' ? input.email : undefined;
+        const acPhone = typeof input.phone === 'string' ? input.phone : undefined;
+        const acMobile = typeof input.mobile === 'string' ? input.mobile : undefined;
+        const acHeadline = acName ?? acEmail ?? acPhone ?? acMobile ?? 'no identifying info provided';
+        const acOthers = [
+          acEmail && acEmail !== acHeadline ? `email: ${acEmail}` : null,
+          acPhone && acPhone !== acHeadline ? `phone: ${acPhone}` : null,
+          acMobile && acMobile !== acHeadline ? `mobile: ${acMobile}` : null,
+        ].filter((part): part is string => part !== null);
+        parts.push(
+          `Add contact "${acHeadline}"${acOthers.length ? ` (${acOthers.join(', ')})` : ''} to organization ${(input.orgId as string)?.slice(0, 8) ?? '(own org)'}...`
+        );
+      } else parts.push(`Organizations: ${action}`);
       break;
 
     case 'manage_monitors':

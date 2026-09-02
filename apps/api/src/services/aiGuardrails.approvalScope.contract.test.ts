@@ -279,6 +279,30 @@ describe('tier-3 approval scope classification', () => {
     expect(check.approvalScope).toBe('supervised');
   });
 
+  // Review finding (fix round 1): the add_contact approval description had no
+  // fallback for `name` — a phone/mobile-only contact rendered literally as
+  // `Add contact "undefined"`, showing the human approver nothing identifying
+  // for exactly the input shape this task's own no-identifier fix enabled.
+  // These pin BOTH a name-bearing contact and a name-less one so the fallback
+  // chain (name ?? email ?? phone ?? mobile) can't regress silently.
+  it('add_contact approval description shows the contact name and email when both are present', () => {
+    const check = checkGuardrails('manage_organizations', {
+      action: 'add_contact', orgId: '11112222-1111-4111-8111-111111111111',
+      name: 'Jane Doe', email: 'jane@customer.example',
+    });
+    expect(check.description).toContain('Jane Doe');
+    expect(check.description).toContain('jane@customer.example');
+    expect(check.description).not.toContain('undefined');
+  });
+
+  it('add_contact approval description identifies a phone-only contact by phone, never "undefined"', () => {
+    const check = checkGuardrails('manage_organizations', {
+      action: 'add_contact', orgId: '11112222-1111-4111-8111-111111111111', phone: '555-0100',
+    });
+    expect(check.description).toContain('555-0100');
+    expect(check.description).not.toContain('undefined');
+  });
+
   it('s1_isolate_device is input-aware: exempt from the static whole-tool sets', () => {
     expect(TIER3_INPUT_AWARE_TOOLS.has('s1_isolate_device')).toBe(true);
     expect(TIER3_FOUR_EYES_TOOLS.has('s1_isolate_device')).toBe(false);
