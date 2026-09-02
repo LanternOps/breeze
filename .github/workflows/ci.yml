@@ -2588,9 +2588,21 @@ jobs:
         working-directory: e2e-tests
         run: pnpm install --ignore-workspace
 
+      # `--with-deps` shells out to `apt-get update`, which intermittently 403s
+      # on packages.microsoft.com from Azure-hosted runners and takes the whole
+      # browser install down with it (exit 100). That repo holds nothing
+      # Playwright needs, so drop it first; if apt still fails, fall back to the
+      # browser-only install — the ubuntu-24.04 runner image already ships
+      # Chromium's shared libraries — and say so loudly rather than silently.
       - name: Install Chromium
         working-directory: e2e-tests
-        run: pnpm exec playwright install --with-deps chromium
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/microsoft*.list \
+                     /etc/apt/sources.list.d/microsoft*.sources || true
+          if ! pnpm exec playwright install --with-deps chromium; then
+            echo "::warning::playwright install --with-deps failed (apt); retrying without system deps"
+            pnpm exec playwright install chromium
+          fi
 
       # `pnpm wt-stack up` without a workspace install: the CLI imports nothing
       # but node builtins and its own sibling modules, so e2e-tests' tsx runs it
@@ -2633,9 +2645,17 @@ jobs:
             docker logs --tail 200 "${c}" 2>&1 || true
           done
 
+      # `wt-stack down` passes --env-file .env.stack, which only exists once
+      # `up` has started; guard so a failure before that leaves a one-line note
+      # instead of a compose stack trace in the log.
       - name: Teardown
         if: always()
-        run: ./e2e-tests/node_modules/.bin/tsx scripts/dev/wt-stack/cli.ts down || true
+        run: |
+          if [ -f .env.stack ]; then
+            ./e2e-tests/node_modules/.bin/tsx scripts/dev/wt-stack/cli.ts down || true
+          else
+            echo "No .env.stack — the stack was never brought up; nothing to tear down."
+          fi
 
   # Summary job that depends on all other jobs for branch protection
   ci-success:
