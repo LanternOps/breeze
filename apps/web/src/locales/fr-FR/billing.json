@@ -21,8 +21,13 @@
       "lineType": {
         "flat": "Forfait",
         "perDevice": "Par appareil",
+        "perDeviceRole": "Par rôle d'appareil",
         "perSeat": "Par utilisateur",
         "manual": "Quantité manuelle"
+      },
+      "coverage": {
+        "uncovered": "{{count}} appareils de cette organisation ne sont facturés par aucune ligne : {{breakdown}}",
+        "allCovered": "Chaque appareil de cette organisation est facturé par une ligne de ce contrat."
       },
       "transition": {
         "activate": "Activer",
@@ -96,6 +101,7 @@
           "cancel": "Contrat annulé"
         },
         "invoiceGenerated": "Facture générée",
+        "uncoveredDevices": "Facture générée, mais {{count}} appareils ne sont facturés par aucune ligne de ce contrat : {{breakdown}}",
         "priceBookGaps": "{{count}} ligne(s) de catalogue facturée(s) au prix figé du contrat — aucun prix en {{currency}} dans le catalogue : {{lines}}",
         "draftDeleted": "Brouillon supprimé"
       },
@@ -188,6 +194,8 @@
         "addFromPax8Catalog": "Ajouter depuis le catalogue Pax8",
         "importFromTdSynnex": "Importer depuis TD SYNNEX",
         "lineType": "Type de ligne",
+        "deviceRoles": "Rôles d'appareil (un appareil est facturé lorsque son rôle est l'un de ceux-ci)",
+        "deviceRolesRequired": "Sélectionnez au moins un rôle.",
         "descriptionPlaceholder": "ex. Gestion des postes de travail",
         "unitPrice": "Prix unitaire",
         "quantity": "Quantité",

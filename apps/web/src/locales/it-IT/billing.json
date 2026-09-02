@@ -21,8 +21,13 @@
       "lineType": {
         "flat": "Canone fisso",
         "perDevice": "Per dispositivo",
+        "perDeviceRole": "Per ruolo dispositivo",
         "perSeat": "Per postazione",
         "manual": "Quantità manuale"
+      },
+      "coverage": {
+        "uncovered": "{{count}} dispositivi di questa organizzazione non sono fatturati da alcuna riga: {{breakdown}}",
+        "allCovered": "Ogni dispositivo di questa organizzazione è fatturato da una riga di questo contratto."
       },
       "transition": {
         "activate": "Attiva",
@@ -96,6 +101,7 @@
           "cancel": "Contratto annullato"
         },
         "invoiceGenerated": "Fattura generata",
+        "uncoveredDevices": "Fattura generata, ma {{count}} dispositivi non sono fatturati da alcuna riga di questo contratto: {{breakdown}}",
         "priceBookGaps": "{{count}} riga/righe di catalogo fatturate al prezzo salvato nel contratto — nessun prezzo in {{currency}} nel catalogo: {{lines}}",
         "draftDeleted": "Bozza eliminata"
       },
@@ -188,6 +194,8 @@
         "addFromPax8Catalog": "Aggiungi dal catalogo Pax8",
         "importFromTdSynnex": "Importa da TD SYNNEX",
         "lineType": "Tipo di riga",
+        "deviceRoles": "Ruoli dispositivo (un dispositivo viene fatturato quando il suo ruolo è uno di questi)",
+        "deviceRolesRequired": "Seleziona almeno un ruolo.",
         "descriptionPlaceholder": "es. Gestione workstation",
         "unitPrice": "Prezzo unitario",
         "quantity": "Quantità",

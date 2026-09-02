@@ -21,6 +21,11 @@ export const DEVICE_ROLES = [
 
 export type DeviceRole = typeof DEVICE_ROLES[number];
 
+/** Roles a contract line may bill (#3205). `unknown` is a classification gap, not a rate. */
+export const BILLABLE_DEVICE_ROLES = DEVICE_ROLES.filter(
+  (r): r is Exclude<DeviceRole, 'unknown'> => r !== 'unknown',
+);
+
 export type DeviceRoleSource = 'auto' | 'manual' | 'discovery';
 
 type DeviceRoleMeta = {

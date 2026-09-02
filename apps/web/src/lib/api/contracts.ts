@@ -16,7 +16,13 @@ import type { StatusPillRole } from '../../components/billing/shared/statusPillR
 
 export type ContractStatus = 'draft' | 'active' | 'paused' | 'cancelled' | 'expired';
 export type ContractBillingTiming = 'advance' | 'arrears';
-export type ContractLineType = 'flat' | 'per_device' | 'per_seat' | 'manual';
+export type ContractLineType = 'flat' | 'per_device' | 'per_device_role' | 'per_seat' | 'manual';
+
+/** Devices no device-counted line on the contract bills (#3205). null = not applicable. */
+export interface UncoveredDevices {
+  total: number;
+  byRole: Record<string, number>;
+}
 
 /** A row from `GET /contracts` (the full `contracts` table row). */
 export interface ContractSummary {
@@ -56,6 +62,7 @@ export interface ContractEstimate {
   currencyCode: string;
   periodTotal: string;
   lines: ContractEstimateLine[];
+  uncoveredDevices: UncoveredDevices | null;
 }
 
 export interface ContractLine {
@@ -68,6 +75,7 @@ export interface ContractLine {
   unitPrice: string;
   manualQuantity: string | null;
   siteId: string | null;
+  deviceRoles: string[] | null;
   taxable: boolean;
   sortOrder: number;
   createdAt: string;
