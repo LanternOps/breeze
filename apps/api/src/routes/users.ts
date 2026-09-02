@@ -4,11 +4,11 @@ import type { SupportedLocale } from '@breeze/shared';
 import { zValidator } from '../lib/validation';
 import { bodyLimit } from 'hono/body-limit';
 import { z } from 'zod';
-import { and, eq, or } from 'drizzle-orm';
+import { and, eq, inArray, isNull, or } from 'drizzle-orm';
 import { HTTPException } from 'hono/http-exception';
 import { nanoid } from 'nanoid';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { users, partnerUsers, organizationUsers, roles, organizations, partners, ticketPushPreferences } from '../db/schema';
+import { users, userPasskeys, partnerUsers, organizationUsers, roles, organizations, partners, ticketPushPreferences } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission } from '../middleware/auth';
 import {
   MAX_AVATAR_SIZE_BYTES,
@@ -1026,6 +1026,32 @@ userRoutes.get('/:id/avatar', async (c) => {
   });
 });
 
+/**
+ * RMM-QA-166 (D11): `mfaProtected` = mfa_enabled OR a live (non-disabled)
+ * user_passkeys row — the same predicate `userIsMfaProtected` applies — so the
+ * operator UI can offer "Reset MFA" for a passkey-only leftover whose
+ * mfa_enabled flag was already cleared. The passkey probe runs under system
+ * context (user_passkeys RLS is self-or-system) but ONLY over the ids the
+ * caller's own tenant-scoped membership join just returned — it never widens
+ * the row set (precedent: routes/sso.ts member passkey annotation).
+ */
+async function annotateMfaProtected<T extends { id: string; mfaEnabled: boolean }>(
+  rows: T[]
+): Promise<Array<T & { mfaProtected: boolean }>> {
+  if (rows.length === 0) return [];
+  const ids = rows.map((row) => row.id);
+  const passkeyRows = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(() =>
+      db
+        .select({ userId: userPasskeys.userId })
+        .from(userPasskeys)
+        .where(and(inArray(userPasskeys.userId, ids), isNull(userPasskeys.disabledAt)))
+    )
+  );
+  const withPasskey = new Set(passkeyRows.map((row) => row.userId));
+  return rows.map((row) => ({ ...row, mfaProtected: row.mfaEnabled === true || withPasskey.has(row.id) }));
+}
+
 userRoutes.get(
   '/',
   requirePermission(PERMISSIONS.USERS_READ.resource, PERMISSIONS.USERS_READ.action),
@@ -1052,7 +1078,7 @@ userRoutes.get(
         .innerJoin(roles, eq(partnerUsers.roleId, roles.id))
         .where(eq(partnerUsers.partnerId, scopeContext.partnerId));
 
-      return c.json({ data });
+      return c.json({ data: await annotateMfaProtected(data) });
     }
 
     const data = await db
@@ -1073,7 +1099,7 @@ userRoutes.get(
       .innerJoin(roles, eq(organizationUsers.roleId, roles.id))
       .where(eq(organizationUsers.orgId, scopeContext.orgId));
 
-    return c.json({ data });
+    return c.json({ data: await annotateMfaProtected(data) });
   }
 );
 

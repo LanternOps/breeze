@@ -384,39 +384,58 @@ describe('user routes', () => {
   });
 
   describe('GET /users', () => {
-    it('should list partner users', async () => {
-      vi.mocked(db.select).mockReturnValue({
-        from: vi.fn().mockReturnValue({
-          innerJoin: vi.fn().mockReturnValue({
-            innerJoin: vi.fn().mockReturnValue({
-              where: vi.fn().mockResolvedValue([
-                {
-                  id: '11111111-1111-1111-1111-111111111111',
-                  email: 'user@example.com',
-                  name: 'Partner User',
-                  status: 'active',
-                  roleId: 'role-1',
-                  roleName: 'Admin',
-                  orgAccess: 'all',
-                  orgIds: null
-                }
-              ])
-            })
-          })
-        })
-      } as any);
+    const MEMBER = '11111111-1111-1111-1111-111111111111';
+    function mockTenantList(rows: Array<Record<string, unknown>>) {
+      return { from: vi.fn().mockReturnValue({ innerJoin: vi.fn().mockReturnValue({ innerJoin: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(rows) }) }) }) } as any;
+    }
+    function mockPasskeyProbe(rows: Array<{ userId: string }>) {
+      return { from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(rows) }) } as any;
+    }
 
-      const res = await app.request('/users', {
-        method: 'GET',
-        headers: {
-          Authorization: 'Bearer token'
-        }
-      });
+    it('should list partner users with mfaProtected derived from mfaEnabled when no passkeys exist', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(mockTenantList([{ id: MEMBER, email: 'user@example.com', name: 'Partner User', status: 'active', mfaEnabled: true, roleId: 'role-1', roleName: 'Admin', orgAccess: 'all', orgIds: null }]))
+        .mockReturnValueOnce(mockPasskeyProbe([]));
+
+      const res = await app.request('/users', { method: 'GET', headers: { Authorization: 'Bearer token' } });
 
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.data).toHaveLength(1);
-      expect(body.data[0].email).toBe('user@example.com');
+      expect(body.data[0]).toMatchObject({ email: 'user@example.com', mfaEnabled: true, mfaProtected: true });
+    });
+
+    it('U-8: a passkey-only member (mfaEnabled=false) is reported mfaProtected=true; the probe runs under system context AFTER the tenant select and only over its ids', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce(mockTenantList([
+          { id: MEMBER, email: 'pk@example.com', name: 'Passkey Only', status: 'active', mfaEnabled: false, roleId: 'role-1', roleName: 'Tech', orgAccess: 'none', orgIds: null },
+          { id: '22222222-2222-2222-2222-222222222222', email: 'plain@example.com', name: 'Plain', status: 'active', mfaEnabled: false, roleId: 'role-1', roleName: 'Tech', orgAccess: 'none', orgIds: null },
+        ]))
+        .mockReturnValueOnce(mockPasskeyProbe([{ userId: MEMBER }]));
+
+      const res = await app.request('/users', { method: 'GET', headers: { Authorization: 'Bearer token' } });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.find((u: any) => u.id === MEMBER)).toMatchObject({ mfaEnabled: false, mfaProtected: true });
+      expect(body.data.find((u: any) => u.id !== MEMBER)).toMatchObject({ mfaEnabled: false, mfaProtected: false });
+      // C4: the system-context read is keyed to the ids the tenant join returned.
+      const selectOrder = vi.mocked(db.select).mock.invocationCallOrder;
+      const sysOrder = vi.mocked(withSystemDbAccessContext).mock.invocationCallOrder[0];
+      expect(sysOrder).toBeGreaterThan(selectOrder[0]!);
+      expect(sysOrder).toBeLessThan(selectOrder[1]!);
+      expect(vi.mocked(inArray)).toHaveBeenCalledWith(userPasskeys.userId, [MEMBER, '22222222-2222-2222-2222-222222222222']);
+    });
+
+    it('issues no passkey probe (no system-context read) when the tenant has no members', async () => {
+      vi.mocked(db.select).mockReturnValueOnce(mockTenantList([]));
+
+      const res = await app.request('/users', { method: 'GET', headers: { Authorization: 'Bearer token' } });
+
+      expect(res.status).toBe(200);
+      expect((await res.json()).data).toEqual([]);
+      expect(withSystemDbAccessContext).not.toHaveBeenCalled();
+      expect(vi.mocked(db.select)).toHaveBeenCalledTimes(1);
     });
 
     it('should reject missing partner/org context', async () => {
