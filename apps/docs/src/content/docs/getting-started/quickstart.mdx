@@ -195,6 +195,34 @@ Pick whichever fits:
   Caddy cannot get a public certificate for a private address, so it serves its
   internal self-signed cert — accept the browser warning.
 
+- **Internal domain** — a name that resolves only on your LAN or VPN, or a host
+  whose ports 80 and 443 are not reachable from the internet:
+
+  ```bash
+  BREEZE_DOMAIN=breeze.mydomain.com
+  PUBLIC_APP_URL=https://breeze.mydomain.com
+  DASHBOARD_URL=https://breeze.mydomain.com
+  CADDY_LOCAL_CERTS=local_certs
+  ```
+
+  Let's Encrypt cannot validate a name it cannot reach, so
+  `CADDY_LOCAL_CERTS=local_certs` switches Caddy to its own internal CA instead.
+  The guided installer asks this for you — *"Can Let's Encrypt reach this
+  domain?"* — whenever you give it a domain that is not `localhost` or an IP.
+
+  Browsers warn on every visit until that CA root is trusted on each client
+  machine. Export it with:
+
+  ```bash
+  docker compose exec caddy cat /data/caddy/pki/authorities/local/root.crt
+  ```
+
+  <Aside type="note">
+    `PUBLIC_APP_URL` still uses `https://` — the site is HTTPS either way, only
+    the issuer changes. Leave `CADDY_LOCAL_CERTS` empty for any deployment
+    Let's Encrypt *can* reach.
+  </Aside>
+
 - **Real domain** — the production path. See
   [Production Deploy](/deploy/production/).
 
@@ -217,6 +245,40 @@ it is what agent installers and portal links are built from.
 - Fix: browse to the address in `PUBLIC_APP_URL`, or add the address you are
   actually using to `CORS_ALLOWED_ORIGINS` in `.env` (comma-separated, no spaces,
   no trailing paths) and restart the API with `docker compose up -d api`.
+
+### The browser shows ERR_SSL_PROTOCOL_ERROR
+
+Chrome reports `ERR_SSL_PROTOCOL_ERROR` and Firefox `SSL_ERROR_INTERNAL_ERROR_ALERT`,
+with no certificate warning you can click through. That is Caddy aborting the TLS
+handshake with alert 80 (`internal_error`) because it holds no certificate for the
+name you asked for. Confirm it from the Caddy log:
+
+```bash
+docker logs breeze-caddy 2>&1 | grep tls.obtain
+```
+
+`could not get certificate from issuer` there means the Let's Encrypt order for
+`BREEZE_DOMAIN` failed. Let's Encrypt needs **public DNS pointing at this host and
+ports 80 and 443 open from the internet** — an internal-only name, or a host behind
+a firewall, can never pass validation.
+
+Two ways out:
+
+- Make the domain publicly resolvable and open 80/443 inbound, then restart Caddy
+  so it retries the order.
+- Or keep it internal and switch to Caddy's own CA — set
+  `CADDY_LOCAL_CERTS=local_certs` in `.env` (see **Internal domain** above) and
+  restart Caddy:
+
+  ```bash
+  docker compose up -d caddy
+  ```
+
+<Aside type="caution">
+  An empty `CADDY_LOCAL_CERTS` is the default and is correct for every
+  internet-reachable deployment. Only set it when the ACME order genuinely cannot
+  succeed — an internal CA means every browser and agent must trust that root.
+</Aside>
 
 ## What's Running
 
