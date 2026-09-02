@@ -192,17 +192,25 @@ function graduationRow(overrides: Record<string, unknown> = {}) {
   };
 }
 
+/** The `organizations` lookup that pins the baseline read to the org's partner. */
+function orgLookupRows(partnerId: string | null = PARTNER_ID): unknown[] {
+  return partnerId === null ? [] : [{ partnerId }];
+}
+
 /**
- * Queues the four sequential reads `evaluateGraduation` performs, in order:
- * graduation row, PARTNER baseline agent row, ORG override agent row, window.
+ * Queues the five sequential reads `evaluateGraduation` performs, in order:
+ * graduation row, the organization's partner_id, PARTNER baseline agent row,
+ * ORG override agent row, window.
  */
 function queueEvaluation(opts: {
   graduation?: unknown[];
+  orgLookup?: unknown[];
   partner?: unknown[];
   org?: unknown[];
   window?: unknown[];
 }): void {
   state.selectQueue.push(opts.graduation ?? []);
+  state.selectQueue.push(opts.orgLookup ?? orgLookupRows());
   state.selectQueue.push(opts.partner ?? [agentRow()]);
   state.selectQueue.push(opts.org ?? []);
   state.selectQueue.push(opts.window ?? [windowRow()]);
@@ -378,7 +386,7 @@ describe('evaluateGraduation', () => {
 
     await evaluateGraduation(ORG_ID, AGENT_ID, OP_KEY);
 
-    const windowWhere = state.selectWheres[3];
+    const windowWhere = state.selectWheres[4];
     const text = sqlText(windowWhere).replace(/\s+/g, ' ');
     expect(text).toContain(`GREATEST(now() - interval '30 days',`);
     expect(text).toContain('"occurred_at" >');
@@ -388,7 +396,12 @@ describe('evaluateGraduation', () => {
     expect(params).toContain(ORG_ID);
     expect(params).toContain(AGENT_ID);
     expect(params).toContain(OP_KEY);
-    expect(params).toContain(demotedAt);
+    // ISO STRING, not the Date object: postgres.js throws ERR_INVALID_ARG_TYPE
+    // ("Received an instance of Date") when an inline `sql` fragment binds a
+    // Date against a placeholder the server describes as timestamptz. Verified
+    // by executing this statement against a real Postgres.
+    expect(params).toContain(demotedAt.toISOString());
+    expect(params.some((p) => p instanceof Date)).toBe(false);
   });
 
   it('still emits the GREATEST bound when the tuple has never been demoted', async () => {
@@ -396,29 +409,36 @@ describe('evaluateGraduation', () => {
 
     await evaluateGraduation(ORG_ID, AGENT_ID, OP_KEY);
 
-    const text = sqlText(state.selectWheres[3]).replace(/\s+/g, ' ');
+    const text = sqlText(state.selectWheres[4]).replace(/\s+/g, ' ');
     expect(text).toContain(`GREATEST(now() - interval '30 days',`);
-    expect(sqlParams(state.selectWheres[3])).toContain(null);
+    expect(sqlParams(state.selectWheres[4])).toContain(null);
   });
 
-  it('pins the PARTNER baseline read to org_id IS NULL and the ORG read to the org', async () => {
+  it('pins the PARTNER baseline read to org_id IS NULL AND the org\u2019s partner_id, and the ORG read to the org', async () => {
     queueEvaluation({ org: [agentRow({ id: ORG_AGENT_ID, orgId: ORG_ID, partnerId: null })] });
 
     await evaluateGraduation(ORG_ID, AGENT_ID, OP_KEY);
 
-    const partnerText = sqlText(state.selectWheres[1]).replace(/\s+/g, ' ');
-    expect(partnerText).toContain('"org_id" is null');
-    expect(partnerText).toContain('"disabled_at" is null');
-    expect(sqlParams(state.selectWheres[1])).toContain(AGENT_ID);
+    // 0 graduation, 1 organizations, 2 partner baseline, 3 org override, 4 window.
+    const orgLookupText = sqlText(state.selectWheres[1]).replace(/\s+/g, ' ');
+    expect(orgLookupText).toContain('"organizations"."id" =');
+    expect(sqlParams(state.selectWheres[1])).toEqual([ORG_ID]);
 
-    const orgText = sqlText(state.selectWheres[2]).replace(/\s+/g, ' ');
+    const partnerText = sqlText(state.selectWheres[2]).replace(/\s+/g, ' ');
+    expect(partnerText).toContain('"org_id" is null');
+    expect(partnerText).toContain('"partner_id" =');
+    expect(partnerText).toContain('"disabled_at" is null');
+    expect(sqlParams(state.selectWheres[2])).toEqual([AGENT_ID, PARTNER_ID]);
+
+    const orgText = sqlText(state.selectWheres[3]).replace(/\s+/g, ' ');
     expect(orgText).toContain('"org_id" =');
     expect(orgText).toContain('"disabled_at" is null');
-    expect(sqlParams(state.selectWheres[2])).toContain(ORG_ID);
+    expect(sqlParams(state.selectWheres[3])).toContain(ORG_ID);
   });
 
   it('reports needs_partner_baseline and never reads an org row when there is no partner baseline', async () => {
     state.selectQueue.push([]); // graduation
+    state.selectQueue.push(orgLookupRows()); // organizations
     state.selectQueue.push([]); // partner baseline: none
     state.selectQueue.push([windowRow()]); // window
 
@@ -430,7 +450,7 @@ describe('evaluateGraduation', () => {
       blockedReason: 'needs_partner_baseline',
       window: { executed: 0, verified: 0, failed: 0, recurred: 0, firstVerifiedAt: null },
     });
-    expect(state.selectCount).toBe(3);
+    expect(state.selectCount).toBe(4);
   });
 
   it('uses the MAX-merged effective promoteThreshold, not the org row alone', async () => {
@@ -464,6 +484,39 @@ describe('evaluateGraduation', () => {
     expect(result.state).toBe('promoted');
     expect(result.blockedReason).toBeNull();
     expect(result.window.verified).toBe(AI_AGENT_LIMIT_DEFAULTS.promoteThreshold);
+  });
+
+  it('is NOT promoted when the org row names a key the partner ceiling no longer holds', async () => {
+    // C3: the grant is the EFFECTIVE set, intersect(partner, org) — never the
+    // raw org column. A partner that narrows its baseline after a promotion
+    // revokes the key, so the tuple must stop reading as `promoted`.
+    const now = new Date();
+    queueEvaluation({
+      partner: [agentRow({ actAssets: { scriptIds: [], supervisedActionKeys: [] } })],
+      org: [agentRow({
+        id: ORG_AGENT_ID,
+        orgId: ORG_ID,
+        partnerId: null,
+        actAssets: { scriptIds: [], supervisedActionKeys: [OP_KEY] },
+      })],
+      window: [eligibleWindow(now)],
+    });
+
+    const result = await evaluateGraduation(ORG_ID, AGENT_ID, OP_KEY);
+
+    expect(result.state).toBe('tracking');
+    expect(result.blockedReason).toBe('needs_partner_baseline');
+  });
+
+  it('reports needs_partner_baseline and reads no agent row at all when the organization is gone', async () => {
+    state.selectQueue.push([]); // graduation
+    state.selectQueue.push(orgLookupRows(null)); // organizations: none
+    state.selectQueue.push([windowRow()]); // window
+
+    const result = await evaluateGraduation(ORG_ID, AGENT_ID, OP_KEY);
+
+    expect(result.blockedReason).toBe('needs_partner_baseline');
+    expect(state.selectCount).toBe(3);
   });
 
   it('normalizes the window counters and firstVerifiedAt to the DTO shape', async () => {
@@ -549,6 +602,77 @@ describe('refreshGraduationRow', () => {
     expect(state.insertValues[0]).toMatchObject({ state: 'promoted' });
   });
 
+  it('seeds a BRAND-NEW row as eligible, never promoted — a promotion needs Task 15 provenance', async () => {
+    // No graduation row yet, but the org row already holds the key. Writing
+    // `promoted` here would mint a row claiming a promotion with promoted_at
+    // and promoted_intent_id NULL.
+    const now = new Date();
+    queueEvaluation({
+      graduation: [],
+      org: [agentRow({
+        id: ORG_AGENT_ID,
+        orgId: ORG_ID,
+        partnerId: null,
+        actAssets: { scriptIds: [], supervisedActionKeys: [OP_KEY] },
+      })],
+      window: [eligibleWindow(now)],
+    });
+
+    const result = await refreshGraduationRow(ORG_ID, AGENT_ID, OP_KEY);
+
+    expect(result.state).toBe('promoted'); // derived for the caller: the grant exists
+    expect(state.insertValues[0]).toMatchObject({ state: 'eligible' });
+    expect(state.insertValues[0]).not.toHaveProperty('promotedAt');
+    expect(state.insertValues[0]).not.toHaveProperty('promotedIntentId');
+    expect((state.insertConflicts[0]?.set as Record<string, unknown>).state).toBe('eligible');
+  });
+
+  it('seeds a BRAND-NEW blocked row as tracking when the org row holds the key', async () => {
+    queueEvaluation({
+      graduation: [],
+      org: [agentRow({
+        id: ORG_AGENT_ID,
+        orgId: ORG_ID,
+        partnerId: null,
+        actAssets: { scriptIds: [], supervisedActionKeys: [OP_KEY] },
+      })],
+      window: [windowRow({ verified: 1 })],
+    });
+
+    const result = await refreshGraduationRow(ORG_ID, AGENT_ID, OP_KEY);
+
+    expect(result.state).toBe('promoted');
+    expect(result.blockedReason).toBe('below_threshold');
+    expect(state.insertValues[0]).toMatchObject({ state: 'tracking' });
+  });
+
+  it('walks a stored promoted row back to tracking once the partner ceiling drops the key', async () => {
+    // Not a demotion (no demoted_at / demote_reason written) — the effective
+    // grant simply no longer exists, so the persisted state must stop claiming
+    // one. Task 16 remains the only writer of `demoted`.
+    const now = new Date();
+    queueEvaluation({
+      graduation: [graduationRow({ state: 'promoted', promotedAt: new Date('2026-08-01T00:00:00.000Z') })],
+      partner: [agentRow({ actAssets: { scriptIds: [], supervisedActionKeys: [] } })],
+      org: [agentRow({
+        id: ORG_AGENT_ID,
+        orgId: ORG_ID,
+        partnerId: null,
+        actAssets: { scriptIds: [], supervisedActionKeys: [OP_KEY] },
+      })],
+      window: [eligibleWindow(now)],
+    });
+
+    const result = await refreshGraduationRow(ORG_ID, AGENT_ID, OP_KEY);
+
+    expect(result.state).toBe('tracking');
+    expect(result.blockedReason).toBe('needs_partner_baseline');
+    expect(result.changed).toBe(true);
+    expect(state.insertValues[0]).toMatchObject({ state: 'tracking' });
+    expect(state.insertValues[0]).not.toHaveProperty('demotedAt');
+    expect(state.insertValues[0]).not.toHaveProperty('demoteReason');
+  });
+
   it('ignores evidence at or before demoted_at and resets first_verified_at on the first later verified', async () => {
     const demotedAt = new Date('2026-08-20T00:00:00.000Z');
     const firstAfter = new Date('2026-08-21T10:00:00.000Z');
@@ -568,7 +692,7 @@ describe('refreshGraduationRow', () => {
     expect(result.state).toBe('tracking');
     expect(result.window).toMatchObject({ verified: 1, failed: 0, firstVerifiedAt: firstAfter.toISOString() });
     expect(state.insertValues[0]).toMatchObject({ state: 'tracking', firstVerifiedAt: firstAfter });
-    expect(sqlParams(state.selectWheres[3])).toContain(demotedAt);
+    expect(sqlParams(state.selectWheres[4])).toContain(demotedAt.toISOString());
   });
 
   it('leaves a demoted row demoted while no post-demotion verified row exists', async () => {
@@ -608,6 +732,7 @@ describe('loadGraduationRows', () => {
   it('derives state and blockedReason live and carries the persisted demote/promote facts', async () => {
     const now = new Date();
     const promotedAt = new Date('2026-08-10T00:00:00.000Z');
+    state.selectQueue.push(orgLookupRows()); // organizations
     state.selectQueue.push([
       agentRow({ actAssets: { scriptIds: [], supervisedActionKeys: [OP_KEY, 'manage_services:stop'] } }),
     ]); // partner baseline
@@ -651,6 +776,7 @@ describe('loadGraduationRows', () => {
   });
 
   it('bounds each row window at GREATEST(now() - interval, that row demoted_at)', async () => {
+    state.selectQueue.push(orgLookupRows());
     state.selectQueue.push([agentRow()]);
     state.selectQueue.push([]);
     state.selectQueue.push([]);
@@ -662,7 +788,7 @@ describe('loadGraduationRows', () => {
     expect(joinOn).toContain('"namespace" =');
     expect(sqlParams(state.selectJoinOns[0])).toContain('policy_key');
 
-    const where = sqlText(state.selectWheres[2]).replace(/\s+/g, ' ');
+    const where = sqlText(state.selectWheres[3]).replace(/\s+/g, ' ');
     expect(where).toContain('"org_id" =');
     expect(where).toContain('"agent_id" =');
   });

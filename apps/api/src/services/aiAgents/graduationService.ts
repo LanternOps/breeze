@@ -53,6 +53,7 @@ import {
 import { aiAgentGraduation } from '../../db/schema/aiAgentGraduation';
 import { aiAgentOpEvidence } from '../../db/schema/aiAgentOpEvidence';
 import { aiAgents } from '../../db/schema/aiAgents';
+import { organizations } from '../../db/schema/orgs';
 import { isPolicyDecidableKey } from '../actionIntents/policyDecidable';
 import { mergeAgentPolicies, normalizeAgentPolicy } from './effectivePolicy';
 
@@ -216,7 +217,11 @@ export interface EligibilityInput {
   window: AiAgentGraduationWindow;
   /** The PARTNER baseline row's `actAssets.supervisedActionKeys` — the CEILING. */
   partnerCeilingKeys: string[];
-  /** The ORG row's `actAssets.supervisedActionKeys` — the GRANT. */
+  /**
+   * The EFFECTIVE `actAssets.supervisedActionKeys` — the GRANT. C3: no org row
+   * -> `[]`; org row -> `intersect(partner, org)`. Always the merged value from
+   * `effectivePolicy.ts`, never the raw org column.
+   */
   orgGrantedKeys: string[];
   /** The MAX-merged effective `limits.promoteThreshold`. */
   promoteThreshold: number;
@@ -279,11 +284,30 @@ interface GraduationPolicyContext {
   promoteThreshold: number;
 }
 
+/** No organization or no partner baseline: nothing is granted, nothing is a ceiling. */
+function emptyPolicyContext(): GraduationPolicyContext {
+  return {
+    partnerCeilingKeys: [],
+    orgGrantedKeys: [],
+    promoteThreshold: AI_AGENT_LIMIT_DEFAULTS.promoteThreshold,
+  };
+}
+
 /**
  * `agentId` is always the EFFECTIVE agent id, i.e. the PARTNER baseline row
  * (`resolveEffectiveAgentSystem` returns `partnerRow.id`, and every evidence
- * writer stamps that id). The read is pinned to `org_id IS NULL` so an org
- * override row can never be mistaken for the ceiling.
+ * writer stamps that id).
+ *
+ * The baseline read is pinned to BOTH `org_id IS NULL` (so an org override row
+ * can never be mistaken for the ceiling) AND `partner_id = <the organization's
+ * partner>`, resolved through `orgId` — the same org->partner pinning
+ * `resolveEffectiveAgentInner` performs. Without that second predicate this
+ * loader runs under a system context (where RLS passes unconditionally) with
+ * an org-unpinned read: a caller passing an `agentId` belonging to a DIFFERENT
+ * partner would silently evaluate against that partner's ceiling and
+ * `promoteThreshold`. A missing organization resolves to the empty context
+ * below (fail closed as `needs_partner_baseline`) rather than throwing, so one
+ * org deleted mid-sweep cannot abort Task 13's daily job.
  *
  * The ORG row is then found by `(org_id, kind)` — the same pairing
  * `resolveEffectiveAgentInner` uses — and `promoteThreshold` comes from
@@ -291,21 +315,36 @@ interface GraduationPolicyContext {
  * a partner asking for 50 is never undercut by an org asking for 5.
  * `allowedModels: null` is correct and inert here — it only ever affects the
  * merged `model`, which this module does not read.
+ *
+ * `orgGrantedKeys` is the C3-CANONICAL effective set
+ * (`merged.effective.actAssets.supervisedActionKeys`), never the raw org row:
+ * no org row -> `[]`, org row -> `intersect(partner, org)` (effectivePolicy.ts).
+ * Reading the raw org column here would be a second, local copy of the
+ * grant/ceiling authority rule — and a divergent one, because a partner that
+ * narrows its baseline ceiling after a promotion must stop the key reading as
+ * `promoted` even while the org row still names it.
  */
 async function loadPolicyContext(orgId: string, agentId: string): Promise<GraduationPolicyContext> {
+  const [org] = await db
+    .select({ partnerId: organizations.partnerId })
+    .from(organizations)
+    .where(eq(organizations.id, orgId))
+    .limit(1);
+
+  if (!org) return emptyPolicyContext();
+
   const [partnerRow] = await db
     .select()
     .from(aiAgents)
-    .where(and(eq(aiAgents.id, agentId), isNull(aiAgents.orgId), isNull(aiAgents.disabledAt)))
+    .where(and(
+      eq(aiAgents.id, agentId),
+      eq(aiAgents.partnerId, org.partnerId),
+      isNull(aiAgents.orgId),
+      isNull(aiAgents.disabledAt),
+    ))
     .limit(1);
 
-  if (!partnerRow) {
-    return {
-      partnerCeilingKeys: [],
-      orgGrantedKeys: [],
-      promoteThreshold: AI_AGENT_LIMIT_DEFAULTS.promoteThreshold,
-    };
-  }
+  if (!partnerRow) return emptyPolicyContext();
 
   const [orgRow] = await db
     .select()
@@ -323,7 +362,7 @@ async function loadPolicyContext(orgId: string, agentId: string): Promise<Gradua
 
   return {
     partnerCeilingKeys: partnerPolicy.actAssets.supervisedActionKeys ?? [],
-    orgGrantedKeys: orgPolicy?.actAssets.supervisedActionKeys ?? [],
+    orgGrantedKeys: merged.effective.actAssets.supervisedActionKeys ?? [],
     promoteThreshold:
       merged.effective.limits.promoteThreshold ?? AI_AGENT_LIMIT_DEFAULTS.promoteThreshold,
   };
@@ -369,7 +408,12 @@ async function loadWindow(
       eq(aiAgentOpEvidence.agentId, agentId),
       eq(aiAgentOpEvidence.namespace, GRADUATION_NAMESPACE),
       eq(aiAgentOpEvidence.opKey, opKey),
-      sql`${aiAgentOpEvidence.occurredAt} > ${windowLowerBound(sql`${demotedAt}::timestamptz`)}`,
+      // ISO STRING, never the Date object: an inline `sql` fragment binds the
+      // value raw (no column `mapToDriverValue`), and postgres.js throws
+      // ERR_INVALID_ARG_TYPE ("Received an instance of Date") when the server
+      // describes the placeholder as timestamptz. Caught only by executing
+      // this against a real server — the compiled-SQL assertion is blind to it.
+      sql`${aiAgentOpEvidence.occurredAt} > ${windowLowerBound(sql`${demotedAt === null ? null : demotedAt.toISOString()}::timestamptz`)}`,
     ));
   return toWindow((rows as RawWindowRow[])[0]);
 }
@@ -419,10 +463,14 @@ export async function evaluateGraduation(
  * It moves `tracking <-> eligible` and `demoted -> tracking`, and resets
  * `first_verified_at` to the window's earliest `verified` (which, because the
  * window's lower bound IS `demoted_at`, is exactly "the first verified after
- * the demotion"). It NEVER writes `promoted` or `demoted` onto an existing
- * row: those two states are facts owned by Task 15's four-eyes executor and
- * Task 16's negative-evidence path, and neither the grant nor the demote
- * columns are touched here.
+ * the demotion"). It NEVER WRITES `promoted` or `demoted` — not onto an
+ * existing row (those two states are facts owned by Task 15's four-eyes
+ * executor and Task 16's negative-evidence path, preserved verbatim here) and
+ * not onto a new one (a seeded `promoted` would carry no `promoted_at` /
+ * `promoted_intent_id` provenance at all). Neither the grant nor the demote
+ * columns are touched. The RETURNED `state` is still the derived one, so a
+ * grant that exists without a promotion row reads as `promoted` to callers —
+ * exactly what `loadGraduationRows` serves for the same tuple.
  */
 export async function refreshGraduationRow(
   orgId: string,
@@ -432,14 +480,19 @@ export async function refreshGraduationRow(
   return inSystemDbContext(() => withGraduationLock(orgId, agentId, opKey, async () => {
     const { evaluation, stored } = await evaluateInner(orgId, agentId, opKey);
 
-    // Only the two DERIVED states are ever written. `promoted`/`demoted` on an
-    // existing row are left exactly as their owning path stamped them; on a
-    // row that does not exist yet there is nothing to preserve, so the derived
-    // value is written as the row's initial state.
+    // Only the two DERIVED states are ever WRITTEN. `promoted`/`demoted` on an
+    // existing row are left exactly as their owning path stamped them; on a row
+    // that does not exist YET there is no provenance to preserve — seeding
+    // `promoted` here would mint a row claiming a promotion with `promoted_at`
+    // and `promoted_intent_id` NULL, which Task 15 owns and Task 16's demote
+    // path may read — so a brand-new row is clamped to `tracking`/`eligible`.
+    // The RETURN value still reports the derived `promoted` (the grant is the
+    // authority), which is also what `loadGraduationRows` serves.
+    const seedState: AiAgentGraduationState = evaluation.blockedReason === null ? 'eligible' : 'tracking';
     const persistedState: AiAgentGraduationState =
       evaluation.state === 'tracking' || evaluation.state === 'eligible'
         ? evaluation.state
-        : (stored?.state ?? evaluation.state);
+        : (stored?.state ?? seedState);
 
     const firstVerifiedAt = evaluation.window.firstVerifiedAt === null
       ? null
@@ -456,7 +509,6 @@ export async function refreshGraduationRow(
 
     return {
       ...evaluation,
-      state: persistedState,
       changed: stored === null || stored.state !== persistedState,
     };
   }));
