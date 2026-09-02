@@ -287,6 +287,11 @@ describe('command queue service', () => {
       'exit-system',
       'exit-outside',
     ]);
+    // #4225: this row is written at DISPATCH time, before the agent has
+    // reported back, so it must NOT claim 'success' — that would assert an
+    // outcome the command hasn't reached yet. Assert the neutral value
+    // explicitly (not just objectContaining) so a regression back to
+    // 'success' fails here rather than only in a UI test.
     expect(auditInsertValues).toHaveBeenCalledWith(
       expect.objectContaining({
         orgId: 'org-42',
@@ -296,7 +301,7 @@ describe('command queue service', () => {
         resourceType: 'device',
         resourceId: 'dev-1',
         resourceName: 'host-1',
-        result: 'success',
+        result: 'dispatched',
       })
     );
   });
@@ -656,12 +661,18 @@ describe('command queue service', () => {
     const result = await executeCommand('dev-2', CommandTypes.CAPTURE_PPROF, { profile: 'all' }, { userId: 'user-1' });
 
     expect(result.status).toBe('completed');
+    // #4225: the audit row is written when the command is DISPATCHED, not
+    // when it completes — `result.status` above being 'completed' is the
+    // polled command outcome, unrelated to the audit row's `result` field.
+    // The audit insert must not claim 'success' regardless of how the
+    // command ultimately resolves.
     expect(auditValues).toHaveBeenCalledWith(expect.objectContaining({
       action: 'agent.command.capture_pprof',
       actorId: 'user-1',
       resourceType: 'device',
       resourceId: 'dev-2',
       orgId: 'org-1',
+      result: 'dispatched',
     }));
   });
 

@@ -27,65 +27,69 @@ const DEVICE_METRIC_ROLLUP_SOURCES = [
   { metricType: 'process', metricName: 'process_count', column: 'process_count' },
 ] as const;
 
+/**
+ * One expansion of a sample row's `top_processes` array, feeding every
+ * array-derived series below (#4341).
+ *
+ * Each of the six array series used to be its own scalar subquery in its own
+ * statement, so every sample row was re-parsed six times per pass. They now
+ * read out of this single `jsonb_array_elements` expansion.
+ *
+ * Value-identical to the old per-series subqueries:
+ *  - `sum`: the old form summed `CASE … ELSE 0`, this one skips NULLs. float8
+ *    addition of 0 is exact, so the totals match; an all-non-numeric array gave
+ *    `0+0+…=0` before and `NULL → coalesce → 0` now.
+ *  - `max`: the old CASE already produced NULL for non-numbers, so `max` saw
+ *    the same input set.
+ *  - empty / NULL array: `jsonb_array_elements` yields zero rows either way, an
+ *    aggregate over zero rows is NULL, and `coalesce(…, 0)` lands on 0 in both.
+ *
+ * `dps` is the outer `device_process_samples` row this is LATERAL-joined to.
+ */
+const PROCESS_SAMPLE_PROCESS_AGGREGATE_SQL = `
+      SELECT
+        coalesce(sum(proc_values.cpu), 0)::double precision AS cpu_percent_sum,
+        coalesce(max(proc_values.cpu), 0)::double precision AS cpu_percent_max,
+        coalesce(sum(proc_values.ram_mb), 0)::double precision AS ram_mb_sum,
+        coalesce(max(proc_values.ram_mb), 0)::double precision AS ram_mb_max,
+        coalesce(sum(proc_values.disk_bps), 0)::double precision AS disk_bps_sum,
+        coalesce(sum(proc_values.net_bps), 0)::double precision AS net_bps_sum
+      FROM (
+        SELECT
+          CASE WHEN jsonb_typeof(proc.value -> 'cpu') = 'number'
+            THEN (proc.value ->> 'cpu')::double precision
+          END AS cpu,
+          CASE WHEN jsonb_typeof(proc.value -> 'ramMb') = 'number'
+            THEN (proc.value ->> 'ramMb')::double precision
+          END AS ram_mb,
+          CASE WHEN jsonb_typeof(proc.value -> 'diskBps') = 'number'
+            THEN (proc.value ->> 'diskBps')::double precision
+          END AS disk_bps,
+          CASE WHEN jsonb_typeof(proc.value -> 'netBps') = 'number'
+            THEN (proc.value ->> 'netBps')::double precision
+          END AS net_bps
+        FROM jsonb_array_elements(dps.top_processes) AS proc(value)
+      ) proc_values`;
+
+/**
+ * `valueSql` is evaluated once per `device_process_samples` row and becomes one
+ * `sample_values` column named after the series. `top_process_count` reads the
+ * array length directly (NULL for a NULL array, which is what makes its
+ * `sample_count` legitimately differ from the coalesced series); the rest read
+ * the shared per-row aggregate above. `metricName` doubles as the column name,
+ * so it must stay a bare SQL identifier.
+ */
 const PROCESS_SAMPLE_ROLLUP_SOURCES = [
   {
     metricName: 'top_process_count',
     valueSql: 'jsonb_array_length(dps.top_processes)::double precision',
   },
-  {
-    metricName: 'top_process_cpu_percent_sum',
-    valueSql: `(SELECT coalesce(sum(
-      CASE WHEN jsonb_typeof(proc.value -> 'cpu') = 'number'
-        THEN (proc.value ->> 'cpu')::double precision
-        ELSE 0
-      END
-    ), 0)::double precision FROM jsonb_array_elements(dps.top_processes) AS proc(value))`,
-  },
-  {
-    metricName: 'top_process_cpu_percent_max',
-    valueSql: `(SELECT coalesce(max(
-      CASE WHEN jsonb_typeof(proc.value -> 'cpu') = 'number'
-        THEN (proc.value ->> 'cpu')::double precision
-        ELSE NULL
-      END
-    ), 0)::double precision FROM jsonb_array_elements(dps.top_processes) AS proc(value))`,
-  },
-  {
-    metricName: 'top_process_ram_mb_sum',
-    valueSql: `(SELECT coalesce(sum(
-      CASE WHEN jsonb_typeof(proc.value -> 'ramMb') = 'number'
-        THEN (proc.value ->> 'ramMb')::double precision
-        ELSE 0
-      END
-    ), 0)::double precision FROM jsonb_array_elements(dps.top_processes) AS proc(value))`,
-  },
-  {
-    metricName: 'top_process_ram_mb_max',
-    valueSql: `(SELECT coalesce(max(
-      CASE WHEN jsonb_typeof(proc.value -> 'ramMb') = 'number'
-        THEN (proc.value ->> 'ramMb')::double precision
-        ELSE NULL
-      END
-    ), 0)::double precision FROM jsonb_array_elements(dps.top_processes) AS proc(value))`,
-  },
-  {
-    metricName: 'top_process_disk_bps_sum',
-    valueSql: `(SELECT coalesce(sum(
-      CASE WHEN jsonb_typeof(proc.value -> 'diskBps') = 'number'
-        THEN (proc.value ->> 'diskBps')::double precision
-        ELSE 0
-      END
-    ), 0)::double precision FROM jsonb_array_elements(dps.top_processes) AS proc(value))`,
-  },
-  {
-    metricName: 'top_process_net_bps_sum',
-    valueSql: `(SELECT coalesce(sum(
-      CASE WHEN jsonb_typeof(proc.value -> 'netBps') = 'number'
-        THEN (proc.value ->> 'netBps')::double precision
-        ELSE 0
-      END
-    ), 0)::double precision FROM jsonb_array_elements(dps.top_processes) AS proc(value))`,
-  },
+  { metricName: 'top_process_cpu_percent_sum', valueSql: 'proc_agg.cpu_percent_sum' },
+  { metricName: 'top_process_cpu_percent_max', valueSql: 'proc_agg.cpu_percent_max' },
+  { metricName: 'top_process_ram_mb_sum', valueSql: 'proc_agg.ram_mb_sum' },
+  { metricName: 'top_process_ram_mb_max', valueSql: 'proc_agg.ram_mb_max' },
+  { metricName: 'top_process_disk_bps_sum', valueSql: 'proc_agg.disk_bps_sum' },
+  { metricName: 'top_process_net_bps_sum', valueSql: 'proc_agg.net_bps_sum' },
 ] as const;
 
 export interface MetricRollupRange {
@@ -141,8 +145,9 @@ function normalizeRange(from: Date, to: Date): { from: Date; to: Date } {
  * #4276 — run ONE statement inside its OWN short-lived system RLS context.
  *
  * This module used to run under a single caller-supplied
- * `withSystemDbAccessContext`, so all 26 statements shared one transaction and
- * pinned one pooled connection for the whole pass. At ~2s+ per org every 5
+ * `withSystemDbAccessContext`, so every statement of the pass (26 of them at
+ * the time; 9 since #4341) shared one transaction and pinned one pooled
+ * connection for the whole pass. At ~2s+ per org every 5
  * minutes that made `metricRollupsWorker` the top `db_context_held_too_long`
  * offender (983 events/7d, ~half the system-scope capture budget) and it is
  * exactly the kind of long single-connection hold that elongates recovery when
@@ -188,21 +193,102 @@ function expandRangeToBucketBounds(from: Date, to: Date, bucketSeconds: number):
   };
 }
 
-async function rollupRawDeviceMetric(options: MetricRollupRange, metric: (typeof DEVICE_METRIC_ROLLUP_SOURCES)[number]): Promise<void> {
+/** `VALUES (…), (…), …` rows, one per source, for an unpivot join. */
+function valuesRows(rows: SQL[]): SQL {
+  return sql.join(rows, sql.raw(',\n        '));
+}
+
+const SERIES_AGGREGATE_SUFFIXES = ['avg', 'min', 'max', 'p95', 'sum', 'count'] as const;
+
+/**
+ * The six aggregates one rollup series needs, aliased `<key>_avg`, `<key>_min`, …
+ *
+ * #4341 computes every series of a source table in ONE grouped pass and unpivots
+ * afterwards, so each aggregate still sees its own input expression at its own
+ * type. Unpivoting the *inputs* instead would force a single common value column,
+ * which for `device_metrics` would silently turn `sum(real)` — Postgres
+ * accumulates that in `real` — into a float8 sum, and for both tables would
+ * multiply the bucket grid by the series count (inflating the planner's row
+ * estimate enough to trip `jit_above_cost` on a query that does not need JIT).
+ */
+function seriesAggregates(sources: ReadonlyArray<{ key: string; valueSql: string }>): SQL {
+  return sql.join(
+    sources.map(({ key, valueSql }) => {
+      const value = sql.raw(valueSql);
+      const alias = (suffix: string) => sql.raw(`${key}_${suffix}`);
+      return sql`
+        avg(${value})::double precision AS ${alias('avg')},
+        min(${value})::double precision AS ${alias('min')},
+        max(${value})::double precision AS ${alias('max')},
+        percentile_cont(0.95) within group (order by ${value})::double precision AS ${alias('p95')},
+        sum(${value})::double precision AS ${alias('sum')},
+        count(${value})::integer AS ${alias('count')}`;
+    }),
+    sql.raw(','),
+  );
+}
+
+/** `ba.<key>_avg, ba.<key>_min, …` — one series' aggregates, read back for the unpivot. */
+function seriesAggregateColumns(key: string): SQL {
+  return sql.raw(SERIES_AGGREGATE_SUFFIXES.map((suffix) => `ba.${key}_${suffix}`).join(', '));
+}
+
+/** Column list the unpivot `VALUES` join binds its aggregate columns to. */
+const SERIES_VALUE_COLUMNS = sql.raw('avg_value, min_value, max_value, p95_value, sum_value, sample_count');
+
+/**
+ * #4341 — ONE statement for all ten `device_metrics` series.
+ *
+ * This used to be ten statements, each re-running the identical
+ * `metric_devices` DISTINCT scan and the identical bucket-grid LEFT JOIN over
+ * the same window, differing only in which column they aggregated. Together
+ * with the seven-statement process-sample loop that made the rollup pass the
+ * single largest consumer of the production DB's CPU.
+ *
+ * The rewrite aggregates every column in ONE grouped pass and unpivots the
+ * result afterwards, so each aggregate still sees its column at its native type
+ * (`real` / `integer` / `bigint`). Unpivoting the *inputs* instead would have
+ * forced a common `double precision` value column and quietly changed
+ * `sum(real)`, which Postgres accumulates in `real`, into a float8 sum.
+ *
+ * `metric_devices` keeps its per-metric `IS NOT NULL` device filter — half
+ * these columns are nullable, and a device that never reports (say)
+ * `process_count` must still produce NO `process_count` rollups rather than a
+ * window's worth of `isGap` rows. The shared bucket grid is built from the
+ * union of those device sets and re-narrowed per series by the closing join.
+ */
+async function rollupRawDeviceMetrics(options: MetricRollupRange): Promise<void> {
   const { from, to } = normalizeRange(options.from, options.to);
   const fromIso = from.toISOString();
   const toIso = to.toISOString();
   const expectedSampleSeconds = options.expectedSampleSeconds ?? DEFAULT_EXPECTED_SAMPLE_SECONDS;
-  const valueSql = sql.raw(`dm.${metric.column}`);
+
+  const notNullProbes = valuesRows(DEVICE_METRIC_ROLLUP_SOURCES.map((metric) =>
+    sql`(${metric.metricName}::text, ${sql.raw(`dm.${metric.column} IS NOT NULL`)})`
+  ));
+
+  const bucketAggregates = seriesAggregates(
+    DEVICE_METRIC_ROLLUP_SOURCES.map((metric) => ({ key: metric.column, valueSql: `dm.${metric.column}` }))
+  );
+
+  const seriesRows = valuesRows(DEVICE_METRIC_ROLLUP_SOURCES.map((metric) =>
+    sql`(${metric.metricType}::text, ${metric.metricName}::text, ${seriesAggregateColumns(metric.column)})`
+  ));
 
   await execInRollupDbContext('metricRollups.raw.device_metrics', sql`
     WITH metric_devices AS (
-      SELECT DISTINCT dm.org_id, dm.device_id
+      SELECT DISTINCT dm.org_id, dm.device_id, probe.metric_name
       FROM device_metrics dm
+      CROSS JOIN LATERAL (VALUES
+        ${notNullProbes}
+      ) AS probe(metric_name, has_value)
       WHERE dm.org_id = ${options.orgId}
         AND dm.timestamp >= ${fromIso}::timestamp
         AND dm.timestamp < ${toIso}::timestamp
-        AND ${valueSql} IS NOT NULL
+        AND probe.has_value
+    ),
+    grid_devices AS (
+      SELECT DISTINCT org_id, device_id FROM metric_devices
     ),
     buckets AS (
       SELECT generate_series(
@@ -212,9 +298,31 @@ async function rollupRawDeviceMetric(options: MetricRollupRange, metric: (typeof
       )::timestamp AS bucket_start
     ),
     bucket_grid AS (
-      SELECT md.org_id, md.device_id, buckets.bucket_start
-      FROM metric_devices md
+      SELECT gd.org_id, gd.device_id, buckets.bucket_start
+      FROM grid_devices gd
       CROSS JOIN buckets
+    ),
+    bucket_aggregates AS (
+      SELECT
+        bg.org_id,
+        bg.device_id,
+        bg.bucket_start,${bucketAggregates}
+      FROM bucket_grid bg
+      LEFT JOIN device_metrics dm
+        ON dm.org_id = bg.org_id
+        AND dm.device_id = bg.device_id
+        -- join window bound: constrain the scan to [from,to). bucket_start comes
+        -- from generate_series, so the per-bucket predicates below are NOT sargable
+        -- and Postgres would bitmap-scan each device's ENTIRE metric history per
+        -- bucket. These two constant bounds let it index-range only the window.
+        AND dm.timestamp >= ${fromIso}::timestamp
+        AND dm.timestamp < ${toIso}::timestamp
+        AND dm.timestamp >= bg.bucket_start
+        AND dm.timestamp < bg.bucket_start + (interval '1 second' * ${RAW_BUCKET_SECONDS})
+      -- No per-column IS NOT NULL filter here: every aggregate above already
+      -- skips NULL inputs, so dropping it leaves each series' numbers untouched
+      -- while letting all ten share one join.
+      GROUP BY bg.org_id, bg.device_id, bg.bucket_start
     )
     INSERT INTO metric_rollups (
       org_id,
@@ -234,51 +342,77 @@ async function rollupRawDeviceMetric(options: MetricRollupRange, metric: (typeof
       metadata
     )
     SELECT
-      bg.org_id,
+      ba.org_id,
       'device_metrics',
-      bg.device_id,
-      ${metric.metricType},
-      ${metric.metricName},
-      bg.bucket_start,
+      ba.device_id,
+      series.metric_type,
+      series.metric_name,
+      ba.bucket_start,
       ${RAW_BUCKET_SECONDS},
-      avg(${valueSql})::double precision,
-      min(${valueSql})::double precision,
-      max(${valueSql})::double precision,
-      percentile_cont(0.95) within group (order by ${valueSql})::double precision,
-      sum(${valueSql})::double precision,
-      count(${valueSql})::integer,
-      greatest(${RAW_BUCKET_SECONDS} - (count(${valueSql})::integer * ${expectedSampleSeconds}), 0)::integer,
+      series.avg_value,
+      series.min_value,
+      series.max_value,
+      series.p95_value,
+      series.sum_value,
+      series.sample_count,
+      greatest(${RAW_BUCKET_SECONDS} - (series.sample_count * ${expectedSampleSeconds}), 0)::integer,
       jsonb_build_object(
         'rollupVersion', ${METRIC_ROLLUP_VERSION}::text,
         'source', 'raw',
         'expectedSampleSeconds', ${expectedSampleSeconds}::integer,
-        'isGap', count(${valueSql}) = 0
+        'isGap', series.sample_count = 0
       )
-    FROM bucket_grid bg
-    LEFT JOIN device_metrics dm
-      ON dm.org_id = bg.org_id
-      AND dm.device_id = bg.device_id
-      -- join window bound: constrain the scan to [from,to). bucket_start comes
-      -- from generate_series, so the per-bucket predicates below are NOT sargable
-      -- and Postgres would bitmap-scan each device's ENTIRE metric history per
-      -- bucket. These two constant bounds let it index-range only the window.
-      AND dm.timestamp >= ${fromIso}::timestamp
-      AND dm.timestamp < ${toIso}::timestamp
-      AND dm.timestamp >= bg.bucket_start
-      AND dm.timestamp < bg.bucket_start + (interval '1 second' * ${RAW_BUCKET_SECONDS})
-      AND ${valueSql} IS NOT NULL
-    GROUP BY bg.org_id, bg.device_id, bg.bucket_start
+    FROM bucket_aggregates ba
+    CROSS JOIN LATERAL (VALUES
+        ${seriesRows}
+    ) AS series(metric_type, metric_name, ${SERIES_VALUE_COLUMNS})
+    JOIN metric_devices md
+      ON md.org_id = ba.org_id
+      AND md.device_id = ba.device_id
+      AND md.metric_name = series.metric_name
     ON CONFLICT (org_id, source_table, device_id, metric_type, metric_name, bucket_seconds, bucket_start)
     DO UPDATE SET ${upsertAssignments()}
   `);
 }
 
-async function rollupRawProcessSampleMetric(options: MetricRollupRange, metric: (typeof PROCESS_SAMPLE_ROLLUP_SOURCES)[number]): Promise<void> {
+/**
+ * #4341 — ONE statement for all seven `device_process_samples` series.
+ *
+ * This was the top statement on the production DB by a wide margin: seven
+ * copies of the same CTE, each rescanning the same window (`process_devices`
+ * DISTINCT + `sample_values`) and re-expanding every sample's `top_processes`
+ * array. `pg_stat_statements` over 31.5h on US prod: ~107k calls at 1.5-2.0s
+ * mean, ~168,600s total — ~1.5 query-seconds per wall-second on a single-vCPU
+ * managed DB, with 900+GB of shared buffer reads starving interactive queries.
+ *
+ * `sample_values` now projects one column per series instead of one row per
+ * series, so the bucket grid and the LEFT JOIN keep exactly the cardinality
+ * they had; only the aggregate list widens, and every series still aggregates
+ * its own `double precision` expression. (A row-wise unpivot was measurably
+ * worse: it multiplies the grid by seven, and because `generate_series` is
+ * costed at its 1000-row default the inflated estimate tripped
+ * `jit_above_cost`, adding ~1.1s of JIT compilation to a sub-100ms query.)
+ */
+async function rollupRawProcessSampleMetrics(options: MetricRollupRange): Promise<void> {
   const { from, to } = normalizeRange(options.from, options.to);
   const fromIso = from.toISOString();
   const toIso = to.toISOString();
   const expectedSampleSeconds = options.expectedSampleSeconds ?? DEFAULT_EXPECTED_SAMPLE_SECONDS;
-  const valueSql = sql.raw(metric.valueSql);
+
+  const sampleColumns = sql.join(
+    PROCESS_SAMPLE_ROLLUP_SOURCES.map((metric) =>
+      sql`${sql.raw(metric.valueSql)} AS ${sql.raw(metric.metricName)}`
+    ),
+    sql.raw(',\n        '),
+  );
+
+  const bucketAggregates = seriesAggregates(
+    PROCESS_SAMPLE_ROLLUP_SOURCES.map((metric) => ({ key: metric.metricName, valueSql: `sv.${metric.metricName}` }))
+  );
+
+  const seriesRows = valuesRows(PROCESS_SAMPLE_ROLLUP_SOURCES.map((metric) =>
+    sql`(${metric.metricName}::text, ${seriesAggregateColumns(metric.metricName)})`
+  ));
 
   await execInRollupDbContext('metricRollups.raw.device_process_samples', sql`
     WITH process_devices AS (
@@ -305,11 +439,26 @@ async function rollupRawProcessSampleMetric(options: MetricRollupRange, metric: 
         dps.org_id,
         dps.device_id,
         dps.timestamp,
-        ${valueSql} AS metric_value
+        ${sampleColumns}
       FROM device_process_samples dps
+      CROSS JOIN LATERAL (${sql.raw(PROCESS_SAMPLE_PROCESS_AGGREGATE_SQL)}
+      ) AS proc_agg
       WHERE dps.org_id = ${options.orgId}
         AND dps.timestamp >= ${fromIso}::timestamp
         AND dps.timestamp < ${toIso}::timestamp
+    ),
+    bucket_aggregates AS (
+      SELECT
+        bg.org_id,
+        bg.device_id,
+        bg.bucket_start,${bucketAggregates}
+      FROM bucket_grid bg
+      LEFT JOIN sample_values sv
+        ON sv.org_id = bg.org_id
+        AND sv.device_id = bg.device_id
+        AND sv.timestamp >= bg.bucket_start
+        AND sv.timestamp < bg.bucket_start + (interval '1 second' * ${RAW_BUCKET_SECONDS})
+      GROUP BY bg.org_id, bg.device_id, bg.bucket_start
     )
     INSERT INTO metric_rollups (
       org_id,
@@ -329,34 +478,31 @@ async function rollupRawProcessSampleMetric(options: MetricRollupRange, metric: 
       metadata
     )
     SELECT
-      bg.org_id,
+      ba.org_id,
       'device_process_samples',
-      bg.device_id,
+      ba.device_id,
       'process',
-      ${metric.metricName},
-      bg.bucket_start,
+      series.metric_name,
+      ba.bucket_start,
       ${RAW_BUCKET_SECONDS},
-      avg(sv.metric_value)::double precision,
-      min(sv.metric_value)::double precision,
-      max(sv.metric_value)::double precision,
-      percentile_cont(0.95) within group (order by sv.metric_value)::double precision,
-      sum(sv.metric_value)::double precision,
-      count(sv.metric_value)::integer,
-      greatest(${RAW_BUCKET_SECONDS} - (count(sv.metric_value)::integer * ${expectedSampleSeconds}), 0)::integer,
+      series.avg_value,
+      series.min_value,
+      series.max_value,
+      series.p95_value,
+      series.sum_value,
+      series.sample_count,
+      greatest(${RAW_BUCKET_SECONDS} - (series.sample_count * ${expectedSampleSeconds}), 0)::integer,
       jsonb_build_object(
         'rollupVersion', ${METRIC_ROLLUP_VERSION}::text,
         'source', 'raw',
         'sourceTable', 'device_process_samples',
         'expectedSampleSeconds', ${expectedSampleSeconds}::integer,
-        'isGap', count(sv.metric_value) = 0
+        'isGap', series.sample_count = 0
       )
-    FROM bucket_grid bg
-    LEFT JOIN sample_values sv
-      ON sv.org_id = bg.org_id
-      AND sv.device_id = bg.device_id
-      AND sv.timestamp >= bg.bucket_start
-      AND sv.timestamp < bg.bucket_start + (interval '1 second' * ${RAW_BUCKET_SECONDS})
-    GROUP BY bg.org_id, bg.device_id, bg.bucket_start
+    FROM bucket_aggregates ba
+    CROSS JOIN LATERAL (VALUES
+        ${seriesRows}
+    ) AS series(metric_name, ${SERIES_VALUE_COLUMNS})
     ON CONFLICT (org_id, source_table, device_id, metric_type, metric_name, bucket_seconds, bucket_start)
     DO UPDATE SET ${upsertAssignments()}
   `);
@@ -589,16 +735,14 @@ async function runRollupDeviceMetricsRange(options: MetricRollupRange): Promise<
     };
   }
 
+  // #4341 — one statement per raw source table, not one per metric. Each of
+  // these derives every series for its table from a single scan of the window.
   let statements = 0;
-  for (const metric of DEVICE_METRIC_ROLLUP_SOURCES) {
-    await rollupRawDeviceMetric(options, metric);
-    statements += 1;
-  }
+  await rollupRawDeviceMetrics(options);
+  statements += 1;
 
-  for (const metric of PROCESS_SAMPLE_ROLLUP_SOURCES) {
-    await rollupRawProcessSampleMetric(options, metric);
-    statements += 1;
-  }
+  await rollupRawProcessSampleMetrics(options);
+  statements += 1;
 
   await rollupRawSnmpMetrics(options);
   statements += 1;

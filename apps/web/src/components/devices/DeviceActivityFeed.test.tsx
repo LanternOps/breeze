@@ -44,15 +44,16 @@ describe('DeviceActivityFeed', () => {
       {
         id: 'e1',
         action: 'agent.command.install_patches',
-        message: 'Patches installed — host-1',
-        result: 'success',
+        // #4225: dispatch-time row — dispatch-tense copy, neutral result.
+        message: 'Patch install command sent — host-1',
+        result: 'dispatched',
         initiatedBy: null,
         timestamp: new Date().toISOString(),
         actor: { type: 'system', name: 'System' },
       },
     ]);
     render(<DeviceActivityFeed deviceId="dev-1" />);
-    expect(await screen.findByText('Patches installed — host-1')).toBeInTheDocument();
+    expect(await screen.findByText('Patch install command sent — host-1')).toBeInTheDocument();
     expect(screen.getByText('Automated')).toBeInTheDocument();
     // The "Automated" chip conveys the actor; the generic "System" must not also show.
     expect(screen.queryByText('System')).toBeNull();
@@ -89,8 +90,9 @@ describe('DeviceActivityFeed', () => {
       {
         id: 'e1',
         action: 'agent.command.script',
-        message: 'Script ran',
-        result: 'success',
+        // #4225: dispatch-time row — dispatch-tense copy, neutral result.
+        message: 'Script run command sent',
+        result: 'dispatched',
         initiatedBy: null,
         timestamp: new Date().toISOString(),
         actor: { type: 'system', name: 'System' },

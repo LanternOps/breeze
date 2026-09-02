@@ -17,6 +17,7 @@ import { emitInvoiceEvent } from './invoiceEvents';
 import { enqueueInvoicePdfRender } from '../jobs/invoiceWorker';
 import { enqueueAccountingInvoicePush, enqueueAccountingInvoiceVoid } from '../jobs/accountingSyncWorker';
 import type { MappingSyncStatus } from './accounting/accountingMappingService';
+import { clearPaymentMappingForInvoicePayment } from './accounting/accountingPaymentPull';
 import { gatherOrgTimeEntries, gatherOrgParts, gatherTicketBillables, mergeAssembly, type AssemblyResult, type DraftLineSpec, type MissingRateSpec } from './invoiceAssembly';
 import { buildSellerSnapshot, buildBillToAddress } from './sellerSnapshot';
 import { InvoiceServiceError } from './invoiceTypes';
@@ -1484,9 +1485,14 @@ export async function voidPayment(paymentId: string, actor: InvoiceActor) {
       reference: pay.reference,
       recordedBy: pay.recordedBy,
     };
-    // Phase D (QBO payment pull-back): clear the 'payment' accounting_entity_mappings
-    // row for this invoice_payments id inline here — see orgMerge.runPostPassFixups'
-    // orphan-sweep comment.
+    // Clear the 'payment' accounting_entity_mappings row for this
+    // invoice_payments id FIRST, inside this same transaction. breeze_entity_id
+    // is polymorphic (no FK, so nothing cascades — see orgMerge.runPostPassFixups'
+    // orphan-sweep comment): deleting the payment row first would strand the
+    // mapping, and a later QuickBooks CDC delivery for that Payment would then
+    // read as "already applied" and silently skip re-recording it. Zero rows is
+    // the normal case (a manual or Stripe payment has no accounting mapping).
+    await clearPaymentMappingForInvoicePayment(tx, paymentId);
     await tx.delete(invoicePayments).where(eq(invoicePayments.id, paymentId));
     await recomputeInvoiceStatus(pay.invoiceId, tx);
     const inv = await getOwnedInvoiceOr404(pay.invoiceId, tx);
@@ -1511,7 +1517,30 @@ export async function listPayments(invoiceId: string, actor: InvoiceActor) {
     .from(invoiceStripePayments)
     .where(and(eq(invoiceStripePayments.invoiceId, invoiceId), eq(invoiceStripePayments.status, 'succeeded')));
   const stripeIds = new Set(linked.map((r) => r.invoicePaymentId).filter((x): x is string => !!x));
-  return rows.map((r) => ({ ...r, source: stripeIds.has(r.id) ? ('stripe' as const) : ('manual' as const) }));
+  // QuickBooks-sourced payments (Phase D pull-back) carry a 'payment' mapping row
+  // keyed on the invoice_payments id. Same purpose as the Stripe badge: the UI
+  // must not offer a hand-void on a row QuickBooks owns — voiding it here would
+  // just be re-pulled on the next CDC sweep. Partner-scoped for the same reason
+  // every other accounting_entity_mappings read is: RLS is stricter than the app
+  // layer, and this read must never depend on it alone.
+  const paymentIds = rows.map((r) => r.id);
+  const qboLinked = paymentIds.length === 0 ? [] : await db
+    .select({ breezeEntityId: accountingEntityMappings.breezeEntityId })
+    .from(accountingEntityMappings)
+    .where(and(
+      eq(accountingEntityMappings.partnerId, inv.partnerId),
+      eq(accountingEntityMappings.breezeEntityType, 'payment'),
+      inArray(accountingEntityMappings.breezeEntityId, paymentIds),
+    ));
+  const qboIds = new Set(qboLinked.map((r) => r.breezeEntityId));
+  // Stripe wins a (structurally impossible) double link: it is the badge that
+  // gates the destructive hand-void affordance.
+  return rows.map((r) => ({
+    ...r,
+    source: stripeIds.has(r.id)
+      ? ('stripe' as const)
+      : qboIds.has(r.id) ? ('quickbooks' as const) : ('manual' as const),
+  }));
 }
 
 // ---------------------------------------------------------------------------

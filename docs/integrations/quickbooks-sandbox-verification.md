@@ -332,6 +332,95 @@ committed to this repository.
     and capture the exact fault text Breeze surfaces.**
     Result: NOT TESTABLE in this realm (single-currency; every customer is USD, so no non-home `CurrencyRef` exists). Customer currency capture itself is verified: `remote_currency_code=USD` persisted on both org mappings. Re-run against a multi-currency realm.
 
+### Phase D checklist (payment pull-back)
+
+**Status: PENDING.** Not yet executed against a live Intuit sandbox company —
+these items require a tunnel (for the webhook) and cannot be run from the
+automated gate alone. Same rules as Sections 2/2a above: dedicated sandbox
+company, no credentials or realm IDs committed to this repository.
+
+Payment pull-back (Phase D, migration
+`apps/api/migrations/2026-10-01-quickbooks-payment-pullback.sql`): QBO-origin
+payments mirror into Breeze via the Intuit webhook (latency optimisation, one
+region only) and the 15-minute `accounting-reconcile` CDC sweep (the
+guaranteed path in every region).
+
+Intuit allows exactly **one webhook URL per app**, and the hosted contract
+uses one Intuit app for both regions, so only the US deployment ever receives
+webhook notifications — the EU deployment (and any self-hosted install with
+no public webhook URL) relies entirely on the 15-minute sweep, which reaches
+the same end state on its own. `POST /api/v1/webhooks/quickbooks` verifies
+every delivery against `QBO_WEBHOOK_VERIFIER_TOKEN` (HMAC over the raw body);
+with the token unset the route answers `503` on every request rather than
+`200`, so Intuit keeps retrying instead of an unconfigured region silently
+swallowing notifications. Setting up the tunnel for item 17 below requires
+`QBO_WEBHOOK_VERIFIER_TOKEN` to be present in the target environment's
+`.env` **and** mapped in that environment's compose `environment:` block —
+per this repo's rule for new required env vars (CLAUDE.md, "Required env
+vars" — a value sitting only in `.env` is not sufficient; compose
+interpolation only happens for vars listed in the service's `environment:`
+block).
+
+17. **Register the webhook URL through a tunnel and confirm Intuit's verifier
+    handshake**, then receive a PARTIAL payment against a pushed invoice in
+    QBO and confirm Breeze flips the invoice to `partially_paid` within
+    seconds with a "QuickBooks" badge on the payment row.
+    Result: PENDING.
+
+18. **Record the remaining balance in QBO** and confirm Breeze flips to
+    `paid` with `paid_at` stamped.
+    Result: PENDING.
+
+19. **Replay the same Intuit notification** (re-deliver from the Intuit
+    dashboard, or re-run "Sync now") and confirm NO duplicate payment row
+    appears and the run logs `replayed`.
+    Result: PENDING.
+
+20. **Delete the payment in QBO** and confirm Breeze deletes only that
+    payment row, recomputes the invoice, and writes an
+    `accounting.payment.reversed` audit entry — while a manually recorded
+    payment on the same invoice survives untouched.
+    Result: PENDING.
+
+21. **Disable the webhook and let the 15-minute sweep run with a stale
+    cursor** — confirm the same end state is reached with no webhook at all
+    (this is the guaranteed path in every region; only the US deployment
+    receives Intuit notifications).
+    Result: PENDING.
+
+22. **Record the observed CDC paging behaviour**: make more than 1000 payment
+    changes in one window if feasible, otherwise capture a normal response's
+    `QueryResponse` block verbatim (`startPosition`, `maxResults`,
+    `totalCount`) so decision 3's window-halving can be confirmed or replaced
+    with a real cursor.
+    Result: PENDING.
+
+23. **Toggle `pull_payments` off** and confirm the next sweep no-ops for that
+    connection (no QBO call at all), then toggle it back on and confirm the
+    backlog lands on the following run.
+    Result: PENDING.
+
+24. **Void an invoice in QBO** and confirm the Breeze invoice mapping flips
+    to `error` / "Deleted in QuickBooks" in the sync card and is never
+    auto-resurrected.
+    Result: PENDING.
+
+25. **Record a QBO payment against an invoice Breeze has voided** and confirm
+    the invoice mapping flips to `error` with the message "Payment received
+    in QuickBooks against a voided invoice", the void header's `amount_paid`
+    and `balance` are left untouched, and the run outcome is `invoice_void`
+    (not a retried failure).
+    Result: PENDING.
+
+26. **Trigger "Sync now" while Redis/BullMQ is unavailable (or the queue add
+    otherwise fails)** and confirm the route still answers HTTP 200 with
+    `{ enqueued: false }` rather than a silent success, and that the web UI
+    shows the warning toast "Payment sync could not be queued. Try again
+    shortly." rather than the success toast — this is the quiet-failure-UI
+    guard and is Playwright-worthy as its own regression test independent of
+    a live sandbox.
+    Result: PENDING.
+
 ### How to fill this in on the next run
 
 1. Copy the "Evidence header" and "Checklist" blocks above into a new
@@ -347,7 +436,8 @@ committed to this repository.
    committing).
 4. Migrations referenced by this feature:
    `apps/api/migrations/2026-09-28-quickbooks-entity-mappings.sql` (Phase B),
-   `apps/api/migrations/2026-09-30-quickbooks-invoice-push.sql` (Phase C).
+   `apps/api/migrations/2026-09-30-quickbooks-invoice-push.sql` (Phase C),
+   `apps/api/migrations/2026-10-01-quickbooks-payment-pullback.sql` (Phase D).
 
 ---
 

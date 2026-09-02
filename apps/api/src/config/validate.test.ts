@@ -2505,6 +2505,7 @@ describe('envSchema ↔ validateConfig parse-input contract (#2896)', () => {
     'QBO_CLIENT_SECRET',
     'QBO_REDIRECT_URI',
     'QBO_ENVIRONMENT',
+    'QBO_WEBHOOK_VERIFIER_TOKEN',
   ])('validates %s (regression: silently dropped before #2896)', (key) => {
     expect(ENV_SCHEMA_KEYS).toContain(key);
     expect(buildEnvParseInput({ [key]: 'sentinel' })[key]).toBe('sentinel');

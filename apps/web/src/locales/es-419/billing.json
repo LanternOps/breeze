@@ -557,7 +557,7 @@
       "addSection": {
         "captionPlaceholder": "Título (opcional)",
         "headingPlaceholder": "Texto del encabezado",
-        "imageHelp": "PNG, JPEG o WebP, hasta 5 MB.",
+        "imageHelp": "PNG o JPEG, hasta 5 MB.",
         "imageUrlPlaceholder": "https://example.com/photo.png",
         "insertHere": "Agregar sección",
         "richTextPlaceholder": "Texto de la propuesta…",
@@ -695,7 +695,8 @@
         "updateSection": "No se pudo actualizar la sección.",
         "uploadImage": "No se pudo cargar la imagen.",
         "noPriceForCurrency": "Este elemento no tiene precio en {{currency}}. Agregue uno en el catálogo o ingrese una línea manual.",
-        "sectionAddedListStale": "Se agregó la sección, pero no se pudo actualizar la lista. Vuelve a cargar la página para verla."
+        "sectionAddedListStale": "Se agregó la sección, pero no se pudo actualizar la lista. Vuelve a cargar la página para verla.",
+        "lineAddedListStale": "Se agregó la línea, pero no se pudo actualizar la lista. Vuelve a cargar la página para verla."
       },
       "image": {
         "alt": "Imagen de cotización",
@@ -875,7 +876,7 @@
         "preparedForPlaceholder": "Reemplazar el nombre del cliente",
         "showPreparedBy": "Mostrar “preparado por” (tu empresa)",
         "imageLabel": "Imagen de portada",
-        "imageHelp": "PNG, JPEG o WebP, hasta 5 MB.",
+        "imageHelp": "PNG o JPEG, hasta 5 MB.",
         "removeImage": "Quitar imagen"
       },
       "ghost": {
@@ -1622,6 +1623,8 @@
       "stripeNudge": "Conecte Stripe para aceptar pagos con tarjeta en línea.",
       "title": "Pagos",
       "viaStripe": "vía Stripe",
+      "quickbooks": "QuickBooks",
+      "viaQuickbooks": "vía QuickBooks",
       "currencyUnknown": "La moneda de liquidación de tu cuenta de Stripe aún no está en caché, así que no se pudo comparar con esta factura en {{documentCurrency}}. Actualiza los datos de tu cuenta de Stripe en Configuración → Integraciones para habilitar la verificación."
     },
     "requestPayment": {
