@@ -58,6 +58,7 @@ import {
   Puzzle,
   LayoutGrid,
   Cpu,
+  TrendingUp,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useUiStore } from '../../stores/uiStore';
@@ -212,6 +213,9 @@ export const navSections: NavSection[] = [
       // /ai-agents/runs (not /settings/*) since a run is fleet activity, not
       // agent configuration.
       { name: 'AI Agent Runs', labelKey: 'nav.aiAgentRuns', href: '/ai-agents/runs', icon: History, requiredPermission: { resource: 'ai_agents', action: 'read' } },
+      // Fleet value accounting (Phase 2 wave P2-6, #4193) — the estimated
+      // time-saved report over the same runs, so it sits beside them.
+      { name: 'AI Impact', labelKey: 'nav.aiImpact', href: '/ai-agents/impact', icon: TrendingUp, requiredPermission: { resource: 'ai_agents', action: 'read' } },
       { name: 'AI Usage & Budget', labelKey: 'nav.aiUsageBudget', href: '/settings/ai-usage', icon: BrainCircuit, partnerScopeOnly: true },
       { name: 'AI for Office', labelKey: 'nav.aiForOffice', href: '/ai-for-office', icon: FileSpreadsheet, partnerScopeOnly: true, requiresAiForOffice: true },
     ],

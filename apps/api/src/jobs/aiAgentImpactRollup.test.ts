@@ -146,10 +146,26 @@ describe('aiAgentImpactRollup', () => {
   });
 
   describe('buildImpactRollupJobId', () => {
-    it('is deterministic and colon-delimited', () => {
+    it('is deterministic and hyphen-delimited', () => {
       expect(buildImpactRollupJobId(ORG_A, '2026-06-11', '2026-06-17')).toBe(
-        `impact:${ORG_A}:2026-06-11:2026-06-17`,
+        `impact-${ORG_A}-2026-06-11-2026-06-17`,
       );
+    });
+
+    // BullMQ REJECTS a custom job id whose colon count is anything other than
+    // exactly two (`Job.addJob`: `jobId.includes(':') && jobId.split(':').length !== 3`
+    // throws `Custom Id cannot contain :`). Every enqueue in this module passes
+    // this string as `opts.jobId`, so a violation is not cosmetic: it throws
+    // inside `Queue.add`/`addBulk` and takes down BOTH the manual
+    // `POST /ai/agents/impact/rebuild` (500) and the nightly scan fan-out,
+    // leaving `ai_agent_impact_daily` permanently empty. The unit suite mocks
+    // BullMQ, so only this assertion — a transcription of BullMQ's own guard —
+    // stands between that and production.
+    it('produces a job id BullMQ accepts as a custom id', () => {
+      const id = buildImpactRollupJobId(ORG_A, '2026-06-11', '2026-06-17');
+
+      expect(id.includes(':') && id.split(':').length !== 3).toBe(false);
+      expect(`${Number.parseInt(id, 10)}`).not.toBe(id); // "Custom Id cannot be integers"
     });
   });
 
