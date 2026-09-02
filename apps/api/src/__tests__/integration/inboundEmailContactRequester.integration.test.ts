@@ -575,6 +575,19 @@ describe('2026-10-04-100000-ticket-requester-contact.sql', () => {
       await admin().execute(sql.raw(readFileSync(PORTAL_USER_FK_MIGRATION_FILE, 'utf8')));
     }
 
+    // Assert the restore landed HERE, at its source. Leaving portal_users
+    // unconstrained would blame whichever suite in this shard next touches
+    // contact_id — and a replay of 2026-08-19-contacts.sql (whose FK guard is
+    // name-only) would quietly resurrect the superseded single-column FK too.
+    const restored = (await admin().execute(sql`
+      SELECT conname FROM pg_constraint
+       WHERE contype = 'f'
+         AND conrelid = 'portal_users'::regclass
+         AND confrelid = 'contacts'::regclass
+       ORDER BY conname
+    `)) as unknown as Array<{ conname: string }>;
+    expect(restored.map((r) => r.conname)).toEqual(['portal_users_contact_org_fk']);
+
     const [row] = await admin()
       .select({ requesterContactId: tickets.requesterContactId })
       .from(tickets)

@@ -24,11 +24,19 @@
 -- unrepresentable rather than merely validated. Two non-obvious clauses:
 --   * `ON DELETE SET NULL (contact_id)` — the COLUMN LIST form (PG 15+). A
 --     bare composite SET NULL would also null `org_id`, which is NOT NULL, so
---     deleting a contact would fail instead of unlinking the login. Preserving
---     "deleting a contact never destroys someone's portal login" is the whole
---     reason the original FK was ON DELETE SET NULL, and org erasure
---     (tenantCascade deletes `contacts` before `portal_users`, alphabetically)
---     depends on it too.
+--     deleting a contact would fail instead of unlinking the login.
+--     Preserving "deleting a contact never destroys someone's portal login" is
+--     the whole reason the original FK was ON DELETE SET NULL, and the path
+--     that exercises it is the INTERACTIVE one: `deleteContact` on a contact
+--     that some login is bound to.
+--
+--     It is NOT org erasure. `cascadeDeleteOrg` orders its DELETEs with
+--     `topologicalCascadeOrder()`, whose pg_constraint read counts every FK
+--     edge regardless of `confdeltype` — so this very constraint makes
+--     `portal_users` a CHILD of `contacts` and it is deleted FIRST. The
+--     referential action never fires during an erasure. (Which is also why
+--     adding this FK cannot reorder an erasure into an FK violation: it moves
+--     `portal_users` earlier, never later.)
 --   * `DEFERRABLE INITIALLY IMMEDIATE` — required of every composite FK whose
 --     referenced side includes an `org_id` column by
 --     orgLifecycleFoundations.integration.test.ts. Org merge runs
@@ -78,20 +86,36 @@ BEGIN
   RAISE WARNING 'cleaned % cross-org portal_users.contact_id link(s)', n;
 END $$;
 
--- Drop the plain single-column FK. The name is the one 2026-08-19-contacts.sql
--- declared explicitly (`portal_users_contact_fk`), not a Drizzle-generated
--- `portal_users_contact_id_contacts_id_fk` — the column was added by
--- hand-written SQL, and `db:check-drift` never generated a migration for it.
--- Guarded so a re-apply is a no-op rather than an error.
+-- Drop the superseded single-column FK, by SHAPE rather than by name.
+--
+-- On a database migrated from this repo the name is the one
+-- 2026-08-19-contacts.sql declared explicitly (`portal_users_contact_fk`), but
+-- a developer database built with `drizzle-kit push` carries the generated
+-- alias `portal_users_contact_id_contacts_id_fk` instead, and a hand-repaired
+-- one could carry anything. Matching on "single-column FK from portal_users to
+-- contacts" converges all of them, and cannot touch the composite added below
+-- (cardinality 2) or the org_id FK (a different `confrelid`).
+--
+-- Leaving one behind would not re-open the cross-org hole — Postgres evaluates
+-- FK constraints conjunctively, so a surviving single-column FK is redundant
+-- rather than permissive — but it WOULD leave two SET NULL actions racing on
+-- one column and a second, unnecessary lock on `contacts`. The suite asserts
+-- exactly one FK from portal_users to contacts survives.
 DO $$
+DECLARE
+  fk record;
 BEGIN
-  IF EXISTS (
-    SELECT 1 FROM pg_constraint
-     WHERE conname = 'portal_users_contact_fk'
+  FOR fk IN
+    SELECT conname
+      FROM pg_constraint
+     WHERE contype = 'f'
        AND conrelid = 'portal_users'::regclass
-  ) THEN
-    ALTER TABLE portal_users DROP CONSTRAINT portal_users_contact_fk;
-  END IF;
+       AND confrelid = 'contacts'::regclass
+       AND cardinality(conkey) = 1
+  LOOP
+    EXECUTE format('ALTER TABLE portal_users DROP CONSTRAINT %I', fk.conname);
+    RAISE WARNING 'dropped superseded single-column FK portal_users.% -> contacts', fk.conname;
+  END LOOP;
 END $$;
 
 DO $$
