@@ -78,6 +78,19 @@ export const tickets = pgTable('tickets', {
   orgId: uuid('org_id').notNull().references(() => organizations.id),
   ticketNumber: varchar('ticket_number', { length: 50 }).notNull().unique(),
   submittedBy: uuid('submitted_by').references(() => portalUsers.id),
+  // #3258 W03: the canonical PERSON on the ticket. `submitted_by` stays the
+  // OPTIONAL portal LOGIN — an inbound email now creates a contact and no
+  // portal_users row at all, so it is this column, not submitted_by, that
+  // every person-backed ticket carries.
+  //
+  // Declared as a plain nullable uuid on purpose: the real constraint is the
+  // COMPOSITE same-org FK `tickets_requester_contact_org_fk`
+  // (requester_contact_id, org_id) -> contacts (id, org_id), DEFERRABLE
+  // INITIALLY IMMEDIATE with a column-list `ON DELETE SET NULL
+  // (requester_contact_id)` so deleting a contact never nulls the NOT NULL
+  // org_id. That lives in SQL only (2026-10-02-100001-ticket-requester-contact.sql)
+  // — same "SQL migration only" convention as this table's categoryId/statusId.
+  requesterContactId: uuid('requester_contact_id'),
   submitterEmail: varchar('submitter_email', { length: 255 }),
   submitterName: varchar('submitter_name', { length: 255 }),
   subject: varchar('subject', { length: 255 }).notNull(),

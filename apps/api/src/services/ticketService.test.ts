@@ -193,6 +193,7 @@ vi.mock('../db/schema', () => ({
     updatedAt: 'updatedAt',
     createdAt: 'createdAt',
     submitterEmail: 'submitterEmail',
+    requesterContactId: 'requesterContactId',
     deletedAt: 'deletedAt'
   },
   ticketComments: {},
@@ -212,7 +213,8 @@ vi.mock('../db/schema', () => ({
   devices: { id: 'id', orgId: 'orgId' },
   users: { id: 'id', partnerId: 'partnerId' },
   ticketCategories: { id: 'id', partnerId: 'partnerId', responseSlaMinutes: 'responseSlaMinutes', resolutionSlaMinutes: 'resolutionSlaMinutes' },
-  portalUsers: { id: 'id', orgId: 'orgId', name: 'name', email: 'email', status: 'status' },
+  portalUsers: { id: 'id', orgId: 'orgId', name: 'name', email: 'email', status: 'status', contactId: 'contactId' },
+  contacts: { id: 'id', orgId: 'orgId', name: 'name', email: 'email' },
   ticketStatusEnum: { enumValues: ['new', 'open', 'pending', 'on_hold', 'resolved', 'closed'] },
   ticketSourceEnum: { enumValues: ['portal', 'email', 'alert', 'manual', 'api', 'ai'] }
 }));
@@ -437,6 +439,132 @@ describe('createTicket', () => {
     expect(err).toBeInstanceOf(TicketServiceError);
     expect(err.status).toBe(404);
     expect(valuesMock).not.toHaveBeenCalled();
+  });
+
+  // ---- #3258 W03: requester_contact_id is the canonical PERSON on a ticket ----
+  // submitted_by stays the optional portal LOGIN; the contact link is what a
+  // person-backed ticket always carries (inbound email now has no portal user
+  // at all). Same-org enforcement mirrors assertRequesterInOrg exactly.
+
+  it('stamps requesterContactId when the caller names a same-org contact', async () => {
+    // selects in order: org, contact
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 'o-1', partnerId: 'p-1' }])
+      .mockResolvedValueOnce([{ id: 'ct-1', orgId: 'o-1', name: 'Jane Doe', email: 'jane@acme.test' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 't-c1', orgId: 'o-1', internalNumber: 'T-2026-0042', status: 'new' }]);
+
+    await createTicket({ orgId: 'o-1', subject: 'Crash', source: 'manual', requesterContactId: 'ct-1' }, actor);
+
+    expect(valuesMock.mock.calls[0]![0]).toMatchObject({ requesterContactId: 'ct-1', submittedBy: null });
+  });
+
+  it('backfills submitterName/email from the contact when no portal user is named', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 'o-1', partnerId: 'p-1' }])
+      .mockResolvedValueOnce([{ id: 'ct-1', orgId: 'o-1', name: 'Jane Doe', email: 'jane@acme.test' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 't-c2', orgId: 'o-1', internalNumber: 'T-2026-0042', status: 'new' }]);
+
+    await createTicket({ orgId: 'o-1', subject: 'Crash', source: 'manual', requesterContactId: 'ct-1' }, actor);
+
+    // NOT the acting staff member's name — a contact-backed ticket has a real requester.
+    expect(valuesMock.mock.calls[0]![0]).toMatchObject({
+      requesterContactId: 'ct-1',
+      submitterName: 'Jane Doe',
+      submitterEmail: 'jane@acme.test',
+    });
+  });
+
+  it('rejects a requesterContactId from a different org (cross-tenant) and writes nothing', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 'o-1', partnerId: 'p-1' }])
+      .mockResolvedValueOnce([{ id: 'ct-x', orgId: 'o-OTHER', name: 'Intruder', email: 'x@evil.com' }]);
+
+    const err = await createTicket(
+      { orgId: 'o-1', subject: 'Crash', source: 'manual', requesterContactId: 'ct-x' }, actor
+    ).catch((e) => e);
+
+    expect(err).toBeInstanceOf(TicketServiceError);
+    expect(err.status).toBe(400);
+    expect(err.code).toBe('REQUESTER_CONTACT_WRONG_ORG');
+    expect(allocateMock).not.toHaveBeenCalled();
+    expect(valuesMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects an unknown requesterContactId with a 404', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 'o-1', partnerId: 'p-1' }])
+      .mockResolvedValueOnce([]);
+
+    const err = await createTicket(
+      { orgId: 'o-1', subject: 'Crash', source: 'manual', requesterContactId: 'ct-missing' }, actor
+    ).catch((e) => e);
+
+    expect(err).toBeInstanceOf(TicketServiceError);
+    expect(err.status).toBe(404);
+    expect(err.code).toBe('REQUESTER_CONTACT_NOT_FOUND');
+    expect(valuesMock).not.toHaveBeenCalled();
+  });
+
+  it('derives requesterContactId from the portal user contact_id when the caller names no contact', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 'o-1', partnerId: 'p-1' }])
+      .mockResolvedValueOnce([{ id: 'pu-1', orgId: 'o-1', name: 'Jane Doe', email: 'jane@example.com', contactId: 'ct-77' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 't-c3', orgId: 'o-1', internalNumber: 'T-2026-0042', status: 'new' }]);
+
+    await createTicket({ orgId: 'o-1', subject: 'Crash', source: 'manual', submittedBy: 'pu-1' }, actor);
+
+    expect(valuesMock.mock.calls[0]![0]).toMatchObject({ submittedBy: 'pu-1', requesterContactId: 'ct-77' });
+  });
+
+  it('leaves requesterContactId null when the portal user is not linked to a contact', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 'o-1', partnerId: 'p-1' }])
+      .mockResolvedValueOnce([{ id: 'pu-1', orgId: 'o-1', name: 'Jane Doe', email: 'jane@example.com', contactId: null }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 't-c4', orgId: 'o-1', internalNumber: 'T-2026-0042', status: 'new' }]);
+
+    await createTicket({ orgId: 'o-1', subject: 'Crash', source: 'manual', submittedBy: 'pu-1' }, actor);
+
+    expect(valuesMock.mock.calls[0]![0]).toMatchObject({ submittedBy: 'pu-1', requesterContactId: null });
+  });
+
+  it('portal-source ticket derives requesterContactId from the submitting portal login', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 'o-1', partnerId: 'p-1' }])
+      .mockResolvedValueOnce([{ id: 'pu-42', orgId: 'o-1', name: 'Alice', email: 'alice@example.com', contactId: 'ct-42' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 't-c5', orgId: 'o-1', internalNumber: 'T-2026-0044', status: 'new' }]);
+
+    await createTicket({
+      orgId: 'o-1',
+      subject: 'Keyboard broken',
+      source: 'portal',
+      submittedBy: 'pu-42',
+      submitterEmail: 'alice@example.com',
+      submitterName: 'Alice',
+    }, actor);
+
+    expect(valuesMock.mock.calls[0]![0]).toMatchObject({ submittedBy: 'pu-42', requesterContactId: 'ct-42' });
+  });
+
+  it('email-source ticket with a contact requester and no portal login stamps only the contact', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 'o-1', partnerId: 'p-1' }])
+      .mockResolvedValueOnce([{ id: 'ct-9', orgId: 'o-1', name: 'Bob', email: 'bob@acme.test' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 't-c6', orgId: 'o-1', internalNumber: 'T-2026-0045', status: 'new' }]);
+
+    await createTicket({
+      orgId: 'o-1',
+      subject: 'Printer jam',
+      source: 'email',
+      submitterEmail: 'bob@acme.test',
+      submitterName: 'Bob',
+      requesterContactId: 'ct-9',
+    }, actor);
+
+    expect(valuesMock.mock.calls[0]![0]).toMatchObject({
+      submittedBy: null,
+      requesterContactId: 'ct-9',
+      submitterEmail: 'bob@acme.test',
+    });
   });
 
   it('non-portal ticket sets both submitter fields to null when actor has no name/email', async () => {
@@ -1878,6 +2006,59 @@ describe('updateTicketFields', () => {
       submitterEmail: null
     });
     expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({ content: 'Updated requester' }));
+  });
+
+  // ---- #3258 W03: requester_contact_id coherence on the requester PATCH ----
+
+  it('re-derives requesterContactId from the new portal user on a requester edit', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ ...BASE_TICKET, submittedBy: null, requesterContactId: 'ct-old' }])
+      .mockResolvedValueOnce([{ id: 'pu-1', orgId: 'o-1', name: 'Jane Doe', email: 'jane@example.com', contactId: 'ct-new' }]);
+    dbMocks.updateReturning.mockResolvedValue([{ ...BASE_TICKET, submittedBy: 'pu-1' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    await updateTicketFields('t-1', { submittedBy: 'pu-1' }, actor);
+
+    expect(setMock.mock.calls[0]![0]).toMatchObject({ submittedBy: 'pu-1', requesterContactId: 'ct-new' });
+  });
+
+  it('clears requesterContactId when the requester is cleared to free text', async () => {
+    dbMocks.selectResult.mockResolvedValue([
+      { ...BASE_TICKET, submittedBy: 'pu-1', submitterName: 'Jane', submitterEmail: 'jane@example.com', requesterContactId: 'ct-1' },
+    ]);
+    dbMocks.updateReturning.mockResolvedValue([{ ...BASE_TICKET, submittedBy: null }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    await updateTicketFields('t-1', { submittedBy: null, submitterName: 'Walk-in', submitterEmail: null }, actor);
+
+    expect(setMock.mock.calls[0]![0]).toMatchObject({ submittedBy: null, requesterContactId: null });
+  });
+
+  it('clears requesterContactId when only a manual submitterName is set', async () => {
+    dbMocks.selectResult.mockResolvedValue([
+      { ...BASE_TICKET, submittedBy: null, submitterName: 'Jane', submitterEmail: 'jane@acme.test', requesterContactId: 'ct-1' },
+    ]);
+    dbMocks.updateReturning.mockResolvedValue([{ ...BASE_TICKET, submitterName: 'Walk-in' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    await updateTicketFields('t-1', { submitterName: 'Walk-in' }, actor);
+
+    expect(setMock.mock.calls[0]![0]).toMatchObject({ requesterContactId: null });
+  });
+
+  it('writes the update when ONLY the contact link changes (requester still counts as changed)', async () => {
+    // Same portal user, but the ticket carried no contact link yet: the
+    // re-derivation is the only difference, and it must still be persisted.
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ ...BASE_TICKET, submittedBy: 'pu-1', submitterName: 'Jane Doe', submitterEmail: 'jane@example.com', requesterContactId: null }])
+      .mockResolvedValueOnce([{ id: 'pu-1', orgId: 'o-1', name: 'Jane Doe', email: 'jane@example.com', contactId: 'ct-5' }]);
+    dbMocks.updateReturning.mockResolvedValue([{ ...BASE_TICKET }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    await updateTicketFields('t-1', { submittedBy: 'pu-1' }, actor);
+
+    expect(setMock).toHaveBeenCalled();
+    expect(setMock.mock.calls[0]![0]).toMatchObject({ requesterContactId: 'ct-5' });
   });
 
   it('rejects a requester portal user from another org on update and writes nothing', async () => {
