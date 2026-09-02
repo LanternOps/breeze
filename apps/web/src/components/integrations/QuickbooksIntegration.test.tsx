@@ -428,6 +428,9 @@ describe("QuickbooksIntegration — payment pull-back (Phase D)", () => {
     expect(screen.queryByTestId("quickbooks-pullpayments")).toBeNull();
     expect(screen.queryByTestId("quickbooks-pushmode")).toBeNull();
     expect(screen.queryByTestId("quickbooks-pushmode-manual")).toBeNull();
+    // The route 403s without invoices:write (finding: "Sync now" was gated
+    // server-side but not hidden client-side like the two switches above).
+    expect(screen.queryByTestId("quickbooks-reconcile-now")).toBeNull();
   });
 
   it("shows both controls again when invoices:write is granted", async () => {
@@ -439,6 +442,7 @@ describe("QuickbooksIntegration — payment pull-back (Phase D)", () => {
 
     expect(await screen.findByTestId("quickbooks-pullpayments")).toBeTruthy();
     expect(screen.getByTestId("quickbooks-pushmode")).toBeTruthy();
+    expect(screen.getByTestId("quickbooks-reconcile-now")).toBeTruthy();
   });
 
   it("renders none of the pull-back controls for an org-scoped user", async () => {

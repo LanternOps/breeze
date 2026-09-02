@@ -591,6 +591,7 @@ export default function QuickbooksIntegration() {
           )}
 
           <div className="flex items-center gap-3 border-t pt-4">
+            {canWriteInvoices && (
             <button
               type="button"
               onClick={() => void handleReconcileNow()}
@@ -605,6 +606,7 @@ export default function QuickbooksIntegration() {
               )}
               {t("quickbooksIntegration.syncNow")}
             </button>
+            )}
             <p
               className="text-xs text-muted-foreground"
               data-testid="quickbooks-last-reconcile"
