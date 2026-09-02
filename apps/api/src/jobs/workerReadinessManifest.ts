@@ -163,6 +163,14 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('aiUnattendedExposureRetention'),
   consumers('alertVerdictScheduler'),
   consumers('aiAgentSweepScheduler'),
+  // Task 8 merge-forward (origin/main fcd5b498a): three more `global` registry
+  // entries, each constructing one Worker and attaching unconditionally (no
+  // flag gate before the attach — aiAgentImpactRollup reads
+  // BREEZE_AI_AGENTS_ENABLED inside its job processor, not before construction).
+  // aiAgentImpactRollup attaches under a name that differs from its registry key.
+  consumers('accountingSyncWorker'),
+  consumers('aiAgentImpactRollup', ['aiAgentImpactRollupWorker']),
+  consumers('aiAgentGraduation'),
   // Started outside WORKER_REGISTRY, role-gated in index.ts / worker.ts.
   // D3a: the dispatch consumer is constructed only when EVENT_DISPATCH_MODE is
   // on (or an off-mode backlog remains — that drain then attaches as
