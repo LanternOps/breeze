@@ -116,11 +116,19 @@ describe('partner service principal scope allowlist parity with SQL', () => {
     return last;
   }
 
-  /** The `candidate_scopes <@ ARRAY[...]::text[]` allowlist, as a set. */
+  /**
+   * The `candidate_scopes <@ ARRAY[...]::text[]` allowlist, as a set.
+   *
+   * The capture groups are narrowed rather than asserted with `!`. Under
+   * `noUncheckedIndexedAccess` an unguarded `match[1]` is a type error, and
+   * silencing it would also silence the one case that matters: a regex that
+   * still matches after the SQL is reformatted but captures nothing, which
+   * would leave the parity assertions below comparing two empty lists.
+   */
   function sqlAllowlist(sql: string): string[] {
-    const match = /<@\s*ARRAY\[([\s\S]*?)\]::text\[\]/u.exec(sql);
-    if (!match) throw new Error('Could not locate the ARRAY[...] scope allowlist in the migration');
-    return [...match[1].matchAll(/'([^']+)'/gu)].map((m) => m[1]);
+    const body = /<@\s*ARRAY\[([\s\S]*?)\]::text\[\]/u.exec(sql)?.[1];
+    if (!body) throw new Error('Could not locate the ARRAY[...] scope allowlist in the migration');
+    return [...body.matchAll(/'([^']+)'/gu)].flatMap((m) => (m[1] === undefined ? [] : [m[1]]));
   }
 
   it('enumerates exactly PARTNER_SERVICE_PRINCIPAL_SCOPES', () => {
