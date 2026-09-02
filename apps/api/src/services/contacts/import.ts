@@ -25,6 +25,12 @@
  * snapshot is refused as `org-not-found`, the same annotation an unknown name
  * gets, so the response is never an existence oracle. Name resolution is
  * bounded to the same snapshot.
+ *
+ * The SITE axis is bounded the same way, and needs it even more: RLS never
+ * covered sites on any path, system context or not. `ctx.allowedSiteIds`
+ * refuses a row pinned to an unreachable site (as a `conflict`, since the ORG
+ * axis is fine) and keeps contacts living in unreachable sites out of the
+ * match maps entirely, so they are never matched and never echoed back.
  */
 
 import { and, eq, inArray, isNull } from 'drizzle-orm';
@@ -176,6 +182,15 @@ function siteReachOf(ctx: ContactImportContext): SiteReach {
  * sites/contacts/links of only the organizations these rows actually name. A
  * 1000-row batch can reference at most 1000 organizations, so the second phase
  * stays bounded instead of dragging in every contact the partner owns.
+ *
+ * Bounded per ORGANIZATION, not per contact: the second phase loads EVERY
+ * contact, site and link of each referenced organization, so its cost is
+ * (organizations named by the batch) x (that organization's contacts) rather
+ * than (rows). Accepted at the 1000-row cap the routes enforce — a batch can
+ * name at most 1000 organizations, and an organization's contact list is
+ * people-sized. If contacts-per-org ever stops being people-sized, or the cap
+ * is raised, narrow this to the emails/names/external ids the batch actually
+ * mentions rather than the whole organization.
  */
 async function loadSnapshot(rows: ContactImportRow[], ctx: ContactImportContext): Promise<Snapshot> {
   const snapshot: Snapshot = {
@@ -633,7 +648,8 @@ export function writeFailureMessage(err: unknown): string {
 
 /**
  * The patch a matched row applies. Only fields the row actually carries, so an
- * absent CSV column never clears stored data.
+ * absent CSV column never clears stored data — see the merge-semantics ruling
+ * in ./types.ts for why a blank cell is "no data" and never "clear this".
  *
  * `siteId` is included ONLY when the row named a site: an absent `site` means
  * "not specified" and must leave the contact where it is, never move it to org

@@ -667,32 +667,33 @@ describe('POST /contacts/import', () => {
     expect(importMocks.commitContactImport).not.toHaveBeenCalled();
   });
 
-  it('an org-scoped token importing rows for ANOTHER org gets org-not-found and writes nothing', async () => {
-    // The route hands the service the caller's single-org allowlist; the
-    // service refuses every row outside it. Asserted end to end: the context
-    // the route builds is what bounds the write.
-    setAuth({ scope: 'organization', orgId: ORG, accessibleOrgIds: [ORG] });
-    importMocks.commitContactImport.mockImplementation(async (rows: any, ctx: any) => {
-      const reach: string[] | null = ctx.accessibleOrgIds;
-      const errors = rows
-        .map((row: any, index: number) => ({ row, index }))
-        .filter(({ row }: any) => reach !== null && !reach.includes(row.organizationId))
-        .map(({ index }: any) => ({ index, error: 'No such organization under this partner', code: 'org-not-found' }));
-      return { imported: [], updated: [], skipped: [], errors };
+  it('hands the service the caller reach verbatim, for an org-scoped token', async () => {
+    // What the ROUTE owns is the context it builds; the filtering itself is the
+    // service's, and is covered against a mocked driver in
+    // services/contacts/import.test.ts and against a real one in
+    // contactImport.integration.test.ts. A route test that re-implements the
+    // filter inside its own mock proves nothing: deleting the production filter
+    // would leave it green.
+    setAuth({
+      scope: 'organization', orgId: ORG, accessibleOrgIds: [ORG],
+      allowedSiteIds: [SITE], canAccessSite: (id) => id === SITE,
     });
+    importMocks.commitContactImport.mockResolvedValue({ imported: [], updated: [], skipped: [], errors: [] });
 
-    const res = await makeApp().request('/contacts/import', json({
+    await makeApp().request('/contacts/import', json({
       rows: [{ organizationId: OTHER_ORG, name: 'Mallory' }, { organizationId: ORG, name: 'Jane' }],
     }));
 
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body.errors).toEqual([
-      { index: 0, error: 'No such organization under this partner', code: 'org-not-found' },
+    // Both bounds travel, unmodified: the route neither widens nor pre-filters.
+    expect(importMocks.commitContactImport.mock.calls[0]![1]).toEqual({
+      partnerId: PARTNER, accessibleOrgIds: [ORG], allowedSiteIds: [SITE],
+    });
+    // And the rows are passed through untouched, so the service sees the
+    // cross-org row and is the one that refuses it.
+    expect(importMocks.commitContactImport.mock.calls[0]![0]).toEqual([
+      { organizationId: OTHER_ORG, name: 'Mallory' },
+      { organizationId: ORG, name: 'Jane' },
     ]);
-    expect(body.imported).toEqual([]);
-    // Nothing was created or updated, so nothing is audited.
-    expect(auditSpy).not.toHaveBeenCalled();
   });
 
   it('403s a partner caller asking to import into a different partner', async () => {

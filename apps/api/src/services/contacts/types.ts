@@ -8,6 +8,31 @@
  * The dedicated contact importer exists for the many-contacts-per-org case the
  * ORG importer cannot express — its single `contact` field per row can only
  * ever carry the headline contact.
+ *
+ * ── Merge semantics: an empty cell means "no data", never "clear this" ──────
+ * RULING (review round 2, no behaviour change): the importer MERGES. A field a
+ * row does not carry — an absent CSV column, or a column present but blank —
+ * leaves the stored value alone, and `roles` is likewise only ever replaced
+ * when the row supplies a non-empty list. There is deliberately no way to CLEAR
+ * a field through an import.
+ *
+ * The reason is that a CSV cannot distinguish the two intents: a blank cell is
+ * overwhelmingly an exporter that had nothing to put there, not an operator
+ * asking to erase a phone number. Reading blanks as clears would let one
+ * partial export from a PSA silently wipe contact details across a whole
+ * tenant, and there is no undo. Clearing a field is a deliberate act and lives
+ * on `PATCH /contacts/:contactId`, which CAN say it: an explicit `null` there
+ * is a real clear, and an omitted key is not.
+ *
+ * ── A malformed row fails the whole batch ───────────────────────────────────
+ * Row shape is validated by Zod at the route (`contactImportRowSchema` /
+ * `commitContactImportRowSchema`), which rejects the entire request when ANY
+ * row fails — a wholly blank row included, since it satisfies no identifier.
+ * That mirrors the org importer, and it is the honest answer for a
+ * wire-contract violation: the per-row error buckets below report rows that
+ * were well-formed but could not be RESOLVED, which is a different thing from
+ * a request the server could not parse. Clients that append trailing blank
+ * lines (every spreadsheet export does) must filter them before upload.
  */
 
 /** Same cap as the org importer, applied by the routes to the rows array. */
