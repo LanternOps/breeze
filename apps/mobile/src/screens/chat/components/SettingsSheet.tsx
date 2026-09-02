@@ -262,11 +262,23 @@ export function SettingsSheet({ visible, onCancel }: Props) {
             // We track the user-intent click, not the actual server-side
             // deletion request (that happens on the web flow).
             track('account_deletion_requested');
-            // The deletion page is served on the server the user selected at
-            // sign-in (e.g. https://us.2breeze.app/account/delete), not a
-            // hardcoded marketing domain. Resolve it at tap time.
-            const url = await getAccountDeletionUrl(FALLBACK_API_BASE_URL);
-            await safeOpen(url);
+            try {
+              // The deletion page is served on the server the user selected
+              // at sign-in (e.g. https://us.2breeze.app/account/delete), not
+              // a hardcoded marketing domain. Resolve it at tap time.
+              //
+              // getAccountDeletionUrl throws ServerUrlReadError when the
+              // stored server can't be read (rather than opening the wrong
+              // tenant's deletion page) — surface that instead of letting the
+              // promise reject silently.
+              const url = await getAccountDeletionUrl(FALLBACK_API_BASE_URL);
+              await safeOpen(url);
+            } catch {
+              setToast({
+                kind: 'error',
+                text: 'Could not open the deletion page. Please try again.',
+              });
+            }
           },
         },
       ],
@@ -410,6 +422,9 @@ function SheetBody({
           paddingTop: insetTop + spacing[6],
           paddingBottom: spacing[8],
         }}
+        // The bar itself is drawn over by the cap below, so keep the scroll
+        // indicator out from under it rather than letting it run to y=0.
+        scrollIndicatorInsets={{ top: insetTop }}
       >
         <View
           style={{
@@ -551,6 +566,24 @@ function SheetBody({
           {buildVersion}
         </Text>
       </View>
+
+      {/* `insetTop` only positions the RESTING layout — it does nothing once the
+          list is scrolled, and the avatar, account name and email then ride up
+          into the status bar and collide with the clock and the Dynamic Island.
+          An opaque cap in the sheet's own surface colour, painted last so it
+          sits above the list, gives that strip something to disappear behind.
+          Not pressable: taps in the status-bar strip belong to the OS. */}
+      <View
+        pointerEvents="none"
+        style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          right: 0,
+          height: insetTop,
+          backgroundColor: theme.bg1,
+        }}
+      />
     </View>
   );
 }

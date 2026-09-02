@@ -772,28 +772,35 @@ export async function loadBuiltinExtensions(args: LoadBuiltinExtensionsArgs): Pr
 
       // Seed the persisted row from the manifest's facts. A built-in has no
       // artifact digest or publisher: it is delivered by the core image itself.
-      const existing = await stateStore.get(name);
+      // `activeVersion` is deliberately NOT included here: this observation
+      // runs before registry.activate() below, and writing it here would let a
+      // mid-pipeline activation failure leave the row claiming an active
+      // version that never actually activated. `recordActive`, called only
+      // after activate() succeeds, is the sole writer of `active_version`.
       await stateStore.upsertObserved({
         name,
         configuredVersion: manifest.version,
-        activeVersion: manifest.version,
         manifestApiVersion: manifest.apiVersion,
         serverSdkVersion: manifest.requires.serverSdk,
         webSdkVersion: manifest.requires.webSdk ?? null,
       });
-      // FIRST boot only: default the runtime flag to enabled. On every later
-      // boot the persisted flag is authoritative, so an operator's disable
-      // survives restarts and deploys.
-      if (existing === null) await stateStore.setEnabled(name, true);
 
       // Activation reads the durable flag, so the enabled gate and the
       // platform-admin enable/disable surface behave identically for a
-      // built-in.
+      // built-in. No explicit first-boot `setEnabled(true)` is needed: on
+      // INSERT, `upsertObserved` relies on the `enabled` column's
+      // `default(true)` (db/schema/extensions.ts), and on UPDATE it never
+      // touches `enabled` — so a fresh row is already enabled, and an
+      // existing row's persisted flag (including an operator's disable)
+      // survives restarts and deploys untouched.
       registry.activate({ ...staged, enabled: await stateStore.isEnabled(name) });
       if (staged.routeApp && manifest.agentRoutes === true) {
         ports.registerRateLimitSkip(`/api/v1/ext/${name}/agent/`);
         ports.registerRateLimitSkip(`/api/v1/${manifest.routeNamespace}/agent/`);
       }
+      // activeVersion is recorded here — only after activate() succeeds — so a
+      // mid-pipeline failure never leaves installed_extensions claiming an
+      // active version that was never actually activated.
       await stateStore.recordActive(name, manifest.version);
 
       // NOTE: deliberately no registerExtensionRoot. Fault attribution keys on

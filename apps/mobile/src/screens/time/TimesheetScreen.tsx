@@ -10,6 +10,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { palette, radii, spacing, type } from '../../theme';
 import { useAppDispatch, useAppSelector } from '../../store';
@@ -53,6 +54,12 @@ interface TimesheetProps {
 }
 
 export function TimesheetScreen({ navigation }: TimesheetProps = {}) {
+  // TimeStack mounts this screen with `headerShown: false`, so nothing above it
+  // reserves the status bar: without this the week bar draws at y=0 and the
+  // Dynamic Island bisects the week title while the clock and the battery icons
+  // sit on top of the two week chevrons. Same inset and same gap as
+  // TicketsScreen so the Time tab starts on the line the Tickets tab does.
+  const insets = useSafeAreaInsets();
   const dispatch = useAppDispatch();
   const suggestionsEnabled = useAppSelector(selectSuggestionsEnabled);
   const unloggedCount = useAppSelector(selectUnloggedCount);
@@ -267,7 +274,7 @@ export function TimesheetScreen({ navigation }: TimesheetProps = {}) {
         <View style={styles.entryHeader}>
           <Text style={styles.entryRef}>
             {entry.ticketId
-              ? ticketRef({ id: entry.ticketId, internalNumber: ticket?.internalNumber ?? null })
+              ? (ticketRef({ internalNumber: ticket?.internalNumber ?? null }) ?? ticket?.subject ?? 'Ticket')
               : 'No ticket'}
           </Text>
           <Text style={styles.entryDuration}>{formatMinutes(entry.durationMinutes)}</Text>
@@ -348,7 +355,7 @@ export function TimesheetScreen({ navigation }: TimesheetProps = {}) {
 
   return (
     <KeyboardAvoidingView
-      style={styles.screen}
+      style={[styles.screen, { paddingTop: insets.top + spacing['3'] }]}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
       {suggestionsBannerVisible ? (

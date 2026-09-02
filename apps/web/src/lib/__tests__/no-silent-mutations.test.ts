@@ -222,6 +222,12 @@ const TARGET_GLOBS = [
   // so a slow response invited a duplicate-creating double click. The mount at
   // /reports/builder passed no onSubmit, the only success path.
   'src/components/reports/ReportBuilder.tsx',
+  // QuickBooks connection panel (Phase D): connect/disconnect/push-mode/settings
+  // -refresh already routed through runAction, but the file was never guarded —
+  // so the pull-payments PATCH and the "Sync now" enqueue would have shipped
+  // unguarded next to them. A silent failure on either reads as "payment sync
+  // is on / a sync is running" while the books and Breeze quietly diverge.
+  'src/components/integrations/QuickbooksIntegration.tsx',
 ];
 
 const absoluteFiles: string[] = TARGET_GLOBS.map((rel) => resolve(WEB_ROOT, '..', rel));
@@ -522,10 +528,16 @@ describe('no silent mutations in targeted set', () => {
     // QuickbooksMappingWorkbench.tsx (QuickBooks entity mapping, Task 6), plus
     // ImpactPage.tsx (P2-6 Task 10, #4193), plus ImpactWeightsDrawer.tsx
     // (P2-6 Task 11, #4193), plus AccountingSyncCard.tsx (QuickBooks invoice
-    // push, Phase C Task 7), plus AiAgentGraduationPanel.tsx (P2-5 Task 20,
-    // #4192). ApprovalsInbox.tsx was already guarded before P2-5 — Task 21's
-    // promote mutation needed no list edit.
-    expect(absoluteFiles.length).toBe(108);
+    // push, Phase C Task 7), plus QuickbooksIntegration.tsx (QuickBooks payment
+    // pull-back, Phase D Task 7 — the pull-payments PATCH and the "Sync now"
+    // enqueue joined four pre-existing unguarded mutations in that file), plus
+    // AiAgentGraduationPanel.tsx (P2-5 Task 20, #4192). ApprovalsInbox.tsx was
+    // already guarded before P2-5 — Task 21's promote mutation needed no list
+    // edit. NOTE: main and this branch each added ONE entry and each landed on
+    // 108, so git auto-merges this line to 108 while the merged list really
+    // holds 109 — bump it deliberately on every merge, never by resolving the
+    // hunk.
+    expect(absoluteFiles.length).toBe(109);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

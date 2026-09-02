@@ -70,14 +70,27 @@ export function pgErrorCode(err: unknown): string | undefined {
 }
 
 /**
- * 40P01 = deadlock_detected, 40001 = serialization_failure. Both mean "you lost
- * a lock race, the work was not applied, try again" — never "the request was
- * invalid". Postgres picks a victim and the winner finishes immediately after,
- * so the retry almost always succeeds.
+ * 40P01 = deadlock_detected, 40001 = serialization_failure, 55P03 =
+ * lock_not_available. All three mean "you lost a lock race, the work was not
+ * applied, try again" — never "the request was invalid". Postgres picks a
+ * victim (40P01/40001) or gives up at a `lock_timeout` bound (55P03) and the
+ * winner finishes immediately after, so the retry almost always succeeds.
+ *
+ * 55P03 is a no-op for every EXISTING caller of `retryOnTransientLockError`
+ * below (see its call sites): Postgres can only raise it where a
+ * `lock_timeout` is actually set, and until #3925 none of THOSE callers' own
+ * transactions set one, so none of them could have observed it before. (Other
+ * transactions in this codebase already set `lock_timeout` via
+ * `tightenLockTimeout` — e.g. deviceDeletion.ts, catalogService.ts — but
+ * those don't route through `retryOnTransientLockError`, so this change is
+ * still a no-op for them.) Adding 55P03 here starts mattering only once a
+ * `retryOnTransientLockError` caller bounds its own lock waits, which #3925
+ * is the first to do (see `tightenLockTimeout` in `../db/lockTimeout`,
+ * used by `ingestSoftwareInventoryReport` in `../services/softwareInventoryObservations`).
  */
 export function isTransientLockError(err: unknown): boolean {
   const code = pgErrorCode(err);
-  return code === '40P01' || code === '40001';
+  return code === '40P01' || code === '40001' || code === '55P03';
 }
 
 /**

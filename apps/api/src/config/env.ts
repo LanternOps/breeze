@@ -142,6 +142,10 @@ export const QBO_CLIENT_ID = process.env.QBO_CLIENT_ID?.trim() ?? '';
 export const QBO_CLIENT_SECRET = process.env.QBO_CLIENT_SECRET?.trim() ?? '';
 export const QBO_REDIRECT_URI = process.env.QBO_REDIRECT_URI?.trim() ?? '';
 export const QBO_ENVIRONMENT = process.env.QBO_ENVIRONMENT?.trim() ?? '';
+// Intuit's shared-secret used to verify inbound CDC webhook signatures
+// (Phase D). '' when unset — a region without the Intuit webhook configured
+// relies entirely on the 15-minute reconcile sweep instead.
+export const QBO_WEBHOOK_VERIFIER_TOKEN = process.env.QBO_WEBHOOK_VERIFIER_TOKEN?.trim() ?? '';
 
 // Read at call time so tests can flip `IS_HOSTED` per-test without `vi.resetModules()`.
 export function isHosted(): boolean {

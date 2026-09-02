@@ -7,6 +7,8 @@ import type {
   AccountingItemPayload,
   AccountingProvider,
   AccountingVoidInvoicePayload,
+  ChangeSet,
+  ChangeSetPaymentLine,
   InvoicePushResult,
   RealmSettings,
   RemoteRef,
@@ -59,5 +61,17 @@ describe('AccountingProvider is fully typed (B8, multi-currency §11)', () => {
   it('keeps all money as major-unit decimal strings (spec §12: no integer-cents storage)', () => {
     expectTypeOf<AccountingInvoicePayload['total']>().toEqualTypeOf<string>();
     expectTypeOf<AccountingItemPayload['unitPrice']>().toEqualTypeOf<string>();
+  });
+
+  it('reconcileChanges returns a ChangeSet carrying deletions and per-line QBO metadata', () => {
+    expectTypeOf<Parameters<AccountingProvider['reconcileChanges']>>()
+      .toEqualTypeOf<[AccountingConnection, Date | null]>();
+    expectTypeOf<ReturnType<AccountingProvider['reconcileChanges']>>().toEqualTypeOf<Promise<ChangeSet>>();
+    expectTypeOf<ChangeSet['deletedPayments']>().toEqualTypeOf<string[]>();
+    expectTypeOf<ChangeSet['deletedInvoices']>().toEqualTypeOf<string[]>();
+    expectTypeOf<ChangeSetPaymentLine['amountMinor']>().toEqualTypeOf<number>();
+    expectTypeOf<ChangeSetPaymentLine['remotePaymentSyncToken']>().toEqualTypeOf<string | null>();
+    expectTypeOf<ChangeSetPaymentLine['paymentMethodName']>().toEqualTypeOf<string | null>();
+    expectTypeOf<ChangeSetPaymentLine['paymentRefNum']>().toEqualTypeOf<string | null>();
   });
 });

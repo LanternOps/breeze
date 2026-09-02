@@ -88,6 +88,9 @@ export function OnboardingScreen({ onComplete }: Props) {
         onScroll={handleScroll}
         scrollEventThrottle={16}
         bounces={false}
+        // Explicit now that the dot rail below is a flow sibling rather than an
+        // overlay: the pager takes the height the rail leaves, and nothing else.
+        style={{ flex: 1 }}
       >
         <Page width={width}>
           <ApprovalPreview />
@@ -117,13 +120,21 @@ export function OnboardingScreen({ onComplete }: Props) {
         </Page>
       </ScrollView>
 
+      {/* The rail sits in normal flow rather than absolutely over the pager.
+          Overlaying it forced every page to reserve the rail's height as bottom
+          padding, and slide 1 — the tallest — outgrew that reservation:
+          `justifyContent: 'center'` overflows a too-small box in BOTH
+          directions, so its body copy centred itself down underneath the dots.
+          As a flow sibling it takes its own height out of the pager's before any
+          page is laid out, so the reservation is exact by construction and no
+          page can reach it however tall its content or the reader's type size.
+          The equal-height spacer that stands in for the last page's CTA still
+          does its job — the rail keeps the same height on every page, so the
+          dots do not jump when the CTA swaps in. */}
       <View
         style={{
-          position: 'absolute',
-          left: 0,
-          right: 0,
-          bottom: insets.bottom + spacing[5],
           paddingHorizontal: spacing[6],
+          paddingBottom: insets.bottom + spacing[5],
         }}
       >
         <View
@@ -173,17 +184,33 @@ export function OnboardingScreen({ onComplete }: Props) {
 function Page({ width, children }: { width: number; children: React.ReactNode }) {
   const insets = useSafeAreaInsets();
   return (
-    <View
-      style={{
-        width,
-        flex: 1,
-        paddingTop: insets.top + spacing[12],
-        paddingBottom: insets.bottom + spacing[20] + spacing[10],
-        paddingHorizontal: spacing[6],
-        justifyContent: 'center',
-      }}
-    >
-      {children}
+    <View style={{ width, flex: 1 }}>
+      {/* Scrollable so a page whose content is taller than the pager scrolls
+          instead of overflowing it — the pager clips, so an un-scrollable tall
+          page would simply lose its last lines on a short phone or at a large
+          Dynamic Type size. `flexGrow: 1` + `justifyContent: 'center'` keeps
+          every page that DOES fit centred exactly as it was before.
+          The horizontal padding stays on the content container, not on the View
+          above, so the previews that bleed to the screen edge with
+          `marginHorizontal: -spacing[6]` still pull against the same gutter
+          rather than being clipped by the scroll view's bounds. */}
+      <ScrollView
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={{
+          flexGrow: 1,
+          justifyContent: 'center',
+          // Tight on purpose. Slide 1 carries the tallest preview, and the
+          // rail below now takes real height out of the pager, so generous
+          // padding here is what pushes its body copy past the fold — the
+          // ScrollView then clips mid-sentence, which reads as broken even
+          // though it technically scrolls. Onboarding copy has to FIT.
+          paddingTop: insets.top + spacing[4],
+          paddingBottom: spacing[2],
+          paddingHorizontal: spacing[6],
+        }}
+      >
+        {children}
+      </ScrollView>
     </View>
   );
 }
@@ -198,8 +225,10 @@ function Copy({
   body: string;
 }) {
   const theme = useApprovalTheme('dark');
+  // Was spacing[10]; trimmed for the same reason as the page padding above —
+  // slide 1's copy has to clear the dot rail without scrolling.
   return (
-    <View style={{ marginTop: spacing[10] }}>
+    <View style={{ marginTop: spacing[6] }}>
       <Text style={[type.metaCaps, { color: palette.brand.soft }]}>{eyebrow}</Text>
       <Text
         style={[
@@ -278,18 +307,17 @@ function ApprovalPreview() {
         borderColor: theme.border,
         // Negative horizontal margin lets the inner components keep their
         // native paddingHorizontal: spacing[6] without doubling up.
-        paddingVertical: spacing[5],
+        // Vertical padding and the ring are deliberately tighter than the real
+        // approval screen's: this card is DECORATION on a slide whose copy is
+        // the actual message, and slide 1 is the tallest of the three. Every
+        // point spent here is a point the body paragraph loses to the dot rail.
+        paddingVertical: spacing[3],
         marginHorizontal: spacing[2],
         overflow: 'hidden',
       }}
     >
-      <View
-        style={{
-          alignItems: 'center',
-          paddingTop: spacing[2],
-        }}
-      >
-        <CountdownRing expiresAt={expiresAt} size={64} stroke={3} />
+      <View style={{ alignItems: 'center' }}>
+        <CountdownRing expiresAt={expiresAt} size={56} stroke={3} />
       </View>
 
       <RequesterRow

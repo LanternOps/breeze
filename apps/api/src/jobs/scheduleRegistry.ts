@@ -101,6 +101,11 @@ export const JOB_SCHEDULES = {
   'event-log-retention': '3 7 * * *',
   'agent-log-retention': '23 7 * * *',
   'change-log-retention': '43 7 * * *',
+  // #4210 — outbox/incident retention family, same daily tier as the other
+  // batched-DELETE retention jobs above.
+  'ticket-outbox-retention': '13 7 * * *',
+  'intent-outbox-retention': '33 7 * * *',
+  'metric-anomaly-incident-retention': '53 7 * * *',
   'ip-history-retention': '3 8 * * *',
   'ml-output-retention': '23 8 * * *',
   'user-risk-retention': '43 8 * * *',

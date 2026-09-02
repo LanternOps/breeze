@@ -91,6 +91,10 @@ export const metricAnomalyIncidents = pgTable('metric_anomaly_incidents', {
     .on(table.orgId, table.lastSeenAt.desc()),
   deviceIdx: index('metric_anomaly_incidents_device_id_idx').on(table.deviceId),
   agentRunIdx: index('metric_anomaly_incidents_agent_run_id_idx').on(table.agentRunId),
+  // #4210 — supports metricAnomalyIncidentRetention.ts's dispatched-row
+  // cutoff scan (dispatched_at < cutoff), the mirror image of
+  // undispatchedIdx above.
+  dispatchedAtIdx: index('metric_anomaly_incidents_dispatched_at_idx').on(table.dispatchedAt),
 }));
 
 export type MetricAnomalyIncidentRow = typeof metricAnomalyIncidents.$inferSelect;

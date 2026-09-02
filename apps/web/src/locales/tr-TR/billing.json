@@ -557,7 +557,7 @@
       "addSection": {
         "captionPlaceholder": "Altyazı (isteğe bağlı)",
         "headingPlaceholder": "Başlık metni",
-        "imageHelp": "PNG, JPEG veya WebP, 5 MB'a kadar.",
+        "imageHelp": "PNG veya JPEG, 5 MB'a kadar.",
         "imageUrlPlaceholder": "https://example.com/photo.png",
         "insertHere": "Bölüm ekle",
         "richTextPlaceholder": "Teklif metni…",
@@ -703,7 +703,8 @@
         "updateSection": "Bölüm güncellenemedi.",
         "uploadImage": "Resim yüklenemedi.",
         "noPriceForCurrency": "Bu öğenin {{currency}} fiyatı yok. Katalogda bir fiyat ekleyin veya manuel bir hat girin.",
-        "sectionAddedListStale": "Bölüm eklendi ancak liste yenilenemedi. Görmek için sayfayı yeniden yükleyin."
+        "sectionAddedListStale": "Bölüm eklendi ancak liste yenilenemedi. Görmek için sayfayı yeniden yükleyin.",
+        "lineAddedListStale": "Satır eklendi ancak liste yenilenemedi. Görmek için sayfayı yeniden yükleyin."
       },
       "image": {
         "alt": "Alıntı görseli",
@@ -883,7 +884,7 @@
         "preparedForPlaceholder": "Müşteri adını geçersiz kılın",
         "showPreparedBy": "“Şirketiniz tarafından hazırlanan”ı göster",
         "imageLabel": "Kapak resmi",
-        "imageHelp": "PNG, JPEG veya WebP, 5 MB'a kadar.",
+        "imageHelp": "PNG veya JPEG, 5 MB'a kadar.",
         "removeImage": "Resmi kaldır"
       },
       "ghost": {
@@ -1622,6 +1623,8 @@
       "stripeNudge": "Çevrimiçi kart ödemelerini kabul etmek için Stripe bağlanın.",
       "title": "Ödemeler",
       "viaStripe": "Stripe aracılığıyla",
+      "quickbooks": "QuickBooks",
+      "viaQuickbooks": "QuickBooks aracılığıyla",
       "currencyUnknown": "Stripe hesabınızın ödeme para birimi henüz önbelleğe alınmadığından bu {{documentCurrency}} faturayla karşılaştırılamadı. Uyuşmazlık kontrolünü etkinleştirmek için Ayarlar → Entegrasyonlar altından Stripe hesap bilgilerinizi yenileyin."
     },
     "requestPayment": {

@@ -1095,6 +1095,32 @@ async function pollForPatchCommandResult(commandId: string) {
   return null;
 }
 
+/**
+ * Shared per-patch success predicate (#4267, factoring the #4228 gate and the
+ * `patch_job_results` row status onto one rule).
+ *
+ * The Windows agent's `results[]` entries (`patchCommandResultFields` in
+ * `agent/internal/heartbeat/heartbeat.go`) carry a
+ * `status: 'installed' | 'failed' | 'rolled_back'` field and never emit a
+ * boolean `success` — so keying off `entry.success` alone (as the per-patch
+ * `patch_job_results` write used to) leaves it permanently `undefined` and the
+ * caller's `fallback` (the *batch's* overall status) wins for every patch. One
+ * failed patch in a 13-patch batch then reads as 13 failures.
+ *
+ * `success` is still checked first, defensively, in case a future/alternate
+ * agent build reports it directly. `fallback` covers only a payload with no
+ * matching per-patch entry at all (unparsable stdout, or the lookup missed).
+ */
+function isPatchResultSuccessful(
+  entry: { success?: boolean; status?: string } | undefined,
+  fallback: boolean,
+): boolean {
+  if (entry === undefined) return fallback;
+  if (typeof entry.success === 'boolean') return entry.success;
+  if (entry.status) return entry.status === 'installed' || entry.status === 'rolled_back';
+  return fallback;
+}
+
 async function recordDeviceExecution(
   data: ExecutePatchJobDeviceData,
   prep: PreparedDeviceExecution,
@@ -1117,6 +1143,10 @@ async function recordDeviceExecution(
   let parsedResult: {
     success?: boolean;
     results?: Array<{
+      /** The agent's own patch reference (`patchCommandResultFields`), keyed
+       *  off `patches.id` server-side — NOT `patchId`, which the agent never
+       *  sends. Kept as a fallback in case a differently-shaped payload does. */
+      id?: string;
       patchId?: string;
       externalId?: string;
       success?: boolean;
@@ -1167,9 +1197,7 @@ async function recordDeviceExecution(
   const installedCount = parsedResult?.installedCount;
   const anyPatchInstalled =
     (typeof installedCount === 'number' && installedCount > 0) ||
-    (parsedResult?.results?.some(
-      (r) => r.success === true || r.status === 'installed' || r.status === 'rolled_back',
-    ) ?? false);
+    (parsedResult?.results?.some((r) => isPatchResultSuccessful(r, false)) ?? false);
 
   // The agent ORs `rebootRequired` across every SUCCESSFUL install, so a partial
   // failure still carries an accurate value — use it verbatim, including a
@@ -1185,11 +1213,19 @@ async function recordDeviceExecution(
 
   // 6. Insert patchJobResults per patch
   for (const patch of approvedPatches) {
+    // The agent echoes the id back as `id` (mirroring the `patches.id` this
+    // job sent it), not `patchId` — `r.patchId` matched here would always be
+    // undefined and this lookup would silently degrade to the `externalId`
+    // branch alone (#4267).
     const perPatchResult = parsedResult?.results?.find(
-      (r) => r.patchId === patch.patchId || r.externalId === patch.externalId
+      (r) => r.id === patch.patchId || r.patchId === patch.patchId || r.externalId === patch.externalId
     );
 
-    const patchSuccess = perPatchResult?.success ?? overallSuccess;
+    // Per-patch status, not the batch's aggregate status (#4267): a batch with
+    // one failure among twelve successes must record twelve `completed` rows
+    // and one `failed` row, not thirteen `failed` rows. `overallSuccess` is
+    // only the fallback for a patch with no matching per-patch entry at all.
+    const patchSuccess = isPatchResultSuccessful(perPatchResult, overallSuccess);
 
     await db.insert(patchJobResults).values({
       jobId: patchJobId,

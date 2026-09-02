@@ -7,6 +7,7 @@ import { emitInvoiceEvent } from './invoiceEvents';
 import { fromMinorUnits } from './stripeMoney';
 import { captureException } from './sentry';
 import { writeAuditEvent, requestLikeFromSnapshot } from './auditEvents';
+import { clearPaymentMappingForInvoicePayment } from './accounting/accountingPaymentPull';
 
 function toCents(v: string | number) { return Math.round(Number(v) * 100); }
 
@@ -182,9 +183,14 @@ export async function reflectStripeRefund(input: RefundInput): Promise<void> {
       // this is a webhook path with no Hono request context, so we use the
       // system-scope audit writer (mirrors quoteExpiryReaper), not writeRouteAudit.
       const [snapshot] = await db.select().from(invoicePayments).where(eq(invoicePayments.id, paymentId)).limit(1);
-      // Phase D (QBO payment pull-back): clear the 'payment' accounting_entity_mappings
-      // row for this invoice_payments id inline here — see orgMerge.runPostPassFixups'
-      // orphan-sweep comment.
+      // Clear the 'payment' accounting_entity_mappings row for this
+      // invoice_payments id FIRST (same reasoning as invoiceService.voidPayment:
+      // breeze_entity_id is polymorphic so nothing cascades). A Stripe-captured
+      // payment normally has no accounting mapping at all — this returns 0 and is
+      // a deliberate orphan sweep, not an expected deletion. `db` here IS the
+      // transaction handle: this whole callback runs inside the enclosing
+      // withSystemDbAccessContext transaction.
+      await clearPaymentMappingForInvoicePayment(db, paymentId);
       await db.delete(invoicePayments).where(eq(invoicePayments.id, paymentId));
       await db.update(invoiceStripePayments)
         .set({ status: 'refunded', invoicePaymentId: null, lastEventAt: new Date(), updatedAt: new Date() })
