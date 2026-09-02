@@ -17,11 +17,15 @@
  *
  * ── What authorises a write ─────────────────────────────────────────────────
  * Because those writes ride in a SYSTEM context, RLS is not the guard: the
- * snapshot is. It is loaded filtered to the caller's partner AND to the
- * caller's own organization allowlist, because a partner user can be
- * restricted to a SUBSET of their partner's organizations (partnerOrgAccess
- * 'selected') — a partner filter alone would let them write contacts into
- * every tenant their MSP owns. A row whose `organizationId` is absent from the
+ * snapshot is. Nor is preview the safer path: `loadSnapshot` wraps BOTH its
+ * queries in `runOutsideDbContext(() => withSystemDbAccessContext(...))` on the
+ * preview path exactly as on commit, so there is no RLS backstop under either
+ * one and the app-layer bounds below are the WHOLE boundary. The snapshot is
+ * loaded filtered to the caller's partner AND to the caller's own organization
+ * allowlist, because a partner user can be restricted to a SUBSET of their
+ * partner's organizations (partnerOrgAccess 'selected') — a partner filter
+ * alone would let them read, or write, contacts in every tenant their MSP
+ * owns. A row whose `organizationId` is absent from the
  * snapshot is refused as `org-not-found`, the same annotation an unknown name
  * gets, so the response is never an existence oracle. Name resolution is
  * bounded to the same snapshot.
@@ -31,14 +35,25 @@
  * refuses a row pinned to an unreachable site (as a `conflict`, since the ORG
  * axis is fine) and keeps contacts living in unreachable sites out of the
  * match maps entirely, so they are never matched and never echoed back.
+ *
+ * That bound is a CONFINEMENT, not a fail-closed one, and the difference is
+ * accepted (see the note above `loadSnapshot`'s contact indexing): a
+ * site-confined caller can still mint an ORG-LEVEL near-duplicate of a contact
+ * living on a site they cannot see. Deduplicating it would require disclosing
+ * the hidden contact, which is the thing the confinement exists to prevent.
  */
 
 import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { contacts, contactExternalLinks } from '../../db/schema/contacts';
 import { organizations, sites } from '../../db/schema/orgs';
-import { pgErrorCode } from '../../utils/pgErrors';
-import { normalizeContactEmail, updateContact, type UpdateContactInput } from './crud';
+import { isPgUniqueViolation, pgErrorCode, pgErrorNode, retryOnTransientLockError } from '../../utils/pgErrors';
+import {
+  ContactValidationError,
+  normalizeContactEmail,
+  updateContact,
+  type UpdateContactInput,
+} from './crud';
 import {
   CONTACT_ROLES,
   DEFAULT_CONTACT_IMPORT_SYSTEM,
@@ -48,6 +63,7 @@ import {
   type ContactImportContext,
   type ContactImportErrorCode,
   type ContactImportErrorEntry,
+  type ContactImportMode,
   type ContactImportRow,
   type ContactImportSummary,
   type ContactRowAnnotation,
@@ -282,10 +298,19 @@ async function loadSnapshot(rows: ContactImportRow[], ctx: ContactImportContext)
   // site. A barred-site contact is therefore never matched and never has its
   // name or email echoed back in a preview row — invisible in exactly the way
   // an out-of-reach ORGANIZATION's contacts are, so neither answer is an
-  // existence oracle. The cost is accepted: a row that would have matched one
-  // reads as `create`, and if it also carries an externalId already linked to
-  // that hidden contact its write fails 23505 and is reported `write-failed`
-  // with nothing committed. Both outcomes are fail-closed.
+  // existence oracle.
+  //
+  // The cost, and the RULING on it: a row that would have matched a hidden
+  // contact reads as `create` and is CREATED. That is fail-closed only when the
+  // row carries an externalId — `contact_external_links_uniq` then rejects the
+  // link with 23505 and the row is reported `write-failed` with nothing
+  // committed. For a plain name/email row there is no such constraint
+  // (`contacts_org_email_idx` is a non-unique index, db/schema/contacts.ts:89),
+  // so the INSERT succeeds and a site-confined importer lands an ORG-LEVEL
+  // near-duplicate of a person they cannot see. ACCEPTED (#3258 review): the
+  // alternative is to tell the caller that a contact they may not see exists,
+  // which is the disclosure this whole bound exists to prevent. Tracked as a
+  // follow-up on the PR; the duplicate is visible to anyone who CAN see both.
   for (const contact of contactRows) {
     if (!snapshot.canReachSite(contact.siteId)) continue;
     snapshot.contactById.set(contact.id, contact);
@@ -350,13 +375,10 @@ interface Resolution {
   contactId: string | null;
   matched?: SnapshotContact;
   conflictReason?: string;
+  /** Non-fatal disclosure carried onto the preview row; see AnnotatedContactRow. */
+  warning?: string;
 }
 
-/**
- * Derive one row's annotation against the snapshot. Called at preview AND
- * again at commit against a freshly loaded snapshot, so a row whose state moved
- * in between is caught by `checkExpectation` rather than silently re-targeted.
- */
 /**
  * Which organization a row lands in. Shared by the duplicate pre-pass and by
  * `resolveRow` so the two can never disagree about a row's tenant.
@@ -389,6 +411,11 @@ function resolveRowOrg(
   return { org: candidates[0]! };
 }
 
+/**
+ * Derive one row's annotation against the snapshot. Called at preview AND
+ * again at commit against a freshly loaded snapshot, so a row whose state moved
+ * in between is caught by `checkExpectation` rather than silently re-targeted.
+ */
 function resolveRow(
   normalized: NormalizedRow,
   snapshot: Snapshot,
@@ -465,9 +492,14 @@ function resolveRow(
   // every later import resolves it by link. Refusing those would make the
   // fourth person on a shared mailbox permanently unimportable — the very
   // shape contacts_org_email_idx is non-unique to allow.
+  //
+  // Overriding an ambiguity is a judgement call, so it is DISCLOSED rather than
+  // silent: the row still resolves to `create`, but carries a `warning` the
+  // preview UI shows, because a deliberate near-duplicate that renders as an
+  // ordinary fresh contact is indistinguishable from an import mistake.
   const identified = normalized.externalId !== null;
-  const ambiguous = (reason: string): Resolution => (identified
-    ? { ...resolved, annotation: 'create', contactId: null }
+  const ambiguous = (reason: string, warning: string): Resolution => (identified
+    ? { ...resolved, annotation: 'create', contactId: null, warning }
     : { ...resolved, annotation: 'conflict', contactId: null, conflictReason: reason });
 
   if (normalized.email) {
@@ -476,8 +508,12 @@ function resolveRow(
       return { ...resolved, annotation: 'email-match', contactId: candidates[0]!.id, matched: candidates[0] };
     }
     if (candidates.length > 1) {
-      return ambiguous(`${candidates.length} contacts in ${org.name} already use ${normalized.email}`
-        + ' — give the row an externalId to say which person it is');
+      return ambiguous(
+        `${candidates.length} contacts in ${org.name} already use ${normalized.email}`
+          + ' — give the row an externalId to say which person it is',
+        `${candidates.length} existing contacts in ${org.name} share ${normalized.email};`
+          + ' creating another, because this row carries its own externalId',
+      );
     }
   }
 
@@ -487,8 +523,12 @@ function resolveRow(
       return { ...resolved, annotation: 'name-match', contactId: candidates[0]!.id, matched: candidates[0] };
     }
     if (candidates.length > 1) {
-      return ambiguous(`${candidates.length} contacts in ${org.name} are named "${normalized.name}"`
-        + ' — give the row an externalId to say which person it is');
+      return ambiguous(
+        `${candidates.length} contacts in ${org.name} are named "${normalized.name}"`
+          + ' — give the row an externalId to say which person it is',
+        `${candidates.length} existing contacts in ${org.name} are named "${normalized.name}";`
+          + ' creating another, because this row carries its own externalId',
+      );
     }
   }
 
@@ -542,6 +582,7 @@ export async function previewContactImport(
         ? { matchedContactName: resolution.matched.name, matchedContactEmail: resolution.matched.email }
         : {}),
       ...(resolution.conflictReason ? { conflictReason: resolution.conflictReason } : {}),
+      ...(resolution.warning ? { warning: resolution.warning } : {}),
     };
   });
 }
@@ -641,7 +682,19 @@ const WRITE_FAILURE_COPY: Record<string, string> = {
 };
 const GENERIC_WRITE_FAILURE = 'Could not write this contact — check the server log for details';
 
+/**
+ * A 23505 on `contact_external_links_uniq` is a different operator problem from
+ * a contact-level duplicate: the CONTACT was fine, the source's external id is
+ * already spoken for in this organization — by a contact the caller may not
+ * even be able to see (a barred site; see `loadSnapshot`). "This contact
+ * conflicts with one that already exists" sends them looking at the wrong row.
+ */
+const EXTERNAL_LINK_UNIQ = 'contact_external_links_uniq';
+
 export function writeFailureMessage(err: unknown): string {
+  if (isPgUniqueViolation(err, EXTERNAL_LINK_UNIQ)) {
+    return 'This external id is already linked to another contact';
+  }
   const code = pgErrorCode(err);
   return (code && WRITE_FAILURE_COPY[code]) ?? GENERIC_WRITE_FAILURE;
 }
@@ -672,7 +725,10 @@ export async function commitContactImport(
   rows: CommitContactRowInput[],
   ctx: ContactImportContext,
   actor: ContactImportActor,
+  options: { mode?: ContactImportMode } = {},
 ): Promise<ContactImportSummary> {
+  // Defaults to 'skip', matching the org importer's `commitOrgImportSchema`.
+  const mode = options.mode ?? 'skip';
   // Re-derived against state loaded NOW, not against whatever preview saw.
   const snapshot = await loadSnapshot(rows, ctx);
   const normalized = normalizeRows(rows);
@@ -708,9 +764,10 @@ export async function commitContactImport(
 
     const orgId = resolution.organizationId!;
 
-    if (resolution.annotation === 'link-match') {
-      // The durable link already says this row IS that contact, so re-importing
-      // the same file writes nothing at all.
+    if (resolution.annotation === 'link-match' && mode === 'skip') {
+      // The durable link already says this row IS that contact, and skip mode
+      // leaves it exactly as it stands, so re-importing the same file writes
+      // nothing at all. `update` mode falls through and applies the row.
       summary.skipped.push({
         index: r.index, organizationId: orgId, contactId: resolution.contactId!, reason: 'already_linked',
       });
@@ -718,26 +775,52 @@ export async function commitContactImport(
     }
 
     try {
+      // Each branch opens its OWN top-level transaction from outside any held
+      // context, which is shape 2 of what `retryOnTransientLockError` supports:
+      // a deadlock victim has fully rolled back, so the retry starts clean. The
+      // rows here touch org and site parents in the same order crud.ts does
+      // (#3911), so losing that race should cost a retry, not the row.
       if (resolution.annotation === 'create') {
-        const { stored, ...result } = await createImportedContact(r, orgId, resolution.siteId, actor);
-        summary.imported.push({ index: r.index, organizationId: orgId, ...result });
+        const { stored, ...result } = await retryOnTransientLockError(
+          'contact-import row',
+          () => createImportedContact(r, orgId, resolution.siteId, actor),
+        );
+        // Fold back BEFORE reporting: a throw here must leave the row in
+        // `errors` only, never in `imported` AND `errors` both.
         applySnapshotWrite(snapshot, r, stored);
+        summary.imported.push({ index: r.index, organizationId: orgId, ...result });
       } else {
-        const { stored, ...result } = await applyMatchedContact(r, orgId, resolution, actor);
-        summary.updated.push({ index: r.index, organizationId: orgId, ...result });
+        const { stored, ...result } = await retryOnTransientLockError(
+          'contact-import row',
+          () => applyMatchedContact(r, orgId, resolution, actor),
+        );
         applySnapshotWrite(snapshot, r, stored, resolution.matched);
+        summary.updated.push({ index: r.index, organizationId: orgId, ...result });
       }
     } catch (err) {
+      // A ContactValidationError is the CRUD service refusing the row on a rule
+      // only it can see (site not in org, merged row left with no identifier).
+      // It is app-authored copy with no query text or column values in it, so
+      // unlike a driver message it is safe to hand back verbatim — and far more
+      // actionable than "check the server log".
+      const validation = err instanceof ContactValidationError ? err : null;
+      const node = pgErrorNode(err);
+      const constraint = typeof node?.constraint_name === 'string' ? node.constraint_name
+        : typeof node?.constraint === 'string' ? node.constraint : undefined;
       console.error('[contact-import] row failed', {
         partnerId: ctx.partnerId,
         index: r.index,
+        // The SQLSTATE (or the service's own code) is what triage branches on;
+        // without it every row failure looks alike in the log.
+        code: validation?.code ?? pgErrorCode(err),
+        ...(constraint ? { constraint } : {}),
         error: err instanceof Error ? err.message : String(err),
       });
       summary.errors.push(withCause({
         index: r.index,
         ...(organization ? { organization } : {}),
-        error: writeFailureMessage(err),
-        code: 'write-failed',
+        error: validation ? validation.message : writeFailureMessage(err),
+        code: validation ? validation.code : 'write-failed',
       }, err));
     }
   }
@@ -789,7 +872,8 @@ async function createImportedContact(
 }
 
 /**
- * Apply an acknowledged email/name match.
+ * Apply a matched row: an acknowledged email/name match, or — in `update` mode
+ * — a link-match.
  *
  * Routed through the CRUD service's `updateContact` rather than issuing its own
  * UPDATE: that function already owns primary demotion and the both-scope
@@ -805,6 +889,11 @@ async function applyMatchedContact(
 ): Promise<RowWriteOutcome> {
   const matched = resolution.matched!;
   const patch = matchedRowPatch(r, resolution.siteId);
+  // A link-match was IDENTIFIED by its `contact_external_links` row, so that
+  // row already exists: re-inserting it violates contact_external_links_uniq
+  // (23505) and would fail an otherwise-good update. Only a fuzzy match has an
+  // acknowledgement left to persist.
+  const alreadyLinked = resolution.annotation === 'link-match';
   return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
     const updated = await updateContact(db, matched.id, orgId, patch, { userId: actor.userId });
     // Only reachable if the contact was deleted between the snapshot and now.
@@ -812,7 +901,7 @@ async function applyMatchedContact(
 
     // Persist the acknowledgement as a durable link so the next import
     // link-matches instead of asking for the same confirmation again.
-    const createdLink = await attachLink(r, orgId, matched.id, actor);
+    const createdLink = alreadyLinked ? false : await attachLink(r, orgId, matched.id, actor);
 
     return {
       contactId: matched.id,

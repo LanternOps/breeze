@@ -61,6 +61,11 @@ const previewImportSchema = z.object({
 const commitImportSchema = z.object({
   partnerId: z.string().guid().optional(),
   rows: z.array(commitContactImportRowSchema).min(1).max(MAX_IMPORT_ROWS),
+  // Same option, same name and same default as the org importer
+  // (routes/orgs.ts:1697): 'skip' leaves an acknowledged match untouched,
+  // 'update' overwrites its fields from the row. Defaulted rather than
+  // required so an existing caller keeps the non-destructive behaviour.
+  mode: z.enum(['skip', 'update']).default('skip'),
 });
 
 /**
@@ -142,10 +147,12 @@ function resolveImportContext(
   if ('error' in resolved) return resolved;
 
   // The caller's own organization allowlist travels with the request: the
-  // importer writes in a SYSTEM db context, so RLS is not the boundary there.
-  // Null is system scope (unrestricted); for an organization token this is the
-  // single org, which is what makes admitting that scope safe — rows naming any
-  // other organization come back `org-not-found` and write nothing.
+  // importer's snapshot READS and its row writes both run in a SYSTEM db
+  // context — on the preview path exactly as on commit — so RLS is not the
+  // boundary on either, and this context is the whole of it. Null is system
+  // scope (unrestricted); for an organization token this is the single org,
+  // which is what makes admitting that scope safe — rows naming any other
+  // organization come back `org-not-found` and write nothing.
   //
   // The SITE allowlist travels for the stronger reason that RLS never enforced
   // the site axis at all, in a system context or out of one.
@@ -173,6 +180,22 @@ export function registerOrgContactsRoutes(orgRoutes: Hono) {
   // contacts regardless of grants. Contacts are customer PII, so an org user
   // who was never granted organizations:read gets an honest, fail-closed 403
   // rather than an implicit grant derived from their token's scope.
+  //
+  // RULING (review round 3), on the sites:write question these routes raise:
+  // a contact write that pins a site and sets `isPrimary` re-projects
+  // `sites.contact` under organizations:write ALONE, and that is intended. The
+  // sibling org importer (routes/orgs.ts:1700) additionally demands
+  // sites:write because it CREATES site rows (#3242) — a different act. Here
+  // no site row is created, renamed, moved or deleted: contacts are org-owned
+  // records, and `sites.contact` is a compatibility PROJECTION of whichever
+  // contact holds the site's primary flag, maintained by the single writer in
+  // services/contacts/compat.ts. Requiring sites:write to file a contact would
+  // gate customer-contact management behind a site-administration grant that
+  // says nothing about it. The rule this encodes: whoever can write the
+  // organization can manage its contacts; sites:write is for site rows
+  // themselves. The site AXIS is still enforced independently of the
+  // permission — see canReachContactSite, which confines a sub-org-restricted
+  // caller to the sites they can reach.
   const requireOrgRead = requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action);
   const requireOrgWrite = requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action);
 
@@ -204,11 +227,11 @@ export function registerOrgContactsRoutes(orgRoutes: Hono) {
     zValidator('json', commitImportSchema),
     async (c) => {
       const auth = c.get('auth') as AuthContext;
-      const { rows, partnerId: bodyPartnerId } = c.req.valid('json');
+      const { rows, partnerId: bodyPartnerId, mode } = c.req.valid('json');
       const ctx = resolveImportContext(auth, bodyPartnerId);
       if ('error' in ctx) return c.json({ error: ctx.error }, ctx.status);
 
-      const summary = await commitContactImport(rows, ctx, actorFrom(c));
+      const summary = await commitContactImport(rows, ctx, actorFrom(c), { mode });
 
       // commitContactImport writes no audit events of its own — it has no Hono
       // context — so every route that commits an import must write them here.

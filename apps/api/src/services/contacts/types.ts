@@ -35,14 +35,19 @@
  * lines (every spreadsheet export does) must filter them before upload.
  */
 
+// TYPE-ONLY, so it is erased at compile time and this module keeps its
+// dependency-free runtime shape (route suites mock ./crud wholesale).
+import type { ContactValidationCode } from './crud';
+
 /** Same cap as the org importer, applied by the routes to the rows array. */
 export const MAX_IMPORT_ROWS = 1000;
 
 /**
  * Written to `contact_external_links.system` when a row names no source.
  *
- * Deliberately duplicated in `./audit` rather than imported, for the reason
- * documented there: route suites mock this service barrel wholesale.
+ * Defined here, in the dependency-free types module, and re-exported by
+ * `./import` so callers that already hold the pipeline barrel need not reach
+ * past it. There is no second copy.
  */
 export const DEFAULT_CONTACT_IMPORT_SYSTEM = 'csv';
 
@@ -90,9 +95,12 @@ export interface ContactImportRow {
 /**
  * How a row resolved against existing state.
  *
- * - `link-match` resolves through `contact_external_links` and auto-applies.
+ * - `link-match` resolves through `contact_external_links`. What commit does
+ *   with it is the caller's `ContactImportMode` (below): skipped by default,
+ *   applied in `update` mode. No acknowledgement is ever required — the durable
+ *   link IS the acknowledgement.
  * - `email-match` / `name-match` are HINTS and are never committed without the
- *   client echoing `expectedAnnotation`.
+ *   client echoing `expectedAnnotation`, in either mode.
  * - `org-not-found` covers "no such organization" and "not yours" alike, so the
  *   annotation is never an existence oracle for another partner's tenants.
  */
@@ -103,6 +111,21 @@ export type ContactRowAnnotation =
   | 'name-match'
   | 'conflict'
   | 'org-not-found';
+
+/**
+ * What a COMMIT does with a `link-match` row. Mirrors the org importer's
+ * `mode` (`routes/orgs.ts` `commitOrgImportSchema`), including its `skip`
+ * default, so the two importers answer "I re-uploaded the same file" the same
+ * way.
+ *
+ * - `skip` (default): a linked contact is left exactly as it is and reported
+ *   under `skipped`, so re-importing an unchanged file writes nothing at all.
+ * - `update`: the row is applied to the contact its link names and reported
+ *   under `updated`. Still a MERGE — see the merge-never-clear ruling above —
+ *   so an absent column cannot erase stored data, and the mode never relaxes
+ *   the acknowledgement a fuzzy `email-match` / `name-match` requires.
+ */
+export type ContactImportMode = 'skip' | 'update';
 
 /**
  * The submitted row echoed back with its resolution. `organizationId` is
@@ -126,6 +149,14 @@ export interface AnnotatedContactRow extends Omit<ContactImportRow, 'organizatio
   matchedContactEmail?: string | null;
   /** Populated for `conflict` and `org-not-found`. */
   conflictReason?: string;
+  /**
+   * NON-FATAL disclosure: the row still applies exactly as its `annotation`
+   * says. Set when resolution made a judgement call the operator should see —
+   * today, an email or name hint that matched SEVERAL existing contacts and was
+   * overridden into a `create` because the row carries its own `externalId`.
+   * Without it that near-duplicate reads as an ordinary fresh contact.
+   */
+  warning?: string;
 }
 
 export interface CommitContactRowInput extends ContactImportRow {
@@ -155,10 +186,11 @@ export interface ContactImportContext {
    * The caller's own organization allowlist (`AuthContext.accessibleOrgIds`).
    * `null` is system scope, i.e. unrestricted; an EMPTY array reaches nothing.
    *
-   * Load-bearing, not belt-and-braces: import writes run in a system DB
-   * context, so RLS is not enforcing tenancy here. A partner user restricted to
-   * a subset of their partner's organizations would otherwise be able to write
-   * contacts into every tenant the MSP owns.
+   * Load-bearing, not belt-and-braces: the importer's snapshot READS and its
+   * row writes both run in a system DB context — on the preview path as much as
+   * on commit — so RLS is not enforcing tenancy on either. A partner user
+   * restricted to a subset of their partner's organizations would otherwise be
+   * able to read, and write, contacts in every tenant the MSP owns.
    */
   accessibleOrgIds?: string[] | null;
   /**
@@ -190,7 +222,15 @@ export type ContactImportErrorCode =
   /** An email/name match was not acknowledged. */
   | 'match-unconfirmed'
   /** A database write failed. `cause` carries the original error. */
-  | 'write-failed';
+  | 'write-failed'
+  /**
+   * The CRUD service refused the row on a rule only it can see — the merged row
+   * lost its last identifier, an unknown role, a site that is not the
+   * organization's. Reported under the service's OWN code (`no-identifier`,
+   * `invalid-role`, `site-not-in-org`) with its own copy, because "check the
+   * server log" would hide a row the operator can actually fix.
+   */
+  | ContactValidationCode;
 
 export interface ContactImportErrorEntry {
   index: number;

@@ -48,7 +48,9 @@ interface StateRow { [key: string]: unknown }
  * later reads in order — a primary re-projection adds two (its own lookup,
  * then compat's re-read of the same row), preceded by the parent pre-locks
  * crud.lockProjectionScopes takes (one for the org, one more when a site scope
- * is involved).
+ * is involved) and then crud's re-read of the TARGET row under those locks,
+ * which must echo the stored `isPrimary`/`siteId` or crud treats the row as
+ * concurrently moved and recomputes the scope set.
  */
 function stubState(state: {
   orgs?: StateRow[];
@@ -68,18 +70,19 @@ function stubState(state: {
   selectMock.mockImplementation(() => ({
     from: () => {
       const rows = queue.shift() ?? [];
-      const settle = () => {
-        const promise = Promise.resolve(rows) as Promise<unknown[]> & Record<string, unknown>;
-        promise.limit = () => Promise.resolve(rows.slice(0, 1));
-        promise.orderBy = () => settle();
-        // The parent pre-locks crud.lockProjectionScopes takes before a primary
-        // re-projection (see the deadlock note there).
-        promise.for = () => settle();
+      // Every builder step returns the SAME settled shape, so any order of
+      // .limit / .orderBy / .for chains — crud takes `FOR NO KEY UPDATE` after
+      // a .limit(1) read, and after an .orderBy on the parent pre-locks.
+      const settle = (visible: StateRow[]): Promise<unknown[]> & Record<string, unknown> => {
+        const promise = Promise.resolve(visible) as Promise<unknown[]> & Record<string, unknown>;
+        promise.limit = (n?: number) => settle(visible.slice(0, n ?? 1));
+        promise.orderBy = () => settle(visible);
+        promise.for = () => settle(visible);
         return promise;
       };
       // The fake cannot APPLY a WHERE, so tenancy filters are asserted on the
       // compiled condition instead of inferred from the rows it returns.
-      return { where: (condition: unknown) => { selectWheres.push(condition); return settle(); } };
+      return { where: (condition: unknown) => { selectWheres.push(condition); return settle(rows); } };
     },
   }));
 }
@@ -290,6 +293,46 @@ describe('previewContactImport', () => {
     expect(row).toMatchObject({ annotation: 'create', contactId: null });
   });
 
+  it('discloses the ambiguity it overrode as a non-fatal warning', async () => {
+    // The row still applies, but the operator has to be told that the address
+    // they imported is shared — otherwise the second Cy Auditor looks like a
+    // clean create rather than a deliberate near-duplicate.
+    stubState({
+      contacts: [
+        { id: EXISTING, orgId: ORG, siteId: null, name: 'Ann Payable', email: 'accounts@acme.example' },
+        { id: OTHER_EXISTING, orgId: ORG, siteId: null, name: 'Bob Ledger', email: 'accounts@acme.example' },
+      ],
+    });
+    const [row] = await previewContactImport([{
+      organizationId: ORG, name: 'Cy Auditor', email: 'accounts@acme.example',
+      externalId: 'CT-77', externalSystem: 'datto_rmm',
+    }], CTX);
+    expect(row!.annotation).toBe('create');
+    expect(row!.warning).toMatch(/2 existing contacts/);
+    expect(row!.warning).toMatch(/accounts@acme\.example/);
+  });
+
+  it('warns on an overridden ambiguous NAME too', async () => {
+    stubState({
+      contacts: [
+        { id: EXISTING, orgId: ORG, siteId: null, name: 'Jane Ops', email: null },
+        { id: OTHER_EXISTING, orgId: ORG, siteId: null, name: 'Jane Ops', email: null },
+      ],
+    });
+    const [row] = await previewContactImport(
+      [{ organizationId: ORG, name: 'Jane Ops', externalId: 'CT-77' }], CTX,
+    );
+    expect(row!.annotation).toBe('create');
+    expect(row!.warning).toMatch(/2 existing contacts/);
+  });
+
+  it('carries no warning on an ordinary create', async () => {
+    stubState();
+    const [row] = await previewContactImport([{ organizationId: ORG, name: 'Jane Ops' }], CTX);
+    expect(row!.annotation).toBe('create');
+    expect(row).not.toHaveProperty('warning');
+  });
+
   it('still adopts an unambiguous existing contact on a first linked import', async () => {
     stubState({ contacts: [{ id: EXISTING, orgId: ORG, siteId: null, name: 'Jane Ops', email: 'jane@acme.example' }] });
     const [row] = await previewContactImport([{
@@ -488,9 +531,15 @@ describe('commitContactImport', () => {
         id: EXISTING, orgId: ORG, siteId: null, name: 'Jane Ops',
         email: 'jane@acme.example', isPrimary: true,
       }],
-      // updateContact re-reads the row, takes the org pre-lock, then the
-      // re-projection reads the primary and compat re-reads the same row.
-      then: [[storedContact({ isPrimary: true })], [], [merged], [merged]],
+      // updateContact re-reads the row, takes the org pre-lock, re-reads the
+      // target under it, then the re-projection reads the primary and compat
+      // re-reads the same row.
+      then: [
+        [storedContact({ isPrimary: true })],
+        [],                                    // org pre-lock
+        [{ isPrimary: true, siteId: null }],   // the target, re-read under it
+        [merged], [merged],
+      ],
     });
     const summary = await commitContactImport([{
       organizationId: ORG, name: 'Jane Ops', email: 'jane@acme.example', phone: '555-0100',
@@ -705,6 +754,7 @@ describe('commitContactImport', () => {
         [{ id: EXISTING, orgId: ORG, siteId: null, name: 'Jane Ops', email: 'jane@acme.example', phone: null, mobile: null, title: null, roles: [], isPrimary: true, notes: null }],
         [{ id: SITE }],   // the site pin is validated against the org
         [], [],           // parent pre-locks: org, then site
+        [{ isPrimary: true, siteId: null }], // the target, re-read under them
         [], [],           // vacated org scope: no primary left
         [moved], [moved], // claimed site scope
       ],
@@ -763,9 +813,9 @@ describe('commitContactImport', () => {
   it('reports fixed copy for a pg failure, never the driver message', async () => {
     stubState();
     const pgError = Object.assign(
-      new Error('duplicate key value violates unique constraint "contact_external_links_uniq"'
-        + ' DETAIL: Key (org_id, system, external_id)=(..., datto_rmm, CT-9) already exists.'),
-      { code: '23505' },
+      new Error('duplicate key value violates unique constraint "contacts_org_primary_uniq"'
+        + ' DETAIL: Key (org_id, is_primary)=(11111111-1111-4111-8111-111111111111, t) already exists.'),
+      { code: '23505', constraint_name: 'contacts_org_primary_uniq' },
     );
     stubWrites({ failOn: () => pgError });
     const summary = await commitContactImport([{ organizationId: ORG, name: 'Boom' }], CTX, ACTOR);
@@ -774,7 +824,7 @@ describe('commitContactImport', () => {
     expect(entry.code).toBe('write-failed');
     expect(entry.error).toBe('This contact conflicts with one that already exists');
     // Neither the constraint name nor the offending values may reach the wire.
-    expect(entry.error).not.toMatch(/DETAIL|contact_external_links_uniq|CT-9/);
+    expect(entry.error).not.toMatch(/DETAIL|contacts_org_primary_uniq|is_primary/);
     expect(entry.cause).toBe(pgError);
   });
 
@@ -884,22 +934,219 @@ describe('commitContactImport', () => {
     expect(contactInserts()[0]!.values).toMatchObject({ email: 'jane@acme.example' });
   });
 
-  it('link-matches a later row against a link an earlier row just created', async () => {
+  it('keys a link an earlier row just created by ORG, not partner-wide', async () => {
+    // NOT a proof that a later row link-matches an earlier row's new link: the
+    // two rows here are in DIFFERENT organizations, and the same triple
+    // repeated under ONE organization is refused as an in-file duplicate
+    // before any of this (`findDuplicateLinkKeys`), so no single file can
+    // reach that path. The `contactByLink.set` in `applySnapshotWrite` is
+    // therefore defensive — it keeps the map honest for the org-keyed reads
+    // around it rather than serving a live case.
     stubState({ orgs: [{ id: ORG, name: 'Acme Co' }, { id: ORG_B, name: 'Beta Ltd' }] });
     const summary = await commitContactImport([
       { organizationId: ORG, name: 'Jane Ops', externalId: 'CT-9', externalSystem: 'datto_rmm' },
-      // Same source id under ANOTHER customer: still its own contact, so this
-      // proves the new link is keyed by org and not applied partner-wide.
+      // Same source id under ANOTHER customer: still its own contact, so the
+      // second row must create rather than adopt the first row's contact.
       { organizationId: ORG_B, name: 'Jane Ops', externalId: 'CT-9', externalSystem: 'datto_rmm' },
     ], CTX, ACTOR);
 
     expect(summary.imported).toHaveLength(2);
+    expect(summary.imported.map((i) => i.organizationId)).toEqual([ORG, ORG_B]);
+    expect(summary.skipped).toEqual([]);
     expect(linkInserts()).toHaveLength(2);
+  });
+
+  it('records a service validation refusal under its OWN code, not as write-failed', async () => {
+    // updateContact re-checks the site against the database and throws a
+    // ContactValidationError when it does not belong to the org. Collapsing
+    // that to `write-failed` + generic copy would hide an operator-fixable
+    // row behind "check the server log".
+    stubState({
+      sites: [{ id: SITE, orgId: ORG, name: 'HQ' }],
+      contacts: [{ id: EXISTING, orgId: ORG, siteId: null, name: 'Jane Ops', email: 'jane@acme.example' }],
+      then: [[storedContact()], []], // getContact, then assertSiteInOrg finds nothing
+    });
+    const summary = await commitContactImport([{
+      organizationId: ORG, site: 'HQ', name: 'Jane Ops', email: 'jane@acme.example',
+      expectedAnnotation: 'email-match', expectedContactId: EXISTING,
+    }], CTX, ACTOR);
+
+    expect(summary.errors[0]).toMatchObject({ index: 0, code: 'site-not-in-org' });
+    expect(summary.errors[0]!.error).toBe('Site does not belong to this organization');
+    expect(summary.updated).toEqual([]);
+  });
+
+  it('names the external-id link when 23505 came from contact_external_links_uniq', async () => {
+    stubState();
+    stubWrites({
+      failOn: () => Object.assign(
+        new Error('duplicate key value violates unique constraint "contact_external_links_uniq"'
+          + ' DETAIL: Key (org_id, system, external_id)=(..., datto_rmm, CT-9) already exists.'),
+        { code: '23505', constraint_name: 'contact_external_links_uniq' },
+      ),
+    });
+    const summary = await commitContactImport(
+      [{ organizationId: ORG, name: 'Boom', externalId: 'CT-9', externalSystem: 'datto_rmm' }], CTX, ACTOR,
+    );
+    const entry = summary.errors[0]!;
+    expect(entry.code).toBe('write-failed');
+    expect(entry.error).toBe('This external id is already linked to another contact');
+    expect(entry.error).not.toMatch(/DETAIL|contact_external_links_uniq|CT-9/);
+
+    // Same copy when the driver dropped the constraint field and only the
+    // message names it — the wrapper shapes differ between postgres.js and the
+    // Drizzle error it arrives inside.
+    stubState();
+    stubWrites({
+      failOn: () => Object.assign(
+        new Error('duplicate key value violates unique constraint "contact_external_links_uniq"'),
+        { code: '23505' },
+      ),
+    });
+    const messageOnly = await commitContactImport([{ organizationId: ORG, name: 'Boom' }], CTX, ACTOR);
+    expect(messageOnly.errors[0]!.error).toBe('This external id is already linked to another contact');
+  });
+
+  it('retries a row that lost a lock race and still lands it', async () => {
+    // Each row's write opens its own top-level transaction from outside any
+    // held context, which is exactly the shape retryOnTransientLockError
+    // supports: the victim has fully rolled back, so the retry starts clean.
+    stubState();
+    let attempts = 0;
+    stubWrites({
+      failOn: () => {
+        attempts += 1;
+        return attempts === 1 ? Object.assign(new Error('deadlock detected'), { code: '40P01' }) : null;
+      },
+    });
+    const summary = await commitContactImport([{ organizationId: ORG, name: 'Jane Ops' }], CTX, ACTOR);
+
+    expect(summary.errors).toEqual([]);
+    expect(summary.imported).toHaveLength(1);
+    // Two attempts, one landed row.
+    expect(contactInserts()).toHaveLength(2);
+  });
+
+  it('does not retry a write that failed for a non-transient reason', async () => {
+    stubState();
+    stubWrites({
+      failOn: () => Object.assign(new Error('duplicate key value'), { code: '23505', constraint_name: 'contacts_pkey' }),
+    });
+    const summary = await commitContactImport([{ organizationId: ORG, name: 'Jane Ops' }], CTX, ACTOR);
+
+    expect(summary.errors[0]).toMatchObject({ code: 'write-failed' });
+    expect(summary.errors[0]!.error).toBe('This contact conflicts with one that already exists');
+    expect(contactInserts()).toHaveLength(1);
+  });
+
+  it('refuses a MATCHED row driven onto a site the caller cannot reach', async () => {
+    // Identity resolution must never outrank site confinement: a confined
+    // caller acknowledging a match must still not be able to move that contact
+    // onto a site they cannot see. Today the site check runs first, so this
+    // guards a reordering rather than a live bug.
+    stubState({
+      sites: [{ id: BARRED_SITE, orgId: ORG, name: 'Depot' }],
+      contacts: [{ id: EXISTING, orgId: ORG, siteId: null, name: 'Jane Ops', email: 'jane@acme.example' }],
+    });
+    const summary = await commitContactImport([{
+      organizationId: ORG, site: 'Depot', name: 'Jane Ops', email: 'jane@acme.example',
+      expectedAnnotation: 'email-match', expectedContactId: EXISTING,
+    }], { partnerId: PARTNER, allowedSiteIds: [SITE] }, ACTOR);
+
+    expect(summary.errors[0]).toMatchObject({ index: 0, code: 'row-conflict' });
+    expect(summary.errors[0]!.error).toMatch(/site access/i);
+    expect(summary.updated).toEqual([]);
+    expect(updated.filter((u) => u.table === contacts)).toHaveLength(0);
+  });
+
+  it('refuses a pinned row whose match has vanished, even with no expectedAnnotation', async () => {
+    // The pin alone is an acknowledgement of a specific contact. If nothing
+    // matches any more, applying the row as a fresh create would silently
+    // ignore the acknowledgement instead of asking for a new preview.
+    stubState();
+    const summary = await commitContactImport(
+      [{ organizationId: ORG, name: 'Jane Ops', expectedContactId: EXISTING }], CTX, ACTOR,
+    );
+
+    expect(summary.errors[0]).toMatchObject({ index: 0, code: 'match-changed' });
+    expect(summary.errors[0]!.error).toMatch(/no longer matches/);
+    expect(summary.imported).toEqual([]);
+    expect(inserted).toHaveLength(0);
   });
 
   it('always returns the four-bucket summary shape', async () => {
     stubState();
     const summary = await commitContactImport([], CTX, ACTOR);
     expect(summary).toEqual({ imported: [], updated: [], skipped: [], errors: [] });
+  });
+});
+
+describe('commitContactImport — link-match modes', () => {
+  const LINKED = {
+    contacts: [{ id: EXISTING, orgId: ORG, siteId: null, name: 'Jane Ops', email: 'jane@acme.example' }],
+    links: [{ contactId: EXISTING, orgId: ORG, system: 'datto_rmm', externalId: 'CT-9' }],
+  };
+  const LINKED_ROW: CommitContactRowInput = {
+    organizationId: ORG, phone: '555-0100',
+    externalId: 'CT-9', externalSystem: 'datto_rmm', expectedAnnotation: 'link-match',
+  };
+
+  it('skips a link-matched row by default', async () => {
+    stubState(LINKED);
+    const summary = await commitContactImport([LINKED_ROW], CTX, ACTOR);
+    expect(summary.skipped).toEqual([
+      { index: 0, organizationId: ORG, contactId: EXISTING, reason: 'already_linked' },
+    ]);
+    expect(summary.updated).toEqual([]);
+    expect(updated).toHaveLength(0);
+    expect(inserted).toHaveLength(0);
+  });
+
+  it('skips a link-matched row on an explicit mode: skip', async () => {
+    stubState(LINKED);
+    const summary = await commitContactImport([LINKED_ROW], CTX, ACTOR, { mode: 'skip' });
+    expect(summary.skipped).toHaveLength(1);
+    expect(summary.updated).toEqual([]);
+    expect(updated).toHaveLength(0);
+  });
+
+  it('applies a link-matched row in update mode, writing ONLY the fields it carries', async () => {
+    // Merge-never-clear is the ruling in ./types.ts: the stored name, email,
+    // title and mobile must survive a row that mentions none of them. Asserting
+    // the SET keys exactly is the only way to catch a patch that re-asserts a
+    // value it merely read.
+    stubState({
+      ...LINKED,
+      then: [[storedContact({ title: 'Controller', mobile: '555-0999' })]],
+    });
+    const summary = await commitContactImport([LINKED_ROW], CTX, ACTOR, { mode: 'update' });
+
+    expect(summary.updated).toHaveLength(1);
+    expect(summary.updated[0]).toMatchObject({ index: 0, organizationId: ORG, contactId: EXISTING });
+    expect(summary.skipped).toEqual([]);
+    const patch = updated.find((u) => u.table === contacts);
+    expect(Object.keys(patch!.set).sort()).toEqual(['phone', 'updatedAt']);
+  });
+
+  it('does not re-insert the external link a link-matched row was identified BY', async () => {
+    // The link row is how the row matched; inserting it again violates
+    // contact_external_links_uniq and would fail an otherwise-good update.
+    stubState({ ...LINKED, then: [[storedContact()]] });
+    const summary = await commitContactImport([LINKED_ROW], CTX, ACTOR, { mode: 'update' });
+
+    expect(summary.updated).toHaveLength(1);
+    expect(summary.updated[0]).toMatchObject({ createdLink: false });
+    expect(linkInserts()).toHaveLength(0);
+  });
+
+  it('leaves email-match acknowledgement rules untouched in update mode', async () => {
+    // `mode` governs link-matches only: a fuzzy match still needs its echoed
+    // acknowledgement, or update mode would become a way to auto-apply guesses.
+    stubState({ contacts: LINKED.contacts });
+    const summary = await commitContactImport(
+      [{ organizationId: ORG, name: 'J. Ops', email: 'jane@acme.example' }], CTX, ACTOR, { mode: 'update' },
+    );
+    expect(summary.errors[0]).toMatchObject({ code: 'match-unconfirmed' });
+    expect(summary.updated).toEqual([]);
   });
 });

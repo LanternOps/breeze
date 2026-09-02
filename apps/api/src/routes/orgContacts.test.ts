@@ -172,6 +172,23 @@ describe('permission and MFA gating', () => {
     expect(importMocks.commitContactImport).not.toHaveBeenCalled();
   });
 
+  it.each(writeRequests)('403s %s for a device-scoped token', async (_label, path, init) => {
+    // requireScope('organization','partner','system') is the OUTERMOST gate on
+    // every write. The positive cases below prove the three named scopes are
+    // admitted; without this one, deleting the middleware entirely would still
+    // leave the suite green — an agent token would then reach contact PII.
+    crudMocks.findContactScope.mockResolvedValue({ orgId: ORG, siteId: null });
+    setAuth({ scope: 'device' });
+    const res = await makeApp().request(path, init);
+    expect(res.status).toBe(403);
+    expect(crudMocks.createContact).not.toHaveBeenCalled();
+    expect(crudMocks.updateContact).not.toHaveBeenCalled();
+    expect(crudMocks.deleteContact).not.toHaveBeenCalled();
+    expect(importMocks.previewContactImport).not.toHaveBeenCalled();
+    expect(importMocks.commitContactImport).not.toHaveBeenCalled();
+    expect(auditSpy).not.toHaveBeenCalled();
+  });
+
   it('403s GET /organizations/:id/contacts without organizations:read', async () => {
     gateState.denied.add('organizations:read');
     const res = await makeApp().request(`/organizations/${ORG}/contacts`);
@@ -480,6 +497,24 @@ describe('PATCH /contacts/:contactId', () => {
     expect(auditSpy).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['no-identifier', 'A contact needs at least one of name, email, phone, or mobile'],
+    ['site-not-in-org', 'Site does not belong to this organization'],
+  ] as const)('maps a %s service refusal to 400, not 500', async (code, message) => {
+    // The POST side had this cover; PATCH did not, though it reaches the same
+    // two refusals — `site-not-in-org` on a move onto a foreign site, and
+    // `no-identifier` when the MERGED row would have no identifying field
+    // (including the 23514 a concurrent patch turns into that same refusal).
+    crudMocks.findContactScope.mockResolvedValue({ orgId: ORG, siteId: null });
+    crudMocks.updateContact.mockRejectedValue(new ContactValidationError(message, code));
+
+    const res = await makeApp().request(`/contacts/${CONTACT}`, json({ name: null, email: null }, 'PATCH'));
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: message, code });
+    // A refused patch changed nothing, so it must leave no audit trail either.
+    expect(auditSpy).not.toHaveBeenCalled();
+  });
+
   it('400s an empty patch', async () => {
     crudMocks.findContactScope.mockResolvedValue({ orgId: ORG, siteId: null });
     const res = await makeApp().request(`/contacts/${CONTACT}`, json({}, 'PATCH'));
@@ -614,8 +649,12 @@ describe('POST /contacts/import', () => {
     expect(actions).toEqual(['contact.create', 'contact.update']);
     expect(auditSpy.mock.calls[0]![1]).toMatchObject({
       orgId: ORG, resourceType: 'contact', resourceId: CONTACT,
-      details: { source: 'contact_import' },
+      // `createdLink` travels too: it is the only field saying whether the
+      // import ALSO created the organization link, which is a second write.
+      details: { source: 'contact_import', createdLink: true },
     });
+    expect((auditSpy.mock.calls[1]![1] as { details: Record<string, unknown> }).details)
+      .toMatchObject({ source: 'contact_import', createdLink: false });
   });
 
   it('passes the actor and the caller org reach through to the service', async () => {
@@ -625,6 +664,24 @@ describe('POST /contacts/import', () => {
       partnerId: PARTNER, accessibleOrgIds: [ORG], allowedSiteIds: null,
     });
     expect(importMocks.commitContactImport.mock.calls[0]![2]).toEqual({ userId: 'u-1' });
+  });
+
+  it.each([
+    ['update', 'update'],
+    [undefined, 'skip'],
+  ] as const)('passes mode %s through to the service as %s', async (sent, expected) => {
+    // `mode: 'update'` is what lets an acknowledged match OVERWRITE an existing
+    // contact's fields rather than skipping it, so a route that dropped the
+    // option would silently downgrade every update-mode import to a no-op the
+    // caller reads as success. Default mirrors the org importer's
+    // commitOrgImportSchema (routes/orgs.ts:1697): skip.
+    importMocks.commitContactImport.mockResolvedValue({ imported: [], updated: [], skipped: [], errors: [] });
+    const res = await makeApp().request('/contacts/import', json({
+      rows: [{ organizationId: ORG, name: 'Jane' }],
+      ...(sent === undefined ? {} : { mode: sent }),
+    }));
+    expect(res.status).toBe(200);
+    expect(importMocks.commitContactImport.mock.calls[0]![3]).toEqual({ mode: expected });
   });
 
   it('rejects a batch over the 1000-row cap', async () => {
