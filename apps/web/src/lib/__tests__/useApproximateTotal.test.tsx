@@ -428,4 +428,26 @@ describe('useApproximateTotal — an ALREADY-MOUNTED line reacts to a reset in p
 
     await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledTimes(2));
   });
+
+  it('two simultaneously-mounted lines with DIFFERENT keys both react to one reset', async () => {
+    // The real fix is a shared `listeners: Set<() => void>` in
+    // approximateTotalCache.ts feeding a `useSyncExternalStore` in every hook
+    // instance — a dashboard's realistic failure mode is several rollup lines
+    // mounted at once, so a fan-out bug (e.g. only the first subscriber
+    // re-rendering) would hide behind the single-instance tests above.
+    fetchWithAuth.mockResolvedValue(jsonRes({ data: AVAILABLE }));
+    render(<><Probe id="a" date="2026-08-21" /><Probe id="b" date="2026-08-20" /></>);
+    await waitFor(() => expect(screen.getByTestId('a').textContent).toBe('available:22940.00:CAD'));
+    await waitFor(() => expect(screen.getByTestId('b').textContent).toBe('available:22940.00:CAD'));
+    expect(fetchWithAuth).toHaveBeenCalledTimes(2);
+
+    fetchWithAuth.mockResolvedValue(
+      jsonRes({ data: { ...AVAILABLE, targetCurrencyCode: 'EUR', total: '17000.00' } }),
+    );
+    resetPartnerCurrencyCache();
+
+    await waitFor(() => expect(screen.getByTestId('a').textContent).toBe('available:17000.00:EUR'));
+    await waitFor(() => expect(screen.getByTestId('b').textContent).toBe('available:17000.00:EUR'));
+    expect(fetchWithAuth).toHaveBeenCalledTimes(4);
+  });
 });

@@ -195,9 +195,17 @@ export function useApproximateTotal(
     }
 
     let cancelled = false;
+    // Captured so the `.then` below can tell "discarded by a reset" apart
+    // from "genuinely failed" WITHOUT relying solely on `cancelled`. Cleanup
+    // setting `cancelled = true` only wins that race in practice because
+    // `notify()` (approximateTotalCache.ts) runs synchronously while a fetch
+    // resolution takes further microtask hops — real today, but not a
+    // structural guarantee, and a false `failed` on an otherwise-healthy
+    // newer state is exactly the silent failure #4472 was already about.
+    const startedGeneration = approximateTotalCache.generation;
     setState({ response: null, loading: true, failed: false });
     void loadApproximateTotal(groupsParam, requestDate).then((response) => {
-      if (cancelled) return;
+      if (cancelled || approximateTotalCache.generation !== startedGeneration) return;
       setState(response
         ? { response, loading: false, failed: false }
         : { response: null, loading: false, failed: true });

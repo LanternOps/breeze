@@ -16,6 +16,14 @@
 // than discovering it lazily on the next unrelated render — a reset that
 // nobody happens to re-render for is otherwise invisible until something
 // else forces one (#4472).
+//
+// Each listener is called in its own try/catch: `Set.forEach` aborts on the
+// first throw, which would otherwise (a) propagate into whatever CALLER
+// triggered the reset — e.g. the billing-settings save success handler — and
+// (b) silently skip every listener registered after the throwing one,
+// reintroducing #4472 for those subscribers with no signal anywhere.
+
+import * as Sentry from '@sentry/astro';
 
 export const partnerCurrencyCache: {
   value: string | null;
@@ -39,5 +47,11 @@ export function resetPartnerCurrencyCache(): void {
   partnerCurrencyCache.value = null;
   partnerCurrencyCache.inflight = null;
   partnerCurrencyCache.generation += 1;
-  listeners.forEach((listener) => listener());
+  listeners.forEach((listener) => {
+    try {
+      listener();
+    } catch (error) {
+      Sentry.captureException(error);
+    }
+  });
 }

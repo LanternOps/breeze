@@ -28,6 +28,8 @@
 // force its own re-render via `useSyncExternalStore` even with nothing else
 // changing.
 
+import * as Sentry from '@sentry/astro';
+
 import { partnerCurrencyCache, subscribePartnerCurrencyCache } from './partnerCurrencyCache';
 import type { ReportingTotalResponse } from './reporting/approximateTotal';
 
@@ -58,8 +60,19 @@ export function subscribeApproximateTotalCache(listener: () => void): () => void
   return () => { listeners.delete(listener); };
 }
 
+/** Each listener runs in its own try/catch: `Set.forEach` aborts on the first
+ *  throw, which would otherwise propagate into whatever caller triggered the
+ *  reset (e.g. `resetPartnerCurrencyCache()`'s own listener, from inside a
+ *  billing-settings save) and silently skip every listener registered after
+ *  the throwing one — reintroducing #4472 for those subscribers. */
 function notify(): void {
-  listeners.forEach((listener) => listener());
+  listeners.forEach((listener) => {
+    try {
+      listener();
+    } catch (error) {
+      Sentry.captureException(error);
+    }
+  });
 }
 
 /** Clear this cache and bump its generation if the partner-currency cache has
