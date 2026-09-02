@@ -25,13 +25,13 @@ Every device already carries a `device_role` (`devices.deviceRole`, varchar(30),
 
 Two migrations, because Postgres refuses to reference an enum value added by `ALTER TYPE ... ADD VALUE` inside the same transaction, and `autoMigrate` wraps each file in one unless it carries the `-- @no-transaction` marker (precedent for the split: `2026-09-05-b-audit-actor-type-ai-agent.sql`). Both must sort after the newest committed migration, which is `2026-10-02-100000-outbox-retention-indexes.sql` as of this writing. Re-check before naming.
 
-**Migration A** `2026-10-03-100000-contract-line-type-per-device-role.sql`, the enum value alone:
+**Migration A** `2026-10-04-100000-contract-line-type-per-device-role.sql`, the enum value alone:
 
 ```sql
 ALTER TYPE public.contract_line_type ADD VALUE IF NOT EXISTS 'per_device_role';
 ```
 
-**Migration B** `2026-10-03-100100-contract-lines-device-roles.sql`:
+**Migration B** `2026-10-04-100100-contract-lines-device-roles.sql`:
 
 ```sql
 ALTER TABLE contract_lines ADD COLUMN IF NOT EXISTS device_roles text[];

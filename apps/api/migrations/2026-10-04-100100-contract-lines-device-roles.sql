@@ -1,5 +1,5 @@
 -- #3205: contract lines billed by device role — column, invariant, site ownership.
--- Companion to 2026-10-03-100000-contract-line-type-per-device-role.sql (enum value).
+-- Companion to 2026-10-04-100000-contract-line-type-per-device-role.sql (enum value).
 
 ALTER TABLE contract_lines ADD COLUMN IF NOT EXISTS device_roles text[];
 
