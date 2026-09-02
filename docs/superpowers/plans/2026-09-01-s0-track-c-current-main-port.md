@@ -60,7 +60,7 @@ tracking_issue: https://github.com/LanternOps/breeze/issues/4060
 - Consumes: `origin/main` pinned at execution time (analysis at `6f496f4d0`); `startRegisteredWorkers(role, { onResult(name, ok, err) })` and `breezeRole()` from main; `consumersForInitializer(name): readonly string[]`, `declareExpectedConsumers({ redisAvailable, abuseSignalsEnabled, registry })`, `workerReadinessRegistry.attach(name, worker)` / `.recordInitializationFailure(name, error)` from Track C.
 - Produces: a merged tree whose deliberate REDs (typecheck on `worker.ts`; `workerReadinessManifest.test.ts`; `workerReadinessCoverage.test.ts`; `worker.boot.test.ts`) are the checkpoints Tasks 2–4 discharge; `webhookDelivery.ts` with the attach inside `initializeWebhookDelivery()` and a constructor-installed `error` listener (Task 6 pins both). Every later task references the merge commit SHA.
 
-- [ ] **Step 1: Preconditions**
+- [x] **Step 1: Preconditions**
 
 ```bash
 cd /Users/toddhebebrand/breeze/.worktrees/s0-track-c-readiness
@@ -86,7 +86,7 @@ git diff --stat 6f496f4d0..origin/main -- \
 git diff 6f496f4d0..origin/main -- apps/api/src/jobs apps/api/src/services apps/api/src/workers | grep -n '^+.*new Worker'
 ```
 
-- [ ] **Step 2: Start the merge with rerere DISABLED**
+- [x] **Step 2: Start the merge with rerere DISABLED**
 
 ```bash
 git -c rerere.enabled=false merge --no-ff --no-commit origin/main 2>&1 | tee /private/tmp/claude-501/-Users-toddhebebrand-breeze-rmm-qa/096c7d0d-b990-4dcd-8885-640bde845261/scratchpad/trackc-merge.log
@@ -110,7 +110,7 @@ docker-compose.yml
 
 CRITICAL: `grep -c "using previous resolution" …/trackc-merge.log` must be 0, and `grep -c '^<<<<<<<' apps/api/src/index.ts` must be 1 (`changeLogRetention.ts` → 2, every other file → 1). If any of these is off, `git merge --abort` and retry with the `-c rerere.enabled=false` flag actually applied. A different conflict list means `origin/main` moved (Step 1) — abort and report.
 
-- [ ] **Step 3: The six jobs files — import unions (keep BOTH sides of the import hunk, delete the markers)**
+- [x] **Step 3: The six jobs files — import unions (keep BOTH sides of the import hunk, delete the markers)**
 
 In each file the single import hunk has C's `import { attachWorkerObservability } from './workerObservability';` on the HEAD side and main's new imports on the other side. Keep both, in this order (C's line first, then main's block), and delete the three marker lines:
 
@@ -133,7 +133,7 @@ done
 
 Expected: `import=1 call=2` for every file (`grep -c` counts lines: the import line plus the one call). Trap: "take MAIN" compiles the import block but leaves the call referencing an undeclared identifier; "take C" drops main's used imports. Only the union compiles.
 
-- [ ] **Step 4: `apps/api/src/services/exchangeRateBoundary.test.ts` — allowlist hand-merge (NOT union-all-three)**
+- [x] **Step 4: `apps/api/src/services/exchangeRateBoundary.test.ts` — allowlist hand-merge (NOT union-all-three)**
 
 In `FX_IMPORT_ALLOWLIST`, resolve the hunk to exactly two entries — main's `'apps/api/src/services/workerRegistry.ts'` (reason text verbatim from main's side of the hunk) and C's `'apps/api/src/jobs/workerReadinessManifest.ts'` (reason text verbatim from C's side) — and DROP C's stale `'apps/api/src/index.ts'` entry (main's `index.ts` no longer contains any FX token). Verify:
 
@@ -143,7 +143,7 @@ grep -n "workerRegistry.ts'\|workerReadinessManifest.ts'\|src/index.ts'" apps/ap
 
 Expected: one hit each for the two surviving entries, zero for `src/index.ts'`.
 
-- [ ] **Step 5: `apps/api/src/workers/webhookDelivery.ts` — outer-catch union, attach relocation, constructor error listener (spec §2, C2)**
+- [x] **Step 5: `apps/api/src/workers/webhookDelivery.ts` — outer-catch union, attach relocation, constructor error listener (spec §2, C2)**
 
 5a. The single conflict hunk is inside `processNextJob()`'s outer `catch (err)`. Resolve it to exactly this order (C's lifecycle mapping first, then main's comment + Sentry capture; the `console.error` + 1 s backoff are the shared tail git already placed after the hunk — do not duplicate them):
 
@@ -219,7 +219,7 @@ grep -n "class WebhookDeliveryWorker extends EventEmitter\|constructor()\|this.o
 
 Expected: every pattern present; `this.emit('ready')` twice (in `start()` and after the successful `brpop`); `workerReadinessRegistry.attach(` exactly once, and its line number is greater than `export async function initializeWebhookDelivery`'s and NOT between `export function getWebhookWorker`'s line and the next `}`; `new WebhookDeliveryWorker()` exactly once (in the getter) so the coverage test's per-file constructor/attach count still balances at 1/1.
 
-- [ ] **Step 6: `docker-compose.yml` — take MAIN's hunk, then re-insert C's six lines inside the `x-api-env` anchor**
+- [x] **Step 6: `docker-compose.yml` — take MAIN's hunk, then re-insert C's six lines inside the `x-api-env` anchor**
 
 The hunk's HEAD side is the entire old inline `api.environment` block (≈367 lines) with C's two `READINESS_*` keys; main's side is the 6-line `<<: *api-env` + `BREEZE_ROLE: ${BREEZE_API_ROLE:-all}` indirection. In the hunk, delete the whole HEAD side and keep main's lines. Then locate the anchor line `  FRANKFURTER_BASE_URL: ${FRANKFURTER_BASE_URL:-}` (top-level `x-api-env: &api-env` block, ~line 387, two-space indent) and insert immediately after it, BEFORE the `  # Startup + agent-fleet behaviour` comment that precedes `  AUTO_MIGRATE:`, with the anchor's two-space indent:
 
@@ -243,7 +243,7 @@ docker compose -f docker-compose.yml config --quiet
 
 Expected: both `READINESS_*` line numbers fall between `x-api-env` and `services:`, and before the `# Startup + agent-fleet behaviour` line; compose config succeeds.
 
-- [ ] **Step 7: `apps/api/src/index.ts` — the hand-merge (neither side compiles alone)**
+- [x] **Step 7: `apps/api/src/index.ts` — the hand-merge (neither side compiles alone)**
 
 Resolve the single hunk inside `initializeWorkers()` and the imports outside it to exactly this shape. The auto-merged parts above the hunk (C's `declareExpectedConsumers` call, the `if (!redisAvailable)` guard) stay as git placed them.
 
@@ -350,7 +350,7 @@ grep -n "getWebhookWorker().stop()\|{ name: 'workers', tasks: workerShutdownTask
 
 Expected, first grep: every pattern present exactly once (`declareExpectedConsumers({` once, at the top of `initializeWorkers`). Second grep: `from './config/env'` exactly once; `const workerStatus` once; `consumersForInitializer` four times (import + three loops); `getWorkerStatus`, `initializeDeclaredWorkerGroup`, `computeWorkersHealthy`, `const allOk`, `READINESS_CACHE_TTL_MAX_MS` → zero hits (if `computeWorkersHealthy` is still imported, the auto-merge kept main's import line inside C's readiness-wiring region — remove it; it is unused and Task 4 deletes the function). Third grep: all three present; `workers` phase line number < `redis` phase line number (`index.pam-actuation-worker.test.ts` pins that order).
 
-- [ ] **Step 8: No markers anywhere; whitespace clean**
+- [x] **Step 8: No markers anywhere; whitespace clean**
 
 ```bash
 for f in $(git diff --name-only --diff-filter=U); do printf '%s %s\n' "$f" "$(grep -c '^<<<<<<<\|^=======$\|^>>>>>>>' "$f")"; done   # all 0
@@ -358,7 +358,7 @@ git add -A
 git diff --cached --check
 ```
 
-- [ ] **Step 9: Tripwire greps on the staged tree (spec §10.1 subset; cheap, before any test)**
+- [x] **Step 9: Tripwire greps on the staged tree (spec §10.1 subset; cheap, before any test)**
 
 ```bash
 grep -n "workersHealthy:" apps/api/src/worker.ts                                     # EXPECTED 1 hit — the deliberate typecheck RED Task 4 fixes
@@ -367,7 +367,7 @@ grep -n "READINESS_CACHE_TTL_MS=\|READINESS_PROBE_TIMEOUT_MS=" .env.example     
 grep -rn "checks.database\|status: 'not_ready'\|'not_ready'" apps/api/src --include='*.ts' | grep -v '\.test\.ts'   # expect EMPTY (spec §7 response-shape re-run); non-empty → STOP and report
 ```
 
-- [ ] **Step 10: Commit the merge (the only --no-verify commit)**
+- [x] **Step 10: Commit the merge (the only --no-verify commit)**
 
 ```bash
 git commit --no-verify -m "merge: port Track C onto current main
@@ -391,7 +391,7 @@ worker.boot.test.ts (section 6). Closed by the follow-up commits."
 git rev-parse HEAD   # RECORD as <merge-sha>
 ```
 
-- [ ] **Step 11: Install the merged dependency set (REQUIRED before any test on the merged tree)**
+- [x] **Step 11: Install the merged dependency set (REQUIRED before any test on the merged tree)**
 
 ```bash
 cd /Users/toddhebebrand/breeze/.worktrees/s0-track-c-readiness
@@ -403,7 +403,7 @@ git status --porcelain                                  # expect EMPTY (frozen l
 
 If `pnpm install --frozen-lockfile` fails, STOP and report — do not run a non-frozen install.
 
-- [ ] **Step 12: Typecheck — expected RED confined to `worker.ts`**
+- [x] **Step 12: Typecheck — expected RED confined to `worker.ts`**
 
 ```bash
 NODE_OPTIONS=--max-old-space-size=8192 pnpm --filter @breeze/api exec tsc --noEmit 2>&1 | tee /private/tmp/claude-501/-Users-toddhebebrand-breeze-rmm-qa/096c7d0d-b990-4dcd-8885-640bde845261/scratchpad/trackc-tsc-merge.log | grep -E "error TS" | sed 's/(.*//' | sort | uniq -c
@@ -411,7 +411,7 @@ NODE_OPTIONS=--max-old-space-size=8192 pnpm --filter @breeze/api exec tsc --noEm
 
 Expected: errors ONLY in `src/worker.ts` (the `workersHealthy` option is not in `ReadinessEvaluatorOptions`, and `workerRegistry`/`workersInitialized` are missing — TS2353/TS2345-class). Record the exact lines. Any error in another file is a resolution mistake: fix it and `git commit --amend --no-verify` (amending keeps both merge parents).
 
-- [ ] **Step 13: Focused suites — GREEN set, then the recorded REDs**
+- [x] **Step 13: Focused suites — GREEN set, then the recorded REDs**
 
 ```bash
 pnpm --filter @breeze/api exec vitest run \
@@ -455,7 +455,7 @@ Expected: manifest — `classifies every initializeWorkers group exactly once` F
 - Consumes: `WORKER_REGISTRY: readonly WorkerRegistration[]` (`name`, `placement: 'global' | 'socket-owner'`, `load`) from `services/workerRegistry`; `attachWorkerObservability(worker: Worker, name: string): void` from `jobs/workerObservability` (Track C made it also call `workerReadinessRegistry.attach(name, worker)`).
 - Produces: `WORKER_READINESS_MANIFEST` keyed by the 115 registry names ∪ `{ eventDispatch, agentCommandRelay }` (117 initializers, 117 consumer names — computed, see Step 5); `consumersForInitializer(name)` unchanged in signature; `initializeDeclaredWorkerGroup` GONE; `aiAgentRunner` still a plain `redis` row here (Task 3 flips it — D3a). Task 3 extends the same `declareExpectedConsumers` with `role` and the flag inputs.
 
-- [ ] **Step 1: RED — re-point `initializerKeys()` at the registry and drop the two subscriber non-consumers**
+- [x] **Step 1: RED — re-point `initializerKeys()` at the registry and drop the two subscriber non-consumers**
 
 In `apps/api/src/jobs/workerReadinessManifest.test.ts`:
 
@@ -544,7 +544,7 @@ and rewrite the three count assertions as:
   });
 ```
 
-- [ ] **Step 2: Run RED and retain the output**
+- [x] **Step 2: Run RED and retain the output**
 
 ```bash
 pnpm --filter @breeze/api exec vitest run src/jobs/workerReadinessManifest.test.ts src/jobs/workerReadinessCoverage.test.ts 2>&1 | tee /private/tmp/claude-501/-Users-toddhebebrand-breeze-rmm-qa/096c7d0d-b990-4dcd-8885-640bde845261/scratchpad/trackc-task2-red.log | tail -80
@@ -552,7 +552,7 @@ pnpm --filter @breeze/api exec vitest run src/jobs/workerReadinessManifest.test.
 
 Expected FAIL set (record each name): manifest `classifies every initializeWorkers group exactly once` (missing the 12 registry names + `eventDispatch` + `agentCommandRelay`; extra `policyAlertBridge`, `dnsThreatAlertSubscriber`); manifest `classifies only verified timer/subscriber initializers as non-consumers` (actual still lists the two); manifest `declares every stable consumer name exactly once` (102 declared vs the registry-derived expectation — its "expected" number is the derived `N`; record it); coverage test 1 (six files) and test 2 (nine names) exactly as recorded in Task 1 Step 13.
 
-- [ ] **Step 3: Manifest — rekey, add the 15 names, delete the dead helper**
+- [x] **Step 3: Manifest — rekey, add the 15 names, delete the dead helper**
 
 In `apps/api/src/jobs/workerReadinessManifest.ts`:
 
@@ -584,7 +584,7 @@ The attach names for the six already-attached modules are taken from the coverag
 
 3. Delete `export async function initializeDeclaredWorkerGroup(…)` entirely. `consumersForInitializer` and `declareExpectedConsumers` stay as they are (Task 3 adds the role and flags).
 
-- [ ] **Step 4: The six hooks (import + call, nothing else)**
+- [x] **Step 4: The six hooks (import + call, nothing else)**
 
 Add `import { attachWorkerObservability } from './workerObservability';` to each file's import block and the call immediately after the assignment that creates the Worker (before the module's own `.on('error', …)` handlers — the module-local Sentry capture stays; the resulting double report is ratified by spec §4):
 
@@ -607,7 +607,7 @@ done
 
 Expected: `import=1 calls=2 ctors=1` for each (`calls` counts the import line plus the one call).
 
-- [ ] **Step 5: GREEN and record the resolved numbers**
+- [x] **Step 5: GREEN and record the resolved numbers**
 
 ```bash
 pnpm --filter @breeze/api exec vitest run src/jobs/workerReadinessManifest.test.ts src/jobs/workerReadinessCoverage.test.ts 2>&1 | tail -20
@@ -615,7 +615,7 @@ pnpm --filter @breeze/api exec vitest run src/jobs/workerReadinessManifest.test.
 
 Expected: ALL PASS. Record `declaredConsumerNames().length` (formula: `115 + 2 − 5 + extras`, where `extras` = 5 multi-consumer rows × 1 = 5 → expected 117; equivalently `102 + 12 + 3`) and the Task-2 required count with abuse off (`117 − 1 = 116`) in the commit message. Take the numbers from the test's own output (temporarily `console.log` them if needed and remove the log before committing), not from this document.
 
-- [ ] **Step 6: Pin the `index.ts` failure loops (spec §9) in `productionReadinessWiring.test.ts`**
+- [x] **Step 6: Pin the `index.ts` failure loops (spec §9) in `productionReadinessWiring.test.ts`**
 
 Append inside the top-level `describe('production readiness wiring', …)`:
 
@@ -637,7 +637,7 @@ Append inside the top-level `describe('production readiness wiring', …)`:
 
 This pin is GREEN on first run (Task 1 wrote the loops). Prove it discriminates without mutating production code: `grep -c 'recordInitializationFailure(consumer, error)' apps/api/src/index.ts` → exactly 3, and `grep -rn initializeDeclaredWorkerGroup apps/api/src` → empty.
 
-- [ ] **Step 7: GREEN + neighborhood**
+- [x] **Step 7: GREEN + neighborhood**
 
 ```bash
 pnpm --filter @breeze/api exec vitest run \
@@ -656,7 +656,7 @@ pnpm --filter @breeze/api exec eslint \
 
 Expected: ALL PASS; lint clean. If one of the six modules' own suites mocks `bullmq`'s `Worker` with an object lacking `.on`, `attachWorkerObservability` will throw inside the test — extend that suite's mock (test-only: add `on: vi.fn()` or an `EventEmitter`-based fake) rather than guarding the hook; note it in the commit message.
 
-- [ ] **Step 8: Commit (hooks ON)**
+- [x] **Step 8: Commit (hooks ON)**
 
 ```bash
 git add apps/api/src/jobs/workerReadinessManifest.ts apps/api/src/jobs/workerReadinessManifest.test.ts \
@@ -724,7 +724,7 @@ export function declareExpectedConsumers(input: {
 
   Semantics: only entries whose initializer is in `selectWorkers(role)` ∪ role-gated out-of-registry starters are declared at all. For a declared entry whose rule is ON: `expect(name, true)` for each consumer not in `optionalConsumers`, `expect(name, false)` for each that is. For a declared entry whose rule is OFF (identical shape to Track C's abuse rule): `expect(name, false)` for every consumer, then `disable(name, 'feature_disabled')` for every consumer NOT in `optionalConsumers` (optional-marker consumers are never disabled — they construct and attach regardless of the flag, e.g. the maintenance worker, and land in `optionalRunning`). Task 4 calls this with `role: 'worker'`.
 
-- [ ] **Step 1: RED — manifest role, flag, and per-consumer-required tests**
+- [x] **Step 1: RED — manifest role, flag, and per-consumer-required tests**
 
 In `apps/api/src/jobs/workerReadinessManifest.test.ts`, extend the rule mirror from Task 2 and add the tests. Expectations are computed from `WORKER_REGISTRY` placements and the rules — NOT from `selectWorkers` — so they are independent of the implementation helper:
 
@@ -858,7 +858,7 @@ pnpm --filter @breeze/api exec vitest run src/jobs/workerReadinessManifest.test.
 
 Expected FAIL (record the names): every role test (the implementation ignores `role` and declares everything), the three flag cases for `event_dispatch_enabled`/`ai_agents_enabled` (rules do not exist yet), the maintenance/optional tests, and the "four optional names" test (currently only `abuseSignalsWorker`). TypeScript-level: the test passes unknown properties to `declareExpectedConsumers` — vitest transpiles without typechecking, so the RED is runtime; that is expected.
 
-- [ ] **Step 2: GREEN — manifest implementation**
+- [x] **Step 2: GREEN — manifest implementation**
 
 In `apps/api/src/jobs/workerReadinessManifest.ts`:
 
@@ -942,7 +942,7 @@ export function declareExpectedConsumers(input: {
 
 Re-run the manifest file: ALL PASS. Record the resolved required count on a default `all` box from the "four optional names" test (`declared.size − 4`, expected `117 − 4 = 113`) for the commit message.
 
-- [ ] **Step 3: `index.ts` passes the role and the flags**
+- [x] **Step 3: `index.ts` passes the role and the flags**
 
 Change the `./config/env` import line to `import { AI_AGENTS_ENABLED, abuseSignalsEnabled, breezeRole, eventDispatchMode } from './config/env';` and the call at the top of `initializeWorkers` to:
 
@@ -957,7 +957,7 @@ Change the `./config/env` import line to `import { AI_AGENTS_ENABLED, abuseSigna
   });
 ```
 
-- [ ] **Step 4: Gate**
+- [x] **Step 4: Gate**
 
 ```bash
 pnpm --filter @breeze/api exec vitest run \
@@ -971,7 +971,7 @@ git diff --stat -- apps/api/src/services/workerReadinessRegistry.ts apps/api/src
 
 Expected: ALL PASS; the registry and `eventDispatchWorker.ts` diffs are empty. (Typecheck is still RED on `worker.ts` only — do not run it as a gate here; Task 4 closes it. If you want confirmation the signature change did not break `index.ts`, run it and confirm the error list is unchanged from Task 1 Step 12.)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/api/src/jobs/workerReadinessManifest.ts apps/api/src/jobs/workerReadinessManifest.test.ts apps/api/src/index.ts
@@ -1005,7 +1005,7 @@ default all box (abuse, eventDispatch, aiAgentRunner, maintenance optional)."
 - Consumes: `createReadinessEvaluator({ checkDb, checkRedis, workerRegistry, workersInitialized, isShuttingDown, requireRedis, ttlMs, probeTimeoutMs, onProbeFailure })` (Track C); `resolveReadinessTiming(process.env, onClamp): { ttlMs, probeTimeoutMs, transitionVisibilityThresholdMs }` from `config/readinessConfig`; `workerReadinessRegistry`, `setWorkerReadinessTransitionHandler(handler)`, `summarizeConsumerReadiness(consumers)` from `services/workerReadinessRegistry`; `declareExpectedConsumers({ role: 'worker', redisAvailable, abuseSignalsEnabled, eventDispatchEnabled, aiAgentsEnabled, registry })` and `consumersForInitializer(name)` from Task 3; `abuseSignalsEnabled()`, `eventDispatchMode()`, `AI_AGENTS_ENABLED` from `config/env`.
 - Produces: the worker container's `/health/ready` body — `{ role: 'worker', ready, db, redis, workers, checkedAt, consumerSummary }` on 200 and the same plus `reason: 'db' | 'redis' | 'workers-pending'` on 503 (pre-parity and shutting-down bodies unchanged: `{ ready: false, reason: 'migrations-pending' | 'shutting-down' }`). API typecheck GREEN for the first time since the merge. No worker-side `/ready` alias (spec §6).
 
-- [ ] **Step 1: RED — update `worker.boot.test.ts`**
+- [x] **Step 1: RED — update `worker.boot.test.ts`**
 
 1. Mocks (`vi.hoisted` block): add
 
@@ -1185,7 +1185,7 @@ pnpm --filter @breeze/api exec vitest run src/worker.boot.test.ts 2>&1 | tail -6
 
 Expected: FAIL — the evaluator is still built with `workersHealthy`, so every readiness-dependent test fails (`readiness.get()` cannot consult a registry it was never given), and the new tests fail. Record the failing names.
 
-- [ ] **Step 2: Port `worker.ts`**
+- [x] **Step 2: Port `worker.ts`**
 
 1. Imports. Replace the `./services/readiness` import with `import { createReadinessEvaluator, type WorkerInitPhase } from './services/readiness';`; change the `./config/env` import to `import { AI_AGENTS_ENABLED, abuseSignalsEnabled, breezeRole, eventDispatchMode } from './config/env';`; add STATIC imports (spec §6 — the evaluator is built at module scope; both modules are leaves: `readinessConfig.ts` imports nothing, `workerReadinessRegistry.ts` imports only `import type { Worker } from 'bullmq'`):
 
@@ -1292,7 +1292,7 @@ and in the eventDispatch block's `catch`, after its `captureException(...)`:
     }
 ```
 
-- [ ] **Step 3: Delete `computeWorkersHealthy` (spec §6/§9)**
+- [x] **Step 3: Delete `computeWorkersHealthy` (spec §6/§9)**
 
 ```bash
 grep -rn "computeWorkersHealthy\|WorkersHealthyInput" apps/api/src   # expect: only services/readiness.ts and services/readiness.test.ts
@@ -1300,7 +1300,7 @@ grep -rn "computeWorkersHealthy\|WorkersHealthyInput" apps/api/src   # expect: o
 
 In `apps/api/src/services/readiness.ts` delete `export interface WorkersHealthyInput { … }` and `export function computeWorkersHealthy(…) { … }` with their doc comments (keep `WorkerInitPhase` — both entrypoints use it). In `apps/api/src/services/readiness.test.ts` delete the whole `describe('computeWorkersHealthy', …)` block (from `describe('computeWorkersHealthy'` to the end of file) and remove `computeWorkersHealthy` from the import. Re-run the grep: expect empty.
 
-- [ ] **Step 4: GREEN — boot suite, closure contract, typecheck (first GREEN since the merge)**
+- [x] **Step 4: GREEN — boot suite, closure contract, typecheck (first GREEN since the merge)**
 
 ```bash
 pnpm --filter @breeze/api exec vitest run src/worker.boot.test.ts src/services/workerEntrypointClosure.contract.test.ts \
@@ -1312,7 +1312,7 @@ pnpm --filter @breeze/api exec eslint src/worker.ts src/worker.boot.test.ts src/
 
 Expected: ALL PASS; typecheck exits 0; greps empty. If the closure test's seeded walk reports a new `routes/` file under the `./jobs/workerReadinessManifest` seed, STOP — the manifest's static closure grew beyond the two leaf modules; do not add an allowlist entry.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/api/src/worker.ts apps/api/src/worker.boot.test.ts apps/api/src/services/readiness.ts apps/api/src/services/readiness.test.ts
@@ -1348,7 +1348,7 @@ computeWorkersHealthy, WorkersHealthyInput and their test block deleted
 - Consumes: `envComposeParity.test.ts`'s two pairs (root `.env.example` ↔ `docker-compose.yml`; `deploy/.env.example` ↔ `deploy/docker-compose.prod.yml`) — every documented var (a `NAME=` or `# NAME=` line; prose does not count) must be referenced in its compose file; `resolveOfflineWorkerConcurrency` (1–20, default 5) in `jobs/offlineDetector.ts`; `PublicReadinessResponse` from `routes/readiness.ts`.
 - Produces: both stacks expose `READINESS_CACHE_TTL_MS`, `READINESS_PROBE_TIMEOUT_MS`, `OFFLINE_DETECTOR_WORKER_CONCURRENCY` to api and worker containers; docs describe the merged reality.
 
-- [ ] **Step 1: Pin the worker-service healthcheck rule (D5) — expected GREEN on first run; it is a pin**
+- [x] **Step 1: Pin the worker-service healthcheck rule (D5) — expected GREEN on first run; it is a pin**
 
 Append to `apps/api/src/config/productionReadinessWiring.test.ts`:
 
@@ -1382,7 +1382,7 @@ Append to `apps/api/src/config/productionReadinessWiring.test.ts`:
 
 Run `pnpm --filter @breeze/api exec vitest run src/config/productionReadinessWiring.test.ts` → PASS. Prove the assertions are load-bearing without editing compose: `grep -n "^      worker:" docker-compose.yml deploy/docker-compose.prod.yml` → empty (no `depends_on: worker:` stanza anywhere); `grep -n "/health/ready" docker-compose.yml deploy/docker-compose.prod.yml` → exactly the two worker healthchecks; `grep -n -- "--wait" scripts/prod/deploy.sh` → empty.
 
-- [ ] **Step 2: RED — document the knobs before mapping them (as `# NAME=` lines)**
+- [x] **Step 2: RED — document the knobs before mapping them (as `# NAME=` lines)**
 
 Root `.env.example`, directly after the existing `READINESS_PROBE_TIMEOUT_MS=3000` line (~line 63):
 
@@ -1415,7 +1415,7 @@ pnpm --filter @breeze/api exec vitest run src/config/envComposeParity.test.ts 2>
 
 Expected RED (record verbatim): self-host pair lists `OFFLINE_DETECTOR_WORKER_CONCURRENCY` as unwired; droplet pair lists `OFFLINE_DETECTOR_WORKER_CONCURRENCY`, `READINESS_CACHE_TTL_MS`, `READINESS_PROBE_TIMEOUT_MS`. If the droplet pair does NOT go red, the lines were written as prose rather than `# NAME=` — fix the lines, not the test.
 
-- [ ] **Step 3: GREEN — map them in both `x-api-env` anchors**
+- [x] **Step 3: GREEN — map them in both `x-api-env` anchors**
 
 `docker-compose.yml`: directly after `  READINESS_PROBE_TIMEOUT_MS: ${READINESS_PROBE_TIMEOUT_MS:-}` in the anchor (still before the `# Startup + agent-fleet behaviour` comment) add
 
@@ -1452,7 +1452,7 @@ done   # 3 each
 
 Expected: ALL PASS; both anchors report 3. (`deploy/docker-compose.prod.yml` `config` may need placeholder env values for `:?` required vars — if it does, reuse whatever invocation the Track C branch's own plan Task 3 gate used and record it in the report.)
 
-- [ ] **Step 4: `docs/operations/health-probes.md` — "Which probe goes where"**
+- [x] **Step 4: `docs/operations/health-probes.md` — "Which probe goes where"**
 
 Change the sentence `**Container healthchecks use \`/health\`, not \`/ready\`.**` to `**The \`api\` container healthchecks \`/health\`, not \`/ready\`.**` (rest of that paragraph unchanged) and append, after the paragraph about the unredirected 200 check, this new paragraph:
 
@@ -1477,7 +1477,7 @@ configured role, not the worker's.
 
 Also add one sentence to the final "Public readiness responses" paragraph: `The worker container's \`/health/ready\` follows the same rule and additionally carries \`role: "worker"\` and, on 503, a single \`reason\` of \`db\`, \`redis\`, \`workers-pending\`, \`migrations-pending\`, or \`shutting-down\`.`
 
-- [ ] **Step 5: `docs/deploy/worker-split.md` — the runbook step that waits on the worker's `/health/ready`**
+- [x] **Step 5: `docs/deploy/worker-split.md` — the runbook step that waits on the worker's `/health/ready`**
 
 In "Rollout" step 3, after `Confirm \`/health/ready\` returns 200 with \`{"ready": true, ...}\` before proceeding; a \`migrations-pending\` or \`redis\`/\`db\` reason means do not proceed.` add:
 
@@ -1497,7 +1497,7 @@ In "Rollout" step 3, after `Confirm \`/health/ready\` returns 200 with \`{"ready
 
 And in "Soak" (step 6), replace `Watch both containers' logs and \`/health/ready\`` with `Watch both containers' logs and \`/health/ready\` (the worker's body's \`consumerSummary.unavailable\` must stay 0)`.
 
-- [ ] **Step 6: `apps/docs/src/content/docs/monitoring/health.mdx` — the public docs page (spec §7)**
+- [x] **Step 6: `apps/docs/src/content/docs/monitoring/health.mdx` — the public docs page (spec §7)**
 
 Make exactly these edits (leave the load-balancer, Kubernetes, metrics and unrelated troubleshooting sections as they are):
 
@@ -1589,7 +1589,7 @@ pnpm --filter @breeze/docs build 2>&1 | tail -15
 
 Expected: build succeeds. If `@breeze/docs` has no installed dependencies in this worktree (the merged `pnpm install` should have covered it), report the exact error rather than skipping.
 
-- [ ] **Step 7: `deploy.sh` and tripwires**
+- [x] **Step 7: `deploy.sh` and tripwires**
 
 ```bash
 bash -n scripts/prod/deploy.sh
@@ -1599,7 +1599,7 @@ git diff --check
 
 Expected: syntax OK; `readiness_ok` defined once and called twice; no `curl … /health` smoke line remains (`productionReadinessWiring.test.ts` already asserts this).
 
-- [ ] **Step 8: The plan-text name correction (spec §9) — conditional**
+- [x] **Step 8: The plan-text name correction (spec §9) — conditional**
 
 ```bash
 grep -rn "OFFLINE_WORKER_CONCURRENCY" docs/superpowers/plans/2026-08-24-s0-track-c-readiness-offline-scaling.md docs/ apps/api/src scripts/ .env.example deploy/.env.example
@@ -1607,7 +1607,7 @@ grep -rn "OFFLINE_WORKER_CONCURRENCY" docs/superpowers/plans/2026-08-24-s0-track
 
 At plan-writing time the ONLY hit in the tree is the spec's own §9 sentence — the original plan already uses `OFFLINE_DETECTOR_WORKER_CONCURRENCY` (lines 39, 522). If the grep still finds no hit outside the spec, make no plan-text edit and state "no `OFFLINE_WORKER_CONCURRENCY` wording found in the plan; the code name is already used" in the commit message (see Open items #2). If a hit exists in the plan, replace it with `OFFLINE_DETECTOR_WORKER_CONCURRENCY`.
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add apps/api/src/config/productionReadinessWiring.test.ts docker-compose.yml deploy/docker-compose.prod.yml .env.example deploy/.env.example \
@@ -1638,7 +1638,7 @@ own probe, flag-gated optional consumers, and aggregate-only counts."
 - Consumes: `getWebhookWorker()` (singleton; NO attach at construction after Task 1), `initializeWebhookDelivery()` (attaches `'webhookDeliveryWorker'` then `start()`s), `configureWebhookFanout({ getWebhooksForEvent, createDeliveryRecord? })` + `handleWebhookFanoutEvent(event)`, the private `processNextJob()` reached the same way `webhookDelivery.claim.test.ts` does, `workerReadinessRegistry.snapshot()`.
 - Produces: pins for (a) job-level failure → `failed` + consumer stays `running`; (b) connection failure → `error` + `redis_disconnected`; (c) `emit('error')` never throws on a bare instance (constructor listener); (d) attach happens in `initializeWebhookDelivery()` and an api-role fan-out declares/attaches nothing; (e) main's three suites unchanged.
 
-- [ ] **Step 1: Write the test file**
+- [x] **Step 1: Write the test file**
 
 Each test gets a fresh module graph (`vi.resetModules()` + dynamic imports) because the singleton and the registry are module-level and `attach()` throws on a second attach of the same name.
 
@@ -1791,7 +1791,7 @@ describe('webhook delivery worker lifecycle -> readiness registry', () => {
 
 If `configureWebhookFanout`'s deps type or the fan-out's `createDeliveryRecord` outcome shape differs from the dedupe suite's usage (`webhookDelivery.dedupe.test.ts` lines ~85–130 are the template), copy that suite's exact shapes; never change production code to fit the test.
 
-- [ ] **Step 2: Run — expected GREEN — then prove (a)/(b)/(c)/(d) discriminate with reverted control mutations**
+- [x] **Step 2: Run — expected GREEN — then prove (a)/(b)/(c)/(d) discriminate with reverted control mutations**
 
 ```bash
 pnpm --filter @breeze/api exec vitest run src/workers/webhookDelivery.lifecycle.test.ts
@@ -1817,7 +1817,7 @@ pnpm --filter @breeze/api exec vitest run src/workers/webhookDelivery.lifecycle.
 
 Record both control runs (failing test names) in the commit message.
 
-- [ ] **Step 3: (e) main's three suites + init suite unchanged**
+- [x] **Step 3: (e) main's three suites + init suite unchanged**
 
 ```bash
 pnpm --filter @breeze/api exec vitest run src/workers/webhookDelivery.test.ts src/workers/webhookDelivery.claim.test.ts src/workers/webhookDelivery.dedupe.test.ts src/services/webhookDeliveryInit.test.ts src/jobs/workerReadinessCoverage.test.ts
@@ -1826,7 +1826,7 @@ pnpm --filter @breeze/api exec eslint src/workers/webhookDelivery.lifecycle.test
 
 Expected: ALL PASS with no edits to those files.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add apps/api/src/workers/webhookDelivery.lifecycle.test.ts
