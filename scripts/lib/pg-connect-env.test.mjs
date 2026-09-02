@@ -108,6 +108,33 @@ test('parses a bracketed IPv6 host with no explicit port', () => {
   assert.equal(vars.PGDATABASE, 'breeze');
 });
 
+test('parses a bracketed IPv6 host together with a query string', () => {
+  const vars = parseUrl('postgresql://user:pass@[::1]:5432/breeze?sslmode=require&connect_timeout=5');
+  assert.equal(vars.PGHOST, '::1');
+  assert.equal(vars.PGDATABASE, 'breeze');
+  assert.equal(vars.PGSSLMODE, 'require');
+});
+
+test('percent-decodes a user containing an escaped special character', () => {
+  const vars = parseUrl('postgresql://us%40er:pass@host:5432/db');
+  assert.equal(vars.PGUSER, 'us@er');
+});
+
+test('percent-decodes a database name containing an escaped space', () => {
+  const vars = parseUrl('postgresql://user:pass@host:5432/my%20db');
+  assert.equal(vars.PGDATABASE, 'my db');
+});
+
+test('distinguishes an explicit empty password from no password at all', () => {
+  const withColon = parseUrl('postgresql://user:@host:5432/db');
+  assert.equal(withColon.PGUSER, 'user');
+  assert.equal(withColon.PGPASSWORD, '');
+
+  const withoutColon = parseUrl('postgresql://user@host:5432/db');
+  assert.equal(withoutColon.PGUSER, 'user');
+  assert.equal(withoutColon.PGPASSWORD, '');
+});
+
 test('rejects a password with a truncated percent-escape instead of silently mangling it', () => {
   // A trailing bare '%' used to reach `printf %b` unchecked, which either
   // errored non-obviously or (platform-dependent) produced a corrupted
@@ -155,12 +182,38 @@ test('does not warn when the query string only has sslmode', () => {
   assert.equal(result.stderr, '');
 });
 
+test('reports multiple extra query parameters together, comma-joined', () => {
+  const script = `
+    set -euo pipefail
+    source "${LIB}"
+    pg_url_to_env "$1"
+  `;
+  const result = spawnSync(
+    'bash',
+    [
+      '-c',
+      script,
+      'bash',
+      'postgresql://user:pass@host:5432/db?sslmode=require&connect_timeout=5&application_name=backup',
+    ],
+    { encoding: 'utf8' },
+  );
+  assert.equal(result.status, 0);
+  assert.match(result.stderr, /connect_timeout,application_name/);
+});
+
 // --- Static regression guard -----------------------------------------------
 //
 // Mirrors the philosophy of scripts/check-selfhost-db-urls.sh: assert the
 // ABSENCE of the vulnerable pattern, not merely the presence of the fix, so
 // a future edit that reintroduces `pg_dump "$DATABASE_URL"` (or similar)
 // fails loudly instead of silently shipping the credential-on-argv bug again.
+//
+// Like any grep-based guard (same limitation as check-selfhost-db-urls.sh),
+// this catches the direct/literal pattern but not deliberate indirection —
+// e.g. assigning DATABASE_URL to a local var first, a line continuation
+// between the command and the URL, or `eval`. It's meant to catch an
+// accidental regression during a normal edit, not a determined bypass.
 const ARGV_SECRET_PATTERNS = [
   /pg_dump\s+"?\$\{?DATABASE_URL\}?"?/,
   /pg_restore\b[^\n]*-d\s+"?\$\{?DATABASE_URL\}?"?/,
