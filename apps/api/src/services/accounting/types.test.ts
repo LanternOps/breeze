@@ -7,15 +7,22 @@ import type {
   AccountingItemPayload,
   AccountingProvider,
   AccountingVoidInvoicePayload,
+  InvoicePushResult,
+  RealmSettings,
+  RemoteRef,
 } from './types';
 import type { AccountingConnection } from './accountingConnectionService';
 
 describe('AccountingProvider is fully typed (B8, multi-currency §11)', () => {
-  it('pushInvoice takes a connection, a currency-bearing invoice payload and line mappings', () => {
+  it('pushInvoice takes a connection, a currency-bearing invoice payload and line mappings, and returns a widened InvoicePushResult', () => {
     expectTypeOf<Parameters<AccountingProvider['pushInvoice']>>().toEqualTypeOf<
       [AccountingConnection, AccountingInvoicePayload, readonly AccountingInvoiceLineMapping[]]
     >();
+    expectTypeOf<ReturnType<AccountingProvider['pushInvoice']>>().toEqualTypeOf<Promise<InvoicePushResult>>();
     expectTypeOf<AccountingInvoicePayload['currencyCode']>().toEqualTypeOf<string>();
+    expectTypeOf<AccountingInvoicePayload['mapping']>().toEqualTypeOf<AccountingEntityMapping | null>();
+    expectTypeOf<InvoicePushResult['remoteTaxTotal']>().toEqualTypeOf<string | null>();
+    expectTypeOf<InvoicePushResult['remoteTotal']>().toEqualTypeOf<string | null>();
   });
 
   it('upsertCustomer and upsertItem carry currency and a nullable remote mapping', () => {
@@ -27,6 +34,10 @@ describe('AccountingProvider is fully typed (B8, multi-currency §11)', () => {
     >();
     expectTypeOf<AccountingCustomerPayload['currencyCode']>().toEqualTypeOf<string>();
     expectTypeOf<AccountingItemPayload['currencyCode']>().toEqualTypeOf<string>();
+    // upsertCustomer's create response surfaces CurrencyRef.value symmetrically
+    // with listRemoteCustomers/mapQboCustomer (multi-currency §11).
+    expectTypeOf<ReturnType<AccountingProvider['upsertCustomer']>>().toEqualTypeOf<Promise<RemoteRef>>();
+    expectTypeOf<RemoteRef['currencyCode']>().toEqualTypeOf<string | undefined>();
   });
 
   it('voidInvoice takes a connection, a currency-bearing void payload and a required mapping', () => {
@@ -37,9 +48,12 @@ describe('AccountingProvider is fully typed (B8, multi-currency §11)', () => {
     expectTypeOf<AccountingVoidInvoicePayload['invoiceId']>().toEqualTypeOf<string>();
   });
 
-  it('exposes a provider-neutral home-currency fetch for the connect flow', () => {
-    expectTypeOf<Parameters<AccountingProvider['fetchHomeCurrency']>>().toEqualTypeOf<[AccountingConnection]>();
-    expectTypeOf<ReturnType<AccountingProvider['fetchHomeCurrency']>>().toEqualTypeOf<Promise<string | null>>();
+  it('exposes a provider-neutral realm-settings fetch for the connect flow (REPLACES fetchHomeCurrency)', () => {
+    expectTypeOf<Parameters<AccountingProvider['fetchRealmSettings']>>().toEqualTypeOf<[AccountingConnection]>();
+    expectTypeOf<ReturnType<AccountingProvider['fetchRealmSettings']>>().toEqualTypeOf<Promise<RealmSettings>>();
+    expectTypeOf<RealmSettings['homeCurrency']>().toEqualTypeOf<string | null>();
+    expectTypeOf<RealmSettings['multiCurrencyEnabled']>().toEqualTypeOf<boolean | null>();
+    expectTypeOf<AccountingProvider>().not.toHaveProperty('fetchHomeCurrency');
   });
 
   it('keeps all money as major-unit decimal strings (spec §12: no integer-cents storage)', () => {

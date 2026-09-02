@@ -731,14 +731,18 @@
     "mappingSaved": "Asignación guardada.",
     "entitySynced": "Sincronizado con QuickBooks.",
     "confirmMatch": "Confirmar coincidencia",
-    "manualEntry": "Ingresar ID manualmente",
     "noProposals": "Aún no hay registros para asignar. Carga las asignaciones para comenzar.",
     "failedToLoadMappings": "No se pudieron cargar las asignaciones de QuickBooks.",
     "failedToLoadIncomeAccounts": "No se pudieron cargar las cuentas de ingresos.",
     "failedToSaveMapping": "No se pudo guardar la asignación.",
     "failedToSyncEntity": "No se pudo sincronizar con QuickBooks.",
     "failedToSaveIncomeAccount": "No se pudo guardar la cuenta de ingresos.",
-    "incomeAccountSaved": "Cuenta de ingresos guardada."
+    "incomeAccountSaved": "Cuenta de ingresos guardada.",
+    "searchPlaceholder": "Buscar en QuickBooks",
+    "searching": "Buscando…",
+    "noCandidates": "No hay coincidencias en QuickBooks para esa búsqueda.",
+    "failedToSearchCandidates": "No se pudo buscar en QuickBooks.",
+    "syncedWithTaxVariance": "Sincronizado con diferencia de impuestos"
   },
   "quickbooksIntegration": {
     "quickbooksConnected": "QuickBooks conectado.",
@@ -766,7 +770,13 @@
     "reconnectQuickBooks": "Vuelva a conectar QuickBooks",
     "connectToQuickBooks": "Conéctate a QuickBooks",
     "automaticOnIssue": "Automático en emisión",
-    "manual": "Manual"
+    "manual": "Manual",
+    "refreshSettings": "Actualizar configuración",
+    "settingsRefreshed": "Configuración de QuickBooks actualizada.",
+    "failedToRefreshSettings": "No se pudo actualizar la configuración de QuickBooks.",
+    "homeCurrency": "Moneda base",
+    "multiCurrency": "Multimoneda",
+    "multiCurrencyUnknown": "Desconocido — actualiza la configuración para verificar"
   },
   "securityIntegration": {
     "notConfigured": "No configurado",

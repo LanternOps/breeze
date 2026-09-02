@@ -143,33 +143,38 @@ export function normalizeAccountingPayment(
 /*
  * DEFERRED ENFORCEMENT + INTEGRATION CONTRACT (multi-currency §11, wave 8 → Phase C/D).
  *
- * WHAT THIS MODULE IS TODAY: a guard PRIMITIVE with a unit contract. It is
- * called by nothing, because nothing can push: QuickbooksProvider.pushInvoice /
- * voidInvoice are `NotImplemented: Phase C`, reconcileChanges is
- * `NotImplemented: Phase D`, and the entity-mapping table that would resolve a
- * remote invoice id is not in the repo. Exporting a pure function does NOT stop
- * a future caller from reaching `provider.pushInvoice` directly — this comment
- * is advisory, so Phase C must convert it into a mechanical gate:
+ * STATUS: items 1-3 below are DELIVERED (Phase C). Only item 4 (the Phase-D
+ * payment applier) remains outstanding — this comment stays as its contract
+ * until that lands.
  *
- *  1. ONE GUARDED COORDINATOR. Phase C exposes exactly one sanctioned entry —
- *     `pushInvoiceToAccounting(...)` — which loads the connection and the typed
+ *  1. DELIVERED. ONE GUARDED COORDINATOR —
+ *     `pushInvoiceToAccounting`/`voidInvoiceInAccounting` in
+ *     `accountingInvoicePush.ts` — loads the connection and the typed
  *     payload, calls assertAccountingInvoicePushCurrency FIRST, and only then
  *     reaches the provider transport. `provider.pushInvoice` / `voidInvoice`
  *     stay transport-only and are never called from anywhere else.
- *  2. A STATIC CALL-SITE GATE, using the AST technique in
- *     apps/api/src/services/stripeCheckoutCallSites.test.ts: parse apps/api/src
- *     + ee, find every call expression whose callee ends in `.pushInvoice` or
- *     `.voidInvoice` on an AccountingProvider, and fail unless the enclosing
- *     module is the coordinator itself. That is what makes the guard
- *     unbypassable rather than merely available.
- *  3. apps/api/src/__tests__/integration/accountingInvoicePushCurrency.integration.test.ts —
- *     seed a USD QBO connection + an EUR invoice, call the real coordinator,
- *     assert ACCOUNTING_INVOICE_CURRENCY_MISMATCH, assert NO QBO request was
- *     made and NO sync/mapping state was persisted; plus a null-home-currency
- *     case asserting ACCOUNTING_HOME_CURRENCY_UNKNOWN with reconnect guidance.
- *     assertAccountingInvoicePushCurrency must run immediately after the typed
+ *  2. DELIVERED. A STATIC CALL-SITE GATE —
+ *     `accountingInvoicePushCallSites.test.ts`, using the AST technique in
+ *     `stripeCheckoutCallSites.test.ts`: parses apps/api/src + ee, finds every
+ *     call expression whose callee ends in `.pushInvoice` or `.voidInvoice` on
+ *     an AccountingProvider, and fails unless the enclosing module is the
+ *     coordinator itself. That is what makes the guard unbypassable rather
+ *     than merely available.
+ *  3. DELIVERED. `apps/api/src/__tests__/integration/accountingInvoicePushCurrency.integration.test.ts` —
+ *     seeds a USD QBO connection + an EUR invoice, calls the real coordinator,
+ *     asserts `currency_mismatch` (ACCOUNTING_INVOICE_CURRENCY_MISMATCH),
+ *     asserts NO QBO request was made (a `fetch` spy) and NO sync/mapping
+ *     state was persisted (no `accounting_entity_mappings` row for the
+ *     invoice at all); a null-home-currency case asserting
+ *     `home_currency_unknown` (ACCOUNTING_HOME_CURRENCY_UNKNOWN) the same
+ *     way; and a same-currency happy-path case (provider transport mocked at
+ *     the `fetch` boundary) proving the mapping row lands `synced` and a
+ *     second push against the same invoice UPDATEs the existing mapping row
+ *     rather than inserting a second one, against the real
+ *     `accounting_entity_mappings_breeze_uniq` unique index.
+ *     assertAccountingInvoicePushCurrency runs immediately after the typed
  *     connection + invoice payload are loaded and BEFORE any network call.
- *  4. A Phase-D payment applier that follows the ESTABLISHED INVOICE-FIRST LOCK
+ *  4. OUTSTANDING (Phase D). A payment applier that follows the ESTABLISHED INVOICE-FIRST LOCK
  *     ORDER (invoiceService.recordPayment, apps/api/src/services/invoiceService.ts:1305-1314:
  *     "ONE transaction, invoice row lock FIRST"). Concretely, in one transaction:
  *       a. SELECT the invoice row FOR UPDATE;

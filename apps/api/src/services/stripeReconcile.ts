@@ -182,6 +182,9 @@ export async function reflectStripeRefund(input: RefundInput): Promise<void> {
       // this is a webhook path with no Hono request context, so we use the
       // system-scope audit writer (mirrors quoteExpiryReaper), not writeRouteAudit.
       const [snapshot] = await db.select().from(invoicePayments).where(eq(invoicePayments.id, paymentId)).limit(1);
+      // Phase D (QBO payment pull-back): clear the 'payment' accounting_entity_mappings
+      // row for this invoice_payments id inline here — see orgMerge.runPostPassFixups'
+      // orphan-sweep comment.
       await db.delete(invoicePayments).where(eq(invoicePayments.id, paymentId));
       await db.update(invoiceStripePayments)
         .set({ status: 'refunded', invoicePaymentId: null, lastEventAt: new Date(), updatedAt: new Date() })

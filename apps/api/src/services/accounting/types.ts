@@ -33,6 +33,8 @@ export interface RemoteCustomer extends RemoteEntity {
   shipAddr?: RemoteAddress;
   active?: boolean;
   syncToken?: string;
+  /** QBO CurrencyRef.value, surfaced from listing/create responses (multi-currency §11). */
+  currencyCode?: string;
 }
 
 export interface RemoteItem extends RemoteEntity {
@@ -53,6 +55,13 @@ export interface RemoteRef {
   id: string;
   syncToken?: string;
   docNumber?: string;
+  /**
+   * QBO CurrencyRef.value, surfaced on a CREATE response so callers get the
+   * realm-assigned currency symmetrically with listRemoteCustomers/
+   * mapQboCustomer (multi-currency §11). Not populated by every provider
+   * method — currently only upsertCustomer's Customer create response.
+   */
+  currencyCode?: string;
 }
 
 /** A previously-synced remote entity, for update-vs-create decisions. */
@@ -117,6 +126,15 @@ export interface AccountingInvoicePayload {
   taxTotal: string;
   total: string;
   lines: readonly AccountingInvoiceLinePayload[];
+  /**
+   * Present on a re-push/retry: the previously-pushed QBO Invoice this call
+   * should sparse-update instead of create (spec §"Provider upsert semantics
+   * for invoices" — Breeze invoices are immutable post-issue, so an update
+   * only re-sends the same content after a partial failure). Embedded here
+   * rather than as a fourth `pushInvoice` argument because the provider
+   * method's parameter tuple is a pinned type contract (types.test.ts).
+   */
+  mapping: AccountingEntityMapping | null;
 }
 
 /**
@@ -129,6 +147,18 @@ export interface AccountingVoidInvoicePayload {
   docNumber: string | null;
   /** The invoice's STAMPED currency, carried so the guard applies on the way out too. */
   currencyCode: string;
+}
+
+export interface InvoicePushResult extends RemoteRef {
+  /** QBO's TxnTaxDetail.TotalTax from the response, major-unit string, null if absent. */
+  remoteTaxTotal: string | null;
+  /** QBO's TotalAmt from the response, major-unit string, null if absent. */
+  remoteTotal: string | null;
+}
+
+export interface RealmSettings {
+  homeCurrency: string | null;
+  multiCurrencyEnabled: boolean | null;
 }
 
 export interface ChangeSet {
@@ -155,12 +185,13 @@ export interface AccountingProvider {
   exchangeCode(code: string, realmId: string): Promise<ConnectionTokens>;
   refresh(refreshToken: string): Promise<ConnectionTokens>;
   /**
-   * The realm/organization's home currency, normalized to an uppercase
-   * three-letter code, or null when the provider does not report one.
+   * The realm/organization's settings relevant to invoice push: home currency
+   * (normalized to an uppercase three-letter code, or null when the provider
+   * does not report one) and whether multi-currency is enabled on the realm.
    * NOT restricted to Breeze's curated supported-currency list — it is a cache
    * of an external fact (multi-currency §11).
    */
-  fetchHomeCurrency(conn: AccountingConnection): Promise<string | null>;
+  fetchRealmSettings(conn: AccountingConnection): Promise<RealmSettings>;
   listRemoteCustomers(conn: AccountingConnection, query?: string): Promise<RemoteCustomer[]>;
   listRemoteItems(conn: AccountingConnection, query?: string): Promise<RemoteItem[]>;
   listRemoteIncomeAccounts(conn: AccountingConnection): Promise<RemoteIncomeAccount[]>;
@@ -178,7 +209,7 @@ export interface AccountingProvider {
     conn: AccountingConnection,
     invoice: AccountingInvoicePayload,
     lineMappings: readonly AccountingInvoiceLineMapping[],
-  ): Promise<RemoteRef>;
+  ): Promise<InvoicePushResult>;
   voidInvoice(
     conn: AccountingConnection,
     invoice: AccountingVoidInvoicePayload,
