@@ -1053,6 +1053,7 @@
     },
     "toasts": {
       "inviteSent": "Davet gönderildi",
+      "inviteSentAmbiguousContact": "Davet gönderildi, ancak birden fazla kişi bu e-posta adresini paylaştığı için hiçbir kişi bağlanamadı. Bir kişi bağlanana kadar bu kullanıcı e-posta yoluyla gelen talepleri göremeyecek.",
       "pendingInvited": "Davet edildi {{count}} bekleyen kullanıcı(lar)",
       "inviteResent": "Yeniden davet et",
       "reactivated": "Kullanıcı yeniden etkinleştirildi",

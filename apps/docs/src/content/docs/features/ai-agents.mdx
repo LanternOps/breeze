@@ -74,6 +74,81 @@ In **Settings → AI Agents**, set the agent's mode to **Act**. The API refuses 
 
 Set the agent's mode back to **Off** or **Shadow**, or disable the agent — either stops unattended execution for that agent immediately. Disabling `BREEZE_AI_AGENTS_ENABLED` (see [Enabling agents](#enabling-agents)) is the platform-wide switch: it stops every agent, in every mode, for the whole deployment.
 
+## Graduation (feedback loop)
+
+Graduation is how an agent earns narrower supervision by evidence rather than by an operator's optimism. Breeze records the outcome of every operation an agent completes, and once a single operation has a long enough clean record you can ask a second person to pre-authorize it — so future runs take that one action without waiting in the Approvals inbox.
+
+Open **Settings → AI Agents**, edit an existing agent, and scroll to **Graduation**. The panel only appears on an agent that already exists; there is nothing to show while you are creating one.
+
+### What gets recorded
+
+Every operation an agent finishes produces exactly one piece of evidence, per outcome:
+
+| Outcome | What it means |
+|---|---|
+| **Executed** | The agent actually attempted the operation and the execution reported success. |
+| **Verified** | It executed *and* the follow-up check confirmed the result held — or no follow-up check applied to it. This is the count graduation is measured on. |
+| **Failed** | An **attempted** failure only. A proposal that was refused, blocked by a live guardrail re-check, or stopped before anything ran is not a failure — nothing was tried. |
+| **Recurred** | The follow-up check saw the same condition come back after the agent had fixed it. |
+
+Thumbs-up and thumbs-down on an [alert verdict](#alert-verdicts) are recorded the same way. They do not feed graduation — a thumbs-up is a supervision signal, not proof the verdict was right — but they are reported on the [AI impact](/features/ai-impact/) page.
+
+The panel reads a rolling **30-day** window. If an operation was previously demoted, the window starts at the demotion instead, so a bad record cannot be outlived by evidence that predates it.
+
+### When an operation becomes eligible
+
+Each row shows the operation, its state, and the verified, failed, recurred and first-verified figures behind that state. States are **Tracking**, **Eligible**, **Promoted** and **Demoted**.
+
+An operation becomes **Eligible** only when all of these hold:
+
+- The partner-wide agent allows that operation.
+- **20 verified** executions in the window. This is the promotion threshold, tunable per partner; an organization can raise it but never lower it below the partner's figure.
+- The **first** verified execution is at least **14 days** old — volume alone is not enough, the record has to have lasted.
+- **Zero** failures and **zero** recurrences in the same window.
+- The operation is one that can be pre-authorized at all. Not every action is.
+
+When a row is not eligible, the **Why not yet** column says which of those it fell on — "The partner-wide agent does not allow this operation yet", "Not enough verified executions yet", "The first verified execution is still too recent", "A failure or a recurrence was recorded in this window", or "This operation can never be pre-authorized".
+
+Below the graduation table, an **act-mode reliability** table shows how Act mode's own operations have been performing — executed, verified, failed and recurred. It is read-only by design: those are not policy operations, so they can never be pre-authorized and never carry a Promote button.
+
+<Aside type="caution" title="Partner-level pre-authorized operations no longer apply to organizations on their own">
+  A partner-wide agent's list of pre-authorized operations is now a **ceiling** — what an organization *may* be granted — not an inherited grant. An organization whose agent has no override of its own now resolves to **no** pre-authorized operations, regardless of what the partner baseline lists.
+
+  Each organization has to be granted the operation separately: through graduation, or by editing that organization's own agent. The partner agent's form says so under **Unattended policy authorization**. If you relied on a partner-level list reaching organizations that have no agent of their own, add those grants explicitly.
+</Aside>
+
+### Promoting an operation
+
+Promotion is never automatic, and never something an agent can do for itself.
+
+<Steps>
+
+1. In the **Graduation** panel, click **Promote** on an Eligible row. The button only appears on an Eligible row, and only when pre-authorized execution is switched on for the deployment.
+
+2. Confirm. This raises a **four-eyes** approval request — see [Four-eyes actions](/features/ai/#four-eyes-actions--a-second-person-approves). A **different** person has to approve it; the requester cannot.
+
+3. Once approved, the operation is added to that organization's agent and its graduation row moves to **Promoted**.
+
+</Steps>
+
+The same request can be raised straight from the Approvals inbox. On an eligible card, **Approve and always allow** approves the request in front of you *and* raises the pre-authorization request in one step. It only appears on supervised cards whose operation is already eligible, and never on a critical-risk one.
+
+<Aside>
+  Promotion applies to **future runs only**. It never authorizes the request you are looking at, or anything else already waiting for a decision — those still follow the normal approval.
+</Aside>
+
+Promotion depends on the deployment-wide pre-authorized-execution setting (`BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED`, off by default and not yet generally available). With it off the panel still loads and still shows the evidence — it says *"Pre-authorized execution is turned off for this deployment; these figures are informational"* — but no operation can be promoted.
+
+### Demotion is automatic
+
+Demotion is always on and does not depend on any setting.
+
+The first attempted failure of a pre-authorized operation, or a recurrence after the agent fixed something, removes that operation from the organization's agent immediately, in the same step that records the failure. Breeze notifies the agent's recipients at high priority, naming the agent and the operation and saying whether the last attempt failed or the alert it fixed came back.
+
+Demotion touches nothing else. The agent stays enabled, its mode is unchanged, its other operations are unchanged, and the partner-wide baseline is never edited. The graduation row moves to **Demoted** and keeps a record of the promotion that preceded it.
+
+Re-promotion is not automatic. The row returns to **Tracking** as soon as a fresh verified execution lands after the demotion, and it has to earn eligibility again from there — the window now starts at the demotion, so the pre-demotion record cannot count twice.
+
 ## Agent activity in the audit trail
 
 Actions that originate from an agent are attributed to **the agent**, not to the person who configured it or happened to be signed in. Agent-created entries in the audit log carry the agent as the actor, so an agent's work is never mistaken for a technician's during a review.

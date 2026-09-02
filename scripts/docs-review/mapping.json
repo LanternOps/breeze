@@ -2329,11 +2329,39 @@
       "pattern": "apps/api/src/routes/aiAgents.ts",
       "docs": [
         "features/ai-agents.mdx",
+        "features/ai-impact.mdx",
         "reference/users-and-roles.mdx"
       ]
     },
     {
       "pattern": "apps/api/src/services/aiAgents/**",
+      "docs": [
+        "features/ai-agents.mdx",
+        "features/ai-impact.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/jobs/aiAgentImpactRollup.ts",
+      "docs": [
+        "features/ai-impact.mdx",
+        "deploy/upgrades.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/jobs/aiAgentGraduationWorker.ts",
+      "docs": [
+        "features/ai-agents.mdx",
+        "deploy/upgrades.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/aiAgents/ImpactPage.tsx",
+      "docs": [
+        "features/ai-impact.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/settings/AiAgentGraduationPanel.tsx",
       "docs": [
         "features/ai-agents.mdx"
       ]

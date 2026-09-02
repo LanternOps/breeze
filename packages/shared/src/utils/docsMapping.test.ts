@@ -32,6 +32,12 @@ describe('getDocsForPath', () => {
       expect(result.url).toBe(`${DOCS_BASE_URL}/features/ai-agents/`);
     });
 
+    it('/ai-agents/impact beats the generic /ai-agents entry', () => {
+      const result = getDocsForPath('/ai-agents/impact');
+      expect(result.label).toBe('AI Impact');
+      expect(result.url).toBe(`${DOCS_BASE_URL}/features/ai-impact/`);
+    });
+
     it('/admin/llm-provider-catalog beats the generic /admin entry', () => {
       const result = getDocsForPath('/admin/llm-provider-catalog');
       expect(result.label).toBe('LLM Provider Catalog');
