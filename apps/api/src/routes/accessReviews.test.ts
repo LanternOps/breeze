@@ -37,13 +37,21 @@ vi.mock('../db', () => ({
     transaction: vi.fn()
   },
   runOutsideDbContext: vi.fn((fn: () => any) => fn()),
-  withSystemDbAccessContext: vi.fn(async (fn: () => any) => fn())
+  withSystemDbAccessContext: vi.fn(async (fn: () => any) => fn()),
+  getCurrentDbAccessContext: vi.fn(() => ({ scope: 'system', orgId: null, accessibleOrgIds: null }))
 }));
 
 vi.mock('../db/schema', () => ({
   accessReviews: {},
   accessReviewItems: {},
   users: {},
+  userPasskeys: {
+    id: { __column: 'user_passkeys.id' },
+    userId: { __column: 'user_passkeys.user_id' },
+    credentialId: { __column: 'user_passkeys.credential_id' },
+    name: { __column: 'user_passkeys.name' },
+    disabledAt: { __column: 'user_passkeys.disabled_at' },
+  },
   roles: {},
   rolePermissions: {},
   permissions: {},
@@ -92,6 +100,7 @@ vi.mock('../services/authLifecycle', async (importOriginal) => {
 });
 
 import { db } from '../db';
+import { users, userPasskeys } from '../db/schema';
 import { authMiddleware } from '../middleware/auth';
 import { runPostCommitCleanup } from '../services/authLifecycle';
 
@@ -426,25 +435,52 @@ describe('access review routes', () => {
     // file). Route .returning() generically: advanceUserEpochs and the final
     // accessReviews update both just need a truthy row back;
     // revokeAllRefreshFamilies never calls .returning() at all.
-    function mockCompleteTx() {
-      const txDelete = vi.fn().mockReturnValue({
-        where: vi.fn().mockResolvedValue(undefined)
-      });
+    function mockCompleteTx(opts: {
+      hasOtherMembership?: boolean;
+      passkeyRows?: Array<{ id: string; credentialId: string; name: string | null }>;
+    } = {}) {
+      const { hasOtherMembership = true, passkeyRows = [] } = opts;
       const capturedUpdates: Array<Record<string, unknown>> = [];
+      const capturedDeletes: unknown[] = [];
+      const txDelete = vi.fn((table: unknown) => {
+        capturedDeletes.push(table);
+        return {
+          where: vi.fn(() => {
+            const ret: any = Promise.resolve(undefined);
+            ret.returning = () => Promise.resolve(table === userPasskeys ? passkeyRows : []);
+            return ret;
+          })
+        };
+      });
+      // Orphan checks read partnerUsers/organizationUsers; the factor-reset
+      // inventory snapshot reads `users` — route by table identity.
+      const txSelect = vi.fn(() => ({
+        from: vi.fn((table: unknown) => ({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue(
+              table === users
+                ? [{ mfaEnabled: true, mfaMethod: 'totp', mfaSecret: 'enc', mfaRecoveryCodes: ['h1'], phoneNumber: null, phoneVerified: false }]
+                : hasOtherMembership ? [{ id: 'other-link' }] : []
+            )
+          })
+        }))
+      }));
       const txUpdate = vi.fn((_table: any) => ({
         set: (values: Record<string, unknown>) => {
           capturedUpdates.push(values);
           return {
-            where: () => ({
-              returning: () => Promise.resolve([updatedReview])
-            })
+            where: () => {
+              const ret: any = Promise.resolve(undefined);
+              ret.returning = () => Promise.resolve('mfaSecret' in values ? [{ id: 'cleared' }] : [updatedReview]);
+              return ret;
+            }
           };
         }
       }));
       vi.mocked(db.transaction).mockImplementation(async (fn) => {
-        return fn({ delete: txDelete, update: txUpdate } as any);
+        return fn({ delete: txDelete, update: txUpdate, select: txSelect } as any);
       });
-      return { txDelete, txUpdate, capturedUpdates };
+      return { txDelete, txUpdate, txSelect, capturedUpdates, capturedDeletes };
     }
 
     function seedReviewSelects(revokedItems: Array<{ userId: string }>) {

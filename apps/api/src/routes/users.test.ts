@@ -117,6 +117,9 @@ vi.mock('../services/permissions', () => ({
 
 vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn) => fn()),
+  // D12 (RMM-QA-166): the factor-reset service asserts it runs in system
+  // context. Default to system so route tests exercise the real service.
+  getCurrentDbAccessContext: vi.fn(() => ({ scope: 'system', orgId: null, accessibleOrgIds: null })),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   db: {
@@ -150,6 +153,13 @@ vi.mock('../db', () => ({
 
 vi.mock('../db/schema', () => ({
   users: {},
+  userPasskeys: {
+    id: { __column: 'user_passkeys.id' },
+    userId: { __column: 'user_passkeys.user_id' },
+    credentialId: { __column: 'user_passkeys.credential_id' },
+    name: { __column: 'user_passkeys.name' },
+    disabledAt: { __column: 'user_passkeys.disabled_at' },
+  },
   partnerUsers: {},
   organizationUsers: {},
   roles: {},
@@ -180,6 +190,7 @@ vi.mock('drizzle-orm', async (importOriginal) => {
   return {
     ...actual,
     eq: vi.fn(actual.eq),
+    inArray: vi.fn(actual.inArray),
   };
 });
 
@@ -274,6 +285,9 @@ vi.mock('../services/authLifecycle', async (importOriginal) => {
 
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { eq } from 'drizzle-orm';
+import { inArray } from 'drizzle-orm';
+import { users, userPasskeys } from '../db/schema';
+import { getRedis } from '../services/redis';
 import { clearPermissionCache, getUserPermissions } from '../services/permissions';
 import { authMiddleware } from '../middleware/auth';
 import { runPostCommitCleanup } from '../services/authLifecycle';
@@ -2001,31 +2015,56 @@ describe('user routes', () => {
     // `.set()` call's values so tests can assert the epoch/family-revoke
     // shapes fired, and routes .returning() by whether the values look like
     // an epoch bump (mirrors advanceUserEpochs' real SET shape).
-    function mockRemoveMembershipTx(opts: { deletedRows: Array<{ id: string }>; hasOtherMembership?: boolean }) {
-      const { deletedRows, hasOtherMembership = true } = opts;
+    function mockRemoveMembershipTx(opts: {
+      deletedRows: Array<{ id: string }>;
+      hasOtherMembership?: boolean;
+      passkeyRows?: Array<{ id: string; credentialId: string; name: string | null }>;
+      targetId?: string;
+    }) {
+      const { deletedRows, hasOtherMembership = true, passkeyRows = [], targetId = 'target' } = opts;
       const capturedUpdates: Array<Record<string, unknown>> = [];
-      const txDelete = vi.fn().mockReturnValue({
-        where: vi.fn().mockReturnValue({
-          returning: vi.fn().mockResolvedValue(deletedRows)
-        })
-      });
-      const txSelect = vi.fn().mockReturnValue({
-        from: vi.fn().mockReturnValue({
+      // Ordered trace of tx operations so tests can assert D3's order.
+      const calls: string[] = [];
+      const txDelete = vi.fn((table: unknown) => {
+        calls.push(table === userPasskeys ? 'delete-passkeys' : 'delete-membership');
+        return {
           where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue(hasOtherMembership ? [{ id: 'other-link' }] : [])
+            returning: vi.fn().mockResolvedValue(table === userPasskeys ? passkeyRows : deletedRows)
           })
-        })
+        };
       });
+      // Orphan checks read partnerUsers/organizationUsers; the factor-reset
+      // inventory snapshot reads `users` — route by table identity.
+      const txSelect = vi.fn(() => ({
+        from: vi.fn((table: unknown) => ({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue(
+              table === users
+                ? [{ mfaEnabled: true, mfaMethod: 'totp', mfaSecret: 'enc', mfaRecoveryCodes: ['h1'], phoneNumber: '+15550100', phoneVerified: true }]
+                : hasOtherMembership ? [{ id: 'other-link' }] : []
+            )
+          })
+        }))
+      }));
       const txUpdate = vi.fn((_table: any) => ({
         set: (values: Record<string, unknown>) => {
           capturedUpdates.push(values);
+          calls.push(
+            'authEpoch' in values ? 'epochs'
+              : 'revokedReason' in values ? 'families'
+              : 'mfaSecret' in values ? 'clear-factors'
+              : values.status === 'disabled' ? 'neutralize'
+              : 'update'
+          );
           return {
             where: () => {
               const ret: any = Promise.resolve(undefined);
               ret.returning = () =>
-                values && 'authEpoch' in values
-                  ? Promise.resolve([{ authEpoch: 1, mfaEpoch: 0, emailEpoch: 0, passwordResetEpoch: 0 }])
-                  : Promise.resolve([]);
+                'authEpoch' in values
+                  ? Promise.resolve([{ authEpoch: 2, mfaEpoch: 2, emailEpoch: 0, passwordResetEpoch: 0 }])
+                  : 'mfaSecret' in values
+                    ? Promise.resolve([{ id: targetId }])
+                    : Promise.resolve([]);
               return ret;
             }
           };
@@ -2034,7 +2073,7 @@ describe('user routes', () => {
       vi.mocked(db.transaction).mockImplementation(async (fn: any) =>
         fn({ delete: txDelete, select: txSelect, update: txUpdate })
       );
-      return { txDelete, txSelect, txUpdate, capturedUpdates };
+      return { txDelete, txSelect, txUpdate, capturedUpdates, calls };
     }
 
     it('removes a partner user, advances their epoch + revokes refresh families in-tx, then runs post-commit cleanup', async () => {
@@ -2142,28 +2181,46 @@ describe('user routes', () => {
       } as any;
     }
 
-    // tx stub for invalidateMfaAssuranceAfterFactorChange: the clear update takes
-    // no .returning(); advanceUserEpochs({mfa}) sets `mfaEpoch` and RETURNs the
-    // epoch row; revokeAllRefreshFamilies sets revoked_at/revoked_reason.
-    function mockFactorChangeTx() {
+    // tx stub for resetAllFactorsAndInvalidate: advanceUserEpochs({mfa}) sets
+    // `mfaEpoch` and RETURNs the epoch row; revokeAllRefreshFamilies sets
+    // revoked_at/revoked_reason; resetAllFactors reads the inventory (select),
+    // clears users columns (update … returning) and deletes passkeys
+    // (delete … returning).
+    function mockFactorChangeTx(opts: {
+      inventory?: Partial<{ mfaEnabled: boolean; mfaMethod: string | null; mfaSecret: string | null; mfaRecoveryCodes: unknown; phoneNumber: string | null; phoneVerified: boolean }>;
+      passkeyRows?: Array<{ id: string; credentialId: string; name: string | null }>;
+    } = {}) {
+      const inventoryRow = { mfaEnabled: false, mfaMethod: null, mfaSecret: null, mfaRecoveryCodes: null, phoneNumber: null, phoneVerified: false, ...opts.inventory };
+      const passkeyRows = opts.passkeyRows ?? [];
       const capturedUpdates: Array<Record<string, unknown>> = [];
+      const calls: string[] = [];
+      const txSelect = vi.fn(() => ({
+        from: vi.fn(() => ({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([inventoryRow]) }) }))
+      }));
       const txUpdate = vi.fn((_table: any) => ({
         set: (values: Record<string, unknown>) => {
           capturedUpdates.push(values);
+          calls.push('mfaEpoch' in values ? 'epochs' : 'revokedReason' in values ? 'families' : 'mfaSecret' in values ? 'clear-factors' : 'update');
           return {
             where: () => {
               const ret: any = Promise.resolve(undefined);
               ret.returning = () =>
-                values && 'mfaEpoch' in values
+                'mfaEpoch' in values
                   ? Promise.resolve([{ authEpoch: 0, mfaEpoch: 7, emailEpoch: 0, passwordResetEpoch: 0 }])
-                  : Promise.resolve([]);
+                  : 'mfaSecret' in values
+                    ? Promise.resolve([{ id: TARGET }])
+                    : Promise.resolve([]);
               return ret;
             }
           };
         }
       }));
-      vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn({ update: txUpdate }));
-      return { capturedUpdates };
+      const txDelete = vi.fn((table: unknown) => {
+        calls.push(table === userPasskeys ? 'delete-passkeys' : 'delete');
+        return { where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue(table === userPasskeys ? passkeyRows : []) }) };
+      });
+      vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn({ select: txSelect, update: txUpdate, delete: txDelete }));
+      return { capturedUpdates, calls, txDelete };
     }
 
     it('clears the factor, bumps mfa_epoch + revokes families in-tx (system context), then post-commit cleanup', async () => {
