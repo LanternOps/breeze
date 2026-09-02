@@ -81,6 +81,7 @@ import type { AccountingEntityMapping as AccountingEntityMappingRow } from '../.
 import { accountingConnections } from '../../db/schema';
 import { assertNoAmbientDbContext, type DbContextRunner } from './dbContextGuard';
 import { AccountingCurrencyContractError, normalizeAccountingPayment } from './accountingCurrency';
+import { paymentMappingRemoteId } from './accountingPaymentMarker';
 import type { AccountingConnection } from './accountingConnectionService';
 import type { ChangeSetPaymentLine } from './types';
 import { recomputeInvoiceStatus } from '../invoiceService';
@@ -143,17 +144,12 @@ interface PendingAudit {
 // Pure helpers
 // ---------------------------------------------------------------------------
 
-/**
- * `<PaymentId>/<remoteInvoiceId>` — plan decision 1.
- *
- * One QuickBooks Payment can settle SEVERAL invoices (a split payment carries
- * one `Line` per invoice). `accounting_entity_mappings_remote_uniq` is unique on
- * `(integration_id, remote_entity_type, remote_entity_id)`, so a bare Payment id
- * would let only the first split line claim a mapping and the rest would collide.
- * Qualifying it by the invoice makes each (payment, invoice) pair its own claim,
- * and `reverseAccountingPayment` recovers the whole set with a `<PaymentId>/%`
- * prefix match.
- */
+// The composite at-most-once key moved to the dependency-free marker module in
+// Phase D2 so the PUSH coordinator can use it without importing this module —
+// invoiceService -> accountingPaymentPush -> accountingPaymentPull ->
+// invoiceService would be a real cycle. Re-exported so nothing else has to move.
+export { paymentMappingRemoteId } from './accountingPaymentMarker';
+
 /**
  * Prefix on every error THIS module writes to an invoice mapping's `last_error`
  * (final-review finding G).
@@ -170,10 +166,6 @@ interface PendingAudit {
  * Contains no LIKE metacharacters, so it is safe as a `<prefix>%` pattern.
  */
 export const PAYMENT_PULL_ERROR_PREFIX = 'Payment pull: ';
-
-export function paymentMappingRemoteId(remotePaymentId: string, remoteInvoiceId: string): string {
-  return `${remotePaymentId}/${remoteInvoiceId}`;
-}
 
 /**
  * QuickBooks PaymentMethod name -> Breeze `payment_method` enum.

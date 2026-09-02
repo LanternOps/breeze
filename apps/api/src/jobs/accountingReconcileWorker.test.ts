@@ -174,6 +174,7 @@ function line(overrides: Partial<ChangeSetPaymentLine> = {}): ChangeSetPaymentLi
     remotePaymentSyncToken: '0',
     paymentMethodName: 'Check',
     paymentRefNum: '4471',
+    breezePaymentId: null,
     ...overrides,
   };
 }

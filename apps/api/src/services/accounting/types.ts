@@ -156,6 +156,43 @@ export interface InvoicePushResult extends RemoteRef {
   remoteTotal: string | null;
 }
 
+/**
+ * One Breeze payment, as sent to the accounting provider (Phase D2).
+ *
+ * Deliberately carries NO payment-method reference: mapping Breeze's
+ * `payment_method` enum onto QuickBooks `PaymentMethod` entities needs a
+ * per-realm PaymentMethod list Breeze does not fetch, and a wrong rail on a
+ * money row is worse than no rail at all (spec "Out of scope").
+ */
+export interface AccountingPaymentPayload {
+  /** Breeze `invoice_payments.id` — the QBO `requestid` AND the PrivateNote marker. */
+  invoicePaymentId: string;
+  remoteCustomerId: string;
+  remoteInvoiceId: string;
+  /** Major-unit decimal string, 2dp. Converted to a JSON number at the wire only. */
+  amount: string;
+  /** The invoice's STAMPED currency. Asserted equal to the realm home currency
+   *  by the coordinator BEFORE this payload is built; never sent as a CurrencyRef. */
+  currencyCode: string;
+  /** ISO date (YYYY-MM-DD) from `invoice_payments.received_at`. */
+  txnDate: string;
+  /** `PaymentRefNum` — cheque number, Stripe `pi_…`. Already truncated to QBO's
+   *  21-char cap by the coordinator. NEVER an ownership key. */
+  reference: string | null;
+  /** `Breeze payment <uuid>` (accountingPaymentMarker.ts). The adoption marker. */
+  privateNote: string;
+}
+
+export interface AccountingDeletePaymentPayload {
+  remotePaymentId: string;
+  /** The SyncToken Breeze last saw. Null forces the provider to read a fresh one. */
+  syncToken: string | null;
+}
+
+/** `already_absent` = QuickBooks reports the Payment does not exist. That is
+ *  SUCCESS for a delete: the desired end state is already true. */
+export type PaymentDeleteResult = 'deleted' | 'already_absent';
+
 export interface RealmSettings {
   homeCurrency: string | null;
   multiCurrencyEnabled: boolean | null;
@@ -179,6 +216,13 @@ export interface ChangeSetPaymentLine {
   paymentMethodName: string | null;
   /** PaymentRefNum (cheque number etc.); null when absent. */
   paymentRefNum: string | null;
+  /**
+   * The Breeze `invoice_payments.id` this QuickBooks Payment claims to be,
+   * parsed from `PrivateNote` by `parseBreezePaymentMarker` — null unless the
+   * WHOLE note matches. Set on a Payment Breeze itself created; the pull uses
+   * it to ADOPT a create whose response was lost (spec decision 3).
+   */
+  breezePaymentId: string | null;
 }
 
 export interface ChangeSet {
@@ -237,6 +281,14 @@ export interface AccountingProvider {
     invoice: AccountingVoidInvoicePayload,
     mapping: AccountingEntityMapping,
   ): Promise<void>;
+  /**
+   * CREATE ONLY — there is deliberately no `updatePayment`. Rewriting a
+   * QuickBooks Payment's amount would rewrite receipt history, and Intuit models
+   * a refund as a separate transaction; a Breeze partial refund is therefore
+   * recorded as a divergence rather than pushed (spec decision 9).
+   */
+  createPayment(conn: AccountingConnection, payment: AccountingPaymentPayload): Promise<RemoteRef>;
+  deletePayment(conn: AccountingConnection, payment: AccountingDeletePaymentPayload): Promise<PaymentDeleteResult>;
   reconcileChanges(conn: AccountingConnection, sinceCursor: Date | null): Promise<ChangeSet>;
   verifyWebhook(signatureHeader: string, rawBody: string, verifierToken: string): boolean;
 }

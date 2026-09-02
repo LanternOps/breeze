@@ -1,15 +1,18 @@
 import { describe, expectTypeOf, it } from 'vitest';
 import type {
   AccountingCustomerPayload,
+  AccountingDeletePaymentPayload,
   AccountingEntityMapping,
   AccountingInvoiceLineMapping,
   AccountingInvoicePayload,
   AccountingItemPayload,
+  AccountingPaymentPayload,
   AccountingProvider,
   AccountingVoidInvoicePayload,
   ChangeSet,
   ChangeSetPaymentLine,
   InvoicePushResult,
+  PaymentDeleteResult,
   RealmSettings,
   RemoteRef,
 } from './types';
@@ -73,5 +76,33 @@ describe('AccountingProvider is fully typed (B8, multi-currency §11)', () => {
     expectTypeOf<ChangeSetPaymentLine['remotePaymentSyncToken']>().toEqualTypeOf<string | null>();
     expectTypeOf<ChangeSetPaymentLine['paymentMethodName']>().toEqualTypeOf<string | null>();
     expectTypeOf<ChangeSetPaymentLine['paymentRefNum']>().toEqualTypeOf<string | null>();
+  });
+});
+
+describe('payment push seam is fully typed (Phase D2)', () => {
+  it('createPayment takes a connection and a currency-bearing payment payload, returning a RemoteRef', () => {
+    expectTypeOf<Parameters<AccountingProvider['createPayment']>>()
+      .toEqualTypeOf<[AccountingConnection, AccountingPaymentPayload]>();
+    expectTypeOf<ReturnType<AccountingProvider['createPayment']>>().toEqualTypeOf<Promise<RemoteRef>>();
+    // Money stays a major-unit decimal STRING through the seam (spec §12).
+    expectTypeOf<AccountingPaymentPayload['amount']>().toEqualTypeOf<string>();
+    expectTypeOf<AccountingPaymentPayload['currencyCode']>().toEqualTypeOf<string>();
+    expectTypeOf<AccountingPaymentPayload['privateNote']>().toEqualTypeOf<string>();
+    expectTypeOf<AccountingPaymentPayload['reference']>().toEqualTypeOf<string | null>();
+  });
+
+  it('deletePayment reports whether the Payment was there, so an already-deleted one is success', () => {
+    expectTypeOf<Parameters<AccountingProvider['deletePayment']>>()
+      .toEqualTypeOf<[AccountingConnection, AccountingDeletePaymentPayload]>();
+    expectTypeOf<ReturnType<AccountingProvider['deletePayment']>>().toEqualTypeOf<Promise<PaymentDeleteResult>>();
+    expectTypeOf<AccountingDeletePaymentPayload['syncToken']>().toEqualTypeOf<string | null>();
+  });
+
+  it('there is NO updatePayment — the push is create-only (spec decision 9)', () => {
+    expectTypeOf<AccountingProvider>().not.toHaveProperty('updatePayment');
+  });
+
+  it('a CDC payment line carries the parsed Breeze marker', () => {
+    expectTypeOf<ChangeSetPaymentLine['breezePaymentId']>().toEqualTypeOf<string | null>();
   });
 });

@@ -41,6 +41,7 @@ function payment(overrides: Partial<ChangeSet['payments'][number]> = {}): Change
     remotePaymentSyncToken: '0',
     paymentMethodName: null,
     paymentRefNum: null,
+    breezePaymentId: null,
     ...overrides,
   };
 }

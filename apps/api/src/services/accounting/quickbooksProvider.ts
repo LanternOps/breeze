@@ -5,16 +5,19 @@ import { captureException } from '../sentry';
 import { QBO_CLIENT_ID, QBO_CLIENT_SECRET, QBO_REDIRECT_URI } from '../../config/env';
 import type {
   AccountingCustomerPayload,
+  AccountingDeletePaymentPayload,
   AccountingEntityMapping,
   AccountingInvoiceLineMapping,
   AccountingInvoicePayload,
   AccountingItemPayload,
+  AccountingPaymentPayload,
   AccountingProvider,
   AccountingVoidInvoicePayload,
   ChangeSet,
   ChangeSetPaymentLine,
   ConnectionTokens,
   InvoicePushResult,
+  PaymentDeleteResult,
   RealmSettings,
   RemoteAddress,
   RemoteCustomer,
@@ -23,6 +26,7 @@ import type {
   RemoteRef,
 } from './types';
 import type { AccountingConnection } from './accountingConnectionService';
+import { parseBreezePaymentMarker } from './accountingPaymentMarker';
 
 const QBO_AUTH_URL = 'https://appcenter.intuit.com/connect/oauth2';
 const QBO_TOKEN_URL = 'https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer';
@@ -185,6 +189,7 @@ interface QboRawCdcPayment {
   CurrencyRef?: { value?: string };
   PaymentMethodRef?: { name?: string };
   PaymentRefNum?: string;
+  PrivateNote?: string;
   Line?: QboRawPaymentLine[];
 }
 
@@ -216,7 +221,7 @@ interface QboCdcResponse {
  * either zeroed it (a void — QBO never deletes a Payment) or it carries no
  * Invoice-linked line (nothing for the applier to reconcile against).
  */
-function mapQboCdcPayment(raw: QboRawCdcPayment, conn: AccountingConnection): ChangeSetPaymentLine[] {
+export function mapQboCdcPayment(raw: QboRawCdcPayment, conn: AccountingConnection): ChangeSetPaymentLine[] {
   const currency = raw.CurrencyRef?.value ?? conn.homeCurrency ?? '';
   const invoiceLines = (raw.Line ?? []).flatMap((line) => {
     const invoiceTxnId = (line.LinkedTxn ?? []).find((txn) => txn.TxnType === 'Invoice')?.TxnId;
@@ -233,12 +238,39 @@ function mapQboCdcPayment(raw: QboRawCdcPayment, conn: AccountingConnection): Ch
     remotePaymentSyncToken: raw.SyncToken ?? null,
     paymentMethodName: raw.PaymentMethodRef?.name ?? null,
     paymentRefNum: raw.PaymentRefNum ?? null,
+    // Anchored whole-note match only — an operator-authored note that merely
+    // mentions a Breeze id must never claim a Breeze payment row.
+    breezePaymentId: parseBreezePaymentMarker(raw.PrivateNote),
   }));
 }
 
 function isDeletedOrVoidedInvoice(raw: QboRawCdcInvoice): boolean {
   if (raw.status === 'Deleted') return true;
   return raw.TotalAmt === 0 && raw.Balance === 0 && typeof raw.PrivateNote === 'string' && raw.PrivateNote.includes('Voided');
+}
+
+/**
+ * `qboRequest` attaches `{ status, body }` (body truncated to 500 chars) to a
+ * non-2xx error. Intuit's fault CODES are the stable signal — the Message text
+ * is localized and has changed between minor versions — so match the code first
+ * and keep the text as a belt-and-braces fallback.
+ */
+function qboFaultBody(err: unknown): string {
+  return err && typeof err === 'object' && typeof (err as { body?: unknown }).body === 'string'
+    ? (err as { body: string }).body
+    : '';
+}
+
+/** QBO fault 610 — the object does not exist (already deleted, or never was). */
+function isQboObjectNotFound(err: unknown): boolean {
+  const body = qboFaultBody(err);
+  return /"code"\s*:\s*"610"/.test(body) || /Object Not Found/i.test(body);
+}
+
+/** QBO fault 5010 — the object exists but our SyncToken is behind. */
+function isQboStaleObject(err: unknown): boolean {
+  const body = qboFaultBody(err);
+  return /"code"\s*:\s*"5010"/.test(body) || /Stale Object/i.test(body);
 }
 
 /** The two entities Phase D reconciles. */
@@ -726,6 +758,102 @@ export class QuickbooksProvider implements AccountingProvider {
       'invoice?operation=void&minorversion=70',
       'QuickBooks invoice void',
       { method: 'POST', body: JSON.stringify({ Id: mapping.remoteEntityId, SyncToken: mapping.remoteSyncToken }) },
+    );
+  }
+
+  async createPayment(conn: AccountingConnection, payment: AccountingPaymentPayload): Promise<RemoteRef> {
+    // Idempotency key, exactly as pushInvoice's create path uses (`:663-678`):
+    // QBO recognizes the same `requestid` for a rolling 24h window and returns
+    // the ORIGINAL response rather than creating again, so a retry after a lost
+    // response cannot double-book the customer's money. Deterministic per Breeze
+    // payment and well under QBO's 50-char cap (a uuid is 36).
+    const path = `payment?minorversion=${QBO_API_MINOR_VERSION}`
+      + `&requestid=${encodeURIComponent(payment.invoicePaymentId)}`;
+    const parsed = await this.qboRequest<{ Payment?: { Id?: string; SyncToken?: string } }>(
+      conn,
+      path,
+      'QuickBooks payment create',
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          CustomerRef: { value: payment.remoteCustomerId },
+          // Wire-time Number() only — storage stays a major-unit decimal string.
+          TotalAmt: Number(payment.amount),
+          TxnDate: payment.txnDate,
+          ...(payment.reference ? { PaymentRefNum: payment.reference } : {}),
+          PrivateNote: payment.privateNote,
+          Line: [{
+            Amount: Number(payment.amount),
+            LinkedTxn: [{ TxnId: payment.remoteInvoiceId, TxnType: 'Invoice' }],
+          }],
+          // CurrencyRef is deliberately NEVER sent — same rule as pushInvoice
+          // (`:650-654`): the coordinator asserted home-currency equality before
+          // this method was reached, and sending it to a single-currency realm is
+          // a QBO error. DepositToAccountRef is omitted so QuickBooks books the
+          // receipt to Undeposited Funds and the bookkeeper records the processor
+          // fee at deposit time (spec decision 8). PaymentMethodRef needs a
+          // per-realm PaymentMethod list Breeze does not fetch.
+        }),
+      },
+    );
+    if (!parsed.Payment?.Id) throw new Error('QuickBooks payment response was missing an Id');
+    return { id: parsed.Payment.Id, syncToken: parsed.Payment.SyncToken };
+  }
+
+  async deletePayment(
+    conn: AccountingConnection,
+    payment: AccountingDeletePaymentPayload,
+  ): Promise<PaymentDeleteResult> {
+    let syncToken = payment.syncToken;
+    // No token held (an adoption that never read one) — fetch one before trying.
+    if (syncToken === null) {
+      const fresh = await this.readPaymentSyncToken(conn, payment.remotePaymentId);
+      if (fresh === null) return 'already_absent';
+      syncToken = fresh;
+    }
+
+    try {
+      await this.postPaymentDelete(conn, payment.remotePaymentId, syncToken);
+      return 'deleted';
+    } catch (err) {
+      if (isQboObjectNotFound(err)) return 'already_absent';
+      if (!isQboStaleObject(err)) throw err;
+      // Stale token means the Payment STILL EXISTS with a newer revision (spec
+      // decision 12). Read it once, retry once, then let the error out as
+      // retryable — a Payment somebody is editing in a loop must not spin here.
+      const fresh = await this.readPaymentSyncToken(conn, payment.remotePaymentId);
+      if (fresh === null) return 'already_absent';
+      try {
+        await this.postPaymentDelete(conn, payment.remotePaymentId, fresh);
+        return 'deleted';
+      } catch (retryErr) {
+        if (isQboObjectNotFound(retryErr)) return 'already_absent';
+        throw retryErr;
+      }
+    }
+  }
+
+  /** Current SyncToken for a Payment, or null when QuickBooks says it is gone. */
+  private async readPaymentSyncToken(conn: AccountingConnection, remotePaymentId: string): Promise<string | null> {
+    try {
+      const parsed = await this.qboRequest<{ Payment?: { SyncToken?: string } }>(
+        conn,
+        `payment/${encodeURIComponent(remotePaymentId)}?minorversion=${QBO_API_MINOR_VERSION}`,
+        'QuickBooks payment read',
+      );
+      return parsed.Payment?.SyncToken ?? null;
+    } catch (err) {
+      if (isQboObjectNotFound(err)) return null;
+      throw err;
+    }
+  }
+
+  private async postPaymentDelete(conn: AccountingConnection, remotePaymentId: string, syncToken: string): Promise<void> {
+    await this.qboRequest(
+      conn,
+      `payment?operation=delete&minorversion=${QBO_API_MINOR_VERSION}`,
+      'QuickBooks payment delete',
+      { method: 'POST', body: JSON.stringify({ Id: remotePaymentId, SyncToken: syncToken }) },
     );
   }
 

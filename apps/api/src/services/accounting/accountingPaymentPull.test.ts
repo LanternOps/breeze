@@ -98,6 +98,7 @@ const LINE: ChangeSetPaymentLine = {
   remotePaymentSyncToken: '0',
   paymentMethodName: 'Check',
   paymentRefNum: '10441',
+  breezePaymentId: null,
 };
 
 function conn(overrides: Partial<AccountingConnection> = {}): AccountingConnection {
