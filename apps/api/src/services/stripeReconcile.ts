@@ -1,13 +1,15 @@
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq, isNull, isNotNull } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../db';
 import { invoices, invoicePayments } from '../db/schema/invoices';
+import { accountingEntityMappings } from '../db/schema/accounting';
 import { invoiceStripePayments } from '../db/schema/stripePayments';
 import { recomputeInvoiceStatus } from './invoiceService';
 import { emitInvoiceEvent } from './invoiceEvents';
 import { fromMinorUnits } from './stripeMoney';
 import { captureException } from './sentry';
 import { writeAuditEvent, requestLikeFromSnapshot } from './auditEvents';
-import { clearPaymentMappingForInvoicePayment } from './accounting/accountingPaymentPull';
+import { requestPaymentPush, requestPaymentDelete, partialRefundDivergenceMessage } from './accounting/accountingPaymentPush';
+import { enqueueAccountingPaymentPush, enqueueAccountingPaymentDelete } from '../jobs/accountingSyncWorker';
 
 function toCents(v: string | number) { return Math.round(Number(v) * 100); }
 
@@ -25,7 +27,12 @@ interface CaptureInput {
 type ReconcileOutcome =
   | { kind: 'noop'; invoiceId: string }
   | { kind: 'terminal'; invoiceId: string; orgId: string; partnerId: string; reason: string }
-  | { kind: 'recorded'; invoiceId: string; orgId: string; partnerId: string; paymentId: string; paid: boolean };
+  | {
+    kind: 'recorded'; invoiceId: string; orgId: string; partnerId: string; paymentId: string; paid: boolean;
+    // The accounting mapping row this capture created, owed a `push-payment`
+    // job once the transaction has returned. Null = nothing owed.
+    paymentPushMappingId: string | null;
+  };
 
 /**
  * Reconcile a captured Stripe charge into the engine. System DB context (webhook is unauth).
@@ -109,9 +116,19 @@ export async function recordStripePayment(input: CaptureInput): Promise<{ invoic
     }
 
     await recomputeInvoiceStatus(inv.id);
+    // Gross amount is what settles the invoice, so gross is what QuickBooks gets
+    // (spec decision 8). DepositToAccountRef is omitted by the provider, so the
+    // receipt lands in Undeposited Funds and the bookkeeper records the
+    // processor fee at deposit time. Fee expense entries are out of scope.
+    // `db` here IS the transaction handle — this callback runs inside the
+    // enclosing withSystemDbAccessContext transaction, so the mapping row (the
+    // outbox) commits with the payment or not at all.
+    const paymentPushMappingId = await requestPaymentPush(db, {
+      invoicePaymentId: payment!.id, invoiceId: inv.id, partnerId: inv.partnerId,
+    });
     const [updated] = await db.select().from(invoices).where(eq(invoices.id, inv.id)).limit(1);
     return { kind: 'recorded', invoiceId: inv.id, orgId: inv.orgId, partnerId: inv.partnerId,
-             paymentId: payment!.id, paid: updated?.status === 'paid' };
+             paymentId: payment!.id, paid: updated?.status === 'paid', paymentPushMappingId };
   });
 
   // Side effects AFTER the transaction commits (and the row locks release).
@@ -125,6 +142,18 @@ export async function recordStripePayment(input: CaptureInput): Promise<{ invoic
   } else if (outcome.kind === 'recorded') {
     await emitInvoiceEvent({ type: 'payment.recorded', invoiceId: outcome.invoiceId, orgId: outcome.orgId,
       partnerId: outcome.partnerId, paymentId: outcome.paymentId });
+    // Fire-and-forget nudge. The enqueue helper is itself Redis-outage-safe: the
+    // mapping row is the durable record, so a lost job only delays the push
+    // until the reconcile sweep re-enqueues it. The extra try/catch matters more
+    // here than on the request path: an unexpected throw would 500 the webhook,
+    // and Stripe would retry a capture that has already been recorded.
+    if (outcome.paymentPushMappingId) {
+      try {
+        await enqueueAccountingPaymentPush(outcome.paymentPushMappingId, outcome.partnerId);
+      } catch (err) {
+        console.error('[stripeReconcile] enqueueAccountingPaymentPush failed (payment already committed)', `paymentId=${outcome.paymentId}`, err instanceof Error ? err.message : err);
+      }
+    }
     if (outcome.paid) {
       await emitInvoiceEvent({ type: 'invoice.paid', invoiceId: outcome.invoiceId, orgId: outcome.orgId, partnerId: outcome.partnerId });
     }
@@ -146,22 +175,30 @@ interface RefundInput {
   stripeAccountId: string;    // event.account — must match the mapping's connected account
 }
 
+/** What the refund transaction leaves for the post-commit (Redis) half to do.
+ *  Null when the refund was a no-op (unknown/unlinked mapping, account mismatch). */
+type RefundOutcome = { deleteMappingId: string | null; partnerId: string } | null;
+
 /** Reflect a Stripe-side refund. No Breeze-initiated money movement. System context. */
 export async function reflectStripeRefund(input: RefundInput): Promise<void> {
-  await withSystemDbAccessContext(async () => {
+  // Same post-transaction outcome shape as recordStripePayment above: the delete
+  // enqueue is Redis work and must not run with the reconcile transaction still
+  // open. (A hoisted `let` assigned inside the callback would also read as
+  // `never` to the type checker, which silently accepts any argument.)
+  const outcome = await withSystemDbAccessContext(async (): Promise<RefundOutcome> => {
     const [mapping] = await db.select().from(invoiceStripePayments)
       .where(eq(invoiceStripePayments.stripePaymentIntentId, input.stripePaymentIntentId)).limit(1);
     if (!mapping) {
       // No mapping for this PI — leave a forensic trail (money divergence: a refund
       // landed for a charge we have no record of, or a redelivery after cleanup).
       console.warn('[stripeReconcile] refund for unknown payment_intent — no mapping', { stripePaymentIntentId: input.stripePaymentIntentId });
-      return;
+      return null;
     }
     if (!mapping.invoicePaymentId) {
       // Mapping exists but was never linked to a payment row (e.g. the charge was
       // terminal-failed). Nothing to reflect, but record why for reconciliation.
       console.warn('[stripeReconcile] refund for a payment_intent with no linked payment row', { stripePaymentIntentId: input.stripePaymentIntentId, mappingId: mapping.id });
-      return;
+      return null;
     }
 
     // Account binding (mirror recordStripePayment's guard): a refund event whose
@@ -171,11 +208,13 @@ export async function reflectStripeRefund(input: RefundInput): Promise<void> {
       console.warn('[stripeReconcile] refund account mismatch — refusing to mutate payment row', {
         stripePaymentIntentId: input.stripePaymentIntentId, eventAccount: input.stripeAccountId, mappingAccount: mapping.stripeAccountId,
       });
-      return;
+      return null;
     }
 
     const paymentId = mapping.invoicePaymentId;
     const full = input.amountRefundedCents >= input.chargeAmountCents;
+    // The mapping id owed a `delete-payment` job once this transaction returns.
+    let deleteMappingId: string | null = null;
     if (full) {
       // Full refund → void the payment row (mirrors voidPayment mechanics).
       // Snapshot the financial record BEFORE deleting so the destroyed payment
@@ -183,14 +222,16 @@ export async function reflectStripeRefund(input: RefundInput): Promise<void> {
       // this is a webhook path with no Hono request context, so we use the
       // system-scope audit writer (mirrors quoteExpiryReaper), not writeRouteAudit.
       const [snapshot] = await db.select().from(invoicePayments).where(eq(invoicePayments.id, paymentId)).limit(1);
-      // Clear the 'payment' accounting_entity_mappings row for this
-      // invoice_payments id FIRST (same reasoning as invoiceService.voidPayment:
-      // breeze_entity_id is polymorphic so nothing cascades). A Stripe-captured
-      // payment normally has no accounting mapping at all — this returns 0 and is
-      // a deliberate orphan sweep, not an expected deletion. `db` here IS the
-      // transaction handle: this whole callback runs inside the enclosing
-      // withSystemDbAccessContext transaction.
-      await clearPaymentMappingForInvoicePayment(db, paymentId);
+      // Settle the 'payment' accounting_entity_mappings row FIRST (same reasoning
+      // as invoiceService.voidPayment: breeze_entity_id is polymorphic so nothing
+      // cascades). A full refund is a void — the money went back — so a
+      // Breeze-origin mapping KEEPS its row with pending_op='delete' until
+      // QuickBooks confirms the Payment is gone, and a QuickBooks-origin one is
+      // simply dropped. Null (nothing to enqueue) is the normal case: a
+      // Stripe-captured payment usually has no accounting mapping at all. `db`
+      // here IS the transaction handle: this whole callback runs inside the
+      // enclosing withSystemDbAccessContext transaction.
+      deleteMappingId = await requestPaymentDelete(db, paymentId);
       await db.delete(invoicePayments).where(eq(invoicePayments.id, paymentId));
       await db.update(invoiceStripePayments)
         .set({ status: 'refunded', invoicePaymentId: null, lastEventAt: new Date(), updatedAt: new Date() })
@@ -226,11 +267,50 @@ export async function reflectStripeRefund(input: RefundInput): Promise<void> {
       await db.update(invoiceStripePayments)
         .set({ status: 'partially_refunded', lastEventAt: new Date(), updatedAt: new Date() })
         .where(eq(invoiceStripePayments.id, mapping.id));
+      // Spec decision 9: a partial refund is a DIVERGENCE, not an update. The
+      // QuickBooks Payment stays exactly as created — rewriting its amount would
+      // rewrite receipt history, and Intuit models a refund as its own
+      // transaction — so the mapping tells a human to record the refund in
+      // QuickBooks, quoting the amount they have to enter.
+      //
+      // Only a row Breeze actually PUSHED is flagged (breeze_origin AND a remote
+      // id): a payment with no QuickBooks Payment behind it has nothing to
+      // diverge from, and a QuickBooks-origin row is the pull's business.
+      // `pending_op` and `claimed_at` are deliberately left ALONE — an owed push
+      // (or a delete converted from one) must survive this flag, and clearing a
+      // live lease would invite a second worker to create a second Payment.
+      // Zero rows is legitimate and is NOT an error.
+      const refunded = fromMinorUnits(input.amountRefundedCents, input.currency);
+      await db.update(accountingEntityMappings)
+        .set({
+          syncStatus: 'error',
+          lastError: partialRefundDivergenceMessage(refunded),
+          updatedAt: new Date(),
+        })
+        .where(and(
+          eq(accountingEntityMappings.breezeEntityType, 'payment'),
+          eq(accountingEntityMappings.breezeEntityId, paymentId),
+          eq(accountingEntityMappings.breezeOrigin, true),
+          isNotNull(accountingEntityMappings.remoteEntityId),
+        ));
     }
     await recomputeInvoiceStatus(mapping.invoiceId);
+    const partnerId = await invoicePartnerId(mapping.invoiceId);
     await emitInvoiceEvent({ type: 'payment.voided', invoiceId: mapping.invoiceId, orgId: mapping.orgId,
-      partnerId: await invoicePartnerId(mapping.invoiceId), paymentId });
+      partnerId, paymentId });
+    return { deleteMappingId, partnerId };
   });
+
+  // Redis work only AFTER the reconcile transaction has returned (and its row
+  // locks released). The mapping row already carries pending_op='delete', so a
+  // failed enqueue only delays the removal until the reconcile sweep.
+  if (outcome?.deleteMappingId) {
+    try {
+      await enqueueAccountingPaymentDelete(outcome.deleteMappingId, outcome.partnerId);
+    } catch (err) {
+      console.error('[stripeReconcile] enqueueAccountingPaymentDelete failed (refund already committed)', `mappingId=${outcome.deleteMappingId}`, err instanceof Error ? err.message : err);
+    }
+  }
 }
 
 async function invoicePartnerId(invoiceId: string): Promise<string> {

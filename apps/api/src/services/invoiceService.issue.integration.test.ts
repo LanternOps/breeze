@@ -23,6 +23,8 @@ const { enqueueAccountingInvoicePushMock, enqueueAccountingInvoiceVoidMock } = v
 vi.mock('../jobs/accountingSyncWorker', () => ({
   enqueueAccountingInvoicePush: enqueueAccountingInvoicePushMock,
   enqueueAccountingInvoiceVoid: enqueueAccountingInvoiceVoidMock,
+  enqueueAccountingPaymentPush: vi.fn().mockResolvedValue(true),
+  enqueueAccountingPaymentDelete: vi.fn().mockResolvedValue(true),
 }));
 
 // Catalog writes (used by the addBundleLine allocation test) emit BullMQ

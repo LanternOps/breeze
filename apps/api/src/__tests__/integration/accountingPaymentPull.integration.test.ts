@@ -16,7 +16,9 @@
  *    suite mocks it, so the money maths is unproven there).
  *  - The ownership TRIGGER (`validate_accounting_mapping_entity_partner`)
  *    refusing a cross-partner payment mapping forge.
- *  - `invoiceService.voidPayment` really removing the mapping row it now clears.
+ *  - `invoiceService.voidPayment` REFUSING a QuickBooks-origin payment (Phase
+ *    D2, spec decision 14) against the real `breeze_origin` column the pull
+ *    writes — the row and its mapping must both survive the refusal.
  *
  * Mirrors `accountingInvoicePushCurrency.integration.test.ts`: `import './setup'`
  * (which truncates tenant tables between tests, so every test seeds its own
@@ -52,6 +54,8 @@ vi.mock('../../jobs/invoiceWorker', () => ({ enqueueInvoicePdfRender: vi.fn().mo
 vi.mock('../../jobs/accountingSyncWorker', () => ({
   enqueueAccountingInvoicePush: vi.fn().mockResolvedValue(undefined),
   enqueueAccountingInvoiceVoid: vi.fn().mockResolvedValue(undefined),
+  enqueueAccountingPaymentPush: vi.fn().mockResolvedValue(true),
+  enqueueAccountingPaymentDelete: vi.fn().mockResolvedValue(true),
 }));
 
 import { voidPayment } from '../../services/invoiceService';
@@ -432,22 +436,55 @@ describe('QuickBooks payment applier — real Postgres', () => {
     expect(sqlCause(caught).message).toMatch(/does not belong to partner/i);
   });
 
-  runDb('invoiceService.voidPayment removes the pulled payment AND its mapping row', async () => {
+  runDb('invoiceService.voidPayment REFUSES a pulled (QuickBooks-origin) payment and changes nothing', async () => {
+    // Phase D2, spec decision 14. Until now this void succeeded, and the next
+    // CDC sweep pulled the same payment straight back in — leaving an audit
+    // trail of a void that did nothing. The refusal is asserted here rather than
+    // only in the unit suite because it turns on the REAL `breeze_origin` value
+    // the pull writes (the column defaults to false, so a pulled row is
+    // QuickBooks-origin without the applier saying so explicitly).
     const fx = await seedFixture();
     const invoiceId = await seedInvoice(fx, { total: '150.00' });
     await seedInvoiceMapping(fx, invoiceId, '145');
     const applied = await applyAccountingPayment(fx.conn, paymentLine(), systemRunner, fx.conn.realmIdFingerprint);
     expect(await loadMappings(fx, 'payment')).toHaveLength(1);
+    const before = await loadInvoice(invoiceId);
 
-    await withSystemDbAccessContext(() => voidPayment(applied.invoicePaymentId!, {
+    await expect(withSystemDbAccessContext(() => voidPayment(applied.invoicePaymentId!, {
+      userId: fx.userId, partnerId: fx.partnerId, accessibleOrgIds: [fx.orgId],
+    }))).rejects.toMatchObject({ status: 409, code: 'QUICKBOOKS_OWNED_PAYMENT' });
+
+    // Refused BEFORE any write: the payment, its mapping and the invoice's own
+    // money columns are all exactly as the pull left them.
+    expect(await loadPayments(invoiceId)).toHaveLength(1);
+    expect(await loadMappings(fx, 'payment')).toHaveLength(1);
+    const after = await loadInvoice(invoiceId);
+    expect(after.status).toBe(before.status);
+    expect(after.balance).toBe(before.balance);
+    expect(after.amountPaid).toBe(before.amountPaid);
+  });
+
+  runDb('invoiceService.voidPayment still voids a MANUAL payment on an invoice QuickBooks also paid', async () => {
+    // The refusal must be narrow: only the QuickBooks-owned row is protected.
+    // A hand-recorded payment on the same invoice stays hand-voidable, and its
+    // void leaves the pulled payment and mapping untouched.
+    const fx = await seedFixture();
+    const invoiceId = await seedInvoice(fx, { total: '150.00' });
+    await seedInvoiceMapping(fx, invoiceId, '145');
+    await applyAccountingPayment(fx.conn, paymentLine(), systemRunner, fx.conn.realmIdFingerprint);
+    const [manual] = await withSystemDbAccessContext(() => db.insert(invoicePayments).values({
+      invoiceId, orgId: fx.orgId, amount: '10.00', method: 'cash',
+      receivedAt: '2026-09-02', recordedBy: fx.userId,
+    }).returning({ id: invoicePayments.id }));
+
+    await withSystemDbAccessContext(() => voidPayment(manual!.id, {
       userId: fx.userId, partnerId: fx.partnerId, accessibleOrgIds: [fx.orgId],
     }));
 
-    expect(await loadPayments(invoiceId)).toEqual([]);
-    expect(await loadMappings(fx, 'payment')).toEqual([]);
-    const inv = await loadInvoice(invoiceId);
-    expect(inv.status).toBe('sent');
-    expect(inv.balance).toBe('150.00');
+    const remaining = await loadPayments(invoiceId);
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0]!.id).not.toBe(manual!.id);
+    expect(await loadMappings(fx, 'payment')).toHaveLength(1);
   });
 
   runDb('markInvoiceDeletedRemotely flips the invoice mapping to error and keeps the remote id', async () => {
