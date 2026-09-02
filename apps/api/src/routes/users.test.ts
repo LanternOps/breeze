@@ -2147,6 +2147,36 @@ describe('user routes', () => {
       expect(runPostCommitCleanup).toHaveBeenCalledWith('22222222-2222-2222-2222-222222222222');
       expect(runPostCommitCleanup).toHaveBeenCalledTimes(1);
     });
+
+    it('U-5: advances {auth, mfa} epochs + revokes families BEFORE neutralizing, and deletes an orphan’s passkeys', async () => {
+      const TARGET = '11111111-1111-1111-1111-111111111111';
+      const { capturedUpdates, calls } = mockRemoveMembershipTx({
+        deletedRows: [{ id: 'link-1' }], hasOtherMembership: false, targetId: TARGET,
+        passkeyRows: [{ id: 'pk-1', credentialId: 'cred-1', name: null }],
+      });
+
+      const res = await app.request(`/users/${TARGET}`, { method: 'DELETE', headers: { Authorization: 'Bearer token' } });
+
+      expect(res.status).toBe(200);
+      expect(calls).toEqual(['delete-membership', 'epochs', 'families', 'neutralize', 'clear-factors', 'delete-passkeys']);
+      const epochs = capturedUpdates.find((v) => 'authEpoch' in v)!;
+      expect(epochs).toHaveProperty('mfaEpoch'); // D3: neutralization bumps BOTH epochs
+      expect(capturedUpdates.filter((v) => 'authEpoch' in v)).toHaveLength(1); // exactly one bump — no double-bump
+      expect(capturedUpdates.some((v) => v.status === 'disabled' && v.passwordHash === null)).toBe(true);
+      expect(capturedUpdates.some((v) => v.mfaEnabled === false && v.phoneNumber === null)).toBe(true);
+      expect(runPostCommitCleanup).toHaveBeenCalledWith(TARGET);
+    });
+
+    it('U-6: a user with another membership is not neutralized and keeps their passkeys', async () => {
+      const { capturedUpdates, calls } = mockRemoveMembershipTx({ deletedRows: [{ id: 'link-1' }], hasOtherMembership: true });
+
+      const res = await app.request('/users/11111111-1111-1111-1111-111111111111', { method: 'DELETE', headers: { Authorization: 'Bearer token' } });
+
+      expect(res.status).toBe(200);
+      expect(calls).toEqual(['delete-membership', 'epochs', 'families']);
+      expect(capturedUpdates.some((v) => v.status === 'disabled')).toBe(false);
+      expect(calls).not.toContain('delete-passkeys');
+    });
   });
 
   describe('POST /users/:id/mfa/reset (admin recovery: clear factor + invalidate assurance)', () => {

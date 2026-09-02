@@ -41,8 +41,9 @@ import { INVITE_TOKEN_TTL_SECONDS } from './auth/schemas';
 import { enforceExistingFactorStepUp, hashInviteToken, inviteRedisKey, inviteUserRedisKey, requireCurrentPasswordStepUp, resolveUserAuditOrgId, userIsMfaProtected, userRequiresSetup } from './auth/helpers';
 import { isPasswordAuthDisabledBySso } from './auth/ssoPolicy';
 import { terminateUserRemoteSessions, TEARDOWN_FAILED } from '../services/remoteSessionTeardown';
-import { advanceUserEpochs, revokeAllRefreshFamilies, runPostCommitCleanup, type Tx } from '../services/authLifecycle';
+import { advanceUserEpochs, revokeAllRefreshFamilies, runPostCommitCleanup } from '../services/authLifecycle';
 import { resetAllFactorsAndInvalidate } from '../services/mfaFactorReset';
+import { neutralizeUserIfOrphaned } from '../services/userNeutralization';
 import { getEffectiveMfaPolicy } from '../services/mfaPolicy';
 import { requestPendingEmailChange } from '../services/pendingEmail';
 
@@ -1567,57 +1568,6 @@ userRoutes.patch(
   }
 );
 
-// A membership-only delete leaves the `users` row behind. If the user has no
-// membership left in EITHER axis, that row is an orphan, and left active it is
-// a problem two ways (#1367):
-//   1. SECURITY: the "deleted" user can still authenticate. login.ts only
-//      bounces on a null password_hash / non-active status, and
-//      resolveCurrentUserTokenContext returns a null-context system-scope token
-//      (instead of throwing) for a membership-less user — so a removed user who
-//      still knows their password logs straight back in.
-//   2. RESURRECTION: re-inviting the same email reuses the row with its stale
-//      active status + password, blocking the new invitee's magic link.
-// The row cannot be hard-deleted (dozens of created_by/approved_by FKs RESTRICT
-// it), so we neutralize it: disable + strip password and MFA secrets. A later
-// invite of this email resets it to a clean invited state (see /invite).
-//
-// MUST run under SYSTEM scope, not the caller's request scope: the orphan check
-// has to see the user's memberships across EVERY tenant. An org admin's RLS
-// view hides partner memberships and other orgs' rows, so a request-scoped
-// check would falsely report a still-active multi-org user as orphaned and
-// wrongly disable them. Takes the caller's `tx` (not the bare `db`) so the
-// just-deleted membership — still uncommitted on this connection — is visible
-// to the SELECTs below; a separate connection would not see it yet.
-async function neutralizeUserIfOrphaned(tx: Tx, userId: string): Promise<void> {
-  const [partnerLink] = await tx
-    .select({ id: partnerUsers.id })
-    .from(partnerUsers)
-    .where(eq(partnerUsers.userId, userId))
-    .limit(1);
-  if (partnerLink) return;
-
-  const [orgLink] = await tx
-    .select({ id: organizationUsers.id })
-    .from(organizationUsers)
-    .where(eq(organizationUsers.userId, userId))
-    .limit(1);
-  if (orgLink) return;
-
-  await tx
-    .update(users)
-    .set({
-      status: 'disabled',
-      disabledReason: 'removed',
-      passwordHash: null,
-      mfaEnabled: false,
-      mfaSecret: null,
-      mfaMethod: null,
-      mfaRecoveryCodes: null,
-      updatedAt: new Date()
-    })
-    .where(eq(users.id, userId));
-}
-
 /**
  * Remove a user's membership in the caller's tenant and, if it was their last
  * membership anywhere, neutralize the orphaned `users` row — in one
@@ -1629,10 +1579,11 @@ async function neutralizeUserIfOrphaned(tx: Tx, userId: string): Promise<void> {
  * dropping it (the #1375 0-row trap). Tenant safety is preserved by the
  * explicit membership-delete WHERE clause, scoped to the caller's own
  * partner/org from their authenticated context — exactly as the request-scoped
- * delete was before. The membership delete, orphan neutralize, epoch advance
- * and refresh-family revoke all run in ONE `db.transaction` inside the system
- * context so a rollback undoes all of them together, and so the just-deleted
- * membership is visible to the orphan check.
+ * delete was before. The membership delete, epoch advance, refresh-family
+ * revoke and orphan neutralize (incl. every MFA factor and passkey —
+ * RMM-QA-166) all run in ONE `db.transaction` inside the system context so a
+ * rollback undoes all of them together, and so the just-deleted membership is
+ * visible to the orphan check.
  */
 async function removeMembershipForScope(
   scopeContext: ScopeContext,
@@ -1656,9 +1607,14 @@ async function removeMembershipForScope(
           return { deleted: false };
         }
 
-        await neutralizeUserIfOrphaned(tx, userId);
-        await advanceUserEpochs(tx, userId, { auth: true });
+        // D3 (RMM-QA-166): epochs → families → factor rows. Both epochs advance:
+        // `auth` because the membership set changed, `mfa` because an orphan's
+        // factors are about to be stripped (kills epoch-bound step-up grants and
+        // pending logins by construction). neutralizeUserIfOrphaned runs LAST and
+        // never bumps epochs itself, so there is exactly one bump per removal.
+        await advanceUserEpochs(tx, userId, { auth: true, mfa: true });
         await revokeAllRefreshFamilies(tx, userId, 'membership-removed');
+        await neutralizeUserIfOrphaned(tx, userId);
         return { deleted: true };
       })
     )
