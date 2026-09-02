@@ -209,6 +209,8 @@ Nothing auto-suspends. Suspension remains an explicit admin action; probation ma
 
 Flag `PARTNER_TRUST_MODE = off | shadow | enforce` (env; hosted default `shadow`, self-hosted default `off`), following the `ML_FEATURE_FLAGS` global-kill-switch pattern (`services/mlFeatureFlags.ts`).
 
+**Env-var rule (self-hosted safety):** every variable this feature introduces (`PARTNER_TRUST_MODE`, `IP_CLASSIFY_PROVIDER`, `IP_CLASSIFY_API_KEY`, `PARTNER_MEETING_URL`) is optional. A missing or unrecognised value never fails config validation, never logs above `warn`, and never blocks a request: missing `PARTNER_TRUST_MODE` resolves to `off` unless hosted; missing classification provider or key resolves to provider `none`, which classifies as `unknown` and pauses auto-promotion only; missing meeting URL just omits the link. The boot-time validator in `config/validate` is not extended with any of them. A unit test boots the resolvers with all four unset and `IS_HOSTED=false` and asserts every gate is a no-op.
+
 - `off`: columns exist, nothing reads them. **Self-hosted safeguard:** the resolver returns `off` whenever `IS_HOSTED` is not `true`, regardless of the env value, and a unit test pins that. The guided-setup smoke job additionally asserts that a fresh self-hosted stack can open a remote session, so a regression here fails CI before it ships.
 - `shadow`: `evaluateCapability` runs, logs would-deny decisions as `partner.trust.capability_denied` audit events with `mode: shadow`, and allows. Gives a false-positive count before any customer is affected.
 - `enforce`: denies.

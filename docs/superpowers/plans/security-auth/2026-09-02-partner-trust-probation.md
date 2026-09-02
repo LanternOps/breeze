@@ -17,6 +17,7 @@ tracking_issue: LanternOps/breeze#4549
 ## Global Constraints
 
 - Flag: `PARTNER_TRUST_MODE = off | shadow | enforce`; resolver returns `off` unless `isHosted()` is true; hosted default `shadow`.
+- **No new env var is ever required.** `PARTNER_TRUST_MODE`, `IP_CLASSIFY_PROVIDER`, `IP_CLASSIFY_API_KEY`, `PARTNER_MEETING_URL` are all optional; a missing or unrecognised value resolves to the feature being off (or, for the classifier, provider `none` → class `unknown`), logs at most a single `warn`, and never blocks a request or fails boot. Do not add any of them to the config validator's required set. Task 2.2 and Task 5.1 each carry a test that boots with the variable unset.
 - Column default `trusted`. Existing partners are never moved by a migration. Backfill is a reviewed SQL batch (Wave 7), never a migration.
 - Enrollment cap in probation: **5**, lifetime counter `partners.probation_enrollments`, incremented inside the enrollment transaction with the partner row locked, never decremented.
 - No age-only promotion. Auto-promotion requires a settled card charge (`type = 'card'`, not `link`) ≥ 24 h old, undisputed, unrefunded, cardholder name present, plus signup IP class not in `{hosting, vpn, tor, unknown}` and no unresolved `alert` abuse signal.
@@ -305,6 +306,13 @@ describe('partnerTrustMode', () => {
     process.env.IS_HOSTED = 'true';
     process.env.PARTNER_TRUST_MODE = 'enforce';
     expect(partnerTrustMode()).toBe('enforce');
+  });
+  it('is off and silent when nothing at all is configured (fresh self-hosted install)', () => {
+    delete process.env.IS_HOSTED; delete process.env.PARTNER_TRUST_MODE;
+    delete process.env.IP_CLASSIFY_PROVIDER; delete process.env.IP_CLASSIFY_API_KEY; delete process.env.PARTNER_MEETING_URL;
+    const warn = vi.spyOn(console, 'warn');
+    expect(partnerTrustMode()).toBe('off');
+    expect(warn).not.toHaveBeenCalled();
   });
   it('falls back to shadow on an unrecognised value', () => {
     process.env.IS_HOSTED = 'true';
@@ -915,7 +923,7 @@ export async function classifyIp(ip: string): Promise<IpClassification>; // Redi
 export async function enqueueIpClassify(target: { kind: 'partner'; partnerId: string; ip: string } | { kind: 'device'; deviceId: string; ip: string }): Promise<void>;
 ```
 
-- [ ] **Step 1: Failing tests** — provider response mapping (`privacy.hosting → hosting`, `privacy.vpn → vpn`, `privacy.tor → tor`, neither → `residential`, `company.type === 'business'` → `business`); cache hit skips the HTTP call; provider error → `unknown`; job handler writes `signup_ip_class` / `enrollment_ip_class` + asn + `classified_at`.
+- [ ] **Step 1: Failing tests** — with `IP_CLASSIFY_PROVIDER` and `IP_CLASSIFY_API_KEY` both unset, `classifyIp()` returns the static-prefix fallback result without any network call and without throwing, and `validateConfig()` (or the API's boot-time env check) still passes; with provider set but key missing → same fallback plus one `console.warn`; provider response mapping (`privacy.hosting → hosting`, `privacy.vpn → vpn`, `privacy.tor → tor`, neither → `residential`, `company.type === 'business'` → `business`); cache hit skips the HTTP call; provider error → `unknown`; job handler writes `signup_ip_class` / `enrollment_ip_class` + asn + `classified_at`.
 - [ ] **Step 2: Fail**, **Step 3: Implement** with `fetch`, a 3 s timeout, and the Redis key `ipclass:v1:<prefix>`; the BullMQ worker lives in `partnerTrustJobs.ts` on the existing `abuse-signals` queue (job name `ip-classify`), following `abuseSignalsSweep.ts`'s registration pattern, gated by `partnerTrustMode() !== 'off'`.
 - [ ] **Step 4: Pass**, **Step 5: Commit** — `git commit -m "feat(trust): async IP classification job"`.
 
