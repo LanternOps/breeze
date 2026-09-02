@@ -74,7 +74,7 @@ function thenable(rows: Array<Record<string, unknown>>, call: SelectCall) {
  */
 function makeExec(
   selectRows: Array<Array<Record<string, unknown>>> = [],
-  options: { updateError?: unknown } = {},
+  options: { updateError?: unknown; deleteRows?: Array<Record<string, unknown>> } = {},
 ) {
   const queue = [...selectRows];
   const calls: Capture = { selects: [], inserts: [], updates: [], deletes: [] };
@@ -127,7 +127,10 @@ function makeExec(
     delete: (table: unknown) => ({
       where: (condition: unknown) => {
         calls.deletes.push({ table, where: condition, seq: (seq += 1) });
-        return Promise.resolve([]);
+        // `deleteRows: []` is a DELETE that matched nothing — the row was
+        // already gone when the statement ran.
+        const rows = options.deleteRows ?? [{ id: 'deleted' }];
+        return Object.assign(Promise.resolve(rows), { returning: () => Promise.resolve(rows) });
       },
     }),
   } as unknown as ContactExecutor;
@@ -271,6 +274,45 @@ describe('createContact', () => {
     expect(siteBlobWrites(calls)).toEqual([{ name: 'Sam Site', email: null, phone: '555-0111' }]);
     expect(orgBlobWrites(calls)).toEqual([]);
   });
+
+  // Review finding (fix round 2): the assertion above proves which jsonb column
+  // is written, but NOT that the demotion predicate is scoped to the site — the
+  // fake executor never applies a WHERE, so `primaryScopeWhere` could ignore
+  // `siteId` entirely and both projection tests would still pass. Compiling the
+  // predicate is the only way to see the difference between the two scopes.
+  it('demotes within the SITE scope for a site-scoped primary, and the org scope otherwise', async () => {
+    const sitePrimary = { name: 'Sam Site', email: null, phone: '555-0111', mobile: null };
+    const site = makeExec([
+      [{ id: SITE }], [], [], [sitePrimary], [{ id: CONTACT, ...sitePrimary }],
+    ]);
+    await createContact(site.exec, {
+      orgId: ORG, siteId: SITE, name: 'Sam Site', phone: '555-0111', isPrimary: true,
+    }, ACTOR);
+
+    const siteDemotion = site.calls.updates.find(
+      (u) => u.table === contacts && u.set.isPrimary === false,
+    )!;
+    const siteWhere = compile(siteDemotion.where);
+    expect(siteWhere.sql).toContain('"site_id" =');
+    expect(siteWhere.sql).not.toContain('"site_id" is null');
+    // Both tenant keys are bound: a site-scoped demotion that dropped the site
+    // parameter would clear the ORG-level primary instead.
+    expect(siteWhere.params).toEqual([ORG, SITE, true]);
+
+    const orgPrimary = { name: 'Jane Ops', email: 'jane@acme.example', phone: '555-0100', mobile: null };
+    const org = makeExec([[], [orgPrimary], [{ id: CONTACT, ...orgPrimary }]]);
+    await createContact(org.exec, {
+      orgId: ORG, name: 'Jane Ops', email: 'jane@acme.example', phone: '555-0100', isPrimary: true,
+    }, ACTOR);
+
+    const orgDemotion = org.calls.updates.find(
+      (u) => u.table === contacts && u.set.isPrimary === false,
+    )!;
+    const orgWhere = compile(orgDemotion.where);
+    expect(orgWhere.sql).toContain('"site_id" is null');
+    expect(orgWhere.sql).not.toContain('"site_id" =');
+    expect(orgWhere.params).toEqual([ORG, true]);
+  });
 });
 
 describe('updateContact', () => {
@@ -284,8 +326,11 @@ describe('updateContact', () => {
 
   it('re-projects the legacy jsonb when a primary contact is edited', async () => {
     const patched = { name: 'Jane Ops', email: 'ap@acme.example', phone: '555-0100', mobile: null };
-    // getContact, then reprojectScope's two reads.
-    const { exec, calls } = makeExec([[PRIMARY_ROW], [patched], [{ id: CONTACT, ...patched }]]);
+    // getContact, the org pre-lock, the target re-read UNDER that lock, then
+    // reprojectScope's two reads.
+    const { exec, calls } = makeExec([
+      [PRIMARY_ROW], [], [PRIMARY_ROW], [patched], [{ id: CONTACT, ...patched }],
+    ]);
     const updated = await updateContact(exec, CONTACT, ORG, { email: 'ap@acme.example' }, ACTOR);
 
     expect(updated).toMatchObject({ email: 'ap@acme.example' });
@@ -295,8 +340,9 @@ describe('updateContact', () => {
   });
 
   it('clears the legacy jsonb when the primary flag is dropped', async () => {
-    // getContact, then reprojectScope: no primary remains, and compat agrees.
-    const { exec, calls } = makeExec([[PRIMARY_ROW], [], []]);
+    // getContact, the org pre-lock, the locked re-read, then reprojectScope:
+    // no primary remains, and compat agrees.
+    const { exec, calls } = makeExec([[PRIMARY_ROW], [], [PRIMARY_ROW], [], []]);
     await updateContact(exec, CONTACT, ORG, { isPrimary: false }, ACTOR);
     expect(orgBlobWrites(calls)).toEqual([null]);
   });
@@ -306,6 +352,7 @@ describe('updateContact', () => {
     const { exec, calls } = makeExec([
       [{ ...PRIMARY_ROW, siteId: SITE }], // getContact
       [], [],                             // parent pre-locks: org, then site
+      [{ ...PRIMARY_ROW, siteId: SITE }], // the target, re-read under them
       [], [],                             // vacated site scope: no primary left
       [moved], [{ id: CONTACT, ...moved }], // claimed org scope
     ]);
@@ -332,13 +379,15 @@ describe('parent-first locking around a primary re-projection', () => {
   // row second. Two concurrent writers on one org hold each other's next lock.
   it('locks the organization before the contact UPDATE when a primary is edited', async () => {
     const patched = { name: 'Jane Ops', email: 'ap@acme.example', phone: '555-0100', mobile: null };
-    // getContact, the org pre-lock, then reprojectScope's two reads.
-    const { exec, calls } = makeExec([[PRIMARY_ROW], [], [patched], [{ id: CONTACT, ...patched }]]);
+    // getContact, the org pre-lock, the locked re-read, then reprojectScope.
+    const { exec, calls } = makeExec([
+      [PRIMARY_ROW], [], [PRIMARY_ROW], [patched], [{ id: CONTACT, ...patched }],
+    ]);
     await updateContact(exec, CONTACT, ORG, { email: 'ap@acme.example' }, ACTOR);
 
+    // Parent first, then the target row itself — never the other way round.
     const locks = lockReads(calls);
-    expect(locks).toHaveLength(1);
-    expect(locks[0]!.table).toBe(organizations);
+    expect(locks.map((l) => l.table)).toEqual([organizations, contacts]);
     // NO KEY UPDATE, not UPDATE: the weakest mode that still conflicts with
     // compat's own UPDATE, so an FK's KEY SHARE from an unrelated child insert
     // stays compatible.
@@ -363,17 +412,19 @@ describe('parent-first locking around a primary re-projection', () => {
       [{ ...PRIMARY_ROW, siteId: null }], // getContact
       [{ id: SITE }],                     // assertSiteInOrg
       [], [],                             // org lock, then site lock
+      [{ ...PRIMARY_ROW, siteId: null }], // the target, re-read under them
       [], [],                             // vacated org scope: no primary left
       [moved], [{ id: CONTACT, ...moved }],
     ]);
     await updateContact(exec, CONTACT, ORG, { siteId: SITE }, ACTOR);
 
+    // org -> sites (id order) -> the contact row: one order for every writer.
     const locks = lockReads(calls);
-    expect(locks.map((l) => l.table)).toEqual([organizations, sites]);
+    expect(locks.map((l) => l.table)).toEqual([organizations, sites, contacts]);
     expect(compile(locks[1]!.where).params).toEqual([SITE]);
-    // The demotion is itself a contacts UPDATE, so it must come after both.
+    // The demotion is itself a contacts UPDATE, so it must come after all three.
     const firstContactWrite = calls.updates.find((u) => u.table === contacts)!;
-    expect(locks[1]!.seq).toBeLessThan(firstContactWrite.seq);
+    expect(locks[2]!.seq).toBeLessThan(firstContactWrite.seq);
   });
 
   it('locks before creating a primary contact', async () => {
@@ -404,6 +455,82 @@ describe('parent-first locking around a primary re-projection', () => {
     const plain = makeExec([[{ ...PRIMARY_ROW, isPrimary: false }]]);
     await deleteContact(plain.exec, CONTACT, ORG, ACTOR);
     expect(lockReads(plain.calls)).toEqual([]);
+  });
+});
+
+describe('the target row is re-read UNDER the lock before anything is projected', () => {
+  // Review finding (fix round 2): `getContact` is an UNLOCKED read, so every
+  // decision derived from it — which scope loses a primary, which gains one —
+  // was a guess until the row was re-read under the parent locks. A DELETE
+  // landing in that window left the patch UPDATE matching nothing (the route
+  // maps the resulting undefined to a 404) while the demotion and the
+  // re-projection had ALREADY run, and the enclosing request transaction
+  // committed both: the organization lost its billing_contact because of a
+  // call that reported failure.
+  it('returns null WITHOUT demoting or re-projecting when the row is gone under the lock', async () => {
+    const { exec, calls } = makeExec([
+      [{ ...PRIMARY_ROW, isPrimary: false }], // getContact: a plain contact...
+      [],                                     // the org pre-lock
+      [],                                     // ...which is GONE by the time it is locked
+    ]);
+
+    expect(await updateContact(exec, CONTACT, ORG, { isPrimary: true }, ACTOR)).toBeNull();
+
+    // No demotion of the incumbent primary, no patch UPDATE, and no jsonb write.
+    expect(calls.updates).toEqual([]);
+    expect(orgBlobWrites(calls)).toEqual([]);
+    expect(siteBlobWrites(calls)).toEqual([]);
+  });
+
+  it('takes the re-read as a NO KEY UPDATE lock on the target, after the parents', async () => {
+    const { exec, calls } = makeExec([
+      [{ ...PRIMARY_ROW, isPrimary: false }], [], [],
+    ]);
+    await updateContact(exec, CONTACT, ORG, { isPrimary: true }, ACTOR);
+
+    const locks = lockReads(calls);
+    expect(locks.map((l) => l.table)).toEqual([organizations, contacts]);
+    expect(locks[1]!.lockMode).toBe('no key update');
+    // Bound by (id, org_id) — a contact from another tenant is not "the target".
+    expect(compile(locks[1]!.where).params).toEqual([CONTACT, ORG]);
+  });
+
+  it('re-derives the scopes from the LOCKED row when a concurrent patch moved it', async () => {
+    // The other shape of the same window: between `getContact` and the lock, a
+    // concurrent patch moved this primary onto a site. Acting on the stale read
+    // would re-project the ORG scope — the one the row no longer occupies —
+    // and leave sites.contact stale.
+    const sitePrimary = { name: 'Jane Ops', email: 'jane@acme.example', phone: '555-0100', mobile: null };
+    const { exec, calls } = makeExec([
+      [PRIMARY_ROW],                              // getContact: org-level primary
+      [],                                         // org pre-lock (the stale scope set)
+      [{ isPrimary: true, siteId: SITE }],        // locked: it is on a SITE now
+      [], [],                                     // the re-lock: org again, then the site
+      [sitePrimary], [{ id: CONTACT, ...sitePrimary }],
+    ]);
+    await updateContact(exec, CONTACT, ORG, { title: 'CFO' }, ACTOR);
+
+    expect(siteBlobWrites(calls)).toEqual([
+      { name: 'Jane Ops', email: 'jane@acme.example', phone: '555-0100' },
+    ]);
+    expect(orgBlobWrites(calls)).toEqual([]);
+    // The second lock pass re-takes the organization BEFORE the newly-named
+    // site, so the parent-first order that closes #3911 survives the recompute.
+    expect(lockReads(calls).map((l) => l.table)).toEqual([
+      organizations, contacts, organizations, sites,
+    ]);
+  });
+
+  it('deleteContact returns null and re-projects nothing when the DELETE removed no row', async () => {
+    // Same window on the delete path: `existing` came from an unlocked read, so
+    // clearing billing_contact on the strength of a delete this call did not
+    // perform would commit a projection change with no row change behind it.
+    const { exec, calls } = makeExec([[PRIMARY_ROW], []], { deleteRows: [] });
+
+    expect(await deleteContact(exec, CONTACT, ORG, ACTOR)).toBeNull();
+    expect(calls.deletes).toHaveLength(1);
+    expect(orgBlobWrites(calls)).toEqual([]);
+    expect(siteBlobWrites(calls)).toEqual([]);
   });
 });
 

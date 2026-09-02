@@ -227,6 +227,28 @@ async function demoteScopePrimary(
 }
 
 /**
+ * The projection scopes one patch touches for a given stored row: the scope it
+ * VACATES (the row's current one, if it holds a primary there) and the scope it
+ * CLAIMS. Also the exact set of parents `lockProjectionScopes` has to take, so
+ * the lock set and the re-projection set cannot drift apart.
+ *
+ * Split out because `updateContact` computes it TWICE: once from the unlocked
+ * `getContact` read, to know which parents to lock, and again from the row
+ * re-read UNDER those locks — which is the only reading that may be acted on.
+ */
+function projectionScopesFor(
+  row: Pick<ContactRecord, 'isPrimary' | 'siteId'>,
+  patch: UpdateContactInput,
+): { nextSiteId: string | null; nextIsPrimary: boolean; scopes: Set<string | null> } {
+  const nextSiteId = patch.siteId === undefined ? row.siteId : (patch.siteId ?? null);
+  const nextIsPrimary = patch.isPrimary === undefined ? row.isPrimary : patch.isPrimary;
+  const scopes = new Set<string | null>();
+  if (row.isPrimary) scopes.add(row.siteId);
+  if (nextIsPrimary) scopes.add(nextSiteId);
+  return { nextSiteId, nextIsPrimary, scopes };
+}
+
+/**
  * Re-derive one scope's legacy jsonb from whatever contact now holds
  * `is_primary` there (or clear it when nothing does).
  *
@@ -430,7 +452,7 @@ export async function updateContact(
   if (!existing) return null;
 
   const roles = assertValidRoles(patch.roles);
-  const nextSiteId = patch.siteId === undefined ? existing.siteId : (patch.siteId ?? null);
+  let { nextSiteId, nextIsPrimary, scopes } = projectionScopesFor(existing, patch);
   const fields: Identifiers = {
     name: patch.name === undefined ? existing.name : clean(patch.name),
     email: patch.email === undefined ? existing.email : normalizeContactEmail(patch.email),
@@ -442,19 +464,55 @@ export async function updateContact(
     await assertSiteInOrg(exec, orgId, nextSiteId);
   }
 
-  const nextIsPrimary = patch.isPrimary === undefined ? existing.isPrimary : patch.isPrimary;
+  // Everything above derives from `existing`, which `getContact` read WITHOUT a
+  // lock. `current` is that same reading once it has been confirmed under one.
+  let current: Pick<ContactRecord, 'isPrimary' | 'siteId'> = existing;
 
-  // Both the vacated and the claimed scope can have lost or gained a primary.
-  // This is also EXACTLY the set of parents the re-projection will write, so the
-  // pre-lock and the re-projection below cannot drift apart.
-  const scopes = new Set<string | null>();
-  if (existing.isPrimary) scopes.add(existing.siteId);
-  if (nextIsPrimary) scopes.add(nextSiteId);
-  if (scopes.size > 0) await lockProjectionScopes(exec, orgId, [...scopes]);
+  // Both the vacated and the claimed scope can have lost or gained a primary,
+  // and that is EXACTLY the set of parents the re-projection will write.
+  if (scopes.size > 0) {
+    await lockProjectionScopes(exec, orgId, [...scopes]);
+
+    // Re-read the target under those locks, and only then act. Without this,
+    // the demotion and the re-projection ran on the strength of the unlocked
+    // read: a concurrent DELETE landing in that window left the patch UPDATE
+    // below matching nothing — the route maps the resulting null to a 404 —
+    // while the incumbent primary had ALREADY been demoted and
+    // `organizations.billing_contact` / `sites.contact` re-projected to null,
+    // and the enclosing request transaction committed both. A call that
+    // reported failure took the organization's billing contact with it.
+    const [locked] = await exec
+      .select({ isPrimary: contacts.isPrimary, siteId: contacts.siteId })
+      .from(contacts)
+      .where(and(eq(contacts.id, contactId), eq(contacts.orgId, orgId)))
+      .limit(1)
+      .for('no key update');
+    if (!locked) return null;
+
+    if (locked.isPrimary !== existing.isPrimary || locked.siteId !== existing.siteId) {
+      // The narrow window the re-read exists to close, in its other shape: a
+      // concurrent patch moved or (de)promoted this row between the two reads,
+      // so the scope set derived from `existing` names the wrong parents.
+      // Recompute from the locked row and take any lock the new set adds.
+      //
+      // A SECOND lockProjectionScopes call is acceptable here: the org lock is
+      // re-entrant within one transaction (a lock already held is a no-op), and
+      // it re-takes the organization before any additional site, so the
+      // parent-first order that closes the #3911 deadlock still holds. The
+      // alternative — locking every scope the patch could conceivably touch up
+      // front — would serialise unrelated writers on sites nothing writes.
+      current = locked;
+      const relocked = projectionScopesFor(locked, patch);
+      const unlockedScopes = [...relocked.scopes].filter((scope) => !scopes.has(scope));
+      if (unlockedScopes.length > 0) await lockProjectionScopes(exec, orgId, unlockedScopes);
+      ({ nextSiteId, nextIsPrimary } = relocked);
+      scopes = relocked.scopes;
+    }
+  }
 
   // Demote the incumbent whenever this row is claiming a primary slot it does
   // not already hold — a scope move counts, even with is_primary unchanged.
-  if (nextIsPrimary && !(existing.isPrimary && existing.siteId === nextSiteId)) {
+  if (nextIsPrimary && !(current.isPrimary && current.siteId === nextSiteId)) {
     await demoteScopePrimary(exec, orgId, nextSiteId, contactId);
   }
 
@@ -494,9 +552,15 @@ export async function updateContact(
     throw err;
   }
 
+  // Nothing matched: the row went away between the read and the write. Only
+  // reachable when no scope was locked above (a patch that projects nothing);
+  // re-projecting after it would write a jsonb change with no row change
+  // behind it, on a call the route answers 404.
+  if (!updated) return null;
+
   for (const scope of scopes) await reprojectPrimaryContact(exec, orgId, scope, actor.userId);
 
-  return updated as ContactRecord;
+  return updated;
 }
 
 /** Returns null when the contact does not exist under this organization. */
@@ -512,7 +576,17 @@ export async function deleteContact(
   // Parent-first before the DELETE, for the same reason updateContact does it.
   if (existing.isPrimary) await lockProjectionScopes(exec, orgId, [existing.siteId]);
 
-  await exec.delete(contacts).where(and(eq(contacts.id, contactId), eq(contacts.orgId, orgId)));
+  const [deleted] = await exec
+    .delete(contacts)
+    .where(and(eq(contacts.id, contactId), eq(contacts.orgId, orgId)))
+    .returning({ id: contacts.id });
+
+  // `existing` came from an unlocked read, so the DELETE is the first statement
+  // that can say whether this call actually removed anything. Clearing the
+  // legacy jsonb after a delete that matched nothing would commit a projection
+  // change on the strength of somebody else's delete, while the route answers
+  // 404 — the same false-success the update path re-reads to avoid.
+  if (!deleted) return null;
 
   if (existing.isPrimary) await reprojectPrimaryContact(exec, orgId, existing.siteId, actor.userId);
   return existing;
