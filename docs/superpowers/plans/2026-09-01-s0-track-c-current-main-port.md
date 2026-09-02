@@ -1852,7 +1852,7 @@ the getter failed (c)+(d); both restored -> GREEN."
 - Consumes: everything above; `gh` CLI authenticated.
 - Produces: a pushed head with `CI Success` green on the exact SHA and an updated PR body; hands off to the controller for the independent review and the merge (the merge itself is NOT a step of this plan).
 
-- [ ] **Step 1: Tripwire greps (spec §10.1)**
+- [x] **Step 1: Tripwire greps (spec §10.1)**
 
 ```bash
 cd /Users/toddhebebrand/breeze/.worktrees/s0-track-c-readiness
@@ -1873,7 +1873,7 @@ grep -c "^    name: '" apps/api/src/services/workerRegistry.ts                  
 git diff --stat <merge-sha>..HEAD -- apps/api/src/services/workerReadinessRegistry.ts apps/api/src/jobs/eventDispatchWorker.ts apps/api/src/services/workerRegistry.ts apps/api/migrations   # EMPTY
 ```
 
-- [ ] **Step 2: Focused unit battery (spec §10.2)**
+- [x] **Step 2: Focused unit battery (spec §10.2)**
 
 ```bash
 pnpm --filter @breeze/api exec vitest run \
@@ -1893,7 +1893,7 @@ pnpm --filter @breeze/api exec vitest run src/jobs/offlineDetector src/jobs/aiAg
 
 Expected: ALL PASS.
 
-- [ ] **Step 3: Typecheck, lint, full unit suite, compose, shell, whitespace (spec §10.3–§10.4)**
+- [x] **Step 3: Typecheck, lint, full unit suite, compose, shell, whitespace (spec §10.3–§10.4)**
 
 ```bash
 NODE_OPTIONS=--max-old-space-size=8192 pnpm --filter @breeze/api exec tsc --noEmit
@@ -1909,7 +1909,7 @@ git diff --check <merge-sha>~1..HEAD
 
 Expected: typecheck 0 errors; lint clean; full unit suite green (record the summary line); all compose configs valid; no whitespace errors. A lint finding in a file this port did not touch is reported, not fixed.
 
-- [ ] **Step 4: Integration sanity (spec §10.5) — per-worktree stack ONLY**
+- [x] **Step 4: Integration sanity (spec §10.5) — per-worktree stack ONLY**
 
 ```bash
 docker ps --format '{{.Names}}' | grep -E 'breeze-(postgres|redis)-test$'   # informational: another worktree's stack — do NOT touch it
@@ -1922,7 +1922,7 @@ pnpm test-stack down
 
 Expected: both PASS (no schema/RLS/cascade surface changed; this is a regression sanity check against the merged tree). `pnpm test-stack down` also removes the generated `.env.test`; confirm `git status --porcelain` is empty afterwards.
 
-- [ ] **Step 5: Push and confirm CI attached to the exact head**
+- [x] **Step 5: Push and confirm CI attached to the exact head**
 
 ```bash
 git log --oneline <design-sha>..HEAD          # expect: merge + 5 follow-ups (+ any battery fix-ups)
@@ -1938,13 +1938,13 @@ gh pr checks 4007 --watch
 gh api repos/LanternOps/breeze/commits/$HEAD_SHA/check-runs --jq '.check_runs[] | select(.name=="CI Success") | {status, conclusion}'
 ```
 
-- [ ] **Step 6: PR body and tracker**
+- [x] **Step 6: PR body and tracker**
 
 Update #4007's body (`gh pr edit 4007 --body-file …`, preserving every existing evidence-boundary statement) with a "Current-main port" section citing: the spec path; `<merge-sha>` and the five follow-up SHAs; decisions D1–D5 (incl. D3a and D3b, and the C1/C2 review findings) in one line each; the recorded RED→GREEN checkpoints (manifest/coverage, role + flag tests, `worker.boot` fail-closed + redaction, envComposeParity, webhook lifecycle controls); the resolved counts (117 declared, 113 required on a default `all` box); and these three intentional compatibility notes verbatim: (1) `deploy.sh`'s admission gate now requires every consumer selected for the api container's role to attach (flag-gated consumers excluded) — stricter than the old `/health` smoke (spec §7); (2) `/health/ready` and `/ready` return `PublicReadinessResponse` (`ready/db/redis/workers/checkedAt/consumerSummary`), replacing the old `{ status, checks }` body — external parsers of the old body must update (spec §7); (3) a deployment running without Redis is no longer admitted (Track C's fail-closed rule, D3b). State the evidence non-claim: code-integration on `main` only; Task 5 exact-candidate evidence (RMM-QA-020/038) remains open.
 
 Comment on #4060 (do not edit its table yet): port pushed at `$HEAD_SHA`, gates run, CI status, spec/plan paths.
 
-- [ ] **Step 7: Handoff**
+- [x] **Step 7: Handoff**
 
 Hand back to the controller for the independent whole-branch review scoped to `<design-sha>..HEAD` (superpowers:requesting-code-review). Do NOT run `gh pr ready`, `gh pr merge`, or dispatch `drift-detector.yml` — the controller does those after the review.
 
