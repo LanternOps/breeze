@@ -83,6 +83,16 @@ export const devices = pgTable('devices', {
   // evaluation — but NOT from the status-upkeep path, which the reaper's
   // end-user-stop detection depends on.
   isEphemeral: boolean('is_ephemeral').notNull().default(false),
+  // RMM-QA-176: manual maintenance lease. `maintenance_until > now()` — not
+  // `status` — is the truth of "a technician put this device into maintenance":
+  // the heartbeat overwrites status to 'online' on every beat, so a status read
+  // cannot distinguish entry from extension. started_at / started_by are
+  // IMMUTABLE across extensions (the original actor stays on the row; each
+  // extension's actor is on its audit event). See services/deviceMaintenanceLease.ts.
+  maintenanceStartedAt: timestamp('maintenance_started_at', { withTimezone: true }),
+  maintenanceUntil: timestamp('maintenance_until', { withTimezone: true }),
+  maintenanceReason: varchar('maintenance_reason', { length: 500 }),
+  maintenanceStartedBy: uuid('maintenance_started_by').references(() => users.id, { onDelete: 'set null' }),
   lastSeenAt: timestamp('last_seen_at'),
   enrolledAt: timestamp('enrolled_at').defaultNow().notNull(),
   enrolledBy: uuid('enrolled_by').references(() => users.id),
