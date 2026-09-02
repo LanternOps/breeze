@@ -858,6 +858,38 @@ describe('ApprovalsInbox — "Approve and always allow"', () => {
     expect(errorToast.message).not.toMatch(/could not be submitted/i);
   });
 
+  it('never promotes when decideIntentApproval returns needs_device — leaves an inline error and the card stays put', async () => {
+    routeGraduationAndBatch([agentCard('ap-a')], graduationDto([graduationRow('manage_patches:install')]));
+    intentApprovalsMock.decide.mockResolvedValue('needs_device');
+    render(<ApprovalsInbox />);
+
+    fireEvent.click(await screen.findByTestId('approval-always-allow-ap-a'));
+    fireEvent.click(await screen.findByTestId('approval-always-allow-confirm-ap-a'));
+
+    await waitFor(() => expect(screen.getByTestId('approval-error-ap-a')).toBeInTheDocument());
+    // The card was NOT approved the ordinary way, so the promote must never
+    // have been reached — a regression that hoisted the promote above this
+    // outcome check would leave a card the approver never actually approved
+    // showing a success toast.
+    expect(promoteCalls()).toHaveLength(0);
+    expect(showToastMock).not.toHaveBeenCalled();
+    expect(screen.getByTestId('approval-row-ap-a')).toBeInTheDocument();
+  });
+
+  it('never promotes when decideIntentApproval returns not_sole_approver — leaves an inline error and the card stays put', async () => {
+    routeGraduationAndBatch([agentCard('ap-a')], graduationDto([graduationRow('manage_patches:install')]));
+    intentApprovalsMock.decide.mockResolvedValue('not_sole_approver');
+    render(<ApprovalsInbox />);
+
+    fireEvent.click(await screen.findByTestId('approval-always-allow-ap-a'));
+    fireEvent.click(await screen.findByTestId('approval-always-allow-confirm-ap-a'));
+
+    await waitFor(() => expect(screen.getByTestId('approval-error-ap-a')).toBeInTheDocument());
+    expect(promoteCalls()).toHaveLength(0);
+    expect(showToastMock).not.toHaveBeenCalled();
+    expect(screen.getByTestId('approval-row-ap-a')).toBeInTheDocument();
+  });
+
   it('hides the button and stays silent when the graduation fetch fails, without blocking Approve', async () => {
     fetchMock.mockImplementation((async (url: string) => {
       const raw = String(url);

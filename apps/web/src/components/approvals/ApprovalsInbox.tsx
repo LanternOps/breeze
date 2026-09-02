@@ -31,6 +31,11 @@ const LIVE_REFETCH_DEBOUNCE_MS = 750;
  *  time-boxed — with no fallback they would arrive AND expire unseen. Same
  *  cadence as NotificationCenter's POLL_INTERVAL_MS. */
 const POLL_INTERVAL_MS = 30_000;
+/** Caps concurrent `GET /ai/agents/graduation` fan-out: each org issues up to
+ *  AI_AGENT_KINDS.length (3) requests, so a batch of 5 orgs tops out at 15
+ *  concurrent requests regardless of how many distinct supervised orgs are on
+ *  screen at once — see the graduation-queue comment near its refs. */
+const ALWAYS_ALLOW_ORG_BATCH_SIZE = 5;
 const APPROVAL_EVENTS = ['notification.created'];
 const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true });
 
@@ -345,6 +350,15 @@ export default function ApprovalsInbox() {
     () => new Map(),
   );
   const requestedGraduationOrgsRef = useRef<Set<string>>(new Set());
+  // Newly-discovered orgIds queue here and a single persistent worker drains
+  // them ALWAYS_ALLOW_ORG_BATCH_SIZE at a time — this is what caps client fan-out
+  // (a page with many distinct supervised orgs would otherwise fire
+  // AI_AGENT_KINDS.length requests per org all at once) and, because the worker
+  // is not tied to any one effect run's cleanup, a poll/WS-nudge re-render that
+  // lands mid-fetch can never discard an in-flight org's result — the queue and
+  // the "already requested" ref only ever grow.
+  const graduationQueueRef = useRef<string[]>([]);
+  const graduationWorkerActiveRef = useRef(false);
   const [alwaysAllowTarget, setAlwaysAllowTarget] = useState<{
     approval: PendingApproval;
     opKey: string;
@@ -398,40 +412,59 @@ export default function ApprovalsInbox() {
     void loadApprovals();
   }, [loadApprovals]);
 
+  // Drains `graduationQueueRef` ALWAYS_ALLOW_ORG_BATCH_SIZE orgs at a time.
+  // Deliberately NOT scoped to any one effect's cleanup: a poll refresh, a WS
+  // nudge, or a post-decide silent reload each hand the eligibility effect
+  // below a brand-new `approvals` array, and an effect-cleanup `cancelled`
+  // flag tied to that array would discard any batch still in flight when the
+  // next one lands — the org stays marked "requested" in
+  // `requestedGraduationOrgsRef` forever with no entry ever written to
+  // `orgGraduation`, silently killing the affordance for that org for the
+  // component's lifetime. A persistent worker has no such cancellation point:
+  // every batch it starts runs to completion and writes its result. A
+  // setState after unmount is a no-op in React 18, so no unmount guard is
+  // needed either.
+  const drainGraduationQueue = useCallback(() => {
+    if (graduationWorkerActiveRef.current) return;
+    graduationWorkerActiveRef.current = true;
+    void (async () => {
+      while (graduationQueueRef.current.length > 0) {
+        const batch = graduationQueueRef.current.splice(0, ALWAYS_ALLOW_ORG_BATCH_SIZE);
+        const entries = await Promise.all(
+          batch.map(async (orgId) => [orgId, await fetchOrgGraduation(orgId)] as const),
+        );
+        setOrgGraduation((current) => {
+          const next = new Map(current);
+          for (const [orgId, info] of entries) next.set(orgId, info);
+          return next;
+        });
+      }
+      graduationWorkerActiveRef.current = false;
+    })();
+  }, []);
+
   // Always-allow eligibility: one fetch per distinct org among supervised
   // cards, gated by `requestedGraduationOrgsRef` so a poll refresh (which
   // hands this effect a brand-new `approvals` array every 30s) never
-  // re-requests an org already resolved this session.
+  // re-requests an org already resolved this session. Newly-discovered orgIds
+  // are enqueued (not fetched inline) so the concurrent fan-out stays capped
+  // regardless of how many distinct orgs appear in one render.
   useEffect(() => {
-    const orgIds = new Set<string>();
+    const newOrgIds: string[] = [];
     for (const approval of approvals) {
       if (
         approval.approvalScope === 'supervised' &&
         approval.orgId !== null &&
         !requestedGraduationOrgsRef.current.has(approval.orgId)
       ) {
-        orgIds.add(approval.orgId);
+        requestedGraduationOrgsRef.current.add(approval.orgId);
+        newOrgIds.push(approval.orgId);
       }
     }
-    if (orgIds.size === 0) return;
-    for (const orgId of orgIds) requestedGraduationOrgsRef.current.add(orgId);
-
-    let cancelled = false;
-    void (async () => {
-      const entries = await Promise.all(
-        [...orgIds].map(async (orgId) => [orgId, await fetchOrgGraduation(orgId)] as const),
-      );
-      if (cancelled) return;
-      setOrgGraduation((current) => {
-        const next = new Map(current);
-        for (const [orgId, info] of entries) next.set(orgId, info);
-        return next;
-      });
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [approvals]);
+    if (newOrgIds.length === 0) return;
+    graduationQueueRef.current.push(...newOrgIds);
+    drainGraduationQueue();
+  }, [approvals, drainGraduationQueue]);
 
   // Polling fallback: the WS layer can die permanently and silently
   // (useEventStream stops retrying after 5 ticket failures), and approvals
