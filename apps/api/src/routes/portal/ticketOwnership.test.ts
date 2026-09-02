@@ -47,6 +47,17 @@ describe('portalTicketOwnership', () => {
     expect(params).not.toContain(undefined);
   });
 
+  it('treats an un-hydrated (undefined) contactId like null instead of binding undefined', () => {
+    // A hand-built portal auth cast through `as never` (the integration suites
+    // do this) can omit contactId entirely. Before the `== null` guard the arm
+    // was added with `undefined` and the driver threw UNDEFINED_VALUE.
+    const { sql, params } = compile(
+      portalTicketOwnership({ id: 'pu-1', contactId: undefined as unknown as null }),
+    );
+    expect(sql).not.toMatch(/requester_contact_id/);
+    expect(params).toEqual(['pu-1']);
+  });
+
   it('binds the contact id itself, not a placeholder, when one is present', () => {
     const { params } = compile(portalTicketOwnership({ id: 'pu-1', contactId: 'ct-1' }));
     // Order matters only in so far as both are present and neither is null:

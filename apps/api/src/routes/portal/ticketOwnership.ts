@@ -30,7 +30,12 @@ import { tickets } from '../../db/schema';
  */
 export function portalTicketOwnership(user: { id: string; contactId: string | null }) {
   const contactId = user.contactId;
-  return contactId === null
+  // `== null` on purpose: the type says `string | null`, but a caller that
+  // builds the auth object by hand and casts it (integration suites inject
+  // `portalAuth` through `as never`) can still hand over `undefined`, and
+  // `eq(col, undefined)` throws UNDEFINED_VALUE at query time instead of
+  // compiling. Either spelling of "no contact" omits the arm.
+  return contactId == null
     ? eq(tickets.submittedBy, user.id)
     : or(eq(tickets.submittedBy, user.id), eq(tickets.requesterContactId, contactId))!;
 }
