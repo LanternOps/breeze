@@ -1,6 +1,29 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
+// RMM-QA-176: ENABLE_2FA is a module constant (routes/auth/schemas.ts:10); the
+// established way to flip it per test is a getter on a partial module mock
+// (precedent: routes/auth/login.test.ts:271-280). T1 asserts it is TRUE by
+// default so no later RED can be an "ENABLE_2FA=false" artefact.
+const { enable2faState, authState } = vi.hoisted(() => ({
+  enable2faState: { value: true },
+  authState: {
+    principalKind: 'user_session' as string,
+    mfa: true as boolean,
+    sid: 'sid-1' as string | undefined,
+  },
+}));
+
+vi.mock('../../routes/auth/schemas', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../routes/auth/schemas')>();
+  return {
+    ...actual,
+    get ENABLE_2FA() {
+      return enable2faState.value;
+    },
+  };
+});
+
 vi.mock('../../db', () => ({
   runOutsideDbContext: vi.fn((fn) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
@@ -8,7 +31,8 @@ vi.mock('../../db', () => ({
   db: {
     select: vi.fn(),
     insert: vi.fn(),
-    update: vi.fn()
+    update: vi.fn(),
+    transaction: vi.fn(),
   }
 }));
 
@@ -25,41 +49,55 @@ vi.mock('../../db/schema', async (importOriginal) => {
   return { ...actual };
 });
 
-vi.mock('../../middleware/auth', () => ({
-  authMiddleware: vi.fn((c: any, next: any) => {
-    c.set('auth', {
-      user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
-      scope: 'organization',
-      orgId: 'org-123',
-      partnerId: null,
-      accessibleOrgIds: ['org-123'],
-      canAccessOrg: (orgId: string) => orgId === 'org-123'
-    });
-    return next();
-  }),
-  requireScope: vi.fn(() => async (_c: any, next: any) => next()),
-  requirePermission: vi.fn((resource: string, action: string) => async (c: any, next: any) => {
-    if (resource === 'devices' && action === 'read' && c.req.header('x-deny-read') === 'true') {
-      return c.json({ error: 'Permission denied' }, 403);
-    }
-    // Production `requirePermission` ALWAYS populates `permissions`; the
-    // canAccessDeviceSite helper fails closed when it is absent (T10), so the
-    // mock must mirror that — set an unrestricted context by default, and add
-    // a site restriction only when the test asks for one.
-    c.set('permissions', {
-      permissions: [{ resource, action }],
-      partnerId: null,
-      orgId: 'org-123',
-      roleId: 'role-123',
-      scope: 'organization',
-      ...(c.req.header('x-site-restricted') === 'true'
-        ? { allowedSiteIds: ['site-allowed'] }
-        : {}),
-    });
-    return next();
-  }),
-  requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
-}));
+// PARTIAL mock (RMM-QA-176): requireMfa, hasSatisfiedMfa and
+// isInteractiveUserSession must be the REAL implementations — the gates this
+// suite now proves are exactly those three. Only the transport-ish middlewares
+// (authMiddleware) and the two authorization stubs whose behaviour this suite
+// drives by header (requireScope / requirePermission) stay mocked.
+vi.mock('../../middleware/auth', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../middleware/auth')>();
+  return {
+    ...actual,
+    authMiddleware: vi.fn((c: any, next: any) => {
+      c.set('auth', {
+        // `principal` drives isInteractiveUserSession (middleware/auth.ts:64);
+        // `token` drives hasSatisfiedMfa (middleware/auth.ts:886). API-key
+        // contexts are built with `token: {}` (routes/mcpServer.ts:2246), which
+        // is why T9 sets principalKind without touching `mfa`.
+        principal: { kind: authState.principalKind, id: 'principal-1' },
+        token: { mfa: authState.mfa, sid: authState.sid },
+        user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+        scope: 'organization',
+        orgId: 'org-123',
+        partnerId: null,
+        accessibleOrgIds: ['org-123'],
+        canAccessOrg: (orgId: string) => orgId === 'org-123'
+      });
+      return next();
+    }),
+    requireScope: vi.fn(() => async (_c: any, next: any) => next()),
+    requirePermission: vi.fn((resource: string, action: string) => async (c: any, next: any) => {
+      if (resource === 'devices' && action === 'read' && c.req.header('x-deny-read') === 'true') {
+        return c.json({ error: 'Permission denied' }, 403);
+      }
+      // Production `requirePermission` ALWAYS populates `permissions`; the
+      // canAccessDeviceSite helper fails closed when it is absent (T10), so the
+      // mock must mirror that — set an unrestricted context by default, and add
+      // a site restriction only when the test asks for one.
+      c.set('permissions', {
+        permissions: [{ resource, action }],
+        partnerId: null,
+        orgId: 'org-123',
+        roleId: 'role-123',
+        scope: 'organization',
+        ...(c.req.header('x-site-restricted') === 'true'
+          ? { allowedSiteIds: ['site-allowed'] }
+          : {}),
+      });
+      return next();
+    }),
+  };
+});
 
 vi.mock('./helpers', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./helpers')>()),
@@ -89,6 +127,10 @@ describe('device commands routes', () => {
   let app: Hono;
 
   beforeEach(() => {
+    enable2faState.value = true;
+    authState.principalKind = 'user_session';
+    authState.mfa = true;
+    authState.sid = 'sid-1';
     vi.clearAllMocks();
     app = new Hono();
     app.route('/devices', commandsRoutes);
