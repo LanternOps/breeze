@@ -26,7 +26,7 @@ const CHECKLIST_ITEMS: ReadonlyArray<{
   { key: 'ageOk', label: '24 hours since signup' },
   { key: 'emailVerified', label: 'Email verified' },
   { key: 'cardSettled', label: 'Card payment settled' },
-  { key: 'signupIpOk', label: 'Signup network verified' },
+  { key: 'signupIpOk', label: 'Account details verified' },
 ];
 
 const CAPABILITY_LABELS: Record<TrustDenial['capability'], string> = {

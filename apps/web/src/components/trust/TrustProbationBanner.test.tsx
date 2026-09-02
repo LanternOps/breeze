@@ -116,4 +116,28 @@ describe('TrustProbationBanner', () => {
     expect(screen.getByText('Agent enrollment is temporarily unavailable.')).toBeInTheDocument();
     await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledTimes(2));
   });
+
+  it('renders installer_distribute capability copy', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(response(status));
+    render(<TrustProbationBanner />);
+    dispatch(deny({ capability: 'installer_distribute' }));
+
+    expect(await screen.findByText('Installer distribution is temporarily unavailable.')).toBeInTheDocument();
+  });
+
+  it('renders cardSettled null as pending in the checklist', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(
+      response({
+        ...status,
+        checklist: { ...status.checklist, cardSettled: null },
+      }),
+    );
+    render(<TrustProbationBanner />);
+    dispatch(deny());
+
+    const checklist = await screen.findByRole('list', { name: 'Verification checklist' });
+    const cardItem = within(checklist).getByText('Card payment settled').parentElement;
+    expect(cardItem).toHaveTextContent('pending');
+    expect(cardItem).not.toHaveTextContent('complete');
+  });
 });
