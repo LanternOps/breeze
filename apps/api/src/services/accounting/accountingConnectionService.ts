@@ -1,11 +1,13 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, isNotNull } from 'drizzle-orm';
 import { accountingConnections } from '../../db/schema';
-import { decryptSecret, encryptSecret } from '../secretCrypto';
+import { decryptSecret, encryptSecret, getActiveSecretEncryptionKeyId, hmacFingerprint } from '../secretCrypto';
 import { db, withSystemDbAccessContext } from '../../db';
 import { assertNoAmbientDbContext, type DbContextRunner } from './dbContextGuard';
 import { getAccountingProvider } from './providerRegistry';
 import { getValidAccessToken, ReauthRequiredError } from './accountingTokens';
 import type { AccountingProviderId } from './types';
+import { isPgUniqueViolation } from '../../utils/pgErrors';
+import { captureException } from '../sentry';
 
 export type AccountingEnvironment = 'sandbox' | 'production';
 export type AccountingPushMode = 'auto' | 'manual';
@@ -31,6 +33,14 @@ export interface AccountingConnection {
   createdAt: Date | null;
   updatedAt: Date | null;
   lastError: string | null;
+  /** hmacFingerprint(realmId): `fp1:<keyId|legacy>:<hex>`. Null until backfilled. */
+  realmIdFingerprint: string | null;
+  /** Per-connection QBO -> Breeze payment pull-back switch. DB default true. */
+  pullPayments: boolean;
+  /** Stamped only after a CDC run in which no item failed. */
+  lastReconcileAt: Date | null;
+  /** CDC watermark. Column already existed (2026-06-23 migration); now read/written. */
+  cdcCursor: Date | null;
 }
 
 export interface UpsertConnectionFields {
@@ -48,6 +58,7 @@ export interface UpsertConnectionFields {
   status?: AccountingConnectionStatus;
   lastError?: string | null;
   connectedBy?: string | null;
+  pullPayments?: boolean;
 }
 
 export interface AccountingTokenUpdate {
@@ -89,6 +100,20 @@ function encryptedField(value: string | null | undefined): string | null | undef
   return encryptSecret(value);
 }
 
+/** Mirrors encryptedField but for the queryable HMAC fingerprint column. */
+function fingerprintField(value: string | null | undefined): string | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  return hmacFingerprint(value);
+}
+
+/** `fp1:<keyId>:<hex>` -> `<keyId>`; null for a malformed/absent fingerprint. */
+export function fingerprintKeyGeneration(fingerprint: string | null): string | null {
+  if (!fingerprint) return null;
+  const match = /^fp1:([^:]+):[0-9a-f]+$/.exec(fingerprint);
+  return match?.[1] ?? null;
+}
+
 function stripUndefined<T extends Record<string, unknown>>(value: T): Partial<T> {
   return Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== undefined)) as Partial<T>;
 }
@@ -113,6 +138,10 @@ function mapConnection(row: AccountingConnectionRow): AccountingConnection {
     createdAt: row.createdAt ?? null,
     updatedAt: row.updatedAt ?? null,
     lastError: row.lastError ?? null,
+    realmIdFingerprint: row.realmIdFingerprint ?? null,
+    pullPayments: row.pullPayments,
+    lastReconcileAt: row.lastReconcileAt ?? null,
+    cdcCursor: row.cdcCursor ?? null,
   };
 }
 
@@ -154,6 +183,10 @@ export async function upsertConnection(
     defaultTaxCodeRef: fields.defaultTaxCodeRef,
     pushMode: fields.pushMode ?? 'auto',
     webhookVerifierTokenEncrypted: encryptedField(fields.webhookVerifierToken),
+    realmIdFingerprint: fingerprintField(fields.realmId),
+    // Insert default true: an existing connected realm should start
+    // reconciling once the sweep ships, rather than silently opting out.
+    pullPayments: fields.pullPayments ?? true,
     status: fields.status ?? 'connected',
     lastError: fields.lastError,
     connectedBy: fields.connectedBy,
@@ -178,6 +211,10 @@ export async function upsertConnection(
     defaultTaxCodeRef: fields.defaultTaxCodeRef,
     pushMode: fields.pushMode,
     webhookVerifierTokenEncrypted: values.webhookVerifierTokenEncrypted,
+    realmIdFingerprint: values.realmIdFingerprint,
+    // Same "do not reset settings on a token-only reconnect" rule as pushMode
+    // above: only present when the caller explicitly supplies it.
+    pullPayments: fields.pullPayments,
     status: fields.status,
     lastError: fields.lastError,
     connectedBy: fields.connectedBy,
@@ -198,6 +235,151 @@ export async function upsertConnection(
   }
 
   return mapConnection(row);
+}
+
+/**
+ * Webhook realm routing (Phase D). The Intuit CDC webhook carries only a
+ * realmId, so this is how an inbound event finds the owning connection
+ * without a linear decrypt-and-compare scan. Exactly one row can match by
+ * construction: `accounting_connections_provider_realm_fp_idx` is a unique
+ * partial index on (provider, realm_id_fingerprint).
+ */
+export async function findConnectionByRealmFingerprint(
+  dbc: DbExecutor,
+  provider: AccountingProviderId,
+  realmIdFingerprint: string,
+): Promise<AccountingConnection | null> {
+  const [row] = await dbc
+    .select()
+    .from(accountingConnections)
+    .where(and(
+      eq(accountingConnections.provider, provider),
+      eq(accountingConnections.realmIdFingerprint, realmIdFingerprint),
+    ))
+    .limit(1);
+
+  return row ? mapConnection(row) : null;
+}
+
+/**
+ * Idempotent boot step. Re-fingerprints every row whose fingerprint is NULL
+ * (pre-Phase-D rows, or a fresh realm captured before this boot step ran) or
+ * was computed under a different encryption-key generation (self-heals a key
+ * rotation — the HMAC key follows APP_ENCRYPTION_KEY(_ID), so a rotation
+ * invalidates every previously stamped fingerprint).
+ *
+ * Opens its own system context; must be called with none open (mirrors the
+ * "no DB context across external work" contract other Phase D entry points
+ * follow, even though this one never leaves the process).
+ */
+export async function backfillRealmFingerprints(): Promise<{ scanned: number; updated: number; skipped: number }> {
+  assertNoAmbientDbContext('backfillRealmFingerprints');
+
+  return withSystemDbAccessContext(async () => {
+    const rows = await db
+      .select({
+        id: accountingConnections.id,
+        partnerId: accountingConnections.partnerId,
+        realmIdEncrypted: accountingConnections.realmIdEncrypted,
+        realmIdFingerprint: accountingConnections.realmIdFingerprint,
+      })
+      .from(accountingConnections)
+      .where(isNotNull(accountingConnections.realmIdEncrypted));
+
+    const activeGen = getActiveSecretEncryptionKeyId() ?? 'legacy';
+    let updated = 0;
+    let skipped = 0;
+
+    for (const row of rows) {
+      if (row.realmIdFingerprint !== null && fingerprintKeyGeneration(row.realmIdFingerprint) === activeGen) {
+        continue;
+      }
+
+      const realmId = decryptSecret(row.realmIdEncrypted);
+      // Guarded by the isNotNull(realmIdEncrypted) filter above; decryptSecret
+      // only returns null for a falsy/empty input, which that filter excludes.
+      if (realmId === null) continue;
+      const fingerprint = hmacFingerprint(realmId);
+
+      try {
+        // Zero-row-throw discipline (see other writes in this file) doesn't
+        // fit a multi-row backfill loop verbatim — aborting the whole sweep
+        // over one row deleted concurrently would strand every later row
+        // unprocessed. Guard against MISCOUNTING instead: only bump `updated`
+        // when a row actually matched.
+        const written = await db
+          .update(accountingConnections)
+          .set({ realmIdFingerprint: fingerprint })
+          .where(and(
+            eq(accountingConnections.id, row.id),
+            eq(accountingConnections.partnerId, row.partnerId),
+          ))
+          .returning({ id: accountingConnections.id });
+        if (written.length > 0) updated++;
+      } catch (err) {
+        // Two partners' realms hashing to the same fingerprint is a real data
+        // conflict an operator must see (a stolen/shared realm, or a bug in a
+        // migration), not a crash that blocks boot for every other partner.
+        if (isPgUniqueViolation(err, 'accounting_connections_provider_realm_fp_idx')) {
+          skipped++;
+          captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+            module: 'accountingConnectionService',
+            op: 'backfillRealmFingerprints',
+            connectionId: row.id,
+          });
+          continue;
+        }
+        throw err;
+      }
+    }
+
+    return { scanned: rows.length, updated, skipped };
+  }, 'backfillRealmFingerprints');
+}
+
+/** Connections the 15-minute sweep should reconcile: status 'connected' AND pull_payments. */
+export async function listReconcilableConnections(
+  dbc: DbExecutor,
+  provider: AccountingProviderId,
+): Promise<Array<{ id: string; partnerId: string }>> {
+  return dbc
+    .select({ id: accountingConnections.id, partnerId: accountingConnections.partnerId })
+    .from(accountingConnections)
+    .where(and(
+      eq(accountingConnections.provider, provider),
+      eq(accountingConnections.status, 'connected'),
+      eq(accountingConnections.pullPayments, true),
+    ));
+}
+
+/**
+ * Advance the CDC watermark and stamp last_reconcile_at. Guarded UPDATE (no
+ * CAS — the worker's shared jobId makes concurrent runs for one connection
+ * impossible); zero rows THROWS, because that means the DB context is wrong.
+ */
+export async function advanceReconcileCursor(
+  dbc: DbExecutor,
+  connectionId: string,
+  partnerId: string,
+  cursor: Date,
+  reconciledAt: Date,
+): Promise<void> {
+  const updated = await dbc
+    .update(accountingConnections)
+    .set({
+      cdcCursor: cursor,
+      lastReconcileAt: reconciledAt,
+      updatedAt: new Date(),
+    })
+    .where(and(
+      eq(accountingConnections.id, connectionId),
+      eq(accountingConnections.partnerId, partnerId),
+    ))
+    .returning({ id: accountingConnections.id });
+
+  if (updated.length === 0) {
+    throw new Error(`advanceReconcileCursor matched no accounting_connections row (id=${connectionId}); refusing to silently drop the CDC watermark`);
+  }
 }
 
 export async function updateTokens(

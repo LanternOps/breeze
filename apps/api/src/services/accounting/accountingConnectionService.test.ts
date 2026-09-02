@@ -1,5 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { decryptSecret, encryptSecret } from '../secretCrypto';
+import type { SQL } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import { decryptSecret, encryptSecret, hmacFingerprint } from '../secretCrypto';
 
 // refreshRealmSettings resolves the ambient `db` from '../../db' itself (its
 // signature is `(partnerId, provider)` — no db parameter), so it needs the
@@ -123,6 +125,10 @@ function ambientConnectionRow(overrides: Record<string, unknown> = {}) {
     lastError: null,
     createdAt: new Date('2026-09-01T00:00:00Z'),
     updatedAt: new Date('2026-09-01T00:00:00Z'),
+    realmIdFingerprint: null,
+    pullPayments: true,
+    lastReconcileAt: null,
+    cdcCursor: null,
     ...overrides,
   };
 }
@@ -552,6 +558,144 @@ describe('accountingConnectionService', () => {
       // write would have lost the race and homeCurrency would stay 'USD'.
       expect(state.row?.homeCurrency).toBe('CAD');
       expect(result.homeCurrency).toBe('CAD');
+    });
+  });
+
+  // Phase D (payment pull-back) — realm fingerprint, pull switch, CDC cursor.
+  describe('realm fingerprint', () => {
+    it('upsertConnection writes hmacFingerprint(realmId) on connect and reconnect', async () => {
+      const captured: { row?: any; insertValues?: any; updateSet?: any } = {};
+      const db = makeMockDb(captured);
+      const { upsertConnection } = await import('./accountingConnectionService');
+
+      await upsertConnection(db, 'p1', 'quickbooks', { realmId: 'realm-9' });
+
+      expect(captured.insertValues.realmIdFingerprint).toBe(hmacFingerprint('realm-9'));
+      expect(captured.updateSet.realmIdFingerprint).toBe(hmacFingerprint('realm-9'));
+    });
+
+    it('upsertConnection leaves the fingerprint untouched when realmId is omitted (token-only reconnect)', async () => {
+      const captured: { row?: any; insertValues?: any; updateSet?: any } = {};
+      const db = makeMockDb(captured);
+      const { upsertConnection } = await import('./accountingConnectionService');
+
+      await upsertConnection(db, 'p1', 'quickbooks', { accessToken: 'a' });
+
+      expect('realmIdFingerprint' in captured.updateSet).toBe(false);
+    });
+
+    it('upsertConnection nulls the fingerprint when realmId is explicitly null', async () => {
+      const captured: { row?: any; insertValues?: any; updateSet?: any } = {};
+      const db = makeMockDb(captured);
+      const { upsertConnection } = await import('./accountingConnectionService');
+
+      await upsertConnection(db, 'p1', 'quickbooks', { realmId: null });
+
+      expect(captured.updateSet.realmIdFingerprint).toBeNull();
+    });
+
+    it('fingerprintKeyGeneration parses the key id and returns null for junk', async () => {
+      const { fingerprintKeyGeneration } = await import('./accountingConnectionService');
+
+      expect(fingerprintKeyGeneration('fp1:k2:abcd')).toBe('k2');
+      expect(fingerprintKeyGeneration('abcd')).toBeNull();
+      expect(fingerprintKeyGeneration(null)).toBeNull();
+    });
+
+    it('mapConnection surfaces realmIdFingerprint, pullPayments, lastReconcileAt and cdcCursor', async () => {
+      const CURSOR = new Date('2026-09-02T20:10:00.000Z');
+      const captured: { row?: any } = {
+        row: ambientConnectionRow({
+          realmIdFingerprint: 'fp1:legacy:deadbeef',
+          pullPayments: true,
+          lastReconcileAt: null,
+          cdcCursor: CURSOR,
+        }),
+      };
+      const db = makeMockDb(captured);
+      const { getConnection } = await import('./accountingConnectionService');
+
+      const conn = await getConnection(db, 'p1', 'quickbooks');
+
+      expect(conn).toMatchObject({
+        realmIdFingerprint: 'fp1:legacy:deadbeef',
+        pullPayments: true,
+        cdcCursor: CURSOR,
+        lastReconcileAt: null,
+      });
+    });
+  });
+
+  describe('advanceReconcileCursor', () => {
+    const CURSOR = new Date('2026-09-02T20:10:00.000Z');
+    const STAMP = new Date('2026-09-02T20:10:01.000Z');
+
+    /** A dedicated db mock exposing the `.set(...)` argument for assertion. */
+    function makeReconcileDb(returningRows: Array<{ id: string }> = [{ id: 'c1' }]) {
+      const setMock = vi.fn((_patch: Record<string, unknown>) => ({
+        where: vi.fn(() => ({
+          returning: vi.fn(async () => returningRows),
+        })),
+      }));
+      const db = {
+        update: vi.fn(() => ({ set: setMock })),
+        select: vi.fn(),
+        insert: vi.fn(),
+        delete: vi.fn(),
+      };
+      return { db, setMock };
+    }
+
+    it('writes cdc_cursor + last_reconcile_at scoped to (id, partnerId)', async () => {
+      const { db, setMock } = makeReconcileDb();
+      const { advanceReconcileCursor } = await import('./accountingConnectionService');
+
+      await advanceReconcileCursor(db, 'c1', 'p1', CURSOR, STAMP);
+
+      expect(setMock.mock.calls.at(-1)![0]).toEqual({
+        cdcCursor: CURSOR,
+        lastReconcileAt: STAMP,
+        updatedAt: expect.any(Date),
+      });
+    });
+
+    it('throws when the guarded update matches no row (wrong DB context)', async () => {
+      const { db } = makeReconcileDb([]);
+      const { advanceReconcileCursor } = await import('./accountingConnectionService');
+
+      await expect(advanceReconcileCursor(db, 'c1', 'p1', CURSOR, STAMP))
+        .rejects.toThrow(/matched no accounting_connections row/);
+    });
+  });
+
+  describe('listReconcilableConnections', () => {
+    /** A dedicated db mock exposing the compiled `.where(...)` clause for assertion. */
+    function makeSelectWhereDb() {
+      const whereMock = vi.fn((_cond: SQL) => Promise.resolve([]));
+      const db = {
+        select: vi.fn(() => ({ from: vi.fn(() => ({ where: whereMock })) })),
+        insert: vi.fn(),
+        update: vi.fn(),
+        delete: vi.fn(),
+      };
+      return { db, whereMock };
+    }
+
+    it('filters to provider AND status connected AND pull_payments true', async () => {
+      const { db, whereMock } = makeSelectWhereDb();
+      const { listReconcilableConnections } = await import('./accountingConnectionService');
+
+      await listReconcilableConnections(db, 'quickbooks');
+
+      const dialect = new PgDialect();
+      // Compiling the captured `and(...)` node standalone (outside the full
+      // query builder) fully table-qualifies each column — real Postgres
+      // output for a query executed through the builder omits the qualifier
+      // on a single-table query, but the compiled clause and bound params
+      // below are the actual filter Drizzle applies either way.
+      const { sql, params } = dialect.sqlToQuery(whereMock.mock.calls.at(-1)![0] as SQL);
+      expect(sql).toMatch(/"accounting_connections"\."provider" = \$\d+ and "accounting_connections"\."status" = \$\d+ and "accounting_connections"\."pull_payments" = \$\d+/i);
+      expect(params).toEqual(['quickbooks', 'connected', true]);
     });
   });
 });
