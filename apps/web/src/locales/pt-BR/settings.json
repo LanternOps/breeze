@@ -1813,6 +1813,59 @@
         "weightRowLabel": "{{label}} (segundos creditados)",
         "neverRebuilt": "Nunca reconstruído"
       }
+    },
+    "graduation": {
+      "title": "Graduação",
+      "description": "O que este agente comprovou nos últimos 30 dias, operação por operação, e se essas evidências bastam para pedir execução pré-autorizada.",
+      "loading": "Carregando as evidências de graduação…",
+      "error": "Não foi possível carregar as evidências de graduação.",
+      "retry": "Tentar novamente",
+      "orgRequired": "Escolha uma única organização no seletor de organizações para ver as evidências dela.",
+      "empty": "Ainda não há evidências registradas para este agente.",
+      "readOnlyNote": "A execução pré-autorizada está desligada nesta instalação; estes números são apenas informativos.",
+      "byOrgTruncated": "Mostrando as {{limit}} primeiras organizações por nome. Escolha uma única organização no seletor de organizações para ver as demais.",
+      "approvalsLink": "Acompanhar esta solicitação na caixa de aprovações",
+      "ceilingHint": "As chaves no nível do parceiro são um teto, não uma concessão. O agente de cada organização precisa receber a chave separadamente — pela graduação ou editando o agente daquela organização.",
+      "promote": "Promover",
+      "verifiedOfThreshold": "{{verified}} de {{threshold}}",
+      "columns": {
+        "opKey": "Operação",
+        "state": "Situação",
+        "verified": "Verificadas",
+        "executed": "Executadas",
+        "failed": "Com falha",
+        "recurred": "Reincidências",
+        "firstVerified": "Primeira verificação",
+        "blockedReason": "Por que ainda não"
+      },
+      "states": {
+        "tracking": "Em acompanhamento",
+        "eligible": "Apta",
+        "promoted": "Promovida",
+        "demoted": "Rebaixada"
+      },
+      "blockedReasons": {
+        "needs_partner_baseline": "O agente do parceiro ainda não permite esta operação.",
+        "below_threshold": "Ainda não há execuções verificadas suficientes.",
+        "too_recent": "A primeira execução verificada ainda é recente demais.",
+        "has_failures": "Uma falha ou uma reincidência foi registrada neste período.",
+        "not_policy_decidable": "Esta operação nunca pode ser pré-autorizada."
+      },
+      "confirm": {
+        "title": "Solicitar pré-autorização",
+        "message": "Isto pede que uma segunda pessoa pré-autorize {{opKey}} para o agente desta organização. Vale somente para execuções futuras e nunca autoriza uma solicitação que já aguarda decisão.",
+        "action": "Solicitar aprovação"
+      },
+      "toasts": {
+        "requested": "Pré-autorização solicitada. Uma segunda pessoa precisa aprová-la antes que esta operação rode sem supervisão, e ela vale somente para execuções futuras."
+      },
+      "errors": {
+        "promote": "Não foi possível abrir a solicitação de pré-autorização.",
+        "policyDecideDisabled": "A execução pré-autorizada está desligada nesta instalação, por isso esta operação não pode ser promovida."
+      },
+      "reliability": {
+        "caption": "Operações do modo de ação, somente leitura: não são chaves de política, portanto nunca podem ser pré-autorizadas."
+      }
     }
   },
   "apiKeyForm": {

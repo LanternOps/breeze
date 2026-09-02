@@ -72,6 +72,10 @@ const TARGET_GLOBS = [
   // cron, unattended. A silent create/update/delete here is invisible until the
   // next occurrence fires — or fails to.
   'src/components/settings/AiAgentSchedulesSection.tsx',
+  // Graduation (P2-5, #4192): the promote POST raises a four-eyes authority
+  // change that widens what an agent may do unattended. A silent failure here
+  // reads as "requested" while no approval was ever queued.
+  'src/components/settings/AiAgentGraduationPanel.tsx',
   // P2-6 (#4193): Refresh enqueues a fleet-wide 90-day rebuild and the weights
   // drawer re-prices every estimate the MSP shows its customers — a silent
   // failure here is invisible until someone quotes a wrong number.
@@ -518,8 +522,9 @@ describe('no silent mutations in targeted set', () => {
     // QuickbooksMappingWorkbench.tsx (QuickBooks entity mapping, Task 6), plus
     // ImpactPage.tsx (P2-6 Task 10, #4193), plus ImpactWeightsDrawer.tsx
     // (P2-6 Task 11, #4193), plus AccountingSyncCard.tsx (QuickBooks invoice
-    // push, Phase C Task 7).
-    expect(absoluteFiles.length).toBe(107);
+    // push, Phase C Task 7), plus AiAgentGraduationPanel.tsx (P2-5 Task 20,
+    // #4192).
+    expect(absoluteFiles.length).toBe(108);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

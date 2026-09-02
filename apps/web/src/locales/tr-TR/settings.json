@@ -1813,6 +1813,59 @@
         "weightRowLabel": "{{label}} (kredilendirilen saniye)",
         "neverRebuilt": "Hiç yeniden oluşturulmadı"
       }
+    },
+    "graduation": {
+      "title": "Kademeli yetkilendirme",
+      "description": "Bu aracının son 30 günde işlem bazında neyi kanıtladığı ve bu kanıtların önceden yetkili çalıştırma istemeye yetip yetmediği.",
+      "loading": "Yetkilendirme kanıtları yükleniyor…",
+      "error": "Yetkilendirme kanıtları yüklenemedi.",
+      "retry": "Yeniden dene",
+      "orgRequired": "Kanıtları görmek için kuruluş seçiciden tek bir kuruluş seçin.",
+      "empty": "Bu araç için henüz hiç kanıt kaydedilmedi.",
+      "readOnlyNote": "Önceden yetkili çalıştırma bu kurulumda kapalı; bu sayılar yalnızca bilgi amaçlıdır.",
+      "byOrgTruncated": "Ada göre ilk {{limit}} kuruluş gösteriliyor. Geri kalanını görmek için kuruluş seçiciden tek bir kuruluş seçin.",
+      "approvalsLink": "Bu isteği onay kutusunda izleyin",
+      "ceilingHint": "İş ortağı düzeyindeki anahtarlar bir tavandır, bir izin değildir. Her kuruluşun aracına anahtar ayrıca verilmelidir — kademeli yetkilendirmeyle ya da o kuruluşun aracını düzenleyerek.",
+      "promote": "Yükselt",
+      "verifiedOfThreshold": "{{threshold}} içinde {{verified}}",
+      "columns": {
+        "opKey": "İşlem",
+        "state": "Durum",
+        "verified": "Doğrulanan",
+        "executed": "Çalıştırılan",
+        "failed": "Başarısız",
+        "recurred": "Yinelenen",
+        "firstVerified": "İlk doğrulama",
+        "blockedReason": "Neden henüz değil"
+      },
+      "states": {
+        "tracking": "İzleniyor",
+        "eligible": "Uygun",
+        "promoted": "Yükseltildi",
+        "demoted": "Geri alındı"
+      },
+      "blockedReasons": {
+        "needs_partner_baseline": "İş ortağı düzeyindeki araç bu işleme henüz izin vermiyor.",
+        "below_threshold": "Henüz yeterli doğrulanmış çalıştırma yok.",
+        "too_recent": "İlk doğrulanmış çalıştırma henüz çok yeni.",
+        "has_failures": "Bu dönemde bir başarısızlık ya da yineleme kaydedildi.",
+        "not_policy_decidable": "Bu işlem hiçbir zaman önceden yetkilendirilemez."
+      },
+      "confirm": {
+        "title": "Ön yetki isteği oluştur",
+        "message": "Bu, ikinci bir onaylayan kişiden bu kuruluşun aracı için {{opKey}} işlemini önceden yetkilendirmesini ister. Yalnızca gelecekteki çalıştırmalar için geçerlidir ve karar bekleyen bir isteği asla yetkilendirmez.",
+        "action": "Onay iste"
+      },
+      "toasts": {
+        "requested": "Ön yetki istendi. Bu işlem gözetimsiz çalışmadan önce ikinci bir kişinin onaylaması gerekir ve yalnızca gelecekteki çalıştırmalar için geçerlidir."
+      },
+      "errors": {
+        "promote": "Ön yetki isteği oluşturulamadı.",
+        "policyDecideDisabled": "Önceden yetkili çalıştırma bu kurulumda kapalı, bu yüzden bu işlem yükseltilemez."
+      },
+      "reliability": {
+        "caption": "Eylem kipi işlemleri, salt okunur: bunlar politika anahtarı değildir, bu yüzden asla önceden yetkilendirilemez."
+      }
     }
   },
   "apiKeyForm": {

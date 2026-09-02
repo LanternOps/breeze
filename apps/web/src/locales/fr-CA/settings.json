@@ -1813,6 +1813,59 @@
         "weightRowLabel": "{{label}} (secondes créditées)",
         "neverRebuilt": "Jamais reconstruit"
       }
+    },
+    "graduation": {
+      "title": "Habilitation graduelle",
+      "description": "Ce que cet agent a démontré au cours des 30 derniers jours, opération par opération, et si ces preuves suffisent pour demander une exécution préautorisée.",
+      "loading": "Chargement des preuves d’habilitation…",
+      "error": "Impossible de charger les preuves d’habilitation.",
+      "retry": "Réessayer",
+      "orgRequired": "Choisissez une seule organisation dans le sélecteur d’organisations pour voir ses preuves d’habilitation.",
+      "empty": "Aucune preuve n’a encore été consignée pour cet agent.",
+      "readOnlyNote": "L’exécution préautorisée est désactivée dans ce déploiement; ces chiffres sont donnés à titre indicatif.",
+      "byOrgTruncated": "Les {{limit}} premières organisations par nom sont affichées. Choisissez une seule organisation dans le sélecteur d’organisations pour voir les autres.",
+      "approvalsLink": "Suivre cette demande dans la boîte des approbations",
+      "ceilingHint": "Les clés au niveau du partenaire constituent un plafond, non une autorisation. L’agent de chaque organisation doit obtenir la clé séparément — par l’habilitation ou en modifiant l’agent de cette organisation.",
+      "promote": "Promouvoir",
+      "verifiedOfThreshold": "{{verified}} sur {{threshold}}",
+      "columns": {
+        "opKey": "Opération",
+        "state": "État",
+        "verified": "Vérifiées",
+        "executed": "Exécutées",
+        "failed": "Échouées",
+        "recurred": "Récurrences",
+        "firstVerified": "Première vérification",
+        "blockedReason": "Pourquoi pas encore"
+      },
+      "states": {
+        "tracking": "En observation",
+        "eligible": "Admissible",
+        "promoted": "Promue",
+        "demoted": "Rétrogradée"
+      },
+      "blockedReasons": {
+        "needs_partner_baseline": "L’agent du partenaire ne permet pas encore cette opération.",
+        "below_threshold": "Il n’y a pas encore assez d’exécutions vérifiées.",
+        "too_recent": "La première exécution vérifiée est encore trop récente.",
+        "has_failures": "Un échec ou une récurrence a été consigné durant cette période.",
+        "not_policy_decidable": "Cette opération ne peut jamais être préautorisée."
+      },
+      "confirm": {
+        "title": "Demander une préautorisation",
+        "message": "Cela demande à une deuxième personne de préautoriser {{opKey}} pour l’agent de cette organisation. Cela s’applique uniquement aux exécutions futures et n’autorise jamais une demande qui attend déjà une décision.",
+        "action": "Demander l’approbation"
+      },
+      "toasts": {
+        "requested": "Préautorisation demandée. Une deuxième personne doit l’approuver avant que cette opération s’exécute sans surveillance, et cela s’applique uniquement aux exécutions futures."
+      },
+      "errors": {
+        "promote": "Impossible de soumettre la demande de préautorisation.",
+        "policyDecideDisabled": "L’exécution préautorisée est désactivée dans ce déploiement; cette opération ne peut donc pas être promue."
+      },
+      "reliability": {
+        "caption": "Opérations du mode action, en lecture seule : ce ne sont pas des clés de politique, elles ne peuvent donc jamais être préautorisées."
+      }
     }
   },
   "apiKeyForm": {

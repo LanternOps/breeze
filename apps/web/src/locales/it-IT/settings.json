@@ -1813,6 +1813,59 @@
         "weightRowLabel": "{{label}} (secondi accreditati)",
         "neverRebuilt": "Mai ricostruito"
       }
+    },
+    "graduation": {
+      "title": "Abilitazione progressiva",
+      "description": "Ciò che questo agente ha dimostrato negli ultimi 30 giorni, operazione per operazione, e se tali prove bastano per chiedere l’esecuzione preautorizzata.",
+      "loading": "Caricamento delle prove di abilitazione…",
+      "error": "Non è stato possibile caricare le prove di abilitazione.",
+      "retry": "Riprova",
+      "orgRequired": "Scegli una sola organizzazione nel selettore delle organizzazioni per vedere le sue prove di abilitazione.",
+      "empty": "Per questo agente non è stata ancora registrata alcuna prova.",
+      "readOnlyNote": "L’esecuzione preautorizzata è disattivata in questa installazione; questi dati sono solo informativi.",
+      "byOrgTruncated": "Sono mostrate le prime {{limit}} organizzazioni in ordine di nome. Scegli una sola organizzazione nel selettore delle organizzazioni per vedere le altre.",
+      "approvalsLink": "Segui questa richiesta nella casella delle approvazioni",
+      "ceilingHint": "Le chiavi a livello di partner sono un limite massimo, non una concessione. L’agente di ogni organizzazione deve ricevere la chiave separatamente: tramite l’abilitazione o modificando l’agente di quella organizzazione.",
+      "promote": "Promuovi",
+      "verifiedOfThreshold": "{{verified}} su {{threshold}}",
+      "columns": {
+        "opKey": "Operazione",
+        "state": "Stato",
+        "verified": "Verificate",
+        "executed": "Eseguite",
+        "failed": "Non riuscite",
+        "recurred": "Ricomparse",
+        "firstVerified": "Prima verifica",
+        "blockedReason": "Perché non ancora"
+      },
+      "states": {
+        "tracking": "In osservazione",
+        "eligible": "Idonea",
+        "promoted": "Promossa",
+        "demoted": "Retrocessa"
+      },
+      "blockedReasons": {
+        "needs_partner_baseline": "L’agente a livello di partner non consente ancora questa operazione.",
+        "below_threshold": "Non ci sono ancora abbastanza esecuzioni verificate.",
+        "too_recent": "La prima esecuzione verificata è ancora troppo recente.",
+        "has_failures": "In questo periodo è stato registrato un errore o una ricomparsa.",
+        "not_policy_decidable": "Questa operazione non può mai essere preautorizzata."
+      },
+      "confirm": {
+        "title": "Richiedi la preautorizzazione",
+        "message": "Chiede a una seconda persona di preautorizzare {{opKey}} per l’agente di questa organizzazione. Vale solo per le esecuzioni future e non autorizza mai una richiesta già in attesa di decisione.",
+        "action": "Richiedi approvazione"
+      },
+      "toasts": {
+        "requested": "Preautorizzazione richiesta. Una seconda persona deve approvarla prima che questa operazione venga eseguita senza supervisione e vale solo per le esecuzioni future."
+      },
+      "errors": {
+        "promote": "Non è stato possibile inoltrare la richiesta di preautorizzazione.",
+        "policyDecideDisabled": "L’esecuzione preautorizzata è disattivata in questa installazione, quindi questa operazione non può essere promossa."
+      },
+      "reliability": {
+        "caption": "Operazioni della modalità azione, in sola lettura: non sono chiavi di criterio, quindi non possono mai essere preautorizzate."
+      }
     }
   },
   "apiKeyForm": {

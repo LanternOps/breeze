@@ -1813,6 +1813,59 @@
         "weightRowLabel": "{{label}} (angerechnete Sekunden)",
         "neverRebuilt": "Nie neu erstellt"
       }
+    },
+    "graduation": {
+      "title": "Freigabestufen",
+      "description": "Was dieser Agent in den letzten 30 Tagen je Vorgang nachgewiesen hat und ob diese Nachweise für einen Antrag auf vorab genehmigte Ausführung genügen.",
+      "loading": "Nachweise werden geladen…",
+      "error": "Die Nachweise konnten nicht geladen werden.",
+      "retry": "Erneut versuchen",
+      "orgRequired": "Wählen Sie in der Organisationsauswahl eine einzelne Organisation aus, um deren Nachweise zu sehen.",
+      "empty": "Für diesen Agenten wurden noch keine Nachweise erfasst.",
+      "readOnlyNote": "Vorab genehmigte Ausführung ist in dieser Installation deaktiviert; diese Zahlen dienen nur zur Information.",
+      "byOrgTruncated": "Es werden die ersten {{limit}} Organisationen nach Name angezeigt. Wählen Sie in der Organisationsauswahl eine einzelne Organisation aus, um die übrigen zu sehen.",
+      "approvalsLink": "Diesen Antrag im Genehmigungseingang verfolgen",
+      "ceilingHint": "Schlüssel auf Partnerebene sind eine Obergrenze, keine Erteilung. Der Agent jeder Organisation muss den Schlüssel gesondert erhalten — über die Freigabestufe oder durch Bearbeiten des Agenten dieser Organisation.",
+      "promote": "Hochstufen",
+      "verifiedOfThreshold": "{{verified}} von {{threshold}}",
+      "columns": {
+        "opKey": "Vorgang",
+        "state": "Status",
+        "verified": "Bestätigt",
+        "executed": "Ausgeführt",
+        "failed": "Fehlgeschlagen",
+        "recurred": "Erneut aufgetreten",
+        "firstVerified": "Erstmals bestätigt",
+        "blockedReason": "Warum noch nicht"
+      },
+      "states": {
+        "tracking": "Wird beobachtet",
+        "eligible": "Berechtigt",
+        "promoted": "Hochgestuft",
+        "demoted": "Zurückgestuft"
+      },
+      "blockedReasons": {
+        "needs_partner_baseline": "Der partnerweite Agent erlaubt diesen Vorgang noch nicht.",
+        "below_threshold": "Noch nicht genug bestätigte Ausführungen.",
+        "too_recent": "Die erste bestätigte Ausführung liegt noch nicht lange genug zurück.",
+        "has_failures": "In diesem Zeitraum wurde ein Fehlschlag oder ein erneutes Auftreten erfasst.",
+        "not_policy_decidable": "Dieser Vorgang kann niemals vorab genehmigt werden."
+      },
+      "confirm": {
+        "title": "Vorabgenehmigung beantragen",
+        "message": "Damit wird eine zweite Person gebeten, {{opKey}} für den Agenten dieser Organisation vorab zu genehmigen. Das gilt nur für künftige Läufe und genehmigt niemals eine Anfrage, die bereits auf eine Entscheidung wartet.",
+        "action": "Genehmigung anfordern"
+      },
+      "toasts": {
+        "requested": "Vorabgenehmigung beantragt. Eine zweite Person muss sie genehmigen, bevor dieser Vorgang unbeaufsichtigt läuft, und sie gilt nur für künftige Läufe."
+      },
+      "errors": {
+        "promote": "Der Antrag auf Vorabgenehmigung konnte nicht gestellt werden.",
+        "policyDecideDisabled": "Vorab genehmigte Ausführung ist in dieser Installation deaktiviert, dieser Vorgang kann daher nicht hochgestuft werden."
+      },
+      "reliability": {
+        "caption": "Vorgänge im Act-Modus, nur zur Ansicht: Sie sind keine Richtlinienschlüssel und können daher nie vorab genehmigt werden."
+      }
     }
   },
   "apiKeyForm": {
