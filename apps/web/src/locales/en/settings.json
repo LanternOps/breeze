@@ -1719,7 +1719,9 @@
       "retry": "Try again",
       "errors": {
         "load": "The impact report could not be loaded.",
-        "rebuild": "The impact rebuild could not be queued."
+        "rebuild": "The impact rebuild could not be queued.",
+        "tooManyOrgs": "This rebuild covers more than {{limit}} organizations. Choose a single organization in the organization switcher and try again.",
+        "orgIdRequired": "Choose a single organization in the organization switcher before rebuilding the impact report."
       },
       "toasts": {
         "rebuildQueued": "Impact rebuild queued.",

@@ -1719,7 +1719,9 @@
       "retry": "Yeniden dene",
       "errors": {
         "load": "Etki raporu yüklenemedi.",
-        "rebuild": "Etki raporunun yeniden oluşturulması sıraya alınamadı."
+        "rebuild": "Etki raporunun yeniden oluşturulması sıraya alınamadı.",
+        "tooManyOrgs": "Bu yeniden oluşturma {{limit}} kuruluştan fazlasını kapsıyor. Organizasyon değiştiriciden tek bir organizasyon seçip yeniden deneyin.",
+        "orgIdRequired": "Etki raporunu yeniden oluşturmadan önce organizasyon değiştiriciden tek bir organizasyon seçin."
       },
       "toasts": {
         "rebuildQueued": "Etki raporunun yeniden oluşturulması sıraya alındı.",

@@ -1719,7 +1719,9 @@
       "retry": "Riprova",
       "errors": {
         "load": "Impossibile caricare il report di impatto.",
-        "rebuild": "Impossibile accodare la ricostruzione del report."
+        "rebuild": "Impossibile accodare la ricostruzione del report.",
+        "tooManyOrgs": "Questa ricostruzione riguarda più di {{limit}} organizzazioni. Scegliete una sola organizzazione nel selettore delle organizzazioni e riprovate.",
+        "orgIdRequired": "Scegliete una sola organizzazione nel selettore delle organizzazioni prima di ricostruire il report di impatto."
       },
       "toasts": {
         "rebuildQueued": "Ricostruzione del report accodata.",

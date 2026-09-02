@@ -21,6 +21,7 @@ import { formatCurrency, formatNumber, formatPercent } from '@/lib/i18n/format';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import {
   AI_AGENT_IMPACT_BY_ORG_LIMIT,
+  AI_AGENT_IMPACT_REBUILD_MAX_ORGS,
   AI_AGENT_IMPACT_WINDOWS,
   DEFAULT_IMPACT_WEIGHTS,
   IMPACT_WEIGHT_KEYS,
@@ -243,6 +244,23 @@ export default function ImpactPage() {
         request: () => fetchWithAuth('/api/ai/agents/impact/rebuild', { method: 'POST' }),
         errorFallback: t('aiAgentsPage.impact.errors.rebuild'),
         successMessage: t('aiAgentsPage.impact.toasts.rebuildQueued'),
+        // The rebuild route refuses with a BARE machine token and no `code`
+        // (`too_many_orgs` 409 above AI_AGENT_IMPACT_REBUILD_MAX_ORGS accessible
+        // orgs, `org_id_required` 400 for a system-scoped caller), and
+        // runAction's fallback chain toasts `body.error` verbatim. Without this
+        // mapper the partner with the biggest fleet — exactly the customer this
+        // page is for — reads "too_many_orgs" as their error message.
+        friendly: (key) => {
+          if (key === 'too_many_orgs') {
+            return t('aiAgentsPage.impact.errors.tooManyOrgs', {
+              limit: AI_AGENT_IMPACT_REBUILD_MAX_ORGS,
+            });
+          }
+          if (key === 'org_id_required') {
+            return t('aiAgentsPage.impact.errors.orgIdRequired');
+          }
+          return undefined;
+        },
       });
     } catch (err) {
       if (err instanceof ActionError && err.status === 401) return;

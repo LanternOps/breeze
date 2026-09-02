@@ -1719,7 +1719,9 @@
       "retry": "Tentar novamente",
       "errors": {
         "load": "Não foi possível carregar o relatório de impacto.",
-        "rebuild": "Não foi possível enfileirar a reconstrução do relatório."
+        "rebuild": "Não foi possível enfileirar a reconstrução do relatório.",
+        "tooManyOrgs": "Esta reconstrução abrange mais de {{limit}} organizações. Escolha uma única organização no seletor de organizações e tente novamente.",
+        "orgIdRequired": "Escolha uma única organização no seletor de organizações antes de reconstruir o relatório de impacto."
       },
       "toasts": {
         "rebuildQueued": "Reconstrução do relatório enfileirada.",

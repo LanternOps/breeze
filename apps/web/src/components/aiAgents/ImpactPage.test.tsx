@@ -402,6 +402,78 @@ describe('ImpactPage', () => {
     expect(toasts).toEqual([]);
   });
 
+  it('translates the rebuild route\u2019s machine tokens instead of toasting them raw', async () => {
+    // The route answers 409 `{ error: 'too_many_orgs', limit, count }` above 200
+    // accessible orgs and 400 `{ error: 'org_id_required' }` for a system-scoped
+    // caller. Neither carries a `code`, so runAction falls back to `body.error`
+    // and would toast the bare token at the partner this page is built for.
+    fetchMock.mockImplementation((url: string) => {
+      if (url.startsWith('/api/ai/agents/impact/rebuild')) {
+        return Promise.resolve(json({ error: 'too_many_orgs', limit: 200, count: 412 }, false, 409));
+      }
+      return Promise.resolve(json({ data: dto() }));
+    });
+    const view = render(<ImpactPage />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-impact-refresh')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('ai-impact-refresh'));
+    await waitFor(() => expect(toasts.some((toast) => toast.type === 'error')).toBe(true));
+
+    expect(toasts.some((toast) => toast.message.includes('too_many_orgs'))).toBe(false);
+    expect(
+      toasts.some((toast) => toast.message.includes('more than 200 organizations')),
+    ).toBe(true);
+    // A refused enqueue must not arm the poll either.
+    expect(screen.getByTestId('ai-impact-refresh')).not.toBeDisabled();
+    view.unmount();
+
+    toasts.length = 0;
+    fetchMock.mockImplementation((url: string) => {
+      if (url.startsWith('/api/ai/agents/impact/rebuild')) {
+        return Promise.resolve(
+          json(
+            { error: 'org_id_required', message: 'A system-scoped impact rebuild must name one organization.' },
+            false,
+            400,
+          ),
+        );
+      }
+      return Promise.resolve(json({ data: dto() }));
+    });
+    render(<ImpactPage />);
+    await waitFor(() => expect(screen.getByTestId('ai-impact-refresh')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('ai-impact-refresh'));
+    await waitFor(() => expect(toasts.some((toast) => toast.type === 'error')).toBe(true));
+
+    expect(toasts.some((toast) => toast.message.includes('org_id_required'))).toBe(false);
+    expect(
+      toasts.some((toast) => toast.message.includes('organization switcher')),
+    ).toBe(true);
+  });
+
+  it('refetches when the org switcher selects a different organization', async () => {
+    // `currentOrgId` is not READ inside requestImpact — fetchWithAuth injects
+    // `?orgId=` itself — so the only thing keeping it in the dependency list is
+    // this behaviour. Without the control re-render below, an autofix that drops
+    // the "unused" dep would leave the suite green and the page showing the
+    // previous customer’s totals.
+    mockImpact(dto());
+    const view = render(<ImpactPage />);
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const afterFirstLoad = fetchMock.mock.calls.length;
+
+    // Control: a re-render with the SAME org must not refetch, so the assertion
+    // below is about the scope change and not about render churn.
+    view.rerender(<ImpactPage />);
+    expect(fetchMock.mock.calls.length).toBe(afterFirstLoad);
+
+    mockCurrentOrgId = 'org-2';
+    view.rerender(<ImpactPage />);
+
+    await waitFor(() => expect(fetchMock.mock.calls.length).toBeGreaterThan(afterFirstLoad));
+  });
+
   it('renders an error state with a working retry when the load fails', async () => {
     fetchMock.mockResolvedValue(json({ error: 'boom' }, false, 500));
     render(<ImpactPage />);

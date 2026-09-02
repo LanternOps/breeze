@@ -1719,7 +1719,9 @@
       "retry": "Réessayer",
       "errors": {
         "load": "Impossible de charger le rapport d’impact.",
-        "rebuild": "Impossible de mettre la reconstruction du rapport en file d’attente."
+        "rebuild": "Impossible de mettre la reconstruction du rapport en file d’attente.",
+        "tooManyOrgs": "Cette reconstruction couvre plus de {{limit}} organisations. Choisissez une seule organisation dans le sélecteur d’organisation, puis réessayez.",
+        "orgIdRequired": "Choisissez une seule organisation dans le sélecteur d’organisation avant de reconstruire le rapport d’impact."
       },
       "toasts": {
         "rebuildQueued": "Reconstruction du rapport mise en file d’attente.",

@@ -1719,7 +1719,9 @@
       "retry": "Erneut versuchen",
       "errors": {
         "load": "Der Wirkungsbericht konnte nicht geladen werden.",
-        "rebuild": "Der Neuaufbau des Wirkungsberichts konnte nicht eingeplant werden."
+        "rebuild": "Der Neuaufbau des Wirkungsberichts konnte nicht eingeplant werden.",
+        "tooManyOrgs": "Dieser Neuaufbau umfasst mehr als {{limit}} Organisationen. Wählen Sie im Organisations-Umschalter eine einzelne Organisation aus und versuchen Sie es erneut.",
+        "orgIdRequired": "Wählen Sie im Organisations-Umschalter eine einzelne Organisation aus, bevor Sie den Wirkungsbericht neu aufbauen."
       },
       "toasts": {
         "rebuildQueued": "Neuaufbau des Wirkungsberichts eingeplant.",

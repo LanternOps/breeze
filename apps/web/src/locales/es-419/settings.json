@@ -1719,7 +1719,9 @@
       "retry": "Reintentar",
       "errors": {
         "load": "No se pudo cargar el informe de impacto.",
-        "rebuild": "No se pudo poner en cola la reconstrucción del informe."
+        "rebuild": "No se pudo poner en cola la reconstrucción del informe.",
+        "tooManyOrgs": "Esta reconstrucción abarca más de {{limit}} organizaciones. Elija una sola organización en el selector de organizaciones e inténtelo de nuevo.",
+        "orgIdRequired": "Elija una sola organización en el selector de organizaciones antes de reconstruir el informe de impacto."
       },
       "toasts": {
         "rebuildQueued": "Reconstrucción del informe puesta en cola.",
