@@ -19,7 +19,7 @@ Everything here uses only documented, stable endpoints — see the [API Referenc
 Two credentials matter here, and they split cleanly by job:
 
 - **A partner service principal** — for anything unattended: Recipe 2's provisioning loop, scheduled syncs, anything that must run without a human at the keyboard. It authenticates against the Partner API (`$BREEZE_URL/partner-api/*`) via the `X-API-Key` header, never touches MFA, and never expires mid-run. Deliberately create-only: it can mint orgs, sites, and enrollment keys, but there is **no** DELETE surface — tearing down tenancy stays a human, MFA-gated act.
-- **A partner-admin user JWT** — for the bulk endpoints that live on the main API: org/site import (Recipe 1) and script bundles (Recipe 6). These are `requireMfa()`-gated: log in as a partner admin, complete the MFA challenge (when `ENABLE_2FA` is on, the JWT must carry `mfa: true` — a bare `POST /auth/login` token gets `403 MFA required`), and export the access token. Tokens are short-lived, so long runs should refresh via `POST /auth/refresh`.
+- **A partner-admin user JWT** — for the bulk endpoints that live on the main API: org/site import (Recipe 1), contact import (Recipe 1c), and script bundles (Recipe 6). These are `requireMfa()`-gated: log in as a partner admin, complete the MFA challenge (when `ENABLE_2FA` is on, the JWT must carry `mfa: true` — a bare `POST /auth/login` token gets `403 MFA required`), and export the access token. Tokens are short-lived, so long runs should refresh via `POST /auth/refresh`.
 
 <Aside title="Setting up the service principal (once, as a human)">
   Creating the principal is itself MFA-gated — that's the point: one interactive act mints a credential your scripts use unattended afterwards.
@@ -32,7 +32,7 @@ Two credentials matter here, and they split cleanly by job:
 
 ```bash
 export BREEZE_URL="https://breeze.yourdomain.com/api/v1"
-export BREEZE_TOKEN="eyJ..."         # partner-admin JWT with MFA satisfied (Recipes 1, 6)
+export BREEZE_TOKEN="eyJ..."         # partner-admin JWT with MFA satisfied (Recipes 1, 1c, 6)
 export BREEZE_PARTNER_KEY="..."      # partner service principal key (Recipe 2)
 
 # Sanity check the JWT — should return your partner record

@@ -107,7 +107,7 @@ This is the single largest variable in migration cost, and it is determined enti
    | Atera Customer | Organization |
    | Pulseway Organization → Site → Group | Organization → Site → Device Group |
 
-   Breeze has no bulk import UI today, so this is scripted against the API — `POST /orgs/organizations` and `POST /orgs/sites`. The [Migration Toolkit](/migration/toolkit/) has a ready-to-run script that reads a two-column CSV and builds the whole tree, and each per-vendor page has the export query that produces that CSV.
+   Breeze has no bulk import UI for the tenancy tree (organizations and sites) today, so this phase is scripted against the API — `POST /orgs/organizations` and `POST /orgs/sites`. Contacts do have one (Settings → Organizations → Contacts → Import CSV, see Recipe 1c). The [Migration Toolkit](/migration/toolkit/) has a ready-to-run script that reads a two-column CSV and builds the whole tree, and each per-vendor page has the export query that produces that CSV.
 
 4. ### Phase 3 — Deploy the Breeze agent from the incumbent
 

@@ -329,7 +329,7 @@ A **Contact** is a person attached to an organisation -- a billing contact, a te
 On `PATCH`, an explicit `null` clears a field and an omitted key leaves it alone. That distinction is the reason clearing a field lives here rather than in the contacts importer, which merges and never clears.
 
 <Aside type="note">
-  `organizations.billingContact` and `sites.contact` are still present and still readable, but they are now maintained as **compatibility projections** of whichever contact holds the primary flag for that scope. The `contacts` table is the system of record; write to it, and the projections follow.
+  `organizations.billingContact` and `sites.contact` are still present, still readable, and still **writable** through the organisation and site routes (`POST`/`PATCH /orgs/organizations` and `/orgs/sites` accept them). They are maintained as **compatibility projections** of whichever contact holds the primary flag for that scope, and every write to either representation is kept in sync with the other — so the two never drift, whichever one you write. The `contacts` table is the system of record for people.
 </Aside>
 
 ---
