@@ -67,6 +67,7 @@ describe('invoiceService site-axis guard', () => {
   it('getInvoice allows a site-restricted actor an in-site invoice', async () => {
     queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', siteId: 'siteA' }]); // getOwnedInvoiceOr404
     queueResult([]); // lines
+    queueResult([]); // accounting_entity_mappings (no QuickBooks mapping)
     const result = await svc.getInvoice('i1', restricted);
     expect(result.invoice.id).toBe('i1');
   });
@@ -74,6 +75,7 @@ describe('invoiceService site-axis guard', () => {
   it('getInvoice is unaffected for an unrestricted actor (out-of-site & null-site both visible)', async () => {
     queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1', siteId: 'siteB' }]);
     queueResult([]); // lines
+    queueResult([]); // accounting_entity_mappings (no QuickBooks mapping)
     const result = await svc.getInvoice('i1', unrestricted);
     expect(result.invoice.id).toBe('i1');
   });

@@ -45,6 +45,7 @@
     "aiUsageBudget": "KI-Nutzung und Budget",
     "aiAgents": "KI-Agenten",
     "aiAgentRuns": "KI-Agenten-Läufe",
+    "aiImpact": "KI-Wirkung",
     "customFields": "Benutzerdefinierte Felder",
     "savedFilters": "Gespeicherte Filter",
     "users": "Benutzer",
@@ -2412,6 +2413,11 @@
     "link": "Neuigkeiten"
   },
   "money": {
-    "approximateTotal": "≈ {{amount}} ungefähr · Kurse vom {{rateDate}}"
+    "approximateTotal": "≈ {{amount}} ungefähr · Kurse vom {{rateDate}}",
+    "approximateFailed": "≈ Summe nicht verfügbar — Wechselkurse konnten nicht geladen werden",
+    "approximateUnavailableMissing": "≈ Summe nicht verfügbar — kein {{target}}-Wechselkurs für {{codes}}",
+    "approximateUnavailableStale": "≈ Summe nicht verfügbar — {{target}}-Wechselkurs für {{codes}} ist zu alt",
+    "approximateUnavailableMixed": "≈ Summe nicht verfügbar — {{codes}} konnte nicht in {{target}} umgerechnet werden",
+    "approximateUnavailableCodesOverflow": "{{codes}} und {{more}} weitere"
   }
 }

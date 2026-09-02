@@ -499,6 +499,54 @@ describe('POST /devices/:id/move-org', () => {
       expect(idx('ticket_parts')).toBeLessThan(idx('ticket_attachments'));
     });
 
+    it('detaches ai_agent_runs.ticket_id via the tickets join, before tickets are re-stamped (#4215)', async () => {
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
+      rigOrgAndSiteSelects({
+        orgRows: [
+          { id: SOURCE_ORG, partnerId: 'partner-1' },
+          { id: TARGET_ORG, partnerId: 'partner-1' },
+        ],
+        siteRow: { id: TARGET_SITE },
+      });
+      const { statements } = rigTransactionSuccess();
+
+      const res = await app.request(`/devices/${DEVICE_ID}/move-org`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE }),
+      });
+      expect(res.status).toBe(200);
+
+      // Agent-run history stays with the SOURCE org, so every FK pointing at a
+      // row that moves WITH the device must be severed. `ticket_id` is
+      // unreachable from the device-keyed detach: ticket-triggered runs carry
+      // a ticket_id with a NULL device_id, so they need their own statement
+      // keyed off the ticket's device_id.
+      const collapse = (s: string) => s.replace(/\s+/g, ' ').trim();
+      const runDetaches = statements
+        .filter((s) => s.startsWith('UPDATE ai_agent_runs '))
+        .map(collapse);
+      expect(
+        runDetaches,
+        `Expected the device-keyed run detach plus the ticket-keyed one.\nStatements:\n${statements.join('\n')}`,
+      ).toEqual([
+        'UPDATE ai_agent_runs SET device_id = NULL, alert_id = NULL, session_id = NULL, ' +
+          `anomaly_incident_id = NULL WHERE device_id = ${DEVICE_ID}::uuid`,
+        'UPDATE ai_agent_runs SET ticket_id = NULL ' +
+          `WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${DEVICE_ID}::uuid)`,
+      ]);
+
+      // The subselect resolves tickets by device_id, which the move never
+      // rewrites — but run it BEFORE the generic loop re-stamps tickets.org_id
+      // so both sides of the statement are still read under the SOURCE org,
+      // matching the metric_anomaly_incidents reverse-pointer ordering.
+      const detachIdx = statements.findIndex((s) => s.startsWith('UPDATE ai_agent_runs SET ticket_id'));
+      const ticketsIdx = statements.findIndex((s) => s.startsWith('UPDATE tickets '));
+      expect(detachIdx).toBeGreaterThanOrEqual(0);
+      expect(ticketsIdx).toBeGreaterThanOrEqual(0);
+      expect(detachIdx).toBeLessThan(ticketsIdx);
+    });
+
     it('rewrites time_entries org_id via the ticket join inside the transaction', async () => {
       vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
       rigOrgAndSiteSelects({

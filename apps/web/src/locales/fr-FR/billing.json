@@ -557,7 +557,7 @@
       "addSection": {
         "captionPlaceholder": "Légende (facultatif)",
         "headingPlaceholder": "Texte du titre",
-        "imageHelp": "PNG, JPEG ou WebP, jusqu'à 5 MB.",
+        "imageHelp": "PNG ou JPEG, jusqu'à 5 MB.",
         "imageUrlPlaceholder": "https://example.com/photo.png",
         "insertHere": "Ajouter une section",
         "richTextPlaceholder": "Texte de proposition…",
@@ -695,7 +695,8 @@
         "updateSection": "Impossible de mettre à jour la section.",
         "uploadImage": "Impossible de téléverser l'image.",
         "noPriceForCurrency": "Aucun prix en {{currency}} pour cet article. Ajoutez-en un dans le catalogue ou saisissez une ligne manuelle.",
-        "sectionAddedListStale": "Section ajoutée, mais la liste n'a pas pu être actualisée. Rechargez la page pour la voir."
+        "sectionAddedListStale": "Section ajoutée, mais la liste n'a pas pu être actualisée. Rechargez la page pour la voir.",
+        "lineAddedListStale": "Ligne ajoutée, mais la liste n'a pas pu être actualisée. Rechargez la page pour la voir."
       },
       "image": {
         "alt": "Image du devis",
@@ -875,7 +876,7 @@
         "preparedForPlaceholder": "Remplacer le nom du client",
         "showPreparedBy": "Afficher « préparé par » (votre entreprise)",
         "imageLabel": "Image de couverture",
-        "imageHelp": "PNG, JPEG ou WebP, jusqu'à 5 MB.",
+        "imageHelp": "PNG ou JPEG, jusqu'à 5 MB.",
         "removeImage": "Supprimer l'image"
       },
       "ghost": {
@@ -1622,6 +1623,8 @@
       "stripeNudge": "Connectez Stripe pour accepter les paiements par carte en ligne.",
       "title": "Paiements",
       "viaStripe": "via Stripe",
+      "quickbooks": "QuickBooks",
+      "viaQuickbooks": "via QuickBooks",
       "currencyUnknown": "La devise de règlement de votre compte Stripe n'est pas encore en cache ; elle n'a donc pas pu être comparée à cette facture en {{documentCurrency}}. Actualisez les détails de votre compte Stripe dans Paramètres → Intégrations pour activer la vérification."
     },
     "requestPayment": {
@@ -1660,6 +1663,21 @@
       "confirm": "Réinitialiser le lien",
       "success": "Lien réinitialisé — les anciens liens ne fonctionnent plus",
       "error": "Impossible de réinitialiser le lien"
+    },
+    "accountingSync": {
+      "title": "Synchronisation QuickBooks",
+      "status": {
+        "pending": "Pas encore envoyée",
+        "synced": "Synchronisée",
+        "error": "Échec de la synchronisation",
+        "synced_with_tax_variance": "Synchronisée avec un écart de taxe"
+      },
+      "taxVarianceHint": "QuickBooks a calculé un total de taxes différent. Comparez les deux enregistrements avant de clôturer la période.",
+      "docNumber": "Document QuickBooks nº {{docNumber}}",
+      "lastSynced": "Dernière synchronisation : {{when}}",
+      "push": "Envoyer vers QuickBooks",
+      "pushed": "Facture envoyée vers QuickBooks.",
+      "pushFailed": "Échec de l'envoi de la facture vers QuickBooks."
     }
   },
   "invoiceDocument": {
@@ -1719,7 +1737,12 @@
       "partial": "{{succeeded}} {{verb}}, {{skipped}} ignorées{{failedText}}",
       "success": "{{succeeded}} {{verb}}",
       "void": "Annuler",
-      "voidedVerb": "annulées"
+      "voidedVerb": "annulées",
+      "quickbooks": "Envoyer vers QuickBooks",
+      "quickbooksQueued": "{{enqueued}} en file d'attente pour QuickBooks",
+      "quickbooksQueuedPartial": "{{enqueued}} en file d'attente pour QuickBooks, {{skipped}} ignorées",
+      "quickbooksQueuedFailed": "{{enqueued}} en file d'attente pour QuickBooks, {{skipped}} ignorées, {{failed}} n'ont pas pu être mises en file d'attente",
+      "quickbooksFailed": "Échec de la mise en file d'attente de l'envoi QuickBooks. Réessayez."
     },
     "bulkDelete": {
       "message": "Supprimer {{count}} facture(s) sélectionnée(s) ? Seules les factures DRAFT seront supprimées ; cette action est irréversible.",

@@ -218,7 +218,8 @@
     {
       "pattern": "docker-compose*.yml",
       "docs": [
-        "deploy/production.mdx"
+        "deploy/production.mdx",
+        "getting-started/prerequisites.mdx"
       ]
     },
     {
@@ -1354,14 +1355,16 @@
       "pattern": "apps/api/src/routes/accounting/**",
       "docs": [
         "features/integrations.mdx",
-        "deploy/environment.mdx"
+        "deploy/environment.mdx",
+        "features/accounting-integrations.mdx"
       ]
     },
     {
       "pattern": "apps/api/src/services/accounting/**",
       "docs": [
         "features/integrations.mdx",
-        "deploy/environment.mdx"
+        "deploy/environment.mdx",
+        "features/accounting-integrations.mdx"
       ]
     },
     {
@@ -2352,6 +2355,132 @@
       "pattern": "packages/shared/src/types/aiAgents.ts",
       "docs": [
         "features/ai-agents.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/contractTemplateService.ts",
+      "docs": [
+        "features/contracts.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/contractTemplateRender.ts",
+      "docs": [
+        "features/contracts.mdx",
+        "features/quotes.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/contractDocumentService.ts",
+      "docs": [
+        "features/contracts.mdx",
+        "features/quotes.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/db/schema/contractDocuments.ts",
+      "docs": [
+        "features/contracts.mdx",
+        "reference/schema.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/contracts/templates.ts",
+      "docs": [
+        "features/contracts.mdx"
+      ]
+    },
+    {
+      "pattern": "packages/shared/src/validators/contractTemplates.ts",
+      "docs": [
+        "features/contracts.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/contracts/TemplatesTab.tsx",
+      "docs": [
+        "features/contracts.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/web/src/components/billing/quotes/QuoteContractBlockEditor.tsx",
+      "docs": [
+        "features/quotes.mdx"
+      ]
+    },
+    {
+      "pattern": "scripts/guided-setup.sh",
+      "docs": [
+        "getting-started/prerequisites.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/orgArchive.ts",
+      "docs": [
+        "reference/organizations-and-sites.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/orgMerge.ts",
+      "docs": [
+        "reference/organizations-and-sites.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/timeEntries/**",
+      "docs": [
+        "features/ticketing.mdx",
+        "features/mobile.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/aiAgentSchedules.ts",
+      "docs": [
+        "features/ai-agents.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/admin/aiKillState.ts",
+      "docs": [
+        "features/ai-agents.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/admin/llmProviderCatalog.ts",
+      "docs": [
+        "features/bring-your-own-llm-key.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/actionIntents/ticketAutonomy.ts",
+      "docs": [
+        "features/ai-agents.mdx",
+        "features/ticketing.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/accounting/accountingMappingService.ts",
+      "docs": [
+        "features/accounting-integrations.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/requestTransport.ts",
+      "docs": [
+        "deploy/environment.mdx",
+        "getting-started/quickstart.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/worker.ts",
+      "docs": [
+        "deploy/worker-split.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/workerRegistry.ts",
+      "docs": [
+        "deploy/worker-split.mdx"
       ]
     }
   ]

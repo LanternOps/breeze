@@ -8,9 +8,40 @@ import (
 	"net"
 	"os"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
+
+// writeObserverConn wraps a net.Conn so a test can observe two things about
+// Send() without measuring wall-clock time (issue #4322):
+//
+//   - firstWrite closes the instant a Send enters its socket write. Send calls
+//     conn.Write under c.mu with the deadline already armed, so a receive on
+//     that channel is proof the writer holds the mutex and is stalled on the
+//     peer — replacing a slept guess at how long that takes.
+//   - writes counts every write that actually reached the socket, which is the
+//     exact property the old `elapsed < writeTimeout` assertions were using
+//     duration as a proxy for ("this Send did not stall on the socket again").
+//     A count has no margin to tune, so it cannot flake under -race on a loaded
+//     runner the way a 20ms-of-100ms budget did.
+type writeObserverConn struct {
+	net.Conn
+	writes     atomic.Int64
+	firstWrite chan struct{}
+	once       sync.Once
+}
+
+func newWriteObserverConn(c net.Conn) *writeObserverConn {
+	return &writeObserverConn{Conn: c, firstWrite: make(chan struct{})}
+}
+
+func (c *writeObserverConn) Write(b []byte) (int, error) {
+	c.writes.Add(1)
+	c.once.Do(func() { close(c.firstWrite) })
+	return c.Conn.Write(b)
+}
 
 func TestConnSendRecv(t *testing.T) {
 	// Create a pair of connected Unix sockets (or TCP for portability)
@@ -381,23 +412,26 @@ func TestConnSendPoisonedAfterWriteError(t *testing.T) {
 	defer serverConn.Close()
 	// Never read from serverConn so the first write stalls out.
 
-	client := NewConn(clientConn)
+	observed := newWriteObserverConn(clientConn)
+	client := NewConn(observed)
 	payload, _ := json.Marshal("x")
 
 	// First send stalls and errors at the deadline, poisoning the Conn.
 	if err := client.Send(&Envelope{ID: "1", Type: TypePing, Payload: payload}); err == nil {
 		t.Fatal("expected first send to fail at the write deadline")
 	}
+	writesAfterFirstSend := observed.writes.Load()
 
-	// Second send must fail fast (poison fast-path), well under a fresh
-	// writeTimeout — i.e. it does not stall on the socket again.
-	start := time.Now()
+	// Second send must fail fast (poison fast-path) — i.e. it does not stall on
+	// the socket again. Stated as "reached the socket zero more times" rather
+	// than "returned in under a writeTimeout": the count is what the duration
+	// was standing in for, and it carries no margin to flake on (issue #4322).
 	err := client.Send(&Envelope{ID: "2", Type: TypePing, Payload: payload})
 	if err == nil {
 		t.Fatal("expected second send to fail fast on a poisoned Conn, got nil")
 	}
-	if elapsed := time.Since(start); elapsed >= writeTimeout {
-		t.Fatalf("second send took %v — did not use the poison fast-path", elapsed)
+	if extra := observed.writes.Load() - writesAfterFirstSend; extra != 0 {
+		t.Fatalf("second send performed %d additional socket write(s) — did not use the poison fast-path", extra)
 	}
 	// Pin the reason to the poison fast-path (not some other incidental error)
 	// and confirm the original write cause is surfaced through it.
@@ -466,20 +500,25 @@ func TestConnSendPoisonsOnPayloadWriteError(t *testing.T) {
 		_, _ = io.ReadFull(serverConn, hdr)
 	}()
 
-	client := NewConn(clientConn)
+	observed := newWriteObserverConn(clientConn)
+	client := NewConn(observed)
 	payload, _ := json.Marshal("x")
 	if err := client.Send(&Envelope{ID: "1", Type: TypePing, Payload: payload}); err == nil {
 		t.Fatal("expected payload write to fail at the deadline")
 	}
+	// Two writes so far: the header (drained by the reader above) and the
+	// payload (stalled to its deadline).
+	writesAfterFirstSend := observed.writes.Load()
 
-	// The payload branch must have latched poison: the next send fails fast.
-	start := time.Now()
+	// The payload branch must have latched poison: the next send fails fast,
+	// i.e. it adds no further writes to the desynced stream. Counted rather
+	// than timed so there is no margin to flake on (issue #4322).
 	err := client.Send(&Envelope{ID: "2", Type: TypePing, Payload: payload})
 	if err == nil {
 		t.Fatal("expected poisoned Conn to reject the next send")
 	}
-	if elapsed := time.Since(start); elapsed >= writeTimeout {
-		t.Fatalf("second send took %v — payload branch did not poison", elapsed)
+	if extra := observed.writes.Load() - writesAfterFirstSend; extra != 0 {
+		t.Fatalf("second send performed %d additional socket write(s) — payload branch did not poison", extra)
 	}
 	if !strings.Contains(err.Error(), "poisoned") {
 		t.Fatalf("expected a poison error, got: %v", err)
@@ -534,15 +573,26 @@ func TestConnSendStalledDoesNotStarveOtherWriter(t *testing.T) {
 	defer serverConn.Close()
 	// No reader on serverConn: every write stalls until its deadline.
 
-	client := NewConn(clientConn)
+	observed := newWriteObserverConn(clientConn)
+	client := NewConn(observed)
 	payload, _ := json.Marshal("x")
 
 	// Writer 1 grabs the mutex and stalls.
 	w1 := make(chan error, 1)
 	go func() { w1 <- client.Send(&Envelope{ID: "1", Type: TypePing, Payload: payload}) }()
 
-	// Give writer 1 time to acquire c.mu and begin its stalled write.
-	time.Sleep(20 * time.Millisecond)
+	// Wait for writer 1 to actually be inside its socket write instead of
+	// sleeping a guess at how long that takes. Send calls conn.Write under c.mu
+	// with the deadline already armed, so this receive proves writer 1 holds the
+	// mutex and is stalled on the dead peer. The old 20ms sleep was not just a
+	// guess — it doubled as the entire margin of a `time.Since(start)` assertion
+	// against a 100ms writeTimeout, which is why this test flaked under -race on
+	// a loaded runner (issue #4322).
+	select {
+	case <-observed.firstWrite:
+	case <-time.After(5 * time.Second):
+		t.Fatal("writer 1 never reached its socket write")
+	}
 
 	// Writer 2 (the "keepalive pong") must not block forever: once writer 1's
 	// deadline fires and releases c.mu, writer 2 proceeds. Before the #2273 fix
@@ -554,10 +604,8 @@ func TestConnSendStalledDoesNotStarveOtherWriter(t *testing.T) {
 	// poison() while still holding c.mu, so writer 2 is guaranteed to observe
 	// writePoisoned the instant it acquires the lock. Without the re-check it
 	// would instead append a frame to a stream writer 1's partial write already
-	// desynced, and burn its own full writeTimeout doing so — which is what the
-	// elapsed-time assertion below detects.
+	// desynced — which is what the socket-write count below detects.
 	w2 := make(chan error, 1)
-	start := time.Now()
 	go func() { w2 <- client.Send(&Envelope{ID: "2", Type: TypePing, Payload: payload}) }()
 
 	for i, ch := range []chan error{w1, w2} {
@@ -566,19 +614,28 @@ func TestConnSendStalledDoesNotStarveOtherWriter(t *testing.T) {
 			if err == nil {
 				t.Fatalf("writer %d unexpectedly succeeded against a dead peer", i+1)
 			}
-			if i == 1 {
-				if !strings.Contains(err.Error(), "poisoned") {
-					t.Fatalf("writer 2 wrote into a poisoned stream instead of failing on the "+
-						"under-lock re-check (issue #3007): %v", err)
-				}
-				if elapsed := time.Since(start); elapsed >= writeTimeout {
-					t.Fatalf("writer 2 took %v (>= writeTimeout %v) — it attempted its own write "+
-						"rather than failing fast on the poison re-check", elapsed, writeTimeout)
-				}
+			if i == 1 && !strings.Contains(err.Error(), "poisoned") {
+				t.Fatalf("writer 2 wrote into a poisoned stream instead of failing on the "+
+					"under-lock re-check (issue #3007): %v", err)
 			}
+		// A liveness bound, not a margin: a correct run settles in one
+		// writeTimeout (100ms) while a starved writer never returns at all.
 		case <-time.After(2 * time.Second):
 			t.Fatalf("writer %d blocked — stalled writer starved the mutex", i+1)
 		}
+	}
+
+	// The decisive, timing-free replacement for the old elapsed-time check
+	// (issue #4322). Exactly one write may ever reach the socket: writer 1's
+	// header, which stalls until its deadline. Writer 2 failing on the
+	// under-lock poison re-check happens strictly before any write of its own,
+	// so a count of 2 means the #3007 regression is back. Unlike a duration
+	// threshold this separates the regression from a merely slow run — the old
+	// assertion could not, since a correct run measured ~80ms and a regressed
+	// one ~180ms against a 100ms line.
+	if got := observed.writes.Load(); got != 1 {
+		t.Fatalf("expected exactly 1 socket write (writer 1's stalled header), got %d — "+
+			"writer 2 attempted its own write rather than failing fast on the poison re-check", got)
 	}
 }
 

@@ -83,7 +83,8 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { and, desc, eq, inArray, isNull, or } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull } from 'drizzle-orm';
+import { AI_AGENT_ALERT_VERDICT_OP_KEY } from '@breeze/shared';
 import type {
   AlertAiVerdictSummaryDto, AlertVerdictOutcome, AlertVerdictSuggestionDisposition,
   AlertVerdictSuggestionReason, AiAgentRunAlertVerdictDto,
@@ -91,10 +92,14 @@ import type {
 import {
   db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext,
 } from '../../db';
-import { aiAlertVerdicts, alertCorrelationMembers, alerts, type AiAlertVerdictRow } from '../../db/schema';
+import {
+  aiAgentRuns, aiAlertVerdicts, alertCorrelationGroups, alertCorrelationMembers, alerts,
+  type AiAlertVerdictRow,
+} from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
 import { isPgUniqueViolation } from '../../utils/pgErrors';
 import { createActionIntent } from '../actionIntents/intentService';
+import { upsertVerdictFeedbackEvidence, verdictEvidenceSourceId } from './opEvidence';
 import { isToolAllowlisted } from './toolAllowlist';
 
 /**
@@ -584,41 +589,121 @@ export type RecordVerdictFeedbackResult =
  * Feedback is not a mutation of customer data (it never touches `alerts` or
  * anything an org admin would consider "their" data) — the route gates this
  * on the read permission, not write. The request already runs inside
- * `withDbAccessContext`, so RLS is the actual boundary here; filtering by
- * `id` alone (no app-layer org predicate) is intentional, matching the
- * `GET /runs/:runId` route's own "RLS is the boundary, the app predicate is
+ * `withDbAccessContext`, so all of this joins that ambient transaction (no
+ * new one is opened here) and RLS is the actual boundary; filtering by `id`
+ * alone (no app-layer org predicate) is intentional, matching the `GET
+ * /runs/:runId` route's own "RLS is the boundary, the app predicate is
  * defence-in-depth" precedent.
  *
  * Carry-in B (PR-A review) — a caller must not silently overwrite ANOTHER
  * user's already-recorded feedback (the SAME user changing their own mind is
- * fine). The UPDATE itself carries that check as a `WHERE feedback_by IS
- * NULL OR feedback_by = <this user>` CAS, so the write is race-safe: two
- * different users racing to be first can never both "win" a lost update.
- * When the CAS matches zero rows, a follow-up SELECT (not itself atomic with
- * the UPDATE, but the stakes here are display-only feedback, not customer
- * data — see the paragraph above) distinguishes "id doesn't exist" from
- * "exists, but someone else already recorded feedback" for the 404-vs-409
- * the route answers.
+ * fine). Task 7 (#4192, Deviation 12) moves that check INSIDE a `SELECT ...
+ * FOR UPDATE` lock on the verdict row rather than leaving it as the prior
+ * `WHERE feedback_by IS NULL OR feedback_by = <this user>` CAS: the lock is
+ * held for the rest of this statement's ambient transaction, so no other
+ * writer can race between the read and the write, and "not found" vs.
+ * "someone else already voted" both resolve from ONE atomic read instead of
+ * a CAS plus a non-atomic follow-up SELECT.
+ *
+ * A successful (re)vote also writes one `alert_verdict`-namespace
+ * `feedback_up`/`feedback_down` op-evidence row (Task 7,
+ * `AI_AGENT_ALERT_VERDICT_OP_KEY`), upserted by `sourceId` so a re-vote
+ * flips the SAME row's metric in place rather than adding a second one —
+ * `upsertVerdictFeedbackEvidence`'s own docstring covers the exactly-once
+ * mechanics. `occurredAt` is pinned to the verdict's own `createdAt` (a
+ * fixed bucket), not the moment of the vote, so re-voting never moves the
+ * row between graduation-window buckets. There is no backfill of feedback
+ * recorded before P2-5 shipped — pre-existing votes simply have no evidence
+ * row and are invisible to `graduationService`.
  */
 export async function recordVerdictFeedback(
   auth: AuthContext,
   verdictId: string,
   feedback: 'up' | 'down',
 ): Promise<RecordVerdictFeedbackResult> {
-  const [updated] = await db.update(aiAlertVerdicts)
-    .set({ feedback, feedbackBy: auth.user.id, feedbackAt: new Date() })
-    .where(and(
-      eq(aiAlertVerdicts.id, verdictId),
-      or(isNull(aiAlertVerdicts.feedbackBy), eq(aiAlertVerdicts.feedbackBy, auth.user.id)),
-    ))
-    .returning({ id: aiAlertVerdicts.id, orgId: aiAlertVerdicts.orgId });
-
-  if (updated) return { status: 'ok', orgId: updated.orgId };
-
-  const [existing] = await db.select({ orgId: aiAlertVerdicts.orgId })
+  const [verdict] = await db.select({
+    id: aiAlertVerdicts.id,
+    orgId: aiAlertVerdicts.orgId,
+    runId: aiAlertVerdicts.runId,
+    alertId: aiAlertVerdicts.alertId,
+    correlationGroupId: aiAlertVerdicts.correlationGroupId,
+    feedback: aiAlertVerdicts.feedback,
+    feedbackBy: aiAlertVerdicts.feedbackBy,
+    createdAt: aiAlertVerdicts.createdAt,
+  })
     .from(aiAlertVerdicts)
     .where(eq(aiAlertVerdicts.id, verdictId))
+    .limit(1)
+    .for('update');
+
+  if (!verdict) return { status: 'not_found' };
+  if (verdict.feedbackBy && verdict.feedbackBy !== auth.user.id) {
+    return { status: 'conflict', orgId: verdict.orgId };
+  }
+
+  await db.update(aiAlertVerdicts)
+    .set({ feedback, feedbackBy: auth.user.id, feedbackAt: new Date() })
+    .where(eq(aiAlertVerdicts.id, verdictId));
+
+  const [run] = await db.select({ agentId: aiAgentRuns.agentId })
+    .from(aiAgentRuns)
+    .where(eq(aiAgentRuns.id, verdict.runId))
     .limit(1);
-  if (!existing) return { status: 'not_found' };
-  return { status: 'conflict', orgId: existing.orgId };
+
+  const ruleId = await resolveVerdictFeedbackRuleId(verdict);
+
+  // `verdict.runId` is NOT NULL and cascade-FKs to `ai_agent_runs` — the run
+  // row is guaranteed to exist whenever the verdict row does, so `run` is
+  // only undefined in a test double that forgot to queue it.
+  if (run) {
+    await upsertVerdictFeedbackEvidence({
+      orgId: verdict.orgId,
+      agentId: run.agentId,
+      namespace: 'alert_verdict',
+      opKey: AI_AGENT_ALERT_VERDICT_OP_KEY,
+      ruleId,
+      sourceKind: 'verdict_feedback',
+      sourceId: verdictEvidenceSourceId(verdict.id),
+      metric: feedback === 'up' ? 'feedback_up' : 'feedback_down',
+      runId: verdict.runId,
+      occurredAt: verdict.createdAt,
+    });
+  }
+
+  return { status: 'ok', orgId: verdict.orgId };
+}
+
+/**
+ * `rule_id` for the evidence row: the alert's own rule when the verdict
+ * targets a single alert; otherwise (a group verdict) the rule of the
+ * group's `root_alert_id`. NULL when the verdict has neither (shouldn't
+ * happen — `persistAlertVerdict` always sets exactly one), the group has no
+ * root, or the root alert row is gone.
+ */
+async function resolveVerdictFeedbackRuleId(
+  verdict: { alertId: string | null; correlationGroupId: string | null },
+): Promise<string | null> {
+  if (verdict.alertId) {
+    const [alert] = await db.select({ ruleId: alerts.ruleId })
+      .from(alerts)
+      .where(eq(alerts.id, verdict.alertId))
+      .limit(1);
+    return alert?.ruleId ?? null;
+  }
+
+  if (verdict.correlationGroupId) {
+    const [group] = await db.select({ rootAlertId: alertCorrelationGroups.rootAlertId })
+      .from(alertCorrelationGroups)
+      .where(eq(alertCorrelationGroups.id, verdict.correlationGroupId))
+      .limit(1);
+    if (!group?.rootAlertId) return null;
+
+    const [alert] = await db.select({ ruleId: alerts.ruleId })
+      .from(alerts)
+      .where(eq(alerts.id, group.rootAlertId))
+      .limit(1);
+    return alert?.ruleId ?? null;
+  }
+
+  return null;
 }

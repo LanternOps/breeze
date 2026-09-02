@@ -69,6 +69,9 @@ const limitsFields = z.object({
   maxTriageRunsPerHour: z.number().int().min(1).max(200),
   triageBudgetCentsPerRun: z.number().int().min(1).max(50),
   triageMaxTurns: z.number().int().min(2).max(12),
+  // Promotion threshold (phase 2 P2-5) — see
+  // AiAgentLimits.promoteThreshold's docstring.
+  promoteThreshold: z.number().int().min(5).max(200),
 });
 export const aiAgentLimitsPatchSchema = limitsFields.partial();
 export const aiAgentLimitsSchema = aiAgentLimitsPatchSchema.transform((v) => ({

@@ -520,6 +520,23 @@ describe('AdminSessionManager heartbeat refresh outcomes (Task 3)', () => {
     expect(apiLogoutMock).not.toHaveBeenCalled();
   });
 
+  // Same eviction as 'auth-failed', different reason code: the keepalive is
+  // the second way a self-hoster on a rejected origin reaches /login, and it
+  // must carry the code that explains the bounce.
+  it("'origin-rejected' evicts with the origin-rejected reason", async () => {
+    restoreAccessTokenFromCookieDetailedMock.mockResolvedValue('origin-rejected');
+
+    render(<AdminSessionManager />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(handleSessionExpiredMock).toHaveBeenCalledTimes(1);
+    expect(handleSessionExpiredMock).toHaveBeenCalledWith('origin-rejected');
+    expect(apiLogoutMock).not.toHaveBeenCalled();
+  });
+
   it("'transient' does nothing — no eviction, no stamp, the next heartbeat retries", async () => {
     restoreAccessTokenFromCookieDetailedMock.mockResolvedValue('transient');
 

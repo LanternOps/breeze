@@ -1077,6 +1077,64 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
       return { init: m.initializeAiAgentSweepScheduler, shutdown: m.shutdownAiAgentSweepScheduler };
     },
   },
+  {
+    // QuickBooks Phase C, Task 4 (invoice push worker). `global`, verified by
+    // `workerEntrypointClosure.contract.test.ts`'s per-entry check: this
+    // module's runtime closure (accountingConnectionService, accountingTokens,
+    // accountingInvoicePush, the QuickBooks provider) never reaches
+    // `routes/agentWs.ts` or `services/agentCommandAwait.ts` — no socket
+    // ownership, no agent involvement at all.
+    name: 'accountingSyncWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/accountingSyncWorker');
+      return { init: m.initializeAccountingSyncWorkers, shutdown: m.shutdownAccountingSyncWorkers };
+    },
+  },
+  {
+    // QuickBooks Phase D, Task 4 (payment pull-back): the CDC reconcile worker
+    // plus its 15-minute sweep. `global`, and NOT copied from the sibling
+    // above on faith — `workerEntrypointClosure.contract.test.ts` re-derives
+    // this module's real runtime import closure per entry and is the authority.
+    name: 'accountingReconcileWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/accountingReconcileWorker');
+      return { init: m.initializeAccountingReconcileWorkers, shutdown: m.shutdownAccountingReconcileWorkers };
+    },
+  },
+  {
+    // Phase 2 wave P2-6 (value accounting), task A5: nightly scan + per-org
+    // impact rollup fan-out.
+    //
+    // `global`: its runtime import closure is `services/aiAgents/impactRollup.ts`
+    // (db + schema + the frozen IMPACT_FIX_TOOLS literal) — it never reaches
+    // `runService.createAndEnqueueAgentRun`, `routes/agentWs.ts` or
+    // `services/agentCommandAwait.ts`. Do NOT copy this value by analogy:
+    // `workerEntrypointClosure.contract.test.ts` is the mechanical authority
+    // and must be run for this entry (see CLAUDE.md — never relitigate
+    // placement by guessing).
+    name: 'aiAgentImpactRollup',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/aiAgentImpactRollup');
+      return { init: m.initializeAiAgentImpactRollupWorker, shutdown: m.shutdownAiAgentImpactRollupWorker };
+    },
+  },
+  {
+    // Phase 2 wave P2-5 (#4192), Task 9: retention sweep for the
+    // `ai_agent_op_evidence` ledger. `global`, same reasoning as
+    // `aiUnattendedExposureRetention` above — this module's closure reaches
+    // only `db` + `services/retentionMetrics.ts`; it must never import
+    // `aiTools.ts` (the promotion executor lives there and would drag
+    // socket-local dispatch into what is otherwise a plain batched DELETE).
+    name: 'aiAgentGraduation',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/aiAgentGraduationWorker');
+      return { init: m.initializeAiAgentGraduationWorker, shutdown: m.shutdownAiAgentGraduationWorker };
+    },
+  },
 ];
 
 function placementForRole(role: BreezeRole): WorkerPlacement | null {

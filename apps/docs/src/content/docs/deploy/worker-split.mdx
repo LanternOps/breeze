@@ -1,0 +1,168 @@
+---
+title: Worker Split
+description: Run Breeze's background jobs in their own container so heavy scheduled work cannot slow down the API that serves your dashboard and agents.
+sidebar:
+  order: 6
+  label: Worker Split
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+By default a single Breeze API container does everything: it serves the
+dashboard and API, holds the WebSocket connections your agents connect to, and
+runs every background job on a schedule. That is the right shape for most
+deployments and nothing about it has changed.
+
+On a busy instance, though, the heavy scheduled work — metric rollups,
+retention sweeps, monitoring and SNMP polling, backup and discovery jobs — can
+compete with the requests your technicians are waiting on. The **worker split**
+is an optional second container that takes those jobs off the API, so a long
+rollup can no longer make the dashboard feel slow.
+
+<Aside>
+  This is entirely opt-in. If you do nothing, your deployment keeps running
+  exactly as before, with one container doing all the work.
+</Aside>
+
+## What moves and what stays
+
+| Runs in the worker container | Stays on the API container |
+|---|---|
+| Scheduled and recurring jobs — metric rollups, retention and cleanup sweeps, report generation, sync jobs | Everything that talks directly to a connected agent over its live WebSocket |
+| Monitoring, SNMP, backup and discovery jobs | The HTTP API and dashboard |
+| Durable event dispatch consumers | Agent enrollment and command dispatch |
+
+Jobs that need to reach an agent's live connection stay on the API container,
+because that is where the connection lives. Everything else — the majority of
+Breeze's background work — moves.
+
+## Choosing the roles
+
+Two settings decide who runs what:
+
+| Setting | Values | Meaning |
+|---|---|---|
+| `BREEZE_API_ROLE` | `all` (default), `api` | `all` keeps today's single-container behaviour. `api` tells the API container to stop running background jobs because a worker container is running them. |
+| `BREEZE_ROLE` | `all`, `api`, `worker` | The role the process actually runs as. You normally leave this alone — the compose file derives it from `BREEZE_API_ROLE`, and the worker container sets it to `worker` for you. |
+
+## Before you start
+
+- **Your image must be new enough to contain the worker.** Confirm with
+  `docker exec breeze-api ls dist/worker.cjs`. If that file is missing, upgrade
+  before going further — an older image has no worker to start and the
+  container will restart in a loop.
+- **`APP_ENCRYPTION_KEY_ID` must be set** in your `.env`. Once the two
+  containers are split, commands relayed between them are individually
+  encrypted, and Breeze refuses to start either process without this key rather
+  than falling back to something weaker. Setting it while you are still
+  unsplit changes nothing, so it is safe to do in advance.
+- **Confirm your compose file actually has the `worker` service.** If you
+  maintain your own `docker-compose.yml` rather than using the shipped one, copy
+  the `worker` service block across before you begin.
+
+## Enable the split
+
+Do this one server at a time, and never on two regions simultaneously.
+
+<Steps>
+
+1. **Upgrade first, with the API still doing everything.**
+
+   Roll out the new image as a normal upgrade and leave `BREEZE_API_ROLE`
+   alone. Confirm the instance is healthy before changing any roles.
+
+2. **Start the worker container.**
+
+   ```bash
+   docker compose --profile worker-split up -d worker
+   ```
+
+   You can also add `worker-split` to `COMPOSE_PROFILES` in `.env` and run your
+   usual `docker compose up -d`. At this point the API is still running every
+   job as well — this step only proves the worker starts cleanly.
+
+3. **Check it is actually running and ready.**
+
+   ```bash
+   docker ps --format '{{.Names}}' | grep breeze-worker
+   docker exec breeze-worker wget -qO- http://127.0.0.1:3001/health/ready
+   ```
+
+   Wait until this reports ready before going on. If it reports that migrations
+   are pending, or that it cannot reach the database or Redis, stop and resolve
+   that first.
+
+   <Aside type="caution">
+     Do not skip the `docker ps` check. If your deploy process names services
+     explicitly, it is easy for the worker to never start at all — and the API's
+     own health endpoint cannot tell you that, because the API is still healthy.
+   </Aside>
+
+4. **Hand the background jobs over.**
+
+   Set `BREEZE_API_ROLE=api` in `.env`, then:
+
+   ```bash
+   docker compose up -d api
+   ```
+
+   Wait for the API to report healthy. From here, scheduled jobs run only in
+   the worker container.
+
+5. **Verify the split took effect.**
+
+   - Send a command to a connected device — it should still work, because the
+     API still owns the agent connection.
+   - Pick a scheduled job with a visible result and confirm it now appears in
+     `docker logs breeze-worker` and no longer in `docker logs breeze-api`.
+
+6. **Soak before repeating.**
+
+   Watch both containers through at least one full cycle of your slowest
+   scheduled job before splitting a second server.
+
+</Steps>
+
+## Rolling back
+
+Give the jobs back to the API **before** stopping the worker. Doing it the
+other way around leaves nothing running them.
+
+<Steps>
+
+1. Set `BREEZE_API_ROLE=all` in `.env` and run `docker compose up -d api`.
+2. Wait for the API to report healthy — it is running every job again.
+3. Stop the worker: `docker compose stop worker`.
+
+</Steps>
+
+## Monitoring the worker
+
+The worker publishes its own metrics at `/metrics` on port 3001 inside its
+container. This is a **separate scrape target** from the API's
+`/metrics/scrape` — if you do not add it to your monitoring configuration, the
+container running your heaviest jobs is invisible.
+
+- Authentication is the same `METRICS_SCRAPE_TOKEN` bearer token the API uses,
+  so the worker already has it.
+- If you use `METRICS_SCRAPE_IP_ALLOWLIST`, note that the worker matches the
+  address that actually connects to it and ignores forwarding headers. Put a
+  proxy's own address on the allowlist, not the scraper's.
+- The worker reports runtime health — event-loop responsiveness and database
+  pool usage — which is exactly what matters on the container doing the heavy
+  lifting. It does not report HTTP or fleet metrics, because it serves no
+  requests. Do not alert on their absence here.
+
+## Keeping the worker upgraded
+
+If your deploy process names services explicitly rather than running a bare
+`docker compose up -d`, **add `worker` to that list**. Otherwise the API and web
+containers move to each new version while the worker silently stays behind on
+an old image. After every upgrade, confirm that every running Breeze container
+reports the version you just deployed.
+
+## Related
+
+- [Production Deployment](/deploy/production/)
+- [Environment Variables](/deploy/environment/)
+- [Monitoring Stack](/monitoring/stack/)

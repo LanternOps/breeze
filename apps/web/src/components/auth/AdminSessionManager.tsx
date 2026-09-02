@@ -73,12 +73,17 @@ export default function AdminSessionManager() {
       const outcome = await restoreAccessTokenFromCookieDetailed();
       if (outcome === 'restored') {
         lastRefreshAtRef.current = Date.now();
-      } else if (outcome === 'auth-failed') {
+      } else if (outcome === 'auth-failed' || outcome === 'origin-rejected') {
         // The refresh endpoint reached a verdict: the session is
         // unrecoverable. Stand the heartbeat down before evicting so no
         // later tick fires a redundant refresh against a dead cookie.
+        //
+        // 'origin-rejected' evicts identically but carries its own reason to
+        // /login: the API refused this browser's Origin, so the sign-in page
+        // must explain the CORS/PUBLIC_APP_URL mismatch instead of claiming the
+        // session expired.
         idleLogoutInFlightRef.current = true;
-        handleSessionExpired('session-expired');
+        handleSessionExpired(outcome === 'origin-rejected' ? 'origin-rejected' : 'session-expired');
       }
       // 'transient': no verdict on the cookie (network/5xx blip) — do
       // nothing. lastRefreshAtRef stays stale so the next 30s heartbeat

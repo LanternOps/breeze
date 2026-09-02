@@ -50,7 +50,18 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   // even though it is a plain timestamp (when the triggering alert was
   // observed to have resolved), not credential material — reviewedIncluded,
   // same treatment as action_intents.policy_authorization_key.
-  "ai_agent_fix_watches": tablePolicy("org_id", {"included":["id","org_id","partner_id","agent_id","run_id","alert_id","rule_id","device_id","config_item_name","state","due_at","evaluated_at","recurrence_alert_id","notified_at","created_at"],"reviewedIncluded":["recovery_observed_at"],"excludedSensitive":[],"excludedOpen":[]}),
+  "ai_agent_fix_watches": tablePolicy("org_id", {"included":["id","org_id","partner_id","agent_id","run_id","alert_id","rule_id","device_id","config_item_name","state","due_at","evaluated_at","recurrence_alert_id","notified_at","created_at","intent_id","source_kind","op_keys"],"reviewedIncluded":["recovery_observed_at"],"excludedSensitive":[],"excludedOpen":[]}),
+  // ai_agent_graduation (P2-5, #4192): plain identifiers, states, and
+  // timestamps tracking one colon-key's promotion journey — no open
+  // containers, no credential-shaped columns.
+  "ai_agent_graduation": tablePolicy("org_id", {"included":["id","org_id","agent_id","op_key","state","first_verified_at","promoted_at","promoted_intent_id","demoted_at","demote_reason","demote_run_id","demote_watch_id","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
+  // ai_agent_impact_daily (P2-6, #4193): every column is a counter, an id
+  // or a date — no jsonb/bytea, no SUSPICIOUS_NAME_PARTS hit.
+  "ai_agent_impact_daily": tablePolicy("org_id", {"included":["id","org_id","day","alerts_judged","noise_flagged","suppressions_applied","tickets_triaged","drafts_sent","fixes_proposed","fixes_executed","fix_watches_held","fix_watches_recurred","narratives_delivered","llm_cents","rebuilt_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
+  // ai_agent_op_evidence (P2-5, #4192): an immutable ledger of terminal
+  // outcome identifiers/timestamps only — no model-authored text (see
+  // CLAUDE.md leak rules), no open containers.
+  "ai_agent_op_evidence": tablePolicy("org_id", {"included":["id","org_id","agent_id","namespace","op_key","rule_id","source_kind","source_id","metric","run_id","occurred_at","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   // ticket_id (wave 6 PR 3, #3828): the triggering ticket for a
   // triggerKind='ticket' run — a plain tenant identifier, same treatment as
   // device_id/alert_id above. profile / correlation_group_id (phase 2 wave

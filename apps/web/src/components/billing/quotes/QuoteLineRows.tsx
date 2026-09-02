@@ -1409,7 +1409,7 @@ export function EditableLineRow({
           <input
             ref={imageInputRef}
             type="file"
-            accept="image/png,image/jpeg,image/webp"
+            accept="image/png,image/jpeg"
             className="hidden"
             data-testid={`quote-line-image-input-${line.id}`}
             onChange={(e) => {

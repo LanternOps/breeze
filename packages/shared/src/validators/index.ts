@@ -1052,9 +1052,11 @@ export const configPolicyDeviceIdParamSchema = z.object({ deviceId: z.string().g
 
 export * from './ai';
 export * from './aiAgents';
+export * from './aiAgentGraduation';
 export * from './aiAgentSchedules';
 export * from './orgNarrative';
 export * from './ticketTriage';
+export * from './aiAgentImpact';
 
 // ============================================
 // Tenant Variable Validators (#3409)

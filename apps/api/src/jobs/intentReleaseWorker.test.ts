@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from 'vitest';
 import { canonicalizeArguments, computeArgumentDigest } from '@breeze/shared/canonicalize';
 import type { AgentReleaseAuthority } from '../services/actionIntents/agentReleaseAuthority';
 
@@ -6,11 +6,15 @@ import type { AgentReleaseAuthority } from '../services/actionIntents/agentRelea
 // Hoisted shared mock state
 // ---------------------------------------------------------------------------
 
-const { schema, dbState, intentServiceMock, actorContextMock, tenantStatusMock, aiToolsMock, aiGuardrailsMock, agentReleaseAuthorityMock, authMock, auditMock, metricsMock, sentryMock, toolTimeoutsMock, googleHeadlessMock, m365HeadlessMock, effectDigestMock, notifyMock, recipientsMock, policyDecideMock, killStateMock } = vi.hoisted(() => {
+/** The value the mocked canonical resolver returns — the worker must pass
+ *  THIS through to the evidence row rather than rebuilding a key itself. */
+const CANONICAL_OP_KEY = 'run_script:execute';
+
+const { schema, dbState, dbMock, intentServiceMock, actorContextMock, tenantStatusMock, aiToolsMock, aiGuardrailsMock, agentReleaseAuthorityMock, authMock, auditMock, metricsMock, sentryMock, toolTimeoutsMock, googleHeadlessMock, m365HeadlessMock, effectDigestMock, notifyMock, recipientsMock, policyDecideMock, killStateMock, opEvidenceMock, canonicalKeyMock, fixWatchMock, demoteMock } = vi.hoisted(() => {
   const col = (name: string) => ({ name });
   const actionIntentsTbl = { id: col('id') };
   const approvalRequestsTbl = { id: col('id'), intentId: col('intent_id'), status: col('status') };
-  const aiAgentRunsTbl = { id: col('id'), agentId: col('agent_id') };
+  const aiAgentRunsTbl = { id: col('id'), agentId: col('agent_id'), orgId: col('org_id'), alertId: col('alert_id') };
   const aiAgentsTbl = { id: col('id'), orgId: col('org_id'), partnerId: col('partner_id'), recipients: col('recipients') };
 
   const notifyMock = {
@@ -23,9 +27,25 @@ const { schema, dbState, intentServiceMock, actorContextMock, tenantStatusMock, 
     // notify exactly what it returns.
     resolveRecipientUserIds: vi.fn(async (_agent: unknown, _orgId: string) => [] as string[]),
   };
+  // P2-5 (#4192) Task 4 fix round 1. `recordIntentTerminalEvidence` runs its
+  // read + insert in a SAVEPOINT (`db.transaction`) nested inside the terminal
+  // CAS's transaction, and threads THAT savepoint's executor into both — the
+  // ambient `db` proxy would issue them on the OUTER postgres-js scope, whose
+  // `uncaughtError` aborts the outer transaction even when the caller catches
+  // the rejection. `executor` is the object the savepoint callback receives,
+  // so a test can assert the writer was handed it rather than the ambient db.
+  const dbMock = {
+    transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(dbMock.executor)),
+    /** The object the savepoint callback receives — deliberately NOT the ambient db. */
+    executor: null as unknown,
+    /** The ambient (outer-transaction) db the module exports. */
+    ambient: null as unknown,
+  };
+
   return {
     notifyMock,
     recipientsMock,
+    dbMock,
     schema: { actionIntentsTbl, approvalRequestsTbl, aiAgentRunsTbl, aiAgentsTbl },
     dbState: {
       selectActionIntentsResults: [] as unknown[][],
@@ -72,6 +92,51 @@ const { schema, dbState, intentServiceMock, actorContextMock, tenantStatusMock, 
     // own fail-closed contract). Default not-killed; the dedicated
     // "final pre-dispatch kill read" describe block below overrides per test.
     killStateMock: { readAiKillState: vi.fn(async () => ({ killed: false, epoch: 0 })) },
+    // P2-5 (#4192) Task 4. Both are collaborators mocked at the module
+    // boundary, same treatment (and same reason) as effectDigestMock above:
+    // `opEvidence.ts`'s exactly-once ON CONFLICT contract is pinned against
+    // the real dialect in services/aiAgents/opEvidence.test.ts, and the
+    // canonical `tool:action` derivation in
+    // services/actionIntents/canonicalPolicyKey.test.ts. Neither module can
+    // load for real here anyway — `drizzle-orm` is mocked wholesale in this
+    // file. What THIS file proves is that the worker calls the shared
+    // resolver (never a second ad hoc parse of `arguments`) and hands the
+    // writer the right metric, for the right branches, only when it won the
+    // terminal CAS.
+    opEvidenceMock: {
+      // Second parameter mirrors the real writer's `database` executor — the
+      // savepoint threading is asserted, so it has to be in the signature.
+      insertOpEvidence: vi.fn(async (_rows: unknown[], _database?: unknown) => 1),
+      intentEvidenceSourceId: vi.fn((intentId: string) => intentId),
+    },
+    canonicalKeyMock: { canonicalPolicyKey: vi.fn(() => CANONICAL_OP_KEY) },
+    // P2-5 (#4192) Task 5. Both mocked at the module boundary, same treatment
+    // as opEvidence above: `createIntentFixWatchRow`'s own denormalisation and
+    // partial-conflict contract are pinned in
+    // services/aiAgents/fixWatch.test.ts + fixWatch.sql.test.ts, and the
+    // enqueue's jobId/delay in jobs/fixWatchWorker.test.ts. What THIS file
+    // proves is the SEQUENCING: the watch row is written inside the terminal
+    // CAS's transaction, the BullMQ enqueue strictly after it commits (the
+    // #1105 held-context tripwire throws otherwise), and the `verified`
+    // fallback row is written when — and only when — no watch will ever
+    // verify the operation.
+    fixWatchMock: {
+      createIntentFixWatchRow: vi.fn(async () => 'watch-1' as string | null),
+      enqueueFixWatchPhase1: vi.fn(async () => undefined),
+    },
+    // P2-5 (#4192) Task 6 — auto-demote. Mocked at the module boundary for
+    // the same reason as opEvidence/fixWatch above: the revoke's own
+    // advisory-lock/FOR UPDATE/SET-clause contract is pinned against the real
+    // dialect in services/aiAgents/supervisedKeyDemote.test.ts. What THIS
+    // file proves is the SEQUENCING and the TRIGGER SET: the revoke shares
+    // the evidence savepoint (so it can never commit without the `failed`
+    // row that justifies it), it fires on every ATTEMPTED failure and no
+    // other exit, and the notification runs strictly after that transaction
+    // closed.
+    demoteMock: {
+      demoteSupervisedKey: vi.fn(async () => ({ revoked: false, orgAgentId: null as string | null })),
+      notifyDemotion: vi.fn(async () => undefined),
+    },
     // getToolTimeout is mocked (per-test override); withToolTimeout is kept
     // REAL (see vi.mock below) so the timeout test's timer actually fires.
     toolTimeoutsMock: { getToolTimeout: vi.fn() },
@@ -123,34 +188,51 @@ const { schema, dbState, intentServiceMock, actorContextMock, tenantStatusMock, 
   };
 });
 
-vi.mock('../db', () => ({
-  db: {
-    select: vi.fn(() => ({
-      from: vi.fn((table: unknown) => ({
-        where: vi.fn(() => ({
-          limit: vi.fn(() => {
-            if (table === schema.actionIntentsTbl) {
-              return Promise.resolve(dbState.selectActionIntentsResults.shift() ?? []);
-            }
-            if (table === schema.approvalRequestsTbl) {
-              return Promise.resolve(dbState.selectApprovalRequestsResults.shift() ?? []);
-            }
-            if (table === schema.aiAgentRunsTbl) {
-              return Promise.resolve(dbState.selectAgentRunsResults.shift() ?? []);
-            }
-            if (table === schema.aiAgentsTbl) {
-              return Promise.resolve(dbState.selectAgentsResults.shift() ?? []);
-            }
-            throw new Error('unexpected select table in mock');
-          }),
-        })),
+vi.mock('../db', () => {
+  const makeSelect = () => vi.fn(() => ({
+    from: vi.fn((table: unknown) => ({
+      where: vi.fn(() => ({
+        limit: vi.fn(() => {
+          if (table === schema.actionIntentsTbl) {
+            return Promise.resolve(dbState.selectActionIntentsResults.shift() ?? []);
+          }
+          if (table === schema.approvalRequestsTbl) {
+            return Promise.resolve(dbState.selectApprovalRequestsResults.shift() ?? []);
+          }
+          if (table === schema.aiAgentRunsTbl) {
+            return Promise.resolve(dbState.selectAgentRunsResults.shift() ?? []);
+          }
+          if (table === schema.aiAgentsTbl) {
+            return Promise.resolve(dbState.selectAgentsResults.shift() ?? []);
+          }
+          throw new Error('unexpected select table in mock');
+        }),
       })),
     })),
-  },
-  withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
-  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
-  runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
-}));
+  }));
+
+  // The SAVEPOINT executor is a DISTINCT object from the ambient db, routing
+  // selects the same way. Identity is the point: an evidence write that
+  // reverted to the ambient `db` proxy would issue on the OUTER postgres-js
+  // scope — whose `uncaughtError` aborts the whole transaction even when the
+  // caller catches the rejection — so "was handed the savepoint's executor"
+  // has to be assertable, not assumed.
+  const savepoint = { select: makeSelect(), insert: vi.fn() };
+  dbMock.executor = savepoint;
+
+  const database = {
+    select: makeSelect(),
+    transaction: dbMock.transaction,
+  };
+  dbMock.ambient = database;
+
+  return {
+    db: database,
+    withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
+    withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+    runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  };
+});
 
 vi.mock('../db/schema/actionIntents', () => ({ actionIntents: schema.actionIntentsTbl }));
 vi.mock('../db/schema/approvals', () => ({ approvalRequests: schema.approvalRequestsTbl }));
@@ -288,6 +370,24 @@ vi.mock('../services/aiAgents/recipients', () => ({
   resolveRecipientUserIds: recipientsMock.resolveRecipientUserIds,
 }));
 
+vi.mock('../services/aiAgents/opEvidence', () => ({
+  insertOpEvidence: opEvidenceMock.insertOpEvidence,
+  intentEvidenceSourceId: opEvidenceMock.intentEvidenceSourceId,
+}));
+vi.mock('../services/actionIntents/canonicalPolicyKey', () => ({
+  canonicalPolicyKey: canonicalKeyMock.canonicalPolicyKey,
+}));
+vi.mock('../services/aiAgents/fixWatch', () => ({
+  createIntentFixWatchRow: fixWatchMock.createIntentFixWatchRow,
+}));
+vi.mock('./fixWatchWorker', () => ({
+  enqueueFixWatchPhase1: fixWatchMock.enqueueFixWatchPhase1,
+}));
+vi.mock('../services/aiAgents/supervisedKeyDemote', () => ({
+  demoteSupervisedKey: demoteMock.demoteSupervisedKey,
+  notifyDemotion: demoteMock.notifyDemotion,
+}));
+
 // bullmq is a real dependency we don't want to spin up — mock Worker/Job to
 // inert stand-ins since these tests only exercise the exported functions,
 // never `createWorker` itself.
@@ -304,8 +404,13 @@ import { releaseApprovedIntent, processIntentReleaseJob } from './intentReleaseW
 // The mocked db handle the worker threads into the digest recompute — imported
 // so that call can be asserted against the real object rather than
 // expect.anything().
-import { db as mockedDb, runOutsideDbContext as mockedRunOutside } from '../db';
+import { db as mockedDb, runOutsideDbContext as mockedRunOutside, withSystemDbAccessContext as mockedWithSystemContext } from '../db';
+// The mocked drizzle predicate builders — imported so the evidence loader's
+// `org_id` predicate (a tenancy invariant, not an implementation detail) can
+// be asserted rather than assumed.
+import { eq as mockedEq } from 'drizzle-orm';
 import type { ActionIntent } from '../db/schema/actionIntents';
+import type { ToolExecutionContext } from '../services/toolExecutionContext';
 import { GoogleConnectionUnavailableError } from '../services/googleToolsHeadless';
 import { M365ConnectionUnavailableError } from '../services/m365ToolsHeadless';
 import { PolicyDecisionTransientError } from '../services/actionIntents/policyDecide';
@@ -544,7 +649,13 @@ describe('releaseApprovedIntent', () => {
         expect.objectContaining({ executedAt: null, executionStartedAt: expect.any(Date) }),
         { requireNotExpired: 'release' },
       );
-      expect(aiToolsMock.executeTool).toHaveBeenCalledWith(intent.actionName, intent.arguments, fakeAuth);
+      expect(aiToolsMock.executeTool).toHaveBeenCalledWith(
+        intent.actionName, intent.arguments, fakeAuth,
+        // P2-5 (#4192): the durable worker ALWAYS names the intent it is
+        // releasing. A handler that may only run as an approved release
+        // (manage_ai_agents:authorize_supervised_key) reads it from here.
+        { context: { actionIntentId: intent.id } },
+      );
       expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
         intent.id, 'executing', 'completed', expect.anything(),
       );
@@ -599,7 +710,13 @@ describe('releaseApprovedIntent', () => {
       intent.arguments,
       fakeAuth,
     );
-    expect(aiToolsMock.executeTool).toHaveBeenCalledWith(intent.actionName, intent.arguments, fakeAuth);
+    expect(aiToolsMock.executeTool).toHaveBeenCalledWith(
+        intent.actionName, intent.arguments, fakeAuth,
+        // P2-5 (#4192): the durable worker ALWAYS names the intent it is
+        // releasing. A handler that may only run as an approved release
+        // (manage_ai_agents:authorize_supervised_key) reads it from here.
+        { context: { actionIntentId: intent.id } },
+      );
     expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
       intent.id,
       'executing',
@@ -1026,7 +1143,13 @@ describe('releaseApprovedIntent', () => {
       await releaseApprovedIntent(intent.id);
 
       expect(killStateMock.readAiKillState).toHaveBeenCalled();
-      expect(aiToolsMock.executeTool).toHaveBeenCalledWith(intent.actionName, intent.arguments, fakeAuth);
+      expect(aiToolsMock.executeTool).toHaveBeenCalledWith(
+        intent.actionName, intent.arguments, fakeAuth,
+        // P2-5 (#4192): the durable worker ALWAYS names the intent it is
+        // releasing. A handler that may only run as an approved release
+        // (manage_ai_agents:authorize_supervised_key) reads it from here.
+        { context: { actionIntentId: intent.id } },
+      );
       expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
         intent.id, 'executing', 'completed', expect.anything(),
       );
@@ -1053,7 +1176,13 @@ describe('releaseApprovedIntent', () => {
       await releaseApprovedIntent(intent.id);
 
       expect(killStateMock.readAiKillState).not.toHaveBeenCalled();
-      expect(aiToolsMock.executeTool).toHaveBeenCalledWith(intent.actionName, intent.arguments, fakeAuth);
+      expect(aiToolsMock.executeTool).toHaveBeenCalledWith(
+        intent.actionName, intent.arguments, fakeAuth,
+        // P2-5 (#4192): the durable worker ALWAYS names the intent it is
+        // releasing. A handler that may only run as an approved release
+        // (manage_ai_agents:authorize_supervised_key) reads it from here.
+        { context: { actionIntentId: intent.id } },
+      );
       expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
         intent.id, 'executing', 'completed', expect.anything(),
       );
@@ -1115,9 +1244,15 @@ describe('releaseApprovedIntent', () => {
       await releaseApprovedIntent(intent.id);
 
       // No verified material came back (this tool has no snapshot to carry),
-      // so the call stays at three arguments — unchanged for every non-
-      // run_script tool.
-      expect(aiToolsMock.executeTool).toHaveBeenCalledWith(intent.actionName, intent.arguments, fakeAuth);
+      // so `verifiedRunScript` is absent — the context bag itself is still
+      // present, carrying only the releasing intent's id (P2-5, #4192).
+      expect(aiToolsMock.executeTool).toHaveBeenCalledWith(
+        intent.actionName, intent.arguments, fakeAuth,
+        // P2-5 (#4192): the durable worker ALWAYS names the intent it is
+        // releasing. A handler that may only run as an approved release
+        // (manage_ai_agents:authorize_supervised_key) reads it from here.
+        { context: { actionIntentId: intent.id } },
+      );
       expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
         intent.id,
         'executing',
@@ -1152,8 +1287,10 @@ describe('releaseApprovedIntent', () => {
       expect(call.slice(0, 3)).toEqual([intent.actionName, intent.arguments, fakeAuth]);
       // Identity, not shape: the handler must receive the very object the
       // recompute resolved, not an equal-looking reconstruction.
-      expect((call[3] as { context?: { verifiedRunScript?: unknown } }).context?.verifiedRunScript)
-        .toBe(verifiedRunScript);
+      const context = (call[3] as { context?: ToolExecutionContext }).context!;
+      expect(context.verifiedRunScript).toBe(verifiedRunScript);
+      // …and the releasing intent's id rides ALONGSIDE it, not instead of it.
+      expect(context.actionIntentId).toBe(intent.id);
     });
 
     it('never executes — and never forwards the verified material — when the digest mismatches', async () => {
@@ -1562,10 +1699,1027 @@ describe('releaseApprovedIntent', () => {
         'manage_alerts',
         expect.objectContaining({ action: 'suppress', alertId: 'alert-1' }),
         agentAuth,
+        { context: { actionIntentId: intent.id } },
       );
       expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
         intent.id, 'executing', 'completed', expect.anything(),
       );
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // P2-5 (#4192) Task 4 — graduation op evidence on terminal writes
+  //
+  // The rule under test reduces to ONE discriminator: evidence is written iff
+  // the terminal write stamps `executedAt` (`failIntent`'s existing
+  // `executed?: boolean` option), `completed -> executed` and
+  // `failed -> failed`. Every other exit of `releaseApprovedIntent` — the
+  // lost claim CAS, both kill-switch pauses, and every pre-execution
+  // revalidation/digest/session stop — is NOT an attempted operation and must
+  // leave the ledger untouched, or an agent would be graded down for actions
+  // it was never allowed to try.
+  // -------------------------------------------------------------------------
+  describe('op evidence on terminal writes (P2-5, #4192)', () => {
+    const AGENT_RUN_ID = 'run-1';
+    /** The EFFECTIVE (partner-baseline) agent id the run row records. */
+    const AGENT_ID = 'agent-baseline-1';
+    /** The alert that triggered the run — what an intent-anchored fix watch
+     *  is anchored to (P2-5 Task 5). */
+    const RUN_ALERT_ID = 'alert-1';
+    const WATCH_ID = 'watch-1';
+
+    const agentAuth = {
+      principal: { kind: 'ai_agent' as const, agentId: AGENT_ID, runId: AGENT_RUN_ID },
+      user: { id: AGENT_ID, email: `agent+${AGENT_ID}@breeze.internal`, name: 'Fix agent', isPlatformAdmin: false },
+      token: {},
+      partnerId: 'partner-1',
+      orgId: 'org-1',
+      scope: 'organization' as const,
+      accessibleOrgIds: ['org-1'],
+      orgCondition: () => undefined,
+      canAccessOrg: () => true,
+    };
+
+    function agentIntent(overrides: Partial<ActionIntent> = {}): ActionIntent {
+      return baseIntent({
+        requestedByUserId: null,
+        requestingAgentRunId: AGENT_RUN_ID,
+        approvalScope: 'supervised',
+        ...overrides,
+      } as Partial<ActionIntent>);
+    }
+
+    /**
+     * Everything an AGENT-originated release needs to reach dispatch.
+     * Deliberately NOT `primeThroughRevalidation`: an agent intent branches
+     * out of `revalidateApprovedIntentForRelease` at (e) into
+     * `checkAgentReleaseAuthority` and never reaches `checkToolPermission`.
+     */
+    function primeAgentThroughRevalidation(
+      intent: ActionIntent,
+      opts: { runRow?: unknown[] } = {},
+    ) {
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // approved -> executing
+      dbState.selectActionIntentsResults.push([intent]);
+      dbState.selectApprovalRequestsResults.push([
+        { id: 'approval-1', status: 'approved', boundArgumentDigest: intent.argumentDigest },
+      ]);
+      aiToolsMock.getToolTier.mockReturnValue(intent.riskTier);
+      actorContextMock.buildAuthContextForIntent.mockResolvedValueOnce(agentAuth);
+      tenantStatusMock.getActiveOrgTenant.mockResolvedValueOnce({ orgId: intent.orgId, partnerId: 'partner-1' });
+      toolTimeoutsMock.getToolTimeout.mockReturnValue(60_000);
+      dbState.selectAgentRunsResults.push(opts.runRow ?? [{ agentId: AGENT_ID, alertId: RUN_ALERT_ID }]);
+    }
+
+    beforeEach(() => {
+      // `vi.clearAllMocks()` clears call history, never implementations or the
+      // `...Once` queues — and several tests earlier in this file leave both
+      // behind (see the Tier-2 block's comment). Pin every collaborator this
+      // describe depends on rather than inheriting whatever ran last.
+      agentReleaseAuthorityMock.checkAgentReleaseAuthority.mockReset();
+      agentReleaseAuthorityMock.checkAgentReleaseAuthority.mockResolvedValue({ ok: true });
+      killStateMock.readAiKillState.mockReset();
+      killStateMock.readAiKillState.mockResolvedValue({ killed: false, epoch: 0 });
+      aiToolsMock.requiresLiveSession.mockReturnValue(false);
+      opEvidenceMock.insertOpEvidence.mockReset();
+      opEvidenceMock.insertOpEvidence.mockResolvedValue(1);
+      opEvidenceMock.intentEvidenceSourceId.mockReset();
+      opEvidenceMock.intentEvidenceSourceId.mockImplementation((intentId: string) => intentId);
+      canonicalKeyMock.canonicalPolicyKey.mockReset();
+      canonicalKeyMock.canonicalPolicyKey.mockReturnValue(CANONICAL_OP_KEY);
+      fixWatchMock.createIntentFixWatchRow.mockReset();
+      fixWatchMock.createIntentFixWatchRow.mockResolvedValue(WATCH_ID);
+      fixWatchMock.enqueueFixWatchPhase1.mockReset();
+      fixWatchMock.enqueueFixWatchPhase1.mockResolvedValue(undefined);
+      demoteMock.demoteSupervisedKey.mockReset();
+      demoteMock.demoteSupervisedKey.mockResolvedValue({ revoked: false, orgAgentId: null });
+      demoteMock.notifyDemotion.mockReset();
+      demoteMock.notifyDemotion.mockResolvedValue(undefined);
+      dbMock.transaction.mockClear();
+      (mockedWithSystemContext as unknown as Mock).mockImplementation(
+        async (fn: () => Promise<unknown>) => fn(),
+      );
+    });
+
+    /**
+     * The transition that IS this branch's identity.
+     *
+     * Fix round 1: the eight `metric: null` cases used to assert only
+     * `insertOpEvidence` was never called, which every one of them satisfied
+     * before any implementation existed — a non-discriminating negative. If
+     * an arrange ever stops steering the flow (a collaborator signature
+     * moves, a guard is reordered, `getToolTier`/`requiresLiveSession` stops
+     * being the trigger), the intent falls through to some OTHER exit and the
+     * case still reads green. Naming the terminal write each branch must
+     * reach makes the arrange load-bearing again. Same failure mode, same
+     * remedy as the `release-lease claim (the 59:59 trap)` block above.
+     */
+    type ExpectedTerminal =
+      /** The claim CAS lost: the body never started, so it is the ONLY call. */
+      | { kind: 'claim_lost' }
+      /** Kill switch: `executing -> approved`, never terminal. */
+      | { kind: 'pause' }
+      | { kind: 'terminal'; to: 'failed'; errorCode: string; executed: boolean }
+      | { kind: 'terminal'; to: 'completed'; executed: true };
+
+    type Branch = {
+      name: string;
+      /** null = this exit writes no evidence row at all. */
+      metric: 'executed' | 'failed' | null;
+      expectedTerminal: ExpectedTerminal;
+      intent?: Partial<ActionIntent>;
+      /** Runs INSTEAD of priming — the claim CAS never lets the body start. */
+      unclaimed?: boolean;
+      arrange: () => void;
+    };
+
+    // One case per exit of `releaseApprovedIntent`, in source order.
+    const BRANCHES: Branch[] = [
+      {
+        name: 'claim CAS approved->executing lost — silent return, nothing ran',
+        metric: null,
+        expectedTerminal: { kind: 'claim_lost' },
+        unclaimed: true,
+        arrange: () => {
+          intentServiceMock.transitionIntent.mockResolvedValueOnce(false);
+        },
+      },
+      {
+        name: 'kill switch during revalidation — pauses executing->approved, never terminal',
+        metric: null,
+        expectedTerminal: { kind: 'pause' },
+        arrange: () => {
+          agentReleaseAuthorityMock.checkAgentReleaseAuthority.mockResolvedValue({
+            ok: false,
+            errorCode: 'kill_switch_engaged',
+          });
+          intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> approved
+        },
+      },
+      {
+        name: 'revalidation stop (tier_escalated) — failed with no executedAt',
+        metric: null,
+        expectedTerminal: { kind: 'terminal', to: 'failed', errorCode: 'tier_escalated', executed: false },
+        arrange: () => {
+          aiToolsMock.getToolTier.mockReturnValue(4);
+          intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+        },
+      },
+      {
+        name: 'digest_check_failed — the recompute threw before any dispatch',
+        metric: null,
+        expectedTerminal: { kind: 'terminal', to: 'failed', errorCode: 'digest_check_failed', executed: false },
+        intent: { effectDigest: 'pinned-1' },
+        arrange: () => {
+          effectDigestMock.computeEffectDigestForRelease.mockRejectedValueOnce(new Error('db down'));
+          intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+        },
+      },
+      {
+        name: 'content_changed — the pinned target drifted, nothing dispatched',
+        metric: null,
+        expectedTerminal: { kind: 'terminal', to: 'failed', errorCode: 'content_changed', executed: false },
+        intent: { effectDigest: 'pinned-1' },
+        arrange: () => {
+          effectDigestMock.computeEffectDigestForRelease.mockResolvedValueOnce({ digest: 'pinned-2' });
+          intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+        },
+      },
+      {
+        name: 'session_required — no headless path exists for this tool',
+        metric: null,
+        expectedTerminal: { kind: 'terminal', to: 'failed', errorCode: 'session_required', executed: false },
+        arrange: () => {
+          aiToolsMock.requiresLiveSession.mockReturnValue(true);
+          intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+        },
+      },
+      {
+        name: 'pre-dispatch kill read — pauses executing->approved, never terminal',
+        metric: null,
+        expectedTerminal: { kind: 'pause' },
+        arrange: () => {
+          killStateMock.readAiKillState.mockResolvedValue({ killed: true, epoch: 3 });
+          intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+        },
+      },
+      {
+        name: 'connection_unavailable — the provider call was never made',
+        metric: null,
+        expectedTerminal: { kind: 'terminal', to: 'failed', errorCode: 'connection_unavailable', executed: false },
+        arrange: () => {
+          googleHeadlessMock.isHeadlessGoogleTool.mockReturnValue(true);
+          googleHeadlessMock.executeGoogleToolHeadless.mockRejectedValueOnce(
+            new GoogleConnectionUnavailableError('{"error":"no connection"}'),
+          );
+          intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+        },
+      },
+      {
+        name: 'execution_error — the executor threw after dispatch (ATTEMPTED)',
+        metric: 'failed',
+        expectedTerminal: { kind: 'terminal', to: 'failed', errorCode: 'execution_error', executed: true },
+        arrange: () => {
+          aiToolsMock.executeTool.mockRejectedValueOnce(new Error('boom'));
+          intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+        },
+      },
+      {
+        name: 'tool_returned_error — an error body, not a throw (ATTEMPTED)',
+        metric: 'failed',
+        expectedTerminal: { kind: 'terminal', to: 'failed', errorCode: 'tool_returned_error', executed: true },
+        arrange: () => {
+          aiToolsMock.executeTool.mockResolvedValueOnce(
+            JSON.stringify({ error: 'Device not found or access denied' }),
+          );
+          intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+        },
+      },
+      {
+        name: 'secret_seal_invariant_violated — the guard tripped after the reset happened (ATTEMPTED)',
+        metric: 'failed',
+        expectedTerminal: {
+          kind: 'terminal',
+          to: 'failed',
+          errorCode: 'secret_seal_invariant_violated',
+          executed: true,
+        },
+        intent: { actionName: 'google_reset_password' },
+        arrange: () => {
+          mockHeadlessGoogleSecret('google_reset_password', {
+            kind: 'error',
+            llmText: 'Reset partially failed. Temporary password: hunter2leaked (raw prose bypass)',
+          });
+          intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+        },
+      },
+      {
+        name: 'success — completed with a result (ATTEMPTED)',
+        metric: 'executed',
+        expectedTerminal: { kind: 'terminal', to: 'completed', executed: true },
+        arrange: () => {
+          aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+          intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+        },
+      },
+    ];
+
+    /**
+     * Proves the branch under test is the branch that actually ran. Without
+     * this the eight no-evidence rows are satisfied by ANY flow that happens
+     * not to write evidence — including one that never reached the named exit.
+     */
+    function expectBranchReached(intent: ActionIntent, expected: ExpectedTerminal): void {
+      const transitions = intentServiceMock.transitionIntent.mock.calls;
+      if (expected.kind === 'claim_lost') {
+        // The claim CAS is attempted and lost; the body returns immediately,
+        // so it is the one and only transition of the whole release.
+        expect(transitions).toHaveLength(1);
+        expect(intentServiceMock.transitionIntent).toHaveBeenCalledWith(
+          intent.id, 'approved', 'executing', expect.anything(), expect.anything(),
+        );
+        // And the intent row itself was never even read: step 2's load runs
+        // only after a WON claim. Without this the case is satisfied by any
+        // flow that exits after one transition for some other reason.
+        expect((dbMock.ambient as { select: Mock }).select).not.toHaveBeenCalled();
+        return;
+      }
+      // Every other branch claimed first, then reached exactly one more
+      // transition — its own.
+      expect(transitions).toHaveLength(2);
+      if (expected.kind === 'pause') {
+        expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+          intent.id, 'executing', 'approved',
+        );
+        return;
+      }
+      expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+        intent.id,
+        'executing',
+        expected.to,
+        expected.to === 'failed'
+          ? expect.objectContaining({ errorCode: expected.errorCode })
+          : expect.objectContaining({ result: expect.anything() }),
+      );
+      // `executedAt` IS the attempted-ness discriminator the implementation
+      // keys on, so pin it per branch rather than inferring it from `metric`.
+      const patch = transitions[1]?.[3] as Record<string, unknown> | undefined;
+      expect(patch?.executedAt instanceof Date).toBe(expected.executed);
+    }
+
+    it.each(BRANCHES)('$name', async (branch) => {
+      const intent = agentIntent(branch.intent);
+      if (!branch.unclaimed) primeAgentThroughRevalidation(intent);
+      branch.arrange();
+
+      await releaseApprovedIntent(intent.id);
+
+      expectBranchReached(intent, branch.expectedTerminal);
+
+      if (branch.metric === null) {
+        expect(opEvidenceMock.insertOpEvidence).not.toHaveBeenCalled();
+        return;
+      }
+      expect(opEvidenceMock.insertOpEvidence).toHaveBeenCalledTimes(1);
+      expect(opEvidenceMock.insertOpEvidence).toHaveBeenCalledWith(
+        [
+          {
+            orgId: intent.orgId,
+            agentId: AGENT_ID,
+            namespace: 'policy_key',
+            opKey: CANONICAL_OP_KEY,
+            ruleId: null,
+            sourceKind: 'intent',
+            sourceId: intent.id,
+            metric: branch.metric,
+            runId: AGENT_RUN_ID,
+            occurredAt: expect.any(Date),
+          },
+        ],
+        // The SAVEPOINT's executor, never the ambient db — see the
+        // `db.transaction` mock's comment.
+        dbMock.executor,
+      );
+    });
+
+    it('redelivery: a second release of the same intent adds no second row — the claim CAS loses', async () => {
+      const intent = agentIntent();
+      primeAgentThroughRevalidation(intent);
+      aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> completed
+
+      await releaseApprovedIntent(intent.id);
+      expect(opEvidenceMock.insertOpEvidence).toHaveBeenCalledTimes(1);
+
+      // BullMQ redelivers: the row is terminal now, so the claim CAS returns
+      // false and the whole body — evidence included — is skipped.
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(false);
+      await releaseApprovedIntent(intent.id);
+
+      expect(opEvidenceMock.insertOpEvidence).toHaveBeenCalledTimes(1);
+    });
+
+    it('a human/chat intent (no requesting agent run) completes but produces no agent evidence', async () => {
+      const intent = baseIntent();
+      primeThroughRevalidation(intent);
+      aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> completed
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+        intent.id, 'executing', 'completed', expect.anything(),
+      );
+      expect(opEvidenceMock.insertOpEvidence).not.toHaveBeenCalled();
+    });
+
+    it('a LOST terminal CAS writes no evidence — the outcome belongs to whoever won it', async () => {
+      const intent = agentIntent();
+      primeAgentThroughRevalidation(intent);
+      aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(false); // executing -> completed LOST
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(opEvidenceMock.insertOpEvidence).not.toHaveBeenCalled();
+      expect(sentryMock.captureException).toHaveBeenCalled();
+    });
+
+    it('writes nothing when the requesting run is not readable in the intent org', async () => {
+      const intent = agentIntent();
+      primeAgentThroughRevalidation(intent, { runRow: [] });
+      aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+        intent.id, 'executing', 'completed', expect.anything(),
+      );
+      expect(opEvidenceMock.insertOpEvidence).not.toHaveBeenCalled();
+    });
+
+    it('loads the run predicated by BOTH id and org_id, and takes the op key from the shared canonical resolver', async () => {
+      const intent = agentIntent();
+      primeAgentThroughRevalidation(intent);
+      aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(mockedEq).toHaveBeenCalledWith(schema.aiAgentRunsTbl.id, AGENT_RUN_ID);
+      expect(mockedEq).toHaveBeenCalledWith(schema.aiAgentRunsTbl.orgId, intent.orgId);
+      expect(canonicalKeyMock.canonicalPolicyKey).toHaveBeenCalledWith(
+        intent.actionName, intent.arguments,
+      );
+    });
+
+    it('opens the evidence SAVEPOINT AFTER the terminal CAS, so a rollback there cannot undo it', async () => {
+      const intent = agentIntent();
+      primeAgentThroughRevalidation(intent);
+      aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> completed
+
+      await releaseApprovedIntent(intent.id);
+
+      // Two savepoints on a successful agent release — one for the ledger
+      // row, one for the verification watch — and BOTH opened after the CAS,
+      // which is the whole point of the nesting. A savepoint that enclosed
+      // the CAS would put the terminal write back on the losing side; a
+      // SHARED savepoint would let a watch-insert failure roll the already-
+      // earned `executed` row back with it.
+      expect(dbMock.transaction).toHaveBeenCalledTimes(2);
+      const casOrder = intentServiceMock.transitionIntent.mock.invocationCallOrder[1] ?? -1;
+      expect(Math.min(...dbMock.transaction.mock.invocationCallOrder)).toBeGreaterThan(casOrder);
+      expect(casOrder).toBeGreaterThan(0);
+      expect(opEvidenceMock.insertOpEvidence).toHaveBeenCalledWith(expect.anything(), dbMock.executor);
+    });
+
+    it('opens NO savepoint on a branch that earns no evidence', async () => {
+      const intent = agentIntent();
+      primeAgentThroughRevalidation(intent);
+      aiToolsMock.requiresLiveSession.mockReturnValue(true); // session_required
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(dbMock.transaction).not.toHaveBeenCalled();
+    });
+
+    it('an evidence-write failure KEEPS the completed terminal state — the ledger yields, not the outcome', async () => {
+      // The failure this guards: the action already ran. If the insert threw
+      // out of `releaseApprovedIntent`, BullMQ would redeliver, the claim CAS
+      // would lose against `executing`, and the stale-executing reaper would
+      // record a SUCCESSFUL action as failed:execution_lost forever.
+      const intent = agentIntent();
+      primeAgentThroughRevalidation(intent);
+      aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> completed
+      opEvidenceMock.insertOpEvidence.mockRejectedValueOnce(
+        Object.assign(new Error('insert or update violates foreign key constraint'), { code: '23503' }),
+      );
+
+      await expect(releaseApprovedIntent(intent.id)).resolves.toBeUndefined();
+
+      expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+        intent.id, 'executing', 'completed', expect.objectContaining({ executedAt: expect.any(Date) }),
+      );
+      // The success audit still runs — the outcome is recorded as executed.
+      expect(metricsMock.recordActionIntentEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ intentId: intent.id, outcome: 'executed' }),
+      );
+      // ...and the lost ledger row is loud, naming the intent and nothing else.
+      const captured = sentryMock.captureException.mock.calls.map((c) => String((c[0] as Error).message));
+      expect(captured.some((m) => m.includes('ai_agent_op_evidence write failed') && m.includes(intent.id))).toBe(true);
+    });
+
+    it('an evidence-write failure KEEPS the failed terminal state and its failure audit', async () => {
+      const intent = agentIntent();
+      primeAgentThroughRevalidation(intent);
+      aiToolsMock.executeTool.mockResolvedValueOnce(
+        JSON.stringify({ error: 'Device not found or access denied' }),
+      );
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> failed
+      opEvidenceMock.insertOpEvidence.mockRejectedValueOnce(new Error('evidence insert blew up'));
+
+      await expect(releaseApprovedIntent(intent.id)).resolves.toBeUndefined();
+
+      expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+        intent.id, 'executing', 'failed',
+        expect.objectContaining({ errorCode: 'tool_returned_error', executedAt: expect.any(Date) }),
+      );
+      expect(auditMock.writeAuditEvent).toHaveBeenCalled();
+      expect(sentryMock.captureException).toHaveBeenCalled();
+    });
+
+    it('success: the evidence write shares the terminal CAS transaction, while the success audit stays outside it', async () => {
+      const intent = agentIntent();
+      primeAgentThroughRevalidation(intent);
+      aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+
+      let depth = 0;
+      const seen = { cas: -1, evidence: -1, audit: -1 };
+      const systemContext = mockedWithSystemContext as unknown as Mock;
+      systemContext.mockImplementation(async (fn: () => Promise<unknown>) => {
+        depth += 1;
+        try {
+          return await fn();
+        } finally {
+          depth -= 1;
+        }
+      });
+      intentServiceMock.transitionIntent.mockImplementationOnce(async () => {
+        seen.cas = depth;
+        return true;
+      });
+      opEvidenceMock.insertOpEvidence.mockImplementationOnce(async () => {
+        seen.evidence = depth;
+        return 1;
+      });
+      metricsMock.recordActionIntentEvent.mockImplementationOnce(() => {
+        seen.audit = depth;
+      });
+
+      try {
+        await releaseApprovedIntent(intent.id);
+      } finally {
+        systemContext.mockImplementation(async (fn: () => Promise<unknown>) => fn());
+      }
+
+      expect(seen.cas).toBeGreaterThanOrEqual(1);
+      expect(seen.evidence).toBe(seen.cas);
+      expect(seen.audit).toBe(0);
+    });
+
+    it('failure: the evidence write shares the terminal CAS transaction, while the failure audit stays outside it', async () => {
+      const intent = agentIntent();
+      primeAgentThroughRevalidation(intent);
+      aiToolsMock.executeTool.mockResolvedValueOnce(
+        JSON.stringify({ error: 'Device not found or access denied' }),
+      );
+
+      let depth = 0;
+      const seen = { cas: -1, evidence: -1, audit: -1 };
+      const systemContext = mockedWithSystemContext as unknown as Mock;
+      systemContext.mockImplementation(async (fn: () => Promise<unknown>) => {
+        depth += 1;
+        try {
+          return await fn();
+        } finally {
+          depth -= 1;
+        }
+      });
+      intentServiceMock.transitionIntent.mockImplementationOnce(async () => {
+        seen.cas = depth;
+        return true;
+      });
+      opEvidenceMock.insertOpEvidence.mockImplementationOnce(async () => {
+        seen.evidence = depth;
+        return 1;
+      });
+      auditMock.writeAuditEvent.mockImplementationOnce(() => {
+        seen.audit = depth;
+      });
+
+      try {
+        await releaseApprovedIntent(intent.id);
+      } finally {
+        systemContext.mockImplementation(async (fn: () => Promise<unknown>) => fn());
+      }
+
+      expect(seen.cas).toBeGreaterThanOrEqual(1);
+      expect(seen.evidence).toBe(seen.cas);
+      expect(seen.audit).toBe(0);
+    });
+
+    // -----------------------------------------------------------------------
+    // P2-5 (#4192) Task 5 — the intent-anchored fix watch (closes #4206)
+    //
+    // A released intent is now its OWN verification episode: N intents from
+    // one run get N watches instead of sharing the run-unique one. The watch
+    // row commits with the terminal CAS; its BullMQ job is enqueued strictly
+    // after that commit (the #1105 held-context tripwire throws on an
+    // in-context `queue.add`), and a lost enqueue is recovered by
+    // `recoverStrandedFixWatches` rather than by rolling anything back.
+    // -----------------------------------------------------------------------
+    describe('intent-anchored fix watch', () => {
+      it('a successful release whose run has a triggering alert opens a watch and writes only `executed`', async () => {
+        const intent = agentIntent();
+        primeAgentThroughRevalidation(intent);
+        aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+        intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> completed
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(fixWatchMock.createIntentFixWatchRow).toHaveBeenCalledTimes(1);
+        expect(fixWatchMock.createIntentFixWatchRow).toHaveBeenCalledWith(
+          {
+            intentId: intent.id,
+            orgId: intent.orgId,
+            runId: AGENT_RUN_ID,
+            agentId: AGENT_ID,
+            alertId: RUN_ALERT_ID,
+            opKey: CANONICAL_OP_KEY,
+          },
+          // Its own SAVEPOINT executor, never the ambient db.
+          dbMock.executor,
+        );
+        // A watch WILL verify this operation, so nothing is credited yet.
+        expect(opEvidenceMock.insertOpEvidence).toHaveBeenCalledTimes(1);
+        expect(opEvidenceMock.insertOpEvidence.mock.calls[0]![0]).toEqual([
+          expect.objectContaining({ metric: 'executed' }),
+        ]);
+        expect(fixWatchMock.enqueueFixWatchPhase1).toHaveBeenCalledWith(WATCH_ID);
+      });
+
+      it('a run with NO triggering alert can never be watched, so the operation is credited `verified` on the same source id', async () => {
+        const intent = agentIntent();
+        primeAgentThroughRevalidation(intent, { runRow: [{ agentId: AGENT_ID, alertId: null }] });
+        aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+        intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(fixWatchMock.createIntentFixWatchRow).not.toHaveBeenCalled();
+        expect(opEvidenceMock.insertOpEvidence).toHaveBeenCalledTimes(2);
+        expect(opEvidenceMock.insertOpEvidence.mock.calls[1]![0]).toEqual([
+          expect.objectContaining({
+            metric: 'verified',
+            sourceKind: 'intent',
+            sourceId: intent.id,
+            opKey: CANONICAL_OP_KEY,
+            agentId: AGENT_ID,
+            runId: AGENT_RUN_ID,
+          }),
+        ]);
+        // Its own SAVEPOINT executor, like every other write in this
+        // transaction — the ambient proxy would put a failed insert on the
+        // outer scope and abort the terminal CAS with it.
+        expect(opEvidenceMock.insertOpEvidence.mock.calls[1]![1]).toBe(dbMock.executor);
+        // A savepoint for the ledger row, a second for the verification
+        // decision — never one shared with the `executed` row it must not be
+        // able to roll back.
+        expect(dbMock.transaction).toHaveBeenCalledTimes(2);
+        expect(fixWatchMock.enqueueFixWatchPhase1).not.toHaveBeenCalled();
+      });
+
+      it('an alert no longer readable in the org yields no watch — same `verified` credit', async () => {
+        const intent = agentIntent();
+        primeAgentThroughRevalidation(intent);
+        fixWatchMock.createIntentFixWatchRow.mockResolvedValueOnce(null);
+        aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+        intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(opEvidenceMock.insertOpEvidence).toHaveBeenCalledTimes(2);
+        expect(opEvidenceMock.insertOpEvidence.mock.calls[1]![0]).toEqual([
+          expect.objectContaining({ metric: 'verified' }),
+        ]);
+        expect(fixWatchMock.enqueueFixWatchPhase1).not.toHaveBeenCalled();
+      });
+
+      it('a watch-insert FAILURE credits nothing — an operation nobody can verify is never graded verified', async () => {
+        const intent = agentIntent();
+        primeAgentThroughRevalidation(intent);
+        fixWatchMock.createIntentFixWatchRow.mockRejectedValueOnce(
+          Object.assign(new Error('insert or update violates foreign key constraint'), { code: '23503' }),
+        );
+        aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+        intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+        await expect(releaseApprovedIntent(intent.id)).resolves.toBeUndefined();
+
+        // The `executed` row stands (its own savepoint committed); no
+        // `verified` row is invented for an operation whose watch was lost.
+        expect(opEvidenceMock.insertOpEvidence).toHaveBeenCalledTimes(1);
+        expect(opEvidenceMock.insertOpEvidence.mock.calls[0]![0]).toEqual([
+          expect.objectContaining({ metric: 'executed' }),
+        ]);
+        // ...and the completed terminal state — a real side effect — survives.
+        expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+          intent.id, 'executing', 'completed', expect.objectContaining({ executedAt: expect.any(Date) }),
+        );
+        expect(metricsMock.recordActionIntentEvent).toHaveBeenCalledWith(
+          expect.objectContaining({ intentId: intent.id, outcome: 'executed' }),
+        );
+        expect(sentryMock.captureException).toHaveBeenCalled();
+        expect(fixWatchMock.enqueueFixWatchPhase1).not.toHaveBeenCalled();
+      });
+
+      it('enqueues the phase-1 job strictly AFTER the terminal transaction — an in-context `queue.add` trips #1105', async () => {
+        const intent = agentIntent();
+        primeAgentThroughRevalidation(intent);
+        aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+
+        let depth = 0;
+        const seen = { cas: -1, watch: -1, enqueue: -1 };
+        const systemContext = mockedWithSystemContext as unknown as Mock;
+        systemContext.mockImplementation(async (fn: () => Promise<unknown>) => {
+          depth += 1;
+          try {
+            return await fn();
+          } finally {
+            depth -= 1;
+          }
+        });
+        intentServiceMock.transitionIntent.mockImplementationOnce(async () => {
+          seen.cas = depth;
+          return true;
+        });
+        fixWatchMock.createIntentFixWatchRow.mockImplementationOnce(async () => {
+          seen.watch = depth;
+          return WATCH_ID;
+        });
+        fixWatchMock.enqueueFixWatchPhase1.mockImplementationOnce(async () => {
+          seen.enqueue = depth;
+        });
+
+        try {
+          await releaseApprovedIntent(intent.id);
+        } finally {
+          systemContext.mockImplementation(async (fn: () => Promise<unknown>) => fn());
+        }
+
+        expect(seen.cas).toBeGreaterThanOrEqual(1);
+        // The row shares the CAS's transaction...
+        expect(seen.watch).toBe(seen.cas);
+        // ...the enqueue does not.
+        expect(seen.enqueue).toBe(0);
+      });
+
+      it('a failed enqueue is swallowed — the row is committed and the recovery sweep re-enqueues it', async () => {
+        const intent = agentIntent();
+        primeAgentThroughRevalidation(intent);
+        fixWatchMock.enqueueFixWatchPhase1.mockRejectedValueOnce(new Error('redis down'));
+        aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+        intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+        await expect(releaseApprovedIntent(intent.id)).resolves.toBeUndefined();
+
+        expect(metricsMock.recordActionIntentEvent).toHaveBeenCalledWith(
+          expect.objectContaining({ intentId: intent.id, outcome: 'executed' }),
+        );
+        expect(sentryMock.captureException).toHaveBeenCalled();
+      });
+
+      it('a LOST terminal CAS opens no watch — the outcome belongs to whoever won it', async () => {
+        const intent = agentIntent();
+        primeAgentThroughRevalidation(intent);
+        aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+        intentServiceMock.transitionIntent.mockResolvedValueOnce(false);
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(fixWatchMock.createIntentFixWatchRow).not.toHaveBeenCalled();
+        expect(fixWatchMock.enqueueFixWatchPhase1).not.toHaveBeenCalled();
+      });
+
+      it('an ATTEMPTED FAILURE opens no watch — there is no fix whose regression could be observed', async () => {
+        const intent = agentIntent();
+        primeAgentThroughRevalidation(intent);
+        aiToolsMock.executeTool.mockResolvedValueOnce(
+          JSON.stringify({ error: 'Device not found or access denied' }),
+        );
+        intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> failed
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(opEvidenceMock.insertOpEvidence).toHaveBeenCalledTimes(1);
+        expect(opEvidenceMock.insertOpEvidence.mock.calls[0]![0]).toEqual([
+          expect.objectContaining({ metric: 'failed' }),
+        ]);
+        expect(fixWatchMock.createIntentFixWatchRow).not.toHaveBeenCalled();
+      });
+
+      it('a human/chat release opens no watch — there is no agent to grade', async () => {
+        const intent = baseIntent();
+        primeThroughRevalidation(intent);
+        aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+        intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(fixWatchMock.createIntentFixWatchRow).not.toHaveBeenCalled();
+        expect(fixWatchMock.enqueueFixWatchPhase1).not.toHaveBeenCalled();
+      });
+    });
+
+    // -----------------------------------------------------------------------
+    // P2-5 (#4192) Task 6 — auto-demote on an ATTEMPTED failure
+    //
+    // Same discriminator as the ledger row it rides with: attempted-ness is
+    // "the terminal write stamped `executedAt`". The revoke is therefore
+    // reachable from EVERY attempted-failure exit (`tool_returned_error`,
+    // `execution_error`, `secret_seal_invariant_violated`) with no per-branch
+    // list, and from no other exit at all. It is ALWAYS ON — no feature flag
+    // is consulted — because leaving unattended authority on an agent whose
+    // last attempt failed is the one outcome this wave exists to prevent.
+    // -----------------------------------------------------------------------
+    describe('auto-demote on attempted failure (P2-5, #4192)', () => {
+      it('revokes the failing op key on the SAME canonical key the evidence row records', async () => {
+        const intent = agentIntent();
+        primeAgentThroughRevalidation(intent);
+        aiToolsMock.executeTool.mockResolvedValueOnce(
+          JSON.stringify({ error: 'Device not found or access denied' }),
+        );
+        intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> failed
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(demoteMock.demoteSupervisedKey).toHaveBeenCalledTimes(1);
+        expect(demoteMock.demoteSupervisedKey).toHaveBeenCalledWith(
+          {
+            orgId: intent.orgId,
+            agentId: AGENT_ID,
+            opKey: CANONICAL_OP_KEY,
+            reason: 'attempted_failure',
+            runId: AGENT_RUN_ID,
+            watchId: null,
+            intentId: intent.id,
+          },
+          dbMock.executor,
+        );
+      });
+
+      it('an execution_error (the tool threw after the side effect) demotes too', async () => {
+        const intent = agentIntent();
+        primeAgentThroughRevalidation(intent);
+        aiToolsMock.executeTool.mockRejectedValueOnce(new Error('provider 500'));
+        intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> failed
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+          intent.id, 'executing', 'failed',
+          expect.objectContaining({ errorCode: 'execution_error', executedAt: expect.any(Date) }),
+        );
+        expect(demoteMock.demoteSupervisedKey).toHaveBeenCalledTimes(1);
+      });
+
+      it('a SUCCESSFUL release demotes nothing', async () => {
+        const intent = agentIntent();
+        primeAgentThroughRevalidation(intent);
+        aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+        intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(demoteMock.demoteSupervisedKey).not.toHaveBeenCalled();
+        expect(demoteMock.notifyDemotion).not.toHaveBeenCalled();
+      });
+
+      it('a NON-ATTEMPTED refusal (session_required) demotes nothing — the agent never got to try', async () => {
+        const intent = agentIntent();
+        primeAgentThroughRevalidation(intent);
+        aiToolsMock.requiresLiveSession.mockReturnValue(true);
+        intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+          intent.id, 'executing', 'failed',
+          expect.not.objectContaining({ executedAt: expect.any(Date) }),
+        );
+        expect(demoteMock.demoteSupervisedKey).not.toHaveBeenCalled();
+      });
+
+      it('a LOST terminal CAS demotes nothing — the outcome belongs to whoever won it', async () => {
+        const intent = agentIntent();
+        primeAgentThroughRevalidation(intent);
+        aiToolsMock.executeTool.mockResolvedValueOnce(
+          JSON.stringify({ error: 'Device not found or access denied' }),
+        );
+        intentServiceMock.transitionIntent.mockResolvedValueOnce(false);
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(demoteMock.demoteSupervisedKey).not.toHaveBeenCalled();
+      });
+
+      it('a human/chat failure demotes nothing — there is no agent grant to revoke', async () => {
+        const intent = baseIntent();
+        primeThroughRevalidation(intent);
+        aiToolsMock.executeTool.mockResolvedValueOnce(
+          JSON.stringify({ error: 'Device not found or access denied' }),
+        );
+        intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(demoteMock.demoteSupervisedKey).not.toHaveBeenCalled();
+      });
+
+      it('an evidence-write failure demotes nothing — the revoke rides the row that justifies it', async () => {
+        const intent = agentIntent();
+        primeAgentThroughRevalidation(intent);
+        aiToolsMock.executeTool.mockResolvedValueOnce(
+          JSON.stringify({ error: 'Device not found or access denied' }),
+        );
+        intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+        opEvidenceMock.insertOpEvidence.mockRejectedValueOnce(new Error('evidence insert blew up'));
+
+        await expect(releaseApprovedIntent(intent.id)).resolves.toBeUndefined();
+
+        expect(demoteMock.notifyDemotion).not.toHaveBeenCalled();
+      });
+
+      it('the revoke shares the evidence savepoint, while its notification stays outside the transaction', async () => {
+        const intent = agentIntent();
+        primeAgentThroughRevalidation(intent);
+        aiToolsMock.executeTool.mockResolvedValueOnce(
+          JSON.stringify({ error: 'Device not found or access denied' }),
+        );
+
+        let depth = 0;
+        const seen = { cas: -1, evidence: -1, demote: -1, notify: -1 };
+        const systemContext = mockedWithSystemContext as unknown as Mock;
+        systemContext.mockImplementation(async (fn: () => Promise<unknown>) => {
+          depth += 1;
+          try {
+            return await fn();
+          } finally {
+            depth -= 1;
+          }
+        });
+        intentServiceMock.transitionIntent.mockImplementationOnce(async () => {
+          seen.cas = depth;
+          return true;
+        });
+        opEvidenceMock.insertOpEvidence.mockImplementationOnce(async () => {
+          seen.evidence = depth;
+          return 1;
+        });
+        demoteMock.demoteSupervisedKey.mockImplementationOnce(async () => {
+          seen.demote = depth;
+          return { revoked: true, orgAgentId: 'org-agent-1' };
+        });
+        demoteMock.notifyDemotion.mockImplementationOnce(async () => {
+          seen.notify = depth;
+        });
+
+        try {
+          await releaseApprovedIntent(intent.id);
+        } finally {
+          systemContext.mockImplementation(async (fn: () => Promise<unknown>) => fn());
+        }
+
+        expect(seen.cas).toBeGreaterThanOrEqual(1);
+        expect(seen.demote).toBe(seen.cas);
+        expect(seen.evidence).toBe(seen.cas);
+        expect(seen.notify).toBe(0);
+      });
+
+      it('notifies exactly once when a key was actually revoked, naming the agent, org row and key', async () => {
+        const intent = agentIntent();
+        primeAgentThroughRevalidation(intent);
+        aiToolsMock.executeTool.mockResolvedValueOnce(
+          JSON.stringify({ error: 'Device not found or access denied' }),
+        );
+        intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+        demoteMock.demoteSupervisedKey.mockResolvedValueOnce({ revoked: true, orgAgentId: 'org-agent-1' });
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(demoteMock.notifyDemotion).toHaveBeenCalledTimes(1);
+        expect(demoteMock.notifyDemotion).toHaveBeenCalledWith({
+          orgId: intent.orgId,
+          agentId: AGENT_ID,
+          orgAgentId: 'org-agent-1',
+          opKey: CANONICAL_OP_KEY,
+          reason: 'attempted_failure',
+          runId: AGENT_RUN_ID,
+          watchId: null,
+        });
+      });
+
+      it('sends no notification when the key was only ever in the partner ceiling', async () => {
+        const intent = agentIntent();
+        primeAgentThroughRevalidation(intent);
+        aiToolsMock.executeTool.mockResolvedValueOnce(
+          JSON.stringify({ error: 'Device not found or access denied' }),
+        );
+        intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+        demoteMock.demoteSupervisedKey.mockResolvedValueOnce({ revoked: false, orgAgentId: 'org-agent-1' });
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(demoteMock.notifyDemotion).not.toHaveBeenCalled();
+      });
+
+      it('a revoke that throws KEEPS the failed terminal state and its failure audit', async () => {
+        const intent = agentIntent();
+        primeAgentThroughRevalidation(intent);
+        aiToolsMock.executeTool.mockResolvedValueOnce(
+          JSON.stringify({ error: 'Device not found or access denied' }),
+        );
+        intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+        demoteMock.demoteSupervisedKey.mockRejectedValueOnce(new Error('lock timeout'));
+
+        await expect(releaseApprovedIntent(intent.id)).resolves.toBeUndefined();
+
+        expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+          intent.id, 'executing', 'failed',
+          expect.objectContaining({ errorCode: 'tool_returned_error', executedAt: expect.any(Date) }),
+        );
+        expect(auditMock.writeAuditEvent).toHaveBeenCalled();
+        expect(sentryMock.captureException).toHaveBeenCalled();
+      });
+
+      it('a notification failure is swallowed — the revoke is already committed', async () => {
+        const intent = agentIntent();
+        primeAgentThroughRevalidation(intent);
+        aiToolsMock.executeTool.mockResolvedValueOnce(
+          JSON.stringify({ error: 'Device not found or access denied' }),
+        );
+        intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+        demoteMock.demoteSupervisedKey.mockResolvedValueOnce({ revoked: true, orgAgentId: 'org-agent-1' });
+        demoteMock.notifyDemotion.mockRejectedValueOnce(new Error('notification service down'));
+
+        await expect(releaseApprovedIntent(intent.id)).resolves.toBeUndefined();
+
+        expect(sentryMock.captureException).toHaveBeenCalled();
+      });
     });
   });
 });

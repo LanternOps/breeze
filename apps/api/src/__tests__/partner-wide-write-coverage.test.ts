@@ -147,6 +147,25 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   // --- caller-facing, gated at the route layer (verify the gate when editing
   //     these services or adding ANY new route caller) -----------------------
   'services/aiAgents/agentService.ts': 'gated centrally in services/aiAgents/access.ts (assertAgentWriteAllowed), called before every write',
+  // P2-5 (#4192). The promote executor writes the ORG axis ONLY, by
+  // construction: the clone it may insert pins `partnerId: null` +
+  // `orgId`, and the one UPDATE targets the id of a row it read under
+  // `eq(aiAgents.orgId, orgId)` + `.for('update')`. A partner baseline row
+  // is READ (locked, as the ceiling) and never written. There is also no
+  // caller to gate: it runs only as the effect of an already-approved
+  // Tier-3 four-eyes intent, whose own release re-checks the requester's
+  // ai_agents:write RBAC.
+  'services/aiAgents/supervisedKeyGrant.ts': 'grants one supervised key on the ORG row only (clone pins partner_id NULL; the update targets a row read by org_id); the partner baseline is read-locked as the ceiling, never written',
+  // P2-5 (#4192), Task 16. The mirror of the promote executor above, and
+  // ORG-axis by the same construction: the one UPDATE targets the id of a
+  // row read under `eq(aiAgents.orgId, orgId)` + `.for('update')`, and the
+  // partner baseline is read ONLY for its `kind` (pinned through the
+  // organization's own partner) and never written — narrowing a partner
+  // ceiling is a partner-level decision no automated signal from one org
+  // may make. There is no caller to gate and deliberately no RBAC check:
+  // auto-demote is ALWAYS ON, fired by the release worker's terminal CAS
+  // and the fix-watch phase-2 verdict, and it only ever REMOVES authority.
+  'services/aiAgents/supervisedKeyDemote.ts': 'revokes one supervised key from the ORG row only (the update targets a row read by org_id); the partner baseline is read for its kind and never written; always-on automatic path with no caller to gate, and it only ever removes authority',
   'services/aiAgents/managedAutomation.ts': 'seeds/syncs one agent\'s own managed automation; the owner axis is copied verbatim from the ai_agents row, never chosen by the caller, and every entry point (createAgent/updateAgent/disableAgent) has already passed assertAgentWriteAllowed — which throws PartnerWideWriteDeniedError for a partner-owned agent',
   'services/aiAgents/scheduleService.ts': 'gated centrally in services/aiAgents/access.ts (assertAgentWriteAllowed → PartnerWideWriteDeniedError) before every create/update/delete; partner rows additionally require a partner-wide triage agent under auth.partnerId (P2-2, #4189)',
   'services/automationRuntime.ts': 'manual trigger gated at routes/automations.ts; webhook path requires the provisioned automation secret',
@@ -168,6 +187,8 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   //     routes/softwareInstallMethods.ts + routes/accounting/index.ts above) --
   'services/accounting/accountingConnectionService.ts': 'QBO/Xero connection lifecycle, gated by its own admin permission set (recorded exemption)',
   'services/accounting/accountingMappingService.ts': 'accounting_entity_mappings is integration external-ref data, not a partner-wide policy table; every write route in routes/accounting/index.ts passes requireScope(partner,system) + requireMfa() + requireMappingWrite (per-entity-type admin permission), and workers/erasure run under system context',
+  'services/accounting/accountingInvoicePush.ts': 'same accounting_entity_mappings rows as accountingMappingService above, for the invoice entity type; the manual/bulk push routes pass requireScope(partner,system) + requireMfa() + INVOICES_WRITE, and the accounting-sync worker runs under system context',
+  'services/accounting/accountingPaymentPull.ts': 'QBO-signed webhook / system-context CDC backstop writes payment mapping rows and invoice_payments; there is no tenant caller to gate — the connection is resolved by id or realm fingerprint and every write carries that connection\'s (integration_id, partner_id), enforced by the composite FK (mirrors the Stripe webhook precedent)',
   'services/catalogImageStorage.ts': 'catalog item images on the catalog permission set; partner-scope routes only',
   'services/catalogService.ts': 'catalog items/prices/bundles on the catalog permission set; partner-scope routes only',
   'services/pax8CatalogService.ts': 'pax8 catalog-item import on the catalog permission set; credentials live behind /pax8\'s global gate',

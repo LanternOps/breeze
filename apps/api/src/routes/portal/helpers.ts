@@ -9,6 +9,7 @@ import { DEFAULT_ALLOWED_ORIGINS } from '../../services/corsOrigins';
 import { getRedis } from '../../services/redis';
 import { portalBase } from '../../services/portalUrl';
 import type { PortalSession } from './schemas';
+import { isSameOriginRequest } from '../../services/requestTransport';
 import {
   PORTAL_SESSION_COOKIE_NAME,
   PORTAL_SESSION_COOKIE_PATH,
@@ -542,8 +543,10 @@ export function validatePortalCookieCsrfRequest(c: Context): string | null {
     return 'Invalid CSRF token';
   }
 
+  // Same-origin requests (tunnel / LAN name outside the allowlist) are not
+  // CSRF — see services/requestTransport.ts isSameOriginRequest.
   const origin = c.req.header('origin');
-  if (origin && !isAllowedOrigin(origin)) {
+  if (origin && !isAllowedOrigin(origin) && !isSameOriginRequest(c, origin)) {
     return 'Invalid request origin';
   }
 
