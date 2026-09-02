@@ -65,6 +65,17 @@ import { relativeTime } from '../../lib/relativeTime';
 import { reportInternalError } from '../../lib/errorReporting';
 
 import { priorityColor, priorityLabel, statusLabel, ticketRef } from './ticketCopy';
+import {
+  buildCommentSubmission,
+  COMMENT_MODES,
+  composerPlaceholder,
+  DEFAULT_COMMENT_MODE,
+  internalBannerText,
+  isPublicForMode,
+  modeTabLabel,
+  submitLabel,
+  type CommentMode,
+} from './commentMode';
 import { startForTicket, stopRunningTimer } from './timerActions';
 import { startOutcomeEffects, stopOutcomeEffects } from './timerOutcomeEffects';
 import { CommentAttachments } from './CommentAttachments';
@@ -122,6 +133,16 @@ export function TicketDetailScreen() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [comment, setComment] = useState('');
+  /**
+   * Not reset after a successful send — mirroring the web composer, which also
+   * leaves `mode` alone and only clears the text and chips. A reply is rarely a
+   * single message, and silently snapping the composer back to a different
+   * visibility between two sends is its own surprise. The mode stays legible
+   * the whole time (selected tab, wash, button label), and the screen unmounts
+   * on navigate-away, so `DEFAULT_COMMENT_MODE` reasserts itself every time a
+   * ticket is opened fresh.
+   */
+  const [commentMode, setCommentMode] = useState<CommentMode>(DEFAULT_COMMENT_MODE);
   const [resolutionNote, setResolutionNote] = useState('');
   const [pendingStatus, setPendingStatus] = useState<TicketStatus | null>(null);
   const [busy, setBusy] = useState(false);
@@ -303,16 +324,29 @@ export function TicketDetailScreen() {
   );
 
   const submitComment = useCallback(async () => {
-    const trimmed = comment.trim();
-    const attachmentIds = claimableIds(chips);
-    // Not `!trimmed`: the API accepts a comment carrying only attachments
+    // `isPublic` is derived, never a literal: a hardcoded `true` here is what
+    // made every comment from a phone email the requester, and a hardcoded
+    // boolean is invisible to a test. `buildCommentSubmission` is the one
+    // place the mode becomes a visibility flag, and it is covered by
+    // commentMode.test.ts.
+    const submission = buildCommentSubmission({
+      mode: commentMode,
+      text: comment,
+      attachmentIds: claimableIds(chips),
+    });
+    // Not `!content`: the API accepts a comment carrying only attachments
     // (`addTicketCommentSchema` refines "text OR at least one attachment"), so
     // gating on text alone would block a photo-only reply.
-    if ((!trimmed && attachmentIds.length === 0) || inFlight.current) return;
+    if ((!submission.content && submission.attachmentIds.length === 0) || inFlight.current) return;
     inFlight.current = true;
     setBusy(true);
     try {
-      const created = await addTicketComment(ticketId, trimmed, true, attachmentIds);
+      const created = await addTicketComment(
+        ticketId,
+        submission.content,
+        submission.isPublic,
+        submission.attachmentIds
+      );
       setComment('');
       // Only clear once the claim succeeded — a failed POST leaves the pending
       // rows claimable, and dropping the chips would strand them until the
@@ -345,7 +379,7 @@ export function TicketDetailScreen() {
       inFlight.current = false;
       if (mounted.current) setBusy(false);
     }
-  }, [comment, chips, ticketId, load]);
+  }, [comment, commentMode, chips, ticketId, load]);
 
   const submitStatus = useCallback(
     async (status: TicketStatus) => {
@@ -528,6 +562,7 @@ export function TicketDetailScreen() {
   const showResolutionInput = pendingStatus === 'resolved';
   const attachBlocked = attachDisabledReason({ connected, chips });
   const sendable = canSend({ chips, text: comment, busy });
+  const isInternal = !isPublicForMode(commentMode);
   const quickStatuses = allowedQuickStatuses(ticket.status, QUICK_STATUS_CANDIDATES);
   // Only person-authored entries are "comments"; the rest of the array is
   // activity (status changes, assignments, time entries).
@@ -696,53 +731,98 @@ export function TicketDetailScreen() {
           })
         )}
 
-        <TextInput
-          value={comment}
-          onChangeText={setComment}
-          placeholder="Add a comment"
-          placeholderTextColor={palette.dark.textLo}
-          multiline
-          style={styles.input}
-          accessibilityLabel="Add a comment"
-        />
+        {/* The whole composer is wrapped so the internal wash covers every
+            control that belongs to the pending comment — a tint on the text
+            field alone reads as a styling quirk, a tinted panel reads as a
+            mode. */}
+        <View style={[styles.composer, isInternal && styles.composerInternal]}>
+          <View style={styles.modeTabs} accessibilityRole="tablist">
+            {COMMENT_MODES.map((mode) => {
+              const active = commentMode === mode;
+              return (
+                <Pressable
+                  key={mode}
+                  onPress={() => setCommentMode(mode)}
+                  accessibilityRole="tab"
+                  accessibilityLabel={modeTabLabel(mode)}
+                  accessibilityState={{ selected: active }}
+                  style={[
+                    styles.modeTab,
+                    active && (mode === 'internal' ? styles.modeTabInternal : styles.modeTabReply),
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.modeTabText,
+                      active &&
+                        (mode === 'internal'
+                          ? styles.modeTabTextInternal
+                          : styles.modeTabTextReply),
+                    ]}
+                  >
+                    {modeTabLabel(mode)}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+          {/* Spelled out rather than implied by colour: the wash is invisible
+              to a technician who cannot distinguish it, the sentence is not. */}
+          {isInternal ? <Text style={styles.internalBanner}>{internalBannerText}</Text> : null}
 
-        <View style={styles.attachRow}>
-          {ATTACH_ACTIONS.map(({ key, label, pick }) => (
-            <Pressable
-              key={key}
-              onPress={() => void handlePick(() => pick(remainingSlots(chips)))}
-              disabled={attachBlocked !== null}
-              accessibilityRole="button"
-              accessibilityLabel={label}
-              accessibilityState={{ disabled: attachBlocked !== null }}
-              style={[styles.attachButton, attachBlocked !== null && styles.submitDisabled]}
-            >
-              <Text style={styles.attachButtonText}>{label}</Text>
-            </Pressable>
-          ))}
-        </View>
-        {/* Says WHY, not just that it is unavailable — "Attachments need a
-            connection" is actionable, a greyed button is not. */}
-        {attachBlocked ? <Text style={styles.metaDim}>{attachBlocked}</Text> : null}
-
-        {chips.map((chip) => (
-          <AttachmentChip
-            key={chip.localId}
-            chip={chip}
-            onRetry={retryChip}
-            onRemove={(localId) => applyChips((prev) => removeChip(prev, localId))}
+          <TextInput
+            value={comment}
+            onChangeText={setComment}
+            placeholder={composerPlaceholder(commentMode)}
+            placeholderTextColor={palette.dark.textLo}
+            multiline
+            style={[styles.input, styles.composerInput]}
+            accessibilityLabel={composerPlaceholder(commentMode)}
           />
-        ))}
 
-        <Pressable
-          onPress={() => void submitComment()}
-          disabled={!sendable}
-          accessibilityRole="button"
-          accessibilityState={{ disabled: !sendable }}
-          style={[styles.submit, !sendable && styles.submitDisabled]}
-        >
-          <Text style={styles.submitText}>{sendButtonLabel({ chips, busy })}</Text>
-        </Pressable>
+          <View style={styles.attachRow}>
+            {ATTACH_ACTIONS.map(({ key, label, pick }) => (
+              <Pressable
+                key={key}
+                onPress={() => void handlePick(() => pick(remainingSlots(chips)))}
+                disabled={attachBlocked !== null}
+                accessibilityRole="button"
+                accessibilityLabel={label}
+                accessibilityState={{ disabled: attachBlocked !== null }}
+                style={[styles.attachButton, attachBlocked !== null && styles.submitDisabled]}
+              >
+                <Text style={styles.attachButtonText}>{label}</Text>
+              </Pressable>
+            ))}
+          </View>
+          {/* Says WHY, not just that it is unavailable — "Attachments need a
+              connection" is actionable, a greyed button is not. */}
+          {attachBlocked ? <Text style={styles.metaDim}>{attachBlocked}</Text> : null}
+
+          {chips.map((chip) => (
+            <AttachmentChip
+              key={chip.localId}
+              chip={chip}
+              onRetry={retryChip}
+              onRemove={(localId) => applyChips((prev) => removeChip(prev, localId))}
+            />
+          ))}
+
+          <Pressable
+            onPress={() => void submitComment()}
+            disabled={!sendable}
+            accessibilityRole="button"
+            accessibilityState={{ disabled: !sendable }}
+            style={[styles.submit, isInternal && styles.submitInternal, !sendable && styles.submitDisabled]}
+          >
+            {/* The idle label names the consequence ("Send reply" / "Add
+                internal note"); the in-flight labels stay generic because at
+                that point the visibility is already decided. */}
+            <Text style={[styles.submitText, isInternal && styles.submitTextInternal]}>
+              {sendButtonLabel({ chips, busy, idleLabel: submitLabel(commentMode) })}
+            </Text>
+          </Pressable>
+        </View>
       </ScrollView>
 
       <Toast
@@ -824,6 +904,43 @@ const styles = StyleSheet.create({
     minHeight: 88,
     textAlignVertical: 'top',
   },
+  // The composer panel. In reply mode it is a plain card; in internal mode the
+  // amber wash and border make the whole pending comment read as private, the
+  // same signal `styles.internal` already gives a posted internal note.
+  composer: {
+    marginTop: spacing['4'],
+    padding: spacing['3'],
+    borderRadius: radii.md,
+    borderWidth: 1,
+    borderColor: palette.dark.border,
+    backgroundColor: palette.dark.bg1,
+  },
+  composerInternal: {
+    borderColor: palette.warning.base,
+    // Same amber as palette.warning.base at low alpha; RN has no colour-mix,
+    // so the wash is written out rather than derived.
+    backgroundColor: 'rgba(219,168,74,0.12)',
+  },
+  // One step lighter than the panel so the field still reads as a field once
+  // the composer has a surface of its own.
+  composerInput: { backgroundColor: palette.dark.bg2, marginTop: 0 },
+  modeTabs: { flexDirection: 'row', gap: spacing['2'], marginBottom: spacing['3'] },
+  modeTab: {
+    paddingHorizontal: spacing['3'],
+    paddingVertical: spacing['2'],
+    borderRadius: radii.full,
+    borderWidth: 1,
+    borderColor: 'transparent',
+  },
+  modeTabReply: { backgroundColor: palette.brand.deep, borderColor: palette.brand.base },
+  modeTabInternal: {
+    backgroundColor: 'rgba(219,168,74,0.20)',
+    borderColor: palette.warning.base,
+  },
+  modeTabText: { ...type.meta, color: palette.dark.textMd },
+  modeTabTextReply: { color: palette.dark.textHi },
+  modeTabTextInternal: { color: palette.warning.base },
+  internalBanner: { ...type.meta, color: palette.warning.base, marginBottom: spacing['2'] },
   submit: {
     marginTop: spacing['3'],
     paddingVertical: spacing['3'],
@@ -831,6 +948,8 @@ const styles = StyleSheet.create({
     backgroundColor: palette.brand.base,
     alignItems: 'center',
   },
+  submitInternal: { backgroundColor: palette.warning.base },
+  submitTextInternal: { color: palette.warning.onBase },
   submitDisabled: { opacity: 0.5 },
   attachRow: { flexDirection: 'row', gap: spacing['2'], marginTop: spacing['2'] },
   attachButton: {
