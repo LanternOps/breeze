@@ -1622,6 +1622,8 @@
       "stripeNudge": "Çevrimiçi kart ödemelerini kabul etmek için Stripe bağlanın.",
       "title": "Ödemeler",
       "viaStripe": "Stripe aracılığıyla",
+      "quickbooks": "QuickBooks",
+      "viaQuickbooks": "QuickBooks aracılığıyla",
       "currencyUnknown": "Stripe hesabınızın ödeme para birimi henüz önbelleğe alınmadığından bu {{documentCurrency}} faturayla karşılaştırılamadı. Uyuşmazlık kontrolünü etkinleştirmek için Ayarlar → Entegrasyonlar altından Stripe hesap bilgilerinizi yenileyin."
     },
     "requestPayment": {

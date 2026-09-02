@@ -21,6 +21,7 @@ vi.mock("../../lib/authScope", () => ({
 }));
 
 import QuickbooksIntegration from "./QuickbooksIntegration";
+import { formatDateTime } from "@/lib/dateTimeFormat";
 
 const jsonResponse = (payload: unknown, status = 200): Response =>
   ({
@@ -43,6 +44,10 @@ const connected = {
   pushMode: "auto",
   connectedAt: "2026-06-23T00:00:00Z",
   lastError: null,
+  // Phase D: GET /accounting/quickbooks carries the reconcile-worker settings
+  // and status on BOTH branches (connected and disconnected).
+  pullPayments: true,
+  lastReconcileAt: null,
 };
 
 describe("QuickbooksIntegration", () => {
@@ -225,5 +230,188 @@ describe("QuickbooksIntegration", () => {
     await waitFor(() =>
       expect(screen.getByTestId("quickbooks-multi-currency")).toHaveTextContent("No"),
     );
+  });
+});
+
+// ─── Phase D: payment pull-back controls ────────────────────────────────────
+describe("QuickbooksIntegration — payment pull-back (Phase D)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    scope = "partner";
+    window.history.replaceState({}, "", "/integrations");
+  });
+
+  it("renders the pull-payments switch from status and PATCHes { pullPayments: false } when turned off", async () => {
+    fetchWithAuth.mockImplementation(
+      async (url: string, init?: RequestInit) => {
+        if (
+          url === "/accounting/quickbooks/settings" &&
+          init?.method === "PATCH"
+        ) {
+          return jsonResponse({ ...connected, pullPayments: false });
+        }
+        if (url === "/accounting/quickbooks") return jsonResponse(connected);
+        return jsonResponse({}, 404);
+      },
+    );
+
+    render(<QuickbooksIntegration />);
+
+    const toggle = await screen.findByTestId("quickbooks-pullpayments");
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
+    fireEvent.click(toggle);
+
+    await waitFor(() =>
+      expect(fetchWithAuth).toHaveBeenCalledWith(
+        "/accounting/quickbooks/settings",
+        expect.objectContaining({
+          method: "PATCH",
+          body: JSON.stringify({ pullPayments: false }),
+        }),
+      ),
+    );
+    expect(showToast).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "success" }),
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("quickbooks-pullpayments").getAttribute("aria-checked"),
+      ).toBe("false"),
+    );
+  });
+
+  it("toasts an error and leaves the switch on when the PATCH fails", async () => {
+    fetchWithAuth.mockImplementation(
+      async (url: string, init?: RequestInit) => {
+        if (
+          url === "/accounting/quickbooks/settings" &&
+          init?.method === "PATCH"
+        ) {
+          return jsonResponse({ error: "boom" }, 500);
+        }
+        if (url === "/accounting/quickbooks") return jsonResponse(connected);
+        return jsonResponse({}, 404);
+      },
+    );
+
+    render(<QuickbooksIntegration />);
+    fireEvent.click(await screen.findByTestId("quickbooks-pullpayments"));
+
+    await waitFor(() =>
+      expect(showToast).toHaveBeenCalledWith(
+        expect.objectContaining({ type: "error" }),
+      ),
+    );
+    // The switch is driven by the SERVER-confirmed value, so a rejected PATCH
+    // leaves it reading the setting QuickBooks actually still has.
+    expect(
+      screen.getByTestId("quickbooks-pullpayments").getAttribute("aria-checked"),
+    ).toBe("true");
+    expect(showToast).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: "success" }),
+    );
+  });
+
+  it("renders Never for a connection that has never reconciled", async () => {
+    fetchWithAuth.mockImplementation(async (url: string) => {
+      if (url === "/accounting/quickbooks") return jsonResponse(connected);
+      return jsonResponse({}, 404);
+    });
+
+    render(<QuickbooksIntegration />);
+
+    expect(
+      await screen.findByTestId("quickbooks-last-reconcile"),
+    ).toHaveTextContent("Never");
+  });
+
+  it("renders the formatted timestamp once a reconcile has run", async () => {
+    fetchWithAuth.mockImplementation(async (url: string) => {
+      if (url === "/accounting/quickbooks") {
+        return jsonResponse({
+          ...connected,
+          lastReconcileAt: "2026-09-01T10:00:00Z",
+        });
+      }
+      return jsonResponse({}, 404);
+    });
+
+    render(<QuickbooksIntegration />);
+
+    const line = await screen.findByTestId("quickbooks-last-reconcile");
+    expect(line).toHaveTextContent(formatDateTime("2026-09-01T10:00:00Z"));
+    expect(line).not.toHaveTextContent("Never");
+  });
+
+  it("Sync now POSTs the reconcile route and reports a queued job as a success", async () => {
+    fetchWithAuth.mockImplementation(
+      async (url: string, init?: RequestInit) => {
+        if (
+          url === "/accounting/quickbooks/reconcile" &&
+          init?.method === "POST"
+        ) {
+          return jsonResponse({ enqueued: true });
+        }
+        if (url === "/accounting/quickbooks") return jsonResponse(connected);
+        return jsonResponse({}, 404);
+      },
+    );
+
+    render(<QuickbooksIntegration />);
+    fireEvent.click(await screen.findByTestId("quickbooks-reconcile-now"));
+
+    await waitFor(() =>
+      expect(fetchWithAuth).toHaveBeenCalledWith(
+        "/accounting/quickbooks/reconcile",
+        expect.objectContaining({ method: "POST" }),
+      ),
+    );
+    expect(showToast).toHaveBeenCalledWith({
+      type: "success",
+      message: "Payment sync queued.",
+    });
+  });
+
+  it("never reports { enqueued: false } as a success — the queue refused the job", async () => {
+    fetchWithAuth.mockImplementation(
+      async (url: string, init?: RequestInit) => {
+        if (
+          url === "/accounting/quickbooks/reconcile" &&
+          init?.method === "POST"
+        ) {
+          // 200 with enqueued:false — Redis was down, or the jobId was still
+          // held. The route answers honestly; the UI must not launder that
+          // into "queued".
+          return jsonResponse({ enqueued: false });
+        }
+        if (url === "/accounting/quickbooks") return jsonResponse(connected);
+        return jsonResponse({}, 404);
+      },
+    );
+
+    render(<QuickbooksIntegration />);
+    fireEvent.click(await screen.findByTestId("quickbooks-reconcile-now"));
+
+    await waitFor(() =>
+      expect(showToast).toHaveBeenCalledWith({
+        type: "warning",
+        message: "Payment sync could not be queued. Try again shortly.",
+      }),
+    );
+    expect(showToast).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: "success" }),
+    );
+  });
+
+  it("renders none of the pull-back controls for an org-scoped user", async () => {
+    scope = "organization";
+
+    render(<QuickbooksIntegration />);
+
+    expect(await screen.findByTestId("quickbooks-org-scope")).toBeTruthy();
+    expect(screen.queryByTestId("quickbooks-pullpayments")).toBeNull();
+    expect(screen.queryByTestId("quickbooks-last-reconcile")).toBeNull();
+    expect(screen.queryByTestId("quickbooks-reconcile-now")).toBeNull();
+    expect(fetchWithAuth).not.toHaveBeenCalled();
   });
 });

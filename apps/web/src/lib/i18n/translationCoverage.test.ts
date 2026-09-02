@@ -41,7 +41,12 @@ const namespaceDuplicateBaselines = {
     // necessarily identical in every catalog.
     // +1: contracts.currencyMismatches.columns.status — "Status" is spelled
     // identically in pt-BR.
-    'billing.json': 55,
+    // +2: invoiceDetail.payments.quickbooks / .viaQuickbooks (QuickBooks
+    // payment pull-back, Phase D) — the badge value IS the proper noun, and
+    // this locale already renders the parallel `viaStripe` as "via Stripe",
+    // so "via QuickBooks" is the correct wording here, not an untranslated
+    // string.
+    'billing.json': 57,
     // +1: richTextEditor.link — "Link" is the standard loanword in pt-BR.
     // +3: dashboard.vuln.kevCves — "{{count}} CVE(s)" is a locale-invariant
     // acronym (base/_one/_other).
@@ -116,7 +121,10 @@ const namespaceDuplicateBaselines = {
     // +1: contracts.currencyMismatches.currencyPair — the value is pure
     // interpolation ("{{contractCurrency}} → {{orgCurrency}}"), so it is
     // necessarily identical in every catalog.
-    'billing.json': 43,
+    // +1: invoiceDetail.payments.quickbooks (QuickBooks payment pull-back,
+    // Phase D) — the badge value IS the proper noun, so it is identical in
+    // every catalog. `.viaQuickbooks` IS translated in this locale.
+    'billing.json': 44,
     // +1: dashboard.vuln.kevCves_one — "{{count}} CVE" is a locale-invariant
     // acronym.
     // +8: PsaConnectionForm credential placeholders — literal token formats
@@ -194,7 +202,12 @@ const namespaceDuplicateBaselines = {
     // +1: contracts.currencyMismatches.currencyPair — the value is pure
     // interpolation ("{{contractCurrency}} → {{orgCurrency}}"), so it is
     // necessarily identical in every catalog.
-    'billing.json': 55,
+    // +2: invoiceDetail.payments.quickbooks / .viaQuickbooks (QuickBooks
+    // payment pull-back, Phase D) — the badge value IS the proper noun, and
+    // this locale already renders the parallel `viaStripe` as "via Stripe",
+    // so "via QuickBooks" is the correct wording here, not an untranslated
+    // string.
+    'billing.json': 57,
     // +1: dashboard.vuln.kevCves_one — "{{count}} CVE" is a locale-invariant
     // acronym.
     // +8: PsaConnectionForm credential placeholders — literal token formats
@@ -274,7 +287,12 @@ const namespaceDuplicateBaselines = {
     // +1: contracts.currencyMismatches.currencyPair — the value is pure
     // interpolation ("{{contractCurrency}} → {{orgCurrency}}"), so it is
     // necessarily identical in every catalog.
-    'billing.json': 55,
+    // +2: invoiceDetail.payments.quickbooks / .viaQuickbooks (QuickBooks
+    // payment pull-back, Phase D) — the badge value IS the proper noun, and
+    // this locale already renders the parallel `viaStripe` as "via Stripe",
+    // so "via QuickBooks" is the correct wording here, not an untranslated
+    // string.
+    'billing.json': 57,
     // +1: dashboard.vuln.kevCves_one "{{count}} CVE" is a locale-invariant
     // acronym.
     // +8: PsaConnectionForm credential placeholders — literal token formats
@@ -357,7 +375,10 @@ const namespaceDuplicateBaselines = {
     // necessarily identical in every catalog.
     // +1: contracts.currencyMismatches.columns.status — "Status" is spelled
     // identically in de-DE.
-    'billing.json': 42,
+    // +1: invoiceDetail.payments.quickbooks (QuickBooks payment pull-back,
+    // Phase D) — the badge value IS the proper noun, so it is identical in
+    // every catalog. `.viaQuickbooks` IS translated in this locale.
+    'billing.json': 43,
     // +1: richTextEditor.link — "Link" is the standard loanword in de-DE.
     // +3: dashboard.vuln.kevCves — "{{count}} CVE(s)" is a locale-invariant
     // acronym (base/_one/_other).
@@ -424,7 +445,10 @@ const namespaceDuplicateBaselines = {
     // +1: contracts.currencyMismatches.currencyPair — the value is pure
     // interpolation ("{{contractCurrency}} → {{orgCurrency}}"), so it is
     // necessarily identical in every catalog.
-    'billing.json': 35,
+    // +1: invoiceDetail.payments.quickbooks (QuickBooks payment pull-back,
+    // Phase D) — the badge value IS the proper noun, so it is identical in
+    // every catalog. `.viaQuickbooks` IS translated in this locale.
+    'billing.json': 36,
     // +1: dashboard.vuln.kevCves_one "{{count}} CVE" is a locale-invariant
     // acronym.
     // +8: PsaConnectionForm credential placeholders — literal token formats
@@ -487,7 +511,10 @@ const namespaceDuplicateBaselines = {
     // +1: contracts.currencyMismatches.currencyPair — the value is pure
     // interpolation ("{{contractCurrency}} → {{orgCurrency}}"), so it is
     // necessarily identical in every catalog.
-    'billing.json': 20,
+    // +1: invoiceDetail.payments.quickbooks (QuickBooks payment pull-back,
+    // Phase D) — the badge value IS the proper noun, so it is identical in
+    // every catalog. `.viaQuickbooks` IS translated in this locale.
+    'billing.json': 21,
     'common.json': 48,
     'devices.json': 77,
     'discovery.json': 9,
