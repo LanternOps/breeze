@@ -123,6 +123,38 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Symbolication. The DSN only makes events ARRIVE; making them READABLE needs
+# source maps and dSYMs, which the @sentry/react-native/expo plugin uploads from
+# two Xcode build phases using SENTRY_AUTH_TOKEN.
+#
+# Unlike the DSN this is a GENUINE SECRET, so it goes in its own gitignored file
+# rather than .env — .env values are compiled into the JS bundle and would ship
+# inside the IPA. Mark it "secret" in the Xcode Cloud workflow so it is redacted
+# from build logs.
+#
+# Missing it does not fail the build, and that is exactly the hazard: events
+# still arrive, but every JS frame is a minified bundle offset and native
+# crashes have no symbols. It looks like working telemetry until someone needs
+# to read a crash — the same "looks like it worked" class as shipping with no
+# DSN at all. So warn loudly instead of passing over it in silence.
+# ---------------------------------------------------------------------------
+SENTRY_ENV_FILE="$REPO_ROOT/apps/mobile/.env.sentry-build-plugin"
+if [ -n "${SENTRY_AUTH_TOKEN:-}" ]; then
+  # Never echoed, only its presence.
+  printf 'SENTRY_AUTH_TOKEN=%s\n' "$SENTRY_AUTH_TOKEN" > "$SENTRY_ENV_FILE"
+  chmod 600 "$SENTRY_ENV_FILE"
+  echo "--- .env.sentry-build-plugin: SENTRY_AUTH_TOKEN written"
+elif [ -f "$SENTRY_ENV_FILE" ]; then
+  echo "--- .env.sentry-build-plugin: workflow set no SENTRY_AUTH_TOKEN, leaving existing file alone"
+else
+  echo "--- WARNING: SENTRY_AUTH_TOKEN is not set. This build will report crashes" >&2
+  echo "---          but WITHOUT source maps or dSYMs, so every JS frame will be a" >&2
+  echo "---          minified bundle offset and native crashes will have no symbols." >&2
+  echo "---          Set it as a secret environment variable on the Xcode Cloud" >&2
+  echo "---          workflow (scopes: project:releases, org:read)." >&2
+fi
+
+# ---------------------------------------------------------------------------
 # Generate ios/. Never `--clean`: it is even more destructive than the default,
 # and the default already replaces this script's directory.
 # ---------------------------------------------------------------------------
