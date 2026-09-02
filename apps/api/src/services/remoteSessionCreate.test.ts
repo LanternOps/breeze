@@ -125,6 +125,12 @@ describe.each([
   });
 });
 
+it('uses a caller-supplied id for a remote session when provided', async () => {
+  const { values } = insertReturning({ id: 'caller-supplied-id', status: 'pending' });
+  await createRemoteSession('remote', { ...remoteInput, id: 'caller-supplied-id' });
+  expect(values).toHaveBeenCalledWith(expect.objectContaining({ id: 'caller-supplied-id' }));
+});
+
 it('passes tunnel values through verbatim', async () => {
   const { values } = insertReturning({ id: 'tunnel-1', status: 'pending' });
   await createRemoteSession('tunnel', tunnelInput);

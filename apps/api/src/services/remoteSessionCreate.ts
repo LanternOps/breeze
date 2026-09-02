@@ -14,6 +14,7 @@ export type TunnelSessionInsert = typeof tunnelSessions.$inferInsert;
 export type TunnelSessionRow = typeof tunnelSessions.$inferSelect;
 
 type RemoteSessionInput = {
+  id?: string;
   deviceId: string;
   orgId: string;
   userId: string;
@@ -73,6 +74,7 @@ export async function createRemoteSession(
     const [created] = await db
       .insert(remoteSessions)
       .values({
+        ...(remote.id ? { id: remote.id } : {}),
         deviceId: remote.deviceId,
         orgId: remote.orgId,
         userId: remote.userId,

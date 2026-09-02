@@ -1471,12 +1471,11 @@ vncViewerRoutes.get('/desktop-access', async (c) => {
 // sessionId + token to drive the standard `/desktop-ws/:sessionId/viewer/*`
 // endpoints for ICE, offer, ws-ticket, etc.
 vncViewerRoutes.post('/upgrade-to-webrtc', async (c) => {
-  // The descendant viewer token is minted below, once the gated session
-  // create (createRemoteSession('remote', ...)) returns a real id — that
-  // service always lets Postgres generate the row's id, so unlike the other
-  // transition routes in this file we can no longer pre-compute the id and
-  // bind the token to it up front.
-  const auth = await requireViewerToken(c, { requireAssuredTransition: true });
+  const transitionSessionId = randomUUID();
+  const auth = await requireViewerToken(c, {
+    requireAssuredTransition: true,
+    descendantSessionId: transitionSessionId,
+  });
   if (auth instanceof Response) return auth;
 
   const bound = await withSystemDbAccessContext(async () => {
@@ -1536,6 +1535,7 @@ vncViewerRoutes.post('/upgrade-to-webrtc', async (c) => {
           )
         );
       return createRemoteSession('remote', {
+        id: transitionSessionId,
         deviceId: bound.deviceId,
         orgId: bound.tunnelOrgId,
         userId: bound.tunnelUserId,
@@ -1553,15 +1553,7 @@ vncViewerRoutes.post('/upgrade-to-webrtc', async (c) => {
     return c.json({ error: 'Failed to create desktop session' }, 500);
   }
 
-  // Minted here (not up front like the sibling transition routes) because the
-  // service above generates the session id — we can't bind a descendant token
-  // to it until it exists.
-  let accessToken: string;
-  try {
-    accessToken = await createViewerDescendantAccessToken(auth, { sessionId: session.id });
-  } catch {
-    return c.json({ error: 'Invalid or expired token' }, 401);
-  }
+  const accessToken = auth.descendantAccessToken!;
 
   // Viewer-token auth — no JWT actor. Attribute the upgrade to the tunnel-bound
   // owner (the user who opened the originating VNC tunnel) so the credential
@@ -1569,7 +1561,7 @@ vncViewerRoutes.post('/upgrade-to-webrtc', async (c) => {
   await logTunnelAudit(
     'tunnel.upgrade_webrtc',
     'tunnel_session',
-    session.id,
+    transitionSessionId,
     bound.tunnelUserId,
     bound.tunnelOrgId,
     { deviceId: bound.deviceId, type: 'desktop', fromTunnelId: auth.sessionId },
@@ -1577,7 +1569,7 @@ vncViewerRoutes.post('/upgrade-to-webrtc', async (c) => {
   );
 
   return c.json({
-    sessionId: session.id,
+    sessionId: transitionSessionId,
     accessToken,
     expiresInSeconds: getViewerAccessTokenExpirySeconds(),
   });
