@@ -1703,6 +1703,116 @@
           "resolutionNote": "Borrador de nota de resolución"
         }
       }
+    },
+    "impact": {
+      "title": "Impacto de IA",
+      "description": "Lo que resolvieron sus agentes de IA en las organizaciones que usted puede ver y el tiempo de trabajo que se estima que representa.",
+      "windowLabel": "Periodo del informe",
+      "windows": {
+        "d7": "Últimos 7 días",
+        "d30": "Últimos 30 días",
+        "d90": "Últimos 90 días"
+      },
+      "loading": "Cargando el informe de impacto…",
+      "refresh": "Actualizar",
+      "refreshing": "Reconstruyendo…",
+      "retry": "Reintentar",
+      "errors": {
+        "load": "No se pudo cargar el informe de impacto.",
+        "rebuild": "No se pudo poner en cola la reconstrucción del informe.",
+        "tooManyOrgs": "Esta reconstrucción abarca más de {{limit}} organizaciones. Elija una sola organización en el selector de organizaciones e inténtelo de nuevo.",
+        "orgIdRequired": "Elija una sola organización en el selector de organizaciones antes de reconstruir el informe de impacto.",
+        "exportPdf": "No se pudo generar la exportación a PDF."
+      },
+      "toasts": {
+        "rebuildQueued": "Reconstrucción del informe puesta en cola.",
+        "rebuildComplete": "El informe de impacto se reconstruyó.",
+        "rebuildStillRunning": "La reconstrucción sigue en curso. Vuelva a cargar esta página en unos minutos para ver las cifras nuevas."
+      },
+      "tiles": {
+        "alertsJudged": "Alertas evaluadas",
+        "noiseFlagged": "Marcadas como ruido",
+        "ticketsTriaged": "Tickets clasificados",
+        "draftsSent": "Borradores enviados",
+        "fixesExecuted": "Correcciones ejecutadas",
+        "estTimeSaved": "Tiempo ahorrado estimado",
+        "estTimeSavedValue": "{{hours}} horas",
+        "llmSpend": "Gasto en LLM"
+      },
+      "weightsTooltipTitle": "Solo es una estimación: a cada resultado se le acredita un tiempo fijo:",
+      "weightsTooltipLine": "{{label}}: {{minutes}} min por resultado",
+      "weightLabels": {
+        "alertJudged": "Alerta evaluada",
+        "noiseFlagged": "Marcada como ruido",
+        "ticketTriaged": "Ticket clasificado",
+        "draftSent": "Borrador enviado",
+        "fixExecuted": "Corrección ejecutada",
+        "narrativeDelivered": "Informe semanal entregado"
+      },
+      "chart": {
+        "title": "Resultados por día",
+        "empty": "No se registraron resultados en este periodo.",
+        "noiseFlagged": "Marcadas como ruido",
+        "alertsJudgedNet": "Alertas evaluadas, sin el ruido",
+        "ticketsTriaged": "Tickets clasificados",
+        "fixesExecuted": "Correcciones ejecutadas"
+      },
+      "byOrg": {
+        "title": "Por organización",
+        "truncated": "Se muestran las {{limit}} organizaciones con mayor tiempo ahorrado estimado.",
+        "columns": {
+          "organization": "Organización",
+          "alertsJudged": "Alertas evaluadas",
+          "ticketsTriaged": "Tickets clasificados",
+          "fixesExecuted": "Correcciones ejecutadas",
+          "estTimeSaved": "Tiempo ahorrado estimado",
+          "llmSpend": "Gasto en LLM"
+        }
+      },
+      "freshness": "Datos hasta {{through}} (UTC) · reconstruido {{rebuiltAt}}",
+      "freshnessNeverRebuilt": "Datos hasta {{through}} (UTC) · nunca reconstruido",
+      "positiveFeedbackRate": "Tasa de comentarios positivos",
+      "positiveFeedbackDetail": "{{up}} útiles, {{down}} no útiles",
+      "editWeights": "Editar ponderaciones",
+      "exportPdf": "Exportar PDF",
+      "weightsDrawer": {
+        "title": "Editar ponderaciones de tiempo ahorrado",
+        "description": "Define cuántos segundos de tiempo humano se acreditan a cada resultado. Estas ponderaciones solo cambian la estimación, nunca lo que hacen tus agentes de IA.",
+        "save": "Guardar",
+        "saving": "Guardando…",
+        "reset": "Restablecer valores predeterminados",
+        "resetting": "Restableciendo…",
+        "customized": "Personalizado",
+        "errors": {
+          "save": "No se pudieron guardar las ponderaciones.",
+          "reset": "No se pudieron restablecer las ponderaciones."
+        },
+        "toasts": {
+          "saved": "Ponderaciones guardadas.",
+          "reset": "Ponderaciones restablecidas a los valores predeterminados."
+        }
+      },
+      "pdf": {
+        "metrics": {
+          "alertsJudged": "Alertas evaluadas",
+          "noiseFlagged": "Marcadas como ruido",
+          "suppressionsApplied": "Supresiones aplicadas",
+          "ticketsTriaged": "Tickets clasificados",
+          "draftsSent": "Borradores enviados",
+          "fixesProposed": "Correcciones propuestas",
+          "fixesExecuted": "Correcciones ejecutadas",
+          "fixWatchesHeld": "Monitoreos de corrección retenidos",
+          "fixWatchesRecurred": "Monitoreos de corrección recurrentes",
+          "narrativesDelivered": "Informes semanales entregados",
+          "estTimeSaved": "Tiempo ahorrado estimado",
+          "llmSpend": "Gasto en LLM",
+          "window": "Ventana del informe (días)",
+          "through": "Datos hasta (UTC)",
+          "rebuiltAt": "Última reconstrucción"
+        },
+        "weightRowLabel": "{{label}} (segundos acreditados)",
+        "neverRebuilt": "Nunca reconstruido"
+      }
     }
   },
   "apiKeyForm": {
