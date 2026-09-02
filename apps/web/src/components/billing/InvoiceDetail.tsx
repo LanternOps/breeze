@@ -26,6 +26,7 @@ import {
 } from './invoiceTypes';
 import { StatusPill } from './shared/StatusPill';
 import InvoiceActions from './InvoiceActions';
+import AccountingSyncCard from './AccountingSyncCard';
 import { MarginPanel, MarginToggle, useShowMargin } from './billingUi';
 import { computeChargeNow } from '@breeze/shared';
 
@@ -478,6 +479,17 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
             </div>
           )}
 
+          {/* QuickBooks push status (Phase C). Renders only when the API
+              returned a mapping row — no connection, or an org-scoped read that
+              RLS-hides the partner-axis row, both come back null and the card
+              stays off the rail rather than implying "not synced". */}
+          <AccountingSyncCard
+            invoiceId={invoice.id}
+            sync={detail.accountingSync}
+            canPush={can('invoices', 'write')}
+            onChanged={onChanged}
+          />
+
           {/* Terms & Conditions */}
           {invoice.termsAndConditions && (
             <div className="rounded-lg border bg-card p-4" data-testid="invoice-detail-terms">
@@ -538,10 +550,23 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
                           {t('invoiceDetail.payments.online')}
                         </span>
                       )}
+                      {p.source === 'quickbooks' && (
+                        <span
+                          className="rounded border border-border bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
+                          data-testid={`invoice-payment-quickbooks-${p.id}`}
+                        >
+                          {t('invoiceDetail.payments.quickbooks')}
+                        </span>
+                      )}
                     </span>
-                    {/* Stripe payments are refunded through Stripe, never hand-voided. */}
+                    {/* Stripe payments are refunded through Stripe, never hand-voided.
+                        QuickBooks-pulled payments are the same story with a different
+                        system of record: reversing one here would not touch the books,
+                        and the next reconcile would pull it straight back in. */}
                     {p.source === 'stripe' ? (
                       <span className="whitespace-nowrap text-[11px] text-muted-foreground">{t('invoiceDetail.payments.viaStripe')}</span>
+                    ) : p.source === 'quickbooks' ? (
+                      <span className="whitespace-nowrap text-[11px] text-muted-foreground">{t('invoiceDetail.payments.viaQuickbooks')}</span>
                     ) : can('invoices', 'send') ? (
                       <button
                         type="button" onClick={() => setReversePayment(p)} disabled={busy || invoice.status === 'void'}

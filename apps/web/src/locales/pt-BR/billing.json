@@ -695,7 +695,8 @@
         "updateSection": "Não foi possível atualizar a seção.",
         "uploadImage": "Não foi possível enviar a imagem.",
         "noPriceForCurrency": "Este item não tem preço em {{currency}}. Adicione um no catálogo ou insira uma linha manual.",
-        "sectionAddedListStale": "Seção adicionada, mas não foi possível atualizar a lista. Recarregue a página para vê-la."
+        "sectionAddedListStale": "Seção adicionada, mas não foi possível atualizar a lista. Recarregue a página para vê-la.",
+        "lineAddedListStale": "Linha adicionada, mas não foi possível atualizar a lista. Recarregue a página para vê-la."
       },
       "image": {
         "alt": "Imagem da cotação",
@@ -1622,6 +1623,8 @@
       "stripeNudge": "Conecte o Stripe para aceitar pagamentos online com cartão.",
       "title": "Pagamentos",
       "viaStripe": "via Stripe",
+      "quickbooks": "QuickBooks",
+      "viaQuickbooks": "via QuickBooks",
       "currencyUnknown": "A moeda de liquidação da sua conta Stripe ainda não foi armazenada em cache, então não foi possível compará-la com esta fatura em {{documentCurrency}}. Atualize os dados da conta Stripe em Configurações → Integrações para habilitar a verificação."
     },
     "requestPayment": {
@@ -1660,6 +1663,21 @@
       "confirm": "Redefinir link",
       "success": "Link redefinido — os links anteriores não funcionam mais",
       "error": "Não foi possível redefinir o link"
+    },
+    "accountingSync": {
+      "title": "Sincronização com o QuickBooks",
+      "status": {
+        "pending": "Ainda não enviada",
+        "synced": "Sincronizada",
+        "error": "Falha na sincronização",
+        "synced_with_tax_variance": "Sincronizada com diferença de imposto"
+      },
+      "taxVarianceHint": "O QuickBooks calculou um total de impostos diferente. Compare os dois registros antes de fechar o período.",
+      "docNumber": "Documento do QuickBooks {{docNumber}}",
+      "lastSynced": "Última sincronização em {{when}}",
+      "push": "Enviar ao QuickBooks",
+      "pushed": "Fatura enviada ao QuickBooks.",
+      "pushFailed": "Falha ao enviar a fatura ao QuickBooks."
     }
   },
   "invoiceDocument": {
@@ -1719,7 +1737,12 @@
       "partial": "{{succeeded}} {{verb}}, {{skipped}} ignoradas{{failedText}}",
       "success": "{{succeeded}} {{verb}}",
       "void": "Anulada",
-      "voidedVerb": "anuladas"
+      "voidedVerb": "anuladas",
+      "quickbooks": "Enviar ao QuickBooks",
+      "quickbooksQueued": "{{enqueued}} na fila para o QuickBooks",
+      "quickbooksQueuedPartial": "{{enqueued}} na fila para o QuickBooks, {{skipped}} ignoradas",
+      "quickbooksQueuedFailed": "{{enqueued}} na fila para o QuickBooks, {{skipped}} ignoradas, {{failed}} não enfileiradas",
+      "quickbooksFailed": "Falha ao enfileirar o envio ao QuickBooks. Tente novamente."
     },
     "bulkDelete": {
       "message": "Excluir {{count}} fatura(s) selecionada(s)? Somente faturas em RASCUNHO serão excluídas; esta ação não pode ser desfeita.",

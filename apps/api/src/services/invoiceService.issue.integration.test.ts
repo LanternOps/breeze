@@ -12,6 +12,19 @@ vi.mock('./invoiceEvents', () => ({ emitInvoiceEvent: vi.fn().mockResolvedValue(
 // can hang under NOAUTH). The render itself is covered by invoicePdf.integration.test.ts.
 vi.mock('../jobs/invoiceWorker', () => ({ enqueueInvoicePdfRender: vi.fn().mockResolvedValue(undefined) }));
 
+// issueInvoice/voidInvoice also enqueue QuickBooks push/void jobs (Phase C,
+// Task 4). Same reason as the PDF-render mock above — the worker/coordinator
+// wiring is covered by accountingSyncWorker.test.ts; here we only assert the
+// hook fires with the right args.
+const { enqueueAccountingInvoicePushMock, enqueueAccountingInvoiceVoidMock } = vi.hoisted(() => ({
+  enqueueAccountingInvoicePushMock: vi.fn().mockResolvedValue(undefined),
+  enqueueAccountingInvoiceVoidMock: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock('../jobs/accountingSyncWorker', () => ({
+  enqueueAccountingInvoicePush: enqueueAccountingInvoicePushMock,
+  enqueueAccountingInvoiceVoid: enqueueAccountingInvoiceVoidMock,
+}));
+
 // Catalog writes (used by the addBundleLine allocation test) emit BullMQ
 // lifecycle events the same way — stub them for the same reason.
 vi.mock('./catalogEvents', () => ({ emitCatalogEvent: vi.fn().mockResolvedValue(undefined) }));
@@ -179,8 +192,10 @@ describe.runIf(RUN)('voidInvoice + runOverdueSweep', () => {
     const { invoice } = await withDbAccessContext(ctx(f), () =>
       svc.assembleDraftFromOrg({ orgId: f.orgId, from: dayBefore(), to: dayAfter() }, actor(f)));
     const issued = await withDbAccessContext(ctx(f), () => svc.issueInvoice(invoice.id, actor(f)));
+    expect(enqueueAccountingInvoicePushMock).toHaveBeenCalledWith(issued.id, f.partnerId);
 
     const result = await withDbAccessContext(ctx(f), () => svc.voidInvoice(issued.id, 'wrong amounts', { reissue: true }, actor(f)));
+    expect(enqueueAccountingInvoiceVoidMock).toHaveBeenCalledWith(issued.id, f.partnerId);
     // returned object is the fresh draft (getInvoice shape)
     expect(result.invoice.status).toBe('draft');
     expect(result.invoice.replacesInvoiceId).toBe(issued.id);

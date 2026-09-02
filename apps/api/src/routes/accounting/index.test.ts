@@ -17,31 +17,62 @@ function mintState(partnerId: string, userId: string | null, exp = Date.now() + 
   return { state, cookie };
 }
 
-const { authState, mocks } = vi.hoisted(() => ({
-  authState: {
-    scope: 'partner' as 'partner' | 'system' | 'organization',
-    partnerId: '11111111-1111-1111-1111-111111111111' as string | null,
-    mfa: true,
-  },
-  mocks: {
-    getConnection: vi.fn(),
-    upsertConnection: vi.fn(),
-    deleteConnection: vi.fn(),
-    exchangeCode: vi.fn(),
-    fetchHomeCurrency: vi.fn(),
-    updateHomeCurrency: vi.fn(),
-    captureException: vi.fn(),
-    captureMessage: vi.fn(),
-    buildAuthUrl: vi.fn((state: string) => `https://qbo.example.test/connect?scope=com.intuit.quickbooks.accounting&state=${encodeURIComponent(state)}`),
-  },
-}));
+const { authState, mocks, AccountingConnectionErrorClass } = vi.hoisted(() => {
+  class AccountingConnectionErrorClass extends Error {
+    constructor(
+      public readonly code: 'not_connected' | 'reauth_required',
+      public readonly status: 404 | 409,
+      message: string,
+    ) {
+      super(message);
+      this.name = 'AccountingConnectionError';
+    }
+  }
+  return {
+    authState: {
+      scope: 'partner' as 'partner' | 'system' | 'organization',
+      partnerId: '11111111-1111-1111-1111-111111111111' as string | null,
+      mfa: true,
+      // Finding D: PATCH /settings must gate pullPayments/pushMode on the same
+      // invoices:write the push routes use, so the suite needs a REVOCABLE
+      // permission rather than a blanket allow.
+      invoicesWrite: true,
+    },
+    mocks: {
+      getConnection: vi.fn(),
+      upsertConnection: vi.fn(),
+      deleteConnection: vi.fn(),
+      exchangeCode: vi.fn(),
+      fetchRealmSettings: vi.fn(),
+      updateHomeCurrency: vi.fn(async () => HOME_CURRENCY_WRITTEN_AT),
+      updateMultiCurrencyEnabled: vi.fn(),
+      refreshRealmSettings: vi.fn(),
+      resetConnectionForRealmChange: vi.fn(async () => ({ mappingsDeleted: 0 })),
+      captureException: vi.fn(),
+      captureMessage: vi.fn(),
+      writeRouteAudit: vi.fn(),
+      buildAuthUrl: vi.fn((state: string) => `https://qbo.example.test/connect?scope=com.intuit.quickbooks.accounting&state=${encodeURIComponent(state)}`),
+      // Task 5 review fix: POST /:provider/settings/refresh is self-managed
+      // (no ambient request tx), so it now wraps refreshRealmSettings in
+      // withAuthDbAccessContext. Runs `fn` through so existing behavior is
+      // unchanged; asserted directly in the settings/refresh describe block.
+      withAuthDbAccessContext: vi.fn(async (_auth: unknown, fn: () => unknown) => fn()),
+      // Task 6 — the PATCH /:provider/settings `.returning({...})` row. A
+      // separate controllable mock (rather than an inline arrow in the `db`
+      // factory below) so individual tests can set what the "update" reports
+      // back, same idiom as `updateHomeCurrency` above.
+      dbUpdateReturning: vi.fn(async () => [] as Record<string, unknown>[]),
+    },
+    AccountingConnectionErrorClass,
+  };
+});
 
 vi.mock('../../db', () => ({
   db: {
     update: vi.fn(() => ({
       set: vi.fn(() => ({
         where: vi.fn(() => ({
-          returning: vi.fn(async () => []),
+          returning: mocks.dbUpdateReturning,
         })),
       })),
     })),
@@ -79,8 +110,15 @@ vi.mock('../../middleware/auth', () => ({
     return next();
   }),
   // The customer routes are permission-gated (organizations:write +
-  // sites:write); this suite covers the OAuth/settings routes, so grant it.
-  requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
+  // sites:write); this suite covers the OAuth/settings routes, so grant those.
+  // `invoices:write` is separately revocable — see authState.invoicesWrite.
+  requirePermission: vi.fn((resource: string, action: string) => async (c: any, next: any) => {
+    if (resource === 'invoices' && action === 'write' && !authState.invoicesWrite) {
+      return c.json({ error: 'Insufficient permissions' }, 403);
+    }
+    return next();
+  }),
+  withAuthDbAccessContext: mocks.withAuthDbAccessContext,
 }));
 
 vi.mock('../../services/accounting/accountingConnectionService', () => ({
@@ -88,6 +126,10 @@ vi.mock('../../services/accounting/accountingConnectionService', () => ({
   upsertConnection: mocks.upsertConnection,
   deleteConnection: mocks.deleteConnection,
   updateHomeCurrency: mocks.updateHomeCurrency,
+  updateMultiCurrencyEnabled: mocks.updateMultiCurrencyEnabled,
+  refreshRealmSettings: mocks.refreshRealmSettings,
+  resetConnectionForRealmChange: mocks.resetConnectionForRealmChange,
+  AccountingConnectionError: AccountingConnectionErrorClass,
   // Real implementation, not a mock: the route's benign-race branch must key on
   // the error CODE, so the test exercises the real predicate.
   isHomeCurrencyCasAbort: (err: unknown) => typeof err === 'object' && err !== null
@@ -99,12 +141,16 @@ vi.mock('../../services/sentry', () => ({
   captureMessage: mocks.captureMessage,
 }));
 
+vi.mock('../../services/auditEvents', () => ({
+  writeRouteAudit: mocks.writeRouteAudit,
+}));
+
 vi.mock('../../services/accounting/providerRegistry', () => ({
   getAccountingProvider: vi.fn(() => ({
     provider: 'quickbooks',
     buildAuthUrl: mocks.buildAuthUrl,
     exchangeCode: mocks.exchangeCode,
-    fetchHomeCurrency: mocks.fetchHomeCurrency,
+    fetchRealmSettings: mocks.fetchRealmSettings,
   })),
 }));
 
@@ -112,6 +158,13 @@ import { accountingRoutes } from './index';
 
 const CONNECTION_ID = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 const PERSISTED_AT = new Date('2026-09-04T00:00:00Z');
+/**
+ * The generation `updateHomeCurrency` reports back after ITS write (it bumps
+ * `updated_at`). The multi-currency compare-and-set must chain onto this, not
+ * onto `PERSISTED_AT` — deliberately a DIFFERENT instant so a regression back
+ * to the pre-write generation fails here instead of passing by coincidence.
+ */
+const HOME_CURRENCY_WRITTEN_AT = new Date('2026-09-04T00:05:00Z');
 
 function exchangedTokens(realmId = 'realm-A') {
   return {
@@ -139,6 +192,7 @@ describe('accounting routes', () => {
     authState.scope = 'partner';
     authState.partnerId = '11111111-1111-1111-1111-111111111111';
     authState.mfa = true;
+    authState.invoicesWrite = true;
     app = new Hono();
     app.route('/accounting', accountingRoutes);
     // The callback now reads the persisted row back (multi-currency §11), so the
@@ -151,7 +205,7 @@ describe('accounting routes', () => {
       updatedAt: PERSISTED_AT,
       homeCurrency: null,
     });
-    mocks.fetchHomeCurrency.mockResolvedValue('CAD');
+    mocks.fetchRealmSettings.mockResolvedValue({ homeCurrency: 'CAD', multiCurrencyEnabled: null });
   });
 
   it('connect returns an authUrl containing the QuickBooks accounting scope', async () => {
@@ -175,6 +229,7 @@ describe('accounting routes', () => {
       refreshTokenExpiresAt: new Date(),
       environment: 'production',
       homeCurrency: null,
+      multiCurrencyEnabled: true,
       defaultIncomeAccountRef: null,
       defaultTaxCodeRef: null,
       pushMode: 'auto',
@@ -189,6 +244,9 @@ describe('accounting routes', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.status).toBe('connected');
+    // Captured realm fact (Phase C): exposed on status so the web card need not
+    // wait for a settings refresh to render the multi-currency line.
+    expect(body.multiCurrencyEnabled).toBe(true);
     expect(body.accessToken).toBeUndefined();
     expect(body.refreshToken).toBeUndefined();
     expect(JSON.stringify(body)).not.toContain('secret-access-token');
@@ -298,7 +356,7 @@ describe('accounting routes', () => {
 
     expect(res.status).toBe(302);
     expect(res.headers.get('location')).toContain('connected=1');
-    expect(mocks.fetchHomeCurrency).toHaveBeenCalledWith(expect.objectContaining({ id: CONNECTION_ID, realmId: 'realm-A' }));
+    expect(mocks.fetchRealmSettings).toHaveBeenCalledWith(expect.objectContaining({ id: CONNECTION_ID, realmId: 'realm-A' }));
     expect(mocks.updateHomeCurrency).toHaveBeenCalledWith(
       expect.anything(),
       CONNECTION_ID,
@@ -310,13 +368,42 @@ describe('accounting routes', () => {
     );
   });
 
+  it('callback persists the realm multi-currency flag alongside the home currency', async () => {
+    mocks.exchangeCode.mockResolvedValueOnce(exchangedTokens('realm-A'));
+    mocks.fetchRealmSettings.mockResolvedValueOnce({ homeCurrency: 'CAD', multiCurrencyEnabled: true });
+
+    const res = await runCallback(app, 'realm-A');
+
+    expect(res.status).toBe(302);
+    // Same realm+generation compare-and-set as the home currency, chained onto
+    // the generation THAT write returned (both bump updated_at) — a reconnect
+    // to a different realm must not be stamped with the old realm's flag.
+    expect(mocks.updateMultiCurrencyEnabled).toHaveBeenCalledWith(
+      expect.anything(),
+      CONNECTION_ID,
+      authState.partnerId,
+      { updatedAt: HOME_CURRENCY_WRITTEN_AT, realmId: 'realm-A' },
+      true,
+    );
+  });
+
+  it('callback never blanks a previously-captured multi-currency flag when the realm reports null', async () => {
+    mocks.exchangeCode.mockResolvedValueOnce(exchangedTokens('realm-A'));
+    mocks.fetchRealmSettings.mockResolvedValueOnce({ homeCurrency: 'CAD', multiCurrencyEnabled: null });
+
+    const res = await runCallback(app, 'realm-A');
+
+    expect(res.status).toBe(302);
+    expect(mocks.updateMultiCurrencyEnabled).not.toHaveBeenCalled();
+  });
+
   it('same-realm reconnect RETAINS the prior captured currency when the capture then fails', async () => {
     // Reconnecting to the SAME realm must not blank a currency that was already
     // captured: there is no retry, no refresh route and no job, so a transient
     // Intuit failure would strand the connection at NULL forever.
     mocks.getConnection.mockResolvedValueOnce({ id: CONNECTION_ID, realmId: 'realm-A', homeCurrency: 'CAD' });
     mocks.exchangeCode.mockResolvedValueOnce(exchangedTokens('realm-A'));
-    mocks.fetchHomeCurrency.mockRejectedValueOnce(new Error('qbo 503'));
+    mocks.fetchRealmSettings.mockRejectedValueOnce(new Error('qbo 503'));
 
     const res = await runCallback(app, 'realm-A');
 
@@ -339,6 +426,54 @@ describe('accounting routes', () => {
     expect(fields.homeCurrency).toBeNull();
   });
 
+  it('different-realm reconnect wipes the mappings and the CDC watermark, and audits it (finding C)', async () => {
+    // The upsert keys on (partner, provider), so re-authorising against another
+    // QuickBooks company REUSES this row — every mapping under it still points
+    // at the OLD realm's entity ids and the stored cursor is a watermark in the
+    // old realm's change stream.
+    mocks.getConnection.mockResolvedValueOnce({ id: CONNECTION_ID, realmId: 'realm-A', homeCurrency: 'CAD' });
+    mocks.exchangeCode.mockResolvedValueOnce(exchangedTokens('realm-B'));
+    mocks.resetConnectionForRealmChange.mockResolvedValueOnce({ mappingsDeleted: 7 });
+
+    const res = await runCallback(app, 'realm-B');
+
+    expect(res.status).toBe(302);
+    expect(mocks.resetConnectionForRealmChange).toHaveBeenCalledWith(
+      expect.anything(), CONNECTION_ID, authState.partnerId,
+    );
+    const audit = mocks.writeRouteAudit.mock.calls
+      .map(([, event]) => event as Record<string, unknown>)
+      .find((event) => event.action === 'accounting.connection.realm_changed');
+    expect(audit).toMatchObject({ details: expect.objectContaining({ mappingsDeleted: 7 }) });
+  });
+
+  it('same-realm reconnect keeps the mappings and the CDC watermark', async () => {
+    mocks.getConnection.mockResolvedValueOnce({ id: CONNECTION_ID, realmId: 'realm-A', homeCurrency: 'CAD' });
+    mocks.exchangeCode.mockResolvedValueOnce(exchangedTokens('realm-A'));
+
+    await runCallback(app, 'realm-A');
+
+    expect(mocks.resetConnectionForRealmChange).not.toHaveBeenCalled();
+  });
+
+  it('a FIRST connect (no prior realm) wipes nothing', async () => {
+    mocks.getConnection.mockResolvedValueOnce(null);
+    mocks.exchangeCode.mockResolvedValueOnce(exchangedTokens('realm-A'));
+
+    await runCallback(app, 'realm-A');
+
+    expect(mocks.resetConnectionForRealmChange).not.toHaveBeenCalled();
+  });
+
+  it('an unreadable prior realm wipes nothing (never destroy a healthy mapping set on a guess)', async () => {
+    mocks.getConnection.mockRejectedValueOnce(new Error('db down'));
+    mocks.exchangeCode.mockResolvedValueOnce(exchangedTokens('realm-B'));
+
+    await runCallback(app, 'realm-B');
+
+    expect(mocks.resetConnectionForRealmChange).not.toHaveBeenCalled();
+  });
+
   it('nulls the currency when the pre-upsert realm read fails (fail closed, still connects)', async () => {
     mocks.getConnection.mockRejectedValueOnce(new Error('db down'));
     mocks.exchangeCode.mockResolvedValueOnce(exchangedTokens('realm-A'));
@@ -353,7 +488,7 @@ describe('accounting routes', () => {
 
   it('callback still connects when the QBO Preferences fetch fails (non-fatal capture)', async () => {
     mocks.exchangeCode.mockResolvedValueOnce(exchangedTokens());
-    mocks.fetchHomeCurrency.mockRejectedValueOnce(new Error('qbo 403'));
+    mocks.fetchRealmSettings.mockRejectedValueOnce(new Error('qbo 403'));
 
     const res = await runCallback(app);
 
@@ -367,9 +502,9 @@ describe('accounting routes', () => {
     // abort budget; a hung Intuit must surface as a plain connected redirect,
     // never as a stalled /callback or a connect error.
     mocks.exchangeCode.mockResolvedValueOnce(exchangedTokens());
-    mocks.fetchHomeCurrency.mockRejectedValueOnce(Object.assign(
+    mocks.fetchRealmSettings.mockRejectedValueOnce(Object.assign(
       new Error('QuickBooks preferences request timed out'),
-      { operation: 'fetchHomeCurrency' },
+      { operation: 'fetchRealmSettings' },
     ));
 
     const res = await runCallback(app);
@@ -381,7 +516,7 @@ describe('accounting routes', () => {
 
   it('callback still connects when the realm reports no home currency', async () => {
     mocks.exchangeCode.mockResolvedValueOnce(exchangedTokens());
-    mocks.fetchHomeCurrency.mockResolvedValueOnce(null);
+    mocks.fetchRealmSettings.mockResolvedValueOnce({ homeCurrency: null, multiCurrencyEnabled: null });
 
     const res = await runCallback(app);
 
@@ -414,7 +549,7 @@ describe('accounting routes', () => {
 
   it('a realm that reports NO currency is a warning, never an exception', async () => {
     mocks.exchangeCode.mockResolvedValueOnce(exchangedTokens());
-    mocks.fetchHomeCurrency.mockResolvedValueOnce(null);
+    mocks.fetchRealmSettings.mockResolvedValueOnce({ homeCurrency: null, multiCurrencyEnabled: null });
 
     const res = await runCallback(app);
 
@@ -461,15 +596,15 @@ describe('accounting routes', () => {
 
     expect(res.status).toBe(302);
     expect(res.headers.get('location')).toContain('error=persist_failed');
-    expect(mocks.fetchHomeCurrency).not.toHaveBeenCalled();
+    expect(mocks.fetchRealmSettings).not.toHaveBeenCalled();
     expect(mocks.updateHomeCurrency).not.toHaveBeenCalled();
   });
 
   it('captured home-currency telemetry carries no QBO body, realm id, token or auth code', async () => {
     mocks.exchangeCode.mockResolvedValueOnce(exchangedTokens('realm-A'));
-    mocks.fetchHomeCurrency.mockRejectedValueOnce(Object.assign(
+    mocks.fetchRealmSettings.mockRejectedValueOnce(Object.assign(
       new Error('QuickBooks preferences request failed with 403'),
-      { status: 403, operation: 'fetchHomeCurrency' },
+      { status: 403, operation: 'fetchRealmSettings' },
     ));
 
     const res = await runCallback(app, 'realm-A');
@@ -519,6 +654,51 @@ describe('accounting routes', () => {
     await expect(disconnected.json()).resolves.toMatchObject({ status: 'disconnected', homeCurrency: null });
   });
 
+  // Phase D, Task 6 — the "Sync now" card needs both fields to render whether
+  // pull is on and when it last ran, on the SAME shape whether or not a
+  // connection exists yet (mirrors the homeCurrency/multiCurrencyEnabled
+  // precedent above).
+  it('returns pullPayments and lastReconcileAt for a connected partner and for the disconnected branch', async () => {
+    const lastReconcileAt = new Date('2026-09-02T12:00:00Z');
+    mocks.getConnection.mockResolvedValueOnce({
+      id: CONNECTION_ID,
+      partnerId: authState.partnerId,
+      provider: 'quickbooks',
+      realmId: 'realm-1',
+      accessToken: 'secret-access-token',
+      refreshToken: 'secret-refresh-token',
+      accessTokenExpiresAt: new Date(),
+      refreshTokenExpiresAt: new Date(),
+      environment: 'production',
+      homeCurrency: 'CAD',
+      defaultIncomeAccountRef: null,
+      defaultTaxCodeRef: null,
+      pushMode: 'auto',
+      status: 'connected',
+      createdAt: new Date('2026-06-23T00:00:00Z'),
+      updatedAt: new Date(),
+      lastError: null,
+      pullPayments: false,
+      lastReconcileAt,
+    });
+
+    const connected = await app.request('/accounting/quickbooks');
+    expect(connected.status).toBe(200);
+    await expect(connected.json()).resolves.toMatchObject({
+      pullPayments: false,
+      lastReconcileAt: lastReconcileAt.toISOString(),
+    });
+
+    mocks.getConnection.mockResolvedValueOnce(null);
+    const disconnected = await app.request('/accounting/quickbooks');
+    expect(disconnected.status).toBe(200);
+    await expect(disconnected.json()).resolves.toMatchObject({
+      status: 'disconnected',
+      pullPayments: true,
+      lastReconcileAt: null,
+    });
+  });
+
   it('disconnect requires MFA', async () => {
     authState.mfa = false;
 
@@ -527,5 +707,165 @@ describe('accounting routes', () => {
     expect(res.status).toBe(403);
     await expect(res.json()).resolves.toMatchObject({ error: 'MFA required' });
     expect(mocks.deleteConnection).not.toHaveBeenCalled();
+  });
+
+  describe('POST /:provider/settings/refresh', () => {
+    it('refreshes and returns the realm settings, and audits the action', async () => {
+      mocks.refreshRealmSettings.mockResolvedValueOnce({ homeCurrency: 'CAD', multiCurrencyEnabled: true });
+
+      const res = await app.request('/accounting/quickbooks/settings/refresh', { method: 'POST' });
+
+      expect(res.status).toBe(200);
+      await expect(res.json()).resolves.toEqual({ homeCurrency: 'CAD', multiCurrencyEnabled: true });
+      // The route no longer WRAPS the service call in withAuthDbAccessContext
+      // (that held the request transaction across the QuickBooks call); it
+      // hands the service a runner it re-enters per phase.
+      expect(mocks.refreshRealmSettings).toHaveBeenCalledWith(authState.partnerId, 'quickbooks', expect.any(Function));
+      const runner = mocks.refreshRealmSettings.mock.calls[0]![2] as <T>(fn: () => Promise<T>) => Promise<T>;
+      mocks.withAuthDbAccessContext.mockClear();
+      await runner(async () => 'phase');
+      expect(mocks.withAuthDbAccessContext).toHaveBeenCalledTimes(1);
+      expect(mocks.withAuthDbAccessContext).toHaveBeenCalledWith(
+        expect.objectContaining({ partnerId: authState.partnerId }),
+        expect.any(Function),
+      );
+      expect(mocks.writeRouteAudit).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ action: 'accounting.settings.refresh' }),
+      );
+    });
+
+    it('requires MFA', async () => {
+      authState.mfa = false;
+
+      const res = await app.request('/accounting/quickbooks/settings/refresh', { method: 'POST' });
+
+      expect(res.status).toBe(403);
+      expect(mocks.refreshRealmSettings).not.toHaveBeenCalled();
+    });
+
+    it('maps not_connected to 404', async () => {
+      mocks.refreshRealmSettings.mockRejectedValueOnce(
+        new AccountingConnectionErrorClass('not_connected', 404, 'QuickBooks is not connected for this partner'),
+      );
+
+      const res = await app.request('/accounting/quickbooks/settings/refresh', { method: 'POST' });
+
+      expect(res.status).toBe(404);
+      await expect(res.json()).resolves.toMatchObject({ code: 'not_connected' });
+    });
+
+    it('maps reauth_required to 409', async () => {
+      mocks.refreshRealmSettings.mockRejectedValueOnce(
+        new AccountingConnectionErrorClass('reauth_required', 409, 'QuickBooks needs to be reconnected'),
+      );
+
+      const res = await app.request('/accounting/quickbooks/settings/refresh', { method: 'POST' });
+
+      expect(res.status).toBe(409);
+      await expect(res.json()).resolves.toMatchObject({ code: 'reauth_required' });
+    });
+  });
+
+  // Phase D, Task 6.
+  describe('PATCH /:provider/settings', () => {
+    function patchSettings(body: Record<string, unknown>) {
+      return app.request('/accounting/quickbooks/settings', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    }
+
+    it('persists and echoes pullPayments', async () => {
+      mocks.dbUpdateReturning.mockResolvedValueOnce([{
+        status: 'connected',
+        environment: 'production',
+        pushMode: 'auto',
+        defaultIncomeAccountRef: null,
+        defaultTaxCodeRef: null,
+        lastError: null,
+        pullPayments: false,
+      }]);
+
+      const res = await patchSettings({ pullPayments: false });
+
+      expect(res.status).toBe(200);
+      await expect(res.json()).resolves.toMatchObject({ pullPayments: false });
+    });
+
+    it('still rejects an empty body (400)', async () => {
+      const res = await patchSettings({});
+      expect(res.status).toBe(400);
+      expect(mocks.dbUpdateReturning).not.toHaveBeenCalled();
+    });
+
+    it('still rejects homeCurrency as read-only — a captured fact, not a setting (400)', async () => {
+      const res = await patchSettings({ homeCurrency: 'CAD' });
+      expect(res.status).toBe(400);
+      expect(mocks.dbUpdateReturning).not.toHaveBeenCalled();
+    });
+
+    it('still rejects multiCurrencyEnabled as read-only — a captured fact, not a setting (400)', async () => {
+      const res = await patchSettings({ multiCurrencyEnabled: true });
+      expect(res.status).toBe(400);
+      expect(mocks.dbUpdateReturning).not.toHaveBeenCalled();
+    });
+
+    it('rejects flipping pullPayments without invoices:write (403, finding D)', async () => {
+      authState.invoicesWrite = false;
+
+      const res = await patchSettings({ pullPayments: false });
+
+      expect(res.status).toBe(403);
+      expect(mocks.dbUpdateReturning).not.toHaveBeenCalled();
+    });
+
+    it('rejects changing pushMode without invoices:write (403, finding D)', async () => {
+      authState.invoicesWrite = false;
+
+      const res = await patchSettings({ pushMode: 'manual' });
+
+      expect(res.status).toBe(403);
+      expect(mocks.dbUpdateReturning).not.toHaveBeenCalled();
+    });
+
+    it('still allows the account-ref settings without invoices:write', async () => {
+      authState.invoicesWrite = false;
+      mocks.dbUpdateReturning.mockResolvedValueOnce([{
+        status: 'connected', environment: 'production', pushMode: 'auto',
+        defaultIncomeAccountRef: '79', defaultTaxCodeRef: null, lastError: null, pullPayments: true,
+      }]);
+
+      const res = await patchSettings({ defaultIncomeAccountRef: '79' });
+
+      expect(res.status).toBe(200);
+    });
+
+    it('lets a SYSTEM-scope token flip pullPayments (scope bypass, like the push routes)', async () => {
+      authState.scope = 'system';
+      authState.invoicesWrite = false;
+      mocks.dbUpdateReturning.mockResolvedValueOnce([{
+        status: 'connected', environment: 'production', pushMode: 'auto',
+        defaultIncomeAccountRef: null, defaultTaxCodeRef: null, lastError: null, pullPayments: false,
+      }]);
+
+      const res = await app.request(
+        `/accounting/quickbooks/settings?partnerId=${authState.partnerId}`,
+        {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pullPayments: false }),
+        },
+      );
+
+      expect(res.status).toBe(200);
+    });
+
+    it('404s when there is no connection to update', async () => {
+      mocks.dbUpdateReturning.mockResolvedValueOnce([]);
+      const res = await patchSettings({ pullPayments: true });
+      expect(res.status).toBe(404);
+    });
   });
 });

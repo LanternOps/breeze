@@ -695,7 +695,8 @@
         "updateSection": "Could not update the section.",
         "uploadImage": "Could not upload the image.",
         "noPriceForCurrency": "No {{currency}} price for this item. Add one in the catalog or enter a manual line.",
-        "sectionAddedListStale": "Section added, but the list could not refresh. Reload the page to see it."
+        "sectionAddedListStale": "Section added, but the list could not refresh. Reload the page to see it.",
+        "lineAddedListStale": "Line added, but the list could not refresh. Reload the page to see it."
       },
       "image": {
         "alt": "Quote image",
@@ -1622,6 +1623,8 @@
       "stripeNudge": "Connect Stripe to accept online card payments.",
       "title": "Payments",
       "viaStripe": "via Stripe",
+      "quickbooks": "QuickBooks",
+      "viaQuickbooks": "via QuickBooks",
       "currencyUnknown": "Your Stripe account's settlement currency hasn't been cached, so it couldn't be checked against this {{documentCurrency}} invoice. Refresh your Stripe account details under Settings → Integrations to enable the mismatch check."
     },
     "requestPayment": {
@@ -1660,6 +1663,21 @@
       "confirm": "Reset link",
       "success": "Link reset — previous links no longer work",
       "error": "Could not reset the link"
+    },
+    "accountingSync": {
+      "title": "QuickBooks sync",
+      "status": {
+        "pending": "Not pushed yet",
+        "synced": "Synced",
+        "error": "Sync failed",
+        "synced_with_tax_variance": "Synced with tax difference"
+      },
+      "taxVarianceHint": "QuickBooks calculated a different tax total. Compare both records before closing the period.",
+      "docNumber": "QuickBooks document {{docNumber}}",
+      "lastSynced": "Last synced {{when}}",
+      "push": "Push to QuickBooks",
+      "pushed": "Invoice pushed to QuickBooks.",
+      "pushFailed": "Failed to push the invoice to QuickBooks."
     }
   },
   "invoiceDocument": {
@@ -1719,7 +1737,12 @@
       "partial": "{{succeeded}} {{verb}}, {{skipped}} skipped{{failedText}}",
       "success": "{{succeeded}} {{verb}}",
       "void": "Void",
-      "voidedVerb": "voided"
+      "voidedVerb": "voided",
+      "quickbooks": "Push to QuickBooks",
+      "quickbooksQueued": "{{enqueued}} queued for QuickBooks",
+      "quickbooksQueuedPartial": "{{enqueued}} queued for QuickBooks, {{skipped}} skipped",
+      "quickbooksQueuedFailed": "{{enqueued}} queued for QuickBooks, {{skipped}} skipped, {{failed}} failed to queue",
+      "quickbooksFailed": "Failed to queue the QuickBooks push. Retry."
     },
     "bulkDelete": {
       "message": "Delete {{count}} selected invoice(s)? Only DRAFT invoices will be deleted; this cannot be undone.",

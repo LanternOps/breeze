@@ -55,9 +55,18 @@ vi.mock('./auditEvents', () => ({
   requestLikeFromSnapshot: () => ({ req: { header: () => undefined } }),
 }));
 
+// The QBO payment-mapping cleanup the full-refund branch now performs (Phase D,
+// Task 3). Mocked so this suite asserts the DELEGATION and its ordering, not a
+// second copy of the applier's own suite.
+const { clearPaymentMapping } = vi.hoisted(() => ({ clearPaymentMapping: vi.fn().mockResolvedValue(0) }));
+vi.mock('./accounting/accountingPaymentPull', () => ({
+  clearPaymentMappingForInvoicePayment: clearPaymentMapping,
+}));
+
+import { db } from '../db';
 import { recordStripePayment, reflectStripeRefund } from './stripeReconcile';
 
-beforeEach(() => { results.length = 0; recompute.mockReset(); emit.mockReset(); capture.mockReset(); audit.mockReset(); setAmount.calls.length = 0; deleteWhereArgs.calls.length = 0; setMapping.calls.length = 0; insertValues.calls.length = 0; });
+beforeEach(() => { results.length = 0; recompute.mockReset(); emit.mockReset(); capture.mockReset(); audit.mockReset(); setAmount.calls.length = 0; deleteWhereArgs.calls.length = 0; setMapping.calls.length = 0; insertValues.calls.length = 0; clearPaymentMapping.mockReset(); clearPaymentMapping.mockResolvedValue(0); });
 
 describe('recordStripePayment', () => {
   it('inserts a card payment, links the mapping, recomputes, emits payment.recorded', async () => {
@@ -363,5 +372,41 @@ describe('reflectStripeRefund', () => {
 
     expect(recompute).not.toHaveBeenCalled();
     expect(emit).not.toHaveBeenCalled();
+  });
+});
+
+describe('reflectStripeRefund clears the QuickBooks payment mapping', () => {
+  it('full refund removes the payment mapping row BEFORE deleting the payment row', async () => {
+    queueResult([{ id: 'm1', invoiceId: 'inv1', orgId: 'org1', invoicePaymentId: 'pay1', stripeAccountId: 'acct_1' }]); // mapping
+    queueResult([{ id: 'pay1', invoiceId: 'inv1', orgId: 'org1', amount: '100.00', method: 'card', recordedBy: null }]); // snapshot
+    queueResult([]); // delete payment
+    queueResult([]); // update mapping -> refunded
+    queueResult([{ partnerId: 'p1' }]); // invoicePartnerId select
+
+    // The shared db chain mock is module-level and never reset between tests in
+    // this file, so scope the ordering assertion to THIS test's delete call.
+    const dbDelete = (db as unknown as { delete: { mock: { invocationCallOrder: number[] } } }).delete;
+    const deletesBefore = dbDelete.mock.invocationCallOrder.length;
+
+    await reflectStripeRefund({ stripePaymentIntentId: 'pi_1', amountRefundedCents: 10000, chargeAmountCents: 10000, currency: 'USD', stripeAccountId: 'acct_1' });
+
+    expect(clearPaymentMapping).toHaveBeenCalledTimes(1);
+    expect(clearPaymentMapping).toHaveBeenCalledWith(expect.anything(), 'pay1');
+    // breeze_entity_id is polymorphic with no FK to cascade: deleting the
+    // payment row first would strand the mapping row behind it.
+    expect(dbDelete.mock.invocationCallOrder.length).toBe(deletesBefore + 1);
+    expect(clearPaymentMapping.mock.invocationCallOrder[0]!)
+      .toBeLessThan(dbDelete.mock.invocationCallOrder[deletesBefore]!);
+  });
+
+  it('partial refund never touches the payment mapping (the row survives)', async () => {
+    queueResult([{ id: 'm1', invoiceId: 'inv1', orgId: 'org1', invoicePaymentId: 'pay1', stripeAccountId: 'acct_1' }]); // mapping
+    queueResult([]); // update payment amount
+    queueResult([]); // update mapping -> partially_refunded
+    queueResult([{ partnerId: 'p1' }]); // invoicePartnerId select
+
+    await reflectStripeRefund({ stripePaymentIntentId: 'pi_1', amountRefundedCents: 4000, chargeAmountCents: 10000, currency: 'USD', stripeAccountId: 'acct_1' });
+
+    expect(clearPaymentMapping).not.toHaveBeenCalled();
   });
 });

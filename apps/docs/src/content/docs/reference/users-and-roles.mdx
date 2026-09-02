@@ -214,13 +214,19 @@ If the primary method is `totp` or `sms` but `passkeyAvailable` is `true`, the u
 
 MFA verification is rate-limited separately from login.
 
+<Aside type="caution" title="Integrators: a wrong code and an expired session share a status code">
+  A wrong six-digit code and an expired or invalid `tempToken` both return **`401`**. Do not branch on the status code alone — a client that treats every `401` here as "session expired" will silently restart the login flow when the user simply mistyped a digit. Distinguish them by the response body: a bad code returns `{ "error": "Invalid MFA code" }`, while a dead session returns `{ "error": "Invalid or expired MFA session" }`.
+</Aside>
+
 ### Disabling MFA
 
 Call `POST /auth/mfa/disable` with the current 6-digit code (TOTP or SMS depending on active method). This clears the MFA secret, phone number, and recovery codes. If the organisation enforces MFA, the endpoint returns `403`.
 
 ### Recovery Codes
 
-Recovery codes are generated during MFA setup and stored as hashed values. To regenerate codes for an active MFA configuration, call `POST /auth/mfa/recovery-codes` (authenticated). This replaces all existing codes.
+Recovery codes are generated during MFA setup and stored as hashed values. They are **shown once, at enrolment, and cannot be displayed again** — the dashboard has no "view codes" action, because the server keeps only hashes. A user who did not save them needs new ones.
+
+To replace the codes for an active MFA configuration, call `POST /auth/mfa/recovery-codes` (authenticated). This invalidates every existing code immediately, including printed copies, and returns the replacements once. In the dashboard this is **Regenerate recovery codes** under profile security settings, behind an explicit confirmation.
 
 ### Admin MFA Reset (Lost Authenticator)
 
@@ -311,7 +317,7 @@ Every user-to-scope association includes a `roleId`. The role determines what th
 
 Roles can be **system** (built-in, immutable) or **custom** (created by administrators).
 
-Roles also carry a **Force MFA** flag. When the flag is on, any user assigned to that role gets a `428 Precondition Required` response on protected endpoints until they enroll a TOTP authenticator. The dashboard intercepts the 428 and walks the user through a forced enrollment screen before letting them reach any other workflow. Partner Admin is seeded with Force MFA on. Switch it on for any role whose privilege level warrants mandatory MFA — admin-equivalent roles, billing operators, and similar.
+Roles also carry a **Force MFA** flag. When the flag is on, any user assigned to that role gets a `428 Precondition Required` response on protected endpoints until they enrol an MFA method. The enrolment screen offers whichever methods the organisation allows -- an authenticator app, SMS, or a passkey. The dashboard intercepts the 428 and walks the user through a forced enrollment screen before letting them reach any other workflow. Partner Admin is seeded with Force MFA on. Switch it on for any role whose privilege level warrants mandatory MFA — admin-equivalent roles, billing operators, and similar.
 
 ### Permission Model
 

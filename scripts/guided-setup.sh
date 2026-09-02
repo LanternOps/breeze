@@ -38,7 +38,9 @@ PROXY_BIND_HOST="${BREEZE_SETUP_PROXY_BIND_HOST:-127.0.0.1}"
 PROXY_TARGET_HOST="${BREEZE_SETUP_PROXY_TARGET_HOST:-}"
 API_HOST_PORT="${BREEZE_SETUP_API_HOST_PORT:-3001}"
 WEB_HOST_PORT="${BREEZE_SETUP_WEB_HOST_PORT:-4321}"
-SELECTED_BREEZE_VERSION=""
+# BREEZE_SETUP_VERSION preselects the release (skips the GitHub/GHCR lookups) —
+# used by CI to run the installer against locally built images.
+SELECTED_BREEZE_VERSION="${BREEZE_SETUP_VERSION:-}"
 BACK_STATUS=42
 BOOTSTRAP_ENV_KEYS=(
   BREEZE_BOOTSTRAP_ADMIN_EMAIL
@@ -88,6 +90,9 @@ Options:
 Environment overrides:
   BREEZE_SETUP_REMOTE_BASE   Override raw GitHub base URL for template testing.
   BREEZE_SETUP_GITHUB_REPO   GitHub repo for latest release lookup.
+  BREEZE_SETUP_VERSION       Preselect the Breeze version/tag; skips the GitHub
+                             release lookup and the GHCR image check (for pinned,
+                             air-gapped, or locally built images).
   BREEZE_SETUP_SECRET_MODE   Secret workflow: auto or manual.
   BREEZE_SETUP_STORAGE_MODE  Storage mode: docker or local.
   BREEZE_SETUP_DRY_RUN       Exercise prompts without Docker/systemd changes: true or false.
@@ -3590,6 +3595,10 @@ apply_reverse_proxy_env() {
       set_env_value "TRUSTED_PROXY_CIDRS" "${REVERSE_PROXY_EXTERNAL_CIDRS}"
       set_env_value "CADDY_TRUSTED_PROXIES" ""
       set_env_value "CADDY_CLIENT_IP_HEADERS" ""
+      # The bundled Caddy is not the TLS terminator in these modes, so an
+      # internal-CA choice left over from a previous caddy-mode run must not
+      # survive a switch.
+      set_env_value "CADDY_LOCAL_CERTS" ""
       set_env_value "BREEZE_EXTERNAL_PROXY" "${REVERSE_PROXY_LABEL}"
       set_env_value "BREEZE_PROXY_TARGET_HOST" "${PROXY_TARGET_HOST}"
       set_env_value "BREEZE_PROXY_BIND_HOST" "${PROXY_BIND_HOST}"
@@ -3601,6 +3610,55 @@ apply_reverse_proxy_env() {
       fail "Unknown reverse proxy mode: ${REVERSE_PROXY_MODE}"
       ;;
   esac
+}
+
+# Caddy asks Let's Encrypt for a certificate whenever its site address is a
+# domain name. That only works when the domain resolves PUBLICLY to this host
+# and ports 80/443 are reachable from the internet. When it does not — an
+# internal name like breeze.corp.example that only answers on a LAN or VPN, or a
+# host behind a firewall — the ACME order fails, Caddy is left with no
+# certificate for the SNI, and it aborts the TLS handshake with alert 80
+# (internal_error). Browsers render that as ERR_SSL_PROTOCOL_ERROR (Chrome) or
+# SSL_ERROR_INTERNAL_ERROR_ALERT (Firefox): it reads as a broken server, not as
+# a certificate warning the operator can click through, and the only clue is
+# `tls.obtain` in `docker logs breeze-caddy`. So ask up front and switch Caddy
+# to its internal CA (CADDY_LOCAL_CERTS=local_certs) when the answer is no.
+#
+# Skipped for localhost and bare IPv4 addresses: Caddy never attempts ACME for
+# either, so it already falls back to its internal CA without being told to.
+configure_caddy_local_certs() {
+  local domain="$1"
+  local existing default_answer
+
+  [[ "${REVERSE_PROXY_MODE}" == "caddy" ]] || return 0
+  [[ "${domain}" != "localhost" ]] || return 0
+  if is_ipv4_address "${domain}"; then
+    return 0
+  fi
+
+  # An operator who already chose the internal CA keeps it on a re-run, including
+  # under --yes (ask_yes_no returns the default without prompting in that mode).
+  existing="$(get_env_value "CADDY_LOCAL_CERTS")"
+  if [[ -n "${existing}" ]]; then
+    default_answer="no"
+  else
+    default_answer="yes"
+  fi
+
+  subsection "Certificates"
+  if ask_yes_no "Can Let's Encrypt reach this domain? It needs public DNS pointing at this host and ports 80 and 443 open from the internet." "${default_answer}"; then
+    if [[ -n "${existing}" ]]; then
+      set_env_value "CADDY_LOCAL_CERTS" ""
+      log "Caddy will request public certificates from Let's Encrypt for ${domain}."
+    fi
+    return 0
+  fi
+
+  set_env_value "CADDY_LOCAL_CERTS" "local_certs"
+  log "Caddy will issue certificates for ${domain} from its own internal CA instead of Let's Encrypt."
+  log "Browsers will warn on every visit until that CA root is trusted on each machine. Export it with:"
+  log "  docker compose exec caddy cat /data/caddy/pki/authorities/local/root.crt"
+  log "PUBLIC_APP_URL must still be https://${domain} — the site is HTTPS either way."
 }
 
 configure_core_env() {
@@ -3619,6 +3677,7 @@ configure_core_env() {
     acme_email="admin@${domain}"
   fi
   acme_email="$(prompt_value "ACME_EMAIL" "Email for certificate registration notices" "${acme_email}" true)"
+  configure_caddy_local_certs "${domain}"
 
   app_url="$(prompt_origin "PUBLIC_APP_URL" "Public app URL" "https://${domain}" true)"
   dashboard_url="$(prompt_origin "DASHBOARD_URL" "Dashboard URL" "${app_url}" true)"

@@ -13,6 +13,7 @@ import { BOOTSTRAP_TOKEN_PATTERN } from "../services/installerBootstrapToken";
 import { getTrustedClientIp } from "../services/clientIp";
 import { clampTtlToCap } from "../services/enrollmentDefaults";
 import { envInt } from "../utils/envInt";
+import { getDefaultEnrollmentKeyTtlMinutes } from "../services/enrollmentKeyTtlDefault";
 
 /**
  * Base lifetime for a child enrollment key minted at redemption, in minutes.
@@ -25,12 +26,19 @@ import { envInt } from "../utils/envInt";
  * entirely on any self-host that pulled the release without adding the key to
  * its .env (#2776).
  *
+ * The fallback (when `CHILD_ENROLLMENT_KEY_TTL_MINUTES` itself is unset/empty)
+ * is the shared `ENROLLMENT_KEY_DEFAULT_TTL_MINUTES` default from
+ * enrollmentKeyTtlDefault.ts, not an independent constant — this used to be
+ * its own hard-coded `24 * 60` (1 day), which drifted from the human "Add
+ * Device" route's 30-day default after #4126 raised that one alone (#4126
+ * follow-up).
+ *
  * Resolved per call rather than at module load so the fallback is directly
  * testable; the env is fixed at boot in production, so this is the same value
  * every time.
  */
 export function childEnrollmentKeyTtlMinutes(): number {
-  return envInt("CHILD_ENROLLMENT_KEY_TTL_MINUTES", 24 * 60);
+  return envInt("CHILD_ENROLLMENT_KEY_TTL_MINUTES", getDefaultEnrollmentKeyTtlMinutes());
 }
 
 /**

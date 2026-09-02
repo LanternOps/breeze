@@ -35,6 +35,9 @@ vi.mock('./aiTools', () => ({
       manage_catalog: 2,
       manage_contracts: 2,
       manage_quotes: 2,
+      // P2-5 (#4192): mirrors the real registry entry
+      // (`aiAgentSdkTools.ts` TOOL_TIERS.manage_ai_agents = 3).
+      manage_ai_agents: 3,
     };
     return tiers[toolName];
   }),
@@ -624,6 +627,58 @@ describe('buildApprovalDescription — manage_tickets copy (P2-4, #4191)', () =>
   it('other manage_tickets actions keep the pre-existing generic description shape (no regression)', () => {
     const result = checkGuardrails('manage_tickets', { action: 'assign', ticketId: TICKET_ID });
     expect(result.description).toBe('manage_tickets: assign');
+  });
+});
+
+// Final review (P2-5, #4192): approving a promotion does more than grant one
+// key. `cloneValuesFromEffective` (supervisedKeyGrant.ts) materializes the
+// partner's CURRENT policy as a per-org `ai_agents` row whenever the org has
+// none — which, under partner-wide-first, is the COMMON case. From that
+// moment the org follows the partner only where the merge is tighten-only: a
+// partner that later WIDENS (a new tool in the allowlist, a raised limit, a
+// new recipient) no longer reaches that org. The audit row records
+// `clonedFromEffective` AFTER the fact; the consent text the second approver
+// reads is the only place that can say it BEFORE.
+describe('buildApprovalDescription — manage_ai_agents copy (P2-5, #4192)', () => {
+  const OVERRIDE_CLAUSE =
+    '(creates a per-organization agent policy override if this organization does not already have one)';
+
+  it('authorize_supervised_key names the op key AND the per-org policy override the approval creates', () => {
+    const result = checkGuardrails('manage_ai_agents', {
+      action: 'authorize_supervised_key',
+      kind: 'triage',
+      opKey: 'manage_services:restart',
+      orgId: '44444444-4444-4444-4444-444444444444',
+    });
+
+    expect(result.description).toBe(
+      'Authorize the AI agent to run "manage_services:restart" without an approval '
+      + `for this organization in future runs ${OVERRIDE_CLAUSE}`,
+    );
+  });
+
+  it('states the override side effect even when opKey is missing (no arg echo beyond the key)', () => {
+    const result = checkGuardrails('manage_ai_agents', { action: 'authorize_supervised_key' });
+
+    expect(result.description).toContain('"unknown"');
+    expect(result.description).toContain(OVERRIDE_CLAUSE);
+  });
+
+  it('never echoes anything but the op key — kind and org id stay out of the approval text', () => {
+    const result = checkGuardrails('manage_ai_agents', {
+      action: 'authorize_supervised_key',
+      kind: 'triage',
+      opKey: 'manage_services:restart',
+      orgId: '44444444-4444-4444-4444-444444444444',
+    });
+
+    expect(result.description).not.toContain('44444444');
+    expect(result.description).not.toContain('triage');
+  });
+
+  it('other manage_ai_agents actions keep the generic description shape (no regression)', () => {
+    const result = checkGuardrails('manage_ai_agents', { action: 'rotate_something' });
+    expect(result.description).toBe('manage_ai_agents: rotate_something');
   });
 });
 
