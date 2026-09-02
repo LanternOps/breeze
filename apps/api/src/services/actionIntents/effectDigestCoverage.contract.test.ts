@@ -73,6 +73,8 @@ const DELIBERATELY_UNPINNED: Record<string, string> = {
     'NEW-OBJECT: inserts an `elevation_requests` row. Takes no PAM policy/rule id — `pam_rules` are matched implicitly by the device org/site at evaluation time, so there is no addressable policy row the approver signed off on.',
   'manage_patches:rollback':
     'NEW-OBJECT: writes a `patch_rollbacks` row. The addressed `patches` row is a GLOBAL vendor catalog entry re-synced on a schedule, so its `updated_at` churns independently of anything the approver saw — pinning it would fail closed on routine syncs.',
+  'manage_policy_feature_link:add':
+    'NEW-OBJECT: inserts a `config_policy_feature_links` row (RMM-QA-176 D9). `configPolicyId` addresses the PARENT policy, which is not the thing being created — there is no pre-existing link row whose content the approver signed off on. The sibling `update`, which DOES address an existing link, is pinned by an EFFECT_DIGEST_RESOLVERS entry rather than exempted here.',
 
   // --- EXTERNAL: the drift happens in another system -----------------------
   ...sharedReason(

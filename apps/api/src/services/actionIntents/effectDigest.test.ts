@@ -546,6 +546,89 @@ describe('computeEffectDigestOutcome', () => {
     });
   });
 
+  describe('manage_policy_feature_link:update', () => {
+    const linkRow = (overrides: Record<string, unknown> = {}) => ({
+      featureType: 'maintenance',
+      featurePolicyId: null,
+      inlineSettings: { recurrence: 'weekly', durationHours: 2 },
+      ...overrides,
+    });
+    const args = {
+      action: 'update', configPolicyId: 'p1', featureLinkId: 'link-1',
+      featureType: 'maintenance', inlineSettings: { durationHours: 8 },
+    };
+
+    it('pins the link content, so a re-write to the SAME values does not trip it', async () => {
+      const before = await digestFor(
+        'manage_policy_feature_link', args, makeFakeDb([[linkRow()]]).database,
+      );
+      const unchanged = await digestFor(
+        'manage_policy_feature_link', args, makeFakeDb([[linkRow()]]).database,
+      );
+      expect(before).toMatch(/^[0-9a-f]{64}$/);
+      expect(before).toBe(unchanged);
+    });
+
+    it('differs when the link settings were edited inside the approval window', async () => {
+      const before = await digestFor(
+        'manage_policy_feature_link', args, makeFakeDb([[linkRow()]]).database,
+      );
+      const widened = await digestFor(
+        'manage_policy_feature_link',
+        args,
+        makeFakeDb([[linkRow({ inlineSettings: { recurrence: 'weekly', durationHours: 168 } })]]).database,
+      );
+      expect(before).not.toBe(widened);
+    });
+
+    it('differs when the link was retargeted to a different featureType', async () => {
+      const asMaintenance = await digestFor(
+        'manage_policy_feature_link', args, makeFakeDb([[linkRow()]]).database,
+      );
+      const asMonitoring = await digestFor(
+        'manage_policy_feature_link', args, makeFakeDb([[linkRow({ featureType: 'monitoring' })]]).database,
+      );
+      expect(asMaintenance).not.toBe(asMonitoring);
+    });
+
+    it('differs when the linked feature policy was swapped', async () => {
+      const unlinked = await digestFor(
+        'manage_policy_feature_link', args, makeFakeDb([[linkRow()]]).database,
+      );
+      const linked = await digestFor(
+        'manage_policy_feature_link', args, makeFakeDb([[linkRow({ featurePolicyId: 'fp-9' })]]).database,
+      );
+      expect(unlinked).not.toBe(linked);
+    });
+
+    it('reports missing_arg without a featureLinkId, without querying', async () => {
+      const { database, select } = makeFakeDb([]);
+      const outcome = await computeEffectDigestOutcome(
+        'manage_policy_feature_link',
+        { action: 'update', configPolicyId: 'p1', featureType: 'maintenance' },
+        database,
+      );
+      expect(outcome).toEqual({ kind: 'unresolved', reason: 'missing_arg' });
+      expect(select).not.toHaveBeenCalled();
+    });
+
+    it('reports target_absent when the link no longer exists', async () => {
+      const { database } = makeFakeDb([[]]);
+      const outcome = await computeEffectDigestOutcome(
+        'manage_policy_feature_link',
+        { ...args, featureLinkId: 'ghost' },
+        database,
+      );
+      expect(outcome).toEqual({ kind: 'unresolved', reason: 'target_absent' });
+    });
+
+    it('add is NOT pinned — it creates the row, so there is nothing to hash', () => {
+      expect(effectDigestResolverKey('manage_policy_feature_link', 'add')).toBeNull();
+      expect(effectDigestResolverKey('manage_policy_feature_link', 'update'))
+        .toBe('manage_policy_feature_link:update');
+    });
+  });
+
   describe('manage_tickets:move_org', () => {
     it('pins the ticket org + status, not updated_at (comment churn must not trip it)', async () => {
       const args = { action: 'move_org', ticketId: 'ticket-1', targetOrgId: 'org-2' };
