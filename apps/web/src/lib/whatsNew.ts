@@ -19,14 +19,14 @@ export interface WhatsNewEntry {
 export const WHATS_NEW_ENTRIES: WhatsNewEntry[] = [
   {
     version: '0.109.0',
-    date: '2026-08-28',
-    title: 'Org archive, guided SSO linking, and 30-day installer keys',
+    date: '2026-09-01',
+    title: 'MFA everywhere, AI ticket triage, and ticketing on mobile',
     highlights: [
-      'Installer and enrollment keys now default to 30 days and 50 devices — staged rollouts no longer die when the download window expires.',
-      'Organizations can now be archived (read-only, with restore) instead of only removed.',
-      'SSO users with an existing password account get a guided "Connect your sign-in" flow instead of a lockout.',
-      'The new AI Agent Runs view shows what an agent did, step by step, with verification results.',
-      'Remote terminal fixes: no more dead Terminal tab until you switch tabs, and the garbled welcome message is gone.',
+      'Multi-factor sign-in is complete: enrol an authenticator, SMS or passkey, and your recovery codes are shown once at enrolment — a mistyped code now tells you instead of silently discarding the setup.',
+      'AI agents can now triage tickets: draft a reply you send as yourself, discard, or resolve with a prefilled note — plus weekly org narratives and scheduled sweeps, all off by default.',
+      'Tickets on mobile: comment attachments, a running timer with a weekly timesheet, push categories, and auto-suggested time entries from remote sessions.',
+      'Organizations can be archived (read-only, with restore) or merged; installer keys default to 30 days and 50 devices.',
+      'Remote desktop: Paste Text arrives exactly as typed on any keyboard layout, the macOS helper reconnects after sleep instead of exiting, and the Terminal tab connects first time.',
     ],
     learnMoreUrl: 'https://breezermm.com/release-notes',
   },

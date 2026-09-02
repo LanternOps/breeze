@@ -751,13 +751,13 @@ async function renderCoverPage(
 
   const preparedForName = cp.preparedForName ?? quote.billToName ?? null;
   if (preparedForName) {
-    doc.fillColor('#9ca3af').fontSize(9).font('Helvetica-Bold').text('PREPARED FOR', c.left, rowY);
-    doc.fillColor('#111827').fontSize(12).font('Helvetica-Bold').text(preparedForName, c.left, rowY + 14, { width: colW });
+    doc.fillColor('#9ca3af').fontSize(9).font(fonts.heading.bold).text('PREPARED FOR', c.left, rowY);
+    doc.fillColor('#111827').fontSize(12).font(fonts.heading.bold).text(preparedForName, c.left, rowY + 14, { width: colW });
     // Start the address at the name's real bottom edge (doc.y) — a name long
     // enough to wrap painted the address on top of its second line when this
     // assumed a fixed one-line name height.
     let addrY = Math.max(rowY + 30, doc.y + 4);
-    doc.fillColor('#4b5563').fontSize(9).font('Helvetica');
+    doc.fillColor('#4b5563').fontSize(9).font(fonts.body.regular);
     for (const line of addressLines(quote.billToAddress as BillToAddress | null)) {
       doc.text(line, c.left, addrY, { width: colW });
       addrY += 12;
@@ -768,10 +768,10 @@ async function renderCoverPage(
   // explicit `false` as "show" so a legacy/loosely-typed value degrades safely.
   if (cp.showPreparedBy !== false) {
     const seller = (quote.sellerSnapshot as SellerSnapshot | null) ?? null;
-    doc.fillColor('#9ca3af').fontSize(9).font('Helvetica-Bold').text('PREPARED BY', rightX, rowY);
-    doc.fillColor('#111827').fontSize(12).font('Helvetica-Bold').text(seller?.name ?? partnerName, rightX, rowY + 14, { width: colW });
+    doc.fillColor('#9ca3af').fontSize(9).font(fonts.heading.bold).text('PREPARED BY', rightX, rowY);
+    doc.fillColor('#111827').fontSize(12).font(fonts.heading.bold).text(seller?.name ?? partnerName, rightX, rowY + 14, { width: colW });
     let addrY = Math.max(rowY + 30, doc.y + 4); // same wrap-safe start as PREPARED FOR
-    doc.fillColor('#4b5563').fontSize(9).font('Helvetica');
+    doc.fillColor('#4b5563').fontSize(9).font(fonts.body.regular);
     for (const line of sellerAddressLines(seller)) {
       doc.text(line, rightX, addrY, { width: colW });
       addrY += 12;
@@ -848,10 +848,10 @@ export async function renderQuotePdf(
   const rightX = c.left + c.contentWidth * 0.55;
   const rightW = c.contentWidth * 0.45;
 
-  doc.fillColor('#9ca3af').fontSize(9).font('Helvetica-Bold').text('FROM', c.left, y);
-  doc.fillColor('#111827').fontSize(12).font('Helvetica-Bold').text(seller?.name ?? partnerName, c.left, y + 12, { width: c.contentWidth * 0.5 });
+  doc.fillColor('#9ca3af').fontSize(9).font(fonts.heading.bold).text('FROM', c.left, y);
+  doc.fillColor('#111827').fontSize(12).font(fonts.heading.bold).text(seller?.name ?? partnerName, c.left, y + 12, { width: c.contentWidth * 0.5 });
   let fromY = doc.y + 2;
-  doc.fillColor('#4b5563').fontSize(10).font('Helvetica');
+  doc.fillColor('#4b5563').fontSize(10).font(fonts.body.regular);
   for (const aline of sellerAddressLines(seller)) {
     doc.text(aline, c.left, fromY, { width: c.contentWidth * 0.5 });
     fromY = doc.y + 1.5;
@@ -863,17 +863,17 @@ export async function renderQuotePdf(
 
   let billY = y;
   if (quote.billToName) {
-    doc.fillColor('#9ca3af').fontSize(9).font('Helvetica-Bold').text('PREPARED FOR', rightX, billY, { width: rightW });
-    doc.fillColor('#111827').fontSize(12).font('Helvetica-Bold').text(quote.billToName, rightX, billY + 12, { width: rightW });
+    doc.fillColor('#9ca3af').fontSize(9).font(fonts.heading.bold).text('PREPARED FOR', rightX, billY, { width: rightW });
+    doc.fillColor('#111827').fontSize(12).font(fonts.heading.bold).text(quote.billToName, rightX, billY + 12, { width: rightW });
     billY = doc.y + 2;
   }
-  doc.fillColor('#4b5563').fontSize(10).font('Helvetica');
+  doc.fillColor('#4b5563').fontSize(10).font(fonts.body.regular);
   for (const aline of addressLines(quote.billToAddress as BillToAddress | null)) {
     doc.text(aline, rightX, billY, { width: rightW });
     billY = doc.y + 1.5;
   }
   if (quote.billToTaxId) { doc.fillColor('#6b7280').fontSize(9).text(`Tax ID: ${quote.billToTaxId}`, rightX, billY, { width: rightW }); billY = doc.y + 1.5; }
-  doc.fillColor('#4b5563').fontSize(10).font('Helvetica');
+  doc.fillColor('#4b5563').fontSize(10).font(fonts.body.regular);
   if (quote.issueDate) { doc.text(`Issued: ${formatDate(quote.issueDate)}`, rightX, billY, { width: rightW }); billY = doc.y + 2; }
   if (quote.expiryDate) { doc.text(`Valid until: ${formatDate(quote.expiryDate)}`, rightX, billY, { width: rightW }); billY = doc.y + 2; }
 
@@ -882,7 +882,7 @@ export async function renderQuotePdf(
 
   // Intro notes, if any (above the blocks).
   if (quote.introNotes) {
-    doc.fillColor('#4b5563').fontSize(10).font('Helvetica').text(quote.introNotes, c.left, y, { width: c.contentWidth });
+    doc.fillColor('#4b5563').fontSize(10).font(fonts.body.regular).text(quote.introNotes, c.left, y, { width: c.contentWidth });
     y = doc.y + 14;
   }
 
@@ -955,7 +955,7 @@ export async function renderQuotePdf(
         }
         const caption = (b.content as { caption?: string }).caption;
         if (caption) {
-          doc.fillColor('#6b7280').fontSize(9).font('Helvetica').text(caption, c.left, y, { width: c.contentWidth });
+          doc.fillColor('#6b7280').fontSize(9).font(fonts.body.regular).text(caption, c.left, y, { width: c.contentWidth });
           y = doc.y;
         }
         doc.fillColor('#111827');
@@ -1028,8 +1028,8 @@ export async function renderQuotePdf(
   // ---- Terms & Conditions --------------------------------------------------
   if (quote.termsAndConditions) {
     y = ensureSpace(doc, y + 14, 60);
-    doc.fillColor('#9ca3af').fontSize(9).font('Helvetica-Bold').text('TERMS & CONDITIONS', c.left, y); y = doc.y + 4;
-    doc.fillColor('#6b7280').fontSize(9).font('Helvetica').text(quote.termsAndConditions, c.left, y, { width: c.contentWidth });
+    doc.fillColor('#9ca3af').fontSize(9).font(fonts.heading.bold).text('TERMS & CONDITIONS', c.left, y); y = doc.y + 4;
+    doc.fillColor('#6b7280').fontSize(9).font(fonts.body.regular).text(quote.termsAndConditions, c.left, y, { width: c.contentWidth });
     y = doc.y;
   }
 
@@ -1038,7 +1038,7 @@ export async function renderQuotePdf(
   // footer band below, on EVERY page.
   if (quote.terms) {
     y = ensureSpace(doc, y + 14, 60);
-    doc.fillColor('#9ca3af').fontSize(9).font('Helvetica').text(quote.terms, c.left, y, { width: c.contentWidth });
+    doc.fillColor('#9ca3af').fontSize(9).font(fonts.body.regular).text(quote.terms, c.left, y, { width: c.contentWidth });
   }
 
   // ---- Per-page footer band: branding footer + quote number + page X of Y ---

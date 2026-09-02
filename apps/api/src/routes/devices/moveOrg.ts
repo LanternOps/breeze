@@ -245,11 +245,30 @@ moveOrgRoutes.post(
         // re-stamped to the target org by the loop below, so a retained
         // source-org run keeping alert_id/session_id/anomaly_incident_id would
         // point across tenants (and /ai-agents/:id/runs would serve those
-        // foreign ids to the source org). All four FKs are ON DELETE SET NULL —
-        // nullable by design.
+        // foreign ids to the source org). ticket_id is the fifth such FK but
+        // needs a different WHERE — see the statement below. All five FKs are
+        // ON DELETE SET NULL — nullable by design.
         await tx.execute(
           sql`UPDATE ai_agent_runs SET device_id = NULL, alert_id = NULL, session_id = NULL, anomaly_incident_id = NULL
               WHERE device_id = ${deviceId}::uuid`,
+        );
+
+        // ticket_id is the fifth device-lineage FK and needs its OWN statement
+        // (#4215): `tickets` is in getDeviceOrgDenormalizedTables(), so a
+        // ticket bound to this device is re-stamped to the target org by the
+        // loop below — but ticket-triggered runs are device-less
+        // (trigger_kind 'ticket' stamps ticket_id and leaves device_id NULL),
+        // so the device-keyed detach above cannot reach them and the retained
+        // source-org run would keep pointing at a now-foreign ticket. Keying
+        // off the ticket's own device_id catches BOTH the device-less ticket
+        // runs and device runs on the same ticket, and touches nothing whose
+        // ticket stays behind in the source org. Same tickets-join shape as
+        // the ticket_attachments/time_entries/ticket_parts rewrites further
+        // down; runs BEFORE the loop for the same reason the reverse pointer
+        // below does, so both sides are still read under the SOURCE org.
+        await tx.execute(
+          sql`UPDATE ai_agent_runs SET ticket_id = NULL
+              WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${deviceId}::uuid)`,
         );
 
         // Reverse pointer: metric_anomaly_incidents.agent_run_id (no FK) must
