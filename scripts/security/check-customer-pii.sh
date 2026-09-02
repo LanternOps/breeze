@@ -38,6 +38,9 @@ ALLOW_RE="$ALLOW_RE"'|(^|\.)breeze\.(io|dev)$'
 ALLOW_RE="$ALLOW_RE"'|(^|\.)acme[a-z0-9-]*\.(co|com)$'
 ALLOW_RE="$ALLOW_RE"'|(^|\.)theirmsp\.com$'
 ALLOW_RE="$ALLOW_RE"'|(^|\.)gserviceaccount\.com$'
+# Intuit's public QuickBooks sandbox sample company ships fixture contacts like
+# Surf@Intuit.com — vendor sample identities, not Breeze customer data.
+ALLOW_RE="$ALLOW_RE"'|(^|\.)intuit\.com$'
 # Exact known-safe domains: public/example, infra, generic placeholders, and
 # owner-blessed real domains (olivetech.co — see PR #1968 discussion).
 ALLOW_RE="$ALLOW_RE"'|^(anthropic\.com|nist\.gov|google\.com|gmail\.com|mailinator\.com|contoso\.com|lanternops\.io|lantern\.it|olivetech\.co|a\.com|b\.co|b\.com|x\.com|mail\.x\.com|x\.io|y\.com|foo\.com|bar\.com|test\.com|corp\.com|company\.com|org\.com|msp\.com|yourmsp\.com|customer\.com|cust\.com|partner\.com|evil\.com|notours\.com|nowhere\.com|yourcompany\.com|yourdomain\.com|theirdomain\.com)$'
