@@ -1109,6 +1109,20 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
       return { init: m.initializeAiAgentImpactRollupWorker, shutdown: m.shutdownAiAgentImpactRollupWorker };
     },
   },
+  {
+    // Phase 2 wave P2-5 (#4192), Task 9: retention sweep for the
+    // `ai_agent_op_evidence` ledger. `global`, same reasoning as
+    // `aiUnattendedExposureRetention` above — this module's closure reaches
+    // only `db` + `services/retentionMetrics.ts`; it must never import
+    // `aiTools.ts` (the promotion executor lives there and would drag
+    // socket-local dispatch into what is otherwise a plain batched DELETE).
+    name: 'aiAgentGraduation',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/aiAgentGraduationWorker');
+      return { init: m.initializeAiAgentGraduationWorker, shutdown: m.shutdownAiAgentGraduationWorker };
+    },
+  },
 ];
 
 function placementForRole(role: BreezeRole): WorkerPlacement | null {
