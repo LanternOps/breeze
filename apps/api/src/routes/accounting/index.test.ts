@@ -33,6 +33,10 @@ const { authState, mocks, AccountingConnectionErrorClass } = vi.hoisted(() => {
       scope: 'partner' as 'partner' | 'system' | 'organization',
       partnerId: '11111111-1111-1111-1111-111111111111' as string | null,
       mfa: true,
+      // Finding D: PATCH /settings must gate pullPayments/pushMode on the same
+      // invoices:write the push routes use, so the suite needs a REVOCABLE
+      // permission rather than a blanket allow.
+      invoicesWrite: true,
     },
     mocks: {
       getConnection: vi.fn(),
@@ -106,8 +110,14 @@ vi.mock('../../middleware/auth', () => ({
     return next();
   }),
   // The customer routes are permission-gated (organizations:write +
-  // sites:write); this suite covers the OAuth/settings routes, so grant it.
-  requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
+  // sites:write); this suite covers the OAuth/settings routes, so grant those.
+  // `invoices:write` is separately revocable — see authState.invoicesWrite.
+  requirePermission: vi.fn((resource: string, action: string) => async (c: any, next: any) => {
+    if (resource === 'invoices' && action === 'write' && !authState.invoicesWrite) {
+      return c.json({ error: 'Insufficient permissions' }, 403);
+    }
+    return next();
+  }),
   withAuthDbAccessContext: mocks.withAuthDbAccessContext,
 }));
 
@@ -182,6 +192,7 @@ describe('accounting routes', () => {
     authState.scope = 'partner';
     authState.partnerId = '11111111-1111-1111-1111-111111111111';
     authState.mfa = true;
+    authState.invoicesWrite = true;
     app = new Hono();
     app.route('/accounting', accountingRoutes);
     // The callback now reads the persisted row back (multi-currency §11), so the
@@ -799,6 +810,56 @@ describe('accounting routes', () => {
       const res = await patchSettings({ multiCurrencyEnabled: true });
       expect(res.status).toBe(400);
       expect(mocks.dbUpdateReturning).not.toHaveBeenCalled();
+    });
+
+    it('rejects flipping pullPayments without invoices:write (403, finding D)', async () => {
+      authState.invoicesWrite = false;
+
+      const res = await patchSettings({ pullPayments: false });
+
+      expect(res.status).toBe(403);
+      expect(mocks.dbUpdateReturning).not.toHaveBeenCalled();
+    });
+
+    it('rejects changing pushMode without invoices:write (403, finding D)', async () => {
+      authState.invoicesWrite = false;
+
+      const res = await patchSettings({ pushMode: 'manual' });
+
+      expect(res.status).toBe(403);
+      expect(mocks.dbUpdateReturning).not.toHaveBeenCalled();
+    });
+
+    it('still allows the account-ref settings without invoices:write', async () => {
+      authState.invoicesWrite = false;
+      mocks.dbUpdateReturning.mockResolvedValueOnce([{
+        status: 'connected', environment: 'production', pushMode: 'auto',
+        defaultIncomeAccountRef: '79', defaultTaxCodeRef: null, lastError: null, pullPayments: true,
+      }]);
+
+      const res = await patchSettings({ defaultIncomeAccountRef: '79' });
+
+      expect(res.status).toBe(200);
+    });
+
+    it('lets a SYSTEM-scope token flip pullPayments (scope bypass, like the push routes)', async () => {
+      authState.scope = 'system';
+      authState.invoicesWrite = false;
+      mocks.dbUpdateReturning.mockResolvedValueOnce([{
+        status: 'connected', environment: 'production', pushMode: 'auto',
+        defaultIncomeAccountRef: null, defaultTaxCodeRef: null, lastError: null, pullPayments: false,
+      }]);
+
+      const res = await app.request(
+        `/accounting/quickbooks/settings?partnerId=${authState.partnerId}`,
+        {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pullPayments: false }),
+        },
+      );
+
+      expect(res.status).toBe(200);
     });
 
     it('404s when there is no connection to update', async () => {

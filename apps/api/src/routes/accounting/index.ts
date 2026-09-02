@@ -221,6 +221,28 @@ const requireInvoicePush = partnerScopedPermission(
   requirePermission(PERMISSIONS.INVOICES_WRITE.resource, PERMISSIONS.INVOICES_WRITE.action),
 );
 
+/**
+ * Finding D. `PATCH /:provider/settings` was gated on partner scope + MFA only,
+ * so any partner admin without `invoices:write` could switch the payment
+ * pull-back off — silently stopping every QuickBooks payment from reaching
+ * Breeze — or flip `pushMode` to `manual` and stop invoices going out. Both are
+ * the same authority the manual/bulk push routes require, so the settings
+ * handler now demands it too WHEN THE BODY CARRIES ONE OF THOSE TWO FIELDS.
+ *
+ * The account-ref settings stay ungated: they are plumbing for a push someone
+ * else performs, not a switch over whether money syncs at all.
+ */
+type SettingsWriteJsonInput = { pushMode?: 'auto' | 'manual'; pullPayments?: boolean };
+const requireInvoicePushForSyncSwitches: MiddlewareHandler<
+  Env,
+  string,
+  { in: { json: SettingsWriteJsonInput }; out: { json: SettingsWriteJsonInput } }
+> = async (c, next) => {
+  const body = c.req.valid('json');
+  if (!('pushMode' in body) && !('pullPayments' in body)) return next();
+  return requireInvoicePush(c, next);
+};
+
 // Typed against the validated `json` env — matching `optionalJsonValidator`'s
 // idiom (lib/validation.ts) for a standalone middleware that reads
 // `c.req.valid('json')` — rather than a bare `MiddlewareHandler` (which
@@ -663,7 +685,7 @@ accountingRoutes.post('/:provider/customers/import', authMiddleware, partnerScop
   return c.json({ data: summary });
 });
 
-accountingRoutes.patch('/:provider/settings', authMiddleware, partnerScopes, requireMfa(), zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), zValidator('json', settingsSchema), async (c) => {
+accountingRoutes.patch('/:provider/settings', authMiddleware, partnerScopes, requireMfa(), zValidator('param', providerParamSchema), zValidator('query', partnerQuerySchema), zValidator('json', settingsSchema), requireInvoicePushForSyncSwitches, async (c) => {
   const { provider } = c.req.valid('param');
   const body = c.req.valid('json');
   const partner = resolvePartnerId(c.get('auth'), c.req.valid('query').partnerId);

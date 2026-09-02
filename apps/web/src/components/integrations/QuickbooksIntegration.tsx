@@ -11,6 +11,7 @@ import { fetchWithAuth } from "../../stores/auth";
 import { runAction, handleActionError, ActionError } from "../../lib/runAction";
 import { navigateTo } from "@/lib/navigation";
 import { loginPathWithNext, getJwtClaims } from "../../lib/authScope";
+import { usePermissions } from "../../lib/permissions";
 import { formatDateTime } from "@/lib/dateTimeFormat";
 import { showToast } from "../shared/Toast";
 import QuickbooksCustomerImport from "./QuickbooksCustomerImport";
@@ -67,6 +68,14 @@ export default function QuickbooksIntegration() {
   const { t } = useTranslation("integrations");
   const claims = getJwtClaims();
   const isOrgScoped = claims.scope === "organization";
+  /**
+   * Both direction-of-travel switches are the same authority the invoice-push
+   * routes require, and `PATCH /accounting/:provider/settings` now 403s without
+   * it (finding D). Hidden rather than disabled: a control that cannot be
+   * operated is noise, and the org-scope gate above already sets that precedent.
+   * UX only — the route re-checks server-side.
+   */
+  const canWriteInvoices = usePermissions().can("invoices", "write");
 
   const [status, setStatus] = useState<QuickbooksStatus | null>(null);
   const [loading, setLoading] = useState(true);
@@ -504,6 +513,7 @@ export default function QuickbooksIntegration() {
             </div>
           </dl>
 
+          {canWriteInvoices && (
           <div>
             <p className="text-sm font-medium">
               {t("quickbooksIntegration.invoicePush")}
@@ -540,10 +550,12 @@ export default function QuickbooksIntegration() {
               })}
             </div>
           </div>
+          )}
 
           {/* Phase D: payment pull-back. Sits beside the push-mode row because
               the two together are the whole direction-of-travel story — push
               invoices out, pull payments back. */}
+          {canWriteInvoices && (
           <div className="flex items-start justify-between gap-4">
             <div>
               <p className="text-sm font-medium">
@@ -576,6 +588,7 @@ export default function QuickbooksIntegration() {
               />
             </button>
           </div>
+          )}
 
           <div className="flex items-center gap-3 border-t pt-4">
             <button

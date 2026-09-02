@@ -5,6 +5,9 @@ const fetchWithAuth = vi.fn();
 const showToast = vi.fn();
 const navigateTo = vi.fn();
 let scope: "system" | "partner" | "organization" | null = "partner";
+// Finding D: the pull-payments switch and the push-mode row are the same
+// authority the invoice-push routes require, so both hide without invoices:write.
+let canWriteInvoices = true;
 
 vi.mock("../../stores/auth", () => ({
   fetchWithAuth: (...args: unknown[]) => fetchWithAuth(...args),
@@ -14,6 +17,13 @@ vi.mock("../shared/Toast", () => ({
 }));
 vi.mock("@/lib/navigation", () => ({
   navigateTo: (...args: unknown[]) => navigateTo(...args),
+}));
+vi.mock("../../lib/permissions", () => ({
+  usePermissions: () => ({
+    permissions: [],
+    can: (resource: string, action: string) =>
+      resource === "invoices" && action === "write" ? canWriteInvoices : true,
+  }),
 }));
 vi.mock("../../lib/authScope", () => ({
   loginPathWithNext: () => "/login?next=/integrations",
@@ -54,6 +64,7 @@ describe("QuickbooksIntegration", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     scope = "partner";
+    canWriteInvoices = true;
     window.history.replaceState({}, "", "/integrations");
   });
 
@@ -238,6 +249,7 @@ describe("QuickbooksIntegration — payment pull-back (Phase D)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     scope = "partner";
+    canWriteInvoices = true;
     window.history.replaceState({}, "", "/integrations");
   });
 
@@ -401,6 +413,32 @@ describe("QuickbooksIntegration — payment pull-back (Phase D)", () => {
     expect(showToast).not.toHaveBeenCalledWith(
       expect.objectContaining({ type: "success" }),
     );
+  });
+
+  it("hides the pull-payments switch and the push-mode row without invoices:write", async () => {
+    canWriteInvoices = false;
+    fetchWithAuth.mockImplementation(async (url: string) =>
+      url === "/accounting/quickbooks" ? jsonResponse(connected) : jsonResponse({}, 404),
+    );
+
+    render(<QuickbooksIntegration />);
+
+    // The panel still renders — this is a control-level gate, not a page gate.
+    expect(await screen.findByTestId("quickbooks-environment")).toBeTruthy();
+    expect(screen.queryByTestId("quickbooks-pullpayments")).toBeNull();
+    expect(screen.queryByTestId("quickbooks-pushmode")).toBeNull();
+    expect(screen.queryByTestId("quickbooks-pushmode-manual")).toBeNull();
+  });
+
+  it("shows both controls again when invoices:write is granted", async () => {
+    fetchWithAuth.mockImplementation(async (url: string) =>
+      url === "/accounting/quickbooks" ? jsonResponse(connected) : jsonResponse({}, 404),
+    );
+
+    render(<QuickbooksIntegration />);
+
+    expect(await screen.findByTestId("quickbooks-pullpayments")).toBeTruthy();
+    expect(screen.getByTestId("quickbooks-pushmode")).toBeTruthy();
   });
 
   it("renders none of the pull-back controls for an org-scoped user", async () => {
