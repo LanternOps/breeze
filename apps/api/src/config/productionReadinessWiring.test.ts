@@ -80,4 +80,18 @@ describe('production readiness wiring', () => {
     const index = read('apps/api/src/index.ts');
     expect(index).toContain('setWorkerReadinessTransitionHandler(() => readiness.invalidate())');
   });
+
+  // Track C's initializeDeclaredWorkerGroup was deleted when index.ts moved
+  // onto the worker registry's onResult seam; this is where its behavior
+  // lives now (registry entries via onResult, plus the two out-of-registry
+  // starters). A source pin, because no test on either side exercises
+  // initializeWorkers()' body.
+  it('records initialization failure for every consumer of a failed initializer', () => {
+    const index = read('apps/api/src/index.ts');
+    expect(index).toContain('for (const consumer of consumersForInitializer(name))');
+    expect(index).toContain("for (const consumer of consumersForInitializer('eventDispatch'))");
+    expect(index).toContain("for (const consumer of consumersForInitializer('agentCommandRelay'))");
+    expect(index.match(/workerReadinessRegistry\.recordInitializationFailure\(consumer, error\)/g)).toHaveLength(3);
+    expect(index).not.toContain('initializeDeclaredWorkerGroup');
+  });
 });

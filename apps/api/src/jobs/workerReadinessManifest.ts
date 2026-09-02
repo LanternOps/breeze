@@ -10,8 +10,6 @@ export type WorkerInitializerClassification =
   | {
       kind: 'non_consumer';
       initializer:
-        | 'policyAlertBridge'
-        | 'dnsThreatAlertSubscriber'
         | 'desktopSessionOrphanRecovery'
         | 'oauthRevocationRetryWorker'
         | 'incidentCorrelationWorker'
@@ -55,7 +53,6 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('abuseSignalsWorker', ['abuseSignalsWorker'], 'abuse_signals_enabled'),
   consumers('userRiskRetention'),
   consumers('backupVerificationJobs', ['backupVerificationWorker']),
-  { kind: 'non_consumer', initializer: 'policyAlertBridge' },
   consumers('eventLogRetention'),
   consumers('logCorrelationWorker'),
   consumers('agentLogRetention'),
@@ -96,7 +93,6 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('wingetIndexSyncWorker'),
   consumers('vulnerabilityJobs', ['vulnerabilityJobs', 'vulnerabilityMaintenance']),
   consumers('dnsSyncWorker'),
-  { kind: 'non_consumer', initializer: 'dnsThreatAlertSubscriber' },
   consumers('s1SyncWorker'),
   consumers('huntressSyncWorker'),
   consumers('pax8SyncWorker'),
@@ -136,6 +132,24 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('ticketMailboxPollWorker'),
   consumers('invoiceWorker'),
   consumers('contractWorker'),
+  // Registry entries main added after Track C's merge base (wave 3.5d-b names).
+  // The first six already attach under exactly these names on main; the next
+  // six receive their attach in this commit (registry entry name == consumer name).
+  consumers('webhookDeliveryRecovery'),
+  consumers('agentNotifyRetry'),
+  consumers('fixWatchWorker'),
+  consumers('authBrowserTransitionCleanup'),
+  consumers('orgMerge'),
+  consumers('pamActuationWorker'),
+  consumers('ticketAttachmentReaper'),
+  consumers('ticketOutboxPublisher'),
+  consumers('metricAnomalyIncidentPublisher'),
+  consumers('aiUnattendedExposureRetention'),
+  consumers('alertVerdictScheduler'),
+  consumers('aiAgentSweepScheduler'),
+  // Started outside WORKER_REGISTRY, role-gated in index.ts / worker.ts.
+  consumers('eventDispatch', ['eventDispatch', 'eventDispatchMaintenance']),
+  consumers('agentCommandRelay'),
 ] as const;
 
 export function consumersForInitializer(initializer: string): readonly string[] {
@@ -143,22 +157,6 @@ export function consumersForInitializer(initializer: string): readonly string[] 
     (entry) => entry.initializer === initializer,
   );
   return classification?.kind === 'consumers' ? classification.consumers : [];
-}
-
-export async function initializeDeclaredWorkerGroup(input: {
-  initializer: string;
-  initialize: () => Promise<void>;
-  registry: WorkerReadinessRegistry;
-}): Promise<unknown | null> {
-  try {
-    await input.initialize();
-    return null;
-  } catch (error) {
-    for (const consumer of consumersForInitializer(input.initializer)) {
-      input.registry.recordInitializationFailure(consumer, error);
-    }
-    return error;
-  }
 }
 
 export function declareExpectedConsumers(input: {

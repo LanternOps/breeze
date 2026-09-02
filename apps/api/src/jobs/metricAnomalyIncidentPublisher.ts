@@ -6,6 +6,7 @@ import { metricAnomalyIncidents } from '../db/schema/metricAnomalyIncidents';
 import { getBullMQConnection } from '../services/redis';
 import { publishEvent } from '../services/eventBus';
 import { captureException } from '../services/sentry';
+import { attachWorkerObservability } from './workerObservability';
 
 /**
  * Drains the `metric_anomaly_incidents` transactional dispatch marker
@@ -293,6 +294,7 @@ export async function initializeMetricAnomalyIncidentPublisher(): Promise<void> 
   if (reaperWorker) return;
 
   reaperWorker = createWorker();
+  attachWorkerObservability(reaperWorker, 'metricAnomalyIncidentPublisher');
   reaperWorker.on('error', (error) => {
     console.error('[MetricAnomalyIncidentPublisher] Worker error:', error);
     captureException(error);

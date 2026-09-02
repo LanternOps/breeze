@@ -1,16 +1,8 @@
-import { readFileSync } from 'node:fs';
-import path from 'node:path';
-import ts from 'typescript';
 import { describe, expect, it, vi } from 'vitest';
-import {
-  WORKER_READINESS_MANIFEST,
-  declareExpectedConsumers,
-  initializeDeclaredWorkerGroup,
-} from './workerReadinessManifest';
+import { WORKER_REGISTRY } from '../services/workerRegistry';
+import { WORKER_READINESS_MANIFEST, declareExpectedConsumers } from './workerReadinessManifest';
 
 const NON_CONSUMERS = [
-  'policyAlertBridge',
-  'dnsThreatAlertSubscriber',
   'desktopSessionOrphanRecovery',
   'oauthRevocationRetryWorker',
   'incidentCorrelationWorker',
@@ -18,33 +10,44 @@ const NON_CONSUMERS = [
   'incidentSlaMonitor',
 ];
 
+// The two consumers main starts OUTSIDE the registry, role-gated in
+// index.ts (eventDispatch when role !== 'api'; agentCommandRelay when
+// role !== 'worker') and worker.ts (eventDispatch only).
+const OUT_OF_REGISTRY_INITIALIZERS = ['eventDispatch', 'agentCommandRelay'] as const;
+
 function initializerKeys(): string[] {
-  const indexPath = path.resolve(__dirname, '../index.ts');
-  const source = ts.createSourceFile(
-    indexPath,
-    readFileSync(indexPath, 'utf8'),
-    ts.ScriptTarget.Latest,
-    true,
+  return [...WORKER_REGISTRY.map((entry) => entry.name), ...OUT_OF_REGISTRY_INITIALIZERS];
+}
+
+/** Consumer names the manifest declares, in manifest order. */
+function declaredConsumerNames(): string[] {
+  return WORKER_READINESS_MANIFEST.flatMap((e) => (e.kind === 'consumers' ? [...e.consumers] : []));
+}
+
+/**
+ * Cross-check against the REGISTRY, not the manifest: every initializer is a
+ * registry entry or one of the two out-of-registry starters; non-consumers
+ * declare nothing; multi-Worker initializers add (consumers.length - 1) extras.
+ */
+function expectedDeclaredCount(): number {
+  const extras = WORKER_READINESS_MANIFEST.reduce(
+    (sum, e) => sum + (e.kind === 'consumers' ? e.consumers.length - 1 : 0),
+    0,
   );
-  const keys: string[] = [];
-  const visit = (node: ts.Node): void => {
-    if (
-      ts.isVariableDeclaration(node)
-      && ts.isIdentifier(node.name)
-      && node.name.text === 'workers'
-      && node.initializer
-      && ts.isArrayLiteralExpression(node.initializer)
-    ) {
-      for (const element of node.initializer.elements) {
-        if (!ts.isArrayLiteralExpression(element)) continue;
-        const key = element.elements[0];
-        if (key && ts.isStringLiteral(key)) keys.push(key.text);
-      }
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(source);
-  return keys;
+  return WORKER_REGISTRY.length + OUT_OF_REGISTRY_INITIALIZERS.length - NON_CONSUMERS.length + extras;
+}
+
+/**
+ * Mirror of the declare-time rules. Task 3 extends this with the role and the
+ * event-dispatch / ai-agents flags; keep it the single place the rules live in
+ * this file so the count tests cannot drift from the semantics tests.
+ */
+function expectedRequiredNames(flags: { abuseSignalsEnabled: boolean }): string[] {
+  return WORKER_READINESS_MANIFEST.flatMap((e) => {
+    if (e.kind !== 'consumers') return [];
+    const required = e.requiredWhen === 'redis' || flags.abuseSignalsEnabled;
+    return required ? [...e.consumers] : [];
+  }).sort();
 }
 
 function fakeRegistry() {
@@ -75,10 +78,8 @@ describe('worker readiness manifest', () => {
   });
 
   it('declares every stable consumer name exactly once', () => {
-    const names = WORKER_READINESS_MANIFEST.flatMap((entry) =>
-      entry.kind === 'consumers' ? [...entry.consumers] : [],
-    );
-    expect(names).toHaveLength(102);
+    const names = declaredConsumerNames();
+    expect(names).toHaveLength(expectedDeclaredCount());
     expect(new Set(names).size).toBe(names.length);
   });
 
@@ -92,10 +93,13 @@ describe('worker readiness manifest', () => {
   it('declares Redis consumers required and abuse signals optional-disabled when configured off', () => {
     const registry = fakeRegistry();
     declareExpectedConsumers({ redisAvailable: true, abuseSignalsEnabled: false, registry });
-    const abuse = registry.expect.mock.calls.filter(([name]) => name === 'abuseSignalsWorker');
-    expect(abuse).toEqual([['abuseSignalsWorker', false]]);
+    expect(registry.expect.mock.calls.filter(([name]) => name === 'abuseSignalsWorker')).toEqual([['abuseSignalsWorker', false]]);
     expect(registry.disable).toHaveBeenCalledWith('abuseSignalsWorker', 'feature_disabled');
-    expect(registry.expect.mock.calls.filter(([, required]) => required)).toHaveLength(101);
+    const required = registry.expect.mock.calls.filter(([, r]) => r).map(([n]) => n as string).sort();
+    expect(required).toEqual(expectedRequiredNames({ abuseSignalsEnabled: false }));
+    // Named, not numbered: exactly these consumers are optional on a box with every flag off.
+    const optional = declaredConsumerNames().filter((n) => !required.includes(n)).sort();
+    expect(optional).toEqual(['abuseSignalsWorker']);
   });
 
   it('makes abuse signals required when configured on', () => {
@@ -103,34 +107,7 @@ describe('worker readiness manifest', () => {
     declareExpectedConsumers({ redisAvailable: true, abuseSignalsEnabled: true, registry });
     expect(registry.expect).toHaveBeenCalledWith('abuseSignalsWorker', true);
     expect(registry.disable).not.toHaveBeenCalled();
-    expect(registry.expect).toHaveBeenCalledTimes(102);
-  });
-
-  it('records initialization failure for every consumer in a multi-consumer group', async () => {
-    const registry = fakeRegistry();
-    const error = new TypeError('startup failed');
-
-    const result = await initializeDeclaredWorkerGroup({
-      initializer: 'patchJobWorker',
-      initialize: async () => { throw error; },
-      registry,
-    });
-
-    expect(result).toBe(error);
-    expect(registry.recordInitializationFailure.mock.calls).toEqual([
-      ['patchJobWorker', error],
-      ['patchJobDeviceWorker', error],
-    ]);
-  });
-
-  it('does not manufacture failures when an initializer succeeds', async () => {
-    const registry = fakeRegistry();
-    const result = await initializeDeclaredWorkerGroup({
-      initializer: 'patchJobWorker',
-      initialize: async () => undefined,
-      registry,
-    });
-    expect(result).toBeNull();
-    expect(registry.recordInitializationFailure).not.toHaveBeenCalled();
+    expect(registry.expect).toHaveBeenCalledTimes(declaredConsumerNames().length);
+    expect(registry.expect.mock.calls.filter(([, r]) => r)).toHaveLength(expectedRequiredNames({ abuseSignalsEnabled: true }).length);
   });
 });
