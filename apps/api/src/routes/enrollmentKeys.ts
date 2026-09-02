@@ -1406,7 +1406,11 @@ enrollmentKeyRoutes.get(
     PERMISSIONS.ORGS_WRITE.action,
   ),
   requireMfa(),
-  requireCapability("installer_distribute"),
+  // No requireCapability("installer_distribute") here: this is the console's
+  // authenticated own-device installer download (AddDeviceModal,
+  // EnrollDeviceStep, EnrollmentKeyManager) — not the abuse-relevant
+  // distribution surface. Distribution is gated below on bootstrap-token
+  // and installer-link, and on the anonymous evaluations.
   zValidator("query", installerQuerySchema),
   async (c) => {
     const auth = c.get("auth");

@@ -271,7 +271,6 @@ describe("partner trust gates on authenticated installer distribution", () => {
   it.each([
     ["installer link", `/enrollment-keys/${KEY_ID}/installer-link`, "POST", { platform: "windows" }],
     ["bootstrap token", `/enrollment-keys/${KEY_ID}/bootstrap-token`, "POST", {}],
-    ["installer child", `/enrollment-keys/${KEY_ID}/installer/windows`, "GET", undefined],
   ])("returns 403 for probation before creating the %s", async (_name, path, method, body) => {
     evaluateCapability.mockResolvedValueOnce({
       allow: false,
@@ -298,6 +297,58 @@ describe("partner trust gates on authenticated installer distribution", () => {
       expect.objectContaining({ partnerId: "22222222-2222-4222-8222-222222222222" }),
     );
     expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it("GET /:id/installer/:platform is NOT gated on installer_distribute — a probation partner can still download their own installer", async () => {
+    // This is the console's authenticated own-device installer download
+    // (AddDeviceModal, EnrollDeviceStep, EnrollmentKeyManager), not the
+    // abuse-relevant distribution surface (installer-link / bootstrap-token /
+    // the anonymous public routes) — so it must behave identically for a
+    // probation partner as for a trusted one, even if evaluateCapability
+    // would have denied.
+    //
+    // Clear call history first: the preceding it.each cases in this describe
+    // block call evaluateCapability (via installer-link / bootstrap-token),
+    // and this describe has no local `vi.clearAllMocks()`, so their history
+    // would otherwise leak into the `not.toHaveBeenCalled()` assertion below.
+    // Deliberately NOT queuing a mockResolvedValueOnce deny here: this route
+    // must never consult evaluateCapability at all, so priming a deny value
+    // that's never consumed would only leak into (and pollute) a later test.
+    evaluateCapability.mockClear();
+    partnerTrustMode.mockReturnValue("enforce");
+
+    process.env.PUBLIC_API_URL = "https://api.example.com";
+    const app = new Hono();
+    app.route("/enrollment-keys", enrollmentKeyRoutes);
+
+    const parentRow = makeKeyRow();
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([parentRow]),
+        }),
+      }),
+    } as any);
+
+    const issueSpy = vi
+      .spyOn(installerBootstrapTokenIssuance, "issueBootstrapTokenForKey")
+      .mockResolvedValueOnce({
+        id: "token-row-uuid-1",
+        token: "ABC1234567",
+        expiresAt: new Date("2026-04-20T00:00:00.000Z"),
+        parentKeyName: "Test Key",
+      });
+
+    const res = await app.request(
+      `/enrollment-keys/${KEY_ID}/installer/windows`,
+    );
+
+    expect(res.status).toBe(200);
+    // The route never consults installer_distribute at all — same behavior
+    // regardless of trust state.
+    expect(evaluateCapability).not.toHaveBeenCalled();
+
+    issueSpy.mockRestore();
   });
 });
 
@@ -756,11 +807,22 @@ describe("GET /s/:code", () => {
         parentKeyName: "Test Key",
       });
 
+    // Precondition: mode 'off' (the module-level default from the outer
+    // beforeEach), so anonymousInstallerDistributionAllowed short-circuits
+    // before ever resolving a partner id.
+    expect(partnerTrustMode()).toBe("off");
+
     const res = await app.request("/s/abc1234567");
 
     expect(res.status).toBe(200);
     const buf = await res.arrayBuffer();
     expect(buf.byteLength).toBeGreaterThan(0);
+
+    // Under mode 'off' the trust gate must short-circuit entirely: no
+    // capability evaluation, and no second db.select for the org's partner id
+    // — only the one lookup-by-shortCode select above.
+    expect(evaluateCapability).not.toHaveBeenCalled();
+    expect(db.select).toHaveBeenCalledTimes(1);
 
     issueSpy.mockRestore();
   });
@@ -1487,12 +1549,23 @@ describe("GET /public-download/:platform", () => {
         parentKeyName: "Test Key",
       });
 
+    // Precondition: mode 'off' (the module-level default from the outer
+    // beforeEach), so anonymousInstallerDistributionAllowed short-circuits
+    // before ever resolving a partner id.
+    expect(partnerTrustMode()).toBe("off");
+
     const res = await app.request(
       `/enrollment-keys/public-download/windows?h=dlh_${"1".repeat(32)}`,
     );
 
     expect(res.status).toBe(200);
     expect(db.update).not.toHaveBeenCalled();
+
+    // Under mode 'off' the trust gate must short-circuit entirely: no
+    // capability evaluation, and no second db.select for the org's partner id
+    // — only the one lookup-by-token-hash select above.
+    expect(evaluateCapability).not.toHaveBeenCalled();
+    expect(db.select).toHaveBeenCalledTimes(1);
 
     issueSpy.mockRestore();
   });

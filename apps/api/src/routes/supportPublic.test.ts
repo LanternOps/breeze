@@ -684,6 +684,11 @@ describe('POST /redeem', () => {
   });
 
   it('never hands out the global AGENT_ENROLLMENT_SECRET', async () => {
+    // Precondition: mode 'off' (the module-level default from the outer
+    // beforeEach), so the trust gate short-circuits before ever resolving a
+    // partner id.
+    expect(partnerTrustMode()).toBe('off');
+
     process.env.AGENT_ENROLLMENT_SECRET = 'super-secret-global-value';
     const session = pendingSession();
     selectResults.push([session]);
@@ -692,6 +697,11 @@ describe('POST /redeem', () => {
 
     const body = await (await redeem()).json();
     expect(JSON.stringify(body)).not.toContain('super-secret-global-value');
+    // Under mode 'off' the trust gate must short-circuit entirely: no
+    // capability evaluation, and no extra select for the org's partner id —
+    // only the session lookup and the site lookup above.
+    expect(evaluateCapability).not.toHaveBeenCalled();
+    expect(selectBuilders).toHaveLength(2);
     delete process.env.AGENT_ENROLLMENT_SECRET;
   });
 
@@ -835,12 +845,22 @@ describe('GET /download/:platform', () => {
   });
 
   it('proxies the release asset rather than redirecting to it', async () => {
+    // Precondition: mode 'off' (the module-level default from the outer
+    // beforeEach), so the trust gate short-circuits before ever resolving a
+    // partner id.
+    expect(partnerTrustMode()).toBe('off');
+
     selectResults.push([{ status: 'pending', codeExpiresAt: FUTURE }]);
     const res = await download();
     // A 302 would hand the browser GitHub's filename and lose the code.
     expect(res.status).toBe(200);
     expect(getGithubAgentUrl).toHaveBeenCalledWith('windows', 'amd64');
     expect(fetchMock).toHaveBeenCalledWith('https://gh.test/breeze-agent-windows-amd64.exe');
+    // Under mode 'off' the trust gate must short-circuit entirely: no
+    // capability evaluation, and no second select for the org's partner id —
+    // only the one lookup-by-code select above.
+    expect(evaluateCapability).not.toHaveBeenCalled();
+    expect(selectBuilders).toHaveLength(1);
   });
 
   it('normalizes the human-formatted code into the filename', async () => {
