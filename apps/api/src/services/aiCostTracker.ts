@@ -13,6 +13,7 @@ import { rateLimiter } from './rate-limit';
 import { getEffectiveAiBudget } from './effectiveSettings';
 import { getLlmBillingSourceForOrg } from './llm/llmConfigResolver';
 import { captureException, captureMessage } from './sentry';
+import { evaluateAiBudgetThresholds } from './aiBudgetAlerts';
 import { getCatalogEntryName } from './llmProviderCatalog';
 
 export type AiBillingSource = 'platform' | 'partner_key';
@@ -679,7 +680,7 @@ export async function recordUsage(
   }
 
   // Cost anomaly detection (after counter updates)
-  checkCostAnomalies(sessionId, orgId, costCents, dailyKey).catch(err => {
+  checkCostAnomalies(sessionId, orgId, costCents).catch(err => {
     console.error('[AI] Cost anomaly check failed:', err);
   });
 }
@@ -845,7 +846,7 @@ export async function recordUsageFromSdkResult(
   }
 
   // Cost anomaly detection
-  checkCostAnomalies(sessionId, orgId, costCents, dailyKey).catch(err => {
+  checkCostAnomalies(sessionId, orgId, costCents).catch(err => {
     console.error('[AI] Cost anomaly check failed (SDK):', err);
   });
 
@@ -976,7 +977,7 @@ export async function recordSessionlessSdkUsage(
     }
   }
 
-  checkCostAnomalies(null, orgId, costCents, dailyKey).catch(err => {
+  checkCostAnomalies(null, orgId, costCents).catch(err => {
     console.error('[AI] Cost anomaly check failed (sessionless SDK):', err);
   });
 
@@ -1056,7 +1057,7 @@ export async function recordOpenAIUsage(
     }
   }
 
-  checkCostAnomalies(sessionId, orgId, costCents, dailyKey).catch(err => {
+  checkCostAnomalies(sessionId, orgId, costCents).catch(err => {
     console.error('[AI] Cost anomaly check failed (OpenAI):', err);
   });
 
@@ -1105,8 +1106,7 @@ export async function getRemainingBudgetUsd(orgId: string): Promise<number | nul
 async function checkCostAnomalies(
   sessionId: string | null,
   orgId: string,
-  costCents: number,
-  dailyKey: string
+  costCents: number
 ): Promise<void> {
   // #2190 — self-contexted: reached fire-and-forget from recordUsage on the
   // (contextless) enrichment path; without a context these reads RLS-filter to
@@ -1114,6 +1114,12 @@ async function checkCostAnomalies(
   // DB reads + console.warn, so one short context covers it; the wrapper
   // reuses any active ambient context (see checkBillingCredits).
   return withSystemDbAccessContext(async () => {
+    // #4388 — the 80 %-of-daily console.warn this replaced never reached a
+    // user. Durable rung evaluation for both ladders lives in aiBudgetAlerts.
+    // Called above the early return below so monthly-only and partner-locked
+    // budgets (which have no dailyBudgetCents) are still evaluated.
+    await evaluateAiBudgetThresholds(orgId);
+
     const [budget] = await db
       .select()
       .from(aiBudgets)
@@ -1137,26 +1143,6 @@ async function checkCostAnomalies(
       console.warn(
         `[AI] Cost anomaly: session ${sessionId} has used ${session.totalCostCents} cents ` +
         `(>${Math.round(budget.dailyBudgetCents * 0.1)} cents = 10% of daily budget)`
-      );
-    }
-
-    // Check if daily spend > 80% of budget
-    const [dailyUsage] = await db
-      .select({ totalCostCents: aiCostUsage.totalCostCents })
-      .from(aiCostUsage)
-      .where(
-        and(
-          eq(aiCostUsage.orgId, orgId),
-          eq(aiCostUsage.period, 'daily'),
-          eq(aiCostUsage.periodKey, dailyKey)
-        )
-      )
-      .limit(1);
-
-    if (dailyUsage && dailyUsage.totalCostCents > budget.dailyBudgetCents * 0.8) {
-      console.warn(
-        `[AI] Cost warning: org ${orgId} daily spend at ${dailyUsage.totalCostCents} cents ` +
-        `(>${Math.round(budget.dailyBudgetCents * 0.8)} cents = 80% of daily budget)`
       );
     }
   });

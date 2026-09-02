@@ -31,7 +31,7 @@ import { createTicket, changeTicketStatus, TicketServiceError } from '../service
 import { createTimeEntry } from '../services/timeEntryService';
 import { writeRouteAudit } from '../services/auditEvents';
 import { assertNotLocked } from '../services/effectiveSettings';
-import { normalizeAlertThresholds } from '../services/aiBudgetAlerts';
+import { normalizeAlertThresholds, evaluateAiBudgetThresholds } from '../services/aiBudgetAlerts';
 import { db } from '../db';
 import { aiSessions, aiMessages, aiToolExecutions, auditLogs, organizations, devices, actionIntents } from '../db/schema';
 import { eq, and, desc, gte, lte, count, avg, sql as drizzleSql } from 'drizzle-orm';
@@ -1111,6 +1111,11 @@ aiRoutes.put(
       ? body
       : { ...body, alertThresholdPercents: normalizeAlertThresholds(body.alertThresholdPercents) };
     await updateBudget(orgId, normalized);
+
+    // A lowered cap or a new rung must fire now, not on the next turn (spec §4.2 #2).
+    // The evaluator wraps itself in runOutsideDbContext, so calling it from a
+    // request is safe; it never throws.
+    void evaluateAiBudgetThresholds(orgId);
 
     writeRouteAudit(c, {
       orgId,

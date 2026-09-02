@@ -127,6 +127,11 @@ vi.mock('../services/effectiveSettings', () => ({
   assertNotLocked: vi.fn(),
 }));
 
+vi.mock('../services/aiBudgetAlerts', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/aiBudgetAlerts')>();
+  return { ...actual, evaluateAiBudgetThresholds: vi.fn().mockResolvedValue([]) };
+});
+
 import { aiRoutes } from './ai';
 import { db } from '../db';
 import {
@@ -139,6 +144,7 @@ import {
   searchSessions,
 } from '../services/aiAgent';
 import { getUsageSummary, updateBudget, getSessionHistory } from '../services/aiCostTracker';
+import { evaluateAiBudgetThresholds } from '../services/aiBudgetAlerts';
 import { streamingSessionManager } from '../services/streamingSessionManager';
 import { runPreFlightChecks, abortActivePlan } from '../services/aiAgentSdk';
 
@@ -213,6 +219,7 @@ describe('AI routes', () => {
         ORG_ID,
         expect.objectContaining({ enabled: true, monthlyBudgetCents: 10000 })
       );
+      expect(evaluateAiBudgetThresholds).toHaveBeenCalledWith(ORG_ID);
     });
 
     it('rejects invalid approval mode', async () => {
