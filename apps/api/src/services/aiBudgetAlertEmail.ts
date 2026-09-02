@@ -52,6 +52,6 @@ export function buildAiBudgetAlertEmail(ctx: AiBudgetAlertContext): { subject: s
     renderButton('Review AI usage', url),
     renderParagraph('You receive this because you can manage billing for this organization in Breeze.', { muted: true, marginTop: 16 }),
   ].join('\n');
-  const html = renderLayout({ title, preheader: message.slice(0, 120), heading: escapeHtml(title), body });
+  const html = renderLayout({ title, preheader: message.slice(0, 120), heading: title, body });
   return { subject: title, html, text };
 }

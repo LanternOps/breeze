@@ -16,10 +16,12 @@ describe('describeAiBudgetAlert', () => {
 });
 
 describe('buildAiBudgetAlertEmail', () => {
-  it('escapes the org name and links to the usage page', () => {
+  it('escapes the org name exactly once in the heading', () => {
     const e = buildAiBudgetAlertEmail(base);
-    expect(e.html).toContain('Acme &lt;Corp&gt;');
-    expect(e.html).not.toContain('Acme <Corp>');
+    const heading = e.html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/)?.[1] ?? '';
+    expect(heading).toContain('Acme &lt;Corp&gt;');
+    expect(heading).not.toContain('&amp;lt;');
+    expect(heading).not.toContain('<Corp>');
     expect(e.html).toContain('https://app.example.com/settings/ai-usage');
     expect(e.text).toContain('$81.23 of $100.00');
   });
@@ -35,7 +37,7 @@ describe('periodResetLabel', () => {
 });
 
 describe('shouldEmail', () => {
-  it.each([['monthly', 50, true], ['monthly', 100, true], ['daily', 80, false], ['daily', 100, true]] as const)('%s %s → %s', (p, r, want) => {
+  it.each([['monthly', 50, true], ['monthly', 100, true], ['daily', 80, false], ['daily', 99, false], ['daily', 100, true]] as const)('%s %s → %s', (p, r, want) => {
     expect(shouldEmail(p, r)).toBe(want);
   });
 });
