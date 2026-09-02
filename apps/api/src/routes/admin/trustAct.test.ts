@@ -188,6 +188,28 @@ describe('admin trust action route', () => {
       expect(response.status).toBe(200);
       expect(mocks.suspendPartnerForAbuse).toHaveBeenCalledWith(expect.anything(), PARTNER_ID, 'trust_card_link');
     });
+
+    it('rejects a form-encoded body with 415 instead of parsing it', async () => {
+      const token = mintTrustActionToken(PARTNER_ID, 'approve', OPERATOR_ID);
+      const params = new URLSearchParams({ token, totp: '123456' });
+      const response = await buildApp().request('/admin/trust/act', {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        body: params.toString(),
+      });
+      expect(response.status).toBe(415);
+      expect(mocks.setTrustState).not.toHaveBeenCalled();
+    });
+
+    it('rejects a request with no content-type at all with 415', async () => {
+      const token = mintTrustActionToken(PARTNER_ID, 'approve', OPERATOR_ID);
+      const response = await buildApp().request('/admin/trust/act', {
+        method: 'POST',
+        body: JSON.stringify({ token, totp: '123456' }),
+      });
+      expect(response.status).toBe(415);
+      expect(mocks.setTrustState).not.toHaveBeenCalled();
+    });
   });
 
   describe('GET /admin/trust/act/preview', () => {

@@ -66,9 +66,16 @@ trustActionAdminRoutes.get('/trust/act/preview', async (c) => {
 
 trustActionAdminRoutes.post('/trust/act', async (c) => {
   const contentType = c.req.header('content-type') ?? '';
+  // JSON-only: the web app's `/admin/trust/act` page is the only caller (see
+  // the comment on the preview route above), and it always sends JSON. A
+  // form-encoded body has no legitimate caller here, so reject it outright
+  // rather than accepting it via `parseBody`.
+  if (!contentType.includes('application/json')) {
+    return c.json({ error: 'Content-Type must be application/json' }, 415);
+  }
   let raw: unknown;
   try {
-    raw = contentType.includes('application/json') ? await c.req.json() : await c.req.parseBody();
+    raw = await c.req.json();
   } catch {
     return forbidden(c);
   }

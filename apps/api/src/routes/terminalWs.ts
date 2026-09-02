@@ -36,7 +36,7 @@ import {
   type RemoteConnectionLease,
 } from '../services/remoteWsOwnership';
 import { partnerTrustMode } from '../config/partnerTrustMode';
-import { evaluateCapability, partnerIdForDevice } from '../services/partnerTrust';
+import { evaluateCapability, partnerIdForDevice, unresolvedPartnerDecision } from '../services/partnerTrust';
 
 // Zod validation for terminal user messages
 const terminalMessageSchema = z.discriminatedUnion('type', [
@@ -602,18 +602,18 @@ function createTerminalWsHandlers(
 
         if (partnerTrustMode() !== 'off') {
           const partnerId = await partnerIdForDevice(session.deviceId);
-          if (partnerId) {
-            const decision = await evaluateCapability('remote_control', {
+          const decision = partnerId
+            ? await evaluateCapability('remote_control', {
               partnerId,
               deviceId: session.deviceId,
               userId,
               detail: { stage: 'ticket', kind: 'terminal' },
-            });
-            if (!decision.allow) {
-              await releaseOpeningReservation();
-              ws.close(4403, decision.code);
-              return;
-            }
+            })
+            : await unresolvedPartnerDecision('remote_control');
+          if (!decision.allow) {
+            await releaseOpeningReservation();
+            ws.close(4403, decision.code);
+            return;
           }
         }
 

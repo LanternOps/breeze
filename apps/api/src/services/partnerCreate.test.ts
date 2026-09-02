@@ -109,7 +109,7 @@ beforeEach(() => {
 });
 
 describe('createPartner', () => {
-  it('writes probation only when hosted partner trust enforcement is enabled', async () => {
+  it('writes probation whenever hosted partner trust evaluation is running (shadow or enforce), omits it when off', async () => {
     const previousIsHosted = process.env.IS_HOSTED;
     const previousMode = process.env.PARTNER_TRUST_MODE;
     try {
@@ -137,7 +137,20 @@ describe('createPartner', () => {
         status: 'active',
       });
       const shadowInsert = insertCalls.find((c) => (c.table as any).__t === 'partners')!;
-      expect(shadowInsert.values).not.toHaveProperty('trustState');
+      expect(shadowInsert.values).toHaveProperty('trustState', 'probation');
+
+      insertCalls = [];
+      process.env.PARTNER_TRUST_MODE = 'off';
+      await createPartner({
+        orgName: 'Off',
+        adminEmail: 'off@example.com',
+        adminName: 'Off',
+        passwordHash: 'hashed',
+        origin: { mcp: false },
+        status: 'active',
+      });
+      const offInsert = insertCalls.find((c) => (c.table as any).__t === 'partners')!;
+      expect(offInsert.values).not.toHaveProperty('trustState');
     } finally {
       if (previousIsHosted === undefined) delete process.env.IS_HOSTED;
       else process.env.IS_HOSTED = previousIsHosted;

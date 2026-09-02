@@ -7,6 +7,7 @@ const {
   partnerTrustModeMock,
   partnerIdForDeviceMock,
   evaluateCapabilityMock,
+  unresolvedPartnerDecisionMock,
 } = vi.hoisted(() => {
   const revokeViewerSessionMock = vi.fn(async (_sessionId: string) => undefined);
   return {
@@ -23,6 +24,7 @@ const {
     partnerTrustModeMock: vi.fn((): 'off' | 'shadow' | 'enforce' => 'off'),
     partnerIdForDeviceMock: vi.fn(),
     evaluateCapabilityMock: vi.fn(),
+    unresolvedPartnerDecisionMock: vi.fn(),
   };
 });
 
@@ -71,6 +73,7 @@ vi.mock('../config/partnerTrustMode', () => ({
 vi.mock('../services/partnerTrust', () => ({
   partnerIdForDevice: partnerIdForDeviceMock,
   evaluateCapability: evaluateCapabilityMock,
+  unresolvedPartnerDecision: unresolvedPartnerDecisionMock,
   trustDenyBody: vi.fn((decision, reviewRequested) => ({
     error: decision.code,
     capability: decision.capability,
@@ -148,7 +151,7 @@ import {
   getViewerAccessTokenExpirySeconds,
 } from '../services/remoteSessionAuth';
 import { createViewerAccessToken, verifyViewerAccessToken } from '../services/jwt';
-import { evaluateCapability, partnerIdForDevice } from '../services/partnerTrust';
+import { evaluateCapability, partnerIdForDevice, unresolvedPartnerDecision } from '../services/partnerTrust';
 import {
   isViewerJtiRevoked,
   isViewerSessionRevoked,
@@ -590,6 +593,72 @@ describe('desktopWs', () => {
 
       expect(res.status).toBe(200);
       expect(partnerIdForDevice).not.toHaveBeenCalled();
+    });
+
+    it('returns 403 TRUST_RESTRICTED without issuing a token when the device partner cannot be resolved under enforce', async () => {
+      const userId = 'user-unresolved-enforce';
+      partnerTrustModeMock.mockReturnValue('enforce');
+      vi.mocked(partnerIdForDevice).mockResolvedValue(null);
+      vi.mocked(unresolvedPartnerDecision).mockResolvedValue({
+        allow: false,
+        code: 'TRUST_RESTRICTED',
+        capability: 'remote_control',
+        reason: 'partner_unresolved',
+      });
+      vi.mocked(consumeDesktopConnectCode).mockResolvedValue({
+        sessionId: SESSION_ID,
+        userId,
+        email: 'test@example.com',
+        expiresAt: Date.now() + 60_000,
+      });
+      vi.mocked(db.select).mockReturnValueOnce(mockSelectChain([{
+        id: SESSION_ID,
+        userId,
+        type: 'desktop',
+        status: 'pending',
+        deviceId: DEVICE_ID,
+      }]));
+
+      const res = await buildApp().request('/connect/exchange', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId: SESSION_ID, code: 'unresolved-partner-code' }),
+      });
+
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({ error: 'TRUST_RESTRICTED' });
+      expect(unresolvedPartnerDecision).toHaveBeenCalledWith('remote_control');
+      expect(createViewerAccessToken).not.toHaveBeenCalled();
+    });
+
+    it('issues a token under shadow when the device partner cannot be resolved', async () => {
+      const userId = 'user-unresolved-shadow';
+      partnerTrustModeMock.mockReturnValue('shadow');
+      vi.mocked(partnerIdForDevice).mockResolvedValue(null);
+      vi.mocked(unresolvedPartnerDecision).mockResolvedValue({ allow: true });
+      vi.mocked(consumeDesktopConnectCode).mockResolvedValue({
+        sessionId: SESSION_ID,
+        userId,
+        email: 'test@example.com',
+        expiresAt: Date.now() + 60_000,
+      });
+      vi.mocked(db.select).mockReturnValueOnce(mockSelectChain([{
+        id: SESSION_ID,
+        userId,
+        type: 'desktop',
+        status: 'pending',
+        deviceId: DEVICE_ID,
+      }]));
+
+      const res = await buildApp().request('/connect/exchange', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId: SESSION_ID, code: 'unresolved-partner-shadow-code' }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(unresolvedPartnerDecision).toHaveBeenCalledWith('remote_control');
+      expect(createViewerAccessToken).toHaveBeenCalledOnce();
     });
 
     it('rejects a re-exchange of a consumed connect code (no re-exchange cache)', async () => {

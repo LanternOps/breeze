@@ -47,6 +47,7 @@ import {
   isLifecycleCommand,
   LIFECYCLE_COMMAND_TYPES,
   setTrustState,
+  unresolvedPartnerDecision,
 } from './partnerTrust';
 import { readTrust, writeTrust } from './partnerTrust.repo';
 
@@ -360,6 +361,52 @@ describe('evaluateCapability', () => {
   it('off mode allows and touches nothing', async () => {
     vi.mocked(partnerTrustMode).mockReturnValue('off');
     expect(await evaluateCapability('remote_control', { partnerId: 'p1' })).toEqual({ allow: true });
+    expect(audit).not.toHaveBeenCalled();
+  });
+});
+
+describe('unresolvedPartnerDecision', () => {
+  it('denies with TRUST_RESTRICTED under enforce and audits with no resourceId', async () => {
+    vi.mocked(partnerTrustMode).mockReturnValue('enforce');
+
+    expect(await unresolvedPartnerDecision('remote_control')).toEqual({
+      allow: false,
+      code: 'TRUST_RESTRICTED',
+      capability: 'remote_control',
+      reason: 'partner_unresolved',
+    });
+    expect(audit).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'partner.trust.capability_denied',
+      resourceType: 'partner',
+      result: 'denied',
+      details: expect.objectContaining({
+        mode: 'enforce',
+        capability: 'remote_control',
+        code: 'TRUST_RESTRICTED',
+        reason: 'partner_unresolved',
+      }),
+    }));
+    const [firstCallArgs] = audit.mock.calls as unknown[][];
+    expect(firstCallArgs?.[0]).not.toHaveProperty('resourceId');
+  });
+
+  it('allows under shadow but records the would-deny', async () => {
+    vi.mocked(partnerTrustMode).mockReturnValue('shadow');
+
+    expect(await unresolvedPartnerDecision('agent_enroll')).toEqual({
+      allow: true,
+      shadowDenied: { code: 'TRUST_RESTRICTED', reason: 'partner_unresolved' },
+    });
+    expect(audit).toHaveBeenCalledWith(expect.objectContaining({
+      result: 'success',
+      details: expect.objectContaining({ mode: 'shadow', capability: 'agent_enroll' }),
+    }));
+  });
+
+  it('allows and audits nothing when trust mode is off', async () => {
+    vi.mocked(partnerTrustMode).mockReturnValue('off');
+
+    expect(await unresolvedPartnerDecision('device_execute')).toEqual({ allow: true });
     expect(audit).not.toHaveBeenCalled();
   });
 });

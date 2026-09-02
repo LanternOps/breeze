@@ -38,7 +38,7 @@ import {
   type DeviceIdentityCollisionAlertInput,
 } from '../../services/deviceIdentityCollisionAlert';
 import { partnerTrustMode } from '../../config/partnerTrustMode';
-import { evaluateCapability, trustDenyBody } from '../../services/partnerTrust';
+import { evaluateCapability, trustDenyBody, unresolvedPartnerDecision } from '../../services/partnerTrust';
 import { enqueueIpClassify } from '../../services/ipClassify';
 
 export const enrollmentRoutes = new Hono();
@@ -705,7 +705,25 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
           .where(eq(partners.id, deviceLimitPartnerId))
           .for('update');
 
-        if (trustRow && trustRow.trustState !== 'trusted') {
+        if (!trustRow) {
+          // The device-limit partner id couldn't be resolved to an actual
+          // partner row (e.g. deleted between key resolution and this
+          // locked read) — fail closed under enforce rather than silently
+          // skipping the gate entirely.
+          const decision = await unresolvedPartnerDecision('agent_enroll');
+          if (!decision.allow) {
+            writeAuditEvent(c, {
+              orgId: key.orgId,
+              action: 'agent.enroll',
+              resourceType: 'device',
+              result: 'denied',
+              details: { reason: decision.reason },
+            });
+            throw new HTTPException(403, {
+              message: JSON.stringify(trustDenyBody(decision, false)),
+            });
+          }
+        } else if (trustRow.trustState !== 'trusted') {
           const decision = await evaluateCapability('agent_enroll', {
             partnerId: deviceLimitPartnerId,
             orgId: key.orgId,

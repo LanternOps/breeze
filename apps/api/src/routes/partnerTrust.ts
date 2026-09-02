@@ -4,12 +4,11 @@ import { db } from '../db';
 import { partners } from '../db/schema';
 import { authMiddleware, requireScope } from '../middleware/auth';
 import { createAuditLog } from '../services/auditService';
-import { sendOpsAlert } from '../services/opsAlerts';
+import { sendEvidenceCard } from '../services/partnerTrustEvidenceCard';
 
 export const partnerTrustRoutes = new Hono();
 
 const REVIEW_COOLDOWN_MS = 24 * 60 * 60 * 1000;
-const RISKY_SIGNUP_IP_CLASSES = new Set(['hosting', 'vpn', 'tor', 'unknown']);
 
 partnerTrustRoutes.use('*', authMiddleware);
 partnerTrustRoutes.use('*', requireScope('partner'));
@@ -49,11 +48,16 @@ partnerTrustRoutes.post('/request-review', async (c) => {
     details: { requestedAt: requestedAt.toISOString() },
   });
 
-  // Task 5.5 replaces this short notification with the full evidence card.
-  await sendOpsAlert({
-    title: 'Partner trust review requested',
-    body: `${updated.name} requested a partner trust review.`,
-  });
+  try {
+    await sendEvidenceCard(partnerId, 'review_requested');
+  } catch (error) {
+    // Best-effort: the review request itself already succeeded (audit row
+    // written above) — a notification failure must never fail the request.
+    console.warn('[PartnerTrust] Failed to send evidence card for review request', {
+      partnerId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 
   return c.json({ requested: true });
 });
@@ -69,7 +73,6 @@ partnerTrustRoutes.get('/', async (c) => {
       trustReviewRequestedAt: partners.trustReviewRequestedAt,
       createdAt: partners.createdAt,
       emailVerifiedAt: partners.emailVerifiedAt,
-      signupIpClass: partners.signupIpClass,
     })
     .from(partners)
     .where(eq(partners.id, partnerId))
@@ -84,7 +87,6 @@ partnerTrustRoutes.get('/', async (c) => {
       emailVerified: partner.emailVerifiedAt !== null,
       // Task 5.2 supplies settled-card evidence; keep unknown distinct from false.
       cardSettled: null,
-      signupIpOk: !RISKY_SIGNUP_IP_CLASSES.has(partner.signupIpClass),
     },
     reviewRequestedAt: partner.trustReviewRequestedAt,
     meetingUrl: process.env.PARTNER_MEETING_URL ?? null,

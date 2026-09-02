@@ -78,7 +78,11 @@ export async function createPartner(
         type: 'msp',
         plan: 'free',
         status: input.status,
-        ...(partnerTrustMode() === 'enforce' ? { trustState: 'probation' as const } : {}),
+        // New partners get `probation` whenever trust evaluation is running at
+        // all (shadow OR enforce) — shadow mode needs the same starting state
+        // so its hard-deny/promotion evaluation produces real denial data,
+        // not just a no-op against partners that were never put in probation.
+        ...(partnerTrustMode() !== 'off' ? { trustState: 'probation' as const } : {}),
         billingEmail: normalizedEmail,
         mcpOrigin,
         mcpOriginIp: mcpOrigin ? (input.origin as { ip?: string }).ip ?? null : null,

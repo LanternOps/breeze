@@ -4,10 +4,12 @@ const {
   partnerTrustModeMock,
   partnerIdForDeviceMock,
   evaluateCapabilityMock,
+  unresolvedPartnerDecisionMock,
 } = vi.hoisted(() => ({
   partnerTrustModeMock: vi.fn((): 'off' | 'shadow' | 'enforce' => 'off'),
   partnerIdForDeviceMock: vi.fn(),
   evaluateCapabilityMock: vi.fn(),
+  unresolvedPartnerDecisionMock: vi.fn(),
 }));
 
 // -------------------------------------------------------------------
@@ -51,6 +53,7 @@ vi.mock('../config/partnerTrustMode', () => ({
 vi.mock('../services/partnerTrust', () => ({
   partnerIdForDevice: partnerIdForDeviceMock,
   evaluateCapability: evaluateCapabilityMock,
+  unresolvedPartnerDecision: unresolvedPartnerDecisionMock,
 }));
 
 vi.mock('./agentWs', () => ({
@@ -91,7 +94,7 @@ vi.mock('./remote/helpers', () => ({
 // -------------------------------------------------------------------
 import { db } from '../db';
 import { consumeWsTicket } from '../services/remoteSessionAuth';
-import { evaluateCapability, partnerIdForDevice } from '../services/partnerTrust';
+import { evaluateCapability, partnerIdForDevice, unresolvedPartnerDecision } from '../services/partnerTrust';
 import { sendCommandToAgent, isAgentConnected } from './agentWs';
 import {
   handleTerminalOutput,
@@ -568,6 +571,41 @@ describe('terminalWs', () => {
         expect.objectContaining({ type: 'terminal_start' }),
       );
       expect(ws.close).not.toHaveBeenCalledWith(4403, expect.anything());
+    });
+
+    it('denies with TRUST_RESTRICTED when the device partner cannot be resolved under enforce', async () => {
+      setupSuccessfulValidation();
+      partnerTrustModeMock.mockReturnValue('enforce');
+      vi.mocked(partnerIdForDevice).mockResolvedValue(null);
+      vi.mocked(unresolvedPartnerDecision).mockResolvedValue({
+        allow: false,
+        code: 'TRUST_RESTRICTED',
+        capability: 'remote_control',
+        reason: 'partner_unresolved',
+      });
+      const handlers = captureWsHandlers(SESSION_ID, 'unresolved-partner-ticket');
+      const ws = wsMock();
+
+      await handlers.onOpen({}, ws);
+
+      expect(unresolvedPartnerDecision).toHaveBeenCalledWith('remote_control');
+      expect(ws.close).toHaveBeenCalledWith(4403, 'TRUST_RESTRICTED');
+      expect(sendCommandToAgent).not.toHaveBeenCalled();
+    });
+
+    it('allows the terminal upgrade when the device partner cannot be resolved under shadow', async () => {
+      setupSuccessfulValidation();
+      partnerTrustModeMock.mockReturnValue('shadow');
+      vi.mocked(partnerIdForDevice).mockResolvedValue(null);
+      vi.mocked(unresolvedPartnerDecision).mockResolvedValue({ allow: true });
+      const handlers = captureWsHandlers(SESSION_ID, 'unresolved-partner-shadow-ticket');
+      const ws = wsMock();
+
+      await handlers.onOpen({}, ws);
+
+      expect(unresolvedPartnerDecision).toHaveBeenCalledWith('remote_control');
+      expect(ws.close).not.toHaveBeenCalledWith(4403, expect.anything());
+      expect(sendCommandToAgent).toHaveBeenCalled();
     });
 
     it('does not resolve a partner when trust mode is off', async () => {

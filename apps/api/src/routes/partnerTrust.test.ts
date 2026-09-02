@@ -7,7 +7,6 @@ const state = vi.hoisted(() => ({
     trustReviewRequestedAt: Date | null;
     createdAt: Date;
     emailVerifiedAt: Date | null;
-    signupIpClass: 'residential' | 'business' | 'hosting' | 'vpn' | 'tor' | 'unknown';
   },
 }));
 
@@ -27,8 +26,8 @@ vi.mock('../services/auditService', () => ({
   createAuditLog: vi.fn(async () => undefined),
 }));
 
-vi.mock('../services/opsAlerts', () => ({
-  sendOpsAlert: vi.fn(async () => true),
+vi.mock('../services/partnerTrustEvidenceCard', () => ({
+  sendEvidenceCard: vi.fn(async () => undefined),
 }));
 
 vi.mock('../middleware/auth', () => ({
@@ -44,7 +43,7 @@ vi.mock('../middleware/auth', () => ({
 import { Hono } from 'hono';
 import { partnerTrustRoutes } from './partnerTrust';
 import { createAuditLog } from '../services/auditService';
-import { sendOpsAlert } from '../services/opsAlerts';
+import { sendEvidenceCard } from '../services/partnerTrustEvidenceCard';
 
 const auth = {
   scope: 'partner',
@@ -82,7 +81,7 @@ describe('partner trust routes — auth scope gate', () => {
 
     expect(response.status).toBe(403);
     expect(createAuditLog).not.toHaveBeenCalled();
-    expect(sendOpsAlert).not.toHaveBeenCalled();
+    expect(sendEvidenceCard).not.toHaveBeenCalled();
   });
 
   it('rejects POST /request-review for a system-scoped token (403)', async () => {
@@ -90,7 +89,7 @@ describe('partner trust routes — auth scope gate', () => {
 
     expect(response.status).toBe(403);
     expect(createAuditLog).not.toHaveBeenCalled();
-    expect(sendOpsAlert).not.toHaveBeenCalled();
+    expect(sendEvidenceCard).not.toHaveBeenCalled();
   });
 
   it('rejects GET / for an organization-scoped token (403)', async () => {
@@ -115,7 +114,6 @@ describe('partner trust routes', () => {
       trustReviewRequestedAt: null,
       createdAt: new Date(Date.now() - 25 * 60 * 60 * 1000),
       emailVerifiedAt: new Date(),
-      signupIpClass: 'business',
     };
 
     dbSpies.update.mockImplementation(() => ({
@@ -134,7 +132,7 @@ describe('partner trust routes', () => {
     }));
   });
 
-  it('requests review, audits it, and alerts ops with the partner name', async () => {
+  it('requests review, audits it, and sends the evidence card for the partner', async () => {
     const response = await buildApp().request('/partner/trust/request-review', { method: 'POST' });
 
     expect(response.status).toBe(200);
@@ -144,9 +142,17 @@ describe('partner trust routes', () => {
       actorId: auth.user.id,
       resourceId: auth.partnerId,
     }));
-    expect(sendOpsAlert).toHaveBeenCalledWith(expect.objectContaining({
-      body: expect.stringContaining('Northwind IT'),
-    }));
+    expect(sendEvidenceCard).toHaveBeenCalledWith(auth.partnerId, 'review_requested');
+  });
+
+  it('still returns 200 when sending the evidence card throws (best-effort)', async () => {
+    vi.mocked(sendEvidenceCard).mockRejectedValueOnce(new Error('smtp down'));
+
+    const response = await buildApp().request('/partner/trust/request-review', { method: 'POST' });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ requested: true });
+    expect(sendEvidenceCard).toHaveBeenCalledWith(auth.partnerId, 'review_requested');
   });
 
   it('returns 429 when a review was requested within 24 hours', async () => {
@@ -155,7 +161,7 @@ describe('partner trust routes', () => {
 
     expect(response.status).toBe(429);
     expect(createAuditLog).not.toHaveBeenCalled();
-    expect(sendOpsAlert).not.toHaveBeenCalled();
+    expect(sendEvidenceCard).not.toHaveBeenCalled();
   });
 
   it('returns the trust checklist and meeting URL', async () => {
@@ -172,7 +178,6 @@ describe('partner trust routes', () => {
           ageOk: true,
           emailVerified: true,
           cardSettled: null,
-          signupIpOk: true,
         },
         reviewRequestedAt: null,
         meetingUrl: 'https://meet.example.test/trust',
@@ -183,13 +188,12 @@ describe('partner trust routes', () => {
     }
   });
 
-  it('fails checklist items for a young, unverified partner on a risky IP', async () => {
+  it('fails checklist items for a young, unverified partner', async () => {
     state.partner = {
       trustState: 'restricted',
       trustReviewRequestedAt: new Date('2026-09-02T00:00:00.000Z'),
       createdAt: new Date(),
       emailVerifiedAt: null,
-      signupIpClass: 'vpn',
     };
 
     const response = await buildApp().request('/partner/trust');
@@ -200,7 +204,6 @@ describe('partner trust routes', () => {
       ageOk: false,
       emailVerified: false,
       cardSettled: null,
-      signupIpOk: false,
     });
   });
 });

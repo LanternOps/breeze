@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
   update, select, runOutside, withSystem, classify, tryAutoPromote,
-  evaluateHardDenies, setTrustState, partnerForDevice,
+  evaluateHardDenies, setTrustState, partnerForDevice, sendEvidenceCard,
 } = vi.hoisted(() => ({
   update: vi.fn(),
   select: vi.fn(),
@@ -13,6 +13,7 @@ const {
   evaluateHardDenies: vi.fn(),
   setTrustState: vi.fn(),
   partnerForDevice: vi.fn(),
+  sendEvidenceCard: vi.fn(),
 }));
 
 vi.mock('../db', () => ({
@@ -30,6 +31,7 @@ vi.mock('../services/ipClassify', () => ({
 vi.mock('../services/partnerTrustPromotion', () => ({ tryAutoPromote, evaluateHardDenies }));
 vi.mock('../services/partnerTrust', () => ({ setTrustState }));
 vi.mock('../services/partnerTrust.repo', () => ({ partnerForDevice }));
+vi.mock('../services/partnerTrustEvidenceCard', () => ({ sendEvidenceCard }));
 
 import { processPartnerTrustJob } from './partnerTrustJobs';
 
@@ -46,6 +48,7 @@ describe('processPartnerTrustJob', () => {
     evaluateHardDenies.mockResolvedValue({ restrict: false });
     setTrustState.mockResolvedValue(true);
     partnerForDevice.mockResolvedValue('partner-for-device');
+    sendEvidenceCard.mockResolvedValue(undefined);
     set.mockReturnValue({ where });
     update.mockReturnValue({ set });
   });
@@ -116,9 +119,10 @@ describe('processPartnerTrustJob', () => {
       { expectedFrom: 'probation' },
     );
     expect(tryAutoPromote).not.toHaveBeenCalled();
+    expect(sendEvidenceCard).toHaveBeenCalledWith('partner-1', 'restricted');
   });
 
-  it('does not restrict when the probation CAS loses to a trusted state', async () => {
+  it('does not send the evidence card when the probation CAS loses to a trusted state', async () => {
     evaluateHardDenies.mockResolvedValue({
       restrict: true,
       reason: 'auto:tor_signup',
@@ -135,6 +139,25 @@ describe('processPartnerTrustJob', () => {
       'partner-1', 'restricted', 'auto:tor_signup', null, {},
       { expectedFrom: 'probation' },
     );
+    expect(sendEvidenceCard).not.toHaveBeenCalled();
+  });
+
+  it('does not fail the job when sending the restricted evidence card throws (best-effort)', async () => {
+    const limit = vi.fn().mockResolvedValue([{ id: 'partner-1' }]);
+    select.mockReturnValue({
+      from: () => ({ where: () => ({ orderBy: () => ({ limit }) }) }),
+    });
+    evaluateHardDenies.mockResolvedValue({
+      restrict: true,
+      reason: 'auto:tor_signup',
+      evidence: { matchedAxes: ['signup_ip_class'] },
+    });
+    sendEvidenceCard.mockRejectedValue(new Error('smtp down'));
+
+    await expect(processPartnerTrustJob({ name: 'partner-trust-promote', data: {} }))
+      .resolves.toEqual({ processed: 1, promoted: 0 });
+
+    expect(sendEvidenceCard).toHaveBeenCalledWith('partner-1', 'restricted');
   });
 
   it('skips a partner whose hard-deny evaluation throws, without stopping the batch', async () => {

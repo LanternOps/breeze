@@ -7,6 +7,7 @@ import { devices, partners } from '../db/schema';
 import { classifyIp, type IpClassifyTarget } from '../services/ipClassify';
 import { partnerForDevice } from '../services/partnerTrust.repo';
 import { setTrustState } from '../services/partnerTrust';
+import { sendEvidenceCard } from '../services/partnerTrustEvidenceCard';
 import { evaluateHardDenies, tryAutoPromote } from '../services/partnerTrustPromotion';
 import { jobSchedule } from './scheduleRegistry';
 
@@ -17,7 +18,7 @@ const PROMOTE_REPEAT_ID = 'partner-trust-promote-repeat';
 async function restrictOnHardDeny(partnerId: string): Promise<boolean> {
   const decision = await evaluateHardDenies(partnerId);
   if (!decision.restrict) return false;
-  return setTrustState(
+  const restricted = await setTrustState(
     partnerId,
     'restricted',
     decision.reason,
@@ -25,6 +26,16 @@ async function restrictOnHardDeny(partnerId: string): Promise<boolean> {
     decision.evidence,
     { expectedFrom: 'probation' },
   );
+  if (restricted) {
+    try {
+      await sendEvidenceCard(partnerId, 'restricted');
+    } catch (error) {
+      // Best-effort: the restriction itself already landed — a notification
+      // failure must never surface as a job failure.
+      console.warn(`[partnerTrustJobs] Failed to send evidence card for restricted partner ${partnerId}`, error);
+    }
+  }
+  return restricted;
 }
 
 export async function runPartnerTrustPromote(): Promise<{ processed: number; promoted: number }> {

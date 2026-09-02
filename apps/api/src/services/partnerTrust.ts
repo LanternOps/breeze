@@ -260,6 +260,46 @@ export async function evaluateCapability(cap: GatedCapability, ctx: GateContext)
   return { allow: false, code: denial.code, capability: cap, reason: denial.reason };
 }
 
+/**
+ * Decision for chokepoints that cannot even resolve a partnerId to gate on
+ * (e.g. `partnerIdForDevice` returns null for an orphaned/unresolvable
+ * device). There is no partner row to read a trust state from, so this
+ * cannot go through `evaluateCapability` — but silently allowing an
+ * unresolvable partner through in enforce mode would be a bypass, not a
+ * gate. Mirrors `evaluateCapability`'s shape: off never denies or audits,
+ * shadow always allows but records what enforce would have done, enforce
+ * denies. The audit row uses the same action/shape as
+ * `evaluateCapability`'s denial write, with `resourceId` omitted since no
+ * partner id exists to scope it to.
+ */
+export async function unresolvedPartnerDecision(cap: GatedCapability): Promise<GateDecision> {
+  const mode = partnerTrustMode();
+  if (mode === 'off') return { allow: true };
+  const denial = { code: 'TRUST_RESTRICTED' as const, reason: 'partner_unresolved' };
+  try {
+    await createAuditLog({
+      orgId: null,
+      actorType: 'system',
+      actorId: ANONYMOUS_ACTOR_ID,
+      action: 'partner.trust.capability_denied',
+      resourceType: 'partner',
+      result: mode === 'enforce' ? 'denied' : 'success',
+      details: {
+        mode,
+        capability: cap,
+        code: denial.code,
+        reason: denial.reason,
+        deviceId: null,
+        commandType: null,
+      },
+    });
+  } catch (error) {
+    console.warn('[partnerTrust] Failed to write audit log for unresolved-partner decision:', error);
+  }
+  if (mode === 'shadow') return { allow: true, shadowDenied: denial };
+  return { allow: false, code: denial.code, capability: cap, reason: denial.reason };
+}
+
 export function trustDenyBody(d: Extract<GateDecision, { allow: false }>, reviewRequested: boolean) {
   return {
     error: d.code,

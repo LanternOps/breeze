@@ -27,12 +27,24 @@ describe('classifyIp', () => {
     vi.restoreAllMocks();
   });
 
-  it('uses the static private-range fallback with no provider and never fetches', async () => {
+  it('maps private/loopback and public addresses alike to unknown with no provider, and never fetches', async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
 
+    // Private/loopback carries no real signal about the origin network — it's
+    // what you see behind NAT, a reverse proxy, or in local dev — so it must
+    // not be asserted as 'residential'.
     await expect(classifyIp('127.0.0.1')).resolves.toEqual({
-      ipClass: 'residential', asn: null, provider: 'none',
+      ipClass: 'unknown', asn: null, provider: 'none',
+    });
+    await expect(classifyIp('10.0.0.5')).resolves.toEqual({
+      ipClass: 'unknown', asn: null, provider: 'none',
+    });
+    await expect(classifyIp('192.168.1.1')).resolves.toEqual({
+      ipClass: 'unknown', asn: null, provider: 'none',
+    });
+    await expect(classifyIp('::1')).resolves.toEqual({
+      ipClass: 'unknown', asn: null, provider: 'none',
     });
     await expect(classifyIp('203.0.113.10')).resolves.toEqual({
       ipClass: 'unknown', asn: null, provider: 'none',

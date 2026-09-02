@@ -22,27 +22,18 @@ export type IpClassifyTarget =
 
 let queue: Queue<IpClassifyTarget> | null = null;
 
-function offlineClassification(ip: string): IpClassification {
+// A private/loopback address (RFC 1918, ::1, fc00::/7) carries no signal
+// about the real-world network the request actually originated from — it's
+// what you see behind NAT, a reverse proxy, or in local dev. Mapping that to
+// 'residential' would assert a specific (and reassuring) network type that
+// was never actually observed; every unclassifiable address — private or
+// otherwise — gets the same honest 'unknown' label with no provider lookup.
+function offlineClassification(_ip: string): IpClassification {
   return {
-    ipClass: isPrivateOrLoopback(ip) ? 'residential' : 'unknown',
+    ipClass: 'unknown',
     asn: null,
     provider: 'none',
   };
-}
-
-function isPrivateOrLoopback(ip: string): boolean {
-  if (isIP(ip) === 4) {
-    const [a = -1, b = -1] = ip.split('.').map(Number);
-    return a === 10
-      || a === 127
-      || (a === 172 && b >= 16 && b <= 31)
-      || (a === 192 && b === 168);
-  }
-  if (isIP(ip) === 6) {
-    const normalized = ip.toLowerCase();
-    return normalized === '::1' || normalized.startsWith('fc') || normalized.startsWith('fd');
-  }
-  return false;
 }
 
 function expandIpv6(ip: string): string[] | null {
