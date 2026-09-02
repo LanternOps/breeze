@@ -449,6 +449,20 @@ describe('runPreFlightChecks', () => {
     expect(result).toEqual({ ok: false, error: 'Session is not active' });
   });
 
+  it('words an already-expired session as expired, so routes map it to 410', async () => {
+    // This branch runs BEFORE the age checks below, so once eviction retires a
+    // row eagerly it becomes the common path for expired sessions. Collapsing
+    // it back to one string silently downgrades every evicted session from 410
+    // to 400, while the lazy age branches keep producing the right wording —
+    // which is exactly what makes the regression invisible.
+    mockGetSession.mockResolvedValue(makeSession({ status: 'expired' }));
+    const result = await runPreFlightChecks('session-1', 'hello', auth);
+    expect(result).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('expired'),
+    });
+  });
+
   // --- Turn limit ---
 
   it('returns error when turn limit is reached', async () => {

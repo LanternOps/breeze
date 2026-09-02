@@ -100,6 +100,12 @@ export const SENTRY_EVENT_CODES = [
   'ai_billing_org_partner_missing',
   /** A rejected partner AI key could not be stamped (config moved under us). */
   'ai_partner_key_error_stamp_stale',
+  /**
+   * Every in-memory AI session was mid-turn when the LRU cap was reached, so
+   * nothing could be evicted and MAX_ACTIVE_SESSIONS was exceeded. Throttled by
+   * the caller; a sustained stream means real capacity exhaustion.
+   */
+  'ai_session_cap_all_in_flight',
 
   // --- backup -----------------------------------------------------------
   /** A backup result matched no job row (deleted, or invisible under RLS). */
