@@ -142,7 +142,7 @@ describe('intentionally ungated system device-command sites', () => {
   });
 
   it('validates that all exception entries refer to scanned files and types that actually appear in them', () => {
-    const scannedFiles = new Set(intentionallyUngatedSystemSites);
+    const scannedFiles = new Set<string>(intentionallyUngatedSystemSites);
     const scannedTypesByFile = new Map<string, Set<string>>();
 
     for (const relativePath of intentionallyUngatedSystemSites) {
