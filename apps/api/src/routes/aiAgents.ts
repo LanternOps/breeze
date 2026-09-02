@@ -24,7 +24,7 @@ import {
   updateAiAgentSchema,
 } from '@breeze/shared';
 import { zValidator } from '../lib/validation';
-import { db } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import {
   actionIntents, aiAgentRuns, aiAgents, aiToolExecutions, devices, organizations,
   reportRuns, reports, ticketDrafts, type AiAgentRow,
@@ -384,16 +384,26 @@ aiAgentsRoutes.get(
 
     const byOrg: AiAgentGraduationByOrgDto['byOrg'] = [];
     let promoteThreshold: number | null = null;
-    for (const org of orgRows) {
-      const resolved = await resolveEffectiveAgentSystem(org.id, kind);
-      if (!resolved) continue;
-      if (promoteThreshold === null) promoteThreshold = resolved.effective.limits.promoteThreshold;
-      const [rows, actOpReliability] = await Promise.all([
-        loadGraduationRows(org.id, resolved.agentId),
-        loadActOpReliability(org.id, resolved.agentId),
-      ]);
-      byOrg.push({ orgId: org.id, orgName: org.name, agentId: resolved.agentId, rows, actOpReliability });
-    }
+    // Review round 1 (Task 18): the loop used to let each org open its own
+    // resolve + two concurrent reads, i.e. 3 pooled transactions per org on
+    // top of the request's own held connection. resolveEffectiveAgentSystem
+    // and graduationService's inSystemDbContext both skip re-opening when
+    // getCurrentDbAccessContext() already reads 'system' (effectivePolicy.ts,
+    // graduationService.ts), so opening ONE system context around the whole
+    // loop collapses 3N transactions to 1 — the org listing above still runs
+    // in the request's own context so auth.orgCondition's tenancy pin binds.
+    await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+      for (const org of orgRows) {
+        const resolved = await resolveEffectiveAgentSystem(org.id, kind);
+        if (!resolved) continue;
+        if (promoteThreshold === null) promoteThreshold = resolved.effective.limits.promoteThreshold;
+        const [rows, actOpReliability] = await Promise.all([
+          loadGraduationRows(org.id, resolved.agentId),
+          loadActOpReliability(org.id, resolved.agentId),
+        ]);
+        byOrg.push({ orgId: org.id, orgName: org.name, agentId: resolved.agentId, rows, actOpReliability });
+      }
+    }, 'aiAgents.graduation.byOrg'));
 
     const dto: AiAgentGraduationByOrgDto = {
       version: 1,

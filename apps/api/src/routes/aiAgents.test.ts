@@ -17,6 +17,10 @@ import {
 // generation; see the '../jobs/aiAgentImpactRollup' mock comment below.
 import { lastCompleteUtcDay, shiftUtcDay } from '../services/aiAgents/impactRollup';
 import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
+// Review round 1 (Task 18): the REAL closure-builder, not a hand-rolled
+// stand-in — proves the byOrg org listing's tenancy pin is the same
+// eq/inArray shape authMiddleware actually installs on `auth.orgCondition`.
+import { buildOrgAccessClosures } from '../middleware/auth';
 
 const {
   selectMock,
@@ -75,19 +79,27 @@ const {
   loadActOpReliabilityMock: vi.fn(),
 }));
 
-vi.mock('../middleware/auth', () => ({
-  authMiddleware: async (_c: unknown, next: () => Promise<void>) => next(),
-  requireScope: () => async (_c: unknown, next: () => Promise<void>) => next(),
-  requireMfa: () => async (c: { json: (body: unknown, status: number) => Response }, next: () => Promise<void>) => (
-    mfaOkMock() ? next() : c.json({ error: 'MFA required', code: 'MFA_REQUIRED' }, 403)
-  ),
-  requirePermission: (resource: string, action: string) => async (
-    c: { json: (body: unknown, status: number) => Response },
-    next: () => Promise<void>,
-  ) => (
-    hasPermMock(resource, action) ? next() : c.json({ error: 'Permission denied' }, 403)
-  ),
-}));
+vi.mock('../middleware/auth', async (importOriginal) => {
+  // Review round 1 (Task 18): `buildOrgAccessClosures` is the REAL
+  // implementation (via importOriginal), not a hand-rolled stand-in — a test
+  // wiring `auth.orgCondition` through it exercises the exact eq/inArray
+  // shape authMiddleware installs, not a test-only approximation of it.
+  const actual = await importOriginal<typeof import('../middleware/auth')>();
+  return {
+    authMiddleware: async (_c: unknown, next: () => Promise<void>) => next(),
+    requireScope: () => async (_c: unknown, next: () => Promise<void>) => next(),
+    requireMfa: () => async (c: { json: (body: unknown, status: number) => Response }, next: () => Promise<void>) => (
+      mfaOkMock() ? next() : c.json({ error: 'MFA required', code: 'MFA_REQUIRED' }, 403)
+    ),
+    requirePermission: (resource: string, action: string) => async (
+      c: { json: (body: unknown, status: number) => Response },
+      next: () => Promise<void>,
+    ) => (
+      hasPermMock(resource, action) ? next() : c.json({ error: 'Permission denied' }, 403)
+    ),
+    buildOrgAccessClosures: actual.buildOrgAccessClosures,
+  };
+});
 
 const { ActPrerequisitesNotMetError, InvalidSupervisedActionKeysError } = vi.hoisted(() => ({
   ActPrerequisitesNotMetError: class ActPrerequisitesNotMetError extends Error {
@@ -2564,6 +2576,40 @@ describe('GET /ai-agents/graduation', () => {
         },
       ],
     });
+  });
+
+  // Review round 1 (Task 18, Important): buildApp's default auth stub
+  // (`orgCondition: () => undefined`) and a bare `selectChain` with no
+  // `onWhere` both let a dropped tenancy pin on the byOrg org listing pass
+  // silently — this test wires a REAL orgCondition closure (the same shape
+  // authMiddleware installs for a partner-scoped, `partnerOrgAccess:
+  // 'selected'`-restricted token) and asserts the compiled `.where()`
+  // predicate's bound params, so deleting `auth.orgCondition(organizations.id)`
+  // from the route fails this test even though the DTO shape is unaffected.
+  it('binds the byOrg org listing to the caller\'s accessible orgs, not every org under the partner', async () => {
+    const { orgCondition } = buildOrgAccessClosures([ORG_ID, OTHER_ORG_ID]);
+    const app = buildApp(false, { scope: 'partner', partnerId: PARTNER_ID, orgCondition });
+    let orgListWhere: unknown;
+    selectMock.mockReturnValueOnce(
+      selectChain(
+        [{ id: ORG_ID, name: 'Acme Corp' }, { id: OTHER_ORG_ID, name: 'Beta LLC' }],
+        (predicate) => { orgListWhere = predicate; },
+      ),
+    );
+
+    const res = await app.request('/ai-agents/graduation?kind=triage');
+
+    expect(res.status).toBe(200);
+    const params = sqlParams(orgListWhere);
+    // The restricted set is bound in — proves the pin binds the RIGHT org
+    // ids, not merely that some `org_id`/`id` column is named.
+    expect(params).toContain(ORG_ID);
+    expect(params).toContain(OTHER_ORG_ID);
+    // Never the partner id itself: a pin that degraded to a partner-wide
+    // filter (every org under the partner, ignoring `partnerOrgAccess:
+    // 'selected'`) would still pass a same-column-name assertion but binds a
+    // different value.
+    expect(params).not.toContain(PARTNER_ID);
   });
 
   it('omits an org with no active agent for kind from byOrg', async () => {
