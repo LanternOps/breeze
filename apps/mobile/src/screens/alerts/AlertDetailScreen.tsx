@@ -4,6 +4,7 @@ import { Alert, Pressable, ScrollView, Text, View } from 'react-native';
 import { useAppDispatch } from '../../store';
 import { acknowledgeAlertAsync } from '../../store/alertsSlice';
 import type { Alert as AlertModel } from '../../services/api';
+import { relativeTime } from '../../lib/relativeTime';
 import {
   useApprovalTheme,
   palette,
@@ -11,6 +12,17 @@ import {
   spacing,
   type,
 } from '../../theme';
+
+/**
+ * Relative time reads at a glance, but an absolute timestamp is genuinely
+ * useful on a detail screen, so this keeps both rather than picking one (same
+ * approach as DeviceDetailScreen's LAST SEEN row).
+ */
+function formatTimestamp(iso: string): string {
+  const rel = relativeTime(iso);
+  const abs = new Date(iso).toLocaleString();
+  return rel ? `${rel} · ${abs}` : abs;
+}
 
 interface Props {
   route: { params: { alert: AlertModel } };
@@ -139,12 +151,6 @@ export function AlertDetailScreen({ route }: Props) {
         {alert.message}
       </Text>
 
-      <DetailRow
-        label="TYPE"
-        value={alert.type}
-        textHi={theme.textHi}
-        textLo={theme.textLo}
-      />
       {alert.deviceName ? (
         <DetailRow
           label="DEVICE"
@@ -155,14 +161,14 @@ export function AlertDetailScreen({ route }: Props) {
       ) : null}
       <DetailRow
         label="CREATED"
-        value={new Date(alert.createdAt).toLocaleString()}
+        value={formatTimestamp(alert.createdAt)}
         textHi={theme.textHi}
         textLo={theme.textLo}
       />
       {alert.acknowledgedAt ? (
         <DetailRow
           label="ACKNOWLEDGED AT"
-          value={new Date(alert.acknowledgedAt).toLocaleString()}
+          value={formatTimestamp(alert.acknowledgedAt)}
           textHi={theme.textHi}
           textLo={theme.textLo}
         />

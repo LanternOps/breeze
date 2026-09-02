@@ -14,6 +14,7 @@ import { ORG_SLUG_UNIQUE_INDEX } from '../db/schema/orgs';
 import { authMiddleware, requireMfa, requirePermission, requireScope, requirePartner, type AuthContext } from '../middleware/auth';
 import { writeAuditEvent, writeRouteAudit } from '../services/auditEvents';
 import { getEffectiveOrgSettings, assertNotLocked } from '../services/effectiveSettings';
+import { normalizeAlertThresholds } from '../services/aiBudgetAlerts';
 import { clearPartnerScopePolicyCache } from '../oauth/partnerScopePolicy';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
 import {
@@ -689,6 +690,7 @@ const partnerSettingsSchema = z.object({
     messagesPerMinutePerUser: z.number().int().min(1).max(100).optional(),
     messagesPerHourPerOrg: z.number().int().min(1).max(10000).optional(),
     approvalMode: z.enum(['per_step', 'action_plan', 'auto_approve', 'hybrid_plan']).optional(),
+    alertThresholdPercents: z.array(z.number().int().min(1).max(99)).max(5).optional(),
   }).optional(),
   organizationOrder: z.array(z.string().guid()).max(10_000).optional(),
   remoteAccessProviders: z.object({
@@ -915,6 +917,18 @@ orgRoutes.patch(
     newSettings.timeTracking = {
       ...((currentSettings.timeTracking as Record<string, unknown> | undefined) ?? {}),
       ...body.settings.timeTracking,
+    };
+  }
+
+  // Normalise aiBudgets.alertThresholdPercents (sorted, deduped) before
+  // persisting — this partner-wide write path is the equivalent of PUT
+  // /ai/budget's per-org normalisation, and skipping it here would let the
+  // partner-wide rungs be stored in whatever order the client submitted them,
+  // which downstream isDeepStrictEqual-based lock comparisons are sensitive to.
+  if (body.settings?.aiBudgets?.alertThresholdPercents != null) {
+    newSettings.aiBudgets = {
+      ...((newSettings.aiBudgets as Record<string, unknown> | undefined) ?? {}),
+      alertThresholdPercents: normalizeAlertThresholds(body.settings.aiBudgets.alertThresholdPercents),
     };
   }
 

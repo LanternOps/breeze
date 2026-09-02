@@ -153,7 +153,14 @@ function SystemsStackNavigator() {
       <SystemsStack.Screen
         name="SystemsDevices"
         component={DevicesListScreen}
-        options={{ headerShown: false }}
+        // `title` still drives the BACK BUTTON label on whatever screen gets
+        // pushed on top of this one, even with the header itself hidden here —
+        // react-navigation falls back to the raw ROUTE NAME ("SystemsDevices",
+        // no space) when a headerless screen has no title. Every other
+        // headerless route in this file (Systems, Tickets, Timesheet) happens
+        // to already be a single readable word, so this is the only one that
+        // needed an explicit title.
+        options={{ headerShown: false, title: 'Devices' }}
       />
       <SystemsStack.Screen
         name="SystemsAlertDetail"

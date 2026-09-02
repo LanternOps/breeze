@@ -127,6 +127,11 @@ vi.mock('../services/effectiveSettings', () => ({
   assertNotLocked: vi.fn(),
 }));
 
+vi.mock('../services/aiBudgetAlerts', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/aiBudgetAlerts')>();
+  return { ...actual, evaluateAiBudgetThresholds: vi.fn().mockResolvedValue([]) };
+});
+
 import { aiRoutes } from './ai';
 import { db } from '../db';
 import {
@@ -139,6 +144,8 @@ import {
   searchSessions,
 } from '../services/aiAgent';
 import { getUsageSummary, updateBudget, getSessionHistory } from '../services/aiCostTracker';
+import { evaluateAiBudgetThresholds } from '../services/aiBudgetAlerts';
+import { assertNotLocked } from '../services/effectiveSettings';
 import { streamingSessionManager } from '../services/streamingSessionManager';
 import { runPreFlightChecks, abortActivePlan } from '../services/aiAgentSdk';
 
@@ -213,6 +220,7 @@ describe('AI routes', () => {
         ORG_ID,
         expect.objectContaining({ enabled: true, monthlyBudgetCents: 10000 })
       );
+      expect(evaluateAiBudgetThresholds).toHaveBeenCalledWith(ORG_ID);
     });
 
     it('rejects invalid approval mode', async () => {
@@ -233,6 +241,53 @@ describe('AI routes', () => {
       });
 
       expect(res.status).toBe(403);
+    });
+
+    it('rejects an alert threshold outside 1..99', async () => {
+      const res = await app.request('/ai/budget', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ alertThresholdPercents: [50, 100] }),
+      });
+
+      expect(res.status).toBe(400);
+    });
+
+    it('stores normalised alert thresholds', async () => {
+      vi.mocked(updateBudget).mockResolvedValueOnce(undefined);
+
+      const res = await app.request('/ai/budget', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ alertThresholdPercents: [95, 50, 50] }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(updateBudget).toHaveBeenCalledWith(
+        ORG_ID,
+        expect.objectContaining({ alertThresholdPercents: [50, 95] })
+      );
+    });
+
+    it('checks the partner lock against the normalised thresholds, not the raw submitted order (finding #2a)', async () => {
+      // assertNotLocked (services/effectiveSettings.ts) compares with
+      // isDeepStrictEqual, which is array-order-sensitive. Passing the raw body
+      // means a partner-locked [50, 80, 95] would 403 a legitimate no-op resubmit
+      // sent as [95, 50, 80] purely on array order.
+      vi.mocked(updateBudget).mockResolvedValueOnce(undefined);
+
+      const res = await app.request('/ai/budget', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ alertThresholdPercents: [95, 50, 80] }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(assertNotLocked).toHaveBeenCalledWith(
+        ORG_ID,
+        'aiBudgets',
+        expect.objectContaining({ alertThresholdPercents: [50, 80, 95] })
+      );
     });
   });
 

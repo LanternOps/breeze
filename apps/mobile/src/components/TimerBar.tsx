@@ -390,7 +390,7 @@ export function TimerBar({ onOpenTimesheet }: { onOpenTimesheet?: () => void } =
     ? tickets.find((candidate) => candidate.id === running.ticketId)
     : undefined;
   const label = running?.ticketId
-    ? ticketRef({ id: running.ticketId, internalNumber: ticket?.internalNumber ?? null })
+    ? (ticketRef({ internalNumber: ticket?.internalNumber ?? null }) ?? ticket?.subject ?? 'Ticket')
     : 'No ticket';
 
   const bar = (

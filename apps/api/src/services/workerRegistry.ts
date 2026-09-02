@@ -342,6 +342,38 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // #4210 — prunes ticket_outbox rows once ticketOutboxPublisher has
+    // drained them (delivered or permanently stuck). No agent-socket-local
+    // dispatch dependency, so 'global'.
+    name: 'ticketOutboxRetention',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/ticketOutboxRetention');
+      return { init: m.initializeTicketOutboxRetention, shutdown: m.shutdownTicketOutboxRetention };
+    },
+  },
+  {
+    // #4210 — same shape as ticketOutboxRetention, for intent_outbox.
+    name: 'intentOutboxRetention',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/intentOutboxRetention');
+      return { init: m.initializeIntentOutboxRetention, shutdown: m.shutdownIntentOutboxRetention };
+    },
+  },
+  {
+    // #4210 — same shape as ticketOutboxRetention, for metric_anomaly_incidents.
+    name: 'metricAnomalyIncidentRetention',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/metricAnomalyIncidentRetention');
+      return {
+        init: m.initializeMetricAnomalyIncidentRetention,
+        shutdown: m.shutdownMetricAnomalyIncidentRetention,
+      };
+    },
+  },
+  {
     name: 'ipHistoryRetention',
     placement: 'global',
     load: async () => {
