@@ -53,7 +53,7 @@ describe('partner reconstruction resource watermarks', () => {
     // (migrations/2026-09-12-100001-org-lifecycle-foundations.sql Section 2,
     // which lists devices_site_org_fk among the 16 constraints it converts).
     // Restore it rather than editing the shipped migration.
-    await reapplyOrgIdFkDeferrability(db);
+    await reapplyOrgIdFkDeferrability(db, ['devices_site_org_fk']);
     const sourceId = '55555555-5555-4555-8555-555555555555';
     const [identity] = await db.execute<{ value: string }>(sql`
       SELECT public.breeze_partner_export_stable_uuid(
