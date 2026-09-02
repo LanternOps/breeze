@@ -1,4 +1,5 @@
 import { evaluateCapability, partnerIdForDevice, isLifecycleCommand, type TrustDenyCode } from './partnerTrust';
+import { partnerTrustMode } from '../config/partnerTrustMode';
 
 export class TrustDeniedError extends Error {
   readonly code: TrustDenyCode; readonly capability = 'device_execute' as const; readonly reason: string; readonly deviceId: string; readonly commandType: string;
@@ -9,6 +10,7 @@ export class TrustDeniedError extends Error {
 }
 
 export async function assertDeviceExecuteAllowed(deviceId: string, commandType: string, userId?: string | null): Promise<void> {
+  if (partnerTrustMode() === 'off') return;
   if (isLifecycleCommand(commandType)) return;
   const partnerId = await partnerIdForDevice(deviceId);
   if (!partnerId) return;
