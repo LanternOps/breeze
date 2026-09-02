@@ -4,7 +4,7 @@ import '../config/normalizeNodeEnv';
 import { db, withSystemDbAccessContext } from './index';
 import { roles, permissions, rolePermissions, scripts, alertTemplates, partners, organizations, sites, users, partnerUsers } from './schema';
 import { seedSystemTicketStatuses } from '../services/ticketConfigService';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, isNull } from 'drizzle-orm';
 import { hashPassword } from '../services/password';
 
 const DEV_BOOTSTRAP_ADMIN_EMAIL = 'admin@breeze.local';
@@ -879,18 +879,41 @@ export async function seedRoles() {
   const permMap = new Map(allPerms.map(p => [p.resource + ':' + p.action, p.id]));
 
   for (const roleDef of SYSTEM_ROLES) {
-    // Check if role already exists
+    // RMM-QA-164: match ONLY the global system template. A name-only lookup
+    // could match a tenant copy (partner_id set, created by createPartner())
+    // or a custom is_system=false role that happens to share the name — it
+    // would then skip creating the template and, with the reconcile below,
+    // flip a row the seed never owned. Tenant copies are reconciled by the
+    // 2026-09-30-110000 migration, not here.
     const [existing] = await db
       .select()
       .from(roles)
-      .where(eq(roles.name, roleDef.name))
+      .where(
+        and(
+          eq(roles.name, roleDef.name),
+          eq(roles.isSystem, true),
+          isNull(roles.partnerId),
+          isNull(roles.orgId),
+        ),
+      )
       .limit(1);
 
     let roleId: string;
 
     if (existing) {
       roleId = existing.id;
-      console.log('  Role exists:', roleDef.name);
+      if (roleDef.forceMfa && !existing.forceMfa) {
+        // One-directional: the definition may RAISE a stored flag, never
+        // lower one. Org Admin et al. are per-deployment opt-ins (see the
+        // 2026-05-25-f header), so "make it equal the definition" would
+        // silently revert an operator's choice on every db:seed. The UPDATE
+        // fires breeze_roles_permissions_epoch for the template's members
+        // (the bootstrap admin) — intended.
+        await db.update(roles).set({ forceMfa: true }).where(eq(roles.id, existing.id));
+        console.log('  Role reconciled (force_mfa):', roleDef.name);
+      } else {
+        console.log('  Role exists:', roleDef.name);
+      }
     } else {
       const [newRole] = await db
         .insert(roles)
@@ -898,7 +921,8 @@ export async function seedRoles() {
           name: roleDef.name,
           scope: roleDef.scope,
           description: roleDef.description,
-          isSystem: true
+          isSystem: true,
+          forceMfa: roleDef.forceMfa,
         })
         .returning();
 
