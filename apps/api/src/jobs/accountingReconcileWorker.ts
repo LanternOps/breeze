@@ -119,6 +119,21 @@ export interface ReconcileRunSummary {
   realmChanged: number;
   failed: number;
   invoicesMarkedDeleted: number;
+  // --- Phase D2 (payment push). Every one of these is CLEAN for the cursor:
+  // each is a recorded, permanent decision the applier reached, not a step that
+  // failed and could succeed on a re-read. ---
+  /** Breeze-created Payments whose lost create response the echo recovered. */
+  adopted: number;
+  /** Breeze-origin payments QuickBooks edited. Recorded, not applied. */
+  breezeOriginDiverged: number;
+  /** Breeze-origin lines the pull deliberately left to the push/delete job. */
+  skippedBreezeOrigin: number;
+  /** New QuickBooks-origin imports suppressed because `pull_payments` is off. */
+  skippedPullDisabled: number;
+  /** Breeze-created Payments somebody removed in QuickBooks. */
+  breezeOriginRemovedRemotely: number;
+  /** CDC "deleted" invoices that were Breeze's OWN void echoing back. */
+  invoicesSelfVoided: number;
   cursorBefore: Date | null;
   cursorAfter: Date | null;
 }
@@ -152,6 +167,12 @@ function emptySummary(cursorBefore: Date | null): ReconcileRunSummary {
     realmChanged: 0,
     failed: 0,
     invoicesMarkedDeleted: 0,
+    adopted: 0,
+    breezeOriginDiverged: 0,
+    skippedBreezeOrigin: 0,
+    skippedPullDisabled: 0,
+    breezeOriginRemovedRemotely: 0,
+    invoicesSelfVoided: 0,
     cursorBefore,
     cursorAfter: null,
   };
@@ -173,6 +194,11 @@ function tally(summary: ReconcileRunSummary, outcome: PaymentPullOutcome): void 
     case 'currency_mismatch': summary.currencyMismatch++; break;
     case 'invoice_void': summary.invoiceVoid++; break;
     case 'realm_changed': summary.realmChanged++; break;
+    case 'adopted': summary.adopted++; break;
+    case 'breeze_origin_diverged': summary.breezeOriginDiverged++; break;
+    case 'skipped_breeze_origin': summary.skippedBreezeOrigin++; break;
+    case 'skipped_pull_disabled': summary.skippedPullDisabled++; break;
+    case 'breeze_origin_removed_remotely': summary.breezeOriginRemovedRemotely++; break;
     case 'failed': summary.failed++; break;
   }
 }
@@ -209,6 +235,12 @@ function logRunLine(data: ReconcileConnectionJobData, summary: ReconcileRunSumma
     `realmChanged=${summary.realmChanged}`,
     `failed=${summary.failed}`,
     `invoicesMarkedDeleted=${summary.invoicesMarkedDeleted}`,
+    `adopted=${summary.adopted}`,
+    `breezeOriginDiverged=${summary.breezeOriginDiverged}`,
+    `skippedBreezeOrigin=${summary.skippedBreezeOrigin}`,
+    `skippedPullDisabled=${summary.skippedPullDisabled}`,
+    `breezeOriginRemovedRemotely=${summary.breezeOriginRemovedRemotely}`,
+    `invoicesSelfVoided=${summary.invoicesSelfVoided}`,
     `cursorBefore=${summary.cursorBefore?.toISOString() ?? 'null'}`,
     `cursorAfter=${summary.cursorAfter?.toISOString() ?? 'null'}`,
     `durationMs=${durationMs}`,
@@ -270,6 +302,10 @@ export async function processReconcileConnectionJob(
     for (const remoteInvoiceId of changes.deletedInvoices) {
       const outcome = await markInvoiceDeletedRemotely(fresh, remoteInvoiceId, runInDbContext, expectedRealmFingerprint);
       if (outcome === 'marked') summary.invoicesMarkedDeleted++;
+      // Breeze's own void job voids the invoice in QuickBooks and CDC reports
+      // that void as a deletion. Counted separately so a run line can never read
+      // as "QuickBooks deleted N invoices" for work Breeze itself did.
+      else if (outcome === 'invoice_void') summary.invoicesSelfVoided++;
     }
     for (const remotePaymentId of changes.deletedPayments) {
       for (const reversal of await reverseAccountingPayment(fresh, remotePaymentId, runInDbContext, expectedRealmFingerprint)) {

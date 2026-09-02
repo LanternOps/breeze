@@ -465,6 +465,12 @@ describe('processReconcileConnectionJob: cursor', () => {
       realmChanged: 0,
       failed: 0,
       invoicesMarkedDeleted: 0,
+      adopted: 0,
+      breezeOriginDiverged: 0,
+      skippedBreezeOrigin: 0,
+      skippedPullDisabled: 0,
+      breezeOriginRemovedRemotely: 0,
+      invoicesSelfVoided: 0,
       cursorBefore: CURSOR_BEFORE,
       cursorAfter: changes.cursor,
     });
@@ -486,6 +492,37 @@ describe('processReconcileConnectionJob: cursor', () => {
     expect(summary?.invoicesMarkedDeleted).toBe(1);
     expect(summary?.reversed).toBe(2);
     expect(advanceReconcileCursorMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('tallies every Phase D2 outcome and still advances the cursor — all five are CLEAN', async () => {
+    applyReturns('adopted', 'breeze_origin_diverged', 'skipped_breeze_origin', 'skipped_pull_disabled');
+    reverseReturns('breeze_origin_removed_remotely');
+    markInvoiceDeletedMock.mockImplementation(async () => {
+      record('markInvoiceDeletedRemotely');
+      return 'invoice_void';
+    });
+    reconcileChangesMock.mockResolvedValue({
+      ...EMPTY_CHANGESET,
+      deletedInvoices: ['145'],
+      deletedPayments: ['181'],
+      payments: [line(), line(), line(), line()],
+    });
+
+    const summary = await processReconcileConnectionJob(JOB);
+
+    expect(summary).toMatchObject({
+      adopted: 1,
+      breezeOriginDiverged: 1,
+      skippedBreezeOrigin: 1,
+      skippedPullDisabled: 1,
+      breezeOriginRemovedRemotely: 1,
+      // Breeze's OWN void echoing back is never "deleted in QuickBooks".
+      invoicesSelfVoided: 1,
+      invoicesMarkedDeleted: 0,
+      failed: 0,
+    });
+    expect(advanceReconcileCursorMock).toHaveBeenCalledTimes(1);
+    expect(stampReconcileRunErrorMock).toHaveBeenCalledWith({}, CONN_ID, PARTNER_ID, null);
   });
 
   it('does NOT advance the cursor and rethrows when an applier throws', async () => {

@@ -155,6 +155,11 @@ interface MappingRow {
   id: string; integrationId: string; partnerId: string; breezeEntityType: string; breezeEntityId: string;
   remoteEntityType: string; remoteEntityId: string | null; remoteSyncToken: string | null;
   linkStatus: string; syncStatus: string; lastError: string | null;
+  // Phase D2 outbox columns. Modelled here because the pull now BRANCHES on
+  // them: `breezeOrigin` decides whether QuickBooks or Breeze is the source of
+  // truth for the row, and `pendingOp`/`claimedAt` are what an adoption must
+  // close out so the push sweep stops re-enqueuing the same create.
+  breezeOrigin: boolean; pendingOp: 'push' | 'delete' | null; claimedAt: Date | null;
 }
 
 type StmtKind = 'select' | 'insert' | 'update' | 'delete' | 'recompute';
@@ -208,7 +213,9 @@ function invoiceMappingRow(overrides: Partial<MappingRow> = {}): MappingRow {
     id: 'map-invoice-1', integrationId: CONN_ID, partnerId: PARTNER,
     breezeEntityType: 'invoice', breezeEntityId: INVOICE_ID,
     remoteEntityType: 'Invoice', remoteEntityId: QBO_INVOICE_ID, remoteSyncToken: '3',
-    linkStatus: 'confirmed', syncStatus: 'synced', lastError: null, ...overrides,
+    linkStatus: 'confirmed', syncStatus: 'synced', lastError: null,
+    // Invoice mappings are Breeze-origin by the Task-1 backfill.
+    breezeOrigin: true, pendingOp: null, claimedAt: null, ...overrides,
   };
 }
 
@@ -217,7 +224,10 @@ function paymentMappingRow(overrides: Partial<MappingRow> = {}): MappingRow {
     id: 'map-payment-1', integrationId: CONN_ID, partnerId: PARTNER,
     breezeEntityType: 'payment', breezeEntityId: 'pay-qbo-1',
     remoteEntityType: 'Payment', remoteEntityId: `${QBO_PAYMENT_ID}/${QBO_INVOICE_ID}`, remoteSyncToken: '0',
-    linkStatus: 'confirmed', syncStatus: 'synced', lastError: null, ...overrides,
+    linkStatus: 'confirmed', syncStatus: 'synced', lastError: null,
+    // A pulled QuickBooks payment by default — the Breeze-origin suites below
+    // flip this explicitly so the two directions can never be confused.
+    breezeOrigin: false, pendingOp: null, claimedAt: null, ...overrides,
   };
 }
 
@@ -261,7 +271,11 @@ function selectRows(table: unknown, cond: unknown): unknown[] {
     // when the compiled condition actually carries one.
     const filtersEntityType = params.includes('payment') || params.includes('invoice');
     return currentMappings.filter((r) => {
+      // `loadPaymentMappingByBreezeId` (Phase D2 adoption) keys on
+      // breeze_entity_id, which no other lookup binds — a row is still
+      // identified by exactly one of the three real keys.
       const identified = boundTo(cond, r.id)
+        || boundTo(cond, r.breezeEntityId)
         || (r.remoteEntityId !== null && boundTo(cond, r.remoteEntityId));
       if (!identified) return false;
       return !filtersEntityType || params.includes(r.breezeEntityType);
@@ -334,8 +348,14 @@ function installDbMocks() {
               (v): v is string => typeof v === 'string' && v.endsWith('%'),
             );
             const requiresError = whereParams.includes('error');
+            // The Phase-D2 adoption CAS narrows its WHERE with
+            // `remote_entity_id IS NULL` (an unbound predicate, so it has to be
+            // read off the compiled SQL). Honouring it is what makes "a landing
+            // phase 2 wins the race" a real assertion instead of a vacuous one.
+            const requiresNullRemoteId = /"remote_entity_id" is null/.test(compiledSql(cond));
             const matched = currentMappings.filter((r) => boundTo(cond, r.id) && boundTo(cond, r.partnerId)
               && (!requiresError || r.syncStatus === 'error')
+              && (!requiresNullRemoteId || r.remoteEntityId === null)
               && (!likePattern || (r.lastError ?? '').startsWith(likePattern.slice(0, -1))));
             for (const row of matched) Object.assign(row, patch);
             return Promise.resolve(matched.map((r) => ({ ...r })));
@@ -1030,5 +1050,429 @@ describe('markInvoiceDeletedRemotely', () => {
   it('refuses to run inside an ambient DB access context', async () => {
     await expect(runCtx(() => markInvoiceDeletedRemotely(conn(), QBO_INVOICE_ID, runCtx, REALM_FP)))
       .rejects.toThrow(/must run with NO ambient DB access context/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase D2 — the pull side of the payment PUSH
+//
+// Every suite below exists to prove ONE property mechanically: QuickBooks is
+// never the source of truth for a payment Breeze created. Concretely, no
+// Breeze-origin branch may write `invoice_payments` — asserted through
+// `moneyWrites()` rather than by reading the fake's state, so a write that
+// happened to be a no-op still fails.
+// ---------------------------------------------------------------------------
+
+const BREEZE_PAY = '0f8d1a2b-3c4d-4e5f-8a9b-0c1d2e3f4a5b';
+const REMOTE_MAPPING_ID = `${QBO_PAYMENT_ID}/${QBO_INVOICE_ID}`;
+
+/** Every statement this run issued AGAINST the money table that was not a read. */
+const moneyWrites = (): Stmt[] => stmts.filter((s) => s.table === 'invoice_payments' && s.kind !== 'select');
+
+/** The Breeze payment row a push created, sitting on the locked invoice. */
+function breezePaymentRow(overrides: Partial<PaymentRow> = {}): PaymentRow {
+  return paymentRow({ id: BREEZE_PAY, amount: '150.00', note: null, recordedBy: 'user-1', ...overrides });
+}
+
+/** Breeze-origin, no remote id yet, a push still owed: the create response was lost. */
+function pendingPushMapping(overrides: Partial<MappingRow> = {}): MappingRow {
+  return paymentMappingRow({
+    breezeEntityId: BREEZE_PAY, remoteEntityId: null, remoteSyncToken: null,
+    breezeOrigin: true, pendingOp: 'push', syncStatus: 'pending', claimedAt: null, ...overrides,
+  });
+}
+
+/** Breeze-origin and already stamped by phase 2. */
+function breezeOriginMapping(overrides: Partial<MappingRow> = {}): MappingRow {
+  return paymentMappingRow({
+    breezeEntityId: BREEZE_PAY, remoteEntityId: REMOTE_MAPPING_ID, remoteSyncToken: '0',
+    breezeOrigin: true, pendingOp: null, syncStatus: 'synced', ...overrides,
+  });
+}
+
+/** A CDC line carrying Breeze's own PrivateNote marker. */
+const markedLine = (overrides: Partial<ChangeSetPaymentLine> = {}): ChangeSetPaymentLine =>
+  ({ ...LINE, breezePaymentId: BREEZE_PAY, ...overrides });
+
+describe('adoption of a Breeze-created Payment (spec decision 3)', () => {
+  it('fills in the remote id and token on a pending push mapping whose create response was lost', async () => {
+    currentPayments = [breezePaymentRow()];
+    currentMappings = [invoiceMappingRow(), pendingPushMapping()];
+
+    const r = await applyAccountingPayment(conn(), markedLine(), runCtx, REALM_FP);
+
+    expect(r.outcome).toBe('adopted');
+    expect(r.invoicePaymentId).toBe(BREEZE_PAY);
+    expect(currentMappings[1]).toMatchObject({
+      remoteEntityId: REMOTE_MAPPING_ID,
+      remoteSyncToken: '0',
+      linkStatus: 'confirmed',
+      syncStatus: 'synced',
+      // Both cleared, or the sweep re-enqueues the create forever and, past
+      // QuickBooks' 24h requestid window, duplicates the Payment.
+      pendingOp: null,
+      claimedAt: null,
+      lastError: null,
+    });
+    // Adoption CLAIMS the row the push already wrote: no second payment row,
+    // and no rewrite of the first.
+    expect(currentPayments).toHaveLength(1);
+    expect(moneyWrites()).toEqual([]);
+    expect(recomputeMock).not.toHaveBeenCalled();
+    expect(writeAuditEventMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'accounting.payment.adopted',
+      resourceId: INVOICE_ID,
+      details: expect.objectContaining({ invoicePaymentId: BREEZE_PAY, amount: '150.00', currency: 'USD' }),
+    }));
+  });
+
+  it('adopts UNDER the invoice lock, and guards the UPDATE on remote_entity_id IS NULL', async () => {
+    currentPayments = [breezePaymentRow()];
+    currentMappings = [invoiceMappingRow(), pendingPushMapping()];
+
+    await applyAccountingPayment(conn(), markedLine(), runCtx, REALM_FP);
+
+    const lockAt = indexOfStmt((s) => s.kind === 'select' && s.table === 'invoices' && s.forUpdate === true);
+    const adoptAt = indexOfStmt((s) => s.kind === 'update' && s.table === 'accounting_entity_mappings');
+    expect(lockAt).toBeGreaterThanOrEqual(0);
+    expect(adoptAt).toBeGreaterThan(lockAt);
+
+    // A push phase 2 that landed a microsecond ago must WIN, not be overwritten.
+    const adopt = stmts[adoptAt]!;
+    expect(compiledSql(adopt.where)).toMatch(/"remote_entity_id" is null/);
+    expect(boundTo(adopt.where, PARTNER)).toBe(true);
+    expect(boundTo(adopt.where, 'map-payment-1')).toBe(true);
+  });
+
+  it('reports skipped_breeze_origin when the adoption CAS matches no row (phase 2 won the race)', async () => {
+    currentPayments = [breezePaymentRow()];
+    // `remoteEntityId` is re-read as non-null by the guarded UPDATE's own
+    // WHERE, which is what the fake models: the row no longer qualifies.
+    currentMappings = [invoiceMappingRow(), pendingPushMapping()];
+    const original = updateMock.getMockImplementation()!;
+    updateMock.mockImplementation((table: unknown) => {
+      // Simulate the concurrent phase 2 committing between the read and the CAS.
+      if (table === accountingEntityMappings) currentMappings[1]!.remoteEntityId = REMOTE_MAPPING_ID;
+      return original(table);
+    });
+
+    const r = await applyAccountingPayment(conn(), markedLine(), runCtx, REALM_FP);
+
+    expect(r.outcome).toBe('skipped_breeze_origin');
+  });
+
+  it('refuses to adopt when the amounts disagree — the push job owns that outcome', async () => {
+    currentPayments = [breezePaymentRow({ amount: '40.00' })];
+    currentMappings = [invoiceMappingRow(), pendingPushMapping()];
+
+    const r = await applyAccountingPayment(conn(), markedLine(), runCtx, REALM_FP);
+
+    expect(r.outcome).toBe('skipped_breeze_origin');
+    expect(currentMappings[1]!.remoteEntityId).toBeNull();
+    expect(moneyWrites()).toEqual([]);
+  });
+
+  it('refuses to adopt when the marker names a payment on a DIFFERENT invoice', async () => {
+    // A split QuickBooks Payment carries the SAME PrivateNote on every line, so
+    // the marker alone never authorises a claim.
+    currentInvoices = [invoiceRow(), invoiceRow({ id: 'invoice-other' })];
+    currentPayments = [breezePaymentRow({ invoiceId: 'invoice-other' })];
+    currentMappings = [invoiceMappingRow(), pendingPushMapping()];
+
+    await expect(applyAccountingPayment(conn(), markedLine(), runCtx, REALM_FP))
+      .resolves.toMatchObject({ outcome: 'skipped_breeze_origin' });
+    expect(currentMappings[1]!.remoteEntityId).toBeNull();
+  });
+
+  it('refuses to adopt a marker naming a payment Breeze does not own — no row is inserted', async () => {
+    currentMappings = [invoiceMappingRow()];
+
+    const r = await applyAccountingPayment(conn(), markedLine(), runCtx, REALM_FP);
+
+    expect(r.outcome).toBe('skipped_breeze_origin');
+    expect(currentPayments).toHaveLength(0);
+    expect(insertMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses to adopt a QuickBooks-ORIGIN mapping even when the note carries a marker', async () => {
+    currentPayments = [breezePaymentRow()];
+    currentMappings = [invoiceMappingRow(), pendingPushMapping({ breezeOrigin: false })];
+
+    await expect(applyAccountingPayment(conn(), markedLine(), runCtx, REALM_FP))
+      .resolves.toMatchObject({ outcome: 'skipped_breeze_origin' });
+  });
+
+  it('refuses to adopt a mapping that owes nothing — nothing authorises the claim', async () => {
+    currentPayments = [breezePaymentRow()];
+    currentMappings = [invoiceMappingRow(), pendingPushMapping({ pendingOp: null, syncStatus: 'error' })];
+
+    await expect(applyAccountingPayment(conn(), markedLine(), runCtx, REALM_FP))
+      .resolves.toMatchObject({ outcome: 'skipped_breeze_origin' });
+  });
+
+  it('adopts a mapping that already owes a DELETE without cancelling the delete', async () => {
+    // A void landed while the create was in flight: `requestPaymentDelete`
+    // destroyed the invoice_payments row and flipped `pending_op` to 'delete'.
+    // The delete worker parks on `awaiting_remote_ref` until the remote id
+    // lands, so the adoption must stamp it and KEEP the delete owed.
+    currentPayments = [];
+    currentMappings = [invoiceMappingRow(), pendingPushMapping({
+      pendingOp: 'delete', claimedAt: new Date('2026-09-02T19:00:00.000Z'),
+    })];
+
+    const r = await applyAccountingPayment(conn(), markedLine(), runCtx, REALM_FP);
+
+    expect(r.outcome).toBe('adopted');
+    expect(currentMappings[1]).toMatchObject({
+      remoteEntityId: REMOTE_MAPPING_ID,
+      remoteSyncToken: '0',
+      linkStatus: 'confirmed',
+      // Still owed, and the lease released so the delete worker can claim it.
+      pendingOp: 'delete',
+      syncStatus: 'pending',
+      claimedAt: null,
+    });
+    expect(moneyWrites()).toEqual([]);
+  });
+
+  it('refuses to adopt a push-pending mapping whose payment row has vanished', async () => {
+    currentPayments = [];
+    currentMappings = [invoiceMappingRow(), pendingPushMapping()];
+
+    await expect(applyAccountingPayment(conn(), markedLine(), runCtx, REALM_FP))
+      .resolves.toMatchObject({ outcome: 'skipped_breeze_origin' });
+  });
+
+  it('reports a divergence when QuickBooks MOVED a Breeze payment to another invoice', async () => {
+    currentPayments = [breezePaymentRow()];
+    currentMappings = [invoiceMappingRow(), breezeOriginMapping({ remoteEntityId: `${QBO_PAYMENT_ID}/999` })];
+
+    const r = await applyAccountingPayment(conn(), markedLine(), runCtx, REALM_FP);
+
+    expect(r.outcome).toBe('breeze_origin_diverged');
+    expect(currentMappings[1]).toMatchObject({
+      syncStatus: 'error',
+      lastError: 'Edited in QuickBooks; Breeze remains the source of truth for this payment',
+      // The link SURVIVES the divergence so a human can compare the two records.
+      remoteEntityId: `${QBO_PAYMENT_ID}/999`,
+    });
+    expect(moneyWrites()).toEqual([]);
+    expect(writeAuditEventMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'accounting.payment.diverged',
+      details: expect.objectContaining({ reason: 'allocation_moved' }),
+    }));
+  });
+});
+
+describe('the echo of a Breeze-origin payment (spec decision 5)', () => {
+  it('replays an identical token without touching the money row', async () => {
+    currentPayments = [breezePaymentRow()];
+    currentMappings = [invoiceMappingRow(), breezeOriginMapping()];
+
+    const r = await applyAccountingPayment(conn(), { ...LINE, remotePaymentSyncToken: '0' }, runCtx, REALM_FP);
+
+    expect(r.outcome).toBe('replayed');
+    expect(recomputeMock).not.toHaveBeenCalled();
+    expect(moneyWrites()).toEqual([]);
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it('stores a NEWER token and stays clean when the amount is unchanged', async () => {
+    currentPayments = [breezePaymentRow()];
+    currentMappings = [invoiceMappingRow(), breezeOriginMapping()];
+
+    const r = await applyAccountingPayment(conn(), { ...LINE, remotePaymentSyncToken: '3' }, runCtx, REALM_FP);
+
+    expect(r.outcome).toBe('replayed');
+    // Stored anyway so a later corrective delete has the right SyncToken.
+    expect(currentMappings[1]).toMatchObject({ remoteSyncToken: '3', syncStatus: 'synced', lastError: null });
+    expect(currentPayments[0]!.amount).toBe('150.00');
+    expect(moneyWrites()).toEqual([]);
+    expect(recomputeMock).not.toHaveBeenCalled();
+  });
+
+  it('records a divergence — and STILL stores the token — when QuickBooks changed the amount', async () => {
+    currentPayments = [breezePaymentRow()];
+    currentMappings = [invoiceMappingRow(), breezeOriginMapping()];
+
+    const r = await applyAccountingPayment(
+      conn(), { ...LINE, remotePaymentSyncToken: '3', amountMinor: 4000 }, runCtx, REALM_FP,
+    );
+
+    expect(r.outcome).toBe('breeze_origin_diverged');
+    expect(currentMappings[1]).toMatchObject({
+      remoteSyncToken: '3',
+      syncStatus: 'error',
+      lastError: 'Edited in QuickBooks; Breeze remains the source of truth for this payment',
+    });
+    // Breeze is the system of record: the money row is NOT rewritten.
+    expect(currentPayments[0]!.amount).toBe('150.00');
+    expect(moneyWrites()).toEqual([]);
+    expect(recomputeMock).not.toHaveBeenCalled();
+    expect(writeAuditEventMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'accounting.payment.diverged',
+      details: expect.objectContaining({ reason: 'amount_changed', remoteAmountMinor: 4000 }),
+    }));
+  });
+
+  it('leaves a pending DELETE owed while recording the divergence', async () => {
+    // The divergence marker is an annotation for a human. Clearing `pending_op`
+    // here would abandon a delete the row still owes QuickBooks and strand the
+    // Payment in the books forever.
+    currentPayments = [];
+    currentMappings = [invoiceMappingRow(), breezeOriginMapping({
+      pendingOp: 'delete', syncStatus: 'pending', claimedAt: new Date('2026-09-02T19:00:00.000Z'),
+    })];
+
+    const r = await applyAccountingPayment(conn(), { ...LINE, remotePaymentSyncToken: '3' }, runCtx, REALM_FP);
+
+    expect(r.outcome).toBe('breeze_origin_diverged');
+    expect(currentMappings[1]).toMatchObject({
+      pendingOp: 'delete',
+      claimedAt: new Date('2026-09-02T19:00:00.000Z'),
+      remoteSyncToken: '3',
+      syncStatus: 'error',
+    });
+  });
+
+  it('never routes a Breeze-origin echo through the QuickBooks-origin update path', async () => {
+    currentPayments = [breezePaymentRow()];
+    currentMappings = [invoiceMappingRow(), breezeOriginMapping()];
+
+    await applyAccountingPayment(conn(), { ...LINE, remotePaymentSyncToken: '3', paymentRefNum: 'CHANGED' }, runCtx, REALM_FP);
+
+    expect(currentPayments[0]).toMatchObject({ reference: '10441', method: 'check', receivedAt: '2026-09-02' });
+  });
+});
+
+describe('pull disabled (spec decision 6, #4543)', () => {
+  it('suppresses a NEW QuickBooks-origin import and says so', async () => {
+    currentMappings = [invoiceMappingRow()];
+
+    const r = await applyAccountingPayment(conn({ pullPayments: false }), LINE, runCtx, REALM_FP);
+
+    expect(r.outcome).toBe('skipped_pull_disabled');
+    expect(r.invoiceId).toBe(INVOICE_ID);
+    expect(currentPayments).toHaveLength(0);
+    expect(insertMock).not.toHaveBeenCalled();
+  });
+
+  it('still ADOPTS a Breeze-created Payment with pull off — push and pull are separate switches', async () => {
+    currentPayments = [breezePaymentRow()];
+    currentMappings = [invoiceMappingRow(), pendingPushMapping()];
+
+    await expect(applyAccountingPayment(conn({ pullPayments: false }), markedLine(), runCtx, REALM_FP))
+      .resolves.toMatchObject({ outcome: 'adopted' });
+  });
+
+  it('still REPLAYS a Breeze-origin echo with pull off', async () => {
+    currentPayments = [breezePaymentRow()];
+    currentMappings = [invoiceMappingRow(), breezeOriginMapping()];
+
+    await expect(applyAccountingPayment(conn({ pullPayments: false }), LINE, runCtx, REALM_FP))
+      .resolves.toMatchObject({ outcome: 'replayed' });
+  });
+
+  it('still UPDATES an already-imported QuickBooks-origin payment with pull off', async () => {
+    // Only NEW imports are suppressed: a mapping that exists is this
+    // connection's own history, and freezing it would let Breeze drift.
+    currentPayments = [paymentRow()];
+    currentMappings = [invoiceMappingRow(), paymentMappingRow({ remoteSyncToken: '0' })];
+
+    await expect(applyAccountingPayment(
+      conn({ pullPayments: false }), { ...LINE, remotePaymentSyncToken: '9' }, runCtx, REALM_FP,
+    )).resolves.toMatchObject({ outcome: 'updated' });
+  });
+});
+
+describe('a Breeze-origin Payment deleted in QuickBooks (spec decision 5)', () => {
+  it('KEEPS the Breeze payment row, clears the remote id and marks the mapping', async () => {
+    // The money moved (a Stripe charge, a cheque). Deleting the Breeze row
+    // because somebody removed the QuickBooks mirror would destroy the record
+    // of a real payment.
+    currentPayments = [breezePaymentRow()];
+    currentMappings = [invoiceMappingRow(), breezeOriginMapping()];
+
+    const results = await reverseAccountingPayment(conn(), QBO_PAYMENT_ID, runCtx, REALM_FP);
+
+    expect(results.map((r) => r.outcome)).toEqual(['breeze_origin_removed_remotely']);
+    expect(results[0]!.invoicePaymentId).toBe(BREEZE_PAY);
+    expect(currentPayments).toHaveLength(1);
+    expect(currentMappings[1]).toMatchObject({
+      syncStatus: 'error',
+      lastError: 'Deleted in QuickBooks',
+      // Cleared so a later push can recreate the Payment.
+      remoteEntityId: null,
+      remoteSyncToken: null,
+    });
+    expect(moneyWrites()).toEqual([]);
+    expect(recomputeMock).not.toHaveBeenCalled();
+    expect(deleteMock).not.toHaveBeenCalled();
+  });
+
+  it('leaves pending_op alone so work the row still owes QuickBooks survives', async () => {
+    currentPayments = [breezePaymentRow()];
+    currentMappings = [invoiceMappingRow(), breezeOriginMapping({ pendingOp: 'delete', claimedAt: null })];
+
+    await reverseAccountingPayment(conn(), QBO_PAYMENT_ID, runCtx, REALM_FP);
+
+    expect(currentMappings[1]!.pendingOp).toBe('delete');
+  });
+
+  it('treats a dropped allocation on a Breeze-origin payment as divergence, not reversal', async () => {
+    currentPayments = [breezePaymentRow()];
+    currentMappings = [invoiceMappingRow(), breezeOriginMapping()];
+
+    const results = await reverseStaleAllocations(conn(), QBO_PAYMENT_ID, ['999'], runCtx, REALM_FP);
+
+    expect(results.map((r) => r.outcome)).toEqual(['breeze_origin_removed_remotely']);
+    expect(currentPayments).toHaveLength(1);
+    expect(currentMappings).toHaveLength(2);
+  });
+
+  it('still DESTROYS a QuickBooks-origin payment row (Phase D behaviour, unchanged)', async () => {
+    currentPayments = [paymentRow()];
+    currentMappings = [invoiceMappingRow(), paymentMappingRow()];
+
+    const results = await reverseAccountingPayment(conn(), QBO_PAYMENT_ID, runCtx, REALM_FP);
+
+    expect(results.map((r) => r.outcome)).toEqual(['reversed']);
+    expect(currentPayments).toHaveLength(0);
+    expect(currentMappings).toHaveLength(1);
+  });
+});
+
+describe('markInvoiceDeletedRemotely self-void guard (spec decision 11)', () => {
+  it('reports invoice_void — NOT an error — when Breeze itself voided the invoice', async () => {
+    // The QuickBooks void is Breeze's OWN echo: voidInvoiceInAccounting sent it.
+    // Stamping "Deleted in QuickBooks" would put a scary error on the mapping
+    // card for a void the operator performed in Breeze thirty seconds earlier.
+    currentInvoices = [invoiceRow({ status: 'void' })];
+    currentMappings = [invoiceMappingRow()];
+
+    await expect(markInvoiceDeletedRemotely(conn(), QBO_INVOICE_ID, runCtx, REALM_FP)).resolves.toBe('invoice_void');
+
+    expect(currentMappings[0]).toMatchObject({ syncStatus: 'synced', lastError: null });
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it('still marks an invoice QuickBooks deleted behind Breeze back', async () => {
+    currentInvoices = [invoiceRow({ status: 'sent' })];
+    currentMappings = [invoiceMappingRow()];
+
+    await expect(markInvoiceDeletedRemotely(conn(), QBO_INVOICE_ID, runCtx, REALM_FP)).resolves.toBe('marked');
+
+    expect(currentMappings[0]).toMatchObject({
+      syncStatus: 'error', lastError: 'Deleted in QuickBooks', remoteEntityId: QBO_INVOICE_ID,
+    });
+  });
+
+  it('marks the mapping when the invoice row itself is gone', async () => {
+    // An erased org: there is no status to read, and the mapping is all that is
+    // left. Reporting `invoice_void` here would hide a real remote deletion.
+    currentInvoices = [];
+    currentMappings = [invoiceMappingRow()];
+
+    await expect(markInvoiceDeletedRemotely(conn(), QBO_INVOICE_ID, runCtx, REALM_FP)).resolves.toBe('marked');
   });
 });
