@@ -4,9 +4,13 @@
 -- only the eight read scopes. The provisioning write scopes (#3243) and this
 -- PR's enrollment-keys:write were both added in TypeScript without a matching
 -- SQL change, so the CHECK would reject any principal carrying one of them.
--- This replacement lists every scope in PARTNER_SERVICE_PRINCIPAL_SCOPES;
--- enrollmentKeys.test.ts parses the ARRAY below and asserts exact parity, so a
--- future scope added in TypeScript alone fails the suite rather than the CHECK.
+-- This replacement lists every scope in PARTNER_SERVICE_PRINCIPAL_SCOPES.
+-- src/services/partnerServicePrincipalScopes.test.ts parses the ARRAY below
+-- (from whichever migration most recently replaces this function, in the same
+-- localeCompare filename order autoMigrate applies) and asserts exact SET
+-- equality with PARTNER_SERVICE_PRINCIPAL_SCOPES. So a scope added in
+-- TypeScript alone, or removed from TypeScript but left grantable here, fails
+-- the suite rather than surfacing as a CHECK violation in production.
 
 CREATE OR REPLACE FUNCTION public.breeze_valid_partner_service_principal_scopes(
   candidate_scopes text[]
@@ -74,8 +78,13 @@ CREATE INDEX IF NOT EXISTS partner_enrollment_key_idempotency_partner_idx
   ON partner_enrollment_key_idempotency(partner_id);
 
 -- Retention: claims only need to outlive the window in which a client may
--- retry, not the key itself. This index is the reaper's scan path; the sweep
--- is registered alongside the existing expired-enrollment-key cleanup job.
+-- retry, not the key itself. This index is the reaper's scan path. The sweep
+-- runs inside the existing expired-enrollment-key cleanup job
+-- (src/jobs/enrollmentKeyCleanup.ts, daily at 04:00 UTC), which deletes claims
+-- older than PARTNER_ENROLLMENT_KEY_IDEMPOTENCY_RETENTION_DAYS in the same
+-- system-scoped pass. The FK cascade from enrollment_keys is NOT sufficient on
+-- its own: a claim can outlive its key's retention, and a request that died
+-- between the claim and the commit leaves a claim with no key at all.
 CREATE INDEX IF NOT EXISTS partner_enrollment_key_idempotency_created_at_idx
   ON partner_enrollment_key_idempotency(created_at);
 

@@ -28,8 +28,7 @@ Content-Type: application/json
     "configuration:read",
     "scripts:read",
     "backup-configuration:read",
-    "custom-fields:read",
-    "enrollment-keys:write"
+    "custom-fields:read"
   ],
   "sourceCidrs": [],
   "expiresAt": null
@@ -38,7 +37,9 @@ Content-Type: application/json
 
 The eight read scopes are the minimum set for a complete reconstruction
 consumer. A narrower integration may omit scopes only for resources it will
-never request.
+never request. A read-only principal may leave `sourceCidrs` empty and
+`expiresAt` null, as above; a principal carrying `enrollment-keys:write` may
+not — see the worked example below.
 
 Three further scopes are **write** scopes, for unattended provisioning and
 migration integrations. They are create/update only — deleting an organization,
@@ -56,9 +57,42 @@ They must be granted explicitly, per principal:
 credentials it mints let a machine join the tenant. A principal holding it must
 additionally set a future expiry **and** at least one source IP/CIDR; Breeze
 enforces that pair in the management API, in the web UI, and as a database
-CHECK constraint. Minting is separately rate limited per service principal
-(default 10/hour, `PARTNER_API_ENROLLMENT_KEY_WRITE_RATE_LIMIT`) and fails
-closed.
+CHECK constraint. A request that grants the scope with `"sourceCidrs": []` or
+`"expiresAt": null` is rejected — the constraint has no exception, so a minting
+principal looks like this instead:
+
+```http
+POST /api/v1/partner-service-principals
+Authorization: Bearer <operator-access-token>
+Content-Type: application/json
+
+{
+  "name": "tenant-provisioning",
+  "description": "Unattended device enrollment for onboarding",
+  "scopes": [
+    "organizations:read",
+    "sites:read",
+    "enrollment-keys:write"
+  ],
+  "sourceCidrs": ["203.0.113.0/24"],
+  "expiresAt": "2027-01-01T00:00:00.000Z"
+}
+```
+
+Minting is rate limited and fails closed. Two buckets are charged, both hourly:
+per service principal (`PARTNER_API_ENROLLMENT_KEY_WRITE_RATE_LIMIT`, default
+10) and per partner (`PARTNER_API_ENROLLMENT_KEY_WRITE_PARTNER_RATE_LIMIT`,
+default 100). The partner bucket exists because a partner admin can create
+service principals, and a per-principal limit alone would be multiplied by
+however many they create. Idempotent replays are answered from the durable
+claim and are not charged against either bucket.
+
+Operators can additionally cap how long a partner-minted key may live with
+`PARTNER_API_ENROLLMENT_KEY_MAX_TTL_MINUTES`. It applies to both `ttlMinutes`
+and `expiresAt`, and it may only narrow the built-in 365-day ceiling, never
+widen it. Unset means the 365-day ceiling applies — the value is not defaulted
+to anything narrower, because that would retroactively cap partners already
+minting through this endpoint.
 
 No partner API scope permits command execution, remote access, secret reading,
 or user management.
@@ -324,8 +358,8 @@ Content-Type: application/json
 Pass either `ttlMinutes` or `expiresAt`, never both. `X-Idempotency-Key` is
 optional; supplying it is strongly recommended for automated callers.
 
-The `201` response returns both one-time credentials outside `data`, which is a
-strict no-secret allowlist:
+The `201` response returns the one-time key outside `data`, which is a strict
+no-secret allowlist:
 
 ```json
 {
@@ -340,25 +374,61 @@ strict no-secret allowlist:
     "expiresAt": "2026-08-09T13:00:00.000Z",
     "createdAt": "2026-08-09T12:00:00.000Z"
   },
+  "key": "<64-char hex, returned once>"
+}
+```
+
+Store `key` securely and pass it to the agent enrollment flow. It is not
+recoverable afterwards.
+
+#### Choosing an enrollment-secret model
+
+An agent enrolling with a key must also present an enrollment secret. There are
+two models, and the request chooses which one the key is minted under.
+
+**Global secret (default).** Omit `issueEnrollmentSecret`, or send it as
+`false`. `enrollment_keys.key_secret_hash` is left unset and the agent presents
+the deployment's configured `AGENT_ENROLLMENT_SECRET`, exactly as it has since
+this endpoint shipped in v0.105.1. Use this when your agents already carry the
+global secret.
+
+**Per-key secret (opt-in).** Send `issueEnrollmentSecret: true`. Breeze mints a
+secret unique to that key, stores its hash, and returns it once:
+
+```jsonc
+// request
+{ "orgId": "<organization-uuid>", "name": "Automated device enrollment", "issueEnrollmentSecret": true }
+
+// 201 response, abbreviated
+{
+  "schemaVersion": "1",
+  "data": { "id": "<enrollment-key-uuid>", "...": "..." },
   "key": "<64-char hex, returned once>",
   "enrollmentSecret": "<64-char hex, returned once>"
 }
 ```
 
-Store both securely and pass both to the agent enrollment flow: `key` is the
-enrollment key and `enrollmentSecret` is the per-key secret the agent presents.
-Neither is recoverable afterwards.
+The agent must then present **that** secret; the global
+`AGENT_ENROLLMENT_SECRET` no longer satisfies this key. `enrollmentSecret` is
+returned once and is unrecoverable, so a caller that loses it must mint a new
+key. Prefer this model when the enrolling machine should not hold a
+deployment-wide credential.
+
+The field is **absent**, not null, when no secret was issued — presence is the
+signal that the key requires one.
 
 Idempotency uses a durable database claim keyed by service principal and
 `X-Idempotency-Key`. The claim, enrollment-key insert, and result link commit
 in one transaction, so concurrent duplicate requests cannot mint two keys. A
 completed replay returns `200` with metadata and `idempotencyReplay: true`, and
-never returns either one-time credential.
+never returns either one-time credential. Replays are answered before the mint
+rate limiter is charged, so retrying with the same key cannot exhaust your own
+mint budget.
 
 | Status | `code` | Cause |
 |---|---|---|
 | `400` | `partner_provisioning_invalid_idempotency_key` | `X-Idempotency-Key` is empty, over 128 chars, or non-printable-ASCII |
-| `400` | `partner_provisioning_ttl_exceeds_cap` | Requested TTL exceeds the organization's enrollment-key cap |
+| `400` | `partner_provisioning_ttl_exceeds_cap` | Requested TTL exceeds the organization's enrollment-key cap or `PARTNER_API_ENROLLMENT_KEY_MAX_TTL_MINUTES` |
 | `400` | `partner_provisioning_site_mismatch` | `siteId` does not belong to `orgId` |
 | `403` | `partner_provisioning_principal_restrictions_required` | Principal lacks an expiry or a source CIDR allowlist |
 | `403` | `partner_provisioning_org_access_denied` | `orgId` is outside the principal's accessible organizations |

@@ -140,14 +140,36 @@ describe('partner enrollment-key DTO safety contract', () => {
     }).success).toBe(false);
   });
 
-  it('requires both one-time credentials on the create response', () => {
-    expect(partnerEnrollmentKeyCreateResponseSchema.safeParse({
-      ...metadata,
-      key: 'a'.repeat(64),
-    }).success).toBe(false);
+  // `key` is always returned; `enrollmentSecret` only when the request opted
+  // in. The asymmetry is the point — a create response that somehow lost `key`
+  // is a bug, while one without `enrollmentSecret` is the default contract this
+  // endpoint has had since v0.105.1.
+  it('always requires the raw key on the create response', () => {
     expect(partnerEnrollmentKeyCreateResponseSchema.safeParse({
       ...metadata,
       enrollmentSecret: 'b'.repeat(64),
+    }).success).toBe(false);
+  });
+
+  it('accepts a create response without an enrollment secret', () => {
+    const parsed = partnerEnrollmentKeyCreateResponseSchema.safeParse({
+      ...metadata,
+      key: 'a'.repeat(64),
+    });
+    expect(parsed.success).toBe(true);
+    expect(parsed.success && 'enrollmentSecret' in parsed.data).toBe(false);
+  });
+
+  it('still validates the enrollment secret shape when one is issued', () => {
+    expect(partnerEnrollmentKeyCreateResponseSchema.safeParse({
+      ...metadata,
+      key: 'a'.repeat(64),
+      enrollmentSecret: 'not-a-64-char-hex-digest',
+    }).success).toBe(false);
+    expect(partnerEnrollmentKeyCreateResponseSchema.safeParse({
+      ...metadata,
+      key: 'a'.repeat(64),
+      enrollmentSecret: null,
     }).success).toBe(false);
   });
 });

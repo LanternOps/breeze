@@ -531,12 +531,19 @@ export const enrollmentKeyCreateResponseSchema = z.object({
   /** Returned exactly once, at creation. 64-char hex, as on the human route. */
   key: z.string().regex(/^[0-9a-f]{64}$/u),
   /**
-   * Per-key enrollment secret, returned exactly once alongside `key`. Agents
-   * present it as the enrollment secret; it is stored as an unpeppered SHA-256
-   * in `enrollment_keys.key_secret_hash` because that is what the agent
-   * enrollment path compares against.
+   * Per-key enrollment secret, returned exactly once alongside `key` — and
+   * ONLY when the request set `issueEnrollmentSecret: true`.
+   *
+   * Optional rather than nullable on purpose. Its presence is the signal that
+   * `enrollment_keys.key_secret_hash` was written, which is what makes the
+   * agent enrollment path require this secret instead of the global
+   * `AGENT_ENROLLMENT_SECRET`. A key minted without it is absent here, so a
+   * client cannot read `null` as "issued but empty".
+   *
+   * Agents present it as the enrollment secret; it is stored as an unpeppered
+   * SHA-256 because that is what the agent enrollment path compares against.
    */
-  enrollmentSecret: z.string().regex(/^[0-9a-f]{64}$/u),
+  enrollmentSecret: z.string().regex(/^[0-9a-f]{64}$/u).optional(),
 }).strict();
 
 /**

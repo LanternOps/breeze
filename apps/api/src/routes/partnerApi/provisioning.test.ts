@@ -203,15 +203,30 @@ const siteRow = {
   partnerExportUpdatedAt: UPDATED_AT,
 };
 
+/**
+ * The row shape `.returning()` actually produces — every column of
+ * `enrollment_keys` the route can see, INCLUDING the two credential columns
+ * and `createdBy`.
+ *
+ * This matters more than it looks. An earlier fixture carried only the
+ * metadata columns, which made every "the response omits the credentials"
+ * assertion below structurally incapable of failing: the route could have
+ * spread the whole row into `data` and the test would still have passed
+ * because the fixture had nothing to leak. The values here are deliberately
+ * recognizable so a leak shows up as itself in the assertion diff.
+ */
 const keyRow = {
   id: KEY_ROW_ID,
   orgId: ORG_ID,
   siteId: null,
   name: 'migration key',
+  key: 'ROW-KEY-HASH-must-not-be-returned'.padEnd(64, '0'),
+  keySecretHash: 'ROW-SECRET-HASH-must-not-be-returned'.padEnd(64, '0'),
   usageCount: 0,
   maxUsage: 1,
   expiresAt: new Date('2026-09-01T12:00:00.000Z'),
   createdAt: CREATED_AT,
+  createdBy: null,
 };
 
 beforeEach(() => {
@@ -496,6 +511,54 @@ describe('POST /enrollment-keys', () => {
     expect(stored.createdBy).toBeNull();
     // The raw key never appears inside the DTO record.
     expect(JSON.stringify(body.data)).not.toContain(body.key);
+    // And the row's own credential columns never reach the client, even though
+    // the fixture returns them (see the keyRow comment).
+    expect(JSON.stringify(body)).not.toContain(keyRow.key);
+    expect(JSON.stringify(body)).not.toContain(keyRow.keySecretHash);
+  });
+
+  // `expiresAt` is the whole security value of a mint TTL, and nothing pinned
+  // what actually got persisted: the three expiry branches could be swapped for
+  // each other, or the column pinned to a constant, without failing anything.
+  it('persists expiresAt derived from ttlMinutes, not the default', async () => {
+    primeSuccess();
+    const before = Date.now();
+    const res = await post('/enrollment-keys', 'enrollment-keys:write', {
+      orgId: ORG_ID, name: 'k', ttlMinutes: 60,
+    });
+    expect(res.status).toBe(201);
+    const stored = insertedValues[0] as { expiresAt: Date };
+    expect(stored.expiresAt).toBeInstanceOf(Date);
+    const ttlMs = stored.expiresAt.getTime() - before;
+    expect(ttlMs).toBeGreaterThanOrEqual(59 * 60_000);
+    expect(ttlMs).toBeLessThanOrEqual(61 * 60_000);
+  });
+
+  it('persists expiresAt taken verbatim from the expiresAt branch', async () => {
+    primeSuccess();
+    const explicit = '2027-01-02T03:04:05.000Z';
+    const res = await post('/enrollment-keys', 'enrollment-keys:write', {
+      orgId: ORG_ID, name: 'k', expiresAt: explicit,
+    });
+    expect(res.status).toBe(201);
+    const stored = insertedValues[0] as { expiresAt: Date };
+    expect(stored.expiresAt.toISOString()).toBe(explicit);
+  });
+
+  it('persists the validated siteId when one is supplied', async () => {
+    primeSuccess({ withSite: true });
+    const res = await post('/enrollment-keys', 'enrollment-keys:write', {
+      orgId: ORG_ID, siteId: SITE_ID, name: 'k',
+    });
+    expect(res.status).toBe(201);
+    expect(insertedValues[0]).toMatchObject({ orgId: ORG_ID, siteId: SITE_ID, name: 'k' });
+  });
+
+  it('persists a null siteId when none is supplied', async () => {
+    primeSuccess();
+    const res = await post('/enrollment-keys', 'enrollment-keys:write', { orgId: ORG_ID, name: 'k' });
+    expect(res.status).toBe(201);
+    expect((insertedValues[0] as { siteId: unknown }).siteId).toBeNull();
   });
 
   it('attributes the audit event to the service principal', async () => {
@@ -549,6 +612,116 @@ describe('POST /enrollment-keys', () => {
       );
     });
 
+    // A partner admin can create service principals, so the per-principal
+    // bucket alone is multiplied by however many principals they mint.
+    it('also charges a partner-wide bucket the principal count cannot multiply', async () => {
+      primeSuccess();
+      await post('/enrollment-keys', 'enrollment-keys:write', { orgId: ORG_ID, name: 'k' });
+      expect(mocks.rateLimiter).toHaveBeenCalledWith(
+        expect.anything(),
+        `rl:partner-enrollment-key-mint:partner:${PARTNER_ID}`,
+        expect.any(Number),
+        3600,
+      );
+    });
+
+    it('429s on the partner bucket even when the principal bucket allows', async () => {
+      mocks.rateLimiter
+        .mockResolvedValueOnce({ allowed: true, remaining: 9, resetAt: new Date(Date.now() + 60_000) })
+        .mockResolvedValueOnce({ allowed: false, remaining: 0, resetAt: new Date(Date.now() + 60_000) });
+      primeSuccess();
+      const res = await post('/enrollment-keys', 'enrollment-keys:write', { orgId: ORG_ID, name: 'k' });
+      expect(res.status).toBe(429);
+      expect(insertedValues).toHaveLength(0);
+    });
+
+    // Two operator knobs, both of which used to be unreadable: the write limit
+    // was read through a local parser that THREW inside the handler (a typo'd
+    // value 500'd every mint instead of failing at deploy), and the TTL ceiling
+    // was documented in .env.example and threaded through compose while no file
+    // in apps/api read it at all.
+    it('reads the per-principal mint limit from the environment', async () => {
+      vi.stubEnv('PARTNER_API_ENROLLMENT_KEY_WRITE_RATE_LIMIT', '3');
+      primeSuccess();
+      await post('/enrollment-keys', 'enrollment-keys:write', { orgId: ORG_ID, name: 'k' });
+      expect(mocks.rateLimiter).toHaveBeenCalledWith(
+        expect.anything(),
+        `rl:partner-enrollment-key-mint:${PRINCIPAL_ID}`,
+        3,
+        3600,
+      );
+    });
+
+    it('falls back to the default limit instead of 500ing on a malformed value', async () => {
+      vi.stubEnv('PARTNER_API_ENROLLMENT_KEY_WRITE_RATE_LIMIT', 'ten-per-hour');
+      primeSuccess();
+      const res = await post('/enrollment-keys', 'enrollment-keys:write', { orgId: ORG_ID, name: 'k' });
+      expect(res.status).toBe(201);
+      expect(mocks.rateLimiter).toHaveBeenCalledWith(
+        expect.anything(),
+        `rl:partner-enrollment-key-mint:${PRINCIPAL_ID}`,
+        10,
+        3600,
+      );
+    });
+
+    it('rejects a ttlMinutes above PARTNER_API_ENROLLMENT_KEY_MAX_TTL_MINUTES', async () => {
+      vi.stubEnv('PARTNER_API_ENROLLMENT_KEY_MAX_TTL_MINUTES', '60');
+      primeSuccess();
+      const res = await post('/enrollment-keys', 'enrollment-keys:write', {
+        orgId: ORG_ID, name: 'k', ttlMinutes: 61,
+      });
+      expect(res.status).toBe(400);
+      expect((await res.json()).code).toBe('partner_provisioning_ttl_exceeds_cap');
+      expect(insertedValues).toHaveLength(0);
+    });
+
+    // Capping only ttlMinutes would leave expiresAt as an open bypass.
+    it('rejects an expiresAt beyond the operator ceiling too', async () => {
+      vi.stubEnv('PARTNER_API_ENROLLMENT_KEY_MAX_TTL_MINUTES', '60');
+      primeSuccess();
+      const res = await post('/enrollment-keys', 'enrollment-keys:write', {
+        orgId: ORG_ID,
+        name: 'k',
+        expiresAt: new Date(Date.now() + 24 * 60 * 60_000).toISOString(),
+      });
+      expect(res.status).toBe(400);
+      expect((await res.json()).code).toBe('partner_provisioning_ttl_exceeds_cap');
+      expect(insertedValues).toHaveLength(0);
+    });
+
+    it('allows a ttlMinutes at exactly the operator ceiling', async () => {
+      vi.stubEnv('PARTNER_API_ENROLLMENT_KEY_MAX_TTL_MINUTES', '60');
+      primeSuccess();
+      const res = await post('/enrollment-keys', 'enrollment-keys:write', {
+        orgId: ORG_ID, name: 'k', ttlMinutes: 60,
+      });
+      expect(res.status).toBe(201);
+    });
+
+    // Unset must mean the pre-existing hard bound, not a narrower one: this
+    // endpoint has shipped since v0.105.1 and partners already mint through it.
+    it('leaves the 365-day bound in place when the ceiling is unset', async () => {
+      vi.stubEnv('PARTNER_API_ENROLLMENT_KEY_MAX_TTL_MINUTES', '');
+      primeSuccess();
+      const res = await post('/enrollment-keys', 'enrollment-keys:write', {
+        orgId: ORG_ID, name: 'k', ttlMinutes: 525_600,
+      });
+      expect(res.status).toBe(201);
+    });
+
+    // The env knob may only narrow the hard ceiling, never widen it.
+    it('cannot be used to widen the hard 365-day bound', async () => {
+      vi.stubEnv('PARTNER_API_ENROLLMENT_KEY_MAX_TTL_MINUTES', '9999999');
+      primeSuccess();
+      const res = await post('/enrollment-keys', 'enrollment-keys:write', {
+        orgId: ORG_ID, name: 'k', ttlMinutes: 525_601,
+      });
+      // Rejected by the schema bound, which the env value never relaxes.
+      expect(res.status).toBe(400);
+      expect(insertedValues).toHaveLength(0);
+    });
+
     // The two columns use different hashers and are NOT interchangeable:
     // `key` is peppered, `key_secret_hash` is plain SHA-256 because
     // routes/agents/enrollment.ts verifies it with hashEnrollmentSecret().
@@ -556,7 +729,9 @@ describe('POST /enrollment-keys', () => {
     // hashEnrollmentKey() here fail instead of silently 403-ing every agent.
     it('stores the enrollment secret unpeppered and the key peppered', async () => {
       primeSuccess();
-      const res = await post('/enrollment-keys', 'enrollment-keys:write', { orgId: ORG_ID, name: 'k' });
+      const res = await post('/enrollment-keys', 'enrollment-keys:write', {
+        orgId: ORG_ID, name: 'k', issueEnrollmentSecret: true,
+      });
       expect(res.status).toBe(201);
       const body = await res.json();
       expect(body.key).toMatch(/^[0-9a-f]{64}$/);
@@ -578,12 +753,78 @@ describe('POST /enrollment-keys', () => {
 
     it('never returns a hash or createdBy in the response body', async () => {
       primeSuccess();
-      const res = await post('/enrollment-keys', 'enrollment-keys:write', { orgId: ORG_ID, name: 'k' });
+      const res = await post('/enrollment-keys', 'enrollment-keys:write', {
+        orgId: ORG_ID, name: 'k', issueEnrollmentSecret: true,
+      });
       const body = await res.json();
       expect(body.data).not.toHaveProperty('keySecretHash');
       expect(body.data).not.toHaveProperty('createdBy');
       expect(JSON.stringify(body)).not.toContain('hash');
       expect((insertedValues[0] as Record<string, unknown>).createdBy).toBeNull();
+      // Non-vacuous only because keyRow carries both credential columns.
+      expect(JSON.stringify(body)).not.toContain(keyRow.key);
+      expect(JSON.stringify(body)).not.toContain(keyRow.keySecretHash);
+    });
+  });
+
+  /**
+   * `enrollment_keys.key_secret_hash` is a switch on the agent enrollment path:
+   * once it is set, that key REQUIRES the per-key secret and the global
+   * AGENT_ENROLLMENT_SECRET no longer satisfies it. This endpoint shipped in
+   * v0.105.1 never writing that column, so setting it unconditionally would
+   * break every integration already minting through it. The default below is
+   * the shipped contract; `issueEnrollmentSecret: true` is the opt-in.
+   */
+  describe('per-key enrollment secret is opt-in', () => {
+    it('leaves key_secret_hash null and omits the secret by default', async () => {
+      primeSuccess();
+      const res = await post('/enrollment-keys', 'enrollment-keys:write', { orgId: ORG_ID, name: 'k' });
+      expect(res.status).toBe(201);
+      const body = await res.json();
+      expect(body.key).toMatch(/^[0-9a-f]{64}$/);
+      expect(body).not.toHaveProperty('enrollmentSecret');
+      expect((insertedValues[0] as Record<string, unknown>).keySecretHash).toBeNull();
+    });
+
+    it('leaves key_secret_hash null when the flag is explicitly false', async () => {
+      primeSuccess();
+      const res = await post('/enrollment-keys', 'enrollment-keys:write', {
+        orgId: ORG_ID, name: 'k', issueEnrollmentSecret: false,
+      });
+      expect(res.status).toBe(201);
+      expect(await res.json()).not.toHaveProperty('enrollmentSecret');
+      expect((insertedValues[0] as Record<string, unknown>).keySecretHash).toBeNull();
+    });
+
+    it('writes key_secret_hash and returns the secret when opted in', async () => {
+      primeSuccess();
+      const res = await post('/enrollment-keys', 'enrollment-keys:write', {
+        orgId: ORG_ID, name: 'k', issueEnrollmentSecret: true,
+      });
+      expect(res.status).toBe(201);
+      const body = await res.json();
+      expect(body.enrollmentSecret).toMatch(/^[0-9a-f]{64}$/);
+      expect((insertedValues[0] as Record<string, unknown>).keySecretHash)
+        .toBe(createHash('sha256').update(body.enrollmentSecret).digest('hex'));
+    });
+
+    // Which credential model a key was minted under decides whether it accepts
+    // the global secret, so it belongs in the audit trail.
+    it.each([
+      [false, undefined],
+      [false, false],
+      [true, true],
+    ])('audits issuedEnrollmentSecret=%s for issueEnrollmentSecret=%s', async (expected, flag) => {
+      primeSuccess();
+      await post('/enrollment-keys', 'enrollment-keys:write', {
+        orgId: ORG_ID,
+        name: 'k',
+        ...(flag === undefined ? {} : { issueEnrollmentSecret: flag }),
+      });
+      expect(mocks.audit).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({
+        action: 'enrollment_key.create',
+        details: expect.objectContaining({ issuedEnrollmentSecret: expected }),
+      }));
     });
   });
 
@@ -633,9 +874,89 @@ describe('POST /enrollment-keys', () => {
       const body = await res.json();
       expect(body.idempotencyReplay).toBe(true);
       expect(body.data.id).toBe(KEY_ROW_ID);
-      // One-time credentials are unrecoverable by design.
+      // One-time credentials are unrecoverable by design. Non-vacuous because
+      // the replayed row carries both of them (see the keyRow comment).
       expect(body).not.toHaveProperty('key');
       expect(body).not.toHaveProperty('enrollmentSecret');
+      expect(JSON.stringify(body)).not.toContain(keyRow.key);
+      expect(JSON.stringify(body)).not.toContain(keyRow.keySecretHash);
+      expect(insertedValues).toHaveLength(0);
+    });
+
+    // A replay mints nothing, so charging it against the mint budget lets a
+    // client's own retries 429 the replay they are entitled to.
+    it('answers a replay without charging the mint budget', async () => {
+      selectResults = [
+        [{
+          id: 'claim-1',
+          partnerServicePrincipalId: PRINCIPAL_ID,
+          idempotencyKey: 'idem-1',
+          requestFingerprint: createHash('sha256')
+            .update(JSON.stringify({ orgId: ORG_ID, name: 'k' }))
+            .digest('hex'),
+          enrollmentKeyId: KEY_ROW_ID,
+        }],
+        [keyRow],
+      ];
+      const res = await postIdem({ orgId: ORG_ID, name: 'k' }, 'idem-1');
+      expect(res.status).toBe(200);
+      expect(mocks.rateLimiter).not.toHaveBeenCalled();
+    });
+
+    it('still replays when the mint budget is already exhausted', async () => {
+      mocks.rateLimiter.mockResolvedValue({
+        allowed: false,
+        remaining: 0,
+        resetAt: new Date(Date.now() + 3_600_000),
+      });
+      selectResults = [
+        [{
+          id: 'claim-1',
+          partnerServicePrincipalId: PRINCIPAL_ID,
+          idempotencyKey: 'idem-1',
+          requestFingerprint: createHash('sha256')
+            .update(JSON.stringify({ orgId: ORG_ID, name: 'k' }))
+            .digest('hex'),
+          enrollmentKeyId: KEY_ROW_ID,
+        }],
+        [keyRow],
+      ];
+      const res = await postIdem({ orgId: ORG_ID, name: 'k' }, 'idem-1');
+      expect(res.status).toBe(200);
+      expect((await res.json()).idempotencyReplay).toBe(true);
+    });
+
+    // A mismatch and an unreadable claim are also decided from the durable
+    // claim alone; neither mints, so neither charges the budget.
+    it('returns 409 on a body mismatch without charging the mint budget', async () => {
+      selectResults = [[{
+        id: 'claim-1',
+        partnerServicePrincipalId: PRINCIPAL_ID,
+        idempotencyKey: 'idem-1',
+        requestFingerprint: 'a-fingerprint-from-a-different-body',
+        enrollmentKeyId: KEY_ROW_ID,
+      }]];
+      const res = await postIdem({ orgId: ORG_ID, name: 'different' }, 'idem-1');
+      expect(res.status).toBe(409);
+      expect(mocks.rateLimiter).not.toHaveBeenCalled();
+    });
+
+    it('returns 503 when the claim exists but its key row is unreadable', async () => {
+      selectResults = [
+        [{
+          id: 'claim-1',
+          partnerServicePrincipalId: PRINCIPAL_ID,
+          idempotencyKey: 'idem-1',
+          requestFingerprint: createHash('sha256')
+            .update(JSON.stringify({ orgId: ORG_ID, name: 'k' }))
+            .digest('hex'),
+          enrollmentKeyId: KEY_ROW_ID,
+        }],
+        [],
+      ];
+      const res = await postIdem({ orgId: ORG_ID, name: 'k' }, 'idem-1');
+      expect(res.status).toBe(503);
+      expect((await res.json()).code).toBe('partner_provisioning_idempotency_state_invalid');
       expect(insertedValues).toHaveLength(0);
     });
 
