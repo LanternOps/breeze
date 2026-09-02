@@ -2203,12 +2203,12 @@ git add apps/api/src/routes/orgContacts.ts apps/api/src/routes/orgContacts.test.
 
 ```ts
 // apps/api/src/jobs/reportScheduleWorker.test.ts
-it('unions contact and legacy recipients, logs null emails, dedupes, and caps at 50', async () => {
+it('unions contact and legacy recipients, logs null emails, and dedupes case-insensitively', async () => {
   const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
   selectResults.push([
     { contactId: 'contact-a', email: 'Ops@Example.test' },
     { contactId: 'contact-b', email: null },
-    ...Array.from({ length: 55 }, (_, index) => ({
+    ...Array.from({ length: 45 }, (_, index) => ({
       contactId: `contact-${index}`,
       email: `user${index}@example.test`,
     })),
@@ -2226,7 +2226,9 @@ it('unions contact and legacy recipients, logs null emails, dedupes, and caps at
     },
   });
 
-  expect(recipients).toHaveLength(50);
+  // 1 named contact + 45 generated + 1 legacy-only address; 'ops@example.test' dedupes
+  // against 'Ops@Example.test' and 'invalid' is dropped.
+  expect(recipients).toHaveLength(47);
   expect(
     recipients.filter((email) => email.toLowerCase() === 'ops@example.test'),
   ).toHaveLength(1);
@@ -2237,6 +2239,34 @@ it('unions contact and legacy recipients, logs null emails, dedupes, and caps at
       reportId: 'report-1',
       contactId: 'contact-b',
     }),
+  );
+});
+```
+
+```ts
+// apps/api/src/jobs/reportScheduleWorker.test.ts
+it('caps the union at 50 addresses in first-seen order (contacts before legacy) and warns', async () => {
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  selectResults.push(
+    Array.from({ length: 60 }, (_, index) => ({
+      contactId: `contact-${index}`,
+      email: `user${index}@example.test`,
+    })),
+  );
+
+  const recipients = await resolveScheduledReportRecipients({
+    reportId: 'report-1',
+    orgId: '11111111-1111-4111-8111-111111111111',
+    config: { emailRecipients: ['legacy@example.test'] },
+  });
+
+  expect(recipients).toHaveLength(50);
+  expect(recipients[0]).toBe('user0@example.test');
+  // Contacts are the structured source and win the cap; legacy addresses beyond it are dropped and logged.
+  expect(recipients).not.toContain('legacy@example.test');
+  expect(warn).toHaveBeenCalledWith(
+    '[ReportScheduleWorker] Recipient union exceeds 50; truncating',
+    expect.objectContaining({ reportId: 'report-1', requested: 61 }),
   );
 });
 ```

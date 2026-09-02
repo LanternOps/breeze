@@ -712,9 +712,13 @@
 
 **Interfaces:**
 
-- **Consumes:** `cfg.maxSecurityStatusAgeDays` from `apps/api/src/routes/reports/schemas.ts:38-55`.
+- **Consumes:** The existing protection rule and Drizzle-derived provider type from `apps/api/src/services/securityComplianceReport.ts:420-445` and `apps/api/src/db/schema/security.ts`.
 - **Produces:**
   ```ts
+  import type { securityStatus } from '../../db/schema';
+
+  type SecurityProvider = (typeof securityStatus.$inferSelect)['provider'];
+
   export type ProtectionState =
     | 'protected'
     | 'unprotected'
@@ -722,13 +726,11 @@
 
   export function classifyDeviceProtection(input: {
     securityStatus: {
-      provider: string | null;
+      provider: SecurityProvider;
       realTimeProtection: boolean | null;
-      updatedAt: Date | null;
     } | null;
-    hasManagedEdrAgent: boolean;
-    now: Date;
-    maxSecurityStatusAgeDays: number;
+    hasS1Agent: boolean;
+    hasHuntressAgent: boolean;
   }): ProtectionState;
   ```
 
@@ -738,21 +740,20 @@
 
   ```ts
   import { describe, expect, it } from 'vitest';
+  import type { securityStatus as securityStatusTable } from '../../db/schema';
   import { classifyDeviceProtection } from './protection';
 
-  const now = new Date('2026-09-02T12:00:00.000Z');
+  type SecurityProvider = (typeof securityStatusTable.$inferSelect)['provider'];
 
   function status(
     overrides: Partial<{
-      provider: string | null;
+      provider: SecurityProvider;
       realTimeProtection: boolean | null;
-      updatedAt: Date | null;
     }> = {},
   ) {
     return {
-      provider: 'windows_defender',
+      provider: 'windows_defender' as const,
       realTimeProtection: true,
-      updatedAt: now,
       ...overrides,
     };
   }
@@ -760,103 +761,82 @@
   describe('classifyDeviceProtection', () => {
     it.each([
       {
-        name: 'managed EDR is counted before status freshness',
+        name: 'S1 agent takes precedence over an absent status row',
         securityStatus: null,
-        hasManagedEdrAgent: true,
+        hasS1Agent: true,
+        hasHuntressAgent: false,
         expected: 'protected',
       },
       {
-        name: 'missing security evidence',
+        name: 'absent row is unknown',
         securityStatus: null,
-        hasManagedEdrAgent: false,
+        hasS1Agent: false,
+        hasHuntressAgent: false,
         expected: 'unknown',
       },
       {
-        name: 'fresh native AV evidence',
+        name: 'stale Defender with RTP on remains protected',
         securityStatus: status(),
-        hasManagedEdrAgent: false,
+        hasS1Agent: false,
+        hasHuntressAgent: false,
+        observedAt: new Date('2026-07-04T12:00:00.000Z'),
         expected: 'protected',
       },
       {
-        name: 'disabled real-time protection',
-        securityStatus: status({ realTimeProtection: false }),
-        hasManagedEdrAgent: false,
-        expected: 'unprotected',
-      },
-      {
-        name: 'unidentified other provider',
+        name: 'fresh provider other is unprotected',
         securityStatus: status({ provider: 'other' }),
-        hasManagedEdrAgent: false,
+        hasS1Agent: false,
+        hasHuntressAgent: false,
+        observedAt: new Date('2026-09-02T12:00:00.000Z'),
         expected: 'unprotected',
       },
       {
-        name: 'evidence exactly at cutoff',
-        securityStatus: status({
-          updatedAt: new Date('2026-08-03T12:00:00.000Z'),
-        }),
-        hasManagedEdrAgent: false,
-        expected: 'protected',
+        name: 'RTP null is unprotected',
+        securityStatus: status({ realTimeProtection: null }),
+        hasS1Agent: false,
+        hasHuntressAgent: false,
+        expected: 'unprotected',
       },
-      {
-        name: 'evidence older than cutoff',
-        securityStatus: status({
-          updatedAt: new Date('2026-08-02T12:00:00.000Z'),
-        }),
-        hasManagedEdrAgent: false,
-        expected: 'unknown',
-      },
-      {
-        name: 'null status timestamp is treated as fresh like daysAgo',
-        securityStatus: status({ updatedAt: null }),
-        hasManagedEdrAgent: false,
-        expected: 'protected',
-      },
-    ])('$name', ({
-      expected,
-      securityStatus,
-      hasManagedEdrAgent,
-    }) => {
+    ])('$name', ({ expected, securityStatus, hasS1Agent, hasHuntressAgent }) => {
       expect(classifyDeviceProtection({
         securityStatus,
-        hasManagedEdrAgent,
-        now,
-        maxSecurityStatusAgeDays: 30,
+        hasS1Agent,
+        hasHuntressAgent,
       })).toBe(expected);
     });
 
     it.each([
-      ['base dev-1 managed Huntress', status({ updatedAt: null }), true, 30, 'protected', 'protected'],
-      ['base dev-2 other/RTP-off', status({ provider: 'other', realTimeProtection: false, updatedAt: null }), false, 30, 'unprotected', 'unprotected'],
-      ['base dev-3 absent', null, false, 30, 'unknown', 'unprotected'],
-      ['Elastic Defend RTP-on', status({ provider: 'elastic_defend' }), false, 30, 'protected', 'protected'],
-      ['fresh Defender', status(), false, 30, 'protected', 'protected'],
-      ['60-day stale Defender', status({ updatedAt: new Date('2026-07-04T12:00:00.000Z') }), false, 30, 'unknown', 'unprotected'],
-      ['10-day Defender under seven-day maximum', status({ updatedAt: new Date('2026-08-23T12:00:00.000Z') }), false, 7, 'unknown', 'unprotected'],
-      ['assessed Defender', status(), false, 30, 'protected', 'protected'],
-      ['assessed-set stale Defender', status({ updatedAt: new Date('2026-07-04T12:00:00.000Z') }), false, 30, 'unknown', 'unprotected'],
-      ['assessed-set absent row', null, false, 30, 'unknown', 'unprotected'],
-      ['exact 30-day cutoff', status({ updatedAt: new Date('2026-08-03T12:00:00.000Z') }), false, 30, 'protected', 'protected'],
-      ['31 days past cutoff', status({ updatedAt: new Date('2026-08-02T12:00:00.000Z') }), false, 30, 'unknown', 'unprotected'],
-      ['missing updatedAt legacy row', status({ updatedAt: null }), false, 30, 'protected', 'protected'],
-      ['inventory other/RTP-off', status({ provider: 'other', realTimeProtection: false }), false, 30, 'unprotected', 'unprotected'],
-      ['SentinelOne managed row', status({ provider: 'sentinelone' }), true, 30, 'protected', 'protected'],
-      ['native Defender row', status(), false, 30, 'protected', 'protected'],
-      ['other provider with RTP on', status({ provider: 'other' }), false, 30, 'unprotected', 'unprotected'],
-      ['CrowdStrike with RTP off', status({ provider: 'crowdstrike', realTimeProtection: false }), false, 30, 'unprotected', 'unprotected'],
-      ['coverage dev-1 Defender', status(), false, 30, 'protected', 'protected'],
-      ['coverage dev-2 Defender', status(), false, 30, 'protected', 'protected'],
-      ['coverage dev-3 Defender', status(), false, 30, 'protected', 'protected'],
-      ['coverage dev-4 Defender', status(), false, 30, 'protected', 'protected'],
-      ['coverage dev-5 managed SentinelOne', status({ provider: 'sentinelone' }), true, 30, 'protected', 'protected'],
-      ['coverage dev-6 managed SentinelOne/RTP-off', status({ provider: 'sentinelone', realTimeProtection: false }), true, 30, 'protected', 'protected'],
+      ['base dev-1 managed Huntress', status(), false, true, 'protected', 'protected'],
+      ['base dev-2 other/RTP-off', status({ provider: 'other', realTimeProtection: false }), false, false, 'unprotected', 'unprotected'],
+      ['base dev-3 absent', null, false, false, 'unknown', 'unprotected'],
+      ['Elastic Defend RTP-on', status({ provider: 'elastic_defend' }), false, false, 'protected', 'protected'],
+      ['fresh Defender', status(), false, false, 'protected', 'protected'],
+      ['60-day stale Defender', status(), false, false, 'protected', 'protected'],
+      ['10-day Defender under seven-day maximum', status(), false, false, 'protected', 'protected'],
+      ['assessed Defender', status(), false, false, 'protected', 'protected'],
+      ['assessed-set stale Defender', status(), false, false, 'protected', 'protected'],
+      ['assessed-set absent row', null, false, false, 'unknown', 'unprotected'],
+      ['exact 30-day cutoff', status(), false, false, 'protected', 'protected'],
+      ['31 days past cutoff', status(), false, false, 'protected', 'protected'],
+      ['missing updatedAt legacy row', status(), false, false, 'protected', 'protected'],
+      ['inventory other/RTP-off', status({ provider: 'other', realTimeProtection: false }), false, false, 'unprotected', 'unprotected'],
+      ['SentinelOne managed row', status({ provider: 'sentinelone' }), true, false, 'protected', 'protected'],
+      ['native Defender row', status(), false, false, 'protected', 'protected'],
+      ['other provider with RTP on', status({ provider: 'other' }), false, false, 'unprotected', 'unprotected'],
+      ['CrowdStrike with RTP off', status({ provider: 'crowdstrike', realTimeProtection: false }), false, false, 'unprotected', 'unprotected'],
+      ['coverage dev-1 Defender', status(), false, false, 'protected', 'protected'],
+      ['coverage dev-2 Defender', status(), false, false, 'protected', 'protected'],
+      ['coverage dev-3 Defender', status(), false, false, 'protected', 'protected'],
+      ['coverage dev-4 Defender', status(), false, false, 'protected', 'protected'],
+      ['coverage dev-5 managed SentinelOne', status({ provider: 'sentinelone' }), true, false, 'protected', 'protected'],
+      ['coverage dev-6 managed SentinelOne/RTP-off', status({ provider: 'sentinelone', realTimeProtection: false }), true, false, 'protected', 'protected'],
     ] as const)(
       'matches report fixture %s and its existing report bucket',
-      (_, securityStatus, hasManagedEdrAgent, maxSecurityStatusAgeDays, expected, reportBucket) => {
+      (_, securityStatus, hasS1Agent, hasHuntressAgent, expected, reportBucket) => {
         const actual = classifyDeviceProtection({
           securityStatus,
-          hasManagedEdrAgent,
-          now,
-          maxSecurityStatusAgeDays,
+          hasS1Agent,
+          hasHuntressAgent,
         });
 
         expect(actual).toBe(expected);
@@ -880,54 +860,39 @@
   Create `apps/api/src/services/portal/protection.ts`:
 
   ```ts
+  import type { securityStatus } from '../../db/schema';
+
+  type SecurityProvider = (typeof securityStatus.$inferSelect)['provider'];
+
   export type ProtectionState =
     | 'protected'
     | 'unprotected'
     | 'unknown';
 
-  const DAY_MS = 24 * 60 * 60 * 1000;
-
   export function classifyDeviceProtection(input: {
     securityStatus: {
-      provider: string | null;
+      provider: SecurityProvider;
       realTimeProtection: boolean | null;
-      updatedAt: Date | null;
     } | null;
-    hasManagedEdrAgent: boolean;
-    now: Date;
-    maxSecurityStatusAgeDays: number;
+    hasS1Agent: boolean;
+    hasHuntressAgent: boolean;
   }): ProtectionState {
-    if (input.hasManagedEdrAgent) {
+    if (input.hasS1Agent || input.hasHuntressAgent) {
       return 'protected';
     }
 
-    if (!input.securityStatus) {
+    if (input.securityStatus === null) {
       return 'unknown';
     }
 
-    const ageDays = input.securityStatus.updatedAt
-      ? Math.floor(
-          (input.now.getTime()
-            - input.securityStatus.updatedAt.getTime()) / DAY_MS,
-        )
-      : null;
-
-    const securityStatusFresh = ageDays === null
-      || (Number.isFinite(ageDays)
-        && ageDays <= input.maxSecurityStatusAgeDays);
-    if (!securityStatusFresh) {
-      return 'unknown';
-    }
-
-    return input.securityStatus.provider != null &&
-      input.securityStatus.provider !== 'other' &&
+    return input.securityStatus.provider !== 'other' &&
       input.securityStatus.realTimeProtection === true
       ? 'protected'
       : 'unprotected';
   }
   ```
 
-  The report query at `securityComplianceReport.ts:234-245` already selects `provider`, `realTimeProtection`, and `updatedAt`; do not add `avProducts`. Define `const now = new Date(generatedAt);` once before `deviceRows.map`, reusing the report's real request timestamp from line 161. Keep the existing `hasNativeAv` boolean because the later AV-definition-age denominator at lines 477-482 needs the raw native-provider fact even on a managed-EDR device. Import the helper and replace only `protectedDevice` plus the three coverage counters inside the device loop with:
+  This is a direct extraction of `securityComplianceReport.ts:420-445`: provider is the selected `security_status.provider` enum value, and either managed-agent table takes precedence over status-row presence and native AV state. The helper deliberately does not consume `updatedAt`, `now`, or `maxSecurityStatusAgeDays`. Keep `updatedAt` in the report query because the existing `ssFresh` calculation still governs only the encryption and firewall buckets. Keep the existing `hasNativeAv` boolean because the later AV-definition-age denominator at lines 477-482 needs the raw native-provider fact even on a managed-EDR device. Import the helper and replace only `protectedDevice` plus the three coverage counters inside the device loop with:
 
   ```ts
   const protection = classifyDeviceProtection({
@@ -935,23 +900,21 @@
       ? {
           provider: ss.provider,
           realTimeProtection: ss.realTimeProtection,
-          updatedAt: ss.updatedAt,
         }
       : null,
-    hasManagedEdrAgent: isManaged,
-    now,
-    maxSecurityStatusAgeDays: cfg.maxSecurityStatusAgeDays,
+    hasS1Agent: s1Devices.has(d.id),
+    hasHuntressAgent: huntressDevices.has(d.id),
   });
 
   if (ss) reporting += 1;
   if (isManaged) managedEdr += 1;
   if (protection === 'protected') anyAv += 1;
-  // The report has no unknown bucket. Preserve its public contract by folding
-  // the portal-only unknown state into the existing unprotected count.
+  // The report has no unknown protection bucket. An absent status row has
+  // always counted as unprotected here, so preserve that public contract.
   if (protection !== 'protected') unprotected += 1;
   ```
 
-  Keep the existing report fixture rows unchanged: they already contain the exact inputs the helper reads. Add a parity test that runs the report before/after the extraction over every existing protection/freshness fixture group and compares the full returned report object, not only the three counters. Enumerate the groups explicitly so none are silently omitted:
+  Keep the existing report fixture rows unchanged: they already contain the exact inputs the helper reads. A status row's staleness remains exposed to portal callers as `observedAt` from `security_status.updated_at`; it is not a `ProtectionState`. Add a parity test that runs the report before/after the extraction over every existing protection/freshness fixture group and compares the full returned report object, not only the three counters. Enumerate the groups explicitly so none are silently omitted:
 
   - base Defender/`other` rows at lines 71-72;
   - Elastic Defend at line 175;
@@ -965,7 +928,7 @@
   - `other`/RTP-off rows at lines 455-456;
   - six coverage rows at lines 504-509.
 
-  The parity assertion must prove the extraction leaves `managedEdr`, `anyAv`, `unprotected`, row labels, and the rest of the report byte-for-byte unchanged; the only new portal-facing distinction is the helper's returned `'unknown'` state.
+  The parity assertion must prove the extraction leaves `managedEdr`, `anyAv`, `unprotected`, row labels, and the rest of the report byte-for-byte unchanged. In particular, stale Defender rows with RTP on remain protected, while an absent row returns `'unknown'` from the helper and maps to the report's existing unprotected bucket.
 
 - [ ] **Step 4: Run the classifier and report suites green.**
 
@@ -973,7 +936,7 @@
   cd apps/api && npx vitest run src/services/portal/protection.test.ts src/services/securityComplianceReport.test.ts
   ```
 
-  Expected result: managed agents classify first, fresh `provider !== 'other' && realTimeProtection === true` evidence is protected, missing/stale evidence is unknown, and the existing security report's full fixture output is unchanged because unknown maps to its existing unprotected bucket.
+  Expected result: either managed agent classifies first; an absent row is unknown; `provider !== 'other' && realTimeProtection === true` is protected regardless of observation age; all other present rows are unprotected; and the existing security report's full fixture output is byte-for-byte unchanged because unknown maps to its existing unprotected bucket.
 
 - [ ] **Step 5: Commit the extraction.**
 
