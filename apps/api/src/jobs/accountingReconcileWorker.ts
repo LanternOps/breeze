@@ -62,10 +62,12 @@ import {
 } from '../services/accounting/accountingConnectionService';
 import { resolveConnectionAndToken } from '../services/accounting/accountingMappingService';
 import { getAccountingProvider } from '../services/accounting/providerRegistry';
+import type { ChangeSetPaymentLine } from '../services/accounting/types';
 import {
   applyAccountingPayment,
   markInvoiceDeletedRemotely,
   reverseAccountingPayment,
+  reverseStaleAllocations,
   type PaymentPullOutcome,
 } from '../services/accounting/accountingPaymentPull';
 
@@ -163,6 +165,23 @@ function tally(summary: ReconcileRunSummary, outcome: PaymentPullOutcome): void 
   }
 }
 
+/**
+ * Group a CDC window's payment lines by QuickBooks Payment id, PRESERVING the
+ * order the provider emitted them in (a `Map` iterates in insertion order), so
+ * the applier sequence stays deterministic and testable.
+ */
+function groupPaymentsById(
+  lines: readonly ChangeSetPaymentLine[],
+): Map<string, ChangeSetPaymentLine[]> {
+  const grouped = new Map<string, ChangeSetPaymentLine[]>();
+  for (const line of lines) {
+    const existing = grouped.get(line.remotePaymentId);
+    if (existing) existing.push(line);
+    else grouped.set(line.remotePaymentId, [line]);
+  }
+  return grouped;
+}
+
 function logRunLine(data: ReconcileConnectionJobData, summary: ReconcileRunSummary, durationMs: number): void {
   console.log(
     '[AccountingReconcileWorker] run complete',
@@ -225,25 +244,42 @@ export async function processReconcileConnectionJob(
         tally(summary, reversal.outcome);
       }
     }
-    for (const line of changes.payments) {
-      try {
-        tally(summary, (await applyAccountingPayment(fresh, line, runInDbContext)).outcome);
-      } catch (err) {
-        // Collected, not rethrown here: one poisonous payment must not skip
-        // the rest of the window. The `failed` counter below turns the whole
-        // run dirty, so the cursor stays put and the window replays intact.
-        summary.failed++;
-        console.error(
-          '[AccountingReconcileWorker] payment apply failed',
-          `connectionId=${fresh.id}`,
-          `remotePaymentId=${line.remotePaymentId}`,
-          err instanceof Error ? err.message : err,
-        );
-        captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
-          service: 'accountingPaymentPull',
-          connectionId: fresh.id,
-          remotePaymentId: line.remotePaymentId,
-        });
+    // Additions are grouped BY PAYMENT (finding B), not applied as a flat line
+    // list. A QuickBooks Payment can be edited to settle a different set of
+    // invoices, and the edit emits the Payment — never a deletion — so the only
+    // way to see a dropped allocation is to diff the payment's CURRENT line set
+    // against the mapping rows Breeze already holds for it. That diff needs the
+    // whole payment, which a per-line loop never has.
+    for (const [remotePaymentId, lines] of groupPaymentsById(changes.payments)) {
+      for (const line of lines) {
+        try {
+          tally(summary, (await applyAccountingPayment(fresh, line, runInDbContext)).outcome);
+        } catch (err) {
+          // Collected, not rethrown here: one poisonous payment must not skip
+          // the rest of the window. The `failed` counter below turns the whole
+          // run dirty, so the cursor stays put and the window replays intact.
+          summary.failed++;
+          console.error(
+            '[AccountingReconcileWorker] payment apply failed',
+            `connectionId=${fresh.id}`,
+            `remotePaymentId=${line.remotePaymentId}`,
+            err instanceof Error ? err.message : err,
+          );
+          captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+            service: 'accountingPaymentPull',
+            connectionId: fresh.id,
+            remotePaymentId: line.remotePaymentId,
+          });
+        }
+      }
+
+      // AFTER this payment's own lines: anything the payment used to settle and
+      // no longer does. Runs even when a line above failed — the current line
+      // set comes from QuickBooks, not from whether Breeze could apply it.
+      for (const stale of await reverseStaleAllocations(
+        fresh, remotePaymentId, lines.map((l) => l.remoteInvoiceId), runInDbContext,
+      )) {
+        tally(summary, stale.outcome);
       }
     }
 

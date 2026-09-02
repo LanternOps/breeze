@@ -78,6 +78,7 @@ import {
   markInvoiceDeletedRemotely,
   paymentMappingRemoteId,
   reverseAccountingPayment,
+  reverseStaleAllocations,
 } from './accountingPaymentPull';
 
 const PARTNER = 'partner-1';
@@ -777,6 +778,67 @@ describe('reverseAccountingPayment', () => {
 
     expect(results).toEqual([]);
     expect(currentPayments.map((p) => p.id)).toEqual(['pay-1800']);
+  });
+});
+
+describe('reverseStaleAllocations', () => {
+  const SECOND_INVOICE = 'invoice-2';
+
+  function splitPaymentFixture(): void {
+    currentInvoices = [invoiceRow(), invoiceRow({ id: SECOND_INVOICE })];
+    currentPayments = [
+      paymentRow({ id: 'pay-qbo-a', invoiceId: INVOICE_ID }),
+      paymentRow({ id: 'pay-qbo-b', invoiceId: SECOND_INVOICE }),
+    ];
+    currentMappings = [
+      invoiceMappingRow(),
+      paymentMappingRow({ id: 'map-a', breezeEntityId: 'pay-qbo-a', remoteEntityId: `${QBO_PAYMENT_ID}/145` }),
+      paymentMappingRow({ id: 'map-b', breezeEntityId: 'pay-qbo-b', remoteEntityId: `${QBO_PAYMENT_ID}/146` }),
+    ];
+  }
+
+  it('refuses to run inside an ambient DB access context', async () => {
+    await expect(runCtx(() => reverseStaleAllocations(conn(), QBO_PAYMENT_ID, ['145'], runCtx)))
+      .rejects.toThrow(/must run with NO ambient DB access context/);
+  });
+
+  it('reverses only the allocation QuickBooks removed, keeping the one still on the payment', async () => {
+    // Finding B: the QBO Payment used to settle invoices 145 AND 146; the
+    // operator edited it down to 145 only. Applying the current lines alone
+    // leaves the Breeze payment row for 146 behind forever.
+    splitPaymentFixture();
+
+    const results = await reverseStaleAllocations(conn(), QBO_PAYMENT_ID, ['145'], runCtx);
+
+    expect(results.map((r) => r.outcome)).toEqual(['reversed']);
+    expect(results[0]?.invoicePaymentId).toBe('pay-qbo-b');
+    expect(currentPayments.map((p) => p.id)).toEqual(['pay-qbo-a']);
+    expect(currentMappings.map((m) => m.id).sort()).toEqual(['map-a', 'map-invoice-1']);
+    expect(recomputeMock).toHaveBeenCalledWith(SECOND_INVOICE, db);
+    expect(recomputeMock).not.toHaveBeenCalledWith(INVOICE_ID, db);
+  });
+
+  it('reverses nothing when every existing allocation is still in the current line set', async () => {
+    splitPaymentFixture();
+
+    const results = await reverseStaleAllocations(conn(), QBO_PAYMENT_ID, ['145', '146'], runCtx);
+
+    expect(results).toEqual([]);
+    expect(deleteMock).not.toHaveBeenCalled();
+    expect(currentPayments.map((p) => p.id).sort()).toEqual(['pay-qbo-a', 'pay-qbo-b']);
+  });
+
+  it('never touches a mapping row for a DIFFERENT QuickBooks payment id', async () => {
+    splitPaymentFixture();
+    currentPayments.push(paymentRow({ id: 'pay-other', invoiceId: SECOND_INVOICE }));
+    currentMappings.push(paymentMappingRow({
+      id: 'map-other', breezeEntityId: 'pay-other', remoteEntityId: '999/146',
+    }));
+
+    await reverseStaleAllocations(conn(), QBO_PAYMENT_ID, ['145'], runCtx);
+
+    expect(currentPayments.map((p) => p.id).sort()).toEqual(['pay-other', 'pay-qbo-a']);
+    expect(currentMappings.some((m) => m.id === 'map-other')).toBe(true);
   });
 });
 

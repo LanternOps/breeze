@@ -42,6 +42,7 @@ import {
   applyAccountingPayment,
   markInvoiceDeletedRemotely,
   reverseAccountingPayment,
+  reverseStaleAllocations,
 } from '../../services/accounting/accountingPaymentPull';
 
 // The applier itself never emits invoice events or enqueues jobs, but
@@ -257,6 +258,50 @@ describe('QuickBooks payment applier — real Postgres', () => {
     const inv = await loadInvoice(invoiceId);
     expect(inv.status).toBe('partially_paid');
     expect(inv.balance).toBe('150.00');
+  });
+
+  runDb('an allocation QuickBooks dropped from a split payment is reversed; the surviving one is untouched', async () => {
+    // Finding B, against real Postgres: payment 180 settled invoices 145 and
+    // 146; the operator edited it in QBO down to 145 only. The next CDC window
+    // carries the 145 line and NO deletion, so without the stale sweep the
+    // Breeze payment against invoice B stands forever and B reads as paid.
+    const fx = await seedFixture();
+    const invoiceA = await seedInvoice(fx, { total: '150.00' });
+    const invoiceB = await seedInvoice(fx, { total: '150.00' });
+    await seedInvoiceMapping(fx, invoiceA, '145');
+    await seedInvoiceMapping(fx, invoiceB, '146');
+    await applyAccountingPayment(fx.conn, paymentLine({ remoteInvoiceId: '145' }), systemRunner);
+    await applyAccountingPayment(fx.conn, paymentLine({ remoteInvoiceId: '146' }), systemRunner);
+    expect((await loadInvoice(invoiceB)).status).toBe('paid');
+
+    const stale = await reverseStaleAllocations(fx.conn, '180', ['145'], systemRunner);
+
+    expect(stale.map((r) => r.outcome)).toEqual(['reversed']);
+    expect(await loadPayments(invoiceA)).toHaveLength(1);
+    expect(await loadPayments(invoiceB)).toHaveLength(0);
+    expect((await loadMappings(fx, 'payment')).map((m) => m.remoteEntityId)).toEqual(['180/145']);
+
+    // Invoice B is open again for exactly the amount that was reversed.
+    const b = await loadInvoice(invoiceB);
+    expect(b.status).not.toBe('paid');
+    expect(b.balance).toBe('150.00');
+    expect((await loadInvoice(invoiceA)).status).toBe('paid');
+  });
+
+  runDb('a stale sweep whose current set still covers every allocation destroys nothing', async () => {
+    const fx = await seedFixture();
+    const invoiceA = await seedInvoice(fx, { total: '150.00' });
+    const invoiceB = await seedInvoice(fx, { total: '150.00' });
+    await seedInvoiceMapping(fx, invoiceA, '145');
+    await seedInvoiceMapping(fx, invoiceB, '146');
+    await applyAccountingPayment(fx.conn, paymentLine({ remoteInvoiceId: '145' }), systemRunner);
+    await applyAccountingPayment(fx.conn, paymentLine({ remoteInvoiceId: '146' }), systemRunner);
+
+    expect(await reverseStaleAllocations(fx.conn, '180', ['145', '146'], systemRunner)).toEqual([]);
+
+    expect(await loadPayments(invoiceA)).toHaveLength(1);
+    expect(await loadPayments(invoiceB)).toHaveLength(1);
+    expect((await loadMappings(fx, 'payment'))).toHaveLength(2);
   });
 
   runDb('a EUR payment against a USD invoice is refused and marked on the invoice mapping', async () => {

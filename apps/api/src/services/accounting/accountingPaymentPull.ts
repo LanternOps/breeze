@@ -577,8 +577,54 @@ export async function reverseAccountingPayment(
 ): Promise<PaymentPullResult[]> {
   assertNoAmbientDbContext('reverseAccountingPayment');
 
+  const candidates = await loadPaymentMappingCandidates(conn, remotePaymentId, runInDbContext);
+  return reverseCandidates(conn, remotePaymentId, candidates, runInDbContext);
+}
+
+/**
+ * Mirrors an ALLOCATION QuickBooks removed from a payment it still holds
+ * (final-review finding B).
+ *
+ * A QBO Payment can be edited to settle a different set of invoices. The
+ * applier only ever sees the lines the payment carries NOW, so an allocation
+ * that was dropped leaves its Breeze `invoice_payments` row — and the invoice
+ * balance it paid down — standing forever: no CDC deletion is ever emitted for
+ * it, because the Payment itself was not deleted.
+ *
+ * `keepRemoteInvoiceIds` is the CURRENT line set for this payment. Every
+ * existing `<PaymentId>/<remoteInvoiceId>` mapping whose invoice is NOT in it
+ * is reversed through the same row-level path a full reversal uses, so the
+ * lock order, the mapping-authorises-the-delete rule and the audit trail are
+ * identical. An empty current set is NOT special-cased: that is a payment whose
+ * every allocation was removed, and every row should indeed go — a payment with
+ * no invoice-linked line at all reaches `reverseAccountingPayment` instead,
+ * because the provider classifies it as a deletion.
+ */
+export async function reverseStaleAllocations(
+  conn: AccountingConnection,
+  remotePaymentId: string,
+  keepRemoteInvoiceIds: readonly string[],
+  runInDbContext: DbContextRunner,
+): Promise<PaymentPullResult[]> {
+  assertNoAmbientDbContext('reverseStaleAllocations');
+
+  const keep = new Set(keepRemoteInvoiceIds);
+  const prefixLength = remotePaymentId.length + 1;
+  const candidates = (await loadPaymentMappingCandidates(conn, remotePaymentId, runInDbContext))
+    .filter((row) => !keep.has(row.remoteEntityId?.slice(prefixLength) ?? ''));
+  if (candidates.length === 0) return [];
+
+  return reverseCandidates(conn, remotePaymentId, candidates, runInDbContext);
+}
+
+/** Every `payment` mapping row for one QBO Payment id, scoped to this connection. */
+async function loadPaymentMappingCandidates(
+  conn: AccountingConnection,
+  remotePaymentId: string,
+  runInDbContext: DbContextRunner,
+): Promise<MappingRow[]> {
   const prefix = `${remotePaymentId}/`;
-  const candidates = await runInDbContext(async () => {
+  return runInDbContext(async () => {
     const rows = await db
       .select()
       .from(accountingEntityMappings)
@@ -592,7 +638,15 @@ export async function reverseAccountingPayment(
     // JS prefix re-check costs nothing and makes the match exact regardless.
     return (rows as MappingRow[]).filter((row) => row.remoteEntityId?.startsWith(prefix));
   });
+}
 
+/** Reverse each candidate in its OWN short context; one failure keeps the rest. */
+async function reverseCandidates(
+  conn: AccountingConnection,
+  remotePaymentId: string,
+  candidates: readonly MappingRow[],
+  runInDbContext: DbContextRunner,
+): Promise<PaymentPullResult[]> {
   const results: PaymentPullResult[] = [];
   for (const candidate of candidates) {
     const reversed = await runInDbContext(() => reverseOneInsideTransaction(conn, remotePaymentId, candidate));

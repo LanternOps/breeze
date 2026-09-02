@@ -42,6 +42,7 @@ const {
   getAccountingProviderMock,
   applyMock,
   reverseMock,
+  reverseStaleMock,
   markInvoiceDeletedMock,
 } = vi.hoisted(() => {
   const ctx = { depth: 0, order: [] as string[], depths: [] as number[] };
@@ -79,6 +80,7 @@ const {
     getAccountingProviderMock: vi.fn(),
     applyMock: vi.fn(),
     reverseMock: vi.fn(),
+    reverseStaleMock: vi.fn(),
     markInvoiceDeletedMock: vi.fn(),
   };
 });
@@ -129,6 +131,7 @@ vi.mock('../services/accounting/providerRegistry', () => ({
 vi.mock('../services/accounting/accountingPaymentPull', () => ({
   applyAccountingPayment: applyMock,
   reverseAccountingPayment: reverseMock,
+  reverseStaleAllocations: reverseStaleMock,
   markInvoiceDeletedRemotely: markInvoiceDeletedMock,
 }));
 
@@ -204,7 +207,7 @@ function result(outcome: PaymentPullOutcome, remotePaymentId = '180'): PaymentPu
  * call time into the same two parallel arrays, so ordering and the
  * "no context held" contract are asserted against one real trace.
  */
-const APPLIER_NAMES = ['markInvoiceDeletedRemotely', 'reverseAccountingPayment', 'applyAccountingPayment'];
+const APPLIER_NAMES = ['markInvoiceDeletedRemotely', 'reverseAccountingPayment', 'applyAccountingPayment', 'reverseStaleAllocations'];
 
 /** Depth recorded at each call of `name`. */
 function depthsOf(name: string): number[] {
@@ -270,6 +273,10 @@ beforeEach(() => {
   markInvoiceDeletedMock.mockImplementation(async () => {
     record('markInvoiceDeletedRemotely');
     return 'marked';
+  });
+  reverseStaleMock.mockImplementation(async () => {
+    record('reverseStaleAllocations');
+    return [];
   });
   reverseReturns();
   applyReturns('applied');
@@ -398,6 +405,8 @@ describe('processReconcileConnectionJob: ordering', () => {
       'markInvoiceDeletedRemotely',
       'reverseAccountingPayment',
       'applyAccountingPayment',
+      // Per-payment stale-allocation sweep (finding B) closes each payment.
+      'reverseStaleAllocations',
     ]);
   });
 });
@@ -471,6 +480,50 @@ describe('processReconcileConnectionJob: cursor', () => {
   it('treats a reversal that REPORTS failed the same as a thrown apply', async () => {
     reconcileChangesMock.mockResolvedValue({ ...EMPTY_CHANGESET, deletedPayments: ['181'] });
     reverseReturns('failed');
+
+    await expect(processReconcileConnectionJob(JOB)).rejects.toThrow(/failed item/);
+
+    expect(advanceReconcileCursorMock).not.toHaveBeenCalled();
+  });
+
+  it('reverses the allocations QuickBooks removed from a payment it still holds', async () => {
+    // Finding B: the CDC window carries payment 180 settling invoice 145 only.
+    // Any OTHER 180/<invoice> mapping in Breeze is an allocation QBO dropped.
+    reconcileChangesMock.mockResolvedValue({
+      ...EMPTY_CHANGESET,
+      payments: [
+        line({ remotePaymentId: '180', remoteInvoiceId: '145' }),
+        line({ remotePaymentId: '181', remoteInvoiceId: '146' }),
+        line({ remotePaymentId: '181', remoteInvoiceId: '147' }),
+      ],
+    });
+    reverseStaleMock.mockImplementation(async (_conn: unknown, remotePaymentId: string) => {
+      record('reverseStaleAllocations');
+      return remotePaymentId === '180' ? [result('reversed', '180')] : [];
+    });
+
+    const summary = await processReconcileConnectionJob(JOB);
+
+    // Once per PAYMENT, not once per line, with that payment's full current set.
+    expect(reverseStaleMock).toHaveBeenCalledTimes(2);
+    expect(reverseStaleMock).toHaveBeenCalledWith(expect.anything(), '180', ['145'], expect.any(Function));
+    expect(reverseStaleMock).toHaveBeenCalledWith(expect.anything(), '181', ['146', '147'], expect.any(Function));
+    expect(summary?.reversed).toBe(1);
+    expect(summary?.applied).toBe(3);
+    // Stale reversal runs AFTER that payment's own lines are applied.
+    expect(applierOrder()).toEqual([
+      'applyAccountingPayment', 'reverseStaleAllocations',
+      'applyAccountingPayment', 'applyAccountingPayment', 'reverseStaleAllocations',
+    ]);
+    expect(depthsOf('reverseStaleAllocations')).toEqual([0, 0]);
+  });
+
+  it('turns the run dirty when a stale-allocation reversal reports failed', async () => {
+    reconcileChangesMock.mockResolvedValue({ ...EMPTY_CHANGESET, payments: [line()] });
+    reverseStaleMock.mockImplementation(async () => {
+      record('reverseStaleAllocations');
+      return [result('failed')];
+    });
 
     await expect(processReconcileConnectionJob(JOB)).rejects.toThrow(/failed item/);
 
