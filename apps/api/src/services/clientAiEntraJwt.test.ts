@@ -143,13 +143,13 @@ describe('verifyEntraIdToken', () => {
       tid,
       oid,
       preferred_username: 'Finance.User@Contoso.com',
-      email: 'Someone.Else@Victim.com',
+      email: 'Someone.Else@Victim.example',
     });
 
     const claims = await verifyEntraIdToken(token, { audience });
 
     expect(claims.upn).toBe('finance.user@contoso.com');
-    expect(claims.emailClaim).toBe('someone.else@victim.com');
+    expect(claims.emailClaim).toBe('someone.else@victim.example');
     // The display/storage address still prefers the UPN.
     expect(claims.email).toBe('finance.user@contoso.com');
   });
