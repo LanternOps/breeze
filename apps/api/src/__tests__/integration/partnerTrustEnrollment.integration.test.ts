@@ -35,10 +35,19 @@ function enrollmentBody(rawKey: string, hostname: string) {
 describe('partner trust probation enrollment cap — real Postgres (Task 4.4)', () => {
   const originalIsHosted = process.env.IS_HOSTED;
   const originalTrustMode = process.env.PARTNER_TRUST_MODE;
+  const originalEnrollmentSecret = process.env.AGENT_ENROLLMENT_SECRET;
 
   beforeEach(() => {
     process.env.IS_HOSTED = 'true';
     process.env.PARTNER_TRUST_MODE = 'enforce';
+    // This suite exercises the probation-cap gate only, using enrollment-key
+    // fixtures with no per-key secret (keySecretHash: null). Whether a global
+    // AGENT_ENROLLMENT_SECRET is configured is orthogonal to that gate but
+    // gets read from whatever .env happens to be loaded in this environment
+    // (CI's integration-test job never sets it; a local worktree's .env
+    // often does, per wt-stack). Force it unset so this test's outcome
+    // doesn't depend on that unrelated, ambient configuration.
+    delete process.env.AGENT_ENROLLMENT_SECRET;
   });
 
   afterEach(() => {
@@ -46,6 +55,8 @@ describe('partner trust probation enrollment cap — real Postgres (Task 4.4)', 
     else process.env.IS_HOSTED = originalIsHosted;
     if (originalTrustMode === undefined) delete process.env.PARTNER_TRUST_MODE;
     else process.env.PARTNER_TRUST_MODE = originalTrustMode;
+    if (originalEnrollmentSecret === undefined) delete process.env.AGENT_ENROLLMENT_SECRET;
+    else process.env.AGENT_ENROLLMENT_SECRET = originalEnrollmentSecret;
   });
 
   runDb('admits exactly five concurrent enrollments and never recycles deleted-device quota', async () => {
