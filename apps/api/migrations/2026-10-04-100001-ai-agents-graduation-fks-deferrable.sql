@@ -12,8 +12,8 @@
 -- `SET CONSTRAINTS ALL DEFERRED` and re-points the parent's and the child's
 -- `org_id` in separate statements, which a non-deferrable composite FK aborts
 -- mid-merge. 2026-09-12-100001-org-lifecycle-foundations.sql Section 2 swept
--- the 19 FKs that existed when it shipped; these three were created after it
--- and so were never covered.
+-- the composite org_id FKs that existed when it shipped; these three were
+-- created after it and so were never covered.
 --
 -- The shipped file is content-hash immutable, so this fixes forward. The
 -- deferrability of an existing FK is changed in place with ALTER CONSTRAINT

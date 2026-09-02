@@ -563,6 +563,17 @@ export async function createIntegrationTestClient(
  *
  * Throws when a named constraint does not exist, so a rename fails loudly here
  * instead of silently leaving the contract un-restored.
+ *
+ * The initial mode is read from the catalog rather than hard-coded: the org
+ * lifecycle sweep's `INITIALLY IMMEDIATE` is the right default for the FKs it
+ * converted, but several later migrations declare a composite `org_id` FK
+ * `DEFERRABLE INITIALLY DEFERRED` on purpose
+ * (`2026-09-13-agent-rollback-lifecycle.sql`,
+ * `2026-09-28-100002-software-inventory-observations.sql`). Forcing IMMEDIATE
+ * would silently downgrade one the first time a caller named it, changing when
+ * Postgres checks that FK for the rest of the shard.
+ *
+ * Contract test: `orgIdFkDeferrabilityHelper.integration.test.ts`.
  */
 export async function reapplyOrgIdFkDeferrability(
   db: TestDatabase,
@@ -577,7 +588,7 @@ export async function reapplyOrgIdFkDeferrability(
   }
 
   const rows = (await db.execute(sql`
-    SELECT con.conname, con.conrelid::regclass::text AS child_table
+    SELECT con.conname, con.conrelid::regclass::text AS child_table, con.condeferred
     FROM pg_constraint con
     WHERE con.contype = 'f'
       AND con.connamespace = 'public'::regnamespace
@@ -585,9 +596,9 @@ export async function reapplyOrgIdFkDeferrability(
         constraintNames.map((name) => sql`${name}`),
         sql`, `,
       )})
-  `)) as unknown as Array<{ conname: string; child_table: string }>;
+  `)) as unknown as Array<{ conname: string; child_table: string; condeferred: boolean }>;
 
-  const byName = new Map(rows.map((row) => [row.conname, row.child_table]));
+  const byName = new Map(rows.map((row) => [row.conname, row]));
   const missing = constraintNames.filter((name) => !byName.has(name));
   if (missing.length > 0) {
     throw new Error(
@@ -596,13 +607,15 @@ export async function reapplyOrgIdFkDeferrability(
     );
   }
 
-  for (const [conname, childTable] of byName) {
+  for (const { conname, child_table: childTable, condeferred } of byName.values()) {
+    // Keep whatever initial mode the constraint currently carries; a replay
+    // that knocked it to NOT DEFERRABLE also cleared condeferred, so those
+    // come back INITIALLY IMMEDIATE as the org-lifecycle sweep intends.
+    const initialMode = condeferred ? 'INITIALLY DEFERRED' : 'INITIALLY IMMEDIATE';
     // `child_table` comes from regclass::text, which Postgres already quotes
     // when the identifier needs it; conname is quoted here for the same reason.
     await db.execute(
-      sql.raw(
-        `ALTER TABLE ${childTable} ALTER CONSTRAINT "${conname}" DEFERRABLE INITIALLY IMMEDIATE`,
-      ),
+      sql.raw(`ALTER TABLE ${childTable} ALTER CONSTRAINT "${conname}" DEFERRABLE ${initialMode}`),
     );
   }
 }
