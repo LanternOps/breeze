@@ -16,9 +16,15 @@
  *    (partner_id, breeze_entity_type, breeze_entity_id), which is what lets a
  *    void destroy the `invoice_payments` row while its mapping stays behind
  *    owing QuickBooks a delete. A mocked db cannot express that trigger at all.
- *  - `accounting_entity_mappings_breeze_uniq` FORBIDS A SECOND MAPPING for the
- *    same payment, which is why `fanOutOwedPayments` RE-OWNS a remotely-deleted
- *    row instead of inserting one — the only re-push path that exists.
+ *  - `accounting_entity_mappings_breeze_uniq` really REJECTS a second mapping
+ *    for one payment (23505), and `insertPendingPushMapping`'s
+ *    `onConflictDoNothing` really is targeted at THAT index — it swallows the
+ *    conflict and returns no id. Be precise about what this buys where: the
+ *    fan-out's own idempotence under a SINGLE writer comes from its pre-read of
+ *    existing mappings, not from the index; the index is the backstop when two
+ *    writers race, and it is the reason `fanOutOwedPayments` RE-OWNS a
+ *    remotely-deleted row rather than inserting a fresh one — a second insert
+ *    is simply not available to it.
  *  - THE `pending_op` CHECK, the RLS partner axis (42501), the ownership
  *    trigger (23514) and the composite connection FK (23503) all reject a
  *    forged mapping.
@@ -420,6 +426,42 @@ describe('QuickBooks payment push — real Postgres', () => {
     expect(await loadPaymentMappings(fx)).toEqual([]);
   });
 
+  runDb('a throw around a real recordPayment rolls the money row and its mapping back together', async () => {
+    // The same atomicity, driven through the REAL writer rather than a
+    // hand-built insert: `recordPayment`'s own `db.transaction` degrades to a
+    // SAVEPOINT inside the caller's context (the request-path shape), so a later
+    // throw in that context must take the payment row, the status recompute AND
+    // the outbox row with it — in one piece.
+    const { fx, invoiceId } = await seedPushable({ total: '150.00' });
+
+    await expect(withSystemDbAccessContext(async () => {
+      const recorded = await recordPayment(
+        invoiceId, { amount: 40, method: 'check', receivedAt: '2026-09-02' }, fx.actor,
+      );
+      // Positive controls, read INSIDE the still-open transaction: all three
+      // writes really landed, so the assertions after the throw are proving a
+      // rollback rather than a write that never happened.
+      expect(recorded.audit.paymentId).toEqual(expect.any(String));
+      const [midFlight] = await db.select().from(invoices).where(eq(invoices.id, invoiceId)).limit(1);
+      expect(midFlight!.amountPaid).toBe('40.00');
+      const pending = await db.select().from(accountingEntityMappings).where(and(
+        eq(accountingEntityMappings.integrationId, fx.conn.id),
+        eq(accountingEntityMappings.breezeEntityType, 'payment'),
+      ));
+      expect(pending).toHaveLength(1);
+      expect(pending[0]).toMatchObject({ pendingOp: 'push', breezeOrigin: true });
+      throw new Error('rollback probe (recordPayment)');
+    })).rejects.toThrow('rollback probe (recordPayment)');
+
+    expect(await loadPayments(invoiceId)).toEqual([]);
+    expect(await loadPaymentMappings(fx)).toEqual([]);
+    // The recompute went back too — no orphaned amount_paid left on the header.
+    const inv = await loadInvoice(invoiceId);
+    expect(inv.amountPaid).toBe('0.00');
+    expect(inv.balance).toBe('150.00');
+    expect(inv.status).toBe('sent');
+  });
+
   // -------------------------------------------------------------------------
   // Phase 2 + the lease
   // -------------------------------------------------------------------------
@@ -601,6 +643,12 @@ describe('QuickBooks payment push — real Postgres', () => {
       breezeOrigin: true,
       lastError: null,
     });
+
+    // The sweep must NOT touch it yet: the row was updated a moment ago, and
+    // re-enqueuing inside PAYMENT_SWEEP_MIN_AGE_MS would race the immediate
+    // enqueue the caller just made. (Negative half — without this, deleting the
+    // `updated_at` predicate would leave the positive assertion below green.)
+    expect(await withSystemDbAccessContext(() => listOwedPaymentMappings(db, new Date()))).toEqual([]);
 
     // ...and the sweep finds it once it is old enough that the immediate
     // enqueue (the one that just failed) has had its chance.
@@ -898,7 +946,7 @@ describe('QuickBooks payment push — real Postgres', () => {
       .toMatchObject({ pendingOp: 'delete', remoteEntityId: '181/145' });
   });
 
-  runDb('fanOutOwedPayments is idempotent — the breeze_uniq index makes a second insert impossible', async () => {
+  runDb('fanOutOwedPayments is idempotent — its pre-read skips payments that already carry a mapping', async () => {
     // `manual` push mode: recordPayment writes no mapping, so the fan-out is the
     // only way these payments reach QuickBooks at all.
     const { fx, invoiceId } = await seedPushable({ total: '150.00', pushMode: 'manual' });
@@ -920,6 +968,52 @@ describe('QuickBooks payment push — real Postgres', () => {
     expect(mappings).toHaveLength(2);
     expect(mappings.every((m) => m.pendingOp === 'push' && m.breezeOrigin)).toBe(true);
     expect(new Set(mappings.map((m) => m.id))).toEqual(new Set(first));
+  });
+
+  runDb('the breeze_uniq index rejects a SECOND mapping for one payment, and the outbox insert swallows it', async () => {
+    // The index the case above does NOT exercise, and the reason its title says
+    // "pre-read": `fanOutOwedPayments` skips a payment that already has a
+    // mapping before it ever reaches `insertPendingPushMapping`, so a
+    // single-writer re-run never attempts the insert at all. What the index
+    // actually buys is the CONCURRENT-writer backstop — and the guarantee that
+    // no second mapping can exist, which is what forces the pull's
+    // removed-remotely branch to null the remote id for the fan-out to re-own
+    // instead of dropping the row and re-inserting one.
+    const { fx, invoiceId } = await seedPushable();
+    const recorded = await withSystemDbAccessContext(() => recordPayment(
+      invoiceId, { amount: 40, method: 'check', receivedAt: '2026-09-02' }, fx.actor,
+    ));
+    const paymentId = recorded.audit.paymentId;
+    expect(await loadPaymentMappings(fx)).toHaveLength(1);
+
+    // A racing writer that does NOT carry the conflict clause is refused
+    // outright. `remote_entity_id` is NULL, so the partial
+    // `..._remote_uniq` index cannot be what fires — this is breeze_uniq alone.
+    let caught: unknown;
+    try {
+      await withDbAccessContext(partnerContext(fx.partnerId, [fx.orgId]), () => db.execute(sql`
+        INSERT INTO accounting_entity_mappings (
+          integration_id, partner_id, breeze_entity_type, breeze_entity_id,
+          remote_entity_type, remote_entity_id, link_status, sync_status
+        ) VALUES (
+          ${fx.conn.id}, ${fx.partnerId}, 'payment', ${paymentId},
+          'Payment', NULL, 'create_new', 'pending'
+        )
+      `));
+    } catch (error) {
+      caught = error;
+    }
+    expect(sqlCause(caught).code).toBe('23505');
+    expect(sqlCause(caught).message).toMatch(/accounting_entity_mappings_breeze_uniq/);
+
+    // ...and the outbox insert, whose `onConflictDoNothing` targets exactly that
+    // index, ABSORBS the same collision: no id to enqueue, and — the point —
+    // no 23505 to abort the caller's already-committed payment transaction.
+    const second = await withSystemDbAccessContext(() => requestPaymentPush(db, {
+      invoicePaymentId: paymentId, invoiceId, partnerId: fx.partnerId,
+    }));
+    expect(second).toBeNull();
+    expect(await loadPaymentMappings(fx)).toHaveLength(1);
   });
 
   // -------------------------------------------------------------------------
