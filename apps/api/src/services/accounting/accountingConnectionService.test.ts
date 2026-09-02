@@ -708,6 +708,39 @@ describe('accountingConnectionService', () => {
     });
   });
 
+  describe('stampReconcileRunError (finding H)', () => {
+    function makeStampDb() {
+      const whereMock = vi.fn((_cond: SQL) => ({ returning: vi.fn(async () => [{ id: 'c1' }]) }));
+      const setMock = vi.fn(() => ({ where: whereMock }));
+      const db = { update: vi.fn(() => ({ set: setMock })), select: vi.fn(), insert: vi.fn(), delete: vi.fn() };
+      return { db, setMock, whereMock };
+    }
+
+    it('writes the message under the payment-pull prefix, scoped to (id, partnerId)', async () => {
+      const { db, setMock, whereMock } = makeStampDb();
+      const { stampReconcileRunError } = await import('./accountingConnectionService');
+
+      await stampReconcileRunError(db, 'c1', 'p1', '3 item(s) failed');
+
+      expect(setMock.mock.calls.at(-1)![0]).toMatchObject({
+        lastError: 'Payment pull: 3 item(s) failed',
+      });
+      expect(new PgDialect().sqlToQuery(whereMock.mock.calls.at(-1)![0] as SQL).params).toEqual(['c1', 'p1']);
+    });
+
+    it('clears ONLY a payment-pull-prefixed error, never a reauth/connection one', async () => {
+      const { db, setMock, whereMock } = makeStampDb();
+      const { stampReconcileRunError } = await import('./accountingConnectionService');
+
+      await stampReconcileRunError(db, 'c1', 'p1', null);
+
+      expect(setMock.mock.calls.at(-1)![0]).toMatchObject({ lastError: null });
+      const { sql, params } = new PgDialect().sqlToQuery(whereMock.mock.calls.at(-1)![0] as SQL);
+      expect(sql).toMatch(/"last_error" like \$\d+/i);
+      expect(params).toEqual(['c1', 'p1', 'Payment pull: %']);
+    });
+  });
+
   describe('resetConnectionForRealmChange (finding C)', () => {
     function makeResetDb(mappingRows: Array<{ id: string }>) {
       const deleteWhereMock = vi.fn((_cond: SQL) => ({ returning: vi.fn(async () => mappingRows) }));

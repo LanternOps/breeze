@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { createHmac } from 'crypto';
+
+const { captureExceptionMock } = vi.hoisted(() => ({ captureExceptionMock: vi.fn() }));
+vi.mock('../sentry', () => ({ captureException: captureExceptionMock }));
 import {
   quickbooksProvider, mapQboCustomer, mapQboAddress, mapQboHomeCurrency, QBO_PREFERENCES_TIMEOUT_MS,
   QBO_CDC_CURSOR_SLACK_MS,
@@ -845,6 +848,48 @@ describe('reconcileChanges (CDC)', () => {
     // The CDC deletion survives: /query never returns deleted entities.
     expect(cs.deletedInvoices.sort()).toEqual(['145', '146']);
     expect(cs.overflowed).toBe(false);
+  });
+
+  // --- stale cursor past the 30-day floor (finding H) ----------------------
+
+  it('warns and captures ONCE when the stored cursor is older than the 30-day CDC floor', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    captureExceptionMock.mockClear();
+    mockFetchJsonOnce(cdcResponse([]));
+    const ancient = new Date(Date.now() - 45 * 24 * 3600_000);
+
+    await quickbooksProvider.reconcileChanges(conn(), ancient);
+
+    // The floor SILENTLY moved the window forward — everything between the
+    // stored cursor and the floor is unreadable and will never be swept.
+    expect(warnSpy).toHaveBeenCalled();
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+    expect(captureExceptionMock.mock.calls[0]![0]).toBeInstanceOf(Error);
+    expect(String(captureExceptionMock.mock.calls[0]![0])).toMatch(/30-day/);
+    warnSpy.mockRestore();
+  });
+
+  it('says nothing when the stored cursor is inside the lookback window', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    captureExceptionMock.mockClear();
+    mockFetchJsonOnce(cdcResponse([]));
+
+    await quickbooksProvider.reconcileChanges(conn(), new Date(Date.now() - 2 * 3600_000));
+
+    expect(warnSpy).not.toHaveBeenCalled();
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  it('says nothing on a FIRST run (null cursor is not a skipped range)', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    captureExceptionMock.mockClear();
+    mockFetchJsonOnce(cdcResponse([]));
+
+    await quickbooksProvider.reconcileChanges(conn(), null);
+
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
   });
 
   it('leaves overflowed false on an ordinary, non-truncated window', async () => {

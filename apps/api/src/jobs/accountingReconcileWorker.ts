@@ -59,6 +59,7 @@ import {
   backfillRealmFingerprints,
   getConnection,
   listReconcilableConnections,
+  stampReconcileRunError,
 } from '../services/accounting/accountingConnectionService';
 import { resolveConnectionAndToken } from '../services/accounting/accountingMappingService';
 import { getAccountingProvider } from '../services/accounting/providerRegistry';
@@ -299,6 +300,19 @@ export async function processReconcileConnectionJob(
     }
 
     logRunLine(data, summary, Date.now() - startedAt);
+
+    // Surface the run's outcome ON THE CONNECTION (finding H). Without this a
+    // failing run left nothing an operator could see: the job retried, gave up
+    // inside BullMQ, `last_reconcile_at` quietly stopped advancing and the
+    // integration panel still read "connected". Counts only — never a
+    // QuickBooks response body (Phase C rule). Cleared on the next clean run,
+    // and prefix-scoped so it can never wipe a reauth message.
+    const runError = changes.overflowed
+      ? 'QuickBooks truncated the last change window and the backfill did not complete; payments may be missing'
+      : summary.failed > 0
+        ? `${summary.failed} item(s) failed in the last reconcile run`
+        : null;
+    await runInDbContext(() => stampReconcileRunError(db, fresh.id, data.partnerId, runError));
 
     if (changes.overflowed) {
       // Finding A. The provider could not fully enumerate the window even after

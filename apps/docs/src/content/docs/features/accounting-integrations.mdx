@@ -156,10 +156,16 @@ mirrors on the 15-minute sweep. Either way, the end state is the same.
 **Pull QuickBooks payments** is a switch on the connected panel. Turn it off
 to stop pulling payments from QuickBooks into Breeze — for example, while
 you're still reconciling manually and don't want QuickBooks payments
-overwriting Breeze's own record. Turn it back on and the next sweep catches
-up on anything that happened while it was off. A **Sync now** button next to
-the switch runs a pull immediately rather than waiting for the sweep or a
-webhook.
+overwriting Breeze's own record. A **Sync now** button next to the switch runs
+a pull immediately rather than waiting for the sweep or a webhook.
+
+Turn it back on and the next sweep resumes from where it stopped — but only
+**within QuickBooks' 30-day change history**. QuickBooks cannot report changes
+older than that, so if the switch was off (or the connection was disconnected
+or erroring) for more than a month, payments recorded in the gap are **not**
+picked up by the sweep and have to be entered in Breeze by hand. Breeze logs a
+warning and raises an alert to its operators when it detects that gap, and the
+connection panel shows the last pull's outcome.
 
 ### Customer and item mapping
 

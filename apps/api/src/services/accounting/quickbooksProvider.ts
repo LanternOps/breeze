@@ -740,6 +740,31 @@ export class QuickbooksProvider implements AccountingProvider {
     ));
     const from = new Date(windowStart.getTime() - QBO_CDC_CURSOR_SLACK_MS);
 
+    // The floor SILENTLY moved the window forward (finding H). QBO's CDC cannot
+    // answer for anything older than 30 days, so the span between the stored
+    // cursor and the floor is unreadable AND will never be swept again once the
+    // cursor advances past it — a connection that was paused, disconnected or
+    // wedged for a month resumes with a hole nobody is told about. Once per run,
+    // and never on a first run: a null cursor is a new connection, not a gap.
+    if (sinceCursor !== null && sinceCursor.getTime() < lookbackFloor.getTime()) {
+      const skippedDays = Math.floor((lookbackFloor.getTime() - sinceCursor.getTime()) / (24 * 3600_000));
+      console.warn(
+        '[QuickbooksProvider] CDC cursor is older than the 30-day lookback floor; the skipped range can never be read',
+        `connectionId=${conn.id}`,
+        `cursor=${sinceCursor.toISOString()}`,
+        `floor=${lookbackFloor.toISOString()}`,
+        `skippedDays=${skippedDays}`,
+      );
+      captureException(
+        new Error(
+          `QuickBooks CDC cursor predates the 30-day lookback floor by ~${skippedDays} day(s); `
+          + 'changes in that range cannot be reconciled',
+        ),
+        undefined,
+        { service: 'quickbooksProvider', op: 'reconcileChanges', connectionId: conn.id, skippedDays },
+      );
+    }
+
     const window = await this.fetchCdcWindow(conn, from);
 
     // Entities QBO truncated are re-enumerated through /query (finding A). A

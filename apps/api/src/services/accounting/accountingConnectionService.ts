@@ -1,4 +1,4 @@
-import { and, eq, isNotNull, isNull } from 'drizzle-orm';
+import { and, eq, isNotNull, isNull, like } from 'drizzle-orm';
 import { accountingConnections, accountingEntityMappings } from '../../db/schema';
 import { decryptSecret, encryptSecret, getActiveSecretEncryptionKeyId, hmacFingerprint } from '../secretCrypto';
 import { db, withSystemDbAccessContext } from '../../db';
@@ -402,6 +402,54 @@ export async function advanceReconcileCursor(
     .returning({ id: accountingConnections.id });
 
   return updated.length > 0;
+}
+
+/**
+ * Prefix on the `accounting_connections.last_error` messages the RECONCILE
+ * WORKER writes (final-review finding H). That column is shared with connection
+ * lifecycle errors — a failed refresh writes "reauthorization required" there —
+ * so a reconcile run must be able to clear its OWN message without wiping one
+ * an operator still has to act on. Same convention (and same literal prefix) as
+ * `accountingPaymentPull.PAYMENT_PULL_ERROR_PREFIX` uses on mapping rows;
+ * duplicated rather than imported to keep this module free of a dependency on
+ * the applier. Contains no LIKE metacharacters.
+ */
+export const RECONCILE_RUN_ERROR_PREFIX = 'Payment pull: ';
+
+/**
+ * Surface a reconcile run's outcome on the connection itself (finding H).
+ *
+ * Before this, a run that ended with failed items or an un-drained CDC window
+ * left NOTHING an operator could see: the job retried and eventually gave up in
+ * BullMQ, `last_reconcile_at` simply stopped advancing, and the integration
+ * panel still read "connected". Pass a sanitized one-liner (counts only — never
+ * a QuickBooks response body) to stamp, or `null` after a clean run to clear.
+ *
+ * The clear is prefix-scoped so it can never erase a `reauth_required` message.
+ */
+export async function stampReconcileRunError(
+  dbc: DbExecutor,
+  connectionId: string,
+  partnerId: string,
+  message: string | null,
+): Promise<void> {
+  const scope = [
+    eq(accountingConnections.id, connectionId),
+    eq(accountingConnections.partnerId, partnerId),
+  ];
+  await dbc
+    .update(accountingConnections)
+    .set({
+      lastError: message === null ? null : `${RECONCILE_RUN_ERROR_PREFIX}${message}`,
+      updatedAt: new Date(),
+    })
+    .where(and(
+      ...scope,
+      ...(message === null
+        ? [like(accountingConnections.lastError, `${RECONCILE_RUN_ERROR_PREFIX}%`)]
+        : []),
+    ))
+    .returning({ id: accountingConnections.id });
 }
 
 /**

@@ -805,6 +805,27 @@ describe('reverseAccountingPayment', () => {
   });
 });
 
+describe('missing TxnDate (finding H)', () => {
+  it.each([[''], ['   ']])('fails with a clear message rather than a DB error on received_at (%j)', async (txnDate) => {
+    // `mapQboCdcPayment` emits `TxnDate ?? ''`. Passed through, that reached
+    // Postgres as an empty `received_at` and surfaced as an opaque driver
+    // error; the operator saw a stack trace, not a reason.
+    await expect(applyAccountingPayment(conn(), { ...LINE, txnDate }, runCtx, REALM_FP))
+      .rejects.toThrow(/no transaction date/i);
+
+    expect(insertMock).not.toHaveBeenCalled();
+    expect(currentPayments).toEqual([]);
+  });
+
+  it('still SKIPS an undated payment for an invoice Breeze never pushed', async () => {
+    currentMappings = [];
+
+    const outcome = await applyAccountingPayment(conn(), { ...LINE, txnDate: '' }, runCtx, REALM_FP);
+
+    expect(outcome.outcome).toBe('skipped_unmapped');
+  });
+});
+
 describe('payment-originated error markers (finding G)', () => {
   it('clears a PAYMENT-prefixed invoice-mapping error back to synced once a payment applies', async () => {
     currentMappings = [invoiceMappingRow({

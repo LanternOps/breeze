@@ -428,6 +428,21 @@ async function applyInsideTransaction(
     return noAudit(result('invoice_void', line.remotePaymentId, line.remoteInvoiceId, inv.id));
   }
 
+  // (b3) A payment with no transaction date (finding H). `mapQboCdcPayment`
+  // emits `TxnDate ?? ''` because QBO's CDC shape makes the field optional, and
+  // an empty string reached Postgres as `received_at` and surfaced as an opaque
+  // driver error — the operator got a stack trace instead of a reason. Thrown,
+  // not recorded: the worker counts it `failed`, holds the cursor and re-reads
+  // the payment next sweep, which is the right answer for a field QuickBooks
+  // may simply not have flushed yet. Checked AFTER the unmapped/void arms so a
+  // payment Breeze does not own still short-circuits cleanly.
+  if (line.txnDate.trim() === '') {
+    throw new Error(
+      `accountingPaymentPull: QuickBooks payment ${line.remotePaymentId} reported no transaction date `
+      + `for invoice ${line.remoteInvoiceId}; refusing to record a payment with no received_at`,
+    );
+  }
+
   // (c) Authoritative at-most-once claim, read under the lock.
   const existing = await loadMappingByRemoteId(conn, 'payment', 'Payment', remoteMappingId);
 

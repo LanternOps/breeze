@@ -36,6 +36,7 @@ const {
   getConnectionMock,
   listReconcilableConnectionsMock,
   advanceReconcileCursorMock,
+  stampReconcileRunErrorMock,
   backfillRealmFingerprintsMock,
   resolveConnectionAndTokenMock,
   reconcileChangesMock,
@@ -74,6 +75,7 @@ const {
     getConnectionMock: vi.fn(),
     listReconcilableConnectionsMock: vi.fn(),
     advanceReconcileCursorMock: vi.fn(),
+    stampReconcileRunErrorMock: vi.fn(),
     backfillRealmFingerprintsMock: vi.fn(),
     resolveConnectionAndTokenMock: vi.fn(),
     reconcileChangesMock: vi.fn(),
@@ -117,6 +119,7 @@ vi.mock('../services/accounting/accountingConnectionService', () => ({
   getConnection: getConnectionMock,
   listReconcilableConnections: listReconcilableConnectionsMock,
   advanceReconcileCursor: advanceReconcileCursorMock,
+  stampReconcileRunError: stampReconcileRunErrorMock,
   backfillRealmFingerprints: backfillRealmFingerprintsMock,
 }));
 
@@ -258,6 +261,9 @@ beforeEach(() => {
   advanceReconcileCursorMock.mockImplementation(async () => {
     record('advanceReconcileCursor');
     return true;
+  });
+  stampReconcileRunErrorMock.mockImplementation(async () => {
+    record('stampReconcileRunError');
   });
   backfillRealmFingerprintsMock.mockImplementation(async () => {
     record('backfillRealmFingerprints');
@@ -570,6 +576,35 @@ describe('processReconcileConnectionJob: cursor', () => {
 
     expect(summary?.realmChanged).toBe(1);
     expect(summary?.failed).toBe(0);
+  });
+
+  it('clears the connection last_error on a clean run (finding H)', async () => {
+    reconcileChangesMock.mockResolvedValue({ ...EMPTY_CHANGESET, payments: [line()] });
+
+    await processReconcileConnectionJob(JOB);
+
+    expect(stampReconcileRunErrorMock).toHaveBeenCalledWith({}, CONN_ID, PARTNER_ID, null);
+    expect(depthsOf('stampReconcileRunError')).toEqual([1]);
+  });
+
+  it('stamps a sanitized one-liner on the connection when items failed (finding H)', async () => {
+    reconcileChangesMock.mockResolvedValue({ ...EMPTY_CHANGESET, payments: [line()] });
+    applyMock.mockRejectedValue(new Error('QuickBooks said <realm secrets>'));
+
+    await expect(processReconcileConnectionJob(JOB)).rejects.toThrow(/failed item/);
+
+    const stamped = stampReconcileRunErrorMock.mock.calls.at(-1)![3] as string;
+    expect(stamped).toMatch(/1 item/);
+    // Counts only — never a QuickBooks response body.
+    expect(stamped).not.toMatch(/realm secrets/);
+  });
+
+  it('stamps a truncated-window one-liner when the CDC window overflowed (finding H)', async () => {
+    reconcileChangesMock.mockResolvedValue({ ...EMPTY_CHANGESET, overflowed: true });
+
+    await expect(processReconcileConnectionJob(JOB)).rejects.toThrow(/could not be fully enumerated/);
+
+    expect(stampReconcileRunErrorMock.mock.calls.at(-1)![3]).toMatch(/truncat/i);
   });
 
   it('holds the cursor and rethrows when the CDC window could not be fully enumerated', async () => {
