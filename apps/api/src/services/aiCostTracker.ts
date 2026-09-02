@@ -1269,11 +1269,24 @@ export async function getUsageSummary(orgId: string): Promise<{
     monthlyUsedCents: number;
     dailyUsedCents: number;
     approvalMode: string;
-  } | null;
+    /** #4388: pre-cap alert rungs (1-99), partner-override-aware. */
+    alertThresholdPercents: number[];
+  };
   billedTo: AiBillingSource;
   /** Name of the catalog endpoint the org's most recent session used, or null
    *  for direct-Anthropic / platform-key traffic (#3922 W4). */
   catalogEndpointName: string | null;
+  /** #4388: threshold rungs already fired for the org's CURRENT daily and
+   *  monthly periods (nothing from prior, rolled-over periods). */
+  alerts: {
+    fired: Array<{
+      period: 'daily' | 'monthly';
+      periodKey: string;
+      thresholdPct: number;
+      createdAt: string;
+      deliveredAt: string | null;
+    }>;
+  };
 }> {
   const now = new Date();
   const dailyKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}-${String(now.getUTCDate()).padStart(2, '0')}`;
@@ -1291,11 +1304,25 @@ export async function getUsageSummary(orgId: string): Promise<{
     .where(and(eq(aiCostUsage.orgId, orgId), eq(aiCostUsage.period, 'monthly'), eq(aiCostUsage.periodKey, monthlyKey)))
     .limit(1);
 
-  const [budget] = await db
-    .select()
-    .from(aiBudgets)
-    .where(eq(aiBudgets.orgId, orgId))
-    .limit(1);
+  // #4388: the EFFECTIVE budget (org row merged with any partner-wide
+  // override), not the raw ai_budgets row: a partner-set cap must show up
+  // here exactly like it already does in checkBudgetDetailed. Self-contexted
+  // for the same #2190 reason as that function; see the comment there.
+  const budget = await withSystemDbAccessContext(() => getEffectiveAiBudget(orgId));
+
+  const fired = await db.execute<{
+    period: 'daily' | 'monthly';
+    period_key: string;
+    threshold_pct: number;
+    created_at: string;
+    delivered_at: string | null;
+  }>(sql`
+    SELECT period, period_key, threshold_pct, created_at, delivered_at
+    FROM ai_budget_alert_events
+    WHERE org_id = ${orgId}::uuid
+      AND ((period = 'daily' AND period_key = ${dailyKey}) OR (period = 'monthly' AND period_key = ${monthlyKey}))
+    ORDER BY created_at
+  `);
 
   const billedTo = await getLlmBillingSourceForOrg(orgId);
 
@@ -1320,15 +1347,25 @@ export async function getUsageSummary(orgId: string): Promise<{
       totalCostCents: monthlyUsage?.totalCostCents ?? 0,
       messageCount: monthlyUsage?.messageCount ?? 0
     },
-    budget: budget ? {
+    budget: {
       enabled: budget.enabled,
       monthlyBudgetCents: budget.monthlyBudgetCents,
       dailyBudgetCents: budget.dailyBudgetCents,
       monthlyUsedCents: monthlyUsage?.totalCostCents ?? 0,
       dailyUsedCents: dailyUsage?.totalCostCents ?? 0,
       approvalMode: budget.approvalMode ?? 'per_step',
-    } : null,
+      alertThresholdPercents: budget.alertThresholdPercents,
+    },
     billedTo,
     catalogEndpointName,
+    alerts: {
+      fired: fired.map((r) => ({
+        period: r.period,
+        periodKey: r.period_key,
+        thresholdPct: Number(r.threshold_pct),
+        createdAt: new Date(r.created_at).toISOString(),
+        deliveredAt: r.delivered_at ? new Date(r.delivered_at).toISOString() : null,
+      })),
+    },
   };
 }

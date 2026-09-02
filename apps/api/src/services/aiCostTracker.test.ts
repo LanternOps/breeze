@@ -47,6 +47,10 @@ vi.mock('../db', () => ({
     update: vi.fn(),
     insert: vi.fn(),
     select: vi.fn(),
+    // Default: no alert-event rows. `vi.clearAllMocks()` (used in beforeEach
+    // below) only resets call tracking, not this implementation, so tests
+    // that don't care about `alerts.fired` never have to stub it themselves.
+    execute: vi.fn().mockResolvedValue([]),
   },
 }));
 
@@ -80,7 +84,21 @@ vi.mock('../db/schema', () => ({
 
 vi.mock('./redis', () => ({ getRedis: vi.fn(() => ({})) }));
 vi.mock('./rate-limit', () => ({ rateLimiter: vi.fn() }));
-vi.mock('./effectiveSettings', () => ({ getEffectiveAiBudget: vi.fn() }));
+// Default: an enabled, unlimited effective budget with the default alert
+// ladder, same shape `getEffectiveAiBudget` itself defaults to. Individual
+// tests override via `vi.mocked(getEffectiveAiBudget).mockResolvedValue(...)`.
+vi.mock('./effectiveSettings', () => ({
+  getEffectiveAiBudget: vi.fn().mockResolvedValue({
+    enabled: true,
+    monthlyBudgetCents: null,
+    dailyBudgetCents: null,
+    maxTurnsPerSession: 50,
+    messagesPerMinutePerUser: 20,
+    messagesPerHourPerOrg: 200,
+    approvalMode: 'per_step',
+    alertThresholdPercents: [50, 80, 95],
+  }),
+}));
 vi.mock('./sentry', () => ({ captureException: vi.fn(), captureMessage: vi.fn() }));
 vi.mock('./aiBudgetAlerts', () => ({ evaluateAiBudgetThresholds: vi.fn().mockResolvedValue([]) }));
 
@@ -1107,6 +1125,135 @@ describe('getUsageSummary catalog endpoint provenance (#3922 W4)', () => {
       catalogEndpointName: null,
     });
     expect(getCatalogEntryNameMock).not.toHaveBeenCalled();
+  });
+});
+
+// ============================================
+// #4388: /ai/usage effective budget + fired-alert ladder
+// ============================================
+//
+// getUsageSummary used to read the raw `ai_budgets` row directly. It now
+// reads the EFFECTIVE budget (org row merged with any partner-wide override,
+// via getEffectiveAiBudget) so a partner-set cap is reflected here exactly
+// like it already is in checkBudgetDetailed. It also reports which alert
+// rungs have already fired for the org's current daily/monthly periods.
+
+describe('getUsageSummary: effective budget + alert ladder (#4388)', () => {
+  const effectiveBudget = (over: Record<string, unknown> = {}) => ({
+    enabled: true,
+    monthlyBudgetCents: null,
+    dailyBudgetCents: null,
+    maxTurnsPerSession: 50,
+    messagesPerMinutePerUser: 20,
+    messagesPerHourPerOrg: 200,
+    approvalMode: 'per_step',
+    alertThresholdPercents: [50, 80, 95],
+    ...over,
+  }) as Awaited<ReturnType<typeof getEffectiveAiBudget>>;
+
+  const currentMonthKey = () => {
+    const now = new Date();
+    return `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
+  };
+  const currentDailyKey = () => {
+    const now = new Date();
+    return `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}-${String(now.getUTCDate()).padStart(2, '0')}`;
+  };
+
+  beforeEach(() => {
+    setupDbMocks(null);
+  });
+
+  it('returns the EFFECTIVE budget (partner override wins) and the threshold ladder', async () => {
+    // A raw `ai_budgets` row would say 99999; this proves the merged/effective
+    // value is what ships, not whatever the org's own row happens to hold.
+    vi.mocked(getEffectiveAiBudget).mockResolvedValue(effectiveBudget({
+      monthlyBudgetCents: 5000,
+      dailyBudgetCents: null,
+      approvalMode: 'per_step',
+      alertThresholdPercents: [50, 80, 95],
+    }));
+
+    const summary = await getUsageSummary('org1');
+
+    expect(summary.budget?.monthlyBudgetCents).toBe(5000);
+    expect(summary.budget?.alertThresholdPercents).toEqual([50, 80, 95]);
+    // #2190: the budget read must be self-contexted like checkBudgetDetailed.
+    expect(vi.mocked(withSystemDbAccessContext)).toHaveBeenCalled();
+  });
+
+  it('lists rungs fired in the current periods', async () => {
+    vi.mocked(getEffectiveAiBudget).mockResolvedValue(effectiveBudget({ monthlyBudgetCents: 5000 }));
+    vi.mocked(db.execute).mockResolvedValueOnce([
+      {
+        period: 'monthly',
+        period_key: currentMonthKey(),
+        threshold_pct: 80,
+        created_at: '2026-09-03T10:00:00Z',
+        delivered_at: '2026-09-03T10:00:05Z',
+      },
+    ] as never);
+
+    const summary = await getUsageSummary('org1');
+
+    expect(summary.alerts.fired).toEqual([
+      {
+        period: 'monthly',
+        periodKey: currentMonthKey(),
+        thresholdPct: 80,
+        createdAt: '2026-09-03T10:00:00.000Z',
+        deliveredAt: '2026-09-03T10:00:05.000Z',
+      },
+    ]);
+  });
+
+  it('reports an undelivered rung with a null deliveredAt', async () => {
+    vi.mocked(getEffectiveAiBudget).mockResolvedValue(effectiveBudget({ dailyBudgetCents: 1000 }));
+    vi.mocked(db.execute).mockResolvedValueOnce([
+      {
+        period: 'daily',
+        period_key: currentDailyKey(),
+        threshold_pct: 50,
+        created_at: '2026-09-03T10:00:00Z',
+        delivered_at: null,
+      },
+    ] as never);
+
+    const summary = await getUsageSummary('org1');
+
+    expect(summary.alerts.fired).toEqual([
+      {
+        period: 'daily',
+        periodKey: currentDailyKey(),
+        thresholdPct: 50,
+        createdAt: '2026-09-03T10:00:00.000Z',
+        deliveredAt: null,
+      },
+    ]);
+  });
+
+  // The instruction not to use a vacuous assertion here means: don't just
+  // stub db.execute to return whatever and check the mapping (the test
+  // above already does that). Separately prove the query itself is scoped
+  // to THIS org and THIS org's current daily/monthly period keys, by
+  // asserting on the exact rendered SQL text and interpolated values that
+  // reached the mocked db.execute call.
+  it('scopes the fired-events query to this org and its current daily/monthly period keys', async () => {
+    vi.mocked(getEffectiveAiBudget).mockResolvedValue(effectiveBudget());
+    const executeMock = vi.mocked(db.execute);
+
+    await getUsageSummary('org-scope-1');
+
+    expect(executeMock).toHaveBeenCalledTimes(1);
+    const queryArg = executeMock.mock.calls[0]![0] as unknown as {
+      _sql: TemplateStringsArray;
+      values: unknown[];
+    };
+    const renderedSql = queryArg._sql.join('?');
+    expect(renderedSql).toContain('FROM ai_budget_alert_events');
+    expect(renderedSql).toContain("period = 'daily'");
+    expect(renderedSql).toContain("period = 'monthly'");
+    expect(queryArg.values).toEqual(['org-scope-1', currentDailyKey(), currentMonthKey()]);
   });
 });
 
