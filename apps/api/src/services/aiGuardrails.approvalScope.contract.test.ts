@@ -175,7 +175,7 @@ describe('tier-3 approval scope classification', () => {
       }
     }
     expect(enumerated.sort()).toEqual([
-      'manage_services', 'manage_startup_items', 's1_threat_action', 'security_scan',
+      'manage_ai_agents', 'manage_services', 'manage_startup_items', 's1_threat_action', 'security_scan',
     ]);
   });
 
@@ -183,7 +183,7 @@ describe('tier-3 approval scope classification', () => {
     // The union in realActionEnum() is only a real guard while BOTH sources
     // still reflect. If one silently returns nothing, the union quietly shrinks
     // and a new action in that source stops failing CI.
-    for (const tool of ['manage_services', 'manage_startup_items', 's1_threat_action', 'security_scan']) {
+    for (const tool of ['manage_ai_agents', 'manage_services', 'manage_startup_items', 's1_threat_action', 'security_scan']) {
       const definition = getToolDefinitions().find((d) => d.name === tool);
       const properties = (definition?.input_schema as { properties?: Record<string, unknown> } | undefined)?.properties;
       expect((properties?.action as { enum?: unknown[] } | undefined)?.enum, `${tool} tool-definition enum`).toBeInstanceOf(Array);

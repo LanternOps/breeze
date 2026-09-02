@@ -106,25 +106,28 @@ describe('likePrefixPattern (action-prefix LIKE escaping)', () => {
 });
 
 describe('formatActionMessage (automated command labels)', () => {
-  it('labels automated patch installs', () => {
-    expect(formatActionMessage('agent.command.install_patches', 'host-1', 'success'))
-      .toBe('Patches installed — host-1');
+  // #4225: these rows are written at DISPATCH time (commandQueue.ts), before
+  // the agent has reported back, so the label must not claim completion and
+  // the audit row's `result` must not claim 'success'.
+  it('labels automated patch installs in dispatch tense, not completed tense, with no suffix for the neutral result', () => {
+    expect(formatActionMessage('agent.command.install_patches', 'host-1', 'dispatched'))
+      .toBe('Patch install command sent — host-1');
   });
 
   it('labels automated script runs', () => {
-    expect(formatActionMessage('agent.command.script', null, 'success'))
-      .toBe('Script ran');
+    expect(formatActionMessage('agent.command.script', null, 'dispatched'))
+      .toBe('Script run command sent');
   });
 
-  it('marks a failed automated patch install', () => {
+  it('still marks a failed automated command explicitly', () => {
     expect(formatActionMessage('agent.command.install_patches', 'host-1', 'failure'))
-      .toBe('Patches installed — host-1 (failed)');
+      .toBe('Patch install command sent — host-1 (failed)');
   });
 
   it('labels rollback, uninstall, and update', () => {
-    expect(formatActionMessage('agent.command.rollback_patches', null, 'success')).toBe('Patches rolled back');
-    expect(formatActionMessage('agent.command.software_uninstall', null, 'success')).toBe('Software uninstalled');
-    expect(formatActionMessage('agent.command.software_update', null, 'success')).toBe('Software updated');
+    expect(formatActionMessage('agent.command.rollback_patches', null, 'dispatched')).toBe('Patch rollback command sent');
+    expect(formatActionMessage('agent.command.software_uninstall', null, 'dispatched')).toBe('Software uninstall command sent');
+    expect(formatActionMessage('agent.command.software_update', null, 'dispatched')).toBe('Software update command sent');
   });
 });
 

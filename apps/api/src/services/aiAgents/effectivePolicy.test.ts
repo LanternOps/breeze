@@ -365,13 +365,17 @@ describe('mergeAgentPolicies — tighten only', () => {
   });
 
   it('supervisedActionKeys narrows exactly like scriptIds: absent partner field, empty-partner-baseline stands alone', () => {
-    // No org override at all: effective === partner verbatim (the existing
-    // `if (!org) return { effective: partner, ... }` early return) — a
-    // partner-wide baseline row's own supervisedActionKeys is never
-    // intersected against anything.
+    // No org override at all (the `if (!org)` fast path): supervisedActionKeys
+    // resolves to `[]`, NOT the partner's own list (C3, ceiling not grant).
+    // Every other field on this fast path passes through the partner baseline
+    // unchanged — scriptIds included — but supervisedActionKeys is a ceiling
+    // (what an org MAY be granted), not a grant (what it HAS). Only an org
+    // row is a grant; promotion is the only writer that adds a key to one,
+    // demotion the only one that removes one. See mergeAgentPolicies'
+    // `if (!org)` branch docstring for the full rationale.
     const partnerOnly = policy({ actAssets: { scriptIds: [], supervisedActionKeys: [KEY_A] } });
     expect(mergeAgentPolicies(partnerOnly, null, { allowedModels: null }).effective.actAssets)
-      .toEqual({ scriptIds: [], supervisedActionKeys: [KEY_A] });
+      .toEqual({ scriptIds: [], supervisedActionKeys: [] });
 
     // Org narrows: intersection, never union — org's KEY_C (not on the
     // partner baseline) is dropped.

@@ -700,6 +700,10 @@ const envObjectSchema = z
     QBO_CLIENT_SECRET: z.string().optional(),
     QBO_REDIRECT_URI: z.string().optional(),
     QBO_ENVIRONMENT: z.string().optional(),
+    // Optional at boot: only the webhook route needs it to verify inbound CDC
+    // signatures, and a region without the Intuit webhook configured relies
+    // on the 15-minute reconcile sweep instead.
+    QBO_WEBHOOK_VERIFIER_TOKEN: z.string().optional(),
 
     // S3 / object storage — required when S3_BUCKET is set.
     S3_BUCKET: z.string().optional(),

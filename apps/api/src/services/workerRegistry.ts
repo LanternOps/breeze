@@ -1092,6 +1092,18 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // QuickBooks Phase D, Task 4 (payment pull-back): the CDC reconcile worker
+    // plus its 15-minute sweep. `global`, and NOT copied from the sibling
+    // above on faith — `workerEntrypointClosure.contract.test.ts` re-derives
+    // this module's real runtime import closure per entry and is the authority.
+    name: 'accountingReconcileWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/accountingReconcileWorker');
+      return { init: m.initializeAccountingReconcileWorkers, shutdown: m.shutdownAccountingReconcileWorkers };
+    },
+  },
+  {
     // Phase 2 wave P2-6 (value accounting), task A5: nightly scan + per-org
     // impact rollup fan-out.
     //

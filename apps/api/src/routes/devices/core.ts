@@ -55,7 +55,9 @@ import { deleteDeviceCascade } from '../../services/deviceDeletion';
 import { resolveRemoteAccessForDevice } from '../../services/remoteAccessPolicy';
 import {
   resolveRemoteAccessLaunch,
+  checkRemoteAccessLaunchAvailability,
   type RemoteAccessLaunchResult,
+  type RemoteAccessLaunchAvailability,
   type RemoteAccessLaunchSkipReason,
 } from '../../services/remoteAccessLauncher';
 import { captureException } from '../../services/sentry';
@@ -1111,29 +1113,32 @@ coreRoutes.get(
 
     // Resolve whether a third-party remote-tool launcher (RustDesk,
     // ScreenConnect, TeamViewer, etc.) is configured and usable for this
-    // device. We DO NOT return the substituted launch URL here. That is
-    // issued by POST /devices/:id/remote-access-launch on click so the
-    // password-bearing URL is never broadcast in detail-fetch responses.
-    // The flags below only tell the UI whether to render the launcher
-    // button and what to surface if the configuration is wrong.
+    // device. This is an AVAILABILITY check only -- it never decrypts the
+    // provider password or substitutes the template, so it does not build
+    // (or discard) a credential-bearing URL. The actual launch URL is only
+    // ever issued by POST /devices/:id/remote-access-launch on click, so the
+    // password-bearing URL is never broadcast in detail-fetch responses and
+    // never even materialized for a GET. See issue #3402.
     //
     // Skip-reason vocabulary lets the UI distinguish expected-empty
     // ('no_provider_configured'), configuration error ('config_error'),
     // and a potential security event ('scheme_not_allowed': partner
     // template was tampered to resolve to a disallowed scheme only after
-    // substitution).
+    // substitution) -- though `scheme_not_allowed` can only ever be
+    // observed by the issuance path (POST), since detecting it requires the
+    // substitution this availability check deliberately skips.
     let hasRemoteAccessLauncher = false;
     let remoteAccessLaunchSkipReason: RemoteAccessLaunchSkipReason | 'config_error' | null = null;
     try {
-      const launcher = await resolveRemoteAccessLauncherForDevice(
+      const availability = await checkRemoteAccessLauncherAvailabilityForDevice(
         device.orgId,
         device.customFields as Record<string, unknown> | null,
         auth,
       );
-      if (launcher.launchUrl) {
+      if (availability.available) {
         hasRemoteAccessLauncher = true;
       } else {
-        remoteAccessLaunchSkipReason = launcher.skipReason;
+        remoteAccessLaunchSkipReason = availability.skipReason;
       }
     } catch (err) {
       captureException(err, c);
@@ -1157,16 +1162,6 @@ coreRoutes.get(
   }
 );
 
-/**
- * Look up the partner's remote-access launcher config for a device and
- * return the structured result describing whether a launch URL is available.
- *
- * The partners table has partner-axis RLS, and the request scope is the
- * user's (organization or partner), not the partner whose settings we
- * need. We wrap the lookup in a system-scope DB context so the policy
- * engine doesn't filter the row out. This mirrors how remoteAccessPolicy.ts
- * uses systemAuth for the same reason.
- */
 /**
  * Read the acting technician's preferred provider id, if any.
  *
@@ -1196,11 +1191,23 @@ async function readPreferredProviderId(auth: AuthContext): Promise<string | null
   return typeof value === 'string' && value.length > 0 ? value : null;
 }
 
-async function resolveRemoteAccessLauncherForDevice(
+/**
+ * Loads the pieces every launcher call needs -- the tenant's configured
+ * providers and the acting technician's preference -- without touching
+ * credentials. Shared by both the availability check (GET) and the issuance
+ * path (POST) so they evaluate the exact same provider selection; see the
+ * skew case called out in issue #3402.
+ *
+ * The partners table has partner-axis RLS, and the request scope is the
+ * user's (organization or partner), not the partner whose settings we need.
+ * We wrap the lookup in a system-scope DB context so the policy engine
+ * doesn't filter the row out. This mirrors how remoteAccessPolicy.ts uses
+ * systemAuth for the same reason.
+ */
+async function loadRemoteAccessLauncherContext(
   orgId: string,
-  customFields: Record<string, unknown> | null,
   auth?: AuthContext,
-): Promise<RemoteAccessLaunchResult> {
+): Promise<{ providers: InheritableRemoteAccessSettings | undefined; preferredProviderId: string | null }> {
   const partnerSettings = await withSystemDbAccessContext(async () => {
     const [partnerRow] = await db
       .select({ settings: partners.settings })
@@ -1210,9 +1217,34 @@ async function resolveRemoteAccessLauncherForDevice(
       .limit(1);
     return (partnerRow?.settings ?? {}) as PartnerSettings;
   });
-  const providers: InheritableRemoteAccessSettings | undefined =
-    partnerSettings.remoteAccessProviders;
   const preferredProviderId = auth ? await readPreferredProviderId(auth) : null;
+  return { providers: partnerSettings.remoteAccessProviders, preferredProviderId };
+}
+
+/**
+ * Availability-only check: would a launch URL resolve for this device? Never
+ * decrypts the provider password or substitutes the template. This is the
+ * ONLY launcher entry point GET /devices/:id should call.
+ */
+async function checkRemoteAccessLauncherAvailabilityForDevice(
+  orgId: string,
+  customFields: Record<string, unknown> | null,
+  auth?: AuthContext,
+): Promise<RemoteAccessLaunchAvailability> {
+  const { providers, preferredProviderId } = await loadRemoteAccessLauncherContext(orgId, auth);
+  return checkRemoteAccessLaunchAvailability({ customFields }, providers, preferredProviderId);
+}
+
+/**
+ * Issuance: resolves (and returns) the substituted, credential-bearing
+ * launch URL. Only POST /devices/:id/remote-access-launch may call this.
+ */
+async function resolveRemoteAccessLauncherForDevice(
+  orgId: string,
+  customFields: Record<string, unknown> | null,
+  auth?: AuthContext,
+): Promise<RemoteAccessLaunchResult> {
+  const { providers, preferredProviderId } = await loadRemoteAccessLauncherContext(orgId, auth);
   return resolveRemoteAccessLaunch({ customFields }, providers, preferredProviderId);
 }
 

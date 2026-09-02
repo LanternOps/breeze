@@ -101,6 +101,51 @@ Creating a triage agent automatically creates a matching **system-managed automa
 
 Disabling the agent disables its wiring too, so an agent that is switched off never gets live alerts routed in front of it.
 
+## Alert verdicts
+
+A triage agent can classify an alert without opening a full run. The verdict appears on the alert itself, under **AI Verdict**, as one of:
+
+| Verdict | Meaning |
+|---|---|
+| **Actionable** | Something genuinely needs doing. |
+| **Self-healed** | The condition cleared on its own. |
+| **Recurring pattern** | Part of a repeating daily, weekly, or post-event pattern rather than a new problem. |
+| **Duplicate** | The same underlying condition as other alerts already grouped together. |
+| **Needs human review** | The agent could not reach a confident conclusion. |
+
+Each verdict shows a confidence percentage and the agent's reasoning. Use **Hide AI-flagged noise** on the alert list to filter out the ones the agent judged non-actionable — the alerts are suppressed from your view, never deleted.
+
+Verdicts are advisory. If the agent thinks an action is warranted it does not take it: the alert shows **AI suggested an action — review in Approvals** and the proposal waits for a person.
+
+Thumbs-up and thumbs-down buttons on a verdict record whether it was useful. One person's feedback per verdict is kept.
+
+## Scheduled sweeps
+
+A sweep is a scheduled pass over your fleet looking for conditions nobody has alerted on yet. Configure them under **Settings → AI Agents → Scheduled sweeps**.
+
+Choose which checks a sweep runs:
+
+- Disk pressure
+- Stale agents
+- Pending reboots
+- Failed backups
+- Service down
+- Unpatched critical vulnerabilities
+
+Schedules are set with a five-field cron expression and a timezone — for example `0 3 * * *` for every day at 03:00.
+
+<Aside>
+  Sweep schedules attach to a **partner-wide** agent. An individual organization can override the baseline only to *narrow* it — disabling the sweep or dropping checks. An override can never add a check the partner did not enable, and always runs on the partner's cadence.
+</Aside>
+
+Findings appear on the run under **Sweep findings**, listed by check, severity, and device. Where the agent wants to act on a finding it raises an approval request rather than acting. If the fleet was too large to examine exhaustively, the run says so rather than implying it saw everything.
+
+## Weekly report
+
+A **Weekly report** schedule has an agent write a plain-language summary of what happened in an organization over the past week. It appears in Reports as **Weekly AI Operations Narrative**, marked *Managed by AI schedule*.
+
+Set it up the same way as a sweep, choosing **Weekly report** as the schedule type. It must fire exactly once a week — a specific minute and hour on a single day, for example `0 7 * * 1` for every Monday at 07:00.
+
 ## Ticket helpdesk lane
 
 A newly created ticket can wake a helpdesk agent when all of these conditions are met:
@@ -112,7 +157,11 @@ A newly created ticket can wake a helpdesk agent when all of these conditions ar
 
 Every ticket creation is written to a transactional outbox. A background publisher drains the outbox onto the event bus approximately every five seconds, so you do not need a separate ticket trigger flag.
 
-Ticket-triggered runs are always forced into Shadow mode, regardless of the agent's configured mode. They have no device context, so device-changing tools are denied outright.
+Ticket-triggered runs have no device context, so device-changing tools are denied outright.
+
+By default a ticket run only ever proposes: it writes an **AI-drafted reply** or an **AI-drafted resolution note** onto the ticket for a technician to deal with. The draft appears in the ticket with two buttons — **Send as me**, which posts it as a comment under your name, and **Discard**, which throws it away. Nothing reaches the customer unless a technician sends it.
+
+You can let a helpdesk agent post ticket updates without waiting for a technician, but it takes two deliberate opt-ins together: the agent must be in **Act** mode, and the organization must turn on **Autonomous ticket writes** (an org-level override on the agent's policy). If either is off — or if the kill switch is engaged — the update goes to a person for approval instead. Both are re-checked at the moment of the write, not just when the run started, so switching either off stops autonomous writes on runs already in flight.
 
 Only ticket creation admits a helpdesk run in this release. Ticket comments and status changes are published on the event bus, but this lane does not read them yet. A ticket that already has agent-originated comment activity is also rejected to prevent a loop.
 

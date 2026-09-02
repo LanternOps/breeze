@@ -381,6 +381,18 @@ x-api-env: &api-env
   BREEZE_BILLING_API_KEY: ${BREEZE_BILLING_API_KEY:-}
   BILLING_SERVICE_URL: ${BILLING_SERVICE_URL:-}
   BILLING_SERVICE_API_KEY: ${BILLING_SERVICE_API_KEY:-}
+  # QuickBooks Online accounting integration. All optional: unset leaves the
+  # integration dark. Mapped explicitly because Compose only interpolates vars
+  # listed in this block — a value in .env alone is never seen by the API
+  # (the IS_HOSTED / #570 failure mode; Phase C's sandbox walkthrough needed a
+  # manual override for exactly this).
+  QBO_CLIENT_ID: ${QBO_CLIENT_ID:-}
+  QBO_CLIENT_SECRET: ${QBO_CLIENT_SECRET:-}
+  QBO_REDIRECT_URI: ${QBO_REDIRECT_URI:-}
+  QBO_ENVIRONMENT: ${QBO_ENVIRONMENT:-}
+  # Intuit's app-level webhook verifier token. Unset -> the webhook route
+  # answers 503 and the 15-minute reconcile sweep is the only pull path.
+  QBO_WEBHOOK_VERIFIER_TOKEN: ${QBO_WEBHOOK_VERIFIER_TOKEN:-}
   # Reporting-only FX (#3779). Empty === unset for both readers, so the
   # `${VAR:-}` form keeps the code defaults (feed ON, public Frankfurter).
   EXCHANGE_RATE_SYNC_ENABLED: ${EXCHANGE_RATE_SYNC_ENABLED:-}

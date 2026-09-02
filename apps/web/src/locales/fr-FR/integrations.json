@@ -776,7 +776,18 @@
     "failedToRefreshSettings": "Échec de l'actualisation des paramètres QuickBooks.",
     "homeCurrency": "Devise de référence",
     "multiCurrency": "Multidevise",
-    "multiCurrencyUnknown": "Inconnu — actualisez les paramètres pour vérifier"
+    "multiCurrencyUnknown": "Inconnu — actualisez les paramètres pour vérifier",
+    "pullPayments": "Synchronisation des paiements",
+    "pullPaymentsDescription": "Récupérez dans les factures Breeze les paiements enregistrés dans QuickBooks.",
+    "pullPaymentsEnabled": "Les paiements seront synchronisés depuis QuickBooks",
+    "pullPaymentsDisabled": "Les paiements ne seront plus synchronisés depuis QuickBooks",
+    "failedToUpdatePullPayments": "Impossible de mettre à jour le paramètre de synchronisation des paiements.",
+    "lastPaymentSync": "Dernière synchronisation des paiements",
+    "never": "Jamais",
+    "syncNow": "Synchroniser maintenant",
+    "syncNowQueued": "Synchronisation des paiements mise en file d'attente.",
+    "syncNowNotQueued": "Impossible de mettre la synchronisation des paiements en file d'attente. Réessayez dans un instant.",
+    "failedToSyncNow": "Impossible de lancer la synchronisation des paiements."
   },
   "securityIntegration": {
     "notConfigured": "Non configuré ",

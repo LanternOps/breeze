@@ -6,12 +6,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 ENV_FILE="${BREEZE_ENV_FILE:-${REPO_ROOT}/.env.prod}"
 # Grafana is defined in the monitoring overlay (docker-compose.monitoring.yml),
-# which pins container_name: breeze-grafana. We exec into it by container
-# name rather than via `docker compose -f deploy/docker-compose.prod.yml -f
-# docker-compose.monitoring.yml`: that combination is not a valid compose
-# project — the monitoring overlay's postgres-exporter service depends on a
-# `postgres` service that only exists in the root docker-compose.yml (dev),
-# not in the managed-Postgres prod stack. See #4278.
+# which pins container_name: breeze-grafana. We exec into it by container name
+# rather than reconstructing the full `docker compose -f
+# deploy/docker-compose.prod.yml -f docker-compose.monitoring.yml` invocation
+# (env file, project name, etc.) just to run one `exec` — simpler, and this
+# script only needs to reach an already-running container. The two-file combo
+# itself is a valid compose project as of #4362 (previously it was not: the
+# overlay's postgres-exporter service hard-depended on a `postgres` service
+# that only exists in the root docker-compose.yml (dev), not in the
+# managed-Postgres prod stack — see #4278).
 GRAFANA_CONTAINER="${GRAFANA_CONTAINER:-breeze-grafana}"
 
 if [[ $# -ge 1 ]]; then
