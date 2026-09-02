@@ -95,11 +95,30 @@ const MAX_MERGED_LIMIT_KEYS = new Set<keyof AiAgentLimits>(['promoteThreshold'])
 const LIMIT_KEYS = Object.keys(AI_AGENT_LIMIT_DEFAULTS) as Array<keyof AiAgentLimits>;
 
 describe('mergeLimits — promoteThreshold merges with max, every other limit with min', () => {
-  it.each(LIMIT_KEYS)('%s', (key) => {
+  it.each(LIMIT_KEYS)('partner high, org low: %s', (key) => {
     const high = 999;
     const low = 2;
     const partner = policy({ limits: { ...AI_AGENT_LIMIT_DEFAULTS, [key]: high } });
     const org = policy({ limits: { ...AI_AGENT_LIMIT_DEFAULTS, [key]: low } });
+
+    const { effective } = mergeAgentPolicies(partner, org, { allowedModels: null });
+
+    const expected = MAX_MERGED_LIMIT_KEYS.has(key) ? high : low;
+    expect(effective.limits[key]).toBe(expected);
+  });
+
+  // Swapped orientation of the table above. On its own, "partner high / org
+  // low" cannot distinguish Math.max from a naive "always take the partner
+  // value" — for promoteThreshold both return 999. Here the org is the HIGH
+  // side: an org RAISING the bar (e.g. partner 20, org 50) must be honoured,
+  // which only a real Math.max satisfies. `useMax ? partnerNumber : Math.min(...)`
+  // would fail this table (it would return the partner's LOW value instead
+  // of the org's higher one for promoteThreshold).
+  it.each(LIMIT_KEYS)('partner low, org high: %s', (key) => {
+    const low = 2;
+    const high = 999;
+    const partner = policy({ limits: { ...AI_AGENT_LIMIT_DEFAULTS, [key]: low } });
+    const org = policy({ limits: { ...AI_AGENT_LIMIT_DEFAULTS, [key]: high } });
 
     const { effective } = mergeAgentPolicies(partner, org, { allowedModels: null });
 
