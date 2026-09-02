@@ -43,5 +43,10 @@ DO $$ DECLARE n int; BEGIN
 END $$;
 ALTER TABLE contract_lines DROP CONSTRAINT IF EXISTS contract_lines_site_fkey;
 ALTER TABLE contract_lines DROP CONSTRAINT IF EXISTS contract_lines_site_org_fk;
+-- DEFERRABLE INITIALLY IMMEDIATE: org merge runs SET CONSTRAINTS ALL DEFERRED
+-- and re-points parent and child org_id in separate statements, so every
+-- composite FK that references an org_id column must be deferrable. Enforced by
+-- orgLifecycleFoundations.integration.test.ts ("merge contract").
 ALTER TABLE contract_lines ADD CONSTRAINT contract_lines_site_org_fk
-  FOREIGN KEY (site_id, org_id) REFERENCES sites (id, org_id) ON DELETE SET NULL (site_id);
+  FOREIGN KEY (site_id, org_id) REFERENCES sites (id, org_id) ON DELETE SET NULL (site_id)
+  DEFERRABLE INITIALLY IMMEDIATE;
