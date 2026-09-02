@@ -1053,6 +1053,7 @@
     },
     "toasts": {
       "inviteSent": "Invite sent",
+      "inviteSentAmbiguousContact": "Invite sent, but no contact could be linked — several contacts share this email. This user will not see tickets that were emailed in until a contact is linked.",
       "pendingInvited": "Invited {{count}} pending user(s)",
       "inviteResent": "Invite resent",
       "reactivated": "User reactivated",
