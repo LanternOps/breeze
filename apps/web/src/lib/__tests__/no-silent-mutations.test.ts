@@ -237,6 +237,10 @@ const TARGET_GLOBS = [
   // unguarded next to them. A silent failure on either reads as "payment sync
   // is on / a sync is running" while the books and Breeze quietly diverge.
   'src/components/integrations/QuickbooksIntegration.tsx',
+  // Partner trust action links approve or suspend an entire partner. Keep the
+  // TOTP-confirmed mutation inside runAction so this high-impact result cannot
+  // fail without operator feedback.
+  'src/components/admin/TrustActionPage.tsx',
 ];
 
 const absoluteFiles: string[] = TARGET_GLOBS.map((rel) => resolve(WEB_ROOT, '..', rel));
@@ -543,11 +547,13 @@ describe('no silent mutations in targeted set', () => {
     // AiAgentGraduationPanel.tsx (P2-5 Task 20, #4192). ApprovalsInbox.tsx was
     // already guarded before P2-5 — Task 21's promote mutation needed no list
     // edit. Also plus BulkContactImport.tsx, ContactImportPreviewTable.tsx and
-    // ContactsCard.tsx (#3258 W04, the contacts tab and its CSV importer).
-    // NOTE: merge-base held 108; this branch added 1 and main added 3 in
-    // parallel, so the true merged count is 112 — bump it deliberately on
-    // every merge, never by resolving the hunk.
-    expect(absoluteFiles.length).toBe(112);
+    // ContactsCard.tsx (#3258 W04, the contacts tab and its CSV importer), plus
+    // TrustActionPage.tsx (partner trust probation, #4549 — the TOTP-confirmed
+    // approve/suspend action).
+    // NOTE: merge-base held 108; this branch added 1 (TrustActionPage.tsx) and
+    // main added 3 in parallel, so the true merged count is 113 — bump it
+    // deliberately on every merge, never by resolving the hunk.
+    expect(absoluteFiles.length).toBe(113);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

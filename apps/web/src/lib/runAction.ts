@@ -1,5 +1,6 @@
 import { showToast } from '../components/shared/Toast';
 import { extractApiError, isApiFailure } from './apiError';
+import { dispatchTrustDenied, isTrustDenial } from './trustProbation';
 
 export class ActionError extends Error {
   code?: string;
@@ -81,7 +82,11 @@ export async function runAction<T = unknown>(opts: RunActionOptions<T>): Promise
       const friendly = opts.friendly(friendlyKey);
       if (friendly) message = friendly;
     }
-    showToast({ message, type: 'error' });
+    if (response.status === 403 && isTrustDenial(data)) {
+      dispatchTrustDenied(data);
+    } else {
+      showToast({ message, type: 'error' });
+    }
     throw new ActionError(message, response.status, code, data);
   }
 
