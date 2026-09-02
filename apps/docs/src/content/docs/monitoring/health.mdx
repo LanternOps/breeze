@@ -106,9 +106,13 @@ consumers behind an off feature flag (`EVENT_DISPATCH_MODE`,
 rather than blocking readiness. The numbers above are illustrative.
 
 The optional `worker` container (Compose profile `worker-split`) serves its
-own `/health/ready` on its `API_PORT` with the same fields plus
-`"role": "worker"` and, when not ready, a single `reason`
-(`db`, `redis`, `workers-pending`, `migrations-pending`, or `shutting-down`).
+own `/health/ready` on its `API_PORT`. When its readiness evaluator runs, the
+body has the same fields plus `"role": "worker"`, and a 503 adds a single
+`reason` of `db`, `redis`, or `workers-pending`. Three 503s bypass the
+evaluator and carry only `{ "ready": false, "reason": ... }` with none of the
+other fields: `shutting-down` (the process received SIGTERM),
+`migrations-pending` (schema parity not yet confirmed), and `db` when the
+evaluator itself throws.
 
 <Aside>
   Use `/health` for liveness probes (restart the container if the process is dead) and `/health/ready` for readiness probes (stop sending traffic until dependencies recover). Do not put `/health/ready` in a Docker Compose `healthcheck:` for a service other containers `depends_on` — Compose turns it into a startup gate. The `worker` container is the one exception, because nothing depends on it. See `docs/operations/health-probes.md` in the repository.
@@ -263,7 +267,7 @@ One or more backend dependencies are down.
 <Steps>
 
 1. Read the `db`, `redis`, and `workers` booleans in the response body. If only `workers` is `false`, `consumerSummary.unavailable` tells you how many required queue consumers are not running; check the API container logs for `[CRITICAL] Failed to initialize <worker>` lines and for Redis disconnects.
-2. If `database` is failing:
+2. If `db` is failing:
    - Verify PostgreSQL is running: `docker compose ps postgres`
    - Test the connection manually: `docker compose exec postgres pg_isready`
    - Check for connection pool exhaustion: look at `pg_stat_activity_count` in Grafana

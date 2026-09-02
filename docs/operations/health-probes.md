@@ -66,6 +66,9 @@ and one bounded dependency probe.
 Public readiness responses contain compatibility booleans and aggregate
 consumer counts only. Consumer names, queue names, endpoints, transition
 timestamps, and internal errors are intentionally not exposed. The worker
-container's `/health/ready` follows the same rule and additionally carries
-`role: "worker"` and, on 503, a single `reason` of `db`, `redis`,
-`workers-pending`, `migrations-pending`, or `shutting-down`.
+container's `/health/ready` follows the same rule. When its evaluator runs,
+the body carries the same fields plus `role: "worker"`, and a 503 adds a
+single `reason` of `db`, `redis`, or `workers-pending`. Three 503s bypass the
+evaluator and carry only `{ "ready": false, "reason": ... }` with none of the
+other fields: `shutting-down` (SIGTERM received), `migrations-pending` (schema
+parity not yet confirmed), and `db` when the evaluator itself throws.
