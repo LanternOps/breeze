@@ -368,3 +368,64 @@ describe('useApproximateTotal — a partner reporting-currency change invalidate
     expect(fetchWithAuth).toHaveBeenCalledTimes(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #4472: the cache generation was not in the effect's dependency list, so an
+// already-mounted line — never unmounted, no other prop/state change — kept
+// its stale state after `resetPartnerCurrencyCache()` and only picked up the
+// new currency on a later remount. Every test above unmounts and remounts
+// (`first.unmount()` then a fresh `render()`), which happens to work because
+// a brand-new mount always computes a fresh key — it never exercised the
+// actually-broken path. These do.
+// ---------------------------------------------------------------------------
+describe('useApproximateTotal — an ALREADY-MOUNTED line reacts to a reset in place (#4472)', () => {
+  it('refetches without unmounting when a same-tab reporting-currency save resets the cache', async () => {
+    fetchWithAuth.mockResolvedValueOnce(jsonRes({ data: AVAILABLE }));
+    render(<Probe id="a" date="2026-08-21" />);
+    await waitFor(() => expect(screen.getByTestId('a').textContent).toBe('available:22940.00:CAD'));
+
+    // What PartnerBillingSettings.tsx does after a reporting-currency save —
+    // the mounted Probe is never unmounted or given new props.
+    fetchWithAuth.mockResolvedValueOnce(
+      jsonRes({ data: { ...AVAILABLE, targetCurrencyCode: 'EUR', total: '17000.00' } }),
+    );
+    resetPartnerCurrencyCache();
+
+    await waitFor(() => expect(screen.getByTestId('a').textContent).toBe('available:17000.00:EUR'));
+    expect(fetchWithAuth).toHaveBeenCalledTimes(2);
+  });
+
+  it('a stale response discarded by the generation guard self-heals instead of pinning `failed`', async () => {
+    let resolveFirst: (r: Response) => void = () => {};
+    fetchWithAuth.mockReturnValueOnce(new Promise<Response>((r) => { resolveFirst = r; }));
+    render(<Probe id="a" date="2026-08-21" />);
+    await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledTimes(1));
+
+    // Reset while the first request is still in flight; the mounted line
+    // must start a second, post-reset request on its own.
+    fetchWithAuth.mockResolvedValueOnce(
+      jsonRes({ data: { ...AVAILABLE, targetCurrencyCode: 'EUR', total: '17000.00' } }),
+    );
+    resetPartnerCurrencyCache();
+    await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.getByTestId('a').textContent).toBe('available:17000.00:EUR'));
+
+    // The stale pre-reset response finally lands and is discarded by the
+    // generation guard — it must not clobber the healthy state with `failed`.
+    resolveFirst(jsonRes({ data: AVAILABLE }));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(screen.getByTestId('a').dataset.failed).toBe('false');
+    expect(screen.getByTestId('a').textContent).toBe('available:17000.00:EUR');
+  });
+
+  it('a mounted line survives a plain resetApproximateTotalCache() (logout) too', async () => {
+    fetchWithAuth.mockResolvedValueOnce(jsonRes({ data: AVAILABLE }));
+    render(<Probe id="a" date="2026-08-21" />);
+    await waitFor(() => expect(screen.getByTestId('a').textContent).toBe('available:22940.00:CAD'));
+
+    fetchWithAuth.mockResolvedValueOnce(jsonRes({ data: AVAILABLE }));
+    resetApproximateTotalCache();
+
+    await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledTimes(2));
+  });
+});

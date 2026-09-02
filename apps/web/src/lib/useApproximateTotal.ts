@@ -20,10 +20,15 @@
 // got a line that simply never appeared. Every non-2xx — including the 409
 // NO_REPORTING_CURRENCY a partner can effectively never hit — lands here and
 // reads the same to the user.
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useSyncExternalStore } from 'react';
 
 import { fetchWithAuth } from '../stores/auth';
-import { approximateTotalCache, approximateTotalCacheKey, resetApproximateTotalCache } from './approximateTotalCache';
+import {
+  approximateTotalCache,
+  approximateTotalCacheKey,
+  resetApproximateTotalCache,
+  subscribeApproximateTotalCache,
+} from './approximateTotalCache';
 import { buildGroupsParam, type ReportingTotalResponse } from './reporting/approximateTotal';
 
 export { resetApproximateTotalCache };
@@ -147,6 +152,16 @@ export function useApproximateTotal(
   byCurrency: readonly { code: string; amount: string | number }[],
   date?: string,
 ): ApproximateTotalState {
+  // Force a re-render the instant a partner-currency (or logout) reset bumps
+  // the cache generation — an already-mounted line has no other reason to
+  // re-render when a module-level cache changes underneath it, which is
+  // exactly why the reset used to go unnoticed here (#4472).
+  const generation = useSyncExternalStore(
+    subscribeApproximateTotalCache,
+    () => approximateTotalCache.generation,
+    () => approximateTotalCache.generation,
+  );
+
   const query = buildGroupsParam(byCurrency);
   const groupsParam = query.kind === 'query' ? query.value : '';
   // An empty book has nothing to say; a book we could not encode is a failure
@@ -188,7 +203,11 @@ export function useApproximateTotal(
         : { response: null, loading: false, failed: true });
     });
     return () => { cancelled = true; };
-  }, [key, groupsParam, requestDate, unbuildable]);
+    // `key` already embeds `generation` (approximateTotalCacheKey), but it is
+    // listed explicitly too: the whole bug (#4472) was this effect running
+    // stale on a reset it had no dependency on, so the cache generation
+    // belongs in this list on its own, not only folded into a derived string.
+  }, [key, groupsParam, requestDate, unbuildable, generation]);
 
   return state;
 }
