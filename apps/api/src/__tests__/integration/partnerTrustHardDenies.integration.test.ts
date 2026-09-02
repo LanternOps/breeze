@@ -84,7 +84,7 @@ describe('evaluateHardDenies — real Postgres (Task 5.3 fix round 1)', () => {
     const suspended = await createPartner({ status: 'suspended' });
     await setPartnerFields(suspended.id, { signupIp: '203.0.113.5' });
     await markSuspendedForAbuse(suspended.id);
-    await createUser({ partnerId: suspended.id, email: 'bob@corp-example.com' });
+    await createUser({ partnerId: suspended.id, email: 'bob@example.com' });
 
     const target = await createPartner();
     await setPartnerFields(target.id, {
@@ -92,7 +92,7 @@ describe('evaluateHardDenies — real Postgres (Task 5.3 fix round 1)', () => {
       signupIpClass: 'residential',
       signupIp: '203.0.113.240',
     });
-    await createUser({ partnerId: target.id, email: 'alice@corp-example.com' });
+    await createUser({ partnerId: target.id, email: 'alice@example.com' });
 
     const decision = await evaluateHardDenies(target.id);
 
@@ -107,7 +107,7 @@ describe('evaluateHardDenies — real Postgres (Task 5.3 fix round 1)', () => {
           suspendedIp: '203.0.113.5',
           prefixLength: 24,
         },
-        corroboration: { type: 'email_domain', value: 'corp-example.com' },
+        corroboration: { type: 'email_domain', value: 'example.com' },
       },
     });
   });
@@ -167,7 +167,7 @@ describe('evaluateHardDenies — real Postgres (Task 5.3 fix round 1)', () => {
       billingCardFingerprint: 'fp_self_match',
     });
     await markSuspendedForAbuse(target.id);
-    await createUser({ partnerId: target.id, email: 'self@corp-example.com' });
+    await createUser({ partnerId: target.id, email: 'self@example.com' });
 
     const decision = await evaluateHardDenies(target.id);
 
@@ -178,7 +178,7 @@ describe('evaluateHardDenies — real Postgres (Task 5.3 fix round 1)', () => {
     const suspended = await createPartner({ status: 'suspended' });
     await setPartnerFields(suspended.id, { signupIp: '2001:db8:1234:5678::99' });
     await markSuspendedForAbuse(suspended.id);
-    await createUser({ partnerId: suspended.id, email: 'bob@corp-example.com' });
+    await createUser({ partnerId: suspended.id, email: 'bob@example.com' });
 
     const target = await createPartner();
     await setPartnerFields(target.id, {
@@ -186,7 +186,7 @@ describe('evaluateHardDenies — real Postgres (Task 5.3 fix round 1)', () => {
       signupIpClass: 'residential',
       signupIp: '2001:db8:1234:5678::10', // same /64 as suspended's IPv6
     });
-    await createUser({ partnerId: target.id, email: 'alice@corp-example.com' });
+    await createUser({ partnerId: target.id, email: 'alice@example.com' });
 
     const decision = await evaluateHardDenies(target.id);
 
@@ -201,7 +201,7 @@ describe('evaluateHardDenies — real Postgres (Task 5.3 fix round 1)', () => {
           suspendedIp: '2001:db8:1234:5678::99',
           prefixLength: 64,
         },
-        corroboration: { type: 'email_domain', value: 'corp-example.com' },
+        corroboration: { type: 'email_domain', value: 'example.com' },
       },
     });
   });
