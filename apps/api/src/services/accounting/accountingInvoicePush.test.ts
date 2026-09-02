@@ -111,7 +111,7 @@ function conn(overrides: Record<string, unknown> = {}) {
     id: CONN_ID, partnerId: PARTNER, provider: 'quickbooks', realmId: 'r1',
     environment: 'sandbox', status: 'connected', homeCurrency: 'USD', multiCurrencyEnabled: false,
     defaultIncomeAccountRef: '79', defaultTaxCodeRef: 'TAX-1',
-    realmIdFingerprint: null, pullPayments: true, lastReconcileAt: null, cdcCursor: null,
+    realmIdFingerprint: null, pullPayments: true, pushPayments: true, lastReconcileAt: null, cdcCursor: null,
     ...overrides,
   };
 }

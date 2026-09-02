@@ -19,7 +19,7 @@ function conn(overrides: Partial<AccountingConnection> = {}): AccountingConnecti
     defaultIncomeAccountRef: null, defaultTaxCodeRef: null,
     pushMode: 'auto', status: 'connected',
     createdAt: null, updatedAt: null, lastError: null,
-    realmIdFingerprint: null, pullPayments: true, lastReconcileAt: null, cdcCursor: null,
+    realmIdFingerprint: null, pullPayments: true, pushPayments: true, lastReconcileAt: null, cdcCursor: null,
     ...overrides,
   };
 }
