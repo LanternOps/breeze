@@ -28,6 +28,7 @@ export type ToolCategory =
   | 'Remote Access & Control'
   | 'Integrations'
   | 'Ticketing'
+  | 'AI Governance'
   | 'Other';
 
 export interface ToolEntry {
@@ -241,6 +242,8 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_automations (run)', description: 'Run an automation on demand', category: 'Fleet Operations' },
       // Ticketing (P2-4, #4191)
       { name: 'manage_tickets (move_org)', description: 'Move a ticket to a different organization', category: 'Ticketing' },
+      // AI Governance (P2-5, #4192)
+      { name: 'manage_ai_agents (authorize_supervised_key)', description: 'Grant an AI agent a pre-authorized action key', category: 'AI Governance' },
     ],
   },
   {
@@ -514,6 +517,8 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
     list_channels: 'alerts.read',
     alert_summary: 'alerts.read',
   },
+  // AI agent governance
+  manage_ai_agents: { authorize_supervised_key: 'ai_agents.write' },
   generate_report: {
     list: 'reports.read',
     generate: 'reports.write',

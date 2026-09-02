@@ -162,6 +162,10 @@ export interface AiAgentGraduationByOrgDto {
   version: 1;
   promoteThreshold: number;
   policyDecideEnabled: boolean;
+  // Final review (A2): the fan-out is capped at AI_AGENT_GRADUATION_BY_ORG_LIMIT
+  // (400) orgs by name and batched 25 per system transaction. True when the
+  // caller has more; the panel must say so and point at the `?orgId=` form.
+  byOrgTruncated: boolean;
   byOrg: Array<{
     orgId: string; orgName: string; agentId: string;
     rows: AiAgentGraduationRowDto[];
@@ -895,7 +899,7 @@ Its row count feeds a merge note: `ai_agents: cleared graduated supervised actio
 
 **Interfaces (consumed):** `AiAgentGraduationDto`, `AiAgentGraduationByOrgDto`, `AiAgentGraduationRowDto`, `AiAgentActOpReliabilityDto` from `@breeze/shared`; `fetchWithAuth`; `runAction` + `ActionError` from `apps/web/src/lib/runAction.ts`.
 
-- Panel props: `{ orgId: string | null; kind: AiAgentKind; isPartnerScope: boolean }`. Fetches `GET /ai/agents/graduation?orgId=…&kind=…` in a `useEffect` with `fetchWithAuth` (the file's existing pattern, `AiAgentForm.tsx:300`); partner scope with no `orgId` renders the `byOrg` grouping.
+- Panel props: `{ orgId: string | null; kind: AiAgentKind; isPartnerScope: boolean }`. Fetches `GET /ai/agents/graduation?orgId=…&kind=…` in a `useEffect` with `fetchWithAuth` (the file's existing pattern, `AiAgentForm.tsx:300`); partner scope with no `orgId` renders the `byOrg` grouping, and must surface `byOrgTruncated` (a partner over the 400-org cap sees only the first 400 by name — a silently short list reads as "these orgs have no evidence").
 - Renders two tables: **Graduation** (op key, state badge, `verified / promoteThreshold`, failed, recurred, first verified, blocked reason) and **Act-op reliability** (op key, executed, verified, failed, recurred — read-only, dot keys are never promotable, say so in the caption).
 - A **Promote** button appears only on rows with `state === 'eligible'` AND `policyDecideEnabled === true`. It opens a confirm dialog, then `runAction({ request: () => fetchWithAuth('/ai/agents/graduation/promote', { method: 'POST', body: JSON.stringify({ orgId, kind, opKey }) }), successMessage: …, errorFallback: …, friendly: …, onUnauthorized: … })` and the success toast links to `/approvals`. Copy states plainly that approval affects **future runs only**.
 - With `policyDecideEnabled === false` the whole panel is read-only with an explanatory note ("Pre-authorized execution is turned off for this deployment; these figures are informational") — the panel is the visible value that needs no flag flip.

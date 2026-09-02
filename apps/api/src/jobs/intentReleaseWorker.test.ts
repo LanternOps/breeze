@@ -10,7 +10,7 @@ import type { AgentReleaseAuthority } from '../services/actionIntents/agentRelea
  *  THIS through to the evidence row rather than rebuilding a key itself. */
 const CANONICAL_OP_KEY = 'run_script:execute';
 
-const { schema, dbState, dbMock, intentServiceMock, actorContextMock, tenantStatusMock, aiToolsMock, aiGuardrailsMock, agentReleaseAuthorityMock, authMock, auditMock, metricsMock, sentryMock, toolTimeoutsMock, googleHeadlessMock, m365HeadlessMock, effectDigestMock, notifyMock, recipientsMock, policyDecideMock, killStateMock, opEvidenceMock, canonicalKeyMock, fixWatchMock } = vi.hoisted(() => {
+const { schema, dbState, dbMock, intentServiceMock, actorContextMock, tenantStatusMock, aiToolsMock, aiGuardrailsMock, agentReleaseAuthorityMock, authMock, auditMock, metricsMock, sentryMock, toolTimeoutsMock, googleHeadlessMock, m365HeadlessMock, effectDigestMock, notifyMock, recipientsMock, policyDecideMock, killStateMock, opEvidenceMock, canonicalKeyMock, fixWatchMock, demoteMock } = vi.hoisted(() => {
   const col = (name: string) => ({ name });
   const actionIntentsTbl = { id: col('id') };
   const approvalRequestsTbl = { id: col('id'), intentId: col('intent_id'), status: col('status') };
@@ -123,6 +123,19 @@ const { schema, dbState, dbMock, intentServiceMock, actorContextMock, tenantStat
     fixWatchMock: {
       createIntentFixWatchRow: vi.fn(async () => 'watch-1' as string | null),
       enqueueFixWatchPhase1: vi.fn(async () => undefined),
+    },
+    // P2-5 (#4192) Task 6 — auto-demote. Mocked at the module boundary for
+    // the same reason as opEvidence/fixWatch above: the revoke's own
+    // advisory-lock/FOR UPDATE/SET-clause contract is pinned against the real
+    // dialect in services/aiAgents/supervisedKeyDemote.test.ts. What THIS
+    // file proves is the SEQUENCING and the TRIGGER SET: the revoke shares
+    // the evidence savepoint (so it can never commit without the `failed`
+    // row that justifies it), it fires on every ATTEMPTED failure and no
+    // other exit, and the notification runs strictly after that transaction
+    // closed.
+    demoteMock: {
+      demoteSupervisedKey: vi.fn(async () => ({ revoked: false, orgAgentId: null as string | null })),
+      notifyDemotion: vi.fn(async () => undefined),
     },
     // getToolTimeout is mocked (per-test override); withToolTimeout is kept
     // REAL (see vi.mock below) so the timeout test's timer actually fires.
@@ -370,6 +383,10 @@ vi.mock('../services/aiAgents/fixWatch', () => ({
 vi.mock('./fixWatchWorker', () => ({
   enqueueFixWatchPhase1: fixWatchMock.enqueueFixWatchPhase1,
 }));
+vi.mock('../services/aiAgents/supervisedKeyDemote', () => ({
+  demoteSupervisedKey: demoteMock.demoteSupervisedKey,
+  notifyDemotion: demoteMock.notifyDemotion,
+}));
 
 // bullmq is a real dependency we don't want to spin up — mock Worker/Job to
 // inert stand-ins since these tests only exercise the exported functions,
@@ -393,6 +410,7 @@ import { db as mockedDb, runOutsideDbContext as mockedRunOutside, withSystemDbAc
 // be asserted rather than assumed.
 import { eq as mockedEq } from 'drizzle-orm';
 import type { ActionIntent } from '../db/schema/actionIntents';
+import type { ToolExecutionContext } from '../services/toolExecutionContext';
 import { GoogleConnectionUnavailableError } from '../services/googleToolsHeadless';
 import { M365ConnectionUnavailableError } from '../services/m365ToolsHeadless';
 import { PolicyDecisionTransientError } from '../services/actionIntents/policyDecide';
@@ -631,7 +649,13 @@ describe('releaseApprovedIntent', () => {
         expect.objectContaining({ executedAt: null, executionStartedAt: expect.any(Date) }),
         { requireNotExpired: 'release' },
       );
-      expect(aiToolsMock.executeTool).toHaveBeenCalledWith(intent.actionName, intent.arguments, fakeAuth);
+      expect(aiToolsMock.executeTool).toHaveBeenCalledWith(
+        intent.actionName, intent.arguments, fakeAuth,
+        // P2-5 (#4192): the durable worker ALWAYS names the intent it is
+        // releasing. A handler that may only run as an approved release
+        // (manage_ai_agents:authorize_supervised_key) reads it from here.
+        { context: { actionIntentId: intent.id } },
+      );
       expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
         intent.id, 'executing', 'completed', expect.anything(),
       );
@@ -686,7 +710,13 @@ describe('releaseApprovedIntent', () => {
       intent.arguments,
       fakeAuth,
     );
-    expect(aiToolsMock.executeTool).toHaveBeenCalledWith(intent.actionName, intent.arguments, fakeAuth);
+    expect(aiToolsMock.executeTool).toHaveBeenCalledWith(
+        intent.actionName, intent.arguments, fakeAuth,
+        // P2-5 (#4192): the durable worker ALWAYS names the intent it is
+        // releasing. A handler that may only run as an approved release
+        // (manage_ai_agents:authorize_supervised_key) reads it from here.
+        { context: { actionIntentId: intent.id } },
+      );
     expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
       intent.id,
       'executing',
@@ -1113,7 +1143,13 @@ describe('releaseApprovedIntent', () => {
       await releaseApprovedIntent(intent.id);
 
       expect(killStateMock.readAiKillState).toHaveBeenCalled();
-      expect(aiToolsMock.executeTool).toHaveBeenCalledWith(intent.actionName, intent.arguments, fakeAuth);
+      expect(aiToolsMock.executeTool).toHaveBeenCalledWith(
+        intent.actionName, intent.arguments, fakeAuth,
+        // P2-5 (#4192): the durable worker ALWAYS names the intent it is
+        // releasing. A handler that may only run as an approved release
+        // (manage_ai_agents:authorize_supervised_key) reads it from here.
+        { context: { actionIntentId: intent.id } },
+      );
       expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
         intent.id, 'executing', 'completed', expect.anything(),
       );
@@ -1140,7 +1176,13 @@ describe('releaseApprovedIntent', () => {
       await releaseApprovedIntent(intent.id);
 
       expect(killStateMock.readAiKillState).not.toHaveBeenCalled();
-      expect(aiToolsMock.executeTool).toHaveBeenCalledWith(intent.actionName, intent.arguments, fakeAuth);
+      expect(aiToolsMock.executeTool).toHaveBeenCalledWith(
+        intent.actionName, intent.arguments, fakeAuth,
+        // P2-5 (#4192): the durable worker ALWAYS names the intent it is
+        // releasing. A handler that may only run as an approved release
+        // (manage_ai_agents:authorize_supervised_key) reads it from here.
+        { context: { actionIntentId: intent.id } },
+      );
       expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
         intent.id, 'executing', 'completed', expect.anything(),
       );
@@ -1202,9 +1244,15 @@ describe('releaseApprovedIntent', () => {
       await releaseApprovedIntent(intent.id);
 
       // No verified material came back (this tool has no snapshot to carry),
-      // so the call stays at three arguments — unchanged for every non-
-      // run_script tool.
-      expect(aiToolsMock.executeTool).toHaveBeenCalledWith(intent.actionName, intent.arguments, fakeAuth);
+      // so `verifiedRunScript` is absent — the context bag itself is still
+      // present, carrying only the releasing intent's id (P2-5, #4192).
+      expect(aiToolsMock.executeTool).toHaveBeenCalledWith(
+        intent.actionName, intent.arguments, fakeAuth,
+        // P2-5 (#4192): the durable worker ALWAYS names the intent it is
+        // releasing. A handler that may only run as an approved release
+        // (manage_ai_agents:authorize_supervised_key) reads it from here.
+        { context: { actionIntentId: intent.id } },
+      );
       expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
         intent.id,
         'executing',
@@ -1239,8 +1287,10 @@ describe('releaseApprovedIntent', () => {
       expect(call.slice(0, 3)).toEqual([intent.actionName, intent.arguments, fakeAuth]);
       // Identity, not shape: the handler must receive the very object the
       // recompute resolved, not an equal-looking reconstruction.
-      expect((call[3] as { context?: { verifiedRunScript?: unknown } }).context?.verifiedRunScript)
-        .toBe(verifiedRunScript);
+      const context = (call[3] as { context?: ToolExecutionContext }).context!;
+      expect(context.verifiedRunScript).toBe(verifiedRunScript);
+      // …and the releasing intent's id rides ALONGSIDE it, not instead of it.
+      expect(context.actionIntentId).toBe(intent.id);
     });
 
     it('never executes — and never forwards the verified material — when the digest mismatches', async () => {
@@ -1649,6 +1699,7 @@ describe('releaseApprovedIntent', () => {
         'manage_alerts',
         expect.objectContaining({ action: 'suppress', alertId: 'alert-1' }),
         agentAuth,
+        { context: { actionIntentId: intent.id } },
       );
       expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
         intent.id, 'executing', 'completed', expect.anything(),
@@ -1740,6 +1791,10 @@ describe('releaseApprovedIntent', () => {
       fixWatchMock.createIntentFixWatchRow.mockResolvedValue(WATCH_ID);
       fixWatchMock.enqueueFixWatchPhase1.mockReset();
       fixWatchMock.enqueueFixWatchPhase1.mockResolvedValue(undefined);
+      demoteMock.demoteSupervisedKey.mockReset();
+      demoteMock.demoteSupervisedKey.mockResolvedValue({ revoked: false, orgAgentId: null });
+      demoteMock.notifyDemotion.mockReset();
+      demoteMock.notifyDemotion.mockResolvedValue(undefined);
       dbMock.transaction.mockClear();
       (mockedWithSystemContext as unknown as Mock).mockImplementation(
         async (fn: () => Promise<unknown>) => fn(),
@@ -2427,6 +2482,243 @@ describe('releaseApprovedIntent', () => {
 
         expect(fixWatchMock.createIntentFixWatchRow).not.toHaveBeenCalled();
         expect(fixWatchMock.enqueueFixWatchPhase1).not.toHaveBeenCalled();
+      });
+    });
+
+    // -----------------------------------------------------------------------
+    // P2-5 (#4192) Task 6 — auto-demote on an ATTEMPTED failure
+    //
+    // Same discriminator as the ledger row it rides with: attempted-ness is
+    // "the terminal write stamped `executedAt`". The revoke is therefore
+    // reachable from EVERY attempted-failure exit (`tool_returned_error`,
+    // `execution_error`, `secret_seal_invariant_violated`) with no per-branch
+    // list, and from no other exit at all. It is ALWAYS ON — no feature flag
+    // is consulted — because leaving unattended authority on an agent whose
+    // last attempt failed is the one outcome this wave exists to prevent.
+    // -----------------------------------------------------------------------
+    describe('auto-demote on attempted failure (P2-5, #4192)', () => {
+      it('revokes the failing op key on the SAME canonical key the evidence row records', async () => {
+        const intent = agentIntent();
+        primeAgentThroughRevalidation(intent);
+        aiToolsMock.executeTool.mockResolvedValueOnce(
+          JSON.stringify({ error: 'Device not found or access denied' }),
+        );
+        intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> failed
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(demoteMock.demoteSupervisedKey).toHaveBeenCalledTimes(1);
+        expect(demoteMock.demoteSupervisedKey).toHaveBeenCalledWith(
+          {
+            orgId: intent.orgId,
+            agentId: AGENT_ID,
+            opKey: CANONICAL_OP_KEY,
+            reason: 'attempted_failure',
+            runId: AGENT_RUN_ID,
+            watchId: null,
+            intentId: intent.id,
+          },
+          dbMock.executor,
+        );
+      });
+
+      it('an execution_error (the tool threw after the side effect) demotes too', async () => {
+        const intent = agentIntent();
+        primeAgentThroughRevalidation(intent);
+        aiToolsMock.executeTool.mockRejectedValueOnce(new Error('provider 500'));
+        intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> failed
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+          intent.id, 'executing', 'failed',
+          expect.objectContaining({ errorCode: 'execution_error', executedAt: expect.any(Date) }),
+        );
+        expect(demoteMock.demoteSupervisedKey).toHaveBeenCalledTimes(1);
+      });
+
+      it('a SUCCESSFUL release demotes nothing', async () => {
+        const intent = agentIntent();
+        primeAgentThroughRevalidation(intent);
+        aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+        intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(demoteMock.demoteSupervisedKey).not.toHaveBeenCalled();
+        expect(demoteMock.notifyDemotion).not.toHaveBeenCalled();
+      });
+
+      it('a NON-ATTEMPTED refusal (session_required) demotes nothing — the agent never got to try', async () => {
+        const intent = agentIntent();
+        primeAgentThroughRevalidation(intent);
+        aiToolsMock.requiresLiveSession.mockReturnValue(true);
+        intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+          intent.id, 'executing', 'failed',
+          expect.not.objectContaining({ executedAt: expect.any(Date) }),
+        );
+        expect(demoteMock.demoteSupervisedKey).not.toHaveBeenCalled();
+      });
+
+      it('a LOST terminal CAS demotes nothing — the outcome belongs to whoever won it', async () => {
+        const intent = agentIntent();
+        primeAgentThroughRevalidation(intent);
+        aiToolsMock.executeTool.mockResolvedValueOnce(
+          JSON.stringify({ error: 'Device not found or access denied' }),
+        );
+        intentServiceMock.transitionIntent.mockResolvedValueOnce(false);
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(demoteMock.demoteSupervisedKey).not.toHaveBeenCalled();
+      });
+
+      it('a human/chat failure demotes nothing — there is no agent grant to revoke', async () => {
+        const intent = baseIntent();
+        primeThroughRevalidation(intent);
+        aiToolsMock.executeTool.mockResolvedValueOnce(
+          JSON.stringify({ error: 'Device not found or access denied' }),
+        );
+        intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(demoteMock.demoteSupervisedKey).not.toHaveBeenCalled();
+      });
+
+      it('an evidence-write failure demotes nothing — the revoke rides the row that justifies it', async () => {
+        const intent = agentIntent();
+        primeAgentThroughRevalidation(intent);
+        aiToolsMock.executeTool.mockResolvedValueOnce(
+          JSON.stringify({ error: 'Device not found or access denied' }),
+        );
+        intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+        opEvidenceMock.insertOpEvidence.mockRejectedValueOnce(new Error('evidence insert blew up'));
+
+        await expect(releaseApprovedIntent(intent.id)).resolves.toBeUndefined();
+
+        expect(demoteMock.notifyDemotion).not.toHaveBeenCalled();
+      });
+
+      it('the revoke shares the evidence savepoint, while its notification stays outside the transaction', async () => {
+        const intent = agentIntent();
+        primeAgentThroughRevalidation(intent);
+        aiToolsMock.executeTool.mockResolvedValueOnce(
+          JSON.stringify({ error: 'Device not found or access denied' }),
+        );
+
+        let depth = 0;
+        const seen = { cas: -1, evidence: -1, demote: -1, notify: -1 };
+        const systemContext = mockedWithSystemContext as unknown as Mock;
+        systemContext.mockImplementation(async (fn: () => Promise<unknown>) => {
+          depth += 1;
+          try {
+            return await fn();
+          } finally {
+            depth -= 1;
+          }
+        });
+        intentServiceMock.transitionIntent.mockImplementationOnce(async () => {
+          seen.cas = depth;
+          return true;
+        });
+        opEvidenceMock.insertOpEvidence.mockImplementationOnce(async () => {
+          seen.evidence = depth;
+          return 1;
+        });
+        demoteMock.demoteSupervisedKey.mockImplementationOnce(async () => {
+          seen.demote = depth;
+          return { revoked: true, orgAgentId: 'org-agent-1' };
+        });
+        demoteMock.notifyDemotion.mockImplementationOnce(async () => {
+          seen.notify = depth;
+        });
+
+        try {
+          await releaseApprovedIntent(intent.id);
+        } finally {
+          systemContext.mockImplementation(async (fn: () => Promise<unknown>) => fn());
+        }
+
+        expect(seen.cas).toBeGreaterThanOrEqual(1);
+        expect(seen.demote).toBe(seen.cas);
+        expect(seen.evidence).toBe(seen.cas);
+        expect(seen.notify).toBe(0);
+      });
+
+      it('notifies exactly once when a key was actually revoked, naming the agent, org row and key', async () => {
+        const intent = agentIntent();
+        primeAgentThroughRevalidation(intent);
+        aiToolsMock.executeTool.mockResolvedValueOnce(
+          JSON.stringify({ error: 'Device not found or access denied' }),
+        );
+        intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+        demoteMock.demoteSupervisedKey.mockResolvedValueOnce({ revoked: true, orgAgentId: 'org-agent-1' });
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(demoteMock.notifyDemotion).toHaveBeenCalledTimes(1);
+        expect(demoteMock.notifyDemotion).toHaveBeenCalledWith({
+          orgId: intent.orgId,
+          agentId: AGENT_ID,
+          orgAgentId: 'org-agent-1',
+          opKey: CANONICAL_OP_KEY,
+          reason: 'attempted_failure',
+          runId: AGENT_RUN_ID,
+          watchId: null,
+        });
+      });
+
+      it('sends no notification when the key was only ever in the partner ceiling', async () => {
+        const intent = agentIntent();
+        primeAgentThroughRevalidation(intent);
+        aiToolsMock.executeTool.mockResolvedValueOnce(
+          JSON.stringify({ error: 'Device not found or access denied' }),
+        );
+        intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+        demoteMock.demoteSupervisedKey.mockResolvedValueOnce({ revoked: false, orgAgentId: 'org-agent-1' });
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(demoteMock.notifyDemotion).not.toHaveBeenCalled();
+      });
+
+      it('a revoke that throws KEEPS the failed terminal state and its failure audit', async () => {
+        const intent = agentIntent();
+        primeAgentThroughRevalidation(intent);
+        aiToolsMock.executeTool.mockResolvedValueOnce(
+          JSON.stringify({ error: 'Device not found or access denied' }),
+        );
+        intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+        demoteMock.demoteSupervisedKey.mockRejectedValueOnce(new Error('lock timeout'));
+
+        await expect(releaseApprovedIntent(intent.id)).resolves.toBeUndefined();
+
+        expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+          intent.id, 'executing', 'failed',
+          expect.objectContaining({ errorCode: 'tool_returned_error', executedAt: expect.any(Date) }),
+        );
+        expect(auditMock.writeAuditEvent).toHaveBeenCalled();
+        expect(sentryMock.captureException).toHaveBeenCalled();
+      });
+
+      it('a notification failure is swallowed — the revoke is already committed', async () => {
+        const intent = agentIntent();
+        primeAgentThroughRevalidation(intent);
+        aiToolsMock.executeTool.mockResolvedValueOnce(
+          JSON.stringify({ error: 'Device not found or access denied' }),
+        );
+        intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+        demoteMock.demoteSupervisedKey.mockResolvedValueOnce({ revoked: true, orgAgentId: 'org-agent-1' });
+        demoteMock.notifyDemotion.mockRejectedValueOnce(new Error('notification service down'));
+
+        await expect(releaseApprovedIntent(intent.id)).resolves.toBeUndefined();
+
+        expect(sentryMock.captureException).toHaveBeenCalled();
       });
     });
   });

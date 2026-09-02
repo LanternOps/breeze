@@ -57,6 +57,18 @@ export const AI_AGENT_GRADUATION_MIN_AGE_DAYS = 14;
 /** Evidence retention — bounded by executions/watches/verdicts per day, so no rollup is needed. */
 export const AI_AGENT_EVIDENCE_RETENTION_DAYS = 400;
 
+/**
+ * Hard cap on the orgs `GET /ai/agents/graduation` (no `orgId`) fans out
+ * over. Each org in that response costs a policy resolve plus two ledger
+ * reads, so an uncapped partner-wide read is an unbounded per-request
+ * workload — the same reason `POST /ai/agents/impact/rebuild` carries
+ * `AI_AGENT_IMPACT_REBUILD_MAX_ORGS` and `GET /ai/agents/impact` carries
+ * `AI_AGENT_IMPACT_BY_ORG_LIMIT`. Orgs are taken in name order; a partner
+ * over the cap gets `byOrgTruncated: true` and reaches the rest through the
+ * single-org form (`?orgId=`), which is never capped.
+ */
+export const AI_AGENT_GRADUATION_BY_ORG_LIMIT = 400;
+
 export interface AiAgentGraduationWindow {
   executed: number;
   verified: number;
@@ -99,6 +111,13 @@ export interface AiAgentGraduationByOrgDto {
   version: 1;
   promoteThreshold: number;
   policyDecideEnabled: boolean;
+  /**
+   * True when the caller's accessible-org set exceeded
+   * `AI_AGENT_GRADUATION_BY_ORG_LIMIT` and `byOrg` holds only the first that
+   * many by name. The panel must say so — a silently short list reads as
+   * "these orgs have no evidence".
+   */
+  byOrgTruncated: boolean;
   byOrg: Array<{
     orgId: string;
     orgName: string;
