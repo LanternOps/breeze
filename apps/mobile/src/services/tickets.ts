@@ -139,6 +139,25 @@ export async function getTickets(params: ListTicketsParams = {}): Promise<Ticket
   };
 }
 
+export interface CreateTicketInput {
+  orgId: string;
+  subject: string;
+  description?: string;
+  priority: TicketPriority;
+}
+
+/**
+ * `POST /tickets` (`createTicketSchema`). The server allocates the internal
+ * number and stamps `source: 'manual'`; the response is the full ticket row.
+ */
+export async function createTicket(input: CreateTicketInput): Promise<TicketSummary> {
+  const response = await coreRequest<{ data: TicketSummary }>('/tickets', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+  return response.data;
+}
+
 export async function getTicket(id: string): Promise<TicketDetail> {
   const response = await coreRequest<{ data: TicketDetail }>(`/tickets/${id}`);
   const ticket = response.data;
