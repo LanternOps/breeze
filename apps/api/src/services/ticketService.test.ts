@@ -10,7 +10,7 @@ const selectLimitMock = vi.fn();
 // C1 (final review #4191): recorder for tx.delete(ticketDrafts).where(w).
 const txDeleteWhereMock = vi.fn();
 
-const { emitMock, emitTriageFeedbackMock, auditMock, allocateMock, guardMock, dbMocks, configMocks, formMocks } = vi.hoisted(() => {
+const { emitMock, emitTriageFeedbackMock, auditMock, allocateMock, guardMock, dbMocks, configMocks, formMocks, ctxMocks, matchContactMock } = vi.hoisted(() => {
   const insertReturning = vi.fn();
   const updateReturning = vi.fn();
   const selectResult = vi.fn();
@@ -23,6 +23,15 @@ const { emitMock, emitTriageFeedbackMock, auditMock, allocateMock, guardMock, db
     allocateMock: vi.fn().mockResolvedValue('T-2026-0042'),
     guardMock: vi.fn().mockResolvedValue(null),
     dbMocks: { insertReturning, updateReturning, selectResult, txExecuteMock, txUpdateReturning },
+    // #3258 W03 review I6: SPIES, not passthrough arrows. The system-context
+    // escape opens a SECOND pooled connection that cannot see the caller's
+    // uncommitted rows, so "which reads take it" is a correctness property
+    // worth asserting, not an implementation detail.
+    ctxMocks: {
+      runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
+      withSystemDbAccessContext: vi.fn((fn: () => unknown) => fn()),
+    },
+    matchContactMock: vi.fn(),
     configMocks: {
       getOrgSlaOverride: vi.fn().mockResolvedValue({ responseMinutes: null, resolutionMinutes: null }),
       getPartnerPrioritySla: vi.fn().mockResolvedValue({ responseMinutes: null, resolutionMinutes: null }),
@@ -66,11 +75,17 @@ vi.mock('./ticketFormService', async () => {
   };
 });
 
+vi.mock('./contacts/crud', async () => {
+  const actual = await vi.importActual<typeof import('./contacts/crud')>('./contacts/crud');
+  return { ...actual, matchContactByEmail: matchContactMock };
+});
+
 vi.mock('../db', () => ({
-  // Context helpers are passthroughs: the service routes its validation reads
-  // through a system-scope DB context (RLS concern), invisible to unit tests.
-  runOutsideDbContext: (fn: () => unknown) => fn(),
-  withSystemDbAccessContext: (fn: () => unknown) => fn(),
+  // Context helpers behave as passthroughs but ARE spies: the service routes
+  // some validation reads through a system-scope DB context (RLS concern) and
+  // deliberately does NOT route others (#3258 W03 I6).
+  runOutsideDbContext: (fn: () => unknown) => ctxMocks.runOutsideDbContext(fn),
+  withSystemDbAccessContext: (fn: () => unknown) => ctxMocks.withSystemDbAccessContext(fn),
   db: {
     select: vi.fn(() => ({
       from: vi.fn(() => ({
@@ -585,7 +600,13 @@ describe('createTicket', () => {
   });
 
   it('passes through portal submitter fields to the insert payload', async () => {
-    dbMocks.selectResult.mockResolvedValue([{ id: 'o-1', partnerId: 'p-1' }]);
+    // Per-call fixtures, not one blanket mockResolvedValue: the second read is
+    // the login -> contact derivation (#3258 W03), and feeding it the ORG row
+    // made it see a login with no org at all — a uniform fixture standing in
+    // for a branch it does not describe.
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 'o-1', partnerId: 'p-1' }])
+      .mockResolvedValueOnce([{ id: 'pu-42', orgId: 'o-1', contactId: null }]);
     dbMocks.insertReturning.mockResolvedValue([{ id: 't-3', orgId: 'o-1', internalNumber: 'T-2026-0044', status: 'new' }]);
 
     await createTicket({
@@ -603,6 +624,9 @@ describe('createTicket', () => {
       submittedBy: 'pu-42',
       submitterEmail: 'alice@example.com',
       submitterName: 'Alice',
+      // A login with no contact behind it links nothing — it does not fall
+      // back to guessing from submitterEmail.
+      requesterContactId: null,
     });
   });
 
@@ -1775,6 +1799,8 @@ describe('updateTicketFields', () => {
     vi.clearAllMocks();
     valuesMock.mockClear();
     setMock.mockClear();
+    // Default: the address resolves to nobody. Tests that care set their own.
+    matchContactMock.mockResolvedValue({ kind: 'no-match' });
   });
 
   it('applies changed fields, writes ONE system feed entry with the humanized field list, emits ticket.updated, audits', async () => {
@@ -2034,7 +2060,17 @@ describe('updateTicketFields', () => {
     expect(setMock.mock.calls[0]![0]).toMatchObject({ submittedBy: null, requesterContactId: null });
   });
 
-  it('clears requesterContactId when only a manual submitterName is set', async () => {
+  // The old rule here was "any requester edit that is not a portal-user pick
+  // clears requesterContactId". That silently unlinked a customer's emailed
+  // ticket — it vanished from their portal with no way back — on edits that
+  // never touched who the requester IS. The rule is now:
+  //
+  //   submittedBy: <uuid>  -> the link is the LOGIN's contact_id
+  //   submittedBy: null    -> a login that WAS there is gone; its derived link goes too
+  //   submitterEmail changed, no login -> re-resolve by (org, lower(email))
+  //   submitterName only   -> neither id is touched
+
+  it('leaves requesterContactId ALONE when only submitterName changes', async () => {
     dbMocks.selectResult.mockResolvedValue([
       { ...BASE_TICKET, submittedBy: null, submitterName: 'Jane', submitterEmail: 'jane@acme.test', requesterContactId: 'ct-1' },
     ]);
@@ -2043,7 +2079,89 @@ describe('updateTicketFields', () => {
 
     await updateTicketFields('t-1', { submitterName: 'Walk-in' }, actor);
 
+    // Not "set to the same value" — absent from the patch entirely, so a
+    // concurrent re-link cannot be clobbered by a display-name correction.
+    expect(setMock.mock.calls[0]![0]).not.toHaveProperty('requesterContactId');
+    expect(matchContactMock).not.toHaveBeenCalled();
+  });
+
+  it('writes NOTHING when the requester editor is saved unchanged on an emailed ticket', async () => {
+    // The exact payload apps/web TicketWorkbench posts when a tech opens the
+    // requester editor on an emailed ticket and clicks Save without editing:
+    // the editor renders as MANUAL_REQUESTER because there is no portal login.
+    // Under the old rule this nulled requester_contact_id and the customer's
+    // ticket disappeared from their portal.
+    dbMocks.selectResult.mockResolvedValue([
+      { ...BASE_TICKET, submittedBy: null, submitterName: 'Jane Doe', submitterEmail: 'jane@acme.test', requesterContactId: 'ct-1' },
+    ]);
+
+    const result = await updateTicketFields(
+      't-1',
+      { submittedBy: null, submitterName: 'Jane Doe', submitterEmail: 'jane@acme.test' },
+      actor,
+    );
+
+    expect(setMock).not.toHaveBeenCalled();
+    expect(valuesMock).not.toHaveBeenCalled();
+    expect(emitMock).not.toHaveBeenCalled();
+    expect((result as Record<string, unknown>).requesterContactId).toBe('ct-1');
+  });
+
+  it('re-resolves the contact when the requester EMAIL changes on a login-less ticket', async () => {
+    dbMocks.selectResult.mockResolvedValue([
+      { ...BASE_TICKET, submittedBy: null, submitterName: 'Jane', submitterEmail: 'jane@acme.test', requesterContactId: 'ct-old' },
+    ]);
+    dbMocks.updateReturning.mockResolvedValue([{ ...BASE_TICKET }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+    matchContactMock.mockResolvedValue({ kind: 'contact', contactId: 'ct-new' });
+
+    await updateTicketFields('t-1', { submitterEmail: 'bob@acme.test' }, actor);
+
+    expect(matchContactMock).toHaveBeenCalledWith(expect.anything(), 'o-1', 'bob@acme.test');
+    expect(setMock.mock.calls[0]![0]).toMatchObject({ submitterEmail: 'bob@acme.test', requesterContactId: 'ct-new' });
+  });
+
+  it('clears the link when the new requester email resolves to several contacts', async () => {
+    dbMocks.selectResult.mockResolvedValue([
+      { ...BASE_TICKET, submittedBy: null, submitterName: 'Jane', submitterEmail: 'jane@acme.test', requesterContactId: 'ct-old' },
+    ]);
+    dbMocks.updateReturning.mockResolvedValue([{ ...BASE_TICKET }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+    matchContactMock.mockResolvedValue({ kind: 'none', reason: 'shared-mailbox' });
+
+    await updateTicketFields('t-1', { submitterEmail: 'support@acme.test' }, actor);
+
+    // Same exactly-one rule inbound uses: no guess, and no stale link left
+    // behind pointing at whoever used to hold the old address.
     expect(setMock.mock.calls[0]![0]).toMatchObject({ requesterContactId: null });
+  });
+
+  it('does NOT re-resolve when the submitted email is byte-identical to the stored one', async () => {
+    dbMocks.selectResult.mockResolvedValue([
+      { ...BASE_TICKET, submittedBy: null, submitterName: 'Jane', submitterEmail: 'jane@acme.test', requesterContactId: 'ct-1' },
+    ]);
+    dbMocks.updateReturning.mockResolvedValue([{ ...BASE_TICKET }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    await updateTicketFields('t-1', { submitterName: 'Jane D.', submitterEmail: 'jane@acme.test' }, actor);
+
+    expect(matchContactMock).not.toHaveBeenCalled();
+    expect(setMock.mock.calls[0]![0]).not.toHaveProperty('requesterContactId');
+  });
+
+  it('drops the derived link when an existing portal login is cleared', async () => {
+    dbMocks.selectResult.mockResolvedValue([
+      { ...BASE_TICKET, submittedBy: 'pu-1', submitterName: 'Jane', submitterEmail: 'jane@acme.test', requesterContactId: 'ct-1' },
+    ]);
+    dbMocks.updateReturning.mockResolvedValue([{ ...BASE_TICKET }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    // Email unchanged, so nothing to re-resolve from — the link was DERIVED
+    // from the login that is being removed, so it goes with it.
+    await updateTicketFields('t-1', { submittedBy: null }, actor);
+
+    expect(setMock.mock.calls[0]![0]).toMatchObject({ submittedBy: null, requesterContactId: null });
+    expect(matchContactMock).not.toHaveBeenCalled();
   });
 
   it('writes the update when ONLY the contact link changes (requester still counts as changed)', async () => {
@@ -2070,6 +2188,48 @@ describe('updateTicketFields', () => {
     expect(err).toBeInstanceOf(TicketServiceError);
     expect(err.status).toBe(400);
     expect(setMock).not.toHaveBeenCalled();
+    expect(valuesMock).not.toHaveBeenCalled();
+  });
+
+  // ---- #3258 W03 review I6: the login -> contact derivation reads IN-CONTEXT ----
+
+  it('derives the contact from the login without opening a system-context connection', async () => {
+    // `getPortalUserForValidation` reads through
+    // runOutsideDbContext(withSystemDbAccessContext(...)), which opens a SECOND
+    // pooled connection — the exact shape assertRequesterContactInOrg's comment
+    // explains cannot see rows the caller's still-open transaction has written.
+    // The inbound path creates the contact and the ticket in ONE transaction.
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 'o-1', partnerId: 'p-1' }])                        // org
+      .mockResolvedValueOnce([{ id: 'pu-1', orgId: 'o-1', contactId: 'ct-9' }]);       // login -> contact
+    dbMocks.insertReturning.mockResolvedValue([{ id: 't-new', orgId: 'o-1', internalNumber: 'T-1' }]);
+
+    await createTicket(
+      { orgId: 'o-1', subject: 'Emailed in', source: 'email', submittedBy: 'pu-1', submitterEmail: 'jane@acme.test' } as never,
+      actor,
+    );
+
+    expect(valuesMock.mock.calls[0]![0]).toMatchObject({ requesterContactId: 'ct-9' });
+    expect(ctxMocks.withSystemDbAccessContext).not.toHaveBeenCalled();
+    expect(ctxMocks.runOutsideDbContext).not.toHaveBeenCalled();
+  });
+
+  it('rejects a derived login that belongs to another org with a TYPED error', async () => {
+    // A raw 23503 from the composite FK would surface as a 500 with a Postgres
+    // message; the guard turns it into the same 400 shape every other requester
+    // tenant check produces.
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 'o-1', partnerId: 'p-1' }])
+      .mockResolvedValueOnce([{ id: 'pu-x', orgId: 'o-OTHER', contactId: 'ct-x' }]);
+
+    const err = await createTicket(
+      { orgId: 'o-1', subject: 'Cross-org', source: 'email', submittedBy: 'pu-x' } as never,
+      actor,
+    ).catch((e) => e);
+
+    expect(err).toBeInstanceOf(TicketServiceError);
+    expect(err.status).toBe(400);
+    expect(err.code).toBe('REQUESTER_CONTACT_WRONG_ORG');
     expect(valuesMock).not.toHaveBeenCalled();
   });
 
@@ -3333,6 +3493,32 @@ describe('moveTicketOrg', () => {
       action: 'ticket.move_org.target',
       resourceId: 't1'
     }));
+  });
+
+  it('detaches requester_contact_id in the SAME UPDATE that re-stamps org_id', async () => {
+    // #3258 W03 final review C1: `tickets_requester_contact_org_fk` is
+    // COMPOSITE (requester_contact_id, org_id) -> contacts(id, org_id) and
+    // DEFERRABLE INITIALLY IMMEDIATE, so it is checked at the END of the
+    // statement that changes org_id. A contact-linked ticket moved to another
+    // org 23503s on this very UPDATE unless the link is dropped by it.
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 't1', orgId: 'oA', partnerId: 'p1', deviceId: 'd1', requesterContactId: 'ct-1' }])
+      .mockResolvedValueOnce([{ currencyCode: 'USD' }])
+      .mockResolvedValueOnce([{ currencyCode: 'USD' }])
+      .mockResolvedValueOnce([
+        { id: 'oA', partnerId: 'p1', name: 'Alpha Corp', currencyCode: 'USD' },
+        { id: 'oB', partnerId: 'p1', name: 'Beta Corp', currencyCode: 'USD' }
+      ]);
+    dbMocks.txUpdateReturning.mockResolvedValue([{ id: 't1', orgId: 'oB', deviceId: null }]);
+    dbMocks.txExecuteMock.mockResolvedValue(undefined);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-sys' }]);
+
+    await moveTicketOrg('t1', 'oB', { userId: 'admin' });
+
+    // One statement, three columns: the org, the device and the person.
+    expect(setMock).toHaveBeenCalledWith(
+      expect.objectContaining({ orgId: 'oB', deviceId: null, requesterContactId: null })
+    );
   });
 
   it('re-stamps ticket_attachments.org_id LAST on ticket move (W08 #3902)', async () => {
