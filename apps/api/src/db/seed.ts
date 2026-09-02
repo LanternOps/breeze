@@ -884,7 +884,7 @@ export async function seedRoles() {
     // or a custom is_system=false role that happens to share the name — it
     // would then skip creating the template and, with the reconcile below,
     // flip a row the seed never owned. Tenant copies are reconciled by the
-    // 2026-10-01-000000 migration, not here.
+    // 2026-10-01-200000 migration, not here.
     const [existing] = await db
       .select()
       .from(roles)

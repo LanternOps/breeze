@@ -29,7 +29,7 @@ import { getTestDb } from './setup';
 
 const MIGRATION_FILE = join(
   __dirname,
-  '../../../migrations/2026-10-01-000000-partner-admin-force-mfa-reconcile.sql',
+  '../../../migrations/2026-10-01-200000-partner-admin-force-mfa-reconcile.sql',
 );
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
@@ -65,7 +65,7 @@ async function epochOf(userId: string): Promise<number> {
   return row!.permissionsEpoch;
 }
 
-describe('2026-10-01-000000 partner-admin force_mfa reconcile migration (RMM-QA-164)', () => {
+describe('2026-10-01-200000 partner-admin force_mfa reconcile migration (RMM-QA-164)', () => {
   runDb('flips only system partner-scope Partner Admin rows, bumps member epochs once, and is idempotent', async () => {
     const tdb = getTestDb();
     const partner = await createPartner();
