@@ -132,6 +132,99 @@ const DEFAULT_PRICING = { inputPerMillion: 500, outputPerMillion: 2500 };
 const CACHE_READ_INPUT_MULTIPLIER = 0.1;
 const CACHE_WRITE_INPUT_MULTIPLIER = 1.25;
 
+/** The record cached at `ai:credits:<partnerId>` and surfaced on /ai/usage. */
+export interface CachedPartnerCredits {
+  remaining: number;
+  includedBalance: number;
+  purchasedBalance: number;
+  fetchedAt: string;
+}
+
+/**
+ * How long a fetched partner credit balance stays cached.
+ *
+ * 15 minutes, up from the 60s this shipped with. The cache used to be written
+ * only by {@link checkBillingCreditsDetailed}, which runs only on an actual AI
+ * turn: for any org that was not mid-conversation the entry had long expired
+ * by the time the usage page or the header cost indicator asked for it, so the
+ * credits card rendered on almost no page load and the header flickered
+ * between "has credits" and nothing. {@link getUsageSummary} now fills the
+ * cache on a miss, and a 15-minute TTL keeps a page refresh from turning into
+ * a billing-service round trip every time. A balance this stale is fine for a
+ * display surface; the credit GATE always reads live.
+ */
+const PARTNER_CREDITS_CACHE_TTL_SECONDS = 900;
+
+/** The `/ai-credits` response from breeze-billing. */
+interface BillingCreditsPayload {
+  allowed: boolean;
+  remainingCredits: number;
+  plan: string;
+  /** Present since breeze-billing's #4388 W04 rollout; optional so this
+   *  deploys safely ahead of it, defaulting to 0 in the cached record. */
+  includedBalance?: number;
+  purchasedBalance?: number;
+}
+
+/**
+ * Discriminated so each caller can react to a failure the way it needs to:
+ * the credit gate reports HTTP and transport failures to Sentry and falls
+ * open, while the usage page just shows no credits card.
+ */
+type PartnerCreditsFetch =
+  | { ok: true; payload: BillingCreditsPayload; credits: CachedPartnerCredits }
+  | { ok: false; reason: 'unconfigured' }
+  | { ok: false; reason: 'http'; status: number }
+  | { ok: false; reason: 'transport'; error: unknown };
+
+/**
+ * Fetch a partner's platform credit balance from breeze-billing and cache it
+ * at `ai:credits:<partnerId>`, the single place that HTTP call is made.
+ *
+ * Never throws: every failure comes back as an `ok: false` variant, including
+ * "no billing service configured", which is the self-hosted default rather
+ * than an error. The Redis write is best-effort for the same reason it always
+ * was - a Redis outage must degrade the credits CARD, never the credit GATE
+ * this call primarily exists to feed.
+ */
+async function fetchAndCachePartnerCredits(partnerId: string): Promise<PartnerCreditsFetch> {
+  const billingUrl = process.env.BILLING_SERVICE_URL;
+  const billingKey = process.env.BILLING_SERVICE_API_KEY;
+  if (!billingUrl || !billingKey) return { ok: false, reason: 'unconfigured' };
+
+  try {
+    const res = await fetch(`${billingUrl}/api/internal/partners/${partnerId}/ai-credits`, {
+      headers: { 'Authorization': `Bearer ${billingKey}` },
+    });
+
+    if (!res.ok) return { ok: false, reason: 'http', status: res.status };
+
+    const payload = await res.json() as BillingCreditsPayload;
+
+    // Cached per PARTNER, not per org: the balance is partner-wide.
+    const credits: CachedPartnerCredits = {
+      remaining: payload.remainingCredits,
+      includedBalance: payload.includedBalance ?? 0,
+      purchasedBalance: payload.purchasedBalance ?? 0,
+      fetchedAt: new Date().toISOString(),
+    };
+
+    const redis = getRedis();
+    if (redis) {
+      void redis.set(
+        `ai:credits:${partnerId}`,
+        JSON.stringify(credits),
+        'EX',
+        PARTNER_CREDITS_CACHE_TTL_SECONDS,
+      ).catch(() => undefined);
+    }
+
+    return { ok: true, payload, credits };
+  } catch (error) {
+    return { ok: false, reason: 'transport', error };
+  }
+}
+
 /**
  * Legacy string-or-null facade over {@link checkBillingCreditsDetailed}, kept
  * because a dozen call sites branch on `if (creditError) return 402`. New
@@ -184,86 +277,61 @@ export async function checkBillingCreditsDetailed(
     return null;
   }
 
-  try {
-    const res = await fetch(`${billingUrl}/api/internal/partners/${org.partnerId}/ai-credits`, {
-      headers: { 'Authorization': `Bearer ${billingKey}` },
-    });
+  // #4388 W04: the fetch and the `ai:credits:<partnerId>` cache write both
+  // live in fetchAndCachePartnerCredits, so the gate and the usage page share
+  // one HTTP path and one cache shape. It never throws; the failure variants
+  // are interpreted here, where the orgId needed to tag them is in scope.
+  const result = await fetchAndCachePartnerCredits(org.partnerId);
 
-    if (!res.ok) {
-      // Fail OPEN on purpose (a billing outage must not take AI down for every
-      // tenant) — but no longer fail SILENT: this branch also swallows a 401
-      // from a rotated BILLING_SERVICE_API_KEY, which looks exactly like
-      // "everyone has credits" from here.
+  if (!result.ok) {
+    // Fail OPEN on purpose (a billing outage must not take AI down for every
+    // tenant), but no longer fail SILENT: the HTTP branch also swallows a 401
+    // from a rotated BILLING_SERVICE_API_KEY, which looks exactly like
+    // "everyone has credits" from here.
+    if (result.reason === 'http') {
       console.error(
-        `[AI] Billing credit check returned HTTP ${res.status} for org=${orgId} — allowing the request (fail-open)`,
+        `[AI] Billing credit check returned HTTP ${result.status} for org=${orgId}, allowing the request (fail-open)`,
       );
       reportBillingIssueAtMostHourly(`credits-http:${orgId}`, () => {
         captureMessage('AI credit check failed; gate fell open', {
           eventCode: 'ai_billing_credits_check_failed',
-          tags: { org_id: orgId, ai_billing_http_status: String(res.status) },
+          tags: { org_id: orgId, ai_billing_http_status: String(result.status) },
         });
       });
-      return null;
-    }
-
-    const data = await res.json() as {
-      allowed: boolean;
-      remainingCredits: number;
-      plan: string;
-      /** breeze-billing added these alongside `remainingCredits` (in flight,
-       *  #4388 W04) — optional here so this deploys safely ahead of that
-       *  billing-service rollout; both default to 0 in the cached record
-       *  until the field actually starts arriving. */
-      includedBalance?: number;
-      purchasedBalance?: number;
-    };
-
-    // #4388 W04: cache the latest balance per PARTNER (not per org — the
-    // balance is partner-wide) so getUsageSummary can surface it on
-    // /ai/usage without its own billing-service round trip. Best-effort: a
-    // Redis outage must not affect the credit gate this function exists for.
-    const redis = getRedis();
-    if (redis) {
-      void redis.set(
-        `ai:credits:${org.partnerId}`,
-        JSON.stringify({
-          remaining: data.remainingCredits,
-          includedBalance: data.includedBalance ?? 0,
-          purchasedBalance: data.purchasedBalance ?? 0,
-          fetchedAt: new Date().toISOString(),
-        }),
-        'EX',
-        60,
-      ).catch(() => undefined);
-    }
-
-    if (!data.allowed) {
-      if (['free', 'starter'].includes(data.plan)) {
-        // A plan gate, not a spend cap: nothing about waiting changes it.
-        return denial('plan_gate', 'AI assistant requires the Community plan.');
-      }
-      if (billingSource === 'platform') {
-        return denial(
-          'credits_exhausted',
-          'You are out of AI credits. Purchase more credits to continue.',
-        );
-      }
-    }
-
-    return null;
-  } catch (err) {
-    console.error(
-      `[AI] Billing credit check failed for org=${orgId} — allowing the request (fail-open):`,
-      err instanceof Error ? err.message : String(err),
-    );
-    reportBillingIssueAtMostHourly(`credits-throw:${orgId}`, () => {
-      captureException(err, undefined, {
-        org_id: orgId,
-        ai_billing_http_status: 'transport_error',
+    } else if (result.reason === 'transport') {
+      const err = result.error;
+      console.error(
+        `[AI] Billing credit check failed for org=${orgId}, allowing the request (fail-open):`,
+        err instanceof Error ? err.message : String(err),
+      );
+      reportBillingIssueAtMostHourly(`credits-throw:${orgId}`, () => {
+        captureException(err, undefined, {
+          org_id: orgId,
+          ai_billing_http_status: 'transport_error',
+        });
       });
-    });
+    }
+    // 'unconfigured' cannot be reached here (the env check above returns
+    // first) and is deliberately unreported anyway: see that comment.
     return null;
   }
+
+  const data = result.payload;
+
+  if (!data.allowed) {
+    if (['free', 'starter'].includes(data.plan)) {
+      // A plan gate, not a spend cap: nothing about waiting changes it.
+      return denial('plan_gate', 'AI assistant requires the Community plan.');
+    }
+    if (billingSource === 'platform') {
+      return denial(
+        'credits_exhausted',
+        'You are out of AI credits. Purchase more credits to continue.',
+      );
+    }
+  }
+
+  return null;
 }
 
 /**
@@ -1286,9 +1354,49 @@ async function getRecentCatalogEntryIdForOrg(orgId: string): Promise<string | nu
 }
 
 /**
- * Get usage summary for an org.
+ * Read the partner's platform credit balance for the usage page: cache first,
+ * billing service on a miss.
+ *
+ * Read-through because the cache used to be written only by an actual AI turn
+ * (see {@link PARTNER_CREDITS_CACHE_TTL_SECONDS}), which meant the credits
+ * card essentially never had anything to render. Every failure mode - no
+ * partner row, Redis down, a corrupt cache entry, billing unreachable -
+ * degrades to `null` rather than a 500 on /ai/usage.
  */
-export async function getUsageSummary(orgId: string): Promise<{
+async function readPartnerCreditsForUsage(orgId: string): Promise<CachedPartnerCredits | null> {
+  try {
+    const [org] = await db
+      .select({ partnerId: organizations.partnerId })
+      .from(organizations)
+      .where(eq(organizations.id, orgId))
+      .limit(1);
+    if (!org?.partnerId) return null;
+
+    const redis = getRedis();
+    if (redis) {
+      const raw = await redis.get(`ai:credits:${org.partnerId}`);
+      // A cache hit must NOT hit billing: /ai/usage is polled by the header
+      // cost indicator on every page.
+      if (raw) return JSON.parse(raw) as CachedPartnerCredits;
+    }
+
+    const fetched = await fetchAndCachePartnerCredits(org.partnerId);
+    return fetched.ok ? fetched.credits : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Get usage summary for an org.
+ *
+ * `includeCredits` gates the partner-wide credit pool, which an org-scoped
+ * caller must never see: it is the MSP's balance, shared across every one of
+ * its customers, so surfacing it to one customer's users leaks a partner-level
+ * figure across the tenancy boundary. Off by default so a new call site has to
+ * opt in deliberately (see the /ai/usage route).
+ */
+export async function getUsageSummary(orgId: string, options: { includeCredits?: boolean } = {}): Promise<{
   daily: { inputTokens: number; outputTokens: number; totalCostCents: number; messageCount: number };
   monthly: { inputTokens: number; outputTokens: number; totalCostCents: number; messageCount: number };
   budget: {
@@ -1305,12 +1413,12 @@ export async function getUsageSummary(orgId: string): Promise<{
   /** Name of the catalog endpoint the org's most recent session used, or null
    *  for direct-Anthropic / platform-key traffic (#3922 W4). */
   catalogEndpointName: string | null;
-  /** #4388 W04: the partner's platform-credit balance, as last cached by
-   *  checkBillingCreditsDetailed. `null` when billed to the partner's own
-   *  key (BYOK — no platform credits apply), when the org has no partner id,
-   *  or when nothing has been cached yet (no billing service, or the cache
-   *  entry expired/was never written). Never throws. */
-  credits: { remaining: number; includedBalance: number; purchasedBalance: number; fetchedAt: string } | null;
+  /** #4388 W04: the partner's platform-credit balance. `null` unless the
+   *  caller passed `includeCredits` (an org-scoped caller must not see the
+   *  partner-wide pool), when billed to the partner's own key (BYOK: no
+   *  platform credits apply), when the org has no partner id, or when neither
+   *  the cache nor the billing service can produce one. Never throws. */
+  credits: CachedPartnerCredits | null;
   /** #4388: threshold rungs already fired for the org's CURRENT daily and
    *  monthly periods (nothing from prior, rolled-over periods). */
   alerts: {
@@ -1369,26 +1477,13 @@ export async function getUsageSummary(orgId: string): Promise<{
     if (entryId) catalogEndpointName = await getCatalogEntryName(entryId);
   }
 
-  // #4388 W04: the cached partner credit balance. Only meaningful for
-  // platform-billed orgs (a partner_key/BYOK org spends against its own
-  // Anthropic account, not platform credits). Wrapped so a Redis outage, a
-  // missing/deleted org row, or a corrupt cache entry all degrade to `null`
-  // rather than a 500 on /ai/usage.
-  let credits: { remaining: number; includedBalance: number; purchasedBalance: number; fetchedAt: string } | null = null;
-  if (billedTo === 'platform') {
-    try {
-      const [org] = await db
-        .select({ partnerId: organizations.partnerId })
-        .from(organizations)
-        .where(eq(organizations.id, orgId))
-        .limit(1);
-      const redis = org?.partnerId ? getRedis() : null;
-      const raw = redis ? await redis.get(`ai:credits:${org?.partnerId}`) : null;
-      if (raw) credits = JSON.parse(raw);
-    } catch {
-      credits = null;
-    }
-  }
+  // #4388 W04: the partner credit balance. Withheld from org-scoped callers
+  // (see the `includeCredits` note on this function), and only meaningful for
+  // platform-billed orgs at all - a partner_key/BYOK org spends against its
+  // own Anthropic account, not platform credits.
+  const credits = options.includeCredits && billedTo === 'platform'
+    ? await readPartnerCreditsForUsage(orgId)
+    : null;
 
   return {
     daily: {

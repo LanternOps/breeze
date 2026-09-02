@@ -1064,7 +1064,7 @@ aiRoutes.get(
         budget: null,
         billedTo: 'platform' as const,
         // #4388 W04: present (null) on every /ai/usage response, same
-        // rationale as `alerts.fired` above — callers read `usage.credits`
+        // rationale as `alerts.fired` above: callers read `usage.credits`
         // unconditionally.
         credits: null,
         alerts: { fired: [] },
@@ -1075,7 +1075,13 @@ aiRoutes.get(
       return c.json({ error: 'Access denied to this organization' }, 403);
     }
 
-    const usage = await getUsageSummary(orgId);
+    // #4388 W04: the credit pool is PARTNER-wide, shared across every one of
+    // the MSP's customer orgs. An organization-scoped token belongs to one of
+    // those customers, so handing it that balance would leak a partner-level
+    // figure across the tenancy boundary (and let one customer watch another's
+    // spend drain it). Only partner- and system-scoped callers get it.
+    const includeCredits = auth.scope === 'partner' || auth.scope === 'system';
+    const usage = await getUsageSummary(orgId, { includeCredits });
     return c.json(usage);
   }
 );

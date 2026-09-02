@@ -1333,7 +1333,7 @@
     "likeActionPlanPlusLiveScreenshotsBetweenStepsAndAPersist": "Como o Plano de Ação, além de capturas de tela ao vivo entre as etapas e um botão Parar persistente.",
     "untitled": "Sem título",
     "billedToPartnerKey": "Cobrado na sua chave — o uso de IA vai para a sua própria conta da Anthropic, não para os créditos de IA do Breeze",
-    "billedToPartnerKeyViaEndpoint": "Cobrado na sua chave via {{name}} — o uso de IA vai para a sua própria conta da Anthropic, não para os créditos de IA do Breeze",
+    "billedToPartnerKeyViaEndpoint": "Cobrado na sua chave via {{name}}: o uso de IA vai para a sua própria conta da Anthropic, não para os créditos de IA do Breeze",
     "creditsRemaining": "Créditos de IA Breeze restantes"
   },
   "aiAgentsPage": {

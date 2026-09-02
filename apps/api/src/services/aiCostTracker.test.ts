@@ -1497,11 +1497,11 @@ describe('checkBillingCreditsDetailed', () => {
 // #4388 W04: partner credit-balance cache
 // ============================================
 //
-// checkBillingCreditsDetailed writes the last-seen balance to Redis
-// (`ai:credits:<partnerId>`, 60s TTL) so getUsageSummary can surface it on
-// /ai/usage without an extra billing-service round trip per page load. The
-// write must never fail the credit check itself — a Redis outage degrades to
-// "no cached balance to show", not a broken AI gate.
+// checkBillingCreditsDetailed and getUsageSummary share one fetch-and-cache
+// path, writing the last-seen balance to Redis (`ai:credits:<partnerId>`,
+// 900s TTL) so /ai/usage can surface it without a billing-service round trip
+// per page load. The write must never fail the credit check itself: a Redis
+// outage degrades to "no cached balance to show", not a broken AI gate.
 
 describe('checkBillingCreditsDetailed: partner credit cache (#4388 W04)', () => {
   it('caches the last credit balance per partner for /ai/usage (#4388)', async () => {
@@ -1513,11 +1513,14 @@ describe('checkBillingCreditsDetailed: partner credit cache (#4388 W04)', () => 
 
     await checkBillingCreditsDetailed('org-cache-1', 'platform');
 
+    // 900s, not 60s: the cache is now read-through from the usage page, and a
+    // one-minute TTL meant the credits card had nothing to render on almost
+    // every page load.
     expect(redisSet).toHaveBeenCalledWith(
       'ai:credits:partner-1',
       expect.stringContaining('"remaining":1240'),
       'EX',
-      60,
+      900,
     );
     const written = JSON.parse(redisSet.mock.calls[0]![1] as string);
     expect(written).toMatchObject({ remaining: 1240, includedBalance: 0, purchasedBalance: 1240 });
@@ -1549,32 +1552,54 @@ describe('checkBillingCreditsDetailed: partner credit cache (#4388 W04)', () => 
   });
 });
 
-// getUsageSummary's `credits` field: cached per-partner balance, surfaced only
-// for platform-billed orgs. Must never throw — a Redis outage or a missing
-// partner/cache entry all degrade to `credits: null`, never a 500.
+// getUsageSummary's `credits` field: the partner-wide balance, surfaced only
+// when the CALLER opted in (`includeCredits`) and only for platform-billed
+// orgs. Read-through: a cache miss fills the cache from the billing service
+// rather than rendering nothing. Must never throw: a Redis outage, a missing
+// partner, a corrupt entry, or a billing outage all degrade to
+// `credits: null`, never a 500.
+const CACHED = { remaining: 1240, includedBalance: 0, purchasedBalance: 1240, fetchedAt: '2026-09-01T00:00:00.000Z' };
+
 describe('getUsageSummary: credits (#4388 W04)', () => {
   beforeEach(() => {
     setupDbMocks(null); // organizations partnerId lookup resolves 'partner-1'
+    // vi.clearAllMocks() clears recorded calls but NOT queued
+    // mockResolvedValueOnce values, and several tests here deliberately leave
+    // one unconsumed (they assert the cache is never read). Reset explicitly
+    // so that queued value cannot surface in the next test.
+    redisGet.mockReset();
+    redisGet.mockResolvedValue(null);
+    redisSet.mockReset();
+    redisSet.mockResolvedValue('OK');
   });
 
   it('returns the cached credit balance when billed to the platform and a cache entry exists', async () => {
     getLlmBillingSourceForOrgMock.mockResolvedValueOnce('platform');
-    redisGet.mockResolvedValueOnce(JSON.stringify({
-      remaining: 1240, includedBalance: 0, purchasedBalance: 1240, fetchedAt: '2026-09-01T00:00:00.000Z',
-    }));
+    redisGet.mockResolvedValueOnce(JSON.stringify(CACHED));
 
-    const summary = await getUsageSummary('org1');
+    const summary = await getUsageSummary('org1', { includeCredits: true });
 
-    expect(summary.credits).toEqual({
-      remaining: 1240, includedBalance: 0, purchasedBalance: 1240, fetchedAt: '2026-09-01T00:00:00.000Z',
-    });
+    expect(summary.credits).toEqual(CACHED);
     expect(redisGet).toHaveBeenCalledWith('ai:credits:partner-1');
   });
 
-  it('is null for BYOK orgs (billedTo partner_key) — never even reads the cache', async () => {
-    getLlmBillingSourceForOrgMock.mockResolvedValueOnce('partner_key');
+  // The partner-wide pool must not reach an org-scoped caller. Proven against
+  // a WARM cache, so a null here is the flag withholding it, not an empty
+  // cache: without the gate this same fixture returns the balance above.
+  it('is null when the caller did not ask for credits, even with a warm cache', async () => {
+    getLlmBillingSourceForOrgMock.mockResolvedValueOnce('platform');
+    redisGet.mockResolvedValueOnce(JSON.stringify(CACHED));
 
     const summary = await getUsageSummary('org1');
+
+    expect(summary.credits).toBeNull();
+    expect(redisGet).not.toHaveBeenCalled();
+  });
+
+  it('is null for BYOK orgs (billedTo partner_key): never even reads the cache', async () => {
+    getLlmBillingSourceForOrgMock.mockResolvedValueOnce('partner_key');
+
+    const summary = await getUsageSummary('org1', { includeCredits: true });
 
     expect(summary.credits).toBeNull();
     expect(redisGet).not.toHaveBeenCalled();
@@ -1593,17 +1618,17 @@ describe('getUsageSummary: credits (#4388 W04)', () => {
       };
     });
 
-    const summary = await getUsageSummary('org1');
+    const summary = await getUsageSummary('org1', { includeCredits: true });
 
     expect(summary.credits).toBeNull();
     expect(redisGet).not.toHaveBeenCalled();
   });
 
-  it('is null when uncached', async () => {
+  it('is null when uncached and no billing service is configured (self-hosted)', async () => {
     getLlmBillingSourceForOrgMock.mockResolvedValueOnce('platform');
     redisGet.mockResolvedValueOnce(null);
 
-    const summary = await getUsageSummary('org1');
+    const summary = await getUsageSummary('org1', { includeCredits: true });
 
     expect(summary.credits).toBeNull();
   });
@@ -1612,14 +1637,87 @@ describe('getUsageSummary: credits (#4388 W04)', () => {
     getLlmBillingSourceForOrgMock.mockResolvedValueOnce('platform');
     redisGet.mockRejectedValueOnce(new Error('redis down'));
 
-    await expect(getUsageSummary('org1')).resolves.toMatchObject({ credits: null });
+    await expect(getUsageSummary('org1', { includeCredits: true })).resolves.toMatchObject({ credits: null });
   });
 
   it('is null (not a throw) when the cached value is corrupt/not valid JSON', async () => {
     getLlmBillingSourceForOrgMock.mockResolvedValueOnce('platform');
     redisGet.mockResolvedValueOnce('not-json');
 
-    await expect(getUsageSummary('org1')).resolves.toMatchObject({ credits: null });
+    await expect(getUsageSummary('org1', { includeCredits: true })).resolves.toMatchObject({ credits: null });
+  });
+});
+
+// Read-through fill. The cache used to be written ONLY by an AI turn, so on a
+// fleet that is not mid-conversation the credits card essentially never
+// rendered and the header cost indicator flickered. getUsageSummary now fills
+// the cache itself on a miss.
+describe('getUsageSummary: credit cache read-through (#4388 W04)', () => {
+  beforeEach(() => {
+    setupDbMocks(null); // organizations partnerId lookup resolves 'partner-1'
+    // vi.clearAllMocks() clears recorded calls but NOT queued
+    // mockResolvedValueOnce values, and several tests here deliberately leave
+    // one unconsumed (they assert the cache is never read). Reset explicitly
+    // so that queued value cannot surface in the next test.
+    redisGet.mockReset();
+    redisGet.mockResolvedValue(null);
+    redisSet.mockReset();
+    redisSet.mockResolvedValue('OK');
+  });
+
+  it('a cache HIT does not call the billing service at all', async () => {
+    const fetchMock = enableBillingService();
+    getLlmBillingSourceForOrgMock.mockResolvedValueOnce('platform');
+    redisGet.mockResolvedValueOnce(JSON.stringify(CACHED));
+
+    const summary = await getUsageSummary('org1', { includeCredits: true });
+
+    expect(summary.credits).toEqual(CACHED);
+    // /ai/usage is polled by the header indicator on every page; a hit that
+    // still round-trips to billing would defeat the cache entirely.
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('a cache MISS fetches from billing once and writes the cache with a 900s TTL', async () => {
+    const fetchMock = enableBillingService();
+    fetchMock.mockResolvedValueOnce(billingCreditsResponse({
+      allowed: true, remainingCredits: 777, includedBalance: 200, purchasedBalance: 577, plan: 'pro',
+    }));
+    getLlmBillingSourceForOrgMock.mockResolvedValueOnce('platform');
+    redisGet.mockResolvedValueOnce(null);
+
+    const summary = await getUsageSummary('org1', { includeCredits: true });
+
+    expect(summary.credits).toMatchObject({ remaining: 777, includedBalance: 200, purchasedBalance: 577 });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://billing.internal/api/internal/partners/partner-1/ai-credits',
+      expect.objectContaining({ headers: { Authorization: 'Bearer billing-key' } }),
+    );
+    expect(redisSet).toHaveBeenCalledWith(
+      'ai:credits:partner-1',
+      expect.stringContaining('"remaining":777'),
+      'EX',
+      900,
+    );
+  });
+
+  it('a billing HTTP failure on the miss path yields credits: null without throwing', async () => {
+    const fetchMock = enableBillingService();
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 503 }));
+    getLlmBillingSourceForOrgMock.mockResolvedValueOnce('platform');
+    redisGet.mockResolvedValueOnce(null);
+
+    await expect(getUsageSummary('org1', { includeCredits: true })).resolves.toMatchObject({ credits: null });
+  });
+
+  it('a billing transport failure on the miss path yields credits: null without throwing', async () => {
+    const fetchMock = enableBillingService();
+    fetchMock.mockRejectedValueOnce(new Error('ECONNREFUSED'));
+    getLlmBillingSourceForOrgMock.mockResolvedValueOnce('platform');
+    redisGet.mockResolvedValueOnce(null);
+
+    await expect(getUsageSummary('org1', { includeCredits: true })).resolves.toMatchObject({ credits: null });
   });
 });
 

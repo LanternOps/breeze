@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Coins } from "lucide-react";
 import { fetchWithAuth, useAuthStore } from "../../stores/auth";
 import { cn, widthPercentClass } from "@/lib/utils";
-import { formatCurrency } from "@/lib/i18n/format";
+import { formatCurrency, formatNumber } from "@/lib/i18n/format";
 import { useTranslation } from "react-i18next";
 
 interface UsageData {
@@ -121,7 +121,7 @@ export default function AiCostIndicator({
     monthlyBudget
       ? `${formatCurrency(monthlyUsed / 100)} / ${formatCurrency(monthlyBudget / 100)}`
       : `${formatCurrency(monthlyUsed / 100)} this month`
-  ) + (usage.credits ? ` · ${usage.credits.remaining.toLocaleString()} credits` : '');
+  ) + (usage.credits ? ` · ${formatNumber(usage.credits.remaining)} credits` : '');
 
   const barColor =
     percentage > 90

@@ -56,7 +56,7 @@ describe('AiCostIndicator polling behavior', () => {
 });
 
 // #4388 W04: when /ai/usage carries a cached partner credit balance, append
-// it to the same cost-summary text the indicator already shows — no separate
+// it to the same cost-summary text the indicator already shows: no separate
 // UI slot, just a trailing " · N credits" clause.
 describe('AiCostIndicator credit balance (#4388 W04)', () => {
   beforeEach(() => {
@@ -86,6 +86,28 @@ describe('AiCostIndicator credit balance (#4388 W04)', () => {
     });
 
     expect(container.textContent).toContain('1,240 credits');
+  });
+
+  // An exhausted balance is exactly when the clause matters most, so the
+  // suffix must survive `remaining: 0` rather than being dropped the way a
+  // truthiness check on the number would drop it.
+  it('still appends the clause, showing 0, when the balance is exhausted', async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeJsonResponse({
+        daily: { totalCostCents: 0, messageCount: 0 },
+        monthly: { totalCostCents: 0, messageCount: 0 },
+        budget: null,
+        credits: { remaining: 0, includedBalance: 0, purchasedBalance: 0, fetchedAt: '2026-09-01T00:00:00.000Z' },
+      }),
+    );
+
+    const { container } = render(<AiCostIndicator />);
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain('0 credits');
   });
 
   it('does not append anything when usage.credits is null', async () => {

@@ -83,7 +83,7 @@ describe('AiUsagePage billedTo indicator', () => {
 });
 
 // #4388 W04: the credits StatCard only appears when the API actually sent a
-// cached partner balance — the existing `usageBody()` fixture never sets it,
+// cached partner balance: the existing `usageBody()` fixture never sets it,
 // so every other describe block in this file keeps proving the card stays
 // hidden by default.
 describe('AiUsagePage credits stat card (#4388 W04)', () => {
@@ -101,6 +101,17 @@ describe('AiUsagePage credits stat card (#4388 W04)', () => {
 
     await waitFor(() => expect(screen.getByText('Breeze AI credits remaining')).toBeInTheDocument());
     expect(screen.getByText('1,240')).toBeInTheDocument();
+  });
+
+  // A zero balance is exactly when the card matters most: the object is
+  // present, so the card must render "0" rather than vanish the way a
+  // truthiness check on `remaining` would make it.
+  it('still renders the card, showing 0, when the balance is exhausted', async () => {
+    mockUsageWithCredits({ remaining: 0, includedBalance: 0, purchasedBalance: 0, fetchedAt: '2026-09-01T00:00:00.000Z' });
+    render(<AiUsagePage />);
+
+    await waitFor(() => expect(screen.getByText('Breeze AI credits remaining')).toBeInTheDocument());
+    expect(screen.getByText('0')).toBeInTheDocument();
   });
 
   it('does not render the credits stat card when usage.credits is null', async () => {

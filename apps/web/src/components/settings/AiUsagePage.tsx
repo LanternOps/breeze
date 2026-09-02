@@ -262,7 +262,7 @@ export default function AiUsagePage() {
           <StatCard
             icon={Coins}
             label={t('aiUsagePage.creditsRemaining')}
-            value={usage.credits.remaining.toLocaleString()}
+            value={formatNumber(usage.credits.remaining)}
           />
         )}
       </div>
