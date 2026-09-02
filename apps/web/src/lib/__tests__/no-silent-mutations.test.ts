@@ -222,12 +222,6 @@ const TARGET_GLOBS = [
   // so a slow response invited a duplicate-creating double click. The mount at
   // /reports/builder passed no onSubmit, the only success path.
   'src/components/reports/ReportBuilder.tsx',
-  // "Approve and always allow" (P2-5, #4192, Task 21): the promote POST raises
-  // a four-eyes authority change widening what an agent may do unattended, on
-  // top of the ordinary approve. A silent failure here would read as
-  // "requested" while no promotion was ever queued — same reasoning as
-  // AiAgentGraduationPanel.tsx above.
-  'src/components/approvals/ApprovalsInbox.tsx',
 ];
 
 const absoluteFiles: string[] = TARGET_GLOBS.map((rel) => resolve(WEB_ROOT, '..', rel));
@@ -529,11 +523,27 @@ describe('no silent mutations in targeted set', () => {
     // ImpactPage.tsx (P2-6 Task 10, #4193), plus ImpactWeightsDrawer.tsx
     // (P2-6 Task 11, #4193), plus AccountingSyncCard.tsx (QuickBooks invoice
     // push, Phase C Task 7), plus AiAgentGraduationPanel.tsx (P2-5 Task 20,
-    // #4192), plus ApprovalsInbox.tsx (P2-5 Task 21, #4192).
-    expect(absoluteFiles.length).toBe(109);
+    // #4192). ApprovalsInbox.tsx was already guarded before P2-5 — Task 21's
+    // promote mutation needed no list edit.
+    expect(absoluteFiles.length).toBe(108);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }
+  });
+
+  it('lists every guarded file exactly once', () => {
+    // A duplicated entry inflates the count above without adding coverage: the
+    // file is scanned twice and the next person to bump the counter inherits an
+    // off-by-one that is invisible unless they dedupe the list by hand. Assert
+    // it mechanically instead, and name the offenders so the fix is obvious.
+    const seen = new Set<string>();
+    const duplicates = TARGET_GLOBS.filter((rel) => {
+      if (seen.has(rel)) return true;
+      seen.add(rel);
+      return false;
+    });
+    expect(duplicates).toEqual([]);
+    expect(seen.size).toBe(absoluteFiles.length);
   });
 
   for (const absPath of absoluteFiles) {
