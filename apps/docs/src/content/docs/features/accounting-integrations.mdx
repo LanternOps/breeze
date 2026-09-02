@@ -46,7 +46,7 @@ QuickBooks Online connects through Intuit's standard OAuth consent flow. Once co
 |------|-----------|-------|
 | **Customers** | QuickBooks → Breeze | Import your existing QuickBooks customers as Breeze organizations (see below). |
 | **Invoices** | Breeze → QuickBooks | Issued invoices push to QuickBooks, either automatically or manually (your choice). |
-| **Payments** | Breeze → QuickBooks | Payments recorded against invoices flow to your books alongside the invoice. |
+| **Payments** | QuickBooks → Breeze | Payments recorded **in QuickBooks** against a pushed invoice mirror back into Breeze (see [Payment pull-back](#payment-pull-back) below). Pushing a Breeze-recorded payment out to QuickBooks is not yet supported. |
 
 ### Invoice push mode
 
@@ -103,6 +103,60 @@ that customer synced) is checked the same way: if the mapped QuickBooks
 customer's currency doesn't match the invoice's currency, the push is
 blocked with a customer-currency mismatch error before anything reaches
 QuickBooks, even if the realm-level check above would have passed.
+
+### Payment pull-back
+
+Once an invoice has been pushed to QuickBooks, payments **recorded in
+QuickBooks against that invoice** mirror back into Breeze automatically —
+the invoice's balance, status (`partially_paid` / `paid`), and payment list
+update without you doing anything in Breeze. Each mirrored payment carries a
+**QuickBooks** badge on the payment row so you can tell it apart from a
+payment you recorded manually or one collected online through
+[Stripe](/features/online-payments/).
+
+**What's mirrored:** a payment (full or partial) entered in QuickBooks
+against an invoice Breeze pushed there, and a payment **deleted** in
+QuickBooks (Breeze removes the matching payment row and recomputes the
+invoice — a payment you recorded manually on the same invoice is never
+touched).
+
+**What's not mirrored, on purpose:**
+
+- **Payments you record in Breeze, or Stripe payments Breeze collects, are
+  not pushed to QuickBooks.** That direction — Breeze → QuickBooks payment
+  push — isn't built yet, which is exactly why the **Pull QuickBooks
+  payments** switch below exists: with both directions live at once, a
+  payment could double-count (pushed out, then pulled back in as if it were
+  a second, QuickBooks-originated payment).
+- **Credit memos and QuickBooks-originated refunds** don't flow into Breeze.
+- **Foreign-currency payments** aren't supported — like invoice push, a
+  payment pull is blocked (and the invoice's mapping flips to an error you
+  can see) if its currency doesn't match the invoice's.
+- If QuickBooks records a payment against an invoice **you've voided in
+  Breeze**, Breeze does not apply it — the invoice mapping flips to an error
+  ("Payment received in QuickBooks against a voided invoice") rather than
+  silently reopening a document you closed.
+- If an invoice itself is **voided or deleted in QuickBooks**, its mapping
+  shows an **Error** status with the message **"Deleted in QuickBooks"** in
+  the sync card, and Breeze never recreates it automatically.
+
+**How fast it happens:** Breeze checks for QuickBooks-side changes every
+**15 minutes** — this scheduled sweep is the guaranteed path and runs the
+same way in every hosted region. Where available, an Intuit webhook
+notification triggers an immediate check instead of waiting for the next
+sweep, but Intuit only supports **one webhook URL per app**, and Breeze's
+hosted deployment uses one Intuit app for both regions — so only the US
+region receives instant notifications today; the EU region (and any
+self-hosted deployment without a public webhook URL configured) always
+mirrors on the 15-minute sweep. Either way, the end state is the same.
+
+**Pull QuickBooks payments** is a switch on the connected panel. Turn it off
+to stop pulling payments from QuickBooks into Breeze — for example, while
+you're still reconciling manually and don't want QuickBooks payments
+overwriting Breeze's own record. Turn it back on and the next sweep catches
+up on anything that happened while it was off. A **Sync now** button next to
+the switch runs a pull immediately rather than waiting for the sweep or a
+webhook.
 
 ### Customer and item mapping
 
