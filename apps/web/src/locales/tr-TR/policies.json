@@ -1629,20 +1629,6 @@
       "summaryCompleted7d": "Tamamlandı (7 gün)",
       "summaryFailed7d": "Başarısız (7 gün)"
     },
-    "softwareComplianceReport": {
-      "softwareComplianceReport": "Yazılım Uyumluluk Raporu",
-      "analyzeSoftwareVersionDriftAcrossManagedDevices": "Yönetilen cihazlar arasında yazılım sürümü değişimini analiz edin.",
-      "bulkUpdate": "Toplu güncelleme",
-      "versionDriftAnalysis": "Sürüm kayması analizi",
-      "clickARowToSeeOutdatedDevices": "Eski cihazları görmek için bir satıra tıklayın.",
-      "software": "Yazılım",
-      "expectedVersion": "Beklenen sürüm",
-      "devicesOnVersion": "Sürümdeki cihazlar",
-      "devicesOutdated": "Cihazların güncelliği geçmiş",
-      "details": "Ayrıntılar",
-      "outdatedDevices": "Güncel olmayan cihazlar",
-      "hide": "Gizle"
-    },
     "softwareInventory": {
       "allowed": "İzin veriliyor",
       "blocked": "Engellendi",

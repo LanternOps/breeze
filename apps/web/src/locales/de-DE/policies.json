@@ -1629,20 +1629,6 @@
       "summaryCompleted7d": "Abgeschlossen (7 Tage)",
       "summaryFailed7d": "Fehlgeschlagen (7 Tage)"
     },
-    "softwareComplianceReport": {
-      "softwareComplianceReport": "Software-Compliance-Bericht",
-      "analyzeSoftwareVersionDriftAcrossManagedDevices": "Analysieren Sie die Softwareversionsdrift auf verwalteten Geräten.",
-      "bulkUpdate": "Massenaktualisierung",
-      "versionDriftAnalysis": "Analyse der Versionsdrift",
-      "clickARowToSeeOutdatedDevices": "Klicken Sie auf eine Zeile, um veraltete Geräte anzuzeigen.",
-      "software": "Software",
-      "expectedVersion": "Erwartete Version",
-      "devicesOnVersion": "Geräte auf Version",
-      "devicesOutdated": "Geräte veraltet",
-      "details": "Details",
-      "outdatedDevices": "Veraltete Geräte",
-      "hide": "Verstecken"
-    },
     "softwareInventory": {
       "allowed": "Erlaubt",
       "blocked": "Blockiert",

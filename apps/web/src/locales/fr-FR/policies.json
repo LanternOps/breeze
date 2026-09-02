@@ -1629,20 +1629,6 @@
       "summaryCompleted7d": "Terminés (7 j)",
       "summaryFailed7d": "Échoués (7 j)"
     },
-    "softwareComplianceReport": {
-      "softwareComplianceReport": "Rapport de conformité logicielle",
-      "analyzeSoftwareVersionDriftAcrossManagedDevices": "Analysez la dérive des versions logicielles entre les appareils gérés.",
-      "bulkUpdate": "Mise à jour en bloc",
-      "versionDriftAnalysis": "Analyse de la dérive de version",
-      "clickARowToSeeOutdatedDevices": "Cliquez sur une ligne pour voir les appareils obsolètes.",
-      "software": "Logiciels",
-      "expectedVersion": "Version attendue",
-      "devicesOnVersion": "Appareils sur la version",
-      "devicesOutdated": "Appareils obsolètes",
-      "details": "Détails",
-      "outdatedDevices": "Appareils obsolètes",
-      "hide": "Masquer"
-    },
     "softwareInventory": {
       "allowed": "Autorisé",
       "blocked": "Bloqué",
