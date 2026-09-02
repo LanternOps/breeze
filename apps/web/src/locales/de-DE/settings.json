@@ -1333,7 +1333,8 @@
     "likeActionPlanPlusLiveScreenshotsBetweenStepsAndAPersist": "Wie ein Aktionsplan, plus Live-Screenshots zwischen den Schritten und eine dauerhafte Stopp-Schaltfläche.",
     "untitled": "Ohne Titel",
     "billedToPartnerKey": "Abrechnung über Ihren Schlüssel — die KI-Nutzung läuft über Ihr eigenes Anthropic-Konto, nicht über Breeze-KI-Guthaben",
-    "billedToPartnerKeyViaEndpoint": "Abrechnung über Ihren Schlüssel via {{name}} — die KI-Nutzung läuft über Ihr eigenes Anthropic-Konto, nicht über Breeze-KI-Guthaben"
+    "billedToPartnerKeyViaEndpoint": "Abrechnung über Ihren Schlüssel via {{name}}: die KI-Nutzung läuft über Ihr eigenes Anthropic-Konto, nicht über Breeze-KI-Guthaben",
+    "creditsRemaining": "Verbleibendes Breeze-KI-Guthaben"
   },
   "aiAgentsPage": {
     "schedules": {
