@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"syscall"
 	"testing"
@@ -299,4 +300,92 @@ func TestReconcileDoesNotTolerateUnresolvableAccountNameInTokenScan(t *testing.T
 	if manager.Available() {
 		t.Fatal("manager reports available after an unverified reconcile")
 	}
+}
+
+// TestSetEnabledFalseFailsClosedWhenTheLedgerCannotBeRead is the regression
+// test for the review finding that an unreadable ledger is indistinguishable
+// from an empty one. Store.Entries() returns zero entries either way, so the
+// disable path would have concluded "this device never actuated", tolerated an
+// absent account and skipped the privileged-token scan — on a device whose
+// actuation history is simply unknown. That has to fail closed, and the
+// account manager must not be touched at all.
+func TestSetEnabledFalseFailsClosedWhenTheLedgerCannotBeRead(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ledger.json")
+	if err := os.WriteFile(path, []byte("{ this is not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store := NewStore(path)
+	if store.LoadError() == nil {
+		t.Fatal("setup: a corrupt ledger must report a load error")
+	}
+	if entries := store.Entries(); len(entries) != 0 {
+		t.Fatalf("setup: corrupt ledger reported %d entries; the test depends on it looking empty", len(entries))
+	}
+
+	var order []string
+	account := &fakeAccountLifecycle{order: &order}
+	win := &fakeWindowsPrimitives{order: &order, privilegedTokenErr: unresolvableAccountErr()}
+	manager := newLifecycleManager(store, win, account, nil)
+
+	err := manager.SetEnabled(context.Background(), false)
+	if err == nil {
+		t.Fatal("SetEnabled(false) returned nil on a device whose actuation history could not be read")
+	}
+	if got, want := err.Error(), "PAM disable cleanup unverified: account:ledger_unavailable"; got != want {
+		t.Fatalf("SetEnabled(false) error = %q, want %q", got, want)
+	}
+	if account.deprovisionCount != 0 || account.verifiedCount != 0 {
+		t.Fatalf("account manager was called (%d Deprovision / %d VerifyClean) despite an unreadable ledger",
+			account.deprovisionCount, account.verifiedCount)
+	}
+
+	enabled, admissionOpen, available, unresolved := managerState(t, manager)
+	if !enabled {
+		t.Fatal("m.enabled must remain set so the next heartbeat retries")
+	}
+	if admissionOpen {
+		t.Fatal("m.admissionOpen must be closed while cleanup is unverified")
+	}
+	if available {
+		t.Fatal("m.available must be false while the ledger cannot be read")
+	}
+	if unresolved != 1 {
+		t.Fatalf("unresolved cleanup evidence = %d, want 1", unresolved)
+	}
+}
+
+// TestToleratedTokenScanLeavesPrivilegedTokenEvidenceUnmeasured pins the
+// difference between "measured, and no token was present" and "never
+// measured". Reporting boolPtr(false) for a scan that was skipped would put a
+// claim on the wire the agent never verified.
+func TestToleratedTokenScanLeavesPrivilegedTokenEvidenceUnmeasured(t *testing.T) {
+	t.Run("skipped scan reports no privileged-token evidence", func(t *testing.T) {
+		manager := newNeverEnabledManager(t, &fakeAccountLifecycle{},
+			&fakeWindowsPrimitives{privilegedTokenErr: unresolvableAccountErr()})
+
+		evidence, code, verified := manager.verifyAccountClean(context.Background(), ResultEvidence{BootID: "windows-boot-42"})
+
+		if !verified || code != "" {
+			t.Fatalf("verifyAccountClean = (%q, %v), want verified with no failure code", code, verified)
+		}
+		if evidence.PrivilegedTokenPresent != nil {
+			t.Fatalf("PrivilegedTokenPresent = %v, want nil: the scan was skipped, not performed", *evidence.PrivilegedTokenPresent)
+		}
+		if evidence.AccountEnabled == nil || *evidence.AccountEnabled {
+			t.Fatalf("AccountEnabled = %v, want a measured false", evidence.AccountEnabled)
+		}
+	})
+
+	t.Run("performed scan does report it", func(t *testing.T) {
+		manager := newNeverEnabledManager(t, &fakeAccountLifecycle{}, &fakeWindowsPrimitives{})
+
+		evidence, code, verified := manager.verifyAccountClean(context.Background(), ResultEvidence{BootID: "windows-boot-42"})
+
+		if !verified || code != "" {
+			t.Fatalf("verifyAccountClean = (%q, %v), want verified with no failure code", code, verified)
+		}
+		if evidence.PrivilegedTokenPresent == nil || *evidence.PrivilegedTokenPresent {
+			t.Fatalf("PrivilegedTokenPresent = %v, want a measured false", evidence.PrivilegedTokenPresent)
+		}
+	})
 }

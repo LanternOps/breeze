@@ -4,6 +4,7 @@ package elevaccount
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"syscall"
@@ -182,10 +183,7 @@ func (*windowsManager) VerifyClean(ctx context.Context) (AccountEvidence, error)
 		return cleanIfAbsent(err)
 	}
 	inAdministrators, err := accountInAdministrators(AccountName)
-	if err != nil {
-		return cleanIfAbsent(err)
-	}
-	return AccountEvidence{Enabled: enabled, InAdministrators: inAdministrators}, nil
+	return evidenceAfterAdminProbe(enabled, inAdministrators, err)
 }
 
 func netUserAddDisabled(username, password string) error {
@@ -256,7 +254,13 @@ func netUserSetInfo(namePtr *uint16, level uint32, info unsafe.Pointer) error {
 		uintptr(unsafe.Pointer(&parmErr)),
 	)
 	if status != nerrSuccess {
-		return fmt.Errorf("NetUserSetInfo level %d failed: %w", level, syscall.Errno(status))
+		// This call named the elevation account, so NERR_UserNotFound here is
+		// proof the account itself is gone.
+		err := fmt.Errorf("NetUserSetInfo level %d failed: %w", level, syscall.Errno(status))
+		if uint32(status) == nerrUserNotFound {
+			return absentAccountErr(err)
+		}
+		return err
 	}
 	return nil
 }
@@ -277,9 +281,10 @@ func addToAdministrators(username string) error {
 func removeFromAdministrators(username string) error {
 	status, err := localGroupMembersCall(procNetLocalGroupDelMembers, username)
 	if err != nil {
-		// The SID lookup fails with ERROR_NONE_MAPPED when the account does
-		// not exist, which is nothing to remove.
-		if IsAccountAbsent(err) {
+		// Nothing to remove from a group if the account itself is gone. Only
+		// the tagged failure counts: an alias-lookup failure carries the same
+		// errno and must stay an error.
+		if errors.Is(err, errAccountAbsent) {
 			return nil
 		}
 		return err
@@ -293,6 +298,10 @@ func removeFromAdministrators(username string) error {
 }
 
 func localGroupMembersCall(proc *syscall.LazyProc, username string) (uint32, error) {
+	// NOT an absence signal: the builtin Administrators alias is a different
+	// principal, and its lookup fails with the same ERROR_NONE_MAPPED. Reading
+	// that as "the elevation account is absent" would report a machine that
+	// cannot resolve its own Administrators group as clean.
 	groupName, err := administratorsGroupName()
 	if err != nil {
 		return 0, err
@@ -303,6 +312,10 @@ func localGroupMembersCall(proc *syscall.LazyProc, username string) (uint32, err
 	}
 	userSID, _, _, err := windows.LookupSID("", username)
 	if err != nil {
+		// This lookup DID name the elevation account.
+		if IsAccountAbsent(err) {
+			return 0, absentAccountErr(fmt.Errorf("LookupSID %s failed: %w", username, err))
+		}
 		return 0, err
 	}
 	info := localGroupMembersInfo0{SID: userSID}
@@ -338,7 +351,11 @@ func accountEnabled(username string) (bool, error) {
 	}
 	var buffer *byte
 	if err := windows.NetUserGetInfo(nil, namePtr, userInfoLevel1, &buffer); err != nil {
-		return false, fmt.Errorf("NetUserGetInfo %s failed: %w", username, err)
+		wrapped := fmt.Errorf("NetUserGetInfo %s failed: %w", username, err)
+		if IsAccountAbsent(err) {
+			return false, absentAccountErr(wrapped)
+		}
+		return false, wrapped
 	}
 	defer windows.NetApiBufferFree(buffer)
 	info := (*userInfo1)(unsafe.Pointer(buffer))
@@ -350,6 +367,8 @@ func accountInAdministrators(username string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	// NOT an absence signal: this resolves the builtin Administrators alias,
+	// not the elevation account. Its failure must propagate as a real error.
 	adminName, err := administratorsGroupName()
 	if err != nil {
 		return false, err
@@ -367,7 +386,11 @@ func accountInAdministrators(username string) (bool, error) {
 		uintptr(unsafe.Pointer(&totalEntries)),
 	)
 	if uint32(status) != nerrSuccess {
-		return false, fmt.Errorf("NetUserGetLocalGroups %s failed: %w", username, syscall.Errno(status))
+		err := fmt.Errorf("NetUserGetLocalGroups %s failed: %w", username, syscall.Errno(status))
+		if uint32(status) == nerrUserNotFound {
+			return false, absentAccountErr(err)
+		}
+		return false, err
 	}
 	if buffer == nil {
 		return false, nil
