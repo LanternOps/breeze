@@ -4089,5 +4089,76 @@
     "saveFailed": "Could not save time tracking settings",
     "minSessionRange": "Minimum session length must be between {{min}} and {{max}} seconds",
     "mergeGapRange": "Merge gap must be between {{min}} and {{max}} minutes"
+  },
+  "contactImportPreview": {
+    "selectAll": "Select all new and linked rows",
+    "organizationLevel": "Organization",
+    "matches": "matches “{{name}}”",
+    "columns": {
+      "name": "Name",
+      "email": "Email address",
+      "site": "Site",
+      "status": "Status"
+    },
+    "badges": {
+      "create": "New",
+      "linkMatch": "Already linked",
+      "emailMatch": "Email match — confirm",
+      "nameMatch": "Name match — confirm",
+      "conflict": "Conflict",
+      "orgNotFound": "Organization not found"
+    }
+  },
+  "bulkContactImport": {
+    "title": "Import contacts from CSV",
+    "description": "Upload a contact export from your previous RMM or PSA. Every row is filed under this organization.",
+    "dropzone": "Drop a CSV file here or click to browse",
+    "dropzoneHint": "Map at least one of name, email address, phone, or mobile — a contact needs one of them.",
+    "actions": {
+      "close": "Close",
+      "preview": "Check {{count}} rows",
+      "previewing": "Checking…",
+      "import": "Import {{count}} selected",
+      "importing": "Importing…"
+    },
+    "mapping": {
+      "heading": "Column mapping",
+      "unmapped": "Not mapped",
+      "identifierRequired": "Map a name, email address, phone, or mobile column to continue.",
+      "fields": {
+        "name": "Name",
+        "email": "Email address",
+        "phone": "Phone",
+        "mobile": "Mobile",
+        "title": "Job title",
+        "roles": "Roles",
+        "site": "Site",
+        "externalId": "Contact ID in the source system",
+        "externalSystem": "Source system"
+      }
+    },
+    "mode": {
+      "label": "Contacts already linked",
+      "skip": "Leave them as they are",
+      "update": "Merge the file into them"
+    },
+    "preview": {
+      "heading": "What will happen"
+    },
+    "summary": {
+      "imported": "{{count}} added",
+      "updated": "{{count}} merged",
+      "skipped": "{{count}} left alone",
+      "failed": "{{count}} refused",
+      "allFailed": "Nothing was imported — {{summary}}."
+    },
+    "failures": {
+      "title_one": "{{count}} row was refused",
+      "title_other": "{{count}} rows were refused"
+    },
+    "errors": {
+      "previewFailed": "Could not check the file against existing contacts.",
+      "importFailed": "Could not import the selected contacts."
+    }
   }
 }
