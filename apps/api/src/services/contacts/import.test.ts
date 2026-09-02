@@ -801,6 +801,91 @@ describe('commitContactImport', () => {
     expect(JSON.stringify(entry)).not.toMatch(/relation/);
   });
 
+  it('re-derives later rows against EARLIER rows of the same file', async () => {
+    // One snapshot is loaded before the loop and every row commits in its own
+    // transaction, so without an in-memory update row 2 is classified against
+    // pre-batch state: row 1 moves Jane onto new@, and row 2 — `create` at
+    // preview because nobody held new@ then — mints a duplicate beside her.
+    stubState({
+      contacts: [{ id: EXISTING, orgId: ORG, siteId: null, name: 'Jane Ops', email: 'jane@acme.example' }],
+      then: [[storedContact()]],
+    });
+
+    const summary = await commitContactImport([
+      {
+        organizationId: ORG, name: 'Jane Ops', email: 'new@acme.example',
+        expectedAnnotation: 'name-match', expectedContactId: EXISTING,
+      },
+      { organizationId: ORG, name: 'Sam Site', email: 'new@acme.example', expectedAnnotation: 'create' },
+    ], CTX, ACTOR);
+
+    expect(summary.updated).toHaveLength(1);
+    expect(summary.errors[0]).toMatchObject({ index: 1, code: 'annotation-changed' });
+    expect(summary.errors[0]!.error).toMatch(/now "email-match"/);
+    // The whole point: no second contact.
+    expect(contactInserts()).toHaveLength(0);
+  });
+
+  it('refuses a second row sharing an address with a row it just created', async () => {
+    stubState();
+    const summary = await commitContactImport([
+      { organizationId: ORG, name: 'Ann First', email: 'shared@acme.example', expectedAnnotation: 'create' },
+      { organizationId: ORG, name: 'Bob Second', email: 'shared@acme.example', expectedAnnotation: 'create' },
+    ], CTX, ACTOR);
+
+    expect(summary.imported).toHaveLength(1);
+    expect(summary.imported[0]).toMatchObject({ index: 0 });
+    expect(summary.errors[0]).toMatchObject({ index: 1, code: 'annotation-changed' });
+    expect(contactInserts()).toHaveLength(1);
+  });
+
+  it('refuses a second row sharing a NAME with a row it just created', async () => {
+    stubState();
+    const summary = await commitContactImport([
+      { organizationId: ORG, name: 'Jane Ops', phone: '555-0100', expectedAnnotation: 'create' },
+      { organizationId: ORG, name: '  jane   ops ', phone: '555-0200', expectedAnnotation: 'create' },
+    ], CTX, ACTOR);
+
+    expect(summary.imported).toHaveLength(1);
+    expect(summary.errors[0]).toMatchObject({ index: 1, code: 'annotation-changed' });
+    expect(contactInserts()).toHaveLength(1);
+  });
+
+  it('stops matching a contact on an address it no longer holds', async () => {
+    // Row 1 moves Jane off jane@; row 2 naming jane@ must then be a fresh
+    // create, not a stale email-match against the pre-batch index.
+    stubState({
+      contacts: [{ id: EXISTING, orgId: ORG, siteId: null, name: 'Jane Ops', email: 'jane@acme.example' }],
+      then: [[storedContact()]],
+    });
+
+    const summary = await commitContactImport([
+      {
+        organizationId: ORG, name: 'Jane Ops', email: 'jane.ops@acme.example',
+        expectedAnnotation: 'name-match', expectedContactId: EXISTING,
+      },
+      { organizationId: ORG, name: 'Someone Else', email: 'jane@acme.example', expectedAnnotation: 'create' },
+    ], CTX, ACTOR);
+
+    expect(summary.errors).toEqual([]);
+    expect(summary.updated).toHaveLength(1);
+    expect(summary.imported).toHaveLength(1);
+    expect(contactInserts()[0]!.values).toMatchObject({ email: 'jane@acme.example' });
+  });
+
+  it('link-matches a later row against a link an earlier row just created', async () => {
+    stubState({ orgs: [{ id: ORG, name: 'Acme Co' }, { id: ORG_B, name: 'Beta Ltd' }] });
+    const summary = await commitContactImport([
+      { organizationId: ORG, name: 'Jane Ops', externalId: 'CT-9', externalSystem: 'datto_rmm' },
+      // Same source id under ANOTHER customer: still its own contact, so this
+      // proves the new link is keyed by org and not applied partner-wide.
+      { organizationId: ORG_B, name: 'Jane Ops', externalId: 'CT-9', externalSystem: 'datto_rmm' },
+    ], CTX, ACTOR);
+
+    expect(summary.imported).toHaveLength(2);
+    expect(linkInserts()).toHaveLength(2);
+  });
+
   it('always returns the four-bucket summary shape', async () => {
     stubState();
     const summary = await commitContactImport([], CTX, ACTOR);

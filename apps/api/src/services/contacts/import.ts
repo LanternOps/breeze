@@ -99,6 +99,66 @@ function pushInto<T>(map: Map<string, T[]>, k: string, value: T): void {
   else map.set(k, [value]);
 }
 
+/** Removes by IDENTITY: the hint maps hold the same objects `contactById` does. */
+function removeFrom<T>(map: Map<string, T[]>, k: string, value: T): void {
+  const list = map.get(k);
+  if (!list) return;
+  const at = list.indexOf(value);
+  if (at >= 0) list.splice(at, 1);
+  if (list.length === 0) map.delete(k);
+}
+
+function indexSnapshotContact(snapshot: Snapshot, contact: SnapshotContact): void {
+  // Same reachability rule the initial load applies, so a contact moved onto a
+  // site the caller cannot reach leaves the maps rather than staying matchable.
+  if (!snapshot.canReachSite(contact.siteId)) return;
+  snapshot.contactById.set(contact.id, contact);
+  if (contact.email) {
+    pushInto(snapshot.contactsByEmail, key(contact.orgId, contact.email.toLowerCase()), contact);
+  }
+  if (contact.name) {
+    pushInto(snapshot.contactsByName, key(contact.orgId, normalizeContactName(contact.name)), contact);
+  }
+}
+
+function unindexSnapshotContact(snapshot: Snapshot, contact: SnapshotContact): void {
+  snapshot.contactById.delete(contact.id);
+  if (contact.email) {
+    removeFrom(snapshot.contactsByEmail, key(contact.orgId, contact.email.toLowerCase()), contact);
+  }
+  if (contact.name) {
+    removeFrom(snapshot.contactsByName, key(contact.orgId, normalizeContactName(contact.name)), contact);
+  }
+}
+
+/**
+ * Fold one committed row back into the in-memory snapshot.
+ *
+ * The snapshot is loaded ONCE before the commit loop, but every row commits in
+ * its own transaction (see the header), so without this later rows are
+ * classified against pre-batch state. Concretely: row 1 moves Jane onto
+ * `new@`, and row 2 carrying `new@` — a `create` at preview, because nobody
+ * held that address then — mints a duplicate beside her instead of being
+ * refused as `annotation-changed`. Two rows sharing an address in one file hit
+ * the same hole.
+ *
+ * `previous` is the entry a matched row is replacing; it has to be un-indexed
+ * before the new one goes in, or the contact stays matchable under an email or
+ * a name it no longer holds.
+ */
+function applySnapshotWrite(
+  snapshot: Snapshot,
+  r: NormalizedRow,
+  stored: SnapshotContact,
+  previous?: SnapshotContact,
+): void {
+  if (previous) unindexSnapshotContact(snapshot, previous);
+  indexSnapshotContact(snapshot, stored);
+  if (r.externalId) {
+    snapshot.contactByLink.set(key(stored.orgId, r.system, r.externalId), stored.id);
+  }
+}
+
 /** Predicate form of the caller's site-axis allowlist; see `ContactImportContext`. */
 export type SiteReach = (siteId: string | null) => boolean;
 
@@ -643,11 +703,13 @@ export async function commitContactImport(
 
     try {
       if (resolution.annotation === 'create') {
-        const result = await createImportedContact(r, orgId, resolution.siteId, actor);
+        const { stored, ...result } = await createImportedContact(r, orgId, resolution.siteId, actor);
         summary.imported.push({ index: r.index, organizationId: orgId, ...result });
+        applySnapshotWrite(snapshot, r, stored);
       } else {
-        const result = await applyMatchedContact(r, orgId, resolution, actor);
+        const { stored, ...result } = await applyMatchedContact(r, orgId, resolution, actor);
         summary.updated.push({ index: r.index, organizationId: orgId, ...result });
+        applySnapshotWrite(snapshot, r, stored, resolution.matched);
       }
     } catch (err) {
       console.error('[contact-import] row failed', {
@@ -667,13 +729,24 @@ export async function commitContactImport(
   return summary;
 }
 
+/**
+ * What one committed row produced: the three fields the summary reports, plus
+ * the row as it now stands so `applySnapshotWrite` can re-index it.
+ */
+interface RowWriteOutcome {
+  contactId: string;
+  name: string | null;
+  createdLink: boolean;
+  stored: SnapshotContact;
+}
+
 /** One row's own transaction — see the module header on failure isolation. */
 async function createImportedContact(
   r: NormalizedRow,
   orgId: string,
   siteId: string | null,
   actor: ContactImportActor,
-): Promise<{ contactId: string; name: string | null; createdLink: boolean }> {
+): Promise<RowWriteOutcome> {
   return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
     const [created] = await db.insert(contacts).values({
       orgId,
@@ -690,7 +763,12 @@ async function createImportedContact(
 
     const contactId = (created as { id: string }).id;
     const createdLink = await attachLink(r, orgId, contactId, actor);
-    return { contactId, name: r.name, createdLink };
+    return {
+      contactId,
+      name: r.name,
+      createdLink,
+      stored: { id: contactId, orgId, siteId, name: r.name, email: r.email, isPrimary: false },
+    };
   }));
 }
 
@@ -708,16 +786,11 @@ async function applyMatchedContact(
   orgId: string,
   resolution: Resolution,
   actor: ContactImportActor,
-): Promise<{ contactId: string; name: string | null; createdLink: boolean }> {
+): Promise<RowWriteOutcome> {
   const matched = resolution.matched!;
+  const patch = matchedRowPatch(r, resolution.siteId);
   return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
-    const updated = await updateContact(
-      db,
-      matched.id,
-      orgId,
-      matchedRowPatch(r, resolution.siteId),
-      { userId: actor.userId },
-    );
+    const updated = await updateContact(db, matched.id, orgId, patch, { userId: actor.userId });
     // Only reachable if the contact was deleted between the snapshot and now.
     if (!updated) throw new Error('Matched contact no longer exists');
 
@@ -725,7 +798,23 @@ async function applyMatchedContact(
     // link-matches instead of asking for the same confirmation again.
     const createdLink = await attachLink(r, orgId, matched.id, actor);
 
-    return { contactId: matched.id, name: updated.name, createdLink };
+    return {
+      contactId: matched.id,
+      name: updated.name,
+      createdLink,
+      // Derived from the patch, not from `updated`: the patch is the authority
+      // on what this row changed, and reading it back off the returned record
+      // would couple the snapshot to whichever columns updateContact chooses
+      // to SET.
+      stored: {
+        id: matched.id,
+        orgId,
+        siteId: patch.siteId === undefined ? matched.siteId : (patch.siteId ?? null),
+        name: patch.name === undefined ? matched.name : (patch.name ?? null),
+        email: patch.email === undefined ? matched.email : (patch.email ?? null),
+        isPrimary: matched.isPrimary,
+      },
+    };
   }));
 }
 
