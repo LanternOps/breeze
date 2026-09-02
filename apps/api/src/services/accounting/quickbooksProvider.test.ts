@@ -763,15 +763,94 @@ describe('reconcileChanges (CDC)', () => {
     expect(cs.deletedInvoices).toEqual([]);
   });
 
-  it('halves the window when an entity reports more changes than it returned, and de-duplicates', async () => {
-    const overflow = cdcResponse([{ Payment: [qboPayment()], startPosition: 1, maxResults: 1, totalCount: 2 }]);
-    const settled = cdcResponse([{ Payment: [qboPayment({ Id: '182' })], totalCount: 1 }]);
-    vi.spyOn(globalThis, 'fetch')
-      .mockResolvedValueOnce(jsonResponse(overflow))   // full window: overflowing
-      .mockResolvedValueOnce(jsonResponse(settled))    // first half
-      .mockResolvedValueOnce(jsonResponse(cdcResponse([{ Payment: [qboPayment()] }])));  // second half
-    const cs = await quickbooksProvider.reconcileChanges(conn(), new Date(Date.now() - 3600_000));
+  // --- overflow: /query backfill (final-review finding A) -------------------
+  //
+  // QBO's /cdc takes only `changedSince`, so the pre-review window-halving
+  // re-issued a BYTE-IDENTICAL request and could never resolve an overflow.
+  // The overflowing entity is now paged through /query instead.
+
+  it('pages the overflowing entity through /query instead of re-issuing the identical CDC request', async () => {
+    const since = new Date('2026-09-02T20:00:00.000Z');
+    const spy = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(jsonResponse(
+        cdcResponse([{ Payment: [qboPayment()], startPosition: 1, maxResults: 1, totalCount: 2 }]),
+      ))
+      .mockResolvedValueOnce(jsonResponse({
+        QueryResponse: { Payment: [qboPayment(), qboPayment({ Id: '182' })] },
+        time: '2026-09-02T20:11:00.000Z',
+      }));
+
+    const cs = await quickbooksProvider.reconcileChanges(conn(), since);
+
+    expect(spy).toHaveBeenCalledTimes(2);
+    const queryUrl = decodeURIComponent(String(spy.mock.calls[1]![0]));
+    expect(queryUrl).toContain('/query?query=');
+    expect(queryUrl).toContain(
+      "select * from Payment where MetaData.LastUpdatedTime >= '2026-09-02T19:55:00.000Z'"
+      + ' orderby MetaData.LastUpdatedTime startposition 1 maxresults 1000',
+    );
     expect(cs.payments.map((p) => p.remotePaymentId).sort()).toEqual(['180', '182']);
+    expect(cs.overflowed).toBe(false);
+  });
+
+  it('keeps paging /query until a short page, and de-duplicates against the CDC rows by Id', async () => {
+    const fullPage = Array.from({ length: 1000 }, (_, i) => qboPayment({ Id: String(2000 + i) }));
+    const spy = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(jsonResponse(
+        cdcResponse([{ Payment: [qboPayment()], startPosition: 1, maxResults: 1, totalCount: 1500 }]),
+      ))
+      .mockResolvedValueOnce(jsonResponse({ QueryResponse: { Payment: fullPage } }))
+      .mockResolvedValueOnce(jsonResponse({ QueryResponse: { Payment: [qboPayment()] } }));
+
+    const cs = await quickbooksProvider.reconcileChanges(conn(), new Date('2026-09-02T20:00:00.000Z'));
+
+    expect(spy).toHaveBeenCalledTimes(3);
+    expect(decodeURIComponent(String(spy.mock.calls[2]![0]))).toContain('startposition 1001');
+    // 1000 query rows + payment 180 exactly once (query row wins over the CDC row).
+    expect(cs.payments).toHaveLength(1001);
+    expect(cs.payments.filter((p) => p.remotePaymentId === '180')).toHaveLength(1);
+    expect(cs.overflowed).toBe(false);
+  });
+
+  it('reports overflowed:true when the /query backfill itself fails, keeping the CDC rows', async () => {
+    const spy = vi.spyOn(globalThis, 'fetch').mockImplementation(() => {
+      throw new Error('unexpected extra fetch() call — this test only mocks 2 responses');
+    });
+    spy
+      .mockResolvedValueOnce(jsonResponse(
+        cdcResponse([{ Payment: [qboPayment()], startPosition: 1, maxResults: 1, totalCount: 2 }]),
+      ))
+      .mockResolvedValueOnce(jsonResponse({ Fault: { Error: [{ Detail: 'realm secrets' }] } }, 500));
+
+    const cs = await quickbooksProvider.reconcileChanges(conn(), new Date('2026-09-02T20:00:00.000Z'));
+
+    expect(cs.overflowed).toBe(true);
+    expect(cs.payments.map((p) => p.remotePaymentId)).toEqual(['180']);
+  });
+
+  it('backfills an overflowing Invoice block through /query and keeps the CDC deletion lists', async () => {
+    const spy = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(jsonResponse(cdcResponse([{
+        Invoice: [{ Id: '145', status: 'Deleted' }],
+        startPosition: 1, maxResults: 1, totalCount: 2,
+      }])))
+      .mockResolvedValueOnce(jsonResponse({ QueryResponse: { Invoice: [
+        { Id: '146', TotalAmt: 0, Balance: 0, PrivateNote: 'Voided on 2026-09-02' },
+        { Id: '147', TotalAmt: 90, Balance: 90 },
+      ] } }));
+
+    const cs = await quickbooksProvider.reconcileChanges(conn(), new Date('2026-09-02T20:00:00.000Z'));
+
+    expect(decodeURIComponent(String(spy.mock.calls[1]![0]))).toContain('select * from Invoice where');
+    // The CDC deletion survives: /query never returns deleted entities.
+    expect(cs.deletedInvoices.sort()).toEqual(['145', '146']);
+    expect(cs.overflowed).toBe(false);
+  });
+
+  it('leaves overflowed false on an ordinary, non-truncated window', async () => {
+    mockFetchJsonOnce(cdcResponse([{ Payment: [qboPayment()], startPosition: 1, maxResults: 1, totalCount: 1 }]));
+    const cs = await quickbooksProvider.reconcileChanges(conn(), new Date());
+    expect(cs.overflowed).toBe(false);
   });
 
   it('never leaks a raw QBO fault body on failure', async () => {

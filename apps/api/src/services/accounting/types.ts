@@ -189,6 +189,16 @@ export interface ChangeSet {
   deletedPayments: string[];
   /** QBO Invoice ids the realm reports as status:"Deleted" or voided. */
   deletedInvoices: string[];
+  /**
+   * "This window could NOT be fully enumerated" — belt and braces (final-review
+   * finding A). The provider re-reads a truncated CDC entity through `/query`;
+   * this stays `false` when that backfill drained the entity, and flips `true`
+   * when it could not (a QBO error, or the page cap). A `true` here is DIRTY for
+   * the worker exactly like a failed item: the CDC cursor is held and the window
+   * replays, because advancing past a truncated window loses every change QBO
+   * withheld — permanently, since nothing else ever re-reads it.
+   */
+  overflowed: boolean;
 }
 
 export interface AccountingProvider {

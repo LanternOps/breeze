@@ -249,6 +249,23 @@ export async function processReconcileConnectionJob(
 
     logRunLine(data, summary, Date.now() - startedAt);
 
+    if (changes.overflowed) {
+      // Finding A. The provider could not fully enumerate the window even after
+      // re-reading the truncated entity through /query. Everything it DID
+      // return has been applied above (those are real changes), but the cursor
+      // must stay put: advancing it would skip whatever QuickBooks withheld,
+      // and nothing ever re-reads a window the cursor has moved past.
+      const err = new Error(
+        `accounting reconcile for connection ${fresh.id} could not be fully enumerated `
+        + '(QuickBooks truncated the change window and the /query backfill did not complete)',
+      );
+      console.error('[AccountingReconcileWorker] CDC window truncated', `connectionId=${fresh.id}`, `trigger=${data.trigger}`);
+      captureException(err, undefined, {
+        service: 'accountingReconcileWorker', connectionId: fresh.id, trigger: data.trigger,
+      });
+      throw err;
+    }
+
     if (summary.failed > 0) {
       // Leave the cursor exactly where it was and rethrow so BullMQ retries the
       // whole window. Advancing past a failed item loses it permanently.

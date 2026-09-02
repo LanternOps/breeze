@@ -1,6 +1,7 @@
 import { createHmac, timingSafeEqual } from 'crypto';
 import { toMinorUnits } from '@breeze/shared';
 import { runOutsideDbContext } from '../../db';
+import { captureException } from '../sentry';
 import { QBO_CLIENT_ID, QBO_CLIENT_SECRET, QBO_REDIRECT_URI } from '../../config/env';
 import type {
   AccountingCustomerPayload,
@@ -46,8 +47,21 @@ export const QBO_PREFERENCES_TIMEOUT_MS = 8_000;
 export const QBO_CDC_LOOKBACK_DAYS = 30;
 /** Re-read this far behind the stored cursor so a payment written mid-window is never missed. */
 export const QBO_CDC_CURSOR_SLACK_MS = 5 * 60 * 1000;
-/** Cap on recursive window-halving when a CDC block reports more changes than it returned (decision 3). */
-export const QBO_CDC_MAX_SPLIT_DEPTH = 6;
+/**
+ * Cap on `/query` backfill pages per overflowing entity (final-review finding
+ * A). Plan decision 3 originally halved the CDC window on an overflow, which
+ * CANNOT work: QBO's `/cdc` operation accepts only `changedSince` and has no
+ * upper bound, so the "left half" re-issued a BYTE-IDENTICAL request, the
+ * recursion bottomed out at its depth cap, and the truncated result was
+ * returned as if complete — with the cursor advancing past everything QBO had
+ * withheld. The overflowing entity is now re-read through the `/query`
+ * endpoint, which DOES page (`startposition`/`maxresults`).
+ *
+ * At 1000 rows a page this is 50k changed entities in one 15-minute window for
+ * one realm; past it the run reports `overflowed` and the worker holds the
+ * cursor rather than pretending the window was drained.
+ */
+export const QBO_CDC_QUERY_MAX_PAGES = 50;
 
 function qboApiBase(environment: 'sandbox' | 'production'): string {
   return environment === 'production'
@@ -227,13 +241,21 @@ function isDeletedOrVoidedInvoice(raw: QboRawCdcInvoice): boolean {
   return raw.TotalAmt === 0 && raw.Balance === 0 && typeof raw.PrivateNote === 'string' && raw.PrivateNote.includes('Voided');
 }
 
+/** The two entities Phase D reconciles. */
+type CdcEntity = 'Payment' | 'Invoice';
+
 /** Result of one CDC request over one [changedSince, now] window — private to the provider. */
 interface CdcWindowResult {
   payments: ChangeSetPaymentLine[];
   deletedPayments: string[];
   deletedInvoices: string[];
-  /** True when any entity block reported totalCount > the array it returned. */
-  overflowed: boolean;
+  /**
+   * Entities whose CDC block reported `totalCount` greater than the array it
+   * actually returned — i.e. QBO truncated the change list for that entity and
+   * the window was NOT fully enumerated. Each one is re-read through `/query`
+   * (see `backfillOverflowedEntity`).
+   */
+  overflowedEntities: CdcEntity[];
   /**
    * Parsed `CDCResponse[].time` — QBO's own server clock for this read, which is
    * what gets stored as the next cursor (spec: "the response's server time, not
@@ -250,34 +272,47 @@ function parseCdcResponseTime(time: string | undefined): Date | null {
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
-function earliestResponseTime(times: readonly (Date | null)[]): Date | null {
-  const known = times.filter((t): t is Date => t !== null);
-  if (known.length === 0) return null;
-  return known.reduce((earliest, t) => (t.getTime() < earliest.getTime() ? t : earliest));
-}
-
-function mergeCdcWindowResults(parts: readonly CdcWindowResult[]): CdcWindowResult {
-  const payments = new Map<string, ChangeSetPaymentLine>();
-  const deletedPayments = new Set<string>();
-  const deletedInvoices = new Set<string>();
-  let overflowed = false;
-  for (const part of parts) {
-    for (const p of part.payments) payments.set(`${p.remotePaymentId}/${p.remoteInvoiceId}`, p);
-    for (const id of part.deletedPayments) deletedPayments.add(id);
-    for (const id of part.deletedInvoices) deletedInvoices.add(id);
-    overflowed = overflowed || part.overflowed;
+/**
+ * Folds a completed `/query` re-enumeration of ONE entity back into the CDC
+ * window result, IN PLACE.
+ *
+ * The `/query` rows are AUTHORITATIVE for every entity id they cover — they are
+ * the entity's current state, read after the truncated CDC list. So a payment
+ * the backfill returns has its CDC-derived lines DISCARDED and rebuilt, rather
+ * than merged line-by-line: merging would let an allocation QuickBooks has since
+ * removed survive as a stale CDC line that the applier would then re-apply.
+ *
+ * Entity ids the backfill does NOT cover keep whatever CDC reported — most
+ * importantly the deletion lists, since `/query` never returns deleted rows.
+ */
+function mergeQueryBackfill(
+  window: CdcWindowResult,
+  entity: CdcEntity,
+  rows: QboRawCdcPayment[] | QboRawCdcInvoice[],
+  conn: AccountingConnection,
+): void {
+  if (entity === 'Invoice') {
+    const deleted = new Set(window.deletedInvoices);
+    for (const raw of rows as QboRawCdcInvoice[]) {
+      if (isDeletedOrVoidedInvoice(raw)) deleted.add(raw.Id);
+    }
+    window.deletedInvoices = [...deleted];
+    return;
   }
-  return {
-    payments: [...payments.values()],
-    deletedPayments: [...deletedPayments],
-    deletedInvoices: [...deletedInvoices],
-    overflowed,
-    // Windows are halved because ONE window overflowed; the stored cursor must
-    // never advance past the earliest server time actually observed across the
-    // merged sub-windows, or a later-overflowing sub-window's unread tail would
-    // be skipped on the next run.
-    responseTime: earliestResponseTime(parts.map((p) => p.responseTime)),
-  };
+
+  const raws = rows as QboRawCdcPayment[];
+  const covered = new Set(raws.map((raw) => raw.Id));
+  window.payments = window.payments.filter((p) => !covered.has(p.remotePaymentId));
+  const deleted = new Set(window.deletedPayments);
+  for (const raw of raws) {
+    const lines = mapQboCdcPayment(raw, conn);
+    if (lines.length === 0) { deleted.add(raw.Id); continue; }
+    // A live, invoice-linked payment is not a deletion, whatever the truncated
+    // CDC list said about it.
+    deleted.delete(raw.Id);
+    window.payments.push(...lines);
+  }
+  window.deletedPayments = [...deleted];
 }
 
 export function mapQboAddress(raw: QboRawAddress | undefined): RemoteAddress | undefined {
@@ -705,28 +740,39 @@ export class QuickbooksProvider implements AccountingProvider {
     ));
     const from = new Date(windowStart.getTime() - QBO_CDC_CURSOR_SLACK_MS);
 
-    const result = await this.fetchCdcWindow(conn, from, now);
+    const window = await this.fetchCdcWindow(conn, from);
+
+    // Entities QBO truncated are re-enumerated through /query (finding A). A
+    // backfill that itself fails or hits the page cap leaves `overflowed` set,
+    // which the worker treats as DIRTY: the cursor is held and the window
+    // replays, rather than silently losing everything QBO withheld.
+    let overflowed = false;
+    for (const entity of window.overflowedEntities) {
+      const filled = await this.backfillOverflowedEntity(conn, entity, from);
+      if (!filled) { overflowed = true; continue; }
+      mergeQueryBackfill(window, entity, filled, conn);
+    }
+
     return {
       // Prefer QBO's own server clock (spec: "the response's server time, not
       // ours") so the next cursor never advances past what QBO actually
       // observed; fall back to our local `now` when the response omitted or
       // failed to report `time` (already covered by the 5-min re-read slack).
-      cursor: result.responseTime ?? now,
-      payments: result.payments,
-      deletedPayments: result.deletedPayments,
-      deletedInvoices: result.deletedInvoices,
+      // Deliberately the CDC read's time, not a later /query page's: the CDC
+      // read is the earliest observation in the run.
+      cursor: window.responseTime ?? now,
+      payments: window.payments,
+      deletedPayments: window.deletedPayments,
+      deletedInvoices: window.deletedInvoices,
+      overflowed,
     };
   }
 
-  // One CDC request over [from, to]. QBO's /cdc endpoint has no upper-bound
-  // parameter — it always returns everything since `changedSince` — so `to`
-  // only drives our own recursive window-halving below, never the request URL.
-  private async fetchCdcWindow(
-    conn: AccountingConnection,
-    from: Date,
-    to: Date,
-    depth = 0,
-  ): Promise<CdcWindowResult> {
+  // One CDC request. QBO's /cdc endpoint has NO upper-bound parameter and no
+  // paging cursor of its own — it always returns everything since
+  // `changedSince`, truncated at the realm's own limit — so this issues exactly
+  // one request and reports which entities came back truncated.
+  private async fetchCdcWindow(conn: AccountingConnection, from: Date): Promise<CdcWindowResult> {
     const params = new URLSearchParams({
       entities: 'Payment,Invoice',
       changedSince: from.toISOString(),
@@ -741,7 +787,7 @@ export class QuickbooksProvider implements AccountingProvider {
     const payments: ChangeSetPaymentLine[] = [];
     const deletedPayments: string[] = [];
     const deletedInvoices: string[] = [];
-    let overflowed = false;
+    const overflowedEntities = new Set<CdcEntity>();
 
     for (const block of parsed.CDCResponse?.[0]?.QueryResponse ?? []) {
       const totalCount = block.totalCount;
@@ -752,24 +798,85 @@ export class QuickbooksProvider implements AccountingProvider {
         if (lines.length === 0) { deletedPayments.push(raw.Id); continue; }
         payments.push(...lines);
       }
-      if (totalCount !== undefined && totalCount > (block.Payment?.length ?? 0) && block.Payment) overflowed = true;
+      if (totalCount !== undefined && totalCount > (block.Payment?.length ?? 0) && block.Payment) {
+        overflowedEntities.add('Payment');
+      }
 
       for (const raw of block.Invoice ?? []) {
         if (isDeletedOrVoidedInvoice(raw)) deletedInvoices.push(raw.Id);
       }
-      if (totalCount !== undefined && totalCount > (block.Invoice?.length ?? 0) && block.Invoice) overflowed = true;
+      if (totalCount !== undefined && totalCount > (block.Invoice?.length ?? 0) && block.Invoice) {
+        overflowedEntities.add('Invoice');
+      }
     }
 
-    const current: CdcWindowResult = {
-      payments, deletedPayments, deletedInvoices, overflowed,
+    return {
+      payments, deletedPayments, deletedInvoices,
+      overflowedEntities: [...overflowedEntities],
       responseTime: parseCdcResponseTime(parsed.time),
     };
-    if (!overflowed || depth >= QBO_CDC_MAX_SPLIT_DEPTH) return current;
+  }
 
-    const mid = new Date(from.getTime() + (to.getTime() - from.getTime()) / 2);
-    const firstHalf = await this.fetchCdcWindow(conn, from, mid, depth + 1);
-    const secondHalf = await this.fetchCdcWindow(conn, mid, to, depth + 1);
-    return mergeCdcWindowResults([current, firstHalf, secondHalf]);
+  /**
+   * Re-enumerate ONE truncated entity through the `/query` endpoint, which —
+   * unlike `/cdc` — really does page.
+   *
+   * Returns null when the enumeration could not be completed (a QBO error, or
+   * the page cap): the caller then reports `overflowed` and the worker holds
+   * the cursor. Returns the full row set otherwise.
+   *
+   * `/query` never returns DELETED entities, so the CDC deletion lists are kept
+   * verbatim and only additions/edits are merged (a void still shows up here,
+   * because QBO keeps voided rows queryable with zeroed amounts).
+   */
+  private async backfillOverflowedEntity(
+    conn: AccountingConnection,
+    entity: CdcEntity,
+    from: Date,
+  ): Promise<QboRawCdcPayment[] | QboRawCdcInvoice[] | null> {
+    const rows: Array<QboRawCdcPayment | QboRawCdcInvoice> = [];
+    let startPosition = 1;
+
+    for (let page = 0; page < QBO_CDC_QUERY_MAX_PAGES; page++) {
+      const query = `select * from ${entity} where MetaData.LastUpdatedTime >= '${from.toISOString()}'`
+        + ` orderby MetaData.LastUpdatedTime startposition ${startPosition} maxresults ${QBO_QUERY_PAGE_SIZE}`;
+      let parsed: { QueryResponse?: { Payment?: QboRawCdcPayment[]; Invoice?: QboRawCdcInvoice[] } };
+      try {
+        parsed = await this.qboRequest(
+          conn,
+          `query?query=${encodeURIComponent(query)}&minorversion=${QBO_API_MINOR_VERSION}`,
+          `QuickBooks ${entity} change backfill query`,
+        );
+      } catch (err) {
+        // Sanitized by qboRequest (status only, never a fault body). Reported,
+        // not rethrown: the CDC rows we already have are still worth applying,
+        // and `overflowed` is what stops the cursor from advancing past them.
+        console.error(
+          '[QuickbooksProvider] CDC overflow backfill failed',
+          `entity=${entity}`,
+          err instanceof Error ? err.message : err,
+        );
+        captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+          service: 'quickbooksProvider', op: 'backfillOverflowedEntity', entity,
+        });
+        return null;
+      }
+      const page$ = (entity === 'Payment' ? parsed.QueryResponse?.Payment : parsed.QueryResponse?.Invoice) ?? [];
+      rows.push(...page$);
+      if (page$.length < QBO_QUERY_PAGE_SIZE) return rows as QboRawCdcPayment[] | QboRawCdcInvoice[];
+      startPosition += QBO_QUERY_PAGE_SIZE;
+    }
+
+    console.error(
+      '[QuickbooksProvider] CDC overflow backfill hit the page cap',
+      `entity=${entity}`, `pages=${QBO_CDC_QUERY_MAX_PAGES}`,
+    );
+    captureException(
+      new Error(`QuickBooks ${entity} change backfill exceeded ${QBO_CDC_QUERY_MAX_PAGES} pages`),
+      undefined,
+      { service: 'quickbooksProvider', op: 'backfillOverflowedEntity', entity },
+    );
+    return null;
   }
 
   verifyWebhook(signatureHeader: string, rawBody: string, verifierToken: string): boolean {

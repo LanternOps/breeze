@@ -155,6 +155,7 @@ const EMPTY_CHANGESET: ChangeSet = {
   payments: [],
   deletedPayments: [],
   deletedInvoices: [],
+  overflowed: false,
 };
 
 function line(overrides: Partial<ChangeSetPaymentLine> = {}): ChangeSetPaymentLine {
@@ -474,6 +475,24 @@ describe('processReconcileConnectionJob: cursor', () => {
     await expect(processReconcileConnectionJob(JOB)).rejects.toThrow(/failed item/);
 
     expect(advanceReconcileCursorMock).not.toHaveBeenCalled();
+  });
+
+  it('holds the cursor and rethrows when the CDC window could not be fully enumerated', async () => {
+    // Finding A, belt-and-braces arm: the provider could not drain a truncated
+    // CDC entity even through /query. Advancing the cursor here would skip
+    // every change QuickBooks withheld, permanently.
+    reconcileChangesMock.mockResolvedValue({ ...EMPTY_CHANGESET, overflowed: true, payments: [line()] });
+
+    await expect(processReconcileConnectionJob(JOB)).rejects.toThrow(/could not be fully enumerated/);
+
+    expect(advanceReconcileCursorMock).not.toHaveBeenCalled();
+    // The rows QBO DID return are still real changes and are still applied.
+    expect(applyMock).toHaveBeenCalledTimes(1);
+    expect(captureExceptionMock).toHaveBeenCalledWith(
+      expect.any(Error),
+      undefined,
+      expect.objectContaining({ service: 'accountingReconcileWorker', connectionId: CONN_ID }),
+    );
   });
 
   it('keeps processing the remaining payment lines after one fails', async () => {
