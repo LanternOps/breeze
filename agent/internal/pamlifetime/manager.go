@@ -487,6 +487,17 @@ func (m *lifecycleManager) verifyAccountClean(ctx context.Context, evidence Resu
 		// error, and any error at all once an actuation is on record — where a
 		// deleted account can still leave a live orphaned token behind — stays
 		// a verification failure.
+		//
+		// IsAccountAbsent classifies ONE call's status, and this error comes
+		// out of a primitive that makes several, so the hazard that the
+		// elevaccount sentinel exists to prevent applies here in principle.
+		// It is sound today only because the single call in
+		// VerifyNoPrivilegedToken that can produce these statuses —
+		// LookupSID, on the elevation account's own name — is the first thing
+		// it does; the snapshot, process and token calls after it cannot
+		// return either status. If that primitive ever grows a second name
+		// lookup (another principal, a group), this must move to a tagged
+		// sentinel the way elevaccount's probes did.
 		if !neverActuated || !elevaccount.IsAccountAbsent(err) {
 			return evidence, "privileged_token_verification_failed", false
 		}
