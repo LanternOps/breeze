@@ -99,9 +99,16 @@ export type ImpactRollupJobData =
  * Deterministic — a second enqueue of the same (org, range) is a natural
  * no-op while the first is waiting/delayed/active, which is what makes the
  * manual Refresh safe to spam.
+ *
+ * HYPHEN-delimited, never colon-delimited. BullMQ rejects a custom job id
+ * unless its colon count is exactly two (`Job.addJob` throws
+ * `Custom Id cannot contain :` when `jobId.split(':').length !== 3`), and this
+ * id interpolates four segments. Both `orgId` (a uuid) and the two `YYYY-MM-DD`
+ * days are fixed-length, so hyphens keep the id unambiguous and deterministic
+ * while matching the convention every other job id in `jobs/` already uses.
  */
 export function buildImpactRollupJobId(orgId: string, fromDay: string, toDay: string): string {
-  return `impact:${orgId}:${fromDay}:${toDay}`;
+  return `impact-${orgId}-${fromDay}-${toDay}`;
 }
 
 let impactRollupQueue: Queue<ImpactRollupJobData> | null = null;

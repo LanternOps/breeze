@@ -42,6 +42,21 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/accounting/quickbooks/mappings/sync'],
     ['POST', '/api/v1/accounting/quickbooks/mappings/sync/'],
     ['put', '/api/v1/accounting/quickbooks/mappings'], // method is case-insensitive
+    // Phase C Task 2 — settings refresh calls provider.fetchRealmSettings
+    // (real QuickBooks HTTP) inside the handler.
+    ['POST', '/api/v1/accounting/quickbooks/settings/refresh'],
+    ['POST', '/api/v1/accounting/quickbooks/settings/refresh/'],
+    ['post', '/api/v1/accounting/quickbooks/settings/refresh'], // method is case-insensitive
+    // Phase C Task 5 — manual invoice push and remote-candidate search both
+    // call QuickBooks HTTP inside the handler. push-bulk is deliberately
+    // ABSENT from this list (see the NO_MATCH block below) — it only enqueues
+    // to Redis and never calls QuickBooks itself.
+    ['POST', '/api/v1/accounting/quickbooks/invoices/abc-123/push'],
+    ['POST', '/api/v1/accounting/quickbooks/invoices/abc-123/push/'],
+    ['post', '/api/v1/accounting/quickbooks/invoices/abc-123/push'], // method is case-insensitive
+    ['GET', '/api/v1/accounting/quickbooks/remote-candidates'],
+    ['GET', '/api/v1/accounting/quickbooks/remote-candidates/'],
+    ['get', '/api/v1/accounting/quickbooks/remote-candidates'], // method is case-insensitive
     // #2190 — distributor catalog imports run a best-effort AI enrichment call
     // inside the handler.
     ['POST', '/api/v1/catalog/distributors/td-synnex/import'],
@@ -144,6 +159,20 @@ describe('isSelfManagedDbContextRoute', () => {
     ['GET', '/api/v1/accounting/quickbooks/mappings/sync', 'sync is POST-only'],
     ['PUT', '/api/v1/accounting/quickbooks/mappings/sync', 'sync is POST-only, not PUT'],
     ['POST', '/api/v1/accounting/quickbooks/mappings/sync/extra', 'extra segment must not match'],
+    // Phase C Task 2 — refresh is POST-only, and the sibling PATCH .../settings
+    // route (no /refresh) makes no outbound call — keep the ambient tx.
+    ['GET', '/api/v1/accounting/quickbooks/settings/refresh', 'refresh is POST-only'],
+    ['POST', '/api/v1/accounting/quickbooks/settings/refresh/extra', 'extra segment must not match'],
+    ['PATCH', '/api/v1/accounting/quickbooks/settings', 'plain settings PATCH does only DB work'],
+    // Phase C Task 5 — push-bulk only enqueues to Redis (never calls
+    // QuickBooks), so it must NOT match despite sharing the /invoices/ prefix
+    // with the single-invoice push route above.
+    ['POST', '/api/v1/accounting/quickbooks/invoices/push-bulk', 'bulk enqueue is DB/Redis-only, no outbound QuickBooks call'],
+    ['GET', '/api/v1/accounting/quickbooks/invoices/abc-123/push', 'invoice push is POST-only'],
+    ['POST', '/api/v1/accounting/quickbooks/invoices/abc-123/push/extra', 'extra segment must not match'],
+    ['POST', '/api/v1/accounting/quickbooks/invoices//push', 'empty invoiceId segment must not match'],
+    ['POST', '/api/v1/accounting/quickbooks/remote-candidates', 'remote-candidates is GET-only'],
+    ['GET', '/api/v1/accounting/quickbooks/remote-candidates/extra', 'extra segment must not match'],
     // #2190 — the other distributor routes (status/config/test/search/lookup/pricing)
     // do only DB work — keep the ambient tx.
     ['GET', '/api/v1/catalog/distributors/td-synnex/status', 'status route is DB-only'],

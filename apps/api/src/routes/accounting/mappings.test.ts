@@ -7,6 +7,7 @@ const {
   saveMappingDecisionMock,
   syncMappedEntityMock,
   writeRouteAuditMock,
+  withAuthDbAccessContextMock,
   AccountingMappingError,
   authState,
 } = vi.hoisted(() => {
@@ -15,6 +16,7 @@ const {
   const saveMappingDecisionMock = vi.fn();
   const syncMappedEntityMock = vi.fn();
   const writeRouteAuditMock = vi.fn();
+  const withAuthDbAccessContextMock = vi.fn(async (_auth: unknown, fn: () => unknown) => fn());
   class AccountingMappingError extends Error {
     code: string;
     status: number;
@@ -36,6 +38,7 @@ const {
     saveMappingDecisionMock,
     syncMappedEntityMock,
     writeRouteAuditMock,
+    withAuthDbAccessContextMock,
     AccountingMappingError,
     authState,
   };
@@ -83,6 +86,12 @@ vi.mock('../../middleware/auth', () => ({
     if (!authState.permissions.has(`${resource}:${action}`)) return c.json({ error: 'Permission denied' }, 403);
     return next();
   },
+  // Task 5 review fix: these routes are self-managed (no ambient request
+  // transaction), so each now wraps its service call in
+  // `withAuthDbAccessContext` to give the service's ambient-`db` reads/writes
+  // a real RLS context. Asserted directly (call count + that it actually ran
+  // `fn`) rather than left an untested pass-through mock, per the review note.
+  withAuthDbAccessContext: withAuthDbAccessContextMock,
 }));
 
 vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: writeRouteAuditMock }));
@@ -140,6 +149,25 @@ beforeEach(() => {
   authState.mfa = true;
 });
 
+/**
+ * The mapping routes no longer WRAP the service call in
+ * `withAuthDbAccessContext` — that held the request transaction across every
+ * QuickBooks HTTP call. They hand the service a `runInDbContext` runner it
+ * re-enters per phase. This proves the runner really delegates to
+ * `withAuthDbAccessContext` with this request's auth, rather than being an
+ * identity passthrough that would leave every phase contextless.
+ */
+async function expectAuthContextRunner(runner: unknown): Promise<void> {
+  expect(typeof runner).toBe('function');
+  withAuthDbAccessContextMock.mockClear();
+  await (runner as <T>(fn: () => Promise<T>) => Promise<T>)(async () => 'phase');
+  expect(withAuthDbAccessContextMock).toHaveBeenCalledTimes(1);
+  expect(withAuthDbAccessContextMock).toHaveBeenCalledWith(
+    expect.objectContaining({ partnerId: 'p1' }),
+    expect.any(Function),
+  );
+}
+
 describe('GET /accounting/:provider/mappings', () => {
   it('returns proposals for the authenticated partner', async () => {
     listMappingProposalsMock.mockResolvedValue([
@@ -160,7 +188,13 @@ describe('GET /accounting/:provider/mappings', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.data).toHaveLength(1);
-    expect(listMappingProposalsMock).toHaveBeenCalledWith({ partnerId: 'p1', provider: 'quickbooks', entityType: 'org' });
+    expect(listMappingProposalsMock).toHaveBeenCalledWith(
+      { partnerId: 'p1', provider: 'quickbooks', entityType: 'org' },
+      expect.any(Function),
+    );
+    // Self-managed route (no ambient request tx) — the service opens its own
+    // short contexts through the runner the route hands it.
+    await expectAuthContextRunner(listMappingProposalsMock.mock.calls[0]![1]);
   });
 
   it('rejects a missing/invalid entityType with 400 before calling the service', async () => {
@@ -187,7 +221,10 @@ describe('GET /accounting/:provider/mappings', () => {
     listMappingProposalsMock.mockResolvedValue([]);
     const res = await app().request(`/accounting/quickbooks/mappings?entityType=catalog_item&partnerId=${OTHER_PARTNER_ID}`);
     expect(res.status).toBe(200);
-    expect(listMappingProposalsMock).toHaveBeenCalledWith({ partnerId: OTHER_PARTNER_ID, provider: 'quickbooks', entityType: 'catalog_item' });
+    expect(listMappingProposalsMock).toHaveBeenCalledWith(
+      { partnerId: OTHER_PARTNER_ID, provider: 'quickbooks', entityType: 'catalog_item' },
+      expect.any(Function),
+    );
   });
 
   it('maps AccountingMappingError(not_connected) to 404', async () => {
@@ -228,7 +265,11 @@ describe('GET /accounting/:provider/income-accounts', () => {
     const res = await app().request('/accounting/quickbooks/income-accounts');
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ data: [{ id: '1', displayName: 'Sales', accountType: 'Income' }] });
-    expect(listRemoteIncomeAccountsForPartnerMock).toHaveBeenCalledWith({ partnerId: 'p1', provider: 'quickbooks' });
+    expect(listRemoteIncomeAccountsForPartnerMock).toHaveBeenCalledWith(
+      { partnerId: 'p1', provider: 'quickbooks' },
+      expect.any(Function),
+    );
+    await expectAuthContextRunner(listRemoteIncomeAccountsForPartnerMock.mock.calls[0]![1]);
   });
 
   it('is read-only: no MFA/permission gate blocks a plain partner-scoped caller', async () => {
@@ -284,7 +325,8 @@ describe('PUT /accounting/:provider/mappings', () => {
       breezeEntityId: VALID_ORG_ID,
       decision: 'confirmed',
       remoteEntityId: 'qb-1',
-    });
+    }, expect.any(Function));
+    await expectAuthContextRunner(saveMappingDecisionMock.mock.calls[0]![1]);
     expect(writeRouteAuditMock).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
@@ -381,7 +423,7 @@ describe('PUT /accounting/:provider/mappings', () => {
       body: JSON.stringify({ breezeEntityType: 'org', breezeEntityId: VALID_ORG_ID, decision: 'create_new' }),
     });
     expect(res.status).toBe(200);
-    expect(saveMappingDecisionMock).toHaveBeenCalledWith(expect.objectContaining({ partnerId: OTHER_PARTNER_ID }));
+    expect(saveMappingDecisionMock).toHaveBeenCalledWith(expect.objectContaining({ partnerId: OTHER_PARTNER_ID }), expect.any(Function));
   });
 
   it('rejects confirmed decision missing remoteEntityId with 400 before service invocation', async () => {
@@ -415,7 +457,7 @@ describe('PUT /accounting/:provider/mappings', () => {
       }),
     });
     expect(res.status).toBe(200);
-    expect(saveMappingDecisionMock).toHaveBeenCalledWith(expect.objectContaining({ partnerId: 'p1' }));
+    expect(saveMappingDecisionMock).toHaveBeenCalledWith(expect.objectContaining({ partnerId: 'p1' }), expect.any(Function));
   });
 
   it('maps AccountingMappingError(mapping_conflict) to 409', async () => {
@@ -464,7 +506,8 @@ describe('POST /accounting/:provider/mappings/sync', () => {
     expect(res.status).toBe(200);
     expect(syncMappedEntityMock).toHaveBeenCalledWith({
       partnerId: 'p1', provider: 'quickbooks', breezeEntityType: 'org', breezeEntityId: VALID_ORG_ID,
-    });
+    }, expect.any(Function));
+    await expectAuthContextRunner(syncMappedEntityMock.mock.calls[0]![1]);
     expect(writeRouteAuditMock).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
@@ -558,6 +601,6 @@ describe('POST /accounting/:provider/mappings/sync', () => {
       body: JSON.stringify({ breezeEntityType: 'org', breezeEntityId: VALID_ORG_ID, partnerId: OTHER_PARTNER_ID }),
     });
     expect(res.status).toBe(200);
-    expect(syncMappedEntityMock).toHaveBeenCalledWith(expect.objectContaining({ partnerId: 'p1' }));
+    expect(syncMappedEntityMock).toHaveBeenCalledWith(expect.objectContaining({ partnerId: 'p1' }), expect.any(Function));
   });
 });

@@ -55,13 +55,43 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // (listMappingProposals / listRemoteIncomeAccountsForPartner); PUT
   // .../mappings calls the same provider list to verify a `confirmed`
   // decision before writing (saveMappingDecision); POST .../mappings/sync
-  // calls provider.upsertCustomer/upsertItem (syncMappedEntity). All four
-  // manage their own short DB access contexts around the outbound QuickBooks
-  // call — see accountingMappingService.ts's per-function comments.
+  // calls provider.upsertCustomer/upsertItem (syncMappedEntity).
+  //
+  // Each of those services takes a `runInDbContext` runner from the route
+  // (`(fn) => withAuthDbAccessContext(auth, fn)`) and RE-ENTERS it per DB
+  // phase, asserting at entry that no context is already open
+  // (services/accounting/dbContextGuard.ts). Registering the route here is
+  // what makes that assertion satisfiable: the auth middleware would
+  // otherwise open one request transaction for the whole handler, which
+  // `runOutsideDbContext` cannot close — it only re-routes the ALS lookup.
+  // An earlier revision of this comment claimed these services already kept
+  // short contexts; they did not, and the routes wrapped the whole call in a
+  // single `withAuthDbAccessContext`.
   { method: 'GET', pattern: /^\/api\/v1\/accounting\/[^/]+\/mappings\/?$/ },
   { method: 'GET', pattern: /^\/api\/v1\/accounting\/[^/]+\/income-accounts\/?$/ },
   { method: 'PUT', pattern: /^\/api\/v1\/accounting\/[^/]+\/mappings\/?$/ },
   { method: 'POST', pattern: /^\/api\/v1\/accounting\/[^/]+\/mappings\/sync\/?$/ },
+  // Phase C Task 2 (2026-09-01-quickbooks-phase-c-invoice-push) — on-demand
+  // realm settings refresh. refreshRealmSettings (accountingConnectionService.ts)
+  // calls provider.fetchRealmSettings, a real outbound QuickBooks HTTP call, and
+  // manages its own short DB access contexts around it — the same treatment as
+  // the mapping routes above.
+  { method: 'POST', pattern: /^\/api\/v1\/accounting\/[^/]+\/settings\/refresh\/?$/ },
+  // Phase C Task 5 (2026-09-01-quickbooks-phase-c-invoice-push) — manual
+  // invoice push and remote-candidate search. `pushInvoiceToAccounting`
+  // (accountingInvoicePush.ts) and `resolveConnectionAndToken` +
+  // `listRemoteCustomers`/`listRemoteItems` (accountingMappingService.ts) both
+  // make a real outbound QuickBooks HTTP call, and both take the route's
+  // `runInDbContext` runner (see the mapping-routes comment above). For the
+  // push coordinator the split is not just about the connection hold: its
+  // Phase 2 sync-state writes (the mapping row's error marker / remote ref)
+  // must COMMIT independently, or they roll back with the caller when the
+  // push then throws — and the retry double-books the invoice in QuickBooks.
+  // `push-bulk` is NOT registered here: it only enqueues to Redis
+  // (`enqueueAccountingInvoicePush`) and never calls QuickBooks itself, so it
+  // keeps the normal ambient request transaction.
+  { method: 'POST', pattern: /^\/api\/v1\/accounting\/[^/]+\/invoices\/[^/]+\/push\/?$/ },
+  { method: 'GET', pattern: /^\/api\/v1\/accounting\/[^/]+\/remote-candidates\/?$/ },
   // #2190 — the three distributor catalog import routes run a best-effort AI
   // enrichment (enrichDistributorListing, up to a 12s outbound Anthropic call)
   // before persisting. The import services manage their own short

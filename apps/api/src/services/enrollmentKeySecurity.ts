@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from 'crypto';
+import { getDefaultEnrollmentKeyTtlMinutes as getSharedDefaultEnrollmentKeyTtlMinutes } from './enrollmentKeyTtlDefault';
 
 /**
  * Mints a raw enrollment key value (64-char hex) for the Partner API
@@ -13,13 +14,14 @@ export function generateEnrollmentKey(): string {
 /**
  * Default lifetime applied when a create request supplies neither
  * `ttlMinutes` nor `expiresAt`. Same env knob the human route has always
- * read; resolved per call so tests can vary the env.
+ * read (`ENROLLMENT_KEY_DEFAULT_TTL_MINUTES`), and the same 43200-minute
+ * (30-day) fallback — see enrollmentKeyTtlDefault.ts for why this delegates
+ * instead of hard-coding its own number (#4126 follow-up: this function used
+ * to fall back to 60 on its own, drifting from the human route's 30 days).
+ * Resolved per call so tests can vary the env.
  */
 export function getDefaultEnrollmentKeyTtlMinutes(): number {
-  const raw = process.env.ENROLLMENT_KEY_DEFAULT_TTL_MINUTES;
-  if (!raw) return 60;
-  const parsed = Number.parseInt(raw, 10);
-  return Number.isFinite(parsed) ? parsed : 60;
+  return getSharedDefaultEnrollmentKeyTtlMinutes();
 }
 
 // Primary pepper used for ALL new enrollment-key hashes. Required in production.

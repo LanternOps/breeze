@@ -604,3 +604,137 @@ describe("QuickbooksMappingWorkbench", () => {
     ).toHaveTextContent(/linked/i);
   });
 });
+
+describe("QuickbooksMappingWorkbench remote candidate search", () => {
+  function wire(candidates: unknown[], proposals: unknown[] = [ambiguousOrgProposal]) {
+    fetchWithAuthMock.mockImplementation((url: string) => {
+      const u = String(url);
+      if (u.includes("/accounting/quickbooks/remote-candidates"))
+        return jsonResponse({ data: candidates });
+      if (u.includes("/accounting/quickbooks/mappings"))
+        return jsonResponse({ data: proposals });
+      if (u.includes("/accounting/quickbooks/income-accounts"))
+        return jsonResponse({ data: [] });
+      return jsonResponse({}, 404);
+    });
+  }
+
+  it("debounces the search into ONE GET carrying entityType and the query", async () => {
+    wire([{ id: "qb-77", displayName: "Acme Corporation", email: "ap@acme.test", currencyCode: "USD" }]);
+    render(
+      <QuickbooksMappingWorkbench onUnauthorized={vi.fn()} defaultIncomeAccountRef={null} />,
+    );
+    fireEvent.click(screen.getByTestId("quickbooks-mapping-load"));
+    await screen.findByTestId(`quickbooks-mapping-row-${ORG_ID}`);
+
+    const box = screen.getByTestId(`quickbooks-mapping-search-${ORG_ID}`);
+    fireEvent.change(box, { target: { value: "acm" } });
+    fireEvent.change(box, { target: { value: "acme" } });
+
+    await waitFor(() => {
+      const calls = fetchWithAuthMock.mock.calls.filter((c) =>
+        String(c[0]).includes("/accounting/quickbooks/remote-candidates"));
+      expect(calls).toHaveLength(1);
+      expect(String(calls[0][0])).toContain("entityType=org");
+      expect(String(calls[0][0])).toContain("q=acme");
+    });
+
+    // The fetched candidate becomes a selectable option (no manual ID typing).
+    await waitFor(() =>
+      expect(screen.getByTestId(`quickbooks-mapping-remote-${ORG_ID}`)).toHaveTextContent(
+        "Acme Corporation",
+      ));
+    expect(
+      screen.queryByTestId(`quickbooks-mapping-remote-manual-${ORG_ID}`),
+    ).toBeNull();
+  });
+
+  it("searches items with entityType=catalog_item on the Items tab", async () => {
+    wire([{ id: "qb-item-3", displayName: "Support Plan", sku: "SUP-1" }], [itemProposal]);
+    render(
+      <QuickbooksMappingWorkbench onUnauthorized={vi.fn()} defaultIncomeAccountRef="acct-1" />,
+    );
+    fireEvent.click(screen.getByTestId("quickbooks-mapping-tab-items"));
+    fireEvent.click(screen.getByTestId("quickbooks-mapping-load"));
+    await screen.findByTestId(`quickbooks-mapping-row-${ITEM_ID}`);
+
+    fireEvent.change(screen.getByTestId(`quickbooks-mapping-search-${ITEM_ID}`), {
+      target: { value: "support" },
+    });
+
+    await waitFor(() => {
+      const call = fetchWithAuthMock.mock.calls.find((c) =>
+        String(c[0]).includes("/accounting/quickbooks/remote-candidates"));
+      expect(call).toBeTruthy();
+      expect(String(call![0])).toContain("entityType=catalog_item");
+    });
+  });
+
+  it("confirming a searched candidate PUTs the decision with that remote id", async () => {
+    const confirmed = {
+      breezeEntityType: "org",
+      breezeEntityId: ORG_ID,
+      remoteEntityType: "Customer",
+      remoteEntityId: "qb-77",
+      linkStatus: "confirmed",
+      syncStatus: "pending",
+      lastSyncedAt: null,
+      lastError: null,
+    };
+    fetchWithAuthMock.mockImplementation((url: string, init?: RequestInit) => {
+      const u = String(url);
+      if (u.includes("/accounting/quickbooks/remote-candidates"))
+        return jsonResponse({ data: [{ id: "qb-77", displayName: "Acme Corporation" }] });
+      if (u.includes("/accounting/quickbooks/mappings") && init?.method === "PUT")
+        return jsonResponse({ data: confirmed });
+      if (u.includes("/accounting/quickbooks/mappings"))
+        return jsonResponse({ data: [ambiguousOrgProposal] });
+      return jsonResponse({}, 404);
+    });
+
+    render(
+      <QuickbooksMappingWorkbench onUnauthorized={vi.fn()} defaultIncomeAccountRef={null} />,
+    );
+    fireEvent.click(screen.getByTestId("quickbooks-mapping-load"));
+    await screen.findByTestId(`quickbooks-mapping-row-${ORG_ID}`);
+
+    fireEvent.change(screen.getByTestId(`quickbooks-mapping-search-${ORG_ID}`), {
+      target: { value: "acme" },
+    });
+    const select = screen.getByTestId(`quickbooks-mapping-remote-${ORG_ID}`);
+    await waitFor(() => expect(select).toHaveTextContent("Acme Corporation"));
+    fireEvent.change(select, { target: { value: "qb-77" } });
+
+    fireEvent.click(screen.getByTestId(`quickbooks-mapping-confirm-${ORG_ID}`));
+
+    await waitFor(() => {
+      const call = fetchWithAuthMock.mock.calls.find(
+        (c) => String(c[0]).includes("/accounting/quickbooks/mappings") &&
+          (c[1] as RequestInit | undefined)?.method === "PUT");
+      expect(call).toBeTruthy();
+      const body = JSON.parse((call![1] as RequestInit).body as string);
+      expect(body).toMatchObject({
+        breezeEntityType: "org",
+        breezeEntityId: ORG_ID,
+        decision: "confirmed",
+        remoteEntityId: "qb-77",
+      });
+    });
+  });
+
+  it("renders synced_with_tax_variance with its own label, never as Pending", async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(
+      jsonResponse({
+        data: [{ ...ambiguousOrgProposal, syncStatus: "synced_with_tax_variance" }],
+      }),
+    );
+    render(
+      <QuickbooksMappingWorkbench onUnauthorized={vi.fn()} defaultIncomeAccountRef={null} />,
+    );
+    fireEvent.click(screen.getByTestId("quickbooks-mapping-load"));
+
+    const status = await screen.findByTestId(`quickbooks-mapping-status-${ORG_ID}`);
+    expect(status).toHaveTextContent("Synced with tax difference");
+    expect(status).not.toHaveTextContent("Pending");
+  });
+});

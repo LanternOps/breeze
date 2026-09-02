@@ -1660,6 +1660,21 @@
       "confirm": "Link zurücksetzen",
       "success": "Link zurückgesetzt — alte Links funktionieren nicht mehr",
       "error": "Link konnte nicht zurückgesetzt werden"
+    },
+    "accountingSync": {
+      "title": "QuickBooks-Synchronisierung",
+      "status": {
+        "pending": "Noch nicht übertragen",
+        "synced": "Synchronisiert",
+        "error": "Synchronisierung fehlgeschlagen",
+        "synced_with_tax_variance": "Synchronisiert mit Steuerabweichung"
+      },
+      "taxVarianceHint": "QuickBooks hat eine abweichende Steuersumme berechnet. Vergleichen Sie beide Datensätze, bevor Sie die Periode abschließen.",
+      "docNumber": "QuickBooks-Beleg {{docNumber}}",
+      "lastSynced": "Zuletzt synchronisiert am {{when}}",
+      "push": "An QuickBooks übertragen",
+      "pushed": "Rechnung an QuickBooks übertragen.",
+      "pushFailed": "Die Rechnung konnte nicht an QuickBooks übertragen werden."
     }
   },
   "invoiceDocument": {
@@ -1719,7 +1734,12 @@
       "partial": "{{succeeded}} {{verb}}, {{skipped}} übersprungen{{failedText}}",
       "success": "{{succeeded}} {{verb}}",
       "void": "Stornieren",
-      "voidedVerb": "storniert"
+      "voidedVerb": "storniert",
+      "quickbooks": "An QuickBooks übertragen",
+      "quickbooksQueued": "{{enqueued}} für QuickBooks eingereiht",
+      "quickbooksQueuedPartial": "{{enqueued}} für QuickBooks eingereiht, {{skipped}} übersprungen",
+      "quickbooksQueuedFailed": "{{enqueued}} für QuickBooks eingereiht, {{skipped}} übersprungen, {{failed}} konnten nicht eingereiht werden",
+      "quickbooksFailed": "Die QuickBooks-Übertragung konnte nicht eingereiht werden. Erneut versuchen."
     },
     "bulkDelete": {
       "message": "{{count}} ausgewählte Rechnung(en) löschen? Es werden nur DRAFT-Rechnungen gelöscht; Dies kann nicht rückgängig gemacht werden.",
