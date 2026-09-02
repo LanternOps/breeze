@@ -445,6 +445,17 @@
       "feedbackFailed": "Impossibile salvare il feedback sul triage del ticket.",
       "feedbackSaved": "Feedback sul triage del ticket salvato"
     },
+    "aiDraft": {
+      "kindReply": "Risposta redatta dall’IA",
+      "kindResolutionNote": "Nota di risoluzione redatta dall’IA",
+      "sendAsMe": "Invia come me",
+      "sending": "Invio in corso…",
+      "discard": "Scarta",
+      "sendFailed": "Impossibile inviare la bozza dell’IA.",
+      "sent": "Bozza inviata",
+      "discardFailed": "Impossibile scartare la bozza dell’IA.",
+      "discarded": "Bozza scartata"
+    },
     "resolve": {
       "noteLabel": "Nota di risoluzione (visibile al richiedente)",
       "submit": "Risolvi ticket"

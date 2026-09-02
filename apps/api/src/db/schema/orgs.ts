@@ -1,5 +1,6 @@
 import { pgTable, uuid, varchar, text, timestamp, jsonb, pgEnum, integer, boolean, numeric, char, uniqueIndex } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
+import type { ImpactWeightOverrides } from '@breeze/shared';
 
 export const partnerTypeEnum = pgEnum('partner_type', ['msp', 'enterprise', 'internal']);
 // `offboarding` (#2774) is the terminal-intent drain state: users locked out
@@ -40,6 +41,12 @@ export const partners = pgTable('partners', {
   // accepted. Dedicated column, not settings JSONB — the settings cards replace
   // sub-objects wholesale (#3597), and a column keeps gate === read-back.
   autoEmailInvoiceOnQuoteAccept: boolean('auto_email_invoice_on_quote_accept').notNull().default(true),
+  // P2-6 (#4193). PARTIAL overrides of DEFAULT_IMPACT_WEIGHTS (@breeze/shared);
+  // NULL means "defaults". Dedicated column, not a partners.settings
+  // sub-object — settings cards replace sub-objects wholesale (#3597) and
+  // would silently drop the weights. Never read directly — always through
+  // resolveImpactWeights().
+  aiImpactWeights: jsonb('ai_impact_weights').$type<ImpactWeightOverrides | null>(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
   deletedAt: timestamp('deleted_at'),

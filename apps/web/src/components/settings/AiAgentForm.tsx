@@ -164,6 +164,11 @@ interface Draft {
   /** Wave 5 Part B (#3827). Operator's per-agent opt-in to unattended
    *  policy-decided authorization — see actAssets in save() below. */
   supervisedActionKeys: string[];
+  /** P2-4 (#4191). Org-row-only opt-in that lifts the forced-shadow behavior
+   *  for ticket-triggered runs — same "reads ONLY the org's own override"
+   *  merge semantics as `anomalyEnabled` (never itself surfaced on this
+   *  form). See `AiAgentTriggers.ticketAutonomousWrites`'s docstring. */
+  ticketAutonomousWrites: boolean;
 }
 
 function draftFrom(
@@ -190,6 +195,7 @@ function draftFrom(
     roleIds: agent?.recipients?.roleIds ?? [],
     instructions: agent?.instructions ?? '',
     supervisedActionKeys: agent?.actAssets?.supervisedActionKeys ?? [],
+    ticketAutonomousWrites: agent?.triggers?.ticketAutonomousWrites ?? false,
   };
 }
 
@@ -337,6 +343,7 @@ export default function AiAgentForm({
       triggers: {
         alertSeverities: draft.severities,
         respectMaintenanceWindows: draft.respectMaintenanceWindows,
+        ticketAutonomousWrites: draft.ticketAutonomousWrites,
       },
       toolAllowlist: lines(draft.toolAllowlist),
       protectedResources: {
@@ -735,6 +742,38 @@ export default function AiAgentForm({
             />
             {t('aiAgentsPage.fields.respectMaintenanceWindows')}
           </label>
+
+          {/* P2-4 (#4191) review fix — ticket-triggered runs are admitted
+              with `kind: 'helpdesk'` (ticketHelpdeskSubscriber.ts's
+              `admitTriageRun`: `createAndEnqueueAgentRun({ kind: 'helpdesk',
+              triggerKind: 'ticket', profile: 'triage', ... })`), and
+              runService.ts's `resolveEffectiveAgentSystem(orgId, kind)`
+              resolves the effective policy off THAT `kind` field — never
+              `triage`, which is a different agent kind entirely (the
+              scheduled-sweeps gate a few lines below IS genuinely
+              triage-only; do not copy this gate from that one again).
+              Disabled — never hidden — on a partner-wide row: the merge
+              reads ONLY the org's own override (effectivePolicy.ts), so a
+              partner baseline value can never take effect; hiding it
+              outright would look like the field vanished rather than
+              explain why it cannot be set here. */}
+          {draft.kind === 'helpdesk' && (
+            <div className="space-y-1">
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={draft.ticketAutonomousWrites}
+                  disabled={draft.ownerScope !== 'organization'}
+                  onChange={(e) => patch({ ticketAutonomousWrites: e.target.checked })}
+                  data-testid="ai-agent-ticket-autonomous-writes"
+                />
+                {t('aiAgentsPage.fields.ticketAutonomousWrites')}
+              </label>
+              <p className="pl-6 text-xs text-muted-foreground">
+                {t('aiAgentsPage.fields.ticketAutonomousWritesHint')}
+              </p>
+            </div>
+          )}
         </fieldset>
 
         <fieldset className="space-y-2 rounded-md border p-3 md:col-span-2">

@@ -20,6 +20,7 @@ import { sql } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { extractRowCount } from '../db/rowCount';
 import { getBullMQConnection } from '../services/redis';
+import { recordRetentionRun } from '../services/retentionMetrics';
 import { captureException } from '../services/sentry';
 import { jobSchedule } from './scheduleRegistry';
 
@@ -103,6 +104,7 @@ export function createServiceProcessCheckRetentionWorker(): Worker<RetentionJobD
 
         const durationMs = Date.now() - startedAt;
         console.log(`[ServiceProcessCheckRetention] Pruned ${deleted} check results older than ${retentionDays} days in ${durationMs}ms`);
+        recordRetentionRun('service_process_check_retention', { rowsDeleted: deleted });
         return { retentionDays, deleted, durationMs };
       });
     },

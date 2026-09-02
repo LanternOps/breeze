@@ -6,6 +6,7 @@ import {
   userRequiresSetup,
   parsePendingMfa,
   evaluatePendingMfa,
+  evaluatePendingMfaMethod,
   getClientRateLimitKey,
   isRequestConnectionSecure,
   buildRefreshTokenCookie,
@@ -43,12 +44,19 @@ function makeContext(headers: Record<string, string | undefined>, remoteAddress?
   } as RequestLike;
 }
 
-function makeCsrfContext(headers: Record<string, string>): Context {
+function makeCsrfContext(
+  headers: Record<string, string>,
+  opts: { url?: string } = {},
+): Context {
   const normalized = Object.fromEntries(
     Object.entries(headers).map(([name, value]) => [name.toLowerCase(), value]),
   );
   return {
-    req: { header: (name: string) => normalized[name.toLowerCase()] },
+    req: {
+      header: (name: string) => normalized[name.toLowerCase()],
+      // Default to an internal hop URL so nothing matches a browser origin by accident.
+      url: opts.url ?? 'http://api:3001/api/v1/auth/refresh',
+    },
   } as unknown as Context;
 }
 
@@ -87,7 +95,7 @@ describe('terminal strict cookie CSRF boundary', () => {
   it.each([
     [{ cookie: 'breeze_csrf_token=csrf', 'x-breeze-csrf': 'different', origin: 'https://breeze.example.com', 'sec-fetch-site': 'same-origin' }, 'Invalid CSRF token'],
     [{ cookie: 'breeze_csrf_token=csrf', 'x-breeze-csrf': 'csrf', 'sec-fetch-site': 'same-origin' }, 'Missing request origin'],
-    [{ cookie: 'breeze_csrf_token=csrf', 'x-breeze-csrf': 'csrf', origin: 'https://evil.example', 'sec-fetch-site': 'same-origin' }, 'Invalid request origin'],
+    [{ cookie: 'breeze_csrf_token=csrf', 'x-breeze-csrf': 'csrf', origin: 'https://evil.example', 'sec-fetch-site': 'same-site' }, 'Invalid request origin'],
     [{ cookie: 'breeze_csrf_token=csrf', 'x-breeze-csrf': 'csrf', origin: 'https://breeze.example.com', 'sec-fetch-site': 'cross-site' }, 'Cross-site request blocked'],
   ])('rejects malformed strict terminal request %#', (headers, expected) => {
     expect(validateStrictCookieCsrfRequest(makeCsrfContext(headers))).toBe(expected);
@@ -101,6 +109,46 @@ describe('terminal strict cookie CSRF boundary', () => {
       'sec-fetch-site': 'same-site',
     });
     expect(validateStrictCookieCsrfRequest(c)).toBeNull();
+  });
+
+  // Self-hosters reach the bundled Caddy through an SSH tunnel / LAN name that
+  // is not the configured origin (quickstart: https://localhost:8443 while
+  // CORS_ALLOWED_ORIGINS=https://localhost). Every such request is same-origin —
+  // browser and API share one origin behind Caddy — so it must not be treated
+  // as CSRF. Proof is either the browser's own Sec-Fetch-Site: same-origin or
+  // Origin equalling the request's effective scheme + Host.
+  describe('same-origin requests outside CORS_ALLOWED_ORIGINS', () => {
+    const tokens = { cookie: 'breeze_csrf_token=csrf', 'x-breeze-csrf': 'csrf' };
+
+    it('accepts the tunnel origin when the browser asserts Sec-Fetch-Site: same-origin (strict + non-strict)', () => {
+      const c = makeCsrfContext({ ...tokens, origin: 'https://localhost:8443', 'sec-fetch-site': 'same-origin' });
+      expect(validateStrictCookieCsrfRequest(c)).toBeNull();
+      expect(validateCookieCsrfRequest(c)).toBeNull();
+    });
+
+    it('accepts the tunnel origin when it equals the request scheme + Host and no fetch metadata is present', () => {
+      const c = makeCsrfContext(
+        { ...tokens, origin: 'https://localhost:8443', host: 'localhost:8443' },
+        { url: 'https://localhost:8443/api/v1/auth/refresh' },
+      );
+      expect(validateStrictCookieCsrfRequest(c)).toBeNull();
+      expect(validateCookieCsrfRequest(c)).toBeNull();
+    });
+
+    it('still rejects a foreign origin that matches neither the allowlist nor the request host', () => {
+      const c = makeCsrfContext(
+        { ...tokens, origin: 'https://evil.example', 'sec-fetch-site': 'same-site', host: 'localhost:8443' },
+        { url: 'https://localhost:8443/api/v1/auth/refresh' },
+      );
+      expect(validateStrictCookieCsrfRequest(c)).toBe('Invalid request origin');
+      expect(validateCookieCsrfRequest(c)).toBe('Invalid request origin');
+    });
+
+    it('rejects Origin: null even with Sec-Fetch-Site: same-origin', () => {
+      const c = makeCsrfContext({ ...tokens, origin: 'null', 'sec-fetch-site': 'same-origin', host: 'localhost:8443' });
+      expect(validateStrictCookieCsrfRequest(c)).toBe('Invalid request origin');
+      expect(validateCookieCsrfRequest(c)).toBe('Invalid request origin');
+    });
   });
 });
 
@@ -239,6 +287,7 @@ describe('parsePendingMfa (SR2-06 strict parse)', () => {
     userId: 'user-1',
     mfaMethod: 'totp',
     passkeyAvailable: false,
+    recoveryAvailable: true,
     authEpoch: 3,
     mfaEpoch: 5,
     transitionId: '11111111-1111-4111-8111-111111111111',
@@ -286,9 +335,43 @@ describe('parsePendingMfa (SR2-06 strict parse)', () => {
     expect(parsePendingMfa('{not json')).toBeNull();
   });
 
-  it('defaults a missing per-method allowedMethods flag to true (only explicit false disables)', () => {
-    const parsed = parsePendingMfa(JSON.stringify({ ...fullRecord, allowedMethods: {} }));
-    expect(parsed?.allowedMethods).toEqual({ totp: true, sms: true, passkey: true });
+  it.each([
+    ['totp', { sms: false, passkey: true }],
+    ['sms', { totp: true, passkey: true }],
+    ['passkey', { totp: true, sms: false }],
+  ])('returns null when allowedMethods.%s is missing', (_name, allowedMethods) => {
+    expect(parsePendingMfa(JSON.stringify({ ...fullRecord, allowedMethods }))).toBeNull();
+  });
+
+  it.each([
+    ['totp', 'true'],
+    ['sms', 1],
+    ['passkey', null],
+  ])('returns null when allowedMethods.%s is not boolean', (name, value) => {
+    expect(parsePendingMfa(JSON.stringify({
+      ...fullRecord,
+      allowedMethods: { ...fullRecord.allowedMethods, [name]: value },
+    }))).toBeNull();
+  });
+
+  it.each([
+    ['passkeyAvailable', undefined],
+    ['passkeyAvailable', 'false'],
+    ['recoveryAvailable', undefined],
+    ['recoveryAvailable', 0],
+  ])('returns null when %s is missing or not boolean', (field, value) => {
+    const record = { ...fullRecord, [field]: value };
+    if (value === undefined) delete record[field as keyof typeof record];
+    expect(parsePendingMfa(JSON.stringify(record))).toBeNull();
+  });
+
+  it.each([
+    ['authEpoch', -1],
+    ['mfaEpoch', 1.5],
+    ['browserGeneration', Number.NaN],
+    ['expiresAt', Date.now() - 1],
+  ])('returns null for invalid or expired %s', (field, value) => {
+    expect(parsePendingMfa(JSON.stringify({ ...fullRecord, [field]: value }))).toBeNull();
   });
 });
 
@@ -297,6 +380,7 @@ describe('evaluatePendingMfa (SR2-06)', () => {
     userId: 'user-1',
     mfaMethod: 'totp',
     passkeyAvailable: false,
+    recoveryAvailable: true,
     authEpoch: 3,
     mfaEpoch: 5,
     transitionId: '11111111-1111-4111-8111-111111111111',
@@ -347,6 +431,71 @@ describe('evaluatePendingMfa (SR2-06)', () => {
       ok: false,
       reason: 'expired',
     });
+  });
+});
+
+describe('evaluatePendingMfaMethod (#3853)', () => {
+  const pending: PendingMfaRecord = {
+    userId: 'user-1',
+    mfaMethod: 'totp',
+    passkeyAvailable: false,
+    recoveryAvailable: true,
+    authEpoch: 3,
+    mfaEpoch: 5,
+    transitionId: '11111111-1111-4111-8111-111111111111',
+    browserGeneration: 3,
+    statusExpectation: 'active',
+    allowedMethods: { totp: true, sms: true, passkey: false },
+    expiresAt: Date.now() + 300_000,
+  };
+  const enrolled = {
+    mfaSecret: 'encrypted-secret',
+    mfaMethod: 'sms' as const,
+    phoneNumber: '+15550000001',
+  };
+  const liveAllowed = { totp: true, sms: true, passkey: true };
+
+  it.each(['totp', 'sms', 'recovery'] as const)('authorizes an allowed and enrolled %s switch', (method) => {
+    expect(evaluatePendingMfaMethod(pending, method, enrolled, liveAllowed)).toEqual({ ok: true });
+  });
+
+  it('rejects a method the pending challenge never authorized without making the challenge terminal', () => {
+    expect(evaluatePendingMfaMethod(
+      { ...pending, allowedMethods: { ...pending.allowedMethods, sms: false } },
+      'sms',
+      enrolled,
+      liveAllowed,
+    )).toEqual({ ok: false, reason: 'pending_method_not_allowed', terminal: false });
+  });
+
+  it.each([
+    ['totp', { ...enrolled, mfaSecret: null }],
+    ['sms', { ...enrolled, mfaMethod: 'totp' as const }],
+    ['sms', { ...enrolled, phoneNumber: null }],
+  ] as const)('rejects %s when the live account is not enrolled in that factor', (method, user) => {
+    expect(evaluatePendingMfaMethod(pending, method, user, liveAllowed)).toEqual({
+      ok: false,
+      reason: 'factor_not_enrolled',
+      terminal: false,
+    });
+  });
+
+  it('rejects recovery when the pending record had no recovery code', () => {
+    expect(evaluatePendingMfaMethod(
+      { ...pending, recoveryAvailable: false },
+      'recovery',
+      enrolled,
+      liveAllowed,
+    )).toEqual({ ok: false, reason: 'recovery_not_available', terminal: false });
+  });
+
+  it('marks live policy drift terminal so the caller consumes the pending challenge', () => {
+    expect(evaluatePendingMfaMethod(
+      pending,
+      'totp',
+      enrolled,
+      { ...liveAllowed, totp: false },
+    )).toEqual({ ok: false, reason: 'live_policy_disallowed', terminal: true });
   });
 });
 

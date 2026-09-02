@@ -656,12 +656,18 @@ describe('getLlmEgressProxy', () => {
     const first = await getLlmEgressProxy();
     const second = await getLlmEgressProxy();
     expect(second).toBe(first);
-    const firstPort = first.port();
     await first.close();
 
     const third = await getLlmEgressProxy();
     expect(third).not.toBe(first);
-    expect(third.port()).not.toBe(firstPort);
+    // Deliberately not asserting the new port differs from the old one: the
+    // kernel may legally hand back the just-freed ephemeral port (flaked in CI
+    // when both listeners bound the same port). Prove the new listener is live
+    // instead — any CONNECT outcome means it accepted the connection.
+    expect(third.port()).toBeGreaterThan(0);
+    const out = await proxyConnect({ port: third.port(), token: null, target: `${PROVIDER_HOST}:443` });
+    if (out.kind === 'tunnel') out.socket.destroy();
+    expect(['tunnel', 'status']).toContain(out.kind);
     await third.close();
   });
 });

@@ -25,9 +25,12 @@ import { ensureApproverDevice } from '../services/approverDevice';
 import { AuthNavigator } from './AuthNavigator';
 import { MainNavigator } from './MainNavigator';
 import { ApprovalGate } from './ApprovalGate';
+import { PushTapRouter } from './PushTapRouter';
+import { flushPendingNavigation, navigationRef } from './navigationRef';
 import { OnboardingScreen } from '../screens/onboarding/OnboardingScreen';
 import { Spinner } from '../components/Spinner';
 import { palette } from '../theme';
+import { MfaEnrollmentRequiredScreen } from '../screens/auth/MfaEnrollmentRequiredScreen';
 
 /**
  * Upper bound on how long the native splash may stay up waiting for boot.
@@ -39,7 +42,7 @@ const SPLASH_MAX_HOLD_MS = 4000;
 
 export function RootNavigator() {
   const dispatch = useAppDispatch();
-  const { token, user } = useAppSelector((state) => state.auth);
+  const { token, user, mfaEnrollmentRequired } = useAppSelector((state) => state.auth);
   const [isCheckingAuth, setIsCheckingAuth] = useState(true);
   const [blockedReason, setBlockedReason] = useState<string | null>(null);
   const blockedHandledRef = useRef(false);
@@ -96,7 +99,7 @@ export function RootNavigator() {
   // call started for user A can resolve after A signed out and B signed in,
   // writing A's outcome into B's session.
   useEffect(() => {
-    if (!token || !user) return;
+    if (!token || !user || mfaEnrollmentRequired) return;
     let active = true;
     // #2707 read-and-clear: take the login-minted grant OUT of Redux before the
     // async attempt. The grant is deliberately NOT in this effect's deps — the
@@ -126,7 +129,7 @@ export function RootNavigator() {
     return () => {
       active = false;
     };
-  }, [token, user, dispatch]);
+  }, [token, user, mfaEnrollmentRequired, dispatch]);
 
   useEffect(() => {
     /**
@@ -299,12 +302,27 @@ export function RootNavigator() {
   }
 
   return (
-    <NavigationContainer theme={navigationTheme}>
-      {token ? (
+    <NavigationContainer theme={navigationTheme} ref={navigationRef} onReady={flushPendingNavigation}>
+      {/* Mandatory MFA enrollment outranks everything, ticket taps included:
+          PushTapRouter is not mounted in that branch, so a buffered tap waits
+          rather than navigating past the gate. */}
+      {mfaEnrollmentRequired ? (
+        <MfaEnrollmentRequiredScreen />
+      ) : token ? (
         hasOnboarded ? (
-          <ApprovalGate>
-            <MainNavigator />
-          </ApprovalGate>
+          // PushTapRouter is a SIBLING of ApprovalGate, never a child (#4336).
+          // ApprovalGate renders <ApprovalScreen /> INSTEAD of its children
+          // while an approval is focused, so nesting the router would tear its
+          // notification subscriptions down for the whole approval lifecycle
+          // and silently stop routing ticket taps. It stays inside the
+          // authenticated + onboarded branch so a tap never navigates a
+          // signed-out container.
+          <>
+            <PushTapRouter />
+            <ApprovalGate>
+              <MainNavigator />
+            </ApprovalGate>
+          </>
         ) : (
           <OnboardingScreen onComplete={handleOnboardingComplete} />
         )

@@ -103,6 +103,7 @@ describe('POST /auth/mfa/passkey/verify — passkey metadata persists under RLS 
         userId: user.id,
         mfaMethod: 'passkey',
         passkeyAvailable: true,
+        recoveryAvailable: false,
         authEpoch: 1,
         mfaEpoch: 1,
         transitionId: randomUUID(),

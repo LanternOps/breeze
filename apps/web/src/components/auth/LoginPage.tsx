@@ -11,10 +11,11 @@ import {
   apiSendSmsMfaCode,
   fetchAndApplyPreferences
 } from '../../stores/auth';
-import type { MfaMethod } from '../../stores/auth';
+import type { MfaChallenge, MfaMethod } from '../../stores/auth';
 import { navigateTo } from '../../lib/navigation';
 import { getSafeNext } from '../../lib/authNext';
 import { getLoginContext } from '../../lib/loginContext';
+import { parseMfaChallengeResponse } from '../../lib/mfaChallenge';
 // Initializes the shared i18next singleton. This page's layout has no Sidebar
 // (which is what pulls i18n in elsewhere), so without this every t() call here
 // renders its raw key.
@@ -43,6 +44,17 @@ function getSessionExpiredNotice(t: ReturnType<typeof useTranslation<'auth'>>['t
     }),
     idle: t('login.notices.idle', {
       defaultValue: 'You were signed out due to inactivity.',
+    }),
+    // Not an expiry: POST /auth/refresh answered 403 "Invalid request origin",
+    // i.e. the API was never told about the address this browser is using
+    // (classically a self-hoster on an SSH tunnel — https://localhost:8443
+    // against a CORS_ALLOWED_ORIGINS of https://localhost). Without naming the
+    // origin, the bounce is indistinguishable from a bad password and it
+    // repeats after every successful sign-in.
+    'origin-rejected': t('login.notices.originRejected', {
+      origin: window.location.origin,
+      defaultValue:
+        'This Breeze server is not configured to accept sign-ins from {{origin}}. Open Breeze at the public URL set during setup (PUBLIC_APP_URL), or add {{origin}} to CORS_ALLOWED_ORIGINS in .env and restart the API.',
     }),
   };
   return reason ? sessionExpiredCopy[reason] : undefined;
@@ -156,8 +168,7 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
   // rather than stacked.
   const sessionExpiredNotice = ssoLoginNotice ? undefined : getSessionExpiredNotice(t);
   const [loading, setLoading] = useState(false);
-  const [mfaRequired, setMfaRequired] = useState(false);
-  const [tempToken, setTempToken] = useState<string>();
+  const [mfaChallenge, setMfaChallenge] = useState<MfaChallenge>();
   const [mfaMethod, setMfaMethod] = useState<MfaMethod>('totp');
   const [passkeyAvailable, setPasskeyAvailable] = useState(false);
   const [phoneLast4, setPhoneLast4] = useState<string>();
@@ -247,11 +258,19 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
     }
 
     if (result.mfaRequired) {
-      setMfaRequired(true);
-      setTempToken(result.tempToken);
-      setMfaMethod(result.mfaMethod || 'totp');
-      setPasskeyAvailable(result.passkeyAvailable === true);
-      setPhoneLast4(result.phoneLast4);
+      const challenge = result.challenge ?? parseMfaChallengeResponse({
+        ...result,
+        mfaRequired: true,
+      });
+      if (!challenge) {
+        setError('Invalid MFA challenge response');
+        setLoading(false);
+        return;
+      }
+      setMfaChallenge(challenge);
+      setMfaMethod(challenge.primary);
+      setPasskeyAvailable(challenge.allowedMethods.passkey);
+      setPhoneLast4(challenge.phoneLast4 ?? undefined);
       setSmsSent(false);
       setLoading(false);
       return;
@@ -269,12 +288,12 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
   };
 
   const handleMfaVerify = async (code: string) => {
-    if (!tempToken) return;
+    if (!mfaChallenge || mfaMethod === 'passkey') return;
 
     setLoading(true);
     setError(undefined);
 
-    const result = await apiVerifyMFA(code, tempToken, mfaMethod);
+    const result = await apiVerifyMFA(code, mfaChallenge.tempToken, mfaMethod);
 
     if (!result.success) {
       setError(result.error);
@@ -283,6 +302,7 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
     }
 
     if (result.user && result.tokens) {
+      setMfaChallenge(undefined);
       login(result.user, result.tokens);
       fetchAndApplyPreferences();
       // Setup wizard wins over `next` — user can't do anything useful before setup completes.
@@ -294,12 +314,12 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
   };
 
   const handlePasskeyMfaVerify = async () => {
-    if (!tempToken) return;
+    if (!mfaChallenge) return;
 
     setLoading(true);
     setError(undefined);
 
-    const result = await apiVerifyPasskeyMFA(tempToken);
+    const result = await apiVerifyPasskeyMFA(mfaChallenge.tempToken);
 
     if (!result.success) {
       setError(result.error);
@@ -308,6 +328,7 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
     }
 
     if (result.user && result.tokens) {
+      setMfaChallenge(undefined);
       login(result.user, result.tokens);
       fetchAndApplyPreferences();
       await navigateTo(result.requiresSetup ? '/setup' : safeNext);
@@ -318,20 +339,23 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
   };
 
   const handleSendSmsCode = async () => {
-    if (!tempToken) return;
+    if (!mfaChallenge) return false;
 
     setSmsSending(true);
     setError(undefined);
 
-    const result = await apiSendSmsMfaCode(tempToken);
+    const result = await apiSendSmsMfaCode(mfaChallenge.tempToken);
 
     if (!result.success) {
       setError(result.error);
+      setSmsSending(false);
+      return false;
     } else {
       setSmsSent(true);
     }
 
     setSmsSending(false);
+    return true;
   };
 
   const handlePartnerSso = async () => {
@@ -353,7 +377,7 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
     return <div data-testid="login-cf-access-check" className="u-min-h-px-160" />;
   }
 
-  if (mfaRequired) {
+  if (mfaChallenge) {
     return (
       <div>
         <div className="mb-8">
@@ -366,6 +390,12 @@ export default function LoginPage({ next }: LoginPageProps = {}) {
           errorMessage={error}
           loading={loading}
           mfaMethod={mfaMethod}
+          methods={mfaChallenge.methods}
+          onMethodChange={(method) => {
+            setMfaMethod(method);
+            setError(undefined);
+            if (method !== 'sms') setSmsSent(false);
+          }}
           passkeyAvailable={passkeyAvailable}
           phoneLast4={phoneLast4}
           onSendSmsCode={handleSendSmsCode}

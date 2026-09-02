@@ -35,6 +35,9 @@ interface SeedHandles {
   invoiceIdControl: string;
   invoicePaymentIdErased: string;
   invoicePaymentIdControl: string;
+  webhookIdErased: string;
+  webhookIdControl: string;
+  webhookDeliveryIdErased: string;
 }
 
 async function seed(): Promise<SeedHandles> {
@@ -178,6 +181,37 @@ async function seed(): Promise<SeedHandles> {
       (${accountingConnectionId}, ${partnerId}, 'payment', ${invoicePaymentIdControl}, 'Payment', 'qbo-pay-control', 'confirmed', 'synced')
   `);
 
+  // Regression fixture for #4100: webhooks IS in CORE_ORG_CASCADE_DELETE_ORDER,
+  // but webhook_deliveries has no org_id column (invisible to the cascade
+  // contract test's org_id auto-discovery) and formerly had no ON DELETE
+  // action on its webhook_id FK — so a populated delivery row made the plain
+  // `DELETE FROM webhooks WHERE org_id = ...` below raise 23503 and abort the
+  // whole erasure. One webhook + delivery per org, mirroring the
+  // erased/control shape used throughout this fixture.
+  const [webhookErased] = (await testDb.execute(sql`
+    INSERT INTO webhooks (org_id, name, url, events)
+    VALUES (${orgIdToErase}, 'Erase Webhook', 'https://example.com/erase', ARRAY['ticket.created'])
+    RETURNING id
+  `)) as unknown as Array<{ id: string }>;
+  const [webhookControl] = (await testDb.execute(sql`
+    INSERT INTO webhooks (org_id, name, url, events)
+    VALUES (${orgIdControl}, 'Control Webhook', 'https://example.com/control', ARRAY['ticket.created'])
+    RETURNING id
+  `)) as unknown as Array<{ id: string }>;
+  const webhookIdErased = webhookErased!.id;
+  const webhookIdControl = webhookControl!.id;
+
+  const [deliveryErased] = (await testDb.execute(sql`
+    INSERT INTO webhook_deliveries (webhook_id, event_type, event_id, payload)
+    VALUES (${webhookIdErased}, 'ticket.created', 'evt-erased-1', '{}'::jsonb)
+    RETURNING id
+  `)) as unknown as Array<{ id: string }>;
+  await testDb.execute(sql`
+    INSERT INTO webhook_deliveries (webhook_id, event_type, event_id, payload)
+    VALUES (${webhookIdControl}, 'ticket.created', 'evt-control-1', '{}'::jsonb)
+  `);
+  const webhookDeliveryIdErased = deliveryErased!.id;
+
   return {
     partnerId,
     orgIdToErase,
@@ -191,6 +225,9 @@ async function seed(): Promise<SeedHandles> {
     invoiceIdControl,
     invoicePaymentIdErased,
     invoicePaymentIdControl,
+    webhookIdErased,
+    webhookIdControl,
+    webhookDeliveryIdErased,
   };
 }
 
@@ -335,5 +372,41 @@ describe('cascadeDeleteOrg — end-to-end', () => {
     const stats = await cascadeDeleteOrg(handles.orgIdToErase, handles.userId);
     // Org was already erased; every cascade-list table matches zero rows.
     expect(stats.totalRowsDeleted).toBe(0);
+  });
+
+  // Regression test for #4100.
+  it('erases an org with a populated webhook_deliveries row instead of aborting on FK violation', async () => {
+    const testDb = getTestDb();
+
+    // Before the fix, this threw a 23503 FK violation (webhook_deliveries.
+    // webhook_id had no ON DELETE action) and the erasure aborted entirely —
+    // the assertion that matters here is that this does NOT throw.
+    const stats = await cascadeDeleteOrg(handles.orgIdToErase, handles.userId);
+
+    expect(stats.tablesDeleted.webhooks).toBe(1);
+
+    const erasedWebhookRows = (await testDb.execute(
+      sql`SELECT id FROM webhooks WHERE id = ${handles.webhookIdErased}`,
+    )) as unknown as unknown[];
+    expect(erasedWebhookRows.length).toBe(0);
+
+    // The delivery row has no org_id of its own — it is gone because
+    // ON DELETE CASCADE removed it when its parent webhook was deleted, not
+    // because the cascade loop targeted webhook_deliveries directly.
+    const erasedDeliveryRows = (await testDb.execute(
+      sql`SELECT id FROM webhook_deliveries WHERE id = ${handles.webhookDeliveryIdErased}`,
+    )) as unknown as unknown[];
+    expect(erasedDeliveryRows.length).toBe(0);
+
+    // Control org's webhook + delivery are untouched.
+    const controlWebhookRows = (await testDb.execute(
+      sql`SELECT id FROM webhooks WHERE id = ${handles.webhookIdControl}`,
+    )) as unknown as unknown[];
+    expect(controlWebhookRows.length).toBe(1);
+
+    const controlDeliveryRows = (await testDb.execute(
+      sql`SELECT id FROM webhook_deliveries WHERE webhook_id = ${handles.webhookIdControl}`,
+    )) as unknown as unknown[];
+    expect(controlDeliveryRows.length).toBe(1);
   });
 });

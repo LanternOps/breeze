@@ -9,6 +9,7 @@ import { formatCurrency, formatNumber } from '@/lib/i18n/format';
 import type {
   AiAgentRunDetailDto,
   AiAgentRunSweepFindingDto,
+  AiAgentRunTicketProposalDto,
   AiAgentRunTraceEntryDto,
   AiSweepKind,
   AiSweepSeverity,
@@ -397,6 +398,170 @@ function NarrativeSectionBlock({
   );
 }
 
+function draftKindLabel(t: (key: string) => string, kind: 'reply' | 'resolution_note'): string {
+  return kind === 'reply'
+    ? t('aiAgentsPage.runs.triage.draftKinds.reply')
+    : t('aiAgentsPage.runs.triage.draftKinds.resolutionNote');
+}
+
+/**
+ * P2-4 (#4191, Task 12) — a `triage`-profile run's ticket proposal
+ * (`AiAgentRunTicketProposalDto`). Same safe-projection posture as the sweep
+ * and narrative sections above: every field on this DTO is already
+ * display-safe by construction (`mapTicketProposal`, runTrace.ts — named-field
+ * projection, no raw tool payload).
+ *
+ * `intentIds` only names ids; the STATUS shown for each comes from the run's
+ * own `intents` array (already fetched for the "Linked approvals" section
+ * below) rather than being duplicated onto the proposal DTO — a live
+ * cross-reference by id, falling back to the bare id if the run's intents
+ * projection ever disagrees with it (defensive only; in practice
+ * `intentIds` is populated FROM the same `action_intents` rows).
+ */
+function TicketProposalSection({
+  proposal,
+  intents,
+  t,
+}: {
+  proposal: AiAgentRunTicketProposalDto;
+  intents: AiAgentRunDetailDto['intents'];
+  t: (key: string, opts?: Record<string, unknown>) => string;
+}) {
+  const intentsById = new Map(intents.map((intent) => [intent.id, intent]));
+  const hasFields = proposal.fields && (proposal.fields.categoryId || proposal.fields.priority);
+  const hasDevice = proposal.device && (proposal.device.hostname || proposal.device.serial);
+
+  return (
+    <section data-testid="ai-agent-run-triage" className="rounded-lg border bg-card p-4">
+      <h2 className="text-sm font-semibold">{t('aiAgentsPage.runs.triage.title')}</h2>
+
+      <p className="mt-2 text-sm" data-testid="ai-agent-run-triage-summary">
+        {proposal.summary}
+      </p>
+
+      {hasFields && (
+        <div className="mt-3 space-y-1" data-testid="ai-agent-run-triage-fields">
+          <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            {t('aiAgentsPage.runs.triage.fieldsTitle')}
+          </h3>
+          <ul className="space-y-1 text-sm">
+            {proposal.fields?.categoryId && (
+              <li data-testid="ai-agent-run-triage-field-categoryId">
+                {/* I3 (#4191 final review): this value is a raw category UUID
+                    (no catalog fetch here to resolve it to a name) — the
+                    "ID" label plus monospace styling makes that legible
+                    instead of reading as a broken/garbled category name. */}
+                <span className="font-medium">{t('aiAgentsPage.runs.triage.fields.categoryIdLabel')}</span>
+                {': '}
+                <span className="font-mono text-xs">{proposal.fields.categoryId.value}</span>{' '}
+                <span className="text-xs text-muted-foreground">
+                  {t('aiAgentsPage.runs.triage.confidence', {
+                    value: Math.round(proposal.fields.categoryId.confidence * 100),
+                  })}
+                </span>
+              </li>
+            )}
+            {proposal.fields?.priority && (
+              <li data-testid="ai-agent-run-triage-field-priority">
+                <span className="font-medium">{t('aiAgentsPage.runs.triage.fields.priority')}</span>
+                {': '}
+                <span>{proposal.fields.priority.value}</span>{' '}
+                <span className="text-xs text-muted-foreground">
+                  {t('aiAgentsPage.runs.triage.confidence', {
+                    value: Math.round(proposal.fields.priority.confidence * 100),
+                  })}
+                </span>
+              </li>
+            )}
+          </ul>
+        </div>
+      )}
+
+      {hasDevice && (
+        <p className="mt-2 text-sm text-muted-foreground" data-testid="ai-agent-run-triage-device">
+          {t('aiAgentsPage.runs.triage.device', {
+            value: [proposal.device?.hostname, proposal.device?.serial].filter(Boolean).join(' / '),
+          })}
+        </p>
+      )}
+
+      {proposal.draftReply && (
+        <div className="mt-3" data-testid="ai-agent-run-triage-draft-reply">
+          <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            {t('aiAgentsPage.runs.triage.draftReplyTitle')}
+          </h3>
+          <p className="mt-1 whitespace-pre-wrap text-sm">{proposal.draftReply}</p>
+        </div>
+      )}
+
+      {proposal.draftResolutionNote && (
+        <div className="mt-3" data-testid="ai-agent-run-triage-draft-resolution">
+          <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            {t('aiAgentsPage.runs.triage.draftResolutionTitle')}
+          </h3>
+          <p className="mt-1 whitespace-pre-wrap text-sm">{proposal.draftResolutionNote}</p>
+        </div>
+      )}
+
+      {proposal.notes && proposal.notes.length > 0 && (
+        <div className="mt-3" data-testid="ai-agent-run-triage-notes">
+          <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            {t('aiAgentsPage.runs.triage.notesTitle')}
+          </h3>
+          <ul className="mt-1 list-disc space-y-0.5 pl-5 text-sm text-muted-foreground">
+            {proposal.notes.map((note, index) => (
+              <li key={index}>{note}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {proposal.intentIds && proposal.intentIds.length > 0 && (
+        <div className="mt-3" data-testid="ai-agent-run-triage-intents">
+          <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            {t('aiAgentsPage.runs.triage.intentsTitle')}
+          </h3>
+          <ul className="mt-1 space-y-1 text-sm">
+            {proposal.intentIds.map((intentId) => {
+              const intent = intentsById.get(intentId);
+              return (
+                <li
+                  key={intentId}
+                  className="flex flex-wrap items-center gap-2"
+                  data-testid={`ai-agent-run-triage-intent-${intentId}`}
+                >
+                  <span className="font-medium">{intent?.actionName ?? intentId}</span>
+                  <span className="text-xs text-muted-foreground">
+                    {intent?.status ?? t('aiAgentsPage.runs.triage.intentUnknown')}
+                  </span>
+                  <a href="/approvals" className="text-primary hover:underline">
+                    {t('aiAgentsPage.runs.detail.intents.viewAll')}
+                  </a>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
+
+      {proposal.draftsWritten && proposal.draftsWritten.length > 0 && (
+        <div className="mt-3" data-testid="ai-agent-run-triage-drafts-written">
+          <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            {t('aiAgentsPage.runs.triage.draftsWrittenTitle')}
+          </h3>
+          <ul className="mt-1 space-y-0.5 text-sm text-muted-foreground">
+            {proposal.draftsWritten.map((draft) => (
+              <li key={draft.draftId} data-testid={`ai-agent-run-triage-draft-${draft.draftId}`}>
+                {draftKindLabel(t, draft.kind)}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </section>
+  );
+}
+
 function ExposureBudgetCard({ orgId, kind, t }: { orgId: string; kind: string; t: (key: string, opts?: Record<string, unknown>) => string }) {
   const [budget, setBudget] = useState<ExposureBudgetDto | null>(null);
   const [loading, setLoading] = useState(true);
@@ -613,6 +778,18 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
           <span className={`inline-flex rounded px-1.5 py-0.5 text-xs font-medium ${verdictBadgeClass(run.runVerdict)}`}>
             {verdictLabel(t, run.runVerdict)}
           </span>
+          {/* P2-4 (#4191, Task 12) — the detail DTO carries no `profile`
+              field (unlike the list item), so `ticketProposal !== null` is
+              the discriminator, same as the sweep/narrative sections below
+              gating on their own null-checked field. */}
+          {run.ticketProposal && (
+            <span
+              data-testid="run-detail-profile-triage"
+              className="inline-flex rounded bg-teal-500/10 px-1.5 py-0.5 text-xs font-medium text-teal-700"
+            >
+              {t('aiAgentsPage.runs.profile.triage')}
+            </span>
+          )}
         </div>
 
         <dl className="mt-3 grid grid-cols-2 gap-x-6 gap-y-2 text-sm sm:grid-cols-4">
@@ -694,6 +871,14 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
 
       {run.orgId && run.agentKind && (
         <ExposureBudgetCard orgId={run.orgId} kind={run.agentKind} t={t} />
+      )}
+
+      {/* Phase 2 wave P2-4 (#4191, Task 12) — a `triage`-profile run's
+          ticket proposal. Null for every other profile, so the whole
+          section is absent rather than empty for them (same contract as
+          the sweep/narrative sections below). */}
+      {run.ticketProposal && (
+        <TicketProposalSection proposal={run.ticketProposal} intents={run.intents} t={t} />
       )}
 
       {/* Phase 2 wave P2-2 (#4189) — a `sweep`-profile run's findings. Null

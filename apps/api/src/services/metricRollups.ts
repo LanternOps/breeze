@@ -2,6 +2,7 @@ import { sql, type SQL } from 'drizzle-orm';
 
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { shouldProduceMlOutput } from './mlFeatureFlags';
+import { recordRollupRun } from './retentionMetrics';
 
 export const METRIC_ROLLUP_VERSION = 'metric-rollups-v1';
 
@@ -552,7 +553,26 @@ async function rollupDerivedMetricSource(
   `);
 }
 
+/**
+ * Instrumentation-only wrapper around the rollup pass (#4345). This is the real
+ * "one rollup run" boundary — `jobs/metricRollups.ts` fans one of these out per
+ * org every 5 minutes — so `breeze_rollup_runs_total{status}` and
+ * `breeze_rollup_duration_seconds` are measured here rather than in the worker,
+ * which would also count the unrelated `scan-orgs` fan-out job.
+ */
 export async function rollupDeviceMetricsRange(options: MetricRollupRange): Promise<MetricRollupResult> {
+  const startedAt = Date.now();
+  try {
+    const result = await runRollupDeviceMetricsRange(options);
+    recordRollupRun(result.skipped ? 'skipped' : 'success', (Date.now() - startedAt) / 1000);
+    return result;
+  } catch (error) {
+    recordRollupRun('failure', (Date.now() - startedAt) / 1000);
+    throw error;
+  }
+}
+
+async function runRollupDeviceMetricsRange(options: MetricRollupRange): Promise<MetricRollupResult> {
   const { from, to } = normalizeRange(options.from, options.to);
   // The gate reads `organizations` + `partners`, both RLS-forced — with no
   // context the read returns zero rows and every org would look disabled.

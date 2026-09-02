@@ -22,6 +22,7 @@ import { sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { organizations } from '../db/schema';
 import { getBullMQConnection } from '../services/redis';
+import { recordRetentionRun } from '../services/retentionMetrics';
 import { getOrgEventLogRetentionDays } from '../routes/agents/helpers';
 import { attachWorkerObservability } from './workerObservability';
 import { jobSchedule } from './scheduleRegistry';
@@ -138,6 +139,14 @@ export function createEventLogRetentionWorker(): Worker<RetentionJobData> {
           `(skipped=${orgsSkipped}, failed=${orgsFailed}, backlog=${orgsWithBacklog.length}) in ${durationMs}ms`,
         );
 
+        // A failed OR skipped org's rows certainly remain, so both count as a
+        // backlog — otherwise a run where every policy lookup threw deletes
+        // nothing and still reports a clean drain. A skipped org is not
+        // pruned at all (see the `continue` above), so it is exactly as
+        // un-drained as a failed one.
+        const incomplete = orgsWithBacklog.length > 0 || orgsFailed > 0 || orgsSkipped > 0;
+        recordRetentionRun('event_log_retention', { rowsDeleted: deletedTotal, incomplete });
+
         return {
           durationMs,
           orgsProcessed: orgRows.length,
@@ -145,12 +154,7 @@ export function createEventLogRetentionWorker(): Worker<RetentionJobData> {
           orgsSkipped,
           orgsFailed,
           deleted: deletedTotal,
-          // A failed OR skipped org's rows certainly remain, so both count as a
-          // backlog — otherwise a run where every policy lookup threw deletes
-          // nothing and still reports a clean drain. A skipped org is not
-          // pruned at all (see the `continue` above), so it is exactly as
-          // un-drained as a failed one.
-          hasMore: orgsWithBacklog.length > 0 || orgsFailed > 0 || orgsSkipped > 0,
+          hasMore: incomplete,
         };
       }
     },

@@ -13,6 +13,12 @@ import { resetPartnerCurrencyCache } from '@/lib/partnerCurrencyCache';
 import { resetApproximateTotalCache } from '@/lib/approximateTotalCache';
 import { getSafeNext, loginPathWithNext } from '@/lib/authNext';
 import {
+  parseMfaChallengeResponse,
+  type MfaChallenge,
+  type MfaMethod,
+} from '@/lib/mfaChallenge';
+export type { MfaAllowedMethods, MfaChallenge, MfaMethod } from '@/lib/mfaChallenge';
+import {
   applyAppearancePreferences,
   applyResolvedLocalePreferences,
   type Density,
@@ -86,6 +92,12 @@ export interface Tokens {
   expiresInSeconds: number;
 }
 
+/**
+ * Why the app bounced the user to /login. Rendered as `?reason=<code>` by
+ * handleSessionExpired() and turned into copy by LoginPage.
+ */
+export type SessionExpiredReason = 'session-expired' | 'idle' | 'origin-rejected';
+
 interface AuthState {
   user: User | null;
   tokens: Tokens | null;
@@ -97,7 +109,12 @@ interface AuthState {
   // overlay, login-page notice) can render a reason in the same tick the nav
   // collapses. NOT persisted — see partialize below — a stale reason must
   // never survive a reload.
-  sessionExpiredReason: 'session-expired' | 'idle' | null;
+  //
+  // 'origin-rejected' is NOT an expiry at all: the API refused the request's
+  // Origin (403 "Invalid request origin"), so no session could be minted from
+  // this address in the first place. It shares this field because the eviction
+  // and redirect are identical — only the copy the user needs differs.
+  sessionExpiredReason: SessionExpiredReason | null;
   // Epoch ms until which POST /auth/refresh is rate-limited for this user
   // (issue #3696). Non-null means "the session is FINE, the server is just
   // throttling us" — the opposite of sessionExpiredReason. AuthOverlay renders
@@ -105,6 +122,7 @@ interface AuthState {
   // never paint as an empty-but-loaded page. NOT persisted: a stale throttle
   // must never survive a reload.
   authThrottledUntil: number | null;
+  sessionGeneration: number;
 
   // Actions
   setUser: (user: User | null) => void;
@@ -114,6 +132,7 @@ interface AuthState {
   login: (user: User, tokens: Tokens) => void;
   logout: () => void;
   updateUser: (user: Partial<User>) => void;
+  commitMfaEnrollmentIfCurrent: (generation: number, tokens: Tokens) => boolean;
   setAuthThrottledUntil: (until: number | null) => void;
 }
 
@@ -135,8 +154,15 @@ export const useAuthStore = create<AuthState>()(
       mfaTempToken: null,
       sessionExpiredReason: null,
       authThrottledUntil: null,
+      sessionGeneration: 0,
 
-      setUser: (user) => set({ user, isAuthenticated: !!user }),
+      setUser: (user) => set((state) => ({
+        user,
+        isAuthenticated: !!user,
+        sessionGeneration: state.user?.id === user?.id
+          ? state.sessionGeneration
+          : state.sessionGeneration + 1,
+      })),
 
       setAuthThrottledUntil: (until) => set({ authThrottledUntil: until }),
 
@@ -153,7 +179,7 @@ export const useAuthStore = create<AuthState>()(
         // Re-login clears any stale expiry state and re-arms
         // handleSessionExpired for the new session.
         sessionExpiryInFlight = false;
-        set({
+        set((state) => ({
           user,
           tokens,
           isAuthenticated: true,
@@ -161,8 +187,9 @@ export const useAuthStore = create<AuthState>()(
           mfaPending: false,
           mfaTempToken: null,
           sessionExpiredReason: null,
-          authThrottledUntil: null
-        });
+          authThrottledUntil: null,
+          sessionGeneration: state.sessionGeneration + 1,
+        }));
       },
 
       // Deliberately does NOT clear `sessionExpiredReason`: handleSessionExpired
@@ -177,7 +204,7 @@ export const useAuthStore = create<AuthState>()(
         // currency (lib/useApproximateTotal), so they must not outlive the
         // session either.
         resetApproximateTotalCache();
-        set({
+        set((state) => ({
           user: null,
           tokens: null,
           isAuthenticated: false,
@@ -185,13 +212,31 @@ export const useAuthStore = create<AuthState>()(
           mfaTempToken: null,
           // An evicted session is not "waiting out a throttle" — drop the mask
           // so the expiry overlay/redirect is what the user sees (#3696).
-          authThrottledUntil: null
-        });
+          authThrottledUntil: null,
+          sessionGeneration: state.sessionGeneration + 1,
+        }));
       },
 
       updateUser: (updates) => set((state) => ({
         user: state.user ? { ...state.user, ...updates } : null
-      }))
+      })),
+
+      commitMfaEnrollmentIfCurrent: (generation, tokens) => {
+        let committed = false;
+        set((state) => {
+          if (
+            state.sessionGeneration !== generation
+            || !state.isAuthenticated
+            || !state.user
+          ) return state;
+          committed = true;
+          return {
+            tokens,
+            user: { ...state.user, mfaEnabled: true },
+          };
+        });
+        return committed;
+      },
     }),
     {
       name: 'breeze-auth',
@@ -348,7 +393,10 @@ export function resolveApiOrigin(): string {
 // that only care about restored-or-not.
 type RefreshOutcome =
   | { kind: 'restored'; tokens: Tokens }
-  | { kind: 'auth-failed' }
+  // `originRejected` marks the sub-case where the refresh was refused because
+  // of WHERE the browser is, not because of the cookie it sent — see the 403
+  // branch in refreshFetchOnce. Still an eviction; only the reason differs.
+  | { kind: 'auth-failed'; originRejected?: boolean }
   | { kind: 'transient' }
   // The server rate-limited POST /auth/refresh (429). Like 'transient' this is
   // NOT a verdict on the refresh cookie — but unlike a gateway blip it comes
@@ -386,6 +434,9 @@ async function fetchAuthIssuerWithBindingRetry(
 //                of ms to wait. Split out from `transient` in #3696 because the
 //                two need OPPOSITE handling: a blip should be retried right
 //                away, a throttle must NOT be (see requestTokenRefresh).
+//   - originRejected: a hard failure too, but caused by the browser's Origin
+//                not being allowed (403 "Invalid request origin"), not by the
+//                refresh cookie. Same eviction, different explanation.
 //   - neither:   a hard failure (expired/reused refresh cookie, real 401/403) —
 //                the session is unrecoverable and the caller must evict.
 type RefreshFetchResult = {
@@ -393,7 +444,15 @@ type RefreshFetchResult = {
   raced: boolean;
   transient: boolean;
   throttledForMs?: number;
+  originRejected?: boolean;
 };
+
+// The exact body the API's cookie-CSRF guard answers with when the request's
+// Origin isn't in CORS_ALLOWED_ORIGINS (apps/api/src/routes/auth/helpers.ts,
+// validateCookieCsrfRequest). Matched on the BODY, not the bare 403: other
+// 403s on this endpoint are genuine auth failures and must keep the generic
+// expiry copy.
+const ORIGIN_REJECTED_ERROR = 'Invalid request origin';
 
 // Fallback wait when a 429 arrives without a usable Retry-After/retryAfter —
 // matches the server's default 60s window (apps/api/src/services/rate-limit.ts,
@@ -508,6 +567,22 @@ async function refreshFetchOnce(): Promise<RefreshFetchResult> {
     };
   }
 
+  // A 403 "Invalid request origin" is a CONFIGURATION verdict, not a session
+  // verdict: the request was rejected on its Origin header before the refresh
+  // cookie was evaluated, so retrying (from this address) can only fail again.
+  // It still evicts — no access token can be minted here — but the user needs
+  // to be told about CORS_ALLOWED_ORIGINS / PUBLIC_APP_URL, not about their
+  // password. Self-hosters hit this on every login when they reach the
+  // dashboard at an address the API was never told about (an SSH tunnel's
+  // https://localhost:8443 against a CORS_ALLOWED_ORIGINS of https://localhost).
+  if (refreshResponse.status === 403) {
+    const body = await refreshResponse.json().catch(() => null) as { error?: string } | null;
+    if (body?.error === ORIGIN_REJECTED_ERROR) {
+      return { tokens: null, raced: false, transient: false, originRejected: true };
+    }
+    return { tokens: null, raced: false, transient: false };
+  }
+
   // 5xx (typically a 502/503/504 from the gateway) means the request never
   // reached a verdict on the refresh cookie — retryable, not an auth failure.
   if (refreshResponse.status >= 500) {
@@ -575,11 +650,13 @@ async function requestTokenRefresh(): Promise<RefreshOutcome> {
         // was the same org-switch logout, just rarer. Deliberately reuses the
         // existing bounded ladder rather than adding a second counter — the
         // whole loop stays capped at MAX_TRANSIENT_REFRESH_RETRIES passes.
-        if (!retry.transient && !retry.raced) return { kind: 'auth-failed' };
+        if (!retry.transient && !retry.raced) {
+          return { kind: 'auth-failed', originRejected: retry.originRejected };
+        }
       } else if (!result.transient) {
         // Hard failure (expired/reused refresh cookie, real 401/403): the
         // session is unrecoverable — evict.
-        return { kind: 'auth-failed' };
+        return { kind: 'auth-failed', originRejected: result.originRejected };
       }
 
       // Transient gateway/network failure. Retry with bounded exponential
@@ -743,12 +820,16 @@ export async function waitForPendingRefresh(): Promise<void> {
  * this; callers that only care about restored-or-not keep using the boolean
  * wrapper below.
  */
-export async function restoreAccessTokenFromCookieDetailed(): Promise<'restored' | 'auth-failed' | 'transient' | 'throttled'> {
+export async function restoreAccessTokenFromCookieDetailed(): Promise<'restored' | 'auth-failed' | 'origin-rejected' | 'transient' | 'throttled'> {
   try {
     const outcome = await requestTokenRefreshShared();
     if (outcome.kind === 'restored') {
       useAuthStore.getState().setTokens(outcome.tokens);
     }
+    // Reported separately from 'auth-failed' so callers that evict can pass the
+    // reason on to handleSessionExpired. Callers that only branch on 'restored'
+    // or 'throttled' are unaffected: this is still a dead end.
+    if (outcome.kind === 'auth-failed' && outcome.originRejected) return 'origin-rejected';
     return outcome.kind;
   } catch (err) {
     // Unexpected throw, not a verdict from the server — treat as transient so
@@ -943,6 +1024,17 @@ export class AuthThrottledError extends Error {
 }
 
 /**
+ * Reason code for an eviction caused by a failed refresh. Everything except an
+ * origin rejection is reported as a plain expiry — including 'transient', where
+ * the bounded retries were exhausted without a verdict.
+ */
+function expiryReasonFor(outcome: RefreshOutcome): SessionExpiredReason {
+  return outcome.kind === 'auth-failed' && outcome.originRejected
+    ? 'origin-rejected'
+    : 'session-expired';
+}
+
+/**
  * Single entry point for "the session is unrecoverable, evict and redirect."
  * Both fetchWithAuth expiry paths (dead refresh cookie on bootstrap, and a
  * 401 that survives a refresh-and-retry) funnel through here so idle-timeout
@@ -952,7 +1044,7 @@ export class AuthThrottledError extends Error {
  * The in-flight flag resets on login() so a later re-login (or the next test)
  * can trigger it again.
  */
-export function handleSessionExpired(reason: 'session-expired' | 'idle' = 'session-expired'): void {
+export function handleSessionExpired(reason: SessionExpiredReason = 'session-expired'): void {
   if (sessionExpiryInFlight) return;
   sessionExpiryInFlight = true;
 
@@ -1045,7 +1137,7 @@ export async function fetchWithAuth(rawUrl: string, options: FetchWithAuthOption
       // This evicts on 'transient' too (bounded retries exhausted), unlike the
       // background heartbeat which can wait forever: a foreground fetch needs a
       // verdict now — bounded retries, then evict.
-      handleSessionExpired('session-expired');
+      handleSessionExpired(expiryReasonFor(outcome));
       throw new AuthSessionExpiredError();
     }
   }
@@ -1130,7 +1222,7 @@ export async function fetchWithAuth(rawUrl: string, options: FetchWithAuthOption
             useAuthStore.getState().authThrottledUntil ?? Date.now() + outcome.retryAfterMs
           );
         }
-        handleSessionExpired('session-expired');
+        handleSessionExpired(expiryReasonFor(outcome));
       }
     }
   }
@@ -1174,8 +1266,6 @@ export async function fetchWithAuth(rawUrl: string, options: FetchWithAuthOption
   return response;
 }
 
-export type MfaMethod = 'totp' | 'sms' | 'passkey';
-
 type ApiAuthSuccess = {
   success: boolean;
   user?: User;
@@ -1207,10 +1297,11 @@ export async function getPasskeyCredential(
 export async function apiLogin(email: string, password: string): Promise<{
   success: boolean;
   mfaRequired?: boolean;
+  challenge?: MfaChallenge;
   tempToken?: string;
   mfaMethod?: MfaMethod;
   passkeyAvailable?: boolean;
-  phoneLast4?: string;
+  phoneLast4?: string | null;
   user?: User;
   tokens?: Tokens;
   requiresSetup?: boolean;
@@ -1231,15 +1322,20 @@ export async function apiLogin(email: string, password: string): Promise<{
     }
 
     if (data.mfaRequired) {
+      const challenge = parseMfaChallengeResponse(data);
+      if (!challenge) {
+        return { success: false, error: 'Invalid MFA challenge response' };
+      }
       return {
         success: true,
         mfaRequired: true,
-        tempToken: data.tempToken,
-        mfaMethod: data.mfaMethod || 'totp',
+        challenge,
+        tempToken: challenge.tempToken,
+        mfaMethod: challenge.primary,
         // #2153: whether a passkey can be used as an alternate factor for this
         // login even when the primary method is totp/sms.
-        passkeyAvailable: data.passkeyAvailable === true,
-        phoneLast4: data.phoneLast4
+        passkeyAvailable: challenge.allowedMethods.passkey,
+        phoneLast4: challenge.phoneLast4
       };
     }
 
@@ -1257,7 +1353,11 @@ export async function apiLogin(email: string, password: string): Promise<{
   }
 }
 
-export async function apiVerifyMFA(code: string, tempToken: string, method?: MfaMethod): Promise<ApiAuthSuccess> {
+export async function apiVerifyMFA(
+  code: string,
+  tempToken: string,
+  method?: Exclude<MfaMethod, 'passkey'>,
+): Promise<ApiAuthSuccess> {
   try {
     const response = await fetchAuthIssuerWithBindingRetry(buildApiUrl('/auth/mfa/verify'), {
       method: 'POST',
@@ -1363,7 +1463,7 @@ export async function apiSsoLinkPending(): Promise<
 }
 
 export type SsoLinkConfirmResult =
-  | { state: 'mfa'; tempToken: string; mfaMethod: MfaMethod; passkeyAvailable: boolean; phoneLast4: string | null }
+  | { state: 'mfa'; challenge: MfaChallenge }
   | { state: 'complete'; user: User; tokens: Tokens; requiresSetup: boolean; redirectPath?: string }
   | { state: 'failed'; reason: 'expired' | 'identity_in_use' | 'completion_failed' | 'other'; error?: string };
 
@@ -1385,16 +1485,11 @@ export async function apiSsoLinkConfirm(password: string): Promise<SsoLinkConfir
     }
 
     if (data.mfaRequired) {
-      if (typeof data.tempToken !== 'string' || data.tempToken.length === 0) {
+      const challenge = parseMfaChallengeResponse(data);
+      if (!challenge) {
         return { state: 'failed', reason: 'other', error: 'Confirmation failed' };
       }
-      return {
-        state: 'mfa',
-        tempToken: data.tempToken,
-        mfaMethod: (data.mfaMethod as MfaMethod) || 'totp',
-        passkeyAvailable: data.passkeyAvailable === true,
-        phoneLast4: typeof data.phoneLast4 === 'string' ? data.phoneLast4 : null
-      };
+      return { state: 'mfa', challenge };
     }
 
     if (data.user && data.tokens) {
@@ -1804,6 +1899,97 @@ export async function apiSendSmsMfaCode(tempToken: string): Promise<{
   }
 }
 
+export interface MfaEnrollmentOptions {
+  allowedMethods: { totp: boolean; sms: boolean; passkey: boolean };
+  phoneConfigured: boolean;
+}
+
+export type MfaEnrollmentCompletion =
+  | { success: true; recoveryCodes: string[]; tokens: Tokens }
+  | { success: false; error: string };
+
+function parseMfaEnrollmentCompletion(data: unknown): MfaEnrollmentCompletion | null {
+  if (!data || typeof data !== 'object') return null;
+  const value = data as Record<string, unknown>;
+  const tokens = value.tokens as Record<string, unknown> | undefined;
+  if (
+    !Array.isArray(value.recoveryCodes)
+    || value.recoveryCodes.some((code) => typeof code !== 'string')
+    || !tokens
+    || typeof tokens.accessToken !== 'string'
+    || typeof tokens.expiresInSeconds !== 'number'
+  ) return null;
+  return { success: true, recoveryCodes: value.recoveryCodes, tokens: tokens as unknown as Tokens };
+}
+
+export async function apiGetMfaEnrollmentOptions(): Promise<
+  | { success: true; options: MfaEnrollmentOptions }
+  | { success: false; error: string }
+> {
+  try {
+    const response = await fetchWithAuth('/auth/mfa/enrollment-options');
+    const data = await response.json().catch(() => null);
+    if (!response.ok) return { success: false, error: extractApiError(data, 'Could not load MFA options') };
+    if (
+      !data
+      || typeof data.allowedMethods?.totp !== 'boolean'
+      || typeof data.allowedMethods?.sms !== 'boolean'
+      || typeof data.allowedMethods?.passkey !== 'boolean'
+      || typeof data.phoneConfigured !== 'boolean'
+    ) return { success: false, error: 'Invalid MFA enrollment options' };
+    return { success: true, options: data as MfaEnrollmentOptions };
+  } catch {
+    return { success: false, error: 'Network error' };
+  }
+}
+
+export async function apiEnableTotpMfa(code: string, currentPassword: string): Promise<MfaEnrollmentCompletion> {
+  try {
+    const response = await fetchWithAuth('/auth/mfa/enable', {
+      method: 'POST',
+      // #4413: a rejected TOTP comes back as 401, same status the bearer guard
+      // uses. Without this the generic 401 path replays the code, or evicts the
+      // session outright — on the forced-enrollment page that strands the user
+      // with no way back in. The caller already renders the raw error.
+      skipUnauthorizedRetry: true,
+      body: JSON.stringify({ code, currentPassword }),
+    });
+    const data = await response.json().catch(() => null);
+    if (!response.ok) return { success: false, error: extractApiError(data, 'Failed to enable MFA') };
+    return parseMfaEnrollmentCompletion(data) ?? { success: false, error: 'Invalid MFA enrollment response' };
+  } catch {
+    return { success: false, error: 'Network error' };
+  }
+}
+
+export async function apiEnrollPasskey(currentPassword: string): Promise<MfaEnrollmentCompletion> {
+  try {
+    const optionsResponse = await fetchWithAuth('/auth/passkeys/register/options', {
+      method: 'POST',
+      body: JSON.stringify({ currentPassword }),
+    });
+    const optionsData = await optionsResponse.json().catch(() => null);
+    if (!optionsResponse.ok) {
+      return { success: false, error: extractApiError(optionsData, 'Failed to start passkey enrollment') };
+    }
+    const credential = await createPasskeyCredential(optionsData.options ?? optionsData.optionsJSON);
+    const verifyResponse = await fetchWithAuth('/auth/passkeys/register/verify', {
+      method: 'POST',
+      body: JSON.stringify({ credential }),
+    });
+    const verifyData = await verifyResponse.json().catch(() => null);
+    if (!verifyResponse.ok) {
+      return { success: false, error: extractApiError(verifyData, 'Failed to enroll passkey') };
+    }
+    return parseMfaEnrollmentCompletion(verifyData) ?? { success: false, error: 'Invalid MFA enrollment response' };
+  } catch (error) {
+    if (error instanceof Error && error.name === 'NotAllowedError') {
+      return { success: false, error: 'Passkey enrollment was canceled or timed out' };
+    }
+    return { success: false, error: 'Network error' };
+  }
+}
+
 export async function apiVerifyPhone(phoneNumber: string, currentPassword: string): Promise<{
   success: boolean;
   error?: string;
@@ -1848,11 +2034,7 @@ export async function apiConfirmPhone(phoneNumber: string, code: string, current
   }
 }
 
-export async function apiEnableSmsMfa(currentPassword: string): Promise<{
-  success: boolean;
-  recoveryCodes?: string[];
-  error?: string;
-}> {
+export async function apiEnableSmsMfa(currentPassword: string): Promise<MfaEnrollmentCompletion> {
   try {
     const response = await fetchWithAuth('/auth/mfa/sms/enable', {
       method: 'POST',
@@ -1865,7 +2047,7 @@ export async function apiEnableSmsMfa(currentPassword: string): Promise<{
       return { success: false, error: extractApiError(data, 'Failed to enable SMS MFA') };
     }
 
-    return { success: true, recoveryCodes: data.recoveryCodes };
+    return parseMfaEnrollmentCompletion(data) ?? { success: false, error: 'Invalid MFA enrollment response' };
   } catch {
     return { success: false, error: 'Network error' };
   }

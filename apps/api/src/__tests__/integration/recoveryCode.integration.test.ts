@@ -47,6 +47,7 @@ function pendingRecord(userId: string) {
     userId,
     mfaMethod: 'totp',
     passkeyAvailable: false,
+    recoveryAvailable: true,
     authEpoch: 1,
     mfaEpoch: 1,
     transitionId: randomUUID(),

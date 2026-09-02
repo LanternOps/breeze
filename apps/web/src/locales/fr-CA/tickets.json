@@ -445,6 +445,17 @@
       "feedbackFailed": "Impossible d’enregistrer les retours de triage des billets.",
       "feedbackSaved": "Retour d’information sur le triage des billets enregistré"
     },
+    "aiDraft": {
+      "kindReply": "Réponse rédigée par l’IA",
+      "kindResolutionNote": "Note de résolution rédigée par l’IA",
+      "sendAsMe": "Envoyer en mon nom",
+      "sending": "Envoi en cours…",
+      "discard": "Rejeter",
+      "sendFailed": "Impossible d’envoyer le brouillon de l’IA.",
+      "sent": "Brouillon envoyé",
+      "discardFailed": "Impossible de rejeter le brouillon de l’IA.",
+      "discarded": "Brouillon rejeté"
+    },
     "resolve": {
       "noteLabel": "Note de résolution (visible pour le demandeur)",
       "submit": "Résoudre le billet"

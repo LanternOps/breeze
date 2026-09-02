@@ -221,6 +221,12 @@ vi.mock('../../middleware/agentAuth', () => ({
   DRAIN_CLAIM_TYPE_ALLOWLIST: ['self_uninstall'] as const,
 }));
 
+vi.mock('../../services/agentEditionAutoMigrate', () => ({
+  maybeDispatchEditionMigration: vi.fn().mockResolvedValue(undefined),
+  // Permissive default so the launch-gating tests below control it explicitly.
+  shouldConsiderEditionMigration: vi.fn(() => true),
+}));
+
 vi.mock('../../services/sentry', () => ({
   captureException: vi.fn(),
 }));
@@ -1930,6 +1936,59 @@ describe('POST /agents/:id/heartbeat — artifact-edition offer gate (#4072)', (
     expect(resp.status).toBe(200);
     const body = (await resp.json()) as OfferBody;
     expect(body.watchdogUpgradeTo).toBeUndefined();
+  });
+
+  it('hands the withheld device to the auto edition migration hook (fire-and-forget)', async () => {
+    const { agentAcceptsServedEdition } = await import('./helpers');
+    vi.mocked(agentAcceptsServedEdition).mockImplementation(() => false);
+    const { maybeDispatchEditionMigration } = await import('../../services/agentEditionAutoMigrate');
+    prime([{ version: '0.66.0' }]);
+
+    const resp = await beat();
+    expect(resp.status).toBe(200);
+    expect(vi.mocked(maybeDispatchEditionMigration)).toHaveBeenCalledTimes(1);
+    const args = vi.mocked(maybeDispatchEditionMigration).mock.calls[0]![0];
+    expect(args.device.id).toBe('device-1');
+    expect(args.reportedAgentVersion).toBe('0.105.1');
+    expect(args.normalizedArch).toBe('amd64');
+    expect(typeof args.updateGateAllows).toBe('boolean');
+    expect(typeof args.resolveTarget).toBe('function');
+  });
+
+  it('does NOT launch the dispatch when the cheap precheck says no (flag off / non-candidate)', async () => {
+    const { agentAcceptsServedEdition } = await import('./helpers');
+    vi.mocked(agentAcceptsServedEdition).mockImplementation(() => false);
+    const { maybeDispatchEditionMigration, shouldConsiderEditionMigration } = await import(
+      '../../services/agentEditionAutoMigrate'
+    );
+    // Once-only: clearAllMocks clears calls, not implementations, so a
+    // persistent false here would leak into every later hook test.
+    vi.mocked(shouldConsiderEditionMigration).mockReturnValueOnce(false);
+    prime([{ version: '0.66.0' }]);
+
+    const resp = await beat();
+    expect(resp.status).toBe(200);
+    expect(vi.mocked(maybeDispatchEditionMigration)).not.toHaveBeenCalled();
+  });
+
+  it('does NOT invoke the auto edition migration hook when the build accepts the served edition', async () => {
+    const { maybeDispatchEditionMigration } = await import('../../services/agentEditionAutoMigrate');
+    prime([{ version: '0.66.0' }]);
+
+    const resp = await beat();
+    expect(resp.status).toBe(200);
+    expect(vi.mocked(maybeDispatchEditionMigration)).not.toHaveBeenCalled();
+  });
+
+  it('a rejected auto-migration promise never fails the heartbeat', async () => {
+    const { agentAcceptsServedEdition } = await import('./helpers');
+    vi.mocked(agentAcceptsServedEdition).mockImplementation(() => false);
+    const { maybeDispatchEditionMigration } = await import('../../services/agentEditionAutoMigrate');
+    vi.mocked(maybeDispatchEditionMigration).mockRejectedValueOnce(new Error('dispatch exploded'));
+    prime([{ version: '0.66.0' }]);
+
+    const resp = await beat();
+    expect(resp.status).toBe(200);
   });
 
   it('offers normally when the build accepts the served edition (gate true)', async () => {

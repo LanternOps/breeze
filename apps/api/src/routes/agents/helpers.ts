@@ -2311,6 +2311,13 @@ export async function resolvePinnedUpgradeTarget(args: {
   const { component, platform, architecture, pin, agentId } = args;
 
   if (pin === null) {
+    // LOCKSTEP (#3499): this promoted-row query is duplicated by
+    // services/promotedAgentVersion.ts (which resolves the BYTES the download
+    // route serves) and by GET /agent-versions/latest (which serves the
+    // CHECKSUM). All three must use the same predicates and the same
+    // created_at tiebreak — if the version offered here is not the version
+    // whose bytes get served, agents are told to upgrade to something that
+    // fails checksum verification on arrival.
     const [latest] = await db
       .select({ version: agentVersions.version })
       .from(agentVersions)

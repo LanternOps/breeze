@@ -22,7 +22,9 @@ import { AUTH_TOKEN_KEY, NATIVE_AUTH_BINDING_KEY } from './authSessionKeys';
 export const FALLBACK_API_BASE_URL =
   process.env.EXPO_PUBLIC_API_URL || 'http://localhost:3001';
 const API_PREFIX = '/api/v1/mobile';
-const API_CORE_PREFIX = '/api/v1';
+/** Exported so callers that build a raw URL (authenticated `<Image>` sources,
+ *  file downloads) cannot drift from the prefix `coreRequest` itself uses. */
+export const API_CORE_PREFIX = '/api/v1';
 const CSRF_HEADER_NAME = 'x-breeze-csrf';
 const CSRF_HEADER_VALUE = '1';
 export const MOBILE_DEVICE_ID_HEADER = 'x-breeze-mobile-device-id';
@@ -121,17 +123,33 @@ export interface LoginResponse {
   registerGrant: string | null;
 }
 
-export type MfaMethod = 'totp' | 'sms';
+export type MfaMethod = 'totp' | 'sms' | 'passkey' | 'recovery';
+export type MfaPrimaryMethod = Exclude<MfaMethod, 'recovery'>;
+
+export interface MfaAllowedMethods {
+  totp: boolean;
+  sms: boolean;
+  passkey: boolean;
+}
 
 export interface MfaChallenge {
   tempToken: string;
   mfaMethod: MfaMethod;
+  methods: MfaMethod[];
+  allowedMethods: MfaAllowedMethods;
+  recoveryAvailable: boolean;
   phoneLast4: string | null;
+}
+
+export interface MfaEnrollmentRequired {
+  reason: 'mfa_enrollment_required';
+  enrollUrl: string;
 }
 
 export type LoginResult =
   | { kind: 'success'; token: string; user: User; registerGrant: string | null }
-  | { kind: 'mfaRequired'; challenge: MfaChallenge };
+  | { kind: 'mfaRequired'; challenge: MfaChallenge }
+  | { kind: 'mfaEnrollmentRequired'; handoff: MfaEnrollmentRequired };
 
 export interface ApiError {
   message: string;
@@ -162,10 +180,79 @@ interface LoginPayload {
   mfaRequired?: boolean;
   tempToken?: string;
   mfaMethod?: MfaMethod;
+  allowedMethods?: MfaAllowedMethods;
+  recoveryAvailable?: boolean;
+  passkeyAvailable?: boolean;
   phoneLast4?: string | null;
+  mfaEnrollmentRequired?: boolean;
+  enrollUrl?: string;
   error?: string;
   /** #2707: single-use approver-register grant; mobile-header-gated. */
   authenticatorRegisterGrantId?: string;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isPrimaryMfaMethod(value: unknown): value is MfaPrimaryMethod {
+  return value === 'totp' || value === 'sms' || value === 'passkey';
+}
+
+export function parseMfaChallengePayload(value: unknown): MfaChallenge | null {
+  if (
+    !isRecord(value)
+    || value.mfaRequired !== true
+    || typeof value.tempToken !== 'string'
+    || !value.tempToken
+    || !isPrimaryMfaMethod(value.mfaMethod)
+  ) {
+    return null;
+  }
+  const phoneLast4 = value.phoneLast4 === undefined || value.phoneLast4 === null
+    ? null
+    : typeof value.phoneLast4 === 'string' ? value.phoneLast4 : undefined;
+  if (phoneLast4 === undefined) return null;
+  const hasAllowed = Object.prototype.hasOwnProperty.call(value, 'allowedMethods');
+  const hasRecovery = Object.prototype.hasOwnProperty.call(value, 'recoveryAvailable');
+  if (hasAllowed !== hasRecovery) return null;
+
+  if (!hasAllowed) {
+    if (value.passkeyAvailable !== undefined && typeof value.passkeyAvailable !== 'boolean') return null;
+    const allowedMethods: MfaAllowedMethods = {
+      totp: value.mfaMethod === 'totp',
+      sms: value.mfaMethod === 'sms',
+      passkey: value.mfaMethod === 'passkey' || value.passkeyAvailable === true,
+    };
+    const methods: MfaMethod[] = [
+      ...(allowedMethods.totp ? ['totp' as const] : []),
+      ...(allowedMethods.sms ? ['sms' as const] : []),
+      ...(allowedMethods.passkey ? ['passkey' as const] : []),
+    ];
+    return { tempToken: value.tempToken, mfaMethod: value.mfaMethod, methods, allowedMethods, recoveryAvailable: false, phoneLast4 };
+  }
+
+  const allowed = value.allowedMethods;
+  if (
+    !isRecord(allowed)
+    || typeof allowed.totp !== 'boolean'
+    || typeof allowed.sms !== 'boolean'
+    || typeof allowed.passkey !== 'boolean'
+    || typeof value.recoveryAvailable !== 'boolean'
+    || typeof value.passkeyAvailable !== 'boolean'
+    || value.passkeyAvailable !== allowed.passkey
+  ) return null;
+  const allowedMethods = { totp: allowed.totp, sms: allowed.sms, passkey: allowed.passkey };
+  const methods: MfaMethod[] = [
+    ...(allowedMethods.totp ? ['totp' as const] : []),
+    ...(allowedMethods.sms ? ['sms' as const] : []),
+    ...(allowedMethods.passkey ? ['passkey' as const] : []),
+    ...(value.recoveryAvailable ? ['recovery' as const] : []),
+  ];
+  if (methods.length === 0) return null;
+  const mfaMethod = allowedMethods[value.mfaMethod] ? value.mfaMethod : methods[0];
+  if (!mfaMethod) return null;
+  return { tempToken: value.tempToken, mfaMethod, methods, allowedMethods, recoveryAvailable: value.recoveryAvailable, phoneLast4 };
 }
 
 type MobileAlertRecord = {
@@ -217,6 +304,45 @@ async function getToken(): Promise<string | null> {
   }
 }
 
+/**
+ * `body instanceof FormData`, guarded for runtimes that lack the global.
+ *
+ * React Native ships its own FormData polyfill and Node 22 has undici's, so the
+ * global exists on both paths we run on — but a bare `instanceof` against a
+ * missing global is a ReferenceError that would take down every request, not
+ * just uploads.
+ */
+function isFormData(body: BodyInit | null | undefined): boolean {
+  return typeof FormData !== 'undefined' && body instanceof FormData;
+}
+
+/**
+ * Auth headers for a component that fetches bytes itself rather than through
+ * `coreRequest` — `<Image source={{ uri, headers }}>` over the authenticated
+ * attachment content route, which is never a presigned public URL.
+ *
+ * Deliberately NOT the full request header set: there is no CSRF header (these
+ * are GETs) and no native binding (not an auth-issuer endpoint). Authorization
+ * is omitted entirely when no token is stored, because a literal
+ * `Bearer null` reads as a malformed credential rather than an absent one.
+ */
+export async function getAuthImageHeaders(): Promise<Record<string, string>> {
+  const headers: Record<string, string> = {};
+  const token = await getToken();
+  if (token) headers.Authorization = `Bearer ${token}`;
+  try {
+    const installationId = await getOrCreateInstallationId();
+    if (installationId) headers[MOBILE_DEVICE_ID_HEADER] = installationId;
+  } catch {
+    // Deliberately silent, unlike the request path above, which reports the
+    // same failure to Sentry. This runs once per rendered thumbnail rather
+    // than once per request, so reporting here would send one event per tile
+    // per feed render and bury the signal the request path already carries.
+    // The header is diagnostic, not authority — dropping it costs nothing.
+  }
+  return headers;
+}
+
 // Request helper
 async function requestWithPrefix<T>(
   endpoint: string,
@@ -245,10 +371,24 @@ async function requestWithPrefix<T>(
       ? sessionContext.bearerToken ?? null
       : await getToken();
     const method = (options.method ?? 'GET').toUpperCase();
+    const multipart = isFormData(options.body);
     const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
+      // Multipart is the one body kind we must NOT name: the runtime generates a
+      // per-request boundary and writes `multipart/form-data; boundary=…` itself.
+      // A hand-set value has no boundary, so the server parses zero parts and the
+      // upload fails with a confusing 400 rather than an obvious one.
+      ...(multipart ? {} : { 'Content-Type': 'application/json' }),
       ...(options.headers as Record<string, string> | undefined),
     };
+
+    // Strip it case-insensitively rather than merely declining to add it. A
+    // caller passing its own `Content-Type` alongside FormData is always wrong
+    // (see above) and the spread would let it back in.
+    if (multipart) {
+      for (const name of Object.keys(headers)) {
+        if (name.toLowerCase() === 'content-type') delete headers[name];
+      }
+    }
 
     if (token) headers.Authorization = `Bearer ${token}`;
 
@@ -438,18 +578,26 @@ export async function login(email: string, password: string): Promise<LoginResul
     body: JSON.stringify({ email, password }),
   });
 
-  if (response.mfaRequired) {
-    if (!response.tempToken || !response.mfaMethod) {
-      throw { message: 'Invalid MFA challenge from server' } as ApiError;
-    }
+  // Fail closed even if a server accidentally includes tempting user/token
+  // fields: enrollment-required is a handoff state, never authentication.
+  if (response.mfaEnrollmentRequired === true) {
     return {
-      kind: 'mfaRequired',
-      challenge: {
-        tempToken: response.tempToken,
-        mfaMethod: response.mfaMethod,
-        phoneLast4: response.phoneLast4 ?? null,
+      kind: 'mfaEnrollmentRequired',
+      handoff: {
+        reason: 'mfa_enrollment_required',
+        enrollUrl: typeof response.enrollUrl === 'string' && response.enrollUrl.startsWith('/')
+          ? response.enrollUrl
+          : '/auth/mfa/setup',
       },
     };
+  }
+
+  if (response.mfaRequired) {
+    const challenge = parseMfaChallengePayload(response);
+    if (!challenge) {
+      throw { message: 'Invalid MFA challenge from server' } as ApiError;
+    }
+    return { kind: 'mfaRequired', challenge };
   }
 
   const token = response.tokens?.accessToken || response.accessToken;
@@ -465,10 +613,14 @@ export async function login(email: string, password: string): Promise<LoginResul
   };
 }
 
-export async function verifyMfa(code: string, tempToken: string): Promise<LoginResponse> {
+export async function verifyMfa(
+  code: string,
+  tempToken: string,
+  method: Exclude<MfaMethod, 'passkey'>,
+): Promise<LoginResponse> {
   const response = await requestWithPrefix<LoginPayload>('/auth/mfa/verify', API_CORE_PREFIX, {
     method: 'POST',
-    body: JSON.stringify({ code, tempToken }),
+    body: JSON.stringify({ code, tempToken, method }),
   });
 
   const token = response.tokens?.accessToken || response.accessToken;

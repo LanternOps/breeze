@@ -16,6 +16,13 @@ interface EpochRow {
   passwordResetEpoch: number;
 }
 
+export class EpochAdvancePreconditionError extends Error {
+  constructor() {
+    super('User epoch precondition no longer matches');
+    this.name = 'EpochAdvancePreconditionError';
+  }
+}
+
 /**
  * Advance the requested epoch counters for a user INSIDE the caller's
  * transaction and return the post-mutation values. Because the increment and
@@ -48,6 +55,7 @@ export async function advanceUserEpochs(
   tx: Tx,
   userId: string,
   fields: { auth?: boolean; mfa?: boolean; email?: boolean; passwordReset?: boolean },
+  expected?: { authEpoch?: number; mfaEpoch?: number; mfaEnabled?: boolean; status?: 'active' },
 ): Promise<EpochRow> {
   const set: Record<string, unknown> = { updatedAt: new Date() };
   if (fields.auth) set.authEpoch = sql`${users.authEpoch} + 1`;
@@ -55,16 +63,23 @@ export async function advanceUserEpochs(
   if (fields.email) set.emailEpoch = sql`${users.emailEpoch} + 1`;
   if (fields.passwordReset) set.passwordResetEpoch = sql`${users.passwordResetEpoch} + 1`;
 
+  const conditions = [eq(users.id, userId)];
+  if (expected?.authEpoch !== undefined) conditions.push(eq(users.authEpoch, expected.authEpoch));
+  if (expected?.mfaEpoch !== undefined) conditions.push(eq(users.mfaEpoch, expected.mfaEpoch));
+  if (expected?.mfaEnabled !== undefined) conditions.push(eq(users.mfaEnabled, expected.mfaEnabled));
+  if (expected?.status !== undefined) conditions.push(eq(users.status, expected.status));
+
   const [row] = await tx
     .update(users)
     .set(set)
-    .where(eq(users.id, userId))
+    .where(and(...conditions))
     .returning({
       authEpoch: users.authEpoch,
       mfaEpoch: users.mfaEpoch,
       emailEpoch: users.emailEpoch,
       passwordResetEpoch: users.passwordResetEpoch,
     });
+  if (!row && expected) throw new EpochAdvancePreconditionError();
   if (!row) throw new Error(`advanceUserEpochs: user ${userId} not found`);
   return row;
 }

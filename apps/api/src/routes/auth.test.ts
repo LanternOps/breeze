@@ -115,6 +115,21 @@ vi.mock('../services', () => {
   RefreshTokenCurrentnessError,
   RecoveryCodeInvalidError,
   issueUserSession: vi.fn(async (identity: any) => issueLegacy(identity)),
+  completeInitialMfaEnrollment: vi.fn(async (input: any) => ({
+    value: undefined,
+    recoveryCodes: [...input.recoveryCodes],
+    issued: {
+      accessToken: 'replacement-access-token',
+      refreshToken: 'replacement-refresh-token',
+      refreshJti: 'replacement-jti',
+      expiresInSeconds: 900,
+      familyId: 'replacement-family',
+      transitionId: 'transition-1',
+      generation: 1,
+    },
+    mfaEpoch: 2,
+    cleanup: { redisOk: true, permissionCacheOk: true, oauthOk: true, remoteSessionsTerminated: 0 },
+  })),
   issueUserSessionLegacyDuringTransition: issueLegacy,
   bindIssuedUserSession: vi.fn(async () => undefined),
   authBrowserTransitionsEnforced: vi.fn(() => process.env.AUTH_BROWSER_TRANSITIONS_ENFORCED === 'true'),
@@ -342,6 +357,7 @@ import {
   issueUserSessionLegacyDuringTransition,
   recordAuthTransitionLegacyIssuer,
   AuthIssuanceCapabilityError,
+  completeInitialMfaEnrollment,
 } from '../services';
 import { assertActiveTenantContext, TenantInactiveError } from '../services/tenantStatus';
 import { performOrdinaryTerminalLogout } from '../services/terminalLogout';
@@ -355,6 +371,7 @@ import { runPostCommitCleanup } from '../services/authLifecycle';
 import { createAuditLogAsync } from '../services/auditService';
 import { hashRecoveryCode, encryptMfaSecret } from './auth/helpers';
 import { finalizeSsoPendingLink } from './auth/ssoLinkCompletion';
+import * as mfaPolicyModule from '../services/mfaPolicy';
 import { mintStepUpGrant, validateStepUpGrant, consumeStepUpGrant } from '../services/mfaStepUpGrant';
 import { verifyStepUpPasskeyAssertion } from './auth/passkeys';
 import { getTwilioService } from '../services/twilio';
@@ -1333,6 +1350,7 @@ describe('auth routes', () => {
         userId: 'user-1',
         mfaMethod: 'totp',
         passkeyAvailable: false,
+        recoveryAvailable: true,
         authEpoch: 1,
         mfaEpoch: 1,
         statusExpectation: 'active',
@@ -1372,6 +1390,10 @@ describe('auth routes', () => {
       vi.mocked(getRedis).mockReturnValue({ get: getMock, del: delMock, setex: vi.fn() } as any);
       vi.mocked(getUserEpochs).mockResolvedValue({ authEpoch: 1, mfaEpoch: 1 });
       vi.mocked(consumeMFAToken).mockResolvedValue(true);
+      vi.mocked(getTwilioService).mockReturnValue({
+        sendVerificationCode: vi.fn().mockResolvedValue({ success: true }),
+        checkVerificationCode: vi.fn().mockResolvedValue({ valid: true, serviceError: false }),
+      } as any);
     });
 
     async function postMfaVerify(
@@ -1415,6 +1437,70 @@ describe('auth routes', () => {
         expect.anything(),
       );
       expect(delMock).toHaveBeenCalledWith('mfa:pending:temp-token');
+    });
+
+    it('honors an explicitly authorized SMS switch instead of the pending primary method', async () => {
+      const checkVerificationCode = vi.fn().mockResolvedValue({ valid: true, serviceError: false });
+      vi.mocked(getTwilioService).mockReturnValue({
+        sendVerificationCode: vi.fn(),
+        checkVerificationCode,
+      } as any);
+      liveUserRow = {
+        ...baseLiveUserRow,
+        mfaMethod: 'sms',
+        phoneNumber: '+15550000001',
+      };
+      getMock.mockResolvedValue(pendingRecord({ mfaMethod: 'totp' }));
+
+      const res = await postMfaVerify({
+        tempToken: 'temp-token',
+        code: '654321',
+        method: 'sms',
+      });
+
+      expect(res.status).toBe(200);
+      expect(checkVerificationCode).toHaveBeenCalledWith('+15550000001', '654321');
+      expect(consumeMFAToken).not.toHaveBeenCalled();
+    });
+
+    it('honors an explicitly authorized TOTP switch from an SMS primary', async () => {
+      const checkVerificationCode = vi.fn();
+      vi.mocked(getTwilioService).mockReturnValue({
+        sendVerificationCode: vi.fn(),
+        checkVerificationCode,
+      } as any);
+      liveUserRow = {
+        ...baseLiveUserRow,
+        mfaMethod: 'sms',
+        phoneNumber: '+15550000001',
+      };
+      getMock.mockResolvedValue(pendingRecord({ mfaMethod: 'sms' }));
+
+      const res = await postMfaVerify({
+        tempToken: 'temp-token',
+        code: '123456',
+        method: 'totp',
+      });
+
+      expect(res.status).toBe(200);
+      expect(consumeMFAToken).toHaveBeenCalledWith('PLAINSECRET123', '123456', 'user-1');
+      expect(checkVerificationCode).not.toHaveBeenCalled();
+    });
+
+    it('rejects recovery when the pending challenge did not authorize it without consuming the challenge or a code', async () => {
+      getMock.mockResolvedValue(pendingRecord({ recoveryAvailable: false }));
+
+      const res = await postMfaVerify({
+        tempToken: 'temp-token',
+        code: 'ABCD-2345',
+        method: 'recovery',
+      });
+
+      expect(res.status).toBe(401);
+      expect(await res.json()).toEqual({ error: 'Invalid MFA code' });
+      expect(consumeRecoveryCode).not.toHaveBeenCalled();
+      expect(consumeMFAToken).not.toHaveBeenCalled();
+      expect(delMock).not.toHaveBeenCalled();
     });
 
     // #4067: pending records carrying ssoLinkTokenHash are the MFA
@@ -1597,6 +1683,7 @@ describe('auth routes', () => {
         userId: 'user-1',
         mfaMethod: 'totp',
         passkeyAvailable: false,
+        recoveryAvailable: true,
         authEpoch: 1,
         mfaEpoch: 1,
         statusExpectation: 'active',
@@ -1711,6 +1798,32 @@ describe('auth routes', () => {
   // the code with the CONSUMING verifier so the accepted time step is
   // recorded and cannot be replayed at login within its validity window.
   describe('POST /auth/mfa/verify — setup confirmation consumes the TOTP step (SR2-24)', () => {
+    it('rejects policy drift before consuming a code or enrollment authority', async () => {
+      const policySpy = vi.spyOn(mfaPolicyModule, 'getEffectiveMfaPolicy').mockResolvedValueOnce({
+        required: true,
+        allowedMethods: { totp: false, sms: false, passkey: true },
+        source: { roleForceMfa: true, settingsRequireMfa: true, killSwitchOff: false },
+      });
+      const mockRedis = {
+        get: vi.fn().mockResolvedValue(JSON.stringify({ secret: 'SETUPSECRET123' })),
+        del: vi.fn(),
+        setex: vi.fn(),
+      };
+      vi.mocked(getRedis).mockReturnValue(mockRedis as any);
+
+      const res = await app.request('/auth/mfa/verify', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: '123456' }),
+      });
+      policySpy.mockRestore();
+
+      expect(res.status).toBe(403);
+      expect(consumeMFAToken).not.toHaveBeenCalled();
+      expect(consumeStepUpGrant).not.toHaveBeenCalled();
+      expect(completeInitialMfaEnrollment).not.toHaveBeenCalled();
+    });
+
     it('confirms setup via the consuming consumeMFAToken verifier', async () => {
       const mockRedis = {
         get: vi.fn().mockResolvedValue(JSON.stringify({
@@ -2007,14 +2120,14 @@ describe('auth routes', () => {
       expect(first.status).toBe(200);
       expect(consumeStepUpGrant).toHaveBeenCalledTimes(1);
       expect(grants.has('grant-1')).toBe(false);
-      expect(db.transaction).toHaveBeenCalledTimes(1);
+      expect(completeInitialMfaEnrollment).toHaveBeenCalledTimes(1);
 
       const replay = await confirmSetup({ code: '123456', stepUpGrantId: 'grant-1' });
       expect(replay.status).toBe(403);
       expect(await replay.json()).toMatchObject({ error: 'existing_factor_step_up_required' });
       // No second factor write, and the grant was never consumable twice.
       expect(consumeStepUpGrant).toHaveBeenCalledTimes(1);
-      expect(db.transaction).toHaveBeenCalledTimes(1);
+      expect(completeInitialMfaEnrollment).toHaveBeenCalledTimes(1);
     });
 
     it('an INVALID grant still 403s BEFORE the consuming TOTP verifier runs (no burned time-step)', async () => {
@@ -2823,6 +2936,26 @@ describe('auth routes', () => {
       expect(hashPassword).not.toHaveBeenCalled();
     });
 
+    it('GET /auth/mfa/enrollment-options returns live policy choices and phone readiness', async () => {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ phoneNumber: '+15551234567', phoneVerified: true }])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/auth/mfa/enrollment-options', {
+        headers: { Authorization: 'Bearer valid-token' },
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        allowedMethods: { totp: true, sms: true, passkey: true },
+        phoneConfigured: true,
+      });
+    });
+
     it('POST /auth/mfa/enable should enable MFA and return recovery codes', async () => {
       const setupRecoveryCodes = ['CODE-0001', 'CODE-0002'];
       const mockRedis = {
@@ -2887,6 +3020,39 @@ describe('auth routes', () => {
       // call that double-charges the per-user step-up rate limit and runs
       // argon2 twice for every successful enable.
       expect(verifyPassword).toHaveBeenCalledTimes(1);
+    });
+
+    it('POST /auth/mfa/enable rejects policy drift without consuming enrollment authority', async () => {
+      const policySpy = vi.spyOn(mfaPolicyModule, 'getEffectiveMfaPolicy').mockResolvedValueOnce({
+        required: true,
+        allowedMethods: { totp: false, sms: false, passkey: true },
+        source: { roleForceMfa: true, settingsRequireMfa: true, killSwitchOff: false },
+      });
+      vi.mocked(verifyPassword).mockResolvedValue(true);
+      vi.mocked(getRedis).mockReturnValue({
+        get: vi.fn().mockResolvedValue(JSON.stringify({ secret: 'SETUPSECRET123' })),
+        del: vi.fn(),
+        setex: vi.fn(),
+      } as any);
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ passwordHash: '$argon2id$hash', mfaEnabled: false, passkeyCount: 0 }]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request('/auth/mfa/enable', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: '123456', currentPassword: 'OldStrongPass123' }),
+      });
+      policySpy.mockRestore();
+
+      expect(res.status).toBe(403);
+      expect(consumeMFAToken).not.toHaveBeenCalled();
+      expect(consumeStepUpGrant).not.toHaveBeenCalled();
+      expect(completeInitialMfaEnrollment).not.toHaveBeenCalled();
     });
 
     // SR2-20: adding a factor to an ALREADY-PROTECTED account additionally
@@ -3068,14 +3234,14 @@ describe('auth routes', () => {
       expect(first.status).toBe(200);
       expect(consumeStepUpGrant).toHaveBeenCalledTimes(1);
       expect(grants.has('grant-1')).toBe(false);
-      expect(db.transaction).toHaveBeenCalledTimes(1);
+      expect(completeInitialMfaEnrollment).toHaveBeenCalledTimes(1);
 
       const replay = await postMfaEnable({ code: '123456', stepUpGrantId: 'grant-1' });
       expect(replay.status).toBe(403);
       expect(await replay.json()).toMatchObject({ error: 'existing_factor_step_up_required' });
       expect(consumeStepUpGrant).toHaveBeenCalledTimes(1);
       // No second factor write from the replayed grant.
-      expect(db.transaction).toHaveBeenCalledTimes(1);
+      expect(completeInitialMfaEnrollment).toHaveBeenCalledTimes(1);
     });
 
     it('POST /auth/mfa/enable — an INVALID grant still 403s BEFORE the consuming TOTP verifier runs (no burned time-step)', async () => {
@@ -3184,6 +3350,27 @@ describe('auth routes', () => {
       expect(res.status).toBe(401);
     });
 
+    it('POST /auth/mfa/setup rejects a direct TOTP enrollment when policy disallows it', async () => {
+      const policySpy = vi.spyOn(mfaPolicyModule, 'getEffectiveMfaPolicy').mockResolvedValueOnce({
+        required: true,
+        allowedMethods: { totp: false, sms: false, passkey: true },
+        source: { roleForceMfa: true, settingsRequireMfa: true, killSwitchOff: false },
+      });
+      const redis = { get: vi.fn(), setex: vi.fn(), del: vi.fn() };
+      vi.mocked(getRedis).mockReturnValue(redis as any);
+
+      const res = await app.request('/auth/mfa/setup', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer valid-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ currentPassword: 'OldStrongPass123' }),
+      });
+      policySpy.mockRestore();
+
+      expect(res.status).toBe(403);
+      expect(redis.setex).not.toHaveBeenCalled();
+      expect(verifyPassword).not.toHaveBeenCalled();
+    });
+
     // #4018 review finding 2: no route-level test proved the SSO re-auth road
     // actually works end to end for /mfa/setup or /mfa/enable — only
     // sso.reauth.test.ts and schemas.test.ts referenced ssoReauthGrantId, and
@@ -3231,6 +3418,13 @@ describe('auth routes', () => {
         });
 
         expect(res.status).toBe(200);
+        const setupBody = await res.json();
+        expect(setupBody).not.toHaveProperty('recoveryCodes');
+        expect(mockRedis.setex).toHaveBeenCalledWith(
+          'mfa:setup:user-123',
+          600,
+          JSON.stringify({ secret: 'MFASECRET123' }),
+        );
         expect(verifyPassword).not.toHaveBeenCalled();
         expect(validateStepUpGrant).toHaveBeenCalledWith(
           '11111111-1111-4111-8111-111111111111',

@@ -554,6 +554,12 @@ export interface ChangeStatusOptions {
    * UPDATE` (mirrors `sendTicketDraft`'s locking contract) — a draft that is
    * missing, the wrong kind, or no longer `active` fails the whole resolve
    * with a 404/409 rather than silently resolving without it.
+   *
+   * Review fix (#4191 final review, C1) — this draft is ALWAYS consumed when
+   * supplied, but it does not always win: a non-empty `resolutionNote` on the
+   * same call is the technician's (possibly edited) text and takes priority
+   * over the draft's content. The draft is treated as a fallback/default,
+   * never a silent override of caller-supplied text.
    */
   aiDraftId?: string;
 }
@@ -675,7 +681,15 @@ export async function changeTicketStatus(
   if (toStatus === fromStatus) {
     const now = new Date();
     const patch: Partial<typeof tickets.$inferInsert> = { statusId: resolvedStatusId ?? null, updatedAt: now };
-    if (sameStatusDraft) patch.resolutionNote = sameStatusDraft.content;
+    // C1 (#4191 final review): a non-empty caller-supplied resolutionNote
+    // (e.g. the technician edited the prefilled AI draft before submitting)
+    // wins over the draft's content — the draft is still consumed below.
+    const appliedResolutionNote = sameStatusDraft
+      ? (opts.resolutionNote?.trim() ? opts.resolutionNote : sameStatusDraft.content)
+      : undefined;
+    if (sameStatusDraft) {
+      patch.resolutionNote = appliedResolutionNote;
+    }
     const updated = await db
       .update(tickets)
       .set(patch)
@@ -701,7 +715,7 @@ export async function changeTicketStatus(
     // same core value but swaps the statusId back to the system row (and
     // carries no draft) produces an empty content and identical
     // oldValue/newValue, which would be a no-op noise row in the feed.
-    const feedContent = sameStatusDraft ? sameStatusDraft.content : customStatusName;
+    const feedContent = sameStatusDraft ? appliedResolutionNote : customStatusName;
     if (feedContent) {
       await db.insert(ticketComments).values({
         ticketId,
@@ -745,7 +759,10 @@ export async function changeTicketStatus(
   let draftToConsume: { id: string } | null = null;
   if (toStatus === 'resolved' && opts.aiDraftId) {
     const draft = await lockAndValidateResolutionDraft(ticketId, opts.aiDraftId);
-    resolutionNote = draft.content;
+    // C1 (#4191 final review): a non-empty caller-supplied resolutionNote
+    // (e.g. the technician edited the prefilled AI draft before submitting)
+    // wins over the draft's content — the draft is still consumed below.
+    resolutionNote = opts.resolutionNote?.trim() ? opts.resolutionNote : draft.content;
     draftToConsume = { id: draft.id };
   }
 

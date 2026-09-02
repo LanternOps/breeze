@@ -56,6 +56,7 @@ export * from './userRisk';
 export * from './ai';
 export * from './aiAgents';
 export * from './aiAgentFixWatches';
+export * from './aiAgentImpactDaily';
 export * from './aiAgentCircuitState';
 export * from './aiUnattendedExposure';
 export * from './aiAlertVerdicts';

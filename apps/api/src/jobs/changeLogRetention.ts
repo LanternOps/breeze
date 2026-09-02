@@ -14,6 +14,7 @@ import { Queue, Worker, Job } from 'bullmq';
 import { sql } from 'drizzle-orm';
 import { captureException } from '../services/sentry';
 import { getBullMQConnection } from '../services/redis';
+import { recordRetentionRun } from '../services/retentionMetrics';
 import { jobSchedule } from './scheduleRegistry';
 import {
   parsePositiveIntEnv,
@@ -73,6 +74,7 @@ export function createChangeLogRetentionWorker(): Worker<RetentionJobData> {
       const durationMs = Date.now() - startTime;
       console.log(`${LOG_PREFIX} Pruned ${deletedCount} rows older than ${retentionDays} days (batches=${batches}) in ${durationMs}ms`);
       warnOnRetentionBacklog(LOG_PREFIX, 'device_change_log', { deleted: deletedCount, batches, hasMore });
+      recordRetentionRun('change_log_retention', { rowsDeleted: deletedCount, incomplete: hasMore });
 
       return { durationMs, deletedCount, retentionDays, batches, hasMore };
     },

@@ -72,4 +72,30 @@ describe('every slice is wiped on sign-out', () => {
     const after = root({ timeSuggestions: populated }, { type: logout.type });
     expect(after.timeSuggestions).toEqual(initialTimeSuggestionsState);
   });
+
+  // ── W10 (#4336) ──────────────────────────────────────────────────────────
+  it('notificationPrefs is registered in combineReducers, so withLogoutReset clears it', async () => {
+    // Push preferences are per USER, not per device: leaving the previous
+    // account's slaScope in place would show the next technician on this phone
+    // a setting that is not theirs, and the Settings sheet would happily PATCH
+    // it back to the server under the new account.
+    const { store } = await import('./index');
+    expect(store.getState()).toHaveProperty('notificationPrefs');
+  });
+
+  it('a populated notificationPrefs slice returns to its initial state on LOGOUT', async () => {
+    const { default: reducer, loadTicketPushPrefs } = await import('./notificationPrefsSlice');
+    const initial = reducer(undefined, { type: '@@init' });
+    const populated = reducer(
+      initial,
+      loadTicketPushPrefs.fulfilled({ assignedEnabled: false, slaScope: 'any' }, 'r', undefined)
+    );
+    expect(populated.prefs.slaScope).toBe('any');
+
+    const { withLogoutReset } = await import('./resettable');
+    const { combineReducers } = await import('@reduxjs/toolkit');
+    const root = withLogoutReset(combineReducers({ notificationPrefs: reducer }));
+    const after = root({ notificationPrefs: populated }, { type: logout.type });
+    expect(after.notificationPrefs).toEqual(initial);
+  });
 });

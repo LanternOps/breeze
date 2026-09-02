@@ -1,4 +1,6 @@
+import { useEffect } from 'react';
 import { View } from 'react-native';
+import type { NavigatorScreenParams } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import {
   BottomTabBar,
@@ -13,8 +15,10 @@ import { HomeScreen } from '../screens/chat/HomeScreen';
 import { SystemsScreen } from '../screens/systems/SystemsScreen';
 import { TicketsScreen } from '../screens/tickets/TicketsScreen';
 import { TicketDetailScreen } from '../screens/tickets/TicketDetailScreen';
+import { AttachmentViewerScreen } from '../screens/tickets/AttachmentViewerScreen';
 import { TimesheetScreen } from '../screens/time/TimesheetScreen';
 import { TimeSuggestionsScreen } from '../screens/time/TimeSuggestionsScreen';
+import { flushPendingNavigation } from './navigationRef';
 import { HomeIcon, SystemsIcon, TicketsIcon, TimeIcon } from '../components/TabIcons';
 import { TimerBar } from '../components/TimerBar';
 import { palette, fontFamily } from '../theme';
@@ -30,6 +34,18 @@ export type SystemsStackParamList = {
 export type TicketsStackParamList = {
   Tickets: undefined;
   TicketDetail: { ticketId: string };
+  /**
+   * W11 (#4337). Carries `contentType` and `filename` as params rather than
+   * re-fetching the attachment row: the feed already holds both, and the viewer
+   * needs `contentType` to decide between rendering inline and handing the file
+   * to the OS *before* it can usefully fetch anything.
+   */
+  AttachmentViewer: {
+    ticketId: string;
+    attachmentId: string;
+    contentType: string;
+    filename: string;
+  };
 };
 
 /**
@@ -43,10 +59,16 @@ export type TimeStackParamList = {
   TimeSuggestions: { date?: string } | undefined;
 };
 
+/**
+ * `TicketsTab` carries nested params so push taps can address a screen inside
+ * the tickets stack directly (`navigateToTicket`, #4336). Declared rather than
+ * cast: a cast here would let a rename inside TicketsStackParamList compile
+ * fine and fail only on a real device.
+ */
 export type MainTabParamList = {
   HomeTab: undefined;
   SystemsTab: undefined;
-  TicketsTab: undefined;
+  TicketsTab: NavigatorScreenParams<TicketsStackParamList> | undefined;
   TimeTab: undefined;
 };
 
@@ -79,6 +101,13 @@ function TicketsStackNavigator() {
         name="TicketDetail"
         component={TicketDetailScreen}
         options={{ title: 'Ticket' }}
+      />
+      <TicketsStack.Screen
+        name="AttachmentViewer"
+        component={AttachmentViewerScreen}
+        // A modal, not a push: the viewer is a detour from the ticket, and a
+        // swipe-down back to the feed is what a full-screen photo should do.
+        options={{ presentation: 'modal', title: 'Attachment' }}
       />
     </TicketsStack.Navigator>
   );
@@ -159,6 +188,28 @@ function TabBarWithTimer(props: BottomTabBarProps) {
 }
 
 export function MainNavigator() {
+  // Second flush source for buffered ticket taps (#4336), and the one that
+  // matters most.
+  //
+  // NavigationContainer's `onReady` fires at most ONCE per container instance —
+  // react-navigation guards it with an `onReadyCalledRef` it never resets
+  // (@react-navigation/core BaseNavigationContainer) — while the container's
+  // readiness is defined as "a root navigator has registered a focus listener",
+  // i.e. THIS component being mounted. ApprovalGate renders ApprovalScreen
+  // instead of its children for the duration of an approval takeover, so
+  // readiness genuinely cycles true -> false -> true inside one session.
+  //
+  // A ticket tap taken while an approval is on screen therefore buffers, and
+  // `onReady` never fires again to release it. Flushing on mount here delivers
+  // it the moment the tab tree comes back, which is exactly the behaviour the
+  // spec asks for: the tap navigates underneath and is revealed when the
+  // decision clears. This runs after the navigator's own effects (React flushes
+  // child effects before parent effects), so the container is ready by now;
+  // flushPendingNavigation re-buffers rather than dropping if it somehow is not.
+  useEffect(() => {
+    flushPendingNavigation();
+  }, []);
+
   return (
     <Tab.Navigator
       tabBar={(props: BottomTabBarProps) => <TabBarWithTimer {...props} />}

@@ -10,6 +10,7 @@ import {
   type MetricRollupMaintenanceResult,
 } from '../services/metricRollupMaintenance';
 import { getBullMQConnection } from '../services/redis';
+import { recordRetentionRun } from '../services/retentionMetrics';
 import { attachWorkerObservability } from './workerObservability';
 import { cronFromEnv } from './scheduleRegistry';
 
@@ -75,6 +76,14 @@ export function createMetricRollupMaintenanceWorker(): Worker<MetricRollupMainte
         console.log(
           `[MetricRollupMaintenance] ensured=${result.ensuredPartitions.length} dropped=${result.droppedPartitions.length} deleted=${deleted} durationMs=${result.durationMs}`,
         );
+        // A lock-contended run returns `skipped` with empty arrays — recording it
+        // would claim "ran, deleted 0, backlog clear" for work that never happened.
+        if (!result.skipped) {
+          recordRetentionRun('metric_rollup_maintenance', {
+            rowsDeleted: deleted,
+            incomplete: result.retention.some((tier) => tier.hasMore),
+          });
+        }
         return result;
       });
     },

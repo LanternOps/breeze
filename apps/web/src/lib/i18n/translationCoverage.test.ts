@@ -241,7 +241,9 @@ const namespaceDuplicateBaselines = {
     // rather than root-caused here).
     // +5: aiAgentsPage.runs (#3828 Task 4) — "Agent" and "Ticket" are the
     // same word in French, and "OK" is locale-invariant.
-    'settings.json': 159,
+    // +1: aiAgentsPage.runs.triage.notesTitle (P2-4, #4191) — "Notes" is the
+    // same word in French.
+    'settings.json': 160,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -319,7 +321,9 @@ const namespaceDuplicateBaselines = {
     // rather than root-caused here).
     // +5: aiAgentsPage.runs (#3828 Task 4) — "Agent" and "Ticket" are the
     // same word in French, and "OK" is locale-invariant.
-    'settings.json': 164,
+    // +1: aiAgentsPage.runs.triage.notesTitle (P2-4, #4191) — "Notes" is the
+    // same word in French.
+    'settings.json': 165,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two

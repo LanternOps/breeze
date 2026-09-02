@@ -71,6 +71,7 @@ import {
 import { extractRowCount } from '../db/rowCount';
 import { captureException } from '../services/sentry';
 import { getBullMQConnection } from '../services/redis';
+import { recordRetentionRun } from '../services/retentionMetrics';
 import { jobSchedule } from './scheduleRegistry';
 
 const QUEUE_NAME = 'audit-log-retention';
@@ -635,6 +636,17 @@ export async function pruneExpiredAuditLogs(
       reason: 'backlog_ceiling',
     });
   }
+
+  // `stats.errors` counts policies whose DELETE threw and were skipped, so their
+  // rows are still past the cutoff; `stats.orgsWithBacklog` counts policies that
+  // hit the batch ceiling with more rows below the cutoff. Either means rows
+  // remain — without this the degenerate run (every policy failed, rowsDeleted
+  // 0, fresh last-run stamp) looks perfectly healthy on the dashboard, and only
+  // Sentry knows otherwise.
+  recordRetentionRun('audit_retention', {
+    rowsDeleted: stats.rowsDeleted,
+    incomplete: stats.errors > 0 || stats.orgsWithBacklog > 0,
+  });
   return stats;
 }
 

@@ -1493,7 +1493,9 @@
       "recipientRolesFailed": "Roller yüklenemedi, bu nedenle bildirim alıcıları şu anda değiştirilemiyor.",
       "supervisedActionKeysHint": "Eşleşen bir politika varsa ve kuruluşun maruziyet sınırında yer varsa, bu aracının bir insan onaylamadan gerçekleştirebileceği işlemler. Her biri yürütme anında yine de canlı korumalardan, kapatma anahtarından ve kuruluş başına sınırlardan geçer.",
       "supervisedActionKeysEmpty": "Politikayla karar verilebilecek işlem kayıtlı değil.",
-      "supervisedActionKeysFailed": "Politikayla karar verilebilecek işlem listesi yüklenemedi, bu nedenle gözetimsiz yetkilendirme şu anda değiştirilemiyor."
+      "supervisedActionKeysFailed": "Politikayla karar verilebilecek işlem listesi yüklenemedi, bu nedenle gözetimsiz yetkilendirme şu anda değiştirilemiyor.",
+      "ticketAutonomousWrites": "Otonom talep yazmaları",
+      "ticketAutonomousWritesHint": "Yalnızca organizasyon geçersiz kılması — otonom talep yazmaları eylem modunu ve bu organizasyon düzeyindeki katılımı gerektirir"
     },
     "loading": "Aracılar yükleniyor…",
     "runs": {
@@ -1540,7 +1542,8 @@
       },
       "profile": {
         "sweep": "Tarama",
-        "narrative": "Haftalık rapor"
+        "narrative": "Haftalık rapor",
+        "triage": "Talep önceliklendirme"
       },
       "sweep": {
         "title": "Tarama bulguları",
@@ -1678,6 +1681,26 @@
           "partialNote": "Gözetimsiz politika yetkilendirmesi devre dışıyken kısmi muhasebeleştirme yapılır — bu, gerçek maruziyeti olduğundan az gösterebilir.",
           "unavailable": "Bu çalıştırmanın organizasyonu için etkin bir aracı politikası yok.",
           "loading": "Bütçe yükleniyor…"
+        }
+      },
+      "triage": {
+        "title": "Talep önceliklendirme",
+        "fieldsTitle": "Önerilen alanlar",
+        "fields": {
+          "categoryIdLabel": "Kategori Kimliği",
+          "priority": "Öncelik"
+        },
+        "confidence": "{{value}}% güven",
+        "device": "Eşleşen cihaz: {{value}}",
+        "draftReplyTitle": "Yanıt taslağı",
+        "draftResolutionTitle": "Çözüm notu taslağı",
+        "notesTitle": "Notlar",
+        "intentsTitle": "Önerilen talep değişiklikleri",
+        "intentUnknown": "Durum kullanılamıyor",
+        "draftsWrittenTitle": "Oluşturulan taslaklar",
+        "draftKinds": {
+          "reply": "Yanıt taslağı",
+          "resolutionNote": "Çözüm notu taslağı"
         }
       }
     }
@@ -2105,7 +2128,12 @@
     "phoneVerifiedLast4": "(telefon doğrulandı: ...{{last4}})",
     "recoveryCodes": "Kurtarma kodları",
     "useTheseCodesToAccessYourAccountIfYouLoseYourAuthenticat": "Kimlik doğrulayıcınızı kaybederseniz hesabınıza erişmek için bu kodları kullanın.",
-    "viewCodes": "Kodları görüntüle",
+    "recoveryCodesAreShownOnceAndCannotBeDisplayedAgain": "Kurtarma kodları yalnızca bir kez gösterilir ve sonradan yeniden görüntülenemez.",
+    "regenerateRecoveryCodes": "Kurtarma kodlarını yeniden oluştur",
+    "existingCodesCannotBeDisplayedAgainRegeneratingIssuesA": "Mevcut kodlar yeniden görüntülenemez. Yeniden oluşturmak yeni bir set üretir ve eskisini anında geçersiz kılar.",
+    "regenerateRecoveryCodesQuestion": "Kurtarma kodları yeniden oluşturulsun mu?",
+    "regeneratingImmediatelyInvalidatesEveryRecoveryCodeYou": "Yeniden oluşturma, yazdırılmış kopyalar dahil kaydettiğiniz tüm kurtarma kodlarını anında geçersiz kılar. Yeni kodlar, oluşturulduktan hemen sonra yalnızca bir kez gösterilir.",
+    "thatCodeWasNotAcceptedYourQRCodeIsStillValidWaitForThe": "Bu kod kabul edilmedi. QR kodunuz hâlâ geçerli; kimlik doğrulayıcınızdaki bir sonraki kodu bekleyip yeniden deneyin.",
     "confirmYourPassword": "Şifrenizi doğrulayın",
     "reEnterYourAccountPasswordToStartSettingUpAnAuthenticato": "Kimlik doğrulama uygulaması kurmaya başlamak için hesap şifrenizi yeniden girin.",
     "setUpAuthenticator": "Kimlik doğrulayıcıyı ayarla",
@@ -2117,7 +2145,8 @@
     "reEnterYourAccountPasswordToConfirmThisChange": "Bu değişikliği onaylamak için hesap şifrenizi yeniden girin.",
     "saveTheseCodesInASafePlaceYouCanUseThemToAccessYourAccou": "Bu kodları güvenli bir yere kaydedin. Kimlik doğrulayıcı cihazınızı kaybederseniz hesabınıza erişmek için bunları kullanabilirsiniz.",
     "copyCodes": "Kodları kopyala",
-    "clickTheButtonBelowToViewOrGenerateNewRecoveryCodes": "Yeni kurtarma kodlarını görüntülemek veya oluşturmak için aşağıdaki düğmeye tıklayın.",
+    "copiedCodes": "Kopyalandı",
+    "copyCodesFailed": "Panoya kopyalanamadı. Yukarıdaki kodları seçip elle kopyalayın.",
     "eachCodeCanOnlyBeUsedOnceGeneratingNewCodesWillInvalidat": "Her kod yalnızca bir kez kullanılabilir. Yeni kodların oluşturulması önceden oluşturulmuş kodları geçersiz kılacaktır.",
     "back": "Geri",
     "smsSentToPhone": "{{last4}} ile biten telefona SMS kodları gönderildi.",
@@ -2141,7 +2170,6 @@
     "disabling": "Devre dışı bırakılıyor...",
     "generating": "Oluşturuluyor...",
     "regenerateCodes": "Kodları yeniden oluştur",
-    "showRecoveryCodes": "Kurtarma kodlarını göster",
     "verifyYourIdentity": "Kimliğinizi doğrulayın",
     "thisAccountSignsInThroughAnIdentityProviderAndHasNoPassw": "Bu hesap bir kimlik sağlayıcısı üzerinden oturum açar ve parolası yoktur. Kimlik doğrulayıcı uygulama kurulumuna başlamak için sağlayıcınızda kimliğinizi yeniden doğrulayın.",
     "verifyWithYourIdentityProvider": "Kimlik sağlayıcınızla doğrulayın",

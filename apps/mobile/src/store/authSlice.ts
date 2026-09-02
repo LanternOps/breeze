@@ -6,6 +6,8 @@ import {
   logout as apiLogout,
   verifyMfa as apiVerifyMfa,
   type MfaChallenge,
+  type MfaEnrollmentRequired,
+  type MfaMethod,
   type User,
 } from '../services/api';
 import { storeToken, storeUser } from '../services/auth';
@@ -37,6 +39,7 @@ interface AuthState {
   isLoading: boolean;
   error: string | null;
   mfaChallenge: MfaChallenge | null;
+  mfaEnrollmentRequired: MfaEnrollmentRequired | null;
   pushRegistration: PushRegistrationStatus;
   pushRegistrationReason: string | null;
   approverRegistration: ApproverRegistrationStatus;
@@ -56,6 +59,7 @@ const initialState: AuthState = {
   isLoading: false,
   error: null,
   mfaChallenge: null,
+  mfaEnrollmentRequired: null,
   pushRegistration: 'idle',
   pushRegistrationReason: null,
   approverRegistration: 'idle',
@@ -73,6 +77,10 @@ export const loginAsync = createAsyncThunk(
       if (result.kind === 'mfaRequired') {
         const committed = await commitIfCurrent(generation, async () => result.challenge);
         return committed === undefined ? { superseded: true as const } : { mfa: committed };
+      }
+      if (result.kind === 'mfaEnrollmentRequired') {
+        const committed = await commitIfCurrent(generation, async () => result.handoff);
+        return committed === undefined ? { superseded: true as const } : { enrollment: committed };
       }
 
       const committed = await commitIfCurrent(generation, async () => {
@@ -95,10 +103,14 @@ export const loginAsync = createAsyncThunk(
 
 export const verifyMfaAsync = createAsyncThunk(
   'auth/verifyMfa',
-  async ({ code, tempToken }: { code: string; tempToken: string }, { rejectWithValue }) => {
+  async ({ code, tempToken, method }: {
+    code: string;
+    tempToken: string;
+    method: Exclude<MfaMethod, 'passkey'>;
+  }, { rejectWithValue }) => {
     const generation = currentSessionGeneration();
     try {
-      const response = await apiVerifyMfa(code, tempToken);
+      const response = await apiVerifyMfa(code, tempToken, method);
       const committed = await commitIfCurrent(generation, async () => {
         await storeToken(response.token);
         await storeUser(response.user);
@@ -180,6 +192,7 @@ const authSlice = createSlice({
       state.isLoading = false;
       state.error = null;
       state.mfaChallenge = null;
+      state.mfaEnrollmentRequired = null;
     },
     logout: (state) => {
       state.user = null;
@@ -187,6 +200,7 @@ const authSlice = createSlice({
       state.isLoading = false;
       state.error = null;
       state.mfaChallenge = null;
+      state.mfaEnrollmentRequired = null;
       // Approver registration is per-user, not per-device: leaving it set would
       // show the next user on this phone the previous user's banner.
       state.approverRegistration = 'idle';
@@ -228,6 +242,7 @@ const authSlice = createSlice({
       .addCase(loginAsync.pending, (state) => {
         state.isLoading = true;
         state.error = null;
+        state.mfaEnrollmentRequired = null;
       })
       .addCase(loginAsync.fulfilled, (state, action) => {
         state.isLoading = false;
@@ -237,10 +252,18 @@ const authSlice = createSlice({
           state.mfaChallenge = action.payload.mfa;
           return;
         }
+        if ('enrollment' in action.payload && action.payload.enrollment) {
+          state.user = null;
+          state.token = null;
+          state.mfaChallenge = null;
+          state.mfaEnrollmentRequired = action.payload.enrollment;
+          return;
+        }
         if ('token' in action.payload && 'user' in action.payload) {
           state.token = action.payload.token;
           state.user = action.payload.user;
           state.mfaChallenge = null;
+          state.mfaEnrollmentRequired = null;
           state.authenticatorRegisterGrantId = action.payload.registerGrant ?? null;
         }
       })
@@ -259,6 +282,7 @@ const authSlice = createSlice({
         state.user = action.payload.user;
         state.error = null;
         state.mfaChallenge = null;
+        state.mfaEnrollmentRequired = null;
         state.authenticatorRegisterGrantId = action.payload.registerGrant ?? null;
       })
       .addCase(verifyMfaAsync.rejected, (state, action) => {
@@ -274,6 +298,7 @@ const authSlice = createSlice({
         state.isLoading = false;
         state.error = null;
         state.mfaChallenge = null;
+        state.mfaEnrollmentRequired = null;
         // Reset push status too — leaving the previous account's 'ok'/'failed'
         // behind briefly shows stale copy in Settings after the next sign-in.
         state.pushRegistration = 'idle';
@@ -288,6 +313,7 @@ const authSlice = createSlice({
         state.isLoading = false;
         state.error = null;
         state.mfaChallenge = null;
+        state.mfaEnrollmentRequired = null;
         state.pushRegistration = 'idle';
         state.pushRegistrationReason = null;
         state.approverRegistration = 'idle';

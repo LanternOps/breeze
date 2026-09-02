@@ -1493,7 +1493,9 @@
       "recipientRolesFailed": "Rollen konnten nicht geladen werden; Benachrichtigungsempfänger lassen sich derzeit nicht ändern.",
       "supervisedActionKeysHint": "Vorgänge, die dieser Agent OHNE einen menschlichen Klick auf Genehmigen ausführen darf, wenn eine passende Richtlinie existiert und im Expositionslimit der Organisation noch Spielraum ist. Jeder Vorgang durchläuft zur Ausführungszeit weiterhin die Live-Schutzmechanismen, den Kill-Switch und die Organisationslimits.",
       "supervisedActionKeysEmpty": "Es sind keine per Richtlinie entscheidbaren Aktionen registriert.",
-      "supervisedActionKeysFailed": "Die Liste der per Richtlinie entscheidbaren Aktionen konnte nicht geladen werden, daher kann die unbeaufsichtigte Autorisierung derzeit nicht geändert werden."
+      "supervisedActionKeysFailed": "Die Liste der per Richtlinie entscheidbaren Aktionen konnte nicht geladen werden, daher kann die unbeaufsichtigte Autorisierung derzeit nicht geändert werden.",
+      "ticketAutonomousWrites": "Autonome Ticket-Schreibvorgänge",
+      "ticketAutonomousWritesHint": "Nur Organisationsüberschreibung — autonome Ticket-Schreibvorgänge erfordern den Aktionsmodus und diese Opt-in-Einstellung auf Organisationsebene"
     },
     "loading": "Agenten werden geladen …",
     "runs": {
@@ -1540,7 +1542,8 @@
       },
       "profile": {
         "sweep": "Prüflauf",
-        "narrative": "Wochenbericht"
+        "narrative": "Wochenbericht",
+        "triage": "Ticket-Triage"
       },
       "sweep": {
         "title": "Ergebnisse des Prüflaufs",
@@ -1678,6 +1681,26 @@
           "partialNote": "Teilweise Erfassung, solange die unbeaufsichtigte Richtlinienautorisierung deaktiviert ist — die tatsächliche Nutzung kann höher sein.",
           "unavailable": "Keine aktive Agentenrichtlinie für die Organisation dieses Laufs.",
           "loading": "Budget wird geladen…"
+        }
+      },
+      "triage": {
+        "title": "Ticket-Triage",
+        "fieldsTitle": "Vorgeschlagene Felder",
+        "fields": {
+          "categoryIdLabel": "Kategorie-ID",
+          "priority": "Priorität"
+        },
+        "confidence": "{{value}} % Konfidenz",
+        "device": "Gerätezuordnung: {{value}}",
+        "draftReplyTitle": "Antwortentwurf",
+        "draftResolutionTitle": "Entwurf der Lösungsnotiz",
+        "notesTitle": "Notizen",
+        "intentsTitle": "Vorgeschlagene Ticketänderungen",
+        "intentUnknown": "Status nicht verfügbar",
+        "draftsWrittenTitle": "Erstellte Entwürfe",
+        "draftKinds": {
+          "reply": "Antwortentwurf",
+          "resolutionNote": "Entwurf der Lösungsnotiz"
         }
       }
     }
@@ -2105,7 +2128,12 @@
     "phoneVerifiedLast4": "(Telefon verifiziert: ...{{last4}})",
     "recoveryCodes": "Wiederherstellungscodes",
     "useTheseCodesToAccessYourAccountIfYouLoseYourAuthenticat": "Verwenden Sie diese Codes, um auf Ihr Konto zuzugreifen, wenn Sie Ihren Authentifikator verlieren.",
-    "viewCodes": "Codes ansehen",
+    "recoveryCodesAreShownOnceAndCannotBeDisplayedAgain": "Wiederherstellungscodes werden nur einmal angezeigt und können danach nicht erneut eingesehen werden.",
+    "regenerateRecoveryCodes": "Wiederherstellungscodes neu generieren",
+    "existingCodesCannotBeDisplayedAgainRegeneratingIssuesA": "Vorhandene Codes können nicht erneut angezeigt werden. Beim Neugenerieren wird ein neuer Satz ausgestellt und der alte sofort ungültig.",
+    "regenerateRecoveryCodesQuestion": "Wiederherstellungscodes neu generieren?",
+    "regeneratingImmediatelyInvalidatesEveryRecoveryCodeYou": "Durch das Neugenerieren wird jeder von Ihnen gespeicherte Wiederherstellungscode sofort ungültig, auch ausgedruckte Kopien. Die neuen Codes werden unmittelbar danach ein einziges Mal angezeigt.",
+    "thatCodeWasNotAcceptedYourQRCodeIsStillValidWaitForThe": "Dieser Code wurde nicht akzeptiert. Ihr QR-Code ist weiterhin gültig. Warten Sie auf den nächsten Code Ihrer Authenticator-App und versuchen Sie es erneut.",
     "confirmYourPassword": "Bestätigen Sie Ihr Passwort",
     "reEnterYourAccountPasswordToStartSettingUpAnAuthenticato": "Geben Sie Ihr Kontopasswort erneut ein, um mit der Einrichtung einer Authentifizierungs-App zu beginnen.",
     "setUpAuthenticator": "Authentifikator einrichten",
@@ -2117,7 +2145,8 @@
     "reEnterYourAccountPasswordToConfirmThisChange": "Geben Sie Ihr Kontopasswort erneut ein, um diese Änderung zu bestätigen.",
     "saveTheseCodesInASafePlaceYouCanUseThemToAccessYourAccou": "Bewahren Sie diese Codes an einem sicheren Ort auf. Sie können damit auf Ihr Konto zugreifen, wenn Sie Ihr Authentifizierungsgerät verlieren.",
     "copyCodes": "Codes kopieren",
-    "clickTheButtonBelowToViewOrGenerateNewRecoveryCodes": "Klicken Sie auf die Schaltfläche unten, um neue Wiederherstellungscodes anzuzeigen oder zu generieren.",
+    "copiedCodes": "Kopiert",
+    "copyCodesFailed": "Kopieren in die Zwischenablage nicht möglich. Markieren Sie die Codes oben und kopieren Sie sie manuell.",
     "eachCodeCanOnlyBeUsedOnceGeneratingNewCodesWillInvalidat": "Jeder Code kann nur einmal verwendet werden. Durch die Generierung neuer Codes werden alle zuvor generierten Codes ungültig.",
     "back": "Zurück",
     "smsSentToPhone": "An das Telefon gesendete SMS-Codes mit der Endung {{last4}}.",
@@ -2141,7 +2170,6 @@
     "disabling": "Deaktivieren...",
     "generating": "Generieren...",
     "regenerateCodes": "Codes neu generieren",
-    "showRecoveryCodes": "Wiederherstellungscodes anzeigen",
     "verifyYourIdentity": "Bestätigen Sie Ihre Identität",
     "thisAccountSignsInThroughAnIdentityProviderAndHasNoPassw": "Dieses Konto meldet sich über einen Identitätsanbieter an und hat kein Passwort. Bestätigen Sie sich erneut bei Ihrem Anbieter, um die Einrichtung einer Authenticator-App zu starten.",
     "verifyWithYourIdentityProvider": "Mit Ihrem Identitätsanbieter bestätigen",

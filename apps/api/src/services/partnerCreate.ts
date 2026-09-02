@@ -83,6 +83,16 @@ export async function createPartner(
         mcpOriginUserAgent: mcpOrigin ? (input.origin as { userAgent?: string }).userAgent ?? null : null,
         signupIp: !mcpOrigin ? (input.origin as { ip?: string }).ip ?? null : null,
         signupUserAgent: !mcpOrigin ? (input.origin as { userAgent?: string }).userAgent ?? null : null,
+        // Issue #3608 (decision: Option B, 2026-08-16): new partners opt IN to
+        // inbound email-to-ticket rather than inheriting the readers'
+        // "absent flag reads as true" fallback. That fallback
+        // (`loadPartnerInboundPolicy` in inboundEmail/resolveOrg.ts and
+        // `getTicketConfig` in ticketConfigService.ts, both `enabled !== false`)
+        // stays as-is — it exists solely as the pre-#3606 upgrade path for
+        // partners created before this default existed. Do NOT "fix" the
+        // readers to match this new-partner default; the two are deliberately
+        // different concerns. Do NOT backfill existing partners' settings.
+        settings: { ticketing: { inbound: { enabled: false } } },
       })
       .returning();
 

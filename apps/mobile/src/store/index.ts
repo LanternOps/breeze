@@ -8,6 +8,7 @@ import aiChatReducer from './aiChatSlice';
 import ticketsReducer from './ticketsSlice';
 import timeReducer from './timeSlice';
 import timeSuggestionsReducer from './timeSuggestionsSlice';
+import notificationPrefsReducer from './notificationPrefsSlice';
 import lifecycleReducer from './lifecycleSlice';
 import { withLogoutReset } from './resettable';
 import { loadServerClock } from '../services/serverClock';
@@ -20,6 +21,7 @@ const appReducer = combineReducers({
   tickets: ticketsReducer,
   time: timeReducer,
   timeSuggestions: timeSuggestionsReducer,
+  notificationPrefs: notificationPrefsReducer,
   lifecycle: lifecycleReducer,
 });
 
@@ -95,6 +97,16 @@ export {
   selectTicketAssignee,
   selectTicketTotal,
 } from './ticketsSlice';
+
+export {
+  loadTicketPushPrefs,
+  saveTicketPushPrefs,
+  clearError as clearNotificationPrefsError,
+  selectTicketPushPrefs,
+  selectTicketPushPrefsSaving,
+  selectTicketPushPrefsError,
+  selectTicketPushPrefsErrorKind,
+} from './notificationPrefsSlice';
 
 export {
   runningTimerAdopted,

@@ -3991,17 +3991,29 @@ ssoRoutes.post('/link/confirm', zValidator('json', ssoLinkConfirmSchema), async 
       orgId: record.providerPartnerId ? null : record.providerOrgId,
       partnerId: record.providerPartnerId,
     });
+    const allowedMethods = {
+      totp: Boolean(user.mfaSecret) && pendingPolicy.allowedMethods.totp,
+      sms: user.mfaMethod === 'sms' && Boolean(user.phoneNumber) && pendingPolicy.allowedMethods.sms,
+      passkey: passkeyAvailable && pendingPolicy.allowedMethods.passkey,
+    };
+    const recoveryAvailable = Array.isArray(user.mfaRecoveryCodes)
+      && user.mfaRecoveryCodes.length > 0;
+    if (!allowedMethods.totp && !allowedMethods.sms && !allowedMethods.passkey && !recoveryAvailable) {
+      await floorPromise;
+      return c.json(genericAuthError(), 401);
+    }
     const PENDING_TTL_SECONDS = 300;
     const pendingRecord: PendingMfaRecord = {
       userId: user.id,
       mfaMethod,
       passkeyAvailable,
+      recoveryAvailable,
       authEpoch: pendingEpochs.authEpoch,
       mfaEpoch: pendingEpochs.mfaEpoch,
       transitionId: record.browserTransitionId,
       browserGeneration: record.browserGeneration,
       statusExpectation: user.status,
-      allowedMethods: pendingPolicy.allowedMethods,
+      allowedMethods,
       expiresAt: Date.now() + PENDING_TTL_SECONDS * 1000,
       ssoLinkTokenHash: tokenHash,
     };
@@ -4016,6 +4028,8 @@ ssoRoutes.post('/link/confirm', zValidator('json', ssoLinkConfirmSchema), async 
       mfaRequired: true,
       tempToken,
       mfaMethod,
+      allowedMethods,
+      recoveryAvailable,
       passkeyAvailable,
       phoneLast4: user.phoneNumber?.slice(-4) || null,
       user: null,

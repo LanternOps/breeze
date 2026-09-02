@@ -67,6 +67,7 @@ describe('POST /auth/mfa/verify — pending session bound to a stale mfa_epoch i
         userId: user.id,
         mfaMethod: 'totp',
         passkeyAvailable: false,
+        recoveryAvailable: false,
         authEpoch: 1,
         mfaEpoch: pendingMfaEpoch, // bound to N
         transitionId: randomUUID(),

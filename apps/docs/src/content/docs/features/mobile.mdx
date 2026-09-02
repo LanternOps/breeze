@@ -143,6 +143,27 @@ The notification service exposes listeners for:
 - `addNotificationResponseReceivedListener` -- fires when the user taps a notification.
 - `getLastNotificationResponse` -- retrieves the notification that launched the app from a terminated state.
 
+### Ticket Notifications
+
+Technicians receive two categories of ticket push on iOS:
+
+| Category | Sent when | Governed by |
+|----------|-----------|-------------|
+| **Assigned to me** | A ticket is assigned to you by someone else (self-assignment never pushes) | `assignedEnabled` |
+| **SLA breach** | A ticket misses its response or resolution SLA | `slaScope` |
+
+Tapping either notification opens that ticket's detail screen, from a cold start as well as from the background.
+
+Notification bodies are lock-screen safe: they carry the ticket number and the customer organization only, never the ticket subject. The subject loads after you unlock and the app authenticates.
+
+**What the preferences do and do not suppress.** These settings govern **push delivery only**. Your in-app notification inbox and any configured email still record every assignment and breach, so turning pushes off never hides work from you -- it only stops your phone buzzing.
+
+Additional delivery rules:
+
+- **Quiet hours** configured on the device suppress ticket pushes outright; they are dropped, not deferred.
+- A **per-user burst cap** (20 pushes per 5 minutes) protects against bulk reassignment. Capped pushes are dropped; the in-app rows are still written.
+- `All tickets` fans out to at most 500 opted-in technicians per breach event.
+
 ### Notification Settings
 
 Users can configure notification preferences per mobile device through `PATCH /devices/:id/settings`:
@@ -153,7 +174,21 @@ Users can configure notification preferences per mobile device through `PATCH /d
 | `severities` | `string[]` | Filter notifications by severity: `critical`, `high`, `medium`, `low`, `info` |
 | `quietHours` | `object \| null` | Suppress notifications during specified hours with `start`, `end`, and optional `timezone` |
 
-The Settings screen in the app also provides local toggles for "Push Notifications" and "Critical Alerts Only" that are persisted via AsyncStorage.
+The Settings screen in the app shows a **Notifications** row that reports the real push-registration state for this phone, and links out to system Settings when the OS permission is the actual control. It is a status readout, not a toggle -- the app has no code path that could honour an in-app on/off for OS-presented pushes, and the earlier "Push Notifications" / "Critical Alerts Only" switches only wrote AsyncStorage keys that nothing consumed.
+
+Ticket push categories are a **per-user** preference (they follow you across every phone you sign in on), configured from **Settings** in the app or through the API:
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/users/me/ticket-push-preferences` | Read the caller's ticket push preferences. Returns defaults when nothing has been saved |
+| PATCH | `/users/me/ticket-push-preferences` | Update one or both settings |
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `assignedEnabled` | `boolean` | `true` | Push when a ticket is assigned to you |
+| `slaScope` | `"off" \| "owned" \| "any"` | `"owned"` | `off` = no SLA pushes; `owned` = tickets assigned to you; `any` = every ticket in your MSP you have access to |
+
+Both endpoints act on the authenticated caller only -- there is no way to read or write another user's preferences, and a `userId` in the request body is rejected.
 
 ---
 

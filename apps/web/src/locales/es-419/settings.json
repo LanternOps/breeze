@@ -1493,7 +1493,9 @@
       "recipientRolesFailed": "No se pudieron cargar los roles, así que por ahora no se pueden cambiar los destinatarios de las notificaciones.",
       "supervisedActionKeysHint": "Operaciones que este agente puede ejecutar SIN que una persona haga clic en aprobar, cuando existe una política coincidente y el límite de exposición de la organización tiene margen. Cada una igual pasa por las protecciones en vivo, el interruptor de apagado y los límites por organización en el momento de la ejecución.",
       "supervisedActionKeysEmpty": "No hay acciones decidibles por política registradas.",
-      "supervisedActionKeysFailed": "No se pudo cargar la lista de acciones decidibles por política, así que la autorización no supervisada no se puede cambiar en este momento."
+      "supervisedActionKeysFailed": "No se pudo cargar la lista de acciones decidibles por política, así que la autorización no supervisada no se puede cambiar en este momento.",
+      "ticketAutonomousWrites": "Escrituras autónomas de tickets",
+      "ticketAutonomousWritesHint": "Solo anulación de la organización — las escrituras autónomas de tickets requieren el modo de actuación y esta activación a nivel de organización"
     },
     "loading": "Cargando agentes…",
     "runs": {
@@ -1540,7 +1542,8 @@
       },
       "profile": {
         "sweep": "Barrido",
-        "narrative": "Informe semanal"
+        "narrative": "Informe semanal",
+        "triage": "Triaje de tickets"
       },
       "sweep": {
         "title": "Hallazgos del barrido",
@@ -1678,6 +1681,26 @@
           "partialNote": "Contabilización parcial mientras la autorización de política desatendida está deshabilitada — esto puede subestimar la exposición real.",
           "unavailable": "No hay una política de agente activa para la organización de esta ejecución.",
           "loading": "Cargando presupuesto…"
+        }
+      },
+      "triage": {
+        "title": "Triaje de tickets",
+        "fieldsTitle": "Campos propuestos",
+        "fields": {
+          "categoryIdLabel": "ID de categoría",
+          "priority": "Prioridad"
+        },
+        "confidence": "{{value}}% confianza",
+        "device": "Dispositivo coincidente: {{value}}",
+        "draftReplyTitle": "Borrador de respuesta",
+        "draftResolutionTitle": "Borrador de nota de resolución",
+        "notesTitle": "Notas",
+        "intentsTitle": "Cambios de ticket propuestos",
+        "intentUnknown": "Estado no disponible",
+        "draftsWrittenTitle": "Borradores creados",
+        "draftKinds": {
+          "reply": "Borrador de respuesta",
+          "resolutionNote": "Borrador de nota de resolución"
         }
       }
     }
@@ -2105,7 +2128,12 @@
     "phoneVerifiedLast4": "(teléfono verificado: ...{{last4}})",
     "recoveryCodes": "Códigos de recuperación",
     "useTheseCodesToAccessYourAccountIfYouLoseYourAuthenticat": "Utilice estos códigos para acceder a su cuenta si pierde su autenticador.",
-    "viewCodes": "Ver códigos",
+    "recoveryCodesAreShownOnceAndCannotBeDisplayedAgain": "Los códigos de recuperación se muestran una sola vez y no se pueden volver a mostrar.",
+    "regenerateRecoveryCodes": "Regenerar códigos de recuperación",
+    "existingCodesCannotBeDisplayedAgainRegeneratingIssuesA": "Los códigos existentes no se pueden volver a mostrar. Al regenerarlos se emite un conjunto nuevo y el anterior queda invalidado de inmediato.",
+    "regenerateRecoveryCodesQuestion": "¿Regenerar los códigos de recuperación?",
+    "regeneratingImmediatelyInvalidatesEveryRecoveryCodeYou": "Regenerarlos invalida de inmediato todos los códigos de recuperación que haya guardado, incluidas las copias impresas. Los nuevos se muestran una sola vez, justo después de generarlos.",
+    "thatCodeWasNotAcceptedYourQRCodeIsStillValidWaitForThe": "Ese código no fue aceptado. Su código QR sigue siendo válido, así que espere el siguiente código de su autenticador e inténtelo de nuevo.",
     "confirmYourPassword": "Confirme su contraseña",
     "reEnterYourAccountPasswordToStartSettingUpAnAuthenticato": "Vuelva a ingresar la contraseña de su cuenta para comenzar a configurar una aplicación de autenticación.",
     "setUpAuthenticator": "Configurar autenticador",
@@ -2117,7 +2145,8 @@
     "reEnterYourAccountPasswordToConfirmThisChange": "Vuelva a ingresar la contraseña de su cuenta para confirmar este cambio.",
     "saveTheseCodesInASafePlaceYouCanUseThemToAccessYourAccou": "Guarde estos códigos en un lugar seguro. Puede usarlos para acceder a su cuenta si pierde su dispositivo de autenticación.",
     "copyCodes": "Copiar códigos",
-    "clickTheButtonBelowToViewOrGenerateNewRecoveryCodes": "Haga clic en el botón a continuación para ver o generar nuevos códigos de recuperación.",
+    "copiedCodes": "Copiado",
+    "copyCodesFailed": "No se pudo copiar al portapapeles. Selecciona los códigos de arriba y cópialos manualmente.",
     "eachCodeCanOnlyBeUsedOnceGeneratingNewCodesWillInvalidat": "Cada código sólo se puede utilizar una vez. La generación de nuevos códigos invalidará cualquier código generado previamente.",
     "back": "Atrás",
     "smsSentToPhone": "Códigos SMS enviados al teléfono que termina en {{last4}}.",
@@ -2141,7 +2170,6 @@
     "disabling": "Desactivando...",
     "generating": "Generando...",
     "regenerateCodes": "Regenerar códigos",
-    "showRecoveryCodes": "Mostrar códigos de recuperación",
     "verifyYourIdentity": "Verifica tu identidad",
     "thisAccountSignsInThroughAnIdentityProviderAndHasNoPassw": "Esta cuenta inicia sesión mediante un proveedor de identidad y no tiene contraseña. Vuelve a verificarte con tu proveedor para comenzar a configurar una aplicación de autenticación.",
     "verifyWithYourIdentityProvider": "Verificar con tu proveedor de identidad",

@@ -88,7 +88,24 @@ $TargetEdition = $env:BREEZE_PARAM_TARGET_EDITION
 $work = 'C:\\ProgramData\\BreezeMigration'
 $cfgDir = 'C:\\ProgramData\\Breeze'
 $log = Join-Path $work 'migration.log'
+# Working dir hardening: identity secrets (bearer token / mTLS key material,
+# SYSTEM/Administrators-only at rest) are staged under $work during the dance.
+# ProgramData's default ACL lets any local user pre-create this directory (or
+# plant a junction) and read what SYSTEM copies in - so refuse reparse points
+# outright and force a SYSTEM/Administrators-only ACL before anything secret
+# is written. icacls runs every time: cheap, idempotent, and it also repairs a
+# pre-existing user-created directory by re-owning its ACL.
 New-Item -ItemType Directory -Force -Path $work | Out-Null
+$workItem = Get-Item -LiteralPath $work -Force
+if ($workItem.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+  Write-Output 'BreezeMigration path is a reparse point; aborting (nothing touched)'
+  exit 1
+}
+& icacls $work /inheritance:r /grant:r 'NT AUTHORITY\\SYSTEM:(OI)(CI)F' 'BUILTIN\\Administrators:(OI)(CI)F' | Out-Null
+if ($LASTEXITCODE -ne 0) {
+  Write-Output 'failed to restrict BreezeMigration ACL; aborting (nothing touched)'
+  exit 1
+}
 function Log($m) {
   $line = "$(Get-Date -Format o) $m"
   Add-Content -Path $log -Value $line
@@ -151,9 +168,12 @@ try {
   }
   Log 'target MSI present, hash verified'
 
-  # Back up identity: the uninstall's RemoveFiles deletes both files.
+  # Back up identity: the uninstall's RemoveFiles deletes both files. The
+  # backup dir is recreated fresh each run (never trusted if pre-existing)
+  # and inherits the SYSTEM/Administrators-only ACL forced on $work above.
   $bak = Join-Path $work 'cfg-backup'
-  New-Item -ItemType Directory -Force -Path $bak | Out-Null
+  if (Test-Path -LiteralPath $bak) { Remove-Item -LiteralPath $bak -Recurse -Force }
+  New-Item -ItemType Directory -Path $bak | Out-Null
   Copy-Item (Join-Path $cfgDir 'agent.yaml') $bak -Force
   if (Test-Path (Join-Path $cfgDir 'secrets.yaml')) {
     Copy-Item (Join-Path $cfgDir 'secrets.yaml') $bak -Force
@@ -196,6 +216,10 @@ try {
   $svc = Get-Service BreezeAgent -ErrorAction SilentlyContinue
   Log "BreezeAgent service: $($svc.Status)"
   if ($svc -and $svc.Status -ne 'Running') { Start-Service BreezeAgent; Log 'started BreezeAgent' }
+  # The restored originals now live in the config dir again - remove the
+  # staged secret copies rather than leaving credential material behind.
+  Remove-Item -LiteralPath $bak -Recurse -Force -ErrorAction SilentlyContinue
+  Log 'backup cleaned up'
   Log '--- edition migration complete ---'
   exit 0
 } catch {

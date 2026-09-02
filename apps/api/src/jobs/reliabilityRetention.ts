@@ -11,6 +11,7 @@ import { sql } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { extractRowCount } from '../db/rowCount';
 import { getBullMQConnection } from '../services/redis';
+import { recordRetentionRun } from '../services/retentionMetrics';
 import { captureException } from '../services/sentry';
 import { jobSchedule } from './scheduleRegistry';
 import { warnOnRetentionBacklog } from './retentionBatch';
@@ -106,6 +107,10 @@ export function createReliabilityRetentionWorker(): Worker<RetentionJobData> {
         );
         // `hasMore=true` buried in an info line is not an alert (#4343).
         warnOnRetentionBacklog('[ReliabilityRetention]', 'device_reliability_history', result);
+        recordRetentionRun('reliability_retention', {
+          rowsDeleted: result.deleted,
+          incomplete: result.hasMore,
+        });
         return result;
       });
     },

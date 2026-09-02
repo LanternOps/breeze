@@ -23,6 +23,8 @@ import {
   bindIssuedUserSession,
   authBrowserTransitionsEnforced,
   recordAuthTransitionLegacyIssuer,
+  completeInitialMfaEnrollment,
+  generateRecoveryCodes,
   type AuthIssuanceCapability,
   type AuthorizedUserSession,
   type UserSessionIdentity,
@@ -40,6 +42,7 @@ import { readMobileDeviceId } from '../../services/mobileDeviceBinding';
 import { getEffectiveMfaPolicy } from '../../services/mfaPolicy';
 import { invalidateMfaAssuranceAfterFactorChange } from '../../services/mfaAssurance';
 import { TEARDOWN_FAILED } from '../../services/remoteSessionTeardown';
+import type { Tx } from '../../services/authLifecycle';
 import { ENABLE_2FA } from './schemas';
 import {
   auditLogin,
@@ -59,6 +62,7 @@ import {
   writeAuthAudit,
   isAuthTransitionV1Request,
   authClientUpgradeRequiredResponse,
+  hashRecoveryCodes,
 } from './helpers';
 import { installAuthBindingReplacement, requestAuthBinding } from './binding';
 
@@ -138,7 +142,7 @@ const deletePasskeySchema = z.object({
 // so this gate only decides whether the passkey path is OFFERED — it never
 // substitutes for credential/assertion verification.
 function pendingAllowsPasskey(pending: PendingMfaRecord): boolean {
-  return pending.mfaMethod === 'passkey' || pending.passkeyAvailable === true;
+  return pending.allowedMethods.passkey;
 }
 
 type PasskeyRow = typeof userPasskeys.$inferSelect;
@@ -244,13 +248,19 @@ passkeyRoutes.post('/passkeys/register/verify', authMiddleware, zValidator('json
   );
   if (enrollmentConsumeError) return enrollmentConsumeError;
 
-  // SR2-07/SR2-19: the insert AND the users.mfaEnabled flip are folded into
-  // ONE transaction with the epoch bump + refresh-family revoke — registering
-  // a new passkey is a factor-add and must invalidate assurance minted before
-  // this factor existed. The inserted row is captured via closure so it can
-  // be used in the response after the transaction commits.
+  const [enrollmentState] = await db
+    .select({
+      mfaEnabled: users.mfaEnabled,
+      mfaSecret: users.mfaSecret,
+      mfaMethod: users.mfaMethod,
+    })
+    .from(users)
+    .where(eq(users.id, auth.user.id))
+    .limit(1);
+  if (!enrollmentState) return c.json({ error: 'User not found' }, 404);
+
   let inserted: PasskeyRow | undefined;
-  const result = await invalidateMfaAssuranceAfterFactorChange(auth.user.id, 'passkey-register', async (tx) => {
+  const persistPasskey = async (tx: Tx) => {
     const [row] = await tx
       .insert(userPasskeys)
       .values({
@@ -271,28 +281,88 @@ passkeyRoutes.post('/passkeys/register/verify', authMiddleware, zValidator('json
       throw new Error('Passkey insert returned no row');
     }
     inserted = row;
+    return row;
+  };
 
-    // Enable MFA, but do NOT overwrite an existing TOTP/SMS factor's method.
-    // `mfaMethod` is single-valued and drives login routing (login.ts/mfa.ts);
-    // clobbering it to 'passkey' would strand a user's working authenticator
-    // and risk lockout if they later lose the passkey device. Only make
-    // passkey the primary method when the user has no other factor configured.
-    const [currentMfa] = await tx
-      .select({ mfaSecret: users.mfaSecret, mfaMethod: users.mfaMethod })
-      .from(users)
-      .where(eq(users.id, auth.user.id))
-      .limit(1);
-    const hasExistingFactor = Boolean(currentMfa?.mfaSecret) || currentMfa?.mfaMethod === 'sms';
+  let mfaEpoch: number;
+  let teardownFailed: boolean;
+  let replacement: { recoveryCodes: string[]; issued: AuthorizedUserSession } | null = null;
+  if (!enrollmentState.mfaEnabled) {
+    const recoveryCodes = generateRecoveryCodes();
+    const recoveryCodeHashes = hashRecoveryCodes(recoveryCodes);
+    let capability: AuthIssuanceCapability;
+    try {
+      capability = await beginAuthIssuance(requestAuthBinding(c));
+    } catch (error) {
+      const response = authIssuanceAdmissionError(c, error);
+      if (!response) throw error;
+      return response;
+    }
+    let result;
+    try {
+      result = await completeInitialMfaEnrollment({
+        userId: auth.user.id,
+        identity: {
+          userId: auth.user.id,
+          email: auth.user.email,
+          roleId: auth.token?.roleId ?? null,
+          orgId: auth.orgId ?? null,
+          partnerId: auth.partnerId ?? null,
+          scope: auth.scope,
+          mfa: true,
+          mobileDeviceId: readMobileDeviceId(c) ?? undefined,
+        },
+        capability,
+        expectedAuthEpoch: auth.token?.aep as number,
+        expectedMfaEpoch: auth.token?.mep as number,
+        revokeReason: 'passkey-register',
+        recoveryCodes,
+        recoveryCodeHashes,
+        persistFactor: async (tx, hashes) => {
+          const enabled = await tx
+            .update(users)
+            .set({
+              mfaEnabled: true,
+              mfaMethod: 'passkey',
+              mfaRecoveryCodes: [...hashes],
+              updatedAt: new Date(),
+            })
+            .where(and(eq(users.id, auth.user.id), eq(users.mfaEnabled, false)))
+            .returning({ id: users.id });
+          if (enabled.length !== 1) throw new Error('MFA enrollment state changed');
+          return persistPasskey(tx);
+        },
+      });
+    } catch (error) {
+      await cancelAuthIssuance(capability).catch(() => undefined);
+      const response = authIssuanceAdmissionError(c, error);
+      if (!response) throw error;
+      return response;
+    }
+    await bindIssuedUserSession(result.issued);
+    installAuthorizedUserSessionCookies(c, result.issued);
+    mfaEpoch = result.mfaEpoch;
+    teardownFailed = result.cleanup.remoteSessionsTerminated === TEARDOWN_FAILED;
+    replacement = { recoveryCodes: result.recoveryCodes, issued: result.issued };
+  } else {
+    // Secondary-factor addition keeps the existing invalidation behavior and
+    // does not rotate recovery codes or replace the already-assured session.
+    const result = await invalidateMfaAssuranceAfterFactorChange(auth.user.id, 'passkey-register', async (tx) => {
+      await persistPasskey(tx);
+      const hasExistingFactor = Boolean(enrollmentState.mfaSecret) || enrollmentState.mfaMethod === 'sms';
 
-    await tx
-      .update(users)
-      .set({
-        mfaEnabled: true,
-        ...(hasExistingFactor ? {} : { mfaMethod: 'passkey' }),
-        updatedAt: new Date()
-      })
-      .where(eq(users.id, auth.user.id));
-  });
+      await tx
+        .update(users)
+        .set({
+          mfaEnabled: true,
+          ...(hasExistingFactor ? {} : { mfaMethod: 'passkey' }),
+          updatedAt: new Date()
+        })
+        .where(eq(users.id, auth.user.id));
+    });
+    mfaEpoch = result.mfaEpoch;
+    teardownFailed = result.remoteSessionsTerminated === TEARDOWN_FAILED;
+  }
 
   if (!inserted) {
     throw new Error('Passkey insert returned no row');
@@ -307,14 +377,20 @@ passkeyRoutes.post('/passkeys/register/verify', authMiddleware, zValidator('json
     details: {
       method: 'passkey',
       credentialId: fields.credentialId,
-      mfaEpoch: result.mfaEpoch,
-      teardownFailed: result.remoteSessionsTerminated === TEARDOWN_FAILED
+      mfaEpoch,
+      teardownFailed
     }
   });
 
   return c.json({
     success: true,
-    passkey: toPublicPasskey(inserted)
+    passkey: toPublicPasskey(inserted),
+    ...(replacement
+      ? {
+          recoveryCodes: replacement.recoveryCodes,
+          tokens: toPublicTokens(replacement.issued),
+        }
+      : {}),
   });
 });
 
@@ -397,7 +473,7 @@ passkeyRoutes.post('/mfa/passkey/options', zValidator('json', passkeyMfaOptionsS
     return c.json({ error: 'Invalid or expired MFA session' }, 401);
   }
   if (!pendingAllowsPasskey(pending)) {
-    return c.json({ error: 'Passkey MFA is not configured for this session' }, 400);
+    return c.json({ error: 'Invalid MFA code' }, 401);
   }
   // Throttle challenge issuance so it can't be hammered, but on a SEPARATE
   // bucket from /verify. A legitimate retry issues one /options + one /verify;
@@ -412,6 +488,37 @@ passkeyRoutes.post('/mfa/passkey/options', zValidator('json', passkeyMfaOptionsS
   );
   if (!rateCheck.allowed) {
     return c.json({ error: 'Too many MFA attempts' }, 429);
+  }
+
+  const [user] = await withSystemDbAccessContext(() =>
+    db.select().from(users).where(eq(users.id, pending.userId)).limit(1)
+  );
+  if (!user) {
+    return c.json({ error: 'Invalid or expired MFA session' }, 401);
+  }
+  const liveEpochs = await getUserEpochs(user.id);
+  const pendingVerdict = liveEpochs
+    ? evaluatePendingMfa(pending, {
+        status: user.status,
+        authEpoch: liveEpochs.authEpoch,
+        mfaEpoch: liveEpochs.mfaEpoch,
+      })
+    : ({ ok: false, reason: 'epoch_mismatch' } as const);
+  if (!pendingVerdict.ok) {
+    await getRedis()?.del(`mfa:pending:${tempToken}`);
+    return c.json({ error: 'Invalid or expired MFA session' }, 401);
+  }
+
+  const context = await resolveCurrentUserTokenContext(user.id);
+  const livePolicy = await getEffectiveMfaPolicy({
+    scope: context.scope,
+    userId: user.id,
+    orgId: context.orgId,
+    partnerId: context.partnerId,
+  });
+  if (!livePolicy.allowedMethods.passkey) {
+    await getRedis()?.del(`mfa:pending:${tempToken}`);
+    return c.json({ error: 'Invalid MFA code' }, 401);
   }
 
   const passkeys = await withSystemDbAccessContext(() => listActivePasskeys(pending.userId));
@@ -443,7 +550,7 @@ passkeyRoutes.post('/mfa/passkey/verify', zValidator('json', passkeyMfaVerifySch
     return c.json({ error: 'Invalid or expired MFA session' }, 401);
   }
   if (!pendingAllowsPasskey(pending)) {
-    return c.json({ error: 'Passkey MFA is not configured for this session' }, 400);
+    return c.json({ error: 'Invalid MFA code' }, 401);
   }
   const transitionV1 = isAuthTransitionV1Request(c);
   if (!transitionV1 && authBrowserTransitionsEnforced()) {
@@ -466,12 +573,6 @@ passkeyRoutes.post('/mfa/passkey/verify', zValidator('json', passkeyMfaVerifySch
   if (!user) {
     return c.json({ error: 'Invalid MFA configuration' }, 400);
   }
-  // Re-check account status before minting tokens — the user could have been
-  // suspended during the 5-minute MFA window after the pending token was issued.
-  if (user.status !== 'active') {
-    return c.json({ error: 'Invalid or expired MFA session' }, 401);
-  }
-
   // SR2-06: re-check the live epoch/status before minting. A factor change
   // (mfa_epoch) or account-wide security event (auth_epoch) during the
   // 5-minute MFA window must invalidate this in-flight session.
@@ -541,6 +642,24 @@ passkeyRoutes.post('/mfa/passkey/verify', zValidator('json', passkeyMfaVerifySch
     if (capability) await cancelAuthIssuance(capability).catch(() => undefined);
     throw error;
   }
+  let context;
+  try {
+    context = await resolveCurrentUserTokenContext(user.id);
+    const livePolicy = await getEffectiveMfaPolicy({
+      scope: context.scope,
+      userId: user.id,
+      orgId: context.orgId,
+      partnerId: context.partnerId,
+    });
+    if (!livePolicy.allowedMethods.passkey) {
+      if (capability) await cancelAuthIssuance(capability).catch(() => undefined);
+      await redis.del(`mfa:pending:${tempToken}`);
+      return c.json({ error: 'Invalid MFA code' }, 401);
+    }
+  } catch (error) {
+    if (capability) await cancelAuthIssuance(capability).catch(() => undefined);
+    throw error;
+  }
   if (pending.ssoLinkTokenHash) {
     // Preserve mainline's link-on-first-login semantics while the normal
     // password-login path below keeps passkey effects inside its guarded
@@ -597,13 +716,6 @@ passkeyRoutes.post('/mfa/passkey/verify', zValidator('json', passkeyMfaVerifySch
     });
   }
 
-  let context;
-  try {
-    context = await resolveCurrentUserTokenContext(user.id);
-  } catch (error) {
-    if (capability) await cancelAuthIssuance(capability).catch(() => undefined);
-    throw error;
-  }
   const identity: UserSessionIdentity = {
     userId: user.id,
     email: user.email,

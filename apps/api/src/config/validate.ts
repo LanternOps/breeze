@@ -595,6 +595,13 @@ const envObjectSchema = z
     // is caught at boot instead of silently parsing to a surprising default.
     AGENT_AUTO_PROMOTE: z.string().optional(),
 
+    // Automatic agent edition migration (#4072). Default false; read at
+    // runtime by editionAutoMigrateEnabled() (services/agentEditionAutoMigrate.ts)
+    // via envFlag(). Validated here for boolean format only, same class as
+    // AGENT_AUTO_PROMOTE above — a typo must fail boot, not silently read as
+    // "off" for an operator who believed they enabled auto-remediation.
+    AGENT_EDITION_AUTO_MIGRATE_ENABLED: z.string().optional(),
+
     // Signup-abuse detection kill switch / opt-in (services/abuseSignals).
     // Defaults to IS_HOSTED; read at runtime by abuseSignalsEnabled() in
     // env.ts. Validated here for boolean format only, for the same reason as
@@ -1677,6 +1684,19 @@ const envSchema = envObjectSchema
         path: ['AGENT_AUTO_PROMOTE'],
         message:
           'AGENT_AUTO_PROMOTE must be a boolean (true/false, 1/0, yes/no, on/off) when set. Defaults to true (sync immediately becomes the fleet upgrade target). Set false to require explicit promotion via POST /agent-versions/promote.',
+      });
+    }
+
+    // AGENT_EDITION_AUTO_MIGRATE_ENABLED (auto edition migration, #4072).
+    // Same treatment and reasoning as AGENT_AUTO_PROMOTE above.
+    const autoMigrateRaw = (data.AGENT_EDITION_AUTO_MIGRATE_ENABLED ?? '').trim().toLowerCase();
+    if (autoMigrateRaw && !boolValues.has(autoMigrateRaw)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['AGENT_EDITION_AUTO_MIGRATE_ENABLED'],
+        message:
+          'AGENT_EDITION_AUTO_MIGRATE_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. ' +
+          'Defaults to false (no automatic edition-migration dispatch).',
       });
     }
 

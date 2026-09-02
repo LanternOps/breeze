@@ -107,11 +107,18 @@ export const SENTRY_EVENT_CODES = [
   /** Snapshots are unattributable because two orgs share a destination. */
   'backup_snapshot_ambiguous_destination',
 
+  // --- agent binary serving ---------------------------------------------
+  /** No promoted `agent_versions` row, so downloads fall back to the
+   *  env-resolved release and may fail client-side checksums (#3499). */
+  'agent_promoted_version_missing',
+
   // --- device lifecycle -------------------------------------------------
   /** The device cascade could not read the caller's prior `lock_timeout`. */
   'device_deletion_lock_timeout_unreadable',
   /** The device cascade ran without holding the parent `devices` row lock. */
   'device_deletion_parent_lock_missing',
+  /** Auto edition migration (#4072) dispatched its script to at least one stranded device this process lifetime. */
+  'agent_edition_auto_migration_dispatched',
 
   // --- mcp transport ----------------------------------------------------
   /** A principal presented an `Mcp-Session-Id` owned by someone else (MED-1). */

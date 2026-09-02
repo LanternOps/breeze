@@ -11,6 +11,7 @@ import { sql } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { extractRowCount } from '../db/rowCount';
 import { getBullMQConnection } from '../services/redis';
+import { recordRetentionRun } from '../services/retentionMetrics';
 import { attachWorkerObservability } from './workerObservability';
 import { cronFromEnv } from './scheduleRegistry';
 import { warnOnRetentionBacklog } from './retentionBatch';
@@ -134,6 +135,10 @@ export function createUserRiskRetentionWorker(): Worker<RetentionJobData> {
         );
         // `hasMore=true` buried in an info line is not an alert (#4343).
         warnOnRetentionBacklog('[UserRiskRetention]', 'user_risk_scores', result);
+        recordRetentionRun('user_risk_retention', {
+          rowsDeleted: result.deleted,
+          incomplete: result.hasMore,
+        });
         return result;
       });
     },

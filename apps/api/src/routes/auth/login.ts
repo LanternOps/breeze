@@ -556,6 +556,18 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
     const pendingPolicy = await getEffectiveMfaPolicy({
       scope: context.scope, userId: user.id, orgId: context.orgId, partnerId: context.partnerId,
     });
+    const allowedMethods = {
+      totp: Boolean(user.mfaSecret) && pendingPolicy.allowedMethods.totp,
+      sms: user.mfaMethod === 'sms' && Boolean(user.phoneNumber) && pendingPolicy.allowedMethods.sms,
+      passkey: passkeyAvailable && pendingPolicy.allowedMethods.passkey,
+    };
+    const recoveryAvailable = Array.isArray(user.mfaRecoveryCodes)
+      && user.mfaRecoveryCodes.length > 0;
+    if (!allowedMethods.totp && !allowedMethods.sms && !allowedMethods.passkey && !recoveryAvailable) {
+      if (capability) await cancelAuthIssuance(capability).catch(() => undefined);
+      await floorPromise;
+      return c.json(genericAuthError(), 401);
+    }
     let pendingTransition = { transitionId: 'legacy', browserGeneration: 0 };
     if (capability) {
       const guardedCapability = capability;
@@ -583,11 +595,12 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
       // the client can't self-elevate to the passkey path without an actually
       // registered credential (and /verify still re-checks credential
       // ownership + assertion regardless).
-      passkeyAvailable,
+      passkeyAvailable: allowedMethods.passkey,
+      recoveryAvailable,
       authEpoch: pendingEpochs.authEpoch,
       mfaEpoch: pendingEpochs.mfaEpoch,
       statusExpectation: user.status,
-      allowedMethods: pendingPolicy.allowedMethods,
+      allowedMethods,
       ...pendingTransition,
       expiresAt: Date.now() + PENDING_TTL_SECONDS * 1000,
     };
@@ -614,9 +627,11 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
       mfaRequired: true,
       tempToken,
       mfaMethod,
+      allowedMethods,
+      recoveryAvailable,
       // #2153: lets the login MFA screen offer "use a passkey instead" alongside
       // the primary factor's prompt when the account has a registered passkey.
-      passkeyAvailable,
+      passkeyAvailable: allowedMethods.passkey,
       phoneLast4: user.phoneNumber?.slice(-4) || null,
       user: null,
       tokens: null
@@ -851,7 +866,15 @@ loginRoutes.post('/refresh', async (c) => {
   const csrfError = validateCookieCsrfRequest(c);
   if (csrfError) {
     clearRefreshTokenCookie(c);
-    return c.json({ error: csrfError }, 403);
+    // `code` lets the web client tell an origin misconfiguration (operator
+    // opened Breeze at an address outside CORS_ALLOWED_ORIGINS) apart from a
+    // dead session, instead of showing "session expired" for both.
+    return c.json(
+      csrfError === 'Invalid request origin'
+        ? { error: csrfError, code: 'invalid_request_origin' }
+        : { error: csrfError },
+      403,
+    );
   }
 
   const payload = await verifyToken(refreshToken);

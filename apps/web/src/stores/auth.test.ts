@@ -3,6 +3,10 @@ import type { Tokens, User } from './auth';
 import { applyResolvedLocalePreferences } from '@/lib/appearance';
 import {
   apiAcceptInvite,
+  apiEnableSmsMfa,
+  apiEnableTotpMfa,
+  apiEnrollPasskey,
+  apiGetMfaEnrollmentOptions,
   apiLogin,
   apiLogout,
   apiPrepareCfTerminalLogout,
@@ -357,6 +361,59 @@ describe('auth store fetchWithAuth', () => {
     // the page is navigating away regardless.
     expect(useAuthStore.getState().sessionExpiredReason).toBe('session-expired');
     expect(response!.status).toBe(401);
+    expect(replace).toHaveBeenCalledWith(`/login?next=${encodeURIComponent('/devices')}&reason=session-expired`);
+  });
+
+  // Self-hosted origin rejection, NOT a dead session. A self-hoster who reaches
+  // the dashboard over an SSH tunnel (`ssh -L 8443:127.0.0.1:443`) browses
+  // https://localhost:8443 while the generated .env allows only
+  // https://localhost, so validateCookieCsrfRequest answers POST /auth/refresh
+  // with 403 {"error":"Invalid request origin"}. Evicting is still correct —
+  // no access token can be minted from that origin — but reporting it as
+  // "session expired" made a pure config problem read as a wrong password,
+  // after EVERY successful login. The reason code is what lets the login page
+  // name the origin and the two settings that fix it.
+  it('reports a 403 "Invalid request origin" refresh as origin-rejected, not session-expired', async () => {
+    useAuthStore.getState().login(baseUser, baseTokens);
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(makeResponse({ error: 'unauthorized' }, false, 401))
+      .mockResolvedValueOnce(makeResponse({ error: 'Invalid request origin' }, false, 403));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { replace, restore } = mockLocation('/devices');
+    try {
+      await fetchWithAuth('/devices');
+    } finally {
+      restore();
+    }
+
+    expect(useAuthStore.getState().isAuthenticated).toBe(false);
+    expect(useAuthStore.getState().sessionExpiredReason).toBe('origin-rejected');
+    expect(replace).toHaveBeenCalledWith(`/login?next=${encodeURIComponent('/devices')}&reason=origin-rejected`);
+  });
+
+  // The discriminator is the body, not the status: every OTHER 403 on refresh
+  // stays a generic expiry, or the notice would blame CORS for unrelated
+  // rejections.
+  it('leaves an unrelated 403 on refresh as a generic session expiry', async () => {
+    useAuthStore.getState().login(baseUser, baseTokens);
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(makeResponse({ error: 'unauthorized' }, false, 401))
+      .mockResolvedValueOnce(makeResponse({ error: 'Forbidden' }, false, 403));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { replace, restore } = mockLocation('/devices');
+    try {
+      await fetchWithAuth('/devices');
+    } finally {
+      restore();
+    }
+
+    expect(useAuthStore.getState().sessionExpiredReason).toBe('session-expired');
     expect(replace).toHaveBeenCalledWith(`/login?next=${encodeURIComponent('/devices')}&reason=session-expired`);
   });
 
@@ -904,7 +961,7 @@ describe('auth API helpers', () => {
 
     const result = await apiLogin('user@example.com', 'password');
 
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       success: true,
       mfaRequired: true,
       tempToken: 'temp-1',
@@ -1513,6 +1570,21 @@ describe('restoreAccessTokenFromCookieDetailed (Task 3 — proactive keepalive)'
     expect(outcome).toBe('auth-failed');
   });
 
+  // Split out from 'auth-failed' so the heartbeat's eviction can carry the
+  // reason code the login notice keys off. Still an eviction — the origin can
+  // never mint a token — just an honestly-labelled one.
+  it("returns 'origin-rejected' on a 403 \"Invalid request origin\"", async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(makeResponse({ error: 'Invalid request origin' }, false, 403))
+    );
+
+    const outcome = await restoreAccessTokenFromCookieDetailed();
+
+    expect(outcome).toBe('origin-rejected');
+    expect(useAuthStore.getState().tokens).toBeNull();
+  });
+
   it("returns 'transient' once a 5xx exhausts the retry budget — no verdict on the cookie", async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(makeResponse({ error: 'bad gateway' }, false, 502)));
 
@@ -1859,5 +1931,113 @@ describe('apiRegisterPartner recovery action', () => {
     const result = await apiRegisterPartner('Acme', 'jane@acme.test', 'pw', 'Jane');
 
     expect(result).toEqual({ success: false, error: 'Registration failed', action: undefined });
+  });
+});
+
+describe('MFA enrollment API bindings', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useAuthStore.getState().login(baseUser, baseTokens);
+  });
+
+  it('accepts only a fully typed enrollment-options response', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(makeResponse({
+      allowedMethods: { totp: true, sms: false, passkey: true },
+      phoneConfigured: false,
+    })));
+
+    await expect(apiGetMfaEnrollmentOptions()).resolves.toEqual({
+      success: true,
+      options: {
+        allowedMethods: { totp: true, sms: false, passkey: true },
+        phoneConfigured: false,
+      },
+    });
+  });
+
+  // #4413: /auth/mfa/enable answers 401 for "that TOTP is wrong", which is not
+  // an expired bearer. Letting fetchWithAuth's generic 401 path have it either
+  // replays the code or — on the forced-enrollment page, where the user has
+  // nowhere else to go — signs them out for a typo.
+  it('treats a wrong-code 401 as a rejection, not an expired session', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(makeResponse({ error: 'Invalid MFA code' }, false, 401));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(apiEnableTotpMfa('123456', 'password')).resolves.toEqual({
+      success: false,
+      error: 'Invalid MFA code',
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1); // no refresh, no replay
+    expect(useAuthStore.getState().isAuthenticated).toBe(true);
+  });
+
+  it('rejects terminal enrollment responses without replacement access metadata', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(makeResponse({
+      success: true,
+      recoveryCodes: ['RC-ONE'],
+    })));
+
+    await expect(apiEnableTotpMfa('123456', 'password')).resolves.toEqual({
+      success: false,
+      error: 'Invalid MFA enrollment response',
+    });
+  });
+
+  it.each([
+    ['totp', () => apiEnableTotpMfa('123456', 'password')],
+    ['sms', () => apiEnableSmsMfa('password')],
+  ] as const)('returns recovery codes and replacement metadata for %s', async (_method, invoke) => {
+    const payload = {
+      success: true,
+      recoveryCodes: ['RC-ONE', 'RC-TWO'],
+      tokens: { accessToken: 'replacement', expiresInSeconds: 900 },
+    };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(makeResponse(payload)));
+
+    await expect(invoke()).resolves.toEqual(payload);
+  });
+
+  it('completes passkey registration through the terminal replacement response', async () => {
+    const payload = {
+      success: true,
+      recoveryCodes: ['RC-PASSKEY'],
+      tokens: { accessToken: 'replacement-passkey', expiresInSeconds: 900 },
+    };
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(makeResponse({ options: { challenge: 'challenge' } }))
+      .mockResolvedValueOnce(makeResponse(payload)));
+
+    await expect(apiEnrollPasskey('password')).resolves.toEqual(payload);
+  });
+});
+
+describe('MFA enrollment session adoption', () => {
+  it('refuses a terminal response after logout', () => {
+    useAuthStore.getState().login(baseUser, baseTokens);
+    const generation = useAuthStore.getState().sessionGeneration;
+    useAuthStore.getState().logout();
+
+    expect(useAuthStore.getState().commitMfaEnrollmentIfCurrent(generation, {
+      accessToken: 'stale',
+      expiresInSeconds: 900,
+    })).toBe(false);
+    expect(useAuthStore.getState()).toMatchObject({ user: null, tokens: null, isAuthenticated: false });
+  });
+
+  it('refuses a terminal response after a newer login, even for the same user', () => {
+    useAuthStore.getState().login(baseUser, baseTokens);
+    const generation = useAuthStore.getState().sessionGeneration;
+    const newerTokens = { accessToken: 'newer', expiresInSeconds: 900 };
+    useAuthStore.getState().login(baseUser, newerTokens);
+
+    expect(useAuthStore.getState().commitMfaEnrollmentIfCurrent(generation, {
+      accessToken: 'stale',
+      expiresInSeconds: 900,
+    })).toBe(false);
+    expect(useAuthStore.getState().tokens).toEqual(newerTokens);
+    expect(useAuthStore.getState().user?.mfaEnabled).toBe(false);
   });
 });
