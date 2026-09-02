@@ -15,6 +15,7 @@ import {
   peripheralPolicyDeliveryEvents,
   peripheralPolicyDeviceStates,
 } from '../db/schema';
+import { assertDeviceExecuteAllowed, TrustDeniedError } from './partnerTrust.commands';
 
 export type PeripheralReconcileReason =
   | 'policy_changed'
@@ -212,6 +213,17 @@ export async function reconcilePeripheralPolicyDevice(
       reason,
     });
     if (plan.kind === 'coalesced') return 'coalesced';
+
+    try {
+      await assertDeviceExecuteAllowed(deviceId, 'peripheral_policy_sync_v2', null);
+    } catch (error) {
+      if (!(error instanceof TrustDeniedError)) throw error;
+      console.warn('Skipping peripheral policy push because partner trust denied device execution', {
+        deviceId,
+        code: error.code,
+      });
+      return 'incompatible';
+    }
 
     const now = new Date(generatedAt);
     if (current) {
