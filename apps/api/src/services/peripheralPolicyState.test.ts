@@ -1,13 +1,41 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const { assertDeviceExecuteAllowedMock, loadEffectivePolicyMock, txMock } = vi.hoisted(() => ({
+  assertDeviceExecuteAllowedMock: vi.fn(async () => undefined),
+  loadEffectivePolicyMock: vi.fn(),
+  txMock: {
+    select: vi.fn(),
+    insert: vi.fn(),
+    update: vi.fn(),
+  },
+}));
+
+vi.mock('../db', () => ({
+  runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
+  withSystemDbAccessContext: vi.fn((fn: () => unknown) => fn()),
+  db: {
+    transaction: vi.fn((fn: (tx: typeof txMock) => unknown) => fn(txMock)),
+  },
+}));
+vi.mock('./peripheralEffectivePolicy', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./peripheralEffectivePolicy')>()),
+  loadAndResolveEffectivePeripheralPolicySetInCurrentDbContext: loadEffectivePolicyMock,
+}));
+vi.mock('./partnerTrust.commands', async () => ({
+  ...(await vi.importActual<typeof import('./partnerTrust.commands')>('./partnerTrust.commands')),
+  assertDeviceExecuteAllowed: assertDeviceExecuteAllowedMock,
+}));
 import {
   planPeripheralPolicyReconciliation,
   planPeripheralPolicyResult,
+  reconcilePeripheralPolicyDevice,
   type PeripheralPolicyStateSnapshot,
 } from './peripheralPolicyState';
 import type {
   PeripheralDeviceIdentity,
   PeripheralPolicyV2,
 } from './peripheralEffectivePolicy';
+import { TrustDeniedError } from './partnerTrust.commands';
 
 const identity: PeripheralDeviceIdentity = {
   deviceId: '00000000-0000-4000-8000-000000000001',
@@ -222,5 +250,73 @@ describe('planPeripheralPolicyResult', () => {
       lastErrorCode: null,
       scheduleEnforce: true,
     });
+  });
+});
+
+describe('reconcilePeripheralPolicyDevice trust gate', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    txMock.select
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            limit: () => ({
+              for: () => Promise.resolve([{
+                id: identity.deviceId,
+                orgId: identity.orgId,
+                peripheralPolicyProtocolVersion: 2,
+              }]),
+            }),
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({ limit: () => ({ for: () => Promise.resolve([]) }) }),
+        }),
+      });
+    loadEffectivePolicyMock.mockResolvedValue({ identity, effectivePolicies });
+  });
+
+  it('warns and skips all writes when partner trust denies the policy push', async () => {
+    assertDeviceExecuteAllowedMock.mockRejectedValueOnce(
+      new TrustDeniedError(
+        'TRUST_PROBATION',
+        'Partner verification is required.',
+        identity.deviceId,
+        'peripheral_policy_sync_v2',
+      ),
+    );
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    await expect(reconcilePeripheralPolicyDevice(identity.deviceId, 'policy_changed'))
+      .resolves.toBe('incompatible');
+
+    expect(assertDeviceExecuteAllowedMock).toHaveBeenCalledWith(
+      identity.deviceId,
+      'peripheral_policy_sync_v2',
+      null,
+    );
+    expect(txMock.insert).not.toHaveBeenCalled();
+    expect(txMock.update).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(
+      'Skipping peripheral policy push because partner trust denied device execution',
+      { deviceId: identity.deviceId, code: 'TRUST_PROBATION' },
+    );
+    warn.mockRestore();
+  });
+
+  it('preserves the existing queued flow when partner trust allows the policy push', async () => {
+    txMock.insert
+      .mockReturnValueOnce({ values: vi.fn().mockResolvedValue(undefined) })
+      .mockReturnValueOnce({
+        values: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'command-1' }]) }),
+      })
+      .mockReturnValueOnce({ values: vi.fn().mockResolvedValue(undefined) });
+
+    await expect(reconcilePeripheralPolicyDevice(identity.deviceId, 'policy_changed'))
+      .resolves.toBe('queued');
+
+    expect(txMock.insert).toHaveBeenCalledTimes(3);
   });
 });

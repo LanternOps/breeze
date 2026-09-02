@@ -13,12 +13,15 @@ import { writeRouteAudit } from '../../services/auditEvents';
 import { commandAuditDetails, sanitizeCommandForHistory } from '../../services/commandAudit';
 import { dispatchWake, type WakeFailureCode } from '../../services/wakeOnLan';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
+import { assertDeviceExecuteAllowed, TrustDeniedError } from '../../services/partnerTrust.commands';
+import { trustDenyBody, type TrustDenyCode } from '../../services/partnerTrust';
 
 export const commandsRoutes = new Hono();
 
 commandsRoutes.use('*', authMiddleware);
 
 const COMMAND_SET_AUTO_UPDATE = 'set_auto_update';
+const COMMAND_WAKE_ON_LAN = 'wake_on_lan';
 
 // POST /devices/bulk/commands - Queue a command for multiple devices
 commandsRoutes.post(
@@ -55,7 +58,7 @@ commandsRoutes.post(
       }> = [];
       const failed: Array<{
         deviceId: string;
-        code: WakeFailureCode | 'DECOMMISSIONED' | 'TARGET_NOT_FOUND' | 'SITE_ACCESS_DENIED';
+        code: WakeFailureCode | 'DECOMMISSIONED' | 'TARGET_NOT_FOUND' | 'SITE_ACCESS_DENIED' | TrustDenyCode;
         message: string;
       }> = [];
       const ipAddress = getTrustedClientIpOrUndefined(c);
@@ -88,6 +91,13 @@ commandsRoutes.post(
           }
           if (device.status === 'decommissioned') {
             failed.push({ deviceId, code: 'DECOMMISSIONED', message: 'Cannot wake a decommissioned device.' });
+            continue;
+          }
+          try {
+            await assertDeviceExecuteAllowed(deviceId, COMMAND_WAKE_ON_LAN, auth.user.id);
+          } catch (error) {
+            if (!(error instanceof TrustDeniedError)) throw error;
+            failed.push({ deviceId, code: error.code, message: error.reason });
             continue;
           }
           const result = await dispatchWake(deviceId, auth.user.id, {
@@ -132,7 +142,8 @@ commandsRoutes.post(
       | 'TARGET_NOT_FOUND'
       | 'SITE_ACCESS_DENIED'
       | 'DECOMMISSIONED'
-      | 'INSERT_FAILED';
+      | 'INSERT_FAILED'
+      | TrustDenyCode;
     const failed: Array<{ deviceId: string; code: BulkFailureCode; message: string }> = [];
     // Devices that completed successfully on a prior call and would queue
     // a duplicate now (currently only the refresh_inventory dedup path).
@@ -156,6 +167,14 @@ commandsRoutes.post(
       }
       if (device.status === 'decommissioned') {
         failed.push({ deviceId, code: 'DECOMMISSIONED', message: 'Cannot send commands to a decommissioned device.' });
+        continue;
+      }
+
+      try {
+        await assertDeviceExecuteAllowed(deviceId, data.type, auth.user.id);
+      } catch (error) {
+        if (!(error instanceof TrustDeniedError)) throw error;
+        failed.push({ deviceId, code: error.code, message: error.reason });
         continue;
       }
 
@@ -267,6 +286,22 @@ commandsRoutes.post(
     // Don't allow commands to decommissioned devices
     if (device.status === 'decommissioned') {
       return c.json({ error: 'Cannot send commands to a decommissioned device' }, 400);
+    }
+
+    try {
+      await assertDeviceExecuteAllowed(
+        deviceId,
+        data.type === 'wake' ? COMMAND_WAKE_ON_LAN : data.type,
+        auth.user.id,
+      );
+    } catch (error) {
+      if (!(error instanceof TrustDeniedError)) throw error;
+      return c.json(trustDenyBody({
+        allow: false,
+        code: error.code,
+        capability: 'device_execute',
+        reason: error.reason,
+      }, false), 403);
     }
 
     // Dedup refresh_inventory: each click fans out ~12 collectors on the
@@ -436,6 +471,18 @@ commandsRoutes.post(
     }
     if (device.status === 'decommissioned') {
       return c.json({ error: 'Cannot send commands to a decommissioned device' }, 400);
+    }
+
+    try {
+      await assertDeviceExecuteAllowed(deviceId, COMMAND_SET_AUTO_UPDATE, auth.user.id);
+    } catch (error) {
+      if (!(error instanceof TrustDeniedError)) throw error;
+      return c.json(trustDenyBody({
+        allow: false,
+        code: error.code,
+        capability: 'device_execute',
+        reason: error.reason,
+      }, false), 403);
     }
 
     const [command] = await db

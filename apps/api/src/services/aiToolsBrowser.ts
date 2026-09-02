@@ -18,6 +18,7 @@ import { eq, and, desc, sql, inArray, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { publishEvent } from './eventBus';
+import { assertDeviceExecuteAllowed, TrustDeniedError } from './partnerTrust.commands';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -453,6 +454,18 @@ export function registerBrowserTools(aiTools: Map<string, AiTool>): void {
 
         if (targetDevices.length === 0) {
           return JSON.stringify({ error: 'No target devices found' });
+        }
+
+        try {
+          for (const device of targetDevices) {
+            await assertDeviceExecuteAllowed(device.id, 'apply_browser_policy', auth.user.id);
+          }
+        } catch (error) {
+          if (!(error instanceof TrustDeniedError)) throw error;
+          return JSON.stringify({
+            error: error.code,
+            message: 'Remote control and device changes are not available until this account is verified.',
+          });
         }
 
         const queued = await db
