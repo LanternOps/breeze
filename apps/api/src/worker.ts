@@ -44,10 +44,25 @@
  * `services/rejectionSuppressions` (zero imports of its own) — each
  * independently verified importable without pulling in the route graph.
  *
+ * #4143 added four more, all held to the same bar: `services/eventLoopMonitor`
+ * (`node:perf_hooks` only), `services/eventLoopStarvationReporter` (the
+ * monitor only), `services/postgresConnectTimeout` (leaves only), and the two
+ * metrics leaves `services/metricsRegistry` (`prom-client` only) and
+ * `services/metricsScrapeAuth` (`node:crypto` only). `services/metricsRuntime`
+ * and `db/dbPoolHealthMonitor` are deliberately NOT static — their graphs
+ * reach `postgres`, and the health server must be listening before that loads.
+ *
  * Boot order (the contract, see the plan doc's Task 6):
  *   1. dotenv + role guard (fail closed — this binary runs ONLY as worker).
  *   2. validateConfig(); initSentry().
- *   3. Slim raw-node:http health server, started FIRST (before DB/Redis).
+ *   2b. #3022/#3214/#4143 observability: event-loop lag monitor +
+ *      CONNECT_TIMEOUT classifier immediately after initSentry (so a stall is
+ *      observable for the whole life of the process), and a `breeze_role`
+ *      Sentry tag set inside initSentry so this container's events are
+ *      distinguishable from the api container's.
+ *   3. Slim raw-node:http health server, started FIRST (before DB/Redis). It
+ *      serves `/health`, `/health/ready` and — auth-gated by the same rules as
+ *      the api role's `/api/metrics/scrape` — `/metrics`.
  *   4. DB reachability probe, then `waitForMigrationParity()` — NEVER
  *      `autoMigrate()`. A worker-role process never applies migrations. Then
  *      `initializeDatabaseForStartup({ autoMigrateEnabled: false, production })`
@@ -63,16 +78,42 @@
  *   8. Start the registry's `global`-placement workers, then the
  *      event-dispatch consumer (its own phase-2 special, same as index.ts) —
  *      no relay consumer (socket-owner, stays on api/all).
- *   9. Signal handlers → phased shutdown (drain → workers → queues →
- *      eventbus → redis → db → sentry), mirroring index.ts's Part A
- *      semantics.
+ *   8b. Pool-health watchdog (after validateConfig and after the classifier —
+ *      see the call site for both ordering constraints), plus the runtime
+ *      metric series that publish its verdict and the event-loop lag.
+ *   9. Signal handlers → phased shutdown. The preamble stops both monitors,
+ *      then the phases run (drain → workers → queues → eventbus → redis → db →
+ *      sentry), mirroring index.ts's Part A semantics.
  */
 import 'dotenv/config';
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from 'node:http';
 import { sql } from 'drizzle-orm';
 import { breezeRole } from './config/env';
 import { validateConfig } from './config/validate';
-import { captureException, flushSentry, initSentry } from './services/sentry';
+import {
+  captureException,
+  captureMessage,
+  flushSentry,
+  initSentry,
+  setConnectTimeoutClassifier,
+} from './services/sentry';
+import {
+  getEventLoopStarvationThresholdMs,
+  startEventLoopMonitor,
+  stopEventLoopMonitor,
+} from './services/eventLoopMonitor';
+import { createStarvationReporter } from './services/eventLoopStarvationReporter';
+import {
+  getConnectTimeoutStarvationThresholdMs,
+  safeDiagnoseConnectTimeout,
+} from './services/postgresConnectTimeout';
+import { metricsRegistry } from './services/metricsRegistry';
+import {
+  directPeerAddress,
+  evaluateMetricsScrapeAuth,
+  parseMetricsScrapeIpAllowlist,
+  resolveMetricsScrapeToken,
+} from './services/metricsScrapeAuth';
 import {
   computeWorkersHealthy,
   createReadinessEvaluator,
@@ -104,6 +145,18 @@ let shuttingDown = false;
 let migrationParityAchieved = false;
 let healthServer: Server | null = null;
 let auditRetryInterval: NodeJS.Timeout | null = null;
+
+/**
+ * Set once `services/metricsRuntime` has been dynamically imported (#4143).
+ *
+ * That module is NOT a static import: its own graph reaches
+ * `db/dbPoolHealthMonitor` and therefore `postgres`, and the health server has
+ * to be listening before any of that loads (boot step 3). Until it is wired,
+ * `/metrics` still answers — it renders whatever the registry holds and simply
+ * omits the runtime series, which is the honest reading of "this process has
+ * not registered them yet". It never 500s and never fabricates a zero.
+ */
+let refreshRuntimeMetrics: (() => void) | null = null;
 
 // Assigned once the dynamically-imported db/redis modules are available
 // (start of main(), before any readiness probe can actually be reached).
@@ -184,6 +237,73 @@ async function handleReadyRequest(res: ServerResponse): Promise<void> {
   }
 }
 
+/**
+ * `/metrics` (#4143) — the worker role's Prometheus scrape endpoint.
+ *
+ * Before this existed, a droplet in split mode published NOTHING from the
+ * container running the relocated BullMQ workers: the registry was private to
+ * `routes/metrics.ts`, which a worker-role process must never import, so every
+ * series that process could have produced was absent rather than stale. No
+ * `up`, no event-loop lag, no pool-health verdict — on the exact process where
+ * #3022 and #3214 were loudest.
+ *
+ * The gate is the SAME three rules the api role applies on
+ * `/api/metrics/scrape`, shared via `services/metricsScrapeAuth` rather than
+ * reimplemented: configured token (else 503), optional source-IP allowlist
+ * (else 403), constant-time bearer compare (else 401). One difference is
+ * deliberate and documented on `directPeerAddress`: the allowlist here matches
+ * the DIRECT PEER and ignores forwarded headers, because this port has no
+ * trusted-proxy configuration to validate them against.
+ *
+ * Env is read per-request, not cached at module load, so an operator can fix a
+ * missing `METRICS_SCRAPE_TOKEN` without the token resolution having been
+ * frozen at boot. At Prometheus scrape intervals the cost is irrelevant.
+ */
+async function handleMetricsRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const ipAllowlist = parseMetricsScrapeIpAllowlist();
+  const denial = evaluateMetricsScrapeAuth({
+    token: resolveMetricsScrapeToken(),
+    ipAllowlist,
+    authHeader: req.headers.authorization,
+    clientIp: ipAllowlist.size > 0 ? directPeerAddress(req.socket) : undefined,
+  });
+  if (denial) {
+    writeJson(res, denial.status, { error: denial.error });
+    return;
+  }
+
+  try {
+    // Refresh the read-on-scrape series (event-loop lag, pool-health verdict)
+    // before rendering, exactly as the api role's `metricsResponse` does.
+    refreshRuntimeMetrics?.();
+    const body = await metricsRegistry.metrics();
+    res.writeHead(200, {
+      'Content-Type': metricsRegistry.contentType,
+      'Cache-Control': 'no-cache, no-store, must-revalidate',
+    });
+    res.end(body);
+  } catch (error) {
+    // A render fault must not take the process down, and must not be silent:
+    // Prometheus sees a 500 (so `up` stays 1 while the scrape fails, which is
+    // the distinguishable state) and the fault is reported. The detail stays in
+    // the log and Sentry — the response body is a fixed string, because this
+    // endpoint answers before authentication has told us anything about who is
+    // asking on the 503 path and there is no reason to narrate internals to a
+    // scraper on any path.
+    console.error('[worker][metrics] Failed to render metrics:', error);
+    captureException(error instanceof Error ? error : new Error(String(error)));
+    // Guarded: if the throw came from `res.end()` the 200 header is already on
+    // the wire, and calling writeHead again raises ERR_HTTP_HEADERS_SENT from
+    // inside this catch — which would reject the promise and report a
+    // secondary, misleading error INSTEAD of the real one above.
+    if (!res.headersSent) {
+      writeJson(res, 500, { error: 'Failed to render metrics' });
+    } else {
+      res.end();
+    }
+  }
+}
+
 function startHealthServer(port: number): Server {
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     const pathName = (req.url ?? '/').split('?')[0];
@@ -195,6 +315,10 @@ function startHealthServer(port: number): Server {
     }
     if (pathName === '/health/ready') {
       void handleReadyRequest(res);
+      return;
+    }
+    if (pathName === '/metrics') {
+      void handleMetricsRequest(req, res);
       return;
     }
     writeJson(res, 404, { error: 'not found' });
@@ -229,6 +353,48 @@ export async function bootWorker(): Promise<void> {
 
   // Step 2.
   initSentry();
+
+  // #3022/#4143 — start measuring event-loop lag immediately after Sentry and
+  // before any DB/Redis work, mirroring index.ts, so a stall is observable for
+  // the whole life of the process. This matters MORE here than on the api
+  // role: the loudest signature in the original incident was the patch
+  // scheduler, and in split mode that runs in THIS container. The monitor is a
+  // native histogram plus one unref'd interval — it holds nothing open.
+  const eventLoopMonitor = startEventLoopMonitor({
+    onSample: createStarvationReporter({
+      thresholdMs: getEventLoopStarvationThresholdMs,
+      capture: (message, tags) =>
+        captureMessage(message, { eventCode: 'event_loop_starvation', tags }),
+    }),
+  });
+  if (eventLoopMonitor) {
+    console.log(
+      `[worker][event-loop] Lag monitor started (interval ${eventLoopMonitor.intervalMs}ms, `
+      + `warn threshold ${getEventLoopStarvationThresholdMs()}ms, `
+      + `CONNECT_TIMEOUT attribution threshold ${getConnectTimeoutStarvationThresholdMs()}ms)`,
+    );
+    if (eventLoopMonitor.intervalMs > getEventLoopStarvationThresholdMs()) {
+      console.warn(
+        `[worker][event-loop] EVENT_LOOP_MONITOR_INTERVAL_MS (${eventLoopMonitor.intervalMs}ms) exceeds the `
+        + `starvation threshold (${getEventLoopStarvationThresholdMs()}ms). Stalls shorter than one `
+        + `sampling interval cannot be observed, so CONNECT_TIMEOUT causes will report "unknown" (#3022).`,
+      );
+    }
+  } else {
+    console.warn(
+      '[worker][event-loop] Lag monitor DISABLED via EVENT_LOOP_MONITOR_DISABLED — Postgres '
+      + 'CONNECT_TIMEOUT errors will report cause "unknown" because starvation can be '
+      + 'neither ruled in nor out (#3022).',
+    );
+  }
+
+  // Injected rather than imported by services/sentry.ts, which must stay a leaf
+  // — same inversion index.ts performs. Must follow startEventLoopMonitor:
+  // before the monitor runs every diagnosis correctly reports 'unknown' rather
+  // than guessing. The SAFE variant specifically — this runs on error paths and
+  // a throw here would cost the original report.
+  setConnectTimeoutClassifier(safeDiagnoseConnectTimeout);
+
   const config = validateConfig();
   console.log(`[worker] Validated config: NODE_ENV=${config.NODE_ENV}`);
 
@@ -253,6 +419,38 @@ export async function bootWorker(): Promise<void> {
   const { shutdownEventDispatchQueue } = await import('./services/eventDispatchQueue');
   const { getEventBus } = await import('./services/eventBus');
   const { drainAuditRetryQueue } = await import('./services/auditService');
+  const {
+    getDbPoolHealthMinTimeouts,
+    getDbPoolHealthWindowMs,
+    startDbPoolHealthMonitor,
+    stopDbPoolHealthMonitor,
+  } = await import('./db/dbPoolHealthMonitor');
+  // Registers the role-agnostic runtime series onto the shared registry and
+  // binds the CONNECT_TIMEOUT counter recorder. Dynamic because its graph
+  // reaches `db/dbPoolHealthMonitor` -> `postgres`; the health server above is
+  // already listening, so this cannot delay liveness.
+  const { updateRuntimeMetrics } = await import('./services/metricsRuntime');
+  refreshRuntimeMetrics = updateRuntimeMetrics;
+
+  // #3214/#4143 — pool-health watchdog. Ordering matches index.ts's two
+  // constraints: after setConnectTimeoutClassifier (nothing is counted until
+  // that is wired, so an earlier start only gives it an empty window) and
+  // after validateConfig (its probe builds a connection URL straight from the
+  // environment, so starting first lets a short interval fire a probe against
+  // unvalidated config and report the misconfiguration as a database fault).
+  const dbPoolHealthIntervalMs = startDbPoolHealthMonitor();
+  if (dbPoolHealthIntervalMs === null) {
+    console.warn(
+      '[worker][db-pool-health] Watchdog DISABLED via DB_POOL_HEALTH_DISABLED — a poisoned '
+      + 'postgres.js pool will decay silently until someone notices the jobs stop (#3214).',
+    );
+  } else {
+    console.log(
+      `[worker][db-pool-health] Watchdog started (interval ${dbPoolHealthIntervalMs}ms, `
+      + `window ${getDbPoolHealthWindowMs()}ms, probe threshold `
+      + `${getDbPoolHealthMinTimeouts()} CONNECT_TIMEOUT(s) per window)`,
+    );
+  }
 
   const { db, withSystemDbAccessContext } = dbModule;
   const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -389,6 +587,14 @@ export async function bootWorker(): Promise<void> {
     shutdownStarted = true;
     shuttingDown = true;
     console.log(`[worker][shutdown] Received ${signal}, shutting down gracefully...`);
+
+    // Both samplers are already unref'd, so stopping them is tidiness rather
+    // than a requirement — but it keeps a winding-down process from emitting
+    // starvation warnings about itself, and stops the watchdog opening a fresh
+    // probe connection while the pool drains (which would report
+    // `database-unreachable` about a process that is simply shutting down).
+    stopEventLoopMonitor();
+    stopDbPoolHealthMonitor();
 
     if (auditRetryInterval) {
       clearInterval(auditRetryInterval);

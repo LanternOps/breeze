@@ -2412,6 +2412,11 @@
     "link": "Yenilikler"
   },
   "money": {
-    "approximateTotal": "≈ {{amount}} yaklaşık · {{rateDate}} tarihli kurlarla"
+    "approximateTotal": "≈ {{amount}} yaklaşık · {{rateDate}} tarihli kurlarla",
+    "approximateFailed": "≈ toplam kullanılamıyor — döviz kurları yüklenemedi",
+    "approximateUnavailableMissing": "≈ toplam kullanılamıyor — {{codes}} için {{target}} döviz kuru yok",
+    "approximateUnavailableStale": "≈ toplam kullanılamıyor — {{codes}} için {{target}} döviz kuru çok eski",
+    "approximateUnavailableMixed": "≈ toplam kullanılamıyor — {{codes}} birimi {{target}} para birimine çevrilemedi",
+    "approximateUnavailableCodesOverflow": "{{codes}} ve {{more}} tane daha"
   }
 }

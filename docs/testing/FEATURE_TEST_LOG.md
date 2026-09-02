@@ -5123,3 +5123,206 @@ Implemented the approved #2489 / #3853 / #3854 client-completion slices on
 - Real-Postgres atomicity suite: **PASS** — 3 tests covering rollback, concurrent single-winner
   enrollment, and concurrent `auth_epoch` cutoff. The concurrency barrier follows PostgreSQL's full
   transitive lock-wait chain so queued enrollment transactions are counted deterministically.
+
+---
+
+### Re-verify — 2026-09-01 (post-fix, pre-0.109.0)
+
+Browser re-verification of four fixes merged to `main` today, against a freshly rebuilt seeded
+wt-stack (`release-prep` worktree at `1b733cedb`, baseUrl `http://localhost:32804`,
+`/health` → `{"status":"ok","version":"0.82.0"}`). Playwright MCP for the authenticated app,
+a fresh headless Chromium context for the public portal page.
+
+| # | Area | PR | Result |
+|---|---|---|---|
+| 1 | MFA enrollment error path | #4439 (#4413/#4414/#4471) | ✅ PASS |
+| 2 | FX approximate line | #4440 (#4415) | ✅ PASS |
+| 3 | UniFi integration page | #4437 (#2382) | ✅ PASS |
+| 4 | Portal hydration + quote accept | #4425 (#3906) | ❌ FAIL |
+
+---
+
+#### 1. MFA enrollment error path — ✅ PASS
+
+Account `admin@breeze.local` started at `mfa_enabled=f, mfa_epoch=3`. Enrollment is gated behind a
+current-password re-prompt (`mfa-current-password`), then renders the QR panel.
+
+- ✅ **Wrong code (`111111`) → visible inline error.** Rendered `Invalid MFA code` plus the
+  `mfa-code-rejected-hint` copy: *"That code was not accepted. Your QR code is still valid, so wait
+  for the next code from your authenticator and try again."*
+- ✅ **QR/secret NOT collapsed.** `img[alt="Authenticator QR code"]` still present; `mfa-setup-start`
+  ("Enable") absent — the panel did not fall back to the pre-enrollment state.
+- ✅ **No logout/redirect.** `POST /api/v1/auth/mfa/enable` → **401**, URL stayed
+  `/settings/profile`. This is the #4413 fix: a 401 on the enrollment path no longer trips the
+  global auth redirect.
+- ✅ **Correct code → enrollment completes.** TOTP derived from the pending secret in Redis
+  (`mfa:setup:<userId>`); `POST /auth/mfa/enable` → **200**; "Multi-factor authentication enabled
+  successfully"; **10 recovery codes displayed once**. DB after: `mfa_enabled=t, mfa_method=totp,
+  mfa_epoch=4, 10 codes`.
+- ✅ **Copy codes.** `mfa-copy-recovery-codes` label transitions `Copy codes` → **`Copied`** at 0 ms
+  and reverts at ~1.9 s (clipboard write succeeded, so `mfa-copy-recovery-codes-error` correctly did
+  not render). An explicit outcome, not silence.
+  *Trap:* a first probe ~2.5 s after the click read `Copy codes` and looked like a silent failure —
+  the label had already reverted. Re-measured with in-page 100 ms polling. (Same measurement trap
+  recorded in the 2026-08 sweep.)
+- ✅ **No "View codes" control.** The only `mfa-*` controls on the panel are
+  `mfa-copy-recovery-codes` and `mfa-recovery-regenerate`. Nothing offers to re-display stored codes.
+- ✅ **Regenerate is confirm-gated before any POST.** Clicking `mfa-recovery-regenerate` fired
+  **zero** `recovery-codes` requests (verified in both the page-level fetch log and the Playwright
+  network log) and opened the confirm dialog: *"Regenerate recovery codes? Regenerating immediately
+  invalidates every recovery code you have saved, including printed copies. The replacements are
+  shown once, right after they are generated."* Only on `confirm-regenerate-recovery-codes` did
+  `POST /api/v1/auth/mfa/recovery-codes` → **200** fire.
+- ✅ **TOTP challenge still works.** Signed out, signed back in: the challenge step rendered
+  (method selector Authenticator app / Recovery code), a live TOTP was accepted, landed on Dashboard.
+
+**Observation (not a regression, by design):** confirming regenerate bumps `mfa_epoch` 4 → 5 and
+tears down sessions (`services/…` via `apps/api/src/routes/auth/mfa.ts:1246`), so the very next
+`POST /auth/refresh` 401s and the UI bounces to `/login?reason=session-expired`. The consequence is
+that **the freshly regenerated codes are never actually shown** — the dialog promises "shown once,
+right after they are generated", but the session dies before that render. Worth a follow-up ticket;
+outside the scope of the four checks.
+
+#### 2. FX approximate line (#4415) — ✅ PASS
+
+Surface: `PartnerDashboard` MRR, `data-testid="partner-dashboard-mrr-approx"`. The
+`ApproximateMoneyLine` component (`apps/web/src/components/billing/shared/ApproximateMoneyLine.tsx`)
+stamps `data-approx-state`, which makes the state assertable. Both branches were exercised.
+
+**Branch A — rates available (stack default).**
+`GET /api/v1/billing/reporting-totals?groups=EUR%3A500.00&date=2026-09-01` → **200**
+```json
+{"data":{"status":"available","targetCurrencyCode":"USD","requestedDate":"2026-09-01",
+"maxStalenessDays":7,"rateDate":"2026-09-01","total":"579.50",
+"groups":[{"currencyCode":"EUR","amount":"500.00","convertedAmount":"579.50",
+"rate":"1.15900000","rateDate":"2026-09-01","source":"ecb"}],"unavailableCurrencyCodes":[]}}
+```
+✅ Rendered: `≈ $579.50 approximate · rates as of 2026-09-01`, `data-approx-state="available"`.
+
+**Branch B — rates unavailable (forced).** Temporarily deleted the single `EUR→USD` row from
+`exchange_rates`, reloaded, then restored it.
+`GET /api/v1/billing/reporting-totals?groups=EUR%3A500.00&date=2026-09-01` → **200**
+```json
+{"data":{"status":"unavailable","targetCurrencyCode":"USD","requestedDate":"2026-09-01",
+"maxStalenessDays":7,"rateDate":null,"total":null,
+"groups":[{"currencyCode":"EUR","amount":"500.00","convertedAmount":null,"rate":null,
+"rateDate":null,"source":null,"reason":"missing"}],"unavailableCurrencyCodes":["EUR"]}}
+```
+✅ Rendered: **`≈ total unavailable — no USD exchange rate for EUR`**,
+`data-approx-state="unavailable"` — an explicit line, not the pre-#4415 blank. This is the fix
+verified directly rather than inferred from the available branch.
+✅ `exchange_rates` row restored afterwards (`EUR|USD|1.15900000|ecb`); stack left as found.
+
+#### 3. UniFi integration page (#2382 refactor) — ✅ PASS
+
+`/integrations#unifi`.
+
+- ✅ Page loads; cards render from the split modules — heading "UniFi Network", "Not connected"
+  badge, `ConnectionChooser` radiogroup (Cloud (Site Manager API key) / Self-hosted controller),
+  API-key field, "Connect to UniFi", "View UniFi documentation".
+- ✅ **Console clean on load** — 0 errors, 0 warnings. No React errors, no hydration warnings.
+- ✅ **Mutation surfaces an outcome (runAction contract).** Submitted an invalid API key:
+  `POST /api/v1/unifi/connect` → **400**, and a toast (`data-testid="toast"`) appeared at ~600 ms
+  reading **"Could not validate the UniFi API key. Check the key and host URL."**, auto-dismissing
+  at ~5.5 s (matches the 5 s default in `apps/web/src/components/shared/Toast.tsx:103`).
+- ✅ Only console errors afterwards are the two expected `400` resource lines from the deliberate
+  bad input.
+  *Trap (again):* the first probe at ~2.5 s post-click found no toast because the tool round-trip
+  had already consumed the window. Confirmed with in-page polling — not a silent failure.
+
+#### 4. Portal hydration + quote accept (#3906 / PR #4425) — ❌ FAIL
+
+Setup: created quote **Q-2026-0002** ("Portal Hydration QA 0901") for `Euro Test GmbH` (EUR),
+€400.00, sent it through the UI (30 s undo window elapsed → `status=sent`, `accept_token_jti` set).
+`GET /api/v1/quotes/:id/share-link` → **200**, `acceptUrl = https://2breeze.app/portal/quote/<jwt>`;
+opened the local equivalent `http://localhost:32804/portal/quote/<jwt>` in a **fresh** headless
+Chromium context.
+
+**The page renders (SSR) but the island never hydrates, and the accept flow cannot be completed.**
+
+❌ Hydration failure, verified four independent ways:
+- Console: `[astro-island] Error hydrating /src/components/portal/PublicQuoteView.tsx TypeError:
+  Failed to fetch dynamically imported module: …/src/components/portal/PublicQuoteView.tsx?astro-retry=…`
+- Network: `GET /src/components/portal/PublicQuoteView.tsx` → **404** (and its `?astro-retry=` retry → 404).
+  This *is* the island's `component-url` (`<astro-island component-url="/src/components/portal/PublicQuoteView.tsx">`).
+- DOM: the `<astro-island>` still carries its `ssr` attribute — Astro strips it on successful hydration.
+- Behavioural: typed `QA Signer` into `public-quote-signer` and checked `public-quote-agree`; the
+  `public-quote-signature-preview` node stayed **empty** (a hydrated island mirrors the name into it),
+  and `public-quote-accept` remained `aria-disabled="true"` / `opacity-50`. `page.click` timed out
+  after 30 s on "element is not enabled". **Zero non-GET requests** were made for the whole session.
+- DB after: `Q-2026-0002 | viewed | accepted_at=NULL | converted_at=NULL` — SSR registered the view,
+  nothing was ever accepted.
+
+**Root cause — two independent defects, both defeating the #3906 Caddy carve-out.**
+
+The fix ships as an env-gated dev-only matcher in `docker/Caddyfile.prod:343-351`:
+```
+@portalDevAssets {
+  expression {env.CADDY_PORTAL_DEV_ASSETS} == "1"
+  header_regexp Referer ^https?://[^/]+(?::\d+)?/portal(?:/|$)
+  path /src/* /@fs/* /@vite/* /node_modules/.vite/*
+}
+```
+Both preconditions are satisfied on this stack — `CADDY_PORTAL_DEV_ASSETS=1` is set on
+`breeze-wt-release-prep-caddy-1`, and the block is present in the container's `/etc/caddy/Caddyfile`.
+The matcher itself works: `curl -H "Referer: http://localhost:32804/portal/quote/abc"
+http://localhost:32804/src/components/portal/PublicQuoteView.tsx` → **200**, and the same request
+without a `Referer` → **404**. The gate is never satisfied by a real browser, for two reasons:
+
+**(a) `/quote/` and `/invoice/` pages send no `Referer` at all.**
+`apps/portal/src/middleware.ts:107-111` sets `Referrer-Policy: no-referrer` on exactly those
+token-bearing paths (deliberately — the URL is the capability and must not leak). Verified on the
+wire: the accept page returns **two** `Referrer-Policy` headers —
+`strict-origin-when-cross-origin` (Caddy global, `Caddyfile.prod:361`) and `no-referrer`
+(portal middleware) — and the last valid value wins. Playwright's request log confirms the island
+module fetch goes out with an **absent/empty `Referer`**, so `header_regexp` cannot match and the
+request falls through to the web catch-all (`web:4321`), which has no such file → 404.
+The Referer-based gate and the no-referrer hardening are mutually exclusive on precisely the two
+page types the gate exists to serve.
+
+**(b) Even *with* a Referer, only depth-1 imports match — the rest of the module graph 404s.**
+Control run against `/portal/login` (which keeps `strict-origin-when-cross-origin`, so it *does*
+send a Referer) still fails to hydrate:
+`[astro-island] Error hydrating /src/components/portal/LoginForm.tsx`. Per-request Referers:
+
+| Module | Referer | Status |
+|---|---|---|
+| `/src/components/portal/LoginForm.tsx` | `/portal/login` | 200 ✅ |
+| `/src/lib/utils.ts` | `/src/components/portal/LoginForm.tsx` | 200 ⚠️ |
+| `/src/lib/navigation.ts` | `/src/components/portal/LoginForm.tsx` | 200 ⚠️ |
+| `/src/lib/basePath.ts` | `/src/components/portal/LoginForm.tsx` | **404** |
+| `/src/lib/auth.ts` | `/src/components/portal/LoginForm.tsx` | **404** |
+| `/src/lib/nextPath.ts` | `/src/components/portal/LoginForm.tsx` | **404** |
+| `/src/components/portal/ui.tsx` | `/src/components/portal/LoginForm.tsx` | **404** |
+
+A module-initiated `import()` carries the **importing module's URL** as its Referer, i.e.
+`/src/components/portal/LoginForm.tsx` — which does not start with `/portal`, so the regex rejects
+it and every transitive import is routed to the web app instead.
+
+⚠️ **Worse than a 404: silent cross-app module bleed.** The two rows above that returned 200 were
+served from `apps/web`, not `apps/portal` — `lib/utils.ts` and `lib/navigation.ts` exist in *both*
+apps, whereas `lib/basePath.ts`, `lib/auth.ts`, `lib/nextPath.ts` and `components/portal/ui.tsx`
+exist only in portal (verified by file presence). So a portal island that happens to import only
+same-named modules would hydrate against the **web app's** copies rather than failing loudly.
+
+**Scope.** Dev/wt-stack only — a production portal build serves bundled assets already prefixed
+under `/portal/*` and never hits this path, as `Caddyfile.prod:325-327` notes. So this is not a
+customer-facing regression, but it does mean **the quote-accept click-through still cannot be
+verified on wt-stack, and portal e2e specs continue to assert against dead (unhydrated) markup** —
+which is the failure mode #3906 was opened to end. Depth-1-only routing also makes the current
+carve-out look like it works when spot-checked with a single curl.
+
+Suspicion (file:line): `docker/Caddyfile.prod:345` (`header_regexp Referer …` — structurally cannot
+cover a Vite module graph) interacting with `apps/portal/src/middleware.ts:108`
+(`Referrer-Policy: no-referrer` on `/quote/` + `/invoice/`). A path-based split (e.g. serving the
+portal dev server under a distinct prefix, or a `Sec-Fetch-Dest`/port-based route) would not have
+either weakness.
+
+**Evidence labels:** all PASS/FAIL determinations above are **verified** in-browser against this
+stack. The production-safety scope note for #4 is **inferred** from `Caddyfile.prod` comments plus
+the fact that the 404s are Vite dev-server module-graph URLs; it was not tested against a production
+portal build.
+
+**Stack left as found** — EUR/USD exchange rate restored; no containers torn down. Residue from this
+run: `admin@breeze.local` now has TOTP MFA enabled (`mfa_epoch=5`, secret
+`KGU2MYZSQWKBWJHJOEBUMOTCCO7M6AXH`), and quote `Q-2026-0002` sits in `viewed`.

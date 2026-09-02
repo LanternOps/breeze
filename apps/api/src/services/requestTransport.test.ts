@@ -1,10 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import type { Context } from 'hono';
-import {
-  effectiveRequestScheme,
-  isCanonicalRequestHost,
-  canonicalHttpsRedirect,
-} from './requestTransport';
+import { effectiveRequestScheme, isCanonicalRequestHost, canonicalHttpsRedirect, isSameOriginRequest } from './requestTransport';
 
 // Mirrors the canonical shim pattern used across services/clientIp.test.ts and
 // routes/auth/helpers.test.ts.
@@ -203,6 +199,152 @@ describe('requestTransport', () => {
     it('does not redirect a request already using canonical https (no-op pass-through)', () => {
       const c = makeContext({ url: 'https://api.example.com/foo', host: 'api.example.com', remoteAddress: null });
       expect(canonicalHttpsRedirect(c, publicApiUrl)).toBeNull();
+    });
+  });
+});
+
+describe('isSameOriginRequest', () => {
+  const originalTrust = process.env.TRUST_PROXY_HEADERS;
+  const originalCidrs = process.env.TRUSTED_PROXY_CIDRS;
+
+  afterEach(() => {
+    if (originalTrust === undefined) delete process.env.TRUST_PROXY_HEADERS;
+    else process.env.TRUST_PROXY_HEADERS = originalTrust;
+    if (originalCidrs === undefined) delete process.env.TRUSTED_PROXY_CIDRS;
+    else process.env.TRUSTED_PROXY_CIDRS = originalCidrs;
+  });
+
+  function ctx(opts: {
+    headers?: Record<string, string>;
+    url?: string;
+    remoteAddress?: string;
+  }): Context {
+    const headers: Record<string, string> = {};
+    for (const [k, v] of Object.entries(opts.headers ?? {})) headers[k.toLowerCase()] = v;
+    return {
+      req: {
+        header: (name: string) => headers[name.toLowerCase()],
+        url: opts.url ?? 'http://api:3001/api/v1/auth/refresh',
+      },
+      ...(opts.remoteAddress ? { env: { incoming: { socket: { remoteAddress: opts.remoteAddress } } } } : {}),
+    } as unknown as Context;
+  }
+
+  it('accepts an origin outside the allowlist when the browser asserts Sec-Fetch-Site: same-origin', () => {
+    process.env.TRUST_PROXY_HEADERS = 'false';
+    const c = ctx({ headers: { origin: 'https://localhost:8443', 'sec-fetch-site': 'same-origin', host: 'api:3001' } });
+    expect(isSameOriginRequest(c, 'https://localhost:8443')).toBe(true);
+  });
+
+  it.each([
+    ['null origin', 'null'],
+    ['malformed origin', 'not an origin'],
+    ['non-http scheme', 'ftp://localhost:8443'],
+    ['origin with a path', 'https://localhost:8443/login'],
+    ['empty origin', ''],
+    // Spellings the WHATWG parser would normalise into a match; the Origin
+    // grammar rejects them before parsing.
+    ['backslash origin', 'https:\\\\localhost:8443'],
+    ['origin with userinfo', 'https://user@localhost:8443'],
+    ['percent-encoded host', 'https://local%68ost:8443'],
+    ['origin with an empty query', 'https://localhost:8443?'],
+    ['origin with an empty fragment', 'https://localhost:8443#'],
+    ['origin with a trailing slash', 'https://localhost:8443/'],
+  ])('rejects a %s even with Sec-Fetch-Site: same-origin', (_label, origin) => {
+    process.env.TRUST_PROXY_HEADERS = 'false';
+    const c = ctx({ headers: { origin, 'sec-fetch-site': 'same-origin', host: 'localhost:8443' }, url: 'https://localhost:8443/x' });
+    expect(isSameOriginRequest(c, origin)).toBe(false);
+  });
+
+  it('does not treat Sec-Fetch-Site: same-site as proof (sibling subdomains are same-site)', () => {
+    process.env.TRUST_PROXY_HEADERS = 'false';
+    const c = ctx({ headers: { origin: 'https://evil.example.com', 'sec-fetch-site': 'same-site', host: 'app.example.com' }, url: 'https://app.example.com/x' });
+    expect(isSameOriginRequest(c, 'https://evil.example.com')).toBe(false);
+  });
+
+  describe('direct requests (no proxy trust)', () => {
+    beforeEach(() => { process.env.TRUST_PROXY_HEADERS = 'false'; });
+
+    it('accepts Origin equal to the request scheme + Host', () => {
+      const c = ctx({ headers: { host: 'localhost:8443' }, url: 'https://localhost:8443/api/v1/auth/refresh' });
+      expect(isSameOriginRequest(c, 'https://localhost:8443')).toBe(true);
+    });
+
+    it('accepts IPv4 and bracketed IPv6 hosts', () => {
+      expect(isSameOriginRequest(ctx({ headers: { host: '192.168.1.50' }, url: 'https://192.168.1.50/x' }), 'https://192.168.1.50')).toBe(true);
+      expect(isSameOriginRequest(ctx({ headers: { host: '[::1]:8443' }, url: 'https://[::1]:8443/x' }), 'https://[::1]:8443')).toBe(true);
+    });
+
+    it('normalises host case and default ports', () => {
+      const upper = ctx({ headers: { host: 'LOCALHOST:8443' }, url: 'https://localhost:8443/x' });
+      expect(isSameOriginRequest(upper, 'https://localhost:8443')).toBe(true);
+      const defaultPort = ctx({ headers: { host: 'app.example.com:443' }, url: 'https://app.example.com/x' });
+      expect(isSameOriginRequest(defaultPort, 'https://app.example.com')).toBe(true);
+    });
+
+    it('rejects a scheme mismatch, a host mismatch, and a missing Host', () => {
+      expect(isSameOriginRequest(ctx({ headers: { host: 'localhost:8443' }, url: 'https://localhost:8443/x' }), 'http://localhost:8443')).toBe(false);
+      expect(isSameOriginRequest(ctx({ headers: { host: 'localhost:8443' }, url: 'https://localhost:8443/x' }), 'https://localhost:9443')).toBe(false);
+      expect(isSameOriginRequest(ctx({ headers: {}, url: 'https://localhost:8443/x' }), 'https://localhost:8443')).toBe(false);
+    });
+
+    it('ignores X-Forwarded-Proto/X-Forwarded-Host from an untrusted peer', () => {
+      const c = ctx({
+        headers: { host: 'api:3001', 'x-forwarded-proto': 'https', 'x-forwarded-host': 'localhost:8443' },
+        url: 'http://api:3001/x',
+        remoteAddress: '203.0.113.9',
+      });
+      expect(isSameOriginRequest(c, 'https://localhost:8443')).toBe(false);
+    });
+  });
+
+  describe('behind a trusted reverse proxy', () => {
+    const PROXY = '172.31.0.10';
+    beforeEach(() => {
+      process.env.TRUST_PROXY_HEADERS = 'true';
+      process.env.TRUSTED_PROXY_CIDRS = `${PROXY}/32`;
+    });
+
+    it('uses the forwarded scheme and X-Forwarded-Host (the Caddy-fronted self-host topology)', () => {
+      const c = ctx({
+        headers: { host: 'api:3001', 'x-forwarded-proto': 'https', 'x-forwarded-host': 'localhost:8443' },
+        url: 'http://api:3001/x',
+        remoteAddress: PROXY,
+      });
+      expect(isSameOriginRequest(c, 'https://localhost:8443')).toBe(true);
+    });
+
+    it('falls back to Host when the trusted proxy passes it through unchanged', () => {
+      const c = ctx({
+        headers: { host: 'localhost:8443', 'x-forwarded-proto': 'https' },
+        url: 'http://localhost:8443/x',
+        remoteAddress: PROXY,
+      });
+      expect(isSameOriginRequest(c, 'https://localhost:8443')).toBe(true);
+    });
+
+    it('fails closed on a multi-valued or empty X-Forwarded-Host', () => {
+      const multi = ctx({
+        headers: { host: 'localhost:8443', 'x-forwarded-proto': 'https', 'x-forwarded-host': 'localhost:8443, evil.example' },
+        url: 'http://localhost:8443/x',
+        remoteAddress: PROXY,
+      });
+      expect(isSameOriginRequest(multi, 'https://localhost:8443')).toBe(false);
+      const empty = ctx({
+        headers: { host: 'localhost:8443', 'x-forwarded-proto': 'https', 'x-forwarded-host': '' },
+        url: 'http://localhost:8443/x',
+        remoteAddress: PROXY,
+      });
+      expect(isSameOriginRequest(empty, 'https://localhost:8443')).toBe(false);
+    });
+
+    it('still rejects a cross-site origin that merely matches nothing', () => {
+      const c = ctx({
+        headers: { host: 'api:3001', 'x-forwarded-proto': 'https', 'x-forwarded-host': 'app.example.com' },
+        url: 'http://api:3001/x',
+        remoteAddress: PROXY,
+      });
+      expect(isSameOriginRequest(c, 'https://evil.example')).toBe(false);
     });
   });
 });

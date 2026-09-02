@@ -416,11 +416,11 @@ describe('LoginPage navigation after MFA verify', () => {
 // /login?next=…&reason=<code>. Without a notice the user lands on a bare sign-in
 // form with no explanation of why they were kicked out.
 describe('LoginPage session-expiry notice', () => {
-  function withSearch(search: string, run: () => Promise<void>): Promise<void> {
+  function withSearch(search: string, run: () => Promise<void>, origin?: string): Promise<void> {
     const realLocation = window.location;
     Object.defineProperty(window, 'location', {
       configurable: true,
-      value: { ...realLocation, search },
+      value: { ...realLocation, search, ...(origin ? { origin } : {}) },
     });
     return run().finally(() => {
       Object.defineProperty(window, 'location', { configurable: true, value: realLocation });
@@ -437,6 +437,25 @@ describe('LoginPage session-expiry notice', () => {
       const notice = await screen.findByTestId('login-session-expired-notice');
       expect(notice).toHaveTextContent(copy);
     }));
+
+  // A self-hoster on an SSH tunnel is bounced here after EVERY successful
+  // login because the API rejects https://localhost:8443 as an origin. The
+  // generic expiry copy sends them hunting for a password problem, so this
+  // notice has to name the origin the browser is actually using and both
+  // settings that accept it.
+  it('renders the origin-rejected notice with the browser origin interpolated', async () =>
+    withSearch(
+      '?next=%2Fdevices&reason=origin-rejected',
+      async () => {
+        render(<LoginPage />);
+
+        const notice = await screen.findByTestId('login-session-expired-notice');
+        expect(notice).toHaveTextContent('https://localhost:8443');
+        expect(notice).toHaveTextContent(/PUBLIC_APP_URL/);
+        expect(notice).toHaveTextContent(/CORS_ALLOWED_ORIGINS/);
+      },
+      'https://localhost:8443',
+    ));
 
   it('renders nothing for an unrecognized reason', async () =>
     withSearch('?reason=made-up-code', async () => {
