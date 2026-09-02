@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { DEVICES_SORT_KEYS } from './cursor';
 import { discoveredAssetTypeEnum } from '../../db/schema/discovery';
+import { MAINTENANCE_MAX_BULK_DEVICES, MAINTENANCE_MAX_DURATION_HOURS } from '../../services/mfaStepUpGrant';
 
 const DEVICE_ROLES = [
   'workstation', 'server', 'printer', 'router', 'switch',
@@ -182,10 +183,38 @@ export const bulkCommandSchema = z.object({
   payload: z.any().optional()
 });
 
-export const maintenanceModeSchema = z.object({
-  enable: z.boolean(),
-  durationHours: z.number().int().positive().max(168).optional()
-});
+/**
+ * RMM-QA-176 D4. `reason` and `durationHours` are REQUIRED on entry: the exit
+ * contract's "audit actor/reason/window" clause cannot be met by an audit row
+ * that says `reason: null`, and there is no released client to protect — the
+ * route is JWT-only (index.ts:840) so no API-key integration can exist, and the
+ * web ships its dialog in the same PR. Both branches are `.strict()`, so an old
+ * client sending `{ enable: false, durationHours }` gets a named 400 rather
+ * than silently having a field ignored. Bounds are imported, never retyped:
+ * the step-up mint schema binds the SAME numbers into the grant digest.
+ */
+export const maintenanceReasonSchema = z.string().trim().min(3).max(500);
+export const maintenanceDurationSchema = z.number().int().min(1).max(MAINTENANCE_MAX_DURATION_HOURS);
+
+export const maintenanceModeSchema = z.discriminatedUnion('enable', [
+  z.object({
+    enable: z.literal(true),
+    reason: maintenanceReasonSchema,
+    durationHours: maintenanceDurationSchema,
+    stepUpGrant: z.string().guid().optional(),
+  }).strict(),
+  z.object({
+    enable: z.literal(false),
+  }).strict(),
+]);
+
+/** Entry-only. Exit stays per-device — ending suppression needs no batching. */
+export const bulkMaintenanceSchema = z.object({
+  deviceIds: z.array(z.string().guid()).min(1).max(MAINTENANCE_MAX_BULK_DEVICES),
+  reason: maintenanceReasonSchema,
+  durationHours: maintenanceDurationSchema,
+  stepUpGrant: z.string().guid().optional(),
+}).strict();
 
 export const createGroupSchema = z.object({
   orgId: z.string().guid(),

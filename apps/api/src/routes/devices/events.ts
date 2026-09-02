@@ -344,6 +344,7 @@ const actionLabels: Record<string, string> = {
   'device.filesystem.cleanup.preview': 'Disk cleanup previewed',
   'device.filesystem.cleanup.execute': 'Disk cleanup executed',
   'device.maintenance.enable': 'Maintenance mode enabled',
+  'device.maintenance.extend': 'Maintenance mode extended',
   'device.maintenance.disable': 'Maintenance mode disabled',
   'device.recovery_key.reveal': 'Recovery key revealed',
   'device.recovery_key.rotate': 'Recovery key rotation requested',

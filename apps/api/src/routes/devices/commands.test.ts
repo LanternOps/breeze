@@ -117,11 +117,27 @@ vi.mock('../../services/clientIp', () => ({
   getTrustedClientIpOrUndefined: vi.fn(() => '127.0.0.1'),
 }));
 
+vi.mock('../../services/mfaStepUpGrant', async (importOriginal) => {
+  // Partial: maintenanceResourceDigest stays REAL so the binding assertion in
+  // T4 compares against the production canonicalization, not a stub.
+  const actual = await importOriginal<typeof import('../../services/mfaStepUpGrant')>();
+  return {
+    ...actual,
+    validateStepUpGrant: vi.fn(async () => true),
+    consumeStepUpGrant: vi.fn(async () => true),
+  };
+});
+
+vi.mock('../../services/authEpochs', () => ({
+  getUserEpochs: vi.fn(async () => ({ authEpoch: 1, mfaEpoch: 1 })),
+}));
+
 import { commandsRoutes } from './commands';
 import { db } from '../../db';
 import { getDeviceWithOrgCheck } from './helpers';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { dispatchWake } from '../../services/wakeOnLan';
+import { consumeStepUpGrant, maintenanceResourceDigest, validateStepUpGrant } from '../../services/mfaStepUpGrant';
 
 describe('device commands routes', () => {
   let app: Hono;
@@ -132,6 +148,14 @@ describe('device commands routes', () => {
     authState.mfa = true;
     authState.sid = 'sid-1';
     vi.clearAllMocks();
+    // RMM-QA-176: vi.clearAllMocks() clears call HISTORY but not queued
+    // `...Once` implementations. Several cases in this file now deny BEFORE the
+    // device lookup (the interactive/MFA/step-up gates), leaving their
+    // `mockResolvedValueOnce` unconsumed — which the NEXT test would then be
+    // served, silently inverting its result. Reset the two mocks whose values
+    // decide a route's outcome so every case starts from an empty queue.
+    vi.mocked(getDeviceWithOrgCheck).mockReset();
+    vi.mocked(db.transaction).mockReset();
     app = new Hono();
     app.route('/devices', commandsRoutes);
   });
@@ -891,77 +915,301 @@ describe('device commands routes', () => {
     });
   });
 
+  /**
+   * tx stub for db.transaction: the lease service takes a FOR UPDATE lock, then
+   * issues one UPDATE … RETURNING. `calls` gives tests the ordered trace so
+   * "no write on denial" and "exactly one UPDATE" are real assertions.
+   */
+  function mockMaintenanceTx(row: Record<string, unknown> | null) {
+    const calls: string[] = [];
+    const captured: Array<Record<string, unknown>> = [];
+    const txSelect = vi.fn(() => ({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({
+          limit: vi.fn(() => ({ for: vi.fn(async () => { calls.push('select-for-update'); return row ? [row] : []; }) })),
+        })),
+      })),
+    }));
+    const txUpdate = vi.fn(() => ({
+      set: vi.fn((values: Record<string, unknown>) => {
+        captured.push(values);
+        calls.push('update');
+        return { where: vi.fn(() => ({ returning: vi.fn(async () => [{ ...row, ...values }]) })) };
+      }),
+    }));
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn({ select: txSelect, update: txUpdate }));
+    return { calls, captured, txSelect, txUpdate };
+  }
+
   describe('POST /devices/:id/maintenance', () => {
-    it('enables maintenance mode for eligible devices', async () => {
-      vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce({
-        id: 'device-a',
-        orgId: 'org-123',
-        hostname: 'host-a',
-        status: 'online'
-      } as never);
-
-      vi.mocked(db.update).mockReturnValueOnce({
-        set: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            returning: vi.fn().mockResolvedValue([{
-              id: 'device-a',
-              hostname: 'host-a',
-              status: 'maintenance'
-            }])
-          })
-        })
-      } as never);
-
-      const res = await app.request('/devices/device-a/maintenance', {
+    const deviceRow = (over: Record<string, unknown> = {}) => ({
+      id: 'device-a', orgId: 'org-123', hostname: 'host-a', siteId: 'site-allowed',
+      status: 'online', lastSeenAt: new Date(Date.now() - 60_000),
+      maintenanceStartedAt: null, maintenanceUntil: null, maintenanceReason: null, maintenanceStartedBy: null,
+      ...over,
+    });
+    const enterBody = (over: Record<string, unknown> = {}) => JSON.stringify({
+      enable: true, reason: 'scheduled patching', durationHours: 2, stepUpGrant: '11111111-1111-4111-8111-111111111111', ...over,
+    });
+    const post = (body: string, headers: Record<string, string> = {}) =>
+      app.request('/devices/device-a/maintenance', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
-        body: JSON.stringify({ enable: true, durationHours: 2 })
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token', ...headers },
+        body,
       });
 
+    // ---- T1: precondition. Without this every later RED could be an
+    // "ENABLE_2FA is off in tests" artefact rather than a real gate.
+    it('runs with ENABLE_2FA true and the REAL MFA gate (precondition for every case below)', async () => {
+      const { ENABLE_2FA } = await import('../../routes/auth/schemas');
+      expect(ENABLE_2FA).toBe(true);
+      const { requireMfa, hasSatisfiedMfa, isInteractiveUserSession } = await import('../../middleware/auth');
+      expect(vi.isMockFunction(requireMfa)).toBe(false);
+      expect(hasSatisfiedMfa({ token: { mfa: false } } as never)).toBe(false);
+      expect(isInteractiveUserSession({ principal: { kind: 'api_key' } } as never)).toBe(false);
+    });
+
+    // ---- T2: non-assured session denied, zero writes.
+    it('denies entry from a session that has not satisfied MFA, with no state change', async () => {
+      authState.mfa = false;
+      vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce(deviceRow() as never);
+      const res = await post(enterBody());
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({ code: 'MFA_REQUIRED' });
+      expect(db.transaction).not.toHaveBeenCalled();
+      expect(db.update).not.toHaveBeenCalled();
+      expect(writeRouteAudit).not.toHaveBeenCalled();
+    });
+
+    // ---- T3: grant required; missing and stale are indistinguishable.
+    it('denies entry with no step-up grant, with no state change', async () => {
+      vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce(deviceRow() as never);
+      const res = await post(enterBody({ stepUpGrant: undefined }));
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({ error: 'Step-up required', code: 'STEP_UP_REQUIRED' });
+      expect(db.transaction).not.toHaveBeenCalled();
+      expect(consumeStepUpGrant).not.toHaveBeenCalled();
+    });
+
+    it('denies entry with a stale or mismatched grant, indistinguishably from a missing one', async () => {
+      vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce(deviceRow() as never);
+      vi.mocked(validateStepUpGrant).mockResolvedValueOnce(false);
+      const res = await post(enterBody());
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'Step-up required', code: 'STEP_UP_REQUIRED' });
+      expect(db.transaction).not.toHaveBeenCalled();
+    });
+
+    // ---- T4: happy path (this REPLACES "enables maintenance mode for eligible
+    // devices" and asserts strictly more: the grant binding and the audit).
+    it('enters maintenance with a valid grant, consuming it with the exact binding, and audits actor/reason/window', async () => {
+      vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce(deviceRow() as never);
+      const { captured, calls } = mockMaintenanceTx(deviceRow());
+      const res = await post(enterBody());
       expect(res.status).toBe(200);
       const body = await res.json();
-      expect(body.success).toBe(true);
-      expect(body.device.status).toBe('maintenance');
+      expect(body).toMatchObject({ success: true, action: 'enable' });
+      expect(body.maintenance).toMatchObject({ reason: 'scheduled patching' });
+      expect(calls).toEqual(['select-for-update', 'update']);
+      expect(captured[0]).toMatchObject({ status: 'maintenance', maintenanceReason: 'scheduled patching', maintenanceStartedBy: 'user-123' });
+      expect(consumeStepUpGrant).toHaveBeenCalledWith('11111111-1111-4111-8111-111111111111', {
+        userId: 'user-123',
+        operation: 'device_maintenance',
+        authEpoch: 1,
+        mfaEpoch: 1,
+        sid: 'sid-1',
+        resourceDigest: maintenanceResourceDigest({ deviceIds: ['device-a'], reason: 'scheduled patching', durationHours: 2 }),
+      });
+      expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        action: 'device.maintenance.enable',
+        details: expect.objectContaining({ reason: 'scheduled patching', durationHours: 2, stepUp: 'grant' }),
+      }));
     });
 
-    it('rejects maintenance mode changes for decommissioned devices', async () => {
-      vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce({
-        id: 'device-a',
-        orgId: 'org-123',
-        hostname: 'host-a',
-        status: 'decommissioned'
-      } as never);
-
-      const res = await app.request('/devices/device-a/maintenance', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
-        body: JSON.stringify({ enable: true })
+    // ---- T5: extension semantics.
+    it('extends an ACTIVE lease from now (never compounding), keeping the original actor, and audits device.maintenance.extend', async () => {
+      const originalStart = new Date(Date.now() - 3_600_000);
+      const row = deviceRow({
+        status: 'maintenance', maintenanceUntil: new Date(Date.now() + 3_600_000),
+        maintenanceStartedAt: originalStart, maintenanceReason: 'old reason', maintenanceStartedBy: 'user-original',
       });
-
-      expect(res.status).toBe(400);
+      vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce(row as never);
+      const { captured } = mockMaintenanceTx(row);
+      const res = await post(enterBody({ reason: 'still patching' }));
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.action).toBe('extend');
+      // now + 2h, not (now + 1h) + 2h
+      expect(new Date(body.maintenance.until).getTime() - Date.now()).toBeGreaterThan(1.9 * 3_600_000);
+      expect(new Date(body.maintenance.until).getTime() - Date.now()).toBeLessThan(2.1 * 3_600_000);
+      expect(captured[0]).not.toHaveProperty('maintenanceStartedBy');
+      expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        action: 'device.maintenance.extend',
+        details: expect.objectContaining({ previousReason: 'old reason' }),
+      }));
     });
 
-    it('denies maintenance changes when site scope excludes the device', async () => {
-      vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce({
-        id: 'device-a',
-        orgId: 'org-123',
-        hostname: 'host-a',
-        siteId: 'site-denied',
-        status: 'online'
-      } as never);
-
-      const res = await app.request('/devices/device-a/maintenance', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: 'Bearer token',
-          'x-site-restricted': 'true',
-        },
-        body: JSON.stringify({ enable: true })
-      });
-
+    it('treats an EXPIRED lease as a fresh entry and still requires the grant', async () => {
+      authState.mfa = false;
+      const row = deviceRow({ status: 'maintenance', maintenanceUntil: new Date(Date.now() - 3_600_000), maintenanceStartedAt: new Date(Date.now() - 7_200_000), maintenanceReason: 'old', maintenanceStartedBy: 'user-original' });
+      vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce(row as never);
+      const res = await post(enterBody());
       expect(res.status).toBe(403);
+      expect(db.transaction).not.toHaveBeenCalled();
+    });
+
+    it.each(['quarantined', 'pending', 'updating'])(
+      'refuses entry for a %s device with 409 MAINTENANCE_STATE_CONFLICT and no state change', async (status) => {
+        vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce(deviceRow({ status }) as never);
+        const res = await post(enterBody());
+        expect(res.status).toBe(409);
+        expect(await res.json()).toMatchObject({ code: 'MAINTENANCE_STATE_CONFLICT' });
+        expect(db.transaction).not.toHaveBeenCalled();
+      });
+
+    // ---- REPLACES "rejects maintenance mode changes for decommissioned devices"
+    it('rejects maintenance mode changes for decommissioned devices, with no state change', async () => {
+      vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce(deviceRow({ status: 'decommissioned' }) as never);
+      const res = await post(enterBody());
+      expect(res.status).toBe(400);
+      expect(db.transaction).not.toHaveBeenCalled();
+      // A request denied on AUTHORIZATION grounds must not burn the grant:
+      // validate/consume sit after the device checks precisely so a technician
+      // does not have to re-step-up because they aimed at the wrong device.
+      expect(validateStepUpGrant).not.toHaveBeenCalled();
+      expect(consumeStepUpGrant).not.toHaveBeenCalled();
+    });
+
+    // ---- REPLACES "denies maintenance changes when site scope excludes the device"
+    it('denies maintenance changes when site scope excludes the device, with no state change', async () => {
+      vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce(deviceRow({ siteId: 'site-denied' }) as never);
+      const res = await post(enterBody(), { 'x-site-restricted': 'true' });
+      expect(res.status).toBe(403);
+      expect(db.transaction).not.toHaveBeenCalled();
       expect(db.update).not.toHaveBeenCalled();
+      expect(validateStepUpGrant).not.toHaveBeenCalled();
+      expect(consumeStepUpGrant).not.toHaveBeenCalled();
+    });
+
+    // ---- T6: consume race.
+    it('returns 403 STEP_UP_REQUIRED and issues no UPDATE when the grant is consumed by a racing request', async () => {
+      vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce(deviceRow() as never);
+      vi.mocked(consumeStepUpGrant).mockResolvedValueOnce(false);
+      const { calls } = mockMaintenanceTx(deviceRow());
+      const res = await post(enterBody());
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({ code: 'STEP_UP_REQUIRED' });
+      expect(calls).not.toContain('update');
+    });
+
+    // ---- T7: exit stays un-gated and truthful.
+    it('exits maintenance without MFA or a grant and resolves status from FRESH liveness (offline)', async () => {
+      authState.mfa = false;
+      const row = deviceRow({ status: 'maintenance', lastSeenAt: new Date(Date.now() - 10 * 60_000), maintenanceUntil: new Date(Date.now() + 3_600_000), maintenanceStartedAt: new Date(Date.now() - 3_600_000), maintenanceReason: 'r', maintenanceStartedBy: 'user-123' });
+      vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce(row as never);
+      const { captured } = mockMaintenanceTx(row);
+      const res = await post(JSON.stringify({ enable: false }));
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ success: true, changed: true });
+      expect(captured[0]).toMatchObject({ status: 'offline', maintenanceUntil: null });
+      expect(validateStepUpGrant).not.toHaveBeenCalled();
+      expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        action: 'device.maintenance.disable',
+        details: expect.objectContaining({ resolvedStatus: 'offline', endedEarly: true }),
+      }));
+    });
+
+    it('resolves a recently-seen device to online on exit', async () => {
+      const row = deviceRow({ status: 'maintenance', lastSeenAt: new Date(Date.now() - 60_000), maintenanceUntil: new Date(Date.now() + 3_600_000), maintenanceStartedAt: new Date(Date.now() - 3_600_000), maintenanceReason: 'r', maintenanceStartedBy: 'user-123' });
+      vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce(row as never);
+      const { captured } = mockMaintenanceTx(row);
+      await post(JSON.stringify({ enable: false }));
+      expect(captured[0]).toMatchObject({ status: 'online' });
+    });
+
+    it('is a 200 no-op with changed:false and NO audit row when there is nothing to end', async () => {
+      const row = deviceRow({ status: 'online' });
+      vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce(row as never);
+      const { calls } = mockMaintenanceTx(row);
+      const res = await post(JSON.stringify({ enable: false }));
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ changed: false });
+      expect(calls).not.toContain('update');
+      expect(writeRouteAudit).not.toHaveBeenCalled();
+    });
+
+    // ---- T8: body contract.
+    it.each([
+      ['missing reason', { enable: true, durationHours: 2 }],
+      ['reason under 3 chars', { enable: true, reason: 'ab', durationHours: 2 }],
+      ['durationHours 0', { enable: true, reason: 'scheduled patching', durationHours: 0 }],
+      ['durationHours 169', { enable: true, reason: 'scheduled patching', durationHours: 169 }],
+      ['unknown field on entry', { enable: true, reason: 'scheduled patching', durationHours: 2, sneaky: 1 }],
+      ['durationHours on exit (strict)', { enable: false, durationHours: 2 }],
+    ])('rejects %s with 400 and no state change', async (_label, body) => {
+      vi.mocked(getDeviceWithOrgCheck).mockResolvedValue(deviceRow() as never);
+      const res = await post(JSON.stringify(body));
+      expect(res.status).toBe(400);
+      expect(db.transaction).not.toHaveBeenCalled();
+    });
+
+    // ---- T9: machine-principal denial that does NOT depend on the MFA gate.
+    it.each([[true], [false]])(
+      'denies an api_key principal on ENTRY with ENABLE_2FA=%s, with no state change', async (twoFactorOn) => {
+        // With ENABLE_2FA=false, hasSatisfiedMfa returns true for ANY context and
+        // API-key contexts carry token:{} (routes/mcpServer.ts:2246) — so if the
+        // interactive gate were removed, this case would 200. That is exactly why
+        // it runs with 2FA OFF as well as on.
+        enable2faState.value = twoFactorOn;
+        authState.principalKind = 'api_key';
+        // Faithful to the PRODUCTION shape: API-key/MCP-OAuth contexts are
+        // built with `token: {}` (routes/mcpServer.ts:2246), i.e. no `mfa`
+        // claim at all. That is what makes the ENABLE_2FA=false variant the
+        // load-bearing one: hasSatisfiedMfa short-circuits to TRUE when 2FA is
+        // off, so requireMfa() would ADMIT this caller and only the
+        // interactive gate denies it.
+        authState.mfa = false;
+        authState.sid = undefined;
+        vi.mocked(getDeviceWithOrgCheck).mockResolvedValue(deviceRow() as never);
+        const res = await post(enterBody());
+        expect(res.status).toBe(403);
+        expect(await res.json()).toEqual({ error: 'Interactive user session required' });
+        expect(db.transaction).not.toHaveBeenCalled();
+        expect(db.update).not.toHaveBeenCalled();
+        expect(getDeviceWithOrgCheck).not.toHaveBeenCalled();
+      });
+
+    it.each([[true], [false]])(
+      'denies an api_key principal on EXIT with ENABLE_2FA=%s, with no state change', async (twoFactorOn) => {
+        enable2faState.value = twoFactorOn;
+        authState.principalKind = 'api_key';
+        authState.mfa = false;
+        authState.sid = undefined;
+        const res = await post(JSON.stringify({ enable: false }));
+        expect(res.status).toBe(403);
+        expect(db.transaction).not.toHaveBeenCalled();
+      });
+
+    it('denies an oauth_grant principal — acting FOR a user is not acting AS an interactive session', async () => {
+      authState.principalKind = 'oauth_grant';
+      authState.mfa = false;
+      authState.sid = undefined;
+      const res = await post(enterBody());
+      expect(res.status).toBe(403);
+      expect(db.transaction).not.toHaveBeenCalled();
+    });
+
+    it('skips the grant requirement when ENABLE_2FA is off, and records stepUp: disabled_2fa', async () => {
+      enable2faState.value = false;
+      authState.mfa = false;
+      vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce(deviceRow() as never);
+      mockMaintenanceTx(deviceRow());
+      const res = await post(JSON.stringify({ enable: true, reason: 'scheduled patching', durationHours: 2 }));
+      expect(res.status).toBe(200);
+      expect(validateStepUpGrant).not.toHaveBeenCalled();
+      expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        details: expect.objectContaining({ stepUp: 'disabled_2fa' }),
+      }));
     });
   });
 
