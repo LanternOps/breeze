@@ -20,7 +20,7 @@ import { buildAiBudgetAlertEmail, describeAiBudgetAlert, shouldEmail } from '../
 import { evaluateAiBudgetThresholds } from '../services/aiBudgetAlerts';
 import { getFrontendBaseUrl } from '../services/c2cM365';
 import { PG_UUID_REGEX } from '../utils/uuid';
-import { attachWorkerObservability } from './workerObservability';
+import { attachWorkerObservability, type WorkerFailureClassification } from './workerObservability';
 
 export const AI_BUDGET_ALERT_QUEUE = 'ai-budget-alert-delivery';
 const USAGE_PATH = '/settings/ai-usage';
@@ -47,6 +47,34 @@ export class AiBudgetAlertEventNotVisibleError extends Error {
     super(`ai budget alert event ${eventId} is not visible (uncommitted or deleted)`);
     this.name = 'AiBudgetAlertEventNotVisibleError';
   }
+}
+
+/**
+ * Severity for this worker's own failure modes (BREEZE-1J mechanism).
+ *
+ * `AiBudgetAlertEventNotVisibleError` is thrown to ASK BullMQ for a retry on an
+ * expected, self-healing condition — the inserting transaction has not
+ * committed yet — not to report a fault. Without a classifier,
+ * `attachWorkerObservability`'s `failed` listener captureExceptions every
+ * attempt at error level, so the ordinary uncommitted-row race would page once
+ * per attempt for something the next attempt fixes by itself. Warning level,
+ * held until the attempts are exhausted, collapses that burst.
+ *
+ * Every other error keeps the default: error level, reported on each attempt.
+ * Reasons are hardcoded labels — no event, org or job id ever goes into a tag.
+ */
+export function classifyAiBudgetAlertFailure(
+  _job: Job | undefined,
+  err: Error,
+): WorkerFailureClassification | null {
+  if (err instanceof AiBudgetAlertEventNotVisibleError) {
+    return {
+      reason: 'ai_budget_alert_event_not_visible',
+      level: 'warning',
+      reportOnlyWhenExhausted: true,
+    };
+  }
+  return null;
 }
 
 export type AiBudgetAlertJobData =
@@ -315,6 +343,18 @@ export async function processJob(job: Job<AiBudgetAlertJobData>): Promise<unknow
         // failing it, so an ordinary tenant deletion doesn't page anyone.
         if (err instanceof AiBudgetAlertEventNotVisibleError && job.attemptsMade + 1 >= (job.opts.attempts ?? 1)) {
           console.warn(`[AI] budget alert event ${eventId} never became visible: rolled back or org deleted; giving up after ${job.attemptsMade + 1} attempt(s)`);
+          // Completing the job means BullMQ's `failed` event never fires on
+          // this, the exhausting attempt — so the classifier's
+          // `reportOnlyWhenExhausted` report for the earlier attempts is never
+          // released, and without the message below the mode would vanish from
+          // Sentry entirely. This is the classifier's terminal half: the same
+          // `warning` severity, emitted from the one place that knows the job
+          // is giving up. Deliberately NOT captureException: a deleted org is
+          // not a fault and must not page.
+          captureMessage('AI budget alert event never became visible', {
+            eventCode: 'ai_budget_alert_event_not_visible',
+            level: 'warning',
+          });
           return { skipped: 'event-not-visible' };
         }
         throw err;
@@ -339,7 +379,7 @@ export async function processJob(job: Job<AiBudgetAlertJobData>): Promise<unknow
 export async function initializeAiBudgetAlertWorker(): Promise<void> {
   if (worker) return;
   worker = new Worker<AiBudgetAlertJobData>(AI_BUDGET_ALERT_QUEUE, processJob, { connection: getBullMQConnection(), concurrency: 2 });
-  attachWorkerObservability(worker, AI_BUDGET_ALERT_QUEUE);
+  attachWorkerObservability(worker, AI_BUDGET_ALERT_QUEUE, { classifyFailure: classifyAiBudgetAlertFailure });
   // Sub-hourly (every 15 minutes), so it is exempt from scheduleRegistry.ts
   // (which only allocates coarse, >= hourly schedules) — confirmed against
   // scheduleRegistry.contract.test.ts's minimumGapMs threshold. The four

@@ -12,6 +12,8 @@ const mocks = vi.hoisted(() => ({
   evaluateAiBudgetThresholds: vi.fn(),
   withSystemContext: vi.fn(),
   runOutside: vi.fn(),
+  attachObservability: vi.fn(),
+  captureMessage: vi.fn(),
 }));
 
 vi.mock('bullmq', () => ({ Queue: class { add = vi.fn(); }, Worker: class {}, Job: class {} }));
@@ -25,20 +27,23 @@ vi.mock('../db', () => ({
   runOutsideDbContext: mocks.runOutside,
 }));
 vi.mock('../services/redis', () => ({ getBullMQConnection: () => ({}) }));
-vi.mock('../services/sentry', () => ({ captureException: vi.fn(), captureMessage: vi.fn() }));
+vi.mock('../services/sentry', () => ({ captureException: vi.fn(), captureMessage: mocks.captureMessage }));
 vi.mock('../services/userNotifications', () => ({ createNotification: mocks.createNotification }));
 vi.mock('../services/usersWithPermission', () => ({ resolveUsersWithPermissionForOrg: mocks.resolveUsers }));
 vi.mock('../services/email', () => ({ getEmailService: mocks.getEmailService }));
 vi.mock('../services/eventBus', () => ({ publishEvent: mocks.publishEvent, EVENT_TYPES: { AI_BUDGET_THRESHOLD_CROSSED: 'ai.budget.threshold_crossed' } }));
 vi.mock('../services/aiBudgetAlerts', () => ({ evaluateAiBudgetThresholds: mocks.evaluateAiBudgetThresholds }));
-vi.mock('./workerObservability', () => ({ attachWorkerObservability: vi.fn() }));
+vi.mock('./workerObservability', () => ({ attachWorkerObservability: mocks.attachObservability }));
 vi.mock('../services/c2cM365', () => ({ getFrontendBaseUrl: () => 'https://app.example.com' }));
 
 import {
+  AI_BUDGET_ALERT_QUEUE,
   AiBudgetAlertEventNotVisibleError,
+  classifyAiBudgetAlertFailure,
   deliverAiBudgetAlert,
   evaluatePartnerOrgs,
   getAiBudgetAlertQueue,
+  initializeAiBudgetAlertWorker,
   processJob,
   reconcileUndeliveredAiBudgetAlerts,
 } from './aiBudgetAlertDelivery';
@@ -327,5 +332,52 @@ describe('processJob (payload validation + terminal not-visible handling)', () =
       .resolves.toBeDefined();
     expect(warn).toHaveBeenCalledWith(expect.stringContaining(EVENT_UUID));
     warn.mockRestore();
+
+    // Fix round 2: completing the job here means the `failed` listener never
+    // fires on the exhausting attempt, so the classifier's held
+    // `reportOnlyWhenExhausted` report can never be released. Without a signal
+    // emitted from HERE, a permanently invisible event would leave no trace in
+    // Sentry at all — a warning-level message keeps the terminal case
+    // observable without reintroducing the error-level page.
+    expect(mocks.captureMessage).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ eventCode: 'ai_budget_alert_event_not_visible', level: 'warning' }),
+    );
+  });
+});
+
+describe('classifyAiBudgetAlertFailure (worker observability, fix round 2)', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    armContextMocks();
+  });
+
+  // Without a classifier, workerObservability's `failed` listener
+  // captureExceptions EVERY attempt at error level. The not-visible retry is an
+  // EXPECTED, self-healing race (the inserting transaction has not committed on
+  // the ambient-system path), so attempts 1..N-1 would each page for something
+  // that resolves itself on the next attempt.
+  it('classifies a not-visible event as expected: warning level, held until attempts are exhausted', () => {
+    expect(classifyAiBudgetAlertFailure(undefined, new AiBudgetAlertEventNotVisibleError(EVENT_UUID))).toEqual({
+      reason: 'ai_budget_alert_event_not_visible',
+      level: 'warning',
+      reportOnlyWhenExhausted: true,
+    });
+  });
+
+  it('leaves every other failure at the default error-level report on every attempt', () => {
+    expect(classifyAiBudgetAlertFailure(undefined, new Error('smtp down'))).toBeNull();
+    expect(classifyAiBudgetAlertFailure(undefined, new TypeError('boom'))).toBeNull();
+  });
+
+  // A classifier nothing attaches is dead code that reads as a fix.
+  it('is wired into the worker via attachWorkerObservability', async () => {
+    await initializeAiBudgetAlertWorker();
+
+    expect(mocks.attachObservability).toHaveBeenCalledWith(
+      expect.anything(),
+      AI_BUDGET_ALERT_QUEUE,
+      { classifyFailure: classifyAiBudgetAlertFailure },
+    );
   });
 });

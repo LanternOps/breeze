@@ -108,6 +108,8 @@ export const SENTRY_EVENT_CODES = [
   'ai_session_cap_all_in_flight',
   /** A crossed AI budget rung (#4388) resolved to zero notifiable recipients. */
   'ai_budget_alert_no_recipients',
+  /** An AI budget alert event never became visible before its retries ran out. */
+  'ai_budget_alert_event_not_visible',
 
   // --- backup -----------------------------------------------------------
   /** A backup result matched no job row (deleted, or invisible under RLS). */
