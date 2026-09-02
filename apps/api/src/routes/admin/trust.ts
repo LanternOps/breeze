@@ -1,7 +1,7 @@
 import { Hono, type Context } from 'hono';
 import { and, desc, eq, isNull, lt, ne, or, sql, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
-import { db, withSystemDbAccessContext } from '../../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { devices, organizations, partners } from '../../db/schema';
 import type { PartnerTrustState } from '../../db/schema/orgs';
 import { zValidator } from '../../lib/validation';
@@ -151,7 +151,7 @@ trustAdminRoutes.get('/trust/queue', zValidator('query', queueQuerySchema), asyn
     );
   }
 
-  const rows = await withSystemDbAccessContext(() => db
+  const rows = await runOutsideDbContext(() => withSystemDbAccessContext(() => db
     .select({
       id: partners.id,
       name: partners.name,
@@ -176,7 +176,7 @@ trustAdminRoutes.get('/trust/queue', zValidator('query', queueQuerySchema), asyn
     .from(partners)
     .where(and(ne(partners.trustState, 'trusted'), cursorCondition))
     .orderBy(sql`${partners.trustChangedAt} DESC NULLS LAST`, desc(partners.id))
-    .limit(limit + 1));
+    .limit(limit + 1)));
 
   const hasMore = rows.length > limit;
   const visibleRows = rows.slice(0, limit);

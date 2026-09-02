@@ -55,15 +55,56 @@ const auth = {
   },
 };
 
-function buildApp() {
+function buildApp(authToInject: typeof auth = auth) {
   const app = new Hono();
   app.use('*', async (c, next) => {
-    c.set('auth', auth as never);
+    c.set('auth', authToInject as never);
     await next();
   });
   app.route('/partner/trust', partnerTrustRoutes);
   return app;
 }
+
+// requireScope('partner') gate: the mocked '../middleware/auth' above rejects
+// with 403 when auth.scope isn't in the allowed list, mirroring the real
+// middleware. Org-scoped and system-scoped tokens must both be rejected —
+// this route is partner-owner-only.
+const orgScopeAuth = { ...auth, scope: 'organization' };
+const systemScopeAuth = { ...auth, scope: 'system' };
+
+describe('partner trust routes — auth scope gate', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('rejects POST /request-review for an organization-scoped token (403)', async () => {
+    const response = await buildApp(orgScopeAuth).request('/partner/trust/request-review', { method: 'POST' });
+
+    expect(response.status).toBe(403);
+    expect(createAuditLog).not.toHaveBeenCalled();
+    expect(sendOpsAlert).not.toHaveBeenCalled();
+  });
+
+  it('rejects POST /request-review for a system-scoped token (403)', async () => {
+    const response = await buildApp(systemScopeAuth).request('/partner/trust/request-review', { method: 'POST' });
+
+    expect(response.status).toBe(403);
+    expect(createAuditLog).not.toHaveBeenCalled();
+    expect(sendOpsAlert).not.toHaveBeenCalled();
+  });
+
+  it('rejects GET / for an organization-scoped token (403)', async () => {
+    const response = await buildApp(orgScopeAuth).request('/partner/trust');
+
+    expect(response.status).toBe(403);
+  });
+
+  it('rejects GET / for a system-scoped token (403)', async () => {
+    const response = await buildApp(systemScopeAuth).request('/partner/trust');
+
+    expect(response.status).toBe(403);
+  });
+});
 
 describe('partner trust routes', () => {
   beforeEach(() => {

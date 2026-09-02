@@ -68,10 +68,20 @@ const auth = {
   token: { mfa: true },
 };
 
-function buildApp() {
+// requireMfa() step-up: the mocked '../../middleware/auth' above rejects with
+// 403 when auth.token.mfa is false, mirroring the real middleware's behavior.
+// Mirrors the abuse.test.ts "auth gate" harness (see admin/abuse.test.ts
+// platformAdminAuthNoMfa) so promote/restrict get the same MFA-not-satisfied
+// coverage that suspend/unsuspend already have.
+const authNoMfa = {
+  ...auth,
+  token: { mfa: false },
+};
+
+function buildApp(authToInject: typeof auth = auth) {
   const app = new Hono();
   app.use('*', async (c, next) => {
-    c.set('auth', auth as never);
+    c.set('auth', authToInject as never);
     await next();
   });
   app.route('/admin', trustAdminRoutes);
@@ -138,6 +148,33 @@ describe('admin partner trust routes', () => {
         reason: 'manual approval',
       }),
     }));
+  });
+
+  it('rejects promote when the MFA step-up is not satisfied (403)', async () => {
+    state.trust = { trustState: 'restricted', probationEnrollments: 0, trustReviewRequestedAt: null };
+    const response = await buildApp(authNoMfa).request('/admin/partners/p-1/trust/promote', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reason: 'manual approval', override: true }),
+    });
+
+    expect(response.status).toBe(403);
+    const body = await response.json() as { error: string };
+    expect(body.error).toBe('MFA required');
+    expect(writeTrust).not.toHaveBeenCalled();
+  });
+
+  it('rejects restrict when the MFA step-up is not satisfied (403)', async () => {
+    const response = await buildApp(authNoMfa).request('/admin/partners/p-1/trust/restrict', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reason: 'confirmed abuse' }),
+    });
+
+    expect(response.status).toBe(403);
+    const body = await response.json() as { error: string };
+    expect(body.error).toBe('MFA required');
+    expect(writeTrust).not.toHaveBeenCalled();
   });
 
   it('restricts a partner with the admin reason code', async () => {
