@@ -532,7 +532,7 @@ same end state, but turns every "within seconds" assertion below into "within
 one sweep".
 
 Payment push (Phase D2, migration
-`apps/api/migrations/2026-10-02-110000-quickbooks-payment-push.sql`): payments
+`apps/api/migrations/2026-10-05-100000-quickbooks-payment-push.sql`): payments
 recorded in Breeze against an invoice already pushed to QuickBooks are created
 there, and deleted there when the Breeze payment is voided or fully refunded.
 The mapping row is the outbox (`pending_op`), so BullMQ is a latency
@@ -674,7 +674,7 @@ items 34 and 35 change both and must put them back.
    `apps/api/migrations/2026-09-28-quickbooks-entity-mappings.sql` (Phase B),
    `apps/api/migrations/2026-09-30-quickbooks-invoice-push.sql` (Phase C),
    `apps/api/migrations/2026-10-01-quickbooks-payment-pullback.sql` (Phase D),
-   `apps/api/migrations/2026-10-02-110000-quickbooks-payment-push.sql`
+   `apps/api/migrations/2026-10-05-100000-quickbooks-payment-push.sql`
    (Phase D2).
 
 ---

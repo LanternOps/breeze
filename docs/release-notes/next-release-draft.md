@@ -74,7 +74,7 @@ bookkeeper instead of rewriting a QuickBooks receipt.
 - Deleting a payment propagates regardless of BOTH `push_mode` and
   `push_payments`: once Breeze created a Payment in QuickBooks it owns its
   removal, so switching the feature off cannot strand money in the books.
-- Migration `2026-10-02-110000-quickbooks-payment-push.sql` adds
+- Migration `2026-10-05-100000-quickbooks-payment-push.sql` adds
   `accounting_connections.push_payments` and three columns on
   `accounting_entity_mappings` (`breeze_origin`, `pending_op`, `claimed_at`),
   one CHECK constraint and one partial index. It backfills `breeze_origin = true`

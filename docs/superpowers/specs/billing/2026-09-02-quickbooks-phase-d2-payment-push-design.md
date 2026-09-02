@@ -36,7 +36,7 @@ When a payment is recorded in Breeze against an invoice that is already in Quick
 
 ## Data model
 
-One migration, `apps/api/migrations/2026-10-02-110000-quickbooks-payment-push.sql` (sorts after `2026-10-02-100000-outbox-retention-indexes.sql`, the newest on `origin/main` at aa09cfbcb; re-check before committing). Idempotent, no inner transaction, no `org_id` anywhere → no cascade, export-policy, or merge-registry changes. `check-migration-naming.sh` and `autoMigrate.test.ts` gate the name.
+One migration, `apps/api/migrations/2026-10-05-100000-quickbooks-payment-push.sql` — renamed from `2026-10-02-110000-…` when `origin/main` gained four later-sorting migrations mid-branch (newest: `2026-10-04-100002-portal-users-contact-composite-fk.sql`). The ceiling moves while a branch is open, so the name is only correct relative to `origin/main` at merge time: re-run `scripts/check-migration-naming.sh --against-ref origin/main` after every fetch, not just before the first commit. Idempotent, no inner transaction, no `org_id` anywhere → no cascade, export-policy, or merge-registry changes. `check-migration-naming.sh` and `autoMigrate.test.ts` gate the name.
 
 ### `accounting_connections`
 

@@ -120,7 +120,7 @@ const FAR_FUTURE_REFRESH = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
 
 const MIGRATION_FILE = join(
   __dirname,
-  '../../../migrations/2026-10-02-110000-quickbooks-payment-push.sql',
+  '../../../migrations/2026-10-05-100000-quickbooks-payment-push.sql',
 );
 
 // ---------------------------------------------------------------------------

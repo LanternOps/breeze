@@ -19,7 +19,7 @@
 - **Never persist or rethrow a raw QBO response body.** Sanitize to `QuickBooks rejected the payment sync (HTTP <status>)` (pattern: `accountingInvoicePush.ts:243-248`).
 - **Zero-row-throw on every write** (`.returning({ id })` + length check). A zero-row match is an RLS-context bug, not a no-op.
 - **BullMQ jobIds contain no colons**; `removeOnComplete: true` / `removeOnFail: true` (Phase C lesson — BullMQ silently drops an `add()` whose jobId still sits in the retained completed/failed sets). Payment jobIds are `accounting-payment-<mappingId>-push` and `accounting-payment-<mappingId>-delete` so a delete enqueued while a push job is still active is never swallowed by a shared deterministic id (spec decision 7).
-- Migration file MUST be named `apps/api/migrations/2026-10-02-110000-quickbooks-payment-push.sql`. Verified 2026-09-02: `'2026-10-02-100000-outbox-retention-indexes.sql'.localeCompare('2026-10-02-110000-quickbooks-payment-push.sql') === -1`, and that outbox file is the newest committed migration. **Re-verify with `ls apps/api/migrations | sort | tail -3` before creating it** — another branch may have raised the ceiling. Idempotent; no inner `BEGIN`/`COMMIT`.
+- Migration file MUST be named `apps/api/migrations/2026-10-05-100000-quickbooks-payment-push.sql`. **Renamed in Task 9** from `2026-10-02-110000-…`: this plan was written when the newest committed migration was `2026-10-02-100000-outbox-retention-indexes.sql`, and by the time the branch merged `origin/main` had gained four later-sorting files (newest `2026-10-04-100002-portal-users-contact-composite-fk.sql`). **Re-verify with `scripts/check-migration-naming.sh --against-ref origin/main` after every fetch, not just before creating the file** — the ceiling moves while a branch is open, and the bare CI form of that script cannot catch it. Idempotent; no inner `BEGIN`/`COMMIT`.
 - **The migration's backfill MUST run under `SELECT set_config('breeze.scope', 'system', true);`.** `accounting_entity_mappings` is `ENABLE` + `FORCE ROW LEVEL SECURITY`, and on managed Postgres the migration role is not a superuser, so an unscoped `UPDATE` silently matches zero rows while CI (superuser) masks it. Exact precedent: `apps/api/migrations/2026-09-30-100000-rls-scoped-backfill-replay.sql:1-24`.
 - Web mutations wrap in `runAction` (`apps/web/src/lib/runAction.ts`); all copy through `t(...)` with genuine translations in **all 8 locale dirs** (`de-DE, en, es-419, fr-CA, fr-FR, it-IT, pt-BR, tr-TR`). `translationCoverage.test.ts` enforces a global `< 0.2` duplicate ratio AND per-namespace, per-locale duplicate baselines (`namespaceDuplicateBaselines`, `:15`; `namespaceDuplicateRegressions`, `:579-596`) — English-identical strings in `integrations.json`/`billing.json` breach them.
 - **`no-silent-mutations.test.ts` needs NO counter bump.** `src/components/integrations/QuickbooksIntegration.tsx` is already in `TARGET_GLOBS` (`:226`) and `expect(absoluteFiles.length).toBe(108)` (`:528`) counts FILES, not mutations. Adding a handler to an already-registered file changes nothing.
@@ -148,7 +148,7 @@ export async function enqueueAccountingPaymentDelete(mappingId: string, partnerI
 ## File Structure
 
 ```
-apps/api/migrations/2026-10-02-110000-quickbooks-payment-push.sql   (new)
+apps/api/migrations/2026-10-05-100000-quickbooks-payment-push.sql   (new)
 apps/api/src/db/schema/accounting.ts                                (modify: 1 + 3 columns, 1 check, 1 partial index)
 apps/api/src/services/accounting/accountingConnectionService.ts     (modify: pushPayments on the DTO/mapConnection/upsert; widen listReconcilableConnections)
 apps/api/src/services/accounting/accountingPaymentMarker.ts         (new: the PrivateNote grammar, both directions, one place)
@@ -187,7 +187,7 @@ docs/release-notes/next-release-draft.md                            (modify: one
 ### Task 1: Migration, mapping columns, `push_payments` on the connection
 
 **Files:**
-- Create: `apps/api/migrations/2026-10-02-110000-quickbooks-payment-push.sql`
+- Create: `apps/api/migrations/2026-10-05-100000-quickbooks-payment-push.sql`
 - Modify: `apps/api/src/db/schema/accounting.ts:18-67` (connection), `:69-124` (mappings)
 - Modify: `apps/api/src/services/accounting/accountingConnectionService.ts:16-44` (DTO), `:46-62` (upsert fields), `:121-146` (`mapConnection`), `:172-222` (`upsertConnection`), `:346-359` (`listReconcilableConnections`)
 - Modify (fixtures broken by the widened DTO): `apps/api/src/services/accounting/quickbooksProvider.test.ts:12-25`, `apps/api/src/services/accounting/accountingInvoicePush.test.ts:109-117`
@@ -223,11 +223,11 @@ claimedAt: timestamp('claimed_at', { withTimezone: true }),
 - [ ] **Step 1: Confirm the migration name still sorts last.**
 
 Run: `ls apps/api/migrations | sort | tail -3`
-Expected: the newest `.sql` is `2026-10-02-100000-outbox-retention-indexes.sql` (or older). If a newer file exists, rename the new migration to sort strictly after it — `node -e "console.log('<newest>'.localeCompare('2026-10-02-110000-quickbooks-payment-push.sql'))"` must print `-1`.
+Expected: the newest `.sql` is `2026-10-02-100000-outbox-retention-indexes.sql` (or older). If a newer file exists, rename the new migration to sort strictly after it — `node -e "console.log('<newest>'.localeCompare('2026-10-05-100000-quickbooks-payment-push.sql'))"` must print `-1`.
 
 - [ ] **Step 2: Write the migration.**
 
-Create `apps/api/migrations/2026-10-02-110000-quickbooks-payment-push.sql`:
+Create `apps/api/migrations/2026-10-05-100000-quickbooks-payment-push.sql`:
 
 ```sql
 -- Phase D2 (payment push) — Task 1.
@@ -4877,7 +4877,7 @@ bookkeeper instead of rewriting a QuickBooks receipt.
 - Deleting a payment propagates regardless of `push_mode` AND `push_payments`:
   once Breeze created a Payment in QuickBooks it owns its removal, so switching
   the feature off cannot strand money in the books.
-- Migration `2026-10-02-110000-quickbooks-payment-push.sql` adds
+- Migration `2026-10-05-100000-quickbooks-payment-push.sql` adds
   `accounting_connections.push_payments` and three columns on
   `accounting_entity_mappings` (`breeze_origin`, `pending_op`, `claimed_at`), plus
   a partial index. It backfills `breeze_origin = true` for existing invoice
@@ -4901,7 +4901,7 @@ git merge origin/main
 ls apps/api/migrations | sort | tail -3     # confirm the new file still sorts last
 bash scripts/check-migration-naming.sh
 ```
-If `origin/main` landed a migration that now sorts AFTER `2026-10-02-110000-quickbooks-payment-push.sql`, rename this branch's file (it is unmerged, so it is still editable) and sweep every reference to the old path.
+If `origin/main` landed a migration that now sorts AFTER `2026-10-05-100000-quickbooks-payment-push.sql`, rename this branch's file (it is unmerged, so it is still editable) and sweep every reference to the old path.
 
 - [ ] **Step 4: Full verification sweep.**
 
@@ -4960,7 +4960,7 @@ is idempotent under crashes, retries and its own CDC echo.
 
 - `push_payments` defaults to **true**, which turns on outbound writes for every
   connected realm at deploy time. Called out in the release-notes draft.
-- Migration `2026-10-02-110000-quickbooks-payment-push.sql`: one column on
+- Migration `2026-10-05-100000-quickbooks-payment-push.sql`: one column on
   `accounting_connections`, three on `accounting_entity_mappings`, one CHECK, one
   partial index, and a `breeze_origin` backfill run under
   `set_config('breeze.scope','system', true)` (both tables are FORCE RLS, so an
