@@ -316,6 +316,7 @@ const RUN_ID = '77777777-7777-4777-8777-777777777777';
 const RUN_ID_2 = '88888888-8888-4888-8888-888888888888';
 const DEVICE_ID = '99999999-9999-4999-8999-999999999999';
 const SITE_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const OTHER_ORG_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 
 function makeAuth(overrides?: { partnerId?: string | null; principal?: unknown }) {
   return {
@@ -559,6 +560,61 @@ describe('createActionIntent — tier gating', () => {
       code: 'tool_blocked',
     });
     expect(dbState.insertedActionIntentValues).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P2-5 (#4192): manage_ai_agents's orgId ARGUMENT is pinned to the intent's org
+// ---------------------------------------------------------------------------
+
+describe('createActionIntent — manage_ai_agents orgId argument', () => {
+  const promoteInput = (orgId?: unknown) => baseInput({
+    toolName: 'manage_ai_agents',
+    input: {
+      action: 'authorize_supervised_key',
+      kind: 'triage',
+      opKey: 'manage_services:restart',
+      ...(orgId === undefined ? {} : { orgId }),
+    },
+  });
+
+  it('refuses an orgId argument that names a different organization', async () => {
+    await expect(createActionIntent(makeAuth(), promoteInput(OTHER_ORG_ID))).rejects.toMatchObject({
+      code: 'org_argument_mismatch',
+    });
+    expect(dbState.insertedActionIntentValues).toHaveLength(0);
+  });
+
+  it('refuses a missing orgId argument — the digest resolver has nothing to pin without it', async () => {
+    await expect(createActionIntent(makeAuth(), promoteInput())).rejects.toMatchObject({
+      code: 'org_argument_mismatch',
+    });
+    expect(dbState.insertedActionIntentValues).toHaveLength(0);
+  });
+
+  it('accepts the argument when it names the organization the intent resolved to', async () => {
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'intent-promote' }));
+    dbState.insertApprovalRequestsResults.push([{ id: 'approval-promote' }]);
+
+    const snap = await createActionIntent(
+      makeAuth(),
+      promoteInput(ORG_ID),
+    );
+
+    expect(snap.id).toBe('intent-promote');
+    expect(dbState.insertedActionIntentValues).toHaveLength(1);
+  });
+
+  it('leaves the orgId argument of every OTHER tool alone', async () => {
+    dbState.insertActionIntentsResults.push(echoInsertedIntent({ id: 'intent-other-tool' }));
+    dbState.insertApprovalRequestsResults.push([{ id: 'approval-other-tool' }]);
+
+    const snap = await createActionIntent(
+      makeAuth(),
+      baseInput({ input: { scriptId: 'script-1', orgId: OTHER_ORG_ID } }),
+    );
+
+    expect(snap.id).toBe('intent-other-tool');
   });
 });
 

@@ -1,5 +1,24 @@
 # Upgrading Breeze
 
+## No action required: v0.109.0 migrations take brief locks on large tables
+
+v0.109.0 applies 53 idempotent migrations on boot. No operator action is needed,
+but two of them touch tables that grow without bound on a long-running
+self-hosted instance:
+
+- an index build over remote-session history, and
+- a validated constraint added to time entries.
+
+Both hold a brief lock while they run, so the API takes longer than usual to
+start accepting traffic — roughly in proportion to how much remote-session and
+time-entry history you hold. Back the database up first (`./scripts/backup.sh
+--db`) and upgrade during a quiet window. Migrations are forward-only: rolling
+the image tag back does not roll the schema back.
+
+Nothing else in v0.109.0 requires a configuration change. New AI agent
+capabilities remain behind `BREEZE_AI_AGENTS_ENABLED` (default `false`), and the
+worker-split container is opt-in.
+
 ## No action required: nightly job schedules were staggered
 
 Every BullMQ job registered with `repeat: { every: N }` fires on a wall-clock

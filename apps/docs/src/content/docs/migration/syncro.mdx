@@ -27,7 +27,7 @@ Syncro is flat — Customers own Assets, with no site layer.
 | — | **Site** | Create one `Main` site per organization. Use the customer's address to set a real timezone. |
 | Asset tag / policy folder | Device Group | Map to Breeze [dynamic device groups](/features/device-groups/). |
 | Asset | Device | Syncro assets include non-agent records (manually added hardware) — filter to agent-managed only. |
-| Contact | — | Breeze cannot create contacts programmatically today. |
+| **Contact** | **Contact** | First-class records, organization-level or pinned to a site. Bulk-load with [Recipe 1c](/migration/toolkit/#recipe-1c--import-contacts) — matched on `externalId` so re-imports are idempotent, with fuzzy email/name matches held back for an explicit acknowledgement. |
 
 ---
 
@@ -71,7 +71,7 @@ Generate an API token under **Admin → API Tokens** with read permissions on cu
 
    Filter on `asset_type` — only Syncro RMM assets have an agent. Manually created asset records are inventory, not migration targets.
 
-3. **Export what you are keeping from the PSA side.** If you are leaving Syncro entirely: `GET /tickets`, `GET /invoices`, `GET /contacts`, `GET /estimates`. None of this migrates into Breeze automatically. Export it to storage before you cancel — Syncro is your system of record for billing history.
+3. **Export what you are keeping from the PSA side.** If you are leaving Syncro entirely: `GET /contacts`, `GET /tickets`, `GET /invoices`, `GET /estimates`. Contacts do land in Breeze — save them as CSV and feed them to [Recipe 1c](/migration/toolkit/#recipe-1c--import-contacts). Tickets, invoices, and estimates do not. Export those to storage before you cancel — Syncro is your system of record for billing history.
 
 </Steps>
 

@@ -10,7 +10,7 @@ import { writeRouteAudit } from '../../services/auditEvents';
 import { supersededAuditEvent } from '../../services/quoteSupersedeAudit';
 import { scheduleQuoteSend, cancelQuoteSend } from '../../jobs/quoteSendQueue';
 import { getQuote } from '../../services/quoteService';
-import { writeQuoteImage, readQuoteImage, sniffImageMime, MAX_QUOTE_IMAGE_SIZE_BYTES, fetchRemoteImage, RemoteImageError, type RemoteImageFailureReason } from '../../services/quoteImageStorage';
+import { writeQuoteImage, readQuoteImage, sniffImageMime, MAX_QUOTE_IMAGE_SIZE_BYTES, fetchRemoteImage, RemoteImageError, QUOTE_IMAGE_WEBP_REJECTED_MESSAGE, type RemoteImageFailureReason } from '../../services/quoteImageStorage';
 import { loadContractBlockRenderData } from '../../services/contractTemplateRender';
 import { quoteActorFrom, handleServiceError } from './quotes';
 
@@ -201,7 +201,8 @@ quoteLifecycleRoutes.post('/:id/images',
       if (file.size > MAX_QUOTE_IMAGE_SIZE_BYTES) return c.json({ error: 'Image too large (max 5 MB)' }, 413);
       const buffer = Buffer.from(await file.arrayBuffer());
       const mime = sniffImageMime(buffer);
-      if (!mime) return c.json({ error: 'Unsupported image format. Allowed: PNG, JPEG, WebP.' }, 415);
+      if (!mime) return c.json({ error: 'Unsupported image format. Allowed: PNG, JPEG.' }, 415);
+      if (mime === 'image/webp') return c.json({ error: QUOTE_IMAGE_WEBP_REJECTED_MESSAGE }, 415);
       const written = await writeQuoteImage(id, quote.orgId, mime, buffer);
       return c.json({ data: { imageId: written.id, mime, byteSize: written.byteSize } });
     } catch (err) { return handleServiceError(c, err); }

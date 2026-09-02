@@ -33,6 +33,10 @@ const { authState, mocks, AccountingConnectionErrorClass } = vi.hoisted(() => {
       scope: 'partner' as 'partner' | 'system' | 'organization',
       partnerId: '11111111-1111-1111-1111-111111111111' as string | null,
       mfa: true,
+      // Finding D: PATCH /settings must gate pullPayments/pushMode on the same
+      // invoices:write the push routes use, so the suite needs a REVOCABLE
+      // permission rather than a blanket allow.
+      invoicesWrite: true,
     },
     mocks: {
       getConnection: vi.fn(),
@@ -43,6 +47,7 @@ const { authState, mocks, AccountingConnectionErrorClass } = vi.hoisted(() => {
       updateHomeCurrency: vi.fn(async () => HOME_CURRENCY_WRITTEN_AT),
       updateMultiCurrencyEnabled: vi.fn(),
       refreshRealmSettings: vi.fn(),
+      resetConnectionForRealmChange: vi.fn(async () => ({ mappingsDeleted: 0 })),
       captureException: vi.fn(),
       captureMessage: vi.fn(),
       writeRouteAudit: vi.fn(),
@@ -52,6 +57,11 @@ const { authState, mocks, AccountingConnectionErrorClass } = vi.hoisted(() => {
       // withAuthDbAccessContext. Runs `fn` through so existing behavior is
       // unchanged; asserted directly in the settings/refresh describe block.
       withAuthDbAccessContext: vi.fn(async (_auth: unknown, fn: () => unknown) => fn()),
+      // Task 6 — the PATCH /:provider/settings `.returning({...})` row. A
+      // separate controllable mock (rather than an inline arrow in the `db`
+      // factory below) so individual tests can set what the "update" reports
+      // back, same idiom as `updateHomeCurrency` above.
+      dbUpdateReturning: vi.fn(async () => [] as Record<string, unknown>[]),
     },
     AccountingConnectionErrorClass,
   };
@@ -62,7 +72,7 @@ vi.mock('../../db', () => ({
     update: vi.fn(() => ({
       set: vi.fn(() => ({
         where: vi.fn(() => ({
-          returning: vi.fn(async () => []),
+          returning: mocks.dbUpdateReturning,
         })),
       })),
     })),
@@ -100,8 +110,14 @@ vi.mock('../../middleware/auth', () => ({
     return next();
   }),
   // The customer routes are permission-gated (organizations:write +
-  // sites:write); this suite covers the OAuth/settings routes, so grant it.
-  requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
+  // sites:write); this suite covers the OAuth/settings routes, so grant those.
+  // `invoices:write` is separately revocable — see authState.invoicesWrite.
+  requirePermission: vi.fn((resource: string, action: string) => async (c: any, next: any) => {
+    if (resource === 'invoices' && action === 'write' && !authState.invoicesWrite) {
+      return c.json({ error: 'Insufficient permissions' }, 403);
+    }
+    return next();
+  }),
   withAuthDbAccessContext: mocks.withAuthDbAccessContext,
 }));
 
@@ -112,6 +128,7 @@ vi.mock('../../services/accounting/accountingConnectionService', () => ({
   updateHomeCurrency: mocks.updateHomeCurrency,
   updateMultiCurrencyEnabled: mocks.updateMultiCurrencyEnabled,
   refreshRealmSettings: mocks.refreshRealmSettings,
+  resetConnectionForRealmChange: mocks.resetConnectionForRealmChange,
   AccountingConnectionError: AccountingConnectionErrorClass,
   // Real implementation, not a mock: the route's benign-race branch must key on
   // the error CODE, so the test exercises the real predicate.
@@ -175,6 +192,7 @@ describe('accounting routes', () => {
     authState.scope = 'partner';
     authState.partnerId = '11111111-1111-1111-1111-111111111111';
     authState.mfa = true;
+    authState.invoicesWrite = true;
     app = new Hono();
     app.route('/accounting', accountingRoutes);
     // The callback now reads the persisted row back (multi-currency §11), so the
@@ -408,6 +426,54 @@ describe('accounting routes', () => {
     expect(fields.homeCurrency).toBeNull();
   });
 
+  it('different-realm reconnect wipes the mappings and the CDC watermark, and audits it (finding C)', async () => {
+    // The upsert keys on (partner, provider), so re-authorising against another
+    // QuickBooks company REUSES this row — every mapping under it still points
+    // at the OLD realm's entity ids and the stored cursor is a watermark in the
+    // old realm's change stream.
+    mocks.getConnection.mockResolvedValueOnce({ id: CONNECTION_ID, realmId: 'realm-A', homeCurrency: 'CAD' });
+    mocks.exchangeCode.mockResolvedValueOnce(exchangedTokens('realm-B'));
+    mocks.resetConnectionForRealmChange.mockResolvedValueOnce({ mappingsDeleted: 7 });
+
+    const res = await runCallback(app, 'realm-B');
+
+    expect(res.status).toBe(302);
+    expect(mocks.resetConnectionForRealmChange).toHaveBeenCalledWith(
+      expect.anything(), CONNECTION_ID, authState.partnerId,
+    );
+    const audit = mocks.writeRouteAudit.mock.calls
+      .map(([, event]) => event as Record<string, unknown>)
+      .find((event) => event.action === 'accounting.connection.realm_changed');
+    expect(audit).toMatchObject({ details: expect.objectContaining({ mappingsDeleted: 7 }) });
+  });
+
+  it('same-realm reconnect keeps the mappings and the CDC watermark', async () => {
+    mocks.getConnection.mockResolvedValueOnce({ id: CONNECTION_ID, realmId: 'realm-A', homeCurrency: 'CAD' });
+    mocks.exchangeCode.mockResolvedValueOnce(exchangedTokens('realm-A'));
+
+    await runCallback(app, 'realm-A');
+
+    expect(mocks.resetConnectionForRealmChange).not.toHaveBeenCalled();
+  });
+
+  it('a FIRST connect (no prior realm) wipes nothing', async () => {
+    mocks.getConnection.mockResolvedValueOnce(null);
+    mocks.exchangeCode.mockResolvedValueOnce(exchangedTokens('realm-A'));
+
+    await runCallback(app, 'realm-A');
+
+    expect(mocks.resetConnectionForRealmChange).not.toHaveBeenCalled();
+  });
+
+  it('an unreadable prior realm wipes nothing (never destroy a healthy mapping set on a guess)', async () => {
+    mocks.getConnection.mockRejectedValueOnce(new Error('db down'));
+    mocks.exchangeCode.mockResolvedValueOnce(exchangedTokens('realm-B'));
+
+    await runCallback(app, 'realm-B');
+
+    expect(mocks.resetConnectionForRealmChange).not.toHaveBeenCalled();
+  });
+
   it('nulls the currency when the pre-upsert realm read fails (fail closed, still connects)', async () => {
     mocks.getConnection.mockRejectedValueOnce(new Error('db down'));
     mocks.exchangeCode.mockResolvedValueOnce(exchangedTokens('realm-A'));
@@ -588,6 +654,51 @@ describe('accounting routes', () => {
     await expect(disconnected.json()).resolves.toMatchObject({ status: 'disconnected', homeCurrency: null });
   });
 
+  // Phase D, Task 6 — the "Sync now" card needs both fields to render whether
+  // pull is on and when it last ran, on the SAME shape whether or not a
+  // connection exists yet (mirrors the homeCurrency/multiCurrencyEnabled
+  // precedent above).
+  it('returns pullPayments and lastReconcileAt for a connected partner and for the disconnected branch', async () => {
+    const lastReconcileAt = new Date('2026-09-02T12:00:00Z');
+    mocks.getConnection.mockResolvedValueOnce({
+      id: CONNECTION_ID,
+      partnerId: authState.partnerId,
+      provider: 'quickbooks',
+      realmId: 'realm-1',
+      accessToken: 'secret-access-token',
+      refreshToken: 'secret-refresh-token',
+      accessTokenExpiresAt: new Date(),
+      refreshTokenExpiresAt: new Date(),
+      environment: 'production',
+      homeCurrency: 'CAD',
+      defaultIncomeAccountRef: null,
+      defaultTaxCodeRef: null,
+      pushMode: 'auto',
+      status: 'connected',
+      createdAt: new Date('2026-06-23T00:00:00Z'),
+      updatedAt: new Date(),
+      lastError: null,
+      pullPayments: false,
+      lastReconcileAt,
+    });
+
+    const connected = await app.request('/accounting/quickbooks');
+    expect(connected.status).toBe(200);
+    await expect(connected.json()).resolves.toMatchObject({
+      pullPayments: false,
+      lastReconcileAt: lastReconcileAt.toISOString(),
+    });
+
+    mocks.getConnection.mockResolvedValueOnce(null);
+    const disconnected = await app.request('/accounting/quickbooks');
+    expect(disconnected.status).toBe(200);
+    await expect(disconnected.json()).resolves.toMatchObject({
+      status: 'disconnected',
+      pullPayments: true,
+      lastReconcileAt: null,
+    });
+  });
+
   it('disconnect requires MFA', async () => {
     authState.mfa = false;
 
@@ -653,6 +764,108 @@ describe('accounting routes', () => {
 
       expect(res.status).toBe(409);
       await expect(res.json()).resolves.toMatchObject({ code: 'reauth_required' });
+    });
+  });
+
+  // Phase D, Task 6.
+  describe('PATCH /:provider/settings', () => {
+    function patchSettings(body: Record<string, unknown>) {
+      return app.request('/accounting/quickbooks/settings', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    }
+
+    it('persists and echoes pullPayments', async () => {
+      mocks.dbUpdateReturning.mockResolvedValueOnce([{
+        status: 'connected',
+        environment: 'production',
+        pushMode: 'auto',
+        defaultIncomeAccountRef: null,
+        defaultTaxCodeRef: null,
+        lastError: null,
+        pullPayments: false,
+      }]);
+
+      const res = await patchSettings({ pullPayments: false });
+
+      expect(res.status).toBe(200);
+      await expect(res.json()).resolves.toMatchObject({ pullPayments: false });
+    });
+
+    it('still rejects an empty body (400)', async () => {
+      const res = await patchSettings({});
+      expect(res.status).toBe(400);
+      expect(mocks.dbUpdateReturning).not.toHaveBeenCalled();
+    });
+
+    it('still rejects homeCurrency as read-only — a captured fact, not a setting (400)', async () => {
+      const res = await patchSettings({ homeCurrency: 'CAD' });
+      expect(res.status).toBe(400);
+      expect(mocks.dbUpdateReturning).not.toHaveBeenCalled();
+    });
+
+    it('still rejects multiCurrencyEnabled as read-only — a captured fact, not a setting (400)', async () => {
+      const res = await patchSettings({ multiCurrencyEnabled: true });
+      expect(res.status).toBe(400);
+      expect(mocks.dbUpdateReturning).not.toHaveBeenCalled();
+    });
+
+    it('rejects flipping pullPayments without invoices:write (403, finding D)', async () => {
+      authState.invoicesWrite = false;
+
+      const res = await patchSettings({ pullPayments: false });
+
+      expect(res.status).toBe(403);
+      expect(mocks.dbUpdateReturning).not.toHaveBeenCalled();
+    });
+
+    it('rejects changing pushMode without invoices:write (403, finding D)', async () => {
+      authState.invoicesWrite = false;
+
+      const res = await patchSettings({ pushMode: 'manual' });
+
+      expect(res.status).toBe(403);
+      expect(mocks.dbUpdateReturning).not.toHaveBeenCalled();
+    });
+
+    it('still allows the account-ref settings without invoices:write', async () => {
+      authState.invoicesWrite = false;
+      mocks.dbUpdateReturning.mockResolvedValueOnce([{
+        status: 'connected', environment: 'production', pushMode: 'auto',
+        defaultIncomeAccountRef: '79', defaultTaxCodeRef: null, lastError: null, pullPayments: true,
+      }]);
+
+      const res = await patchSettings({ defaultIncomeAccountRef: '79' });
+
+      expect(res.status).toBe(200);
+    });
+
+    it('lets a SYSTEM-scope token flip pullPayments (scope bypass, like the push routes)', async () => {
+      authState.scope = 'system';
+      authState.invoicesWrite = false;
+      mocks.dbUpdateReturning.mockResolvedValueOnce([{
+        status: 'connected', environment: 'production', pushMode: 'auto',
+        defaultIncomeAccountRef: null, defaultTaxCodeRef: null, lastError: null, pullPayments: false,
+      }]);
+
+      const res = await app.request(
+        `/accounting/quickbooks/settings?partnerId=${authState.partnerId}`,
+        {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pullPayments: false }),
+        },
+      );
+
+      expect(res.status).toBe(200);
+    });
+
+    it('404s when there is no connection to update', async () => {
+      mocks.dbUpdateReturning.mockResolvedValueOnce([]);
+      const res = await patchSettings({ pullPayments: true });
+      expect(res.status).toBe(404);
     });
   });
 });

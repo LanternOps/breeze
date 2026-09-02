@@ -77,6 +77,17 @@ Portal users only ever see public replies. Internal notes, status changes, and a
 
 Press `Cmd+Enter` (or `Ctrl+Enter`) to send without leaving the keyboard.
 
+### Attachments
+
+You can attach files to a reply or an internal note — a screenshot of the error, a photo of a serial number, a signed PDF.
+
+- Up to **5 files per comment**, each up to **10 MB**.
+- **JPEG, PNG, WebP and PDF** only.
+
+An attachment inherits the visibility of the comment it belongs to. Files on a public reply are visible to the requester in the customer portal; files on an internal note stay with your team. Deleting a comment removes access to its attachments too.
+
+Technicians can add attachments from the ticket workbench and from the mobile app. Customers can open and download the files on a public reply from the portal, but cannot upload their own there.
+
 ### Editing and deleting your replies
 
 Each reply and internal note you wrote has **Edit** and **Delete** controls in its header. Editing opens the text inline with **Save** and **Cancel**; an edited entry is marked **edited** in the feed. Deleting asks you to confirm and leaves a small "deleted" placeholder in its place rather than removing the entry outright, so the conversation history stays intact.
@@ -145,6 +156,7 @@ Breeze can turn customer emails into tickets automatically, so your help desk wo
 
 Two things to know:
 
+- **New partners start with it off.** If you signed up from v0.109.0 onward, turn this on before publishing your support address — until you do, mail is discarded rather than queued.
 - Existing partners are **on** by default. The switch had no effect before v0.106.0, so ingestion has always been running; leaving it alone keeps today's behavior.
 - Switching it off **discards** mail rather than pausing it. Messages that arrive while it's off are not queued for replay when you switch it back on.
 

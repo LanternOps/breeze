@@ -17,6 +17,17 @@ vi.mock('./tenantLifecycle', () => ({
 vi.mock('./tenantOffboarding', () => ({
   abortOrganizationOffboarding: vi.fn(async () => ({ aborted: false, uninstallsCancelled: 0 })),
 }));
+// add_contact delegates to the shared contact CRUD service (#3258) rather than
+// writing `contacts` directly — createContact's own correctness (trimming,
+// role validation, site-in-org check, primary demotion/reprojection) is
+// already covered by services/contacts/crud.test.ts, so here it is mocked at
+// the boundary and these tests only assert the AI-tool WIRING: tenancy,
+// input shaping, error-code surfacing, and audit parity with create_site.
+// ContactValidationError is kept real so `instanceof` in the handler works.
+vi.mock('./contacts/crud', async (orig) => {
+  const actual = await orig<typeof import('./contacts/crud')>();
+  return { ...actual, createContact: vi.fn() };
+});
 
 import { and, eq, ilike, inArray, isNull, ne } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
@@ -27,9 +38,12 @@ import {
   restoreOrganizationTenantAccess,
 } from './tenantLifecycle';
 import { registerOrgTools, slugifyOrgName, generateUniqueOrgSlug } from './aiToolsOrgs';
+import { createContact, ContactValidationError } from './contacts/crud';
 import type { AiTool } from './aiTools';
 import type { AuthContext } from '../middleware/auth';
 import { validateToolInput } from './aiToolSchemas';
+
+const mockCreateContact = createContact as unknown as ReturnType<typeof vi.fn>;
 
 const mockDb = db as unknown as {
   select: ReturnType<typeof vi.fn>;
@@ -159,6 +173,14 @@ describe('org tools registration', () => {
     expect(validateToolInput('manage_organizations', { action: 'create_org', name: 'Acme Dental' }).success).toBe(true);
     expect(validateToolInput('manage_organizations', { action: 'drop_all_orgs' }).success).toBe(false);
     expect(validateToolInput('manage_organizations', { action: 'update_org', orgId: 'not-a-uuid' }).success).toBe(false);
+    // add_contact's roles/siteId fields are validated by the same shared schema
+    // (isolated from orgId so each failure is unambiguously about ITS field).
+    expect(
+      validateToolInput('manage_organizations', { action: 'add_contact', name: 'Pat', roles: ['owner'] }).success
+    ).toBe(false);
+    expect(
+      validateToolInput('manage_organizations', { action: 'add_contact', name: 'Pat', siteId: 'not-a-uuid' }).success
+    ).toBe(false);
     expect(validateToolInput('list_organizations', { search: 'acme', limit: 10 }).success).toBe(true);
     expect(validateToolInput('list_organizations', { limit: 0 }).success).toBe(false);
   });
@@ -535,18 +557,195 @@ describe('manage_organizations create_site', () => {
 // ── manage_organizations: add_contact ────────────────────────────────────────
 
 describe('manage_organizations add_contact', () => {
-  it('returns a structured not-supported note without touching the database', async () => {
+  const CONTACT_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+  const PARTNER_USER_ID = 'de305d54-75b4-431b-adb2-eb6b9e546014';
+  const ORG_USER_ID = 'de305d54-75b4-431b-adb2-eb6b9e546015';
+
+  function contactRow(overrides: Record<string, unknown> = {}) {
+    return {
+      id: CONTACT_ID, orgId: ORG_1, siteId: null, name: 'Pat Lee', email: 'pat@customer.example',
+      phone: null, mobile: null, title: null, roles: [], isPrimary: false, notes: null,
+      createdAt: new Date(), updatedAt: new Date(),
+      ...overrides,
+    };
+  }
+
+  it('creates the contact through the shared CRUD service and audits it (no direct DB write here)', async () => {
+    mockCreateContact.mockResolvedValueOnce(contactRow({ title: 'Office Manager', roles: ['billing'] }));
+
     const out = JSON.parse(
       await getTools().manage.handler(
-        { action: 'add_contact', orgId: ORG_1, name: 'Pat', email: 'pat@customer.example' },
+        { action: 'add_contact', orgId: ORG_1, name: 'Pat Lee', email: 'pat@customer.example', title: 'Office Manager', roles: ['billing'] },
         partnerAuth()
       )
     );
-    expect(out.status).toBe('not_supported');
-    expect(out.code).toBe('CONTACT_ENTITY_UNDEFINED');
-    expect(out.note).toMatch(/product decision/i);
+
+    expect(out.contact.id).toBe(CONTACT_ID);
+    expect(mockCreateContact).toHaveBeenCalledWith(
+      db,
+      {
+        orgId: ORG_1, siteId: undefined, name: 'Pat Lee', email: 'pat@customer.example',
+        phone: undefined, mobile: undefined, title: 'Office Manager', roles: ['billing'], isPrimary: false,
+      },
+      { userId: PARTNER_USER_ID }
+    );
+    // Reaches the customer PII write through createContact, never a bare insert.
     expect(mockDb.insert).not.toHaveBeenCalled();
-    expect(mockDb.update).not.toHaveBeenCalled();
+
+    expect(writeAuditEvent).toHaveBeenCalledTimes(1);
+    const [, auditEntry] = (writeAuditEvent as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    // `details` pinned too (review finding): it was previously unasserted, so
+    // { isPrimary, roles } silently going missing or drifting from the CRUD
+    // service's real values would have gone undetected.
+    expect(auditEntry).toMatchObject({
+      orgId: ORG_1, action: 'contact.create', resourceType: 'contact',
+      resourceId: CONTACT_ID, resourceName: 'Pat Lee',
+      details: { isPrimary: false, roles: ['billing'] },
+    });
+  });
+
+  it('passes optional site/contact fields through untouched, including isPrimary', async () => {
+    mockCreateContact.mockResolvedValueOnce(
+      contactRow({ siteId: SITE_1, phone: '555-0100', mobile: '555-0199', title: 'Manager', roles: ['site'], isPrimary: true })
+    );
+
+    await getTools().manage.handler(
+      {
+        action: 'add_contact', orgId: ORG_1, siteId: SITE_1, name: 'Site Contact',
+        phone: '555-0100', mobile: '555-0199', title: 'Manager', roles: ['site'], isPrimary: true,
+      },
+      partnerAuth()
+    );
+
+    expect(mockCreateContact).toHaveBeenCalledWith(
+      db,
+      {
+        orgId: ORG_1, siteId: SITE_1, name: 'Site Contact', email: undefined,
+        phone: '555-0100', mobile: '555-0199', title: 'Manager', roles: ['site'], isPrimary: true,
+      },
+      { userId: PARTNER_USER_ID }
+    );
+  });
+
+  it('denies a partner caller targeting an org outside its accessible set', async () => {
+    const out = JSON.parse(
+      await getTools().manage.handler(
+        { action: 'add_contact', orgId: OTHER_ORG, name: 'Rogue Contact' },
+        partnerAuth()
+      )
+    );
+    expect(out.error).toMatch(/access denied/i);
+    expect(mockCreateContact).not.toHaveBeenCalled();
+  });
+
+  it('org scope may add a contact in its OWN org only', async () => {
+    mockCreateContact.mockResolvedValueOnce(contactRow({ name: 'Local Contact', email: null }));
+    const ok = JSON.parse(
+      await getTools().manage.handler({ action: 'add_contact', name: 'Local Contact' }, orgAuth())
+    );
+    expect(ok.contact.orgId).toBe(ORG_1);
+    expect(mockCreateContact).toHaveBeenCalledWith(
+      db, expect.objectContaining({ orgId: ORG_1 }), { userId: ORG_USER_ID }
+    );
+
+    const denied = JSON.parse(
+      await getTools().manage.handler(
+        { action: 'add_contact', orgId: ORG_2, name: 'Cross-org contact' },
+        orgAuth()
+      )
+    );
+    expect(denied.error).toMatch(/cannot access another organization/i);
+  });
+
+  it('refuses a siteId outside a site-confined caller allowlist, before any write', async () => {
+    // allowedSiteIds is app-layer only and RLS on `contacts` is the org axis,
+    // so without this a site-confined org user could file a contact under any
+    // sibling site through the AI tool.
+    const out = JSON.parse(
+      await getTools().manage.handler(
+        { action: 'add_contact', orgId: ORG_1, siteId: SITE_2, name: 'Pat Lee' },
+        orgAuth({ allowedSiteIds: [SITE_1], canAccessSite: (id) => id === SITE_1 })
+      )
+    );
+    expect(out.code).toBe('site-access-denied');
+    expect(out.error).toMatch(/site/i);
+    expect(mockCreateContact).not.toHaveBeenCalled();
+    expect(writeAuditEvent).not.toHaveBeenCalled();
+  });
+
+  it('still allows a confined caller their own site, and an org-level contact', async () => {
+    const confined = orgAuth({ allowedSiteIds: [SITE_1], canAccessSite: (id?: string | null) => id === SITE_1 });
+    mockCreateContact.mockResolvedValueOnce(contactRow({ siteId: SITE_1 }));
+    const pinned = JSON.parse(
+      await getTools().manage.handler(
+        { action: 'add_contact', orgId: ORG_1, siteId: SITE_1, name: 'Pat Lee' }, confined
+      )
+    );
+    expect(pinned.contact.siteId).toBe(SITE_1);
+
+    mockCreateContact.mockResolvedValueOnce(contactRow());
+    const orgLevel = JSON.parse(
+      await getTools().manage.handler({ action: 'add_contact', orgId: ORG_1, name: 'Pat Lee' }, confined)
+    );
+    expect(orgLevel.contact.id).toBe(CONTACT_ID);
+  });
+
+  it('does not require a name — an email-only contact is passed through to createContact', async () => {
+    mockCreateContact.mockResolvedValueOnce(contactRow({ name: null, email: 'nameless@customer.example' }));
+    const out = JSON.parse(
+      await getTools().manage.handler(
+        { action: 'add_contact', orgId: ORG_1, email: 'nameless@customer.example' },
+        partnerAuth()
+      )
+    );
+    expect(out.contact.email).toBe('nameless@customer.example');
+    expect(mockCreateContact).toHaveBeenCalledWith(
+      db,
+      expect.objectContaining({ orgId: ORG_1, name: undefined, email: 'nameless@customer.example' }),
+      { userId: PARTNER_USER_ID }
+    );
+  });
+
+  // `name` is nullable (contacts.name) and contacts_identifiable_chk only
+  // requires ONE of name/email/phone/mobile — createContact enforces that
+  // invariant itself (code 'no-identifier'); the tool must surface it as a
+  // structured error rather than let it become an uncaught 500.
+  it('surfaces createContact\'s "no-identifier" refusal as a structured tool error, not a 500', async () => {
+    mockCreateContact.mockRejectedValueOnce(
+      new ContactValidationError('A contact needs at least one of name, email, phone, or mobile', 'no-identifier')
+    );
+    const out = JSON.parse(
+      await getTools().manage.handler({ action: 'add_contact', orgId: ORG_1 }, partnerAuth())
+    );
+    expect(out.code).toBe('no-identifier');
+    expect(out.error).toMatch(/at least one of name, email, phone, or mobile/i);
+    expect(writeAuditEvent).not.toHaveBeenCalled();
+  });
+
+  it('surfaces a ContactValidationError from the CRUD service as a structured tool error', async () => {
+    mockCreateContact.mockRejectedValueOnce(
+      new ContactValidationError('Unknown contact role "owner" — expected one of billing, technical', 'invalid-role')
+    );
+    const out = JSON.parse(
+      await getTools().manage.handler(
+        { action: 'add_contact', orgId: ORG_1, name: 'Pat', roles: ['owner'] },
+        partnerAuth()
+      )
+    );
+    expect(out.code).toBe('invalid-role');
+    expect(out.error).toMatch(/unknown contact role/i);
+    expect(writeAuditEvent).not.toHaveBeenCalled();
+  });
+
+  it('rethrows a non-validation error to the tool dispatcher\'s generic handler', async () => {
+    mockCreateContact.mockRejectedValueOnce(new Error('connection reset'));
+    const out = JSON.parse(
+      await getTools().manage.handler(
+        { action: 'add_contact', orgId: ORG_1, name: 'Pat' },
+        partnerAuth()
+      )
+    );
+    expect(out.error).toMatch(/operation failed/i);
   });
 });
 

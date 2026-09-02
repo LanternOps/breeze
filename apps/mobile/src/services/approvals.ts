@@ -1,6 +1,6 @@
 import * as SecureStore from 'expo-secure-store';
 import { getServerUrl } from './serverConfig';
-import { fetchWithTimeout } from './fetchWithTimeout';
+import { fetchWithAuthRefresh } from './authedFetch';
 
 const FALLBACK_API_BASE_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:3001';
 const PREFIX = '/api/v1/mobile/approvals';
@@ -51,10 +51,14 @@ export interface ApprovalRequest {
   createdAt: string;
 }
 
-async function authedFetch(path: string, init?: RequestInit) {
+async function authedFetch(
+  path: string,
+  init?: RequestInit,
+  opts?: { retryOnAuthFailure?: boolean }
+) {
   const token = await SecureStore.getItemAsync(TOKEN_KEY);
   const baseUrl = (await getServerUrl()) || FALLBACK_API_BASE_URL;
-  const res = await fetchWithTimeout(`${baseUrl}${path}`, {
+  const res = await fetchWithAuthRefresh(`${baseUrl}${path}`, {
     ...init,
     headers: {
       'Content-Type': 'application/json',
@@ -62,7 +66,7 @@ async function authedFetch(path: string, init?: RequestInit) {
       [CSRF_HEADER_NAME]: CSRF_HEADER_VALUE,
       ...(init?.headers ?? {}),
     },
-  });
+  }, undefined, opts);
   return res;
 }
 
@@ -98,7 +102,9 @@ export async function approveRequest(id: string, stepUp?: ApproveStepUp): Promis
   const body = stepUp && (stepUp.proof || stepUp.pin)
     ? JSON.stringify({ proof: stepUp.proof, pin: stepUp.pin })
     : undefined;
-  const res = await authedFetch(`${PREFIX}/${id}/approve`, { method: 'POST', body });
+  // A 401 on a decision is a failed step-up (see STEP_UP_FAILED below), not an
+  // expired token, so it must not be refreshed and replayed.
+  const res = await authedFetch(`${PREFIX}/${id}/approve`, { method: 'POST', body }, { retryOnAuthFailure: false });
   if (res.status === 409) throw new Error('ALREADY_DECIDED');
   if (res.status === 410) throw new Error('EXPIRED');
   if (res.status === 401) throw new Error('STEP_UP_FAILED');
@@ -111,7 +117,7 @@ export async function denyRequest(id: string, reason?: string): Promise<Approval
   const res = await authedFetch(`${PREFIX}/${id}/deny`, {
     method: 'POST',
     body: JSON.stringify({ reason }),
-  });
+  }, { retryOnAuthFailure: false });
   if (res.status === 409) throw new Error('ALREADY_DECIDED');
   if (res.status === 410) throw new Error('EXPIRED');
   if (!res.ok) throw new Error(`Deny failed: ${res.status}`);

@@ -18,9 +18,22 @@ import {
 } from '../../theme';
 import { Spinner } from '../../components/Spinner';
 import { reportInternalError } from '../../lib/errorReporting';
+import { osLabel } from '../../lib/osLabel';
+import { relativeTime } from '../../lib/relativeTime';
 
 interface Props {
   route: { params: { device: Device } };
+}
+
+/**
+ * Relative time reads at a glance, but an absolute timestamp is genuinely
+ * useful on a detail screen (matching against agent logs, ticket timestamps,
+ * etc.), so this keeps both rather than picking one.
+ */
+function formatTimestamp(iso: string): string {
+  const rel = relativeTime(iso);
+  const abs = new Date(iso).toLocaleString();
+  return rel ? `${rel} · ${abs}` : abs;
 }
 
 function statusDotColor(status: Device['status']): string {
@@ -280,7 +293,7 @@ export function DeviceDetailScreen({ route }: Props) {
         {device.os ? (
           <DetailRow
             label="OPERATING SYSTEM"
-            value={device.os}
+            value={osLabel(device.os)}
             textHi={theme.textHi}
             textLo={theme.textLo}
             border={theme.border}
@@ -298,7 +311,7 @@ export function DeviceDetailScreen({ route }: Props) {
         {device.lastSeen ? (
           <DetailRow
             label="LAST SEEN"
-            value={new Date(device.lastSeen).toLocaleString()}
+            value={formatTimestamp(device.lastSeen)}
             textHi={theme.textHi}
             textLo={theme.textLo}
             border={theme.border}

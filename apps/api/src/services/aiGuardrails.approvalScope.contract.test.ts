@@ -175,7 +175,7 @@ describe('tier-3 approval scope classification', () => {
       }
     }
     expect(enumerated.sort()).toEqual([
-      'manage_services', 'manage_startup_items', 's1_threat_action', 'security_scan',
+      'manage_ai_agents', 'manage_services', 'manage_startup_items', 's1_threat_action', 'security_scan',
     ]);
   });
 
@@ -183,7 +183,7 @@ describe('tier-3 approval scope classification', () => {
     // The union in realActionEnum() is only a real guard while BOTH sources
     // still reflect. If one silently returns nothing, the union quietly shrinks
     // and a new action in that source stops failing CI.
-    for (const tool of ['manage_services', 'manage_startup_items', 's1_threat_action', 'security_scan']) {
+    for (const tool of ['manage_ai_agents', 'manage_services', 'manage_startup_items', 's1_threat_action', 'security_scan']) {
       const definition = getToolDefinitions().find((d) => d.name === tool);
       const properties = (definition?.input_schema as { properties?: Record<string, unknown> } | undefined)?.properties;
       expect((properties?.action as { enum?: unknown[] } | undefined)?.enum, `${tool} tool-definition enum`).toBeInstanceOf(Array);
@@ -254,6 +254,103 @@ describe('tier-3 approval scope classification', () => {
     const withoutStatus = checkGuardrails('manage_organizations', { action: 'update_org', orgId: 'o1', name: 'Renamed' });
     expect(withoutStatus.tier).toBe(3);
     expect(withoutStatus.approvalScope).toBe('supervised');
+  });
+
+  // Task 7 (#3258 wave W02): add_contact went from a stub ("returns guidance
+  // only") to a real write of customer PII, so it must escalate to Tier 3 and
+  // land on `supervised` — not stay Tier 2 (auto-execute with no approval) and
+  // not fall through to `four_eyes` (which would demand a second approver for
+  // routine contact creation, same as create_site). Two assertions, one per
+  // failure mode described in spec §5:
+  //   - membership in BOTH TIER3_ACTIONS and TIER3_SUPERVISED_ACTIONS is
+  //     required — pulling either one out fails a DIFFERENT assertion below,
+  //     so this test cannot go green with just one of the two edits in place.
+  it('add_contact is classified supervised in both required tables, never four_eyes', () => {
+    expect(TIER3_ACTIONS.manage_organizations ?? []).toContain('add_contact');
+    expect(TIER3_SUPERVISED_ACTIONS.manage_organizations ?? []).toContain('add_contact');
+    expect(TIER3_FOUR_EYES_ACTIONS.manage_organizations ?? []).not.toContain('add_contact');
+  });
+
+  it('add_contact resolves to supervised at tier 3 end-to-end — not tier 2, not four_eyes', () => {
+    const check = checkGuardrails('manage_organizations', {
+      action: 'add_contact', orgId: 'o1', name: 'Jane Doe', email: 'jane@customer.example',
+    });
+    expect(check.tier).toBe(3);
+    expect(check.approvalScope).toBe('supervised');
+  });
+
+  // Review finding (fix round 1): the add_contact approval description had no
+  // fallback for `name` — a phone/mobile-only contact rendered literally as
+  // `Add contact "undefined"`, showing the human approver nothing identifying
+  // for exactly the input shape this task's own no-identifier fix enabled.
+  // These pin BOTH a name-bearing contact and a name-less one so the fallback
+  // chain (name ?? email ?? phone ?? mobile) can't regress silently.
+  it('add_contact approval description shows the contact name and email when both are present', () => {
+    const check = checkGuardrails('manage_organizations', {
+      action: 'add_contact', orgId: '11112222-1111-4111-8111-111111111111',
+      name: 'Jane Doe', email: 'jane@customer.example',
+    });
+    expect(check.description).toContain('Jane Doe');
+    expect(check.description).toContain('jane@customer.example');
+    expect(check.description).not.toContain('undefined');
+  });
+
+  it('add_contact approval description identifies a phone-only contact by phone, never "undefined"', () => {
+    const check = checkGuardrails('manage_organizations', {
+      action: 'add_contact', orgId: '11112222-1111-4111-8111-111111111111', phone: '555-0100',
+    });
+    expect(check.description).toContain('555-0100');
+    expect(check.description).not.toContain('undefined');
+  });
+
+  // Review finding (fix round 2): the description named only the contact and
+  // the organization. `isPrimary` and `siteId` are the ONLY two add_contact
+  // inputs with an effect beyond inserting a row — `isPrimary: true` demotes
+  // whoever currently holds the scope's primary slot and REPLACES
+  // `organizations.billing_contact` (or `sites.contact` when a site is named),
+  // which is a public partner-API DTO. An approver shown neither could not
+  // tell "file a new contact" apart from "overwrite this customer's billing
+  // contact". These pin the exact rendering of all four combinations.
+  const CONTACT_ORG = '11112222-1111-4111-8111-111111111111';
+  const CONTACT_SITE = '22223333-2222-4222-8222-222222222222';
+
+  it('add_contact approval description names the primary takeover at the ORG level', () => {
+    const check = checkGuardrails('manage_organizations', {
+      action: 'add_contact', orgId: CONTACT_ORG, name: 'Jane Doe', isPrimary: true,
+    });
+    expect(check.description).toBe(
+      'Add contact "Jane Doe" to organization 11112222... '
+      + 'as PRIMARY contact (replaces the current billing contact)',
+    );
+  });
+
+  it('add_contact approval description names the SITE and the site-contact takeover together', () => {
+    const check = checkGuardrails('manage_organizations', {
+      action: 'add_contact', orgId: CONTACT_ORG, siteId: CONTACT_SITE,
+      name: 'Jane Doe', isPrimary: true,
+    });
+    expect(check.description).toBe(
+      'Add contact "Jane Doe" to organization 11112222... on site 22223333... '
+      + "as PRIMARY contact (replaces the site's current contact)",
+    );
+  });
+
+  it('add_contact approval description names the site pin on its own', () => {
+    const check = checkGuardrails('manage_organizations', {
+      action: 'add_contact', orgId: CONTACT_ORG, siteId: CONTACT_SITE, name: 'Jane Doe',
+    });
+    expect(check.description).toBe(
+      'Add contact "Jane Doe" to organization 11112222... on site 22223333...',
+    );
+  });
+
+  it('add_contact approval description is unchanged for a plain org-level contact', () => {
+    const check = checkGuardrails('manage_organizations', {
+      action: 'add_contact', orgId: CONTACT_ORG, name: 'Jane Doe', email: 'jane@customer.example',
+    });
+    expect(check.description).toBe(
+      'Add contact "Jane Doe" (email: jane@customer.example) to organization 11112222...',
+    );
   });
 
   it('s1_isolate_device is input-aware: exempt from the static whole-tool sets', () => {

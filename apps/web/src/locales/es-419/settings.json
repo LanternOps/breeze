@@ -119,6 +119,8 @@
     "maxTurns": "Giros máximos por sesión",
     "messagesPerMinute": "Mensajes por minuto por usuario",
     "messagesPerHour": "Mensajes por hora por organización",
+    "alertThresholds": "Avisar al (% del presupuesto)",
+    "alertThresholdsHelp": "Los administradores del partner con acceso a facturación reciben una alerta en la aplicación en cada nivel y un correo para las alertas mensuales y de límite alcanzado. Deja vacío para heredar 50, 80, 95.",
     "notSet": "No configurado: las organizaciones se configuran individualmente",
     "description": "Los valores presupuestarios se aplican en todas las organizaciones secundarias. Los montos en dólares se almacenan internamente en centavos.",
     "modes": {
@@ -127,6 +129,9 @@
       "autoApprove": "Aprobación automática",
       "hybridPlan": "Plan híbrido"
     }
+  },
+  "aiBudgetThresholds": {
+    "invalid": "Ingresa hasta cinco números enteros entre 1 y 99, separados por comas."
   },
   "partnerAiProvider": {
     "title": "Proveedor de IA",
@@ -1048,6 +1053,7 @@
     },
     "toasts": {
       "inviteSent": "Invitación enviada",
+      "inviteSentAmbiguousContact": "Invitación enviada, pero no se pudo vincular ningún contacto porque varios contactos comparten este correo electrónico. Este usuario no verá los tickets enviados por correo hasta que se vincule un contacto.",
       "pendingInvited": "Usuario(s) pendiente(s) {{count}} invitado(s)",
       "inviteResent": "invitar a resentir",
       "reactivated": "Usuario reactivado",
@@ -1294,6 +1300,13 @@
     "monthlyBudget": "Presupuesto mensual ($)",
     "noLimit": "Sin límite",
     "dailyBudget": "Presupuesto diario ($)",
+    "alertThresholds": "Avisar al (% del presupuesto)",
+    "alertThresholdsHelp": "Las alertas se envían a los administradores del partner con acceso a facturación. El 100% (límite alcanzado) siempre se envía.",
+    "firedRung": "Alerta del {{pct}}% {{period}} enviada el {{date}}",
+    "periodLabel": {
+      "daily": "diaria",
+      "monthly": "mensual"
+    },
     "maxTurnsPerSession": "Giros máximos por sesión",
     "msgsMinPerUser": "Mensajes/min por usuario",
     "msgsHrPerOrg": "Mensajes/hora por organización",
@@ -1321,7 +1334,8 @@
     "likeActionPlanPlusLiveScreenshotsBetweenStepsAndAPersist": "Como Plan de acción, además de capturas de pantalla en vivo entre los pasos y un botón Detener persistente.",
     "untitled": "Sin título",
     "billedToPartnerKey": "Facturado a tu clave: el uso de IA se cobra a tu propia cuenta de Anthropic, no a los créditos de IA de Breeze",
-    "billedToPartnerKeyViaEndpoint": "Facturado a tu clave a través de {{name}}: el uso de IA se cobra a tu propia cuenta de Anthropic, no a los créditos de IA de Breeze"
+    "billedToPartnerKeyViaEndpoint": "Facturado a tu clave a través de {{name}}: el uso de IA se cobra a tu propia cuenta de Anthropic, no a los créditos de IA de Breeze",
+    "creditsRemaining": "Créditos de IA de Breeze restantes"
   },
   "aiAgentsPage": {
     "schedules": {
@@ -1735,6 +1749,8 @@
         "ticketsTriaged": "Tickets clasificados",
         "draftsSent": "Borradores enviados",
         "fixesExecuted": "Correcciones ejecutadas",
+        "promoteEligible": "Operaciones aptas para promoción",
+        "promoteEligibleHint": "Operaciones con evidencia suficiente y sin fallas para autorizarse previamente. Abre Configuración → Agentes de IA para revisarlas y promoverlas.",
         "estTimeSaved": "Tiempo ahorrado estimado",
         "estTimeSavedValue": "{{hours}} horas",
         "llmSpend": "Gasto en LLM"
@@ -1812,6 +1828,60 @@
         },
         "weightRowLabel": "{{label}} (segundos acreditados)",
         "neverRebuilt": "Nunca reconstruido"
+      }
+    },
+    "graduation": {
+      "title": "Graduación",
+      "description": "Lo que este agente demostró en los últimos 30 días, operación por operación, y si esa evidencia alcanza para pedir ejecución preautorizada.",
+      "loading": "Cargando la evidencia de graduación…",
+      "error": "No se pudo cargar la evidencia de graduación.",
+      "retry": "Reintentar",
+      "orgRequired": "Elige una sola organización en el selector de organizaciones para ver su evidencia de graduación.",
+      "empty": "Todavía no se registró evidencia para este agente.",
+      "readOnlyNote": "La ejecución preautorizada está desactivada en esta instalación; estas cifras son solo informativas.",
+      "byOrgTruncated": "Se muestran las primeras {{limit}} organizaciones por nombre. Elige una sola organización en el selector de organizaciones para ver el resto.",
+      "thresholdPerOrgNote": "Cada organización resuelve su propio umbral de promoción, por eso aquí las ejecuciones verificadas se muestran sin objetivo. Elige una sola organización en el selector de organizaciones para ver su objetivo.",
+      "approvalsLink": "Seguir esta solicitud en la bandeja de aprobaciones",
+      "ceilingHint": "Las claves del nivel de socio son un techo, no una concesión. El agente de cada organización debe recibir la clave por separado: mediante la graduación o editando el agente de esa organización.",
+      "promote": "Promover",
+      "verifiedOfThreshold": "{{verified}} de {{threshold}}",
+      "columns": {
+        "opKey": "Operación",
+        "state": "Estado",
+        "verified": "Verificadas",
+        "executed": "Ejecutadas",
+        "failed": "Fallidas",
+        "recurred": "Reincidencias",
+        "firstVerified": "Primera verificación",
+        "blockedReason": "Por qué todavía no"
+      },
+      "states": {
+        "tracking": "En seguimiento",
+        "eligible": "Apta",
+        "promoted": "Promovida",
+        "demoted": "Degradada"
+      },
+      "blockedReasons": {
+        "needs_partner_baseline": "El agente del socio todavía no permite esta operación.",
+        "below_threshold": "Aún no hay suficientes ejecuciones verificadas.",
+        "too_recent": "La primera ejecución verificada es demasiado reciente.",
+        "has_failures": "En esta ventana se registró una falla o una reincidencia.",
+        "not_policy_decidable": "Esta operación nunca puede preautorizarse."
+      },
+      "confirm": {
+        "title": "Solicitar preautorización",
+        "message": "Esto le pide a una segunda persona que preautorice {{opKey}} para el agente de esta organización. Se aplica solo a ejecuciones futuras y nunca autoriza una solicitud que ya está esperando una decisión.",
+        "action": "Solicitar aprobación"
+      },
+      "toasts": {
+        "requested": "Preautorización solicitada. Una segunda persona debe aprobarla antes de que esta operación se ejecute sin supervisión, y se aplica solo a ejecuciones futuras."
+      },
+      "errors": {
+        "promote": "No se pudo presentar la solicitud de preautorización.",
+        "policyDecideDisabled": "La ejecución preautorizada está desactivada en esta instalación, así que esta operación no puede promoverse."
+      },
+      "reliability": {
+        "caption": "Operaciones del modo de acción, solo lectura: no son claves de política, así que nunca pueden preautorizarse."
       }
     }
   },
@@ -3052,6 +3122,8 @@
       "organization": "Organización",
       "general": "General",
       "generalDescription": "Perfil y valores predeterminados",
+      "contacts": "Contactos",
+      "contactsDescription": "Personas con quienes hablar en este cliente, por sitio o en toda la organización",
       "contracts": "Contratos",
       "contractsDescription": "Acuerdos recurrentes",
       "billing": "Facturación",
@@ -3651,7 +3723,8 @@
       "title": "Dispositivos",
       "assigned": "dispositivos asignados a este sitio",
       "viewAll": "Ver todos los dispositivos"
-    }
+    },
+    "allContactsLink": "Todos los contactos de este cliente"
   },
   "siteForm": {
     "description": "Sólo se requiere el nombre del sitio. La dirección y el contacto son opcionales; puede completarlos más tarde.",
@@ -4089,5 +4162,180 @@
     "saveFailed": "No se pudo guardar la configuración de seguimiento de tiempo",
     "minSessionRange": "La duración mínima de la sesión debe estar entre {{min}} y {{max}} segundos",
     "mergeGapRange": "El intervalo de fusión debe estar entre {{min}} y {{max}} minutos"
+  },
+  "contactsCard": {
+    "title": "Contactos",
+    "description": "Las personas con las que su equipo habla en este cliente. Un contacto puede quedar fijado a un sitio o valer para toda la organización.",
+    "organizationLevel": "Organización",
+    "unknownSite": "Sitio no disponible",
+    "empty": "Todavía no hay contactos. Agregue uno o importe un CSV de su herramienta anterior.",
+    "loading": "Cargando contactos…",
+    "confirmDelete": "¿Eliminar a {{name}}? Esta acción no se puede deshacer.",
+    "actions": {
+      "add": "Agregar contacto",
+      "import": "Importar CSV",
+      "edit": "Editar",
+      "delete": "Eliminar",
+      "save": "Guardar contacto",
+      "saving": "Guardando…",
+      "cancel": "Cancelar",
+      "retry": "Reintentar"
+    },
+    "filters": {
+      "site": "Filtrar por sitio",
+      "role": "Filtrar por rol",
+      "allSites": "Todos los sitios",
+      "allRoles": "Todos los roles"
+    },
+    "columns": {
+      "name": "Nombre",
+      "reach": "Cómo comunicarse",
+      "jobTitle": "Cargo",
+      "roles": "Roles",
+      "site": "Pertenece a",
+      "actions": "Acciones"
+    },
+    "primary": {
+      "organization": "Principal (organización)",
+      "site": "Principal ({{site}})"
+    },
+    "roles": {
+      "billing": "Facturación",
+      "technical": "Técnico",
+      "escalation": "Escalamiento",
+      "admin": "Administración",
+      "site": "Sitio",
+      "afterHours": "Fuera de horario",
+      "portal": "Portal del cliente"
+    },
+    "form": {
+      "addHeading": "Nuevo contacto",
+      "editHeading": "Editar contacto",
+      "identifierRequired": "Complete al menos uno: nombre, correo electrónico, teléfono o celular.",
+      "fields": {
+        "name": "Nombre",
+        "email": "Correo electrónico",
+        "phone": "Teléfono",
+        "mobile": "Celular",
+        "title": "Cargo",
+        "site": "Pertenece a",
+        "roles": "Roles",
+        "notes": "Notas",
+        "isPrimary": "Marcar como contacto principal del alcance elegido arriba"
+      }
+    },
+    "pagination": {
+      "summary": "Mostrando {{from}} a {{to}} de {{total}}",
+      "previous": "Anterior",
+      "next": "Siguiente"
+    },
+    "toasts": {
+      "created": "Contacto agregado",
+      "updated": "Contacto guardado",
+      "deleted": "Contacto eliminado"
+    },
+    "errors": {
+      "load": "No se pudieron cargar los contactos de esta organización.",
+      "sites": "No se pudieron cargar los sitios de esta organización. Los nombres de sitio y el filtro por sitio seguirán sin estar disponibles hasta que carguen.",
+      "create": "No se pudo agregar el contacto.",
+      "update": "No se pudo guardar el contacto.",
+      "delete": "No se pudo eliminar el contacto."
+    }
+  },
+  "bulkContactImport": {
+    "title": "Importar contactos desde un CSV",
+    "description": "Cargue una exportación de contactos de su RMM o PSA anterior. Cada fila queda archivada en esta organización.",
+    "dropzone": "Suelte un archivo CSV aquí o haga clic para buscar",
+    "dropzoneHint": "Asigne al menos uno: nombre, correo electrónico, teléfono o celular; sin alguno de ellos no hay contacto.",
+    "actions": {
+      "close": "Cerrar",
+      "preview": "Revisar {{count}} filas",
+      "previewing": "Revisando…",
+      "import": "Importar {{count}} seleccionadas",
+      "importing": "Importando…"
+    },
+    "mapping": {
+      "heading": "Asignación de columnas",
+      "unmapped": "Sin asignar",
+      "identifierRequired": "Asigne una columna de nombre, correo electrónico, teléfono o celular para continuar.",
+      "droppedRows_one": "{{count}} fila omitida: sin nombre, correo electrónico, teléfono ni celular.",
+      "droppedRows_other": "{{count}} filas omitidas: sin nombre, correo electrónico, teléfono ni celular.",
+      "tooManyRows": "Este archivo asigna {{count}} filas, más de las {{max}} que acepta una importación. Divídalo en archivos más pequeños.",
+      "fields": {
+        "name": "Nombre",
+        "email": "Correo electrónico",
+        "phone": "Teléfono",
+        "mobile": "Celular",
+        "title": "Cargo",
+        "roles": "Roles",
+        "site": "Sitio",
+        "externalId": "Identificador del contacto en el sistema de origen",
+        "externalSystem": "Sistema de origen"
+      }
+    },
+    "mode": {
+      "label": "Contactos ya vinculados",
+      "skip": "Dejarlos como están",
+      "update": "Combinar el archivo con ellos"
+    },
+    "preview": {
+      "heading": "Qué va a pasar"
+    },
+    "summary": {
+      "imported": "{{count}} agregados",
+      "updated": "{{count}} combinados",
+      "skipped": "{{count}} sin cambios",
+      "failed": "{{count}} rechazados",
+      "allFailed": "No se importó nada: {{summary}}.",
+      "nothingImported": "No se importó nada: {{count}} ya vinculados.",
+      "nothingImportedEmpty": "No se importó nada."
+    },
+    "failures": {
+      "title_one": "Se rechazó {{count}} fila",
+      "title_other": "Se rechazaron {{count}} filas"
+    },
+    "skipped": {
+      "title_one": "Se dejó {{count}} fila sin cambios",
+      "title_other": "Se dejaron {{count}} filas sin cambios",
+      "reasons": {
+        "alreadyLinked": "ya vinculado a un contacto existente"
+      }
+    },
+    "errorCodes": {
+      "rowConflict": "La fila es ambigua frente a los contactos que ya están aquí.",
+      "orgNotFound": "Esta organización ya no está a su alcance.",
+      "annotationChanged": "Esta fila cambió desde la vista previa. Revise el archivo de nuevo.",
+      "matchChanged": "Esta fila ahora coincide con otro contacto. Revise el archivo de nuevo.",
+      "matchUnconfirmed": "Marque la fila e importe de nuevo para confirmar la coincidencia.",
+      "writeFailed": "La base de datos rechazó la escritura. No se guardó nada de esta fila.",
+      "noIdentifier": "La fila queda sin nombre, correo electrónico, teléfono ni celular.",
+      "invalidRole": "La fila nombra un rol que Breeze no reconoce.",
+      "siteNotInOrg": "El sitio de esta fila no pertenece a esta organización."
+    },
+    "errors": {
+      "previewFailed": "No se pudo comparar el archivo con los contactos existentes.",
+      "importFailed": "No se pudieron importar los contactos seleccionados.",
+      "fileRead": "No se pudo leer ese archivo. Selecciónelo de nuevo.",
+      "noColumns": "Ese archivo no tiene fila de encabezado, así que no hay nada que asignar."
+    }
+  },
+  "contactImportPreview": {
+    "selectAll": "Seleccionar todas las filas nuevas y vinculadas",
+    "organizationLevel": "Organización",
+    "matches": "coincide con «{{name}}»",
+    "columns": {
+      "name": "Nombre",
+      "email": "Correo electrónico",
+      "site": "Sitio",
+      "status": "Resultado"
+    },
+    "badges": {
+      "create": "Nuevo",
+      "linkMatch": "Ya vinculado",
+      "emailMatch": "Coincide el correo: confirme",
+      "nameMatch": "Coincide el nombre: confirme",
+      "conflict": "Conflicto",
+      "orgNotFound": "Organización no encontrada"
+    }
   }
 }

@@ -265,6 +265,15 @@ vi.mock('./DeviceList', () => ({
           onClick={() => onAction?.('restore', d)}
         />
       ))}
+      {devices.map(d => (
+        <button
+          key={`row-permanent-delete-${d.id}`}
+          type="button"
+          aria-label={`row permanent delete ${d.id}`}
+          data-testid={`row-permanent-delete-${d.id}`}
+          onClick={() => onAction?.('permanent-delete', d)}
+        />
+      ))}
       {onShowDecommissioned && (
         <button
           type="button"
@@ -2109,5 +2118,72 @@ describe('DevicesPage — compare bulk action navigates with selected ids', () =
     expect(vi.mocked(showToast)).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'error', message: expect.stringContaining('at least 2') }),
     );
+  });
+});
+
+// #4368: permanentDeleteDevice's 200 body can carry a `warning` when the
+// agent could not be reached for remote uninstall (decommission force-closes
+// the WS handshake, so this is the common case, not a rare race — see the
+// issue). The row/grid path must branch the toast on it instead of always
+// showing a green success, or the operator believes the endpoint is clean
+// when the agent is still installed and running.
+describe('DevicesPage — permanent delete surfaces the API warning (#4368)', () => {
+  beforeEach(() => {
+    vi.mocked(fetchAllDevices).mockResolvedValue({
+      data: [{ ...rawDevice(DEV_1, 'host-alpha'), status: 'decommissioned' }],
+    } as never);
+  });
+
+  async function runPermanentDelete() {
+    render(<DevicesPage />);
+    const trigger = await screen.findByTestId(`row-permanent-delete-${DEV_1}`);
+
+    // Only setTimeout is faked, and fake timers must be installed BEFORE the
+    // click — the 5s undo-window timer is scheduled synchronously inside the
+    // click handler, so installing fake timers after the click would leave it
+    // running on the real clock.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      fireEvent.click(trigger);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  }
+
+  it('shows a warning toast (not success) when the agent could not be reached', async () => {
+    const { permanentDeleteDevice } = await import('../../services/deviceActions');
+    const { showToast } = await import('../shared/Toast');
+    vi.mocked(permanentDeleteDevice).mockResolvedValue({
+      success: true,
+      agentUninstallSent: false,
+      warning: 'The agent could not be reached for remote uninstall. You may need to manually remove it from the endpoint.',
+    } as never);
+
+    await runPermanentDelete();
+
+    const calls = vi.mocked(showToast).mock.calls.map(c => c[0]);
+    expect(calls).toContainEqual(
+      expect.objectContaining({
+        type: 'warning',
+        message: expect.stringContaining('host-alpha'),
+      }),
+    );
+    expect(calls.some(c => c.type === 'warning' && c.message.includes('could not be reached'))).toBe(true);
+    expect(calls).not.toContainEqual(expect.objectContaining({ type: 'success' }));
+  });
+
+  it('still shows a success toast when there is no warning', async () => {
+    const { permanentDeleteDevice } = await import('../../services/deviceActions');
+    const { showToast } = await import('../shared/Toast');
+    vi.mocked(permanentDeleteDevice).mockResolvedValue({ success: true, agentUninstallSent: true } as never);
+
+    await runPermanentDelete();
+
+    const calls = vi.mocked(showToast).mock.calls.map(c => c[0]);
+    expect(calls).toContainEqual(expect.objectContaining({ type: 'success' }));
+    expect(calls.some(c => c.type === 'warning')).toBe(false);
   });
 });

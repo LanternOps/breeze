@@ -149,7 +149,15 @@ export interface AiAgentImpactDto {
    * Labelled "positive feedback rate" in every surface — never "precision".
    */
   positiveFeedback: { up: number; down: number; rate: number | null };
-  /** P2-6b, after P2-5's ai_agent_graduation lands. Always null in P2-6. */
+  /**
+   * `(org, agent, op_key)` tuples in `ai_agent_graduation` state `eligible`
+   * over the same accessible-org set as `totals` — "operations ready to be
+   * promoted to pre-authorized execution". Refreshed by the daily graduation
+   * pass and by every graduation read, so it may lag the graduation panel by
+   * one pass; surface it as a LINK to that panel, never as a list.
+   * `number | null` only so an older API behind a newer web build still
+   * renders — v1 always returns a number.
+   */
   promoteEligibleCount: number | null;
   weights: { effective: ImpactWeights; overrides: ImpactWeightOverrides | null };
   canEditWeights: boolean;

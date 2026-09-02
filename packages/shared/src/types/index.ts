@@ -685,6 +685,8 @@ export interface InheritableAiBudgetSettings {
   messagesPerMinutePerUser?: number;
   messagesPerHourPerOrg?: number;
   approvalMode?: 'per_step' | 'action_plan' | 'auto_approve' | 'hybrid_plan';
+  /** #4388 — pre-cap alert rungs (1–99). Empty = off. Omit = inherit. */
+  alertThresholdPercents?: number[];
 }
 
 // A pluggable remote-desktop launcher (e.g. RustDesk, ScreenConnect, TeamViewer).

@@ -77,6 +77,15 @@ type AgentRunRef = {
 // Errors
 // ---------------------------------------------------------------------------
 
+/**
+ * The one tool whose `orgId` ARGUMENT must equal the intent's own resolved
+ * org. A bare literal rather than an import from
+ * `services/aiToolsAiAgentGovernance.ts`: that module reaches the whole
+ * `aiTools` registry graph, and this file is imported by the release worker.
+ * Kept as a named constant so it is greppable from both ends.
+ */
+const ORG_PINNED_ARG_TOOL = 'manage_ai_agents';
+
 export class ActionIntentError extends Error {
   constructor(message: string, public code: string) {
     super(message);
@@ -795,6 +804,21 @@ export async function createActionIntent(
     throw new ActionIntentError(resolvedOrg.error ?? 'Organization context required', 'org_resolution_failed');
   }
   const orgId = resolvedOrg.orgId;
+  // P2-5 (#4192): `manage_ai_agents.orgId` is an ADDRESS, not a target
+  // selector. It exists only so the effect-digest resolver — which receives
+  // `(args, database)` and recomputes under a system context with no ambient
+  // org — can name the org whose supervised-key list is being pinned
+  // (services/actionIntents/effectDigest.ts). Rejected HERE rather than in
+  // the promote route because BOTH creation paths funnel through this
+  // function: the route and the chat/MCP `tool()` declaration. The executor
+  // re-asserts the same equality against this row's own immutable `org_id`
+  // before it writes, so neither check is load-bearing alone.
+  if (input.toolName === ORG_PINNED_ARG_TOOL && input.input.orgId !== orgId) {
+    throw new ActionIntentError(
+      `"${ORG_PINNED_ARG_TOOL}" must name the organization the request is authorized for`,
+      'org_argument_mismatch',
+    );
+  }
   const requesterId = auth.user.id;
   // Tier-3 supervised/four_eyes classification (Task 1's checkGuardrails).
   // Pre-existing tools that haven't been classified yet (approvalScope

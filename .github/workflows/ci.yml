@@ -53,6 +53,7 @@ jobs:
           bash scripts/check-guided-setup-default-project.sh
           bash scripts/check-selfhost-db-urls.sh
           bash scripts/check-guided-setup-env-roundtrip.sh
+          bash scripts/check-guided-setup-local-certs-backfill.sh
           bash scripts/check-guided-setup-placeholders.sh
           bash scripts/check-guided-setup-systemd-unit.sh
 
@@ -1003,7 +1004,9 @@ jobs:
         run: pnpm build --filter=@breeze/web
 
       - name: Install Chromium for CSP guard
-        run: pnpm --filter @breeze/web exec playwright install --with-deps chromium
+        uses: ./.github/actions/install-chromium
+        with:
+          run-prefix: pnpm --filter @breeze/web exec
 
       - name: CSP drift guard (real-browser)
         run: pnpm --filter @breeze/web run csp:guard
@@ -2447,8 +2450,9 @@ jobs:
         run: npm ci
 
       - name: Install Chromium
-        working-directory: e2e-tests
-        run: npx playwright install --with-deps chromium
+        uses: ./.github/actions/install-chromium
+        with:
+          working-directory: e2e-tests
 
       - name: Migrate and seed auth contract database
         run: |
@@ -2473,6 +2477,179 @@ jobs:
         run: |
           if [ -f auth-browser-transition-api.pid ]; then
             kill "$(cat auth-browser-transition-api.pid)" || true
+          fi
+
+  # ─── Portal dev-mode hydration guard (#3906) ─────────────────────────────
+  # Regression cover for #3906: every portal React island SSR'd correctly
+  # behind Caddy in a dev-mode stack and then silently failed to hydrate, so
+  # the portal e2e assertions kept passing against dead markup. The guard that
+  # actually catches it is `waitForHydration()` (e2e-tests/pages/hydration.ts),
+  # which can only fail against a REAL dev-mode stack with Caddy in front of
+  # the portal at /portal — the exact shape PR #4540 fixed and the one shape
+  # nothing in CI ran. (The other Playwright job here,
+  # auth-browser-transition-browser-contract, uses a narrow config with a bare
+  # API process, no web/portal dev servers and no Caddy.) Until this job
+  # existed, a #3906-class regression could only be caught in a hand-brought-up
+  # stack.
+  #
+  # NON-BLOCKING FOR NOW: `continue-on-error: true`, and deliberately absent
+  # from `ci-success`'s `needs` list and from its result checks — a flake or a
+  # Docker hiccup in a job this heavy must not red a PR while we learn how
+  # stable it is.
+  # PROMOTION CRITERION: after a week of green runs on main, drop
+  # `continue-on-error`, add `portal-dev-e2e` to `ci-success`'s `needs`, and
+  # add a `PORTAL_DEV_E2E_RESULT != "success"` clause to its check script.
+  portal-dev-e2e:
+    name: Portal Dev E2E (hydration, non-blocking)
+    runs-on: ubuntu-latest
+    needs: [lint, typecheck]
+    continue-on-error: true
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version-file: .node-version
+
+      # The stack is brought up by the repo's own wt-stack tooling
+      # (scripts/dev/wt-stack) rather than a CI-only compose invocation, so this
+      # job tracks the dev stack developers actually run: pg + redis + api + web
+      # + portal + caddy from docker-compose.yml + .override.yml.dev +
+      # .override.yml.worktree, code-mounted, on ephemeral host ports, with
+      # e2e-tests/seed-fixtures.sql seeded into Postgres and a descriptor
+      # (.breeze-stack.json) that playwright.config.ts already knows how to read.
+      #
+      # wt-stack requires a root .env: the base compose file guards a dozen
+      # values with `${VAR:?}` and resolves every image ref from it. wt-stack
+      # writes .env.stack itself for the dev-only values and passes it LAST, so
+      # for the handful of keys set in both places (POSTGRES_*, the peppers,
+      # TURN_SECRET, BREEZE_PORTAL_IMAGE_REF) .env.stack wins; they are repeated
+      # here only so this file stays valid if that list ever changes.
+      #
+      # BREEZE_BOOTSTRAP_ADMIN_* is deliberately NOT set: with NODE_ENV
+      # development (docker-compose.override.yml.dev) the API's first-boot seed
+      # then creates admin@breeze.local / BreezeAdmin123!, which is the account
+      # the wt-stack descriptor hands to Playwright.
+      - name: Create .env for the dev stack
+        run: |
+          cat > .env <<'EOF'
+          BREEZE_VERSION=ci-portal-dev-e2e
+          POSTGRES_USER=breeze
+          POSTGRES_PASSWORD=breeze
+          POSTGRES_DB=breeze
+          REDIS_PASSWORD=ci-portal-dev-e2e-redis-pw
+          JWT_SECRET=ci-portal-dev-e2e-k7x9Qm4pR2vL8nW5jT3yF6hB0cA1dE4gI7
+          # Signs partner reconstruction export cursors (#2506). 32 random bytes, base64.
+          PARTNER_API_CURSOR_SIGNING_KEY=nJ4B7uS2xielQGyxLoBLcPCPey5FyilPeVQbGL10CDo=
+          AGENT_ENROLLMENT_SECRET=ci-portal-dev-e2e-agent-enrollment-Hy4Bz9Mp2Wq6
+          APP_ENCRYPTION_KEY=e9367714341ea19491ff7cd095d1a97e15ae3f7962416723ecfb29a89ed71eb9
+          MFA_ENCRYPTION_KEY=e86f8b88f2c058d428de55c4abec1b50a3cd960a7205dffdb65be8130abbb777
+          ENROLLMENT_KEY_PEPPER=ci-portal-dev-e2e-enrollment-pepper-Hy4Bz9Mp2W
+          MFA_RECOVERY_CODE_PEPPER=ci-portal-dev-e2e-mfa-recovery-pepper-Nq8Zx2
+          TURN_SECRET=ci-portal-dev-e2e-turn-secret
+          # Wave 3.5d / Wave 4 runtime config — `${VAR:?}` guards in the base compose.
+          EVENT_PERMISSION_EPOCH_MODE=compat
+          REMOTE_ACCESS_ADMISSION_MODE=open
+          REMOTE_WS_AUTH_MODE=post_upgrade
+          REMOTE_WS_REDIS_TOPOLOGY=standalone-single-primary
+          # Caddy terminates plain HTTP on an ephemeral port here (the dev stack
+          # has no TLS), so the API must not demand https on forwarded requests.
+          FORCE_HTTPS=false
+          # The built-in Workspace extension defaults ON in the dev override; its
+          # migrations are pure cost for a portal hydration run, so keep it off.
+          BREEZE_WORKSPACE_ENABLED=false
+          # Image refs — the base docker-compose.yml requires all of these via
+          # `${VAR:?}` before profile filtering, even though the dev override
+          # builds api/web/portal from this checkout and stubs binaries-init.
+          BREEZE_API_IMAGE_REF=ghcr.io/lanternops/breeze/api:latest
+          BREEZE_WEB_IMAGE_REF=ghcr.io/lanternops/breeze/web:latest
+          BREEZE_PORTAL_IMAGE_REF=ghcr.io/lanternops/breeze/portal:latest
+          BREEZE_BINARIES_IMAGE_REF=ghcr.io/lanternops/breeze/binaries:latest
+          CADDY_IMAGE_REF=caddy:2-alpine
+          POSTGRES_IMAGE_REF=pgvector/pgvector:pg16
+          REDIS_IMAGE_REF=redis:7-alpine
+          COTURN_IMAGE_REF=coturn/coturn:latest
+          EOF
+
+      # e2e-tests is deliberately OUTSIDE the pnpm workspace
+      # (pnpm-workspace.yaml covers apps/*, packages/* and ee/* only), so it
+      # installs standalone. It ships no pnpm-lock.yaml — only the
+      # package-lock.json the auth-browser-transition job's `npm ci` uses — and
+      # pnpm's CI frozen-lockfile default is a no-op when no pnpm lockfile
+      # exists, so this resolves fresh rather than failing.
+      - name: Install e2e-tests dependencies
+        working-directory: e2e-tests
+        run: pnpm install --ignore-workspace
+
+      # apt 403 guard lives in the composite action (see its description).
+      - name: Install Chromium
+        uses: ./.github/actions/install-chromium
+        with:
+          run-prefix: pnpm exec
+          working-directory: e2e-tests
+
+      # `pnpm wt-stack up` without a workspace install: the CLI imports nothing
+      # but node builtins and its own sibling modules, so e2e-tests' tsx runs it
+      # directly and a multi-minute root `pnpm install` is avoided. It must run
+      # from the repo root — the CLI derives the compose project name, the
+      # env-file paths and the descriptor location from process.cwd().
+      - name: Bring up the dev-mode stack (Caddy fronting the portal at /portal)
+        run: ./e2e-tests/node_modules/.bin/tsx scripts/dev/wt-stack/cli.ts up --rebuild
+
+      - name: Show the stack descriptor
+        run: cat .breeze-stack.json
+
+      # multi-currency.spec.ts is the only spec whose flow reaches the portal
+      # through `waitForHydration` — its `public-quote-accept` step is the exact
+      # assertion #3906 broke and #4540 fixed.
+      # `quote-contract-proposal.spec.ts` is the only other `waitForHydration`
+      # caller and is EXCLUDED on purpose: it has a known, unrelated
+      # pre-existing failure earlier in the WEB flow (AuthOverlay /
+      # session-expired on the contracts tab) and never gets as far as its
+      # portal step. Add it here once that is fixed.
+      - name: Run the portal hydration specs
+        run: ./e2e-tests/node_modules/.bin/tsx scripts/dev/wt-stack/cli.ts test -- tests/multi-currency.spec.ts
+
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: portal-dev-e2e-playwright-report
+          path: |
+            e2e-tests/playwright-report
+            e2e-tests/test-results
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Container logs on failure
+        if: failure()
+        run: |
+          for c in $(docker ps -aq); do
+            echo "===== $(docker inspect -f '{{ .Name }}' "${c}") ====="
+            docker logs --tail 200 "${c}" 2>&1 || true
+          done
+
+      # `wt-stack down` passes --env-file .env.stack, which only exists once
+      # `up` has started; guard so a failure before that leaves a one-line note
+      # instead of a compose stack trace in the log.
+      - name: Teardown
+        if: always()
+        run: |
+          if [ -f .env.stack ]; then
+            ./e2e-tests/node_modules/.bin/tsx scripts/dev/wt-stack/cli.ts down || true
+          else
+            echo "No .env.stack — the stack was never brought up; nothing to tear down."
           fi
 
   # Summary job that depends on all other jobs for branch protection

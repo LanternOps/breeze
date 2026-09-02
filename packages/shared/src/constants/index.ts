@@ -55,8 +55,11 @@ export const NOTIFICATION_CHANNEL_TYPES = ['email', 'slack', 'teams', 'webhook',
 export const ACTOR_TYPES = ['user', 'api_key', 'agent', 'system', 'ai_agent'] as const;
 
 // Audit Results — same contract as ACTOR_TYPES above, for the `audit_result`
-// Postgres enum.
-export const AUDIT_RESULTS = ['success', 'failure', 'denied'] as const;
+// Postgres enum. 'dispatched' is the neutral outcome for commands audited at
+// enqueue time, before the agent has reported back — see commandQueue.ts and
+// issue #4225. It must never be conflated with 'success': the dispatch-time
+// audit row cannot yet know whether the command actually succeeded.
+export const AUDIT_RESULTS = ['success', 'failure', 'denied', 'dispatched'] as const;
 
 // Remote Session Types
 export const REMOTE_SESSION_TYPES = ['terminal', 'desktop', 'file_transfer'] as const;

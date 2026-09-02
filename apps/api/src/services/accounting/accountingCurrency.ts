@@ -143,9 +143,8 @@ export function normalizeAccountingPayment(
 /*
  * DEFERRED ENFORCEMENT + INTEGRATION CONTRACT (multi-currency §11, wave 8 → Phase C/D).
  *
- * STATUS: items 1-3 below are DELIVERED (Phase C). Only item 4 (the Phase-D
- * payment applier) remains outstanding — this comment stays as its contract
- * until that lands.
+ * STATUS: items 1-4 below are all DELIVERED (1-3 Phase C, 4 Phase D). This
+ * comment stays as the contract for future changes to any of them.
  *
  *  1. DELIVERED. ONE GUARDED COORDINATOR —
  *     `pushInvoiceToAccounting`/`voidInvoiceInAccounting` in
@@ -174,18 +173,29 @@ export function normalizeAccountingPayment(
  *     `accounting_entity_mappings_breeze_uniq` unique index.
  *     assertAccountingInvoicePushCurrency runs immediately after the typed
  *     connection + invoice payload are loaded and BEFORE any network call.
- *  4. OUTSTANDING (Phase D). A payment applier that follows the ESTABLISHED INVOICE-FIRST LOCK
- *     ORDER (invoiceService.recordPayment, apps/api/src/services/invoiceService.ts:1305-1314:
- *     "ONE transaction, invoice row lock FIRST"). Concretely, in one transaction:
- *       a. SELECT the invoice row FOR UPDATE;
- *       b. re-read currency and recompute the balance from invoice_payments
- *          UNDER that lock (the header balance column is only a cache of the sum);
- *       c. resolve the remote-invoice mapping and call normalizeAccountingPayment
- *          against the LOCKED invoice's stamped currency;
- *       d. claim the unique (connection, remotePaymentId) mapping and insert the
- *          invoice_payments row and recompute the header IN THE SAME transaction,
- *          so a re-delivered remotePaymentId applies at most once.
- *     A Phase-D suite must prove the ordering (normalize after mapping
- *     resolution, before any invoice_payments write) and the at-most-once
- *     property under concurrent re-delivery.
+ *  4. DELIVERED. `accountingPaymentPull.ts`'s `applyAccountingPayment`, proved by
+ *     `apps/api/src/__tests__/integration/accountingPaymentPull.integration.test.ts`.
+ *     One transaction, in this order:
+ *       a. an UNLOCKED discovery read of the invoice mapping — resolves WHICH
+ *          invoice to lock; not authoritative;
+ *       b. `SELECT ... FROM invoices ... FOR UPDATE` on that invoice;
+ *       c. the PAYMENT mapping re-read UNDER the invoice lock — this is the
+ *          authoritative at-most-once claim, not step (a);
+ *       d. `normalizeAccountingPayment` against the LOCKED invoice's stamped
+ *          currency (equality asserted before any minor-unit conversion);
+ *       e/f. the `invoice_payments` insert and `recomputeInvoiceStatus`, which
+ *          re-reads the payment sum in the same transaction and therefore under
+ *          the same lock.
+ *
+ *     ONE DELIBERATE REFINEMENT beyond what this comment originally specified:
+ *     the at-most-once claim is keyed on `accounting_entity_mappings.remote_entity_id`
+ *     set to the COMPOSITE `'<PaymentId>/<remoteInvoiceId>'`
+ *     (`paymentMappingRemoteId`), never on the bare `remotePaymentId`. One QBO
+ *     `Payment` legitimately settles several Breeze invoices (a split payment
+ *     carries one `Line` per invoice), so a bare payment id would let only the
+ *     first split line claim the mapping and the rest would collide against
+ *     `accounting_entity_mappings_remote_uniq`. Qualifying the id by the invoice
+ *     makes each (payment, invoice) pair its own claim; `reverseAccountingPayment`
+ *     recovers the whole set of an invoice's payment lines with a
+ *     `<PaymentId>/%` prefix match.
  */

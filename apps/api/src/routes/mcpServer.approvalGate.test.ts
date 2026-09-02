@@ -169,7 +169,7 @@ vi.mock('../services/permissions', async (importOriginal) => {
 });
 
 import { mcpServerRoutes } from './mcpServer';
-import { checkGuardrails } from '../services/aiGuardrails';
+import { checkGuardrails, TIER3_ACTIONS } from '../services/aiGuardrails';
 
 // Real JSON schemas for the multiplexed tools these tests target, trimmed to
 // just the `action` enum the gate inspects (mirrors the real registry
@@ -193,6 +193,18 @@ const MANAGE_INVOICES_SCHEMA = {
       ],
     },
   },
+};
+
+// manage_organizations' four actions, mirroring the real registry definition
+// the same way the two schemas above do. The enforced schema itself cannot be
+// imported here — aiToolSchemas reaches into `../db/schema`, which this suite
+// mocks down to five tables — so the corresponding "the REAL enum is fully
+// Tier 3" assertion lives next to the real registry, in
+// services/aiAgentSdkTools.mcpCoverage.test.ts.
+const MANAGE_ORGANIZATIONS_ACTIONS = ['create_org', 'update_org', 'create_site', 'add_contact'];
+const MANAGE_ORGANIZATIONS_SCHEMA = {
+  type: 'object',
+  properties: { action: { type: 'string', enum: MANAGE_ORGANIZATIONS_ACTIONS } },
 };
 
 const MANAGE_POLICY_FEATURE_LINK_SCHEMA = {
@@ -370,7 +382,62 @@ describe('MCP interactive-approval-only gate (all Tier 3, tier-driven)', () => {
     });
   });
 
-  // (c2) manage_policy_feature_link (RMM-QA-176 D9) — mixed multiplexer, base
+  // (c2) manage_organizations — a mixed multiplexer that became WHOLLY gated.
+  describe('manage_organizations — every action is now Tier 3 (#3258 W02)', () => {
+    // add_contact (#3258 wave W02) writes customer PII and can replace an
+    // organization's billing contact, so it escalated to Tier 3 — which made
+    // ALL FOUR of manage_organizations' actions Tier 3 and flipped the tool
+    // from "mixed multiplexer" to wholly gated. The consequence is deliberate
+    // and easy to mistake for a regression: MCP has no interactive approval
+    // channel, so the tool disappears from tools/list entirely and every call
+    // over MCP is refused. Pinned here so the day someone adds a NON-Tier-3
+    // action back (which would re-list the tool) is a decision, not an
+    // accident. New-customer intake over MCP is unaffected in the only sense
+    // that matters: it never worked without approval, it now says so up front
+    // instead of advertising a tool that always fails.
+    beforeEach(() => {
+      mocks.getToolDefinitions.mockReturnValue([
+        { name: 'manage_organizations', description: 'Create and manage organizations, sites, and contacts.', input_schema: MANAGE_ORGANIZATIONS_SCHEMA },
+        { name: 'query_devices', description: 'List devices.', input_schema: {} },
+      ]);
+      // Base tier 2 in the real registry — the gate here comes purely from
+      // TIER3_ACTIONS covering the whole enum, not from the base tier.
+      mocks.getToolTier.mockImplementation((name: string) => {
+        if (name === 'manage_organizations') return 2;
+        if (name === 'query_devices') return 1;
+        return undefined;
+      });
+    });
+
+    it('every declared action escalates to Tier 3 — the premise of the suppression', () => {
+      const tier3 = TIER3_ACTIONS.manage_organizations ?? [];
+      expect(MANAGE_ORGANIZATIONS_ACTIONS).toContain('add_contact');
+      for (const action of MANAGE_ORGANIZATIONS_ACTIONS) {
+        expect(tier3, `${action} is not Tier 3 — the tool is no longer wholly gated`).toContain(action);
+      }
+    });
+
+    it('is absent from tools/list despite base tier 2', async () => {
+      const res = await listTools();
+      const body = await res.json();
+      const names = body.result.tools.map((t: any) => t.name);
+      expect(names).not.toContain('manage_organizations');
+      expect(names).toContain('query_devices');
+    });
+
+    it('tools/call add_contact returns MCP_APPROVAL_REQUIRED without executing', async () => {
+      const res = await callTool('manage_organizations', {
+        action: 'add_contact', orgId: 'org-1', name: 'Jane Ops', email: 'jane@acme.example',
+      });
+      const body = await res.json();
+      expect(body.result.isError).toBe(true);
+      const payload = JSON.parse(body.result.content[0].text);
+      expect(payload.code).toBe('MCP_APPROVAL_REQUIRED');
+      expect(mocks.executeTool).not.toHaveBeenCalled();
+    });
+  });
+
+  // (c3) manage_policy_feature_link (RMM-QA-176 D9) — mixed multiplexer, base
   // tier 2, escalated by INPUT content rather than by action name.
   describe('manage_policy_feature_link — maintenance links escalate by input', () => {
     beforeEach(() => {

@@ -9,13 +9,13 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
 import { customerEmailDomains } from '../../db/schema/emailInbound';
-import { organizations, partners } from '../../db/schema';
+import { contacts, organizations, partners } from '../../db/schema';
 import { portalUsers } from '../../db/schema/portal';
 import { createOrganization, createPartner } from './db-utils';
 import { getTestDb } from './setup';
 import {
   resolveOrgBySenderDomain,
-  findOrCreateEmailContact,
+  resolveEmailRequester,
   loadPartnerInboundPolicy,
 } from '../../services/inboundEmail/resolveOrg';
 
@@ -38,6 +38,7 @@ afterAll(async () => {
   const orgList = sql.join(seededOrgIds.map((id) => sql`${id}`), sql`, `);
   await adminDb.delete(customerEmailDomains).where(sql`${customerEmailDomains.partnerId} IN (${partnerList})`);
   await adminDb.delete(portalUsers).where(sql`${portalUsers.orgId} IN (${orgList})`);
+  await adminDb.delete(contacts).where(sql`${contacts.orgId} IN (${orgList})`);
   await adminDb.delete(organizations).where(sql`${organizations.id} IN (${orgList})`);
   await adminDb.delete(partners).where(sql`${partners.id} IN (${partnerList})`);
 });
@@ -97,22 +98,77 @@ describe('resolveOrgBySenderDomain', () => {
   });
 });
 
-describe('findOrCreateEmailContact', () => {
-  it('creates a password-less contact and is idempotent on the same (org,email)', async () => {
+describe('resolveEmailRequester', () => {
+  it('creates ONE contact for an unknown sender, writes no portal_users row, and is idempotent', async () => {
     const { org } = await seedPartnerOrg();
     const email = `Contact-${uniqueSuffix()}@acme.test`;
 
-    const id1 = await withSystemDbAccessContext(() => findOrCreateEmailContact(org.id, email, 'Acme Bob'));
-    const id2 = await withSystemDbAccessContext(() => findOrCreateEmailContact(org.id, email.toUpperCase(), 'Acme Bob'));
-    expect(id1).toBe(id2);
+    const first = await withSystemDbAccessContext(() => resolveEmailRequester(org.id, email, 'Acme Bob'));
+    // Same sender again, different casing — must resolve to the SAME contact.
+    const second = await withSystemDbAccessContext(() => resolveEmailRequester(org.id, email.toUpperCase(), 'Acme Bob'));
+
+    expect(first).toEqual({ kind: 'contact', contactId: expect.any(String) });
+    expect(second).toEqual(first);
 
     const adminDb = getTestDb() as any;
-    const [row] = await adminDb
-      .select({ passwordHash: portalUsers.passwordHash, email: portalUsers.email })
-      .from(portalUsers)
-      .where(eq(portalUsers.id, id1));
-    expect(row.passwordHash).toBeNull();
-    expect(row.email).toBe(email.toLowerCase());
+    const rows = await adminDb
+      .select({ id: contacts.id, email: contacts.email, name: contacts.name, createdBy: contacts.createdBy })
+      .from(contacts)
+      .where(eq(contacts.orgId, org.id));
+    expect(rows).toHaveLength(1);
+    expect(rows[0].email).toBe(email.toLowerCase());
+    expect(rows[0].name).toBe('Acme Bob');
+    // A system-context create has no acting user.
+    expect(rows[0].createdBy).toBeNull();
+
+    // The whole point of W03: the auth table is no longer written on ingest.
+    const logins = await adminDb.select({ id: portalUsers.id }).from(portalUsers).where(eq(portalUsers.orgId, org.id));
+    expect(logins).toHaveLength(0);
+  });
+
+  it("returns none/'unusable-address' for an empty From and creates nothing", async () => {
+    const { org } = await seedPartnerOrg();
+
+    const result = await withSystemDbAccessContext(() => resolveEmailRequester(org.id, '   ', 'Nobody'));
+
+    expect(result).toEqual({ kind: 'none', reason: 'unusable-address' });
+    const adminDb = getTestDb() as any;
+    const rows = await adminDb.select({ id: contacts.id }).from(contacts).where(eq(contacts.orgId, org.id));
+    expect(rows).toHaveLength(0);
+  });
+
+  it("returns none/'shared-mailbox' for a shared mailbox and mints no duplicate", async () => {
+    const { org } = await seedPartnerOrg();
+    const email = `support-${uniqueSuffix()}@acme.test`;
+    const adminDb = getTestDb() as any;
+    // Two real contacts on one address: an org's shared support mailbox.
+    await adminDb.insert(contacts).values([
+      { orgId: org.id, email, name: 'Support One' },
+      { orgId: org.id, email, name: 'Support Two' },
+    ]);
+
+    const result = await withSystemDbAccessContext(() => resolveEmailRequester(org.id, email, 'Acme Support'));
+
+    expect(result).toEqual({ kind: 'none', reason: 'shared-mailbox' });
+    const rows = await adminDb.select({ id: contacts.id }).from(contacts).where(eq(contacts.orgId, org.id));
+    expect(rows).toHaveLength(2);
+  });
+
+  it('two concurrent first messages from one new sender create exactly ONE contact', async () => {
+    // The advisory lock is the only thing preventing this: contacts_org_email_idx
+    // is deliberately NON-unique, and the inbound worker runs at concurrency 5.
+    const { org } = await seedPartnerOrg();
+    const email = `race-${uniqueSuffix()}@acme.test`;
+
+    const [a, b] = await Promise.all([
+      withSystemDbAccessContext(() => resolveEmailRequester(org.id, email, 'Racer A')),
+      withSystemDbAccessContext(() => resolveEmailRequester(org.id, email, 'Racer B')),
+    ]);
+
+    expect(a).toEqual(b);
+    const adminDb = getTestDb() as any;
+    const rows = await adminDb.select({ id: contacts.id }).from(contacts).where(eq(contacts.orgId, org.id));
+    expect(rows).toHaveLength(1);
   });
 });
 

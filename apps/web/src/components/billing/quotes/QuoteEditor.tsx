@@ -1226,8 +1226,9 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
    * rules close #3519 for every branch that routes through here — which is the
    * catch: nothing enforces that routing, so a NEW block type must call this
    * helper rather than re-inlining `positionNewBlock` + reset + `refresh()`,
-   * or it reopens the bug. (Line creation still has the unfixed twin of this
-   * problem; see the note on `doAddCatalog`.)
+   * or it reopens the bug. (Line creation had the unfixed twin of this problem;
+   * it now runs the same one-shot resync-and-warn tail via `finishLineCreate`,
+   * see below — #4286.)
    *
    * 1. It never throws. A throw would escape into `runScoped`'s catch and toast
    *    "Could not add the section" over a block that DOES exist — the copy that
@@ -1465,15 +1466,29 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
   [quote.id, refresh, runScoped, t]);
 
   // ---- line mutations (scoped to a line_items block) ----------------------
-  // KNOWN GAP (#3519's unfixed twin, deliberately out of scope here): every line
-  // creation below rests on the same premise the block path just stopped
-  // trusting — "no success toast, the appended row and the moving totals ARE the
-  // feedback" — and ends with the fire-and-forget `refresh()` rather than the
-  // honest `finishBlockCreate` tail. So a line POST that succeeds while its
-  // quiet refetch fails is still completely silent, and a tech on a flaky link
-  // can re-add the same line the way the reporter re-uploaded the same image.
-  // Fixing it needs its own copy, its own 8 locales and its own tests, so it is
-  // filed separately rather than smuggled into this change.
+  /**
+   * Tail for every line-creation path below, once the POST has already
+   * succeeded server-side. Same shape as `finishBlockCreate` and closes the
+   * same defect (#3519) for line creation (#4286): these mutations
+   * deliberately have no success toast of their own — the appended row and
+   * the moving totals ARE the feedback — so a quiet refetch that fails after
+   * a successful write must say so honestly, or the technician reads silence
+   * as "nothing happened" and re-adds the same line, duplicating a billable
+   * charge.
+   *
+   * Never throws (see `resync`), and goes through the one-shot `resync()`
+   * rather than the coalescing `refresh()` for the same reason `finishBlockCreate`
+   * does: adding a line is a one-shot action, not the tab-through burst the
+   * throttle exists to cap, and its outcome report must not sit behind a
+   * cooldown window.
+   */
+  const finishLineCreate = useCallback(async (): Promise<void> => {
+    const resynced = await resync();
+    if (!resynced) {
+      showToast({ message: t('quotes.editor.errors.lineAddedListStale'), type: 'warning' });
+    }
+  }, [resync, t]);
+
   const doAddCatalog = useCallback(async (blockId: string, item: CatalogItem) => {
     await runAction({
       request: () => addCatalogLine(quote.id, { catalogItemId: item.id, quantity: 1, blockId }),
@@ -1489,8 +1504,8 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
       // control. Failures still toast.
       onUnauthorized: UNAUTHORIZED,
     });
-    refresh();
-  }, [quote.id, quote.currencyCode, refresh, t]);
+    await finishLineCreate();
+  }, [quote.id, quote.currencyCode, finishLineCreate, t]);
 
   const addCatalog = useCallback((blockId: string, item: CatalogItem) =>
     runScoped(pendingKey.addLine(blockId), () => doAddCatalog(blockId, item), t('quotes.editor.errors.addCatalogItem')),
@@ -1632,32 +1647,41 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
         onUnauthorized: UNAUTHORIZED,
       });
       // Optionally persist the manual line to the product catalog for reuse.
-      if (form.saveToCatalog) {
-        await runAction({
-          request: () => createCatalogItem({
-            itemType: 'service',
-            name: form.name.trim() || form.description.trim(),
-            description: form.description.trim() || null,
-            billingType: form.recurrence === 'one_time' ? 'one_time' : 'recurring',
-            billingFrequency: form.recurrence === 'monthly'
-              ? 'monthly'
-              : form.recurrence === 'annual'
-                ? 'annual'
-                : null,
-            // Price-book row in the quote's currency (the legacy unitPrice would be
-            // stored as the PARTNER currency — wrong for a foreign-currency quote).
-            prices: [{ currencyCode: quote.currencyCode, unitPrice: priceNum }],
-            taxable: form.taxable,
-          }),
-          errorFallback: t('quotes.editor.errors.lineAddedCatalogSaveFailed'),
-          successMessage: t('quotes.editor.success.savedToCatalog'),
-          onUnauthorized: UNAUTHORIZED,
-        });
-        void loadCatalog();
+      // This sits in a `finally` around `finishLineCreate()`: the manual LINE
+      // already exists server-side by this point (the addManualLine call above
+      // succeeded), so a failed catalog-save must not skip the resync — that
+      // would reopen #4286 for this one branch, stranding the line with no
+      // list refresh and no stale-list warning even though runAction's own
+      // "saving it to the catalog failed" toast already fired.
+      try {
+        if (form.saveToCatalog) {
+          await runAction({
+            request: () => createCatalogItem({
+              itemType: 'service',
+              name: form.name.trim() || form.description.trim(),
+              description: form.description.trim() || null,
+              billingType: form.recurrence === 'one_time' ? 'one_time' : 'recurring',
+              billingFrequency: form.recurrence === 'monthly'
+                ? 'monthly'
+                : form.recurrence === 'annual'
+                  ? 'annual'
+                  : null,
+              // Price-book row in the quote's currency (the legacy unitPrice would be
+              // stored as the PARTNER currency — wrong for a foreign-currency quote).
+              prices: [{ currencyCode: quote.currencyCode, unitPrice: priceNum }],
+              taxable: form.taxable,
+            }),
+            errorFallback: t('quotes.editor.errors.lineAddedCatalogSaveFailed'),
+            successMessage: t('quotes.editor.success.savedToCatalog'),
+            onUnauthorized: UNAUTHORIZED,
+          });
+          void loadCatalog();
+        }
+      } finally {
+        await finishLineCreate();
       }
-      refresh();
     }, t('quotes.editor.errors.addLine'));
-  }, [quote.id, refresh, loadCatalog, runScoped, t]);
+  }, [quote.id, quote.currencyCode, finishLineCreate, loadCatalog, runScoped, t]);
 
   // Deferred-flush executor for a line delete (see startLineDelete). No
   // success toast — the undo toast at delete time already told the user.
@@ -2218,7 +2242,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
                   <input
                     ref={imageFileInputRef}
                     type="file"
-                    accept="image/png,image/jpeg,image/webp"
+                    accept="image/png,image/jpeg"
                     onChange={(e) => setImageFile(e.target.files?.[0] ?? null)}
                     data-testid="quote-block-image-file"
                     className="block w-full text-sm text-muted-foreground file:mr-3 file:rounded-md file:border file:bg-muted file:px-3 file:py-1.5 file:text-xs file:font-medium"
@@ -2515,7 +2539,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
                   <>
                     <input
                       type="file"
-                      accept="image/png,image/jpeg,image/webp"
+                      accept="image/png,image/jpeg"
                       onChange={(e) => { const f = e.target.files?.[0]; if (f) uploadCoverImage(f); }}
                       disabled={isPending('cover-image')}
                       data-testid="quote-cover-page-image-file"

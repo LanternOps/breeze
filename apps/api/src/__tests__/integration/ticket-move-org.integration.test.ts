@@ -26,6 +26,7 @@ import { and, eq } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
 import { randomUUID } from 'node:crypto';
 import {
+  contacts,
   tickets,
   ticketComments,
   ticketAlertLinks,
@@ -691,5 +692,41 @@ describe('moveTicketOrg — ticket_drafts cleanup + scope_ticket_id tombstone (C
     await withSystemDbAccessContext(() => moveTicketOrg(ticket.id, orgC.id, actor));
 
     expect((await readTicket(ticket.id))?.orgId).toBe(orgC.id);
+  });
+});
+
+// ── #3258 W03 review C1: the requester contact does not move with the ticket ──
+
+describe('moveTicketOrg — requester contact detach (#3258 W03)', () => {
+  it('moves a contact-linked ticket without 23503 and leaves the link null', async () => {
+    const { orgA, orgB, partner, actor, ticket } = await seedMoveOrgFixture();
+    const adminDb = getTestDb() as any;
+
+    const [contact] = await adminDb
+      .insert(contacts)
+      .values({ orgId: orgA.id, email: `requester-${uid()}@example.test`, name: 'Requester Person' })
+      .returning();
+    await adminDb
+      .update(tickets)
+      .set({ requesterContactId: contact.id, submitterEmail: contact.email, submitterName: contact.name })
+      .where(eq(tickets.id, ticket.id));
+
+    // `tickets_requester_contact_org_fk` is DEFERRABLE INITIALLY IMMEDIATE and
+    // this transaction issues no `SET CONSTRAINTS ... DEFERRED`, so it is
+    // checked the instant the org_id UPDATE completes. Before the fix this
+    // threw 23503 and NO part of the move landed.
+    await withSystemDbAccessContext(() => moveTicketOrg(ticket.id, orgB.id, actor));
+
+    const moved = await readTicket(ticket.id);
+    expect(moved?.orgId).toBe(orgB.id);
+    expect(moved?.requesterContactId).toBeNull();
+    // The point-in-time snapshot is deliberately untouched — the move drops the
+    // link to a live contact row, not the record of who filed the ticket.
+    expect(moved?.submitterEmail).toBe(contact.email);
+    expect(moved?.submitterName).toBe('Requester Person');
+
+    // The contact stays in its own organization; nothing about it was moved.
+    const [after] = await adminDb.select().from(contacts).where(eq(contacts.id, contact.id));
+    expect(after.orgId).toBe(orgA.id);
   });
 });

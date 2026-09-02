@@ -134,7 +134,7 @@ function dto(overrides: Partial<AiAgentImpactDto> = {}): AiAgentImpactDto {
     byOrg: [],
     byOrgTruncated: false,
     positiveFeedback: { up: 12, down: 3, rate: 0.8 },
-    promoteEligibleCount: null,
+    promoteEligibleCount: 5,
     weights: {
       effective: {
         alertJudged: 90,
@@ -593,5 +593,31 @@ describe('buildImpactPdfRows', () => {
     const rows = buildImpactPdfRows(dto({ rebuiltAt: null }), t);
     const rebuiltRow = rows.find((row) => row.metric === 'aiAgentsPage.impact.pdf.metrics.rebuiltAt');
     expect(rebuiltRow?.value).toBe('aiAgentsPage.impact.pdf.neverRebuilt');
+  });
+});
+
+describe('ImpactPage — promotion-eligible tile', () => {
+  it('renders the count and links to the graduation panel', async () => {
+    fetchMock.mockResolvedValueOnce(json({ data: dto() }));
+    render(<ImpactPage />);
+
+    const tile = await screen.findByTestId('ai-impact-tile-promote-eligible');
+    expect(tile).toHaveTextContent('5');
+    expect(tile.getAttribute('href')).toBe('/settings/ai-agents');
+  });
+
+  it('renders 0 as a tile, not as a hidden one', async () => {
+    fetchMock.mockResolvedValueOnce(json({ data: dto({ promoteEligibleCount: 0 }) }));
+    render(<ImpactPage />);
+
+    expect(await screen.findByTestId('ai-impact-tile-promote-eligible')).toHaveTextContent('0');
+  });
+
+  it('hides the tile when the API returns null (an older API behind a newer build)', async () => {
+    fetchMock.mockResolvedValueOnce(json({ data: dto({ promoteEligibleCount: null }) }));
+    render(<ImpactPage />);
+
+    await screen.findByTestId('ai-impact-tile-llm-cents');
+    expect(screen.queryByTestId('ai-impact-tile-promote-eligible')).toBeNull();
   });
 });

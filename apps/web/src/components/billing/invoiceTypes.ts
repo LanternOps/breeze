@@ -150,8 +150,12 @@ export interface InvoicePayment {
   note: string | null;
   createdAt: string;
   /** Origin of the payment: 'stripe' = collected via online checkout (refund
-   *  through Stripe, no manual void), 'manual' = recorded by an operator. */
-  source?: 'stripe' | 'manual';
+   *  through Stripe, no manual void), 'manual' = recorded by an operator,
+   *  'quickbooks' = pulled back from QuickBooks by the accounting-reconcile
+   *  worker (Phase D). QuickBooks is the system of record for those, so they
+   *  are not hand-voidable either — a Breeze-side reverse would not touch the
+   *  books and the next reconcile would pull the payment straight back in. */
+  source?: 'stripe' | 'manual' | 'quickbooks';
 }
 
 export const STATUS_LABELS: Record<InvoiceStatus, string> = {
