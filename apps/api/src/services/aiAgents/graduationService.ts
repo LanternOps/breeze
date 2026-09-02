@@ -54,7 +54,16 @@ import { aiAgentGraduation } from '../../db/schema/aiAgentGraduation';
 import { aiAgentOpEvidence } from '../../db/schema/aiAgentOpEvidence';
 import { aiAgents } from '../../db/schema/aiAgents';
 import { organizations } from '../../db/schema/orgs';
-import { isPolicyDecidableKey } from '../actionIntents/policyDecidable';
+// From the leaf module, NOT `policyDecidable.ts` — that module also imports
+// `aiTools.ts` (for `rejectionReasonFor`, which this file never calls), and
+// `aiTools.ts` transitively reaches `routes/agentWs.ts` /
+// `services/agentCommandAwait.ts` via `aiToolsAgentLogs.ts` -> `commandQueue.ts`.
+// This module is reachable from `jobs/aiAgentGraduationWorker.ts`, a
+// `global`-placement BullMQ worker (`workerRegistry.ts`) that
+// `workerEntrypointClosure.contract.test.ts` forbids from reaching
+// socket-local dispatch — see `policyDecidableKeys.ts`'s header (P2-5, #4192,
+// Task A2-3).
+import { isPolicyDecidableKey } from '../actionIntents/policyDecidableKeys';
 import { mergeAgentPolicies, normalizeAgentPolicy } from './effectivePolicy';
 
 /** The only evidence namespace a graduation row is ever computed from. */

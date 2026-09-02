@@ -118,6 +118,10 @@ export const JOB_SCHEDULES = {
   'sso-domain-recheck': '23 16 * * *',
   'exchange-rate-sync': '13 17 * * *',
   'ai-unattended-exposure-retention': '8 18 * * *',
+  // P2-5 (#4192, Task A2-3): daily graduation eligibility sweep. Runs after
+  // the evidence-window's day has fully closed, same lane as its sibling
+  // retention slot below (same queue/worker — Deviation #10).
+  'ai-agent-graduation-evaluate': '28 18 * * *',
   // P2-6 (#4193): nightly value-accounting rollup. Daily lane; hour 18 held
   // only minute 8 before this. Runs well after the day it summarises closed.
   'ai-agent-impact-rollup': '33 18 * * *',
