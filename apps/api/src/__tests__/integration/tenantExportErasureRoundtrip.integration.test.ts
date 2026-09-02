@@ -125,6 +125,18 @@ async function seedTwoOrgs(): Promise<SeededOrgs> {
     )
   `);
 
+  // #3205: a per_device_role line, so the archive's contract_lines.json is
+  // exercised with the text[] column populated.
+  const contractId = crypto.randomUUID();
+  await db.execute(sql`
+    INSERT INTO contracts (id, partner_id, org_id, name, interval_months, start_date, currency_code)
+    VALUES (${contractId}, ${partnerId}, ${orgA}, ${'Roundtrip contract ' + suffix}, 1, '2026-07-01', 'USD')
+  `);
+  await db.execute(sql`
+    INSERT INTO contract_lines (contract_id, org_id, line_type, description, unit_price, taxable, device_roles)
+    VALUES (${contractId}, ${orgA}, 'per_device_role', 'Network gear', 25.00, false, ARRAY['switch','router','firewall']::text[])
+  `);
+
   return { partnerId, orgA, orgB, prohibitedSentinels };
 }
 
@@ -152,6 +164,8 @@ describe('tenant export + erasure round-trip (live DB)', () => {
     const byName = new Map(manifest.files.map((f) => [f.name, f]));
     // Org A has exactly 2 sites + 2 device_groups; Org B's rows must not leak.
     expect(byName.get('sites.json')?.rowCount).toBe(2);
+    expect(byName.get('contracts.json')?.rowCount).toBe(1);
+    expect(byName.get('contract_lines.json')?.rowCount).toBe(1);
     expect(byName.get('device_groups.json')?.rowCount).toBe(2);
     // organizations.json is the org's own id-keyed row.
     expect(byName.get('organizations.json')?.rowCount).toBe(1);
