@@ -53,23 +53,22 @@ export function priorityColor(priority: TicketPriority): string {
 }
 
 /**
- * `#1041` when the tenant has internal numbers, else an id-derived fallback.
- * `internalNumber` (not `ticketNumber`) is the display reference — it is what
- * the web queue renders, and it is a nullable varchar rather than an integer.
+ * `#1041` when the ticket has an internal number, else `null` so the caller
+ * hides the reference entirely.
  *
- * The fallback is NOT `#` + a slice of the id: seeded/fixture data (and any
- * UUIDv4 batch minted close together) can share a long, identical-looking
- * prefix, so `id.slice(0, 8)` isn't guaranteed to differ between tickets —
- * three distinct tickets in the Apple review tenant all rendered as the
- * identical "#11110000" because every seeded id there starts `11110000-`.
- * Two changes fix that: draw from the END of the id, where sequentially- or
- * closely-minted ids actually diverge, and drop the '#' so a fallback can
- * never be mistaken for a genuine internal number.
+ * `internalNumber` (not `ticketNumber`) is the display reference: it is what the
+ * web queue renders, and it is a nullable varchar rather than an integer. The
+ * service allocates one on every create (`T-YYYY-NNNN`), so a production ticket
+ * always has one; only hand-inserted rows (fixtures, a seeded review tenant)
+ * lack it. Web renders nothing for those rather than inventing a reference, and
+ * so does mobile: an id-derived fallback either collides (seeded ids share a
+ * long prefix, so `id.slice(0, 8)` showed three tickets as the same "#11110000")
+ * or looks like a real number it is not.
  */
-export function ticketRef(ticket: Pick<TicketSummary, 'internalNumber' | 'id'>): string {
+export function ticketRef(ticket: Pick<TicketSummary, 'internalNumber'>): string | null {
   const n = ticket.internalNumber?.trim();
-  if (n) return n.startsWith('#') ? n : `#${n}`;
-  return `ID ${ticket.id.replace(/-/g, '').slice(-12)}`;
+  if (!n) return null;
+  return n.startsWith('#') ? n : `#${n}`;
 }
 
 export function isBreached(ticket: Pick<TicketSummary, 'slaBreachedAt'>): boolean {

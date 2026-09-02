@@ -543,6 +543,9 @@ export function TicketDetailScreen() {
   // what's on screen: a prior version counted only non-system comments while
   // the list rendered system rows too, so the header undercounted.
   const activityCount = visibleActivityCount(ticket.comments);
+  // Null when the ticket has no internal number (hand-inserted rows only);
+  // hide the reference rather than invent one, as the web queue does.
+  const ref = ticketRef(ticket);
 
   return (
     <KeyboardAvoidingView
@@ -551,7 +554,7 @@ export function TicketDetailScreen() {
     >
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         <View style={styles.header}>
-          <Text style={styles.ref}>{ticketRef(ticket)}</Text>
+          {ref ? <Text style={styles.ref}>{ref}</Text> : null}
           <View style={[styles.priorityDot, { backgroundColor: priorityColor(ticket.priority) }]} />
           <Text style={styles.priority}>{priorityLabel(ticket.priority)}</Text>
         </View>

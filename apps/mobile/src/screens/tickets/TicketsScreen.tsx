@@ -55,10 +55,11 @@ function Chip({
 
 function TicketRow({ ticket, onPress }: { ticket: TicketSummary; onPress: () => void }) {
   const breached = isBreached(ticket);
+  const ref = ticketRef(ticket);
   return (
     <Pressable onPress={onPress} accessibilityRole="button" style={styles.row}>
       <View style={styles.rowHeader}>
-        <Text style={styles.ref}>{ticketRef(ticket)}</Text>
+        {ref ? <Text style={styles.ref}>{ref}</Text> : null}
         <View style={[styles.priorityDot, { backgroundColor: priorityColor(ticket.priority) }]} />
         <Text style={styles.priority}>{priorityLabel(ticket.priority)}</Text>
         {breached ? <Text style={styles.breach}>SLA</Text> : null}

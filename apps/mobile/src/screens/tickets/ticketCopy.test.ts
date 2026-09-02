@@ -24,38 +24,27 @@ describe('statusLabel', () => {
 
 describe('ticketRef', () => {
   it('uses the internal number when present', () => {
-    expect(ticketRef({ internalNumber: '1041', id: 'abcdef01-1111' })).toBe('#1041');
+    expect(ticketRef({ internalNumber: '1041' })).toBe('#1041');
   });
 
   it('does not double-prefix a number that already carries a #', () => {
-    expect(ticketRef({ internalNumber: '#1041', id: 'abcdef01-1111' })).toBe('#1041');
+    expect(ticketRef({ internalNumber: '#1041' })).toBe('#1041');
   });
 
   it('preserves a non-numeric internal reference verbatim', () => {
-    expect(ticketRef({ internalNumber: 'TKT-1041', id: 'abcdef01' })).toBe('#TKT-1041');
+    expect(ticketRef({ internalNumber: 'TKT-1041' })).toBe('#TKT-1041');
   });
 
-  it('falls back to an id-derived reference when the tenant has no internal number', () => {
-    expect(ticketRef({ internalNumber: null, id: 'abcdef0123456789' })).toBe('ID ef0123456789');
-    expect(ticketRef({ internalNumber: '   ', id: 'abcdef0123456789' })).toBe('ID ef0123456789');
-  });
-
-  it('does not present the fallback as a real ticket number', () => {
-    // The old fallback ("#abcdef01") wore the same '#'-prefixed shape as a
-    // genuine internalNumber, so a tenant with no numbering scheme saw what
-    // looked like a real, distinct ticket number on every ticket.
-    const ref = ticketRef({ internalNumber: null, id: 'abcdef0123456789' });
-    expect(ref.startsWith('#')).toBe(false);
-  });
-
-  it('does not collide when two ticket ids share a common prefix (review-tenant regression)', () => {
-    // Apple review tenant: every seeded ticket id starts `11110000-...`, so
-    // slicing the first 8 hex chars produced the SAME "#11110000" reference
-    // for three different tickets. The distinguishing digits live at the end
-    // of these ids, so the fallback must draw from there, not the front.
-    const a = ticketRef({ internalNumber: null, id: '11110000-0000-0000-0000-000000000001' });
-    const b = ticketRef({ internalNumber: null, id: '11110000-0000-0000-0000-000000000002' });
-    expect(a).not.toBe(b);
+  it('returns null when the ticket has no internal number, so callers hide the reference', () => {
+    // Web precedent: the queue renders nothing when internalNumber is null
+    // rather than inventing a reference. A production ticket always has one
+    // because the service allocates it on create; only hand-inserted rows
+    // (fixtures, the App Review tenant's seed) lack it. No fallback also
+    // closes the review-tenant regression where every seeded id started
+    // `11110000-...` and an id-derived fallback showed three different
+    // tickets as the same "#11110000".
+    expect(ticketRef({ internalNumber: null })).toBeNull();
+    expect(ticketRef({ internalNumber: '   ' })).toBeNull();
   });
 });
 
