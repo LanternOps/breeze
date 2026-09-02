@@ -49,14 +49,20 @@ vi.mock('../services/accounting/accountingInvoicePush', async (importOriginal) =
   };
 });
 
-const { pushPaymentMock, deletePaymentMock } = vi.hoisted(() => ({
-  pushPaymentMock: vi.fn(), deletePaymentMock: vi.fn(),
+const { pushPaymentMock, deletePaymentMock, noteSkippedMock } = vi.hoisted(() => ({
+  pushPaymentMock: vi.fn(), deletePaymentMock: vi.fn(), noteSkippedMock: vi.fn(),
 }));
-// The REAL AccountingPaymentPushError class is kept so the worker's
-// instanceof/terminal branch exercises the real taxonomy.
+// The REAL AccountingPaymentPushError class and PAYMENT_NOT_CONNECTED_MESSAGE
+// are kept so the worker's instanceof/terminal branch exercises the real
+// taxonomy and the skip test asserts the shipped string.
 vi.mock('../services/accounting/accountingPaymentPush', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../services/accounting/accountingPaymentPush')>();
-  return { ...actual, pushPaymentToAccounting: pushPaymentMock, deletePaymentInAccounting: deletePaymentMock };
+  return {
+    ...actual,
+    pushPaymentToAccounting: pushPaymentMock,
+    deletePaymentInAccounting: deletePaymentMock,
+    notePaymentJobSkipped: noteSkippedMock,
+  };
 });
 
 import {
@@ -67,7 +73,11 @@ import {
   enqueueAccountingPaymentDelete,
 } from './accountingSyncWorker';
 import { AccountingInvoicePushError, type AccountingInvoicePushErrorCode } from '../services/accounting/accountingInvoicePush';
-import { AccountingPaymentPushError, type AccountingPaymentPushErrorCode } from '../services/accounting/accountingPaymentPush';
+import {
+  AccountingPaymentPushError,
+  PAYMENT_NOT_CONNECTED_MESSAGE,
+  type AccountingPaymentPushErrorCode,
+} from '../services/accounting/accountingPaymentPush';
 
 const INV_ID = '11111111-1111-1111-1111-111111111111';
 const PARTNER_ID = '22222222-2222-2222-2222-222222222222';
@@ -307,6 +317,40 @@ describe('payment jobs', () => {
       { type: 'delete-payment', mappingId: MAPPING_ID, partnerId: PARTNER_ID },
       expect.objectContaining({ jobId: `accounting-payment-${MAPPING_ID}-delete` }),
     );
+  });
+
+  it('RECORDS a payment job skipped because QuickBooks is not connected, instead of returning silently', async () => {
+    // Finding I2. The mapping row is the OUTBOX, so a silent return left it
+    // `pending` with an empty last_error while the 15-minute sweep re-enqueued
+    // it forever against a realm that may have been disconnected for weeks.
+    getConnectionMock.mockResolvedValue({ id: 'c1', status: 'reauth_required', pushMode: 'auto', pushPayments: true });
+
+    await processAccountingSyncJob({ type: 'push-payment', mappingId: MAPPING_ID, partnerId: PARTNER_ID });
+    await processAccountingSyncJob({ type: 'delete-payment', mappingId: MAPPING_ID, partnerId: PARTNER_ID });
+
+    expect(pushPaymentMock).not.toHaveBeenCalled();
+    expect(deletePaymentMock).not.toHaveBeenCalled();
+    expect(noteSkippedMock.mock.calls).toEqual([
+      [MAPPING_ID, PARTNER_ID, PAYMENT_NOT_CONNECTED_MESSAGE],
+      [MAPPING_ID, PARTNER_ID, PAYMENT_NOT_CONNECTED_MESSAGE],
+    ]);
+  });
+
+  it('records the same skip when there is no QuickBooks connection row at all', async () => {
+    getConnectionMock.mockResolvedValue(null);
+
+    await processAccountingSyncJob({ type: 'push-payment', mappingId: MAPPING_ID, partnerId: PARTNER_ID });
+
+    expect(noteSkippedMock).toHaveBeenCalledWith(MAPPING_ID, PARTNER_ID, PAYMENT_NOT_CONNECTED_MESSAGE);
+  });
+
+  it('does NOT record a skip for an INVOICE job — those carry no mapping id to stamp', async () => {
+    getConnectionMock.mockResolvedValue(null);
+
+    await processAccountingSyncJob({ type: 'push-invoice', invoiceId: INV_ID, partnerId: PARTNER_ID });
+    await processAccountingSyncJob({ type: 'void-invoice', invoiceId: INV_ID, partnerId: PARTNER_ID });
+
+    expect(noteSkippedMock).not.toHaveBeenCalled();
   });
 
   it('runs a delete-payment job even when the connection has both switches off', async () => {

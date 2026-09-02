@@ -60,7 +60,9 @@ import {
 import {
   pushPaymentToAccounting,
   deletePaymentInAccounting,
+  notePaymentJobSkipped,
   AccountingPaymentPushError,
+  PAYMENT_NOT_CONNECTED_MESSAGE,
   type AccountingPaymentPushErrorCode,
   type PaymentPushOutcome,
   type PaymentDeleteOutcome,
@@ -172,7 +174,19 @@ export async function processAccountingSyncJob(data: AccountingSyncJobData): Pro
       withSystemDbAccessContext(fn, `accountingSync.${data.type}`);
 
     const conn = await runInDbContext(() => getConnection(db, data.partnerId, 'quickbooks'));
-    if (!conn || conn.status !== 'connected') return;
+    if (!conn || conn.status !== 'connected') {
+      // A payment job's mapping row is the OUTBOX, so returning silently here
+      // left it `pending` with an empty `last_error` while the 15-minute sweep
+      // re-enqueued it forever against a realm that may have been disconnected
+      // for weeks (finding I2). Record the reason on the row and count the
+      // attempt — which is also what eventually retires a doomed PUSH row
+      // (PAYMENT_PUSH_MAX_ATTEMPTS); a `delete` row keeps waiting, because
+      // Breeze still owes QuickBooks that removal once the realm comes back.
+      if (data.type === 'push-payment' || data.type === 'delete-payment') {
+        await notePaymentJobSkipped(data.mappingId, data.partnerId, PAYMENT_NOT_CONNECTED_MESSAGE);
+      }
+      return;
+    }
     // The pushMode gate applies to push-invoice ONLY. A payment job that exists
     // at all was authorised when its mapping row was created — `requestPaymentPush`
     // already refused in manual mode, so a payment job in manual mode came from

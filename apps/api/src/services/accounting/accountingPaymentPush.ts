@@ -53,8 +53,8 @@
  * the runner returns.
  */
 
-import { and, eq, inArray, isNull, lt, or } from 'drizzle-orm';
-import { db, runOutsideDbContext } from '../../db';
+import { and, eq, inArray, isNull, lt, or, sql } from 'drizzle-orm';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { accountingConnections, accountingEntityMappings, invoicePayments, invoices } from '../../db/schema';
 import type { AccountingEntityMapping as AccountingEntityMappingRow } from '../../db/schema';
 import { assertNoAmbientDbContext, type DbContextRunner } from './dbContextGuard';
@@ -73,10 +73,11 @@ import { buildPaymentPrivateNote, paymentMappingRemoteId } from './accountingPay
 // module stays the coordinator-facing home of the constant.
 export { PAYMENT_CLAIM_LEASE_MS } from './accountingPaymentMarker';
 import { PAYMENT_CLAIM_LEASE_MS } from './accountingPaymentMarker';
-// Integer-cents money helpers. `invoiceMath` is a pure calculation module (its
-// only import is @breeze/shared), so this pulls in no service graph and closes
-// no cycle.
-import { fromCents, toCents } from '../invoiceMath';
+// CURRENCY-AWARE minor-unit helpers — the same pair the Stripe refund path
+// uses, and deliberately not `invoiceMath`'s `toCents`/`fromCents`, whose fixed
+// 2-decimal exponent misstates a JPY or KWD total (multi-currency §11).
+// `@breeze/shared` is a leaf package, so this closes no cycle.
+import { fromMinorUnits, toMinorUnits } from '@breeze/shared';
 import { getAccountingProvider } from './providerRegistry';
 import { requestLikeFromSnapshot, writeAuditEvent } from '../auditEvents';
 import { captureException } from '../sentry';
@@ -103,6 +104,47 @@ export const PAYMENT_REF_MAX_LENGTH = 21;
 export const PAYMENT_DELETE_UNRESOLVED_GRACE_MS = 24 * 60 * 60 * 1000;
 
 export const PAYMENT_PUSH_DISABLED_MESSAGE = 'Payment push is disabled for this QuickBooks connection';
+
+/**
+ * How many failed or skipped attempts a `pending_op = 'push'` row gets before
+ * Breeze stops asking (final-review findings I1/I2).
+ *
+ * Without a ceiling the outbox is unbounded: the 15-minute sweep re-enqueues
+ * every row that still owes work, so a create QuickBooks will never accept —
+ * an over-application, a realm that stays disconnected, a deleted QuickBooks
+ * customer — is retried every quarter hour forever, and the operator's only
+ * signal is a `last_error` that keeps being rewritten with the same text.
+ * Twenty attempts is five hours of sweeps: long enough to ride out a QuickBooks
+ * outage or a reconnect, short enough that a genuinely broken row stops
+ * generating traffic the same working day.
+ *
+ * A `delete` row is deliberately NOT capped — see `markPaymentMappingError`.
+ */
+export const PAYMENT_PUSH_MAX_ATTEMPTS = 20;
+
+/** Stamped by the sync worker when a payment job finds no connected QuickBooks
+ *  connection to run against (`notePaymentJobSkipped`). */
+export const PAYMENT_NOT_CONNECTED_MESSAGE = 'QuickBooks is not connected';
+
+/**
+ * How a push row that burned through `PAYMENT_PUSH_MAX_ATTEMPTS` reads on the
+ * mapping card. It quotes the LAST sanitized failure, because "gave up" alone
+ * tells an operator nothing about what to fix, and names the recovery: the
+ * invoice's "Push to QuickBooks" button, whose fan-out re-owns the row and
+ * resets the counter.
+ */
+export function paymentPushGaveUpMessage(previous: string): string {
+  return `QuickBooks payment push gave up after ${PAYMENT_PUSH_MAX_ATTEMPTS} attempts: ${previous}. `
+    + 'Fix the cause and push the invoice again.';
+}
+
+/**
+ * Sentry cadence for an UNCAPPED `delete` row: the first failure, then once
+ * every 96 attempts. At the sweep's 15-minute cadence that is one event on day
+ * zero and one a day after that — enough to keep a stuck delete visible without
+ * turning a disconnected realm into 96 identical events a day.
+ */
+const PAYMENT_DELETE_ALERT_EVERY_ATTEMPTS = 96;
 
 /**
  * The ONE divergence string both refund paths write into `last_error` — the
@@ -417,11 +459,14 @@ export async function requestPaymentPush(
  * later CDC delivery for the same QuickBooks Payment reads as "already applied"
  * and silently skips.
  *
- * Two cases:
- *  - Breeze-origin (with OR without a remote id) -> keep the row, flip
+ * Three cases:
+ *  - Breeze-origin that QuickBooks can be told about — it has a remote id, or a
+ *    `pending_op` meaning a create is owed or in flight -> keep the row, flip
  *    `pending_op='delete'`. Breeze created that Payment in QuickBooks — or is
  *    creating it right now — so Breeze owns its removal, regardless of
  *    `push_mode` or `push_payments` (spec decision 10).
+ *  - Breeze-origin STRANDED — `remote_entity_id IS NULL` AND `pending_op IS
+ *    NULL` -> delete the row (see the exception below).
  *  - QuickBooks-origin -> delete the row, as Phase D always did. The pull's
  *    reversal path owns those; asking QuickBooks to delete its own payment
  *    because Breeze voided a mirror of it would be backwards.
@@ -447,6 +492,28 @@ export async function requestPaymentPush(
  * (`partner_id`, `breeze_entity_type`, `breeze_entity_id`), so it stays legal
  * even as the `invoice_payments` row disappears in the same transaction.
  *
+ * THE STRANDED EXCEPTION (final-review finding C2). A row with
+ * `remote_entity_id IS NULL` AND `pending_op IS NULL` is not addressable in
+ * QuickBooks and nothing is coming to make it so. No create is in flight — an
+ * in-flight create's row still owes a `push` — so the paragraph above does not
+ * apply, and flipping it to `delete` would park the delete worker
+ * on `awaiting_remote_ref` for 24 hours and then raise a false
+ * "a QuickBooks Payment may be orphaned" Sentry alarm for a Payment that was
+ * never created. The row is DELETED instead, and nothing new is audited — the
+ * caller's own void/refund audit already records the event.
+ *
+ * Four states reach that shape, all of them terminal states of the push:
+ *  - a true deletion of the QuickBooks Payment that the pull mirrored back
+ *    (`breeze_origin_removed_remotely` clears the ids and leaves nothing owed,
+ *    waiting for a fan-out re-own that never came);
+ *  - `push_disabled` — the connection's `push_payments` was switched off;
+ *  - a pre-call terminal refusal — `invoice_void`, `customer_not_mapped`, a
+ *    currency-contract failure, or a push row that burned through
+ *    `PAYMENT_PUSH_MAX_ATTEMPTS`;
+ *  - `record_failed` with no remote id, which is already a loud
+ *    manual-reconciliation state (Sentry + a stamped `last_error`) and gains
+ *    nothing from a delete job that has no id to delete.
+ *
  * Returns the mapping id to enqueue a `delete-payment` job for, or `null`.
  * Zero rows is LEGITIMATE and deliberately not a throw: a manual or Stripe
  * payment usually has no accounting mapping at all.
@@ -460,6 +527,28 @@ export async function requestPaymentDelete(
 
   if (!mapping.breezeOrigin) {
     await deleteMappingRow(tx, mapping.id);
+    return null;
+  }
+
+  if (mapping.remoteEntityId === null && mapping.pendingOp === null) {
+    // Nothing addressable remotely and nothing owed: drop the row rather than
+    // strand it (finding C2). Partner-scoped, and a zero-row result throws for
+    // the same reason the flip below does — this runs inside the destroyer's
+    // transaction, and a mapping that silently outlives its `invoice_payments`
+    // row makes the next CDC delivery read as "already applied" and skip.
+    const removed = await tx
+      .delete(accountingEntityMappings)
+      .where(and(
+        eq(accountingEntityMappings.id, mapping.id),
+        eq(accountingEntityMappings.partnerId, mapping.partnerId),
+      ))
+      .returning({ id: accountingEntityMappings.id });
+    if (removed.length !== 1) {
+      throw new Error(
+        `accountingPaymentPush: dropping a stranded payment mapping matched no row (id=${mapping.id}); `
+        + 'refusing to leave a mapping behind that would make the next CDC delivery read as already applied',
+      );
+    }
     return null;
   }
 
@@ -540,27 +629,46 @@ async function releaseLease(mappingId: string, partnerId: string): Promise<void>
 }
 
 /**
- * Stamp a refusal: release the lease, optionally CLEAR `pending_op` (when
- * retrying can never succeed) and record why, so the mapping card shows an
- * operator what to fix. Runs inside the caller's phase-1 transaction, which is
- * why phase 1 RETURNS a recordable refusal instead of throwing it.
+ * Stamp a refusal: release the lease, count the attempt, optionally CLEAR
+ * `pending_op` (when retrying can never succeed) and record why, so the mapping
+ * card shows an operator what to fix. Runs inside the caller's phase-1
+ * transaction, which is why phase 1 RETURNS a recordable refusal instead of
+ * throwing it.
  *
- * Zero rows is tolerated for the same reason as `releaseLease` above: this is
- * best-effort annotation of a failure that is being reported anyway, and Sentry
- * already carries the original.
+ * THE ATTEMPT COUNTER IS THE OUTBOX'S ONLY BOUND (findings I1/I2). `pending_op`
+ * is never cleared on a retryable failure — that is what makes the outbox
+ * durable — so nothing else stops the 15-minute sweep re-enqueueing a row
+ * forever. `sync_attempts` is incremented IN THE UPDATE (never read-modify-write:
+ * the sweep and an immediate enqueue can both be mid-flight on one row) and a
+ * `push` row that reaches `PAYMENT_PUSH_MAX_ATTEMPTS` gives up here: `pending_op`
+ * and the lease are cleared and `last_error` says so, quoting the failure that
+ * did it. The invoice fan-out's re-own is the documented recovery, and it resets
+ * the counter.
+ *
+ * A `delete` row is NEVER capped and NEVER dropped. Once Breeze created a
+ * Payment in QuickBooks it owns that removal, and giving up would strand money
+ * in someone's books; the row keeps asking until QuickBooks confirms (or the
+ * pull observes the deletion and satisfies it). The counter still earns its keep
+ * there — it is what throttles the delete path's Sentry reporting.
+ *
+ * Returns the row's NEW attempt count, or null when no row matched. Zero rows is
+ * tolerated for the same reason as `releaseLease` above: this is best-effort
+ * annotation of a failure that is being reported anyway, and Sentry already
+ * carries the original.
  */
 async function markPaymentMappingError(
   mappingId: string,
   partnerId: string,
   message: string,
   opts: { clearPendingOp: boolean },
-): Promise<void> {
-  await db
+): Promise<number | null> {
+  const rows = await db
     .update(accountingEntityMappings)
     .set({
       syncStatus: 'error',
       lastError: message,
       claimedAt: null,
+      syncAttempts: sql`${accountingEntityMappings.syncAttempts} + 1`,
       ...(opts.clearPendingOp ? { pendingOp: null } : {}),
       updatedAt: new Date(),
     })
@@ -568,7 +676,61 @@ async function markPaymentMappingError(
       eq(accountingEntityMappings.id, mappingId),
       eq(accountingEntityMappings.partnerId, partnerId),
     ))
-    .returning({ id: accountingEntityMappings.id });
+    .returning({
+      syncAttempts: accountingEntityMappings.syncAttempts,
+      pendingOp: accountingEntityMappings.pendingOp,
+    });
+  const row = (rows as Array<{ syncAttempts: number; pendingOp: string | null }>)[0];
+  if (!row) return null;
+
+  if (row.pendingOp === 'push' && row.syncAttempts >= PAYMENT_PUSH_MAX_ATTEMPTS) {
+    await db
+      .update(accountingEntityMappings)
+      .set({
+        pendingOp: null,
+        claimedAt: null,
+        lastError: paymentPushGaveUpMessage(message),
+        updatedAt: new Date(),
+      })
+      .where(and(
+        eq(accountingEntityMappings.id, mappingId),
+        eq(accountingEntityMappings.partnerId, partnerId),
+      ))
+      .returning({ id: accountingEntityMappings.id });
+  }
+  return row.syncAttempts;
+}
+
+/**
+ * A payment job that never reached the coordinator at all — today only the sync
+ * worker's "no connected QuickBooks connection" short-circuit, which used to
+ * `return` silently and leave the row pending with no record of why.
+ *
+ * That silence is half of finding I2: the sweep re-enqueued the row every 15
+ * minutes against a realm that was disconnected weeks ago, the operator saw a
+ * mapping stuck on `pending` with an empty `last_error`, and nothing ever
+ * counted the attempts. Routing the skip through `markPaymentMappingError` gives
+ * it both — a reason on the card, and the same ceiling a QuickBooks failure gets.
+ *
+ * Opens its OWN short system context (the worker calls this outside any) and
+ * swallows its own failures: this is annotation of a job that is ending either
+ * way, and a pool error here must not turn a clean skip into a BullMQ retry.
+ */
+export async function notePaymentJobSkipped(
+  mappingId: string,
+  partnerId: string,
+  reason: string,
+): Promise<void> {
+  try {
+    await withSystemDbAccessContext(
+      () => markPaymentMappingError(mappingId, partnerId, reason, { clearPendingOp: false }),
+      'accountingPaymentPush.notePaymentJobSkipped',
+    );
+  } catch (err) {
+    captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+      service: 'accountingPaymentPush', mappingId, partnerId,
+    });
+  }
 }
 
 /** `markPaymentMappingError` in its OWN short, self-committing transaction, and
@@ -582,13 +744,14 @@ async function markPaymentMappingErrorInOwnContext(
   partnerId: string,
   message: string,
   opts: { clearPendingOp: boolean },
-): Promise<void> {
+): Promise<number | null> {
   try {
-    await runInDbContext(() => markPaymentMappingError(mappingId, partnerId, message, opts));
+    return await runInDbContext(() => markPaymentMappingError(mappingId, partnerId, message, opts));
   } catch (err) {
     captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
       service: 'accountingPaymentPush', mappingId, partnerId,
     });
+    return null;
   }
 }
 
@@ -848,6 +1011,10 @@ async function reownPushMapping(mappingId: string, partnerId: string): Promise<b
       linkStatus: 'create_new',
       lastError: null,
       claimedAt: null,
+      // A fresh push deserves a fresh budget: a re-own is a deliberate operator
+      // action (or a re-push after QuickBooks lost the Payment), and inheriting
+      // an exhausted counter would make it give up on its first failure.
+      syncAttempts: 0,
       updatedAt: new Date(),
     })
     .where(and(
@@ -1106,7 +1273,15 @@ export async function pushPaymentToAccounting(
         // cumulative `amount_refunded`. Quoting `payment.amount` (the REMAINING
         // amount, as this branch first did) tells the bookkeeper to refund money
         // that was never returned.
-        const totalRefunded = fromCents(toCents(prep.amount) - toCents(payment.amount));
+        // Currency-aware minor units, exactly as the Stripe refund path derives
+        // the same figure — `toCents`/`fromCents` hard-code a 2-decimal
+        // exponent, which silently misstates the refunded total for a
+        // zero-decimal (JPY) or three-decimal (KWD) invoice.
+        const currency = prep.payload.currencyCode;
+        const totalRefunded = fromMinorUnits(
+          toMinorUnits(prep.amount, currency) - toMinorUnits(payment.amount, currency),
+          currency,
+        );
         const message = partialRefundDivergenceMessage(totalRefunded);
         await stampRemoteRef(mappingId, partnerId, remoteEntityId, ref.syncToken ?? null, {
           syncStatus: 'error', linkStatus: 'confirmed', pendingOp: null, lastError: message,
@@ -1303,12 +1478,25 @@ export async function deletePaymentInAccounting(
     }));
   } catch (err) {
     const message = sanitizePaymentSyncErrorMessage(err);
-    captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
-      service: 'accountingPaymentPush', mappingId, remotePaymentId: prep.remotePaymentId,
-    });
-    // `pending_op` KEPT: the mapping is never cleared until QuickBooks confirms,
-    // which is what makes a delete survive Redis failure and exhausted retries.
-    await markPaymentMappingErrorInOwnContext(runInDbContext, mappingId, partnerId, message, { clearPendingOp: false });
+    // `pending_op` KEPT and NEVER capped: the mapping is never cleared until
+    // QuickBooks confirms, which is what makes a delete survive Redis failure
+    // and exhausted retries. The stamp runs FIRST so its attempt count can
+    // throttle the Sentry event below — an uncapped row retried every 15 minutes
+    // would otherwise raise 96 identical events a day for one stuck delete, and
+    // that volume is how a real one stops being noticed.
+    const attempts = await markPaymentMappingErrorInOwnContext(
+      runInDbContext, mappingId, partnerId, message, { clearPendingOp: false },
+    );
+    if (attempts === null || attempts <= 1 || attempts % PAYMENT_DELETE_ALERT_EVERY_ATTEMPTS === 0) {
+      captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+        service: 'accountingPaymentPush',
+        mappingId,
+        remotePaymentId: prep.remotePaymentId,
+        // Sentry tags are strings; `unknown` means the stamp itself could not be
+        // written, so the event is raised rather than suppressed.
+        syncAttempts: attempts === null ? 'unknown' : String(attempts),
+      });
+    }
     throw new AccountingPaymentPushError('quickbooks_error', 502, message);
   }
 

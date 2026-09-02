@@ -111,6 +111,10 @@ import {
   PAYMENT_REF_MAX_LENGTH,
   PAYMENT_DELETE_UNRESOLVED_GRACE_MS,
   PAYMENT_PUSH_DISABLED_MESSAGE,
+  PAYMENT_PUSH_MAX_ATTEMPTS,
+  PAYMENT_NOT_CONNECTED_MESSAGE,
+  notePaymentJobSkipped,
+  paymentPushGaveUpMessage,
   partialRefundDivergenceMessage,
 } from './accountingPaymentPush';
 
@@ -147,7 +151,8 @@ interface MapRow {
   id: string; integrationId: string; partnerId: string; breezeEntityType: string; breezeEntityId: string;
   remoteEntityType: string; remoteEntityId: string | null; remoteSyncToken: string | null;
   breezeOrigin: boolean; pendingOp: string | null; claimedAt: Date | null; lastSyncedAt: Date | null;
-  linkStatus: string; syncStatus: string; lastError: string | null; createdAt: Date; updatedAt: Date;
+  linkStatus: string; syncStatus: string; lastError: string | null; syncAttempts: number;
+  createdAt: Date; updatedAt: Date;
 }
 
 type StmtKind = 'select' | 'insert' | 'update' | 'delete';
@@ -230,7 +235,7 @@ function mapRowBase(o: Partial<MapRow>): MapRow {
     id: 'map-x', integrationId: CONN_ID, partnerId: PARTNER, breezeEntityType: 'invoice', breezeEntityId: INVOICE,
     remoteEntityType: 'Invoice', remoteEntityId: null, remoteSyncToken: null,
     breezeOrigin: false, pendingOp: null, claimedAt: null, lastSyncedAt: null,
-    linkStatus: 'confirmed', syncStatus: 'synced', lastError: null,
+    linkStatus: 'confirmed', syncStatus: 'synced', lastError: null, syncAttempts: 0,
     createdAt: ago(30 * MINUTE), updatedAt: ago(5 * MINUTE), ...o,
   };
 }
@@ -319,6 +324,36 @@ function matchedRows(table: unknown, cond: unknown): unknown[] {
   return [];
 }
 
+/**
+ * Applies an UPDATE's `set` to a row, evaluating a `sql` expression rather than
+ * storing the SQL object. Only the one shape the coordinator uses is understood
+ * — `<column> + 1` — and anything else `sql`-shaped is a hard failure, so a new
+ * expression cannot silently write a `SQL` object into a fixture and read as a
+ * pass. The expression is COMPILED with the real dialect, so a counter aimed at
+ * the wrong column would not match here either.
+ */
+function applyPatch(row: Record<string, unknown>, patch: Record<string, unknown>): void {
+  for (const [key, value] of Object.entries(patch)) {
+    if (!isSqlExpression(value)) {
+      row[key] = value;
+      continue;
+    }
+    const text = compiledSql(value);
+    const match = /^"accounting_entity_mappings"\."([a-z_]+)" \+ 1$/.exec(text);
+    if (!match) throw new Error(`fake DB: unsupported sql expression in an UPDATE set: ${text}`);
+    const column = match[1]!;
+    const field = column.replace(/_([a-z])/g, (_m, c: string) => c.toUpperCase());
+    if (typeof row[field] !== 'number') {
+      throw new Error(`fake DB: sql increment targets "${column}", which the fixture row does not carry as a number`);
+    }
+    row[key] = (row[field] as number) + 1;
+  }
+}
+
+function isSqlExpression(value: unknown): boolean {
+  return !!value && typeof value === 'object' && 'queryChunks' in (value as object);
+}
+
 /** Applies a drizzle projection object ({ outKey: column }) by field name. */
 function project(rows: unknown[], projection?: Record<string, unknown>): unknown[] {
   if (!projection) return rows.map((r) => ({ ...(r as object) }));
@@ -386,7 +421,7 @@ function installDbMocks(): void {
         returning: (projection?: Record<string, unknown>) => {
           stmts.push({ kind: 'update', table: tableName(table), where: cond, set: patch, depth: ctx.depth });
           const matched = matchedRows(table, cond);
-          for (const row of matched) Object.assign(row as object, patch);
+          for (const row of matched) applyPatch(row as Record<string, unknown>, patch);
           return Promise.resolve(project(matched, projection));
         },
       }),
@@ -591,6 +626,38 @@ describe('requestPaymentDelete (the destroyer-side helper)', () => {
 
     const patch = lastUpdate().set!;
     expect(Object.keys(patch).sort()).toEqual(['lastError', 'pendingOp', 'syncStatus', 'updatedAt']);
+  });
+
+  it('DELETES a STRANDED Breeze-origin mapping — no remote id and nothing owed (finding C2)', async () => {
+    // The shape `breeze_origin_removed_remotely`, `push_disabled` and every
+    // pre-call terminal refusal leave behind. There is nothing for QuickBooks to
+    // delete and no create in flight (an in-flight create still owes a `push`),
+    // so flipping it to `delete` would park the delete worker on
+    // `awaiting_remote_ref` for 24 h and then raise a false orphan alarm.
+    currentMappings = [invoiceMapRow(), orgMapRow(), paymentMapRow({
+      remoteEntityId: null, remoteSyncToken: null, pendingOp: null, syncStatus: 'error',
+      lastError: 'Deleted in QuickBooks',
+    })];
+
+    await expect(runCtx(() => requestPaymentDelete(db, PAYMENT))).resolves.toBeNull();
+
+    expect(mapping()).toBeNull();
+    expect(stmtsOf('update', 'accounting_entity_mappings')).toHaveLength(0);
+    // Partner-scoped, like every other write in this module.
+    const removal = stmtsOf('delete', 'accounting_entity_mappings')[0]!;
+    expect(boundTo(removal.where, PARTNER)).toBe(true);
+    expect(compiledSql(removal.where)).toContain('"accounting_entity_mappings"."partner_id"');
+  });
+
+  it('still KEEPS a stranded-looking row that carries a remote id — QuickBooks has that Payment', async () => {
+    currentMappings = [invoiceMapRow(), orgMapRow(), paymentMapRow({
+      remoteEntityId: '181/145', pendingOp: null, syncStatus: 'error',
+      lastError: 'Edited in QuickBooks; Breeze remains the source of truth for this payment',
+    })];
+
+    await expect(runCtx(() => requestPaymentDelete(db, PAYMENT))).resolves.toBe(MAPPING);
+    expect(mapping()).toMatchObject({ pendingOp: 'delete', remoteEntityId: '181/145' });
+    expect(stmtsOf('delete', 'accounting_entity_mappings')).toHaveLength(0);
   });
 
   it('DELETES a QuickBooks-origin mapping without asking QuickBooks to delete anything', async () => {
@@ -1026,6 +1093,30 @@ describe('pushPaymentToAccounting', () => {
     expect(deletePaymentMock).not.toHaveBeenCalled();
   });
 
+  it('derives the refunded total through the CURRENCY-AWARE minor unit (finding M7)', async () => {
+    // The refunded total must be derived the way the Stripe path derives it —
+    // `toMinorUnits`/`fromMinorUnits` against the INVOICE currency — not through
+    // `invoiceMath`'s `toCents`/`fromCents`, whose exponent is hard-coded to 2.
+    //
+    // For a whole-unit amount the two agree (the factor cancels in a
+    // subtraction), so this fixture is deliberately the input where they do NOT:
+    // JPY is zero-decimal, `invoice_payments.amount` is numeric(_,2), and a
+    // sub-yen fraction can reach that column (a converted charge, a hand-typed
+    // value). Currency-aware: 5001 - 3000 = 2001 yen. Fixed-cents: 200025
+    // "cents" = 2000.25 — a quarter of a yen, a quantity that does not exist.
+    currentConns = [connRow({ homeCurrency: 'JPY' })];
+    currentInvoices = [invRow({ currencyCode: 'JPY' })];
+    currentPayments = [payRow({ amount: '5000.50' })];
+    createPaymentMock.mockImplementationOnce(async () => {
+      currentPayments = [payRow({ amount: '3000.25' })];
+      return { id: '181', syncToken: '0' };
+    });
+
+    await expect(pushPaymentToAccounting(MAPPING, PARTNER, runCtx)).resolves.toBe('diverged');
+    expect(mapping()!.lastError).toBe(partialRefundDivergenceMessage('2001.00'));
+    expect(mapping()!.lastError).not.toContain('2000.25');
+  });
+
   it('sanitizes a QuickBooks failure, COMMITS the marker, keeps pending_op and rethrows 502', async () => {
     createPaymentMock.mockRejectedValueOnce(Object.assign(new Error('boom'), {
       status: 400,
@@ -1210,6 +1301,157 @@ describe('deletePaymentInAccounting', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// The attempt ceiling (findings I1/I2)
+// ---------------------------------------------------------------------------
+
+describe('sync_attempts: the outbox\'s only bound', () => {
+  const failCreate = () => createPaymentMock.mockRejectedValueOnce(
+    Object.assign(new Error('boom'), { status: 400 }),
+  );
+
+  it('counts every failed push attempt and keeps the row owed below the ceiling', async () => {
+    currentMappings = [invoiceMapRow(), orgMapRow(), paymentMapRow({ syncAttempts: 3 })];
+    failCreate();
+
+    await expect(pushPaymentToAccounting(MAPPING, PARTNER, runCtx))
+      .rejects.toMatchObject({ code: 'quickbooks_error' });
+
+    expect(mapping()).toMatchObject({
+      syncAttempts: 4,
+      pendingOp: 'push',
+      claimedAt: null,
+      lastError: 'QuickBooks rejected the payment sync (HTTP 400)',
+    });
+  });
+
+  it('increments IN THE UPDATE, never read-modify-write', async () => {
+    // The sweep and an immediate enqueue can both be mid-flight on one row, so
+    // the counter has to be `sync_attempts + 1` evaluated by Postgres. A JS
+    // `attempts + 1` computed from a stale read loses increments silently.
+    failCreate();
+
+    await expect(pushPaymentToAccounting(MAPPING, PARTNER, runCtx)).rejects.toThrow();
+
+    const stamp = stmtsOf('update', 'accounting_entity_mappings')
+      .find((st) => (st.set as Record<string, unknown>).lastError !== undefined)!;
+    expect(compiledSql((stamp.set as Record<string, unknown>).syncAttempts))
+      .toBe('"accounting_entity_mappings"."sync_attempts" + 1');
+  });
+
+  it('GIVES UP on a push row at PAYMENT_PUSH_MAX_ATTEMPTS: pending_op and the lease cleared, reason quoted', async () => {
+    currentMappings = [invoiceMapRow(), orgMapRow(), paymentMapRow({
+      syncAttempts: PAYMENT_PUSH_MAX_ATTEMPTS - 1,
+    })];
+    failCreate();
+
+    await expect(pushPaymentToAccounting(MAPPING, PARTNER, runCtx))
+      .rejects.toMatchObject({ code: 'quickbooks_error' });
+
+    expect(mapping()).toMatchObject({
+      syncAttempts: PAYMENT_PUSH_MAX_ATTEMPTS,
+      // Cleared, so the 15-minute sweep stops re-enqueueing a doomed create.
+      pendingOp: null,
+      claimedAt: null,
+      syncStatus: 'error',
+      lastError: paymentPushGaveUpMessage('QuickBooks rejected the payment sync (HTTP 400)'),
+    });
+    expect(mapping()!.lastError).toContain('push the invoice again');
+    // The row is no longer owed, so the sweep query drops it.
+    expect(await listOwedPaymentMappings(db, new Date())).toEqual([]);
+  });
+
+  it('NEVER caps a delete row — Breeze owns the removal of a Payment it created', async () => {
+    currentPayments = [];
+    currentMappings = [invoiceMapRow(), orgMapRow(), paymentMapRow({
+      remoteEntityId: '181/145', remoteSyncToken: '3', pendingOp: 'delete', syncStatus: 'pending',
+      syncAttempts: PAYMENT_PUSH_MAX_ATTEMPTS * 5,
+    })];
+    deletePaymentMock.mockRejectedValueOnce(Object.assign(new Error('boom'), { status: 500 }));
+
+    await expect(deletePaymentInAccounting(MAPPING, PARTNER, runCtx))
+      .rejects.toMatchObject({ code: 'quickbooks_error' });
+
+    expect(mapping()).toMatchObject({
+      pendingOp: 'delete',
+      syncAttempts: PAYMENT_PUSH_MAX_ATTEMPTS * 5 + 1,
+      claimedAt: null,
+    });
+    expect(mapping()!.lastError).not.toContain('gave up');
+  });
+
+  it('reports a stuck delete to Sentry on the FIRST failure and then once a day, not every sweep', async () => {
+    currentPayments = [];
+    const seed = (syncAttempts: number) => {
+      currentMappings = [invoiceMapRow(), orgMapRow(), paymentMapRow({
+        remoteEntityId: '181/145', remoteSyncToken: '3', pendingOp: 'delete', syncStatus: 'pending',
+        syncAttempts,
+      })];
+    };
+    const attempt = async () => {
+      captureExceptionMock.mockClear();
+      deletePaymentMock.mockRejectedValueOnce(Object.assign(new Error('boom'), { status: 500 }));
+      await expect(deletePaymentInAccounting(MAPPING, PARTNER, runCtx)).rejects.toThrow();
+      return captureExceptionMock.mock.calls.length;
+    };
+
+    seed(0);
+    expect(await attempt()).toBe(1); // the first failure is always reported
+    seed(1);
+    expect(await attempt()).toBe(0); // ...the second is not
+    seed(50);
+    expect(await attempt()).toBe(0);
+    seed(95);
+    expect(await attempt()).toBe(1); // 96 attempts = one sweep-day
+    expect(captureExceptionMock.mock.calls[0]![2]).toMatchObject({ syncAttempts: '96' });
+  });
+
+  it('records a payment job the sync worker skipped because QuickBooks is not connected', async () => {
+    // Finding I2: this used to `return` silently, leaving the row pending with
+    // an empty last_error while the sweep re-enqueued it forever.
+    await notePaymentJobSkipped(MAPPING, PARTNER, PAYMENT_NOT_CONNECTED_MESSAGE);
+
+    expect(mapping()).toMatchObject({
+      syncAttempts: 1,
+      pendingOp: 'push', // still owed — a reconnect must be able to finish it
+      syncStatus: 'error',
+      lastError: PAYMENT_NOT_CONNECTED_MESSAGE,
+    });
+  });
+
+  it('retires a push row that has spent its whole budget on not-connected skips', async () => {
+    currentMappings = [invoiceMapRow(), orgMapRow(), paymentMapRow({
+      syncAttempts: PAYMENT_PUSH_MAX_ATTEMPTS - 1,
+    })];
+
+    await notePaymentJobSkipped(MAPPING, PARTNER, PAYMENT_NOT_CONNECTED_MESSAGE);
+
+    expect(mapping()).toMatchObject({
+      pendingOp: null,
+      lastError: paymentPushGaveUpMessage(PAYMENT_NOT_CONNECTED_MESSAGE),
+    });
+  });
+
+  it('leaves a skipped DELETE row owed no matter how many times it is skipped', async () => {
+    currentPayments = [];
+    currentMappings = [invoiceMapRow(), orgMapRow(), paymentMapRow({
+      remoteEntityId: '181/145', pendingOp: 'delete', syncStatus: 'pending',
+      syncAttempts: PAYMENT_PUSH_MAX_ATTEMPTS - 1,
+    })];
+
+    await notePaymentJobSkipped(MAPPING, PARTNER, PAYMENT_NOT_CONNECTED_MESSAGE);
+
+    expect(mapping()).toMatchObject({ pendingOp: 'delete', syncAttempts: PAYMENT_PUSH_MAX_ATTEMPTS });
+  });
+
+  it('never lets its own failure escape into the worker', async () => {
+    updateMock.mockImplementationOnce(() => { throw new Error('pool exhausted'); });
+
+    await expect(notePaymentJobSkipped(MAPPING, PARTNER, PAYMENT_NOT_CONNECTED_MESSAGE)).resolves.toBeUndefined();
+    expect(captureExceptionMock).toHaveBeenCalled();
+  });
+});
+
 describe('fanOutOwedPayments', () => {
   it('creates a pending push mapping for every unmapped payment and returns their ids', async () => {
     currentPayments = [payRow({ id: PAYMENT }), payRow({ id: 'pay-2', amount: '10.00' })];
@@ -1245,6 +1487,17 @@ describe('fanOutOwedPayments', () => {
     expect(mapping()).toMatchObject({
       pendingOp: 'push', syncStatus: 'pending', lastError: null, claimedAt: null,
     });
+  });
+
+  it('RESETS the attempt budget on a re-own — a fresh push must not inherit an exhausted counter', async () => {
+    currentMappings = [invoiceMapRow(), orgMapRow(), paymentMapRow({
+      remoteEntityId: null, pendingOp: null, syncStatus: 'error',
+      lastError: 'Deleted in QuickBooks', syncAttempts: PAYMENT_PUSH_MAX_ATTEMPTS,
+    })];
+
+    await expect(fanOutOwedPayments(INVOICE, PARTNER, runCtx)).resolves.toEqual([MAPPING]);
+
+    expect(mapping()).toMatchObject({ pendingOp: 'push', syncAttempts: 0, lastError: null });
   });
 
   it('guards the re-own on the whole removed-remotely state, so a racing stamp wins', async () => {

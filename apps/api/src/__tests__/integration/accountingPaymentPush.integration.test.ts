@@ -79,6 +79,8 @@ import {
   PAYMENT_CLAIM_LEASE_MS,
   PAYMENT_DELETE_UNRESOLVED_GRACE_MS,
   PAYMENT_SWEEP_MIN_AGE_MS,
+  PAYMENT_PUSH_MAX_ATTEMPTS,
+  paymentPushGaveUpMessage,
   deletePaymentInAccounting,
   fanOutOwedPayments,
   listOwedPaymentMappings,
@@ -829,6 +831,80 @@ describe('QuickBooks payment push — real Postgres', () => {
     expect(rows[0]).toMatchObject({ id: mappingId, remoteEntityId: '182/145', syncStatus: 'synced', pendingOp: null });
   });
 
+  runDb('a QuickBooks VOID (alive, zero allocations) KEEPS the Breeze-origin ids and does NOT re-push', async () => {
+    // The C1 twin of the case above, and the whole reason a void and a delete
+    // must not share a code path. QBO never DELETES a Payment on a void — it
+    // zeroes it and keeps the row — so the provider now delivers it as a live
+    // payment with an EMPTY line set, which lands here.
+    const { fx, invoiceId } = await seedPushable();
+    const { paymentId, mappingId, create } = await recordAndPush(fx, invoiceId);
+    create.mockClear();
+
+    const stale = await reverseStaleAllocations(fx.conn, '181', [], systemRunner, fx.conn.realmIdFingerprint);
+
+    expect(stale.map((r) => r.outcome)).toEqual(['breeze_origin_diverged']);
+
+    // The money moved, so the Breeze row survives — same as a delete.
+    expect(await loadPayments(invoiceId)).toHaveLength(1);
+    const after = await loadInvoice(invoiceId);
+    expect(after.amountPaid).toBe('40.00');
+
+    // ...but UNLIKE a delete, the ids SURVIVE. A later Breeze void still has to
+    // name that Payment, and it cannot without the id and the token.
+    expect(await loadOnePaymentMapping(fx)).toMatchObject({
+      id: mappingId,
+      syncStatus: 'error',
+      lastError: BREEZE_ORIGIN_DIVERGED_MESSAGE,
+      remoteEntityId: '181/145',
+      remoteSyncToken: '0',
+      pendingOp: null,
+      breezeOrigin: true,
+    });
+
+    // THE DUPLICATE THIS FINDING IS ABOUT. Re-pushing the invoice must NOT
+    // re-own this row: the re-own CAS requires `remote_entity_id IS NULL`, and
+    // the push is create-only, so a re-own here would mint a SECOND QuickBooks
+    // Payment for money that moved once.
+    const owed = await fanOutOwedPayments(invoiceId, fx.partnerId, systemRunner);
+    expect(owed).toEqual([]);
+    expect(create).not.toHaveBeenCalled();
+    expect(await loadOnePaymentMapping(fx)).toMatchObject({
+      remoteEntityId: '181/145', pendingOp: null,
+    });
+
+    // And the void Breeze owes on that Payment is still addressable.
+    await withSystemDbAccessContext(() => voidPayment(paymentId, fx.actor));
+    expect(await loadOnePaymentMapping(fx)).toMatchObject({
+      pendingOp: 'delete', remoteEntityId: '181/145', remoteSyncToken: '0',
+    });
+  });
+
+  runDb('a QuickBooks VOID of a QuickBooks-ORIGIN payment still reverses it, exactly as Phase D did', async () => {
+    // The other half of C1: reclassifying void/unapplied as "not a deletion"
+    // must NOT change what happens to a mirror row Breeze does not own. The
+    // money is no longer applied to the invoice, so the mirror and its mapping
+    // both go and the invoice balance is restored — the Phase D end state.
+    const { fx, invoiceId } = await seedPushable({ total: '150.00' });
+
+    const pulled = await applyAccountingPayment(
+      fx.conn,
+      paymentLine({ remotePaymentId: '200', amountMinor: 5000 }),
+      systemRunner,
+      fx.conn.realmIdFingerprint,
+    );
+    expect(pulled.outcome).toBe('applied');
+    expect((await loadInvoice(invoiceId)).amountPaid).toBe('50.00');
+
+    const stale = await reverseStaleAllocations(fx.conn, '200', [], systemRunner, fx.conn.realmIdFingerprint);
+
+    expect(stale.map((r) => r.outcome)).toEqual(['reversed']);
+    expect(await loadPayments(invoiceId)).toEqual([]);
+    expect(await loadPaymentMappings(fx)).toEqual([]);
+    const after = await loadInvoice(invoiceId);
+    expect(after.amountPaid).toBe('0.00');
+    expect(after.balance).toBe('150.00');
+  });
+
   runDb('a CDC delete of a row that already owed a delete SATISFIES it and drops the mapping', async () => {
     const { fx, invoiceId } = await seedPushable();
     const { paymentId, mappingId } = await recordAndPush(fx, invoiceId);
@@ -881,6 +957,104 @@ describe('QuickBooks payment push — real Postgres', () => {
       remoteSyncToken: '0',
       pendingOp: null,
     });
+  });
+
+  // -------------------------------------------------------------------------
+  // The attempt ceiling (findings I1/I2)
+  // -------------------------------------------------------------------------
+
+  runDb('a push that keeps failing GIVES UP at PAYMENT_PUSH_MAX_ATTEMPTS and leaves the sweep nothing to do', async () => {
+    // Without a ceiling the mapping row is an unbounded outbox: `pending_op` is
+    // deliberately never cleared on a retryable failure, so the 15-minute sweep
+    // re-enqueues a create QuickBooks will never accept — forever.
+    const { fx, invoiceId } = await seedPushable();
+    await withSystemDbAccessContext(() => recordPayment(
+      invoiceId, { amount: 40, method: 'check', receivedAt: '2026-09-02' }, fx.actor,
+    ));
+    const mappingId = (await loadOnePaymentMapping(fx)).id;
+
+    // A rejection QuickBooks would keep repeating — an over-application, say.
+    const create = stubCreatePayment(async () => {
+      throw Object.assign(new Error('Amount exceeds balance'), { status: 400 });
+    });
+
+    for (let attempt = 1; attempt <= PAYMENT_PUSH_MAX_ATTEMPTS; attempt++) {
+      await expect(pushPaymentToAccounting(mappingId, fx.partnerId, systemRunner))
+        .rejects.toMatchObject({ code: 'quickbooks_error' });
+      const row = await loadOnePaymentMapping(fx);
+      expect(row.syncAttempts).toBe(attempt);
+      // The lease is released every time, which is what lets the NEXT attempt
+      // claim the row at all.
+      expect(row.claimedAt).toBeNull();
+      // Still owed right up to the last attempt, and not a moment longer.
+      expect(row.pendingOp).toBe(attempt < PAYMENT_PUSH_MAX_ATTEMPTS ? 'push' : null);
+    }
+
+    expect(create).toHaveBeenCalledTimes(PAYMENT_PUSH_MAX_ATTEMPTS);
+    const givenUp = await loadOnePaymentMapping(fx);
+    expect(givenUp).toMatchObject({
+      pendingOp: null,
+      claimedAt: null,
+      syncStatus: 'error',
+      syncAttempts: PAYMENT_PUSH_MAX_ATTEMPTS,
+      lastError: paymentPushGaveUpMessage('QuickBooks rejected the payment sync (HTTP 400)'),
+    });
+    // Never an Intuit fault body — the Phase C rule holds through the give-up.
+    expect(givenUp.lastError).not.toContain('Amount exceeds balance');
+
+    // The point of the whole change: Postgres now returns the row to nobody.
+    await withSystemDbAccessContext(() => db
+      .update(accountingEntityMappings)
+      .set({ updatedAt: new Date(Date.now() - PAYMENT_SWEEP_MIN_AGE_MS - 60_000) })
+      .where(eq(accountingEntityMappings.id, mappingId))
+      .returning({ id: accountingEntityMappings.id }));
+    expect(await withSystemDbAccessContext(() => listOwedPaymentMappings(db, new Date()))).toEqual([]);
+
+    // The documented recovery: the invoice's own push button re-owns the row
+    // with a fresh budget.
+    const owed = await fanOutOwedPayments(invoiceId, fx.partnerId, systemRunner);
+    expect(owed).toEqual([mappingId]);
+    expect(await loadOnePaymentMapping(fx)).toMatchObject({
+      pendingOp: 'push', syncAttempts: 0, lastError: null,
+    });
+  });
+
+  runDb('voiding a payment whose mapping is STRANDED drops the row instead of owing a delete (finding C2)', async () => {
+    // `remote_entity_id IS NULL` with nothing owed: what a `push_disabled`
+    // refusal, a terminal pre-call refusal or a remote deletion leaves behind.
+    // Flipping it to `delete` would park the delete worker on
+    // `awaiting_remote_ref` for 24 h and then raise a false orphan alarm.
+    const { fx, invoiceId } = await seedPushable({ pushPayments: false, pushMode: 'manual' });
+    const recorded = await withSystemDbAccessContext(() => recordPayment(
+      invoiceId, { amount: 40, method: 'check', receivedAt: '2026-09-02' }, fx.actor,
+    ));
+    // The fan-out does not run with `push_payments` off, so seed the stranded
+    // row the way the pull's removed-remotely branch leaves it.
+    const mappingId = await withSystemDbAccessContext(async () => {
+      const [row] = await db.insert(accountingEntityMappings).values({
+        integrationId: fx.conn.id,
+        partnerId: fx.partnerId,
+        breezeEntityType: 'payment',
+        breezeEntityId: recorded.audit.paymentId,
+        remoteEntityType: 'Payment',
+        remoteEntityId: null,
+        breezeOrigin: true,
+        linkStatus: 'create_new',
+        syncStatus: 'error',
+        lastError: BREEZE_ORIGIN_REMOVED_MESSAGE,
+        pendingOp: null,
+      }).returning({ id: accountingEntityMappings.id });
+      return row!.id;
+    });
+    expect(mappingId).toBeTruthy();
+
+    vi.mocked(enqueueAccountingPaymentDelete).mockClear();
+    await withSystemDbAccessContext(() => voidPayment(recorded.audit.paymentId, fx.actor));
+
+    expect(await loadPayments(invoiceId)).toEqual([]);
+    // Row gone — and no delete job, because there is nothing to delete.
+    expect(await loadPaymentMappings(fx)).toEqual([]);
+    expect(vi.mocked(enqueueAccountingPaymentDelete)).not.toHaveBeenCalled();
   });
 
   // -------------------------------------------------------------------------
