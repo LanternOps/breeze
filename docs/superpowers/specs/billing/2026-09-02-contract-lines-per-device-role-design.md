@@ -1,7 +1,7 @@
 # Contract Lines Billed by Device Role
 
 **Date:** 2026-09-02
-**Status:** Draft (Fable design, Codex xhigh review folded in)
+**Status:** Approved 2026-09-02 (Fable design, Codex xhigh review folded in)
 **Tracking issue:** LanternOps/breeze#3205
 **Sibling:** LanternOps/breeze#4547 block hours (same MSP conversation, separate feature)
 **Origin:** MSP demo follow-up. The MSP prices workstations, servers, and network gear at different rates and today has to maintain those quantities by hand on `manual` lines.
