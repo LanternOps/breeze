@@ -129,21 +129,40 @@ export async function deliverAiBudgetAlert(eventId: string): Promise<{ recipient
         }
       }
 
-      await publishEvent(EVENT_TYPES.AI_BUDGET_THRESHOLD_CROSSED, event.org_id, {
-        eventId: event.id,
-        period: event.period,
-        periodKey: event.period_key,
-        thresholdPct: ctx.thresholdPct,
-        capCents: ctx.capCents,
-        usedCents: ctx.usedCents,
-        billingSource: event.billing_source,
-      }, 'ai-budget-alerts');
-
+      // Mark delivered BEFORE the event-bus publish. Notifications + email
+      // above are the actual customer-facing delivery; the publish below is
+      // observability only. If it were ordered first and then failed (a real
+      // Redis call), the outer catch would record a failed attempt and
+      // BullMQ would retry a job whose customer-facing work already
+      // succeeded — resending the email, which (unlike the in-app
+      // notification's dedupe-key unique index) has no idempotency guard.
+      // Marking delivered here means a retry hits the `event.delivered_at`
+      // short-circuit above and returns early instead of resending anything.
       await db.execute(sql`
         UPDATE ai_budget_alert_events
         SET delivered_at = now(), recipient_count = ${userIds.length}, delivery_attempts = delivery_attempts + 1, last_delivery_error = NULL
         WHERE id = ${eventId}::uuid
       `);
+
+      // Best-effort only, deliberately outside the outer try/catch's failure
+      // path: a publish failure must never undo the delivery just marked
+      // above or trigger a retry of it.
+      try {
+        await publishEvent(EVENT_TYPES.AI_BUDGET_THRESHOLD_CROSSED, event.org_id, {
+          eventId: event.id,
+          period: event.period,
+          periodKey: event.period_key,
+          thresholdPct: ctx.thresholdPct,
+          capCents: ctx.capCents,
+          usedCents: ctx.usedCents,
+          billingSource: event.billing_source,
+        }, 'ai-budget-alerts');
+      } catch (publishErr) {
+        const publishMsg = publishErr instanceof Error ? publishErr.message : String(publishErr);
+        console.error(`[AI] budget alert event-bus publish failed for event ${eventId} (delivery already marked complete):`, publishMsg);
+        captureException(publishErr instanceof Error ? publishErr : new Error(publishMsg), undefined, { service: 'aiBudgetAlertDelivery' });
+      }
+
       return { recipients: userIds.length, emailed };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -170,7 +189,8 @@ export async function reconcileUndeliveredAiBudgetAlerts(): Promise<number> {
   return rows.length;
 }
 
-async function evaluatePartnerOrgs(partnerId: string): Promise<number> {
+/** Exported for tests (finding 2, fix round 1). Internal to the job's switch otherwise — no other caller. */
+export async function evaluatePartnerOrgs(partnerId: string): Promise<number> {
   const rows = await runOutsideDbContext(() => withSystemDbAccessContext(() => db.execute<{ id: string }>(sql`
     SELECT id FROM organizations WHERE partner_id = ${partnerId}::uuid AND deleted_at IS NULL
   `)));

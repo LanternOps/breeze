@@ -75,6 +75,7 @@ describe('evaluateAiBudgetThresholds', () => {
     vi.mocked(runOutsideDbContext).mockClear();
     vi.mocked(withSystemDbAccessContext).mockClear();
     vi.mocked(getCurrentDbAccessContext).mockReset().mockReturnValue(undefined);
+    vi.mocked(enqueueAiBudgetAlertDelivery).mockClear();
   });
 
   it('does nothing when AI is disabled', async () => {
@@ -99,6 +100,7 @@ describe('evaluateAiBudgetThresholds', () => {
     // usage read, then advisory lock (unused), then insert suppressed by the monotonic guard
     responses = [[{ total_cost_cents: 8100 }], [], []];
     await expect(evaluateAiBudgetThresholds('org1')).resolves.toEqual([]);
+    expect(enqueueAiBudgetAlertDelivery).not.toHaveBeenCalled();
   });
 
   it('does not escape to a system context when already system-scoped (finding #1)', async () => {

@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   sendEmail: vi.fn(),
   getEmailService: vi.fn(),
   publishEvent: vi.fn(),
+  evaluateAiBudgetThresholds: vi.fn(),
 }));
 
 vi.mock('bullmq', () => ({ Queue: class { add = vi.fn(); }, Worker: class {}, Job: class {} }));
@@ -23,10 +24,11 @@ vi.mock('../services/userNotifications', () => ({ createNotification: mocks.crea
 vi.mock('../services/usersWithPermission', () => ({ resolveUsersWithPermissionForOrg: mocks.resolveUsers }));
 vi.mock('../services/email', () => ({ getEmailService: mocks.getEmailService }));
 vi.mock('../services/eventBus', () => ({ publishEvent: mocks.publishEvent, EVENT_TYPES: { AI_BUDGET_THRESHOLD_CROSSED: 'ai.budget.threshold_crossed' } }));
+vi.mock('../services/aiBudgetAlerts', () => ({ evaluateAiBudgetThresholds: mocks.evaluateAiBudgetThresholds }));
 vi.mock('./workerObservability', () => ({ attachWorkerObservability: vi.fn() }));
 vi.mock('../services/c2cM365', () => ({ getFrontendBaseUrl: () => 'https://app.example.com' }));
 
-import { deliverAiBudgetAlert } from './aiBudgetAlertDelivery';
+import { deliverAiBudgetAlert, evaluatePartnerOrgs, getAiBudgetAlertQueue, reconcileUndeliveredAiBudgetAlerts } from './aiBudgetAlertDelivery';
 
 const dialect = new PgDialect();
 
@@ -105,5 +107,94 @@ describe('deliverAiBudgetAlert', () => {
     mocks.sendEmail.mockRejectedValue(new Error('smtp down'));
     await expect(deliverAiBudgetAlert('evt-1')).rejects.toThrow('smtp down');
     expect(JSON.stringify(mocks.execute.mock.calls.at(-1))).toContain('delivery_attempts');
+  });
+
+  it('marks delivered before the event-bus publish, so a publish failure does not fail delivery and a retry does not resend', async () => {
+    // Finding 1: notifications + email are the customer-facing delivery: they
+    // must be durably marked BEFORE the (best-effort) bus publish, so that a
+    // publish failure never causes BullMQ to retry a job that already sent.
+    mocks.publishEvent.mockRejectedValueOnce(new Error('redis unavailable'));
+
+    const first = await deliverAiBudgetAlert('evt-1');
+    expect(first).toEqual({ recipients: 2, emailed: true });
+    expect(mocks.sendEmail).toHaveBeenCalledTimes(1);
+    // The delivered_at UPDATE already ran, even though publish rejected.
+    expect(JSON.stringify(mocks.execute.mock.calls.at(-1))).toContain('delivered_at');
+
+    // Simulate BullMQ retrying the same job id: the row this call loads back
+    // out is now delivered (the mark-delivered write ran before the publish
+    // that failed), so the retry must be a no-op, not a second send.
+    mockExecute({ ...baseEvent, delivered_at: new Date().toISOString() });
+    const second = await deliverAiBudgetAlert('evt-1');
+    expect(second).toEqual({ recipients: 0, emailed: false });
+    expect(mocks.sendEmail).toHaveBeenCalledTimes(1);
+    expect(mocks.createNotification).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('reconcileUndeliveredAiBudgetAlerts', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it('re-enqueues each undelivered row and returns the row count', async () => {
+    mocks.execute.mockImplementation(async (q: unknown) => {
+      const text = renderSql(q);
+      if (text.includes('FROM ai_budget_alert_events')) return [{ id: 'evt-a' }, { id: 'evt-b' }];
+      return [];
+    });
+    const queue = getAiBudgetAlertQueue();
+
+    const count = await reconcileUndeliveredAiBudgetAlerts();
+
+    expect(count).toBe(2);
+    const addMock = queue.add as unknown as ReturnType<typeof vi.fn>;
+    const jobIds = addMock.mock.calls.map((call: unknown[]) => (call[2] as { jobId: string }).jobId);
+    expect(jobIds).toEqual(['deliver-evt-a', 'deliver-evt-b']);
+    const selectText = mocks.execute.mock.calls.map((call: unknown[]) => renderSql(call[0])).find((t: string) => t.includes('FROM ai_budget_alert_events'));
+    expect(selectText).toContain('delivered_at IS NULL');
+    expect(selectText).toContain('delivery_attempts <');
+  });
+
+  it('enqueues nothing and returns 0 when there are no undelivered rows', async () => {
+    mocks.execute.mockResolvedValue([]);
+    const queue = getAiBudgetAlertQueue();
+
+    const count = await reconcileUndeliveredAiBudgetAlerts();
+
+    expect(count).toBe(0);
+    expect(queue.add).not.toHaveBeenCalled();
+  });
+});
+
+describe('evaluatePartnerOrgs (partner-wide evaluation fan-out)', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    mocks.evaluateAiBudgetThresholds.mockResolvedValue([]);
+  });
+
+  it('evaluates every active org of the partner, in order, and returns the count', async () => {
+    mocks.execute.mockImplementation(async (q: unknown) => {
+      const text = renderSql(q);
+      if (text.includes('FROM organizations')) return [{ id: 'org-a' }, { id: 'org-b' }];
+      return [];
+    });
+
+    const count = await evaluatePartnerOrgs('partner-1');
+
+    expect(count).toBe(2);
+    expect(mocks.evaluateAiBudgetThresholds.mock.calls.map((call: unknown[]) => call[0])).toEqual(['org-a', 'org-b']);
+    const selectText = mocks.execute.mock.calls.map((call: unknown[]) => renderSql(call[0])).find((t: string) => t.includes('FROM organizations'));
+    expect(selectText).toContain('partner_id');
+    expect(selectText).toContain('deleted_at IS NULL');
+  });
+
+  it('evaluates nothing when the partner has no active orgs', async () => {
+    mocks.execute.mockResolvedValue([]);
+
+    const count = await evaluatePartnerOrgs('partner-1');
+
+    expect(count).toBe(0);
+    expect(mocks.evaluateAiBudgetThresholds).not.toHaveBeenCalled();
   });
 });
