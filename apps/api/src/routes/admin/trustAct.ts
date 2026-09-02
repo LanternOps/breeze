@@ -4,8 +4,8 @@ import { requireFreshMfaStepUp } from '../auth/helpers';
 import {
   buildEvidenceCard,
   consumeTrustActionToken,
-  renderEvidenceCardSummary,
   verifyTrustActionToken,
+  verifyTrustActionTokenDetailed,
 } from '../../services/partnerTrustEvidenceCard';
 import { setTrustState } from '../../services/partnerTrust';
 import { suspendPartnerForAbuse } from './abuse';
@@ -17,38 +17,51 @@ const actionBodySchema = z.object({
   totp: z.string().trim().regex(/^\d{6}$/),
 });
 
-function escapeHtml(value: string): string {
-  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
-
 function forbidden(c: Context) {
   return c.json({ error: 'Invalid or expired trust action' }, 403);
 }
 
-trustActionAdminRoutes.get('/trust/act', async (c) => {
+// This API is Bearer-only: an email link cannot authenticate to it directly,
+// and an HTML `<form>` has no way to send a bearer token. So this route is
+// JSON-only, verifies the token WITHOUT consuming it, and never acts — it
+// exists purely so the web app's `/admin/trust/act` page (Wave 6) can show
+// the operator what they're about to do (and why the link might already be
+// dead) before it collects a fresh TOTP and calls POST below with the
+// operator's own bearer.
+trustActionAdminRoutes.get('/trust/act/preview', async (c) => {
   const token = c.req.query('token');
   const auth = c.get('auth');
-  if (!token) return forbidden(c);
-  const payload = await verifyTrustActionToken(token, auth.user.id);
-  if (!payload) return forbidden(c);
+  if (!token) {
+    return c.json({ valid: false, reason: 'bad_signature' as const });
+  }
 
+  const result = await verifyTrustActionTokenDetailed(token, auth.user.id);
+  if (!result.valid) {
+    return c.json({ valid: false, reason: result.reason });
+  }
+
+  const { payload } = result;
   let card;
   try {
     card = await buildEvidenceCard(payload.partnerId);
   } catch {
-    return forbidden(c);
+    // Partner vanished (deleted/merged) between mint and preview — surface it
+    // as an invalid token rather than 500ing the operator's preview page.
+    return c.json({ valid: false, reason: 'bad_signature' as const });
   }
-  const summary = renderEvidenceCardSummary(card);
-  const title = payload.action === 'approve' ? 'Approve partner' : 'Suspend partner';
-  return c.html(`<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
-<title>${title}</title></head><body><main><h1>${title}</h1>
-<pre>${escapeHtml(summary)}</pre>
-<form method="post" action="/admin/trust/act">
-<input type="hidden" name="token" value="${escapeHtml(token)}">
-<label>Fresh TOTP code <input name="totp" inputmode="numeric" pattern="[0-9]{6}" required autocomplete="one-time-code"></label>
-<button type="submit">${title}</button>
-</form></main></body></html>`);
+
+  return c.json({
+    valid: true,
+    action: payload.action,
+    partner: {
+      id: card.partner.id,
+      name: card.partner.name,
+      slug: card.partner.slug,
+      plan: card.partner.plan,
+      trustState: card.partner.trustState,
+    },
+    card,
+  });
 });
 
 trustActionAdminRoutes.post('/trust/act', async (c) => {
@@ -74,6 +87,12 @@ trustActionAdminRoutes.post('/trust/act', async (c) => {
   );
   if (mfaFailure) return forbidden(c);
 
+  // Consume the jti BEFORE acting, deliberately: this is the anti-replay
+  // gate, and it must close even if the action below throws. The tradeoff is
+  // that a downstream failure (setTrustState / suspendPartnerForAbuse
+  // throwing) leaves the token burned with the action never applied — that
+  // requires a fresh evidence-card email rather than a raw retry, which is
+  // an acceptable cost for never double-applying an approve/suspend.
   if (!await consumeTrustActionToken(payload.jti)) return forbidden(c);
 
   if (payload.action === 'approve') {

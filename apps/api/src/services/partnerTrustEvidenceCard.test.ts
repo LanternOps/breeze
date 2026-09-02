@@ -87,6 +87,7 @@ describe('buildEvidenceCard', () => {
       [{
         id: PARTNER_ID,
         name: 'Fixture MSP',
+        slug: 'fixture-msp',
         plan: 'pro',
         status: 'active',
         trustState: 'probation',
@@ -110,7 +111,7 @@ describe('buildEvidenceCard', () => {
   it('builds all evidence fields in a system DB context and resolves MX', async () => {
     const card = await buildEvidenceCard(PARTNER_ID);
     expect(card).toMatchObject({
-      partner: { id: PARTNER_ID, name: 'Fixture MSP', plan: 'pro', status: 'active', trustState: 'probation' },
+      partner: { id: PARTNER_ID, name: 'Fixture MSP', slug: 'fixture-msp', plan: 'pro', status: 'active', trustState: 'probation' },
       signup: { ip: '198.51.100.10', ipClass: 'hosting', asn: 64500 },
       emailDomain: { domain: 'example.test', ageDays: null, hasMx: true },
       identity: { userName: 'Alice Operator', cardholderName: 'Alice Operator', namesMatch: true },
@@ -120,5 +121,17 @@ describe('buildEvidenceCard', () => {
       matchedSuspendedAxes: ['billing_card_fingerprint', 'email_domain'],
     });
     expect(mocks.resolveMx).toHaveBeenCalledWith('example.test');
+  });
+
+  it('reports hasMx: null on a DNS error or timeout — distinct from a confirmed absence', async () => {
+    mocks.resolveMx.mockRejectedValue(new Error('DNS lookup timed out'));
+    const card = await buildEvidenceCard(PARTNER_ID);
+    expect(card.emailDomain.hasMx).toBeNull();
+  });
+
+  it('reports hasMx: false only for a confirmed empty MX result', async () => {
+    mocks.resolveMx.mockResolvedValue([]);
+    const card = await buildEvidenceCard(PARTNER_ID);
+    expect(card.emailDomain.hasMx).toBe(false);
   });
 });

@@ -12,6 +12,7 @@ export interface EvidenceCard {
   partner: {
     id: string;
     name: string;
+    slug: string;
     plan: string;
     status: string;
     trustState: string;
@@ -62,6 +63,11 @@ function normalizedName(value: string | null): string | null {
   return normalized || null;
 }
 
+// `null` means "we don't know" (DNS error or timeout) and must be kept
+// distinct from a confirmed `false` (the lookup succeeded and returned zero
+// MX records) — collapsing the two previously made a transient resolver
+// hiccup look identical to "this domain has no mail server", which is a much
+// stronger (and much less deserved) abuse signal.
 async function resolveMx(domain: string | null): Promise<boolean | null> {
   if (!domain) return null;
   let timeout: NodeJS.Timeout | undefined;
@@ -74,7 +80,7 @@ async function resolveMx(domain: string | null): Promise<boolean | null> {
     ]);
     return result.length > 0;
   } catch {
-    return false;
+    return null;
   } finally {
     if (timeout) clearTimeout(timeout);
   }
@@ -85,6 +91,7 @@ export async function buildEvidenceCard(partnerId: string): Promise<EvidenceCard
     const [partner] = await db.select({
       id: partners.id,
       name: partners.name,
+      slug: partners.slug,
       plan: partners.plan,
       status: partners.status,
       trustState: partners.trustState,
@@ -155,6 +162,7 @@ export async function buildEvidenceCard(partnerId: string): Promise<EvidenceCard
       partner: {
         id: partner.id,
         name: partner.name,
+        slug: partner.slug,
         plan: partner.plan,
         status: partner.status,
         trustState: partner.trustState,
@@ -245,16 +253,45 @@ function parsePayload(token: string): TrustActionTokenPayload | null {
   }
 }
 
+export type TrustActionTokenInvalidReason = 'bad_signature' | 'expired' | 'used' | 'operator_mismatch';
+
+export type TrustActionTokenVerification =
+  | { valid: true; payload: TrustActionTokenPayload }
+  | { valid: false; reason: TrustActionTokenInvalidReason };
+
+/**
+ * Verifies a trust action token and reports WHY it's invalid, without
+ * consuming it or taking any action. Used by the preview endpoint
+ * (GET /admin/trust/act/preview) so the web app can show the operator a
+ * useful message instead of a bare "invalid token"; `verifyTrustActionToken`
+ * below is the boolean-collapsed wrapper the action-taking POST route uses.
+ */
+export async function verifyTrustActionTokenDetailed(
+  token: string,
+  operatorUserId: string,
+): Promise<TrustActionTokenVerification> {
+  const payload = parsePayload(token);
+  if (!payload) return { valid: false, reason: 'bad_signature' };
+  if (payload.exp <= Math.floor(Date.now() / 1000)) return { valid: false, reason: 'expired' };
+  if (payload.operatorUserId !== operatorUserId) return { valid: false, reason: 'operator_mismatch' };
+
+  await tokenReservations.get(payload.jti);
+  const redis = getRedis();
+  const state = redis ? await redis.get(`trustact:${payload.jti}`) : null;
+  if (state === 'used') return { valid: false, reason: 'used' };
+  // A missing/absent key (redis down, or the record's TTL already lapsed) is
+  // reported as `expired` rather than `used` — it's the closer of the two
+  // lies, since the token cannot be reasoned about as still-active either way.
+  if (state !== 'active') return { valid: false, reason: 'expired' };
+  return { valid: true, payload };
+}
+
 export async function verifyTrustActionToken(
   token: string,
   operatorUserId: string,
 ): Promise<TrustActionTokenPayload | null> {
-  const payload = parsePayload(token);
-  if (!payload || payload.exp <= Math.floor(Date.now() / 1000) || payload.operatorUserId !== operatorUserId) return null;
-  await tokenReservations.get(payload.jti);
-  const redis = getRedis();
-  if (!redis || await redis.get(`trustact:${payload.jti}`) !== 'active') return null;
-  return payload;
+  const result = await verifyTrustActionTokenDetailed(token, operatorUserId);
+  return result.valid ? result.payload : null;
 }
 
 export async function consumeTrustActionToken(jti: string): Promise<boolean> {
@@ -290,11 +327,22 @@ function escapeHtml(value: string): string {
   return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-function publicBaseUrl(): string {
-  const value = process.env.PUBLIC_URL || process.env.PUBLIC_APP_URL || process.env.PUBLIC_API_URL;
-  if (value?.trim()) return value.replace(/\/$/, '');
-  if (process.env.NODE_ENV === 'production') throw new Error('PUBLIC_URL, PUBLIC_APP_URL, or PUBLIC_API_URL is required');
-  return 'http://localhost:3000';
+// This API is Bearer-only (no cookie/session auth), so an email link can
+// never authenticate directly against it, and an HTML `<form>` posted from
+// an email client has no way to attach a bearer token either. The evidence-
+// card email therefore links to the WEB APP's `/admin/trust/act` page (Wave
+// 6), not this API — that page verifies the token via GET
+// /admin/trust/act/preview and, once the operator supplies a fresh TOTP,
+// calls POST /admin/trust/act itself using the operator's own bearer.
+// Same PUBLIC_APP_URL / DASHBOARD_URL precedence as other web-app deep links
+// in this codebase (see services/quoteOutcomeNotify.ts, contractRenewal.ts).
+function trustActionWebBaseUrl(): string {
+  const value = process.env.PUBLIC_APP_URL || process.env.DASHBOARD_URL;
+  if (value?.trim()) return value.trim().replace(/\/+$/, '');
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('PUBLIC_APP_URL or DASHBOARD_URL is required to build trust action email links');
+  }
+  return 'http://localhost:4321';
 }
 
 export async function sendEvidenceCard(
@@ -316,7 +364,7 @@ export async function sendEvidenceCard(
   const suspendPayload = parsePayload(suspendToken)!;
   await Promise.all([tokenReservations.get(approvePayload.jti), tokenReservations.get(suspendPayload.jti)]);
 
-  const base = publicBaseUrl();
+  const base = trustActionWebBaseUrl();
   const approveUrl = `${base}/admin/trust/act?token=${encodeURIComponent(approveToken)}`;
   const suspendUrl = `${base}/admin/trust/act?token=${encodeURIComponent(suspendToken)}`;
   const summary = renderCardText(card);
