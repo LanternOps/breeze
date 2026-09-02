@@ -25,6 +25,21 @@
  * invoiceService). This module imports nothing, so it can never be in one.
  */
 
+/**
+ * Worker lease on a `pending_op` mapping row (spec decision 2).
+ *
+ * Here, not in `accountingPaymentPush.ts`, for the same reason
+ * `paymentMappingRemoteId` is: BOTH directions now depend on it. The PUSH
+ * claims a row with it; the PULL has to respect it, because a CDC deletion that
+ * drops a delete-pending mapping while a delete worker holds the lease would
+ * pull the row out from under a job that is mid-flight. A `pull -> push` import
+ * would drag the provider registry and the mapping service into every pull unit
+ * test; this module imports nothing, so it can never do that or close a cycle.
+ * Re-exported from `accountingPaymentPush.ts` so its existing importers are
+ * unaffected.
+ */
+export const PAYMENT_CLAIM_LEASE_MS = 10 * 60 * 1000;
+
 export const BREEZE_PAYMENT_NOTE_PREFIX = 'Breeze payment ';
 
 /** Lowercase canonical uuid only — the ids Postgres hands back are lowercase. */

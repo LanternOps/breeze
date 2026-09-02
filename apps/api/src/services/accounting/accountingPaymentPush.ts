@@ -68,6 +68,11 @@ import {
 // here instead would close a cycle: invoiceService -> this module -> pull ->
 // invoiceService (pull needs `recomputeInvoiceStatus`).
 import { buildPaymentPrivateNote, paymentMappingRemoteId } from './accountingPaymentMarker';
+// Defined in the dependency-free marker module because the PULL must respect the
+// same lease (it can drop a delete-pending mapping); re-exported here so this
+// module stays the coordinator-facing home of the constant.
+export { PAYMENT_CLAIM_LEASE_MS } from './accountingPaymentMarker';
+import { PAYMENT_CLAIM_LEASE_MS } from './accountingPaymentMarker';
 // Integer-cents money helpers. `invoiceMath` is a pure calculation module (its
 // only import is @breeze/shared), so this pulls in no service graph and closes
 // no cycle.
@@ -78,9 +83,6 @@ import { captureException } from '../sentry';
 import type { AccountingConnection } from './accountingConnectionService';
 import type { AccountingPaymentPayload, PaymentDeleteResult, RemoteRef } from './types';
 
-/** Worker lease window (spec decision 2). A job that dies mid-flight frees its
- *  claim after this long, and the sweep re-enqueues it. */
-export const PAYMENT_CLAIM_LEASE_MS = 10 * 60 * 1000;
 /** A row must be at least this stale before the sweep re-enqueues it, so the
  *  sweep never races the immediate enqueue the caller just made. */
 export const PAYMENT_SWEEP_MIN_AGE_MS = 2 * 60 * 1000;
@@ -806,7 +808,16 @@ export async function fanOutOwedPayments(
         && existing.remoteEntityId === null
         && existing.pendingOp === null;
       if (!removedRemotely) continue;
-      await reownPushMapping(existing.id, partnerId);
+      // A lost CAS is NOT fatal here. This whole fan-out is ONE transaction, so
+      // throwing would roll back the sibling payments' inserts too — punishing
+      // every other payment on the invoice for one row another writer claimed.
+      if (!await reownPushMapping(existing.id, partnerId)) {
+        console.log(
+          '[accountingPaymentPush] skipped re-owning a payment mapping another writer claimed first',
+          `mappingId=${existing.id}`, `invoiceId=${invoiceId}`, `partnerId=${partnerId}`,
+        );
+        continue;
+      }
       enqueue.push(existing.id);
     }
     return enqueue;
@@ -820,16 +831,21 @@ export async function fanOutOwedPayments(
  * The WHERE re-asserts the whole re-ownable state, not just the id: a concurrent
  * adoption or push that stamped a remote id between this transaction's read and
  * this write MUST win, because the push is create-only and re-owing a stamped
- * row would create a SECOND QuickBooks Payment for the same money. Zero rows is
- * therefore a throw, and the caller (`accountingInvoicePush`) already treats the
- * whole fan-out as best-effort behind a Sentry capture.
+ * row would create a SECOND QuickBooks Payment for the same money.
+ *
+ * Returns whether the row was re-owned. Zero rows is a lost race, NOT an error:
+ * the caller runs every payment of the invoice in one transaction, so a throw
+ * here would roll back the sibling inserts as well.
  */
-async function reownPushMapping(mappingId: string, partnerId: string): Promise<void> {
+async function reownPushMapping(mappingId: string, partnerId: string): Promise<boolean> {
   const rows = await db
     .update(accountingEntityMappings)
     .set({
       pendingOp: 'push',
       syncStatus: 'pending',
+      // Matches `insertPendingPushMapping`: the row is once again a payment
+      // QuickBooks has never seen, so it is a create, not a confirmed link.
+      linkStatus: 'create_new',
       lastError: null,
       claimedAt: null,
       updatedAt: new Date(),
@@ -842,12 +858,7 @@ async function reownPushMapping(mappingId: string, partnerId: string): Promise<v
       isNull(accountingEntityMappings.pendingOp),
     ))
     .returning({ id: accountingEntityMappings.id });
-  if (rows.length !== 1) {
-    throw new Error(
-      `accountingPaymentPush: re-owning mapping ${mappingId} for a re-push matched no row; `
-      + 'another writer claimed it, so it is NOT safe to enqueue a create for this payment',
-    );
-  }
+  return rows.length === 1;
 }
 
 // ---------------------------------------------------------------------------

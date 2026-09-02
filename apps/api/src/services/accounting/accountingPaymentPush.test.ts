@@ -1254,6 +1254,7 @@ describe('fanOutOwedPayments', () => {
 
     await fanOutOwedPayments(INVOICE, PARTNER, runCtx);
 
+    expect(mapping()).toMatchObject({ linkStatus: 'create_new' });
     const reown = stmtsOf('update', 'accounting_entity_mappings')[0]!;
     const sql = compiledSql(reown.where);
     expect(sql).toMatch(/"remote_entity_id" is null/);
@@ -1289,6 +1290,47 @@ describe('fanOutOwedPayments', () => {
 
     await expect(fanOutOwedPayments(INVOICE, PARTNER, runCtx)).resolves.toEqual([]);
     expect(stmtsOf('update', 'accounting_entity_mappings')).toHaveLength(0);
+  });
+
+  it('skips a payment whose re-own CAS lost, WITHOUT rolling back its siblings', async () => {
+    // The whole fan-out is one transaction. Throwing on a lost race would
+    // punish every other payment on the invoice for one row another writer
+    // claimed a microsecond earlier.
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      currentPayments = [payRow({ id: PAYMENT }), payRow({ id: 'pay-2', amount: '10.00' })];
+      currentMappings = [invoiceMapRow(), orgMapRow(), paymentMapRow({
+        breezeOrigin: true, remoteEntityId: null, pendingOp: null, syncStatus: 'error',
+      })];
+      const realUpdate = updateMock.getMockImplementation()!;
+      updateMock.mockImplementation((table: unknown) => {
+        // The racing writer stamps the row between the read and the CAS.
+        const row = mapping();
+        if (table === accountingEntityMappings && row) row.remoteEntityId = '181/145';
+        return realUpdate(table);
+      });
+
+      // `pay-2` has no mapping at all, so its insert must still be returned.
+      await expect(fanOutOwedPayments(INVOICE, PARTNER, runCtx)).resolves.toEqual(['map-new-1']);
+
+      expect(stmtsOf('insert', 'accounting_entity_mappings')[0]!.values!.breezeEntityId).toBe('pay-2');
+      expect(logSpy).toHaveBeenCalledWith(
+        expect.stringContaining('skipped re-owning'), expect.anything(), expect.anything(), expect.anything(),
+      );
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it('re-owns nothing when push_payments is off', async () => {
+    currentConns = [connRow({ pushPayments: false })];
+    currentMappings = [invoiceMapRow(), orgMapRow(), paymentMapRow({
+      breezeOrigin: true, remoteEntityId: null, pendingOp: null, syncStatus: 'error',
+    })];
+
+    await expect(fanOutOwedPayments(INVOICE, PARTNER, runCtx)).resolves.toEqual([]);
+    expect(stmtsOf('update', 'accounting_entity_mappings')).toHaveLength(0);
+    expect(mapping()).toMatchObject({ pendingOp: null, syncStatus: 'error' });
   });
 
   it('returns nothing when push_payments is off', async () => {

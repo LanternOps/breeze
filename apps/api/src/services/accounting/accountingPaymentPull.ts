@@ -78,7 +78,7 @@
  *     the same row `markInvoiceDeletedRemotely` marks.
  */
 
-import { and, eq, isNull, like } from 'drizzle-orm';
+import { and, eq, isNull, like, lt, or } from 'drizzle-orm';
 import { toMinorUnits } from '@breeze/shared';
 import { db } from '../../db';
 import { accountingEntityMappings, invoicePayments, invoices } from '../../db/schema';
@@ -87,7 +87,7 @@ import { accountingConnections } from '../../db/schema';
 import { assertNoAmbientDbContext, type DbContextRunner } from './dbContextGuard';
 import { AccountingCurrencyContractError, normalizeAccountingPayment } from './accountingCurrency';
 import type { NormalizedAccountingPayment } from './accountingCurrency';
-import { paymentMappingRemoteId } from './accountingPaymentMarker';
+import { PAYMENT_CLAIM_LEASE_MS, paymentMappingRemoteId } from './accountingPaymentMarker';
 import type { AccountingConnection } from './accountingConnectionService';
 import type { ChangeSetPaymentLine } from './types';
 import { recomputeInvoiceStatus } from '../invoiceService';
@@ -1025,7 +1025,7 @@ export async function reverseAccountingPayment(
   assertNoAmbientDbContext('reverseAccountingPayment');
 
   const candidates = await loadPaymentMappingCandidates(conn, remotePaymentId, runInDbContext);
-  return reverseCandidates(conn, remotePaymentId, candidates, runInDbContext, expectedRealmFingerprint);
+  return reverseCandidates(conn, remotePaymentId, candidates, runInDbContext, expectedRealmFingerprint, 'deleted');
 }
 
 /**
@@ -1062,7 +1062,7 @@ export async function reverseStaleAllocations(
     .filter((row) => !keep.has(row.remoteEntityId?.slice(prefixLength) ?? ''));
   if (candidates.length === 0) return [];
 
-  return reverseCandidates(conn, remotePaymentId, candidates, runInDbContext, expectedRealmFingerprint);
+  return reverseCandidates(conn, remotePaymentId, candidates, runInDbContext, expectedRealmFingerprint, 'reallocated');
 }
 
 /** Every `payment` mapping row for one QBO Payment id, scoped to this connection. */
@@ -1088,6 +1088,19 @@ async function loadPaymentMappingCandidates(
   });
 }
 
+/**
+ * WHY THE TWO ENTRY POINTS ARE NOT INTERCHANGEABLE for a Breeze-origin row.
+ *
+ * `deleted` means the QuickBooks Payment is GONE. `reallocated` means it still
+ * EXISTS and merely stopped settling this invoice. For a QuickBooks-origin row
+ * the response is identical (drop Breeze's mirror of the allocation), which is
+ * why the two shared one code path for all of Phase D — but for a Breeze-origin
+ * row it is the difference between "the delete Breeze owed is now satisfied" and
+ * "the Payment Breeze still has to delete is alive and was edited". Conflating
+ * them abandons a real delete and writes a false `deleteSatisfied` audit.
+ */
+type ReverseReason = 'deleted' | 'reallocated';
+
 /** Reverse each candidate in its OWN short context; one failure keeps the rest. */
 async function reverseCandidates(
   conn: AccountingConnection,
@@ -1095,11 +1108,12 @@ async function reverseCandidates(
   candidates: readonly MappingRow[],
   runInDbContext: DbContextRunner,
   expectedRealmFingerprint: string | null,
+  reason: ReverseReason,
 ): Promise<PaymentPullResult[]> {
   const results: PaymentPullResult[] = [];
   for (const candidate of candidates) {
     const reversed = await runInDbContext(
-      () => reverseOneInsideTransaction(conn, remotePaymentId, candidate, expectedRealmFingerprint),
+      () => reverseOneInsideTransaction(conn, remotePaymentId, candidate, expectedRealmFingerprint, reason),
     );
     // The realm moved under us: stop, and report it ONCE rather than per
     // candidate. Every remaining candidate would answer identically.
@@ -1122,97 +1136,18 @@ async function reverseOneInsideTransaction(
   remotePaymentId: string,
   mapping: MappingRow,
   expectedRealmFingerprint: string | null,
+  reason: ReverseReason,
 ): Promise<ApplyOutcome | null | typeof REALM_CHANGED> {
   if (!await realmStillMatches(conn, expectedRealmFingerprint)) return REALM_CHANGED;
 
   const remoteInvoiceId = mapping.remoteEntityId?.slice(remotePaymentId.length + 1) ?? null;
 
-  // A Payment BREEZE created that somebody removed in QuickBooks (spec decision
-  // 5), reached by BOTH `reverseAccountingPayment` and `reverseStaleAllocations`
-  // — which is why a dropped allocation on a Breeze-origin payment is a
-  // divergence, not a reversal.
-  //
-  // Checked BEFORE the unlocked payment read on purpose: that read's `!pre` arm
-  // SWEEPS the mapping row, which for a Breeze-origin row would silently drop an
-  // outbox entry that still owes QuickBooks a delete.
-  //
-  // No invoice lock is taken and no recompute runs: the only write is to the
-  // mapping row, so no money row and no invoice balance change.
+  // A Breeze-origin mapping whose QuickBooks side changed under us. Handled
+  // BEFORE the unlocked payment read on purpose: that read's `!pre` arm SWEEPS
+  // the mapping row, which for a Breeze-origin row would silently drop an outbox
+  // entry that still owes QuickBooks a delete.
   if (mapping.breezeOrigin) {
-    // Context for the audit event: the payment row may already be gone, so the
-    // org comes from the invoice this Payment settled. Unresolvable (an erased
-    // org) is not a failure — the event falls back to the mapping row.
-    const ctx = remoteInvoiceId ? await loadInvoiceContext(conn, remoteInvoiceId) : null;
-    const removalAudit = (deleteSatisfied: boolean): PendingAudit => ({
-      orgId: ctx?.orgId ?? null,
-      action: 'accounting.payment.removed_remotely',
-      resourceType: ctx ? 'invoice' : 'accounting_entity_mapping',
-      resourceId: ctx?.id ?? mapping.id,
-      details: {
-        remotePaymentId,
-        remoteInvoiceId,
-        invoicePaymentId: mapping.breezeEntityId,
-        deleteSatisfied,
-      },
-    });
-
-    if (mapping.pendingOp === 'delete') {
-      // Breeze already wanted this Payment gone and QuickBooks got there first,
-      // so the remote deletion SATISFIES the owed delete and the outbox row has
-      // nothing left to do. Nulling its remote id instead would park the delete
-      // worker on `awaiting_remote_ref` for the whole grace window and then
-      // raise a false "a QuickBooks Payment may be orphaned" Sentry alarm for a
-      // Payment that demonstrably no longer exists.
-      await deleteMappingRow(conn, mapping.id, { required: true });
-      return {
-        result: result(
-          'breeze_origin_removed_remotely', remotePaymentId, remoteInvoiceId, ctx?.id ?? null, mapping.breezeEntityId,
-        ),
-        audit: removalAudit(true),
-      };
-    }
-
-    // Nothing owed (`pending_op IS NULL`), so Breeze still holds the payment.
-    // The Breeze row SURVIVES: the money really moved (a Stripe charge, a
-    // cheque), and deleting Breeze's record because the accounting mirror was
-    // removed would destroy the evidence of a real receipt. Clearing
-    // `remote_entity_id` is what makes the payment re-pushable — the next
-    // invoice push RE-OWNS this exact row through
-    // `accountingPaymentPush.fanOutOwedPayments`, which is the only path that
-    // can, since `accounting_entity_mappings_breeze_uniq` forbids a second
-    // mapping for the same payment. Nulling the id can never collide: that
-    // unique index is PARTIAL (`WHERE remote_entity_id IS NOT NULL`).
-    //
-    // `pending_op = 'push'` alongside a remote id should be unreachable (the
-    // stamp clears it) and is deliberately treated the same way, so an
-    // unexpected row still lands in a recorded, operator-visible state.
-    const marked = await db
-      .update(accountingEntityMappings)
-      .set({
-        syncStatus: 'error',
-        lastError: BREEZE_ORIGIN_REMOVED_MESSAGE,
-        remoteEntityId: null,
-        remoteSyncToken: null,
-        updatedAt: new Date(),
-      })
-      .where(and(
-        eq(accountingEntityMappings.id, mapping.id),
-        eq(accountingEntityMappings.partnerId, conn.partnerId),
-      ))
-      .returning({ id: accountingEntityMappings.id });
-    if (marked.length !== 1) {
-      throw new Error(
-        `accountingPaymentPull: Breeze-origin removal marker matched no row (id=${mapping.id})`,
-      );
-    }
-    // `claimed_at` is deliberately UNTOUCHED: clearing a live lease would hand a
-    // second worker a row another one is mid-flight on.
-    return {
-      result: result(
-        'breeze_origin_removed_remotely', remotePaymentId, remoteInvoiceId, ctx?.id ?? null, mapping.breezeEntityId,
-      ),
-      audit: removalAudit(false),
-    };
+    return breezeOriginRemoval(conn, mapping, remotePaymentId, remoteInvoiceId, reason);
   }
 
   // Unlocked discovery read: which invoice owns the mapped payment row?
@@ -1270,6 +1205,149 @@ async function reverseOneInsideTransaction(
         reason: 'deleted_in_quickbooks',
       },
     },
+  };
+}
+
+/**
+ * A Breeze-origin payment mapping the QuickBooks side moved under us
+ * (spec decision 5). Four cases, because `reason` and `pending_op` are
+ * independent and the wrong pairing loses money state:
+ *
+ * | reason        | pending_op | outcome |
+ * |---------------|------------|---------|
+ * | `deleted`     | `'delete'` | The remote deletion SATISFIES the owed delete: drop the row. |
+ * | `deleted`     | none       | Keep the payment row (the money moved); clear the ids so the fan-out can re-push. |
+ * | `reallocated` | `'delete'` | NO WRITE. The Payment is alive and the delete job is about to remove it outright. |
+ * | `reallocated` | none       | An EDIT: mark the mapping diverged and KEEP the ids — a later void still has to delete that Payment. |
+ *
+ * `pending_op = 'push'` alongside a remote id should be unreachable (the stamp
+ * clears it) and is deliberately treated as "none", so an unexpected row lands
+ * in a recorded, operator-visible state rather than being dropped.
+ *
+ * No invoice lock is taken and no recompute runs: the only write is to the
+ * mapping row, so no money row and no invoice balance change.
+ */
+async function breezeOriginRemoval(
+  conn: AccountingConnection,
+  mapping: MappingRow,
+  remotePaymentId: string,
+  remoteInvoiceId: string | null,
+  reason: ReverseReason,
+): Promise<ApplyOutcome> {
+  const owesDelete = mapping.pendingOp === 'delete';
+  const skipped = (): ApplyOutcome => ({
+    result: result(
+      'skipped_breeze_origin', remotePaymentId, remoteInvoiceId, null, mapping.breezeEntityId,
+    ),
+    audit: null,
+  });
+
+  // The Payment still EXISTS and the delete job is about to remove it outright,
+  // which settles every allocation at once. Writing anything here would either
+  // abandon that delete or strip the `<PaymentId>` half the delete needs to
+  // name it. So: nothing at all.
+  if (reason === 'reallocated' && owesDelete) return skipped();
+
+  // Audit context: the payment row may already be gone, so the org comes from
+  // the invoice this Payment settled. Unresolvable (an erased org) is not a
+  // failure — the event falls back to the mapping row.
+  const ctx = remoteInvoiceId ? await loadInvoiceContext(conn, remoteInvoiceId) : null;
+  const audit = (
+    action: 'accounting.payment.removed_remotely' | 'accounting.payment.diverged',
+    details: Record<string, unknown>,
+  ): PendingAudit => ({
+    orgId: ctx?.orgId ?? null,
+    action,
+    resourceType: ctx ? 'invoice' : 'accounting_entity_mapping',
+    resourceId: ctx?.id ?? mapping.id,
+    details: {
+      remotePaymentId,
+      remoteInvoiceId,
+      invoicePaymentId: mapping.breezeEntityId,
+      ...details,
+    },
+  });
+
+  if (reason === 'reallocated') {
+    // QuickBooks stopped applying a Payment that STILL EXISTS to this invoice.
+    // That is an edit, not a removal — and the remote id and token must SURVIVE
+    // it, because a later Breeze void still has to delete that Payment and needs
+    // both to do it.
+    await markPaymentMappingDiverged(conn, mapping.id, BREEZE_ORIGIN_DIVERGED_MESSAGE);
+    return {
+      result: result(
+        'breeze_origin_diverged', remotePaymentId, remoteInvoiceId, ctx?.id ?? null, mapping.breezeEntityId,
+      ),
+      audit: audit('accounting.payment.diverged', { reason: 'allocation_moved' }),
+    };
+  }
+
+  if (owesDelete) {
+    // Breeze already wanted this Payment gone and QuickBooks got there first, so
+    // the owed delete is satisfied and the outbox row has nothing left to do.
+    // Nulling its remote id instead would park the delete worker on
+    // `awaiting_remote_ref` for the whole grace window and then raise a false
+    // "a QuickBooks Payment may be orphaned" alarm for a Payment that
+    // demonstrably no longer exists.
+    //
+    // Guarded on the LEASE: a delete worker holding a live claim is mid-flight
+    // on this exact row, and pulling it out from under that job would make its
+    // own write fail. Let it finish its own path instead.
+    const removed = await db
+      .delete(accountingEntityMappings)
+      .where(and(
+        eq(accountingEntityMappings.id, mapping.id),
+        eq(accountingEntityMappings.partnerId, conn.partnerId),
+        or(
+          isNull(accountingEntityMappings.claimedAt),
+          lt(accountingEntityMappings.claimedAt, new Date(Date.now() - PAYMENT_CLAIM_LEASE_MS)),
+        ),
+      ))
+      .returning({ id: accountingEntityMappings.id });
+    if (removed.length !== 1) return skipped();
+    return {
+      result: result(
+        'breeze_origin_removed_remotely', remotePaymentId, remoteInvoiceId, ctx?.id ?? null, mapping.breezeEntityId,
+      ),
+      audit: audit('accounting.payment.removed_remotely', { deleteSatisfied: true }),
+    };
+  }
+
+  // Nothing owed, so Breeze still holds the payment. The Breeze row SURVIVES:
+  // the money really moved (a Stripe charge, a cheque), and deleting Breeze's
+  // record because the accounting mirror was removed would destroy the evidence
+  // of a real receipt. Clearing `remote_entity_id` is what makes the payment
+  // re-pushable — the next invoice push RE-OWNS this exact row through
+  // `accountingPaymentPush.fanOutOwedPayments`, the only path that can, since
+  // `accounting_entity_mappings_breeze_uniq` forbids a second mapping for the
+  // same payment. Nulling the id can never collide: that unique index is PARTIAL
+  // (`WHERE remote_entity_id IS NOT NULL`).
+  const marked = await db
+    .update(accountingEntityMappings)
+    .set({
+      syncStatus: 'error',
+      lastError: BREEZE_ORIGIN_REMOVED_MESSAGE,
+      remoteEntityId: null,
+      remoteSyncToken: null,
+      updatedAt: new Date(),
+    })
+    .where(and(
+      eq(accountingEntityMappings.id, mapping.id),
+      eq(accountingEntityMappings.partnerId, conn.partnerId),
+    ))
+    .returning({ id: accountingEntityMappings.id });
+  if (marked.length !== 1) {
+    throw new Error(
+      `accountingPaymentPull: Breeze-origin removal marker matched no row (id=${mapping.id})`,
+    );
+  }
+  // `claimed_at` is deliberately UNTOUCHED: clearing a live lease would hand a
+  // second worker a row another one is mid-flight on.
+  return {
+    result: result(
+      'breeze_origin_removed_remotely', remotePaymentId, remoteInvoiceId, ctx?.id ?? null, mapping.breezeEntityId,
+    ),
+    audit: audit('accounting.payment.removed_remotely', { deleteSatisfied: false }),
   };
 }
 

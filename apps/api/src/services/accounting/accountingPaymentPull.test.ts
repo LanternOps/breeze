@@ -71,6 +71,7 @@ import { accountingConnections, accountingEntityMappings, invoicePayments, invoi
 import { db } from '../../db';
 import type { AccountingConnection } from './accountingConnectionService';
 import type { ChangeSetPaymentLine } from './types';
+import { PAYMENT_CLAIM_LEASE_MS } from './accountingPaymentMarker';
 import {
   applyAccountingPayment,
   mapQboPaymentMethod,
@@ -138,6 +139,17 @@ const compiledSql = (whereArg: unknown): string => dialect.sqlToQuery(whereArg a
 /** The bound parameters of a builder call's `.where(...)` argument. */
 const paramsOf = (whereArg: unknown): unknown[] => dialect.sqlToQuery(whereArg as SQL).params;
 const boundTo = (whereArg: unknown, value: unknown): boolean => paramsOf(whereArg).includes(value);
+/**
+ * The bound Date on a `"claimed_at" < $n` lease predicate, or null when the
+ * condition carries no lease guard at all.
+ */
+function claimedAtCutoff(whereArg: unknown): Date | null {
+  const match = /"accounting_entity_mappings"\."claimed_at" < \$(\d+)/.exec(compiledSql(whereArg));
+  if (!match) return null;
+  const raw = paramsOf(whereArg)[Number(match[1]) - 1];
+  if (raw instanceof Date) return raw;
+  return typeof raw === 'string' ? new Date(raw) : null;
+}
 
 // ---------------------------------------------------------------------------
 // Stateful fake DB
@@ -376,7 +388,14 @@ function installDbMocks() {
           return Promise.resolve(matched.map((r) => ({ id: r.id })));
         }
         if (table === accountingEntityMappings) {
-          const matched = currentMappings.filter((r) => boundTo(cond, r.id) || boundTo(cond, r.breezeEntityId));
+          // The delete-satisfied drop narrows its WHERE with
+          // `claimed_at IS NULL OR claimed_at < $cutoff`, so a row a delete
+          // worker is mid-flight on must NOT match. Honouring it here is what
+          // stops that guard passing vacuously.
+          const cutoff = claimedAtCutoff(cond);
+          const matched = currentMappings.filter((r) =>
+            (boundTo(cond, r.id) || boundTo(cond, r.breezeEntityId))
+            && (cutoff === null || r.claimedAt === null || r.claimedAt < cutoff));
           currentMappings = currentMappings.filter((r) => !matched.includes(r));
           return Promise.resolve(matched.map((r) => ({ id: r.id })));
         }
@@ -1517,15 +1536,90 @@ describe('a Breeze-origin Payment deleted in QuickBooks (spec decision 5)', () =
     }));
   });
 
-  it('treats a dropped allocation on a Breeze-origin payment as divergence, not reversal', async () => {
+  it('does NOT drop the row when a live lease says a delete worker is mid-flight', async () => {
+    // Pulling the row out from under a job that is mid-flight would make its
+    // own write fail. Let it finish its own path.
+    currentPayments = [];
+    currentMappings = [invoiceMappingRow(), breezeOriginMapping({
+      pendingOp: 'delete', syncStatus: 'pending', claimedAt: new Date(),
+    })];
+
+    const results = await reverseAccountingPayment(conn(), QBO_PAYMENT_ID, runCtx, REALM_FP);
+
+    expect(results.map((r) => r.outcome)).toEqual(['skipped_breeze_origin']);
+    expect(currentMappings).toHaveLength(2);
+    expect(writeAuditEventMock).not.toHaveBeenCalled();
+  });
+
+  it('DOES drop the row once the lease has expired', async () => {
+    currentPayments = [];
+    currentMappings = [invoiceMappingRow(), breezeOriginMapping({
+      pendingOp: 'delete',
+      syncStatus: 'pending',
+      claimedAt: new Date(Date.now() - PAYMENT_CLAIM_LEASE_MS - 60_000),
+    })];
+
+    const results = await reverseAccountingPayment(conn(), QBO_PAYMENT_ID, runCtx, REALM_FP);
+
+    expect(results.map((r) => r.outcome)).toEqual(['breeze_origin_removed_remotely']);
+    expect(currentMappings.map((m) => m.id)).toEqual(['map-invoice-1']);
+  });
+});
+
+describe('a Breeze-origin Payment REALLOCATED in QuickBooks (the payment still exists)', () => {
+  it('marks the mapping diverged and KEEPS the remote ref a later delete needs', async () => {
+    // `reverseStaleAllocations` fires for a Payment that is ALIVE and merely
+    // stopped settling this invoice. Nulling its remote id — the `deleted` path's
+    // behaviour — would leave a later Breeze void unable to name the Payment.
     currentPayments = [breezePaymentRow()];
     currentMappings = [invoiceMappingRow(), breezeOriginMapping()];
 
     const results = await reverseStaleAllocations(conn(), QBO_PAYMENT_ID, ['999'], runCtx, REALM_FP);
 
-    expect(results.map((r) => r.outcome)).toEqual(['breeze_origin_removed_remotely']);
+    expect(results.map((r) => r.outcome)).toEqual(['breeze_origin_diverged']);
     expect(currentPayments).toHaveLength(1);
+    expect(currentMappings[1]).toMatchObject({
+      syncStatus: 'error',
+      lastError: 'Edited in QuickBooks; Breeze remains the source of truth for this payment',
+      remoteEntityId: REMOTE_MAPPING_ID,
+      remoteSyncToken: '0',
+    });
+    expect(writeAuditEventMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'accounting.payment.diverged',
+      details: expect.objectContaining({ reason: 'allocation_moved' }),
+    }));
+  });
+
+  it('writes NOTHING when the row already owes a delete — the delete removes the whole Payment', async () => {
+    // The Payment is alive and the delete job is about to remove it outright,
+    // which settles every allocation. Dropping the row here would abandon that
+    // delete against a live Payment and claim `deleteSatisfied` falsely.
+    currentPayments = [];
+    currentMappings = [invoiceMappingRow(), breezeOriginMapping({
+      pendingOp: 'delete', syncStatus: 'pending', remoteSyncToken: '4',
+    })];
+
+    const results = await reverseStaleAllocations(conn(), QBO_PAYMENT_ID, ['999'], runCtx, REALM_FP);
+
+    expect(results.map((r) => r.outcome)).toEqual(['skipped_breeze_origin']);
     expect(currentMappings).toHaveLength(2);
+    expect(currentMappings[1]).toMatchObject({
+      pendingOp: 'delete', syncStatus: 'pending',
+      remoteEntityId: REMOTE_MAPPING_ID, remoteSyncToken: '4', lastError: null,
+    });
+    expect(updateMock).not.toHaveBeenCalled();
+    expect(deleteMock).not.toHaveBeenCalled();
+    expect(writeAuditEventMock).not.toHaveBeenCalled();
+  });
+
+  it('still reverses a QuickBooks-ORIGIN dropped allocation (Phase D behaviour, unchanged)', async () => {
+    currentPayments = [paymentRow()];
+    currentMappings = [invoiceMappingRow(), paymentMappingRow()];
+
+    const results = await reverseStaleAllocations(conn(), QBO_PAYMENT_ID, ['999'], runCtx, REALM_FP);
+
+    expect(results.map((r) => r.outcome)).toEqual(['reversed']);
+    expect(currentPayments).toHaveLength(0);
   });
 
   it('still DESTROYS a QuickBooks-origin payment row (Phase D behaviour, unchanged)', async () => {
