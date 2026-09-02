@@ -165,7 +165,10 @@ const namespaceDuplicateBaselines = {
     // rather than root-caused here).
     // +4: aiAgentsPage.runs (#3828 Task 4) — "Manual" and "Ticket" are the
     // same cognate in es-419, and "OK"/"Error" are locale-invariant.
-    'settings.json': 121,
+    // +3: contactsCard / bulkContactImport (#3258 W04) — "Roles" is the same
+    // word in Spanish (plural of "rol"), and the contacts UI labels it in
+    // three places (the list column, the form fieldset and the CSV mapping row).
+    'settings.json': 124,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -256,7 +259,11 @@ const namespaceDuplicateBaselines = {
     // same word in French, and "OK" is locale-invariant.
     // +1: aiAgentsPage.runs.triage.notesTitle (P2-4, #4191) — "Notes" is the
     // same word in French.
-    'settings.json': 160,
+    // +5: contactsCard / bulkContactImport / contactImportPreview (#3258 W04)
+    // — "Contacts" and "Site" are the same words in French, and
+    // TERMINOLOGY.md pins site → site for both French locales, so the three
+    // site labels plus the tab title and its nav entry stay identical.
+    'settings.json': 165,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -341,7 +348,11 @@ const namespaceDuplicateBaselines = {
     // same word in French, and "OK" is locale-invariant.
     // +1: aiAgentsPage.runs.triage.notesTitle (P2-4, #4191) — "Notes" is the
     // same word in French.
-    'settings.json': 165,
+    // +5: contactsCard / bulkContactImport / contactImportPreview (#3258 W04)
+    // — "Contacts" and "Site" are the same words in Canadian French, and
+    // TERMINOLOGY.md pins site → site for both French locales, so the three
+    // site labels plus the tab title and its nav entry stay identical.
+    'settings.json': 170,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -417,7 +428,11 @@ const namespaceDuplicateBaselines = {
     // rather than root-caused here).
     // +10: aiAgentsPage.runs (#3828 Task 4) — "Agent", "Status", "Ticket" and
     // "Tool" are the same words in German, and "OK" is locale-invariant.
-    'settings.json': 179,
+    // +4: contactsCard / bulkContactImport / contactImportPreview (#3258 W04)
+    // — "Name" is the same word in German, and the contacts UI labels it in
+    // four places (the list column, the form field, the CSV mapping row and
+    // the import preview column).
+    'settings.json': 183,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -537,7 +552,10 @@ const namespaceDuplicateBaselines = {
     // (see the pt-BR block's note above — same root cause, carried forward
     // rather than root-caused here). aiAgentsPage.runs (#3828 Task 4) itself
     // introduced zero new tr-TR duplicates.
-    'settings.json': 65,
+    // +3: contactsCard / bulkContactImport / contactImportPreview (#3258 W04)
+    // — "Site" is the established loanword in tr-TR (bulkOrgImport already
+    // uses it), so the three site labels stay identical.
+    'settings.json': 68,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     'tickets.json': 12,

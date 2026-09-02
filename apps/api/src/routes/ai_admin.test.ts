@@ -186,6 +186,91 @@ describe('AI routes', () => {
       expect(body.billedTo).toBe('partner_key');
     });
 
+    // ============================================
+    // #4388 W04: the partner-wide credit pool
+    // ============================================
+    //
+    // `credits` is the MSP's balance, shared across every one of its customer
+    // orgs, so an organization-scoped token must never receive it. The mock
+    // below stands in for a WARM cache: getUsageSummary hands back a balance
+    // whenever the caller asked for one, so a `credits: null` in the response
+    // is the ROUTE withholding it, not an empty cache.
+    const CACHED_CREDITS = {
+      remaining: 1240, includedBalance: 0, purchasedBalance: 1240, fetchedAt: '2026-09-01T00:00:00.000Z',
+    };
+
+    function mockWarmCreditCache() {
+      vi.mocked(getUsageSummary).mockImplementation(
+        (async (_orgId: string, options?: { includeCredits?: boolean }) => ({
+          daily: { inputTokens: 0, outputTokens: 0, totalCostCents: 0, messageCount: 0 },
+          monthly: { inputTokens: 0, outputTokens: 0, totalCostCents: 0, messageCount: 0 },
+          budget: null,
+          billedTo: 'platform',
+          catalogEndpointName: null,
+          credits: options?.includeCredits ? CACHED_CREDITS : null,
+          alerts: { fired: [] },
+        })) as unknown as typeof getUsageSummary,
+      );
+    }
+
+    async function authAs(scope: 'organization' | 'partner' | 'system') {
+      const { authMiddleware } = await import('../middleware/auth');
+      vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-1', email: 'test@example.com', name: 'Test User' },
+          scope,
+          partnerId: scope === 'organization' ? null : 'partner-1',
+          orgId: ORG_ID,
+          accessibleOrgIds: [ORG_ID],
+          orgCondition: () => undefined,
+          canAccessOrg: () => true,
+        });
+        return next();
+      });
+    }
+
+    it('withholds the partner-wide credit pool from an organization-scoped token', async () => {
+      mockWarmCreditCache();
+      await authAs('organization');
+
+      const res = await app.request('/ai/usage', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      expect((await res.json()).credits).toBeNull();
+      expect(getUsageSummary).toHaveBeenCalledWith(ORG_ID, { includeCredits: false });
+    });
+
+    it('returns the credit balance to a partner-scoped token', async () => {
+      mockWarmCreditCache();
+      await authAs('partner');
+
+      const res = await app.request('/ai/usage', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      expect((await res.json()).credits).toEqual(CACHED_CREDITS);
+      expect(getUsageSummary).toHaveBeenCalledWith(ORG_ID, { includeCredits: true });
+    });
+
+    it('returns the credit balance to a system-scoped token', async () => {
+      mockWarmCreditCache();
+      await authAs('system');
+
+      const res = await app.request('/ai/usage', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      expect((await res.json()).credits).toEqual(CACHED_CREDITS);
+      expect(getUsageSummary).toHaveBeenCalledWith(ORG_ID, { includeCredits: true });
+    });
+
     it('returns 403 when accessing other org', async () => {
       const res = await app.request('/ai/usage?orgId=other-org', {
         method: 'GET',

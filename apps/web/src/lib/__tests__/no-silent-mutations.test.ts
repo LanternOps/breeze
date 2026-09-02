@@ -204,6 +204,15 @@ const TARGET_GLOBS = [
   // the partner's tenant tree from a remote list. A silent failure would leave
   // the tech believing a tenant tree was provisioned when nothing was written.
   'src/components/psa/PsaCompanyImport.tsx',
+  // Contact CSV import (#3258 W04): preview is advisory, but the commit writes
+  // customer PII across a whole organization in one click. The preview table is
+  // listed alongside its host because this guard's TARGET_GLOBS is a literal
+  // file list, not directory-wide.
+  'src/components/organizations/BulkContactImport.tsx',
+  'src/components/organizations/ContactImportPreviewTable.tsx',
+  // Contact CRUD (#3258 W04): create/update/delete write customer PII, and a
+  // silent failure would leave a tech believing a contact was filed.
+  'src/components/settings/ContactsCard.tsx',
   // Fleet findings: the lifecycle PATCH (acknowledge/dismiss/reopen) lives in
   // the service, and the two components must not grow their own bare mutations
   // alongside it.
@@ -533,11 +542,12 @@ describe('no silent mutations in targeted set', () => {
     // enqueue joined four pre-existing unguarded mutations in that file), plus
     // AiAgentGraduationPanel.tsx (P2-5 Task 20, #4192). ApprovalsInbox.tsx was
     // already guarded before P2-5 — Task 21's promote mutation needed no list
-    // edit. NOTE: main and this branch each added ONE entry and each landed on
-    // 108, so git auto-merges this line to 108 while the merged list really
-    // holds 109 — bump it deliberately on every merge, never by resolving the
-    // hunk.
-    expect(absoluteFiles.length).toBe(109);
+    // edit. Also plus BulkContactImport.tsx, ContactImportPreviewTable.tsx and
+    // ContactsCard.tsx (#3258 W04, the contacts tab and its CSV importer).
+    // NOTE: merge-base held 108; this branch added 1 and main added 3 in
+    // parallel, so the true merged count is 112 — bump it deliberately on
+    // every merge, never by resolving the hunk.
+    expect(absoluteFiles.length).toBe(112);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

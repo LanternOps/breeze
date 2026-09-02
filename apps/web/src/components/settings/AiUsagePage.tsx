@@ -1,7 +1,7 @@
 import '@/lib/i18n';
 import { useTranslation } from 'react-i18next';
 import { useState, useEffect, useCallback } from 'react';
-import { Bot, DollarSign, Flag, MessageSquare, Zap, Save, Loader2, Lock } from 'lucide-react';
+import { Bot, Coins, DollarSign, Flag, MessageSquare, Zap, Save, Loader2, Lock } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { formatDate, formatDateTime } from '@/lib/dateTimeFormat';
@@ -26,6 +26,9 @@ interface UsageData {
    *  billed to the partner key via a platform-vetted third-party endpoint
    *  rather than direct Anthropic (#3922 W4). */
   catalogEndpointName?: string | null;
+  /** #4388 W04: the partner's cached platform-credit balance. `null`/absent
+   *  when BYOK, no partner id, or nothing cached yet. */
+  credits?: { remaining: number; includedBalance: number; purchasedBalance: number; fetchedAt: string } | null;
   budget: {
     enabled: boolean;
     monthlyBudgetCents: number | null;
@@ -255,6 +258,13 @@ export default function AiUsagePage() {
             output: formatTokens(usage?.monthly.outputTokens ?? 0)
           })}
         />
+        {usage?.credits && (
+          <StatCard
+            icon={Coins}
+            label={t('aiUsagePage.creditsRemaining')}
+            value={formatNumber(usage.credits.remaining)}
+          />
+        )}
       </div>
 
       {usage?.alerts?.fired?.length ? (

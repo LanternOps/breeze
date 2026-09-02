@@ -1333,7 +1333,8 @@
     "likeActionPlanPlusLiveScreenshotsBetweenStepsAndAPersist": "Eylem Planını beğenin, artı adımlar arasında canlı ekran görüntüleri ve kalıcı Durdur düğmesi.",
     "untitled": "Başlıksız",
     "billedToPartnerKey": "Anahtarınıza faturalandırılır — yapay zeka kullanımı Breeze yapay zeka kredilerine değil, kendi Anthropic hesabınıza yansır",
-    "billedToPartnerKeyViaEndpoint": "{{name}} üzerinden anahtarınıza faturalandırılır — yapay zeka kullanımı Breeze yapay zeka kredilerine değil, kendi Anthropic hesabınıza yansır"
+    "billedToPartnerKeyViaEndpoint": "{{name}} üzerinden anahtarınıza faturalandırılır: yapay zeka kullanımı Breeze yapay zeka kredilerine değil, kendi Anthropic hesabınıza yansır",
+    "creditsRemaining": "Kalan Breeze yapay zeka kredisi"
   },
   "aiAgentsPage": {
     "schedules": {
@@ -3173,6 +3174,8 @@
       "organization": "Organizasyon",
       "general": "Genel",
       "generalDescription": "Profil ve varsayılanlar",
+      "contacts": "Kişiler",
+      "contactsDescription": "Bu müşteride ulaşılacak kişiler; siteye göre veya kuruluş genelinde",
       "contracts": "Sözleşmeler",
       "contractsDescription": "Yinelenen anlaşmalar",
       "billing": "Faturalandırma",
@@ -3772,7 +3775,8 @@
       "title": "Cihazlar\nBu siteye atanmış ",
       "assigned": "cihazlar",
       "viewAll": "Tüm cihazları görüntüle"
-    }
+    },
+    "allContactsLink": "Bu müşterinin tüm kişileri"
   },
   "siteForm": {
     "description": "Yalnızca site adı gereklidir. Adres ve iletişim bilgileri isteğe bağlıdır; bunları daha sonra doldurabilirsiniz.",
@@ -4157,5 +4161,180 @@
     "saveFailed": "Zaman takibi ayarları kaydedilemedi",
     "minSessionRange": "Minimum oturum süresi {{min}} ile {{max}} saniye arasında olmalıdır",
     "mergeGapRange": "Birleştirme aralığı {{min}} ile {{max}} dakika arasında olmalıdır"
+  },
+  "contactsCard": {
+    "title": "Kişiler",
+    "description": "Ekibinizin bu müşteride ulaştığı kişiler. Bir kişi tek bir siteye bağlanabilir ya da kuruluşun tamamı için geçerli olabilir.",
+    "organizationLevel": "Kuruluş",
+    "unknownSite": "Site kullanılamıyor",
+    "empty": "Henüz kişi yok. Bir tane ekleyin ya da önceki aracınızdan bir CSV içe aktarın.",
+    "loading": "Kişiler yükleniyor…",
+    "confirmDelete": "{{name}} silinsin mi? Bu geri alınamaz.",
+    "actions": {
+      "add": "Kişi ekle",
+      "import": "CSV içe aktar",
+      "edit": "Düzenle",
+      "delete": "Sil",
+      "save": "Kişiyi kaydet",
+      "saving": "Kaydediliyor…",
+      "cancel": "Vazgeç",
+      "retry": "Yeniden dene"
+    },
+    "filters": {
+      "site": "Siteye göre süz",
+      "role": "Role göre süz",
+      "allSites": "Tüm siteler",
+      "allRoles": "Tüm roller"
+    },
+    "columns": {
+      "name": "Ad",
+      "reach": "Nasıl ulaşılır",
+      "jobTitle": "Unvan",
+      "roles": "Roller",
+      "site": "Bağlı olduğu yer",
+      "actions": "İşlemler"
+    },
+    "primary": {
+      "organization": "Birincil (kuruluş)",
+      "site": "Birincil ({{site}})"
+    },
+    "roles": {
+      "billing": "Faturalama",
+      "technical": "Teknik",
+      "escalation": "Yükseltme",
+      "admin": "Yönetim",
+      "site": "Site",
+      "afterHours": "Mesai dışı",
+      "portal": "Müşteri portalı"
+    },
+    "form": {
+      "addHeading": "Yeni kişi",
+      "editHeading": "Kişiyi düzenle",
+      "identifierRequired": "Ad, e-posta adresi, telefon veya cep telefonundan en az birini doldurun.",
+      "fields": {
+        "name": "Ad",
+        "email": "E-posta adresi",
+        "phone": "Telefon",
+        "mobile": "Cep telefonu",
+        "title": "Unvan",
+        "site": "Bağlı olduğu yer",
+        "roles": "Roller",
+        "notes": "Notlar",
+        "isPrimary": "Yukarıda seçilen kapsam için birincil kişi yap"
+      }
+    },
+    "pagination": {
+      "summary": "{{total}} kayıttan {{from}}-{{to}} arası gösteriliyor",
+      "previous": "Önceki",
+      "next": "Sonraki"
+    },
+    "toasts": {
+      "created": "Kişi eklendi",
+      "updated": "Kişi kaydedildi",
+      "deleted": "Kişi silindi"
+    },
+    "errors": {
+      "load": "Bu kuruluşun kişileri yüklenemedi.",
+      "sites": "Bu kuruluşun siteleri yüklenemedi. Site adları ve site filtresi yüklenene kadar kullanılamaz.",
+      "create": "Kişi eklenemedi.",
+      "update": "Kişi kaydedilemedi.",
+      "delete": "Kişi silinemedi."
+    }
+  },
+  "bulkContactImport": {
+    "title": "CSV dosyasından kişi içe aktar",
+    "description": "Önceki RMM veya PSA aracınızdan aldığınız kişi dışa aktarımını yükleyin. Her satır bu kuruluşun altına kaydedilir.",
+    "dropzone": "Buraya bir CSV dosyası bırakın veya göz atmak için tıklayın",
+    "dropzoneHint": "Ad, e-posta adresi, telefon veya cep telefonundan en az birini eşleyin; biri olmadan kişi oluşmaz.",
+    "actions": {
+      "close": "Kapat",
+      "preview": "{{count}} satırı denetle",
+      "previewing": "Denetleniyor…",
+      "import": "Seçilen {{count}} satırı içe aktar",
+      "importing": "İçe aktarılıyor…"
+    },
+    "mapping": {
+      "heading": "Sütun eşleme",
+      "unmapped": "Eşlenmedi",
+      "identifierRequired": "Devam etmek için ad, e-posta adresi, telefon veya cep telefonu sütunu eşleyin.",
+      "droppedRows_one": "{{count}} satır atlandı: ad, e-posta adresi, telefon veya cep telefonu yok.",
+      "droppedRows_other": "{{count}} satır atlandı: ad, e-posta adresi, telefon veya cep telefonu yok.",
+      "tooManyRows": "Bu dosya {{count}} satır eşliyor; tek bir içe aktarmanın kabul ettiği {{max}} satırdan fazla. Dosyayı daha küçük parçalara bölün.",
+      "fields": {
+        "name": "Ad",
+        "email": "E-posta adresi",
+        "phone": "Telefon",
+        "mobile": "Cep telefonu",
+        "title": "Unvan",
+        "roles": "Roller",
+        "site": "Site",
+        "externalId": "Kaynak sistemdeki kişi kimliği",
+        "externalSystem": "Kaynak sistem"
+      }
+    },
+    "mode": {
+      "label": "Halihazırda bağlı kişiler",
+      "skip": "Olduğu gibi bırak",
+      "update": "Dosyayı onlarla birleştir"
+    },
+    "preview": {
+      "heading": "Ne olacak"
+    },
+    "summary": {
+      "imported": "{{count}} eklendi",
+      "updated": "{{count}} birleştirildi",
+      "skipped": "{{count}} değiştirilmedi",
+      "failed": "{{count}} reddedildi",
+      "allFailed": "Hiçbir şey içe aktarılmadı — {{summary}}.",
+      "nothingImported": "Hiçbir şey içe aktarılmadı: {{count}} zaten bağlı.",
+      "nothingImportedEmpty": "Hiçbir kayıt içe aktarılmadı."
+    },
+    "failures": {
+      "title_one": "{{count}} satır reddedildi",
+      "title_other": "{{count}} satır reddedildi"
+    },
+    "skipped": {
+      "title_one": "{{count}} satır olduğu gibi bırakıldı",
+      "title_other": "{{count}} satır olduğu gibi bırakıldı",
+      "reasons": {
+        "alreadyLinked": "zaten mevcut bir kişiye bağlı"
+      }
+    },
+    "errorCodes": {
+      "rowConflict": "Satır, burada zaten bulunan kişiler karşısında belirsiz.",
+      "orgNotFound": "Bu kuruluş artık erişiminizde değil.",
+      "annotationChanged": "Bu satır önizlemeden bu yana değişti. Dosyayı yeniden denetleyin.",
+      "matchChanged": "Bu satır artık başka bir kişiyle eşleşiyor. Dosyayı yeniden denetleyin.",
+      "matchUnconfirmed": "Eşleşmeyi onaylamak için satırı işaretleyip yeniden içe aktarın.",
+      "writeFailed": "Veritabanı yazma işlemini reddetti. Bu satır için hiçbir şey kaydedilmedi.",
+      "noIdentifier": "Satırda ad, e-posta adresi, telefon veya cep telefonu kalmıyor.",
+      "invalidRole": "Satır, Breeze’in tanımadığı bir rol belirtiyor.",
+      "siteNotInOrg": "Bu satırdaki site bu kuruluşa ait değil."
+    },
+    "errors": {
+      "previewFailed": "Dosya mevcut kişilerle karşılaştırılamadı.",
+      "importFailed": "Seçilen kişiler içe aktarılamadı.",
+      "fileRead": "Bu dosya okunamadı. Lütfen yeniden seçin.",
+      "noColumns": "Bu dosyada başlık satırı yok, dolayısıyla eşlenecek bir şey de yok."
+    }
+  },
+  "contactImportPreview": {
+    "selectAll": "Yeni ve bağlı tüm satırları seç",
+    "organizationLevel": "Kuruluş",
+    "matches": "“{{name}}” ile eşleşiyor",
+    "columns": {
+      "name": "Ad",
+      "email": "E-posta adresi",
+      "site": "Site",
+      "status": "Sonuç"
+    },
+    "badges": {
+      "create": "Yeni",
+      "linkMatch": "Zaten bağlı",
+      "emailMatch": "E-posta eşleşmesi — onaylayın",
+      "nameMatch": "Ad eşleşmesi — onaylayın",
+      "conflict": "Çakışma",
+      "orgNotFound": "Kuruluş bulunamadı"
+    }
   }
 }

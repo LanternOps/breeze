@@ -1333,7 +1333,8 @@
     "likeActionPlanPlusLiveScreenshotsBetweenStepsAndAPersist": "Como o Plano de Ação, além de capturas de tela ao vivo entre as etapas e um botão Parar persistente.",
     "untitled": "Sem título",
     "billedToPartnerKey": "Cobrado na sua chave — o uso de IA vai para a sua própria conta da Anthropic, não para os créditos de IA do Breeze",
-    "billedToPartnerKeyViaEndpoint": "Cobrado na sua chave via {{name}} — o uso de IA vai para a sua própria conta da Anthropic, não para os créditos de IA do Breeze"
+    "billedToPartnerKeyViaEndpoint": "Cobrado na sua chave via {{name}}: o uso de IA vai para a sua própria conta da Anthropic, não para os créditos de IA do Breeze",
+    "creditsRemaining": "Créditos de IA Breeze restantes"
   },
   "aiAgentsPage": {
     "schedules": {
@@ -3173,6 +3174,8 @@
       "organization": "Organização",
       "general": "Geral",
       "generalDescription": "Perfil e padrões",
+      "contacts": "Contatos",
+      "contactsDescription": "Pessoas para procurar neste cliente, por local ou em toda a organização",
       "contracts": "Contratos",
       "contractsDescription": "Acordos recorrentes",
       "billing": "Cobrança",
@@ -3772,7 +3775,8 @@
       "title": "Dispositivos",
       "assigned": "dispositivos atribuídos a este site",
       "viewAll": "Ver todos os dispositivos"
-    }
+    },
+    "allContactsLink": "Todos os contatos deste cliente"
   },
   "siteForm": {
     "description": "Apenas o nome do site é obrigatório. Endereço e contato são opcionais – você pode preenchê-los mais tarde.",
@@ -4157,5 +4161,180 @@
     "saveFailed": "Não foi possível salvar as configurações de controle de tempo",
     "minSessionRange": "A duração mínima da sessão deve estar entre {{min}} e {{max}} segundos",
     "mergeGapRange": "O intervalo de mesclagem deve estar entre {{min}} e {{max}} minutos"
+  },
+  "contactsCard": {
+    "title": "Contatos",
+    "description": "As pessoas que sua equipe procura neste cliente. Um contato pode ficar preso a um local ou valer para toda a organização.",
+    "organizationLevel": "Organização",
+    "unknownSite": "Local indisponível",
+    "empty": "Nenhum contato ainda. Adicione um ou importe um CSV da sua ferramenta anterior.",
+    "loading": "Carregando contatos…",
+    "confirmDelete": "Excluir {{name}}? Isso não pode ser desfeito.",
+    "actions": {
+      "add": "Adicionar contato",
+      "import": "Importar CSV",
+      "edit": "Editar",
+      "delete": "Excluir",
+      "save": "Salvar contato",
+      "saving": "Salvando…",
+      "cancel": "Cancelar",
+      "retry": "Tentar novamente"
+    },
+    "filters": {
+      "site": "Filtrar por local",
+      "role": "Filtrar por função",
+      "allSites": "Todos os locais",
+      "allRoles": "Todas as funções"
+    },
+    "columns": {
+      "name": "Nome",
+      "reach": "Como falar com a pessoa",
+      "jobTitle": "Cargo",
+      "roles": "Funções",
+      "site": "Pertence a",
+      "actions": "Ações"
+    },
+    "primary": {
+      "organization": "Principal (organização)",
+      "site": "Principal ({{site}})"
+    },
+    "roles": {
+      "billing": "Faturamento",
+      "technical": "Técnico",
+      "escalation": "Escalonamento",
+      "admin": "Administração",
+      "site": "Local",
+      "afterHours": "Fora do horário",
+      "portal": "Portal do cliente"
+    },
+    "form": {
+      "addHeading": "Novo contato",
+      "editHeading": "Editar contato",
+      "identifierRequired": "Preencha pelo menos um: nome, endereço de e-mail, telefone ou celular.",
+      "fields": {
+        "name": "Nome",
+        "email": "Endereço de e-mail",
+        "phone": "Telefone",
+        "mobile": "Celular",
+        "title": "Cargo",
+        "site": "Pertence a",
+        "roles": "Funções",
+        "notes": "Observações",
+        "isPrimary": "Tornar este o contato principal do escopo escolhido acima"
+      }
+    },
+    "pagination": {
+      "summary": "Exibindo {{from}} a {{to}} de {{total}}",
+      "previous": "Anterior",
+      "next": "Próxima"
+    },
+    "toasts": {
+      "created": "Contato adicionado",
+      "updated": "Contato salvo",
+      "deleted": "Contato excluído"
+    },
+    "errors": {
+      "load": "Não foi possível carregar os contatos desta organização.",
+      "sites": "Não foi possível carregar os locais desta organização. Os nomes de local e o filtro por local ficam indisponíveis até carregarem.",
+      "create": "Não foi possível adicionar o contato.",
+      "update": "Não foi possível salvar o contato.",
+      "delete": "Não foi possível excluir o contato."
+    }
+  },
+  "bulkContactImport": {
+    "title": "Importar contatos de um CSV",
+    "description": "Envie uma exportação de contatos do seu RMM ou PSA anterior. Cada linha fica arquivada nesta organização.",
+    "dropzone": "Solte um arquivo CSV aqui ou clique para procurar",
+    "dropzoneHint": "Mapeie pelo menos um: nome, endereço de e-mail, telefone ou celular — sem isso não existe contato.",
+    "actions": {
+      "close": "Fechar",
+      "preview": "Conferir {{count}} linhas",
+      "previewing": "Conferindo…",
+      "import": "Importar {{count}} selecionadas",
+      "importing": "Importando…"
+    },
+    "mapping": {
+      "heading": "Mapeamento de colunas",
+      "unmapped": "Não mapeada",
+      "identifierRequired": "Mapeie uma coluna de nome, endereço de e-mail, telefone ou celular para continuar.",
+      "droppedRows_one": "{{count}} linha ignorada: sem nome, e-mail, telefone ou celular.",
+      "droppedRows_other": "{{count}} linhas ignoradas: sem nome, e-mail, telefone ou celular.",
+      "tooManyRows": "Este arquivo mapeia {{count}} linhas, mais do que as {{max}} aceitas por importação. Divida-o em arquivos menores.",
+      "fields": {
+        "name": "Nome",
+        "email": "Endereço de e-mail",
+        "phone": "Telefone",
+        "mobile": "Celular",
+        "title": "Cargo",
+        "roles": "Funções",
+        "site": "Local",
+        "externalId": "Identificador do contato no sistema de origem",
+        "externalSystem": "Sistema de origem"
+      }
+    },
+    "mode": {
+      "label": "Contatos já vinculados",
+      "skip": "Deixar como estão",
+      "update": "Mesclar o arquivo neles"
+    },
+    "preview": {
+      "heading": "O que vai acontecer"
+    },
+    "summary": {
+      "imported": "{{count}} adicionados",
+      "updated": "{{count}} mesclados",
+      "skipped": "{{count}} sem alteração",
+      "failed": "{{count}} recusadas",
+      "allFailed": "Nada foi importado — {{summary}}.",
+      "nothingImported": "Nada foi importado: {{count}} já vinculados.",
+      "nothingImportedEmpty": "Nada foi importado."
+    },
+    "failures": {
+      "title_one": "{{count}} linha foi recusada",
+      "title_other": "{{count}} linhas foram recusadas"
+    },
+    "skipped": {
+      "title_one": "{{count}} linha ficou sem alteração",
+      "title_other": "{{count}} linhas ficaram sem alteração",
+      "reasons": {
+        "alreadyLinked": "já vinculado a um contato existente"
+      }
+    },
+    "errorCodes": {
+      "rowConflict": "A linha é ambígua diante dos contatos que já existem aqui.",
+      "orgNotFound": "Esta organização não está mais ao seu alcance.",
+      "annotationChanged": "Esta linha mudou desde a prévia. Confira o arquivo novamente.",
+      "matchChanged": "Esta linha agora corresponde a outro contato. Confira o arquivo novamente.",
+      "matchUnconfirmed": "Marque a linha e importe novamente para confirmar a correspondência.",
+      "writeFailed": "O banco de dados recusou a gravação. Nada desta linha foi salvo.",
+      "noIdentifier": "A linha fica sem nome, e-mail, telefone ou celular.",
+      "invalidRole": "A linha indica um papel que o Breeze não reconhece.",
+      "siteNotInOrg": "O local desta linha não pertence a esta organização."
+    },
+    "errors": {
+      "previewFailed": "Não foi possível comparar o arquivo com os contatos existentes.",
+      "importFailed": "Não foi possível importar os contatos selecionados.",
+      "fileRead": "Não foi possível ler esse arquivo. Selecione-o novamente.",
+      "noColumns": "Esse arquivo não tem linha de cabeçalho, então não há nada a mapear."
+    }
+  },
+  "contactImportPreview": {
+    "selectAll": "Selecionar todas as linhas novas e vinculadas",
+    "organizationLevel": "Organização",
+    "matches": "corresponde a “{{name}}”",
+    "columns": {
+      "name": "Nome",
+      "email": "Endereço de e-mail",
+      "site": "Local",
+      "status": "Resultado"
+    },
+    "badges": {
+      "create": "Novo",
+      "linkMatch": "Já vinculado",
+      "emailMatch": "E-mail coincide — confirme",
+      "nameMatch": "Nome coincide — confirme",
+      "conflict": "Conflito",
+      "orgNotFound": "Organização não encontrada"
+    }
   }
 }
