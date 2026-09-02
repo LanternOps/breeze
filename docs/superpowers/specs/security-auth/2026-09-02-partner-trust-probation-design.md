@@ -1,7 +1,7 @@
 # Partner Trust Probation — Design
 
 **Date:** 2026-09-02
-**Status:** Draft, advisor quorum complete (Fable + Codex gpt-5.6-sol xhigh read-only review, 13 findings, all folded in; one disagreement surfaced in §9)
+**Status:** Approved 2026-09-02 (operator decisions recorded in §9); advisor quorum complete (Fable + Codex gpt-5.6-sol xhigh read-only review, 13 findings folded in)
 **Owner scope:** hosted SaaS (`IS_HOSTED=true`); self-hosted deployments default to `off`
 **Supersedes in part:** `2026-07-11-signup-abuse-detection-design.md` (keeps its detectors; replaces the "alert-first, human suspends later" response posture with a capability gate)
 
@@ -254,10 +254,10 @@ Rollout order:
 - **Async external IP classification, never on the registration path.**
 - **Buttons stay visible in probation.** Hidden-on-failure UI is a documented anti-pattern here.
 
-## 9. Open questions for the operator
+## 9. Operator decisions (2026-09-02)
 
-1. **Trial friction vs. bypass surface (quorum disagreement).** Codex recommends the default-deny model as written. My first draft carried a per-device exception so a trial could remote into the laptop it signed up from. Given finding §8 bullet 2, I now agree default-deny should ship first; the exception can be added later behind `PARTNER_TRUST_SELF_DEVICE_EXCEPTION=true` if review requests show real conversion loss, and only with a stronger ownership proof than IP (e.g. a one-time code displayed in the console and typed into the agent installer). **Recommend: ship default-deny, measure.**
-2. Enrollment cap in probation: 5 (proposed) or 3.
-3. 3DS on the first payment: `any` (proposed) or `automatic`. `any` costs some conversion on issuers without 3DS.
-4. Retro-backfill of the last 14 days of partners into probation (§5 step 5): do it or not.
-5. Approval-link MFA: require a fresh TOTP on the one-click links (proposed) or accept the signed token alone.
+1. **Default deny ships first; no self-device exception.** Revisit only with a stronger ownership proof than IP (one-time code shown in the console and typed into the installer), behind `PARTNER_TRUST_SELF_DEVICE_EXCEPTION`, if review requests show real conversion loss.
+2. **Enrollment cap in probation: 5**, lifetime counter.
+3. **3DS: already enforced in the Stripe dashboard** (Radar rule) as far as Stripe allows. The Checkout code still sets `request_three_d_secure: 'any'` explicitly so the behaviour does not depend on dashboard state. Note: both signup Checkout sessions in breeze-billing (`src/routes/checkout.ts:103` subscription mode, `src/routes/setupIntents.ts:55` setup mode) currently pass **no** `payment_method_types`, so Link is on by Stripe default; turning it off is a code change in both.
+4. **Retro-backfill: yes.** Partners created in the last 14 days with no settled card payment move to `probation` at the `enforce` flip, as a reviewed SQL batch (not a migration), each with an evidence-card email so the operator can approve real trials the same day.
+5. **Approval links require a fresh TOTP.** The signed one-time token opens a page that prompts for the authenticator code before acting; the token alone never performs the action.
