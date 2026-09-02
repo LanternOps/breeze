@@ -4,7 +4,7 @@ import '@/lib/i18n';
 import { Drawer } from '../shared/Drawer';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction } from '@/lib/runAction';
-import { IMPACT_WEIGHT_KEYS, IMPACT_WEIGHT_MAX_SECONDS } from '@breeze/shared';
+import { DEFAULT_IMPACT_WEIGHTS, IMPACT_WEIGHT_KEYS, IMPACT_WEIGHT_MAX_SECONDS } from '@breeze/shared';
 import type { ImpactWeightOverrides, ImpactWeights } from '@breeze/shared';
 
 export interface ImpactWeightsDrawerProps {
@@ -49,10 +49,16 @@ function clamp(raw: number): number {
 /**
  * Weights drawer (Task 11, #4193). Six number inputs seeded from the
  * effective (defaults merged with any stored override) weights. Save PUTs
- * only the keys the user actually changed from `effective` — matching the
- * server's partial-override contract (`impactWeightsSchema` is `.strict()`,
- * so an unrelated key would 400, and sending every key every time would
- * silently pin fields the operator never touched). Reset DELETEs
+ * every key whose CURRENT value differs from `DEFAULT_IMPACT_WEIGHTS` — the
+ * PUT route REPLACES the whole `partners.ai_impact_weights` jsonb column
+ * (`saveImpactWeights` -> `set({ aiImpactWeights: normalized })`, it does
+ * not merge), so the body must always be the operator's complete override
+ * set, not just the fields touched in this session. Diffing against
+ * `effective` (defaults merged with any PRE-EXISTING override) instead of
+ * against the defaults would drop every override the operator didn't touch
+ * in this drawer visit back to its default the moment any single field is
+ * edited — and would silently wipe every stored override on a no-edit Save,
+ * since `diff(effective, effective)` is always `{}`. Reset DELETEs
  * unconditionally, dropping any stored override back to the defaults.
  */
 export default function ImpactWeightsDrawer({
@@ -81,10 +87,18 @@ export default function ImpactWeightsDrawer({
     setValues((prev) => ({ ...prev, [key]: clamp(Number(raw)) }));
   };
 
-  function diffFromEffective(): ImpactWeightOverrides {
+  /**
+   * The full override set to send: every key whose current value differs
+   * from its DEFAULT (not from `effective` — see the drawer's docstring).
+   * A key equal to its default is omitted, which is correct too: sending
+   * `{}` overall means "no overrides at all" and matches what Reset does,
+   * while omitting just one key resets that one field to default while
+   * preserving the rest of the sent object's keys.
+   */
+  function diffFromDefault(): ImpactWeightOverrides {
     const changed: ImpactWeightOverrides = {};
     for (const key of IMPACT_WEIGHT_KEYS) {
-      if (values[key] !== effective[key]) changed[key] = values[key];
+      if (values[key] !== DEFAULT_IMPACT_WEIGHTS[key]) changed[key] = values[key];
     }
     return changed;
   }
@@ -98,7 +112,7 @@ export default function ImpactWeightsDrawer({
           fetchWithAuth('/api/ai/agents/impact/weights', {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(diffFromEffective()),
+            body: JSON.stringify(diffFromDefault()),
           }),
         errorFallback: t('aiAgentsPage.impact.weightsDrawer.errors.save'),
         successMessage: t('aiAgentsPage.impact.weightsDrawer.toasts.saved'),

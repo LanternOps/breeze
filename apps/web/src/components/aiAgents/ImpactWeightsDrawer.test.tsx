@@ -154,6 +154,66 @@ describe('ImpactWeightsDrawer', () => {
     expect(screen.queryByTestId('ai-impact-weight-noiseFlagged-customized')).not.toBeInTheDocument();
   });
 
+  it('Save with a pre-existing stored override preserves it alongside the edited key', async () => {
+    // Regression for the Critical finding: the PUT route REPLACES the whole
+    // stored-weights column, so a partial body built by diffing against
+    // `effective` (defaults + pre-existing overrides) would silently drop
+    // any override the operator didn't touch this visit. Diffing against
+    // DEFAULT_IMPACT_WEIGHTS must send the untouched override too.
+    fetchMock.mockResolvedValue(
+      json({
+        data: {
+          effective: { ...EFFECTIVE, alertJudged: 120, draftSent: 400 },
+          overrides: { alertJudged: 120, draftSent: 400 },
+        },
+      }),
+    );
+    const { onSaved } = renderDrawer({
+      effective: { ...EFFECTIVE, alertJudged: 120 },
+      overrides: { alertJudged: 120 },
+    });
+
+    // Seeded input reflects the pre-existing override, untouched this visit.
+    expect(screen.getByTestId('ai-impact-weight-alertJudged')).toHaveValue(120);
+
+    // Operator edits a DIFFERENT field only.
+    fireEvent.change(screen.getByTestId('ai-impact-weight-draftSent'), { target: { value: '400' } });
+    fireEvent.click(screen.getByTestId('ai-impact-weights-save'));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const [, init] = fetchMock.mock.calls[0]!;
+    const body = JSON.parse((init as RequestInit).body as string);
+    // BOTH keys must be present — the untouched override, and the edit.
+    expect(body).toEqual({ alertJudged: 120, draftSent: 400 });
+
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
+  });
+
+  it('a no-edit Save with pre-existing stored overrides re-sends them (not an accidental reset)', async () => {
+    // Regression for the locked-in-by-a-test half of the Critical finding:
+    // Save with NO edits must NOT send `{}` when overrides already exist —
+    // that would perform a full reset while reporting success.
+    fetchMock.mockResolvedValue(
+      json({
+        data: {
+          effective: { ...EFFECTIVE, alertJudged: 120, noiseFlagged: 500 },
+          overrides: { alertJudged: 120, noiseFlagged: 500 },
+        },
+      }),
+    );
+    renderDrawer({
+      effective: { ...EFFECTIVE, alertJudged: 120, noiseFlagged: 500 },
+      overrides: { alertJudged: 120, noiseFlagged: 500 },
+    });
+
+    fireEvent.click(screen.getByTestId('ai-impact-weights-save'));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const [, init] = fetchMock.mock.calls[0]!;
+    const body = JSON.parse((init as RequestInit).body as string);
+    expect(body).toEqual({ alertJudged: 120, noiseFlagged: 500 });
+  });
+
   it('sends no body when nothing changed from the effective values', async () => {
     fetchMock.mockResolvedValue(json({ data: { effective: EFFECTIVE, overrides: null } }));
     renderDrawer();
