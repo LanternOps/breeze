@@ -8,7 +8,7 @@
 
 import { z } from 'zod';
 import { isIP } from 'node:net';
-import { ACTOR_TYPES, INVOICE_STATUSES, currencyCodeSchema } from '@breeze/shared';
+import { ACTOR_TYPES, AI_AGENT_KINDS, INVOICE_STATUSES, currencyCodeSchema } from '@breeze/shared';
 import { backupProfileSelectionsSchema, ringAutoApproveSchema } from '@breeze/shared/validators';
 import { fleetToolInputSchemas } from './aiToolSchemasFleet';
 import { backupToolSchemas } from './aiToolSchemasBackup';
@@ -340,6 +340,22 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   list_organizations: z.object({
     search: z.string().max(255).optional(),
     limit: z.number().int().min(1).max(100).optional(),
+  }),
+
+  // AI agent governance (P2-5, #4192). `orgId` is an ADDRESS, never an
+  // authority — it exists so the effect-digest resolver (which receives
+  // `(args, database)` and nothing else, and recomputes under a system context
+  // with no ambient org) can name the org whose supervised keys are changing.
+  // Creation sets it from the authenticated org and rejects
+  // `args.orgId !== intent.orgId`; the executor re-asserts the same equality
+  // under the graduation lock before writing. See aiToolsAiAgentGovernance.ts.
+  // Keys mirror the tool's advertised input_schema exactly; a key Zod does not
+  // know is STRIPPED silently rather than rejected (#2814).
+  manage_ai_agents: z.object({
+    action: z.enum(['authorize_supervised_key']),
+    kind: z.enum(AI_AGENT_KINDS),
+    opKey: z.string().min(3).max(120),
+    orgId: uuid,
   }),
 
   manage_organizations: z.object({

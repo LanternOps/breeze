@@ -322,6 +322,11 @@ export const TIER3_FOUR_EYES_ACTIONS: Record<string, string[]> = {
   // See TIER3_INPUT_AWARE_ACTIONS.
   manage_organizations: ['create_org'],
   manage_tickets: ['move_org'],
+  // Grants an AUTHORITY, not a device action: it converts "this agent must ask
+  // a human for <opKey>" into "this agent may run <opKey> unattended for this
+  // org from now on". Proposing that and authorising it are separate
+  // responsibilities. See services/aiToolsAiAgentGovernance.ts.
+  manage_ai_agents: ['authorize_supervised_key'],
   // Destroys or rewinds state.
   manage_hyperv_checkpoints: ['delete', 'apply'],
   manage_patches: ['rollback'],
@@ -341,6 +346,10 @@ export const TIER3_FOUR_EYES_TOOLS = new Set<string>([
   'computer_control', 'create_remote_session',
   // Tenant destruction.
   'delete_tenant',
+  // AI agent authority grants (P2-5, #4192). Whole-tool member on top of the
+  // TIER3_FOUR_EYES_ACTIONS entry above, so a future action of this tool
+  // defaults to four_eyes instead of falling through to `supervised`.
+  'manage_ai_agents',
   // Identity / account control — M365 (helpdesk tools; dispatch outside the
   // headless registry via makeSessionAwareHandler, but still carry a real
   // tier via m365ToolTiers).
@@ -371,6 +380,25 @@ export const TIER3_FOUR_EYES_TOOLS = new Set<string>([
   // request_elevation above). Not named in spec §3.2; classified four_eyes
   // out of caution — flagged in the task report "concerns".
   'request_elevation',
+]);
+
+/**
+ * Tools the `ai_agent` principal may NEVER call, whatever its allowlist says.
+ *
+ * A third unconditional denial class alongside BLOCKED_TOOLS (tier 4) and
+ * `isSecretBearingTool` — and, like those, enforced in `checkAgentGuardrails`
+ * ABOVE the allowlist and the multiplexed-action resolution, so the deny
+ * cannot depend on a parseable `action` or on the snapshot omitting the name.
+ *
+ * `manage_ai_agents` (P2-5, #4192) grants an agent a pre-authorized action
+ * key: an agent able to call it could grant ITSELF new unattended authority,
+ * which is the one escalation no approval scope can contain (the grant
+ * outlives the run). Membership here is a registry, not a hard-coded string,
+ * so aiGuardrails.agentPrincipal.contract.test.ts can treat the class as
+ * unconditionally denied instead of duplicating the literal.
+ */
+export const AGENT_HUMAN_ONLY_TOOLS = new Set<string>([
+  'manage_ai_agents',
 ]);
 
 export const TIER3_SUPERVISED_ACTIONS: Record<string, string[]> = {
@@ -523,6 +551,12 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     acknowledge: { resource: 'alerts', action: 'acknowledge' },
     resolve: { resource: 'alerts', action: 'write' },
     suppress: { resource: 'alerts', action: 'write' },
+  },
+  // Per-ACTION shape (like manage_tickets below) so a future action of this
+  // tool cannot inherit the grant permission by accident. `ai_agents:write`
+  // already exists in the canonical registry, seed, migration and catalog.
+  manage_ai_agents: {
+    authorize_supervised_key: { resource: 'ai_agents', action: 'write' },
   },
   manage_tickets: {
     list: { resource: 'tickets', action: 'read' },
@@ -1149,6 +1183,8 @@ const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: number }>
   get_service_monitoring_status: { limit: 30, windowSeconds: 300 },
   // Integration & webhook tools
   test_webhook: { limit: 5, windowSeconds: 300 },
+  // AI agent governance — a grant is a rare, deliberate act.
+  manage_ai_agents: { limit: 5, windowSeconds: 3600 },
   // Agent version & remote session tools
   trigger_agent_upgrade: { limit: 5, windowSeconds: 600 },
   trigger_agent_restart: { limit: 5, windowSeconds: 600 },
@@ -1628,6 +1664,9 @@ export function checkAgentGuardrails(
   if (isSecretBearingTool(toolName)) {
     return deny(`Tool "${toolName}" is secret-bearing and never available to agents`);
   }
+  if (AGENT_HUMAN_ONLY_TOOLS.has(toolName)) {
+    return deny(`Tool "${toolName}" is human-only and is never available to agents`);
+  }
 
   const siteDenial = siteScopeDenial(input, policy.deviceSiteId);
   if (siteDenial) return deny(`Denied: ${siteDenial}`);
@@ -1973,6 +2012,34 @@ function buildApprovalDescription(
       }
       break;
     }
+
+    // P2-5 (#4192): the op key ONLY. Never the agent's own text, never a
+    // rationale — this string is rendered in the approval inbox and stored on
+    // the intent, and no model-authored content may reach either.
+    //
+    // The parenthetical is not decoration: `cloneValuesFromEffective`
+    // (`aiAgents/supervisedKeyGrant.ts`) materializes the partner's CURRENT
+    // policy as a per-org `ai_agents` row whenever the org has none — the
+    // COMMON case under partner-wide-first. After that the org follows the
+    // partner only where the merge is tighten-only, so a partner that later
+    // WIDENS (a new tool in the allowlist, a raised limit, a new recipient or
+    // trigger) no longer reaches this org. The grant audit row records
+    // `clonedFromEffective` after the fact; this is the only place the second
+    // approver can be told BEFORE they consent. Unconditional because the
+    // description is built at intent-CREATION time, when whether the org
+    // already has a row is a race against the release — stating the
+    // conditional truth is honest at both moments.
+    case 'manage_ai_agents':
+      if (action === 'authorize_supervised_key') {
+        parts.push(
+          `Authorize the AI agent to run "${String(input.opKey ?? 'unknown')}" without an approval ` +
+          'for this organization in future runs',
+          '(creates a per-organization agent policy override if this organization does not already have one)',
+        );
+      } else {
+        parts.push(`${toolName}${action ? `: ${action}` : ''}`);
+      }
+      break;
 
     case 'security_scan':
       parts.push(`Security: ${action}`);
