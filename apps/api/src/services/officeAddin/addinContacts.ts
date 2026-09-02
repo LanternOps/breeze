@@ -1,61 +1,61 @@
 import { and, eq } from 'drizzle-orm';
 import { db } from '../../db';
 import { portalUsers } from '../../db/schema/portal';
+import { linkLoginToContact, type LoginContactOutcome } from '../contacts/loginLink';
+import type { ContactActor } from '../contacts/crud';
 
 /**
- * Create (or reuse) a password-less portal-user contact for the Outlook tech
- * add-in's "create contact" requester option (spec §3.2, Task 16).
+ * Resolve the Outlook tech add-in's "create contact" requester option to the
+ * org's CONTACT for that address, creating one when the org has none
+ * (spec §3.2, Task 16; repointed onto `contacts` by the #3258 follow-up).
  *
- * Deliberately NOT `inboundEmail/resolveOrg.resolveEmailRequester` (formerly
- * `findOrCreateEmailContact`): that one is an ingest side-effect on the poller
- * path, where contact creation is an automatic consequence of a message
- * arriving. Here it is a TECHNICIAN-CONFIRMED action inside a request — the
- * tech explicitly chose "create a contact for this sender" in the pane — so it
- * lives on the add-in's own service surface and can evolve (audit, contact
- * linkage) without changing ingest behaviour.
+ * ── Why this no longer mints a `portal_users` row ───────────────────────────
+ * It used to insert a password-less LOGIN so the ticket route could set
+ * `tickets.submitted_by`. Under #3258 `contacts` is the person and
+ * `portal_users` is a login attached to one, minted only where portal access is
+ * actually granted — and the add-in grants none. The old row was write-only:
+ * its single consumer was `submitted_by`, and it cost three real things.
  *
- * KNOWN GAP (#3258 W03, deliberately out of scope): this path still creates a
- * contact-less `portal_users` row, so an add-in-confirmed requester has a login
- * with no `contacts` row behind it. Same for the Entra SSO provisioning in
- * `clientAiExchange.ts`. Repointing both is follow-up work.
+ *   1. The customer could not see their own ticket. `portalTicketOwnership`
+ *      matches `submitted_by = me OR requester_contact_id = my contact`; the
+ *      orphan login had `contact_id` NULL, so neither arm could ever match a
+ *      login the customer actually holds.
+ *   2. Identity split by channel. The same human emailing support got a
+ *      `contacts` row from ingest and a `portal_users` row from the pane — two
+ *      records for one person in one org.
+ *   3. The orphan was undeletable: `hasPortalUserReferences` pins it forever
+ *      through the ticket FK.
  *
- * Runs in-request, so it executes under the caller's partner-scope RLS context
- * (the middleware's transaction). A null `passwordHash` is inherently non-login,
- * matching the Entra and inbound password-less rows.
+ * `createTicket` already accepts `requesterContactId`, validates it same-org
+ * before allocating a ticket number, and backfills the name/email snapshot from
+ * the contact when there is no login — so nothing downstream needed a login.
+ * `ticket_comments.portal_user_id` and the notify worker both already tolerate
+ * its absence (the worker keys on `submitter_email` alone).
  *
- * `portal_users` has no (org_id, email) unique index, so the select-then-insert
- * is not atomic. The pre-check is a convenience that keeps a technician who
- * clicks twice from minting two rows; a genuine concurrent double-create yields
- * a benign duplicate in the same org (identical to the ingest path's tolerance).
+ * ── Why it is still its own entry point ─────────────────────────────────────
+ * Deliberately NOT `inboundEmail/resolveOrg.resolveEmailRequester`: that one is
+ * an ingest side effect on the poller path, in a system context with no acting
+ * user. This is a TECHNICIAN-CONFIRMED action inside a request — the tech
+ * explicitly chose "create a contact for this sender" — so it runs under the
+ * caller's partner-scope RLS context and stamps the technician as
+ * `contacts.created_by`. It grants the `portal` role for the same reason the
+ * invite does: the tech has named this person as the ticket's requester.
+ *
+ * Both paths share `linkLoginToContact`, so both take the SAME advisory lock on
+ * the same (org, address) key — a tech confirming a sender while that sender's
+ * first email is being ingested cannot produce two contacts.
  */
-export async function createConfirmedContact(
+export async function resolveConfirmedContact(
   orgId: string,
-  input: { email: string; name?: string | null }
-): Promise<{ portalUserId: string }> {
-  const email = input.email.trim().toLowerCase();
-
-  const existing = await db
-    .select({ id: portalUsers.id })
-    .from(portalUsers)
-    .where(and(eq(portalUsers.orgId, orgId), eq(portalUsers.email, email)))
-    .limit(1);
-  if (existing[0]) return { portalUserId: existing[0].id };
-
-  const inserted = await db
-    .insert(portalUsers)
-    .values({
-      orgId,
-      email,
-      name: input.name ?? null,
-      passwordHash: null,
-      authMethod: 'password',
-      status: 'active',
-    })
-    .returning({ id: portalUsers.id });
-
-  const row = inserted[0];
-  if (!row) throw new Error('failed to create add-in contact');
-  return { portalUserId: row.id };
+  input: { email: string; name?: string | null },
+  actor: ContactActor
+): Promise<{ contactId: string | null; outcome: LoginContactOutcome }> {
+  return linkLoginToContact(db, {
+    orgId,
+    email: input.email,
+    name: input.name ?? null,
+    actor,
+  });
 }
 
 /**

@@ -13,6 +13,7 @@ const {
   rateLimiterMock,
   writeAuditEventMock,
   getOrgPolicyMock,
+  linkLoginToContactMock,
 } = vi.hoisted(() => {
   const redis = {
     setex: vi.fn(() => Promise.resolve('OK')),
@@ -31,6 +32,7 @@ const {
     ),
     writeAuditEventMock: vi.fn(),
     getOrgPolicyMock: vi.fn(),
+    linkLoginToContactMock: vi.fn(),
   };
 });
 
@@ -52,6 +54,12 @@ vi.mock('../../db', () => ({
   db: { select: dbSelectMock, insert: dbInsertMock, update: dbUpdateMock },
   withSystemDbAccessContext: vi.fn((fn: () => unknown) => fn()),
 }));
+
+// #3258: the exchange resolves the login's CONTACT. The resolver's own rules
+// are proved in services/contacts/loginLink.test.ts (real compiled SQL) and its
+// use by the exchange in services/clientAiExchange.test.ts — this suite is the
+// route's wire shape, so it stubs the resolver.
+vi.mock('../../services/contacts/loginLink', () => ({ linkLoginToContact: linkLoginToContactMock }));
 
 vi.mock('../../services/redis', () => ({ getRedis: getRedisMock }));
 vi.mock('../../services/rate-limit', () => ({ rateLimiter: rateLimiterMock }));
@@ -102,6 +110,8 @@ const USER_ROW = {
   email: 'finance.user@contoso.com',
   name: 'Finance User',
   status: 'active',
+  // Already linked (#3258), so an ordinary repeat login re-derives nothing.
+  contactId: 'c0c0c0c0-1111-4222-8333-444455556666',
 };
 
 const ENABLED_POLICY = {
@@ -138,6 +148,7 @@ function setupDb({ mapping, user }: { mapping: object | null; user: object | nul
   dbUpdateMock.mockImplementation(() => ({
     set: vi.fn(() => ({ where: vi.fn(() => Promise.resolve()) })),
   }));
+  linkLoginToContactMock.mockResolvedValue({ contactId: 'c0c0c0c0-1111-4222-8333-444455556666', outcome: 'created' });
 }
 
 function buildApp() {
@@ -317,13 +328,15 @@ describe('POST /client-ai/auth/exchange', () => {
         entraTenantId: TID,
         authMethod: 'entra',
         passwordHash: null,
+        // #3258: a provisioned login is never persisted without its person.
+        contactId: 'c0c0c0c0-1111-4222-8333-444455556666',
       })
     );
     expect(writeAuditEventMock).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
         result: 'success',
-        details: expect.objectContaining({ provisioned: true }),
+        details: expect.objectContaining({ provisioned: true, contactLink: 'created' }),
       })
     );
   });

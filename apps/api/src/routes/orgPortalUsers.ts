@@ -1,10 +1,9 @@
 import type { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
-import { and, eq, isNull, desc, ne, sql } from 'drizzle-orm';
+import { and, eq, isNull, desc, ne } from 'drizzle-orm';
 import { db } from '../db';
-import { organizations, portalUsers, tickets, ticketComments, assetCheckouts, contacts } from '../db/schema';
-import { createContact, updateContact } from '../services/contacts/crud';
-import { INBOUND_CONTACT_LOCK_NAMESPACE } from '../services/inboundEmail/resolveOrg';
+import { organizations, portalUsers, tickets, ticketComments, assetCheckouts } from '../db/schema';
+import { linkLoginToContact, type LoginContactOutcome } from '../services/contacts/loginLink';
 import { requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
 import { writeRouteAudit } from '../services/auditEvents';
@@ -97,30 +96,30 @@ async function issueAndSendInvite(c: any, orgId: string, user: { id: string; ema
 
 /**
  * How an invite resolved to the org's contact for that address (#3258 W03).
+ *
  * Recorded in the invite's audit details AND returned in the response body,
  * because a null `contact_id` is not self-explaining after the fact:
  * 'ambiguous' means we declined to guess (and the new login will not see that
  * address's emailed tickets), 'kept' means we deliberately did not touch a
  * link that was already there.
+ *
+ * `kept` is the one outcome the shared resolver cannot produce, because it is
+ * decided BEFORE the resolver is consulted: an existing link is never
+ * re-derived, so there is nothing to resolve.
  */
-type InviteContactLink = 'linked' | 'created' | 'ambiguous' | 'kept';
+type InviteContactLink = LoginContactOutcome | 'kept';
 
 /**
  * Bind an invited portal LOGIN to the org's CONTACT for that address.
  *
- * A portal login is a login attached to a person (#3258), and tickets now
- * attribute to that person — so an invite that leaves `contact_id` null hands
- * the customer a login that cannot see the tickets they emailed in
- * (routes/portal/ticketOwnership.ts).
+ * A thin wrapper over the shared `linkLoginToContact` (services/contacts/
+ * loginLink.ts) — the same resolution the Entra exchange and the Outlook
+ * add-in use, so all three agree on the lock, the shared-mailbox refusal and
+ * the role union.
  *
  * Runs in the caller's REQUEST context, so `contacts` is read and written
  * under RLS with the acting user as `created_by` — unlike the inbound path,
  * which is a system-context ingest side effect with no acting user.
- *
- * Several contacts on one address (a shared mailbox) is left UNLINKED rather
- * than resolved by a guess: `contacts_org_email_idx` is deliberately
- * non-unique, and picking one would silently grant that person's ticket
- * history to whoever accepted the invite.
  */
 async function resolveInviteContact(
   orgId: string,
@@ -128,41 +127,13 @@ async function resolveInviteContact(
   name: string | null,
   actorUserId: string,
 ): Promise<{ contactId: string | null; link: InviteContactLink }> {
-  // The SAME namespaced advisory lock the inbound resolver takes, on the SAME
-  // (org, address) key. An invite and a first email from that address arriving
-  // together would otherwise each see "no contact" and each create one —
-  // `contacts_org_email_idx` is deliberately non-unique (shared mailboxes are
-  // real), so the database will not stop it. Transaction-scoped: the request's
-  // own transaction releases it.
-  await db.execute(
-    sql`SELECT pg_advisory_xact_lock(hashtext(${INBOUND_CONTACT_LOCK_NAMESPACE}), hashtext(${`${orgId}:${normalizedEmail}`}))`,
-  );
-
-  // limit(2) is all the arithmetic this needs: two rows means "at least two".
-  const found = await db
-    .select({ id: contacts.id, roles: contacts.roles })
-    .from(contacts)
-    .where(and(eq(contacts.orgId, orgId), sql`lower(${contacts.email}) = ${normalizedEmail}`))
-    .limit(2);
-  if (found.length > 1) return { contactId: null, link: 'ambiguous' };
-  if (found.length === 1) {
-    const existing = found[0]!;
-    // Grant the 'portal' role the invite is actually granting. A UNION, never
-    // a replace: an existing billing/technical contact does not stop being one
-    // because someone gave them a login. Skipped when the role is already
-    // there so a re-invite writes nothing (and does not churn updated_at).
-    const roles = (existing.roles ?? []) as string[];
-    if (!roles.includes('portal')) {
-      await updateContact(db, existing.id, orgId, { roles: [...roles, 'portal'] }, { userId: actorUserId });
-    }
-    return { contactId: existing.id, link: 'linked' };
-  }
-  const created = await createContact(
-    db,
-    { orgId, email: normalizedEmail, name, roles: ['portal'] },
-    { userId: actorUserId },
-  );
-  return { contactId: created.id, link: 'created' };
+  const { contactId, outcome } = await linkLoginToContact(db, {
+    orgId,
+    email: normalizedEmail,
+    name,
+    actor: { userId: actorUserId },
+  });
+  return { contactId, link: outcome };
 }
 
 export function registerOrgPortalUsersRoutes(orgRoutes: Hono) {

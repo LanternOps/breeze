@@ -6,6 +6,7 @@ import { portalUsers } from '../db/schema';
 import { clientAiTenantMappings } from '../db/schema/clientAi';
 import { organizations, partners } from '../db/schema/orgs';
 import { getOrgPolicy, isClientUserPermitted } from './clientAiPolicy';
+import { linkLoginToContact, type LoginContactOutcome } from './contacts/loginLink';
 import type { ClientAiEntraClaims } from './clientAiEntraJwt';
 import {
   CLIENT_AI_REDIS_KEYS,
@@ -30,7 +31,21 @@ export type ExchangeUser = {
   email: string;
   name: string | null;
   status: string;
+  /** The `contacts` row this login belongs to (#3258); null until resolved. */
+  contactId: string | null;
 };
+
+/**
+ * How this exchange resolved the login to a CONTACT (#3258).
+ *
+ * `kept` is not produced by the resolver: it means the login already carried a
+ * link, which is never re-derived. Surfaced in the exchange's audit details
+ * (both `/client-ai/auth/exchange` and `/office-addin/auth/exchange` write
+ * `outcome.audit.details` verbatim) because a null `contact_id` is not
+ * self-explaining afterwards — 'ambiguous' is a refusal, 'unusable-address' is
+ * a token that carried no address at all.
+ */
+type ExchangeContactLink = LoginContactOutcome | 'kept';
 
 /** White-label footer fields (spec §11), sourced from the org policy's branding JSONB. */
 export type ExchangeBranding = { displayName: string | null; logoUrl: string | null };
@@ -43,7 +58,12 @@ type Denied = {
     details: Record<string, unknown>;
   };
 };
-type Resolved = { user: ExchangeUser; provisioned: boolean; branding: ExchangeBranding };
+type Resolved = {
+  user: ExchangeUser;
+  provisioned: boolean;
+  branding: ExchangeBranding;
+  contactLink: ExchangeContactLink;
+};
 
 export type ClientExchangeOutcome =
   | {
@@ -92,6 +112,7 @@ const USER_COLUMNS = {
   email: portalUsers.email,
   name: portalUsers.name,
   status: portalUsers.status,
+  contactId: portalUsers.contactId,
 };
 
 export async function resolveAndMintClientSession(
@@ -156,10 +177,42 @@ export async function resolveAndMintClientSession(
       )
       .limit(1);
 
+    // #3258: a portal login is a login ATTACHED TO A PERSON, so an Entra
+    // identity resolves to a `contacts` row the same way an invite or an
+    // inbound email does. Without it the same human exists twice in one org —
+    // once as an add-in login, once as the contact their emails created — and
+    // their portal view cannot see their own emailed tickets, because
+    // `portalTicketOwnership` matches on the contact, not the login.
+    //
+    // The address handed to the resolver is `claims.email`, NEVER the synthetic
+    // `@…entra.invalid` fallback below: a contact keyed on a non-routable
+    // address is an unreachable person in the customer's address book, and it
+    // could never match a real inbound sender. A token with no address
+    // therefore yields 'unusable-address' and an unlinked (but working) login.
+    //
+    // `claims.name` is the Entra display name — the only human-readable
+    // identity in the token, and the same string already written to
+    // `portal_users.name`, so a contact created here reads identically to the
+    // login it belongs to.
+    let contactLink: ExchangeContactLink;
     if (!user) {
       // portal_users.email is NOT NULL; some Entra token shapes carry no usable
       // address — fall back to a synthetic, non-routable one.
       const email = claims.email ?? `${claims.oid}@${claims.tid}.entra.invalid`;
+      // Resolved BEFORE the insert so the login is never persisted unlinked:
+      // the resolver's advisory lock serialises concurrent first exchanges (and
+      // a racing invite or inbound email) on the same (org, address) key, so the
+      // 23505 loser below finds the winner's contact rather than minting a
+      // second one.
+      const resolved = await linkLoginToContact(db, {
+        orgId: mapping.orgId,
+        email: claims.email,
+        name: claims.name,
+        // No acting Breeze user exists: the login provisions ITSELF from a
+        // verified token, so `contacts.created_by` is genuinely null.
+        actor: { userId: null },
+      });
+      contactLink = resolved.outcome;
       try {
         const inserted = await db
           .insert(portalUsers)
@@ -172,6 +225,7 @@ export async function resolveAndMintClientSession(
             entraTenantId: claims.tid,
             authMethod: 'entra',
             lastLoginAt: now,
+            contactId: resolved.contactId,
           })
           .returning(USER_COLUMNS);
         user = inserted[0];
@@ -189,9 +243,32 @@ export async function resolveAndMintClientSession(
           .limit(1);
       }
     } else {
+      // Backfill-on-login for every Entra row that predates this change (and
+      // for one whose earlier login could not resolve a person). An EXISTING
+      // link is never re-derived, let alone overwritten: whoever set it — the
+      // 2026-08-19 backfill, an invite, a technician editing the contact — knew
+      // more than an email string does.
+      let contactPatch: { contactId?: string } = {};
+      if (user.contactId) {
+        contactLink = 'kept';
+      } else {
+        const resolved = await linkLoginToContact(db, {
+          orgId: user.orgId,
+          email: claims.email,
+          name: claims.name,
+          actor: { userId: null },
+        });
+        contactLink = resolved.outcome;
+        if (resolved.contactId) contactPatch = { contactId: resolved.contactId };
+      }
       await db
         .update(portalUsers)
-        .set({ lastLoginAt: now, updatedAt: now, ...(claims.name ? { name: claims.name } : {}) })
+        .set({
+          lastLoginAt: now,
+          updatedAt: now,
+          ...(claims.name ? { name: claims.name } : {}),
+          ...contactPatch,
+        })
         .where(eq(portalUsers.id, user.id));
     }
 
@@ -228,7 +305,7 @@ export async function resolveAndMintClientSession(
       };
     }
 
-    return { user, provisioned, branding: brandingFromPolicy(policy.branding) };
+    return { user, provisioned, branding: brandingFromPolicy(policy.branding), contactLink };
   });
 
   if ('denied' in resolution) {
@@ -245,7 +322,7 @@ export async function resolveAndMintClientSession(
     };
   }
 
-  const { user, provisioned, branding } = resolution;
+  const { user, provisioned, branding, contactLink } = resolution;
   const token = nanoid(48);
   await redis.setex(
     CLIENT_AI_REDIS_KEYS.session(token),
@@ -269,7 +346,7 @@ export async function resolveAndMintClientSession(
       result: 'success',
       actorId: user.id,
       actorEmail: user.email,
-      details: { tid: claims.tid, oid: claims.oid, provisioned },
+      details: { tid: claims.tid, oid: claims.oid, provisioned, contactLink },
     },
   };
 }

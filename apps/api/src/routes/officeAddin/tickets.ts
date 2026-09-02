@@ -10,7 +10,7 @@ import { applyDlp } from '../../services/clientAiDlp';
 import { getOrgPolicy } from '../../services/clientAiPolicy';
 import { ticketThreadAnchor } from '../../services/inboundEmail/outboundThreading';
 import { insertEmailAuthoredComment } from '../../services/inboundEmail/emailComments';
-import { createConfirmedContact, findPortalUserByEmail } from '../../services/officeAddin/addinContacts';
+import { resolveConfirmedContact, findPortalUserByEmail } from '../../services/officeAddin/addinContacts';
 import { draftTicketFromEmail, EmailDraftFailedError } from '../../services/officeAddin/aiEmailDraft';
 import {
   getAnthropicClientForPartner,
@@ -429,7 +429,15 @@ officeAddinTicketRoutes.post(
 
     // 3. Requester. `create_contact` is a technician-confirmed action, never an
     //    inferred one — the pane only sends it after an explicit choice.
+    //
+    //    The two branches produce DIFFERENT columns, and deliberately so
+    //    (#3258): naming an existing LOGIN sets `submitted_by` (from which
+    //    `createTicket` derives that login's own contact), while confirming a
+    //    sender resolves the PERSON and sets `requester_contact_id`. The add-in
+    //    grants nobody portal access, so it mints no login — see
+    //    `services/officeAddin/addinContacts.ts` for what that used to cost.
     let submittedBy: string | undefined;
+    let requesterContactId: string | undefined;
     if (input.requester.kind === 'portal_user') {
       const portalUser = await getPortalUserForValidation(input.requester.id);
       if (!portalUser || portalUser.orgId !== input.orgId) {
@@ -437,11 +445,16 @@ officeAddinTicketRoutes.post(
       }
       submittedBy = portalUser.id;
     } else if (input.requester.kind === 'create_contact') {
-      const contact = await createConfirmedContact(input.orgId, {
-        email: input.requester.email,
-        name: input.requester.name ?? null,
-      });
-      submittedBy = contact.portalUserId;
+      const contact = await resolveConfirmedContact(
+        input.orgId,
+        { email: input.requester.email, name: input.requester.name ?? null },
+        { userId: auth.userId }
+      );
+      // A shared mailbox resolves to no single person. The ticket still gets
+      // made — it keeps the submitter name/email snapshot below — it is simply
+      // not attributed to a contact, which is the same refusal inbound email
+      // makes rather than guessing whose history to hand over.
+      requesterContactId = contact.contactId ?? undefined;
     }
 
     // 4. Closed-ticket continuation: carry the original thread key so replies to
@@ -488,6 +501,7 @@ officeAddinTicketRoutes.post(
             submitterEmail: input.from.email,
             submitterName: input.from.name ?? undefined,
             submittedBy,
+            requesterContactId,
           },
           actor
         );
