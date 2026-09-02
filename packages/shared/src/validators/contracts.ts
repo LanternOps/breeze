@@ -1,12 +1,16 @@
 import { z } from 'zod';
 import { BULK_ID_LIMIT } from '../constants';
 import { currencyCodeSchema } from './currency';
+import { BILLABLE_DEVICE_ROLES } from './deviceRoles';
 
 const money = z.string().regex(/^\d+(\.\d{1,2})?$/, 'must be a 2-decimal money string');
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'must be YYYY-MM-DD');
 
+export const CONTRACT_LINE_TYPES = ['flat', 'per_device', 'per_device_role', 'per_seat', 'manual'] as const;
+export type ContractLineType = typeof CONTRACT_LINE_TYPES[number];
+
 export const contractLineInputSchema = z.object({
-  lineType: z.enum(['flat', 'per_device', 'per_seat', 'manual']),
+  lineType: z.enum(CONTRACT_LINE_TYPES),
   description: z.string().min(1).max(2000),
   // Multi-currency wave 3 (#3775): a catalog-sourced line is priced by the
   // server-side resolver in the CONTRACT's currency, so unitPrice is optional
@@ -17,6 +21,9 @@ export const contractLineInputSchema = z.object({
   catalogItemId: z.string().guid().optional(),
   manualQuantity: money.optional(),
   siteId: z.string().guid().optional(),
+  // #3205: the SET of roles a per_device_role line bills. 'unknown' is not a
+  // rate; the DB CHECK (contract_lines_device_roles_chk) enforces the same list.
+  deviceRoles: z.array(z.enum(BILLABLE_DEVICE_ROLES)).min(1).optional(),
   sortOrder: z.number().int().min(0).optional()
 }).refine(
   (l) => l.unitPrice !== undefined || l.catalogItemId !== undefined,
@@ -28,8 +35,16 @@ export const contractLineInputSchema = z.object({
   (l) => l.lineType !== 'manual' || l.manualQuantity !== undefined,
   { message: 'manualQuantity is required for manual lines', path: ['manualQuantity'] }
 ).refine(
-  (l) => l.lineType === 'per_device' || l.siteId === undefined,
-  { message: 'siteId is only valid on per_device lines', path: ['siteId'] }
+  (l) => l.lineType === 'per_device' || l.lineType === 'per_device_role' || l.siteId === undefined,
+  { message: 'siteId is only valid on per_device and per_device_role lines', path: ['siteId'] }
+).refine(
+  // Two-way on purpose (stricter than the manualQuantity rule): the CHECK
+  // constraint rejects roles on any other type, so the validator must too.
+  (l) => (l.lineType === 'per_device_role') === (l.deviceRoles !== undefined),
+  { message: 'deviceRoles is required on per_device_role lines and not allowed on other line types', path: ['deviceRoles'] }
+).refine(
+  (l) => l.deviceRoles === undefined || new Set(l.deviceRoles).size === l.deviceRoles.length,
+  { message: 'deviceRoles must not contain duplicates', path: ['deviceRoles'] }
 );
 
 export const createContractSchema = z.object({
