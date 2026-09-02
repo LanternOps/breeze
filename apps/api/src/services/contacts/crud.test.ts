@@ -5,8 +5,10 @@ vi.mock('../../db', () => ({ db: {} }));
 
 import {
   ContactValidationError,
+  countContacts,
   createContact,
   deleteContact,
+  findContactScope,
   listContacts,
   updateContact,
 } from './crud';
@@ -28,11 +30,32 @@ function compile(condition: unknown): { sql: string; params: unknown[] } {
   return { sql: query.sql, params: query.params };
 }
 
+interface SelectCall {
+  table: unknown;
+  where?: unknown;
+  /** Recorded window/order so paging is asserted, not assumed. */
+  limit?: number;
+  offset?: number;
+  orderBy?: unknown[];
+}
+
 interface Capture {
-  selects: Array<{ table: unknown; where?: unknown }>;
+  selects: SelectCall[];
   inserts: Array<{ table: unknown; values: Record<string, unknown> }>;
   updates: Array<{ table: unknown; set: Record<string, unknown>; where?: unknown }>;
   deletes: Array<{ table: unknown; where?: unknown }>;
+}
+
+/**
+ * A settled select whose builder tail (`orderBy`/`limit`/`offset`) stays
+ * chainable and records what it was handed.
+ */
+function thenable(rows: Array<Record<string, unknown>>, call: SelectCall) {
+  const promise = Promise.resolve(rows) as Promise<unknown[]> & Record<string, unknown>;
+  promise.limit = (n: number) => { call.limit = n; return thenable(rows.slice(0, n), call); };
+  promise.offset = (n: number) => { call.offset = n; return thenable(rows, call); };
+  promise.orderBy = (...args: unknown[]) => { call.orderBy = args; return thenable(rows, call); };
+  return promise;
 }
 
 /**
@@ -55,15 +78,11 @@ function makeExec(selectRows: Array<Array<Record<string, unknown>>> = []) {
       from: (table: unknown) => {
         const rows = queue.shift() ?? [];
         lastSelected = rows[0];
-        const entry: { table: unknown; where?: unknown } = { table };
+        const entry: SelectCall = { table };
         calls.selects.push(entry);
-        const settle = () => {
-          const promise = Promise.resolve(rows) as Promise<unknown[]> & Record<string, unknown>;
-          promise.limit = () => Promise.resolve(rows.slice(0, 1));
-          promise.orderBy = () => Promise.resolve(rows);
-          return promise;
+        return {
+          where: (condition: unknown) => { entry.where = condition; return thenable(rows, entry); },
         };
-        return { where: (condition: unknown) => { entry.where = condition; return settle(); } };
       },
     }),
     insert: (table: unknown) => ({
@@ -302,6 +321,91 @@ describe('deleteContact', () => {
     const { exec, calls } = makeExec([[]]);
     expect(await deleteContact(exec, CONTACT, OTHER_ORG, ACTOR)).toBeNull();
     expect(calls.deletes).toHaveLength(0);
+  });
+});
+
+describe('listContacts site confinement and paging', () => {
+  it('intersects with the caller site allowlist while keeping org-level contacts', async () => {
+    // RLS on `contacts` is the ORG axis only, so this WHERE clause IS the site
+    // boundary for a sub-org-restricted user.
+    const { exec, calls } = makeExec([[]]);
+    await listContacts(exec, ORG, { allowedSiteIds: [SITE] });
+    const { sql, params } = compile(calls.selects[0]!.where);
+    expect(sql).toContain('"site_id" is null');
+    expect(sql).toContain(' in ');
+    expect(params).toEqual([ORG, SITE]);
+  });
+
+  it('leaves ONLY org-level contacts when the allowlist is empty', async () => {
+    const { exec, calls } = makeExec([[]]);
+    await listContacts(exec, ORG, { allowedSiteIds: [] });
+    const { sql, params } = compile(calls.selects[0]!.where);
+    expect(sql).toContain('"site_id" is null');
+    // An empty allowlist must never degrade into "no site filter".
+    expect(sql).not.toContain(' in ');
+    expect(params).toEqual([ORG]);
+  });
+
+  it('applies no site clause at all when the caller is unrestricted', async () => {
+    const { exec, calls } = makeExec([[]]);
+    await listContacts(exec, ORG, {});
+    expect(compile(calls.selects[0]!.where).sql).not.toContain('"site_id"');
+  });
+
+  it('narrows an explicit siteId filter AND the allowlist together', async () => {
+    const { exec, calls } = makeExec([[]]);
+    await listContacts(exec, ORG, { siteId: SITE, allowedSiteIds: [SITE] });
+    const { params } = compile(calls.selects[0]!.where);
+    expect(params).toEqual([ORG, SITE, SITE]);
+  });
+
+  it('takes the requested window and orders totally', async () => {
+    const { exec, calls } = makeExec([[PRIMARY_ROW]]);
+    await listContacts(exec, ORG, {}, { limit: 25, offset: 50 });
+    expect(calls.selects[0]!.limit).toBe(25);
+    expect(calls.selects[0]!.offset).toBe(50);
+    // name + createdAt alone is not a total order — two contacts can share
+    // both, and a non-total order drops or repeats rows across pages.
+    expect(calls.selects[0]!.orderBy).toHaveLength(3);
+  });
+
+  it('reads no window when none is asked for', async () => {
+    const { exec, calls } = makeExec([[PRIMARY_ROW]]);
+    await listContacts(exec, ORG, {});
+    expect(calls.selects[0]!.limit).toBeUndefined();
+    expect(calls.selects[0]!.offset).toBeUndefined();
+  });
+});
+
+describe('countContacts', () => {
+  it('counts against the SAME predicate the list uses', async () => {
+    const { exec: countExec, calls: countCalls } = makeExec([[{ count: '137' }]]);
+    const filters = { role: 'billing', allowedSiteIds: [SITE] };
+    const total = await countContacts(countExec, ORG, filters);
+    // Postgres count(*) arrives as a bigint string over the wire.
+    expect(total).toBe(137);
+
+    const { exec: listExec, calls: listCalls } = makeExec([[]]);
+    await listContacts(listExec, ORG, filters);
+    expect(compile(countCalls.selects[0]!.where)).toEqual(compile(listCalls.selects[0]!.where));
+  });
+
+  it('reads an empty result as zero', async () => {
+    const { exec } = makeExec([[]]);
+    expect(await countContacts(exec, ORG, {})).toBe(0);
+  });
+});
+
+describe('findContactScope', () => {
+  it('returns the org AND the site pin, so the route can gate the site axis', async () => {
+    const { exec, calls } = makeExec([[{ orgId: ORG, siteId: SITE }]]);
+    expect(await findContactScope(exec, CONTACT)).toEqual({ orgId: ORG, siteId: SITE });
+    expect(compile(calls.selects[0]!.where).params).toEqual([CONTACT]);
+  });
+
+  it('returns null when the contact is not visible', async () => {
+    const { exec } = makeExec([[]]);
+    expect(await findContactScope(exec, CONTACT)).toBeNull();
   });
 });
 

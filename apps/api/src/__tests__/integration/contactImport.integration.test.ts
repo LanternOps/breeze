@@ -24,7 +24,7 @@ import { eq, inArray } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
 import { contactExternalLinks, contacts } from '../../db/schema/contacts';
 import { commitContactImport, previewContactImport } from '../../services/contacts/import';
-import { createOrganization, createPartner } from './db-utils';
+import { createOrganization, createPartner, createSite } from './db-utils';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
@@ -129,6 +129,68 @@ describe('contact import — organization reach bound (system-context writes)', 
     expect(second.errors).toEqual([]);
     expect(await readContacts([orgA.id])).toHaveLength(2);
     expect(await readLinks(orgA.id)).toHaveLength(2);
+  });
+
+  runDb('refuses a row pinned to a site outside the caller site allowlist, writing nothing', async () => {
+    // The site axis has NO database enforcement anywhere — RLS on `contacts`
+    // and on `sites` is org-only — so `ctx.allowedSiteIds` is the whole
+    // boundary, and a mocked-driver unit test can only prove the branch was
+    // taken, not that nothing landed.
+    const { partner, orgA } = await seed();
+    const reachable = await withSystemDbAccessContext(() =>
+      createSite({ orgId: orgA.id, name: `HQ ${Date.now()}` }));
+    const barred = await withSystemDbAccessContext(() =>
+      createSite({ orgId: orgA.id, name: `Depot ${Date.now()}` }));
+
+    const ctx = {
+      partnerId: partner.id,
+      accessibleOrgIds: [orgA.id],
+      allowedSiteIds: [reachable!.id],
+    };
+
+    const summary = await commitContactImport([
+      { organizationId: orgA.id, site: barred!.name, name: 'Barred Sam', email: 'barred@example.test', externalId: 'CT-BARRED' },
+      { organizationId: orgA.id, site: reachable!.name, name: 'Allowed Ann', email: 'allowed@example.test' },
+      { organizationId: orgA.id, name: 'Org Level Ozzy', email: 'orglevel@example.test' },
+    ], ctx, ACTOR);
+
+    // Refused on the SITE axis, not the org axis: the organization resolved.
+    expect(summary.errors).toHaveLength(1);
+    expect(summary.errors[0]).toMatchObject({ index: 0, code: 'row-conflict' });
+    expect(summary.errors[0]!.error).toMatch(/site access/i);
+
+    // The allowed site and the org-level row still import — the site allowlist
+    // confines a caller within an org, it does not narrow their org reach.
+    const stored = await readContacts([orgA.id]);
+    expect(stored.map((c) => c.name).sort()).toEqual(['Allowed Ann', 'Org Level Ozzy']);
+    expect(stored.find((c) => c.name === 'Barred Sam')).toBeUndefined();
+    // No link row either, so a later import cannot resolve through one.
+    expect(await readLinks(orgA.id)).toEqual([]);
+  });
+
+  runDb('a contact living in a barred site is neither matched nor disclosed', async () => {
+    const { partner, orgA } = await seed();
+    const reachable = await withSystemDbAccessContext(() =>
+      createSite({ orgId: orgA.id, name: `HQ ${Date.now()}` }));
+    const barred = await withSystemDbAccessContext(() =>
+      createSite({ orgId: orgA.id, name: `Depot ${Date.now()}` }));
+
+    // Seed a real contact inside the barred site, as an unrestricted caller.
+    await commitContactImport(
+      [{ organizationId: orgA.id, site: barred!.name, name: 'Hidden Hal', email: 'hidden@example.test' }],
+      { partnerId: partner.id, accessibleOrgIds: [orgA.id] },
+      ACTOR,
+    );
+
+    const [row] = await previewContactImport(
+      [{ organizationId: orgA.id, name: 'Hidden Hal', email: 'hidden@example.test' }],
+      { partnerId: partner.id, accessibleOrgIds: [orgA.id], allowedSiteIds: [reachable!.id] },
+    );
+
+    expect(row!.annotation).toBe('create');
+    expect(row!.contactId).toBeNull();
+    expect(row).not.toHaveProperty('matchedContactName');
+    expect(row).not.toHaveProperty('matchedContactEmail');
   });
 
   runDb('one source contact id may exist under two organizations at once', async () => {

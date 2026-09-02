@@ -136,6 +136,17 @@ export interface ContactImportContext {
    * contacts into every tenant the MSP owns.
    */
   accessibleOrgIds?: string[] | null;
+  /**
+   * The caller's site-axis allowlist (`AuthContext.allowedSiteIds`).
+   * `null`/absent is unrestricted; an array confines the caller to those sites
+   * plus every ORG-LEVEL contact, because the site allowlist narrows a caller
+   * WITHIN an org rather than narrowing their org reach.
+   *
+   * Even more load-bearing than `accessibleOrgIds`: RLS never covered the site
+   * axis on ANY path, in a system context or out of one, so this is the only
+   * boundary that exists for it.
+   */
+  allowedSiteIds?: string[] | null;
 }
 
 /**

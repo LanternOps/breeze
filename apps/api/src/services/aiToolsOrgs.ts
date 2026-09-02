@@ -473,6 +473,21 @@ async function handleAddContact(
     return jsonError(resolved.error ?? 'orgId is required for add_contact');
   }
 
+  // Site axis. `allowedSiteIds` is app-layer only and RLS on `contacts` is the
+  // ORG axis, so nothing below this line would stop a sub-org-restricted caller
+  // filing a contact under a sibling site. Refused BEFORE createContact, on the
+  // same structured `{error, code}` path a ContactValidationError takes, and
+  // matching the list handler's allowedSiteIds confinement above. An absent
+  // siteId is an org-level contact and stays allowed: the allowlist confines a
+  // caller within an org, it does not narrow their org reach.
+  const siteId = typeof input.siteId === 'string' ? input.siteId : undefined;
+  if (siteId !== undefined && auth.canAccessSite?.(siteId) === false) {
+    return jsonError(
+      'Access denied to that site. You can only add contacts to sites you have access to.',
+      'site-access-denied'
+    );
+  }
+
   const roles = Array.isArray(input.roles)
     ? input.roles.filter((role): role is string => typeof role === 'string')
     : undefined;
@@ -491,7 +506,7 @@ async function handleAddContact(
       db,
       {
         orgId: resolved.orgId,
-        siteId: typeof input.siteId === 'string' ? input.siteId : undefined,
+        siteId,
         name: typeof input.name === 'string' ? input.name : undefined,
         email: typeof input.email === 'string' ? input.email : undefined,
         phone: typeof input.phone === 'string' ? input.phone : undefined,

@@ -657,6 +657,39 @@ describe('manage_organizations add_contact', () => {
     expect(denied.error).toMatch(/cannot access another organization/i);
   });
 
+  it('refuses a siteId outside a site-confined caller allowlist, before any write', async () => {
+    // allowedSiteIds is app-layer only and RLS on `contacts` is the org axis,
+    // so without this a site-confined org user could file a contact under any
+    // sibling site through the AI tool.
+    const out = JSON.parse(
+      await getTools().manage.handler(
+        { action: 'add_contact', orgId: ORG_1, siteId: SITE_2, name: 'Pat Lee' },
+        orgAuth({ allowedSiteIds: [SITE_1], canAccessSite: (id) => id === SITE_1 })
+      )
+    );
+    expect(out.code).toBe('site-access-denied');
+    expect(out.error).toMatch(/site/i);
+    expect(mockCreateContact).not.toHaveBeenCalled();
+    expect(writeAuditEvent).not.toHaveBeenCalled();
+  });
+
+  it('still allows a confined caller their own site, and an org-level contact', async () => {
+    const confined = orgAuth({ allowedSiteIds: [SITE_1], canAccessSite: (id?: string | null) => id === SITE_1 });
+    mockCreateContact.mockResolvedValueOnce(contactRow({ siteId: SITE_1 }));
+    const pinned = JSON.parse(
+      await getTools().manage.handler(
+        { action: 'add_contact', orgId: ORG_1, siteId: SITE_1, name: 'Pat Lee' }, confined
+      )
+    );
+    expect(pinned.contact.siteId).toBe(SITE_1);
+
+    mockCreateContact.mockResolvedValueOnce(contactRow());
+    const orgLevel = JSON.parse(
+      await getTools().manage.handler({ action: 'add_contact', orgId: ORG_1, name: 'Pat Lee' }, confined)
+    );
+    expect(orgLevel.contact.id).toBe(CONTACT_ID);
+  });
+
   it('does not require a name — an email-only contact is passed through to createContact', async () => {
     mockCreateContact.mockResolvedValueOnce(contactRow({ name: null, email: 'nameless@customer.example' }));
     const out = JSON.parse(

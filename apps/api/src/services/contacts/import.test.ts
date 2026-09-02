@@ -34,6 +34,7 @@ const ORG = '11111111-1111-4111-8111-111111111111';
 const ORG_B = '1b1b1b1b-1111-4111-8111-111111111111';
 const FOREIGN_ORG = 'ffffffff-1111-4111-8111-111111111111';
 const SITE = '22222222-2222-4222-8222-222222222222';
+const BARRED_SITE = '2b2b2b2b-2222-4222-8222-222222222222';
 const EXISTING = '33333333-3333-4333-8333-333333333333';
 const OTHER_EXISTING = '44444444-4444-4444-8444-444444444444';
 const ACTOR = { userId: '55555555-5555-4555-8555-555555555555' };
@@ -355,6 +356,91 @@ describe('previewContactImport', () => {
     await previewContactImport([{ organizationId: ORG, name: 'Jane' }], CTX);
     expect(inserted).toHaveLength(0);
     expect(updated).toHaveLength(0);
+  });
+});
+
+describe('site confinement (allowedSiteIds)', () => {
+  // The importer writes in a SYSTEM db context and RLS never covered the site
+  // axis anyway, so `ctx.allowedSiteIds` is the ONLY thing keeping a
+  // sub-org-restricted caller out of a sibling site's contacts.
+  const CONFINED = { partnerId: PARTNER, allowedSiteIds: [SITE] };
+
+  it('refuses a row pinned to a barred site as a conflict, not org-not-found', async () => {
+    stubState({ sites: [{ id: BARRED_SITE, orgId: ORG, name: 'Depot' }] });
+    const [row] = await previewContactImport(
+      [{ organizationId: ORG, site: 'Depot', name: 'Sam' }], CONFINED,
+    );
+    // org-not-found is the ORG axis; using it here would misreport which
+    // boundary refused the row.
+    expect(row!.annotation).toBe('conflict');
+    expect(row!.organizationId).toBe(ORG);
+    expect(row!.conflictReason).toMatch(/site access/i);
+  });
+
+  it('writes nothing at all for a row pinned to a barred site', async () => {
+    stubState({ sites: [{ id: BARRED_SITE, orgId: ORG, name: 'Depot' }] });
+    const summary = await commitContactImport(
+      [{ organizationId: ORG, site: 'Depot', name: 'Sam' }], CONFINED, ACTOR,
+    );
+    expect(summary.errors[0]).toMatchObject({ index: 0, code: 'row-conflict' });
+    expect(summary.imported).toEqual([]);
+    expect(inserted).toHaveLength(0);
+    expect(updated).toHaveLength(0);
+  });
+
+  it('still admits a row pinned to a site the caller CAN reach', async () => {
+    stubState({ sites: [{ id: SITE, orgId: ORG, name: 'HQ' }] });
+    const [row] = await previewContactImport(
+      [{ organizationId: ORG, site: 'HQ', name: 'Sam' }], CONFINED,
+    );
+    expect(row).toMatchObject({ annotation: 'create', siteId: SITE });
+  });
+
+  it('still admits an ORG-LEVEL row: the site axis confines within an org', async () => {
+    stubState();
+    const [row] = await previewContactImport([{ organizationId: ORG, name: 'Sam' }], CONFINED);
+    expect(row).toMatchObject({ annotation: 'create', siteId: null });
+  });
+
+  it('never matches, or discloses, a contact pinned to a barred site', async () => {
+    stubState({
+      contacts: [{
+        id: EXISTING, orgId: ORG, siteId: BARRED_SITE,
+        name: 'Jane Ops', email: 'jane@acme.example',
+      }],
+    });
+    const [row] = await previewContactImport(
+      [{ organizationId: ORG, name: 'Jane Ops', email: 'jane@acme.example' }], CONFINED,
+    );
+    // Invisible exactly the way an out-of-reach ORG's contacts are: the row
+    // reads as fresh rather than as "matches something you may not see".
+    expect(row).toMatchObject({ annotation: 'create', contactId: null });
+    expect(row).not.toHaveProperty('matchedContactName');
+    expect(row).not.toHaveProperty('matchedContactEmail');
+  });
+
+  it('does not link-match through a barred-site contact either', async () => {
+    stubState({
+      contacts: [{ id: EXISTING, orgId: ORG, siteId: BARRED_SITE, name: 'Jane Ops', email: null }],
+      links: [{ contactId: EXISTING, orgId: ORG, system: 'datto_rmm', externalId: 'CT-9' }],
+    });
+    const [row] = await previewContactImport(
+      [{ organizationId: ORG, name: 'Jane Ops', externalId: 'CT-9', externalSystem: 'datto_rmm' }],
+      CONFINED,
+    );
+    expect(row).toMatchObject({ annotation: 'create', contactId: null });
+  });
+
+  it('leaves an unrestricted caller completely unaffected', async () => {
+    stubState({
+      sites: [{ id: BARRED_SITE, orgId: ORG, name: 'Depot' }],
+      contacts: [{ id: EXISTING, orgId: ORG, siteId: BARRED_SITE, name: 'Jane Ops', email: 'jane@acme.example' }],
+    });
+    const rows = await previewContactImport([
+      { organizationId: ORG, site: 'Depot', name: 'Sam' },
+      { organizationId: ORG, name: 'Jane Ops', email: 'jane@acme.example' },
+    ], { partnerId: PARTNER, allowedSiteIds: null });
+    expect(rows.map((r) => r.annotation)).toEqual(['create', 'email-match']);
   });
 });
 

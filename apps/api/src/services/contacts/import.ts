@@ -86,12 +86,29 @@ interface Snapshot {
   contactsByName: Map<string, SnapshotContact[]>;
   /** `orgId + system + externalId` -> contactId. */
   contactByLink: Map<string, string>;
+  /**
+   * The caller's site-axis reach, carried on the snapshot so `resolveRow` —
+   * which sees nothing else about the caller — cannot forget to apply it.
+   */
+  canReachSite: SiteReach;
 }
 
 function pushInto<T>(map: Map<string, T[]>, k: string, value: T): void {
   const list = map.get(k);
   if (list) list.push(value);
   else map.set(k, [value]);
+}
+
+/** Predicate form of the caller's site-axis allowlist; see `ContactImportContext`. */
+export type SiteReach = (siteId: string | null) => boolean;
+
+function siteReachOf(ctx: ContactImportContext): SiteReach {
+  const allowed = ctx.allowedSiteIds ?? null;
+  if (allowed === null) return () => true;
+  const reachable = new Set(allowed);
+  // A null site is an ORG-LEVEL contact and is always in reach — the site
+  // allowlist confines a caller within an org, it does not narrow org reach.
+  return (siteId) => siteId === null || reachable.has(siteId);
 }
 
 /**
@@ -109,6 +126,7 @@ async function loadSnapshot(rows: ContactImportRow[], ctx: ContactImportContext)
     contactsByEmail: new Map(),
     contactsByName: new Map(),
     contactByLink: new Map(),
+    canReachSite: siteReachOf(ctx),
   };
 
   // null/undefined reach means system scope, which is unrestricted. An EMPTY
@@ -177,10 +195,24 @@ async function loadSnapshot(rows: ContactImportRow[], ctx: ContactImportContext)
     return { siteRows: loadedSites, contactRows: loadedContacts, linkRows: loadedLinks };
   }));
 
+  // EVERY site is indexed by name, deliberately, even ones the caller cannot
+  // reach: a row naming a barred site has to resolve far enough for `resolveRow`
+  // to refuse it with a site-access reason. Reporting `No site named "Depot"`
+  // instead would misattribute the refusal to a typo.
   for (const site of siteRows) {
     pushInto(snapshot.sitesByName, key(site.orgId, normalizeContactName(site.name)), site);
   }
+
+  // Contacts, by contrast, are indexed only when the caller can reach their
+  // site. A barred-site contact is therefore never matched and never has its
+  // name or email echoed back in a preview row — invisible in exactly the way
+  // an out-of-reach ORGANIZATION's contacts are, so neither answer is an
+  // existence oracle. The cost is accepted: a row that would have matched one
+  // reads as `create`, and if it also carries an externalId already linked to
+  // that hidden contact its write fails 23505 and is reported `write-failed`
+  // with nothing committed. Both outcomes are fail-closed.
   for (const contact of contactRows) {
+    if (!snapshot.canReachSite(contact.siteId)) continue;
     snapshot.contactById.set(contact.id, contact);
     if (contact.email) {
       pushInto(snapshot.contactsByEmail, key(contact.orgId, contact.email.toLowerCase()), contact);
@@ -190,6 +222,7 @@ async function loadSnapshot(rows: ContactImportRow[], ctx: ContactImportContext)
     }
   }
   for (const link of linkRows) {
+    if (!snapshot.contactById.has(link.contactId)) continue;
     snapshot.contactByLink.set(key(link.orgId, link.system, link.externalId), link.contactId);
   }
   return snapshot;
@@ -325,6 +358,12 @@ function resolveRow(
       return rowConflict(`Multiple sites in ${org.name} are named "${siteName}"`);
     }
     siteId = candidates[0]!.id;
+    // Site-axis confinement. Deliberately a `conflict` and not `org-not-found`:
+    // the ORGANIZATION resolved fine and the caller can see it, so reporting an
+    // org-axis refusal would send them hunting the wrong boundary.
+    if (!snapshot.canReachSite(siteId)) {
+      return rowConflict(`Site "${siteName}" in ${org.name} is outside your site access`);
+    }
   }
 
   const resolved = { ...base, siteId };

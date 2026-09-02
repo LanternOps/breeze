@@ -10,10 +10,11 @@ const { authRef, orgLookup, crudMocks, importMocks, auditSpy, gateState } = vi.h
   gateState: { granted: true, denied: new Set<string>(), mfaSatisfied: true },
   crudMocks: {
     listContacts: vi.fn(),
+    countContacts: vi.fn(),
     createContact: vi.fn(),
     updateContact: vi.fn(),
     deleteContact: vi.fn(),
-    findContactOrgId: vi.fn(),
+    findContactScope: vi.fn(),
   },
   importMocks: {
     previewContactImport: vi.fn(),
@@ -68,10 +69,11 @@ vi.mock('../services/contacts/crud', () => ({
     }
   },
   listContacts: (...a: unknown[]) => crudMocks.listContacts(...a),
+  countContacts: (...a: unknown[]) => crudMocks.countContacts(...a),
   createContact: (...a: unknown[]) => crudMocks.createContact(...a),
   updateContact: (...a: unknown[]) => crudMocks.updateContact(...a),
   deleteContact: (...a: unknown[]) => crudMocks.deleteContact(...a),
-  findContactOrgId: (...a: unknown[]) => crudMocks.findContactOrgId(...a),
+  findContactScope: (...a: unknown[]) => crudMocks.findContactScope(...a),
 }));
 
 vi.mock('../services/contacts/import', () => ({
@@ -90,6 +92,7 @@ import { ContactValidationError } from '../services/contacts/crud';
 const ORG = '11111111-1111-4111-8111-111111111111';
 const OTHER_ORG = '1e1e1e1e-1111-4111-8111-111111111111';
 const SITE = '22222222-2222-4222-8222-222222222222';
+const BARRED_SITE = '2b2b2b2b-2222-4222-8222-222222222222';
 const CONTACT = '33333333-3333-4333-8333-333333333333';
 const PARTNER = 'aaaaaaaa-1111-4111-8111-111111111111';
 
@@ -101,6 +104,10 @@ const DEFAULT_AUTH = {
   accessibleOrgIds: [ORG] as string[] | null,
   orgCondition: () => undefined,
   canAccessOrg: ((id: string) => id === ORG) as (id: string) => boolean,
+  // Site axis. `undefined` is an unrestricted caller (partner/system scope, or
+  // an org user with no sub-org restriction) — the shape authMiddleware builds.
+  allowedSiteIds: undefined as string[] | undefined,
+  canAccessSite: undefined as ((siteId: string | null | undefined) => boolean) | undefined,
 };
 
 function makeApp() {
@@ -141,6 +148,7 @@ beforeEach(() => {
   gateState.denied.clear();
   gateState.mfaSatisfied = true;
   orgLookup.mockResolvedValue([{ id: ORG }]);
+  crudMocks.countContacts.mockResolvedValue(0);
 });
 
 describe('permission and MFA gating', () => {
@@ -153,7 +161,7 @@ describe('permission and MFA gating', () => {
   ];
 
   it.each(writeRequests)('403s %s without organizations:write', async (_label, path, init) => {
-    crudMocks.findContactOrgId.mockResolvedValue(ORG);
+    crudMocks.findContactScope.mockResolvedValue({ orgId: ORG, siteId: null });
     gateState.denied.add('organizations:write');
     const res = await makeApp().request(path, init);
     expect(res.status).toBe(403);
@@ -172,7 +180,7 @@ describe('permission and MFA gating', () => {
   });
 
   it.each(writeRequests)('403s %s when MFA is not satisfied', async (_label, path, init) => {
-    crudMocks.findContactOrgId.mockResolvedValue(ORG);
+    crudMocks.findContactScope.mockResolvedValue({ orgId: ORG, siteId: null });
     gateState.mfaSatisfied = false;
     const res = await makeApp().request(path, init);
     expect(res.status).toBe(403);
@@ -199,12 +207,157 @@ describe('permission and MFA gating', () => {
   });
 });
 
-describe('GET /organizations/:id/contacts', () => {
-  it('returns the org contacts', async () => {
-    crudMocks.listContacts.mockResolvedValue([CONTACT_ROW]);
+describe('site confinement', () => {
+  // `allowedSiteIds` is app-layer only: RLS on `contacts` is the ORG axis, so a
+  // sub-org-restricted user would otherwise read and write every sibling site's
+  // contacts. Org-level contacts (site_id IS NULL) stay reachable — the site
+  // gate confines a caller WITHIN an org, it does not remove their org reach.
+  function setConfined(overrides: Partial<typeof DEFAULT_AUTH> = {}) {
+    setAuth({
+      scope: 'organization',
+      orgId: ORG,
+      accessibleOrgIds: [ORG],
+      allowedSiteIds: [SITE],
+      canAccessSite: (siteId) => siteId === SITE,
+      ...overrides,
+    });
+  }
+
+  it('hands the list the caller site allowlist so it can intersect', async () => {
+    setConfined();
+    crudMocks.listContacts.mockResolvedValue([]);
     const res = await makeApp().request(`/organizations/${ORG}/contacts`);
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ data: [CONTACT_ROW] });
+    expect(crudMocks.listContacts.mock.calls[0]![2]).toMatchObject({ allowedSiteIds: [SITE] });
+  });
+
+  it('passes an EMPTY allowlist through, leaving only org-level contacts', async () => {
+    setConfined({ allowedSiteIds: [], canAccessSite: () => false });
+    crudMocks.listContacts.mockResolvedValue([]);
+    await makeApp().request(`/organizations/${ORG}/contacts`);
+    // An empty array must reach the service as an empty array — degrading it to
+    // "no filter" would hand a caller who can reach no site every site's rows.
+    expect(crudMocks.listContacts.mock.calls[0]![2]).toMatchObject({ allowedSiteIds: [] });
+  });
+
+  it('sends no site filter at all for an unrestricted caller', async () => {
+    crudMocks.listContacts.mockResolvedValue([]);
+    await makeApp().request(`/organizations/${ORG}/contacts`);
+    expect(crudMocks.listContacts.mock.calls[0]![2]).not.toHaveProperty('allowedSiteIds');
+  });
+
+  it('403s a ?siteId= filter naming a barred site', async () => {
+    // Matches the sibling PATCH /orgs/sites/:id, which answers a barred site
+    // with 403 "Access to this site denied" rather than an empty result.
+    setConfined();
+    const res = await makeApp().request(`/organizations/${ORG}/contacts?siteId=${BARRED_SITE}`);
+    expect(res.status).toBe(403);
+    expect(crudMocks.listContacts).not.toHaveBeenCalled();
+  });
+
+  it('allows a ?siteId= filter naming an allowed site, and siteId=none', async () => {
+    setConfined();
+    crudMocks.listContacts.mockResolvedValue([]);
+    expect((await makeApp().request(`/organizations/${ORG}/contacts?siteId=${SITE}`)).status).toBe(200);
+    expect((await makeApp().request(`/organizations/${ORG}/contacts?siteId=none`)).status).toBe(200);
+  });
+
+  it('403s a create pinned to a barred site before any write', async () => {
+    setConfined();
+    const res = await makeApp().request(
+      `/organizations/${ORG}/contacts`, json({ name: 'Jane', siteId: BARRED_SITE }),
+    );
+    expect(res.status).toBe(403);
+    expect(crudMocks.createContact).not.toHaveBeenCalled();
+    expect(auditSpy).not.toHaveBeenCalled();
+  });
+
+  it('still creates an org-level contact for a site-confined caller', async () => {
+    setConfined();
+    crudMocks.createContact.mockResolvedValue(CONTACT_ROW);
+    const res = await makeApp().request(`/organizations/${ORG}/contacts`, json({ name: 'Jane Ops' }));
+    expect(res.status).toBe(201);
+  });
+
+  it('404s a PATCH on a contact pinned to a barred site, disclosing nothing', async () => {
+    setConfined();
+    crudMocks.findContactScope.mockResolvedValue({ orgId: ORG, siteId: BARRED_SITE });
+    const res = await makeApp().request(`/contacts/${CONTACT}`, json({ title: 'CFO' }, 'PATCH'));
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Contact not found' });
+    expect(crudMocks.updateContact).not.toHaveBeenCalled();
+  });
+
+  it('403s a PATCH moving a reachable contact ONTO a barred site', async () => {
+    setConfined();
+    crudMocks.findContactScope.mockResolvedValue({ orgId: ORG, siteId: SITE });
+    const res = await makeApp().request(`/contacts/${CONTACT}`, json({ siteId: BARRED_SITE }, 'PATCH'));
+    expect(res.status).toBe(403);
+    expect(crudMocks.updateContact).not.toHaveBeenCalled();
+  });
+
+  it('allows a PATCH that leaves the contact inside the allowed site', async () => {
+    setConfined();
+    crudMocks.findContactScope.mockResolvedValue({ orgId: ORG, siteId: SITE });
+    crudMocks.updateContact.mockResolvedValue({ ...CONTACT_ROW, siteId: SITE, title: 'CFO' });
+    const res = await makeApp().request(`/contacts/${CONTACT}`, json({ title: 'CFO' }, 'PATCH'));
+    expect(res.status).toBe(200);
+  });
+
+  it('404s a DELETE on a contact pinned to a barred site', async () => {
+    setConfined();
+    crudMocks.findContactScope.mockResolvedValue({ orgId: ORG, siteId: BARRED_SITE });
+    const res = await makeApp().request(`/contacts/${CONTACT}`, { method: 'DELETE' });
+    expect(res.status).toBe(404);
+    expect(crudMocks.deleteContact).not.toHaveBeenCalled();
+  });
+
+  it('leaves an org-level contact writable by a site-confined caller', async () => {
+    setConfined();
+    crudMocks.findContactScope.mockResolvedValue({ orgId: ORG, siteId: null });
+    crudMocks.deleteContact.mockResolvedValue(CONTACT_ROW);
+    expect((await makeApp().request(`/contacts/${CONTACT}`, { method: 'DELETE' })).status).toBe(200);
+  });
+
+  it('hands the importer the caller site allowlist alongside the org allowlist', async () => {
+    setConfined();
+    importMocks.commitContactImport.mockResolvedValue({ imported: [], updated: [], skipped: [], errors: [] });
+    await makeApp().request('/contacts/import', json({ rows: [{ organizationId: ORG, name: 'Jane' }] }));
+    expect(importMocks.commitContactImport.mock.calls[0]![1]).toEqual({
+      partnerId: PARTNER, accessibleOrgIds: [ORG], allowedSiteIds: [SITE],
+    });
+  });
+});
+
+describe('GET /organizations/:id/contacts', () => {
+  it('returns the org contacts in the paged envelope GET /orgs/sites uses', async () => {
+    crudMocks.listContacts.mockResolvedValue([CONTACT_ROW]);
+    crudMocks.countContacts.mockResolvedValue(1);
+    const res = await makeApp().request(`/organizations/${ORG}/contacts`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      data: [CONTACT_ROW],
+      pagination: { page: 1, limit: 50, total: 1 },
+    });
+  });
+
+  it('honours page and limit, and reports the unpaged total', async () => {
+    crudMocks.listContacts.mockResolvedValue([]);
+    crudMocks.countContacts.mockResolvedValue(137);
+    const res = await makeApp().request(`/organizations/${ORG}/contacts?page=3&limit=25`);
+
+    expect(await res.json()).toMatchObject({ pagination: { page: 3, limit: 25, total: 137 } });
+    // The service takes the window, so the handler cannot silently return the
+    // whole table while reporting a page.
+    expect(crudMocks.listContacts.mock.calls[0]![3]).toEqual({ limit: 25, offset: 50 });
+    // The count runs against the SAME filters, never a bare org count.
+    expect(crudMocks.countContacts.mock.calls[0]![2]).toEqual(crudMocks.listContacts.mock.calls[0]![2]);
+  });
+
+  it('clamps limit to the shared 100 cap and floors page at 1', async () => {
+    crudMocks.listContacts.mockResolvedValue([]);
+    await makeApp().request(`/organizations/${ORG}/contacts?page=0&limit=5000`);
+    expect(crudMocks.listContacts.mock.calls[0]![3]).toEqual({ limit: 100, offset: 0 });
   });
 
   it('passes the siteId and role filters through to the service', async () => {
@@ -293,7 +446,7 @@ describe('POST /organizations/:id/contacts', () => {
 
 describe('PATCH /contacts/:contactId', () => {
   it('updates the contact and audits the changed fields', async () => {
-    crudMocks.findContactOrgId.mockResolvedValue(ORG);
+    crudMocks.findContactScope.mockResolvedValue({ orgId: ORG, siteId: null });
     crudMocks.updateContact.mockResolvedValue({ ...CONTACT_ROW, title: 'CFO' });
 
     const res = await makeApp().request(`/contacts/${CONTACT}`, json({ title: 'CFO' }, 'PATCH'));
@@ -309,18 +462,18 @@ describe('PATCH /contacts/:contactId', () => {
   it('404s a malformed contact id without touching the database', async () => {
     const res = await makeApp().request('/contacts/not-a-uuid', json({ title: 'CFO' }, 'PATCH'));
     expect(res.status).toBe(404);
-    expect(crudMocks.findContactOrgId).not.toHaveBeenCalled();
+    expect(crudMocks.findContactScope).not.toHaveBeenCalled();
   });
 
   it('404s when the contact does not exist', async () => {
-    crudMocks.findContactOrgId.mockResolvedValue(null);
+    crudMocks.findContactScope.mockResolvedValue(null);
     const res = await makeApp().request(`/contacts/${CONTACT}`, json({ title: 'CFO' }, 'PATCH'));
     expect(res.status).toBe(404);
     expect(crudMocks.updateContact).not.toHaveBeenCalled();
   });
 
   it('404s when the contact belongs to an organization the caller cannot reach', async () => {
-    crudMocks.findContactOrgId.mockResolvedValue(OTHER_ORG);
+    crudMocks.findContactScope.mockResolvedValue({ orgId: OTHER_ORG, siteId: null });
     const res = await makeApp().request(`/contacts/${CONTACT}`, json({ title: 'CFO' }, 'PATCH'));
     expect(res.status).toBe(404);
     expect(crudMocks.updateContact).not.toHaveBeenCalled();
@@ -328,7 +481,7 @@ describe('PATCH /contacts/:contactId', () => {
   });
 
   it('400s an empty patch', async () => {
-    crudMocks.findContactOrgId.mockResolvedValue(ORG);
+    crudMocks.findContactScope.mockResolvedValue({ orgId: ORG, siteId: null });
     const res = await makeApp().request(`/contacts/${CONTACT}`, json({}, 'PATCH'));
     expect(res.status).toBe(400);
     expect(crudMocks.updateContact).not.toHaveBeenCalled();
@@ -337,7 +490,7 @@ describe('PATCH /contacts/:contactId', () => {
 
 describe('DELETE /contacts/:contactId', () => {
   it('deletes the contact and audits it', async () => {
-    crudMocks.findContactOrgId.mockResolvedValue(ORG);
+    crudMocks.findContactScope.mockResolvedValue({ orgId: ORG, siteId: null });
     crudMocks.deleteContact.mockResolvedValue(CONTACT_ROW);
 
     const res = await makeApp().request(`/contacts/${CONTACT}`, { method: 'DELETE' });
@@ -350,7 +503,7 @@ describe('DELETE /contacts/:contactId', () => {
   });
 
   it('404s and audits nothing when the contact is already gone', async () => {
-    crudMocks.findContactOrgId.mockResolvedValue(ORG);
+    crudMocks.findContactScope.mockResolvedValue({ orgId: ORG, siteId: null });
     crudMocks.deleteContact.mockResolvedValue(null);
     const res = await makeApp().request(`/contacts/${CONTACT}`, { method: 'DELETE' });
     expect(res.status).toBe(404);
@@ -369,7 +522,7 @@ describe('POST /contacts/import/preview', () => {
     // The importer writes in a system DB context, so the caller's own org
     // allowlist has to travel with the request or nothing bounds the writes.
     expect(importMocks.previewContactImport.mock.calls[0]![1]).toEqual({
-      partnerId: PARTNER, accessibleOrgIds: [ORG],
+      partnerId: PARTNER, accessibleOrgIds: [ORG], allowedSiteIds: null,
     });
   });
 
@@ -405,7 +558,7 @@ describe('POST /contacts/import/preview', () => {
     );
     expect(res.status).toBe(200);
     expect(importMocks.previewContactImport.mock.calls[0]![1]).toEqual({
-      partnerId: PARTNER, accessibleOrgIds: [ORG],
+      partnerId: PARTNER, accessibleOrgIds: [ORG], allowedSiteIds: null,
     });
   });
 
@@ -469,7 +622,7 @@ describe('POST /contacts/import', () => {
     importMocks.commitContactImport.mockResolvedValue({ imported: [], updated: [], skipped: [], errors: [] });
     await makeApp().request('/contacts/import', json({ rows: [{ organizationId: ORG, name: 'Jane' }] }));
     expect(importMocks.commitContactImport.mock.calls[0]![1]).toEqual({
-      partnerId: PARTNER, accessibleOrgIds: [ORG],
+      partnerId: PARTNER, accessibleOrgIds: [ORG], allowedSiteIds: null,
     });
     expect(importMocks.commitContactImport.mock.calls[0]![2]).toEqual({ userId: 'u-1' });
   });

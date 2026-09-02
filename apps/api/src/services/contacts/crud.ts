@@ -17,9 +17,9 @@
  * together or not at all.
  */
 
-import { and, arrayContains, asc, eq, isNull, ne, type SQL } from 'drizzle-orm';
+import { and, arrayContains, asc, eq, inArray, isNull, ne, or, sql, type SQL } from 'drizzle-orm';
 import { contacts, type Contact } from '../../db/schema/contacts';
-import { sites } from '../../db/schema/orgs';
+import { organizations, sites } from '../../db/schema/orgs';
 import { replaceBillingContact, replaceSiteContact, type ContactExecutor } from './compat';
 import { CONTACT_ROLES, type ContactRole } from './types';
 
@@ -33,6 +33,18 @@ export interface ContactListFilters {
   /** A string pins to that site; `null` selects org-level contacts only. */
   siteId?: string | null;
   role?: string;
+  /**
+   * The caller's site-axis allowlist (`AuthContext.allowedSiteIds`). Omit for
+   * an unrestricted caller; an array confines the result to
+   * `site_id IS NULL OR site_id = ANY(...)`, and an EMPTY array therefore
+   * leaves ONLY the org-level contacts.
+   *
+   * Load-bearing, not belt-and-braces: RLS on `contacts` is the ORG axis only,
+   * so a sub-org-restricted user reads every sibling site's contacts without
+   * this. Org-level contacts stay visible on purpose — the site allowlist
+   * confines a caller WITHIN an org, it does not narrow their org reach.
+   */
+  allowedSiteIds?: string[];
 }
 
 export interface CreateContactInput {
@@ -216,11 +228,7 @@ export async function reprojectPrimaryContact(
   }
 }
 
-export async function listContacts(
-  exec: ContactExecutor,
-  orgId: string,
-  filters: ContactListFilters = {},
-): Promise<ContactRecord[]> {
+function contactListWhere(orgId: string, filters: ContactListFilters): SQL {
   const conditions: SQL[] = [eq(contacts.orgId, orgId)];
   if (filters.siteId === null) {
     conditions.push(isNull(contacts.siteId));
@@ -231,12 +239,46 @@ export async function listContacts(
     // roles is text[]: membership is array containment, not equality.
     conditions.push(arrayContains(contacts.roles, [filters.role]));
   }
+  if (filters.allowedSiteIds) {
+    // `inArray` with an empty list compiles to a false constant, which is the
+    // wanted reading: a caller who can reach no site still sees the org-level
+    // contacts and nothing else.
+    conditions.push(
+      filters.allowedSiteIds.length === 0
+        ? isNull(contacts.siteId)
+        : or(isNull(contacts.siteId), inArray(contacts.siteId, filters.allowedSiteIds))!,
+    );
+  }
+  return and(...conditions)!;
+}
 
-  return exec
+export async function listContacts(
+  exec: ContactExecutor,
+  orgId: string,
+  filters: ContactListFilters = {},
+  page: { limit: number; offset: number } | null = null,
+): Promise<ContactRecord[]> {
+  const query = exec
     .select(contactColumns())
     .from(contacts)
-    .where(and(...conditions))
-    .orderBy(asc(contacts.name), asc(contacts.createdAt)) as Promise<ContactRecord[]>;
+    .where(contactListWhere(orgId, filters))
+    // `id` last so the order is total: two contacts can share a name and a
+    // creation timestamp, and a non-total order makes paging drop/repeat rows.
+    .orderBy(asc(contacts.name), asc(contacts.createdAt), asc(contacts.id));
+  return (page ? query.limit(page.limit).offset(page.offset) : query) as Promise<ContactRecord[]>;
+}
+
+/** Total matching `listContacts` with the same filters, for the page envelope. */
+export async function countContacts(
+  exec: ContactExecutor,
+  orgId: string,
+  filters: ContactListFilters = {},
+): Promise<number> {
+  const [row] = await exec
+    .select({ count: sql<number>`count(*)` })
+    .from(contacts)
+    .where(contactListWhere(orgId, filters));
+  return Number((row as { count: number | string } | undefined)?.count ?? 0);
 }
 
 export async function getContact(
@@ -253,21 +295,26 @@ export async function getContact(
 }
 
 /**
- * The organization a contact belongs to, for the `/contacts/:id` routes, which
- * carry no org in their path. Returns null when no such contact is visible —
- * under RLS that already collapses "not yours" into "not there", and the
- * routes re-assert the caller's org reach on top.
+ * The organization AND site a contact belongs to, for the `/contacts/:id`
+ * routes, which carry neither in their path. Returns null when no such contact
+ * is visible — under RLS that already collapses "not yours" into "not there",
+ * and the routes re-assert the caller's org reach on top.
+ *
+ * The site comes back with the org because the site axis is app-layer only:
+ * the route cannot decide whether a site-confined caller may touch this contact
+ * without knowing which site it is pinned to, and a second query for that would
+ * be a second chance to forget the check.
  */
-export async function findContactOrgId(
+export async function findContactScope(
   exec: ContactExecutor,
   contactId: string,
-): Promise<string | null> {
+): Promise<{ orgId: string; siteId: string | null } | null> {
   const [row] = await exec
-    .select({ orgId: contacts.orgId })
+    .select({ orgId: contacts.orgId, siteId: contacts.siteId })
     .from(contacts)
     .where(eq(contacts.id, contactId))
     .limit(1);
-  return (row as { orgId: string } | undefined)?.orgId ?? null;
+  return (row as { orgId: string; siteId: string | null } | undefined) ?? null;
 }
 
 export async function createContact(
