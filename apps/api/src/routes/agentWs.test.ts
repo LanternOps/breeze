@@ -204,6 +204,17 @@ vi.mock('../services/redis', () => ({
   getRedis: vi.fn(() => null)
 }));
 
+vi.mock('../config/partnerTrustMode', () => ({
+  partnerTrustMode: vi.fn(() => 'off'),
+}));
+
+vi.mock('../services/partnerTrust', () => ({
+  evaluateCapability: vi.fn(async () => ({ allow: true })),
+  isLifecycleCommand: vi.fn((type: string) => type === 'self_uninstall'),
+  loadTrustState: vi.fn(async () => ({ trustState: 'trusted', probationEnrollments: 0 })),
+  partnerIdForDevice: vi.fn(async () => 'p1'),
+}));
+
 // Wave 3.5b (#4084): presence lifecycle wiring. Defaults are chosen so every
 // OTHER describe block in this file — which never asserts on presence — sees
 // harmless, non-throwing behaviour: refresh "succeeds" so the self-heal branch
@@ -330,6 +341,8 @@ import {
   disconnectAgent,
   isAgentConnected,
   sendCommandToAgent,
+  handleTrustChanged,
+  registerConnection,
   processOrphanedCommandResult,
   __resetCrossTenantDropsForTest,
   AGENT_WS_CAPABILITIES,
@@ -337,6 +350,8 @@ import {
 import { sendCommandToAgentAwaitResult } from '../services/agentCommandAwait';
 import { applySoftwareInstallResult } from '../services/softwareDeploymentResult';
 import { isRedisAvailable } from '../services/redis';
+import { partnerTrustMode } from '../config/partnerTrustMode';
+import { evaluateCapability } from '../services/partnerTrust';
 import {
   clearAgentPresence,
   clearAgentPresenceUnfenced,
@@ -418,6 +433,45 @@ async function connectedAgent(
   await connectAgentSocket(handlers, ws);
   return { handlers, ws };
 }
+
+describe('partner-trust WebSocket fast path', () => {
+  beforeEach(() => {
+    vi.mocked(partnerTrustMode).mockReturnValue('enforce');
+    vi.mocked(evaluateCapability).mockClear();
+  });
+
+  it('fast path refuses a gated command for a probation connection and returns false', () => {
+    const fakeWs = wsMock();
+    registerConnection('trust-agent-1', fakeWs, { partnerId: 'p1', trustState: 'probation' });
+
+    expect(sendCommandToAgent('trust-agent-1', { id: 'c1', type: 'script', payload: {} })).toBe(false);
+    expect(fakeWs.send).not.toHaveBeenCalled();
+  });
+
+  it('fast path sends lifecycle commands regardless of trust', () => {
+    const fakeWs = wsMock();
+    registerConnection('trust-agent-2', fakeWs, { partnerId: 'p1', trustState: 'probation' });
+
+    expect(sendCommandToAgent('trust-agent-2', {
+      id: 'c2',
+      type: 'self_uninstall',
+      payload: {},
+    })).toBe(true);
+    expect(fakeWs.send).toHaveBeenCalledOnce();
+  });
+
+  it('a partner-trust:changed message updates every cached connection for that partner', async () => {
+    const firstWs = wsMock();
+    const secondWs = wsMock();
+    registerConnection('trust-agent-3', firstWs, { partnerId: 'p1', trustState: 'probation' });
+    registerConnection('trust-agent-4', secondWs, { partnerId: 'p1', trustState: 'probation' });
+
+    await handleTrustChanged({ partnerId: 'p1', trustState: 'trusted' });
+
+    expect(sendCommandToAgent('trust-agent-3', { id: 'c3', type: 'script', payload: {} })).toBe(true);
+    expect(sendCommandToAgent('trust-agent-4', { id: 'c4', type: 'script', payload: {} })).toBe(true);
+  });
+});
 
 describe('validateAgentToken — tenant-status gate', () => {
   const TOKEN = 'brz_ws_test_token';

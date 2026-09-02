@@ -3,8 +3,9 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { audit, state } = vi.hoisted(() => ({
+const { audit, publish, state } = vi.hoisted(() => ({
   audit: vi.fn(async () => {}),
+  publish: vi.fn(async () => 1),
   state: {
     trustState: 'probation' as 'probation' | 'trusted' | 'restricted',
     probationEnrollments: 0,
@@ -13,6 +14,7 @@ const { audit, state } = vi.hoisted(() => ({
 }));
 
 vi.mock('./auditService', () => ({ createAuditLog: audit }));
+vi.mock('./redis', () => ({ getRedis: vi.fn(() => ({ publish })) }));
 vi.mock('../config/partnerTrustMode', () => ({ partnerTrustMode: vi.fn(() => 'enforce') }));
 vi.mock('../db', () => ({
   db: {},
@@ -31,7 +33,9 @@ import {
   GATED_COMMAND_TYPES,
   isLifecycleCommand,
   LIFECYCLE_COMMAND_TYPES,
+  setTrustState,
 } from './partnerTrust';
+import { writeTrust } from './partnerTrust.repo';
 
 function sourceFilesUnder(directory: string): string[] {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
@@ -141,9 +145,25 @@ function agentDispatcherCommandTypes(): { commandTypes: string[]; unresolvedCons
 
 beforeEach(() => {
   audit.mockClear();
+  publish.mockClear();
+  vi.mocked(writeTrust).mockClear();
   state.trustState = 'probation';
   state.probationEnrollments = 0;
   vi.mocked(partnerTrustMode).mockReturnValue('enforce');
+});
+
+describe('setTrustState', () => {
+  it('publishes the new trust state after persisting it', async () => {
+    await setTrustState('p1', 'trusted', 'review approved', 'user-1');
+
+    expect(writeTrust).toHaveBeenCalledWith('p1', 'trusted', 'review approved', 'user-1');
+    expect(publish).toHaveBeenCalledWith(
+      'partner-trust:changed',
+      JSON.stringify({ partnerId: 'p1', trustState: 'trusted' }),
+    );
+    expect(vi.mocked(writeTrust).mock.invocationCallOrder[0])
+      .toBeLessThan(publish.mock.invocationCallOrder[0]!);
+  });
 });
 
 describe('evaluateCapability', () => {
