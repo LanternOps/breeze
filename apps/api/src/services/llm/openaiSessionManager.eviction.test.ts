@@ -31,7 +31,14 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
 
-const { dbUpdateMock, capturedExpires, mockState, contextStore, captureExceptionMock } =
+const {
+  dbUpdateMock,
+  capturedExpires,
+  mockState,
+  contextStore,
+  captureExceptionMock,
+  captureMessageMock,
+} =
   vi.hoisted(() => {
     const { AsyncLocalStorage } = require('node:async_hooks') as typeof import('node:async_hooks');
     return {
@@ -44,6 +51,8 @@ const { dbUpdateMock, capturedExpires, mockState, contextStore, captureException
       mockState: {
         /** Context in force at the moment the UPDATE is issued. */
         effectiveContext: null as unknown,
+        /** Row count the next UPDATE resolves with (0 = the RLS signature). */
+        nextRowCount: 1,
       },
       /**
        * The REAL primitive the db module uses, not a hand-rolled stand-in. A
@@ -54,6 +63,7 @@ const { dbUpdateMock, capturedExpires, mockState, contextStore, captureException
        */
       contextStore: new AsyncLocalStorage<unknown>(),
       captureExceptionMock: vi.fn(),
+      captureMessageMock: vi.fn(),
     };
   });
 
@@ -78,7 +88,7 @@ vi.mock('../../db', () => ({
 
 vi.mock('../sentry', () => ({
   captureException: captureExceptionMock,
-  captureMessage: vi.fn(),
+  captureMessage: captureMessageMock,
 }));
 
 import { OpenAISessionManager } from './openaiSessionManager';
@@ -132,6 +142,8 @@ describe('OpenAISessionManager eviction (#4384)', () => {
   beforeEach(() => {
     capturedExpires.length = 0;
     mockState.effectiveContext = null;
+    mockState.nextRowCount = 1;
+    captureMessageMock.mockClear();
     captureExceptionMock.mockClear();
     dbUpdateMock.mockReset();
     dbUpdateMock.mockImplementation(() => ({
@@ -142,7 +154,7 @@ describe('OpenAISessionManager eviction (#4384)', () => {
             set: values,
             where: clause,
           });
-          return Promise.resolve([]);
+          return Promise.resolve({ count: mockState.nextRowCount });
         },
       }),
     }));
@@ -301,7 +313,11 @@ describe('OpenAISessionManager eviction (#4384)', () => {
       expectExpiredWrite(0, 'idled-out', 'org-idle');
     });
 
-    it('LRU eviction expires the row', async () => {
+    it('LRU eviction does NOT expire the row — a capacity drop stays resumable', async () => {
+      // History lives in ai_messages, so the user's next message rebuilds the
+      // session transparently. Stamping 'expired' would turn a transient server
+      // capacity condition into a hard 410 for a live conversation, since
+      // runPreFlightChecks rejects on status before getOrCreate ever runs.
       seed(manager, 'lru-victim', 'org-lru', { idleFor: 10 * MINUTE, state: 'idle' });
       seed(manager, 'survivor', 'org-keep', { idleFor: 1 * MINUTE, state: 'idle' });
 
@@ -309,8 +325,7 @@ describe('OpenAISessionManager eviction (#4384)', () => {
       await flush();
 
       expect(manager.get('lru-victim')).toBeUndefined();
-      expect(capturedExpires).toHaveLength(1);
-      expectExpiredWrite(0, 'lru-victim', 'org-lru');
+      expect(capturedExpires).toHaveLength(0);
     });
 
     it('24h age eviction still expires the row', async () => {
@@ -327,13 +342,15 @@ describe('OpenAISessionManager eviction (#4384)', () => {
     it('expires the evicted session under ITS OWN org scope, escaping the request context', async () => {
       // Reproduces the production shape: getOrCreate() runs inside the
       // REQUESTER's context, while the LRU victim belongs to another tenant.
-      seed(manager, 'victim', 'org-victim', { idleFor: 10 * MINUTE, state: 'idle' });
+      seed(manager, 'victim', 'org-victim', { idleFor: 3 * HOUR, state: 'idle' });
 
-      // The requester's context is genuinely open around the eviction, exactly
-      // as the auth middleware leaves it around getOrCreate().
+      // A requester context is genuinely open around the sweep. That is not
+      // hypothetical: the manager is a lazy singleton built inside an AI
+      // request, so its eviction timer inherits that request's context on every
+      // tick unless the constructor escapes it.
       contextStore.run(
         { scope: 'organization', orgId: 'org-requester', accessibleOrgIds: ['org-requester'] },
-        () => internals(manager).evictLeastRecentlyActive(),
+        () => internals(manager).evictStaleSessions(),
       );
       await flush();
 
@@ -367,6 +384,30 @@ describe('OpenAISessionManager eviction (#4384)', () => {
       const orgs = capturedExpires.map((w) => (w.context as { orgId: string }).orgId).sort();
       expect(orgs).toEqual(['org-a', 'org-b', 'org-c']);
       expect(orgs).not.toContain('org-requester');
+    });
+
+    it('surfaces a zero-row expire — the RLS-denial signature is otherwise silent', async () => {
+      // A cross-tenant UPDATE does not raise under forced RLS; it matches zero
+      // rows and reports success. If nothing reads the count, a regression that
+      // reinstates the context leak is invisible in production.
+      mockState.nextRowCount = 0;
+      seed(manager, 'ghost', 'org-a', { idleFor: 3 * HOUR, state: 'idle' });
+
+      internals(manager).evictStaleSessions();
+      await vi.waitFor(() => expect(captureMessageMock).toHaveBeenCalledTimes(1));
+
+      expect(captureMessageMock.mock.calls[0]![1]).toMatchObject({
+        eventCode: 'db_write_expecting_rows_zero',
+      });
+    });
+
+    it('stays quiet when the expire actually lands', async () => {
+      seed(manager, 'real', 'org-a', { idleFor: 3 * HOUR, state: 'idle' });
+
+      internals(manager).evictStaleSessions();
+      await vi.waitFor(() => expect(capturedExpires).toHaveLength(1));
+
+      expect(captureMessageMock).not.toHaveBeenCalled();
     });
 
     it('does not expire rows for sessions it leaves in place', async () => {
