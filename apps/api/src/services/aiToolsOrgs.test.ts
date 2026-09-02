@@ -645,15 +645,36 @@ describe('manage_organizations add_contact', () => {
     expect(denied.error).toMatch(/cannot access another organization/i);
   });
 
-  it('requires a name', async () => {
+  it('does not require a name — an email-only contact is passed through to createContact', async () => {
+    mockCreateContact.mockResolvedValueOnce(contactRow({ name: null, email: 'nameless@customer.example' }));
     const out = JSON.parse(
       await getTools().manage.handler(
         { action: 'add_contact', orgId: ORG_1, email: 'nameless@customer.example' },
         partnerAuth()
       )
     );
-    expect(out.error).toMatch(/name is required/i);
-    expect(mockCreateContact).not.toHaveBeenCalled();
+    expect(out.contact.email).toBe('nameless@customer.example');
+    expect(mockCreateContact).toHaveBeenCalledWith(
+      db,
+      expect.objectContaining({ orgId: ORG_1, name: undefined, email: 'nameless@customer.example' }),
+      { userId: PARTNER_USER_ID }
+    );
+  });
+
+  // `name` is nullable (contacts.name) and contacts_identifiable_chk only
+  // requires ONE of name/email/phone/mobile — createContact enforces that
+  // invariant itself (code 'no-identifier'); the tool must surface it as a
+  // structured error rather than let it become an uncaught 500.
+  it('surfaces createContact\'s "no-identifier" refusal as a structured tool error, not a 500', async () => {
+    mockCreateContact.mockRejectedValueOnce(
+      new ContactValidationError('A contact needs at least one of name, email, phone, or mobile', 'no-identifier')
+    );
+    const out = JSON.parse(
+      await getTools().manage.handler({ action: 'add_contact', orgId: ORG_1 }, partnerAuth())
+    );
+    expect(out.code).toBe('no-identifier');
+    expect(out.error).toMatch(/at least one of name, email, phone, or mobile/i);
+    expect(writeAuditEvent).not.toHaveBeenCalled();
   });
 
   it('surfaces a ContactValidationError from the CRUD service as a structured tool error', async () => {

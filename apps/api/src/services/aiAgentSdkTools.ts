@@ -2241,7 +2241,7 @@ export function createBreezeMcpServer(
 
     tool(
       'manage_organizations',
-      'Create and manage organizations, sites, and contacts (new-customer intake). Actions: create_org (name required; creates the org under the caller\'s partner with a default "Main Office" site — partner scope only), update_org (name/status patch), create_site (orgId + name + optional address), add_contact (orgId + name required; optional email/phone/mobile/title/roles/siteId/isPrimary — creates a first-class contact on the organization or one of its sites). create_org, update_org, create_site, and add_contact require approval.',
+      'Create and manage organizations, sites, and contacts (new-customer intake). Actions: create_org (name required; creates the org under the caller\'s partner with a default "Main Office" site — partner scope only), update_org (name/status patch), create_site (orgId + name + optional address), add_contact (orgId required; at least one of name/email/phone/mobile required — mirrors contacts_identifiable_chk; optional title/roles/siteId/isPrimary — creates a first-class contact on the organization or one of its sites). create_org, update_org, create_site, and add_contact require approval.',
       {
         action: z.enum(['create_org', 'update_org', 'create_site', 'add_contact']),
         orgId: uuid.optional(),

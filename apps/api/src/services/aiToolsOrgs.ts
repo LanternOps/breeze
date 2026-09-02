@@ -472,9 +472,6 @@ async function handleAddContact(
     return jsonError(resolved.error ?? 'orgId is required for add_contact');
   }
 
-  const name = typeof input.name === 'string' ? input.name.trim() : '';
-  if (!name) return jsonError('name is required for add_contact');
-
   const roles = Array.isArray(input.roles)
     ? input.roles.filter((role): role is string => typeof role === 'string')
     : undefined;
@@ -483,6 +480,10 @@ async function handleAddContact(
   // routes/orgContacts.ts calls — under the request's own DB access context,
   // so validation, role checks, and the legacy-jsonb re-projection all live
   // there, not here. No direct Drizzle write into `contacts` from this file.
+  // Deliberately no local "name is required" check: `name` is nullable
+  // (contacts.name) and createContact's own `contacts_identifiable_chk`
+  // mirror already requires at least one of name/email/phone/mobile —
+  // duplicating that here would just be a second place to keep in sync.
   let contact;
   try {
     contact = await createContact(
@@ -490,7 +491,7 @@ async function handleAddContact(
       {
         orgId: resolved.orgId,
         siteId: typeof input.siteId === 'string' ? input.siteId : undefined,
-        name,
+        name: typeof input.name === 'string' ? input.name : undefined,
         email: typeof input.email === 'string' ? input.email : undefined,
         phone: typeof input.phone === 'string' ? input.phone : undefined,
         mobile: typeof input.mobile === 'string' ? input.mobile : undefined,
@@ -502,9 +503,10 @@ async function handleAddContact(
     );
   } catch (err) {
     // A ContactValidationError is the caller's fault (bad role, site not in
-    // org, no identifier) — surface it as a structured tool error the model
-    // can act on, the same shape the /organizations/:id/contacts route uses.
-    // Anything else propagates to the dispatcher's generic catch below.
+    // org, or no identifying field at all — mirrors contacts_identifiable_chk)
+    // — surface it as a structured tool error the model can act on, the same
+    // shape the /organizations/:id/contacts route uses. Anything else
+    // propagates to the dispatcher's generic catch below.
     if (err instanceof ContactValidationError) return jsonError(err.message, err.code);
     throw err;
   }
@@ -560,8 +562,9 @@ export function registerOrgTools(aiTools: Map<string, AiTool>): void {
         'Create and manage organizations, sites, and contacts (new-customer intake). Actions: create_org (name required; creates the ' +
         'org under the caller\'s partner WITH a default "Main Office" site — partner scope only), update_org (name/status ' +
         'patch; suspending or churning an org severs its agents), create_site (orgId + name + optional address object), ' +
-        'add_contact (orgId + name required; optional email, phone, mobile, title, roles, siteId, isPrimary — creates a ' +
-        'first-class contact on the organization or one of its sites). create_org, update_org, create_site, and add_contact ' +
+        'add_contact (orgId required; at least one of name, email, phone, mobile required — mirrors contacts_identifiable_chk; ' +
+        'optional title, roles, siteId, isPrimary — creates a first-class contact on the organization or one of its sites). ' +
+        'create_org, update_org, create_site, and add_contact ' +
         'require approval: update_org needs a second approver only when it includes a status change (suspend/churn/' +
         'reactivate); a plain name edit or add_contact can be self-approved by the requester.',
       input_schema: {
@@ -572,7 +575,7 @@ export function registerOrgTools(aiTools: Map<string, AiTool>): void {
             enum: ['create_org', 'update_org', 'create_site', 'add_contact'],
           },
           orgId: { type: 'string', description: 'Organization UUID (update_org, create_site, add_contact)' },
-          name: { type: 'string', description: 'Org name (create_org/update_org), site name (create_site), or contact name (add_contact)' },
+          name: { type: 'string', description: 'Org name (create_org/update_org), site name (create_site), or contact name (add_contact — optional; add_contact needs at least one of name/email/phone/mobile)' },
           status: { type: 'string', enum: [...ORG_STATUSES], description: 'New org status (update_org)' },
           address: { type: 'object', description: 'Site address object (create_site), e.g. {addressLine1, city, state, postalCode, country}' },
           email: { type: 'string', description: 'Contact email (add_contact)' },
