@@ -31,7 +31,7 @@ function assertValidDeviceRoleLine(line: CoverageLine): void {
 function lineMatches(line: CoverageLine, row: DeviceSnapshotRow): boolean {
   if (line.siteId !== null && line.siteId !== row.siteId) return false;
   if (line.lineType === 'per_device') return true;
-  if (line.lineType === 'per_device_role') return line.deviceRoles!.includes(row.role);
+  if (line.lineType === 'per_device_role') return !!line.deviceRoles && line.deviceRoles.includes(row.role);
   return false;
 }
 

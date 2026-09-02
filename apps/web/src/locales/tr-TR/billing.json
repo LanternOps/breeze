@@ -26,7 +26,7 @@
         "manual": "Manuel miktar"
       },
       "coverage": {
-        "uncovered": "Bu kuruluştaki {{count}} cihaz hiçbir satırda faturalandırılmıyor: {{breakdown}}",
+        "uncovered": "Bu kuruluştaki {{count}} cihaz bu sözleşmedeki hiçbir satırda faturalandırılmıyor: {{breakdown}}",
         "allCovered": "Bu kuruluştaki her cihaz bu sözleşmedeki bir satırda faturalandırılıyor."
       },
       "transition": {
@@ -101,7 +101,7 @@
           "cancel": "Sözleşme iptal edildi"
         },
         "invoiceGenerated": "Fatura oluşturuldu",
-        "uncoveredDevices": "Fatura oluşturuldu, ancak bu sözleşmedeki {{count}} cihaz hiçbir satırda faturalandırılmıyor: {{breakdown}}",
+        "uncoveredDevices": "Fatura oluşturuldu, ancak {{count}} cihaz bu sözleşmedeki hiçbir satırda faturalandırılmıyor: {{breakdown}}",
         "priceBookGaps": "{{count}} katalog satırı sözleşme anlık görüntüsündeki fiyattan faturalandırıldı — katalogda {{currency}} fiyatı yok: {{lines}}",
         "draftDeleted": "Taslak silindi"
       },

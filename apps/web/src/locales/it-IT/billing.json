@@ -26,7 +26,7 @@
         "manual": "Quantità manuale"
       },
       "coverage": {
-        "uncovered": "{{count}} dispositivi di questa organizzazione non sono fatturati da alcuna riga: {{breakdown}}",
+        "uncovered": "{{count}} dispositivo/i di questa organizzazione non sono fatturati da alcuna riga di questo contratto: {{breakdown}}",
         "allCovered": "Ogni dispositivo di questa organizzazione è fatturato da una riga di questo contratto."
       },
       "transition": {
@@ -101,7 +101,7 @@
           "cancel": "Contratto annullato"
         },
         "invoiceGenerated": "Fattura generata",
-        "uncoveredDevices": "Fattura generata, ma {{count}} dispositivi non sono fatturati da alcuna riga di questo contratto: {{breakdown}}",
+        "uncoveredDevices": "Fattura generata, ma {{count}} dispositivo/i non sono fatturati da alcuna riga di questo contratto: {{breakdown}}",
         "priceBookGaps": "{{count}} riga/righe di catalogo fatturate al prezzo salvato nel contratto — nessun prezzo in {{currency}} nel catalogo: {{lines}}",
         "draftDeleted": "Bozza eliminata"
       },

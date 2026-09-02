@@ -26,6 +26,15 @@ ALTER TABLE contract_lines ADD CONSTRAINT contract_lines_device_roles_chk CHECK 
 -- replace the FK with a composite one against sites_id_org_id_uniq (2026-07-23).
 -- ON DELETE SET NULL (site_id): the column list (PG 15+) nulls only site_id; a
 -- bare SET NULL would also null org_id, which is NOT NULL.
+-- contract_lines is ENABLE + FORCE ROW LEVEL SECURITY (2026-06-15-d), so the
+-- policies apply to the table OWNER too, and breeze_current_scope() deny-defaults
+-- to 'none' (0012 supersedes 0008). autoMigrate sets no scope. On managed
+-- Postgres (DigitalOcean/RDS) the admin role is NOT a superuser: without this the
+-- UPDATE below is a silent 0-row no-op, the RAISE WARNING never fires, and the
+-- composite FK (RI checks bypass RLS) then aborts on the surviving cross-org rows
+-- and refuses the API's boot. is_local = true scopes it to autoMigrate's per-file
+-- transaction. Same one-liner as 2026-09-29-100000-automation-policy-compliance-unique.sql.
+SELECT set_config('breeze.scope', 'system', true);
 DO $$ DECLARE n int; BEGIN
   UPDATE contract_lines cl SET site_id = NULL
     FROM sites s WHERE cl.site_id = s.id AND s.org_id <> cl.org_id;

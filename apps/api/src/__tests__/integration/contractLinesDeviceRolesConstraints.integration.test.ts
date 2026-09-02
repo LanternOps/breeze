@@ -6,6 +6,7 @@
 import './setup';
 import { describe, it, expect } from 'vitest';
 import { sql } from 'drizzle-orm';
+import { BILLABLE_DEVICE_ROLES } from '@breeze/shared';
 import { db, withSystemDbAccessContext } from '../../db';
 import { partners, organizations, sites, contracts } from '../../db/schema';
 
@@ -61,6 +62,15 @@ async function expectPgError(
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
 describe('contract_lines device-role invariants (real DB) #3205', () => {
+  runDb('the CHECK role list is exactly BILLABLE_DEVICE_ROLES (shared SSOT — widen both or neither)', async () => {
+    const rows = await withSystemDbAccessContext(() => db.execute(sql`
+      SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conname = 'contract_lines_device_roles_chk'`));
+    const def = (rows as unknown as Array<{ def: string }>)[0]!.def;
+    const arrayLiteral = /ARRAY\[([^\]]*)\]/.exec(def)![1]!;
+    const dbRoles = [...arrayLiteral.matchAll(/'([a-z_]+)'/g)].map((m) => m[1]!).sort();
+    expect(dbRoles).toEqual([...BILLABLE_DEVICE_ROLES].sort());
+  });
+
   runDb('accepts a valid role set on per_device_role and NULL on other types', async () => {
     const f = await seed();
     await expect(insertLine(f, 'per_device_role', sql`ARRAY['server','nas']::text[]`)).resolves.toBeDefined();

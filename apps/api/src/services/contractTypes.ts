@@ -1,5 +1,4 @@
 export type ContractStatus = 'draft' | 'active' | 'paused' | 'cancelled' | 'expired';
-export type ContractLineType = 'flat' | 'per_device' | 'per_seat' | 'manual';
 export type BillingTiming = 'advance' | 'arrears';
 
 export interface ContractActor {
