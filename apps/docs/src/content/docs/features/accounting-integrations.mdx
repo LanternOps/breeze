@@ -57,6 +57,53 @@ On the connected panel, choose how issued invoices reach QuickBooks:
 
 You can switch between the two at any time; the change is saved immediately.
 
+### Invoice sync status
+
+Each pushed invoice carries one of these statuses, shown on the invoice detail
+page:
+
+| Status | Meaning |
+|---|---|
+| **Pending** | Queued to push, or a push is in flight. |
+| **Synced** | Pushed successfully and QuickBooks' totals match Breeze's. |
+| **Synced (tax variance)** | Pushed successfully, but QuickBooks computed a tax total more than 1¢ different from Breeze's — usually because the QuickBooks customer or item has its own tax settings that override Breeze's line-level `TaxCodeRef`. The invoice is still synced; the variance is informational, so you can reconcile the difference in your books. |
+| **Error** | The push failed. The sync status carries the last error so you can see why before retrying. |
+
+A pushed invoice's QuickBooks `DocNumber` is shown alongside the status when
+QuickBooks assigned one different from the Breeze invoice number — this
+happens when QuickBooks already held a document under Breeze's number and
+Breeze retried the push letting QuickBooks assign its own.
+
+### Home-currency limitation
+
+QuickBooks invoice push is **home-currency only**: an invoice can only be
+pushed when its currency matches the currency your connected QuickBooks
+company books in (its "home currency"). Foreign-currency invoicing against a
+QuickBooks realm that uses a different currency, or against a company whose
+currency Breeze hasn't captured yet, is not supported — Breeze blocks the
+push with a clear error rather than mis-booking the invoice at the wrong
+currency or silently converting it.
+
+You'll see one of two errors on a blocked push:
+
+- **Home currency unavailable:** `QuickBooks home currency is unavailable, so
+  this invoice cannot be pushed safely. Reconnect QuickBooks to capture it,
+  then retry.` — QuickBooks' home currency was never captured (or the capture
+  failed). Reconnecting QuickBooks re-captures it.
+- **Currency mismatch:** `Invoice currency <code> does not match the
+  connected QuickBooks home currency <code>. Cross-currency accounting
+  pushes are not supported.`, followed by either `Enable multi-currency in
+  QuickBooks or invoice in <home currency>.` (when your QuickBooks company
+  isn't confirmed to have multi-currency turned on) or `QuickBooks
+  foreign-currency invoice push is not yet supported.` (when it does — the
+  seams to support it exist, but the push itself is a later release).
+
+A QuickBooks **customer** stamped with its own currency (set the first time
+that customer synced) is checked the same way: if the mapped QuickBooks
+customer's currency doesn't match the invoice's currency, the push is
+blocked with a customer-currency mismatch error before anything reaches
+QuickBooks, even if the realm-level check above would have passed.
+
 ### Importing customers
 
 Once QuickBooks is connected, an **Import customers** section appears so you can bring your existing QuickBooks customers into Breeze as organizations — no re-typing.

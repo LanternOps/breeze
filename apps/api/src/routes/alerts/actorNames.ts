@@ -39,8 +39,18 @@ export type AlertActorNames = Partial<
  * already access-checked for, and only the display name is returned — no email,
  * no tenancy columns. The Audit Trail already shows those same callers the
  * acting user's name/email for the same actions.
+ *
+ * Deliberately NOT exported (#3983). This is an RLS-bypassing name oracle: it
+ * accepts an arbitrary list of user ids and resolves them outside any request
+ * tenancy scope. That's only safe because `withAlertActorNames` below is the
+ * sole caller and every id it passes in already came off an access-checked
+ * alert row. A general-purpose exported "give me names for these ids" helper
+ * invites a future caller (an endpoint that echoes ids from a request body, a
+ * batch/list route resolving ids it never itself authorized) to turn this into
+ * cross-tenant user enumeration. Keep it module-private; route all name
+ * resolution through `withAlertActorNames`.
  */
-export async function resolveUserDisplayNames(
+async function resolveUserDisplayNames(
   userIds: readonly (string | null | undefined)[]
 ): Promise<Map<string, string>> {
   const ids = [

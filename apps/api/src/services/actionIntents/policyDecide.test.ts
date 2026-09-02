@@ -260,6 +260,10 @@ const POLICY_SNAPSHOT: AiAgentPolicySnapshot = {
       maxTriageRunsPerHour: AI_AGENT_LIMIT_DEFAULTS.maxTriageRunsPerHour,
       triageBudgetCentsPerRun: AI_AGENT_LIMIT_DEFAULTS.triageBudgetCentsPerRun,
       triageMaxTurns: AI_AGENT_LIMIT_DEFAULTS.triageMaxTurns,
+      // v9 (phase 2 wave P2-5) promotion threshold — same reason as the v6/v7/v8
+      // blocks above: `AiAgentLimits` requires it, and nothing on the
+      // policy-decision path reads the promotion threshold.
+      promoteThreshold: AI_AGENT_LIMIT_DEFAULTS.promoteThreshold,
     },
     triggers: { alertSeverities: [], respectMaintenanceWindows: false },
     recipients: { userIds: ['recipient-1'], roleIds: [] },

@@ -362,3 +362,78 @@ describe('InvoiceDetail — Stripe currency-mismatch warning (#3777)', () => {
     expect(screen.queryByTestId('invoice-stripe-currency-warning')).not.toBeInTheDocument();
   });
 });
+
+describe('InvoiceDetail — QuickBooks accounting sync rail card', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    _resetShowMarginMemoryForTests();
+    fetchMock.mockImplementation(async (input: string) => {
+      if (input.endsWith('/payments')) return json({ data: [] });
+      return json({ data: {} });
+    });
+  });
+
+  it('omits the card entirely when the API reports no accounting sync row', async () => {
+    render(<InvoiceDetail detail={issued} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('invoice-detail')).toBeInTheDocument());
+    expect(screen.queryByTestId('invoice-detail-accounting-sync')).not.toBeInTheDocument();
+  });
+
+  it('renders the card in the rail when accountingSync is present', async () => {
+    render(
+      <InvoiceDetail
+        detail={{
+          ...issued,
+          accountingSync: {
+            provider: 'quickbooks',
+            syncStatus: 'error',
+            lastSyncedAt: null,
+            lastError: 'QuickBooks rejected the invoice sync (HTTP 500)',
+            remoteDocNumber: null,
+          },
+        }}
+        onChanged={vi.fn()}
+      />,
+    );
+    await waitFor(() => expect(screen.getByTestId('invoice-detail')).toBeInTheDocument());
+    expect(screen.getByTestId('invoice-detail-accounting-sync')).toBeInTheDocument();
+    expect(screen.getByTestId('invoice-accounting-sync-error')).toHaveTextContent('HTTP 500');
+  });
+
+  it('refetches the invoice after a successful push', async () => {
+    const onChanged = vi.fn();
+    render(
+      <InvoiceDetail
+        detail={{
+          ...issued,
+          accountingSync: {
+            provider: 'quickbooks',
+            syncStatus: 'pending',
+            lastSyncedAt: null,
+            lastError: null,
+            remoteDocNumber: null,
+          },
+        }}
+        onChanged={onChanged}
+      />,
+    );
+    await waitFor(() => expect(screen.getByTestId('invoice-detail')).toBeInTheDocument());
+
+    fetchMock.mockImplementation(async (input: string) => {
+      if (input.includes('/accounting/quickbooks/invoices/')) {
+        return json({ syncStatus: 'synced', docNumber: 'INV-0007', taxVarianceCents: null });
+      }
+      if (input.endsWith('/payments')) return json({ data: [] });
+      return json({ data: {} });
+    });
+
+    fireEvent.click(screen.getByTestId('invoice-accounting-sync-push'));
+
+    await waitFor(() => expect(onChanged).toHaveBeenCalled());
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/accounting/quickbooks/invoices/inv-1/push',
+      expect.objectContaining({ method: 'POST' }),
+    );
+  });
+});

@@ -11,6 +11,7 @@ const state = vi.hoisted(() => ({
   insertedValues: null as Record<string, unknown> | null,
   updatedValues: null as Record<string, unknown> | null,
   selectWhere: undefined as unknown,
+  selectFor: undefined as unknown,
   audit: vi.fn(),
   publish: vi.fn(),
   validateRecipients: vi.fn(),
@@ -47,8 +48,21 @@ vi.mock('../../db', () => ({
       from: vi.fn(() => ({
         where: vi.fn((condition: unknown) => {
           state.selectWhere = condition;
+          const rows = state.currentRow ? [state.currentRow] : [];
           return ({
-          limit: vi.fn(async () => state.currentRow ? [state.currentRow] : []),
+          // `.limit(n)` must itself be awaitable (getAgent/createAgent's
+          // duplicate check both `await` it directly with no further
+          // chaining) AND support a chained `.for('update')` (withAgentRowLocked)
+          // — a plain Promise is a valid target for an extra method since
+          // promises are ordinary objects.
+          limit: vi.fn(() => {
+            const result = Promise.resolve(rows) as Promise<unknown[]> & { for: (mode: string) => Promise<unknown[]> };
+            result.for = vi.fn((mode: string) => {
+              state.selectFor = mode;
+              return Promise.resolve(rows);
+            });
+            return result;
+          }),
           orderBy: vi.fn(async () => state.listRows),
         });
         }),
@@ -131,6 +145,7 @@ vi.mock('./effectivePolicy', () => ({
   }),
 }));
 
+import { db } from '../../db';
 import {
   ActPrerequisitesNotMetError,
   AgentKindConflictError,
@@ -140,6 +155,7 @@ import {
   disableAgent,
   listAgents,
   updateAgent,
+  withAgentRowLocked,
 } from './agentService';
 
 function auth(over: Partial<AuthContext> = {}): AuthContext {
@@ -241,6 +257,7 @@ beforeEach(() => {
   state.returnedRow = null;
   state.insertedValues = null;
   state.updatedValues = null;
+  state.selectFor = undefined;
 });
 
 describe('assertAgentWriteAllowed', () => {
@@ -805,6 +822,114 @@ describe('agent mutations', () => {
       expect.objectContaining({ agentId: 'a1', change: 'created', ownerScope: 'partner' }),
       'ai-agents',
     );
+  });
+});
+
+// Task 8 (#4192): a read-modify-write of `actAssets` (the jsonb A2's
+// promote/demote executors will also patch) without a row lock loses a
+// concurrent key append. `withAgentRowLocked` is the one place every writer
+// of that column is meant to route through — updateAgent here, promote/demote
+// in a later PR.
+describe('withAgentRowLocked', () => {
+  it('locks one row FOR UPDATE, bound by the same accessible-agent predicate as getAgent', async () => {
+    state.currentRow = storedRow;
+
+    const seen = await withAgentRowLocked(auth(), 'a1', async (row) => row);
+
+    expect(seen).toBe(storedRow);
+    expect(state.selectFor).toBe('update');
+    // Walk the bound predicate the same way the create-conflict tests do
+    // above — asserting only that a row came back would pass even with the
+    // org/id predicate silently dropped.
+    const bound = JSON.stringify(state.selectWhere);
+    expect(bound).toContain('aiAgents.id');
+    expect(bound).toContain('a1');
+    expect(bound).toContain('aiAgents.orgId');
+    expect(bound).toContain('o1');
+  });
+
+  it('throws AgentAccessDeniedError instead of running fn when the predicate excludes the row', async () => {
+    state.currentRow = null;
+    const fn = vi.fn(async (row: unknown) => row);
+
+    await expect(withAgentRowLocked(auth(), 'missing', fn)).rejects.toBeInstanceOf(AgentAccessDeniedError);
+    expect(fn).not.toHaveBeenCalled();
+  });
+
+  // Fix round 1/5 (Critical): the system-caller (auth: null) branch used to
+  // drop the tenancy predicate to `id` alone. It must now bind `id + org_id`
+  // from opts, the same way the auth branch binds `id + accessibleAgentCondition`.
+  it('system caller (auth: null) binds id + org_id from opts, not id alone', async () => {
+    state.currentRow = storedRow; // storedRow.orgId === 'o1'
+
+    const seen = await withAgentRowLocked(null, 'a1', async (row) => row, { orgId: 'o1' });
+
+    expect(seen).toBe(storedRow);
+    expect(state.selectFor).toBe('update');
+    const bound = JSON.stringify(state.selectWhere);
+    expect(bound).toContain('aiAgents.id');
+    expect(bound).toContain('a1');
+    expect(bound).toContain('aiAgents.orgId');
+    expect(bound).toContain('o1');
+  });
+
+  it('system caller with a mismatched orgId throws AgentAccessDeniedError rather than returning the row', async () => {
+    // The mock's `where` returns state.currentRow unconditionally (there is
+    // no real SQL engine here), so a predicate miss is simulated the same
+    // way as the auth-bound "excludes the row" test above. The assertion on
+    // state.selectWhere below is what actually proves the mismatched orgId
+    // was bound into the predicate rather than silently ignored.
+    state.currentRow = null;
+    const fn = vi.fn(async (row: unknown) => row);
+
+    await expect(
+      withAgentRowLocked(null, 'a1', fn, { orgId: 'wrong-org' }),
+    ).rejects.toBeInstanceOf(AgentAccessDeniedError);
+    expect(fn).not.toHaveBeenCalled();
+    const bound = JSON.stringify(state.selectWhere);
+    expect(bound).toContain('aiAgents.orgId');
+    expect(bound).toContain('wrong-org');
+  });
+
+  it('system caller without opts.orgId throws AgentInvariantError before issuing any SELECT', async () => {
+    state.currentRow = storedRow;
+    const fn = vi.fn(async (row: unknown) => row);
+
+    // @ts-expect-error — exercising the runtime guard behind the overload that
+    // makes this uncallable at compile time.
+    await expect(withAgentRowLocked(null, 'a1', fn)).rejects.toThrow(/requires opts\.orgId/);
+    expect(fn).not.toHaveBeenCalled();
+    expect(db.select).not.toHaveBeenCalled();
+  });
+});
+
+describe('updateAgent row lock', () => {
+  it('acquires the lock before validating recipients or issuing the UPDATE', async () => {
+    state.currentRow = storedRow;
+    state.returnedRow = storedRow;
+
+    await updateAgent(auth(), 'a1', { recipients: { userIds: ['u1'], roleIds: [] } } as never);
+
+    const selectOrder = vi.mocked(db.select).mock.invocationCallOrder[0] as number;
+    const validateOrder = state.validateRecipients.mock.invocationCallOrder[0] as number;
+    const updateOrder = vi.mocked(db.update).mock.invocationCallOrder[0] as number;
+    expect(selectOrder).toBeLessThan(validateOrder);
+    expect(selectOrder).toBeLessThan(updateOrder);
+    // Fix round 1/5 (Important): call-order alone is satisfied by the
+    // pre-refactor select-then-validate-then-update code too (no FOR UPDATE
+    // involved) — it does not prove updateAgent is actually routing through
+    // withAgentRowLocked's lock. This is the one assertion that does: the
+    // mock's `.for()` chain only gets invoked by withAgentRowLocked's own
+    // `.limit(1).for('update')` call, never by a plain `getAgent`-style read.
+    expect(state.selectFor).toBe('update');
+  });
+
+  it('a disabled row seen inside the lock still throws AgentAccessDeniedError', async () => {
+    state.currentRow = { ...storedRow, disabledAt: new Date('2026-08-01T00:00:00Z') };
+
+    await expect(updateAgent(auth(), 'a1', { name: 'Renamed' })).rejects.toBeInstanceOf(AgentAccessDeniedError);
+    expect(state.updatedValues).toBeNull();
+    expect(state.validateRecipients).not.toHaveBeenCalled();
   });
 });
 

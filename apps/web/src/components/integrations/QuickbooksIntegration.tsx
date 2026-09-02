@@ -33,6 +33,16 @@ interface QuickbooksStatus {
   lastError: string | null;
   defaultIncomeAccountRef?: string | null;
   defaultTaxCodeRef?: string | null;
+  /** Realm home currency captured at connect time (ISO 4217). */
+  homeCurrency?: string | null;
+  /**
+   * QuickBooks `Preferences.CurrencyPrefs.MultiCurrencyEnabled`. Nullable BY
+   * DESIGN — `null`/absent means "not captured yet", which is a different fact
+   * from `false`. GET /accounting/quickbooks does not currently carry it, so
+   * on a cold load it is only learned from POST /settings/refresh; typed
+   * optional here so it is picked up for free if the status route ever adds it.
+   */
+  multiCurrencyEnabled?: boolean | null;
 }
 
 function isMfaError(err: unknown): boolean {
@@ -54,6 +64,7 @@ export default function QuickbooksIntegration() {
   const [connecting, setConnecting] = useState(false);
   const [disconnecting, setDisconnecting] = useState(false);
   const [savingMode, setSavingMode] = useState(false);
+  const [refreshingSettings, setRefreshingSettings] = useState(false);
 
   const onUnauthorized = useCallback(() => {
     navigateTo(loginPathWithNext());
@@ -214,6 +225,46 @@ export default function QuickbooksIntegration() {
     [savingMode, status?.pushMode, onUnauthorized],
   );
 
+  // On-demand realm settings refresh (Phase C). This makes a live QuickBooks
+  // call server-side and persists what it finds, so it is a mutation (POST,
+  // MFA-gated) and goes through runAction like every other one here.
+  const handleRefreshSettings = useCallback(async () => {
+    setRefreshingSettings(true);
+    try {
+      const settings = await runAction<{
+        homeCurrency: string | null;
+        multiCurrencyEnabled: boolean | null;
+      }>({
+        request: () =>
+          fetchWithAuth("/accounting/quickbooks/settings/refresh", {
+            method: "POST",
+          }),
+        errorFallback: t("quickbooksIntegration.failedToRefreshSettings"),
+        successMessage: t("quickbooksIntegration.settingsRefreshed"),
+        onUnauthorized,
+      });
+      setStatus((prev) =>
+        prev
+          ? {
+              ...prev,
+              homeCurrency: settings.homeCurrency,
+              multiCurrencyEnabled: settings.multiCurrencyEnabled,
+            }
+          : prev,
+      );
+    } catch (err) {
+      if (isMfaError(err))
+        setLoadError(t("quickbooksIntegration.mfaRequiredHint"));
+      else if (!(err instanceof ActionError))
+        handleActionError(
+          err,
+          t("quickbooksIntegration.failedToRefreshSettings"),
+        );
+    } finally {
+      setRefreshingSettings(false);
+    }
+  }, [onUnauthorized]);
+
   if (isOrgScoped) {
     return (
       <div className="space-y-6" data-testid="quickbooks-panel">
@@ -336,6 +387,29 @@ export default function QuickbooksIntegration() {
                 {status.connectedAt ? formatDateTime(status.connectedAt) : "—"}
               </dd>
             </div>
+            <div>
+              <dt className="text-muted-foreground">
+                {t("quickbooksIntegration.homeCurrency")}
+              </dt>
+              <dd className="font-medium" data-testid="quickbooks-home-currency">
+                {status.homeCurrency ?? "—"}
+              </dd>
+            </div>
+            <div>
+              <dt className="text-muted-foreground">
+                {t("quickbooksIntegration.multiCurrency")}
+              </dt>
+              {/* Three states, not two: `null`/absent is "not captured yet",
+                  which must not read as a definitive "No" — foreign-currency
+                  push behaviour hinges on this flag. */}
+              <dd className="font-medium" data-testid="quickbooks-multi-currency">
+                {status.multiCurrencyEnabled === true
+                  ? t("common:labels.yes")
+                  : status.multiCurrencyEnabled === false
+                    ? t("common:labels.no")
+                    : t("quickbooksIntegration.multiCurrencyUnknown")}
+              </dd>
+            </div>
           </dl>
 
           <div>
@@ -383,6 +457,20 @@ export default function QuickbooksIntegration() {
               data-testid="quickbooks-refresh"
             >
               <RefreshCw className="h-4 w-4" /> {t("common:actions.refresh")}
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleRefreshSettings()}
+              disabled={refreshingSettings}
+              className="inline-flex h-9 items-center gap-2 rounded-md border px-3 text-sm font-medium hover:bg-muted disabled:opacity-50"
+              data-testid="quickbooks-settings-refresh"
+            >
+              {refreshingSettings ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <RefreshCw className="h-4 w-4" />
+              )}
+              {t("quickbooksIntegration.refreshSettings")}
             </button>
             <button
               type="button"

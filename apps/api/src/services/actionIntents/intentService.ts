@@ -434,8 +434,9 @@ function resolvePolicyDecisionState(args: {
   // pre-authorization was written against the run-bound target — extending
   // it to a target the operator's per-agent authorization never saw is a
   // wider grant than it was reviewed as. Act-mode auto-execution for sweeps
-  // arrives with P2-5, behind its own review, and is expected to REPLACE
-  // this line rather than route around it.
+  // is roadmap #4442 (explicitly OUT of P2-5, quorum 2026-09-01), behind
+  // its own review, and is expected to REPLACE this line rather than route
+  // around it.
   if (args.hasScope) return 'human_required';
   if (!args.agentRun) return 'human_required';
   if (args.approvalScope !== 'supervised') return 'human_required';

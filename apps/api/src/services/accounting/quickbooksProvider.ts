@@ -11,6 +11,8 @@ import type {
   AccountingVoidInvoicePayload,
   ChangeSet,
   ConnectionTokens,
+  InvoicePushResult,
+  RealmSettings,
   RemoteAddress,
   RemoteCustomer,
   RemoteIncomeAccount,
@@ -61,6 +63,8 @@ interface QboRawCustomer {
   Active?: boolean;
   BillAddr?: QboRawAddress;
   ShipAddr?: QboRawAddress;
+  /** Present on both query rows and create responses (multi-currency §11). */
+  CurrencyRef?: { value?: string };
 }
 
 /**
@@ -76,7 +80,7 @@ function preferencesError(status: number | null, reason: string): Error & { stat
       : `QuickBooks preferences request ${reason} (status ${status})`,
   ) as Error & { status?: number; operation: string };
   if (status !== null) err.status = status;
-  err.operation = 'fetchHomeCurrency';
+  err.operation = 'fetchRealmSettings';
   return err;
 }
 
@@ -89,6 +93,7 @@ export interface QboRawPreferences {
   Preferences?: {
     CurrencyPrefs?: {
       HomeCurrency?: { value?: string | null } | null;
+      MultiCurrencyEnabled?: unknown;
     } | null;
   };
 }
@@ -104,6 +109,24 @@ export function mapQboHomeCurrency(raw: QboRawPreferences): string | null {
   if (typeof value !== 'string') return null;
   const code = value.trim().toUpperCase();
   return /^[A-Z]{3}$/.test(code) ? code : null;
+}
+
+/**
+ * Reads whether the realm has multi-currency enabled. A non-boolean value
+ * (missing field, or an unexpected shape from a proxy/WAF response) coerces
+ * to null ("unknown") rather than persisting junk.
+ */
+export function mapQboMultiCurrencyEnabled(raw: QboRawPreferences): boolean | null {
+  const value = raw.Preferences?.CurrencyPrefs?.MultiCurrencyEnabled;
+  return typeof value === 'boolean' ? value : null;
+}
+
+interface QboRawInvoice {
+  Id: string;
+  SyncToken?: string;
+  DocNumber?: string;
+  TotalAmt?: number;
+  TxnTaxDetail?: { TotalTax?: number };
 }
 
 interface QboRawItem {
@@ -151,6 +174,7 @@ export function mapQboCustomer(raw: QboRawCustomer): RemoteCustomer {
     billAddr: mapQboAddress(raw.BillAddr),
     shipAddr: mapQboAddress(raw.ShipAddr),
     syncToken: raw.SyncToken,
+    currencyCode: raw.CurrencyRef?.value || undefined,
   };
 }
 
@@ -264,7 +288,7 @@ export class QuickbooksProvider implements AccountingProvider {
   // NOTE: like listRemoteCustomers, this assumes `conn.accessToken` is already
   // valid and issues no DB queries. The fetch runs OUTSIDE any DB context so a
   // QBO round-trip never holds a pooled connection (#1105 class).
-  async fetchHomeCurrency(conn: AccountingConnection): Promise<string | null> {
+  async fetchRealmSettings(conn: AccountingConnection): Promise<RealmSettings> {
     if (!conn.realmId) throw new Error('QuickBooks connection is missing a realmId');
     if (!conn.accessToken) throw new Error('QuickBooks connection is missing an access token');
 
@@ -309,7 +333,10 @@ export class QuickbooksProvider implements AccountingProvider {
     } catch {
       throw preferencesError(response.status, 'returned a non-JSON body');
     }
-    return mapQboHomeCurrency(parsed);
+    return {
+      homeCurrency: mapQboHomeCurrency(parsed),
+      multiCurrencyEnabled: mapQboMultiCurrencyEnabled(parsed),
+    };
   }
 
   async listRemoteIncomeAccounts(conn: AccountingConnection): Promise<RemoteIncomeAccount[]> {
@@ -369,7 +396,11 @@ export class QuickbooksProvider implements AccountingProvider {
       { method: 'POST', body: JSON.stringify(payload) },
     );
     if (!parsed.Customer?.Id) throw new Error('QuickBooks customer response was missing an Id');
-    return { id: parsed.Customer.Id, syncToken: parsed.Customer.SyncToken };
+    return {
+      id: parsed.Customer.Id,
+      syncToken: parsed.Customer.SyncToken,
+      currencyCode: parsed.Customer.CurrencyRef?.value || undefined,
+    };
   }
 
   async upsertItem(
@@ -411,19 +442,124 @@ export class QuickbooksProvider implements AccountingProvider {
   }
 
   async pushInvoice(
-    _conn: AccountingConnection,
-    _invoice: AccountingInvoicePayload,
-    _lineMappings: readonly AccountingInvoiceLineMapping[],
-  ): Promise<RemoteRef> {
-    throw new Error('NotImplemented: Phase C');
+    conn: AccountingConnection,
+    invoice: AccountingInvoicePayload,
+    lineMappings: readonly AccountingInvoiceLineMapping[],
+  ): Promise<InvoicePushResult> {
+    const mapping = invoice.mapping;
+    if (mapping && !mapping.remoteSyncToken) {
+      throw new Error('QuickBooks Invoice update requires the current SyncToken');
+    }
+
+    const lineMappingByLineId = new Map(lineMappings.map((m) => [m.invoiceLineId, m]));
+    const lines = invoice.lines.map((line) => {
+      const itemRef = lineMappingByLineId.get(line.invoiceLineId)?.remoteItemRef;
+      return {
+        DetailType: 'SalesItemLineDetail',
+        // The wire-time Number() conversion — storage stays a major-unit
+        // decimal string (spec §12); QBO wants a JSON number.
+        Amount: Number(line.lineTotal),
+        Description: line.description,
+        SalesItemLineDetail: {
+          ItemRef: itemRef ? { value: itemRef.id } : undefined,
+          Qty: Number(line.quantity),
+          UnitPrice: Number(line.unitPrice),
+          TaxCodeRef: { value: line.taxable ? 'TAX' : 'NON' },
+        },
+      };
+    });
+
+    const buildBody = (includeDocNumber: boolean) => ({
+      ...(mapping ? {
+        sparse: true,
+        Id: mapping.remoteEntityId,
+        SyncToken: mapping.remoteSyncToken,
+      } : {}),
+      ...(includeDocNumber && invoice.docNumber ? { DocNumber: invoice.docNumber } : {}),
+      TxnDate: invoice.txnDate,
+      DueDate: invoice.dueDate ?? undefined,
+      CustomerRef: { value: invoice.customerRef.id },
+      Line: lines,
+      // CurrencyRef is deliberately NEVER sent — mirrors upsertCustomer's
+      // create-path guard: sending it to a single-currency realm is a QBO
+      // error, and the currency contract is enforced by the coordinator's
+      // assertAccountingInvoicePushCurrency BEFORE this method is reached
+      // (Phase C, multi-currency §11), not by this transport.
+      ...(conn.defaultTaxCodeRef ? {
+        TxnTaxDetail: {
+          TxnTaxCodeRef: { value: conn.defaultTaxCodeRef },
+          TotalTax: Number(invoice.taxTotal),
+        },
+      } : {}),
+    });
+
+    // Idempotency key for CREATE only (review finding, Phase C Task 3 fix
+    // round). A network-level retry of a create request that actually landed
+    // — the response was lost, not the write — must not mint a second
+    // QuickBooks invoice: QBO recognizes the same `requestid` for a rolling
+    // 24h window and returns the ORIGINAL response instead of creating again.
+    // A sparse UPDATE doesn't need this: it targets an existing Id +
+    // SyncToken, and a stale SyncToken (the only way a retried update could
+    // double-apply) is rejected outright by QBO. Deterministic per Breeze
+    // invoice — every retry of the SAME invoice's create (including the
+    // DocNumber-stripped retry below, still logically the same create) reuses
+    // the identical key — and well under QBO's 50-char cap (a uuid is 36).
+    const createRequestId = invoice.invoiceId;
+    const invoicePath = (includeRequestId: boolean) => {
+      const base = `invoice?minorversion=${QBO_API_MINOR_VERSION}`;
+      return includeRequestId ? `${base}&requestid=${encodeURIComponent(createRequestId)}` : base;
+    };
+
+    let parsed: { Invoice?: QboRawInvoice };
+    try {
+      parsed = await this.qboRequest<{ Invoice?: QboRawInvoice }>(
+        conn,
+        invoicePath(!mapping),
+        'QuickBooks invoice push',
+        { method: 'POST', body: JSON.stringify(buildBody(true)) },
+      );
+    } catch (err) {
+      const e = err as Error & { status?: number; body?: string };
+      // A single retry WITHOUT DocNumber on a 400 Duplicate Document Number
+      // fault: QBO already holds a document under that number (e.g. a prior
+      // attempt that actually succeeded but whose response was lost), so
+      // retrying with the same number would loop forever — let QBO assign one.
+      if (e.status === 400 && invoice.docNumber && typeof e.body === 'string' && /Duplicate Document Number/i.test(e.body)) {
+        parsed = await this.qboRequest<{ Invoice?: QboRawInvoice }>(
+          conn,
+          invoicePath(!mapping),
+          'QuickBooks invoice push',
+          { method: 'POST', body: JSON.stringify(buildBody(false)) },
+        );
+      } else {
+        throw err;
+      }
+    }
+
+    if (!parsed.Invoice?.Id) throw new Error('QuickBooks invoice response was missing an Id');
+    return {
+      id: parsed.Invoice.Id,
+      syncToken: parsed.Invoice.SyncToken,
+      docNumber: parsed.Invoice.DocNumber,
+      remoteTaxTotal: parsed.Invoice.TxnTaxDetail?.TotalTax != null ? String(parsed.Invoice.TxnTaxDetail.TotalTax) : null,
+      remoteTotal: parsed.Invoice.TotalAmt != null ? String(parsed.Invoice.TotalAmt) : null,
+    };
   }
 
   async voidInvoice(
-    _conn: AccountingConnection,
+    conn: AccountingConnection,
     _invoice: AccountingVoidInvoicePayload,
-    _mapping: AccountingEntityMapping,
+    mapping: AccountingEntityMapping,
   ): Promise<void> {
-    throw new Error('NotImplemented: Phase C');
+    if (!mapping.remoteSyncToken) {
+      throw new Error('QuickBooks Invoice void requires the current SyncToken');
+    }
+    await this.qboRequest(
+      conn,
+      'invoice?operation=void&minorversion=70',
+      'QuickBooks invoice void',
+      { method: 'POST', body: JSON.stringify({ Id: mapping.remoteEntityId, SyncToken: mapping.remoteSyncToken }) },
+    );
   }
 
   async reconcileChanges(_conn: AccountingConnection, _sinceCursor: Date | null): Promise<ChangeSet> {

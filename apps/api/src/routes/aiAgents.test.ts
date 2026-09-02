@@ -4,7 +4,19 @@ import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
-import { AI_AGENT_LIMIT_DEFAULTS, AI_AGENT_RUN_LEAK_TRIPWIRE_KEYS } from '@breeze/shared';
+import {
+  AI_AGENT_IMPACT_REBUILD_DAYS,
+  AI_AGENT_IMPACT_REBUILD_MAX_ORGS,
+  AI_AGENT_LIMIT_DEFAULTS,
+  AI_AGENT_RUN_LEAK_TRIPWIRE_KEYS,
+  DEFAULT_IMPACT_WEIGHTS,
+  type AiAgentImpactDto,
+} from '@breeze/shared';
+// Real (unmocked) — pure UTC day math, no DB call. Task 8 tests compute the
+// same expected from/through the route does rather than re-mocking date
+// generation; see the '../jobs/aiAgentImpactRollup' mock comment below.
+import { lastCompleteUtcDay, shiftUtcDay } from '../services/aiAgents/impactRollup';
+import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
 
 const {
   selectMock,
@@ -18,6 +30,10 @@ const {
   getCircuitStateMock,
   resetCircuitMock,
   recordVerdictFeedbackMock,
+  loadImpactSummaryMock,
+  enqueueImpactRollupForOrgsMock,
+  saveImpactWeightsMock,
+  resolveImpactPartnerIdMock,
 } = vi.hoisted(() => ({
   selectMock: vi.fn(),
   // Explicit generic: vitest infers a zero-arg tuple from a bare `() => true`
@@ -38,6 +54,14 @@ const {
   recordVerdictFeedbackMock: vi.fn<(auth: unknown, verdictId: string, feedback: string) => Promise<
     { status: 'ok'; orgId: string } | { status: 'not_found' } | { status: 'conflict'; orgId: string }
   >>(),
+  // Task 8 (#4193 A8) — the impact routes. Service-layer functions mocked
+  // here have their own full unit coverage (A5/A6/A7); these route tests
+  // exercise only routing/auth/validation, the same convention as
+  // createAndEnqueueAgentRun/getAgent/recordVerdictFeedback above.
+  loadImpactSummaryMock: vi.fn(),
+  enqueueImpactRollupForOrgsMock: vi.fn(),
+  saveImpactWeightsMock: vi.fn(),
+  resolveImpactPartnerIdMock: vi.fn(),
 }));
 
 vi.mock('../middleware/auth', () => ({
@@ -116,6 +140,41 @@ vi.mock('../services/aiTools', () => ({
   verifyDeviceAccess: verifyDeviceAccessMock,
 }));
 
+// Task 8 (#4193 A8): '../jobs/aiAgentImpactRollup' is mocked (the manual
+// rebuild producer, A5); '../services/aiAgents/impactRollup' (lastCompleteUtcDay/
+// shiftUtcDay, A4) is deliberately left REAL — those two functions are pure
+// date math with no DB call, so these tests compute the same expected
+// from/through the route does instead of re-mocking date generation.
+vi.mock('../jobs/aiAgentImpactRollup', () => ({
+  enqueueImpactRollupForOrgs: enqueueImpactRollupForOrgsMock,
+}));
+
+vi.mock('../services/aiAgents/impactQuery', () => ({
+  loadImpactSummary: loadImpactSummaryMock,
+}));
+
+const { ImpactPartnerUnresolvedError, ImpactPartnerNotFoundError } = vi.hoisted(() => ({
+  ImpactPartnerUnresolvedError: class ImpactPartnerUnresolvedError extends Error {
+    constructor(message = 'Unable to resolve a single partner for this impact request') {
+      super(message);
+      this.name = 'ImpactPartnerUnresolvedError';
+    }
+  },
+  ImpactPartnerNotFoundError: class ImpactPartnerNotFoundError extends Error {
+    constructor(message = 'Partner not found or not writable by this caller') {
+      super(message);
+      this.name = 'ImpactPartnerNotFoundError';
+    }
+  },
+}));
+
+vi.mock('../services/aiAgents/impactWeights', () => ({
+  saveImpactWeights: saveImpactWeightsMock,
+  resolveImpactPartnerId: resolveImpactPartnerIdMock,
+  ImpactPartnerUnresolvedError,
+  ImpactPartnerNotFoundError,
+}));
+
 vi.mock('../services/auditEvents', () => ({
   writeRouteAudit: writeRouteAuditMock,
 }));
@@ -155,7 +214,31 @@ function agent(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function buildApp(withGlobalErrorHandler = false): Hono {
+const ZERO_COUNTERS = {
+  alertsJudged: 0, noiseFlagged: 0, suppressionsApplied: 0, ticketsTriaged: 0, draftsSent: 0,
+  fixesProposed: 0, fixesExecuted: 0, fixWatchesHeld: 0, fixWatchesRecurred: 0, narrativesDelivered: 0,
+};
+
+/** Task 8 (#4193 A8): a structurally-valid AiAgentImpactDto for route tests — the DTO's own field-by-field correctness is A7's unit coverage, not this file's. */
+function minimalImpactDto(overrides: Partial<AiAgentImpactDto> = {}): AiAgentImpactDto {
+  return {
+    schemaVersion: 1,
+    window: 30,
+    through: '2026-08-31',
+    rebuiltAt: null,
+    totals: { ...ZERO_COUNTERS, llmCents: 0, estSecondsSaved: 0 },
+    series: [],
+    byOrg: [],
+    byOrgTruncated: false,
+    positiveFeedback: { up: 0, down: 0, rate: null },
+    promoteEligibleCount: null,
+    weights: { effective: { ...DEFAULT_IMPACT_WEIGHTS }, overrides: null },
+    canEditWeights: false,
+    ...overrides,
+  };
+}
+
+function buildApp(withGlobalErrorHandler = false, authOverrides: Record<string, unknown> = {}): Hono {
   const app = new Hono();
   app.use('*', async (c, next) => {
     c.set('auth', {
@@ -166,6 +249,7 @@ function buildApp(withGlobalErrorHandler = false): Hono {
       user: { id: USER_ID, email: 'tech@example.com', name: 'Tech' },
       canAccessOrg: () => true,
       orgCondition: () => undefined,
+      ...authOverrides,
     } as never);
     await next();
   });
@@ -203,6 +287,14 @@ beforeEach(() => {
   });
   envMock.policyDecideEnabled.mockReturnValue(true);
   recordVerdictFeedbackMock.mockResolvedValue({ status: 'ok', orgId: ORG_ID });
+  loadImpactSummaryMock.mockResolvedValue(minimalImpactDto());
+  enqueueImpactRollupForOrgsMock.mockImplementation(async (orgIds: string[]) => orgIds.length);
+  resolveImpactPartnerIdMock.mockResolvedValue(PARTNER_ID);
+  saveImpactWeightsMock.mockResolvedValue({
+    before: null,
+    after: { fixExecuted: 1200 },
+    effective: { ...DEFAULT_IMPACT_WEIGHTS, fixExecuted: 1200 },
+  });
 });
 
 describe('POST /ai-agents/:id/runs', () => {
@@ -1860,5 +1952,335 @@ describe('mapError — create-race unique violation (#4020)', () => {
 
     expect(threw).toBe(wrapped);
     expect(jsonMock).not.toHaveBeenCalled();
+  });
+});
+
+// Task 8 (#4193 A8) — GET /impact, POST /impact/rebuild, PUT/DELETE
+// /impact/weights. Registered ahead of GET /:id (line 716) for the same
+// reason as /effective, /policy-decidable-keys and /runs/:runId above it —
+// a literal path segment must not fall into the `:id` param route.
+describe('AI agents impact routes — registration order (#4193 A8)', () => {
+  it('GET /ai-agents/impact resolves the impact handler, not GET /:id', async () => {
+    const app = buildApp();
+
+    const res = await app.request('/ai-agents/impact');
+
+    expect(res.status).toBe(200);
+    expect(loadImpactSummaryMock).toHaveBeenCalledTimes(1);
+    expect(getAgentMock).not.toHaveBeenCalled();
+  });
+
+  it('GET /ai-agents/:id still resolves the agent handler for a literal uuid', async () => {
+    // A fuller fixture than the shared `agent()` helper — mapRow (the GET
+    // /:id wire mapper) reads createdAt/updatedAt directly, which the other
+    // fixtures never exercise since every other test on this file mocks
+    // getAgent as an authorization/visibility handle, not a rendered row.
+    getAgentMock.mockResolvedValue({
+      ...agent(),
+      enabled: true,
+      mode: 'supervised',
+      model: 'default',
+      toolAllowlist: [],
+      protectedResources: [],
+      limits: AI_AGENT_LIMIT_DEFAULTS,
+      triggers: [],
+      recipients: [],
+      actAssets: {},
+      instructions: null,
+      cooldownSeconds: 0,
+      disabledAt: null,
+      createdAt: new Date('2026-08-01T00:00:00.000Z'),
+      updatedAt: new Date('2026-08-01T00:00:00.000Z'),
+    });
+    const app = buildApp();
+
+    const res = await app.request(`/ai-agents/${AGENT_ID}`);
+
+    expect(res.status).toBe(200);
+    expect(getAgentMock).toHaveBeenCalledWith(expect.anything(), AGENT_ID);
+    expect(loadImpactSummaryMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('GET /ai-agents/impact', () => {
+  it('defaults the window to 30 and passes orgId through as undefined', async () => {
+    const app = buildApp();
+
+    const res = await app.request('/ai-agents/impact');
+
+    expect(res.status).toBe(200);
+    expect(loadImpactSummaryMock).toHaveBeenCalledWith(
+      expect.anything(),
+      { window: 30, orgId: undefined },
+    );
+  });
+
+  it('passes ?window=90 through to loadImpactSummary', async () => {
+    const app = buildApp();
+
+    const res = await app.request('/ai-agents/impact?window=90');
+
+    expect(res.status).toBe(200);
+    expect(loadImpactSummaryMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ window: 90 }),
+    );
+  });
+
+  it('rejects an unsupported window', async () => {
+    const app = buildApp();
+
+    const res = await app.request('/ai-agents/impact?window=1');
+
+    expect(res.status).toBe(400);
+    expect(loadImpactSummaryMock).not.toHaveBeenCalled();
+  });
+
+  it('requires an orgId for a system-scoped caller', async () => {
+    const app = buildApp(false, { scope: 'system', partnerId: null });
+
+    const res = await app.request('/ai-agents/impact');
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'org_id_required',
+      message: 'A system-scoped impact query must name one organization — one weight set belongs to one partner.',
+    });
+    expect(loadImpactSummaryMock).not.toHaveBeenCalled();
+  });
+
+  it('answers 200 for a system-scoped caller that names an accessible org', async () => {
+    const app = buildApp(false, { scope: 'system', partnerId: null, canAccessOrg: () => true });
+
+    const res = await app.request(`/ai-agents/impact?orgId=${OTHER_ORG_ID}`);
+
+    expect(res.status).toBe(200);
+    expect(loadImpactSummaryMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ orgId: OTHER_ORG_ID }),
+    );
+  });
+
+  it('rejects an inaccessible orgId with 403', async () => {
+    const app = buildApp(false, { canAccessOrg: () => false });
+
+    const res = await app.request(`/ai-agents/impact?orgId=${OTHER_ORG_ID}`);
+
+    expect(res.status).toBe(403);
+    expect(loadImpactSummaryMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /ai-agents/impact/rebuild', () => {
+  it('answers 409 too_many_orgs when the accessible set exceeds the cap', async () => {
+    const orgIds = Array.from({ length: AI_AGENT_IMPACT_REBUILD_MAX_ORGS + 1 }, (_, i) => `org-${i}`);
+    const app = buildApp(false, { accessibleOrgIds: orgIds });
+
+    const res = await app.request('/ai-agents/impact/rebuild', { method: 'POST' });
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error: 'too_many_orgs',
+      limit: AI_AGENT_IMPACT_REBUILD_MAX_ORGS,
+      count: orgIds.length,
+    });
+    expect(enqueueImpactRollupForOrgsMock).not.toHaveBeenCalled();
+  });
+
+  it('enqueues a 90-day rebuild ending at the last complete UTC day and audits it', async () => {
+    const orgIds = [ORG_ID, OTHER_ORG_ID, 'third-org-id'];
+    const app = buildApp(false, { accessibleOrgIds: orgIds });
+
+    const res = await app.request('/ai-agents/impact/rebuild', { method: 'POST' });
+
+    const through = lastCompleteUtcDay();
+    const from = shiftUtcDay(through, -(AI_AGENT_IMPACT_REBUILD_DAYS - 1));
+
+    expect(res.status).toBe(202);
+    expect(await res.json()).toEqual({ queued: 3, from, through });
+    expect(enqueueImpactRollupForOrgsMock).toHaveBeenCalledWith(orgIds, from, through);
+    expect(writeRouteAuditMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: 'ai_agent_impact.rebuild_requested',
+        details: { orgCount: 3, from, through },
+      }),
+    );
+  });
+
+  it('rejects a rebuild request for an inaccessible org', async () => {
+    const app = buildApp(false, { canAccessOrg: () => false });
+
+    const res = await app.request(`/ai-agents/impact/rebuild?orgId=${OTHER_ORG_ID}`, { method: 'POST' });
+
+    expect(res.status).toBe(403);
+    expect(enqueueImpactRollupForOrgsMock).not.toHaveBeenCalled();
+  });
+
+  it('requires an orgId for a system-scoped caller with no accessible-org list', async () => {
+    const app = buildApp(false, { scope: 'system', partnerId: null, accessibleOrgIds: null });
+
+    const res = await app.request('/ai-agents/impact/rebuild', { method: 'POST' });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual(expect.objectContaining({ error: 'org_id_required' }));
+    expect(enqueueImpactRollupForOrgsMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('PUT /ai-agents/impact/weights', () => {
+  const validBody = { fixExecuted: 1200 };
+
+  it('denies a selected-access partner member', async () => {
+    const app = buildApp(false, { scope: 'partner', partnerId: PARTNER_ID, partnerOrgAccess: 'selected' });
+
+    const res = await app.request('/ai-agents/impact/weights', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(validBody),
+    });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
+    expect(saveImpactWeightsMock).not.toHaveBeenCalled();
+  });
+
+  it('denies an organization-scoped caller', async () => {
+    const app = buildApp();
+
+    const res = await app.request('/ai-agents/impact/weights', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(validBody),
+    });
+
+    expect(res.status).toBe(403);
+    expect(saveImpactWeightsMock).not.toHaveBeenCalled();
+  });
+
+  it('accepts a full-partner-admin write and audits before/after', async () => {
+    const app = buildApp(false, { scope: 'partner', partnerId: PARTNER_ID, partnerOrgAccess: 'all' });
+
+    const res = await app.request('/ai-agents/impact/weights', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(validBody),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      data: { effective: { ...DEFAULT_IMPACT_WEIGHTS, fixExecuted: 1200 }, overrides: { fixExecuted: 1200 } },
+    });
+    expect(saveImpactWeightsMock).toHaveBeenCalledWith(expect.anything(), PARTNER_ID, validBody);
+    expect(writeRouteAuditMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        orgId: null,
+        action: 'ai_agent_impact_weights.updated',
+        details: { before: null, after: { fixExecuted: 1200 } },
+      }),
+    );
+  });
+
+  it('rejects an out-of-range weight value', async () => {
+    const app = buildApp(false, { scope: 'partner', partnerId: PARTNER_ID, partnerOrgAccess: 'all' });
+
+    const res = await app.request('/ai-agents/impact/weights', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ fixExecuted: 86401 }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(saveImpactWeightsMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects an unrecognized key (strict schema)', async () => {
+    const app = buildApp(false, { scope: 'partner', partnerId: PARTNER_ID, partnerOrgAccess: 'all' });
+
+    const res = await app.request('/ai-agents/impact/weights', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ bogus: 1 }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(saveImpactWeightsMock).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Review round 1 finding: mapError's ImpactPartnerUnresolvedError branch
+   * (aiAgents.ts) was previously untested despite being reachable — a
+   * system-scoped caller that clears canManagePartnerWidePolicies still
+   * calls resolveImpactPartnerId(auth) with no orgId, which throws this for
+   * any auth.scope === 'system' caller (impactWeights.ts:71-79). A
+   * partner-admin fixture exercises the same catch branch since the route
+   * never passes an orgId on this path either way.
+   */
+  it('maps a resolveImpactPartnerId ImpactPartnerUnresolvedError to 400 org_id_required', async () => {
+    resolveImpactPartnerIdMock.mockRejectedValue(new ImpactPartnerUnresolvedError());
+    const app = buildApp(false, { scope: 'partner', partnerId: PARTNER_ID, partnerOrgAccess: 'all' });
+
+    const res = await app.request('/ai-agents/impact/weights', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(validBody),
+    });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual(expect.objectContaining({ error: 'org_id_required' }));
+    expect(saveImpactWeightsMock).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Review round 1 finding: the ImpactPartnerNotFoundError branch (zero-row
+   * UPDATE / RLS-decline guard, impactWeights.ts:148-149) was untested. This
+   * asserts the route's mapError call actually reaches it — not just that
+   * mapError itself maps the class to 404 in isolation.
+   */
+  it('maps a saveImpactWeights ImpactPartnerNotFoundError to 404', async () => {
+    saveImpactWeightsMock.mockRejectedValue(new ImpactPartnerNotFoundError());
+    const app = buildApp(false, { scope: 'partner', partnerId: PARTNER_ID, partnerOrgAccess: 'all' });
+
+    const res = await app.request('/ai-agents/impact/weights', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(validBody),
+    });
+
+    expect(res.status).toBe(404);
+  });
+});
+
+describe('DELETE /ai-agents/impact/weights', () => {
+  it('resets to defaults for a full-partner-admin', async () => {
+    saveImpactWeightsMock.mockResolvedValue({
+      before: { fixExecuted: 1200 },
+      after: null,
+      effective: { ...DEFAULT_IMPACT_WEIGHTS },
+    });
+    const app = buildApp(false, { scope: 'partner', partnerId: PARTNER_ID, partnerOrgAccess: 'all' });
+
+    const res = await app.request('/ai-agents/impact/weights', { method: 'DELETE' });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: { effective: DEFAULT_IMPACT_WEIGHTS, overrides: null } });
+    expect(saveImpactWeightsMock).toHaveBeenCalledWith(expect.anything(), PARTNER_ID, null);
+    expect(writeRouteAuditMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: 'ai_agent_impact_weights.updated',
+        details: { before: { fixExecuted: 1200 }, after: null },
+      }),
+    );
+  });
+
+  it('denies a non-full-partner caller', async () => {
+    const app = buildApp();
+
+    const res = await app.request('/ai-agents/impact/weights', { method: 'DELETE' });
+
+    expect(res.status).toBe(403);
+    expect(saveImpactWeightsMock).not.toHaveBeenCalled();
   });
 });

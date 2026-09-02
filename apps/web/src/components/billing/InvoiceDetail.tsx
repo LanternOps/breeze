@@ -26,6 +26,7 @@ import {
 } from './invoiceTypes';
 import { StatusPill } from './shared/StatusPill';
 import InvoiceActions from './InvoiceActions';
+import AccountingSyncCard from './AccountingSyncCard';
 import { MarginPanel, MarginToggle, useShowMargin } from './billingUi';
 import { computeChargeNow } from '@breeze/shared';
 
@@ -477,6 +478,17 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
               </div>
             </div>
           )}
+
+          {/* QuickBooks push status (Phase C). Renders only when the API
+              returned a mapping row — no connection, or an org-scoped read that
+              RLS-hides the partner-axis row, both come back null and the card
+              stays off the rail rather than implying "not synced". */}
+          <AccountingSyncCard
+            invoiceId={invoice.id}
+            sync={detail.accountingSync}
+            canPush={can('invoices', 'write')}
+            onChanged={onChanged}
+          />
 
           {/* Terms & Conditions */}
           {invoice.termsAndConditions && (
