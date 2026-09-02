@@ -73,7 +73,6 @@ import type { AccountingConnection } from './accountingConnectionService';
 import type { ChangeSetPaymentLine } from './types';
 import {
   applyAccountingPayment,
-  clearPaymentMappingForInvoicePayment,
   mapQboPaymentMethod,
   markInvoiceDeletedRemotely,
   paymentMappingRemoteId,
@@ -1031,27 +1030,5 @@ describe('markInvoiceDeletedRemotely', () => {
   it('refuses to run inside an ambient DB access context', async () => {
     await expect(runCtx(() => markInvoiceDeletedRemotely(conn(), QBO_INVOICE_ID, runCtx, REALM_FP)))
       .rejects.toThrow(/must run with NO ambient DB access context/);
-  });
-});
-
-describe('clearPaymentMappingForInvoicePayment', () => {
-  it('deletes the payment mapping row for one invoice_payments id inside the caller transaction', async () => {
-    currentMappings = [invoiceMappingRow(), paymentMappingRow({ breezeEntityId: 'pay-qbo-1' })];
-
-    const removed = await clearPaymentMappingForInvoicePayment(db, 'pay-qbo-1');
-
-    expect(removed).toBe(1);
-    const del = stmts.find((s) => s.kind === 'delete' && s.table === 'accounting_entity_mappings')!;
-    expect(compiledSql(del.where)).toMatch(
-      /"accounting_entity_mappings"\."breeze_entity_type" = \$\d+ and "accounting_entity_mappings"\."breeze_entity_id" = \$\d+/i,
-    );
-    expect(paramsOf(del.where)).toEqual(['payment', 'pay-qbo-1']);
-    expect(currentMappings.map((m) => m.id)).toEqual(['map-invoice-1']);
-  });
-
-  it('returns 0 for a manual or Stripe payment that has no mapping row', async () => {
-    currentMappings = [invoiceMappingRow()];
-
-    await expect(clearPaymentMappingForInvoicePayment(db, 'pay-manual')).resolves.toBe(0);
   });
 });

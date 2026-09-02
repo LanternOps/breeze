@@ -5,10 +5,14 @@
  * Consumes one `ChangeSetPaymentLine` produced by `reconcileChanges` (Task 2)
  * and lands it as an `invoice_payments` row plus the `accounting_entity_mappings`
  * row that claims it, at most once. Also mirrors QBO-side deletions
- * (`reverseAccountingPayment`, `markInvoiceDeletedRemotely`) and owns the
- * mapping-row cleanup the two Breeze-side payment destroyers must perform
- * (`clearPaymentMappingForInvoicePayment`, called from
- * `invoiceService.voidPayment` and `stripeReconcile`'s full-refund branch).
+ * (`reverseAccountingPayment`, `markInvoiceDeletedRemotely`).
+ *
+ * The mapping-row cleanup the two Breeze-side payment destroyers must perform
+ * moved OUT of this module in Phase D2: `requestPaymentDelete`
+ * (`accountingPaymentPush.ts`) replaced `clearPaymentMappingForInvoicePayment`,
+ * because a Breeze-origin mapping with a remote id must now be KEPT and flipped
+ * to `pending_op = 'delete'` until QuickBooks confirms the removal, not deleted
+ * outright.
  *
  * DB ACCESS CONTRACT (verbatim from `accountingInvoicePush.ts`, the Phase-C
  * coordinator this module mirrors). Every entry point here MUST be entered with
@@ -124,13 +128,6 @@ type PaymentMethod = typeof invoicePayments.$inferInsert['method'];
 type MappingRow = AccountingEntityMappingRow;
 type InvoiceRow = typeof invoices.$inferSelect;
 type PaymentRow = typeof invoicePayments.$inferSelect;
-
-/**
- * Anything that can issue the mapping DELETE: the ambient `db` proxy (which,
- * inside an open access context, IS the transaction handle) or an explicit
- * drizzle transaction handle. Same shape as `invoiceService`'s own `DbExecutor`.
- */
-export type PaymentMappingExecutor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 /** Audit intent captured inside the transaction, fired only after it commits. */
 interface PendingAudit {
@@ -873,36 +870,4 @@ export async function markInvoiceDeletedRemotely(
     await markInvoiceMappingError(conn, mapping.id, 'Deleted in QuickBooks');
     return 'marked';
   });
-}
-
-// ---------------------------------------------------------------------------
-// clearPaymentMappingForInvoicePayment
-// ---------------------------------------------------------------------------
-
-/**
- * Deletes the `payment` mapping row for one `invoice_payments` id, INSIDE the
- * caller's transaction.
- *
- * Called by `invoiceService.voidPayment` and `stripeReconcile`'s full-refund
- * branch — both already hold the invoice row lock, and both destroy the payment
- * row. `breeze_entity_id` is polymorphic, so there is no FK to cascade: without
- * this call the mapping row outlives its payment and a later CDC delivery for
- * the same QuickBooks Payment would look "already applied" and silently skip.
- *
- * Returns the number of rows removed. ZERO IS LEGITIMATE and deliberately not a
- * throw: a manual or Stripe-sourced payment has no accounting mapping at all,
- * which is the common case at both call sites.
- */
-export async function clearPaymentMappingForInvoicePayment(
-  tx: PaymentMappingExecutor,
-  invoicePaymentId: string,
-): Promise<number> {
-  const rows = await tx
-    .delete(accountingEntityMappings)
-    .where(and(
-      eq(accountingEntityMappings.breezeEntityType, 'payment'),
-      eq(accountingEntityMappings.breezeEntityId, invoicePaymentId),
-    ))
-    .returning({ id: accountingEntityMappings.id });
-  return rows.length;
 }
