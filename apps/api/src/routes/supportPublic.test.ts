@@ -6,16 +6,27 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
  * TTL, and that failures are indistinguishable from one another.
  */
 
-const { rateLimiter, getRedis, logSessionAudit, getTrustedClientIp } = vi.hoisted(() => ({
+const {
+  rateLimiter,
+  getRedis,
+  logSessionAudit,
+  getTrustedClientIp,
+  evaluateCapability,
+  partnerTrustMode,
+} = vi.hoisted(() => ({
   rateLimiter: vi.fn(() => Promise.resolve({ allowed: true, currentCount: 1 })),
   getRedis: vi.fn(() => ({}) as unknown),
   logSessionAudit: vi.fn(() => Promise.resolve()),
   getTrustedClientIp: vi.fn(() => '203.0.113.9'),
+  evaluateCapability: vi.fn(async (_cap?: string, _ctx?: unknown): Promise<any> => ({ allow: true })),
+  partnerTrustMode: vi.fn((): 'off' | 'shadow' | 'enforce' => 'off'),
 }));
 
 vi.mock('../services/rate-limit', () => ({ rateLimiter }));
 vi.mock('../services/redis', () => ({ getRedis }));
 vi.mock('./remote/helpers', () => ({ logSessionAudit }));
+vi.mock('../services/partnerTrust', () => ({ evaluateCapability }));
+vi.mock('../config/partnerTrustMode', () => ({ partnerTrustMode }));
 // clientIp is mocked, but rateLimitIpKey is NOT stubbed to identity — the real
 // implementation is re-exported so the key-shape assertions below stay honest.
 vi.mock('../services/clientIp', async () => {
@@ -141,6 +152,7 @@ vi.mock('../db', () => {
 vi.mock('../db/schema', () => ({
   supportSessions: {
     id: 'supportSessions.id',
+    orgId: 'supportSessions.orgId',
     codeHash: 'supportSessions.codeHash',
     status: 'supportSessions.status',
     codeExpiresAt: 'supportSessions.codeExpiresAt',
@@ -241,6 +253,8 @@ beforeEach(() => {
   rateLimiter.mockResolvedValue({ allowed: true, currentCount: 1 });
   getTrustedClientIp.mockReturnValue('203.0.113.9');
   getBinarySource.mockReturnValue('github');
+  partnerTrustMode.mockReturnValue('off');
+  evaluateCapability.mockResolvedValue({ allow: true });
   getGithubAgentUrl.mockImplementation((os: string, arch: string) => `https://gh.test/breeze-agent-${os}-${arch}.exe`);
   isS3Configured.mockReturnValue(false);
   fetchMock.mockResolvedValue(new Response(new Uint8Array([0x4d, 0x5a, 0x90]), {
@@ -610,9 +624,37 @@ describe('two-tier miss budget', () => {
 });
 
 describe('POST /redeem', () => {
+  it('hides an installer-distribution trust denial behind 404 before claiming the code', async () => {
+    partnerTrustMode.mockReturnValue('enforce');
+    evaluateCapability.mockResolvedValueOnce({
+      allow: false,
+      code: 'TRUST_PROBATION',
+      capability: 'installer_distribute',
+      reason: 'probation_default_deny',
+    });
+    const session = pendingSession();
+    selectResults.push([session]);
+    selectResults.push([{ partnerId: 'partner-1' }]);
+
+    const res = await redeem();
+
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'invalid or expired code' });
+    expect(evaluateCapability).toHaveBeenCalledWith('installer_distribute', {
+      partnerId: 'partner-1',
+      orgId: 'qs-org',
+      detail: { route: 'code-redemption' },
+    });
+    expect(updateWhereCalled).toBe(0);
+    expect(insertedValues).toHaveLength(0);
+    expect(logSessionAudit).not.toHaveBeenCalled();
+  });
+
   it('claims the session and mints a single-use key with its own secret', async () => {
+    partnerTrustMode.mockReturnValue('enforce');
     const session = pendingSession();
     selectResults.push([session]); // code lookup
+    selectResults.push([{ partnerId: 'partner-1' }]); // trust lookup
     updateResults.push([{ ...session, status: 'claimed' }]); // atomic claim wins
     selectResults.push([{ id: 'site-1' }]); // site lookup
 
@@ -624,6 +666,11 @@ describe('POST /redeem', () => {
     expect(body.enrollmentSecret).toMatch(/^[0-9a-f]{64}$/);
     expect(body.serverUrl).toBe('https://us.2breeze.app');
     expect(body.sessionId).toBe(session.id);
+    expect(evaluateCapability).toHaveBeenCalledWith('installer_distribute', {
+      partnerId: 'partner-1',
+      orgId: 'qs-org',
+      detail: { route: 'code-redemption' },
+    });
 
     const key = insertedValues[0] as Record<string, unknown>;
     expect(key.maxUsage).toBe(1);
@@ -743,11 +790,41 @@ describe('GET /download/:platform', () => {
     return supportPublicRoutes.request(`/download/${platform}${query}`);
   }
 
+  it('hides an installer-distribution trust denial behind 404 before serving a binary', async () => {
+    partnerTrustMode.mockReturnValue('enforce');
+    evaluateCapability.mockResolvedValueOnce({
+      allow: false,
+      code: 'TRUST_PROBATION',
+      capability: 'installer_distribute',
+      reason: 'probation_default_deny',
+    });
+    selectResults.push([{ status: 'pending', codeExpiresAt: FUTURE, orgId: 'qs-org' }]);
+    selectResults.push([{ partnerId: 'partner-1' }]);
+
+    const res = await download();
+
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'invalid or expired code' });
+    expect(evaluateCapability).toHaveBeenCalledWith('installer_distribute', {
+      partnerId: 'partner-1',
+      orgId: 'qs-org',
+      detail: { route: 'public-download' },
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('serves the agent binary named after the code and API host', async () => {
-    selectResults.push([{ status: 'pending', codeExpiresAt: FUTURE }]);
+    partnerTrustMode.mockReturnValue('enforce');
+    selectResults.push([{ status: 'pending', codeExpiresAt: FUTURE, orgId: 'qs-org' }]);
+    selectResults.push([{ partnerId: 'partner-1' }]);
 
     const res = await download();
     expect(res.status).toBe(200);
+    expect(evaluateCapability).toHaveBeenCalledWith('installer_distribute', {
+      partnerId: 'partner-1',
+      orgId: 'qs-org',
+      detail: { route: 'public-download' },
+    });
     // Exact wire format — the Go client parses this filename (Task 12).
     expect(res.headers.get('Content-Disposition'))
       .toBe('attachment; filename="breeze-support-234567892-us.2breeze.app.exe"');
