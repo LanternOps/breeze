@@ -40,6 +40,7 @@ const baseFacts = (): PromotionFacts => ({
   deviceIpClasses: ['business'],
   unresolvedAlerts: 0,
   billingHold: false,
+  billingHoldUnknown: false,
 });
 
 describe('promotionDecision', () => {
@@ -53,7 +54,8 @@ describe('promotionDecision', () => {
     ['device on hosting', { deviceIpClasses: ['hosting'] as IpClass[] }, []],
     ['device on tor', { deviceIpClasses: ['tor'] as IpClass[] }, ['device_on_tor']],
     ['unresolved alert', { unresolvedAlerts: 1 }, ['unresolved_alert']],
-    ['billing hold', { billingHold: true }, ['billing_hold']],
+    ['billing hold', { billingHold: true, billingHoldUnknown: false }, ['billing_hold']],
+    ['billing hold unknown (billing service unreachable)', { billingHold: true, billingHoldUnknown: true }, ['billing_hold_unknown']],
     ['email unverified', { emailVerified: false }, ['email_unverified']],
     ['partner too young', { createdAt: hoursAgo(23) }, ['too_young']],
   ] as const)('%s', (_name, overrides, blockers) => {
@@ -67,6 +69,17 @@ describe('promotionDecision', () => {
       promote: true, reason: 'auto:settled_card_24h',
     });
   });
+
+  it('promotes when the partner is exactly 24 hours old', () => {
+    const facts = { ...baseFacts(), createdAt: hoursAgo(24) };
+    expect(promotionDecision(facts, now)).toEqual({ promote: true, reason: 'auto:settled_card_24h' });
+  });
+
+  it('blocks as too_young at 23 hours 59 minutes old', () => {
+    const createdAt = new Date(now.getTime() - (23 * 60 + 59) * 60 * 1_000);
+    const facts = { ...baseFacts(), createdAt };
+    expect(promotionDecision(facts, now)).toEqual({ promote: false, blockers: ['too_young'] });
+  });
 });
 
 describe('tryAutoPromote', () => {
@@ -77,7 +90,10 @@ describe('tryAutoPromote', () => {
       chargeId: 'ch_1', settledAt: hoursAgo(24), paymentMethodType: 'card',
       threeDsAuthenticated: true, cardholderName: 'Ada', disputed: false, refunded: false,
     });
-    getSignupRiskHold.mockResolvedValue(null);
+    // A resolved "clear" status, not null — null now means "unknown" and
+    // fails closed (see the billing-hold-unknown tests below).
+    getSignupRiskHold.mockResolvedValue({ status: 'clear' });
+    setTrustState.mockResolvedValue(true);
 
     select.mockImplementation((fields: Record<string, unknown>) => {
       if ('createdAt' in fields) {
@@ -96,6 +112,7 @@ describe('tryAutoPromote', () => {
     expect(setTrustState).toHaveBeenCalledWith(
       'p1', 'trusted', 'auto:settled_card_24h', null,
       expect.objectContaining({ settledCard: { chargeId: 'ch_1', settledAt: hoursAgo(24) } }),
+      { expectedFrom: 'probation' },
     );
     expect(runOutside).toHaveBeenCalledTimes(1);
     expect(withSystem).toHaveBeenCalledTimes(1);
@@ -105,6 +122,10 @@ describe('tryAutoPromote', () => {
     ['link', { paymentMethodType: 'link' }],
     ['refunded', { refunded: true }],
     ['disputed', { disputed: true }],
+    ['missing cardholder name', { cardholderName: '' }],
+    ['null cardholder name', { cardholderName: null }],
+    ['threeDsAuthenticated false', { threeDsAuthenticated: false }],
+    ['threeDsAuthenticated null', { threeDsAuthenticated: null }],
   ])('does not promote a %s charge returned by billing', async (_name, overrides) => {
     getSettledCardCharge.mockResolvedValue({
       chargeId: 'ch_1', settledAt: hoursAgo(48), paymentMethodType: 'card',
@@ -124,12 +145,25 @@ describe('tryAutoPromote', () => {
     expect(select).not.toHaveBeenCalled();
   });
 
-  it('does not overwrite a restriction applied while facts were gathered', async () => {
-    readTrust
-      .mockResolvedValueOnce({ trustState: 'probation', probationEnrollments: 0 })
-      .mockResolvedValueOnce({ trustState: 'restricted', probationEnrollments: 0 });
+  it('does not promote when getSignupRiskHold returns null (unknown, fails closed)', async () => {
+    getSignupRiskHold.mockResolvedValue(null);
 
     await expect(tryAutoPromote('p1')).resolves.toBe(false);
     expect(setTrustState).not.toHaveBeenCalled();
+  });
+
+  it('treats a CAS miss on the underlying write as "not promoted" with no audit/event', async () => {
+    // setTrustState itself performs the atomic compare-and-swap (writeTrust
+    // with expectedFrom); when it reports the row already moved out of
+    // 'probation' (e.g. an admin restriction landed concurrently), tryAutoPromote
+    // must surface that as false rather than assuming success.
+    setTrustState.mockResolvedValue(false);
+
+    await expect(tryAutoPromote('p1')).resolves.toBe(false);
+    expect(setTrustState).toHaveBeenCalledWith(
+      'p1', 'trusted', 'auto:settled_card_24h', null,
+      expect.anything(),
+      { expectedFrom: 'probation' },
+    );
   });
 });

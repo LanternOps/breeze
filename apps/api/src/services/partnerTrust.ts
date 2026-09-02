@@ -288,15 +288,35 @@ export function requireCapability(cap: GatedCapability): MiddlewareHandler {
   };
 }
 
+export interface SetTrustStateOptions {
+  /**
+   * When set, the write only lands if the partner's current trust_state is
+   * still this value (an atomic compare-and-swap in writeTrust). Used by
+   * tryAutoPromote so a race against a concurrent admin restriction (or a
+   * second auto-promote) is detected instead of silently overwritten.
+   */
+  expectedFrom?: PartnerTrustState;
+}
+
+/**
+ * Returns true when the write actually landed. When `options.expectedFrom`
+ * is set and the row's trust_state no longer matches it, the underlying
+ * UPDATE affects zero rows: no audit log is written and no Redis message is
+ * published, and this returns false.
+ */
 export async function setTrustState(
   partnerId: string,
   next: PartnerTrustState,
   reason: string,
   actorUserId: string | null,
   evidence: Record<string, unknown> = {},
-): Promise<void> {
+  options: SetTrustStateOptions = {},
+): Promise<boolean> {
   const before = await readTrust(partnerId);
-  await writeTrust(partnerId, next, reason, actorUserId);
+  const affected = options.expectedFrom
+    ? await writeTrust(partnerId, next, reason, actorUserId, options.expectedFrom)
+    : await writeTrust(partnerId, next, reason, actorUserId);
+  if (affected === 0) return false;
   try {
     await getRedis()?.publish(
       'partner-trust:changed',
@@ -319,4 +339,5 @@ export async function setTrustState(
     result: 'success',
     details: { from: before?.trustState ?? null, to: next, reason, ...evidence },
   });
+  return true;
 }

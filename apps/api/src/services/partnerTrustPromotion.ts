@@ -17,6 +17,14 @@ export interface PromotionFacts {
   deviceIpClasses: IpClass[];
   unresolvedAlerts: number;
   billingHold: boolean;
+  /**
+   * True when the billing service could not tell us the risk-hold status
+   * (breeze-billing 404s or the request fails) rather than affirmatively
+   * reporting the partner clear. `billingHold` is forced true in this case
+   * (fail closed — see gatherPromotionFacts) and this flag is what lets
+   * promotionDecision report the distinct 'billing_hold_unknown' blocker.
+   */
+  billingHoldUnknown: boolean;
 }
 
 export type PromotionBlocker =
@@ -27,6 +35,7 @@ export type PromotionBlocker =
   | 'device_on_tor'
   | 'unresolved_alert'
   | 'billing_hold'
+  | 'billing_hold_unknown'
   | 'email_unverified'
   | 'too_young';
 
@@ -41,7 +50,7 @@ export function promotionDecision(
   else if (['hosting', 'vpn', 'tor'].includes(facts.signupIpClass)) blockers.push('signup_ip_hosting');
   if (facts.deviceIpClasses.includes('tor')) blockers.push('device_on_tor');
   if (facts.unresolvedAlerts > 0) blockers.push('unresolved_alert');
-  if (facts.billingHold) blockers.push('billing_hold');
+  if (facts.billingHold) blockers.push(facts.billingHoldUnknown ? 'billing_hold_unknown' : 'billing_hold');
   if (!facts.emailVerified) blockers.push('email_unverified');
   if (now.getTime() - facts.createdAt.getTime() < DAY_MS) blockers.push('too_young');
   return blockers.length === 0
@@ -81,14 +90,24 @@ export async function gatherPromotionFacts(partnerId: string): Promise<Promotion
     billing.getSettledCardCharge(partnerId),
     billing.getSignupRiskHold(partnerId),
   ]);
+  // getSignupRiskHold returning null means we couldn't determine the
+  // risk-hold status (404 from breeze-billing, or the request itself
+  // failed) — NOT that the partner is clear. Fail closed: treat an unknown
+  // status as a hold so an outage in breeze-billing can never silently
+  // unblock an auto-promotion.
+  const billingHoldUnknown = hold === null;
+  const billingHold = billingHoldUnknown
+    ? true
+    : hold.status === 'hold' || hold.status === 'review_pending';
   return {
     ...localFacts,
     settledCard: settledCard && !settledCard.disputed && !settledCard.refunded
       && settledCard.paymentMethodType === 'card' && settledCard.threeDsAuthenticated
-      && settledCard.cardholderName.trim() !== ''
+      && (settledCard.cardholderName ?? '').trim() !== ''
       ? { chargeId: settledCard.chargeId, settledAt: settledCard.settledAt }
       : null,
-    billingHold: hold?.status === 'hold' || hold?.status === 'review_pending',
+    billingHold,
+    billingHoldUnknown,
   };
 }
 
@@ -98,10 +117,12 @@ export async function tryAutoPromote(partnerId: string): Promise<boolean> {
   const facts = await gatherPromotionFacts(partnerId);
   const decision = promotionDecision(facts, new Date());
   if (!decision.promote) return false;
-  // Re-read immediately before the mutation so an intervening admin restriction
-  // can never be overwritten by automatic promotion.
-  const latest = await readTrust(partnerId);
-  if (latest?.trustState !== 'probation') return false;
-  await setTrustState(partnerId, 'trusted', decision.reason, null, { ...facts });
-  return true;
+  // setTrustState's writeTrust performs the actual UPDATE under
+  // `AND trust_state = 'probation'` (expectedFrom), so this is an atomic
+  // compare-and-swap: an admin restriction (or a second, concurrent
+  // auto-promote) that lands between the reads above and this write causes
+  // the CAS to affect zero rows. setTrustState returns false in that case
+  // with no audit row and no Redis publish, which we surface as "not
+  // promoted" rather than treating it as success.
+  return setTrustState(partnerId, 'trusted', decision.reason, null, { ...facts }, { expectedFrom: 'probation' });
 }
