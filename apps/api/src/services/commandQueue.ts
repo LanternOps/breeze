@@ -1003,12 +1003,10 @@ export async function executeCommand(
   } catch (e) {
     if (e instanceof TrustDeniedError) {
       return {
-        success: false,
+        status: 'failed',
         error: e.code,
-        output: '',
-        exitCode: null,
         trust: { capability: e.capability, reason: e.reason },
-      } as unknown as CommandResult;
+      };
     }
     throw e;
   }

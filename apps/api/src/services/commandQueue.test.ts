@@ -154,10 +154,17 @@ describe('command queue service', () => {
       }),
     } as any);
 
-    await expect(executeCommand('d1', 'script', {})).resolves.toMatchObject({
-      success: false,
+    const result = await executeCommand('d1', 'script', {});
+
+    expect(result).toMatchObject({
+      status: 'failed',
       error: 'TRUST_PROBATION',
+      trust: { reason: 'probation_default_deny' },
     });
+    // Regression guard: the legacy `{ success: false }` shape must never
+    // come back — callers (e.g. routes/backup/vss.ts) check
+    // `result.status === 'failed'`, not `result.success`.
+    expect((result as any).success).toBeUndefined();
   });
 
   it('refuses to re-arm a desktop stop row whose payload is not exact', async () => {
