@@ -3113,6 +3113,8 @@
       "organization": "Organisation",
       "general": "Généralités",
       "generalDescription": "Profil et paramètres par défaut",
+      "contacts": "Contacts",
+      "contactsDescription": "Personnes à joindre chez ce client, par site ou pour toute l’organisation",
       "contracts": "Contrats",
       "contractsDescription": "Accords récurrents",
       "billing": "Facturation",
@@ -3712,7 +3714,8 @@
       "title": "Appareils",
       "assigned": "Appareils attribués à ce site",
       "viewAll": "Voir tous les appareils"
-    }
+    },
+    "allContactsLink": "Tous les contacts de ce client"
   },
   "siteForm": {
     "description": "Seul le nom du site est requis. L’adresse et le contact sont optionnels — vous pourrez les remplir plus tard.",
@@ -4102,5 +4105,180 @@
     "saveFailed": "Impossible d’enregistrer les paramètres de suivi du temps",
     "minSessionRange": "La durée minimale de session doit être comprise entre {{min}} et {{max}} secondes",
     "mergeGapRange": "L’intervalle de fusion doit être compris entre {{min}} et {{max}} minutes"
+  },
+  "contactsCard": {
+    "title": "Contacts",
+    "description": "Les personnes que votre équipe joint chez ce client. Un contact peut être rattaché à un site ou viser l’organisation entière.",
+    "organizationLevel": "Organisation",
+    "unknownSite": "Site indisponible",
+    "empty": "Aucun contact pour le moment. Ajoutez-en un, ou importez un CSV de votre ancien outil.",
+    "loading": "Chargement des contacts…",
+    "confirmDelete": "Supprimer {{name}} ? Cette opération est irréversible.",
+    "actions": {
+      "add": "Ajouter un contact",
+      "import": "Importer un CSV",
+      "edit": "Modifier",
+      "delete": "Supprimer",
+      "save": "Enregistrer le contact",
+      "saving": "Enregistrement en cours…",
+      "cancel": "Annuler",
+      "retry": "Réessayer"
+    },
+    "filters": {
+      "site": "Filtrer par site",
+      "role": "Filtrer par rôle",
+      "allSites": "Tous les sites",
+      "allRoles": "Tous les rôles"
+    },
+    "columns": {
+      "name": "Nom",
+      "reach": "Comment les joindre",
+      "jobTitle": "Titre du poste",
+      "roles": "Rôles",
+      "site": "Rattaché à",
+      "actions": "Opérations"
+    },
+    "primary": {
+      "organization": "Principal (organisation)",
+      "site": "Principal ({{site}})"
+    },
+    "roles": {
+      "billing": "Facturation",
+      "technical": "Technique",
+      "escalation": "Escalade",
+      "admin": "Administration",
+      "site": "Site",
+      "afterHours": "En dehors des heures d’ouverture",
+      "portal": "Portail"
+    },
+    "form": {
+      "addHeading": "Nouveau contact",
+      "editHeading": "Modifier le contact",
+      "identifierRequired": "Remplissez au moins un champ : nom, adresse courriel, téléphone ou cellulaire.",
+      "fields": {
+        "name": "Nom",
+        "email": "Adresse courriel",
+        "phone": "Téléphone",
+        "mobile": "Cellulaire",
+        "title": "Titre du poste",
+        "site": "Rattaché à",
+        "roles": "Rôles",
+        "notes": "Remarques",
+        "isPrimary": "Faire de ce contact le principal pour la portée choisie ci-dessus"
+      }
+    },
+    "pagination": {
+      "summary": "Affichage de {{from}} à {{to}} sur {{total}}",
+      "previous": "Précédent",
+      "next": "Suivant"
+    },
+    "toasts": {
+      "created": "Contact ajouté",
+      "updated": "Contact enregistré",
+      "deleted": "Contact supprimé"
+    },
+    "errors": {
+      "load": "Impossible de charger les contacts de cette organisation.",
+      "sites": "Impossible de charger les sites de cette organisation. Les noms de site et le filtre par site restent indisponibles.",
+      "create": "Impossible d’ajouter le contact.",
+      "update": "Impossible d’enregistrer le contact.",
+      "delete": "Impossible de supprimer le contact."
+    }
+  },
+  "bulkContactImport": {
+    "title": "Importer des contacts à partir d’un CSV",
+    "description": "Téléversez un export de contacts de votre ancien RMM ou PSA. Chaque ligne est classée sous cette organisation.",
+    "dropzone": "Déposez un fichier CSV ici ou cliquez pour parcourir",
+    "dropzoneHint": "Associez au moins un champ : nom, adresse courriel, téléphone ou cellulaire — il en faut un.",
+    "actions": {
+      "close": "Fermer",
+      "preview": "Vérifier {{count}} lignes",
+      "previewing": "Vérification en cours…",
+      "import": "Importer les {{count}} sélectionnées",
+      "importing": "Importation en cours…"
+    },
+    "mapping": {
+      "heading": "Correspondance des colonnes",
+      "unmapped": "Non associée",
+      "identifierRequired": "Associez une colonne nom, adresse courriel, téléphone ou cellulaire pour continuer.",
+      "droppedRows_one": "{{count}} ligne ignorée : ni nom, ni adresse courriel, ni téléphone, ni cellulaire.",
+      "droppedRows_other": "{{count}} lignes ignorées : ni nom, ni adresse courriel, ni téléphone, ni cellulaire.",
+      "tooManyRows": "Ce fichier associe {{count}} lignes, soit plus que les {{max}} acceptées par importation. Divisez-le en fichiers plus petits.",
+      "fields": {
+        "name": "Nom",
+        "email": "Adresse courriel",
+        "phone": "Téléphone",
+        "mobile": "Cellulaire",
+        "title": "Titre du poste",
+        "roles": "Rôles",
+        "site": "Site",
+        "externalId": "Identifiant du contact dans le système source",
+        "externalSystem": "Système source"
+      }
+    },
+    "mode": {
+      "label": "Contacts déjà liés",
+      "skip": "Les laisser tels quels",
+      "update": "Y fusionner le fichier"
+    },
+    "preview": {
+      "heading": "Ce qui va se produire"
+    },
+    "summary": {
+      "imported": "{{count}} ajoutés",
+      "updated": "{{count}} fusionnés",
+      "skipped": "{{count}} laissés tels quels",
+      "failed": "{{count}} refusées",
+      "allFailed": "Rien n’a été importé — {{summary}}.",
+      "nothingImported": "Rien d’importé : {{count}} déjà liés.",
+      "nothingImportedEmpty": "Rien n’a été importé."
+    },
+    "failures": {
+      "title_one": "{{count}} ligne a été refusée",
+      "title_other": "{{count}} lignes ont été refusées"
+    },
+    "skipped": {
+      "title_one": "{{count}} ligne a été laissée telle quelle",
+      "title_other": "{{count}} lignes ont été laissées telles quelles",
+      "reasons": {
+        "alreadyLinked": "déjà lié à un contact existant"
+      }
+    },
+    "errorCodes": {
+      "rowConflict": "La ligne est ambiguë par rapport aux contacts déjà présents.",
+      "orgNotFound": "Cette organisation n’est plus à votre portée.",
+      "annotationChanged": "Cette ligne a changé depuis l’aperçu. Vérifiez le fichier de nouveau.",
+      "matchChanged": "Cette ligne correspond maintenant à un autre contact. Vérifiez le fichier de nouveau.",
+      "matchUnconfirmed": "Cochez la ligne et relancez l’importation pour confirmer la correspondance.",
+      "writeFailed": "La base de données a refusé l’écriture. Rien n’a été enregistré pour cette ligne.",
+      "noIdentifier": "Il ne reste à la ligne ni nom, ni adresse courriel, ni téléphone, ni cellulaire.",
+      "invalidRole": "La ligne nomme un rôle que Breeze ne connaît pas.",
+      "siteNotInOrg": "Le site de cette ligne n’appartient pas à cette organisation."
+    },
+    "errors": {
+      "previewFailed": "Impossible de comparer le fichier aux contacts déjà présents.",
+      "importFailed": "Impossible d’importer les contacts sélectionnés.",
+      "fileRead": "Impossible de lire ce fichier. Sélectionnez-le de nouveau.",
+      "noColumns": "Ce fichier n’a pas de ligne d’en-tête : il n’y a donc rien à associer."
+    }
+  },
+  "contactImportPreview": {
+    "selectAll": "Sélectionner toutes les lignes nouvelles et liées",
+    "organizationLevel": "Organisation",
+    "matches": "correspond à « {{name}} »",
+    "columns": {
+      "name": "Nom",
+      "email": "Adresse courriel",
+      "site": "Site",
+      "status": "Résultat"
+    },
+    "badges": {
+      "create": "Nouveau",
+      "linkMatch": "Déjà lié",
+      "emailMatch": "Correspondance de courriel — à confirmer",
+      "nameMatch": "Correspondance de nom — à confirmer",
+      "conflict": "Conflit",
+      "orgNotFound": "Organisation introuvable"
+    }
   }
 }

@@ -3118,6 +3118,8 @@
       "organization": "Organization",
       "general": "General",
       "generalDescription": "Profile and defaults",
+      "contacts": "Contacts",
+      "contactsDescription": "People to reach at this customer, by site or organization-wide",
       "contracts": "Contracts",
       "contractsDescription": "Recurring agreements",
       "billing": "Billing",
@@ -3717,7 +3719,8 @@
       "title": "Devices",
       "assigned": "devices assigned to this site",
       "viewAll": "View all devices"
-    }
+    },
+    "allContactsLink": "All contacts for this customer"
   },
   "siteForm": {
     "description": "Only the site name is required. Address and contact are optional — you can fill these in later.",
@@ -4102,5 +4105,180 @@
     "saveFailed": "Could not save time tracking settings",
     "minSessionRange": "Minimum session length must be between {{min}} and {{max}} seconds",
     "mergeGapRange": "Merge gap must be between {{min}} and {{max}} minutes"
+  },
+  "contactImportPreview": {
+    "selectAll": "Select all new and linked rows",
+    "organizationLevel": "Organization",
+    "matches": "matches “{{name}}”",
+    "columns": {
+      "name": "Name",
+      "email": "Email address",
+      "site": "Site",
+      "status": "Status"
+    },
+    "badges": {
+      "create": "New",
+      "linkMatch": "Already linked",
+      "emailMatch": "Email match — confirm",
+      "nameMatch": "Name match — confirm",
+      "conflict": "Conflict",
+      "orgNotFound": "Organization not found"
+    }
+  },
+  "bulkContactImport": {
+    "title": "Import contacts from CSV",
+    "description": "Upload a contact export from your previous RMM or PSA. Every row is filed under this organization.",
+    "dropzone": "Drop a CSV file here or click to browse",
+    "dropzoneHint": "Map at least one of name, email address, phone, or mobile — a contact needs one of them.",
+    "actions": {
+      "close": "Close",
+      "preview": "Check {{count}} rows",
+      "previewing": "Checking…",
+      "import": "Import {{count}} selected",
+      "importing": "Importing…"
+    },
+    "mapping": {
+      "heading": "Column mapping",
+      "unmapped": "Not mapped",
+      "identifierRequired": "Map a name, email address, phone, or mobile column to continue.",
+      "droppedRows_one": "{{count}} row skipped: no name, email address, phone or mobile.",
+      "droppedRows_other": "{{count}} rows skipped: no name, email address, phone or mobile.",
+      "tooManyRows": "This file maps {{count}} rows, more than the {{max}} one import accepts. Split it into smaller files.",
+      "fields": {
+        "name": "Name",
+        "email": "Email address",
+        "phone": "Phone",
+        "mobile": "Mobile",
+        "title": "Job title",
+        "roles": "Roles",
+        "site": "Site",
+        "externalId": "Contact ID in the source system",
+        "externalSystem": "Source system"
+      }
+    },
+    "mode": {
+      "label": "Contacts already linked",
+      "skip": "Leave them as they are",
+      "update": "Merge the file into them"
+    },
+    "preview": {
+      "heading": "What will happen"
+    },
+    "summary": {
+      "imported": "{{count}} added",
+      "updated": "{{count}} merged",
+      "skipped": "{{count}} left alone",
+      "failed": "{{count}} refused",
+      "allFailed": "Nothing was imported — {{summary}}.",
+      "nothingImported": "Nothing imported: {{count}} already linked.",
+      "nothingImportedEmpty": "Nothing was imported."
+    },
+    "failures": {
+      "title_one": "{{count}} row was refused",
+      "title_other": "{{count}} rows were refused"
+    },
+    "skipped": {
+      "title_one": "{{count}} row was left as it is",
+      "title_other": "{{count}} rows were left as they are",
+      "reasons": {
+        "alreadyLinked": "already linked to an existing contact"
+      }
+    },
+    "errorCodes": {
+      "rowConflict": "The row is ambiguous against the contacts already here.",
+      "orgNotFound": "This organization is no longer one you can reach.",
+      "annotationChanged": "This row changed since the preview. Check the file again.",
+      "matchChanged": "This row now matches a different contact. Check the file again.",
+      "matchUnconfirmed": "Tick the row and import again to confirm the match.",
+      "writeFailed": "The database refused the write. Nothing was saved for this row.",
+      "noIdentifier": "The row is left with no name, email address, phone or mobile.",
+      "invalidRole": "The row names a role Breeze does not recognize.",
+      "siteNotInOrg": "The site on this row does not belong to this organization."
+    },
+    "errors": {
+      "previewFailed": "Could not check the file against existing contacts.",
+      "importFailed": "Could not import the selected contacts.",
+      "fileRead": "Could not read that file. Choose it again.",
+      "noColumns": "That file has no header row, so there is nothing to map."
+    }
+  },
+  "contactsCard": {
+    "title": "Contacts",
+    "description": "The people your team reaches at this customer. One contact can be pinned to a site or belong to the organization as a whole.",
+    "organizationLevel": "Organization",
+    "unknownSite": "Site unavailable",
+    "empty": "No contacts yet. Add one, or import a CSV from your previous tool.",
+    "loading": "Loading contacts…",
+    "confirmDelete": "Delete {{name}}? This cannot be undone.",
+    "actions": {
+      "add": "Add contact",
+      "import": "Import CSV",
+      "edit": "Edit",
+      "delete": "Delete",
+      "save": "Save contact",
+      "saving": "Saving…",
+      "cancel": "Cancel",
+      "retry": "Try again"
+    },
+    "filters": {
+      "site": "Filter by site",
+      "role": "Filter by role",
+      "allSites": "Every site",
+      "allRoles": "Every role"
+    },
+    "columns": {
+      "name": "Name",
+      "reach": "How to reach them",
+      "jobTitle": "Job title",
+      "roles": "Roles",
+      "site": "Belongs to",
+      "actions": "Actions"
+    },
+    "primary": {
+      "organization": "Primary (organization)",
+      "site": "Primary ({{site}})"
+    },
+    "roles": {
+      "billing": "Billing",
+      "technical": "Technical",
+      "escalation": "Escalation",
+      "admin": "Admin",
+      "site": "Site",
+      "afterHours": "After hours",
+      "portal": "Portal"
+    },
+    "form": {
+      "addHeading": "New contact",
+      "editHeading": "Edit contact",
+      "identifierRequired": "Fill in at least one of name, email address, phone, or mobile.",
+      "fields": {
+        "name": "Name",
+        "email": "Email address",
+        "phone": "Phone",
+        "mobile": "Mobile",
+        "title": "Job title",
+        "site": "Belongs to",
+        "roles": "Roles",
+        "notes": "Notes",
+        "isPrimary": "Make this the primary contact for the scope above"
+      }
+    },
+    "pagination": {
+      "summary": "Showing {{from}} to {{to}} of {{total}}",
+      "previous": "Previous",
+      "next": "Next"
+    },
+    "toasts": {
+      "created": "Contact added",
+      "updated": "Contact saved",
+      "deleted": "Contact deleted"
+    },
+    "errors": {
+      "load": "Could not load the contacts for this organization.",
+      "sites": "Could not load this organization's sites. Site names and the site filter stay unavailable until they load.",
+      "create": "Could not add the contact.",
+      "update": "Could not save the contact.",
+      "delete": "Could not delete the contact."
+    }
   }
 }

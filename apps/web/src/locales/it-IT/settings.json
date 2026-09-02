@@ -3113,6 +3113,8 @@
       "organization": "Organizzazione",
       "general": "Generale",
       "generalDescription": "Profilo e predefiniti",
+      "contacts": "Contatti",
+      "contactsDescription": "Persone da raggiungere presso questo cliente, per sito o per l’intera organizzazione",
       "contracts": "Contratti",
       "contractsDescription": "Accordi ricorrenti",
       "billing": "Fatturazione",
@@ -3712,7 +3714,8 @@
       "title": "Dispositivi",
       "assigned": "dispositivi assegnati a questo sito",
       "viewAll": "Visualizza tutti i dispositivi"
-    }
+    },
+    "allContactsLink": "Tutti i contatti di questo cliente"
   },
   "siteForm": {
     "description": "È richiesto solo il nome del sito. Indirizzo e contatto sono facoltativi: puoi compilarli più tardi.",
@@ -4102,5 +4105,180 @@
     "saveFailed": "Impossibile salvare le impostazioni di tracciamento tempo",
     "minSessionRange": "La durata minima della sessione deve essere compresa tra {{min}} e {{max}} secondi",
     "mergeGapRange": "L’intervallo di unione deve essere compreso tra {{min}} e {{max}} minuti"
+  },
+  "contactsCard": {
+    "title": "Contatti",
+    "description": "Le persone che il vostro team raggiunge presso questo cliente. Un contatto può essere legato a un sito oppure valere per l’intera organizzazione.",
+    "organizationLevel": "Organizzazione",
+    "unknownSite": "Sito non disponibile",
+    "empty": "Nessun contatto per ora. Aggiungetene uno oppure importate un CSV dal vostro strumento precedente.",
+    "loading": "Caricamento dei contatti…",
+    "confirmDelete": "Eliminare {{name}}? L’operazione non è reversibile.",
+    "actions": {
+      "add": "Aggiungi contatto",
+      "import": "Importa CSV",
+      "edit": "Modifica",
+      "delete": "Elimina",
+      "save": "Salva contatto",
+      "saving": "Salvataggio…",
+      "cancel": "Annulla",
+      "retry": "Riprova"
+    },
+    "filters": {
+      "site": "Filtra per sito",
+      "role": "Filtra per ruolo",
+      "allSites": "Tutti i siti",
+      "allRoles": "Tutti i ruoli"
+    },
+    "columns": {
+      "name": "Nome",
+      "reach": "Come raggiungerli",
+      "jobTitle": "Qualifica",
+      "roles": "Ruoli",
+      "site": "Appartiene a",
+      "actions": "Azioni"
+    },
+    "primary": {
+      "organization": "Principale (organizzazione)",
+      "site": "Principale ({{site}})"
+    },
+    "roles": {
+      "billing": "Fatturazione",
+      "technical": "Tecnico",
+      "escalation": "Inoltro urgente",
+      "admin": "Amministrazione",
+      "site": "Sito",
+      "afterHours": "Fuori orario",
+      "portal": "Portale"
+    },
+    "form": {
+      "addHeading": "Nuovo contatto",
+      "editHeading": "Modifica contatto",
+      "identifierRequired": "Compilate almeno uno fra nome, indirizzo e-mail, telefono o cellulare.",
+      "fields": {
+        "name": "Nome",
+        "email": "Indirizzo e-mail",
+        "phone": "Telefono",
+        "mobile": "Cellulare",
+        "title": "Qualifica",
+        "site": "Appartiene a",
+        "roles": "Ruoli",
+        "notes": "Note",
+        "isPrimary": "Imposta come contatto principale per l’ambito scelto sopra"
+      }
+    },
+    "pagination": {
+      "summary": "Da {{from}} a {{to}} di {{total}}",
+      "previous": "Precedente",
+      "next": "Successivo"
+    },
+    "toasts": {
+      "created": "Contatto aggiunto",
+      "updated": "Contatto salvato",
+      "deleted": "Contatto eliminato"
+    },
+    "errors": {
+      "load": "Impossibile caricare i contatti di questa organizzazione.",
+      "sites": "Impossibile caricare i siti di questa organizzazione. I nomi dei siti e il filtro per sito restano non disponibili.",
+      "create": "Impossibile aggiungere il contatto.",
+      "update": "Impossibile salvare il contatto.",
+      "delete": "Impossibile eliminare il contatto."
+    }
+  },
+  "bulkContactImport": {
+    "title": "Importa contatti da un CSV",
+    "description": "Caricate un’esportazione di contatti dal vostro precedente RMM o PSA. Ogni riga viene archiviata sotto questa organizzazione.",
+    "dropzone": "Trascinate qui un file CSV oppure fate clic per sceglierlo",
+    "dropzoneHint": "Associate almeno uno fra nome, indirizzo e-mail, telefono o cellulare: senza, non c’è contatto.",
+    "actions": {
+      "close": "Chiudi",
+      "preview": "Controlla {{count}} righe",
+      "previewing": "Controllo in corso…",
+      "import": "Importa {{count}} selezionate",
+      "importing": "Importazione in corso…"
+    },
+    "mapping": {
+      "heading": "Corrispondenza delle colonne",
+      "unmapped": "Non associata",
+      "identifierRequired": "Associate una colonna nome, indirizzo e-mail, telefono o cellulare per proseguire.",
+      "droppedRows_one": "{{count}} riga ignorata: nessun nome, e-mail, telefono o cellulare.",
+      "droppedRows_other": "{{count}} righe ignorate: nessun nome, e-mail, telefono o cellulare.",
+      "tooManyRows": "Questo file mappa {{count}} righe, più delle {{max}} accettate da una singola importazione. Suddividetelo in file più piccoli.",
+      "fields": {
+        "name": "Nome",
+        "email": "Indirizzo e-mail",
+        "phone": "Telefono",
+        "mobile": "Cellulare",
+        "title": "Qualifica",
+        "roles": "Ruoli",
+        "site": "Sito",
+        "externalId": "Identificativo del contatto nel sistema di origine",
+        "externalSystem": "Sistema di origine"
+      }
+    },
+    "mode": {
+      "label": "Contatti già collegati",
+      "skip": "Lasciarli invariati",
+      "update": "Unirvi il contenuto del file"
+    },
+    "preview": {
+      "heading": "Che cosa succederà"
+    },
+    "summary": {
+      "imported": "{{count}} aggiunti",
+      "updated": "{{count}} uniti",
+      "skipped": "{{count}} invariati",
+      "failed": "{{count}} rifiutate",
+      "allFailed": "Non è stato importato nulla — {{summary}}.",
+      "nothingImported": "Non è stato importato nulla: {{count}} già collegati.",
+      "nothingImportedEmpty": "Non è stato importato nulla."
+    },
+    "failures": {
+      "title_one": "{{count}} riga è stata rifiutata",
+      "title_other": "{{count}} righe sono state rifiutate"
+    },
+    "skipped": {
+      "title_one": "{{count}} riga è rimasta invariata",
+      "title_other": "{{count}} righe sono rimaste invariate",
+      "reasons": {
+        "alreadyLinked": "già collegato a un contatto esistente"
+      }
+    },
+    "errorCodes": {
+      "rowConflict": "La riga è ambigua rispetto ai contatti già presenti.",
+      "orgNotFound": "Questa organizzazione non è più alla vostra portata.",
+      "annotationChanged": "Questa riga è cambiata dopo l’anteprima. Ricontrollate il file.",
+      "matchChanged": "Questa riga ora corrisponde a un altro contatto. Ricontrollate il file.",
+      "matchUnconfirmed": "Spuntate la riga e importate di nuovo per confermare la corrispondenza.",
+      "writeFailed": "Il database ha rifiutato la scrittura. Per questa riga non è stato salvato nulla.",
+      "noIdentifier": "Alla riga non resta né nome, né e-mail, né telefono, né cellulare.",
+      "invalidRole": "La riga indica un ruolo che Breeze non riconosce.",
+      "siteNotInOrg": "Il sito di questa riga non appartiene a questa organizzazione."
+    },
+    "errors": {
+      "previewFailed": "Impossibile confrontare il file con i contatti esistenti.",
+      "importFailed": "Impossibile importare i contatti selezionati.",
+      "fileRead": "Impossibile leggere quel file. Selezionatelo di nuovo.",
+      "noColumns": "Quel file non ha una riga di intestazione, quindi non c’è nulla da mappare."
+    }
+  },
+  "contactImportPreview": {
+    "selectAll": "Seleziona tutte le righe nuove e collegate",
+    "organizationLevel": "Organizzazione",
+    "matches": "corrisponde a “{{name}}”",
+    "columns": {
+      "name": "Nome",
+      "email": "Indirizzo e-mail",
+      "site": "Sito",
+      "status": "Esito"
+    },
+    "badges": {
+      "create": "Nuovo",
+      "linkMatch": "Già collegato",
+      "emailMatch": "Corrispondenza e-mail — confermare",
+      "nameMatch": "Corrispondenza nome — confermare",
+      "conflict": "Conflitto",
+      "orgNotFound": "Organizzazione non trovata"
+    }
   }
 }
