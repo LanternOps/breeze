@@ -9,12 +9,14 @@ import ScriptPickerModal, {
   type Script,
   type ScriptRunAsSelection,
 } from "./ScriptPickerModal";
+import MaintenanceModeDialog from "./MaintenanceModeDialog";
+import { isInMaintenance } from "../../lib/maintenanceResource";
 import type { Device, DeviceStatus, OSType } from "./DeviceList";
 import { fetchWithAuth } from "../../stores/auth";
 import {
   sendDeviceCommand,
   executeScript,
-  toggleMaintenanceMode,
+  exitMaintenanceMode,
   decommissionDevice,
   clearDeviceSessions,
   restoreDevice,
@@ -44,6 +46,7 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [changeSiteOpen, setChangeSiteOpen] = useState(false);
   const [scriptPickerOpen, setScriptPickerOpen] = useState(false);
+  const [maintenanceDialogOpen, setMaintenanceDialogOpen] = useState(false);
 
   // Track every in-flight wake watcher so that navigating away aborts the
   // long-running poll loop. Without this, watchWakeOutcome keeps polling
@@ -104,6 +107,12 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
         displayName: data.displayName ?? undefined,
         isHeadless: data.isHeadless ?? undefined,
         pendingReboot: data.pendingReboot === true,
+        // RMM-QA-176: the manual maintenance lease end. Same dropped-field
+        // hazard as possibleReplacementOfDeviceId below — this transform is an
+        // explicit whitelist, so omitting it would silently make every leased
+        // device look "not in maintenance" to isInMaintenance.
+        maintenanceUntil:
+          typeof data.maintenanceUntil === "string" ? data.maintenanceUntil : null,
         // Collision enrollment (#2764) — the ONLY input to the review banner.
         // The detail endpoint spreads the whole row (the column is not in
         // SENSITIVE_DEVICE_FIELDS), but this transform is an explicit
@@ -293,12 +302,21 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
         }
 
         case "maintenance": {
-          const isCurrentlyMaintenance = device.status === "maintenance";
-          await toggleMaintenanceMode(device.id, !isCurrentlyMaintenance);
+          // RMM-QA-176 D10: exit is a one-click, un-gated operation; ENTRY
+          // needs a reason, a duration and possibly a step-up factor, so it
+          // opens MaintenanceModeDialog instead of firing a request here.
+          if (!isInMaintenance(device)) {
+            setMaintenanceDialogOpen(true);
+            break;
+          }
+          await exitMaintenanceMode(device.id);
           showToast({
             type: "success",
-            message: `${device.hostname} ${isCurrentlyMaintenance ? t("deviceDetailPage.takenOutOf") : t("deviceDetailPage.putInto")} maintenance mode`,
+            message: `${device.hostname} ${t("deviceDetailPage.takenOutOf")} maintenance mode`,
           });
+          // Refetch rather than assume: exit returns the device to its REAL
+          // liveness state (online/offline by last-seen), never a blind
+          // 'online'.
           await fetchDevice();
           break;
         }
@@ -565,6 +583,18 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
           showToast({
             type: "success",
             message: `${device.hostname} moved to new site`,
+          });
+          void fetchDevice();
+        }}
+      />
+      <MaintenanceModeDialog
+        open={maintenanceDialogOpen}
+        devices={[{ id: device.id, hostname: device.hostname }]}
+        onClose={() => setMaintenanceDialogOpen(false)}
+        onCompleted={() => {
+          showToast({
+            type: "success",
+            message: `${device.hostname} ${t("deviceDetailPage.putInto")} maintenance mode`,
           });
           void fetchDevice();
         }}

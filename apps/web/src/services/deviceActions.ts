@@ -534,21 +534,105 @@ export async function fetchLiveSessions(deviceId: string): Promise<LiveSession[]
   return (body as { data?: { sessions?: LiveSession[] } } | null)?.data?.sessions ?? [];
 }
 
-export async function toggleMaintenanceMode(
-  deviceId: string,
-  enable: boolean,
-  durationHours?: number
-): Promise<{ success: boolean; device: any }> {
-  const body = durationHours !== undefined ? { enable, durationHours } : { enable };
-  const response = await fetchWithAuth(`/devices/${deviceId}/maintenance`, {
+/**
+ * Manual maintenance mode (RMM-QA-176 D10). Replaces `toggleMaintenanceMode`,
+ * whose `{ enable[, durationHours] }` body the server now rejects: entry takes
+ * a required reason and duration, and — when 2FA is enabled — a single-use
+ * step-up grant bound to the digest of `{ deviceIds, reason, durationHours }`.
+ */
+export class MaintenanceActionError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code?: string
+  ) {
+    super(message);
+    this.name = 'MaintenanceActionError';
+  }
+}
+
+async function maintenanceRequest(path: string, body: unknown): Promise<any> {
+  const response = await fetchWithAuth(path, {
     method: 'POST',
     body: JSON.stringify(body)
   });
-
   if (!response.ok) {
-    throw new Error(await getErrorMessage(response, 'Failed to update maintenance mode'));
+    const parsed = await response.json().catch(() => null);
+    // `code` is what the dialog branches on: STEP_UP_REQUIRED reveals the
+    // factor step, MFA_REQUIRED does not (a full MFA sign-in is needed, and a
+    // step-up factor cannot substitute for it).
+    throw new MaintenanceActionError(
+      (parsed as { error?: string } | null)?.error ?? 'Failed to update maintenance mode',
+      response.status,
+      (parsed as { code?: string } | null)?.code
+    );
   }
-
   const data = await response.json();
   return data.data ?? data;
+}
+
+export interface MaintenanceEntryBody {
+  reason: string;
+  durationHours: number;
+  stepUpGrant?: string;
+}
+
+export interface BulkMaintenanceSucceeded {
+  deviceId: string;
+  action: 'enable' | 'extend';
+  maintenanceUntil: string;
+}
+
+export type BulkMaintenanceFailureCode =
+  | 'TARGET_NOT_FOUND'
+  | 'SITE_ACCESS_DENIED'
+  | 'DECOMMISSIONED'
+  | 'STATE_CONFLICT';
+
+export interface BulkMaintenanceFailed {
+  deviceId: string;
+  code: BulkMaintenanceFailureCode;
+  message: string;
+}
+
+export interface BulkMaintenanceResponse {
+  succeeded: BulkMaintenanceSucceeded[];
+  failed: BulkMaintenanceFailed[];
+}
+
+/**
+ * Enter or EXTEND maintenance. `stepUpGrant` is deliberately optional and
+ * omitted on the first submit: the SERVER decides whether a factor is required
+ * (403 STEP_UP_REQUIRED), so a 2FA-off deployment never prompts and the client
+ * can never decide for itself that it does not need one.
+ */
+export async function enterMaintenanceMode(
+  deviceId: string,
+  body: MaintenanceEntryBody
+): Promise<any> {
+  return maintenanceRequest(`/devices/${deviceId}/maintenance`, { enable: true, ...body });
+}
+
+/**
+ * Exit. The route's exit branch is `.strict()` — send exactly this. Exit is
+ * un-gated but liveness-truthful: the server returns the device to its REAL
+ * status (online/offline by last-seen), never a blind 'online', so callers must
+ * refetch rather than assume.
+ */
+export async function exitMaintenanceMode(deviceId: string): Promise<any> {
+  return maintenanceRequest(`/devices/${deviceId}/maintenance`, { enable: false });
+}
+
+/**
+ * One server-side operation under ONE grant — replaces the N-call client loop.
+ * NOTE the response is 200 even when every device failed preflight: callers
+ * must read `succeeded`/`failed`, never treat the resolved promise as success.
+ */
+export async function bulkEnterMaintenanceMode(body: {
+  deviceIds: string[];
+  reason: string;
+  durationHours: number;
+  stepUpGrant?: string;
+}): Promise<BulkMaintenanceResponse> {
+  return maintenanceRequest('/devices/bulk/maintenance', body);
 }

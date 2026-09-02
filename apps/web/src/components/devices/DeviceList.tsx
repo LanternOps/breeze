@@ -160,6 +160,13 @@ export type Device = {
    * for network-discovered rows it is the discovered asset's own IP.
    */
   lanIp?: string | null;
+  /**
+   * RMM-QA-176 manual maintenance lease end (ISO). `maintenanceUntil > now` —
+   * not `status` — is the truth of "a technician put this device into
+   * maintenance": the heartbeat overwrites `status` on every beat, so a device
+   * with a live lease can read back as `online`. Use `isInMaintenance`.
+   */
+  maintenanceUntil?: string | null;
   tags: string[];
   lastUser?: string;
   uptimeSeconds?: number;

@@ -5,6 +5,7 @@ import {
   type PublicKeyCredentialRequestOptionsJSON,
 } from '@simplewebauthn/browser';
 import { fetchWithAuth } from './auth';
+import { mintStepUpGrant, StepUpMintError } from '../lib/mfaStepUp';
 import type { AssertionProof } from '@breeze/shared';
 
 /**
@@ -85,37 +86,21 @@ async function mintRegisterGrant(reauth: RegisterReauth): Promise<string> {
     return data.registerGrantId;
   }
 
-  let stepUpBody: Record<string, unknown>;
-  if (reauth.method === 'totp') {
-    stepUpBody = { method: 'totp', code: reauth.code, operation: 'register_approver_device' };
-  } else {
-    // Passkey: fetch an authenticated step-up challenge, run the assertion
-    // ceremony, then prove it to /auth/mfa/step-up.
-    const challengeData = await jsonOrThrow(
-      await fetchWithAuth('/auth/mfa/step-up/options', { method: 'POST' }),
-      'Could not start passkey verification.'
+  // TOTP/passkey both mint through /auth/mfa/step-up, which is now shared with
+  // the device-maintenance dialog (RMM-QA-176 D10) — one ceremony, one
+  // skipUnauthorizedRetry rationale, no drift. The step-up endpoint names it
+  // stepUpGrantId; the register routes take it as registerGrantId — same
+  // value, different field name.
+  try {
+    return await mintStepUpGrant({ operation: 'register_approver_device', reauth });
+  } catch (err) {
+    // The store's callers branch on RegisterStepError (and read `.status` to
+    // map 401/403/429), so keep that contract across the delegation.
+    throw new RegisterStepError(
+      err instanceof Error ? err.message : 'Verification failed.',
+      err instanceof StepUpMintError ? err.status : undefined
     );
-    const optionsJSON: PublicKeyCredentialRequestOptionsJSON =
-      challengeData.options ?? challengeData.optionsJSON ?? challengeData;
-    const credential = await startAuthentication({ optionsJSON });
-    stepUpBody = { method: 'passkey', credential, operation: 'register_approver_device' };
   }
-
-  const data = await jsonOrThrow(
-    await fetchWithAuth('/auth/mfa/step-up', {
-      method: 'POST',
-      body: JSON.stringify(stepUpBody),
-      // Same reasoning: a 401 means the TOTP code / passkey assertion was
-      // rejected (wrong code, or the assertion is already burned), not that
-      // the access token is stale — never replay it.
-      skipUnauthorizedRetry: true,
-    }),
-    'Verification failed.'
-  );
-  if (!data?.stepUpGrantId) throw new RegisterStepError('Verification failed.');
-  // The step-up endpoint names it stepUpGrantId; the register routes take it
-  // as registerGrantId — same value, different field name.
-  return data.stepUpGrantId;
 }
 
 /**

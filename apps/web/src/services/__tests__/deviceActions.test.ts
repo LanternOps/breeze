@@ -10,7 +10,10 @@ import {
   sendWakeCommand,
   summarizeBulkCommandFailures,
   summarizeBulkWakeFailures,
-  toggleMaintenanceMode,
+  bulkEnterMaintenanceMode,
+  enterMaintenanceMode,
+  exitMaintenanceMode,
+  MaintenanceActionError,
   watchWakeOutcome,
   WakeCommandError,
   wakeFriendlyErrorMessage,
@@ -113,50 +116,86 @@ describe('deviceActions service', () => {
     });
   });
 
-  describe('toggleMaintenanceMode', () => {
-    it('enables maintenance mode with a duration', async () => {
-      const payload = {
-        data: {
-          success: true,
-          device: { id: 'dev-1' }
-        }
-      };
+  // RMM-QA-176 D10. These three FLIPPED from the old `toggleMaintenanceMode`
+  // cases ('enables maintenance mode with a duration' / 'disables maintenance
+  // mode without a duration' / 'throws a helpful error when the request
+  // fails'). The old body — { enable } (+ an optional durationHours) with no
+  // reason and no grant — is now rejected by the server's discriminated,
+  // .strict() maintenanceModeSchema, so the assertions had to move with the
+  // contract; the intent (what goes on the wire, and that a failure is not
+  // swallowed) is unchanged.
+  describe('maintenance mode services (RMM-QA-176)', () => {
+    it('enterMaintenanceMode posts reason, duration and the grant', async () => {
+      fetchWithAuthMock.mockResolvedValue(makeResponse({ data: { success: true, action: 'enable' } }));
 
-      fetchWithAuthMock.mockResolvedValue(makeResponse(payload));
-
-      const result = await toggleMaintenanceMode('dev-1', true, 4);
-
-      expect(fetchWithAuthMock).toHaveBeenCalledWith('/devices/dev-1/maintenance', {
-        method: 'POST',
-        body: JSON.stringify({ enable: true, durationHours: 4 })
+      const result = await enterMaintenanceMode('dev-1', {
+        reason: 'scheduled patching',
+        durationHours: 2,
+        stepUpGrant: 'g1'
       });
-      expect(result).toEqual(payload.data);
-    });
 
-    it('disables maintenance mode without a duration', async () => {
-      const payload = {
-        data: {
-          success: true,
-          device: { id: 'dev-1' }
-        }
-      };
-
-      fetchWithAuthMock.mockResolvedValue(makeResponse(payload));
-
-      const result = await toggleMaintenanceMode('dev-1', false);
-
-      expect(fetchWithAuthMock).toHaveBeenCalledWith('/devices/dev-1/maintenance', {
-        method: 'POST',
-        body: JSON.stringify({ enable: false })
+      const [path, init] = fetchWithAuthMock.mock.calls[0] as [string, RequestInit];
+      expect(path).toBe('/devices/dev-1/maintenance');
+      expect(JSON.parse(init.body as string)).toEqual({
+        enable: true,
+        reason: 'scheduled patching',
+        durationHours: 2,
+        stepUpGrant: 'g1'
       });
-      expect(result).toEqual(payload.data);
+      expect(result).toEqual({ success: true, action: 'enable' });
     });
 
-    it('throws a helpful error when the request fails', async () => {
-      fetchWithAuthMock.mockResolvedValue(makeResponse({ error: 'Maintenance failed' }, false, 400));
+    it('enterMaintenanceMode omits stepUpGrant on the FIRST submit (server-driven step-up)', async () => {
+      fetchWithAuthMock.mockResolvedValue(makeResponse({ data: { success: true } }));
 
-      await expect(toggleMaintenanceMode('dev-1', true)).rejects.toThrow('Maintenance failed');
+      await enterMaintenanceMode('dev-1', { reason: 'scheduled patching', durationHours: 2 });
+
+      const init = fetchWithAuthMock.mock.calls[0][1] as RequestInit;
+      expect(JSON.parse(init.body as string)).not.toHaveProperty('stepUpGrant');
     });
+
+    it('exitMaintenanceMode posts EXACTLY { enable: false } — the route body is strict', async () => {
+      fetchWithAuthMock.mockResolvedValue(makeResponse({ data: { success: true, changed: true } }));
+
+      await exitMaintenanceMode('dev-1');
+
+      const [path, init] = fetchWithAuthMock.mock.calls[0] as [string, RequestInit];
+      expect(path).toBe('/devices/dev-1/maintenance');
+      expect(JSON.parse(init.body as string)).toEqual({ enable: false });
+    });
+
+    it('surfaces the server code so the dialog can branch on STEP_UP_REQUIRED vs MFA_REQUIRED', async () => {
+      fetchWithAuthMock.mockResolvedValue(
+        makeResponse({ error: 'Step-up required', code: 'STEP_UP_REQUIRED' }, false, 403)
+      );
+
+      await expect(
+        enterMaintenanceMode('dev-1', { reason: 'scheduled patching', durationHours: 2 })
+      ).rejects.toMatchObject({ status: 403, code: 'STEP_UP_REQUIRED', message: 'Step-up required' });
+    });
+
+    it('a failed request still rejects when the body carries no error string', async () => {
+      fetchWithAuthMock.mockResolvedValue(makeResponse({}, false, 500));
+
+      await expect(exitMaintenanceMode('dev-1')).rejects.toBeInstanceOf(MaintenanceActionError);
+    });
+
+    it('bulkEnterMaintenanceMode makes ONE call with every id', async () => {
+      fetchWithAuthMock.mockResolvedValue(makeResponse({ succeeded: [], failed: [] }));
+
+      await bulkEnterMaintenanceMode({
+        deviceIds: ['a', 'b', 'c'],
+        reason: 'scheduled patching',
+        durationHours: 2,
+        stepUpGrant: 'g1'
+      });
+
+      expect(fetchWithAuthMock).toHaveBeenCalledTimes(1);
+      expect(fetchWithAuthMock.mock.calls[0][0]).toBe('/devices/bulk/maintenance');
+      const init = fetchWithAuthMock.mock.calls[0][1] as RequestInit;
+      expect(JSON.parse(init.body as string).deviceIds).toEqual(['a', 'b', 'c']);
+    });
+
   });
 
   describe('executeScript', () => {
