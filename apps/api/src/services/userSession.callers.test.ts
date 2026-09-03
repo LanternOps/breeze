@@ -36,7 +36,7 @@ const expectedSingleBoundaryFiles = new Map([
 const expectedLegacyIssuerFiles = new Map(expectedSingleBoundaryFiles);
 const expectedGuardedCookieInstallerFiles = new Map([
   ...expectedSingleBoundaryFiles,
-  ['routes/auth/mfa.ts', 4],
+  ['routes/auth/mfa.ts', 5],
   ['routes/auth/passkeys.ts', 3],
   ['routes/auth/phone.ts', 1],
   ['routes/sso.ts', 1],
