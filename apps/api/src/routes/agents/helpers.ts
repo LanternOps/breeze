@@ -2060,8 +2060,14 @@ async function resolveDeviceMonitoringSettings(deviceId: string): Promise<Monito
     ))
     .orderBy(configPolicyMonitoringWatches.sortOrder);
 
-  if (watches.length === 0) return null;
-
+  // A winning policy row with zero enabled watches is a valid resolution — it
+  // means "clear whatever watches were previously delivered", not "no policy
+  // matched" (that case already returned null above at the empty-rows check).
+  // Collapsing both to null used to make heartbeat.ts omit monitoring_settings
+  // from the payload, so the agent (which handles an empty array fine — see
+  // agent/internal/monitoring/monitor.go ApplyConfig) could never be told to
+  // stop watching something it was configured to watch on a prior heartbeat
+  // (#2949).
   return {
     check_interval_seconds: winner.checkIntervalSeconds,
     watches: watches.map((w) => {
