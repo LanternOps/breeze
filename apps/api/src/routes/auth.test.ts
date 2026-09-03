@@ -130,6 +130,32 @@ vi.mock('../services', () => {
     mfaEpoch: 2,
     cleanup: { redisOk: true, permissionCacheOk: true, oauthOk: true, remoteSessionsTerminated: 0 },
   })),
+  replaceSessionOnMfaFactorWrite: vi.fn(async (input: any) => {
+    // Minimal drizzle-shaped tx so the caller's persistFactor runs for real.
+    const tx = {
+      update: () => ({
+        set: () => ({
+          where: () => ({ returning: async () => [{ id: input.userId }] }),
+        }),
+      }),
+    };
+    await input.persistFactor(tx, input.recoveryCodeHashes);
+    return {
+      value: undefined,
+      recoveryCodes: [...input.recoveryCodes],
+      issued: {
+        accessToken: 'replacement-access-token',
+        refreshToken: 'replacement-refresh-token',
+        refreshJti: 'replacement-jti',
+        expiresInSeconds: 900,
+        familyId: 'replacement-family',
+        transitionId: 'transition-1',
+        generation: 1,
+      },
+      mfaEpoch: 2,
+      cleanup: { redisOk: true, permissionCacheOk: true, oauthOk: true, remoteSessionsTerminated: 0 },
+    };
+  }),
   issueUserSessionLegacyDuringTransition: issueLegacy,
   bindIssuedUserSession: vi.fn(async () => undefined),
   authBrowserTransitionsEnforced: vi.fn(() => process.env.AUTH_BROWSER_TRANSITIONS_ENFORCED === 'true'),
@@ -357,7 +383,10 @@ import {
   issueUserSessionLegacyDuringTransition,
   recordAuthTransitionLegacyIssuer,
   AuthIssuanceCapabilityError,
+  AuthIssuanceConflictError,
   completeInitialMfaEnrollment,
+  replaceSessionOnMfaFactorWrite,
+  bindIssuedUserSession,
 } from '../services';
 import { assertActiveTenantContext, TenantInactiveError } from '../services/tenantStatus';
 import { performOrdinaryTerminalLogout } from '../services/terminalLogout';
@@ -375,6 +404,7 @@ import * as mfaPolicyModule from '../services/mfaPolicy';
 import { mintStepUpGrant, validateStepUpGrant, consumeStepUpGrant } from '../services/mfaStepUpGrant';
 import { verifyStepUpPasskeyAssertion } from './auth/passkeys';
 import { getTwilioService } from '../services/twilio';
+import { authMiddleware } from '../middleware/auth';
 
 // SR2-08: stub `db.transaction` so advanceUserEpochs/revokeAllRefreshFamilies
 // (kept REAL, see the authLifecycle mock above) run against a fake `tx`
@@ -3676,6 +3706,180 @@ describe('auth routes', () => {
       expect(body.success).toBe(true);
       expect(body.recoveryCodes).toEqual(newRecoveryCodes);
       expect(body.message).toBe('Recovery codes generated successfully');
+    });
+
+    // The three reads /auth/mfa/recovery-codes makes, in order: the password
+    // step-up hash, the mfa_enabled gate, then the audit org lookup.
+    const mockRecoveryRotateReads = () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ passwordHash: '$argon2id$hash' }])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ mfaEnabled: true }])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([])
+            })
+          })
+        } as any);
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn(() => Object.assign(Promise.resolve(undefined), {
+            returning: vi.fn().mockResolvedValue([{ id: 'user-123' }])
+          }))
+        })
+      } as any);
+    };
+
+    // #4480: rotation bumps mfa_epoch and revokes every refresh family, so
+    // WITHOUT a replacement session the 200 that carries the one-time codes
+    // lands on a page the very next request signs out — the user never reads
+    // the codes the call just made authoritative. Same shape /mfa/enable
+    // already uses: evict everyone else, re-issue the actor.
+    it('POST /auth/mfa/recovery-codes re-issues the caller session instead of evicting it', async () => {
+      const newRecoveryCodes = ['NEWA-0001', 'NEWB-0002'];
+      vi.mocked(generateRecoveryCodes).mockReturnValue(newRecoveryCodes);
+      vi.mocked(verifyPassword).mockResolvedValue(true);
+      mockRecoveryRotateReads();
+
+      const res = await app.request('/auth/mfa/recovery-codes', {
+        method: 'POST',
+        headers: {
+          'Authorization': 'Bearer valid-token',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ currentPassword: 'OldStrongPass123' })
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.recoveryCodes).toEqual(newRecoveryCodes);
+      // The replacement access token is what keeps the caller authenticated
+      // past its own epoch bump.
+      expect(body.tokens).toEqual({ accessToken: 'replacement-access-token', expiresInSeconds: 900 });
+      // ...and the rotated refresh cookie is what survives the family revoke.
+      expect(res.headers.get('set-cookie') ?? '').toContain('replacement-refresh-token');
+
+      expect(replaceSessionOnMfaFactorWrite).toHaveBeenCalledTimes(1);
+      const rotateInput = vi.mocked(replaceSessionOnMfaFactorWrite).mock.calls[0]?.[0] as any;
+      expect(rotateInput).toMatchObject({
+        userId: 'user-123',
+        expectedMfaEnabled: true,
+        revokeReason: 'mfa-recovery-rotate',
+        recoveryCodes: newRecoveryCodes,
+      });
+      // What lands in the row must be the HASHES, never the plaintext the
+      // response hands back — one per code, none of them a code.
+      expect(rotateInput.recoveryCodeHashes).toHaveLength(newRecoveryCodes.length);
+      for (const hash of rotateInput.recoveryCodeHashes) {
+        expect(newRecoveryCodes).not.toContain(hash);
+      }
+    });
+
+    // Post-commit: the codes are already the account's only valid set, so a
+    // failure installing the replacement session must not 500 the response and
+    // take the only copy of them with it.
+    it('POST /auth/mfa/recovery-codes still returns the codes when the session install fails', async () => {
+      const newRecoveryCodes = ['NEWA-0001', 'NEWB-0002'];
+      vi.mocked(generateRecoveryCodes).mockReturnValue(newRecoveryCodes);
+      vi.mocked(verifyPassword).mockResolvedValue(true);
+      mockRecoveryRotateReads();
+      vi.mocked(bindIssuedUserSession).mockRejectedValueOnce(new Error('redis down'));
+
+      const res = await app.request('/auth/mfa/recovery-codes', {
+        method: 'POST',
+        headers: {
+          'Authorization': 'Bearer valid-token',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ currentPassword: 'OldStrongPass123' })
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.recoveryCodes).toEqual(newRecoveryCodes);
+      // The refresh JTI was never bound, so the access token would die at its
+      // first refresh — withhold it rather than sell the caller a few minutes.
+      expect(body.tokens).toBeUndefined();
+    });
+
+    // SR-001: the replacement session must inherit the caller's SIGNED device
+    // binding and the caller's own MFA assurance — never the forgeable
+    // `x-breeze-mobile-device-id` header, and never an upgrade to `mfa: true`
+    // that only a factor proof should buy.
+    it('POST /auth/mfa/recovery-codes carries the signed binding and assurance into the replacement', async () => {
+      vi.mocked(generateRecoveryCodes).mockReturnValue(['NEWA-0001']);
+      vi.mocked(verifyPassword).mockResolvedValue(true);
+      mockRecoveryRotateReads();
+      vi.mocked(authMiddleware).mockImplementationOnce(((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+          token: {
+            sid: 'family-123', sub: 'user-123', type: 'access',
+            aep: 4, mep: 9, mfa: true, mdid: 'signed-device-1', roleId: 'role-7',
+          },
+          orgId: 'org-5',
+          partnerId: 'partner-2',
+          scope: 'organization',
+        });
+        return next();
+      }) as never);
+
+      const res = await app.request('/auth/mfa/recovery-codes', {
+        method: 'POST',
+        headers: {
+          'Authorization': 'Bearer valid-token',
+          'Content-Type': 'application/json',
+          'x-breeze-mobile-device-id': 'forged-device-header'
+        },
+        body: JSON.stringify({ currentPassword: 'OldStrongPass123' })
+      });
+
+      expect(res.status).toBe(200);
+      const input = vi.mocked(replaceSessionOnMfaFactorWrite).mock.calls[0]?.[0] as any;
+      expect(input.expectedAuthEpoch).toBe(4);
+      expect(input.expectedMfaEpoch).toBe(9);
+      expect(input.identity).toMatchObject({
+        userId: 'user-123',
+        roleId: 'role-7',
+        orgId: 'org-5',
+        partnerId: 'partner-2',
+        scope: 'organization',
+        mfa: true,
+        mobileDeviceId: 'signed-device-1',
+      });
+      expect(input.identity.mobileDeviceId).not.toBe('forged-device-header');
+    });
+
+    it('POST /auth/mfa/recovery-codes surfaces a lost issuance race as 409 without exposing codes', async () => {
+      vi.mocked(generateRecoveryCodes).mockReturnValue(['NEWA-0001']);
+      vi.mocked(verifyPassword).mockResolvedValue(true);
+      mockRecoveryRotateReads();
+      vi.mocked(replaceSessionOnMfaFactorWrite).mockRejectedValueOnce(new AuthIssuanceConflictError());
+
+      const res = await app.request('/auth/mfa/recovery-codes', {
+        method: 'POST',
+        headers: {
+          'Authorization': 'Bearer valid-token',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ currentPassword: 'OldStrongPass123' })
+      });
+
+      expect(res.status).toBe(409);
+      expect(await res.text()).not.toContain('NEWA-0001');
+      expect(cancelAuthIssuance).toHaveBeenCalledTimes(1);
     });
 
     it('POST /auth/mfa/recovery-codes should reject missing currentPassword', async () => {
