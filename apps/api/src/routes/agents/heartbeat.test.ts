@@ -308,6 +308,7 @@ function buildApp(): Hono {
       deviceId: 'device-1',
       agentId: 'agent-1',
       orgId: 'org-1',
+      partnerId: 'partner-1',
       siteId: 'site-1',
       role: 'agent',
     });
@@ -324,6 +325,7 @@ function buildWatchdogApp(): Hono {
       deviceId: 'device-1',
       agentId: 'agent-1',
       orgId: 'org-1',
+      partnerId: 'partner-1',
       siteId: 'site-1',
       role: 'watchdog',
     });
@@ -342,6 +344,7 @@ function buildDrainingApp(role: 'agent' | 'watchdog' = 'agent'): Hono {
       deviceId: 'device-1',
       agentId: 'agent-1',
       orgId: 'org-1',
+      partnerId: 'partner-1',
       siteId: 'site-1',
       role,
       tenantDraining: true,
@@ -367,6 +370,7 @@ function buildDeviceDrainApp(): Hono {
       deviceId: 'device-1',
       agentId: 'agent-1',
       orgId: 'org-1',
+      partnerId: 'partner-1',
       siteId: 'site-1',
       role: 'agent',
       tenantDraining: false,
