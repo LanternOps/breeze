@@ -916,6 +916,13 @@ func writeUpdateMarker(version string) {
 // leaving a stale one behind means an unrelated restart (crash, reboot, launchd
 // respawn) also skips jitter, which is the thundering-herd case jitter exists
 // for.
+//
+// The marker is process-shared state and TryBeginProcessMutation's lease is
+// in-process only, so a watchdog-driven failover update of the agent
+// (cmd/breeze-watchdog doUpdateAgent, a separate process against the same
+// BinaryPath) racing an agent self-update could clear a marker the other just
+// wrote. The cost is bounded to that restart losing its jitter skip; the
+// write-side of the same race predates this function.
 func removeUpdateMarker() {
 	markerPath := filepath.Join(config.ConfigDir(), ".update-restart")
 	if err := os.Remove(markerPath); err != nil && !os.IsNotExist(err) {

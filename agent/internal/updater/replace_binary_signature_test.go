@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -174,6 +175,13 @@ func TestReplaceBinary_NoAdHocSigning(t *testing.T) {
 // that the refusal does NOT roll back: nothing was written, so rewriting the
 // live binary from the backup would be pure risk.
 func TestUpdateFromURL_SignatureRejectionSurvivesToTheCaller(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// UpdateFromURL hands the swap to RestartWithHelper on Windows and
+		// never reaches replaceBinary, so there is no signature gate to assert.
+		// internal/updater is currently excluded from the test-agent-windows
+		// job (#2523); this guard is here so re-enabling it does not surprise.
+		t.Skip("UpdateFromURL does not call replaceBinary on Windows")
+	}
 	const installed = "installed binary v1"
 	staged := []byte("staged binary v2")
 

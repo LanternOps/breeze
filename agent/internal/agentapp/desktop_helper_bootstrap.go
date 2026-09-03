@@ -126,7 +126,10 @@ func desktopHelperUnavailableWarning(err error, version, goos, goarch string) st
 // executable at path. downloadReleaseAsset does the same for the network path;
 // the sibling copy must not be the weaker of the two.
 func writeBinaryAtomically(path string, data []byte) error {
-	tmpPath := path + ".staging"
+	// Per-process temp name: two concurrent `service install` runs must not
+	// share a staging file, where one's cleanup would delete the other's
+	// in-flight write.
+	tmpPath := fmt.Sprintf("%s.staging.%d", path, os.Getpid())
 	if err := os.WriteFile(tmpPath, data, 0o755); err != nil {
 		_ = os.Remove(tmpPath)
 		return err

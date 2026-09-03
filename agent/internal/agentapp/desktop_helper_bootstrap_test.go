@@ -409,8 +409,12 @@ func TestWriteBinaryAtomically(t *testing.T) {
 	if info.Mode().Perm()&0o111 == 0 {
 		t.Fatalf("dest mode = %v, want it executable", info.Mode().Perm())
 	}
-	if _, err := os.Stat(dest + ".staging"); !os.IsNotExist(err) {
-		t.Fatalf("staging temp file left behind at %s", dest+".staging")
+	leftovers, globErr := filepath.Glob(dest + ".staging*")
+	if globErr != nil {
+		t.Fatal(globErr)
+	}
+	if len(leftovers) != 0 {
+		t.Fatalf("staging temp files left behind: %v", leftovers)
 	}
 
 	// A destination whose directory does not exist fails without touching a
@@ -419,7 +423,11 @@ func TestWriteBinaryAtomically(t *testing.T) {
 	if err := writeBinaryAtomically(missingDir, []byte("x")); err == nil {
 		t.Fatal("expected an error writing into a missing directory")
 	}
-	if _, err := os.Stat(missingDir + ".staging"); !os.IsNotExist(err) {
-		t.Fatal("staging temp file left behind after a failed write")
+	leftovers, globErr = filepath.Glob(missingDir + ".staging*")
+	if globErr != nil {
+		t.Fatal(globErr)
+	}
+	if len(leftovers) != 0 {
+		t.Fatalf("staging temp files left behind after a failed write: %v", leftovers)
 	}
 }
