@@ -55,9 +55,9 @@ function parseUrl(url) {
 
 test('parses a full URL with an encoded password and sslmode', () => {
   const vars = parseUrl(
-    'postgresql://breeze:s3cr%40t%2Fp%40ss@db-nyc3-01.db.ondigitalocean.com:25060/breeze?sslmode=require',
+    'postgresql://breeze:s3cr%40t%2Fp%40ss@db-primary-01.db.example:25060/breeze?sslmode=require',
   );
-  assert.equal(vars.PGHOST, 'db-nyc3-01.db.ondigitalocean.com');
+  assert.equal(vars.PGHOST, 'db-primary-01.db.example');
   assert.equal(vars.PGPORT, '25060');
   assert.equal(vars.PGUSER, 'breeze');
   assert.equal(vars.PGPASSWORD, 's3cr@t/p@ss');
