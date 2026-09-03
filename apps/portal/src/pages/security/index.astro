@@ -19,7 +19,7 @@ if (overview.statusCode === 401 || devices.statusCode === 401) {
 <PortalLayout title="Security">
   {
     overview.data
-      ? <SecurityOverview overview={overview.data} />
+      ? <SecurityOverview overview={overview.data} timezone={devices.data?.timezone} />
       : <p data-testid="portal-security-error">{overview.error}</p>
   }
   {

@@ -10,6 +10,7 @@ const state = vi.hoisted(() => ({
   wheres: [] as unknown[],
   joins: [] as unknown[],
   orderBys: [] as unknown[][],
+  selects: [] as Record<string, unknown>[],
 }));
 
 const posture = vi.hoisted(() => ({ trend: vi.fn() }));
@@ -17,7 +18,8 @@ const catalog = vi.hoisted(() => ({ lookup: vi.fn() }));
 
 vi.mock('../../db', () => ({
   db: {
-    select: vi.fn(() => {
+    select: vi.fn((columns?: Record<string, unknown>) => {
+      state.selects.push(columns ?? {});
       const rows = state.rows.shift() ?? [];
       const chain: Record<string, unknown> = {};
       for (const method of [
@@ -67,6 +69,11 @@ function compiledWheres() {
   return state.wheres.map((where) => dialect.sqlToQuery(where as SQL));
 }
 
+function compiledSelectColumn(selectIndex: number, column: string) {
+  const columns = state.selects[selectIndex];
+  return dialect.sqlToQuery(columns?.[column] as SQL);
+}
+
 describe('dashboard security tiles', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -74,6 +81,7 @@ describe('dashboard security tiles', () => {
     state.wheres.length = 0;
     state.joins.length = 0;
     state.orderBys.length = 0;
+    state.selects.length = 0;
     posture.trend.mockResolvedValue([]);
     catalog.lookup.mockResolvedValue(new Map());
   });
@@ -139,6 +147,17 @@ describe('dashboard security tiles', () => {
     const compiled = compiledWheres();
     expect(compiled.some(({ params }) => params.includes(ORG_ID))).toBe(true);
     expect(compiled.some(({ sql }) => sql.includes('"devices"."org_id" ='))).toBe(true);
+
+    // The org predicate lives inside the EXISTS subqueries used as SELECT
+    // columns, not just in .where()/.leftJoin() — compile them directly so a
+    // regression that drops `s1.org_id = ...` / `ha.org_id = ...` is caught.
+    const hasS1Agent = compiledSelectColumn(0, 'hasS1Agent');
+    expect(hasS1Agent.sql).toContain('s1.org_id = $');
+    expect(hasS1Agent.params).toContain(ORG_ID);
+
+    const hasHuntressAgent = compiledSelectColumn(0, 'hasHuntressAgent');
+    expect(hasHuntressAgent.sql).toContain('ha.org_id = $');
+    expect(hasHuntressAgent.params).toContain(ORG_ID);
   });
 
   it('returns no_data instead of a fabricated score or count', async () => {
@@ -174,6 +193,7 @@ describe('securityReadModel', () => {
     state.wheres.length = 0;
     state.joins.length = 0;
     state.orderBys.length = 0;
+    state.selects.length = 0;
     posture.trend.mockResolvedValue([]);
     catalog.lookup.mockResolvedValue(new Map());
   });
@@ -330,6 +350,23 @@ describe('securityReadModel', () => {
       return query.sql.includes('"devices"."org_id" =') &&
         query.params.includes(ORG_ID);
     })).toBe(true);
+
+    // select(1) is the paginated device list query (select(0) is the plain
+    // count query); its hasS1Agent/hasHuntressAgent EXISTS subqueries and the
+    // pendingCriticalPatches subquery are never touched by .where()/.leftJoin()
+    // assertions above, so compile them directly to prove the org predicate
+    // survives inside each SELECT-column subquery.
+    const hasS1Agent = compiledSelectColumn(1, 'hasS1Agent');
+    expect(hasS1Agent.sql).toContain('s1.org_id = $');
+    expect(hasS1Agent.params).toContain(ORG_ID);
+
+    const hasHuntressAgent = compiledSelectColumn(1, 'hasHuntressAgent');
+    expect(hasHuntressAgent.sql).toContain('ha.org_id = $');
+    expect(hasHuntressAgent.params).toContain(ORG_ID);
+
+    const pendingCriticalPatches = compiledSelectColumn(1, 'pendingCriticalPatches');
+    expect(pendingCriticalPatches.sql).toContain('dp.org_id = $');
+    expect(pendingCriticalPatches.params).toContain(ORG_ID);
   });
 
   it('returns no_data with pagination metadata for an empty device page', async () => {
