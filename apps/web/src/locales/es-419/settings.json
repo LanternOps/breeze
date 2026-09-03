@@ -4034,6 +4034,12 @@
     "description": "Defina atributos personalizados para rastrear información adicional en los dispositivos.",
     "searchPlaceholder": "Buscar campos...",
     "allTypes": "Todos los tipos",
+    "allOrganizations": "Todas las organizaciones",
+    "ownerScope": {
+      "legend": "Se aplica a",
+      "allOrganizations": "Todas las organizaciones (para todo el partner)",
+      "thisOrganizationOnly": "Esta organización sólo"
+    },
     "actions": {
       "add": "Agregar campo personalizado",
       "addFirst": "Agregue su primer campo personalizado",

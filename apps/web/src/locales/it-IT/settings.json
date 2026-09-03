@@ -4082,6 +4082,12 @@
     "description": "Definisci attributi personalizzati per tracciare informazioni aggiuntive sui dispositivi.",
     "searchPlaceholder": "Cerca campi...",
     "allTypes": "Tutti i tipi",
+    "allOrganizations": "Tutte le organizzazioni",
+    "ownerScope": {
+      "legend": "Si applica a",
+      "allOrganizations": "Tutte le organizzazioni (a livello di partner)",
+      "thisOrganizationOnly": "Solo questa organizzazione"
+    },
     "actions": {
       "add": "Aggiungi campo personalizzato",
       "addFirst": "Aggiungi il primo campo personalizzato",

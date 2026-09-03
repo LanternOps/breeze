@@ -4,7 +4,13 @@ import '@/lib/i18n';
 import CustomFieldsPage from './CustomFieldsPage';
 
 vi.mock('../../stores/auth', () => ({
-  fetchWithAuth: vi.fn()
+  fetchWithAuth: vi.fn(),
+  registerOrgIdProvider: vi.fn(),
+  useAuthStore: Object.assign(
+    (selector: (s: { user: { canManagePartnerWide?: boolean } }) => unknown) =>
+      selector({ user: {} }),
+    { getState: () => ({ tokens: null }) },
+  ),
 }));
 
 import { fetchWithAuth } from '../../stores/auth';

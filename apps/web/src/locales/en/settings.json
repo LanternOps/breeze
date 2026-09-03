@@ -4087,6 +4087,12 @@
     "description": "Define custom attributes to track additional information on devices.",
     "searchPlaceholder": "Search fields...",
     "allTypes": "All Types",
+    "allOrganizations": "All organizations",
+    "ownerScope": {
+      "legend": "Applies to",
+      "allOrganizations": "All organizations (partner-wide)",
+      "thisOrganizationOnly": "This organization only"
+    },
     "actions": {
       "add": "Add Custom Field",
       "addFirst": "Add your first custom field",
