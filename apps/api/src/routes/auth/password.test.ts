@@ -135,7 +135,7 @@ vi.mock('./ssoPolicy', () => ({
 
 import { passwordRoutes } from './password';
 import { db, withSystemDbAccessContext } from '../../db';
-import { invalidateAllUserSessions } from '../../services';
+import { invalidateAllUserSessions, verifyPassword } from '../../services';
 import { writeAuthAudit } from './helpers';
 import { getPasswordResetEligibility } from '../../services/passwordResetEligibility';
 import { enqueuePasswordResetRequest } from '../../services/authEmailQueue';
@@ -687,6 +687,51 @@ describe('password reset eligibility (#719)', () => {
       const body = await res.json() as { success: boolean };
       expect(body.success).toBe(true);
       expect(runPostCommitCleanupMock).toHaveBeenCalledWith('u-1');
+    });
+
+    // #4660 (follows #4470/#4651): the `currentPassword` the user typed into
+    // the request BODY is request data, not the credential that authenticates
+    // this request. Rejecting it must therefore never be a 401 — the web
+    // client's `fetchWithAuth` (apps/web/src/stores/auth.ts) hands any 401 to
+    // refresh-and-replay and then `handleSessionExpired`, so a single typo on
+    // the profile page signed the user out mid-flow. 401 stays reserved for a
+    // dead bearer. Clients branch on `code`, never on the message text.
+    it('answers a wrong current password with 400 + code invalid_credentials, not 401 (#4660)', async () => {
+      vi.mocked(verifyPassword).mockResolvedValueOnce(false);
+
+      const res = await postJson('/change-password', {
+        currentPassword: 'wrong-old-pw-1234',
+        newPassword: 'new-strong-pw-1234',
+      });
+
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error: 'Current password is incorrect',
+        message: 'Current password is incorrect',
+        code: 'invalid_credentials',
+      });
+      // The rejection is terminal: nothing was rotated or revoked.
+      expect(db.transaction).not.toHaveBeenCalled();
+      expect(invalidateAllUserSessions).not.toHaveBeenCalled();
+      expect(runPostCommitCleanupMock).not.toHaveBeenCalled();
+    });
+
+    // The other half of the #4660 contract: the SSO-only (no password hash)
+    // branch was ALREADY 400 and keeps its own distinct message, so moving the
+    // wrong-password branch to 400 does not create a new oracle here —
+    // `GET /auth/me` already publishes `hasPassword` (#4018).
+    it('still answers a passwordless account with its own 400 body (#4660)', async () => {
+      vi.mocked(db.select).mockReturnValue(selectChain([{ passwordHash: null }]) as any);
+
+      const res = await postJson('/change-password', {
+        currentPassword: 'anything-1234',
+        newPassword: 'new-strong-pw-1234',
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json() as { error: string };
+      expect(body.error).toBe('Password authentication is not available for this account');
+      expect(db.transaction).not.toHaveBeenCalled();
     });
   });
 });

@@ -7,7 +7,7 @@ import { navigateTo } from './navigation';
 // Invoice-domain enum SSOT lives in @breeze/shared (billing-enums.ts). Imported
 // into local scope for the InvoiceSummary/InvoiceDetail types below and re-exported
 // (type-only, erased at build) so '@/lib/api' consumers are unaffected.
-import type { DocumentPageSize, DocumentThemeId, InvoiceStatus, PublicQuoteHeader, QuotePresentation, SecurityDevicesDto, SecurityOverviewDto, TicketFormField } from '@breeze/shared';
+import type { DocumentPageSize, DocumentThemeId, EnrichedPortalDevice, InvoiceStatus, PublicQuoteHeader, QuotePresentation, SecurityDevicesDto, SecurityOverviewDto, TicketFormField } from '@breeze/shared';
 
 // Client API base. Empty (the default) → same-origin **relative** requests
 // (`/api/v1/...`), which the reverse proxy routes to the API under `/api/*`. This
@@ -305,15 +305,7 @@ export interface PaginatedResult<T> extends ApiResponse<T[]> {
   pagination?: Pagination;
 }
 
-export interface Device {
-  id: string;
-  hostname: string;
-  displayName: string | null;
-  osType: string | null;
-  osVersion: string | null;
-  status: 'online' | 'offline' | 'warning';
-  lastSeenAt: string | null;
-}
+export type Device = EnrichedPortalDevice;
 
 /** Mirrors the API's ticket_status enum. A freshly submitted ticket is 'new'
  *  (it becomes 'open' when a technician picks it up); 'pending' is waiting on
@@ -736,13 +728,14 @@ export const portalApi = {
   getDevices: async (
     params: ListParams = {},
     config: ApiRequestConfig = {}
-  ): Promise<PaginatedResult<Device>> => {
+  ): Promise<PaginatedResult<EnrichedPortalDevice>> => {
     const query = buildQueryString({ page: params.page ?? 1, limit: params.limit ?? 50 });
-    const response = await apiGet<{ data: Device[]; pagination: Pagination }>(
-      `/portal/devices${query}`,
-      config
+    return mapPaginatedData(
+      await apiGet<{
+        data: EnrichedPortalDevice[];
+        pagination: Pagination;
+      }>(`/portal/devices${query}`, config)
     );
-    return mapPaginatedData(response);
   },
 
   getTickets: async (

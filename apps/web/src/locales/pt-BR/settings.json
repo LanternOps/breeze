@@ -1742,6 +1742,29 @@
         "draftKinds": {
           "reply": "Rascunho de resposta",
           "resolutionNote": "Rascunho da nota de resolução"
+        },
+        "skippedTitle": "Não aplicado",
+        "skipped": {
+          "item": {
+            "fields": "Atualizações de campos",
+            "link": "Vínculo de dispositivo",
+            "note": "Nota privada",
+            "draftReply": "Rascunho de resposta",
+            "draftResolution": "Rascunho da nota de resolução"
+          },
+          "reason": {
+            "noFieldsProposed": "Nenhum campo foi proposto.",
+            "belowConfidenceFloor": "A confiança ficou abaixo do limite para uma gravação automática.",
+            "humanSet": "Uma pessoa já definiu este campo.",
+            "noDeviceProposed": "Nenhum dispositivo foi proposto.",
+            "deviceAlreadyLinked": "O chamado já tem um dispositivo vinculado.",
+            "noDraftReply": "Nenhuma resposta foi proposta.",
+            "noDraftResolution": "Nenhuma nota de resolução foi proposta.",
+            "resolutionNoteExists": "O chamado já tem uma nota de resolução.",
+            "maxActionsPerRun": "O limite de ações da execução foi atingido primeiro.",
+            "intentError": "Não foi possível criar a alteração.",
+            "ticketNotFound": "O chamado não pôde ser encontrado."
+          }
         }
       }
     },

@@ -512,6 +512,53 @@
         "passed": "Bestanden",
         "failed": "Fehlgeschlagen"
       }
+    },
+    "aiKillSwitch": {
+      "title": "KI-Notausschalter",
+      "description": "Plattformweiter Notausschalter für unbeaufsichtigte KI-Agentenaktivität. Das Umschalten wirkt sich auf alle Partner gleichzeitig aus — dies ist eine Plattformoperation, keine mandantenspezifische Einstellung.",
+      "refresh": "Aktualisieren",
+      "loading": "Status des Notausschalters wird geladen…",
+      "impactNote": "Das Aktivieren des Schalters stoppt unbeaufsichtigte KI-Aktionen für alle Partner innerhalb von etwa 5 Sekunden. Bereits laufende Aktionen werden nicht unterbrochen.",
+      "platformAdmin": {
+        "title": "Plattform-Administratorzugriff erforderlich",
+        "description": "Der KI-Notausschalter ist eine plattformweite Kontrolle, die von Breeze-Plattformadministratoren verwaltet wird. Ihr Konto kann ihn nicht einsehen oder ändern."
+      },
+      "status": {
+        "active": "KI-Aktionen aktiv",
+        "killed": "KI-Aktionen gestoppt"
+      },
+      "fields": {
+        "epoch": "Epoche",
+        "updatedBy": "Zuletzt geändert von",
+        "updatedAt": "Zuletzt geändert am",
+        "lastReason": "Letzter Grund",
+        "none": "—"
+      },
+      "actions": {
+        "kill": "KI-Aktionen plattformweit stoppen",
+        "restore": "KI-Aktionen wiederherstellen"
+      },
+      "confirm": {
+        "killTitle": "KI-Aktionen plattformweit stoppen?",
+        "killDescription": "Dies stoppt sofort unbeaufsichtigte KI-Agentenaktivität für alle Partner auf Breeze. Verwenden Sie dies nur bei einem aktiven Vorfall.",
+        "restoreTitle": "KI-Aktionen wiederherstellen?",
+        "restoreDescription": "Dies aktiviert unbeaufsichtigte KI-Agentenaktivität für alle Partner auf Breeze erneut.",
+        "reasonLabel": "Grund (erforderlich, für das Audit-Protokoll)",
+        "reasonPlaceholder": "Beschreiben Sie den Vorfall oder den Grund für diese Änderung…",
+        "cancel": "Abbrechen",
+        "killSubmit": "KI-Aktionen stoppen",
+        "restoreSubmit": "KI-Aktionen wiederherstellen"
+      },
+      "notice": {
+        "killed": "KI-Aktionen plattformweit gestoppt.",
+        "restored": "KI-Aktionen plattformweit wiederhergestellt."
+      },
+      "errors": {
+        "load": "Laden des Notausschalterstatus fehlgeschlagen",
+        "generic": "Ein Fehler ist aufgetreten",
+        "flip": "Aktualisieren des Notausschalters fehlgeschlagen",
+        "mfaRequired": "Das Umschalten des KI-Notausschalters erfordert Multi-Faktor-Authentifizierung. Aktivieren Sie MFA in Ihren Profil-Sicherheitseinstellungen und versuchen Sie es erneut."
+      }
     }
   },
   "audit": {

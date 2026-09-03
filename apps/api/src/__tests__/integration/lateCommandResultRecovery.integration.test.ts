@@ -58,6 +58,7 @@ const fakeWs = { send: () => {} } as unknown as Parameters<
 
 interface Fixture {
   orgId: string;
+  partnerId: string;
   siteId: string;
   deviceId: string;
   agentId: string;
@@ -101,6 +102,7 @@ async function makeFixture(): Promise<Fixture> {
 
   return {
     orgId: env.organization.id,
+    partnerId: env.partner.id,
     siteId: env.site.id,
     deviceId: device.id,
     agentId,
@@ -172,6 +174,7 @@ async function sendWsResult(
   const handlers = createAgentWsHandlers(fx.agentId, {
     deviceId: fx.deviceId,
     orgId: fx.orgId,
+    partnerId: fx.partnerId,
   });
   const event = {
     data: JSON.stringify({ type: 'command_result', commandId, ...body }),
@@ -200,6 +203,7 @@ async function sendHttpResult(
       deviceId: fx.deviceId,
       agentId: fx.agentId,
       orgId: fx.orgId,
+      partnerId: fx.partnerId,
       siteId: fx.siteId,
       role: 'agent',
     });

@@ -92,13 +92,20 @@ vi.mock('../services/ticketService', () => ({
 
 vi.mock('../db/schema', () => ({
   assetCheckouts: {},
+  backupJobs: {},
+  devicePatches: {},
+  deviceWarranty: {},
   devices: {},
   // The portal route graph transitively imports networkBaseline.ts, which reads
   // discoveredAssetTypeEnum.enumValues at module load — the full-module mock must
   // provide it or the whole suite fails to load.
   discoveredAssetTypeEnum: { enumValues: [] },
+  huntressAgents: {},
+  organizations: {},
   portalBranding: {},
   portalUsers: {},
+  s1Agents: {},
+  securityStatus: {},
   ticketComments: {},
   tickets: {},
   ticketStatuses: {}
@@ -130,14 +137,13 @@ const makeWhereChain = (result: any) =>
     orderBy: vi.fn().mockReturnValue(makeOrderChain(result))
   });
 
-const mockSelectResult = (result: any) => ({
-  from: vi.fn().mockReturnValue({
+const mockSelectResult = (result: any) => {
+  const fromChain: Record<string, any> = {
     where: vi.fn().mockReturnValue(makeWhereChain(result)),
-    leftJoin: vi.fn().mockReturnValue({
-      where: vi.fn().mockReturnValue(makeWhereChain(result))
-    })
-  })
-});
+  };
+  fromChain.leftJoin = vi.fn().mockReturnValue(fromChain);
+  return { from: vi.fn().mockReturnValue(fromChain) };
+};
 
 const mockSelectLimit = mockSelectResult;
 const mockSelectWhere = mockSelectResult;
