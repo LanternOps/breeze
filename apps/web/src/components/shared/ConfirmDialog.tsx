@@ -51,6 +51,10 @@ export function ConfirmDialog({
     if (!open || !isLoading) confirmLatchRef.current = false;
   }, [open, isLoading]);
 
+  // While `isLoading` the buttons stay focusable (`aria-disabled`, not
+  // `disabled`): a disabled element loses focus to <body>, which lets Tab
+  // escape the dialog's own trap mid-request and leaves the Drawer beneath
+  // with nothing to restore focus to when the action settles.
   const handleConfirm = useCallback(() => {
     if (confirmLatchRef.current) {
       // The latch releasing depends on the call site either closing the dialog
@@ -112,18 +116,19 @@ export function ConfirmDialog({
       <div className="mt-6 flex justify-end gap-3">
         <button
           type="button"
-          onClick={onClose}
-          disabled={isLoading}
-          className="rounded-md border px-4 py-2 text-sm font-medium text-foreground hover:bg-muted transition-colors disabled:opacity-50"
+          onClick={isLoading ? undefined : onClose}
+          aria-disabled={isLoading}
+          className="rounded-md border px-4 py-2 text-sm font-medium text-foreground hover:bg-muted transition-colors aria-disabled:opacity-50 aria-disabled:cursor-not-allowed"
         >
           {t('actions.cancel')}
         </button>
         <button
           type="button"
-          onClick={handleConfirm}
-          disabled={isLoading}
+          onClick={isLoading ? undefined : handleConfirm}
+          aria-disabled={isLoading}
+          aria-busy={isLoading}
           data-testid={confirmTestId}
-          className={`rounded-md px-4 py-2 text-sm font-medium transition-colors disabled:opacity-50 ${
+          className={`rounded-md px-4 py-2 text-sm font-medium transition-colors aria-disabled:opacity-50 aria-disabled:cursor-not-allowed ${
             variant === 'destructive'
               ? 'bg-destructive text-destructive-foreground hover:bg-destructive/90'
               : 'bg-warning text-warning-foreground hover:bg-warning/90'

@@ -7,14 +7,51 @@
       "clearFilters": "Filter zurücksetzen",
       "emptyDescription": "Läufe, die durch Warnungen, Zeitpläne, Tickets und manuelle Aktionen ausgelöst werden, werden hier angezeigt, sobald ein Agent sie ausführt.",
       "emptyFilteredDescription": "Keine Läufe entsprechen diesen Filtern. Versuchen Sie einen anderen Agenten oder Status.",
-      "emptyConfigureLink": "KI-Agenten konfigurieren"
+      "emptyConfigureLink": "KI-Agenten konfigurieren",
+      "columns": {
+        "started": "Gestartet",
+        "duration": "Dauer"
+      },
+      "showCost": "Kosten anzeigen",
+      "hideCost": "Kosten ausblenden"
     },
     "detail": {
       "notFoundDescription": "Dieser Lauf wurde möglicherweise gelöscht, oder der Link ist veraltet.",
+      "summary": {
+        "title": "Was der Agent gefunden hat"
+      },
+      "findings": {
+        "badge_one": "{{count}} Befund zu prüfen",
+        "badge_other": "{{count}} Befunde zu prüfen"
+      },
+      "evidence": {
+        "labels": {
+          "mountPoint": "Laufwerk",
+          "serviceName": "Dienstname",
+          "configName": "Sicherungsauftrag",
+          "usedPercent": "Belegt (%)",
+          "percentUsed": "Belegt (%)",
+          "freeGb": "Frei (GB)",
+          "totalGb": "Kapazität (GB)",
+          "lastSeenAt": "Zuletzt gesehen",
+          "lastSeenDays": "Tage seit letztem Kontakt",
+          "checkedAt": "Geprüft",
+          "cveIds": "CVE-IDs",
+          "cveCount": "CVE-Anzahl",
+          "osType": "Betriebssystemtyp",
+          "openCriticalCount": "Offene kritische CVEs"
+        }
+      },
+      "sweep": {
+        "caption": "Eine Zeile pro Problem, das dieser Durchlauf gefunden hat, mit der jeweils vorgeschlagenen Aktion.",
+        "reviewPermissions": "Agentberechtigungen prüfen"
+      },
       "trace": {
+        "description": "Jeder Tool-Aufruf, den der Agent vorgeschlagen, ausgeführt oder abgelehnt bekommen hat, in zeitlicher Reihenfolge.",
         "emptyDescription": "Tool-Aufrufe, die der Agent vorschlägt oder ausführt, werden hier aufgelistet."
       },
       "ledger": {
+        "description": "Nur die tatsächlich ausgeführten Aufrufe, mit Laufzeit und etwaigem Fehler.",
         "emptyDescription": "Tools, die der Agent tatsächlich aufgerufen hat, werden hier aufgelistet.",
         "statuses": {
           "pending": "Ausstehend",
@@ -1494,6 +1531,30 @@
     "allOrgsHint": "Partnerweit: gilt für jede Organisation, sofern eine Organisation die Richtlinie nicht verschärft.",
     "stateEnabled": "Aktiviert",
     "stateDisabled": "Deaktiviert",
+    "lastRun": {
+      "never": "Nie ausgeführt",
+      "at": "Letzte Ausführung {{at}}"
+    },
+    "disableDialog": {
+      "title": "{{name}} deaktivieren?",
+      "message": "Künftige Ausführungen werden gestoppt, angehängte Zeitpläne lösen nicht mehr aus, und Organisations-Überschreibungen dieses Agenten gelten nicht mehr. Eine bereits laufende Ausführung läuft bis zu ihrem Zeitlimit weiter.",
+      "retained": "Ausführungsverlauf und Nachweise bleiben erhalten. Sie können den Agenten später in der Liste der deaktivierten Agenten wieder aktivieren; er kommt ausgeschaltet zurück."
+    },
+    "unsavedSchedule": {
+      "closeBlocked": "Speichern oder verwerfen Sie den bearbeiteten Zeitplan, bevor Sie diesen Editor schließen.",
+      "discardTitle": "Nicht gespeicherten Zeitplan verwerfen?",
+      "discardMessage": "Der bearbeitete Zeitplan wurde nicht gespeichert. Beim Schließen des Editors gehen diese Änderungen verloren. Der Agent selbst bleibt unverändert.",
+      "discardConfirm": "Zeitplan verwerfen"
+    },
+    "disabledSection": {
+      "title": "Deaktiviert",
+      "hint": "Wegen ihres Ausführungsverlaufs aufbewahrt. Ein wieder aktivierter Agent kommt ausgeschaltet zurück, sodass Sie seine Richtlinie prüfen können, bevor er erneut läuft.",
+      "disabledAt": "Deaktiviert am {{at}}"
+    },
+    "allDisabled": {
+      "title": "Alle Agenten sind deaktiviert",
+      "description": "Es läuft nichts. Aktivieren Sie unten einen Agenten wieder oder erstellen Sie einen neuen."
+    },
     "errors": {
       "load": "Agenten konnten nicht geladen werden.",
       "kindExists": "Für diesen Eigentümer existiert bereits ein Agent dieser Art. Bearbeiten Sie den vorhandenen oder deaktivieren Sie ihn zuerst.",
@@ -1502,7 +1563,8 @@
       "actMissingRecipient": "Fügen Sie mindestens einen Benachrichtigungsempfänger hinzu, bevor Sie den Handlungsmodus aktivieren.",
       "actMissingTool": "Lassen Sie mindestens ein für den Handlungsmodus geeignetes Tool zu, oder autorisieren Sie ein Skript, bevor Sie ihn aktivieren.",
       "invalidSupervisedActionKeys": "Eine oder mehrere ausgewählte Aktionen können nicht per Richtlinie autorisiert werden.",
-      "supervisedKeyRejected": "{{key}}: {{reason}}"
+      "supervisedKeyRejected": "{{key}}: {{reason}}",
+      "notDisabled": "Dieser Agent ist bereits aktiv."
     },
     "actions": {
       "add": "Neuer Agent",
@@ -1510,19 +1572,24 @@
       "save": "Speichern",
       "cancel": "Abbrechen",
       "disable": "Deaktivieren",
-      "confirmDisable": "Deaktivierung bestätigen"
+      "confirmDisable": "Deaktivierung bestätigen",
+      "reenable": "Wieder aktivieren",
+      "runs": "Ausführungen"
     },
     "toasts": {
       "saved": "Agent gespeichert",
       "saveFailed": "Der Agent konnte nicht gespeichert werden.",
       "disabled": "Agent deaktiviert",
-      "disableFailed": "Der Agent konnte nicht deaktiviert werden."
+      "disableFailed": "Der Agent konnte nicht deaktiviert werden.",
+      "reenabled": "Agent wieder aktiviert",
+      "reenableFailed": "Der Agent konnte nicht wieder aktiviert werden."
     },
     "issues": {
       "name": "Geben Sie dem Agenten einen Namen.",
       "severities": "Wählen Sie mindestens einen Schweregrad aus.",
       "org": "Wählen Sie eine Organisation aus, bevor Sie einen organisationseigenen Agenten anlegen.",
-      "allKindsTaken": "Für diesen Eigentümer gibt es bereits zu jeder Art einen Agenten. Bearbeiten Sie stattdessen einen vorhandenen Agenten."
+      "allKindsTaken": "Für diesen Eigentümer gibt es bereits zu jeder Art einen Agenten. Bearbeiten Sie stattdessen einen vorhandenen Agenten.",
+      "unsavedSchedule": "Sie haben einen nicht gespeicherten Zeitplan. Speichern oder verwerfen Sie ihn, bevor Sie den Agenten speichern."
     },
     "editor": {
       "newTitle": "Neuer Agent",
@@ -1589,6 +1656,8 @@
       "maxFleetPercentPerDay": "Max. Flottenanteil pro Tag (%)",
       "cooldownSeconds": "Abkühlzeit pro Gerät (Sekunden)",
       "recipientRolesHint": "Rollen, die benachrichtigt werden, wenn dieser Agent etwas vorschlägt.",
+      "recipientRolesPartner": "Partner-Rollen",
+      "recipientRolesOrganization": "Organisationsrollen",
       "recipientRolesEmpty": "Keine Rollen verfügbar.",
       "instructionsHint": "Nur zur Orientierung — Tonfall, was zuerst zu prüfen ist, interne Gepflogenheiten. Es werden dadurch keine Berechtigungen erteilt.",
       "charactersLeft": "Noch {{count}} Zeichen",
@@ -1599,6 +1668,7 @@
       "ticketAutonomousWrites": "Autonome Ticket-Schreibvorgänge",
       "ticketAutonomousWritesHint": "Nur Organisationsüberschreibung — autonome Ticket-Schreibvorgänge erfordern den Aktionsmodus und diese Opt-in-Einstellung auf Organisationsebene",
       "enabledHint": "„Aktiviert“ und der Modus sind getrennte Schalter, und ein Lauf braucht beide: Ist dies aus, läuft unabhängig vom Modus nichts, und im Modus „Aus“ läuft auch dann nichts, wenn dies eingeschaltet ist.",
+      "enabledCreateHint": "Neue Agenten werden ausgeschaltet erstellt. Prüfen Sie unten die Tool-Zulassungsliste und die Limits und schalten Sie dies dann ein, wenn der Agent starten soll.",
       "actKeysCleared": "Die Berechtigungen des Aktionsmodus bleiben erhalten, werden aber erst gespeichert, wenn dieser Agent wieder in den Aktionsmodus wechselt.",
       "toolSuggestLabel": "Bekanntes Werkzeug hinzufügen",
       "toolSuggestHint": "Die Vorschläge stammen aus dem Register richtlinienentscheidbarer Aktionen und sind nicht die vollständige Werkzeugliste. Alles andere, was dieser Agent nutzen darf, kann oben weiterhin eingetippt werden.",
@@ -1878,8 +1948,9 @@
         "promoteEligible": "Für Freigabe geeignete Vorgänge",
         "promoteEligibleCaption": "Vorgänge mit ausreichend fehlerfreien Nachweisen für eine Vorabgenehmigung. Öffnen Sie Einstellungen → KI-Agenten, um sie zu prüfen und freizugeben.",
         "estTimeSaved": "Geschätzte Zeitersparnis",
-        "estTimeSavedValue": "{{hours}} Std.",
-        "estTimeSavedCaption": "Geschätzt anhand eines festen Zeitwerts pro Ergebnis.",
+        "estTimeSavedValue_one": "{{hours}} Std.",
+        "estTimeSavedValue_other": "{{hours}} Std.",
+        "estTimeSavedCaption": "Basierend auf festen Zeitwerten pro Ergebnis — zum Anpassen Gewichtungen bearbeiten.",
         "howEstimatedToggle": "Wie wird das geschätzt?",
         "llmSpend": "LLM-Ausgaben"
       },
@@ -1914,19 +1985,25 @@
         }
       },
       "freshness": "Daten bis {{through}} (UTC) · neu aufgebaut {{rebuiltAt}}",
-      "freshnessNeverRebuilt": "Daten bis {{through}} (UTC) · nie neu aufgebaut",
+      "freshnessNeverRebuilt": "Noch nicht erstellt — der erste Neuaufbau läuft heute Nacht",
       "positiveFeedbackRate": "Quote positiver Rückmeldungen",
       "positiveFeedbackDetail": "{{up}} hilfreich, {{down}} nicht hilfreich",
       "editWeights": "Gewichtungen bearbeiten",
       "exportPdf": "Als PDF exportieren",
       "weightsDrawer": {
         "title": "Gewichtungen für Zeitersparnis bearbeiten",
-        "description": "Legen Sie fest, wie viele Sekunden menschlicher Zeit jedem Ergebnis angerechnet werden. Diese Gewichtungen ändern nur die Schätzung — niemals, was Ihre KI-Agenten tun.",
+        "description": "Legen Sie fest, wie viele Minuten menschlicher Zeit jedem Ergebnis angerechnet werden. Diese Gewichtungen ändern nur die Schätzung — niemals, was Ihre KI-Agenten tun.",
+        "unitSuffix": "Min.",
+        "preview": "Geschätzte Zeitersparnis in diesem Zeitraum: {{from}} → {{to}}",
         "save": "Speichern",
         "saving": "Wird gespeichert…",
         "reset": "Auf Standardwerte zurücksetzen",
         "resetting": "Wird zurückgesetzt…",
         "customized": "Angepasst",
+        "resetConfirm": {
+          "title": "Gewichtungen auf Standardwerte zurücksetzen?",
+          "message": "Alle sechs Gewichtungen werden auf ihre Standardwerte zurückgesetzt, und die geschätzte Zeitersparnis auf dieser Seite ändert sich entsprechend."
+        },
         "errors": {
           "save": "Die Gewichtungen konnten nicht gespeichert werden.",
           "reset": "Die Gewichtungen konnten nicht zurückgesetzt werden."
@@ -1954,7 +2031,7 @@
           "through": "Daten bis (UTC)",
           "rebuiltAt": "Zuletzt neu erstellt"
         },
-        "weightRowLabel": "{{label}} (angerechnete Sekunden)",
+        "weightRowLabel": "{{label}} (angerechnete Minuten)",
         "neverRebuilt": "Nie neu erstellt"
       }
     },
