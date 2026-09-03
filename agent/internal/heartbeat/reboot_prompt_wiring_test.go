@@ -44,6 +44,40 @@ func TestRebootManagerIsBuiltWithThePromptSeam(t *testing.T) {
 	}
 }
 
+// TestRebootManagerIsBuiltWithTheLinuxDesktopFallback extends the guard above to
+// the second delivery vehicle (#3207 W4).
+//
+// The same argument applies one layer out, and with a worse blast radius:
+// unwrapping the chain back to a bare rebootPromptFunc compiles, passes every
+// other test in this package, and silently removes the reboot dialog AND the
+// desktop notification from every Linux device — the platform that has no
+// helper binary and therefore nothing else to fall back to. Nothing about that
+// regression is visible from the console; the only symptom is a Linux user
+// whose machine reboots with no warning at all.
+func TestRebootManagerIsBuiltWithTheLinuxDesktopFallback(t *testing.T) {
+	_, testFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	source, err := os.ReadFile(filepath.Join(filepath.Dir(testFile), "heartbeat.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(source)
+
+	for _, want := range []struct{ token, why string }{
+		{"chainedRebootPrompt(", "the prompt no longer chains to the daemon-drawn dialog; Linux devices lose the postponement prompt entirely"},
+		{"chainedRebootNotify(", "the warning no longer chains to the daemon-drawn notification; a Linux desktop user would never see a reboot warning"},
+		{"patching.DesktopPrompt", "the Linux dialog is no longer wired in as the prompt fallback"},
+		{"patching.DesktopNotify", "the Linux notification is no longer wired in as the warning fallback"},
+		{`SessionsWithScope("notify")`, "the daemon path is no longer gated on the absence of a helper session, so a future Linux helper would double every warning"},
+	} {
+		if !strings.Contains(src, want.token) {
+			t.Errorf("heartbeat.go no longer contains %q: %s", want.token, want.why)
+		}
+	}
+}
+
 // TestRebootPromptFuncTranslatesTheBrokerResult drives the REAL translation, not
 // a hand-rolled stand-in. The distinction this pins is the one that decides
 // whether a headless box gets warned at all: an unconfirmed prompt must report

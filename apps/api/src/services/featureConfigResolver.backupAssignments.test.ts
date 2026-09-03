@@ -343,21 +343,25 @@ describe('resolveAllBackupAssignedDevices tenancy scoping', () => {
     const result = await resolveAllBackupAssignedDevices(orgId);
 
     expect(result).toHaveLength(1);
-    // TWO escapes, not one (#2822): the config-policy join, plus the single
-    // context that wraps the whole timezone fan-out (resolveDeviceTimezone's
-    // `partners` join is partner-axis and was silently resolving to UTC for
-    // org-scoped callers). Never 1 + N — see the two-device test below.
-    expect(dbMock.withSystemDbAccessContext).toHaveBeenCalledTimes(2);
-    expect(dbMock.runOutsideDbContext).toHaveBeenCalledTimes(2);
+    // ONE escape, down from two (#4673 W03). The config-policy join no longer
+    // escapes: `<table>_partner_wide_select` grants partner-wide rows to the
+    // caller's own context, so the only remaining system context is the single
+    // one wrapping the timezone fan-out (resolveDeviceTimezone's `partners`
+    // join is partner-AXIS, which no SELECT-only branch covers — see
+    // db/partnerAxisRead.ts and #2822). Never 1 + N — see the two-device test
+    // below.
+    expect(dbMock.withSystemDbAccessContext).toHaveBeenCalledTimes(1);
+    expect(dbMock.runOutsideDbContext).toHaveBeenCalledTimes(1);
     // Exact topology, asserted as a whole array rather than by index: a
     // `.slice(...).every(...)` goes vacuously true if a select is ever removed,
     // which would silently retire this guard.
-    // #0 org→partner lookup | #1 config-policy join (SYSTEM) | #2 org default
-    // destination | #3 device expansion | #4 the batch org lookup | #5 the ONE
-    // shared partners read (SYSTEM) | #6 the per-device site/org read.
-    // Everything except the two partner-axis reads is caller-scoped — device
-    // EXPANSION (#3) especially, since that is the read RLS must keep guarding.
-    expect(selectDepths).toEqual([0, 1, 0, 0, 0, 1, 0]);
+    // #0 org→partner lookup | #1 config-policy join (CALLER — W03) | #2 org
+    // default destination | #3 device expansion | #4 the batch org lookup |
+    // #5 the ONE shared partners read (SYSTEM) | #6 the per-device site/org
+    // read. Everything except the partner-AXIS read is caller-scoped — device
+    // EXPANSION (#3) especially, since that is the read RLS must keep guarding,
+    // and now the config-policy join (#1) too.
+    expect(selectDepths).toEqual([0, 0, 0, 0, 0, 1, 0]);
     expect(systemStats.maxDepth).toBe(1);
     // Context must be closed again once the read completes.
     expect(systemDepth.value).toBe(0);
@@ -423,23 +427,24 @@ describe('resolveAllBackupAssignedDevices tenancy scoping', () => {
     const result = await resolveAllBackupAssignedDevices(orgId);
 
     expect(result).toHaveLength(2);
-    // Still 2 with two devices — the count does not scale with N. Pre-fix this
-    // was 3 (1 policy join + 1 per device) and would keep climbing. The partner
-    // timezone is now resolved once for the whole batch, so there is also only
-    // ONE `partners` read rather than N identical ones.
-    expect(dbMock.withSystemDbAccessContext).toHaveBeenCalledTimes(2);
-    expect(dbMock.runOutsideDbContext).toHaveBeenCalledTimes(2);
+    // Still 1 with two devices — the count does not scale with N. It was 3
+    // (1 policy join + 1 per device) before the timezone batching, 2 after it,
+    // and 1 since #4673 W03 dropped the policy join's escape. The partner
+    // timezone is resolved once for the whole batch, so there is exactly ONE
+    // `partners` read rather than N identical ones.
+    expect(dbMock.withSystemDbAccessContext).toHaveBeenCalledTimes(1);
+    expect(dbMock.runOutsideDbContext).toHaveBeenCalledTimes(1);
     // The real assertion: never more than one system transaction — and
     // therefore never more than one extra pooled connection — at any instant.
     expect(systemStats.maxDepth).toBe(1);
-    // #0 org→partner | #1 policy join (SYSTEM) | #2 org default destination |
-    // #3 device expansion (CALLER — the read RLS must keep guarding) | #4 the
-    // batch org lookup | #5 the ONE shared partners read (SYSTEM) | #6,#7 the
-    // per-device site/org reads (CALLER).
+    // #0 org→partner | #1 policy join (CALLER — W03) | #2 org default
+    // destination | #3 device expansion (CALLER — the read RLS must keep
+    // guarding) | #4 the batch org lookup | #5 the ONE shared partners read
+    // (SYSTEM) | #6,#7 the per-device site/org reads (CALLER).
     //
     // The key property: exactly ONE depth-1 select in the timezone tail no
     // matter how many devices there are. Pre-fix this was one per device.
-    expect(selectDepths.slice(0, 4)).toEqual([0, 1, 0, 0]);
+    expect(selectDepths.slice(0, 4)).toEqual([0, 0, 0, 0]);
     expect(selectDepths.slice(4).filter((d) => d === 1)).toHaveLength(1);
     expect(systemDepth.value).toBe(0);
   });
@@ -473,7 +478,7 @@ describe('resolveBackupConfigForDevice partner-wide visibility', () => {
       )
       .mockReturnValueOnce(makeSelectChain([{ partnerId: 'partner-1' }]))
       .mockReturnValueOnce(makeSelectChain([]))
-      // the config-policy join (must be system-scoped)
+      // the config-policy join (runs in the CALLER's context since W03)
       .mockReturnValueOnce(
         makeSelectChain([
           {
@@ -502,15 +507,17 @@ describe('resolveBackupConfigForDevice partner-wide visibility', () => {
     const resolved = await resolveBackupConfigForDevice('device-1');
 
     expect(resolved).toMatchObject({ featureLinkId: 'feature-1', configId: 'config-1' });
-    // Two escapes: the policy join and resolveDeviceTimezone's partner-axis
-    // read (#2822), taken one after the other — never nested.
-    expect(dbMock.withSystemDbAccessContext).toHaveBeenCalledTimes(2);
-    expect(dbMock.runOutsideDbContext).toHaveBeenCalledTimes(2);
+    // ONE escape: resolveDeviceTimezone's partner-AXIS read (#2822). The policy
+    // join no longer takes one — #4673 W03 removed it once
+    // `<table>_partner_wide_select` made partner-wide rows legible to the
+    // caller's own context.
+    expect(dbMock.withSystemDbAccessContext).toHaveBeenCalledTimes(1);
+    expect(dbMock.runOutsideDbContext).toHaveBeenCalledTimes(1);
     expect(systemStats.maxDepth).toBe(1);
-    // 0-2 device hierarchy (caller) | 3 policy join (system) | 4 timezone
+    // 0-2 device hierarchy (caller) | 3 policy join (CALLER — W03) | 4 timezone
     // device/org/site read (CALLER — RLS still selects the device) | 5 the
     // partner-axis read (system).
-    expect(selectDepths).toEqual([0, 0, 0, 1, 0, 1]);
+    expect(selectDepths).toEqual([0, 0, 0, 0, 0, 1]);
     expect(systemDepth.value).toBe(0);
   });
 });

@@ -9,6 +9,17 @@ import type { ExecutionStatus } from '@breeze/shared';
 export type { ExecutionStatus } from '@breeze/shared';
 type ScriptsT = TFunction<'scripts'>;
 
+// #2698: per-run summary of the script custom-field write-back. Mirrors
+// `ScriptCustomFieldWriteSummary` in apps/api/src/db/schema/scripts.ts — kept
+// as a local type rather than a cross-package import since apps/web does not
+// depend on apps/api. `rejected.reason` is one of the
+// CustomFieldWriteRejection values documented in
+// apps/api/src/services/customFields/scriptWriteBack.ts.
+export type ScriptCustomFieldWriteResult = {
+  applied: string[];
+  rejected: Array<{ key: string; reason: string }>;
+};
+
 export type ScriptExecution = {
   id: string;
   scriptId: string;
@@ -22,6 +33,10 @@ export type ScriptExecution = {
   stdout?: string;
   stderr?: string;
   duration?: number; // in seconds
+  // NULL/absent for every run that emitted no `::breeze:custom-fields::`
+  // marker. Only present once the execution-detail endpoint has been fetched
+  // (the list endpoint omits it, same as stdout/stderr).
+  customFieldResult?: ScriptCustomFieldWriteResult | null;
 };
 
 type ExecutionHistoryProps = {

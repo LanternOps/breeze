@@ -30,7 +30,9 @@
       "deletedGroup": "{{name}} (gelöschte Gruppe)",
       "coverage": {
         "uncovered": "{{count}} Gerät(e) dieser Organisation werden von keiner Position dieses Vertrags abgerechnet: {{breakdown}}",
-        "allCovered": "Jedes Gerät dieser Organisation wird von einer Position dieses Vertrags abgerechnet."
+        "allCovered": "Jedes Gerät dieser Organisation wird von einer Position dieses Vertrags abgerechnet.",
+        "uncoveredLead": "{{count}} Gerät(e) dieser Organisation werden von keiner Position dieses Vertrags abgerechnet:",
+        "roleBucket": "{{count}} {{role}}"
       },
       "transition": {
         "activate": "Aktivieren",
@@ -41,6 +43,9 @@
       "values": {
         "auto": "auto",
         "groupDeleted": "Gruppe gelöscht"
+      },
+      "lineScope": {
+        "site": "Standort: {{name}}"
       }
     },
     "contractDetail": {
@@ -153,13 +158,22 @@
         "addLine": "Die Position konnte nicht hinzugefügt werden.",
         "removeLine": "Die Position konnte nicht entfernt werden.",
         "activateContract": "Der Vertrag konnte nicht aktiviert werden.",
-        "noPriceForCurrency": "Kein Preis in {{currency}} für dieses Element. Legen Sie einen im Katalog an oder heben Sie die Katalogverknüpfung auf."
+        "noPriceForCurrency": "Kein Preis in {{currency}} für dieses Element. Legen Sie einen im Katalog an oder heben Sie die Katalogverknüpfung auf.",
+        "updateLine": "Die Position konnte nicht aktualisiert werden.",
+        "lineNotFound": "Diese Position existiert nicht mehr. Aktualisieren Sie den Vertrag.",
+        "contractNotEditable": "Positionen können nur bei Verträgen im Entwurf oder aktiven Verträgen bearbeitet werden.",
+        "siteNotInOrg": "Dieser Standort gehört zu einer anderen Organisation.",
+        "groupNotInOrg": "Diese Gerätegruppe gehört zu einer anderen Organisation.",
+        "invalidLinePatch": "Diese Änderungen sind für diesen Positionstyp nicht gültig.",
+        "priceNotRepresentable": "Dieser Preis hat zu viele Nachkommastellen für {{currency}}.",
+        "catalogItemNotFound": "Dieser Katalogartikel ist für diesen Vertrag nicht verfügbar."
       },
       "toast": {
         "contractCreated": "Vertrag erstellt",
         "lineAdded": "Position hinzugefügt",
         "lineRemoved": "Position entfernt",
-        "contractActivated": "Vertrag aktiviert"
+        "contractActivated": "Vertrag aktiviert",
+        "lineUpdated": "Position aktualisiert"
       },
       "schedule": {
         "title": "Zeitplan",
@@ -190,7 +204,8 @@
         "unitPrice": "Stückpreis",
         "qty": "Menge",
         "tax": "Steuer",
-        "empty": "Noch keine Positionen. Fügen Sie unten eine wiederkehrende Position hinzu."
+        "empty": "Noch keine Positionen. Fügen Sie unten eine wiederkehrende Position hinzu.",
+        "edit": "Bearbeiten"
       },
       "addLine": {
         "integrationHint": "Aus einer Integration hinzufügen – eine Position wird vorab ausgefüllt.",
@@ -223,6 +238,16 @@
         "priceLookupFailed": "Der {{currency}}-Preis konnte nicht ermittelt werden.",
         "priceNotRepresentable": "Der gespeicherte {{currency}}-Preis dieses Artikels ist in {{currency}} ungültig — korrigieren Sie ihn im Katalog oder heben Sie die Katalogverknüpfung auf und erfassen Sie eine manuelle Position.",
         "priceSourceOrgOverride": "Organisationsspezifischer Preis für {{org}}"
+      },
+      "editLine": {
+        "save": "Position speichern",
+        "cancel": "Abbrechen",
+        "typeLocked": "Der Positionstyp kann nicht geändert werden. Entfernen Sie die Position und fügen Sie eine neue hinzu.",
+        "priceFromCatalog": "Der Preis stammt aus dem Katalog. Entfernen Sie die Katalogverknüpfung, um ihn manuell zu setzen.",
+        "refreshPrice": "Preis aus dem Katalog aktualisieren",
+        "restoreCatalogLink": "Katalogverknüpfung wiederherstellen",
+        "unlinkNeedsPrice": "Geben Sie einen Stückpreis und die Steuereinstellung an, um die Katalogverknüpfung zu entfernen.",
+        "noChanges": "Noch nichts zu speichern."
       },
       "estimate": {
         "title": "Geschätzter Zeitraum",
@@ -1155,6 +1180,29 @@
         "untitled": "eine neuere Version"
       }
     },
+    "currency": {
+      "actions": {
+        "change": "Währung ändern"
+      },
+      "dialog": {
+        "title": "Angebotswährung ändern",
+        "description": "Dieses Entwurfsangebot wird in {{currency}} berechnet.",
+        "currencyLabel": "Neue Währung",
+        "modeLegend": "Was mit den Positionen des Angebots geschieht",
+        "modeClear": "Alle Positionen entfernen",
+        "modeClearHint": "Positionen werden gelöscht. Erforderlich, wenn eine Position manuell oder ein Bündel ist.",
+        "modeReprice": "Katalogpositionen neu bepreisen",
+        "modeRepriceHint": "Jede Katalogposition wird aus der Preisliste der neuen Währung aufgelöst. Nur möglich, wenn alle Positionen aus dem Katalog stammen.",
+        "confirm": "Mir ist bewusst, dass dies die Währung des Angebots ändert.",
+        "submit": "Währung ändern"
+      },
+      "toast": {
+        "changed": "Angebotswährung zu {{currency}} geändert."
+      },
+      "errors": {
+        "change": "Die Angebotswährung konnte nicht geändert werden."
+      }
+    },
     "distributorLookup": {
       "feedPriceCurrencyUnknown": "Währung des Feed-Preises unbekannt — bitte einen Preis in {{currency}} eingeben",
       "feedPriceIn": "Feed-Preis in {{feedCurrency}} — bitte einen Preis in {{currency}} eingeben",
@@ -1575,6 +1623,29 @@
     "unsavedTitle": "„{{field}}“ enthält eine nicht gespeicherte Änderung — Ausstellen wird freigegeben, sobald sie gespeichert ist."
   },
   "invoiceDetail": {
+    "currency": {
+      "actions": {
+        "change": "Währung ändern"
+      },
+      "dialog": {
+        "title": "Rechnungswährung ändern",
+        "description": "Diese Entwurfsrechnung wird in {{currency}} berechnet.",
+        "currencyLabel": "Neue Währung",
+        "modeLegend": "Was mit den Positionen der Rechnung geschieht",
+        "modeClear": "Alle Positionen entfernen",
+        "modeClearHint": "Positionen werden gelöscht. Erforderlich, wenn eine Position manuell oder ein Bündel ist.",
+        "modeReprice": "Katalogpositionen neu bepreisen",
+        "modeRepriceHint": "Jede Katalogposition wird aus der Preisliste der neuen Währung aufgelöst. Nur möglich, wenn alle Positionen aus dem Katalog stammen.",
+        "confirm": "Mir ist bewusst, dass dies die Währung der Rechnung ändert.",
+        "submit": "Währung ändern"
+      },
+      "toast": {
+        "changed": "Rechnungswährung zu {{currency}} geändert."
+      },
+      "errors": {
+        "change": "Die Rechnungswährung konnte nicht geändert werden."
+      }
+    },
     "deposit": {
       "duePrefix": "Anzahlung von",
       "dueSuffix": "fällig – {{paid}} von {{total}} bezahlt.",
@@ -1697,7 +1768,9 @@
       "lastSynced": "Zuletzt synchronisiert am {{when}}",
       "push": "An QuickBooks übertragen",
       "pushed": "Rechnung an QuickBooks übertragen.",
-      "pushFailed": "Die Rechnung konnte nicht an QuickBooks übertragen werden."
+      "pushFailed": "Die Rechnung konnte nicht an QuickBooks übertragen werden.",
+      "voidedHint": "Diese Rechnung ist storniert — es gibt nichts an QuickBooks zu übertragen.",
+      "remoteDeletedHint": "Diese Rechnung wurde in QuickBooks gelöscht. Ein erneutes Übertragen würde ein Duplikat erzeugen — lösen Sie dies zuerst in QuickBooks."
     }
   },
   "invoiceDocument": {

@@ -619,6 +619,30 @@
       "stdout": "Standart Çıkış (stdout)",
       "stderr": "Standart Hata (stderr)"
     },
+    "customFields": {
+      "title": "Özel alan yazmaları",
+      "applied": "Uygulanan",
+      "rejected": "Reddedilen",
+      "none": "Yok",
+      "reasons": {
+        "unknown_field": "Eşleşen alan tanımı yok",
+        "not_script_writable": "Alan betikle yazılabilir değil",
+        "not_applicable_to_device": "Alan bu cihaz türü için geçerli değil",
+        "device_not_found": "Cihaz bulunamadı",
+        "invalid_type": "Değer yanlış türde",
+        "out_of_range": "Değer izin verilen aralığın dışında",
+        "not_a_choice": "Değer, alanın izin verilen seçeneklerinden biri değil",
+        "too_long": "Değer çok uzun",
+        "invalid_date": "Değer geçerli bir tarih değil",
+        "marker_unparseable": "İşaretleyici JSON olarak ayrıştırılamadı",
+        "too_many_lines": "Bu çalıştırmada çok fazla işaretleyici satırı var",
+        "too_many_keys": "İşaretleyicide çok fazla anahtar var",
+        "marker_too_large": "İşaretleyici boyut sınırını aştı",
+        "forbidden_key": "Anahtara izin verilmiyor",
+        "envelope_unparseable": "Yapılandırılmış sonuç ayrıştırılamadı",
+        "envelope_unsupported_version": "Yapılandırılmış sonuç desteklenmeyen bir sürüm kullandı"
+      }
+    },
     "actions": {
       "copyToClipboard": "Panoya kopyala"
     },

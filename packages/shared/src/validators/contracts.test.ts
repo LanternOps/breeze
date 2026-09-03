@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { createContractSchema, contractLineInputSchema, updateContractSchema, changeContractCurrencySchema } from './contracts';
+import {
+  createContractSchema, contractLineInputSchema, updateContractSchema, changeContractCurrencySchema,
+  updateContractLineSchema, contractLineInvariantIssues, mergeContractLinePatch, patchHasKey,
+  type PersistedContractLine,
+} from './contracts';
 
 describe('createContractSchema', () => {
   it('accepts a valid monthly advance contract', () => {
@@ -224,5 +228,278 @@ describe('changeContractCurrencySchema (#3778)', () => {
 
   it('rejects an unsupported currency code', () => {
     expect(changeContractCurrencySchema.safeParse({ currencyCode: 'XXX' }).success).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #3205 W03 — contract line editing.
+// ---------------------------------------------------------------------------
+
+// The create-path bounds tighten too (decision 10): unbounded money and
+// sortOrder reached Postgres as a raw 22003 and surfaced as a 500.
+describe('contractLineInputSchema — numeric bounds (#3205 W03)', () => {
+  const base = { lineType: 'flat' as const, description: 'Fee', taxable: true };
+  const parse = (v: unknown) => contractLineInputSchema.safeParse(v).success;
+
+  it('accepts the largest numeric(12,2) unitPrice and rejects an 11-digit one', () => {
+    expect(parse({ ...base, unitPrice: '9999999999.99' })).toBe(true);
+    expect(parse({ ...base, unitPrice: '99999999999.00' })).toBe(false);
+  });
+
+  it('applies the same bound to manualQuantity', () => {
+    const manual = { lineType: 'manual' as const, description: 'Hours', unitPrice: '1.00', taxable: false };
+    expect(parse({ ...manual, manualQuantity: '9999999999.99' })).toBe(true);
+    expect(parse({ ...manual, manualQuantity: '99999999999.00' })).toBe(false);
+  });
+
+  it('bounds sortOrder at int32', () => {
+    expect(parse({ ...base, unitPrice: '1.00', sortOrder: 2147483647 })).toBe(true);
+    expect(parse({ ...base, unitPrice: '1.00', sortOrder: 2147483648 })).toBe(false);
+  });
+});
+
+describe('contractLineInputSchema — pre-W03 issue-array parity', () => {
+  it('preserves the exact path, message and order for multiple create issues', () => {
+    const r = contractLineInputSchema.safeParse({
+      lineType: 'per_seat', description: 'Seats', taxable: true,
+      siteId: '22222222-2222-4222-8222-222222222222', deviceRoles: ['server'],
+    });
+    expect(r.success).toBe(false);
+    expect(r.error!.issues.map(({ path, message }) => ({ path, message }))).toEqual([
+      { path: ['unitPrice'], message: 'unitPrice is required unless catalogItemId is set' },
+      { path: ['siteId'], message: 'siteId is only valid on per_device and per_device_role lines' },
+      { path: ['deviceRoles'], message: 'deviceRoles is required on per_device_role lines and not allowed on other line types' },
+    ]);
+  });
+
+  it('reports only Zod\'s array minimum issue for empty create deviceRoles', () => {
+    const r = contractLineInputSchema.safeParse({
+      lineType: 'per_device_role', description: 'Network gear', unitPrice: '25.00',
+      taxable: true, deviceRoles: [],
+    });
+    expect(r.success).toBe(false);
+    expect(r.error!.issues.map(({ path, message }) => ({ path, message }))).toEqual([
+      { path: ['deviceRoles'], message: 'Too small: expected array to have >=1 items' },
+    ]);
+  });
+});
+
+describe('updateContractLineSchema (#3205 W03)', () => {
+  const GUID = '33333333-3333-4333-8333-333333333333';
+  const parse = (v: unknown) => updateContractLineSchema.safeParse(v);
+
+  // Decision 3's anchor. A NON-strict schema would ACCEPT {lineType:'flat'} and
+  // silently drop it, changing nothing while reporting success.
+  it('rejects lineType with the exact unrecognized-key message', () => {
+    const r = parse({ description: 'x', lineType: 'flat' });
+    expect(r.success).toBe(false);
+    expect(r.error!.issues.map((i) => i.message)).toContain('Unrecognized key: "lineType"');
+  });
+
+  it('rejects any unknown key and an empty patch', () => {
+    expect(parse({ nope: 1 }).success).toBe(false);
+    const empty = parse({});
+    expect(empty.success).toBe(false);
+    expect(empty.error!.issues.map((i) => i.message)).toContain('patch must change at least one field');
+  });
+
+  it('rejects a non-GUID catalogItemId, empty/duplicate deviceRoles and an over-long description', () => {
+    expect(parse({ catalogItemId: 'nope' }).success).toBe(false);
+    expect(parse({ deviceRoles: [] }).success).toBe(false);
+    expect(parse({ deviceRoles: ['server', 'server'] }).success).toBe(false);
+    expect(parse({ description: 'x'.repeat(2001) }).success).toBe(false);
+    expect(parse({ description: '' }).success).toBe(false);
+  });
+
+  it('applies the same money and sortOrder bounds as the create schema', () => {
+    expect(parse({ unitPrice: '9999999999.99' }).success).toBe(true);
+    expect(parse({ unitPrice: '99999999999.00' }).success).toBe(false);
+    expect(parse({ manualQuantity: '99999999999.00' }).success).toBe(false);
+    expect(parse({ sortOrder: 2147483647 }).success).toBe(true);
+    expect(parse({ sortOrder: 2147483648 }).success).toBe(false);
+  });
+
+  // TRI-STATE PIN. This is what catches a Zod upgrade changing absence
+  // semantics — the whole catalog transition table rests on it.
+  it('preserves key absence and an explicit null on catalogItemId', () => {
+    const absent = updateContractLineSchema.parse({ description: 'x' }) as Record<string, unknown>;
+    expect(Object.prototype.hasOwnProperty.call(absent, 'catalogItemId')).toBe(false);
+    const explicit = updateContractLineSchema.parse({ catalogItemId: null }) as Record<string, unknown>;
+    expect(Object.prototype.hasOwnProperty.call(explicit, 'catalogItemId')).toBe(true);
+    expect(explicit.catalogItemId).toBeNull();
+    expect(patchHasKey(absent as never, 'catalogItemId')).toBe(false);
+    expect(patchHasKey(explicit as never, 'catalogItemId')).toBe(true);
+  });
+
+  it('treats an explicit undefined catalogItemId as absent after parsing', () => {
+    const parsed = updateContractLineSchema.parse({ description: 'x', catalogItemId: undefined });
+    expect(patchHasKey(parsed, 'catalogItemId')).toBe(false);
+  });
+
+  // siteId: null widens a site-scoped line to the whole org — legitimate.
+  // deviceRoles/deviceGroupId: null would leave a row the DB rejects, or an
+  // orphan nobody asked for (decision 7).
+  it('accepts siteId null, rejects deviceRoles null and deviceGroupId null', () => {
+    expect(parse({ siteId: null }).success).toBe(true);
+    expect(parse({ siteId: GUID }).success).toBe(true);
+    expect(parse({ deviceRoles: null }).success).toBe(false);
+    expect(parse({ deviceGroupId: null }).success).toBe(false);
+    expect(parse({ deviceGroupId: GUID }).success).toBe(true);
+  });
+
+  it('accepts refreshCatalogPrice alone', () => {
+    expect(parse({ refreshCatalogPrice: true }).success).toBe(true);
+    expect(parse({ refreshCatalogPrice: false }).success).toBe(true);
+  });
+});
+
+// The whole asymmetry matrix of the spec's § Validators, both modes. Every case
+// carries a comment naming which side is the sole guard, so nobody deletes one
+// as redundant with "the CHECK already does it".
+describe('contractLineInvariantIssues (#3205 W03)', () => {
+  const GUID = '33333333-3333-4333-8333-333333333333';
+  const paths = (l: Parameters<typeof contractLineInvariantIssues>[0], mode: 'create' | 'persisted') =>
+    contractLineInvariantIssues(l, { mode }).map((i) => i.path);
+
+  it('manual lines require manualQuantity in both modes', () => {
+    expect(paths({ lineType: 'manual' }, 'create')).toEqual(['manualQuantity']);
+    expect(paths({ lineType: 'manual', manualQuantity: null }, 'persisted')).toEqual(['manualQuantity']);
+    expect(paths({ lineType: 'manual', manualQuantity: '2' }, 'create')).toEqual([]);
+    expect(paths({ lineType: 'manual', manualQuantity: '2' }, 'persisted')).toEqual([]);
+  });
+
+  // THE MODE DIFFERENCE that keeps add behaviour intact: the add writer nulls
+  // manualQuantity on every non-manual type (contractService.ts:904), so create
+  // TOLERATES it; a stored row carrying it is a real defect. NO DB CHECK exists
+  // on manual_quantity at all — the helper is the only guard on both sides.
+  it('tolerates manualQuantity on a flat line in create and rejects it in persisted', () => {
+    expect(paths({ lineType: 'flat', manualQuantity: '5' }, 'create')).toEqual([]);
+    expect(paths({ lineType: 'flat', manualQuantity: '5' }, 'persisted')).toEqual(['manualQuantity']);
+  });
+
+  // The DB constrains site_id only on per_device_group (W02's CHECK). For
+  // flat / manual / per_seat the helper is the ONLY guard.
+  it('allows siteId only on per_device and per_device_role, in both modes', () => {
+    for (const mode of ['create', 'persisted'] as const) {
+      expect(paths({ lineType: 'per_device', siteId: GUID }, mode)).toEqual([]);
+      expect(paths({ lineType: 'per_device_role', siteId: GUID, deviceRoles: ['server'] }, mode)).toEqual([]);
+      for (const lineType of ['flat', 'per_seat'] as const) {
+        expect(paths({ lineType, siteId: GUID }, mode)).toEqual(['siteId']);
+      }
+      expect(paths({ lineType: 'manual', manualQuantity: '1', siteId: GUID }, mode)).toEqual(['siteId']);
+    }
+  });
+
+  it('rejects a siteId on a per_device_group line in both modes', () => {
+    expect(paths({ lineType: 'per_device_group', deviceGroupId: GUID, siteId: GUID }, 'create')).toEqual(['siteId']);
+    expect(paths({ lineType: 'per_device_group', deviceGroupId: GUID, deviceGroupName: 'VIP', siteId: GUID }, 'persisted')).toEqual(['siteId']);
+  });
+
+  it('keeps deviceRoles two-way in both modes and leaves create emptiness to Zod', () => {
+    for (const mode of ['create', 'persisted'] as const) {
+      expect(paths({ lineType: 'per_device_role' }, mode)).toEqual(['deviceRoles']);
+      expect(paths({ lineType: 'per_device', deviceRoles: ['server'] }, mode)).toEqual(['deviceRoles']);
+      expect(paths({ lineType: 'per_device_role', deviceRoles: ['server'] }, mode)).toEqual([]);
+    }
+    expect(paths({ lineType: 'per_device_role', deviceRoles: [] }, 'create')).toEqual([]);
+    expect(paths({ lineType: 'per_device_role', deviceRoles: [] }, 'persisted')).toEqual(['deviceRoles']);
+  });
+
+  // contract_lines_device_roles_chk uses `<@` — CONTAINMENT, not set equality —
+  // so {'server','server'} PASSES the database. The helper is the only guard.
+  it('rejects duplicate deviceRoles in both modes (the DB CHECK accepts them)', () => {
+    expect(paths({ lineType: 'per_device_role', deviceRoles: ['server', 'server'] }, 'create')).toEqual(['deviceRoles']);
+    expect(paths({ lineType: 'per_device_role', deviceRoles: ['server', 'server'] }, 'persisted')).toEqual(['deviceRoles']);
+  });
+
+  it('requires deviceGroupId on a group line in create but allows the orphan state in persisted', () => {
+    expect(paths({ lineType: 'per_device_group' }, 'create')).toEqual(['deviceGroupId']);
+    // The orphaned state the FK produces (ON DELETE SET NULL on device_group_id):
+    // legal, and repairable in place by a patch (decision 7).
+    expect(paths({ lineType: 'per_device_group', deviceGroupId: null, deviceGroupName: 'Retired' }, 'persisted')).toEqual([]);
+  });
+
+  it('rejects deviceGroupId on a non-group line in both modes', () => {
+    expect(paths({ lineType: 'flat', deviceGroupId: GUID }, 'create')).toEqual(['deviceGroupId']);
+    expect(paths({ lineType: 'flat', deviceGroupId: GUID }, 'persisted')).toEqual(['deviceGroupId']);
+  });
+
+  it('ignores deviceGroupName in create and makes it two-way in persisted', () => {
+    // deviceGroupName is not a field of the add schema — the writer stamps it.
+    expect(paths({ lineType: 'per_device_group', deviceGroupId: GUID, deviceGroupName: 'VIP' }, 'create')).toEqual([]);
+    expect(paths({ lineType: 'flat', deviceGroupName: 'VIP' }, 'create')).toEqual([]);
+    expect(paths({ lineType: 'per_device_group', deviceGroupId: GUID }, 'persisted')).toEqual(['deviceGroupName']);
+    expect(paths({ lineType: 'flat', deviceGroupName: 'VIP' }, 'persisted')).toEqual(['deviceGroupName']);
+  });
+
+  it('carries a human message on every issue', () => {
+    const issues = contractLineInvariantIssues({ lineType: 'manual' }, { mode: 'create' });
+    expect(issues[0]!.message.length).toBeGreaterThan(0);
+  });
+});
+
+describe('mergeContractLinePatch (#3205 W03)', () => {
+  const GUID_A = '33333333-3333-4333-8333-333333333333';
+  const GUID_B = '44444444-4444-4444-8444-444444444444';
+  const current: PersistedContractLine = {
+    lineType: 'per_device', description: 'Managed device', unitPrice: '10.00', taxable: true,
+    catalogItemId: null, manualQuantity: null, siteId: GUID_A, deviceRoles: null,
+    deviceGroupId: null, deviceGroupName: null, sortOrder: 3,
+  };
+
+  it('preserves every field an omitted key does not touch', () => {
+    expect(mergeContractLinePatch(current, updateContractLineSchema.parse({ description: 'Renamed' }) as never))
+      .toEqual({ ...current, description: 'Renamed' });
+  });
+
+  it('clears siteId on an explicit null and leaves it alone when the key is absent', () => {
+    expect(mergeContractLinePatch(current, updateContractLineSchema.parse({ siteId: null }) as never).siteId).toBeNull();
+    expect(mergeContractLinePatch(current, updateContractLineSchema.parse({ description: 'x' }) as never).siteId).toBe(GUID_A);
+  });
+
+  it('ignores explicit undefined catalogItemId and siteId keys', () => {
+    const linked: PersistedContractLine = { ...current, catalogItemId: GUID_B };
+    const catalogPatch = updateContractLineSchema.parse({ description: 'x', catalogItemId: undefined });
+    const sitePatch = updateContractLineSchema.parse({ description: 'x', siteId: undefined });
+    expect(mergeContractLinePatch(linked, catalogPatch).catalogItemId).toBe(GUID_B);
+    expect(mergeContractLinePatch(current, sitePatch).siteId).toBe(GUID_A);
+    expect(patchHasKey(sitePatch, 'siteId')).toBe(false);
+  });
+
+  it('applies a client price on an unlinked line', () => {
+    const m = mergeContractLinePatch(current, updateContractLineSchema.parse({ unitPrice: '12.50', taxable: false }) as never);
+    expect(m).toMatchObject({ unitPrice: '12.50', taxable: false, catalogItemId: null });
+  });
+
+  // Transition rows 2 and 4: the resolver is authoritative on a linked line, so
+  // a client price is dropped rather than written.
+  it('ignores a client price while the merged row stays catalog-linked', () => {
+    const linked: PersistedContractLine = { ...current, catalogItemId: GUID_B, unitPrice: '20.00', taxable: false };
+    const m = mergeContractLinePatch(linked, updateContractLineSchema.parse({ unitPrice: '1.00', taxable: true }) as never);
+    expect(m).toMatchObject({ unitPrice: '20.00', taxable: false, catalogItemId: GUID_B });
+  });
+
+  it('lets `resolved` override unitPrice, taxable and catalogItemId', () => {
+    const m = mergeContractLinePatch(
+      current, updateContractLineSchema.parse({ catalogItemId: GUID_B }) as never,
+      { unitPrice: '7.25', taxable: false, catalogItemId: GUID_B },
+    );
+    expect(m).toMatchObject({ unitPrice: '7.25', taxable: false, catalogItemId: GUID_B });
+  });
+
+  // Transition row 6: after an unlink nothing re-resolves the number ever again,
+  // so the patch's own price is what lands.
+  it('applies the patch price when the patch unlinks the catalog item', () => {
+    const linked: PersistedContractLine = { ...current, catalogItemId: GUID_B, unitPrice: '20.00' };
+    const m = mergeContractLinePatch(linked, updateContractLineSchema.parse({ catalogItemId: null, unitPrice: '3.00', taxable: false }) as never);
+    expect(m).toMatchObject({ catalogItemId: null, unitPrice: '3.00', taxable: false });
+  });
+
+  it('never moves lineType or deviceGroupName', () => {
+    const group: PersistedContractLine = {
+      ...current, lineType: 'per_device_group', siteId: null, deviceGroupId: GUID_A, deviceGroupName: 'VIP',
+    };
+    const m = mergeContractLinePatch(group, updateContractLineSchema.parse({ deviceGroupId: GUID_B }) as never);
+    expect(m).toMatchObject({ lineType: 'per_device_group', deviceGroupId: GUID_B, deviceGroupName: 'VIP' });
   });
 });

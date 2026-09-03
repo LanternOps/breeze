@@ -397,15 +397,33 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     // rather than inherited. Without it the `breeze.current_partner_id` GUC is
     // empty here and Wave 1's SELECT-only partner-wide branches can never match.
     //
-    // Scope note, so nobody over-reads this: as of W02 the field is INERT on
-    // this route. Every config-delivery read the heartbeat performs
-    // (event-log, monitoring, PAM, patch-source, OneDrive, helper settings,
-    // the update-policy gate) still runs in its own withSystemDbAccessContext,
-    // which bypasses RLS and already saw partner-wide rows. Nothing inside the
-    // org-scoped block below reads a partner-wide-branched table directly.
-    // It becomes load-bearing in Wave 3, when those escapes are removed and
-    // this GUC is the only thing keeping partner-wide config reaching agents.
-    // Set it now so Wave 3 is a deletion, not a deletion plus a scavenger hunt.
+    // Scope note, so nobody over-reads this: the field is still INERT on THIS
+    // route, and W03 did not change that — read the paragraph below before
+    // "cleaning up" the hoisted system contexts further down.
+    //
+    // W03 deleted the NESTED escapes (`withPartnerWideVisibility` and the
+    // direct `runOutsideDbContext(() => withSystemDbAccessContext(...))`
+    // wraps), so on every OTHER caller of these resolvers — agents/eventlogs,
+    // agents/commands, the backup routes, alertService, policyEvaluationService,
+    // pamBridge, the feature-link routes — the read now happens in the caller's
+    // own context and this GUC is exactly what carries it. The heartbeat is the
+    // one path where it does not, because the reads below are HOISTED into
+    // their own top-level system contexts (this route opts out of the
+    // request-long wrap). Those are not nested and cost no second connection,
+    // so W03 had no reason to touch them.
+    //
+    // Converting them to org-scoped contexts is a real follow-up — it would
+    // close the last RLS-bypass surface on the hottest path — but it is NOT a
+    // drop-in swap, which is why it is not in this wave:
+    // `buildPatchSourceConfigUpdate` reaches `resolveDeviceTimezone`, whose
+    // `partners` read is partner-AXIS and escapes through
+    // `readWithPartnerAxisVisibility` (#2822). Under a system wrapper that
+    // escape short-circuits; under an org wrapper it fires, uncached, once per
+    // heartbeat — turning one hoisted context into a genuinely NESTED
+    // double-hold on the fleet's hottest path, which is the #1105 shape this
+    // whole epic exists to remove. The timezone read has to be hoisted or
+    // batched first. Track it separately; do not do it by analogy with W03.
+    //
     // Read-only widening to the device's own MSP; see agentAuth.ts.
     currentPartnerId: agent.partnerId,
   };
@@ -876,6 +894,50 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     deviceUpdates.virtualizationPlatform = data.isVirtual
       ? (data.virtualizationPlatform ?? null)
       : null;
+  }
+
+  // Scheduled-restart status from the agent's RebootManager (#3207 W5).
+  //
+  // Three-way, matching the wire contract in schemas.ts:
+  //   undefined -> no news. A pre-#3207 agent omits `rebootStatus` entirely,
+  //                and the whole point of the isVirtual-style `!== undefined`
+  //                guard is that such an agent must not wipe a live schedule
+  //                out of the console on its next beat.
+  //   null      -> news: nothing is scheduled any more. Clear all five.
+  //   object    -> store the snapshot as a unit.
+  //
+  // The snapshot is written whole rather than column-by-column against the
+  // stored row. This UPDATE already fires on every heartbeat (lastSeenAt /
+  // status / updatedAt are unconditional above) and none of these columns is
+  // indexed, so re-assigning an unchanged value costs no extra tuple, no extra
+  // WAL record and no index maintenance — while a per-column diff would add
+  // Date-vs-Date comparison hazards for nothing. The one case worth skipping is
+  // the steady state, below: the overwhelming majority of the fleet has no
+  // restart scheduled and reports null forever, so a device whose columns are
+  // ALREADY clear contributes nothing to the SET list at all.
+  if (data.rebootStatus === null) {
+    const alreadyClear = [
+      device.rebootScheduledAt,
+      device.rebootDeadline,
+      device.rebootSource,
+      device.rebootDeferralsUsed,
+      device.rebootMaxDeferrals,
+    ].every((stored) => stored === null || stored === undefined);
+    if (!alreadyClear) {
+      deviceUpdates.rebootScheduledAt = null;
+      deviceUpdates.rebootDeadline = null;
+      deviceUpdates.rebootSource = null;
+      deviceUpdates.rebootDeferralsUsed = null;
+      deviceUpdates.rebootMaxDeferrals = null;
+    }
+  } else if (data.rebootStatus !== undefined) {
+    deviceUpdates.rebootScheduledAt = new Date(data.rebootStatus.scheduledAt);
+    deviceUpdates.rebootDeadline = data.rebootStatus.deadline
+      ? new Date(data.rebootStatus.deadline)
+      : null;
+    deviceUpdates.rebootSource = data.rebootStatus.source ?? null;
+    deviceUpdates.rebootDeferralsUsed = data.rebootStatus.deferralsUsed ?? null;
+    deviceUpdates.rebootMaxDeferrals = data.rebootStatus.maxDeferrals ?? null;
   }
 
   // Update hostname/OS version when agent reports changes
@@ -1727,7 +1789,17 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // #2930 — event_log / monitoring / pam / patch_source policy readers. These
   // used to run inside the org transaction, where a partner-wide policy
   // (org_id NULL) is RLS-invisible, so a partner-authored policy for any of the
-  // four never reached an agent. Same treatment as policyProbeConfig /
+  // four never reached an agent.
+  //
+  // #4673 W03 kept this hoist deliberately. The resolvers themselves no longer
+  // escape internally — they read partner-wide rows through the
+  // `*_partner_wide_select` branch in whatever context they are given — so an
+  // org-scoped wrapper here WOULD work for event_log / monitoring / pam. It is
+  // not applied because `buildPatchSourceConfigUpdate` shares this wrapper and
+  // reaches the partner-AXIS `partners` read in `resolveDeviceTimezone`, which
+  // would then take a nested `readWithPartnerAxisVisibility` escape once per
+  // heartbeat (see the long note at the `currentPartnerId` assignment above).
+  // Same treatment as policyProbeConfig /
   // onedriveSettings / helperSettings above: resolved after the org tx is
   // released, under a system context anchored to `scoped.deviceId` — an id
   // derived from the device the agent already authenticated as, so this cannot
@@ -1845,11 +1917,19 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
 
   // #1105 — helper settings resolved OUTSIDE the org context too (same
   // guarantee as policyProbeConfig/onedriveSettings above): a partner-wide
-  // helper policy (org_id NULL) is invisible under the org-scoped RLS context
-  // (accessiblePartnerIds: [] there), so it must resolve under a system
-  // context anchored to this authenticated device's own org — cannot pivot
-  // tenants since both ids come from `scoped`, derived from the device the
-  // agent already authenticated as.
+  // helper policy (org_id NULL) was invisible under the org-scoped RLS context
+  // (accessiblePartnerIds: [] there), so it resolved under a system context
+  // anchored to this authenticated device's own org — cannot pivot tenants
+  // since both ids come from `scoped`, derived from the device the agent
+  // already authenticated as.
+  //
+  // #4673 W03: the invisibility half of that reason is gone —
+  // `config_policy_feature_links_partner_wide_select` covers the JSONB
+  // `inlineSettings` this resolves, and `buildHelperConfigUpdate` touches no
+  // partner-AXIS table, so this one IS a safe drop-in swap to an org-scoped
+  // context. It is left alone only so the heartbeat's five hoists are converted
+  // as ONE reviewable change with one integration proof each, rather than
+  // piecemeal. See the note at the `currentPartnerId` assignment above.
   let helperSettings: HelperSettings | null = null;
   try {
     helperSettings = await withSystemDbAccessContext(() =>

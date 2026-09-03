@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
-import { and, asc, desc, eq, inArray, isNull, sql, type SQL } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNotNull, isNull, sql, type SQL } from 'drizzle-orm';
 import {
   AI_AGENT_GRADUATION_BY_ORG_LIMIT,
   AI_AGENT_IMPACT_REBUILD_DAYS,
@@ -15,6 +15,7 @@ import {
   type AiAgentGraduationByOrgDto,
   type AiAgentGraduationDto,
   type AiAgentRunListItemDto,
+  type AiAgentRunStatus,
   type ExposureBudgetDto,
   createAiAgentSchema,
   impactQuerySchema,
@@ -27,7 +28,7 @@ import {
 import { zValidator } from '../lib/validation';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import {
-  actionIntents, aiAgentRuns, aiAgents, aiToolExecutions, devices, organizations,
+  actionIntents, aiAgentGraduation, aiAgentRuns, aiAgents, aiToolExecutions, devices, organizations,
   reportRuns, reports, ticketDrafts, type AiAgentRow,
 } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
@@ -37,7 +38,7 @@ import {
   PARTNER_WIDE_WRITE_DENIED_MESSAGE,
   PartnerWideWriteDeniedError,
 } from '../services/partnerWideAccess';
-import { AgentAccessDeniedError } from '../services/aiAgents/access';
+import { AgentAccessDeniedError, assertAgentWriteAllowed } from '../services/aiAgents/access';
 import { getCircuitState, resetCircuit } from '../services/aiAgents/agentCircuit';
 import { enqueueImpactRollupForOrgs } from '../jobs/aiAgentImpactRollup';
 import { loadImpactSummary } from '../services/aiAgents/impactQuery';
@@ -49,12 +50,13 @@ import {
   saveImpactWeights,
 } from '../services/aiAgents/impactWeights';
 import {
-  createAgent, disableAgent, getAgent, listAgents, updateAgent,
+  createAgent, disableAgent, getAgent, listAgents, recordAgentMutation, updateAgent, withAgentRowLocked,
   ActPrerequisitesNotMetError, AgentInvariantError, AgentKindConflictError,
   InvalidSupervisedActionKeysError, UnsupportedAgentModeError,
 } from '../services/aiAgents/agentService';
 import { resolveEffectiveAgent, resolveEffectiveAgentSystem } from '../services/aiAgents/effectivePolicy';
 import { loadActOpReliability, loadGraduationRows } from '../services/aiAgents/graduationService';
+import { demoteSupervisedKey } from '../services/aiAgents/supervisedKeyDemote';
 import { POLICY_DECIDABLE_TIER3 } from '../services/actionIntents/policyDecidable';
 import { ActionIntentError, createActionIntent } from '../services/actionIntents/intentService';
 import { computeExposureBudget } from '../services/actionIntents/exposureBudget';
@@ -87,13 +89,18 @@ const requireAiWrite = requirePermission(PERMISSIONS.AI_AGENTS_WRITE.resource, P
 const scopes = requireScope('organization', 'partner', 'system');
 
 // NOTE (deviation from the plan, deliberate): the agent-MUTATION handlers do
-// not call writeRouteAudit. agentService.recordMutation already writes the
-// ai.agent.created/updated/disabled audit row through createAuditLog, and both
-// paths land in the same audit_logs table — auditing here too would double every
-// agent mutation. The service is the single audit point precisely because wave 3
-// mutates agents from schedulers that have no Hono context. POST /:id/runs is
-// different: createAndEnqueueAgentRun emits console/event-bus observability but
-// writes no audit row, so the route must record the human actor who initiated it.
+// not call writeRouteAudit. agentService.recordAgentMutation already writes the
+// ai.agent.created/updated/disabled/enabled audit row through createAuditLog —
+// awaited, paired with the ai.agent.policy_changed publish — and both paths land
+// in the same audit_logs table, so auditing here too would double every agent
+// mutation. The service is the single audit point precisely because wave 3
+// mutates agents from schedulers that have no Hono context. POST /:id/enable
+// writes its row in this file but still records through that helper rather than
+// writeRouteAudit: the fire-and-forget variant could lose the row after the 200,
+// and a hand-rolled second audit path is how the enable handler ended up
+// publishing no policy_changed event at all. POST /:id/runs is different:
+// createAndEnqueueAgentRun emits console/event-bus observability but writes no
+// audit row, so the route must record the human actor who initiated it.
 
 const UUID = z.string().guid();
 
@@ -142,6 +149,12 @@ function mapRow(row: AiAgentRow): AiAgentDto {
     disabledAt: row.disabledAt?.toISOString() ?? null,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
+    // Declared on the DTO, so answered on every route that returns one. Only
+    // the LIST route computes them (it overwrites these from `loadLastRuns`);
+    // everywhere else the honest answer is "not computed here", and `null` is
+    // what the type promises rather than a silently missing field.
+    lastRunAt: null,
+    lastRunStatus: null,
   };
 }
 
@@ -243,6 +256,44 @@ export function mapError(c: Context, err: unknown) {
   throw err;
 }
 
+/**
+ * The settings list's "when did this last do anything" column, for the whole
+ * page in ONE query rather than one per row.
+ *
+ * `DISTINCT ON (agent_id) … ORDER BY agent_id, queued_at DESC` rides
+ * `ai_agent_runs_agent_queued_idx` (agent_id, queued_at DESC), so the cost is
+ * one index probe per agent id, not a scan of the agent's whole run history.
+ *
+ * Predicated on `auth.orgCondition` as well as RLS, the same "defended twice"
+ * posture `listAgents` documents: `ai_agent_runs.org_id` is NOT NULL, so a
+ * partner-wide agent's runs belong to many orgs and what comes back here is
+ * the latest run the CALLER may see, never the latest run that exists.
+ */
+async function loadLastRuns(
+  auth: AuthContextForRuns,
+  agentIds: string[],
+): Promise<Map<string, { lastRunAt: string; lastRunStatus: AiAgentRunStatus }>> {
+  if (agentIds.length === 0) return new Map();
+  const rows = await db
+    .selectDistinctOn([aiAgentRuns.agentId], {
+      agentId: aiAgentRuns.agentId,
+      status: aiAgentRuns.status,
+      queuedAt: aiAgentRuns.queuedAt,
+    })
+    .from(aiAgentRuns)
+    .where(and(inArray(aiAgentRuns.agentId, agentIds), auth.orgCondition(aiAgentRuns.orgId)))
+    .orderBy(aiAgentRuns.agentId, desc(aiAgentRuns.queuedAt));
+  return new Map(
+    rows.map((row) => [
+      row.agentId,
+      { lastRunAt: row.queuedAt.toISOString(), lastRunStatus: row.status },
+    ]),
+  );
+}
+
+/** Only the piece of the auth context `loadLastRuns` needs. */
+type AuthContextForRuns = { orgCondition: (column: typeof aiAgentRuns.orgId) => SQL | undefined };
+
 aiAgentsRoutes.get(
   '/',
   scopes,
@@ -256,7 +307,19 @@ aiAgentsRoutes.get(
     const rows = await listAgents(auth, {
       includeDisabled: query.includeDisabled !== undefined,
     });
-    return c.json({ data: rows.map(mapRow) });
+    // Batched, never per row: the settings page renders every agent this
+    // caller owns, and a per-row query would be one round trip per agent.
+    const lastRuns = await loadLastRuns(auth, rows.map((row) => row.id));
+    return c.json({
+      data: rows.map((row) => {
+        const last = lastRuns.get(row.id);
+        return {
+          ...mapRow(row),
+          lastRunAt: last?.lastRunAt ?? null,
+          lastRunStatus: last?.lastRunStatus ?? null,
+        };
+      }),
+    });
   },
 );
 
@@ -557,6 +620,168 @@ aiAgentsRoutes.post(
       }
       throw err;
     }
+  },
+);
+
+/**
+ * Body of `POST /graduation/revoke`. Kept local to this route rather than
+ * added beside `promoteSupervisedKeyRequestSchema` in `@breeze/shared`: the
+ * promote body crosses the wire into an action intent's ARGUMENTS (the
+ * effect-digest resolver re-reads it), so it has to be canonical in a package
+ * both ends import. A revoke is a plain request body that never leaves this
+ * handler.
+ *
+ * `opKey` carries promote's colon-form restriction verbatim: a dot-form
+ * act-op key is outcome evidence and was never grantable, so it can never be
+ * revocable either — rejecting it at the schema is what keeps a typo from
+ * reading as "no such grant".
+ *
+ * `kind` is OPTIONAL and exists only to disambiguate. Policy-decidable keys
+ * are not kind-scoped (`POLICY_DECIDABLE_TIER3` is one flat registry), and
+ * `ai_agent_graduation` is unique on `(org_id, agent_id, op_key)` — so one
+ * org CAN hold the same key under two agents of different kinds. The panel
+ * always knows the kind it is rendering; a caller that omits it gets served
+ * only while the answer is unambiguous.
+ */
+const revokeSupervisedKeyRequestSchema = z.object({
+  orgId: z.string().guid(),
+  opKey: z.string().min(3).max(120).regex(/^[a-z0-9_]+:[a-z0-9_]+$/),
+  kind: z.enum(AI_AGENT_KINDS).optional(),
+  /** Operator-authored note. Recorded on the audit row, never on the agent policy. */
+  reason: z.string().trim().min(1).max(500).optional(),
+}).strict();
+
+/**
+ * How many graduation rows the precondition read pulls for one
+ * `(org_id, op_key)`. Only "one, or more than one" is ever asked — the extra
+ * rows exist so the ambiguity branch below can fire instead of the route
+ * silently revoking whichever holder Postgres returned first.
+ */
+const GRADUATION_REVOKE_CANDIDATE_LIMIT = 5;
+
+/**
+ * The operator-facing mirror of `POST /graduation/promote`: hand a promoted
+ * key back to the approval queue.
+ *
+ * NO FOUR-EYES, and that is the whole point of it being a route rather than
+ * a second `manage_ai_agents` action. Promote's four-eyes ceremony exists
+ * because granting unattended authority is irreversible-in-effect once an
+ * action runs; revoking strictly REDUCES privilege, so requiring a second
+ * human would mean an operator who has just watched an agent misbehave
+ * cannot stop it without finding a colleague. Same `scopes` and the same
+ * `requireAiWrite` capability as promote; no `requireMfa()`, matching what
+ * promote asks of its FIRST approver.
+ *
+ * NOT GATED ON `BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED`, deliberately, and
+ * for the exact reason promote IS: the flag going dark must stop new grants
+ * without stranding a live one on an agent an operator wants stopped.
+ * `supervisedKeyDemote.ts` is always-on for the same reason.
+ *
+ * TENANCY. The precondition read runs in the CALLER's own request context —
+ * `ai_agent_graduation` is Shape 1 (`breeze_has_org_access(org_id)`), so RLS
+ * is a real gate here and elevating would throw it away (the same reasoning
+ * `countEligibleGraduations` records). `auth.orgCondition` is stacked on top
+ * because partner scope means ACCESSIBLE orgs, not every org under the
+ * partner. Only the EXECUTOR elevates, and it does so itself: unlike
+ * promote's `createActionIntent` (a bare system wrapper, which is a no-op
+ * inside a request context — hence promote's `runOutsideDbContext`),
+ * `demoteSupervisedKey`'s own `inSystemDbContext` already exits the request
+ * context before establishing system visibility, so this handler must NOT
+ * wrap it.
+ *
+ * Refusals are all "nothing was revoked", never a false success:
+ *   404 `no_promoted_grant`  — no row, or none that ever reached `promoted`
+ *   409 `already_demoted`    — this key is already back in the queue
+ *   409 `ambiguous_op_key`   — two agents hold it; re-send with `kind`
+ *   409 `already_revoked`    — the key had already left the org row (a manual
+ *                              PATCH, or a partner-ceiling-only grant), so
+ *                              the executor wrote nothing and the stored
+ *                              state is stale-promoted. Reporting 200 here
+ *                              would claim a `demoted` row that does not
+ *                              exist.
+ */
+aiAgentsRoutes.post(
+  '/graduation/revoke',
+  scopes,
+  requireAiWrite,
+  zValidator('json', revokeSupervisedKeyRequestSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { orgId, opKey, kind, reason } = c.req.valid('json');
+
+    if (!auth.canAccessOrg(orgId)) {
+      return c.json({ error: 'Organization not accessible' }, 403);
+    }
+
+    const rows = await db
+      .select({ agentId: aiAgentGraduation.agentId, state: aiAgentGraduation.state })
+      .from(aiAgentGraduation)
+      .where(and(
+        auth.orgCondition(aiAgentGraduation.orgId),
+        eq(aiAgentGraduation.orgId, orgId),
+        eq(aiAgentGraduation.opKey, opKey),
+      ))
+      .limit(GRADUATION_REVOKE_CANDIDATE_LIMIT);
+
+    let candidates = rows;
+    if (kind !== undefined) {
+      // Server-side resolution, never a caller-supplied agent id — the same
+      // rule GET /graduation states: an org token carries a partnerId but
+      // cannot read the partner baseline row itself.
+      const resolved = await resolveEffectiveAgentSystem(orgId, kind);
+      if (!resolved) {
+        return c.json({ error: 'No active agent policy for this organization/kind' }, 404);
+      }
+      candidates = rows.filter((row) => row.agentId === resolved.agentId);
+    }
+
+    const promoted = candidates.filter((row) => row.state === 'promoted');
+    if (promoted.length === 0) {
+      if (candidates.some((row) => row.state === 'demoted')) {
+        return c.json({ error: 'already_demoted' }, 409);
+      }
+      return c.json({ error: 'no_promoted_grant' }, 404);
+    }
+    if (promoted.length > 1) {
+      return c.json({
+        error: 'ambiguous_op_key',
+        message: 'More than one agent holds this key for the organization — re-send with `kind`',
+      }, 409);
+    }
+
+    const { agentId } = promoted[0]!;
+    const { revoked, orgAgentId } = await demoteSupervisedKey({
+      orgId,
+      agentId,
+      opKey,
+      reason: 'operator',
+      // No disqualifying evidence produced this — a human decided it. The
+      // accountable human is on the audit row below, which is also why the
+      // executor is left to write its own `ai.agent.supervised_key.revoked`
+      // row unchanged: that one records the AUTHORITY CHANGE (and is the same
+      // row the two automatic callers produce), this one records WHO.
+      runId: null,
+      watchId: null,
+      intentId: null,
+    });
+    if (!revoked) {
+      return c.json({ error: 'already_revoked', orgAgentId }, 409);
+    }
+
+    writeRouteAudit(c, {
+      orgId,
+      action: 'ai_agent.graduation.revoke',
+      resourceType: 'ai_agent',
+      resourceId: orgAgentId,
+      // The operator's own note is the one piece of free text on this row.
+      // It is a HUMAN's words, not a tool result, an alert message or any
+      // model-authored rationale — the class `supervisedKeyDemote.ts`'s leak
+      // rule excludes from operator-facing surfaces.
+      details: { agentId, orgAgentId, opKey, reason: reason ?? null },
+      result: 'success',
+    });
+
+    return c.json({ revoked: true, orgAgentId, state: 'demoted' as const });
   },
 );
 
@@ -941,15 +1166,41 @@ aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
   // sweep-hostname and narrative-artifact reads above do (a partner-scoped
   // caller's `auth.orgCondition` alone spans every sibling org); that stays
   // as defence-in-depth beside RLS.
+  //
+  // Issue #4467 — also selects `content` and `state`, and orders newest
+  // first: `buildRunTrace`/`mapTicketProposal` now derive
+  // `ticketProposal.draftReply`/`draftResolutionNote` off this SAME live row
+  // (when one exists for the kind) instead of always echoing the persisted
+  // proposal text, so the two representations of a written draft can't
+  // disagree. `content` never reaches `draftsWritten` on the wire itself —
+  // it only feeds that derivation (see the docstrings on
+  // `RunTraceDraftRowInput` and `mapTicketProposal`/`pickDraftText`).
+  //
+  // More than one row of the SAME kind can be linked to this run_id — the
+  // `draft` tool executor (aiToolsTicketing.ts, action 'draft') supersedes
+  // the ticket's previously-active draft of that kind and inserts a new row
+  // on every call, including its own unique-violation retry path, and this
+  // query has no per-run uniqueness to lean on (`ticket_drafts_active_uq` is
+  // scoped to `(ticket_id, kind)`, not `(run_id, kind)`). `state` +
+  // `ORDER BY created_at DESC` let `pickDraftText` deterministically prefer
+  // the row that is actually still `active` (falling back to the most
+  // recently written row of that kind if none is), rather than an arbitrary
+  // one — see that function's docstring.
   const draftRows = run.triggerKind === 'ticket'
     ? await db
-      .select({ id: ticketDrafts.id, kind: ticketDrafts.kind })
+      .select({
+        id: ticketDrafts.id,
+        kind: ticketDrafts.kind,
+        content: ticketDrafts.content,
+        state: ticketDrafts.state,
+      })
       .from(ticketDrafts)
       .where(and(
         eq(ticketDrafts.runId, run.id),
         eq(ticketDrafts.orgId, run.orgId),
         auth.orgCondition(ticketDrafts.orgId),
       ))
+      .orderBy(desc(ticketDrafts.createdAt))
     : [];
 
   // Both fields come from the same left-joined ai_agents row, so they are
@@ -1377,6 +1628,125 @@ aiAgentsRoutes.delete('/:id', scopes, requireAiWrite, requireMfa(), async (c) =>
     const row = await disableAgent(auth, id);
     return c.json({ data: mapRow(row) });
   } catch (err) {
+    return mapError(c, err);
+  }
+});
+
+/** `POST /:id/enable` against a row that is not disabled. Not an error the
+ *  operator can act on beyond "it is already live", so it is a 409 rather
+ *  than the 404 a missing row gets — conflating them would tell an operator
+ *  their agent had vanished. */
+class AgentNotDisabledError extends Error {
+  readonly code = 'agent_not_disabled';
+
+  constructor() {
+    super('agent_not_disabled');
+    this.name = 'AgentNotDisabledError';
+  }
+}
+
+/**
+ * The way back from `DELETE /:id`.
+ *
+ * Disable is a soft delete (`disabled_at`), so the row, its run history and
+ * its evidence all survive — but until this route existed there was no way to
+ * bring one back, and the settings page reported a tenant whose only agent had
+ * been disabled as a tenant with no agents at all.
+ *
+ * Same gates as DELETE: `scopes`, `requireAiWrite`, `requireMfa()`, plus
+ * `assertAgentWriteAllowed` (the partner-wide branch of which is
+ * `canManagePartnerWidePolicies`). Deliberately NOT a `PATCH /:id` field:
+ * `updateAgent` refuses a disabled row outright, and re-enabling is a
+ * different authorization question from editing a policy.
+ *
+ * `enabled` stays FALSE. Disable set it false on the way out, and restoring an
+ * agent straight back into service — possibly in `act` mode, possibly with a
+ * partner-wide schedule still attached — is a second decision the operator
+ * makes deliberately on the form, not a side effect of un-archiving. The
+ * managed automation stays disabled with it; `updateAgent`'s
+ * `syncManagedAutomation` re-enables it when the operator turns the agent on.
+ *
+ * COUNTERINTUITIVE CONSEQUENCE, for an ORG-owned row under a live partner-wide
+ * baseline of the same kind: re-enabling can turn that org's coverage OFF.
+ * `mergePolicies` (effectivePolicy.ts) resolves `enabled` as
+ * `partner.enabled && org.enabled`, and a disabled org row is not merged at
+ * all — so the org was running on the partner baseline, and un-archiving its
+ * override re-introduces an `enabled: false` row that AND-merges the baseline
+ * to false. The operator has to switch the restored agent on for the org to
+ * get back to where it was. Restoring it enabled instead is NOT the fix: that
+ * would silently re-arm whatever mode the row was archived in.
+ *
+ * Implemented here rather than in `agentService` only because this change was
+ * scoped to the route layer; the lock, the tenancy predicate, the conflict
+ * pre-check and `recordAgentMutation` are all the service's own, reused.
+ */
+aiAgentsRoutes.post('/:id/enable', scopes, requireAiWrite, requireMfa(), async (c) => {
+  const auth = c.get('auth');
+  const id = uuidParam(c, 'id');
+  if (!id) return c.json({ error: 'Agent not found' }, 404);
+  try {
+    const row = await withAgentRowLocked(auth, id, async (existing) => {
+      // `withAgentRowLocked` reports only a predicate miss (404); everything
+      // else is this callback's job, read off the LOCKED row.
+      //
+      // Authorization FIRST, conflict second (review finding 8a). The other
+      // order let a partner-scoped technician without full org access probe a
+      // partner-wide agent and read its archived/live state off the status
+      // code — 409 vs 403 — before the write gate had run at all.
+      assertAgentWriteAllowed(auth, existing);
+      if (existing.disabledAt === null) throw new AgentNotDisabledError();
+
+      // Pre-check the two partial unique indexes on (partner_id, kind) and
+      // (org_id, kind) WHERE disabled_at IS NULL — a live agent of this kind
+      // may well have been created while this one was disabled. Letting the
+      // UPDATE trip 23505 is not an option: the whole request runs inside one
+      // withDbAccessContext transaction, so an in-statement error poisons it
+      // and the COMMIT 500s (the same reason `createAgent` pre-checks).
+      const [conflict] = await db
+        .select({ id: aiAgents.id })
+        .from(aiAgents)
+        .where(and(
+          existing.partnerId === null
+            ? eq(aiAgents.orgId, existing.orgId as string)
+            : and(eq(aiAgents.partnerId, existing.partnerId), isNull(aiAgents.orgId)),
+          eq(aiAgents.kind, existing.kind),
+          isNull(aiAgents.disabledAt),
+        ))
+        .limit(1);
+      if (conflict) throw new AgentKindConflictError(existing.kind);
+
+      const [updated] = await db
+        .update(aiAgents)
+        .set({
+          disabledAt: null,
+          disabledBy: null,
+          lastUpdatedBy: auth.user.id,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(aiAgents.id, id), isNotNull(aiAgents.disabledAt)))
+        .returning();
+      if (!updated) throw new AgentAccessDeniedError('Agent not found');
+      return updated;
+    });
+
+    // The exact pair `disableAgent` records, through the same service helper
+    // (review findings 8b/8c). This used to be a fire-and-forget
+    // `writeRouteAudit` and NO `ai.agent.policy_changed` publish at all, which
+    // made un-archiving the one agent mutation in the product whose policy
+    // change never reached the event bus — and whose audit row could be lost
+    // after the response had already claimed success. Awaited, so the audit is
+    // written before the 200 goes out; `publishPolicyChanged` swallows a bus
+    // outage by design (see its docstring) rather than rolling the restore back.
+    await recordAgentMutation(row, auth, 'enabled', {
+      // The restore leaves the agent switched off on purpose — recorded so the
+      // audit row cannot be read as "this agent started running again".
+      enabled: row.enabled,
+    });
+    return c.json({ data: mapRow(row) });
+  } catch (err) {
+    if (err instanceof AgentNotDisabledError) {
+      return c.json({ error: 'Agent is not disabled', code: err.code }, 409);
+    }
     return mapError(c, err);
   }
 });

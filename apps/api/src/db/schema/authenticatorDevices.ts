@@ -57,6 +57,16 @@ export const authenticatorDevices = pgTable(
     kind: authenticatorKindEnum('kind').notNull(),
     label: varchar('label', { length: 255 }),
     publicKey: text('public_key').notNull(),
+    /** Signature algorithm of `publicKey` (#1374 W02). 'RS256' = RSASSA-PKCS1-v1_5
+     * + SHA-256 (react-native-biometrics RSA-2048, every pre-W02 row); 'ES256' =
+     * ECDSA + SHA-256 over P-256 (Secure Enclave / StrongBox-or-TEE), the only
+     * shape an attested platform-bound key can take.
+     *
+     * READ FROM THIS ROW on every verification — never from the request body.
+     * A client-chosen algorithm is an algorithm-confusion vector. The domain is
+     * enforced by a DB CHECK; `toMobileKeyAlg` in services/mobileHwKey.ts fails
+     * closed on anything else. */
+    publicKeyAlg: varchar('public_key_alg', { length: 16 }).notNull().default('RS256'),
     // WebAuthn credential id (web only); null for mobile_hw_key.
     credentialId: text('credential_id').unique(),
     // Anti-clone counter (web) / monotonic nonce counter (mobile).

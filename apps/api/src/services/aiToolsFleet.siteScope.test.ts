@@ -84,6 +84,7 @@ reportScopeMocks.resolveRequestReportAuthority.mockImplementation(
   async (auth: AuthContext, orgId: string) => ({
     ok: true,
     authority: {
+      principalKind: 'user',
       scope: auth.allowedSiteIds === undefined
         ? { version: 1, kind: 'unrestricted', orgId }
         : { version: 1, kind: 'restricted', orgId, siteIds: auth.allowedSiteIds },
@@ -369,6 +370,7 @@ describe('SR5-06 generate_report — run scope gating', () => {
     reportScopeMocks.resolveRequestReportAuthority.mockResolvedValue({
       ok: true,
       authority: {
+        principalKind: 'user',
         scope: { version: 1, kind: 'unrestricted', orgId: 'org-1' },
         principalUserId: 'u1',
         capturedAt: new Date('2026-07-25T12:00:00.000Z'),
@@ -460,6 +462,7 @@ describe('SR5-06 generate_report — run scope gating', () => {
     reportScopeMocks.resolveRequestReportAuthority.mockResolvedValueOnce({
       ok: true,
       authority: {
+        principalKind: 'user',
         scope: { version: 1, kind: 'restricted', orgId: 'org-1', siteIds: [] },
         principalUserId: 'u1',
         capturedAt: new Date('2026-07-25T12:00:00.000Z'),
@@ -499,6 +502,7 @@ describe('SR5-06 generate_report — run scope gating', () => {
     reportScopeMocks.resolveRequestReportAuthority.mockResolvedValue({
       ok: true,
       authority: {
+        principalKind: 'user',
         scope: restrictedScope,
         principalUserId: 'u1',
         capturedAt: new Date('2026-07-25T12:00:00.000Z'),
@@ -523,6 +527,42 @@ describe('SR5-06 generate_report — run scope gating', () => {
     expect(mockDb.insert).not.toHaveBeenCalled();
     expect(mockDb.update).not.toHaveBeenCalled();
     expect(result.success).not.toBe(true);
+  });
+
+  it('records AI-tool saved report runs with the acting user requester provenance', async () => {
+    reportScopeMocks.intersectSiteScopes.mockReturnValue({
+      version: 1,
+      kind: 'unrestricted',
+      orgId: 'org-1',
+    });
+    reportScopeMocks.siteScopeFingerprint.mockReturnValue('f'.repeat(64));
+    reportScopeMocks.persistedSiteScopeValues.mockReturnValue({
+      executionScopeVersion: 1,
+      executionScopeKind: 'unrestricted',
+      executionScopeSiteIds: null,
+      executionScopeUserId: 'u1',
+      executionScopeFingerprint: 'f'.repeat(64),
+      executionScopeCapturedAt: new Date('2026-07-25T12:00:00.000Z'),
+      executionScopePrincipalKind: 'user',
+    });
+    mockDb.select.mockReturnValue(definitionSelectChain());
+    const values = vi.fn(() => ({
+      returning: () => Promise.resolve([{ id: 'run-1' }]),
+    }));
+    mockDb.insert.mockReturnValue({ values });
+    mockDb.update.mockReturnValue({ set: () => ({ where: () => Promise.resolve() }) });
+
+    const result = JSON.parse(await handlerFor('generate_report')(
+      { action: 'generate', reportId: 'rep1' },
+      makeAuth(undefined),
+    ));
+
+    expect(result.success).toBe(true);
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({
+      requestedByKind: 'user',
+      requestedByUserId: 'u1',
+      requestedByPortalUserId: null,
+    }));
   });
 
   it('rolls back run deletion when the guarded definition delete loses its scope race', async () => {

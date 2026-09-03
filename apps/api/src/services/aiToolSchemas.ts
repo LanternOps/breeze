@@ -455,6 +455,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
       'delete_draft',
       'add_line',
       'remove_line',
+      'update_line',
       'activate',
       'pause',
       'resume',

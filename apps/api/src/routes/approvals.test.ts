@@ -488,16 +488,29 @@ beforeEach(() => {
 // GET /pending now joins action_intents (Task 8) — db.select() for this
 // route returns `{approval, intent}` pairs via a `.from().leftJoin().where()
 // .orderBy()` chain, rather than raw approval_requests rows directly.
+//
+// The handler also runs up to THREE more batched lookups over the resulting
+// page (customer tenant, target device, org name) — each its own db.select()
+// call, in a DIFFERENT chain shape (`.from().innerJoin()...` /
+// `.from().where()`), that only fires when the page actually has something
+// to look up. Rather than hand-code every possible extra shape, this stub is
+// a single self-chaining node: every chain method returns the SAME node, so
+// it satisfies `.from().leftJoin().where().orderBy()` (resolving `rows`, via
+// the real mocked `.orderBy()` promise) AND any shorter chain that stops at
+// `.where()` (which returns the node itself, and the node is `then`-able,
+// resolving empty) — regardless of how many extra times db.select() is
+// called, or in what shape. A test that needs to assert on one of THOSE
+// batched lookups' own output queues an explicit `mockReturnValueOnce` ahead
+// of this persistent fallback instead (see the orgName tests below).
 function mockPendingJoinResolves(rows: Array<{ approval: unknown; intent: unknown | null }>) {
-  vi.mocked(db.select).mockReturnValue({
-    from: vi.fn().mockReturnValue({
-      leftJoin: vi.fn().mockReturnValue({
-        where: vi.fn().mockReturnValue({
-          orderBy: vi.fn().mockResolvedValue(rows),
-        }),
-      }),
-    }),
-  } as any);
+  const node: any = {};
+  node.from = vi.fn().mockReturnValue(node);
+  node.leftJoin = vi.fn().mockReturnValue(node);
+  node.innerJoin = vi.fn().mockReturnValue(node);
+  node.where = vi.fn().mockReturnValue(node);
+  node.orderBy = vi.fn().mockResolvedValue(rows);
+  node.then = (resolve: (v: unknown[]) => void) => resolve([]);
+  vi.mocked(db.select).mockReturnValue(node);
 }
 
 function buildPendingApproval(overrides: Record<string, unknown> = {}) {
@@ -534,7 +547,76 @@ describe('GET /approvals/pending', () => {
     const body = await res.json();
     expect(body.approvals).toHaveLength(1);
     expect(body.approvals[0].id).toBe('a1');
+    // No linked intent → no orgId to resolve a name for, and no org-name
+    // lookup select at all (see the batched-lookup tests below).
+    expect(body.approvals[0].orgName).toBeNull();
     expect(body.nextCursor).toBeNull();
+  });
+
+  it("projects orgName from the linked intent's org (single batched lookup)", async () => {
+    const approval = buildPendingApproval({ id: 'a-org', intentId: 'intent-org' });
+    const intent = {
+      id: 'intent-org',
+      orgId: 'org-9',
+      status: 'pending_approval',
+      approvalScope: 'four_eyes',
+      requestedByUserId: 'requester-9',
+    };
+    // 1) the pending join; 2) the batched org-name lookup.
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          leftJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockResolvedValue([{ approval, intent }]),
+            }),
+          }),
+        }),
+      } as any)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([{ id: 'org-9', name: 'Acme Dental' }]),
+        }),
+      } as any);
+
+    const res = await buildApp().request('/approvals/pending');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.approvals[0].orgId).toBe('org-9');
+    expect(body.approvals[0].orgName).toBe('Acme Dental');
+  });
+
+  it('serializes orgName: null when the linked org no longer exists', async () => {
+    const approval = buildPendingApproval({ id: 'a-org-missing', intentId: 'intent-org-missing' });
+    const intent = {
+      id: 'intent-org-missing',
+      orgId: 'org-deleted',
+      status: 'pending_approval',
+      approvalScope: 'four_eyes',
+      requestedByUserId: 'requester-9',
+    };
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          leftJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockResolvedValue([{ approval, intent }]),
+            }),
+          }),
+        }),
+      } as any)
+      // The org row is gone — the lookup returns zero rows, not an error.
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([]),
+        }),
+      } as any);
+
+    const res = await buildApp().request('/approvals/pending');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.approvals[0].orgId).toBe('org-deleted');
+    expect(body.approvals[0].orgName).toBeNull();
   });
 
   it('excludes a four_eyes intent-linked row once the approver no longer holds approvals:decide (demoted approver)', async () => {

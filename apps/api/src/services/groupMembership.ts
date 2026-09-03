@@ -137,6 +137,67 @@ export async function resolveEffectiveGroupMembers(group: GroupForResolution): P
   return { matched, pinned };
 }
 
+export type DeviceForMembership = {
+  id: string;
+  orgId: string;
+  siteId: string | null;
+  isEphemeral: boolean;
+};
+
+/**
+ * Is this ONE device in this group, as billing defines membership (#3205 W06)?
+ * The single-device twin of resolveEffectiveGroupMembers: returns
+ * `deviceId ∈ (matched ∪ pinned)` for billing-eligible devices (same org, not
+ * ephemeral). Other-org and ephemeral devices are refused up front. Proved by
+ * groupMembership.parity.integration.test.ts.
+ *
+ * The site clause on the filter branch is PARITY, not an optimization:
+ * evaluateFilter narrows by allowedSiteIds inside its SQL, deviceMatchesFilter
+ * (filterEngine.ts:668) takes no site argument. The pinned branch carries no
+ * site clause because `pinned` carries none either — a site-bound group's
+ * off-site pinned member IS in memberIds and is narrowed out later, by
+ * coverageMatch's group branch.
+ *
+ * Tenant/ephemeral eligibility runs before all queries. For eligible devices,
+ * filter-shape validation runs BEFORE the pinned short-circuit: an unevaluable
+ * group throws, exactly as resolveEffectiveGroupMembers does.
+ * The shape check is a pure in-memory test, so the pinned row still skips the
+ * expensive half (deviceMatchesFilter, a compiled filter under a 500 ms timeout).
+ *
+ * Every membership read predicates on group_id AND the group's own org_id: the
+ * membership table's RLS is org-only, so a forged row carrying another tenant's
+ * org_id and this group's id is visible to a system context.
+ */
+export async function groupIncludesDevice(group: GroupForResolution, device: DeviceForMembership): Promise<boolean> {
+  if (device.orgId !== group.orgId || device.isEphemeral) return false;
+
+  const filter = group.filterConditions;
+  const hasFilter = filter !== null && filter !== undefined;
+  if (group.type === 'dynamic' && hasFilter && !isFilterConditionGroup(filter)) {
+    throw new GroupEvaluationError(group.id, 'invalid_filter');
+  }
+
+  const [membership] = await db
+    .select({ isPinned: deviceGroupMemberships.isPinned })
+    .from(deviceGroupMemberships)
+    .where(and(
+      eq(deviceGroupMemberships.groupId, group.id),
+      eq(deviceGroupMemberships.orgId, group.orgId),
+      eq(deviceGroupMemberships.deviceId, device.id),
+    ))
+    .limit(1);
+
+  if (group.type !== 'dynamic') return membership !== undefined;
+  if (membership?.isPinned) return true;
+  if (!hasFilter) return false;
+  if (group.siteId !== null && group.siteId !== device.siteId) return false;
+  try {
+    return await deviceMatchesFilter(device.id, filter as FilterConditionGroup);
+  } catch (err) {
+    throw new GroupEvaluationError(group.id, 'engine_error', err);
+  }
+}
+
 function uniqueFields(fields: string[]): string[] {
   return [...new Set(fields)].filter(Boolean);
 }

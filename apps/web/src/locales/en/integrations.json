@@ -787,6 +787,7 @@
     "syncNow": "Sync now",
     "syncNowQueued": "Payment sync queued.",
     "syncNowNotQueued": "Payment sync could not be queued. Try again shortly.",
+    "syncNowPullDisabled": "Payment sync is turned off for this connection. Turn on Payment sync to sync now.",
     "failedToSyncNow": "Failed to start a payment sync."
   },
   "securityIntegration": {

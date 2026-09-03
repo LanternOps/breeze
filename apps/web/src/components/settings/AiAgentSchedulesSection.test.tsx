@@ -17,7 +17,10 @@ vi.mock('../shared/Toast', () => ({
 }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 
-import AiAgentSchedulesSection from './AiAgentSchedulesSection';
+import AiAgentSchedulesSection, {
+  nextCronOccurrence,
+  parseFiveFieldCron,
+} from './AiAgentSchedulesSection';
 
 const json = (payload: unknown, ok = true, status = 200): Response =>
   ({ ok, status, statusText: 'OK', json: vi.fn().mockResolvedValue(payload) }) as unknown as Response;
@@ -173,6 +176,27 @@ describe('AiAgentSchedulesSection', () => {
     await waitFor(() => expect(mutations()).toHaveLength(1));
   });
 
+  // Review fix (#4187 UI critique, P1): the client accepted a cron the server's
+  // hourly floor (`isHourlyFloorCron`) refuses — a `*/15` minute field is a
+  // structurally valid five-field cron, but a partner with hundreds of orgs
+  // fanning that out is exactly the cost the floor exists to prevent.
+  it('disables Save and shows the hint when the minute field is not a literal or comma-list (hourly floor)', async () => {
+    mockList([]);
+    render(<AiAgentSchedulesSection {...partnerProps} />);
+
+    fireEvent.click(await screen.findByTestId('ai-agent-schedule-add'));
+
+    fireEvent.change(screen.getByTestId('ai-agent-schedule-cron'), { target: { value: '*/15 * * * *' } });
+    expect(screen.getByTestId('ai-agent-schedule-save')).toBeDisabled();
+    expect(screen.getByTestId('ai-agent-schedule-cron-invalid')).toBeInTheDocument();
+
+    // A comma-separated list of literal minutes is fine — only the operators
+    // that could fire more than hourly are refused.
+    fireEvent.change(screen.getByTestId('ai-agent-schedule-cron'), { target: { value: '0,15,30,45 * * * *' } });
+    expect(screen.getByTestId('ai-agent-schedule-save')).not.toBeDisabled();
+    expect(screen.queryByTestId('ai-agent-schedule-cron-invalid')).toBeNull();
+  });
+
   it('patches an existing baseline instead of creating a second one', async () => {
     mockList([BASELINE], () => json({ data: BASELINE }));
     render(<AiAgentSchedulesSection {...partnerProps} />);
@@ -228,6 +252,31 @@ describe('AiAgentSchedulesSection', () => {
     expect(screen.queryByTestId('ai-agent-schedule-edit-s-1')).toBeNull();
     expect(screen.queryByTestId('ai-agent-schedule-delete')).toBeNull();
     expect(screen.getByTestId('ai-agent-schedule-override-s-1')).toBeInTheDocument();
+  });
+
+  // Review fix (#4187 UI critique, P3): `load`'s dependency array omitted
+  // `orgId`, so switching the org switcher while this section stayed mounted
+  // never re-fetched — the operator kept looking at the PREVIOUS org's
+  // merged overrides until some unrelated prop change (or a remount) forced
+  // a reload.
+  it('refetches schedules when the selected org changes', async () => {
+    mockList([BASELINE]);
+    const { rerender } = render(<AiAgentSchedulesSection {...orgProps} />);
+    await waitFor(() => expect(screen.getByTestId('ai-agent-schedule-s-1')).toBeInTheDocument());
+
+    const getsBefore = fetchWithAuth.mock.calls.filter(
+      ([url]) => typeof url === 'string' && url.startsWith('/ai/agents/schedules?'),
+    ).length;
+    expect(getsBefore).toBeGreaterThan(0);
+
+    rerender(<AiAgentSchedulesSection {...orgProps} orgId="org-2" />);
+
+    await waitFor(() => {
+      const getsAfter = fetchWithAuth.mock.calls.filter(
+        ([url]) => typeof url === 'string' && url.startsWith('/ai/agents/schedules?'),
+      ).length;
+      expect(getsAfter).toBeGreaterThan(getsBefore);
+    });
   });
 
   it('creates an org override with the tighten-only wire shape and offers no kind the baseline lacks', async () => {
@@ -474,5 +523,192 @@ describe('AiAgentSchedulesSection', () => {
     expect(await screen.findByTestId('ai-agent-schedules-partner-only')).toBeInTheDocument();
     expect(screen.queryByTestId('ai-agent-schedule-add')).toBeNull();
     expect(fetchWithAuth).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #4187 UI critique — the next-run preview. Structural cron validity is the
+// only feedback a five-field expression used to give, so a typo'd day-of-week
+// read as a working schedule until it failed to fire.
+// ---------------------------------------------------------------------------
+
+describe('nextCronOccurrence / parseFiveFieldCron', () => {
+  // Every case is asserted on WALL-CLOCK parts read as UTC — that is exactly
+  // what the function returns (see its module comment).
+  const at = (iso: string) => Date.parse(iso);
+  const next = (cron: string, fromIso: string) => {
+    const fields = parseFiveFieldCron(cron);
+    expect(fields).not.toBeNull();
+    return nextCronOccurrence(fields!, at(fromIso))?.toISOString() ?? null;
+  };
+
+  it.each([
+    // daily at 03:00, before and after today's occurrence
+    ['0 3 * * *', '2026-09-02T01:10:00Z', '2026-09-02T03:00:00.000Z'],
+    ['0 3 * * *', '2026-09-02T03:00:00Z', '2026-09-03T03:00:00.000Z'],
+    // step, list and range forms
+    ['*/15 * * * *', '2026-09-02T01:07:00Z', '2026-09-02T01:15:00.000Z'],
+    ['0 6,18 * * *', '2026-09-02T07:00:00Z', '2026-09-02T18:00:00.000Z'],
+    ['0 6 * * 1-5', '2026-09-05T00:00:00Z', '2026-09-07T06:00:00.000Z'],
+    // 2026-09-02 is a Wednesday; Monday is the 7th.
+    ['0 7 * * 1', '2026-09-02T09:00:00Z', '2026-09-07T07:00:00.000Z'],
+    // day-of-week names, and 7 as a second spelling of Sunday
+    ['0 7 * * mon', '2026-09-02T09:00:00Z', '2026-09-07T07:00:00.000Z'],
+    ['0 7 * * 7', '2026-09-02T09:00:00Z', '2026-09-06T07:00:00.000Z'],
+    // month rollover, and a month name
+    ['0 0 1 * *', '2026-09-20T00:00:00Z', '2026-10-01T00:00:00.000Z'],
+    ['0 0 1 jan *', '2026-09-20T00:00:00Z', '2027-01-01T00:00:00.000Z'],
+    // Vixie rule: with BOTH day fields restricted, EITHER may match. The 4th
+    // is a Friday, so a Monday-or-the-4th cron fires on the 4th first.
+    ['0 5 4 * 1', '2026-09-02T00:00:00Z', '2026-09-04T05:00:00.000Z'],
+  ])('resolves %s from %s', (cron, from, expected) => {
+    expect(next(cron, from)).toBe(expected);
+  });
+
+  it('returns null for a structurally valid cron that can never fire', () => {
+    // 30 February. `isStructurallyValidCron` accepts it (both fields are in
+    // range) — only evaluation can tell the operator it will never run.
+    expect(next('0 0 30 2 *', '2026-09-02T00:00:00Z')).toBeNull();
+  });
+
+  it.each([
+    '', 'every morning', '0 6 * *', '0 6 * * * *', '60 6 * * *', '0 6 * * 8', '0 6 * * 5-1', '0 6 * * ',
+  ])('refuses to parse %s', (cron) => {
+    expect(parseFiveFieldCron(cron)).toBeNull();
+  });
+});
+
+describe('AiAgentSchedulesSection next-run preview', () => {
+  it('shows a next run beside the stored cron', async () => {
+    mockList([BASELINE]);
+    render(<AiAgentSchedulesSection {...partnerProps} />);
+
+    const line = await screen.findByTestId('ai-agent-schedule-next-run-s-1');
+    // The schedule's own zone is named, never the viewer's.
+    expect(line.textContent).toContain('America/New_York');
+    expect(line.textContent).toMatch(/\d/);
+  });
+
+  // Review fix (#4187 UI critique, P3): the preview used to render alongside
+  // the "Enter a valid five-field cron expression" banner, showing "Invalid
+  // schedule" twice for the same problem. Now the preview is withheld
+  // entirely while `cronValid` is false — the cron-invalid banner alone says
+  // the expression is bad, so the preview's OWN "invalid" variant is only
+  // reachable for a cron the hourly-floor/weekly-literal rules accept but
+  // that still fails cron-conditions.ts's stricter five-field evaluator.
+  it('hides the next-run preview once the cron fails validation, leaving only the cron-invalid message', async () => {
+    mockList([BASELINE]);
+    render(<AiAgentSchedulesSection {...partnerProps} />);
+
+    fireEvent.click(await screen.findByTestId('ai-agent-schedule-edit-s-1'));
+    expect(await screen.findByTestId('ai-agent-schedule-editor-next-run')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByTestId('ai-agent-schedule-cron'), { target: { value: 'every morning' } });
+
+    expect(await screen.findByTestId('ai-agent-schedule-cron-invalid')).toBeInTheDocument();
+    expect(screen.queryByTestId('ai-agent-schedule-editor-next-run')).toBeNull();
+    expect(screen.queryByTestId('ai-agent-schedule-editor-next-run-invalid')).toBeNull();
+    expect(screen.queryByTestId('ai-agent-schedule-editor-next-run-none')).toBeNull();
+
+    // Recovers once the expression is valid again.
+    fireEvent.change(screen.getByTestId('ai-agent-schedule-cron'), { target: { value: '0 3 * * *' } });
+    expect(await screen.findByTestId('ai-agent-schedule-editor-next-run')).toBeInTheDocument();
+  });
+
+  it('updates the preview live as a valid expression is edited', async () => {
+    mockList([BASELINE]);
+    render(<AiAgentSchedulesSection {...partnerProps} />);
+
+    fireEvent.click(await screen.findByTestId('ai-agent-schedule-edit-s-1'));
+    const before = (await screen.findByTestId('ai-agent-schedule-editor-next-run')).textContent;
+
+    fireEvent.change(screen.getByTestId('ai-agent-schedule-cron'), { target: { value: '17 4 * * *' } });
+
+    expect(screen.getByTestId('ai-agent-schedule-editor-next-run').textContent).not.toBe(before);
+  });
+
+  it('says so when a valid expression has no occurrence in the next year', async () => {
+    mockList([BASELINE]);
+    render(<AiAgentSchedulesSection {...partnerProps} />);
+
+    fireEvent.click(await screen.findByTestId('ai-agent-schedule-edit-s-1'));
+    fireEvent.change(await screen.findByTestId('ai-agent-schedule-cron'), { target: { value: '0 0 30 2 *' } });
+
+    expect(await screen.findByTestId('ai-agent-schedule-editor-next-run-none')).toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// onDirtyChange — what the parent form blocks its Save and its drawer on.
+// Review finding 3: dirtiness was `draft !== null`, so OPENING an editor to
+// read a schedule counted as unsaved work.
+// ---------------------------------------------------------------------------
+describe('AiAgentSchedulesSection unsaved-work reporting (#4187 UI critique round 2)', () => {
+  it('does not report an opened-but-unedited draft as dirty', async () => {
+    mockList([BASELINE]);
+    const onDirtyChange = vi.fn();
+    render(<AiAgentSchedulesSection {...partnerProps} onDirtyChange={onDirtyChange} />);
+
+    fireEvent.click(await screen.findByTestId('ai-agent-schedule-edit-s-1'));
+    await screen.findByTestId('ai-agent-schedule-editor');
+
+    expect(onDirtyChange).not.toHaveBeenCalledWith(true);
+  });
+
+  it('reports dirty on the first field change, for every editable field', async () => {
+    mockList([BASELINE]);
+    const onDirtyChange = vi.fn();
+    render(<AiAgentSchedulesSection {...partnerProps} onDirtyChange={onDirtyChange} />);
+
+    fireEvent.click(await screen.findByTestId('ai-agent-schedule-edit-s-1'));
+    fireEvent.change(await screen.findByTestId('ai-agent-schedule-cron'), { target: { value: '0 4 * * *' } });
+    expect(onDirtyChange).toHaveBeenCalledWith(true);
+
+    // The enabled toggle and the kind checkboxes are edits too — a guard that
+    // only watched the cron box would discard either without a word.
+    onDirtyChange.mockClear();
+    fireEvent.click(screen.getByTestId('ai-agent-schedule-cancel'));
+    expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+
+    fireEvent.click(screen.getByTestId('ai-agent-schedule-edit-s-1'));
+    fireEvent.click(await screen.findByTestId('ai-agent-schedule-enabled'));
+    expect(onDirtyChange).toHaveBeenLastCalledWith(true);
+
+    onDirtyChange.mockClear();
+    fireEvent.click(screen.getByTestId('ai-agent-schedule-cancel'));
+    fireEvent.click(screen.getByTestId('ai-agent-schedule-edit-s-1'));
+    fireEvent.click(await screen.findByTestId('ai-agent-schedule-kind-disk_pressure'));
+    expect(onDirtyChange).toHaveBeenLastCalledWith(true);
+  });
+
+  it('clears dirty when the draft is cancelled and when it saves', async () => {
+    mockList([BASELINE]);
+    const onDirtyChange = vi.fn();
+    render(<AiAgentSchedulesSection {...partnerProps} onDirtyChange={onDirtyChange} />);
+
+    fireEvent.click(await screen.findByTestId('ai-agent-schedule-edit-s-1'));
+    fireEvent.change(await screen.findByTestId('ai-agent-schedule-cron'), { target: { value: '0 4 * * *' } });
+    expect(onDirtyChange).toHaveBeenLastCalledWith(true);
+
+    fireEvent.click(screen.getByTestId('ai-agent-schedule-save'));
+    await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(false));
+  });
+
+  // Re-opening a draft after an edit must start clean: `touched` is per-draft,
+  // not per-mount, or the section would stay latched dirty forever after one
+  // keystroke anywhere.
+  it('starts clean again when a second draft is opened', async () => {
+    mockList([BASELINE]);
+    const onDirtyChange = vi.fn();
+    render(<AiAgentSchedulesSection {...partnerProps} onDirtyChange={onDirtyChange} />);
+
+    fireEvent.click(await screen.findByTestId('ai-agent-schedule-edit-s-1'));
+    fireEvent.change(await screen.findByTestId('ai-agent-schedule-cron'), { target: { value: '0 4 * * *' } });
+    fireEvent.click(screen.getByTestId('ai-agent-schedule-cancel'));
+
+    onDirtyChange.mockClear();
+    fireEvent.click(screen.getByTestId('ai-agent-schedule-edit-s-1'));
+    await screen.findByTestId('ai-agent-schedule-editor');
+    expect(onDirtyChange).not.toHaveBeenCalledWith(true);
   });
 });

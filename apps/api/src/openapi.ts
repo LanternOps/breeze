@@ -1266,7 +1266,10 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
           // 400s for a passwordless account and a too-weak new password. 401
           // is reserved for a dead bearer.
           '400': { $ref: '#/components/responses/BadRequest' },
-          '401': { $ref: '#/components/responses/Unauthorized' }
+          '401': { $ref: '#/components/responses/Unauthorized' },
+          // #4746: current-password guesses are metered per user (5 / 5 min),
+          // the same shared step-up limiter the MFA factor routes use.
+          '429': { $ref: '#/components/responses/TooManyRequests' }
         }
       }
     },

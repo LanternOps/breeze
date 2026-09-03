@@ -12,7 +12,7 @@ import type { PlatformBoundBasis } from '../db/schema/authenticatorDevices';
 import { authenticatorAttestationEnforced } from '../config/env';
 import { recordAuthenticatorL4Basis } from './anomalyMetrics';
 import { verifyApprovalAssertion } from './approverWebAuthn';
-import { verifyMobileSignature, consumeMobileAssertionNonce } from './mobileHwKey';
+import { verifyMobileSignature, consumeMobileAssertionNonce, toMobileKeyAlg } from './mobileHwKey';
 import { loadPartnerPolicy, isEnforcing } from './authenticatorPolicy';
 
 /**
@@ -479,10 +479,18 @@ async function verifyMobileFactor(
     throw new Error('mobile assertion nonce missing or mismatched');
   }
 
+  // The algorithm comes from the DEVICE ROW, never from the proof (#1374 W02):
+  // letting a caller pick how their own key is interpreted is the classic
+  // algorithm-confusion vector. An unrecognised stored label fails closed rather
+  // than defaulting to RSA — a row we cannot describe is a row we cannot verify.
+  const alg = toMobileKeyAlg(device.publicKeyAlg);
+  if (!alg) throw new Error('mobile authenticator device has an unsupported public_key_alg');
+
   const verified = verifyMobileSignature({
     publicKeySpkiB64: device.publicKey,
     payload: consumed.nonce,
     signatureB64: proof.signature,
+    alg,
   });
   if (!verified) throw new Error('mobile assertion signature verification failed');
 

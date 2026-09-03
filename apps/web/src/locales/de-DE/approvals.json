@@ -31,6 +31,16 @@
   "deciding": "Wird gesendet…",
   "expiresIn": "Läuft in {{minutes}} Min. ab",
   "expiresSoon": "Läuft in weniger als einer Minute ab",
+  "expired": "Abgelaufen",
+  "unknownOrganization": "Unbekannte Organisation",
+  "charCount": "{{count}}/{{max}}",
+  "approveToast": "{{action}} für {{org}} genehmigt",
+  "pagination": {
+    "showing": "{{shown}} von {{total}} werden angezeigt",
+    "showingCount": "{{shown}} werden angezeigt",
+    "loadMore": "Mehr laden",
+    "loadMoreError": "Weitere Elemente konnten nicht geladen werden. Versuchen Sie es erneut."
+  },
   "errors": {
     "noApproverDevice": "Registrieren Sie in Ihrem Profil ein Genehmigungsgerät und versuchen Sie es erneut.",
     "notSoleApprover": "Eine andere berechtigte Person muss diese Anfrage genehmigen.",

@@ -10,10 +10,29 @@ import { isTicketOpen, ticketStatusLabel, ticketStatusTone } from './ticketMarks
 interface TicketListProps {
   tickets: TicketSummary[];
   error?: string | null;
+  enableSupportUsage?: boolean;
 }
 
+const SLA_LABELS = {
+  breached: 'SLA breached',
+  at_risk: 'SLA at risk',
+  paused: 'SLA paused',
+  on_track: 'SLA on track',
+  met: 'SLA met',
+  not_configured: 'No SLA configured',
+} as const;
 
-export function TicketList({ tickets, error }: TicketListProps) {
+export function TicketSlaBadge({
+  sla,
+  testId,
+}: {
+  sla: TicketSummary['sla'];
+  testId: string;
+}) {
+  return <span data-testid={testId}>{SLA_LABELS[sla.status]}</span>;
+}
+
+export function TicketList({ tickets, error, enableSupportUsage = false }: TicketListProps) {
   if (error) {
     return <ErrorNotice>{error}</ErrorNotice>;
   }
@@ -76,6 +95,12 @@ export function TicketList({ tickets, error }: TicketListProps) {
                       <StatusMark tone={tone}>
                         {ticketStatusLabel(ticket.status)}
                       </StatusMark>
+                      {enableSupportUsage && ticket.sla && (
+                        <TicketSlaBadge
+                          sla={ticket.sla}
+                          testId={`portal-ticket-sla-${ticket.id}`}
+                        />
+                      )}
                     </td>
                     <td className={cn(CELL, 'order-3')}>
                       {/* Priority is context, not state: plain text so the row

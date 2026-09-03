@@ -21,3 +21,9 @@ describe('formatTimeAgo', () => {
     expect(formatTimeAgo('2026-07-11T11:58:00Z')).toBe('há 2 minutos');
   });
 });
+
+describe('formatTimeAgo invalid input', () => {
+  it('returns a placeholder instead of throwing on an unparseable timestamp', () => {
+    expect(formatTimeAgo('not-a-date')).toBe('—');
+  });
+});

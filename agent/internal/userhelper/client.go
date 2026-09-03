@@ -787,11 +787,38 @@ func (c *Client) executeScript(cmd ipc.IPCCommand) ipc.IPCCommandResult {
 		status = "failed"
 	}
 
-	resultJSON, err := json.Marshal(map[string]any{
+	// #2698: extract from RAW stdout, BEFORE SanitizeOutput, exactly like the
+	// main-agent local-executor path (handlers_script.go). This IS the raw
+	// output — the helper is the process that actually ran the script — so
+	// doing the extraction here, rather than after the IPC round trip, is
+	// required: forwarding SanitizeOutput'd stdout to the main agent and
+	// extracting there would corrupt any marker whose JSON contains a
+	// token/secret/password-shaped key before extraction ever saw it,
+	// silently degrading every runAs:user script to the pre-Wave-3 gap this
+	// feature exists to close.
+	customFields, cleanedStdout := executor.ExtractCustomFields(result.Stdout)
+	if strings.Contains(cleanedStdout, executor.CustomFieldMarker) {
+		// A marker-prefixed line survived extraction: rejected by one of
+		// ExtractCustomFields' caps or unparseable. Left visible in stdout by
+		// design; logged here too so it's diagnosable from agent logs, not just
+		// by reading persisted script output.
+		log.Warn("script printed a custom-field marker that was not applied (parse failure or cap exceeded)",
+			"commandId", cmd.CommandID)
+	}
+
+	resultPayload := map[string]any{
 		"exitCode": result.ExitCode,
-		"stdout":   executor.SanitizeOutput(result.Stdout),
+		"stdout":   executor.SanitizeOutput(cleanedStdout),
 		"stderr":   executor.SanitizeOutput(result.Stderr),
-	})
+	}
+	if len(customFields) > 0 {
+		resultPayload["customFieldWrites"] = map[string]any{
+			"schemaVersion": 1,
+			"fields":        customFields,
+		}
+	}
+
+	resultJSON, err := json.Marshal(resultPayload)
 	if err != nil {
 		return ipc.IPCCommandResult{
 			CommandID: cmd.CommandID,

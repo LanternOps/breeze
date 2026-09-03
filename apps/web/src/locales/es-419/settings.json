@@ -1,4 +1,76 @@
 {
+  "aiAgentsRuns": {
+    "live": {
+      "label": "Actualizando en vivo"
+    },
+    "list": {
+      "clearFilters": "Borrar filtros",
+      "emptyDescription": "Las ejecuciones activadas por alertas, horarios, tickets y acciones manuales aparecerán aquí una vez que un agente las ejecute.",
+      "emptyFilteredDescription": "Ninguna ejecución coincide con estos filtros. Prueba con otro agente o estado.",
+      "emptyConfigureLink": "Configurar agentes de IA",
+      "columns": {
+        "started": "Iniciado",
+        "duration": "Duración"
+      },
+      "showCost": "Mostrar costo",
+      "hideCost": "Ocultar costo"
+    },
+    "detail": {
+      "notFoundDescription": "Es posible que esta ejecución se haya eliminado, o que el enlace esté desactualizado.",
+      "summary": {
+        "title": "Lo que encontró el agente"
+      },
+      "findings": {
+        "badge_one": "{{count}} hallazgo por revisar",
+        "badge_other": "{{count}} hallazgos por revisar"
+      },
+      "evidence": {
+        "labels": {
+          "mountPoint": "Unidad",
+          "serviceName": "Nombre del servicio",
+          "configName": "Trabajo de respaldo",
+          "usedPercent": "Usado (%)",
+          "percentUsed": "Usado (%)",
+          "freeGb": "Libre (GB)",
+          "totalGb": "Capacidad (GB)",
+          "lastSeenAt": "Visto por última vez",
+          "lastSeenDays": "Días desde la última vez visto",
+          "checkedAt": "Comprobado",
+          "cveIds": "ID de CVE",
+          "cveCount": "Cantidad de CVE",
+          "osType": "Tipo de SO",
+          "openCriticalCount": "CVE críticos abiertos"
+        }
+      },
+      "sweep": {
+        "caption": "Una fila por cada problema que encontró este barrido, con la acción que propuso.",
+        "reviewPermissions": "Revisar permisos del agente"
+      },
+      "trace": {
+        "description": "Cada llamada a herramienta que el agente propuso, ejecutó o tuvo denegada, en orden.",
+        "emptyDescription": "Las llamadas a herramientas que el agente proponga o ejecute se mostrarán aquí."
+      },
+      "ledger": {
+        "description": "Solo las llamadas que realmente se ejecutaron, con su duración y cualquier error.",
+        "emptyDescription": "Las herramientas que el agente realmente invocó se mostrarán aquí.",
+        "statuses": {
+          "pending": "Pendiente",
+          "approved": "Aprobado",
+          "executing": "Ejecutando",
+          "completed": "Completado",
+          "failed": "Fallido",
+          "rejected": "Rechazado"
+        }
+      },
+      "intents": {
+        "emptyDescription": "Las aprobaciones solicitadas por esta ejecución se mostrarán aquí."
+      },
+      "triage": {
+        "categoryLabel": "Categoría",
+        "categoryUnresolved": "Sugerido — nombre no disponible en esta vista"
+      }
+    }
+  },
   "partnerServicePrincipals": {
     "title": "Principales de servicio",
     "description": "Administra identidades de máquina a nivel de partner y sus claves de acceso.",
@@ -1380,7 +1452,7 @@
       "deleteOverride": "Quitar excepción",
       "confirmDelete": "Confirmar eliminación",
       "cron": "Expresión cron",
-      "cronHint": "Cinco campos: minuto hora día-del-mes mes día-de-la-semana. Por ejemplo, 0 3 * * * se ejecuta todos los días a las 03:00.",
+      "cronHint": "Cinco campos: minuto hora día-del-mes mes día-de-la-semana. Por ejemplo, 0 3 * * * se ejecuta todos los días a las 03:00. El campo de minutos debe ser un número literal o una lista separada por comas (sin *, / ni rango -); los horarios se ejecutan como máximo cada hora.",
       "cronInvalid": "Ingresa una expresión cron válida de cinco campos antes de guardar.",
       "timezone": "Zona horaria",
       "kinds": {
@@ -1400,6 +1472,9 @@
       "tightenOnly": "Una excepción solo puede restringir la línea base: puede desactivar el barrido o quitar comprobaciones, nunca agregarlas.",
       "noKinds": "Sin comprobaciones",
       "lastRun": "Última ejecución {{at}} · {{admitted}} de {{total}} organizaciones barridas, {{skipped}} omitidas.",
+      "nextRun": "Próxima ejecución {{at}} ({{timezone}})",
+      "nextRunInvalid": "Programación no válida",
+      "nextRunNone": "No hay ninguna ejecución en el próximo año.",
       "kindLabels": {
         "disk_pressure": "Presión de disco",
         "stale_agents": "Agentes obsoletos",
@@ -1432,10 +1507,54 @@
     "title": "Agentes de IA",
     "description": "Trabajadores de IA con nombre y una política. Los partners definen la línea base; las organizaciones solo pueden restringirla.",
     "empty": "Aún no hay agentes.",
+    "kindHints": {
+      "triage": "Investiga las alertas nuevas y propone qué hacer con ellas.",
+      "patch": "Revisa los parches faltantes y propone qué instalar.",
+      "helpdesk": "Toma tickets y propone respuestas y próximos pasos."
+    },
+    "emptyState": {
+      "title": "Aún no hay agentes",
+      "description": "Un agente es una política guardada, no un proceso en ejecución: observa las alertas, los parches o los tickets que elija, investiga con las herramientas que permita y luego propone una solución o la ejecuta. Empiece en modo sombra, donde el agente propone y una persona aprueba, así nada llega a un dispositivo hasta que usted lo diga.",
+      "action": "Cree su primer agente"
+    },
+    "modeChoice": {
+      "legend": "Qué puede hacer este agente",
+      "off": "Apagado",
+      "offConsequence": "No se ejecuta nada.",
+      "shadow": "Sombra",
+      "shadowConsequence": "Observa y propone; una persona aprueba todo.",
+      "act": "Actuación",
+      "actConsequence": "Ejecuta las operaciones permitidas sin un clic. No hay reversión automática.",
+      "actUnavailable": "Todavía no está disponible para este agente."
+    },
     "allOrgs": "Todas las organizaciones",
     "allOrgsHint": "Para todo el partner: se aplica a cada organización, salvo que una organización la restrinja.",
     "stateEnabled": "Habilitado",
     "stateDisabled": "Deshabilitado",
+    "lastRun": {
+      "never": "Nunca se ejecutó",
+      "at": "Última ejecución {{at}}"
+    },
+    "disableDialog": {
+      "title": "¿Deshabilitar {{name}}?",
+      "message": "Las ejecuciones futuras se detienen, las programaciones asociadas dejan de dispararse y las anulaciones de organización de este agente dejan de aplicarse. Una ejecución en curso continúa hasta su límite de tiempo.",
+      "retained": "El historial de ejecuciones y la evidencia se conservan. Puede volver a habilitar el agente más tarde desde la lista de deshabilitados; regresa apagado."
+    },
+    "unsavedSchedule": {
+      "closeBlocked": "Guarde o cancele la programación que está editando antes de cerrar este editor.",
+      "discardTitle": "¿Descartar la programación sin guardar?",
+      "discardMessage": "La programación que estaba editando no se guardó. Al cerrar el editor se descartan esos cambios. El agente en sí no cambia.",
+      "discardConfirm": "Descartar programación"
+    },
+    "disabledSection": {
+      "title": "Deshabilitados",
+      "hint": "Se conservan por su historial de ejecuciones. Al volver a habilitar uno, regresa apagado para que pueda revisar su política antes de que se ejecute de nuevo.",
+      "disabledAt": "Deshabilitado el {{at}}"
+    },
+    "allDisabled": {
+      "title": "Todos los agentes están deshabilitados",
+      "description": "No se está ejecutando nada. Vuelva a habilitar uno abajo o cree un agente nuevo."
+    },
     "errors": {
       "load": "No se pudieron cargar los agentes.",
       "kindExists": "Ya existe un agente de este tipo para este propietario. Edite el existente o deshabilítelo primero.",
@@ -1444,7 +1563,8 @@
       "actMissingRecipient": "Agregue al menos un destinatario de notificación antes de habilitar el modo Actuar.",
       "actMissingTool": "Permita al menos una herramienta apta para el modo Actuar, o autorice un script, antes de habilitarlo.",
       "invalidSupervisedActionKeys": "Una o más acciones seleccionadas no se pueden autorizar mediante la política.",
-      "supervisedKeyRejected": "{{key}}: {{reason}}"
+      "supervisedKeyRejected": "{{key}}: {{reason}}",
+      "notDisabled": "Ese agente ya está activo."
     },
     "actions": {
       "add": "Nuevo agente",
@@ -1452,19 +1572,24 @@
       "save": "Guardar",
       "cancel": "Cancelar",
       "disable": "Deshabilitar",
-      "confirmDisable": "Confirmar deshabilitación"
+      "confirmDisable": "Confirmar deshabilitación",
+      "reenable": "Volver a habilitar",
+      "runs": "Ejecuciones"
     },
     "toasts": {
       "saved": "Agente guardado",
       "saveFailed": "No se pudo guardar el agente.",
       "disabled": "Agente deshabilitado",
-      "disableFailed": "No se pudo deshabilitar el agente."
+      "disableFailed": "No se pudo deshabilitar el agente.",
+      "reenabled": "Agente habilitado de nuevo",
+      "reenableFailed": "No se pudo volver a habilitar el agente."
     },
     "issues": {
       "name": "Asigne un nombre al agente.",
       "severities": "Seleccione al menos una severidad de alerta.",
       "org": "Seleccione una organización antes de crear un agente propio de la organización.",
-      "allKindsTaken": "Todos los tipos de agente ya tienen un agente para este propietario. Edite uno existente."
+      "allKindsTaken": "Todos los tipos de agente ya tienen un agente para este propietario. Edite uno existente.",
+      "unsavedSchedule": "Tiene una programación sin guardar. Guárdela o cancélela antes de guardar el agente."
     },
     "editor": {
       "newTitle": "Nuevo agente",
@@ -1477,8 +1602,11 @@
     "sections": {
       "scope": "Cuándo se ejecuta",
       "permissions": "Permisos",
+      "permissionsDescription": "Qué puede tocar este agente. La lista de herramientas amplía lo que puede hacer; los recursos protegidos la limitan y siempre prevalecen.",
       "policyDecide": "Autorización de política no supervisada",
       "limits": "Límites",
+      "limitsBudget": "Presupuesto y alcance",
+      "limitsTiming": "Tiempos",
       "notifications": "Notificaciones",
       "instructions": "Instrucciones"
     },
@@ -1528,6 +1656,8 @@
       "maxFleetPercentPerDay": "Porción máx. de la flota por día (%)",
       "cooldownSeconds": "Enfriamiento por dispositivo (segundos)",
       "recipientRolesHint": "Roles que se notifican cuando este agente propone algo.",
+      "recipientRolesPartner": "Roles del partner",
+      "recipientRolesOrganization": "Roles de la organización",
       "recipientRolesEmpty": "No hay roles disponibles.",
       "instructionsHint": "Solo orientación: tono, qué revisar primero, convenciones internas. Nunca otorga permisos.",
       "charactersLeft": "Quedan {{count}} caracteres",
@@ -1536,7 +1666,13 @@
       "supervisedActionKeysEmpty": "No hay acciones decidibles por política registradas.",
       "supervisedActionKeysFailed": "No se pudo cargar la lista de acciones decidibles por política, así que la autorización no supervisada no se puede cambiar en este momento.",
       "ticketAutonomousWrites": "Escrituras autónomas de tickets",
-      "ticketAutonomousWritesHint": "Solo anulación de la organización — las escrituras autónomas de tickets requieren el modo de actuación y esta activación a nivel de organización"
+      "ticketAutonomousWritesHint": "Solo anulación de la organización — las escrituras autónomas de tickets requieren el modo de actuación y esta activación a nivel de organización",
+      "enabledHint": "«Habilitado» y el modo son interruptores distintos y una ejecución necesita los dos: con esto apagado no se ejecuta nada sin importar el modo, y en modo Apagado no se ejecuta nada aunque esto esté encendido.",
+      "enabledCreateHint": "Los agentes nuevos se crean apagados. Revise la lista de herramientas permitidas y los límites de abajo, y encienda esto cuando quiera que el agente empiece a ejecutarse.",
+      "actKeysCleared": "Los permisos del modo de actuación se conservan, pero no se guardarán a menos que este agente vuelva al modo de actuación.",
+      "toolSuggestLabel": "Agregar una herramienta conocida",
+      "toolSuggestHint": "Las sugerencias vienen del registro de acciones decidibles por política, que no es la lista completa de herramientas. Cualquier otra que este agente pueda usar todavía se puede escribir arriba.",
+      "toolSuggestAdd": "Agregar"
     },
     "loading": "Cargando agentes…",
     "runs": {
@@ -1781,6 +1917,7 @@
       "refresh": "Actualizar",
       "refreshing": "Reconstruyendo…",
       "retry": "Reintentar",
+      "moreActions": "Más acciones",
       "errors": {
         "load": "No se pudo cargar el informe de impacto.",
         "rebuild": "No se pudo poner en cola la reconstrucción del informe.",
@@ -1793,6 +1930,15 @@
         "rebuildComplete": "El informe de impacto se reconstruyó.",
         "rebuildStillRunning": "La reconstrucción sigue en curso. Vuelva a cargar esta página en unos minutos para ver las cifras nuevas."
       },
+      "emptyState": {
+        "title": "Aún no hay resultados de IA en este período",
+        "description": "Los resultados aparecerán aquí en cuanto sus agentes de IA evalúen una alerta, clasifiquen un ticket o ejecuten una corrección en modo de observación o de acción. Amplíe el período de informe arriba, o configure un agente para comenzar.",
+        "action": "Configurar un agente"
+      },
+      "tileGroups": {
+        "judged": "Evaluados",
+        "executed": "Ejecutados"
+      },
       "tiles": {
         "alertsJudged": "Alertas evaluadas",
         "noiseFlagged": "Marcadas como ruido",
@@ -1800,9 +1946,12 @@
         "draftsSent": "Borradores enviados",
         "fixesExecuted": "Correcciones ejecutadas",
         "promoteEligible": "Operaciones aptas para promoción",
-        "promoteEligibleHint": "Operaciones con evidencia suficiente y sin fallas para autorizarse previamente. Abre Configuración → Agentes de IA para revisarlas y promoverlas.",
+        "promoteEligibleCaption": "Operaciones con evidencia suficiente y sin fallas para autorizarse previamente. Abre Configuración → Agentes de IA para revisarlas y promoverlas.",
         "estTimeSaved": "Tiempo ahorrado estimado",
-        "estTimeSavedValue": "{{hours}} horas",
+        "estTimeSavedValue_one": "{{hours}} hora",
+        "estTimeSavedValue_other": "{{hours}} horas",
+        "estTimeSavedCaption": "Basado en tiempos fijos por resultado. Edita las ponderaciones para ajustarlo.",
+        "howEstimatedToggle": "¿Cómo se estima esto?",
         "llmSpend": "Gasto en LLM"
       },
       "weightsTooltipTitle": "Solo es una estimación: a cada resultado se le acredita un tiempo fijo:",
@@ -1836,19 +1985,25 @@
         }
       },
       "freshness": "Datos hasta {{through}} (UTC) · reconstruido {{rebuiltAt}}",
-      "freshnessNeverRebuilt": "Datos hasta {{through}} (UTC) · nunca reconstruido",
+      "freshnessNeverRebuilt": "Aún no se generó — la primera reconstrucción se ejecuta esta noche",
       "positiveFeedbackRate": "Tasa de comentarios positivos",
       "positiveFeedbackDetail": "{{up}} útiles, {{down}} no útiles",
       "editWeights": "Editar ponderaciones",
       "exportPdf": "Exportar PDF",
       "weightsDrawer": {
         "title": "Editar ponderaciones de tiempo ahorrado",
-        "description": "Define cuántos segundos de tiempo humano se acreditan a cada resultado. Estas ponderaciones solo cambian la estimación, nunca lo que hacen tus agentes de IA.",
+        "description": "Define cuántos minutos de tiempo humano se acreditan a cada resultado. Estas ponderaciones solo cambian la estimación, nunca lo que hacen tus agentes de IA.",
+        "unitSuffix": "min.",
+        "preview": "Tiempo estimado ahorrado en esta ventana: {{from}} → {{to}}",
         "save": "Guardar",
         "saving": "Guardando…",
         "reset": "Restablecer valores predeterminados",
         "resetting": "Restableciendo…",
         "customized": "Personalizado",
+        "resetConfirm": {
+          "title": "¿Restablecer las ponderaciones a los valores predeterminados?",
+          "message": "Las seis ponderaciones vuelven a sus valores predeterminados, y el tiempo estimado ahorrado en esta página cambia para reflejarlo."
+        },
         "errors": {
           "save": "No se pudieron guardar las ponderaciones.",
           "reset": "No se pudieron restablecer las ponderaciones."
@@ -1876,7 +2031,7 @@
           "through": "Datos hasta (UTC)",
           "rebuiltAt": "Última reconstrucción"
         },
-        "weightRowLabel": "{{label}} (segundos acreditados)",
+        "weightRowLabel": "{{label}} (minutos acreditados)",
         "neverRebuilt": "Nunca reconstruido"
       }
     },
@@ -1886,6 +2041,8 @@
       "loading": "Cargando la evidencia de graduación…",
       "error": "No se pudo cargar la evidencia de graduación.",
       "retry": "Reintentar",
+      "noBaselineTitle": "Todavía no hay un agente base",
+      "noBaseline": "El seguimiento de graduación comienza cuando existe un agente base de todo el partner de este tipo. Crea uno con el alcance \"Todas las organizaciones\" para empezar a registrar evidencia de esta organización.",
       "orgRequired": "Elige una sola organización en el selector de organizaciones para ver su evidencia de graduación.",
       "empty": "Todavía no se registró evidencia para este agente.",
       "readOnlyNote": "La ejecución preautorizada está desactivada en esta instalación; estas cifras son solo informativas.",
@@ -1894,6 +2051,22 @@
       "approvalsLink": "Seguir esta solicitud en la bandeja de aprobaciones",
       "ceilingHint": "Las claves del nivel de socio son un techo, no una concesión. El agente de cada organización debe recibir la clave por separado: mediante la graduación o editando el agente de esa organización.",
       "promote": "Promover",
+      "revoke": "Revocar",
+      "emptyTitle": "Todavía no hay evidencia",
+      "demotedAt": "Revocado el {{at}}",
+      "demotedReason": "Motivo: {{reason}}",
+      "demoteReasons": {
+        "attempted_failure": "un intento falló",
+        "recurrence": "la alerta que corrigió volvió a aparecer",
+        "operator": "una persona operadora lo revocó"
+      },
+      "revokeConfirm": {
+        "title": "Revocar la preautorización",
+        "message": "{{opKey}} vuelve a la cola de aprobación del agente de esta organización. Una ejecución en curso no se ve afectada; cada una posterior vuelve a necesitar una decisión humana.",
+        "action": "Revocar",
+        "reasonLabel": "Motivo (opcional)",
+        "reasonHint": "Se registra en la entrada de auditoría de esta revocación. Hasta 500 caracteres."
+      },
       "verifiedOfThreshold": "{{verified}} de {{threshold}}",
       "columns": {
         "opKey": "Operación",
@@ -1924,11 +2097,17 @@
         "action": "Solicitar aprobación"
       },
       "toasts": {
-        "requested": "Preautorización solicitada. Una segunda persona debe aprobarla antes de que esta operación se ejecute sin supervisión, y se aplica solo a ejecuciones futuras."
+        "requested": "Preautorización solicitada. Una segunda persona debe aprobarla antes de que esta operación se ejecute sin supervisión, y se aplica solo a ejecuciones futuras.",
+        "revoked": "Preautorización revocada. Esta operación vuelve a necesitar una decisión humana a partir de la próxima ejecución."
       },
       "errors": {
         "promote": "No se pudo presentar la solicitud de preautorización.",
-        "policyDecideDisabled": "La ejecución preautorizada está desactivada en esta instalación, así que esta operación no puede promoverse."
+        "policyDecideDisabled": "La ejecución preautorizada está desactivada en esta instalación, así que esta operación no puede promoverse.",
+        "revoke": "No se pudo revocar la preautorización.",
+        "noPromotedGrant": "Esta operación no está preautorizada para esta organización, así que no hay nada que revocar.",
+        "alreadyDemoted": "Esta operación ya está de vuelta en la cola de aprobación.",
+        "alreadyRevoked": "Esta operación ya se había quitado del agente, así que nada cambió.",
+        "ambiguousOpKey": "Más de un agente tiene esta operación para esta organización. Abra el agente que quiera cambiar y revóquela allí."
       },
       "reliability": {
         "caption": "Operaciones del modo de acción, solo lectura: no son claves de política, así que nunca pueden preautorizarse."
@@ -3879,7 +4058,8 @@
     },
     "columns": {
       "key": "Clave",
-      "deviceTypes": "Tipos de dispositivos"
+      "deviceTypes": "Tipos de dispositivos",
+      "scriptWrite": "Escritura desde script"
     },
     "fieldTypes": {
       "text": {
@@ -3933,7 +4113,9 @@
       "patternPlaceholder": "por ejemplo, ^[A-Z]{2}-\\d{4}$",
       "deviceTypes": "Tipos de dispositivos (opcional)",
       "deviceTypesHelp": "Déjelo vacío para mostrarlo en todos los tipos de dispositivos",
-      "requiredField": "Campo requerido"
+      "requiredField": "Campo requerido",
+      "scriptWrite": "Permitir que los scripts escriban en este campo",
+      "scriptWriteHelp": "Los scripts que se ejecutan en un dispositivo pueden establecer este campo imprimiendo ::breeze:custom-fields:: {\"key\": \"value\"}. El valor también aparece en la salida guardada del script; nunca escriba un secreto de esta manera."
     },
     "delete": {
       "title": "Eliminar campo personalizado",

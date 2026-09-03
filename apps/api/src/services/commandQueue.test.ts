@@ -766,6 +766,48 @@ describe('command queue service', () => {
     }));
   });
 
+  // #3525 behavioural pin for AUDITED_COMMANDS membership: stopping someone
+  // else's running script on a customer endpoint must leave a dispatch audit
+  // row, exactly as the run it interrupts does. AUDITED_COMMANDS is
+  // module-private, so a source-text assertion elsewhere would not prove the
+  // audit is actually written — only this does.
+  it('writes an audit log when queueing script_cancel', async () => {
+    const auditValues = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(db.insert)
+      .mockReturnValueOnce({
+        values: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: 'cancel-cmd-1' }]),
+        }),
+      } as any)
+      .mockReturnValueOnce({ values: auditValues } as any);
+
+    const schema = await import('../db/schema');
+    vi.mocked(db.select).mockImplementation((() => ({
+      from: vi.fn((table: unknown) => ({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue(
+            table === schema.devices
+              ? [{ orgId: 'org-9', hostname: 'host-9' }]
+              : [{ id: 'user-9' }],
+          ),
+        }),
+      })),
+    })) as any);
+
+    await queueCommand('dev-9', CommandTypes.SCRIPT_CANCEL, { executionId: 'orig-cmd-1' }, 'user-9');
+
+    // The audit block is fire-and-forget, so it settles after queueCommand.
+    await vi.waitFor(() => expect(auditValues).toHaveBeenCalled());
+    expect(auditValues).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'agent.command.script_cancel',
+      actorId: 'user-9',
+      resourceType: 'device',
+      resourceId: 'dev-9',
+      orgId: 'org-9',
+      result: 'dispatched',
+    }));
+  });
+
   it('should return pending commands for a device', async () => {
     const commands = [{ id: 'cmd-5' }, { id: 'cmd-6' }];
     vi.mocked(db.select).mockReturnValue({
