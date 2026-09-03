@@ -2,6 +2,7 @@ package collectors
 
 import (
 	"context"
+	"log/slog"
 	"sort"
 	"strings"
 	"sync"
@@ -13,6 +14,12 @@ import (
 const (
 	sessionRefreshInterval = 5 * time.Minute
 	maxIdleMinutes         = 10080 // submitSessionsSchema caps idleMinutes at 7 days
+
+	// maxBufferedSessionEvents bounds the in-memory event backlog. Events are
+	// tiny, but a device whose uploads keep failing must not grow the buffer
+	// without limit, so the oldest are shed once the cap is reached — loudly,
+	// because shedding them is real data loss (#3529).
+	maxBufferedSessionEvents = 1024
 )
 
 type UserSession struct {
@@ -127,6 +134,13 @@ func (c *SessionCollector) LastUser() string {
 	return last.Username
 }
 
+// DrainEvents removes and returns up to max buffered events, oldest first.
+//
+// The caller owns the returned events until the server confirms receipt; a
+// failed upload must hand them back via RequeueEvents, or they are lost — the
+// API never learns they existed and nothing re-derives them (#3529). A backlog
+// larger than max keeps its remainder buffered for the next cycle rather than
+// being discarded.
 func (c *SessionCollector) DrainEvents(max int) []UserSessionEvent {
 	if max <= 0 {
 		max = 256
@@ -145,11 +159,45 @@ func (c *SessionCollector) DrainEvents(max int) []UserSessionEvent {
 		return out
 	}
 
-	// Keep newest max events and drop older backlog.
-	start := len(c.events) - max
-	out := append([]UserSessionEvent(nil), c.events[start:]...)
-	c.events = c.events[:0]
+	out := append([]UserSessionEvent(nil), c.events[:max]...)
+	c.events = append(c.events[:0], c.events[max:]...)
 	return out
+}
+
+// RequeueEvents returns previously drained events to the front of the buffer so
+// the next upload retries them.
+//
+// No dedupe is required: DrainEvents removes what it hands out, so a requeued
+// event cannot still be buffered, and anything appended while the upload was in
+// flight is a distinct, newer observation. Concurrent drains get disjoint
+// batches under the same lock, so requeuing one cannot duplicate another.
+func (c *SessionCollector) RequeueEvents(events []UserSessionEvent) {
+	if len(events) == 0 {
+		return
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	restored := make([]UserSessionEvent, 0, len(events)+len(c.events))
+	restored = append(restored, events...)
+	restored = append(restored, c.events...)
+	c.events = restored
+	c.trimEventsLocked()
+}
+
+// trimEventsLocked sheds the oldest events once the buffer exceeds its cap.
+// Callers must hold c.mu.
+func (c *SessionCollector) trimEventsLocked() {
+	if len(c.events) <= maxBufferedSessionEvents {
+		return
+	}
+
+	dropped := len(c.events) - maxBufferedSessionEvents
+	c.events = append(c.events[:0], c.events[dropped:]...)
+	slog.Warn("session event backlog exceeded buffer, dropped oldest events",
+		"dropped", dropped,
+		"buffered", len(c.events))
 }
 
 func (c *SessionCollector) refreshSessions(now time.Time) {
@@ -265,9 +313,7 @@ func (c *SessionCollector) applyEvent(event sessionbroker.SessionEvent, now time
 		ActivityState: mapEventState(event.Type),
 	})
 
-	if len(c.events) > 1024 {
-		c.events = c.events[len(c.events)-1024:]
-	}
+	c.trimEventsLocked()
 }
 
 func inferSessionType(session sessionbroker.DetectedSession) string {
