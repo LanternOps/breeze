@@ -1,6 +1,7 @@
 import { and, eq } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { scriptExecutions } from '../db/schema/scripts';
+import { envInt } from '../utils/envInt';
 import { captureException } from './sentry';
 
 /**
@@ -35,7 +36,10 @@ export const MAX_GRACE_SECONDS = 30;
  * it and records `unconfirmed`. Measured from DELIVERY, not from the request:
  * an undelivered cancel is the generic command reaper's problem, not this one's.
  */
-export const CANCEL_GRACE_MS = Number(process.env.CANCEL_GRACE_MS ?? 90_000);
+// envInt, not `Number(process.env.X ?? default)`: compose maps an unset
+// variable as an EMPTY STRING, and `Number('')` is 0 — which would make the
+// sweep give up on every cancel the instant it was delivered (#2823 guard).
+export const CANCEL_GRACE_MS = envInt('CANCEL_GRACE_MS', 90_000);
 
 /** Statuses from which a cancel may be requested. */
 export const CANCELLABLE_STATUSES = ['pending', 'queued', 'running'] as const;
