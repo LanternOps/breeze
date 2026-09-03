@@ -1,6 +1,8 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { CUSTOM_ORG_REWRITE_TABLES } from '../routes/devices/core';
 import {
+  applyTicketChildLockOrder,
   TICKET_CHILD_ORG_REWRITE_LOCK_ORDER,
   TICKET_ORG_DENORMALIZED_TABLES,
 } from './ticketOrgMoveLockOrder';
@@ -106,5 +108,112 @@ describe('ticket child-table org-rewrite lock order (#4657)', () => {
     ] as const) {
       expect(new Set(tables).size, `${axis} contains a duplicate entry`).toBe(tables.length);
     }
+  });
+});
+
+/**
+ * Org-merge third-walker contract (#4748).
+ *
+ * `orgMerge.ts` computes its table walk from `topologicalCascadeOrder()`
+ * (tenantCascade.ts) reversed. That function ties on alphabetical order for
+ * tables with no FK between them, and the six tables above are exactly such
+ * a set (see the FK note in ticketOrgMoveLockOrder.ts) — so left alone, the
+ * merge visits them in reverse-alphabetical order, which disagrees with the
+ * canonical lock order the two movers share. `fenceLoser()`'s app-layer fence
+ * is the only thing keeping a merge and an in-flight move apart; a move that
+ * starts before the fence lands can still contend under AB-BA ordering
+ * (40P01).
+ *
+ * `applyTicketChildLockOrder` is the fix: given any walk order, it leaves
+ * every other table's position untouched and permutes only the ticket child
+ * tables' own slots into canonical relative order. These tests pin its
+ * behavior directly (no DB needed — it's a pure array transform) and then
+ * grep orgMerge.ts's source to prove both of its walk-order computations
+ * actually call it, so a future edit that reintroduces a bare
+ * `[...(await topologicalCascadeOrder())].reverse()` fails here rather than
+ * only under Integration Tests.
+ */
+describe('org-merge walk order honors the canonical ticket child-table lock order (#4748)', () => {
+  it('demonstrates the gap: naive reverse-alphabetical tie-break disagrees with canonical order', () => {
+    // This is exactly what topologicalCascadeOrder() reversed produces for a
+    // set of siblings with no FK between them (alphabetical tie-break,
+    // reversed) — see the SCOPE note in ticketOrgMoveLockOrder.ts. It must
+    // NOT equal the canonical order, or this whole fix would be moot.
+    const naiveMergeOrder = [...canonical].sort().reverse();
+    expect(naiveMergeOrder).not.toEqual(canonical);
+  });
+
+  it('reorders only the ticket child tables, in place, to canonical order', () => {
+    const walkOrder = [
+      'organizations',
+      'tickets',
+      'unrelated_table',
+      'time_entries',
+      'ticket_parts',
+      'ticket_outbox',
+      'ticket_email_links',
+      'ticket_attachments',
+      'ticket_alert_links',
+      'users',
+    ];
+    const fixed = applyTicketChildLockOrder(walkOrder);
+
+    // Every non-ticket-child table stays at its original index.
+    expect(fixed[0]).toBe('organizations');
+    expect(fixed[1]).toBe('tickets');
+    expect(fixed[2]).toBe('unrelated_table');
+    expect(fixed[9]).toBe('users');
+
+    // The six ticket-child slots (indices 3-8) now read out in canonical
+    // relative order.
+    expect(fixed.slice(3, 9)).toEqual(canonical);
+
+    // Same multiset of tables — nothing added, nothing dropped.
+    expect([...fixed].sort()).toEqual([...walkOrder].sort());
+  });
+
+  it('is a no-op when the ticket child tables are already in canonical order', () => {
+    const walkOrder = ['tickets', ...canonical, 'users'];
+    expect(applyTicketChildLockOrder(walkOrder)).toEqual(walkOrder);
+  });
+
+  it('handles a subset of the ticket child tables without touching the rest', () => {
+    const walkOrder = ['tickets', 'ticket_alert_links', 'time_entries', 'users'];
+    // Only time_entries and ticket_alert_links present; canonical says
+    // time_entries comes first.
+    expect(applyTicketChildLockOrder(walkOrder)).toEqual([
+      'tickets',
+      'time_entries',
+      'ticket_alert_links',
+      'users',
+    ]);
+  });
+
+  it('orgMerge.ts routes BOTH of its walk-order computations through applyTicketChildLockOrder', () => {
+    // Static contract, not a behavior test: if a future edit adds a second
+    // raw computation site or has a walk-order consumer bypass
+    // getOrgMergeWalkOrder(), this fails in the unit job instead of only
+    // manifesting as a live 40P01 under load.
+    const source = readFileSync(new URL('./orgMerge.ts', import.meta.url), 'utf8');
+    const bareReverse = /\[\.\.\.\(await topologicalCascadeOrder\(\)\)\]\.reverse\(\)/g;
+    expect(
+      source.match(bareReverse) ?? [],
+      'expected exactly ONE raw `[...(await topologicalCascadeOrder())].reverse()` in ' +
+        'orgMerge.ts — the single definition inside getOrgMergeWalkOrder(). A second raw ' +
+        'occurrence means a walk-order consumer bypassed the applyTicketChildLockOrder fix (#4748).',
+    ).toHaveLength(1);
+
+    const walkOrderCalls = source.match(/await getOrgMergeWalkOrder\(\)/g) ?? [];
+    expect(
+      walkOrderCalls.length,
+      'expected orgMerge.ts to compute its walk order via getOrgMergeWalkOrder() at both ' +
+        'consumption sites (the main merge transaction and the preview) — a different count ' +
+        'means one of them reverted to a raw topologicalCascadeOrder().reverse() (#4748).',
+    ).toBe(2);
+
+    expect(
+      source.includes('applyTicketChildLockOrder('),
+      'getOrgMergeWalkOrder() no longer calls applyTicketChildLockOrder — the #4748 fix was removed.',
+    ).toBe(true);
   });
 });
