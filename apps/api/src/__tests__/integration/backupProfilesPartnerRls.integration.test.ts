@@ -240,13 +240,23 @@ function partnerContext(partnerId: string, orgIds: string[]): DbAccessContext {
   };
 }
 
-function orgContext(orgId: string): DbAccessContext {
+/**
+ * An ORG-scoped session. `currentPartnerId` mirrors what
+ * `buildDbAccessContext` (middleware/auth.ts) actually puts on an org token —
+ * the token's OWN partner, populated for every scope and distinct from
+ * `accessiblePartnerIds`, which stays empty for org scope. It is what the
+ * `*_partner_wide_select` read branch (#2468) keys on, so a test that omits it
+ * is exercising the AGENT context shape (currentPartnerId null), not an org
+ * token's, and any "org scope sees nothing" assertion under it is vacuous.
+ */
+function orgContext(orgId: string, currentPartnerId: string | null = null): DbAccessContext {
   return {
     scope: 'organization',
     orgId,
     accessibleOrgIds: [orgId],
     accessiblePartnerIds: [],
     userId: null,
+    currentPartnerId,
   };
 }
 
@@ -299,12 +309,20 @@ describe('backup_profiles RLS — dual-axis (2026-07-13 migration)', () => {
     ).rejects.toMatchObject({ cause: { code: '42501' } });
   });
 
-  it('org scope can INSERT/SELECT an org profile but cannot see a partner-wide one', async () => {
+  // #2468 flipped the second half of this. It used to assert org scope could
+  // not see a partner-wide profile — but the fixture never set
+  // `currentPartnerId`, so it was asserting the AGENT context shape and passed
+  // for the wrong reason. `backup_profiles_partner_wide_select`
+  // (2026-10-05-110000-config-policy-partner-wide-select.sql) now grants an org
+  // token a SELECT-only view of its OWN partner's partner-wide profiles. Org
+  // tokens still never pass `breeze_has_partner_access`, so every WRITE path is
+  // exactly as strict as before.
+  it('org scope can INSERT/SELECT an org profile and READ (not write) its partner’s partner-wide one', async () => {
     const partner = await createPartner();
     const org = await createOrganization({ partnerId: partner.id });
     const partnerProfileId = await seedPartnerProfile(partner.id);
 
-    const inserted = await withDbAccessContext(orgContext(org.id), () =>
+    const inserted = await withDbAccessContext(orgContext(org.id, partner.id), () =>
       db
         .insert(backupProfiles)
         .values({ name: 'Org profile', orgId: org.id, partnerId: null, selections: SERVER_SELECTIONS })
@@ -313,12 +331,33 @@ describe('backup_profiles RLS — dual-axis (2026-07-13 migration)', () => {
     if (inserted[0]) createdProfiles.push(inserted[0].id);
     expect(inserted).toHaveLength(1);
 
-    // RLS is stricter than the app layer: org tokens never pass
-    // breeze_has_partner_access even though they carry a partnerId.
-    const partnerVisibleToOrg = await withDbAccessContext(orgContext(org.id), () =>
+    const partnerVisibleToOrg = await withDbAccessContext(orgContext(org.id, partner.id), () =>
       db.select({ id: backupProfiles.id }).from(backupProfiles).where(eq(backupProfiles.id, partnerProfileId)),
     );
-    expect(partnerVisibleToOrg).toEqual([]);
+    expect(partnerVisibleToOrg.map((r) => r.id)).toEqual([partnerProfileId]);
+
+    // FOR SELECT only — RLS filters the write's target rows silently, so the
+    // row COUNT is the assertion that has teeth.
+    const updated = await withDbAccessContext(orgContext(org.id, partner.id), () =>
+      db
+        .update(backupProfiles)
+        .set({ name: 'HIJACKED' })
+        .where(eq(backupProfiles.id, partnerProfileId))
+        .returning({ id: backupProfiles.id }),
+    );
+    expect(updated).toEqual([]);
+  });
+
+  it('org scope of a DIFFERENT partner still cannot see a partner-wide profile', async () => {
+    const owner = await createPartner();
+    const other = await createPartner();
+    const otherOrg = await createOrganization({ partnerId: other.id });
+    const partnerProfileId = await seedPartnerProfile(owner.id);
+
+    const visible = await withDbAccessContext(orgContext(otherOrg.id, other.id), () =>
+      db.select({ id: backupProfiles.id }).from(backupProfiles).where(eq(backupProfiles.id, partnerProfileId)),
+    );
+    expect(visible).toEqual([]);
   });
 
   it('the one-owner CHECK rejects BOTH axes and NEITHER axis', async () => {
