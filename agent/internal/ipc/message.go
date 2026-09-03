@@ -237,12 +237,21 @@ type IPCCommandResult struct {
 }
 
 // NotifyRequest asks the user helper to show a desktop notification.
+//
+// Actions turns it into an interactive prompt: a helper that understands them
+// renders a modal dialog with those buttons and answers with the clicked label
+// in NotifyResult.ActionClicked. Both Actions and TimeoutMs are optional and
+// omitempty, so an OLD helper still unmarshals the request and shows its plain
+// toast, and a NEW helper on an old agent simply never receives any actions.
 type NotifyRequest struct {
 	Title   string   `json:"title"`
 	Body    string   `json:"body"`
 	Icon    string   `json:"icon,omitempty"`
 	Urgency string   `json:"urgency,omitempty"`
 	Actions []string `json:"actions,omitempty"`
+	// TimeoutMs is how long the helper should hold an interactive prompt open
+	// before giving up and reporting no decision. Ignored when Actions is empty.
+	TimeoutMs int `json:"timeoutMs,omitempty"`
 }
 
 // NotifyResult is the user helper's response after showing a notification.
