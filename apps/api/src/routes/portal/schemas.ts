@@ -39,6 +39,12 @@ export type PortalAuthContext = {
   };
   token: string;
   authMethod: 'bearer' | 'cookie';
+  /**
+   * Org -> partner -> UTC timezone chain, resolved once by
+   * `portalAuthMiddleware` (`services/portal/timezone.ts`). Read models must
+   * never resolve this themselves — they consume `auth.timezone`.
+   */
+  timezone: string;
 };
 
 declare module 'hono' {

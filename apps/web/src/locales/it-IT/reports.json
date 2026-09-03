@@ -187,13 +187,9 @@
       "template": "Template",
       "templates": {
         "alert_summary": { "description": "Avvisi principali, trend di gravità e carico di risposta.", "name": "Report riepilogo avvisi" },
-        "billing_usage": { "description": "Utilizzo licenze, fasce di consumo e riepiloghi di riaddebito.", "name": "Report fatturazione/utilizzo" },
         "device_health": { "description": "Andamento CPU, memoria e uptime con punteggio sullo stato dei dispositivi.", "name": "Report stato dispositivi" },
         "executive_summary": { "description": "KPI di alto livello, profilo di rischio e trend strategici per la dirigenza.", "name": "Riepilogo direzionale" },
-        "patch_compliance": { "description": "Copertura patch, aggiornamenti scaduti e stato della correzione.", "name": "Report conformità patch" },
-        "security_compliance_posture": { "description": "Evidenze pronte per assicurazione/verifica: copertura EDR, crittografia, firewall, patching, vulnerabilità, accesso privilegiato e integrazioni di sicurezza con riepiloghi percentuali di implementazione.", "name": "Stato di sicurezza e conformità (assicurazione)" },
-        "sla_compliance": { "description": "Aderenza SLA, rischio di violazione e tempi di risposta.", "name": "Report conformità SLA" },
-        "technician_activity": { "description": "Volume ticket, interventi sui dispositivi e velocità di risoluzione.", "name": "Report attività tecnici" }
+        "security_compliance_posture": { "description": "Evidenze pronte per assicurazione/verifica: copertura EDR, crittografia, firewall, patching, vulnerabilità, accesso privilegiato e integrazioni di sicurezza con riepiloghi percentuali di implementazione.", "name": "Stato di sicurezza e conformità (assicurazione)" }
       },
       "title": "Template report",
       "useTemplate": "Usa template",

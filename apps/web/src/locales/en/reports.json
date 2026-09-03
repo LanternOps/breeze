@@ -849,10 +849,6 @@
           "description": "Top alerts, severity trends, and response workload.",
           "name": "Alert Summary Report"
         },
-        "billing_usage": {
-          "description": "License utilization, usage tiers, and chargeback summaries.",
-          "name": "Billing/Usage Report"
-        },
         "device_health": {
           "description": "CPU, memory, and uptime trends with device health scoring.",
           "name": "Device Health Report"
@@ -861,21 +857,9 @@
           "description": "High-level KPIs, risk posture, and strategic trends for leadership.",
           "name": "Executive Summary"
         },
-        "patch_compliance": {
-          "description": "Patch coverage, overdue updates, and remediation status.",
-          "name": "Patch Compliance Report"
-        },
         "security_compliance_posture": {
           "description": "Insurance/vetting-ready evidence: EDR coverage, encryption, firewall, patching, vulnerabilities, privileged access, and security integrations with percent-implemented rollups.",
           "name": "Security & Compliance Posture (Insurance)"
-        },
-        "sla_compliance": {
-          "description": "SLA adherence, breach risk, and response timelines.",
-          "name": "SLA Compliance Report"
-        },
-        "technician_activity": {
-          "description": "Ticket volume, device touches, and resolution velocity.",
-          "name": "Technician Activity Report"
         }
       },
       "title": "Report Templates",

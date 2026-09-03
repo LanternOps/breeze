@@ -102,6 +102,7 @@ function app(orgId = ORG_ID, authMethod: 'bearer' | 'cookie' = 'bearer') {
       // do not read it, so the null (contact-less login) case is stated.
       user: { id: 'pu1', orgId, email: 'c@example.test', name: 'Cust', contactId: null, receiveNotifications: true, status: 'active' },
       token: 't', authMethod,
+      timezone: 'UTC',
     });
     await next();
   });

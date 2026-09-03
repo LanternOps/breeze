@@ -36,6 +36,7 @@ export async function partnerGuard(c: Context, next: Next) {
       db
         .select({
           status: partners.status,
+          trustState: partners.trustState,
           settings: partners.settings,
           emailVerifiedAt: partners.emailVerifiedAt,
           paymentMethodAttachedAt: partners.paymentMethodAttachedAt,
@@ -79,6 +80,7 @@ export async function partnerGuard(c: Context, next: Next) {
       try {
         await withSystemDbAccessContext(() => activatePartnerRow(db, partnerId!));
         console.warn(`[PartnerGuard] reconciled stranded pending partner ${partnerId} → active (#718)`);
+        c.set('trustState', partner.trustState);
         return next();
       } catch (err) {
         // Reconciliation is best-effort: if the activation write fails we fall
@@ -102,5 +104,6 @@ export async function partnerGuard(c: Context, next: Next) {
     }, 403);
   }
 
+  c.set('trustState', partner.trustState);
   return next();
 }

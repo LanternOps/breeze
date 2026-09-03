@@ -1053,6 +1053,7 @@
     },
     "toasts": {
       "inviteSent": "Invitación enviada",
+      "inviteSentAmbiguousContact": "Invitación enviada, pero no se pudo vincular ningún contacto porque varios contactos comparten este correo electrónico. Este usuario no verá los tickets enviados por correo hasta que se vincule un contacto.",
       "pendingInvited": "Usuario(s) pendiente(s) {{count}} invitado(s)",
       "inviteResent": "invitar a resentir",
       "reactivated": "Usuario reactivado",

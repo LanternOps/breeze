@@ -10,10 +10,12 @@ import { Hono } from 'hono';
  * and a system token with no partner context has no org to provision into.
  */
 
-const { getOrCreateQuickSupportOrg, logSessionAudit, getTrustedClientIp } = vi.hoisted(() => ({
+const { getOrCreateQuickSupportOrg, logSessionAudit, getTrustedClientIp, evaluateCapability, partnerTrustMode } = vi.hoisted(() => ({
   getOrCreateQuickSupportOrg: vi.fn(() => Promise.resolve({ orgId: 'qs-org', siteId: 'qs-site' })),
   logSessionAudit: vi.fn(() => Promise.resolve()),
   getTrustedClientIp: vi.fn(() => '203.0.113.7'),
+  evaluateCapability: vi.fn(async (): Promise<any> => ({ allow: true })),
+  partnerTrustMode: vi.fn(() => 'off'),
 }));
 
 const { endSupportSession } = vi.hoisted(() => ({
@@ -30,6 +32,18 @@ vi.mock('../../services/quickSupportOrg', () => ({ getOrCreateQuickSupportOrg })
 vi.mock('../../services/quickSupportEnd', () => ({ endSupportSession }));
 vi.mock('./helpers', () => ({ logSessionAudit }));
 vi.mock('../../services/clientIp', () => ({ getTrustedClientIp }));
+vi.mock('../../config/partnerTrustMode', () => ({ partnerTrustMode }));
+vi.mock('../../services/partnerTrust', () => ({
+  evaluateCapability,
+  partnerIdForDevice: vi.fn(),
+  trustDenyBody: (d: Record<string, unknown>, reviewRequested: boolean) => ({
+    error: d.code,
+    capability: d.capability,
+    reason: d.reason,
+    reviewRequested,
+    meetingUrl: null,
+  }),
+}));
 
 // Scripted select results, consumed in call order.
 const selectResults: unknown[][] = [];
@@ -153,6 +167,26 @@ describe('POST /support-sessions', () => {
     expect((insertedValues[0] as { codeHash: string }).codeHash).toBe(hashSupportCode(raw));
     expect(body.landingUrl).toBe(`https://us.2breeze.app/quick?code=${raw}`);
     expect((insertedValues[0] as { orgId: string }).orgId).toBe('qs-org');
+  });
+
+  it('maps partner-trust denial to a 403 without inserting', async () => {
+    partnerTrustMode.mockReturnValueOnce('enforce');
+    evaluateCapability.mockResolvedValueOnce({
+      allow: false,
+      code: 'TRUST_PROBATION',
+      capability: 'remote_control',
+      reason: 'probation_default_deny',
+    });
+
+    const res = await buildApp().request('/support-sessions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual(expect.objectContaining({ error: 'TRUST_PROBATION' }));
+    expect(insertedValues).toHaveLength(0);
   });
 
   it('never returns the code hash to the caller', async () => {

@@ -1053,6 +1053,7 @@
     },
     "toasts": {
       "inviteSent": "Einladung gesendet",
+      "inviteSentAmbiguousContact": "Einladung gesendet, aber es konnte kein Kontakt verknüpft werden – mehrere Kontakte teilen sich diese E-Mail-Adresse. Dieser Benutzer sieht keine per E-Mail eingereichten Tickets, bis ein Kontakt verknüpft ist.",
       "pendingInvited": "Eingeladene {{count}} ausstehende(r) Benutzer",
       "inviteResent": "Einladung erneut gesendet",
       "reactivated": "Benutzer reaktiviert",

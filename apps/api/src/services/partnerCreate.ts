@@ -10,6 +10,7 @@ import {
   sites,
 } from '../db/schema';
 import type { PartnerStatus } from '../db/schema/orgs';
+import { partnerTrustMode } from '../config/partnerTrustMode';
 import { seedSystemTicketStatuses } from './ticketConfigService';
 import type { Tx as AuthLifecycleTransaction } from './authLifecycle';
 
@@ -77,6 +78,7 @@ export async function createPartner(
         type: 'msp',
         plan: 'free',
         status: input.status,
+        ...(partnerTrustMode() === 'enforce' ? { trustState: 'probation' as const } : {}),
         billingEmail: normalizedEmail,
         mcpOrigin,
         mcpOriginIp: mcpOrigin ? (input.origin as { ip?: string }).ip ?? null : null,

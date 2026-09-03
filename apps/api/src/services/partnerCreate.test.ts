@@ -109,6 +109,43 @@ beforeEach(() => {
 });
 
 describe('createPartner', () => {
+  it('writes probation only when hosted partner trust enforcement is enabled', async () => {
+    const previousIsHosted = process.env.IS_HOSTED;
+    const previousMode = process.env.PARTNER_TRUST_MODE;
+    try {
+      process.env.IS_HOSTED = 'true';
+      process.env.PARTNER_TRUST_MODE = 'enforce';
+      await createPartner({
+        orgName: 'Enforced',
+        adminEmail: 'enforced@example.com',
+        adminName: 'Enforced',
+        passwordHash: 'hashed',
+        origin: { mcp: false },
+        status: 'active',
+      });
+      const enforcedInsert = insertCalls.find((c) => (c.table as any).__t === 'partners')!;
+      expect(enforcedInsert.values).toHaveProperty('trustState', 'probation');
+
+      insertCalls = [];
+      process.env.PARTNER_TRUST_MODE = 'shadow';
+      await createPartner({
+        orgName: 'Shadow',
+        adminEmail: 'shadow@example.com',
+        adminName: 'Shadow',
+        passwordHash: 'hashed',
+        origin: { mcp: false },
+        status: 'active',
+      });
+      const shadowInsert = insertCalls.find((c) => (c.table as any).__t === 'partners')!;
+      expect(shadowInsert.values).not.toHaveProperty('trustState');
+    } finally {
+      if (previousIsHosted === undefined) delete process.env.IS_HOSTED;
+      else process.env.IS_HOSTED = previousIsHosted;
+      if (previousMode === undefined) delete process.env.PARTNER_TRUST_MODE;
+      else process.env.PARTNER_TRUST_MODE = previousMode;
+    }
+  });
+
   it('uses a caller transaction without opening a nested transaction', async () => {
     const input = {
       orgName: 'Outer Transaction',

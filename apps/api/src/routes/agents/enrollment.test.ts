@@ -63,7 +63,12 @@ vi.mock('../../db/schema', () => ({
   deviceHardware: { deviceId: 'deviceId', serialNumber: 'serialNumber' },
   deviceNetwork: { deviceId: 'deviceId', macAddress: 'macAddress' },
   organizations: { id: 'id', partnerId: 'partnerId' },
-  partners: { id: 'id', maxDevices: 'maxDevices' },
+  partners: {
+    id: 'id',
+    maxDevices: 'maxDevices',
+    trustState: 'trustState',
+    probationEnrollments: 'probationEnrollments',
+  },
   supportSessions: {
     id: 'supportSessions.id',
     status: 'supportSessions.status',
@@ -127,6 +132,21 @@ vi.mock('../../services/deviceIdentityCollisionAlert', () => ({
   raiseDeviceIdentityCollisionAlert: vi.fn(async () => 'alert-1'),
 }));
 
+vi.mock('../../config/partnerTrustMode', () => ({
+  partnerTrustMode: vi.fn(() => 'off'),
+}));
+
+vi.mock('../../services/partnerTrust', () => ({
+  evaluateCapability: vi.fn(async () => ({ allow: true })),
+  trustDenyBody: vi.fn((decision: Record<string, unknown>, reviewRequested: boolean) => ({
+    error: decision.code,
+    capability: decision.capability,
+    reason: decision.reason,
+    reviewRequested,
+    meetingUrl: null,
+  })),
+}));
+
 // ---------- imports after mocks ----------
 
 import { db, withSystemDbAccessContext } from '../../db';
@@ -137,7 +157,14 @@ import * as manifestSigning from '../../services/manifestSigning';
 import { getTrustedClientIp } from '../../services/clientIp';
 import { queueWarrantySyncForDevice } from '../../services/warrantyWorker';
 import { raiseDeviceIdentityCollisionAlert } from '../../services/deviceIdentityCollisionAlert';
-import { devices as devicesTable, supportSessions as supportSessionsTable } from '../../db/schema';
+import { partnerTrustMode } from '../../config/partnerTrustMode';
+import { evaluateCapability } from '../../services/partnerTrust';
+import {
+  devices as devicesTable,
+  enrollmentKeys as enrollmentKeysTable,
+  partners as partnersTable,
+  supportSessions as supportSessionsTable,
+} from '../../db/schema';
 import { enrollmentRoutes } from './enrollment';
 
 function buildApp(): Hono {
@@ -332,6 +359,173 @@ describe('POST /agents/enroll — backup server URL delivery (#2288)', () => {
   it('omits/empty backupServerUrl when env unset', async () => {
     const body = await enrollOk();
     expect(body.backupServerUrl ?? '').toBe('');
+  });
+});
+
+describe('POST /agents/enroll — partner trust probation enrollment counter (Task 4.4)', () => {
+  function arrangeEnrollment() {
+    mockKeyLookup({
+      id: 'key-trust',
+      orgId: 'org-trust',
+      siteId: 'site-trust',
+      keySecretHash: null,
+      expiresAt: new Date(Date.now() + 3600_000),
+      maxUsage: null,
+      usageCount: 0,
+      supportSessionId: null,
+    });
+    mockSelectRows([{ partnerId: 'partner-trust' }]);
+    mockSelectRows([{ maxDevices: null }]);
+    mockSelectRows([]);
+  }
+
+  function installTrustTransaction(trustRow: {
+    trustState: 'probation' | 'trusted';
+    probationEnrollments: number;
+  }) {
+    const forUpdate = vi.fn().mockResolvedValue([trustRow]);
+    const select = vi.fn().mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ for: forUpdate }),
+      }),
+    });
+    const insertedDevice = {
+      id: 'device-trust',
+      orgId: 'org-trust',
+      siteId: 'site-trust',
+      hostname: 'host-1',
+    };
+    const insertedTables: unknown[] = [];
+    const updateCalls: Array<{ table: unknown; values: Record<string, unknown> }> = [];
+
+    vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn({
+      select,
+      update: vi.fn((table: unknown) => ({
+        set: vi.fn((values: Record<string, unknown>) => {
+          updateCalls.push({ table, values });
+          const returning = table === enrollmentKeysTable
+            ? vi.fn().mockResolvedValue([{ id: 'key-trust' }])
+            : vi.fn().mockResolvedValue([]);
+          return {
+            where: vi.fn(() => Object.assign(Promise.resolve(undefined), { returning })),
+          };
+        }),
+      })),
+      insert: vi.fn((table: unknown) => {
+        insertedTables.push(table);
+        return {
+          values: vi.fn(() => ({
+            returning: vi.fn().mockResolvedValue([insertedDevice]),
+            onConflictDoUpdate: vi.fn().mockResolvedValue(undefined),
+          })),
+        };
+      }),
+      delete: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
+    }));
+
+    return { forUpdate, select, insertedTables, updateCalls };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    delete process.env.AGENT_ENROLLMENT_SECRET;
+    process.env.NODE_ENV = 'test';
+    vi.mocked(partnerTrustMode).mockReturnValue('enforce');
+    vi.mocked(evaluateCapability).mockResolvedValue({ allow: true });
+  });
+
+  afterEach(() => {
+    vi.mocked(partnerTrustMode).mockReturnValue('off');
+  });
+
+  it('denies the sixth probation enrollment with the trust contract and no device insert', async () => {
+    arrangeEnrollment();
+    const tx = installTrustTransaction({ trustState: 'probation', probationEnrollments: 5 });
+    vi.mocked(evaluateCapability).mockResolvedValue({
+      allow: false,
+      code: 'TRUST_PROBATION',
+      capability: 'agent_enroll',
+      reason: 'probation_enrollment_cap',
+    });
+
+    const resp = await buildApp().request('/agents/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(baseEnrollBody),
+    });
+
+    expect(resp.status).toBe(403);
+    expect(await resp.json()).toEqual({
+      error: 'TRUST_PROBATION',
+      capability: 'agent_enroll',
+      reason: 'probation_enrollment_cap',
+      reviewRequested: false,
+      meetingUrl: null,
+    });
+    expect(tx.forUpdate).toHaveBeenCalledWith('update');
+    expect(evaluateCapability).toHaveBeenCalledWith('agent_enroll', {
+      partnerId: 'partner-trust',
+      orgId: 'org-trust',
+      detail: { probationEnrollments: 5 },
+    });
+    expect(tx.insertedTables).not.toContain(devicesTable);
+    expect(writeAuditEvent).toHaveBeenCalledWith(expect.anything(), {
+      orgId: 'org-trust',
+      action: 'agent.enroll',
+      resourceType: 'device',
+      result: 'denied',
+      details: { reason: 'probation_enrollment_cap' },
+    });
+  });
+
+  it('serializes and increments the fifth probation enrollment before inserting the device', async () => {
+    arrangeEnrollment();
+    const tx = installTrustTransaction({ trustState: 'probation', probationEnrollments: 4 });
+
+    const resp = await buildApp().request('/agents/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(baseEnrollBody),
+    });
+
+    expect(resp.status).toBe(201);
+    expect(tx.insertedTables).toContain(devicesTable);
+    const partnerUpdate = tx.updateCalls.find((call) => call.table === partnersTable);
+    expect(partnerUpdate).toBeDefined();
+    expect(JSON.stringify(partnerUpdate?.values.probationEnrollments)).toContain('+ 1');
+  });
+
+  it('locks but does not increment a trusted partner', async () => {
+    arrangeEnrollment();
+    const tx = installTrustTransaction({ trustState: 'trusted', probationEnrollments: 5 });
+
+    const resp = await buildApp().request('/agents/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(baseEnrollBody),
+    });
+
+    expect(resp.status).toBe(201);
+    expect(tx.forUpdate).toHaveBeenCalledWith('update');
+    expect(evaluateCapability).not.toHaveBeenCalled();
+    expect(tx.updateCalls.some((call) => call.table === partnersTable)).toBe(false);
+  });
+
+  it('does not issue the partner SELECT FOR UPDATE when trust mode is off', async () => {
+    vi.mocked(partnerTrustMode).mockReturnValue('off');
+    arrangeEnrollment();
+    const tx = installTrustTransaction({ trustState: 'probation', probationEnrollments: 5 });
+
+    const resp = await buildApp().request('/agents/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(baseEnrollBody),
+    });
+
+    expect(resp.status).toBe(201);
+    expect(tx.select).not.toHaveBeenCalled();
+    expect(tx.forUpdate).not.toHaveBeenCalled();
+    expect(evaluateCapability).not.toHaveBeenCalled();
   });
 });
 

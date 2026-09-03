@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
+const { assertDeviceExecuteAllowedMock } = vi.hoisted(() => ({
+  assertDeviceExecuteAllowedMock: vi.fn(async () => undefined),
+}));
+
 vi.mock('../../db', () => ({
   runOutsideDbContext: vi.fn((fn) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
@@ -79,11 +83,17 @@ vi.mock('../../services/clientIp', () => ({
   getTrustedClientIpOrUndefined: vi.fn(() => '127.0.0.1'),
 }));
 
+vi.mock('../../services/partnerTrust.commands', async () => ({
+  ...(await vi.importActual<typeof import('../../services/partnerTrust.commands')>('../../services/partnerTrust.commands')),
+  assertDeviceExecuteAllowed: assertDeviceExecuteAllowedMock,
+}));
+
 import { commandsRoutes } from './commands';
 import { db } from '../../db';
 import { getDeviceWithOrgCheck } from './helpers';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { dispatchWake } from '../../services/wakeOnLan';
+import { TrustDeniedError } from '../../services/partnerTrust.commands';
 
 describe('device commands routes', () => {
   let app: Hono;
@@ -131,6 +141,42 @@ describe('device commands routes', () => {
           message: 'Cannot send commands to a decommissioned device.',
         },
       ]);
+      expect(assertDeviceExecuteAllowedMock).toHaveBeenCalledWith(
+        '11111111-1111-1111-1111-111111111111',
+        'reboot',
+        'user-123',
+      );
+    });
+
+    it('reports trust-denied devices per-device without inserting or aborting the bulk request', async () => {
+      const deniedId = '11111111-1111-1111-1111-111111111111';
+      const allowedId = '22222222-2222-2222-2222-222222222222';
+      vi.mocked(getDeviceWithOrgCheck)
+        .mockResolvedValueOnce({ id: deniedId, orgId: 'org-123', hostname: 'denied', status: 'online' } as never)
+        .mockResolvedValueOnce({ id: allowedId, orgId: 'org-123', hostname: 'allowed', status: 'online' } as never);
+      assertDeviceExecuteAllowedMock
+        .mockRejectedValueOnce(new TrustDeniedError('TRUST_PROBATION', 'Partner verification is required.', deniedId, 'reboot'))
+        .mockResolvedValueOnce(undefined);
+      vi.mocked(db.insert).mockReturnValueOnce({
+        values: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{
+            id: 'cmd-allowed', deviceId: allowedId, type: 'reboot', status: 'pending', createdAt: new Date(),
+          }]),
+        }),
+      } as never);
+
+      const res = await app.request('/devices/bulk/commands', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ deviceIds: [deniedId, allowedId], type: 'reboot' }),
+      });
+
+      expect(res.status).toBe(201);
+      expect(await res.json()).toMatchObject({
+        commands: [{ deviceId: allowedId }],
+        failed: [{ deviceId: deniedId, code: 'TRUST_PROBATION', message: 'Partner verification is required.' }],
+      });
+      expect(db.insert).toHaveBeenCalledTimes(1);
     });
 
     it('bulk refresh_inventory dedups already-pending devices, skips silently (caught by @xxiaoxiong on #831)', async () => {
@@ -636,6 +682,30 @@ describe('device commands routes', () => {
   });
 
   describe('POST /devices/:id/commands', () => {
+    it('returns the shared trust denial body without inserting', async () => {
+      vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce({
+        id: 'device-a', orgId: 'org-123', hostname: 'host-a', status: 'online',
+      } as never);
+      assertDeviceExecuteAllowedMock.mockRejectedValueOnce(
+        new TrustDeniedError('TRUST_RESTRICTED', 'Partner access is restricted.', 'device-a', 'reboot'),
+      );
+
+      const res = await app.request('/devices/device-a/commands', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ type: 'reboot' }),
+      });
+
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({
+        error: 'TRUST_RESTRICTED',
+        capability: 'device_execute',
+        reason: 'Partner access is restricted.',
+        reviewRequested: false,
+      });
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
     it('writes sanitized command payload details to audit logs', async () => {
       vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce({
         id: 'device-a',
@@ -1083,6 +1153,25 @@ describe('device commands routes', () => {
     });
 
   describe('POST /devices/:id/auto-update', () => {
+    it('returns a trust denial without inserting an auto-update command', async () => {
+      vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce({
+        id: 'device-a', orgId: 'org-123', hostname: 'test-host', status: 'online',
+      } as never);
+      assertDeviceExecuteAllowedMock.mockRejectedValueOnce(
+        new TrustDeniedError('TRUST_PROBATION', 'Partner verification is required.', 'device-a', 'set_auto_update'),
+      );
+
+      const res = await app.request('/devices/device-a/auto-update', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: true }),
+      });
+
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({ error: 'TRUST_PROBATION', capability: 'device_execute' });
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
     it('queues set_auto_update command when enabled=true', async () => {
       vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce({
         id: 'device-a',

@@ -5,6 +5,9 @@ import canonical from '../../../../packages/shared/src/fixtures/pam-lifetime-v2-
 const { executeMock } = vi.hoisted(() => ({
   executeMock: vi.fn(),
 }));
+const { assertDeviceExecuteAllowedMock } = vi.hoisted(() => ({
+  assertDeviceExecuteAllowedMock: vi.fn(async () => undefined),
+}));
 
 vi.mock('bullmq', () => ({ Queue: class {}, Worker: class {}, Job: class {} }));
 vi.mock('../db', () => ({
@@ -13,8 +16,13 @@ vi.mock('../db', () => ({
 }));
 vi.mock('../services/redis', () => ({ getBullMQConnection: () => ({}) }));
 vi.mock('../services/sentry', () => ({ captureException: vi.fn() }));
+vi.mock('../services/partnerTrust.commands', async () => ({
+  ...(await vi.importActual<typeof import('../services/partnerTrust.commands')>('../services/partnerTrust.commands')),
+  assertDeviceExecuteAllowed: assertDeviceExecuteAllowedMock,
+}));
 
 import { processPamActuationEvent } from './pamActuationWorker';
+import { TrustDeniedError } from '../services/partnerTrust.commands';
 
 const current = {
   id: '30000000-0000-4000-8000-000000000001',
@@ -66,6 +74,7 @@ describe('processPamActuationEvent', () => {
       .mockResolvedValueOnce({ rows: [] });
     await expect(processPamActuationEvent({ actuationId: current.id, generation: 4 }))
       .resolves.toBe('dispatched');
+    expect(assertDeviceExecuteAllowedMock).toHaveBeenCalledWith(current.device_id, 'pam_apply_v2', null);
     expect(commandPayloadAt(1)).toEqual(canonical.apply);
 
     executeMock.mockReset().mockResolvedValueOnce({
@@ -103,6 +112,23 @@ describe('processPamActuationEvent', () => {
       .resolves.toBe('blocked');
     const sqlText = executeMock.mock.calls.map(([query]) => JSON.stringify(query)).join('\n');
     expect(sqlText).toContain('identity_mismatch');
+    expect(sqlText).not.toContain('INSERT INTO device_commands');
+  });
+
+  it('marks a trust-denied actuation failed without inserting a command', async () => {
+    executeMock
+      .mockResolvedValueOnce({ rows: [current] })
+      .mockResolvedValueOnce({ rows: [] });
+    assertDeviceExecuteAllowedMock.mockRejectedValueOnce(
+      new TrustDeniedError('TRUST_RESTRICTED', 'Partner access is restricted.', current.device_id, 'pam_apply_v2'),
+    );
+
+    await expect(processPamActuationEvent({ actuationId: current.id, generation: 4 }))
+      .resolves.toBe('blocked');
+
+    expect(executeMock).toHaveBeenCalledTimes(2);
+    const sqlText = executeMock.mock.calls.map(([query]) => JSON.stringify(query)).join('\n');
+    expect(sqlText).toContain('TRUST_RESTRICTED');
     expect(sqlText).not.toContain('INSERT INTO device_commands');
   });
 
