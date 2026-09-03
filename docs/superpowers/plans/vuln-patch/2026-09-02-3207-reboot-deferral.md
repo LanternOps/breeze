@@ -1,3 +1,7 @@
+---
+tracking_issue: LanternOps/breeze#3207
+---
+
 # End-User Reboot Prompts with Deferral Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan wave-by-wave, task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
