@@ -75,6 +75,7 @@ import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from 
 import { deviceSiteDenied, deviceIdSiteDenied, resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
 import { checkAutomationTargetsWithinSiteScope } from './automationRuntime';
 import { assertReportExecutionPreflight } from './reportGenerationService';
+import { deleteDeviceGroup, DeviceGroupDeleteError } from './deviceGroupDelete';
 import {
   decodeSiteScope,
   intersectSiteScopes,
@@ -1256,16 +1257,14 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         // Site axis (app-layer only; RLS does NOT enforce it).
         if (deviceSiteDenied(auth, existing.siteId)) return JSON.stringify({ error: 'Group not found or access denied' });
 
-        const affectedMemberships = await db.select({ deviceId: deviceGroupMemberships.deviceId })
-          .from(deviceGroupMemberships)
-          .where(eq(deviceGroupMemberships.groupId, existing.id));
-
-        await db.transaction(async (tx) => {
-          await tx.delete(deviceGroupMemberships).where(eq(deviceGroupMemberships.groupId, existing.id));
-          await tx.delete(groupMembershipLog).where(eq(groupMembershipLog.groupId, existing.id));
-          await tx.delete(deviceGroups).where(eq(deviceGroups.id, existing.id));
-        });
-        await scheduleAiGroupPeripheralReconciliation(affectedMemberships.map(({ deviceId }) => deviceId));
+        let result: Awaited<ReturnType<typeof deleteDeviceGroup>>;
+        try {
+          result = await deleteDeviceGroup(existing.id, existing.orgId);
+        } catch (err) {
+          if (err instanceof DeviceGroupDeleteError) return JSON.stringify({ error: err.message, code: err.code });
+          throw err;
+        }
+        await scheduleAiGroupPeripheralReconciliation(result.affectedDeviceIds);
         return JSON.stringify({ success: true, message: `Group "${existing.name}" deleted` });
       }
 
