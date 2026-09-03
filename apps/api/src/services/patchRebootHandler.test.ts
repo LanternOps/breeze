@@ -213,6 +213,21 @@ describe('rebootDeferralSettingsFrom (#3207)', () => {
     } as never)).toEqual(DEFERRAL_OFF);
   });
 
+  // The guard is `rebootAllowDeferral !== true`, not a truthy check. Swapping it
+  // for `!settings.rebootAllowDeferral` would still pass the false/true cases
+  // above, so the discriminating input is a value that is truthy but not `true`.
+  it('treats a truthy-but-not-true opt-in as OFF, never as enabled', () => {
+    for (const bad of [1, 'true', 'yes', {}, [], undefined]) {
+      expect(rebootDeferralSettingsFrom({
+        rebootAllowDeferral: bad, rebootMaxDeferrals: 5, rebootDeferralMinutes: 60,
+      } as never), String(bad)).toEqual(DEFERRAL_OFF);
+    }
+  });
+
+  it('is OFF when the column is absent entirely (a pre-migration row)', () => {
+    expect(rebootDeferralSettingsFrom({ rebootDelayMinutes: 15 } as never)).toEqual(DEFERRAL_OFF);
+  });
+
   it('carries an opted-in budget through unchanged', () => {
     expect(rebootDeferralSettingsFrom({
       rebootAllowDeferral: true, rebootMaxDeferrals: 2, rebootDeferralMinutes: 45,
@@ -351,6 +366,28 @@ describe('executeReboot deferral payload (#3207)', () => {
     expect(resolvePatchConfigForDevice).toHaveBeenCalledTimes(1);
   });
 
+  it('caps the deadline at a supplied maintenance-window close', async () => {
+    // Budget alone would put the deadline 4h out; the window shuts in 20min.
+    const windowEndsAt = new Date(Date.now() + 20 * 60_000);
+    await executeReboot('dev-1', 'In active maintenance window', {
+      delayMinutes: 5,
+      deferral: { allowDeferral: true, maxDeferrals: 4, deferralMinutes: 60 },
+      windowEndsAt,
+    });
+    expect(Date.parse(payloadOf().deadline as string)).toBe(windowEndsAt.getTime());
+  });
+
+  it('ignores a null window close (the non-maintenance policies)', async () => {
+    await executeReboot('dev-1', 'Patch install', {
+      delayMinutes: 5,
+      deferral: { allowDeferral: true, maxDeferrals: 1, deferralMinutes: 60 },
+      windowEndsAt: null,
+    });
+    const minutesOut = (Date.parse(payloadOf().deadline as string) - Date.now()) / 60000;
+    expect(minutesOut).toBeGreaterThan(64);
+    expect(minutesOut).toBeLessThan(66);
+  });
+
   it('honours a caller-supplied deferral budget over the policy', async () => {
     vi.mocked(resolvePatchConfigForDevice).mockResolvedValue({
       rebootDelayMinutes: 15, rebootAllowDeferral: true,
@@ -392,7 +429,28 @@ describe('evaluateRebootPolicy', () => {
       shouldReboot: false,
       reason: 'Reboot policy is never',
       deferred: false,
+      windowEndsAt: null,
     });
+  });
+
+  // #3207: this is the ONLY place the post-patch reboot path can learn when the
+  // maintenance window closes. Dropping it here means the deferral deadline is
+  // never capped to the window on the patch path, silently and only there.
+  it('reports when the active maintenance window closes so the deadline can be capped', async () => {
+    const windowEndsAt = new Date('2026-02-17T02:00:00.000Z');
+    vi.mocked(checkDeviceMaintenanceWindow).mockResolvedValue({ active: true, windowEndsAt } as never);
+    await expect(evaluateRebootPolicy('dev-1', 'maintenance_window', false)).resolves.toMatchObject({
+      shouldReboot: true,
+      windowEndsAt,
+    });
+  });
+
+  it('reports no window close on every non-maintenance policy', async () => {
+    for (const policy of ['never', 'if_required', 'always', 'nonsense']) {
+      await expect(evaluateRebootPolicy('dev-1', policy, true)).resolves.toMatchObject({
+        windowEndsAt: null,
+      });
+    }
   });
 
   it('reboots under if_required only when a patch demands it', async () => {

@@ -260,6 +260,14 @@ export interface RebootEvaluation {
   shouldReboot: boolean;
   reason: string;
   deferred: boolean;
+  /**
+   * Close of the maintenance window this decision was made inside, or null for
+   * every other policy (#3207). This is the ONLY place the post-patch reboot
+   * path learns when the window shuts, so it is a required field rather than an
+   * optional one: a future branch that forgets it fails to compile instead of
+   * silently uncapping the deferral deadline.
+   */
+  windowEndsAt: Date | null;
 }
 
 export interface RebootResult {
@@ -282,35 +290,41 @@ export async function evaluateRebootPolicy(
 ): Promise<RebootEvaluation> {
   switch (rebootPolicy) {
     case 'never':
-      return { shouldReboot: false, reason: 'Reboot policy is never', deferred: false };
+      return { shouldReboot: false, reason: 'Reboot policy is never', deferred: false, windowEndsAt: null };
 
     case 'if_required':
       if (anyPatchRequiresReboot) {
-        return { shouldReboot: true, reason: 'Installed patch requires reboot', deferred: false };
+        return { shouldReboot: true, reason: 'Installed patch requires reboot', deferred: false, windowEndsAt: null };
       }
-      return { shouldReboot: false, reason: 'No installed patch requires reboot', deferred: false };
+      return { shouldReboot: false, reason: 'No installed patch requires reboot', deferred: false, windowEndsAt: null };
 
     case 'always':
-      return { shouldReboot: true, reason: 'Reboot policy is always', deferred: false };
+      return { shouldReboot: true, reason: 'Reboot policy is always', deferred: false, windowEndsAt: null };
 
     case 'maintenance_window': {
       const maintenanceStatus = await checkDeviceMaintenanceWindow(deviceId);
       if (maintenanceStatus.active) {
-        return { shouldReboot: true, reason: 'In active maintenance window', deferred: false };
+        return {
+          shouldReboot: true,
+          reason: 'In active maintenance window',
+          deferred: false,
+          windowEndsAt: maintenanceStatus.windowEndsAt,
+        };
       }
       return {
         shouldReboot: false,
         reason: 'Outside maintenance window — reboot deferred',
         deferred: true,
+        windowEndsAt: null,
       };
     }
 
     default:
       // Unknown policy — treat as if_required for safety
       if (anyPatchRequiresReboot) {
-        return { shouldReboot: true, reason: `Unknown reboot policy "${rebootPolicy}", defaulting to if_required`, deferred: false };
+        return { shouldReboot: true, reason: `Unknown reboot policy "${rebootPolicy}", defaulting to if_required`, deferred: false, windowEndsAt: null };
       }
-      return { shouldReboot: false, reason: `Unknown reboot policy "${rebootPolicy}", no reboot needed`, deferred: false };
+      return { shouldReboot: false, reason: `Unknown reboot policy "${rebootPolicy}", no reboot needed`, deferred: false, windowEndsAt: null };
   }
 }
 

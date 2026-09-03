@@ -784,18 +784,22 @@ export const patchInlineSettingsSchema = z.object({
     });
   }
 
-  // The agent refuses any schedule_reboot delay above 10080 minutes
-  // (handlers_patch.go). The API sets the hard deadline to
-  // delay + maxDeferrals x deferralMinutes, so a budget that cannot fit inside
-  // that ceiling would let the UI promise deferrals the agent always refuses.
+  // 10080 minutes (7 days) is the agent's own ceiling on a scheduled reboot
+  // (handlers_patch.go rejects delayMinutes outside 1-10080). The API sets the
+  // hard deadline to delay + maxDeferrals x deferralMinutes, so the WHOLE sum
+  // has to stay inside that horizon: bounding only the deferral product would
+  // let a 1440-minute warning delay push the real deadline a day past it, and
+  // this comment would then be promising something the check did not deliver.
+  // With deferral off there is no deferral horizon at all and
+  // rebootDelayMinutes is bounded by its own 1-1440 range instead.
   if (
     data.rebootAllowDeferral
-    && data.rebootMaxDeferrals * data.rebootDeferralMinutes > 10080
+    && data.rebootDelayMinutes + data.rebootMaxDeferrals * data.rebootDeferralMinutes > 10080
   ) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['rebootDeferralMinutes'],
-      message: 'rebootMaxDeferrals x rebootDeferralMinutes must not exceed 10080 minutes (7 days).',
+      message: 'rebootDelayMinutes + rebootMaxDeferrals x rebootDeferralMinutes must not exceed 10080 minutes (7 days).',
     });
   }
 

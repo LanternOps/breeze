@@ -277,6 +277,14 @@ const parityCases: Array<{ name: string; mirror: unknown; serializedMirror?: str
     name: 'a deferral budget inside the ceiling stays valid',
     mirror: {
       ...meaningfulMirror,
+      rebootAllowDeferral: true, rebootMaxDeferrals: 6, rebootDeferralMinutes: 1440,
+    },
+  },
+  {
+    name: 'the warning delay counts toward the ceiling',
+    mirror: {
+      ...meaningfulMirror,
+      rebootDelayMinutes: 1440,
       rebootAllowDeferral: true, rebootMaxDeferrals: 7, rebootDeferralMinutes: 1440,
     },
   },

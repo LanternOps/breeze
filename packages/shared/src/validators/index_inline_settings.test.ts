@@ -271,10 +271,47 @@ describe('patchInlineSettingsSchema reboot deferral (#3207)', () => {
 
   it('accepts a budget that fits inside the ceiling', () => {
     const parsed = patchInlineSettingsSchema.parse({
-      rebootAllowDeferral: true, rebootMaxDeferrals: 7, rebootDeferralMinutes: 1440,
+      rebootAllowDeferral: true, rebootMaxDeferrals: 6, rebootDeferralMinutes: 1440,
     });
     expect(parsed.rebootAllowDeferral).toBe(true);
-    expect(parsed.rebootMaxDeferrals).toBe(7);
+    expect(parsed.rebootMaxDeferrals).toBe(6);
+  });
+
+  // The ceiling bounds the WHOLE horizon the API puts on the wire —
+  // computeRebootDeadline returns delay + maxDeferrals x deferralMinutes — so
+  // the warning delay has to be inside the sum, not excluded from it.
+  it('counts rebootDelayMinutes toward the ceiling, not just the deferral product', () => {
+    expect(() =>
+      patchInlineSettingsSchema.parse({
+        rebootDelayMinutes: 1440,
+        rebootAllowDeferral: true, rebootMaxDeferrals: 7, rebootDeferralMinutes: 1440,
+      }),
+    ).toThrow(/10080/);
+  });
+
+  it('accepts a total that lands exactly on the ceiling and rejects one minute past it', () => {
+    expect(() =>
+      patchInlineSettingsSchema.parse({
+        rebootDelayMinutes: 80,
+        rebootAllowDeferral: true, rebootMaxDeferrals: 10, rebootDeferralMinutes: 1000,
+      }),
+    ).not.toThrow();
+    expect(() =>
+      patchInlineSettingsSchema.parse({
+        rebootDelayMinutes: 81,
+        rebootAllowDeferral: true, rebootMaxDeferrals: 10, rebootDeferralMinutes: 1000,
+      }),
+    ).toThrow(/10080/);
+  });
+
+  it('leaves a long warning delay alone while deferral is off', () => {
+    // The ceiling is about the deferral horizon; without deferral the delay is
+    // bounded by its own 1-1440 range and nothing else.
+    const parsed = patchInlineSettingsSchema.parse({
+      rebootDelayMinutes: 1440, rebootAllowDeferral: false, rebootMaxDeferrals: 10,
+      rebootDeferralMinutes: 1440,
+    });
+    expect(parsed.rebootDelayMinutes).toBe(1440);
   });
 });
 
