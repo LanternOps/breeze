@@ -483,6 +483,22 @@ describe('recordRunTerminal', () => {
     );
   });
 
+  it('a rejected publishEvent does not stop the notification or audit log from firing', async () => {
+    state.selectQueue.push([agentRow()]);
+    state.selectQueue.push([{ partnerId: PARTNER_ID }]);
+    state.insertReturningQueue.push([circuitRow({ consecutiveFailures: 3, state: 'closed' })]);
+    state.updateReturningQueue.push([circuitRow({ consecutiveFailures: 3, state: 'open', openedAt: new Date() })]);
+    resolveEffectiveAgentSystemMock.mockResolvedValue(resolvedPolicy(3));
+    resolveRecipientUserIdsMock.mockResolvedValue([USER_ID]);
+    publishEventMock.mockRejectedValueOnce(new Error('redis unavailable'));
+
+    await recordRunTerminal(run, 'failed', 'sdk_error', null);
+
+    expect(publishEventMock).toHaveBeenCalledTimes(1);
+    expect(createNotificationMock).toHaveBeenCalledTimes(1);
+    expect(createAuditLogAsyncMock).toHaveBeenCalledTimes(1);
+  });
+
   it('opens exactly once: a second increment landing on an already-open row notifies nobody again', async () => {
     state.selectQueue.push([agentRow()]);
     state.selectQueue.push([{ partnerId: PARTNER_ID }]);

@@ -554,7 +554,7 @@ export async function recordRunTerminal(
     );
   } catch (error) {
     console.error('[agentCircuit] failed to publish a circuit open event (non-fatal)', {
-      orgId: run.orgId, agentId: run.agentId, error,
+      orgId: run.orgId, agentId: run.agentId, triggeringRunId: run.id, error,
     });
   }
 
