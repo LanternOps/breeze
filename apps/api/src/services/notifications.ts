@@ -4,7 +4,7 @@ import { alerts, mobileDevices, organizationUsers, pushNotifications, users } fr
 import { and, eq } from 'drizzle-orm';
 import { getEventBus } from './eventBus';
 import { isApnsConfigured, sendApnsNotification } from './apns';
-import { sendFcmNotification } from './fcm';
+import { isFcmConfigured, sendFcmNotification } from './fcm';
 // Moved to its own module in W07 (#3901) so non-Firebase callers can use it.
 // Re-exported here so every existing importer keeps working.
 import { isInQuietHours, type QuietHoursConfig } from './quietHours';
@@ -107,6 +107,18 @@ export async function sendPushToDevice(device: MobileDevice, payload: PushPayloa
 }
 
 export async function sendFCM(token: string, payload: PushPayload): Promise<PushSendResult> {
+  // No credentials configured → keep the historical no-op stub so alert pushes
+  // degrade gracefully in dev/self-hosted deployments without Firebase set up.
+  // Mirrors sendAPNS's isApnsConfigured() check above.
+  if (!isFcmConfigured()) {
+    const tokenFingerprint = createHash('sha256').update(token).digest('hex').slice(0, 12);
+    console.warn('[Notifications] FCM not configured; push stubbed.', {
+      tokenFingerprint,
+      title: payload.title,
+    });
+    return { messageId: `fcm-stub-${Date.now()}`, status: 'stubbed' };
+  }
+
   const data: Record<string, unknown> = { ...payload.data };
   if (payload.alertId) data.alertId = payload.alertId;
   if (payload.eventType) data.eventType = payload.eventType;

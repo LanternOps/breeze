@@ -8,8 +8,10 @@ vi.mock('./apns', () => ({
   sendApnsNotification: (...args: unknown[]) => sendApnsNotificationMock(...args),
 }));
 
+const isFcmConfiguredMock = vi.fn();
 const sendFcmNotificationMock = vi.fn();
 vi.mock('./fcm', () => ({
+  isFcmConfigured: () => isFcmConfiguredMock(),
   sendFcmNotification: (...args: unknown[]) => sendFcmNotificationMock(...args),
 }));
 
@@ -119,6 +121,8 @@ describe('sendAPNS', () => {
 
 describe('sendFCM', () => {
   beforeEach(() => {
+    isFcmConfiguredMock.mockReset();
+    isFcmConfiguredMock.mockReturnValue(true);
     sendFcmNotificationMock.mockReset();
     vi.mocked(db.update).mockClear();
     updateSetCalls.length = 0;
@@ -126,6 +130,29 @@ describe('sendFCM', () => {
   });
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it('returns a stubbed result and never logs the raw token when FCM is not configured', async () => {
+    isFcmConfiguredMock.mockReturnValue(false);
+    const token = 'fcm-sensitive-token';
+    const tokenFingerprint = createHash('sha256').update(token).digest('hex').slice(0, 12);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const res = await sendFCM(token, {
+      title: 'Alert Triggered',
+      body: 'Disk full',
+      data: {},
+      alertId: 'al-1',
+      eventType: 'alert.triggered',
+    });
+
+    expect(res.status).toBe('stubbed');
+    expect(sendFcmNotificationMock).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(
+      '[Notifications] FCM not configured; push stubbed.',
+      { tokenFingerprint, title: 'Alert Triggered' },
+    );
+    expect(JSON.stringify(warn.mock.calls)).not.toContain(token);
   });
 
   it('returns sent with the provider messageId on success', async () => {
