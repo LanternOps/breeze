@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { isDeviceLine, quantityFor, uncoveredByRole, type CoverageLine, type OrgDeviceSnapshot } from './contractCoverage';
+import { coverageMatch, DEVICE_COUNTED_LINE_TYPES, isDeviceLine, quantityFor, uncoveredByRole, type CoverageLine, type CoverageMatchReason, type OrgDeviceSnapshot } from './contractCoverage';
+import { CONTRACT_LINE_TYPES } from '@breeze/shared';
 import type { DeviceSnapshotRow } from './contractQuantities';
 
 const A = 'site-a';
@@ -116,5 +117,82 @@ describe('uncoveredByRole', () => {
   it.each([['null', null], ['empty', []]] as const)('throws for %s device roles even when inventory is empty', (_n, deviceRoles) => {
     const s: OrgDeviceSnapshot = { devices: [], groups: new Map() };
     expect(() => uncoveredByRole(s, [line({ lineType: 'per_device_role', deviceRoles })])).toThrow(/without device roles/);
+  });
+});
+
+// #3205 W06: coverageMatch is the SAME predicate as the private lineMatches,
+// with the reason attached. The parity block at the bottom is the anti-drift
+// assertion: every quantity W02 computes must equal the number of devices
+// coverageMatch calls covered, over W02's own truth-table fixtures.
+describe('coverageMatch (#3205 W06)', () => {
+  const rowOf = (id: string) => devices.find((d) => d.id === id)!;
+  const why = (l: CoverageLine, id: string): CoverageMatchReason | null => coverageMatch(l, rowOf(id), snapshot);
+
+  it('per_device names the selector: org-wide vs one site', () => {
+    expect(why(line({ lineType: 'per_device' }), 'ws1')).toBe('org');
+    expect(why(line({ lineType: 'per_device', siteId: A }), 'ws1')).toBe('site');
+    expect(why(line({ lineType: 'per_device', siteId: B }), 'ws1')).toBeNull();
+  });
+
+  it('a site-scoped role line is role, not site (Decision 3)', () => {
+    expect(why(line({ lineType: 'per_device_role', deviceRoles: ['server'] }), 'srv1')).toBe('role');
+    expect(why(line({ lineType: 'per_device_role', siteId: A, deviceRoles: ['server'] }), 'srv1')).toBe('role');
+    expect(why(line({ lineType: 'per_device_role', siteId: B, deviceRoles: ['server'] }), 'srv1')).toBeNull();
+    expect(why(line({ lineType: 'per_device_role', deviceRoles: ['printer'] }), 'srv1')).toBeNull();
+  });
+
+  it('a group covers its members, and a site-bound group does not reach off-site', () => {
+    expect(why(line({ lineType: 'per_device_group', deviceGroupId: G_VIP }), 'ws1')).toBe('group');
+    expect(why(line({ lineType: 'per_device_group', deviceGroupId: G_VIP }), 'ws2')).toBeNull();
+    expect(why(line({ lineType: 'per_device_group', deviceGroupId: G_SITE_B }), 'ws3')).toBe('group');
+    expect(why(line({ lineType: 'per_device_group', deviceGroupId: G_SITE_B }), 'ws1')).toBeNull(); // member, wrong site
+  });
+
+  it('an unknown-role device is billable by non-role lines (roadmap correction)', () => {
+    expect(why(line({ lineType: 'per_device' }), 'unk1')).toBe('org');
+    expect(why(line({ lineType: 'per_device_role', deviceRoles: ['workstation', 'server'] }), 'unk1')).toBeNull();
+    const s: OrgDeviceSnapshot = {
+      devices,
+      groups: new Map([['g-unk', { siteId: null, memberIds: new Set(['unk1']) }]]),
+    };
+    expect(coverageMatch(line({ lineType: 'per_device_group', deviceGroupId: 'g-unk' }), rowOf('unk1'), s)).toBe('group');
+  });
+
+  it('throws on an unresolvable line, exactly like quantityFor', () => {
+    expect(() => why(line({ lineType: 'per_device_role', deviceRoles: null }), 'srv1')).toThrow(/without device roles/);
+    expect(() => why(line({ lineType: 'per_device_group' }), 'srv1')).toThrow(/without a device group/);
+    expect(() => why(line({ lineType: 'per_device_group', deviceGroupId: 'nope' }), 'srv1')).toThrow(/group nope is not in the snapshot/);
+  });
+
+  it('returns null for every non-device-counted line type', () => {
+    for (const lineType of ['flat', 'per_seat', 'manual'] as const) {
+      expect(why(line({ lineType }), 'srv1')).toBeNull();
+    }
+  });
+
+  it('DEVICE_COUNTED_LINE_TYPES and isDeviceLine agree over every contract line type', () => {
+    for (const lineType of CONTRACT_LINE_TYPES) {
+      expect(isDeviceLine({ lineType })).toBe((DEVICE_COUNTED_LINE_TYPES as readonly string[]).includes(lineType));
+    }
+    expect([...DEVICE_COUNTED_LINE_TYPES].sort()).toEqual(['per_device', 'per_device_group', 'per_device_role']);
+  });
+
+  it('PARITY: quantityFor counts exactly the devices coverageMatch calls covered', () => {
+    const lines: CoverageLine[] = [
+      line({ lineType: 'per_device' }),
+      line({ lineType: 'per_device', siteId: A }),
+      line({ lineType: 'per_device_role', deviceRoles: ['server'] }),
+      line({ lineType: 'per_device_role', deviceRoles: ['workstation', 'server'] }),
+      line({ lineType: 'per_device_role', siteId: B, deviceRoles: ['workstation', 'switch'] }),
+      line({ lineType: 'per_device_group', deviceGroupId: G_VIP }),
+      line({ lineType: 'per_device_group', deviceGroupId: G_SITE_B }),
+    ];
+    for (const l of lines) {
+      expect(quantityFor(snapshot, l)).toBe(devices.filter((r) => coverageMatch(l, r, snapshot) !== null).length);
+    }
+    // …and the uncovered tally is exactly the complement, which is what makes
+    // the contract page's warning and the device page's panel one answer.
+    expect(uncoveredByRole(snapshot, lines).total)
+      .toBe(devices.filter((r) => !lines.some((l) => coverageMatch(l, r, snapshot) !== null)).length);
   });
 });

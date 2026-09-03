@@ -38,12 +38,13 @@
 // Deletes use an INLINE two-step confirm, never `window.confirm`: a native
 // dialog cannot be dismissed by the browser-automation harness, so an E2E run
 // wedges on it.
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import {
   AI_AGENT_SCHEDULE_KINDS,
   AI_SWEEP_KINDS,
+  isHourlyFloorCron,
   isStructurallyValidCron,
   isWeeklyLiteralCron,
   listIanaTimezones,
@@ -53,6 +54,8 @@ import {
   type AiSweepKind,
 } from '@breeze/shared';
 import { fetchWithAuth } from '../../stores/auth';
+import { badgeClass } from '../aiAgents/statusBadge';
+import { EmptyState } from '../shared/EmptyState';
 import { handleActionError, runAction } from '@/lib/runAction';
 import { loginPathWithNext } from '@/lib/authScope';
 import { navigateTo } from '@/lib/navigation';
@@ -104,6 +107,190 @@ const SCHEDULE_ERROR_COPY: Record<string, ((t: (key: string) => string) => strin
 /** The server's rule, restated client-side — see the module doc. */
 function isFiveFieldCron(value: string): boolean {
   return isStructurallyValidCron(value) && value.trim().split(/\s+/).length === 5;
+}
+
+// ---------------------------------------------------------------------------
+// Next-run preview
+//
+// A cron field is validated by `isStructurallyValidCron` but never EVALUATED
+// anywhere on the client, so `0 3 * * 7` and `0 3 * * 0` (Sunday, twice) look
+// identical to an operator and a typo'd day-of-week is invisible until the
+// sweep silently fails to fire for a week. `cron-parser` is not a dependency
+// of apps/web (only of apps/api, transitively through BullMQ), so this
+// evaluates the same grammar `isValidCronField` accepts — comma lists of `*`,
+// a value, or `a-b`, each optionally `/step`, with month and day names.
+//
+// TIMEZONE. The result is WALL-CLOCK TIME IN THE SCHEDULE'S OWN ZONE, and the
+// label says which zone, so no instant conversion is needed: "now" is read
+// into that zone's wall clock once and the search then walks a plain calendar.
+// The consequence is that a DST transition is not modelled — a preview one
+// hour off twice a year is the accepted cost of not shipping a tz library to
+// render a hint. The scheduler, not this function, decides when a sweep runs.
+// ---------------------------------------------------------------------------
+
+const CRON_MONTH_NAMES = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+const CRON_DAY_NAMES = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+
+/** Every value one cron field matches, or null when the field does not parse. */
+function expandCronField(
+  field: string,
+  min: number,
+  max: number,
+  names: readonly string[],
+): Set<number> | null {
+  const readValue = (token: string): number | null => {
+    const named = names.indexOf(token.toLowerCase());
+    // Month names are 1-based, day names 0-based — the same asymmetry
+    // `isValidCronField` encodes.
+    if (named >= 0) return names === CRON_MONTH_NAMES ? named + 1 : named;
+    if (!/^\d+$/.test(token)) return null;
+    const value = Number(token);
+    return value >= min && value <= max ? value : null;
+  };
+
+  const values = new Set<number>();
+  for (const listItem of field.split(',')) {
+    if (listItem === '') return null;
+    const [rangePart, stepPart, ...extra] = listItem.split('/');
+    if (extra.length > 0) return null;
+    if (stepPart !== undefined && !/^[1-9]\d*$/.test(stepPart)) return null;
+    const step = stepPart === undefined ? 1 : Number(stepPart);
+    let from: number;
+    let to: number;
+    if (rangePart === '*') {
+      from = min;
+      to = max;
+    } else {
+      const bounds = (rangePart ?? '').split('-');
+      if (bounds.length > 2) return null;
+      const parsed = bounds.map(readValue);
+      if (parsed.some((value) => value === null)) return null;
+      from = parsed[0] as number;
+      // A bare `5/15` means "from 5 to the end of the range, every 15" —
+      // a lone value with no step is just itself.
+      to = parsed.length === 2 ? (parsed[1] as number) : stepPart === undefined ? from : max;
+      if (from > to) return null;
+    }
+    for (let value = from; value <= to; value += step) values.add(value);
+  }
+  return values.size === 0 ? null : values;
+}
+
+interface CronFields {
+  minutes: Set<number>;
+  hours: Set<number>;
+  daysOfMonth: Set<number>;
+  months: Set<number>;
+  daysOfWeek: Set<number>;
+  domRestricted: boolean;
+  dowRestricted: boolean;
+}
+
+export function parseFiveFieldCron(cron: string): CronFields | null {
+  const parts = cron.trim().split(/\s+/);
+  if (parts.length !== 5) return null;
+  const minutes = expandCronField(parts[0]!, 0, 59, []);
+  const hours = expandCronField(parts[1]!, 0, 23, []);
+  const daysOfMonth = expandCronField(parts[2]!, 1, 31, []);
+  const months = expandCronField(parts[3]!, 1, 12, CRON_MONTH_NAMES);
+  const rawDaysOfWeek = expandCronField(parts[4]!, 0, 7, CRON_DAY_NAMES);
+  if (!minutes || !hours || !daysOfMonth || !months || !rawDaysOfWeek) return null;
+  return {
+    minutes,
+    hours,
+    daysOfMonth,
+    months,
+    // 7 and 0 are both Sunday.
+    daysOfWeek: new Set([...rawDaysOfWeek].map((day) => (day === 7 ? 0 : day))),
+    domRestricted: parts[2] !== '*',
+    dowRestricted: parts[4] !== '*',
+  };
+}
+
+/**
+ * First matching wall-clock minute strictly after `fromMs`, expressed as a
+ * floating instant (the Y-M-D H:M read as if it were UTC). Null when nothing
+ * matches inside a year — `0 0 30 2 *` is structurally valid and never fires.
+ */
+export function nextCronOccurrence(fields: CronFields, fromMs: number): Date | null {
+  const cursor = new Date(Math.floor(fromMs / 60000) * 60000 + 60000);
+  for (let day = 0; day < 400; day += 1) {
+    if (fields.months.has(cursor.getUTCMonth() + 1)) {
+      const domHit = fields.daysOfMonth.has(cursor.getUTCDate());
+      const dowHit = fields.daysOfWeek.has(cursor.getUTCDay());
+      // Vixie cron: when BOTH day fields are restricted the day matches if
+      // EITHER does; otherwise the unrestricted one is a no-op `*`.
+      const dayHit = fields.domRestricted && fields.dowRestricted ? domHit || dowHit : domHit && dowHit;
+      if (dayHit) {
+        const fromHour = cursor.getUTCHours();
+        for (let hour = fromHour; hour < 24; hour += 1) {
+          if (!fields.hours.has(hour)) continue;
+          const fromMinute = hour === fromHour ? cursor.getUTCMinutes() : 0;
+          for (let minute = fromMinute; minute < 60; minute += 1) {
+            if (!fields.minutes.has(minute)) continue;
+            return new Date(Date.UTC(
+              cursor.getUTCFullYear(),
+              cursor.getUTCMonth(),
+              cursor.getUTCDate(),
+              hour,
+              minute,
+            ));
+          }
+        }
+      }
+    }
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+    cursor.setUTCHours(0, 0, 0, 0);
+  }
+  return null;
+}
+
+/** "Now" as a floating instant on `timezone`'s wall clock. */
+function wallClockNow(timezone: string, now: Date): number {
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: timezone,
+      hour12: false,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    }).formatToParts(now);
+    const read = (type: string) => Number(parts.find((part) => part.type === type)?.value);
+    const year = read('year');
+    if (!Number.isFinite(year)) throw new Error('unreadable parts');
+    // `hour12: false` renders midnight as 24 in some ICU versions.
+    return Date.UTC(year, read('month') - 1, read('day'), read('hour') % 24, read('minute'));
+  } catch {
+    // An unknown zone must not blank the whole row — fall back to UTC and
+    // keep the label, which names the zone the schedule actually stores.
+    return Date.UTC(
+      now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), now.getUTCHours(), now.getUTCMinutes(),
+    );
+  }
+}
+
+type NextRun =
+  | { kind: 'invalid' }
+  | { kind: 'none' }
+  | { kind: 'at'; at: string };
+
+export function describeNextRun(cron: string, timezone: string, now = new Date()): NextRun {
+  const fields = parseFiveFieldCron(cron);
+  if (!fields) return { kind: 'invalid' };
+  const occurrence = nextCronOccurrence(fields, wallClockNow(timezone, now));
+  if (!occurrence) return { kind: 'none' };
+  // Formatted as UTC because the value IS a floating wall-clock instant; the
+  // zone it belongs to is named beside it, never inferred from the viewer's.
+  return {
+    kind: 'at',
+    at: new Intl.DateTimeFormat(undefined, {
+      timeZone: 'UTC',
+      dateStyle: 'medium',
+      timeStyle: 'short',
+    }).format(occurrence),
+  };
 }
 
 /**
@@ -214,6 +401,7 @@ export default function AiAgentSchedulesSection({
   const [draft, setDraft] = useState<Draft | null>(null);
   const [saving, setSaving] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const allOrgsHintId = useId();
 
   const load = useCallback(async () => {
     if (!schedulable) return;
@@ -244,7 +432,13 @@ export default function AiAgentSchedulesSection({
     } finally {
       setLoading(false);
     }
-  }, [agentId, schedulable]);
+    // `orgId` is a dependency even though it never appears in the URL above:
+    // fetchWithAuth reads it from the org store to build the `?orgId=`
+    // query itself, but THIS callback still has to be re-created (and thus
+    // re-run by the effect below) when the org switcher changes, or the
+    // section keeps showing the previous org's merged overrides until some
+    // unrelated prop forces a reload.
+  }, [agentId, orgId, schedulable]);
 
   useEffect(() => {
     void load();
@@ -321,12 +515,15 @@ export default function AiAgentSchedulesSection({
     });
   };
 
-  // A narrative baseline must ALSO be a weekly literal (`isWeeklyLiteralCron`)
-  // — the same predicate the server applies, restated rather than approximated,
-  // so a cron this form accepts is never one the API then refuses.
+  // A SWEEP baseline must ALSO clear the server's hourly floor
+  // (`isHourlyFloorCron` — see the module doc), and a narrative baseline must
+  // ALSO be a weekly literal (`isWeeklyLiteralCron`) — both the same
+  // predicates the server applies, restated rather than approximated, so a
+  // cron this form accepts is never one the API then refuses.
   const cronValid = draft?.mode !== 'baseline'
     ? true
-    : isFiveFieldCron(draft.cron) && (draft.kind !== 'narrative' || isWeeklyLiteralCron(draft.cron));
+    : isFiveFieldCron(draft.cron)
+      && (draft.kind === 'narrative' ? isWeeklyLiteralCron(draft.cron) : isHourlyFloorCron(draft.cron));
   // `.min(1)` on a SWEEP baseline (a sweep baseline that sweeps nothing is
   // pointless); a narrative baseline evaluates no kinds at all, and an
   // override's `[]` is meaningful — "run no check for this org".
@@ -456,6 +653,34 @@ export default function AiAgentSchedulesSection({
       ? t('aiAgentsPage.schedules.noKinds')
       : kinds.map(kindLabel).join(', ');
 
+  /**
+   * "Next run" beside the raw cron. Without it the only feedback a five-field
+   * expression gives is structural validity, so a wrong day-of-week reads as
+   * a working schedule until it fails to fire.
+   */
+  const nextRunLine = (cron: string, timezone: string, testId: string) => {
+    const next = describeNextRun(cron, timezone);
+    if (next.kind === 'invalid') {
+      return (
+        <span className="block text-xs text-destructive" data-testid={`${testId}-invalid`}>
+          {t('aiAgentsPage.schedules.nextRunInvalid')}
+        </span>
+      );
+    }
+    if (next.kind === 'none') {
+      return (
+        <span className="block text-xs text-muted-foreground" data-testid={`${testId}-none`}>
+          {t('aiAgentsPage.schedules.nextRunNone')}
+        </span>
+      );
+    }
+    return (
+      <span className="block text-xs text-muted-foreground" data-testid={testId}>
+        {t('aiAgentsPage.schedules.nextRun', { at: next.at, timezone })}
+      </span>
+    );
+  };
+
   const editor = (drafted: Draft) => (
     <div className="mt-3 space-y-3 rounded-md border bg-background p-3" data-testid="ai-agent-schedule-editor">
       {/* CREATE only. `kind` is immutable once saved (the update schema is
@@ -503,6 +728,11 @@ export default function AiAgentSchedulesSection({
                 {t('aiAgentsPage.schedules.cronInvalid')}
               </span>
             )}
+            {/* Only while the cron actually validates — otherwise this and
+                the cronInvalid banner above say the same "this is broken"
+                thing twice, once as a generic banner and once as the
+                preview's own "Invalid schedule" state. */}
+            {cronValid && nextRunLine(drafted.cron, drafted.timezone, 'ai-agent-schedule-editor-next-run')}
           </label>
           <label className="space-y-1 text-sm">
             <span className="font-medium">{t('aiAgentsPage.schedules.timezone')}</span>
@@ -617,6 +847,7 @@ export default function AiAgentSchedulesSection({
         {t('aiAgentsPage.schedules.title')}
       </legend>
       <p className="text-xs text-muted-foreground">{t('aiAgentsPage.schedules.description')}</p>
+      <span id={allOrgsHintId} className="sr-only">{t('aiAgentsPage.allOrgsHint')}</span>
 
       {!schedulable ? (
         <p className="text-sm text-muted-foreground" data-testid="ai-agent-schedules-partner-only">
@@ -635,9 +866,12 @@ export default function AiAgentSchedulesSection({
             </p>
           )}
           {!loading && !failed && schedules.length === 0 && (
-            <p className="text-sm text-muted-foreground" data-testid="ai-agent-schedules-empty">
-              {t('aiAgentsPage.schedules.empty')}
-            </p>
+            <EmptyState
+              size="sm"
+              headingLevel={4}
+              testId="ai-agent-schedules-empty"
+              title={t('aiAgentsPage.schedules.empty')}
+            />
           )}
 
           {schedules.length > 0 && (
@@ -648,25 +882,34 @@ export default function AiAgentSchedulesSection({
                   <li key={schedule.id} className="p-3" data-testid={`ai-agent-schedule-${schedule.id}`}>
                     <div className="flex flex-wrap items-center gap-2 text-sm">
                       <span
-                        className="rounded bg-sky-500/10 px-2 py-0.5 text-xs font-medium text-sky-700"
+                        className={badgeClass('info', { size: 'sm' })}
                         data-testid={`ai-agent-schedule-kind-badge-${schedule.id}`}
                       >
                         {scheduleKindLabel(kindOf(schedule))}
                       </span>
                       <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">{schedule.cron}</code>
                       <span className="text-muted-foreground">{schedule.timezone}</span>
+                      {/* `title=` alone is invisible to touch and keyboard, so
+                          the explanation is a real described-by node. */}
                       <span
                         className="rounded bg-primary/10 px-2 py-0.5 text-xs text-primary"
-                        title={t('aiAgentsPage.allOrgsHint')}
+                        aria-describedby={allOrgsHintId}
                       >
                         {t('aiAgentsPage.allOrgs')}
                       </span>
-                      <span className="text-xs text-muted-foreground">
+                      <span className={badgeClass(schedule.enabled ? 'success' : 'muted', { size: 'sm' })}>
                         {schedule.enabled
                           ? t('aiAgentsPage.stateEnabled')
                           : t('aiAgentsPage.stateDisabled')}
                       </span>
                     </div>
+                    <p className="mt-1">
+                      {nextRunLine(
+                        schedule.cron,
+                        schedule.timezone,
+                        `ai-agent-schedule-next-run-${schedule.id}`,
+                      )}
+                    </p>
                     {/* A narrative row has no checks to name — "No checks"
                         would read as a misconfiguration rather than as the
                         kind's defining property. */}

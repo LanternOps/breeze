@@ -37,6 +37,7 @@ import { formatPercent } from "@/lib/i18n/format";
 import { formatUptime } from "../../lib/utils";
 import type { Device, DeviceStatus } from "./DeviceList";
 import { formatDeviceSummaryOs } from "./osDisplay";
+import RebootScheduledBadge from "./RebootScheduledBadge";
 import DeviceActions from "./DeviceActions";
 import DeviceInfoTab from "./DeviceInfoTab";
 import DeviceHardwareInventory from "./DeviceHardwareInventory";
@@ -61,6 +62,7 @@ import DeviceBootPerformanceTab from "./DeviceBootPerformanceTab";
 import DevicePlaybookHistory from "./DevicePlaybookHistory";
 import DevicePeripheralsTab from "./DevicePeripheralsTab";
 import DeviceWarrantyCard from "./DeviceWarrantyCard";
+import DeviceBillingCard from "./DeviceBillingCard";
 import DeviceUserIdleStat from "./DeviceUserIdleStat";
 import MacOSPermissionsBanner from "./MacOSPermissionsBanner";
 import PossibleReplacementBanner from "./PossibleReplacementBanner";
@@ -596,6 +598,17 @@ export default function DeviceDetails({
                     {t("deviceDetails.rebootPending")}{" "}
                   </span>
                 )}
+                {/* A restart BOOKED for a specific instant (#3207 W5) — the
+                    complement of the OS-level "reboot pending" flag beside it,
+                    not a replacement for it. Renders nothing when nothing is
+                    scheduled, which is the steady state for most devices. */}
+                <RebootScheduledBadge
+                  rebootScheduledAt={device.rebootScheduledAt}
+                  rebootDeadline={device.rebootDeadline}
+                  rebootSource={device.rebootSource}
+                  rebootDeferralsUsed={device.rebootDeferralsUsed}
+                  rebootMaxDeferrals={device.rebootMaxDeferrals}
+                />
               </div>
               <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted-foreground">
                 <span>
@@ -712,6 +725,8 @@ export default function DeviceDetails({
             <DevicePerformanceGraphs deviceId={device.id} compact />
 
             <DeviceWarrantyCard deviceId={device.id} compact />
+
+            <DeviceBillingCard deviceId={device.id} />
           </div>
 
           <div

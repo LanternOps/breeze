@@ -194,12 +194,19 @@ export async function billableDeviceById(deviceId: string, orgId: string): Promi
 ### API — `apps/api/src/services/groupMembership.ts` (one export)
 
 ```ts
-export type DeviceForMembership = Pick<typeof devices.$inferSelect, 'id' | 'siteId'>;
+export type DeviceForMembership = {
+  id: string;
+  orgId: string;
+  siteId: string | null;
+  isEphemeral: boolean;
+};
 
 /**
  * Is this ONE device in this group, as billing defines membership (#3205 W06)?
- * The single-device twin of resolveEffectiveGroupMembers: returns exactly
- * `deviceId ∈ (matched ∪ pinned)`, proved by groupMembership.parity.integration.test.ts.
+ * The single-device twin of resolveEffectiveGroupMembers: returns
+ * `deviceId ∈ (matched ∪ pinned)` for billing-eligible devices (same org, not
+ * ephemeral). Other-org and ephemeral devices are refused up front. Proved by
+ * groupMembership.parity.integration.test.ts.
  *
  * The site clause on the filter branch is PARITY, not an optimization:
  * evaluateFilter narrows by allowedSiteIds inside its SQL, deviceMatchesFilter
@@ -209,12 +216,17 @@ export type DeviceForMembership = Pick<typeof devices.$inferSelect, 'id' | 'site
  * coverageMatch's group branch.
  */
 export async function groupIncludesDevice(group: GroupForResolution, device: DeviceForMembership): Promise<boolean> {
+  if (device.orgId !== group.orgId || device.isEphemeral) return false;
+
   const pinnedFirst = /* org-predicated membership read: (group_id, org_id, device_id) → { isPinned } | undefined */;
 
   if (group.type !== 'dynamic') return pinnedFirst !== undefined;
-  if (pinnedFirst?.isPinned) return true;                              // cheap branch first
+  if (group.filterConditions !== null && group.filterConditions !== undefined
+      && !isFilterConditionGroup(group.filterConditions)) {
+    throw new GroupEvaluationError(group.id, 'invalid_filter');
+  }
+  if (pinnedFirst?.isPinned) return true;
   if (group.filterConditions === null || group.filterConditions === undefined) return false;
-  if (!isFilterConditionGroup(group.filterConditions)) throw new GroupEvaluationError(group.id, 'invalid_filter');
   if (group.siteId !== null && group.siteId !== device.siteId) return false;
   try {
     return await deviceMatchesFilter(device.id, group.filterConditions);
@@ -223,6 +235,10 @@ export async function groupIncludesDevice(group: GroupForResolution, device: Dev
   }
 }
 ```
+
+The eligibility guard is required because `deviceMatchesFilter` carries no org or ephemeral predicate.
+
+A pinned member of a malformed group still throws `GroupEvaluationError(group.id, 'invalid_filter')`; filter-shape validation precedes the pinned short-circuit.
 
 Every membership read predicates on `group_id` **and** the group's own `org_id` — W02's finding that the membership table's RLS is org-only, so a forged row carrying another tenant's `org_id` and this group's id is visible to a system context. `resolveEffectiveGroupMembers` and `evaluateGroupMembership` are untouched.
 
