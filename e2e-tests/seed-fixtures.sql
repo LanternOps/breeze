@@ -22,6 +22,7 @@ DECLARE
   v_org_id UUID;
   v_site_id UUID;
   v_user_id UUID;
+  v_portal_user_id UUID;
   v_macos_device_id  UUID := '42fc7de0-48f5-48f2-846b-6dd95924baf9';
   v_windows_device_id UUID := 'e65460f3-413c-4599-a9a6-90ee71bbc4ff';
   v_baseline_win UUID;
@@ -32,7 +33,11 @@ DECLARE
   v_patch_moderate UUID;
   v_vuln_critical UUID;
 BEGIN
-  SELECT id INTO v_org_id FROM organizations LIMIT 1;
+  SELECT o.id INTO v_org_id
+  FROM organizations o
+  WHERE EXISTS (SELECT 1 FROM sites s WHERE s.org_id = o.id)
+  ORDER BY o.created_at
+  LIMIT 1;
   IF v_org_id IS NULL THEN
     RAISE NOTICE 'No organization found — run autoMigrate seed first.';
     RETURN;
@@ -56,6 +61,118 @@ BEGIN
     SET setup_completed_at = NOW(),
         preferences = preferences - 'bootstrapSetupRequired'
     WHERE id = v_user_id AND setup_completed_at IS NULL;
+  END IF;
+
+  -- ───────────────────────────────────────────────────────────────────
+  -- Customer portal visibility + report self-service
+  -- Password hash generated with apps/api/src/services/password.ts for
+  -- E2E_PORTAL_PASSWORD's default, PortalTest123!; plaintext is never stored.
+  -- ───────────────────────────────────────────────────────────────────
+  SELECT id INTO v_portal_user_id
+  FROM portal_users
+  WHERE org_id = v_org_id AND email = 'portal@breeze.local'
+  ORDER BY created_at
+  LIMIT 1;
+
+  IF v_portal_user_id IS NULL THEN
+    INSERT INTO portal_users (
+      org_id,
+      email,
+      name,
+      password_hash,
+      auth_method,
+      status
+    ) VALUES (
+      v_org_id,
+      'portal@breeze.local',
+      'E2E Portal Customer',
+      '$argon2id$v=19$m=65536,p=4,t=3$q5hKTRQYCXO6bbaMerNeMA$khldmE+NStz0U5xbEZGHFtSp7MVJ8eVmiGMZ0gAj5oE',
+      'password',
+      'active'
+    )
+    RETURNING id INTO v_portal_user_id;
+  ELSE
+    UPDATE portal_users
+    SET name = 'E2E Portal Customer',
+        password_hash = '$argon2id$v=19$m=65536,p=4,t=3$q5hKTRQYCXO6bbaMerNeMA$khldmE+NStz0U5xbEZGHFtSp7MVJ8eVmiGMZ0gAj5oE',
+        auth_method = 'password',
+        status = 'active',
+        updated_at = NOW()
+    WHERE id = v_portal_user_id;
+  END IF;
+
+  INSERT INTO portal_branding (
+    org_id,
+    enable_reports,
+    enable_self_service
+  ) VALUES (
+    v_org_id,
+    true,
+    false
+  )
+  ON CONFLICT (org_id) DO UPDATE
+    SET enable_reports = EXCLUDED.enable_reports,
+        enable_self_service = EXCLUDED.enable_self_service,
+        updated_at = NOW();
+
+  IF v_user_id IS NOT NULL THEN
+    INSERT INTO reports (
+      org_id,
+      name,
+      type,
+      config,
+      schedule,
+      format,
+      created_by,
+      execution_scope_version,
+      execution_scope_kind,
+      execution_scope_site_ids,
+      execution_scope_user_id,
+      execution_scope_fingerprint,
+      execution_scope_captured_at,
+      execution_scope_principal_kind,
+      portal_self_service
+    ) VALUES
+      (
+        v_org_id,
+        'Customer portal — Executive summary',
+        'executive_summary',
+        '{"dateRange":{"preset":"last_30_days"},"filters":{"siteIds":[]}}'::jsonb,
+        'one_time',
+        'pdf',
+        v_user_id,
+        1,
+        'unrestricted',
+        NULL,
+        v_user_id,
+        repeat('0', 64),
+        NOW(),
+        'user',
+        true
+      ),
+      (
+        v_org_id,
+        'Customer portal — Security & compliance posture',
+        'security_compliance_posture',
+        '{"dateRange":{"preset":"last_30_days"},"sites":[],"windowDays":30,"minPasswordLength":8,"maxLocalAdmins":2,"maxAvDefinitionsAgeDays":7,"maxSecurityStatusAgeDays":30,"includeCis":true,"backupRequired":true}'::jsonb,
+        'one_time',
+        'pdf',
+        v_user_id,
+        1,
+        'unrestricted',
+        NULL,
+        v_user_id,
+        repeat('0', 64),
+        NOW(),
+        'user',
+        true
+      )
+    ON CONFLICT (org_id, type) WHERE portal_self_service = true
+    DO UPDATE SET
+      name = EXCLUDED.name,
+      config = EXCLUDED.config,
+      format = EXCLUDED.format,
+      updated_at = NOW();
   END IF;
 
   -- ───────────────────────────────────────────────────────────────────
