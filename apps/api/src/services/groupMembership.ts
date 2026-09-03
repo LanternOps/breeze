@@ -60,6 +60,77 @@ function isFilterConditionGroup(value: unknown): value is FilterConditionGroup {
   return Array.isArray(maybeGroup.conditions) && typeof maybeGroup.operator === 'string';
 }
 
+export type GroupForResolution = Pick<typeof deviceGroups.$inferSelect, 'id' | 'orgId' | 'type' | 'siteId' | 'filterConditions'>;
+
+/** Thrown by resolveEffectiveGroupMembers when a dynamic group cannot be evaluated.
+ *  Billing maps it to GROUP_EVALUATION_FAILED; never to a zero count. */
+export class GroupEvaluationError extends Error {
+  constructor(
+    public readonly groupId: string,
+    public readonly reason: 'invalid_filter' | 'engine_error',
+    cause?: unknown,
+  ) {
+    super(`device group ${groupId}: ${reason}`, cause === undefined ? undefined : { cause });
+    this.name = 'GroupEvaluationError';
+  }
+}
+
+export interface EffectiveGroupMembers {
+  /** What the group's definition selects: live filter matches (dynamic) or every row (static). */
+  matched: ReadonlySet<string>;
+  /** Pinned rows of a dynamic group (empty for static). The evaluator keeps them even when the filter no longer matches. */
+  pinned: ReadonlySet<string>;
+}
+
+const SLOW_GROUP_EVALUATION_MS = 250;
+
+/**
+ * The one read-only definition of "who is in this group" (#3205 W02). Used by
+ * evaluateGroupMembership (which then diffs and writes) and by contract billing
+ * (which never writes). Every membership read predicates on group_id AND the
+ * group's own org_id: the membership table's RLS is org-only, so a forged row
+ * carrying another org_id and this group's id is visible to the system context.
+ *
+ * - static: matched = all rows, pinned = ∅
+ * - dynamic, filter_conditions NULL: matched = ∅, pinned = pinned rows
+ * - dynamic, malformed non-null filter: throws GroupEvaluationError('invalid_filter')
+ * - dynamic, valid filter: matched = live evaluateFilter within the group's site,
+ *   pinned = pinned rows; an engine error/timeout throws GroupEvaluationError('engine_error')
+ */
+export async function resolveEffectiveGroupMembers(group: GroupForResolution): Promise<EffectiveGroupMembers> {
+  const rows = await db
+    .select({ deviceId: deviceGroupMemberships.deviceId, isPinned: deviceGroupMemberships.isPinned })
+    .from(deviceGroupMemberships)
+    .where(and(eq(deviceGroupMemberships.groupId, group.id), eq(deviceGroupMemberships.orgId, group.orgId)));
+
+  if (group.type !== 'dynamic') {
+    return { matched: new Set(rows.map((r) => r.deviceId)), pinned: new Set() };
+  }
+  const pinned = new Set(rows.filter((r) => r.isPinned).map((r) => r.deviceId));
+  if (group.filterConditions === null || group.filterConditions === undefined) {
+    return { matched: new Set(), pinned };
+  }
+  if (!isFilterConditionGroup(group.filterConditions)) {
+    throw new GroupEvaluationError(group.id, 'invalid_filter');
+  }
+  const started = Date.now();
+  let matched: Set<string>;
+  try {
+    const result = await evaluateFilter(group.filterConditions, {
+      orgId: group.orgId,
+      allowedSiteIds: group.siteId ? [group.siteId] : null,
+    });
+    matched = new Set(result.deviceIds);
+  } catch (err) {
+    throw new GroupEvaluationError(group.id, 'engine_error', err);
+  }
+  const ms = Date.now() - started;
+  if (ms > SLOW_GROUP_EVALUATION_MS) {
+    console.warn(`[groupMembership] slow filter evaluation for group ${group.id} (org ${group.orgId}): ${ms}ms`);
+  }
+  return { matched, pinned };
+}
+
 function uniqueFields(fields: string[]): string[] {
   return [...new Set(fields)].filter(Boolean);
 }
@@ -267,19 +338,12 @@ export async function evaluateGroupMembership(groupId: string): Promise<Membersh
   const filter = group.filterConditions;
   await ensureFilterFieldsUsed(group.id, filter, group.filterFieldsUsed);
 
-  const filterResults = await evaluateFilter(filter, {
-    orgId: group.orgId,
-    allowedSiteIds: group.siteId ? [group.siteId] : null,
-  });
-  const matchingIds = new Set<string>(filterResults.deviceIds);
+  const { matched: matchingIds, pinned: pinnedIds } = await resolveEffectiveGroupMembers(group);
 
   const currentMemberships = await db
-    .select({
-      deviceId: deviceGroupMemberships.deviceId,
-      isPinned: deviceGroupMemberships.isPinned
-    })
+    .select({ deviceId: deviceGroupMemberships.deviceId, isPinned: deviceGroupMemberships.isPinned })
     .from(deviceGroupMemberships)
-    .where(eq(deviceGroupMemberships.groupId, groupId));
+    .where(and(eq(deviceGroupMemberships.groupId, groupId), eq(deviceGroupMemberships.orgId, group.orgId)));
 
   const currentIds = new Set(currentMemberships.map(row => row.deviceId));
   const toAdd: string[] = [];
@@ -340,9 +404,7 @@ export async function evaluateGroupMembership(groupId: string): Promise<Membersh
   let materialized: number | undefined;
   if (toAdd.length > 0 || toRemove.length > 0) {
     const expected = new Set(matchingIds);
-    for (const membership of currentMemberships) {
-      if (membership.isPinned) expected.add(membership.deviceId);
-    }
+    for (const id of pinnedIds) expected.add(id);
     materialized = await countGroupMemberships(groupId);
     if (materialized < expected.size) {
       console.error(
