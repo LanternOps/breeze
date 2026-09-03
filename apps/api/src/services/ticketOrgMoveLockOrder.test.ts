@@ -189,6 +189,15 @@ describe('org-merge walk order honors the canonical ticket child-table lock orde
     ]);
   });
 
+  it('throws on a duplicate ticket child-table entry rather than silently mis-permuting', () => {
+    // Practically unreachable in real callers (topologicalCascadeOrder()
+    // lists each table exactly once), but this is the guard's whole reason
+    // for existing — pin that it actually fires rather than, say, silently
+    // dropping or duplicating a value.
+    const walkOrder = ['tickets', 'time_entries', 'time_entries', 'ticket_parts'];
+    expect(() => applyTicketChildLockOrder(walkOrder)).toThrow(/duplicate/i);
+  });
+
   it('orgMerge.ts routes BOTH of its walk-order computations through applyTicketChildLockOrder', () => {
     // Static contract, not a behavior test: if a future edit adds a second
     // raw computation site or has a walk-order consumer bypass
