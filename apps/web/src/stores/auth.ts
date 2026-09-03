@@ -806,7 +806,10 @@ let ssoExchangeFailed = false;
  * never lands), we make it carry the same destination: whichever navigation
  * wins, the user gets the same specific explanation.
  *
- * Cleared by login(), alongside the sessionExpiryInFlight latch.
+ * Cleared by login(), and — more importantly — by ANY refresh that mints an
+ * access token (see requestTokenRefreshWaitingOutThrottle): a proven-live
+ * session must never carry a previous attempt's SSO verdict into an unrelated
+ * eviction later in the same document.
  */
 export function markSsoExchangeFailed(): void {
   ssoExchangeFailed = true;
@@ -921,6 +924,18 @@ async function requestTokenRefreshWaitingOutThrottle(): Promise<RefreshOutcome> 
     // drop the mask so a wait we entered above can never outlive its cause.
     useAuthStore.getState().setAuthThrottledUntil(null);
     cancelThrottleReload();
+  }
+
+  // A minted access token proves the session is alive, so a previous SSO
+  // exchange failure is no longer the reason for anything (#3704). Clearing it
+  // in login() alone is NOT enough: every cookie-based recovery path lands on
+  // setTokens() without ever calling login(), so the verdict would outlive its
+  // cause and mislabel an unrelated eviction — an idle timeout hours later
+  // reported as "SSO sign-in failed", with its `next` deep link dropped too.
+  // Every refresh in the app funnels through here, so this is the one place
+  // that catches all of them.
+  if (outcome.kind === 'restored') {
+    ssoExchangeFailed = false;
   }
 
   return outcome;
@@ -1221,8 +1236,9 @@ export function handleSessionExpired(reason: SessionExpiredReason = 'session-exp
     // refreshes report (#3704): it is the actual reason the session is dead,
     // and it is the only one of the two the user can act on. Landing on the
     // exact URL AuthOverlay is already navigating to makes it irrelevant which
-    // of the two wins — and no `next` deep link is dropped, because the SSO
-    // handoff has none to preserve.
+    // of the two wins. Dropping `next` is safe precisely BECAUSE the verdict is
+    // cleared by any successful refresh: it can only still be set while the SSO
+    // bounce is the live cause, and that handoff has no deep link to preserve.
     if (ssoExchangeFailed) {
       window.location.replace(SSO_EXCHANGE_FAILED_LOGIN_PATH);
       return;

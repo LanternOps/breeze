@@ -4,6 +4,7 @@ import {
   fetchWithAuth,
   handleSessionExpired,
   markSsoExchangeFailed,
+  restoreAccessTokenFromCookieDetailed,
   settleSsoLoginGate,
   SSO_EXCHANGE_FAILED_LOGIN_PATH,
   useAuthStore,
@@ -136,6 +137,45 @@ describe('a terminally failed SSO exchange outranks the generic expiry (#3704)',
       const target = String(loc.replace.mock.calls[0][0]);
       expect(target).toContain('reason=session-expired');
       expect(target).not.toContain('sso_exchange_failed');
+    } finally {
+      loc.restore();
+    }
+  });
+
+  it('does not let the verdict outlive a session that a plain refresh restored', async () => {
+    // The leak that login()-only clearing misses: every cookie-based recovery
+    // path (restoreAccessTokenFromCookieDetailed, fetchWithAuth's bootstrap and
+    // its 401 replay) lands on setTokens() WITHOUT calling login(). A stray
+    // `#ssoCode=` on a page whose refresh cookie is actually fine sets the
+    // verdict, the refresh then succeeds, and the user is legitimately signed
+    // in — an unrelated idle timeout hours later must not be reported as an SSO
+    // failure, nor drop its `next` deep link.
+    markSsoExchangeFailed();
+
+    global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes('/auth/refresh')) {
+        return new Response(
+          JSON.stringify({ tokens: { accessToken: 'restored', expiresInSeconds: 900 } }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify({}), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }) as typeof fetch;
+    useAuthStore.setState({ isAuthenticated: true, tokens: null });
+
+    await expect(restoreAccessTokenFromCookieDetailed()).resolves.toBe('restored');
+
+    const loc = mockLocation('/tickets/42');
+    try {
+      handleSessionExpired('idle');
+      const target = String(loc.replace.mock.calls[0][0]);
+      expect(target).not.toContain('sso_exchange_failed');
+      expect(target).toContain('reason=idle');
+      // The deep link the SSO branch deliberately drops must survive here.
+      expect(target).toContain('next=');
     } finally {
       loc.restore();
     }
