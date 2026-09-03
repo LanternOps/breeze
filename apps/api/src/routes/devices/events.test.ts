@@ -23,9 +23,9 @@ vi.mock('../../db', () => ({
             feedWhereArgs.push(cond);
             return {
               orderBy: vi.fn(() => ({
-                limit: vi.fn(() => ({
-                  offset: vi.fn().mockResolvedValue([])
-                }))
+                // Each feed arm is a bounded `limit(offset + limit)` read; the
+                // page is cut client-side by mergeFeedPage. No `.offset()`.
+                limit: vi.fn().mockResolvedValue([])
               }))
             };
           })
@@ -86,7 +86,7 @@ vi.mock('./helpers', () => ({
   SITE_ACCESS_DENIED: Symbol('SITE_ACCESS_DENIED'),
 }));
 
-import { eventsRoutes, likePrefixPattern, formatActionMessage } from './events';
+import { eventsRoutes, likePrefixPattern, formatActionMessage, mergeFeedPage } from './events';
 
 describe('likePrefixPattern (action-prefix LIKE escaping)', () => {
   it('appends a trailing wildcard for a clean dotted prefix', () => {
@@ -253,7 +253,8 @@ describe('GET /devices/:id/events validation', () => {
     expect(res.status).toBe(200);
     const json = (await res.json()) as { pagination: { total: number | null } };
     expect(json.pagination.total).toBe(0);
-    expect(countQueryCalls).toHaveBeenCalledTimes(1);
+    // One count per feed arm (resource arm + details arm), summed.
+    expect(countQueryCalls).toHaveBeenCalledTimes(2);
   });
 
   it('rejects an invalid withTotal value with 400', async () => {
@@ -289,9 +290,100 @@ describe("GET /devices/:id/events — org scoping of the audit feed (BREEZE-B)",
     // this predicate). Assert the org column and the device's org id are both
     // in the WHERE, so removing the scoping fails here rather than silently
     // regressing to a seq scan in production.
-    expect(feedWhereArgs).toHaveLength(1);
-    const serialized = JSON.stringify(feedWhereArgs[0]);
-    expect(serialized).toContain('org_id');
-    expect(serialized).toContain('org-123');
+    expect(feedWhereArgs).toHaveLength(2);
+    for (const arm of feedWhereArgs) {
+      const serialized = JSON.stringify(arm);
+      expect(serialized).toContain('org_id');
+      expect(serialized).toContain('org-123');
+    }
+  });
+});
+
+// The feed runs as breeze_app under forced RLS, where only leakproof clauses
+// can become index conditions. These tests pin the SHAPE of each arm's WHERE so
+// a refactor cannot quietly re-merge the arms into the one-query form that
+// walked the whole org (2.4M rows, 13-minute page loads on US, 2026-09-03).
+// The runtime proof that the shapes actually hit the partial indexes lives in
+// __tests__/integration/deviceEventsFeedIndexes.integration.test.ts.
+describe('GET /devices/:id/events — two-arm feed predicate (RLS index promotability)', () => {
+  let app: Hono;
+  const DEVICE = '11111111-1111-1111-1111-111111111111';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    feedWhereArgs.length = 0;
+    app = new Hono();
+    app.route('/devices', eventsRoutes);
+  });
+
+  async function arms(query: string) {
+    const res = await app.request(`/devices/${DEVICE}/events${query}`, {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' },
+    });
+    expect(res.status).toBe(200);
+    expect(feedWhereArgs).toHaveLength(2);
+    return {
+      resource: JSON.stringify(feedWhereArgs[0]),
+      details: JSON.stringify(feedWhereArgs[1]),
+    };
+  }
+
+  it('resource arm keys on resource_id only — never the non-leakproof details->>deviceId', async () => {
+    const { resource } = await arms('');
+    expect(resource).toContain('resource_id');
+    expect(resource).not.toContain("->>'deviceId'");
+  });
+
+  it('details arm carries the JSONB test, the non-agent predicate and the disjointness guard', async () => {
+    const { details } = await arms('');
+    expect(details).toContain("->>'deviceId'");
+    expect(details).toContain("? 'deviceId'");
+    expect(details).toContain("<> 'agent'");
+    expect(details).toContain('IS DISTINCT FROM');
+  });
+
+  it('unfiltered Activities feed keeps agent rows in the resource arm (no actor exclusion)', async () => {
+    const { resource } = await arms('?limit=50&withTotal=true');
+    expect(resource).not.toContain("<> 'agent'");
+  });
+
+  it('deliberate-action feed adds actor_type <> agent to the resource arm so the partial index applies', async () => {
+    const { resource } = await arms('?actions=script.,device.command&includeAutomated=true');
+    expect(resource).toContain("<> 'agent'");
+    expect(resource).toContain('LIKE');
+  });
+
+  it('includeAutomated alone also counts as the deliberate feed', async () => {
+    const { resource } = await arms('?includeAutomated=true');
+    expect(resource).toContain("<> 'agent'");
+    // The automated arm is system-only; the agent's own command-result rows
+    // are telemetry.
+    expect(resource).toContain("= 'system'");
+    expect(resource).not.toContain("'agent')");
+  });
+});
+
+describe('mergeFeedPage (two-arm page merge)', () => {
+  const row = (id: string, ts: string) => ({ id, timestamp: new Date(ts) });
+
+  it('interleaves both arms newest-first and cuts the page', () => {
+    const a = [row('a3', '2026-01-03T00:00:00Z'), row('a1', '2026-01-01T00:00:00Z')];
+    const b = [row('b2', '2026-01-02T00:00:00Z')];
+    expect(mergeFeedPage(a, b, 0, 10).map((r) => r.id)).toEqual(['a3', 'b2', 'a1']);
+    expect(mergeFeedPage(a, b, 1, 1).map((r) => r.id)).toEqual(['b2']);
+    expect(mergeFeedPage(a, b, 2, 5).map((r) => r.id)).toEqual(['a1']);
+  });
+
+  it('breaks timestamp ties by id DESC, matching the SQL ORDER BY', () => {
+    const a = [row('aaaa', '2026-01-01T00:00:00Z')];
+    const b = [row('bbbb', '2026-01-01T00:00:00Z')];
+    expect(mergeFeedPage(a, b, 0, 10).map((r) => r.id)).toEqual(['bbbb', 'aaaa']);
+  });
+
+  it('applies the offset even when one arm is empty', () => {
+    const a = [row('a3', '2026-01-03T00:00:00Z'), row('a2', '2026-01-02T00:00:00Z'), row('a1', '2026-01-01T00:00:00Z')];
+    expect(mergeFeedPage(a, [], 1, 1).map((r) => r.id)).toEqual(['a2']);
+    expect(mergeFeedPage([], a, 2, 5).map((r) => r.id)).toEqual(['a1']);
   });
 });
