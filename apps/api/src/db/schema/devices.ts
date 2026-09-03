@@ -481,8 +481,9 @@ export const deviceGroupMemberships = pgTable('device_group_memberships', {
   // 2026-10-08-101100-device-group-memberships-composite-tenant-fks.sql, which
   // also declares them DEFERRABLE INITIALLY IMMEDIATE (drizzle-orm's
   // foreignKey() builder has no deferrable option, so that detail lives in the
-  // migration only) and adds the BEFORE-trigger that detaches memberships on a
-  // cross-org device move. Declared here for db:check-drift.
+  // migration only) and adds the detach — to breeze_cascade_device_org_id(),
+  // an AFTER trigger — that drops these rows on a cross-org device move.
+  // Declared here for db:check-drift.
   groupOrgFk: foreignKey({
     columns: [table.groupId, table.orgId],
     foreignColumns: [deviceGroups.id, deviceGroups.orgId],

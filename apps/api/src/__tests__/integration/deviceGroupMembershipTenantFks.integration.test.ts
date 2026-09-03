@@ -15,9 +15,13 @@
  *      while its group_id kept naming the SOURCE org's group — producing the
  *      forged shape through ordinary supported use. With the FKs in place and
  *      no detach, that same re-stamp would abort the move outright.
- *   3. The detach really is a BEFORE trigger and really does beat the device
- *      FK's end-of-statement RI check. That ordering is decided by Postgres,
- *      and a mocked suite cannot see it at all.
+ *   3. The detach — inside breeze_cascade_device_org_id(), an AFTER UPDATE OF
+ *      org_id row trigger — really does beat the device FK's RI check, which
+ *      is what INITIALLY DEFERRED buys. That ordering is decided by Postgres,
+ *      and a mocked suite cannot see it at all. (A BEFORE trigger is not an
+ *      option here: memberships carry
+ *      breeze_touch_devices_after_membership_delete, which UPDATEs devices, so
+ *      deleting them before the row update aborts with SQLSTATE 27000.)
  *   4. FORCE ROW LEVEL SECURITY on `device_group_memberships` does not
  *      silently make the detach a zero-row no-op for the unprivileged
  *      `breeze_app` role.
@@ -314,6 +318,122 @@ describe('cross-org device move detaches group memberships (#3182)', () => {
   });
 });
 
+describe('migration pre-flight repair (#3182)', () => {
+  // The migration deletes rows that already violated the invariant before the
+  // FKs existed — the accumulated residue of every past cross-org device move.
+  // That statement can never run again on a database that has the constraints,
+  // so this replays it the only way it can be replayed: both FKs are
+  // DEFERRABLE, so a transaction can defer them, create the exact rows the
+  // pre-flight is meant to find, run the migration's own DELETE verbatim, and
+  // commit — a commit that would itself 23503 if the repair had missed one.
+  //
+  // The one property no other test can reach: a row violating BOTH axes must
+  // be counted once, not twice. The migration reports the real ROW_COUNT of
+  // the union rather than summing the two per-axis counts, and the assertion
+  // below is what pins that.
+  // The migration's DELETE, verbatim apart from the trailing device_id filter,
+  // which keeps the reported ROW_COUNT deterministic when integration shards
+  // share a database. The two EXISTS clauses — the part under test — are
+  // unchanged, including the OR that makes a both-axes row one deletion.
+  const repairSql = (deviceIds: string[]) => sql`
+    DELETE FROM device_group_memberships m
+     WHERE (
+             EXISTS (
+               SELECT 1 FROM device_groups g
+                WHERE g.id = m.group_id AND g.org_id <> m.org_id
+             )
+             OR EXISTS (
+               SELECT 1 FROM devices d
+                WHERE d.id = m.device_id AND d.org_id <> m.org_id
+             )
+           )
+       AND m.device_id IN (${sql.join(deviceIds.map((id) => sql`${id}::uuid`), sql`, `)})
+  `;
+
+  it('deletes every violating row — group-axis, device-axis, and both at once — and leaves valid rows alone', async () => {
+    const f = await seed();
+
+    const counts = await getTestDb().transaction(async (tx) => {
+      await tx.execute(sql`SET CONSTRAINTS ALL DEFERRED`);
+      // The two forged rows below are stamped with DIFFERENT orgs, and each
+      // INSERT's breeze_touch_devices_after_membership_insert acquires the
+      // partner-export lock for its own row's org — so without this, the
+      // second insert raises 'locks must be acquired in ascending UUID order'
+      // whenever the random org uuids happen to land in the wrong sequence.
+      // Take both up front, exactly as breeze_cascade_device_org_id() does for
+      // the same reason (see the migration's header).
+      await tx.execute(
+        sql`SELECT breeze_partner_export_lock_orgs_exclusive(ARRAY[${f.sourceOrgId}::uuid, ${f.targetOrgId}::uuid])`,
+      );
+
+      // group-axis only: the device's org matches the row, the group's does not.
+      await tx.execute(sql`
+        INSERT INTO device_group_memberships (device_id, group_id, org_id)
+        VALUES (${f.targetDeviceId}::uuid, ${f.sourceGroupId}::uuid, ${f.targetOrgId}::uuid)
+      `);
+      // BOTH axes: a second target-org group, a target-org device, stamped
+      // with the SOURCE org — so neither parent is in the stamped org.
+      // Counted once by the migration's union, twice by a naive sum.
+      // (A distinct group is needed because (device_id, group_id) is the PK.)
+      const [secondTargetGroup] = await tx.execute<{ id: string }>(sql`
+        INSERT INTO device_groups (org_id, name, type)
+        VALUES (${f.targetOrgId}::uuid, ${`dgm-preflight-${uid()}`}, 'static')
+        RETURNING id
+      `);
+      await tx.execute(sql`
+        INSERT INTO device_group_memberships (device_id, group_id, org_id)
+        VALUES (${f.targetDeviceId}::uuid, ${secondTargetGroup!.id}::uuid, ${f.sourceOrgId}::uuid)
+      `);
+
+      // Scoped to this fixture's devices, not the whole table: integration
+      // shards share one database, so a global count here would make the
+      // assertions depend on what else is mid-flight.
+      const scope = sql`m.device_id IN (${f.deviceId}::uuid, ${f.stayerId}::uuid, ${f.targetDeviceId}::uuid)`;
+      const [groupAxis] = await tx.execute<{ n: string }>(sql`
+        SELECT count(*)::text AS n FROM device_group_memberships m
+          JOIN device_groups g ON g.id = m.group_id WHERE g.org_id <> m.org_id AND ${scope}
+      `);
+      const [deviceAxis] = await tx.execute<{ n: string }>(sql`
+        SELECT count(*)::text AS n FROM device_group_memberships m
+          JOIN devices d ON d.id = m.device_id WHERE d.org_id <> m.org_id AND ${scope}
+      `);
+
+      const deleted = await tx.execute(repairSql([f.deviceId, f.stayerId, f.targetDeviceId]));
+
+      const [remaining] = await tx.execute<{ n: string }>(sql`
+        SELECT count(*)::text AS n FROM device_group_memberships m WHERE ${scope}
+      `);
+      // Committing here is itself the assertion that the repair was complete:
+      // the deferred FKs are checked now, and any missed row would 23503.
+      return {
+        groupAxis: Number(groupAxis!.n),
+        deviceAxis: Number(deviceAxis!.n),
+        deleted: deleted.count,
+        remaining: Number(remaining!.n),
+      };
+    });
+
+    expect(counts.groupAxis, 'both forged rows name a group in the wrong org').toBe(2);
+    expect(counts.deviceAxis, 'only the second forged row ALSO names a device in the wrong org').toBe(1);
+    expect(
+      counts.deleted,
+      'the union must delete 2 rows, not 3 — the row violating BOTH axes is one row, which is why the migration reports ROW_COUNT rather than groupAxis + deviceAxis',
+    ).toBe(2);
+    expect(counts.remaining, 'the three legitimate same-org memberships survive').toBe(3);
+
+    // And the survivors are exactly the seeded, valid ones.
+    expect(await readMemberships(f.deviceId)).toEqual([
+      { groupId: f.sourceGroupId, orgId: f.sourceOrgId },
+    ]);
+    expect(await readMemberships(f.stayerId)).toEqual([
+      { groupId: f.sourceGroupId, orgId: f.sourceOrgId },
+    ]);
+    expect(await readMemberships(f.targetDeviceId)).toEqual([
+      { groupId: f.targetGroupId, orgId: f.targetOrgId },
+    ]);
+  });
+});
+
 describe('backupSlaWorker target resolution is org-scoped (#3182)', () => {
   // The composite FKs cannot reach this one: backup_sla_configs.target_groups
   // is a plain jsonb id array with no FK behind it, and POST/PATCH
@@ -321,23 +441,44 @@ describe('backupSlaWorker target resolution is org-scoped (#3182)', () => {
   // org B naming org A's group id stays possible after the FKs land, and the
   // worker's own org predicate is the only thing that stops it — while the
   // worker runs under a system DB context with no RLS behind it.
-  it('a config naming ANOTHER org\'s group id resolves no devices', async () => {
-    const f = await seed();
-    const { resolveTargetDeviceIds } = await import('../../jobs/backupSlaWorker');
-
-    const [foreign] = await (getTestDb() as never as AdminDb)
+  const seedConfig = async (
+    orgId: string,
+    targets: { targetGroups?: string[]; targetDevices?: string[] },
+  ) => {
+    const [row] = await (getTestDb() as never as AdminDb)
       .insert(backupSlaConfigs)
       .values({
         id: randomUUID(),
-        orgId: f.targetOrgId,
-        name: `foreign-sla-${uid()}`,
+        orgId,
+        name: `sla-${uid()}`,
         rpoTargetMinutes: 60,
         rtoTargetMinutes: 60,
-        targetGroups: [f.sourceGroupId],
-        targetDevices: [f.deviceId],
+        targetGroups: targets.targetGroups ?? [],
+        targetDevices: targets.targetDevices ?? [],
         isActive: true,
       } as never)
       .returning();
+    return row;
+  };
+
+  // Split from the direct-device case below on purpose: both vectors resolve
+  // the same device id, so a combined fixture could not say WHICH clamp broke.
+  it('a config naming ANOTHER org\'s GROUP id resolves no devices', async () => {
+    const f = await seed();
+    const { resolveTargetDeviceIds } = await import('../../jobs/backupSlaWorker');
+    const foreign = await seedConfig(f.targetOrgId, { targetGroups: [f.sourceGroupId] });
+
+    const resolved = await withSystemDbAccessContext(() =>
+      resolveTargetDeviceIds(foreign as never),
+    );
+
+    expect(resolved, 'a foreign group\'s members may not be resolved for another org\'s SLA config').toEqual([]);
+  });
+
+  it('a config naming ANOTHER org\'s DEVICE id directly resolves no devices', async () => {
+    const f = await seed();
+    const { resolveTargetDeviceIds } = await import('../../jobs/backupSlaWorker');
+    const foreign = await seedConfig(f.targetOrgId, { targetDevices: [f.deviceId] });
 
     const resolved = await withSystemDbAccessContext(() =>
       resolveTargetDeviceIds(foreign as never),
@@ -345,7 +486,7 @@ describe('backupSlaWorker target resolution is org-scoped (#3182)', () => {
 
     expect(
       resolved,
-      'neither the foreign group\'s member nor the directly-named foreign device may be resolved for another org\'s SLA config',
+      'target_devices is written through by POST/PATCH /backup/sla with no ownership check, so the worker\'s own clamp is the only thing standing here',
     ).toEqual([]);
   });
 
@@ -353,19 +494,10 @@ describe('backupSlaWorker target resolution is org-scoped (#3182)', () => {
     const f = await seed();
     const { resolveTargetDeviceIds } = await import('../../jobs/backupSlaWorker');
 
-    const [own] = await (getTestDb() as never as AdminDb)
-      .insert(backupSlaConfigs)
-      .values({
-        id: randomUUID(),
-        orgId: f.sourceOrgId,
-        name: `own-sla-${uid()}`,
-        rpoTargetMinutes: 60,
-        rtoTargetMinutes: 60,
-        targetGroups: [f.sourceGroupId],
-        targetDevices: [f.stayerId],
-        isActive: true,
-      } as never)
-      .returning();
+    const own = await seedConfig(f.sourceOrgId, {
+      targetGroups: [f.sourceGroupId],
+      targetDevices: [f.stayerId],
+    });
 
     const resolved = await withSystemDbAccessContext(() =>
       resolveTargetDeviceIds(own as never),

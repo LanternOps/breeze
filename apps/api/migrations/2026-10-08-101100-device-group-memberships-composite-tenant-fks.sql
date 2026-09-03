@@ -189,6 +189,17 @@ BEGIN
   -- acquires one. Every later request for either org then hits the helper's
   -- already-held short-circuit and is a no-op.
   --
+  -- Note for a future bulk-move feature: this runs PER ROW, so it sorts one
+  -- (OLD, NEW) pair at a time, whereas breeze_partner_export_devices_update
+  -- sorts the whole statement's distinct org set in one pass and is therefore
+  -- order-independent. Every devices.org_id writer today carries a SINGLE org
+  -- pair per statement -- moveOrg.ts updates exactly one device, and the org
+  -- merge's bulk repoint is always (loser -> survivor) and is skipped by the
+  -- fence below anyway -- so per-row sorting is equivalent. A statement that
+  -- moved devices between SEVERAL different org pairs at once could visit rows
+  -- in an order that violates the ascending rule; such a feature must either
+  -- keep one org pair per statement or pre-acquire the whole set here.
+  --
   -- Skipped while the SOURCE org is fenced for a merge: a merge moves the
   -- devices AND their groups to the same survivor together (orgMerge.ts /
   -- orgMergeRegistry.ts REPOINT_TABLES lists devices, device_groups and
