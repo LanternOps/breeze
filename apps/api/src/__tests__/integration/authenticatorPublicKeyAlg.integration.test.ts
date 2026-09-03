@@ -43,11 +43,12 @@ async function seedUser(): Promise<string> {
 }
 
 afterAll(async () => {
-  const db = getTestDb();
+  // setup.ts TRUNCATEs core tenant tables between tests; this is a harmless
+  // FK-ordered superset for anything that survived.
   for (const partnerId of seededPartnerIds) {
-    await db.execute(sql`DELETE FROM users WHERE partner_id = ${partnerId}::uuid`);
-    await db.execute(sql`DELETE FROM organizations WHERE partner_id = ${partnerId}::uuid`);
-    await db.execute(sql`DELETE FROM partners WHERE id = ${partnerId}::uuid`);
+    await getTestDb().execute(sql`DELETE FROM users WHERE partner_id = ${partnerId}::uuid`);
+    await getTestDb().execute(sql`DELETE FROM organizations WHERE partner_id = ${partnerId}::uuid`);
+    await getTestDb().execute(sql`DELETE FROM partners WHERE id = ${partnerId}::uuid`);
   }
 });
 
@@ -73,17 +74,17 @@ describe('authenticator_devices.public_key_alg (migration 2026-10-06-120000)', (
 
   it('accepts both supported algorithms, and an insert that omits it lands on RS256', async () => {
     const userId = await seedUser();
-    await withSystemDbAccessContext(async (db) => {
-      await db.execute(sql`
+    await withSystemDbAccessContext(async () => {
+      await getTestDb().execute(sql`
         INSERT INTO authenticator_devices (user_id, kind, label, public_key, is_platform_bound)
         VALUES (${userId}::uuid, 'mobile_hw_key', 'legacy', 'spki-rsa', false)
       `);
-      await db.execute(sql`
+      await getTestDb().execute(sql`
         INSERT INTO authenticator_devices (user_id, kind, label, public_key, is_platform_bound, public_key_alg)
         VALUES (${userId}::uuid, 'mobile_hw_key', 'attested', 'spki-ec', false, 'ES256')
       `);
 
-      const rows = (await db.execute(sql`
+      const rows = (await getTestDb().execute(sql`
         SELECT label, public_key_alg FROM authenticator_devices
         WHERE user_id = ${userId}::uuid ORDER BY label
       `)) as unknown as { label: string; public_key_alg: string }[];
@@ -99,22 +100,32 @@ describe('authenticator_devices.public_key_alg (migration 2026-10-06-120000)', (
     // toMobileKeyAlg() fails closed on an unknown label, so such a row could
     // never satisfy an approval. It should not be storable in the first place.
     const userId = await seedUser();
-    await withSystemDbAccessContext(async (db) => {
-      await expect(
-        db.execute(sql`
+    // drizzle wraps the top-level message as "Failed query: ..." and surfaces
+    // the postgres.js error on `.cause` — same convention as authenticatorRls
+    // and the W01 attestation suite.
+    let caught: unknown;
+    try {
+      await withSystemDbAccessContext(async () =>
+        getTestDb().execute(sql`
           INSERT INTO authenticator_devices (user_id, kind, label, public_key, is_platform_bound, public_key_alg)
           VALUES (${userId}::uuid, 'mobile_hw_key', 'bad', 'spki', false, 'HS256')
         `),
-      ).rejects.toThrow(/authenticator_devices_public_key_alg_chk|violates check constraint/i);
-    });
+      );
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeDefined();
+    const cause = (caught as { cause?: { message?: string; constraint_name?: string } }).cause;
+    expect(cause?.constraint_name).toBe('authenticator_devices_public_key_alg_chk');
+    expect(cause?.message).toMatch(/violates check constraint/i);
   });
 
   it('re-applies as a true no-op (idempotent), preserving an existing ES256 row', async () => {
     // autoMigrate keys `breeze_migrations` on filename; a replay must not reset
     // a classified row back to the default.
     const userId = await seedUser();
-    await withSystemDbAccessContext(async (db) => {
-      await db.execute(sql`
+    await withSystemDbAccessContext(async () => {
+      await getTestDb().execute(sql`
         INSERT INTO authenticator_devices (user_id, kind, label, public_key, is_platform_bound, public_key_alg)
         VALUES (${userId}::uuid, 'mobile_hw_key', 'attested', 'spki-ec', false, 'ES256')
       `);
@@ -124,8 +135,8 @@ describe('authenticator_devices.public_key_alg (migration 2026-10-06-120000)', (
     await getTestDb().execute(sql.raw(full));
     await getTestDb().execute(sql.raw(full));
 
-    await withSystemDbAccessContext(async (db) => {
-      const rows = (await db.execute(sql`
+    await withSystemDbAccessContext(async () => {
+      const rows = (await getTestDb().execute(sql`
         SELECT public_key_alg FROM authenticator_devices WHERE user_id = ${userId}::uuid
       `)) as unknown as { public_key_alg: string }[];
       expect(rows.map((r) => r.public_key_alg)).toEqual(['ES256']);
