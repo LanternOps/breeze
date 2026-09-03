@@ -133,7 +133,12 @@ describe('acceptQuote hash version write (#3205 W05)', () => {
   });
 
   it('writes hashVersion 2 beside the acceptance hash', async () => {
-    const recurringLine = { ...descriptorLine, deviceGroupId: null };
+    // A plain recurring line (no descriptor): after Task 9, a group NAME beside a
+    // NULL id is the deleted-group orphan state and acceptance refuses it.
+    const recurringLine = {
+      ...descriptorLine, contractLineType: null, deviceRoles: null, deviceGroupId: null, deviceGroupName: null,
+      siteId: null, siteName: null, includedQuantity: null, overageMode: null, overageUnitPrice: null,
+    };
     results.push(
       [quote], [], [recurringLine], [{ prefix: 'INV', termsDays: 30, settings: {} }],
       [{ id: 'a1' }], [{ id: 'i1' }], [], [], [{ ...quote, status: 'converted' }],
