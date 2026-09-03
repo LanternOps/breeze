@@ -5762,11 +5762,19 @@ func toWSCommandResult(commandID string, result tools.CommandResult) websocket.C
 		ExitCode:  result.ExitCode,
 		Stdout:    result.Stdout,
 		Stderr:    result.Stderr,
+		Error:     result.Error,
 	}
 
-	if result.Error != "" {
-		wsResult.Error = result.Error
-	} else if result.Stdout != "" {
+	// An explicitly-set Result wins. The stdout reparse below stays for the
+	// handlers that depend on it (discovery, backup, snmp, monitor read
+	// `result`, not stdout) but must never clobber a handler that built a
+	// structured payload on purpose — #2698's customFieldWrites envelope is the
+	// first such payload on the script path. The Error-suppresses-reparse
+	// behavior is unchanged: an errored command's raw stdout must not be
+	// mistaken for a successful structured result.
+	if result.Result != nil {
+		wsResult.Result = result.Result
+	} else if result.Error == "" && result.Stdout != "" {
 		var jsonResult any
 		if err := json.Unmarshal([]byte(result.Stdout), &jsonResult); err == nil {
 			wsResult.Result = jsonResult
