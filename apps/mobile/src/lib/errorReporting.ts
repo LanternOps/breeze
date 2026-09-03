@@ -31,8 +31,22 @@ export function reportInternalError(err: unknown, area: string): void {
           `${area} failed: ${apiErr?.statusCode ?? '?'} ${apiErr?.message ?? String(err)}`.trim(),
         );
 
+  // A real `ApiError` is `instanceof Error` and takes the branch above
+  // unchanged, but Sentry does not auto-serialize a thrown Error subclass's
+  // own `code`/`statusCode` properties (no extraErrorDataIntegration
+  // configured) — attach them explicitly so the HTTP status/code survives
+  // into the event instead of only living in the stack trace.
+  const apiExtra =
+    apiErr && (apiErr.code !== undefined || apiErr.statusCode !== undefined)
+      ? { code: apiErr.code, statusCode: apiErr.statusCode }
+      : null;
+
   Sentry.captureException(normalized, {
     tags: { area },
-    ...(err instanceof Error ? {} : { extra: { apiError: err } }),
+    ...(err instanceof Error
+      ? apiExtra
+        ? { extra: apiExtra }
+        : {}
+      : { extra: { apiError: err } }),
   });
 }

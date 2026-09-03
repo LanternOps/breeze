@@ -74,12 +74,21 @@ describe('changePassword', () => {
       response(429, { error: 'Too many attempts', code: 'rate_limited' }),
     );
 
-    await expect(changePassword('a', 'b')).rejects.toBeInstanceOf(ApiError);
-    await expect(changePassword('a', 'b')).rejects.toBeInstanceOf(Error);
-    fetchWithTimeout.mockResolvedValueOnce(
-      response(429, { error: 'Too many attempts', code: 'rate_limited' }),
-    );
-    await expect(changePassword('a', 'b')).rejects.toMatchObject({
+    // One caught value, asserted three ways — a separate `mockResolvedValueOnce`
+    // per `expect(...).rejects` call would starve the queue after the first
+    // await (vitest's mock queue is consumed per call), leaving later calls to
+    // resolve `undefined` and fail somewhere unrelated (`response.headers` on
+    // `undefined`) rather than re-exercising this path.
+    let caught: unknown;
+    try {
+      await changePassword('a', 'b');
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeInstanceOf(ApiError);
+    expect(caught).toBeInstanceOf(Error);
+    expect(caught).toMatchObject({
       message: 'Too many attempts',
       code: 'rate_limited',
       statusCode: 429,
