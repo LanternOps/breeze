@@ -63,7 +63,7 @@ func TestScheduleRebootHonoursTheDeferralBudget(t *testing.T) {
 	deadline := time.Now().Add(3 * time.Hour).UTC().Truncate(time.Second)
 	res := handleScheduleReboot(h, Command{Payload: map[string]any{
 		"delayMinutes": float64(15), "reason": "Patch", "source": "patch_job",
-		"deadline":     deadline.Format(time.RFC3339),
+		"deadline":      deadline.Format(time.RFC3339),
 		"allowDeferral": true, "maxDeferrals": float64(2), "deferralMinutes": float64(60),
 	}})
 	if res.Status != "completed" {
@@ -83,7 +83,7 @@ func TestScheduleRebootHonoursTheDeferralBudget(t *testing.T) {
 func TestScheduleRebootIgnoresUnknownPayloadKeys(t *testing.T) {
 	h := newTestHeartbeatWithRebootManager(t)
 	res := handleScheduleReboot(h, Command{Payload: map[string]any{
-		"delayMinutes": float64(15),
+		"delayMinutes":  float64(15),
 		"allowDeferral": true, "maxDeferrals": float64(1), "deferralMinutes": float64(30),
 		"deferralChoices": []any{"15m", "1h"}, "somethingFromTheFuture": map[string]any{"a": 1},
 	}})
