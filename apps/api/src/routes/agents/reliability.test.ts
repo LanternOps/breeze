@@ -322,6 +322,31 @@ describe('agent reliability ingestion route', () => {
     expect(auditDepth).toBe(0); // audit is OUTSIDE the org transaction
     expect(vi.mocked(withDbAccessContext)).toHaveBeenCalled(); // insert WAS wrapped
   });
+
+  // #4673 W02 — this route is in SELF_MANAGED_DB_CONTEXT_ACTIONS, so it skips
+  // agentAuthMiddleware's request-long wrap and hand-builds its own context.
+  // That means it must copy `currentPartnerId` across from the agent context
+  // itself; nothing inherits it for free here.
+  //
+  // Without this assertion, reverting `currentPartnerId` to `null` in
+  // reliability.ts passes every other test in this file (verified by mutation)
+  // — the exact silent-zero regression #4673 exists to prevent, just scoped to
+  // one route.
+  it('carries currentPartnerId from the agent context onto its self-managed org context (#4673 W02)', async () => {
+    const app = buildApp();
+    const res = await app.request('/agents/agent-123/reliability', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+
+    expect(res.status).toBe(200);
+    const ctx = vi.mocked(withDbAccessContext).mock.calls[0]?.[0] as unknown as Record<string, unknown>;
+    expect(ctx.currentPartnerId).toBe('partner-1');
+    expect(ctx.orgId).toBe('org-1');
+    // Read-only axis only — the write-capable partner AXIS stays empty.
+    expect(ctx.accessiblePartnerIds).toEqual([]);
+  });
 });
 
 describe('reliability ingest — requireAgentRole gate (F8)', () => {

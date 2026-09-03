@@ -13,6 +13,8 @@ const ingestRollbackObservationMock = vi.hoisted(() => vi.fn());
 // manifest-trust-keyset fetch happens AFTER the org DB context closes
 // (the #1105 pool-poison fix). Reset per test.
 const callOrder: string[] = [];
+// #4673 W02 — org contexts opened by the heartbeat's self-managed wrap.
+const orgDbContexts: Array<Record<string, unknown>> = [];
 
 const recordAgentHealthObservationMock = vi.hoisted(() => vi.fn(async (_input: unknown) => ({
   observationId: 'health-observation-1',
@@ -46,7 +48,13 @@ vi.mock('../../db', () => ({
   // Pass-through that records when the org-scoped context opens and when its
   // callback resolves — in production the org transaction is released at the
   // latter point.
-  withDbAccessContext: async (_ctx: unknown, fn: () => Promise<unknown>) => {
+  // #4673 W02 — also RECORDS the context object. The heartbeat is in
+  // SELF_MANAGED_DB_CONTEXT_ACTIONS, so it skips agentAuthMiddleware's
+  // request-long wrap and hand-builds this context itself; the only way to
+  // prove it copies `currentPartnerId` across from the agent context is to
+  // inspect what it passed.
+  withDbAccessContext: async (ctx: unknown, fn: () => Promise<unknown>) => {
+    orgDbContexts.push(ctx as Record<string, unknown>);
     callOrder.push('dbContext:opened');
     const result = await fn();
     callOrder.push('dbContext:released');
@@ -449,6 +457,38 @@ describe('POST /agents/:id/heartbeat — reachability ownership', () => {
     insertMock.mockReset();
     getActiveTrustKeysetMock.mockResolvedValue([]);
     getActiveManifestKeyDelegationsMock.mockResolvedValue([]);
+    orgDbContexts.length = 0;
+  });
+
+  // #4673 W02 — the heartbeat is THE agent config-delivery path, and it is in
+  // SELF_MANAGED_DB_CONTEXT_ACTIONS: it skips agentAuthMiddleware's
+  // request-long wrap and hand-builds its own org context. So it must copy
+  // `currentPartnerId` over from the agent context explicitly — nothing
+  // inherits it here.
+  //
+  // Reverting that field to `null` in heartbeat.ts passes every other test in
+  // this file (verified by mutation), while silently making Wave 1's
+  // partner-wide SELECT branches unmatched for every heartbeat — the exact
+  // silent-zero bug this wave fixes. This assertion is the only thing that
+  // catches it.
+  it('carries currentPartnerId from the agent context onto its self-managed org context (#4673 W02)', async () => {
+    selectMock.mockReturnValueOnce(selectChainResolving([pendingDevice]));
+    selectMock.mockReturnValue(selectChainResolving([]));
+    updateMock.mockReturnValue({ set: vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) })) });
+    insertMock.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
+
+    const response = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+
+    expect(response.status).toBe(200);
+    const orgCtx = orgDbContexts.find((c) => c.scope === 'organization');
+    expect(orgCtx).toBeDefined();
+    expect(orgCtx!.currentPartnerId).toBe('partner-1');
+    // Read-only axis only — the write-capable partner AXIS stays empty.
+    expect(orgCtx!.accessiblePartnerIds).toEqual([]);
   });
 
   it('an authenticated main-agent heartbeat promotes pending to online and advances lastSeenAt', async () => {

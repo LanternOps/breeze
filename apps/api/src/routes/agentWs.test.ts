@@ -3391,7 +3391,19 @@ describe('#3021: command_result opens no message-level org context', () => {
     // The short wrap carries the authenticated agent's org, and no context
     // anywhere in the message used the removed message-level label.
     const handlerCtx = orgContexts.find((c) => c.label === 'agentWs.commandResult.handler');
-    expect(handlerCtx).toMatchObject({ scope: 'organization', orgId: 'org-3021', accessibleOrgIds: ['org-3021'] });
+    // #4673 W02 — `currentPartnerId` is asserted here because
+    // `runWithAgentOrgDbAccess(label, orgId, partnerId, fn)` takes orgId and
+    // partnerId as ADJACENT positional strings across five call sites in
+    // processCommandResult. Transposing them typechecks cleanly (both are
+    // `string`), so only a value assertion catches it — and reverting the field
+    // to `null` otherwise passes this whole file (verified by mutation).
+    expect(handlerCtx).toMatchObject({
+      scope: 'organization',
+      orgId: 'org-3021',
+      accessibleOrgIds: ['org-3021'],
+      currentPartnerId: 'partner-3021',
+      accessiblePartnerIds: [],
+    });
     expect(orgContexts.map((c) => c.label)).not.toContain('agentWs.commandResult');
 
     expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
