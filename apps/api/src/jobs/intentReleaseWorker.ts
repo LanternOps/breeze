@@ -1166,6 +1166,64 @@ async function loadRunAndAgent(runId: string): Promise<{
 }
 
 /**
+ * The identity of an outcome notification, for dedupe purposes — deliberately
+ * NOT the raw status (#4465).
+ *
+ * One autonomy intent carries TWO outbox rows (`intent_created` and
+ * `intent_approved`, both written by `createActionIntent`), so
+ * `releaseAndNotify` runs twice for it by design — the second is a backstop
+ * for the first — and outbox delivery is at-least-once on top of that. The
+ * release itself is CAS-guarded and safely idempotent; this key is the only
+ * thing that makes the NOTIFICATION idempotent too. Keying it on
+ * `intent.status` broke that the moment the status advanced between the two
+ * reads (the CAS loser observes `approved` while the winner is still
+ * executing; the winner then observes `completed`), ringing the bell twice
+ * for one outcome.
+ *
+ * Collapsing to a class keeps the property the status key was protecting — a
+ * later, MATERIALLY DIFFERENT outcome must still be able to correct an earlier
+ * one — without paying a bell for each intermediate observation of the same
+ * one:
+ *
+ * | status          | class       | shares a key with `granted`? | why                                                             |
+ * |-----------------|-------------|------------------------------|-----------------------------------------------------------------|
+ * | approved        | `granted`   | —                            | approved; execution pending                                     |
+ * | executing       | `granted`   | yes (silent)                 | same outcome, later observation                                 |
+ * | completed       | `granted`   | yes (silent)                 | same outcome, settled as expected                               |
+ * | failed          | `failed`    | no (corrects it)             | approved but did NOT run — the earlier "is now running" was wrong |
+ * | rejected        | `rejected`  | no                           | terminal negative decision                                      |
+ * | cancelled       | `cancelled` | no                           | terminal, withdrawn                                             |
+ * | expired         | `expired`   | no                           | terminal, nobody decided                                        |
+ * | anything else   | `update`    | no                           | unknown/pending — say only what is certain, and never share a key with a real outcome |
+ *
+ * "no" means only that the two do not share a key. `rejected`/`cancelled`/
+ * `expired` are mutually exclusive with `granted` in practice (a rejected
+ * intent is never released), so the sequence that actually produces two bells
+ * is `granted` -> `failed`, which is exactly the correction that must survive.
+ *
+ * Every unknown status shares the one `update` key on purpose: they all render
+ * the same "changed state" copy, so a second one is noise, not news.
+ *
+ * Repeating the SAME class always dedupes — that is what makes the intentional
+ * duplicate delivery silent.
+ */
+function outcomeNotificationClass(status: string): string {
+  switch (status) {
+    case 'approved':
+    case 'executing':
+    case 'completed':
+      return 'granted';
+    case 'failed':
+    case 'rejected':
+    case 'cancelled':
+    case 'expired':
+      return status;
+    default:
+      return 'update';
+  }
+}
+
+/**
  * Same status switch the requester path uses below — the copy MUST derive
  * from the freshly re-read `intent.status`, never the outbox event (see the
  * long rationale in notifyRequesterOfOutcome) — but worded for a recipient
@@ -1267,9 +1325,12 @@ async function notifyRequesterOfOutcome(
             message: `${intent.requestingClientLabel ?? 'AI agent'}: ${message}`,
             link: '/approvals',
             metadata: { intentId: intent.id, agentId: agent.id, agentRunId: run.id, status: intent.status },
-            // Status-scoped: a later, MORE ACCURATE status (approved -> failed)
-            // must not be suppressed by the earlier notification's dedupe row.
-            dedupeKey: `agent-intent-outcome:${intent.id}:${intent.status}`,
+            // Outcome-CLASS scoped, never status-scoped (#4465): a later,
+            // materially different outcome (granted -> failed) must not be
+            // suppressed by the earlier notification's dedupe row, while a
+            // mere status advance between two deliveries of the SAME outcome
+            // must be. Truth table: outcomeNotificationClass.
+            dedupeKey: `agent-intent-outcome:${intent.id}:${outcomeNotificationClass(intent.status)}`,
           })));
     }
     return;
@@ -1341,10 +1402,13 @@ async function notifyRequesterOfOutcome(
       message: copy.message,
       link: '/approvals',
       metadata: { intentId: intent.id, outcome: eventType, status: intent.status },
-      // Scoped to the STATUS, not just the intent. A per-intent key meant that
-      // once a premature "is now running" had been written, the later truthful
-      // notification deduped to null and the person was never corrected.
-      dedupeKey: `intent-outcome:${intent.id}:${intent.status}`,
+      // Scoped to the outcome CLASS, not to the intent alone and not to the raw
+      // status (#4465). A per-intent key meant that once a premature "is now
+      // running" had been written, the later truthful notification deduped to
+      // null and the person was never corrected; a per-status key meant the two
+      // deliveries every autonomy intent gets rang the bell twice for one
+      // outcome. Truth table: outcomeNotificationClass.
+      dedupeKey: `intent-outcome:${intent.id}:${outcomeNotificationClass(intent.status)}`,
     }));
 }
 
