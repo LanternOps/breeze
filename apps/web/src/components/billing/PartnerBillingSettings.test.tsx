@@ -130,6 +130,50 @@ describe('PartnerBillingSettings', () => {
     });
   });
 
+  it('#3205 W07: the appendix checkbox round-trips', async () => {
+    fetchMock.mockImplementation(async (_input: string, opts?: RequestInit) => {
+      if (opts?.method === 'PATCH') return json({ data: {} });
+      return json({
+        currencyCode: 'USD', defaultTaxRate: null, invoiceNumberPrefix: 'INV', invoiceTermsDays: 30,
+        invoiceDeviceAppendix: true, invoiceFooter: null,
+      });
+    });
+    render(<PartnerBillingSettings />);
+    const box = await screen.findByTestId('partner-billing-device-appendix') as HTMLInputElement;
+    expect(box.checked).toBe(true);
+    fireEvent.click(box);
+    fireEvent.click(screen.getByTestId('partner-billing-save'));
+    await waitFor(() => {
+      const patch = fetchMock.mock.calls.find((c) => c[0] === '/partner/billing-settings' && (c[1] as RequestInit)?.method === 'PATCH');
+      expect(JSON.parse((patch![1] as RequestInit).body as string)).toMatchObject({ invoiceDeviceAppendix: false });
+    });
+  });
+
+  it('#3205 W07: keeps an enabled appendix default on an unrelated settings save', async () => {
+    fetchMock.mockImplementation(async (_input: string, opts?: RequestInit) => {
+      if (opts?.method === 'PATCH') return json({ data: {} });
+      return json({
+        currencyCode: 'USD', defaultTaxRate: null, invoiceNumberPrefix: 'INV', invoiceTermsDays: 30,
+        invoiceDeviceAppendix: true, invoiceFooter: null,
+      });
+    });
+    render(<PartnerBillingSettings />);
+    const box = await screen.findByTestId('partner-billing-device-appendix') as HTMLInputElement;
+    expect(box.checked).toBe(true);
+
+    fireEvent.change(screen.getByTestId('partner-billing-prefix'), { target: { value: 'ACME' } });
+    fireEvent.click(screen.getByTestId('partner-billing-save'));
+
+    await waitFor(() => {
+      const patch = fetchMock.mock.calls.find((c) => c[0] === '/partner/billing-settings' && (c[1] as RequestInit)?.method === 'PATCH');
+      expect(patch).toBeTruthy();
+      expect(JSON.parse((patch![1] as RequestInit).body as string)).toMatchObject({
+        invoiceNumberPrefix: 'ACME',
+        invoiceDeviceAppendix: true,
+      });
+    });
+  });
+
   it('uppercases billingAddressCountry and normalizes whitespace-only address fields to null on save', async () => {
     fetchMock.mockImplementation(async (input: string, opts?: RequestInit) => {
       if (opts?.method === 'PATCH') return json({ data: {} });

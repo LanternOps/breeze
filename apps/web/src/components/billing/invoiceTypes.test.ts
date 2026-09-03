@@ -33,7 +33,7 @@ describe('computeInvoiceProfit counts a contract overage sibling (#3205 W04)', (
     id: 'x', invoiceId: 'inv', sourceType: 'contract', parentLineId: null, catalogItemId: null,
     name: null, description: 'x', quantity: '1.00', unitPrice: '0.00', costBasis: null,
     revenueAllocation: null, taxable: true, customerVisible: true, lineTotal: '0.00',
-    isUnapprovedTime: false, sortOrder: 0, ...p,
+    isUnapprovedTime: false, sortOrder: 0, deviceCount: 0, ...p,
   });
 
   it('characterizes top-level sibling revenue accounting for a contract overage', () => {

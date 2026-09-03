@@ -19,6 +19,7 @@ interface PartnerBilling {
   defaultMarkupPercent: string | null;
   autoTaxHardware: boolean;
   autoEmailInvoiceOnQuoteAccept: boolean;
+  invoiceDeviceAppendix: boolean;
   catalogAiStyle: string | null;
   invoiceFooter: string | null;
   documentTheme: 'classic' | 'condensed';
@@ -52,6 +53,7 @@ export default function PartnerBillingSettings() {
   const [autoTaxHardware, setAutoTaxHardware] = useState(true);
   // Default ON — same `!== false` read-back as the server-side accept gate.
   const [autoEmailInvoice, setAutoEmailInvoice] = useState(true);
+  const [deviceAppendix, setDeviceAppendix] = useState(false);
   // Partner AI copy style for Auto-fill/Polish; empty = built-in house format.
   const [aiStyle, setAiStyle] = useState('');
   const [footer, setFooter] = useState('');
@@ -83,6 +85,7 @@ export default function PartnerBillingSettings() {
       setMarkupPercent(p.defaultMarkupPercent != null ? String(Number(p.defaultMarkupPercent)) : '');
       setAutoTaxHardware(p.autoTaxHardware ?? true);
       setAutoEmailInvoice(p.autoEmailInvoiceOnQuoteAccept !== false);
+      setDeviceAppendix(p.invoiceDeviceAppendix === true);
       setAiStyle(p.catalogAiStyle ?? '');
       setFooter(p.invoiceFooter ?? '');
       setDocumentTheme(p.documentTheme ?? 'classic');
@@ -134,6 +137,7 @@ export default function PartnerBillingSettings() {
             defaultMarkupPercent,
             autoTaxHardware,
             autoEmailInvoiceOnQuoteAccept: autoEmailInvoice,
+            invoiceDeviceAppendix: deviceAppendix,
             catalogAiStyle: aiStyle.trim() === '' ? null : aiStyle.trim(),
             invoiceFooter: footer.trim() === '' ? null : footer,
             documentTheme,
@@ -167,7 +171,7 @@ export default function PartnerBillingSettings() {
     } finally {
       setSaving(false);
     }
-  }, [saving, websiteInvalid, currencyCode, taxPercent, prefix, termsDays, markupPercent, autoTaxHardware, autoEmailInvoice, aiStyle, footer,
+  }, [saving, websiteInvalid, currencyCode, taxPercent, prefix, termsDays, markupPercent, autoTaxHardware, autoEmailInvoice, deviceAppendix, aiStyle, footer,
       documentTheme, documentPageSize, companyName, phone, website, addr1, addr2, city, region, postal, country, terms, load]);
 
   if (loading) return <p className="text-sm text-muted-foreground">{t('partnerBillingSettings.loading')}</p>;
@@ -275,6 +279,22 @@ export default function PartnerBillingSettings() {
           </label>
           <p className="mt-1 text-xs text-muted-foreground">
             {t('partnerBillingSettings.defaults.autoEmailInvoiceHelp')}
+          </p>
+        </div>
+        <div className="mt-4">
+          <label className="flex cursor-pointer items-center gap-2">
+            <input
+              id="pb-device-appendix"
+              type="checkbox"
+              checked={deviceAppendix}
+              onChange={(e) => setDeviceAppendix(e.target.checked)}
+              data-testid="partner-billing-device-appendix"
+              className="h-4 w-4 rounded border"
+            />
+            <span className="text-sm font-medium">{t('partnerBillingSettings.defaults.deviceAppendix')}</span>
+          </label>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {t('partnerBillingSettings.defaults.deviceAppendixHelp')}
           </p>
         </div>
         <div className="mt-4">

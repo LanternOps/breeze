@@ -41,7 +41,7 @@ function draft(lines: InvoiceDetail['lines'], extra: Partial<InvoiceDetail['invo
 const manualLine: InvoiceDetail['lines'][number] = {
   id: 'line-1', invoiceId: 'inv-1', sourceType: 'manual', parentLineId: null, catalogItemId: null,
   name: null, description: 'Consulting', quantity: '2.00', unitPrice: '50.00', costBasis: null, revenueAllocation: null,
-  taxable: false, customerVisible: true, lineTotal: '100.00', isUnapprovedTime: false, sortOrder: 1,
+  taxable: false, customerVisible: true, lineTotal: '100.00', isUnapprovedTime: false, sortOrder: 1, deviceCount: 0,
 };
 
 describe('InvoiceEditor', () => {

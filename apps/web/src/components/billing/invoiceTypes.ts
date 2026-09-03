@@ -62,6 +62,8 @@ export interface InvoiceSummary {
   termsAndConditions: string | null;
   sellerSnapshot: SellerSnapshot | null;
   createdAt: string;
+  /** null identifies an invoice created before device evidence was recorded. */
+  evidenceVersion?: number | null;
 }
 
 export interface InvoiceLine {
@@ -81,6 +83,19 @@ export interface InvoiceLine {
   lineTotal: string;
   isUnapprovedTime: boolean;
   sortOrder: number;
+  /** Evidence rows attached to this line, populated on invoice detail reads. */
+  deviceCount: number;
+}
+
+export interface InvoiceLineDevice {
+  /** The immutable evidence-row id; use this as the React key. */
+  id: string;
+  /** null when the source device was deleted or moved out of scope. */
+  deviceId: string | null;
+  hostname: string;
+  deviceRole: string;
+  siteId: string | null;
+  countedAs: 'included' | 'overage' | 'flagged';
 }
 
 // A line's title falls back to its description for legacy lines created before
