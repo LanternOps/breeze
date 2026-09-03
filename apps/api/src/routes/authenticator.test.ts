@@ -141,6 +141,13 @@ vi.mock('../db/schema', () => ({
     aaguid: 'authenticatorDevices.aaguid',
     transports: 'authenticatorDevices.transports',
     isPlatformBound: 'authenticatorDevices.isPlatformBound',
+    platformBoundBasis: 'authenticatorDevices.platformBoundBasis',
+    attestationVerifiedAt: 'authenticatorDevices.attestationVerifiedAt',
+    attestationKeyId: 'authenticatorDevices.attestationKeyId',
+    attestedPublicKeySha256: 'authenticatorDevices.attestedPublicKeySha256',
+    attestationEvidence: 'authenticatorDevices.attestationEvidence',
+    appIntegrityVerifiedAt: 'authenticatorDevices.appIntegrityVerifiedAt',
+    possessionVerifiedAt: 'authenticatorDevices.possessionVerifiedAt',
     mobileDeviceId: 'authenticatorDevices.mobileDeviceId',
     createdAt: 'authenticatorDevices.createdAt',
     lastUsedAt: 'authenticatorDevices.lastUsedAt',
@@ -357,6 +364,11 @@ describe('approver device routes', () => {
       signCount: 0,
       isPlatformBound: true,
       label: 'My Laptop',
+      // #1374: a platform-bound browser key must record the basis it was
+      // DERIVED from. Without this a newly registered passkey defaults to
+      // 'unattested' and silently loses L4 — the migration only classifies
+      // rows that already existed.
+      platformBoundBasis: 'webauthn_backup_flags',
     });
     expect(helperMocks.writeAuthAudit).toHaveBeenCalledWith(
       expect.anything(),
@@ -468,7 +480,10 @@ describe('approver device routes', () => {
       label: 'iPhone',
       credentialId: null,
       signCount: 0,
-      isPlatformBound: true,
+      // #1374: this legacy endpoint performs NO platform attestation, so it
+      // must never assert platform binding. The row registers at L2/L3 only.
+      isPlatformBound: false,
+      platformBoundBasis: 'unattested',
     });
     // Pending marker: never used yet — the insert must NOT set last_used_at; it
     // stays null until the first approval signature flips it active (server-side,
@@ -478,6 +493,43 @@ describe('approver device routes', () => {
     expect(helperMocks.writeAuthAudit).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ action: 'auth.authenticator.device.register' }),
+    );
+  });
+
+  // #1374 — the reported gap. A client that asserts isPlatformBound must not be
+  // able to influence the stored value: the server registers an unattested
+  // mobile key as NOT platform-bound regardless of what the body claims.
+  it('ignores a client-asserted isPlatformBound and registers the mobile key unattested (#1374)', async () => {
+    dbState.insertReturning = [
+      { ...deviceRow, id: 'mobile-pending-2', kind: 'mobile_hw_key', credentialId: null, lastUsedAt: null },
+    ];
+
+    const res = await postJson('/devices', {
+      registerGrantId: 'g-mobile-2',
+      kind: 'mobile_hw_key',
+      publicKey: 'pk',
+      label: 'iPhone',
+      isPlatformBound: true,
+    });
+
+    expect(res.status).toBe(201);
+    expect(dbState.insertValues[0]).toMatchObject({
+      kind: 'mobile_hw_key',
+      isPlatformBound: false,
+      platformBoundBasis: 'unattested',
+    });
+    // The audit row is the forensic record of what was actually stored, so it
+    // must report the stored value, not the historical hard-coded `true`.
+    expect(helperMocks.writeAuthAudit).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: 'auth.authenticator.device.register',
+        details: expect.objectContaining({
+          kind: 'mobile_hw_key',
+          isPlatformBound: false,
+          platformBoundBasis: 'unattested',
+        }),
+      }),
     );
   });
 
