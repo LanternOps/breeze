@@ -4,8 +4,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // quoteService.test.ts): every builder method returns the same chain; a query
 // resolves when awaited (the chain is a thenable that yields the next queued
 // result). Tests queue the rows each db call should resolve to, in call order.
-const results: unknown[][] = [];
-function queueResult(rows: unknown[]) { results.push(rows); }
+type QueuedQuery = { rows: unknown[] } | { error: unknown };
+const results: QueuedQuery[] = [];
+function queueResult(rows: unknown[]) { results.push({ rows }); }
+function queueError(error: unknown) { results.push({ error }); }
 
 vi.mock('../db', () => {
   const makeChain = () => {
@@ -15,9 +17,9 @@ vi.mock('../db', () => {
     // Execute the callback with the same chain as `tx` — each awaited tx call
     // still consumes one queued result, exactly like a bare db call.
     chain.transaction = vi.fn(async (run: (tx: unknown) => unknown) => run(chain));
-    (chain as { then: unknown }).then = (resolve: (v: unknown) => unknown) => {
-      const rows = results.shift() ?? [];
-      return Promise.resolve(rows).then(resolve);
+    (chain as { then: unknown }).then = (resolve: (v: unknown) => unknown, reject: (e: unknown) => unknown) => {
+      const result = results.shift() ?? { rows: [] };
+      return 'error' in result ? reject(result.error) : resolve(result.rows);
     };
     return chain;
   };
@@ -36,7 +38,7 @@ vi.mock('./invoiceService', () => ({
   createManualInvoice: vi.fn(), addContractLine: vi.fn(), deleteDraftInvoice: vi.fn(),
 }));
 vi.mock('./contractQuantities', () => ({
-  countContractDevices: vi.fn(), countContractSeats: vi.fn(), snapshotContractDevices: vi.fn(),
+  countContractDevices: vi.fn(), countContractSeats: vi.fn(), snapshotContractDevices: vi.fn(), groupMembersForBilling: vi.fn(),
 }));
 // Multi-currency wave 3 (#3775): catalog contract lines price through the
 // resolver. Mock only resolvePrice; CatalogServiceError stays real so the
@@ -58,7 +60,8 @@ import { db } from '../db';
 import { resolvePrice, CatalogServiceError } from './catalogService';
 import { resolvePriceFrom } from './catalogPricing';
 import { createManualInvoice, addContractLine } from './invoiceService';
-import { countContractDevices, countContractSeats, snapshotContractDevices } from './contractQuantities';
+import { countContractDevices, countContractSeats, snapshotContractDevices, groupMembersForBilling } from './contractQuantities';
+import { GroupEvaluationError } from './groupMembership';
 
 const resolvePriceMock = vi.mocked(resolvePrice);
 
@@ -211,6 +214,52 @@ describe('contract line writers lock the contract row first (#3774)', () => {
     expect(chain.transaction.mock.calls.length).toBe(1);
     expect(chain.for.mock.calls[0]).toEqual(['update']);
     expect(chain.values.mock.calls[0]![0]).toMatchObject({ contractId: 'c1', orgId: 'org1', unitPrice: '500.00' });
+  });
+
+  it('rejects a per_device_group line without deviceGroupId as typed INVALID_STATE', async () => {
+    queueResult([{ id: 'c1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD' }]);
+
+    await expect(svc.addContractLineToContract('c1', {
+      lineType: 'per_device_group', description: 'Missing group', unitPrice: '10.00', taxable: false,
+    } as never, actor)).rejects.toMatchObject({
+      code: 'INVALID_STATE', status: 400,
+      message: 'per_device_group line requires deviceGroupId',
+    });
+    expect((db as unknown as LockChain).values.mock.calls.length).toBe(0);
+  });
+
+  it('maps the device-group composite FK violation through nested causes', async () => {
+    queueResult([{ id: 'c1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD' }]);
+    queueResult([{ id: 'group-1', name: 'Servers', type: 'static', siteId: null }]);
+    queueError({ cause: { cause: { code: '23503', constraint_name: 'contract_lines_device_group_org_fk' } } });
+
+    await expect(svc.addContractLineToContract('c1', {
+      lineType: 'per_device_group', description: 'Servers', unitPrice: '10.00', taxable: false,
+      deviceGroupId: 'group-1',
+    } as never, actor)).rejects.toMatchObject({ code: 'GROUP_NOT_IN_ORG', status: 400 });
+  });
+
+  it('maps a direct pg-shaped device-group composite FK violation', async () => {
+    queueResult([{ id: 'c1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD' }]);
+    queueResult([{ id: 'group-1', name: 'Servers', type: 'static', siteId: null }]);
+    queueError({ code: '23503', constraint_name: 'contract_lines_device_group_org_fk' });
+
+    await expect(svc.addContractLineToContract('c1', {
+      lineType: 'per_device_group', description: 'Servers', unitPrice: '10.00', taxable: false,
+      deviceGroupId: 'group-1',
+    } as never, actor)).rejects.toMatchObject({ code: 'GROUP_NOT_IN_ORG', status: 400 });
+  });
+
+  it('does not map a differently-named 23503 as GROUP_NOT_IN_ORG', async () => {
+    const foreignKeyError = { code: '23503', constraint_name: 'some_other_foreign_key' };
+    queueResult([{ id: 'c1', status: 'draft', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD' }]);
+    queueResult([{ id: 'group-1', name: 'Servers', type: 'static', siteId: null }]);
+    queueError(foreignKeyError);
+
+    await expect(svc.addContractLineToContract('c1', {
+      lineType: 'per_device_group', description: 'Servers', unitPrice: '10.00', taxable: false,
+      deviceGroupId: 'group-1',
+    } as never, actor)).rejects.toBe(foreignKeyError);
   });
 
   it('addContractLineToContract rejects a cancelled contract off the locked row (INVALID_STATE, no insert)', async () => {
@@ -445,6 +494,34 @@ describe('contractService currency representability guard (W6-G3-1)', () => {
       } as never),
     ).rejects.toMatchObject({ code: 'INVALID_STATE', status: 400 });
     expect((db as unknown as { insert: { mock: { calls: unknown[][] } } }).insert.mock.calls.length).toBe(1);
+  });
+
+  it('createContractWithLinesDetailed rejects a group line without deviceGroupId before inserting the line', async () => {
+    queueResult([{ id: 'c1', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD', status: 'draft' }]);
+    await expect(
+      svc.createContractWithLinesDetailed({
+        partnerId: 'p1', orgId: 'org1', name: 'C', billingTiming: 'advance', intervalMonths: 1,
+        startDate: '2026-01-01', currencyCode: 'USD',
+        lines: [{ lineType: 'per_device_group', description: 'VIP', unitPrice: '5.00', taxable: false }],
+      } as never),
+    ).rejects.toMatchObject({ code: 'INVALID_STATE', status: 400 });
+    expect((db as unknown as { insert: { mock: { calls: unknown[][] } } }).insert.mock.calls.length).toBe(1);
+  });
+
+  it('createContractWithLinesDetailed stamps deviceGroupName from the group row', async () => {
+    const groupId = '33333333-3333-4333-8333-333333333333';
+    queueResult([{ id: 'c1', orgId: 'org1', partnerId: 'p1', currencyCode: 'USD', status: 'draft' }]);
+    queueResult([{ id: groupId, name: 'VIP devices', type: 'static', siteId: null }]);
+    queueResult([{ id: 'line-1' }]);
+
+    await svc.createContractWithLinesDetailed({
+      partnerId: 'p1', orgId: 'org1', name: 'C', billingTiming: 'advance', intervalMonths: 1,
+      startDate: '2026-01-01', currencyCode: 'USD',
+      lines: [{ lineType: 'per_device_group', description: 'VIP', unitPrice: '5.00', taxable: false, deviceGroupId: groupId }],
+    } as never);
+
+    const values = (db as unknown as { values: { mock: { calls: unknown[][] } } }).values.mock.calls;
+    expect(values[1]![0]).toMatchObject({ deviceGroupId: groupId, deviceGroupName: 'VIP devices' });
   });
 });
 
@@ -821,5 +898,152 @@ describe('computeContractEstimate — per_device_role + uncoveredDevices (#3205)
     queueResult([contract]);
     queueResult([lineRow({ lineType: 'per_device_role', deviceRoles: null })]);
     await expect(svc.computeContractEstimate('c1', actor)).rejects.toMatchObject({ code: 'INVALID_STATE', status: 500 });
+  });
+});
+
+describe('per_device_group quantities (#3205 W02)', () => {
+  beforeEach(() => {
+    results.length = 0;
+    vi.clearAllMocks();
+    vi.mocked(snapshotContractDevices).mockResolvedValue([
+      { id: 'device-1', role: 'server', siteId: 'site-1' },
+      { id: 'device-2', role: 'workstation', siteId: 'site-1' },
+    ]);
+  });
+
+  const contract = (over: Record<string, unknown> = {}) => ({
+    id: 'c1', orgId: 'org1', partnerId: 'p1', status: 'draft', currencyCode: 'USD',
+    intervalMonths: 1, createdAt: new Date(), ...over,
+  });
+  const groupLine = (over: Record<string, unknown> = {}) => ({
+    id: 'l1', contractId: 'c1', orgId: 'org1', lineType: 'per_device_group',
+    description: 'Group', unitPrice: '10.00', taxable: false, catalogItemId: null,
+    manualQuantity: null, siteId: null, deviceRoles: null, deviceGroupId: 'group-1',
+    deviceGroupName: 'Servers', sortOrder: 0, createdAt: new Date(), ...over,
+  });
+  const group = { id: 'group-1', orgId: 'org1', name: 'Servers', type: 'static', siteId: null, filterConditions: null };
+
+  function whereCallIncludes(...values: string[]): boolean {
+    function params(node: unknown, out: unknown[] = [], seen = new Set<unknown>()): unknown[] {
+      if (node === null || typeof node !== 'object' || seen.has(node)) return out;
+      seen.add(node);
+      if (Array.isArray(node)) {
+        for (const child of node) params(child, out, seen);
+        return out;
+      }
+      for (const [key, child] of Object.entries(node as Record<string, unknown>)) {
+        if (key === 'value') {
+          if (Array.isArray(child)) out.push(...child.filter((v) => typeof v !== 'object'));
+          else if (child !== null && typeof child !== 'object') out.push(child);
+        }
+        if (child && typeof child === 'object') params(child, out, seen);
+      }
+      return out;
+    }
+    const calls = (db as unknown as { where: { mock: { calls: unknown[][] } } }).where.mock.calls;
+    return calls.some(([condition]) => {
+      const found = params(condition);
+      return values.every((value) => found.includes(value));
+    });
+  }
+
+  it('evaluates a group once for two contracts in one estimate/list calculation', async () => {
+    vi.mocked(groupMembersForBilling).mockResolvedValue({ siteId: null, memberIds: new Set(['device-1']) });
+    queueResult([contract(), contract({ id: 'c2' })]);
+    queueResult([groupLine(), groupLine({ id: 'l2', contractId: 'c2' })]);
+    queueResult([group]);
+
+    const out = await svc.listContracts({ orgId: 'org1' }, actor);
+
+    expect(out.map((c) => c.estimatedPeriodValue)).toEqual(['10.00', '10.00']);
+    expect(groupMembersForBilling).toHaveBeenCalledTimes(1);
+    expect(snapshotContractDevices).toHaveBeenCalledTimes(1);
+  });
+
+  it('pre-warms all groups in one query before estimating a contract', async () => {
+    const group2 = { ...group, id: 'group-2', name: 'Workstations' };
+    vi.mocked(groupMembersForBilling).mockResolvedValue({ siteId: null, memberIds: new Set(['device-1']) });
+    queueResult([contract()]);
+    queueResult([groupLine(), groupLine({ id: 'l2', deviceGroupId: 'group-2', deviceGroupName: 'Workstations' })]);
+    queueResult([group, group2]);
+
+    await svc.computeContractEstimate('c1', actor);
+
+    expect(whereCallIncludes('group-1', 'group-2')).toBe(true);
+  });
+
+  it('pre-warms all groups in one query before listing a contract', async () => {
+    const group2 = { ...group, id: 'group-2', name: 'Workstations' };
+    vi.mocked(groupMembersForBilling).mockResolvedValue({ siteId: null, memberIds: new Set(['device-1']) });
+    queueResult([contract()]);
+    queueResult([groupLine(), groupLine({ id: 'l2', deviceGroupId: 'group-2', deviceGroupName: 'Workstations' })]);
+    queueResult([group, group2]);
+
+    await svc.listContracts({ orgId: 'org1' }, actor);
+
+    expect(whereCallIncludes('group-1', 'group-2')).toBe(true);
+  });
+
+  it('pre-warms all groups in one query before rolling up a contract', async () => {
+    const group2 = { ...group, id: 'group-2', name: 'Workstations' };
+    vi.mocked(groupMembersForBilling).mockResolvedValue({ siteId: null, memberIds: new Set(['device-1']) });
+    queueResult([contract({ status: 'active' })]);
+    queueResult([groupLine(), groupLine({ id: 'l2', deviceGroupId: 'group-2', deviceGroupName: 'Workstations' })]);
+    queueResult([group, group2]);
+
+    await svc.summarizeActiveContractMrrByOrg(['org1']);
+
+    expect(whereCallIncludes('group-1', 'group-2')).toBe(true);
+  });
+
+  it('maps GroupEvaluationError to GROUP_EVALUATION_FAILED with groupId/groupName/reason', async () => {
+    vi.mocked(groupMembersForBilling).mockRejectedValue(new GroupEvaluationError('group-1', 'invalid_filter'));
+    queueResult([contract()]);
+    queueResult([groupLine()]);
+    queueResult([group]);
+
+    await expect(svc.computeContractEstimate('c1', actor)).rejects.toMatchObject({
+      code: 'GROUP_EVALUATION_FAILED',
+      status: 500,
+      details: { groupId: 'group-1', groupName: 'Servers', reason: 'invalid_filter' },
+    });
+  });
+
+  it('a null-group line resolves to quantity 0 with unresolved=group_deleted on the estimate', async () => {
+    queueResult([contract()]);
+    queueResult([groupLine({ deviceGroupId: null })]);
+
+    const out = await svc.computeContractEstimate('c1', actor);
+
+    expect(out.lines[0]).toMatchObject({ quantity: 0, live: true, unresolved: 'group_deleted' });
+    expect(groupMembersForBilling).not.toHaveBeenCalled();
+  });
+
+  it('listContracts rethrows a cached group failure for every contract billing that same group', async () => {
+    vi.mocked(groupMembersForBilling).mockRejectedValue(new GroupEvaluationError('group-1', 'engine_error'));
+    queueResult([contract(), contract({ id: 'c2' })]);
+    queueResult([
+      groupLine(),
+      groupLine({ id: 'l2', contractId: 'c2', unitPrice: '25.00' }),
+    ]);
+    queueResult([group]);
+
+    const out = await svc.listContracts({ orgId: 'org1' }, actor);
+
+    expect(out[0]).toMatchObject({ id: 'c1', estimatedPeriodValue: null, estimateError: 'GROUP_EVALUATION_FAILED' });
+    expect(out[1]).toMatchObject({ id: 'c2', estimatedPeriodValue: null, estimateError: 'GROUP_EVALUATION_FAILED' });
+  });
+
+  it('MRR skips every contract that bills the same cached failing group', async () => {
+    vi.mocked(groupMembersForBilling).mockRejectedValue(new GroupEvaluationError('group-1', 'engine_error'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    queueResult([contract({ status: 'active' }), contract({ id: 'c2', status: 'active' })]);
+    queueResult([groupLine(), groupLine({ id: 'l2', contractId: 'c2' })]);
+    queueResult([group]);
+
+    const out = await svc.summarizeActiveContractMrrByOrg(['org1']);
+
+    expect(out.has('org1')).toBe(false);
+    expect(warn).toHaveBeenCalledTimes(2);
   });
 });

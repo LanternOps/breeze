@@ -1,6 +1,6 @@
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../db';
-import { contracts, contractLines, contractBillingPeriods, organizations, sites, catalogItemPrices, catalogItemOrgPricing } from '../db/schema';
+import { contracts, contractLines, contractBillingPeriods, organizations, sites, deviceGroups, catalogItemPrices, catalogItemOrgPricing } from '../db/schema';
 import { ContractServiceError, actorCan, type ContractActor } from './contractTypes';
 import type { ContractLineInput, UpdateContractInput } from '@breeze/shared';
 import { BILLABLE_DEVICE_ROLES, isRepresentableInCurrency, minorUnitExponent, roundToCurrency, PERMISSION_GRANTS } from '@breeze/shared';
@@ -8,6 +8,7 @@ import type { NewContractSpec } from './quoteToContract';
 import { periodIndexFor, nextBillingDate, computePeriod, isExpired, duePeriodStartFor } from './contractMath';
 import { emitContractEvent } from './contractEvents';
 import { readOrgStampingDefaults, OrgCurrencyServiceError, type DbExecutor as OrgLockExecutor } from './orgCurrencyCore';
+import { pgErrorNode } from '../utils/pgErrors';
 
 /**
  * Boundary mapping for the org SHARE barrier (#3778, review finding 1).
@@ -32,8 +33,9 @@ async function lockOrgStampingDefaults(tx: OrgLockExecutor, orgId: string): Prom
 import { createManualInvoice, addContractLine, deleteDraftInvoice } from './invoiceService';
 import { resolvePrice, CatalogServiceError } from './catalogService';
 import { resolvePriceFrom, isPriceGap } from './catalogPricing';
-import { countContractSeats, snapshotContractDevices, type DeviceSnapshotRow } from './contractQuantities';
-import { isDeviceLine, quantityFor, uncoveredByRole, type UncoveredDevices } from './contractCoverage';
+import { countContractSeats, snapshotContractDevices, groupMembersForBilling, type DeviceSnapshotRow } from './contractQuantities';
+import { isDeviceLine, quantityFor, uncoveredByRole, type UncoveredDevices, type OrgDeviceSnapshot, type GroupMembers } from './contractCoverage';
+import { GroupEvaluationError } from './groupMembership';
 import type { InvoiceActor } from './invoiceTypes';
 
 export type ContractActorT = ContractActor;
@@ -49,6 +51,18 @@ async function getOwnedContractOr404(contractId: string, actor: ContractActor) {
   if (!c) throw new ContractServiceError('Contract not found', 404, 'CONTRACT_NOT_FOUND');
   requireOrgAccess(actor, c.orgId);
   return c;
+}
+
+/** #3205 W02: label group lines without a second fetch. Matched on (id, org_id)
+ *  as defence in depth beside the composite FK; null when the group is gone
+ *  (the stamped deviceGroupName still says what it was). */
+async function withDeviceGroup<T extends { deviceGroupId: string | null; orgId: string }>(lines: T[]) {
+  const ids = [...new Set(lines.map((l) => l.deviceGroupId).filter((x): x is string => x !== null))];
+  const groups = ids.length === 0 ? [] : await db
+    .select({ id: deviceGroups.id, orgId: deviceGroups.orgId, name: deviceGroups.name, type: deviceGroups.type })
+    .from(deviceGroups).where(inArray(deviceGroups.id, ids));
+  const byKey = new Map(groups.map((g) => [`${g.id}|${g.orgId}`, { id: g.id, name: g.name, type: g.type }]));
+  return lines.map((l) => ({ ...l, deviceGroup: l.deviceGroupId ? (byKey.get(`${l.deviceGroupId}|${l.orgId}`) ?? null) : null }));
 }
 
 function assertDraft(c: { status: string }): void {
@@ -70,6 +84,24 @@ async function assertSiteInOrg(tx: DbExecutor, siteId: string, orgId: string): P
     .where(and(eq(sites.id, siteId), eq(sites.orgId, orgId))).limit(1);
   if (!row) throw new ContractServiceError('Site does not belong to this organization', 400, 'SITE_NOT_IN_ORG');
 }
+
+async function assertGroupInOrg(tx: DbExecutor, groupId: string, orgId: string) {
+  const [row] = await tx.select({ id: deviceGroups.id, name: deviceGroups.name, type: deviceGroups.type, siteId: deviceGroups.siteId })
+    .from(deviceGroups).where(and(eq(deviceGroups.id, groupId), eq(deviceGroups.orgId, orgId))).limit(1);
+  if (!row) throw new ContractServiceError('Device group does not belong to this organization', 400, 'GROUP_NOT_IN_ORG');
+  return row;
+}
+
+/** Postgres 23503 on contract_lines_device_group_org_fk = the group vanished
+ *  between assertGroupInOrg and the insert (deleteDeviceGroup holds FOR UPDATE
+ *  on the group row, so the insert waited and then lost). Same answer. */
+function isGroupFkViolation(err: unknown): boolean {
+  const node = pgErrorNode(err);
+  const constraint = node?.constraint_name ?? node?.constraint;
+  return node?.code === '23503' && constraint === 'contract_lines_device_group_org_fk';
+}
+
+const SITE_SCOPABLE = new Set(['per_device', 'per_device_role']);
 
 /**
  * Lock-order anchor (#3774, mirrors invoiceService.lockDraftInvoice): SELECT
@@ -138,12 +170,18 @@ export async function getContract(contractId: string, actor: ContractActor) {
     .where(eq(contractLines.contractId, contractId)).orderBy(contractLines.sortOrder);
   const periods = await db.select().from(contractBillingPeriods)
     .where(eq(contractBillingPeriods.contractId, contractId)).orderBy(desc(contractBillingPeriods.periodStart));
-  return { contract, lines, periods };
+  return { contract, lines: await withDeviceGroup(lines), periods };
 }
+
+type ContractRow = typeof contracts.$inferSelect;
+export type ContractListRow = ContractRow & {
+  estimatedPeriodValue: string | null;
+  estimateError?: 'GROUP_EVALUATION_FAILED';
+};
 
 export async function listContracts(query: {
   orgId?: string; status?: string; limit?: number;
-}, actor: ContractActor) {
+}, actor: ContractActor): Promise<ContractListRow[]> {
   const conds = [];
   if (query.orgId) { requireOrgAccess(actor, query.orgId); conds.push(eq(contracts.orgId, query.orgId)); }
   if (query.status) conds.push(eq(contracts.status, query.status as never));
@@ -157,7 +195,7 @@ export async function listContracts(query: {
     .where(conds.length ? and(...conds) : undefined)
     .orderBy(desc(contracts.createdAt))
     .limit(Math.min(query.limit ?? 50, 100));
-  if (rows.length === 0) return rows;
+  if (rows.length === 0) return [];
 
   // Enrich each row with estimatedPeriodValue (live counts for per_device/per_seat
   // lines). All lines for the page load in one query; one device snapshot is
@@ -171,30 +209,98 @@ export async function listContracts(query: {
   }
   const dc: DeviceCache = new Map();
   const sc: SeatCache = new Map();
-  const out = [];
+  const out: ContractListRow[] = [];
   for (const c of rows) {
     let total = 0;
-    for (const l of byContract.get(c.id) ?? []) {
-      const { quantity } = await resolveLineQty(c.orgId, l, dc, sc);
-      total += Number(l.unitPrice) * quantity;
+    let estimateError: 'GROUP_EVALUATION_FAILED' | undefined;
+    try {
+      const lines = byContract.get(c.id) ?? [];
+      const groupIds = groupIdsOf(lines);
+      if (groupIds.length > 0) await orgSnapshot(c.orgId, dc, groupIds);
+      for (const l of lines) {
+        const { quantity } = await resolveLineQty(c.orgId, l, dc, sc);
+        total += Number(l.unitPrice) * quantity;
+      }
+    } catch (err) {
+      // #3205 W02: one un-evaluable group must not fail the whole list.
+      if (err instanceof ContractServiceError && err.code === 'GROUP_EVALUATION_FAILED') estimateError = err.code;
+      else throw err;
     }
-    out.push({ ...c, estimatedPeriodValue: total.toFixed(2) });
+    out.push(estimateError
+      ? { ...c, estimatedPeriodValue: null, estimateError }
+      : { ...c, estimatedPeriodValue: total.toFixed(2) });
   }
   return out;
 }
 
-// ---- recurring-value estimate (live per_device/per_device_role/per_seat) ----
-// One device snapshot per org (#3205): every device-counted line on a contract
-// is computed from the same grouped query, so a device reclassified between two
-// per-line COUNTs can no longer be billed twice or skipped on the same run.
-type DeviceCache = Map<string, DeviceSnapshotRow[]>; // key orgId
-type SeatCache = Map<string, number>;                // key orgId
+// ---- recurring-value estimate (live per_device/per_device_role/per_device_group/per_seat) ----
+// One device snapshot per org PER CALCULATION (#3205): every device-counted line
+// on a contract is computed from the same query, and every billed group is
+// evaluated once per calculation. Never shared across the worker's per-contract
+// transactions — "at generation time" must stay literally true.
+interface OrgSnapshotEntry {
+  devices: DeviceSnapshotRow[];
+  groups: Map<string, GroupMembers>;
+  failures: Map<string, ContractServiceError>;
+  /** Group ids already looked up (resolved OR absent). Absent ids are not in `groups`, and
+   *  must not be queried again on the next line of the same calculation. */
+  attempted: Set<string>;
+}
+type DeviceCache = Map<string, OrgSnapshotEntry>; // key orgId
+type SeatCache = Map<string, number>;              // key orgId
 type ContractLineRow = typeof contractLines.$inferSelect;
 
-async function orgSnapshot(orgId: string, dc: DeviceCache): Promise<DeviceSnapshotRow[]> {
-  let snap = dc.get(orgId);
-  if (!snap) { snap = await snapshotContractDevices(orgId); dc.set(orgId, snap); }
-  return snap;
+function emptySnapshot(): OrgDeviceSnapshot {
+  return { devices: [], groups: new Map() };
+}
+
+function groupIdsOf(lines: readonly Pick<ContractLineRow, 'lineType' | 'deviceGroupId'>[]): string[] {
+  return [...new Set(lines.filter((l) => l.lineType === 'per_device_group' && l.deviceGroupId).map((l) => l.deviceGroupId!))];
+}
+
+/** The org's snapshot with the members of every group in `groupIds` resolved
+ *  (once per calculation). A group id that does not come back — deleted between
+ *  the line read and here, or not in this org — is simply absent from the map;
+ *  callers treat that like a null id (GROUP_DELETED / unresolved). */
+async function orgSnapshot(orgId: string, dc: DeviceCache, groupIds: readonly string[] = []): Promise<OrgDeviceSnapshot> {
+  let entry = dc.get(orgId);
+  if (!entry) {
+    entry = { devices: await snapshotContractDevices(orgId), groups: new Map(), failures: new Map(), attempted: new Set() };
+    dc.set(orgId, entry);
+  }
+  const priorFailure = groupIds.map((id) => entry!.failures.get(id)).find((failure) => failure !== undefined);
+  if (priorFailure) throw priorFailure;
+  const missing = groupIds.filter((id) => !entry!.attempted.has(id));
+  if (missing.length > 0) {
+    for (const id of missing) entry.attempted.add(id);
+    const rows = await db.select({
+      id: deviceGroups.id, orgId: deviceGroups.orgId, name: deviceGroups.name, type: deviceGroups.type,
+      siteId: deviceGroups.siteId, filterConditions: deviceGroups.filterConditions,
+    }).from(deviceGroups).where(and(inArray(deviceGroups.id, missing), eq(deviceGroups.orgId, orgId)));
+    for (const g of rows) {
+      try {
+        entry.groups.set(g.id, await groupMembersForBilling(g));
+      } catch (err) {
+        if (err instanceof GroupEvaluationError) {
+          entry.failures.set(g.id, new ContractServiceError(
+            `Device group "${g.name}" could not be evaluated (${err.reason})`, 500, 'GROUP_EVALUATION_FAILED',
+            { groupId: g.id, groupName: g.name, reason: err.reason },
+          ));
+          continue;
+        }
+        throw err;
+      }
+    }
+  }
+  const failure = groupIds.map((id) => entry.failures.get(id)).find((candidate) => candidate !== undefined);
+  if (failure) throw failure;
+  return entry;
+}
+
+/** Lines the pure helpers can resolve: a group line whose group is absent from
+ *  the snapshot (deleted) covers nothing and is left out. */
+function resolvableLines(lines: readonly ContractLineRow[], snapshot: OrgDeviceSnapshot): ContractLineRow[] {
+  return lines.filter((l) => l.lineType !== 'per_device_group' || (l.deviceGroupId !== null && snapshot.groups.has(l.deviceGroupId)));
 }
 
 /** True when `line` is a per_device_role line whose deviceRoles is missing,
@@ -220,15 +326,29 @@ function assertRoleLineHasRoles(line: Pick<ContractLineRow, 'id' | 'lineType' | 
 
 const BILLABLE_DEVICE_ROLE_SET = new Set<string>(BILLABLE_DEVICE_ROLES);
 
-function assertSpecRoleLine(line: NewContractSpec['lines'][number]): void {
+// Task 7 widens the quote-conversion spec itself. Keep this producer ready for
+// that input without weakening the existing NewContractSpec contract elsewhere.
+type DeviceSetContractLineSpec = Omit<NewContractSpec['lines'][number], 'lineType'> & {
+  lineType: ContractLineRow['lineType'];
+  deviceGroupId?: string | null;
+};
+
+function assertSpecDeviceSetLine(line: {
+  lineType: string;
+  deviceRoles?: readonly string[] | null;
+  deviceGroupId?: string | null;
+}): void {
   if (roleLineIsInvalid(line, BILLABLE_DEVICE_ROLE_SET)) {
     throw new ContractServiceError('per_device_role line requires at least one device role', 400, 'INVALID_STATE');
+  }
+  if (line.lineType === 'per_device_group' && !line.deviceGroupId) {
+    throw new ContractServiceError('per_device_group line requires deviceGroupId', 400, 'INVALID_STATE');
   }
 }
 
 async function resolveLineQty(
   orgId: string, line: ContractLineRow, dc: DeviceCache, sc: SeatCache,
-): Promise<{ quantity: number; live: boolean }> {
+): Promise<{ quantity: number; live: boolean; unresolved?: 'group_deleted' }> {
   switch (line.lineType) {
     case 'flat': return { quantity: 1, live: false };
     case 'manual': return { quantity: Number(line.manualQuantity ?? '0'), live: false };
@@ -236,6 +356,12 @@ async function resolveLineQty(
     case 'per_device_role': {
       assertRoleLineHasRoles(line);
       return { quantity: quantityFor(await orgSnapshot(orgId, dc), line), live: true };
+    }
+    case 'per_device_group': {
+      if (line.deviceGroupId === null) return { quantity: 0, live: true, unresolved: 'group_deleted' };
+      const snapshot = await orgSnapshot(orgId, dc, [line.deviceGroupId]);
+      if (!snapshot.groups.has(line.deviceGroupId)) return { quantity: 0, live: true, unresolved: 'group_deleted' };
+      return { quantity: quantityFor(snapshot, line), live: true };
     }
     case 'per_seat': {
       if (!sc.has(orgId)) sc.set(orgId, await countContractSeats(orgId));
@@ -252,7 +378,7 @@ async function resolveLineQty(
 export interface ContractEstimate {
   currencyCode: string;
   periodTotal: string;
-  lines: Array<{ lineId: string; lineType: ContractLineRow['lineType']; quantity: number; value: string; live: boolean }>;
+  lines: Array<{ lineId: string; lineType: ContractLineRow['lineType']; quantity: number; value: string; live: boolean; unresolved?: 'group_deleted' }>;
   /** Devices no device-counted line bills (#3205). null when the contract has
    *  no per_device / per_device_role line, so the UI can tell "n/a" from "0". */
   uncoveredDevices: UncoveredDevices | null;
@@ -268,15 +394,19 @@ export async function computeContractEstimate(contractId: string, actor: Contrac
   const sc: SeatCache = new Map();
   let total = 0;
   const out: ContractEstimate['lines'] = [];
+  const groupIds = groupIdsOf(lines);
+  if (groupIds.length > 0) await orgSnapshot(contract.orgId, dc, groupIds);
   for (const l of lines) {
-    const { quantity, live } = await resolveLineQty(contract.orgId, l, dc, sc);
+    const { quantity, live, unresolved } = await resolveLineQty(contract.orgId, l, dc, sc);
     const value = Number(l.unitPrice) * quantity;
     total += value;
-    out.push({ lineId: l.id, lineType: l.lineType, quantity, value: value.toFixed(2), live });
+    out.push({ lineId: l.id, lineType: l.lineType, quantity, value: value.toFixed(2), live, ...(unresolved ? { unresolved } : {}) });
   }
-  const uncoveredDevices = lines.some(isDeviceLine)
-    ? uncoveredByRole(await orgSnapshot(contract.orgId, dc), lines)
-    : null;
+  let uncoveredDevices: UncoveredDevices | null = null;
+  if (lines.some(isDeviceLine)) {
+    const snapshot = await orgSnapshot(contract.orgId, dc, groupIds);
+    uncoveredDevices = uncoveredByRole(snapshot, resolvableLines(lines, snapshot));
+  }
   return { currencyCode: contract.currencyCode, periodTotal: total.toFixed(2), lines: out, uncoveredDevices };
 }
 
@@ -426,12 +556,23 @@ export async function summarizeActiveContractMrrByOrg(
 
   for (const c of rows) {
     let periodValue = 0;
-    for (const l of byContract.get(c.id) ?? []) {
-      const { quantity } = await resolveLineQty(c.orgId, l, dc, sc);
-      const unitPrice = l.catalogItemId
-        ? (resolvedUnitPrice(l.catalogItemId, c.currencyCode, c.orgId) ?? l.unitPrice)
-        : l.unitPrice;
-      periodValue += Number(unitPrice) * quantity;
+    try {
+      const lines = byContract.get(c.id) ?? [];
+      const groupIds = groupIdsOf(lines);
+      if (groupIds.length > 0) await orgSnapshot(c.orgId, dc, groupIds);
+      for (const l of lines) {
+        const { quantity } = await resolveLineQty(c.orgId, l, dc, sc);
+        const unitPrice = l.catalogItemId
+          ? (resolvedUnitPrice(l.catalogItemId, c.currencyCode, c.orgId) ?? l.unitPrice)
+          : l.unitPrice;
+        periodValue += Number(unitPrice) * quantity;
+      }
+    } catch (err) {
+      if (err instanceof ContractServiceError && err.code === 'GROUP_EVALUATION_FAILED') {
+        console.warn('[contracts] MRR rollup skipped contract %s: %s', c.id, err.message);
+        continue;
+      }
+      throw err;
     }
     const months = c.intervalMonths > 0 ? c.intervalMonths : 1;
     // Round each contract in ITS OWN currency before grouping — a JPY contract
@@ -867,6 +1008,7 @@ export async function addContractLineToContract(contractId: string, input: Contr
   return db.transaction(async (tx) => {
     const c = await lockContract(tx, contractId, actor);
     assertEditable(c);
+    assertSpecDeviceSetLine(input);
     let unitPrice: string;
     let taxable: boolean;
     if (input.catalogItemId) {
@@ -896,19 +1038,30 @@ export async function addContractLineToContract(contractId: string, input: Contr
       assertRepresentable(unitPrice, c.currencyCode);
       taxable = input.taxable;
     }
-    const siteId = isDeviceLine(input) ? (input.siteId ?? null) : null;
+    const siteId = SITE_SCOPABLE.has(input.lineType) ? (input.siteId ?? null) : null;
     if (siteId) await assertSiteInOrg(tx, siteId, c.orgId);
-    const [row] = await tx.insert(contractLines).values({
-      contractId, orgId: c.orgId, lineType: input.lineType, description: input.description,
-      catalogItemId: input.catalogItemId ?? null, unitPrice,
-      manualQuantity: input.lineType === 'manual' ? (input.manualQuantity ?? '0') : null,
-      siteId,
-      // #3205: roles only on per_device_role (CHECK-enforced); the validator
-      // already guarantees a non-empty, duplicate-free, billable set.
-      deviceRoles: input.lineType === 'per_device_role' ? (input.deviceRoles ?? null) : null,
-      taxable, sortOrder: input.sortOrder ?? 0
-    }).returning();
-    return row!;
+    const group = input.lineType === 'per_device_group' && input.deviceGroupId
+      ? await assertGroupInOrg(tx, input.deviceGroupId, c.orgId) : null;
+    try {
+      const [row] = await tx.insert(contractLines).values({
+        contractId, orgId: c.orgId, lineType: input.lineType, description: input.description,
+        catalogItemId: input.catalogItemId ?? null, unitPrice,
+        manualQuantity: input.lineType === 'manual' ? (input.manualQuantity ?? '0') : null,
+        siteId,
+        // #3205: roles only on per_device_role (CHECK-enforced); the validator
+        // already guarantees a non-empty, duplicate-free, billable set.
+        deviceRoles: input.lineType === 'per_device_role' ? (input.deviceRoles ?? null) : null,
+        deviceGroupId: group?.id ?? null,
+        deviceGroupName: group?.name ?? null,
+        taxable, sortOrder: input.sortOrder ?? 0
+      }).returning();
+      return row!;
+    } catch (err) {
+      if (isGroupFkViolation(err)) {
+        throw new ContractServiceError('Device group does not belong to this organization', 400, 'GROUP_NOT_IN_ORG');
+      }
+      throw err;
+    }
   });
 }
 
@@ -1099,6 +1252,19 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
     return { generated: false, autoIssue: false, skipped: 'not_due', priceBookGaps: [], uncoveredDevices: null };
   }
 
+  const hasDeviceLine = lines.some(isDeviceLine);
+  const dc: DeviceCache = new Map();
+  const snapshot = hasDeviceLine ? await orgSnapshot(c.orgId, dc, groupIdsOf(lines)) : emptySnapshot();
+  // #3205 W02: a group line whose group is gone must never bill zero silently.
+  for (const l of lines) {
+    if (l.lineType === 'per_device_group' && (l.deviceGroupId === null || !snapshot.groups.has(l.deviceGroupId))) {
+      throw new ContractServiceError(
+        `Contract line "${l.description}" bills device group "${l.deviceGroupName ?? ''}", which no longer exists`,
+        409, 'GROUP_DELETED', { contractLineId: l.id, deviceGroupName: l.deviceGroupName },
+      );
+    }
+  }
+
   // 1. Draft invoice. Carry contract notes + terms onto the invoice notes
   //    (the engine has no terms param on create).
   const noteParts = [c.notes, c.terms].filter(Boolean) as string[];
@@ -1114,10 +1280,6 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
   //    passed as-is — addContractLine resolves the catalog price in the contract's
   //    currency when catalogItemId is set (falling back to this stamped snapshot
   //    on a price-book gap, reported below), or uses them when it is null.
-  // #3205: one snapshot per run. Every device-counted line and the coverage
-  // figure below derive from it — never a per-line COUNT.
-  const hasDeviceLine = lines.some(isDeviceLine);
-  const snapshot = hasDeviceLine ? await snapshotContractDevices(c.orgId) : [];
   const priceBookGaps: PriceBookGap[] = [];
   for (const l of lines) {
     let quantity: string;
@@ -1130,6 +1292,7 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
         break;
       case 'per_device':
       case 'per_device_role':
+      case 'per_device_group':
         assertRoleLineHasRoles(l);
         quantity = String(quantityFor(snapshot, l));
         break;
@@ -1184,7 +1347,7 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
   await emitContractEvent({ type: 'contract.invoiced', contractId, orgId: c.orgId, partnerId: c.partnerId, invoiceId: inv.id });
   // Auto-issue + email are intentionally returned to the caller (NOT done here) so they
   // run post-commit, outside the billing transaction. See the doc-comment above.
-  const uncoveredDevices = hasDeviceLine ? uncoveredByRole(snapshot, lines) : null;
+  const uncoveredDevices = hasDeviceLine ? uncoveredByRole(snapshot, resolvableLines(lines, snapshot)) : null;
   return { generated: true, invoiceId: inv.id, autoIssue: c.autoIssue, actor, priceBookGaps, uncoveredDevices };
 }
 
@@ -1233,26 +1396,38 @@ export async function createContractWithLinesDetailed(
 
   const createdLines: CreatedContractWithLines['lines'] = [];
   for (let i = 0; i < spec.lines.length; i++) {
-    const l = spec.lines[i]!;
-    assertSpecRoleLine(l);
+    const l = spec.lines[i]! as DeviceSetContractLineSpec;
+    assertSpecDeviceSetLine(l);
     // Same guard as addContractLineToContract — the quote→contract conversion
     // path must not be a way around it (W6-G3-1).
     assertRepresentable(l.unitPrice, spec.currencyCode);
-    const siteId = isDeviceLine(l) ? (l.siteId ?? null) : null;
+    const siteId = SITE_SCOPABLE.has(l.lineType) ? (l.siteId ?? null) : null;
     if (siteId) await assertSiteInOrg(db, siteId, spec.orgId);
-    const [insertedLine] = await db.insert(contractLines).values({
-      contractId: contract.id,
-      orgId: spec.orgId,
-      lineType: l.lineType,
-      description: l.description,
-      catalogItemId: l.catalogItemId ?? null,
-      unitPrice: l.unitPrice,
-      manualQuantity: l.lineType === 'manual' ? (l.manualQuantity ?? '0') : null,
-      siteId,
-      deviceRoles: l.lineType === 'per_device_role' ? (l.deviceRoles ?? null) : null,
-      taxable: l.taxable,
-      sortOrder: l.sortOrder ?? i,
-    }).returning({ id: contractLines.id });
+    const group = l.lineType === 'per_device_group' && l.deviceGroupId
+      ? await assertGroupInOrg(db, l.deviceGroupId, spec.orgId) : null;
+    let insertedLine: { id: string } | undefined;
+    try {
+      [insertedLine] = await db.insert(contractLines).values({
+        contractId: contract.id,
+        orgId: spec.orgId,
+        lineType: l.lineType,
+        description: l.description,
+        catalogItemId: l.catalogItemId ?? null,
+        unitPrice: l.unitPrice,
+        manualQuantity: l.lineType === 'manual' ? (l.manualQuantity ?? '0') : null,
+        siteId,
+        deviceRoles: l.lineType === 'per_device_role' ? (l.deviceRoles ?? null) : null,
+        deviceGroupId: group?.id ?? null,
+        deviceGroupName: group?.name ?? null,
+        taxable: l.taxable,
+        sortOrder: l.sortOrder ?? i,
+      }).returning({ id: contractLines.id });
+    } catch (err) {
+      if (isGroupFkViolation(err)) {
+        throw new ContractServiceError('Device group does not belong to this organization', 400, 'GROUP_NOT_IN_ORG');
+      }
+      throw err;
+    }
 
     if (!insertedLine) {
       throw new ContractServiceError(
