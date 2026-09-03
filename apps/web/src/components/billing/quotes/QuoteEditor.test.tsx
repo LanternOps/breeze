@@ -267,6 +267,46 @@ describe('QuoteEditor', () => {
     expect(textarea.value).toBe('Net 30 — draft in progress');
   });
 
+  // Review finding: the reseed must also reset `termsDirty` when the prop
+  // GENUINELY changes mid-edit (not just an equal-value refetch) — matching
+  // what the old effect did — otherwise a stale "Unsaved" badge would linger
+  // over text that was just replaced with the (already-persisted) new value.
+  it('clears the Unsaved badge when a genuinely different termsAndConditions prop lands mid-edit', async () => {
+    const { rerender } = render(<QuoteEditor detail={draftDetail({ termsAndConditions: 'Net 30' })} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('quote-editor')).toBeInTheDocument());
+
+    const textarea = screen.getByTestId('quote-terms') as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: 'Net 30 draft' } });
+    expect(screen.getByTestId('unsaved-badge')).toBeInTheDocument();
+
+    // A genuinely different persisted value lands (e.g. another session's edit).
+    rerender(<QuoteEditor detail={draftDetail({ termsAndConditions: 'Net 60' })} onChanged={vi.fn()} />);
+
+    expect(textarea.value).toBe('Net 60');
+    expect(screen.queryByTestId('unsaved-badge')).not.toBeInTheDocument();
+  });
+
+  // Review finding: the deposit-percent reseed clears `depositPctError` too
+  // (new behavior vs. the old effect, which never touched it) — a stale
+  // "out of range" message must not linger once the field has been replaced
+  // with a fresh, valid, server-confirmed value.
+  it('clears the inline deposit-percent range error when a genuinely different depositPercent prop lands', async () => {
+    const { rerender } = render(
+      <QuoteEditor detail={draftDetail({ depositType: 'percent', depositPercent: '10' })} onChanged={vi.fn()} />,
+    );
+    await waitFor(() => expect(screen.getByTestId('deposit-percent-input')).toBeInTheDocument());
+
+    const input = screen.getByTestId('deposit-percent-input') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: '150' } });
+    fireEvent.blur(input);
+    expect(screen.getByTestId('deposit-percent-error')).toBeInTheDocument();
+
+    rerender(<QuoteEditor detail={draftDetail({ depositType: 'percent', depositPercent: '30' })} onChanged={vi.fn()} />);
+
+    expect(input.value).toBe('30');
+    expect(screen.queryByTestId('deposit-percent-error')).not.toBeInTheDocument();
+  });
+
   it('toasts the currency-gap message when the catalog add answers NO_PRICE_FOR_CURRENCY (#3775)', async () => {
     const catItem = {
       id: 'cat-1', partnerId: 'p-1', itemType: 'hardware', name: 'NVMe 1TB', sku: 'NV-1', description: null,
