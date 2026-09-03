@@ -1,7 +1,8 @@
+import { randomUUID } from 'node:crypto';
 import { and, or, eq, desc, lt, inArray, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import {
-  invoices, invoiceLines, invoicePayments, invoiceStripePayments, organizations, partners,
+  invoices, invoiceLines, invoiceLineDevices, invoicePayments, invoiceStripePayments, organizations, partners,
   catalogBundleComponents, catalogItems, contracts, contractLines, timeEntries, ticketParts, tickets,
   accountingEntityMappings, accountingConnections
 } from '../db/schema';
@@ -1318,6 +1319,13 @@ export async function issueInvoice(invoiceId: string, actor: InvoiceActor) {
       // carries. Pure key addition using the `partner` row read above (after
       // all locks): no new read, no new lock class.
       documentLocale: inv.documentLocale ?? resolvePartnerDocumentLocale(partner),
+      // #3205 W07 decision 14a: resolve the appendix choice ONCE, here, and write
+      // a concrete boolean. After this the column is a settled fact, not an
+      // override-or-inherit tri-state, and loadInvoiceForRender reads ONLY this
+      // column — so a later change to the partner default cannot alter what a
+      // sanctioned re-render produces. Same two-writer rule document_locale
+      // follows, for the same reason.
+      deviceAppendix: inv.deviceAppendix ?? partner?.invoiceDeviceAppendix ?? false,
       updatedAt: issueDate
     }).where(and(eq(invoices.id, invoiceId), eq(invoices.status, 'draft'))).returning({ id: invoices.id });
     // Guarded write: impossible to miss while we hold the row lock and asserted
@@ -1578,6 +1586,14 @@ export async function listPayments(invoiceId: string, actor: InvoiceActor) {
 // Void + reissue + overdue sweep + viewed (Task 3.8)
 // ---------------------------------------------------------------------------
 
+// #3205 W07: same body as contractService.ts's chunksOf — two callers in two
+// services is this repo's existing pattern; not extracted to a shared util.
+function chunksOf<T>(items: readonly T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+  return out;
+}
+
 /**
  * Void an issued invoice and optionally reissue it as a fresh draft.
  *
@@ -1681,7 +1697,15 @@ export async function voidInvoice(invoiceId: string, reason: string, opts: { rei
     // make sense in the currency they were rounded in. document_locale is
     // likewise NOT copied: it is an issue-time snapshot, restamped when this
     // draft issues (#3777).
-    const [draft] = await db.insert(invoices).values({ partnerId: inv.partnerId, orgId: inv.orgId, siteId: inv.siteId, status: 'draft', notes: inv.notes, currencyCode: inv.currencyCode, replacesInvoiceId: invoiceId, createdBy: actor.userId }).returning();
+    const [draft] = await db.insert(invoices).values({
+      partnerId: inv.partnerId, orgId: inv.orgId, siteId: inv.siteId, status: 'draft', notes: inv.notes,
+      currencyCode: inv.currencyCode, replacesInvoiceId: invoiceId, createdBy: actor.userId,
+      // #3205 W07 decision 15a: copied verbatim. document_locale is NOT copied
+      // (it is an issue-time snapshot, restamped when this draft issues);
+      // evidence_version IS, because the evidence itself is being cloned — a
+      // clone must not read as a pre-W07 invoice.
+      evidenceVersion: inv.evidenceVersion,
+    }).returning();
     draftId = draft!.id;
     await db.update(invoices).set({ replacedByInvoiceId: draft!.id }).where(eq(invoices.id, invoiceId));
     // Cloned from the rows LOCKED in step 2 — not re-read unlocked.
@@ -1697,15 +1721,50 @@ export async function voidInvoice(invoiceId: string, reason: string, opts: { rei
       costBasis: l.costBasis, revenueAllocation: l.revenueAllocation, taxable: l.taxable, customerVisible: l.customerVisible,
       lineTotal: l.lineTotal, isUnapprovedTime: l.isUnapprovedTime, sortOrder: l.sortOrder
     });
-    const oldToNew = new Map<string, string>();
+    // Mint every new line id UP FRONT — parents AND children — so the map is
+    // complete and order-independent before a single row is written.
+    //
+    // The old shape built the map POSITIONALLY from `.returning({ id })`
+    // (`parents.forEach((l, i) => oldToNew.set(l.id, inserted[i]!.id))`), which
+    // assumes RETURNING comes back in input order. Postgres does not promise
+    // that. Today the consequence would be invisible (the map only re-pointed
+    // parentLineId among sibling bundle rows); attach billing evidence to it and
+    // a reordered RETURNING silently files device rows under the WRONG line.
+    // Pre-generated uuids remove the assumption instead of adding a second one.
+    // The children insert also never returned ids at all, so the map was
+    // parents-only — evidence on a bundle child had nowhere to go.
+    const oldToNew = new Map<string, string>(srcLines.map((l) => [l.id, randomUUID()]));
+    const newId = (oldLineId: string): string => {
+      const id = oldToNew.get(oldLineId);
+      // The old child clone used `oldToNew.get(l.parentLineId!) ?? null`, which
+      // silently PROMOTED a child to a top-level line when its parent was
+      // missing. Throw instead.
+      if (!id) throw new InvoiceServiceError(`Reissue clone: no mapping for line ${oldLineId}`, 500, 'INVALID_STATE');
+      return id;
+    };
     const parents = srcLines.filter((l) => l.parentLineId === null);
     if (parents.length) {
-      const inserted = await db.insert(invoiceLines).values(parents.map((l) => cloneValues(l, null))).returning({ id: invoiceLines.id });
-      parents.forEach((l, i) => oldToNew.set(l.id, inserted[i]!.id));
+      await db.insert(invoiceLines).values(parents.map((l) => ({ id: newId(l.id), ...cloneValues(l, null) })));
     }
     const children = srcLines.filter((l) => l.parentLineId !== null);
     if (children.length) {
-      await db.insert(invoiceLines).values(children.map((l) => cloneValues(l, oldToNew.get(l.parentLineId!) ?? null)));
+      await db.insert(invoiceLines).values(
+        children.map((l) => ({ id: newId(l.id), ...cloneValues(l, newId(l.parentLineId!)) })),
+      );
+    }
+
+    // #3205 W07: clone the evidence through the SAME map. Device pointers are
+    // copied VERBATIM — device_id, hostname, device_role, site_id, counted_as —
+    // so a row detached before the reissue (deleted or moved device) stays
+    // detached on the clone rather than being resurrected.
+    const srcEvidence = await db.select().from(invoiceLineDevices)
+      .where(eq(invoiceLineDevices.invoiceId, invoiceId));
+    for (const chunk of chunksOf(srcEvidence, 500)) {
+      await db.insert(invoiceLineDevices).values(chunk.map((e) => ({
+        invoiceLineId: newId(e.invoiceLineId), invoiceId: draft!.id, orgId: e.orgId,
+        deviceId: e.deviceId, hostname: e.hostname, deviceRole: e.deviceRole,
+        siteId: e.siteId, countedAs: e.countedAs,
+      })));
     }
   }));
 
