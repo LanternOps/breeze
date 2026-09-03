@@ -40,7 +40,8 @@
     "decisionFailed": "The decision could not be submitted. Try again.",
     "batchStepUp": "This batch needs a stronger sign-in. Approve the requests one at a time.",
     "batchNotHomogeneous": "These requests can no longer be decided together.",
-    "batchTooLarge": "This batch has too many requests to decide together. Approve them in smaller groups."
+    "batchTooLarge": "This batch has too many requests to decide together. Approve them in smaller groups.",
+    "driftedFromBatch": "This request changed and must be decided on its own."
   },
   "registerDevice": "Register device",
   "alwaysAllow": {

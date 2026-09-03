@@ -512,6 +512,53 @@
         "passed": "Réussie",
         "failed": "Échouée"
       }
+    },
+    "aiKillSwitch": {
+      "title": "Coupe-circuit IA",
+      "description": "Arrêt d'urgence à l'échelle de la plateforme pour l'activité non supervisée des agents IA. Le basculer affecte tous les partenaires à la fois — il s'agit d'une opération de plateforme, pas d'un paramètre par tenant.",
+      "refresh": "Actualiser",
+      "loading": "Chargement de l'état du coupe-circuit…",
+      "impactNote": "Activer le coupe-circuit arrête les actions IA non supervisées pour tous les partenaires en environ 5 secondes. Les actions déjà en cours ne sont pas interrompues.",
+      "platformAdmin": {
+        "title": "Accès administrateur de plateforme requis",
+        "description": "Le coupe-circuit IA est un contrôle à l'échelle de la plateforme géré par les administrateurs de plateforme Breeze. Votre compte ne peut pas le consulter ni le modifier."
+      },
+      "status": {
+        "active": "Actions IA actives",
+        "killed": "Actions IA arrêtées"
+      },
+      "fields": {
+        "epoch": "Époque",
+        "updatedBy": "Dernière modification par",
+        "updatedAt": "Dernière modification le",
+        "lastReason": "Dernier motif",
+        "none": "—"
+      },
+      "actions": {
+        "kill": "Arrêter les actions IA à l'échelle de la plateforme",
+        "restore": "Restaurer les actions IA"
+      },
+      "confirm": {
+        "killTitle": "Arrêter les actions IA à l'échelle de la plateforme ?",
+        "killDescription": "Cela arrête immédiatement l'activité non supervisée des agents IA pour tous les partenaires sur Breeze. À utiliser uniquement en cas d'incident actif.",
+        "restoreTitle": "Restaurer les actions IA ?",
+        "restoreDescription": "Cela réactive l'activité non supervisée des agents IA pour tous les partenaires sur Breeze.",
+        "reasonLabel": "Motif (obligatoire, pour le journal d'audit)",
+        "reasonPlaceholder": "Décrivez l'incident ou le motif de ce changement…",
+        "cancel": "Annuler",
+        "killSubmit": "Arrêter les actions IA",
+        "restoreSubmit": "Restaurer les actions IA"
+      },
+      "notice": {
+        "killed": "Actions IA arrêtées à l'échelle de la plateforme.",
+        "restored": "Actions IA restaurées à l'échelle de la plateforme."
+      },
+      "errors": {
+        "load": "Échec du chargement de l'état du coupe-circuit",
+        "generic": "Une erreur s'est produite",
+        "flip": "Échec de la mise à jour du coupe-circuit",
+        "mfaRequired": "Le basculement du coupe-circuit IA nécessite l'authentification multifacteur. Activez la MFA dans les paramètres de sécurité de votre profil, puis réessayez."
+      }
     }
   },
   "audit": {

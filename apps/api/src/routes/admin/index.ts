@@ -30,5 +30,7 @@ adminRoutes.route('/exchange-rates', exchangeRateAdminRoutes);
 adminRoutes.route('/llm-provider-catalog', llmProviderCatalogAdminRoutes);
 // Wave 6 PR 2 (#3828): the AI kill switch's authorized surface. Global row —
 // a flip stops unattended AI for every partner, hence platform-admin + MFA.
-// No UI (prod has zero platform admins); runbook: docs/deploy/ai-kill-switch.md.
+// UI: apps/web AiKillSwitch.tsx at /admin/ai-kill-switch (#4208). Runbook
+// (including the SQL fallback for when no platform admin exists — true of
+// production today): docs/deploy/ai-kill-switch.md.
 adminRoutes.route('/ai-kill-state', aiKillStateAdminRoutes);
