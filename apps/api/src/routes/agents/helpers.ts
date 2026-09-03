@@ -1165,12 +1165,20 @@ export async function handleCisCommandResult(
       return;
     }
 
-    // Resolve the baseline in a SYSTEM context. This handler runs inside the
-    // agent's ORG-scoped RLS context, where breeze_current_partner_id() is
-    // NULL — so a partner-wide baseline (org_id NULL) is invisible and this
-    // lookup would return nothing. Both callers swallow the error, so the
-    // failure mode is every scheduled scan result silently discarded with
-    // only a log line. The read is by primary key and the result is
+    // Resolve the baseline in a SYSTEM context.
+    //
+    // This escape originally existed because the agent's ORG-scoped RLS
+    // context had breeze_current_partner_id() NULL, making a partner-wide
+    // baseline (org_id NULL) invisible and this lookup return nothing. As of
+    // #4673 W02 that is no longer true — agent contexts now carry the device
+    // org's partner, so `cis_baselines_partner_wide_select` would match here.
+    // The escape is kept only because #4673 Wave 3 owns removing it together
+    // with the other `withPartnerWideVisibility` sites, as one reviewable
+    // change; do not read this comment as evidence that the GUC is still null.
+    //
+    // Why it stays safe meanwhile: both callers swallow the error, so the
+    // failure mode of a miss is every scheduled scan result silently discarded
+    // with only a log line. The read is by primary key and the result is
     // immediately re-checked against the device's own org below.
     const [baseline] = await runOutsideDbContext(() =>
       withSystemDbAccessContext(() =>

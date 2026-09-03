@@ -38,6 +38,7 @@ import {
   type AiAgentRunTraceEntryDto,
   type AiAgentTriggerKind,
   type AiToolStatus,
+  type TicketTriageSkip,
 } from '@breeze/shared';
 
 export interface RunTraceRunInput {
@@ -231,11 +232,17 @@ function mapDenied(action: { tool: string; reason: string }): AiAgentRunTraceEnt
  * than a misleadingly-present empty list. `draftsWritten` is the caller's
  * live `ticket_drafts` query result (`RunTraceDraftRowInput[]`), same
  * undefined-when-empty treatment.
+ *
+ * Issue #4462: `skipped` is `outcome.ticketTriageSkipped` verbatim (already
+ * the safe, display-string-only shape `persistTicketTriage` built — see
+ * `TicketTriageSkip`'s own docstring), undefined-when-empty like its two
+ * siblings above.
  */
 function mapTicketProposal(
   proposal: TicketProposalOutcome,
   intentIds: string[],
   draftRows: RunTraceDraftRowInput[],
+  skipped: TicketTriageSkip[] | undefined,
 ): AiAgentRunTicketProposalDto {
   return {
     version: proposal.version,
@@ -249,6 +256,7 @@ function mapTicketProposal(
     draftsWritten: draftRows.length > 0
       ? draftRows.map((row) => ({ kind: row.kind, draftId: row.id }))
       : undefined,
+    skipped: skipped && skipped.length > 0 ? skipped : undefined,
   };
 }
 
@@ -346,7 +354,9 @@ export function buildRunTrace(
     trace: buildTraceEntries(outcome),
     ledger: ledgerRows.map(mapLedgerRow),
     intents: intents.map(mapIntentRow),
-    ticketProposal: outcome.ticketProposal ? mapTicketProposal(outcome.ticketProposal, run.intentIds, draftRows) : null,
+    ticketProposal: outcome.ticketProposal
+      ? mapTicketProposal(outcome.ticketProposal, run.intentIds, draftRows, outcome.ticketTriageSkipped)
+      : null,
     // Phase 2 wave P2-1 (alert verdicts), Task 8: null for every full-profile
     // run and for a verdict-profile run that has not (yet, or ever)
     // produced one — see `projectAlertVerdict`'s own safe-projection

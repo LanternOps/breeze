@@ -8,6 +8,9 @@ import {
 } from '@breeze/shared';
 import { db } from '../db';
 import { authenticatorDevices } from '../db/schema';
+import type { PlatformBoundBasis } from '../db/schema/authenticatorDevices';
+import { authenticatorAttestationEnforced } from '../config/env';
+import { recordAuthenticatorL4Basis } from './anomalyMetrics';
 import { verifyApprovalAssertion } from './approverWebAuthn';
 import { verifyMobileSignature, consumeMobileAssertionNonce } from './mobileHwKey';
 import { loadPartnerPolicy, isEnforcing } from './authenticatorPolicy';
@@ -19,6 +22,44 @@ import { loadPartnerPolicy, isEnforcing } from './authenticatorPolicy';
  * already per-request and short-lived; this is the explicit server-side bound.
  */
 export const APPROVAL_CHALLENGE_TTL_MS = 120_000;
+
+/**
+ * The ONLY `platform_bound_basis` values that may reach L4 (critical tier) —
+ * #1374. Reading `is_platform_bound` alone is NOT sufficient and never will be
+ * again: pre-#1374 mobile registration forced that boolean true with no
+ * attestation of any kind, so a software RSA key presented as an L4-capable
+ * hardware factor.
+ *
+ * Deliberately EXCLUDED:
+ *  - `unattested` / `legacy_unattested` — no attestation was ever verified.
+ *  - `ios_keychain_rsa_app_attest` — App Attest proves a genuine app instance
+ *    vouched for the SPKI; it does NOT prove the RSA private key lives in
+ *    hardware. The Apple Secure Enclave holds only P-256 keys, so an RSA
+ *    Keychain key is biometric-gated but software-resident.
+ *
+ * `webauthn_backup_flags` IS included, as a documented weaker exception:
+ * browser registration requests `attestationType: 'none'` and derives
+ * platform-bound from `singleDevice && !backedUp` (services/approverWebAuthn.ts)
+ * — backup-eligibility flags, not a hardware attestation. Tightening that is a
+ * separate decision with its own blast radius (#1374 open question Q3). Do not
+ * quietly remove it here without closing that question.
+ */
+export const L4_TRUSTED_PLATFORM_BOUND_BASES: ReadonlySet<PlatformBoundBasis> = new Set<PlatformBoundBasis>([
+  'webauthn_backup_flags',
+  'ios_se_p256_app_attest',
+  'android_tee_key_attestation',
+  'android_strongbox_key_attestation',
+]);
+
+/**
+ * Bases whose platform-binding is derived at registration rather than from a
+ * verified attestation, so there is no attestation timestamp to require. Kept
+ * as an explicit set (not an inline `=== 'webauthn_backup_flags'`) so adding
+ * another derived basis can never silently skip the timestamp requirement for
+ * a basis that DOES carry an attestation.
+ */
+const BASES_WITHOUT_ATTESTATION_TIMESTAMP: ReadonlySet<PlatformBoundBasis> =
+  new Set<PlatformBoundBasis>(['webauthn_backup_flags']);
 
 /** Thrown when an L3+ approval's challenge was issued outside the recency window
  * (a stale signature replayed late). The decide paths map this to a 401 — a
@@ -160,7 +201,8 @@ export function resolveElevationAssurance(riskTierNum: number | null): Assurance
  * Two L2 factors, discriminated on `proof.type`:
  *  - `webauthn_platform` (Phase 2): a browser WebAuthn assertion, verified via
  *    @simplewebauthn against the device's stored public key.
- *  - `mobile_hw_key` (Phase 3): a Secure-Enclave / Keystore RSA-SHA256 signature
+ *  - `mobile_hw_key` (Phase 3): a biometric-gated Keychain / Keystore RSA-SHA256
+ *    signature (NOT Secure Enclave — the SE holds only P-256 keys; #1374)
  *    over the single-use server nonce, verified against the device's stored SPKI
  *    public key. `proof.credentialId` carries the approver device id.
  *
@@ -170,8 +212,9 @@ export function resolveElevationAssurance(riskTierNum: number | null): Assurance
  *    `APPROVAL_CHALLENGE_TTL_MS`. The issued-at is read server-side from the
  *    consumed challenge (it travels with the nonce in Redis), NOT supplied by
  *    the route — so a stale-but-valid signature is rejected automatically.
- *  - L4 (critical): L3 conditions, plus a hardware/platform-bound key
- *    (`device.is_platform_bound`) and a FRESH account re-authentication
+ *  - L4 (critical): L3 conditions, plus a genuinely platform-bound key
+ *    (`device.is_platform_bound` AND a `platform_bound_basis` in
+ *    `L4_TRUSTED_PLATFORM_BOUND_BASES` — #1374) and a FRESH account re-authentication
  *    (`reauthVerified === true`, satisfied inline at the decide surface — this
  *    is the only route-supplied factor).
  *
@@ -265,6 +308,12 @@ interface VerifiedFactor {
   decidedVia: 'webauthn_platform' | 'mobile_hw_key';
   authenticatorDeviceId: string;
   isPlatformBound: boolean;
+  /** WHY the device counts as platform-bound (#1374). Read from the device row,
+   * never from the request. */
+  platformBoundBasis: PlatformBoundBasis;
+  /** When the attestation behind that basis was verified server-side. Null =
+   * never (or a basis that carries no attestation). */
+  attestationVerifiedAt: Date | null;
   challengeIssuedAt: number;
 }
 
@@ -294,9 +343,38 @@ function escalateAchievedLevel(
   }
   if (riskTier === 'high') return 3;
 
-  // L4 (critical): L3 recency + a platform/hardware-bound key + fresh re-auth.
+  // L4 (critical): L3 recency + a genuinely platform-bound key + fresh re-auth.
+  //
+  // #1374: the boolean alone is not enough. Pre-#1374 mobile registration set
+  // is_platform_bound = true unconditionally with no attestation, so a software
+  // RSA key read as an L4-capable hardware factor. L4 now additionally requires
+  // a basis in L4_TRUSTED_PLATFORM_BOUND_BASES, with a recorded verification
+  // time for every basis that has an attestation to time-stamp.
+  //
+  // Failure keeps producing StepUpRequiredError(4, 3) — the achieved level is
+  // genuinely L3, and a critical tier is never silently downgraded.
   if (!factor.isPlatformBound) {
+    recordAuthenticatorL4Basis(factor.platformBoundBasis, 'denied');
     throw new StepUpRequiredError(4, 3);
+  }
+  const basisTrusted =
+    L4_TRUSTED_PLATFORM_BOUND_BASES.has(factor.platformBoundBasis) &&
+    (BASES_WITHOUT_ATTESTATION_TIMESTAMP.has(factor.platformBoundBasis) ||
+      factor.attestationVerifiedAt !== null);
+  if (!basisTrusted) {
+    // The basis check runs BEFORE the re-auth check on purpose: an untrusted
+    // basis must surface as a step-up (the honest achieved level is L3), not as
+    // a missing re-auth the technician could satisfy and still get nowhere.
+    if (authenticatorAttestationEnforced()) {
+      recordAuthenticatorL4Basis(factor.platformBoundBasis, 'denied');
+      throw new StepUpRequiredError(4, 3);
+    }
+    // Break-glass: enforcement is off, so the approval proceeds on the legacy
+    // boolean. Counted as `would_deny` so the blast radius of turning
+    // enforcement back on is measurable while it is off.
+    recordAuthenticatorL4Basis(factor.platformBoundBasis, 'would_deny');
+  } else {
+    recordAuthenticatorL4Basis(factor.platformBoundBasis, 'allowed');
   }
   if (!ctx.reauthVerified) {
     throw new ReauthRequiredError();
@@ -359,6 +437,8 @@ async function verifyWebauthnFactor(
     decidedVia: 'webauthn_platform',
     authenticatorDeviceId: device.id,
     isPlatformBound: device.isPlatformBound === true,
+    platformBoundBasis: device.platformBoundBasis,
+    attestationVerifiedAt: device.attestationVerifiedAt ?? null,
     challengeIssuedAt,
   };
 }
@@ -417,6 +497,8 @@ async function verifyMobileFactor(
     decidedVia: 'mobile_hw_key',
     authenticatorDeviceId: device.id,
     isPlatformBound: device.isPlatformBound === true,
+    platformBoundBasis: device.platformBoundBasis,
+    attestationVerifiedAt: device.attestationVerifiedAt ?? null,
     challengeIssuedAt: consumed.issuedAt,
   };
 }

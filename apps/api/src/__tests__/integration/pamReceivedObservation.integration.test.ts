@@ -21,6 +21,7 @@ vi.mock('../../services/pamReconciliationRateLimit', () => ({
 
 type Fixture = {
   orgId: string;
+  partnerId: string;
   siteId: string;
   deviceId: string;
   requestId: string;
@@ -87,8 +88,8 @@ async function createFixture(): Promise<Fixture> {
            request.id AS "requestId", command.id AS "commandId",
            actuation.id AS "actuationId"
     FROM device, request, command, actuation
-  `) as unknown as Array<Omit<Fixture, 'orgId' | 'agentId'>>;
-  return { orgId: org.id, agentId, ...row! };
+  `) as unknown as Array<Omit<Fixture, 'orgId' | 'agentId' | 'partnerId'>>;
+  return { orgId: org.id, partnerId: partner.id, agentId, ...row! };
 }
 
 function receivedFor(fixture: Fixture): PamAgentResultV2 & { state: 'received' } {
@@ -123,6 +124,7 @@ function appFor(fixture: Fixture): Hono {
     c.set('agent', {
       deviceId: fixture.deviceId,
       orgId: fixture.orgId,
+      partnerId: fixture.partnerId,
       agentId: fixture.agentId,
       siteId: fixture.siteId,
       role: 'agent',

@@ -188,6 +188,26 @@ moveOrgRoutes.post(
     let currencyGuard: MoveCurrencyGuardDetails | null = null;
     try {
       await db.transaction(async (tx) => {
+        // #4596 W2. `time_entries_ticket_org_fk` and `ticket_parts_ticket_org_fk`
+        // are composite (ticket_id, org_id) -> tickets(id, org_id) and DEFERRABLE
+        // INITIALLY IMMEDIATE, so they are checked at the end of EACH statement
+        // unless deferred here. This path moves the device's tickets to the
+        // target org and only then rewrites time_entries / ticket_parts through
+        // the tickets join (~180 lines below), so with a merely IMMEDIATE check
+        // the tickets UPDATE 23503s the instant it completes. Deferring to
+        // COMMIT is exactly right: by then every (ticket_id, org_id) pair
+        // resolves again. See moveTicketOrg in services/ticketService.ts for
+        // the full rationale — this is the same invariant on the device path.
+        //
+        // BY NAME, never `ALL`: the requester-contact / ticket_drafts /
+        // action_intents composites must stay IMMEDIATE so a newly added
+        // referencing row type fails fast instead of silently at COMMIT.
+        //
+        // Safe to precede the org lock below: SET CONSTRAINTS takes no table
+        // locks, so it does not participate in this transaction's lock order.
+        await tx.execute(
+          sql`SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk DEFERRED`,
+        );
         // Creation barrier / cross-org move lock order (#3778): BOTH organizations
         // FOR SHARE, ascending UUID, as the FIRST statement of this transaction —
         // before any device/ticket row is touched. Held to commit, so the
