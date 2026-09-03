@@ -1,4 +1,39 @@
 {
+  "aiAgentsRuns": {
+    "live": {
+      "label": "Wird live aktualisiert"
+    },
+    "list": {
+      "clearFilters": "Filter zurücksetzen",
+      "emptyDescription": "Läufe, die durch Warnungen, Zeitpläne, Tickets und manuelle Aktionen ausgelöst werden, werden hier angezeigt, sobald ein Agent sie ausführt.",
+      "emptyFilteredDescription": "Keine Läufe entsprechen diesen Filtern. Versuchen Sie einen anderen Agenten oder Status.",
+      "emptyConfigureLink": "KI-Agenten konfigurieren"
+    },
+    "detail": {
+      "notFoundDescription": "Dieser Lauf wurde möglicherweise gelöscht, oder der Link ist veraltet.",
+      "trace": {
+        "emptyDescription": "Tool-Aufrufe, die der Agent vorschlägt oder ausführt, werden hier aufgelistet."
+      },
+      "ledger": {
+        "emptyDescription": "Tools, die der Agent tatsächlich aufgerufen hat, werden hier aufgelistet.",
+        "statuses": {
+          "pending": "Ausstehend",
+          "approved": "Genehmigt",
+          "executing": "Wird ausgeführt",
+          "completed": "Abgeschlossen",
+          "failed": "Fehlgeschlagen",
+          "rejected": "Abgelehnt"
+        }
+      },
+      "intents": {
+        "emptyDescription": "Genehmigungen, die dieser Lauf angefordert hat, werden hier aufgelistet."
+      },
+      "triage": {
+        "categoryLabel": "Kategorie",
+        "categoryUnresolved": "Vorgeschlagen — Name in dieser Ansicht nicht verfügbar"
+      }
+    }
+  },
   "partnerServicePrincipals": {
     "title": "Dienstprinzipale",
     "description": "Partnerweite Maschinenidentitäten und ihre Zugriffsschlüssel verwalten.",
@@ -1380,7 +1415,7 @@
       "deleteOverride": "Ausnahme entfernen",
       "confirmDelete": "Löschen bestätigen",
       "cron": "Cron-Ausdruck",
-      "cronHint": "Fünf Felder: Minute Stunde Tag-des-Monats Monat Wochentag. Beispiel: 0 3 * * * läuft täglich um 03:00 Uhr.",
+      "cronHint": "Fünf Felder: Minute Stunde Tag-des-Monats Monat Wochentag. Beispiel: 0 3 * * * läuft täglich um 03:00 Uhr. Das Minutenfeld muss eine literale Zahl oder eine durch Kommas getrennte Liste sein (kein *, / oder -Bereich) — Zeitpläne laufen höchstens stündlich.",
       "cronInvalid": "Geben Sie vor dem Speichern einen gültigen Cron-Ausdruck mit fünf Feldern ein.",
       "timezone": "Zeitzone",
       "kinds": {
@@ -1400,6 +1435,9 @@
       "tightenOnly": "Eine Ausnahme kann die Basis nur einschränken: Sie kann den Sweep deaktivieren oder Prüfungen entfernen, aber nie hinzufügen.",
       "noKinds": "Keine Prüfungen",
       "lastRun": "Letzter Lauf {{at}} · {{admitted}} von {{total}} Organisationen geprüft, {{skipped}} übersprungen.",
+      "nextRun": "Nächster Lauf {{at}} ({{timezone}})",
+      "nextRunInvalid": "Ungültiger Zeitplan",
+      "nextRunNone": "Im nächsten Jahr fällt kein Lauf an.",
       "kindLabels": {
         "disk_pressure": "Speicherplatzdruck",
         "stale_agents": "Veraltete Agenten",
@@ -1432,6 +1470,26 @@
     "title": "KI-Agenten",
     "description": "Benannte KI-Mitarbeiter mit einer Richtlinie. Partner legen die Grundlinie fest; Organisationen können sie nur verschärfen.",
     "empty": "Noch keine Agenten vorhanden.",
+    "kindHints": {
+      "triage": "Untersucht neue Warnungen und schlägt vor, was zu tun ist.",
+      "patch": "Prüft fehlende Patches und schlägt vor, was installiert werden soll.",
+      "helpdesk": "Nimmt Tickets auf und schlägt Antworten und nächste Schritte vor."
+    },
+    "emptyState": {
+      "title": "Noch keine Agenten",
+      "description": "Ein Agent ist eine gespeicherte Richtlinie, kein laufender Prozess: Er beobachtet die von Ihnen gewählten Warnungen, Patches oder Tickets, untersucht sie mit den von Ihnen erlaubten Werkzeugen und schlägt danach eine Lösung vor oder führt sie aus. Beginnen Sie im Schattenmodus, in dem der Agent vorschlägt und ein Mensch genehmigt, damit nichts ein Gerät erreicht, bevor Sie es sagen.",
+      "action": "Ersten Agenten erstellen"
+    },
+    "modeChoice": {
+      "legend": "Was dieser Agent tun darf",
+      "off": "Aus",
+      "offConsequence": "Es läuft nichts.",
+      "shadow": "Schatten",
+      "shadowConsequence": "Beobachtet und schlägt vor; ein Mensch genehmigt alles.",
+      "act": "Aktion",
+      "actConsequence": "Führt erlaubte Vorgänge ohne Klick aus. Kein automatisches Zurücksetzen.",
+      "actUnavailable": "Für diesen Agenten noch nicht verfügbar."
+    },
     "allOrgs": "Alle Organisationen",
     "allOrgsHint": "Partnerweit: gilt für jede Organisation, sofern eine Organisation die Richtlinie nicht verschärft.",
     "stateEnabled": "Aktiviert",
@@ -1477,8 +1535,11 @@
     "sections": {
       "scope": "Wann er ausgeführt wird",
       "permissions": "Berechtigungen",
+      "permissionsDescription": "Worauf dieser Agent zugreifen darf. Die Werkzeugliste erweitert seine Möglichkeiten; geschützte Ressourcen schränken sie ein und haben immer Vorrang.",
       "policyDecide": "Unbeaufsichtigte Richtlinienautorisierung",
       "limits": "Grenzwerte",
+      "limitsBudget": "Budget und Reichweite",
+      "limitsTiming": "Zeitverhalten",
       "notifications": "Benachrichtigungen",
       "instructions": "Anweisungen"
     },
@@ -1536,7 +1597,12 @@
       "supervisedActionKeysEmpty": "Es sind keine per Richtlinie entscheidbaren Aktionen registriert.",
       "supervisedActionKeysFailed": "Die Liste der per Richtlinie entscheidbaren Aktionen konnte nicht geladen werden, daher kann die unbeaufsichtigte Autorisierung derzeit nicht geändert werden.",
       "ticketAutonomousWrites": "Autonome Ticket-Schreibvorgänge",
-      "ticketAutonomousWritesHint": "Nur Organisationsüberschreibung — autonome Ticket-Schreibvorgänge erfordern den Aktionsmodus und diese Opt-in-Einstellung auf Organisationsebene"
+      "ticketAutonomousWritesHint": "Nur Organisationsüberschreibung — autonome Ticket-Schreibvorgänge erfordern den Aktionsmodus und diese Opt-in-Einstellung auf Organisationsebene",
+      "enabledHint": "„Aktiviert“ und der Modus sind getrennte Schalter, und ein Lauf braucht beide: Ist dies aus, läuft unabhängig vom Modus nichts, und im Modus „Aus“ läuft auch dann nichts, wenn dies eingeschaltet ist.",
+      "actKeysCleared": "Die Berechtigungen des Aktionsmodus bleiben erhalten, werden aber erst gespeichert, wenn dieser Agent wieder in den Aktionsmodus wechselt.",
+      "toolSuggestLabel": "Bekanntes Werkzeug hinzufügen",
+      "toolSuggestHint": "Die Vorschläge stammen aus dem Register richtlinienentscheidbarer Aktionen und sind nicht die vollständige Werkzeugliste. Alles andere, was dieser Agent nutzen darf, kann oben weiterhin eingetippt werden.",
+      "toolSuggestAdd": "Hinzufügen"
     },
     "loading": "Agenten werden geladen …",
     "runs": {
@@ -1781,6 +1847,7 @@
       "refresh": "Aktualisieren",
       "refreshing": "Wird neu aufgebaut…",
       "retry": "Erneut versuchen",
+      "moreActions": "Weitere Aktionen",
       "errors": {
         "load": "Der Wirkungsbericht konnte nicht geladen werden.",
         "rebuild": "Der Neuaufbau des Wirkungsberichts konnte nicht eingeplant werden.",
@@ -1793,6 +1860,15 @@
         "rebuildComplete": "Der Wirkungsbericht wurde neu aufgebaut.",
         "rebuildStillRunning": "Der Neuaufbau läuft noch. Laden Sie diese Seite in einigen Minuten neu, um die neuen Zahlen zu sehen."
       },
+      "emptyState": {
+        "title": "Noch keine KI-Ergebnisse in diesem Zeitraum",
+        "description": "Ergebnisse erscheinen hier, sobald Ihre KI-Agenten im Beobachtungs- oder Aktionsmodus eine Warnmeldung bewerten, ein Ticket sortieren oder eine Behebung ausführen. Erweitern Sie oben den Berichtszeitraum, oder richten Sie einen Agenten ein, um loszulegen.",
+        "action": "Agenten einrichten"
+      },
+      "tileGroups": {
+        "judged": "Bewertet",
+        "executed": "Ausgeführt"
+      },
       "tiles": {
         "alertsJudged": "Bewertete Warnmeldungen",
         "noiseFlagged": "Als Rauschen markiert",
@@ -1800,9 +1876,11 @@
         "draftsSent": "Gesendete Entwürfe",
         "fixesExecuted": "Ausgeführte Behebungen",
         "promoteEligible": "Für Freigabe geeignete Vorgänge",
-        "promoteEligibleHint": "Vorgänge mit ausreichend fehlerfreien Nachweisen für eine Vorabgenehmigung. Öffnen Sie Einstellungen → KI-Agenten, um sie zu prüfen und freizugeben.",
+        "promoteEligibleCaption": "Vorgänge mit ausreichend fehlerfreien Nachweisen für eine Vorabgenehmigung. Öffnen Sie Einstellungen → KI-Agenten, um sie zu prüfen und freizugeben.",
         "estTimeSaved": "Geschätzte Zeitersparnis",
         "estTimeSavedValue": "{{hours}} Std.",
+        "estTimeSavedCaption": "Geschätzt anhand eines festen Zeitwerts pro Ergebnis.",
+        "howEstimatedToggle": "Wie wird das geschätzt?",
         "llmSpend": "LLM-Ausgaben"
       },
       "weightsTooltipTitle": "Nur eine Schätzung — jedem Ergebnis wird ein fester Zeitwert gutgeschrieben:",
@@ -1886,6 +1964,8 @@
       "loading": "Nachweise werden geladen…",
       "error": "Die Nachweise konnten nicht geladen werden.",
       "retry": "Erneut versuchen",
+      "noBaselineTitle": "Noch kein Basis-Agent",
+      "noBaseline": "Die Nachverfolgung der Freigabestufen beginnt erst, sobald ein partnerweiter Basis-Agent dieser Art existiert. Erstellen Sie einen mit dem Geltungsbereich „Alle Organisationen“, um die Nachweise für diese Organisation zu erfassen.",
       "orgRequired": "Wählen Sie in der Organisationsauswahl eine einzelne Organisation aus, um deren Nachweise zu sehen.",
       "empty": "Für diesen Agenten wurden noch keine Nachweise erfasst.",
       "readOnlyNote": "Vorab genehmigte Ausführung ist in dieser Installation deaktiviert; diese Zahlen dienen nur zur Information.",
@@ -1894,6 +1974,22 @@
       "approvalsLink": "Diesen Antrag im Genehmigungseingang verfolgen",
       "ceilingHint": "Schlüssel auf Partnerebene sind eine Obergrenze, keine Erteilung. Der Agent jeder Organisation muss den Schlüssel gesondert erhalten — über die Freigabestufe oder durch Bearbeiten des Agenten dieser Organisation.",
       "promote": "Hochstufen",
+      "revoke": "Widerrufen",
+      "emptyTitle": "Noch keine Nachweise",
+      "demotedAt": "Widerrufen am {{at}}",
+      "demotedReason": "Grund: {{reason}}",
+      "demoteReasons": {
+        "attempted_failure": "ein Versuch ist fehlgeschlagen",
+        "recurrence": "die behobene Warnung ist wieder aufgetreten",
+        "operator": "eine Bedienperson hat den Vorgang widerrufen"
+      },
+      "revokeConfirm": {
+        "title": "Vorabgenehmigung widerrufen",
+        "message": "{{opKey}} kehrt für den Agenten dieser Organisation in die Genehmigungswarteschlange zurück. Ein bereits laufender Durchlauf bleibt unberührt; jeder spätere braucht wieder eine menschliche Entscheidung.",
+        "action": "Widerrufen",
+        "reasonLabel": "Grund (optional)",
+        "reasonHint": "Wird im Prüfprotokoll dieses Widerrufs festgehalten. Bis zu 500 Zeichen."
+      },
       "verifiedOfThreshold": "{{verified}} von {{threshold}}",
       "columns": {
         "opKey": "Vorgang",
@@ -1924,11 +2020,17 @@
         "action": "Genehmigung anfordern"
       },
       "toasts": {
-        "requested": "Vorabgenehmigung beantragt. Eine zweite Person muss sie genehmigen, bevor dieser Vorgang unbeaufsichtigt läuft, und sie gilt nur für künftige Läufe."
+        "requested": "Vorabgenehmigung beantragt. Eine zweite Person muss sie genehmigen, bevor dieser Vorgang unbeaufsichtigt läuft, und sie gilt nur für künftige Läufe.",
+        "revoked": "Vorabgenehmigung widerrufen. Dieser Vorgang braucht ab dem nächsten Lauf wieder eine menschliche Entscheidung."
       },
       "errors": {
         "promote": "Der Antrag auf Vorabgenehmigung konnte nicht gestellt werden.",
-        "policyDecideDisabled": "Vorab genehmigte Ausführung ist in dieser Installation deaktiviert, dieser Vorgang kann daher nicht hochgestuft werden."
+        "policyDecideDisabled": "Vorab genehmigte Ausführung ist in dieser Installation deaktiviert, dieser Vorgang kann daher nicht hochgestuft werden.",
+        "revoke": "Die Vorabgenehmigung konnte nicht widerrufen werden.",
+        "noPromotedGrant": "Dieser Vorgang ist für diese Organisation nicht vorab genehmigt, es gibt also nichts zu widerrufen.",
+        "alreadyDemoted": "Dieser Vorgang ist bereits wieder in der Genehmigungswarteschlange.",
+        "alreadyRevoked": "Dieser Vorgang war bereits vom Agenten entfernt, es hat sich nichts geändert.",
+        "ambiguousOpKey": "Mehr als ein Agent hält diesen Vorgang für diese Organisation. Öffnen Sie den gewünschten Agenten und widerrufen Sie ihn dort."
       },
       "reliability": {
         "caption": "Vorgänge im Act-Modus, nur zur Ansicht: Sie sind keine Richtlinienschlüssel und können daher nie vorab genehmigt werden."

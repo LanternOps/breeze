@@ -20,7 +20,9 @@ const namespaceDuplicateBaselines = {
     'admin.json': 25,
     'ai.json': 1,
     'alerts.json': 43,
-    'approvals.json': 0,
+    // +1: approvals charCount "{{count}}/{{max}}" is two interpolations and a
+    // slash — no wording to translate.
+    'approvals.json': 1,
     'auth.json': 14,
     'backup.json': 52,
     // +4: contract-template format strings + Portuguese cognate ("v{{number}} ·
@@ -101,7 +103,9 @@ const namespaceDuplicateBaselines = {
     'admin.json': 21,
     'ai.json': 4,
     'alerts.json': 39,
-    'approvals.json': 0,
+    // +1: approvals charCount "{{count}}/{{max}}" is two interpolations and a
+    // slash — no wording to translate.
+    'approvals.json': 1,
     'auth.json': 14,
     'backup.json': 30,
     // +3: contract-template format strings ("v{{number}} · {{status}}",
@@ -183,7 +187,9 @@ const namespaceDuplicateBaselines = {
     'admin.json': 34,
     'ai.json': 9,
     'alerts.json': 58,
-    'approvals.json': 0,
+    // +1: approvals charCount "{{count}}/{{max}}" is two interpolations and a
+    // slash — no wording to translate.
+    'approvals.json': 1,
     'auth.json': 13,
     'backup.json': 59,
     // +7: contract-template format strings + French cognates ("v{{number}} ·
@@ -278,7 +284,9 @@ const namespaceDuplicateBaselines = {
     'admin.json': 34,
     'ai.json': 9,
     'alerts.json': 59,
-    'approvals.json': 0,
+    // +1: approvals charCount "{{count}}/{{max}}" is two interpolations and a
+    // slash — no wording to translate.
+    'approvals.json': 1,
     'auth.json': 13,
     'backup.json': 60,
     // Contract-template format strings, French cognates, and locale-invariant
@@ -367,7 +375,9 @@ const namespaceDuplicateBaselines = {
     'admin.json': 31,
     'ai.json': 5,
     'alerts.json': 46,
-    'approvals.json': 0,
+    // +1: approvals charCount "{{count}}/{{max}}" is two interpolations and a
+    // slash — no wording to translate.
+    'approvals.json': 1,
     'auth.json': 15,
     'backup.json': 63,
     // +6: contract-template format strings + German cognates ("v{{number}} ·
@@ -447,7 +457,9 @@ const namespaceDuplicateBaselines = {
     'admin.json': 38,
     'ai.json': 12,
     'alerts.json': 57,
-    'approvals.json': 0,
+    // +1: approvals charCount "{{count}}/{{max}}" is two interpolations and a
+    // slash — no wording to translate.
+    'approvals.json': 1,
     'auth.json': 21,
     'backup.json': 45,
     // +1: unassigned.qtyPrice "{{qty}} × {{price}}" is two interpolations plus a
@@ -512,7 +524,9 @@ const namespaceDuplicateBaselines = {
     'admin.json': 19,
     'ai.json': 1,
     'alerts.json': 25,
-    'approvals.json': 0,
+    // +1: approvals charCount "{{count}}/{{max}}" is two interpolations and a
+    // slash — no wording to translate.
+    'approvals.json': 1,
     'auth.json': 14,
     'backup.json': 25,
     // +1: the quote/invoice bulk-result strings ("{{succeeded}} {{verb}}") are
