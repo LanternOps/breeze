@@ -57,6 +57,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { randomUUID } from 'crypto';
 import { eq, sql } from 'drizzle-orm';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
+import { extractRowCount } from '../../db/rowCount';
 import {
   configurationPolicies,
   configPolicyFeatureLinks,
@@ -69,6 +70,7 @@ import {
 } from '../../db/schema';
 import {
   buildEventLogConfigUpdate,
+  buildHelperConfigUpdate,
   buildMonitoringConfigUpdate,
   buildPamConfigUpdate,
   buildPatchSourceConfigUpdate,
@@ -248,6 +250,25 @@ async function seedPamPolicy(
   });
 }
 
+async function seedHelperPolicy(
+  owner: { orgId: string | null; partnerId: string | null },
+  inlineSettings: Record<string, unknown>,
+) {
+  return withDbAccessContext(SYSTEM_CTX, async () => {
+    const [policy] = await db
+      .insert(configurationPolicies)
+      .values({ orgId: owner.orgId, partnerId: owner.partnerId, name: `helper policy ${randomUUID()}`, status: 'active' })
+      .returning();
+    createdPolicies.push(policy!.id);
+    await db.insert(configPolicyFeatureLinks).values({
+      configPolicyId: policy!.id,
+      featureType: 'helper',
+      inlineSettings,
+    });
+    return policy!.id;
+  });
+}
+
 async function seedPatchPolicy(
   owner: { orgId: string | null; partnerId: string | null },
   exclusiveWindowsUpdate: boolean,
@@ -283,6 +304,7 @@ async function purgeCaches(deviceId: string) {
     `eventlog:settings:device:${deviceId}`,
     `monitoring:settings:device:${deviceId}`,
     `pam:settings:device:${deviceId}`,
+    `helper:settings:device:${deviceId}`,
   );
 }
 
@@ -629,6 +651,41 @@ describe('agent-facing config-policy resolvers honour partner-wide policies (#29
       expect(sighted.exclusiveWindowsUpdate).toBe(true);
     });
 
+    it('helper settings: a partner-wide policy resolves, and is INVISIBLE without breeze.current_partner_id', async () => {
+      // buildHelperConfigUpdate is the FIFTH agent-facing resolver whose escape
+      // W03 removed, and the only one this suite did not already cover. Its
+      // settings live in `config_policy_feature_links.inlineSettings` (JSONB) —
+      // there is no `config_policy_helper_settings` table — so the grant comes
+      // from `config_policy_feature_links_partner_wide_select`.
+      const partner = await createPartner();
+      const org = await createOrganization({ partnerId: partner.id });
+      const site = await createSite({ orgId: org!.id });
+      const device = await seedDevice(org!.id, site!.id);
+      await purgeCaches(device.id);
+
+      // Both fields differ from what the no-policy path produces: that path
+      // returns HELPER_DEFAULTS with `enabled` from organizations.settings.helper
+      // (unset here, so false) and `showTrayIcon: true`.
+      const policyId = await seedHelperPolicy(
+        { orgId: null, partnerId: partner.id },
+        { enabled: true, showTrayIcon: false },
+      );
+      await assign(policyId, 'partner', partner.id);
+
+      const blind = await withDbAccessContext(partnerWideBlindContext(org!.id), () =>
+        buildHelperConfigUpdate(device.id, org!.id),
+      );
+      expect(blind.enabled).toBe(false);
+      expect(blind.showTrayIcon).toBe(true);
+
+      await purgeCaches(device.id);
+      const sighted = await withDbAccessContext(orgContext(org!.id, partner.id), () =>
+        buildHelperConfigUpdate(device.id, org!.id),
+      );
+      expect(sighted.enabled).toBe(true);
+      expect(sighted.showTrayIcon).toBe(false);
+    });
+
     it('writes stay locked: the org context still cannot UPDATE or DELETE the partner-wide policy', async () => {
       // The branch is FOR SELECT only. Postgres never consults FOR SELECT
       // policies when computing UPDATE/DELETE target rows, so the row stays
@@ -644,12 +701,12 @@ describe('agent-facing config-policy resolvers honour partner-wide policies (#29
         const updated = await db.execute(
           sql`update configuration_policies set name = 'hijacked' where id = ${policyId}`,
         );
-        expect((updated as unknown as { count: number }).count).toBe(0);
+        expect(extractRowCount(updated)).toBe(0);
 
         const deleted = await db.execute(
           sql`delete from configuration_policies where id = ${policyId}`,
         );
-        expect((deleted as unknown as { count: number }).count).toBe(0);
+        expect(extractRowCount(deleted)).toBe(0);
       });
 
       // ...and the row is still there, unchanged.

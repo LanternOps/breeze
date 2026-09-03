@@ -731,8 +731,18 @@ export async function resolveBackupConfigForDevice(
   const targetConditions = buildTargetConditions(hierarchy);
   const roleOsConditions = buildRoleOsFilterConditions(hierarchy);
 
-  // Partner-wide policies + profiles are RLS-invisible to org tokens — resolve
-  // them in a system context (self-tenanted by this device's hierarchy).
+  // Partner-wide policies + profiles used to be RLS-invisible to org tokens, so
+  // this resolved in a system context. #4673 W01 grants them directly —
+  // `configuration_policies_partner_wide_select`,
+  // `config_policy_backup_settings_partner_wide_select` and
+  // `backup_profiles_partner_wide_select` — so W03 deleted that escape and this
+  // runs in the CALLER'S OWN context.
+  //
+  // That makes `DbAccessContext.currentPartnerId` load-bearing for every caller:
+  // a hand-built org context that omits it resolves ZERO partner-wide rows, with
+  // no error, and the device silently falls back to no backup config. Build
+  // contexts with `buildDbAccessContext` / `dbAccessContextFromAuth`, never by
+  // hand. Still self-tenanted by this device's hierarchy on top of RLS.
   const rows = await db
     .select({
       backupSettings: configPolicyBackupSettings,
