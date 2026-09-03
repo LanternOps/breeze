@@ -1,6 +1,21 @@
 import { render, screen, fireEvent } from '@testing-library/react';
+import { useLayoutEffect } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import AiBudgetThresholdsInput from './AiBudgetThresholdsInput';
+
+/**
+ * Records the input's committed DOM value once per commit. Layout effects run
+ * synchronously in the mutation phase of the very commit that produced the
+ * DOM, so this observes what the box showed at each commit boundary without
+ * depending on when React's scheduler gets around to passive effects.
+ */
+function CommitProbe({ testId, seen }: { testId: string; seen: string[] }) {
+  useLayoutEffect(() => {
+    const el = document.querySelector(`[data-testid="${testId}-input"]`);
+    if (el) seen.push((el as HTMLInputElement).value);
+  });
+  return null;
+}
 
 describe('AiBudgetThresholdsInput', () => {
   it('renders current rungs as chips and emits a normalised list on blur', () => {
@@ -115,5 +130,40 @@ describe('AiBudgetThresholdsInput', () => {
     fireEvent.change(input, { target: { value: '80' } });
     fireEvent.blur(input);
     expect(onChange).not.toHaveBeenCalled();
+  });
+
+  // #4659 / #4601: the box used to seed itself from `value` in a `useEffect`,
+  // i.e. in a commit AFTER the one that delivered the new prop. Because a
+  // passive effect is deferred, its `setText` could land after the user had
+  // already typed, writing the effect's captured string over the keystroke —
+  // the next blur then committed the PRE-EDIT ladder.
+  //
+  // That window is not hypothetical: @testing-library's `asyncWrapper` turns
+  // the act environment OFF for the duration of `waitFor`/`findBy*` and drains
+  // with `setTimeout(0)`, which under CI load loses the race against React's
+  // scheduler. On real CI it surfaced in `AiUsagePage` as a PUT carrying
+  // `[50, 80, 95]` where the test had cleared the field, and `null` where it
+  // had typed `60, 90` — always the value the box held at mount.
+  //
+  // Seeding during render closes the window: there is no commit in which the
+  // box still shows the old ladder, so assert exactly that.
+  it('re-seeds a changed value prop within the same commit, not a later one (#4659)', () => {
+    const seen: string[] = [];
+    const view = (value: number[]) => (
+      <>
+        <AiBudgetThresholdsInput value={value} onChange={vi.fn()} testId="thresholds" />
+        <CommitProbe testId="thresholds" seen={seen} />
+      </>
+    );
+
+    const { rerender } = render(view([50, 80]));
+    seen.length = 0;
+
+    rerender(view([60, 90]));
+
+    // One commit, already showing the new ladder. Two entries starting with
+    // '50, 80' is the old effect-driven seed, and is what made the box
+    // clobberable mid-keystroke.
+    expect(seen).toEqual(['60, 90']);
   });
 });
