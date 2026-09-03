@@ -135,7 +135,7 @@ vi.mock('./ssoPolicy', () => ({
 
 import { passwordRoutes } from './password';
 import { db, withSystemDbAccessContext } from '../../db';
-import { invalidateAllUserSessions, verifyPassword } from '../../services';
+import { invalidateAllUserSessions, rateLimiter, verifyPassword } from '../../services';
 import { writeAuthAudit } from './helpers';
 import { getPasswordResetEligibility } from '../../services/passwordResetEligibility';
 import { enqueuePasswordResetRequest } from '../../services/authEmailQueue';
@@ -732,6 +732,85 @@ describe('password reset eligibility (#719)', () => {
       const body = await res.json() as { error: string };
       expect(body.error).toBe('Password authentication is not available for this account');
       expect(db.transaction).not.toHaveBeenCalled();
+    });
+
+    // #4746: every sibling that verifies a body-supplied password is throttled
+    // (account deletion via its own `rateLimiter` call, the MFA/passkey/phone
+    // factor routes via `requireCurrentPasswordStepUp`). This route was the
+    // only one that ran a bare `verifyPassword`, so a stolen access token could
+    // brute-force the current password one argon2 verify per request and, on a
+    // hit, set a new one — takeover with no lockout. It now goes through the
+    // same shared step-up helper.
+    it('throttles current-password guessing and answers 429 BEFORE argon2 runs (#4746)', async () => {
+      vi.mocked(rateLimiter).mockResolvedValueOnce({
+        allowed: false,
+        remaining: 0,
+        resetAt: new Date(Date.now() + 5 * 60 * 1000),
+      } as never);
+
+      const res = await postJson('/change-password', {
+        currentPassword: 'guess-number-six-1234',
+        newPassword: 'new-strong-pw-1234',
+      });
+
+      expect(res.status).toBe(429);
+      const body = await res.json() as { error: string; message: string; retryAfter: number };
+      expect(body.error).toBe('Too many attempts. Please try again later.');
+      // `message` too: the profile form renders `data.message` and would
+      // otherwise show its generic "Failed to change password" fallback, hiding
+      // the throttle from the very user who needs to stop retrying.
+      expect(body.message).toBe('Too many attempts. Please try again later.');
+      expect(body.retryAfter).toBeGreaterThan(0);
+      // The whole point of the fix: the expensive verify is never reached on a
+      // throttled guess, so the limiter is a real cost ceiling rather than a
+      // response-shaping afterthought. Nothing is rotated either.
+      expect(verifyPassword).not.toHaveBeenCalled();
+      expect(db.transaction).not.toHaveBeenCalled();
+      expect(runPostCommitCleanupMock).not.toHaveBeenCalled();
+    });
+
+    it('meters guesses in its own per-user bucket, 5 per 5 minutes (#4746)', async () => {
+      vi.mocked(verifyPassword).mockResolvedValueOnce(false);
+
+      const res = await postJson('/change-password', {
+        currentPassword: 'wrong-old-pw-1234',
+        newPassword: 'new-strong-pw-1234',
+      });
+
+      expect(res.status).toBe(400);
+      // A dedicated `pwd:change` prefix, so change-password guesses neither
+      // spend nor are shielded by the `mfa:pwd` budget the factor routes share.
+      expect(vi.mocked(rateLimiter)).toHaveBeenCalledWith(
+        expect.anything(),
+        'pwd:change:u-1',
+        5,
+        5 * 60,
+      );
+    });
+
+    it('still accepts the correct password after a few wrong guesses under the limit (#4746)', async () => {
+      vi.mocked(verifyPassword).mockResolvedValueOnce(false).mockResolvedValueOnce(false);
+
+      const first = await postJson('/change-password', {
+        currentPassword: 'wrong-1234',
+        newPassword: 'new-strong-pw-1234',
+      });
+      const second = await postJson('/change-password', {
+        currentPassword: 'wrong-again-1234',
+        newPassword: 'new-strong-pw-1234',
+      });
+      const third = await postJson('/change-password', {
+        currentPassword: 'old-strong-pw-1234',
+        newPassword: 'new-strong-pw-1234',
+      });
+
+      expect(first.status).toBe(400);
+      expect(second.status).toBe(400);
+      // The limiter must not lock a legitimate user out of their own password
+      // change for two typos — the throttle only bites past the 5th attempt.
+      expect(third.status).toBe(200);
+      expect(vi.mocked(rateLimiter)).toHaveBeenCalledTimes(3);
+      expect(db.transaction).toHaveBeenCalledTimes(1);
     });
   });
 });
