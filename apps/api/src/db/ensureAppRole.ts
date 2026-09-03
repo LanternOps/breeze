@@ -189,6 +189,57 @@ export async function ensureAppRole(): Promise<boolean> {
         IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='llm_egress_events') THEN
           REVOKE UPDATE, TRUNCATE ON TABLE llm_egress_events FROM breeze_app;
         END IF;
+        -- #4371: ml_feedback_events is append-only from breeze_app's
+        -- perspective (migration 2026-06-18-ml-feedback-events.sql). The
+        -- migration REVOKEs UPDATE, DELETE, but the blanket GRANT in step 4
+        -- re-permits both on every boot — re-revoke here so the restriction
+        -- actually sticks. Tenant erasure deletes through breeze_audit_admin
+        -- (see AUDIT_ADMIN_REQUIRED_TABLES in tenantCascade.ts), not breeze_app.
+        IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='ml_feedback_events') THEN
+          REVOKE UPDATE, DELETE, TRUNCATE ON TABLE ml_feedback_events FROM breeze_app;
+        END IF;
+        -- #4371: peripheral_policy_delivery_events keeps UPDATE granted
+        -- intentionally (delivery status transitions), but the migration
+        -- (2026-09-11-peripheral-effective-policy-v2.sql) REVOKEs DELETE and
+        -- TRUNCATE from breeze_app — re-revoke both here so the blanket GRANT
+        -- in step 4 doesn't silently restore them on every boot.
+        IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='peripheral_policy_delivery_events') THEN
+          REVOKE DELETE, TRUNCATE ON TABLE peripheral_policy_delivery_events FROM breeze_app;
+        END IF;
+        -- #4371: agent_rollback_events is append-only evidence (migration
+        -- 2026-09-13-agent-rollback-lifecycle.sql REVOKEs UPDATE, DELETE,
+        -- TRUNCATE from breeze_app). Same re-revoke pattern as the other
+        -- append-only evidence tables above.
+        IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='agent_rollback_events') THEN
+          REVOKE UPDATE, DELETE, TRUNCATE ON TABLE agent_rollback_events FROM breeze_app;
+        END IF;
+        -- #4371: pam_actuation_results is append-only evidence enforced by a
+        -- BEFORE UPDATE/DELETE trigger (migration
+        -- 2026-09-16-pam-actuation-lifecycle.sql REVOKEs UPDATE, DELETE,
+        -- TRUNCATE from breeze_app). The trigger has been the sole
+        -- enforcement in production because this re-revoke was missing —
+        -- the privilege layer of the belt-and-suspenders pair now actually
+        -- holds.
+        IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='pam_actuation_results') THEN
+          REVOKE UPDATE, DELETE, TRUNCATE ON TABLE pam_actuation_results FROM breeze_app;
+        END IF;
+        -- #4371: automation_action_results keeps UPDATE/DELETE granted
+        -- intentionally, but the migration
+        -- (2026-09-28-100001-automation-action-results.sql) REVOKEs TRUNCATE
+        -- from breeze_app (and PUBLIC) — re-revoke it here too.
+        IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='automation_action_results') THEN
+          REVOKE TRUNCATE ON TABLE automation_action_results FROM breeze_app;
+          REVOKE TRUNCATE ON TABLE automation_action_results FROM PUBLIC;
+        END IF;
+        -- #4371: device_software_inventory_state keeps UPDATE/DELETE granted
+        -- intentionally (it's mutable device state, unlike the append-only
+        -- software_inventory_observations above), but the migration
+        -- (2026-09-28-100002-software-inventory-observations.sql) REVOKEs
+        -- TRUNCATE from breeze_app (and PUBLIC) — re-revoke it here too.
+        IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='device_software_inventory_state') THEN
+          REVOKE TRUNCATE ON TABLE device_software_inventory_state FROM breeze_app;
+          REVOKE TRUNCATE ON TABLE device_software_inventory_state FROM PUBLIC;
+        END IF;
       END $$;
     `);
 
