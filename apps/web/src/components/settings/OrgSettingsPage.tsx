@@ -20,7 +20,8 @@ import {
   Puzzle,
   ScrollText,
   Shield,
-  Ticket
+  Ticket,
+  Archive
 } from 'lucide-react';
 import ContactsCard from './ContactsCard';
 import ContractsList from '../contracts/ContractsList';
@@ -36,6 +37,7 @@ import OrgNotificationSettings from './OrgNotificationSettings';
 import OrgSecuritySettings from './OrgSecuritySettings';
 import { OrgApprovalSecurityTab } from './OrgApprovalSecurityTab';
 import OrgEventLogSettings from './OrgEventLogSettings';
+import OrgAuditRetentionSettings from './OrgAuditRetentionSettings';
 import OrgRemoteAccessSettings from './OrgRemoteAccessSettings';
 import { useOrgStore } from '../../stores/orgStore';
 import { fetchWithAuth } from '../../stores/auth';
@@ -47,7 +49,7 @@ import ExtensionSlotHost from '../extensions/ExtensionSlotHost';
 
 type TabKey =
   | 'general' | 'contacts' | 'branding' | 'portal' | 'notifications' | 'security'
-  | 'approval-security' | 'event-logs' | 'remote-access' | 'ticketing' | 'contracts' | 'billing' | 'pax8'
+  | 'approval-security' | 'event-logs' | 'audit-retention' | 'remote-access' | 'ticketing' | 'contracts' | 'billing' | 'pax8'
   | 'extensions';
 
 // Grouped sidebar definition — same anatomy as PartnerSettingsPage (shared
@@ -78,6 +80,7 @@ const TAB_GROUPS: (Omit<SettingsNavGroup, 'items'> & { items: (SettingsNavGroup[
       { key: 'approval-security', hash: 'approval-security', label: 'orgSettingsPage.nav.approvalSecurity', description: 'orgSettingsPage.nav.approvalSecurityDescription', icon: Fingerprint },
       { key: 'remote-access', hash: 'remote-access', label: 'orgSettingsPage.nav.remoteAccess', description: 'orgSettingsPage.nav.remoteAccessDescription', icon: Monitor },
       { key: 'event-logs', hash: 'event-logs', label: 'orgSettingsPage.nav.eventLogs', description: 'orgSettingsPage.nav.eventLogsDescription', icon: ScrollText },
+      { key: 'audit-retention', hash: 'audit-retention', label: 'orgSettingsPage.nav.auditRetention', description: 'orgSettingsPage.nav.auditRetentionDescription', icon: Archive },
     ],
   },
   {
@@ -585,6 +588,14 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
             locked={locked}
           />
         );
+      case 'audit-retention':
+        return effectiveOrgId ? (
+          <OrgAuditRetentionSettings
+            orgId={effectiveOrgId}
+            onDirty={handleDirty}
+            onSave={() => handleSave()}
+          />
+        ) : null;
       case 'remote-access':
         // No onDirty: every control on this tab persists immediately through
         // its own request, so the tab never holds unsaved draft state.

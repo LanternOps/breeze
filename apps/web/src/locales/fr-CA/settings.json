@@ -17,6 +17,12 @@
     },
     "detail": {
       "notFoundDescription": "Cette exécution a peut-être été supprimée, ou le lien est désuet.",
+      "pageTitle": "{{agent}} · {{started}} · Exécution | Breeze RMM",
+      "header": {
+        "title": "Exécution de {{agent}}",
+        "startedLabel": "Démarré",
+        "machineVerdict": "Verdict de la machine : {{verdict}}"
+      },
       "summary": {
         "title": "Ce que l'agent a constaté"
       },
@@ -38,13 +44,16 @@
           "checkedAt": "Vérifié",
           "cveIds": "ID de CVE",
           "cveCount": "Nombre de CVE",
+          "cveId": "CVE",
+          "cvssScore": "Score CVSS",
           "osType": "Type de SE",
           "openCriticalCount": "CVE critiques ouvertes"
         }
       },
       "sweep": {
         "caption": "Une ligne par problème relevé par ce balayage, avec l'action proposée.",
-        "reviewPermissions": "Examiner les permissions de l'agent"
+        "reviewPermissions": "Examiner les permissions de l'agent",
+        "checksLabel": "Vérifications :"
       },
       "trace": {
         "description": "Chaque appel d'outil proposé, exécuté ou refusé à l'agent, dans l'ordre.",
@@ -53,6 +62,7 @@
       "ledger": {
         "description": "Seulement les appels réellement exécutés, avec leur durée et toute erreur.",
         "emptyDescription": "Les outils réellement invoqués par l'agent seront répertoriés ici.",
+        "collapsedSummary": "Exécutions d'outils ({{count}}) — identiques à la trace ci-dessus",
         "statuses": {
           "pending": "En attente",
           "approved": "Approuvé",
@@ -820,6 +830,28 @@
       "unavailable": "Aucune politique disponible."
     }
   },
+  "orgAuditRetentionSettings": {
+    "title": "Conservation des journaux d'audit",
+    "description": "Détermine la durée de conservation du journal d'audit de cette organisation avant la suppression des entrées les plus anciennes.",
+    "loading": "Chargement de la politique de conservation...",
+    "errors": {
+      "load": "Échec du chargement de la politique de conservation des audits.",
+      "save": "Échec de l'enregistrement de la politique de conservation des audits."
+    },
+    "toasts": {
+      "saved": "Politique de conservation des audits enregistrée."
+    },
+    "unconfiguredWarning": "Aucune politique de conservation n'est encore configurée pour cette organisation — les journaux d'audit ne sont jamais purgés tant que vous n'en enregistrez pas une.",
+    "retentionDays": "Durée de conservation (jours)",
+    "readOnly": "Vous n'avez pas la permission de modifier ce paramètre.",
+    "lastCleanup": "Dernier nettoyage exécuté le {{date}}",
+    "actions": {
+      "save": "Enregistrer"
+    },
+    "issues": {
+      "range": "Entrez un nombre entier de jours entre 1 et 3650."
+    }
+  },
   "orgBrandingEditor": {
     "title": "Image de marque",
     "description": "Personnalisez l’expérience du portail pour {{organization}}.",
@@ -1475,6 +1507,7 @@
       "nextRun": "Prochaine exécution {{at}} ({{timezone}})",
       "nextRunInvalid": "Horaire invalide",
       "nextRunNone": "Aucune exécution dans la prochaine année.",
+      "useMyTimezone": "Utiliser mon fuseau horaire",
       "kindLabels": {
         "disk_pressure": "Pression sur le disque",
         "stale_agents": "Agents obsolètes",
@@ -1531,6 +1564,18 @@
     "allOrgsHint": "À l’échelle du partenaire : s’applique à chaque organisation, sauf si une organisation la restreint.",
     "stateEnabled": "Activé",
     "stateDisabled": "Désactivé",
+    "runningBadge": {
+      "running": "En cours d’exécution",
+      "notRunning": "Ne s’exécute pas"
+    },
+    "reenableNote": "Restauré, mais désactivé. Consultez sa politique avant de l’activer.",
+    "chipLabels": {
+      "kind": "Type",
+      "ownership": "Propriété",
+      "mode": "Mode",
+      "running": "Statut",
+      "lastRunStatus": "Résultat de la dernière exécution"
+    },
     "lastRun": {
       "never": "Jamais exécuté",
       "at": "Dernière exécution {{at}}"
@@ -1553,7 +1598,8 @@
     },
     "allDisabled": {
       "title": "Tous les agents sont désactivés",
-      "description": "Rien ne s’exécute. Réactivez-en un ci-dessous ou créez un nouvel agent."
+      "description": "Rien ne s’exécute en ce moment.",
+      "reenableCta": "Réactiver un agent"
     },
     "errors": {
       "load": "Impossible de charger les agents.",
@@ -1664,6 +1710,8 @@
       "recipientRolesFailed": "Impossible de charger les rôles ; les destinataires des notifications ne peuvent pas être modifiés pour le moment.",
       "supervisedActionKeysHint": "Opérations que cet agent peut exécuter SANS qu’un humain clique sur approuver, lorsqu’une politique correspondante existe et que le plafond d’exposition de l’organisation le permet. Chacune passe tout de même par les garde-fous en direct, l’interrupteur d’arrêt et les plafonds par organisation au moment de l’exécution.",
       "supervisedActionKeysEmpty": "Aucune action décidable par politique n’est enregistrée.",
+      "supervisedActionKeysCeilingSummary_one": "Plafond pour les organisations — {{count}} clé",
+      "supervisedActionKeysCeilingSummary_other": "Plafond pour les organisations — {{count}} clés",
       "supervisedActionKeysFailed": "Impossible de charger la liste des actions décidables par politique ; l’autorisation sans surveillance ne peut pas être modifiée pour le moment.",
       "ticketAutonomousWrites": "Écritures autonomes de tickets",
       "ticketAutonomousWritesHint": "Dérogation d'organisation seulement — les écritures autonomes de tickets nécessitent le mode action et cette activation au niveau de l'organisation",
@@ -1673,6 +1721,35 @@
       "toolSuggestLabel": "Ajouter un outil connu",
       "toolSuggestHint": "Les suggestions proviennent du registre des actions décidables par politique, qui n’est pas la liste complète des outils. Tout autre outil permis à cet agent peut encore être saisi ci-dessus.",
       "toolSuggestAdd": "Ajouter"
+    },
+    "policyKeys": {
+      "tools": {
+        "manage_services": "Services système",
+        "manage_startup_items": "Éléments de démarrage",
+        "manage_scheduled_tasks": "Tâches planifiées",
+        "security_scan": "Analyse de sécurité"
+      },
+      "actions": {
+        "manage_services": {
+          "start": "Démarrer un service",
+          "stop": "Arrêter un service",
+          "restart": "Redémarrer un service"
+        },
+        "manage_startup_items": {
+          "disable": "Désactiver un élément de démarrage",
+          "enable": "Activer un élément de démarrage"
+        },
+        "manage_scheduled_tasks": {
+          "run": "Exécuter une tâche planifiée",
+          "disable": "Désactiver une tâche planifiée",
+          "enable": "Activer une tâche planifiée"
+        },
+        "security_scan": {
+          "quarantine": "Mettre une menace en quarantaine",
+          "remove": "Supprimer une menace",
+          "restore": "Restaurer une menace"
+        }
+      }
     },
     "loading": "Chargement des agents en cours…",
     "runs": {
@@ -1689,8 +1766,6 @@
         "status": "Statut",
         "trigger": "Déclencheur",
         "verdict": "Résultat",
-        "queued": "En file d'attente",
-        "finished": "Terminé",
         "cost": "Coût"
       },
       "statuses": {
@@ -1984,6 +2059,7 @@
           "llmSpend": "Dépenses LLM"
         }
       },
+      "freshnessLabel": "Fraîcheur des données",
       "freshness": "Données jusqu’au {{through}} (UTC) · reconstruit {{rebuiltAt}}",
       "freshnessNeverRebuilt": "Pas encore généré — la première reconstruction s’exécute cette nuit",
       "positiveFeedbackRate": "Taux d’avis positifs",
@@ -1994,7 +2070,10 @@
         "title": "Modifier les pondérations de temps gagné",
         "description": "Définissez le nombre de minutes de temps humain crédité pour chaque résultat. Ces pondérations ne modifient que l'estimation — jamais ce que font vos agents IA.",
         "unitSuffix": "min.",
+        "rangeHint": "Entrez une valeur entre {{min}} et {{max}} minutes.",
+        "defaultValue": "Par défaut : {{minutes}} min.",
         "preview": "Temps estimé économisé pour cette période : {{from}} → {{to}}",
+        "noOutcomesPreview": "Aucun résultat dans cette période à prévisualiser",
         "save": "Enregistrer",
         "saving": "Enregistrement…",
         "reset": "Rétablir les valeurs par défaut",
@@ -3423,6 +3502,8 @@
       "remoteAccessDescription": "VNC, proxy et tunnels",
       "eventLogs": "Journaux d’événements",
       "eventLogsDescription": "Transfert et conservation",
+      "auditRetention": "Conservation des audits",
+      "auditRetentionDescription": "Durée de conservation des journaux d'audit",
       "communications": "Communications",
       "notifications": "Notifications",
       "notificationsDescription": "Courriel, Slack, webhooks",
@@ -4082,6 +4163,12 @@
     "description": "Définissez des attributs personnalisés pour suivre des informations supplémentaires sur les appareils.",
     "searchPlaceholder": "Rechercher des champs...",
     "allTypes": "Tous types",
+    "allOrganizations": "Toutes les organisations",
+    "ownerScope": {
+      "legend": "S'applique à",
+      "allOrganizations": "Toutes les organisations (à l'échelle du partenaire)",
+      "thisOrganizationOnly": "Cette organisation uniquement"
+    },
     "actions": {
       "add": "Ajouter un champ personnalisé",
       "addFirst": "Ajoutez votre premier champ personnalisé",

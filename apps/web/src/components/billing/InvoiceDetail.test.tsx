@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { useLayoutEffect } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import InvoiceDetail from './InvoiceDetail';
@@ -47,6 +48,22 @@ const issued: InvoiceDetailData = {
   },
   lines,
 };
+
+/**
+ * Records the due-date input's committed DOM value. A layout effect runs
+ * synchronously in the mutation phase of the very commit that produced the
+ * DOM, so it reads what the field actually showed at that commit without
+ * depending on when React's scheduler gets around to passive effects — same
+ * technique used to pin down #4659 (AiBudgetThresholdsInput).
+ */
+function CommitProbe({ testId, seen }: { testId: string; seen: string[] }) {
+  useLayoutEffect(() => {
+    const el = document.querySelector(`[data-testid="${testId}"]`) as HTMLInputElement | null;
+    if (!el) throw new Error(`CommitProbe: no element matching [data-testid="${testId}"]`);
+    seen.push(el.value);
+  });
+  return null;
+}
 
 describe('InvoiceDetail', () => {
   beforeEach(() => {
@@ -496,5 +513,59 @@ describe('InvoiceDetail — QuickBooks accounting sync rail card', () => {
       '/accounting/quickbooks/invoices/inv-1/push',
       expect.objectContaining({ method: 'POST' }),
     );
+  });
+
+  // #4807 (mirrors #4659/#4033): `dueDateDraft` used to re-seed from
+  // `invoice.dueDate` in a `useEffect`, i.e. in a commit AFTER the one that
+  // delivered the new prop. Because a passive effect is deferred, a keystroke
+  // landing in that window was silently reverted by the stale date the
+  // effect had captured. Re-seeding during render (this fix) leaves no such
+  // commit — assert exactly that.
+  it('re-seeds a changed dueDate prop within the same commit, not a later one (#4807)', async () => {
+    const seen: string[] = [];
+    // The inline editor (and thus the input the probe reads) only mounts
+    // after "Edit" is clicked, so the probe is added to the tree in a
+    // SEPARATE rerender from the one that opens it — otherwise its layout
+    // effect would fire before the input exists.
+    const bare = (dueDate: string) => <InvoiceDetail detail={{ ...issued, invoice: { ...issued.invoice, dueDate } }} onChanged={vi.fn()} />;
+    const probed = (dueDate: string) => (
+      <>
+        {bare(dueDate)}
+        <CommitProbe testId="invoice-due-date-input" seen={seen} />
+      </>
+    );
+
+    const { rerender } = render(bare('2026-06-30'));
+    await waitFor(() => expect(screen.getByTestId('invoice-detail')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('invoice-due-date-edit'));
+    await waitFor(() => expect(screen.getByTestId('invoice-due-date-input')).toBeInTheDocument());
+
+    rerender(probed('2026-06-30')); // add the probe once the field exists
+    seen.length = 0;
+
+    rerender(probed('2026-07-15'));
+
+    // One commit, already showing the new due date. An earlier entry still
+    // reading '2026-06-30' is the old effect-driven seed — the window that
+    // made the field clobberable mid-keystroke.
+    expect(seen).toEqual(['2026-07-15']);
+  });
+
+  // Discriminating test per the issue's required pattern: type a draft, then
+  // let an unrelated (equal-valued) prop refetch land — the draft must
+  // survive rather than being discarded by a resync that changed nothing.
+  it('keeps a typed due-date draft when an unrelated refetch hands back the same dueDate', async () => {
+    const { rerender } = render(<InvoiceDetail detail={issued} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('invoice-detail')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('invoice-due-date-edit'));
+
+    const input = screen.getByTestId('invoice-due-date-input') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: '2026-08-01' } });
+
+    // A fresh detail object, same persisted due date — an unrelated resync
+    // (e.g. the payments-list refresh on the same page).
+    rerender(<InvoiceDetail detail={{ ...issued, invoice: { ...issued.invoice } }} onChanged={vi.fn()} />);
+
+    expect(screen.getByTestId('invoice-due-date-input')).toHaveValue('2026-08-01');
   });
 });

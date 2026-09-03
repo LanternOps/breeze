@@ -1420,3 +1420,121 @@ describe('AiAgentsPage mode roving contract and disable focus (#4187 UI critique
     await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId('ai-agent-edit-a1')));
   });
 });
+
+// ---------------------------------------------------------------------------
+// #4187 UI critique 3 — the running-state badge, the findings-to-review
+// badge, the all-disabled CTA, and the shared PageHeader.
+// ---------------------------------------------------------------------------
+
+describe('AiAgentsPage running-state badge (#4187 UI critique 3)', () => {
+  it('never labels the on/off switch "Enabled"/"Disabled" — that is the Disabled SECTION\'s own name', async () => {
+    mockEndpoints([{ ...PARTNER_AGENT, enabled: false }]);
+    render(<AiAgentsPage />);
+
+    const badge = await screen.findByTestId('ai-agent-running-badge-a1');
+    expect(badge).toHaveTextContent('Not running');
+    expect(badge).not.toHaveTextContent('Disabled');
+  });
+
+  it('labels a live, running agent "Running"', async () => {
+    mockEndpoints([PARTNER_AGENT]);
+    render(<AiAgentsPage />);
+
+    expect(await screen.findByTestId('ai-agent-running-badge-a1')).toHaveTextContent('Running');
+  });
+
+  it('shows a one-time "switched off, review its policy" note on the row a Re-enable just restored', async () => {
+    // A STATEFUL mock, unlike `mockEnableEndpoints` (whose list fetch always
+    // replays the same static fixture): the reload `reenable()` triggers
+    // after a successful POST has to actually observe the row having moved
+    // out of `disabledAt`, or this test could not tell the note apart from
+    // one that just never goes away.
+    let stored: Array<Record<string, unknown>> = [PARTNER_AGENT, DISABLED_AGENT];
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === '/ai/agents/policy-decidable-keys') return Promise.resolve(json({ data: [] }));
+      if (url === '/ai/agents/a9/enable' && init?.method === 'POST') {
+        stored = stored.map((row) => (row.id === 'a9' ? { ...row, disabledAt: null } : row));
+        return Promise.resolve(json({ data: stored.find((row) => row.id === 'a9') }));
+      }
+      if (url.startsWith('/ai/agents/schedules')) return Promise.resolve(json({ data: [] }));
+      if (url.startsWith('/ai/agents')) return Promise.resolve(json({ data: stored }));
+      if (url === '/roles') return Promise.resolve(json({ data: [] }));
+      return Promise.resolve(json({ data: [] }));
+    });
+    render(<AiAgentsPage />);
+
+    await screen.findByTestId('ai-agents-disabled-section');
+    fireEvent.click(screen.getByTestId('ai-agent-reenable-a9'));
+
+    // The restored row moves into the live list — enabled: false, per the
+    // dialog's own promise ("it comes back switched off") — and carries the note.
+    const note = await screen.findByTestId('ai-agent-reenabled-note-a9');
+    expect(note).toHaveTextContent('Restored, switched off. Review its policy, then turn it on.');
+    expect(within(await screen.findByTestId('ai-agents-list')).getByTestId('ai-agent-row-a9')).toBeInTheDocument();
+
+    // Dismissed by the next state change — opening the editor.
+    fireEvent.click(screen.getByTestId('ai-agent-edit-a9'));
+    await waitFor(() => expect(screen.queryByTestId('ai-agent-reenabled-note-a9')).toBeNull());
+  });
+});
+
+describe('AiAgentsPage findings-to-review badge (#4187 UI critique 3, P0)', () => {
+  it('renders a warning badge naming how many findings need review, linking to the agent\'s runs', async () => {
+    mockEndpoints([{
+      ...PARTNER_AGENT,
+      lastRunAt: '2026-08-30T12:00:00.000Z',
+      lastRunStatus: 'completed',
+      lastRunFindingsToReview: 3,
+    }]);
+    render(<AiAgentsPage />);
+
+    const badge = await screen.findByTestId('ai-agent-findings-badge-a1');
+    expect(badge).toHaveTextContent('3 findings to review');
+    expect(badge).toHaveAttribute('href', '/ai-agents/runs#agent=a1');
+  });
+
+  it('does not render the badge when there is nothing left to review', async () => {
+    mockEndpoints([{
+      ...PARTNER_AGENT,
+      lastRunAt: '2026-08-30T12:00:00.000Z',
+      lastRunStatus: 'completed',
+      lastRunFindingsToReview: 0,
+    }]);
+    render(<AiAgentsPage />);
+
+    await screen.findByTestId('ai-agent-lastrun-a1');
+    expect(screen.queryByTestId('ai-agent-findings-badge-a1')).toBeNull();
+  });
+
+  it('does not render the badge when the list DTO carries no findings count at all', async () => {
+    mockEndpoints([PARTNER_AGENT]);
+    render(<AiAgentsPage />);
+
+    await screen.findByTestId('ai-agent-lastrun-a1');
+    expect(screen.queryByTestId('ai-agent-findings-badge-a1')).toBeNull();
+  });
+});
+
+describe('AiAgentsPage all-disabled primary CTA (#4187 UI critique 3)', () => {
+  it('focuses the first Re-enable button rather than pointing straight at "New agent"', async () => {
+    mockEndpoints([DISABLED_AGENT]);
+    render(<AiAgentsPage />);
+
+    await screen.findByTestId('ai-agents-all-disabled');
+    fireEvent.click(screen.getByTestId('ai-agents-all-disabled-reenable'));
+
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId('ai-agent-reenable-a9')));
+    // "New agent" is still offered, as the secondary action.
+    expect(screen.getByTestId('ai-agents-all-disabled-create')).toBeInTheDocument();
+  });
+});
+
+describe('AiAgentsPage header (#4187 UI critique 3)', () => {
+  it('renders the page title through the shared PageHeader', async () => {
+    mockEndpoints([PARTNER_AGENT]);
+    render(<AiAgentsPage />);
+
+    const header = await screen.findByTestId('ai-agents-page-header');
+    expect(within(header).getByRole('heading', { level: 1, name: 'AI Agents' })).toBeInTheDocument();
+  });
+});

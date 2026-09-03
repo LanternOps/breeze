@@ -37,6 +37,13 @@
  * mapping row were savepoints that rolled back the instant this coordinator
  * threw: the operator saw no error at all, and the retry took the CREATE path
  * again and double-booked the invoice in QuickBooks.
+ *
+ * The currency guard inside Phase 1 is the SAME trap in miniature (#4498): it
+ * throws from inside that one transaction, so a write made in that same
+ * callback would roll back with it. `persistInvoiceCurrencyMismatchErrorInOwnContext`
+ * therefore runs from the OUTER catch around Phase 1 — AFTER Phase 1's
+ * transaction has already rolled back — in its own short, separately-committed
+ * context, exactly like `markInvoiceMappingErrorInOwnContext` does for Phase 2.
  */
 
 import { and, eq, isNull, ne, or } from 'drizzle-orm';
@@ -226,6 +233,90 @@ function translateCurrencyError(err: unknown, conn: AccountingConnection): never
     : `Enable multi-currency in ${label} or invoice in ${home ?? 'the connected home currency'}.`;
 
   throw new AccountingInvoicePushError('currency_mismatch', 409, `${err.message} ${guidance}`);
+}
+
+/**
+ * Persists a `currency_mismatch` pre-flight refusal onto the invoice's own
+ * mapping row (#4498). Before this, the currency guard threw before Phase 1b
+ * ever claims/creates that row, so `getInvoiceAccountingSync` had nothing to
+ * read and the invoice detail card showed no trace of a failed auto-push — a
+ * tech had no signal short of retrying the push manually and reading the 409.
+ * Deliberately scoped to `currency_mismatch` only (not `home_currency_unknown`,
+ * a rarer connection-setup problem that is not this issue's complaint).
+ *
+ * MUST be called from OUTSIDE the Phase 1 `runInDbContext` call whose guard
+ * just threw — that transaction has already rolled back by the time this
+ * runs (see the DB ACCESS CONTRACT doc comment above), so this opens its own
+ * short, separately-committed context and re-resolves the connection itself
+ * rather than threading `conn.id` through the thrown error.
+ *
+ * Best-effort and NEVER throws: a failure here must not replace the typed
+ * `currency_mismatch` error the caller is about to (re)raise regardless of
+ * whether this write lands. Sentry has the original either way.
+ *
+ * Never clobbers a `remote-deleted` marker (same WHERE guard as
+ * `upsertInvoiceMappingPending`) and, on an existing row, never touches
+ * `remoteEntityId`/`linkStatus` — if this invoice was already pushed
+ * successfully before the connection's home currency changed, that remote
+ * link must survive; only `syncStatus`/`lastError` move to reflect this
+ * attempt's failure.
+ */
+async function persistInvoiceCurrencyMismatchErrorInOwnContext(
+  runInDbContext: DbContextRunner,
+  partnerId: string,
+  invoiceId: string,
+  message: string,
+): Promise<void> {
+  try {
+    await runInDbContext(async () => {
+      const conn = await resolveConnection(partnerId, 'quickbooks');
+      const existingRows = await loadMappingRowsForType(partnerId, conn.id, 'invoice');
+      const existing = existingRows.find((m) => m.breezeEntityId === invoiceId) ?? null;
+
+      if (existing) {
+        // Zero rows back is not an error worth surfacing here: it means the
+        // remote-deleted marker landed on this row concurrently (the WHERE
+        // guard below) or the row was deleted entirely — either way there is
+        // nothing this best-effort write should do about it.
+        await db
+          .update(accountingEntityMappings)
+          .set({ syncStatus: 'error', lastError: message, updatedAt: new Date() })
+          .where(and(
+            eq(accountingEntityMappings.id, existing.id),
+            eq(accountingEntityMappings.partnerId, partnerId),
+            or(
+              isNull(accountingEntityMappings.lastError),
+              ne(accountingEntityMappings.lastError, INVOICE_REMOTE_DELETED_ERROR),
+            ),
+          ))
+          .returning();
+        return;
+      }
+
+      try {
+        await db.insert(accountingEntityMappings).values({
+          integrationId: conn.id,
+          partnerId,
+          breezeEntityType: 'invoice',
+          breezeEntityId: invoiceId,
+          remoteEntityType: 'Invoice',
+          linkStatus: 'create_new',
+          syncStatus: 'error',
+          lastError: message,
+        }).returning();
+      } catch (err) {
+        // A concurrent push (or a concurrent currency-error write for the
+        // same invoice) claimed the row first between our read and this
+        // insert; that write owns the row's current state now — nothing to
+        // reconcile, and nothing worth reporting.
+        if (!isPgUniqueViolation(err, 'accounting_entity_mappings_breeze_uniq')) throw err;
+      }
+    });
+  } catch (err) {
+    captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+      service: 'accountingInvoicePush', invoiceId, partnerId,
+    });
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -518,69 +609,91 @@ export async function pushInvoiceToAccounting(
   // No token is resolved here: the currency guard (and every other permanent
   // refusal) must be able to fire WITHOUT triggering a QuickBooks token
   // refresh for an invoice that can never be pushed.
-  const prep = await runInDbContext(async () => {
-    const conn = await resolveConnection(partnerId, 'quickbooks').catch(translateMappingError);
+  //
+  // Wrapped in try/catch: a throw FROM INSIDE this callback rolls the whole
+  // transaction back (DB ACCESS CONTRACT above), so a currency_mismatch write
+  // cannot happen in here — it happens in the outer catch below, in its own
+  // context, AFTER this one has already rolled back.
+  let prep: {
+    conn: AccountingConnection;
+    inv: InvoiceRow;
+    lines: InvoiceLineRow[];
+    orgMapping: MappingRow;
+    itemMappingRows: MappingRow[];
+  };
+  try {
+    prep = await runInDbContext(async () => {
+      const conn = await resolveConnection(partnerId, 'quickbooks').catch(translateMappingError);
 
-    const inv = await loadOwnedInvoice(invoiceId, partnerId);
-    if (inv.invoiceNumber === null || !PUSHABLE_STATUSES.has(inv.status)) {
-      // Covers both a draft (never issued) and a void invoice — void pushes go
-      // through voidInvoiceInAccounting, never this entrypoint.
-      throw new AccountingInvoicePushError(
-        'invoice_not_pushable',
-        409,
-        'Invoice must be issued and not void before it can be pushed to QuickBooks',
-      );
+      const inv = await loadOwnedInvoice(invoiceId, partnerId);
+      if (inv.invoiceNumber === null || !PUSHABLE_STATUSES.has(inv.status)) {
+        // Covers both a draft (never issued) and a void invoice — void pushes go
+        // through voidInvoiceInAccounting, never this entrypoint.
+        throw new AccountingInvoicePushError(
+          'invoice_not_pushable',
+          409,
+          'Invoice must be issued and not void before it can be pushed to QuickBooks',
+        );
+      }
+
+      // Remote-deleted guard (#4544) runs BEFORE any org/item lookup, token
+      // refresh or provider call, same rationale as the currency guard below —
+      // a permanent refusal must not pay for work whose only purpose is a push
+      // that can never succeed. Phase 1b re-checks this against a fresh read
+      // right before claiming the mapping row `pending`, since the reconcile
+      // worker can flip it to remote-deleted while the dependency syncs below
+      // are still in flight — this early check is a cheap-exit optimization,
+      // not the sole enforcement point.
+      if (await loadInvoiceMappingIsRemoteDeleted(partnerId, conn.id, inv.id)) {
+        throw new AccountingInvoicePushError(
+          'remote_deleted',
+          409,
+          'QuickBooks reports this invoice as deleted — pushing again would create a duplicate. Resolve it in QuickBooks, or unlink and re-map the invoice, before pushing again.',
+        );
+      }
+
+      // Currency guard runs BEFORE any org/item lookup, token refresh or provider
+      // call (multi-currency §11 contract, accountingCurrency.ts:143-186).
+      try {
+        assertAccountingInvoicePushCurrency(conn, { currencyCode: inv.currencyCode });
+      } catch (err) {
+        translateCurrencyError(err, conn);
+      }
+
+      const lines = await loadInvoiceLinesOrdered(inv.id);
+
+      const orgMappingRows = await loadMappingRowsForType(partnerId, conn.id, 'org');
+      const orgMapping = orgMappingRows.find((m) => m.breezeEntityId === inv.orgId) ?? null;
+      if (!orgMapping || orgMapping.linkStatus === 'unlinked' || orgMapping.linkStatus === 'suggested') {
+        throw new AccountingInvoicePushError(
+          'customer_not_mapped',
+          409,
+          'This organization is not mapped to a QuickBooks customer yet — confirm or create a mapping first',
+        );
+      }
+      if (
+        orgMapping.remoteCurrencyCode
+        && normalizeCurrencyCode(orgMapping.remoteCurrencyCode) !== normalizeCurrencyCode(inv.currencyCode)
+      ) {
+        throw new AccountingInvoicePushError(
+          'customer_currency_mismatch',
+          409,
+          `The QuickBooks customer for this organization is stamped in ${orgMapping.remoteCurrencyCode}, which does not match this invoice's ${inv.currencyCode} currency`,
+        );
+      }
+
+      const itemMappingRows = await loadMappingRowsForType(partnerId, conn.id, 'catalog_item');
+      return { conn, inv, lines, orgMapping, itemMappingRows };
+    });
+  } catch (err) {
+    if (err instanceof AccountingInvoicePushError && err.code === 'currency_mismatch') {
+      // Phase 1's transaction above already rolled back on this throw — this
+      // persists in its own, separately-committed context (see the comment
+      // on `persistInvoiceCurrencyMismatchErrorInOwnContext`).
+      await persistInvoiceCurrencyMismatchErrorInOwnContext(runInDbContext, partnerId, invoiceId, err.message);
     }
-
-    // Remote-deleted guard (#4544) runs BEFORE any org/item lookup, token
-    // refresh or provider call, same rationale as the currency guard below —
-    // a permanent refusal must not pay for work whose only purpose is a push
-    // that can never succeed. Phase 1b re-checks this against a fresh read
-    // right before claiming the mapping row `pending`, since the reconcile
-    // worker can flip it to remote-deleted while the dependency syncs below
-    // are still in flight — this early check is a cheap-exit optimization,
-    // not the sole enforcement point.
-    if (await loadInvoiceMappingIsRemoteDeleted(partnerId, conn.id, inv.id)) {
-      throw new AccountingInvoicePushError(
-        'remote_deleted',
-        409,
-        'QuickBooks reports this invoice as deleted — pushing again would create a duplicate. Resolve it in QuickBooks, or unlink and re-map the invoice, before pushing again.',
-      );
-    }
-
-    // Currency guard runs BEFORE any org/item lookup, token refresh or provider
-    // call (multi-currency §11 contract, accountingCurrency.ts:143-186).
-    try {
-      assertAccountingInvoicePushCurrency(conn, { currencyCode: inv.currencyCode });
-    } catch (err) {
-      translateCurrencyError(err, conn);
-    }
-
-    const lines = await loadInvoiceLinesOrdered(inv.id);
-
-    const orgMappingRows = await loadMappingRowsForType(partnerId, conn.id, 'org');
-    const orgMapping = orgMappingRows.find((m) => m.breezeEntityId === inv.orgId) ?? null;
-    if (!orgMapping || orgMapping.linkStatus === 'unlinked' || orgMapping.linkStatus === 'suggested') {
-      throw new AccountingInvoicePushError(
-        'customer_not_mapped',
-        409,
-        'This organization is not mapped to a QuickBooks customer yet — confirm or create a mapping first',
-      );
-    }
-    if (
-      orgMapping.remoteCurrencyCode
-      && normalizeCurrencyCode(orgMapping.remoteCurrencyCode) !== normalizeCurrencyCode(inv.currencyCode)
-    ) {
-      throw new AccountingInvoicePushError(
-        'customer_currency_mismatch',
-        409,
-        `The QuickBooks customer for this organization is stamped in ${orgMapping.remoteCurrencyCode}, which does not match this invoice's ${inv.currencyCode} currency`,
-      );
-    }
-
-    const itemMappingRows = await loadMappingRowsForType(partnerId, conn.id, 'catalog_item');
-    return { conn, inv, lines, orgMapping, itemMappingRows };
-  });
+    throw err;
+  }
 
   const { conn, inv, lines } = prep;
 

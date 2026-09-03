@@ -102,7 +102,18 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
   // Save PATCHes /invoices/:id/due-date.
   const [dueDateEditing, setDueDateEditing] = useState(false);
   const [dueDateDraft, setDueDateDraft] = useState(invoice.dueDate ?? '');
-  useEffect(() => { setDueDateDraft(invoice.dueDate ?? ''); }, [invoice.dueDate]);
+  // Re-seed from the prop DURING RENDER, never from a passive effect (#4807;
+  // same defect and remedy as InvoiceEditor's notes/terms drafts — #2925,
+  // #3219, #3277, #3980, #4033 — and AiBudgetThresholdsInput, #4659/#4805). A
+  // passive effect flushes AFTER commit, so a keystroke landing between the
+  // prop's commit and the effect's later run gets silently overwritten by the
+  // stale date the effect captured.
+  const dueDateSeed = invoice.dueDate ?? '';
+  const [dueDateSeededFrom, setDueDateSeededFrom] = useState(dueDateSeed);
+  if (dueDateSeededFrom !== dueDateSeed) {
+    setDueDateSeededFrom(dueDateSeed);
+    setDueDateDraft(dueDateSeed);
+  }
 
   const loadPayments = useCallback(async () => {
     const res = await fetchWithAuth(`/invoices/${invoice.id}/payments`);

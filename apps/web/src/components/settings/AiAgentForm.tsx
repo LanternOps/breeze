@@ -54,13 +54,35 @@ function roleScope(role: RoleOption): 'partner' | 'organization' {
 const ROLE_GROUPS = ['partner', 'organization'] as const;
 
 /** GET /ai/agents/policy-decidable-keys — the read-only POLICY_DECIDABLE_TIER3
- *  registry (wave 5 Part B, #3827). `note` is fetched but not currently
- *  rendered; kept on the type for parity with the wire shape. */
+ *  registry (wave 5 Part B, #3827). `note` is the server's one-sentence
+ *  description of what the operation actually does; it is rendered as the
+ *  checkbox's description below. */
 interface PolicyDecidableKeyOption {
   key: string;
   toolName: string;
   action: string | null;
   note: string;
+}
+
+/**
+ * `manage_startup_items` -> "Manage startup items". Last-resort label for a
+ * registry key this catalog has no translation for: the registry is
+ * server-owned, so a key can ship in an API build before the web catalog
+ * knows it, and the operator must still read words rather than an identifier.
+ * Deliberately silent — a missing translation is a catalog gap to fix in the
+ * next extraction pass, not a runtime fault worth a console line on every
+ * render of this form.
+ */
+function sentenceCase(token: string): string {
+  const words = token.replace(/[_:-]+/g, ' ').trim();
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+/** `manage_services:restart` -> `manage_services-restart`, so the key can be
+ *  spliced into a DOM id (`aria-describedby` takes an id list, and a colon in
+ *  an id is legal HTML but a syntax error in any selector that reads it). */
+function idSafe(key: string): string {
+  return key.replace(/[^A-Za-z0-9_-]+/g, '-');
 }
 
 /** Groups registry entries by `toolName`, preserving the server's ordering
@@ -150,6 +172,28 @@ const INSTRUCTIONS_MAX = 2000;
  * arrow-key order.
  */
 const MODE_ORDER: readonly AiAgentMode[] = ['off', 'shadow', 'act'];
+
+/**
+ * Kinds whose runs can ever carry an alert severity — i.e. the only kinds for
+ * which `triggers.alertSeverities` is read at all.
+ *
+ * `runService.ts` evaluates the severity list inside
+ * `evaluateAgentTriggerFilters`, which runs ONLY when the admission input
+ * carries an `alertContext`, and both producers of one
+ * (`alertVerdictSubscriber.ts` and `automationRuntime.ts`) admit with
+ * `kind: 'triage'`. A helpdesk agent is admitted from a ticket
+ * (`ticketHelpdeskSubscriber.ts`, `ticketContext`), a patch agent from a
+ * manual or scheduled trigger — neither carries a severity, so the list is
+ * inert for both.
+ *
+ * Showing the control for those kinds asked the operator to make a choice
+ * that could never take effect, and the client-side `.min(1)` check could
+ * block a save over a field the server never reads for that kind. Hidden AND
+ * omitted from the payload: on PATCH the one-level merge preserves whatever
+ * is stored, and on create the server's `aiAgentTriggersSchema` supplies its
+ * own `['critical', 'high']` default, so omission is never a `.min(1)` 400.
+ */
+const ALERT_SEVERITY_KINDS: ReadonlySet<AiAgentKind> = new Set<AiAgentKind>(['triage']);
 
 /** Newline-separated textarea → trimmed, de-duplicated list. */
 function lines(value: string): string[] {
@@ -364,7 +408,39 @@ export default function AiAgentForm({
   const toolSuggestInputId = useId();
   const toolSuggestListId = useId();
   const rolesGroupBaseId = useId();
+  const severitiesGroupId = useId();
+  const policyKeyNoteBaseId = useId();
+  const nameInputId = useId();
+  const nameErrorId = useId();
   const [toolSuggestion, setToolSuggestion] = useState('');
+  /** Name has been left at least once. Until then an empty Name is "not
+   *  filled in yet", not an error — a form that goes red before the operator
+   *  has reached the field is scolding them for a field they were on their
+   *  way to. */
+  const [nameTouched, setNameTouched] = useState(false);
+  const nameInvalid = nameTouched && draft.name.trim() === '';
+
+  const usesAlertSeverities = ALERT_SEVERITY_KINDS.has(draft.kind);
+
+  /** Registry tool -> translated group heading, falling back to the
+   *  sentence-cased token (see `sentenceCase`). */
+  const policyToolLabel = (toolName: string) =>
+    t(/* i18n-dynamic */ `aiAgentsPage.policyKeys.tools.${toolName}`, {
+      defaultValue: sentenceCase(toolName),
+    });
+
+  /** Registry entry -> translated operation label. Scoped by tool, because the
+   *  bare action verb is ambiguous across the registry: "disable" appears
+   *  against a startup item and a scheduled task, "enable" likewise, and a
+   *  checkbox list of bare verbs cannot say which object it authorizes. A
+   *  bare-tool entry (`action: null`) has no verb of its own, so it reads as
+   *  the tool. */
+  const policyActionLabel = (entry: PolicyDecidableKeyOption) =>
+    entry.action === null
+      ? policyToolLabel(entry.toolName)
+      : t(/* i18n-dynamic */ `aiAgentsPage.policyKeys.actions.${entry.toolName}.${entry.action}`, {
+        defaultValue: sentenceCase(entry.action),
+      });
 
   /**
    * Autocomplete source for the tool allowlist. There is no tool-name
@@ -523,7 +599,17 @@ export default function AiAgentForm({
         const response = await fetchWithAuth('/ai/agents/policy-decidable-keys');
         if (!response.ok) throw new Error(`GET /ai/agents/policy-decidable-keys ${response.status}`);
         const body = (await response.json()) as { data?: PolicyDecidableKeyOption[] };
-        if (!cancelled) setPolicyKeys(Array.isArray(body.data) ? body.data : []);
+        // Defensive, not just a type assertion: `key`/`toolName` drive both
+        // the DOM id splice (`idSafe`) and the translated-label fallback
+        // (`sentenceCase`), and this registry is server-owned — a shape drift
+        // must degrade to "skip the row", never crash the whole form.
+        const rows = Array.isArray(body.data)
+          ? body.data.filter(
+              (row): row is PolicyDecidableKeyOption =>
+                typeof row?.key === 'string' && typeof row?.toolName === 'string',
+            )
+          : [];
+        if (!cancelled) setPolicyKeys(rows);
       } catch (err) {
         console.error('[AiAgentForm] could not load policy-decidable keys', err);
         if (!cancelled) setPolicyKeysFailed(true);
@@ -541,10 +627,19 @@ export default function AiAgentForm({
     // without a word; the footer says why the button is inert.
     if (scheduleDirty) return;
     const problems: string[] = [];
-    if (!draft.name.trim()) problems.push(t('aiAgentsPage.issues.name'));
+    if (!draft.name.trim()) {
+      problems.push(t('aiAgentsPage.issues.name'));
+      // Also mark the field itself, so the summary at the top of the form and
+      // the control it is about say the same thing.
+      setNameTouched(true);
+    }
     // `alertSeverities` is `.min(1)` server-side — an empty list is not
-    // "all severities", it is a 400.
-    if (draft.severities.length === 0) problems.push(t('aiAgentsPage.issues.severities'));
+    // "all severities", it is a 400. Only asked of the kinds that can read it
+    // (ALERT_SEVERITY_KINDS); for the others the field is hidden AND omitted
+    // below, so there is nothing here to be empty.
+    if (ALERT_SEVERITY_KINDS.has(draft.kind) && draft.severities.length === 0) {
+      problems.push(t('aiAgentsPage.issues.severities'));
+    }
     if (isCreate && draft.ownerScope === 'organization' && !orgScope.orgId) {
       problems.push(t('aiAgentsPage.issues.org'));
     }
@@ -568,7 +663,12 @@ export default function AiAgentForm({
       enabled: draft.enabled,
       mode: draft.mode,
       triggers: {
-        alertSeverities: draft.severities,
+        // Omitted, not sent as the draft value, for a kind whose runs can
+        // never carry a severity (see ALERT_SEVERITY_KINDS): the form does not
+        // show the control there, and sending a value the operator was never
+        // offered would silently rewrite a stored list they cannot see. The
+        // PATCH merge keeps what is stored; create takes the server default.
+        ...(ALERT_SEVERITY_KINDS.has(draft.kind) ? { alertSeverities: draft.severities } : {}),
         respectMaintenanceWindows: draft.respectMaintenanceWindows,
         ticketAutonomousWrites: draft.ticketAutonomousWrites,
       },
@@ -797,7 +897,13 @@ export default function AiAgentForm({
               // unattended changes on a customer machine read as no more
               // consequential than "do nothing" — the warning tone is the same
               // one the act warning panel and its icon already use.
-              className={`rounded-lg border p-3 text-left transition-colors focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60 ${
+              // `flex flex-col items-start` overrides the UA stylesheet's
+              // vertical centring of a <button>'s content box. The three cards
+              // stretch to a common height in the grid but carry consequence
+              // lines of different lengths, so centred content put the three
+              // option NAMES on three different baselines — the one line a
+              // reader scans across before choosing.
+              className={`flex flex-col items-start rounded-lg border p-3 text-left transition-colors focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60 ${
                 selected
                   ? mode === 'act'
                     ? 'border-warning-strong bg-warning/10 ring-1 ring-warning-strong'
@@ -806,7 +912,11 @@ export default function AiAgentForm({
               }`}
               data-testid={`ai-agent-mode-${mode}`}
             >
-              <span className="flex items-center gap-2">
+              {/* `w-full`: the card is now a flex COLUMN with `items-start`,
+                  which shrinks its children to their content width — without
+                  this the act card's `ml-auto` warning icon would sit against
+                  the label instead of the card's right edge. */}
+              <span className="flex w-full items-center gap-2">
                 {/* Selection is encoded by SHAPE (a filled ring) as well as by
                     colour, so the choice survives a colourblind read. */}
                 <span
@@ -890,6 +1000,117 @@ export default function AiAgentForm({
     </div>
   );
 
+  /** The registry checkboxes, grouped by tool with translated labels — shared
+   *  between the plain (org, act-only) rendering and the partner-wide
+   *  `<details>` wrapper below, so the two never drift out of sync. */
+  const policyKeysBody = policyKeysFailed ? (
+    <p className="text-sm text-destructive" data-testid="ai-agent-policy-keys-failed">
+      {t('aiAgentsPage.fields.supervisedActionKeysFailed')}
+    </p>
+  ) : policyKeys.length === 0 ? (
+    <p className="text-sm text-muted-foreground" data-testid="ai-agent-policy-keys-empty">
+      {t('aiAgentsPage.fields.supervisedActionKeysEmpty')}
+    </p>
+  ) : (
+    <div className="space-y-3">
+      {[...groupByTool(policyKeys).entries()].map(([toolName, entries]) => (
+        <div key={toolName}>
+          <p className="text-xs font-semibold">{policyToolLabel(toolName)}</p>
+          <div className="space-y-1.5">
+            {entries.map((entry) => {
+              // `idSafe`: a colon in `manage_services:restart` is a legal DOM
+              // id character but a syntax error in a CSS/query selector, so
+              // the registry key can't be spliced into the id raw.
+              const noteId = `${policyKeyNoteBaseId}-${idSafe(entry.key)}`;
+              return (
+                <label key={entry.key} className="flex items-start gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5"
+                    checked={draft.supervisedActionKeys.includes(entry.key)}
+                    onChange={() =>
+                      patch({ supervisedActionKeys: toggle(draft.supervisedActionKeys, entry.key) })}
+                    aria-describedby={noteId}
+                    data-testid={`ai-agent-supervised-key-${entry.key}`}
+                  />
+                  <span>
+                    <span className="block">{policyActionLabel(entry)}</span>
+                    {/* The registry's own one-sentence description of what the
+                        operation actually does — wired as the checkbox's
+                        accessible description, not just adjacent text, so a
+                        screen reader announces it as part of the control. */}
+                    <span id={noteId} className="block text-xs text-muted-foreground">
+                      {entry.note}
+                    </span>
+                  </span>
+                </label>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+
+  /* Wave 5 Part B (#3827). Gated the same way as the act-warning block above
+   * (draft.mode === 'act' only) for ORG rows — the "act acknowledgement
+   * pattern": this is additional unattended authority an operator is opting
+   * into only once they are already looking at the act-mode warning, never
+   * offered for shadow/off.
+   * PARTNER rows are the exception (#4583): per P2-5 (#4192) a partner row's
+   * keys are a CEILING on org grants, not authority the partner row exercises
+   * itself — ticking a key here authorizes nothing on its own regardless of
+   * the partner row's own mode, so gating the editor (and its ceiling hint)
+   * behind the partner row's act mode hid the warning precisely when it
+   * mattered: while editing a Shadow-mode baseline.
+   *
+   * A partner row's registry is collapsed behind a native `<details>` while
+   * the row is NOT acting — placed BELOW Permissions rather than above it,
+   * since these checkboxes refine the tool allowlist Permissions already
+   * sets, not precede it. The summary counts the selection rather than
+   * repeating the full ceiling explanation (still given underneath, once
+   * opened), so a shadow-mode baseline reads as one scannable line instead of
+   * a checkbox list that authorizes nothing on its own from this row. The
+   * moment the row enters act mode the list is unwrapped entirely (not just
+   * opened) — that is the one mode where THIS row's own dispatch can be
+   * gated by these keys, so it earns the same plain treatment an org row
+   * always gets; the ceiling caveat still prints beneath it as a fact that
+   * survives the mode, not as something act mode makes disappear. An org row
+   * has no ceiling caveat to begin with and is only ever shown in act mode,
+   * so it renders the list directly with no wrapper at all. */
+  const collapsedForCeiling = draft.ownerScope === 'partner' && draft.mode !== 'act';
+  const ceilingNote = draft.ownerScope === 'partner' && (
+    <p className="text-xs text-muted-foreground" data-testid="ai-agent-supervised-keys-ceiling-hint">
+      {t('aiAgentsPage.graduation.ceilingHint')}
+    </p>
+  );
+  const policyDecideFieldset = (draft.mode === 'act' || draft.ownerScope === 'partner') && (
+    <fieldset className="space-y-2 rounded-md border p-3 md:col-span-2" data-testid="ai-agent-policy-decide">
+      <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">
+        {t('aiAgentsPage.sections.policyDecide')}
+      </legend>
+      <p className="text-xs text-muted-foreground">{t('aiAgentsPage.fields.supervisedActionKeysHint')}</p>
+      {collapsedForCeiling ? (
+        <details data-testid="ai-agent-policy-keys-details">
+          <summary className="cursor-pointer text-xs font-medium">
+            {t('aiAgentsPage.fields.supervisedActionKeysCeilingSummary', {
+              count: draft.supervisedActionKeys.length,
+            })}
+          </summary>
+          <div className="mt-1 space-y-2">
+            {ceilingNote}
+            {policyKeysBody}
+          </div>
+        </details>
+      ) : (
+        <>
+          {ceilingNote}
+          {policyKeysBody}
+        </>
+      )}
+    </fieldset>
+  );
+
   return (
     <div className="flex min-h-0 flex-1 flex-col" data-testid="ai-agent-editor">
       <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-5">
@@ -966,16 +1187,38 @@ export default function AiAgentForm({
             )}
           </label>
 
-          <label className="space-y-1 text-sm">
-            <span className="font-medium">{t('aiAgentsPage.fields.name')}</span>
+          {/* The only required free-text field on the form, and it used to
+              look exactly like the optional ones — the first sign it was
+              required was a Save that refused. Marked with the repo's
+              required convention (the destructive-toned asterisk from
+              ApiKeyForm.tsx) and validated on blur, so the operator learns it
+              at the field rather than at the button.
+              A <div> with `htmlFor` rather than a wrapping <label>: the error
+              paragraph is a sibling of the input, and nesting it inside the
+              label would fold the error text into the input's own accessible
+              name instead of its description. */}
+          <div className="space-y-1 text-sm">
+            <label className="block font-medium" htmlFor={nameInputId}>
+              {t('aiAgentsPage.fields.name')}<span className="text-destructive">*</span>
+            </label>
             <input
-              className={inputCls}
+              id={nameInputId}
+              className={`${inputCls} ${nameInvalid ? 'border-destructive' : ''}`}
               maxLength={120}
+              required
+              aria-invalid={nameInvalid || undefined}
+              aria-describedby={nameInvalid ? nameErrorId : undefined}
               value={draft.name}
               onChange={(e) => patch({ name: e.target.value })}
+              onBlur={() => setNameTouched(true)}
               data-testid="ai-agent-name"
             />
-          </label>
+            {nameInvalid && (
+              <p id={nameErrorId} className="text-xs text-destructive" data-testid="ai-agent-name-error">
+                {t('aiAgentsPage.issues.name')}
+              </p>
+            )}
+          </div>
 
           {/* `enabled` and `mode` are two independent gates, and BOTH have to
               pass: runService's admission skips `agent_disabled` before it ever
@@ -1005,71 +1248,6 @@ export default function AiAgentForm({
             )}
           </div>
 
-          {/* Wave 5 Part B (#3827). Gated the same way as the act-warning block
-              above (draft.mode === 'act' only) for ORG rows — the "act
-              acknowledgement pattern": this is additional unattended authority
-              an operator is opting into only once they are already looking at
-              the act-mode warning, never offered for shadow/off.
-              PARTNER rows are the exception (#4583): per P2-5 (#4192) a
-              partner row's keys are a CEILING on org grants, not authority the
-              partner row exercises itself — ticking a key here authorizes
-              nothing on its own regardless of the partner row's own mode, so
-              gating the editor (and its ceiling hint) behind the partner row's
-              act mode hid the warning precisely when it mattered: while
-              editing a Shadow-mode baseline. */}
-          {(draft.mode === 'act' || draft.ownerScope === 'partner') && (
-            <fieldset className="space-y-2 rounded-md border p-3 md:col-span-2" data-testid="ai-agent-policy-decide">
-              <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">
-                {t('aiAgentsPage.sections.policyDecide')}
-              </legend>
-              <p className="text-xs text-muted-foreground">{t('aiAgentsPage.fields.supervisedActionKeysHint')}</p>
-              {/* P2-5 (#4192). A partner row's keys are a CEILING, not an
-                  inherited grant: with no org row the effective key set is empty,
-                  so ticking a key here authorizes nothing on its own. Said only
-                  on the partner form, because that is where the misreading is
-                  possible — an org-owned agent's keys really are the live set. */}
-              {draft.ownerScope === 'partner' && (
-                <p
-                  className="text-xs text-muted-foreground"
-                  data-testid="ai-agent-supervised-keys-ceiling-hint"
-                >
-                  {t('aiAgentsPage.graduation.ceilingHint')}
-                </p>
-              )}
-              {policyKeysFailed ? (
-                <p className="text-sm text-destructive" data-testid="ai-agent-policy-keys-failed">
-                  {t('aiAgentsPage.fields.supervisedActionKeysFailed')}
-                </p>
-              ) : policyKeys.length === 0 ? (
-                <p className="text-sm text-muted-foreground" data-testid="ai-agent-policy-keys-empty">
-                  {t('aiAgentsPage.fields.supervisedActionKeysEmpty')}
-                </p>
-              ) : (
-                <div className="space-y-2">
-                  {[...groupByTool(policyKeys).entries()].map(([toolName, entries]) => (
-                    <div key={toolName}>
-                      <p className="text-xs font-semibold">{toolName}</p>
-                      <div className="flex flex-wrap gap-3">
-                        {entries.map((entry) => (
-                          <label key={entry.key} className="flex items-center gap-1 text-sm">
-                            <input
-                              type="checkbox"
-                              checked={draft.supervisedActionKeys.includes(entry.key)}
-                              onChange={() =>
-                                patch({ supervisedActionKeys: toggle(draft.supervisedActionKeys, entry.key) })}
-                              data-testid={`ai-agent-supervised-key-${entry.key}`}
-                            />
-                            {entry.action ?? entry.toolName}
-                          </label>
-                        ))}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </fieldset>
-          )}
-
           {/* Graduation evidence (P2-5, #4192). Edit-only, for the same reason
               the schedules section is: the evidence ledger is keyed to a
               persisted agent that does not exist until the first save. NOT gated
@@ -1093,19 +1271,28 @@ export default function AiAgentForm({
             <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">
               {t('aiAgentsPage.sections.scope')}
             </legend>
-            <div className="flex flex-wrap gap-3">
-              {SEVERITIES.map((severity) => (
-                <label key={severity} className="flex items-center gap-1 text-sm">
-                  <input
-                    type="checkbox"
-                    checked={draft.severities.includes(severity)}
-                    onChange={() => patch({ severities: toggle(draft.severities, severity) })}
-                    data-testid={`ai-agent-severity-${severity}`}
-                  />
-                  {t(/* i18n-dynamic */ `aiAgentsPage.severities.${severity}`)}
-                </label>
-              ))}
-            </div>
+            {/* Hidden — never just left unread — for a kind whose runs can
+                never carry a severity (see ALERT_SEVERITY_KINDS's docstring):
+                runService only evaluates `triggers.alertSeverities` when the
+                admission input carries an `alertContext`, which only a
+                triage-kind run ever does. Offering the control for helpdesk
+                or patch asked the operator to make a choice that could never
+                take effect. */}
+            {usesAlertSeverities && (
+              <div className="flex flex-wrap gap-3">
+                {SEVERITIES.map((severity) => (
+                  <label key={severity} className="flex items-center gap-1 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={draft.severities.includes(severity)}
+                      onChange={() => patch({ severities: toggle(draft.severities, severity) })}
+                      data-testid={`ai-agent-severity-${severity}`}
+                    />
+                    {t(/* i18n-dynamic */ `aiAgentsPage.severities.${severity}`)}
+                  </label>
+                ))}
+              </div>
+            )}
             <label className="flex items-center gap-2 text-sm">
               <input
                 type="checkbox"
@@ -1214,6 +1401,8 @@ export default function AiAgentForm({
               {listField('ai-agent-registrykeys', t('aiAgentsPage.fields.protectedRegistryKeys'), draft.registryKeys, (v) => patch({ registryKeys: v }), 2)}
             </div>
           </section>
+
+          {policyDecideFieldset}
 
           {/* Six unlabelled number inputs in one 3-column grid read as one
               undifferentiated wall. Split into the two questions they actually
@@ -1355,7 +1544,7 @@ export default function AiAgentForm({
               || (isCreate && availableKinds.length === 0)
               || (enteringActMode && !actAck)
             }
-            className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground disabled:opacity-60"
+            className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground disabled:cursor-not-allowed disabled:opacity-60"
             data-testid="ai-agent-save"
           >
             {t('aiAgentsPage.actions.save')}
@@ -1386,12 +1575,17 @@ export default function AiAgentForm({
           disable", stayed armed indefinitely, and never said what disabling
           actually does. Same ConfirmDialog ceremony as every other guarded
           action in the app, and the message names both halves: what stops,
-          and what survives. */}
+          and what survives.
+          `variant="warning"`, not the destructive default: disabling an agent
+          is reversible (re-enabling is one checkbox away, and the retained
+          text below says what survives), so the destructive red/octagon
+          treatment overstated the stakes of a switch, not a deletion. */}
       {agent && (
         <ConfirmDialog
           open={confirmDisable}
           onClose={() => setConfirmDisable(false)}
           onConfirm={() => void disable()}
+          variant="warning"
           title={t('aiAgentsPage.disableDialog.title', { name: agent.name })}
           message={t('aiAgentsPage.disableDialog.message')}
           confirmLabel={t('aiAgentsPage.actions.disable')}

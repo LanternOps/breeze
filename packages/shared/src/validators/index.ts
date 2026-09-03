@@ -1119,6 +1119,7 @@ export * from './queryParams';
 export * from './timeEntries';
 export * from './portal';
 export * from './ticketConfig';
+export * from './auditRetention';
 export * from './ticketPushPreferences';
 export * from './clientAiDlp';
 export * from './quickSupport';

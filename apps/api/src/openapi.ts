@@ -372,13 +372,16 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
           // so a caller cannot forge this provenance.
           triggerType: { type: 'string', enum: ['manual', 'scheduled', 'alert', 'policy', 'automation'] },
           parameters: { type: 'object', nullable: true },
-          status: { type: 'string', enum: ['pending', 'queued', 'running', 'completed', 'failed', 'timeout', 'cancelled'] },
+          status: { type: 'string', enum: ['pending', 'queued', 'running', 'cancelling', 'completed', 'failed', 'timeout', 'cancelled'] },
           startedAt: { type: 'string', format: 'date-time', nullable: true },
           completedAt: { type: 'string', format: 'date-time', nullable: true },
           exitCode: { type: 'integer', nullable: true },
           stdout: { type: 'string', nullable: true },
           stderr: { type: 'string', nullable: true },
-          errorMessage: { type: 'string', nullable: true }
+          errorMessage: { type: 'string', nullable: true },
+          cancelState: { type: 'string', nullable: true, enum: ['requested', 'confirmed', 'unconfirmed', 'failed'] },
+          cancelRequestedAt: { type: 'string', format: 'date-time', nullable: true },
+          cancelCommandId: { type: 'string', format: 'uuid', nullable: true }
         }
       },
 
@@ -535,10 +538,11 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
           id: { type: 'string', format: 'uuid' },
           automationId: { type: 'string', format: 'uuid' },
           triggeredBy: { type: 'string' },
-          status: { type: 'string', enum: ['running', 'completed', 'failed', 'partial'] },
+          status: { type: 'string', enum: ['running', 'completed', 'failed', 'partial', 'cancelled'] },
           devicesTargeted: { type: 'integer' },
           devicesSucceeded: { type: 'integer' },
           devicesFailed: { type: 'integer' },
+          devicesCancelled: { type: 'integer' },
           logs: { type: 'array', items: { type: 'object' } },
           startedAt: { type: 'string', format: 'date-time' },
           completedAt: { type: 'string', format: 'date-time', nullable: true }
@@ -2730,7 +2734,10 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
               }
             }
           },
-          '400': { $ref: '#/components/responses/BadRequest' }
+          '400': { $ref: '#/components/responses/BadRequest' },
+          '403': { $ref: '#/components/responses/Forbidden' },
+          '404': { $ref: '#/components/responses/NotFound' },
+          '409': { description: 'Execution transitioned out of a cancellable state before the update landed' }
         }
       }
     },

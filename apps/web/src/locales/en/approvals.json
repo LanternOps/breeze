@@ -14,7 +14,25 @@
   "batch": {
     "approveAll": "Approve all ({{count}})",
     "declineAll": "Decline all ({{count}})",
-    "groupTitle": "{{count}} similar requests · {{tool}}"
+    "groupTitle": "{{count}} similar requests · {{tool}}",
+    "moreHostnames": "+{{count}} more",
+    "denyConfirmSummary": "This declines {{count}} requests for {{org}}."
+  },
+  "filters": {
+    "orgLabel": "Organization",
+    "allOrganizations": "All organizations ({{count}})",
+    "orgOption": "{{name}} ({{count}} pending)",
+    "searchLabel": "Search",
+    "searchPlaceholder": "Search by action, machine, or agent…",
+    "sortLabel": "Sort by",
+    "sortExpiringSoonest": "Expiring soonest",
+    "sortNewest": "Newest",
+    "showingLoaded": "Showing {{shown}} of {{loaded}} loaded",
+    "clearFilters": "Clear filters",
+    "noMatches": {
+      "title": "No approvals match your filters",
+      "description": "Try a different organization or search term, or clear your filters."
+    }
   },
   "risk": {
     "low": "Low risk",

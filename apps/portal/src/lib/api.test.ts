@@ -315,3 +315,82 @@ describe('portal security client', () => {
     );
   });
 });
+
+describe('portalApi customer reports', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('lists report runs with pagination and maps the response data', async () => {
+    const run = {
+      id: 'run-1',
+      reportId: 'report-1',
+      type: 'executive_summary',
+      name: 'Customer portal — Executive summary',
+      status: 'completed',
+      startedAt: '2026-09-02T12:00:00.000Z',
+      completedAt: '2026-09-02T12:01:00.000Z',
+      rowCount: 4,
+      createdAt: '2026-09-02T12:00:00.000Z',
+    };
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      data: [run],
+      pagination: { page: 2, limit: 5, total: 6 },
+      timezone: 'America/Denver',
+    }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await portalApi.getReportRuns({ page: 2, limit: 5 });
+
+    expect(String(fetchMock.mock.calls[0][0])).toContain(
+      '/portal/reports/runs?page=2&limit=5',
+    );
+    expect(result).toMatchObject({
+      data: [run],
+      pagination: { page: 2, limit: 5, total: 6 },
+      timezone: 'America/Denver',
+      statusCode: 200,
+    });
+  });
+
+  it('generates a report with the requested type and unwraps the run', async () => {
+    const run = {
+      id: 'run-2',
+      reportId: 'report-2',
+      type: 'security_compliance_posture',
+      name: 'Customer portal — Security compliance posture',
+      status: 'pending',
+      startedAt: null,
+      completedAt: null,
+      rowCount: null,
+      createdAt: '2026-09-02T12:00:00.000Z',
+    };
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ data: run }),
+      { status: 200 },
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await portalApi.generateReport(
+      'security_compliance_posture',
+    );
+
+    expect(String(fetchMock.mock.calls[0][0])).toContain(
+      '/portal/reports/generate',
+    );
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({
+      method: 'POST',
+      body: JSON.stringify({ type: 'security_compliance_posture' }),
+    });
+    expect(result).toMatchObject({ data: run, statusCode: 200 });
+  });
+
+  it('builds same-origin PDF and CSV artifact paths', () => {
+    expect(portalApi.reportArtifactUrl('run-1', 'pdf')).toBe(
+      '/api/v1/portal/reports/runs/run-1/pdf',
+    );
+    expect(portalApi.reportArtifactUrl('run-1', 'csv')).toBe(
+      '/api/v1/portal/reports/runs/run-1/csv',
+    );
+  });
+});

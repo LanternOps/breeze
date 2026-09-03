@@ -17,6 +17,12 @@
     },
     "detail": {
       "notFoundDescription": "This run may have been deleted, or the link may be out of date.",
+      "pageTitle": "{{agent}} · {{started}} · Run | Breeze RMM",
+      "header": {
+        "title": "{{agent}} run",
+        "startedLabel": "Started",
+        "machineVerdict": "Machine verdict: {{verdict}}"
+      },
       "summary": {
         "title": "What the agent found"
       },
@@ -38,13 +44,16 @@
           "checkedAt": "Checked",
           "cveIds": "CVE IDs",
           "cveCount": "CVE count",
+          "cveId": "CVE",
+          "cvssScore": "CVSS score",
           "osType": "OS type",
           "openCriticalCount": "Open critical CVEs"
         }
       },
       "sweep": {
         "caption": "One row per problem this sweep found, with the action it proposed.",
-        "reviewPermissions": "Review agent permissions"
+        "reviewPermissions": "Review agent permissions",
+        "checksLabel": "Checks:"
       },
       "trace": {
         "description": "Every tool call the agent proposed, executed, or was denied, in order.",
@@ -53,6 +62,7 @@
       "ledger": {
         "description": "Only the calls that actually ran, with their timing and any error.",
         "emptyDescription": "Tools the agent actually invoked will be listed here.",
+        "collapsedSummary": "Tool executions ({{count}}) — same as the trace above",
         "statuses": {
           "pending": "Pending",
           "approved": "Approved",
@@ -820,6 +830,28 @@
       "unavailable": "No policy available."
     }
   },
+  "orgAuditRetentionSettings": {
+    "title": "Audit Log Retention",
+    "description": "Controls how long this organization's audit trail is kept before older entries are pruned.",
+    "loading": "Loading retention policy...",
+    "errors": {
+      "load": "Failed to load the audit retention policy.",
+      "save": "Failed to save the audit retention policy."
+    },
+    "toasts": {
+      "saved": "Audit retention policy saved."
+    },
+    "unconfiguredWarning": "No retention policy is configured for this organization yet — audit logs are never pruned until you save one.",
+    "retentionDays": "Retention period (days)",
+    "readOnly": "You do not have permission to change this setting.",
+    "lastCleanup": "Last cleanup ran at {{date}}",
+    "actions": {
+      "save": "Save"
+    },
+    "issues": {
+      "range": "Enter a whole number of days between 1 and 3650."
+    }
+  },
   "orgBrandingEditor": {
     "title": "Branding",
     "description": "Customize the portal experience for {{organization}}.",
@@ -1475,6 +1507,7 @@
       "nextRun": "Next run {{at}} ({{timezone}})",
       "nextRunInvalid": "Invalid schedule",
       "nextRunNone": "No run falls in the next year.",
+      "useMyTimezone": "Use my timezone",
       "kindLabels": {
         "disk_pressure": "Disk pressure",
         "stale_agents": "Stale agents",
@@ -1531,6 +1564,18 @@
     "allOrgsHint": "Partner-wide: applies to every organization unless an organization tightens it.",
     "stateEnabled": "Enabled",
     "stateDisabled": "Disabled",
+    "runningBadge": {
+      "running": "Running",
+      "notRunning": "Not running"
+    },
+    "reenableNote": "Restored, switched off. Review its policy, then turn it on.",
+    "chipLabels": {
+      "kind": "Kind",
+      "ownership": "Ownership",
+      "mode": "Mode",
+      "running": "Status",
+      "lastRunStatus": "Last run outcome"
+    },
     "lastRun": {
       "never": "Never run",
       "at": "Last run {{at}}"
@@ -1553,7 +1598,8 @@
     },
     "allDisabled": {
       "title": "All agents are disabled",
-      "description": "Nothing is running. Re-enable one below to bring it back, or create a new agent."
+      "description": "Nothing is running right now.",
+      "reenableCta": "Re-enable an agent"
     },
     "errors": {
       "load": "Could not load agents.",
@@ -1664,6 +1710,8 @@
       "recipientRolesFailed": "Couldn't load roles, so notification recipients can't be changed right now.",
       "supervisedActionKeysHint": "Operations this agent may execute WITHOUT a human clicking approve, when a matching policy exists and the org's exposure cap has room. Each one still passes live guardrails, the kill switch, and per-org caps at execution time.",
       "supervisedActionKeysEmpty": "No policy-decidable actions are registered.",
+      "supervisedActionKeysCeilingSummary_one": "Ceiling for organizations — {{count}} key",
+      "supervisedActionKeysCeilingSummary_other": "Ceiling for organizations — {{count}} keys",
       "supervisedActionKeysFailed": "Couldn't load the policy-decidable action list, so unattended authorization can't be changed right now.",
       "ticketAutonomousWrites": "Autonomous ticket writes",
       "ticketAutonomousWritesHint": "Org override only — autonomous ticket writes require act mode and this org-level opt-in",
@@ -1673,6 +1721,35 @@
       "toolSuggestLabel": "Add a known tool",
       "toolSuggestHint": "Suggestions come from the policy-decidable action registry, which is not the full list of tools. Anything else this agent may use can still be typed above.",
       "toolSuggestAdd": "Add"
+    },
+    "policyKeys": {
+      "tools": {
+        "manage_services": "Services",
+        "manage_startup_items": "Startup items",
+        "manage_scheduled_tasks": "Scheduled tasks",
+        "security_scan": "Security scan"
+      },
+      "actions": {
+        "manage_services": {
+          "start": "Start a service",
+          "stop": "Stop a service",
+          "restart": "Restart a service"
+        },
+        "manage_startup_items": {
+          "disable": "Disable a startup item",
+          "enable": "Enable a startup item"
+        },
+        "manage_scheduled_tasks": {
+          "run": "Run a scheduled task",
+          "disable": "Disable a scheduled task",
+          "enable": "Enable a scheduled task"
+        },
+        "security_scan": {
+          "quarantine": "Quarantine a threat",
+          "remove": "Remove a threat",
+          "restore": "Restore a threat"
+        }
+      }
     },
     "loading": "Loading agents…",
     "runs": {
@@ -1689,8 +1766,6 @@
         "status": "Status",
         "trigger": "Trigger",
         "verdict": "Verdict",
-        "queued": "Queued",
-        "finished": "Finished",
         "cost": "Cost"
       },
       "statuses": {
@@ -1984,6 +2059,7 @@
           "llmSpend": "LLM spend"
         }
       },
+      "freshnessLabel": "Data freshness",
       "freshness": "Data through {{through}} (UTC) · rebuilt {{rebuiltAt}}",
       "freshnessNeverRebuilt": "Not built yet — first rebuild runs nightly",
       "positiveFeedbackRate": "Positive feedback rate",
@@ -1994,7 +2070,10 @@
         "title": "Edit time-saved weights",
         "description": "Set how many minutes of human time each outcome is credited with. These weights only change the estimate — they never change what your AI agents do.",
         "unitSuffix": "min",
+        "rangeHint": "Enter a value between {{min}} and {{max}} minutes.",
+        "defaultValue": "Default {{minutes}} min",
         "preview": "Estimated time saved this window: {{from}} → {{to}}",
+        "noOutcomesPreview": "No outcomes in this window to preview against",
         "save": "Save",
         "saving": "Saving…",
         "reset": "Reset to defaults",
@@ -3428,6 +3507,8 @@
       "remoteAccessDescription": "VNC, proxy, tunnels",
       "eventLogs": "Event Logs",
       "eventLogsDescription": "Forwarding and retention",
+      "auditRetention": "Audit Retention",
+      "auditRetentionDescription": "How long audit logs are kept",
       "communications": "Communications",
       "notifications": "Notifications",
       "notificationsDescription": "Email, Slack, webhooks",
@@ -4087,6 +4168,12 @@
     "description": "Define custom attributes to track additional information on devices.",
     "searchPlaceholder": "Search fields...",
     "allTypes": "All Types",
+    "allOrganizations": "All organizations",
+    "ownerScope": {
+      "legend": "Applies to",
+      "allOrganizations": "All organizations (partner-wide)",
+      "thisOrganizationOnly": "This organization only"
+    },
     "actions": {
       "add": "Add Custom Field",
       "addFirst": "Add your first custom field",

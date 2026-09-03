@@ -323,6 +323,22 @@ moveOrgRoutes.post(
           sql`UPDATE metric_anomaly_incidents SET agent_run_id = NULL WHERE device_id = ${deviceId}::uuid`,
         );
 
+        // Reverse pointer: ticket_comments.agent_run_id (#4644). ticket_comments
+        // has no org_id (child-via-parent tenancy through tickets), so a comment
+        // on a ticket bound to this device travels to the target org via the
+        // denormalized-table loop below while the run it names stays with the
+        // SOURCE org — same reverse-pointer class as metric_anomaly_incidents
+        // above, and the mirror image of moveTicketOrg's own ticket_comments
+        // detach (ticketService.ts) on the ticket axis. Same
+        // `ticket_id IN (SELECT id FROM tickets WHERE device_id = ...)` join the
+        // ai_agent_runs.ticket_id detach above uses, so it reaches comments on
+        // both device-less and device-bound ticket runs alike.
+        await tx.execute(
+          sql`UPDATE ticket_comments SET agent_run_id = NULL
+              WHERE agent_run_id IS NOT NULL
+                AND ticket_id IN (SELECT id FROM tickets WHERE device_id = ${deviceId}::uuid)`,
+        );
+
         // action_intents.scope_device_id (P2-2, #4189): same cross-tenant-
         // pointer class as the two detaches above — an intent whose target
         // device just moved to a different org must not keep pointing at it.
@@ -375,6 +391,30 @@ moveOrgRoutes.post(
                 AND org_id IS DISTINCT FROM ${targetOrgId}::uuid`,
         );
 
+        // action_intents.scope_ticket_id (#4792): composite FK (scope_ticket_id,
+        // org_id) -> tickets(id, org_id) (action_intents_scope_ticket_org_fk,
+        // migrations/2026-09-25-ai-agents-ticket-triage.sql), DEFERRABLE
+        // INITIALLY IMMEDIATE and deliberately NOT named in the SET CONSTRAINTS
+        // above (by-name, never ALL — see that comment): a newly added
+        // referencing row type must still fail fast, not silently at COMMIT.
+        // `tickets` IS in getDeviceOrgDenormalizedTables(), so the loop below
+        // re-stamps tickets.org_id for every ticket bound to this device — the
+        // instant that statement completes, ANY remaining scope_ticket_id
+        // pointer (regardless of status; unlike scope_device_id above, this FK
+        // does not care about status) names a (ticketId, OLD org_id) pair that
+        // no longer exists in `tickets`, and the tickets UPDATE itself 23503s
+        // and aborts the whole move. Same invariant, same fix, as
+        // moveTicketOrg's identical detach for the ticket-level move
+        // (services/ticketService.ts) — ALL statuses, unconditionally, and run
+        // BEFORE the re-stamp that would otherwise trip the constraint. The
+        // immutability trigger (action_intents_block_content_update()) permits
+        // exactly this non-null -> NULL transition regardless of scope_ticket_id
+        // vs scope_device_id, so this is the tombstone path, not a bypass.
+        await tx.execute(
+          sql`UPDATE action_intents SET scope_ticket_id = NULL
+              WHERE scope_ticket_id IN (SELECT id FROM tickets WHERE device_id = ${deviceId}::uuid)`,
+        );
+
         // Rewrite the denormalized org_id on every device-scoped table.
         // Skipping any of these strands pre-existing rows under RLS.
         for (const table of getDeviceOrgDenormalizedTables()) {
@@ -386,6 +426,41 @@ moveOrgRoutes.post(
             sql`UPDATE ${sql.identifier(table)} SET org_id = ${targetOrgId}::uuid WHERE device_id = ${deviceId}::uuid`,
           );
         }
+
+        // device_vulnerabilities.ticket_id (#4645): `device_vulnerabilities` IS
+        // in getDeviceOrgDenormalizedTables(), so the loop just above already
+        // re-stamped org_id to the TARGET org for every finding on this device
+        // — the finding row itself always travels with the device. Its
+        // remediation ticket does NOT: vulnerability-remediation tickets are
+        // created org-scoped only (`POST /vulnerabilities/tickets` never sets
+        // `tickets.device_id`), so `tickets` denormalized-table loop above
+        // never reaches them and they stay put in whatever org they were
+        // created in. Once the finding's org_id is the target org, a ticket_id
+        // still naming a SOURCE-org ticket resolves to nothing under RLS for
+        // any caller in the target org — the reverse of moveTicketOrg's own
+        // device_vulnerabilities detach (services/ticketService.ts) on the
+        // ticket axis.
+        //
+        // Placement — AFTER the loop above, not before: comparing against
+        // `t.org_id` (rather than the finding's own, already-rewritten
+        // org_id) means a ticket that DOES happen to be bound to this device
+        // (`tickets.device_id = deviceId`, and therefore re-stamped to the
+        // target org by that same loop, since `tickets` is also a member) is
+        // correctly left alone — its org now matches the finding's, so the
+        // link is still valid. Checking before the loop would see the ticket's
+        // stale SOURCE org and wrongly null a link that is about to become
+        // valid. Same `org_id IS DISTINCT FROM` precision as moveTicketOrg's
+        // mirror statement and the tickets.requester_contact_id detach above.
+        //
+        // Plain single-column `ON DELETE SET NULL` FK (not composite
+        // tenant-FK'd), so this can never 23503 either way.
+        await tx.execute(
+          sql`UPDATE device_vulnerabilities dv SET ticket_id = NULL
+              FROM tickets t
+              WHERE dv.device_id = ${deviceId}::uuid
+                AND dv.ticket_id = t.id
+                AND t.org_id IS DISTINCT FROM ${targetOrgId}::uuid`,
+        );
 
         // Extension tables that must be DELETED (not re-stamped) on org-move: their rows
         // FK a source/config row that stays in the old org, so rewriting org_id would

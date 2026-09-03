@@ -281,7 +281,8 @@
       "partial": "Teilweise",
       "running": "Wird ausgeführt",
       "pending": "Ausstehend",
-      "skipped": "Übersprungen"
+      "skipped": "Übersprungen",
+      "cancelled": "Abgebrochen"
     },
     "empty": "Kein Ausführungsverlauf verfügbar.",
     "triggeredBy": {
@@ -651,7 +652,10 @@
       "completed": "Skript erfolgreich abgeschlossen",
       "failed": "Die Skriptausführung ist fehlgeschlagen",
       "timeout": "Zeitüberschreitung bei der Skriptausführung",
-      "pending": "Das Skript wartet darauf, ausgeführt zu werden"
+      "pending": "Das Skript wartet darauf, ausgeführt zu werden",
+      "queued": "Das Skript wartet auf die Übermittlung an das Gerät",
+      "cancelling": "Abbruch angefordert – warte auf Bestätigung durch das Gerät.",
+      "cancelled": "Das Skript wurde auf dem Gerät gestoppt"
     },
     "fields": {
       "startedAt": "Begonnen um",
@@ -664,7 +668,14 @@
       "pending": "Ausstehend",
       "completed": "Abgeschlossen",
       "failed": "Fehlgeschlagen",
-      "timeout": "Zeitüberschreitung"
+      "timeout": "Zeitüberschreitung",
+      "queued": "In Warteschlange",
+      "cancelling": "Wird gestoppt…",
+      "cancelled": "Abgebrochen",
+      "completedCancelTooLate": "Abgeschlossen — Ihre Abbruchanfrage kam zu spät",
+      "failedCancelTooLate": "Fehlgeschlagen — Ihre Abbruchanfrage kam zu spät",
+      "timeoutCancelTooLate": "Zeitüberschreitung — Ihre Abbruchanfrage kam zu spät",
+      "cancelFailed": "Abbruch fehlgeschlagen — das Gerät konnte den Prozess nicht stoppen"
     }
   },
   "executionHistory": {
@@ -685,7 +696,14 @@
       "running": "Wird ausgeführt...",
       "completed": "Abgeschlossen",
       "failed": "Fehlgeschlagen",
-      "timeout": "Zeitüberschreitung"
+      "timeout": "Zeitüberschreitung",
+      "queued": "In Warteschlange",
+      "cancelling": "Wird gestoppt…",
+      "cancelled": "Abgebrochen",
+      "completedCancelTooLate": "Abgeschlossen — Ihre Abbruchanfrage kam zu spät",
+      "failedCancelTooLate": "Fehlgeschlagen — Ihre Abbruchanfrage kam zu spät",
+      "timeoutCancelTooLate": "Zeitüberschreitung — Ihre Abbruchanfrage kam zu spät",
+      "cancelFailed": "Abbruch fehlgeschlagen — das Gerät konnte den Prozess nicht stoppen"
     },
     "summary": "{{shown}} von {{total}}",
     "headers": {
@@ -1320,7 +1338,8 @@
       "failed": "Fehlgeschlagen",
       "timeout": "Zeitüberschreitung",
       "queued": "In Warteschlange",
-      "cancelled": "Abgebrochen"
+      "cancelled": "Abgebrochen",
+      "cancelling": "Wird gestoppt…"
     },
     "errors": {
       "execute": "Testlauf konnte nicht gestartet werden",

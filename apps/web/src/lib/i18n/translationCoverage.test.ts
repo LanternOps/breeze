@@ -88,7 +88,11 @@ const namespaceDuplicateBaselines = {
     // +6: aiAgentsPage.runs (#3828 Task 4) — "Status" and "Manual" are the
     // same cognate in pt-BR (already accepted elsewhere in this namespace),
     // and "OK" is locale-invariant.
-    'settings.json': 120,
+    // +1: aiAgentsPage.chipLabels.running (#4187 UI critique 3) — "Status" is
+    // the same cognate in pt-BR (already accepted above in this namespace).
+    // +1: aiAgentsRuns.detail.evidence.labels.cveId (#4822 review) — "CVE" is
+    // locale-invariant (the acronym is never translated).
+    'settings.json': 122,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -172,7 +176,9 @@ const namespaceDuplicateBaselines = {
     // +3: contactsCard / bulkContactImport (#3258 W04) — "Roles" is the same
     // word in Spanish (plural of "rol"), and the contacts UI labels it in
     // three places (the list column, the form fieldset and the CSV mapping row).
-    'settings.json': 124,
+    // +1: aiAgentsRuns.detail.evidence.labels.cveId (#4822 review) — "CVE" is
+    // locale-invariant (the acronym is never translated).
+    'settings.json': 125,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -269,7 +275,11 @@ const namespaceDuplicateBaselines = {
     // — "Contacts" and "Site" are the same words in French, and
     // TERMINOLOGY.md pins site → site for both French locales, so the three
     // site labels plus the tab title and its nav entry stay identical.
-    'settings.json': 165,
+    // +1: aiAgentsPage.chipLabels.mode (#4187 UI critique 3) — "Mode" is the
+    // same word in French (already accepted above in this namespace).
+    // +1: aiAgentsRuns.detail.evidence.labels.cveId (#4822 review) — "CVE" is
+    // locale-invariant (the acronym is never translated).
+    'settings.json': 167,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -360,7 +370,11 @@ const namespaceDuplicateBaselines = {
     // — "Contacts" and "Site" are the same words in Canadian French, and
     // TERMINOLOGY.md pins site → site for both French locales, so the three
     // site labels plus the tab title and its nav entry stay identical.
-    'settings.json': 170,
+    // +1: aiAgentsPage.chipLabels.mode (#4187 UI critique 3) — "Mode" is the
+    // same word in Canadian French (already accepted above in this namespace).
+    // +1: aiAgentsRuns.detail.evidence.labels.cveId (#4822 review) — "CVE" is
+    // locale-invariant (the acronym is never translated).
+    'settings.json': 172,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -443,7 +457,11 @@ const namespaceDuplicateBaselines = {
     // — "Name" is the same word in German, and the contacts UI labels it in
     // four places (the list column, the form field, the CSV mapping row and
     // the import preview column).
-    'settings.json': 183,
+    // +1: aiAgentsPage.chipLabels.running (#4187 UI critique 3) — "Status" is
+    // the same word in German (already accepted above in this namespace).
+    // +1: aiAgentsRuns.detail.evidence.labels.cveId (#4822 review) — "CVE" is
+    // locale-invariant (the acronym is never translated).
+    'settings.json': 185,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -510,7 +528,9 @@ const namespaceDuplicateBaselines = {
     // rather than root-caused here).
     // +4: aiAgentsPage.runs (#3828 Task 4) — "Trigger" and "Ticket" are
     // standard loanwords in it-IT technical UI, and "OK" is locale-invariant.
-    'settings.json': 162,
+    // +1: aiAgentsRuns.detail.evidence.labels.cveId (#4822 review) — "CVE" is
+    // locale-invariant (the acronym is never translated).
+    'settings.json': 163,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -570,7 +590,9 @@ const namespaceDuplicateBaselines = {
     // +3: contactsCard / bulkContactImport / contactImportPreview (#3258 W04)
     // — "Site" is the established loanword in tr-TR (bulkOrgImport already
     // uses it), so the three site labels stay identical.
-    'settings.json': 68,
+    // +1: aiAgentsRuns.detail.evidence.labels.cveId (#4822 review) — "CVE" is
+    // locale-invariant (the acronym is never translated).
+    'settings.json': 69,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     'tickets.json': 12,

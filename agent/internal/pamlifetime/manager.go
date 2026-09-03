@@ -9,8 +9,11 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/elevaccount"
+	"github.com/breeze-rmm/agent/internal/logging"
 	"github.com/google/uuid"
 )
+
+var log = logging.L("pamlifetime")
 
 const (
 	createSuspended                 uint32 = 0x00000004
@@ -34,6 +37,9 @@ type lifetimeStore interface {
 	ClearProcessIdentity(string, uint64) error
 	Entry(string) (LedgerEntry, bool)
 	Entries() []LedgerEntry
+	// LoadError reports a ledger that could not be read. Entries() returns an
+	// empty slice in that case, so emptiness alone never means "no actuation".
+	LoadError() error
 }
 
 type suspendedLaunchSpec struct {
@@ -447,6 +453,19 @@ func (m *lifecycleManager) reconcileActiveLocked(ctx context.Context, entry Ledg
 	return result, verified
 }
 
+// verifyAccountClean proves the dormant elevation account is deprovisioned,
+// disabled, out of Administrators and holding no live token.
+//
+// An absent account is tolerated in exactly one situation: this agent has no
+// record of ever having applied an actuation. The account is provisioned
+// lazily when PAM is first enabled, so on the majority of the fleet it was
+// never created. Reconciling a recorded actuation is the opposite case, where
+// a missing account is anomalous and must keep failing closed.
+//
+// That condition is derived here rather than passed in by the caller. It is
+// not simply "the ledger is empty": a ledger that could not be READ also
+// yields zero entries, and on such a device the actuation history is unknown,
+// not absent.
 func (m *lifecycleManager) verifyAccountClean(ctx context.Context, evidence ResultEvidence) (ResultEvidence, string, bool) {
 	deprovisioned, err := m.account.Deprovision(ctx)
 	if err != nil {
@@ -456,13 +475,49 @@ func (m *lifecycleManager) verifyAccountClean(ctx context.Context, evidence Resu
 	if err != nil || verified.Enabled || verified.InAdministrators || deprovisioned.Enabled || deprovisioned.InAdministrators {
 		return evidence, "account_verification_failed", false
 	}
+	neverActuated := len(m.store.Entries()) == 0 && m.store.LoadError() == nil
 	privileged, err := m.windows.VerifyNoPrivilegedToken(ctx, elevaccount.AccountName)
-	if err != nil || privileged {
+	tokenScanned := true
+	switch {
+	case err != nil:
+		// The scan needs the account's SID, so it fails outright when the name
+		// resolves to nothing. On a never-actuated agent that means the
+		// dormant account was never created: nothing has ever logged on as it,
+		// so no process can be holding a token for it (#4587). Any other
+		// error, and any error at all once an actuation is on record — where a
+		// deleted account can still leave a live orphaned token behind — stays
+		// a verification failure.
+		//
+		// IsAccountAbsent classifies ONE call's status, and this error comes
+		// out of a primitive that makes several, so the hazard that the
+		// elevaccount sentinel exists to prevent applies here in principle.
+		// It is sound today only because the single call in
+		// VerifyNoPrivilegedToken that can produce these statuses —
+		// LookupSID, on the elevation account's own name — is the first thing
+		// it does; the snapshot, process and token calls after it cannot
+		// return either status. If that primitive ever grows a second name
+		// lookup (another principal, a group), this must move to a tagged
+		// sentinel the way elevaccount's probes did.
+		if !neverActuated || !elevaccount.IsAccountAbsent(err) {
+			return evidence, "privileged_token_verification_failed", false
+		}
+		// Logged because a skipped security check should never be invisible.
+		// This fires once per agent lifetime, not once per heartbeat: the
+		// disable settles, and the next call returns at SetEnabled's early
+		// return without reaching this code.
+		tokenScanned = false
+		log.Info("PAM token scan skipped: elevation account absent and no actuation on record",
+			"account", elevaccount.AccountName)
+	case privileged:
 		return evidence, "privileged_token_verification_failed", false
 	}
 	evidence.AccountEnabled = boolPtr(false)
 	evidence.AccountInAdministrators = boolPtr(false)
-	evidence.PrivilegedTokenPresent = boolPtr(false)
+	if tokenScanned {
+		// Left nil when the scan was skipped: not measured is not the same
+		// claim as measured absent.
+		evidence.PrivilegedTokenPresent = boolPtr(false)
+	}
 	return evidence, "", true
 }
 
@@ -499,7 +554,15 @@ func (m *lifecycleManager) SetEnabled(ctx context.Context, enabled bool) error {
 	m.mu.Unlock()
 	entries := m.store.Entries()
 	var failures []string
-	if len(entries) == 0 {
+	if loadErr := m.store.LoadError(); loadErr != nil {
+		// An unreadable ledger reports zero entries, the same shape as "this
+		// device never actuated" — but it is not the same claim. The actuation
+		// history is unknown, so nothing about the account may be concluded
+		// from emptiness. Fail closed; here the repeating heartbeat ERROR is
+		// the correct signal, because this is a genuine failure state.
+		failures = append(failures, "account:ledger_unavailable")
+		m.markUnresolved("__account__", 0)
+	} else if len(entries) == 0 {
 		bootID, bootErr := m.currentBootID(ctx)
 		if bootErr != nil {
 			failures = append(failures, "account:boot_id_unavailable")

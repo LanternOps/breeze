@@ -25,6 +25,7 @@ import type {
 } from './runLoop';
 import { projectAlertVerdict } from './alertVerdicts';
 import { projectNarrative } from './narrativeReport';
+import { countFindingsToReview } from './runFindings';
 import { projectSweep } from './sweepFindings';
 import {
   AI_AGENT_RUN_DTO_SCHEMA_VERSION,
@@ -400,6 +401,13 @@ export function buildRunTrace(
     status: run.status,
     summary: run.summary,
     runVerdict: outcome.runVerdict ?? null,
+    // The SAME helper the runs list and the agents list use — not a second
+    // count derived from `trace`/`sweep` below. `runVerdict` alone understates
+    // a run (a sweep that found six problems and could execute none of them
+    // still rolls up `no_action`), and the detail page's own override was the
+    // only place that knew it; carrying the server's answer here is what lets
+    // the list surfaces say the same thing. See runFindings.ts.
+    findingsToReview: countFindingsToReview(run.outcome),
     turnCount: run.turnCount,
     costCents: run.costCents,
     errorCode: run.errorCode,

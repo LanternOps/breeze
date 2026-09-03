@@ -64,6 +64,20 @@ describe('EmptyState', () => {
     expect(screen.getByTestId('runs-empty').className).toContain('border-dashed');
   });
 
+  it('uses the dashed frame by default (variant="framed")', () => {
+    render(<EmptyState title="No runs yet" testId="runs-empty" />);
+    const container = screen.getByTestId('runs-empty');
+    expect(container.className).toContain('border-dashed');
+    expect(container.className).toContain('border');
+  });
+
+  it('drops the dashed border and background for variant="plain"', () => {
+    render(<EmptyState title="No runs yet" testId="runs-empty" variant="plain" />);
+    const container = screen.getByTestId('runs-empty');
+    expect(container.className).not.toContain('border-dashed');
+    expect(container.className).not.toContain('border-border');
+  });
+
   it('applies a distinct className for the sm size vs md', () => {
     const { container: smContainer } = render(<EmptyState title="Compact" size="sm" testId="sm-empty" />);
     const { container: mdContainer } = render(<EmptyState title="Full" size="md" testId="md-empty" />);

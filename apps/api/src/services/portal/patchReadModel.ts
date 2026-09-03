@@ -7,8 +7,12 @@ import {
 } from '../../db/schema';
 
 export function portalMonthWindow(now: Date, timezone: string) {
+  // Bind the anchor as an ISO string: Drizzle's postgres-js driver leaves
+  // timestamp serialization to column mappers, which a raw fragment bypasses,
+  // and a bare Date makes postgres.js throw at bind time (#4562 W04 fix).
+  const anchor = now.toISOString();
   const localStart = sql<Date>`
-    date_trunc('month', ${now}::timestamptz at time zone ${timezone})
+    date_trunc('month', ${anchor}::timestamptz at time zone ${timezone})
   `;
   const start = sql<Date>`${localStart} at time zone ${timezone}`;
   const end = sql<Date>`

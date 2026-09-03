@@ -149,9 +149,11 @@ describe('ensureAppRole append-only re-revoke coverage (#4371)', () => {
     { table: 'pam_actuation_results', revoked: ['UPDATE', 'DELETE', 'TRUNCATE'], kept: [] },
     { table: 'agent_rollback_events', revoked: ['UPDATE', 'DELETE', 'TRUNCATE'], kept: [] },
     { table: 'ml_feedback_events', revoked: ['UPDATE', 'DELETE', 'TRUNCATE'], kept: [] },
-    // peripheral_policy_delivery_events keeps UPDATE — residual gap tracked
-    // as issue #4806 (moveOrg.ts's restamp loop still needs it).
-    { table: 'peripheral_policy_delivery_events', revoked: ['DELETE', 'TRUNCATE'], kept: ['UPDATE'] },
+    // peripheral_policy_delivery_events (#4806 fixup): UPDATE now revoked
+    // too — moveOrg.ts's restamp loop no longer needs it, since the table
+    // is auto-discovered by breeze_cascade_device_org_id() instead (see
+    // DEVICE_ORG_FK_CASCADE_TABLES in routes/devices/core.ts).
+    { table: 'peripheral_policy_delivery_events', revoked: ['UPDATE', 'DELETE', 'TRUNCATE'], kept: [] },
     { table: 'automation_action_results', revoked: ['TRUNCATE'], kept: ['UPDATE', 'DELETE'] },
     { table: 'device_software_inventory_state', revoked: ['TRUNCATE'], kept: ['UPDATE', 'DELETE'] },
   ];

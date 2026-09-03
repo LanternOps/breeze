@@ -14,7 +14,25 @@
   "batch": {
     "approveAll": "Tout approuver ({{count}})",
     "declineAll": "Tout refuser ({{count}})",
-    "groupTitle": "{{count}} demandes semblables · {{tool}}"
+    "groupTitle": "{{count}} demandes semblables · {{tool}}",
+    "moreHostnames": "+{{count}} de plus",
+    "denyConfirmSummary": "Ceci refuse {{count}} demandes pour {{org}}."
+  },
+  "filters": {
+    "orgLabel": "Organisation",
+    "allOrganizations": "Toutes les organisations ({{count}})",
+    "orgOption": "{{name}} ({{count}} en attente)",
+    "searchLabel": "Recherche",
+    "searchPlaceholder": "Rechercher par action, appareil ou agent…",
+    "sortLabel": "Trier par",
+    "sortExpiringSoonest": "Expire bientôt",
+    "sortNewest": "Plus récentes",
+    "showingLoaded": "{{shown}} sur {{loaded}} chargées affichées",
+    "clearFilters": "Effacer les filtres",
+    "noMatches": {
+      "title": "Aucune approbation ne correspond à vos filtres",
+      "description": "Essayez une autre organisation ou un autre terme de recherche, ou effacez vos filtres."
+    }
   },
   "risk": {
     "low": "Risque faible",

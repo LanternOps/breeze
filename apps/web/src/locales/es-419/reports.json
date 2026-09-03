@@ -319,6 +319,7 @@
       },
       "loading": "Cargando informes...",
       "never": "Nunca",
+      "visibleInPortal": "Visible en el portal del cliente",
       "newReport": "Nuevo informe",
       "nextOccurrence": "Siguiente: {{next}}",
       "reportTypes": {

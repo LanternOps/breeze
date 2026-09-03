@@ -30,8 +30,10 @@ export const SCRIPT_LANGUAGES = ['powershell', 'bash', 'python', 'cmd'] as const
 // Script Run As
 export const SCRIPT_RUN_AS = ['system', 'user', 'elevated'] as const;
 
-// Execution Statuses
-export const EXECUTION_STATUSES = ['pending', 'queued', 'running', 'completed', 'failed', 'timeout', 'cancelled'] as const;
+// Execution Statuses — canonical source is ../types (EXECUTION_STATUSES), which
+// also carries the transient 'cancelling' state (#3525). Re-exported here so
+// existing `from '../constants'` imports keep working.
+export { EXECUTION_STATUSES } from '../types';
 
 // Role Scopes
 export const ROLE_SCOPES = ['system', 'partner', 'organization'] as const;

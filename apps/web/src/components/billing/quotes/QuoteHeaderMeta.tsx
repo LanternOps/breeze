@@ -51,7 +51,19 @@ export function QuoteHeaderMeta({ detail, onChanged, onPendingChange, onUnsavedC
   const [titleBusy, setTitleBusy] = useState(false);
   const [titleFailed, setTitleFailed] = useState(false);
   const [titleSaved, flashTitleSaved] = useSavedFlash();
-  useEffect(() => { setTitle(quote.title ?? ''); setTitleDirty(false); }, [quote.title]);
+  // Re-seed from the prop DURING RENDER, never from a passive effect (#4807;
+  // same defect and remedy as InvoiceEditor's notes/terms drafts — #2925,
+  // #3219, #3277, #3980, #4033 — and AiBudgetThresholdsInput, #4659/#4805). A
+  // passive effect flushes AFTER commit, so a keystroke landing between the
+  // prop's commit and the effect's later run gets silently overwritten by the
+  // stale string the effect captured.
+  const titleSeed = quote.title ?? '';
+  const [titleSeededFrom, setTitleSeededFrom] = useState(titleSeed);
+  if (titleSeededFrom !== titleSeed) {
+    setTitleSeededFrom(titleSeed);
+    setTitle(titleSeed);
+    setTitleDirty(false);
+  }
 
   const saveTitle = useCallback(async () => {
     if (!titleDirty) return;
@@ -132,7 +144,16 @@ export function QuoteCustomerSwitcher({ detail, onChanged, onPendingChange }: Pr
 
   const [customerOrgId, setCustomerOrgId] = useState(quote.orgId);
   const [customerBusy, setCustomerBusy] = useState(false);
-  useEffect(() => { setCustomerOrgId(quote.orgId); }, [quote.orgId]);
+  // Mirror `quote.orgId` DURING RENDER, never from a passive effect (#4807) —
+  // same class of bug as the title field above, just via a select instead of
+  // free text: a passive effect flushes AFTER commit, so an optimistic
+  // `setCustomerOrgId` from `saveCustomer` (below) landing in that window
+  // would be overwritten by the stale org id the effect captured.
+  const [orgSeededFrom, setOrgSeededFrom] = useState(quote.orgId);
+  if (orgSeededFrom !== quote.orgId) {
+    setOrgSeededFrom(quote.orgId);
+    setCustomerOrgId(quote.orgId);
+  }
   // Reassignment clears site + bill-to and re-resolves tax, so a select change
   // stages here and a confirm step commits — a dropdown mis-click must never
   // silently rewrite the quote's tax basis.
