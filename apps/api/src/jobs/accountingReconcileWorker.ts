@@ -242,14 +242,25 @@ function classifyReconcileSkip(
   return null;
 }
 
-/** One structured line per short-circuit reason (issue #4543) — see `classifyReconcileSkip`. */
-function logReconcileSkip(data: ReconcileConnectionJobData, reason: ReconcileSkipReason): void {
+/**
+ * One structured line per short-circuit reason (issue #4543) — see
+ * `classifyReconcileSkip`. On `connection_mismatch` also logs the LIVE
+ * connection id that superseded the job's stale target (review finding:
+ * without it, a debugger sees "this job's target is dead" but not what
+ * replaced it, and has to go query the connection row separately).
+ */
+function logReconcileSkip(
+  data: ReconcileConnectionJobData,
+  reason: ReconcileSkipReason,
+  conn: Pick<AccountingConnection, 'id'> | null,
+): void {
   console.log(
     '[AccountingReconcileWorker] run skipped',
     `reason=${reason}`,
     `connectionId=${data.connectionId}`,
     `partnerId=${data.partnerId}`,
     `trigger=${data.trigger}`,
+    ...(reason === 'connection_mismatch' && conn ? [`liveConnectionId=${conn.id}`] : []),
   );
 }
 
@@ -278,16 +289,16 @@ export async function processReconcileConnectionJob(
     const conn = await runInDbContext(() => getConnection(db, data.partnerId, 'quickbooks'));
     const skipReason = classifyReconcileSkip(conn, data);
     if (skipReason) {
-      logReconcileSkip(data, skipReason);
+      logReconcileSkip(data, skipReason, conn);
       // `pull_disabled` is the one reason with no OTHER visible signal:
       // `status` already surfaces `not_connected`, and `missing` /
       // `connection_mismatch` name a job whose target isn't (or is no longer)
       // the live connection, so there is nothing safe to stamp. Reuses the
-      // finding-H mechanism (`stampReconcileRunError`) so the same
-      // sync-status surface the "Sync now" card already reads shows this too.
+      // finding-H mechanism (`stampReconcileRunError`) — rendered on the
+      // connected-state "Sync now" card in QuickbooksIntegration.tsx.
       if (skipReason === 'pull_disabled' && conn) {
         await runInDbContext(() =>
-          stampReconcileRunError(db, conn.id, data.partnerId, 'skipped this run — payment pull is disabled for this connection'),
+          stampReconcileRunError(db, conn.id, data.partnerId, 'run skipped — disabled for this connection'),
         );
       }
       return null;

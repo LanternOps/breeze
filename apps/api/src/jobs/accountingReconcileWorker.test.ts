@@ -364,7 +364,10 @@ describe('processReconcileConnectionJob: gating', () => {
     // The one reason with no other visible signal: stamp it on last_error
     // (finding-H mechanism) so the sync-status surface shows it too.
     expect(stampReconcileRunErrorMock).toHaveBeenCalledWith(
-      {}, CONN_ID, PARTNER_ID, expect.stringMatching(/pull.*disabled/i),
+      // The mock captures the RAW message — `stampReconcileRunError`'s own
+      // `RECONCILE_RUN_ERROR_PREFIX` ("Payment pull: ") is applied inside the
+      // (mocked-out) real function, not visible here.
+      {}, CONN_ID, PARTNER_ID, expect.stringMatching(/disabled/i),
     );
   });
 
@@ -380,6 +383,9 @@ describe('processReconcileConnectionJob: gating', () => {
       `connectionId=${CONN_ID}`,
       `partnerId=${PARTNER_ID}`,
       'trigger=sweep',
+      // The live connection that superseded the job's stale target — lets a
+      // debugger correlate without a separate query (review finding).
+      'liveConnectionId=some-other-connection',
     );
     // The live connection is a DIFFERENT row than this stale job named —
     // nothing to safely stamp.
