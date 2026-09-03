@@ -2554,10 +2554,16 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
         </div>
       )}
 
-      {/* The rail joins as a second column only at xl: below that the two-column
-          split starves the pricing table (at 1100px the blocks track is ~420px
-          against a ~650px table minimum) and forces sideways scrolling on the
-          most-checked figures. Stacked, the table gets the full content width. */}
+      {/* The rail joins as a second column only at xl (1280px): below that the
+          two-column split starves the pricing table and forces sideways
+          scrolling on the most-checked figures. Stacked, the table gets the
+          full content width. Even at xl, this breakpoint tracks VIEWPORT
+          width, not the width actually left for the blocks column — with the
+          left nav sidebar expanded (256px) the table's real budget is closer
+          to ~576px at exactly 1280px (#4668), which is why the table's own
+          min-width floor (QuoteBlockCard.tsx) has to stay well under that,
+          not just under the full 650px this column could theoretically
+          offer. */}
       <div className="grid gap-6 xl:grid-cols-[1fr_300px]">
         {/* ── blocks ─────────────────────────────────────────────────── */}
         {/* min-w-0: this 1fr grid track holds a pricing table with a min-width
