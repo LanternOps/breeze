@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
+import type { SecurityOverviewDto } from '@breeze/shared';
 import { render, screen } from '@testing-library/react';
 import { expect, it } from 'vitest';
 import { formatDateTime } from '@/lib/utils';
 import { SecurityOverview } from './SecurityOverview';
 
-it('labels threats honestly and displays severity and KEV totals', () => {
-  render(<SecurityOverview overview={{
+function overviewFixture(patch: Partial<SecurityOverviewDto> = {}): SecurityOverviewDto {
+  return {
     asOf: '2026-09-02T12:00:00Z',
     dataStatus: 'ok',
     score: 82,
@@ -26,36 +27,57 @@ it('labels threats honestly and displays severity and KEV totals', () => {
       kevCount: 1,
       lastDetectedAt: '2026-09-01T00:00:00Z',
     },
-  }} />);
+    ...patch,
+  };
+}
 
-  expect(screen.getByTestId('portal-security-overview').textContent).toContain(
+it('opens with the serif page title in the ordinary state', () => {
+  render(<SecurityOverview overview={overviewFixture()} />);
+
+  const heading = screen.getByRole('heading', { level: 1 });
+  expect(heading.textContent).toBe('Security');
+  expect(heading.className).toContain('font-display');
+});
+
+it('keeps the page title and reassures when nothing has been scored yet', () => {
+  render(<SecurityOverview overview={overviewFixture({ dataStatus: 'no_data' })} />);
+
+  expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Security');
+  const empty = screen.getByTestId('portal-security-empty');
+  expect(empty.textContent).toContain('Nothing to report yet');
+  expect(empty.textContent).toContain('being watched');
+  // A ruled band, not a bare paragraph.
+  expect(empty.className).toContain('border-y');
+});
+
+it('speaks the reader language instead of technician vocabulary', () => {
+  const text = render(<SecurityOverview overview={overviewFixture()} />).container.textContent ?? '';
+
+  for (const jargon of [
+    'KEV',
     'Endpoint threat events',
-  );
-  expect(screen.getByTestId('portal-security-vulnerabilities').textContent).toContain(
-    '1 KEV',
-  );
+    'Definitions age',
+    'Real-time protection',
+    'Observed at',
+  ]) {
+    expect(text).not.toContain(jargon);
+  }
+  expect(text).toContain('actively exploited');
+});
+
+it('shows the score with its band as the single status mark', () => {
+  render(<SecurityOverview overview={overviewFixture({ band: 'at_risk', score: 41 })} />);
+
+  expect(screen.getByTestId('portal-security-score').textContent).toContain('41');
+  expect(screen.getByTestId('portal-security-band').textContent).toContain('Needs attention');
 });
 
 it('explains when observations exist but no security score has been calculated', () => {
-  render(<SecurityOverview overview={{
-    asOf: '2026-09-02T12:00:00Z',
-    dataStatus: 'ok',
-    score: null,
-    band: null,
-    scoreHistory: [],
-    threatEvents: {
-      label: 'Endpoint threat events',
-      weeks: [],
-    },
-    vulnerabilities: {
-      openBySeverity: { critical: 1, high: 0, medium: 0, low: 0, unknown: 0 },
-      kevCount: 0,
-      lastDetectedAt: '2026-09-01T00:00:00Z',
-    },
-  }} />);
+  render(<SecurityOverview overview={overviewFixture({ score: null, band: null, scoreHistory: [] })} />);
 
-  expect(screen.getByTestId('portal-security-score-unavailable').textContent).toBe(
-    'No security score has been calculated for this organization yet.',
+  expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Security');
+  expect(screen.getByTestId('portal-security-score-unavailable').textContent).toContain(
+    "We haven't scored your machines yet",
   );
   expect(screen.queryByTestId('portal-sparkline')).toBeNull();
   expect(screen.getByTestId('portal-security-overview').textContent).not.toContain('null');
@@ -64,19 +86,13 @@ it('explains when observations exist but no security score has been calculated',
 it('renders medium, low, and unknown vulnerability counts plus the last-detected timestamp', () => {
   render(<SecurityOverview
     timezone="America/Denver"
-    overview={{
-      asOf: '2026-09-02T12:00:00Z',
-      dataStatus: 'ok',
-      score: 82,
-      band: 'strong',
-      scoreHistory: [{ capturedAt: '2026-09-01', score: 82 }],
-      threatEvents: { label: 'Endpoint threat events', weeks: [] },
+    overview={overviewFixture({
       vulnerabilities: {
         openBySeverity: { critical: 1, high: 2, medium: 3, low: 4, unknown: 5 },
         kevCount: 1,
         lastDetectedAt: '2026-09-01T14:30:00Z',
       },
-    }}
+    })}
   />);
 
   expect(screen.getByTestId('portal-security-vulnerabilities-medium').textContent).toContain('3');
@@ -88,19 +104,42 @@ it('renders medium, low, and unknown vulnerability counts plus the last-detected
 });
 
 it('omits the last-detected line when no vulnerability has ever been observed', () => {
-  render(<SecurityOverview overview={{
-    asOf: '2026-09-02T12:00:00Z',
-    dataStatus: 'ok',
-    score: 82,
-    band: 'strong',
-    scoreHistory: [{ capturedAt: '2026-09-01', score: 82 }],
-    threatEvents: { label: 'Endpoint threat events', weeks: [] },
+  render(<SecurityOverview overview={overviewFixture({
     vulnerabilities: {
       openBySeverity: { critical: 0, high: 0, medium: 0, low: 0, unknown: 0 },
       kevCount: 0,
       lastDetectedAt: null,
     },
-  }} />);
+  })} />);
 
   expect(screen.queryByTestId('portal-security-vulnerabilities-last-detected')).toBeNull();
+});
+
+it('does not reserve the trend column when there is too little history to draw', () => {
+  // One captured point draws no polyline: the reserved 16rem column used to
+  // hold nothing but the caption — a gap mid-row on desktop, ~80px of dead
+  // space above it on a phone.
+  render(<SecurityOverview overview={overviewFixture({
+    scoreHistory: [{ capturedAt: '2026-09-01', score: 82 }],
+  })} />);
+
+  expect(screen.queryByTestId('portal-sparkline')).toBeNull();
+
+  const band = screen.getByTestId('portal-security-score').closest('div');
+  expect(band).not.toBeNull();
+  expect(band?.textContent).toContain('Last 30 days');
+});
+
+it('sets the trend against the right rule when there is history to draw', () => {
+  render(<SecurityOverview overview={overviewFixture({
+    scoreHistory: [
+      { capturedAt: '2026-08-25', score: 74 },
+      { capturedAt: '2026-09-01', score: 82 },
+    ],
+  })} />);
+
+  const column = screen.getByTestId('portal-sparkline').parentElement;
+  expect(column?.textContent).toContain('Last 30 days');
+  // The figure stays on the left of the band, never inside the trend column.
+  expect(column?.querySelector('[data-testid="portal-security-score"]')).toBeNull();
 });

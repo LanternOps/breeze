@@ -25,6 +25,13 @@ const { ticketsDisabled, usageStrictlyDisabled, redirectToDevices } =
 if (redirectToDevices) {
   return Astro.redirect(withBase('/devices'));
 }
+
+// SupportUsagePanel renders nothing without data or an error to report; only
+// open the spaced section when there is actually something in it, so the page
+// does not trail a block of empty margin under the ledger foot.
+const showSupportUsage =
+  !usageStrictlyDisabled &&
+  (usageResponse.data !== undefined || usageResponse.error !== undefined);
 ---
 
 <PortalLayout title="Support">
@@ -48,10 +55,13 @@ if (redirectToDevices) {
     )
   }
   {
-    !usageStrictlyDisabled &&
-      <SupportUsagePanel
-        usage={usageResponse.data ?? null}
-        error={usageResponse.error}
-      />
+    showSupportUsage && (
+      <section class="mt-12">
+        <SupportUsagePanel
+          usage={usageResponse.data ?? null}
+          error={usageResponse.error}
+        />
+      </section>
+    )
   }
 </PortalLayout>

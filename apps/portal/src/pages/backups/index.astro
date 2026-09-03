@@ -16,12 +16,20 @@ const [overview, devices] = await Promise.all([
 if (overview.statusCode === 401 || devices.statusCode === 401) {
   return redirectToLoginAfter401(Astro);
 }
+
+// The overview's `no_data` keys on a passed verification, not on backups. The
+// device ledger is what actually knows whether anything has been backed up, so
+// the page tells the summary rather than letting it contradict the rows below.
+const backupDevices = devices.data?.data ?? [];
+const hasBackupActivity = backupDevices.some(
+  (device) => device.configured && device.lastRestorePointAt !== null
+);
 ---
 
 <PortalLayout title="Backups">
   {
     overview.data ? (
-      <BackupOverview overview={overview.data} />
+      <BackupOverview overview={overview.data} hasBackupActivity={hasBackupActivity} />
     ) : (
       <div data-testid="portal-backup-error">
         <ErrorNotice>{overview.error ?? 'Backup information is unavailable.'}</ErrorNotice>
@@ -29,7 +37,7 @@ if (overview.statusCode === 401 || devices.statusCode === 401) {
     )
   }
   <BackupDeviceTable
-    devices={devices.data?.data ?? []}
+    devices={backupDevices}
     total={devices.data?.pagination.total}
     error={devices.error}
   />

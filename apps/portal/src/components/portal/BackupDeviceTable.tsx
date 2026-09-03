@@ -1,7 +1,23 @@
 import { HardDrive } from 'lucide-react';
 import type { BackupDeviceRow } from '@breeze/shared';
 import { cn, formatDateTime } from '@/lib/utils';
-import { CELL, EmptyState, ErrorNotice, ROW, TH } from './ui';
+import { CELL, EmptyState, ErrorNotice, ROW, StatusMark, TH } from './ui';
+import { humanizeStatus, testRestoreMark } from './BackupOverview';
+
+/**
+ * The SLA worker's event types, said the way the customer's office manager
+ * would say them (services/portal/backupReadModel.ts sends the raw
+ * `backup_sla_events.event_type`). An acronym explains nothing to this reader.
+ */
+const BREACH_LABELS: Record<string, string> = {
+  rpo_breach: 'Backup behind schedule',
+  missed_backup: 'Backup missed',
+  rto_breach: 'Restore slower than promised',
+};
+
+function breachLabel(eventType: string): string {
+  return BREACH_LABELS[eventType.trim().toLowerCase()] ?? humanizeStatus(eventType);
+}
 
 export function BackupDeviceTable({
   devices,
@@ -54,56 +70,72 @@ export function BackupDeviceTable({
         <thead className="hidden border-b border-border sm:table-header-group">
           <tr>
             <th scope="col" className={cn(TH, 'text-left')}>Device</th>
-            <th scope="col" className={cn(TH, 'text-left')}>Last restore point</th>
-            <th scope="col" className={cn(TH, 'text-left')}>Last test restore</th>
-            <th scope="col" className={cn(TH, 'text-left')}>Open breaches</th>
-            <th scope="col" className={cn(TH, 'text-left')}>Readiness</th>
+            <th scope="col" className={cn(TH, 'text-left')}>Last backup</th>
+            <th scope="col" className={cn(TH, 'text-left')}>Last restore test</th>
+            <th scope="col" className={cn(TH, 'text-left')}>Needs attention</th>
+            <th scope="col" className={cn(TH, 'text-left')}>Recovery readiness</th>
           </tr>
         </thead>
         <tbody className="block divide-y divide-border/70 sm:table-row-group">
-          {devices.map((device) => (
-            <tr
-              key={device.id}
-              className={ROW}
-              data-testid={`portal-backup-device-${device.id}`}
-            >
-              <td className={cn(CELL, 'order-1 grow font-semibold text-foreground')}>
-                {device.name}
-              </td>
-              {!device.configured ? (
-                <td
-                  className={cn(CELL, 'order-2 w-full text-sm text-muted-foreground')}
-                  colSpan={4}
-                >
-                  No backup has run for this device yet
+          {devices.map((device) => {
+            const restoreTest = device.lastTestRestore
+              ? testRestoreMark(device.lastTestRestore.status)
+              : null;
+            return (
+              <tr
+                key={device.id}
+                className={ROW}
+                data-testid={`portal-backup-device-${device.id}`}
+              >
+                <td className={cn(CELL, 'order-1 grow font-semibold text-foreground')}>
+                  {device.name}
                 </td>
-              ) : (
-                <>
-                  <td className={cn(CELL, 'order-2 text-sm text-foreground')}>
-                    <span className="sm:hidden">Last restore point </span>
-                    {device.lastRestorePointAt
-                      ? formatDateTime(device.lastRestorePointAt)
-                      : 'No restore point is available'}
-                    {device.lastRestorePointDegraded ? ' (degraded)' : ''}
+                {!device.configured ? (
+                  <td
+                    className={cn(CELL, 'order-2 w-full text-sm text-muted-foreground')}
+                    colSpan={4}
+                  >
+                    No backup has run for this device yet
                   </td>
-                  <td className={cn(CELL, 'order-3 text-sm text-foreground')}>
-                    <span className="sm:hidden">Last test restore </span>
-                    {device.lastTestRestore
-                      ? `${device.lastTestRestore.status} — ${device.lastTestRestore.completedAt ? formatDateTime(device.lastTestRestore.completedAt) : 'time unavailable'}`
-                      : 'No test restore is available'}
-                  </td>
-                  <td className={cn(CELL, 'order-4 text-sm text-foreground')}>
-                    <span className="sm:hidden">Open breaches </span>
-                    {device.openBreaches.join(', ') || 'None'}
-                  </td>
-                  <td className={cn(CELL, 'order-5 text-sm text-foreground')}>
-                    <span className="sm:hidden">Readiness </span>
-                    {device.readinessScore ?? 'Not available'}
-                  </td>
-                </>
-              )}
-            </tr>
-          ))}
+                ) : (
+                  <>
+                    <td className={cn(CELL, 'order-2 text-sm text-foreground')}>
+                      <span className="sm:hidden">Last backup </span>
+                      {device.lastRestorePointAt
+                        ? formatDateTime(device.lastRestorePointAt)
+                        : 'No backup has run yet'}
+                      {device.lastRestorePointDegraded ? ' (degraded)' : ''}
+                    </td>
+                    <td className={cn(CELL, 'order-3 text-sm text-foreground')}>
+                      <span className="sm:hidden">Last restore test </span>
+                      {device.lastTestRestore && restoreTest ? (
+                        <span className="inline-flex flex-wrap items-baseline gap-x-2">
+                          {/* The row's one mark: a raw "passed" carried no tone
+                              and a "failed" read exactly as calmly. */}
+                          <StatusMark tone={restoreTest.tone}>{restoreTest.label}</StatusMark>
+                          <span>
+                            {device.lastTestRestore.completedAt
+                              ? formatDateTime(device.lastTestRestore.completedAt)
+                              : 'Time not available'}
+                          </span>
+                        </span>
+                      ) : (
+                        'No restore test has run yet'
+                      )}
+                    </td>
+                    <td className={cn(CELL, 'order-4 text-sm text-foreground')}>
+                      <span className="sm:hidden">Needs attention </span>
+                      {device.openBreaches.map(breachLabel).join(', ') || 'None'}
+                    </td>
+                    <td className={cn(CELL, 'order-5 text-sm text-foreground')}>
+                      <span className="sm:hidden">Recovery readiness </span>
+                      {device.readinessScore ?? 'Not available'}
+                    </td>
+                  </>
+                )}
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>
