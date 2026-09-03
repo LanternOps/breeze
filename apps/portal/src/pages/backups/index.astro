@@ -1,0 +1,32 @@
+---
+import PortalLayout from '../../layouts/PortalLayout.astro';
+import { BackupOverview } from '../../components/portal/BackupOverview';
+import { BackupDeviceTable } from '../../components/portal/BackupDeviceTable';
+import { ErrorNotice } from '../../components/portal/ui';
+import { portalApi } from '../../lib/api';
+import { buildServerApiConfig } from '../../lib/server';
+import { redirectToLoginAfter401 } from '../../lib/session';
+
+const config = buildServerApiConfig(Astro.request);
+const [overview, devices] = await Promise.all([
+  portalApi.getBackupOverview(config),
+  portalApi.getBackupDevices({ page: 1, limit: 100 }, config),
+]);
+
+if (overview.statusCode === 401 || devices.statusCode === 401) {
+  return redirectToLoginAfter401(Astro);
+}
+---
+
+<PortalLayout title="Backups">
+  {
+    overview.data ? (
+      <BackupOverview overview={overview.data} />
+    ) : (
+      <div data-testid="portal-backup-error">
+        <ErrorNotice>{overview.error ?? 'Backup information is unavailable.'}</ErrorNotice>
+      </div>
+    )
+  }
+  <BackupDeviceTable devices={devices.data?.data ?? []} error={devices.error} />
+</PortalLayout>
