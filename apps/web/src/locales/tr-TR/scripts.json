@@ -281,7 +281,8 @@
       "partial": "Kısmi",
       "running": "Koşuyor",
       "pending": "Beklemede",
-      "skipped": "Atlandı"
+      "skipped": "Atlandı",
+      "cancelled": "İptal Edildi"
     },
     "empty": "Çalıştırma geçmişi yok.",
     "triggeredBy": {
@@ -627,7 +628,10 @@
       "completed": "Komut dosyası başarıyla tamamlandı",
       "failed": "Komut dosyası yürütme başarısız oldu",
       "timeout": "Komut dosyası yürütme zaman aşımına uğradı",
-      "pending": "Komut dosyası çalıştırılmayı bekliyor"
+      "pending": "Komut dosyası çalıştırılmayı bekliyor",
+      "queued": "Komut dosyası cihaza gönderilmek üzere sırada",
+      "cancelling": "Durdurma istendi — cihazdan onay bekleniyor.",
+      "cancelled": "Komut dosyası cihazda durduruldu"
     },
     "fields": {
       "startedAt": "Başlangıç Tarihi",
@@ -640,7 +644,14 @@
       "pending": "Beklemede",
       "completed": "Tamamlandı",
       "failed": "Başarısız",
-      "timeout": "Zaman Aşımı"
+      "timeout": "Zaman Aşımı",
+      "queued": "Sırada",
+      "cancelling": "Durduruluyor…",
+      "cancelled": "İptal Edildi",
+      "completedCancelTooLate": "Tamamlandı — durdurma isteğiniz çok geç geldi",
+      "failedCancelTooLate": "Başarısız — durdurma isteğiniz çok geç geldi",
+      "timeoutCancelTooLate": "Zaman aşımına uğradı — durdurma isteğiniz çok geç geldi",
+      "cancelFailed": "Durdurma başarısız — cihaz işlemi durduramadı"
     }
   },
   "executionHistory": {
@@ -661,7 +672,14 @@
       "running": "Koşuyor...",
       "completed": "Tamamlandı",
       "failed": "Başarısız",
-      "timeout": "Zaman Aşımı"
+      "timeout": "Zaman Aşımı",
+      "queued": "Sırada",
+      "cancelling": "Durduruluyor…",
+      "cancelled": "İptal Edildi",
+      "completedCancelTooLate": "Tamamlandı — durdurma isteğiniz çok geç geldi",
+      "failedCancelTooLate": "Başarısız — durdurma isteğiniz çok geç geldi",
+      "timeoutCancelTooLate": "Zaman aşımına uğradı — durdurma isteğiniz çok geç geldi",
+      "cancelFailed": "Durdurma başarısız — cihaz işlemi durduramadı"
     },
     "summary": "{{shown}} / {{total}}",
     "headers": {

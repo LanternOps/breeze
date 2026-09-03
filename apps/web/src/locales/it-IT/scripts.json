@@ -281,7 +281,8 @@
       "partial": "Parziale",
       "running": "In esecuzione",
       "pending": "In sospeso",
-      "skipped": "Ignorata"
+      "skipped": "Ignorata",
+      "cancelled": "Annullata"
     },
     "empty": "Nessuna cronologia esecuzioni disponibile.",
     "triggeredBy": {
@@ -627,7 +628,10 @@
       "completed": "Script completato correttamente",
       "failed": "Esecuzione script non riuscita",
       "timeout": "Esecuzione script scaduta",
-      "pending": "Lo script è in attesa di essere eseguito"
+      "pending": "Lo script è in attesa di essere eseguito",
+      "queued": "Lo script è in coda per l'invio al dispositivo",
+      "cancelling": "Interruzione richiesta: in attesa di conferma dal dispositivo.",
+      "cancelled": "È stato interrotto sul dispositivo"
     },
     "fields": {
       "startedAt": "Avviato il",
@@ -640,7 +644,14 @@
       "pending": "In sospeso",
       "completed": "Completato",
       "failed": "Non riuscito",
-      "timeout": "Timeout"
+      "timeout": "Timeout",
+      "queued": "In coda",
+      "cancelling": "Interruzione…",
+      "cancelled": "Annullato",
+      "completedCancelTooLate": "Completato — la richiesta di interruzione è arrivata troppo tardi",
+      "failedCancelTooLate": "Non riuscito — la richiesta di interruzione è arrivata troppo tardi",
+      "timeoutCancelTooLate": "Timeout — la richiesta di interruzione è arrivata troppo tardi",
+      "cancelFailed": "Interruzione non riuscita — il dispositivo non è riuscito a interrompere il processo"
     }
   },
   "executionHistory": {
@@ -661,7 +672,14 @@
       "running": "In esecuzione...",
       "completed": "Completato",
       "failed": "Non riuscito",
-      "timeout": "Timeout"
+      "timeout": "Timeout",
+      "queued": "In coda",
+      "cancelling": "Interruzione…",
+      "cancelled": "Annullato",
+      "completedCancelTooLate": "Completato — la richiesta di interruzione è arrivata troppo tardi",
+      "failedCancelTooLate": "Non riuscito — la richiesta di interruzione è arrivata troppo tardi",
+      "timeoutCancelTooLate": "Timeout — la richiesta di interruzione è arrivata troppo tardi",
+      "cancelFailed": "Interruzione non riuscita — il dispositivo non è riuscito a interrompere il processo"
     },
     "summary": "{{shown}} di {{total}}",
     "headers": {

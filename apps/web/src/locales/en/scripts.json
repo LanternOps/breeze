@@ -281,7 +281,8 @@
       "partial": "Partial",
       "running": "Running",
       "pending": "Pending",
-      "skipped": "Skipped"
+      "skipped": "Skipped",
+      "cancelled": "Cancelled"
     },
     "empty": "No run history available.",
     "triggeredBy": {
@@ -627,7 +628,10 @@
       "completed": "Script completed successfully",
       "failed": "Script execution failed",
       "timeout": "Script execution timed out",
-      "pending": "Script is waiting to be executed"
+      "pending": "Script is waiting to be executed",
+      "queued": "Script is queued for delivery to the device",
+      "cancelling": "Stop requested — waiting for the device to confirm.",
+      "cancelled": "Script was stopped on the device"
     },
     "fields": {
       "startedAt": "Started At",
@@ -640,7 +644,14 @@
       "pending": "Pending",
       "completed": "Completed",
       "failed": "Failed",
-      "timeout": "Timeout"
+      "timeout": "Timeout",
+      "queued": "Queued",
+      "cancelling": "Stopping…",
+      "cancelled": "Cancelled",
+      "completedCancelTooLate": "Completed — your stop request arrived too late",
+      "failedCancelTooLate": "Failed — your stop request arrived too late",
+      "timeoutCancelTooLate": "Timed out — your stop request arrived too late",
+      "cancelFailed": "Stop failed — the device could not stop the process"
     }
   },
   "executionHistory": {
@@ -661,7 +672,14 @@
       "running": "Running...",
       "completed": "Completed",
       "failed": "Failed",
-      "timeout": "Timeout"
+      "timeout": "Timeout",
+      "queued": "Queued",
+      "cancelling": "Stopping…",
+      "cancelled": "Cancelled",
+      "completedCancelTooLate": "Completed — your stop request arrived too late",
+      "failedCancelTooLate": "Failed — your stop request arrived too late",
+      "timeoutCancelTooLate": "Timed out — your stop request arrived too late",
+      "cancelFailed": "Stop failed — the device could not stop the process"
     },
     "summary": "{{shown}} of {{total}}",
     "headers": {

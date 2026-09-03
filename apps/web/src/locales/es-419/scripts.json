@@ -281,7 +281,8 @@
       "partial": "Parcial",
       "running": "En ejecución",
       "pending": "Pendiente",
-      "skipped": "Saltado"
+      "skipped": "Saltado",
+      "cancelled": "Cancelado"
     },
     "empty": "No hay historial de ejecución disponible.",
     "triggeredBy": {
@@ -627,7 +628,10 @@
       "completed": "Script completado con éxito",
       "failed": "La ejecución del script falló",
       "timeout": "Se agotó el tiempo de ejecución del script",
-      "pending": "El script está esperando ser ejecutado."
+      "pending": "El script está esperando ser ejecutado.",
+      "queued": "El script está en cola para enviarse al dispositivo",
+      "cancelling": "Detención solicitada; esperando confirmación del dispositivo.",
+      "cancelled": "El script se detuvo en el dispositivo"
     },
     "fields": {
       "startedAt": "Comenzó en",
@@ -640,7 +644,14 @@
       "pending": "Pendiente",
       "completed": "Terminado",
       "failed": "Fallido",
-      "timeout": "Tiempo de espera"
+      "timeout": "Tiempo de espera",
+      "queued": "En cola",
+      "cancelling": "Deteniendo…",
+      "cancelled": "Cancelado",
+      "completedCancelTooLate": "Completado: tu solicitud de detención llegó demasiado tarde",
+      "failedCancelTooLate": "Fallido: tu solicitud de detención llegó demasiado tarde",
+      "timeoutCancelTooLate": "Tiempo de espera agotado: tu solicitud de detención llegó demasiado tarde",
+      "cancelFailed": "Error al detener: el dispositivo no pudo detener el proceso"
     }
   },
   "executionHistory": {
@@ -661,7 +672,14 @@
       "running": "En ejecución...",
       "completed": "Terminado",
       "failed": "Fallido",
-      "timeout": "Tiempo de espera"
+      "timeout": "Tiempo de espera",
+      "queued": "En cola",
+      "cancelling": "Deteniendo…",
+      "cancelled": "Cancelado",
+      "completedCancelTooLate": "Completado: tu solicitud de detención llegó demasiado tarde",
+      "failedCancelTooLate": "Fallido: tu solicitud de detención llegó demasiado tarde",
+      "timeoutCancelTooLate": "Tiempo de espera agotado: tu solicitud de detención llegó demasiado tarde",
+      "cancelFailed": "Error al detener: el dispositivo no pudo detener el proceso"
     },
     "summary": "{{shown}} de {{total}}",
     "headers": {
