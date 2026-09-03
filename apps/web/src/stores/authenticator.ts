@@ -25,6 +25,25 @@ export interface ApproverDevice {
   label: string | null;
   kind: string;
   isPlatformBound: boolean;
+  /**
+   * WHY this key counts as platform-bound (#1374). The boolean above is NOT the
+   * L4 gate on its own — `L4_TRUSTED_PLATFORM_BOUND_BASES` on the server is —
+   * so any UI that describes a device's assurance must read this, not
+   * `isPlatformBound`. `webauthn_backup_flags` in particular means
+   * `singleDevice && !backedUp`, i.e. backup-eligibility flags rather than a
+   * hardware attestation.
+   *
+   * Optional so a client running against an API from before #1374 W02 still
+   * type-checks. The honest attested/unattested badge that consumes it is W07.
+   */
+  platformBoundBasis?:
+    | 'unattested'
+    | 'legacy_unattested'
+    | 'webauthn_backup_flags'
+    | 'ios_keychain_rsa_app_attest'
+    | 'ios_se_p256_app_attest'
+    | 'android_tee_key_attestation'
+    | 'android_strongbox_key_attestation';
   createdAt: string;
   lastUsedAt: string | null;
   // The list endpoint already filters to active devices server-side, so the DTO
