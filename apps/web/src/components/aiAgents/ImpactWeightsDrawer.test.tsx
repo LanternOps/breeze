@@ -100,6 +100,34 @@ describe('ImpactWeightsDrawer', () => {
     }
   });
 
+  it('hides the native number-input spinner so it cannot collide with the "min" suffix', () => {
+    renderDrawer();
+
+    for (const key of ['alertJudged', 'noiseFlagged', 'ticketTriaged', 'draftSent', 'fixExecuted', 'narrativeDelivered']) {
+      const input = screen.getByTestId(`ai-impact-weight-${key}`);
+      expect(input.className).toContain('[appearance:textfield]');
+      expect(input.className).toContain('[&::-webkit-inner-spin-button]:appearance-none');
+      expect(input.className).toContain('[&::-webkit-outer-spin-button]:appearance-none');
+    }
+  });
+
+  it('shows each field\'s default value beside the current value', () => {
+    renderDrawer();
+
+    // Defaults (seconds -> minutes): alertJudged 90s=1.5, noiseFlagged 240s=4,
+    // ticketTriaged 360s=6, draftSent 300s=5, fixExecuted 900s=15,
+    // narrativeDelivered 1800s=30.
+    expect(screen.getByTestId('ai-impact-weight-alertJudged-default')).toHaveTextContent('1.5');
+    expect(screen.getByTestId('ai-impact-weight-fixExecuted-default')).toHaveTextContent('15');
+    expect(screen.getByTestId('ai-impact-weight-narrativeDelivered-default')).toHaveTextContent('30');
+  });
+
+  it('shows a visible min/max range hint for the minute fields', () => {
+    renderDrawer();
+    expect(screen.getByTestId('ai-impact-weights-range-hint')).toHaveTextContent('0');
+    expect(screen.getByTestId('ai-impact-weights-range-hint')).toHaveTextContent('1440');
+  });
+
   it('accepts a decimal (0.5-minute step) value', () => {
     renderDrawer();
 
@@ -409,6 +437,27 @@ describe('ImpactWeightsDrawer', () => {
       fireEvent.change(screen.getByTestId('ai-impact-weight-alertJudged'), { target: { value: '3' } });
 
       expect(preview).toHaveTextContent('1 hour → 2 hours');
+    });
+
+    it('replaces the "0 hours → 0 hours" preview with a no-outcomes message when the window has no priced activity', () => {
+      const ZERO_COUNTERS: AiAgentImpactCounters = {
+        alertsJudged: 0,
+        noiseFlagged: 0,
+        suppressionsApplied: 0,
+        ticketsTriaged: 0,
+        draftsSent: 0,
+        fixesProposed: 0,
+        fixesExecuted: 0,
+        fixWatchesHeld: 0,
+        fixWatchesRecurred: 0,
+        narrativesDelivered: 0,
+      };
+      renderDrawer({ counters: ZERO_COUNTERS });
+
+      const preview = screen.getByTestId('ai-impact-weights-preview');
+      expect(preview).toHaveTextContent('No outcomes in this window to preview against');
+      expect(preview).not.toHaveTextContent('0 hours');
+      expect(preview).not.toHaveTextContent('→');
     });
   });
 });

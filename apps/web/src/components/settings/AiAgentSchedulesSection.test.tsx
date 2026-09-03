@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AiAgentEffectiveScheduleDto } from '@breeze/shared';
 
@@ -710,5 +710,116 @@ describe('AiAgentSchedulesSection unsaved-work reporting (#4187 UI critique roun
     fireEvent.click(screen.getByTestId('ai-agent-schedule-edit-s-1'));
     await screen.findByTestId('ai-agent-schedule-editor');
     expect(onDirtyChange).not.toHaveBeenCalledWith(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #4187 UI critique 3 — empty-state/editor overlap, the enabled switch row,
+// grouped/searchable timezone select, and the shared badge idiom on the
+// "All orgs" chip.
+// ---------------------------------------------------------------------------
+
+describe('AiAgentSchedulesSection empty state vs. open create editor (#4187 UI critique 3)', () => {
+  it('does not render "No sweep schedules yet" above an already-open create editor', async () => {
+    mockList([]);
+    render(<AiAgentSchedulesSection {...partnerProps} />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-schedule-add')).toBeInTheDocument());
+    // Before opening a draft, the empty state is the only thing there is to say.
+    expect(screen.getByTestId('ai-agent-schedules-empty')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('ai-agent-schedule-add'));
+
+    expect(await screen.findByTestId('ai-agent-schedule-editor')).toBeInTheDocument();
+    // The empty state used to gate on `schedules.length === 0` alone, so it
+    // kept rendering directly above the create form it was telling the
+    // operator to use.
+    expect(screen.queryByTestId('ai-agent-schedules-empty')).toBeNull();
+  });
+
+  it('shows the empty state again once the open create draft is cancelled', async () => {
+    mockList([]);
+    render(<AiAgentSchedulesSection {...partnerProps} />);
+
+    fireEvent.click(await screen.findByTestId('ai-agent-schedule-add'));
+    await screen.findByTestId('ai-agent-schedule-editor');
+    fireEvent.click(screen.getByTestId('ai-agent-schedule-cancel'));
+
+    expect(await screen.findByTestId('ai-agent-schedules-empty')).toBeInTheDocument();
+  });
+});
+
+describe('AiAgentSchedulesSection enabled switch row (#4187 UI critique 3)', () => {
+  it('renders the enabled control as a labelled switch, not an unlabelled seventh checkbox', async () => {
+    mockList([]);
+    render(<AiAgentSchedulesSection {...partnerProps} />);
+
+    fireEvent.click(await screen.findByTestId('ai-agent-schedule-add'));
+    const toggle = await screen.findByTestId('ai-agent-schedule-enabled');
+
+    expect(toggle.tagName).toBe('BUTTON');
+    expect(toggle).toHaveAttribute('role', 'switch');
+    expect(toggle).toHaveAttribute('aria-checked', 'true');
+    // Named via its own visible label, not left to context the way it sat
+    // among six identically-shaped "Checks to run" checkboxes before.
+    expect(toggle).toHaveAttribute('aria-labelledby');
+    const labelId = toggle.getAttribute('aria-labelledby')!;
+    expect(document.getElementById(labelId)?.textContent).toBe('Enabled');
+
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-checked', 'false');
+  });
+});
+
+describe('AiAgentSchedulesSection timezone picker (#4187 UI critique 3)', () => {
+  it('sets the viewer\'s own IANA zone when "Use my timezone" is clicked', async () => {
+    const originalResolvedOptions = Intl.DateTimeFormat.prototype.resolvedOptions;
+    Intl.DateTimeFormat.prototype.resolvedOptions = () =>
+      ({ ...originalResolvedOptions.call(new Intl.DateTimeFormat()), timeZone: 'Asia/Tokyo' });
+    try {
+      mockList([]);
+      render(<AiAgentSchedulesSection {...partnerProps} />);
+
+      fireEvent.click(await screen.findByTestId('ai-agent-schedule-add'));
+      fireEvent.change(await screen.findByTestId('ai-agent-schedule-timezone'), {
+        target: { value: 'Europe/Paris' },
+      });
+      expect(screen.getByTestId('ai-agent-schedule-timezone')).toHaveValue('Europe/Paris');
+
+      fireEvent.click(screen.getByTestId('ai-agent-schedule-use-my-timezone'));
+      expect(screen.getByTestId('ai-agent-schedule-timezone')).toHaveValue('Asia/Tokyo');
+    } finally {
+      Intl.DateTimeFormat.prototype.resolvedOptions = originalResolvedOptions;
+    }
+  });
+
+  it('groups the timezone options into <optgroup>s by region', async () => {
+    mockList([]);
+    render(<AiAgentSchedulesSection {...partnerProps} />);
+
+    fireEvent.click(await screen.findByTestId('ai-agent-schedule-add'));
+    const select = await screen.findByTestId('ai-agent-schedule-timezone');
+
+    const groups = select.querySelectorAll('optgroup');
+    // A flat 400+ option list, grouped by continent, is necessarily more than
+    // one group — and every option lives inside SOME group, not loose beside them.
+    expect(groups.length).toBeGreaterThan(1);
+    expect(select.querySelectorAll(':scope > option').length).toBe(0);
+    expect([...groups].some((group) => group.getAttribute('label') === 'America')).toBe(true);
+  });
+});
+
+describe('AiAgentSchedulesSection "All orgs" chip (#4187 UI critique 3)', () => {
+  it('renders the schedule row\'s "All orgs" chip through the shared badge idiom', async () => {
+    mockList([BASELINE]);
+    render(<AiAgentSchedulesSection {...partnerProps} />);
+
+    const row = await screen.findByTestId('ai-agent-schedule-s-1');
+    const chip = within(row).getByText('All orgs');
+    // Not the old bespoke `bg-primary/10 text-primary` pill — the same
+    // dark-mode-aware pill idiom as the kind badge beside it.
+    expect(chip.className).toContain('rounded-full');
+    expect(chip.className).toMatch(/dark:/);
+    expect(chip.className).not.toContain('bg-primary/10');
   });
 });

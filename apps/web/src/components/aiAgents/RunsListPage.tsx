@@ -9,6 +9,7 @@ import { formatCurrency } from '@/lib/i18n/format';
 import { formatTimeAgo } from '@/lib/formatTime';
 import { badgeClass, runStatusTone, verdictTone } from './statusBadge';
 import { EmptyState } from '../shared/EmptyState';
+import { PageHeader } from '../shared/PageHeader';
 import type { AiAgentRunListItemDto, AiAgentRunStatus } from '@breeze/shared';
 import { AI_AGENT_RUN_STATUSES } from '@breeze/shared';
 
@@ -133,9 +134,9 @@ const LIST_IDLE_POLL_INTERVAL_MS = 30_000;
  * sr-only label here so an accessibility tree still names what the dot means
  * for a screen-reader user who tabs to it.
  */
-function LiveIndicator({ label }: { label: string }) {
+function LiveIndicator({ label, testId = 'run-live-indicator' }: { label: string; testId?: string }) {
   return (
-    <span className="ml-1.5 inline-flex items-center" data-testid="run-live-indicator">
+    <span className="ml-1.5 inline-flex items-center" data-testid={testId}>
       <span className="relative flex h-2 w-2" aria-hidden="true">
         <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-sky-500 opacity-75" />
         <span className="relative inline-flex h-2 w-2 rounded-full bg-sky-500" />
@@ -200,6 +201,205 @@ function triggerLabel(t: (key: string) => string, value: string): string {
     default:
       return value;
   }
+}
+
+/** Loose local alias — the shared badges/cells below need the optional
+ *  interpolation-options overload (`{{count}}`) that the narrower
+ *  single-arg `t` type used by the literal-key label lookups doesn't carry. */
+type TFn = (key: string, options?: Record<string, unknown>) => string;
+
+/**
+ * UI critique finding #1 — mirrors RunDetailPage's `verdictUnderstatesFindings`:
+ * a `no_action`-and-similar verdict must not read as "nothing to see here"
+ * when the run actually left findings for a human to review. Broadened from
+ * RunDetailPage's `runVerdict === 'no_action'` check to any verdict whose
+ * tone isn't already `danger` — `needs_attention` already signals "this
+ * needs review" on its own, so it's the one verdict the override leaves
+ * alone.
+ */
+function findingsOverrideActive(run: AiAgentRunListItemDto): boolean {
+  return run.findingsToReview > 0 && verdictTone(run.runVerdict ?? '') !== 'danger';
+}
+
+/**
+ * The three mutually-exclusive run-profile chips (sweep/narrative/triage),
+ * shared between the desktop table row and the mobile card so both surfaces
+ * stay in sync. `idPrefix` keeps mobile-card testids distinct from the
+ * desktop table's (`ai-agent-run-profile-*`) so `getByTestId` in tests never
+ * matches two elements at once — only one of the two surfaces is visible at
+ * a given viewport, but both exist in the jsdom tree.
+ *
+ * UI critique finding #7 — all three chips use the `muted` tone (not
+ * `info`), so a blue "Running" status badge is the only blue signal in a
+ * row; without this, "Running" (status) and "Sweep" (profile) both read as
+ * the same blue and colour stopped meaning anything specific.
+ */
+function ProfileBadges({
+  run,
+  t,
+  idPrefix,
+}: {
+  run: AiAgentRunListItemDto;
+  t: TFn;
+  idPrefix: string;
+}) {
+  return (
+    <>
+      {run.profile === 'sweep' && (
+        <span
+          data-testid={`${idPrefix}-profile-sweep-${run.id}`}
+          className={badgeClass('muted', { size: 'sm' })}
+        >
+          {t('aiAgentsPage.runs.profile.sweep')}
+        </span>
+      )}
+      {/* Phase 2 wave P2-3 (#4190) — a narrative-profile run is the weekly
+          org report, not a device outcome; the badge is what tells the two
+          apart in a mixed list. */}
+      {run.profile === 'narrative' && (
+        <span
+          data-testid={`${idPrefix}-profile-narrative-${run.id}`}
+          className={badgeClass('muted', { size: 'sm' })}
+        >
+          {t('aiAgentsPage.runs.profile.narrative')}
+        </span>
+      )}
+      {/* Phase 2 wave P2-4 (#4191, Task 12) — a triage-profile run is a
+          ticket outcome, not a device incident; same "tell the two apart in
+          a mixed list" rationale as the sweep/narrative badges above. */}
+      {run.profile === 'triage' && (
+        <span
+          data-testid={`${idPrefix}-profile-triage-${run.id}`}
+          className={badgeClass('muted', { size: 'sm' })}
+        >
+          {t('aiAgentsPage.runs.profile.triage')}
+        </span>
+      )}
+    </>
+  );
+}
+
+/**
+ * The Verdict badge alone (no layout wrapper) — shared between the desktop
+ * table cell and the mobile card, which each place it in a different
+ * surrounding flex row (the mobile card's combines it with the status
+ * badge; the desktop table cell keeps status in its own column). Renders
+ * the findings-to-review override (finding #1) when active; the caller is
+ * responsible for rendering the demoted verdict as secondary text alongside
+ * it via `findingsOverrideActive` + `verdictLabel`.
+ */
+function VerdictBadge({ run, t, idPrefix }: { run: AiAgentRunListItemDto; t: TFn; idPrefix: string }) {
+  return (
+    <span data-testid={`${idPrefix}-verdict-${run.id}`}>
+      {findingsOverrideActive(run) ? (
+        <span
+          data-testid={`${idPrefix}-findings-badge-${run.id}`}
+          className={badgeClass('warning', { size: 'sm' })}
+        >
+          {t('aiAgentsRuns.detail.findings.badge', { count: run.findingsToReview })}
+        </span>
+      ) : (
+        <span className={badgeClass(verdictTone(run.runVerdict ?? ''), { size: 'sm' })}>
+          {verdictLabel(t, run.runVerdict)}
+        </span>
+      )}
+    </span>
+  );
+}
+
+/** The real verdict, demoted to secondary muted text once the findings
+ *  override above has taken its place as the primary badge (finding #1). */
+function VerdictSecondary({ run, t, idPrefix }: { run: AiAgentRunListItemDto; t: TFn; idPrefix: string }) {
+  if (!findingsOverrideActive(run)) return null;
+  return (
+    <div data-testid={`${idPrefix}-verdict-secondary-${run.id}`} className="mt-1 text-xs text-muted-foreground">
+      {verdictLabel(t, run.runVerdict)}
+    </div>
+  );
+}
+
+/**
+ * UI critique finding #3 — the mobile equivalent of a table row: stacked
+ * card (agent + org / status + verdict + profile chips / excerpt / a muted
+ * meta line), mirroring `SweepFindingCard`'s table→card degradation pattern
+ * in RunDetailPage. Shares `VerdictBadge`/`ProfileBadges` with the desktop
+ * table cell so the two surfaces never drift; `idPrefix` keeps this card's
+ * testids distinct from the table row's so `getByTestId` never matches two
+ * elements — only one of the two surfaces is visible (and in the a11y
+ * tree) at a given viewport, via `hidden`/`md:hidden`, but both exist in
+ * the jsdom tree.
+ */
+function RunCard({
+  run,
+  t,
+  showCost,
+  onNavigate,
+}: {
+  run: AiAgentRunListItemDto;
+  t: TFn;
+  showCost: boolean;
+  onNavigate: (runId: string) => void;
+}) {
+  const live = isLiveRunStatus(run.status);
+  return (
+    <li
+      data-testid={`runs-list-card-${run.id}`}
+      className="cursor-pointer rounded-lg border bg-card p-3 text-sm"
+      onClick={() => onNavigate(run.id)}
+    >
+      {/* Line 1: agent + org. */}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <a
+          href={`/ai-agents/runs/${run.id}`}
+          data-testid={`runs-list-card-link-${run.id}`}
+          className="font-medium text-primary hover:underline"
+          onClick={(event) => event.stopPropagation()}
+        >
+          {run.agentName ?? t('aiAgentsPage.runs.noAgent')}
+        </a>
+        <span className="text-xs text-muted-foreground">{run.orgName ?? '—'}</span>
+      </div>
+
+      {/* Line 2: status + findings/verdict + profile chips. */}
+      <div className="mt-2 flex flex-wrap items-center gap-1.5">
+        <span
+          className={badgeClass(runStatusTone(run.status), { size: 'sm' })}
+          aria-live={live ? 'polite' : undefined}
+        >
+          {statusLabel(t, run.status)}
+        </span>
+        {live && (
+          <LiveIndicator label={t('aiAgentsRuns.live.label')} testId={`runs-list-card-live-indicator-${run.id}`} />
+        )}
+        <VerdictBadge run={run} t={t} idPrefix="runs-list-card" />
+        <ProfileBadges run={run} t={t} idPrefix="runs-list-card" />
+      </div>
+      <VerdictSecondary run={run} t={t} idPrefix="runs-list-card" />
+
+      {/* Line 3: the agent's own excerpt, when it has one. */}
+      {run.summaryExcerpt && (
+        <p
+          data-testid={`runs-list-card-summary-${run.id}`}
+          className="mt-1.5 line-clamp-1 text-xs text-muted-foreground"
+        >
+          {run.summaryExcerpt}
+        </p>
+      )}
+
+      {/* Muted meta line: started / duration (/ cost when toggled on). */}
+      <div className="mt-2 flex flex-wrap items-center gap-x-1.5 text-xs text-muted-foreground">
+        <StartedCell queuedAt={run.queuedAt} />
+        <span aria-hidden="true">·</span>
+        <span>{formatRunDuration(run.queuedAt, run.finishedAt)}</span>
+        {showCost && (
+          <>
+            <span aria-hidden="true">·</span>
+            <span data-testid={`runs-list-card-cost-${run.id}`}>{formatCurrency(run.costCents / 100)}</span>
+          </>
+        )}
+      </div>
+    </li>
+  );
 }
 
 /**
@@ -380,7 +580,11 @@ export default function RunsListPage() {
         const response = await fetchWithAuth(`/ai/agents/runs?${params.toString()}`);
         if (requestId !== requestIdRef.current) return;
         if (!response.ok) {
-          const message = t('aiAgentsPage.runs.errors.load', { status: response.status });
+          // UI critique finding #6 — a "Load more" failure gets its own
+          // copy, distinct from the page-1 load error it used to reuse.
+          const message = append
+            ? t('aiAgentsPage.runs.errors.loadMore')
+            : t('aiAgentsPage.runs.errors.load', { status: response.status });
           if (append) setLoadMoreError(message);
           else setError(message);
           return;
@@ -390,7 +594,9 @@ export default function RunsListPage() {
         if (!Array.isArray(body.data)) {
           // A body we cannot read is an error, not zero runs — same lesson as
           // AiAgentsPage's `?? []` regression.
-          const message = t('aiAgentsPage.runs.errors.load', { status: response.status });
+          const message = append
+            ? t('aiAgentsPage.runs.errors.loadMore')
+            : t('aiAgentsPage.runs.errors.load', { status: response.status });
           if (append) setLoadMoreError(message);
           else setError(message);
           return;
@@ -400,7 +606,11 @@ export default function RunsListPage() {
         setNextCursor(body.nextCursor ?? null);
       } catch (err) {
         if (requestId !== requestIdRef.current) return;
-        const message = err instanceof Error ? err.message : t('aiAgentsPage.runs.errors.load', { status: 0 });
+        const message = append
+          ? t('aiAgentsPage.runs.errors.loadMore')
+          : err instanceof Error
+            ? err.message
+            : t('aiAgentsPage.runs.errors.load', { status: 0 });
         if (append) setLoadMoreError(message);
         else setError(message);
       } finally {
@@ -493,70 +703,85 @@ export default function RunsListPage() {
     window.location.assign(`/ai-agents/runs/${runId}`);
   }, []);
 
+  // UI critique finding #4 — a truly empty, unfiltered list has nothing to
+  // filter yet, so the agent/status selects and the cost toggle only add
+  // noise above the empty state's own configure-agents CTA. Still shown
+  // while loading (we don't yet know the count) or erroring, and shown the
+  // moment ANY filter is active (e.g. a deep link into a zero-total org) so
+  // the active filter and its Clear affordance stay visible.
+  const showFilterChrome = loading || Boolean(error) || runs.length > 0 || hasActiveFilter;
+
   return (
     <div className="space-y-6" data-testid="runs-list-page">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h1 className="flex items-center gap-2 text-xl font-semibold tracking-tight">
-            <History className="h-5 w-5" />
-            {t('aiAgentsPage.runs.title')}
-          </h1>
-          <p className="text-muted-foreground">{t('aiAgentsPage.runs.description')}</p>
-        </div>
+      <PageHeader
+        testId="runs-list-header"
+        icon={<History className="h-5 w-5" />}
+        title={t('aiAgentsPage.runs.title')}
+        description={t('aiAgentsPage.runs.description')}
+        actions={
+          showFilterChrome ? (
+            <>
+              <select
+                data-testid="runs-list-filter-agent"
+                aria-label={t('aiAgentsPage.runs.filters.agent')}
+                value={agentFilter}
+                onChange={(event) => setAgentFilter(event.target.value)}
+                className="rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-primary/20"
+              >
+                <option value="">{t('aiAgentsPage.runs.filters.allAgents')}</option>
+                {agents.map((agent) => (
+                  <option key={agent.id} value={agent.id}>
+                    {agent.name}
+                  </option>
+                ))}
+              </select>
 
-        <div className="flex flex-wrap items-center gap-3">
-          <select
-            data-testid="runs-list-filter-agent"
-            aria-label={t('aiAgentsPage.runs.filters.agent')}
-            value={agentFilter}
-            onChange={(event) => setAgentFilter(event.target.value)}
-            className="rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-primary/20"
-          >
-            <option value="">{t('aiAgentsPage.runs.filters.allAgents')}</option>
-            {agents.map((agent) => (
-              <option key={agent.id} value={agent.id}>
-                {agent.name}
-              </option>
-            ))}
-          </select>
+              <select
+                data-testid="runs-list-filter-status"
+                aria-label={t('aiAgentsPage.runs.filters.status')}
+                value={statusFilter}
+                onChange={(event) => setStatusFilter(event.target.value as AiAgentRunStatus | '')}
+                className="rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-primary/20"
+              >
+                <option value="">{t('aiAgentsPage.runs.filters.allStatuses')}</option>
+                {AI_AGENT_RUN_STATUSES.map((value) => (
+                  <option key={value} value={value}>
+                    {statusLabel(t, value)}
+                  </option>
+                ))}
+              </select>
 
-          <select
-            data-testid="runs-list-filter-status"
-            aria-label={t('aiAgentsPage.runs.filters.status')}
-            value={statusFilter}
-            onChange={(event) => setStatusFilter(event.target.value as AiAgentRunStatus | '')}
-            className="rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-primary/20"
-          >
-            <option value="">{t('aiAgentsPage.runs.filters.allStatuses')}</option>
-            {AI_AGENT_RUN_STATUSES.map((value) => (
-              <option key={value} value={value}>
-                {statusLabel(t, value)}
-              </option>
-            ))}
-          </select>
+              {hasActiveFilter && (
+                <button
+                  type="button"
+                  data-testid="runs-list-clear-filters"
+                  onClick={clearFilters}
+                  className="text-sm text-muted-foreground hover:text-foreground hover:underline"
+                >
+                  {t('aiAgentsRuns.list.clearFilters')}
+                </button>
+              )}
 
-          {hasActiveFilter && (
-            <button
-              type="button"
-              data-testid="runs-list-clear-filters"
-              onClick={clearFilters}
-              className="text-sm text-muted-foreground hover:text-foreground hover:underline"
-            >
-              {t('aiAgentsRuns.list.clearFilters')}
-            </button>
-          )}
-
-          <button
-            type="button"
-            data-testid="runs-list-toggle-cost"
-            aria-pressed={showCost}
-            onClick={toggleShowCost}
-            className="rounded-md border px-3 py-2 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"
-          >
-            {showCost ? t('aiAgentsRuns.list.hideCost') : t('aiAgentsRuns.list.showCost')}
-          </button>
-        </div>
-      </div>
+              {/* UI critique finding #5 — a pressed toggle must read as
+                  clearly ON (not merely muted-foreground, which reads as
+                  disabled in dark mode) in both themes. */}
+              <button
+                type="button"
+                data-testid="runs-list-toggle-cost"
+                aria-pressed={showCost}
+                onClick={toggleShowCost}
+                className={`rounded-md border px-3 py-2 text-sm font-medium transition-colors ${
+                  showCost
+                    ? 'border-primary/50 bg-primary/10 text-primary'
+                    : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+                }`}
+              >
+                {showCost ? t('aiAgentsRuns.list.hideCost') : t('aiAgentsRuns.list.showCost')}
+              </button>
+            </>
+          ) : undefined
+        }
+      />
 
       {loading && (
         <p className="text-sm text-muted-foreground" data-testid="runs-list-loading">
@@ -614,112 +839,111 @@ export default function RunsListPage() {
       )}
 
       {!loading && !error && runs.length > 0 && (
-        <div className="overflow-hidden rounded-lg border">
-          <div className="overflow-x-auto">
-            <table className="min-w-full divide-y" data-testid="runs-list-table">
-              <thead className="bg-muted/40">
-                <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                  <th className="px-4 py-3">{t('aiAgentsPage.runs.columns.agent')}</th>
-                  {/* Review finding #2: this column's cell renders `orgName`
-                      — the list DTO has no device hostname to "target" — so
-                      the header says Organization, reusing the shared
-                      vocabulary key rather than a private "Target" label
-                      that never matched what the column actually shows. */}
-                  <th className="px-4 py-3">{t('common:labels.organization')}</th>
-                  <th className="px-4 py-3">{t('aiAgentsPage.runs.columns.status')}</th>
-                  <th className="px-4 py-3">{t('aiAgentsPage.runs.columns.trigger')}</th>
-                  <th className="px-4 py-3">{t('aiAgentsPage.runs.columns.verdict')}</th>
-                  <th className="px-4 py-3">{t('aiAgentsRuns.list.columns.started')}</th>
-                  <th className="px-4 py-3">{t('aiAgentsRuns.list.columns.duration')}</th>
-                  {showCost && <th className="px-4 py-3">{t('aiAgentsPage.runs.columns.cost')}</th>}
-                </tr>
-              </thead>
-              <tbody className="divide-y">
-                {runs.map((run) => {
-                  const live = isLiveRunStatus(run.status);
-                  return (
-                    <tr
-                      key={run.id}
-                      data-testid={`runs-list-row-${run.id}`}
-                      className="cursor-pointer text-sm hover:bg-muted/30"
-                      onClick={() => handleRowNavigate(run.id)}
-                    >
-                      <td className="px-4 py-3 font-medium">
-                        <a
-                          href={`/ai-agents/runs/${run.id}`}
-                          data-testid={`runs-list-row-link-${run.id}`}
-                          className="text-primary hover:underline"
-                          onClick={(event) => event.stopPropagation()}
-                        >
-                          {run.agentName ?? t('aiAgentsPage.runs.noAgent')}
-                        </a>
-                      </td>
-                      <td className="px-4 py-3 text-muted-foreground">{run.orgName ?? '—'}</td>
-                      <td className="px-4 py-3">
-                        <span
-                          className={badgeClass(runStatusTone(run.status), { size: 'sm' })}
-                          aria-live={live ? 'polite' : undefined}
-                        >
-                          {statusLabel(t, run.status)}
-                        </span>
-                        {live && <LiveIndicator label={t('aiAgentsRuns.live.label')} />}
-                      </td>
-                      <td className="px-4 py-3 text-muted-foreground">{triggerLabel(t, run.triggerKind)}</td>
-                      <td className="px-4 py-3">
-                        <span className={badgeClass(verdictTone(run.runVerdict ?? ''), { size: 'sm' })}>
-                          {verdictLabel(t, run.runVerdict)}
-                        </span>
-                        {run.profile === 'sweep' && (
-                          <span
-                            data-testid={`ai-agent-run-profile-sweep-${run.id}`}
-                            className={`ml-1.5 ${badgeClass('info', { size: 'sm' })}`}
+        <>
+          {/* UI critique finding #3 — below `md` the table degrades into
+              stacked cards (mirroring RunDetailPage's sweep-findings
+              table→card pattern) instead of a horizontally-scrolling table.
+              Exactly one of the two blocks is displayed — and therefore in
+              the a11y tree — at a given viewport via `hidden`/`md:hidden`. */}
+          <div
+            data-testid="runs-list-table-wrapper"
+            className="hidden overflow-hidden rounded-lg border md:block"
+          >
+            <div className="overflow-x-auto">
+              <table className="min-w-full divide-y" data-testid="runs-list-table">
+                <thead className="bg-muted/40">
+                  <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    <th className="px-4 py-3">{t('aiAgentsPage.runs.columns.agent')}</th>
+                    {/* Review finding #2: this column's cell renders `orgName`
+                        — the list DTO has no device hostname to "target" — so
+                        the header says Organization, reusing the shared
+                        vocabulary key rather than a private "Target" label
+                        that never matched what the column actually shows. */}
+                    <th className="px-4 py-3">{t('common:labels.organization')}</th>
+                    <th className="px-4 py-3">{t('aiAgentsPage.runs.columns.status')}</th>
+                    <th className="px-4 py-3">{t('aiAgentsPage.runs.columns.trigger')}</th>
+                    <th className="px-4 py-3">{t('aiAgentsPage.runs.columns.verdict')}</th>
+                    <th className="px-4 py-3">{t('aiAgentsRuns.list.columns.started')}</th>
+                    <th className="px-4 py-3">{t('aiAgentsRuns.list.columns.duration')}</th>
+                    {showCost && <th className="px-4 py-3">{t('aiAgentsPage.runs.columns.cost')}</th>}
+                  </tr>
+                </thead>
+                <tbody className="divide-y">
+                  {runs.map((run) => {
+                    const live = isLiveRunStatus(run.status);
+                    return (
+                      <tr
+                        key={run.id}
+                        data-testid={`runs-list-row-${run.id}`}
+                        className="cursor-pointer text-sm hover:bg-muted/30"
+                        onClick={() => handleRowNavigate(run.id)}
+                      >
+                        <td className="px-4 py-3 font-medium">
+                          <a
+                            href={`/ai-agents/runs/${run.id}`}
+                            data-testid={`runs-list-row-link-${run.id}`}
+                            className="text-primary hover:underline"
+                            onClick={(event) => event.stopPropagation()}
                           >
-                            {t('aiAgentsPage.runs.profile.sweep')}
-                          </span>
-                        )}
-                        {/* Phase 2 wave P2-3 (#4190) — a narrative-profile
-                            run is the weekly org report, not a device
-                            outcome; the badge is what tells the two apart in
-                            a mixed list. */}
-                        {run.profile === 'narrative' && (
-                          <span
-                            data-testid={`ai-agent-run-profile-narrative-${run.id}`}
-                            className={`ml-1.5 ${badgeClass('accent', { size: 'sm' })}`}
-                          >
-                            {t('aiAgentsPage.runs.profile.narrative')}
-                          </span>
-                        )}
-                        {/* Phase 2 wave P2-4 (#4191, Task 12) — a triage-profile
-                            run is a ticket outcome, not a device incident; same
-                            "tell the two apart in a mixed list" rationale as
-                            the sweep/narrative badges above. */}
-                        {run.profile === 'triage' && (
-                          <span
-                            data-testid={`ai-agent-run-profile-triage-${run.id}`}
-                            className={`ml-1.5 ${badgeClass('muted', { size: 'sm' })}`}
-                          >
-                            {t('aiAgentsPage.runs.profile.triage')}
-                          </span>
-                        )}
-                      </td>
-                      <td className="px-4 py-3 whitespace-nowrap text-muted-foreground">
-                        <StartedCell queuedAt={run.queuedAt} />
-                      </td>
-                      <td className="px-4 py-3 whitespace-nowrap text-muted-foreground">
-                        {formatRunDuration(run.queuedAt, run.finishedAt)}
-                      </td>
-                      {showCost && (
-                        <td className="px-4 py-3 whitespace-nowrap text-muted-foreground">
-                          {formatCurrency(run.costCents / 100)}
+                            {run.agentName ?? t('aiAgentsPage.runs.noAgent')}
+                          </a>
+                          {/* UI critique finding #2 — the agent's own
+                              one-line excerpt, so triage can end at the list
+                              without opening every run. */}
+                          {run.summaryExcerpt && (
+                            <p
+                              data-testid={`runs-list-summary-${run.id}`}
+                              className="line-clamp-1 max-w-xs font-normal text-xs text-muted-foreground"
+                            >
+                              {run.summaryExcerpt}
+                            </p>
+                          )}
                         </td>
-                      )}
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+                        <td className="px-4 py-3 text-muted-foreground">{run.orgName ?? '—'}</td>
+                        <td className="px-4 py-3">
+                          <span
+                            className={badgeClass(runStatusTone(run.status), { size: 'sm' })}
+                            aria-live={live ? 'polite' : undefined}
+                          >
+                            {statusLabel(t, run.status)}
+                          </span>
+                          {live && <LiveIndicator label={t('aiAgentsRuns.live.label')} />}
+                        </td>
+                        <td className="px-4 py-3 text-muted-foreground">{triggerLabel(t, run.triggerKind)}</td>
+                        <td className="px-4 py-3">
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <VerdictBadge run={run} t={t} idPrefix="runs-list" />
+                            {/* `ai-agent-run` prefix preserved — pre-existing
+                                testids these profile chips have always used. */}
+                            <ProfileBadges run={run} t={t} idPrefix="ai-agent-run" />
+                          </div>
+                          <VerdictSecondary run={run} t={t} idPrefix="runs-list" />
+                        </td>
+                        <td className="px-4 py-3 whitespace-nowrap text-muted-foreground">
+                          <StartedCell queuedAt={run.queuedAt} />
+                        </td>
+                        <td className="px-4 py-3 whitespace-nowrap text-muted-foreground">
+                          {formatRunDuration(run.queuedAt, run.finishedAt)}
+                        </td>
+                        {showCost && (
+                          <td className="px-4 py-3 whitespace-nowrap text-muted-foreground">
+                            {formatCurrency(run.costCents / 100)}
+                          </td>
+                        )}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
           </div>
-        </div>
+
+          <ul className="space-y-3 md:hidden" data-testid="runs-list-cards">
+            {runs.map((run) => (
+              <RunCard key={run.id} run={run} t={t} showCost={showCost} onNavigate={handleRowNavigate} />
+            ))}
+          </ul>
+        </>
       )}
 
       {!loading && !error && nextCursor && (

@@ -17,6 +17,12 @@
     },
     "detail": {
       "notFoundDescription": "Dieser Lauf wurde möglicherweise gelöscht, oder der Link ist veraltet.",
+      "pageTitle": "{{agent}} · {{started}} · Lauf | Breeze RMM",
+      "header": {
+        "title": "Lauf von {{agent}}",
+        "startedLabel": "Gestartet",
+        "machineVerdict": "Maschinelles Ergebnis: {{verdict}}"
+      },
       "summary": {
         "title": "Was der Agent gefunden hat"
       },
@@ -38,13 +44,16 @@
           "checkedAt": "Geprüft",
           "cveIds": "CVE-IDs",
           "cveCount": "CVE-Anzahl",
+          "cveId": "CVE",
+          "cvssScore": "CVSS-Bewertung",
           "osType": "Betriebssystemtyp",
           "openCriticalCount": "Offene kritische CVEs"
         }
       },
       "sweep": {
         "caption": "Eine Zeile pro Problem, das dieser Durchlauf gefunden hat, mit der jeweils vorgeschlagenen Aktion.",
-        "reviewPermissions": "Agentberechtigungen prüfen"
+        "reviewPermissions": "Agentberechtigungen prüfen",
+        "checksLabel": "Prüfungen:"
       },
       "trace": {
         "description": "Jeder Tool-Aufruf, den der Agent vorgeschlagen, ausgeführt oder abgelehnt bekommen hat, in zeitlicher Reihenfolge.",
@@ -53,6 +62,7 @@
       "ledger": {
         "description": "Nur die tatsächlich ausgeführten Aufrufe, mit Laufzeit und etwaigem Fehler.",
         "emptyDescription": "Tools, die der Agent tatsächlich aufgerufen hat, werden hier aufgelistet.",
+        "collapsedSummary": "Tool-Ausführungen ({{count}}) — wie oben im Trace",
         "statuses": {
           "pending": "Ausstehend",
           "approved": "Genehmigt",
@@ -1497,6 +1507,7 @@
       "nextRun": "Nächster Lauf {{at}} ({{timezone}})",
       "nextRunInvalid": "Ungültiger Zeitplan",
       "nextRunNone": "Im nächsten Jahr fällt kein Lauf an.",
+      "useMyTimezone": "Meine Zeitzone verwenden",
       "kindLabels": {
         "disk_pressure": "Speicherplatzdruck",
         "stale_agents": "Veraltete Agenten",
@@ -1553,6 +1564,18 @@
     "allOrgsHint": "Partnerweit: gilt für jede Organisation, sofern eine Organisation die Richtlinie nicht verschärft.",
     "stateEnabled": "Aktiviert",
     "stateDisabled": "Deaktiviert",
+    "runningBadge": {
+      "running": "Läuft",
+      "notRunning": "Läuft nicht"
+    },
+    "reenableNote": "Wiederhergestellt, aber ausgeschaltet. Prüfen Sie zuerst die Richtlinie, bevor Sie ihn einschalten.",
+    "chipLabels": {
+      "kind": "Art",
+      "ownership": "Zugehörigkeit",
+      "mode": "Modus",
+      "running": "Status",
+      "lastRunStatus": "Ergebnis des letzten Laufs"
+    },
     "lastRun": {
       "never": "Nie ausgeführt",
       "at": "Letzte Ausführung {{at}}"
@@ -1575,7 +1598,8 @@
     },
     "allDisabled": {
       "title": "Alle Agenten sind deaktiviert",
-      "description": "Es läuft nichts. Aktivieren Sie unten einen Agenten wieder oder erstellen Sie einen neuen."
+      "description": "Es läuft gerade nichts.",
+      "reenableCta": "Einen Agenten wieder aktivieren"
     },
     "errors": {
       "load": "Agenten konnten nicht geladen werden.",
@@ -1686,6 +1710,8 @@
       "recipientRolesFailed": "Rollen konnten nicht geladen werden; Benachrichtigungsempfänger lassen sich derzeit nicht ändern.",
       "supervisedActionKeysHint": "Vorgänge, die dieser Agent OHNE einen menschlichen Klick auf Genehmigen ausführen darf, wenn eine passende Richtlinie existiert und im Expositionslimit der Organisation noch Spielraum ist. Jeder Vorgang durchläuft zur Ausführungszeit weiterhin die Live-Schutzmechanismen, den Kill-Switch und die Organisationslimits.",
       "supervisedActionKeysEmpty": "Es sind keine per Richtlinie entscheidbaren Aktionen registriert.",
+      "supervisedActionKeysCeilingSummary_one": "Obergrenze für Organisationen — {{count}} Schlüssel",
+      "supervisedActionKeysCeilingSummary_other": "Obergrenze für Organisationen — {{count}} Schlüssel",
       "supervisedActionKeysFailed": "Die Liste der per Richtlinie entscheidbaren Aktionen konnte nicht geladen werden, daher kann die unbeaufsichtigte Autorisierung derzeit nicht geändert werden.",
       "ticketAutonomousWrites": "Autonome Ticket-Schreibvorgänge",
       "ticketAutonomousWritesHint": "Nur Organisationsüberschreibung — autonome Ticket-Schreibvorgänge erfordern den Aktionsmodus und diese Opt-in-Einstellung auf Organisationsebene",
@@ -1695,6 +1721,35 @@
       "toolSuggestLabel": "Bekanntes Werkzeug hinzufügen",
       "toolSuggestHint": "Die Vorschläge stammen aus dem Register richtlinienentscheidbarer Aktionen und sind nicht die vollständige Werkzeugliste. Alles andere, was dieser Agent nutzen darf, kann oben weiterhin eingetippt werden.",
       "toolSuggestAdd": "Hinzufügen"
+    },
+    "policyKeys": {
+      "tools": {
+        "manage_services": "Dienste",
+        "manage_startup_items": "Autostartelemente",
+        "manage_scheduled_tasks": "Geplante Aufgaben",
+        "security_scan": "Sicherheitsscan"
+      },
+      "actions": {
+        "manage_services": {
+          "start": "Einen Dienst starten",
+          "stop": "Einen Dienst stoppen",
+          "restart": "Einen Dienst neu starten"
+        },
+        "manage_startup_items": {
+          "disable": "Ein Autostartelement deaktivieren",
+          "enable": "Ein Autostartelement aktivieren"
+        },
+        "manage_scheduled_tasks": {
+          "run": "Eine geplante Aufgabe ausführen",
+          "disable": "Eine geplante Aufgabe deaktivieren",
+          "enable": "Eine geplante Aufgabe aktivieren"
+        },
+        "security_scan": {
+          "quarantine": "Eine Bedrohung isolieren",
+          "remove": "Eine Bedrohung entfernen",
+          "restore": "Eine Bedrohung wiederherstellen"
+        }
+      }
     },
     "loading": "Agenten werden geladen …",
     "runs": {
@@ -1711,8 +1766,6 @@
         "status": "Status",
         "trigger": "Auslöser",
         "verdict": "Ergebnis",
-        "queued": "Eingereiht",
-        "finished": "Beendet",
         "cost": "Kosten"
       },
       "statuses": {
@@ -2006,6 +2059,7 @@
           "llmSpend": "LLM-Ausgaben"
         }
       },
+      "freshnessLabel": "Aktualität der Daten",
       "freshness": "Daten bis {{through}} (UTC) · neu aufgebaut {{rebuiltAt}}",
       "freshnessNeverRebuilt": "Noch nicht erstellt — der erste Neuaufbau läuft heute Nacht",
       "positiveFeedbackRate": "Quote positiver Rückmeldungen",
@@ -2016,7 +2070,10 @@
         "title": "Gewichtungen für Zeitersparnis bearbeiten",
         "description": "Legen Sie fest, wie viele Minuten menschlicher Zeit jedem Ergebnis angerechnet werden. Diese Gewichtungen ändern nur die Schätzung — niemals, was Ihre KI-Agenten tun.",
         "unitSuffix": "Min.",
+        "rangeHint": "Geben Sie einen Wert zwischen {{min}} und {{max}} Minuten ein.",
+        "defaultValue": "Standard {{minutes}} Min.",
         "preview": "Geschätzte Zeitersparnis in diesem Zeitraum: {{from}} → {{to}}",
+        "noOutcomesPreview": "Keine Ergebnisse in diesem Zeitraum zur Vorschau",
         "save": "Speichern",
         "saving": "Wird gespeichert…",
         "reset": "Auf Standardwerte zurücksetzen",

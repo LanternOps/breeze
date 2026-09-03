@@ -368,17 +368,19 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
         return;
       }
 
-      // Clean up stale sessions in parallel with creating new one
-      const [, response] = await Promise.all([
-        fetchWithAuth('/remote/sessions/stale', { method: 'DELETE' }).catch(() => {}),
-        fetchWithAuth('/remote/sessions', {
-          method: 'POST',
-          body: JSON.stringify({
-            deviceId,
-            type: 'desktop',
-          }),
+      // Do NOT sweep /remote/sessions/stale here. The unscoped sweep (no
+      // deviceId, no type) revoked every live session the caller could see,
+      // including a Terminal on the same device (close 4003 "Session revoked"),
+      // and racing it against the POST could catch the brand-new desktop row
+      // too (#4090). POST /remote/sessions already terminates stale rows
+      // scoped to this device+type server-side.
+      const response = await fetchWithAuth('/remote/sessions', {
+        method: 'POST',
+        body: JSON.stringify({
+          deviceId,
+          type: 'desktop',
         }),
-      ]);
+      });
 
       if (!response.ok) {
         const err = await response.json();

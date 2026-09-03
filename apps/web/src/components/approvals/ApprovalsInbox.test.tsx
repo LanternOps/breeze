@@ -1223,4 +1223,234 @@ describe('ApprovalsInbox — organization identity, live expiry, paging, and cop
       ),
     );
   });
+
+  it('renders "Expires in under a minute" instead of a misleading unit below 60s', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-23T12:00:00.000Z'));
+    routeFetch([{ ...pendingApproval, expiresAt: '2026-08-23T12:00:45.000Z' }]);
+    render(<ApprovalsInbox />);
+    await act(async () => {});
+
+    expect(screen.getByTestId('approval-expiry-approval-1')).toHaveTextContent(
+      'Expires in under a minute',
+    );
+  });
+});
+
+describe('ApprovalsInbox — organization filter, search, and sort (findings #1)', () => {
+  it('lists distinct organizations with per-org counts, defaulting to "All organizations"', async () => {
+    routeFetch([
+      { ...pendingApproval, id: 'r1', orgId: 'org-1', orgName: 'Acme' },
+      { ...pendingApproval, id: 'r2', orgId: 'org-2', orgName: 'Contoso' },
+      { ...pendingApproval, id: 'r3', orgId: 'org-1', orgName: 'Acme' },
+    ]);
+    render(<ApprovalsInbox />);
+    await screen.findByTestId('approval-row-r3');
+
+    const select = screen.getByTestId('approvals-filter-org') as HTMLSelectElement;
+    const optionTexts = Array.from(select.options).map((option) => option.textContent);
+    expect(optionTexts).toContain('All organizations (3)');
+    expect(optionTexts).toContain('Acme (2 pending)');
+    expect(optionTexts).toContain('Contoso (1 pending)');
+    expect(select.value).toBe('');
+  });
+
+  it('filters to one organization while every other org disappears', async () => {
+    routeFetch([
+      { ...pendingApproval, id: 'r1', orgId: 'org-1', orgName: 'Acme' },
+      { ...pendingApproval, id: 'r2', orgId: 'org-2', orgName: 'Contoso' },
+    ]);
+    render(<ApprovalsInbox />);
+    await screen.findByTestId('approval-row-r2');
+
+    fireEvent.change(screen.getByTestId('approvals-filter-org'), {
+      target: { value: 'org-2' },
+    });
+
+    expect(screen.queryByTestId('approval-row-r1')).not.toBeInTheDocument();
+    expect(screen.getByTestId('approval-row-r2')).toBeInTheDocument();
+  });
+
+  it('searches over the action label, target hostname, and agent name', async () => {
+    routeFetch([
+      {
+        ...pendingApproval,
+        id: 'r1',
+        actionLabel: 'Restart accounting server',
+        targetDevice: null,
+        agentName: null,
+      },
+      {
+        ...pendingApproval,
+        id: 'r2',
+        actionLabel: 'Install patch',
+        targetDevice: { id: 'd2', hostname: 'HOST-42' },
+        agentName: null,
+      },
+      {
+        ...pendingApproval,
+        id: 'r3',
+        actionLabel: 'Deploy script',
+        targetDevice: null,
+        agentName: 'Patch Sweep',
+      },
+    ]);
+    render(<ApprovalsInbox />);
+    await screen.findByTestId('approval-row-r3');
+
+    fireEvent.change(screen.getByTestId('approvals-filter-search'), {
+      target: { value: 'host-42' },
+    });
+    expect(screen.getByTestId('approval-row-r2')).toBeInTheDocument();
+    expect(screen.queryByTestId('approval-row-r1')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('approval-row-r3')).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByTestId('approvals-filter-search'), {
+      target: { value: 'patch sweep' },
+    });
+    expect(screen.getByTestId('approval-row-r3')).toBeInTheDocument();
+    expect(screen.queryByTestId('approval-row-r2')).not.toBeInTheDocument();
+  });
+
+  it('honestly shows "Showing N of M loaded" only once a filter narrows the loaded set', async () => {
+    routeFetch([
+      { ...pendingApproval, id: 'r1', orgId: 'org-1', orgName: 'Acme' },
+      { ...pendingApproval, id: 'r2', orgId: 'org-2', orgName: 'Contoso' },
+    ]);
+    render(<ApprovalsInbox />);
+    await screen.findByTestId('approval-row-r2');
+
+    expect(screen.queryByTestId('approvals-filter-summary')).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByTestId('approvals-filter-org'), {
+      target: { value: 'org-1' },
+    });
+
+    expect(screen.getByTestId('approvals-filter-summary')).toHaveTextContent(
+      'Showing 1 of 2 loaded',
+    );
+  });
+
+  it('sorts by expiring soonest (default) and by newest', async () => {
+    routeFetch([
+      {
+        ...pendingApproval,
+        id: 'soon',
+        expiresAt: '2026-08-23T12:05:00.000Z',
+        createdAt: '2026-08-23T11:00:00.000Z',
+      },
+      {
+        ...pendingApproval,
+        id: 'later',
+        expiresAt: '2026-08-23T13:00:00.000Z',
+        createdAt: '2026-08-23T11:30:00.000Z',
+      },
+    ]);
+    render(<ApprovalsInbox />);
+    await screen.findByTestId('approval-row-later');
+
+    let order = screen
+      .getAllByTestId(/^approval-row-/)
+      .map((el) => el.getAttribute('data-testid'));
+    expect(order).toEqual(['approval-row-soon', 'approval-row-later']);
+
+    fireEvent.click(screen.getByTestId('approvals-sort-newest'));
+
+    order = screen.getAllByTestId(/^approval-row-/).map((el) => el.getAttribute('data-testid'));
+    expect(order).toEqual(['approval-row-later', 'approval-row-soon']);
+  });
+
+  it('shows a distinct "no matches" empty state when filters exclude everything, with a working Clear filters', async () => {
+    routeFetch([{ ...pendingApproval, actionLabel: 'Restart accounting server' }]);
+    render(<ApprovalsInbox />);
+    await screen.findByTestId('approval-row-approval-1');
+
+    fireEvent.change(screen.getByTestId('approvals-filter-search'), {
+      target: { value: 'no such action' },
+    });
+
+    const empty = await screen.findByTestId('approvals-filtered-empty');
+    expect(empty).toHaveTextContent('No approvals match your filters');
+    expect(screen.queryByTestId('approvals-empty')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('approvals-filtered-empty-clear'));
+
+    expect(await screen.findByTestId('approval-row-approval-1')).toBeInTheDocument();
+    expect((screen.getByTestId('approvals-filter-search') as HTMLInputElement).value).toBe('');
+  });
+});
+
+describe('ApprovalsInbox — batch scope naming (finding #2)', () => {
+  it('lists the group\'s target hostnames on the header, with a "+K more" tail past the cap', async () => {
+    const members = Array.from({ length: 8 }, (_, i) =>
+      agentCard(`ap-${i}`, { targetDevice: { id: `device-${i}`, hostname: `HOST-${i}` } }),
+    );
+    routeFetch(members);
+    render(<ApprovalsInbox />);
+
+    const hostnames = await screen.findByTestId(`approval-group-hostnames-${GROUP_KEY}`);
+    for (let i = 0; i < 6; i += 1) {
+      expect(hostnames).toHaveTextContent(`HOST-${i}`);
+    }
+    expect(hostnames).not.toHaveTextContent('HOST-6');
+    expect(hostnames).not.toHaveTextContent('HOST-7');
+    expect(hostnames).toHaveTextContent('+2 more');
+  });
+
+  it('restates the count and organization on the group deny confirm step', async () => {
+    routeFetch([
+      agentCard('ap-a', { orgName: 'Acme Dental' }),
+      agentCard('ap-b', { orgName: 'Acme Dental' }),
+    ]);
+    render(<ApprovalsInbox />);
+    await screen.findByTestId(`approval-group-${GROUP_KEY}`);
+
+    fireEvent.click(screen.getByTestId(`approval-group-decline-${GROUP_KEY}`));
+
+    expect(screen.getByTestId(`approval-group-deny-summary-${GROUP_KEY}`)).toHaveTextContent(
+      'This declines 2 requests for Acme Dental.',
+    );
+  });
+});
+
+describe('ApprovalsInbox — client-side expiry refusal at click time (finding #3)', () => {
+  it('refuses an approve click the instant expiry passes, even before the next 10s tick', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-23T12:00:00.000Z'));
+    routeFetch([{ ...pendingApproval, expiresAt: '2026-08-23T12:00:03.000Z' }]);
+    render(<ApprovalsInbox />);
+    await act(async () => {});
+
+    // The wall clock has moved PAST expiry, but by less than
+    // EXPIRY_TICK_MS (10s) — the ticking `now` state has not caught up yet,
+    // so the button's own `disabled` attribute is still stale-enabled.
+    vi.setSystemTime(new Date('2026-08-23T12:00:05.000Z'));
+    expect(screen.getByTestId('approval-approve-approval-1')).toBeEnabled();
+
+    // The guard runs synchronously before `decide`'s first `await`, so the
+    // error state is already committed by the time `fireEvent.click`
+    // returns — asserting via `findByTestId` here would wait on a real
+    // `setTimeout` that fake timers never advance, and time out.
+    fireEvent.click(screen.getByTestId('approval-approve-approval-1'));
+
+    expect(screen.getByTestId('approval-error-approval-1')).toHaveTextContent('expired');
+    expect(intentApprovalsMock.decide).not.toHaveBeenCalled();
+  });
+
+  it('refuses a group approve click the same way when any member has expired', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-23T12:00:00.000Z'));
+    routeFetch([
+      agentCard('ap-a', { expiresAt: '2026-08-23T12:00:03.000Z' }),
+      agentCard('ap-b', { expiresAt: '2026-08-23T12:10:00.000Z' }),
+    ]);
+    render(<ApprovalsInbox />);
+    await act(async () => {});
+
+    vi.setSystemTime(new Date('2026-08-23T12:00:05.000Z'));
+    fireEvent.click(screen.getByTestId(`approval-group-approve-${GROUP_KEY}`));
+
+    expect(screen.getByTestId(`approval-group-error-${GROUP_KEY}`)).toHaveTextContent('expired');
+    expect(batchCalls()).toHaveLength(0);
+  });
 });

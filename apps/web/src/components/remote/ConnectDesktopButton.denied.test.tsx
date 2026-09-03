@@ -42,8 +42,6 @@ describe('ConnectDesktopButton — user-denied state', () => {
       hasRemoteAccessLauncher: false,
       remoteAccessLaunchSkipReason: 'no_provider_configured',
     }));
-    // DELETE /remote/sessions/stale (fires in parallel, ignored)
-    fetchMock.mockResolvedValueOnce(jsonRes({}));
     // POST /remote/sessions — returns session id
     fetchMock.mockResolvedValueOnce(jsonRes({ id: 'sess-denied' }));
     // POST /remote/sessions/sess-denied/desktop-connect-code
@@ -68,7 +66,6 @@ describe('ConnectDesktopButton — user-denied state', () => {
       hasRemoteAccessLauncher: false,
       remoteAccessLaunchSkipReason: 'no_provider_configured',
     }));
-    fetchMock.mockResolvedValueOnce(jsonRes({}));
     fetchMock.mockResolvedValueOnce(jsonRes({ id: 'sess-denied-2' }));
     fetchMock.mockResolvedValueOnce(jsonRes({ code: 'code-xyz' }));
     // Poll returns denied
