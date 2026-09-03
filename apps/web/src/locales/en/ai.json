@@ -424,7 +424,9 @@
     "limit": "Up to 5 concurrent conversations"
   },
   "workspaceTab": {
-    "approvalPending": "Approval pending"
+    "approvalPending": "Approval pending",
+    "renameLabel": "Rename chat",
+    "renameHint": "Double-click to rename"
   },
   "workspaceTabBar": {
     "newTabShortcut": "New tab (Cmd+Shift+N)",

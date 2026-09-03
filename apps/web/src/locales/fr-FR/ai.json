@@ -424,7 +424,9 @@
     "limit": "Jusqu’à 5 conversations simultanées"
   },
   "workspaceTab": {
-    "approvalPending": "Approbation en attente"
+    "approvalPending": "Approbation en attente",
+    "renameLabel": "Renommer la conversation",
+    "renameHint": "Double-cliquez pour renommer"
   },
   "workspaceTabBar": {
     "newTabShortcut": "Nouvel onglet (Cmd+Shift+N)",
