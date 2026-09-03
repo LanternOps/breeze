@@ -3218,6 +3218,32 @@ describe('agent-originated outcome notifications', () => {
     expect(vi.mocked(mockedRunOutside).mock.calls.length).toBeGreaterThanOrEqual(3);
   });
 
+  // #4798 review finding: cancelActionIntent explicitly permits an
+  // approvals:decide holder to dismiss an agent-originated proposal with no
+  // human requester (owner decision 2026-08-23, wave 3b) — the agent-
+  // recipient fanout branch above must fire for a cancel exactly as it does
+  // for a reject, and this is the only test in the file that drives
+  // eventType: 'intent_cancelled' through it.
+  it('notifies agent recipients on a cancelled agent-originated intent', async () => {
+    dbState.selectActionIntentsResults.push([{ ...AGENT_INTENT, status: 'cancelled' }]);
+    dbState.selectAgentRunsResults.push([RUN_ROW]);
+    dbState.selectAgentsResults.push([AGENT_ROW]);
+    recipientsMock.resolveRecipientUserIds.mockResolvedValueOnce(['user-a', 'user-b']);
+
+    const result = await processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_cancelled' });
+
+    expect(result).toEqual({ released: false });
+    expect(notifyMock.createNotification).toHaveBeenCalledTimes(2);
+    expect(notifyMock.createNotification).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: 'user-a',
+        title: 'Agent proposal cancelled',
+        message: 'Patch triage: run_script(deviceId=d-1) was cancelled and will not run.',
+        dedupeKey: 'agent-intent-outcome:intent-1:cancelled',
+      }),
+    );
+  });
+
   it('derives agent copy from the re-read status, never the event type', async () => {
     // intent_approved arrives but the release did not run (lost CAS) and the
     // row now says failed — recipients must hear the truth, at high priority.
