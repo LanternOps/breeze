@@ -96,6 +96,14 @@ describe('DashboardTiles', () => {
     expect(deviceTile.textContent).not.toContain('0 of 10 protected');
   });
 
+  it('shows the freshness timestamp in the organization timezone, not the timezone name alone', () => {
+    render(<DashboardTiles dashboard={dashboard} />);
+    const lede = screen.getByText(/Current as of/);
+    expect(lede.textContent).toContain('Sep 2, 2026');
+    expect(lede.textContent).toContain('America/Denver');
+    expect(lede.textContent).not.toBe('Current as of America/Denver.');
+  });
+
   it('renders honest not-configured copy', () => {
     render(<DashboardTiles dashboard={dashboard} />);
     expect(screen.getByTestId('portal-dashboard-tile-backup').textContent).toContain(

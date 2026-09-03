@@ -38,7 +38,7 @@ export function DashboardTiles({ dashboard }: { dashboard: DashboardDto }) {
 
   return (
     <div>
-      <PageHeader title="Dashboard" lede={`Current as of ${dashboard.timezone}.`} />
+      <PageHeader title="Dashboard" lede={`Current as of ${formatDateTime(dashboard.asOf, dashboard.timezone)} (${dashboard.timezone}).`} />
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         <Tile
           testId="portal-dashboard-tile-security"
