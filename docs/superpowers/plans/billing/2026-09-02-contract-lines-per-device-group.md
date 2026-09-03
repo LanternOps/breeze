@@ -1215,7 +1215,13 @@ Replace the cache block and `orgSnapshot` (lines 191-199) with:
 // on a contract is computed from the same query, and every billed group is
 // evaluated once per calculation. Never shared across the worker's per-contract
 // transactions — "at generation time" must stay literally true.
-interface OrgSnapshotEntry { devices: DeviceSnapshotRow[]; groups: Map<string, GroupMembers> }
+interface OrgSnapshotEntry {
+  devices: DeviceSnapshotRow[];
+  groups: Map<string, GroupMembers>;
+  /** Group ids already looked up (resolved OR absent). Absent ids are not in `groups`, and
+   *  must not be queried again on the next line of the same calculation. */
+  attempted: Set<string>;
+}
 type DeviceCache = Map<string, OrgSnapshotEntry>; // key orgId
 type SeatCache = Map<string, number>;              // key orgId
 type ContractLineRow = typeof contractLines.$inferSelect;
@@ -1232,9 +1238,10 @@ function groupIdsOf(lines: readonly Pick<ContractLineRow, 'lineType' | 'deviceGr
  *  callers treat that like a null id (GROUP_DELETED / unresolved). */
 async function orgSnapshot(orgId: string, dc: DeviceCache, groupIds: readonly string[] = []): Promise<OrgDeviceSnapshot> {
   let entry = dc.get(orgId);
-  if (!entry) { entry = { devices: await snapshotContractDevices(orgId), groups: new Map() }; dc.set(orgId, entry); }
-  const missing = groupIds.filter((id) => !entry!.groups.has(id));
+  if (!entry) { entry = { devices: await snapshotContractDevices(orgId), groups: new Map(), attempted: new Set() }; dc.set(orgId, entry); }
+  const missing = groupIds.filter((id) => !entry!.attempted.has(id));
   if (missing.length > 0) {
+    for (const id of missing) entry.attempted.add(id);
     const rows = await db.select({
       id: deviceGroups.id, orgId: deviceGroups.orgId, name: deviceGroups.name, type: deviceGroups.type,
       siteId: deviceGroups.siteId, filterConditions: deviceGroups.filterConditions,

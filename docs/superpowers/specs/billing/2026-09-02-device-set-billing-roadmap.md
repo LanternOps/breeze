@@ -31,7 +31,7 @@ These were decided in W01/W02 and hold for every later wave:
 - **Silence is a bug.** Anything not billed that an operator might expect billed (unclassified devices, uncovered roles, flagged overage, deleted groups) is reported on the estimate, the generate result, the worker log and the UI. Never a quiet zero. From W07 on it is also persisted per period.
 - **Columns before tables.** `contract_lines` is already registered in every tenancy list; new columns only need export-policy classification. A new table (W07) owes RLS in its creating migration, cascade-list registration, export policy and an org-merge policy (`orgMergeRegistry.ts`), and is the reason W07 is its own wave.
 - **Composite `(x, org_id)` FKs are `DEFERRABLE INITIALLY IMMEDIATE`** (org-merge contract, `orgLifecycleFoundations.integration.test.ts`); site/group/contract/quote ownership is proved by composite FKs, with the app check as the error path and the FK as the backstop.
-- **`unknown` is never billable**; the coverage warning is what drives classification.
+- **`unknown` is never selected by a role line** (a `per_device` or group line can still bill an unclassified device); the coverage warning is what drives classification.
 - **Lines on cancelled/expired contracts are immutable** (`assertEditable`). Any reference from a line to a deletable thing (site, group, later quote line) is `ON DELETE SET NULL` with a stamped display name, never `RESTRICT`.
 - **Quote acceptance freezes price** (catalog link dropped, `unitPrice` copied). W05 keeps that rule and only changes how *quantity* is resolved.
 - **Edits affect future periods only.** No wave rewrites an issued invoice; W07's evidence is a snapshot at generation.
