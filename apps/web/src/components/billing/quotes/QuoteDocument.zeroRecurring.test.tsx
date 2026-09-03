@@ -21,6 +21,7 @@ const zeroQuote = {
   subtotal: '0.00', taxRate: null, taxTotal: '0.00', total: '0.00',
   oneTimeTotal: '0.00', monthlyRecurringTotal: '0.00', annualRecurringTotal: '0.00',
   dueOnAcceptanceTotal: '0.00', categoryBreakdown: [
+    { category: 'hardware', oneTimeTotal: '0.00', monthlyTotal: '0.00', annualTotal: '0.00' },
     { category: 'other', oneTimeTotal: '0.00', monthlyTotal: '0.00', annualTotal: '0.00' },
   ],
 };
@@ -38,8 +39,8 @@ const block = {
   content: { showSubtotal: true }, sortOrder: 0, createdAt: '2026-09-03T00:00:00Z',
 };
 
-function renderZero(line: Record<string, unknown> = zeroLine) {
-  render(<QuoteDocument detail={{ quote: zeroQuote, blocks: [block], lines: [line] } as never} customerName="Acme" />);
+function renderZero(line: Record<string, unknown> = zeroLine, quote: Record<string, unknown> = zeroQuote) {
+  render(<QuoteDocument detail={{ quote, blocks: [block], lines: [line] } as never} customerName="Acme" />);
 }
 
 describe('QuoteDocument with a zero-quantity recurring device-set line', () => {
@@ -49,6 +50,7 @@ describe('QuoteDocument with a zero-quantity recurring device-set line', () => {
     expect(screen.getByText(/Monthly recurring/i)).toBeInTheDocument();
     expect(screen.getByTestId('quote-table-subtotal')).toHaveTextContent('$0.00');
     expect(screen.getByTestId('quote-document-category-other')).toHaveTextContent('$0.00/mo');
+    expect(screen.getByTestId('quote-document-category-hardware')).not.toHaveTextContent('/mo');
   });
 
   it('renders the estimate sentence', () => {
@@ -66,5 +68,13 @@ describe('QuoteDocument with a zero-quantity recurring device-set line', () => {
     renderZero({ ...zeroLine, contractLineType: null, deviceRoles: null });
     expect(screen.getByTestId('quote-document-first-period')).toBeInTheDocument();
     expect(screen.getByText(/Monthly recurring/i)).toBeInTheDocument();
+  });
+
+  it('does not render a redundant category breakdown for a plain single-category quote', () => {
+    renderZero(
+      { ...zeroLine, contractLineType: null, deviceRoles: null },
+      { ...zeroQuote, categoryBreakdown: [zeroQuote.categoryBreakdown[1]] },
+    );
+    expect(screen.queryByTestId('quote-document-category-breakdown')).not.toBeInTheDocument();
   });
 });

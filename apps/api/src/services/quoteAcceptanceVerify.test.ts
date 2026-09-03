@@ -72,7 +72,7 @@ const descriptorLine = {
   overageMode: 'bill', overageUnitPrice: '12.00',
 };
 
-function queueVerification(hashVersion: 1 | 2 | undefined, storedSha256: string, line: typeof descriptorLine) {
+function queueVerification(hashVersion: number | undefined, storedSha256: string, line: typeof descriptorLine) {
   results.push(
     [{ id: 'a1', quoteId: quote.id, quoteSha256: storedSha256, hashVersion, renderLocale: 'en', signedAt: quote.acceptedAt }],
     [quote],
@@ -122,6 +122,15 @@ describe('verifyQuoteAcceptanceHash version dispatch (#3205 W05)', () => {
 
     const config = getTableConfig(quoteAcceptances);
     expect(config.columns.find((column) => column.name === 'hash_version')?.default).toBe(1);
+  });
+
+  it('rejects an unsupported stored hash version before recomputing', async () => {
+    queueVerification(3, 'stored-hash', descriptorLine);
+    await expect(verifyQuoteAcceptanceHash('a1')).rejects.toMatchObject({
+      status: 500,
+      code: 'HASH_VERSION_UNSUPPORTED',
+      message: 'Unsupported acceptance hash version 3',
+    });
   });
 });
 

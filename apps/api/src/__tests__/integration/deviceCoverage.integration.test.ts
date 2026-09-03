@@ -30,7 +30,7 @@ async function seed() {
     const orgId = oA!.id;
     const [sA, sB] = await db.insert(sites).values([
       { orgId, name: `A-${sfx}` }, { orgId, name: `B-${sfx}` },
-    ]).returning({ id: sites.id });
+    ]).returning({ id: sites.id, name: sites.name });
     const [sOther] = await db.insert(sites).values({ orgId: oB!.id, name: `O-${sfx}` }).returning({ id: sites.id });
     const dev = (
       agent: string,
@@ -53,7 +53,9 @@ async function seed() {
       startDate: '2026-07-01', nextBillingAt: '2026-08-01', currencyCode: 'USD', billingTiming: 'advance',
     }).returning({ id: contracts.id });
     return {
-      partnerId: p!.id, orgId, orgB: oB!.id, siteA: sA!.id, siteB: sB!.id, contractId: c!.id,
+      partnerId: p!.id, orgId, orgB: oB!.id,
+      siteA: sA!.id, siteAName: sA!.name, siteB: sB!.id, siteBName: sB!.name,
+      contractId: c!.id,
       srvA: srvA!, srvB: srvB!, wsA: wsA!, unk: unk!, decom: decom!, otherOrgDev: otherOrgDev!,
     };
   });
@@ -138,7 +140,7 @@ describe('contractLinesCoveringDevice (real DB) #3205 W06', () => {
     await withSystemDbAccessContext(() => db.insert(deviceGroupMemberships)
       .values({ groupId: g.id, deviceId: f.srvB.id, orgId: f.orgId, isPinned: true }));  // off-site pin
     await addLine(f, { lineType: 'per_device_group', deviceGroupId: g.id, deviceGroupName: g.name, sortOrder: 0 });
-    await addLine(f, { lineType: 'per_device', siteId: f.siteB, description: 'Branch devices', sortOrder: 1 });
+    await addLine(f, { lineType: 'per_device', siteId: f.siteB, siteName: f.siteBName, description: 'Branch devices', sortOrder: 1 });
 
     const lines = await withSystemDbAccessContext(() => db.select().from(contractLines).where(eq(contractLines.contractId, f.contractId)));
     const full = await withSystemDbAccessContext(async (): Promise<OrgDeviceSnapshot> => ({
@@ -176,9 +178,9 @@ describe('contractLinesCoveringDevice (real DB) #3205 W06', () => {
 
   runDb('a per_device line at another site does not cover; at the device site it covers with matchedBy site', async () => {
     const f = await seed();
-    await addLine(f, { lineType: 'per_device', siteId: f.siteB, description: 'Branch' });
+    await addLine(f, { lineType: 'per_device', siteId: f.siteB, siteName: f.siteBName, description: 'Branch' });
     expect((await coverage(f.srvA.id)).uncovered).toBe(true);
-    await addLine(f, { lineType: 'per_device', siteId: f.siteA, description: 'HQ' });
+    await addLine(f, { lineType: 'per_device', siteId: f.siteA, siteName: f.siteAName, description: 'HQ' });
     expect((await coverage(f.srvA.id)).lines).toEqual([expect.objectContaining({ matchedBy: 'site', siteId: f.siteA })]);
   });
 

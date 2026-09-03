@@ -62,6 +62,7 @@ import {
   minorUnitExponent,
   mergeQuoteLinePatch,
   quoteLineDeviceSetIssues,
+  isQuoteLineSiteDeleted,
 } from '@breeze/shared';
 import type {
   CreateQuoteInput, CloneQuoteInput, UpdateQuoteInput, QuoteLineInput, QuoteBlockInput, ListQuotesQuery,
@@ -925,7 +926,7 @@ export async function getQuote(id: string, actor: QuoteActor) {
     // A stamped name with a null id: the thing this line prices is gone.
     descriptorUnresolved: Boolean(
       (line.deviceGroupId === null && line.deviceGroupName !== null)
-      || (line.siteId === null && line.siteName !== null),
+      || isQuoteLineSiteDeleted(line),
     ),
   }));
   // Quote acceptance returns the staged order id once, but the technician may
@@ -1822,6 +1823,26 @@ export async function updateLine(
         400, 'INVALID_LINE_PATCH', { issues: [{ path: 'quantity', message: 'quantity is server-derived on a device-set line' }] },
       );
     }
+    const descriptorKeys = [
+      'deviceRoles', 'deviceGroupId', 'siteId', 'includedQuantity', 'overageMode', 'overageUnitPrice',
+    ] as const;
+    if (!existing.contractLineType) {
+      const invalidDescriptorKeys = descriptorKeys.filter((key) =>
+        Object.prototype.hasOwnProperty.call(input, key));
+      if (invalidDescriptorKeys.length > 0) {
+        throw new QuoteServiceError(
+          'this line has no device set',
+          400,
+          'INVALID_LINE_PATCH',
+          {
+            issues: invalidDescriptorKeys.map((path) => ({
+              path,
+              message: 'device-set fields are only valid on a device-set line',
+            })),
+          },
+        );
+      }
+    }
     const quantity = input.quantity != null ? String(input.quantity) : existing.quantity;
     const unitPrice = input.unitPrice != null ? Number(input.unitPrice).toFixed(2) : existing.unitPrice;
     if (input.unitPrice != null) assertRepresentable(unitPrice, q.currencyCode);
@@ -1888,7 +1909,7 @@ export async function updateLine(
 
       // A descriptor change is the one mutation that explicitly re-counts this
       // line; unrelated edits retain the persisted estimate.
-      const descriptorTouched = ['deviceRoles', 'deviceGroupId', 'siteId', 'includedQuantity', 'overageMode', 'overageUnitPrice']
+      const descriptorTouched = descriptorKeys
         .some((key) => Object.prototype.hasOwnProperty.call(input, key));
       if (descriptorTouched) {
         const valueFor = <T>(key: string, fallback: T): T =>

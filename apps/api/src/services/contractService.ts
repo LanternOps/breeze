@@ -6,7 +6,7 @@ import type { ContractLineInput, UpdateContractInput } from '@breeze/shared';
 import {
   ALLOWANCE_LINE_TYPES, BILLABLE_DEVICE_ROLES, fromCents, isRepresentableInCurrency, minorUnitExponent,
   multiplyToCurrency, roundToCurrency, toCents, PERMISSION_GRANTS,
-  contractLineInvariantIssues, mergeContractLinePatch, patchHasKey, SITE_SCOPABLE_LINE_TYPES,
+  contractLineInvariantIssues, isSiteDeletedLine, mergeContractLinePatch, patchHasKey, SITE_SCOPABLE_LINE_TYPES,
   type DeviceRole, type UpdateContractLineInput,
 } from '@breeze/shared';
 import type { NewContractSpec } from './quoteToContract';
@@ -409,7 +409,7 @@ function resolvableLines(lines: readonly ContractLineRow[], snapshot: OrgDeviceS
     // #4693: a site-deleted per_device / per_device_role line (id NULL, stamp kept)
     // covers NOTHING — the same rule resolveLineQty applies. Without this the
     // coverage notice would report the whole org as covered by a dead line.
-    && !(SITE_SCOPABLE_LINE_TYPES.has(l.lineType) && l.siteId === null && l.siteName != null));
+    && !isSiteDeletedLine(l));
 }
 
 /** True when `line` is a per_device_role line whose deviceRoles is missing,
@@ -477,7 +477,7 @@ function assertSpecDeviceSetLine(line: {
   if (line.lineType === 'per_device_group' && !line.deviceGroupId) {
     throw new ContractServiceError('per_device_group line requires deviceGroupId', 400, 'INVALID_STATE');
   }
-  if ((line.lineType === 'per_device' || line.lineType === 'per_device_role') && line.siteName && !line.siteId) {
+  if (isSiteDeletedLine({ lineType: line.lineType, siteId: line.siteId, siteName: line.siteName })) {
     throw new ContractServiceError('site-scoped line requires siteId', 400, 'INVALID_STATE');
   }
 }
@@ -502,7 +502,7 @@ async function resolveLineQty(
       // #4693: site_id NULL with a stamped name means the site was DELETED.
       // Counting here would silently bill every device in the org. A line with
       // neither column set never had a site and correctly remains org-wide.
-      if (line.siteId === null && line.siteName != null) {
+      if (isSiteDeletedLine(line)) {
         return { ...UNRESOLVED_QTY, live: true, unresolved: 'site_deleted' };
       }
       assertRoleLineHasRoles(line);
@@ -1773,7 +1773,7 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
   // result. A stamped name with no id means the formerly scoped site is gone;
   // treating the line as org-wide would over-bill every remaining device.
   for (const l of lines) {
-    if ((l.lineType === 'per_device' || l.lineType === 'per_device_role') && l.siteId === null && l.siteName != null) {
+    if (isSiteDeletedLine(l)) {
       throw new ContractServiceError(
         `contract line ${l.id} is scoped to site "${l.siteName}", which no longer exists`,
         409, 'SITE_DELETED', { contractLineId: l.id, siteName: l.siteName },

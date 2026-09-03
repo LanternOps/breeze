@@ -55,6 +55,18 @@ export interface ContractLineShape {
   overageUnitPrice?: string | null;
 }
 
+/** A persisted site-scopable line whose referenced site was deleted. The
+ * composite FK clears siteId but deliberately preserves the stamped siteName. */
+export function isSiteDeletedLine(l: {
+  lineType: string;
+  siteId: string | null | undefined;
+  siteName: string | null | undefined;
+}): boolean {
+  return SITE_SCOPABLE_LINE_TYPES.has(l.lineType as ContractLineType)
+    && l.siteId === null
+    && l.siteName != null;
+}
+
 export interface ContractLineInvariantIssue {
   path: keyof ContractLineShape;
   message: string;

@@ -309,6 +309,23 @@ describe('renderQuotePdf', () => {
     expect(recurringText).toContain('Annual');
   });
 
+  it('does not render a redundant category breakdown for a plain single-category quote', async () => {
+    const pdf = await renderQuotePdf(
+      {
+        id: 'q-single', quoteNumber: 'Q-SINGLE', currencyCode: 'USD', subtotal: '100.00', taxTotal: '0.00',
+        oneTimeTotal: '100.00', monthlyRecurringTotal: '0.00', annualRecurringTotal: '0.00',
+        dueOnAcceptanceTotal: '100.00', total: '100.00', categoryBreakdown: [
+          { category: 'other', oneTimeTotal: '100.00', monthlyTotal: '0.00', annualTotal: '0.00' },
+        ],
+      },
+      [{ id: 'b1', blockType: 'line_items', sortOrder: 0, content: {} }],
+      [{ id: 'l1', blockId: 'b1', description: 'Setup', quantity: '1', unitPrice: '100', lineTotal: '100.00', recurrence: 'one_time' }],
+      async () => null,
+      {},
+    );
+    expect(extractPdfText(pdf)).not.toContain('Other');
+  });
+
   it('renders every recurring surface and the estimate sentence for a zero-count device set', async () => {
     const pdf = await renderQuotePdf(
       {
@@ -776,9 +793,9 @@ describe('renderQuotePdf', () => {
       },
       [],
       [
-        { id: 'l1', description: 'Setup', quantity: '1', unitPrice: '3000', lineTotal: '3000.00', recurrence: 'one_time' },
-        { id: 'l2', description: 'Service', quantity: '1', unitPrice: '4800', lineTotal: '4800.00', recurrence: 'monthly' },
-        { id: 'l3', description: 'Review', quantity: '1', unitPrice: '9600', lineTotal: '9600.00', recurrence: 'annual' },
+        { id: 'l1', description: 'Setup', quantity: '1', unitPrice: '3000', lineTotal: '3000.00', recurrence: 'one_time', itemType: 'service' },
+        { id: 'l2', description: 'Service', quantity: '1', unitPrice: '4800', lineTotal: '4800.00', recurrence: 'monthly', itemType: 'service' },
+        { id: 'l3', description: 'Review', quantity: '1', unitPrice: '9600', lineTotal: '9600.00', recurrence: 'annual', itemType: 'service' },
       ],
       async () => null,
       {},

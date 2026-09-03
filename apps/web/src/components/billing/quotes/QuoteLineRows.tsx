@@ -271,6 +271,7 @@ function DeviceSetEditorSummary({ line, quoteId, editable, onEdit }: {
   const [estimateFailed, setEstimateFailed] = useState(false);
   const [groups, setGroups] = useState<Array<{ id: string; name: string; type: string }>>([]);
   const [sites, setSites] = useState<Array<{ id: string; name: string }>>([]);
+  const [pickerLoadFailed, setPickerLoadFailed] = useState(false);
   const [allowanceOn, setAllowanceOn] = useState(line.includedQuantity != null);
   const [included, setIncluded] = useState(line.includedQuantity == null ? '' : String(Number(line.includedQuantity)));
   const [mode, setMode] = useState<'bill' | 'flag'>(line.overageMode ?? 'bill');
@@ -302,10 +303,21 @@ function DeviceSetEditorSummary({ line, quoteId, editable, onEdit }: {
   useEffect(() => {
     if (!editable) return;
     let alive = true;
+    setPickerLoadFailed(false);
     void Promise.all([
-      Promise.resolve(fetchWithAuth(`/device-groups?orgId=${line.orgId}&limit=200`)).then(async (r) => r?.ok ? (await r.json()).data ?? [] : []),
-      Promise.resolve(fetchWithAuth(`/orgs/sites?organizationId=${line.orgId}`)).then(async (r) => r?.ok ? (await r.json()).data ?? [] : []),
-    ]).then(([nextGroups, nextSites]) => { if (alive) { setGroups(nextGroups); setSites(nextSites); } }).catch(() => {});
+      Promise.resolve(fetchWithAuth(`/device-groups?orgId=${line.orgId}&limit=200`)).then(async (r) => {
+        if (!r?.ok) throw new Error('device-group picker load failed');
+        return (await r.json()).data ?? [];
+      }),
+      Promise.resolve(fetchWithAuth(`/orgs/sites?organizationId=${line.orgId}`)).then(async (r) => {
+        if (!r?.ok) throw new Error('site picker load failed');
+        return (await r.json()).data ?? [];
+      }),
+    ]).then(([nextGroups, nextSites]) => {
+      if (alive) { setGroups(nextGroups); setSites(nextSites); }
+    }).catch(() => {
+      if (alive) setPickerLoadFailed(true);
+    });
     return () => { alive = false; };
   }, [editable, line.orgId]);
   const stored = Number(line.quantity);
@@ -339,6 +351,7 @@ function DeviceSetEditorSummary({ line, quoteId, editable, onEdit }: {
         {(drifted || estimateFailed) && editable && <button type="button" onClick={() => void refreshCounts()} className="font-medium text-primary hover:underline" data-testid={`quote-line-device-set-refresh-${line.id}`}>{t('quotes.editor.deviceSet.refresh')}</button>}
       </div>
       {estimateFailed && <p role="alert" className="text-warning-foreground" data-testid={`quote-line-device-set-estimate-error-${line.id}`}>{t('quotes.editor.deviceSet.estimateError')}</p>}
+      {pickerLoadFailed && <p role="alert" className="text-warning-foreground" data-testid={`quote-line-device-set-picker-error-${line.id}`}>Couldn’t load device groups or sites.</p>}
       {line.descriptorUnresolved && line.contractLineType === 'per_device_group' && <p className="text-warning-foreground" data-testid={`quote-line-device-set-orphan-${line.id}`}>{t('quotes.editor.deviceSet.groupDeleted', { name: line.deviceGroupName ?? '' })}</p>}
       {line.descriptorUnresolved && line.contractLineType !== 'per_device_group' && <p className="text-warning-foreground" data-testid={`quote-line-device-set-orphan-${line.id}`}>{t('quotes.editor.deviceSet.siteDeleted', { name: line.siteName ?? '' })}</p>}
       <p>{t('quotes.editor.deviceSet.typeLocked')}</p>

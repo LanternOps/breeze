@@ -3,7 +3,7 @@ import { BULK_ID_LIMIT } from '../constants';
 import { currencyCodeSchema } from './currency';
 import {
   contractLineInvariantIssues, ALLOWANCE_LINE_TYPES, OVERAGE_MODES,
-  type ContractLineShape,
+  isSiteDeletedLine, type ContractLineShape,
 } from './contracts';
 import { BILLABLE_DEVICE_ROLES } from './deviceRoles';
 
@@ -30,7 +30,6 @@ export const QUOTE_DEVICE_SET_TYPES =
   ['per_device', 'per_device_role', 'per_device_group', 'per_seat'] as const;
 export type QuoteDeviceSetType = typeof QUOTE_DEVICE_SET_TYPES[number];
 const QUOTE_DEVICE_SET_TYPE_SET: ReadonlySet<string> = new Set(QUOTE_DEVICE_SET_TYPES);
-const SITE_SCOPABLE_QUOTE_TYPES: ReadonlySet<string> = new Set(['per_device', 'per_device_role']);
 
 const present = (v: unknown): boolean => v !== undefined && v !== null;
 /** Quote money/quantities are NUMBERS; contract ones are 2dp STRINGS. The same
@@ -54,6 +53,19 @@ export interface QuoteLineDeviceSetShape {
   includedQuantity?: number | null;
   overageMode?: 'bill' | 'flag' | null;
   overageUnitPrice?: number | null;
+}
+
+/** Quote-line spelling of the shared persisted-site orphan predicate. */
+export function isQuoteLineSiteDeleted(l: {
+  contractLineType: string | null | undefined;
+  siteId: string | null | undefined;
+  siteName: string | null | undefined;
+}): boolean {
+  return isSiteDeletedLine({
+    lineType: l.contractLineType ?? '',
+    siteId: l.siteId,
+    siteName: l.siteName,
+  });
 }
 
 /**

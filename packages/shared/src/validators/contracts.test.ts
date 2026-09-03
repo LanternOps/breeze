@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   createContractSchema, contractLineInputSchema, updateContractSchema, changeContractCurrencySchema,
   updateContractLineSchema, contractLineInvariantIssues, mergeContractLinePatch, patchHasKey,
+  isSiteDeletedLine,
   type ContractLineShape, type PersistedContractLine,
 } from './contracts';
 
@@ -435,6 +436,17 @@ describe('contractLineInvariantIssues (#3205 W03)', () => {
   it('carries a human message on every issue', () => {
     const issues = contractLineInvariantIssues({ lineType: 'manual' }, { mode: 'create' });
     expect(issues[0]!.message.length).toBeGreaterThan(0);
+  });
+});
+
+describe('isSiteDeletedLine (#4693)', () => {
+  it('only identifies a site-scopable line whose id is gone but stamp remains', () => {
+    const siteId = '33333333-3333-4333-8333-333333333333';
+    expect(isSiteDeletedLine({ lineType: 'per_device', siteId: null, siteName: 'HQ' })).toBe(true);
+    expect(isSiteDeletedLine({ lineType: 'per_device_role', siteId: null, siteName: 'HQ' })).toBe(true);
+    expect(isSiteDeletedLine({ lineType: 'per_device', siteId, siteName: 'HQ' })).toBe(false);
+    expect(isSiteDeletedLine({ lineType: 'per_device', siteId: null, siteName: null })).toBe(false);
+    expect(isSiteDeletedLine({ lineType: 'per_device_group', siteId: null, siteName: 'HQ' })).toBe(false);
   });
 });
 

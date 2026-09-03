@@ -599,11 +599,11 @@ function renderRecurringSummary(
   const categoryAmountX = c.colSummaryAmtX - 60;
   const categoryAmountW = c.right - categoryAmountX;
   doc.font('Helvetica').fontSize(9);
-  const breakdownRows = breakdown.length > 0 ? breakdown.map((b) => {
+  const breakdownRows = breakdown.length > 1 ? breakdown.map((b) => {
     const label = b.category === 'other' ? 'Other' : b.category[0]!.toUpperCase() + b.category.slice(1);
     const parts: string[] = [];
     const categoryLines = lines.filter((l) => (l.itemType ?? 'other') === b.category && l.customerVisible !== false);
-    const cadenceLines = categoryLines.length === 0 ? lines : categoryLines;
+    const cadenceLines = categoryLines;
     if (cadenceLines.some((l) => l.recurrence !== 'monthly' && l.recurrence !== 'annual')) parts.push(formatMoneyForPdf(b.oneTimeTotal, currency, locale));
     if (cadenceLines.some((l) => l.recurrence === 'monthly')) parts.push(`${formatMoneyForPdf(b.monthlyTotal, currency, locale)}/mo`);
     if (cadenceLines.some((l) => l.recurrence === 'annual')) parts.push(`${formatMoneyForPdf(b.annualTotal, currency, locale)}/yr`);

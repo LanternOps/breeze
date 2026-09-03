@@ -46,6 +46,14 @@ export interface AcceptanceHashVerification {
 export async function verifyQuoteAcceptanceHash(acceptanceId: string): Promise<AcceptanceHashVerification> {
   const [acceptance] = await db.select().from(quoteAcceptances).where(eq(quoteAcceptances.id, acceptanceId)).limit(1);
   if (!acceptance) throw new QuoteServiceError('Acceptance not found', 404, 'QUOTE_NOT_FOUND');
+  const hashVersion = acceptance.hashVersion ?? 1;
+  if (hashVersion !== 1 && hashVersion !== 2) {
+    throw new QuoteServiceError(
+      `Unsupported acceptance hash version ${hashVersion}`,
+      500,
+      'HASH_VERSION_UNSUPPORTED' as never,
+    );
+  }
   const [quote] = await db.select().from(quotes).where(eq(quotes.id, acceptance.quoteId)).limit(1);
   if (!quote) throw new QuoteServiceError('Quote not found', 404, 'QUOTE_NOT_FOUND');
   const blocks = await db.select().from(quoteBlocks).where(eq(quoteBlocks.quoteId, quote.id)).orderBy(quoteBlocks.sortOrder);
@@ -67,7 +75,6 @@ export async function verifyQuoteAcceptanceHash(acceptanceId: string): Promise<A
   // re-creates the fragility the version exists to remove: a v1 quote whose
   // line later ACQUIRED a descriptor through a migration or a support edit
   // would silently verify under the wrong algorithm.
-  const hashVersion = (acceptance.hashVersion ?? 1) as QuoteHashVersion;
   const recomputedSha256 = computeQuoteSha256(quote as any, blocks as any, lines as any, parts, hashVersion);
   return {
     acceptanceId: acceptance.id,

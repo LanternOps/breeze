@@ -232,7 +232,7 @@ W04 finished the contract-line model (type, roles, group, site, allowance, overa
 
 ### Schema
 
-One migration, `apps/api/migrations/2026-10-08-100000-quote-lines-device-set.sql`. **Re-run `ls apps/api/migrations | sort | tail -3` before creating it** and bump past whatever is there (floor: W04's `2026-10-07-100000`).
+Two migrations shipped: `apps/api/migrations/2026-10-08-101400-contract-lines-site-stamp.sql` and `apps/api/migrations/2026-10-08-101500-quote-lines-device-set.sql`.
 
 ```sql
 -- #3205 wave 5 / #4654: device-set descriptors on recurring quote lines.

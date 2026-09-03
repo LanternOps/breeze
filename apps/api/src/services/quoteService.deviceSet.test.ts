@@ -216,6 +216,24 @@ describe('updateLine on a device-set line', () => {
     expect(countQuoteDeviceSetLines).not.toHaveBeenCalled();
     expect(lastUpdateValues()).toMatchObject({ quantity: '12' });
   });
+
+  it.each([
+    ['deviceRoles', ['server']],
+    ['deviceGroupId', GROUP],
+    ['siteId', SITE],
+    ['includedQuantity', 25],
+    ['overageMode', 'flag'],
+    ['overageUnitPrice', 12],
+  ])('400s when %s is patched onto an ordinary line', async (key, value) => {
+    queueDraftQuote({ id: QUOTE, orgId: 'org1', currencyCode: 'USD' });
+    queueResult([{ ...stored, contractLineType: null, deviceRoles: null }]);
+    await expect(updateLine(QUOTE, 'line-1', { [key]: value } as never, ACTOR))
+      .rejects.toMatchObject({
+        status: 400,
+        code: 'INVALID_LINE_PATCH',
+        meta: { issues: [{ path: key }] },
+      });
+  });
 });
 
 describe('refreshQuoteDeviceCounts', () => {

@@ -217,7 +217,7 @@ export const quoteLines = pgTable('quote_lines', {
   index('quote_lines_image_idx').on(t.imageId),
   uniqueIndex('quote_lines_id_quote_uq').on(t.id, t.quoteId),
   index('quote_lines_device_group_id_idx').on(t.deviceGroupId).where(sql`${t.deviceGroupId} IS NOT NULL`),
-  // The CHECK and all three composite FKs are SQL-only (2026-10-08-100700) —
+  // The CHECK and all three composite FKs are SQL-only (2026-10-08-101500-quote-lines-device-set.sql) —
   // the W01/W02 pattern. Drizzle cannot express ON DELETE SET NULL (col) or
   // DEFERRABLE, and drift detection compares columns/indexes, not constraints.
 ]);

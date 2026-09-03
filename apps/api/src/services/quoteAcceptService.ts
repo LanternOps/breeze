@@ -17,6 +17,7 @@ import { buildContractSpecsFromQuote, type QuoteLineForContract } from './quoteT
 import { createContractWithLinesDetailed } from './contractService';
 import { stagePax8OrderFromQuote } from './quoteToPax8Order';
 import { captureException } from './sentry';
+import { isQuoteLineSiteDeleted } from '@breeze/shared';
 import type { ContractBlockRenderData } from './contractTemplateRender';
 import { getOrMintInvoiceLink, buildPublicInvoiceUrl } from './invoiceLinkToken';
 import {
@@ -99,13 +100,13 @@ export function assertQuoteLinesAcceptable(lines: readonly AcceptableQuoteLine[]
         { quoteLineId: l.id, reference: 'device_group', name: l.deviceGroupName },
       );
     }
-    if (l.siteName !== null && l.siteId === null) {
+    if (isQuoteLineSiteDeleted(l)) {
       console.warn('[quotes] accept refused: line %s references a deleted site', l.id);
       throw new QuoteServiceError(
         QUOTE_LINE_REFERENCE_DELETED_MESSAGE,
         409,
         'QUOTE_LINE_REFERENCE_DELETED',
-        { quoteLineId: l.id, reference: 'site', name: l.siteName },
+        { quoteLineId: l.id, reference: 'site', name: l.siteName ?? undefined },
       );
     }
   }

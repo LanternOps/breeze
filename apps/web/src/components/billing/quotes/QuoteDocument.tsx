@@ -547,7 +547,7 @@ export function QuoteDocument({ detail, customerName }: DocumentProps) {
                   <span className="tabular-nums text-foreground">{formatMoney(quote.taxTotal, currency)}</span>
                 </div>
               )}
-              {categoryBreakdown.length > 0 && (
+              {categoryBreakdown.length > 1 && (
                 <div className="space-y-0.5 text-sm text-muted-foreground" data-testid="quote-document-category-breakdown">
                   {categoryBreakdown.map((b) => (
                     <div key={b.category} className="flex justify-between" data-testid={`quote-document-category-${b.category}`}>
@@ -555,7 +555,7 @@ export function QuoteDocument({ detail, customerName }: DocumentProps) {
                       <span className="tabular-nums">
                         {(() => {
                           const categoryLines = lines.filter((l) => (l.itemType ?? 'other') === b.category);
-                          const cadenceLines = categoryLines.length === 0 ? lines : categoryLines;
+                          const cadenceLines = categoryLines;
                           return [
                             cadenceLines.some((l) => l.recurrence === 'one_time') ? formatMoney(b.oneTimeTotal, currency) : null,
                             cadenceLines.some((l) => l.recurrence === 'monthly') ? `${formatMoney(b.monthlyTotal, currency)}/mo` : null,
