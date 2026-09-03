@@ -700,6 +700,7 @@
         "templateName": "Vierteljährliches Compliance-Paket",
         "value": "Wert"
       },
+      "recipients": { "contacts": "Organisationskontakte", "legacy": "Ältere E-Mail-Adressen", "convert": "In Kontakt umwandeln", "added": "Berichtsempfänger hinzugefügt", "removed": "Berichtsempfänger entfernt", "converted": "E-Mail-Adresse in einen Kontakt umgewandelt", "updateFailed": "Die Berichtsempfänger konnten nicht aktualisiert werden", "convertFailed": "Diese E-Mail-Adresse konnte nicht umgewandelt werden" },
       "previewTable": {
         "selectFields": "Wählen Sie Felder aus, um die Vorschautabelle zu füllen."
       },
@@ -786,6 +787,7 @@
         "off": "Aus",
         "on": "Auf"
       },
+      "visibleInPortal": "Im Kundenportal sichtbar",
       "weekDays": {
         "friday": "Freitag",
         "monday": "Montag",

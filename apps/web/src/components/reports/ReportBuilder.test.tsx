@@ -1,10 +1,12 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import ReportBuilder from './ReportBuilder';
 import { fetchWithAuth } from '../../stores/auth';
 import { showToast } from '../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
+import { useOrgStore } from '../../stores/orgStore';
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
@@ -244,5 +246,76 @@ describe('ReportBuilder save feedback', () => {
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalled());
     expect(navigateToMock).not.toHaveBeenCalledWith('/reports');
+  });
+});
+
+describe('ReportBuilder recipients', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useOrgStore.setState({ currentOrgId: 'org-1' });
+  });
+
+  it('adds a contact and explicitly converts a legacy address', async () => {
+    fetchWithAuthMock.mockImplementation(async (url, init) => {
+      if (url.includes('/orgs/organizations/org-1/contacts')) {
+        return makeJsonResponse({
+          data: [{
+            id: 'contact-1',
+            name: 'Alex Customer',
+            email: 'alex@example.test'
+          }]
+        });
+      }
+      if (url.endsWith('/reports/report-1/recipients')) {
+        if (init?.method === 'POST') {
+          return makeJsonResponse({ data: { id: 'recipient-1' } }, true, 201);
+        }
+        return makeJsonResponse({ data: [] });
+      }
+      if (url.endsWith('/reports/report-1/recipients/convert')) {
+        return makeJsonResponse({
+          data: {
+            id: 'contact-2',
+            name: null,
+            email: 'legacy@example.test'
+          }
+        }, true, 201);
+      }
+      return makeJsonResponse({});
+    });
+
+    render(
+      <ReportBuilder
+        mode="edit"
+        reportId="report-1"
+        defaultValues={{
+          type: 'executive_summary',
+          schedule: 'monthly',
+          emailRecipients: ['legacy@example.test']
+        }}
+      />
+    );
+
+    await userEvent.click(
+      await screen.findByTestId('report-recipient-contact-contact-1')
+    );
+    expect(fetchWithAuthMock).toHaveBeenCalledWith(
+      expect.stringContaining('/reports/report-1/recipients'),
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ contactId: 'contact-1' })
+      })
+    );
+
+    await userEvent.click(
+      screen.getByTestId('report-recipient-convert-legacy@example.test')
+    );
+    expect(fetchWithAuthMock).toHaveBeenCalledWith(
+      expect.stringContaining('/reports/report-1/recipients/convert'),
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ email: 'legacy@example.test' })
+      })
+    );
   });
 });

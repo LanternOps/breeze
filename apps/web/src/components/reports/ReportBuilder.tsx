@@ -67,6 +67,12 @@ type FieldDefinition = {
   dataType: 'string' | 'number' | 'date';
 };
 
+type ContactOption = {
+  id: string;
+  name: string | null;
+  email: string;
+};
+
 export type ReportBuilderFormValues = {
   name?: string;
   type: ReportBuilderType;
@@ -729,6 +735,8 @@ export default function ReportBuilder({
     defaultValues?.exportFormats ?? (defaultValues?.format ? [defaultValues.format] : ['pdf'])
   );
   const [emailRecipients, setEmailRecipients] = useState<string[]>(defaultValues?.emailRecipients ?? []);
+  const [contacts, setContacts] = useState<ContactOption[]>([]);
+  const [selectedContactIds, setSelectedContactIds] = useState<Set<string>>(new Set());
   const [saveTemplate, setSaveTemplate] = useState(defaultValues?.saveTemplate ?? false);
   const [templateName, setTemplateName] = useState(defaultValues?.templateName ?? '');
   const [emailInput, setEmailInput] = useState('');
@@ -773,6 +781,34 @@ export default function ReportBuilder({
     setSaveTemplate(defaultValues.saveTemplate ?? false);
     setTemplateName(defaultValues.templateName ?? '');
   }, [defaultValues]);
+
+  useEffect(() => {
+    if (!currentOrgId || !reportId || schedule === 'one_time') return;
+
+    void Promise.all([
+      fetchWithAuth(`/orgs/organizations/${currentOrgId}/contacts`),
+      fetchWithAuth(`/reports/${reportId}/recipients`)
+    ]).then(async ([contactsResponse, recipientsResponse]) => {
+      if (contactsResponse.ok) {
+        const payload = await contactsResponse.json();
+        setContacts(
+          (payload.data ?? []).filter(
+            (contact: ContactOption) => Boolean(contact.email)
+          )
+        );
+      }
+      if (recipientsResponse.ok) {
+        const payload = await recipientsResponse.json();
+        setSelectedContactIds(
+          new Set(
+            (payload.data ?? []).map(
+              (recipient: { contactId: string }) => recipient.contactId
+            )
+          )
+        );
+      }
+    });
+  }, [currentOrgId, reportId, schedule]);
 
   const fieldDefinitions = fieldDefinitionsByType[builderType];
   const dataSourceFields = dataSourceFieldsByType[builderType];
@@ -1187,6 +1223,69 @@ export default function ReportBuilder({
   const removeEmailRecipient = (email: string) => {
     setEmailRecipients(prev => prev.filter(item => item !== email));
   };
+
+  async function toggleContact(contactId: string): Promise<void> {
+    if (!reportId) return;
+    const selected = selectedContactIds.has(contactId);
+    try {
+      await runAction({
+        request: () => fetchWithAuth(
+          selected
+            ? `/reports/${reportId}/recipients/${contactId}`
+            : `/reports/${reportId}/recipients`,
+          {
+            method: selected ? 'DELETE' : 'POST',
+            body: selected ? undefined : JSON.stringify({ contactId })
+          }
+        ),
+        successMessage: selected
+          ? t('reports.reportBuilder.recipients.removed')
+          : t('reports.reportBuilder.recipients.added'),
+        errorFallback: t('reports.reportBuilder.recipients.updateFailed')
+      });
+      setSelectedContactIds(current => {
+        const next = new Set(current);
+        if (selected) next.delete(contactId);
+        else next.add(contactId);
+        return next;
+      });
+    } catch (actionError) {
+      if (actionError instanceof ActionError && actionError.status === 401) return;
+      if (!(actionError instanceof ActionError)) {
+        setError(t('reports.reportBuilder.recipients.updateFailed'));
+      }
+    }
+  }
+
+  async function convertLegacyRecipient(email: string): Promise<void> {
+    if (!reportId) return;
+    try {
+      const data = await runAction<{ data: ContactOption }>({
+        request: () => fetchWithAuth(
+          `/reports/${reportId}/recipients/convert`,
+          {
+            method: 'POST',
+            body: JSON.stringify({ email })
+          }
+        ),
+        successMessage: t('reports.reportBuilder.recipients.converted'),
+        errorFallback: t('reports.reportBuilder.recipients.convertFailed')
+      });
+      setEmailRecipients(current =>
+        current.filter(value => value.toLowerCase() !== email.toLowerCase())
+      );
+      setContacts(current => [
+        ...current.filter(contact => contact.id !== data.data.id),
+        data.data
+      ]);
+      setSelectedContactIds(current => new Set([...current, data.data.id]));
+    } catch (actionError) {
+      if (actionError instanceof ActionError && actionError.status === 401) return;
+      if (!(actionError instanceof ActionError)) {
+        setError(t('reports.reportBuilder.recipients.convertFailed'));
+      }
+    }
+  }
 
   const formatCellValue = (value: unknown) => {
     if (value === null || value === undefined || value === '') return '-';
@@ -2065,18 +2164,61 @@ export default function ReportBuilder({
                 <Mail className="h-4 w-4 text-muted-foreground" />
                 <p className="text-xs font-medium text-muted-foreground">{t('reports.reportBuilder.emailDistributionList')}</p>
               </div>
-              <div className="flex flex-wrap gap-2">
-                {emailRecipients.map(email => (
-                  <span
-                    key={email}
-                    className="inline-flex items-center gap-1 rounded-full border px-3 py-1 text-xs"
-                  >
-                    {email}
-                    <button type="button" onClick={() => removeEmailRecipient(email)}>
-                      <X className="h-3 w-3 text-muted-foreground" />
-                    </button>
-                  </span>
-                ))}
+              <div className="space-y-3">
+                <p className="text-xs font-medium text-muted-foreground">
+                  {t('reports.reportBuilder.recipients.contacts')}
+                </p>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {contacts.map(contact => (
+                    <label
+                      key={contact.id}
+                      data-testid={`report-recipient-contact-${contact.id}`}
+                      className="flex items-center gap-2 rounded-md border p-3 text-sm"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selectedContactIds.has(contact.id)}
+                        onChange={() => void toggleContact(contact.id)}
+                      />
+                      <span>
+                        {contact.name || contact.email}
+                        {contact.name && (
+                          <span className="block text-xs text-muted-foreground">
+                            {contact.email}
+                          </span>
+                        )}
+                      </span>
+                    </label>
+                  ))}
+                </div>
+
+                {emailRecipients.length > 0 && (
+                  <div>
+                    <p className="text-xs font-medium text-muted-foreground">
+                      {t('reports.reportBuilder.recipients.legacy')}
+                    </p>
+                    {emailRecipients.map(email => (
+                      <div key={email} className="flex items-center justify-between gap-3 py-2">
+                        <span className="text-sm">{email}</span>
+                        <div className="flex items-center gap-2">
+                          {reportId && (
+                            <button
+                              type="button"
+                              data-testid={`report-recipient-convert-${email}`}
+                              onClick={() => void convertLegacyRecipient(email)}
+                              className="text-xs font-medium text-primary"
+                            >
+                              {t('reports.reportBuilder.recipients.convert')}
+                            </button>
+                          )}
+                          <button type="button" onClick={() => removeEmailRecipient(email)}>
+                            <X className="h-3 w-3 text-muted-foreground" />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
               <div className="flex flex-col gap-2 sm:flex-row">
                 <input
