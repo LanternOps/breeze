@@ -4,6 +4,7 @@ import type { PartnerTrustState } from '../db/schema/orgs';
 import { ANONYMOUS_ACTOR_ID } from './auditEvents';
 import { createAuditLog } from './auditService';
 import { partnerForDevice, readTrust, writeTrust } from './partnerTrust.repo';
+import { getRedis } from './redis';
 
 export type GatedCapability = 'remote_control' | 'device_execute' | 'installer_distribute' | 'agent_enroll';
 export type TrustDenyCode = 'TRUST_PROBATION' | 'TRUST_RESTRICTED';
@@ -224,8 +225,9 @@ export async function evaluateCapability(cap: GatedCapability, ctx: GateContext)
   const mode = partnerTrustMode();
   if (mode === 'off') return { allow: true };
   const row = await readTrust(ctx.partnerId);
-  if (!row) return { allow: true };
-  const denial = decide(cap, row, ctx);
+  const denial = row
+    ? decide(cap, row, ctx)
+    : { code: 'TRUST_RESTRICTED' as const, reason: 'partner_unresolved' };
   if (!denial) return { allow: true };
   await createAuditLog({
     orgId: ctx.orgId ?? null,
@@ -290,6 +292,14 @@ export async function setTrustState(
 ): Promise<void> {
   const before = await readTrust(partnerId);
   await writeTrust(partnerId, next, reason, actorUserId);
+  try {
+    await getRedis()?.publish(
+      'partner-trust:changed',
+      JSON.stringify({ partnerId, trustState: next }),
+    );
+  } catch (error) {
+    console.warn('[partnerTrust] Failed to publish trust-state change:', error);
+  }
   await createAuditLog({
     orgId: null,
     actorType: actorUserId ? 'user' : 'system',

@@ -38,6 +38,11 @@ import { captureMessage } from '../services/sentry';
 import { createReportThrottle } from '../utils/reportThrottle';
 import { isPgUniqueViolation } from '../utils/pgErrors';
 import { UUID_REGEX } from '../utils/uuid';
+import {
+  assertDeviceExecuteAllowed,
+  TrustDeniedError,
+} from '../services/partnerTrust.commands';
+import { trustDenyBody } from '../services/partnerTrust';
 // Shared with the web device routes rather than re-declared locally. This file
 // used to carry a byte-identical private copy, which is precisely why the #2968
 // uuid guard — added to the shared helper — silently did not apply to
@@ -1315,16 +1320,33 @@ mobileRoutes.post(
       }, 202);
     }
 
-    const cmdResult = await db
-      .insert(deviceCommands)
-      .values({
-        deviceId: device.id,
-        type: data.action,
-        payload: { source: 'mobile' },
-        status: 'pending',
-        createdBy: auth.user.id
-      })
-      .returning();
+    let cmdResult;
+    try {
+      await assertDeviceExecuteAllowed(device.id, data.action, auth.user.id);
+      cmdResult = await db
+        .insert(deviceCommands)
+        .values({
+          deviceId: device.id,
+          type: data.action,
+          payload: { source: 'mobile' },
+          status: 'pending',
+          createdBy: auth.user.id
+        })
+        .returning();
+    } catch (e) {
+      if (e instanceof TrustDeniedError) {
+        return c.json(
+          trustDenyBody({
+            allow: false,
+            code: e.code,
+            capability: 'device_execute',
+            reason: e.reason,
+          }, false),
+          403,
+        );
+      }
+      throw e;
+    }
     const cmd = cmdResult[0];
 
     if (!cmd) {
