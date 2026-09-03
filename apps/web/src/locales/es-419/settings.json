@@ -3870,6 +3870,8 @@
       "fieldKey": "Clave de campo",
       "fieldKeyPlaceholder": "p. ej., asset_tag",
       "fieldKeyHelp": "Utilizado en filtros y API. No se puede cambiar después de la creación.",
+      "fieldKeyScriptHelp": "Esta clave es lo que los scripts usan para leer y escribir el campo. Lectura: vincula el origen de un parámetro del script a \"Desde un campo personalizado del dispositivo\" usando esta clave. Escritura: haz que el script llame a la API de campos personalizados del dispositivo con una solicitud PATCH y una clave de API para guardar un nuevo valor.",
+      "fieldKeyScriptHelpAriaLabel": "Acerca de usar este campo en scripts",
       "fieldType": "Tipo de campo",
       "dropdownChoices": "Opciones desplegables",
       "choiceLabel": "Etiqueta",
