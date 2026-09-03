@@ -50,6 +50,27 @@ function orgContext(orgId: string): DbAccessContext {
   };
 }
 
+/**
+ * Mirrors authMiddleware's computeAccessiblePartnerIds for scope 'partner':
+ * `[partnerId]`. This shape needs NO escalation to see its own partner row —
+ * `breeze_has_partner_access` would already grant it — but it takes the escape
+ * anyway, because `readWithPartnerAxisVisibility` skips only for 'system'.
+ * Covered because the launcher's entry points are
+ * `requireScope('organization', 'partner', 'system')`, so this is a real
+ * caller shape, and because it is the one the fix silently changed the
+ * connection behaviour of.
+ */
+function partnerContext(partnerId: string): DbAccessContext {
+  return {
+    scope: 'partner',
+    orgId: null,
+    accessibleOrgIds: [],
+    accessiblePartnerIds: [partnerId],
+    currentPartnerId: partnerId,
+    userId: null,
+  };
+}
+
 const PROVIDER_ID = 'rustdesk';
 const CUSTOM_FIELD_KEY = 'rustdesk_id';
 
@@ -175,6 +196,23 @@ describe('remote-access launcher — partner provider visibility under org-scope
   );
 
   runDb(
+    'a partner-scoped caller resolves the launcher too (the other admitted scope)',
+    async () => {
+      const { orgId, partnerId } = await seedTenant();
+
+      const availability = await withDbAccessContext(partnerContext(partnerId), () =>
+        checkRemoteAccessLauncherAvailabilityForDevice(orgId, DEVICE_CUSTOM_FIELDS),
+      );
+
+      expect(availability).toEqual({
+        available: true,
+        providerId: PROVIDER_ID,
+        skipReason: null,
+      });
+    },
+  );
+
+  runDb(
     'negative control: a partner with NO providers configured still reports no_provider_configured',
     async () => {
       const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -206,12 +244,13 @@ describe('remote-access launcher — partner provider visibility under org-scope
       createdPartnerIds.push(ids.partnerId);
       createdOrgIds.push(ids.orgId);
 
-      // Discriminating control for the assertion above: it must be the
-      // partner's real configuration that decides the answer, not the fix
-      // hard-coding availability. A genuinely unconfigured tenant must still
-      // report the same skip reason the BUG used to report for a configured
-      // one — otherwise these tests would pass against a resolver that always
-      // said "available".
+      // Scope note, so this case is not mistaken for a #3419 regression test:
+      // it does NOT discriminate the bug. Reverting the fix leaves this case
+      // green, because a denied read and a genuinely empty config are
+      // observationally identical here — that indistinguishability is the
+      // whole reason #3419 stayed invisible for so long. What it does guard is
+      // the opposite failure: an over-eager "fix" that hard-codes availability
+      // or defaults a missing config to configured would turn this red.
       const availability = await withDbAccessContext(orgContext(ids.orgId), () =>
         checkRemoteAccessLauncherAvailabilityForDevice(ids.orgId, DEVICE_CUSTOM_FIELDS),
       );
