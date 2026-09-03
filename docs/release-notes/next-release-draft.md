@@ -185,3 +185,7 @@ auto-suspended.
 - [ ] Optional: set `IP_CLASSIFY_PROVIDER`/`IP_CLASSIFY_API_KEY` so
       auto-promotion can run; without them signups classify as `unknown` and
       promotion is manual only.
+
+## Contract line included quantity and overage (#3205 W04)
+
+**Contracts: included quantity and overage.** A per-device, per-device-role, per-device-group or per-seat contract line can now include a fixed quantity (for example "up to 25 devices included") and either bill the extras at a second rate or flag them for review. A billed overage becomes its own line on the invoice, directly under the line it belongs to, so the customer sees the count and the rate. A flagged overage is never invoiced silently: it shows on the contract estimate, on the result of Generate now, and in the nightly billing log.
