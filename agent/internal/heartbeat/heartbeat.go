@@ -1003,12 +1003,22 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 	// Register winget provider (SYSTEM/machine-scope; see winget_register_windows.go)
 	h.registerSystemWinget()
 
-	// Initialize reboot manager (uses session broker for user notifications)
-	h.rebootMgr = patching.NewRebootManager(func(title, body, urgency string) {
-		if h.sessionBroker != nil {
-			h.sessionBroker.BroadcastNotification(title, body, urgency)
-		}
-	}, cfg.PatchRebootMaxPerDay)
+	// Initialize reboot manager (uses session broker for user notifications, and
+	// for the interactive postponement prompt when policy enables deferral).
+	h.rebootMgr = patching.NewRebootManagerWithPrompt(
+		func(title, body, urgency string) {
+			if h.sessionBroker != nil {
+				h.sessionBroker.BroadcastNotification(title, body, urgency)
+			}
+		},
+		rebootPromptFunc(func(req ipc.NotifyRequest, timeout time.Duration) (ipc.NotifyResult, error) {
+			if h.sessionBroker == nil {
+				return ipc.NotifyResult{}, nil
+			}
+			return h.sessionBroker.RequestNotificationDecision(req, timeout)
+		}),
+		cfg.PatchRebootMaxPerDay,
+	)
 
 	// Set backup binary path for IPC forwarding to breeze-backup helper
 	h.backupBinaryPath = cfg.BackupBinaryPath
