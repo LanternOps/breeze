@@ -133,6 +133,13 @@ export class PortalReportRateLimitError extends Error {
   }
 }
 
+export class PortalReportNoTabularDataError extends Error {
+  constructor() {
+    super('Report run has no tabular data to download');
+    this.name = 'PortalReportNoTabularDataError';
+  }
+}
+
 // This fallback protects only one API process. Distributed deployments use
 // the PORTAL_STATE_BACKEND Redis store below for a cross-process guard.
 const inFlightUntil = new Map<string, number>();
@@ -154,6 +161,14 @@ export function portalRunPredicate(runId: string, orgId: string) {
     eq(reportRuns.id, runId),
     eq(reports.orgId, orgId),
     eq(reports.portalSelfService, true),
+  )!;
+}
+
+export function portalRunListPredicate(orgId: string) {
+  return and(
+    eq(reports.orgId, orgId),
+    eq(reports.portalSelfService, true),
+    eq(reportRuns.status, 'completed'),
   )!;
 }
 
@@ -224,11 +239,7 @@ export async function listPortalRuns(
   const page = Math.max(1, opts.page);
   const limit = Math.min(100, Math.max(1, opts.limit));
   const offset = (page - 1) * limit;
-  const where = and(
-    eq(reports.orgId, orgId),
-    eq(reports.portalSelfService, true),
-    eq(reportRuns.status, 'completed'),
-  );
+  const where = portalRunListPredicate(orgId);
 
   const [totalRow] = await db.select({ total: count() })
     .from(reportRuns)
@@ -324,7 +335,7 @@ export async function generatePortalReport(args: {
 
       const completedAt = new Date();
       const rowCount = result.rowCount
-        ?? (Array.isArray(result.rows) ? result.rows.length : 0);
+        ?? (Array.isArray(result.rows) ? result.rows.length : null);
       const [completed] = await db.update(reportRuns).set({
         status: 'completed',
         completedAt,
@@ -339,11 +350,19 @@ export async function generatePortalReport(args: {
         type: definition.type as PortalReportType,
       });
     } catch (error) {
+      const errorMessage = error instanceof Error
+        ? error.message
+        : 'Report generation failed';
+      console.error('[portal-reports] Report generation failed', {
+        runId: run.id,
+        orgId: args.orgId,
+        type: args.type,
+        error: errorMessage,
+      });
       const [failed] = await db.update(reportRuns).set({
         status: 'failed',
         completedAt: new Date(),
-        errorMessage:
-          error instanceof Error ? error.message : 'Report generation failed',
+        errorMessage,
       }).where(eq(reportRuns.id, run.id)).returning();
 
       return toDto({
@@ -409,7 +428,7 @@ export async function renderRunCsv(
   const row = await completedRun(runId, orgId);
   const result = row.result as ReportResult | null;
   if (!result || !Array.isArray(result.rows)) {
-    throw new Error('Report has no tabular result');
+    throw new PortalReportNoTabularDataError();
   }
   return rowsToCsv(result.rows);
 }
