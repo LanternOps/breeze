@@ -6,13 +6,11 @@ import type { SQL } from 'drizzle-orm';
 const state = vi.hoisted(() => ({
   rows: [] as unknown[][],
   wheres: [] as unknown[],
-  selections: [] as Record<string, unknown>[],
 }));
 
 vi.mock('../../db', () => ({
   db: {
-    select: vi.fn((selection: Record<string, unknown>) => {
-      state.selections.push(selection);
+    select: vi.fn(() => {
       const chain: Record<string, unknown> = {};
       for (const method of ['from', 'innerJoin', 'leftJoin', 'where', 'orderBy', 'limit', 'offset']) {
         chain[method] = vi.fn((arg: unknown) => {
@@ -35,7 +33,6 @@ describe('backupTile', () => {
   beforeEach(() => {
     state.rows.length = 0;
     state.wheres.length = 0;
-    state.selections.length = 0;
   });
 
   it('returns latest passed verification and configured-device counts', async () => {
@@ -86,12 +83,12 @@ vi.mock('../../routes/backup/readinessCalculator', () => ({
 }));
 
 import { backupDevicesPage, backupOverview } from './backupReadModel';
+import { db } from '../../db';
 
 beforeEach(() => {
   vi.clearAllMocks();
   state.rows.length = 0;
   state.wheres.length = 0;
-  state.selections.length = 0;
 });
 
 it('returns overview verification, restore, breach, and readiness evidence', async () => {
@@ -185,7 +182,9 @@ it('returns every enrolled device, including not configured', async () => {
   expect(compiled.some(({ sql }) => sql.includes('"devices"."org_id" ='))).toBe(true);
   for (const query of compiled) expect(query.params).toContain(ORG_ID);
 
-  const deviceSelection = state.selections.find((selection) => 'configured' in selection);
+  const deviceSelection = vi.mocked(db.select).mock.calls
+    .map(([selection]) => selection as Record<string, unknown>)
+    .find((selection) => 'configured' in selection);
   expect(deviceSelection).toBeDefined();
   const expectedOrgPredicates = {
     configured: 2,
