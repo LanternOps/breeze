@@ -216,6 +216,9 @@ vi.mock('../db/schema', () => ({
   ticketComments: { ticketId: 'ticketId', agentRunId: 'agentRunId' },
   // #4524: moveTicketOrg severs ai_agent_runs.ticket_id in the same transaction.
   aiAgentRuns: { id: 'id', orgId: 'orgId', ticketId: 'ticketId' },
+  // #4645: moveTicketOrg severs device_vulnerabilities.ticket_id in the same
+  // transaction (the ticket-axis twin of the ai_agent_runs detach above).
+  deviceVulnerabilities: { id: 'id', orgId: 'orgId', deviceId: 'deviceId', ticketId: 'ticketId' },
   ticketDrafts: {
     id: 'id', ticketId: 'ticketId', orgId: 'orgId', runId: 'runId', intentId: 'intentId',
     kind: 'kind', content: 'content', state: 'state', supersededBy: 'supersededBy',

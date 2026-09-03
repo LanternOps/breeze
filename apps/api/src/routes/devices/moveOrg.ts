@@ -415,6 +415,41 @@ moveOrgRoutes.post(
           );
         }
 
+        // device_vulnerabilities.ticket_id (#4645): `device_vulnerabilities` IS
+        // in getDeviceOrgDenormalizedTables(), so the loop just above already
+        // re-stamped org_id to the TARGET org for every finding on this device
+        // — the finding row itself always travels with the device. Its
+        // remediation ticket does NOT: vulnerability-remediation tickets are
+        // created org-scoped only (`POST /vulnerabilities/tickets` never sets
+        // `tickets.device_id`), so `tickets` denormalized-table loop above
+        // never reaches them and they stay put in whatever org they were
+        // created in. Once the finding's org_id is the target org, a ticket_id
+        // still naming a SOURCE-org ticket resolves to nothing under RLS for
+        // any caller in the target org — the reverse of moveTicketOrg's own
+        // device_vulnerabilities detach (services/ticketService.ts) on the
+        // ticket axis.
+        //
+        // Placement — AFTER the loop above, not before: comparing against
+        // `t.org_id` (rather than the finding's own, already-rewritten
+        // org_id) means a ticket that DOES happen to be bound to this device
+        // (`tickets.device_id = deviceId`, and therefore re-stamped to the
+        // target org by that same loop, since `tickets` is also a member) is
+        // correctly left alone — its org now matches the finding's, so the
+        // link is still valid. Checking before the loop would see the ticket's
+        // stale SOURCE org and wrongly null a link that is about to become
+        // valid. Same `org_id IS DISTINCT FROM` precision as moveTicketOrg's
+        // mirror statement and the tickets.requester_contact_id detach above.
+        //
+        // Plain single-column `ON DELETE SET NULL` FK (not composite
+        // tenant-FK'd), so this can never 23503 either way.
+        await tx.execute(
+          sql`UPDATE device_vulnerabilities dv SET ticket_id = NULL
+              FROM tickets t
+              WHERE dv.device_id = ${deviceId}::uuid
+                AND dv.ticket_id = t.id
+                AND t.org_id IS DISTINCT FROM ${targetOrgId}::uuid`,
+        );
+
         // Extension tables that must be DELETED (not re-stamped) on org-move: their rows
         // FK a source/config row that stays in the old org, so rewriting org_id would
         // corrupt cross-row consistency. See the extension tenancy docs.
