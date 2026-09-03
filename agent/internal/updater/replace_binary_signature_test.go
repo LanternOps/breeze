@@ -1,11 +1,17 @@
 package updater
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/breeze-rmm/agent/internal/secmem"
 )
 
 // stubStagedSignatureCheck replaces the code-signature gate for the duration of
@@ -45,8 +51,8 @@ func TestReplaceBinary_SignatureGate(t *testing.T) {
 			wantContent: installed,
 		},
 		{
-			name:        "wrapped signature error is still refused",
-			verifyErr:   errors.New("codesign: " + ErrCodeSignatureInvalid.Error()),
+			name:        "any non-sentinel verify failure is still refused",
+			verifyErr:   errors.New("codesign: exit status 1"),
 			wantErr:     true,
 			wantContent: installed,
 		},
@@ -134,13 +140,132 @@ func TestReplaceBinary_SignatureRejectionIsClassifiable(t *testing.T) {
 // hash, so applying one to a shipped build changes the agent's code identity on
 // every update and macOS drops the TCC grants keyed to the previous identity.
 func TestReplaceBinary_NoAdHocSigning(t *testing.T) {
-	source, err := os.ReadFile("updater.go")
+	entries, err := os.ReadDir(".")
 	if err != nil {
-		t.Fatalf("read updater.go: %v", err)
+		t.Fatalf("read package dir: %v", err)
 	}
-	for _, forbidden := range []string{`"--force", "--sign", "-"`, `"--sign", "-"`} {
-		if strings.Contains(string(source), forbidden) {
-			t.Fatalf("updater.go still ad-hoc signs the binary (found %s); see #3458", forbidden)
+	scanned := 0
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
 		}
+		source, readErr := os.ReadFile(name)
+		if readErr != nil {
+			t.Fatalf("read %s: %v", name, readErr)
+		}
+		scanned++
+		for _, forbidden := range []string{`"--force", "--sign", "-"`, `"--sign", "-"`, `"--sign", adHoc`} {
+			if strings.Contains(string(source), forbidden) {
+				t.Fatalf("%s ad-hoc signs the binary (found %s); the updater must never manufacture a signature — see #3458", name, forbidden)
+			}
+		}
+	}
+	if scanned == 0 {
+		t.Fatal("scanned no source files — the guard would pass vacuously")
+	}
+}
+
+// TestUpdateFromURL_SignatureRejectionSurvivesToTheCaller drives the public
+// entry point, not just replaceBinary. heartbeat.doUpgrade matches on
+// errors.Is(err, ErrCodeSignatureInvalid), so a future re-wrap that loses the
+// sentinel (errors.New(err.Error()), say) would silently disable the
+// classification, the actionable log line and the retry cooldown. It also pins
+// that the refusal does NOT roll back: nothing was written, so rewriting the
+// live binary from the backup would be pure risk.
+func TestUpdateFromURL_SignatureRejectionSurvivesToTheCaller(t *testing.T) {
+	const installed = "installed binary v1"
+	staged := []byte("staged binary v2")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(staged)
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	binaryPath := filepath.Join(dir, "breeze-agent")
+	backupPath := filepath.Join(dir, "breeze-agent.backup")
+	if err := os.WriteFile(binaryPath, []byte(installed), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	stubStagedSignatureCheck(t, func(string) error { return ErrCodeSignatureInvalid })
+
+	u := New(&Config{
+		ServerURL:  staticServerURL(srv.URL),
+		AuthToken:  secmem.NewSecureString("tok"),
+		BinaryPath: binaryPath,
+		BackupPath: backupPath,
+	})
+	u.client = srv.Client()
+
+	sum := sha256.Sum256(staged)
+	err := u.UpdateFromURL(srv.URL, hex.EncodeToString(sum[:]), UpdateOptions{})
+	if !errors.Is(err, ErrCodeSignatureInvalid) {
+		t.Fatalf("UpdateFromURL error = %v, want it to wrap ErrCodeSignatureInvalid", err)
+	}
+
+	content, readErr := os.ReadFile(binaryPath)
+	if readErr != nil {
+		t.Fatalf("read installed binary: %v", readErr)
+	}
+	if string(content) != installed {
+		t.Fatalf("installed binary = %q, want it untouched", string(content))
+	}
+}
+
+// The two remedy branches differ by which entry point refused the update, and a
+// swapped one would only surface mid-incident in an agent log.
+func TestCodeSignatureRejectionFields(t *testing.T) {
+	tests := []struct {
+		name          string
+		targetVersion string
+		wantPairs     map[string]string
+		wantRemedy    string
+		wantNoKey     string
+	}{
+		{
+			name:          "control-plane upgrade names the version",
+			targetVersion: "0.109.0",
+			wantPairs:     map[string]string{"targetVersion": "0.109.0"},
+			wantRemedy:    "republish this version",
+		},
+		{
+			name:          "dev push has no version and points at the build",
+			targetVersion: "",
+			wantRemedy:    "sign the dev binary",
+			wantNoKey:     "targetVersion",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			fields := codeSignatureRejectionFields(tc.targetVersion, ErrCodeSignatureInvalid)
+			if len(fields)%2 != 0 {
+				t.Fatalf("fields must be key/value pairs, got %d entries", len(fields))
+			}
+			got := map[string]string{}
+			for i := 0; i < len(fields); i += 2 {
+				key, _ := fields[i].(string)
+				value, _ := fields[i+1].(string)
+				got[key] = value
+			}
+			for key, want := range tc.wantPairs {
+				if got[key] != want {
+					t.Errorf("field %q = %q, want %q", key, got[key], want)
+				}
+			}
+			if tc.wantNoKey != "" {
+				if _, present := got[tc.wantNoKey]; present {
+					t.Errorf("field %q should not be present, got %q", tc.wantNoKey, got[tc.wantNoKey])
+				}
+			}
+			if !strings.Contains(got["remedy"], tc.wantRemedy) {
+				t.Errorf("remedy = %q, want it to mention %q", got["remedy"], tc.wantRemedy)
+			}
+			if got["action"] == "" {
+				t.Error("action field missing")
+			}
+		})
 	}
 }

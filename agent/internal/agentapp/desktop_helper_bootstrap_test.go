@@ -257,6 +257,9 @@ func TestServiceInstallDarwin_DelegatesHelperStaging(t *testing.T) {
 	if strings.Contains(text, "os.WriteFile(darwinDesktopHelperBinaryPath") {
 		t.Fatal("service_cmd_darwin.go writes the desktop helper path directly — helper bytes must only ever come from stageDesktopHelper (#3457)")
 	}
+	if !strings.Contains(text, "desktopHelperLaunchAgentsWanted(") {
+		t.Fatal("service_cmd_darwin.go no longer gates the helper LaunchAgents on a helper binary being present")
+	}
 }
 
 func TestDesktopHelperDownloadURL(t *testing.T) {
@@ -314,5 +317,109 @@ func TestDesktopHelperUnavailableWarning_IsActionable(t *testing.T) {
 		if !strings.Contains(msg, want) {
 			t.Errorf("warning does not mention %q:\n%s", want, msg)
 		}
+	}
+}
+
+// The helper's LaunchAgent plists name /usr/local/bin/breeze-desktop-helper as
+// their Program. Registering them for a binary that is not there makes launchd
+// retry a doomed posix_spawn on its KeepAlive schedule forever, and that failure
+// is invisible from the agent. Before #3457 it could not happen — install-service
+// always left the agent binary at that path — so removing the substitution is
+// exactly what makes this gate necessary.
+func TestDesktopHelperLaunchAgentsWanted(t *testing.T) {
+	dir := t.TempDir()
+	present := filepath.Join(dir, "present")
+	if err := os.WriteFile(present, []byte("helper"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	empty := filepath.Join(dir, "empty")
+	if err := os.WriteFile(empty, nil, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	asDir := filepath.Join(dir, "as-dir")
+	if err := os.MkdirAll(asDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name     string
+		stageErr error
+		path     string
+		want     bool
+	}{
+		{name: "staging succeeded", stageErr: nil, path: present, want: true},
+		{
+			name:     "staging failed but an earlier install left a helper behind",
+			stageErr: os.ErrNotExist,
+			path:     present,
+			want:     true,
+		},
+		{
+			name:     "staging failed and no helper exists",
+			stageErr: os.ErrNotExist,
+			path:     filepath.Join(dir, "missing"),
+			want:     false,
+		},
+		{
+			name:     "staging failed and the path is an empty file",
+			stageErr: os.ErrNotExist,
+			path:     empty,
+			want:     false,
+		},
+		{
+			name:     "staging failed and the path is a directory",
+			stageErr: os.ErrNotExist,
+			path:     asDir,
+			want:     false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := desktopHelperLaunchAgentsWanted(tc.stageErr, tc.path); got != tc.want {
+				t.Fatalf("desktopHelperLaunchAgentsWanted(%v, %s) = %v, want %v", tc.stageErr, tc.path, got, tc.want)
+			}
+		})
+	}
+}
+
+// The sibling copy must be as safe as the download path: a failure part-way
+// through must not leave a truncated executable where a working one was.
+func TestWriteBinaryAtomically(t *testing.T) {
+	dir := t.TempDir()
+	dest := filepath.Join(dir, "breeze-desktop-helper")
+	if err := os.WriteFile(dest, []byte("previous helper"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := writeBinaryAtomically(dest, []byte("new helper")); err != nil {
+		t.Fatalf("writeBinaryAtomically: %v", err)
+	}
+	got, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "new helper" {
+		t.Fatalf("dest = %q, want %q", string(got), "new helper")
+	}
+	info, err := os.Stat(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm()&0o111 == 0 {
+		t.Fatalf("dest mode = %v, want it executable", info.Mode().Perm())
+	}
+	if _, err := os.Stat(dest + ".staging"); !os.IsNotExist(err) {
+		t.Fatalf("staging temp file left behind at %s", dest+".staging")
+	}
+
+	// A destination whose directory does not exist fails without touching a
+	// pre-existing file elsewhere, and leaves no temp behind.
+	missingDir := filepath.Join(dir, "nope", "helper")
+	if err := writeBinaryAtomically(missingDir, []byte("x")); err == nil {
+		t.Fatal("expected an error writing into a missing directory")
+	}
+	if _, err := os.Stat(missingDir + ".staging"); !os.IsNotExist(err) {
+		t.Fatal("staging temp file left behind after a failed write")
 	}
 }

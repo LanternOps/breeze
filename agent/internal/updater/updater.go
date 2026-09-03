@@ -316,19 +316,28 @@ func isCodeSignatureErr(err error) bool {
 // rewrite the live, correctly signed binary. targetVersion is "" for the
 // dev-push path, which has no version to name.
 func logCodeSignatureRejection(targetVersion string, err error) {
+	log.Error(codeSignatureRejectionMessage, codeSignatureRejectionFields(targetVersion, err)...)
+}
+
+// codeSignatureRejectionMessage is the log line for a refused update.
+const codeSignatureRejectionMessage = "staged binary failed macOS code signature verification — refusing to install it"
+
+// codeSignatureRejectionFields builds the structured fields for that line. Split
+// out from logCodeSignatureRejection so the two remedy branches are assertable:
+// a swapped remedy would otherwise only be discovered mid-incident, by an
+// operator reading agent logs.
+func codeSignatureRejectionFields(targetVersion string, err error) []any {
 	fields := []any{
 		"error", err.Error(),
 		"action", "update refused; keeping the currently installed binary",
 	}
 	if targetVersion != "" {
-		fields = append(fields,
+		return append(fields,
 			"targetVersion", targetVersion,
 			"remedy", "republish this version as a Developer ID signed, notarized macOS build")
-	} else {
-		fields = append(fields,
-			"remedy", "sign the dev binary before pushing it (`make dev-push` signs darwin targets; set CODESIGN_IDENTITY to keep TCC grants across pushes)")
 	}
-	log.Error("staged binary failed macOS code signature verification — refusing to install it", fields...)
+	return append(fields,
+		"remedy", "sign the dev binary before pushing it (`make dev-push` signs darwin targets; set CODESIGN_IDENTITY to keep TCC grants across pushes)")
 }
 
 // downloadInfoError is the control plane's error body for a refused
@@ -901,6 +910,19 @@ func writeUpdateMarker(version string) {
 	}
 }
 
+// removeUpdateMarker clears a marker written for an update that then refused to
+// proceed. The marker tells the next agent start to skip its heartbeat jitter,
+// which is only correct when the process actually restarted for an update —
+// leaving a stale one behind means an unrelated restart (crash, reboot, launchd
+// respawn) also skips jitter, which is the thundering-herd case jitter exists
+// for.
+func removeUpdateMarker() {
+	markerPath := filepath.Join(config.ConfigDir(), ".update-restart")
+	if err := os.Remove(markerPath); err != nil && !os.IsNotExist(err) {
+		log.Warn("failed to remove update marker", "path", markerPath, "error", err.Error())
+	}
+}
+
 // UpdateTo is a thin shim around UpdateToWithOptions for the common case of
 // an agent-only upgrade. New code (and any caller that needs to thread a
 // companion binary like breeze-user-helper.exe through the Windows restart
@@ -1058,6 +1080,10 @@ func (u *Updater) updateTo(version string, opts UpdateOptions) error {
 	// 6. Non-macOS or pkg fallback: replace binary inline and restart
 	if err := u.replaceBinary(tempPath); err != nil {
 		if isCodeSignatureErr(err) {
+			// The darwin branch above already wrote the update marker before
+			// attempting the .pkg install; this update is not happening, so it
+			// must not tell the next restart that it did.
+			removeUpdateMarker()
 			logCodeSignatureRejection(version, err)
 			return err
 		}

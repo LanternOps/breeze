@@ -65,7 +65,7 @@ func stageDesktopHelper(opts desktopHelperStageOptions) error {
 	data, readErr := os.ReadFile(sibling)
 	switch {
 	case readErr == nil:
-		if err := os.WriteFile(opts.destPath, data, 0o755); err != nil {
+		if err := writeBinaryAtomically(opts.destPath, data); err != nil {
 			return fmt.Errorf("copy desktop helper to %s: %w", opts.destPath, err)
 		}
 		return nil
@@ -119,4 +119,50 @@ func desktopHelperUnavailableWarning(err error, version, goos, goarch string) st
 			"  2. Download %s, place it next to breeze-agent,\n"+
 			"     then re-run `sudo breeze-agent service install`.\n",
 		err, desktopHelperDownloadURL(version, goos, goarch))
+}
+
+// writeBinaryAtomically writes data to path via a sibling temp file and an
+// atomic rename, so a failure part-way through can never leave a truncated
+// executable at path. downloadReleaseAsset does the same for the network path;
+// the sibling copy must not be the weaker of the two.
+func writeBinaryAtomically(path string, data []byte) error {
+	tmpPath := path + ".staging"
+	if err := os.WriteFile(tmpPath, data, 0o755); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	return nil
+}
+
+// desktopHelperInstalled reports whether a usable helper binary sits at path.
+func desktopHelperInstalled(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir() && info.Size() > 0
+}
+
+// desktopHelperLaunchAgentsWanted reports whether install-service should write
+// and bootstrap the helper's LaunchAgent plists.
+//
+// The plists name /usr/local/bin/breeze-desktop-helper as their Program. Handing
+// launchd a job whose program does not exist makes it retry a doomed
+// posix_spawn on its KeepAlive schedule indefinitely, and that failure is
+// invisible from the agent — it shows up only in launchctl/Console on the box.
+// Before #3457 this could not happen, because install-service always left
+// *something* at that path: the agent binary itself. Now that the substitution
+// is gone, the plists have to be gated.
+//
+// A staging failure on a host that still has a helper from an earlier install is
+// NOT a reason to skip them — that binary may be a pre-#3457 substituted agent
+// binary, but it works, and tearing down its LaunchAgents would turn a
+// wrong-identity helper into no helper at all. It is corrected on the next
+// install that can reach a real helper.
+func desktopHelperLaunchAgentsWanted(stageErr error, helperPath string) bool {
+	if stageErr == nil {
+		return true
+	}
+	return desktopHelperInstalled(helperPath)
 }
