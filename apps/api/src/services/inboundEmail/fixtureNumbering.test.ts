@@ -34,4 +34,29 @@ describe('fourDigitSuffix', () => {
     expect(next).toHaveLength(4);
     expect(next).not.toBe(base);
   });
+
+  it('wraps exactly at the 9999 -> 0000 boundary', () => {
+    // '07pr' is the base36 encoding of 9999 (parseInt('07pr', 36) === 9999),
+    // so this exercises the true top-of-range wraparound the previous test's
+    // name implied but 'zzzz' (-> 9615) doesn't actually reach.
+    expect(fourDigitSuffix('07pr')).toBe('9999');
+    expect(fourDigitSuffix('07pr', 1)).toBe('0000');
+  });
+
+  it('never throws or produces non-4-digit output for the real caller\'s edge-case suffix shapes', () => {
+    // The real fixture builds suffix as `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`.
+    // Math.random()'s base36 tail can be shorter than 4 chars (e.g. when the
+    // random value is close to 0), which pulls the epoch/suffix separator '-'
+    // into the 4-char slice (e.g. "0-i5"). Also cover a fully empty input and
+    // an all-'-' slice as hard edge cases, none of which should throw or
+    // produce output outside the 4-digit contract.
+    const edgeCaseSuffixes = ['0-i5', '5--a', '----', '', 'a', 'ab', 'abc'];
+    for (const suffix of edgeCaseSuffixes) {
+      for (const offset of [0, 1]) {
+        const result = fourDigitSuffix(suffix, offset);
+        expect(result).toHaveLength(4);
+        expect(result).toMatch(/^\d{4}$/);
+      }
+    }
+  });
 });

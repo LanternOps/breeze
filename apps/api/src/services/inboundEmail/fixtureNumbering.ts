@@ -16,7 +16,7 @@
  */
 export function fourDigitSuffix(input: string, offset = 0): string {
   const parsed = parseInt(input.slice(-4), 36);
-  const base = Number.isFinite(parsed) ? Math.abs(parsed) % 10000 : 0;
+  const base = Number.isNaN(parsed) ? 0 : Math.abs(parsed) % 10000;
   const n = (((base + offset) % 10000) + 10000) % 10000;
   return n.toString().padStart(4, '0');
 }
