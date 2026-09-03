@@ -30,7 +30,9 @@
       "deletedGroup": "{{name}} (silinmiş grup)",
       "coverage": {
         "uncovered": "Bu kuruluştaki {{count}} cihaz bu sözleşmedeki hiçbir satırda faturalandırılmıyor: {{breakdown}}",
-        "allCovered": "Bu kuruluştaki her cihaz bu sözleşmedeki bir satırda faturalandırılıyor."
+        "allCovered": "Bu kuruluştaki her cihaz bu sözleşmedeki bir satırda faturalandırılıyor.",
+        "uncoveredLead": "Bu kuruluştaki {{count}} cihaz bu sözleşmedeki hiçbir satırda faturalandırılmıyor:",
+        "roleBucket": "{{count}} {{role}}"
       },
       "transition": {
         "activate": "Etkinleştir",

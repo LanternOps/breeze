@@ -1,4 +1,5 @@
 {
+  "lists": { "separator": ", " },
   "nav": {
     "fleetPosture": "Filo Duruşu",
     "dashboard": "Kontrol Paneli",

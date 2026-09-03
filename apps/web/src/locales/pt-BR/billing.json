@@ -30,7 +30,9 @@
       "deletedGroup": "{{name}} (grupo excluído)",
       "coverage": {
         "uncovered": "{{count}} dispositivo(s) desta organização não são cobrados por nenhuma linha deste contrato: {{breakdown}}",
-        "allCovered": "Todos os dispositivos desta organização são cobrados por uma linha deste contrato."
+        "allCovered": "Todos os dispositivos desta organização são cobrados por uma linha deste contrato.",
+        "uncoveredLead": "{{count}} dispositivo(s) desta organização não são cobrados por nenhuma linha deste contrato:",
+        "roleBucket": "{{count}} {{role}}"
       },
       "transition": {
         "activate": "Ativar",
