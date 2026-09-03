@@ -94,6 +94,7 @@ import {
   PortalReportNotFoundError,
   PortalReportRateLimitError,
 } from '../../services/portal/reportsSelfService';
+import { validatePortalCookieCsrfRequest } from './helpers';
 import { portalRoutes } from './index';
 import { portalReportRoutes } from './reports';
 
@@ -172,6 +173,35 @@ describe('portal report routes', () => {
     });
   });
 
+  it('returns 403 on CSRF failure without generating a report', async () => {
+    vi.mocked(validatePortalCookieCsrfRequest).mockReturnValueOnce(
+      'csrf token mismatch',
+    );
+
+    const response = await isolatedApp().request('/reports/generate', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ type: 'executive_summary' }),
+    });
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toEqual({
+      error: 'csrf token mismatch',
+    });
+    expect(mocks.generateMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects non-portal report types without generating a report', async () => {
+    const response = await isolatedApp().request('/reports/generate', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ type: 'device_inventory' }),
+    });
+
+    expect(response.status).toBe(400);
+    expect(mocks.generateMock).not.toHaveBeenCalled();
+  });
+
   it('returns 404 when the canonical definition or run is absent', async () => {
     mocks.generateMock.mockRejectedValue(new PortalReportNotFoundError());
     const response = await isolatedApp().request('/reports/generate', {
@@ -201,6 +231,11 @@ describe('portal report routes', () => {
     expect(response.status).toBe(200);
     expect(response.headers.get('content-type')).toBe('application/pdf');
     expect(response.headers.get('content-disposition')).toContain('attachment');
+    expect(response.headers.get('cache-control')).toBe(
+      'private, max-age=0, no-store',
+    );
+    expect(response.headers.get('vary')).toContain('Authorization');
+    expect(response.headers.get('vary')).toContain('Cookie');
     expect(await response.text()).toBe('%PDF-test');
     expect(mocks.pdfMock).toHaveBeenCalledWith(RUN_ID, ORG_ID, 'UTC');
   });
@@ -226,8 +261,36 @@ describe('portal report routes', () => {
       'text/csv; charset=utf-8',
     );
     expect(response.headers.get('content-disposition')).toContain('attachment');
+    expect(response.headers.get('cache-control')).toBe(
+      'private, max-age=0, no-store',
+    );
+    expect(response.headers.get('vary')).toContain('Authorization');
+    expect(response.headers.get('vary')).toContain('Cookie');
     expect(await response.text()).toBe('Device,Status\nLaptop,online\n');
     expect(mocks.csvMock).toHaveBeenCalledWith(RUN_ID, ORG_ID);
+  });
+
+  it.each([
+    ['PDF', 'pdf', mocks.pdfMock],
+    ['CSV', 'csv', mocks.csvMock],
+  ] as const)('logs the thrown error when %s rendering fails', async (_label, format, renderMock) => {
+    const error = new Error(`${format} render crashed`);
+    renderMock.mockRejectedValue(error);
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const response = await isolatedApp().request(
+        `/reports/runs/${RUN_ID}/${format}`,
+      );
+
+      expect(response.status).toBe(500);
+      expect(consoleError).toHaveBeenCalledWith(
+        `[portal] ${format.toUpperCase()} report render failed`,
+        { runId: RUN_ID, error },
+      );
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 
   it('returns 422 when a completed run has no tabular data', async () => {

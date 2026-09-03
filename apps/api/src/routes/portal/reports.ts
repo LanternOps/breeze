@@ -98,12 +98,14 @@ portalReportRoutes.get(
         'Content-Disposition',
         `attachment; filename="portal-report-${runId}.pdf"`,
       );
+      c.header('Cache-Control', 'private, max-age=0, no-store');
+      c.header('Vary', 'Authorization, Cookie');
       return c.body(new Uint8Array(body));
     } catch (error) {
       if (error instanceof PortalReportNotFoundError) {
         return c.json({ error: 'Report run not found' }, 404);
       }
-      console.error('[portal] PDF report render failed', { runId });
+      console.error('[portal] PDF report render failed', { runId, error });
       return c.json({ error: 'Could not render report' }, 500);
     }
   },
@@ -122,6 +124,8 @@ portalReportRoutes.get(
         'Content-Disposition',
         `attachment; filename="portal-report-${runId}.csv"`,
       );
+      c.header('Cache-Control', 'private, max-age=0, no-store');
+      c.header('Vary', 'Authorization, Cookie');
       return c.body(body);
     } catch (error) {
       if (error instanceof PortalReportNotFoundError) {
@@ -133,7 +137,7 @@ portalReportRoutes.get(
           422,
         );
       }
-      console.error('[portal] CSV report render failed', { runId });
+      console.error('[portal] CSV report render failed', { runId, error });
       return c.json({ error: 'Could not render report' }, 500);
     }
   },
