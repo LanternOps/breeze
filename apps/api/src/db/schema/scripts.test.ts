@@ -6,8 +6,8 @@ import { scriptExecutions, executionStatusEnum, scriptCancelStateEnum } from './
 const MIGRATIONS_DIR = join(__dirname, '../../../migrations');
 const readMigration = (name: string) => readFileSync(join(MIGRATIONS_DIR, name), 'utf8');
 
-const ENUM_MIGRATION = '2026-10-07-100000-cancellation-enums.sql';
-const COLUMN_MIGRATION = '2026-10-07-100100-cancellation-columns.sql';
+const ENUM_MIGRATION = '2026-10-07-110000-cancellation-enums.sql';
+const COLUMN_MIGRATION = '2026-10-07-110100-cancellation-columns.sql';
 
 /**
  * #3525 W02. `status` describes what happened to the PROCESS; `cancel_state`

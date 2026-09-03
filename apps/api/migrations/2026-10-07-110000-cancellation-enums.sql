@@ -3,7 +3,7 @@
 -- Split from the column migration because Postgres forbids USING a new enum
 -- literal in the transaction that ADDs it, and autoMigrate wraps each file in
 -- one transaction (db/autoMigrate.ts). The 'cancelling' literal is used in
--- 2026-10-07-100100's partial-index predicate.
+-- 2026-10-07-110100's partial-index predicate.
 --
 -- 'cancelling' is TRANSIENT. Only a proven stop terminalises as 'cancelled';
 -- an unconfirmed or failed cancel reverts status to cancel_prev_status and

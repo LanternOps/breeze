@@ -10,7 +10,7 @@ export const scriptRunAsEnum = pgEnum('script_run_as', ['system', 'user', 'eleva
 // #3525: 'cancelling' is TRANSIENT — a cancel is in flight and unresolved. Only
 // a PROVEN stop terminalises as 'cancelled'; an unproven one reverts to
 // `cancel_prev_status`. Value order mirrors the installed type
-// (2026-10-07-100000 adds it AFTER 'running'), which drizzle-kit compares.
+// (2026-10-07-110000 adds it AFTER 'running'), which drizzle-kit compares.
 export const executionStatusEnum = pgEnum('execution_status', ['pending', 'queued', 'running', 'cancelling', 'completed', 'failed', 'timeout', 'cancelled']);
 // #3525: the cancel REQUEST's lifecycle, orthogonal to the execution outcome
 // (spec OD8-C). NULL means no cancel was ever requested.
