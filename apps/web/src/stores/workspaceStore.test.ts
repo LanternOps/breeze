@@ -224,6 +224,33 @@ describe('workspace store renameTab', () => {
     expect(tabById('tab-1').title).toBe('Pre-session rename');
     expect(tabById('tab-1').isTitleCustom).toBe(true);
   });
+
+  it('does not let a stale (superseded) rename failure clobber a newer, already-successful rename', async () => {
+    // Two renames fired back-to-back with no in-flight guard on the UI side:
+    // the FIRST PATCH ("A") stays pending while the SECOND ("B") resolves
+    // successfully. When A's failure response finally arrives, it must not
+    // roll the tab back over B's already-confirmed title.
+    let resolveFirst!: (value: Response) => void;
+    const firstPatch = new Promise<Response>((resolve) => {
+      resolveFirst = resolve;
+    });
+    fetchWithAuthMock
+      .mockImplementationOnce(() => firstPatch)
+      .mockResolvedValueOnce(makeResponse({ success: true, title: 'Second rename' }));
+
+    const firstRename = useWorkspaceStore.getState().renameTab('tab-1', 'First rename');
+    await useWorkspaceStore.getState().renameTab('tab-1', 'Second rename');
+
+    expect(tabById('tab-1').title).toBe('Second rename');
+    expect(tabById('tab-1').isTitleCustom).toBe(true);
+
+    resolveFirst(makeResponse({ error: 'boom' }, false, 500));
+    await firstRename;
+
+    expect(tabById('tab-1').title).toBe('Second rename');
+    expect(tabById('tab-1').isTitleCustom).toBe(true);
+    expect(tabById('tab-1').error).toBeNull();
+  });
 });
 
 describe('workspace store sendMessage title handling', () => {
@@ -274,6 +301,83 @@ describe('workspace store sendMessage title handling', () => {
       method: 'POST',
       body: JSON.stringify({ pageContext: undefined, title: undefined }),
     });
+  });
+
+  it('PATCHes the session with a newer title if the tab was renamed while its session was still being created', async () => {
+    useWorkspaceStore.setState({
+      tabs: [tab({ id: 'tab-1', sessionId: null, title: 'New Chat', isTitleCustom: false })],
+      activeTabId: 'tab-1',
+    });
+
+    let resolveCreate!: (value: Response) => void;
+    const createPromise = new Promise<Response>((resolve) => {
+      resolveCreate = resolve;
+    });
+    fetchWithAuthMock
+      .mockImplementationOnce(() => createPromise) // POST /ai/sessions — stays pending
+      .mockResolvedValueOnce(makeResponse({ success: true, title: 'Renamed mid-flight' })) // PATCH sync
+      .mockResolvedValueOnce(makeStreamResponse()); // POST .../messages
+
+    const sendPromise = useWorkspaceStore.getState().sendMessage('tab-1', 'hello');
+
+    // renameTab is a local-only no-op against the API while sessionId is
+    // still null — this must not be lost once the session exists.
+    await useWorkspaceStore.getState().renameTab('tab-1', 'Renamed mid-flight');
+    expect(fetchWithAuthMock).toHaveBeenCalledTimes(1);
+
+    resolveCreate(makeResponse({ id: 'session-1' }));
+    await sendPromise;
+
+    expect(fetchWithAuthMock).toHaveBeenNthCalledWith(2, '/ai/sessions/session-1', {
+      method: 'PATCH',
+      body: JSON.stringify({ title: 'Renamed mid-flight' }),
+    });
+  });
+});
+
+describe('workspace store title_updated SSE handling', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    storageHarness.data.clear();
+  });
+
+  const makeSseResponse = (events: Array<Record<string, unknown>>): Response => {
+    const encoder = new TextEncoder();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const event of events) {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+        }
+        controller.close();
+      },
+    });
+    return { ok: true, status: 200, body } as unknown as Response;
+  };
+
+  it('applies a title_updated event when the tab title is not custom (server auto-title)', async () => {
+    useWorkspaceStore.setState({
+      tabs: [tab({ id: 'tab-1', sessionId: 'session-1', title: 'New Chat', isTitleCustom: false })],
+      activeTabId: 'tab-1',
+      _readers: new Map(),
+    });
+    fetchWithAuthMock.mockResolvedValueOnce(makeSseResponse([{ type: 'title_updated', title: 'Auto-generated title' }]));
+
+    await useWorkspaceStore.getState().sendMessage('tab-1', 'hello');
+
+    expect(useWorkspaceStore.getState().tabs.find(t => t.id === 'tab-1')!.title).toBe('Auto-generated title');
+  });
+
+  it('ignores a title_updated event once the tab has a user-set custom title', async () => {
+    useWorkspaceStore.setState({
+      tabs: [tab({ id: 'tab-1', sessionId: 'session-1', title: 'My Custom Title', isTitleCustom: true })],
+      activeTabId: 'tab-1',
+      _readers: new Map(),
+    });
+    fetchWithAuthMock.mockResolvedValueOnce(makeSseResponse([{ type: 'title_updated', title: 'Auto-generated title' }]));
+
+    await useWorkspaceStore.getState().sendMessage('tab-1', 'hello');
+
+    expect(useWorkspaceStore.getState().tabs.find(t => t.id === 'tab-1')!.title).toBe('My Custom Title');
   });
 });
 

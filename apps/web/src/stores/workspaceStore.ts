@@ -199,6 +199,17 @@ export const useWorkspaceStore = create<WorkspaceState>()(
 
           if (!tab.sessionId) return;
 
+          // Only roll back if THIS call's title is still the tab's current
+          // title. Two renames can be in flight at once (fire-and-forget from
+          // the UI, no in-flight guard) and their PATCH responses can arrive
+          // out of order — without this check, an older call's failure could
+          // stomp a newer, already-successful rename.
+          const rollbackIfStillCurrent = (patch: Partial<TabState>) => {
+            if (getTab(tabId)?.title === trimmed) {
+              updateTab(tabId, { title: previousTitle, isTitleCustom: previousIsTitleCustom, ...patch });
+            }
+          };
+
           try {
             const res = await fetchWithAuth(`/ai/sessions/${tab.sessionId}`, {
               method: 'PATCH',
@@ -206,19 +217,11 @@ export const useWorkspaceStore = create<WorkspaceState>()(
             });
             if (!res.ok) {
               const data = await res.json().catch(() => null);
-              updateTab(tabId, {
-                title: previousTitle,
-                isTitleCustom: previousIsTitleCustom,
-                error: extractApiError(data, 'Failed to rename chat'),
-              });
+              rollbackIfStillCurrent({ error: extractApiError(data, 'Failed to rename chat') });
             }
           } catch (err) {
             console.error('[Workspace] Rename failed:', err);
-            updateTab(tabId, {
-              title: previousTitle,
-              isTitleCustom: previousIsTitleCustom,
-              error: 'Failed to rename chat',
-            });
+            rollbackIfStillCurrent({ error: 'Failed to rename chat' });
           }
         },
 
@@ -233,6 +236,15 @@ export const useWorkspaceStore = create<WorkspaceState>()(
           let sessionId = tab.sessionId;
           if (!sessionId) {
             updateTab(tabId, { isLoading: true, error: null });
+            // Snapshot the title sent with session creation. renameTab() is a
+            // no-op against the API while sessionId is still null (there's no
+            // session yet to PATCH), so a rename that lands *during* this
+            // await would otherwise be silently dropped — the tab shows the
+            // new title locally, but the backend record it's about to create
+            // never carries it, and nothing ever revisits it. Compare against
+            // the tab's title once a sessionId exists below and PATCH if it
+            // has since diverged.
+            const titleAtCreation = tab.isTitleCustom ? tab.title : undefined;
             try {
               const res = await fetchWithAuth('/ai/sessions', {
                 method: 'POST',
@@ -241,7 +253,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
                   // Carry a user-set title through to the new session so the
                   // server's first-message auto-title (gated on `!title`)
                   // never clobbers a rename made before the first message.
-                  title: tab.isTitleCustom ? tab.title : undefined,
+                  title: titleAtCreation,
                 }),
               });
               if (!res.ok) {
@@ -251,6 +263,14 @@ export const useWorkspaceStore = create<WorkspaceState>()(
               const data = await res.json();
               sessionId = data.id;
               updateTab(tabId, { sessionId, isLoading: false });
+
+              const latestTab = getTab(tabId);
+              if (latestTab?.isTitleCustom && latestTab.title !== titleAtCreation) {
+                fetchWithAuth(`/ai/sessions/${sessionId}`, {
+                  method: 'PATCH',
+                  body: JSON.stringify({ title: latestTab.title }),
+                }).catch((err) => console.error('[Workspace] Failed to sync title after session creation:', err));
+              }
             } catch (err) {
               updateTab(tabId, {
                 error: err instanceof Error ? err.message : 'Failed to create session',
