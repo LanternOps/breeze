@@ -168,6 +168,31 @@ function containsNotExists(predicate: unknown): boolean {
   return false;
 }
 
+/**
+ * #4446 — the correlation-metadata read's WHERE is the ONLY `and(...)` in this
+ * handler whose every arg is an `inArray` leaf (the list-query `whereCondition`
+ * always carries an `ne`/`eq` alongside), so this identifies it without relying
+ * on `whereCalls` ordering. Returns each such node's `vals` arrays in arg order.
+ *
+ * The mocked `../../db/schema` stubs tables as bare `{}`, so `col` is
+ * `undefined` here and this file cannot say WHICH column each leaf pins — that
+ * is what `alerts.hideAiNoise.sql.test.ts` compiles real SQL to prove. What
+ * this file uniquely proves is the ROUTE wiring: that
+ * `correlationMetadataCondition(orgIdsForPage, alertIds)` is the predicate that
+ * actually reaches `.where()`, org array and all, rather than the unpinned
+ * `inArray(alertCorrelationMembers.alertId, alertIds)` it replaced.
+ */
+function inArrayOnlyAndNodes(): unknown[][] {
+  return dbState.whereCalls
+    .filter((predicate): predicate is { op: 'and'; args: { op: string; vals: unknown[] }[] } => {
+      if (!predicate || typeof predicate !== 'object') return false;
+      const node = predicate as { op?: string; args?: unknown[] };
+      if (node.op !== 'and' || !Array.isArray(node.args) || node.args.length === 0) return false;
+      return node.args.every((arg) => (arg as { op?: string } | null)?.op === 'inArray');
+    })
+    .map((node) => node.args.map((arg) => arg.vals));
+}
+
 const ALERT_1 = '11111111-1111-4111-8111-111111111111';
 const ALERT_2 = '22222222-2222-4222-8222-222222222222';
 const ORG_1 = 'org-1';
@@ -353,6 +378,40 @@ describe('GET /alerts — aiVerdict (Task 14)', () => {
     const res = await makeApp().request('/alerts?hideAiNoise=true');
     expect(res.status).toBe(200);
     expect(dbState.whereCalls.some(containsNotExists)).toBe(true);
+  });
+
+  // #4446 — the sibling of the hideAiNoise wiring test above, for the OTHER
+  // correlation read on this page. Before the fix this query's WHERE was a bare
+  // `inArray(alertCorrelationMembers.alertId, alertIds)` with no org pin at
+  // all; a `status === 200` assertion stays green through that revert, and so
+  // would a compiled-SQL test of `correlationMetadataCondition` in isolation.
+  // Only capturing the ROUTE's actual `.where()` argument catches it.
+  it('wires correlationMetadataCondition(orgIdsForPage, alertIds) into the correlation-metadata read', async () => {
+    const ORG_2 = 'org-2';
+    authRef.current = {
+      scope: 'partner',
+      user: { id: 'u-1', name: 'Partner Tech', email: 'tech@partner.example' },
+      partnerId: 'partner-1', orgId: null, accessibleOrgIds: [ORG_1, ORG_2], allowedSiteIds: undefined,
+      canAccessOrg: () => true,
+    };
+    dbState.selectQueue.push([{ count: 2 }]);
+    dbState.selectQueue.push([
+      baseAlertRow(ALERT_1, { orgId: ORG_1 }),
+      baseAlertRow(ALERT_2, { orgId: ORG_2 }),
+    ]);
+    dbState.selectQueue.push([]); // correlationRows
+
+    await makeApp().request('/alerts');
+
+    // Three `inArray` leaves in `correlationMetadataCondition`'s own order:
+    // member org, member alert, group org. The page's org set appearing TWICE
+    // is the load-bearing part — that is the pin the pre-#4446 code lacked on
+    // BOTH joined rows.
+    expect(inArrayOnlyAndNodes()).toContainEqual([
+      [ORG_1, ORG_2],
+      [ALERT_1, ALERT_2],
+      [ORG_1, ORG_2],
+    ]);
   });
 
   it('does NOT add a notExists condition when hideAiNoise is absent', async () => {
