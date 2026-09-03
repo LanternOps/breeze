@@ -207,20 +207,53 @@ describe('verifyMobileSignature — ES256', () => {
     // react-native-biometrics mints RSA-2048; anything smaller is forgeable
     // enough that it must not carry an approval, legacy row or not.
     //
-    // The weak key is the SUBJECT of the test, not a use of one: it is minted
-    // here solely so the assertion below can prove verifyMobileSignature
-    // REJECTS it. It never leaves this function and nothing is protected with
-    // it. The signature has to be genuine — with a garbage signature the call
-    // would return false anyway and the test would be vacuous, proving nothing
-    // about the modulus floor.
-    // codeql[js/insufficient-key-size]
-    const { publicKey, privateKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 1024 });
-    const spkiB64 = publicKey.export({ type: 'spki', format: 'der' }).toString('base64');
+    // These are PUBLIC test vectors for a throwaway 1024-bit key: an SPKI and a
+    // genuine RSA-SHA256 signature over the payload 'n'. The private key was
+    // discarded at generation and nothing is protected with any of this.
+    //
+    // They are committed rather than minted in-test for two reasons. The
+    // signature must be REAL — with a garbage signature the call would return
+    // false anyway and this test would be vacuous, proving nothing about the
+    // modulus floor it exists to pin. And calling
+    // `generateKeyPairSync('rsa', { modulusLength: 1024 })` here trips CodeQL's
+    // js/insufficient-key-size (high) — correctly by the letter of the rule,
+    // since a weak key really would be generated, even though the whole point
+    // is that we REJECT it. Vectors sidestep the sink without weakening the
+    // assertion or dismissing a scanner finding.
+    //
+    // To regenerate:
+    //   const { publicKey, privateKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 1024 });
+    //   publicKey.export({ type: 'spki', format: 'der' }).toString('base64');
+    //   crypto.sign('RSA-SHA256', Buffer.from('n', 'utf8'), privateKey).toString('base64');
+    const WEAK_RSA1024_SPKI_B64 =
+      'MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDNgEPIiNLf6ClxhbvERAyoLHOuV8Imla8ko+hkv4Yefg1ARbPBcixO+NDp9uWuy2evCv1VpeVjkSALttH0A1jkircplD9fp+TPOEDCNCzInlVDGBdUxSXcRMyS1YqPa/PwvqlBsk5zy5+VCUXa9WhGepoN0IoO8peDgHljrROnSQIDAQAB';
+    const WEAK_RSA1024_SIG_OVER_N_B64 =
+      'emOQP1xjbn6AX9SVzSNww8PDVlDgQYAQzBVmMf8yBRe0JKS5bVi9iI7Sk4B6Ju8TlkGaMM3aTzNjozVdoVo6eSPu5XfDSuzU27dYPidsMFVkVs4ew5CB59lsL+W9oLvnmHg+FRFTJWwx3pD1RPN8DlemzTsbfv0mtLxOfuAR+3Y=';
+
+    // Control: the vectors really are a 1024-bit key and a signature that
+    // VERIFIES against it. Without this the test could silently degrade into
+    // "malformed input returns false" and still pass.
+    const key = crypto.createPublicKey({
+      key: Buffer.from(WEAK_RSA1024_SPKI_B64, 'base64'),
+      format: 'der',
+      type: 'spki',
+    });
+    expect(key.asymmetricKeyDetails?.modulusLength).toBe(1024);
+    expect(
+      crypto.verify(
+        'SHA256',
+        Buffer.from('n', 'utf8'),
+        key,
+        Buffer.from(WEAK_RSA1024_SIG_OVER_N_B64, 'base64'),
+      ),
+    ).toBe(true);
+
+    // ...and yet the approval verifier refuses it, purely on the modulus floor.
     expect(
       verifyMobileSignature({
-        publicKeySpkiB64: spkiB64,
+        publicKeySpkiB64: WEAK_RSA1024_SPKI_B64,
         payload: 'n',
-        signatureB64: sign(privateKey, 'n'),
+        signatureB64: WEAK_RSA1024_SIG_OVER_N_B64,
         alg: 'RS256',
       }),
     ).toBe(false);
