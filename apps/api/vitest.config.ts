@@ -127,11 +127,6 @@ export default defineConfig({
       // the no-DB unit runner would fail it on connect. Belongs to
       // vitest.integration.config.ts (registered in its include list).
       'src/jobs/intentReleaseWorkerM365Headless.integration.test.ts',
-      // Two-replica runtime extension reconcile + failure policy (Task 8,
-      // issue #2619): imports `__tests__/integration/setup` (real postgres
-      // pool) and forks real child processes against `:5433`. Belongs to
-      // vitest.integration.config.ts (already in its include).
-      'src/extensions/twoReplicaReconcile.integration.test.ts',
       // Disabled built-in extension's table-existence probe against a real
       // server: imports `__tests__/integration/setup` (real postgres pool) and
       // provisions its own throwaway database. Belongs to

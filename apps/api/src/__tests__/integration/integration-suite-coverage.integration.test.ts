@@ -3,6 +3,16 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import integrationConfig from '../../../vitest.integration.config';
 
+// NOTE: importing the real config module runs its module-scope
+// `config({ path: '../../.env.test' })` (dotenv) call as a side effect.
+// That's a deliberate trade-off, not an oversight: reading the config's
+// actual `include`/`exclude` arrays (rather than hand-copying them, which
+// would drift) requires importing the module, and dotenv silently no-ops
+// when the target file is absent or already loaded. If a future change adds
+// something less inert at module scope in vitest.integration.config.ts
+// (e.g. eager env validation), this "static-analysis only, no DB/Redis"
+// runner would need to be revisited.
+
 /**
  * Contract test for #4522: every `*.integration.test.ts` file under `src/`
  * must be reachable by SOME CI job, or explicitly and visibly documented as
@@ -119,6 +129,23 @@ function isCoveredByIntegrationConfig(relPath: string): boolean {
   return include.some((pattern) => globToRegExp(pattern).test(relPath));
 }
 
+describe('globToRegExp (matcher used by the coverage checks below)', () => {
+  it('matches literal paths exactly, and nothing else', () => {
+    const re = globToRegExp('src/services/invoicePdf.integration.test.ts');
+    expect(re.test('src/services/invoicePdf.integration.test.ts')).toBe(true);
+    expect(re.test('src/services/invoicePdf.integration.test.ts.bak')).toBe(false);
+    expect(re.test('other/src/services/invoicePdf.integration.test.ts')).toBe(false);
+  });
+
+  it('matches `dir/**/*.ext`-style globs at any depth, including zero', () => {
+    const re = globToRegExp('src/__tests__/integration/**/*.test.ts');
+    expect(re.test('src/__tests__/integration/rls.integration.test.ts')).toBe(true);
+    expect(re.test('src/__tests__/integration/nested/dir/foo.test.ts')).toBe(true);
+    expect(re.test('src/__tests__/integration/foo.ts')).toBe(false);
+    expect(re.test('src/other/foo.test.ts')).toBe(false);
+  });
+});
+
 describe('integration test suite coverage (#4522)', () => {
   it('every *.integration.test.ts file is either in the integration config include list or a justified allowlist entry', async () => {
     const files = await findIntegrationTestFiles(API_ROOT);
@@ -144,6 +171,28 @@ describe('integration test suite coverage (#4522)', () => {
       stale,
       `KNOWN_OUTSIDE_INTEGRATION_SUITE names file(s) that no longer exist — ` +
         `remove the stale entry:\n` + stale.map((f) => `  - ${f}`).join('\n')
+    ).toEqual([]);
+  });
+
+  it('every literal (non-glob) include entry in the integration config still resolves to a file on disk', async () => {
+    // The disk->config checks above only catch a file that exists but isn't
+    // wired in. They miss the inverse: an include entry left behind after
+    // its file was deleted or renamed, which just quietly does nothing
+    // forever (config drift, not a CI gap) — e.g. a since-deleted
+    // `twoReplicaReconcile.integration.test.ts` sat in this exact include
+    // list for a release after its source file was removed (#3488). Only
+    // literal (non-glob) entries are checked: a glob entry that currently
+    // matches zero files isn't necessarily stale — it just means no file
+    // happens to live under that pattern right now.
+    const files = new Set(await findIntegrationTestFiles(API_ROOT));
+    const { include } = integrationConfig.test as { include: string[] };
+    const staleIncludes = include.filter((pattern) => !pattern.includes('*') && !files.has(pattern));
+
+    expect(
+      staleIncludes,
+      `vitest.integration.config.ts's include list names file(s) that no ` +
+        `longer exist on disk — remove the stale entry:\n` +
+        staleIncludes.map((f) => `  - ${f}`).join('\n')
     ).toEqual([]);
   });
 });
