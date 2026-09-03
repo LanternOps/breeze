@@ -57,6 +57,7 @@ import {
   assertAppRoleBootstrapped,
   hashSql,
   hasNoTransactionDirective,
+  extractDefinedFunctionNames,
   splitSqlStatements,
   CHECKSUM_RECONCILIATIONS,
   planMigrations,
@@ -284,6 +285,81 @@ describe('autoMigrate', () => {
 
     it('matches "@no-transaction" only as a whole word', () => {
       expect(hasNoTransactionDirective('-- @no-transactional\nSELECT 1;')).toBe(false);
+    });
+  });
+
+  describe('extractDefinedFunctionNames', () => {
+    it('returns an empty array for a file that defines no function', () => {
+      expect(extractDefinedFunctionNames('ALTER TABLE devices ADD COLUMN IF NOT EXISTS foo text;')).toEqual([]);
+    });
+
+    it('extracts a schema-qualified CREATE OR REPLACE FUNCTION, lowercased', () => {
+      const sql = 'CREATE OR REPLACE FUNCTION public.Breeze_Guard_Pam_Device_Org_Move()\nRETURNS trigger\nAS $$ BEGIN RETURN NEW; END; $$ LANGUAGE plpgsql;';
+      expect(extractDefinedFunctionNames(sql)).toEqual(['public.breeze_guard_pam_device_org_move']);
+    });
+
+    it('extracts every function/procedure a real multi-definer migration redefines', () => {
+      // Trimmed shape of apps/api/migrations/2026-09-17-pam-device-move-guard.sql:
+      // two CREATE OR REPLACE FUNCTION statements in one file.
+      const sql = `
+CREATE OR REPLACE FUNCTION public.breeze_guard_pam_device_org_move()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  RETURN NEW;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.breeze_device_child_orgid_tables()
+  RETURNS SETOF text
+  LANGUAGE sql
+  STABLE
+  AS $$
+  SELECT 1;
+$$;
+`;
+      expect(extractDefinedFunctionNames(sql)).toEqual([
+        'public.breeze_device_child_orgid_tables',
+        'public.breeze_guard_pam_device_org_move',
+      ]);
+    });
+
+    it('recognizes bare CREATE FUNCTION and CREATE [OR REPLACE] PROCEDURE, without the "OR REPLACE" branch', () => {
+      const sql = `
+CREATE FUNCTION public.plain_new_function() RETURNS void AS $$ BEGIN END; $$ LANGUAGE plpgsql;
+CREATE PROCEDURE public.plain_procedure() LANGUAGE sql AS $$ SELECT 1; $$;
+CREATE OR REPLACE PROCEDURE public.replaced_procedure() LANGUAGE sql AS $$ SELECT 1; $$;
+`;
+      expect(extractDefinedFunctionNames(sql)).toEqual([
+        'public.plain_new_function',
+        'public.plain_procedure',
+        'public.replaced_procedure',
+      ]);
+    });
+
+    it('ignores a CREATE OR REPLACE FUNCTION mentioned only in a line comment', () => {
+      const sql = [
+        '-- Idempotent throughout: ADD COLUMN IF NOT EXISTS, DO-guarded constraint add,',
+        '-- CREATE OR REPLACE FUNCTION public.should_not_count(). autoMigrate wraps this',
+        '-- file in one transaction -- no inner BEGIN/COMMIT.',
+        '',
+        'ALTER TABLE action_intents ADD COLUMN IF NOT EXISTS approval_scope text;',
+      ].join('\n');
+      expect(extractDefinedFunctionNames(sql)).toEqual([]);
+    });
+
+    it('dedupes a name defined more than once in the same file', () => {
+      const sql = `
+CREATE OR REPLACE FUNCTION public.dup() RETURNS void AS $$ BEGIN END; $$ LANGUAGE plpgsql;
+CREATE OR REPLACE FUNCTION public.dup() RETURNS void AS $$ BEGIN END; $$ LANGUAGE plpgsql;
+`;
+      expect(extractDefinedFunctionNames(sql)).toEqual(['public.dup']);
+    });
+
+    it('is case-insensitive on the CREATE/FUNCTION keywords themselves', () => {
+      expect(extractDefinedFunctionNames('create or replace function public.lower_kw() returns void as $$ begin end; $$ language plpgsql;'))
+        .toEqual(['public.lower_kw']);
     });
   });
 

@@ -7,6 +7,10 @@
  * without migration 2026-10-08-101300-device-move-exclude-billing-evidence.sql invoice_line_devices is auto-enrolled and
  * the initially-immediate composite FKs raise 23503, failing every cross-org
  * move of a billed device. A red here IS that failure.
+ *
+ * The exclusion also has to SURVIVE another suite replaying an EARLIER
+ * definer of the same function by path — see the last case below and
+ * `replayMigration.ts` (#3205 W07 / PR #4838 CI shard-4 regression).
  */
 import './setup';
 import { randomUUID } from 'node:crypto';
@@ -18,6 +22,7 @@ import { devices, invoices, invoiceLines } from '../../db/schema';
 import { moveOrgRoutes } from '../../routes/devices/moveOrg';
 import { createAccessToken } from '../../services/jwt';
 import { createOrganization, createSite, setupTestEnvironment } from './db-utils';
+import { replayMigration } from './replayMigration';
 
 async function seed() {
   const env = await setupTestEnvironment({ scope: 'partner' });
@@ -109,5 +114,23 @@ describe('cross-org device move with billing evidence (real DB) #3205 W07', () =
       SELECT org_id FROM devices WHERE id = ${f.deviceId}::uuid
     `));
     expect(dev).toEqual([{ org_id: f.orgB }]);
+  });
+
+  runDb('the exclusion survives a later suite replaying the EARLIER pam-device-move-guard.sql definer by path', async () => {
+    // pamDeviceMoveGuard.integration.test.ts replays this exact file (to
+    // prove it's a privilege-grant no-op on re-apply). That file's own
+    // CREATE OR REPLACE FUNCTION public.breeze_device_child_orgid_tables()
+    // body predates 2026-10-08-101300-device-move-exclude-billing-evidence.sql's
+    // invoice_line_devices exclusion — a bare replay reverts the function to
+    // the older body for the rest of this vitest process. replayMigration
+    // (unlike a bare readFile + sql.raw) re-applies every LATER migration
+    // that redefines the same function, so the exclusion must still hold
+    // immediately afterward.
+    await replayMigration('2026-09-17-pam-device-move-guard.sql');
+
+    const rows = await withSystemDbAccessContext(() => db.execute(sql`
+      SELECT 1 AS hit FROM public.breeze_device_child_orgid_tables() t(name) WHERE t.name = 'invoice_line_devices'
+    `));
+    expect(rows).toEqual([]);
   });
 });

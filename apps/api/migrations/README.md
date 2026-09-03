@@ -95,6 +95,15 @@ references fails as an `ENOENT` several minutes into Integration Tests, not as
 a compile error. `autoMigrate.test.ts` asserts every such reference resolves,
 so the unit job catches it first — but only if you run it.
 
+**A replayed migration must go through `replayMigration`, not a bare
+`readFile` + `sql.raw`.** If the file redefines a SQL function
+(`CREATE OR REPLACE FUNCTION`) that a LATER migration also redefines, a bare
+replay reverts that function to the earlier body for the rest of the vitest
+process — silently breaking any later suite in the same shard/CI job that
+depends on the later body (#3205 W07 / PR #4838).
+`apps/api/src/__tests__/integration/replayMigration.ts` re-applies every
+later definer automatically; see its header comment.
+
 ## Checklist for a new migration
 
 1. Write `apps/api/migrations/YYYY-MM-DD-<slug>.sql` (add `-a-`/`-b-` only if
