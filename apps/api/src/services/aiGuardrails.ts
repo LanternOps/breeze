@@ -252,6 +252,23 @@ export const TIER3_ACTIONS: Record<string, string[]> = {
   // Ticketing — move_org is a tenant-shape mutation and requires approval.
   // log_time_entry/start_timer/stop_timer downgraded to Tier 2 (2026-07-20).
   manage_tickets: ['move_org'],
+  // Money-authoring drafts vs money-moving actions (#2551): this boundary
+  // tracks reversibility/external-commitment, not dollar amount. Drafting —
+  // create_draft, add_manual_line, add_catalog_line, update, etc. — only
+  // mutates an internal record nobody outside Breeze has seen yet; it's
+  // Tier 2 (auto-execute + audit) no matter how large the draft's total is.
+  // The step that actually commits externally — issuing/voiding an invoice,
+  // recording/voiding a payment, sending a quote to the customer, or
+  // transitioning a contract's lifecycle — is what exposes the change beyond
+  // Breeze, so THAT step is Tier 3 regardless of amount. A five-figure quote
+  // draft and a $10 one get the same tier; only `send` escalates.
+  //
+  // This is deliberate, not an oversight that `manage_organizations:
+  // create_org` is Tier 3 while `manage_quotes: create_draft` is Tier 2 —
+  // create_org is gated on tenant-structure mutation, an unrelated axis, not
+  // financial size. A partner-configurable dollar-amount escalation
+  // threshold for drafting was proposed and explicitly deferred (not
+  // rejected) — see #2551 for the full analysis and the decision record.
   manage_invoices: ['issue', 'void', 'record_payment', 'void_payment'],
   manage_contracts: ['activate', 'pause', 'resume', 'cancel'],
   manage_quotes: ['send'],
