@@ -686,7 +686,11 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
   // only; the API 409s a resolution_note draft here (it's consumed only via
   // the resolve flow's aiDraftId, below).
   const sendAiDraft = useCallback(async (draft: TicketAiDraft) => {
-    if (sendingDraftId || discardingDraftId) return;
+    // Scoped to this draft's own id — each draft card is an independent
+    // operation (#4469). Guarding on "any in-flight action" blocked acting on
+    // one card while the other was mid-request, even though the button
+    // itself wasn't visually disabled.
+    if (sendingDraftId === draft.id || discardingDraftId === draft.id) return;
     const content = (draftContent[draft.id] ?? draft.content).trim();
     if (!content) return;
     setSendingDraftId(draft.id);
@@ -718,7 +722,8 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
 
   // Discards a draft (either kind) without acting on it.
   const discardAiDraft = useCallback(async (draft: TicketAiDraft) => {
-    if (sendingDraftId || discardingDraftId) return;
+    // Scoped to this draft's own id — see sendAiDraft above (#4469).
+    if (sendingDraftId === draft.id || discardingDraftId === draft.id) return;
     setDiscardingDraftId(draft.id);
     try {
       await runAction({
