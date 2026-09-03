@@ -642,6 +642,7 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     delete_draft: { resource: 'contracts', action: 'write' },
     add_line: { resource: 'contracts', action: 'write' },
     remove_line: { resource: 'contracts', action: 'write' },
+    update_line: { resource: 'contracts', action: 'write' },
     activate: { resource: 'contracts', action: 'manage' },
     pause: { resource: 'contracts', action: 'manage' },
     resume: { resource: 'contracts', action: 'manage' },

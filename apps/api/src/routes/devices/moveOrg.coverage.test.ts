@@ -207,6 +207,10 @@ describe('CUSTOM_ORG_REWRITE_TABLES coverage', () => {
     expect(CUSTOM_ORG_REWRITE_TABLES).toContain('ticket_attachments');
   });
 
+  it('contains ticket_outbox (#4743: org_id denormalized from tickets, no device_id)', () => {
+    expect(CUSTOM_ORG_REWRITE_TABLES).toContain('ticket_outbox');
+  });
+
   it('is disjoint from the generic denorm, device-managed, and intentional-exclusion lists', () => {
     const overlapping = [
       ...deviceOrgDenormalizedTables.filter((t) => customSet.has(t)).map(

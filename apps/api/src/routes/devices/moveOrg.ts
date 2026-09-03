@@ -439,11 +439,26 @@ moveOrgRoutes.post(
           sql`UPDATE ${sql.identifier('ticket_alert_links')} SET org_id = ${targetOrgId}::uuid WHERE alert_id IN (SELECT id FROM alerts WHERE device_id = ${deviceId}::uuid)`,
         );
 
+        // ticket_outbox (#4743) denormalizes org_id from its ticket and has no
+        // device_id; tickets bound to this device move org, so any unpublished
+        // outbox row for one of those tickets must follow via the tickets
+        // join, or it keeps routing to the source org's helpdesk agents after
+        // the move (same class as ticket_alert_links, #3828 wave-6-3). Placed
+        // AFTER ticket_alert_links and BEFORE ticket_attachments to match this
+        // table's position in TICKET_ORG_DENORMALIZED_TABLES
+        // (ticketService.ts) — [..., 'ticket_alert_links', 'ticket_outbox',
+        // 'ticket_attachments'] — so this path and moveTicketOrg's loop touch
+        // the ticket-linked child tables in the same relative order; see the
+        // lock-order comment at moveOrg.ts:~311.
+        await tx.execute(
+          sql`UPDATE ${sql.identifier('ticket_outbox')} SET org_id = ${targetOrgId}::uuid WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${deviceId}::uuid)`,
+        );
+
         // ticket_attachments (W08 #3902) denormalizes org_id from its ticket and
         // has no device_id; tickets bound to this device move org, so their
         // attachment rows follow via the tickets join. Placed LAST to extend —
         // not reorder — the documented global lock order (tickets ->
-        // time_entries -> ticket_parts -> ticket_alert_links ->
+        // time_entries -> ticket_parts -> ticket_alert_links -> ticket_outbox ->
         // ticket_attachments); the moveTicketOrg loop appends it last for the
         // same reason. S3 objects are keyed by attachment id only (spec D8) and
         // are not touched.

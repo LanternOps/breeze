@@ -45,8 +45,10 @@ function formatSourceLabel(value: unknown): string {
 }
 
 function normalizeSeverity(value?: string): PatchSeverity {
-  if (!value) return 'low';
-  return severityMap[value.toLowerCase()] ?? 'low';
+  if (!value) return 'unrated';
+  const normalized = value.toLowerCase();
+  if (normalized === 'unknown') return 'unrated';
+  return severityMap[normalized] ?? 'unrated';
 }
 
 function normalizeApprovalStatus(value?: string): PatchApprovalStatus {

@@ -3,11 +3,111 @@ import { BULK_ID_LIMIT } from '../constants';
 import { currencyCodeSchema } from './currency';
 import { BILLABLE_DEVICE_ROLES } from './deviceRoles';
 
-const money = z.string().regex(/^\d+(\.\d{1,2})?$/, 'must be a 2-decimal money string');
+// numeric(12,2): ten digits before the point, two after. Unbounded before
+// (#3205 W03); an oversize value reached Postgres as a raw 22003 -> 500.
+// String-length, not Number(), so no float rounding decides a boundary.
+// Sibling validators already bound money (quotes.ts:8, catalog.ts:15).
+const money = z.string()
+  .regex(/^\d+(\.\d{1,2})?$/, 'must be a 2-decimal money string')
+  .refine((v) => v.split('.')[0]!.length <= 10, 'must be at most 10 digits before the decimal point');
+
+const INT32_MAX = 2_147_483_647;  // sort_order is int4
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'must be YYYY-MM-DD');
 
 export const CONTRACT_LINE_TYPES = ['flat', 'per_device', 'per_device_role', 'per_device_group', 'per_seat', 'manual'] as const;
 export type ContractLineType = typeof CONTRACT_LINE_TYPES[number];
+
+/** Read layers use null for not-applicable, write layers omit the key (see the
+ *  note on deviceRoles below). One predicate set has to serve both. */
+const present = (v: unknown): boolean => v !== undefined && v !== null;
+
+const SITE_SCOPABLE_LINE_TYPES = new Set<ContractLineType>(['per_device', 'per_device_role']);
+
+export interface ContractLineShape {
+  lineType: ContractLineType;
+  manualQuantity?: string | null;
+  siteId?: string | null;
+  deviceRoles?: readonly string[] | null;
+  deviceGroupId?: string | null;
+  deviceGroupName?: string | null;
+}
+
+export interface ContractLineInvariantIssue {
+  path: keyof ContractLineShape;
+  message: string;
+}
+
+/**
+ * #3205 W03. The contract-line invariants, once, in two modes.
+ *
+ * 'create'    — a NEW line, from contractLineInputSchema. Reproduces the
+ *               pre-W03 add-schema behaviour byte for byte.
+ * 'persisted' — a line that already exists, or a merged (current ⊕ patch) row.
+ *               Differs only where the persisted world legitimately allows
+ *               something a new line may not (a group line orphaned by the FK),
+ *               or requires something only a stored row has (the stamped
+ *               device_group_name).
+ *
+ * NOT a transcription of the DB CHECKs. Three rules here have NO database
+ * counterpart (duplicate roles — `<@` is containment, not set equality;
+ * manualQuantity — there is no CHECK on the column at all; siteId on
+ * flat/manual/per_seat — W02's CHECK covers per_device_group only), and two DB
+ * rules are not expressible here (role-set membership, 1-D array shape). Both
+ * sides are load-bearing; see the asymmetry matrix in the spec.
+ */
+export function contractLineInvariantIssues(
+  l: ContractLineShape, opts: { mode: 'create' | 'persisted' },
+): ContractLineInvariantIssue[] {
+  const issues: ContractLineInvariantIssue[] = [];
+  const isManual = l.lineType === 'manual';
+  const isRoleLine = l.lineType === 'per_device_role';
+  const isGroupLine = l.lineType === 'per_device_group';
+
+  if (isManual && !present(l.manualQuantity)) {
+    issues.push({ path: 'manualQuantity', message: 'manualQuantity is required for manual lines' });
+  } else if (!isManual && opts.mode === 'persisted' && present(l.manualQuantity)) {
+    // create TOLERATES this: the add writer nulls the column on every other
+    // type (contractService.ts:904), so rejecting it would change add behaviour.
+    issues.push({ path: 'manualQuantity', message: 'manualQuantity is only valid on manual lines' });
+  }
+
+  if (present(l.siteId) && !SITE_SCOPABLE_LINE_TYPES.has(l.lineType)) {
+    issues.push({ path: 'siteId', message: 'siteId is only valid on per_device and per_device_role lines' });
+  }
+
+  if (isRoleLine !== present(l.deviceRoles)) {
+    issues.push({ path: 'deviceRoles', message: 'deviceRoles is required on per_device_role lines and not allowed on other line types' });
+  } else if (present(l.deviceRoles)) {
+    const roles = l.deviceRoles!;
+    // The create schema's z.array(...).min(1) owns this issue. Repeating it
+    // here would change the pre-W03 issue array; persisted rows need the helper
+    // to enforce non-empty roles because they do not pass through that schema.
+    if (opts.mode === 'persisted' && roles.length === 0) {
+      issues.push({ path: 'deviceRoles', message: 'deviceRoles must not be empty' });
+    } else if (new Set(roles).size !== roles.length) {
+      issues.push({ path: 'deviceRoles', message: 'deviceRoles must not contain duplicates' });
+    }
+  }
+
+  if (opts.mode === 'create') {
+    // W02's two-way refine: a NEW group line must name its group.
+    if (isGroupLine !== present(l.deviceGroupId)) {
+      issues.push({ path: 'deviceGroupId', message: 'deviceGroupId is required on per_device_group lines and not allowed on other line types' });
+    }
+  } else {
+    // A stored group line may carry a NULL device_group_id: the composite FK is
+    // ON DELETE SET NULL (device_group_id), so deleting the group orphans the
+    // line rather than blocking. That state is legal and repairable in place.
+    if (!isGroupLine && present(l.deviceGroupId)) {
+      issues.push({ path: 'deviceGroupId', message: 'deviceGroupId is not allowed on this line type' });
+    }
+    if (isGroupLine !== present(l.deviceGroupName)) {
+      issues.push({ path: 'deviceGroupName', message: 'deviceGroupName is required on per_device_group lines and not allowed on other line types' });
+    }
+  }
+
+  return issues;
+}
 
 export const contractLineInputSchema = z.object({
   lineType: z.enum(CONTRACT_LINE_TYPES),
@@ -29,31 +129,123 @@ export const contractLineInputSchema = z.object({
   // are evaluated live at estimate/invoice time. No siteId on this type — the
   // group's own site narrows it (contract_lines_device_group_chk).
   deviceGroupId: z.string().guid().optional(),
-  sortOrder: z.number().int().min(0).optional()
+  sortOrder: z.number().int().min(0).max(INT32_MAX).optional()
 }).refine(
   (l) => l.unitPrice !== undefined || l.catalogItemId !== undefined,
   { message: 'unitPrice is required unless catalogItemId is set', path: ['unitPrice'] }
 ).refine(
   (l) => l.taxable !== undefined || l.catalogItemId !== undefined,
   { message: 'taxable is required unless catalogItemId is set', path: ['taxable'] }
+).superRefine((l, ctx) => {
+  // #3205 W03: the shape invariants live in contractLineInvariantIssues so the
+  // update path can run the SAME rules over a merged row. Pricing refinements
+  // remain before these shape checks to preserve the pre-W03 issue ordering.
+  for (const issue of contractLineInvariantIssues(l, { mode: 'create' })) {
+    ctx.addIssue({ code: 'custom', path: [issue.path], message: issue.message });
+  }
+});
+
+/**
+ * PATCH /contracts/:id/lines/:lineId (#3205 W03). Hand-written rather than
+ * contractLineInputSchema.partial(): partial() cannot express the tri-state
+ * catalogItemId, and on this schema it is not even callable — Zod 4.4.3 throws
+ * ".partial() cannot be used on object schemas containing refinements"
+ * (verified), and contractLineInputSchema carries refinements.
+ *
+ * STRICT on purpose. lineType is not editable — changing it crosses
+ * contract_lines_device_roles_chk, contract_lines_device_group_chk and the site
+ * rule at once — and a non-strict schema would ACCEPT {lineType:'flat'} and
+ * silently drop it. Strict also turns a misspelled key into a 400 rather than a
+ * silent no-op patch. Message: Unrecognized key: "lineType".
+ *
+ * catalogItemId is TRI-STATE by key presence (Zod 4 preserves absence, verified
+ * by execution); see the transition table in the spec. refreshCatalogPrice is
+ * the ONLY way to reprice an unchanged link, so a price never moves as a side
+ * effect of another edit.
+ */
+export const updateContractLineSchema = z.object({
+  description: z.string().min(1).max(2000).optional(),
+  unitPrice: money.optional(),
+  taxable: z.boolean().optional(),
+  catalogItemId: z.string().guid().nullable().optional(),
+  refreshCatalogPrice: z.boolean().optional(),      // default false
+  manualQuantity: money.optional(),
+  // null clears the site narrowing on a per_device / per_device_role line.
+  siteId: z.string().guid().nullable().optional(),
+  deviceRoles: z.array(z.enum(BILLABLE_DEVICE_ROLES)).min(1).optional(),
+  // No null: a group line is never deliberately orphaned (decision 7).
+  deviceGroupId: z.string().guid().optional(),
+  sortOrder: z.number().int().min(0).max(INT32_MAX).optional(),
+}).strict().refine(
+  (p) => Object.keys(p).length > 0,
+  { message: 'patch must change at least one field' },
 ).refine(
-  (l) => l.lineType !== 'manual' || l.manualQuantity !== undefined,
-  { message: 'manualQuantity is required for manual lines', path: ['manualQuantity'] }
-).refine(
-  (l) => l.lineType === 'per_device' || l.lineType === 'per_device_role' || l.siteId === undefined,
-  { message: 'siteId is only valid on per_device and per_device_role lines', path: ['siteId'] }
-).refine(
-  // Two-way on purpose (stricter than the manualQuantity rule): the CHECK
-  // constraint rejects roles on any other type, so the validator must too.
-  (l) => (l.lineType === 'per_device_role') === (l.deviceRoles !== undefined),
-  { message: 'deviceRoles is required on per_device_role lines and not allowed on other line types', path: ['deviceRoles'] }
-).refine(
-  (l) => l.deviceRoles === undefined || new Set(l.deviceRoles).size === l.deviceRoles.length,
-  { message: 'deviceRoles must not contain duplicates', path: ['deviceRoles'] }
-).refine(
-  (l) => (l.lineType === 'per_device_group') === (l.deviceGroupId !== undefined),
-  { message: 'deviceGroupId is required on per_device_group lines and not allowed on other line types', path: ['deviceGroupId'] }
+  (p) => p.deviceRoles === undefined || new Set(p.deviceRoles).size === p.deviceRoles.length,
+  { message: 'deviceRoles must not contain duplicates', path: ['deviceRoles'] },
 );
+
+export type UpdateContractLineInput = z.infer<typeof updateContractLineSchema>;
+
+/** Key-presence test for a tri-state patch field. Explicit undefined is the
+ *  same as omission; null alone means clear/unlink. */
+export function patchHasKey(patch: UpdateContractLineInput, key: keyof UpdateContractLineInput): boolean {
+  return key in patch && patch[key] !== undefined;
+}
+
+/** A contract_lines row in read-layer shape (null = not applicable). */
+export interface PersistedContractLine extends ContractLineShape {
+  description: string;
+  unitPrice: string;
+  taxable: boolean;
+  catalogItemId: string | null;
+  manualQuantity: string | null;
+  siteId: string | null;
+  deviceRoles: readonly string[] | null;
+  deviceGroupId: string | null;
+  deviceGroupName: string | null;
+  sortOrder: number;
+}
+
+export type MergedContractLine = PersistedContractLine;
+
+/**
+ * Current persisted line ⊕ patch (#3205 W03). PURE — the service resolves the
+ * catalog price/taxable BEFORE calling this and passes the result in `resolved`,
+ * so the whole rule set can also run in the web editor to disable Save before a
+ * round-trip, with no second copy of the rules.
+ *
+ * Price precedence implements the transition table: a `resolved` wins outright
+ * (rows 3/5 and a refresh); otherwise a merged row that stays LINKED keeps its
+ * stamped price and ignores any client value (rows 2/4), and an UNLINKED merged
+ * row takes the patch's value (rows 1/6/7).
+ *
+ * lineType and deviceGroupName are never merged: the type is not patchable, and
+ * the group name is re-stamped by the service from the resolved group AFTER the
+ * invariants run.
+ */
+export function mergeContractLinePatch(
+  current: PersistedContractLine,
+  patch: UpdateContractLineInput,
+  resolved?: { unitPrice: string; taxable: boolean; catalogItemId: string | null },
+): MergedContractLine {
+  const catalogItemId = resolved
+    ? resolved.catalogItemId
+    : (patchHasKey(patch, 'catalogItemId') ? (patch.catalogItemId ?? null) : current.catalogItemId);
+  const stillLinked = catalogItemId !== null;
+  return {
+    lineType: current.lineType,
+    description: patch.description ?? current.description,
+    unitPrice: resolved ? resolved.unitPrice : (stillLinked ? current.unitPrice : (patch.unitPrice ?? current.unitPrice)),
+    taxable: resolved ? resolved.taxable : (stillLinked ? current.taxable : (patch.taxable ?? current.taxable)),
+    catalogItemId,
+    manualQuantity: patch.manualQuantity ?? current.manualQuantity,
+    siteId: patchHasKey(patch, 'siteId') ? (patch.siteId ?? null) : current.siteId,
+    deviceRoles: patch.deviceRoles ?? current.deviceRoles,
+    deviceGroupId: patch.deviceGroupId ?? current.deviceGroupId,
+    deviceGroupName: current.deviceGroupName,
+    sortOrder: patch.sortOrder ?? current.sortOrder,
+  };
+}
 
 export const createContractSchema = z.object({
   orgId: z.string().guid(),

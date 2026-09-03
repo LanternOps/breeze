@@ -14,7 +14,7 @@
  * otherwise the move is blocked with a 409 and nothing moves.
  *
  * Global lock order: tickets → time_entries → ticket_parts → ticket_alert_links
- * → ticket_attachments. Call this INSIDE the mover's transaction, AFTER its
+ * → ticket_outbox → ticket_attachments. Call this INSIDE the mover's transaction, AFTER its
  * `UPDATE tickets` (which holds the ticket row lock) and BEFORE the child
  * `org_id` rewrites. `issueInvoice` never locks `tickets` (wave-2 order
  * invoices → invoice_lines → contracts → contract_lines → time_entries →

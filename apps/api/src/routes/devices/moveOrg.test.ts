@@ -372,10 +372,11 @@ describe('POST /devices/:id/move-org', () => {
       // only post-move": each row in those tables has its org_id rewritten
       // to the new org, so RLS in the OLD org no longer matches it.
       // CUSTOM_ORG_REWRITE_TABLES (time_entries, ticket_parts,
-      // ticket_alert_links, ticket_attachments — no device_id column, each
-      // rewritten via a ticket_id or alert_id join) follow the generic org
-      // loop, and this spread is what pins the hand-written statements to that
-      // array's ORDER, which is the cross-axis lock order (#4657). The SITE
+      // ticket_alert_links, ticket_outbox, ticket_attachments — no device_id
+      // column, each rewritten via a ticket_id or alert_id join) follow the
+      // generic org loop, and this spread is what pins the hand-written
+      // statements to that array's ORDER, which is the cross-axis lock order
+      // (#4657, #4743). The SITE
       // loop runs last and any table in DEVICE_SITE_DENORMALIZED_TABLES
       // appears in updatedTables a second time for the site_id rewrite.
       expect(updatedTables).toEqual([
@@ -499,6 +500,46 @@ describe('POST /devices/:id/move-org', () => {
       // the device-move and ticket-move paths agree (moveOrg.ts:~311).
       const idx = (t: string) => statements.findIndex((s) => s.startsWith(`UPDATE ${t} `));
       expect(idx('ticket_parts')).toBeLessThan(idx('ticket_attachments'));
+    });
+
+    it('rewrites ticket_outbox org_id via the tickets join inside the transaction (#4743)', async () => {
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
+      rigOrgAndSiteSelects({
+        orgRows: [
+          { id: SOURCE_ORG, partnerId: 'partner-1' },
+          { id: TARGET_ORG, partnerId: 'partner-1' },
+        ],
+        siteRow: { id: TARGET_SITE },
+      });
+      const { statements } = rigTransactionSuccess();
+
+      const res = await app.request(`/devices/${DEVICE_ID}/move-org`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE }),
+      });
+      expect(res.status).toBe(200);
+
+      // ticket_outbox denormalizes org_id for RLS but has NO device_id
+      // column, so the generic getDeviceOrgDenormalizedTables() loop can't
+      // reach it. Without this dedicated rewrite, an unpublished outbox row
+      // for the moved device's ticket keeps routing to the OLD org's
+      // helpdesk agents after the move (same class as #4643).
+      const rewrites = statements.filter((s) => s.startsWith('UPDATE ticket_outbox '));
+      expect(
+        rewrites,
+        `Expected exactly one ticket_outbox org_id rewrite.\nStatements:\n${statements.join('\n')}`,
+      ).toEqual([
+        `UPDATE ticket_outbox SET org_id = ${TARGET_ORG}::uuid ` +
+          `WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${DEVICE_ID}::uuid)`,
+      ]);
+      // Lock order: ticket_outbox must come BEFORE ticket_attachments in this
+      // path, mirroring its position in TICKET_ORG_DENORMALIZED_TABLES
+      // (ticketService.ts) — '...ticket_alert_links', 'ticket_outbox',
+      // 'ticket_attachments'] — so the device-move and ticket-move paths
+      // agree on relative lock order (moveOrg.ts:~311).
+      const idx2 = (t: string) => statements.findIndex((s) => s.startsWith(`UPDATE ${t} `));
+      expect(idx2('ticket_outbox')).toBeLessThan(idx2('ticket_attachments'));
     });
 
     it('detaches ai_agent_runs.ticket_id via the tickets join, before tickets are re-stamped (#4215)', async () => {
@@ -830,11 +871,13 @@ describe('POST /devices/:id/move-org', () => {
       // caught here rather than in production.
       //
       // The currency guard is mocked for this whole file, so its own
-      // `FOR UPDATE` selects never reach the statement stream — only the four
-      // hand-written UPDATEs below are being ordered here. Cross-currency orgs
-      // are used so the guard resolves rather than short-circuits, putting the
-      // statements in the same positions they occupy on a real move; the real
-      // guard's lock order is covered by ticketMoveCurrencyGuard.test.ts.
+      // `FOR UPDATE` selects never reach the statement stream — only four of
+      // the five hand-written UPDATEs are being ordered here (ticket_outbox's
+      // position relative to ticket_attachments is asserted separately below).
+      // Cross-currency orgs are used so the guard resolves rather than
+      // short-circuits, putting the statements in the same positions they
+      // occupy on a real move; the real guard's lock order is covered by
+      // ticketMoveCurrencyGuard.test.ts.
       vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
       rigOrgAndSiteSelects({ orgRows: crossCurrencyOrgs, siteRow: { id: TARGET_SITE } });
       const { statements } = rigTransactionSuccess();

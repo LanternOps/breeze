@@ -31,6 +31,16 @@
   "deciding": "Envoi en cours…",
   "expiresIn": "Expire dans {{minutes}} min",
   "expiresSoon": "Expire dans moins d’une minute",
+  "expired": "Expirée",
+  "unknownOrganization": "Organisation inconnue",
+  "charCount": "{{count}}/{{max}}",
+  "approveToast": "{{action}} approuvé pour {{org}}",
+  "pagination": {
+    "showing": "Affichage de {{shown}} sur {{total}}",
+    "showingCount": "Affichage de {{shown}}",
+    "loadMore": "Charger plus",
+    "loadMoreError": "Impossible de charger plus d’éléments. Réessayez."
+  },
   "errors": {
     "noApproverDevice": "Enregistrez un appareil d’approbation dans votre profil, puis réessayez.",
     "notSoleApprover": "Une autre personne autorisée doit décider de cette demande.",

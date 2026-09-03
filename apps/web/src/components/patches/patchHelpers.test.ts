@@ -33,6 +33,43 @@ describe('normalizePatch — os resolution (#2215)', () => {
   });
 });
 
+// #3758: normalizeSeverity must not silently coerce a missing/unrecognized
+// severity to 'low' — that actively mislabels unrated patches instead of
+// just failing to label them.
+describe('normalizePatch severity (#3758)', () => {
+  it('maps a null severity to "unrated", not "low"', () => {
+    const patch = normalizePatch({ id: 'p1', title: 'KB123', severity: null }, 0);
+    expect(patch.severity).toBe('unrated');
+  });
+
+  it('maps a missing severity field to "unrated"', () => {
+    const patch = normalizePatch({ id: 'p1', title: 'KB123' }, 0);
+    expect(patch.severity).toBe('unrated');
+  });
+
+  it('maps the literal "unknown" severity to "unrated"', () => {
+    const patch = normalizePatch({ id: 'p1', title: 'KB123', severity: 'unknown' }, 0);
+    expect(patch.severity).toBe('unrated');
+  });
+
+  it('maps "unknown" case-insensitively (e.g. "UNKNOWN") to "unrated"', () => {
+    const patch = normalizePatch({ id: 'p1', title: 'KB123', severity: 'UNKNOWN' }, 0);
+    expect(patch.severity).toBe('unrated');
+  });
+
+  it('maps any other unrecognized severity string to "unrated", not "low"', () => {
+    const patch = normalizePatch({ id: 'p1', title: 'KB123', severity: 'urgent' }, 0);
+    expect(patch.severity).toBe('unrated');
+  });
+
+  it('still maps recognized severities correctly', () => {
+    expect(normalizePatch({ id: 'p1', title: 't', severity: 'critical' }, 0).severity).toBe('critical');
+    expect(normalizePatch({ id: 'p1', title: 't', severity: 'high' }, 0).severity).toBe('important');
+    expect(normalizePatch({ id: 'p1', title: 't', severity: 'medium' }, 0).severity).toBe('moderate');
+    expect(normalizePatch({ id: 'p1', title: 't', severity: 'low' }, 0).severity).toBe('low');
+  });
+});
+
 // #1317: normalizeRing must coerce the ring's stored autoApprove JSONB into the
 // typed editor shape, tolerant of legacy values the API may still return.
 describe('normalizeRing — autoApprove normalization (#1317)', () => {

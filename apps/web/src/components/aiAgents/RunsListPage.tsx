@@ -6,6 +6,8 @@ import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { formatCurrency } from '@/lib/i18n/format';
+import { badgeClass, runStatusTone, verdictTone } from './statusBadge';
+import { EmptyState } from '../shared/EmptyState';
 import type { AiAgentRunListItemDto, AiAgentRunStatus } from '@breeze/shared';
 import { AI_AGENT_RUN_STATUSES } from '@breeze/shared';
 
@@ -21,32 +23,45 @@ interface AgentOption {
 
 const PAGE_LIMIT = 25;
 
-function verdictBadgeClass(verdict: string | null): string {
-  switch (verdict) {
-    case 'remediated':
-      return 'bg-emerald-500/10 text-emerald-600';
-    case 'partial':
-      return 'bg-amber-500/10 text-amber-700';
-    case 'needs_attention':
-      return 'bg-red-500/10 text-red-600';
-    default:
-      return 'bg-muted text-muted-foreground';
-  }
+/** Every status NOT in this set is "live" — treat an unrecognized future
+ * status as live too, so a run never silently stops updating just because
+ * this list predates it. */
+const TERMINAL_RUN_STATUSES = new Set<AiAgentRunStatus>([
+  'completed', 'failed', 'cancelled', 'expired', 'skipped',
+]);
+function isLiveRunStatus(status: AiAgentRunStatus): boolean {
+  return !TERMINAL_RUN_STATUSES.has(status);
 }
 
-function statusBadgeClass(status: AiAgentRunStatus): string {
-  switch (status) {
-    case 'completed':
-      return 'bg-emerald-500/10 text-emerald-600';
-    case 'failed':
-      return 'bg-red-500/10 text-red-600';
-    case 'running':
-      return 'bg-blue-500/10 text-blue-600';
-    case 'awaiting_approval':
-      return 'bg-amber-500/10 text-amber-700';
-    default:
-      return 'bg-muted text-muted-foreground';
-  }
+const LIST_POLL_INTERVAL_MS = 10_000;
+/**
+ * Review finding P2-1 (#4187 critique): a run started after the initial page
+ * load never appeared, because polling stopped entirely once every visible
+ * row was terminal. While unfiltered and on page 1, a run can start at any
+ * time (not just while another run is already live), so keep a slow idle
+ * poll going even with nothing live on screen — same mechanism, longer
+ * cadence.
+ */
+const LIST_IDLE_POLL_INTERVAL_MS = 30_000;
+
+/**
+ * Decorative pulse next to a live row's status badge. The dot itself is
+ * `aria-hidden` — it is a sighted-user cue only; the substantive
+ * accessibility signal is the `aria-live="polite"` region on the status text
+ * itself (screen readers announce the status word changing), plus the
+ * sr-only label here so an accessibility tree still names what the dot means
+ * for a screen-reader user who tabs to it.
+ */
+function LiveIndicator({ label }: { label: string }) {
+  return (
+    <span className="ml-1.5 inline-flex items-center" data-testid="run-live-indicator">
+      <span className="relative flex h-2 w-2" aria-hidden="true">
+        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-sky-500 opacity-75" />
+        <span className="relative inline-flex h-2 w-2 rounded-full bg-sky-500" />
+      </span>
+      <span className="sr-only">{label}</span>
+    </span>
+  );
 }
 
 // Literal-key label lookups (not dynamic t()) so the keyUsage guard can verify
@@ -117,6 +132,15 @@ function triggerLabel(t: (key: string) => string, value: string): string {
  * `window.location.hash`-only rule for transient UI state (CLAUDE.md) extends
  * to pagination cursors, which are exactly that: a "load more" position, not
  * a shareable/bookmarkable view.
+ *
+ * UI critique fixes: the whole page polls the first page every
+ * `LIST_POLL_INTERVAL_MS` while any visible row is still in flight
+ * (`hasLiveRun`), merging fresh rows in by id so a "Load more" page beyond
+ * the first isn't clobbered; polling pauses while the tab is hidden.
+ * When unfiltered, a run started after the initial load is prepended (not
+ * just merged by id), and polling never stops outright — it drops to a slow
+ * `LIST_IDLE_POLL_INTERVAL_MS` cadence once nothing visible is live, so a
+ * brand-new run still surfaces without a manual reload.
  */
 export default function RunsListPage() {
   const { t } = useTranslation('settings');
@@ -139,11 +163,31 @@ export default function RunsListPage() {
 
   const [agentFilter, setAgentFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState<AiAgentRunStatus | ''>('');
+  const hasActiveFilter = Boolean(agentFilter || statusFilter);
+
+  const clearFilters = useCallback(() => {
+    setAgentFilter('');
+    setStatusFilter('');
+  }, []);
 
   // Monotonic request id — same stale-response guard as DeviceChangeHistoryTab:
   // a fresh page-1 load (filter change) bumps it so a late "Load more" response
   // can detect it's stale and bail before clobbering the new filter's rows.
+  // The background poll (below) shares this counter too (review finding
+  // P2-2, #4187 critique), so an out-of-order poll response — or a poll that
+  // resolves after a filter change already started a fresh page-1 load — is
+  // detected as stale and discarded rather than regressing the screen.
   const requestIdRef = useRef(0);
+
+  // Guards every setState in the background poll against firing after
+  // unmount (review finding P2-2).
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -228,6 +272,78 @@ export default function RunsListPage() {
     void fetchPage(null, false);
   }, [fetchPage]);
 
+  /**
+   * Background poll: re-fetches page 1 under the current filters.
+   *
+   * Known ids are merged in place (never replacing the whole array), so an
+   * accumulated "Load more" tail past the first page survives a poll tick.
+   * When unfiltered, ids in the response that aren't in `runs` yet are
+   * genuinely new runs — those are prepended (review finding P2-1) rather
+   * than silently dropped, which is what merge-by-id alone did. If the view
+   * hasn't been paginated past page 1 (no "Load more" yet), the result is
+   * trimmed back to `PAGE_LIMIT` so the page-1 window mirrors what the
+   * server just returned; an already-loaded tail beyond page 1 is left
+   * alone. Filtered views skip the prepend — a filtered page 1 isn't
+   * necessarily "everything newer", so a naive prepend could misorder rows
+   * the filter itself is meant to control.
+   *
+   * Shares `requestIdRef` with `fetchPage` (review finding P2-2): an
+   * overlapping or out-of-order response — including one that resolves
+   * after a filter change already kicked off a fresh page-1 load — is
+   * detected as stale via the id check and discarded. `mountedRef` guards
+   * against setting state after unmount.
+   *
+   * Best-effort — a failed poll just tries again next tick, without
+   * disturbing whatever is already on screen.
+   */
+  const pollListSilently = useCallback(async () => {
+    requestIdRef.current += 1;
+    const requestId = requestIdRef.current;
+    try {
+      const params = new URLSearchParams({ limit: String(PAGE_LIMIT) });
+      if (agentFilter) params.set('agentId', agentFilter);
+      if (statusFilter) params.set('status', statusFilter);
+      const response = await fetchWithAuth(`/ai/agents/runs?${params.toString()}`);
+      if (!mountedRef.current || requestId !== requestIdRef.current) return;
+      if (!response.ok) return;
+      const body = (await response.json()) as Partial<RunsResponse>;
+      if (!mountedRef.current || requestId !== requestIdRef.current) return;
+      if (!Array.isArray(body.data)) return;
+      const page = body.data;
+      const unfiltered = !agentFilter && !statusFilter;
+      setRuns((prev) => {
+        const byId = new Map(page.map((run) => [run.id, run] as const));
+        const merged = prev.map((run) => byId.get(run.id) ?? run);
+        if (!unfiltered) return merged;
+        const knownIds = new Set(prev.map((run) => run.id));
+        const freshRows = page.filter((run) => !knownIds.has(run.id));
+        if (freshRows.length === 0) return merged;
+        const combined = [...freshRows, ...merged];
+        return prev.length > PAGE_LIMIT ? combined : combined.slice(0, PAGE_LIMIT);
+      });
+    } catch {
+      // Best-effort background refresh; keep showing the last good data.
+    }
+  }, [agentFilter, statusFilter]);
+
+  const hasLiveRun = runs.some((run) => isLiveRunStatus(run.status));
+
+  useEffect(() => {
+    // Nothing to poll for: a filtered view with nothing live won't change on
+    // its own (review finding P2-1 only asks for the idle cadence on the
+    // unfiltered page-1 view — a filtered terminal-only result set is inert).
+    if (!hasLiveRun && hasActiveFilter) return undefined;
+    const intervalMs = hasLiveRun ? LIST_POLL_INTERVAL_MS : LIST_IDLE_POLL_INTERVAL_MS;
+    const interval = setInterval(() => {
+      if (document.visibilityState === 'visible') void pollListSilently();
+    }, intervalMs);
+    return () => clearInterval(interval);
+  }, [hasLiveRun, hasActiveFilter, pollListSilently]);
+
+  const handleRowNavigate = useCallback((runId: string) => {
+    window.location.assign(`/ai-agents/runs/${runId}`);
+  }, []);
+
   return (
     <div className="space-y-6" data-testid="runs-list-page">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
@@ -269,6 +385,17 @@ export default function RunsListPage() {
               </option>
             ))}
           </select>
+
+          {hasActiveFilter && (
+            <button
+              type="button"
+              data-testid="runs-list-clear-filters"
+              onClick={clearFilters}
+              className="text-sm text-muted-foreground hover:text-foreground hover:underline"
+            >
+              {t('aiAgentsRuns.list.clearFilters')}
+            </button>
+          )}
         </div>
       </div>
 
@@ -295,11 +422,36 @@ export default function RunsListPage() {
       )}
 
       {!loading && !error && runs.length === 0 && (
-        <p className="text-sm text-muted-foreground" data-testid="runs-list-empty">
-          {agentFilter || statusFilter
-            ? t('aiAgentsPage.runs.emptyFiltered')
-            : t('aiAgentsPage.runs.empty')}
-        </p>
+        <EmptyState
+          size="sm"
+          headingLevel={2}
+          testId="runs-list-empty"
+          icon={<History className="h-5 w-5" />}
+          title={hasActiveFilter ? t('aiAgentsPage.runs.emptyFiltered') : t('aiAgentsPage.runs.empty')}
+          description={
+            hasActiveFilter
+              ? t('aiAgentsRuns.list.emptyFilteredDescription')
+              : t('aiAgentsRuns.list.emptyDescription')
+          }
+          action={
+            hasActiveFilter ? (
+              <button
+                type="button"
+                onClick={clearFilters}
+                className="rounded-md border px-4 py-2 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"
+              >
+                {t('aiAgentsRuns.list.clearFilters')}
+              </button>
+            ) : undefined
+          }
+          secondary={
+            !hasActiveFilter ? (
+              <a href="/settings/ai-agents" className="text-primary hover:underline">
+                {t('aiAgentsRuns.list.emptyConfigureLink')}
+              </a>
+            ) : undefined
+          }
+        />
       )}
 
       {!loading && !error && runs.length > 0 && (
@@ -319,77 +471,87 @@ export default function RunsListPage() {
                 </tr>
               </thead>
               <tbody className="divide-y">
-                {runs.map((run) => (
-                  <tr key={run.id} data-testid={`runs-list-row-${run.id}`} className="text-sm hover:bg-muted/30">
-                    <td className="px-4 py-3 font-medium">
-                      <a
-                        href={`/ai-agents/runs/${run.id}`}
-                        data-testid={`runs-list-row-link-${run.id}`}
-                        className="text-primary hover:underline"
-                      >
-                        {run.agentName ?? t('aiAgentsPage.runs.noAgent')}
-                      </a>
-                    </td>
-                    {isFleetView && (
-                      <td className="px-4 py-3 text-muted-foreground">{run.orgName ?? '—'}</td>
-                    )}
-                    <td className="px-4 py-3">
-                      <span
-                        className={`inline-flex rounded px-1.5 py-0.5 text-xs font-medium ${statusBadgeClass(run.status)}`}
-                      >
-                        {statusLabel(t, run.status)}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 text-muted-foreground">{triggerLabel(t, run.triggerKind)}</td>
-                    <td className="px-4 py-3">
-                      <span
-                        className={`inline-flex rounded px-1.5 py-0.5 text-xs font-medium ${verdictBadgeClass(run.runVerdict)}`}
-                      >
-                        {verdictLabel(t, run.runVerdict)}
-                      </span>
-                      {run.profile === 'sweep' && (
-                        <span
-                          data-testid={`ai-agent-run-profile-sweep-${run.id}`}
-                          className="ml-1.5 inline-flex rounded bg-sky-500/10 px-1.5 py-0.5 text-xs font-medium text-sky-700"
+                {runs.map((run) => {
+                  const live = isLiveRunStatus(run.status);
+                  return (
+                    <tr
+                      key={run.id}
+                      data-testid={`runs-list-row-${run.id}`}
+                      className="cursor-pointer text-sm hover:bg-muted/30"
+                      onClick={() => handleRowNavigate(run.id)}
+                    >
+                      <td className="px-4 py-3 font-medium">
+                        <a
+                          href={`/ai-agents/runs/${run.id}`}
+                          data-testid={`runs-list-row-link-${run.id}`}
+                          className="text-primary hover:underline"
+                          onClick={(event) => event.stopPropagation()}
                         >
-                          {t('aiAgentsPage.runs.profile.sweep')}
-                        </span>
+                          {run.agentName ?? t('aiAgentsPage.runs.noAgent')}
+                        </a>
+                      </td>
+                      {isFleetView && (
+                        <td className="px-4 py-3 text-muted-foreground">{run.orgName ?? '—'}</td>
                       )}
-                      {/* Phase 2 wave P2-3 (#4190) — a narrative-profile run
-                          is the weekly org report, not a device outcome; the
-                          badge is what tells the two apart in a mixed list. */}
-                      {run.profile === 'narrative' && (
+                      <td className="px-4 py-3">
                         <span
-                          data-testid={`ai-agent-run-profile-narrative-${run.id}`}
-                          className="ml-1.5 inline-flex rounded bg-violet-500/10 px-1.5 py-0.5 text-xs font-medium text-violet-700"
+                          className={badgeClass(runStatusTone(run.status), { size: 'sm' })}
+                          aria-live={live ? 'polite' : undefined}
                         >
-                          {t('aiAgentsPage.runs.profile.narrative')}
+                          {statusLabel(t, run.status)}
                         </span>
-                      )}
-                      {/* Phase 2 wave P2-4 (#4191, Task 12) — a triage-profile
-                          run is a ticket outcome, not a device incident; same
-                          "tell the two apart in a mixed list" rationale as
-                          the sweep/narrative badges above. */}
-                      {run.profile === 'triage' && (
-                        <span
-                          data-testid={`ai-agent-run-profile-triage-${run.id}`}
-                          className="ml-1.5 inline-flex rounded bg-teal-500/10 px-1.5 py-0.5 text-xs font-medium text-teal-700"
-                        >
-                          {t('aiAgentsPage.runs.profile.triage')}
+                        {live && <LiveIndicator label={t('aiAgentsRuns.live.label')} />}
+                      </td>
+                      <td className="px-4 py-3 text-muted-foreground">{triggerLabel(t, run.triggerKind)}</td>
+                      <td className="px-4 py-3">
+                        <span className={badgeClass(verdictTone(run.runVerdict ?? ''), { size: 'sm' })}>
+                          {verdictLabel(t, run.runVerdict)}
                         </span>
-                      )}
-                    </td>
-                    <td className="px-4 py-3 whitespace-nowrap text-muted-foreground">
-                      {formatDateTime(run.queuedAt)}
-                    </td>
-                    <td className="px-4 py-3 whitespace-nowrap text-muted-foreground">
-                      {run.finishedAt ? formatDateTime(run.finishedAt) : '—'}
-                    </td>
-                    <td className="px-4 py-3 whitespace-nowrap text-muted-foreground">
-                      {formatCurrency(run.costCents / 100)}
-                    </td>
-                  </tr>
-                ))}
+                        {run.profile === 'sweep' && (
+                          <span
+                            data-testid={`ai-agent-run-profile-sweep-${run.id}`}
+                            className={`ml-1.5 ${badgeClass('info', { size: 'sm' })}`}
+                          >
+                            {t('aiAgentsPage.runs.profile.sweep')}
+                          </span>
+                        )}
+                        {/* Phase 2 wave P2-3 (#4190) — a narrative-profile
+                            run is the weekly org report, not a device
+                            outcome; the badge is what tells the two apart in
+                            a mixed list. */}
+                        {run.profile === 'narrative' && (
+                          <span
+                            data-testid={`ai-agent-run-profile-narrative-${run.id}`}
+                            className={`ml-1.5 ${badgeClass('accent', { size: 'sm' })}`}
+                          >
+                            {t('aiAgentsPage.runs.profile.narrative')}
+                          </span>
+                        )}
+                        {/* Phase 2 wave P2-4 (#4191, Task 12) — a triage-profile
+                            run is a ticket outcome, not a device incident; same
+                            "tell the two apart in a mixed list" rationale as
+                            the sweep/narrative badges above. */}
+                        {run.profile === 'triage' && (
+                          <span
+                            data-testid={`ai-agent-run-profile-triage-${run.id}`}
+                            className={`ml-1.5 ${badgeClass('muted', { size: 'sm' })}`}
+                          >
+                            {t('aiAgentsPage.runs.profile.triage')}
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 whitespace-nowrap text-muted-foreground">
+                        {formatDateTime(run.queuedAt)}
+                      </td>
+                      <td className="px-4 py-3 whitespace-nowrap text-muted-foreground">
+                        {run.finishedAt ? formatDateTime(run.finishedAt) : '—'}
+                      </td>
+                      <td className="px-4 py-3 whitespace-nowrap text-muted-foreground">
+                        {formatCurrency(run.costCents / 100)}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

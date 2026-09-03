@@ -51,7 +51,7 @@
  * sequence equals `CUSTOM_ORG_REWRITE_TABLES`). The ticket path needs no
  * separate statement check — its loop iterates the array literally.
  *
- * FK note: all four are children of `tickets` and none references another, so
+ * FK note: all five are children of `tickets` and none references another, so
  * children-before-parents does not constrain their relative order. `tickets`
  * itself is locked before all of them on both axes.
  */
@@ -64,6 +64,12 @@ export const TICKET_CHILD_ORG_REWRITE_LOCK_ORDER = [
   'time_entries',
   'ticket_parts',
   'ticket_alert_links',
+  // ticket_outbox (#4743) joined the device axis alongside ticket_alert_links
+  // and ticket_attachments — it is no longer ticket-axis-only, so it is now
+  // governed by this shared order too. Placed AFTER ticket_alert_links and
+  // BEFORE ticket_attachments to match where it already sat in
+  // TICKET_ORG_DENORMALIZED_TABLES.
+  'ticket_outbox',
   'ticket_attachments',
 ] as const;
 
@@ -71,9 +77,9 @@ export const TICKET_CHILD_ORG_REWRITE_LOCK_ORDER = [
  * Tables `moveTicketOrg` re-stamps in this order, `WHERE ticket_id = <ticket>`.
  *
  * Ordering is NOT free: the entries shared with the device axis must appear in
- * {@link TICKET_CHILD_ORG_REWRITE_LOCK_ORDER}'s relative order (#4657).
- * `ticket_outbox` is ticket-axis-only — the device path never reaches it — so
- * it is unconstrained and simply sits where it always has.
+ * {@link TICKET_CHILD_ORG_REWRITE_LOCK_ORDER}'s relative order (#4657), which
+ * as of #4743 is every entry in this list — the device axis now reaches all
+ * five.
  *
  * ticket_comments is deliberately absent: it has no `org_id` (child-via-parent
  * tenancy), so a moved ticket carries its comments implicitly.

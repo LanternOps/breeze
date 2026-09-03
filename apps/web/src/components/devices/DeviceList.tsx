@@ -176,6 +176,25 @@ export type Device = {
    */
   pendingReboot?: boolean;
   /**
+   * Scheduled end-user restart, denormalized from the agent heartbeat
+   * (#3207 W5, `devices.reboot_scheduled_at` and friends).
+   *
+   * Distinct from `pendingReboot` above: that is the OS saying a restart is
+   * required at some point; these say one is BOOKED for a specific instant and
+   * how much of the deferral budget the end user has spent on it.
+   *
+   * Absent on responses from older API versions, and null on every device that
+   * has no restart scheduled — including devices running an agent that
+   * predates reboot-status reporting. `rebootMaxDeferrals` is the one field
+   * where 0 and null differ meaningfully: 0 means this restart cannot be
+   * postponed, null means the agent never told us.
+   */
+  rebootScheduledAt?: string | null;
+  rebootDeadline?: string | null;
+  rebootSource?: string | null;
+  rebootDeferralsUsed?: number | null;
+  rebootMaxDeferrals?: number | null;
+  /**
    * Set when this row was created by a hostname-collision enrollment and may
    * be replacing an earlier device record (#2764,
    * `devices.possible_replacement_of_device_id`). Null/absent on every

@@ -44,7 +44,7 @@ const detail: ContractDetailData = {
   lines: [
     {
       id: 'cl-1', contractId: 'ct-1', orgId: 'org-1', lineType: 'flat', description: 'Managed endpoint',
-      catalogItemId: 'cat-1', unitPrice: '80.00', manualQuantity: null, siteId: null, deviceRoles: null,
+      catalogItemId: 'cat-1', unitPrice: '80.00', manualQuantity: null, siteId: null, site: null, deviceRoles: null,
       deviceGroupId: null, deviceGroupName: null, deviceGroup: null,
       taxable: true, sortOrder: 0, createdAt: '2026-06-01T00:00:00Z',
     },
@@ -54,7 +54,7 @@ const detail: ContractDetailData = {
 
 const roleLine = {
   id: 'cl-2', contractId: 'ct-1', orgId: 'org-1', lineType: 'per_device_role' as const, description: 'Network gear',
-  catalogItemId: null, unitPrice: '25.00', manualQuantity: null, siteId: null, deviceRoles: ['switch', 'firewall'],
+  catalogItemId: null, unitPrice: '25.00', manualQuantity: null, siteId: null, site: null, deviceRoles: ['switch', 'firewall'],
   deviceGroupId: null, deviceGroupName: null, deviceGroup: null,
   taxable: false, sortOrder: 1, createdAt: '2026-06-01T00:00:00Z',
 };
