@@ -11,6 +11,7 @@ import {
   ticketCommentParamSchema,
   portalAttachmentParamSchema,
   commentSchema,
+  supportUsageQuerySchema,
 } from './schemas';
 import {
   applyPortalCacheHeaders,
@@ -31,8 +32,20 @@ import { captureException } from '../../services/sentry';
 import { contentDispositionFor } from '../tickets/attachments';
 import { Readable } from 'node:stream';
 import { ticketSla } from '../../services/portal/ticketReadModel';
+import { supportUsageForOrg } from '../../services/portal/supportUsage';
 
 export const ticketRoutes = new Hono();
+
+function currentMonthIn(timezone: string, now = new Date()): string {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: timezone,
+    year: 'numeric',
+    month: '2-digit',
+  }).formatToParts(now);
+  const value = (type: string) =>
+    parts.find((part) => part.type === type)!.value;
+  return `${value('year')}-${value('month')}`;
+}
 
 const PORTAL_TICKET_SLA_COLUMNS = {
   responseSlaMinutes: tickets.responseSlaMinutes,
@@ -128,6 +141,37 @@ ticketRoutes.get('/tickets/forms', async (c) => {
   }));
   return c.json({ data });
 });
+
+ticketRoutes.get(
+  '/tickets/usage',
+  zValidator('query', supportUsageQuerySchema),
+  async (c) => {
+    const auth = c.get('portalAuth');
+    const month = c.req.valid('query').month ?? currentMonthIn(auth.timezone);
+    const payload = await supportUsageForOrg({
+      orgId: auth.user.orgId,
+      month,
+      timezone: auth.timezone,
+      portalUserId: auth.user.id,
+    });
+
+    applyPortalCacheHeaders(c, {
+      scope: 'private',
+      browserMaxAgeSeconds: 30,
+      staleWhileRevalidateSeconds: 0,
+      vary: ['Authorization', 'Cookie'],
+    });
+    const etag = buildWeakEtag(payload);
+    c.header('ETag', etag);
+    if (isEtagFresh(c.req.header('if-none-match'), etag)) {
+      return new Response(null, {
+        status: 304,
+        headers: c.res.headers,
+      });
+    }
+    return c.json(payload);
+  },
+);
 
 ticketRoutes.get('/tickets', zValidator('query', listSchema), async (c) => {
   const auth = c.get('portalAuth');
