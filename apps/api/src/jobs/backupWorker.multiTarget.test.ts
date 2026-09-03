@@ -76,9 +76,15 @@ const CONFIG_ROW = { id: 'config-1', provider: 'local', providerConfig: {}, encr
 
 /** Discovered Hyper-V VMs for this run — one dispatch target each. */
 let vmRows: Array<{ vmName: string }> = [];
-/** `isBackupJobCancelled` reports 'cancelled' from this 1-based call onwards. */
-let cancelFromStatusCall: number | null = null;
-let statusCalls = 0;
+/**
+ * When set, `isBackupJobCancelled` starts reporting 'cancelled' on the Nth
+ * status check taken AFTER the first child row is committed. Counted relative
+ * to the insert rather than from the start of the run so the trigger stays
+ * pinned to the loop structure under test and does not silently shift if a
+ * cancellation check is added or reordered in Phase 1 / early Phase 3.
+ */
+let cancelAfterInsertOnCheck: number | null = null;
+let statusCallsSinceFirstInsert: number | null = null;
 let childCounter = 0;
 
 const insertLog: Array<{ payload: Record<string, unknown>; id: string }> = [];
@@ -120,8 +126,11 @@ function wireDb() {
     const keys = cols ? Object.keys(cols) : [];
     if (keys.length === 0) return selectResult([CONFIG_ROW]); // config load
     if (keys.length === 1 && keys[0] === 'status') {
-      statusCalls += 1;
-      const cancelled = cancelFromStatusCall !== null && statusCalls >= cancelFromStatusCall;
+      if (statusCallsSinceFirstInsert !== null) statusCallsSinceFirstInsert += 1;
+      const cancelled =
+        cancelAfterInsertOnCheck !== null &&
+        statusCallsSinceFirstInsert !== null &&
+        statusCallsSinceFirstInsert >= cancelAfterInsertOnCheck;
       return selectResult([{ status: cancelled ? 'cancelled' : 'pending' }]);
     }
     if (keys.length === 1 && keys[0] === 'agentId') return selectResult([{ agentId: 'agent-1' }]);
@@ -138,6 +147,7 @@ function wireDb() {
         childCounter += 1;
         const id = `child-${childCounter}`;
         insertLog.push({ payload, id });
+        if (statusCallsSinceFirstInsert === null) statusCallsSinceFirstInsert = 0;
         return [{ id }];
       },
     }),
@@ -163,8 +173,8 @@ describe('processDispatchBackup — multi-target dispatch (#4137)', () => {
     insertLog.length = 0;
     updateLog.length = 0;
     childCounter = 0;
-    statusCalls = 0;
-    cancelFromStatusCall = null;
+    statusCallsSinceFirstInsert = null;
+    cancelAfterInsertOnCheck = null;
     vmRows = [{ vmName: 'vm-a' }, { vmName: 'vm-b' }];
     wireDb();
     agentRelayMock.isAgentConnectedAnywhere.mockResolvedValue(true);
@@ -256,11 +266,11 @@ describe('processDispatchBackup — multi-target dispatch (#4137)', () => {
 
   it('cancels EVERY child row already created when a cancel lands mid-preparation', async () => {
     vmRows = [{ vmName: 'vm-a' }, { vmName: 'vm-b' }, { vmName: 'vm-c' }];
-    // isBackupJobCancelled call order for a 3-target hyperv run:
-    //   1 phase-1 start · 2 phase-1 post-config · 3 phase-3 start
-    //   4 phase-3 post-resolve · 5 loop i=0 · 6 loop i=1 · 7 loop i=1 post-insert
-    //   8 loop i=2  ← cancel lands here, with child-1 already committed
-    cancelFromStatusCall = 8;
+    // Cancel on the SECOND status check after child-1 is committed: the first
+    // is the post-insert check inside iteration i=1 (which the pre-#4137 code
+    // already handled correctly), the second is the top of iteration i=2 — the
+    // path that used to return leaving child-1 stranded at 'running'.
+    cancelAfterInsertOnCheck = 2;
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     const result = await __testOnly.processDispatchBackup(DATA as never);
