@@ -320,6 +320,70 @@ describe('isInMaintenanceWindow', () => {
   });
 
   // ============================================
+  // windowEndsAt (#3207)
+  // ============================================
+
+  // The close of the window is the ceiling on a reboot deferral deadline — a
+  // user may not postpone a maintenance-window restart past the end of the
+  // window. The projection that produces it is subtle: windowStart, windowEnd
+  // and localNow are wall-clock times rendered as naive Dates, so only their
+  // DIFFERENCE is meaningful; it has to be added back onto the real `now` to
+  // become an instant. A wrong projection is silent — it would either grant
+  // deferral time past the real close or truncate it — so it is pinned here
+  // rather than left to the comment.
+  describe('windowEndsAt', () => {
+    it('is null whenever the window is inactive', () => {
+      const now = new Date('2026-02-17T03:00:00Z');
+      expect(isInMaintenanceWindow(makeSettings(), now).windowEndsAt).toBeNull();
+    });
+
+    it('is null for an unknown recurrence', () => {
+      const now = new Date('2026-02-17T00:30:00Z');
+      const settings = makeSettings({ recurrence: 'fortnightly' });
+      expect(isInMaintenanceWindow(settings, now).windowEndsAt).toBeNull();
+    });
+
+    it('is the real instant the active daily window closes', () => {
+      // Daily window is midnight + 2h in UTC; at 00:30 it closes at 02:00Z.
+      const now = new Date('2026-02-17T00:30:00Z');
+      const result = isInMaintenanceWindow(makeSettings(), now);
+      expect(result.active).toBe(true);
+      expect(result.windowEndsAt?.toISOString()).toBe('2026-02-17T02:00:00.000Z');
+    });
+
+    it('always lies in the future while the window is active', () => {
+      for (const iso of ['2026-02-17T00:00:00Z', '2026-02-17T00:30:00Z', '2026-02-17T01:59:00Z']) {
+        const now = new Date(iso);
+        const result = isInMaintenanceWindow(makeSettings(), now);
+        expect(result.active, iso).toBe(true);
+        expect(result.windowEndsAt!.getTime(), iso).toBeGreaterThan(now.getTime());
+      }
+    });
+
+    it('is a UTC instant, not a wall-clock time, under a non-UTC timezone', () => {
+      // 05:30Z is 00:30 in America/New_York (EST, UTC-5). The window closes at
+      // 02:00 LOCAL, i.e. 07:00Z — NOT 02:00Z. Returning the naive wall-clock
+      // Date here would be 5 hours early and silently cut deferral short.
+      const now = new Date('2026-02-17T05:30:00Z');
+      const settings = makeSettings({ timezone: 'America/New_York' });
+      const result = isInMaintenanceWindow(settings, now);
+      expect(result.active).toBe(true);
+      expect(result.windowEndsAt?.toISOString()).toBe('2026-02-17T07:00:00.000Z');
+    });
+
+    it('stays consistent with the remaining duration across timezones', () => {
+      // Same offset into the window in two zones => same time remaining.
+      const utc = isInMaintenanceWindow(makeSettings(), new Date('2026-02-17T00:30:00Z'));
+      const nyc = isInMaintenanceWindow(
+        makeSettings({ timezone: 'America/New_York' }),
+        new Date('2026-02-17T05:30:00Z')
+      );
+      const remaining = (r: typeof utc, now: string) => r.windowEndsAt!.getTime() - Date.parse(now);
+      expect(remaining(nyc, '2026-02-17T05:30:00Z')).toBe(remaining(utc, '2026-02-17T00:30:00Z'));
+    });
+  });
+
+  // ============================================
   // Suppress flags
   // ============================================
 

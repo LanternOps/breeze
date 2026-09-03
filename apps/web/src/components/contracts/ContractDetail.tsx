@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { navigateTo } from '@/lib/navigation';
+import { getDeviceRoleLabel } from '@/lib/deviceRoles';
 import '@/lib/i18n';
 import { runAction, handleActionError, ActionError } from '../../lib/runAction';
 import { showToast } from '../shared/Toast';
@@ -16,14 +17,16 @@ import {
   type ContractCurrencyBlockerDetails,
   type ContractDetail as ContractDetailData,
   type ContractEstimate,
-  type ContractLineType,
   type ContractStatus,
   type ContractTransition,
   type PriceBookGap,
+  type UncoveredDevices,
 } from '../../lib/api/contracts';
 import { formatMoney, formatDate } from '../billing/invoiceTypes';
 import { usePermissions } from '../../lib/permissions';
 import ContractDocumentsSection from './ContractDocumentsSection';
+import DeviceCoverageNotice, { formatUncoveredBreakdown } from './DeviceCoverageNotice';
+import { AUTO_QTY_TYPES, LINE_TYPE_LABELS } from './lineTypes';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -31,13 +34,6 @@ interface Props {
   detail: ContractDetailData;
   onChanged: () => void;
 }
-
-const LINE_TYPE_LABELS: Record<ContractLineType, string> = {
-  flat: 'contracts.shared.lineType.flat',
-  per_device: 'contracts.shared.lineType.perDevice',
-  per_seat: 'contracts.shared.lineType.perSeat',
-  manual: 'contracts.shared.lineType.manual',
-};
 
 // Which lifecycle transitions are offered for each status (mirrors the API's
 // allowed state machine — the route rejects anything else with a 409).
@@ -107,6 +103,7 @@ export default function ContractDetail({ detail, onChanged }: Props) {
   // reversible and fire immediately.
   const [cancelOpen, setCancelOpen] = useState(false);
   const [estimate, setEstimate] = useState<ContractEstimate | null>(null);
+  const [estimateFailed, setEstimateFailed] = useState(false);
   // Currency restamp (ACTIVE contracts only, manage-gated, #3778).
   const [currencyOpen, setCurrencyOpen] = useState(false);
   const [targetCurrency, setTargetCurrency] = useState(currency);
@@ -114,17 +111,36 @@ export default function ContractDetail({ detail, onChanged }: Props) {
   const [currencyConfirmed, setCurrencyConfirmed] = useState(false);
   const [currencyBlockers, setCurrencyBlockers] = useState<CurrencyBlockers | null>(null);
 
-  useEffect(() => {
-    let cancelled = false;
-    void getContractEstimate(contract.id).then(async (res) => {
-      if (cancelled || !res.ok) return;
-      const body = (await res.json().catch(() => null)) as { data?: ContractEstimate } | null;
-      if (!cancelled) setEstimate(body?.data ?? null);
-    });
-    return () => { cancelled = true; };
+  // Guards against a response landing after unmount (or after `loadEstimate`
+  // itself changes, e.g. contract.id changing under us): toggled false in the
+  // effect cleanup below and checked before every setState past an await.
+  const mountedRef = useRef(true);
+
+  const loadEstimate = useCallback(async () => {
+    setEstimate(null);
+    setEstimateFailed(false);
+    let res: Response;
+    try {
+      res = await getContractEstimate(contract.id);
+    } catch {
+      if (mountedRef.current) setEstimateFailed(true);
+      return;
+    }
+    if (!res.ok) {
+      if (mountedRef.current) setEstimateFailed(true);
+      return;
+    }
+    const body = (await res.json().catch(() => null)) as { data?: ContractEstimate } | null;
+    if (mountedRef.current) setEstimate(body?.data ?? null);
   }, [contract.id]);
 
-  const refresh = useCallback(() => onChanged(), [onChanged]);
+  useEffect(() => {
+    mountedRef.current = true;
+    void loadEstimate();
+    return () => { mountedRef.current = false; };
+  }, [loadEstimate]);
+
+  const refresh = useCallback(() => { onChanged(); void loadEstimate(); }, [onChanged, loadEstimate]);
 
   const transition = useCallback(async (verb: ContractTransition) => {
     if (busy) return;
@@ -148,7 +164,7 @@ export default function ContractDetail({ detail, onChanged }: Props) {
     if (busy) return;
     setBusy(true);
     try {
-      const result = await runAction<{ data?: { invoiceId?: string; priceBookGaps?: PriceBookGap[] } }>({
+      const result = await runAction<{ data?: { invoiceId?: string; priceBookGaps?: PriceBookGap[]; uncoveredDevices?: UncoveredDevices | null } }>({
         request: () => generateContractInvoice(contract.id),
         errorFallback: t('contracts.contractDetail.errors.generateInvoice'),
         successMessage: t('contracts.contractDetail.toast.invoiceGenerated'),
@@ -167,6 +183,17 @@ export default function ContractDetail({ detail, onChanged }: Props) {
             count: gaps.length,
             currency: gaps[0]!.currencyCode,
             lines: gaps.map((g) => g.itemName).join(', '),
+          }),
+        });
+      }
+      // #3205: a role-billed contract with devices no line covers still billed —
+      // say so, with the breakdown, before navigating to the invoice.
+      const uncovered = result?.data?.uncoveredDevices;
+      if (uncovered && uncovered.total > 0) {
+        showToast({
+          type: 'warning',
+          message: t('contracts.contractDetail.toast.uncoveredDevices', {
+            count: uncovered.total, breakdown: formatUncoveredBreakdown(uncovered.byRole),
           }),
         });
       }
@@ -305,6 +332,15 @@ export default function ContractDetail({ detail, onChanged }: Props) {
                 <dt className="text-xs uppercase text-muted-foreground">{t('contracts.contractDetail.fields.estimatedPerPeriod')}</dt>
                 <dd className="mt-1 font-medium tabular-nums" data-testid="contract-estimate-stat">
                   {estimate ? formatMoney(estimate.periodTotal, currency) : '—'}
+                  <DeviceCoverageNotice uncovered={estimate?.uncoveredDevices} />
+                  {estimateFailed && (
+                    <p className="mt-1 text-xs text-amber-600 dark:text-amber-500" data-testid="contract-estimate-stale">
+                      {t('contracts.contractEditor.estimate.loadLiveCountsFailed')}{' '}
+                      <button type="button" onClick={() => void loadEstimate()} className="underline hover:text-foreground">
+                        {t('common:actions.retry')}
+                      </button>
+                    </p>
+                  )}
                 </dd>
               </div>
             </dl>
@@ -338,11 +374,16 @@ export default function ContractDetail({ detail, onChanged }: Props) {
                 ) : (
                   lines.map((l) => (
                     <tr key={l.id} className="border-t" data-testid={`contract-detail-line-${l.id}`}>
-                      <td className="px-3 py-2">{t(/* i18n-dynamic */ LINE_TYPE_LABELS[l.lineType])}</td>
+                      <td className="px-3 py-2">
+                        {t(/* i18n-dynamic */ LINE_TYPE_LABELS[l.lineType])}
+                        {l.lineType === 'per_device_role' && l.deviceRoles
+                          ? <span className="block text-xs text-muted-foreground">{l.deviceRoles.map(getDeviceRoleLabel).join(', ')}</span>
+                          : null}
+                      </td>
                       <td className="px-3 py-2">{l.description}</td>
                       <td className="px-3 py-2 text-right">{formatMoney(l.unitPrice, currency)}</td>
                       <td className="px-3 py-2 text-right">
-                        {l.lineType === 'per_device' || l.lineType === 'per_seat'
+                        {AUTO_QTY_TYPES.has(l.lineType)
                           ? <span className="text-muted-foreground">{t('contracts.shared.values.auto')}</span>
                           : (l.lineType === 'manual' ? (l.manualQuantity ?? '0') : '1')}
                       </td>

@@ -167,6 +167,40 @@ describe('processAlertNotifications status guard (a)', () => {
   });
 });
 
+describe('processAlertNotifications status guard (#4123, table-driven)', () => {
+  it.each([
+    { status: 'resolved', expectSkip: true },
+    { status: 'suppressed', expectSkip: true },
+    { status: 'dismissed', expectSkip: true },
+    { status: 'active', expectSkip: false }
+  ])('status=$status → skip baseline fan-out: $expectSkip', async ({ status, expectSkip }) => {
+    if (expectSkip) {
+      selectQueue.push([makeAlert({ status })]);
+    } else {
+      selectQueue.push(
+        [makeAlert({ status })], // alert
+        [{ id: 'device-1', displayName: 'Server-1' }], // device
+        [{ partnerId: null }], // org (partnerIdForOrg)
+        [], // routing rules (no match)
+        [{ id: 'channel-1' }], // org channels fallback
+        [{ id: 'channel-1' }] // validChannels
+      );
+    }
+
+    const result = await processAlertNotifications({ type: 'process-alert', alertId: 'alert-1' });
+
+    if (expectSkip) {
+      expect(result).toEqual({ queued: 0, inAppSent: false, durationMs: expect.any(Number) });
+      expect(sendInAppNotificationMock).not.toHaveBeenCalled();
+      expect(queueAddBulkMock).not.toHaveBeenCalled();
+    } else {
+      expect(result.queued).toBe(1);
+      expect(sendInAppNotificationMock).toHaveBeenCalledTimes(1);
+      expect(queueAddBulkMock).toHaveBeenCalledTimes(1);
+    }
+  });
+});
+
 describe('processAlertNotifications baseline send jobId (c)', () => {
   it('enqueues baseline sends with a stable jobId so a retried process-alert cannot duplicate the fan-out', async () => {
     selectQueue.push(

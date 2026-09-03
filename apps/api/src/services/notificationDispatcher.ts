@@ -207,14 +207,17 @@ export async function processAlertNotifications(data: ProcessAlertJobData): Prom
     return { queued: 0, inAppSent: false, durationMs: Date.now() - startTime };
   }
 
-  // Durable status guard (#4085): `cancelAlertEscalations` only removes jobs
-  // that are DELAYED at the moment it runs — an optimization, not the
-  // correctness mechanism. Under queue delivery, `alert.resolved` can
-  // process before a retried `alert.triggered` delivery, which would
-  // otherwise re-fan-out the whole baseline notification set for an alert
-  // that is already closed. Acknowledged still gets the baseline — only
-  // escalations are cancelled on ack (today's semantics, preserved).
-  if (alert.status === 'resolved') {
+  // Durable status guard (#4085, widened #4123): `cancelAlertEscalations`
+  // only removes jobs that are DELAYED at the moment it runs — an
+  // optimization, not the correctness mechanism. Under queue delivery,
+  // `alert.resolved` can process before a retried `alert.triggered`
+  // delivery, which would otherwise re-fan-out the whole baseline
+  // notification set for an alert that is already closed. A `process-alert`
+  // job landing after a tech suppresses/dismisses an alert has the same
+  // exposure — it must not send the full baseline into the snooze window.
+  // Acknowledged still gets the baseline — only escalations are cancelled
+  // on ack (today's semantics, preserved; decision: issue #4123).
+  if (alert.status === 'resolved' || alert.status === 'suppressed' || alert.status === 'dismissed') {
     return { queued: 0, inAppSent: false, durationMs: Date.now() - startTime };
   }
 

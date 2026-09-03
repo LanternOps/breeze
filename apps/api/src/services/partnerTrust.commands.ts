@@ -1,4 +1,4 @@
-import { evaluateCapability, partnerIdForDevice, isLifecycleCommand, type TrustDenyCode } from './partnerTrust';
+import { evaluateCapability, partnerIdForDevice, isLifecycleCommand, unresolvedPartnerDecision, type TrustDenyCode } from './partnerTrust';
 import { partnerTrustMode } from '../config/partnerTrustMode';
 
 export class TrustDeniedError extends Error {
@@ -13,7 +13,11 @@ export async function assertDeviceExecuteAllowed(deviceId: string, commandType: 
   if (partnerTrustMode() === 'off') return;
   if (isLifecycleCommand(commandType)) return;
   const partnerId = await partnerIdForDevice(deviceId);
-  if (!partnerId) return;
+  if (!partnerId) {
+    const unresolved = await unresolvedPartnerDecision('device_execute');
+    if (!unresolved.allow) throw new TrustDeniedError(unresolved.code, unresolved.reason, deviceId, commandType);
+    return;
+  }
   const d = await evaluateCapability('device_execute', { partnerId, deviceId, userId: userId ?? undefined, commandType });
   if (!d.allow) throw new TrustDeniedError(d.code, d.reason, deviceId, commandType);
 }

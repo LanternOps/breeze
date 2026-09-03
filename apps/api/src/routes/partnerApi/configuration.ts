@@ -53,6 +53,9 @@ const PATCH_NORMALIZED_MATERIAL_KEYS = [
   'scheduleDayOfMonth',
   'rebootPolicy',
   'rebootDelayMinutes',
+  'rebootAllowDeferral',
+  'rebootMaxDeferrals',
+  'rebootDeferralMinutes',
   'exclusiveWindowsUpdate',
 ] as const;
 const PATCH_NORMALIZED_MATERIAL_KEY_SET = new Set<string>(PATCH_NORMALIZED_MATERIAL_KEYS);

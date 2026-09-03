@@ -988,7 +988,7 @@ export function mintTrustActionToken(partnerId: string, action: 'approve' | 'sus
 export async function sendEvidenceCard(partnerId: string, trigger: 'probation_watch' | 'review_requested' | 'restricted'): Promise<void>;
 ```
 
-Action flow: `GET /admin/trust/act?token=…` renders a minimal page (server-rendered HTML from the API, no web build dependency) showing the card summary and a TOTP field; `POST /admin/trust/act` with `{ token, totp }` verifies the token (signature, expiry, unused, `operatorUserId` matches the authenticated platform admin), verifies the code with `consumeMFAToken(secret, totp, userId)` (`services/mfa.ts:38`), marks the jti used, then calls `setTrustState(..., 'trusted', 'admin:approve_link', userId)` or the existing suspend-for-abuse service function with reason `'trust_card_link'`. The token alone never acts.
+Action flow (amended 2026-09-02 after review: the API is Bearer-only, so an email link cannot authenticate to a server-rendered API page and an HTML form cannot send a bearer): the email links target the **web app** `${WEB_BASE_URL}/admin/trust/act?token=…`; the API exposes `GET /admin/trust/act/preview?token=…` (platform admin + bearer; verifies signature/expiry/unused/operator without consuming; returns JSON `{ valid, reason?, action, partner, card }`) and `POST /admin/trust/act` with `{ token, totp }` verifies the token (signature, expiry, unused, `operatorUserId` matches the authenticated platform admin), verifies the code with `consumeMFAToken(secret, totp, userId)` (`services/mfa.ts:38`), marks the jti used, then calls `setTrustState(..., 'trusted', 'admin:approve_link', userId)` or the existing suspend-for-abuse service function with reason `'trust_card_link'`. The token alone never acts.
 
 - [ ] **Step 1: Failing tests** — token round-trip; expired/used/mismatched-operator → 403; wrong TOTP → 403 and token still unused; correct TOTP → state change + token consumed; card builder fields for a fixture partner.
 - [ ] **Step 2: Fail**, **Step 3: Implement**, **Step 4: Pass**, **Step 5: Commit** — `git commit -m "feat(trust): evidence card email with TOTP-guarded approve/suspend links"`.
@@ -1010,6 +1010,15 @@ Action flow: `GET /admin/trust/act?token=…` renders a minimal page (server-ren
 - [ ] **Step 1: Failing tests** — `runAction` receiving a 403 with `error: 'TRUST_PROBATION'` dispatches `CustomEvent('breeze:trust-denied', { detail: body })` and shows no toast; the banner renders capability copy, the checklist from `GET /partner/trust`, and the Request review button which calls `POST /partner/trust/request-review` via `runAction` and flips to "Review requested".
 - [ ] **Step 2: Fail**, **Step 3: Implement**. Copy (no mechanism details): title "Verification pending", body "Remote control and script execution unlock after your first card payment settles (about 24 hours) or once we've reviewed your account.", button "Request review", secondary link "Book a call" using `meetingUrl` when present.
 - [ ] **Step 4: Pass** (`cd apps/web && npx vitest run src/lib/runAction src/components/trust`), **Step 5: Commit**.
+
+### Task 6.3: Admin trust action page (added 2026-09-02, from the Task 5.5 review)
+
+**Files:**
+- Create: `apps/web/src/pages/admin/trust/act.astro`, `apps/web/src/components/admin/TrustActionPage.tsx` (+ test)
+
+- [ ] Page reads `token` from the query string, calls `GET /admin/trust/act/preview?token=…` via `fetchWithAuth`, renders the evidence-card summary and the requested action (Approve / Suspend), a six-digit TOTP input, and a confirm button; on submit `runAction` → `POST /admin/trust/act { token, totp }`; shows the API's `reason` verbatim for invalid tokens (expired, used, operator mismatch) and a success state naming the resulting trust state. Requires platform admin (the API enforces it; the page shows a plain "sign in as a platform admin" message on 401/403).
+- [ ] Test: renders preview, submits TOTP, handles each invalid reason; `no-silent-mutations` guard covers the handler.
+- [ ] Commit `feat(trust): admin trust action page`.
 
 ### Task 6.2: Onboarding copy and the `no-silent-mutations` guard
 

@@ -76,6 +76,7 @@ import {
 } from '../../extensions/tenancyRegistry';
 import { pgErrorCode, pgErrorNode } from '../../utils/pgErrors';
 import { schedulePeripheralPolicyDevice } from '../../jobs/peripheralJobs';
+import { requireCapability } from '../../services/partnerTrust';
 
 
 /**
@@ -449,6 +450,7 @@ coreRoutes.post(
   requireScope('organization', 'partner', 'system'),
   requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
   requireMfa(),
+  requireCapability('installer_distribute'),
   optionalJsonValidator(onboardingTokenSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -1264,6 +1266,7 @@ coreRoutes.post(
   // needs to match (not loosen) the existing remote-desktop session gate.
   requirePermission(PERMISSIONS.REMOTE_ACCESS.resource, PERMISSIONS.REMOTE_ACCESS.action),
   requireMfa(),
+  requireCapability('remote_control'),
   async (c) => {
     const auth = c.get('auth');
     const deviceId = c.req.param('id')!;

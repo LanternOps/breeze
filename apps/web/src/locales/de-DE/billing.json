@@ -21,8 +21,13 @@
       "lineType": {
         "flat": "Pauschalpreis",
         "perDevice": "Pro Gerät",
+        "perDeviceRole": "Pro Geräterolle",
         "perSeat": "Pro Sitzplatz",
         "manual": "Manuelle Menge"
+      },
+      "coverage": {
+        "uncovered": "{{count}} Gerät(e) dieser Organisation werden von keiner Position dieses Vertrags abgerechnet: {{breakdown}}",
+        "allCovered": "Jedes Gerät dieser Organisation wird von einer Position dieses Vertrags abgerechnet."
       },
       "transition": {
         "activate": "Aktivieren",
@@ -96,6 +101,7 @@
           "cancel": "Vertrag gekündigt"
         },
         "invoiceGenerated": "Rechnung erstellt",
+        "uncoveredDevices": "Rechnung erstellt, aber {{count}} Gerät(e) werden von keiner Position dieses Vertrags abgerechnet: {{breakdown}}",
         "priceBookGaps": "{{count}} Katalogposition(en) zum Vertrags-Snapshot abgerechnet — kein {{currency}}-Preis im Katalog: {{lines}}",
         "draftDeleted": "Entwurf gelöscht"
       },
@@ -188,6 +194,8 @@
         "addFromPax8Catalog": "Aus dem Pax8-Katalog hinzufügen",
         "importFromTdSynnex": "Import aus TD SYNNEX",
         "lineType": "Positionstyp",
+        "deviceRoles": "Geräterollen (ein Gerät wird abgerechnet, wenn seine Rolle eine davon ist)",
+        "deviceRolesRequired": "Mindestens eine Rolle auswählen.",
         "descriptionPlaceholder": "z.B. Arbeitsplatzverwaltung",
         "unitPrice": "Stückpreis",
         "quantity": "Menge",

@@ -29,6 +29,9 @@ const {
   teardownDisconnectedSessions,
   checkSessionRateLimit,
   checkUserSessionRateLimit,
+  evaluateCapability,
+  partnerIdForDevice,
+  partnerTrustMode,
 } = vi.hoisted(() => ({
   getDeviceWithOrgCheck: vi.fn(),
   getSessionWithOrgCheck: vi.fn(),
@@ -39,6 +42,9 @@ const {
   teardownDisconnectedSessions: vi.fn(() => Promise.resolve(undefined)),
   checkSessionRateLimit: vi.fn(() => Promise.resolve({ allowed: true, currentCount: 0 })),
   checkUserSessionRateLimit: vi.fn(() => Promise.resolve({ allowed: true, currentCount: 0 })),
+  evaluateCapability: vi.fn(async (): Promise<any> => ({ allow: true })),
+  partnerIdForDevice: vi.fn(() => Promise.resolve('partner-1')),
+  partnerTrustMode: vi.fn(() => 'off'),
 }));
 
 // `runOutsideDbContext` is synchronous (wraps AsyncLocalStorage.exit); the real
@@ -49,6 +55,7 @@ const {
 vi.mock('../../db', () => ({
   db: {
     select: vi.fn(),
+    insert: vi.fn(),
     update: vi.fn(),
   },
   runOutsideDbContext: vi.fn(<T>(fn: () => T): T => fn()),
@@ -167,6 +174,19 @@ vi.mock('../../services/remoteSessionAuth', () => ({
 vi.mock('../../services/clientIp', () => ({
   getTrustedClientIp: vi.fn(() => '10.0.0.1'),
   getTrustedClientIpOrUndefined: vi.fn(() => '10.0.0.1'),
+}));
+
+vi.mock('../../config/partnerTrustMode', () => ({ partnerTrustMode }));
+vi.mock('../../services/partnerTrust', () => ({
+  evaluateCapability,
+  partnerIdForDevice,
+  trustDenyBody: (d: Record<string, unknown>, reviewRequested: boolean) => ({
+    error: d.code,
+    capability: d.capability,
+    reason: d.reason,
+    reviewRequested,
+    meetingUrl: null,
+  }),
 }));
 
 vi.mock('./recordingUrl', () => ({ normalizeRecordingUrl: vi.fn((u: unknown) => u) }));
@@ -674,6 +694,41 @@ describe('remote sessions — site-scope enforcement', () => {
       // live stream running" hole.
       expect(teardownDisconnectedSessions).toHaveBeenCalledTimes(1);
       expect(teardownDisconnectedSessions).toHaveBeenCalledWith(staleRows);
+    });
+
+    it('maps partner-trust denial to a 403 without inserting', async () => {
+      getDeviceWithOrgCheck.mockResolvedValue({
+        id: DEVICE_IN_ALLOWED,
+        orgId: ORG_ID,
+        siteId: ALLOWED_SITE,
+        agentId: 'agent-1',
+        hostname: 'host-1',
+        osType: 'linux',
+        status: 'online',
+      });
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
+      } as never);
+      partnerTrustMode.mockReturnValueOnce('enforce');
+      evaluateCapability.mockResolvedValueOnce({
+        allow: false,
+        code: 'TRUST_PROBATION',
+        capability: 'remote_control',
+        reason: 'probation_default_deny',
+      });
+
+      const res = await app.request('/remote/sessions', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ deviceId: DEVICE_IN_ALLOWED, type: 'desktop' }),
+      });
+
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual(expect.objectContaining({
+        error: 'TRUST_PROBATION',
+        capability: 'remote_control',
+      }));
+      expect((db as any).insert).not.toHaveBeenCalled();
     });
   });
 

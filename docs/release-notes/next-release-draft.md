@@ -52,3 +52,106 @@ delete once done:
 - [ ] The first partner to connect QuickBooks in prod is the first OAuth
       against the production keys and the Production redirect URIs
       (registered 2026-09-02) — watch that callback.
+
+## Contract lines billed by device role (#3205)
+
+**Self-Hosting / Upgrade Notes**
+
+- Migration `2026-10-05-100100-contract-lines-device-roles.sql` replaces the
+  `contract_lines.site_id` foreign key with a composite one to `sites(id, org_id)`.
+  Before adding it, it **clears `site_id` on any contract line whose site belongs
+  to a different organization** (such lines silently counted zero devices before).
+  The count is logged as a Postgres `WARNING` (`cleaned N contract_lines rows whose
+  site belonged to another org`); if N > 0, re-scope those lines in the contract
+  editor before the next billing run.
+- Adding a contract line with a site from another organization now returns
+  `400 SITE_NOT_IN_ORG` instead of being accepted.
+- New billing-worker log line
+  `[contract-billing] uncovered devices: contract <id> has N billable device(s) no line bills — {...}`
+  fires on every sweep for role-billed contracts that have unclassified (`unknown`)
+  devices or roles no line covers. Informational: classify the devices or add a line.
+
+**Behaviour**
+
+- New contract line type **Per device role** bills a set of device roles (e.g.
+  switch + router + firewall). `unknown` is never billable. Contract estimates and
+  generated invoices now report how many devices no line bills, by role.
+## Partner trust probation (hosted abuse control) — breeze #4567 → #4588 → #4599 → #4603 → #4602 → #4604, breeze-billing #16 + #17
+
+Only fold this in once the whole chain above is merged. It is one feature in
+seven stacked PRs; a partial merge ships columns and a flag with nothing
+reading them, which is safe but not worth announcing.
+
+**Summary (operator-facing)**
+
+New hosted self-serve partners start in **probation**: they can enrol up to 5
+devices and see inventory, patching and alerts, but remote control, script and
+command execution, and installer distribution (links, short-links, onboarding
+tokens, Quick Support codes, third-party remote launch) are refused until a
+settled 3DS card payment has aged 24 hours or a platform admin approves them
+from an evidence-card email or the new **Admin → Trust queue** page. Existing
+partners are grandfathered (`trust_state` defaults to `trusted`). Suspicious
+signups (Tor, card fingerprint or fraudulent-refund identity match, shared
+network **plus** a corroborating axis) are auto-restricted, never
+auto-suspended.
+
+**Self-Hosting / Upgrade Notes**
+
+- **No action needed for self-hosters.** `PARTNER_TRUST_MODE` resolves to
+  `off` unless `IS_HOSTED=true`, regardless of its value; with it off no new
+  code path performs a database read, Redis call or network call, and every
+  gate is a no-op. The guided-setup smoke job asserts a fresh self-hosted
+  stack can still open a remote session.
+- Migration `2026-10-03-partner-trust-probation.sql`: adds enums
+  `partner_trust_state`, `ip_class`; `partners.trust_state` (default
+  `trusted`), `trust_changed_at/by`, `trust_reason`,
+  `trust_review_requested_at`, `probation_enrollments`,
+  `signup_ip_class/asn/classified_at`; `devices.enrollment_ip_class/asn/
+  classified_at`; one partial index. Idempotent, no backfill, no table
+  rewrite.
+- New **optional** env vars (missing = feature off / fallback; never fail
+  boot; map in the `api` compose `environment:` block when set):
+  `PARTNER_TRUST_MODE` (`off | shadow | enforce`; hosted default `shadow`),
+  `IP_CLASSIFY_PROVIDER` (`ipinfo | ipdata | none`), `IP_CLASSIFY_API_KEY`,
+  `TRUST_ACTION_TOKEN_SECRET` (falls back to `JWT_SECRET`),
+  `PARTNER_MEETING_URL` (shown on the probation banner).
+- New BullMQ jobs on the existing `abuse-signals` queue: `ip-classify`
+  (event-driven) and `partner-trust-promote` (every 15 min). The
+  `abuse-signals-sweep` cadence changes from hourly to every 15 minutes
+  (`22,37,52,7 * * * *`).
+- New audit actions: `partner.trust.probation`, `partner.trust.promoted`,
+  `partner.trust.restricted`, `partner.trust.review_requested`,
+  `partner.trust.capability_denied` (details carry `mode`, `capability`,
+  `reason`, `route`).
+- New routes: `GET /partner/trust`, `POST /partner/trust/request-review`
+  (partner scope); `POST /admin/partners/:id/trust/promote|restrict`,
+  `GET /admin/trust/queue`, `GET /admin/trust/act/preview`,
+  `POST /admin/trust/act` (platform admin + MFA). Web: `/admin/trust-queue`,
+  `/admin/trust/act`.
+- Gated 403 bodies use a stable contract
+  `{ error: 'TRUST_PROBATION' | 'TRUST_RESTRICTED', capability, reason,
+  reviewRequested, meetingUrl }`; the web app turns them into the
+  "Verification pending" banner instead of a generic error toast.
+- breeze-billing (rebuild the `billing` container on each droplet): signup
+  Checkout is now **card-only with 3DS requested** (Link disabled — every
+  fraudulent capture to date arrived via Link); two new internal endpoints
+  `GET /internal/partners/:id/settled-card-charge` and
+  `…/fraudulent-refund-match`; one new idempotent index on `billing_events`.
+
+**Hosted rollout TODO (one-off, delete once done)**
+
+- [ ] Deploy billing first (both regions), then the API/web images.
+- [ ] Grant `is_platform_admin = true` to the operator account — production
+      has none, and the trust queue page and the email action links require
+      it.
+- [ ] Leave `PARTNER_TRUST_MODE` at its `shadow` default for 7 days; new
+      signups enter probation but nothing is denied. Run
+      `apps/api/scripts/partner-trust-shadow-report.sql` (as `doadmin`, with
+      `SET breeze.scope = 'system'`) and check the acceptance rule in the
+      header.
+- [ ] Set `PARTNER_TRUST_MODE=enforce` + compose mapping, `up -d api`; then
+      run `apps/api/scripts/partner-trust-backfill.sql` (dry-run first) and
+      the `partner-trust:backfill-cards` hand-off documented in its header.
+- [ ] Optional: set `IP_CLASSIFY_PROVIDER`/`IP_CLASSIFY_API_KEY` so
+      auto-promotion can run; without them signups classify as `unknown` and
+      promotion is manual only.
