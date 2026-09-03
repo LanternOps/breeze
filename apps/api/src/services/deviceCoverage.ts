@@ -228,8 +228,9 @@ export async function contractLinesCoveringDevice(
       // The stamped device_group_name, not a fourth query: it is what W02
       // designed the stamp for, and a resolvable line's group exists by
       // definition, so the only drift is a rename after line creation.
+      // contract_lines_device_group_chk guarantees the stamped name is non-null.
       deviceGroup: l.lineType === 'per_device_group' && l.deviceGroupId
-        ? { id: l.deviceGroupId, name: l.deviceGroupName ?? '' }
+        ? { id: l.deviceGroupId, name: l.deviceGroupName! }
         : null,
     });
   }

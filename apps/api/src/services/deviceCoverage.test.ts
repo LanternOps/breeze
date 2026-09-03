@@ -36,7 +36,6 @@ vi.mock('./filterEngine', async (importOriginal) => {
   return { ...actual, deviceMatchesFilter: deviceMatchesFilterMock };
 });
 
-import { GroupEvaluationError } from './groupMembership';
 import { contractLinesCoveringDevice, DeviceCoverageError } from './deviceCoverage';
 
 const DEVICE_ID = '11111111-1111-4111-8111-111111111111';
@@ -196,7 +195,6 @@ describe('contractLinesCoveringDevice (#3205 W06)', () => {
       status: 500, code: 'GROUP_EVALUATION_FAILED',
       details: { groupId: GROUP_ID, groupName: 'VIP Laptops', reason: 'invalid_filter' },
     });
-    expect(new GroupEvaluationError(GROUP_ID, 'engine_error')).toBeInstanceOf(Error);
   });
 
   it('any other error propagates unchanged — never swallowed into an empty coverage', async () => {

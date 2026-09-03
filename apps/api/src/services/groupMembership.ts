@@ -146,8 +146,10 @@ export type DeviceForMembership = {
 
 /**
  * Is this ONE device in this group, as billing defines membership (#3205 W06)?
- * The single-device twin of resolveEffectiveGroupMembers: returns exactly
- * `deviceId ∈ (matched ∪ pinned)`, proved by groupMembership.parity.integration.test.ts.
+ * The single-device twin of resolveEffectiveGroupMembers: returns
+ * `deviceId ∈ (matched ∪ pinned)` for billing-eligible devices (same org, not
+ * ephemeral). Other-org and ephemeral devices are refused up front. Proved by
+ * groupMembership.parity.integration.test.ts.
  *
  * The site clause on the filter branch is PARITY, not an optimization:
  * evaluateFilter narrows by allowedSiteIds inside its SQL, deviceMatchesFilter

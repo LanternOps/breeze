@@ -3,9 +3,8 @@
 // that cooperates with filterUrl.ts and deviceClassFilter.ts — each writer
 // preserves the other's fragments.
 //
-// READ-ONLY on purpose: the org SELECTOR owns the store, so this page never
-// writes the fragment back. A mirror writer would fight the selector for
-// ownership of the same key.
+// The org SELECTOR owns ongoing store state. This hook consumes the one-shot
+// deep-link fragment after adoption so a later reload cannot re-select it.
 import { useEffect, useLayoutEffect } from 'react';
 import { useOrgStore } from '../../stores/orgStore';
 
@@ -47,6 +46,10 @@ export function useOrgIdFromHash(): void {
       if (!id) return;
       const { currentOrgId, selectOrganization } = useOrgStore.getState();
       if (id !== currentOrgId) selectOrganization(id);
+      const raw = window.location.hash.startsWith('#') ? window.location.hash.slice(1) : window.location.hash;
+      const remaining = raw.split('&').filter((part) => part && part.split('=', 1)[0] !== HASH_KEY);
+      const nextHash = remaining.length > 0 ? `#${remaining.join('&')}` : '';
+      history.replaceState(null, '', `${window.location.pathname}${window.location.search}${nextHash}`);
     };
     apply();
     window.addEventListener('hashchange', apply);

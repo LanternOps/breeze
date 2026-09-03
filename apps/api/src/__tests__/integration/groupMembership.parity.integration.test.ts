@@ -2,8 +2,9 @@
  * #3205 W06 mandatory anti-drift test. Two definitions of group membership now
  * exist — resolveEffectiveGroupMembers (whole group, billing + evaluator) and
  * groupIncludesDevice (one device, the device coverage panel). This file is the
- * reason they cannot drift: for EVERY group x EVERY device in the fixture,
- * groupIncludesDevice(group, device) === (matched ∪ pinned).has(device.id).
+ * reason they cannot drift: for EVERY group x EVERY billing-eligible device in
+ * the fixture, groupIncludesDevice(group, device) ===
+ * (matched ∪ pinned).has(device.id).
  *
  * The trailing site clause on groupIncludesDevice's filter branch is the one
  * place drift could hide: evaluateFilter narrows by allowedSiteIds inside its
@@ -78,11 +79,12 @@ const member = (groupId: string, deviceId: string, orgId: string, isPinned = fal
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
 describe('groupIncludesDevice parity with resolveEffectiveGroupMembers (real DB) #3205 W06', () => {
-  runDb('every group x every device: groupIncludesDevice === (matched ∪ pinned).has(id)', async () => {
+  runDb('every group x every billing-eligible device has one-device/whole-group parity', async () => {
     const f = await seed();
     const gStatic = await group(f.orgId, { type: 'static' });
     await member(gStatic.id, f.wsA.id, f.orgId);
     await member(gStatic.id, f.srvB.id, f.orgId);
+    await member(gStatic.id, f.ephemeralDev.id, f.orgId);
 
     const gDynamic = await group(f.orgId, { type: 'dynamic', filterConditions: SERVER_FILTER });
     await member(gDynamic.id, f.wsB.id, f.orgId, true);
@@ -98,11 +100,17 @@ describe('groupIncludesDevice parity with resolveEffectiveGroupMembers (real DB)
     for (const g of [gStatic, gDynamic, gNullFilter, gSiteBound]) {
       const { matched, pinned } = await withSystemDbAccessContext(() => resolveEffectiveGroupMembers(g));
       const union = new Set([...matched, ...pinned]);
-      for (const d of f.all) {
+      for (const d of f.local) {
         const actual = await withSystemDbAccessContext(() => groupIncludesDevice(g, d));
         expect({ group: g.id, device: d.id, actual }).toEqual({ group: g.id, device: d.id, actual: union.has(d.id) });
       }
     }
+
+    const { matched } = await withSystemDbAccessContext(() => resolveEffectiveGroupMembers(gStatic));
+    // Deliberate divergence: the whole-group resolver includes real membership
+    // rows, while billing eligibility refuses ephemeral devices up front.
+    expect(matched.has(f.ephemeralDev.id)).toBe(true);
+    expect(await withSystemDbAccessContext(() => groupIncludesDevice(gStatic, f.ephemeralDev))).toBe(false);
   });
 
   runDb('a malformed non-null filter throws for eligible devices and rejects ineligible devices first', async () => {

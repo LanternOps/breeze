@@ -6,8 +6,9 @@ const HASH_KEY = 'filtersV2';
 
 // Pure, isomorphic base64url. The old body returned '' when `window` was
 // undefined, so any link built from encodeFilterToHash during SSR was silently
-// `/devices#` (#3205 W06). Byte-identical to the old btoa path for every input:
-// unescape(encodeURIComponent(s)) IS the UTF-8 byte sequence TextEncoder emits.
+// `/devices#` (#3205 W06). Byte-identical to the old btoa path for every
+// well-formed input: unescape(encodeURIComponent(s)) IS the UTF-8 byte sequence
+// TextEncoder emits.
 const B64URL_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
 
 function toBase64Url(s: string): string {

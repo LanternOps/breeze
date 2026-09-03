@@ -88,7 +88,10 @@ describe('DevicesPage deep link (#3205 W06)', () => {
     });
     vi.mocked(fetchWithAuth).mockImplementation(async (url: string, init?: RequestInit) => {
       if (url.startsWith('/filters/preview')) {
-        events.push(`preview:${String(init?.body)}`);
+        // Mirror fetchWithAuth's org injection so this test observes which org
+        // would be carried on the wire, in addition to call ordering.
+        const scopedUrl = `${url}?orgId=${orgStoreState.currentOrgId}`;
+        events.push(`preview:${scopedUrl}`);
         return { ok: true, json: async () => ({ data: { deviceIds: [] } }) } as unknown as Response;
       }
       return { ok: true, json: async () => ({ data: [] }) } as unknown as Response;
@@ -106,20 +109,22 @@ describe('DevicesPage deep link (#3205 W06)', () => {
     const previewAt = events.findIndex((e) => e.startsWith('preview:'));
     expect(orgAt).toBeGreaterThanOrEqual(0);
     expect(orgAt).toBeLessThan(previewAt);   // layout effect before passive effect
+    expect(events[previewAt]).toBe(`preview:/filters/preview?orgId=${ORG_FROM_HASH}`);
   });
 
   it('posts the decoded filter to /filters/preview', async () => {
     render(<DevicesPage />);
     await waitFor(() => expect(events.some((e) => e.startsWith('preview:'))).toBe(true));
-    const body = JSON.parse(events.find((e) => e.startsWith('preview:'))!.slice('preview:'.length));
+    const previewCall = vi.mocked(fetchWithAuth).mock.calls.find(([url]) => url === '/filters/preview');
+    const body = JSON.parse(String(previewCall?.[1]?.body));
     expect(body.conditions).toEqual(FILTER);
     expect(body.idsOnly).toBe(true);
   });
 
-  it('the hash mirror preserves the orgId fragment', async () => {
+  it('removes only the adopted orgId fragment while preserving filtersV2', async () => {
     render(<DevicesPage />);
-    await waitFor(() => expect(window.location.hash).toContain('filtersV2='));
-    expect(window.location.hash).toContain(`orgId=${ORG_FROM_HASH}`);
+    await waitFor(() => expect(window.location.hash).not.toContain('orgId='));
+    expect(window.location.hash).toContain('filtersV2=');
   });
 
   it('a hash with no orgId leaves the current org alone', async () => {

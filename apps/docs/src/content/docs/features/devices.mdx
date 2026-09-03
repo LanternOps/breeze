@@ -47,6 +47,8 @@ The device **Overview** tab carries a **Billing** card answering "which contract
 - **Not billed** -- the device is decommissioned or an ephemeral support-session machine, so it is excluded from billing entirely. Nothing is wrong.
 - **Coverage unknown** -- a device group on an active contract could not be evaluated (a broken filter, for example). The card says so and offers a retry rather than reporting the device as unbilled.
 
+The **Role** chip names the contract line's configured role set, not the individual device's role.
+
 Only **active** contracts count, and the answer is computed live from the same rule the billing run uses, so the card and the contract's own coverage warning can never disagree.
 
 ## VPN Presence

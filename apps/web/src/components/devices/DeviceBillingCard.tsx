@@ -11,6 +11,8 @@ import { loginPathWithNext } from '../../lib/authScope';
 import { usePermissions } from '@/lib/permissions';
 import { getDeviceRoleIcon, getDeviceRoleLabel } from '@/lib/deviceRoles';
 import { getDeviceBilling, type DeviceBillingCoverage, type DeviceCoverageLine } from '../../lib/api/devices';
+import { CONTRACT_STATUS_ROLES } from '../../lib/api/contracts';
+import { StatusPill } from '../billing/shared/StatusPill';
 
 const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true });
 
@@ -142,6 +144,12 @@ export default function DeviceBillingCard({ deviceId }: { deviceId: string }) {
           <a href={`/contracts/${line.contractId}`} className="font-medium text-primary hover:underline">
             {line.contractName}
           </a>
+          <StatusPill
+            role={CONTRACT_STATUS_ROLES[line.contractStatus].role}
+            label={t(/* i18n-dynamic */ `billing:contracts.shared.status.${line.contractStatus}`)}
+            className={CONTRACT_STATUS_ROLES[line.contractStatus].className}
+            testId="device-billing-contract-status"
+          />
           <span className="text-muted-foreground">{line.description}</span>
           <span className="inline-flex items-center rounded-full border px-2 py-0.5 text-xs text-muted-foreground">
             {matchedByLabel(t, line)}

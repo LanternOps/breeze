@@ -51,6 +51,8 @@ describe('DeviceBillingCard (#3205 W06)', () => {
     const rows = await screen.findAllByTestId('device-billing-line');
     expect(rows).toHaveLength(2);
     expect(rows[0]!.textContent).toContain('Acme MSA');
+    expect(rows[0]!.textContent).toContain('Active');
+    expect(rows[0]!.querySelector('[data-testid="device-billing-contract-status"]')).toHaveTextContent('Active');
     expect(rows[0]!.textContent).toContain('Role: Server');
     expect(rows[1]!.textContent).toContain('Group: VIP Laptops');
     expect(rows[0]!.querySelector('a')!.getAttribute('href')).toBe('/contracts/c1');
