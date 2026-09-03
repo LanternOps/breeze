@@ -18,6 +18,7 @@ import { enqueueInvoicePdfRender } from '../jobs/invoiceWorker';
 import { enqueueAccountingInvoicePush, enqueueAccountingInvoiceVoid } from '../jobs/accountingSyncWorker';
 import type { MappingSyncStatus } from './accounting/accountingMappingService';
 import { clearPaymentMappingForInvoicePayment } from './accounting/accountingPaymentPull';
+import { INVOICE_REMOTE_DELETED_ERROR } from './accounting/types';
 import { gatherOrgTimeEntries, gatherOrgParts, gatherTicketBillables, mergeAssembly, type AssemblyResult, type DraftLineSpec, type MissingRateSpec } from './invoiceAssembly';
 import { buildSellerSnapshot, buildBillToAddress } from './sellerSnapshot';
 import { InvoiceServiceError } from './invoiceTypes';
@@ -622,6 +623,15 @@ export interface InvoiceAccountingSync {
   lastSyncedAt: string | null;
   lastError: string | null;
   remoteDocNumber: string | null;
+  /**
+   * True when this mapping row carries the `markInvoiceDeletedRemotely`
+   * marker (#4544) — the reconcile worker saw QuickBooks delete/void an
+   * invoice Breeze previously pushed. Computed here, server-side, from the
+   * one place that knows the exact sentinel `lastError` string
+   * (`INVOICE_REMOTE_DELETED_ERROR`), so the web layer never has to
+   * string-match `lastError` to decide whether re-pushing is safe.
+   */
+  remoteDeleted: boolean;
 }
 
 /**
@@ -664,6 +674,7 @@ async function getInvoiceAccountingSync(invoiceId: string, partnerId: string): P
     lastSyncedAt: row.lastSyncedAt ? row.lastSyncedAt.toISOString() : null,
     lastError: row.lastError,
     remoteDocNumber: row.remoteDocNumber,
+    remoteDeleted: row.lastError === INVOICE_REMOTE_DELETED_ERROR,
   };
 }
 

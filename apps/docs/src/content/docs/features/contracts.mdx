@@ -45,9 +45,13 @@ Each line is one charge on the contract. Lines can resolve their quantity in dif
 
 Per-device and per-device-role lines can be scoped to a specific **site** so you bill only the devices at that location. A per-device-group line is not site-scoped: make the group itself site-bound instead. Per-seat lines always bill the organization's whole active-user count and cannot be site-scoped. A line can link to a [catalog item](/features/product-catalog/), which prefills its description and price.
 
+**Editing a line.** On a draft or active contract you can edit a line in place -- its description, price, tax flag, quantity, site, device roles, device group and catalog link -- from the contract editor. The line keeps its identity, so invoices already generated from it stay linked to it and any allowance you set later is preserved. **The line type cannot be changed**: remove the line and add a new one instead. A catalog-linked line keeps the price it was given when it was added; use **Refresh price from catalog** to re-price it. Clearing a catalog link asks you for a unit price, because nothing re-prices the line afterwards. Edits apply from the next billing period onward; invoices that have already been generated are never rewritten.
+
 Dynamic groups on a contract are evaluated live when the estimate or invoice is computed, not from the member list cached on the Device Groups page, so a device that changed since the group was last refreshed is still billed correctly. The one exception is a filter condition that tests membership in *another* group, which reads that group's cached list. A group billed by a draft, active or paused contract cannot be deleted until the line is removed; a group deleted after a contract ended stays on that contract's lines by name.
 
-Device roles come from the agent's automatic classification, a network discovery scan, or a manual override on the device. A device whose role is still **Unknown** is never billed by a per-device-role line. The contract's estimate and each generated invoice report how many devices on the organization are not billed by any line, broken down by role, so you can classify them or add a line before the next period.
+Device roles come from the agent's automatic classification, a network discovery scan, or a manual override on the device. A device whose role is still **Unknown** is never billed by a per-device-role line, though a per-device or per-device-group line bills it like any other machine. The contract's estimate and each generated invoice report how many devices on the organization are not billed by any line, broken down by role -- and each role in that breakdown is a **link** to the devices list, already filtered to that role in that customer's organization, so you can classify them or add a line before the next period. The link carries the organization, so opening it in a new tab switches your org scope to the contract's customer.
+
+Coverage is worked out **live** every time you look at it -- nothing is stored -- and only **active** contracts count. A device covered by a draft contract still reads "no active contract line bills this device" on its own page until the contract is activated, even though the draft contract's own estimate counts it: the two answer different questions.
 
 ## Creating a Contract
 
@@ -56,7 +60,7 @@ A contract is priced in the customer organization's billing currency, which the 
 <Steps>
 1. Go to **Contracts** and click **New contract**.
 2. Select the customer organization, name the contract, and set the billing timing, interval, and start date.
-3. Add lines -- choose flat, per device, per device role, per seat, or manual, and set the price (and quantity or roles where applicable). Link a catalog item to prefill description and price.
+3. Add lines -- choose flat, per device, per device role, per device group, per seat, or manual, and set the price (and quantity, roles or group where applicable). Link a catalog item to prefill description and price. You can edit any line later from the same screen while the contract is a draft or active.
 4. Add any **terms** and notes.
 5. Review the **estimated value this period** -- per-device, per-device-role and per-seat lines resolve to live counts so the estimate is real, not a placeholder, and any devices no line bills are called out.
 6. **Activate** the contract to start billing.

@@ -247,6 +247,181 @@ describe('AiAgentGraduationPanel — promote affordance', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// #4187 UI critique — Revoke, the operator-facing mirror of Promote, and the
+// demotion cause a `demoted` pill used to leave unexplained.
+// ---------------------------------------------------------------------------
+
+const OP = 'manage_devices:restart_device';
+
+async function clickRevokeAndConfirm(opKey: string, reason?: string) {
+  fireEvent.click(await screen.findByTestId(`ai-agent-graduation-revoke-${opKey}`));
+  if (reason !== undefined) {
+    fireEvent.change(await screen.findByTestId('ai-agent-graduation-revoke-reason'), {
+      target: { value: reason },
+    });
+  }
+  fireEvent.click(await screen.findByTestId('ai-agent-graduation-revoke-confirm'));
+}
+
+describe('AiAgentGraduationPanel — revoke affordance', () => {
+  it.each(['tracking', 'eligible', 'demoted'] as const)('hides Revoke on a %s row', async (state) => {
+    mockGraduation(dto({ rows: [row({ state })] }));
+    render(<AiAgentGraduationPanel {...orgProps} />);
+
+    await screen.findByTestId(`ai-agent-graduation-row-${OP}`);
+    expect(screen.queryByTestId(`ai-agent-graduation-revoke-${OP}`)).toBeNull();
+  });
+
+  it('offers Revoke on a promoted row even while policy-decide is off', async () => {
+    // The route is deliberately not gated on the flag: turning it off must
+    // stop new grants without stranding a live one.
+    mockGraduation(dto({ rows: [row({ state: 'promoted' })], policyDecideEnabled: false }));
+    render(<AiAgentGraduationPanel {...orgProps} />);
+
+    expect(await screen.findByTestId(`ai-agent-graduation-revoke-${OP}`)).toBeTruthy();
+  });
+
+  it('POSTs the exact revoke body, including the typed reason and the panel kind', async () => {
+    mockGraduation(
+      dto({ rows: [row({ state: 'promoted' })] }),
+      () => json({ revoked: true, orgAgentId: 'org-agent-9', state: 'demoted' }),
+    );
+    render(<AiAgentGraduationPanel {...orgProps} />);
+    await clickRevokeAndConfirm(OP, 'Customer asked us to stop');
+
+    await waitFor(() => expect(lastMutation().method).toBe('POST'));
+    expect(lastMutation().url).toBe('/ai/agents/graduation/revoke');
+    expect(lastMutation().body).toEqual({
+      orgId: 'org-1',
+      opKey: OP,
+      // Sent so the route never has to guess between two agents holding the
+      // same key — the rows on screen belong to this kind's agent.
+      kind: 'patch',
+      reason: 'Customer asked us to stop',
+    });
+    await waitFor(() =>
+      expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' })));
+  });
+
+  it('omits `reason` entirely rather than sending an empty string', async () => {
+    // The route records `null` for "the operator supplied none"; '' is not that.
+    mockGraduation(
+      dto({ rows: [row({ state: 'promoted' })] }),
+      () => json({ revoked: true, orgAgentId: 'org-agent-9', state: 'demoted' }),
+    );
+    render(<AiAgentGraduationPanel {...orgProps} />);
+    await clickRevokeAndConfirm(OP, '   ');
+
+    await waitFor(() => expect(lastMutation().method).toBe('POST'));
+    expect(lastMutation().body).toEqual({ orgId: 'org-1', opKey: OP, kind: 'patch' });
+  });
+
+  it('caps the reason at 500 characters and counts down', async () => {
+    mockGraduation(dto({ rows: [row({ state: 'promoted' })] }));
+    render(<AiAgentGraduationPanel {...orgProps} />);
+    fireEvent.click(await screen.findByTestId(`ai-agent-graduation-revoke-${OP}`));
+
+    const textarea = await screen.findByTestId('ai-agent-graduation-revoke-reason');
+    expect(textarea).toHaveAttribute('maxlength', '500');
+    fireEvent.change(textarea, { target: { value: 'x'.repeat(40) } });
+    expect(screen.getByTestId('ai-agent-graduation-revoke-reason-count').textContent).toContain('460');
+  });
+
+  it('re-reads the ledger after a successful revoke rather than guessing the new state', async () => {
+    let reads = 0;
+    fetchWithAuth.mockImplementation((url: string, init?: RequestInit) => {
+      if (init?.method) return Promise.resolve(json({ revoked: true, orgAgentId: 'a', state: 'demoted' }));
+      if (typeof url === 'string' && url.startsWith('/ai/agents/graduation')) {
+        reads += 1;
+        return Promise.resolve(json(dto({
+          rows: [row(reads === 1
+            ? { state: 'promoted' }
+            : { state: 'demoted', demotedAt: '2026-09-02T10:00:00.000Z', demoteReason: 'operator' })],
+        })));
+      }
+      return Promise.resolve(json({ data: [] }));
+    });
+    render(<AiAgentGraduationPanel {...orgProps} />);
+    await clickRevokeAndConfirm(OP);
+
+    await waitFor(() => expect(reads).toBe(2));
+    expect(await screen.findByTestId(`ai-agent-graduation-demoted-${OP}`)).toBeTruthy();
+  });
+
+  it('maps every revoke refusal token to a sentence and keeps the row', async () => {
+    for (const token of ['no_promoted_grant', 'already_demoted', 'already_revoked', 'ambiguous_op_key']) {
+      showToast.mockClear();
+      mockGraduation(
+        dto({ rows: [row({ state: 'promoted' })] }),
+        () => json({ error: token }, false, 409),
+      );
+      const view = render(<AiAgentGraduationPanel {...orgProps} />);
+      await clickRevokeAndConfirm(OP);
+
+      await waitFor(() =>
+        expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+      const message = String((showToast.mock.calls.at(-1)?.[0] as { message: string }).message);
+      expect(message).not.toBe(token);
+      expect(message).not.toContain('aiAgentsPage.graduation');
+      expect(screen.getByTestId(`ai-agent-graduation-row-${OP}`)).toBeTruthy();
+      view.unmount();
+    }
+  });
+});
+
+describe('AiAgentGraduationPanel — demotion cause', () => {
+  it('names when and why a demoted grant was taken away', async () => {
+    mockGraduation(dto({
+      rows: [row({
+        state: 'demoted',
+        blockedReason: 'has_failures',
+        demotedAt: '2026-09-02T10:00:00.000Z',
+        demoteReason: 'operator',
+      })],
+    }));
+    render(<AiAgentGraduationPanel {...orgProps} />);
+
+    const cause = await screen.findByTestId(`ai-agent-graduation-demoted-${OP}`);
+    const lines = [...cause.querySelectorAll('span')].map((span) => span.textContent ?? '');
+    expect(lines).toHaveLength(2);
+    // The formatted timestamp, never the raw ISO string.
+    expect(lines[0]).not.toContain('2026-09-02T10:00:00.000Z');
+    expect(lines[0]).toContain('2026');
+    // A sentence, never the bare machine token or a missing catalog entry.
+    expect(lines[1]).not.toBe('operator');
+    expect(lines[1]).not.toContain('aiAgentsPage.graduation');
+    expect(lines[1]?.length).toBeGreaterThan('operator'.length);
+  });
+
+  it('gives each demote reason its own distinct sentence, never the raw token', async () => {
+    const reasons = ['attempted_failure', 'recurrence', 'operator'] as const;
+    const rendered: string[] = [];
+    for (const reason of reasons) {
+      mockGraduation(dto({ rows: [row({ state: 'demoted', demoteReason: reason })] }));
+      const view = render(<AiAgentGraduationPanel {...orgProps} />);
+
+      const text = (await screen.findByTestId(`ai-agent-graduation-demoted-${OP}`)).textContent ?? '';
+      // A snake_case token never occurs in prose, so its presence is proof the
+      // raw ledger value reached the operator. (`operator` is a real English
+      // word and legitimately appears in its own sentence, hence the guard.)
+      if (reason.includes('_')) expect(text).not.toContain(reason);
+      expect(text).not.toContain('aiAgentsPage.graduation');
+      rendered.push(text);
+      view.unmount();
+    }
+    expect(new Set(rendered).size).toBe(reasons.length);
+  });
+
+  it('renders nothing extra when the ledger carries neither field', async () => {
+    mockGraduation(dto({ rows: [row({ state: 'tracking' })] }));
+    render(<AiAgentGraduationPanel {...orgProps} />);
+
+    await screen.findByTestId(`ai-agent-graduation-row-${OP}`);
+    expect(screen.queryByTestId(`ai-agent-graduation-demoted-${OP}`)).toBeNull();
+  });
+});
+
 describe('AiAgentGraduationPanel — partner byOrg fan-out', () => {
   const byOrg: AiAgentGraduationByOrgDto = {
     version: 1,
@@ -369,6 +544,32 @@ describe('AiAgentGraduationPanel — states with nothing to fetch', () => {
 
     expect(await screen.findByTestId('ai-agent-graduation-error')).toBeTruthy();
     expect(screen.queryByTestId('ai-agent-graduation-empty')).toBeNull();
+  });
+
+  // Live smoke finding: an org override with no partner-wide baseline agent of
+  // this kind gets a 404 from GET /ai/agents/graduation — by design,
+  // `resolveEffectiveAgentSystem` resolves null and org overrides cannot
+  // self-enable (routes/aiAgents.ts). That is not a load FAILURE (retrying
+  // can never succeed until a baseline exists), so it must not render the
+  // generic error + a Try again button that is dead on arrival.
+  it('explains that graduation tracking needs a partner-wide baseline agent on a 404, with no retry button', async () => {
+    fetchWithAuth.mockResolvedValue(json({ error: 'agent_not_found' }, false, 404));
+    render(<AiAgentGraduationPanel {...orgProps} />);
+
+    expect(await screen.findByTestId('ai-agent-graduation-no-baseline')).toBeTruthy();
+    expect(screen.queryByTestId('ai-agent-graduation-error')).toBeNull();
+    expect(screen.queryByTestId('ai-agent-graduation-retry')).toBeNull();
+  });
+
+  // Every OTHER failure keeps the existing retryable-error path — the 404
+  // branch must not swallow a genuine outage.
+  it('keeps the retryable error (and retry button) for a non-404 failure', async () => {
+    fetchWithAuth.mockResolvedValue(json({ error: 'boom' }, false, 500));
+    render(<AiAgentGraduationPanel {...orgProps} />);
+
+    expect(await screen.findByTestId('ai-agent-graduation-error')).toBeTruthy();
+    expect(screen.getByTestId('ai-agent-graduation-retry')).toBeTruthy();
+    expect(screen.queryByTestId('ai-agent-graduation-no-baseline')).toBeNull();
   });
 });
 

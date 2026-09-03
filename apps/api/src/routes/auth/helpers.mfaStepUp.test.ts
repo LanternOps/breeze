@@ -198,7 +198,12 @@ describe('requireFreshMfaStepUp', () => {
     getRedis.mockReturnValue(null);
     const c = makeContext();
     await requireFreshMfaStepUp(c, USER_ID, '123456');
-    expect(c.json).toHaveBeenCalledWith({ error: 'Service temporarily unavailable' }, 503);
+    // #4746: `message` mirrors `error` on both non-rejection bodies, because
+    // the web profile form reads `data.message` only.
+    expect(c.json).toHaveBeenCalledWith(
+      { error: 'Service temporarily unavailable', message: 'Service temporarily unavailable' },
+      503,
+    );
     expect(rateLimiter).not.toHaveBeenCalled();
   });
 

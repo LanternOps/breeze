@@ -4,14 +4,23 @@
  * `supervisedKeyGrant.ts`.
  *
  * The one and only writer that REMOVES a colon key from an organization's
- * `ai_agents.actAssets.supervisedActionKeys`. Two events reach it, and they
- * are the two ways an unattended operation proves it should not have been
- * unattended:
+ * `ai_agents.actAssets.supervisedActionKeys`. Two AUTOMATIC events reach it,
+ * and they are the two ways an unattended operation proves it should not have
+ * been unattended:
  *
  *   - an ATTEMPTED failure of a released intent (`intentReleaseWorker.ts` —
  *     the terminal write stamped `executed_at`, so the provider-side call
  *     really happened and really failed);
  *   - a fix-watch `recurred` verdict (`fixWatch.ts` — the fix did not hold).
+ *
+ * A third caller is a HUMAN: `POST /ai/agents/graduation/revoke`
+ * (`routes/aiAgents.ts`) with `reason: 'operator'`, the operator-facing
+ * mirror of promote. It carries no `runId`/`watchId` — there is no
+ * disqualifying evidence, only a decision — and it deliberately does NOT
+ * notify (see `notifyDemotion`). Everything below applies to it unchanged
+ * except the savepoint: the route holds no evidence transaction to nest in,
+ * so it takes the `database` default and this executor opens its own system
+ * context.
  *
  * Three properties make this safe to run unattended, and all three are the
  * reason it exists as its own module rather than as a second half of
@@ -84,8 +93,21 @@ import { mergeAgentPolicies, normalizeAgentPolicy } from './effectivePolicy';
 import { withGraduationLock } from './graduationService';
 import { resolveRecipientUserIds } from './recipients';
 
-/** Which disqualifying signal revoked the key. Persisted as `demote_reason`. */
-export type AiAgentDemoteReason = 'attempted_failure' | 'recurrence';
+/**
+ * Which disqualifying signal revoked the key. Persisted as `demote_reason`.
+ *
+ * The column is plain `text` with NO check constraint
+ * (`2026-10-01-100000-ai-agents-graduation-evidence.sql`), so this union is
+ * the only place the value set is pinned — widening it needs no migration,
+ * but nothing else may write the column either.
+ *
+ * `operator` is the one member with no evidence behind it: a human used
+ * `POST /ai/agents/graduation/revoke` to hand the key back to the approval
+ * queue. It carries no `runId`/`watchId` for that reason, and the operator
+ * who did it is named by the route's own `ai_agent.graduation.revoke` audit
+ * row rather than by this table (there is no `demoted_by` column).
+ */
+export type AiAgentDemoteReason = 'attempted_failure' | 'recurrence' | 'operator';
 
 /**
  * The executor the caller's transaction is running on. Defaults to the
@@ -296,6 +318,12 @@ export interface NotifyDemotionInput {
 const DEMOTE_REASON_CLAUSE: Record<AiAgentDemoteReason, string> = {
   attempted_failure: 'its last attempt failed.',
   recurrence: 'the alert it fixed recurred.',
+  // Unreachable in practice — the operator route deliberately does not notify
+  // (the person who revoked the key does not need to be told, and there is no
+  // run to resolve recipients from, so `notifyDemotion` stands down before it
+  // gets here). Present because the `Record` is total, and worded so it would
+  // still read correctly if a future caller did notify.
+  operator: 'an operator revoked it.',
 };
 
 /**

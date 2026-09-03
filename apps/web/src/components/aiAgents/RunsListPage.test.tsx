@@ -1,5 +1,5 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
 
@@ -110,11 +110,26 @@ describe('RunsListPage', () => {
     await waitFor(() => expect(screen.getByTestId('runs-list-error')).toBeInTheDocument());
   });
 
-  it('shows the empty state when there are no runs', async () => {
+  it('shows the empty state when there are no runs, with a description and a link to configure agents', async () => {
     mockEndpoints({ runs: [] });
     render(<RunsListPage />);
 
     await waitFor(() => expect(screen.getByTestId('runs-list-empty')).toBeInTheDocument());
+    expect(screen.getByText('No runs yet.')).toBeInTheDocument();
+    expect(screen.getByText(/will appear here/i)).toBeInTheDocument();
+    const link = screen.getByText('Configure AI agents');
+    expect(link).toHaveAttribute('href', '/settings/ai-agents');
+  });
+
+  it('shows a Clear filters action in the filtered-empty state instead of the settings link', async () => {
+    mockEndpoints({ runs: [] });
+    render(<RunsListPage />);
+    await waitFor(() => expect(screen.getByTestId('runs-list-empty')).toBeInTheDocument());
+
+    fireEvent.change(screen.getByTestId('runs-list-filter-status'), { target: { value: 'failed' } });
+    await waitFor(() => expect(screen.getByText('No runs match these filters.')).toBeInTheDocument());
+    expect(screen.queryByText('Configure AI agents')).not.toBeInTheDocument();
+    expect(screen.getAllByText('Clear filters').length).toBeGreaterThan(0);
   });
 
   it('shows a Load more button when a nextCursor is returned, and appends on click', async () => {
@@ -254,5 +269,273 @@ describe('RunsListPage', () => {
 
     await waitFor(() => expect(screen.getByTestId('runs-list-row-run-1')).toBeInTheDocument());
     expect(screen.queryByText('Acme Corp')).not.toBeInTheDocument();
+  });
+});
+
+// Critique finding #4 — the whole row is a click target, not just the
+// agent-name link, and clicking the link itself must not double-navigate.
+describe('RunsListPage row navigation', () => {
+  function withMockedLocation() {
+    const realLocation = window.location;
+    const assign = vi.fn();
+    Object.defineProperty(window, 'location', { configurable: true, value: { ...realLocation, assign } });
+    return {
+      assign,
+      restore: () => Object.defineProperty(window, 'location', { configurable: true, value: realLocation }),
+    };
+  }
+
+  it('navigates to the run detail page when clicking anywhere in the row', async () => {
+    mockEndpoints();
+    const { assign, restore } = withMockedLocation();
+    try {
+      render(<RunsListPage />);
+      await waitFor(() => expect(screen.getByTestId('runs-list-row-run-1')).toBeInTheDocument());
+
+      fireEvent.click(screen.getByTestId('runs-list-row-run-1'));
+      expect(assign).toHaveBeenCalledWith('/ai-agents/runs/run-1');
+    } finally {
+      restore();
+    }
+  });
+
+  it('does not double-navigate when the agent-name link itself is clicked', async () => {
+    mockEndpoints();
+    const { assign, restore } = withMockedLocation();
+    try {
+      render(<RunsListPage />);
+      await waitFor(() => expect(screen.getByTestId('runs-list-row-link-run-1')).toBeInTheDocument());
+
+      fireEvent.click(screen.getByTestId('runs-list-row-link-run-1'));
+      // The link's own click handler stops propagation, so the row's
+      // click-anywhere handler must not also fire.
+      expect(assign).not.toHaveBeenCalled();
+    } finally {
+      restore();
+    }
+  });
+});
+
+// Critique finding #8 — a single "Clear filters" affordance, shown only
+// when a filter is active.
+describe('RunsListPage clear filters', () => {
+  it('hides the clear-filters control when no filter is active', async () => {
+    mockEndpoints();
+    render(<RunsListPage />);
+    await waitFor(() => expect(screen.getByTestId('runs-list-row-run-1')).toBeInTheDocument());
+
+    expect(screen.queryByTestId('runs-list-clear-filters')).not.toBeInTheDocument();
+  });
+
+  it('shows the control once a filter is active, and clears both filters on click', async () => {
+    mockEndpoints();
+    render(<RunsListPage />);
+    await waitFor(() => expect(screen.getByTestId('runs-list-row-run-1')).toBeInTheDocument());
+
+    fireEvent.change(screen.getByTestId('runs-list-filter-status'), { target: { value: 'failed' } });
+    await waitFor(() => expect(screen.getByTestId('runs-list-clear-filters')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('runs-list-clear-filters'));
+    await waitFor(() => expect(screen.queryByTestId('runs-list-clear-filters')).not.toBeInTheDocument());
+    expect(screen.getByTestId('runs-list-filter-status')).toHaveValue('');
+    expect(screen.getByTestId('runs-list-filter-agent')).toHaveValue('');
+  });
+});
+
+// Critique finding #1 — a non-terminal row must update on its own: the page
+// polls page 1 every 10s while any visible row is live, merging fresh rows
+// in by id, stops once every row is terminal, and pauses while hidden.
+describe('RunsListPage polling', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
+  });
+
+  it('polls every 10s while a row is non-terminal and merges the fresh status in', async () => {
+    mockEndpoints({ runs: [{ ...RUN_1, status: 'running' as const }] });
+    render(<RunsListPage />);
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.getByTestId('runs-list-row-run-1')).toHaveTextContent('Running');
+    expect(screen.getByTestId('run-live-indicator')).toBeInTheDocument();
+
+    mockEndpoints({ runs: [{ ...RUN_1, status: 'completed' as const }] });
+    await act(async () => {
+      vi.advanceTimersByTime(10_000);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.getByTestId('runs-list-row-run-1')).toHaveTextContent('Completed');
+    expect(screen.queryByTestId('run-live-indicator')).not.toBeInTheDocument();
+  });
+
+  // Review finding P2-1 (#4187 critique): a filtered, all-terminal result set
+  // is inert (the filter itself pins the rows it can contain), so it keeps
+  // the pre-fix "stop entirely" behavior. The unfiltered idle-poll cases are
+  // covered below.
+  it('does not poll when filtered and every visible row is already terminal', async () => {
+    mockEndpoints(); // RUN_1 completed, RUN_2 failed — both terminal.
+    render(<RunsListPage />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.getByTestId('runs-list-row-run-1')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByTestId('runs-list-filter-status'), { target: { value: 'failed' } });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const callsAfterLoad = fetchMock.mock.calls.length;
+
+    await act(async () => {
+      vi.advanceTimersByTime(30_000);
+      await Promise.resolve();
+    });
+
+    expect(fetchMock.mock.calls.length).toBe(callsAfterLoad);
+  });
+
+  // Review finding P2-1 (#4187 critique): merging by id alone can never
+  // surface a run that started after the initial page load — polling must
+  // also stay alive with nothing on screen, at a slower idle cadence, and
+  // prepend ids it hasn't seen yet.
+  it('keeps a slow idle poll on the unfiltered page-1 view even when nothing is live, and prepends a newly started run', async () => {
+    mockEndpoints(); // RUN_1 completed, RUN_2 failed — both terminal, unfiltered.
+    render(<RunsListPage />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.getByTestId('runs-list-row-run-1')).toBeInTheDocument();
+    const callsAfterLoad = fetchMock.mock.calls.length;
+
+    // Under 30s: idle cadence hasn't elapsed yet, no extra poll.
+    await act(async () => {
+      vi.advanceTimersByTime(10_000);
+      await Promise.resolve();
+    });
+    expect(fetchMock.mock.calls.length).toBe(callsAfterLoad);
+
+    // A run that started after the initial load — not merged into the
+    // existing rows by id, so a naive merge-by-id poll would drop it.
+    const RUN_3 = { ...RUN_1, id: 'run-3', status: 'running' as const, queuedAt: '2026-08-21T10:00:00.000Z' };
+    mockEndpoints({ runs: [RUN_3, RUN_1, RUN_2] });
+
+    await act(async () => {
+      vi.advanceTimersByTime(20_000); // total 30s — the idle cadence.
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(fetchMock.mock.calls.length).toBeGreaterThan(callsAfterLoad);
+    expect(screen.getByTestId('runs-list-row-run-3')).toBeInTheDocument();
+    expect(screen.getByTestId('runs-list-row-run-1')).toBeInTheDocument();
+    expect(screen.getByTestId('runs-list-row-run-2')).toBeInTheDocument();
+    // Prepended: run-3 renders before run-1 in the table.
+    const rows = screen.getAllByRole('row').map((row) => row.getAttribute('data-testid'));
+    expect(rows.indexOf('runs-list-row-run-3')).toBeLessThan(rows.indexOf('runs-list-row-run-1'));
+  });
+
+  it('polls at the fast 10s cadence (not the 30s idle cadence) once a row is live', async () => {
+    mockEndpoints({ runs: [{ ...RUN_1, status: 'running' as const }] });
+    render(<RunsListPage />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.getByTestId('runs-list-row-run-1')).toBeInTheDocument();
+    const callsAfterLoad = fetchMock.mock.calls.length;
+
+    await act(async () => {
+      vi.advanceTimersByTime(10_000);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(fetchMock.mock.calls.length).toBeGreaterThan(callsAfterLoad);
+  });
+
+  // Review finding P2-2 (#4187 critique): overlapping poll responses must
+  // apply in request order, not resolution order.
+  it('discards a stale poll response that resolves after a newer one', async () => {
+    mockEndpoints({ runs: [{ ...RUN_1, status: 'running' as const }] });
+    render(<RunsListPage />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.getByTestId('runs-list-row-run-1')).toBeInTheDocument();
+
+    let resolveOlder!: (value: Response) => void;
+    let resolveNewer!: (value: Response) => void;
+    const responses = [
+      new Promise<Response>((resolve) => {
+        resolveOlder = resolve;
+      }),
+      new Promise<Response>((resolve) => {
+        resolveNewer = resolve;
+      }),
+    ];
+    let call = 0;
+    fetchMock.mockImplementation((url: string) => {
+      if (url.startsWith('/ai/agents/runs')) {
+        return responses[call++] ?? Promise.resolve(json({ data: [], nextCursor: null }));
+      }
+      return Promise.resolve(json({ data: [] }));
+    });
+
+    // Two poll ticks fire back to back (10s cadence while live) before either
+    // response resolves.
+    await act(async () => {
+      vi.advanceTimersByTime(10_000);
+      await Promise.resolve();
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(10_000);
+      await Promise.resolve();
+    });
+
+    // Resolve the NEWER request first with a fresh status, then the OLDER
+    // request with a stale one — the stale one must not win.
+    resolveNewer(json({ data: [{ ...RUN_1, status: 'completed' as const }], nextCursor: null }));
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    resolveOlder(json({ data: [{ ...RUN_1, status: 'running' as const }], nextCursor: null }));
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.getByTestId('runs-list-row-run-1')).toHaveTextContent('Completed');
+  });
+
+  it('pauses polling while the document is hidden', async () => {
+    mockEndpoints({ runs: [{ ...RUN_1, status: 'running' as const }] });
+    render(<RunsListPage />);
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
+    const callsAfterLoad = fetchMock.mock.calls.length;
+
+    await act(async () => {
+      vi.advanceTimersByTime(10_000);
+      await Promise.resolve();
+    });
+
+    expect(fetchMock.mock.calls.length).toBe(callsAfterLoad);
   });
 });

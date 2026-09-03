@@ -486,6 +486,7 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
           <AccountingSyncCard
             invoiceId={invoice.id}
             sync={detail.accountingSync}
+            invoiceStatus={invoice.status}
             canPush={can('invoices', 'write')}
             onChanged={onChanged}
           />
