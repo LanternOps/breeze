@@ -982,6 +982,9 @@ describe('processRunScheduledReport', () => {
         reportId: REPORT_ID,
         status: 'failed',
         errorMessage: expect.stringMatching(/^scope_[a-z_]+$/),
+        requestedByKind: 'user',
+        requestedByUserId: report.executionScopeUserId,
+        requestedByPortalUserId: null,
       }),
     );
     const failedValues = failedInsert.values.mock.calls[0]?.[0] as Record<string, unknown>;

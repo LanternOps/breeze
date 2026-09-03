@@ -612,6 +612,18 @@ describe('portal-user report execution principal', () => {
     }, ORG_A)).toThrow(/invalid/i);
   });
 
+  it('rejects a legacy_unscoped portal-user principal', () => {
+    expect(() => decodeSiteScope({
+      executionScopeVersion: 1,
+      executionScopeKind: 'legacy_unscoped',
+      executionScopeSiteIds: null,
+      executionScopeUserId: null,
+      executionScopeFingerprint: siteScopeFingerprint(legacy()),
+      executionScopeCapturedAt: CAPTURED_AT,
+      executionScopePrincipalKind: 'portal_user',
+    }, ORG_A)).toThrow(/invalid/i);
+  });
+
   it('rejects a portal-user authority carrying a forged staff user id', () => {
     expect(() => persistedSiteScopeValues({
       ...portalUserReportAuthority(ORG_A, CAPTURED_AT),
