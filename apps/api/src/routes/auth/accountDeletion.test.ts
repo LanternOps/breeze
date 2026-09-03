@@ -260,6 +260,18 @@ describe('POST /account-deletion-request', () => {
     );
   });
 
+  // Redis backs the attempt limiter, so losing it must fail CLOSED (503) —
+  // never fall through to the password check unthrottled. Untested before
+  // #4660; added here because this PR reworks the rejection statuses on the
+  // very next lines and a silent 503->200 regression would be invisible.
+  it('fails closed with 503 when Redis is unavailable', async () => {
+    vi.mocked(getRedis).mockReturnValueOnce(null as never);
+    const res = await postRequest({ password: 'correct-horse' });
+    expect(res.status).toBe(503);
+    expect(verifyPasswordMock).not.toHaveBeenCalled();
+    expect(insertReturningMock).not.toHaveBeenCalled();
+  });
+
   it('returns 429 when rate-limited', async () => {
     vi.mocked(rateLimiter).mockResolvedValueOnce({
       allowed: false,
