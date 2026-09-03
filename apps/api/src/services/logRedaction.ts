@@ -115,8 +115,16 @@ export function redactLogFields(value: unknown, depth = 0): unknown {
  * keep sending the old grammar until the fleet rolls, so ingest still has to
  * strip it. The trailing `-<digits>` is required, which is exactly what the new
  * opaque form lacks — so this never matches a post-fix id.
+ *
+ * The middle segment is length-bounded on purpose. `agentLogEntrySchema.message`
+ * (routes/agents/schemas.ts) has no max length, so this runs on unbounded,
+ * agent-supplied text; an unbounded `\\S*` here backtracks over the whole tail
+ * once per `helper-` occurrence, which is quadratic — a 293KB message packed
+ * with `helper-` prefixes took 116ms, and 500 of those are allowed per request.
+ * A bounded quantifier caps the work per match attempt and keeps ingest linear.
+ * Excluding quotes also stops a match escaping its quoted context.
  */
-const LEGACY_HELPER_SESSION_ID = /\b(helper|assist)-\S*-\d+\b/g;
+const LEGACY_HELPER_SESSION_ID = /\b(helper|assist)-[^\s"']{1,128}-\d{1,10}\b/g;
 
 /** `C:\Users\jdoe\…`, `D:\Documents and Settings\jdoe\…` — keep the path, drop the name. */
 const WINDOWS_PROFILE_PATH = /([A-Za-z]:\\(?:Users|Documents and Settings)\\)([^\\/:*?"<>|\r\n]+)/gi;

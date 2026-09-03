@@ -140,6 +140,26 @@ describe('value-shape redaction on the agent-log path (#3109)', () => {
     );
   });
 
+  it('bounds the legacy session-id pattern so ingest cannot be made quadratic', () => {
+    // `agentLogEntrySchema.message` (routes/agents/schemas.ts) has NO max
+    // length, and 500 entries are allowed per request, so this pass runs on
+    // unbounded agent-supplied text. An unbounded middle segment backtracks
+    // over the whole tail once per `helper-` occurrence — measured at 116ms for
+    // a single 293KB message, and quadratic from there. The length bound is
+    // what keeps it linear; this asserts the bound is actually present.
+    const overLong = `helper-${'a'.repeat(200)}-65864`;
+    expect(redactSensitiveValueShapes(overLong)).toBe(overLong);
+    expect(redactSensitiveValueShapes(`helper-${'a'.repeat(100)}-65864`)).toBe('helper-[REDACTED]');
+
+    // A hostile 1MB input packed with `helper-` prefixes. Linear finishes in
+    // well under 100ms; the quadratic form took seconds. The threshold is
+    // deliberately loose so a slow CI runner cannot flake it.
+    const hostile = `helper-${'a-b-c-'.repeat(60)}`.repeat(2800);
+    const startedAt = Date.now();
+    redactSensitiveValueShapes(hostile);
+    expect(Date.now() - startedAt).toBeLessThan(2000);
+  });
+
   it('leaves the new opaque helper id alone — it carries no identity to scrub', () => {
     const opaque = 'helper-a1b2c3d4e5f60718';
     expect(redactSensitiveValueShapes(`(session "${opaque}")`)).toContain(opaque);
