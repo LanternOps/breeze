@@ -71,7 +71,7 @@ _pg_url_query_param() {
 # doesn't translate to a PG* environment variable, e.g. connect_timeout,
 # sslrootcert, application_name.
 _pg_url_extra_query_params() {
-  local query="$1" pair key
+  local query="$1" pair key=""
   local names=()
   local IFS='&'
   for pair in $query; do
@@ -142,7 +142,10 @@ pg_url_to_env() {
 
   # Decode everything and validate BEFORE exporting anything, so a failure
   # here never leaves a partially-populated (stale/wrong) PG* environment.
-  local dbname user password sslmode
+  # Initialise every local: bash 5.x treats a declared-but-unassigned local as
+  # unbound under `set -u` (macOS bash 3.2 reads it as ""), and $sslmode is
+  # read unconditionally below.
+  local dbname="" user="" password="" sslmode=""
   if ! dbname="$(_pg_url_decode "$dbname_raw")"; then
     echo "pg_url_to_env: invalid database name in connection URL" >&2
     return 1
@@ -175,7 +178,7 @@ pg_url_to_env() {
   fi
 
   if [[ -n "$query" ]]; then
-    local extra
+    local extra=""
     extra="$(_pg_url_extra_query_params "$query")"
     if [[ -n "$extra" ]]; then
       echo "pg_url_to_env: WARNING: ignoring unsupported connection URL parameter(s): ${extra} (only sslmode is translated to a PG* env var; extend scripts/lib/pg-connect-env.sh if this matters)" >&2
