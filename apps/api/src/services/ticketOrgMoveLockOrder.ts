@@ -26,7 +26,7 @@
  * carried its own locally-reasoned comment, and the two reached opposite
  * conclusions without either being wrong on its own terms.
  *
- * SCOPE — two other walkers touch these tables, and neither is governed here:
+ * SCOPE — one other walker touches these tables and is now governed here too:
  *
  *   - Org erasure (`cascadeDeleteOrg`, services/tenantCascade.ts) is NOT a
  *     hazard: it gives each table its OWN system-context transaction, so it
@@ -34,17 +34,20 @@
  *     either mover.
  *   - Org MERGE (services/orgMerge.ts) is a genuine third walker — the whole
  *     merge runs in ONE transaction over `topologicalCascadeOrder()` reversed,
- *     which for these four siblings (alphabetical tie-break, then reversed)
- *     yields time_entries -> ticket_parts -> ticket_attachments ->
- *     ticket_alert_links. That disagrees with the order below on the last
- *     pair. It is held apart from the movers by a FENCE, not by lock order:
- *     `fenceLoser()` stamps the loser org `status='merging'` before the merge
- *     transaction opens, and the device/ticket move routes refuse a fenced
- *     org. That fence is app-layer, so it does not close the window for a
- *     move already in flight when the fence lands. Deliberately left as-is by
- *     #4657, whose scope is the ticket/device pair; reordering the merge walk
- *     means touching orgMergeRegistry's own ordering contract. Do not extend
- *     the order below to cover merge without changing that walk to match.
+ *     which ties on alphabetical order for tables with no FK between them
+ *     (see the FK note below) — exactly the six tables here. Left alone, that
+ *     tie-break disagrees with the order below (#4748: for six siblings it
+ *     yields time_entries -> ticket_parts -> ticket_outbox ->
+ *     ticket_email_links -> ticket_attachments -> ticket_alert_links, not a
+ *     single trailing-pair swap). `fenceLoser()` stamps the loser org
+ *     `status='merging'` before the merge transaction opens and the
+ *     device/ticket move routes refuse a fenced org, but that fence is
+ *     app-layer — it does not close the window for a move already in flight
+ *     when the fence lands. `applyTicketChildLockOrder` below is the fix:
+ *     `orgMerge.ts` routes both of its walk-order computations through it so
+ *     the merge's ticket-child slots always read out in the SAME relative
+ *     order as the movers, closing the AB-BA window rather than merely
+ *     documenting it.
  *
  * Contract enforced by ticketOrgMoveLockOrder.test.ts (both lists agree with
  * this order) and by moveOrg.test.ts (the device path's actual statement
@@ -119,3 +122,50 @@ export const TICKET_ORG_DENORMALIZED_TABLES = [
   'ticket_attachments',
   'ticket_email_links',
 ] as const;
+
+/**
+ * Reorders a merge-style table walk (e.g. a reversed
+ * `topologicalCascadeOrder()`) so the six tables in
+ * {@link TICKET_CHILD_ORG_REWRITE_LOCK_ORDER} occupy their SAME index
+ * positions but in canonical relative order — every other table's position
+ * is left untouched.
+ *
+ * Exists for org merge (#4748): `orgMerge.ts` derives its walk order from
+ * `topologicalCascadeOrder()`, which ties on alphabetical order for tables
+ * with no FK between them. The six ticket child tables are exactly such a
+ * set (see the FK note above — none of the six references another, so
+ * children-before-parents never constrains their relative order), so it is
+ * always safe to permute them into the canonical order without disturbing
+ * FK-safety: we never move a table INTO or OUT OF the slots it already
+ * occupies, only change which of the six values lands in each slot.
+ *
+ * `walkOrder` may contain any subset of the six (a caller doesn't have to
+ * pass all of them) — the ones present are placed in canonical relative
+ * order among themselves; anything absent is simply skipped.
+ */
+export function applyTicketChildLockOrder(walkOrder: readonly string[]): string[] {
+  const canonicalSet = new Set<string>(TICKET_CHILD_ORG_REWRITE_LOCK_ORDER);
+  const slotIndices: number[] = [];
+  walkOrder.forEach((table, index) => {
+    if (canonicalSet.has(table)) slotIndices.push(index);
+  });
+  const present = TICKET_CHILD_ORG_REWRITE_LOCK_ORDER.filter((table) => walkOrder.includes(table));
+  if (slotIndices.length !== present.length) {
+    // Only reachable if walkOrder has a duplicate ticket-child entry — every
+    // real caller (topologicalCascadeOrder() reversed) lists each table
+    // exactly once, so this guards a contract violation rather than a
+    // reachable runtime state.
+    throw new Error(
+      `[ticketOrgMoveLockOrder] applyTicketChildLockOrder: walkOrder contains a duplicate ` +
+        `ticket child-table entry (found ${slotIndices.length} slots for ${present.length} ` +
+        `distinct tables)`,
+    );
+  }
+  const result = [...walkOrder];
+  slotIndices.forEach((index, i) => {
+    // Safe: the length check above guarantees `present` has exactly one
+    // entry per `slotIndices` position.
+    result[index] = present[i] as string;
+  });
+  return result;
+}

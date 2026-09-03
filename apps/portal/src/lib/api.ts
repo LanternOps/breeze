@@ -8,6 +8,7 @@ import { navigateTo } from './navigation';
 // into local scope for the InvoiceSummary/InvoiceDetail types below and re-exported
 // (type-only, erased at build) so '@/lib/api' consumers are unaffected.
 import type { BackupDevicesDto, BackupOverviewDto, DashboardDto, DocumentPageSize, DocumentThemeId, EnrichedPortalDevice, InvoiceStatus, PublicQuoteHeader, QuotePresentation, SecurityDevicesDto, SecurityOverviewDto, SlaDto, SupportUsageDto, TicketFormField } from '@breeze/shared';
+import type { PortalRunDto, PortalRunsDto } from '@breeze/shared';
 
 // Client API base. Empty (the default) → same-origin **relative** requests
 // (`/api/v1/...`), which the reverse proxy routes to the API under `/api/*`. This
@@ -303,6 +304,10 @@ export interface Pagination {
 
 export interface PaginatedResult<T> extends ApiResponse<T[]> {
   pagination?: Pagination;
+}
+
+export interface PortalRunsResult extends PaginatedResult<PortalRunDto> {
+  timezone?: string;
 }
 
 export type Device = EnrichedPortalDevice;
@@ -1176,5 +1181,55 @@ export const portalApi = {
     apiGet<SupportUsageDto>(
       `/portal/tickets/usage${buildQueryString({ month })}`,
       config
-    )
+    ),
+
+  // W10 — customer reports
+  getReportRuns: async (
+    params: ListParams = {},
+    config: ApiRequestConfig = {},
+  ): Promise<PortalRunsResult> => {
+    const query = buildQueryString({
+      page: params.page ?? 1,
+      limit: params.limit ?? 20,
+    });
+    const response = await apiGet<PortalRunsDto>(
+      `/portal/reports/runs${query}`,
+      config,
+    );
+    return {
+      ...mapPaginatedData(response),
+      timezone: response.data?.timezone,
+    };
+  },
+
+  generateReport: async (
+    type: 'security_compliance_posture' | 'executive_summary',
+    config: ApiRequestConfig = {},
+  ): Promise<ApiResponse<PortalRunDto>> => {
+    const response = await apiPost<{ data: PortalRunDto }>(
+      '/portal/reports/generate',
+      { type },
+      config,
+    );
+    if (!response.data) {
+      return {
+        error: response.error,
+        code: response.code,
+        errorData: response.errorData,
+        statusCode: response.statusCode,
+        headers: response.headers,
+      };
+    }
+    return {
+      data: response.data.data,
+      statusCode: response.statusCode,
+      headers: response.headers,
+    };
+  },
+
+  reportArtifactUrl: (
+    runId: string,
+    format: 'pdf' | 'csv',
+  ): PublicApiPath =>
+    publicApiPath(`/portal/reports/runs/${runId}/${format}`),
 };

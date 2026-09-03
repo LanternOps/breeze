@@ -66,6 +66,29 @@ describe('patchesAppliedTile', () => {
     }
   });
 
+  it('binds the window anchor as an ISO string, never a Date (#4562 W04 regression)', async () => {
+    state.rows.push([{ id: 'patch-source-row' }], [{ applied: 0 }], [{ devicesWithOutstandingCritical: 0 }]);
+
+    await patchesAppliedTile(ORG_ID, {
+      timezone: 'America/Denver',
+      now: new Date('2026-09-02T12:00:00Z'),
+    });
+
+    // Drizzle's postgres-js driver replaces the timestamp serializers with
+    // pass-throughs and relies on column mappers to stringify Dates. A Date
+    // bound inside a raw `sql` fragment skips the mappers and postgres.js
+    // throws `Buffer.byteLength ... Received an instance of Date` at bind
+    // time — against a real database only, which is how the portal e2e
+    // caught every dashboard request 500ing.
+    const compiled = state.wheres.map((where) =>
+      new PgDialect().sqlToQuery(where as SQL),
+    );
+    for (const query of compiled) {
+      expect(query.params.some((param) => param instanceof Date)).toBe(false);
+    }
+    expect(compiled[1]!.params).toContain('2026-09-02T12:00:00.000Z');
+  });
+
   it('returns no_data with null values when the org has no patch source rows', async () => {
     state.rows.push(
       [],

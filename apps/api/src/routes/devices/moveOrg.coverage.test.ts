@@ -160,14 +160,16 @@ describe('getDeviceOrgDenormalizedTables() coverage', () => {
   });
 
   it('keeps database-cascade restamps registered in the complete org-denormalized contract', () => {
-    // agent_rollback_events (#4371 fixup): breeze_app has UPDATE revoked
-    // entirely, so its restamp runs via the SECURITY DEFINER
-    // breeze_cascade_device_org_id() trigger instead of an ON UPDATE CASCADE
-    // FK — see the DEVICE_ORG_FK_CASCADE_TABLES doc comment in core.ts.
+    // agent_rollback_events (#4371 fixup) and peripheral_policy_delivery_
+    // events (#4806 fixup): breeze_app has UPDATE revoked entirely, so their
+    // restamp runs via the SECURITY DEFINER breeze_cascade_device_org_id()
+    // trigger instead of an ON UPDATE CASCADE FK — see the
+    // DEVICE_ORG_FK_CASCADE_TABLES doc comment in core.ts.
     expect(DEVICE_ORG_FK_CASCADE_TABLES).toEqual([
       'agent_health_observations',
       'software_inventory_observations',
       'agent_rollback_events',
+      'peripheral_policy_delivery_events',
     ]);
     expect(deviceOrgDenormalizedTables).toEqual(
       expect.arrayContaining([...DEVICE_ORG_FK_CASCADE_TABLES]),
@@ -671,5 +673,185 @@ describe('action_intents.scope_device_id detach coverage', () => {
       tombstone,
       `${name}: the action_intents tombstone must run before the generic re-stamp loop, mirroring moveOrg.ts's internal order`,
     ).toBeLessThan(loop);
+  });
+});
+
+/**
+ * action_intents.scope_ticket_id detach coverage (#4792).
+ *
+ * Worse version of the scope_device_id gap above: `tickets` IS returned by
+ * breeze_device_child_orgid_tables(), so the generic re-stamp loop rewrites
+ * tickets.org_id for every ticket bound to the moved device.
+ * `action_intents_scope_ticket_org_fk` (composite FK (scope_ticket_id, org_id)
+ * -> tickets(id, org_id), DEFERRABLE INITIALLY IMMEDIATE, no ON UPDATE clause)
+ * does not gate on status, so ANY remaining scope_ticket_id pointer — live or
+ * terminal — 23503s the instant the loop's own tickets UPDATE runs, aborting
+ * the whole move. Unlike scope_device_id this is unconditional: no status
+ * filter, matching moveTicketOrg's identical ticket-axis detach
+ * (services/ticketService.ts).
+ *
+ * Both sites are asserted below, same "a future edit that fixes one and
+ * forgets the other goes red" contract as the scope_device_id block above.
+ *
+ * These are STATIC source assertions only. That the statement actually
+ * matches rows and the move no longer 23503s needs a real server and lives in
+ * `src/__tests__/integration/deviceMoveOrgTicketScopeTombstone.integration.test.ts`.
+ */
+describe('action_intents.scope_ticket_id detach coverage (#4792)', () => {
+  it('moveOrg.ts tombstones scope_ticket_id for tickets bound to the moved device, all statuses', () => {
+    const moveOrgPath = fileURLToPath(new URL('./moveOrg.ts', import.meta.url));
+    const src = readFileSync(moveOrgPath, 'utf8');
+
+    const match = src.match(
+      /UPDATE action_intents SET scope_ticket_id = NULL\s+WHERE scope_ticket_id IN \(SELECT id FROM tickets WHERE device_id = \$\{deviceId\}::uuid\)/,
+    );
+    expect(
+      match,
+      'moveOrg.ts no longer has the expected "UPDATE action_intents SET scope_ticket_id = NULL ... WHERE scope_ticket_id IN (SELECT id FROM tickets WHERE device_id = ...)" statement — update this test if the statement shape changed intentionally',
+    ).toBeTruthy();
+
+    // Unlike scope_device_id, this FK does not gate on status — a status
+    // filter here would leave a terminal-status intent's pointer in place to
+    // 23503 on the very next unrelated UPDATE. Assert the absence explicitly
+    // so a copy-paste of the scope_device_id statement (which DOES filter by
+    // status) is caught.
+    expect(
+      match![0],
+      'the scope_ticket_id tombstone must be unconditional (no status filter) — action_intents_scope_ticket_org_fk does not gate on status',
+    ).not.toMatch(/status/i);
+  });
+
+  it('breeze_cascade_device_org_id() mirrors the tombstone, unconditionally (#4792)', () => {
+    const { name, body } = newestCascadeFunctionBody();
+
+    const match = body.match(
+      /UPDATE public\.action_intents\s+SET scope_ticket_id = NULL\s+WHERE scope_ticket_id IN \(SELECT id FROM public\.tickets WHERE device_id = NEW\.id\)/,
+    );
+    expect(
+      match,
+      `${name} is the newest definition of breeze_cascade_device_org_id() and its body has no "UPDATE public.action_intents SET scope_ticket_id = NULL WHERE scope_ticket_id IN (SELECT id FROM public.tickets WHERE device_id = NEW.id)" statement — a device org-move that bypasses the moveOrg route (e.g. orgMerge's raw UPDATE devices) would 23503 on action_intents_scope_ticket_org_fk and abort the move whenever the device has a ticket-scoped intent (#4792)`,
+    ).toBeTruthy();
+
+    expect(
+      match![0],
+      `${name}'s action_intents scope_ticket_id tombstone must be unconditional (no status filter), matching moveOrg.ts`,
+    ).not.toMatch(/status/i);
+  });
+
+  it('places the tombstone BEFORE the generic device-child org re-stamp loop (load-bearing: tickets IS in that loop)', () => {
+    const { name, body } = newestCascadeFunctionBody();
+    const tombstone = body.indexOf('SET scope_ticket_id = NULL');
+    const loop = body.indexOf('breeze_device_child_orgid_tables()');
+    expect(tombstone, `${name}: no scope_ticket_id tombstone found`).toBeGreaterThan(-1);
+    expect(loop, `${name}: no device-child re-stamp loop found`).toBeGreaterThan(-1);
+    expect(
+      tombstone,
+      `${name}: the scope_ticket_id tombstone must run before the generic re-stamp loop — unlike scope_device_id's placement (a convention guard only), THIS ordering is load-bearing: tickets IS in breeze_device_child_orgid_tables(), so the loop's own tickets UPDATE is the statement that trips action_intents_scope_ticket_org_fk if the tombstone hasn't run first`,
+    ).toBeLessThan(loop);
+  });
+
+  // moveOrg.ts's OWN copy of this statement is just as load-bearing as the
+  // trigger's: `tickets` is in getDeviceOrgDenormalizedTables(), which the
+  // route's "Rewrite the denormalized org_id" loop below iterates too. A
+  // reorder that moved the route's UPDATE below that loop would 23503 in
+  // exactly the same way the trigger would, but nothing short of the (slower,
+  // integration-job-only) real-Postgres test would have caught it without
+  // this check.
+  it('moveOrg.ts places its own tombstone BEFORE the denormalized-table re-stamp loop', () => {
+    const moveOrgPath = fileURLToPath(new URL('./moveOrg.ts', import.meta.url));
+    const src = readFileSync(moveOrgPath, 'utf8');
+    const tombstone = src.indexOf('UPDATE action_intents SET scope_ticket_id = NULL');
+    // NOT a bare `indexOf('getDeviceOrgDenormalizedTables()')` — that also
+    // matches the top-of-file `import { getDeviceOrgDenormalizedTables, ... }`
+    // statement, which always precedes everything. Anchor on the actual loop.
+    const loop = src.indexOf('for (const table of getDeviceOrgDenormalizedTables())');
+    expect(tombstone, 'moveOrg.ts: no scope_ticket_id tombstone found').toBeGreaterThan(-1);
+    expect(loop, 'moveOrg.ts: no getDeviceOrgDenormalizedTables() loop found').toBeGreaterThan(-1);
+    expect(
+      tombstone,
+      'moveOrg.ts: the scope_ticket_id tombstone must run before the getDeviceOrgDenormalizedTables() loop — that loop is what re-stamps tickets.org_id and trips action_intents_scope_ticket_org_fk if the tombstone has not run first',
+    ).toBeLessThan(loop);
+  });
+});
+
+/**
+ * device_vulnerabilities.ticket_id detach coverage (#4645, device axis).
+ *
+ * `device_vulnerabilities` IS returned by breeze_device_child_orgid_tables()
+ * / getDeviceOrgDenormalizedTables(), so the generic re-stamp loop already
+ * moves a finding's org_id to the destination org unconditionally — the
+ * finding always travels with its device. Its remediation ticket does not:
+ * `POST /vulnerabilities/tickets` (routes/vulnerabilities.ts) creates the
+ * ticket org-scoped only and never sets tickets.device_id, so the SAME loop
+ * (which also re-stamps `tickets` for any ticket bound to the moved device)
+ * never reaches it — it stays behind in the source org.
+ *
+ * Unlike scope_ticket_id above, `ticket_id` is a PLAIN single-column FK
+ * (`ON DELETE SET NULL`, not composite tenant-FK'd), so this is a tenancy-
+ * hygiene detach, not a 23503-avoidance one — and the ORDERING requirement is
+ * the OPPOSITE of scope_ticket_id's: this statement must run AFTER the
+ * generic loop, not before, because it compares against the referenced
+ * ticket's ACTUAL (possibly just-restamped) org_id. Checked before the loop,
+ * a ticket bound to the SAME moving device (still holding its stale source
+ * org_id at that point) would be wrongly nulled even though it is about to
+ * become valid once the loop restamps it.
+ *
+ * These are STATIC source assertions only. That the statement actually
+ * matches rows (and correctly SPARES a same-device-bound ticket) against a
+ * real server lives in
+ * `src/__tests__/integration/deviceMoveOrgVulnerabilityTicketDetach.integration.test.ts`.
+ * The ticket-axis twin (moveTicketOrg's own detach, services/ticketService.ts)
+ * has no SQL trigger counterpart and is covered only by
+ * `src/__tests__/integration/ticket-move-org.integration.test.ts`.
+ */
+describe('device_vulnerabilities.ticket_id detach coverage (#4645)', () => {
+  it('moveOrg.ts detaches a stale ticket_id, keyed off the ticket\'s own (post-restamp) org_id', () => {
+    const moveOrgPath = fileURLToPath(new URL('./moveOrg.ts', import.meta.url));
+    const src = readFileSync(moveOrgPath, 'utf8');
+
+    const match = src.match(
+      /UPDATE device_vulnerabilities dv SET ticket_id = NULL\s+FROM tickets t\s+WHERE dv\.device_id = \$\{deviceId\}::uuid\s+AND dv\.ticket_id = t\.id\s+AND t\.org_id IS DISTINCT FROM \$\{targetOrgId\}::uuid/,
+    );
+    expect(
+      match,
+      'moveOrg.ts no longer has the expected device_vulnerabilities.ticket_id detach statement — update this test if the statement shape changed intentionally',
+    ).toBeTruthy();
+  });
+
+  it('breeze_cascade_device_org_id() mirrors the detach', () => {
+    const { name, body } = newestCascadeFunctionBody();
+
+    const match = body.match(
+      /UPDATE public\.device_vulnerabilities dv\s+SET ticket_id = NULL\s+FROM public\.tickets t\s+WHERE dv\.device_id = NEW\.id\s+AND dv\.ticket_id = t\.id\s+AND t\.org_id IS DISTINCT FROM NEW\.org_id/,
+    );
+    expect(
+      match,
+      `${name} is the newest definition of breeze_cascade_device_org_id() and its body has no device_vulnerabilities.ticket_id detach statement — a device org-move that bypasses the moveOrg route (e.g. orgMerge's raw UPDATE devices) would leave a stale cross-org ticket_id on every finding whose device moves (#4645)`,
+    ).toBeTruthy();
+  });
+
+  it('places the detach AFTER the generic device-child org re-stamp loop (load-bearing: reversed from scope_ticket_id)', () => {
+    const { name, body } = newestCascadeFunctionBody();
+    const detach = body.indexOf('UPDATE public.device_vulnerabilities dv');
+    const loop = body.indexOf('breeze_device_child_orgid_tables()');
+    expect(detach, `${name}: no device_vulnerabilities.ticket_id detach found`).toBeGreaterThan(-1);
+    expect(loop, `${name}: no device-child re-stamp loop found`).toBeGreaterThan(-1);
+    expect(
+      detach,
+      `${name}: the device_vulnerabilities.ticket_id detach must run AFTER the generic re-stamp loop — it compares against the referenced ticket's post-restamp org_id, so checking earlier would see a same-device-bound ticket's stale SOURCE org and wrongly null a link that the loop is about to make valid`,
+    ).toBeGreaterThan(loop);
+  });
+
+  it('moveOrg.ts places its own detach AFTER the denormalized-table re-stamp loop', () => {
+    const moveOrgPath = fileURLToPath(new URL('./moveOrg.ts', import.meta.url));
+    const src = readFileSync(moveOrgPath, 'utf8');
+    const detach = src.indexOf('UPDATE device_vulnerabilities dv SET ticket_id = NULL');
+    const loop = src.indexOf('for (const table of getDeviceOrgDenormalizedTables())');
+    expect(detach, 'moveOrg.ts: no device_vulnerabilities.ticket_id detach found').toBeGreaterThan(-1);
+    expect(loop, 'moveOrg.ts: no getDeviceOrgDenormalizedTables() loop found').toBeGreaterThan(-1);
+    expect(
+      detach,
+      'moveOrg.ts: the device_vulnerabilities.ticket_id detach must run AFTER the getDeviceOrgDenormalizedTables() loop — see the trigger-ordering comment above for why this is reversed from scope_ticket_id',
+    ).toBeGreaterThan(loop);
   });
 });

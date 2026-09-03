@@ -253,6 +253,7 @@ export interface PortalRunDto {
 export interface PortalRunsDto {
   data: PortalRunDto[];
   pagination: PaginationDto;
+  timezone: string;
 }
 
 export interface EnrichedPortalDevice {

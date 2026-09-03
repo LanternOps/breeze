@@ -7,6 +7,7 @@ import {
   XCircle,
   AlertTriangle,
   Clock,
+  Ban,
   ChevronDown,
   ChevronUp,
   Monitor,
@@ -55,7 +56,7 @@ const SCRIPT_RESULT_POLL_MS = 5000;
 export type DeviceRunResult = {
   deviceId: string;
   deviceName: string;
-  status: 'pending' | 'success' | 'failed' | 'skipped' | 'running';
+  status: 'pending' | 'success' | 'failed' | 'skipped' | 'running' | 'cancelled';
   startedAt?: string;
   completedAt?: string;
   duration?: number;
@@ -77,11 +78,12 @@ export type AutomationRun = {
   triggeredBy: 'schedule' | 'event' | 'webhook' | 'manual' | 'api';
   startedAt: string;
   completedAt?: string;
-  status: 'running' | 'success' | 'failed' | 'partial';
+  status: 'running' | 'success' | 'failed' | 'partial' | 'cancelled';
   devicesTotal: number;
   devicesSuccess: number;
   devicesFailed: number;
   devicesSkipped: number;
+  devicesCancelled?: number;
   deviceResults: DeviceRunResult[];
   logs?: string[];
 };
@@ -96,8 +98,10 @@ type AutomationRunHistoryProps = {
   onLoadRunDetail?: RunDetailLoader;
 };
 
-type StatusKey = 'running' | 'success' | 'failed' | 'partial' | 'skipped' | 'pending';
-const statusConfig: Record<StatusKey, { label: string; color: string; bgColor: string; icon: typeof CheckCircle }> = {
+export type AutomationRunHistoryStatusKey =
+  'running' | 'success' | 'failed' | 'partial' | 'skipped' | 'pending' | 'cancelled';
+
+export const statusConfig: Record<AutomationRunHistoryStatusKey, { label: string; color: string; bgColor: string; icon: typeof CheckCircle }> = {
   running: {
     label: 'status.running',
     color: 'text-blue-600',
@@ -133,6 +137,12 @@ const statusConfig: Record<StatusKey, { label: string; color: string; bgColor: s
     color: 'text-gray-600',
     bgColor: 'bg-gray-500/20 border-gray-500/40',
     icon: Clock
+  },
+  cancelled: {
+    label: 'status.cancelled',
+    color: 'text-muted-foreground',
+    bgColor: 'bg-muted',
+    icon: Ban
   }
 };
 

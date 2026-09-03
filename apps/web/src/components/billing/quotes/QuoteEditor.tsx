@@ -424,7 +424,21 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
   const [contractVarErrors, setContractVarErrors] = useState<Record<string, string>>({});
   const [contractLabel, setContractLabel] = useState('');
 
-  useEffect(() => { setTerms(quote.termsAndConditions ?? ''); setTermsDirty(false); }, [quote.termsAndConditions]);
+  // Re-seed from the prop DURING RENDER, never from a passive effect (#4807;
+  // same defect and remedy as InvoiceEditor's notes/terms drafts — #2925,
+  // #3219, #3277, #3980, #4033 — and AiBudgetThresholdsInput, #4659/#4805). A
+  // passive effect is flushed AFTER commit, so a keystroke landing between the
+  // prop's commit and the effect's later run gets silently overwritten by the
+  // stale string the effect captured. Comparing the rendered STRING (not the
+  // prop's identity) means a refetch that hands back an equal-but-unchanged
+  // value changes nothing on screen and can't discard an in-progress edit.
+  const termsSeed = quote.termsAndConditions ?? '';
+  const [termsSeededFrom, setTermsSeededFrom] = useState(termsSeed);
+  if (termsSeededFrom !== termsSeed) {
+    setTermsSeededFrom(termsSeed);
+    setTerms(termsSeed);
+    setTermsDirty(false);
+  }
 
   // ---- deposit controls ----------------------------------------------------
   // Local mirrors of the persisted deposit config so the type select + percent
@@ -442,7 +456,17 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
   // selected_lines block further down for the rationale.
   const stagedSelectedLines = useRef(false);
   useEffect(() => { if (!stagedSelectedLines.current) setDepositType(quote.depositType ?? 'none'); }, [quote.depositType]);
-  useEffect(() => { setDepositPercentDraft(quote.depositPercent ?? ''); }, [quote.depositPercent]);
+  // Same render-phase reseed as `terms` above (#4807) — the percent field is a
+  // live-typed draft, so a passive effect here is the identical clobber
+  // window. Resetting the inline range error too: it described the draft this
+  // reseed just replaced.
+  const depositPercentSeed = quote.depositPercent ?? '';
+  const [depositPercentSeededFrom, setDepositPercentSeededFrom] = useState(depositPercentSeed);
+  if (depositPercentSeededFrom !== depositPercentSeed) {
+    setDepositPercentSeededFrom(depositPercentSeed);
+    setDepositPercentDraft(depositPercentSeed);
+    setDepositPctError(null);
+  }
 
   // Coalesce re-pulls: each mutation calls refresh(), but tab-through editing
   // would otherwise fire one full GET /quotes/:id per field. This is a LEADING +

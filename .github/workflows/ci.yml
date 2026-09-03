@@ -1342,11 +1342,50 @@ jobs:
       # sessionbroker. Note the #3007 bug itself was NOT a data race — sendSeq
       # was already atomic — so -race would not have caught it; the regression
       # test asserts receiver-visible ordering instead.
+      #
+      # ./internal/elevaccount is the fourth instance of the eventlog/logging
+      # gap, found by #4587: the whole package is netapi32 account lifecycle
+      # behind //go:build windows, and the only Windows-tagged test it had was
+      # a compile-time interface assertion that no job ran. The bug it shipped
+      # was precisely a netapi32 status code the Windows-only code mishandled
+      # (NERR_UserNotFound on an account that was never provisioned, which is
+      # the DEFAULT state of every agent that never enabled PAM), so a gate
+      # that never executes on Windows could not have caught it and cannot
+      # catch the next one. Verified the same way as logging and ipc: with
+      # GOOS=windows GOARCH=amd64 CGO_ENABLED=0 the package vets, its test
+      # binary compiles, and its Windows dependency graph contains no
+      # remote/desktop and no cgo. Its two behavioural tests assert against the
+      # real netapi32 and skip loudly, rather than pass, on a host where
+      # ~breeze_elev exists or local-account queries are not permitted.
       - name: Run Windows Go tests
         working-directory: agent
         env:
           CGO_ENABLED: "0"
-        run: go test ./internal/sessionbroker ./internal/eventlog ./internal/ipc ./internal/logging ./internal/state ./internal/watchdog ./internal/backup/vss ./cmd/breeze-watchdog
+        run: go test ./internal/sessionbroker ./internal/eventlog ./internal/elevaccount ./internal/ipc ./internal/logging ./internal/state ./internal/watchdog ./internal/backup/vss ./cmd/breeze-watchdog
+
+      # The step above runs without -v, so a t.Skip is indistinguishable from a
+      # pass in its output. That matters here more than usual: elevaccount's two
+      # behavioural tests are the ONLY live-syscall coverage anywhere of the
+      # #4587 fix, and they skip by design when ~breeze_elev already exists or
+      # when local-account queries are refused. A silent skip would leave the
+      # real netapi32 path — the actual blast radius of the bug — with zero
+      # coverage while CI stayed green, which is the same vacuous-gate failure
+      # the collectors and backup steps below already guard against. Assert both
+      # actually PASSED.
+      - name: Run Windows elevation-account absence tests (must not skip)
+        working-directory: agent
+        env:
+          CGO_ENABLED: "0"
+        shell: pwsh
+        run: |
+          $out = go test ./internal/elevaccount -run '^Test(VerifyClean|Deprovision)TreatsAbsentAccountAsClean$' -v 2>&1
+          $exit = $LASTEXITCODE
+          $out | ForEach-Object { Write-Host $_ }
+          if ($exit -ne 0) { throw "go test failed (exit $exit)" }
+          $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
+          $skips = @($out | Select-String -Pattern '^--- SKIP: Test').Count
+          if ($skips -ne 0) { throw "$skips of the absent-account tests SKIPPED - the runner could not reach the never-provisioned state they assert against, so the #4587 netapi32 fix has no live coverage here" }
+          if ($passes -ne 2) { throw "expected exactly 2 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
 
       # Software inventory has platform-specific registry behavior. Keep this
       # filtered until the inherited Windows package backlog in #2523 is green,
@@ -2672,16 +2711,20 @@ jobs:
       - name: Show the stack descriptor
         run: cat .breeze-stack.json
 
-      # multi-currency.spec.ts is the only spec whose flow reaches the portal
-      # through `waitForHydration` — its `public-quote-accept` step is the exact
+      # multi-currency.spec.ts is the only `waitForHydration` caller whose flow
+      # reaches the portal — its `public-quote-accept` step is the exact
       # assertion #3906 broke and #4540 fixed.
       # `quote-contract-proposal.spec.ts` is the only other `waitForHydration`
       # caller and is EXCLUDED on purpose: it has a known, unrelated
       # pre-existing failure earlier in the WEB flow (AuthOverlay /
       # session-expired on the contracts tab) and never gets as far as its
       # portal step. Add it here once that is fixed.
+      # portal-visibility.spec.ts (#4562 W10) does not use `waitForHydration`,
+      # but this is the only job that stands up Caddy fronting the portal, so
+      # it is the only place the customer-facing portal is exercised at all.
+      # It depends on the portal rows in e2e-tests/seed-fixtures.sql.
       - name: Run the portal hydration specs
-        run: ./e2e-tests/node_modules/.bin/tsx scripts/dev/wt-stack/cli.ts test -- tests/multi-currency.spec.ts
+        run: ./e2e-tests/node_modules/.bin/tsx scripts/dev/wt-stack/cli.ts test -- tests/multi-currency.spec.ts tests/portal-visibility.spec.ts
 
       - name: Upload Playwright report
         if: failure()

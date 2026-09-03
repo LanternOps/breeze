@@ -333,6 +333,56 @@ describe('customFields routes', () => {
       const body = await res.json();
       expect(body.data.deviceTypes).toEqual(['windows', 'macos']);
     });
+
+    it('accepts a dropdown created with the shared {label,value} choices shape', async () => {
+      const created = makeField({
+        name: 'Contract Tier',
+        fieldKey: 'contract_tier',
+        type: 'dropdown',
+        options: { choices: [{ label: 'Gold', value: 'gold' }, { label: 'Silver', value: 'silver' }] }
+      });
+      vi.mocked(db.insert).mockReturnValueOnce({
+        values: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([created])
+        })
+      } as any);
+
+      const res = await app.request('/custom-fields', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+          name: 'Contract Tier',
+          fieldKey: 'contract_tier',
+          type: 'dropdown',
+          options: { choices: [{ label: 'Gold', value: 'gold' }, { label: 'Silver', value: 'silver' }] }
+        })
+      });
+
+      expect(res.status).toBe(201);
+    });
+
+    it('preserves text minLength/maxLength instead of stripping them', async () => {
+      let inserted: any;
+      vi.mocked(db.insert).mockReturnValueOnce({
+        values: vi.fn().mockImplementation((v: any) => {
+          inserted = v;
+          return { returning: vi.fn().mockResolvedValue([makeField({ name: 'Asset Tag', fieldKey: 'asset_tag', options: v.options })]) };
+        })
+      } as any);
+
+      await app.request('/custom-fields', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+          name: 'Asset Tag',
+          fieldKey: 'asset_tag',
+          type: 'text',
+          options: { minLength: 3, maxLength: 32 }
+        })
+      });
+
+      expect(inserted.options).toEqual({ minLength: 3, maxLength: 32 });
+    });
   });
 
   // ----------------------------------------------------------------

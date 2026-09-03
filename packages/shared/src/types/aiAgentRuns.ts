@@ -65,6 +65,15 @@ export const AI_AGENT_RUN_LEAK_TRIPWIRE_KEYS = ['args', 'toolInput', 'toolOutput
 export const AI_AGENT_RUN_DTO_SCHEMA_VERSION = 1 as const;
 
 /**
+ * Hard ceiling on `AiAgentRunListItemDto.summaryExcerpt`, INCLUDING the
+ * single-character ellipsis the API appends when it had to truncate. Shared
+ * rather than duplicated so a consumer sizing a column (or asserting the cap)
+ * reads the same number the API enforces — see `summaryExcerpt` in
+ * `apps/api/src/services/aiAgents/runFindings.ts`.
+ */
+export const AI_AGENT_RUN_SUMMARY_EXCERPT_MAX_CHARS = 160;
+
+/**
  * One row of `GET /ai/agents/runs` — org-wide, keyset-paginated. Deliberately
  * carries NO outcome payload (no trace, no ledger, no intents) — that is the
  * whole point of a list endpoint versus the detail one; a caller that needs
@@ -109,6 +118,43 @@ export interface AiAgentRunListItemDto {
   profile: AiAgentRunProfile;
   /** Absent until `finishRun` computes it (services/aiAgents/runLoop.ts); null for any run that hasn't reached a terminal rollup yet. */
   runVerdict: AgentRunVerdict | null;
+  /**
+   * How many things this run left for a human to look at: its sweep findings
+   * plus the tool calls it PROPOSED but could not run. A `denied` action is
+   * deliberately NOT counted — for a read-only profile that is the guardrail
+   * working as intended, logged for every mutating tool the model merely
+   * attempted, and counting it would inflate the badge with denials nobody
+   * needs to act on.
+   *
+   * Exists because `runVerdict` alone understates a run: a sweep that found
+   * six problems and was allowed to execute none of them still rolls up as
+   * `no_action`. The run DETAIL page already overrides the verdict badge off
+   * this number; without it on the list item the runs list and the agents
+   * list could not, and rendered "No action" over six unread findings.
+   *
+   * Derived by ONE helper shared with the detail route
+   * (`countFindingsToReview` / `findingsToReviewSql`,
+   * apps/api/src/services/aiAgents/runFindings.ts) so the list and the detail
+   * page can never badge the same run with different numbers. Always a
+   * number (0, never null) — a run with nothing to review is a real answer,
+   * not a missing one.
+   *
+   * Additive and always present, so it does NOT bump
+   * `AI_AGENT_RUN_DTO_SCHEMA_VERSION`: no field was removed, renamed, or
+   * changed type/semantics (see the bump rule above).
+   */
+  findingsToReview: number;
+  /**
+   * First sentence of the run's `summary`, markdown emphasis stripped and
+   * capped at `AI_AGENT_RUN_SUMMARY_EXCERPT_MAX_CHARS` (an ellipsis is
+   * appended, within the cap, only when the cap actually truncated).
+   *
+   * `null` when the run has no summary yet (still running, or it failed
+   * before writing one) or when the summary is whitespace-only. The FULL
+   * summary is deliberately still detail-only — this is a one-line list
+   * affordance, not the narrative.
+   */
+  summaryExcerpt: string | null;
   queuedAt: string;
   finishedAt: string | null;
   costCents: number;
@@ -448,6 +494,22 @@ export interface AiAgentRunDetailDto {
   /** `ai_agent_runs.summary` — narrative text, never a tool payload. */
   summary: string | null;
   runVerdict: AgentRunVerdict | null;
+  /**
+   * The same count `AiAgentRunListItemDto.findingsToReview` carries, from the
+   * SAME helper (`countFindingsToReview`,
+   * apps/api/src/services/aiAgents/runFindings.ts) — see that field's
+   * docstring for the rule and why `denied` entries are excluded.
+   *
+   * Carried on the detail DTO too so the two surfaces cannot drift: the run
+   * detail page derives this number itself today (`sweep.findings.length` +
+   * `trace` entries of kind `proposed`), which is fine only for as long as
+   * the client rule and the server rule stay identical. This field is the
+   * server's own answer, and the client is expected to move onto it.
+   *
+   * Additive and always present — does NOT bump
+   * `AI_AGENT_RUN_DTO_SCHEMA_VERSION`.
+   */
+  findingsToReview: number;
   turnCount: number;
   costCents: number;
   errorCode: string | null;

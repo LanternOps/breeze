@@ -319,6 +319,7 @@
       },
       "loading": "Raporlar yükleniyor...",
       "never": "Hiçbir zaman",
+      "visibleInPortal": "Müşteri portalında görünür",
       "newReport": "Yeni Rapor",
       "nextOccurrence": "Sonraki: {{next}}",
       "reportTypes": {

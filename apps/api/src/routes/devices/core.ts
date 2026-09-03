@@ -276,11 +276,22 @@ const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
  *    discovery function — migrations/2026-09-17-pam-device-move-guard.sql
  *    — because a device with PAM history cannot move orgs at all; see
  *    devices_pam_history_move_guard / PamDeviceMoveBlockedError below.)
+ *  - `peripheral_policy_delivery_events` (#4806 fixup): same shape as
+ *    `agent_rollback_events` above — breeze_app now has UPDATE revoked
+ *    entirely (see ensureAppRole.ts's writer-path matrix), and the table
+ *    has a uuid `device_id` + `org_id` pair but no `ON UPDATE CASCADE` FK,
+ *    so `breeze_cascade_device_org_id()`'s auto-discovery restamps it
+ *    instead — verified the same way, via `breeze_device_child_orgid_
+ *    tables()`. Before #4806, breeze_app kept a real UPDATE grant on this
+ *    table specifically so this loop's statement could restamp it; that
+ *    grant is what the fixup revoked, since the cascade trigger already
+ *    made the app-level UPDATE redundant.
  */
 export const DEVICE_ORG_FK_CASCADE_TABLES: readonly string[] = [
   'agent_health_observations',
   'software_inventory_observations',
   'agent_rollback_events',
+  'peripheral_policy_delivery_events',
 ];
 
 export function getDeviceOrgDenormalizedTables(): readonly string[] {

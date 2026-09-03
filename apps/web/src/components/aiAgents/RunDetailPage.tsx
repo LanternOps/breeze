@@ -5,7 +5,7 @@ import { ArrowLeft, Bot, Clock, Download, ExternalLink, Loader2 } from 'lucide-r
 import ReactMarkdown from 'react-markdown';
 import { fetchWithAuth } from '../../stores/auth';
 import { exportReport, getBrowserTimezone } from '../reports/reportExport';
-import { formatDate, formatDateTime } from '@/lib/dateTimeFormat';
+import { formatDate, formatDateTime, formatTime } from '@/lib/dateTimeFormat';
 import { formatCurrency, formatNumber } from '@/lib/i18n/format';
 import { badgeClass, runStatusTone, verdictTone } from './statusBadge';
 import { EmptyState } from '../shared/EmptyState';
@@ -144,6 +144,104 @@ function ledgerStatusLabel(t: (key: string) => string, value: AiAgentRunLedgerEn
     default:
       return value;
   }
+}
+
+/**
+ * Craft-floor fix (nested cards are always wrong) — every in-card empty
+ * state below (trace/ledger/intents) used to be a dashed-bordered
+ * `EmptyState` nested INSIDE the section's own `rounded-lg border bg-card`
+ * card, a border-on-a-border. Rendered as a plain muted note instead: a
+ * short title line plus its description, no card of its own. Two separate
+ * `<p>` elements (not one concatenated string) so each piece of text is
+ * still independently queryable, matching how `EmptyState` exposed them.
+ */
+function InCardEmpty({ title, description, testId }: { title: string; description: string; testId?: string }) {
+  return (
+    <div className="mt-2" data-testid={testId}>
+      <p className="text-sm font-medium text-foreground">{title}</p>
+      <p className="mt-0.5 text-sm text-muted-foreground">{description}</p>
+    </div>
+  );
+}
+
+/** The same ledger entry, stacked, for viewports below `md` (UI critique
+ *  finding #5 — the ledger had no mobile layout, unlike the sweep findings
+ *  table it sits beside on this page). Mirrors `SweepFindingCard`'s divided
+ *  list, not a nested bordered card. */
+function LedgerEntryCard({
+  entry,
+  index,
+  t,
+}: {
+  entry: AiAgentRunLedgerEntryDto;
+  index: number;
+  t: (key: string) => string;
+}) {
+  return (
+    <li data-testid={`run-detail-ledger-card-${index}`} className="py-3 first:pt-0 last:pb-0">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="text-sm font-medium">{entry.toolName}</span>
+        <span className="text-xs text-muted-foreground">{ledgerStatusLabel(t, entry.status)}</span>
+      </div>
+      <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
+        <span>{formatDuration(entry.durationMs)}</span>
+        <span>{formatDateTime(entry.createdAt)}</span>
+      </div>
+      {/* Finding #3 — destructive tone only when there IS an error; a
+          healthy row's em dash must not read as an error too. */}
+      {entry.errorMessage && (
+        <p className="mt-1 text-xs text-destructive" data-testid={`run-detail-ledger-card-${index}-error`}>
+          {entry.errorMessage}
+        </p>
+      )}
+    </li>
+  );
+}
+
+/**
+ * The ledger's body, rendered twice like the sweep findings above: stacked
+ * cards below `md`, a table from `md` up. Shared by both the collapsed
+ * (`<details>`, finding #2) and plain rendering paths below so the two never
+ * drift from each other.
+ */
+function LedgerTable({ ledger, t }: { ledger: AiAgentRunLedgerEntryDto[]; t: (key: string) => string }) {
+  return (
+    <>
+      <ul className="mt-2 divide-y md:hidden" data-testid="run-detail-ledger-cards">
+        {ledger.map((entry, index) => (
+          <LedgerEntryCard key={index} entry={entry} index={index} t={t} />
+        ))}
+      </ul>
+      <div className="mt-2 hidden overflow-x-auto md:block" data-testid="run-detail-ledger-table-wrapper">
+        <table className="min-w-full divide-y text-sm" data-testid="run-detail-ledger">
+          <thead>
+            <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              <th className="px-2 py-2">{t('aiAgentsPage.runs.detail.ledger.columns.tool')}</th>
+              <th className="px-2 py-2">{t('aiAgentsPage.runs.detail.ledger.columns.status')}</th>
+              <th className="px-2 py-2">{t('aiAgentsPage.runs.detail.ledger.columns.duration')}</th>
+              <th className="px-2 py-2">{t('aiAgentsPage.runs.detail.ledger.columns.started')}</th>
+              <th className="px-2 py-2">{t('aiAgentsPage.runs.detail.ledger.columns.error')}</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y">
+            {ledger.map((entry, index) => (
+              <tr key={index}>
+                <td className="px-2 py-2 font-medium">{entry.toolName}</td>
+                <td className="px-2 py-2 text-muted-foreground">{ledgerStatusLabel(t, entry.status)}</td>
+                <td className="px-2 py-2 text-muted-foreground">{formatDuration(entry.durationMs)}</td>
+                <td className="px-2 py-2 text-muted-foreground">{formatDateTime(entry.createdAt)}</td>
+                {/* Finding #3 — was unconditionally `text-destructive`, so a
+                    healthy row's em dash read as an error too. */}
+                <td className={`px-2 py-2 ${entry.errorMessage ? 'text-destructive' : 'text-muted-foreground'}`}>
+                  {entry.errorMessage ?? '—'}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </>
+  );
 }
 
 /**
@@ -448,17 +546,39 @@ const EVIDENCE_LABELLED_KEYS: ReadonlySet<string> = new Set([
   'usedPercent', 'percentUsed', 'freeGb', 'totalGb',
   'lastSeenAt', 'lastSeenDays', 'checkedAt',
   'cveIds', 'cveCount', 'osType', 'openCriticalCount',
+  // Review finding — a per-finding CVE the model calls out by itself (not
+  // the aggregate `cveIds`/`cveCount` a sweep loader emits) still needs a
+  // curated label: `sentenceCaseKey`'s acronym fallback below cannot turn
+  // "cveId" into "CVE" on its own without also mangling "Id" into "ID",
+  // which the rest of the page spells lower-case (see `isOpaqueIdValue`).
+  'cveId', 'cvssScore',
 ]);
 
-/** `camelCase` / `snake_case` → `Sentence case`. */
+/** Short tokens that read as gibberish once sentence-cased (`Cve`, `Ip`,
+ *  `Mac`) because they are actually acronyms. Used only by the fallback
+ *  below, for evidence keys with no entry in `EVIDENCE_LABELLED_KEYS` — a
+ *  model can author evidence field names freely (see `sweepFindings.ts`),
+ *  so this cannot be an exhaustive dictionary of every possible key, only of
+ *  the short word-stems worth preserving in upper case. Deliberately a small,
+ *  literal set rather than "any short word": acronym-casing an ordinary
+ *  short English word (`auto`, `type`, `name`) would be just as wrong as the
+ *  bug this fixes. */
+const ACRONYM_WORDS: ReadonlySet<string> = new Set(['cve', 'cvss', 'kev', 'ip', 'mac', 'os', 'smart']);
+
+/** `camelCase` / `snake_case` → `Sentence case`, upper-casing any word that
+ *  matches `ACRONYM_WORDS` instead of folding it into the rest of the
+ *  sentence (e.g. `ipAddress` → "IP address", not "Ip address"). */
 function sentenceCaseKey(key: string): string {
   const words = key
     .replace(/[_-]+/g, ' ')
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
     .replace(/\s+/g, ' ')
     .trim()
-    .toLowerCase();
-  return words.charAt(0).toUpperCase() + words.slice(1);
+    .toLowerCase()
+    .split(' ')
+    .map((word) => (ACRONYM_WORDS.has(word) ? word.toUpperCase() : word));
+  const sentence = words.join(' ');
+  return sentence.charAt(0).toUpperCase() + sentence.slice(1);
 }
 
 function evidenceLabel(t: (key: string) => string, key: string): string {
@@ -495,6 +615,22 @@ function formatEvidenceValue(t: (key: string) => string, value: string | number 
   return value;
 }
 
+/**
+ * UI critique finding #4 — a sweep loader occasionally hands over the
+ * LITERAL string `"null"`/`"undefined"` (a stringified missing value, not a
+ * real JS `null`) or an empty string. `formatEvidenceValue` above only
+ * special-cases real `null`; these string forms fell through to the raw
+ * `return value` branch and rendered as visible "Error count: null" noise.
+ * The row is dropped entirely rather than shown as "—" — a real `null`
+ * already means "no value" and keeps showing the dash; this is only for the
+ * string forms that were never a value in the first place.
+ */
+function isAbsentEvidenceString(value: string | number | boolean | null): boolean {
+  if (typeof value !== 'string') return false;
+  const normalized = value.trim().toLowerCase();
+  return normalized === '' || normalized === 'null' || normalized === 'undefined';
+}
+
 /** The bounded scalar evidence map, rendered as `<dt>`/`<dd>` pairs — never a
  * JSON dump, and never a flattened "k: v" string a screen reader would read
  * as one undifferentiated run of text. */
@@ -508,7 +644,16 @@ function SweepEvidenceList({
   t: (key: string) => string;
 }) {
   const entries = Object.entries(evidence).filter(
-    ([key, value]) => key !== 'deviceId' && !isOpaqueIdValue(value),
+    ([key, value]) =>
+      // `deviceName`/`hostname` are excluded alongside `deviceId`: once
+      // `SweepFindingDevice` falls back to one of them for the Device
+      // column (finding #4 below), repeating it as a generic evidence row
+      // would duplicate the same fact under a raw-looking key.
+      key !== 'deviceId'
+      && key !== 'deviceName'
+      && key !== 'hostname'
+      && !isOpaqueIdValue(value)
+      && !isAbsentEvidenceString(value),
   );
   if (entries.length === 0) return null;
   return (
@@ -561,14 +706,30 @@ const SWEEP_TEST_IDS: Record<SweepVariant, SweepTestIds> = {
   },
 };
 
+/**
+ * UI critique finding #4 — the Device column showed an em dash even when the
+ * sweep's own evidence carried a name for the device (`deviceName`, or
+ * `hostname` for a loader that used the other convention); only the resolved
+ * `finding.deviceHostname` join was ever consulted. Falls back to whichever
+ * evidence key is present before giving up.
+ */
+function evidenceHostnameFallback(evidence: AiAgentRunSweepFindingDto['evidence']): string | null {
+  const deviceName = evidence.deviceName;
+  if (typeof deviceName === 'string' && deviceName.trim() !== '') return deviceName;
+  const hostname = evidence.hostname;
+  if (typeof hostname === 'string' && hostname.trim() !== '') return hostname;
+  return null;
+}
+
 /** A finding's device, as a link to the device itself when the sweep resolved
  *  one — the id is otherwise a dead end (UI critique finding #2). */
 function SweepFindingDevice({ finding }: { finding: AiAgentRunSweepFindingDto }) {
-  if (!finding.deviceHostname) return <>—</>;
-  if (!finding.deviceId) return <>{finding.deviceHostname}</>;
+  const hostname = finding.deviceHostname ?? evidenceHostnameFallback(finding.evidence);
+  if (!hostname) return <>—</>;
+  if (!finding.deviceId) return <>{hostname}</>;
   return (
     <a href={`/devices/${finding.deviceId}`} className="text-primary hover:underline">
-      {finding.deviceHostname}
+      {hostname}
     </a>
   );
 }
@@ -692,9 +853,20 @@ function SweepFindingCard({
       <p className="mt-1.5 text-sm font-medium">{finding.title}</p>
       <p className="mt-0.5 text-sm text-muted-foreground">{finding.detail}</p>
       <SweepEvidenceList evidence={finding.evidence} testId={ids.evidence(index)} t={t} />
-      <p className={`mt-1.5 text-xs ${sweepProposalToneClass(finding.proposal)}`} data-testid={ids.proposal(index)}>
-        <SweepProposalContent finding={finding} index={index} agentId={agentId} ids={ids} t={t} />
-      </p>
+      {/* Review finding — this used to render unconditionally: a bare "—"
+          for a finding with no proposal at all (the table's other columns
+          all sit under a header; this line had none), and no name for what
+          kind of fact it was when a proposal WAS present. Reuse the table's
+          own column header key rather than mint a second "Proposal" string,
+          and drop the line entirely rather than print a dash — a finding
+          the sweep judged fine as-is (`disk_pressure` at 94% is a finding,
+          not necessarily an action) has nothing to report here. */}
+      {finding.proposal !== null && (
+        <p className={`mt-1.5 text-xs ${sweepProposalToneClass(finding.proposal)}`} data-testid={ids.proposal(index)}>
+          <span className="font-medium text-foreground">{t('aiAgentsPage.runs.sweep.columns.proposal')}: </span>
+          <SweepProposalContent finding={finding} index={index} agentId={agentId} ids={ids} t={t} />
+        </p>
+      )}
     </li>
   );
 }
@@ -1164,6 +1336,22 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
   }, [run?.status, refreshSilently]);
 
   /**
+   * UI critique finding #7 — the browser tab title was a static "Run Detail"
+   * (set in the Astro page shell) no matter which run was open, so a user
+   * with several run tabs open couldn't tell them apart. Set once the run
+   * has loaded; no [id].astro-level i18n precedent exists for this title to
+   * follow (checked: every AI Agents page passes a hardcoded English
+   * `DashboardLayout title`), so the static shell title is left alone and
+   * this effect overwrites it as soon as data is available.
+   */
+  useEffect(() => {
+    if (!run) return;
+    const agent = run.agentName ?? t('aiAgentsPage.runs.noAgent');
+    const started = run.startedAt ? formatDate(run.startedAt) : '—';
+    document.title = t('aiAgentsRuns.detail.pageTitle', { agent, started });
+  }, [run, t]);
+
+  /**
    * Phase 2 wave P2-3 (#4190) — "Download PDF" on the narrative section.
    *
    * The report-run download route answers JSON (`{ type, format, data }`) and
@@ -1263,10 +1451,35 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
    * permission/budget) is the only trace kind that belongs alongside sweep
    * findings.
    */
-  const findingsToReview =
-    (run.sweep?.findings.length ?? 0)
-    + run.trace.filter((entry) => entry.kind === 'proposed').length;
-  const verdictUnderstatesFindings = run.runVerdict === 'no_action' && findingsToReview > 0;
+  // Server-computed by the same helper the runs list uses
+  // (`services/aiAgents/runFindings.ts`), so the two surfaces cannot badge
+  // one run with different numbers.
+  const findingsToReview = run.findingsToReview;
+  // Same rule as the runs list's `findingsOverrideActive`: any verdict that
+  // is not already an attention-tone one understates a run that left
+  // findings behind, so the findings count takes the badge and the verdict
+  // becomes secondary text.
+  const verdictUnderstatesFindings =
+    findingsToReview > 0 && verdictTone(run.runVerdict ?? '') !== 'danger';
+
+  /**
+   * UI critique finding #2 — "Execution trace" and "Tool executions" can
+   * render the exact same single row under two different status
+   * vocabularies (an `executed` trace kind vs. an `AiToolStatus`). When
+   * every ledger row lines up 1:1, in order, with an `executed` trace entry
+   * for the same tool, the ledger collapses under the trace instead of
+   * repeating it. Any mismatch (a ledger row the trace lost, reordering, a
+   * different tool) falls back to rendering both in full — this is a
+   * display-only convenience, never a claim that the two are semantically
+   * identical.
+   */
+  const executedTraceTools = run.trace
+    .filter((entry): entry is Extract<AiAgentRunTraceEntryDto, { kind: 'executed' }> => entry.kind === 'executed')
+    .map((entry) => entry.tool);
+  const ledgerMatchesTrace =
+    run.ledger.length > 0
+    && executedTraceTools.length === run.ledger.length
+    && executedTraceTools.every((tool, index) => tool === run.ledger[index].toolName);
 
   /**
    * UI critique finding #5 — the exposure budget is a per-device allowance.
@@ -1286,7 +1499,16 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
       <div data-testid="run-detail-header" className="rounded-lg border bg-card p-4">
         <div className="flex flex-wrap items-center gap-2">
           <Bot className="h-5 w-5 text-muted-foreground" />
-          <h1 className="text-lg font-semibold">{run.agentName ?? t('aiAgentsPage.runs.noAgent')}</h1>
+          {/* UI critique finding #7 — the h1 used to be the bare agent name
+              (indistinguishable from a device/org page's own h1), with no
+              visible sense of WHICH run this is beyond the URL. */}
+          <h1 className="text-xl font-semibold tracking-tight">
+            {t('aiAgentsRuns.detail.header.title', { agent: run.agentName ?? t('aiAgentsPage.runs.noAgent') })}
+          </h1>
+          <span className="text-sm font-normal text-muted-foreground" data-testid="run-detail-header-started">
+            <span className="sr-only">{t('aiAgentsRuns.detail.header.startedLabel')}</span>
+            {run.startedAt ? formatTime(run.startedAt) : '—'}
+          </span>
           <span
             className={badgeClass(runStatusTone(run.status), { size: 'sm' })}
             aria-live={runIsLive ? 'polite' : undefined}
@@ -1331,63 +1553,81 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
             <span className="sr-only">{t('aiAgentsPage.runs.detail.labels.duration')}</span>
             {formatDuration(durationMs)}
           </span>
+          {/* UI critique finding #8 — the verdict badge above and this
+              demoted-verdict line sat with no connective, reading as two
+              unrelated facts rather than "the machine's own call, which the
+              findings above override". */}
           {verdictUnderstatesFindings && (
-            <span data-testid="run-detail-verdict-secondary">{verdictLabel(t, run.runVerdict)}</span>
+            <span data-testid="run-detail-verdict-secondary">
+              {t('aiAgentsRuns.detail.header.machineVerdict', { verdict: verdictLabel(t, run.runVerdict) })}
+            </span>
           )}
         </div>
 
-        {/* UI critique finding #1 — the agent's own account of the run leads
-            the card, above the machine-derived metadata grid, at body weight
-            rather than as a muted afterthought below it. */}
-        {run.summary && (
-          <section className="mt-4" aria-labelledby="run-detail-summary-heading">
-            <h2
-              id="run-detail-summary-heading"
-              className="text-xs font-semibold uppercase tracking-wide text-muted-foreground"
-            >
-              {t('aiAgentsRuns.detail.summary.title')}
-            </h2>
-            <div
-              className="mt-1.5 max-w-prose text-sm leading-relaxed text-foreground"
-              data-testid="run-detail-summary"
-            >
-              <RunSummaryMarkdown markdown={run.summary} />
-            </div>
-          </section>
-        )}
+        {/* UI critique finding #1 — the summary at `max-w-prose` inside the
+            full-width header card left ~660px of dead space beside it at
+            `lg`. Two-column the body there: summary left, metadata dl
+            right — only when there IS a summary to sit beside; a
+            summary-less run keeps the dl at full width. */}
+        <div
+          data-testid="run-detail-header-body"
+          className={run.summary ? 'mt-4 lg:flex lg:items-start lg:gap-8' : ''}
+        >
+          {run.summary && (
+            <section className="lg:max-w-prose lg:flex-1" aria-labelledby="run-detail-summary-heading">
+              <h2
+                id="run-detail-summary-heading"
+                className="text-xs font-semibold uppercase tracking-wide text-muted-foreground"
+              >
+                {t('aiAgentsRuns.detail.summary.title')}
+              </h2>
+              <div
+                className="mt-1.5 max-w-prose text-sm leading-relaxed text-foreground"
+                data-testid="run-detail-summary"
+              >
+                <RunSummaryMarkdown markdown={run.summary} />
+              </div>
+            </section>
+          )}
 
-        <dl data-testid="run-detail-meta" className="mt-4 grid grid-cols-2 gap-x-6 gap-y-2 text-sm sm:grid-cols-4">
-          <div>
-            <dt className="text-xs text-muted-foreground">{t('aiAgentsPage.runs.detail.labels.device')}</dt>
-            <dd>{run.deviceHostname ?? t('aiAgentsPage.runs.detail.labels.noDevice')}</dd>
-          </div>
-          <div>
-            <dt className="text-xs text-muted-foreground">{t('aiAgentsPage.runs.detail.labels.trigger')}</dt>
-            <dd>{triggerLabel(t, run.triggerKind)}</dd>
-          </div>
-          <div>
-            <dt className="text-xs text-muted-foreground">{t('aiAgentsPage.runs.detail.labels.cost')}</dt>
-            <dd>{formatCurrency(run.costCents / 100)}</dd>
-          </div>
-          {/* Duration lives in the status row above (UI critique finding #4)
-              — repeating it here would double-mark the same fact. */}
-          <div>
-            <dt className="text-xs text-muted-foreground">{t('aiAgentsPage.runs.detail.labels.queuedAt')}</dt>
-            <dd>{formatDateTime(run.queuedAt)}</dd>
-          </div>
-          <div>
-            <dt className="text-xs text-muted-foreground">{t('aiAgentsPage.runs.detail.labels.startedAt')}</dt>
-            <dd>{run.startedAt ? formatDateTime(run.startedAt) : '—'}</dd>
-          </div>
-          <div>
-            <dt className="text-xs text-muted-foreground">{t('aiAgentsPage.runs.detail.labels.finishedAt')}</dt>
-            <dd>{run.finishedAt ? formatDateTime(run.finishedAt) : '—'}</dd>
-          </div>
-          <div>
-            <dt className="text-xs text-muted-foreground">{t('aiAgentsPage.runs.detail.labels.turnCount')}</dt>
-            <dd>{formatNumber(run.turnCount)}</dd>
-          </div>
-        </dl>
+          <dl
+            data-testid="run-detail-meta"
+            className={`grid grid-cols-2 gap-x-6 gap-y-2 text-sm sm:grid-cols-4 ${
+              run.summary ? 'mt-4 lg:mt-0 lg:w-72 lg:flex-none lg:grid-cols-2' : 'mt-4'
+            }`}
+          >
+            <div>
+              <dt className="text-xs text-muted-foreground">{t('aiAgentsPage.runs.detail.labels.device')}</dt>
+              <dd>{run.deviceHostname ?? t('aiAgentsPage.runs.detail.labels.noDevice')}</dd>
+            </div>
+            <div>
+              <dt className="text-xs text-muted-foreground">{t('aiAgentsPage.runs.detail.labels.trigger')}</dt>
+              <dd>{triggerLabel(t, run.triggerKind)}</dd>
+            </div>
+            <div>
+              <dt className="text-xs text-muted-foreground">{t('aiAgentsPage.runs.detail.labels.cost')}</dt>
+              <dd>{formatCurrency(run.costCents / 100)}</dd>
+            </div>
+            {/* Duration lives in the status row above (UI critique finding
+                #4) — repeating it here would double-mark the same fact. */}
+            <div>
+              <dt className="text-xs text-muted-foreground">{t('aiAgentsPage.runs.detail.labels.queuedAt')}</dt>
+              <dd>{formatDateTime(run.queuedAt)}</dd>
+            </div>
+            <div>
+              <dt className="text-xs text-muted-foreground">{t('aiAgentsPage.runs.detail.labels.startedAt')}</dt>
+              <dd>{run.startedAt ? formatDateTime(run.startedAt) : '—'}</dd>
+            </div>
+            <div>
+              <dt className="text-xs text-muted-foreground">{t('aiAgentsPage.runs.detail.labels.finishedAt')}</dt>
+              <dd>{run.finishedAt ? formatDateTime(run.finishedAt) : '—'}</dd>
+            </div>
+            <div>
+              <dt className="text-xs text-muted-foreground">{t('aiAgentsPage.runs.detail.labels.turnCount')}</dt>
+              <dd>{formatNumber(run.turnCount)}</dd>
+            </div>
+          </dl>
+        </div>
 
         {/* Wave 6 PR 4 (#3828, Task 4) — anomaly-triggered runs are
             device-bound (unlike ticket runs), so `deviceId` is always set
@@ -1444,15 +1684,26 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
         <section data-testid="ai-agent-run-sweep" className="rounded-lg border bg-card p-4">
           <h2 className="text-sm font-semibold">{t('aiAgentsPage.runs.sweep.title')}</h2>
 
+          {/* UI critique finding #1 — this used to be a single comma-joined
+              sentence ("Checks: a, b, c, …") that ran to ~220ch for a
+              six-check sweep. A wrapped chip row reads at a glance and never
+              needs a measure cap. */}
           {run.sweep.kinds.length > 0 && (
-            <p className="mt-1 text-xs text-muted-foreground" data-testid="ai-agent-run-sweep-kinds">
-              {t('aiAgentsPage.runs.sweep.kindsLabel', {
-                kinds: run.sweep.kinds.map((kind) => sweepKindLabel(t, kind)).join(', '),
-              })}
-            </p>
+            <div className="mt-1 flex flex-wrap items-center gap-1.5" data-testid="ai-agent-run-sweep-kinds">
+              <span className="text-xs font-medium text-muted-foreground">
+                {t('aiAgentsRuns.detail.sweep.checksLabel')}
+              </span>
+              {run.sweep.kinds.map((kind) => (
+                <span key={kind} className={badgeClass('neutral', { size: 'sm' })}>
+                  {sweepKindLabel(t, kind)}
+                </span>
+              ))}
+            </div>
           )}
 
-          <p className="mt-2 text-sm" data-testid="ai-agent-run-sweep-summary">
+          {/* UI critique finding #1 — the summary had no measure cap and ran
+              to ~188ch lines at the header card's full width. */}
+          <p className="mt-2 max-w-prose text-sm" data-testid="ai-agent-run-sweep-summary">
             {run.sweep.summary}
           </p>
 
@@ -1585,9 +1836,8 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
           </p>
         )}
         {run.trace.length === 0 ? (
-          <EmptyState
-            size="sm"
-            headingLevel={3}
+          <InCardEmpty
+            testId="run-detail-trace-empty"
             title={t('aiAgentsPage.runs.detail.trace.empty')}
             description={t('aiAgentsRuns.detail.trace.emptyDescription')}
           />
@@ -1602,52 +1852,37 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
 
       <div className="rounded-lg border bg-card p-4">
         <h2 className="text-sm font-semibold">{t('aiAgentsPage.runs.detail.ledger.title')}</h2>
-        {run.ledger.length > 0 && (
-          <p className="mt-1 text-xs text-muted-foreground" data-testid="run-detail-ledger-description">
-            {t('aiAgentsRuns.detail.ledger.description')}
-          </p>
-        )}
         {run.ledger.length === 0 ? (
-          <EmptyState
-            size="sm"
-            headingLevel={3}
+          <InCardEmpty
+            testId="run-detail-ledger-empty"
             title={t('aiAgentsPage.runs.detail.ledger.empty')}
             description={t('aiAgentsRuns.detail.ledger.emptyDescription')}
           />
+        ) : ledgerMatchesTrace ? (
+          // Finding #2 — every row here already appeared, in the same
+          // order, as an `executed` trace entry above. Collapsed rather
+          // than duplicated; still fully present for anyone who opens it.
+          <details className="mt-2" data-testid="run-detail-ledger-details">
+            <summary className="cursor-pointer text-sm text-muted-foreground">
+              {t('aiAgentsRuns.detail.ledger.collapsedSummary', { count: run.ledger.length })}
+            </summary>
+            <LedgerTable ledger={run.ledger} t={t} />
+          </details>
         ) : (
-          <div className="mt-2 overflow-x-auto">
-            <table className="min-w-full divide-y text-sm" data-testid="run-detail-ledger">
-              <thead>
-                <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                  <th className="px-2 py-2">{t('aiAgentsPage.runs.detail.ledger.columns.tool')}</th>
-                  <th className="px-2 py-2">{t('aiAgentsPage.runs.detail.ledger.columns.status')}</th>
-                  <th className="px-2 py-2">{t('aiAgentsPage.runs.detail.ledger.columns.duration')}</th>
-                  <th className="px-2 py-2">{t('aiAgentsPage.runs.detail.ledger.columns.started')}</th>
-                  <th className="px-2 py-2">{t('aiAgentsPage.runs.detail.ledger.columns.error')}</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y">
-                {run.ledger.map((entry, index) => (
-                  <tr key={index}>
-                    <td className="px-2 py-2 font-medium">{entry.toolName}</td>
-                    <td className="px-2 py-2 text-muted-foreground">{ledgerStatusLabel(t, entry.status)}</td>
-                    <td className="px-2 py-2 text-muted-foreground">{formatDuration(entry.durationMs)}</td>
-                    <td className="px-2 py-2 text-muted-foreground">{formatDateTime(entry.createdAt)}</td>
-                    <td className="px-2 py-2 text-destructive">{entry.errorMessage ?? '—'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <>
+            <p className="mt-1 text-xs text-muted-foreground" data-testid="run-detail-ledger-description">
+              {t('aiAgentsRuns.detail.ledger.description')}
+            </p>
+            <LedgerTable ledger={run.ledger} t={t} />
+          </>
         )}
       </div>
 
       <div className="rounded-lg border bg-card p-4">
         <h2 className="text-sm font-semibold">{t('aiAgentsPage.runs.detail.intents.title')}</h2>
         {run.intents.length === 0 ? (
-          <EmptyState
-            size="sm"
-            headingLevel={3}
+          <InCardEmpty
+            testId="run-detail-intents-empty"
             title={t('aiAgentsPage.runs.detail.intents.empty')}
             description={t('aiAgentsRuns.detail.intents.emptyDescription')}
           />

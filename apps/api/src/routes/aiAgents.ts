@@ -63,6 +63,7 @@ import { computeExposureBudget } from '../services/actionIntents/exposureBudget'
 import { createAndEnqueueAgentRun } from '../services/aiAgents/runService';
 import { InvalidAgentRecipientsError } from '../services/aiAgents/recipients';
 import { SUPPORTED_AGENT_MODES } from '../services/aiAgents/constants';
+import { findingsToReviewSql, summaryExcerpt } from '../services/aiAgents/runFindings';
 import { buildRunTrace } from '../services/aiAgents/runTrace';
 import { recordVerdictFeedback } from '../services/aiAgents/alertVerdicts';
 import { sweepFindingDeviceIds } from '../services/aiAgents/sweepFindings';
@@ -155,6 +156,7 @@ function mapRow(row: AiAgentRow): AiAgentDto {
     // what the type promises rather than a silently missing field.
     lastRunAt: null,
     lastRunStatus: null,
+    lastRunFindingsToReview: null,
   };
 }
 
@@ -272,12 +274,20 @@ export function mapError(c: Context, err: unknown) {
 async function loadLastRuns(
   auth: AuthContextForRuns,
   agentIds: string[],
-): Promise<Map<string, { lastRunAt: string; lastRunStatus: AiAgentRunStatus }>> {
+): Promise<Map<string, LastRunProjection>> {
   if (agentIds.length === 0) return new Map();
   const rows = await db
     .selectDistinctOn([aiAgentRuns.agentId], {
       agentId: aiAgentRuns.agentId,
       status: aiAgentRuns.status,
+      // `lastRunStatus` alone understates the agent the same way `runVerdict`
+      // understates a run: a sweep that found six problems and was allowed to
+      // execute none of them reports `completed`, and the settings list read
+      // as a healthy agent sitting on unread findings. Counted inside
+      // Postgres on the SAME DISTINCT ON row — no extra query, and the
+      // outcome blob still never leaves the database on a list path. Same
+      // rule as the runs list and the run detail (runFindings.ts).
+      findingsToReview: findingsToReviewSql(aiAgentRuns.outcome),
       queuedAt: aiAgentRuns.queuedAt,
     })
     .from(aiAgentRuns)
@@ -286,10 +296,27 @@ async function loadLastRuns(
   return new Map(
     rows.map((row) => [
       row.agentId,
-      { lastRunAt: row.queuedAt.toISOString(), lastRunStatus: row.status },
+      {
+        lastRunAt: row.queuedAt.toISOString(),
+        lastRunStatus: row.status,
+        // `?? 0` for the same reason as `mapRunListItem`'s: a last run that
+        // left nothing to review is 0. `null` on the DTO is reserved for
+        // "this agent has no visible last run at all", which is decided by
+        // the absence of a map entry, not by this value.
+        lastRunFindingsToReview: row.findingsToReview ?? 0,
+      },
     ]),
   );
 }
+
+/** What `loadLastRuns` projects per agent — the three `lastRun*` fields
+ *  `AiAgentDto` declares, kept together so the list mapper cannot answer one
+ *  of them and forget another. */
+type LastRunProjection = {
+  lastRunAt: string;
+  lastRunStatus: AiAgentRunStatus;
+  lastRunFindingsToReview: number;
+};
 
 /** Only the piece of the auth context `loadLastRuns` needs. */
 type AuthContextForRuns = { orgCondition: (column: typeof aiAgentRuns.orgId) => SQL | undefined };
@@ -317,6 +344,7 @@ aiAgentsRoutes.get(
           ...mapRow(row),
           lastRunAt: last?.lastRunAt ?? null,
           lastRunStatus: last?.lastRunStatus ?? null,
+          lastRunFindingsToReview: last?.lastRunFindingsToReview ?? null,
         };
       }),
     });
@@ -865,6 +893,10 @@ function mapRunListItem(row: {
   triggerKind: AiAgentRunListItemDto['triggerKind'];
   profile: AiAgentRunListItemDto['profile'];
   runVerdict: string | null;
+  // Counted BY POSTGRES (`findingsToReviewSql`), not derived from an outcome
+  // payload this projection deliberately never receives — see below.
+  findingsToReview: number | null;
+  summary: string | null;
   queuedAt: Date;
   finishedAt: Date | null;
   costCents: number;
@@ -883,6 +915,17 @@ function mapRunListItem(row: {
     // this; `triggerKind: 'schedule'` alone cannot identify a sweep.
     profile: row.profile,
     runVerdict: (row.runVerdict as AgentRunVerdict | null) ?? null,
+    // `?? 0`, not `!`: the count is a SQL expression, and the DTO promises a
+    // number. A run with nothing to review is 0 — the honest answer — and a
+    // null here would make "nothing to review" indistinguishable from "not
+    // computed" for a client that only has to render a badge.
+    findingsToReview: row.findingsToReview ?? 0,
+    // Derived here rather than in SQL so the list and any future consumer of
+    // the same rule share ONE implementation (runFindings.ts). `summary` is
+    // already display-safe narrative text (never a tool payload) — unlike the
+    // outcome column, which is why THAT one is still counted in Postgres and
+    // never selected.
+    summaryExcerpt: summaryExcerpt(row.summary),
     queuedAt: row.queuedAt.toISOString(),
     finishedAt: row.finishedAt ? row.finishedAt.toISOString() : null,
     costCents: row.costCents,
@@ -957,6 +1000,18 @@ aiAgentsRoutes.get(
         // no business leaving Postgres for a row that isn't the one the
         // caller asked to see in detail.
         runVerdict: sql<string | null>`${aiAgentRuns.outcome}->>'runVerdict'`,
+        // Same posture, one step further: `runVerdict` alone UNDERSTATES the
+        // run (a sweep that found six problems and was allowed to execute
+        // none of them still rolls up `no_action`), so the list needs the
+        // findings count too — but the counting happens INSIDE Postgres,
+        // which returns two bounded integers per row instead of up to 50
+        // model-authored findings. Same rule the detail route counts with;
+        // see services/aiAgents/runFindings.ts.
+        findingsToReview: findingsToReviewSql(aiAgentRuns.outcome),
+        // The typed narrative column — display-safe (never a tool payload),
+        // unlike `outcome`. `mapRunListItem` reduces it to a first-sentence
+        // excerpt; the full text stays detail-only.
+        summary: aiAgentRuns.summary,
         queuedAt: aiAgentRuns.queuedAt,
         // Full microsecond-precision text of the same column, for the
         // cursor only — never put on the DTO. See runsListCursor.ts's
@@ -1474,6 +1529,12 @@ aiAgentsRoutes.get(
         triggerKind: aiAgentRuns.triggerKind,
         profile: aiAgentRuns.profile,
         runVerdict: sql<string | null>`${aiAgentRuns.outcome}->>'runVerdict'`,
+        // Shares `mapRunListItem` with the org-wide list above, so it shares
+        // its wire shape too — including the findings count and the summary
+        // excerpt. Counted in Postgres for the same reason: never select the
+        // outcome blob on a list route.
+        findingsToReview: findingsToReviewSql(aiAgentRuns.outcome),
+        summary: aiAgentRuns.summary,
         queuedAt: aiAgentRuns.queuedAt,
         finishedAt: aiAgentRuns.finishedAt,
         costCents: aiAgentRuns.costCents,

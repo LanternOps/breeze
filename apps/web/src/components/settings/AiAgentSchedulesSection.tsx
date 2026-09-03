@@ -360,6 +360,15 @@ function defaultTimezone(): string {
   }
 }
 
+/** The part of an IANA zone name before its first '/' ("America", "Europe",
+ *  "UTC"). Used only to group the 418-option select into `<optgroup>`s — a
+ *  bare list that long forces the operator to scan every option in order to
+ *  find their own continent. */
+function timezoneRegion(zone: string): string {
+  const slash = zone.indexOf('/');
+  return slash === -1 ? zone : zone.slice(0, slash);
+}
+
 type BaselineDraft = {
   mode: 'baseline';
   /** null = creating. */
@@ -422,6 +431,7 @@ export default function AiAgentSchedulesSection({
   const [saving, setSaving] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const allOrgsHintId = useId();
+  const scheduleEnabledLabelId = useId();
 
   // Read through a ref so an inline `onDirtyChange={...}` at the call site
   // cannot re-fire the effect on every parent render — the effect must run on
@@ -488,6 +498,20 @@ export default function AiAgentSchedulesSection({
     // field would silently rewrite it to the first option.
     return draftTimezone && !all.includes(draftTimezone) ? [draftTimezone, ...all] : all;
   }, [draftTimezone]);
+  // `listIanaTimezones()` is already alphabetical, so entries sharing a
+  // region are already contiguous — grouping by insertion order here never
+  // has to re-sort. A Map preserves that order, which is what makes the
+  // `<optgroup>`s below come out in the same order the flat list did.
+  const zoneGroups = useMemo(() => {
+    const groups = new Map<string, string[]>();
+    for (const zone of zones) {
+      const region = timezoneRegion(zone);
+      const list = groups.get(region);
+      if (list) list.push(zone);
+      else groups.set(region, [zone]);
+    }
+    return groups;
+  }, [zones]);
 
   /**
    * A field CHANGE. The only thing that makes this section dirty — kept
@@ -786,18 +810,34 @@ export default function AiAgentSchedulesSection({
           </label>
           <label className="space-y-1 text-sm">
             <span className="font-medium">{t('aiAgentsPage.schedules.timezone')}</span>
-            <select
-              className={inputCls}
-              value={drafted.timezone}
-              onChange={(e) => editDraft({ ...drafted, timezone: e.target.value })}
-              data-testid="ai-agent-schedule-timezone"
-            >
-              {zones.map((zone) => (
-                <option key={zone} value={zone}>
-                  {zone}
-                </option>
-              ))}
-            </select>
+            <div className="flex items-center gap-2">
+              <select
+                className={inputCls}
+                value={drafted.timezone}
+                onChange={(e) => editDraft({ ...drafted, timezone: e.target.value })}
+                data-testid="ai-agent-schedule-timezone"
+              >
+                {/* Grouped by continent — a flat 418-option list forces the
+                    operator to scan every entry to find their own region. */}
+                {[...zoneGroups.entries()].map(([region, regionZones]) => (
+                  <optgroup key={region} label={region}>
+                    {regionZones.map((zone) => (
+                      <option key={zone} value={zone}>
+                        {zone}
+                      </option>
+                    ))}
+                  </optgroup>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={() => editDraft({ ...drafted, timezone: defaultTimezone() })}
+                className="shrink-0 whitespace-nowrap rounded-md border px-2.5 py-1.5 text-xs font-medium"
+                data-testid="ai-agent-schedule-use-my-timezone"
+              >
+                {t('aiAgentsPage.schedules.useMyTimezone')}
+              </button>
+            </div>
           </label>
         </div>
       ) : (
@@ -836,15 +876,33 @@ export default function AiAgentSchedulesSection({
         </div>
       )}
 
-      <label className="flex items-center gap-2 text-sm">
-        <input
-          type="checkbox"
-          checked={drafted.enabled}
-          onChange={() => editDraft({ ...drafted, enabled: !drafted.enabled })}
+      {/* A labelled switch row, set apart with its own top border — not an
+          unlabelled seventh checkbox sitting directly under "Checks to run"
+          (six of those, for a sweep draft), which read as one more item in
+          that group rather than the schedule's own on/off gate. */}
+      <div className="flex items-center justify-between gap-3 border-t pt-3">
+        <span className="text-sm font-medium" id={scheduleEnabledLabelId}>
+          {t('aiAgentsPage.schedules.enabled')}
+        </span>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={drafted.enabled}
+          aria-labelledby={scheduleEnabledLabelId}
+          onClick={() => editDraft({ ...drafted, enabled: !drafted.enabled })}
           data-testid="ai-agent-schedule-enabled"
-        />
-        {t('aiAgentsPage.schedules.enabled')}
-      </label>
+          className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full border transition ${
+            drafted.enabled ? 'bg-emerald-500/80' : 'bg-muted'
+          }`}
+        >
+          <span
+            aria-hidden="true"
+            className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition ${
+              drafted.enabled ? 'translate-x-6' : 'translate-x-1'
+            }`}
+          />
+        </button>
+      </div>
 
       <div className="flex flex-wrap items-center gap-2">
         <button
@@ -915,7 +973,11 @@ export default function AiAgentSchedulesSection({
               {t('aiAgentsPage.schedules.loading')}
             </p>
           )}
-          {!loading && !failed && schedules.length === 0 && (
+          {/* `draft === null` too: without it, the empty state rendered ABOVE
+              an already-open create editor the instant the list was empty —
+              "No sweep schedules yet" sitting directly on top of the form
+              that was already fixing that. */}
+          {!loading && !failed && schedules.length === 0 && draft === null && (
             <EmptyState
               size="sm"
               headingLevel={4}
@@ -942,7 +1004,7 @@ export default function AiAgentSchedulesSection({
                       {/* `title=` alone is invisible to touch and keyboard, so
                           the explanation is a real described-by node. */}
                       <span
-                        className="rounded bg-primary/10 px-2 py-0.5 text-xs text-primary"
+                        className={badgeClass('info', { size: 'sm' })}
                         aria-describedby={allOrgsHintId}
                       >
                         {t('aiAgentsPage.allOrgs')}

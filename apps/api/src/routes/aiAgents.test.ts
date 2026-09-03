@@ -10,6 +10,7 @@ import {
   AI_AGENT_IMPACT_REBUILD_MAX_ORGS,
   AI_AGENT_LIMIT_DEFAULTS,
   AI_AGENT_RUN_LEAK_TRIPWIRE_KEYS,
+  AI_AGENT_RUN_SUMMARY_EXCERPT_MAX_CHARS,
   DEFAULT_IMPACT_WEIGHTS,
   type AiAgentImpactDto,
 } from '@breeze/shared';
@@ -850,6 +851,9 @@ const runDetailResponseSchema = z.object({
     status: z.string(),
     summary: z.string().nullable(),
     runVerdict: z.string().nullable(),
+    // The server's own answer to the count the detail page derives itself —
+    // carried here so the list and the detail cannot drift.
+    findingsToReview: z.number(),
     turnCount: z.number(),
     costCents: z.number(),
     errorCode: z.string().nullable(),
@@ -991,6 +995,13 @@ const runListResponseSchema = z.object({
     // schedule-triggered SWEEP is not distinguishable from `triggerKind`.
     profile: z.enum(['full', 'verdict', 'sweep']),
     runVerdict: z.string().nullable(),
+    // The verdict-understates-the-run override the DETAIL page already
+    // renders, now answerable by the list too. Counted in Postgres from the
+    // outcome column, which itself never reaches this wire shape — a
+    // regression that started shipping the blob to feed the count would fail
+    // `.strict()` here.
+    findingsToReview: z.number(),
+    summaryExcerpt: z.string().nullable(),
     queuedAt: z.string(),
     finishedAt: z.string().nullable(),
     costCents: z.number(),
@@ -1093,6 +1104,11 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
     expect(parsed.data.trace).toHaveLength(3);
     expect(parsed.data.ledger).toHaveLength(1);
     expect(parsed.data.intents).toHaveLength(1);
+    // The detail DTO now carries the server's OWN findings count, from the
+    // same helper the list routes use. This fixture's outcome has one
+    // proposed action, one executed and one denied — only the proposed one
+    // is a finding to review, so the list and the detail agree on 1.
+    expect(parsed.data.findingsToReview).toBe(1);
 
     // The leak tripwire: the raw tool input the model proposed
     // (`{ scriptId: 'abc', secretParam: 'do-not-leak-me' }`) must never reach
@@ -1759,6 +1775,98 @@ describe('GET /ai-agents/runs (org-wide keyset list, #3828)', () => {
     expect(body.data[0]).not.toHaveProperty('trace');
     expect(body.data[0]).not.toHaveProperty('outcome');
     expect(body.data[0]).not.toHaveProperty('ledger');
+  });
+
+  // UI critique follow-up: `runVerdict` alone understates a run — a sweep
+  // that found problems and was allowed to execute none of them still rolls
+  // up `no_action`. The DETAIL page already overrides its verdict badge with
+  // "N findings to review"; these two fields are what let the LIST do the
+  // same. Both are derived by the shared helper (runFindings.ts), whose own
+  // suite pins the rule (denied entries excluded) and the SQL that counts it.
+  describe('findingsToReview + summaryExcerpt (verdict-understates-the-run)', () => {
+    const listRow = (overrides: Record<string, unknown> = {}) => ({
+      id: RUN_ID, agentId: AGENT_ID, agentName: 'Sweeper', orgId: ORG_ID, orgName: 'Acme Corp',
+      deviceId: null,
+      status: 'completed', triggerKind: 'schedule', profile: 'sweep', runVerdict: 'no_action',
+      // What `findingsToReviewSql` computes IN POSTGRES for this row.
+      findingsToReview: 6,
+      summary: 'Six hosts are low on disk. Details follow.',
+      queuedAt: new Date('2026-09-02T10:00:00.000Z'),
+      queuedAtRaw: '2026-09-02T10:00:00.000000Z',
+      finishedAt: new Date('2026-09-02T10:00:30.000Z'),
+      costCents: 3,
+      ...overrides,
+    });
+
+    it('carries the Postgres-computed findings count beside a no_action verdict', async () => {
+      selectMock.mockReturnValueOnce(selectChain([listRow()]));
+
+      const res = await buildApp().request('/ai-agents/runs');
+      expect(res.status).toBe(200);
+      const parsed = runListResponseSchema.parse(await res.json());
+      expect(parsed.data[0]).toMatchObject({ runVerdict: 'no_action', findingsToReview: 6 });
+    });
+
+    it('counts the outcome inside Postgres — the SQL names both counted json paths and neither excluded one', async () => {
+      let projection: Record<string, unknown> | undefined;
+      selectMock.mockImplementationOnce((cols: Record<string, unknown>) => {
+        projection = cols;
+        return selectChain([listRow()]);
+      });
+
+      await buildApp().request('/ai-agents/runs');
+
+      // The count must be a SQL expression, not a selected `outcome` column:
+      // a list route shipping up to 50 model-authored findings per row to
+      // count them in JS is exactly what this projection exists to prevent.
+      expect(projection).toBeDefined();
+      expect(projection).not.toHaveProperty('outcome');
+      const compiled = dialect.sqlToQuery(
+        (projection as Record<string, SQL>).findingsToReview!,
+      ).sql;
+      expect(compiled).toContain("->'sweepFindings'->'findings'");
+      expect(compiled).toContain("->'proposedActions'");
+      expect(compiled).not.toContain('deniedActions');
+    });
+
+    it('excerpts the first sentence of the summary with markdown emphasis stripped', async () => {
+      selectMock.mockReturnValueOnce(selectChain([
+        listRow({ summary: '**Six** hosts are low on disk. Details follow.' }),
+      ]));
+
+      const res = await buildApp().request('/ai-agents/runs');
+      const parsed = runListResponseSchema.parse(await res.json());
+      expect(parsed.data[0]!.summaryExcerpt).toBe('Six hosts are low on disk.');
+    });
+
+    it('truncates a long first sentence to the shared cap with an ellipsis', async () => {
+      selectMock.mockReturnValueOnce(selectChain([
+        listRow({ summary: `${'headroom '.repeat(40)}gone.` }),
+      ]));
+
+      const res = await buildApp().request('/ai-agents/runs');
+      const parsed = runListResponseSchema.parse(await res.json());
+      const excerpt = parsed.data[0]!.summaryExcerpt as string;
+      expect(excerpt.length).toBeLessThanOrEqual(AI_AGENT_RUN_SUMMARY_EXCERPT_MAX_CHARS);
+      expect(excerpt).toMatch(/…$/);
+    });
+
+    it('reports a null excerpt for a run with no summary yet', async () => {
+      selectMock.mockReturnValueOnce(selectChain([listRow({ summary: null })]));
+
+      const res = await buildApp().request('/ai-agents/runs');
+      const parsed = runListResponseSchema.parse(await res.json());
+      expect(parsed.data[0]!.summaryExcerpt).toBeNull();
+    });
+
+    it('never puts the full summary on the list item — only the excerpt', async () => {
+      selectMock.mockReturnValueOnce(selectChain([listRow()]));
+
+      const res = await buildApp().request('/ai-agents/runs');
+      const body = await res.json();
+      expect(body.data[0]).not.toHaveProperty('summary');
+      expect(body.data[0].summaryExcerpt).toBe('Six hosts are low on disk.');
+    });
   });
 });
 
@@ -3069,7 +3177,10 @@ describe('GET /ai-agents', () => {
 
   it('projects the latest run per agent from ONE batched query', async () => {
     selectDistinctOnMock.mockReturnValueOnce(distinctChain([
-      { agentId: AGENT_ID, status: 'failed', queuedAt: new Date('2026-08-30T12:00:00.000Z') },
+      {
+        agentId: AGENT_ID, status: 'failed', findingsToReview: 0,
+        queuedAt: new Date('2026-08-30T12:00:00.000Z'),
+      },
     ]));
 
     const res = await buildApp().request('/ai-agents');
@@ -3092,6 +3203,64 @@ describe('GET /ai-agents', () => {
     const body = await res.json();
     expect(body.data[0].lastRunAt).toBeNull();
     expect(body.data[0].lastRunStatus).toBeNull();
+    expect(body.data[0].lastRunFindingsToReview).toBeNull();
+  });
+
+  // `lastRunStatus` alone understates the agent the same way `runVerdict`
+  // understates a run: a sweep that found six problems and could execute none
+  // of them reports `completed`. Counted on the SAME DISTINCT ON row — never
+  // a second query — by the same helper the runs list and run detail use.
+  it('projects lastRunFindingsToReview from the same DISTINCT ON row', async () => {
+    selectDistinctOnMock.mockReturnValueOnce(distinctChain([
+      {
+        agentId: AGENT_ID, status: 'completed', findingsToReview: 6,
+        queuedAt: new Date('2026-09-02T12:00:00.000Z'),
+      },
+    ]));
+
+    const res = await buildApp().request('/ai-agents');
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data[0]).toMatchObject({
+      lastRunStatus: 'completed',
+      lastRunFindingsToReview: 6,
+    });
+    expect(selectDistinctOnMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports 0 — not null — for a last run that left nothing to review', async () => {
+    selectDistinctOnMock.mockReturnValueOnce(distinctChain([
+      {
+        agentId: AGENT_ID, status: 'completed', findingsToReview: 0,
+        queuedAt: new Date('2026-09-02T12:00:00.000Z'),
+      },
+    ]));
+
+    const res = await buildApp().request('/ai-agents');
+
+    const body = await res.json();
+    // 0 and null mean different things here: "ran, nothing to review" vs
+    // "no visible run at all".
+    expect(body.data[0].lastRunFindingsToReview).toBe(0);
+  });
+
+  it('counts the last run inside Postgres — never by selecting the outcome column', async () => {
+    let projection: Record<string, unknown> | undefined;
+    selectDistinctOnMock.mockImplementationOnce((_on: unknown, cols: Record<string, unknown>) => {
+      projection = cols;
+      return distinctChain([]);
+    });
+
+    const res = await buildApp().request('/ai-agents');
+
+    expect(res.status).toBe(200);
+    expect(projection).toBeDefined();
+    expect(projection).not.toHaveProperty('outcome');
+    const compiled = dialect.sqlToQuery((projection as Record<string, SQL>).findingsToReview!).sql;
+    expect(compiled).toContain("->'sweepFindings'->'findings'");
+    expect(compiled).toContain("->'proposedActions'");
+    expect(compiled).not.toContain('deniedActions');
   });
 
   it('never touches ai_agent_runs when the caller owns no agents', async () => {

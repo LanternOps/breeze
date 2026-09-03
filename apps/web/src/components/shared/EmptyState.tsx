@@ -15,6 +15,13 @@ export interface EmptyStateProps {
   secondary?: ReactNode;
   /** `sm` = compact, for inline table/panel empties. `md` = page-level. Defaults to `md`. */
   size?: 'sm' | 'md';
+  /**
+   * `framed` (default) = the dashed-border card, for a standalone empty
+   * section. `plain` = no border/background, for an empty state already
+   * nested inside another card or panel, where a second frame would nest
+   * cards. Both use the same icon/title/description/action layout.
+   */
+  variant?: 'framed' | 'plain';
   /** data-testid passthrough on the outerframed card. */
   testId?: string;
   className?: string;
@@ -58,16 +65,20 @@ export function EmptyState({
   action,
   secondary,
   size = 'md',
+  variant = 'framed',
   testId,
   className,
   headingLevel = 3,
 }: EmptyStateProps): JSX.Element {
   const Heading = (`h${headingLevel}` as const) as 'h2' | 'h3' | 'h4';
   const containerClassName = [
+    'rounded-xl text-center',
     // No `--border-strong` token exists (globals.css) — the plain `--border`
     // dark value (18% lightness) is near-invisible for a 1px dashed line, so
-    // dark mode gets an explicit stronger override.
-    'rounded-xl border border-dashed border-border dark:border-zinc-600 text-center',
+    // dark mode gets an explicit stronger override. `plain` skips the frame
+    // entirely — it's for an empty state already nested inside another
+    // card/panel, where a second dashed border would be a nested card.
+    variant === 'framed' ? 'border border-dashed border-border dark:border-zinc-600' : '',
     SIZE_CONTAINER_CLASSES[size],
     className,
   ]

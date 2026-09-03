@@ -14,7 +14,25 @@
   "batch": {
     "approveAll": "Tümünü onayla ({{count}})",
     "declineAll": "Tümünü reddet ({{count}})",
-    "groupTitle": "{{count}} benzer istek · {{tool}}"
+    "groupTitle": "{{count}} benzer istek · {{tool}}",
+    "moreHostnames": "+{{count}} daha",
+    "denyConfirmSummary": "Bu, {{org}} için {{count}} isteği reddeder."
+  },
+  "filters": {
+    "orgLabel": "Kuruluş",
+    "allOrganizations": "Tüm kuruluşlar ({{count}})",
+    "orgOption": "{{name}} ({{count}} bekliyor)",
+    "searchLabel": "Ara",
+    "searchPlaceholder": "Eylem, cihaz veya aracıya göre ara…",
+    "sortLabel": "Sıralama",
+    "sortExpiringSoonest": "Süresi yakında doluyor",
+    "sortNewest": "En yeni",
+    "showingLoaded": "Yüklenen {{loaded}} kayıttan {{shown}} tanesi gösteriliyor",
+    "clearFilters": "Filtreleri temizle",
+    "noMatches": {
+      "title": "Filtrelerinize uyan onay yok",
+      "description": "Farklı bir kuruluş veya arama terimi deneyin ya da filtrelerinizi temizleyin."
+    }
   },
   "risk": {
     "low": "Düşük risk",

@@ -319,6 +319,7 @@
       },
       "loading": "Chargement des rapports...",
       "never": "Jamais",
+      "visibleInPortal": "Visible dans le portail client",
       "newReport": "Nouveau rapport",
       "nextOccurrence": "Suite : {{next}}",
       "reportTypes": {

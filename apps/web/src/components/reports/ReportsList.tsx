@@ -64,6 +64,7 @@ export type Report = {
   schedule: ReportSchedule;
   format: ReportFormat;
   config: Record<string, unknown>;
+  portalSelfService: boolean;
   lastGeneratedAt: string | null;
   createdAt: string;
   updatedAt: string;
@@ -456,6 +457,14 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
                         <div className="flex items-center gap-2">
                           <FileText className="h-4 w-4 text-muted-foreground" />
                           <span className="font-medium">{report.name}</span>
+                          {report.portalSelfService && (
+                            <span
+                              data-testid={`report-portal-badge-${report.id}`}
+                              className="rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary"
+                            >
+                              {t('reports.reportsList.visibleInPortal')}
+                            </span>
+                          )}
                         </div>
                       </td>
                       <td className="px-4 py-3 text-sm">
@@ -512,11 +521,16 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
                       </td>
                       <td className="px-4 py-3">
                         <div className="flex items-center justify-end gap-1">
-                          {isSystemManagedReportType(report.type) ? (
-                            /* Generate/Edit/Delete all return 409 for these,
-                               so the row offers reading the newest run only. */
+                          {isSystemManagedReportType(report.type) || report.portalSelfService ? (
+                            /* Generate/Edit/Delete all return 409 for these —
+                               system-managed always, portal self-service
+                               (#4562) while the customer portal exposes
+                               reports — so the row offers reading the newest
+                               run only. Read-only, not invisible: the MSP can
+                               still open what the customer sees. */
                             <button
                               type="button"
+                              data-testid={`report-open-latest-${report.id}`}
                               onClick={() => handleOpenLatest(report)}
                               disabled={openingReportId === report.id}
                               className="flex h-8 items-center gap-1 rounded-md border px-3 text-sm hover:bg-muted disabled:opacity-50"
@@ -532,6 +546,7 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
                             <>
                               <button
                                 type="button"
+                                data-testid={`report-generate-${report.id}`}
                                 onClick={() => handleGenerate(report)}
                                 disabled={generatingIds.has(report.id)}
                                 className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted disabled:opacity-50"
@@ -545,6 +560,7 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
                               </button>
                               <button
                                 type="button"
+                                data-testid={`report-edit-${report.id}`}
                                 onClick={() => onEdit?.(report)}
                                 className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted"
                                 title={t('reports.reportsList.actions.edit')}
@@ -553,6 +569,7 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
                               </button>
                               <button
                                 type="button"
+                                data-testid={`report-delete-${report.id}`}
                                 onClick={() => handleDelete(report)}
                                 disabled={deletingId === report.id}
                                 className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted text-destructive disabled:opacity-50"

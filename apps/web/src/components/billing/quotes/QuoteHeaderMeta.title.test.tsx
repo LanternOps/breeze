@@ -4,6 +4,7 @@
 // "Saving changes… Send unlocks when everything is saved." over the Send button
 // for the rest of the session, describing a save that had already given up.
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { useLayoutEffect } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { QuoteHeaderMeta } from './QuoteHeaderMeta';
@@ -43,6 +44,22 @@ function detail(): QuoteDetailData {
     blocks: [],
     lines: [],
   };
+}
+
+/**
+ * Records the title input's committed DOM value. A layout effect runs
+ * synchronously in the mutation phase of the very commit that produced the
+ * DOM, so it reads what the box actually showed at that commit without
+ * depending on when React's scheduler gets around to passive effects — same
+ * technique used to pin down #4659 (AiBudgetThresholdsInput).
+ */
+function CommitProbe({ testId, seen }: { testId: string; seen: string[] }) {
+  useLayoutEffect(() => {
+    const el = document.querySelector(`[data-testid="${testId}"]`) as HTMLInputElement | null;
+    if (!el) throw new Error(`CommitProbe: no element matching [data-testid="${testId}"]`);
+    seen.push(el.value);
+  });
+  return null;
 }
 
 beforeEach(() => vi.clearAllMocks());
@@ -114,5 +131,46 @@ describe('QuoteHeaderMeta — title save reporting', () => {
     fireEvent.blur(input);
     await waitFor(() => expect(screen.getByTestId('quote-title')).not.toBeDisabled());
     expect(onSaveFailure).toHaveBeenCalledTimes(1);
+  });
+
+  // #4807 (mirrors #4659/#4033): `title` used to re-seed from `quote.title` in
+  // a `useEffect`, i.e. in a commit AFTER the one that delivered the new
+  // prop. Because a passive effect is deferred, a keystroke landing in that
+  // window was silently reverted by the stale string the effect had
+  // captured. Re-seeding during render (this fix) leaves no such commit —
+  // assert exactly that.
+  it('re-seeds a changed title prop within the same commit, not a later one (#4807)', () => {
+    const seen: string[] = [];
+    const view = (title: string | null) => (
+      <>
+        <QuoteHeaderMeta detail={{ ...detail(), quote: { ...detail().quote, title } }} onChanged={vi.fn()} />
+        <CommitProbe testId="quote-title" seen={seen} />
+      </>
+    );
+
+    const { rerender } = render(view('Original title'));
+    seen.length = 0;
+
+    rerender(view('Server-updated title'));
+
+    // One commit, already showing the new title. An earlier entry still
+    // reading 'Original title' is the old effect-driven seed — the window
+    // that made the field clobberable mid-keystroke.
+    expect(seen).toEqual(['Server-updated title']);
+  });
+
+  // Discriminating test per the issue's required pattern: type a draft, then
+  // let an unrelated (equal-valued) prop refetch land — the draft must
+  // survive rather than being discarded by a resync that changed nothing.
+  it('keeps a typed title draft when an unrelated refetch hands back the same title', () => {
+    const d = { ...detail(), quote: { ...detail().quote, title: 'Original title' } };
+    const { rerender } = render(<QuoteHeaderMeta detail={d} onChanged={vi.fn()} />);
+
+    const input = screen.getByTestId('quote-title') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: 'Original title — draft in progress' } });
+
+    rerender(<QuoteHeaderMeta detail={{ ...detail(), quote: { ...detail().quote, title: 'Original title' } }} onChanged={vi.fn()} />);
+
+    expect(input.value).toBe('Original title — draft in progress');
   });
 });

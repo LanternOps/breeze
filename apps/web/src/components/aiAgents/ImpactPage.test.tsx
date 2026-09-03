@@ -520,6 +520,29 @@ describe('ImpactPage', () => {
     );
   });
 
+  it('renders the page title as an h1 via PageHeader', async () => {
+    mockImpact(dto());
+    render(<ImpactPage />);
+    await waitFor(() => expect(screen.getByTestId('ai-impact-tile-alerts-judged')).toBeInTheDocument());
+    expect(screen.getByRole('heading', { level: 1, name: 'AI impact' })).toBeInTheDocument();
+  });
+
+  it('labels the freshness line and places it beside the window switcher, not floating unlabelled', async () => {
+    mockImpact(dto());
+    render(<ImpactPage />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-impact-freshness')).toBeInTheDocument());
+    expect(screen.getByText('Data freshness')).toBeInTheDocument();
+
+    // The freshness label+text and the window-switcher group share the same
+    // "view controls" wrapper (~gh #4187 review: the freshness line used to
+    // float, disconnected from anything explaining what it describes).
+    const viewControls = screen.getByTestId('ai-impact-view-controls');
+    expect(viewControls).toContainElement(screen.getByText('Data freshness'));
+    expect(viewControls).toContainElement(screen.getByTestId('ai-impact-freshness'));
+    expect(viewControls).toContainElement(screen.getByTestId('ai-impact-window-90'));
+  });
+
   it('hides the positive-feedback readout when the rate is null', async () => {
     mockImpact(dto());
     const view = render(<ImpactPage />);
