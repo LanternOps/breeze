@@ -20,6 +20,7 @@ import { eq, and, inArray, isNotNull, or, sql, type SQL } from 'drizzle-orm';
 import { buildResolveAlertCas } from './alertService';
 import { policyOwnershipCondition } from './configPolicyOwnership';
 import { publishEvent } from './eventBus';
+import { captureException } from './sentry';
 
 interface WarrantyAlertSettings {
   enabled: boolean;
@@ -70,6 +71,23 @@ async function resolveWarrantySettings(deviceId: string): Promise<WarrantyAlertS
     .from(organizations)
     .where(eq(organizations.id, device.orgId))
     .limit(1);
+
+  // Not reachable by the schema: `devices.org_id` is NOT NULL with an FK to
+  // `organizations.id`, and `organizations.partner_id` is itself NOT NULL. So an
+  // empty result means the invariant broke (org deleted mid-evaluation, or a
+  // caller whose context cannot see its own device's org). Say it out loud —
+  // falling through quietly would resolve in exactly the org-only way #3963
+  // exists to fix, just one join upstream, and be indistinguishable from
+  // "correctly found no policy". Resolution continues so warranty alerting
+  // degrades rather than throwing.
+  if (!org) {
+    console.error(
+      `[warranty] org ${device.orgId} for device ${deviceId} did not resolve; partner-wide warranty policies cannot apply to this evaluation`
+    );
+    captureException(
+      new Error(`warranty: organizations row missing for device org ${device.orgId}`)
+    );
+  }
 
   // Get device group IDs
   const groupRows = await db

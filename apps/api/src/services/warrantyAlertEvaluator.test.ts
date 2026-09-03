@@ -133,6 +133,32 @@ describe('evaluateWarrantyAlerts gating', () => {
     expect(insertMock).not.toHaveBeenCalled();
   });
 
+  it('reports loudly when the device org row does not resolve, instead of silently degrading (#3963)', async () => {
+    stubAutoResolve();
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    // 1: warranty row  2: device row (evaluate)  3: device row (resolveWarrantySettings)
+    selectMock.mockReturnValueOnce(queueSelect([baseWarranty]));
+    selectMock.mockReturnValueOnce(queueSelect([baseDevice]));
+    selectMock.mockReturnValueOnce(queueSelect([{ orgId: ORG_ID, siteId: null }]));
+    // 4: device org row → EMPTY. Unreachable via the schema (devices.org_id is
+    // NOT NULL with an FK to organizations.id), so it means an invariant broke.
+    // Without the guard this degrades to exactly the org-only resolution #3963
+    // fixes — silently, and indistinguishably from "no policy configured".
+    selectMock.mockReturnValueOnce(queueSelect([]));
+    // 5: device group memberships  6: warranty feature links  7: auto-resolve open alerts
+    selectMock.mockReturnValueOnce(queueSelect([]));
+    selectMock.mockReturnValueOnce(queueSelect([]));
+    selectMock.mockReturnValueOnce(queueSelect([]));
+
+    const result = await evaluateWarrantyAlerts(DEVICE_ID);
+
+    expect(consoleError).toHaveBeenCalledWith(expect.stringContaining(ORG_ID));
+    expect(consoleError).toHaveBeenCalledWith(expect.stringContaining('partner-wide'));
+    // Resolution still completes rather than throwing — warranty alerting degrades.
+    expect(result).toBeNull();
+    consoleError.mockRestore();
+  });
+
   it('does NOT fire for an active AppleCare subscription even within threshold (#1320 Bug 2)', async () => {
     stubAutoResolve();
     // 1: warranty row flagged as a subscription whose end date rolls ~30 days out

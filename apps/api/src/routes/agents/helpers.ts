@@ -1952,6 +1952,18 @@ export async function getOrgEventLogRetentionDays(orgId: string): Promise<number
     .where(eq(organizations.id, orgId))
     .limit(1);
 
+  // Not reachable by the schema (`organizations.partner_id` is NOT NULL and the
+  // caller read this org id out of `organizations` moments earlier), so an empty
+  // result means the invariant broke. Say it out loud: falling through quietly
+  // would silently resolve org-only — the exact #3963 failure, one join upstream
+  // — and this decides how long a customer's event logs are kept.
+  if (!org) {
+    console.error(
+      `[eventlog] organizations row missing for org ${orgId}; partner-wide retention policies cannot apply, falling back to org-level resolution`
+    );
+    captureException(new Error(`eventLogRetention: organizations row missing for org ${orgId}`));
+  }
+
   const targetConditions = [
     and(eq(configPolicyAssignments.level, 'organization'), eq(configPolicyAssignments.targetId, orgId))!,
   ];

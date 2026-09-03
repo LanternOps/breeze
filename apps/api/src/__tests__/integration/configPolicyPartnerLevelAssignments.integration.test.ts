@@ -105,6 +105,8 @@ function agentBlindContext(orgId: string): DbAccessContext {
 const createdPolicies: string[] = [];
 const createdDevices: string[] = [];
 
+// Children before parents: the alert/warranty rows FK to `devices` with no
+// ON DELETE, so deleting the device first raises 23503.
 afterEach(async () => {
   await withDbAccessContext(SYSTEM_CTX, async () => {
     for (const id of createdDevices) {
@@ -121,7 +123,7 @@ afterEach(async () => {
 });
 
 type PolicyOwner = { orgId: string | null; partnerId: string | null };
-type AssignmentLevel = 'partner' | 'organization';
+type AssignmentLevel = 'partner' | 'organization' | 'site' | 'device_group' | 'device';
 
 /** ISO `YYYY-MM-DD` date `days` from now. */
 function inDays(days: number): string {
@@ -229,6 +231,7 @@ async function assign(configPolicyId: string, level: AssignmentLevel, targetId: 
   });
 }
 
+
 describe('warranty evaluator honours partner-level assignments (#3963)', () => {
   it('applies a partner-wide warranty policy from the SYSTEM-scoped warranty worker', async () => {
     const { partner, org, site } = await seedTenant();
@@ -305,6 +308,48 @@ describe('warranty evaluator honours partner-level assignments (#3963)', () => {
 
     expect(alertId).not.toBeNull();
   });
+
+  // The fix replaced ONE `inArray(targetId, [deviceId, ...groupIds, siteId, orgId])`
+  // with five level-PAIRED conditions. Only the partner branch was broken, but all
+  // five were rewritten, and `targetId` is polymorphic — pairing an id to the wrong
+  // level silently matches nothing rather than erroring. The org branch is covered
+  // by warrantyAlertEvaluator.integration.test.ts and the partner branch by the
+  // cases above; this pins a THIRD, structurally distinct branch (an id that is
+  // neither the device's org nor its partner, resolved through the device row).
+  //
+  // COVERAGE LIMIT, stated rather than implied: the `device` and `device_group`
+  // branches are still not covered here. Seeding them requires an assignment whose
+  // target is a device/group created on the app pool, and that insert is rejected
+  // in this suite by the `config_policy_assignments_target_owner_fk` statement
+  // trigger for reasons that reproduce neither in psql (the identical fixture —
+  // partner/org/site/device/group/membership/policy, then all three assignment
+  // levels — inserts cleanly as breeze_test, and both rows are visible to
+  // breeze_app under system scope) nor in the org/site/partner cases that pass
+  // here. That is a test-fixture problem, not a product one, so it is recorded
+  // instead of being papered over with a weaker assertion.
+  it('matches a site-level warranty assignment to its own level', async () => {
+    const { org, site } = await seedTenant();
+    const device = await seedDeviceWithExpiringWarranty(org.id, site.id);
+    const policyId = await seedWarrantyPolicy({ orgId: org.id, partnerId: null }, true);
+    await assign(policyId, 'site', site.id);
+
+    const alertId = await withDbAccessContext(SYSTEM_CTX, () => evaluateWarrantyAlerts(device.id));
+
+    expect(alertId).not.toBeNull();
+  });
+
+  // NOT TESTED, deliberately: "an assignment targeting this org for a policy owned
+  // by a DIFFERENT org". That row cannot be created. Postgres rejects the insert
+  // via `config_policy_assignments_target_owner_fk`
+  // (`breeze_validate_config_policy_assignment_target`) with "configuration
+  // assignment target is incompatible with the policy owner" — verified by
+  // attempting exactly this fixture and getting 23503 back. So the
+  // `policyOwnershipCondition` this PR adds to the warranty query is
+  // defense-in-depth behind a DB-enforced invariant, not a filter that any
+  // creatable row depends on. The one way ownership and target can still drift is
+  // an org MOVE (`config_policy_assignments` has no `org_id` column and is in no
+  // move/cascade list, so a device- or group-level assignment survives its device
+  // changing org), which the predicate now correctly stops from resolving.
 
   it('does not apply another partner’s partner-wide warranty policy', async () => {
     const { org, site } = await seedTenant();
