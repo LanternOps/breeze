@@ -5,7 +5,12 @@ import {
 } from 'drizzle-orm/pg-core';
 import { partners, organizations } from './orgs';
 import { users } from './users';
-import { INVOICE_STATUSES, INVOICE_LINE_SOURCE_TYPES, PAYMENT_METHODS } from '@breeze/shared';
+import {
+  INVOICE_STATUSES,
+  INVOICE_LINE_SOURCE_TYPES,
+  PAYMENT_METHODS,
+  INVOICE_LINE_DEVICE_COUNTED_AS,
+} from '@breeze/shared';
 
 // Spread the readonly SSOT tuples into pgEnum's mutable `[string, ...string[]]`.
 // Keep this a DIRECT spread of the const tuple — routing through a `string[]`
@@ -13,6 +18,7 @@ import { INVOICE_STATUSES, INVOICE_LINE_SOURCE_TYPES, PAYMENT_METHODS } from '@b
 export const invoiceStatusEnum = pgEnum('invoice_status', [...INVOICE_STATUSES]);
 export const invoiceLineSourceTypeEnum = pgEnum('invoice_line_source_type', [...INVOICE_LINE_SOURCE_TYPES]);
 export const paymentMethodEnum = pgEnum('payment_method', [...PAYMENT_METHODS]);
+export const invoiceLineDeviceCountedAsEnum = pgEnum('invoice_line_device_counted_as', [...INVOICE_LINE_DEVICE_COUNTED_AS]);
 
 // Partial-index predicate helpers (real partial indexes created in SQL migration;
 // drizzle-kit only needs these for drift detection).
@@ -58,6 +64,15 @@ export const invoices = pgTable('invoices', {
   sellerSnapshot: jsonb('seller_snapshot'),
   // Render-locale snapshot, stamped once at issue/send (#3777). NULL = resolve from partner at render.
   documentLocale: varchar('document_locale', { length: 16 }),
+  // #3205 W07 appendix gate. NULL pre-issue = "inherit partners.invoice_device_appendix";
+  // both issuance writers stamp the RESOLVED boolean at issue and the renderer
+  // reads ONLY this column afterwards, so a later partner-default change cannot
+  // alter what a sanctioned re-render produces.
+  deviceAppendix: boolean('device_appendix'),
+  // #3205 W07: 1 = billing evidence written at generation. NULL = pre-W07 or
+  // never generated from a contract. Invoice-level `recorded` flag — never
+  // derived from an evidence row count.
+  evidenceVersion: integer('evidence_version'),
   termsAndConditions: text('terms_and_conditions'),
   sentAt: timestamp('sent_at'),
   firstViewedAt: timestamp('first_viewed_at'),
@@ -132,7 +147,49 @@ export const invoiceLines = pgTable('invoice_lines', {
 }, (t) => [
   index('invoice_lines_invoice_sort_idx').on(t.invoiceId, t.sortOrder),
   index('invoice_lines_org_idx').on(t.orgId),
-  index('invoice_lines_source_idx').on(t.sourceType, t.sourceId)
+  index('invoice_lines_source_idx').on(t.sourceType, t.sourceId),
+  // Composite-FK target for invoice_line_devices_line_org_fk (#3205 W07).
+  // Built CONCURRENTLY by migration 2026-10-08-100300; declared here as an
+  // ordinary uniqueIndex because db:check-drift compares definitions, not how
+  // they were built.
+  uniqueIndex('invoice_lines_id_org_uq').on(t.id, t.orgId),
+]);
+
+/**
+ * #3205 W07 (#4656): which devices an auto-counted invoice line actually billed.
+ *
+ * One row per counted device per invoice line. `invoice_line_id` is NOT NULL in
+ * every case — "uncovered" is an aggregate on contract_billing_period_outcomes,
+ * never a row here. Written by generateDueInvoice inside the billing
+ * transaction, AFTER the period claim; never mutated afterwards except by the
+ * device-delete / move-org detaches and the org-merge repoint.
+ *
+ * SQL-ONLY constraints (declared in migration 2026-10-08-100400, deliberately
+ * not mirrored here — same treatment as W01's site FK and W02's group FK):
+ *   - (invoice_line_id, org_id) -> invoice_lines(id, org_id) ON DELETE CASCADE DEFERRABLE
+ *   - (invoice_id, org_id)      -> invoices(id, org_id)      ON DELETE CASCADE DEFERRABLE
+ *   - (site_id, org_id)         -> sites(id, org_id)         ON DELETE SET NULL (site_id) DEFERRABLE
+ * The device_id FK IS single-column and SQL-only below: a composite
+ * (device_id, org_id) would forbid every cross-org device move.
+ */
+export const invoiceLineDevices = pgTable('invoice_line_devices', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  invoiceLineId: uuid('invoice_line_id').notNull(),
+  invoiceId: uuid('invoice_id').notNull(),
+  orgId: uuid('org_id').notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  // FK is SQL-only to avoid an import cycle with devices.ts.
+  deviceId: uuid('device_id'),
+  hostname: varchar('hostname', { length: 255 }).notNull(),
+  deviceRole: text('device_role').notNull(),
+  siteId: uuid('site_id'),
+  countedAs: invoiceLineDeviceCountedAsEnum('counted_as').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull()
+}, (t) => [
+  uniqueIndex('invoice_line_devices_line_device_uq').on(t.invoiceLineId, t.deviceId),
+  index('invoice_line_devices_line_read_idx').on(t.invoiceLineId, t.hostname, t.id),
+  index('invoice_line_devices_invoice_read_idx').on(t.invoiceId, t.hostname, t.id),
+  index('invoice_line_devices_device_idx').on(t.deviceId).where(sql`${t.deviceId} IS NOT NULL`),
+  index('invoice_line_devices_org_idx').on(t.orgId)
 ]);
 
 export const invoicePayments = pgTable('invoice_payments', {

@@ -1,7 +1,7 @@
 import type { DeviceRole } from '@breeze/shared';
-import { sql } from 'drizzle-orm';
+import { desc, sql } from 'drizzle-orm';
 import {
-  pgTable, uuid, text, varchar, integer, boolean, numeric, date, char,
+  pgTable, uuid, text, varchar, integer, boolean, numeric, jsonb, date, char,
   timestamp, pgEnum, index, uniqueIndex
 } from 'drizzle-orm/pg-core';
 import { partners, organizations } from './orgs';
@@ -110,7 +110,41 @@ export const contractBillingPeriods = pgTable('contract_billing_periods', {
   generatedAt: timestamp('generated_at').defaultNow().notNull()
 }, (t) => [
   uniqueIndex('contract_billing_periods_contract_period_uq').on(t.contractId, t.periodStart),
-  index('contract_billing_periods_org_idx').on(t.orgId)
+  index('contract_billing_periods_org_idx').on(t.orgId),
+  // Composite-FK target for cbp_outcomes_period_org_fk (#3205 W07). Built
+  // CONCURRENTLY by migration 2026-10-08-100300.
+  uniqueIndex('contract_billing_periods_id_org_uq').on(t.id, t.orgId),
+]);
+
+/**
+ * #3205 W07 (#4656): what one claimed billing period actually billed — and did
+ * not bill. Exactly one row per contract_billing_periods row, written in the
+ * same transaction immediately after the claim. A period with NO row was billed
+ * before W07; that is the ONLY meaning of absence.
+ *
+ * snapshot_device_total = 0 means "no snapshot was evaluated" (a flat-only
+ * contract), not "the org owns zero devices".
+ *
+ * SQL-ONLY constraints (migration 2026-10-08-100400):
+ *   - (contract_billing_period_id, org_id) -> contract_billing_periods(id, org_id) ON DELETE CASCADE DEFERRABLE
+ *   - (contract_id, org_id)                -> contracts(id, org_id)                ON DELETE CASCADE DEFERRABLE
+ *   - (invoice_id, org_id)                 -> invoices(id, org_id)                 ON DELETE SET NULL (invoice_id) DEFERRABLE
+ */
+export const contractBillingPeriodOutcomes = pgTable('contract_billing_period_outcomes', {
+  contractBillingPeriodId: uuid('contract_billing_period_id').primaryKey(),
+  orgId: uuid('org_id').notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  contractId: uuid('contract_id').notNull(),
+  invoiceId: uuid('invoice_id'),
+  snapshotDeviceTotal: integer('snapshot_device_total').notNull().default(0),
+  uncoveredTotal: integer('uncovered_total').notNull().default(0),
+  flaggedTotal: integer('flagged_total').notNull().default(0),
+  billedOverageTotal: integer('billed_overage_total').notNull().default(0),
+  uncoveredByRole: jsonb('uncovered_by_role').notNull().default(sql`'{}'::jsonb`),
+  overages: jsonb('overages').notNull().default(sql`'[]'::jsonb`),
+  generatedAt: timestamp('generated_at', { withTimezone: true }).defaultNow().notNull()
+}, (t) => [
+  index('cbp_outcomes_contract_idx').on(t.contractId, desc(t.generatedAt)),
+  index('cbp_outcomes_org_idx').on(t.orgId)
 ]);
 
 export const contractRenewalNotices = pgTable('contract_renewal_notices', {

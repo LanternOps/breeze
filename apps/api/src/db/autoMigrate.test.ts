@@ -473,6 +473,24 @@ describe('CHECKSUM_RECONCILIATIONS', () => {
 });
 
 describe('migration filename conventions', () => {
+  it('#3205 W07: the billing-evidence migrations sort A -> B -> C and A is no-transaction', () => {
+    const dir = path.join(__dirname, '../../migrations');
+    const files = readdirSync(dir)
+      .filter((f) => /^\d{4}-.*\.sql$/.test(f))
+      .sort((a, b) => a.localeCompare(b));
+    const a = files.findIndex((f) => f.endsWith('-billing-evidence-fk-targets.sql'));
+    const b = files.findIndex((f) => f.endsWith('-billing-evidence.sql'));
+    const c = files.findIndex((f) => f.endsWith('-device-move-exclude-billing-evidence.sql'));
+    expect(a).toBeGreaterThan(-1);
+    expect(b).toBeGreaterThan(a);
+    expect(c).toBeGreaterThan(b);
+    // A builds indexes CONCURRENTLY, which is illegal inside a transaction.
+    expect(hasNoTransactionDirective(readFileSync(path.join(dir, files[a]!), 'utf8'))).toBe(true);
+    // B and C are ordinary transactional files.
+    expect(hasNoTransactionDirective(readFileSync(path.join(dir, files[b]!), 'utf8'))).toBe(false);
+    expect(hasNoTransactionDirective(readFileSync(path.join(dir, files[c]!), 'utf8'))).toBe(false);
+  });
+
   it('adds no new migration to the closed 2026-08-06 reserved block', () => {
     const onDisk = listMigrationFilenames().filter((filename) =>
       filename.startsWith(RESERVED_MIGRATION_DATE),
