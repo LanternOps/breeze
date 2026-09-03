@@ -19,16 +19,20 @@ export class PortalVisibilityPage {
     this.page.getByTestId('portal-dashboard-tile-security');
 
   /**
-   * Lands on /quotes, not /dashboard: pages/index.astro redirects an
-   * authenticated customer to '/quotes' unconditionally, and enabling the
-   * dashboard adds a nav entry without changing that landing. Asserting
-   * '**\/dashboard' here would fail against the shipped app.
+   * The post-login landing is decided by the portal middleware
+   * (`authenticatedLanding` → `lib/landing.ts`): '/dashboard' when the org's
+   * `enable_dashboard` flag is on, '/quotes' otherwise. The seeded org enables
+   * the dashboard, but accept either so the page object does not encode the
+   * seed. Dev-mode Astro compiles the landing page on first hit, hence the
+   * generous timeout.
    */
   async login(email: string, password: string): Promise<void> {
     await this.page.goto('/portal/login');
     await this.email().fill(email);
     await this.password().fill(password);
     await this.submit().click();
-    await this.page.waitForURL('**/quotes');
+    await this.page.waitForURL(/\/portal\/(dashboard|quotes)(?:[?#]|$)/, {
+      timeout: 60_000,
+    });
   }
 }

@@ -4,6 +4,11 @@ import { PortalVisibilityPage } from '../pages/PortalVisibilityPage';
 const email = process.env.E2E_PORTAL_EMAIL ?? 'portal@breeze.local';
 const password = process.env.E2E_PORTAL_PASSWORD ?? 'PortalTest123!';
 
+// Dev-mode stack: Astro compiles each portal page on its first request and the
+// posture report generates synchronously, so the default 30 s per-test budget
+// is too tight for the first test in the file.
+test.describe.configure({ timeout: 90_000 });
+
 test.describe.serial('portal visibility', () => {
   // Seeded with enable_dashboard = true. The tiles render for every status —
   // a source with no rows shows honest "not available" copy rather than a
