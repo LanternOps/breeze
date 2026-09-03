@@ -640,6 +640,14 @@ describe('action_intents.scope_device_id detach coverage', () => {
     ).toEqual(['approved', 'executing', 'pending_approval']);
   });
 
+  // A CONVENTION guard, not a behavioural one — worth being honest about.
+  // `action_intents` is not returned by breeze_device_child_orgid_tables() (its
+  // device pointer is `scope_device_id`, not `device_id`), so the generic loop
+  // cannot reach these rows and moving the statement after it would not change
+  // what the trigger does today. What this pins is that the trigger's internal
+  // order keeps mirroring moveOrg.ts's, which is the property that made the
+  // tickets requester detach — where placement IS load-bearing, because the
+  // re-stamp is the statement that trips its constraint — easy to get right.
   it('places the tombstone BEFORE the generic device-child org re-stamp loop', () => {
     const { name, body } = newestCascadeFunctionBody();
     const tombstone = body.indexOf('UPDATE public.action_intents');

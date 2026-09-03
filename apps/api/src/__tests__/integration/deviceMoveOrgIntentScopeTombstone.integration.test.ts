@@ -21,11 +21,15 @@
  *      while updating nothing is indistinguishable from the bug it fixes.
  *   2. `action_intents_block_content_update()` — the BEFORE UPDATE immutability
  *      trigger — rejecting the write. It permits `scope_device_id` non-null ->
- *      NULL and nothing else, so a trigger-on-trigger ordering problem or a
- *      future tightening of that deny-list would raise
- *      `action_intents content is immutable` and abort the whole device move.
- *   3. `action_intents_scope_device_chk` rejecting a NULL id under a surviving
- *      `scope_kind = 'device'`.
+ *      NULL and nothing else, so a future tightening of that deny-list would
+ *      raise `action_intents content is immutable` and abort the whole device
+ *      move.
+ *
+ * `action_intents_scope_device_chk` is deliberately NOT on that list, though it
+ * sits right beside the trigger: `scope_device_id IS NULL OR scope_kind =
+ * 'device'` is satisfied by ANY row whose id is NULL, so the tombstone cannot
+ * violate it and no test here proves anything about it. Naming it as a third
+ * guarded hazard would be a claim this suite does not earn.
  *
  * The two suites are complementary and deliberately both exist: the static one
  * fails fast in the blocking `test-api` job when the statement is deleted or
@@ -226,6 +230,10 @@ describe('breeze_cascade_device_org_id(): action_intents scope tombstone (#4454)
 
   it('tombstones under the unprivileged breeze_app role in a system access context (forced RLS does not swallow the UPDATE)', async () => {
     const f = await seed();
+
+    // Its OWN before-state control, rather than leaning on the first case's:
+    // this test must still mean something when run alone under `-t` filtering.
+    expect(await readScopes(f.liveIntentIds)).toEqual([f.deviceId, f.deviceId, f.deviceId]);
 
     // The shape every real non-route caller has — orgMerge's `devices` repoint
     // included. If FORCE RLS on action_intents made the trigger's UPDATE match

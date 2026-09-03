@@ -55,6 +55,30 @@
 -- check). Tombstoning is the strictly safer of the two: it leaves no
 -- cross-tenant device id behind at all.
 --
+-- THE STATEMENT RUNS UNDER THE CALLER'S ACCESS CONTEXT, not the definer's.
+-- SECURITY DEFINER switches the ROLE; it does not touch the `breeze.*` GUCs
+-- that breeze_current_scope() reads, and action_intents is FORCE ROW LEVEL
+-- SECURITY. Both callers that exist today set a context that satisfies
+-- breeze_has_org_access(org_id): the moveOrg route's request context spans
+-- source and target orgs (the devices UPDATE that fired this trigger already
+-- proved that), and orgMerge Phase B wraps its whole transaction in
+-- withSystemDbAccessContext, where the helper short-circuits TRUE. A future
+-- contextless caller -- an ad hoc psql fix, or a script that forgets the
+-- wrapper -- would land on scope='none' and this UPDATE would match zero rows
+-- silently.
+--
+-- Deliberately NOT instrumented with GET DIAGNOSTICS + RAISE WARNING, unlike a
+-- migration cleanup statement. Zero rows is the OVERWHELMINGLY common normal
+-- case here: the trigger fires on every device org-move and most moved devices
+-- have no intent scoped to them at all, so a warning would fire constantly and
+-- train readers to ignore it. Worse, the "did we miss rows?" probe would have
+-- to read action_intents under the SAME context that just hid them, so it
+-- cannot detect the one case it exists for. The real backstop is at release:
+-- services/actionIntents/agentReleaseAuthority.ts refuses a device whose
+-- CURRENT org_id no longer matches the intent's, so a tombstone that never
+-- fired still fails closed. This statement is defense in depth and data
+-- hygiene, not the security boundary.
+--
 -- NO HISTORICAL BACKFILL, for the reason 2026-09-29's header gives for the same
 -- omission: action_intents is FORCE ROW LEVEL SECURITY, so a bare cleanup
 -- statement here — run without a `breeze.scope` access context — is subject to
