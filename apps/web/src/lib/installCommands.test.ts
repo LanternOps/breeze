@@ -110,6 +110,11 @@ describe('buildInstallCommands', () => {
       // can never run the agent.
       const { windows } = buildInstallCommands(base);
       expect(windows).toContain('OSVersion.Version');
+      // Assert the actual comparison, not just surrounding text — a wrong
+      // operator/threshold/field (-gt instead of -lt, .Minor instead of
+      // .Major, a dropped `if`) would still leave the message text and
+      // OSVersion.Version substring present.
+      expect(windows).toContain('$osv.Major -lt 10');
       expect(windows).toContain('Windows 10 or Windows Server 2016 or later');
       expect(windows.indexOf('OSVersion')).toBeLessThan(windows.indexOf('Invoke-WebRequest'));
     });
