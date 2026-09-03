@@ -152,7 +152,7 @@ describe('useAdvancedFilterIds', () => {
     consoleSpy.mockRestore();
   });
 
-  it('does not set the error flag on a 401 — the existing auth-redirect path owns that failure', async () => {
+  it('does not set the error flag on a 401, but still fails ids closed — the auth-redirect path owns the failure UX', async () => {
     vi.mocked(fetchWithAuth).mockResolvedValue({
       ok: false,
       status: 401,
@@ -163,11 +163,22 @@ describe('useAdvancedFilterIds', () => {
 
     await waitFor(() => expect(result.current.loading).toBe(false));
 
-    // fetchWithAuth itself triggers the session-expiry redirect on an
+    // fetchWithAuth USUALLY triggers the session-expiry redirect on an
     // unrecoverable 401 (stores/auth.ts handleSessionExpired) before this
-    // hook ever sees the response — piling a second, competing error state
-    // on top would be redundant with (and could outlive) the redirect.
+    // hook ever sees the response, so `error` (which drives the toast/pill)
+    // stays false — piling a second, competing error message on top of a
+    // page that's about to navigate away would be confusing.
     expect(result.current.error).toBe(false);
+    // But `ids` must still fail CLOSED unconditionally: two of
+    // fetchWithAuth's retry-after-refresh branches can return a SURVIVING
+    // 401 without ever calling handleSessionExpired (no redirect in
+    // flight). If `ids` stayed null in that case, the list would fall back
+    // to "no filter active" and render the full unfiltered fleet — exactly
+    // the #4732 bug this hook exists to prevent, just gated behind a rarer
+    // trigger. So `ids` empties regardless of whether a redirect is (or
+    // isn't) actually in flight for this particular 401.
+    expect(result.current.ids).not.toBeNull();
+    expect(result.current.ids?.size).toBe(0);
   });
 
   it('clears a prior error once the filter succeeds again', async () => {
@@ -192,8 +203,16 @@ describe('useAdvancedFilterIds', () => {
     };
     rerender({ f: retried });
 
-    await waitFor(() => expect(result.current.error).toBe(false));
-    expect(result.current.ids?.size).toBe(1);
+    // Wait on `ids` (the value the success path sets LAST, after `error`),
+    // not on `error` — `error` resets to false synchronously at the START of
+    // every effect run (including this retry), well before the retried
+    // fetch resolves. Waiting on `error` alone is satisfied by that
+    // synchronous reset and can read `ids` before the retry's response has
+    // landed, flaking the very next assertion (confirmed: failed on direct
+    // isolated re-run during PR #4783 review).
+    await waitFor(() => expect(result.current.ids?.size).toBe(1));
+    expect(result.current.loading).toBe(false);
+    expect(result.current.error).toBe(false);
     consoleSpy.mockRestore();
   });
 });

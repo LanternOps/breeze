@@ -1764,7 +1764,7 @@
     "title": "Dispositivos",
     "toasts": {
       "actionFailed": "{{action}} falló en {{hostname}}",
-      "advancedFilterFailed": "No se pudo cargar el filtro avanzado; no se mostrará ningún dispositivo hasta reintentarlo",
+      "advancedFilterFailed": "No se pudo cargar el filtro avanzado; no se muestra ningún dispositivo. Edite o borre el filtro para volver a intentarlo.",
       "agentOnlyAction": "Esta acción se aplica únicamente a los dispositivos del agente. Los dispositivos de red no tienen agente y se omitieron.",
       "alreadyPendingTail": "Cola ya pendiente",
       "bulkActionFailed": "Error en la acción masiva",

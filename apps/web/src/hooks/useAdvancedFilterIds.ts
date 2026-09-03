@@ -21,19 +21,23 @@ function hasValidConditions(filter: FilterConditionGroup): boolean {
 export interface UseAdvancedFilterIdsReturn {
   /**
    * Set of device ids matching the advanced filter, or null when no filter is
-   * active (callers should treat null as "show everything"). On a preview
-   * failure (`error: true`) this is an EMPTY set, never null — a failed
+   * active (callers should treat null as "show everything"). On ANY preview
+   * failure — including a 401 — this is an EMPTY set, never null: a failed
    * filter must narrow the result to nothing, not widen it to the unfiltered
    * fleet (#4732).
    */
   ids: Set<string> | null;
   loading: boolean;
   /**
-   * True when the last preview request failed (non-ok response other than
-   * 401, or a thrown fetch). Callers should surface this rather than let the
-   * empty `ids` pass silently as "the filter genuinely matched nothing."
-   * A 401 does NOT set this — fetchWithAuth already triggers the session-
-   * expiry redirect itself, and that owns the failure UX.
+   * True when the last preview request failed with a non-ok response other
+   * than 401, or a thrown fetch. Callers should surface this rather than let
+   * the empty `ids` pass silently as "the filter genuinely matched nothing."
+   * A 401 does NOT set this — fetchWithAuth almost always triggers the
+   * session-expiry redirect itself, which owns the failure UX and would
+   * otherwise compete with a second "filter failed" message. `ids` still
+   * empties on a 401 regardless, so the rare case where fetchWithAuth
+   * returns a surviving 401 (see the hook body) fails closed too — just
+   * without a label.
    */
   error: boolean;
 }
@@ -73,18 +77,24 @@ export function useAdvancedFilterIds(filter: FilterConditionGroup | null): UseAd
           setError(false);
           return;
         }
-        // 401: let the existing auth-redirect path own it. fetchWithAuth
-        // already triggers the session-expiry redirect (logout + navigate)
-        // for an unrecoverable 401 before this .then ever runs, so there is
-        // nothing left for this hook to add — and setting our own error
-        // state here would just flash a second, misleading "filter failed"
-        // message on top of a page that's about to navigate away.
-        if (res.status === 401) return;
-        // Any other non-ok response (403 — a pinned orgId the caller can't
-        // access; 500; etc.): a failed filter must never degrade to an
-        // unfiltered list (#4732). Fail CLOSED — empty set, not null — and
-        // flag the failure so the caller can surface it.
+        // Non-ok: a failed filter must never degrade to an unfiltered list
+        // (#4732) — fail CLOSED (empty set, not null) regardless of status.
+        // This covers 401 too: fetchWithAuth USUALLY triggers its own
+        // session-expiry redirect before returning an unrecoverable 401, but
+        // two of its retry-after-refresh branches (`stores/auth.ts`, the
+        // 'restored' and 'a newer token exists' paths) can themselves 401
+        // again without calling handleSessionExpired — relying on "401 means
+        // the redirect already owns it" for `ids` would silently reopen the
+        // exact hole this fix closes. Setting the id set is therefore
+        // unconditional.
         setIds(new Set());
+        // The visible error toast/pill is still suppressed for 401: the
+        // common case IS an in-flight auth redirect, and a competing "filter
+        // failed" message on top of a page that's about to navigate away
+        // would be confusing. The rare surviving-401 edge case above is left
+        // with an empty, unlabeled result rather than a mislabeled one —
+        // strictly better than the pre-fix "silently unfiltered" behavior.
+        if (res.status === 401) return;
         setError(true);
       })
       .catch((err) => {

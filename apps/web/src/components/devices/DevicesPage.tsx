@@ -1496,6 +1496,23 @@ export default function DevicesPage() {
         />
       ) : (
         <div className="space-y-3">
+          {/* Grid view has no filter toolbar to host DeviceList's inline
+              pill, and the toast fired above is transient (auto-dismisses)
+              and one-shot (only fires on the false→true transition) — a user
+              who missed it, or who switched into grid view after the error
+              already landed, would otherwise see an unexplained empty grid.
+              This persistent banner is grid view's equivalent of DeviceList's
+              `device-filter-error` pill (#4732). */}
+          {advancedFilterError && (
+            <div
+              className="flex items-center gap-2 rounded-full bg-destructive/10 px-3 py-1.5 text-xs font-medium text-destructive w-fit"
+              data-testid="device-filter-error-grid"
+              role="alert"
+            >
+              <AlertCircle className="h-3.5 w-3.5" />
+              {t('devicesPage.toasts.advancedFilterFailed')}
+            </div>
+          )}
           {hiddenDecommissionedCount > 0 && (
             <p>
               <DecommissionedHiddenHint

@@ -1768,7 +1768,7 @@
     "title": "Cihazlar",
     "toasts": {
       "actionFailed": "{{action}}, {{hostname}} üzerinde başarısız oldu",
-      "advancedFilterFailed": "Gelişmiş filtre yüklenemedi — yeniden denenene kadar hiçbir cihaz gösterilmeyecek",
+      "advancedFilterFailed": "Gelişmiş filtre yüklenemedi — hiçbir cihaz gösterilmiyor. Yeniden denemek için filtreyi düzenleyin veya temizleyin.",
       "agentOnlyAction": "Bu eylem yalnızca aracı cihazlar için geçerlidir. Ağ cihazlarının aracısı yoktur ve atlanmıştır.",
       "alreadyPendingTail": "Zaten Bekleyen Kuyruk",
       "bulkActionFailed": "Toplu İşlem Başarısız Oldu",
