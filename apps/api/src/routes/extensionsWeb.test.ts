@@ -290,6 +290,29 @@ describe('GET /api/v1/extensions/assets/t/:token/:name/:digest/*', () => {
     }
   });
 
+  it('caps cache freshness at the token\'s REMAINING life, not a constant', async () => {
+    const { app } = harnessWithAsset({ 'web/index.js': { path: 'web/index.js', content: 'x' } });
+    const token = mintExtensionAssetToken({ name: 'demo', digest: DIGEST }, SCOPE);
+    const url = assetUrl('web/index.js', { token });
+
+    const fresh = await app.request(url);
+    const freshMaxAge = Number(/max-age=(\d+)/.exec(fresh.headers.get('cache-control')!)![1]);
+
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date(Date.now() + 30 * 60 * 1000));
+      const later = await app.request(url);
+      const laterMaxAge = Number(/max-age=(\d+)/.exec(later.headers.get('cache-control')!)![1]);
+      // Half the token's life has burned, so the browser must be told to hold
+      // these bytes for half as long — a private cache that outlived the token
+      // would keep serving a disabled extension.
+      expect(laterMaxAge).toBeLessThan(freshMaxAge);
+      expect(laterMaxAge).toBeCloseTo(freshMaxAge - 1800, -1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('404s when the token is bound to a DIFFERENT digest than the URL asks for', async () => {
     const { app } = harnessWithAsset({ 'web/index.js': { path: 'web/index.js', content: 'x' } });
     const foreign = mintExtensionAssetToken({ name: 'demo', digest: `sha256:${'c'.repeat(64)}` }, SCOPE);

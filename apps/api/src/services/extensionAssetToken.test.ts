@@ -220,6 +220,17 @@ describe('extension web-asset tokens', () => {
     expect(verifyExtensionAssetToken(token, BINDING)!.claims.orgId).toBeNull();
   });
 
+  it('coerces a non-UUID tenant scope to null instead of failing the mint', () => {
+    // The tenant claim is a binding, not an authorization input — failing the
+    // mint would 500 the registry and take every extension page down, which is
+    // the very outage #4164 was. So an unexpected scope shape degrades to null.
+    const token = mintExtensionAssetToken(BINDING, { partnerId: 'not-a-uuid', orgId: undefined });
+    const verified = verifyExtensionAssetToken(token, BINDING);
+    expect(verified).not.toBeNull();
+    expect(verified!.claims.partnerId).toBeNull();
+    expect(verified!.claims.orgId).toBeNull();
+  });
+
   it('produces a DIFFERENT token per tenant scope', () => {
     const a = mintExtensionAssetToken(BINDING, SCOPE);
     const b = mintExtensionAssetToken(BINDING, OTHER_SCOPE);
