@@ -209,3 +209,17 @@ auto-suspended.
 ## Contract line included quantity and overage (#3205 W04)
 
 **Contracts: included quantity and overage.** A per-device, per-device-role, per-device-group or per-seat contract line can now include a fixed quantity (for example "up to 25 devices included") and either bill the extras at a second rate or flag them for review. A billed overage becomes its own line on the invoice, directly under the line it belongs to, so the customer sees the count and the rate. A flagged overage is never invoiced silently: it shows on the contract estimate, on the result of Generate now, and in the nightly billing log.
+
+## Device-set quote lines (#3205 W05, #4693)
+
+**Billing by a device set on quotes.** A recurring quote line can now price every device, selected device roles, one device group, or active users. Breeze supplies the quantity, including zero for a new customer with nothing enrolled. The customer document labels the number as an estimate and explains that billing uses the actual count each period. Accepting the quote creates the matching auto-quantity contract line and freezes the unit price the customer accepted.
+
+Counts update when a line is added or its device-set or allowance settings are edited, or when an operator refreshes a draft. The estimate endpoint is read-only. Sending reports count drift but does not change the approved quote, and acceptance does not refresh the estimate. A device group priced by a draft, sent, or viewed quote cannot be deleted until the quote line is removed.
+
+**Site deletion now fails loudly (#4693).** From this release, deleting a site used by a site-scoped contract line makes invoice generation refuse with 409 `SITE_DELETED` instead of silently billing every device in the organization. This is intentionally louder than the old behavior. An operator who deletes a site under an active contract now gets a failed generation and a Sentry report where an inflated invoice could previously go unnoticed. Re-scope or remove the affected line before generating again.
+
+There is one accepted residual. A line whose site was deleted before this release has no recoverable site name, so it remains ambiguous and continues billing organization-wide until a technician re-scopes it. Operators who suspect an affected contract can look for a `per_device` line with no site on a contract that used to have one. The migration's `RAISE WARNING` row count records how many existing lines were protected by the site-name backfill.
+
+**Direct API and AI clients.** `PATCH /quotes/:id/lines/:lineId` now returns 400 for an unrecognized key instead of accepting the request while changing nothing.
+
+There is no feature flag and no acceptance-hash backfill. `quote_acceptances.hash_version` defaults to `1`, so every signature already on file continues to verify with the exact algorithm that produced it. New acceptances use hash version 2.

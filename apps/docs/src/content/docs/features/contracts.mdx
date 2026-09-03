@@ -85,7 +85,15 @@ When a customer accepts a quote or proposal that includes recurring (monthly or 
 - The draft inherits the quote's terms, currency, and the prices the customer agreed to.
 - It lands as a **draft** for you to review, adjust lines, and **activate** when you're ready to start billing.
 
+A recurring quote line that bills a device set becomes a contract line of the matching type (per device, per device role, per device group or per seat) instead of a fixed-quantity line, with the accepted unit price frozen, so the contract bills the actual count every period.
+
 Any one-time charges on the same quote become an invoice instead, not a contract.
+
+### If a site is deleted
+
+A contract line scoped to a site records the site's name as well as its id. If that site is deleted, the line **stops billing and says so**. The contract detail shows "site deleted," and generating an invoice refuses with a named error, instead of quietly falling back to billing every device in the organization. Re-scope the line to another site, or remove it, and generation resumes.
+
+A line whose site was deleted *before* this behavior shipped cannot be recovered because its site name was never recorded. It stays organization-wide until a technician re-scopes it.
 
 ## Managing the Lifecycle
 
