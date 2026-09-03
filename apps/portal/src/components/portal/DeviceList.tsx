@@ -19,8 +19,8 @@ interface DeviceListProps {
   error?: string | null;
 }
 
-// Local OS label + last-seen phrasing for the customer's office manager, kept
-// private rather than widening `@/lib/utils`, which the rest of the app shares.
+// Local OS label for the customer's office manager, kept private rather than
+// widening `@/lib/utils`, which the rest of the app shares.
 const OS_LABELS: Record<string, string> = {
   windows: 'Windows',
   macos: 'Mac',
@@ -33,22 +33,7 @@ function osLabel(osType: string | null): string {
 }
 
 function lastSeenLabel(value: string | null): string {
-  if (!value) return 'Not known';
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return 'Not known';
-
-  const diffMin = Math.floor((Date.now() - d.getTime()) / 60000);
-  if (diffMin < 2) return 'Just now';
-  if (diffMin < 60) return `${diffMin} minutes ago`;
-
-  const diffHour = Math.floor(diffMin / 60);
-  if (diffHour < 24) return diffHour === 1 ? 'About an hour ago' : `About ${diffHour} hours ago`;
-
-  const diffDay = Math.floor(diffHour / 24);
-  if (diffDay === 1) return 'Yesterday';
-  if (diffDay < 7) return `${diffDay} days ago`;
-
-  return `On ${d.toLocaleDateString()}`;
+  return value ?? 'Not known';
 }
 
 function statusMark(status: Device['status']): { tone: MarkTone; label: string } {
@@ -174,13 +159,26 @@ export function DeviceList({ devices, error }: DeviceListProps) {
                       <span className="sm:hidden">Last online </span>
                       {lastSeenLabel(device.lastSeenAt)}
                     </td>
-                    <td className={CELL}>{device.lastPatchAt ?? 'Not available'}</td>
-                    <td className={CELL}>
+                    <td className={cn(CELL, 'order-5')}>
+                      <span className="sm:hidden">Last patch </span>
+                      {device.lastPatchAt ?? 'Not available'}
+                    </td>
+                    <td className={cn(CELL, 'order-6')}>
+                      <span className="sm:hidden">Protection </span>
                       {device.protection[0].toUpperCase() + device.protection.slice(1)}
                     </td>
-                    <td className={CELL}>{device.encryption ?? 'Not available'}</td>
-                    <td className={CELL}>{device.lastBackupAt ?? 'Not available'}</td>
-                    <td className={CELL}>{device.warrantyEndsAt ?? 'Not available'}</td>
+                    <td className={cn(CELL, 'order-7')}>
+                      <span className="sm:hidden">Encryption </span>
+                      {device.encryption ?? 'Not available'}
+                    </td>
+                    <td className={cn(CELL, 'order-8')}>
+                      <span className="sm:hidden">Last backup </span>
+                      {device.lastBackupAt ?? 'Not available'}
+                    </td>
+                    <td className={cn(CELL, 'order-9')}>
+                      <span className="sm:hidden">Warranty ends </span>
+                      {device.warrantyEndsAt ?? 'Not available'}
+                    </td>
                   </tr>
                 );
               })}

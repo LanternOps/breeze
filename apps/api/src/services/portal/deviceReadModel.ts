@@ -14,7 +14,7 @@ import { classifyDeviceProtection } from './protection';
 
 export async function enrichedDevicesForOrg(
   orgId: string,
-  args: { page: number; limit: number; timezone: string; now: Date },
+  args: { page: number; limit: number; timezone: string },
 ) {
   const offset = (args.page - 1) * args.limit;
   const [countRows, rows] = await Promise.all([
@@ -83,6 +83,18 @@ export async function enrichedDevicesForOrg(
       .offset(offset),
   ]);
 
+  const timestampFormatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: args.timezone,
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    timeZoneName: 'short',
+  });
+  const formatTimestamp = (value: Date | null) =>
+    value ? timestampFormatter.format(value) : null;
+
   const data: EnrichedPortalDevice[] = rows.map((row) => ({
     id: row.id,
     hostname: row.hostname,
@@ -90,8 +102,8 @@ export async function enrichedDevicesForOrg(
     osType: row.osType,
     osVersion: row.osVersion,
     status: row.status,
-    lastSeenAt: row.lastSeenAt?.toISOString() ?? null,
-    lastPatchAt: row.lastPatchAt?.toISOString() ?? null,
+    lastSeenAt: formatTimestamp(row.lastSeenAt),
+    lastPatchAt: formatTimestamp(row.lastPatchAt),
     protection: classifyDeviceProtection({
       securityStatus: row.provider
         ? {
@@ -103,7 +115,7 @@ export async function enrichedDevicesForOrg(
       hasHuntressAgent: row.hasHuntressAgent,
     }),
     encryption: row.encryption,
-    lastBackupAt: row.lastBackupAt?.toISOString() ?? null,
+    lastBackupAt: formatTimestamp(row.lastBackupAt),
     warrantyEndsAt: row.warrantyEndsAt,
   }));
 
@@ -119,7 +131,7 @@ export async function enrichedDevicesForOrg(
 
 export async function* devicesCsvForOrg(
   orgId: string,
-  args: { timezone: string; now: Date },
+  args: { timezone: string },
 ): AsyncIterable<string> {
   const csvRow = (values: readonly unknown[]) =>
     values.map((value) => escapeCsvCell(String(value ?? ''))).join(',');
@@ -141,7 +153,6 @@ export async function* devicesCsvForOrg(
       page,
       limit: 250,
       timezone: args.timezone,
-      now: args.now,
     });
     for (const row of result.data) {
       yield csvRow([

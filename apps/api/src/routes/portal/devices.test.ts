@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
@@ -107,6 +107,10 @@ beforeEach(() => {
   mocks.selfServiceEnabled = false;
 });
 
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
 it('delegates the JSON list with the session org', async () => {
   mocks.enriched.mockResolvedValue({
     data: [],
@@ -120,18 +124,20 @@ it('delegates the JSON list with the session org', async () => {
       page: 1,
       limit: 50,
       timezone: 'America/Denver',
-      now: expect.any(Date),
     }),
   );
 });
 
-it('streams CSV with an org/date filename and scoped slug query', async () => {
+it('materializes CSV with an org/date filename and scoped slug query', async () => {
+  let completed = false;
   mocks.csv.mockImplementation(async function* () {
     yield 'Device,Status\n';
     yield 'Laptop,online\n';
+    completed = true;
   });
 
   const response = await isolatedApp().request('/devices/export.csv');
+  expect(completed).toBe(true);
   expect(response.status).toBe(200);
   expect(response.headers.get('content-type')).toContain('text/csv');
   expect(response.headers.get('content-disposition')).toMatch(
@@ -140,12 +146,31 @@ it('streams CSV with an org/date filename and scoped slug query', async () => {
   expect(await response.text()).toBe('Device,Status\nLaptop,online\n');
   expect(mocks.csv).toHaveBeenCalledWith(
     '11111111-1111-4111-8111-111111111111',
-    expect.objectContaining({ timezone: 'America/Denver', now: expect.any(Date) }),
+    expect.objectContaining({ timezone: 'America/Denver' }),
   );
 
   const query = new PgDialect().sqlToQuery(mocks.where as SQL);
   expect(query.sql).toContain('"organizations"."id" =');
   expect(query.params).toContain('11111111-1111-4111-8111-111111111111');
+});
+
+it('logs CSV generation failures with the org id and returns an error response', async () => {
+  const failure = new Error('database unavailable');
+  mocks.csv.mockImplementation(async function* () {
+    throw failure;
+  });
+  const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+  const response = await isolatedApp().request('/devices/export.csv');
+
+  expect(response.status).toBe(500);
+  expect(consoleError).toHaveBeenCalledWith(
+    '[portal] device CSV export failed',
+    expect.objectContaining({
+      orgId: '11111111-1111-4111-8111-111111111111',
+      error: failure,
+    }),
+  );
 });
 
 describe('real portal router auth and enableSelfService gate', () => {

@@ -36,21 +36,18 @@ deviceRoutes.get('/devices/export.csv', async (c) => {
     `${org?.slug ?? 'organization'}-devices-${date}.csv`
   );
 
-  const iterator = devicesCsvForOrg(orgId, {
-    timezone: auth.timezone,
-    now: new Date()
-  })[Symbol.asyncIterator]();
-  const encoder = new TextEncoder();
-  const body = new ReadableStream<Uint8Array>({
-    async pull(controller) {
-      const next = await iterator.next();
-      if (next.done) controller.close();
-      else controller.enqueue(encoder.encode(next.value));
-    },
-    async cancel() {
-      await iterator.return?.();
+  const chunks: string[] = [];
+  try {
+    for await (const chunk of devicesCsvForOrg(orgId, {
+      timezone: auth.timezone
+    })) {
+      chunks.push(chunk);
     }
-  });
+  } catch (error) {
+    console.error('[portal] device CSV export failed', { orgId, error });
+    throw error;
+  }
+  const body = chunks.join('');
 
   return new Response(body, {
     headers: {
@@ -70,8 +67,7 @@ deviceRoutes.get(
     const payload = await enrichedDevicesForOrg(auth.user.orgId, {
       page,
       limit,
-      timezone: auth.timezone,
-      now: new Date()
+      timezone: auth.timezone
     });
 
     applyPortalCacheHeaders(c, {

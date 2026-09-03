@@ -4,16 +4,20 @@ import type { SQL } from 'drizzle-orm';
 
 const state = vi.hoisted(() => ({
   rows: [] as unknown[][],
+  selections: [] as Record<string, unknown>[],
+  leftJoins: [] as unknown[][],
   wheres: [] as unknown[],
   orderBys: [] as unknown[][],
 }));
 
 vi.mock('../../db', () => ({
   db: {
-    select: vi.fn(() => {
+    select: vi.fn((selection: Record<string, unknown>) => {
+      state.selections.push(selection);
       const chain: Record<string, unknown> = {};
       for (const method of ['from', 'leftJoin', 'where', 'orderBy', 'limit', 'offset']) {
         chain[method] = vi.fn((...args: unknown[]) => {
+          if (method === 'leftJoin') state.leftJoins.push(args);
           if (method === 'where') state.wheres.push(args[0]);
           if (method === 'orderBy') state.orderBys.push(args);
           return chain;
@@ -36,6 +40,8 @@ const ORG_ID = '11111111-1111-4111-8111-111111111111';
 describe('deviceReadModel', () => {
   beforeEach(() => {
     state.rows.length = 0;
+    state.selections.length = 0;
+    state.leftJoins.length = 0;
     state.wheres.length = 0;
     state.orderBys.length = 0;
   });
@@ -69,7 +75,6 @@ describe('deviceReadModel', () => {
         page: 1,
         limit: 50,
         timezone: 'America/Denver',
-        now: new Date('2026-09-02T12:00:00Z'),
       }),
     ).resolves.toEqual({
       data: [{
@@ -79,11 +84,11 @@ describe('deviceReadModel', () => {
         osType: 'windows',
         osVersion: '11',
         status: 'online',
-        lastSeenAt: '2026-09-02T11:00:00.000Z',
-        lastPatchAt: '2026-09-01T00:00:00.000Z',
+        lastSeenAt: 'Sep 2, 2026, 5:00 AM MDT',
+        lastPatchAt: 'Aug 31, 2026, 6:00 PM MDT',
         protection: 'protected',
         encryption: 'encrypted',
-        lastBackupAt: '2026-09-02T08:00:00.000Z',
+        lastBackupAt: 'Sep 2, 2026, 2:00 AM MDT',
         warrantyEndsAt: '2027-01-01',
       }],
       pagination: { page: 1, limit: 50, total: 1 },
@@ -95,6 +100,30 @@ describe('deviceReadModel', () => {
     );
     for (const query of queries) expect(query.params).toContain(ORG_ID);
     expect(queries.some(({ sql }) => sql.includes('"devices"."org_id" ='))).toBe(true);
+
+    const projection = state.selections[1]!;
+    const scopedProjectionSql = [
+      ['lastPatchAt', '"device_patches"."org_id" ='],
+      ['hasS1Agent', '"s1_agents"."org_id" ='],
+      ['hasHuntressAgent', '"huntress_agents"."org_id" ='],
+      ['lastBackupAt', '"backup_jobs"."org_id" ='],
+    ] as const;
+    for (const [key, predicate] of scopedProjectionSql) {
+      const query = dialect.sqlToQuery(projection[key] as SQL);
+      expect(query.sql).toContain(predicate);
+      expect(query.params).toContain(ORG_ID);
+    }
+
+    const scopedJoinSql = [
+      '"security_status"."org_id" =',
+      '"device_warranty"."org_id" =',
+    ];
+    expect(state.leftJoins).toHaveLength(2);
+    state.leftJoins.forEach((join, index) => {
+      const query = dialect.sqlToQuery(join[1] as SQL);
+      expect(query.sql).toContain(scopedJoinSql[index]);
+      expect(query.params).toContain(ORG_ID);
+    });
 
     const orderBy = state.orderBys[0]!.map((expression) =>
       dialect.sqlToQuery(expression as SQL).sql,
@@ -130,7 +159,6 @@ describe('deviceReadModel', () => {
     let csv = '';
     for await (const chunk of devicesCsvForOrg(ORG_ID, {
       timezone: 'UTC',
-      now: new Date('2026-09-02T12:00:00Z'),
     })) csv += chunk;
 
     expect(csv).toContain(
