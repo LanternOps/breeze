@@ -269,6 +269,28 @@ describe('buildTenantExportPlan', () => {
 });
 
 describe('CORE_TENANT_EXPORT_POLICY migration-era columns', () => {
+  it('exports portal report definitions and contact-bound recipients', () => {
+    expect(
+      CORE_TENANT_EXPORT_POLICY.reports!.columns.portal_self_service!.decision,
+    ).toBe('include');
+
+    expect(
+      Object.fromEntries(
+        Object.entries(
+          CORE_TENANT_EXPORT_POLICY.report_schedule_recipients!.columns,
+        ).map(([name, value]) => [name, value.decision]),
+      ),
+    ).toEqual({
+      id: 'include',
+      report_id: 'include',
+      org_id: 'include',
+      contact_id: 'include',
+      created_at: 'include',
+    });
+
+    expect(CORE_TENANT_EXPORT_POLICY).not.toHaveProperty('report_runs');
+  });
+
   it('rejects a column classified in both a shared group and a specific decision', () => {
     expect(() =>
       tablePolicy('org_id', {

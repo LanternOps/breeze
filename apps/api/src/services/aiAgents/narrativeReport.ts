@@ -316,6 +316,9 @@ export async function persistNarrativeReport(
         completedAt: generatedAt,
         rowCount: 0,
         result: { rows: [], rowCount: 0, summary },
+        requestedByKind: 'system',
+        requestedByUserId: null,
+        requestedByPortalUserId: null,
         ...scopeValues,
       })
       .returning({ id: reportRuns.id });

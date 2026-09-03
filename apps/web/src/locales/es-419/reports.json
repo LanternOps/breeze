@@ -700,6 +700,7 @@
         "templateName": "Paquete de cumplimiento trimestral",
         "value": "Valor"
       },
+      "recipients": { "contacts": "Contactos de la organización", "legacy": "Direcciones de correo electrónico heredadas", "convert": "Convertir en contacto", "added": "Destinatario del informe agregado", "removed": "Destinatario del informe eliminado", "converted": "Dirección de correo electrónico convertida en contacto", "updateFailed": "No se pudieron actualizar los destinatarios del informe", "convertFailed": "No se pudo convertir esta dirección de correo electrónico", "mfaRequired": "La conversión de un destinatario requiere autenticación multifactor. Activa MFA en tu perfil y vuelve a intentarlo.", "loadFailed": "No se pudieron cargar los destinatarios del informe" },
       "previewTable": {
         "selectFields": "Seleccione campos para completar la tabla de vista previa."
       },
