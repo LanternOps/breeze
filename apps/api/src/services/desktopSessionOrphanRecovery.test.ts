@@ -288,6 +288,35 @@ describe('desktop orphan recovery', () => {
     consoleErrorSpy.mockRestore();
   });
 
+  it('logs and reports a malformed persisted intent instead of swallowing it (#3945)', async () => {
+    const deps = dependencies();
+    vi.mocked(deps.observeSharedState).mockResolvedValue({
+      ownerPresent: false,
+      finalizationId: '66666666-6666-4666-8666-666666666666',
+      // Not valid JSON -- exercises the JSON.parse failure branch of the
+      // bare `catch { return 'retained' }` this used to be (#3945). A
+      // canonicalizeDesktopFinalization shape failure takes the same path.
+      canonicalPayload: '{not-json',
+      consistent: true,
+    });
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    captureExceptionMock.mockClear();
+    const service = createDesktopSessionOrphanRecoveryService(deps);
+
+    // Fail-closed behavior is unchanged: a malformed intent must still be
+    // retained, never reclaimed.
+    await expect(service.recover(session.id, 'background')).resolves.toBe('retained');
+
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('failed to parse'),
+      expect.objectContaining({ sessionId: session.id }),
+    );
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+    expect(captureExceptionMock.mock.calls[0]?.[0]).toBeInstanceOf(Error);
+
+    consoleErrorSpy.mockRestore();
+  });
+
   it('reuses the unique durable pre-intent stop identity after a crash', async () => {
     const deps = dependencies();
     vi.mocked(deps.findExistingStopIdentity).mockResolvedValue({

@@ -226,7 +226,23 @@ export function createDesktopSessionOrphanRecoveryService(
             persisted.input,
             persisted.canonicalPayload,
           );
-        } catch {
+        } catch (error) {
+          // Fail-closed behavior is unchanged (never reclaim on a parse
+          // failure), but this used to be a bare `catch { return 'retained' }`
+          // with zero logging (#3945) -- a corrupted or unparseable persisted
+          // intent left the session stuck in this branch forever with no
+          // trace of why. Log with context and report it: unlike a genuinely
+          // in-flight stop_pending (handled by the escalation above), this is
+          // a data-integrity fault that will never resolve itself.
+          console.error(
+            '[desktopSessionOrphanRecovery] failed to parse/canonicalize the persisted finalization intent; retaining (fail-closed) instead of reclaiming',
+            {
+              sessionId,
+              finalizationId: observed.finalizationId,
+              error: error instanceof Error ? error.message : String(error),
+            },
+          );
+          captureException(error instanceof Error ? error : new Error(String(error)));
           return 'retained';
         }
       }
