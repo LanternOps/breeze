@@ -531,7 +531,7 @@ function sweepSeverityLabel(t: (key: string) => string, severity: AiSweepSeverit
   return t(/* i18n-dynamic */ `aiAgentsPage.runs.sweep.severities.${severity}`);
 }
 
-function sweepReasonLabel(t: (key: string) => string, reason: string | null): string {
+function sweepReasonLabel(t: (key: string) => string, reason: SweepProposalReason | null): string {
   if (!reason) return '—';
   if (!SWEEP_PROPOSAL_REASONS.includes(reason)) return reason;
   return t(/* i18n-dynamic */ `aiAgentsPage.runs.sweep.reasons.${reason}`);
