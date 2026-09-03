@@ -201,7 +201,8 @@ export function resolveElevationAssurance(riskTierNum: number | null): Assurance
  * Two L2 factors, discriminated on `proof.type`:
  *  - `webauthn_platform` (Phase 2): a browser WebAuthn assertion, verified via
  *    @simplewebauthn against the device's stored public key.
- *  - `mobile_hw_key` (Phase 3): a Secure-Enclave / Keystore RSA-SHA256 signature
+ *  - `mobile_hw_key` (Phase 3): a biometric-gated Keychain / Keystore RSA-SHA256
+ *    signature (NOT Secure Enclave — the SE holds only P-256 keys; #1374)
  *    over the single-use server nonce, verified against the device's stored SPKI
  *    public key. `proof.credentialId` carries the approver device id.
  *

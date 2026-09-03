@@ -322,7 +322,8 @@ authenticatorRoutes.post(
     // Re-validate the authoritative fields through the shared strict schema
     // BEFORE consuming the single-use grant: the client-asserted
     // kind/isPlatformBound discriminators are ignored (the server forces
-    // kind='mobile_hw_key' + is_platform_bound=true). A bad/missing publicKey
+    // kind='mobile_hw_key' and, since #1374, is_platform_bound=FALSE with
+    // platform_bound_basis='unattested'). A bad/missing publicKey
     // or label is a 400 here, never an insert — and parsing first means a
     // malformed payload never burns a caller's valid grant (unlike the
     // consume-first ordering, which is correct for /devices/webauthn/verify
