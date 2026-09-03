@@ -574,6 +574,117 @@ describe('pushInvoiceToAccounting', () => {
     });
   });
 
+  // #4498: the currency guard used to throw with no trace at all — no
+  // accounting_entity_mappings row for the invoice, so getInvoiceAccountingSync
+  // had nothing to read and the AccountingSyncCard showed nothing. It now
+  // persists an error-only mapping row so the card's existing
+  // syncStatus:'error' branch (no new UI plumbing) surfaces it.
+  describe('currency_mismatch persists an error-only mapping row (#4498)', () => {
+    it('inserts a new error-only mapping row (no remoteEntityId) naming both currencies, in a FRESH context opened AFTER Phase 1 rolled back', async () => {
+      setup({ invoice: { currencyCode: 'EUR' } });
+      resolveConnectionMock.mockResolvedValue(conn({ homeCurrency: 'USD', multiCurrencyEnabled: false }));
+
+      await expect(pushInvoiceToAccounting(INVOICE, PARTNER, runCtx)).rejects.toMatchObject({
+        code: 'currency_mismatch', status: 409,
+      });
+      expect(pushInvoiceMock).not.toHaveBeenCalled();
+
+      // Phase 1 enters/exits (and throws inside), THEN a separate context opens
+      // for the persist — never inside the same enter/exit pair Phase 1 used,
+      // which is exactly the shape that would roll back on a real Postgres
+      // transaction (see the DB ACCESS CONTRACT doc comment).
+      expect(ctx.events).toEqual(['ctx:enter', 'ctx:exit', 'ctx:enter', 'ctx:exit']);
+
+      const row = currentMappings.find((m) => m.breezeEntityType === 'invoice' && m.breezeEntityId === INVOICE);
+      expect(row).toMatchObject({
+        integrationId: CONN_ID, partnerId: PARTNER, breezeEntityType: 'invoice', breezeEntityId: INVOICE,
+        remoteEntityType: 'Invoice', linkStatus: 'create_new', syncStatus: 'error',
+      });
+      expect(row?.remoteEntityId ?? null).toBeNull(); // omitted from the insert -> nullable column, no remote id
+      expect(row?.lastError).toContain('EUR');
+      expect(row?.lastError).toContain('USD');
+    });
+
+    it('does NOT persist any mapping row for home_currency_unknown (scoped to currency_mismatch only)', async () => {
+      resolveConnectionMock.mockResolvedValue(conn({ homeCurrency: null }));
+
+      await expect(pushInvoiceToAccounting(INVOICE, PARTNER, runCtx)).rejects.toMatchObject({
+        code: 'home_currency_unknown', status: 409,
+      });
+
+      expect(currentMappings.find((m) => m.breezeEntityType === 'invoice')).toBeUndefined();
+      expect(insertedValues).toHaveLength(0);
+    });
+
+    it('UPDATEs an existing invoice mapping row in place (never a duplicate insert) and never touches remoteEntityId/linkStatus of an already-synced row', async () => {
+      // Simulates the invoice having synced successfully in the past, then the
+      // connection's home currency changing so this push attempt now 409s.
+      setup({
+        invoice: { currencyCode: 'EUR' },
+        mappings: [
+          orgMappingRow(),
+          {
+            id: 'map-inv-old', integrationId: CONN_ID, partnerId: PARTNER, breezeEntityType: 'invoice', breezeEntityId: INVOICE,
+            remoteEntityType: 'Invoice', remoteEntityId: 'qb-inv-old', remoteSyncToken: '2',
+            remoteCurrencyCode: null, remoteDocNumber: 'INV-QBO-1', linkStatus: 'confirmed', syncStatus: 'synced', lastError: null,
+          },
+        ],
+      });
+      resolveConnectionMock.mockResolvedValue(conn({ homeCurrency: 'GBP', multiCurrencyEnabled: false }));
+
+      await expect(pushInvoiceToAccounting(INVOICE, PARTNER, runCtx)).rejects.toMatchObject({ code: 'currency_mismatch' });
+
+      expect(insertedValues).toHaveLength(0); // updated in place, never inserted a second row
+      const row = currentMappings.find((m) => m.breezeEntityType === 'invoice' && m.breezeEntityId === INVOICE);
+      expect(row).toMatchObject({
+        id: 'map-inv-old', syncStatus: 'error', remoteEntityId: 'qb-inv-old', remoteDocNumber: 'INV-QBO-1', linkStatus: 'confirmed',
+      });
+      expect(row?.lastError).toContain('EUR');
+    });
+
+    // Same rationale/technique as the remote-deleted claiming-UPDATE test above:
+    // the mock harness can't fake a genuine concurrent-transaction race, but it
+    // CAN prove the compiled WHERE clause carries the same never-clobber guard,
+    // so a future edit that quietly drops it fails this test instead of shipping
+    // a currency-guard write that can resurrect a remote-deleted invoice.
+    it('the error-row UPDATE conditions on the row NOT already carrying the remote-deleted marker (SQL-level regression guard)', async () => {
+      setup({
+        invoice: { currencyCode: 'EUR' },
+        mappings: [orgMappingRow(), { ...remoteDeletedInvoiceMappingRow(), lastError: null, syncStatus: 'synced' }],
+      });
+      resolveConnectionMock.mockResolvedValue(conn({ homeCurrency: 'USD', multiCurrencyEnabled: false }));
+
+      let capturedWhereCond: unknown;
+      updateMock.mockImplementation(() => ({
+        set: (patch: Record<string, unknown>) => ({
+          where: (cond: unknown) => ({
+            returning: () => {
+              capturedWhereCond = cond;
+              const idx = currentMappings.findIndex((row) => conditionContainsValue(cond, row.id));
+              if (idx !== -1) currentMappings[idx] = { ...currentMappings[idx], ...patch } as MappingRow;
+              return Promise.resolve(idx === -1 ? [] : [currentMappings[idx]]);
+            },
+          }),
+        }),
+      }));
+
+      await expect(pushInvoiceToAccounting(INVOICE, PARTNER, runCtx)).rejects.toMatchObject({ code: 'currency_mismatch' });
+
+      expect(conditionContainsValue(capturedWhereCond, 'Deleted in QuickBooks')).toBe(true);
+    });
+
+    it('is best-effort: a failure persisting the error row still raises the original currency_mismatch, and reports to Sentry', async () => {
+      setup({ invoice: { currencyCode: 'EUR' } });
+      resolveConnectionMock.mockResolvedValue(conn({ homeCurrency: 'USD', multiCurrencyEnabled: false }));
+      insertMock.mockImplementation(() => ({ values: () => ({ returning: () => Promise.reject(new Error('db down')) }) }));
+
+      await expect(pushInvoiceToAccounting(INVOICE, PARTNER, runCtx)).rejects.toMatchObject({
+        code: 'currency_mismatch', status: 409,
+      });
+      expect(captureExceptionMock).toHaveBeenCalled();
+    });
+  });
+
   it('rejects with customer_currency_mismatch when the mapped customer currency differs from the invoice', async () => {
     setup({ mappings: [orgMappingRow({ remoteCurrencyCode: 'EUR' })] });
 
