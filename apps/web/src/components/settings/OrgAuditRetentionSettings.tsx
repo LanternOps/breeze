@@ -6,6 +6,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, ActionError } from '@/lib/runAction';
 import { usePermissions } from '@/lib/permissions';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 import type { OrgAuditRetentionPolicy } from '@breeze/shared';
 
 type OrgAuditRetentionSettingsProps = {
@@ -66,7 +67,12 @@ export default function OrgAuditRetentionSettings({ orgId, onDirty, onSave }: Or
     setIssue(null);
     setSaving(true);
     try {
-      await runAction({
+      // Apply the saved policy straight from the PUT response rather than
+      // re-fetching: a re-fetch that fails (transient network blip, token
+      // about to expire) would otherwise flip the whole panel to the
+      // full-page load-error screen right after the "Saved" toast, making a
+      // successful save look like it failed.
+      const { data } = await runAction<{ data: OrgAuditRetentionPolicy }>({
         request: () => fetchWithAuth(`/orgs/organizations/${orgId}/audit-retention`, {
           method: 'PUT',
           body: JSON.stringify({ retentionDays: parsed })
@@ -75,14 +81,15 @@ export default function OrgAuditRetentionSettings({ orgId, onDirty, onSave }: Or
         successMessage: t('orgAuditRetentionSettings.toasts.saved'),
         onUnauthorized: () => void navigateTo('/login', { replace: true })
       });
-      await load();
+      setPolicy(data);
+      setRetentionDays(String(data.retentionDays));
       onSave();
     } catch (err) {
       if (!(err instanceof ActionError)) throw err;
     } finally {
       setSaving(false);
     }
-  }, [orgId, retentionDays, saving, load, onSave, t]);
+  }, [orgId, retentionDays, saving, onSave, t]);
 
   if (loading) {
     return <p className="text-sm text-muted-foreground">{t('orgAuditRetentionSettings.loading')}</p>;
@@ -142,7 +149,7 @@ export default function OrgAuditRetentionSettings({ orgId, onDirty, onSave }: Or
 
         {policy.lastCleanupAt && (
           <p className="mt-3 text-xs text-muted-foreground">
-            {t('orgAuditRetentionSettings.lastCleanup', { date: policy.lastCleanupAt })}
+            {t('orgAuditRetentionSettings.lastCleanup', { date: formatDateTime(policy.lastCleanupAt) })}
           </p>
         )}
       </section>

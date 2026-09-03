@@ -163,10 +163,10 @@ For a self-hosted install running a version without this settings page, set it d
 ```sql
 INSERT INTO audit_retention_policies (org_id, retention_days)
 VALUES ('<org-id>', 365)
-ON CONFLICT DO NOTHING;
+ON CONFLICT (org_id) DO NOTHING;
 ```
 
-(There is no unique constraint on `org_id`, so check for an existing row first if you are not sure one hasn't already been created — `SELECT id FROM audit_retention_policies WHERE org_id = '<org-id>';`.)
+`org_id` is unique, so this is safe to re-run — it will not overwrite a policy that already exists. To change an existing value instead, use `UPDATE audit_retention_policies SET retention_days = <days> WHERE org_id = '<org-id>';`.
 
 ---
 

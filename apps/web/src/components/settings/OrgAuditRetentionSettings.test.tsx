@@ -68,10 +68,13 @@ describe('OrgAuditRetentionSettings', () => {
     expect((screen.getByTestId('org-audit-retention-days') as HTMLInputElement).value).toBe('365');
   });
 
-  it('shows the last cleanup timestamp when present', async () => {
+  it('shows a locale-formatted last cleanup timestamp when present', async () => {
     mockApi({ orgId: ORG_ID, configured: true, retentionDays: 30, lastCleanupAt: '2026-09-01T03:30:00.000Z' });
     render(<OrgAuditRetentionSettings orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);
-    await waitFor(() => expect(screen.getByText(/2026-09-01T03:30:00.000Z/)).toBeInTheDocument());
+    // Formatted via formatDateTime (locale-aware), not the raw ISO string —
+    // just assert the year shows up somewhere in a rendered date.
+    await waitFor(() => expect(screen.getByText(/2026/)).toBeInTheDocument());
+    expect(screen.queryByText('2026-09-01T03:30:00.000Z')).toBeNull();
   });
 
   it('saves the entered retentionDays as a number and fires onSave', async () => {

@@ -39,49 +39,38 @@ export async function getOrgAuditRetentionPolicy(orgId: string): Promise<OrgAudi
 }
 
 /**
- * Creates or updates the caller's org policy. `audit_retention_policies` has
- * no unique constraint on `org_id` (it predates this feature — see the
- * baseline migration), so this can't use a Postgres-level upsert
- * (`ON CONFLICT`) without first adding one. A `SELECT ... FOR UPDATE` inside a
- * transaction gets the same one-row-per-org guarantee without a migration:
- * it serializes concurrent saves for the same org so two racing requests
- * can't both see "no row" and both INSERT.
+ * Creates or updates the caller's org policy.
+ *
+ * Uses a real `INSERT ... ON CONFLICT (org_id) DO UPDATE`, backed by the
+ * unique constraint added in migration 2026-10-08-100400. An earlier version
+ * of this function used `SELECT ... FOR UPDATE` inside a transaction instead,
+ * reasoning that the row lock made concurrent saves for the same org safe —
+ * that reasoning was wrong for an org with NO row yet (the exact case #4633
+ * exists to fix): `SELECT ... FOR UPDATE` only locks rows that already
+ * exist, so two concurrent requests both see "no row" and both INSERT,
+ * producing duplicates with nothing to prevent it. `ON CONFLICT` is atomic
+ * regardless of whether a row already exists, so it closes that gap.
  */
 export async function upsertOrgAuditRetentionPolicy(
   orgId: string,
   retentionDays: number,
 ): Promise<OrgAuditRetentionPolicy> {
-  return db.transaction(async (tx) => {
-    const existing = await tx
-      .select({ id: auditRetentionPolicies.id })
-      .from(auditRetentionPolicies)
-      .where(eq(auditRetentionPolicies.orgId, orgId))
-      .limit(1)
-      .for('update');
+  const [saved] = await db
+    .insert(auditRetentionPolicies)
+    .values({ orgId, retentionDays })
+    .onConflictDoUpdate({
+      target: auditRetentionPolicies.orgId,
+      set: { retentionDays, updatedAt: new Date() },
+    })
+    .returning({
+      retentionDays: auditRetentionPolicies.retentionDays,
+      lastCleanupAt: auditRetentionPolicies.lastCleanupAt,
+    });
 
-    if (existing[0]) {
-      await tx
-        .update(auditRetentionPolicies)
-        .set({ retentionDays, updatedAt: new Date() })
-        .where(eq(auditRetentionPolicies.id, existing[0].id));
-    } else {
-      await tx.insert(auditRetentionPolicies).values({ orgId, retentionDays });
-    }
-
-    const [saved] = await tx
-      .select({
-        retentionDays: auditRetentionPolicies.retentionDays,
-        lastCleanupAt: auditRetentionPolicies.lastCleanupAt,
-      })
-      .from(auditRetentionPolicies)
-      .where(eq(auditRetentionPolicies.orgId, orgId))
-      .limit(1);
-
-    return {
-      orgId,
-      configured: true,
-      retentionDays: saved!.retentionDays,
-      lastCleanupAt: saved!.lastCleanupAt ? saved!.lastCleanupAt.toISOString() : null,
-    };
-  });
+  return {
+    orgId,
+    configured: true,
+    retentionDays: saved!.retentionDays,
+    lastCleanupAt: saved!.lastCleanupAt ? saved!.lastCleanupAt.toISOString() : null,
+  };
 }

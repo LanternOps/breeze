@@ -19,6 +19,10 @@ describe('auditRetentionPolicySchema', () => {
     expect(auditRetentionPolicySchema.safeParse({ retentionDays: -1 }).success).toBe(false);
   });
 
+  it('accepts the 1-day minimum', () => {
+    expect(auditRetentionPolicySchema.safeParse({ retentionDays: 1 }).success).toBe(true);
+  });
+
   it('rejects non-integer values', () => {
     expect(auditRetentionPolicySchema.safeParse({ retentionDays: 1.5 }).success).toBe(false);
   });
