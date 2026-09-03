@@ -719,30 +719,47 @@ describe('accounting captureException tags stay allowlisted (#4828)', () => {
     [...allowlistBody.matchAll(/'([a-zA-Z0-9_]+)'/g)].map((m) => m[1]!),
   );
 
-  // Every `captureException(<err expr>, undefined, { <tags> })` call, in
-  // source-code order. Assumes (true of both files today) that the tags
-  // object contains no nested `{`/`}` and the call contains no `;` before its
-  // closing `)` — a call that grows either would need a smarter matcher here.
-  function extractCaptureExceptionTagKeys(source: string): string[] {
-    const keys: string[] = [];
-    for (const call of source.matchAll(/captureException\([^;]*?\{([^}]*)\}\s*\)/gs)) {
+  // Every `captureException(<err expr>, undefined, { <tags> })` call's tags
+  // object, in source-code order. Anchored on the literal `undefined,` second
+  // argument (every tag-bearing call in both files uses this exact calling
+  // convention) rather than lazily hunting for the first `{` after
+  // `captureException(` — an earlier version of this matcher did that and was
+  // fooled by `markInvoiceMappingError`/`markMappingError`'s error-message
+  // template literal (`` `... (id=${mappingId})` ``), whose `${...}`
+  // interpolation is itself a `{`/`}` pair: it matched THAT as the "tags
+  // object" (capturing only the bare word `mappingId`) and then skipped clean
+  // over the real tags object entirely — a call site could have shipped an
+  // unallowlisted key there and this test would never have seen it. Assumes
+  // (true of both files today) the tags object contains no nested `{`/`}` and
+  // the call contains no `;` before its closing `)` — a call that grows
+  // either would need a smarter matcher here.
+  function extractCaptureExceptionTagCalls(source: string): string[][] {
+    const calls: string[][] = [];
+    for (const call of source.matchAll(/captureException\([^;]*?undefined,\s*\{([^}]*)\}\s*,?\s*\)/gs)) {
       const tagsBody = call[1] ?? '';
-      for (const key of tagsBody.matchAll(/([A-Za-z_][A-Za-z0-9_]*)\s*:/g)) {
-        keys.push(key[1]!);
-      }
+      const keys = [...tagsBody.matchAll(/([A-Za-z_][A-Za-z0-9_]*)\s*:/g)].map((m) => m[1]!);
+      calls.push(keys);
     }
-    return keys;
+    return calls;
   }
 
   it.each([
-    'accounting/accountingInvoicePush.ts',
-    'accounting/accountingMappingService.ts',
-  ])('every captureException tag key in %s is in ALLOWED_TAG_NAMES', (relativePath) => {
+    // The second number is how many `captureException(` calls in that file
+    // pass a tags object at all (i.e. exclude tag-less calls like
+    // `captureException(err)`) — asserted below so a future regex blind spot
+    // like the one this test guards against (see the comment above) fails
+    // LOUDLY as a count mismatch, instead of silently extracting zero keys
+    // for a skipped call and passing anyway.
+    ['accounting/accountingInvoicePush.ts', 7],
+    ['accounting/accountingMappingService.ts', 5],
+  ] as const)('every captureException tag key in %s is in ALLOWED_TAG_NAMES', (relativePath, expectedTagBearingCalls) => {
     const source = readFileSync(
       fileURLToPath(new URL(`./${relativePath}`, import.meta.url)),
       'utf-8',
     );
-    const tagKeys = extractCaptureExceptionTagKeys(source);
+    const calls = extractCaptureExceptionTagCalls(source);
+    expect(calls.length).toBe(expectedTagBearingCalls);
+    const tagKeys = calls.flat();
     // Guards the guard: if the file's captureException calls stop passing a
     // tags object entirely (e.g. a refactor), this test would vacuously pass
     // with zero assertions below — fail loudly instead.

@@ -1121,6 +1121,7 @@ export async function syncMappedEntity(
       service: 'accountingMappingService',
       accounting_mapping_id: mapping.id,
       remote_entity_id: remote.id,
+      remote_sync_token: remote.syncToken ?? 'none',
     });
     const label = breezeEntityType === 'org' ? 'customer' : 'item';
     throw new AccountingMappingError(

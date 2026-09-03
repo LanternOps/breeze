@@ -307,11 +307,20 @@ const ALLOWED_TAG_NAMES = new Set([
   // from `SyncMappedEntityInput` (accountingMappingService.ts) — which kind of
   // entity a sync failure was for; bounded by construction, carries no
   // identifier.
+  //
+  // `remote_sync_token` is QuickBooks' optimistic-concurrency version counter
+  // for the pushed entity — a short numeric string (`'0'`, `'1'`, `'3'`, …),
+  // not free text. It is specifically the value the "QuickBooks accepted the
+  // sync but Breeze failed to record it — do not retry; contact support to
+  // reconcile" failure path in accountingMappingService.ts hands off: manual
+  // reconciliation needs to know which version Breeze last observed, not just
+  // which record. No tenant, device, or host identifier.
   'service',
   'invoice_id',
   'accounting_mapping_id',
   'remote_entity_id',
   'breeze_entity_type',
+  'remote_sync_token',
 ]);
 const UNSAFE_TAG_CHARACTERS = /[/?#\r\n]/;
 const SAFE_STRUCTURAL_NAME = /^[A-Za-z_$<][A-Za-z0-9_.$<>:[\] ]{0,127}$/;
