@@ -64,6 +64,16 @@ vi.mock('../db/schema', () => ({
     timezone: 'partners.timezone',
     settings: 'partners.settings',
   },
+  contacts: {
+    id: 'contacts.id',
+    orgId: 'contacts.org_id',
+    email: 'contacts.email',
+  },
+  reportScheduleRecipients: {
+    reportId: 'report_schedule_recipients.report_id',
+    orgId: 'report_schedule_recipients.org_id',
+    contactId: 'report_schedule_recipients.contact_id',
+  },
 }));
 
 type PreviousBaseline = { generatedAt: string | null; summary?: Record<string, unknown> } | undefined;
@@ -179,6 +189,7 @@ import {
   processCheckSchedules,
   processRunScheduledReport,
   buildOccurrenceClaimCas,
+  resolveScheduledReportRecipients,
 } from './reportScheduleWorker';
 
 const REPORT_ID = '11111111-1111-1111-1111-111111111111';
@@ -227,6 +238,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   breezeRoleState.role = 'all';
   selectMock.mockReset();
+  selectMock.mockReturnValue(selectChain([]));
   insertMock.mockReset();
   updateMock.mockReset();
   generateReportMock.mockReset();
@@ -345,6 +357,77 @@ describe('wallClockIn', () => {
   it('falls back to UTC for unknown zones', () => {
     const wc = wallClockIn(new Date('2026-07-01T15:04:00Z'), 'Invalid/Zone');
     expect(wc).toMatchObject({ y: 2026, m: 7, d: 1, hh: 15, mm: 4 });
+  });
+});
+
+describe('resolveScheduledReportRecipients', () => {
+  it('unions contact and legacy recipients, logs null emails, and dedupes case-insensitively', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    selectMock.mockReturnValueOnce(selectChain([
+      { contactId: 'contact-a', email: 'Ops@Example.test' },
+      { contactId: 'contact-b', email: null },
+      ...Array.from({ length: 45 }, (_, index) => ({
+        contactId: `contact-${index}`,
+        email: `user${index}@example.test`,
+      })),
+    ]));
+
+    try {
+      const recipients = await resolveScheduledReportRecipients({
+        reportId: 'report-1',
+        orgId: '11111111-1111-4111-8111-111111111111',
+        config: {
+          emailRecipients: [
+            'ops@example.test',
+            'legacy@example.test',
+            'invalid',
+          ],
+        },
+      });
+
+      expect(recipients).toHaveLength(47);
+      expect(
+        recipients.filter((email) => email.toLowerCase() === 'ops@example.test'),
+      ).toHaveLength(1);
+      expect(recipients).toContain('legacy@example.test');
+      expect(warn).toHaveBeenCalledWith(
+        '[ReportScheduleWorker] Recipient contact has no email; skipping',
+        expect.objectContaining({
+          reportId: 'report-1',
+          contactId: 'contact-b',
+        }),
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('caps the union at 50 addresses in first-seen order (contacts before legacy) and warns', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    selectMock.mockReturnValueOnce(selectChain(
+      Array.from({ length: 60 }, (_, index) => ({
+        contactId: `contact-${index}`,
+        email: `user${index}@example.test`,
+      })),
+    ));
+
+    try {
+      const recipients = await resolveScheduledReportRecipients({
+        reportId: 'report-1',
+        orgId: '11111111-1111-4111-8111-111111111111',
+        config: { emailRecipients: ['legacy@example.test'] },
+      });
+
+      expect(recipients).toHaveLength(50);
+      expect(recipients[0]).toBe('user0@example.test');
+      expect(recipients).not.toContain('legacy@example.test');
+      expect(warn).toHaveBeenCalledWith(
+        '[ReportScheduleWorker] Recipient union exceeds 50; truncating',
+        expect.objectContaining({ reportId: 'report-1', requested: 61 }),
+      );
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 
@@ -620,6 +703,7 @@ describe('processRunScheduledReport', () => {
 
   it('stores a completed run, stamps lastGeneratedAt, and emails valid recipients with a CSV', async () => {
     selectMock.mockReturnValueOnce(selectChain([report]));
+    selectMock.mockReturnValueOnce(selectChain([])); // scheduled contact recipients
     selectMock.mockReturnValueOnce(selectChain([])); // org/partner timezone lookup
     const runInsert = insertChain([{ id: RUN_ID }]);
     insertMock.mockReturnValueOnce(runInsert);
@@ -1013,6 +1097,7 @@ describe('processRunScheduledReport', () => {
       config: { emailRecipients: ['ops@example.com'] },
     };
     selectMock.mockReturnValueOnce(selectChain([postureReport]));
+    selectMock.mockReturnValueOnce(selectChain([])); // scheduled contact recipients
     selectMock.mockReturnValueOnce(selectChain([])); // org/partner timezone lookup
     insertMock.mockReturnValueOnce(insertChain([{ id: RUN_ID }]));
     const updates = [updateChain(), updateChain()];
@@ -1051,6 +1136,7 @@ describe('processRunScheduledReport', () => {
     selectMock.mockReturnValueOnce(
       selectChain([{ ...report, format: 'pdf', config: { emailRecipients: ['a@b.co'] } }]),
     );
+    selectMock.mockReturnValueOnce(selectChain([])); // scheduled contact recipients
     selectMock.mockReturnValueOnce(
       selectChain([{ orgSettings: {}, partnerTimezone: 'UTC', partnerSettings: {} }]), // org/partner timezone lookup
     );
@@ -1077,6 +1163,7 @@ describe('processRunScheduledReport', () => {
     selectMock.mockReturnValueOnce(
       selectChain([{ ...report, format: 'pdf', config: { emailRecipients: ['a@b.co'] } }]),
     );
+    selectMock.mockReturnValueOnce(selectChain([])); // scheduled contact recipients
     selectMock.mockReturnValueOnce(
       selectChain([{ orgSettings: {}, partnerTimezone: 'UTC', partnerSettings: {} }]), // org/partner timezone lookup
     );
@@ -1129,6 +1216,7 @@ describe('processRunScheduledReport', () => {
     selectMock.mockReturnValueOnce(
       selectChain([{ ...report, format: 'csv', config: { emailRecipients: ['a@b.co'] } }]),
     );
+    selectMock.mockReturnValueOnce(selectChain([])); // scheduled contact recipients
     selectMock.mockReturnValueOnce(
       selectChain([{ orgSettings: {}, partnerTimezone: 'UTC', partnerSettings: {} }]), // org/partner timezone lookup
     );
@@ -1161,6 +1249,7 @@ describe('processRunScheduledReport', () => {
     selectMock.mockReturnValueOnce(
       selectChain([{ ...report, format: 'csv', config: { emailRecipients: ['a@b.co'] } }]),
     );
+    selectMock.mockReturnValueOnce(selectChain([])); // scheduled contact recipients
     selectMock.mockReturnValueOnce(
       selectChain([{ orgSettings: {}, partnerTimezone: 'UTC', partnerSettings: {} }]), // org/partner timezone lookup
     );
@@ -1257,12 +1346,14 @@ describe('scheduled report failure handling', () => {
     // report 1: CAS claim wins, then load -> throws during generation
     updateMock.mockReturnValueOnce(claimUpdateChain([{ id: report.id }]));
     selectMock.mockReturnValueOnce(selectChain([report]));
+    selectMock.mockReturnValueOnce(selectChain([])); // scheduled contact recipients after failure
     insertMock.mockReturnValueOnce(insertChain([{ id: RUN_ID }]));
     updateMock.mockReturnValueOnce(updateChain());
     generateReportMock.mockRejectedValueOnce(new Error('boom'));
     // report 2: CAS claim wins, then load -> succeeds
     updateMock.mockReturnValueOnce(claimUpdateChain([{ id: second.id }]));
     selectMock.mockReturnValueOnce(selectChain([second]));
+    selectMock.mockReturnValueOnce(selectChain([])); // scheduled contact recipients
     selectMock.mockReturnValueOnce(selectChain([])); // timezone lookup
     insertMock.mockReturnValueOnce(insertChain([{ id: RUN_ID }]));
     updateMock.mockReturnValueOnce(updateChain());
