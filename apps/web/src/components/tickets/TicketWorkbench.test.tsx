@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { configure, fireEvent, getConfig, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import TicketWorkbench from './TicketWorkbench';
@@ -747,6 +747,53 @@ describe('TicketWorkbench AI drafts (#4191, Task 11)', () => {
   // e.g. resolveDraftId survived from a prior ticket's aiDrafts state) used
   // to fall through the `err.status === 409` check and loop forever. The
   // recovery must match the sibling send/discard handlers (any non-401).
+  // Regression for a CI-only flake (I1 below, 2026-09-03 run 33724780964):
+  // the resolve note came up '' although the draft badge was already on
+  // screen. openResolveForm reads aiDraftsRef, which was synced in a PASSIVE
+  // effect — flushed in a later macrotask than the commit that painted the
+  // badge. RTL's findBy* normally hides the window with a setTimeout(0) drain
+  // after the element appears, but under CI load the scheduler's flush can
+  // lose to that drain. Bypassing the drain here reproduces the window
+  // deterministically: red on the useEffect sync, green on useLayoutEffect.
+  it('prefills the resolve note even when the status change lands in the same macrotask as the draft commit', async () => {
+    let resolveAttempts = 0;
+    let consumed = false;
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url === '/tickets/tk-1' && (!init?.method || init.method === 'GET')) {
+        return makeJsonResponse({ data: makeTicket({ id: 'tk-1' }) });
+      }
+      if (url === '/tickets/tk-1/triage-suggestion' && (!init?.method || init.method === 'GET')) {
+        return makeJsonResponse({ enabled: false, flagSource: 'default', suggestion: null });
+      }
+      if (url === '/tickets/tk-1/ai-drafts' && (!init?.method || init.method === 'GET')) {
+        return makeJsonResponse({ data: consumed ? [] : [resolutionDraft] });
+      }
+      if (url === '/tickets/tk-1/status' && init?.method === 'POST') {
+        resolveAttempts += 1;
+        if (resolveAttempts === 1) {
+          consumed = true;
+          return makeJsonResponse({ error: 'Draft not found' }, false, 404);
+        }
+        return makeJsonResponse({ data: makeTicket({ id: 'tk-1', status: 'resolved' }) });
+      }
+      return makeJsonResponse({ success: true });
+    });
+
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+    await screen.findByTestId('ticket-workbench');
+    const previousWrapper = getConfig().asyncWrapper;
+    configure({ asyncWrapper: (cb) => cb() });
+    try {
+      await screen.findByTestId('ticket-ai-draft-resolution_note');
+      fireEvent.change(screen.getByTestId('ticket-workbench-status'), { target: { value: 'resolved' } });
+      const note = screen.getByTestId('ticket-workbench-resolve-note') as HTMLTextAreaElement;
+      expect(note.value).toBe(resolutionDraft.content);
+    } finally {
+      configure({ asyncWrapper: previousWrapper });
+    }
+  });
+
   it('I1: on a 404 resolve conflict from a stale aiDraftId, drops it and retries without it (not just 409)', async () => {
     let resolveAttempts = 0;
     let consumed = false;
