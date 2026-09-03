@@ -43,6 +43,12 @@ describe('applyAllowance — the boundary matrix (#4607)', () => {
     }
   });
 
+  it('treats an absent includedQuantity column as no allowance', () => {
+    expect(applyAllowance(7, { ...NONE, includedQuantity: undefined as never }, 'included_units')).toEqual({
+      counted: 7, billed: 7, included: null, overage: 0, overageMode: null,
+    });
+  });
+
   // The #4547 (block hours) contract: unit_price is the price of the whole block,
   // so the base quantity is 1 whether or not there is an allowance.
   it.each<[string, AllowanceSpec, number | null]>([

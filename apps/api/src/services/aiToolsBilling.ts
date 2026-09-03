@@ -35,7 +35,6 @@ import {
   addManualLine,
   addCatalogLine,
   addBundleLine,
-  addContractLine,
   updateLine,
   removeLine,
   updateInvoice,
@@ -49,7 +48,7 @@ import {
 } from './invoiceService';
 import { createInvoicePayLink } from './invoiceCheckout';
 import { InvoiceServiceError, type InvoiceActor } from './invoiceTypes';
-import { computeContractEstimate, getContract } from './contractService';
+import { computeContractEstimate, getContract, materializeContractLineOntoInvoice } from './contractService';
 import { toCents } from './invoiceMath';
 import { missingParamsJson, zodErrorToJson } from './aiToolValidation';
 
@@ -215,8 +214,9 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
         'NO_PRICE_FOR_CURRENCY (409) when the item has no price in that currency, add_bundle_line with ' +
         'NO_PRICE_FOR_CURRENCY (bundle headline missing) or PRICE_BOOK_INCOMPLETE (409, a component is ' +
         'missing a price). Use add_manual_line instead, or fill the price book. add_contract_line returns ' +
-        '{ line, pricedFrom }; pricedFrom "contract_snapshot" on a catalog line means the price book had a ' +
-        'gap and the contract line\'s stamped price was billed.',
+        '{ line, pricedFrom, overages }; pricedFrom "contract_snapshot" on a catalog line means the price book had a ' +
+        'gap and the contract line\'s stamped price was billed. overages reports bill/flag allowance overages and ' +
+        'the bill-mode sibling invoiceLineId.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -296,7 +296,7 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
             };
             const contractId = String(input.contractId);
             const contractLineId = String(input.contractLineId);
-            const { lines } = await getContract(contractId, contractActor);
+            const { contract, lines } = await getContract(contractId, contractActor);
             const line = lines.find((candidate) => candidate.id === contractLineId);
             if (!line) return JSON.stringify({ error: 'Contract line not found for this contract' });
 
@@ -304,16 +304,24 @@ export function registerBillingTools(aiTools: Map<string, AiTool>): void {
             const est = estimate.lines.find((candidate) => candidate.lineId === line.id);
             if (!est) return JSON.stringify({ error: 'Contract line estimate not found for this contract' });
 
-            return JSON.stringify(await addContractLine(String(input.invoiceId), {
-              description: line.description,
-              quantity: String(est.quantity),
-              unitPrice: line.unitPrice,
-              taxable: line.taxable,
-              catalogItemId: line.catalogItemId,
-              sourceId: line.id,
-              // Durable contract lineage (#3778).
-              contractId,
-            }, actor));
+            const materialized = await materializeContractLineOntoInvoice(actor, {
+              invoiceId: String(input.invoiceId),
+              contract,
+              line,
+              resolved: {
+                counted: est.counted,
+                billed: est.quantity,
+                included: est.included,
+                overage: est.overage,
+                overageMode: est.overageMode,
+              },
+              currencyCode: estimate.currencyCode,
+            });
+            return JSON.stringify({
+              line: materialized.baseLine,
+              pricedFrom: materialized.pricedFrom,
+              overages: materialized.overage ? [materialized.overage] : [],
+            });
           }
           case 'update_line':
             return JSON.stringify(await updateLine(

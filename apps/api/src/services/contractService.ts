@@ -1,5 +1,5 @@
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
-import { db } from '../db';
+import { assertInTransaction, db } from '../db';
 import { contracts, contractLines, contractBillingPeriods, organizations, sites, deviceGroups, catalogItemPrices, catalogItemOrgPricing } from '../db/schema';
 import { ContractServiceError, actorCan, type ContractActor, type ContractLineAudit } from './contractTypes';
 import type { ContractLineInput, UpdateContractInput } from '@breeze/shared';
@@ -42,7 +42,7 @@ import { countContractSeats, snapshotContractDevices, groupMembersForBilling, ty
 import { isDeviceLine, quantityFor, uncoveredByRole, type UncoveredDevices, type OrgDeviceSnapshot, type GroupMembers } from './contractCoverage';
 import { GroupEvaluationError } from './groupMembership';
 import type { InvoiceActor } from './invoiceTypes';
-import { applyAllowance, overageValue, type ResolvedQuantity } from './contractAllowance';
+import { applyAllowance, billsOverage, overageValue, type ResolvedQuantity } from './contractAllowance';
 
 export type ContractActorT = ContractActor;
 
@@ -519,6 +519,92 @@ export interface OverageSummary {
   included: number;
   overage: number;
   mode: 'bill' | 'flag';
+}
+
+type AddedContractInvoiceLine = Awaited<ReturnType<typeof addContractLine>>;
+
+export interface MaterializeContractLineInput {
+  invoiceId: string;
+  contract: Pick<typeof contracts.$inferSelect, 'id' | 'currencyCode'>;
+  line: Pick<typeof contractLines.$inferSelect,
+    'id' | 'description' | 'unitPrice' | 'taxable' | 'catalogItemId' | 'overageUnitPrice'>;
+  resolved: ResolvedQuantity;
+  currencyCode: string;
+}
+
+export interface MaterializedContractLine {
+  baseLine: AddedContractInvoiceLine['line'];
+  overageLine: AddedContractInvoiceLine['line'] | null;
+  overage: OverageSummary | null;
+  pricedFrom: AddedContractInvoiceLine['pricedFrom'];
+}
+
+/**
+ * The single invoice-writing path for a resolved contract line. The surrounding
+ * transaction/savepoint makes the base + optional bill-mode sibling atomic even
+ * when the caller is an interactive draft edit rather than the full generation run.
+ */
+export async function materializeContractLineOntoInvoice(
+  actor: InvoiceActor,
+  { invoiceId, contract, line, resolved, currencyCode }: MaterializeContractLineInput,
+): Promise<MaterializedContractLine> {
+  // Self-guard like generateDueInvoice: without an ambient context, nested
+  // db.transaction() calls would each open their own pooled connection and the
+  // base + overage writes would no longer be atomic.
+  assertInTransaction('materializeContractLineOntoInvoice');
+  if (currencyCode !== contract.currencyCode) {
+    throw new ContractServiceError('Resolved currency does not match the contract currency', 500, 'INVALID_STATE');
+  }
+
+  return db.transaction(async () => {
+    const quantity = resolved.included === null ? String(resolved.billed) : resolved.billed.toFixed(2);
+    const { line: baseLine, pricedFrom } = await addContractLine(invoiceId, {
+      description: line.description,
+      quantity,
+      unitPrice: line.unitPrice,
+      taxable: line.taxable,
+      catalogItemId: line.catalogItemId,
+      sourceId: line.id,
+      // Durable lineage (#3778): the CONTRACT id, not just the contract_line id.
+      // Survives removeContractLine, which is permitted on active contracts.
+      contractId: contract.id,
+    }, actor);
+
+    let overageLine: AddedContractInvoiceLine['line'] | null = null;
+    if (billsOverage(resolved)) {
+      const expectedLineTotal = multiplyToCurrency(resolved.overage, line.overageUnitPrice!, currencyCode);
+      const materialized = await addContractLine(invoiceId, {
+        description: `Overage: ${resolved.overage} above ${resolved.included} included — ${line.description}`,
+        quantity: resolved.overage.toFixed(2),
+        unitPrice: line.overageUnitPrice!,
+        // Inherit economics from the MATERIALIZED base. The catalog resolver,
+        // not the contract snapshot, owns these values for catalog-linked bases.
+        taxable: baseLine.taxable,
+        costBasis: baseLine.costBasis,
+        catalogItemId: null,
+        sourceId: line.id,
+        contractId: contract.id,
+      }, actor);
+      overageLine = materialized.line;
+      if (overageLine.lineTotal !== expectedLineTotal) {
+        throw new ContractServiceError('Materialized overage total does not match its exact decimal value', 500, 'INVALID_STATE');
+      }
+    }
+
+    const overage = resolved.overageMode !== null && resolved.overage > 0
+      ? {
+          contractLineId: line.id,
+          invoiceLineId: overageLine?.id ?? null,
+          description: line.description,
+          counted: resolved.counted,
+          included: resolved.included!,
+          overage: resolved.overage,
+          mode: resolved.overageMode,
+        }
+      : null;
+
+    return { baseLine, overageLine, overage, pricedFrom };
+  });
 }
 
 export interface ContractEstimate {
@@ -1530,6 +1616,11 @@ export interface GenerateResult {
    *  contract has no per_device / per_device_role / per_device_group line or nothing generated.
    *  Rides beside priceBookGaps: the worker logs it, the generate route returns it. */
   uncoveredDevices: UncoveredDevices | null;
+  /** Allowance lines that were OVER this run, in either mode (#3205 W04).
+   *  Always present (`[]` when none / nothing generated), like priceBookGaps.
+   *  `mode: 'flag'` entries were NOT invoiced — the worker warns and the
+   *  generate UI toasts on exactly those. */
+  overages: OverageSummary[];
 }
 
 /**
@@ -1570,6 +1661,13 @@ export interface GenerateResult {
  * in the wave-3 plan's Self-Review (a).
  */
 export async function generateDueInvoice(contractId: string, asOf: Date = new Date()): Promise<GenerateResult> {
+  // #3205 W04 decision 14: this function does multi-statement all-or-nothing
+  // writes and does not open its own transaction — both callers wrap it in
+  // runOutsideDbContext(() => withSystemDbAccessContext(...)). Without one, every
+  // write below lands on the bare pool with no RLS GUC and silently affects 0
+  // rows (#1375). W04 doubles the writes per line, so the window widens.
+  assertInTransaction('generateDueInvoice');
+
   // PRODUCER SERIALIZATION (#3778): lock the contract row as the FIRST statement
   // of the caller-supplied transaction. Until wave 6 this opened with a plain
   // unlocked SELECT while every other contract writer locked — so a billing run
@@ -1582,9 +1680,9 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
   // plain string but drizzle types it as the narrow union; `as never` keeps tsc happy
   // while the runtime check stays a simple string compare (mirrors listContracts).
   if ((c.status as never) !== ('active' as never) || c.nextBillingAt === null) {
-    return { generated: false, autoIssue: false, skipped: 'not_due', priceBookGaps: [], uncoveredDevices: null };
+    return { generated: false, autoIssue: false, skipped: 'not_due', priceBookGaps: [], uncoveredDevices: null, overages: [] };
   }
-  if (c.nextBillingAt > todayISO(asOf)) return { generated: false, autoIssue: false, skipped: 'not_due', priceBookGaps: [], uncoveredDevices: null };
+  if (c.nextBillingAt > todayISO(asOf)) return { generated: false, autoIssue: false, skipped: 'not_due', priceBookGaps: [], uncoveredDevices: null, overages: [] };
 
   // Which period does this billing run cover?
   // advance: the period whose START == nextBillingAt.
@@ -1597,7 +1695,7 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
   if (isExpired({ endDate: c.endDate, periodStart: period.periodStart })) {
     await db.update(contracts).set({ status: 'expired', nextBillingAt: null, updatedAt: asOf }).where(eq(contracts.id, contractId));
     await emitContractEvent({ type: 'contract.expired', contractId, orgId: c.orgId, partnerId: c.partnerId });
-    return { generated: false, autoIssue: false, skipped: 'expired', priceBookGaps: [], uncoveredDevices: null };
+    return { generated: false, autoIssue: false, skipped: 'expired', priceBookGaps: [], uncoveredDevices: null, overages: [] };
   }
 
   // Build an InvoiceActor for the contract. createdBy is nullable on system-seeded /
@@ -1615,7 +1713,7 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
   // This generation-side guard remains the backstop for an active contract whose
   // final line was removed before the billing run.
   if (lines.length === 0) {
-    return { generated: false, autoIssue: false, skipped: 'not_due', priceBookGaps: [], uncoveredDevices: null };
+    return { generated: false, autoIssue: false, skipped: 'not_due', priceBookGaps: [], uncoveredDevices: null, overages: [] };
   }
 
   const hasDeviceLine = lines.some(isDeviceLine);
@@ -1647,6 +1745,7 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
   //    currency when catalogItemId is set (falling back to this stamped snapshot
   //    on a price-book gap, reported below), or uses them when it is null.
   const priceBookGaps: PriceBookGap[] = [];
+  const overages: OverageSummary[] = [];
   for (const l of lines) {
     let quantity: string;
     switch (l.lineType) {
@@ -1672,18 +1771,24 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
         throw new ContractServiceError(`Unknown contract line type: ${String(l.lineType)}`, 500, 'INVALID_STATE');
       }
     }
-    const { pricedFrom } = await addContractLine(inv.id, {
-      description: l.description, quantity, unitPrice: l.unitPrice, taxable: l.taxable,
-      catalogItemId: l.catalogItemId, sourceId: l.id,
-      // Durable lineage (#3778): the CONTRACT id, not just the contract_line id.
-      // Survives removeContractLine, which is permitted on active contracts.
-      contractId
-    }, actor);
+
+    // The ONE definition of the split, shared with resolveLineQty.
+    const r = applyAllowance(Number(quantity), l, 'included_units');
+    if (r.included !== null) quantity = r.billed.toFixed(2);   // the allowance overrides the count
+
+    const materialized = await materializeContractLineOntoInvoice(actor, {
+      invoiceId: inv.id,
+      contract: c,
+      line: l,
+      resolved: r,
+      currencyCode: c.currencyCode,
+    });
     // A non-catalog line is always its own snapshot — only a CATALOG line billed
     // at the snapshot is a price-book gap.
-    if (l.catalogItemId && pricedFrom === 'contract_snapshot') {
+    if (l.catalogItemId && materialized.pricedFrom === 'contract_snapshot') {
       priceBookGaps.push({ contractLineId: l.id, catalogItemId: l.catalogItemId, itemName: l.description, currencyCode: c.currencyCode });
     }
+    if (materialized.overage) overages.push(materialized.overage);
   }
 
   // 3. Claim the period (idempotency guard). On conflict this run lost a race →
@@ -1696,7 +1801,7 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
 
   if (claimed.length === 0) {
     await deleteDraftInvoice(inv.id, actor); // still a draft here — safe to remove
-    return { generated: false, autoIssue: false, skipped: 'already_billed', priceBookGaps: [], uncoveredDevices: null };
+    return { generated: false, autoIssue: false, skipped: 'already_billed', priceBookGaps: [], uncoveredDevices: null, overages: [] };
   }
 
   // 4. Advance the pointer to the next period (or expire if the next period is past end_date).
@@ -1714,7 +1819,7 @@ export async function generateDueInvoice(contractId: string, asOf: Date = new Da
   // Auto-issue + email are intentionally returned to the caller (NOT done here) so they
   // run post-commit, outside the billing transaction. See the doc-comment above.
   const uncoveredDevices = hasDeviceLine ? uncoveredByRole(snapshot, resolvableLines(lines, snapshot)) : null;
-  return { generated: true, invoiceId: inv.id, autoIssue: c.autoIssue, actor, priceBookGaps, uncoveredDevices };
+  return { generated: true, invoiceId: inv.id, autoIssue: c.autoIssue, actor, priceBookGaps, uncoveredDevices, overages };
 }
 
 // INTERNAL (Phase 4): persist a contract + lines built by buildContractSpecsFromQuote.

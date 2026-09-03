@@ -27,6 +27,9 @@ vi.mock('./invoiceCheckout', () => ({
 vi.mock('./contractService', () => ({
   getContract: vi.fn().mockResolvedValue({ contract: { id: 'contract-1' }, lines: [], periods: [] }),
   computeContractEstimate: vi.fn().mockResolvedValue({ lines: [] }),
+  materializeContractLineOntoInvoice: vi.fn().mockResolvedValue({
+    baseLine: { id: 'line-1' }, overageLine: null, overage: null, pricedFrom: 'contract_snapshot',
+  }),
 }));
 
 import { registerBillingTools } from './aiToolsBilling';
@@ -154,7 +157,7 @@ describe('manage_invoices', () => {
     expect(invoiceService.assembleDraftFromTicket).toHaveBeenLastCalledWith('t-1', actor, { currencyCode: undefined });
   });
 
-  it('add_contract_line resolves authoritative contract line values before calling addContractLine', async () => {
+  it('add_contract_line resolves authoritative contract line values before materializing it', async () => {
     vi.mocked(contractService.getContract).mockResolvedValueOnce({
       contract: contractRow(),
       lines: [
@@ -194,21 +197,62 @@ describe('manage_invoices', () => {
 
     expect(contractService.getContract).toHaveBeenCalledWith('contract-1', actor);
     expect(contractService.computeContractEstimate).toHaveBeenCalledWith('contract-1', actor);
-    expect(invoiceService.addContractLine).toHaveBeenCalledWith(
-      'inv-1',
-      {
-        description: 'Managed endpoint coverage',
-        quantity: '3',
-        unitPrice: '12.50',
-        taxable: true,
-        catalogItemId: 'catalog-1',
-        sourceId: 'contract-line-1',
-        // Durable contract lineage (#3778) — the ACTIVE-contract restamp keys on it.
-        contractId: 'contract-1',
-      },
-      actor,
-    );
-    expect(JSON.parse(out)).toEqual({ id: 'line-1' });
+    expect(contractService.materializeContractLineOntoInvoice).toHaveBeenCalledWith(actor, {
+      invoiceId: 'inv-1',
+      contract: expect.objectContaining({ id: 'contract-1', currencyCode: 'USD' }),
+      line: expect.objectContaining({ id: 'contract-line-1', catalogItemId: 'catalog-1' }),
+      resolved: { counted: 3, billed: 3, included: null, overage: 0, overageMode: null },
+      currencyCode: 'USD',
+    });
+    expect(invoiceService.addContractLine).not.toHaveBeenCalled();
+    expect(JSON.parse(out)).toEqual({ line: { id: 'line-1' }, pricedFrom: 'contract_snapshot', overages: [] });
+  });
+
+  it('add_contract_line materializes bill overage and reports its invoice line id', async () => {
+    const line = contractLineRow({ includedQuantity: '25.00', overageMode: 'bill', overageUnitPrice: '12.00' });
+    vi.mocked(contractService.getContract).mockResolvedValueOnce({ contract: contractRow(), lines: [line], periods: [] });
+    vi.mocked(contractService.computeContractEstimate).mockResolvedValueOnce({
+      currencyCode: 'USD', periodTotal: '262.00',
+      lines: [{ lineId: line.id, lineType: 'per_device', quantity: 25, value: '250.00', live: true, counted: 26, included: 25, overage: 1, overageMode: 'bill', overageValue: '12.00' }],
+      uncoveredDevices: null,
+      overages: [{ contractLineId: line.id, invoiceLineId: null, description: line.description, counted: 26, included: 25, overage: 1, mode: 'bill' }],
+    });
+    vi.mocked(contractService.materializeContractLineOntoInvoice).mockResolvedValueOnce({
+      baseLine: { id: 'base-line' }, overageLine: { id: 'overage-line' }, pricedFrom: 'contract_snapshot',
+      overage: { contractLineId: line.id, invoiceLineId: 'overage-line', description: line.description, counted: 26, included: 25, overage: 1, mode: 'bill' },
+    } as never);
+
+    const out = JSON.parse(await getTool().handler({
+      action: 'add_contract_line', invoiceId: 'inv-1', contractId: 'contract-1', contractLineId: line.id,
+    }, auth));
+
+    expect(contractService.materializeContractLineOntoInvoice).toHaveBeenCalledTimes(1);
+    expect(out).toEqual({
+      line: { id: 'base-line' }, pricedFrom: 'contract_snapshot',
+      overages: [{ contractLineId: line.id, invoiceLineId: 'overage-line', description: line.description, counted: 26, included: 25, overage: 1, mode: 'bill' }],
+    });
+  });
+
+  it('add_contract_line materializes no sibling for flag overage and reports the flag', async () => {
+    const line = contractLineRow({ includedQuantity: '25.00', overageMode: 'flag', overageUnitPrice: null });
+    vi.mocked(contractService.getContract).mockResolvedValueOnce({ contract: contractRow(), lines: [line], periods: [] });
+    vi.mocked(contractService.computeContractEstimate).mockResolvedValueOnce({
+      currencyCode: 'USD', periodTotal: '250.00',
+      lines: [{ lineId: line.id, lineType: 'per_device', quantity: 25, value: '250.00', live: true, counted: 26, included: 25, overage: 1, overageMode: 'flag', overageValue: '0.00' }],
+      uncoveredDevices: null,
+      overages: [{ contractLineId: line.id, invoiceLineId: null, description: line.description, counted: 26, included: 25, overage: 1, mode: 'flag' }],
+    });
+    vi.mocked(contractService.materializeContractLineOntoInvoice).mockResolvedValueOnce({
+      baseLine: { id: 'base-line' }, overageLine: null, pricedFrom: 'contract_snapshot',
+      overage: { contractLineId: line.id, invoiceLineId: null, description: line.description, counted: 26, included: 25, overage: 1, mode: 'flag' },
+    } as never);
+
+    const out = JSON.parse(await getTool().handler({
+      action: 'add_contract_line', invoiceId: 'inv-1', contractId: 'contract-1', contractLineId: line.id,
+    }, auth));
+
+    expect(contractService.materializeContractLineOntoInvoice).toHaveBeenCalledTimes(1);
+    expect(out.overages).toEqual([expect.objectContaining({ mode: 'flag', invoiceLineId: null })]);
   });
 
   it('add_contract_line returns an error when the contract line is not on the scoped contract', async () => {

@@ -56,7 +56,7 @@ export interface ResolvedQuantity {
 export function applyAllowance(
   counted: number, spec: AllowanceSpec, baseBillingMode: BaseBillingMode,
 ): ResolvedQuantity {
-  const included = spec.includedQuantity === null ? null : Number(spec.includedQuantity);
+  const included = spec.includedQuantity == null ? null : Number(spec.includedQuantity);
   if (included === null) {
     return {
       counted,

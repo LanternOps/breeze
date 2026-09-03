@@ -1588,6 +1588,18 @@ describe('invoiceService currency representability guard (W6-G1-1)', () => {
     ).rejects.toMatchObject({ code: 'PRICE_NOT_REPRESENTABLE', status: 400 });
     expect((db as unknown as { insert: Mock }).insert).not.toHaveBeenCalled();
   });
+
+  it('addContractLine rejects a fractional injected JPY costBasis', async () => {
+    queueResult([draft('JPY')]);
+    queueResult([{ id: 'ct1', orgId: 'org1', currencyCode: 'JPY' }]);
+    await expect(
+      svc.addContractLine('i1', {
+        description: 'Overage', quantity: '1', unitPrice: '100', costBasis: '40.5',
+        taxable: false, contractId: 'ct1',
+      }, actor)
+    ).rejects.toMatchObject({ code: 'PRICE_NOT_REPRESENTABLE', status: 400 });
+    expect((db as unknown as { insert: Mock }).insert).not.toHaveBeenCalled();
+  });
 });
 
 // ── overdue sweep tenant scope (org-lifecycle Wave 4 review fix C-A.2) ──────

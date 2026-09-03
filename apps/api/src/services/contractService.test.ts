@@ -26,6 +26,7 @@ vi.mock('../db', () => {
   const db = makeChain();
   return {
     db,
+    assertInTransaction: vi.fn(),
     runOutsideDbContext: (fn: () => unknown) => fn(),
     withSystemDbAccessContext: (fn: () => unknown) => fn(),
   };
@@ -394,6 +395,8 @@ describe('generateDueInvoice surfaces price-book gaps (#3775)', () => {
     queueResult([]);                  // advance pointer
   }
 
+  const noAllowance = { includedQuantity: null, overageMode: null, overageUnitPrice: null };
+
   it('collects every catalog line billed at the contract snapshot into priceBookGaps', async () => {
     vi.mocked(createManualInvoice).mockResolvedValue({ id: 'inv1' } as never);
     vi.mocked(addContractLine)
@@ -401,10 +404,10 @@ describe('generateDueInvoice surfaces price-book gaps (#3775)', () => {
       .mockResolvedValueOnce({ line: { id: 'il2' }, pricedFrom: 'price_book' } as never)
       .mockResolvedValueOnce({ line: { id: 'il3' }, pricedFrom: 'contract_snapshot' } as never);
     queueRun([
-      { id: 'cl-1', lineType: 'flat', description: 'Managed endpoint', unitPrice: '80.00', taxable: true, catalogItemId: 'cat-1', manualQuantity: null, siteId: null },
-      { id: 'cl-2', lineType: 'flat', description: 'Backup', unitPrice: '20.00', taxable: true, catalogItemId: 'cat-2', manualQuantity: null, siteId: null },
+      { id: 'cl-1', lineType: 'flat', description: 'Managed endpoint', unitPrice: '80.00', taxable: true, catalogItemId: 'cat-1', manualQuantity: null, siteId: null, ...noAllowance },
+      { id: 'cl-2', lineType: 'flat', description: 'Backup', unitPrice: '20.00', taxable: true, catalogItemId: 'cat-2', manualQuantity: null, siteId: null, ...noAllowance },
       // Non-catalog lines are always "contract_snapshot" priced — never a gap.
-      { id: 'cl-3', lineType: 'flat', description: 'Onboarding', unitPrice: '250.00', taxable: false, catalogItemId: null, manualQuantity: null, siteId: null },
+      { id: 'cl-3', lineType: 'flat', description: 'Onboarding', unitPrice: '250.00', taxable: false, catalogItemId: null, manualQuantity: null, siteId: null, ...noAllowance },
     ]);
 
     const res = await svc.generateDueInvoice('c1', asOf);
@@ -413,6 +416,7 @@ describe('generateDueInvoice surfaces price-book gaps (#3775)', () => {
     expect(res.priceBookGaps).toEqual([
       { contractLineId: 'cl-1', catalogItemId: 'cat-1', itemName: 'Managed endpoint', currencyCode: 'EUR' },
     ]);
+    expect(res.overages).toEqual([]);
     // The catalog line was still billed (fallback, never skipped).
     expect(addContractLine).toHaveBeenCalledTimes(3);
     expect(addContractLine).toHaveBeenNthCalledWith(1, 'inv1', expect.objectContaining({ catalogItemId: 'cat-1', unitPrice: '80.00', sourceId: 'cl-1' }), expect.anything());
@@ -422,17 +426,21 @@ describe('generateDueInvoice surfaces price-book gaps (#3775)', () => {
     vi.mocked(createManualInvoice).mockResolvedValue({ id: 'inv1' } as never);
     vi.mocked(addContractLine).mockResolvedValue({ line: { id: 'il1' }, pricedFrom: 'price_book' } as never);
     queueRun([
-      { id: 'cl-1', lineType: 'flat', description: 'Managed endpoint', unitPrice: '80.00', taxable: true, catalogItemId: 'cat-1', manualQuantity: null, siteId: null },
+      { id: 'cl-1', lineType: 'flat', description: 'Managed endpoint', unitPrice: '80.00', taxable: true, catalogItemId: 'cat-1', manualQuantity: null, siteId: null, ...noAllowance },
     ]);
     const res = await svc.generateDueInvoice('c1', asOf);
     expect(res.generated).toBe(true);
     expect(res.priceBookGaps).toEqual([]);
+    expect(res.overages).toEqual([]);
   });
 
   it('a not-due contract reports no gaps (always-present array)', async () => {
     queueResult([{ ...contract, nextBillingAt: '2026-08-01' }]);
     const res = await svc.generateDueInvoice('c1', asOf);
-    expect(res).toMatchObject({ generated: false, skipped: 'not_due', priceBookGaps: [] });
+    expect(res).toEqual({
+      generated: false, autoIssue: false, skipped: 'not_due', priceBookGaps: [],
+      uncoveredDevices: null, overages: [],
+    });
   });
 
   // #3205
@@ -450,8 +458,8 @@ describe('generateDueInvoice surfaces price-book gaps (#3775)', () => {
       { id: 'unknown-1', role: 'unknown', siteId: null },
     ]);
     queueRun([
-      { id: 'cl-1', lineType: 'per_device_role', description: 'Servers', unitPrice: '40.00', taxable: false, catalogItemId: null, manualQuantity: null, siteId: null, deviceRoles: ['server'] },
-      { id: 'cl-2', lineType: 'per_device_role', description: 'Workstations', unitPrice: '10.00', taxable: false, catalogItemId: null, manualQuantity: null, siteId: null, deviceRoles: ['workstation'] },
+      { id: 'cl-1', lineType: 'per_device_role', description: 'Servers', unitPrice: '40.00', taxable: false, catalogItemId: null, manualQuantity: null, siteId: null, deviceRoles: ['server'], ...noAllowance },
+      { id: 'cl-2', lineType: 'per_device_role', description: 'Workstations', unitPrice: '10.00', taxable: false, catalogItemId: null, manualQuantity: null, siteId: null, deviceRoles: ['workstation'], ...noAllowance },
     ]);
 
     const res = await svc.generateDueInvoice('c1', asOf);
@@ -461,14 +469,16 @@ describe('generateDueInvoice surfaces price-book gaps (#3775)', () => {
     expect(vi.mocked(addContractLine).mock.calls[0]![1]).toMatchObject({ description: 'Servers', quantity: '2' });
     expect(vi.mocked(addContractLine).mock.calls[1]![1]).toMatchObject({ description: 'Workstations', quantity: '5' });
     expect(res.uncoveredDevices).toEqual({ total: 1, byRole: { unknown: 1 } });
+    expect(res.overages).toEqual([]);
   });
 
   it('returns uncoveredDevices: null when no device-counted line exists', async () => {
     vi.mocked(createManualInvoice).mockResolvedValue({ id: 'inv1' } as never);
     vi.mocked(addContractLine).mockResolvedValue({ line: { id: 'il1' }, pricedFrom: 'contract_snapshot' } as never);
-    queueRun([{ id: 'cl-1', lineType: 'flat', description: 'Fee', unitPrice: '80.00', taxable: true, catalogItemId: null, manualQuantity: null, siteId: null, deviceRoles: null }]);
+    queueRun([{ id: 'cl-1', lineType: 'flat', description: 'Fee', unitPrice: '80.00', taxable: true, catalogItemId: null, manualQuantity: null, siteId: null, deviceRoles: null, ...noAllowance }]);
     const res = await svc.generateDueInvoice('c1', asOf);
     expect(res.uncoveredDevices).toBeNull();
+    expect(res.overages).toEqual([]);
     expect(vi.mocked(snapshotContractDevices)).not.toHaveBeenCalled();
   });
 });
@@ -1578,9 +1588,10 @@ describe('deterministic line ordering (#3205 W03)', () => {
       endDate: null, autoIssue: false, createdBy: 'u1', notes: null, terms: null,
     }]);
     queueResult([]);
-    await svc.generateDueInvoice('c1', new Date('2026-07-01T06:00:00Z'));
+    const res = await svc.generateDueInvoice('c1', new Date('2026-07-01T06:00:00Z'));
     const orderBy = (db as unknown as { orderBy: { mock: { calls: unknown[][] } } }).orderBy.mock.calls[0]!;
     expect(orderBy).toEqual([contractLines.sortOrder, contractLines.createdAt, contractLines.id]);
+    expect(res.overages).toEqual([]);
   });
 });
 
@@ -1642,6 +1653,52 @@ describe('allowance writers (#3205 W04)', () => {
     }]);
     await expect(svc.updateContractLine('c1', 'l1', { overageUnitPrice: '12.50' } as never, actor))
       .rejects.toMatchObject({ status: 400, code: 'PRICE_NOT_REPRESENTABLE' });
+  });
+});
+
+describe('materializeContractLineOntoInvoice (#3205 W04)', () => {
+  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+
+  const contract = { id: 'c1', currencyCode: 'USD' };
+  const line = {
+    id: 'cl1', description: 'Endpoints', unitPrice: '10.00', taxable: true,
+    catalogItemId: null, overageUnitPrice: '12.00',
+  };
+
+  it('writes the bill-mode base and overage sibling and returns its summary', async () => {
+    vi.mocked(addContractLine)
+      .mockResolvedValueOnce({ line: { id: 'base', taxable: true, costBasis: '4.00' }, pricedFrom: 'contract_snapshot' } as never)
+      .mockResolvedValueOnce({ line: { id: 'overage', lineTotal: '12.00' }, pricedFrom: 'contract_snapshot' } as never);
+
+    const out = await svc.materializeContractLineOntoInvoice(actor, {
+      invoiceId: 'inv1', contract, line,
+      resolved: { counted: 26, billed: 25, included: 25, overage: 1, overageMode: 'bill' },
+      currencyCode: 'USD',
+    } as never);
+
+    expect(addContractLine).toHaveBeenCalledTimes(2);
+    expect(addContractLine).toHaveBeenNthCalledWith(2, 'inv1', expect.objectContaining({
+      description: 'Overage: 1 above 25 included — Endpoints', quantity: '1.00', unitPrice: '12.00',
+      taxable: true, costBasis: '4.00', catalogItemId: null, sourceId: 'cl1', contractId: 'c1',
+    }), actor);
+    expect(out.overageLine).toMatchObject({ id: 'overage' });
+    expect(out.overage).toMatchObject({ invoiceLineId: 'overage', mode: 'bill' });
+  });
+
+  it('writes only the flag-mode base and returns a non-invoiced summary', async () => {
+    vi.mocked(addContractLine).mockResolvedValueOnce({
+      line: { id: 'base', taxable: true, costBasis: null }, pricedFrom: 'contract_snapshot',
+    } as never);
+
+    const out = await svc.materializeContractLineOntoInvoice(actor, {
+      invoiceId: 'inv1', contract, line: { ...line, overageUnitPrice: null },
+      resolved: { counted: 26, billed: 25, included: 25, overage: 1, overageMode: 'flag' },
+      currencyCode: 'USD',
+    } as never);
+
+    expect(addContractLine).toHaveBeenCalledTimes(1);
+    expect(out.overageLine).toBeNull();
+    expect(out.overage).toMatchObject({ invoiceLineId: null, mode: 'flag' });
   });
 });
 
