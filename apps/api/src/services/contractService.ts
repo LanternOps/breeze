@@ -1211,9 +1211,24 @@ export async function changeContractCurrency(
     }
     if (c.currencyCode === input.currencyCode) return c; // no-op restamp
 
-    const lineRows = await tx.select({ id: contractLines.id, catalogItemId: contractLines.catalogItemId })
-      .from(contractLines).where(eq(contractLines.contractId, contractId)).orderBy(contractLines.id);
+    const lineRows = await tx.select({
+      id: contractLines.id, catalogItemId: contractLines.catalogItemId,
+      overageUnitPrice: contractLines.overageUnitPrice,
+    }).from(contractLines).where(eq(contractLines.contractId, contractId)).orderBy(contractLines.id);
     if (lineRows.length > 0) {
+      // #3205 W04 decision 15: the reprice loop writes only unit_price
+      // (`:822`) and cannot re-derive a hand-entered overage rate from a price
+      // book, so a catalog-linked line with one would keep a wrong-currency
+      // number that every future invoice would carry. Refused for BOTH reprice
+      // and a bare restamp; clearLines is still allowed, because it deletes the
+      // lines — and the rate with them.
+      const withOverageRate = lineRows.filter((l) => l.overageUnitPrice !== null).length;
+      if (withOverageRate > 0 && !input.clearLines) {
+        throw new ContractServiceError(
+          `${withOverageRate} line(s) carry an overage rate priced in ${c.currencyCode} that cannot be re-derived from a price book — clear the allowance on those lines, or pass clearLines to remove all lines`,
+          409, 'CURRENCY_LOCKED'
+        );
+      }
       if (input.reprice) {
         // Multi-currency wave 3 (#3775): re-resolve every catalog-linked line's
         // unit_price from the price book in the NEW currency on the locked tx

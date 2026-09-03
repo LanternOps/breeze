@@ -297,6 +297,25 @@ describe('pushInvoice', () => {
     expect(body.Line[0].SalesItemLineDetail).toMatchObject({ TaxCodeRef: { value: 'NON' } });
   });
 
+  it('pushes a contract base line and its overage sibling, the overage with no ItemRef (#3205 W04)', async () => {
+    const fetchMock = mockFetchJsonOnce({ Invoice: { Id: '311', SyncToken: '0' } });
+
+    await quickbooksProvider.pushInvoice(taxConn, invoicePayload({
+      subtotal: '262.00', taxTotal: '26.20', total: '288.20',
+      lines: [
+        line({ invoiceLineId: 'base', description: 'Endpoints', quantity: '25.00', unitPrice: '10.00', lineTotal: '250.00', taxable: true }),
+        line({ invoiceLineId: 'over', description: 'Overage: 1 above 25 included — Endpoints', quantity: '1.00', unitPrice: '12.00', lineTotal: '12.00', taxable: true }),
+      ],
+    }), [{ invoiceLineId: 'base', remoteItemRef: { id: '77' } }]); // the overage is never catalog-linked
+
+    const body = JSON.parse(String(lastFetchInit(fetchMock).body));
+    expect(body.Line).toHaveLength(2);
+    expect(body.Line[0].SalesItemLineDetail).toMatchObject({ ItemRef: { value: '77' }, Qty: 25, UnitPrice: 10, TaxCodeRef: { value: 'TAX' } });
+    expect(body.Line[1]).toMatchObject({ Amount: 12, Description: 'Overage: 1 above 25 included — Endpoints' });
+    expect(body.Line[1].SalesItemLineDetail).not.toHaveProperty('ItemRef');
+    expect(body.Line[1].SalesItemLineDetail).toMatchObject({ Qty: 1, UnitPrice: 12, TaxCodeRef: { value: 'TAX' } });
+  });
+
   it('sends sparse update with Id + SyncToken when a mapping is provided, and throws without a sync token', async () => {
     const fetchMock = mockFetchJsonOnce({ Invoice: { Id: '310', SyncToken: '4' } });
 
