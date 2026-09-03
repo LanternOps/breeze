@@ -665,6 +665,13 @@ export const ringAutoApproveSchema = z.object({
   // first-seen otherwise (#2218). null = inherit deferralDays. Optional for
   // the same old-shape-preservation reason as thirdPartyApps.
   thirdPartyDeferralDays: z.number().int().min(0).max(365).nullable().optional(),
+  // Opt-in to auto-approving patches with no severity rating (severity IS NULL
+  // or the 'unknown' sentinel) — issue #3758. Fail-closed default: unrated
+  // patches never auto-approve unless this is explicitly true. OPTIONAL (no
+  // default) for the same old-shape-preservation reason as thirdPartyApps: an
+  // omitted value means "writer predates this field" and is preserved by
+  // mergeRingAutoApproveWrite, not reset to false.
+  autoApproveUnrated: z.boolean().optional(),
 }).superRefine((data, ctx) => {
   if (data.enabled && data.severities.length === 0 && !data.thirdPartyApps) {
     ctx.addIssue({
@@ -699,9 +706,11 @@ export function mergeRingAutoApproveWrite(
   deferralDays: number;
   thirdPartyApps: boolean;
   thirdPartyDeferralDays: number | null;
+  autoApproveUnrated: boolean;
 } {
   let storedThirdPartyApps = false;
   let storedThirdPartyDeferralDays: number | null = null;
+  let storedAutoApproveUnrated = false;
   if (storedRaw && typeof storedRaw === 'object') {
     const stored = storedRaw as Record<string, unknown>;
     const storedSeverities = Array.isArray(stored.severities)
@@ -716,6 +725,7 @@ export function mergeRingAutoApproveWrite(
       typeof rawTp === 'number' && Number.isInteger(rawTp) && rawTp >= 0 && rawTp <= 365
         ? rawTp
         : null;
+    storedAutoApproveUnrated = stored.autoApproveUnrated === true;
   }
   return {
     enabled: incoming.enabled,
@@ -726,6 +736,7 @@ export function mergeRingAutoApproveWrite(
       incoming.thirdPartyDeferralDays !== undefined
         ? incoming.thirdPartyDeferralDays
         : storedThirdPartyDeferralDays,
+    autoApproveUnrated: incoming.autoApproveUnrated ?? storedAutoApproveUnrated,
   };
 }
 
