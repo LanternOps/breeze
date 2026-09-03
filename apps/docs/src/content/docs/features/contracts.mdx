@@ -38,10 +38,13 @@ Each line is one charge on the contract. Lines can resolve their quantity in dif
 |-----------|----------------------------|
 | Flat | A fixed amount each period, regardless of count |
 | Per device | Counts the customer's devices at billing time × unit price |
+| Per device role | Counts the customer's devices whose role is in the line's set (for example switch + router + firewall, or workstation + server) at billing time × unit price |
 | Per seat | Counts the customer's seats/users at billing time × unit price |
 | Manual | A fixed quantity you set × unit price |
 
-Per-device and per-seat lines can be scoped to a specific **site** so you bill only the devices or seats at that location. A line can link to a [catalog item](/features/product-catalog/), which prefills its description and price.
+Per-device and per-device-role lines can be scoped to a specific **site** so you bill only the devices at that location. Per-seat lines always bill the organization's whole active-user count and cannot be site-scoped. A line can link to a [catalog item](/features/product-catalog/), which prefills its description and price.
+
+Device roles come from the agent's automatic classification, a network discovery scan, or a manual override on the device. A device whose role is still **Unknown** is never billed by a per-device-role line. The contract's estimate and each generated invoice report how many devices on the organization are not billed by any line, broken down by role, so you can classify them or add a line before the next period.
 
 ## Creating a Contract
 
@@ -50,9 +53,9 @@ A contract is priced in the customer organization's billing currency, which the 
 <Steps>
 1. Go to **Contracts** and click **New contract**.
 2. Select the customer organization, name the contract, and set the billing timing, interval, and start date.
-3. Add lines -- choose flat, per device, per seat, or manual, and set the price (and quantity where applicable). Link a catalog item to prefill description and price.
+3. Add lines -- choose flat, per device, per device role, per seat, or manual, and set the price (and quantity or roles where applicable). Link a catalog item to prefill description and price.
 4. Add any **terms** and notes.
-5. Review the **estimated value this period** -- per-device and per-seat lines resolve to live counts so the estimate is real, not a placeholder.
+5. Review the **estimated value this period** -- per-device, per-device-role and per-seat lines resolve to live counts so the estimate is real, not a placeholder, and any devices no line bills are called out.
 6. **Activate** the contract to start billing.
 </Steps>
 
