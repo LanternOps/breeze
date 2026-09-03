@@ -87,6 +87,7 @@ type RebootManager struct {
 	notifyTimers     []*time.Timer
 	osTimer          *time.Timer
 	notifyFn         NotifyFunc
+	promptFn         PromptFunc
 	stopChan         chan struct{}
 	stopped          bool
 	maxRebootsPerDay int
@@ -94,7 +95,19 @@ type RebootManager struct {
 	// osInvoked records that the OS shutdown countdown has actually been
 	// started, so Cancel only tries to abort something that exists. Without it
 	// Cancel would always fail on macOS, where abortOSReboot can never succeed.
+	//
+	// Set only AFTER execOSReboot returns successfully. Setting it before, as
+	// this did originally, opened a window in which Cancel and a re-schedule both
+	// took the abort path while there was still nothing to abort: the abort
+	// "succeeded", the caller was told the reboot was off, and exec then ran and
+	// took the machine down anyway. osInvoking covers that window instead.
 	osInvoked bool
+	// osInvoking is true from the moment runOSReboot commits to the shutdown
+	// until execOSReboot returns. Nothing can be aborted in that window, so
+	// Cancel, Defer and a re-schedule are all REFUSED there rather than handed a
+	// success they cannot deliver — the same honesty rule Cancel already applies
+	// to a platform whose abort cannot work.
+	osInvoking bool
 	// generation identifies the current schedule. time.Timer.Stop() does not
 	// wait for an AfterFunc callback that has already started — those run on
 	// their own goroutines — so stopping the timers is not enough on its own:
@@ -122,13 +135,23 @@ type RebootManager struct {
 	deferralLedger func() string
 }
 
-// NewRebootManager creates a new RebootManager with circuit breaker protection.
+// NewRebootManager creates a new RebootManager with circuit breaker protection
+// and no interactive surface: every warning is a fire-and-forget notification,
+// exactly as before #3207.
 func NewRebootManager(notifyFn NotifyFunc, maxRebootsPerDay int) *RebootManager {
+	return NewRebootManagerWithPrompt(notifyFn, nil, maxRebootsPerDay)
+}
+
+// NewRebootManagerWithPrompt adds the interactive seam. promptFn may be nil,
+// which is the same manager NewRebootManager builds — a headless box, or a build
+// with no helper, must still warn the user and still reboot on time.
+func NewRebootManagerWithPrompt(notifyFn NotifyFunc, promptFn PromptFunc, maxRebootsPerDay int) *RebootManager {
 	if maxRebootsPerDay <= 0 {
 		maxRebootsPerDay = 3
 	}
 	rm := &RebootManager{
 		notifyFn:         notifyFn,
+		promptFn:         promptFn,
 		stopChan:         make(chan struct{}),
 		maxRebootsPerDay: maxRebootsPerDay,
 		nowFn:            time.Now,
@@ -193,6 +216,13 @@ func (r *RebootManager) scheduleLockedAt(now time.Time, delay time.Duration, dea
 		return fmt.Errorf("reboot manager is stopped")
 	}
 
+	// The shutdown command is being handed to the OS right now. There is nothing
+	// to abort yet and no way to recall it once it lands, so refuse rather than
+	// arm a new schedule on top of a reboot that is already going to happen.
+	if r.osInvoking {
+		return fmt.Errorf("the restart command is being handed to the operating system and cannot be superseded")
+	}
+
 	// An OS-level countdown may already be running: runOSReboot fires at
 	// OSInvokeAt, a minute before the machine actually goes down. That countdown
 	// lives in the OS, not this process, so simply re-arming Go timers on top of
@@ -249,10 +279,10 @@ func (r *RebootManager) scheduleLockedAt(now time.Time, delay time.Duration, dea
 		// failure, so the field describes only the most recent attempt.
 	}
 
-	for _, n := range plan.Notifications {
-		notif := n // capture for closure
-		r.notifyTimers = append(r.notifyTimers, r.afterFunc(notif.After, func() {
-			r.emitNotification(gen, notif)
+	for _, rung := range planRebootRungs(plan) {
+		rung := rung // capture for closure
+		r.notifyTimers = append(r.notifyTimers, r.afterFunc(rung.notification.After, func() {
+			r.emitNotification(gen, rung)
 		}))
 	}
 
@@ -310,7 +340,7 @@ func (r *RebootManager) Defer() (time.Duration, error) {
 	if r.stopped {
 		return 0, fmt.Errorf("reboot manager is stopped")
 	}
-	if r.osInvoked {
+	if r.osInvoked || r.osInvoking {
 		return 0, fmt.Errorf("the restart countdown has already started and cannot be postponed")
 	}
 	if !r.state.RebootScheduled {
@@ -374,6 +404,14 @@ func (r *RebootManager) ledgerPath() string {
 // misleading "no reboot scheduled" while a countdown was live.
 func (r *RebootManager) Cancel() error {
 	r.mu.Lock()
+	// The shutdown command is mid-flight. abortOSReboot has nothing to abort yet,
+	// so running it here would report a cancellation that never happened while
+	// exec still took the machine down. Refuse instead — the window is the length
+	// of one exec call.
+	if r.osInvoking {
+		r.mu.Unlock()
+		return fmt.Errorf("the restart command is being handed to the operating system and can no longer be cancelled")
+	}
 	if !r.state.RebootScheduled && !r.osInvoked {
 		r.mu.Unlock()
 		return fmt.Errorf("no reboot scheduled")
@@ -439,20 +477,109 @@ func (r *RebootManager) cancelLocked() {
 	r.notifyTimers = nil
 }
 
-func (r *RebootManager) emitNotification(gen uint64, n RebootNotification) {
+// emitNotification delivers one rung of the warning ladder, as an interactive
+// prompt when this rung may offer a postponement and as a plain notification
+// otherwise.
+//
+// Nothing here holds r.mu across the delivery. The prompt blocks for up to
+// maxRebootPromptWindow, and holding the lock would stall State(), Cancel(), the
+// OS timer callback and every sibling rung behind a dialog nobody is looking at.
+func (r *RebootManager) emitNotification(gen uint64, rung rebootRung) {
+	n := rung.notification
+
 	r.mu.Lock()
 	if r.stopped || gen != r.generation {
 		r.mu.Unlock()
 		return
 	}
 	notifyFn := r.notifyFn
+	promptFn := r.promptFn
+	policy := r.deferral
+	used := r.deferralsUsed
+	// ComputeDeferral is the single authority on whether a postponement is
+	// available, so the button offered here can never be one Defer() would then
+	// refuse. It is pure, so calling it under the lock costs nothing.
+	canPostpone := policy.Allowed && ComputeDeferral(
+		policy, used, r.nowFn(), r.state.ScheduledAt, r.state.Deadline).Granted
 	r.state.NotifiedUser = true
 	r.state.NotificationSent = r.nowFn()
 	r.mu.Unlock()
 
-	if notifyFn != nil {
-		notifyFn(n.Title, n.Body, n.Urgency)
+	body := rebootPromptBody(n.Body, rebootDeferralNote(policy, used, canPostpone))
+
+	offerPrompt := rung.deferrable && promptFn != nil && canPostpone
+	if !offerPrompt {
+		if notifyFn != nil {
+			notifyFn(n.Title, body, n.Urgency)
+		}
+		return
 	}
+
+	actions := []string{
+		RebootActionRestartNow,
+		rebootActionPostpone(time.Duration(policy.DeferralMinutes) * time.Minute),
+	}
+	clicked := promptFn(n.Title, body, n.Urgency, actions, rung.promptWindow)
+
+	switch clicked {
+	case "":
+		// No decision. Proceed exactly as scheduled — silence is never a
+		// postponement and never an acceleration. The prompt itself was the
+		// warning, so nothing more is emitted.
+	case RebootActionRestartNow:
+		if err := r.restartNow(gen); err != nil {
+			log.Warn("could not honour Restart now", "error", err.Error())
+			r.notifyUser("Restart Could Not Be Started", err.Error(), "critical")
+		}
+	case actions[1]:
+		// Compared against the label we sent rather than a well-known constant:
+		// the helper echoes back a string, and only the exact offer counts.
+		if _, err := r.Defer(); err != nil {
+			// Refused after the fact — the operator cancelled while the dialog
+			// was open, or the deadline moved. Say so rather than leaving the
+			// click looking like it worked.
+			log.Info("postponement refused", "reason", err.Error())
+			r.notifyUser("Restart Cannot Be Postponed", err.Error(), "critical")
+		}
+	default:
+		log.Warn("reboot prompt returned a label that was never offered", "clicked", clicked)
+	}
+}
+
+// notifyUser sends a one-off notification outside the ladder, used to tell the
+// user why a button they pressed did not do what it promised.
+func (r *RebootManager) notifyUser(title, body, urgency string) {
+	r.mu.Lock()
+	notifyFn := r.notifyFn
+	r.mu.Unlock()
+	if notifyFn != nil {
+		notifyFn(title, body, urgency)
+	}
+}
+
+// restartNow collapses the countdown to the shortest schedule the planner allows.
+//
+// NOT an immediate reboot: PlanReboot(MinRebootDelay) still emits the closing
+// notice and still hands the OS a non-zero grace, which is the race #3197 exists
+// to prevent. The deferral policy is carried over so a user who changes their
+// mind at the new lead rung is not silently locked out.
+//
+// gen is checked under the lock because ScheduleWithOptions has no generation
+// check of its own: a "Restart now" answered after the operator cancelled would
+// otherwise arm a brand-new reboot they had just called off — the same
+// resurrection hazard Defer() documents.
+func (r *RebootManager) restartNow(gen uint64) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.stopped {
+		return fmt.Errorf("reboot manager is stopped")
+	}
+	if gen != r.generation || !r.state.RebootScheduled {
+		return fmt.Errorf("the restart was cancelled or rescheduled while the prompt was open")
+	}
+	return r.scheduleLockedAt(r.nowFn(), MinRebootDelay, r.state.Deadline,
+		r.state.Reason, r.state.Source, RebootOptions{Deferral: r.deferral})
 }
 
 func (r *RebootManager) runOSReboot(gen uint64, grace time.Duration) {
@@ -497,7 +624,13 @@ func (r *RebootManager) runOSReboot(gen uint64, grace time.Duration) {
 	// Record this reboot
 	r.rebootHistory = append(r.rebootHistory, now)
 	r.state.RebootScheduled = false
-	r.osInvoked = true
+	// osInvoking, NOT osInvoked: the shutdown command has not been issued yet.
+	// Marking it invoked here — as this did originally — meant that for the whole
+	// duration of the exec call, Cancel() and a re-schedule both took the abort
+	// path, abortOSReboot found nothing to abort and returned success, and the
+	// machine then went down anyway at the original time. Only exec's own success
+	// promotes this to osInvoked, from which point the abort is real.
+	r.osInvoking = true
 	exec := r.execOSReboot
 	r.mu.Unlock()
 
@@ -507,21 +640,25 @@ func (r *RebootManager) runOSReboot(gen uint64, grace time.Duration) {
 	if exec == nil {
 		log.Error("no OS reboot implementation for this platform")
 		r.mu.Lock()
-		r.osInvoked = false
+		r.osInvoking = false
 		r.state.LastError = "no OS reboot implementation for this platform"
 		r.mu.Unlock()
 		return
 	}
-	if err := exec(grace); err != nil {
-		r.mu.Lock()
-		r.osInvoked = false
+	err := exec(grace)
+	r.mu.Lock()
+	r.osInvoking = false
+	if err != nil {
 		r.state.LastError = fmt.Sprintf("OS reboot invocation failed: %v", err)
 		r.mu.Unlock()
 		// A failed shutdown invocation used to be discarded entirely: the old
 		// code called exec.Command(...).Run() and ignored the error, so a
 		// blocked or missing shutdown binary looked identical to a reboot.
 		log.Error("failed to invoke OS reboot", "error", err, "grace", grace.String())
+		return
 	}
+	r.osInvoked = true
+	r.mu.Unlock()
 }
 
 func rebootHistoryPath() string {

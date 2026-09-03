@@ -1003,12 +1003,36 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 	// Register winget provider (SYSTEM/machine-scope; see winget_register_windows.go)
 	h.registerSystemWinget()
 
-	// Initialize reboot manager (uses session broker for user notifications)
-	h.rebootMgr = patching.NewRebootManager(func(title, body, urgency string) {
-		if h.sessionBroker != nil {
-			h.sessionBroker.BroadcastNotification(title, body, urgency)
-		}
-	}, cfg.PatchRebootMaxPerDay)
+	// Initialize reboot manager (uses session broker for user notifications, and
+	// for the interactive postponement prompt when policy enables deferral).
+	h.rebootMgr = patching.NewRebootManagerWithPrompt(
+		func(title, body, urgency string) {
+			if h.sessionBroker != nil {
+				h.sessionBroker.BroadcastNotification(title, body, urgency)
+			}
+		},
+		func(title, body, urgency string, actions []string, timeout time.Duration) string {
+			if h.sessionBroker == nil {
+				return ""
+			}
+			res, err := h.sessionBroker.RequestNotificationDecision(ipc.NotifyRequest{
+				Title:     title,
+				Body:      body,
+				Urgency:   urgency,
+				Actions:   actions,
+				TimeoutMs: int(timeout.Milliseconds()),
+			}, timeout)
+			if err != nil {
+				// Not a failure: no helper, an old helper that ignores Actions, or
+				// a user who simply did not answer. All of them mean "no decision",
+				// and the reboot proceeds exactly as scheduled.
+				log.Debug("reboot prompt returned no decision; proceeding as scheduled", "error", err.Error())
+				return ""
+			}
+			return res.ActionClicked
+		},
+		cfg.PatchRebootMaxPerDay,
+	)
 
 	// Set backup binary path for IPC forwarding to breeze-backup helper
 	h.backupBinaryPath = cfg.BackupBinaryPath
