@@ -820,6 +820,8 @@ describe('processRunScheduledReport', () => {
       executionScopeUserId: null,
       executionScopePrincipalKind: 'portal_user',
     }]));
+    const failedInsert = insertChain([{ id: RUN_ID }]);
+    insertMock.mockReturnValueOnce(failedInsert);
 
     await processRunScheduledReport({
       type: 'run-scheduled-report',
@@ -827,8 +829,49 @@ describe('processRunScheduledReport', () => {
       occurrenceKey: 202607010900,
     });
 
-    expect(insertMock).not.toHaveBeenCalled();
+    expect(failedInsert.values).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reportId: REPORT_ID,
+        status: 'failed',
+        errorMessage: 'portal_user_principal_definition',
+        requestedByKind: 'portal_user',
+        requestedByUserId: null,
+        requestedByPortalUserId: null,
+      }),
+    );
     expect(decodeSiteScopeMock).not.toHaveBeenCalled();
+    expect(resolveLiveReportAuthorityMock).not.toHaveBeenCalled();
+    expect(generateReportMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['legacy scope', { decodedScope: { version: 1, kind: 'legacy_unscoped', orgId: ORG_ID } }],
+    ['unverifiable scope', { decodeError: new Error('partial scope') }],
+  ])('does not forge user provenance when denying a definition with no execution user for %s', async (_name, state) => {
+    selectMock.mockReturnValueOnce(selectChain([{
+      ...report,
+      executionScopeUserId: null,
+      executionScopePrincipalKind: null,
+    }]));
+    if ('decodedScope' in state) scopeState.decodedScope = state.decodedScope;
+    if ('decodeError' in state) scopeState.decodeError = state.decodeError;
+    const failedInsert = insertChain([{ id: RUN_ID }]);
+    insertMock.mockReturnValueOnce(failedInsert);
+
+    await processRunScheduledReport({
+      type: 'run-scheduled-report',
+      reportId: REPORT_ID,
+      occurrenceKey: 202607010900,
+    });
+
+    expect(failedInsert.values).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: 'failed',
+        requestedByKind: null,
+        requestedByUserId: null,
+        requestedByPortalUserId: null,
+      }),
+    );
     expect(resolveLiveReportAuthorityMock).not.toHaveBeenCalled();
     expect(generateReportMock).not.toHaveBeenCalled();
   });

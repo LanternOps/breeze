@@ -444,7 +444,18 @@ export async function processRunScheduledReport(
 
   const config = (report.config ?? {}) as Record<string, unknown>;
 
-  const deny = async (reason: string): Promise<void> => {
+  const deny = async (
+    reason: string,
+    requestedByKind:
+      | 'user'
+      | 'system'
+      | 'portal_user'
+      | null = report.executionScopePrincipalKind === 'system'
+        ? 'system'
+        : report.executionScopeUserId
+          ? 'user'
+          : null,
+  ): Promise<void> => {
     await db
       .insert(reportRuns)
       .values({
@@ -452,12 +463,9 @@ export async function processRunScheduledReport(
         status: 'failed',
         completedAt: new Date(),
         errorMessage: reason,
-        requestedByKind:
-          report.executionScopePrincipalKind === 'system' ? 'system' : 'user',
+        requestedByKind,
         requestedByUserId:
-          report.executionScopePrincipalKind === 'system'
-            ? null
-            : report.executionScopeUserId,
+          requestedByKind === 'user' ? report.executionScopeUserId : null,
         requestedByPortalUserId: null,
       })
       .returning();
@@ -482,6 +490,8 @@ export async function processRunScheduledReport(
     );
     if (definitionPrincipalKind === 'system') {
       await deny('system_principal_definition');
+    } else if (definitionPrincipalKind === 'portal_user') {
+      await deny('portal_user_principal_definition', 'portal_user');
     }
     return;
   }
