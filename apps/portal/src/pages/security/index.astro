@@ -22,5 +22,9 @@ if (overview.statusCode === 401 || devices.statusCode === 401) {
       ? <SecurityOverview overview={overview.data} />
       : <p data-testid="portal-security-error">{overview.error}</p>
   }
-  <SecurityDeviceTable devices={devices.data?.data ?? []} />
+  {
+    devices.data
+      ? <SecurityDeviceTable devices={devices.data.data} />
+      : <p data-testid="portal-security-devices-error">{devices.error}</p>
+  }
 </PortalLayout>
