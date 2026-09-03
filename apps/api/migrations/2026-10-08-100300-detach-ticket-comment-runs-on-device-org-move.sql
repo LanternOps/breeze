@@ -40,19 +40,38 @@
 -- row out of the partial unique index ticket_comments_one_ai_note_per_run_uq
 -- (predicate requires agent_run_id IS NOT NULL), so it can never collide.
 --
--- Severity today: latent, not live — nothing writes ticket_comments.agent_run_id
--- yet (the autonomous-note lane is deferred; see the column comment in
--- db/schema/portal.ts), so no production row carries a value on either axis.
--- The point of fixing it now is to have the contract in place before that lane
--- ships.
+-- CORRECTION to the issue's own framing: #4644 described this as "latent, not
+-- live" on the premise that "nothing writes ticket_comments.agent_run_id yet".
+-- That premise is FALSE as of this migration: addAiTriageNote()
+-- (services/ticketService.ts, P2-4a #4300, 2026-08-31) is a real, unflagged
+-- writer — every AI-agent `comment` tool call
+-- (services/aiToolsTicketing.ts's 'comment' action, when the caller carries an
+-- agentRunId) inserts a ticket_comments row with a live agent_run_id. So this
+-- IS a live gap, not a preemptive one: any ticket that received an AI-authored
+-- comment and then had its bound device moved to another org — on EITHER axis,
+-- before #4642 (ticket axis) or before this migration (device axis) — can
+-- already carry a stale cross-org agent_run_id today. (The column comment in
+-- db/schema/portal.ts still says "nothing writes it yet"; that comment
+-- predates P2-4a and is corrected in the same commit as this migration.)
 --
--- NO HISTORICAL BACKFILL, for the same reason 2026-09-29's header gives: doing
--- a bare cleanup UPDATE here — outside any request/access context — would run
--- under whatever GUCs the migration runner happens to hold, and ticket_comments'
--- UPDATE policy (breeze_ticket_parent_update, an EXISTS join on the parent
--- ticket's org) is not guaranteed to pass. Since nothing writes this column
--- yet, there is nothing to backfill: any pre-existing NULL is already correct,
--- and no non-NULL row can exist to be stale.
+-- BACKFILL, therefore, unlike 2026-09-29's/2026-10-06's declined backfills for
+-- columns nothing writes: the statement below sweeps EVERY ticket_comments row
+-- (both axes, not just the device axis this trigger covers) whose
+-- agent_run_id names a run in an org that no longer matches its ticket's
+-- current org — the exact staleness condition this whole reverse-pointer class
+-- exists to prevent. `breeze.scope` is set to 'system' for this migration's
+-- transaction FIRST: ticket_comments is FORCE ROW LEVEL SECURITY
+-- (2026-05-03-tenant-rls-force-and-invites.sql) with an EXISTS-join UPDATE
+-- policy (breeze_ticket_parent_update) that is NOT satisfied by a bare
+-- migration-role connection, so — per the migration_backfill_without_
+-- breeze_scope_silent_noop lesson — an UPDATE issued without that GUC set
+-- would silently match zero rows on a managed Postgres (no BYPASSRLS) while
+-- reporting nothing wrong. Row count is reported via GET DIAGNOSTICS +
+-- RAISE WARNING (not silent) so any cleanup is visible in the migration log,
+-- per CLAUDE.md's cleanup-statement convention — these are exactly the kind of
+-- rows that could, in principle, evidence a tenant-isolation gap having been
+-- exploited (an AI-authored note surviving into a new tenant naming a run the
+-- new tenant cannot see), so a recorded count matters even when it is 0.
 --
 -- Full function body copied verbatim from
 -- 2026-10-06-124500-cascade-device-org-move-intent-scope.sql (the newest
@@ -130,3 +149,27 @@ BEGIN
   RETURN NULL; -- AFTER trigger; return value ignored
 END;
 $$;
+
+-- Backfill: sever every ALREADY-stale ticket_comments.agent_run_id, on both
+-- the ticket axis (#4642) and the device axis (this migration) — see the
+-- header above for why this is live, not preventative.
+DO $$
+DECLARE
+  n integer;
+BEGIN
+  PERFORM set_config('breeze.scope', 'system', true);
+  -- FROM-list items cannot reference the UPDATE target (c) in their own join
+  -- condition (`t.id = c.ticket_id` there raises 42P01, "invalid reference to
+  -- FROM-clause entry"), so both joins are plain FROM-list entries and both
+  -- join predicates live in WHERE instead.
+  UPDATE public.ticket_comments c
+     SET agent_run_id = NULL
+    FROM public.ai_agent_runs r, public.tickets t
+   WHERE c.agent_run_id = r.id
+     AND c.ticket_id = t.id
+     AND r.org_id IS DISTINCT FROM t.org_id;
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n > 0 THEN
+    RAISE WARNING 'ticket_comments backfill: severed % stale cross-org agent_run_id pointer(s)', n;
+  END IF;
+END $$;
