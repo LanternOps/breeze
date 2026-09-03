@@ -21,7 +21,7 @@ import { cn } from '@/lib/utils';
 import { ResponsiveTable, DataCard, CardField, CardActions } from '../shared/ResponsiveTable';
 import { usePatchSelection } from './usePatchSelection';
 
-export type PatchSeverity = 'critical' | 'important' | 'moderate' | 'low';
+export type PatchSeverity = 'critical' | 'important' | 'moderate' | 'low' | 'unrated';
 export type PatchApprovalStatus = 'pending' | 'approved' | 'declined' | 'deferred';
 
 export type Patch = {
@@ -55,7 +55,8 @@ const severityConfig: Record<PatchSeverity, { labelKey: string; color: string }>
   critical: { labelKey: 'patchList.severity.critical', color: 'bg-red-500/20 text-red-700 border-red-500/40' },
   important: { labelKey: 'patchList.severity.important', color: 'bg-orange-500/20 text-orange-700 border-orange-500/40' },
   moderate: { labelKey: 'patchList.severity.moderate', color: 'bg-yellow-500/20 text-yellow-700 border-yellow-500/40' },
-  low: { labelKey: 'patchList.severity.low', color: 'bg-blue-500/20 text-blue-700 border-blue-500/40' }
+  low: { labelKey: 'patchList.severity.low', color: 'bg-blue-500/20 text-blue-700 border-blue-500/40' },
+  unrated: { labelKey: 'patchList.severity.unrated', color: 'bg-muted text-muted-foreground border-border' }
 };
 
 const approvalConfig: Record<PatchApprovalStatus, { labelKey: string; color: string; icon: typeof CheckCircle }> = {
@@ -98,7 +99,8 @@ const severityRank: Record<PatchSeverity, number> = {
   critical: 0,
   important: 1,
   moderate: 2,
-  low: 3
+  low: 3,
+  unrated: 4
 };
 
 const approvalRank: Record<PatchApprovalStatus, number> = {
@@ -315,8 +317,13 @@ export default function PatchList({
   const renderSeverityBadge = (patch: Patch) => {
     const severity = severityConfig[patch.severity];
     return (
-      <span className={cn('inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium', severity.color)}>
-        {t(/* i18n-dynamic */ severity.labelKey)}
+      <span className="inline-flex flex-col gap-0.5">
+        <span className={cn('inline-flex w-fit items-center rounded-full border px-2.5 py-1 text-xs font-medium', severity.color)}>
+          {t(/* i18n-dynamic */ severity.labelKey)}
+        </span>
+        {patch.severity === 'unrated' && (
+          <span className="text-[10px] text-muted-foreground">{t('patchList.severity.unratedNote')}</span>
+        )}
       </span>
     );
   };
