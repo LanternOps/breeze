@@ -36,7 +36,14 @@ import { Job, Queue, Worker } from 'bullmq';
 
 import * as dbModule from '../db';
 import { breezeRole } from '../config/env';
-import { reports, reportRuns, organizations, partners } from '../db/schema';
+import {
+  contacts,
+  organizations,
+  partners,
+  reportRuns,
+  reportScheduleRecipients,
+  reports,
+} from '../db/schema';
 import {
   assertReportExecutionPreflight,
   generateReport,
@@ -248,13 +255,74 @@ async function claimReportOccurrence(reportId: string, observedLastGeneratedAt: 
 
 // ─── Execution ───────────────────────────────────────────────────────────────
 
-function recipientsOf(config: Record<string, unknown>): string[] {
-  const raw = config.emailRecipients;
-  if (!Array.isArray(raw)) return [];
-  return raw
-    .filter((r): r is string => typeof r === 'string')
-    .map((r) => r.trim())
-    .filter((r) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(r));
+function validEmail(value: unknown): value is string {
+  return typeof value === 'string'
+    && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
+}
+
+export async function resolveScheduledReportRecipients(args: {
+  reportId: string;
+  orgId: string;
+  config: Record<string, unknown>;
+}): Promise<string[]> {
+  const contactRows = await db
+    .select({
+      contactId: contacts.id,
+      email: contacts.email,
+    })
+    .from(reportScheduleRecipients)
+    .innerJoin(
+      contacts,
+      and(
+        eq(contacts.id, reportScheduleRecipients.contactId),
+        eq(contacts.orgId, reportScheduleRecipients.orgId),
+      ),
+    )
+    .where(and(
+      eq(reportScheduleRecipients.reportId, args.reportId),
+      eq(reportScheduleRecipients.orgId, args.orgId),
+      eq(contacts.orgId, args.orgId),
+    ));
+
+  const candidates: string[] = [];
+  for (const row of contactRows) {
+    if (!row.email) {
+      console.warn(
+        '[ReportScheduleWorker] Recipient contact has no email; skipping',
+        {
+          reportId: args.reportId,
+          contactId: row.contactId,
+        },
+      );
+      continue;
+    }
+    if (validEmail(row.email)) candidates.push(row.email.trim());
+  }
+
+  const legacy = args.config.emailRecipients;
+  if (Array.isArray(legacy)) {
+    candidates.push(
+      ...legacy.filter(validEmail).map((email) => email.trim()),
+    );
+  }
+
+  const deduped = new Map<string, string>();
+  for (const email of candidates) {
+    const key = email.toLowerCase();
+    if (!deduped.has(key)) deduped.set(key, email);
+  }
+
+  const resolved = [...deduped.values()];
+  if (resolved.length > 50) {
+    console.warn(
+      '[ReportScheduleWorker] Recipient union exceeds 50; truncating',
+      {
+        reportId: args.reportId,
+        requested: resolved.length,
+      },
+    );
+  }
+  return resolved.slice(0, 50);
 }
 
 /** One-line trend summary for the email body — "Posture score 79 — up from
@@ -444,7 +512,18 @@ export async function processRunScheduledReport(
 
   const config = (report.config ?? {}) as Record<string, unknown>;
 
-  const deny = async (reason: string): Promise<void> => {
+  const deny = async (
+    reason: string,
+    requestedByKind:
+      | 'user'
+      | 'system'
+      | 'portal_user'
+      | null = report.executionScopePrincipalKind === 'system'
+        ? 'system'
+        : report.executionScopeUserId
+          ? 'user'
+          : null,
+  ): Promise<void> => {
     await db
       .insert(reportRuns)
       .values({
@@ -452,6 +531,10 @@ export async function processRunScheduledReport(
         status: 'failed',
         completedAt: new Date(),
         errorMessage: reason,
+        requestedByKind,
+        requestedByUserId:
+          requestedByKind === 'user' ? report.executionScopeUserId : null,
+        requestedByPortalUserId: null,
       })
       .returning();
   };
@@ -463,12 +546,21 @@ export async function processRunScheduledReport(
   // requires execution_scope_user_id NOT NULL) and A7 adds the type exclusion —
   // this refuses it even if a caller forces the job in directly, BEFORE any
   // scope decode or authority resolution can invent a principal.
-  if (report.executionScopePrincipalKind === 'system') {
+  const definitionPrincipalKind = report.executionScopePrincipalKind ?? null;
+  if (definitionPrincipalKind !== null && definitionPrincipalKind !== 'user') {
     console.warn(
-      '[ReportScheduleWorker] Refusing a system-principal report definition',
-      { reportId: report.id, orgId: report.orgId },
+      '[ReportScheduleWorker] Refusing a non-user-principal report definition',
+      {
+        reportId: report.id,
+        orgId: report.orgId,
+        principalKind: definitionPrincipalKind,
+      },
     );
-    await deny('system_principal_definition');
+    if (definitionPrincipalKind === 'system') {
+      await deny('system_principal_definition');
+    } else if (definitionPrincipalKind === 'portal_user') {
+      await deny('portal_user_principal_definition', 'portal_user');
+    }
     return;
   }
 
@@ -526,6 +618,7 @@ export async function processRunScheduledReport(
   }
 
   const executionAuthority: ReportExecutionAuthority = {
+    principalKind: 'user',
     scope: effectiveScope,
     principalUserId: liveResult.authority.principalUserId,
     capturedAt: liveResult.authority.capturedAt,
@@ -545,6 +638,9 @@ export async function processRunScheduledReport(
       reportId: report.id,
       status: 'running',
       startedAt: new Date(),
+      requestedByKind: 'user',
+      requestedByUserId: executionAuthority.principalUserId,
+      requestedByPortalUserId: null,
       ...persistedSiteScopeValues(executionAuthority),
     })
     .returning();
@@ -587,7 +683,11 @@ export async function processRunScheduledReport(
       })
       .where(eq(reportRuns.id, run.id));
 
-    const recipients = recipientsOf(config);
+    const recipients = await resolveScheduledReportRecipients({
+      reportId: report.id,
+      orgId: report.orgId,
+      config,
+    });
     if (recipients.length > 0) {
       try {
         // Timezone + branding are only needed to build the email — deferred
@@ -631,7 +731,11 @@ export async function processRunScheduledReport(
     // Only once the job is out of retries: an earlier attempt may still succeed,
     // and this occurrence will not be re-enqueued after the last one fails.
     if (opts.finalAttempt) {
-      const recipients = recipientsOf(config);
+      const recipients = await resolveScheduledReportRecipients({
+        reportId: report.id,
+        orgId: report.orgId,
+        config,
+      });
       if (recipients.length > 0) {
         try {
           await emailReportFailure({ reportName: report.name, recipients });

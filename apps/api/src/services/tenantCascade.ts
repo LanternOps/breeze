@@ -353,6 +353,7 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'recovery_tokens',
   'remediation_suggestions',
   'remote_sessions',
+  'report_schedule_recipients',
   'reports',
   'restore_jobs',
   'roles',

@@ -1180,6 +1180,29 @@
         "untitled": "a newer version"
       }
     },
+    "currency": {
+      "actions": {
+        "change": "Change currency"
+      },
+      "dialog": {
+        "title": "Change quote currency",
+        "description": "This draft quote is priced in {{currency}}.",
+        "currencyLabel": "New currency",
+        "modeLegend": "What happens to the quote's lines",
+        "modeClear": "Remove all lines",
+        "modeClearHint": "Lines are deleted. Required when any line is manual or a bundle.",
+        "modeReprice": "Reprice catalog lines",
+        "modeRepriceHint": "Every catalog line is resolved from the price book of the new currency. Only possible when all lines come from the catalog.",
+        "confirm": "I understand this changes the quote's currency.",
+        "submit": "Change currency"
+      },
+      "toast": {
+        "changed": "Quote currency changed to {{currency}}."
+      },
+      "errors": {
+        "change": "Could not change the quote currency."
+      }
+    },
     "distributorLookup": {
       "feedPriceCurrencyUnknown": "Feed price currency unknown — enter a {{currency}} price",
       "feedPriceIn": "Feed price is {{feedCurrency}} — enter a {{currency}} price",
@@ -1600,6 +1623,29 @@
     "unsavedTitle": "“{{field}}” has an unsaved change — Issue unlocks once it saves."
   },
   "invoiceDetail": {
+    "currency": {
+      "actions": {
+        "change": "Change currency"
+      },
+      "dialog": {
+        "title": "Change invoice currency",
+        "description": "This draft invoice is priced in {{currency}}.",
+        "currencyLabel": "New currency",
+        "modeLegend": "What happens to the invoice's lines",
+        "modeClear": "Remove all lines",
+        "modeClearHint": "Lines are deleted. Required when any line is manual or a bundle.",
+        "modeReprice": "Reprice catalog lines",
+        "modeRepriceHint": "Every catalog line is resolved from the price book of the new currency. Only possible when all lines come from the catalog.",
+        "confirm": "I understand this changes the invoice's currency.",
+        "submit": "Change currency"
+      },
+      "toast": {
+        "changed": "Invoice currency changed to {{currency}}."
+      },
+      "errors": {
+        "change": "Could not change the invoice currency."
+      }
+    },
     "deposit": {
       "duePrefix": "Deposit of",
       "dueSuffix": "due — {{paid}} of {{total}} paid.",
