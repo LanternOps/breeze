@@ -1061,6 +1061,7 @@
     "of": "arasında",
     "devices": "cihazlar",
     "advancedFilterActive": "Gelişmiş filtre etkin",
+    "advancedFilterFailed": "Filtre yüklenemedi — hiçbir cihaz gösterilmiyor",
     "filterByDeviceClass": "Cihaz sınıfına göre filtrele",
     "filterByVpn": "VPN'e göre filtrele",
     "allVpn": "Tüm VPN'ler",
@@ -1767,6 +1768,7 @@
     "title": "Cihazlar",
     "toasts": {
       "actionFailed": "{{action}}, {{hostname}} üzerinde başarısız oldu",
+      "advancedFilterFailed": "Gelişmiş filtre yüklenemedi — yeniden denenene kadar hiçbir cihaz gösterilmeyecek",
       "agentOnlyAction": "Bu eylem yalnızca aracı cihazlar için geçerlidir. Ağ cihazlarının aracısı yoktur ve atlanmıştır.",
       "alreadyPendingTail": "Zaten Bekleyen Kuyruk",
       "bulkActionFailed": "Toplu İşlem Başarısız Oldu",
