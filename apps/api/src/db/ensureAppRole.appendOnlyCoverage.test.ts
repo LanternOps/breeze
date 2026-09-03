@@ -125,4 +125,60 @@ describe('ensureAppRole append-only re-revoke coverage (#4371)', () => {
       ).toEqual([]);
     },
   );
+
+  // #4371 writer-path matrix — the executable half of the doc comment above
+  // ensureAppRole.ts's six #4371 re-revoke blocks. Closing the original
+  // privilege gap wasn't enough on its own: every legitimate writer of these
+  // tables (device permanent-delete, device org-move, org merge, org
+  // erasure) had to keep working under the now-real privilege wall too —
+  // see deviceDeletion.ts's DEVICE_CASCADE_AUDIT_ADMIN_TABLES,
+  // routes/devices/core.ts's DEVICE_ORG_FK_CASCADE_TABLES, and
+  // orgMergeRegistry.ts's per-table classification for how each was
+  // reconciled. This asserts EXACT equality (not just "at least"), unlike
+  // the superset check above, so a future PR can't silently OVER-tighten
+  // one of these six and reopen a writer-path conflict the same way #4371's
+  // own fix did for agent_rollback_events/pam_actuation_results — a
+  // narrower re-revoke here should force a conscious update to this table,
+  // not a silent green.
+  //
+  // 'kept' lists privileges intentionally left granted; the reason lives in
+  // ensureAppRole.ts's matrix comment, not duplicated here. A table with an
+  // empty 'kept' array is fully privilege-walled — no app path ever needs
+  // breeze_app to hold UPDATE/DELETE/TRUNCATE on it.
+  const WRITER_PATH_MATRIX: ReadonlyArray<{ table: string; revoked: string[]; kept: string[] }> = [
+    { table: 'pam_actuation_results', revoked: ['UPDATE', 'DELETE', 'TRUNCATE'], kept: [] },
+    { table: 'agent_rollback_events', revoked: ['UPDATE', 'DELETE', 'TRUNCATE'], kept: [] },
+    { table: 'ml_feedback_events', revoked: ['UPDATE', 'DELETE', 'TRUNCATE'], kept: [] },
+    // peripheral_policy_delivery_events keeps UPDATE — residual gap tracked
+    // as issue #4806 (moveOrg.ts's restamp loop still needs it).
+    { table: 'peripheral_policy_delivery_events', revoked: ['DELETE', 'TRUNCATE'], kept: ['UPDATE'] },
+    { table: 'automation_action_results', revoked: ['TRUNCATE'], kept: ['UPDATE', 'DELETE'] },
+    { table: 'device_software_inventory_state', revoked: ['TRUNCATE'], kept: ['UPDATE', 'DELETE'] },
+  ];
+
+  it.each(WRITER_PATH_MATRIX)(
+    'ensureAppRole.ts revokes EXACTLY [$revoked] (not more, not less) on $table',
+    ({ table, revoked }) => {
+      const ensurePrivs = [...(ensureAppRoleRevokes.get(table) ?? new Set<string>())].sort();
+      expect(
+        ensurePrivs,
+        `ensureAppRole.ts's re-revoke for '${table}' no longer matches the documented writer-path ` +
+          `matrix (ensureAppRole.ts's #4371 comment block and this file's WRITER_PATH_MATRIX). If this ` +
+          `is a deliberate change, update BOTH the matrix here and the doc comment there — a narrower ` +
+          `revoke can silently reopen a writer-path conflict (see DEVICE_CASCADE_AUDIT_ADMIN_TABLES / ` +
+          `DEVICE_ORG_FK_CASCADE_TABLES / orgMergeRegistry.ts), and a broader one needs the same writer-path ` +
+          `audit #4371 did before it ships.`,
+      ).toEqual([...revoked].sort());
+    },
+  );
+
+  it('WRITER_PATH_MATRIX accounts for exactly the tables ensureAppRole.ts revokes something from breeze_app for beyond the pre-#4371 baseline', () => {
+    // Sanity check that the matrix itself hasn't drifted from ensureAppRole.ts:
+    // every table the matrix names must actually appear in the source with a
+    // re-revoke block (guards against a stale/renamed table silently making
+    // the it.each above a vacuous no-op).
+    for (const { table } of WRITER_PATH_MATRIX) {
+      expect(ensureAppRoleRevokes.has(table), `ensureAppRole.ts has no re-revoke block for '${table}'`).toBe(true);
+    }
+  });
 });

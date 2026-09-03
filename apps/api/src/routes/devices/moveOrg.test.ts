@@ -385,9 +385,13 @@ describe('POST /devices/:id/move-org', () => {
         ...DEVICE_SITE_DENORMALIZED_TABLES,
       ]);
       expect(getDeviceOrgDenormalizedTables()).toContain('agent_health_observations');
+      // agent_rollback_events (#4371 fixup): restamped by the SECURITY
+      // DEFINER breeze_cascade_device_org_id() trigger, not this loop's
+      // app-role UPDATE — see the doc comment on DEVICE_ORG_FK_CASCADE_TABLES.
       expect(DEVICE_ORG_FK_CASCADE_TABLES).toEqual([
         'agent_health_observations',
         'software_inventory_observations',
+        'agent_rollback_events',
       ]);
 
       expect(statements).toContain(
