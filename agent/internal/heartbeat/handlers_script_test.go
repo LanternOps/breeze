@@ -822,7 +822,7 @@ func TestExecuteViaUserHelperEmitsCustomFieldEnvelope(t *testing.T) {
 	session := sessionbroker.NewSession(serverIPC, 1000, "1000", "testuser", "quartz", "test-custom-fields", []string{"run_as_user"})
 
 	go func() {
-		clientIPC.SetReadDeadline(time.Now().Add(5 * time.Second))
+		_ = clientIPC.SetReadDeadline(time.Now().Add(5 * time.Second))
 		env, err := clientIPC.Recv()
 		if err != nil {
 			t.Errorf("client recv: %v", err)
@@ -863,8 +863,8 @@ func TestExecuteViaUserHelperEmitsCustomFieldEnvelope(t *testing.T) {
 		},
 	}, 10)
 
-	session.Close()
-	clientIPC.Close()
+	_ = session.Close()
+	_ = clientIPC.Close()
 
 	if result.Status != "completed" {
 		t.Fatalf("expected completed, got %s (error: %s)", result.Status, result.Error)
