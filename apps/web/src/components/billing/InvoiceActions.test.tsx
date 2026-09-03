@@ -32,7 +32,7 @@ const json = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
 const visibleLine: InvoiceDetail['lines'][number] = {
   id: 'line-1', invoiceId: 'inv-1', sourceType: 'manual', parentLineId: null, catalogItemId: null,
   name: null, description: 'Consulting', quantity: '2.00', unitPrice: '50.00', costBasis: null, revenueAllocation: null,
-  taxable: false, customerVisible: true, lineTotal: '100.00', isUnapprovedTime: false, sortOrder: 1,
+  taxable: false, customerVisible: true, lineTotal: '100.00', isUnapprovedTime: false, sortOrder: 1, deviceCount: 0,
 };
 
 function detail(lines: InvoiceDetail['lines'], extra: Partial<InvoiceDetail['invoice']> = {}): InvoiceDetail {
@@ -87,28 +87,65 @@ describe('InvoiceActions — issue flows', () => {
   it('Issue & Send shows a success toast when the email was dispatched (emailed:true)', async () => {
     const onChanged = vi.fn();
     fetchMock.mockImplementation(async (input: string, opts?: RequestInit) => {
-      if (input === '/invoices/inv-1/issue' && opts?.method === 'POST') return json({ data: { id: 'inv-1', status: 'sent' } });
+      if (input === '/orgs/partners/me') return json({ invoiceDeviceAppendix: false });
+      if (input === '/orgs/organizations/org-1') return json({ billingContact: { email: 'ap@acme.test' } });
       if (input === '/invoices/inv-1/send' && opts?.method === 'POST') return json({ data: { invoice: { id: 'inv-1', status: 'sent' }, emailed: true } });
       return json({ data: {} });
     });
     render(<InvoiceActions detail={detail([visibleLine])} onChanged={onChanged} variant="header" />);
 
     fireEvent.click(screen.getByTestId('invoice-issue-send'));
+    await waitFor(() => expect(screen.getByTestId('invoice-send-to')).toHaveValue('ap@acme.test'));
     fireEvent.click(await screen.findByTestId('invoice-issue-send-confirm'));
     await waitFor(() => expect(onChanged).toHaveBeenCalled());
     expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: 'Invoice issued and sent' }));
   });
 
+  it('#3205 W07: draft Issue & Send uses the composer and submits the appendix override before issue', async () => {
+    const onChanged = vi.fn();
+    fetchMock.mockImplementation(async (input: string, opts?: RequestInit) => {
+      if (input === '/orgs/partners/me') return json({ invoiceDeviceAppendix: true });
+      if (input === '/orgs/organizations/org-1') {
+        return json({ billingContact: { email: 'ap@acme.test' } });
+      }
+      if (input === '/invoices/inv-1/send' && opts?.method === 'POST') {
+        return json({ data: { invoice: { id: 'inv-1', status: 'sent' }, emailed: true } });
+      }
+      return json({ data: {} });
+    });
+    render(<InvoiceActions detail={detail([visibleLine])} onChanged={onChanged} variant="header" />);
+
+    fireEvent.click(screen.getByTestId('invoice-issue-send'));
+    const appendix = await screen.findByTestId('invoice-send-include-device-appendix') as HTMLInputElement;
+    expect(appendix.checked).toBe(true);
+    await waitFor(() => expect(screen.getByTestId('invoice-send-to')).toHaveValue('ap@acme.test'));
+    fireEvent.click(appendix);
+    fireEvent.click(screen.getByTestId('invoice-issue-send-confirm'));
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find((c) => c[0] === '/invoices/inv-1/send');
+      expect(call).toBeTruthy();
+      expect(JSON.parse(String((call![1] as RequestInit).body))).toMatchObject({
+        to: ['ap@acme.test'],
+        includeDeviceAppendix: false,
+      });
+    });
+    expect(fetchMock.mock.calls.some((c) => c[0] === '/invoices/inv-1/issue')).toBe(false);
+    expect(onChanged).toHaveBeenCalled();
+  });
+
   it('Issue & Send shows a WARNING toast (not error) when nothing was emailed (emailed:false)', async () => {
     const onChanged = vi.fn();
     fetchMock.mockImplementation(async (input: string, opts?: RequestInit) => {
-      if (input === '/invoices/inv-1/issue' && opts?.method === 'POST') return json({ data: { id: 'inv-1', status: 'sent' } });
+      if (input === '/orgs/partners/me') return json({ invoiceDeviceAppendix: false });
+      if (input === '/orgs/organizations/org-1') return json({ billingContact: { email: 'ap@acme.test' } });
       if (input === '/invoices/inv-1/send' && opts?.method === 'POST') return json({ data: { invoice: { id: 'inv-1', status: 'sent' }, emailed: false, reason: 'no_billing_contact' } });
       return json({ data: {} });
     });
     render(<InvoiceActions detail={detail([visibleLine])} onChanged={onChanged} variant="header" />);
 
     fireEvent.click(screen.getByTestId('invoice-issue-send'));
+    await waitFor(() => expect(screen.getByTestId('invoice-send-to')).toHaveValue('ap@acme.test'));
     fireEvent.click(await screen.findByTestId('invoice-issue-send-confirm'));
     await waitFor(() => expect(onChanged).toHaveBeenCalled());
     expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'warning' }));
