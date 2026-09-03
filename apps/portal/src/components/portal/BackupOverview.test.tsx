@@ -27,7 +27,17 @@ describe('BackupOverview', () => {
     expect(screen.getByTestId('portal-backup-overview').textContent).toContain('3 of 4');
     expect(
       screen.getByTestId('portal-backup-overview-last-verification').textContent
-    ).toContain('2026-09-01T09:30:00Z');
+    ).toContain('Sep 1, 2026');
+    expect(
+      screen.getByTestId('portal-backup-overview-last-verification').textContent
+    ).not.toContain('2026-09-01T09:30:00Z');
+    expect(screen.getByTestId('portal-backup-overview-last-test-restore').textContent).toContain(
+      'Aug 30, 2026'
+    );
+    expect(screen.getByTestId('portal-backup-overview-last-test-restore').textContent).toContain(
+      'Last successful test restore'
+    );
+    expect(screen.getByTestId('portal-backup-overview-as-of').textContent).toContain('Sep 2, 2026');
     expect(screen.getByTestId('portal-backup-overview-readiness').textContent).toContain('76');
     expect(screen.getByTestId('portal-backup-overview-rpo-breaches').textContent).toContain('2');
     expect(screen.getByTestId('portal-backup-overview-rto-breaches').textContent).toContain('1');

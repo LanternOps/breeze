@@ -1,4 +1,5 @@
 import type { BackupOverviewDto } from '@breeze/shared';
+import { formatDateTime } from '@/lib/utils';
 import { PageHeader, StatusMark, type MarkTone } from './ui';
 
 const STATUS_COPY: Record<
@@ -67,7 +68,9 @@ export function BackupOverview({ overview }: { overview: BackupOverviewDto }) {
             Last verification
           </dt>
           <dd className="mt-2 text-sm font-medium text-foreground">
-            {overview.lastPassedVerification?.completedAt ?? 'No verification is available'}
+            {overview.lastPassedVerification?.completedAt
+              ? formatDateTime(overview.lastPassedVerification.completedAt)
+              : 'No verification is available'}
           </dd>
         </div>
         <div
@@ -75,10 +78,12 @@ export function BackupOverview({ overview }: { overview: BackupOverviewDto }) {
           data-testid="portal-backup-overview-last-test-restore"
         >
           <dt className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
-            Last test restore
+            Last successful test restore
           </dt>
           <dd className="mt-2 text-sm font-medium text-foreground">
-            {overview.lastTestRestoreAt ?? 'No test restore is available'}
+            {overview.lastTestRestoreAt
+              ? formatDateTime(overview.lastTestRestoreAt)
+              : 'No successful test restore is available'}
           </dd>
         </div>
         <div
@@ -120,7 +125,7 @@ export function BackupOverview({ overview }: { overview: BackupOverviewDto }) {
         className="mt-3 text-xs text-muted-foreground"
         data-testid="portal-backup-overview-as-of"
       >
-        As of {overview.asOf}
+        As of {formatDateTime(overview.asOf)}
       </p>
     </section>
   );

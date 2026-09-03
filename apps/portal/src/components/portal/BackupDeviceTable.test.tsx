@@ -23,14 +23,18 @@ const configuredDevice: BackupDeviceRow = {
 
 describe('BackupDeviceTable', () => {
   it('renders configured device backup details', () => {
-    render(<BackupDeviceTable devices={[configuredDevice]} />);
+    render(<BackupDeviceTable devices={[configuredDevice]} total={125} />);
 
     const row = screen.getByTestId('portal-backup-device-d-1');
     expect(row.textContent).toContain('File Server');
-    expect(row.textContent).toContain('2026-09-02T10:00:00Z');
-    expect(row.textContent).toContain('passed — 2026-09-01T08:00:00Z');
+    expect(row.textContent).toContain('Sep 2, 2026');
+    expect(row.textContent).not.toContain('2026-09-02T10:00:00Z');
+    expect(row.textContent).toContain('passed — Sep 1, 2026');
     expect(row.textContent).toContain('None');
     expect(row.textContent).toContain('92');
+    expect(screen.getByTestId('portal-backup-device-count').textContent).toContain(
+      'Showing 1 of 125 devices'
+    );
   });
 
   it('marks degraded restore points and lists open breaches', () => {
@@ -48,7 +52,8 @@ describe('BackupDeviceTable', () => {
     );
 
     const row = screen.getByTestId('portal-backup-device-d-2');
-    expect(row.textContent).toContain('2026-09-02T10:00:00Z (degraded)');
+    expect(row.textContent).toContain('Sep 2, 2026');
+    expect(row.textContent).toContain('(degraded)');
     expect(row.textContent).toContain('RPO, RTO');
   });
 
@@ -73,7 +78,7 @@ describe('BackupDeviceTable', () => {
     );
 
     expect(screen.getByTestId('portal-backup-device-d-3').textContent).toContain(
-      'No backup is configured for this device'
+      'No backup has run for this device yet'
     );
   });
 

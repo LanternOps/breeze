@@ -6,15 +6,19 @@ import type { SQL } from 'drizzle-orm';
 const state = vi.hoisted(() => ({
   rows: [] as unknown[][],
   wheres: [] as unknown[],
+  orderBys: [] as unknown[],
+  selections: [] as unknown[],
 }));
 
 vi.mock('../../db', () => ({
   db: {
-    select: vi.fn(() => {
+    select: vi.fn((selection: unknown) => {
+      state.selections.push(selection);
       const chain: Record<string, unknown> = {};
       for (const method of ['from', 'innerJoin', 'leftJoin', 'where', 'orderBy', 'limit', 'offset']) {
         chain[method] = vi.fn((arg: unknown) => {
           if (method === 'where') state.wheres.push(arg);
+          if (method === 'orderBy') state.orderBys.push(arg);
           return chain;
         });
       }
@@ -33,6 +37,8 @@ describe('backupTile', () => {
   beforeEach(() => {
     state.rows.length = 0;
     state.wheres.length = 0;
+    state.orderBys.length = 0;
+    state.selections.length = 0;
   });
 
   it('returns latest passed verification and configured-device counts', async () => {
@@ -75,13 +81,6 @@ describe('backupTile', () => {
 });
 
 // W06 — backup overview + per-device backup evidence
-const { getBackupHealthSummaryMock } = vi.hoisted(() => ({
-  getBackupHealthSummaryMock: vi.fn(),
-}));
-vi.mock('../../routes/backup/readinessCalculator', () => ({
-  getBackupHealthSummary: getBackupHealthSummaryMock,
-}));
-
 import { backupDevicesPage, backupOverview } from './backupReadModel';
 import { db } from '../../db';
 
@@ -89,6 +88,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   state.rows.length = 0;
   state.wheres.length = 0;
+  state.orderBys.length = 0;
+  state.selections.length = 0;
 });
 
 it('returns overview verification, restore, breach, and readiness evidence', async () => {
@@ -98,12 +99,8 @@ it('returns overview verification, restore, breach, and readiness evidence', asy
     [{ completedAt: new Date('2026-09-02T09:00:00Z'), verificationType: 'integrity' }],
     [{ completedAt: new Date('2026-09-01T09:00:00Z') }],
     [{ eventType: 'rpo_breach' }, { eventType: 'rto_breach' }, { eventType: 'missed_backup' }],
-    [{ readinessCount: 2 }],
+    [{ readinessCount: 2, meanReadinessScore: 83 }],
   );
-  getBackupHealthSummaryMock.mockResolvedValue({
-    verification: {}, readiness: { averageScore: 83 }, escalations: {},
-  });
-
   await expect(backupOverview(ORG_ID, {
     timezone: 'America/Denver',
     now: new Date('2026-09-02T12:00:00Z'),
@@ -122,13 +119,29 @@ it('returns overview verification, restore, breach, and readiness evidence', asy
     openRtoBreaches: 1,
     meanReadinessScore: 83,
   });
-  expect(getBackupHealthSummaryMock).toHaveBeenCalledWith(ORG_ID);
-
   for (const where of state.wheres) {
     expect(
       new PgDialect().sqlToQuery(where as SQL).params,
     ).toContain(ORG_ID);
   }
+
+  const restorePredicate = state.wheres
+    .map((where) => new PgDialect().sqlToQuery(where as SQL))
+    .find(({ params }) => params.includes('test_restore'));
+  expect(restorePredicate?.params).toContain('passed');
+
+  const verificationOrderings = state.orderBys
+    .map((orderBy) => new PgDialect().sqlToQuery(orderBy as SQL).sql)
+    .filter((query) => query.includes('backup_verifications'));
+  expect(verificationOrderings).toContainEqual(expect.stringContaining('desc nulls last'));
+
+  const readinessSelection = state.selections
+    .map((selection) => selection as Record<string, unknown>)
+    .find((selection) => 'meanReadinessScore' in selection);
+  const readinessAverage = new PgDialect().sqlToQuery(
+    readinessSelection?.meanReadinessScore as SQL,
+  );
+  expect(readinessAverage.sql).toContain('avg("recovery_readiness"."readiness_score")');
 });
 
 it('returns every enrolled device, including not configured', async () => {
@@ -228,10 +241,6 @@ it('returns null breach counts when backups are not configured', async () => {
     [],
     [{ readinessCount: 0 }],
   );
-  getBackupHealthSummaryMock.mockResolvedValue({
-    verification: {}, readiness: { averageScore: 0 }, escalations: {},
-  });
-
   await expect(backupOverview(ORG_ID, {
     timezone: 'America/Denver',
     now: new Date('2026-09-02T12:00:00Z'),

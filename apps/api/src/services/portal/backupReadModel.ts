@@ -66,23 +66,17 @@ import {
   RESTORABLE_BACKUP_JOB_STATUSES,
 } from '../../db/schema';
 import { asc, isNull, sql } from 'drizzle-orm';
-import { getBackupHealthSummary } from '../../routes/backup/readinessCalculator';
 import type {
   BackupDeviceRow,
   BackupDevicesDto,
   BackupOverviewDto,
 } from '@breeze/shared';
 
-const restorableStatuses = sql.join(
-  RESTORABLE_BACKUP_JOB_STATUSES.map((status) => sql`${status}`),
-  sql`, `,
-);
-
 export async function backupOverview(
   orgId: string,
   args: { timezone: string; now: Date },
 ): Promise<BackupOverviewDto> {
-  const [tile, restoreRows, breachRows, readinessCountRows, health] = await Promise.all([
+  const [tile, restoreRows, breachRows, readinessRows] = await Promise.all([
     backupTile(orgId, args.now),
     db
       .select({ completedAt: backupVerifications.completedAt })
@@ -90,8 +84,9 @@ export async function backupOverview(
       .where(and(
         eq(backupVerifications.orgId, orgId),
         eq(backupVerifications.verificationType, 'test_restore'),
+        eq(backupVerifications.status, 'passed'),
       ))
-      .orderBy(desc(backupVerifications.completedAt))
+      .orderBy(sql`${backupVerifications.completedAt} desc nulls last`)
       .limit(1),
     db
       .select({ eventType: backupSlaEvents.eventType })
@@ -101,10 +96,12 @@ export async function backupOverview(
         isNull(backupSlaEvents.resolvedAt),
       )),
     db
-      .select({ readinessCount: sql<number>`count(*)::int` })
+      .select({
+        readinessCount: sql<number>`count(*)::int`,
+        meanReadinessScore: sql<number | null>`avg(${recoveryReadiness.readinessScore})::float`,
+      })
       .from(recoveryReadiness)
       .where(eq(recoveryReadiness.orgId, orgId)),
-    getBackupHealthSummary(orgId),
   ]);
 
   // Mirrors apps/api/src/jobs/backupSlaWorker.ts: 'missed_backup' is an RPO-family event.
@@ -132,8 +129,9 @@ export async function backupOverview(
     openRpoBreaches: tile.status === 'ok' ? countBreach('rpo') : null,
     openRtoBreaches: tile.status === 'ok' ? countBreach('rto') : null,
     meanReadinessScore:
-      Number(readinessCountRows[0]?.readinessCount ?? 0) > 0
-        ? health.readiness.averageScore
+      Number(readinessRows[0]?.readinessCount ?? 0) > 0 &&
+      readinessRows[0]?.meanReadinessScore != null
+        ? Number(readinessRows[0]?.meanReadinessScore)
         : null,
   };
 }
@@ -143,6 +141,10 @@ export async function backupDevicesPage(
   args: { page: number; limit: number; timezone: string; now: Date },
 ): Promise<BackupDevicesDto> {
   const offset = (args.page - 1) * args.limit;
+  const restorableStatuses = sql.join(
+    RESTORABLE_BACKUP_JOB_STATUSES.map((status) => sql`${status}`),
+    sql`, `,
+  );
   const [countRows, rows] = await Promise.all([
     db
       .select({ count: sql<number>`count(*)::int` })

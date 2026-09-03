@@ -28,5 +28,9 @@ if (overview.statusCode === 401 || devices.statusCode === 401) {
       </div>
     )
   }
-  <BackupDeviceTable devices={devices.data?.data ?? []} error={devices.error} />
+  <BackupDeviceTable
+    devices={devices.data?.data ?? []}
+    total={devices.data?.pagination.total}
+    error={devices.error}
+  />
 </PortalLayout>

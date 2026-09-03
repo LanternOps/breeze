@@ -92,6 +92,10 @@ vi.mock('../services/ticketService', () => ({
 
 vi.mock('../db/schema', () => ({
   assetCheckouts: {},
+  backupConfigs: {},
+  backupJobs: {},
+  backupSlaEvents: {},
+  backupVerifications: {},
   devices: {},
   // The portal route graph transitively imports networkBaseline.ts, which reads
   // discoveredAssetTypeEnum.enumValues at module load — the full-module mock must
@@ -99,6 +103,8 @@ vi.mock('../db/schema', () => ({
   discoveredAssetTypeEnum: { enumValues: [] },
   portalBranding: {},
   portalUsers: {},
+  recoveryReadiness: {},
+  RESTORABLE_BACKUP_JOB_STATUSES: ['completed', 'partial'],
   ticketComments: {},
   tickets: {},
   ticketStatuses: {}

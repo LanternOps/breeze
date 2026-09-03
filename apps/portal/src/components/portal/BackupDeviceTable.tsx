@@ -1,13 +1,15 @@
 import { HardDrive } from 'lucide-react';
 import type { BackupDeviceRow } from '@breeze/shared';
-import { cn } from '@/lib/utils';
+import { cn, formatDateTime } from '@/lib/utils';
 import { CELL, EmptyState, ErrorNotice, ROW, TH } from './ui';
 
 export function BackupDeviceTable({
   devices,
+  total,
   error,
 }: {
   devices: BackupDeviceRow[];
+  total?: number;
   error?: string | null;
 }) {
   if (error) {
@@ -37,6 +39,14 @@ export function BackupDeviceTable({
       <h2 className="mb-4 font-display text-xl font-semibold text-foreground">
         Device backup readiness
       </h2>
+      {total !== undefined && (
+        <p
+          className="mb-4 text-sm text-muted-foreground"
+          data-testid="portal-backup-device-count"
+        >
+          Showing {devices.length} of {total} devices
+        </p>
+      )}
       <table
         className="block w-full sm:table sm:min-w-[48rem]"
         data-testid="portal-backup-device-table"
@@ -65,19 +75,21 @@ export function BackupDeviceTable({
                   className={cn(CELL, 'order-2 w-full text-sm text-muted-foreground')}
                   colSpan={4}
                 >
-                  No backup is configured for this device
+                  No backup has run for this device yet
                 </td>
               ) : (
                 <>
                   <td className={cn(CELL, 'order-2 text-sm text-foreground')}>
                     <span className="sm:hidden">Last restore point </span>
-                    {device.lastRestorePointAt ?? 'No restore point is available'}
+                    {device.lastRestorePointAt
+                      ? formatDateTime(device.lastRestorePointAt)
+                      : 'No restore point is available'}
                     {device.lastRestorePointDegraded ? ' (degraded)' : ''}
                   </td>
                   <td className={cn(CELL, 'order-3 text-sm text-foreground')}>
                     <span className="sm:hidden">Last test restore </span>
                     {device.lastTestRestore
-                      ? `${device.lastTestRestore.status} — ${device.lastTestRestore.completedAt ?? 'time unavailable'}`
+                      ? `${device.lastTestRestore.status} — ${device.lastTestRestore.completedAt ? formatDateTime(device.lastTestRestore.completedAt) : 'time unavailable'}`
                       : 'No test restore is available'}
                   </td>
                   <td className={cn(CELL, 'order-4 text-sm text-foreground')}>
