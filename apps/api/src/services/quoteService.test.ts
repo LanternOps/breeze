@@ -512,7 +512,11 @@ describe('quoteService deposits', () => {
   it('getQuote returns depositDueTotal and categoryBreakdown', async () => {
     queueResult([{ id: 'q1', orgId: 'org1', taxRate: '0.10000', depositType: 'percent', depositPercent: '30.00' }]); // quote
     queueResult([]); // blocks
-    queueResult([{ quantity: '1', unitPrice: '1000.00', taxable: true, customerVisible: true, recurrence: 'one_time', depositEligible: false, itemType: 'hardware' }]); // lines
+    queueResult([{
+      line: { quantity: '1', unitPrice: '1000.00', taxable: true, customerVisible: true, recurrence: 'one_time', depositEligible: false, itemType: 'hardware' },
+      deviceGroup: null,
+      site: null,
+    }]); // lines
     queueResult([]); // no staged Pax8 order
     queueResult([]); // no successor revision
     queueResult([]); // listQuoteOrders — order headers

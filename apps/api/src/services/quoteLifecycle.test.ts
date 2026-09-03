@@ -16,7 +16,7 @@ const insertValueCalls: unknown[] = [];
 vi.mock('../db', () => {
   const makeChain = () => {
     const chain: Record<string, unknown> = {};
-    const methods = ['select', 'from', 'where', 'limit', 'orderBy', 'insert', 'values', 'returning', 'update', 'set', 'delete', 'for', 'innerJoin', 'execute', 'transaction'];
+    const methods = ['select', 'from', 'where', 'limit', 'orderBy', 'insert', 'values', 'returning', 'update', 'set', 'delete', 'for', 'innerJoin', 'leftJoin', 'execute', 'transaction'];
     for (const m of methods) chain[m] = vi.fn(() => chain);
     chain.set = vi.fn((payload: Record<string, unknown>) => { setCalls.push(payload); return chain; });
     (chain as { then: unknown }).then = (resolve: (v: unknown) => unknown) => {
@@ -324,7 +324,10 @@ describe('sendQuote customer-facing PDF', () => {
       sellerSnapshot: null,
     }]);
     queueResult([]); // blocks
-    queueResult([visibleLine, internalLine]); // lines
+    queueResult([
+      { line: visibleLine, deviceGroup: null, site: null },
+      { line: internalLine, deviceGroup: null, site: null },
+    ]); // lines
     queueResult([]); // no staged Pax8 order
     queueResult([]); // no successor revision
     queueResult([]); // getQuote: listQuoteOrders — order headers
@@ -386,7 +389,7 @@ describe('sendQuote email delivery status', () => {
     queueResult([{ id: 'q1' }]); // sendQuote: child row lock
     queueResult([quoteRow]);
     queueResult([]); // blocks
-    queueResult([lineRow]); // lines
+    queueResult([{ line: lineRow, deviceGroup: null, site: null }]); // lines
     queueResult([]); // no staged Pax8 order
     queueResult([]); // no successor revision
     queueResult([]); // getQuote: listQuoteOrders — order headers
@@ -595,7 +598,7 @@ describe('sendQuote bill-to snapshot', () => {
     queueResult([{ id: 'q1' }]); // sendQuote: child row lock
     queueResult([quote]); // getQuote: quote
     queueResult([]);       // getQuote: blocks
-    queueResult([{ quantity: '1', unitPrice: '100.00', taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false, lineTotal: '100.00' }]); // getQuote: lines
+    queueResult([{ line: { quantity: '1', unitPrice: '100.00', taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false, lineTotal: '100.00' }, deviceGroup: null, site: null }]); // getQuote: lines
     queueResult([]);       // getQuote: no staged Pax8 order
     queueResult([]);       // getQuote: no successor revision
     queueResult([]); // getQuote: listQuoteOrders — order headers
@@ -739,7 +742,7 @@ describe('sendQuote presentation snapshot', () => {
     queueResult([{ id: 'q1' }]); // sendQuote: child row lock
     queueResult([quote]); // getQuote: quote
     queueResult([]);       // getQuote: blocks
-    queueResult([{ quantity: '1', unitPrice: '100.00', taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false, lineTotal: '100.00' }]); // getQuote: lines
+    queueResult([{ line: { quantity: '1', unitPrice: '100.00', taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false, lineTotal: '100.00' }, deviceGroup: null, site: null }]); // getQuote: lines
     queueResult([]);       // getQuote: no staged Pax8 order
     queueResult([]);       // getQuote: no successor revision
     queueResult([]); // getQuote: listQuoteOrders — order headers
@@ -825,7 +828,7 @@ describe('sendQuote document_locale stamp', () => {
     queueResult([{ id: 'q1' }]); // sendQuote: child row lock
     queueResult([quote]); // getQuote: quote
     queueResult([]);       // getQuote: blocks
-    queueResult([{ quantity: '1', unitPrice: '100.00', taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false, lineTotal: '100.00' }]); // getQuote: lines
+    queueResult([{ line: { quantity: '1', unitPrice: '100.00', taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false, lineTotal: '100.00' }, deviceGroup: null, site: null }]); // getQuote: lines
     queueResult([]);       // getQuote: no staged Pax8 order
     queueResult([]);       // getQuote: no successor revision
     queueResult([]); // getQuote: listQuoteOrders — order headers
@@ -996,7 +999,7 @@ describe('sendQuote contract-variable gate', () => {
     queueResult([{ id: 'q1' }]);                              // sendQuote: child row lock
     queueResult([baseQuote]);                                   // getQuote: quote
     queueResult([contractBlock({ governing_state: 'Texas' })]); // getQuote: blocks — filled in
-    queueResult([{ quantity: '1', unitPrice: '100.00', taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false, lineTotal: '100.00' }]); // getQuote: lines
+    queueResult([{ line: { quantity: '1', unitPrice: '100.00', taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false, lineTotal: '100.00' }, deviceGroup: null, site: null }]); // getQuote: lines
     queueResult([]);                        // getQuote: no staged Pax8 order
     queueResult([]);                        // getQuote: no successor revision
     queueResult([]); // getQuote: listQuoteOrders — order headers
@@ -1038,7 +1041,7 @@ describe('sendQuote contract-variable gate', () => {
     queueResult([{ id: 'q1' }]);             // sendQuote: child row lock
     queueResult([draftNullBillTo]);          // getQuote: quote (NULL billTo)
     queueResult([contractBlock({})]);        // getQuote: blocks
-    queueResult([{ quantity: '1', unitPrice: '100.00', taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false, lineTotal: '100.00' }]); // getQuote: lines
+    queueResult([{ line: { quantity: '1', unitPrice: '100.00', taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false, lineTotal: '100.00' }, deviceGroup: null, site: null }]); // getQuote: lines
     queueResult([]);                         // getQuote: no staged Pax8 order
     queueResult([]);                         // getQuote: no successor revision
     queueResult([]); // getQuote: listQuoteOrders — order headers
@@ -1093,7 +1096,11 @@ describe('resendQuote', () => {
   function queueGetQuote(quote: Record<string, unknown>) {
     queueResult([quote]);
     queueResult([]); // blocks
-    queueResult([{ quantity: '1', unitPrice: '1000.00', taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false }]);
+    queueResult([{
+      line: { quantity: '1', unitPrice: '1000.00', taxable: false, customerVisible: true, recurrence: 'one_time', depositEligible: false },
+      deviceGroup: null,
+      site: null,
+    }]);
     queueResult([]); // no staged Pax8 order
     queueResult([]); // no successor revision
     queueResult([]); // listQuoteOrders — headers
