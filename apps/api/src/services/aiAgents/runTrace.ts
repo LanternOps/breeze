@@ -160,6 +160,17 @@ export interface RunTraceNarrativeArtifactInput {
 export interface RunTraceDraftRowInput {
   id: string;
   kind: 'reply' | 'resolution_note';
+  /**
+   * Issue #4467 — the row's live `content`. Read here so `mapTicketProposal`
+   * can derive `draftReply`/`draftResolutionNote` from this SAME query
+   * rather than always echoing `TicketProposalOutcome.draftReply`/
+   * `draftResolutionNote` (the persisted-at-proposal-time text), which could
+   * go stale the moment the draft is edited on the ticket's "AI draft"
+   * surface after it's written. Never placed on the wire DTO's
+   * `draftsWritten` entries themselves (see that field's own docstring) —
+   * it feeds the derivation only, so the content is exposed exactly once.
+   */
+  content: string;
 }
 
 /** The safe-projected subset of one linked `action_intents` row. */
@@ -233,11 +244,36 @@ function mapDenied(action: { tool: string; reason: string }): AiAgentRunTraceEnt
  * live `ticket_drafts` query result (`RunTraceDraftRowInput[]`), same
  * undefined-when-empty treatment.
  *
+ * Issue #4467: `draftReply`/`draftResolutionNote` used to be projected
+ * straight off `proposal` — the text the model proposed, frozen at proposal
+ * time — independently of `draftsWritten`, which reads live off
+ * `ticket_drafts`. The two are two representations of the SAME draft and
+ * could disagree: once a draft is written, a technician can edit its content
+ * on the ticket's "AI draft" surface (`TicketWorkbench.tsx`), or a retry can
+ * supersede it, and the run-detail page would keep showing the now-stale
+ * originally-proposed text forever. `pickDraftText` below makes the live
+ * `ticket_drafts` row (via `draftRows`, the same query `draftsWritten` is
+ * built from) authoritative for its kind whenever one exists — a derivation
+ * off ONE source, not a second copy kept in sync — falling back to the
+ * proposal's own text only pre-write, when no row exists yet (a draft intent
+ * left `pending_approval` hasn't released into a `ticket_drafts` row — see
+ * `RunTraceDraftRowInput`'s docstring — so the proposal text is the only
+ * preview available before a technician approves it).
+ *
  * Issue #4462: `skipped` is `outcome.ticketTriageSkipped` verbatim (already
  * the safe, display-string-only shape `persistTicketTriage` built — see
  * `TicketTriageSkip`'s own docstring), undefined-when-empty like its two
  * siblings above.
  */
+function pickDraftText(
+  proposalText: string | undefined,
+  draftRows: RunTraceDraftRowInput[],
+  kind: 'reply' | 'resolution_note',
+): string | undefined {
+  const written = draftRows.find((row) => row.kind === kind);
+  return written ? written.content : proposalText;
+}
+
 function mapTicketProposal(
   proposal: TicketProposalOutcome,
   intentIds: string[],
@@ -249,8 +285,8 @@ function mapTicketProposal(
     summary: proposal.summary,
     fields: proposal.fields,
     device: proposal.device,
-    draftReply: proposal.draftReply,
-    draftResolutionNote: proposal.draftResolutionNote,
+    draftReply: pickDraftText(proposal.draftReply, draftRows, 'reply'),
+    draftResolutionNote: pickDraftText(proposal.draftResolutionNote, draftRows, 'resolution_note'),
     notes: proposal.notes,
     intentIds: intentIds.length > 0 ? intentIds : undefined,
     draftsWritten: draftRows.length > 0

@@ -941,9 +941,17 @@ aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
   // sweep-hostname and narrative-artifact reads above do (a partner-scoped
   // caller's `auth.orgCondition` alone spans every sibling org); that stays
   // as defence-in-depth beside RLS.
+  //
+  // Issue #4467 — also selects `content`: `buildRunTrace`/`mapTicketProposal`
+  // now derive `ticketProposal.draftReply`/`draftResolutionNote` off this
+  // SAME live row (when one exists for the kind) instead of always echoing
+  // the persisted proposal text, so the two representations of a written
+  // draft can't disagree. `content` never reaches `draftsWritten` on the
+  // wire itself — it only feeds that derivation (see the docstrings on
+  // `RunTraceDraftRowInput` and `mapTicketProposal`/`pickDraftText`).
   const draftRows = run.triggerKind === 'ticket'
     ? await db
-      .select({ id: ticketDrafts.id, kind: ticketDrafts.kind })
+      .select({ id: ticketDrafts.id, kind: ticketDrafts.kind, content: ticketDrafts.content })
       .from(ticketDrafts)
       .where(and(
         eq(ticketDrafts.runId, run.id),
