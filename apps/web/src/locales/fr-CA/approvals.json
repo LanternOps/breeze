@@ -39,7 +39,8 @@
     "expired": "Cette demande a expiré avant qu’une décision soit prise.",
     "decisionFailed": "Impossible d’envoyer la décision. Réessayez.",
     "batchStepUp": "Ce lot exige une connexion plus forte. Approuvez les demandes une à la fois.",
-    "batchNotHomogeneous": "Ces demandes ne peuvent plus être traitées ensemble."
+    "batchNotHomogeneous": "Ces demandes ne peuvent plus être traitées ensemble.",
+    "batchTooLarge": "Ce lot contient trop de demandes pour être traité ensemble. Approuvez-les par groupes plus petits."
   },
   "registerDevice": "Enregistrer l’appareil",
   "alwaysAllow": {

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
@@ -697,6 +697,31 @@ describe('RunDetailPage ticket triage proposal', () => {
     expect(intentRow).toHaveTextContent('approved');
 
     expect(screen.getByTestId('ai-agent-run-triage-draft-draft-91')).toBeInTheDocument();
+  });
+
+  // #4468: a ticket-triage run can propose several intents (one row each),
+  // but they all resolve to the SAME /approvals inbox — a link repeated once
+  // per row added nothing and read as N distinct destinations. Only one
+  // collapsed link should render for the whole intents list.
+  it('collapses repeated per-intent /approvals links into a single link', async () => {
+    const secondIntent = { ...TICKET_INTENT, id: 'intent-43', actionName: 'manage_tickets:add_note', status: 'pending' };
+    mockEndpoints({
+      detail: {
+        ...RUN_DETAIL,
+        ticketProposal: { ...TICKET_PROPOSAL, intentIds: ['intent-42', 'intent-43'] },
+        intents: [TICKET_INTENT, secondIntent],
+      },
+    });
+    render(<RunDetailPage runId="run-1" />);
+
+    const intentsSection = await screen.findByTestId('ai-agent-run-triage-intents');
+    await screen.findByTestId('ai-agent-run-triage-intent-intent-42');
+    await screen.findByTestId('ai-agent-run-triage-intent-intent-43');
+
+    const approvalsLinks = within(intentsSection)
+      .getAllByRole('link')
+      .filter((link) => link.getAttribute('href') === '/approvals');
+    expect(approvalsLinks).toHaveLength(1);
   });
 
   it('never renders raw tool args/input/output anywhere in the triage section', async () => {

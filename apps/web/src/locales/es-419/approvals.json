@@ -39,7 +39,8 @@
     "expired": "Esta solicitud venció antes de que se pudiera decidir.",
     "decisionFailed": "No se pudo enviar la decisión. Inténtalo de nuevo.",
     "batchStepUp": "Este lote requiere un inicio de sesión más seguro. Aprueba las solicitudes de una en una.",
-    "batchNotHomogeneous": "Estas solicitudes ya no se pueden decidir en conjunto."
+    "batchNotHomogeneous": "Estas solicitudes ya no se pueden decidir en conjunto.",
+    "batchTooLarge": "Este lote tiene demasiadas solicitudes para decidirlas juntas. Apruébalas en grupos más pequeños."
   },
   "registerDevice": "Registrar dispositivo",
   "alwaysAllow": {

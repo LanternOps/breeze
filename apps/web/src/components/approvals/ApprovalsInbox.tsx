@@ -4,6 +4,7 @@ import { AlertTriangle, Bot, Check, CheckCheck, Layers, Loader2, ShieldCheck, X 
 import { useTranslation } from 'react-i18next';
 import {
   AI_AGENT_KINDS,
+  APPROVAL_BATCH_MAX,
   type AiAgentGraduationDto,
   type AiAgentGraduationRowDto,
   type AiAgentKind,
@@ -49,7 +50,7 @@ type DecisionErrorKind =
   | 'decisionFailed';
 /** Group headers add the two WHOLE-batch refusals, which are never per-row:
  *  nothing was decided, so they belong above the cards, not on one of them. */
-type GroupErrorKind = DecisionErrorKind | 'batchStepUp' | 'batchNotHomogeneous';
+type GroupErrorKind = DecisionErrorKind | 'batchStepUp' | 'batchNotHomogeneous' | 'batchTooLarge';
 
 interface PendingApproval {
   id: string;
@@ -680,6 +681,18 @@ export default function ApprovalsInbox() {
     if (busy) return;
     const ids = group.members.map((member) => member.id);
 
+    // #4460: mirror the server's hard cap (`BATCH_MAX` in
+    // services/approvals/batchDecide.ts, sourced from the same
+    // `APPROVAL_BATCH_MAX` constant) client-side. Unreachable today at the
+    // 25-row inbox page size, but the two limits are independent numbers —
+    // this is what keeps a future page-size bump from silently outrunning
+    // the batch cap and turning "Approve all" into a guaranteed 422 with no
+    // WebAuthn ceremony even attempted.
+    if (ids.length > APPROVAL_BATCH_MAX) {
+      setGroupError(group.identity, 'batchTooLarge');
+      return;
+    }
+
     setDecidingIds(new Set(ids));
     clearRowErrors(ids);
     setGroupErrors((current) => {
@@ -704,6 +717,14 @@ export default function ApprovalsInbox() {
       }
       if (outcome.outcome === 'batch_not_homogeneous') {
         setGroupError(group.identity, 'batchNotHomogeneous');
+        return;
+      }
+      // Defense-in-depth only: the client-side APPROVAL_BATCH_MAX check above
+      // refuses an oversized group before this call is ever made, so the
+      // server only answers `batch_too_large` on a stale bundle or a group
+      // that grew between render and submit.
+      if (outcome.outcome === 'batch_too_large') {
+        setGroupError(group.identity, 'batchTooLarge');
         return;
       }
 

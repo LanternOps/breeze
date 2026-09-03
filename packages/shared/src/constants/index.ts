@@ -142,6 +142,15 @@ export const MAX_PAGE_SIZE = 100;
 // friendly message) so the two can never drift.
 export const BULK_ID_LIMIT = 50;
 
+// Hard cap on one AI-agent approvals batch decide (services/approvals/
+// batchDecide.ts's `BATCH_MAX`, which re-exports this). Matches the inbox
+// page size, so "select everything on this page" is always expressible in
+// one call. Shared by the server's enforcement (`loadHomogeneousBatch`
+// 422s `batch_too_large` past it) and the web inbox's client-side guard
+// (#4460) so the two can never drift — the group tap is refused inline
+// instead of round-tripping to learn the cap the hard way.
+export const APPROVAL_BATCH_MAX = 50;
+
 // Session timeouts
 export const ACCESS_TOKEN_EXPIRY = '15m';
 export const REFRESH_TOKEN_EXPIRY = '7d';

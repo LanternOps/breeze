@@ -299,6 +299,21 @@ describe('decideIntentApprovalBatch', () => {
       expect(fetchWithAuth).not.toHaveBeenCalled();
     });
 
+    it('maps a 400 batch_too_large to its own outcome, not a ceremony failure', async () => {
+      // #4460: ApprovalsInbox's client-side APPROVAL_BATCH_MAX guard refuses
+      // an oversized group before this ever runs, so this only fires on a
+      // stale bundle or a group that grew between render and submit — but it
+      // must still be reported honestly rather than as a fingerprint failure.
+      getBatchApprovalAssertion.mockRejectedValue(
+        new AssertionChallengeError('batch_too_large', 400, 'batch_too_large'),
+      );
+
+      const outcome = await decideIntentApprovalBatch(IDS, 'approve');
+
+      expect(outcome).toEqual({ outcome: 'batch_too_large' });
+      expect(fetchWithAuth).not.toHaveBeenCalled();
+    });
+
     it('still throws CeremonyError for any OTHER challenge failure', async () => {
       // The two branches above must be narrow: a 500 is a real outage and has
       // to stay a ceremony failure, not be laundered into a tidy outcome.
@@ -348,6 +363,15 @@ describe('decideIntentApprovalBatch', () => {
 
       expect(outcome).toEqual({ outcome: 'batch_not_homogeneous', offending: ['ap-2'] });
       expect(toastMessages()[0].message).toMatch(/no longer be decided together/i);
+    });
+
+    it('maps a 400 batch_too_large to its own outcome with actionable copy', async () => {
+      respond({ error: 'batch_too_large', max: 50 }, 400);
+
+      const outcome = await decideIntentApprovalBatch(IDS, 'approve');
+
+      expect(outcome).toEqual({ outcome: 'batch_too_large' });
+      expect(toastMessages()[0].message).toMatch(/too many/i);
     });
 
     it('rethrows a 401 assertion_failed — a real proof rejection is not a step-up', async () => {
