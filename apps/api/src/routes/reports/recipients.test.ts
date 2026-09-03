@@ -121,6 +121,12 @@ vi.mock('../../middleware/auth', () => ({
   },
   requirePermission: () => async (_c: unknown, next: () => Promise<void>) => next(),
   requireScope: () => async (_c: unknown, next: () => Promise<void>) => next(),
+  requireMfa: () => async (c: any, next: () => Promise<void>) => {
+    if (c.req.header('x-test-mfa') !== 'satisfied') {
+      return c.json({ error: 'MFA required', code: 'MFA_REQUIRED' }, 403);
+    }
+    await next();
+  },
 }));
 
 vi.mock('../../services/permissions', () => ({
@@ -240,7 +246,7 @@ describe('report recipient routes', () => {
 
     const response = await app().request(`/${REPORT_ID}/recipients/convert`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', 'x-test-mfa': 'satisfied' },
       body: JSON.stringify({ email: 'Alex@Example.Test', name: 'Alex' }),
     });
 
@@ -264,6 +270,57 @@ describe('report recipient routes', () => {
     expect(hasEquality(state.updated[0]?.condition, 'reports.orgId', ORG_ID)).toBe(true);
   });
 
+  it('requires MFA before converting a legacy recipient', async () => {
+    const response = await app().request(`/${REPORT_ID}/recipients/convert`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: 'attacker@example.test' }),
+    });
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({
+      error: 'MFA required',
+      code: 'MFA_REQUIRED',
+    });
+    expect(state.getReport).not.toHaveBeenCalled();
+    expect(state.inserted).toHaveLength(0);
+  });
+
+  it('reuses an existing contact matched by lowercased email without creating a duplicate', async () => {
+    state.results.push([{
+      id: CONTACT_ID,
+      name: 'Existing Alex',
+      email: 'Alex@Example.Test',
+    }]);
+
+    const response = await app().request(`/${REPORT_ID}/recipients/convert`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-test-mfa': 'satisfied' },
+      body: JSON.stringify({ email: 'ALEX@example.test', name: 'Ignored Name' }),
+    });
+
+    expect(response.status).toBe(201);
+    expect(await response.json()).toEqual({
+      data: {
+        id: CONTACT_ID,
+        name: 'Existing Alex',
+        email: 'Alex@Example.Test',
+      },
+    });
+    expect(state.inserted).toHaveLength(1);
+    expect(state.inserted[0]?.value).toEqual({
+      reportId: REPORT_ID,
+      orgId: ORG_ID,
+      contactId: CONTACT_ID,
+    });
+    expect(state.whereConditions.some((condition) => {
+      if (!condition || typeof condition !== 'object') return false;
+      const node = condition as { conditions?: Array<{ type?: string; values?: unknown[] }> };
+      return node.conditions?.some((child) =>
+        child.type === 'sql' && child.values?.includes('alex@example.test')) ?? false;
+    })).toBe(true);
+  });
+
   it('validates recipient and conversion request bodies', async () => {
     const invalidContact = await app().request(`/${REPORT_ID}/recipients`, {
       method: 'POST',
@@ -272,7 +329,7 @@ describe('report recipient routes', () => {
     });
     const invalidEmail = await app().request(`/${REPORT_ID}/recipients/convert`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', 'x-test-mfa': 'satisfied' },
       body: JSON.stringify({ email: 'not-an-email' }),
     });
 

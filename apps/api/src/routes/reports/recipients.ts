@@ -9,6 +9,7 @@ import {
 } from '../../db/schema';
 import {
   authMiddleware,
+  requireMfa,
   requirePermission,
   requireScope,
 } from '../../middleware/auth';
@@ -131,6 +132,7 @@ recipientsRoutes.post(
   '/:id/recipients/convert',
   requireScope('organization', 'partner', 'system'),
   write,
+  requireMfa(),
   zValidator('json', convertReportRecipientSchema),
   async (c) => {
     const report = await getReportWithOrgCheck(
