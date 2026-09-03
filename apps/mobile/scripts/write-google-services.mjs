@@ -34,46 +34,35 @@
  *   pnpm --filter breeze-mobile write-google-services
  *   npx expo prebuild --platform android
  *
- * Nothing is invented: if GOOGLE_SERVICES_JSON is unset, this script fails
- * loudly rather than letting `expo prebuild` fail later with a less obvious
- * "file not found", or — worse — silently prebuilding without Firebase config
- * if a stale file happens to exist on disk from a previous run.
+ * Nothing is invented: if GOOGLE_SERVICES_JSON is unset, unparsable, or valid
+ * JSON that isn't shaped like a real google-services.json (see
+ * src/config/googleServicesJson.js — a bare "is it JSON" check would silently
+ * accept e.g. a pasted FIREBASE_SERVICE_ACCOUNT by mistake), this script fails
+ * loudly and leaves any existing google-services.json on disk untouched,
+ * rather than writing garbage that only surfaces as a native Firebase-init
+ * crash deep into `expo prebuild`/a Gradle build. It does NOT detect a stale
+ * file left on disk from a previous run when it is never invoked at all —
+ * that is a build-pipeline responsibility, not this script's.
  */
 
 import { writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { GoogleServicesJsonError, parseGoogleServicesJson } from '../src/config/googleServicesJson.js';
+
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const OUT_PATH = resolve(projectRoot, 'google-services.json');
 
-const raw = process.env.GOOGLE_SERVICES_JSON;
-if (!raw) {
+try {
+  const contents = parseGoogleServicesJson(process.env.GOOGLE_SERVICES_JSON);
+  writeFileSync(OUT_PATH, contents, { mode: 0o600 });
+  console.log(`--- wrote ${OUT_PATH} from GOOGLE_SERVICES_JSON`);
+} catch (err) {
+  const message = err instanceof GoogleServicesJsonError ? err.message : String(err);
   console.error(
-    '--- GOOGLE_SERVICES_JSON is not set. Cannot write apps/mobile/google-services.json.\n' +
-      '--- Set it to the content of the file downloaded from the Firebase Console\n' +
-      '--- (Project Settings -> your Android app -> Download google-services.json),\n' +
-      '--- as raw JSON or base64. See STORE_SUBMISSION.md for details.'
+    `--- ${message}\n` +
+      '--- See STORE_SUBMISSION.md for how to set GOOGLE_SERVICES_JSON.'
   );
   process.exit(1);
 }
-
-let contents;
-try {
-  JSON.parse(raw);
-  contents = raw;
-} catch {
-  try {
-    const decoded = Buffer.from(raw, 'base64').toString('utf8');
-    JSON.parse(decoded); // validate before writing — a bad secret should fail loudly here
-    contents = decoded;
-  } catch {
-    console.error(
-      '--- GOOGLE_SERVICES_JSON is set but is neither valid JSON nor base64-encoded JSON.'
-    );
-    process.exit(1);
-  }
-}
-
-writeFileSync(OUT_PATH, contents, { mode: 0o600 });
-console.log(`--- wrote ${OUT_PATH} from GOOGLE_SERVICES_JSON`);
