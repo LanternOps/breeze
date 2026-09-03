@@ -19,6 +19,7 @@ import { watchdogLogsRoutes } from './watchdogLogs';
 import { bootMetricsRoutes } from './bootMetrics';
 import { diagnoseRoutes } from './diagnose';
 import { warrantyRoutes } from './warranty';
+import { billingRoutes } from './billing';
 import { provisionRoutes } from './provision';
 import { moveOrgRoutes } from './moveOrg';
 import { actuateElevationRoutes } from './actuateElevation';
@@ -112,6 +113,10 @@ deviceRoutes.route('/', sessionsRoutes);
 deviceRoutes.route('/', diagnosticLogsRoutes);
 deviceRoutes.route('/', watchdogLogsRoutes);
 deviceRoutes.route('/', warrantyRoutes);
+// #3205 W06: GET /:id/billing. :id-prefixed, so it cannot be shadowed by core's
+// /:id matcher — mounted here with the other sub-resources, and pinned by
+// index.test.ts so a later static sibling cannot silently reorder it.
+deviceRoutes.route('/', billingRoutes);
 deviceRoutes.route('/', bootMetricsRoutes);
 deviceRoutes.route('/', actuateElevationRoutes);
 deviceRoutes.route('/', homebrewBootstrapRoutes);
