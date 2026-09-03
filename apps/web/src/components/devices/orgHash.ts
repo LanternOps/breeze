@@ -7,21 +7,16 @@
 // deep-link fragment after adoption so a later reload cannot re-select it.
 import { useEffect, useLayoutEffect } from 'react';
 import { useOrgStore } from '../../stores/orgStore';
+import { isOrgIdForHash } from './orgIdShape';
 
 const HASH_KEY = 'orgId';
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-/** The only org id shape the hash key accepts, shared with the link producer. */
-export function isOrgIdForHash(value: string): boolean {
-  return UUID_RE.test(value);
-}
 
 export function readOrgIdFromHash(hash: string): string | null {
   if (!hash) return null;
   const raw = hash.startsWith('#') ? hash.slice(1) : hash;
   for (const part of raw.split('&')) {
     const [k, v] = part.split('=');
-    if (k === HASH_KEY && v && UUID_RE.test(v)) return v;
+    if (k === HASH_KEY && v && isOrgIdForHash(v)) return v;
   }
   return null;
 }

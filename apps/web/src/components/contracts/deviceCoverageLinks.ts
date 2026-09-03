@@ -2,7 +2,7 @@
 // devices list's OWN hash format so producer and consumer cannot drift:
 // `#orgId=…` (orgHash.ts) + `#filtersV2=…` (filterUrl.ts, DevicesPage.tsx:195).
 import { encodeFilterToHash } from '../devices/filterUrl';
-import { isOrgIdForHash } from '../devices/orgHash';
+import { isOrgIdForHash } from '../devices/orgIdShape';
 import { DEVICE_ROLES } from '@/lib/deviceRoles';
 
 /** The devices list filtered to one device role, in one org. Returns null for a
