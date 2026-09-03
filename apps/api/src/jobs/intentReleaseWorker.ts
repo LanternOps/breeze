@@ -1528,16 +1528,27 @@ export async function processIntentReleaseJob(data: IntentReleaseJobData): Promi
  * branch above — `null` (missing row, or any read fault) falls through to
  * the ordinary `attemptPolicyDecision` call, which is itself a safe no-op
  * for a row it does not recognize as `unattempted`.
+ *
+ * #4464: the SELECT is wrapped rather than left to throw — this runs once
+ * per `intent_created` event in a batch, and an unhandled rejection here
+ * previously aborted the whole batch instead of degrading just this one
+ * event to the existing fail-open path.
  */
 async function loadIntentDecidedVia(intentId: string): Promise<string | null> {
-  const [row] = await withSystemDbAccessContext(() =>
-    db
-      .select({ decidedVia: actionIntents.decidedVia })
-      .from(actionIntents)
-      .where(eq(actionIntents.id, intentId))
-      .limit(1),
-  );
-  return row?.decidedVia ?? null;
+  try {
+    const [row] = await withSystemDbAccessContext(() =>
+      db
+        .select({ decidedVia: actionIntents.decidedVia })
+        .from(actionIntents)
+        .where(eq(actionIntents.id, intentId))
+        .limit(1),
+    );
+    return row?.decidedVia ?? null;
+  } catch (err) {
+    console.error(`[IntentReleaseWorker] loadIntentDecidedVia failed for intent ${intentId}:`, err);
+    captureException(err instanceof Error ? err : new Error(String(err)));
+    return null;
+  }
 }
 
 /**

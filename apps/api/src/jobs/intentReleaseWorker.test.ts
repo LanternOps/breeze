@@ -52,6 +52,12 @@ const { schema, dbState, dbMock, intentServiceMock, actorContextMock, tenantStat
       selectApprovalRequestsResults: [] as unknown[][],
       selectAgentRunsResults: [] as unknown[][],
       selectAgentsResults: [] as unknown[][],
+      /** One-shot override (#4464): the NEXT actionIntents SELECT rejects
+       *  with this instead of resolving from selectActionIntentsResults,
+       *  then clears itself. Lets a test simulate a transient read fault
+       *  (e.g. loadIntentDecidedVia's SELECT) without disturbing every
+       *  other test that relies on the queue-based happy path above. */
+      selectActionIntentsNextError: null as Error | null,
     },
     intentServiceMock: { transitionIntent: vi.fn() },
     actorContextMock: { buildAuthContextForIntent: vi.fn() },
@@ -194,6 +200,11 @@ vi.mock('../db', () => {
       where: vi.fn(() => ({
         limit: vi.fn(() => {
           if (table === schema.actionIntentsTbl) {
+            if (dbState.selectActionIntentsNextError) {
+              const err = dbState.selectActionIntentsNextError;
+              dbState.selectActionIntentsNextError = null;
+              return Promise.reject(err);
+            }
             return Promise.resolve(dbState.selectActionIntentsResults.shift() ?? []);
           }
           if (table === schema.approvalRequestsTbl) {
@@ -492,6 +503,7 @@ function resetDbState() {
   dbState.selectApprovalRequestsResults.length = 0;
   dbState.selectAgentRunsResults.length = 0;
   dbState.selectAgentsResults.length = 0;
+  dbState.selectActionIntentsNextError = null;
 }
 
 /** Clears GOOGLE_HEADLESS_SECRET_ACTIONS keys in place (see the hoisted
@@ -2944,6 +2956,46 @@ describe('processIntentReleaseJob', () => {
       expect(result).toEqual({ released: false });
       expect(policyDecideMock.attemptPolicyDecision).toHaveBeenCalledWith('intent-1');
       expect(intentServiceMock.transitionIntent).not.toHaveBeenCalled();
+    });
+
+    // #4464 — loadIntentDecidedVia's SELECT previously had no try/catch, so
+    // one failing read aborted the whole job (and, since intent_created jobs
+    // are batched per BullMQ delivery, the rest of that batch never ran).
+    it('#4464: a throwing SELECT is caught, logged to Sentry, and treated as a missing row — falls through to attemptPolicyDecision instead of aborting the job', async () => {
+      dbState.selectActionIntentsNextError = new Error('connection terminated unexpectedly');
+
+      const result = await processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_created' });
+
+      expect(result).toEqual({ released: false });
+      expect(policyDecideMock.attemptPolicyDecision).toHaveBeenCalledWith('intent-1');
+      expect(intentServiceMock.transitionIntent).not.toHaveBeenCalled();
+      expect(sentryMock.captureException).toHaveBeenCalledTimes(1);
+      expect(sentryMock.captureException).toHaveBeenCalledWith(
+        expect.objectContaining({ message: expect.stringContaining('connection terminated unexpectedly') }),
+      );
+    });
+
+    it('#4464: a throwing SELECT does not poison the next call — a later lookup on a different intent still succeeds normally', async () => {
+      dbState.selectActionIntentsNextError = new Error('connection terminated unexpectedly');
+      await processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_created' });
+      sentryMock.captureException.mockClear();
+      policyDecideMock.attemptPolicyDecision.mockClear();
+
+      // decidedVia lookup, then the unrelated best-effort outcome-notification
+      // lookup releaseAndNotify always performs afterward (notifyRequesterOfOutcome)
+      // — both queue off the same actionIntents SELECT mock, in call order.
+      dbState.selectActionIntentsResults.push([{ decidedVia: 'ticket_autonomy' }]);
+      dbState.selectActionIntentsResults.push([{ ...FOUR_EYES_INTENT, id: 'intent-2' }]);
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(false);
+
+      const result = await processIntentReleaseJob({ intentId: 'intent-2', eventType: 'intent_created' });
+
+      expect(result).toEqual({ released: true });
+      expect(policyDecideMock.attemptPolicyDecision).not.toHaveBeenCalled();
+      // The earlier read fault must not leak into this unrelated, successful lookup.
+      expect(sentryMock.captureException).not.toHaveBeenCalledWith(
+        expect.objectContaining({ message: expect.stringContaining('connection terminated unexpectedly') }),
+      );
     });
   });
 

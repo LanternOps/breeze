@@ -1180,6 +1180,29 @@
         "untitled": "una versione più recente"
       }
     },
+    "currency": {
+      "actions": {
+        "change": "Cambia valuta"
+      },
+      "dialog": {
+        "title": "Cambia la valuta del preventivo",
+        "description": "Questo preventivo in bozza è prezzato in {{currency}}.",
+        "currencyLabel": "Nuova valuta",
+        "modeLegend": "Cosa accade alle righe del preventivo",
+        "modeClear": "Rimuovi tutte le righe",
+        "modeClearHint": "Le righe vengono eliminate. Obbligatorio quando una riga è manuale o un bundle.",
+        "modeReprice": "Riprezza le righe di catalogo",
+        "modeRepriceHint": "Ogni riga di catalogo viene risolta dal listino della nuova valuta. Possibile solo se tutte le righe provengono dal catalogo.",
+        "confirm": "Comprendo che questa operazione cambia la valuta del preventivo.",
+        "submit": "Cambia valuta"
+      },
+      "toast": {
+        "changed": "Valuta del preventivo cambiata in {{currency}}."
+      },
+      "errors": {
+        "change": "Impossibile cambiare la valuta del preventivo."
+      }
+    },
     "distributorLookup": {
       "feedPriceCurrencyUnknown": "Valuta del prezzo del feed sconosciuta — inserisci un prezzo in {{currency}}",
       "feedPriceIn": "Il prezzo del feed è in {{feedCurrency}} — inserisci un prezzo in {{currency}}",
@@ -1600,6 +1623,29 @@
     "unsavedTitle": "\"{{field}}\" contiene una modifica non salvata — l'emissione si sblocca una volta salvata."
   },
   "invoiceDetail": {
+    "currency": {
+      "actions": {
+        "change": "Cambia valuta"
+      },
+      "dialog": {
+        "title": "Cambia la valuta della fattura",
+        "description": "Questa fattura in bozza è prezzata in {{currency}}.",
+        "currencyLabel": "Nuova valuta",
+        "modeLegend": "Cosa accade alle righe della fattura",
+        "modeClear": "Rimuovi tutte le righe",
+        "modeClearHint": "Le righe vengono eliminate. Obbligatorio quando una riga è manuale o un bundle.",
+        "modeReprice": "Riprezza le righe di catalogo",
+        "modeRepriceHint": "Ogni riga di catalogo viene risolta dal listino della nuova valuta. Possibile solo se tutte le righe provengono dal catalogo.",
+        "confirm": "Comprendo che questa operazione cambia la valuta della fattura.",
+        "submit": "Cambia valuta"
+      },
+      "toast": {
+        "changed": "Valuta della fattura cambiata in {{currency}}."
+      },
+      "errors": {
+        "change": "Impossibile cambiare la valuta della fattura."
+      }
+    },
     "deposit": {
       "duePrefix": "Acconto di",
       "dueSuffix": "dovuto — {{paid}} di {{total}} pagati.",

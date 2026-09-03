@@ -2181,14 +2181,17 @@ export async function restoreTicket(ticketId: string, actor: TicketActor): Promi
 // ticket-linked child tables in the same relative order; see the lock-order
 // comment at moveOrg.ts:~311. S3 objects are keyed by attachment id only
 // (spec D8) and are NOT touched by a move.
-// ticket_email_links is NOT here, and that is a known gap rather than a ruling:
-// it denormalizes org_id from its ticket (shape 1, FORCE RLS) yet is absent
-// from both this list and the device path's CUSTOM_ORG_REWRITE_TABLES, so a
-// moved ticket strands its link rows on the source org on BOTH axes. Left out
-// of the #4524 fix deliberately — closing it correctly spans this service and
-// routes/devices/moveOrg.ts and turns on the inbound-email tenancy model, so it
-// is tracked in #4643 rather than half-fixed on one axis here.
-const TICKET_ORG_DENORMALIZED_TABLES = ['time_entries', 'ticket_parts', 'ticket_alert_links', 'ticket_outbox', 'ticket_attachments'] as const;
+// ticket_email_links (#4643): cross-channel email<->ticket link/idempotency
+// rows denormalize org_id from their ticket (shape 1, FORCE RLS) and have no
+// device_id — same shape as ticket_attachments above. Appended LAST, after
+// ticket_attachments, so this path and the device-move path
+// (routes/devices/moveOrg.ts) touch the ticket-linked child tables in the
+// same relative order; see the lock-order comment at moveOrg.ts:~311.
+// findTicketInPartner / findTicketIdsByMessageIds (threadMatcher.ts) resolve
+// inbound-email threading by (partner_id, message_id) under a system context
+// and take tenancy from the live tickets.org_id, never from this row's
+// org_id, so re-stamping it here does not touch the idempotency contract.
+const TICKET_ORG_DENORMALIZED_TABLES = ['time_entries', 'ticket_parts', 'ticket_alert_links', 'ticket_outbox', 'ticket_attachments', 'ticket_email_links'] as const;
 
 /**
  * Reassigns a ticket to another organization of the SAME partner.
@@ -2245,7 +2248,7 @@ export async function moveTicketOrg(
     // UUID so two concurrent moves between the same pair cannot deadlock) →
     // action_intents → ticket_drafts → ai_agent_runs → tickets → ticket_comments
     // → the TICKET_ORG_DENORMALIZED_TABLES loop (time_entries, ticket_parts,
-    // ticket_alert_links, ticket_outbox, ticket_attachments).
+    // ticket_alert_links, ticket_outbox, ticket_attachments, ticket_email_links).
     //
     // ai_agent_runs sits ahead of tickets (#4524) to match
     // breeze_cascade_device_org_id(), which severs runs before re-stamping its

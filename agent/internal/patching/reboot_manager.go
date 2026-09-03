@@ -108,6 +108,27 @@ type RebootManager struct {
 	// success they cannot deliver — the same honesty rule Cancel already applies
 	// to a platform whose abort cannot work.
 	osInvoking bool
+	// osInvokeDone is non-nil exactly while osInvoking is true, and is closed
+	// when the invocation finishes. It is how Stop waits out a reboot that has
+	// already been committed to the OS without holding mu across the exec.
+	osInvokeDone chan struct{}
+	// osAborting is true from the moment Cancel decides to abort an in-flight
+	// OS countdown until abortOSReboot returns.
+	//
+	// Cancel runs the abort OUTSIDE the lock on purpose: it is an exec with a
+	// thirty-second ceiling, and holding mu across it would stall State(),
+	// every timer callback and every other operation for that long. The price
+	// is a window in which the manager holds no OS countdown but a `shutdown
+	// -c` is still in the air — and a schedule armed inside that window would
+	// reach OSInvokeAt, register a NEW countdown, and then have the pending
+	// abort silently cancel it. The manager would go on reporting a reboot the
+	// OS had already been told to forget.
+	//
+	// So the window is closed by refusal rather than by holding the lock:
+	// scheduleLockedAt declines while this is set, exactly as it declines while
+	// osInvoking is set, and for the same reason — the manager cannot honour a
+	// promise it is about to contradict.
+	osAborting bool
 	// generation identifies the current schedule. time.Timer.Stop() does not
 	// wait for an AfterFunc callback that has already started — those run on
 	// their own goroutines — so stopping the timers is not enough on its own:
@@ -221,6 +242,12 @@ func (r *RebootManager) scheduleLockedAt(now time.Time, delay time.Duration, dea
 	// arm a new schedule on top of a reboot that is already going to happen.
 	if r.osInvoking {
 		return fmt.Errorf("the restart command is being handed to the operating system and cannot be superseded")
+	}
+
+	// A cancellation's `shutdown -c` is still in flight. Arming a countdown now
+	// would hand it to an abort that was never about it; see osAborting.
+	if r.osAborting {
+		return fmt.Errorf("a previous restart is being aborted and a new one cannot be scheduled until that completes")
 	}
 
 	// An OS-level countdown may already be running: runOSReboot fires at
@@ -363,6 +390,9 @@ func (r *RebootManager) deferSchedule(gen *uint64) (time.Duration, error) {
 	if r.osInvoked || r.osInvoking {
 		return 0, fmt.Errorf("the restart countdown has already started and cannot be postponed")
 	}
+	if r.osAborting {
+		return 0, fmt.Errorf("this restart is being cancelled and can no longer be postponed")
+	}
 	if !r.state.RebootScheduled {
 		return 0, fmt.Errorf("no reboot scheduled")
 	}
@@ -456,6 +486,12 @@ func (r *RebootManager) Cancel() error {
 	abort := r.abortOSReboot
 	osInvoked := r.osInvoked
 	r.osInvoked = false
+	// Claim the abort window before releasing the lock, so nothing can arm a
+	// countdown that the abort below would then kill. See osAborting.
+	aborting := osInvoked && abort != nil
+	if aborting {
+		r.osAborting = true
+	}
 	r.mu.Unlock()
 
 	// Abort an OS-level countdown, but only if one was actually started — i.e.
@@ -464,26 +500,81 @@ func (r *RebootManager) Cancel() error {
 	// distinction matters because not every platform can abort at all (BSD
 	// shutdown(8), so macOS, has no cancel flag), and an unconditional attempt
 	// would make every cancellation there look like a failure.
-	if osInvoked && abort != nil {
-		if err := abort(); err != nil {
-			log.Warn("reboot cancelled locally but the OS countdown could not be aborted", "error", err)
-			return fmt.Errorf("reboot schedule cleared, but the OS countdown could not be aborted: %w", err)
-		}
+	if !aborting {
+		return nil
+	}
+	err := abort()
+	r.mu.Lock()
+	r.osAborting = false
+	r.mu.Unlock()
+	if err != nil {
+		log.Warn("reboot cancelled locally but the OS countdown could not be aborted", "error", err)
+		return fmt.Errorf("reboot schedule cleared, but the OS countdown could not be aborted: %w", err)
 	}
 	return nil
 }
 
 // Stop stops the reboot manager and cancels any pending reboot.
+//
+// One reboot it deliberately does NOT cancel: one whose shutdown command has
+// already been handed to the operating system. Past that point the countdown
+// lives in the OS, not in this process, and no platform can be relied on to
+// recall it (BSD shutdown(8), so macOS, has no cancel flag) — the same honesty
+// rule Cancel documents. Stop's obligation is therefore not to stop it but to
+// refuse to RETURN while the invocation is mid-flight: a Stop that returned
+// there told its caller the manager was quiescent moments before the machine
+// went down, and agent shutdown would then race a reboot it did not know about.
+//
+// The wait is bounded twice over. runOSReboot always clears osInvoking, success
+// or failure, and the shutdown invocation it wraps carries its own thirty-second
+// ceiling — but the invocation window also spans saveRebootHistory, a file write
+// with no deadline of its own, so a wedged filesystem could otherwise park Stop
+// forever. stopInvokeWaitTimeout is the backstop for that: past it, Stop gives
+// up the guarantee and says so, rather than never returning.
 func (r *RebootManager) Stop() {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-
 	if r.stopped {
-		return // already stopped, avoid double-close on stopChan
+		// Already stopped. Still wait out an invocation in flight, so a second
+		// caller gets the same guarantee as the first.
+		done := r.osInvokeDone
+		r.mu.Unlock()
+		waitForOSInvoke(done)
+		return // avoid double-close on stopChan
 	}
 	r.stopped = true
 	r.cancelLocked()
 	close(r.stopChan)
+	// Read under the lock and waited on outside it: runOSReboot needs mu to
+	// close this channel, so waiting while holding mu would deadlock.
+	done := r.osInvokeDone
+	r.mu.Unlock()
+
+	waitForOSInvoke(done)
+}
+
+// stopInvokeWaitTimeout bounds Stop's wait for a committed OS reboot. Comfortably
+// past osRebootCommandTimeout, so it only ever fires when something outside the
+// shutdown command itself has wedged.
+var stopInvokeWaitTimeout = 60 * time.Second
+
+// waitForOSInvoke blocks until a committed OS reboot invocation finishes, or
+// until the backstop expires.
+func waitForOSInvoke(done <-chan struct{}) {
+	if done == nil {
+		return
+	}
+	timer := time.NewTimer(stopInvokeWaitTimeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-timer.C:
+		// Loud: the caller is about to proceed believing the manager is
+		// quiescent while a shutdown may still be in flight, which is exactly
+		// the state this wait exists to prevent.
+		log.Error("gave up waiting for an in-flight OS reboot invocation; "+
+			"agent shutdown continues while a restart may still fire",
+			"waited", stopInvokeWaitTimeout.String())
+	}
 }
 
 // cancelLocked stops the in-flight timers and bumps the generation so any
@@ -668,6 +759,10 @@ func (r *RebootManager) runOSReboot(gen uint64, grace time.Duration) {
 	// machine then went down anyway at the original time. Only exec's own success
 	// promotes this to osInvoked, from which point the abort is real.
 	r.osInvoking = true
+	// Opened here, under the same lock hold that passed the stopped/generation
+	// check, so there is no instant at which the reboot is committed but Stop
+	// cannot see that it must wait.
+	r.osInvokeDone = make(chan struct{})
 	exec := r.execOSReboot
 	r.mu.Unlock()
 
@@ -677,14 +772,14 @@ func (r *RebootManager) runOSReboot(gen uint64, grace time.Duration) {
 	if exec == nil {
 		log.Error("no OS reboot implementation for this platform")
 		r.mu.Lock()
-		r.osInvoking = false
+		r.finishOSInvokeLocked()
 		r.state.LastError = "no OS reboot implementation for this platform"
 		r.mu.Unlock()
 		return
 	}
 	err := exec(grace)
 	r.mu.Lock()
-	r.osInvoking = false
+	r.finishOSInvokeLocked()
 	if err != nil {
 		r.state.LastError = fmt.Sprintf("OS reboot invocation failed: %v", err)
 		r.mu.Unlock()
@@ -696,6 +791,18 @@ func (r *RebootManager) runOSReboot(gen uint64, grace time.Duration) {
 	}
 	r.osInvoked = true
 	r.mu.Unlock()
+}
+
+// finishOSInvokeLocked releases the invocation window: it clears osInvoking and
+// wakes any Stop that is waiting the invocation out. Callers must hold r.mu,
+// and must call it on EVERY path out of the invocation — a missed call leaves
+// Stop blocked until the process exits. Callers must hold r.mu.
+func (r *RebootManager) finishOSInvokeLocked() {
+	r.osInvoking = false
+	if r.osInvokeDone != nil {
+		close(r.osInvokeDone)
+		r.osInvokeDone = nil
+	}
 }
 
 func rebootHistoryPath() string {

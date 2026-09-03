@@ -160,9 +160,14 @@ describe('getDeviceOrgDenormalizedTables() coverage', () => {
   });
 
   it('keeps database-cascade restamps registered in the complete org-denormalized contract', () => {
+    // agent_rollback_events (#4371 fixup): breeze_app has UPDATE revoked
+    // entirely, so its restamp runs via the SECURITY DEFINER
+    // breeze_cascade_device_org_id() trigger instead of an ON UPDATE CASCADE
+    // FK — see the DEVICE_ORG_FK_CASCADE_TABLES doc comment in core.ts.
     expect(DEVICE_ORG_FK_CASCADE_TABLES).toEqual([
       'agent_health_observations',
       'software_inventory_observations',
+      'agent_rollback_events',
     ]);
     expect(deviceOrgDenormalizedTables).toEqual(
       expect.arrayContaining([...DEVICE_ORG_FK_CASCADE_TABLES]),
@@ -209,6 +214,10 @@ describe('CUSTOM_ORG_REWRITE_TABLES coverage', () => {
 
   it('contains ticket_outbox (#4743: org_id denormalized from tickets, no device_id)', () => {
     expect(CUSTOM_ORG_REWRITE_TABLES).toContain('ticket_outbox');
+  });
+
+  it('contains ticket_email_links (#4643: org_id denormalized from tickets, no device_id)', () => {
+    expect(CUSTOM_ORG_REWRITE_TABLES).toContain('ticket_email_links');
   });
 
   it('is disjoint from the generic denorm, device-managed, and intentional-exclusion lists', () => {

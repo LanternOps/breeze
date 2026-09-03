@@ -3,11 +3,12 @@ import { useTranslation } from 'react-i18next';
 import '../../lib/i18n';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
-import { runAction, handleActionError } from '../../lib/runAction';
+import { runAction, handleActionError, ActionError } from '../../lib/runAction';
 import { usePermissions } from '../../lib/permissions';
 import { showToast } from '../shared/Toast';
 import { Dialog } from '../shared/Dialog';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
+import ChangeCurrencyDialog, { type CurrencyChangeMode } from './ChangeCurrencyDialog';
 import {
   type InvoiceDetail as InvoiceDetailData,
   type InvoiceLine,
@@ -84,6 +85,17 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
   const [voidOpen, setVoidOpen] = useState(false);
   const [voidReason, setVoidReason] = useState('');
   const [voidReissue, setVoidReissue] = useState(false);
+
+  // Draft-only currency restamp (#4416, ports the ContractDetail #3778
+  // pattern). The server (changeInvoiceCurrency, invoiceService.ts) is the
+  // authority: it re-checks invoices:write, the draft status and the row
+  // lock, so this dialog is a convenience, never a gate.
+  const [currencyOpen, setCurrencyOpen] = useState(false);
+  const [currencyBusy, setCurrencyBusy] = useState(false);
+  const [targetCurrency, setTargetCurrency] = useState(currency);
+  const [currencyMode, setCurrencyMode] = useState<CurrencyChangeMode | null>(null);
+  const [currencyConfirmed, setCurrencyConfirmed] = useState(false);
+  const [currencyError, setCurrencyError] = useState<string | null>(null);
 
   // Inline due-date editor (issued invoices only). Opens with the current due date;
   // Save PATCHes /invoices/:id/due-date.
@@ -275,6 +287,51 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
       setBusy(false);
     }
   }, [busy, voidReason, voidReissue, invoice.id, refresh, t]);
+
+  const openCurrencyDialog = useCallback(() => {
+    setTargetCurrency(currency);
+    setCurrencyMode(null);
+    setCurrencyConfirmed(false);
+    setCurrencyError(null);
+    setCurrencyOpen(true);
+  }, [currency]);
+
+  const submitCurrency = useCallback(async () => {
+    if (currencyBusy || !currencyMode || !currencyConfirmed || targetCurrency === currency) return;
+    setCurrencyBusy(true);
+    // A retry starts from a clean slate — a stale error would read as a fresh
+    // rejection of the SAME attempt.
+    setCurrencyError(null);
+    try {
+      await runAction({
+        request: () => fetchWithAuth(`/invoices/${invoice.id}/currency`, {
+          method: 'POST',
+          body: JSON.stringify({
+            currencyCode: targetCurrency,
+            ...(currencyMode === 'clear' ? { clearLines: true } : { reprice: true }),
+          }),
+        }),
+        errorFallback: t('invoiceDetail.currency.errors.change'),
+        successMessage: t('invoiceDetail.currency.toast.changed', { currency: targetCurrency }),
+        onUnauthorized: UNAUTHORIZED,
+      });
+      setCurrencyOpen(false);
+      refresh();
+    } catch (err) {
+      // A 409 CURRENCY_LOCKED names why (line count) in its message — keep the
+      // dialog open and show it inline rather than losing it to a toast alone.
+      if (err instanceof ActionError && err.status === 409) {
+        setCurrencyError(err.message);
+      } else {
+        handleActionError(err, t('invoiceDetail.currency.errors.change'));
+      }
+    } finally {
+      setCurrencyBusy(false);
+    }
+  }, [currencyBusy, currencyMode, currencyConfirmed, targetCurrency, currency, invoice.id, refresh, t]);
+
+  const canChangeCurrency = can('invoices', 'write') && invoice.status === 'draft';
+  const currencySubmittable = !!currencyMode && currencyConfirmed && targetCurrency !== currency;
 
   return (
     <div className="space-y-6" data-testid="invoice-detail">
@@ -524,6 +581,20 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
                 {t('invoiceDetail.void.button')}
               </button>
             )}
+            {/* Change stamped currency (DRAFT only, #4416). The server
+                re-checks permission, the draft status and eligibility under
+                the row lock. */}
+            {canChangeCurrency && (
+              <button
+                type="button"
+                onClick={openCurrencyDialog}
+                disabled={currencyBusy}
+                data-testid="invoice-currency-open"
+                className="inline-flex w-full items-center justify-center rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
+              >
+                {t('invoiceDetail.currency.actions.change')}
+              </button>
+            )}
           </div>
 
           {/* Payments */}
@@ -752,6 +823,36 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
           </div>
         </div>
       </Dialog>
+
+      <ChangeCurrencyDialog
+        open={currencyOpen}
+        onClose={() => setCurrencyOpen(false)}
+        busy={currencyBusy}
+        currentCurrency={currency}
+        targetCurrency={targetCurrency}
+        onTargetCurrencyChange={setTargetCurrency}
+        mode={currencyMode}
+        onModeChange={setCurrencyMode}
+        confirmed={currencyConfirmed}
+        onConfirmedChange={setCurrencyConfirmed}
+        error={currencyError}
+        onSubmit={() => void submitCurrency()}
+        submittable={currencySubmittable}
+        testIdPrefix="invoice-currency"
+        copy={{
+          title: t('invoiceDetail.currency.dialog.title'),
+          description: t('invoiceDetail.currency.dialog.description', { currency }),
+          currencyLabel: t('invoiceDetail.currency.dialog.currencyLabel'),
+          modeLegend: t('invoiceDetail.currency.dialog.modeLegend'),
+          modeClearLabel: t('invoiceDetail.currency.dialog.modeClear'),
+          modeClearHint: t('invoiceDetail.currency.dialog.modeClearHint'),
+          modeRepriceLabel: t('invoiceDetail.currency.dialog.modeReprice'),
+          modeRepriceHint: t('invoiceDetail.currency.dialog.modeRepriceHint'),
+          confirmLabel: t('invoiceDetail.currency.dialog.confirm'),
+          submitLabel: t('invoiceDetail.currency.dialog.submit'),
+          cancelLabel: t('common:actions.cancel'),
+        }}
+      />
     </div>
   );
 }

@@ -385,9 +385,13 @@ describe('POST /devices/:id/move-org', () => {
         ...DEVICE_SITE_DENORMALIZED_TABLES,
       ]);
       expect(getDeviceOrgDenormalizedTables()).toContain('agent_health_observations');
+      // agent_rollback_events (#4371 fixup): restamped by the SECURITY
+      // DEFINER breeze_cascade_device_org_id() trigger, not this loop's
+      // app-role UPDATE — see the doc comment on DEVICE_ORG_FK_CASCADE_TABLES.
       expect(DEVICE_ORG_FK_CASCADE_TABLES).toEqual([
         'agent_health_observations',
         'software_inventory_observations',
+        'agent_rollback_events',
       ]);
 
       expect(statements).toContain(
@@ -537,6 +541,42 @@ describe('POST /devices/:id/move-org', () => {
       // agree on relative lock order (moveOrg.ts:~311).
       const idx2 = (t: string) => statements.findIndex((s) => s.startsWith(`UPDATE ${t} `));
       expect(idx2('ticket_outbox')).toBeLessThan(idx2('ticket_attachments'));
+    });
+
+    it('rewrites ticket_email_links org_id via the tickets join inside the transaction (#4643)', async () => {
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
+      rigOrgAndSiteSelects({
+        orgRows: [
+          { id: SOURCE_ORG, partnerId: 'partner-1' },
+          { id: TARGET_ORG, partnerId: 'partner-1' },
+        ],
+        siteRow: { id: TARGET_SITE },
+      });
+      const { statements } = rigTransactionSuccess();
+
+      const res = await app.request(`/devices/${DEVICE_ID}/move-org`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE }),
+      });
+      expect(res.status).toBe(200);
+
+      // ticket_email_links denormalizes org_id for RLS but has NO device_id
+      // column, so the generic getDeviceOrgDenormalizedTables() loop can't
+      // reach it. Without this dedicated rewrite, the moved device's ticket
+      // email-link rows stay under the OLD org's RLS after the move.
+      const rewrites = statements.filter((s) => s.startsWith('UPDATE ticket_email_links '));
+      expect(
+        rewrites,
+        `Expected exactly one ticket_email_links org_id rewrite.\nStatements:\n${statements.join('\n')}`,
+      ).toEqual([
+        `UPDATE ticket_email_links SET org_id = ${TARGET_ORG}::uuid ` +
+          `WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${DEVICE_ID}::uuid)`,
+      ]);
+      // Lock order: email_links must come AFTER ticket_attachments in this
+      // path so the device-move and ticket-move paths agree (moveOrg.ts:~311).
+      const idx = (t: string) => statements.findIndex((s) => s.startsWith(`UPDATE ${t} `));
+      expect(idx('ticket_attachments')).toBeLessThan(idx('ticket_email_links'));
     });
 
     it('detaches ai_agent_runs.ticket_id via the tickets join, before tickets are re-stamped (#4215)', async () => {
