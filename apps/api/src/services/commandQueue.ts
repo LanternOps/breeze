@@ -1364,6 +1364,13 @@ export async function executeCommand(
  * scrubbed; a device id never belongs in one). Logs have no quota. So the
  * Sentry event is the alert and the log line is the attribution — the same
  * division of labour `reportContextlessWrite` uses.
+ *
+ * Deliberately NOT `db/index.ts`'s exported `shouldCaptureHeldContext`, even
+ * though it is the same per-scope shape: its map is shared with the
+ * `db_context_held_too_long` capture, so one signal would silently suppress the
+ * other for a whole window. These are different problems — "a context was held
+ * too long" vs "this dispatch was made from inside one" — and an operator needs
+ * to see both. The cost of keeping them apart is the six lines below.
  */
 const HELD_CONTEXT_DISPATCH_CAPTURE_THROTTLE_MS = 15 * 60 * 1000;
 const heldContextDispatchLastCapture = new Map<string, number>();
