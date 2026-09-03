@@ -1,4 +1,39 @@
 {
+  "aiAgentsRuns": {
+    "live": {
+      "label": "Updating live"
+    },
+    "list": {
+      "clearFilters": "Clear filters",
+      "emptyDescription": "Runs triggered by alerts, schedules, tickets, and manual actions will appear here once an agent executes.",
+      "emptyFilteredDescription": "No runs match these filters. Try a different agent or status.",
+      "emptyConfigureLink": "Configure AI agents"
+    },
+    "detail": {
+      "notFoundDescription": "This run may have been deleted, or the link may be out of date.",
+      "trace": {
+        "emptyDescription": "Tool calls the agent proposes or executes will be listed here."
+      },
+      "ledger": {
+        "emptyDescription": "Tools the agent actually invoked will be listed here.",
+        "statuses": {
+          "pending": "Pending",
+          "approved": "Approved",
+          "executing": "Executing",
+          "completed": "Completed",
+          "failed": "Failed",
+          "rejected": "Rejected"
+        }
+      },
+      "intents": {
+        "emptyDescription": "Approvals this run requested will be listed here."
+      },
+      "triage": {
+        "categoryLabel": "Category",
+        "categoryUnresolved": "Suggested — name not available on this view"
+      }
+    }
+  },
   "partnerServicePrincipals": {
     "title": "Service principals",
     "description": "Manage partner-scoped machine identities and their access keys.",
@@ -1380,7 +1415,7 @@
       "deleteOverride": "Remove override",
       "confirmDelete": "Confirm delete",
       "cron": "Cron expression",
-      "cronHint": "Five fields: minute hour day-of-month month day-of-week. For example 0 3 * * * runs every day at 03:00.",
+      "cronHint": "Five fields: minute hour day-of-month month day-of-week. For example 0 3 * * * runs every day at 03:00. The minute field must be a literal number or comma-separated list (no *, /, or - ranges) — schedules fire at most hourly.",
       "cronInvalid": "Enter a valid five-field cron expression before saving.",
       "timezone": "Timezone",
       "kinds": {
@@ -1400,6 +1435,9 @@
       "tightenOnly": "An override can only narrow the baseline: it may disable the sweep or drop checks, never add one.",
       "noKinds": "No checks",
       "lastRun": "Last run {{at}} · {{admitted}} of {{total}} organizations swept, {{skipped}} skipped.",
+      "nextRun": "Next run {{at}} ({{timezone}})",
+      "nextRunInvalid": "Invalid schedule",
+      "nextRunNone": "No run falls in the next year.",
       "kindLabels": {
         "disk_pressure": "Disk pressure",
         "stale_agents": "Stale agents",
@@ -1432,6 +1470,26 @@
     "title": "AI Agents",
     "description": "Named AI workers with a policy. Partners set the baseline; organizations can only tighten it.",
     "empty": "No agents yet.",
+    "kindHints": {
+      "triage": "Investigates new alerts and proposes what to do about them.",
+      "patch": "Reviews missing patches and proposes what to install.",
+      "helpdesk": "Picks up tickets and proposes replies and next steps."
+    },
+    "emptyState": {
+      "title": "No agents yet",
+      "description": "An agent is a saved policy, not a running process: it watches the alerts, patches or tickets you choose, investigates with the tools you allow, and then either proposes a fix or carries one out. Start in shadow mode, where the agent proposes and a person approves, so nothing reaches a device until you say so.",
+      "action": "Create your first agent"
+    },
+    "modeChoice": {
+      "legend": "What this agent may do",
+      "off": "Off",
+      "offConsequence": "Nothing runs.",
+      "shadow": "Shadow",
+      "shadowConsequence": "Observes and proposes; a human approves everything.",
+      "act": "Act",
+      "actConsequence": "Executes allowed operations without a click. No automatic rollback.",
+      "actUnavailable": "Not available for this agent yet."
+    },
     "allOrgs": "All orgs",
     "allOrgsHint": "Partner-wide: applies to every organization unless an organization tightens it.",
     "stateEnabled": "Enabled",
@@ -1477,8 +1535,11 @@
     "sections": {
       "scope": "When it runs",
       "permissions": "Permissions",
+      "permissionsDescription": "What this agent may touch. The tool allowlist widens what it can do; protected resources narrow it, and always win.",
       "policyDecide": "Unattended policy authorization",
       "limits": "Limits",
+      "limitsBudget": "Budget and reach",
+      "limitsTiming": "Timing",
       "notifications": "Notifications",
       "instructions": "Instructions"
     },
@@ -1536,7 +1597,12 @@
       "supervisedActionKeysEmpty": "No policy-decidable actions are registered.",
       "supervisedActionKeysFailed": "Couldn't load the policy-decidable action list, so unattended authorization can't be changed right now.",
       "ticketAutonomousWrites": "Autonomous ticket writes",
-      "ticketAutonomousWritesHint": "Org override only — autonomous ticket writes require act mode and this org-level opt-in"
+      "ticketAutonomousWritesHint": "Org override only — autonomous ticket writes require act mode and this org-level opt-in",
+      "enabledHint": "Enabled and the mode are separate switches and a run needs both: with this off nothing runs whatever the mode says, and in Off mode nothing runs even while this is on.",
+      "actKeysCleared": "Act-mode permissions are kept but won't be saved unless this agent returns to Act mode.",
+      "toolSuggestLabel": "Add a known tool",
+      "toolSuggestHint": "Suggestions come from the policy-decidable action registry, which is not the full list of tools. Anything else this agent may use can still be typed above.",
+      "toolSuggestAdd": "Add"
     },
     "loading": "Loading agents…",
     "runs": {
@@ -1742,6 +1808,29 @@
         "draftKinds": {
           "reply": "Reply draft",
           "resolutionNote": "Resolution-note draft"
+        },
+        "skippedTitle": "Not applied",
+        "skipped": {
+          "item": {
+            "fields": "Field updates",
+            "link": "Device link",
+            "note": "Private note",
+            "draftReply": "Reply draft",
+            "draftResolution": "Resolution-note draft"
+          },
+          "reason": {
+            "noFieldsProposed": "No fields were proposed.",
+            "belowConfidenceFloor": "Confidence was below the threshold for an automatic write.",
+            "humanSet": "A person already set this field.",
+            "noDeviceProposed": "No device was proposed.",
+            "deviceAlreadyLinked": "The ticket already has a linked device.",
+            "noDraftReply": "No reply was proposed.",
+            "noDraftResolution": "No resolution note was proposed.",
+            "resolutionNoteExists": "The ticket already has a resolution note.",
+            "maxActionsPerRun": "The run's action cap was reached first.",
+            "intentError": "Creating the change failed.",
+            "ticketNotFound": "The ticket could not be found."
+          }
         }
       }
     },
@@ -1758,6 +1847,7 @@
       "refresh": "Refresh",
       "refreshing": "Rebuilding…",
       "retry": "Try again",
+      "moreActions": "More actions",
       "errors": {
         "load": "The impact report could not be loaded.",
         "rebuild": "The impact rebuild could not be queued.",
@@ -1770,6 +1860,15 @@
         "rebuildComplete": "The impact report has been rebuilt.",
         "rebuildStillRunning": "The rebuild is still running. Reload this page in a few minutes to see the new figures."
       },
+      "emptyState": {
+        "title": "No AI outcomes in this window yet",
+        "description": "Outcomes will appear here once your AI agents judge an alert, triage a ticket, or execute a fix in shadow or act mode. Widen the reporting window above, or set up an agent to get started.",
+        "action": "Set up an agent"
+      },
+      "tileGroups": {
+        "judged": "Judged",
+        "executed": "Executed"
+      },
       "tiles": {
         "alertsJudged": "Alerts judged",
         "noiseFlagged": "Flagged as noise",
@@ -1777,9 +1876,11 @@
         "draftsSent": "Drafts sent",
         "fixesExecuted": "Fixes executed",
         "promoteEligible": "Promotion-eligible operations",
-        "promoteEligibleHint": "Operations with enough clean evidence to be pre-authorized. Open Settings → AI Agents to review and promote them.",
+        "promoteEligibleCaption": "Enough clean evidence to pre-authorize. Review and promote in AI Agents settings.",
         "estTimeSaved": "Estimated time saved",
         "estTimeSavedValue": "{{hours}} hours",
+        "estTimeSavedCaption": "Estimated from a fixed time allowance per outcome.",
+        "howEstimatedToggle": "How is this estimated?",
         "llmSpend": "LLM spend"
       },
       "weightsTooltipTitle": "An estimate only — each outcome is credited with a fixed allowance:",
@@ -1863,6 +1964,8 @@
       "loading": "Loading graduation evidence…",
       "error": "The graduation evidence could not be loaded.",
       "retry": "Try again",
+      "noBaselineTitle": "No baseline agent yet",
+      "noBaseline": "Graduation tracking starts once a partner-wide baseline agent of this kind exists. Create one with the \"All organizations\" scope to begin tracking evidence for this org.",
       "orgRequired": "Choose a single organization in the organization switcher to see its graduation evidence.",
       "empty": "No evidence has been recorded for this agent yet.",
       "readOnlyNote": "Pre-authorized execution is turned off for this deployment; these figures are informational.",
@@ -1871,6 +1974,22 @@
       "approvalsLink": "Track this request in the approvals inbox",
       "ceilingHint": "Partner-level keys are a ceiling, not a grant. Each organization's agent must be granted the key separately — through graduation or by editing that organization's agent.",
       "promote": "Promote",
+      "revoke": "Revoke",
+      "emptyTitle": "No evidence yet",
+      "demotedAt": "Revoked {{at}}",
+      "demotedReason": "Reason: {{reason}}",
+      "demoteReasons": {
+        "attempted_failure": "an attempt failed",
+        "recurrence": "the alert it fixed came back",
+        "operator": "an operator revoked it"
+      },
+      "revokeConfirm": {
+        "title": "Revoke pre-authorization",
+        "message": "{{opKey}} goes back to the approval queue for this organization's agent. A run already under way is unaffected; every later one needs a human decision again.",
+        "action": "Revoke",
+        "reasonLabel": "Reason (optional)",
+        "reasonHint": "Recorded on the audit entry for this revocation. Up to 500 characters."
+      },
       "verifiedOfThreshold": "{{verified}} of {{threshold}}",
       "columns": {
         "opKey": "Operation",
@@ -1901,11 +2020,17 @@
         "action": "Request approval"
       },
       "toasts": {
-        "requested": "Pre-authorization requested. A second approver has to approve it before this operation runs unattended, and it applies to future runs only."
+        "requested": "Pre-authorization requested. A second approver has to approve it before this operation runs unattended, and it applies to future runs only.",
+        "revoked": "Pre-authorization revoked. This operation needs a human decision again, starting with the next run."
       },
       "errors": {
         "promote": "The pre-authorization request could not be raised.",
-        "policyDecideDisabled": "Pre-authorized execution is turned off for this deployment, so this operation cannot be promoted."
+        "policyDecideDisabled": "Pre-authorized execution is turned off for this deployment, so this operation cannot be promoted.",
+        "revoke": "The pre-authorization could not be revoked.",
+        "noPromotedGrant": "This operation is not pre-authorized for this organization, so there is nothing to revoke.",
+        "alreadyDemoted": "This operation is already back in the approval queue.",
+        "alreadyRevoked": "This operation had already been removed from the agent, so nothing changed.",
+        "ambiguousOpKey": "More than one agent holds this operation for this organization. Open the agent you want to change and revoke it there."
       },
       "reliability": {
         "caption": "Act-mode operations, read-only: these are not policy keys, so they can never be pre-authorized."

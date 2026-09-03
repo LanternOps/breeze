@@ -88,9 +88,19 @@ type HeartbeatPayload struct {
 	RollbackObservation *rollbackstate.Observation `json:"rollbackObservation,omitempty"`
 	IPHistoryUpdate     *IPHistoryUpdate           `json:"ipHistoryUpdate,omitempty"`
 	PendingReboot       bool                       `json:"pendingReboot"`
-	LastUser            string                     `json:"lastUser,omitempty"`
-	UptimeSeconds       int64                      `json:"uptime,omitempty"`
-	DeviceRole          string                     `json:"deviceRole,omitempty"`
+	// RebootStatus is the scheduled-restart snapshot from RebootManager
+	// (#3207 W5). Sent unconditionally — NO omitempty — for the same reason
+	// SecurityCapabilities below is: the server has to tell an old agent (the
+	// key absent from the JSON body entirely) apart from a capable agent
+	// reporting that nothing is scheduled (an explicit null). Absent means "no
+	// news, keep what you have"; null means "the restart was cancelled or has
+	// already fired, clear it". Collapsing those two would strand a cancelled
+	// restart on the device page forever, or let every pre-#3207 agent in the
+	// fleet wipe the console's view on its next beat.
+	RebootStatus  *RebootStatusReport `json:"rebootStatus"`
+	LastUser      string              `json:"lastUser,omitempty"`
+	UptimeSeconds int64               `json:"uptime,omitempty"`
+	DeviceRole    string              `json:"deviceRole,omitempty"`
 	// Orthogonal virtualization attribute (issue #1387). IsVirtual is a
 	// pointer so an old-agent omission (nil) is distinguishable from a
 	// genuine "physical" report (false) — the server only overwrites the
@@ -4116,6 +4126,10 @@ func (h *Heartbeat) sendHeartbeat() {
 	// Check for pending reboot
 	pendingReboot, _ := patching.DetectPendingReboot()
 	payload.PendingReboot = pendingReboot
+	// Scheduled-restart snapshot (#3207 W5). nil here is not "skip it" — it
+	// marshals to an explicit null, which is how the server learns a restart it
+	// was told about is no longer happening.
+	payload.RebootStatus = h.rebootStatusForHeartbeat()
 	if h.sessionCol != nil {
 		payload.LastUser = h.sessionCol.LastUser()
 	}

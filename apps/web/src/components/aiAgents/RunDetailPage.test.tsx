@@ -1,5 +1,5 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
 vi.mock('../reports/reportExport', () => ({
@@ -414,13 +414,19 @@ describe('RunDetailPage sweep findings', () => {
     expect(row).toHaveTextContent('The watched Spooler service has been stopped since 09:12.');
   });
 
-  it('renders evidence as key/value pairs rather than a raw JSON blob', async () => {
+  it('renders evidence as a definition list of key/value pairs rather than a raw JSON blob or a flattened string', async () => {
     mockEndpoints({ detail: { ...RUN_DETAIL, sweep: SWEEP } });
     const { container } = render(<RunDetailPage runId="run-1" />);
 
     await waitFor(() => expect(screen.getByTestId('ai-agent-run-sweep-finding-0')).toBeInTheDocument());
-    expect(screen.getByTestId('ai-agent-run-sweep-finding-0-evidence')).toHaveTextContent('serviceName: Spooler');
-    expect(screen.getByTestId('ai-agent-run-sweep-finding-0-evidence')).toHaveTextContent('state: stopped');
+    const evidence = screen.getByTestId('ai-agent-run-sweep-finding-0-evidence');
+    // A real <dl> with <dt>/<dd> pairs — not a flattened "k: v · k: v" string
+    // — so a screen reader gets term/value structure.
+    expect(evidence.tagName).toBe('DL');
+    const terms = evidence.querySelectorAll('dt');
+    const values = evidence.querySelectorAll('dd');
+    expect(Array.from(terms).map((el) => el.textContent)).toEqual(['serviceName:', 'state:']);
+    expect(Array.from(values).map((el) => el.textContent)).toEqual(['Spooler', 'stopped']);
     // A JSON dump would carry the object punctuation; the k/v rendering never does.
     expect(container.innerHTML).not.toContain('{&quot;serviceName&quot;');
   });
@@ -663,7 +669,10 @@ describe('RunDetailPage ticket triage proposal', () => {
     render(<RunDetailPage runId="run-1" />);
 
     const categoryRow = await screen.findByTestId('ai-agent-run-triage-field-categoryId');
-    expect(categoryRow).toHaveTextContent('cat-hardware-printer');
+    // Critique finding #6: the DTO carries no resolved category NAME, only a
+    // raw internal category UUID (`fields.categoryId.value`) — that id must
+    // never reach the DOM. Only its confidence is shown.
+    expect(categoryRow).not.toHaveTextContent('cat-hardware-printer');
     expect(categoryRow).toHaveTextContent('82');
 
     const priorityRow = screen.getByTestId('ai-agent-run-triage-field-priority');
@@ -733,5 +742,259 @@ describe('RunDetailPage ticket triage proposal', () => {
     for (const forbidden of ['toolInput', 'toolOutput', 'args', 'arguments']) {
       expect(html).not.toContain(forbidden);
     }
+  });
+
+  // Issue #4462 — the per-field skip reasons `persistTicketTriage` computes
+  // (ticketTriageFindings.ts) were previously console-only; this asserts
+  // they now render on the run detail once the DTO carries them.
+  it('renders per-field skip reasons when the proposal carries them', async () => {
+    mockEndpoints({
+      detail: {
+        ...RUN_DETAIL,
+        ticketProposal: {
+          ...TICKET_PROPOSAL,
+          skipped: [
+            { item: 'fields', reason: 'below_confidence_floor' },
+            { item: 'link', reason: 'device_already_linked' },
+          ],
+        },
+        intents: [TICKET_INTENT],
+      },
+    });
+    render(<RunDetailPage runId="run-1" />);
+
+    const skippedSection = await screen.findByTestId('ai-agent-run-triage-skipped');
+    expect(skippedSection).toHaveTextContent(/confidence/i);
+    expect(screen.getByTestId('ai-agent-run-triage-skipped-fields')).toBeInTheDocument();
+    expect(screen.getByTestId('ai-agent-run-triage-skipped-link')).toBeInTheDocument();
+  });
+
+  it('omits the skipped section when the proposal carries no skips', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, ticketProposal: TICKET_PROPOSAL, intents: [TICKET_INTENT] } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => screen.getByTestId('ai-agent-run-triage'));
+    expect(screen.queryByTestId('ai-agent-run-triage-skipped')).not.toBeInTheDocument();
+  });
+});
+
+// Critique finding #5 — the document outline must run h1 → h2 → h3 with no
+// skipped level. The exposure-budget card used to be an h3 sandwiched
+// between the page h1 and the next section's h2.
+describe('RunDetailPage heading order', () => {
+  it('keeps every top-level section at h2, sibling to the exposure-budget card', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, sweep: SWEEP } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('run-detail-budget-card')).toBeInTheDocument());
+
+    const h1s = screen.getAllByRole('heading', { level: 1 });
+    expect(h1s).toHaveLength(1);
+
+    const budgetHeading = screen.getByText('Exposure budget');
+    expect(budgetHeading.tagName).toBe('H2');
+
+    const sweepHeading = screen.getByText('Sweep findings');
+    expect(sweepHeading.tagName).toBe('H2');
+
+    const traceHeading = screen.getByText('Execution trace');
+    expect(traceHeading.tagName).toBe('H2');
+  });
+});
+
+// Critique finding #6 — the ledger must never print the raw AiToolStatus
+// enum token; it goes through i18n first.
+describe('RunDetailPage ledger status labels', () => {
+  it('translates the ledger status instead of printing the raw enum', async () => {
+    mockEndpoints();
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('run-detail-ledger')).toBeInTheDocument());
+    const row = screen.getByTestId('run-detail-ledger').querySelector('tbody tr');
+    expect(row).not.toBeNull();
+    // RUN_DETAIL.ledger[0].status is the raw enum 'completed' — the cell
+    // must show the translated label, not the bare lowercase token.
+    expect(row).toHaveTextContent('Completed');
+  });
+});
+
+// Critique finding #3 — bare muted <p> empty states become a structured
+// EmptyState with a description of what will appear.
+describe('RunDetailPage empty states', () => {
+  it('renders a not-found EmptyState with a description and a way back to the list', async () => {
+    mockEndpoints({ detailOk: false, detailStatus: 404 });
+    render(<RunDetailPage runId="missing" />);
+
+    await waitFor(() => expect(screen.getByTestId('run-detail-not-found')).toBeInTheDocument());
+    expect(screen.getByText('Run not found.')).toBeInTheDocument();
+    expect(screen.getByText(/deleted|out of date/i)).toBeInTheDocument();
+    expect(screen.getByText('Back to runs')).toHaveAttribute('href', '/ai-agents/runs');
+  });
+
+  it('renders a description in the empty trace/ledger/intents sections instead of a bare line', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, trace: [], ledger: [], intents: [] } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('run-detail-header')).toBeInTheDocument());
+    expect(screen.getByText('No trace entries recorded.')).toBeInTheDocument();
+    expect(screen.getByText('Tool calls the agent proposes or executes will be listed here.')).toBeInTheDocument();
+    expect(screen.getByText('No tool executions recorded.')).toBeInTheDocument();
+    expect(screen.getByText('No linked approvals.')).toBeInTheDocument();
+  });
+});
+
+// Critique finding #1 — an in-flight run must update on its own; the page
+// polls silently (no full-page reload flicker) while status is non-terminal,
+// stops once terminal, and pauses while the tab is hidden.
+describe('RunDetailPage live polling', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
+  });
+
+  it('polls every 5s while the run is running and reflects the updated status', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, status: 'running' as const } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.getByTestId('run-detail-header')).toHaveTextContent('Running');
+    expect(screen.getByTestId('run-live-indicator')).toBeInTheDocument();
+
+    mockEndpoints({ detail: { ...RUN_DETAIL, status: 'completed' as const } });
+    await act(async () => {
+      vi.advanceTimersByTime(5_000);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.getByTestId('run-detail-header')).toHaveTextContent('Completed');
+    expect(screen.queryByTestId('run-live-indicator')).not.toBeInTheDocument();
+  });
+
+  it('never flips the page back to the full-page loading state while polling', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, status: 'running' as const } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.getByTestId('run-detail-page')).toBeInTheDocument();
+
+    await act(async () => {
+      vi.advanceTimersByTime(5_000);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // The header/page stayed mounted throughout — a naive poll that reused
+    // `load()` would have flipped `loading` and replaced this with
+    // `run-detail-loading` on every tick.
+    expect(screen.queryByTestId('run-detail-loading')).not.toBeInTheDocument();
+    expect(screen.getByTestId('run-detail-page')).toBeInTheDocument();
+  });
+
+  it('stops polling once the run is already terminal on first load', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, status: 'completed' as const } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const callsAfterLoad = fetchMock.mock.calls.length;
+
+    await act(async () => {
+      vi.advanceTimersByTime(30_000);
+      await Promise.resolve();
+    });
+
+    expect(fetchMock.mock.calls.length).toBe(callsAfterLoad);
+  });
+
+  it('pauses polling while the document is hidden', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, status: 'running' as const } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
+    const callsAfterLoad = fetchMock.mock.calls.length;
+
+    await act(async () => {
+      vi.advanceTimersByTime(5_000);
+      await Promise.resolve();
+    });
+
+    expect(fetchMock.mock.calls.length).toBe(callsAfterLoad);
+  });
+
+  // Review finding P2-2 (#4187 critique): overlapping poll responses must
+  // apply in request order, not resolution order.
+  it('discards a stale poll response that resolves after a newer one', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, status: 'running' as const } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.getByTestId('run-detail-header')).toHaveTextContent('Running');
+
+    let resolveOlder!: (value: Response) => void;
+    let resolveNewer!: (value: Response) => void;
+    const detailResponses = [
+      new Promise<Response>((resolve) => {
+        resolveOlder = resolve;
+      }),
+      new Promise<Response>((resolve) => {
+        resolveNewer = resolve;
+      }),
+    ];
+    let call = 0;
+    fetchMock.mockImplementation((url: string) => {
+      if (url.startsWith('/ai/agents/runs/')) {
+        return detailResponses[call++] ?? Promise.resolve(json({ data: RUN_DETAIL }));
+      }
+      if (url.startsWith('/ai/agents/exposure-budget')) {
+        return Promise.resolve(json({ data: BUDGET }));
+      }
+      return Promise.resolve(json({ data: [] }));
+    });
+
+    // Two poll ticks fire back to back (5s cadence while running) before
+    // either response resolves.
+    await act(async () => {
+      vi.advanceTimersByTime(5_000);
+      await Promise.resolve();
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(5_000);
+      await Promise.resolve();
+    });
+
+    // Resolve the NEWER request first with a fresh status, then the OLDER
+    // request with a stale one — the stale one must not win.
+    resolveNewer(json({ data: { ...RUN_DETAIL, status: 'completed' as const } }));
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    resolveOlder(json({ data: { ...RUN_DETAIL, status: 'running' as const } }));
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.getByTestId('run-detail-header')).toHaveTextContent('Completed');
   });
 });

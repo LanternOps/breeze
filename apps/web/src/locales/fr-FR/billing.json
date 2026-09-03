@@ -41,6 +41,9 @@
       "values": {
         "auto": "auto",
         "groupDeleted": "groupe supprimé"
+      },
+      "lineScope": {
+        "site": "Site : {{name}}"
       }
     },
     "contractDetail": {
@@ -153,13 +156,22 @@
         "addLine": "Impossible d'ajouter la ligne.",
         "removeLine": "Impossible de supprimer la ligne.",
         "activateContract": "Impossible d'activer le contrat.",
-        "noPriceForCurrency": "Aucun prix en {{currency}} pour cet article. Ajoutez-en un dans le catalogue ou supprimez le lien vers le catalogue."
+        "noPriceForCurrency": "Aucun prix en {{currency}} pour cet article. Ajoutez-en un dans le catalogue ou supprimez le lien vers le catalogue.",
+        "updateLine": "Impossible de mettre à jour la ligne.",
+        "lineNotFound": "Cette ligne n’existe plus. Actualisez le contrat.",
+        "contractNotEditable": "Les lignes ne peuvent être modifiées que sur les contrats brouillon ou actifs.",
+        "siteNotInOrg": "Ce site appartient à une autre organisation.",
+        "groupNotInOrg": "Ce groupe d’appareils appartient à une autre organisation.",
+        "invalidLinePatch": "Ces modifications ne sont pas valides pour ce type de ligne.",
+        "priceNotRepresentable": "Ce prix comporte trop de décimales pour {{currency}}.",
+        "catalogItemNotFound": "Cet article du catalogue n’est pas disponible sur ce contrat."
       },
       "toast": {
         "contractCreated": "Contrat créé",
         "lineAdded": "Ligne ajoutée",
         "lineRemoved": "Ligne supprimée",
-        "contractActivated": "Contrat activé"
+        "contractActivated": "Contrat activé",
+        "lineUpdated": "Ligne mise à jour"
       },
       "schedule": {
         "title": "Planification",
@@ -190,7 +202,8 @@
         "unitPrice": "Prix unitaire",
         "qty": "Qté",
         "tax": "Taxe",
-        "empty": "Aucune ligne pour le moment. Ajoutez une ligne récurrente ci-dessous."
+        "empty": "Aucune ligne pour le moment. Ajoutez une ligne récurrente ci-dessous.",
+        "edit": "Modifier"
       },
       "addLine": {
         "integrationHint": "Ajouter depuis une intégration : une ligne sera préremplie.",
@@ -223,6 +236,16 @@
         "priceLookupFailed": "Impossible de récupérer le prix en {{currency}}.",
         "priceNotRepresentable": "Le prix en {{currency}} enregistré pour cet article n’est pas valide en {{currency}} — corrigez-le dans le catalogue, ou supprimez le lien au catalogue et saisissez une ligne manuelle.",
         "priceSourceOrgOverride": "Prix spécifique à l’organisation {{org}}"
+      },
+      "editLine": {
+        "save": "Enregistrer la ligne",
+        "cancel": "Annuler",
+        "typeLocked": "Le type de ligne ne peut pas être modifié. Supprimez la ligne et ajoutez-en une nouvelle.",
+        "priceFromCatalog": "Le prix provient du catalogue. Retirez le lien au catalogue pour le définir manuellement.",
+        "refreshPrice": "Actualiser le prix depuis le catalogue",
+        "restoreCatalogLink": "Rétablir le lien au catalogue",
+        "unlinkNeedsPrice": "Saisissez un prix unitaire et le réglage de taxe pour retirer le lien au catalogue.",
+        "noChanges": "Rien à enregistrer pour l’instant."
       },
       "estimate": {
         "title": "Estimé pour cette période",

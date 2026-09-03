@@ -1,16 +1,26 @@
 import React from 'react';
-import { Monitor } from 'lucide-react';
-import { type Device } from '@/lib/api';
+import { Download, Monitor } from 'lucide-react';
+import { publicApiPath, type Device } from '@/lib/api';
 import { cn } from '@/lib/utils';
-import { ROW, CELL, TH, PageHeader, StatusMark, EmptyState, ErrorNotice, type MarkTone } from './ui';
+import {
+  BTN_SECONDARY,
+  ROW,
+  CELL,
+  TH,
+  PageHeader,
+  StatusMark,
+  EmptyState,
+  ErrorNotice,
+  type MarkTone,
+} from './ui';
 
 interface DeviceListProps {
   devices: Device[];
   error?: string | null;
 }
 
-// Local OS label + last-seen phrasing for the customer's office manager, kept
-// private rather than widening `@/lib/utils`, which the rest of the app shares.
+// Local OS label for the customer's office manager, kept private rather than
+// widening `@/lib/utils`, which the rest of the app shares.
 const OS_LABELS: Record<string, string> = {
   windows: 'Windows',
   macos: 'Mac',
@@ -23,22 +33,7 @@ function osLabel(osType: string | null): string {
 }
 
 function lastSeenLabel(value: string | null): string {
-  if (!value) return 'Not known';
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return 'Not known';
-
-  const diffMin = Math.floor((Date.now() - d.getTime()) / 60000);
-  if (diffMin < 2) return 'Just now';
-  if (diffMin < 60) return `${diffMin} minutes ago`;
-
-  const diffHour = Math.floor(diffMin / 60);
-  if (diffHour < 24) return diffHour === 1 ? 'About an hour ago' : `About ${diffHour} hours ago`;
-
-  const diffDay = Math.floor(diffHour / 24);
-  if (diffDay === 1) return 'Yesterday';
-  if (diffDay < 7) return `${diffDay} days ago`;
-
-  return `On ${d.toLocaleDateString()}`;
+  return value ?? 'Not known';
 }
 
 function statusMark(status: Device['status']): { tone: MarkTone; label: string } {
@@ -49,6 +44,8 @@ function statusMark(status: Device['status']): { tone: MarkTone; label: string }
       return { tone: 'neutral', label: 'Offline' };
     case 'warning':
       return { tone: 'warning', label: 'Warning' };
+    default:
+      return { tone: 'neutral', label: status || 'Unknown' };
   }
 }
 
@@ -70,7 +67,20 @@ export function DeviceList({ devices, error }: DeviceListProps) {
 
   return (
     <div>
-      <PageHeader title="Devices" lede="The machines your IT team looks after for you." />
+      <PageHeader
+        title="Devices"
+        lede="The machines your IT team looks after for you."
+        action={
+          <a
+            href={publicApiPath('/portal/devices/export.csv')}
+            data-testid="portal-devices-export"
+            className={BTN_SECONDARY}
+          >
+            <Download className="h-4 w-4" aria-hidden="true" />
+            Export CSV
+          </a>
+        }
+      />
 
       {devices.length === 0 ? (
         <EmptyState icon={<Monitor className="h-10 w-10" strokeWidth={1.5} />} title="No devices">
@@ -83,7 +93,10 @@ export function DeviceList({ devices, error }: DeviceListProps) {
           {/* One inventory, one treatment: the same hairline-ruled ledger the
               rest of the portal keeps (Equipment reads these machines the same
               way) — not a card grid holding a second belief about this data. */}
-          <table className="block w-full sm:table sm:min-w-[36rem]">
+          <table
+            className="block w-full sm:table sm:min-w-[70rem]"
+            data-testid="portal-device-table"
+          >
             <thead className="hidden border-b border-border sm:table-header-group">
               <tr>
                 <th scope="col" className={cn(TH, 'text-left')}>
@@ -98,13 +111,32 @@ export function DeviceList({ devices, error }: DeviceListProps) {
                 <th scope="col" className={cn(TH, 'text-left')}>
                   Last online
                 </th>
+                <th scope="col" className={cn(TH, 'text-left')}>
+                  Last patch
+                </th>
+                <th scope="col" className={cn(TH, 'text-left')}>
+                  Protection
+                </th>
+                <th scope="col" className={cn(TH, 'text-left')}>
+                  Encryption
+                </th>
+                <th scope="col" className={cn(TH, 'text-left')}>
+                  Last backup
+                </th>
+                <th scope="col" className={cn(TH, 'text-left')}>
+                  Warranty ends
+                </th>
               </tr>
             </thead>
             <tbody className="block divide-y divide-border/70 sm:table-row-group">
               {devices.map((device) => {
                 const mark = statusMark(device.status);
                 return (
-                  <tr key={device.id} className={ROW}>
+                  <tr
+                    key={device.id}
+                    className={ROW}
+                    data-testid={`portal-device-${device.id}`}
+                  >
                     {/* order-* reorders the phone card: name and status share
                         the first line, platform and last-seen trail muted. The
                         friendly name only — the raw hostname is a technician's
@@ -126,6 +158,26 @@ export function DeviceList({ devices, error }: DeviceListProps) {
                     <td className={cn(CELL, 'order-4 text-xs text-muted-foreground sm:text-sm')}>
                       <span className="sm:hidden">Last online </span>
                       {lastSeenLabel(device.lastSeenAt)}
+                    </td>
+                    <td className={cn(CELL, 'order-5')}>
+                      <span className="sm:hidden">Last patch </span>
+                      {device.lastPatchAt ?? 'Not available'}
+                    </td>
+                    <td className={cn(CELL, 'order-6')}>
+                      <span className="sm:hidden">Protection </span>
+                      {device.protection[0].toUpperCase() + device.protection.slice(1)}
+                    </td>
+                    <td className={cn(CELL, 'order-7')}>
+                      <span className="sm:hidden">Encryption </span>
+                      {device.encryption ?? 'Not available'}
+                    </td>
+                    <td className={cn(CELL, 'order-8')}>
+                      <span className="sm:hidden">Last backup </span>
+                      {device.lastBackupAt ?? 'Not available'}
+                    </td>
+                    <td className={cn(CELL, 'order-9')}>
+                      <span className="sm:hidden">Warranty ends </span>
+                      {device.warrantyEndsAt ?? 'Not available'}
                     </td>
                   </tr>
                 );

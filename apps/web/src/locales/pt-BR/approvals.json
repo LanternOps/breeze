@@ -31,6 +31,16 @@
   "deciding": "Enviando…",
   "expiresIn": "Expira em {{minutes}} min",
   "expiresSoon": "Expira em menos de um minuto",
+  "expired": "Expirada",
+  "unknownOrganization": "Organização desconhecida",
+  "charCount": "{{count}}/{{max}}",
+  "approveToast": "{{action}} aprovado para {{org}}",
+  "pagination": {
+    "showing": "Mostrando {{shown}} de {{total}}",
+    "showingCount": "Mostrando {{shown}}",
+    "loadMore": "Carregar mais",
+    "loadMoreError": "Não foi possível carregar mais. Tente novamente."
+  },
   "errors": {
     "noApproverDevice": "Registre um dispositivo aprovador no seu perfil e tente novamente.",
     "notSoleApprover": "Outra pessoa autorizada precisa decidir esta solicitação.",
@@ -40,7 +50,8 @@
     "decisionFailed": "Não foi possível enviar a decisão. Tente novamente.",
     "batchStepUp": "Este lote exige um login mais seguro. Aprove as solicitações uma de cada vez.",
     "batchNotHomogeneous": "Estas solicitações não podem mais ser decididas em conjunto.",
-    "batchTooLarge": "Este lote tem solicitações demais para decidir em conjunto. Aprove-as em grupos menores."
+    "batchTooLarge": "Este lote tem solicitações demais para decidir em conjunto. Aprove-as em grupos menores.",
+    "driftedFromBatch": "Esta solicitação mudou e precisa ser decidida individualmente."
   },
   "registerDevice": "Registrar dispositivo",
   "alwaysAllow": {

@@ -31,6 +31,16 @@
   "deciding": "Wird gesendet…",
   "expiresIn": "Läuft in {{minutes}} Min. ab",
   "expiresSoon": "Läuft in weniger als einer Minute ab",
+  "expired": "Abgelaufen",
+  "unknownOrganization": "Unbekannte Organisation",
+  "charCount": "{{count}}/{{max}}",
+  "approveToast": "{{action}} für {{org}} genehmigt",
+  "pagination": {
+    "showing": "{{shown}} von {{total}} werden angezeigt",
+    "showingCount": "{{shown}} werden angezeigt",
+    "loadMore": "Mehr laden",
+    "loadMoreError": "Weitere Elemente konnten nicht geladen werden. Versuchen Sie es erneut."
+  },
   "errors": {
     "noApproverDevice": "Registrieren Sie in Ihrem Profil ein Genehmigungsgerät und versuchen Sie es erneut.",
     "notSoleApprover": "Eine andere berechtigte Person muss diese Anfrage genehmigen.",
@@ -40,7 +50,8 @@
     "decisionFailed": "Die Entscheidung konnte nicht gesendet werden. Versuchen Sie es erneut.",
     "batchStepUp": "Für diesen Stapel ist eine stärkere Anmeldung erforderlich. Genehmigen Sie die Anfragen einzeln.",
     "batchNotHomogeneous": "Über diese Anfragen kann nicht mehr gemeinsam entschieden werden.",
-    "batchTooLarge": "Dieser Stapel enthält zu viele Anfragen, um sie gemeinsam zu entscheiden. Genehmigen Sie sie in kleineren Gruppen."
+    "batchTooLarge": "Dieser Stapel enthält zu viele Anfragen, um sie gemeinsam zu entscheiden. Genehmigen Sie sie in kleineren Gruppen.",
+    "driftedFromBatch": "Diese Anfrage hat sich geändert und muss einzeln entschieden werden."
   },
   "registerDevice": "Gerät registrieren",
   "alwaysAllow": {

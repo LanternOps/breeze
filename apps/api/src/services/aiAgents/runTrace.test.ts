@@ -269,6 +269,31 @@ describe('buildRunTrace — safe projection (#3828)', () => {
         expect(detail.ticketProposal?.draftsWritten).toBeUndefined();
       });
 
+      it('issue #4462 — projects outcome.ticketTriageSkipped as ticketProposal.skipped', () => {
+        const detail = buildRunTrace(
+          baseRun({
+            triggerKind: 'ticket',
+            outcome: {
+              ...PROPOSAL_OUTCOME,
+              ticketTriageSkipped: [{ item: 'fields', reason: 'below_confidence_floor' }],
+            },
+            intentIds: [],
+          }),
+          AGENT, null, [], [],
+        );
+        expect(detail.ticketProposal?.skipped).toEqual([
+          { item: 'fields', reason: 'below_confidence_floor' },
+        ]);
+      });
+
+      it('issue #4462 — leaves skipped undefined (not an empty array) when nothing was skipped', () => {
+        const detail = buildRunTrace(
+          baseRun({ triggerKind: 'ticket', outcome: PROPOSAL_OUTCOME, intentIds: [] }),
+          AGENT, null, [], [],
+        );
+        expect(detail.ticketProposal?.skipped).toBeUndefined();
+      });
+
       it('never carries draft content — only id/kind — even if the caller\'s row shape somehow had it', () => {
         const draftRows = [{ id: 'draft-1', kind: 'resolution_note' as const, content: 'leak-marker-zzz' } as never];
         const detail = buildRunTrace(

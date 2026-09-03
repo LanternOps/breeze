@@ -31,6 +31,16 @@
   "deciding": "Submitting…",
   "expiresIn": "Expires in {{minutes}} min",
   "expiresSoon": "Expires in under a minute",
+  "expired": "Expired",
+  "unknownOrganization": "Unknown organization",
+  "charCount": "{{count}}/{{max}}",
+  "approveToast": "Approved {{action}} for {{org}}",
+  "pagination": {
+    "showing": "Showing {{shown}} of {{total}}",
+    "showingCount": "Showing {{shown}}",
+    "loadMore": "Load more",
+    "loadMoreError": "Couldn't load more. Try again."
+  },
   "errors": {
     "noApproverDevice": "Register an approver device in your profile, then try again.",
     "notSoleApprover": "Another eligible approver must decide this request.",
@@ -40,7 +50,8 @@
     "decisionFailed": "The decision could not be submitted. Try again.",
     "batchStepUp": "This batch needs a stronger sign-in. Approve the requests one at a time.",
     "batchNotHomogeneous": "These requests can no longer be decided together.",
-    "batchTooLarge": "This batch has too many requests to decide together. Approve them in smaller groups."
+    "batchTooLarge": "This batch has too many requests to decide together. Approve them in smaller groups.",
+    "driftedFromBatch": "This request changed and must be decided on its own."
   },
   "registerDevice": "Register device",
   "alwaysAllow": {
