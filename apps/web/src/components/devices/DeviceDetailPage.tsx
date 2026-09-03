@@ -552,6 +552,13 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
     <div className="space-y-6">
       <Breadcrumbs
         items={[
+          // #3839 (Discord ask): one-click jump to the device's Organization
+          // page from the device breadcrumb, instead of using the OrgSwitcher
+          // dropdown + search. Omitted when the device has no orgId (defensive
+          // — the detail fetch always sets one for a real device).
+          ...(device.orgId
+            ? [{ label: device.orgName, href: `/settings/organizations/${device.orgId}` }]
+            : []),
           { label: t("deviceDetailPage.devices"), href: "/devices" },
           { label: device.hostname || "Device" },
         ]}
