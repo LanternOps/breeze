@@ -826,7 +826,7 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
                     <input
                       ref={imageInputRef}
                       type="file"
-                      accept="image/png,image/jpeg,image/webp"
+                      accept="image/png,image/jpeg"
                       disabled={imageBusy}
                       onChange={(e) => { const f = e.target.files?.[0]; if (f) void uploadImage(f); }}
                       className="block w-full text-xs file:mr-2 file:rounded-md file:border file:bg-muted file:px-2 file:py-1 file:text-xs file:font-medium disabled:opacity-50"

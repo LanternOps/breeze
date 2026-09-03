@@ -2113,7 +2113,7 @@
     "remove": "Retirer",
     "httpsExampleComProductPng": "https://example.com/product.png",
     "importFromURL": "Importation depuis URL",
-    "pNGJPEGOrWebPUpTo5MB": "PNG, JPEG ou WebP jusqu’à 5 Mo.",
+    "pNGJPEGOrWebPUpTo5MB": "PNG ou JPEG, jusqu’à 5 Mo.",
     "saveTheItemFirstThenAddAProductImage": "enregistrez d’abord l’article, puis ajoutez une image produit.",
     "thisItemIsABundle": "Cet élément est un paquet",
     "groupsOtherCatalogItemsSoldTogether": "Regroupe d’autres articles de catalogue vendus ensemble.",
