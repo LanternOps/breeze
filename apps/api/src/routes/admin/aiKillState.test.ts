@@ -5,9 +5,9 @@
  * the posture: platform-admin for both verbs, MFA on the flip, a mandatory
  * reason, and an audit row on every successful flip.
  *
- * There is deliberately NO UI for this (prod has zero platform admins — see
- * the runbook, docs/deploy/ai-kill-switch.md); the API + SQL fallback are
- * the whole operational surface.
+ * The platform-admin UI (apps/web AiKillSwitch.tsx, #4208) is a thin client of
+ * this route — these tests remain the authoritative contract for the
+ * authorization/validation/audit posture. Runbook: docs/deploy/ai-kill-switch.md.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
