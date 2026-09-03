@@ -15,7 +15,7 @@ import { db, withSystemDbAccessContext } from '../../db';
 import { partners, organizations, sites, contracts, contractLines, deviceGroups } from '../../db/schema';
 import { getTestDb } from './setup';
 
-const MIGRATION_FILE = join(__dirname, '../../../migrations/2026-10-08-100600-contract-lines-site-stamp.sql');
+const MIGRATION_FILE = join(__dirname, '../../../migrations/2026-10-08-101400-contract-lines-site-stamp.sql');
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
 async function seed() {
