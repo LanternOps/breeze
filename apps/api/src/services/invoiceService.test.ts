@@ -11,7 +11,7 @@ function queueResult(rows: unknown[]) { results.push(rows); }
 vi.mock('../db', () => {
   const makeChain = () => {
     const chain: Record<string, unknown> = {};
-    const methods = ['select', 'from', 'where', 'limit', 'orderBy', 'insert', 'values', 'returning', 'update', 'set', 'delete', 'for', 'innerJoin', 'execute'];
+    const methods = ['select', 'from', 'where', 'limit', 'orderBy', 'insert', 'values', 'returning', 'update', 'set', 'delete', 'for', 'innerJoin', 'leftJoin', 'execute'];
     for (const m of methods) chain[m] = vi.fn(() => chain);
     // Make the chain awaitable: resolve to the next queued result (or []).
     (chain as { then: unknown }).then = (resolve: (v: unknown) => unknown) => {
@@ -412,6 +412,46 @@ describe('invoiceService guards', () => {
     expect(result.invoice).not.toHaveProperty('partnerId');
   });
 
+  it('serializes ticketNumber without source metadata', () => {
+    expect(svc.toCustomerInvoiceLine({
+      ticketNumber: 'T-100',
+      name: 'Support',
+      description: 'Printer repair',
+      quantity: '1',
+      unitPrice: '100',
+      taxable: false,
+      lineTotal: '100',
+    })).toEqual({
+      ticketNumber: 'T-100',
+      name: 'Support',
+      description: 'Printer repair',
+      quantity: '1',
+      unitPrice: '100',
+      taxable: false,
+      lineTotal: '100',
+    });
+  });
+
+  it('joins tickets and scopes both sides to the invoice org', async () => {
+    queueResult([{
+      id: 'invoice-1', status: 'sent', orgId: 'org1', partnerId: 'p1',
+    }]);
+    queueResult([]);
+    await svc.getCustomerInvoice('invoice-1', 'org1');
+    const join = (db as unknown as { leftJoin: Mock }).leftJoin.mock.calls.at(-1)![1];
+    const compiledJoin = new PgDialect().sqlToQuery(join as SQL);
+    expect(compiledJoin.sql).toContain(
+      '"tickets"."id" = "invoice_lines"."ticket_id"',
+    );
+    expect(compiledJoin.sql).toContain('"tickets"."org_id" =');
+    expect(compiledJoin.params).toContain('org1');
+
+    const where = (db as unknown as { where: Mock }).where.mock.calls.at(-1)![0];
+    const compiledWhere = new PgDialect().sqlToQuery(where as SQL);
+    expect(compiledWhere.sql).toContain('"invoice_lines"."org_id" =');
+    expect(compiledWhere.params).toContain('org1');
+  });
+
   it('getCustomerInvoice returns the exact customer-safe invoice line keyset', async () => {
     queueResult([{ id: 'i1', status: 'sent', orgId: 'org1', partnerId: 'p1' }]);
     queueResult([{
@@ -437,9 +477,10 @@ describe('invoiceService guards', () => {
     const result = await svc.getCustomerInvoice('i1', 'org1');
 
     expect(Object.keys(result.lines[0]!).sort()).toEqual([
-      'description', 'lineTotal', 'name', 'quantity', 'taxable', 'unitPrice',
+      'description', 'lineTotal', 'name', 'quantity', 'taxable', 'ticketNumber', 'unitPrice',
     ]);
     expect(result.lines[0]).toEqual({
+      ticketNumber: null,
       // Legacy line (source row carries no `name`): description stays the title.
       name: null,
       description: 'Customer-facing work',
@@ -478,7 +519,7 @@ describe('invoiceService guards', () => {
     });
     // Still no internal columns leaked alongside the new field.
     expect(Object.keys(result.lines[0]!).sort()).toEqual([
-      'description', 'lineTotal', 'name', 'quantity', 'taxable', 'unitPrice',
+      'description', 'lineTotal', 'name', 'quantity', 'taxable', 'ticketNumber', 'unitPrice',
     ]);
   });
 

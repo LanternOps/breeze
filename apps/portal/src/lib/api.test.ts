@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { buildPortalApiUrl, portalApi, publicApiPath } from './api';
 
 // Regression guard for the same-origin client API base (the deploy relies on it):
@@ -90,6 +91,43 @@ describe('portalApi backup request paths', () => {
       '/portal/backups/devices?page=1&limit=50',
     );
   });
+});
+
+it('GETs support usage with an optional month', async () => {
+  const dto = {
+    asOf: '2026-09-02T12:00:00.000Z',
+    month: '2026-09',
+    timezone: 'America/Denver',
+    dataStatus: 'no_data',
+    totals: {
+      billed: { minutes: 0, hours: 0 },
+      toBeBilled: { minutes: 0, hours: 0 },
+      coveredByContract: { minutes: 0, hours: 0 },
+      pendingReview: { minutes: 0, hours: 0 },
+    },
+    tickets: [],
+  };
+  const fetchMock = vi.fn().mockResolvedValue(
+    new Response(JSON.stringify(dto), { status: 200 }),
+  );
+  vi.stubGlobal('fetch', fetchMock);
+
+  await expect(
+    portalApi.getSupportUsage('2026-09'),
+  ).resolves.toMatchObject({ data: dto });
+  expect(String(fetchMock.mock.calls[0][0])).toContain(
+    '/portal/tickets/usage?month=2026-09',
+  );
+});
+
+it('keeps the W08 support usage API in its trailing delimited block', () => {
+  const source = readFileSync(new URL('./api.ts', import.meta.url), 'utf8');
+  const marker = source.lastIndexOf('// W08 — support usage');
+  const supportUsage = source.lastIndexOf('getSupportUsage:');
+  const previousApiMember = source.lastIndexOf('settlePublicReturn:');
+
+  expect(marker).toBeGreaterThan(previousApiMember);
+  expect(supportUsage).toBeGreaterThan(marker);
 });
 
 

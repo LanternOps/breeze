@@ -24,6 +24,13 @@ const ticket = (over: Partial<TicketDetailsType> = {}): TicketDetailsType => ({
   description: 'Drops every afternoon.',
   createdAt: '2026-08-01T00:00:00Z',
   updatedAt: '2026-08-02T00:00:00Z',
+  sla: {
+    firstResponseMinutes: null,
+    resolutionMinutes: null,
+    responseTargetMinutes: null,
+    resolutionTargetMinutes: null,
+    status: 'not_configured',
+  },
   comments: [
     { id: 'c2', authorName: 'Tech', authorType: 'user', content: 'second', createdAt: '2026-08-02T00:00:00Z' },
     { id: 'c1', authorName: 'Maya', authorType: 'portal', content: 'first', createdAt: '2026-08-01T00:00:00Z' },
@@ -45,6 +52,26 @@ describe('TicketDetails — statuses', () => {
     render(<TicketDetails ticket={ticket({ status: 'closed' })} />);
     expect(screen.queryByTestId('ticket-reply-form')).toBeNull();
     expect(screen.getByTestId('ticket-closed-note')).toBeTruthy();
+  });
+});
+
+describe('TicketDetails — SLA status', () => {
+  it.each([
+    ['breached', 'SLA breached'],
+    ['on_track', 'SLA on track'],
+    ['not_configured', 'No SLA configured'],
+  ] as const)('renders %s with honest copy', (status, copy) => {
+    render(<TicketDetails ticket={ticket({
+      sla: {
+        firstResponseMinutes: null,
+        resolutionMinutes: null,
+        responseTargetMinutes: null,
+        resolutionTargetMinutes: null,
+        status,
+      },
+    })} />);
+
+    expect(screen.getByTestId('portal-ticket-sla-badge').textContent).toContain(copy);
   });
 });
 
