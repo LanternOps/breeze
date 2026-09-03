@@ -1118,4 +1118,59 @@ describe('moveTicketOrg — device_vulnerabilities.ticket_id detach (#4645)', ()
     expect(after?.ticketId, 'the finding already lived in the ticket\'s destination org — not stale').toBe(ticket.id);
     expect(after?.orgId).toBe(orgB.id);
   });
+
+  it('severs the pointer under a REAL partner-scoped RLS context, not just system scope', async () => {
+    // The route runs under withDbAccessContext, never withSystemDbAccessContext.
+    // device_vulnerabilities is FORCE ROW LEVEL SECURITY, so a detach that only
+    // works for `breeze.scope=system` would be a silent zero-row no-op on the
+    // one path that actually matters — same hazard the ai_agent_runs sibling
+    // test above (#4524) exists to catch for that table.
+    const { orgA, orgB, partner, actor, ticket, device } = await seedMoveOrgFixture();
+    const vuln = await seedVulnCatalogEntry();
+    const finding = await seedFinding(orgA.id, device.id, vuln.id, ticket.id);
+
+    const partnerCtx: DbAccessContext = {
+      scope: 'partner',
+      orgId: null,
+      accessibleOrgIds: [orgA.id, orgB.id],
+      accessiblePartnerIds: [partner.id],
+      userId: actor.userId,
+    };
+    await withDbAccessContext(partnerCtx, () => moveTicketOrg(ticket.id, orgB.id, actor));
+
+    expect((await readTicket(ticket.id))?.orgId).toBe(orgB.id);
+    const after = await readFinding(finding.id);
+    expect(after?.ticketId).toBeNull();
+    expect(after?.orgId).toBe(orgA.id);
+  });
+
+  it('rolls the detach back with the rest of the transaction when the currency guard blocks the move', async () => {
+    // The detach runs BEFORE assertTicketMoveCurrencyCompatible (same
+    // placement as the ai_agent_runs detach beside it), so a blocked move
+    // must unwind it along with everything else. Verified discriminating by
+    // mutation, same as the ai_agent_runs rollback test above: hoisting the
+    // detach out of db.transaction would fail ONLY this case.
+    const adminDb = getTestDb() as any;
+    const { orgA, orgB, partner, actor, ticket, device, timeEntry, ticketPart } = await seedMoveOrgFixture();
+    const vuln = await seedVulnCatalogEntry();
+    const finding = await seedFinding(orgA.id, device.id, vuln.id, ticket.id);
+
+    await setOrgCurrency(orgB.id, 'EUR');
+    await adminDb.update(timeEntries)
+      .set({ hourlyRate: '100.00', isBillable: false, billingStatus: 'not_billed' })
+      .where(eq(timeEntries.id, timeEntry.id));
+    await adminDb.delete(ticketParts).where(eq(ticketParts.id, ticketPart.id));
+
+    const err = await withSystemDbAccessContext(() =>
+      moveTicketOrg(ticket.id, orgB.id, actor)
+    ).catch((e) => e);
+    expect(err).toBeInstanceOf(TicketMoveCurrencyBlockedError);
+
+    // Nothing moved — and the pointer is still there, because the ticket is
+    // still the source org's.
+    expect((await readTicket(ticket.id))?.orgId).toBe(orgA.id);
+    const after = await readFinding(finding.id);
+    expect(after?.ticketId).toBe(ticket.id);
+    expect(after?.orgId).toBe(orgA.id);
+  });
 });
