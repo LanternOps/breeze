@@ -55,9 +55,10 @@ scrape_configs:
   # that's expected outside a split deployment.
   #
   # Unlike breeze-api, the worker publishes `/metrics` directly (no `/api`
-  # prefix, no request-route auth) via a slim raw-node:http server, and only
-  # the role-agnostic runtime series (event-loop lag, DB pool health) — not
-  # the HTTP/business/fleet series `breeze-api` exposes. Filter dashboards and
+  # prefix) via a slim raw-node:http server rather than the Hono route graph
+  # — same bearer/IP-allowlist scrape gate either way (metricsScrapeAuth.ts) —
+  # and only the role-agnostic runtime series (event-loop lag, DB pool health),
+  # not the HTTP/business/fleet series `breeze-api` exposes. Filter dashboards and
   # alerts on `job="breeze-worker"` vs `job="breeze-api"` rather than
   # assuming a single `breeze_*` source, or the two roles' series can be
   # double-counted once both report (#4523).

@@ -137,7 +137,7 @@ scrape_configs:
 #     ports:
 #       - '<DROPLET_TAILSCALE_IP>:3002:3001'   # tailnet-only, distinct port
 #
-# Then: docker compose up -d worker
+# Then: docker compose --profile worker-split up -d worker
 # Verify: curl -H "Authorization: Bearer <token>" \
 #   http://<DROPLET_TAILSCALE_IP>:3002/metrics | head
 # Lock down further with a tailnet ACL allowing only the Prometheus node ->

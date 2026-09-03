@@ -30,6 +30,7 @@ interface ScrapeConfig {
   scheme?: string;
   static_configs?: Array<{ targets?: string[] }>;
   authorization?: { type?: string; credentials_file?: string };
+  relabel_configs?: Array<{ source_labels?: string[]; target_label?: string }>;
 }
 
 interface PrometheusConfig {
@@ -51,6 +52,12 @@ describe('monitoring/prometheus.yml worker scrape target (#4523)', () => {
   });
 
   it('scrapes the worker container on its own job, distinct from breeze-api', () => {
+    // Exactly one — a duplicate job_name (e.g. from a bad merge) would have
+    // Prometheus scrape the same target twice under identical labels, which
+    // silently double-counts the worker's series the same way an unfiltered
+    // dashboard would double-count across roles.
+    expect(jobs.filter((j) => j.job_name === 'breeze-worker')).toHaveLength(1);
+
     const workerJob = jobs.find((j) => j.job_name === 'breeze-worker');
     expect(workerJob).toBeDefined();
     expect(workerJob!.job_name).not.toBe('breeze-api');
@@ -58,10 +65,15 @@ describe('monitoring/prometheus.yml worker scrape target (#4523)', () => {
     const targets = workerJob!.static_configs?.flatMap((sc) => sc.targets ?? []) ?? [];
     expect(targets).toContain('worker:3001');
 
-    // The worker exposes `/metrics` (unauthenticated path shape differs from
-    // the api role's `/api/metrics/scrape`) — see worker.ts and
-    // docs/deploy/worker-split.md.
+    // The worker's Bearer-authenticated scrape endpoint is `/metrics` — a
+    // different path shape than the api role's `/api/metrics/scrape` — see
+    // worker.ts and docs/deploy/worker-split.md.
     expect(workerJob!.metrics_path).toBe('/metrics');
+
+    // Same instance-relabel rule as breeze-api, so `instance` carries the
+    // bare hostname (not `worker:3001`) and dashboard/alert queries that
+    // join on `instance` across both jobs still line up.
+    expect(workerJob!.relabel_configs?.[0]?.target_label).toBe('instance');
   });
 
   it('authenticates the worker scrape with the same bearer token as breeze-api', () => {
@@ -69,8 +81,12 @@ describe('monitoring/prometheus.yml worker scrape target (#4523)', () => {
     const workerJob = jobs.find((j) => j.job_name === 'breeze-worker')!;
 
     expect(workerJob.authorization?.type).toBe('Bearer');
-    // Same credentials_file as the api job — one METRICS_SCRAPE_TOKEN secret,
-    // shared via the `x-api-env` anchor both containers already read from.
+    // Same credentials_file as the api job — both point at the one
+    // `metrics_scrape_token` Docker secret declared in
+    // docker-compose.monitoring.yml (mounted into the prometheus container at
+    // /run/secrets/...), not the api/worker containers' own METRICS_SCRAPE_TOKEN
+    // env var (that one is what the *servers* check against; this is what
+    // Prometheus itself presents as the scraper).
     expect(workerJob.authorization?.credentials_file).toBe(apiJob.authorization?.credentials_file);
   });
 });
