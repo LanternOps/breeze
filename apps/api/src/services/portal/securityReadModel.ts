@@ -285,7 +285,7 @@ export async function securityOverview(
     band: score == null ? null : scoreBand(score),
     scoreHistory,
     threatEvents: {
-      label: 'endpoint threat events',
+      label: 'Endpoint threat events',
       weeks,
     },
     vulnerabilities: {

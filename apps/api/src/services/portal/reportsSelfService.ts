@@ -360,6 +360,12 @@ export async function generatePortalReport(args: {
         outputUrl: `/api/v1/portal/reports/runs/${run.id}/pdf`,
       }).where(eq(reportRuns.id, run.id)).returning();
 
+      // The MSP Reports list reads this column; the MSP generate path and the
+      // scheduler stamp it, so a portal run must too or the MSP sees "Never".
+      await db.update(reports)
+        .set({ lastGeneratedAt: completedAt, updatedAt: completedAt })
+        .where(eq(reports.id, definition.id));
+
       return toDto({
         ...completed!,
         name: definition.name,

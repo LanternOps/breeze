@@ -79,6 +79,7 @@ import type {
   BackupDevicesDto,
   BackupOverviewDto,
 } from '@breeze/shared';
+import { sqlTimestamp } from './sqlTimestamp';
 
 export async function backupOverview(
   orgId: string,
@@ -201,7 +202,7 @@ export async function backupDevicesPage(
               and bj.device_id = ${devices.id}
           )
         `,
-        lastBackupAt: sql<Date | null>`(
+        lastBackupAt: sql<Date | string | null>`(
           select max(bj.completed_at)
           from backup_jobs bj
           where bj.org_id = ${orgId}
@@ -226,7 +227,7 @@ export async function backupDevicesPage(
           order by bv.completed_at desc nulls last
           limit 1
         )`,
-        testRestoreAt: sql<Date | null>`(
+        testRestoreAt: sql<Date | string | null>`(
           select max(bv.completed_at)
           from backup_verifications bv
           where bv.org_id = ${orgId}
@@ -273,12 +274,12 @@ export async function backupDevicesPage(
     id: row.id,
     name: row.displayName ?? row.hostname,
     configured: row.configured,
-    lastRestorePointAt: row.lastBackupAt?.toISOString() ?? null,
+    lastRestorePointAt: sqlTimestamp(row.lastBackupAt)?.toISOString() ?? null,
     lastRestorePointDegraded: row.lastBackupStatus === 'partial',
     lastTestRestore: row.testRestoreStatus
       ? {
           status: row.testRestoreStatus,
-          completedAt: row.testRestoreAt?.toISOString() ?? null,
+          completedAt: sqlTimestamp(row.testRestoreAt)?.toISOString() ?? null,
           restoreTimeSeconds: row.restoreTimeSeconds,
         }
       : null,

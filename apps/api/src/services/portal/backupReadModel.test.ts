@@ -194,6 +194,47 @@ it('returns overview verification, restore, breach, and readiness evidence', asy
   expect(readinessJoin?.params).toContain(ORG_ID);
 });
 
+it('serializes raw-SQL timestamps that postgres-js returns as strings', async () => {
+  // `lastBackupAt` / `testRestoreAt` are raw `max(...)` subqueries; the driver
+  // returns strings, not Dates. Found by the portal QA walk (#4562): every
+  // /portal/backups/devices request 500ed with
+  // `row.lastBackupAt?.toISOString is not a function`.
+  state.rows.push(
+    [{ count: 1 }],
+    [{
+      id: 'd-1',
+      hostname: 'Laptop',
+      displayName: null,
+      configured: true,
+      lastBackupAt: '2026-09-02 09:00:00+00',
+      lastBackupStatus: 'completed',
+      testRestoreStatus: 'passed',
+      testRestoreAt: '2026-09-01T09:00:00.000Z',
+      restoreTimeSeconds: 120,
+      openBreaches: [],
+      readinessScore: null,
+      estimatedRtoMinutes: null,
+      estimatedRpoMinutes: null,
+    }],
+  );
+
+  const page = await backupDevicesPage(ORG_ID, {
+    page: 1,
+    limit: 25,
+    timezone: 'America/Denver',
+    now: new Date('2026-09-02T12:00:00Z'),
+  });
+
+  expect(page.data[0]).toMatchObject({
+    lastRestorePointAt: '2026-09-02T09:00:00.000Z',
+    lastTestRestore: {
+      status: 'passed',
+      completedAt: '2026-09-01T09:00:00.000Z',
+      restoreTimeSeconds: 120,
+    },
+  });
+});
+
 it('returns every enrolled device, including not configured', async () => {
   state.rows.push(
     [{ count: 2 }],
