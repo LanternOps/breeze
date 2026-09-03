@@ -70,6 +70,11 @@ func handleScript(h *Heartbeat, cmd Command) tools.CommandResult {
 	res.Stdout = redact(res.Stdout)
 	res.Stderr = redact(res.Stderr)
 	res.Error = redact(res.Error)
+	// res.Result is deliberately NOT passed through redact: it only ever
+	// carries the #2698 customFieldWrites envelope, which Wave 1 already
+	// documents as not a secrets channel (the marker rides raw stdout, which
+	// IS redacted above, before extraction). A future Result payload must not
+	// assume this field is scrubbed.
 	return res
 }
 
@@ -205,10 +210,19 @@ func handleScriptInner(h *Heartbeat, cmd Command, secretEnv executor.SecretEnv) 
 	if scriptResult.Error != "" && strings.Contains(scriptResult.Error, "timed out") {
 		status = "timeout"
 	}
-	return tools.CommandResult{
+
+	// #2698: pull markers out of RAW stdout, BEFORE SanitizeOutput. The
+	// sanitizer rewrites `token=`/`secret=`-shaped substrings, which corrupts a
+	// marker's JSON past recovery — the server's stdout-scanning fallback
+	// (Wave 1) can only see post-sanitizer text, which is exactly the gap this
+	// closes. The marker lines are stripped so the operator's saved output is
+	// the script's real output.
+	customFields, cleanedStdout := executor.ExtractCustomFields(scriptResult.Stdout)
+
+	result := tools.CommandResult{
 		Status:   status,
 		ExitCode: scriptResult.ExitCode,
-		Stdout:   executor.SanitizeOutput(scriptResult.Stdout),
+		Stdout:   executor.SanitizeOutput(cleanedStdout),
 		Stderr:   executor.SanitizeOutput(scriptResult.Stderr),
 		// Error is deliberately raw here: handleScript sanitizes it for every
 		// exit path, including the NewErrorResult return above that never
@@ -217,6 +231,15 @@ func handleScriptInner(h *Heartbeat, cmd Command, secretEnv executor.SecretEnv) 
 		Error:      scriptResult.Error,
 		DurationMs: time.Since(start).Milliseconds(),
 	}
+	if len(customFields) > 0 {
+		result.Result = map[string]any{
+			"customFieldWrites": map[string]any{
+				"schemaVersion": 1,
+				"fields":        customFields,
+			},
+		}
+	}
+	return result
 }
 
 // isRunningElevated is an indirection over privilege.IsRunningAsRoot so the
@@ -408,7 +431,20 @@ func (h *Heartbeat) executeViaUserHelper(session *sessionbroker.Session, cmd Com
 			log.Warn("failed to unmarshal nested result from user helper", "commandId", cmd.ID, "error", err.Error())
 		} else {
 			if stdout, ok := nested["stdout"].(string); ok {
-				cmdResult.Stdout = executor.SanitizeOutput(stdout)
+				// #2698: same RAW-stdout-before-SanitizeOutput ordering as the
+				// local executor build site above — a runAs:user script must
+				// not silently lose the feature just because it ran through
+				// the helper IPC path.
+				customFields, cleanedStdout := executor.ExtractCustomFields(stdout)
+				cmdResult.Stdout = executor.SanitizeOutput(cleanedStdout)
+				if len(customFields) > 0 {
+					cmdResult.Result = map[string]any{
+						"customFieldWrites": map[string]any{
+							"schemaVersion": 1,
+							"fields":        customFields,
+						},
+					}
+				}
 			}
 			if stderr, ok := nested["stderr"].(string); ok {
 				cmdResult.Stderr = executor.SanitizeOutput(stderr)

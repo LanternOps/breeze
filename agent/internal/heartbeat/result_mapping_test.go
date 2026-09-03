@@ -2,6 +2,7 @@ package heartbeat
 
 import (
 	"encoding/json"
+	"reflect"
 	"testing"
 
 	"github.com/breeze-rmm/agent/internal/remote/tools"
@@ -115,5 +116,35 @@ func TestToWSCommandResultPreservesStructuredResult(t *testing.T) {
 	}
 	if obj["devices"].(float64) != 2 {
 		t.Errorf("Result[devices] = %v, want 2", obj["devices"])
+	}
+}
+
+// TestToWSCommandResultPreservesExplicitResult is the #2698 regression guard:
+// a handler that builds a structured Result on purpose (the script handler's
+// customFieldWrites envelope) must win over the generic stdout->JSON reparse,
+// even when stdout is not valid JSON at all.
+func TestToWSCommandResultPreservesExplicitResult(t *testing.T) {
+	explicit := map[string]any{"customFieldWrites": map[string]any{"schemaVersion": 1}}
+	got := toWSCommandResult("cmd-1", tools.CommandResult{
+		Status: "completed",
+		Stdout: "not json at all",
+		Result: explicit,
+	})
+	if !reflect.DeepEqual(got.Result, explicit) {
+		t.Fatalf("Result = %#v, want %#v", got.Result, explicit)
+	}
+}
+
+// TestToWSCommandResultStillReparsesJSONStdoutWhenResultIsNil pins that the
+// pre-existing stdout reparse (discovery/backup/snmp/monitor handlers, which
+// never populate tools.CommandResult.Result) is untouched by the new
+// Result-wins branch above.
+func TestToWSCommandResultStillReparsesJSONStdoutWhenResultIsNil(t *testing.T) {
+	got := toWSCommandResult("cmd-2", tools.CommandResult{
+		Status: "completed",
+		Stdout: `{"hosts":[]}`,
+	})
+	if got.Result == nil {
+		t.Fatal("expected the stdout reparse to still populate Result for discovery/backup/snmp handlers")
 	}
 }

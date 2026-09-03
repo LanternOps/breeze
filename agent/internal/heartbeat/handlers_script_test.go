@@ -727,3 +727,161 @@ func TestHandleScriptDurationMs(t *testing.T) {
 		t.Fatalf("expected positive DurationMs, got %d", result.DurationMs)
 	}
 }
+
+// --- #2698 custom-field write-back: extraction from RAW stdout, before SanitizeOutput ---
+
+func TestHandleScriptEmitsCustomFieldEnvelopeAndStripsMarker(t *testing.T) {
+	h := newTestHeartbeat(nil)
+	result := handleScript(h, Command{
+		ID:   "cmd-custom-fields",
+		Type: tools.CmdScript,
+		Payload: map[string]any{
+			"content":        `echo '::breeze:custom-fields:: {"a":"1"}'`,
+			"language":       "bash",
+			"timeoutSeconds": 10,
+		},
+	})
+
+	if result.Status != "completed" {
+		t.Fatalf("expected completed, got %s (error: %s, stderr: %s)", result.Status, result.Error, result.Stderr)
+	}
+	if strings.Contains(result.Stdout, "::breeze:custom-fields::") {
+		t.Fatalf("marker line must be stripped from the stdout the server persists, got %q", result.Stdout)
+	}
+
+	resultMap, ok := result.Result.(map[string]any)
+	if !ok {
+		t.Fatalf("missing customFieldWrites envelope: %#v", result.Result)
+	}
+	writes, ok := resultMap["customFieldWrites"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing customFieldWrites envelope: %#v", result.Result)
+	}
+	if writes["schemaVersion"] != 1 {
+		t.Fatalf("schemaVersion = %#v, want 1", writes["schemaVersion"])
+	}
+	fields, ok := writes["fields"].(map[string]any)
+	if !ok || fields["a"] != "1" {
+		t.Fatalf("fields = %#v", writes["fields"])
+	}
+}
+
+func TestHandleScriptNoMarkerLeavesResultNil(t *testing.T) {
+	h := newTestHeartbeat(nil)
+	result := handleScript(h, Command{
+		ID:   "cmd-no-marker",
+		Type: tools.CmdScript,
+		Payload: map[string]any{
+			"content":        "echo 'hello from breeze'",
+			"language":       "bash",
+			"timeoutSeconds": 10,
+		},
+	})
+
+	if result.Status != "completed" {
+		t.Fatalf("expected completed, got %s (error: %s)", result.Status, result.Error)
+	}
+	if result.Result != nil {
+		t.Fatalf("expected nil Result when no marker is present, got %#v", result.Result)
+	}
+}
+
+func TestHandleScriptSecretShapedMarkerValueSurvivesSanitizer(t *testing.T) {
+	// The marker is extracted from RAW stdout, before SanitizeOutput rewrites
+	// token/secret/password-shaped substrings — that ordering is the entire
+	// point of Wave 3 (Channel A, stdout marker, corrupts on a secret-shaped
+	// key; Channel B does not).
+	h := newTestHeartbeat(nil)
+	result := handleScript(h, Command{
+		ID:   "cmd-secret-shaped",
+		Type: tools.CmdScript,
+		Payload: map[string]any{
+			"content":        `echo '::breeze:custom-fields:: {"vault_token_id":"abcdefgh"}'`,
+			"language":       "bash",
+			"timeoutSeconds": 10,
+		},
+	})
+
+	if result.Status != "completed" {
+		t.Fatalf("expected completed, got %s (error: %s, stderr: %s)", result.Status, result.Error, result.Stderr)
+	}
+	resultMap, _ := result.Result.(map[string]any)
+	writes, _ := resultMap["customFieldWrites"].(map[string]any)
+	fields, _ := writes["fields"].(map[string]any)
+	if fields["vault_token_id"] != "abcdefgh" {
+		t.Fatalf("expected the secret-shaped value to survive intact, got fields=%#v", fields)
+	}
+}
+
+func TestExecuteViaUserHelperEmitsCustomFieldEnvelope(t *testing.T) {
+	serverConn, clientConn := createTestSocketPair(t)
+
+	serverIPC := ipc.NewConn(serverConn)
+	clientIPC := ipc.NewConn(clientConn)
+
+	session := sessionbroker.NewSession(serverIPC, 1000, "1000", "testuser", "quartz", "test-custom-fields", []string{"run_as_user"})
+
+	go func() {
+		clientIPC.SetReadDeadline(time.Now().Add(5 * time.Second))
+		env, err := clientIPC.Recv()
+		if err != nil {
+			t.Errorf("client recv: %v", err)
+			return
+		}
+
+		resultPayload, _ := json.Marshal(map[string]any{
+			"exitCode": 0,
+			"stdout":   `scanning` + "\n" + `::breeze:custom-fields:: {"a":"1"}` + "\n" + `done`,
+			"stderr":   "",
+		})
+		ipcResult := ipc.IPCCommandResult{
+			CommandID: env.ID,
+			Status:    "completed",
+			Result:    resultPayload,
+		}
+		payload, _ := json.Marshal(ipcResult)
+		resp := &ipc.Envelope{
+			ID:      env.ID,
+			Type:    ipc.TypeCommandResult,
+			Payload: payload,
+		}
+		if err := clientIPC.Send(resp); err != nil {
+			t.Errorf("client send: %v", err)
+		}
+	}()
+
+	go session.RecvLoop(func(s *sessionbroker.Session, env *ipc.Envelope) {})
+
+	h := newTestHeartbeat(nil)
+	result := h.executeViaUserHelper(session, Command{
+		ID:   "cmd-user-custom-fields",
+		Type: tools.CmdScript,
+		Payload: map[string]any{
+			"content":        "echo hi",
+			"language":       "bash",
+			"timeoutSeconds": 10,
+		},
+	}, 10)
+
+	session.Close()
+	clientIPC.Close()
+
+	if result.Status != "completed" {
+		t.Fatalf("expected completed, got %s (error: %s)", result.Status, result.Error)
+	}
+	if strings.Contains(result.Stdout, "::breeze:custom-fields::") {
+		t.Fatalf("marker line must be stripped from the runAs=user stdout too, got %q", result.Stdout)
+	}
+	resultMap, ok := result.Result.(map[string]any)
+	if !ok {
+		t.Fatalf("missing customFieldWrites envelope on runAs=user path: %#v", result.Result)
+	}
+	writes, ok := resultMap["customFieldWrites"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing customFieldWrites envelope on runAs=user path: %#v", result.Result)
+	}
+	fields, ok := writes["fields"].(map[string]any)
+	if !ok || fields["a"] != "1" {
+		t.Fatalf("fields = %#v", writes["fields"])
+	}
+}
