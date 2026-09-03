@@ -2681,7 +2681,7 @@ jobs:
       # session-expired on the contracts tab) and never gets as far as its
       # portal step. Add it here once that is fixed.
       - name: Run the portal hydration specs
-        run: ./e2e-tests/node_modules/.bin/tsx scripts/dev/wt-stack/cli.ts test -- tests/multi-currency.spec.ts
+        run: ./e2e-tests/node_modules/.bin/tsx scripts/dev/wt-stack/cli.ts test -- tests/multi-currency.spec.ts tests/portal-visibility.spec.ts
 
       - name: Upload Playwright report
         if: failure()

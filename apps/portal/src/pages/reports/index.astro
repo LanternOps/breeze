@@ -27,6 +27,7 @@ if (response.statusCode === 403 && response.code === 'PORTAL_REPORTS_DISABLED') 
   <ReportRunList
     client:load
     initialRuns={response.data ?? []}
+    timezone={response.timezone ?? 'UTC'}
     error={response.error}
   />
 </PortalLayout>

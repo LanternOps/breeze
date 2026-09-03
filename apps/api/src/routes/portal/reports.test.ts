@@ -135,6 +135,7 @@ describe('portal report routes', () => {
     const payload = {
       data: [{ id: 'run-1', status: 'completed' }],
       pagination: { page: 1, limit: 20, total: 1 },
+      timezone: 'UTC',
     };
     mocks.listMock.mockResolvedValue(payload);
 
@@ -147,10 +148,11 @@ describe('portal report routes', () => {
       'private, max-age=30',
     );
     expect(response.headers.get('etag')).toMatch(/^W\//);
-    expect(mocks.listMock).toHaveBeenCalledWith(ORG_ID, {
-      page: 1,
-      limit: 20,
-    });
+    expect(mocks.listMock).toHaveBeenCalledWith(
+      ORG_ID,
+      'UTC',
+      { page: 1, limit: 20 },
+    );
   });
 
   it('generates synchronously for the portal user', async () => {

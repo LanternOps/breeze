@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { PortalRunDto } from '@breeze/shared';
 import { portalApi } from '@/lib/api';
+import { formatDateTime } from '@/lib/utils';
 import {
   EmptyState,
   ErrorNotice,
@@ -9,9 +10,11 @@ import {
 
 export function ReportRunList({
   initialRuns,
+  timezone,
   error,
 }: {
   initialRuns: PortalRunDto[];
+  timezone: string;
   error?: string | null;
 }) {
   const [runs, setRuns] = useState(initialRuns);
@@ -105,7 +108,7 @@ export function ReportRunList({
                 <td>{run.name}</td>
                 <td>
                   {run.completedAt
-                    ? new Date(run.completedAt).toLocaleString()
+                    ? `${formatDateTime(run.completedAt, timezone)} (${timezone})`
                     : 'Not completed'}
                 </td>
                 <td>

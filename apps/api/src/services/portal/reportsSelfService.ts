@@ -1,8 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import { and, count, desc, eq, sql } from 'drizzle-orm';
 import { buildReportPdf, type BuildOpts } from '@breeze/shared/reportPdf';
-import { rowsToCsv, type PortalRunDto } from '@breeze/shared';
+import {
+  rowsToCsv,
+  type PortalRunDto,
+  type PortalRunsDto,
+} from '@breeze/shared';
 import { db } from '../../db';
+import { tightenStatementTimeout } from '../../db/lockTimeout';
 import { reportRuns, reports } from '../../db/schema';
 import { checkRateLimit } from '../../routes/portal/helpers';
 import { PORTAL_USE_REDIS } from '../../routes/portal/schemas';
@@ -144,6 +149,17 @@ export class PortalReportNoTabularDataError extends Error {
 // the PORTAL_STATE_BACKEND Redis store below for a cross-process guard.
 const inFlightUntil = new Map<string, number>();
 const IN_FLIGHT_TTL_SECONDS = 15 * 60;
+const PORTAL_REPORT_STATEMENT_TIMEOUT_MS = 60_000;
+
+/**
+ * Portal auth holds its organization-scoped RLS transaction through the route
+ * handler (#1105). R10-2 deliberately keeps report generation synchronous, so
+ * tighten (but never widen) the ambient transaction's statement timeout before
+ * the multi-query generation and PDF-render paths can pin that connection.
+ */
+async function tightenPortalReportStatementTimeout(): Promise<void> {
+  await tightenStatementTimeout(db, PORTAL_REPORT_STATEMENT_TIMEOUT_MS);
+}
 
 export function portalDefinitionPredicate(
   orgId: string,
@@ -231,11 +247,9 @@ async function acquireInFlight(key: string): Promise<() => Promise<void>> {
 
 export async function listPortalRuns(
   orgId: string,
+  timezone: string,
   opts: { page: number; limit: number },
-): Promise<{
-  data: PortalRunDto[];
-  pagination: { page: number; limit: number; total: number };
-}> {
+): Promise<PortalRunsDto> {
   const page = Math.max(1, opts.page);
   const limit = Math.min(100, Math.max(1, opts.limit));
   const offset = (page - 1) * limit;
@@ -270,6 +284,7 @@ export async function listPortalRuns(
       limit,
       total: Number(totalRow?.total ?? 0),
     },
+    timezone,
   };
 }
 
@@ -278,6 +293,8 @@ export async function generatePortalReport(args: {
   portalUserId: string;
   type: PortalReportType;
 }): Promise<PortalRunDto> {
+  await tightenPortalReportStatementTimeout();
+
   const [definition] = await db.select({
     id: reports.id,
     orgId: reports.orgId,
@@ -399,6 +416,8 @@ export async function renderRunPdf(
   orgId: string,
   timezone: string,
 ): Promise<Buffer> {
+  await tightenPortalReportStatementTimeout();
+
   const row = await completedRun(runId, orgId);
   const result = row.result as ReportResult | null;
   if (!result) throw new Error('Report result is unavailable');

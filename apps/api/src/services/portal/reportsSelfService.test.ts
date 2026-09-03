@@ -17,6 +17,7 @@ const state = vi.hoisted(() => ({
   getReportBranding: vi.fn(),
   buildReportPdf: vi.fn(),
   rowsToCsv: vi.fn(),
+  execute: vi.fn(),
 }));
 
 vi.mock('../../db', () => ({
@@ -58,6 +59,7 @@ vi.mock('../../db', () => ({
         };
       }),
     })),
+    execute: state.execute,
   },
 }));
 
@@ -126,6 +128,8 @@ describe('provisionPortalReportDefinitions', () => {
     state.getReportBranding.mockReset();
     state.buildReportPdf.mockReset();
     state.rowsToCsv.mockReset();
+    state.execute.mockReset();
+    state.execute.mockResolvedValue([{ prior_ms: 0 }]);
   });
 
   it('inserts the two fixed customer-safe definitions idempotently', async () => {
@@ -256,6 +260,43 @@ describe('generatePortalReport', () => {
     state.insertReturning.mockReset();
     state.updateReturning.mockReset();
     state.updated.mockReset();
+    state.execute.mockResolvedValue([{ prior_ms: 0 }]);
+  });
+
+  it('tightens the ambient transaction statement timeout before report work', async () => {
+    state.insertReturning.mockResolvedValue([{
+      id: RUN_ID,
+      reportId: 'report-1',
+      status: 'running',
+      startedAt: new Date('2026-09-02T11:59:00.000Z'),
+      completedAt: null,
+      rowCount: null,
+      createdAt: new Date('2026-09-02T11:59:00.000Z'),
+    }]);
+    state.generateReport.mockResolvedValue({ rows: [], rowCount: 0 });
+    state.updateReturning.mockResolvedValue([{
+      id: RUN_ID,
+      reportId: 'report-1',
+      status: 'completed',
+      startedAt: new Date('2026-09-02T11:59:00.000Z'),
+      completedAt: new Date('2026-09-02T12:00:00.000Z'),
+      rowCount: 0,
+      createdAt: new Date('2026-09-02T11:59:00.000Z'),
+    }]);
+
+    await generatePortalReport({
+      orgId: ORG_ID,
+      portalUserId: PORTAL_USER_ID,
+      type: 'executive_summary',
+    });
+
+    expect(state.execute).toHaveBeenCalled();
+    const query = new PgDialect().sqlToQuery(state.execute.mock.calls[0]![0]);
+    expect(query.sql).toMatch(/set_config\(\s*'statement_timeout'/);
+    expect(query.sql).toContain('pg_settings');
+    expect(query.params).toContain(60000);
+    expect(state.execute.mock.invocationCallOrder[0])
+      .toBeLessThan(state.checkRateLimit.mock.invocationCallOrder[0]!);
   });
 
   it('stores portal-user provenance and waits for generation', async () => {
@@ -498,9 +539,14 @@ describe('listPortalRuns', () => {
         createdAt: new Date('2026-09-02T11:59:00.000Z'),
       }]);
 
-    const result = await listPortalRuns(ORG_ID, { page: 0, limit: 500 });
+    const result = await listPortalRuns(
+      ORG_ID,
+      'America/Denver',
+      { page: 0, limit: 500 },
+    );
 
     expect(result.pagination).toEqual({ page: 1, limit: 100, total: 1 });
+    expect(result.timezone).toBe('America/Denver');
     expect(result.data).toEqual([expect.objectContaining({
       id: RUN_ID,
       rowCount: null,
@@ -512,6 +558,8 @@ describe('listPortalRuns', () => {
 describe('portal run rendering', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    state.execute.mockReset();
+    state.execute.mockResolvedValue([{ prior_ms: 0 }]);
     state.getReportBranding.mockResolvedValue({
       name: 'Partner',
       logoDataUrl: null,
@@ -537,6 +585,13 @@ describe('portal run rendering', () => {
       reportType: 'executive_summary',
       timezone: 'America/Denver',
     }));
+    expect(state.execute).toHaveBeenCalled();
+    const query = new PgDialect().sqlToQuery(state.execute.mock.calls[0]![0]);
+    expect(query.sql).toMatch(/set_config\(\s*'statement_timeout'/);
+    expect(query.sql).toContain('pg_settings');
+    expect(query.params).toContain(60000);
+    expect(state.execute.mock.invocationCallOrder[0])
+      .toBeLessThan(state.buildReportPdf.mock.invocationCallOrder[0]!);
   });
 
   it('renders tabular stored results as CSV', async () => {

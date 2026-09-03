@@ -34,7 +34,11 @@ portalReportRoutes.get(
   async (c) => {
     const auth = c.get('portalAuth');
     const query = c.req.valid('query');
-    const payload = await listPortalRuns(auth.user.orgId, query);
+    const payload = await listPortalRuns(
+      auth.user.orgId,
+      auth.timezone,
+      query,
+    );
 
     applyPortalCacheHeaders(c, {
       scope: 'private',

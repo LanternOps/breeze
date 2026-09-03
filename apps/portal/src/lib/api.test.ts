@@ -336,6 +336,7 @@ describe('portalApi customer reports', () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       data: [run],
       pagination: { page: 2, limit: 5, total: 6 },
+      timezone: 'America/Denver',
     }), { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
 
@@ -347,6 +348,7 @@ describe('portalApi customer reports', () => {
     expect(result).toMatchObject({
       data: [run],
       pagination: { page: 2, limit: 5, total: 6 },
+      timezone: 'America/Denver',
       statusCode: 200,
     });
   });

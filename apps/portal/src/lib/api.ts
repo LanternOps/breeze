@@ -8,7 +8,7 @@ import { navigateTo } from './navigation';
 // into local scope for the InvoiceSummary/InvoiceDetail types below and re-exported
 // (type-only, erased at build) so '@/lib/api' consumers are unaffected.
 import type { BackupDevicesDto, BackupOverviewDto, DashboardDto, DocumentPageSize, DocumentThemeId, EnrichedPortalDevice, InvoiceStatus, PublicQuoteHeader, QuotePresentation, SecurityDevicesDto, SecurityOverviewDto, SlaDto, SupportUsageDto, TicketFormField } from '@breeze/shared';
-import type { PortalRunDto } from '@breeze/shared';
+import type { PortalRunDto, PortalRunsDto } from '@breeze/shared';
 
 // Client API base. Empty (the default) → same-origin **relative** requests
 // (`/api/v1/...`), which the reverse proxy routes to the API under `/api/*`. This
@@ -304,6 +304,10 @@ export interface Pagination {
 
 export interface PaginatedResult<T> extends ApiResponse<T[]> {
   pagination?: Pagination;
+}
+
+export interface PortalRunsResult extends PaginatedResult<PortalRunDto> {
+  timezone?: string;
 }
 
 export type Device = EnrichedPortalDevice;
@@ -1173,16 +1177,19 @@ export const portalApi = {
   getReportRuns: async (
     params: ListParams = {},
     config: ApiRequestConfig = {},
-  ): Promise<PaginatedResult<PortalRunDto>> => {
+  ): Promise<PortalRunsResult> => {
     const query = buildQueryString({
       page: params.page ?? 1,
       limit: params.limit ?? 20,
     });
-    const response = await apiGet<{
-      data: PortalRunDto[];
-      pagination: Pagination;
-    }>(`/portal/reports/runs${query}`, config);
-    return mapPaginatedData(response);
+    const response = await apiGet<PortalRunsDto>(
+      `/portal/reports/runs${query}`,
+      config,
+    );
+    return {
+      ...mapPaginatedData(response),
+      timezone: response.data?.timezone,
+    };
   },
 
   generateReport: async (

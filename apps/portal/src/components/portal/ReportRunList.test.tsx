@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import type { PortalRunDto } from '@breeze/shared';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ReportRunList } from './ReportRunList';
 
@@ -17,7 +18,7 @@ vi.mock('@/lib/api', () => ({
   },
 }));
 
-const run = {
+const run: PortalRunDto = {
   id: 'run-1',
   reportId: 'report-1',
   name: 'Customer portal — Executive summary',
@@ -36,7 +37,7 @@ describe('ReportRunList', () => {
     generateMock.mockResolvedValue({ data: run });
     listMock.mockResolvedValue({ data: [run] });
 
-    render(<ReportRunList initialRuns={[]} />);
+    render(<ReportRunList initialRuns={[]} timezone="America/Denver" />);
 
     fireEvent.click(
       screen.getByTestId('portal-reports-generate-executive'),
@@ -59,5 +60,17 @@ describe('ReportRunList', () => {
     ).toBe(
       '/api/v1/portal/reports/runs/run-1/csv',
     );
+  });
+
+  it('renders generated timestamps in the organization timezone with its label', () => {
+    render(
+      <ReportRunList
+        initialRuns={[run]}
+        timezone="America/Denver"
+      />,
+    );
+
+    expect(screen.getByTestId('portal-report-run-row-run-1').textContent)
+      .toContain('Sep 2, 2026, 06:01 AM (America/Denver)');
   });
 });

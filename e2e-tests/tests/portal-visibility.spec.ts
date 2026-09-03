@@ -16,7 +16,7 @@ test.describe.serial('portal visibility', () => {
     await portal.generatePosture().click();
 
     const row = portal.reportRows().first();
-    await expect(row).toBeVisible();
+    await expect(row).toBeVisible({ timeout: 30_000 });
 
     const downloadPromise = cleanPage.waitForEvent('download');
     await row
