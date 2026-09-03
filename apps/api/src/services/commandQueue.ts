@@ -8,7 +8,7 @@ import {
 } from '../db';
 import { deviceCommands, devices, auditLogs, users } from '../db/schema';
 import { sendCommandToAgent, isAgentConnected } from '../routes/agentWs';
-import { captureException } from './sentry';
+import { captureException, captureMessage } from './sentry';
 import { recordBackupCommandTimeout, recordRestoreTimeout } from './backupMetrics';
 import {
   claimPendingCommandForDelivery,
@@ -976,19 +976,17 @@ function dispatchesViaWs(options: ExecuteCommandOptions): boolean {
 
 /**
  * The columns of the device row the dispatch phase still needs once the
- * precheck's DB context has closed. Named explicitly so the two phases cannot
- * silently start depending on a column the precheck stopped selecting.
+ * precheck's DB context has closed — the WS target, and the org/hostname the
+ * audit row is stamped with. Deliberately just these three: everything else
+ * the precheck selects (status, the watchdog freshness fields, the
+ * agent-edition triple) is consumed by a gate that runs BEFORE the context
+ * closes, and carrying it forward would invite the dispatch phase to start
+ * reasoning about a snapshot whose gate has already passed.
  */
 interface PreparedCommandDevice {
-  id: string;
-  status: string;
-  agentId: string | null;
+  agentId: string;
   orgId: string;
-  hostname: string | null;
-  watchdogLastSeen: Date | null;
-  agentEdition: string | null;
-  agentVersion: string | null;
-  watchdogVersion: string | null;
+  hostname: string;
 }
 
 type CommandPrecheckOutcome =
@@ -1372,6 +1370,10 @@ export async function executeCommand(
  * caller that needs the command gated by a specific tenant's RLS must open
  * that context itself and call `executeCommand` — but see the note there
  * about how long it will then hold a connection.
+ *
+ * PRECONDITION: no ambient DB access context. It is reported (not thrown) when
+ * broken, because from inside someone else's transaction the no-held-context
+ * promise is unrecoverable — see the guard below.
  */
 export async function executeCommandWithSystemPrecheck(
   deviceId: string,
@@ -1379,10 +1381,33 @@ export async function executeCommandWithSystemPrecheck(
   payload: CommandPayload = {},
   options: ExecuteCommandOptions = {}
 ): Promise<CommandResult> {
+  const ambient = getCurrentDbAccessContext();
+  if (ambient) {
+    // The precondition is broken, and this function CANNOT recover from it:
+    // `runOutsideDbContext` exits the AsyncLocalStorage but cannot release a
+    // transaction somebody further up the stack opened, so the caller's pooled
+    // connection stays pinned for the whole round-trip below no matter what we
+    // do here. Report it instead of throwing — this runs inside the AI run
+    // loop's postToolUse hook, where a throw downgrades a real verification to
+    // `inconclusive`, and a slow dispatch beats a lost one. The db-layer
+    // `db_context_held_too_long` tripwire fires on the same hold but attributes
+    // it to whoever OPENED the context; this line names the dispatch that made
+    // it long, which is the half that is actionable.
+    const message = '[commandQueue] executeCommandWithSystemPrecheck was called from inside a '
+      + `'${ambient.scope}' DB access context. The caller's pooled connection stays pinned `
+      + 'idle-in-transaction for the whole device round-trip (#1105/#4150) — call it at depth 0, '
+      + 'or use executeCommand if the caller genuinely wants its own context to gate the precheck.';
+    console.warn(message, { deviceId, type, scope: ambient.scope });
+    captureMessage(message, {
+      eventCode: 'db_operation_inside_held_context',
+      tags: { commandType: String(type) },
+    });
+  }
+
   // Joins an ambient system context rather than opening a second one: a nested
   // withSystemDbAccessContext would check out a SECOND pooled connection while
   // the first is still held, which is strictly worse than the bug being fixed.
-  const precheck = getCurrentDbAccessContext()?.scope === 'system'
+  const precheck = ambient?.scope === 'system'
     ? await precheckCommandExecution(deviceId, type, options)
     : await runOutsideDbContextSafe(() =>
       withSystemDbAccessContext(

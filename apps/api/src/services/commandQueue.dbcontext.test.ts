@@ -21,7 +21,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { ctxState, dbState, partnerTrustMocks, agentWsMocks, commandDispatchMocks } = vi.hoisted(() => ({
+const { ctxState, dbState, partnerTrustMocks, agentWsMocks, commandDispatchMocks, sentryMocks } = vi.hoisted(() => ({
   ctxState: { depth: 0, events: [] as string[], ambient: undefined as { scope: string } | undefined },
   dbState: {
     deviceRows: [] as unknown[],
@@ -34,6 +34,7 @@ const { ctxState, dbState, partnerTrustMocks, agentWsMocks, commandDispatchMocks
     claimPendingCommandForDelivery: vi.fn(),
     releaseClaimedCommandDelivery: vi.fn(async () => undefined),
   },
+  sentryMocks: { captureMessage: vi.fn() },
 }));
 
 vi.mock('../db', () => ({
@@ -129,7 +130,7 @@ vi.mock('./partnerTrust.commands', async (importOriginal) => {
   };
 });
 
-vi.mock('./sentry', () => ({ captureException: vi.fn() }));
+vi.mock('./sentry', () => ({ captureException: vi.fn(), captureMessage: sentryMocks.captureMessage }));
 vi.mock('./backupMetrics', () => ({
   recordBackupCommandTimeout: vi.fn(),
   recordRestoreTimeout: vi.fn(),
@@ -190,6 +191,8 @@ describe('executeCommandWithSystemPrecheck (#4150/#1105)', () => {
     ]);
     // Nothing may still be open once the call returns.
     expect(ctxState.depth).toBe(0);
+    // Called correctly (depth 0), so the held-context guard must stay quiet.
+    expect(sentryMocks.captureMessage).not.toHaveBeenCalled();
   });
 
   it('opens no context at all past the precheck when the device is missing', async () => {
@@ -219,6 +222,15 @@ describe('executeCommandWithSystemPrecheck (#4150/#1105)', () => {
     // phase's insert, not to the precheck.
     expect(ctxState.events.filter((e) => e === 'ctx:enter')).toHaveLength(1);
     expect(ctxState.events).toContain('insert:device_commands@depth2');
+    // The precondition is broken here and cannot be recovered from, so it must
+    // be REPORTED rather than silently tolerated — see the guard's comment.
+    expect(sentryMocks.captureMessage).toHaveBeenCalledTimes(1);
+    expect(sentryMocks.captureMessage.mock.calls[0]![0]).toContain(
+      "called from inside a 'system' DB access context",
+    );
+    expect(sentryMocks.captureMessage.mock.calls[0]![1]).toMatchObject({
+      eventCode: 'db_operation_inside_held_context',
+    });
   });
 
   it('surfaces a trust denial as a terminal result and dispatches nothing', async () => {
