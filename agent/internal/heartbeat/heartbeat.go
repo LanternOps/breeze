@@ -1013,20 +1013,32 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 	// Register winget provider (SYSTEM/machine-scope; see winget_register_windows.go)
 	h.registerSystemWinget()
 
-	// Initialize reboot manager (uses session broker for user notifications, and
-	// for the interactive postponement prompt when policy enables deferral).
+	// Initialize reboot manager. Warnings and the interactive postponement
+	// prompt go to the desktop helper through the session broker first, and to
+	// the daemon-drawn Linux dialog when no helper session took them — see
+	// chainedRebootPrompt in reboot_prompt.go for why the order is that way and
+	// why patching.Desktop* is a no-op off Linux.
 	h.rebootMgr = patching.NewRebootManagerWithPrompt(
-		func(title, body, urgency string) {
-			if h.sessionBroker != nil {
-				h.sessionBroker.BroadcastNotification(title, body, urgency)
-			}
-		},
-		rebootPromptFunc(func(req ipc.NotifyRequest, timeout time.Duration) (ipc.NotifyResult, error) {
-			if h.sessionBroker == nil {
-				return ipc.NotifyResult{}, nil
-			}
-			return h.sessionBroker.RequestNotificationDecision(req, timeout)
-		}),
+		chainedRebootNotify(
+			func(title, body, urgency string) {
+				if h.sessionBroker != nil {
+					h.sessionBroker.BroadcastNotification(title, body, urgency)
+				}
+			},
+			patching.DesktopNotify,
+			func() bool {
+				return h.sessionBroker != nil && len(h.sessionBroker.SessionsWithScope("notify")) > 0
+			},
+		),
+		chainedRebootPrompt(
+			rebootPromptFunc(func(req ipc.NotifyRequest, timeout time.Duration) (ipc.NotifyResult, error) {
+				if h.sessionBroker == nil {
+					return ipc.NotifyResult{}, nil
+				}
+				return h.sessionBroker.RequestNotificationDecision(req, timeout)
+			}),
+			patching.DesktopPrompt,
+		),
 		cfg.PatchRebootMaxPerDay,
 	)
 
