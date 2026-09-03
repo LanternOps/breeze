@@ -484,4 +484,29 @@ describe('monitoring: a matched policy with zero enabled watches (#2949)', () =>
 
     expect(result).toBeNull();
   });
+
+  it('caches the empty-watches result via redis.set, same as any other match', async () => {
+    // `buildMonitoringConfigUpdate` only skips caching on a null resolution
+    // ("quick policy activation"); an empty-watches object is a real match and
+    // must be cached like any other, or a rapid heartbeat retry would re-run
+    // the resolver queries needlessly.
+    getRedisImpl.mockReturnValue(redisMock);
+    dbMock._resetQueue([
+      deviceRow,
+      orgWithPartner,
+      [],
+      [{ level: 'organization', assignmentPriority: 1, settingsId: 'set-1', checkIntervalSeconds: 90 }],
+      [], // no enabled watches for the winning settings row
+    ]);
+
+    const result = await buildMonitoringConfigUpdate(DEVICE_ID);
+
+    expect(result?.watches).toEqual([]);
+    expect(redisMock.set).toHaveBeenCalledWith(
+      `monitoring:settings:device:${DEVICE_ID}`,
+      JSON.stringify({ check_interval_seconds: 90, watches: [] }),
+      'EX',
+      120,
+    );
+  });
 });
