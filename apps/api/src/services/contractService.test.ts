@@ -63,7 +63,7 @@ import { resolvePriceFrom } from './catalogPricing';
 import { createManualInvoice, addContractLine } from './invoiceService';
 import { countContractDevices, countContractSeats, snapshotContractDevices, groupMembersForBilling } from './contractQuantities';
 import { GroupEvaluationError } from './groupMembership';
-import { isKnownCurrency } from '@breeze/shared';
+import { isKnownCurrency, roundToCurrency } from '@breeze/shared';
 
 const resolvePriceMock = vi.mocked(resolvePrice);
 
@@ -722,7 +722,8 @@ describe('summarizeActiveContractMrrByOrg (#3779)', () => {
   });
   const line = (over: Record<string, unknown> = {}) => ({
     id: 'l1', contractId: 'c1', lineType: 'flat', unitPrice: '100.00',
-    manualQuantity: null, siteId: null, catalogItemId: null, ...over,
+    manualQuantity: null, siteId: null, catalogItemId: null,
+    includedQuantity: null, overageMode: null, overageUnitPrice: null, ...over,
   });
 
   it('returns an empty map without querying when no org ids are given', async () => {
@@ -861,6 +862,26 @@ describe('summarizeActiveContractMrrByOrg (#3779)', () => {
     expect(out.get('org1')).toEqual([{ currencyCode: 'USD', amount: '42.00' }]);
   });
 
+  it('uses the catalog base price plus the stamped billed-overage rate', async () => {
+    vi.mocked(snapshotContractDevices).mockResolvedValue(
+      Array.from({ length: 27 }, (_, i) => ({ id: `d${i}`, role: 'workstation', siteId: null })),
+    );
+    queueResult([contract({ currencyCode: 'USD', intervalMonths: 3 })]);
+    queueResult([line({
+      catalogItemId: 'item-1', lineType: 'per_device', unitPrice: '10.00',
+      includedQuantity: '25.00', overageMode: 'bill', overageUnitPrice: '12.34',
+    })]);
+    queueResult([]); // no org overrides
+    queueResult([{ itemId: 'item-1', currencyCode: 'USD', unitPrice: '11.11' }]);
+
+    const out = await svc.summarizeActiveContractMrrByOrg(['org1']);
+
+    expect(out.get('org1')).toEqual([{
+      currencyCode: 'USD',
+      amount: roundToCurrency((25 * 11.11 + 2 * 12.34) / 3, 'USD'),
+    }]);
+  });
+
   it('prefers an org override stamped in the contract currency over the price book', async () => {
     queueResult([contract({ currencyCode: 'USD' })]);
     queueResult([line({ catalogItemId: 'item-1', unitPrice: '10.00' })]);
@@ -896,7 +917,8 @@ describe('computeContractEstimate — per_device_role + uncoveredDevices (#3205)
   const contract = { id: 'c1', orgId: 'org1', partnerId: 'p1', status: 'draft', currencyCode: 'USD' };
   const lineRow = (p: Record<string, unknown>) => ({
     id: 'l1', contractId: 'c1', orgId: 'org1', description: 'x', unitPrice: '10.00', taxable: false,
-    catalogItemId: null, manualQuantity: null, siteId: null, deviceRoles: null, sortOrder: 0, ...p,
+    catalogItemId: null, manualQuantity: null, siteId: null, deviceRoles: null, sortOrder: 0,
+    includedQuantity: null, overageMode: null, overageUnitPrice: null, ...p,
   });
   const snapshot = [
     { id: 'workstation-1', role: 'workstation', siteId: null },
@@ -912,7 +934,10 @@ describe('computeContractEstimate — per_device_role + uncoveredDevices (#3205)
     queueResult([contract]); // getOwnedContractOr404
     queueResult([lineRow({ lineType: 'per_device_role', deviceRoles: ['server'], unitPrice: '50.00' })]);
     const out = await svc.computeContractEstimate('c1', actor);
-    expect(out.lines).toEqual([{ lineId: 'l1', lineType: 'per_device_role', quantity: 2, value: '100.00', live: true }]);
+    expect(out.lines).toEqual([{
+      lineId: 'l1', lineType: 'per_device_role', quantity: 2, value: '100.00', live: true,
+      counted: 2, included: null, overage: 0, overageMode: null, overageValue: '0.00',
+    }]);
     expect(out.uncoveredDevices).toEqual({ total: 4, byRole: { workstation: 3, unknown: 1 } });
     expect(vi.mocked(snapshotContractDevices)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(countContractDevices)).not.toHaveBeenCalled();
@@ -934,6 +959,146 @@ describe('computeContractEstimate — per_device_role + uncoveredDevices (#3205)
   });
 });
 
+// #3205 W04 (#4607): the estimate carries the allowance split, and every money
+// leg it touches goes through the exact-decimal primitives.
+describe('computeContractEstimate — allowance and overage (#3205 W04)', () => {
+  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+
+  const contract = { id: 'c1', orgId: 'org1', partnerId: 'p1', status: 'active', currencyCode: 'USD' };
+  const lineRow = (p: Record<string, unknown>) => ({
+    id: 'l1', contractId: 'c1', orgId: 'org1', description: 'Endpoints', unitPrice: '10.00', taxable: true,
+    catalogItemId: null, manualQuantity: null, siteId: null, deviceRoles: null,
+    deviceGroupId: null, deviceGroupName: null, sortOrder: 0,
+    includedQuantity: null, overageMode: null, overageUnitPrice: null, ...p,
+  });
+  const snapshotOf = (n: number) => Array.from({ length: n }, (_, i) => ({ id: `d${i}`, role: 'workstation', siteId: null }));
+
+  async function estimateWith(line: Record<string, unknown>, deviceCount: number) {
+    vi.mocked(snapshotContractDevices).mockResolvedValue(snapshotOf(deviceCount));
+    queueResult([contract]);
+    queueResult([lineRow({ lineType: 'per_device', ...line })]);
+    return svc.computeContractEstimate('c1', actor);
+  }
+
+  it('bills the ALLOWANCE at counted 0 — the fixed-allowance rule', async () => {
+    const out = await estimateWith({ includedQuantity: '25.00', overageMode: 'bill', overageUnitPrice: '12.00' }, 0);
+    expect(out.lines[0]).toMatchObject({
+      quantity: 25, value: '250.00', counted: 0, included: 25, overage: 0,
+      overageMode: 'bill', overageValue: '0.00',
+    });
+    expect(out.periodTotal).toBe('250.00');
+    expect(out.overages).toEqual([]);
+  });
+
+  it('at 26 with bill mode: base 25, overage 1 priced separately, period total is their cent-exact sum', async () => {
+    const out = await estimateWith({ includedQuantity: '25.00', overageMode: 'bill', overageUnitPrice: '12.00' }, 26);
+    expect(out.lines[0]).toMatchObject({ quantity: 25, value: '250.00', counted: 26, overage: 1, overageValue: '12.00' });
+    expect(out.periodTotal).toBe('262.00');
+    expect(out.overages).toEqual([{
+      contractLineId: 'l1', invoiceLineId: null, description: 'Endpoints',
+      counted: 26, included: 25, overage: 1, mode: 'bill',
+    }]);
+  });
+
+  it('at 26 with flag mode: nothing extra is priced, but the excess is reported', async () => {
+    const out = await estimateWith({ includedQuantity: '25.00', overageMode: 'flag' }, 26);
+    expect(out.lines[0]).toMatchObject({ quantity: 25, value: '250.00', overage: 1, overageMode: 'flag', overageValue: '0.00' });
+    expect(out.periodTotal).toBe('250.00');
+    expect(out.overages[0]).toMatchObject({ invoiceLineId: null, mode: 'flag', overage: 1 });
+  });
+
+  it('a line inside its allowance is not an overage entry, in either mode', async () => {
+    for (const mode of [{ overageMode: 'bill', overageUnitPrice: '12.00' }, { overageMode: 'flag' }]) {
+      results.length = 0;
+      const out = await estimateWith({ includedQuantity: '25.00', ...mode }, 24);
+      expect(out.overages).toEqual([]);
+    }
+  });
+
+  it('a line with no allowance is unchanged: quantity === counted and value === qty × unitPrice', async () => {
+    const out = await estimateWith({}, 26);
+    expect(out.lines[0]).toMatchObject({
+      quantity: 26, value: '260.00', counted: 26, included: null, overage: 0, overageMode: null, overageValue: '0.00',
+    });
+    expect(out.periodTotal).toBe('260.00');
+  });
+
+  it('a wave-2 group line whose group is gone bills nothing and carries no allowance', async () => {
+    vi.mocked(snapshotContractDevices).mockResolvedValue([]);
+    queueResult([contract]);
+    queueResult([lineRow({
+      lineType: 'per_device_group', deviceGroupId: null, deviceGroupName: 'Retired group',
+      includedQuantity: '25.00', overageMode: 'bill', overageUnitPrice: '12.00',
+    })]);
+    const out = await svc.computeContractEstimate('c1', actor);
+    expect(out.lines[0]).toMatchObject({
+      quantity: 0, value: '0.00', counted: 0, included: null, overage: 0,
+      overageMode: null, overageValue: '0.00', unresolved: 'group_deleted',
+    });
+    expect(out.periodTotal).toBe('0.00');
+    expect(out.overages).toEqual([]);
+  });
+
+  it('flat, manual and per_seat all return the six-field shape', async () => {
+    vi.mocked(countContractSeats).mockResolvedValue(4);
+    queueResult([contract]);
+    queueResult([
+      lineRow({ id: 'lf', lineType: 'flat' }),
+      lineRow({ id: 'lm', lineType: 'manual', manualQuantity: '3.00' }),
+      lineRow({ id: 'ls', lineType: 'per_seat', includedQuantity: '2.00', overageMode: 'flag' }),
+    ]);
+    const out = await svc.computeContractEstimate('c1', actor);
+    expect(out.lines.map((l) => [l.quantity, l.counted, l.included, l.overage, l.overageMode])).toEqual([
+      [1, 1, null, 0, null],
+      [3, 3, null, 0, null],
+      [2, 4, 2, 2, 'flag'],
+    ]);
+    expect(out.overages).toEqual([{
+      contractLineId: 'ls', invoiceLineId: null, description: 'Endpoints',
+      counted: 4, included: 2, overage: 2, mode: 'flag',
+    }]);
+  });
+
+  it('a JPY contract has no fractional yen anywhere', async () => {
+    vi.mocked(snapshotContractDevices).mockResolvedValue(snapshotOf(26));
+    queueResult([{ ...contract, currencyCode: 'JPY' }]);
+    queueResult([lineRow({
+      lineType: 'per_device', unitPrice: '1000', includedQuantity: '25.00',
+      overageMode: 'bill', overageUnitPrice: '1200',
+    })]);
+    const out = await svc.computeContractEstimate('c1', actor);
+    expect(out.lines[0]).toMatchObject({ value: '25000.00', overageValue: '1200.00' });
+    expect(out.periodTotal).toBe('26200.00');
+  });
+});
+
+describe('listContracts estimatedPeriodValue with allowances (#3205 W04)', () => {
+  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+
+  it('includes a billed overage and excludes a flagged one', async () => {
+    vi.mocked(snapshotContractDevices).mockResolvedValue(
+      Array.from({ length: 26 }, (_, i) => ({ id: `d${i}`, role: 'workstation', siteId: null })),
+    );
+    const rows = [
+      { id: 'cb', orgId: 'org1', currencyCode: 'USD' },
+      { id: 'cf', orgId: 'org1', currencyCode: 'USD' },
+    ];
+    const base = {
+      contractId: '', orgId: 'org1', lineType: 'per_device', description: 'Endpoints', unitPrice: '10.00',
+      taxable: true, catalogItemId: null, manualQuantity: null, siteId: null, deviceRoles: null,
+      deviceGroupId: null, deviceGroupName: null, sortOrder: 0, includedQuantity: '25.00',
+    };
+    queueResult(rows);
+    queueResult([
+      { ...base, id: 'lb', contractId: 'cb', overageMode: 'bill', overageUnitPrice: '12.00' },
+      { ...base, id: 'lf', contractId: 'cf', overageMode: 'flag', overageUnitPrice: null },
+    ]);
+    const out = await svc.listContracts({ orgId: 'org1' }, actor) as Array<{ id: string; estimatedPeriodValue: string }>;
+    expect(out.find((c) => c.id === 'cb')!.estimatedPeriodValue).toBe('262.00');
+    expect(out.find((c) => c.id === 'cf')!.estimatedPeriodValue).toBe('250.00');
+  });
+});
+
 describe('per_device_group quantities (#3205 W02)', () => {
   beforeEach(() => {
     results.length = 0;
@@ -952,7 +1117,8 @@ describe('per_device_group quantities (#3205 W02)', () => {
     id: 'l1', contractId: 'c1', orgId: 'org1', lineType: 'per_device_group',
     description: 'Group', unitPrice: '10.00', taxable: false, catalogItemId: null,
     manualQuantity: null, siteId: null, deviceRoles: null, deviceGroupId: 'group-1',
-    deviceGroupName: 'Servers', sortOrder: 0, createdAt: new Date(), ...over,
+    deviceGroupName: 'Servers', sortOrder: 0, createdAt: new Date(),
+    includedQuantity: null, overageMode: null, overageUnitPrice: null, ...over,
   });
   const group = { id: 'group-1', orgId: 'org1', name: 'Servers', type: 'static', siteId: null, filterConditions: null };
 

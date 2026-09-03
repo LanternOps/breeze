@@ -4,7 +4,8 @@ import { contracts, contractLines, contractBillingPeriods, organizations, sites,
 import { ContractServiceError, actorCan, type ContractActor, type ContractLineAudit } from './contractTypes';
 import type { ContractLineInput, UpdateContractInput } from '@breeze/shared';
 import {
-  ALLOWANCE_LINE_TYPES, BILLABLE_DEVICE_ROLES, isRepresentableInCurrency, minorUnitExponent, roundToCurrency, PERMISSION_GRANTS,
+  ALLOWANCE_LINE_TYPES, BILLABLE_DEVICE_ROLES, fromCents, isRepresentableInCurrency, minorUnitExponent,
+  multiplyToCurrency, roundToCurrency, toCents, PERMISSION_GRANTS,
   contractLineInvariantIssues, mergeContractLinePatch, patchHasKey,
   type DeviceRole, type UpdateContractLineInput,
 } from '@breeze/shared';
@@ -41,6 +42,7 @@ import { countContractSeats, snapshotContractDevices, groupMembersForBilling, ty
 import { isDeviceLine, quantityFor, uncoveredByRole, type UncoveredDevices, type OrgDeviceSnapshot, type GroupMembers } from './contractCoverage';
 import { GroupEvaluationError } from './groupMembership';
 import type { InvoiceActor } from './invoiceTypes';
+import { applyAllowance, overageValue, type ResolvedQuantity } from './contractAllowance';
 
 export type ContractActorT = ContractActor;
 
@@ -292,15 +294,15 @@ export async function listContracts(query: {
   const sc: SeatCache = new Map();
   const out: ContractListRow[] = [];
   for (const c of rows) {
-    let total = 0;
+    let cents = 0;
     let estimateError: 'GROUP_EVALUATION_FAILED' | undefined;
     try {
       const lines = byContract.get(c.id) ?? [];
       const groupIds = groupIdsOf(lines);
       if (groupIds.length > 0) await orgSnapshot(c.orgId, dc, groupIds);
       for (const l of lines) {
-        const { quantity } = await resolveLineQty(c.orgId, l, dc, sc);
-        total += Number(l.unitPrice) * quantity;
+        const r = await resolveLineQty(c.orgId, l, dc, sc);
+        cents += lineCents(r, l.unitPrice, l, c.currencyCode);
       }
     } catch (err) {
       // #3205 W02: one un-evaluable group must not fail the whole list.
@@ -309,7 +311,7 @@ export async function listContracts(query: {
     }
     out.push(estimateError
       ? { ...c, estimatedPeriodValue: null, estimateError }
-      : { ...c, estimatedPeriodValue: total.toFixed(2) });
+      : { ...c, estimatedPeriodValue: fromCents(cents) });
   }
   return out;
 }
@@ -330,6 +332,23 @@ interface OrgSnapshotEntry {
 type DeviceCache = Map<string, OrgSnapshotEntry>; // key orgId
 type SeatCache = Map<string, number>;              // key orgId
 type ContractLineRow = typeof contractLines.$inferSelect;
+
+/** A wave-2 group line whose group is gone: all-zero, no allowance, so the
+ *  estimate never shows a number the invoice cannot carry (generation refuses
+ *  with GROUP_DELETED). #3205 W04 decision 7. */
+const UNRESOLVED_QTY: ResolvedQuantity = {
+  counted: 0, billed: 0, included: null, overage: 0, overageMode: null,
+};
+
+/** One line's contribution to a period total, in integer cents: the base leg at
+ *  `unitPrice` plus the overage leg at the line's stamped `overageUnitPrice`.
+ *  Both legs go through the exact-decimal primitives — `Number(a) * b` is what
+ *  turned 0.02 × 7.25 into 0.14. `overageValue` is the currency's zero whenever
+ *  the line is not billing an overage, so there is no branch here. */
+function lineCents(r: ResolvedQuantity, unitPrice: string, l: ContractLineRow, currencyCode: string): number {
+  return toCents(multiplyToCurrency(r.billed, unitPrice, currencyCode))
+    + toCents(overageValue(r, l, currencyCode));
+}
 
 function emptySnapshot(): OrgDeviceSnapshot {
   return { devices: [], groups: new Map() };
@@ -449,26 +468,36 @@ function assertSpecDeviceSetLine(line: {
   }
 }
 
+/**
+ * The one quantity resolver for the estimate, the contracts list and the MRR
+ * rollup. EVERY branch routes through applyAllowance — including flat and
+ * manual, where contract_lines_allowance_chk forbids an allowance and the
+ * function is the identity — so a future allowance-bearing type cannot be
+ * forgotten in one branch (#3205 W04).
+ */
 async function resolveLineQty(
   orgId: string, line: ContractLineRow, dc: DeviceCache, sc: SeatCache,
-): Promise<{ quantity: number; live: boolean; unresolved?: 'group_deleted' }> {
+): Promise<ResolvedQuantity & { live: boolean; unresolved?: 'group_deleted' }> {
   switch (line.lineType) {
-    case 'flat': return { quantity: 1, live: false };
-    case 'manual': return { quantity: Number(line.manualQuantity ?? '0'), live: false };
+    case 'flat':
+      return { ...applyAllowance(1, line, 'included_units'), live: false };
+    case 'manual':
+      return { ...applyAllowance(Number(line.manualQuantity ?? '0'), line, 'included_units'), live: false };
     case 'per_device':
     case 'per_device_role': {
       assertRoleLineHasRoles(line);
-      return { quantity: quantityFor(await orgSnapshot(orgId, dc), line), live: true };
+      const counted = quantityFor(await orgSnapshot(orgId, dc), line);
+      return { ...applyAllowance(counted, line, 'included_units'), live: true };
     }
     case 'per_device_group': {
-      if (line.deviceGroupId === null) return { quantity: 0, live: true, unresolved: 'group_deleted' };
+      if (line.deviceGroupId === null) return { ...UNRESOLVED_QTY, live: true, unresolved: 'group_deleted' };
       const snapshot = await orgSnapshot(orgId, dc, [line.deviceGroupId]);
-      if (!snapshot.groups.has(line.deviceGroupId)) return { quantity: 0, live: true, unresolved: 'group_deleted' };
-      return { quantity: quantityFor(snapshot, line), live: true };
+      if (!snapshot.groups.has(line.deviceGroupId)) return { ...UNRESOLVED_QTY, live: true, unresolved: 'group_deleted' };
+      return { ...applyAllowance(quantityFor(snapshot, line), line, 'included_units'), live: true };
     }
     case 'per_seat': {
       if (!sc.has(orgId)) sc.set(orgId, await countContractSeats(orgId));
-      return { quantity: sc.get(orgId)!, live: true };
+      return { ...applyAllowance(sc.get(orgId)!, line, 'included_units'), live: true };
     }
     default: {
       // Exhaustiveness: a new line type is a compile error here, not a silent qty 0.
@@ -478,13 +507,44 @@ async function resolveLineQty(
   }
 }
 
+export interface OverageSummary {
+  contractLineId: string;
+  /** The materialized overage invoice line ('bill' mode) or null ('flag' mode). W07
+   *  attaches device evidence to it. */
+  invoiceLineId: string | null;
+  /** Carried so a toast/log can name the line without a second fetch (the same
+   *  reason PriceBookGap carries itemName). */
+  description: string;
+  counted: number;
+  included: number;
+  overage: number;
+  mode: 'bill' | 'flag';
+}
+
 export interface ContractEstimate {
   currencyCode: string;
   periodTotal: string;
-  lines: Array<{ lineId: string; lineType: ContractLineRow['lineType']; quantity: number; value: string; live: boolean; unresolved?: 'group_deleted' }>;
+  lines: Array<{
+    lineId: string;
+    lineType: ContractLineRow['lineType'];
+    /** The BASE invoice quantity — `billed`. Meaning unchanged for a line with no allowance. */
+    quantity: number;
+    /** multiplyToCurrency(quantity, unitPrice). The invariant value === qty × unitPrice still holds. */
+    value: string;
+    live: boolean;
+    counted: number;
+    included: number | null;
+    overage: number;
+    overageMode: 'bill' | 'flag' | null;
+    /** multiplyToCurrency(overage, overageUnitPrice), or the currency's zero. NEVER folded into `value`. */
+    overageValue: string;
+    unresolved?: 'group_deleted';
+  }>;
   /** Devices no device-counted line bills (#3205). null when the contract has
    *  no per_device / per_device_role / per_device_group line, so the UI can tell "n/a" from "0". */
   uncoveredDevices: UncoveredDevices | null;
+  /** One entry per allowance line that is OVER, in either mode. [] when none. */
+  overages: OverageSummary[];
 }
 
 /** Per-line resolved quantities + values + period total for one contract, using
@@ -496,22 +556,37 @@ export async function computeContractEstimate(contractId: string, actor: Contrac
     .orderBy(contractLines.sortOrder, contractLines.createdAt, contractLines.id);
   const dc: DeviceCache = new Map();
   const sc: SeatCache = new Map();
-  let total = 0;
+  let cents = 0;
   const out: ContractEstimate['lines'] = [];
+  const overages: OverageSummary[] = [];
   const groupIds = groupIdsOf(lines);
   if (groupIds.length > 0) await orgSnapshot(contract.orgId, dc, groupIds);
   for (const l of lines) {
-    const { quantity, live, unresolved } = await resolveLineQty(contract.orgId, l, dc, sc);
-    const value = Number(l.unitPrice) * quantity;
-    total += value;
-    out.push({ lineId: l.id, lineType: l.lineType, quantity, value: value.toFixed(2), live, ...(unresolved ? { unresolved } : {}) });
+    const r = await resolveLineQty(contract.orgId, l, dc, sc);
+    const value = multiplyToCurrency(r.billed, l.unitPrice, contract.currencyCode);
+    const oValue = overageValue(r, l, contract.currencyCode);
+    cents += toCents(value) + toCents(oValue);
+    out.push({
+      lineId: l.id, lineType: l.lineType, quantity: r.billed, value, live: r.live,
+      counted: r.counted, included: r.included, overage: r.overage, overageMode: r.overageMode,
+      overageValue: oValue,
+      ...(r.unresolved ? { unresolved: r.unresolved } : {}),
+    });
+    // Either mode: an over line the operator can act on. 'bill' is on the
+    // invoice, 'flag' is not — the UI and the worker branch on `mode`.
+    if (r.overageMode !== null && r.overage > 0) {
+      overages.push({
+        contractLineId: l.id, invoiceLineId: null, description: l.description,
+        counted: r.counted, included: r.included!, overage: r.overage, mode: r.overageMode,
+      });
+    }
   }
   let uncoveredDevices: UncoveredDevices | null = null;
   if (lines.some(isDeviceLine)) {
     const snapshot = await orgSnapshot(contract.orgId, dc, groupIds);
     uncoveredDevices = uncoveredByRole(snapshot, resolvableLines(lines, snapshot));
   }
-  return { currencyCode: contract.currencyCode, periodTotal: total.toFixed(2), lines: out, uncoveredDevices };
+  return { currencyCode: contract.currencyCode, periodTotal: fromCents(cents), lines: out, uncoveredDevices, overages };
 }
 
 // ---- per-currency MRR rollup (multi-currency wave 7, #3779) ----------------
@@ -659,14 +734,14 @@ export async function summarizeActiveContractMrrByOrg(
   const totals = new Map<string, Map<string, number>>(); // orgId -> currency -> monthly
 
   for (const c of rows) {
-    let periodValue = 0;
+    let cents = 0;
     try {
       const lines = byContract.get(c.id) ?? [];
       const groupIds = groupIdsOf(lines);
       if (groupIds.length > 0) await orgSnapshot(c.orgId, dc, groupIds);
       for (const l of lines) {
-        const { quantity, unresolved } = await resolveLineQty(c.orgId, l, dc, sc);
-        if (unresolved === 'group_deleted') {
+        const r = await resolveLineQty(c.orgId, l, dc, sc);
+        if (r.unresolved === 'group_deleted') {
           console.warn(
             '[contracts] MRR rollup: contract %s line %s bills a deleted device group (%s); counted as 0',
             c.id,
@@ -677,7 +752,9 @@ export async function summarizeActiveContractMrrByOrg(
         const unitPrice = l.catalogItemId
           ? (resolvedUnitPrice(l.catalogItemId, c.currencyCode, c.orgId) ?? l.unitPrice)
           : l.unitPrice;
-        periodValue += Number(unitPrice) * quantity;
+        // The BASE leg may be catalog-resolved; the overage leg never is
+        // (decision 13), so lineCents reads the stamped overage_unit_price.
+        cents += lineCents(r, unitPrice, l, c.currencyCode);
       }
     } catch (err) {
       if (err instanceof ContractServiceError && err.code === 'GROUP_EVALUATION_FAILED') {
@@ -686,6 +763,7 @@ export async function summarizeActiveContractMrrByOrg(
       }
       throw err;
     }
+    const periodValue = Number(fromCents(cents));
     const months = c.intervalMonths > 0 ? c.intervalMonths : 1;
     // Round each contract in ITS OWN currency before grouping — a JPY contract
     // must never contribute a fractional yen.

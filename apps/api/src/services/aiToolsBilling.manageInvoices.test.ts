@@ -171,8 +171,9 @@ describe('manage_invoices', () => {
     vi.mocked(contractService.computeContractEstimate).mockResolvedValueOnce({
       currencyCode: 'USD',
       periodTotal: '37.50',
-      lines: [{ lineId: 'contract-line-1', lineType: 'per_device', quantity: 3, value: '37.50', live: true }],
+      lines: [{ lineId: 'contract-line-1', lineType: 'per_device', quantity: 3, value: '37.50', live: true, counted: 3, included: null, overage: 0, overageMode: null, overageValue: '0.00' }],
       uncoveredDevices: null,
+      overages: [],
     });
 
     const out = await getTool().handler(
