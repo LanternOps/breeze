@@ -110,6 +110,7 @@ runsRoutes.post(
         return c.json({ error: 'Access to report scope denied' }, 403);
       }
       executionAuthority = {
+        principalKind: 'user',
         scope: effectiveScope,
         principalUserId: liveResult.authority.principalUserId,
         capturedAt: liveResult.authority.capturedAt,
@@ -136,6 +137,9 @@ runsRoutes.post(
         reportId: report.id,
         status: 'pending',
         startedAt: new Date(),
+        requestedByKind: 'user',
+        requestedByUserId: auth.user.id,
+        requestedByPortalUserId: null,
         ...persistedSiteScopeValues(executionAuthority),
       })
       .returning();

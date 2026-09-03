@@ -452,6 +452,13 @@ export async function processRunScheduledReport(
         status: 'failed',
         completedAt: new Date(),
         errorMessage: reason,
+        requestedByKind:
+          report.executionScopePrincipalKind === 'system' ? 'system' : 'user',
+        requestedByUserId:
+          report.executionScopePrincipalKind === 'system'
+            ? null
+            : report.executionScopeUserId,
+        requestedByPortalUserId: null,
       })
       .returning();
   };
@@ -463,12 +470,19 @@ export async function processRunScheduledReport(
   // requires execution_scope_user_id NOT NULL) and A7 adds the type exclusion —
   // this refuses it even if a caller forces the job in directly, BEFORE any
   // scope decode or authority resolution can invent a principal.
-  if (report.executionScopePrincipalKind === 'system') {
+  const definitionPrincipalKind = report.executionScopePrincipalKind ?? null;
+  if (definitionPrincipalKind !== null && definitionPrincipalKind !== 'user') {
     console.warn(
-      '[ReportScheduleWorker] Refusing a system-principal report definition',
-      { reportId: report.id, orgId: report.orgId },
+      '[ReportScheduleWorker] Refusing a non-user-principal report definition',
+      {
+        reportId: report.id,
+        orgId: report.orgId,
+        principalKind: definitionPrincipalKind,
+      },
     );
-    await deny('system_principal_definition');
+    if (definitionPrincipalKind === 'system') {
+      await deny('system_principal_definition');
+    }
     return;
   }
 
@@ -526,6 +540,7 @@ export async function processRunScheduledReport(
   }
 
   const executionAuthority: ReportExecutionAuthority = {
+    principalKind: 'user',
     scope: effectiveScope,
     principalUserId: liveResult.authority.principalUserId,
     capturedAt: liveResult.authority.capturedAt,
@@ -545,6 +560,9 @@ export async function processRunScheduledReport(
       reportId: report.id,
       status: 'running',
       startedAt: new Date(),
+      requestedByKind: 'user',
+      requestedByUserId: executionAuthority.principalUserId,
+      requestedByPortalUserId: null,
       ...persistedSiteScopeValues(executionAuthority),
     })
     .returning();

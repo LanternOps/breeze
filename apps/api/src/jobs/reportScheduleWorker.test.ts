@@ -255,6 +255,7 @@ beforeEach(() => {
   scopeState.liveResult = {
     ok: true,
     authority: {
+      principalKind: 'user',
       scope: {
         version: 1,
         kind: 'unrestricted',
@@ -638,6 +639,7 @@ describe('processRunScheduledReport', () => {
       ORG_ID,
       report.config,
       expect.objectContaining({
+        principalKind: 'user',
         scope: expect.objectContaining({ kind: 'unrestricted', orgId: ORG_ID }),
         principalUserId: report.executionScopeUserId,
         fingerprint: 'f'.repeat(64),
@@ -651,6 +653,9 @@ describe('processRunScheduledReport', () => {
         executionScopeUserId: report.executionScopeUserId,
         executionScopeFingerprint: 'f'.repeat(64),
         executionScopeCapturedAt: expect.any(Date),
+        requestedByKind: 'user',
+        requestedByUserId: report.executionScopeUserId,
+        requestedByPortalUserId: null,
       }),
     );
     // First update stamps reports.lastGeneratedAt, second completes the run.
@@ -795,6 +800,9 @@ describe('processRunScheduledReport', () => {
         reportId: REPORT_ID,
         status: 'failed',
         errorMessage: 'system_principal_definition',
+        requestedByKind: 'system',
+        requestedByUserId: null,
+        requestedByPortalUserId: null,
       }),
     );
     expect(decodeSiteScopeMock).not.toHaveBeenCalled();
@@ -804,6 +812,25 @@ describe('processRunScheduledReport', () => {
     expect(previousBaselineForMock).not.toHaveBeenCalled();
     expect(updateMock).not.toHaveBeenCalled();
     expect(sendEmailMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses a portal-user definition before decoding or inventing a staff principal', async () => {
+    selectMock.mockReturnValueOnce(selectChain([{
+      ...report,
+      executionScopeUserId: null,
+      executionScopePrincipalKind: 'portal_user',
+    }]));
+
+    await processRunScheduledReport({
+      type: 'run-scheduled-report',
+      reportId: REPORT_ID,
+      occurrenceKey: 202607010900,
+    });
+
+    expect(insertMock).not.toHaveBeenCalled();
+    expect(decodeSiteScopeMock).not.toHaveBeenCalled();
+    expect(resolveLiveReportAuthorityMock).not.toHaveBeenCalled();
+    expect(generateReportMock).not.toHaveBeenCalled();
   });
 
   it.each([

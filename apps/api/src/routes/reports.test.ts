@@ -37,6 +37,7 @@ const siteScopeState = vi.hoisted(() => {
     result: {
       ok: true,
       authority: {
+        principalKind: 'user',
         scope: unrestrictedScope,
         principalUserId: userId,
         capturedAt,
@@ -693,8 +694,11 @@ describe('POST /reports/:id/generate persists a snapshot', () => {
     vi.mocked(db.select).mockImplementation(() =>
       selectChain([{ id: 'rep-1', orgId: ORG_ID, type: 'device_inventory', name: 'Inv', config: {}, format: 'csv' }])
     );
+    const insertValuesMock = vi.fn(() => ({
+      returning: () => Promise.resolve([{ id: 'run-1', status: 'pending' }]),
+    }));
     vi.mocked(db.insert).mockReturnValue({
-      values: () => ({ returning: () => Promise.resolve([{ id: 'run-1', status: 'pending' }]) })
+      values: insertValuesMock,
     } as any);
 
     const res = await app.request('/reports/rep-1/generate', { method: 'POST' });
@@ -705,6 +709,13 @@ describe('POST /reports/:id/generate persists a snapshot', () => {
     expect(completedSet).toBeDefined();
     expect(completedSet.result).toBeDefined();
     expect(completedSet.outputUrl).toBe('/api/reports/runs/run-1/download');
+    expect(insertValuesMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requestedByKind: 'user',
+        requestedByUserId: 'user-123',
+        requestedByPortalUserId: null,
+      }),
+    );
   });
 });
 
@@ -715,6 +726,7 @@ describe('generateReport dispatch — security_compliance_posture', () => {
 
   it('routes to the posture generator', async () => {
     const executionAuthority = {
+      principalKind: 'user' as const,
       scope: { version: 1 as const, kind: 'unrestricted' as const, orgId: 'org-1' },
       principalUserId: 'user-1',
       capturedAt: new Date('2026-07-25T12:00:00.000Z'),
@@ -747,6 +759,7 @@ describe('report definition scope enforcement', () => {
     return {
       ok: true,
       authority: {
+        principalKind: 'user',
         scope: kind === 'restricted'
           ? { version: 1, kind, orgId: ORG_ID, siteIds: siteIds ?? [] }
           : { version: 1, kind, orgId: ORG_ID },
@@ -1503,6 +1516,7 @@ describe('reports routes', () => {
     siteScopeState.result = {
       ok: true,
       authority: {
+        principalKind: 'user',
         scope: { version: 1, kind: 'unrestricted', orgId: ORG_ID },
         principalUserId: '44444444-4444-4444-8444-444444444444',
         capturedAt: new Date('2026-07-25T12:00:00.000Z'),
@@ -2027,6 +2041,7 @@ describe('reports routes', () => {
       return {
         ok: true,
         authority: {
+          principalKind: 'user',
           scope: { version: 1, kind: 'restricted', orgId, siteIds },
           principalUserId: USER_ID,
           capturedAt: CAPTURED_AT,
@@ -2039,6 +2054,7 @@ describe('reports routes', () => {
       return {
         ok: true,
         authority: {
+          principalKind: 'user',
           scope: { version: 1, kind: 'unrestricted', orgId },
           principalUserId: USER_ID,
           capturedAt: CAPTURED_AT,
@@ -2272,6 +2288,7 @@ describe('reports routes', () => {
       siteScopeState.result = {
         ok: true,
         authority: {
+          principalKind: 'user',
           scope: { version: 1, kind: 'restricted', orgId: ORG_ID, siteIds: [SITE_ALLOWED] },
           principalUserId: 'user-123',
           capturedAt: new Date('2026-07-25T12:00:00.000Z'),
@@ -2298,6 +2315,7 @@ describe('reports routes', () => {
       siteScopeState.result = {
         ok: true,
         authority: {
+          principalKind: 'user',
           scope: { version: 1, kind: 'restricted', orgId: ORG_ID, siteIds: [SITE_ALLOWED] },
           principalUserId: 'user-123',
           capturedAt: new Date('2026-07-25T12:00:00.000Z'),
@@ -2355,6 +2373,7 @@ describe('report run immutable scope enforcement', () => {
     return {
       ok: true,
       authority: {
+        principalKind: 'user',
         scope: kind === 'restricted'
           ? { version: 1, kind, orgId, siteIds }
           : { version: 1, kind, orgId },

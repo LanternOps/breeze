@@ -17,6 +17,7 @@ function selectChain(rows: unknown[]) {
 
 const ORG = '00000000-0000-0000-0000-000000000001';
 const AUTHORITY: ReportExecutionAuthority = {
+  principalKind: 'user',
   scope: { version: 1, kind: 'unrestricted', orgId: ORG },
   principalUserId: '11111111-1111-4111-8111-111111111111',
   capturedAt: new Date('2026-07-25T12:00:00.000Z'),

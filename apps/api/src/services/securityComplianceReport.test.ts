@@ -29,6 +29,7 @@ const SITE_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 
 function authority(siteIds?: string[]): ReportExecutionAuthority {
   return {
+    principalKind: 'user',
     scope: siteIds === undefined
       ? { version: 1, kind: 'unrestricted', orgId: ORG }
       : { version: 1, kind: 'restricted', orgId: ORG, siteIds },

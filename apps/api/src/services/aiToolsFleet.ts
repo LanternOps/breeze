@@ -92,6 +92,7 @@ import {
   type PersistedSiteScopeColumns,
   type ReportAction,
   type ReportExecutionAuthority,
+  type UserReportExecutionAuthority,
 } from './siteScope';
 import { upsertPatchApproval, resolvePartnerIdForOrg } from '../routes/patches/helpers';
 import { sanitizeThrownToolError } from './aiToolErrors';
@@ -155,11 +156,11 @@ async function aiLiveReportAuthority(
   orgId: string,
   action: ReportAction,
 ): Promise<
-  (Omit<ReportExecutionAuthority, 'scope'> & { scope: LiveSiteScopeV1 }) | null
+  (Omit<UserReportExecutionAuthority, 'scope'> & { scope: LiveSiteScopeV1 }) | null
 > {
   const result = await resolveRequestReportAuthority(auth, orgId, action);
   if (!result.ok || result.authority.scope.kind === 'legacy_unscoped') return null;
-  return result.authority as Omit<ReportExecutionAuthority, 'scope'> & {
+  return result.authority as Omit<UserReportExecutionAuthority, 'scope'> & {
     scope: LiveSiteScopeV1;
   };
 }
@@ -2184,6 +2185,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
               return JSON.stringify({ error: 'Report not found or access denied' });
             }
             executionAuthority = {
+              principalKind: 'user',
               scope: effectiveScope,
               principalUserId: access.authority.principalUserId,
               capturedAt: access.authority.capturedAt,
@@ -2219,6 +2221,9 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           const [run] = await db.insert(reportRuns).values({
             reportId,
             status: 'pending',
+            requestedByKind: 'system',
+            requestedByUserId: null,
+            requestedByPortalUserId: null,
             ...persistedSiteScopeValues(executionAuthority),
           }).returning();
           runId = run?.id ?? null;

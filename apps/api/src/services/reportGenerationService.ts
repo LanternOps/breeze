@@ -167,6 +167,31 @@ function assertExecutableAuthority(
   if (authority.scope.kind === 'legacy_unscoped') {
     throw new UnexecutableReportScopeError('Legacy report scope cannot execute');
   }
+  switch (authority.principalKind) {
+    case 'user':
+      if (!authority.principalUserId) {
+        throw new UnexecutableReportScopeError('User report execution authority requires a principal user');
+      }
+      break;
+    case 'portal_user':
+      if (authority.scope.kind !== 'unrestricted') {
+        throw new UnexecutableReportScopeError('Portal-user report execution authority must be unrestricted');
+      }
+      if (
+        'principalUserId' in authority
+        && authority.principalUserId !== null
+        && authority.principalUserId !== undefined
+      ) {
+        throw new UnexecutableReportScopeError('Portal-user report execution authority cannot carry a staff principal');
+      }
+      break;
+    default: {
+      const exhaustive: never = authority;
+      throw new UnexecutableReportScopeError(
+        `Unsupported report execution authority: ${String(exhaustive)}`,
+      );
+    }
+  }
 }
 
 function assertRequestedScopeWithinAuthority(
@@ -197,7 +222,19 @@ export function assertReportExecutionPreflight(
   authority: ReportExecutionAuthority | null | undefined,
 ): asserts authority is ReportExecutionAuthority {
   assertExecutableAuthority(orgId, authority);
-  assertRequestedScopeWithinAuthority(config, authority);
+  switch (authority.principalKind) {
+    case 'user':
+      assertRequestedScopeWithinAuthority(config, authority);
+      return;
+    case 'portal_user':
+      return;
+    default: {
+      const exhaustive: never = authority;
+      throw new UnexecutableReportScopeError(
+        `Unsupported report execution authority: ${String(exhaustive)}`,
+      );
+    }
+  }
 }
 
 export async function generateDeviceInventoryReport(
@@ -605,6 +642,15 @@ export async function generateReport(
   authority: ReportExecutionAuthority,
 ): Promise<ReportResult> {
   assertReportExecutionPreflight(orgId, config, authority);
+  if (
+    authority.principalKind === 'portal_user'
+    && type !== 'executive_summary'
+    && type !== 'security_compliance_posture'
+  ) {
+    throw new UnexecutableReportScopeError(
+      `Portal-user authority cannot generate report type ${type}`,
+    );
+  }
   if (authority.scope.kind === 'restricted' && authority.scope.siteIds.length === 0) {
     return zeroSafeReport(type, orgId);
   }
