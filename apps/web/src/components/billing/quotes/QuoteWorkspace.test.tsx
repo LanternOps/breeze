@@ -287,7 +287,14 @@ describe('QuoteWorkspace — an older refetch must not clobber a newer one (#351
     // chain its own waitFor budget rather than making them share one window.
     fireEvent.change(screen.getByTestId('quote-terms'), { target: { value: 'Net 30' } });
     fireEvent.blur(screen.getByTestId('quote-terms'));
-    await waitFor(() => expect(deferred).toHaveLength(1));
+    // Real-timer waitFor with the library's default 1000ms budget flaked in CI
+    // (observed on PR #4704, unrelated file/branch): under the parallel-shard
+    // CPU contention of a full-suite run, the PATCH -> refresh() -> resync()
+    // continuation chain can legitimately take longer than 1s wall-clock even
+    // though it does only a handful of awaits. Widen the budget rather than
+    // the assertion — this doesn't change what's being tested, just how long
+    // CI is allowed to take to get there.
+    await waitFor(() => expect(deferred).toHaveLength(1), { timeout: 5000 });
 
     // GET #3 — the add-block resync. #2 is still an unresolved promise here, so
     // the two requests genuinely overlap, exactly as before: this only removes
@@ -295,7 +302,7 @@ describe('QuoteWorkspace — an older refetch must not clobber a newer one (#351
     fireEvent.click(screen.getByTestId('quote-add-block-type-heading'));
     fireEvent.change(screen.getByTestId('quote-block-heading-text'), { target: { value: 'Scope of work' } });
     fireEvent.click(screen.getByTestId('quote-add-block-submit'));
-    await waitFor(() => expect(deferred).toHaveLength(2));
+    await waitFor(() => expect(deferred).toHaveLength(2), { timeout: 5000 });
 
     // Neither refetch has answered yet, so the canvas is still pre-mutation.
     // Pinning that here is what stops the "block survives" assertion at the end
