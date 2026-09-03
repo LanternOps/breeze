@@ -190,7 +190,7 @@ export async function groupMembersForBilling(group: GroupForResolution): Promise
 - `summarizeActiveContractMrrByOrg`: same catch, skips the contract with one `console.warn`.
 - Writers (`addContractLineToContract`, `createContractWithLinesDetailed`): `assertGroupInOrg(tx, groupId, orgId)` beside `assertSiteInOrg` returns the group row (400 `GROUP_NOT_IN_ORG` when absent); persist `deviceGroupId` and `deviceGroupName: group.name` when `lineType === 'per_device_group'`. A Postgres FK violation on the insert (the delete race) is mapped to the same 400.
 - Reads: one `withDeviceGroup(lines)` mapper left-joins `device_groups` on `(id, org_id)` and adds `deviceGroup: { id, name, type } | null`; `getContract` and `listContracts` use it.
-- New `listContractsBillingGroup(executor, groupId)` returning `{ id, name, status }[]` for **draft, active, paused** contracts, used by the delete service.
+- `listContractsBillingGroup(executor, groupId)` (in `deviceGroupDelete.ts`, so the group routes do not import the contract service) returns `{ id, name, status }[]` for **draft, active, paused** contracts.
 
 ### Group deletion (`apps/api/src/services/deviceGroupDelete.ts`, new)
 
