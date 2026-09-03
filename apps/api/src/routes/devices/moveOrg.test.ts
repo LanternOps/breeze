@@ -634,6 +634,51 @@ describe('POST /devices/:id/move-org', () => {
       expect(detachIdx).toBeLessThan(ticketsIdx);
     });
 
+    it('nulls the reverse pointer ticket_comments.agent_run_id via the tickets join (#4644)', async () => {
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
+      rigOrgAndSiteSelects({
+        orgRows: [
+          { id: SOURCE_ORG, partnerId: 'partner-1' },
+          { id: TARGET_ORG, partnerId: 'partner-1' },
+        ],
+        siteRow: { id: TARGET_SITE },
+      });
+      const { statements } = rigTransactionSuccess();
+
+      const res = await app.request(`/devices/${DEVICE_ID}/move-org`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE }),
+      });
+      expect(res.status).toBe(200);
+
+      // ticket_comments has no org_id (child-via-parent tenancy through
+      // tickets), so a comment on a ticket bound to the moving device travels
+      // to the target org via the generic denormalized-table loop while the
+      // run it names stays with the SOURCE org — same reverse-pointer class as
+      // metric_anomaly_incidents above, keyed off the same tickets join the
+      // ai_agent_runs.ticket_id detach uses.
+      const collapse = (s: string) => s.replace(/\s+/g, ' ').trim();
+      const rewrites = statements.map(collapse).filter((s) => s.startsWith('UPDATE ticket_comments '));
+      expect(
+        rewrites,
+        `Expected exactly one ticket_comments reverse-pointer detach.\nStatements:\n${statements.join('\n')}`,
+      ).toEqual([
+        'UPDATE ticket_comments SET agent_run_id = NULL WHERE agent_run_id IS NOT NULL ' +
+          `AND ticket_id IN (SELECT id FROM tickets WHERE device_id = ${DEVICE_ID}::uuid)`,
+      ]);
+
+      // Not load-bearing (same reasoning as the ai_agent_runs.ticket_id detach
+      // above: the join key is tickets.device_id, untouched by the generic
+      // org_id loop), but placed alongside the other reverse pointers for
+      // readability — must run before the generic denormalized-table rewrite.
+      const detachIdx = statements.findIndex((s) => s.startsWith('UPDATE ticket_comments SET agent_run_id'));
+      const ticketsIdx = statements.findIndex((s) => s.startsWith('UPDATE tickets '));
+      expect(detachIdx).toBeGreaterThanOrEqual(0);
+      expect(ticketsIdx).toBeGreaterThanOrEqual(0);
+      expect(detachIdx).toBeLessThan(ticketsIdx);
+    });
+
     it('rewrites time_entries org_id via the ticket join inside the transaction', async () => {
       vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
       rigOrgAndSiteSelects({

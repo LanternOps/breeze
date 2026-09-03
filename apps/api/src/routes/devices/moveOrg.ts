@@ -311,6 +311,22 @@ moveOrgRoutes.post(
           sql`UPDATE metric_anomaly_incidents SET agent_run_id = NULL WHERE device_id = ${deviceId}::uuid`,
         );
 
+        // Reverse pointer: ticket_comments.agent_run_id (#4644). ticket_comments
+        // has no org_id (child-via-parent tenancy through tickets), so a comment
+        // on a ticket bound to this device travels to the target org via the
+        // denormalized-table loop below while the run it names stays with the
+        // SOURCE org — same reverse-pointer class as metric_anomaly_incidents
+        // above, and the mirror image of moveTicketOrg's own ticket_comments
+        // detach (ticketService.ts) on the ticket axis. Same
+        // `ticket_id IN (SELECT id FROM tickets WHERE device_id = ...)` join the
+        // ai_agent_runs.ticket_id detach above uses, so it reaches comments on
+        // both device-less and device-bound ticket runs alike.
+        await tx.execute(
+          sql`UPDATE ticket_comments SET agent_run_id = NULL
+              WHERE agent_run_id IS NOT NULL
+                AND ticket_id IN (SELECT id FROM tickets WHERE device_id = ${deviceId}::uuid)`,
+        );
+
         // action_intents.scope_device_id (P2-2, #4189): same cross-tenant-
         // pointer class as the two detaches above — an intent whose target
         // device just moved to a different org must not keep pointing at it.
