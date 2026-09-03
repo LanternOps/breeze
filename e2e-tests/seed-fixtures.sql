@@ -101,17 +101,25 @@ BEGIN
     WHERE id = v_portal_user_id;
   END IF;
 
+  -- enable_dashboard is opt-in (column default false), so the Dashboard nav
+  -- entry and /dashboard page only exist for this org because it is set here.
+  -- enable_self_service stays false on purpose: portal-visibility.spec.ts
+  -- asserts the Devices nav entry is absent, which is the fail-open flag's
+  -- only negative case.
   INSERT INTO portal_branding (
     org_id,
+    enable_dashboard,
     enable_reports,
     enable_self_service
   ) VALUES (
     v_org_id,
     true,
+    true,
     false
   )
   ON CONFLICT (org_id) DO UPDATE
-    SET enable_reports = EXCLUDED.enable_reports,
+    SET enable_dashboard = EXCLUDED.enable_dashboard,
+        enable_reports = EXCLUDED.enable_reports,
         enable_self_service = EXCLUDED.enable_self_service,
         updated_at = NOW();
 

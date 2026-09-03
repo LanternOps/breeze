@@ -10,9 +10,20 @@ export class PortalVisibilityPage {
     this.page.getByTestId('portal-reports-generate-posture');
   reportRows = () =>
     this.page.getByTestId(/^portal-report-run-row-/);
+  dashboardNav = () => this.page.getByTestId('portal-nav-dashboard');
   reportsNav = () => this.page.getByTestId('portal-nav-reports');
   devicesNav = () => this.page.getByTestId('portal-nav-devices');
+  dashboardTiles = () =>
+    this.page.getByTestId(/^portal-dashboard-tile-/);
+  dashboardSecurity = () =>
+    this.page.getByTestId('portal-dashboard-tile-security');
 
+  /**
+   * Lands on /quotes, not /dashboard: pages/index.astro redirects an
+   * authenticated customer to '/quotes' unconditionally, and enabling the
+   * dashboard adds a nav entry without changing that landing. Asserting
+   * '**\/dashboard' here would fail against the shipped app.
+   */
   async login(email: string, password: string): Promise<void> {
     await this.page.goto('/portal/login');
     await this.email().fill(email);

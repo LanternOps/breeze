@@ -5,6 +5,23 @@ const email = process.env.E2E_PORTAL_EMAIL ?? 'portal@breeze.local';
 const password = process.env.E2E_PORTAL_PASSWORD ?? 'PortalTest123!';
 
 test.describe.serial('portal visibility', () => {
+  // Seeded with enable_dashboard = true. The tiles render for every status —
+  // a source with no rows shows honest "not available" copy rather than a
+  // fabricated zero — so this assertion does not depend on seeded telemetry.
+  test('shows the dashboard tiles once the flag is on', async ({
+    cleanPage,
+  }) => {
+    const portal = new PortalVisibilityPage(cleanPage);
+    await portal.login(email, password);
+
+    await expect(portal.dashboardNav()).toBeVisible();
+    await portal.dashboardNav().click();
+    await cleanPage.waitForURL('**/dashboard');
+
+    await expect(portal.dashboardSecurity()).toBeVisible();
+    expect(await portal.dashboardTiles().count()).toBeGreaterThan(0);
+  });
+
   test('generates and downloads a posture PDF', async ({
     cleanPage,
   }) => {
