@@ -1,23 +1,16 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { X, ChevronDown, ChevronUp, Copy, Check, Clock, CheckCircle, XCircle, Loader2, AlertTriangle, Terminal, AlertOctagon } from 'lucide-react';
+import { X, ChevronDown, ChevronUp, Copy, Check, Loader2, Terminal, AlertOctagon } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { formatDateTime as formatUserDateTime } from '@/lib/dateTimeFormat';
-import type { ScriptExecution, ExecutionStatus } from './ExecutionHistory';
+import type { ScriptExecution } from './ExecutionHistory';
+import { executionDetailStatusConfig as statusConfig } from './executionStatus';
 
 type ExecutionDetailsProps = {
   execution: ScriptExecution;
   isOpen: boolean;
   onClose: () => void;
   timezone?: string;
-};
-
-const statusConfig: Record<ExecutionStatus, { label: string; color: string; bgColor: string; icon: typeof CheckCircle }> = {
-  pending: { label: 'status.pending', color: 'text-muted-foreground', bgColor: 'bg-muted', icon: Clock },
-  running: { label: 'status.running', color: 'text-blue-700 dark:text-blue-400', bgColor: 'bg-blue-500/10', icon: Loader2 },
-  completed: { label: 'status.completed', color: 'text-success', bgColor: 'bg-success/10', icon: CheckCircle },
-  failed: { label: 'status.failed', color: 'text-destructive', bgColor: 'bg-destructive/10', icon: XCircle },
-  timeout: { label: 'status.timeout', color: 'text-warning', bgColor: 'bg-warning/10', icon: AlertTriangle }
 };
 
 function formatDuration(seconds?: number): string {
@@ -209,15 +202,7 @@ export default function ExecutionDetails({
                   {t(/* i18n-dynamic */ `executionDetails.${statusConfig[execution.status].label}`)}
                 </p>
                 <p className="text-sm text-muted-foreground">
-                  {execution.status === 'running'
-                    ? t('executionDetails.statusDescription.running')
-                    : execution.status === 'completed'
-                      ? t('executionDetails.statusDescription.completed')
-                      : execution.status === 'failed'
-                        ? t('executionDetails.statusDescription.failed')
-                        : execution.status === 'timeout'
-                          ? t('executionDetails.statusDescription.timeout')
-                          : t('executionDetails.statusDescription.pending')}
+                  {t(/* i18n-dynamic */ `executionDetails.statusDescription.${execution.status}`)}
                 </p>
               </div>
             </div>
