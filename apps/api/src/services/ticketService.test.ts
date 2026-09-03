@@ -3502,6 +3502,15 @@ describe('moveTicketOrg', () => {
     // Never `SET CONSTRAINTS ALL DEFERRED` — that would also defer the three
     // constraints this path relies on failing fast.
     expect(texts.some((t) => /SET CONSTRAINTS ALL/i.test(t))).toBe(false);
+    // Pin the total tx.execute() count so a regression that issues the
+    // SET CONSTRAINTS statement twice, or interposes an extra unnamed raw
+    // statement, is visible here — executedTableNames() only counts
+    // statements with a table identifier chunk and would not catch either.
+    // 1 SET CONSTRAINTS + 5 child-table rewrites (time_entries, ticket_parts,
+    // ticket_alert_links, ticket_outbox, ticket_attachments — same 5 tables
+    // as the 'moves ticket to a same-partner org' test below).
+    expect(texts).toHaveLength(6);
+    expect(texts.filter((t) => t === 'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk DEFERRED')).toHaveLength(1);
   });
 
   it('moves ticket to a same-partner org, detaches device, re-stamps child org_id on 5 tables including ticket_attachments', async () => {

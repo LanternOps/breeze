@@ -52,39 +52,87 @@ SELECT set_config('breeze.scope', 'system', true);
 
 -- Cleanup BEFORE the constraints, so a drifted row cannot abort the file.
 --
--- Direction: RE-DERIVE org_id from the parent ticket, do not null it. The
--- ticket IS the authority for a ticket-linked row — that is exactly what
--- resolveTicketLink does at write time (timeEntryService.ts), and it is what
--- both org-move paths do to these very columns.
+-- Direction: RE-DERIVE org_id from the parent ticket. The ticket IS the
+-- authority for a ticket-linked row — that is exactly what resolveTicketLink
+-- does at write time (timeEntryService.ts), and it is what both org-move paths
+-- do to these very columns.
+--
+-- BUT that premise only holds while the link stays inside one partner. A
+-- `time_entries` row can be internally consistent (org_id belongs to its own
+-- partner_id, so the W1 constraint added by 2026-10-06-110000 accepts it and
+-- that migration's cleanup left it alone) while its TICKET belongs to a
+-- different partner's org — `time_entries` RLS only checks partner_id, and the
+-- old single-column `ticket_id -> tickets(id)` FK never checked tenancy at all.
+-- Blindly re-deriving such a row would write another partner's org onto it and
+-- violate `time_entries_org_partner_fk` — which is already live and IMMEDIATE
+-- by the time this file runs, since 110000 committed in its own transaction.
+-- That would abort THIS ENTIRE FILE with a 23503, on exactly the drifted data
+-- these migrations exist to remediate. (Verified by direct repro against
+-- Postgres 16 before this split was written.)
+--
+-- So the two cases are handled separately:
+--   (a) the ticket's org belongs to the entry's own partner -> re-derive.
+--   (b) the ticket's org belongs to ANOTHER partner -> the LINK is the corrupt
+--       field, not the org. The entry's own (partner_id, org_id) pair is
+--       self-consistent and represents real billable labour with a currency
+--       snapshot; the cross-tenant ticket link is the thing neither RLS nor
+--       any application writer could legitimately have produced. So NULL the
+--       ticket_id and keep the org attribution, rather than nulling org_id and
+--       keeping an impossible link. `ticket_id` is nullable and already
+--       ON DELETE SET NULL, so a standalone entry is a supported state.
 --
 -- Only rows whose org_id is non-NULL and disagrees are touched. A NULL org_id
 -- on a ticket-linked time entry is left alone on purpose: backfilling it would
 -- violate time_entries_currency_required_when_org_chk for a row that never got
 -- a currency snapshot, and such a row is attributed to no organization, so no
--- org-keyed reader counts it.
+-- org-keyed reader counts it. (It is also MATCH SIMPLE-exempt from the
+-- composite below, so it cannot block the ADD CONSTRAINT.)
 --
 -- Counts reported UNCONDITIONALLY (see the W1 file for why a suppressed zero
--- is worse than a logged one).
+-- is worse than a logged one). Case (b) is reported separately because a
+-- non-zero count there is stronger evidence than (a): it means a ticket link
+-- crossed a partner boundary, which is a tenant-isolation signal, not drift.
 DO $$
 DECLARE
-  n bigint;
+  n_rederived bigint;
+  n_unlinked bigint;
+  n_parts bigint;
 BEGIN
+  -- (a) same-partner disagreement: the ticket is the authority.
   UPDATE time_entries te
      SET org_id = t.org_id
     FROM tickets t
+    JOIN organizations o ON o.id = t.org_id
    WHERE t.id = te.ticket_id
      AND te.org_id IS NOT NULL
-     AND te.org_id IS DISTINCT FROM t.org_id;
-  GET DIAGNOSTICS n = ROW_COUNT;
-  RAISE WARNING 're-derived % time_entries.org_id row(s) that disagreed with their ticket', n;
+     AND te.org_id IS DISTINCT FROM t.org_id
+     AND o.partner_id = te.partner_id;
+  GET DIAGNOSTICS n_rederived = ROW_COUNT;
 
+  -- (b) cross-partner ticket link: sever the link, keep the attribution.
+  UPDATE time_entries te
+     SET ticket_id = NULL
+    FROM tickets t
+    JOIN organizations o ON o.id = t.org_id
+   WHERE t.id = te.ticket_id
+     AND te.org_id IS NOT NULL
+     AND te.org_id IS DISTINCT FROM t.org_id
+     AND o.partner_id IS DISTINCT FROM te.partner_id;
+  GET DIAGNOSTICS n_unlinked = ROW_COUNT;
+
+  -- ticket_parts has no partner_id column and its only org FK is the
+  -- single-column org_id -> organizations(id), which re-deriving always
+  -- satisfies. No case (b) equivalent exists here.
   UPDATE ticket_parts tp
      SET org_id = t.org_id
     FROM tickets t
    WHERE t.id = tp.ticket_id
      AND tp.org_id IS DISTINCT FROM t.org_id;
-  GET DIAGNOSTICS n = ROW_COUNT;
-  RAISE WARNING 're-derived % ticket_parts.org_id row(s) that disagreed with their ticket', n;
+  GET DIAGNOSTICS n_parts = ROW_COUNT;
+
+  RAISE WARNING 're-derived % time_entries.org_id row(s) that disagreed with their ticket', n_rederived;
+  RAISE WARNING 'unlinked % time_entries row(s) whose ticket belongs to another partner (cross-partner link; org attribution kept)', n_unlinked;
+  RAISE WARNING 're-derived % ticket_parts.org_id row(s) that disagreed with their ticket', n_parts;
 END $$;
 
 -- DROP + re-ADD rather than a bare ALTER CONSTRAINT: on a database built with

@@ -127,7 +127,9 @@ describe('ticket-child org FKs (#4596 W2)', () => {
       withDbAccessContext(orgCtx(orgB.id, tech.id), () =>
         db.insert(ticketParts).values(partValues(ticketA.id, orgB.id, 'forged part')),
       ),
-    ).rejects.toMatchObject({ cause: { code: '23503' } });
+    ).rejects.toMatchObject({
+      cause: { code: '23503', constraint_name: 'ticket_parts_ticket_org_fk' },
+    });
   });
 
   it('time_entries: an entry cannot carry an org_id its ticket does not have', async () => {
@@ -136,7 +138,9 @@ describe('ticket-child org FKs (#4596 W2)', () => {
       withDbAccessContext(partnerCtx(partner.id, [orgA.id, orgB.id], tech.id), () =>
         db.insert(timeEntries).values(entryValues(partner.id, orgB.id, ticketA.id, tech.id)),
       ),
-    ).rejects.toMatchObject({ cause: { code: '23503' } });
+    ).rejects.toMatchObject({
+      cause: { code: '23503', constraint_name: 'time_entries_ticket_org_fk' },
+    });
   });
 
   it('ticket_parts: another PARTNER\'s org_id in the row itself is refused by RLS (42501)', async () => {
@@ -175,7 +179,9 @@ describe('ticket-child org FKs (#4596 W2)', () => {
       withDbAccessContext(orgCtx(otherOrg.id, otherTech.id), () =>
         db.insert(ticketParts).values(partValues(ticketA.id, otherOrg.id, 'cross-partner part')),
       ),
-    ).rejects.toMatchObject({ cause: { code: '23503' } });
+    ).rejects.toMatchObject({
+      cause: { code: '23503', constraint_name: 'ticket_parts_ticket_org_fk' },
+    });
   });
 
   it('a matching org_id is accepted on both tables', async () => {
@@ -188,6 +194,54 @@ describe('ticket-child org FKs (#4596 W2)', () => {
     );
     expect(part!.orgId).toBe(orgA.id);
     expect(entry!.orgId).toBe(orgA.id);
+  });
+
+  it('time_entries: an UPDATE that decouples org_id from the linked ticket is rejected', async () => {
+    // Real path this backstops: updateTimeEntry (timeEntryService.ts, ~716-762)
+    // sets ticketId and orgId together on relink. The DB constraint is the
+    // backstop if a future edit ever drops that pairing.
+    //
+    // time_entries RLS (time_entries_partner_access) checks ONLY partner_id,
+    // never org_id, so any context whose partner_id matches clears RLS for
+    // both the pre-update row and the post-update value — orgB need not be
+    // in accessibleOrgIds for RLS purposes. partnerCtx is reused here (not a
+    // new fixture) because it already carries the caller's partner_id.
+    const { partner, orgA, orgB, tech, ticketA } = await seed();
+    const ctx = partnerCtx(partner.id, [orgA.id, orgB.id], tech.id);
+    const [entry] = await withDbAccessContext(ctx, () =>
+      db.insert(timeEntries).values(entryValues(partner.id, orgA.id, ticketA.id, tech.id)).returning(),
+    );
+    await expect(
+      withDbAccessContext(ctx, () =>
+        db.update(timeEntries).set({ orgId: orgB.id }).where(sql`id = ${entry!.id}::uuid`),
+      ),
+    ).rejects.toMatchObject({
+      cause: { code: '23503', constraint_name: 'time_entries_ticket_org_fk' },
+    });
+  });
+
+  it('ticket_parts: an UPDATE that decouples org_id from the linked ticket is rejected', async () => {
+    // Same production shape as the time_entries case above, on the sibling
+    // table's own relink path.
+    //
+    // Unlike time_entries, ticket_parts RLS (breeze_org_isolation_update) DOES
+    // check org_id — USING on the pre-update row (org_id = orgA) and WITH
+    // CHECK on the post-update value (org_id = orgB). Both must be in
+    // accessibleOrgIds or the write dies on 42501 instead of 23503, proving
+    // the wrong thing. partnerCtx's accessibleOrgIds = [orgA, orgB] covers
+    // both sides; a single-org orgCtx would not.
+    const { partner, orgA, orgB, tech, ticketA } = await seed();
+    const ctx = partnerCtx(partner.id, [orgA.id, orgB.id], tech.id);
+    const [part] = await withDbAccessContext(ctx, () =>
+      db.insert(ticketParts).values(partValues(ticketA.id, orgA.id, 'relink me')).returning(),
+    );
+    await expect(
+      withDbAccessContext(ctx, () =>
+        db.update(ticketParts).set({ orgId: orgB.id }).where(sql`id = ${part!.id}::uuid`),
+      ),
+    ).rejects.toMatchObject({
+      cause: { code: '23503', constraint_name: 'ticket_parts_ticket_org_fk' },
+    });
   });
 
   it('deleting the ticket unlinks the time entry and cascades the part', async () => {

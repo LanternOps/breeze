@@ -89,7 +89,9 @@ describe('time_entries org/partner composite FK (#4596 W1)', () => {
           entryValues(partnerA.id, orgB.id, techA.id),
         ),
       ),
-    ).rejects.toMatchObject({ cause: { code: '23503' } });
+    ).rejects.toMatchObject({
+      cause: { code: '23503', constraint_name: 'time_entries_org_partner_fk' },
+    });
   });
 
   it("rejects an UPDATE that moves a row onto another partner's org", async () => {
@@ -102,7 +104,9 @@ describe('time_entries org/partner composite FK (#4596 W1)', () => {
       withDbAccessContext(ctx, () =>
         db.update(timeEntries).set({ orgId: orgB.id }).where(eq(timeEntries.id, row!.id)),
       ),
-    ).rejects.toMatchObject({ cause: { code: '23503' } });
+    ).rejects.toMatchObject({
+      cause: { code: '23503', constraint_name: 'time_entries_org_partner_fk' },
+    });
   });
 
   it("refuses another partner's partner_id outright, via RLS (42501)", async () => {
