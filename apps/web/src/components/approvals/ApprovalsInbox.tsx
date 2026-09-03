@@ -347,6 +347,14 @@ export default function ApprovalsInbox() {
   // each of those rows must render (and disable) as busy.
   const [decidingIds, setDecidingIds] = useState<ReadonlySet<string>>(() => new Set());
   const [rowErrors, setRowErrors] = useState<Record<string, DecisionErrorKind>>({});
+  // Issue #4459 — mirrors `decidingIds`'s own "a set of row ids that's
+  // currently true" idiom rather than deriving it from `rowErrors` inline on
+  // every render (review finding: three independent passes flagged the
+  // inline `Object.entries(rowErrors).filter(...)` derivation). Kept in sync
+  // with `rowErrors`'s `driftedFromBatch` entries by every writer below —
+  // `clearRowErrors` drops both together, and the `batch_not_homogeneous`
+  // branch in `decideGroup` adds to both together.
+  const [driftedIds, setDriftedIds] = useState<ReadonlySet<string>>(() => new Set());
   const [groupErrors, setGroupErrors] = useState<Record<string, GroupErrorKind>>({});
   const [denyingId, setDenyingId] = useState<string | null>(null);
   const [denyReason, setDenyReason] = useState('');
@@ -527,6 +535,15 @@ export default function ApprovalsInbox() {
     setRowErrors((current) => {
       const next = { ...current };
       for (const id of ids) delete next[id];
+      return next;
+    });
+    // Issue #4459 — keeps `driftedIds` in sync with `rowErrors`: a drifted
+    // card the approver decides individually (or that's swept into a fresh
+    // `decideGroup` call) must rejoin ordinary grouping, same as before.
+    setDriftedIds((current) => {
+      if (ids.every((id) => !current.has(id))) return current;
+      const next = new Set(current);
+      for (const id of ids) next.delete(id);
       return next;
     });
   };
@@ -728,6 +745,11 @@ export default function ApprovalsInbox() {
           setRowErrors((current) => {
             const next = { ...current };
             for (const id of outcome.offending) next[id] = 'driftedFromBatch';
+            return next;
+          });
+          setDriftedIds((current) => {
+            const next = new Set(current);
+            for (const id of outcome.offending) next.add(id);
             return next;
           });
         } else {
@@ -995,19 +1017,7 @@ export default function ApprovalsInbox() {
         </div>
       ) : (
         <div className="overflow-hidden rounded-xl border bg-card">
-          {buildSections(
-            approvals,
-            // Issue #4459 — recomputed each render from `rowErrors`, not a
-            // separate state slice: a card decided individually afterward
-            // clears its row error the normal way (`clearRowErrors` in
-            // `decide`), which regroups it right back in if it's still
-            // eligible and shares an identity with another pending card.
-            new Set(
-              Object.entries(rowErrors)
-                .filter(([, kind]) => kind === 'driftedFromBatch')
-                .map(([id]) => id),
-            ),
-          ).map((section) =>
+          {buildSections(approvals, driftedIds).map((section) =>
             section.kind === 'row' ? (
               renderRow(section.approval)
             ) : (
