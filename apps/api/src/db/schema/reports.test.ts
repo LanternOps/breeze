@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { getTableColumns } from 'drizzle-orm';
 import { getTableConfig, PgDialect } from 'drizzle-orm/pg-core';
 import {
@@ -77,6 +78,56 @@ describe('report execution scope provenance', () => {
     expect(columns.orgId.notNull).toBe(true);
     expect(columns.contactId.notNull).toBe(true);
   });
+
+  it('pins the composite same-org recipient foreign keys', () => {
+    const foreignKeys = getTableConfig(reportScheduleRecipients).foreignKeys
+      .map((foreignKey) => {
+        const reference = foreignKey.reference();
+        return {
+          name: foreignKey.getName(),
+          columns: reference.columns.map((column) => column.name),
+          foreignColumns: reference.foreignColumns.map((column) => column.name),
+          onDelete: foreignKey.onDelete,
+        };
+      });
+
+    expect(foreignKeys).toEqual(expect.arrayContaining([
+      {
+        name: 'report_schedule_recipients_report_org_fk',
+        columns: ['report_id', 'org_id'],
+        foreignColumns: ['id', 'org_id'],
+        onDelete: 'cascade',
+      },
+      {
+        name: 'report_schedule_recipients_contact_org_fk',
+        columns: ['contact_id', 'org_id'],
+        foreignColumns: ['id', 'org_id'],
+        onDelete: 'cascade',
+      },
+    ]));
+  });
+
+  it('makes both composite same-org recipient foreign keys deferrable', () => {
+    const migration = readFileSync(
+      new URL(
+        '../../../migrations/2026-10-06-120000-portal-report-self-service.sql',
+        import.meta.url,
+      ),
+      'utf8',
+    );
+
+    for (const constraint of [
+      'report_schedule_recipients_report_org_fk',
+      'report_schedule_recipients_contact_org_fk',
+    ]) {
+      expect(migration).toMatch(new RegExp(
+        `ADD CONSTRAINT ${constraint}[\\s\\S]*?ON DELETE CASCADE\\s+DEFERRABLE INITIALLY IMMEDIATE`,
+      ));
+      expect(migration).toMatch(new RegExp(
+        `ALTER CONSTRAINT ${constraint}\\s+DEFERRABLE INITIALLY IMMEDIATE`,
+      ));
+    }
+  });
 });
 
 describe('reportTypeEnum', () => {
@@ -85,5 +136,18 @@ describe('reportTypeEnum', () => {
     expect(reportTypeEnum.enumValues).toContain(
       'security_compliance_posture',
     );
+  });
+
+  it('keeps the original six types', () => {
+    for (const type of [
+      'device_inventory',
+      'software_inventory',
+      'alert_summary',
+      'compliance',
+      'performance',
+      'executive_summary',
+    ]) {
+      expect(reportTypeEnum.enumValues).toContain(type);
+    }
   });
 });

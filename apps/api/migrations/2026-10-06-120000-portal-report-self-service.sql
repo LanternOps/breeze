@@ -245,8 +245,13 @@ BEGIN
       ADD CONSTRAINT report_schedule_recipients_report_org_fk
       FOREIGN KEY (report_id, org_id)
       REFERENCES reports (id, org_id)
-      ON DELETE CASCADE;
+      ON DELETE CASCADE
+      DEFERRABLE INITIALLY IMMEDIATE;
   END IF;
+
+  ALTER TABLE report_schedule_recipients
+    ALTER CONSTRAINT report_schedule_recipients_report_org_fk
+    DEFERRABLE INITIALLY IMMEDIATE;
 END $$;
 
 DO $$
@@ -260,8 +265,13 @@ BEGIN
       ADD CONSTRAINT report_schedule_recipients_contact_org_fk
       FOREIGN KEY (contact_id, org_id)
       REFERENCES contacts (id, org_id)
-      ON DELETE CASCADE;
+      ON DELETE CASCADE
+      DEFERRABLE INITIALLY IMMEDIATE;
   END IF;
+
+  ALTER TABLE report_schedule_recipients
+    ALTER CONSTRAINT report_schedule_recipients_contact_org_fk
+    DEFERRABLE INITIALLY IMMEDIATE;
 END $$;
 
 CREATE UNIQUE INDEX IF NOT EXISTS
