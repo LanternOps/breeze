@@ -66,22 +66,51 @@ ALTER TABLE authenticator_devices
 -- Row counts are RAISEd because these rows are exactly the ones that could
 -- evidence a critical-tier bypass. A recorded 0 is as useful as a recorded 500.
 --
--- Only rows still sitting on the column default are touched, so re-applying
--- this migration after a real attestation has landed is a true no-op.
+-- REPLAY SAFETY. `platform_bound_basis = 'unattested'` alone is NOT a
+-- pre-existing-row marker: after this wave ships, every NEW mobile registration
+-- writes exactly that value on purpose (routes/authenticator.ts), so a bare
+-- basis predicate would relabel legitimate new keys as `legacy_unattested` on
+-- any replay — corrupting the very forensic count these WARNINGs exist to
+-- produce. The cutoff below is this migration's own ledger timestamp:
+--   * first run  -> no ledger row yet (autoMigrate INSERTs it after the file
+--                   body, in the same transaction) -> cutoff NULL -> classify
+--                   every pre-existing row, which is the whole point;
+--   * any replay -> cutoff = the ORIGINAL application time -> the predicate
+--                   selects the identical row set -> a true no-op.
+-- Note the filename date cannot be used as the cutoff: shipped migration names
+-- run weeks ahead of real time in this repo, so a literal would sit in the
+-- future and re-classify anyway.
 DO $$
-DECLARE n integer;
+DECLARE
+  n integer;
+  cutoff timestamptz := NULL;
 BEGIN
+  IF to_regclass('public.breeze_migrations') IS NOT NULL THEN
+    SELECT applied_at INTO cutoff
+      FROM breeze_migrations
+     WHERE filename = '2026-10-06-100101-authenticator-attestation-state.sql';
+  END IF;
+
   UPDATE authenticator_devices
      SET platform_bound_basis = 'legacy_unattested'
    WHERE kind = 'mobile_hw_key'
-     AND platform_bound_basis = 'unattested';
+     AND platform_bound_basis = 'unattested'
+     AND (cutoff IS NULL OR created_at < cutoff);
   GET DIAGNOSTICS n = ROW_COUNT;
   RAISE WARNING '#1374: classified % pre-existing mobile_hw_key rows as legacy_unattested (these lose L4 eligibility)', n;
 
+  -- `is_platform_bound = true` is part of the predicate on purpose: the
+  -- webauthn_backup_flags basis MEANS `singleDevice && !backedUp`, so labelling
+  -- a synced/backed-up passkey with it would be simply false. Such a row keeps
+  -- the honest 'unattested' default. This matches what the webauthn verify
+  -- route now writes at registration (routes/authenticator.ts), so the
+  -- migration and the live insert path cannot disagree about the same row.
   UPDATE authenticator_devices
      SET platform_bound_basis = 'webauthn_backup_flags'
    WHERE kind = 'webauthn_platform'
-     AND platform_bound_basis = 'unattested';
+     AND platform_bound_basis = 'unattested'
+     AND is_platform_bound = true
+     AND (cutoff IS NULL OR created_at < cutoff);
   GET DIAGNOSTICS n = ROW_COUNT;
   RAISE WARNING '#1374: classified % webauthn_platform rows as webauthn_backup_flags (backup-eligibility flags, not hardware attestation)', n;
 END $$;

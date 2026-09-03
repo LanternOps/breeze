@@ -203,25 +203,41 @@ describe('authenticator_devices attestation state (migration 2026-10-06-100101)'
 
     const rows = await withSystemDbAccessContext(async () => {
       const db = getTestDb();
+      // Backdated on purpose: "pre-existing" now means created_at < the
+      // migration's own ledger timestamp, not merely basis = 'unattested'.
       await db.execute(sql`
-        INSERT INTO authenticator_devices (user_id, kind, public_key, is_platform_bound, platform_bound_basis)
-        VALUES (${userId}::uuid, 'mobile_hw_key', 'legacy-mobile', true, 'unattested')
+        INSERT INTO authenticator_devices (user_id, kind, public_key, is_platform_bound, platform_bound_basis, created_at)
+        VALUES (${userId}::uuid, 'mobile_hw_key', 'legacy-mobile', true, 'unattested', now() - interval '30 days')
       `);
       await db.execute(sql`
-        INSERT INTO authenticator_devices (user_id, kind, public_key, credential_id, is_platform_bound, platform_bound_basis)
-        VALUES (${userId}::uuid, 'webauthn_platform', 'legacy-web', ${`cred-${Math.random()}`}, true, 'unattested')
+        INSERT INTO authenticator_devices (user_id, kind, public_key, credential_id, is_platform_bound, platform_bound_basis, created_at)
+        VALUES (${userId}::uuid, 'webauthn_platform', 'legacy-web', ${`cred-${Math.random()}`}, true, 'unattested', now() - interval '30 days')
+      `);
+      // A synced / backed-up passkey (is_platform_bound = false) must NOT be
+      // labelled webauthn_backup_flags — that basis literally means
+      // `singleDevice && !backedUp`, so the label would be false.
+      await db.execute(sql`
+        INSERT INTO authenticator_devices (user_id, kind, public_key, credential_id, is_platform_bound, platform_bound_basis, created_at)
+        VALUES (${userId}::uuid, 'webauthn_platform', 'synced-web', ${`cred-synced-${Math.random()}`}, false, 'unattested', now() - interval '30 days')
       `);
       await db.execute(sql.raw(classifyBlock));
       return (await db.execute(sql`
-        SELECT kind, platform_bound_basis, is_platform_bound
+        SELECT kind, public_key, platform_bound_basis, is_platform_bound
         FROM authenticator_devices
         WHERE user_id = ${userId}::uuid
         ORDER BY kind
-      `)) as unknown as { kind: string; platform_bound_basis: string; is_platform_bound: boolean }[];
+      `)) as unknown as {
+        kind: string;
+        public_key: string;
+        platform_bound_basis: string;
+        is_platform_bound: boolean;
+      }[];
     });
 
     const mobile = rows.find((r) => r.kind === 'mobile_hw_key')!;
-    const web = rows.find((r) => r.kind === 'webauthn_platform')!;
+    const web = rows.find((r) => r.public_key === 'legacy-web')!;
+    const synced = rows.find((r) => r.public_key === 'synced-web')!;
+    expect(synced.platform_bound_basis).toBe('unattested');
     expect(mobile.platform_bound_basis).toBe('legacy_unattested');
     expect(web.platform_bound_basis).toBe('webauthn_backup_flags');
     // The migration deliberately does NOT touch the boolean — the CODE
@@ -229,6 +245,65 @@ describe('authenticator_devices attestation state (migration 2026-10-06-100101)'
     // BREEZE_AUTHENTICATOR_ATTESTATION_ENFORCED instead of a second migration.
     expect(mobile.is_platform_bound).toBe(true);
     expect(web.is_platform_bound).toBe(true);
+  });
+
+  // The replay hazard the classify predicate exists to close: after this wave
+  // ships, EVERY new mobile registration legitimately writes
+  // platform_bound_basis = 'unattested'. A classify step gated on the basis
+  // alone would relabel those as legacy_unattested on any replay, corrupting
+  // the forensic count the RAISE WARNINGs exist to produce.
+  it('a replay does NOT relabel rows registered AFTER the migration applied', async () => {
+    const userId = await seedUser();
+    const full = readFileSync(MIGRATION_PATH, 'utf8');
+    const rows = await withSystemDbAccessContext(async () => {
+      const db = getTestDb();
+      // Registered just now — i.e. after this migration's ledger timestamp.
+      await db.execute(sql`
+        INSERT INTO authenticator_devices (user_id, kind, public_key, is_platform_bound, platform_bound_basis)
+        VALUES (${userId}::uuid, 'mobile_hw_key', 'brand-new-mobile', false, 'unattested')
+      `);
+      await db.execute(sql`
+        INSERT INTO authenticator_devices (user_id, kind, public_key, credential_id, is_platform_bound, platform_bound_basis)
+        VALUES (${userId}::uuid, 'webauthn_platform', 'brand-new-web', ${`cred-new-${Math.random()}`}, true, 'unattested')
+      `);
+      await db.execute(sql.raw(full));
+      return (await db.execute(sql`
+        SELECT public_key, platform_bound_basis
+        FROM authenticator_devices
+        WHERE user_id = ${userId}::uuid
+      `)) as unknown as { public_key: string; platform_bound_basis: string }[];
+    });
+    expect(rows.find((r) => r.public_key === 'brand-new-mobile')!.platform_bound_basis).toBe(
+      'unattested',
+    );
+    expect(rows.find((r) => r.public_key === 'brand-new-web')!.platform_bound_basis).toBe(
+      'unattested',
+    );
+  });
+
+  // The CHECK is an AND, not an OR: half the evidence is not evidence.
+  it.each([
+    ['only attestation_verified_at', sql`now(), NULL`],
+    ['only attested_public_key_sha256', sql`NULL, ${Buffer.from([0])}::bytea`],
+  ])('rejects an attested basis carrying %s', async (_label, values) => {
+    const userId = await seedUser();
+    let caught: unknown;
+    try {
+      await withSystemDbAccessContext(async () =>
+        getTestDb().execute(sql`
+          INSERT INTO authenticator_devices (
+            user_id, kind, public_key, is_platform_bound, platform_bound_basis,
+            attestation_verified_at, attested_public_key_sha256
+          )
+          VALUES (${userId}::uuid, 'mobile_hw_key', 'half-evidence', true, 'ios_se_p256_app_attest', ${values})
+        `),
+      );
+    } catch (err) {
+      caught = err;
+    }
+    expect(
+      (caught as { cause?: { constraint_name?: string } } | undefined)?.cause?.constraint_name,
+    ).toBe('authenticator_devices_attested_basis_chk');
   });
 
   // Re-applying a shipped migration must be a true no-op (CLAUDE.md).

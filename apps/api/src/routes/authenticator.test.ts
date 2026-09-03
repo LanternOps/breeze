@@ -376,6 +376,36 @@ describe('approver device routes', () => {
     );
   });
 
+  // #1374: the FALSE branch of the basis derivation. A synced / multi-device
+  // passkey is not platform-bound, so it must NOT be labelled
+  // `webauthn_backup_flags` — that basis literally means
+  // `singleDevice && !backedUp` AND it is in L4_TRUSTED_PLATFORM_BOUND_BASES.
+  it('records a synced (backed-up) passkey as unattested, not webauthn_backup_flags (#1374)', async () => {
+    approverMocks.verifyApproverRegistration.mockResolvedValue({
+      credentialId: 'credential-synced',
+      publicKey: 'public-key',
+      counter: 0,
+      deviceType: 'multiDevice',
+      backedUp: true,
+      transports: ['internal'],
+      aaguid: null,
+      isPlatformBound: false,
+    });
+
+    const res = await postJson('/devices/webauthn/verify', {
+      registerGrantId: 'g-1',
+      response: { id: 'credential-synced', rawId: 'credential-synced', type: 'public-key', response: {}, clientExtensionResults: {} },
+      label: 'Synced Passkey',
+    });
+
+    expect(res.status).toBe(200);
+    expect(dbState.insertValues[0]).toMatchObject({
+      kind: 'webauthn_platform',
+      isPlatformBound: false,
+      platformBoundBasis: 'unattested',
+    });
+  });
+
   it('lists only the caller active approver devices', async () => {
     dbState.selectQueue.push([deviceRow]);
 
