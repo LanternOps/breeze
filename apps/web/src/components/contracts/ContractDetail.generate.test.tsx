@@ -50,7 +50,9 @@ const detail: ContractDetailData = {
   lines: [
     {
       id: 'cl-1', contractId: 'ct-1', orgId: 'org-1', lineType: 'flat', description: 'Managed endpoint',
-      catalogItemId: 'cat-1', unitPrice: '80.00', manualQuantity: null, siteId: null, site: null, deviceRoles: null,
+      catalogItemId: 'cat-1', unitPrice: '80.00', manualQuantity: null,
+      includedQuantity: null, overageMode: null, overageUnitPrice: null,
+      siteId: null, site: null, deviceRoles: null,
       deviceGroupId: null, deviceGroupName: null, deviceGroup: null, taxable: true,
       sortOrder: 0, createdAt: '2026-06-01T00:00:00Z',
     },
@@ -62,7 +64,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   state.permissions = [{ resource: 'contracts', action: 'manage' }];
   (contractsApi.getContractEstimate as ReturnType<typeof vi.fn>).mockResolvedValue(
-    resp({ data: { currencyCode: 'EUR', periodTotal: '80.00', lines: [], uncoveredDevices: null } }),
+    resp({ data: { currencyCode: 'EUR', periodTotal: '80.00', lines: [], uncoveredDevices: null, overages: [] } }),
   );
 });
 

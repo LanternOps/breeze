@@ -32,6 +32,16 @@
         "uncovered": "{{count}} dispositivo/i di questa organizzazione non sono fatturati da alcuna riga di questo contratto: {{breakdown}}",
         "allCovered": "Ogni dispositivo di questa organizzazione è fatturato da una riga di questo contratto."
       },
+      "allowance": {
+        "includedOf": "{{counted}} di {{included}} inclusi",
+        "includedOnly": "{{included}} inclusi",
+        "overBilled": "{{included}} inclusi · {{overage}} oltre (fatturati)",
+        "overFlagged": "{{included}} inclusi · {{overage}} oltre (segnalati)"
+      },
+      "overage": {
+        "flagged": "{{description}} — {{overage}} oltre i {{included}} inclusi, non fatturati",
+        "billed": "{{description}} — {{overage}} oltre i {{included}} inclusi, fatturati alla tariffa di eccedenza"
+      },
       "transition": {
         "activate": "Attiva",
         "pause": "Metti in pausa",
@@ -108,6 +118,7 @@
           "cancel": "Contratto annullato"
         },
         "invoiceGenerated": "Fattura generata",
+        "flaggedOverage": "{{count}} riga/righe superano la quantità inclusa e non sono state fatturate: {{names}}",
         "uncoveredDevices": "Fattura generata, ma {{count}} dispositivo/i non sono fatturati da alcuna riga di questo contratto: {{breakdown}}",
         "priceBookGaps": "{{count}} riga/righe di catalogo fatturate al prezzo salvato nel contratto — nessun prezzo in {{currency}} nel catalogo: {{lines}}",
         "draftDeleted": "Bozza eliminata"
@@ -211,6 +222,14 @@
         "addFromPax8Catalog": "Aggiungi dal catalogo Pax8",
         "importFromTdSynnex": "Importa da TD SYNNEX",
         "lineType": "Tipo di riga",
+        "allowanceToggle": "Includi una quantità fissa e gestisci le eccedenze",
+        "allowanceHint": "La riga fattura la quantità inclusa in ogni periodo, anche quando i dispositivi contati sono meno.",
+        "includedQuantity": "Quantità inclusa",
+        "overageMode": "Oltre la quantità inclusa",
+        "overageBill": "Fattura le eccedenze",
+        "overageFlag": "Segnala le eccedenze per revisione",
+        "overageUnitPrice": "Prezzo per unità aggiuntiva",
+        "allowanceRequired": "Inserisci una quantità inclusa e un prezzo se fatturi le eccedenze.",
         "deviceRoles": "Ruoli dispositivo (un dispositivo viene fatturato quando il suo ruolo è uno di questi)",
         "deviceRolesRequired": "Seleziona almeno un ruolo.",
         "deviceGroup": "Gruppo di dispositivi (fattura i suoi membri; i gruppi dinamici sono valutati alla fatturazione)",

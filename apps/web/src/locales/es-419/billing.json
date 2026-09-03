@@ -32,6 +32,16 @@
         "uncovered": "{{count}} dispositivo(s) de esta organización no se facturan en ninguna línea de este contrato: {{breakdown}}",
         "allCovered": "Todos los dispositivos de esta organización se facturan en una línea de este contrato."
       },
+      "allowance": {
+        "includedOf": "{{counted}} de {{included}} incluidos",
+        "includedOnly": "{{included}} incluidos",
+        "overBilled": "{{included}} incluidos · {{overage}} por encima (facturados)",
+        "overFlagged": "{{included}} incluidos · {{overage}} por encima (marcados)"
+      },
+      "overage": {
+        "flagged": "{{description}} — {{overage}} por encima de {{included}} incluidos, sin facturar",
+        "billed": "{{description}} — {{overage}} por encima de {{included}} incluidos, facturados a la tarifa de excedente"
+      },
       "transition": {
         "activate": "Activar",
         "pause": "Pausa",
@@ -108,6 +118,7 @@
           "cancel": "Contrato cancelado"
         },
         "invoiceGenerated": "Factura generada",
+        "flaggedOverage": "{{count}} línea(s) superan la cantidad incluida y no se facturaron: {{names}}",
         "uncoveredDevices": "Factura generada, pero {{count}} dispositivo(s) no se facturan en ninguna línea de este contrato: {{breakdown}}",
         "priceBookGaps": "{{count}} línea(s) de catálogo facturada(s) con el precio guardado en el contrato — no hay precio en {{currency}} en el catálogo: {{lines}}",
         "draftDeleted": "Borrador eliminado"
@@ -211,6 +222,14 @@
         "addFromPax8Catalog": "Añadir desde el catálogo Pax8",
         "importFromTdSynnex": "Importar desde TD SYNNEX",
         "lineType": "tipo de línea",
+        "allowanceToggle": "Incluir una cantidad fija y gestionar los extras",
+        "allowanceHint": "La línea factura la cantidad incluida en cada período, incluso si se cuentan menos dispositivos.",
+        "includedQuantity": "Cantidad incluida",
+        "overageMode": "Extras por encima de la cantidad incluida",
+        "overageBill": "Facturar extras",
+        "overageFlag": "Marcar extras para revisión",
+        "overageUnitPrice": "Precio por unidad adicional",
+        "allowanceRequired": "Ingresa una cantidad incluida y un precio si facturas los extras.",
         "deviceRoles": "Roles de dispositivo (se factura un dispositivo cuando su rol es uno de estos)",
         "deviceRolesRequired": "Elige al menos un rol.",
         "deviceGroup": "Grupo de dispositivos (factura a sus miembros; los grupos dinámicos se evalúan al facturar)",

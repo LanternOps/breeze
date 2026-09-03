@@ -20,6 +20,23 @@ export type { ContractLineType };
 export type ContractStatus = 'draft' | 'active' | 'paused' | 'cancelled' | 'expired';
 export type ContractBillingTiming = 'advance' | 'arrears';
 
+/** #3205 W04 (#4607): what happens to the units above includedQuantity. */
+export type OverageMode = 'bill' | 'flag';
+
+/** One allowance line that is OVER this period, in either mode. `bill` is on the
+ *  invoice; `flag` is not — the UI branches on `mode`. */
+export interface OverageSummary {
+  contractLineId: string;
+  /** The materialized overage invoice line ('bill' mode) or null ('flag' mode). W07
+   *  attaches device evidence to it. */
+  invoiceLineId: string | null;
+  description: string;
+  counted: number;
+  included: number;
+  overage: number;
+  mode: OverageMode;
+}
+
 /** Devices no device-counted line on the contract bills (#3205). null = not applicable. */
 export interface UncoveredDevices {
   total: number;
@@ -57,9 +74,16 @@ export interface ContractSummary {
 export interface ContractEstimateLine {
   lineId: string;
   lineType: ContractLineType;
+  /** BASE quantity billed by the contract line; overage is separate. */
   quantity: number;
+  /** BASE value only. `overageValue` is never folded into this value. */
   value: string;
   live: boolean;
+  counted: number;
+  included: number | null;
+  overage: number;
+  overageMode: OverageMode | null;
+  overageValue: string;
   unresolved?: 'group_deleted';
 }
 export interface ContractEstimate {
@@ -67,6 +91,7 @@ export interface ContractEstimate {
   periodTotal: string;
   lines: ContractEstimateLine[];
   uncoveredDevices: UncoveredDevices | null;
+  overages: OverageSummary[];
 }
 
 export interface ContractLine {
@@ -85,6 +110,9 @@ export interface ContractLine {
   deviceGroupId: string | null;
   deviceGroupName: string | null;
   deviceGroup: { id: string; name: string; type: 'static' | 'dynamic' } | null;
+  includedQuantity: string | null;
+  overageMode: OverageMode | null;
+  overageUnitPrice: string | null;
   taxable: boolean;
   sortOrder: number;
   createdAt: string;
@@ -230,6 +258,9 @@ export interface UpdateContractLinePatch {
   deviceRoles?: string[];
   deviceGroupId?: string;
   sortOrder?: number;
+  includedQuantity?: string | null;
+  overageMode?: OverageMode | null;
+  overageUnitPrice?: string | null;
 }
 
 export function updateContractLine(id: string, lineId: string, body: UpdateContractLinePatch): Promise<Response> {

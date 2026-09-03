@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { navigateTo } from '@/lib/navigation';
 import { getDeviceRoleLabel } from '@/lib/deviceRoles';
@@ -17,6 +17,8 @@ import {
   type ContractCurrencyBlockerDetails,
   type ContractDetail as ContractDetailData,
   type ContractEstimate,
+  type ContractEstimateLine,
+  type OverageSummary,
   type ContractStatus,
   type ContractTransition,
   type PriceBookGap,
@@ -26,7 +28,8 @@ import { formatMoney, formatDate } from '../billing/invoiceTypes';
 import { usePermissions } from '../../lib/permissions';
 import ContractDocumentsSection from './ContractDocumentsSection';
 import DeviceCoverageNotice, { formatUncoveredBreakdown } from './DeviceCoverageNotice';
-import { AUTO_QTY_TYPES, LINE_TYPE_LABELS } from './lineTypes';
+import { LINE_TYPE_LABELS } from './lineTypes';
+import AllowanceCell, { OverageNotice } from './AllowanceCell';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -104,7 +107,11 @@ export default function ContractDetail({ detail, onChanged }: Props) {
   const [cancelOpen, setCancelOpen] = useState(false);
   const [estimate, setEstimate] = useState<ContractEstimate | null>(null);
   const [estimateFailed, setEstimateFailed] = useState(false);
-  const estByLine = new Map(estimate?.lines.map((line) => [line.lineId, line]) ?? []);
+  const estByLine = useMemo(() => {
+    const m = new Map<string, ContractEstimateLine>();
+    for (const e of estimate?.lines ?? []) m.set(e.lineId, e);
+    return m;
+  }, [estimate]);
   // Currency restamp (ACTIVE contracts only, manage-gated, #3778).
   const [currencyOpen, setCurrencyOpen] = useState(false);
   const [targetCurrency, setTargetCurrency] = useState(currency);
@@ -165,7 +172,7 @@ export default function ContractDetail({ detail, onChanged }: Props) {
     if (busy) return;
     setBusy(true);
     try {
-      const result = await runAction<{ data?: { invoiceId?: string; priceBookGaps?: PriceBookGap[]; uncoveredDevices?: UncoveredDevices | null } }>({
+      const result = await runAction<{ data?: { invoiceId?: string; priceBookGaps?: PriceBookGap[]; uncoveredDevices?: UncoveredDevices | null; overages?: OverageSummary[] } }>({
         request: () => generateContractInvoice(contract.id),
         errorFallback: t('contracts.contractDetail.errors.generateInvoice'),
         successMessage: t('contracts.contractDetail.toast.invoiceGenerated'),
@@ -195,6 +202,20 @@ export default function ContractDetail({ detail, onChanged }: Props) {
           type: 'warning',
           message: t('contracts.contractDetail.toast.uncoveredDevices', {
             count: uncovered.total, breakdown: formatUncoveredBreakdown(uncovered.byRole),
+          }),
+        });
+      }
+      // #3205 W04: flagged overage is money left on the table. It is NOT on the
+      // invoice the user is about to be navigated to, so this toast is the only
+      // place they see it. Billed overage raises nothing — it is a line on the
+      // invoice they are about to open.
+      const flagged = (result?.data?.overages ?? []).filter((o) => o.mode === 'flag');
+      if (flagged.length > 0) {
+        showToast({
+          type: 'warning',
+          message: t('contracts.contractDetail.toast.flaggedOverage', {
+            count: flagged.length,
+            names: flagged.map((o) => o.description).join(', '),
           }),
         });
       }
@@ -334,6 +355,7 @@ export default function ContractDetail({ detail, onChanged }: Props) {
                 <dd className="mt-1 font-medium tabular-nums" data-testid="contract-estimate-stat">
                   {estimate ? formatMoney(estimate.periodTotal, currency) : '—'}
                   <DeviceCoverageNotice uncovered={estimate?.uncoveredDevices} />
+                  <OverageNotice overages={estimate?.overages} />
                   {estimateFailed && (
                     <p className="mt-1 text-xs text-amber-600 dark:text-amber-500" data-testid="contract-estimate-stale">
                       {t('contracts.contractEditor.estimate.loadLiveCountsFailed')}{' '}
@@ -393,14 +415,8 @@ export default function ContractDetail({ detail, onChanged }: Props) {
                       </td>
                       <td className="px-3 py-2">{l.description}</td>
                       <td className="px-3 py-2 text-right">{formatMoney(l.unitPrice, currency)}</td>
-                      <td className="px-3 py-2 text-right">
-                        {AUTO_QTY_TYPES.has(l.lineType)
-                          ? (estByLine.has(l.id)
-                              ? (estByLine.get(l.id)?.unresolved === 'group_deleted'
-                                  ? t('contracts.shared.values.groupDeleted')
-                                  : estByLine.get(l.id)?.quantity)
-                              : <span className="text-muted-foreground">{t('contracts.shared.values.auto')}</span>)
-                          : (l.lineType === 'manual' ? (l.manualQuantity ?? '0') : '1')}
+                      <td className="px-3 py-2 text-right" data-testid={`contract-detail-line-qty-${l.id}`}>
+                        <AllowanceCell line={l} estimate={estByLine.get(l.id)} />
                       </td>
                       <td className="px-3 py-2 text-center">{l.taxable ? '✓' : '—'}</td>
                     </tr>

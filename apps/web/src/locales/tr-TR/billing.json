@@ -32,6 +32,16 @@
         "uncovered": "Bu kuruluştaki {{count}} cihaz bu sözleşmedeki hiçbir satırda faturalandırılmıyor: {{breakdown}}",
         "allCovered": "Bu kuruluştaki her cihaz bu sözleşmedeki bir satırda faturalandırılıyor."
       },
+      "allowance": {
+        "includedOf": "{{included}} dahilden {{counted}}",
+        "includedOnly": "{{included}} dahil",
+        "overBilled": "{{included}} dahil · {{overage}} fazla (faturalandı)",
+        "overFlagged": "{{included}} dahil · {{overage}} fazla (işaretlendi)"
+      },
+      "overage": {
+        "flagged": "{{description}} — {{included}} dahilin {{overage}} üzerinde, faturalandırılmadı",
+        "billed": "{{description}} — {{included}} dahilin {{overage}} üzerinde, aşım tarifesinden faturalandı"
+      },
       "transition": {
         "activate": "Etkinleştir",
         "pause": "Duraklat",
@@ -108,6 +118,7 @@
           "cancel": "Sözleşme iptal edildi"
         },
         "invoiceGenerated": "Fatura oluşturuldu",
+        "flaggedOverage": "{{count}} satır dahil edilen miktarı aştı ve faturalandırılmadı: {{names}}",
         "uncoveredDevices": "Fatura oluşturuldu, ancak {{count}} cihaz bu sözleşmedeki hiçbir satırda faturalandırılmıyor: {{breakdown}}",
         "priceBookGaps": "{{count}} katalog satırı sözleşme anlık görüntüsündeki fiyattan faturalandırıldı — katalogda {{currency}} fiyatı yok: {{lines}}",
         "draftDeleted": "Taslak silindi"
@@ -211,6 +222,14 @@
         "addFromPax8Catalog": "Pax8 kataloğundan ekle",
         "importFromTdSynnex": "TD SYNNEX'ten içe aktar",
         "lineType": "Hat türü",
+        "allowanceToggle": "Sabit bir miktar dahil et, fazlasını ayrıca yönet",
+        "allowanceHint": "Satır, daha az cihaz sayılsa bile her dönem dahil edilen miktarı faturalandırır.",
+        "includedQuantity": "Dahil edilen miktar",
+        "overageMode": "Dahil edilen miktarın üzeri",
+        "overageBill": "Fazlasını faturalandır",
+        "overageFlag": "Fazlasını incelemek üzere işaretle",
+        "overageUnitPrice": "Ek birim başına fiyat",
+        "allowanceRequired": "Dahil edilen bir miktar girin; fazlasını faturalandırıyorsanız bir fiyat da girin.",
         "deviceRoles": "Cihaz rolleri (rolü bunlardan biri olan cihazlar faturalandırılır)",
         "deviceRolesRequired": "En az bir rol seçin.",
         "deviceGroup": "Cihaz grubu (üyeleri faturalandırılır; dinamik gruplar faturalama sırasında değerlendirilir)",

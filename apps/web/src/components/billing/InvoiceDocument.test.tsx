@@ -103,3 +103,22 @@ describe('InvoiceDocumentPreview — customer-name fallback', () => {
     expect(customer).not.toHaveTextContent('9f8e7d6c');
   });
 });
+
+describe('InvoiceDocument — contract overage sibling (#3205 W04)', () => {
+  it('characterizes a contract overage sibling as an ordinary line, not a bundle child', () => {
+    const line = detail.lines[0]!;
+    render(<InvoiceDocument detail={{
+      ...detail,
+      lines: [
+        { ...line, id: 'base', description: 'Endpoints', quantity: '25.00', unitPrice: '10.00', lineTotal: '250.00', parentLineId: null, sortOrder: 1 },
+        { ...line, id: 'over', description: 'Overage: 1 above 25 included — Endpoints', quantity: '1.00', unitPrice: '12.00', lineTotal: '12.00', parentLineId: null, sortOrder: 2 },
+        { ...line, id: 'child', description: 'Bundle component', parentLineId: 'base', customerVisible: true, sortOrder: 3 },
+      ],
+    }} customerName="Acme Industries" />);
+    const overCell = screen.getByText(/Overage: 1 above 25 included/).closest('td')!;
+    expect(overCell.className).not.toContain('pl-8');
+    expect(overCell.textContent).not.toContain('↳');
+    const childCell = screen.getByText('Bundle component').closest('td')!;
+    expect(childCell.className).toContain('pl-8');
+  });
+});

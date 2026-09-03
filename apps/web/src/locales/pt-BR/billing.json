@@ -32,6 +32,16 @@
         "uncovered": "{{count}} dispositivo(s) desta organização não são cobrados por nenhuma linha deste contrato: {{breakdown}}",
         "allCovered": "Todos os dispositivos desta organização são cobrados por uma linha deste contrato."
       },
+      "allowance": {
+        "includedOf": "{{counted}} de {{included}} incluídos",
+        "includedOnly": "{{included}} incluídos",
+        "overBilled": "{{included}} incluídos · {{overage}} acima (faturados)",
+        "overFlagged": "{{included}} incluídos · {{overage}} acima (sinalizados)"
+      },
+      "overage": {
+        "flagged": "{{description}} — {{overage}} acima dos {{included}} incluídos, não faturados",
+        "billed": "{{description}} — {{overage}} acima dos {{included}} incluídos, faturados pela tarifa de excedente"
+      },
       "transition": {
         "activate": "Ativar",
         "pause": "Pausar",
@@ -108,6 +118,7 @@
           "cancel": "Contrato cancelado"
         },
         "invoiceGenerated": "Fatura gerada",
+        "flaggedOverage": "{{count}} linha(s) excedem a quantidade incluída e não foram faturadas: {{names}}",
         "uncoveredDevices": "Fatura gerada, mas {{count}} dispositivo(s) não são cobrados por nenhuma linha deste contrato: {{breakdown}}",
         "priceBookGaps": "{{count}} linha(s) de catálogo faturada(s) pelo preço salvo no contrato — sem preço em {{currency}} no catálogo: {{lines}}",
         "draftDeleted": "Rascunho excluído"
@@ -211,6 +222,14 @@
         "addFromPax8Catalog": "Adicionar do catálogo Pax8",
         "importFromTdSynnex": "Importar da TD SYNNEX",
         "lineType": "Tipo de linha",
+        "allowanceToggle": "Incluir uma quantidade fixa e tratar os excedentes",
+        "allowanceHint": "A linha cobra a quantidade incluída em todos os períodos, mesmo quando são contados menos dispositivos.",
+        "includedQuantity": "Quantidade incluída",
+        "overageMode": "Acima da quantidade incluída",
+        "overageBill": "Faturar excedentes",
+        "overageFlag": "Sinalizar excedentes para revisão",
+        "overageUnitPrice": "Preço por unidade adicional",
+        "allowanceRequired": "Informe uma quantidade incluída e um preço se faturar os excedentes.",
         "deviceRoles": "Funções do dispositivo (um dispositivo é cobrado quando sua função é uma destas)",
         "deviceRolesRequired": "Escolha pelo menos uma função.",
         "deviceGroup": "Grupo de dispositivos (cobra seus membros; grupos dinâmicos são avaliados no faturamento)",
