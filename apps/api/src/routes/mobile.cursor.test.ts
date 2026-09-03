@@ -73,5 +73,20 @@ describe('mobile route cursor helpers', () => {
       const encoded = encodeCursor('not-a-timestamp', id);
       expect(decodeTimestampCursor(encoded ?? undefined)).toBeNull();
     });
+
+    it('rejects a key that is a valid JS Date but out of Postgres timestamp range', () => {
+      // `new Date(-8640000000000000).toISOString()` — JS's own minimum
+      // representable date — parses fine as a `Date` (not NaN), but sits
+      // nowhere near Postgres `timestamp`'s actual range and would 500 the
+      // route on the `::timestamp` cast instead of failing cleanly here.
+      // A `Number.isNaN(new Date(key).getTime())` check alone does not catch
+      // this; the regex on the exact `to_char` output shape does.
+      const id = '11111111-1111-4111-8111-111111111111';
+      const extreme = new Date(-8640000000000000).toISOString();
+      expect(extreme).toBe('-271821-04-20T00:00:00.000Z');
+      expect(Number.isNaN(new Date(extreme).getTime())).toBe(false);
+      const encoded = encodeCursor(extreme, id);
+      expect(decodeTimestampCursor(encoded ?? undefined)).toBeNull();
+    });
   });
 });

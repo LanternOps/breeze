@@ -107,10 +107,20 @@ export function decodeCursor(raw: string | undefined): CursorTuple | null {
 // checks above, reject a cursor whose `key` doesn't even parse as a
 // timestamp — otherwise it reaches the raw SQL comparison in the route and
 // Postgres 500s on the bad cast instead of a clean "start over".
+//
+// Matches the EXACT shape `to_char(..., 'YYYY-MM-DD"T"HH24:MI:SS.US')` emits
+// on the encode side (4-digit year, fixed-width fields, 6-digit
+// microseconds) rather than deferring to `new Date(...)` parseability —
+// `Date` accepts a much wider grammar than Postgres `timestamp` does, so a
+// crafted `key` like `-271821-04-20T00:00:00.000Z` parses fine as a `Date`
+// (round-trips through `.getTime()` with no NaN) but sits nowhere near
+// Postgres's actual range and 500s on `::timestamp` instead of failing this
+// check.
+const TIMESTAMP_CURSOR_KEY_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}$/;
 export function decodeTimestampCursor(raw: string | undefined): CursorTuple | null {
   const cursor = decodeCursor(raw);
   if (!cursor) return null;
-  return Number.isNaN(new Date(cursor.key).getTime()) ? null : cursor;
+  return TIMESTAMP_CURSOR_KEY_RE.test(cursor.key) ? cursor : null;
 }
 
 /**
