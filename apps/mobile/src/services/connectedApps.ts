@@ -2,7 +2,7 @@ import * as SecureStore from 'expo-secure-store';
 
 import { getServerUrl } from './serverConfig';
 import { getOrCreateInstallationId } from './installationId';
-import { MOBILE_DEVICE_ID_HEADER } from './api';
+import { ApiError, MOBILE_DEVICE_ID_HEADER } from './api';
 import { fetchWithAuthRefresh } from './authedFetch';
 
 const FALLBACK_API_BASE_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:3001';
@@ -16,12 +16,6 @@ export interface ConnectedApp {
   lastUsedAt: string | null;
   lastApprovalDecidedAt: string | null;
   revokedAt: string | null;
-}
-
-interface ApiError {
-  message: string;
-  code?: string;
-  statusCode?: number;
 }
 
 async function call<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -49,12 +43,11 @@ async function call<T>(path: string, init: RequestInit = {}): Promise<T> {
 
   if (!res.ok) {
     const body = await res.json().catch(() => ({} as Record<string, unknown>));
-    const err: ApiError = {
+    throw new ApiError({
       message: (typeof body.error === 'string' && body.error) || 'Request failed',
       code: typeof body.code === 'string' ? body.code : undefined,
       statusCode: res.status,
-    };
-    throw err;
+    });
   }
 
   const text = await res.text();
