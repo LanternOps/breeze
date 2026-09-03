@@ -11,7 +11,7 @@ vi.mock('../../stores/auth', () => ({
   createPasskeyCredential: createPasskeyCredentialMock,
   useAuthStore: Object.assign(
     (selector: any) => selector({ updateUser: vi.fn() }),
-    { getState: () => ({ updateUser: vi.fn() }) },
+    { getState: () => ({ updateUser: vi.fn(), sessionGeneration: 0, commitReissuedSessionIfCurrent: vi.fn(() => true) }) },
   ),
 }));
 

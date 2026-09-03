@@ -2443,3 +2443,42 @@ describe('MFA enrollment session adoption', () => {
     expect(useAuthStore.getState().user?.mfaEnabled).toBe(false);
   });
 });
+
+describe('replacement-session adoption (#4480)', () => {
+  it('installs the replacement tokens on the live session without touching the user record', () => {
+    useAuthStore.getState().login({ ...baseUser, mfaEnabled: true }, baseTokens);
+    const generation = useAuthStore.getState().sessionGeneration;
+    const rotated = { accessToken: 'rotated', expiresInSeconds: 900 };
+
+    expect(useAuthStore.getState().commitReissuedSessionIfCurrent(generation, rotated)).toBe(true);
+    expect(useAuthStore.getState().tokens).toEqual(rotated);
+    expect(useAuthStore.getState().user).toEqual({ ...baseUser, mfaEnabled: true });
+    // Adopting a replacement is not a new session — nothing else may re-run.
+    expect(useAuthStore.getState().sessionGeneration).toBe(generation);
+  });
+
+  it('refuses a replacement after logout rather than resurrecting the session', () => {
+    useAuthStore.getState().login(baseUser, baseTokens);
+    const generation = useAuthStore.getState().sessionGeneration;
+    useAuthStore.getState().logout();
+
+    expect(useAuthStore.getState().commitReissuedSessionIfCurrent(generation, {
+      accessToken: 'rotated',
+      expiresInSeconds: 900,
+    })).toBe(false);
+    expect(useAuthStore.getState()).toMatchObject({ tokens: null, isAuthenticated: false });
+  });
+
+  it('refuses a replacement that lost a race with a newer login', () => {
+    useAuthStore.getState().login(baseUser, baseTokens);
+    const generation = useAuthStore.getState().sessionGeneration;
+    const newerTokens = { accessToken: 'newer', expiresInSeconds: 900 };
+    useAuthStore.getState().login(baseUser, newerTokens);
+
+    expect(useAuthStore.getState().commitReissuedSessionIfCurrent(generation, {
+      accessToken: 'rotated',
+      expiresInSeconds: 900,
+    })).toBe(false);
+    expect(useAuthStore.getState().tokens).toEqual(newerTokens);
+  });
+});
