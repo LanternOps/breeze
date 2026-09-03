@@ -770,6 +770,94 @@ describe('DevicePatchStatusTab', () => {
     expect(fetchWithAuthMock).toHaveBeenCalledWith(`/configuration-policies/effective/${deviceId}`);
   });
 
+  it('falls back to the policy id as the link label when sourcePolicyName is missing (#4671)', async () => {
+    fetchWithAuthMock.mockImplementation(async (url: string) => {
+      if (typeof url === 'string' && url.includes('/configuration-policies/effective/')) {
+        return makeJsonResponse({
+          deviceId,
+          features: {
+            patch: {
+              featureType: 'patch',
+              featurePolicyId: 'feature-policy-1',
+              inlineSettings: null,
+              sourceLevel: 'organization',
+              sourceTargetId: 'org-1',
+              sourcePolicyId: 'policy-xyz'
+              // sourcePolicyName intentionally omitted
+            }
+          },
+          inheritanceChain: []
+        });
+      }
+      return makeJsonResponse({
+        data: { compliancePercent: 90, pending: [], installed: [] }
+      });
+    });
+
+    render(<DevicePatchStatusTab deviceId={deviceId} osType="windows" />);
+
+    const policyLink = await screen.findByRole('link', { name: 'policy-xyz' });
+    expect(policyLink.getAttribute('href')).toBe('/configuration-policies/policy-xyz');
+  });
+
+  it('degrades to no policy link (without crashing) when the effective-config fetch fails (#4671)', async () => {
+    fetchWithAuthMock.mockImplementation(async (url: string) => {
+      if (typeof url === 'string' && url.includes('/configuration-policies/effective/')) {
+        throw new Error('network error');
+      }
+      return makeJsonResponse({
+        data: { compliancePercent: 90, pending: [], installed: [] }
+      });
+    });
+
+    render(<DevicePatchStatusTab deviceId={deviceId} osType="windows" />);
+
+    // The rest of the tab still renders normally.
+    await screen.findByRole('link', { name: /manage patches/i });
+    expect(screen.queryByText(/managed by policy/i)).toBeNull();
+  });
+
+  it('clears a previously-resolved policy link when the effective-config fetch returns a non-OK response (#4671)', async () => {
+    let effectiveCallCount = 0;
+    fetchWithAuthMock.mockImplementation(async (url: string) => {
+      if (typeof url === 'string' && url.includes('/configuration-policies/effective/')) {
+        effectiveCallCount += 1;
+        if (effectiveCallCount === 1) {
+          return makeJsonResponse({
+            deviceId,
+            features: {
+              patch: {
+                featureType: 'patch',
+                featurePolicyId: 'feature-policy-1',
+                inlineSettings: null,
+                sourceLevel: 'organization',
+                sourceTargetId: 'org-1',
+                sourcePolicyId: 'policy-abc',
+                sourcePolicyName: 'Standard Patch Ring'
+              }
+            },
+            inheritanceChain: []
+          });
+        }
+        return makeJsonResponse({ error: 'server error' }, false, 500);
+      }
+      return makeJsonResponse({
+        data: { compliancePercent: 90, pending: [], installed: [] }
+      });
+    });
+
+    const { rerender } = render(<DevicePatchStatusTab deviceId={deviceId} osType="windows" />);
+
+    await screen.findByRole('link', { name: 'Standard Patch Ring' });
+
+    // Re-render with a different device id to trigger a re-fetch that now 500s.
+    rerender(<DevicePatchStatusTab deviceId="22222222-2222-2222-2222-222222222222" osType="windows" />);
+
+    await waitFor(() => {
+      expect(screen.queryByText(/managed by policy/i)).toBeNull();
+    });
+  });
+
   it('does not show a policy link when no patch policy is assigned to the device (#4671)', async () => {
     fetchWithAuthMock.mockImplementation(async (url: string) => {
       if (typeof url === 'string' && url.includes('/configuration-policies/effective/')) {

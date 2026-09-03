@@ -715,11 +715,17 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
   // Resolve the device's effective patch policy so the tab can link straight
   // to it instead of making a tech search for it (#4671, split from #4280).
   // Best-effort: a failure here should not block the patch status view, so
-  // errors are swallowed and simply leave the link absent.
+  // the link is just left absent -- but any absent-vs-not-yet-loaded state is
+  // still reset (not left stale) and logged, matching the sibling
+  // fetchRecentLinuxInstalls pattern in this file.
   const fetchPatchPolicyLink = useCallback(async () => {
     try {
       const response = await fetchWithAuth(`/configuration-policies/effective/${deviceId}`);
-      if (!response.ok) return;
+      if (!response.ok) {
+        console.error(`[DevicePatchStatusTab] Failed to fetch effective patch policy: ${response.status} ${response.statusText}`);
+        setPatchPolicyLink(null);
+        return;
+      }
       const json: EffectiveConfigPatchResponse = await response.json();
       const patchFeature = json?.features?.patch;
       if (patchFeature && patchFeature.sourceLevel !== 'default' && patchFeature.sourcePolicyId) {
@@ -730,7 +736,8 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
       } else {
         setPatchPolicyLink(null);
       }
-    } catch {
+    } catch (err) {
+      console.error('[DevicePatchStatusTab] Failed to fetch patch policy link:', err);
       setPatchPolicyLink(null);
     }
   }, [deviceId]);
