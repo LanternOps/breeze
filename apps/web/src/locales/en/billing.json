@@ -255,6 +255,10 @@
       "newContract": "New contract",
       "doneEditing": "Done editing"
     },
+    "list": {
+      "estimateUnavailable": "Estimate unavailable: a device group on this contract could not be evaluated",
+      "estimateExcluded": "Excludes {{count}} contract(s) whose estimate is unavailable"
+    },
     "contractsList": {
       "title": "Contracts",
       "description": "Recurring agreements that auto-generate draft invoices on a cadence.",

@@ -118,6 +118,46 @@ describe('ContractsList — search, sort & skeleton', () => {
     expect(strip.textContent).not.toContain('€');
   });
 
+  it('excludes degraded active estimates from MRR and discloses the excluded count', async () => {
+    const degraded = {
+      ...ZETA,
+      estimatedPeriodValue: '900.00',
+      estimateError: 'GROUP_EVALUATION_FAILED' as const,
+    };
+    listContracts.mockResolvedValue(json({ data: [ALPHA, degraded] }));
+    render(<ContractsList />);
+
+    await screen.findByTestId('contracts-list');
+    expect(screen.getByTestId('contracts-mrr-strip')).toHaveTextContent('$100.00');
+    expect(screen.getByTestId('contracts-mrr-strip')).not.toHaveTextContent('$1,000.00');
+    expect(screen.getByTestId('contracts-summary-excluded')).toHaveTextContent(
+      'Excludes 1 contract(s) whose estimate is unavailable',
+    );
+  });
+
+  it('exposes estimate failures to screen readers and omits failure cues for healthy contracts', async () => {
+    const degraded = {
+      ...ZETA,
+      estimateError: 'GROUP_EVALUATION_FAILED' as const,
+    };
+    listContracts.mockResolvedValue(json({ data: [ALPHA, degraded] }));
+    const { unmount } = render(<ContractsList />);
+
+    await screen.findByTestId('contracts-list');
+    const explanation = 'Estimate unavailable: a device group on this contract could not be evaluated';
+    const degradedCell = screen.getByTestId(`contract-estimate-${degraded.id}`);
+    const healthyCell = screen.getByTestId(`contract-estimate-${ALPHA.id}`);
+    expect(within(degradedCell).getByText(explanation)).toHaveClass('sr-only');
+    expect(within(healthyCell).queryByText(explanation)).not.toBeInTheDocument();
+    expect(screen.getByTestId('contracts-summary-excluded')).toBeInTheDocument();
+
+    unmount();
+    listContracts.mockResolvedValue(json({ data: [ALPHA] }));
+    render(<ContractsList />);
+    await screen.findByTestId('contracts-list');
+    expect(screen.queryByTestId('contracts-summary-excluded')).not.toBeInTheDocument();
+  });
+
   it('exposes a focusable link to the contract detail so keyboard users can open it', async () => {
     listContracts.mockResolvedValue(json({ data: [ALPHA] }));
     render(<ContractsList />);

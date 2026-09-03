@@ -255,6 +255,10 @@
       "newContract": "Novo contrato",
       "doneEditing": "Concluir edição"
     },
+    "list": {
+      "estimateUnavailable": "Estimativa indisponível: não foi possível avaliar um grupo de dispositivos deste contrato",
+      "estimateExcluded": "Exclui {{count}} contrato(s) cuja estimativa está indisponível"
+    },
     "contractsList": {
       "title": "Contratos",
       "description": "Acordos recorrentes que geram automaticamente faturas em rascunho conforme uma cadência.",

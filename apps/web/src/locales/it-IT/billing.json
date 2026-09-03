@@ -255,6 +255,10 @@
       "newContract": "Nuovo contratto",
       "doneEditing": "Modifica completata"
     },
+    "list": {
+      "estimateUnavailable": "Stima non disponibile: non è stato possibile valutare un gruppo di dispositivi in questo contratto",
+      "estimateExcluded": "Esclude {{count}} contratto/i la cui stima non è disponibile"
+    },
     "contractsList": {
       "title": "Contratti",
       "description": "Accordi ricorrenti che generano automaticamente bozze di fattura secondo una cadenza.",

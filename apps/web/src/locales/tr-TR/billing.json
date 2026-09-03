@@ -255,6 +255,10 @@
       "newContract": "Yeni sözleşme",
       "doneEditing": "Düzenleme tamamlandı"
     },
+    "list": {
+      "estimateUnavailable": "Tahmin kullanılamıyor: bu sözleşmedeki bir cihaz grubu değerlendirilemedi",
+      "estimateExcluded": "Tahmini kullanılamayan {{count}} sözleşmeyi hariç tutar"
+    },
     "contractsList": {
       "title": "Sözleşmeler",
       "description": "Taslak faturaları belirli aralıklarla otomatik olarak oluşturan yinelenen anlaşmalar.",

@@ -255,6 +255,10 @@
       "newContract": "Nouveau contrat",
       "doneEditing": "Modification terminée"
     },
+    "list": {
+      "estimateUnavailable": "Estimation indisponible : un groupe de périphériques de ce contrat n’a pas pu être évalué",
+      "estimateExcluded": "Exclut {{count}} contrat(s) dont l’estimation est indisponible"
+    },
     "contractsList": {
       "title": "Contrats",
       "description": "Accords récurrents qui génèrent automatiquement des factures brouillon selon une périodicité.",

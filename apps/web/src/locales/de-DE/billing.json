@@ -255,6 +255,10 @@
       "newContract": "Neuer Vertrag",
       "doneEditing": "Bearbeitung abgeschlossen"
     },
+    "list": {
+      "estimateUnavailable": "Schätzung nicht verfügbar: Eine Gerätegruppe in diesem Vertrag konnte nicht ausgewertet werden",
+      "estimateExcluded": "Schließt {{count}} Vertrag/Verträge aus, deren Schätzung nicht verfügbar ist"
+    },
     "contractsList": {
       "title": "Verträge",
       "description": "Wiederkehrende Vereinbarungen, die in regelmäßigen Abständen automatisch Rechnungsentwürfe erstellen.",

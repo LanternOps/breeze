@@ -734,6 +734,8 @@
     "post": "POST",
     "failedToSaveDeviceGroup": "Failed to save device group",
     "failedToDeleteGroup": "Failed to delete group",
+    "billedByContracts": "This group is billed by {{count}} contract(s): {{names}}. Remove those contract lines first.",
+    "billedByContractsCount": "This group is billed by {{count}} contract(s). Remove those contract lines first.",
     "failedToRunScriptOnGroups": "Failed to run script on groups",
     "failedToApplyPolicyToGroups": "Failed to apply policy to groups",
     "failedToMoveDevice": "Failed to move device",

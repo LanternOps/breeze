@@ -734,6 +734,8 @@
     "post": "POST",
     "failedToSaveDeviceGroup": "Impossibile salvare il gruppo di dispositivi",
     "failedToDeleteGroup": "Impossibile eliminare il gruppo",
+    "billedByContracts": "Questo gruppo è fatturato da {{count}} contratto/i: {{names}}. Rimuovi prima le relative righe contrattuali.",
+    "billedByContractsCount": "Questo gruppo è fatturato da {{count}} contratto/i. Rimuovi prima le relative righe contrattuali.",
     "failedToRunScriptOnGroups": "Impossibile eseguire lo script sui gruppi",
     "failedToApplyPolicyToGroups": "Impossibile applicare il criterio ai gruppi",
     "failedToMoveDevice": "Impossibile spostare il dispositivo",

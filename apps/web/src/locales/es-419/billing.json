@@ -255,6 +255,10 @@
       "newContract": "Nuevo contrato",
       "doneEditing": "Edición terminada"
     },
+    "list": {
+      "estimateUnavailable": "Estimación no disponible: no se pudo evaluar un grupo de dispositivos de este contrato",
+      "estimateExcluded": "Excluye {{count}} contrato(s) cuya estimación no está disponible"
+    },
     "contractsList": {
       "title": "Contratos",
       "description": "Acuerdos recurrentes que generan automáticamente borradores de facturas según una cadencia.",
