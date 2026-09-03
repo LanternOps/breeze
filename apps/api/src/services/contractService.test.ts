@@ -1019,6 +1019,23 @@ describe('per_device_group quantities (#3205 W02)', () => {
     expect(groupMembersForBilling).not.toHaveBeenCalled();
   });
 
+  it('MRR warns once for each deleted-group line and counts it as 0', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    queueResult([contract({ status: 'active' })]);
+    queueResult([groupLine({ deviceGroupId: null, deviceGroupName: 'Retired group' })]);
+
+    const out = await svc.summarizeActiveContractMrrByOrg(['org1']);
+
+    expect(out.get('org1')).toEqual([{ currencyCode: 'USD', amount: '0.00' }]);
+    expect(warn).toHaveBeenCalledOnce();
+    expect(warn).toHaveBeenCalledWith(
+      '[contracts] MRR rollup: contract %s line %s bills a deleted device group (%s); counted as 0',
+      'c1',
+      'l1',
+      'Retired group',
+    );
+  });
+
   it('listContracts rethrows a cached group failure for every contract billing that same group', async () => {
     vi.mocked(groupMembersForBilling).mockRejectedValue(new GroupEvaluationError('group-1', 'engine_error'));
     queueResult([contract(), contract({ id: 'c2' })]);

@@ -203,6 +203,7 @@
         "deviceGroup": "Device group (bills its members; dynamic groups are evaluated at billing time)",
         "selectGroup": "Select a group",
         "deviceGroupRequired": "Pick a group.",
+        "deviceGroupsLoadFailed": "Couldn't load this organization's device groups.",
         "descriptionPlaceholder": "e.g. Workstation management",
         "unitPrice": "Unit price",
         "quantity": "Quantity",

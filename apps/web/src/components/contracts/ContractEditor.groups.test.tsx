@@ -89,6 +89,22 @@ describe('ContractEditor — per_device_group (#3205 W02)', () => {
     expect(body.siteId).toBeUndefined();
   });
 
+  it('shows an inline hint and keeps Add disabled when device groups fail to load', async () => {
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url.startsWith('/orgs/organizations')) return resp({ data: [{ id: 'org-1', name: 'Acme' }] });
+      if (url.startsWith('/orgs/sites')) return resp({ data: [{ id: 'site-1', name: 'HQ' }] });
+      if (url.startsWith('/device-groups')) throw new Error('network down');
+      return resp({ data: {} });
+    });
+
+    renderEdit();
+    fireEvent.change(screen.getByTestId('contract-line-type'), { target: { value: 'per_device_group' } });
+    fireEvent.change(screen.getByTestId('contract-line-desc'), { target: { value: 'VIP' } });
+
+    expect(await screen.findByText("Couldn't load this organization's device groups.")).toBeVisible();
+    expect(screen.getByTestId('add-line-btn')).toBeDisabled();
+  });
+
   it('labels a group line with its live name and dynamic hint, a deleted group by its stamped name, and shows "group deleted" as the quantity', async () => {
     renderEdit([
       { id: 'l1', contractId: 'ct-1', orgId: 'org-1', lineType: 'per_device_group', description: 'Old', catalogItemId: null, unitPrice: '5.00', manualQuantity: null, siteId: null, deviceRoles: null, deviceGroupId: null, deviceGroupName: 'Retired group', deviceGroup: null, taxable: false, sortOrder: 0, createdAt: '2026-06-01T00:00:00Z' },

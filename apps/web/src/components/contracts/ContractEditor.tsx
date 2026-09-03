@@ -132,6 +132,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
   const [orgs, setOrgs] = useState<Organization[]>([]);
   const [sites, setSites] = useState<Site[]>([]);
   const [deviceGroupsList, setDeviceGroupsList] = useState<Array<{ id: string; name: string; type: 'static' | 'dynamic' }>>([]);
+  const [deviceGroupsLoadFailed, setDeviceGroupsLoadFailed] = useState(false);
   const [catalogItems, setCatalogItems] = useState<CatalogItem[]>([]);
 
   // ---- add-line form -------------------------------------------------------
@@ -308,14 +309,27 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
   }, [loadCatalog]);
   useEffect(() => { void loadSites(orgId); }, [orgId, loadSites]);
   useEffect(() => {
+    let alive = true;
     const forOrg = orgId;
-    if (!forOrg) { setDeviceGroupsList([]); return; }
-    fetchWithAuth(`/device-groups?orgId=${forOrg}&limit=200`).then(async (res) => {
-      if (!res.ok) return;
-      const body = await res.json();
-      const items = Array.isArray(body.data) ? body.data : [];
-      setDeviceGroupsList(items.map((g: { id: string; name: string; type: 'static' | 'dynamic' }) => ({ id: g.id, name: g.name, type: g.type })));
-    }).catch(() => { /* the select stays empty; Add stays disabled for this type */ });
+    setDeviceGroupsList([]);
+    setDeviceGroupsLoadFailed(false);
+    if (forOrg) {
+      void (async () => {
+        try {
+          const res = await fetchWithAuth(`/device-groups?orgId=${forOrg}&limit=200`);
+          if (!res.ok) throw new Error(`Device groups request failed (${res.status})`);
+          const body = await res.json();
+          if (!alive) return;
+          const items = Array.isArray(body.data) ? body.data : [];
+          setDeviceGroupsList(items.map((g: { id: string; name: string; type: 'static' | 'dynamic' }) => ({ id: g.id, name: g.name, type: g.type })));
+        } catch {
+          if (!alive) return;
+          setDeviceGroupsList([]);
+          setDeviceGroupsLoadFailed(true);
+        }
+      })();
+    }
+    return () => { alive = false; };
   }, [orgId]);
   useEffect(() => { if (!isCreate) void loadEstimate(); }, [isCreate, loadEstimate]);
 
@@ -1131,7 +1145,9 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                           </option>
                         ))}
                       </select>
-                      {!lineGroupId && <span className="text-amber-600 dark:text-amber-500">{t('contracts.contractEditor.addLine.deviceGroupRequired')}</span>}
+                      {deviceGroupsLoadFailed
+                        ? <span className="text-destructive" data-testid="contract-line-groups-load-failed">{t('contracts.contractEditor.addLine.deviceGroupsLoadFailed')}</span>
+                        : !lineGroupId && <span className="text-amber-600 dark:text-amber-500">{t('contracts.contractEditor.addLine.deviceGroupRequired')}</span>}
                     </label>
                   )}
                   {SITE_SCOPED_TYPES.has(lineType) && (

@@ -203,6 +203,7 @@
         "deviceGroup": "Cihaz grubu (üyeleri faturalandırılır; dinamik gruplar faturalama sırasında değerlendirilir)",
         "selectGroup": "Bir grup seçin",
         "deviceGroupRequired": "Bir grup seçin.",
+        "deviceGroupsLoadFailed": "Bu kuruluşun cihaz grupları yüklenemedi.",
         "descriptionPlaceholder": "ör. İş istasyonu yönetimi",
         "unitPrice": "Birim fiyatı",
         "quantity": "Adet",

@@ -203,6 +203,7 @@
         "deviceGroup": "Grupo de dispositivos (factura a sus miembros; los grupos dinámicos se evalúan al facturar)",
         "selectGroup": "Selecciona un grupo",
         "deviceGroupRequired": "Elige un grupo.",
+        "deviceGroupsLoadFailed": "No se pudieron cargar los grupos de dispositivos de esta organización.",
         "descriptionPlaceholder": "p.ej. Gestión de estaciones de trabajo",
         "unitPrice": "Precio unitario",
         "quantity": "Cantidad",

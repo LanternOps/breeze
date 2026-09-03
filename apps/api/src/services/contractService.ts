@@ -380,7 +380,7 @@ export interface ContractEstimate {
   periodTotal: string;
   lines: Array<{ lineId: string; lineType: ContractLineRow['lineType']; quantity: number; value: string; live: boolean; unresolved?: 'group_deleted' }>;
   /** Devices no device-counted line bills (#3205). null when the contract has
-   *  no per_device / per_device_role line, so the UI can tell "n/a" from "0". */
+   *  no per_device / per_device_role / per_device_group line, so the UI can tell "n/a" from "0". */
   uncoveredDevices: UncoveredDevices | null;
 }
 
@@ -561,7 +561,15 @@ export async function summarizeActiveContractMrrByOrg(
       const groupIds = groupIdsOf(lines);
       if (groupIds.length > 0) await orgSnapshot(c.orgId, dc, groupIds);
       for (const l of lines) {
-        const { quantity } = await resolveLineQty(c.orgId, l, dc, sc);
+        const { quantity, unresolved } = await resolveLineQty(c.orgId, l, dc, sc);
+        if (unresolved === 'group_deleted') {
+          console.warn(
+            '[contracts] MRR rollup: contract %s line %s bills a deleted device group (%s); counted as 0',
+            c.id,
+            l.id,
+            l.deviceGroupName,
+          );
+        }
         const unitPrice = l.catalogItemId
           ? (resolvedUnitPrice(l.catalogItemId, c.currencyCode, c.orgId) ?? l.unitPrice)
           : l.unitPrice;
@@ -1163,7 +1171,7 @@ export interface GenerateResult {
   /** Always present (`[]` when none / nothing generated) — never a silent fallback. */
   priceBookGaps: PriceBookGap[];
   /** Devices no device-counted line billed on this run (#3205). null when the
-   *  contract has no per_device / per_device_role line or nothing generated.
+   *  contract has no per_device / per_device_role / per_device_group line or nothing generated.
    *  Rides beside priceBookGaps: the worker logs it, the generate route returns it. */
   uncoveredDevices: UncoveredDevices | null;
 }

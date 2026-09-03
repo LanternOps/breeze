@@ -98,6 +98,15 @@ const SLOW_GROUP_EVALUATION_MS = 250;
  *   pinned = pinned rows; an engine error/timeout throws GroupEvaluationError('engine_error')
  */
 export async function resolveEffectiveGroupMembers(group: GroupForResolution): Promise<EffectiveGroupMembers> {
+  const filterConditions = group.filterConditions;
+  let dynamicFilter: FilterConditionGroup | null = null;
+  if (group.type === 'dynamic' && filterConditions !== null && filterConditions !== undefined) {
+    if (!isFilterConditionGroup(filterConditions)) {
+      throw new GroupEvaluationError(group.id, 'invalid_filter');
+    }
+    dynamicFilter = filterConditions;
+  }
+
   const rows = await db
     .select({ deviceId: deviceGroupMemberships.deviceId, isPinned: deviceGroupMemberships.isPinned })
     .from(deviceGroupMemberships)
@@ -107,16 +116,13 @@ export async function resolveEffectiveGroupMembers(group: GroupForResolution): P
     return { matched: new Set(rows.map((r) => r.deviceId)), pinned: new Set() };
   }
   const pinned = new Set(rows.filter((r) => r.isPinned).map((r) => r.deviceId));
-  if (group.filterConditions === null || group.filterConditions === undefined) {
+  if (dynamicFilter === null) {
     return { matched: new Set(), pinned };
-  }
-  if (!isFilterConditionGroup(group.filterConditions)) {
-    throw new GroupEvaluationError(group.id, 'invalid_filter');
   }
   const started = Date.now();
   let matched: Set<string>;
   try {
-    const result = await evaluateFilter(group.filterConditions, {
+    const result = await evaluateFilter(dynamicFilter, {
       orgId: group.orgId,
       allowedSiteIds: group.siteId ? [group.siteId] : null,
     });

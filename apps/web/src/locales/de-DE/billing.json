@@ -203,6 +203,7 @@
         "deviceGroup": "Gerätegruppe (berechnet ihre Mitglieder; dynamische Gruppen werden zur Abrechnung ausgewertet)",
         "selectGroup": "Gruppe auswählen",
         "deviceGroupRequired": "Wählen Sie eine Gruppe.",
+        "deviceGroupsLoadFailed": "Die Gerätegruppen dieser Organisation konnten nicht geladen werden.",
         "descriptionPlaceholder": "z.B. Arbeitsplatzverwaltung",
         "unitPrice": "Stückpreis",
         "quantity": "Menge",
