@@ -618,6 +618,12 @@
       "stdout": "Standardausgabe (stdout)",
       "stderr": "Standardfehler (stderr)"
     },
+    "customFields": {
+      "title": "Skript-Schreibvorgänge für benutzerdefinierte Felder",
+      "applied": "Übernommen",
+      "rejected": "Abgelehnt",
+      "none": "Keine"
+    },
     "actions": {
       "copyToClipboard": "In die Zwischenablage kopieren"
     },

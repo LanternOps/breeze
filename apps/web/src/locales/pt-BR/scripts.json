@@ -618,6 +618,12 @@
       "stdout": "Saída padrão (stdout)",
       "stderr": "Erro padrão (stderr)"
     },
+    "customFields": {
+      "title": "Gravações de campos personalizados",
+      "applied": "Aplicados",
+      "rejected": "Rejeitados",
+      "none": "Nenhum"
+    },
     "actions": {
       "copyToClipboard": "Copiar para a área de transferência"
     },

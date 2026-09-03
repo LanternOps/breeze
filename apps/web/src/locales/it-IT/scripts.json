@@ -618,6 +618,12 @@
       "stdout": "Output standard (stdout)",
       "stderr": "Errore standard (stderr)"
     },
+    "customFields": {
+      "title": "Scritture di campi personalizzati",
+      "applied": "Applicati",
+      "rejected": "Rifiutati",
+      "none": "Nessuno"
+    },
     "actions": {
       "copyToClipboard": "Copia negli appunti"
     },

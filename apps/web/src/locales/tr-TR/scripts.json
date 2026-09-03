@@ -618,6 +618,12 @@
       "stdout": "Standart Çıkış (stdout)",
       "stderr": "Standart Hata (stderr)"
     },
+    "customFields": {
+      "title": "Özel alan yazmaları",
+      "applied": "Uygulanan",
+      "rejected": "Reddedilen",
+      "none": "Yok"
+    },
     "actions": {
       "copyToClipboard": "Panoya kopyala"
     },

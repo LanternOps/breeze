@@ -3882,7 +3882,8 @@
     },
     "columns": {
       "key": "Key",
-      "deviceTypes": "Device Types"
+      "deviceTypes": "Device Types",
+      "scriptWrite": "Script write"
     },
     "fieldTypes": {
       "text": {
@@ -3934,7 +3935,9 @@
       "patternPlaceholder": "e.g., ^[A-Z]{2}-\\d{4}$",
       "deviceTypes": "Device Types (optional)",
       "deviceTypesHelp": "Leave empty to show on all device types",
-      "requiredField": "Required field"
+      "requiredField": "Required field",
+      "scriptWrite": "Allow scripts to write this field",
+      "scriptWriteHelp": "Scripts running on a device can set this field by printing ::breeze:custom-fields:: {\"key\": \"value\"}. The value also appears in the script's saved output — never write a secret this way."
     },
     "delete": {
       "title": "Delete Custom Field",

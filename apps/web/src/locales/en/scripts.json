@@ -618,6 +618,12 @@
       "stdout": "Standard Output (stdout)",
       "stderr": "Standard Error (stderr)"
     },
+    "customFields": {
+      "title": "Custom field writes",
+      "applied": "Applied",
+      "rejected": "Rejected",
+      "none": "None"
+    },
     "actions": {
       "copyToClipboard": "Copy to clipboard"
     },

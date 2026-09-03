@@ -1,9 +1,9 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { X, ChevronDown, ChevronUp, Copy, Check, Clock, CheckCircle, XCircle, Loader2, AlertTriangle, Terminal, AlertOctagon } from 'lucide-react';
+import { X, ChevronDown, ChevronUp, Copy, Check, Clock, CheckCircle, XCircle, Loader2, AlertTriangle, Terminal, AlertOctagon, ListChecks } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { formatDateTime as formatUserDateTime } from '@/lib/dateTimeFormat';
-import type { ScriptExecution, ExecutionStatus } from './ExecutionHistory';
+import type { ScriptExecution, ExecutionStatus, ScriptCustomFieldWriteResult } from './ExecutionHistory';
 
 type ExecutionDetailsProps = {
   execution: ScriptExecution;
@@ -159,6 +159,76 @@ export function OutputSection({
   );
 }
 
+/**
+ * #2698 — the per-run outcome of the script custom-field write-back. Renders
+ * nothing when the execution emitted no `::breeze:custom-fields::` marker
+ * (`result` is null/undefined). Rejections are always shown when present,
+ * even if nothing was applied — a silently-rejected write is exactly the
+ * failure mode this panel exists to surface.
+ */
+export function CustomFieldWriteSummarySection({
+  result
+}: {
+  result?: ScriptCustomFieldWriteResult | null;
+}) {
+  const { t } = useTranslation('scripts');
+  if (!result) return null;
+
+  const hasApplied = result.applied.length > 0;
+  const hasRejected = result.rejected.length > 0;
+
+  return (
+    <div className="space-y-2">
+      <h3 className="flex items-center gap-2 text-sm font-semibold">
+        <ListChecks className="h-4 w-4 text-muted-foreground" />
+        {t('executionDetails.customFields.title')}
+      </h3>
+      <div className="rounded-md border">
+        <div className="space-y-3 p-4">
+          <div data-testid="exec-custom-fields-applied">
+            <p className="text-xs font-medium text-muted-foreground">
+              {t('executionDetails.customFields.applied')}
+            </p>
+            {hasApplied ? (
+              <div className="mt-1 flex flex-wrap gap-1">
+                {result.applied.map((key) => (
+                  <code
+                    key={key}
+                    className="rounded bg-success/15 px-1.5 py-0.5 text-xs text-success"
+                  >
+                    {key}
+                  </code>
+                ))}
+              </div>
+            ) : (
+              <p className="mt-1 text-sm italic text-muted-foreground">
+                {t('executionDetails.customFields.none')}
+              </p>
+            )}
+          </div>
+          {hasRejected && (
+            <div data-testid="exec-custom-fields-rejected">
+              <p className="text-xs font-medium text-muted-foreground">
+                {t('executionDetails.customFields.rejected')}
+              </p>
+              <ul className="mt-1 space-y-1">
+                {result.rejected.map((r) => (
+                  <li key={r.key} className="text-sm">
+                    <code className="rounded bg-destructive/15 px-1.5 py-0.5 text-xs text-destructive">
+                      {r.key}
+                    </code>
+                    <span className="ml-2 text-muted-foreground">{r.reason}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function ExecutionDetails({
   execution,
   isOpen,
@@ -291,6 +361,8 @@ export default function ExecutionDetails({
               variant="error"
             />
           </div>
+
+          <CustomFieldWriteSummarySection result={execution.customFieldResult} />
         </div>
 
         {/* Footer */}

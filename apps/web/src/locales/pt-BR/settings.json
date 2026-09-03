@@ -3882,7 +3882,8 @@
     },
     "columns": {
       "key": "Chave",
-      "deviceTypes": "Tipos de dispositivos"
+      "deviceTypes": "Tipos de dispositivos",
+      "scriptWrite": "Gravação por script"
     },
     "fieldTypes": {
       "text": {
@@ -3934,7 +3935,9 @@
       "patternPlaceholder": "por exemplo, ^[A-Z]{2}-\\d{4}$",
       "deviceTypes": "Tipos de dispositivos (opcional)",
       "deviceTypesHelp": "Deixe em branco para mostrar em todos os tipos de dispositivos",
-      "requiredField": "Campo obrigatório"
+      "requiredField": "Campo obrigatório",
+      "scriptWrite": "Permitir que scripts gravem neste campo",
+      "scriptWriteHelp": "Scripts em execução em um dispositivo podem definir este campo imprimindo ::breeze:custom-fields:: {\"key\": \"value\"}. O valor também aparece na saída salva do script — nunca grave um segredo dessa forma."
     },
     "delete": {
       "title": "Excluir campo personalizado",
