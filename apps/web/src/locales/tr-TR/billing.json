@@ -1697,7 +1697,9 @@
       "lastSynced": "Son eşitleme: {{when}}",
       "push": "QuickBooks'a gönder",
       "pushed": "Fatura QuickBooks'a gönderildi.",
-      "pushFailed": "Fatura QuickBooks'a gönderilemedi."
+      "pushFailed": "Fatura QuickBooks'a gönderilemedi.",
+      "voidedHint": "Bu fatura iptal edildi — QuickBooks'a gönderilecek bir şey yok.",
+      "remoteDeletedHint": "Bu fatura QuickBooks'ta silindi. Yeniden göndermek bir kopya oluşturur — önce QuickBooks'ta çözün."
     }
   },
   "invoiceDocument": {

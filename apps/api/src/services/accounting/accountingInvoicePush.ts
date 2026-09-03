@@ -55,17 +55,24 @@ import { AccountingCurrencyContractError, assertAccountingInvoicePushCurrency, n
 import { getAccountingProvider } from './providerRegistry';
 import { captureException } from '../sentry';
 import { isPgUniqueViolation } from '../../utils/pgErrors';
-import type {
-  AccountingEntityMapping as AccountingEntityMappingSeam,
-  AccountingInvoiceLineMapping,
-  AccountingInvoiceLinePayload,
-  AccountingInvoicePayload,
-  AccountingVoidInvoicePayload,
-  InvoicePushResult,
+import {
+  INVOICE_REMOTE_DELETED_ERROR,
+  type AccountingEntityMapping as AccountingEntityMappingSeam,
+  type AccountingInvoiceLineMapping,
+  type AccountingInvoiceLinePayload,
+  type AccountingInvoicePayload,
+  type AccountingVoidInvoicePayload,
+  type InvoicePushResult,
 } from './types';
 
 export type AccountingInvoicePushErrorCode =
   | 'not_connected' | 'reauth_required' | 'invoice_not_pushable' // draft or unknown invoice
+  // The invoice's mapping row is the `markInvoiceDeletedRemotely` marker (#4544):
+  // the reconcile worker saw QuickBooks delete/void the previously-pushed
+  // invoice. Deliberately never auto-resurrected (Phase D decision 2) — a push
+  // must not silently clear the marker and re-create a second QuickBooks
+  // invoice for a document the operator (or QuickBooks user) removed there.
+  | 'remote_deleted'
   | 'customer_not_mapped' // org mapping absent / not confirmed|create_new
   | 'home_currency_unknown' | 'currency_mismatch' // realm-level (from assert)
   | 'customer_currency_mismatch' // mapping.remoteCurrencyCode ≠ invoice.currencyCode
@@ -178,6 +185,22 @@ async function loadMappingRowsForType(
       eq(accountingEntityMappings.breezeEntityType, breezeEntityType),
     ));
   return rows as MappingRow[];
+}
+
+/**
+ * True when this invoice already has a mapping row carrying the
+ * `markInvoiceDeletedRemotely` marker (#4544). Reuses `loadMappingRowsForType`
+ * (same query Phase 1b re-issues right before claiming the row) rather than a
+ * one-off projected query, so both checks read the mapping the same way.
+ */
+async function loadInvoiceMappingIsRemoteDeleted(
+  partnerId: string,
+  integrationId: string,
+  invoiceId: string,
+): Promise<boolean> {
+  const invoiceMappingRows = await loadMappingRowsForType(partnerId, integrationId, 'invoice');
+  const existing = invoiceMappingRows.find((m) => m.breezeEntityId === invoiceId) ?? null;
+  return existing?.lastError === INVOICE_REMOTE_DELETED_ERROR;
 }
 
 // ---------------------------------------------------------------------------
@@ -475,6 +498,22 @@ export async function pushInvoiceToAccounting(
       );
     }
 
+    // Remote-deleted guard (#4544) runs BEFORE any org/item lookup, token
+    // refresh or provider call, same rationale as the currency guard below —
+    // a permanent refusal must not pay for work whose only purpose is a push
+    // that can never succeed. Phase 1b re-checks this against a fresh read
+    // right before claiming the mapping row `pending`, since the reconcile
+    // worker can flip it to remote-deleted while the dependency syncs below
+    // are still in flight — this early check is a cheap-exit optimization,
+    // not the sole enforcement point.
+    if (await loadInvoiceMappingIsRemoteDeleted(partnerId, conn.id, inv.id)) {
+      throw new AccountingInvoicePushError(
+        'remote_deleted',
+        409,
+        'QuickBooks reports this invoice as deleted — pushing again would create a duplicate. Resolve it in QuickBooks, or unlink and re-map the invoice, before pushing again.',
+      );
+    }
+
     // Currency guard runs BEFORE any org/item lookup, token refresh or provider
     // call (multi-currency §11 contract, accountingCurrency.ts:143-186).
     try {
@@ -559,6 +598,20 @@ export async function pushInvoiceToAccounting(
   const mappingRow = await runInDbContext(async () => {
     const invoiceMappingRows = await loadMappingRowsForType(partnerId, conn.id, 'invoice');
     const existingInvoiceMapping = invoiceMappingRows.find((m) => m.breezeEntityId === inv.id) ?? null;
+    // Re-check remote-deleted against this fresh read (#4544): the reconcile
+    // worker's `markInvoiceDeletedRemotely` can land while the org/item
+    // dependency syncs above were in flight, after Phase 1's early check
+    // already passed. This is the check that actually closes the race —
+    // upsertInvoiceMappingPending below would otherwise clear the marker
+    // (`lastError: null`) and let the push through, re-creating the invoice
+    // in QuickBooks.
+    if (existingInvoiceMapping?.lastError === INVOICE_REMOTE_DELETED_ERROR) {
+      throw new AccountingInvoicePushError(
+        'remote_deleted',
+        409,
+        'QuickBooks reports this invoice as deleted — pushing again would create a duplicate. Resolve it in QuickBooks, or unlink and re-map the invoice, before pushing again.',
+      );
+    }
     return upsertInvoiceMappingPending({
       existing: existingInvoiceMapping,
       integrationId: conn.id,

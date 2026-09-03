@@ -233,6 +233,19 @@ function orgMappingRow(overrides: Partial<MappingRow> = {}): MappingRow {
   };
 }
 
+// #4544: the exact shape `markInvoiceDeletedRemotely` (accountingPaymentPull.ts)
+// leaves behind — sync_status flipped to 'error', last_error the sentinel
+// literal, remote_entity_id deliberately NOT cleared (Phase D decision 2).
+function remoteDeletedInvoiceMappingRow(overrides: Partial<MappingRow> = {}): MappingRow {
+  return {
+    id: 'map-inv-1', integrationId: CONN_ID, partnerId: PARTNER, breezeEntityType: 'invoice', breezeEntityId: INVOICE,
+    remoteEntityType: 'Invoice', remoteEntityId: 'qb-inv-1', remoteSyncToken: '3',
+    remoteCurrencyCode: null, remoteDocNumber: null, linkStatus: 'confirmed', syncStatus: 'error',
+    lastError: 'Deleted in QuickBooks',
+    ...overrides,
+  };
+}
+
 function setup(opts: {
   invoice?: Partial<InvRow>;
   lines?: Partial<LineRow>[];
@@ -423,6 +436,51 @@ describe('pushInvoiceToAccounting', () => {
       code: 'invoice_not_pushable', status: 409,
     });
     expect(pushInvoiceMock).not.toHaveBeenCalled();
+  });
+
+  // #4544: markInvoiceDeletedRemotely leaves the invoice's mapping row
+  // sync_status='error' — pushable per PUSHABLE_STATUSES/isPushable on its
+  // own — so the remote-deleted marker must be its own guard, not folded
+  // into invoice_not_pushable.
+  it('rejects with remote_deleted (never re-creating the invoice in QuickBooks) when the mapping carries the remote-deleted marker, without ever calling org sync', async () => {
+    setup({ mappings: [orgMappingRow(), remoteDeletedInvoiceMappingRow()] });
+
+    await expect(pushInvoiceToAccounting(INVOICE, PARTNER, runCtx)).rejects.toMatchObject({
+      code: 'remote_deleted', status: 409,
+    });
+    expect(pushInvoiceMock).not.toHaveBeenCalled();
+    // Phase 1's early exit (before the currency/dependency-sync work) — the
+    // org mapping is already 'synced' in this fixture, so a call here would
+    // mean the guard fired too late to matter for THIS assertion; the
+    // ordering itself is covered by the "before any provider call" describe
+    // block's pattern elsewhere in this file.
+    expect(syncMappedEntityMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects with remote_deleted even when the marker appears only after Phase 1 (closes the Phase-1b re-check race)', async () => {
+    // Org mapping starts 'pending' so the coordinator actually calls
+    // syncMappedEntity between Phase 1 (no invoice mapping yet — passes) and
+    // Phase 1b (re-reads the mapping row to claim it 'pending'). The marker
+    // lands mid-sync, as if the reconcile worker ran concurrently.
+    setup({ mappings: [orgMappingRow({ syncStatus: 'pending' })] });
+    syncMappedEntityMock.mockImplementationOnce(async (...args: unknown[]) => {
+      currentMappings.push(remoteDeletedInvoiceMappingRow());
+      const [{ breezeEntityType, breezeEntityId }] = args as [{ breezeEntityType: string; breezeEntityId: string }];
+      const existing = currentMappings.find((m) => m.breezeEntityType === breezeEntityType && m.breezeEntityId === breezeEntityId)!;
+      const updated = { ...existing, syncStatus: 'synced' as const };
+      const idx = currentMappings.findIndex((m) => m.id === existing.id);
+      currentMappings[idx] = updated;
+      return updated;
+    });
+
+    await expect(pushInvoiceToAccounting(INVOICE, PARTNER, runCtx)).rejects.toMatchObject({
+      code: 'remote_deleted', status: 409,
+    });
+    expect(pushInvoiceMock).not.toHaveBeenCalled();
+    // The row must still carry the original marker — upsertInvoiceMappingPending
+    // must never have run and cleared it.
+    const row = currentMappings.find((m) => m.breezeEntityType === 'invoice' && m.breezeEntityId === INVOICE);
+    expect(row?.lastError).toBe('Deleted in QuickBooks');
   });
 
   describe('currency guard runs before any provider call', () => {

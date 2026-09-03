@@ -120,6 +120,15 @@ export interface AccountingSyncSummary {
   lastSyncedAt: string | null;
   lastError: string | null;
   remoteDocNumber: string | null;
+  /**
+   * True when the API found the `markInvoiceDeletedRemotely` marker (#4544)
+   * on this mapping row — QuickBooks deleted or voided an invoice Breeze
+   * previously pushed, and Phase D deliberately never auto-resurrects it.
+   * Computed server-side (invoiceService.ts) from the exact sentinel
+   * `lastError` string, so this component never has to string-match
+   * `lastError` itself to decide whether "Push to QuickBooks" is safe.
+   */
+  remoteDeleted: boolean;
 }
 
 export interface InvoiceDetail {

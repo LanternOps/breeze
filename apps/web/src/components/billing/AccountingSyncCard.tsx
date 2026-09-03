@@ -6,7 +6,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError } from '../../lib/runAction';
 import { formatDateTime } from '@/lib/dateTimeFormat';
-import type { AccountingSyncSummary } from './invoiceTypes';
+import type { AccountingSyncSummary, InvoiceStatus } from './invoiceTypes';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -20,6 +20,13 @@ interface Props {
    * than invent a status.
    */
   sync: AccountingSyncSummary | null | undefined;
+  /**
+   * The invoice's own lifecycle status (#4544). A void invoice is not
+   * reflected in `sync` at all — the mapping row can still read 'synced' or
+   * 'error' from before the void — so the card needs this independently to
+   * hide the push affordance on a voided invoice.
+   */
+  invoiceStatus: InvoiceStatus;
   /** `can('invoices','write')` — the same permission the push route requires. */
   canPush: boolean;
   /** Refetch the invoice so the card re-renders off the persisted mapping row. */
@@ -28,18 +35,26 @@ interface Props {
 
 /** Pushing is a remedy only for a row that is not (successfully) in QuickBooks
  *  yet. `synced_with_tax_variance` IS synced — QuickBooks simply computed a
- *  different tax total — so re-pushing would just re-send identical content. */
+ *  different tax total — so re-pushing would just re-send identical content.
+ *  Does NOT account for a voided invoice or a remote-deleted mapping (#4544)
+ *  — those are independent blockers layered on top by the caller, so this
+ *  stays a pure function of `syncStatus` alone. */
 function isPushable(status: AccountingSyncSummary['syncStatus']): boolean {
   return status === 'pending' || status === 'error';
 }
 
-export default function AccountingSyncCard({ invoiceId, sync, canPush, onChanged }: Props) {
+export default function AccountingSyncCard({ invoiceId, sync, invoiceStatus, canPush, onChanged }: Props) {
   const { t } = useTranslation('billing');
   const [pushing, setPushing] = useState(false);
 
   if (!sync) return null;
 
-  const { syncStatus } = sync;
+  const { syncStatus, remoteDeleted } = sync;
+  // Void is checked independently of `sync` (see the Props doc above) —
+  // the mapping row's own status doesn't change when the invoice is voided.
+  const voided = invoiceStatus === 'void';
+  const statusPushable = isPushable(syncStatus);
+  const pushable = canPush && statusPushable && !voided && !remoteDeleted;
   const statusLabel = t(
     /* i18n-dynamic */ `invoiceDetail.accountingSync.status.${syncStatus}`,
   );
@@ -104,6 +119,22 @@ export default function AccountingSyncCard({ invoiceId, sync, canPush, onChanged
           </p>
         )}
 
+        {/* Explanatory labels for why the push affordance is hidden even
+            though the mapping row's own status would otherwise allow it
+            (#4544). Void takes precedence in copy when both apply — a
+            remote-deleted invoice that also got voided in Breeze doesn't
+            need two explanations for one missing button. */}
+        {statusPushable && voided && (
+          <p className="text-xs text-muted-foreground" data-testid="invoice-accounting-sync-voided-hint">
+            {t('invoiceDetail.accountingSync.voidedHint')}
+          </p>
+        )}
+        {statusPushable && remoteDeleted && !voided && (
+          <p className="text-xs text-muted-foreground" data-testid="invoice-accounting-sync-remote-deleted-hint">
+            {t('invoiceDetail.accountingSync.remoteDeletedHint')}
+          </p>
+        )}
+
         {sync.remoteDocNumber && (
           <p className="text-muted-foreground" data-testid="invoice-accounting-sync-docnumber">
             {t('invoiceDetail.accountingSync.docNumber', { docNumber: sync.remoteDocNumber })}
@@ -116,7 +147,7 @@ export default function AccountingSyncCard({ invoiceId, sync, canPush, onChanged
           </p>
         )}
 
-        {canPush && isPushable(syncStatus) && (
+        {pushable && (
           <button
             type="button"
             data-testid="invoice-accounting-sync-push"

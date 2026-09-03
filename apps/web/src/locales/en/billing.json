@@ -1697,7 +1697,9 @@
       "lastSynced": "Last synced {{when}}",
       "push": "Push to QuickBooks",
       "pushed": "Invoice pushed to QuickBooks.",
-      "pushFailed": "Failed to push the invoice to QuickBooks."
+      "pushFailed": "Failed to push the invoice to QuickBooks.",
+      "voidedHint": "This invoice is voided — there is nothing to push to QuickBooks.",
+      "remoteDeletedHint": "This invoice was deleted in QuickBooks. Pushing again would create a duplicate — resolve it in QuickBooks first."
     }
   },
   "invoiceDocument": {
