@@ -247,6 +247,7 @@ import {
   TicketServiceError, TICKET_STATUS_TRANSITIONS, SYSTEM_COMMENT_TYPES
 } from './ticketService';
 import { TicketMoveCurrencyBlockedError } from './ticketMoveCurrencyGuard';
+import { TICKET_ORG_DENORMALIZED_TABLES } from './ticketOrgMoveLockOrder';
 
 const actor = { userId: 'u-1', name: 'Tess Tech' };
 
@@ -3544,11 +3545,18 @@ describe('moveTicketOrg', () => {
     // W08 #3902 added ticket_attachments as the 5th entry.
     // #4643 added ticket_email_links as the 6th and LAST entry.
     // Counts the child-table rewrites specifically: since #4596 the
-    // transaction also issues a leading SET CONSTRAINTS that names no table.
-    expect(executedTableNames()).toHaveLength(6);
-    expect(executedTableNames()).toEqual(
-      expect.arrayContaining(['time_entries', 'ticket_parts', 'ticket_alert_links', 'ticket_outbox', 'ticket_attachments', 'ticket_email_links'])
-    );
+    // transaction also issues a leading SET CONSTRAINTS that names no table,
+    // so this must NOT be asserted against dbMocks.txExecuteMock's raw call
+    // count (which would include that statement) — executedTableNames()
+    // already filters to statements with a table identifier chunk.
+    //
+    // Ordered, not arrayContaining: the ORDER is the lock order this path
+    // shares with the device move (#4657), so an order-agnostic assertion here
+    // would let the loop be rewritten as hand-written statements in a
+    // different sequence without anything failing — the mirror of the bug
+    // #4657 fixed on the device axis, which moveOrg.test.ts pins the same way.
+    // Compared against the shared constant so the two stay coupled.
+    expect(executedTableNames()).toEqual([...TICKET_ORG_DENORMALIZED_TABLES]);
 
     // System feed comment inserted with "Moved to <org name>"
     expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({
@@ -3624,8 +3632,8 @@ describe('moveTicketOrg', () => {
     expect(tables).toContain('ticket_email_links');
     // ticket_email_links is appended last (after ticket_attachments) so the
     // device-move path (routes/devices/moveOrg.ts) and this path touch the
-    // ticket-linked tables in the same relative order — see the lock-order
-    // comment at moveOrg.ts:~311.
+    // ticket-linked tables in the same relative order — the shared order
+    // lives in ticketOrgMoveLockOrder.ts.
     expect(tables[tables.length - 1]).toBe('ticket_email_links');
     expect(tables.indexOf('ticket_attachments')).toBeLessThan(tables.indexOf('ticket_email_links'));
   });

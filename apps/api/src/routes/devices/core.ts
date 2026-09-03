@@ -309,8 +309,25 @@ export const DEVICE_ORG_DENORMALIZED_TABLES = CORE_DEVICE_ORG_DENORMALIZED_TABLE
  * every entry exists with org_id but without device_id, so a future table
  * can't silently skip both paths. The dedicated statements themselves are
  * covered by behavior tests in moveOrg.test.ts.
+ *
+ * ORDER IS LOAD-BEARING, not cosmetic (#4657). `moveTicketOrg`
+ * (services/ticketService.ts) re-stamps these same tables `WHERE ticket_id`,
+ * and its rows overlap this path's — so both movers must take the locks in
+ * one order or a concurrent ticket-move and device-move deadlock with 40P01.
+ * That order is stated once, with its rationale, in
+ * services/ticketOrgMoveLockOrder.ts; this list must match it, and
+ * ticketOrgMoveLockOrder.test.ts fails if it drifts. moveOrg.test.ts pins the
+ * hand-written UPDATEs in moveOrg.ts to this array's order in turn, so the
+ * statements cannot drift from the list either.
  */
-export const CUSTOM_ORG_REWRITE_TABLES = ['ticket_alert_links', 'time_entries', 'ticket_parts', 'ticket_outbox', 'ticket_attachments', 'ticket_email_links'] as const;
+export const CUSTOM_ORG_REWRITE_TABLES = [
+  'time_entries',
+  'ticket_parts',
+  'ticket_alert_links',
+  'ticket_outbox',
+  'ticket_attachments',
+  'ticket_email_links',
+] as const;
 
 /**
  * Tables that are both device-id scoped AND denormalize site_id for query-perf.

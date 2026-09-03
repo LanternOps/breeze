@@ -371,11 +371,14 @@ describe('POST /devices/:id/move-org', () => {
       // This is the unit-test proxy for "RLS will read from the new org
       // only post-move": each row in those tables has its org_id rewritten
       // to the new org, so RLS in the OLD org no longer matches it.
-      // CUSTOM_ORG_REWRITE_TABLES (ticket_alert_links, time_entries,
-      // ticket_parts — no device_id column, each rewritten via a ticket_id
-      // or alert_id join) follow the generic org loop. The SITE loop runs
-      // last and any table in DEVICE_SITE_DENORMALIZED_TABLES appears in
-      // updatedTables a second time for the site_id rewrite.
+      // CUSTOM_ORG_REWRITE_TABLES (time_entries, ticket_parts,
+      // ticket_alert_links, ticket_outbox, ticket_attachments,
+      // ticket_email_links — no device_id column, each rewritten via a
+      // ticket_id or alert_id join) follow the generic org loop, and this
+      // spread is what pins the hand-written statements to that array's
+      // ORDER, which is the cross-axis lock order (#4657, #4743, #4643). The SITE
+      // loop runs last and any table in DEVICE_SITE_DENORMALIZED_TABLES
+      // appears in updatedTables a second time for the site_id rewrite.
       expect(updatedTables).toEqual([
         ...getDeviceOrgDenormalizedTables().filter(
           (table) => !DEVICE_ORG_FK_CASCADE_TABLES.includes(table as never),
@@ -895,6 +898,56 @@ describe('POST /devices/:id/move-org', () => {
       // Not accepted → no audit flag.
       const sourceAudit = vi.mocked(writeRouteAudit).mock.calls.find((c) => (c[1] as any).action === 'device.move_org.source')![1] as any;
       expect(sourceAudit.details).not.toHaveProperty('currencyMismatchAccepted');
+    });
+
+    it('rewrites ticket_alert_links AFTER ticket_parts, matching moveTicketOrg (#4657)', async () => {
+      // #4657: this path used to take ticket_alert_links BEFORE
+      // time_entries/ticket_parts while moveTicketOrg took it after, and the
+      // two select overlapping rows — a ticket_alert_links row joining ticket
+      // X to an alert on device D is reached by a device-move of D and by a
+      // concurrent moveTicketOrg(X). Opposite order = 40P01 on an admin
+      // action. Asserted on the real statement stream, not just the list, so
+      // moving the UPDATE without touching CUSTOM_ORG_REWRITE_TABLES is
+      // caught here rather than in production.
+      //
+      // The currency guard is mocked for this whole file, so its own
+      // `FOR UPDATE` selects never reach the statement stream — only four of
+      // the six hand-written UPDATEs are being ordered here (ticket_outbox's
+      // position relative to ticket_attachments, and ticket_email_links'
+      // position relative to ticket_attachments, are asserted separately
+      // below).
+      // Cross-currency orgs are used so the guard resolves rather than
+      // short-circuits, putting the statements in the same positions they
+      // occupy on a real move; the real guard's lock order is covered by
+      // ticketMoveCurrencyGuard.test.ts.
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
+      rigOrgAndSiteSelects({ orgRows: crossCurrencyOrgs, siteRow: { id: TARGET_SITE } });
+      const { statements } = rigTransactionSuccess();
+      guardMock.mockResolvedValue({ sourceCurrency: 'USD', targetCurrency: 'EUR', unbilledTimeEntries: 0, unbilledParts: 0, accepted: false });
+
+      const res = await app.request(`/devices/${DEVICE_ID}/move-org`, postBody());
+      expect(res.status).toBe(200);
+
+      const idx = (prefix: string) => statements.findIndex((s) => s.startsWith(prefix));
+      const timeEntriesIdx = idx('UPDATE time_entries ');
+      const partsIdx = idx('UPDATE ticket_parts ');
+      const linksIdx = idx('UPDATE ticket_alert_links ');
+      const attachmentsIdx = idx('UPDATE ticket_attachments ');
+
+      // Every index must be found first: findIndex returns -1 for a missing
+      // statement, and -1 would satisfy the `toBeLessThan` chain below while
+      // actually meaning the rewrite was deleted.
+      expect(timeEntriesIdx, 'the time_entries rewrite went missing').toBeGreaterThanOrEqual(0);
+      expect(partsIdx, 'the ticket_parts rewrite went missing').toBeGreaterThanOrEqual(0);
+      expect(linksIdx, 'the ticket_alert_links rewrite went missing').toBeGreaterThanOrEqual(0);
+      expect(attachmentsIdx, 'the ticket_attachments rewrite went missing').toBeGreaterThanOrEqual(0);
+
+      // Pairwise, matching the idiom already used for the tickets/time_entries
+      // ordering above: time_entries -> ticket_parts -> ticket_alert_links ->
+      // ticket_attachments, the same order moveTicketOrg uses (#4657).
+      expect(timeEntriesIdx, 'time_entries must precede ticket_parts').toBeLessThan(partsIdx);
+      expect(partsIdx, 'ticket_parts must precede ticket_alert_links (#4657)').toBeLessThan(linksIdx);
+      expect(linksIdx, 'ticket_alert_links must precede ticket_attachments').toBeLessThan(attachmentsIdx);
     });
 
     it('409s with code + details when the guard blocks — no Sentry capture, no failed-move audit, no WS disconnect', async () => {
