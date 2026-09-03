@@ -1,7 +1,7 @@
 /**
  * #1374 (feature #4707, wave W01) — real-Postgres proof for the attestation
  * state added to `authenticator_devices` by
- * `2026-10-06-100001-authenticator-attestation-state.sql`.
+ * `2026-10-06-100101-authenticator-attestation-state.sql`.
  *
  * Why this must be an INTEGRATION suite: every assertion here is about what
  * Postgres itself accepts. The mocked unit suites (authenticatorAssurance.test,
@@ -25,7 +25,7 @@ import { getTestDb } from './setup';
 
 const MIGRATION_PATH = join(
   __dirname,
-  '../../../migrations/2026-10-06-100001-authenticator-attestation-state.sql',
+  '../../../migrations/2026-10-06-100101-authenticator-attestation-state.sql',
 );
 
 const seededPartnerIds: string[] = [];
@@ -54,7 +54,7 @@ afterAll(async () => {
   }
 });
 
-describe('authenticator_devices attestation state (migration 2026-10-06-100001)', () => {
+describe('authenticator_devices attestation state (migration 2026-10-06-100101)', () => {
   it('exposes the platform_bound_basis enum with exactly the expected labels, weakest first', async () => {
     const rows = (await getTestDb().execute(sql`
       SELECT e.enumlabel AS label
