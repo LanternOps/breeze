@@ -54,12 +54,23 @@ export function buildInstallCommands(opts: InstallCommandOptions): InstallComman
   // native exe exit codes do not trip $ErrorActionPreference.
   const winSecretFlag = enrollmentSecret ? ` --enrollment-secret "${enrollmentSecret}"` : '';
   const winThrow = (step: string) => `if($LASTEXITCODE){throw "Breeze: ${step} failed (exit code $LASTEXITCODE)"}`;
+  // Go 1.22+ (the agent's pinned toolchain, agent/go.mod) cannot run below
+  // Windows 10 / Server 2016 (#4608) -- check the OS floor before spending a
+  // download on a box that can never run the agent. Mirrors the MSI's
+  // `VersionNT >= 1000` LaunchCondition in agent/installer/breeze.wxs:
+  // Windows 10 and every Server release from 2016 onward report OS major
+  // version 10, so `.Major -lt 10` is exactly that same floor.
+  const winOsFloorCheck =
+    `$osv=[System.Environment]::OSVersion.Version; ` +
+    `if($osv.Major -lt 10)` +
+    `{throw "Breeze: Windows 10 or Windows Server 2016 or later is required (detected $($osv.Major).$($osv.Minor))"}`;
   const winMzCheck =
     `$b=[IO.File]::ReadAllBytes("$pwd\\breeze-agent.exe"); ` +
     `if($b.Length -lt 2 -or $b[0] -ne 0x4D -or $b[1] -ne 0x5A)` +
     `{throw "Breeze: downloaded file is not a Windows executable - a captive portal or web filter may be intercepting this network"}`;
   const windows =
     `$ErrorActionPreference='Stop'; ` +
+    `${winOsFloorCheck}; ` +
     `Invoke-WebRequest -Uri "${apiUrl}/api/v1/agents/download/windows/amd64" -OutFile breeze-agent.exe; ` +
     `${winMzCheck}; ` +
     `.\\breeze-agent.exe service install; ${winThrow('service install')}; ` +

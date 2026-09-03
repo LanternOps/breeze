@@ -125,6 +125,18 @@
     </InstallExecuteSequence>
 
     <Launch Condition="VersionNT64" Message="Breeze Agent requires 64-bit Windows." />
+    <!-- Go 1.22+ (agent/go.mod pins a newer toolchain) structurally requires
+         Windows 10 / Server 2016 or later -- Go 1.21 was the last release
+         that ran on Windows 7/8/8.1/Server 2008 R2/2012/2012 R2, and the
+         agent binary compiled against the current toolchain would install
+         successfully on a legacy box and then fail at runtime with no
+         useful message (issue #4608, Option C: declare the floor and block
+         at install time instead). VersionNT is Windows Installer's OS
+         version property (major*100+minor); Windows 10 and every Windows
+         Server release from 2016 onward all report NT 10.0, i.e. 1000, so
+         `>= 1000` is exactly the Windows-10/Server-2016 floor -- it is not
+         a magic threshold pointing at one specific release. -->
+    <Launch Condition="VersionNT >= 1000" Message="Breeze Agent requires Windows 10 or Windows Server 2016 or later. Legacy Windows versions (7, 8, 8.1, Server 2008 R2 through 2012 R2) are not supported." />
     <Launch Condition="(NOT SERVER_URL AND NOT ENROLLMENT_KEY) OR (SERVER_URL AND ENROLLMENT_KEY)" Message="SERVER_URL and ENROLLMENT_KEY must be provided together." />
 
     <?ifdef ServerUrlDefault ?>
