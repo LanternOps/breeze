@@ -17,7 +17,7 @@ import { compareBuilds } from '../../services/versionCompare';
 type PendingPatchData = z.infer<typeof submitPendingPatchesSchema>['patches'][number];
 type InstalledPatchData = z.infer<typeof submitInstalledPatchesSchema>['installed'][number];
 type PatchIngestDevice = { id: string; orgId: string; osType: string | null };
-type PatchIngestExecutor = Pick<Database, 'insert' | 'update'>;
+type PatchIngestExecutor = Pick<Database, 'insert' | 'update' | 'select'>;
 /**
  * A refused row means the sweep can no longer be trusted for this submission:
  * the sweep tombstones every pending row for the covered sources on the
@@ -399,12 +399,30 @@ async function upsertInstalledPatches(
     // 'pending' forever even after the upgrade genuinely lands, with the
     // installed inventory (winget list) succeeding the whole time (#2736).
     // Bound that: if the reported installed version already meets or exceeds
-    // the patch's known target version (`patches.version`, filled once via
-    // fillIfNull and stable thereafter), flip out of 'pending' regardless of
+    // the patch's known target version, flip out of 'pending' regardless of
     // sweep coverage — the installed inventory itself proves the upgrade
     // completed, so there is nothing left to preserve.
+    //
+    // The target must be THIS device's own observed available version
+    // (`device_patches.available_version`), not the global `patches.version` —
+    // `patches` is deduped on (source, externalId) with no tenant column, so
+    // an unrelated device (any org) that reported this same package first
+    // freezes `patches.version` via fillIfNull, and it can be arbitrarily
+    // stale relative to what THIS device is actually waiting on. Comparing
+    // against it directly would let a stale low `patches.version` prematurely
+    // flip a genuinely-still-pending row (reintroducing the #2725 downgrade
+    // bug), or a stale high one strand the row forever (failing to fix
+    // #2736). `patches.version` is only the fallback for a device_patches row
+    // that doesn't exist yet — same COALESCE precedence patchApprovalEvaluator
+    // already uses for pin targets.
+    const [existingDevicePatch] = await executor
+      .select({ availableVersion: devicePatches.availableVersion })
+      .from(devicePatches)
+      .where(and(eq(devicePatches.deviceId, device.id), eq(devicePatches.patchId, patch.id)))
+      .limit(1);
+    const targetVersion = existingDevicePatch?.availableVersion ?? patch.version;
     const installedMeetsTarget =
-      version !== null && patch.version !== null && compareBuilds(version, patch.version) >= 0;
+      version !== null && targetVersion !== null && compareBuilds(version, targetVersion) >= 0;
 
     await executor
       .insert(devicePatches)

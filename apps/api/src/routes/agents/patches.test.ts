@@ -158,6 +158,16 @@ function mockPatchInsertTx() {
         where: vi.fn().mockResolvedValue(undefined),
       })),
     })),
+    // No existing device_patches row in these generic fixtures — the
+    // installed-path version-aware flip (#2736) falls back to the global
+    // patches.version, which these tests don't exercise directly.
+    select: vi.fn(() => ({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({
+          limit: vi.fn().mockResolvedValue([]),
+        })),
+      })),
+    })),
     insert: vi.fn((table) => ({
       values: vi.fn((values) => ({
         onConflictDoUpdate: vi.fn(() => {
@@ -957,17 +967,36 @@ describe('PUT /agents/:id/patches/installed - pending rows survive installed inv
     mockDeviceLookup('windows');
   });
 
-  // `patchVersionOverride` simulates the stable, fillIfNull-frozen
-  // `patches.version` (the target version the row went pending for) diverging
-  // from whatever version THIS scan happens to report — without it, the mock
-  // would just echo back the current call's own insert values, which can never
-  // exercise the version-aware flip/no-flip branches.
-  function mockTxCapturingDevicePatchUpserts(patchVersionOverride?: string | null) {
+  // `patchVersionOverride` simulates the stable, fillIfNull-frozen GLOBAL
+  // `patches.version` — the fallback target used only when this device has no
+  // `device_patches` row yet. `existingAvailableVersion` simulates THIS
+  // device's own `device_patches.available_version`, which takes precedence
+  // (see the comment above `installedMeetsTarget` in patches.ts): `patches` is
+  // deduped on (source, externalId) with no tenant column, so a DIFFERENT
+  // device/org that reported the same package first can freeze
+  // `patches.version` at a value that has nothing to do with what THIS device
+  // is waiting on. Without decoupling the two, the mock could only ever echo
+  // back the current call's own insert values, which can never exercise the
+  // version-aware flip/no-flip branches — let alone the per-device-precedence
+  // branch.
+  function mockTxCapturingDevicePatchUpserts(
+    patchVersionOverride?: string | null,
+    existingAvailableVersion: string | null = null,
+  ) {
     const devicePatchUpserts: Array<{ values: Record<string, unknown>; set: Record<string, unknown> }> = [];
     const tx = {
       update: vi.fn(() => ({
         set: vi.fn(() => ({
           where: vi.fn().mockResolvedValue(undefined),
+        })),
+      })),
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({
+          where: vi.fn(() => ({
+            limit: vi.fn().mockResolvedValue(
+              existingAvailableVersion === null ? [] : [{ availableVersion: existingAvailableVersion }],
+            ),
+          })),
         })),
       })),
       insert: vi.fn((table) => ({
@@ -990,17 +1019,8 @@ describe('PUT /agents/:id/patches/installed - pending rows survive installed inv
     return { tx, devicePatchUpserts };
   }
 
-  it('conflict update keeps a pending row pending when the reported version is older than the target (#2736)', async () => {
-    // winget reports a pending upgrade (target 2.52.0.0, recorded on patches.version
-    // by the earlier pending upsert) and the installed package under the same
-    // (source, externalId): `winget list` includes every package that
-    // `winget upgrade` just reported. Here the currently-installed version
-    // (2.51.0.2) has NOT yet reached the target, so the installed upsert must
-    // not downgrade the pending row written earlier in the same scan cycle.
-    const { tx, devicePatchUpserts } = mockTxCapturingDevicePatchUpserts('2.52.0.0');
-    vi.mocked(db.transaction).mockImplementation(async (fn) => fn(tx as unknown as Parameters<typeof fn>[0]));
-
-    const res = await mountAgentPatchRoutes().request(`/agents/${AGENT_ID}/patches/installed`, {
+  async function submitInstalled(version = '2.51.0.2') {
+    return mountAgentPatchRoutes().request(`/agents/${AGENT_ID}/patches/installed`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -1010,11 +1030,25 @@ describe('PUT /agents/:id/patches/installed - pending rows survive installed inv
             source: 'third_party',
             externalId: 'Git.Git',
             packageId: 'Git.Git',
-            version: '2.51.0.2',
+            version,
           },
         ],
       }),
     });
+  }
+
+  it('conflict update keeps a pending row pending when the reported version is older than this device\'s own target (#2736)', async () => {
+    // winget reports a pending upgrade (this device's real target, 2.52.0.0,
+    // recorded on device_patches.available_version by the earlier pending
+    // upsert) and the installed package under the same (source, externalId):
+    // `winget list` includes every package that `winget upgrade` just
+    // reported. Here the currently-installed version (2.51.0.2) has NOT yet
+    // reached the target, so the installed upsert must not downgrade the
+    // pending row written earlier in the same scan cycle.
+    const { tx, devicePatchUpserts } = mockTxCapturingDevicePatchUpserts(undefined, '2.52.0.0');
+    vi.mocked(db.transaction).mockImplementation(async (fn) => fn(tx as unknown as Parameters<typeof fn>[0]));
+
+    const res = await submitInstalled('2.51.0.2');
 
     expect(res.status).toBe(200);
     expect(devicePatchUpserts).toHaveLength(1);
@@ -1042,32 +1076,18 @@ describe('PUT /agents/:id/patches/installed - pending rows survive installed inv
     expect(set.installedVersion).toBe('2.51.0.2');
   });
 
-  it('flips a stranded pending row to installed once the reported version meets the target, even without a sweep (#2736)', async () => {
+  it('flips a stranded pending row to installed once the reported version meets this device\'s own target, even without a sweep (#2736)', async () => {
     // The source's pending Scan() chronically errors (e.g. winget upgrade
     // flaking), so `markPendingDevicePatchesMissing` never sweeps this source
     // and the row never gets a chance to transition through 'missing'. But
     // `winget list` (installed inventory) keeps succeeding and now reports a
-    // version that meets or exceeds the recorded target (patches.version) —
-    // proof the upgrade actually landed, so the row must not stay pending
-    // forever just because the sweep never ran.
-    const { tx, devicePatchUpserts } = mockTxCapturingDevicePatchUpserts('2.51.0.2');
+    // version that meets or exceeds this device's own recorded target
+    // (device_patches.available_version) — proof the upgrade actually landed,
+    // so the row must not stay pending forever just because the sweep never ran.
+    const { tx, devicePatchUpserts } = mockTxCapturingDevicePatchUpserts(undefined, '2.51.0.2');
     vi.mocked(db.transaction).mockImplementation(async (fn) => fn(tx as unknown as Parameters<typeof fn>[0]));
 
-    const res = await mountAgentPatchRoutes().request(`/agents/${AGENT_ID}/patches/installed`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        installed: [
-          {
-            name: 'Git',
-            source: 'third_party',
-            externalId: 'Git.Git',
-            packageId: 'Git.Git',
-            version: '2.51.0.2',
-          },
-        ],
-      }),
-    });
+    const res = await submitInstalled('2.51.0.2');
 
     expect(res.status).toBe(200);
     expect(devicePatchUpserts).toHaveLength(1);
@@ -1076,18 +1096,55 @@ describe('PUT /agents/:id/patches/installed - pending rows survive installed inv
     // The version-aware flip bypasses the pending-preserving CASE entirely:
     // it writes the plain 'installed' literal, not a conditional expression.
     expect(set.status).toBe('installed');
-    expect(set.installedAt).not.toEqual(
-      expect.objectContaining({ values: expect.arrayContaining([tables.devicePatches.installedAt]) }),
-    );
+    // ...and installedAt takes the plain installedAtParam value (NULL::timestamp
+    // here, since the payload has no installedAt), not the CASE that would
+    // otherwise reference the stored column.
+    expect(set.installedAt).toEqual({ op: 'sql', strings: ['NULL::timestamp'], values: [] });
     expect(set.installedVersion).toBe('2.51.0.2');
   });
 
-  it('does not force a flip when the reported version is newer but no target version is on record', async () => {
-    // patches.version is null (e.g. this is the very first scan ever seen for
-    // this package via the installed path, with no prior pending upsert). With
-    // no target to compare against, fall back to the pending-preserving CASE
-    // rather than treating "no data" as "meets target".
-    const { tx, devicePatchUpserts } = mockTxCapturingDevicePatchUpserts(null);
+  it('uses this device\'s own available_version, not a stale global patches.version, so a differently-stale catalog row cannot prematurely flip a still-pending row (#2736)', async () => {
+    // `patches` is a GLOBAL row deduped on (source, externalId) with no tenant
+    // column: some OTHER device (any org) reported this same package earlier
+    // and froze patches.version at 2.40.0.0 via fillIfNull — long stale
+    // relative to what THIS device is actually waiting on (2.52.0.0, its own
+    // available_version). The reported install (2.51.0.2) clears the stale
+    // global figure but NOT this device's real target, so it must stay pending.
+    // Comparing against the global column directly would prematurely flip it —
+    // reintroducing the #2725 downgrade bug this whole guard exists to prevent.
+    const { tx, devicePatchUpserts } = mockTxCapturingDevicePatchUpserts('2.40.0.0', '2.52.0.0');
+    vi.mocked(db.transaction).mockImplementation(async (fn) => fn(tx as unknown as Parameters<typeof fn>[0]));
+
+    const res = await submitInstalled('2.51.0.2');
+
+    expect(res.status).toBe(200);
+    const { set } = devicePatchUpserts[0]!;
+    expect(set.status).not.toBe('installed');
+    expect((set.status as { values: unknown[] }).values).toContain(tables.devicePatches.status);
+  });
+
+  it('falls back to the global patches.version when this device has no device_patches row yet', async () => {
+    // No prior pending upsert ever ran for this device+package, so there is no
+    // device_patches row to read an available_version from. Falling back to
+    // the global patches.version (the same COALESCE precedence
+    // patchApprovalEvaluator.ts already uses for pin targets) is the only
+    // target available, and the reported version meets it.
+    const { tx, devicePatchUpserts } = mockTxCapturingDevicePatchUpserts('2.51.0.2', null);
+    vi.mocked(db.transaction).mockImplementation(async (fn) => fn(tx as unknown as Parameters<typeof fn>[0]));
+
+    const res = await submitInstalled('2.51.0.2');
+
+    expect(res.status).toBe(200);
+    const { set } = devicePatchUpserts[0]!;
+    expect(set.status).toBe('installed');
+  });
+
+  it('does not force a flip when the installed submit omits version', async () => {
+    // `version` is optional on the installed payload schema and normalizes to
+    // null (trimToNull/nullIfTooLong) when omitted — a real, reachable state,
+    // not just a defensive branch. With nothing to compare, fall back to the
+    // pending-preserving CASE rather than treating "no data" as "meets target".
+    const { tx, devicePatchUpserts } = mockTxCapturingDevicePatchUpserts(undefined, '2.52.0.0');
     vi.mocked(db.transaction).mockImplementation(async (fn) => fn(tx as unknown as Parameters<typeof fn>[0]));
 
     const res = await mountAgentPatchRoutes().request(`/agents/${AGENT_ID}/patches/installed`, {
@@ -1095,13 +1152,7 @@ describe('PUT /agents/:id/patches/installed - pending rows survive installed inv
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         installed: [
-          {
-            name: 'Git',
-            source: 'third_party',
-            externalId: 'Git.Git',
-            packageId: 'Git.Git',
-            version: '2.51.0.2',
-          },
+          { name: 'Git', source: 'third_party', externalId: 'Git.Git', packageId: 'Git.Git' },
         ],
       }),
     });
