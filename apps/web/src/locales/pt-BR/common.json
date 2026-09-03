@@ -65,6 +65,7 @@
     "sectionExtensions": "Extensões",
     "variables": "Variáveis",
     "llmProviderCatalog": "Catálogo de Provedores de LLM",
+    "aiKillSwitch": "Interruptor de emergência de IA",
     "sectionAi": "IA",
     "sectionFleetManagement": "Gestão de Frota",
     "sectionBilling": "Faturamento",
