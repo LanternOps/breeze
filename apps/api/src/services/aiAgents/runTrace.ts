@@ -171,6 +171,17 @@ export interface RunTraceDraftRowInput {
    * it feeds the derivation only, so the content is exposed exactly once.
    */
   content: string;
+  /**
+   * Issue #4467 review round 1 — more than one row of the SAME `kind` can be
+   * linked to one run_id (the `draft` tool executor supersedes-then-inserts
+   * on every call, including its own unique-violation retry path; the
+   * `ticket_drafts_active_uq` uniqueness is scoped to `(ticket_id, kind)`,
+   * not `(run_id, kind)`). `state` lets `pickDraftText` prefer the row that
+   * is still `active` over a `superseded`/`consumed`/`discarded` one sharing
+   * this run_id + kind, rather than picking whichever the query happened to
+   * return first.
+   */
+  state: 'active' | 'consumed' | 'discarded' | 'superseded';
 }
 
 /** The safe-projected subset of one linked `action_intents` row. */
@@ -265,12 +276,23 @@ function mapDenied(action: { tool: string; reason: string }): AiAgentRunTraceEnt
  * `TicketTriageSkip`'s own docstring), undefined-when-empty like its two
  * siblings above.
  */
+/**
+ * Issue #4467 review round 1 — more than one `draftRows` entry can share the
+ * same `kind` for a single run (see `RunTraceDraftRowInput.state`'s
+ * docstring), so picking the first match isn't safe by construction. Prefers
+ * the row that is still `active` for this kind; if none is (every write of
+ * that kind was later superseded/consumed/discarded, or the route's query
+ * ordering changes), falls back to `draftRows[0]` of that kind — the route
+ * orders `draftRows` newest-first (`ORDER BY created_at DESC`), so that's
+ * the most recently written row, the next-best approximation of "current".
+ */
 function pickDraftText(
   proposalText: string | undefined,
   draftRows: RunTraceDraftRowInput[],
   kind: 'reply' | 'resolution_note',
 ): string | undefined {
-  const written = draftRows.find((row) => row.kind === kind);
+  const matches = draftRows.filter((row) => row.kind === kind);
+  const written = matches.find((row) => row.state === 'active') ?? matches[0];
   return written ? written.content : proposalText;
 }
 

@@ -253,7 +253,7 @@ describe('buildRunTrace — safe projection (#3828)', () => {
       });
 
       it('projects the caller\'s live ticket_drafts rows as draftsWritten', () => {
-        const draftRows = [{ id: 'draft-1', kind: 'reply' as const, content: 'Hi — try restarting your computer.' }];
+        const draftRows = [{ id: 'draft-1', kind: 'reply' as const, content: 'Hi — try restarting your computer.', state: 'active' as const }];
         const detail = buildRunTrace(
           baseRun({ triggerKind: 'ticket', outcome: PROPOSAL_OUTCOME, intentIds: [] }),
           AGENT, null, [], [], new Map(), null, draftRows,
@@ -284,7 +284,7 @@ describe('buildRunTrace — safe projection (#3828)', () => {
       // RunTraceDraftRowInput's docstring). This is a derivation off ONE
       // source per kind, not two independently-synced copies.
       it('derives draftReply from the live ticket_drafts content once written, never disagreeing with draftsWritten', () => {
-        const draftRows = [{ id: 'draft-1', kind: 'reply' as const, content: 'EDITED on the ticket after approval.' }];
+        const draftRows = [{ id: 'draft-1', kind: 'reply' as const, content: 'EDITED on the ticket after approval.', state: 'active' as const }];
         const detail = buildRunTrace(
           baseRun({
             triggerKind: 'ticket',
@@ -306,7 +306,7 @@ describe('buildRunTrace — safe projection (#3828)', () => {
 
       it('derives draftResolutionNote from the live ticket_drafts content once written', () => {
         const draftRows = [
-          { id: 'draft-2', kind: 'resolution_note' as const, content: 'Live resolution note content.' },
+          { id: 'draft-2', kind: 'resolution_note' as const, content: 'Live resolution note content.', state: 'active' as const },
         ];
         const detail = buildRunTrace(
           baseRun({
@@ -324,6 +324,60 @@ describe('buildRunTrace — safe projection (#3828)', () => {
           AGENT, null, [], [], new Map(), null, draftRows,
         );
         expect(detail.ticketProposal?.draftResolutionNote).toBe('Live resolution note content.');
+      });
+
+      // Issue #4467 review round 1 — the `draft` tool executor supersedes-
+      // then-inserts on every call (including its own unique-violation retry
+      // path), so more than one `ticket_drafts` row of the SAME kind can end
+      // up linked to one run_id: one `superseded`, one `active`. The route
+      // orders `draftRows` newest-first, but `pickDraftText` must not just
+      // trust ordering — it explicitly prefers the `active` row so a stale
+      // superseded row can never win even if it happened to sort first.
+      it('prefers the active row over a superseded one when two draftRows share the same kind', () => {
+        const draftRows = [
+          { id: 'draft-old', kind: 'reply' as const, content: 'STALE superseded text.', state: 'superseded' as const },
+          { id: 'draft-new', kind: 'reply' as const, content: 'Current active text.', state: 'active' as const },
+        ];
+        const detail = buildRunTrace(
+          baseRun({ triggerKind: 'ticket', outcome: PROPOSAL_OUTCOME, intentIds: [] }),
+          AGENT, null, [], [], new Map(), null, draftRows,
+        );
+        expect(detail.ticketProposal?.draftReply).toBe('Current active text.');
+        // draftsWritten still lists BOTH rows — it is an audit trail of
+        // every write, not just the currently-active one.
+        expect(detail.ticketProposal?.draftsWritten).toEqual([
+          { kind: 'reply', draftId: 'draft-old' },
+          { kind: 'reply', draftId: 'draft-new' },
+        ]);
+      });
+
+      it('derives both draftReply and draftResolutionNote independently when a run wrote one of each kind', () => {
+        const draftRows = [
+          { id: 'draft-reply-1', kind: 'reply' as const, content: 'Live reply text.', state: 'active' as const },
+          { id: 'draft-note-1', kind: 'resolution_note' as const, content: 'Live resolution text.', state: 'active' as const },
+        ];
+        const detail = buildRunTrace(
+          baseRun({
+            triggerKind: 'ticket',
+            outcome: {
+              ticketProposal: {
+                version: 1,
+                summary: 'Restart the spooler.',
+                draftReply: 'Stale proposed reply.',
+                draftResolutionNote: 'Stale proposed note.',
+                notes: [],
+              },
+            },
+            intentIds: [],
+          }),
+          AGENT, null, [], [], new Map(), null, draftRows,
+        );
+        expect(detail.ticketProposal?.draftReply).toBe('Live reply text.');
+        expect(detail.ticketProposal?.draftResolutionNote).toBe('Live resolution text.');
+        expect(detail.ticketProposal?.draftsWritten).toEqual([
+          { kind: 'reply', draftId: 'draft-reply-1' },
+          { kind: 'resolution_note', draftId: 'draft-note-1' },
+        ]);
       });
 
       it('falls back to the proposal\'s own draftReply text when no ticket_drafts row has been written yet (pending intent)', () => {
@@ -380,7 +434,7 @@ describe('buildRunTrace — safe projection (#3828)', () => {
       // once on the wire (via draftReply/draftResolutionNote) and not
       // duplicated a second time inside draftsWritten.
       it('draftsWritten entries never carry draft content — only id/kind — even though that content now feeds draftReply/draftResolutionNote', () => {
-        const draftRows = [{ id: 'draft-1', kind: 'resolution_note' as const, content: 'leak-marker-zzz' }];
+        const draftRows = [{ id: 'draft-1', kind: 'resolution_note' as const, content: 'leak-marker-zzz', state: 'active' as const }];
         const detail = buildRunTrace(
           baseRun({ triggerKind: 'ticket', outcome: PROPOSAL_OUTCOME, intentIds: [] }),
           AGENT, null, [], [], new Map(), null, draftRows,
