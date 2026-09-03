@@ -211,6 +211,14 @@ func (c *ChangeTrackerCollector) CollectPendingChanges() (*PendingChanges, error
 // derived from and persists it. Call it only once the records are known to be
 // durable server-side (or when there were none to deliver).
 //
+// The baseline only ever moves forward. Because the lock is released across the
+// upload, two overlapping cycles can finish out of order — the one that
+// collected FIRST can commit LAST if its request was slower — and letting the
+// older snapshot win would roll the baseline backwards, re-reporting changes
+// that were already delivered on every subsequent cycle. A stale commit is
+// therefore dropped rather than applied: the newer snapshot already accounts
+// for everything the older one saw.
+//
 // The in-memory baseline advances even when the on-disk write fails: the
 // records have already landed, so re-reporting them every cycle would duplicate
 // them server-side. A failed write costs at most one re-diff after a restart.
@@ -221,6 +229,13 @@ func (c *ChangeTrackerCollector) Commit(pending *PendingChanges) error {
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	if c.lastSnapshot != nil && pending.snapshot.Timestamp.Before(c.lastSnapshot.Timestamp) {
+		slog.Debug("change tracker ignoring stale baseline commit",
+			"pending", pending.snapshot.Timestamp,
+			"committed", c.lastSnapshot.Timestamp)
+		return nil
+	}
 
 	c.lastSnapshot = pending.snapshot
 	return c.saveSnapshot()

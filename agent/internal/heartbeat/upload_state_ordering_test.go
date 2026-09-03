@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -277,5 +278,76 @@ func TestSendPolicyConfigStatePartialCollectionMergesInsteadOfReplacing(t *testi
 	entries, _ := sent[0]["entries"].([]any)
 	if len(entries) != 1 {
 		t.Fatalf("entries = %d, want the 1 probe that was readable", len(entries))
+	}
+}
+
+// TestSendConfigurationChangesSerializesOverlappingCycles pins that two change
+// tracker cycles never run at once. sendInventory is dispatched both by the
+// 15-minute tick and by the "Refresh Inventory" command, so overlap is real;
+// concurrent cycles would diff the same baseline, upload the same records
+// twice, and race to commit — with the loser's older snapshot able to rewind
+// the baseline.
+func TestSendConfigurationChangesSerializesOverlappingCycles(t *testing.T) {
+	var (
+		mu       sync.Mutex
+		inFlight int
+		maxSeen  int
+		requests int
+	)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		inFlight++
+		requests++
+		if inFlight > maxSeen {
+			maxSeen = inFlight
+		}
+		mu.Unlock()
+
+		time.Sleep(50 * time.Millisecond)
+
+		mu.Lock()
+		inFlight--
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	h := NewWithVersion(&config.Config{
+		AgentID:   "agent-1",
+		AuthToken: "token",
+		ServerURL: server.URL,
+	}, "1.0.0", nil, nil)
+
+	// Every collection sees a different installed package, so every cycle has
+	// records to upload.
+	var tick atomic.Int32
+	tracker := collectors.NewChangeTrackerCollector(filepath.Join(t.TempDir(), "change_tracker_snapshot.json"))
+	setUnexportedField(t, tracker, "gatherSnapshot", func() (*collectors.Snapshot, error) {
+		n := tick.Add(1)
+		snap := emptyTrackerSnapshot(time.Unix(int64(n), 0).UTC())
+		key := fmt.Sprintf("acme-%d::1.0", n)
+		snap.Software[key] = collectors.SoftwareItem{Name: fmt.Sprintf("acme-%d", n), Version: "1.0"}
+		return snap, nil
+	})
+	h.changeTrackerCol = tracker
+
+	var wg sync.WaitGroup
+	for range 3 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			h.sendConfigurationChanges()
+		}()
+	}
+	wg.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if maxSeen != 1 {
+		t.Fatalf("peak concurrent change uploads = %d, want 1 (cycles must not overlap)", maxSeen)
+	}
+	if requests != 3 {
+		t.Fatalf("uploads = %d, want 3 (each serialized cycle still runs)", requests)
 	}
 }

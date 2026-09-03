@@ -176,28 +176,42 @@ func (c *SessionCollector) RequeueEvents(events []UserSessionEvent) {
 		return
 	}
 
+	// Explicit unlock rather than defer: the shed-count log must not run while
+	// the write lock is held, or a slow log writer stalls every Collect().
+	// Nothing between Lock and Unlock can panic.
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	restored := make([]UserSessionEvent, 0, len(events)+len(c.events))
 	restored = append(restored, events...)
 	restored = append(restored, c.events...)
 	c.events = restored
-	c.trimEventsLocked()
+	dropped := c.trimEventsLocked()
+	c.mu.Unlock()
+
+	logDroppedSessionEvents(dropped)
 }
 
-// trimEventsLocked sheds the oldest events once the buffer exceeds its cap.
-// Callers must hold c.mu.
-func (c *SessionCollector) trimEventsLocked() {
+// trimEventsLocked sheds the oldest events once the buffer exceeds its cap and
+// reports how many it dropped. Callers must hold c.mu, and must log the count
+// (via logDroppedSessionEvents) only after releasing it.
+func (c *SessionCollector) trimEventsLocked() int {
 	if len(c.events) <= maxBufferedSessionEvents {
-		return
+		return 0
 	}
 
 	dropped := len(c.events) - maxBufferedSessionEvents
 	c.events = append(c.events[:0], c.events[dropped:]...)
+	return dropped
+}
+
+// logDroppedSessionEvents reports shed events. Shedding is real data loss, so
+// it is never silent.
+func logDroppedSessionEvents(dropped int) {
+	if dropped <= 0 {
+		return
+	}
 	slog.Warn("session event backlog exceeded buffer, dropped oldest events",
 		"dropped", dropped,
-		"buffered", len(c.events))
+		"buffered", maxBufferedSessionEvents)
 }
 
 func (c *SessionCollector) refreshSessions(now time.Time) {
@@ -269,8 +283,14 @@ func (c *SessionCollector) applyEvent(event sessionbroker.SessionEvent, now time
 	sessionType := inferSessionTypeFromEvent(event)
 	key := sessionKey(event.Username, sessionType, event.Session)
 
+	dropped := 0
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	// Deferred LIFO: the lock is released inside this func before the log runs,
+	// so a slow log writer never stalls a concurrent Collect().
+	defer func() {
+		c.mu.Unlock()
+		logDroppedSessionEvents(dropped)
+	}()
 
 	switch event.Type {
 	case sessionbroker.SessionLogin:
@@ -313,7 +333,7 @@ func (c *SessionCollector) applyEvent(event sessionbroker.SessionEvent, now time
 		ActivityState: mapEventState(event.Type),
 	})
 
-	c.trimEventsLocked()
+	dropped = c.trimEventsLocked()
 }
 
 func inferSessionType(session sessionbroker.DetectedSession) string {

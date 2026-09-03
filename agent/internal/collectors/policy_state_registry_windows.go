@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"golang.org/x/sys/windows/registry"
@@ -43,7 +44,12 @@ func (c *PolicyStateCollector) CollectRegistryState(probes []RegistryProbe) ([]R
 		root, subPath, err := resolveRegistryProbePath(registryPath)
 		if err != nil {
 			// Malformed probe configuration, not a collection failure: the
-			// value can never be read, so absence is the honest report.
+			// value can never be read, so absence is the honest report. Logged
+			// so a typo'd probe is discoverable instead of reading as "policy
+			// absent" on every device forever.
+			slog.Debug("skipping unresolvable policy registry probe",
+				"registryPath", registryPath,
+				"error", err.Error())
 			continue
 		}
 

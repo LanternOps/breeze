@@ -333,3 +333,62 @@ func TestCollectConfigStateReportsIncompleteCollection(t *testing.T) {
 		})
 	}
 }
+
+// TestChangeTrackerCommitIgnoresStaleBaseline pins that the baseline only moves
+// forward. The lock is released across the upload, so two overlapping cycles can
+// finish out of order; letting the older snapshot win would rewind the baseline
+// and re-report already-delivered changes on every later cycle.
+func TestChangeTrackerCommitIgnoresStaleBaseline(t *testing.T) {
+	var current *Snapshot
+	tracker := newTestChangeTracker(t, func() (*Snapshot, error) { return current, nil })
+
+	current = emptySnapshot()
+	current.Timestamp = time.Unix(1, 0).UTC()
+	baseline, err := tracker.CollectPendingChanges()
+	if err != nil {
+		t.Fatalf("baseline collect: %v", err)
+	}
+	if err := tracker.Commit(baseline); err != nil {
+		t.Fatalf("baseline commit: %v", err)
+	}
+
+	// Cycle A collects first (older snapshot) but will commit last.
+	current = emptySnapshot()
+	current.Timestamp = time.Unix(2, 0).UTC()
+	current.Software["acme::1.0"] = SoftwareItem{Name: "acme", Version: "1.0"}
+	cycleA, err := tracker.CollectPendingChanges()
+	if err != nil {
+		t.Fatalf("cycle A collect: %v", err)
+	}
+
+	// Cycle B collects second (newer snapshot) and commits first.
+	current = emptySnapshot()
+	current.Timestamp = time.Unix(3, 0).UTC()
+	current.Software["acme::1.0"] = SoftwareItem{Name: "acme", Version: "1.0"}
+	current.Software["beta::2.0"] = SoftwareItem{Name: "beta", Version: "2.0"}
+	cycleB, err := tracker.CollectPendingChanges()
+	if err != nil {
+		t.Fatalf("cycle B collect: %v", err)
+	}
+
+	if err := tracker.Commit(cycleB); err != nil {
+		t.Fatalf("cycle B commit: %v", err)
+	}
+	if err := tracker.Commit(cycleA); err != nil {
+		t.Fatalf("cycle A commit: %v", err)
+	}
+
+	// Nothing has changed on the device since cycle B, so a clean baseline
+	// reports nothing. A rewound baseline would re-report beta as added.
+	current = emptySnapshot()
+	current.Timestamp = time.Unix(4, 0).UTC()
+	current.Software["acme::1.0"] = SoftwareItem{Name: "acme", Version: "1.0"}
+	current.Software["beta::2.0"] = SoftwareItem{Name: "beta", Version: "2.0"}
+	next, err := tracker.CollectPendingChanges()
+	if err != nil {
+		t.Fatalf("post-commit collect: %v", err)
+	}
+	if len(next.Records) != 0 {
+		t.Fatalf("stale commit rewound the baseline: next collect re-reported %d records, want 0", len(next.Records))
+	}
+}
