@@ -65,6 +65,7 @@
     "sectionExtensions": "Modules d'extension",
     "variables": "Variables",
     "llmProviderCatalog": "Catalogue des fournisseurs LLM",
+    "aiKillSwitch": "Coupe-circuit IA",
     "sectionAi": "IA",
     "sectionFleetManagement": "Gestion de la flotte",
     "sectionBilling": "Facturation",

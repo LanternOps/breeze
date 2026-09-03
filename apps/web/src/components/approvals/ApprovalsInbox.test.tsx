@@ -558,10 +558,67 @@ describe('ApprovalsInbox — grouped agent cards and batch decisions', () => {
     expect(screen.getByTestId('approval-row-ap-0')).toBeInTheDocument();
   });
 
-  it('leaves every row in place and explains a 422 batch_not_homogeneous', async () => {
+  // Issue #4459: a `batch_not_homogeneous` 422 now uses the server's
+  // `offending` ids to deselect just those cards, rather than freezing the
+  // whole group behind one banner and forcing the approver to redo the
+  // selection. Both rows still stay in place (nothing was decided) — but the
+  // offending one is flagged individually and the survivor(s) fall back to
+  // the ordinary single-card path (a 2-member group has no group left once
+  // one member is excluded — `buildSections` never renders a group of one).
+  it('leaves every row in place and deselects only the offending card on a 422 batch_not_homogeneous', async () => {
     routeFetch([agentCard('ap-a'), agentCard('ap-b')], {
       status: 422,
       payload: { error: 'batch_not_homogeneous', offending: ['ap-b'] },
+    });
+    render(<ApprovalsInbox />);
+    await screen.findByTestId(`approval-group-${GROUP_KEY}`);
+
+    fireEvent.click(screen.getByTestId(`approval-group-approve-${GROUP_KEY}`));
+
+    const error = await screen.findByTestId('approval-error-ap-b');
+    expect(error).toHaveTextContent(/changed and must be decided on its own/i);
+    expect(screen.getByTestId('approval-row-ap-a')).toBeInTheDocument();
+    expect(screen.getByTestId('approval-row-ap-b')).toBeInTheDocument();
+    // No whole-group banner — ap-a was never at fault and must not be stuck
+    // behind one.
+    expect(screen.queryByTestId(`approval-group-error-${GROUP_KEY}`)).not.toBeInTheDocument();
+    expect(screen.queryByTestId('approval-error-ap-a')).not.toBeInTheDocument();
+    // The group dissolves: only ap-b (now excluded from grouping) remains,
+    // which is a group of one — never rendered as a group.
+    expect(screen.queryByTestId(`approval-group-${GROUP_KEY}`)).not.toBeInTheDocument();
+  });
+
+  it('issue #4459 — a partial drift regroups the survivors, immediately re-batchable with no redone selection', async () => {
+    routeFetch([agentCard('ap-a'), agentCard('ap-b'), agentCard('ap-c')], {
+      status: 422,
+      payload: { error: 'batch_not_homogeneous', offending: ['ap-c'] },
+    });
+    render(<ApprovalsInbox />);
+    await screen.findByTestId(`approval-group-${GROUP_KEY}`);
+    expect(screen.getByTestId(`approval-group-approve-${GROUP_KEY}`)).toHaveTextContent('(3)');
+
+    fireEvent.click(screen.getByTestId(`approval-group-approve-${GROUP_KEY}`));
+
+    await screen.findByTestId('approval-error-ap-c');
+    // ap-a and ap-b are still eligible and share an identity — they re-group
+    // as a batch of two, with a fresh "Approve all" the approver can use
+    // right away, no re-selection needed.
+    await waitFor(() =>
+      expect(screen.getByTestId(`approval-group-approve-${GROUP_KEY}`)).toHaveTextContent('(2)'),
+    );
+    expect(screen.queryByTestId(`approval-group-error-${GROUP_KEY}`)).not.toBeInTheDocument();
+    expect(screen.getByTestId('approval-row-ap-a')).toBeInTheDocument();
+    expect(screen.getByTestId('approval-row-ap-b')).toBeInTheDocument();
+    expect(screen.getByTestId('approval-row-ap-c')).toBeInTheDocument();
+  });
+
+  it('issue #4459 — falls back to the whole-group banner when the server names no offending ids', async () => {
+    // Defensive fallback only (should not happen after the offending
+    // plumbing fix) — asserts the old behavior survives rather than silently
+    // doing nothing when a 422 carries an empty/missing offending list.
+    routeFetch([agentCard('ap-a'), agentCard('ap-b')], {
+      status: 422,
+      payload: { error: 'batch_not_homogeneous', offending: [] },
     });
     render(<ApprovalsInbox />);
     await screen.findByTestId(`approval-group-${GROUP_KEY}`);

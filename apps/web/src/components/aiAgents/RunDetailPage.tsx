@@ -16,6 +16,7 @@ import type {
   ExposureBudgetDto,
   NarrativeSection,
   OrgNarrativeReportSummary,
+  TicketTriageSkip,
 } from '@breeze/shared';
 
 interface RunDetailPageProps {
@@ -404,6 +405,37 @@ function draftKindLabel(t: (key: string) => string, kind: 'reply' | 'resolution_
     : t('aiAgentsPage.runs.triage.draftKinds.resolutionNote');
 }
 
+/** Issue #4462 — literal switch (not a dynamic key) so the i18n key-usage
+ *  scanner can see every key, same convention as `draftKindLabel` above. */
+function skipItemLabel(t: (key: string) => string, item: TicketTriageSkip['item']): string {
+  switch (item) {
+    case 'fields': return t('aiAgentsPage.runs.triage.skipped.item.fields');
+    case 'link': return t('aiAgentsPage.runs.triage.skipped.item.link');
+    case 'note': return t('aiAgentsPage.runs.triage.skipped.item.note');
+    case 'draft-reply': return t('aiAgentsPage.runs.triage.skipped.item.draftReply');
+    case 'draft-resolution': return t('aiAgentsPage.runs.triage.skipped.item.draftResolution');
+    default: return item;
+  }
+}
+
+/** Same literal-switch convention as `skipItemLabel` just above. */
+function skipReasonLabel(t: (key: string) => string, reason: TicketTriageSkip['reason']): string {
+  switch (reason) {
+    case 'no_fields_proposed': return t('aiAgentsPage.runs.triage.skipped.reason.noFieldsProposed');
+    case 'below_confidence_floor': return t('aiAgentsPage.runs.triage.skipped.reason.belowConfidenceFloor');
+    case 'human_set': return t('aiAgentsPage.runs.triage.skipped.reason.humanSet');
+    case 'no_device_proposed': return t('aiAgentsPage.runs.triage.skipped.reason.noDeviceProposed');
+    case 'device_already_linked': return t('aiAgentsPage.runs.triage.skipped.reason.deviceAlreadyLinked');
+    case 'no_draft_reply': return t('aiAgentsPage.runs.triage.skipped.reason.noDraftReply');
+    case 'no_draft_resolution': return t('aiAgentsPage.runs.triage.skipped.reason.noDraftResolution');
+    case 'resolution_note_exists': return t('aiAgentsPage.runs.triage.skipped.reason.resolutionNoteExists');
+    case 'max_actions_per_run': return t('aiAgentsPage.runs.triage.skipped.reason.maxActionsPerRun');
+    case 'intent_error': return t('aiAgentsPage.runs.triage.skipped.reason.intentError');
+    case 'ticket_not_found': return t('aiAgentsPage.runs.triage.skipped.reason.ticketNotFound');
+    default: return reason;
+  }
+}
+
 /**
  * P2-4 (#4191, Task 12) — a `triage`-profile run's ticket proposal
  * (`AiAgentRunTicketProposalDto`). Same safe-projection posture as the sweep
@@ -561,6 +593,26 @@ function TicketProposalSection({
             {proposal.draftsWritten.map((draft) => (
               <li key={draft.draftId} data-testid={`ai-agent-run-triage-draft-${draft.draftId}`}>
                 {draftKindLabel(t, draft.kind)}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {proposal.skipped && proposal.skipped.length > 0 && (
+        <div className="mt-3" data-testid="ai-agent-run-triage-skipped">
+          <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            {t('aiAgentsPage.runs.triage.skippedTitle')}
+          </h3>
+          <ul className="mt-1 space-y-0.5 text-sm text-muted-foreground">
+            {proposal.skipped.map((skip, index) => (
+              <li
+                key={`${skip.item}-${index}`}
+                data-testid={`ai-agent-run-triage-skipped-${skip.item}`}
+              >
+                <span className="font-medium text-foreground">{skipItemLabel(t, skip.item)}</span>
+                {': '}
+                {skipReasonLabel(t, skip.reason)}
               </li>
             ))}
           </ul>

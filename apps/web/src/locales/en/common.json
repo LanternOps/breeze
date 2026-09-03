@@ -65,6 +65,7 @@
     "sectionSettings": "Settings",
     "sectionExtensions": "Extensions",
     "llmProviderCatalog": "LLM Provider Catalog",
+    "aiKillSwitch": "AI Kill Switch",
     "sectionAi": "AI",
     "sectionFleetManagement": "Fleet Management",
     "sectionBilling": "Billing",

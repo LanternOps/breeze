@@ -934,22 +934,66 @@ func (c *Client) executeToolCommand(cmd ipc.IPCCommand) ipc.IPCCommandResult {
 	}
 }
 
+// handleNotify shows a desktop notification and replies on the same envelope id.
+//
+// A request carrying Actions is an interactive PROMPT rather than an
+// announcement: it renders a native modal dialog and the daemon is blocked
+// waiting for the clicked label (sessionbroker.RequestNotificationDecision). A
+// request with no Actions keeps the fire-and-forget toast path exactly as it was
+// — that is the #3197 reboot warning ladder, which must never become a modal
+// dialog in the user's face.
+//
+// Because the daemon now WAITS, this guarantees a reply on every exit path, the
+// way handleConsentRequest does. handleNotify is dispatched via safeGo
+// (commandLoop), which recovers panics but sends nothing back, and the most
+// panic-prone code below is the raw user32 syscall in the Windows dialog. Silence
+// is not fatal here — an unanswered prompt means "proceed as scheduled" — but it
+// would cost a full prompt timeout of dead air on a rung that had something to
+// say.
 func (c *Client) handleNotify(env *ipc.Envelope) {
+	replied := false
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error("notify handler panicked", "id", env.ID, "panic", fmt.Sprintf("%v", r))
+			_ = c.conn.SendError(env.ID, ipc.TypeNotifyResult, "notify handler panicked")
+			return
+		}
+		if !replied {
+			_ = c.conn.SendError(env.ID, ipc.TypeNotifyResult, "notify handler produced no result")
+		}
+	}()
+
 	var req ipc.NotifyRequest
 	if err := json.Unmarshal(env.Payload, &req); err != nil {
 		log.Warn("invalid notify payload", "error", err)
 		if sendErr := c.conn.SendError(env.ID, ipc.TypeNotifyResult, fmt.Sprintf("invalid payload: %v", err)); sendErr != nil {
 			log.Warn("failed to send notify error", "error", sendErr)
 		}
+		replied = true // terminal error reply already sent; don't double-send in the defer
 		return
 	}
+	req = sanitizeNotifyRequest(req)
 
-	delivered := showNotification(req)
-	if err := c.conn.SendTyped(env.ID, ipc.TypeNotifyResult, ipc.NotifyResult{
-		Delivered: delivered,
-	}); err != nil {
-		log.Warn("failed to send notify result", "id", env.ID, "error", err)
+	var result ipc.NotifyResult
+	if len(req.Actions) > 0 {
+		clicked, shown := showNotifyPrompt(req)
+		if shown {
+			result = ipc.NotifyResult{Delivered: true, ActionClicked: clicked}
+		} else {
+			// No dialog could be put on screen. The user still has to be TOLD:
+			// the #3197 always-warn invariant does not depend on the prompt, so
+			// fall back to the plain toast this rung would otherwise have shown.
+			result = ipc.NotifyResult{Delivered: showNotification(req)}
+		}
+	} else {
+		result = ipc.NotifyResult{Delivered: showNotification(req)}
 	}
+
+	if err := c.conn.SendTyped(env.ID, ipc.TypeNotifyResult, result); err != nil {
+		log.Warn("failed to send notify result", "id", env.ID, "error", err)
+		return
+	}
+	replied = true
 }
 
 func (c *Client) handlePamDialog(env *ipc.Envelope) {

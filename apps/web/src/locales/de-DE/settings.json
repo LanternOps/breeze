@@ -1742,6 +1742,29 @@
         "draftKinds": {
           "reply": "Antwortentwurf",
           "resolutionNote": "Entwurf der Lösungsnotiz"
+        },
+        "skippedTitle": "Nicht übernommen",
+        "skipped": {
+          "item": {
+            "fields": "Feldaktualisierungen",
+            "link": "Geräteverknüpfung",
+            "note": "Private Notiz",
+            "draftReply": "Antwortentwurf",
+            "draftResolution": "Entwurf der Lösungsnotiz"
+          },
+          "reason": {
+            "noFieldsProposed": "Es wurden keine Felder vorgeschlagen.",
+            "belowConfidenceFloor": "Die Konfidenz lag unter dem Schwellenwert für eine automatische Übernahme.",
+            "humanSet": "Dieses Feld wurde bereits von einer Person gesetzt.",
+            "noDeviceProposed": "Es wurde kein Gerät vorgeschlagen.",
+            "deviceAlreadyLinked": "Dem Ticket ist bereits ein Gerät zugeordnet.",
+            "noDraftReply": "Es wurde keine Antwort vorgeschlagen.",
+            "noDraftResolution": "Es wurde keine Lösungsnotiz vorgeschlagen.",
+            "resolutionNoteExists": "Das Ticket hat bereits eine Lösungsnotiz.",
+            "maxActionsPerRun": "Das Aktionslimit des Laufs wurde zuerst erreicht.",
+            "intentError": "Das Erstellen der Änderung ist fehlgeschlagen.",
+            "ticketNotFound": "Das Ticket konnte nicht gefunden werden."
+          }
         }
       }
     },
