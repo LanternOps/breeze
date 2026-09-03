@@ -959,12 +959,12 @@ async function markMappingError(mappingId: string, partnerId: string, message: s
       captureException(
         new Error(`markMappingError matched no accounting_entity_mappings row (id=${mappingId})`),
         undefined,
-        { service: 'accountingMappingService', mappingId, partnerId },
+        { service: 'accountingMappingService', accounting_mapping_id: mappingId, partner_id: partnerId },
       );
     }
   } catch (err) {
     captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
-      service: 'accountingMappingService', mappingId, partnerId,
+      service: 'accountingMappingService', accounting_mapping_id: mappingId, partner_id: partnerId,
     });
   }
 }
@@ -1084,7 +1084,7 @@ export async function syncMappedEntity(
 
     const message = sanitizeSyncErrorMessage(err, breezeEntityType);
     captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
-      service: 'accountingMappingService', mappingId: mapping.id, breezeEntityType,
+      service: 'accountingMappingService', accounting_mapping_id: mapping.id, breeze_entity_type: breezeEntityType,
     });
     // Phase 2 (failure) — its OWN short context, so the error marker COMMITS
     // before the throw below. Written inside the caller's transaction it was a
@@ -1097,7 +1097,7 @@ export async function syncMappedEntity(
       // OPENING the context can fail too, and that must not replace the typed
       // 502 below with a raw error. Sentry already has the original.
       captureException(markErr instanceof Error ? markErr : new Error(String(markErr)), undefined, {
-        service: 'accountingMappingService', mappingId: mapping.id, partnerId,
+        service: 'accountingMappingService', accounting_mapping_id: mapping.id, partner_id: partnerId,
       });
     }
     throw new AccountingMappingError('quickbooks_error', 502, message);
@@ -1119,9 +1119,8 @@ export async function syncMappedEntity(
   } catch (dbErr) {
     captureException(dbErr instanceof Error ? dbErr : new Error(String(dbErr)), undefined, {
       service: 'accountingMappingService',
-      mappingId: mapping.id,
-      remoteEntityId: remote.id,
-      remoteSyncToken: remote.syncToken ?? 'none',
+      accounting_mapping_id: mapping.id,
+      remote_entity_id: remote.id,
     });
     const label = breezeEntityType === 'org' ? 'customer' : 'item';
     throw new AccountingMappingError(

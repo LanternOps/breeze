@@ -693,3 +693,62 @@ describe('sentry bootstrap wiring (index.ts)', () => {
     expect(indexSource).toMatch(/flushSentry\s*\(/);
   });
 });
+
+// #4828: every `captureException(err, undefined, { ...tags })` call in the
+// accounting sync path was passing camelCase tag keys (`invoiceId`,
+// `mappingId`, `partnerId`, `remoteEntityId`) and an unallowlisted `service`
+// key — none of which `pickAllowedTags` forwards, so `scrubEvent` strips
+// `message`/`extra`/`logentry` and the event arrives at Sentry with NO usable
+// content at all. A source-grep contract test (rather than a unit test on one
+// call site) so a future call site added to either file with a NEW,
+// not-yet-allowlisted tag key fails CI immediately instead of shipping another
+// silent drop.
+describe('accounting captureException tags stay allowlisted (#4828)', () => {
+  const sentrySource = readFileSync(
+    fileURLToPath(new URL('./sentry.ts', import.meta.url)),
+    'utf-8',
+  );
+  const allowlistMatch = sentrySource.match(
+    /const ALLOWED_TAG_NAMES = new Set\(\[([\s\S]*?)\]\);/,
+  );
+  if (!allowlistMatch?.[1]) {
+    throw new Error('Could not locate ALLOWED_TAG_NAMES in sentry.ts — has it been renamed?');
+  }
+  const allowlistBody: string = allowlistMatch[1];
+  const allowedTagNames = new Set(
+    [...allowlistBody.matchAll(/'([a-zA-Z0-9_]+)'/g)].map((m) => m[1]!),
+  );
+
+  // Every `captureException(<err expr>, undefined, { <tags> })` call, in
+  // source-code order. Assumes (true of both files today) that the tags
+  // object contains no nested `{`/`}` and the call contains no `;` before its
+  // closing `)` — a call that grows either would need a smarter matcher here.
+  function extractCaptureExceptionTagKeys(source: string): string[] {
+    const keys: string[] = [];
+    for (const call of source.matchAll(/captureException\([^;]*?\{([^}]*)\}\s*\)/gs)) {
+      const tagsBody = call[1] ?? '';
+      for (const key of tagsBody.matchAll(/([A-Za-z_][A-Za-z0-9_]*)\s*:/g)) {
+        keys.push(key[1]!);
+      }
+    }
+    return keys;
+  }
+
+  it.each([
+    'accounting/accountingInvoicePush.ts',
+    'accounting/accountingMappingService.ts',
+  ])('every captureException tag key in %s is in ALLOWED_TAG_NAMES', (relativePath) => {
+    const source = readFileSync(
+      fileURLToPath(new URL(`./${relativePath}`, import.meta.url)),
+      'utf-8',
+    );
+    const tagKeys = extractCaptureExceptionTagKeys(source);
+    // Guards the guard: if the file's captureException calls stop passing a
+    // tags object entirely (e.g. a refactor), this test would vacuously pass
+    // with zero assertions below — fail loudly instead.
+    expect(tagKeys.length).toBeGreaterThan(0);
+    for (const key of tagKeys) {
+      expect(allowedTagNames.has(key), `tag "${key}" in ${relativePath} is not in sentry.ts ALLOWED_TAG_NAMES — it will be silently dropped`).toBe(true);
+    }
+  });
+});
