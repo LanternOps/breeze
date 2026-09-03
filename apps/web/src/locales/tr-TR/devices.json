@@ -1227,6 +1227,8 @@
       "installOsPatches": "Bekleyen işletim sistemi yamalarını yükleyin ({{count}})",
       "installThirdPartyPatches": "3. taraf yamaları yükleyin ({{count}})",
       "lastScan": "Son tarama: {{label}}",
+      "managePatches": "Yamaları yönet",
+      "managedByPolicy": "Şu politika tarafından yönetiliyor:",
       "pendingApprovalCount": "({{count}} onay bekleniyor)",
       "polling": "Oylama...",
       "refreshPatchData": "Yama verilerini yenile",

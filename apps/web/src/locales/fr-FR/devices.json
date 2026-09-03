@@ -1227,6 +1227,8 @@
       "installOsPatches": "Installer les correctifs du système d’exploitation en attente ({{count}})",
       "installThirdPartyPatches": "Installer des correctifs tiers ({{count}})",
       "lastScan": "Dernier scan : {{label}}",
+      "managePatches": "Gérer les patches",
+      "managedByPolicy": "Géré par la politique :",
       "pendingApprovalCount": "({{count}} en attente d’approbation)",
       "polling": "Sondages...",
       "refreshPatchData": "Actualiser les données des correctifs",

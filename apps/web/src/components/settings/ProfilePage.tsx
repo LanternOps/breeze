@@ -651,13 +651,11 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
           : {};
       const response = await fetchWithAuth('/auth/mfa/enable', {
         method: 'POST',
-        // #4413: this endpoint answers 401 for "that TOTP is wrong", not for
-        // "your bearer expired". Handing that to fetchWithAuth's generic 401
-        // path either replays a single-use code or — when the refresh does not
-        // restore — signs the user out mid-enrollment (auth.ts handleSessionExpired).
-        // Take the raw 401 and render it ourselves. The durable fix is on the
-        // API side (400/422 + a stable code for a rejected factor proof).
-        skipUnauthorizedRetry: true,
+        // #4470 landed the durable API-side fix the #4413 stopgap was waiting
+        // for: a rejected TOTP or step-up proof is now 400 + a stable `code`,
+        // so it never reaches fetchWithAuth's 401 refresh-and-evict path and
+        // the opt-out flag is no longer needed. A 401 from here now means only
+        // "your bearer expired", which SHOULD refresh.
         body: JSON.stringify({ code, ...proof })
       });
 
@@ -694,8 +692,6 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       setMfaLoading(true);
       const response = await fetchWithAuth('/auth/mfa/disable', {
         method: 'POST',
-        // Same overloaded 401 as /mfa/enable above — see the comment there.
-        skipUnauthorizedRetry: true,
         body: JSON.stringify({ code, currentPassword })
       });
 
@@ -731,9 +727,6 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       setMfaLoading(true);
       const response = await fetchWithAuth('/auth/mfa/recovery-codes', {
         method: 'POST',
-        // Same overloaded 401 as /mfa/enable above — a wrong password here is a
-        // rejected proof, not an expired session.
-        skipUnauthorizedRetry: true,
         body: JSON.stringify({ currentPassword })
       });
 
@@ -792,6 +785,10 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
         ? { ssoReauthGrantId }
         : { currentPassword: passkeyPassword };
       const verifyProof = isPasswordless ? { ssoReauthGrantId } : {};
+      // #4470: `/auth/passkeys/register/{options,verify}` and the delete below
+      // answer a rejected step-up password (or a stale registration challenge)
+      // with 400 + a stable `code`, so these calls need no 401 opt-out — a 401
+      // from them now means only that the bearer expired, which SHOULD refresh.
       const optionsResponse = await fetchWithAuth('/auth/passkeys/register/options', {
         method: 'POST',
         body: JSON.stringify({ ...optionsProof, name: label })

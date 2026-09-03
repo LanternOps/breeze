@@ -1035,6 +1035,8 @@
       "variablePlaceholder": "p.ej. vendor_token",
       "fieldLabel": "Clave del campo personalizado",
       "fieldPlaceholder": "p.ej. asset_tag",
+      "fieldHelp": "Ingresa la Clave de Campo que se muestra en Configuración → Campos Personalizados (distingue mayúsculas de minúsculas). Lectura: una vez vinculado, el valor resuelto se entrega al script como cualquier parámetro normal, sin mostrar ninguna solicitud. Escritura: para guardar un nuevo valor, haz que el script llame a la API de campos personalizados del dispositivo con una solicitud PATCH y una clave de API.",
+      "fieldHelpAriaLabel": "Acerca de la vinculación de campo personalizado del dispositivo",
       "builtinLabel": "Propiedad",
       "chooseTitle": "Elegir una variable",
       "secretRejected": "\"{{key}}\" es secreta: se rechazará el guardado. Elige una variable que no sea secreta.",

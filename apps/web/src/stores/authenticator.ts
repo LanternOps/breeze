@@ -39,16 +39,28 @@ export type RegisterReauth =
 
 class RegisterStepError extends Error {
   status?: number;
-  constructor(message: string, status?: number) {
+  /**
+   * #4470: the API's stable machine code for a rejected proof
+   * (`mfa_proof_invalid`, `invalid_credentials`, ...). Carried through so the
+   * UI can branch on it instead of string-matching the human message, which
+   * was the only discriminator available while every rejection was a 401.
+   */
+  code?: string;
+  constructor(message: string, status?: number, code?: string) {
     super(message);
     this.status = status;
+    this.code = code;
   }
 }
 
 async function jsonOrThrow(response: Response, fallback: string): Promise<any> {
   if (!response.ok) {
     const data = await response.json().catch(() => null);
-    throw new RegisterStepError(data?.error ?? fallback, response.status);
+    throw new RegisterStepError(
+      data?.error ?? fallback,
+      response.status,
+      typeof data?.code === 'string' ? data.code : undefined,
+    );
   }
   // A 2xx with an unparseable body (empty body, truncated proxy response) must
   // not silently resolve to `null` — every caller immediately reads a field
@@ -105,10 +117,13 @@ async function mintRegisterGrant(reauth: RegisterReauth): Promise<string> {
     await fetchWithAuth('/auth/mfa/step-up', {
       method: 'POST',
       body: JSON.stringify(stepUpBody),
-      // Same reasoning: a 401 means the TOTP code / passkey assertion was
-      // rejected (wrong code, or the assertion is already burned), not that
-      // the access token is stale — never replay it.
-      skipUnauthorizedRetry: true,
+      // #4470: no opt-out here any more. A rejected proof is now 400
+      // `mfa_proof_invalid`, and the handler has no 401 path left at all — so
+      // every 401 from this endpoint comes from `authMiddleware`, BEFORE the
+      // handler runs. The passkey assertion in this body is therefore still
+      // unburned, and refreshing the bearer and replaying it is exactly right.
+      // Keeping the flag would instead have signed the user out for an access
+      // token that simply aged out mid-ceremony.
     }),
     'Verification failed.'
   );
