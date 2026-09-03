@@ -1,0 +1,32 @@
+---
+import PortalLayout from '../../layouts/PortalLayout.astro';
+import ReportRunList from '../../components/portal/ReportRunList';
+import { portalApi } from '../../lib/api';
+import { withBase } from '../../lib/basePath';
+import { buildServerApiConfig } from '../../lib/server';
+import { redirectToLoginAfter401 } from '../../lib/session';
+
+const response = await portalApi.getReportRuns(
+  { page: 1, limit: 20 },
+  buildServerApiConfig(Astro.request),
+);
+
+if (response.statusCode === 401) {
+  return redirectToLoginAfter401(Astro);
+}
+
+// enable_reports gate 403s with PORTAL_REPORTS_DISABLED; bounce to the
+// portal home instead of rendering a dead page. Other 403s (e.g. "Account
+// is not active") fall through and render inline via the error prop.
+if (response.statusCode === 403 && response.code === 'PORTAL_REPORTS_DISABLED') {
+  return Astro.redirect(withBase('/devices'));
+}
+---
+
+<PortalLayout title="Reports">
+  <ReportRunList
+    client:load
+    initialRuns={response.data ?? []}
+    error={response.error}
+  />
+</PortalLayout>
