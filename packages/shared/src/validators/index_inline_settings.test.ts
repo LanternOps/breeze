@@ -221,6 +221,63 @@ describe('patchInlineSettingsSchema app rules + deferral', () => {
   });
 });
 
+describe('patchInlineSettingsSchema reboot deferral (#3207)', () => {
+  it('defaults deferral off so existing policies are unchanged', () => {
+    const parsed = patchInlineSettingsSchema.parse({});
+    expect(parsed.rebootAllowDeferral).toBe(false);
+    expect(parsed.rebootMaxDeferrals).toBe(3);
+    expect(parsed.rebootDeferralMinutes).toBe(60);
+  });
+
+  it('rejects a deferral window below 5 minutes', () => {
+    expect(() => patchInlineSettingsSchema.parse({ rebootDeferralMinutes: 4 })).toThrow();
+  });
+
+  it('rejects a deferral window above 1440 minutes', () => {
+    expect(() => patchInlineSettingsSchema.parse({ rebootDeferralMinutes: 1441 })).toThrow();
+  });
+
+  it('rejects more than 10 deferrals', () => {
+    expect(() => patchInlineSettingsSchema.parse({ rebootMaxDeferrals: 11 })).toThrow();
+  });
+
+  it('rejects a negative or non-integer deferral count', () => {
+    expect(() => patchInlineSettingsSchema.parse({ rebootMaxDeferrals: -1 })).toThrow();
+    expect(() => patchInlineSettingsSchema.parse({ rebootMaxDeferrals: 2.5 })).toThrow();
+  });
+
+  it('rejects deferral enabled with a zero budget — that is a UI lie, not a policy', () => {
+    expect(() =>
+      patchInlineSettingsSchema.parse({ rebootAllowDeferral: true, rebootMaxDeferrals: 0 }),
+    ).toThrow(/rebootMaxDeferrals/);
+  });
+
+  it('allows a zero budget while deferral is disabled', () => {
+    const parsed = patchInlineSettingsSchema.parse({
+      rebootAllowDeferral: false,
+      rebootMaxDeferrals: 0,
+    });
+    expect(parsed.rebootMaxDeferrals).toBe(0);
+  });
+
+  it('rejects a total deferral budget that cannot fit before the 7-day agent ceiling', () => {
+    // 10 x 1440 = 14400 minutes = 10 days; handleScheduleReboot caps delay at 10080.
+    expect(() =>
+      patchInlineSettingsSchema.parse({
+        rebootAllowDeferral: true, rebootMaxDeferrals: 10, rebootDeferralMinutes: 1440,
+      }),
+    ).toThrow(/10080/);
+  });
+
+  it('accepts a budget that fits inside the ceiling', () => {
+    const parsed = patchInlineSettingsSchema.parse({
+      rebootAllowDeferral: true, rebootMaxDeferrals: 7, rebootDeferralMinutes: 1440,
+    });
+    expect(parsed.rebootAllowDeferral).toBe(true);
+    expect(parsed.rebootMaxDeferrals).toBe(7);
+  });
+});
+
 describe('policyAppRuleSchema source enum', () => {
   it('accepts third_party and custom sources', () => {
     expect(policyAppRuleSchema.safeParse({ source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' }).success).toBe(true);

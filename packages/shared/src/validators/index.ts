@@ -747,6 +747,12 @@ export const patchInlineSettingsSchema = z.object({
   // #3197: how long the logged-in user is warned before a patch-triggered
   // reboot fires. Replaces the hardcoded 5-minute delay.
   rebootDelayMinutes: z.number().int().min(1).max(1440).default(15),
+  // #3207: end-user reboot deferral budget. `rebootAllowDeferral` is the opt-in;
+  // there is deliberately no "don't warn the user" switch — #3197 made at least
+  // one warning an invariant and a silence toggle would re-create that defect.
+  rebootAllowDeferral: z.boolean().default(false),
+  rebootMaxDeferrals: z.number().int().min(0).max(10).default(3),
+  rebootDeferralMinutes: z.number().int().min(5).max(1440).default(60),
   // #1872: enforce Breeze as the sole patch source on Windows endpoints. When
   // true the agent suppresses the native Windows Update automatic-install
   // channel (NoAutoUpdate=1); Breeze's own WUA-driven installs are unaffected.
@@ -765,6 +771,31 @@ export const patchInlineSettingsSchema = z.object({
       code: z.ZodIssueCode.custom,
       path: ['sources'],
       message: 'The selected patch sources (firmware/drivers) have no patch provider yet and would approve nothing. Include at least one of: os, third_party, custom.',
+    });
+  }
+
+  // #3207: deferral enabled with a zero budget would render a "Postpone"
+  // affordance that can never be used — a UI lie, not a policy.
+  if (data.rebootAllowDeferral && data.rebootMaxDeferrals === 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['rebootMaxDeferrals'],
+      message: 'rebootMaxDeferrals must be at least 1 when deferral is enabled.',
+    });
+  }
+
+  // The agent refuses any schedule_reboot delay above 10080 minutes
+  // (handlers_patch.go). The API sets the hard deadline to
+  // delay + maxDeferrals x deferralMinutes, so a budget that cannot fit inside
+  // that ceiling would let the UI promise deferrals the agent always refuses.
+  if (
+    data.rebootAllowDeferral
+    && data.rebootMaxDeferrals * data.rebootDeferralMinutes > 10080
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['rebootDeferralMinutes'],
+      message: 'rebootMaxDeferrals x rebootDeferralMinutes must not exceed 10080 minutes (7 days).',
     });
   }
 

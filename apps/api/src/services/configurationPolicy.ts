@@ -526,6 +526,9 @@ async function decomposeInlineSettings(
         scheduleDayOfMonth: parsed.scheduleDayOfMonth,
         rebootPolicy: parsed.rebootPolicy,
         rebootDelayMinutes: parsed.rebootDelayMinutes,
+        rebootAllowDeferral: parsed.rebootAllowDeferral,
+        rebootMaxDeferrals: parsed.rebootMaxDeferrals,
+        rebootDeferralMinutes: parsed.rebootDeferralMinutes,
         exclusiveWindowsUpdate: parsed.exclusiveWindowsUpdate,
       });
       break;
@@ -994,6 +997,9 @@ async function assembleInlineSettings(
         scheduleDayOfMonth: row.scheduleDayOfMonth,
         rebootPolicy: row.rebootPolicy,
         rebootDelayMinutes: row.rebootDelayMinutes,
+        rebootAllowDeferral: row.rebootAllowDeferral,
+        rebootMaxDeferrals: row.rebootMaxDeferrals,
+        rebootDeferralMinutes: row.rebootDeferralMinutes,
         exclusiveWindowsUpdate: row.exclusiveWindowsUpdate,
       };
     }
