@@ -3,13 +3,15 @@ import { useTranslation } from 'react-i18next';
 import '../../../lib/i18n';
 import { usePermissions } from '../../../lib/permissions';
 import { useOrgStore } from '../../../stores/orgStore';
-import { quoteImageUrl } from '../../../lib/api/quotes';
+import { quoteImageUrl, changeQuoteCurrency } from '../../../lib/api/quotes';
 import { useReviseQuote } from './useReviseQuote';
 import { navigateTo } from '@/lib/navigation';
+import { runAction, handleActionError, ActionError } from '../../../lib/runAction';
 import { useAuthedImage } from './useQuoteImage';
 import QuoteActions, { QuoteSendOutcomeBanners } from './QuoteActions';
 import QuoteOrderBreakdown, { orderableLines } from './QuoteOrderBreakdown';
 import { RecurringBillingNote, MarginPanel, MarginToggle, useShowMargin } from '../billingUi';
+import ChangeCurrencyDialog, { type CurrencyChangeMode } from '../ChangeCurrencyDialog';
 import { computeQuoteProfit, type QuoteProfit } from '@breeze/shared';
 import {
   type QuoteDetail as QuoteDetailData,
@@ -28,6 +30,8 @@ import {
   sellerLines,
 } from './quoteTypes';
 import { StatusPill } from '../shared/StatusPill';
+
+const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
 interface Props {
   detail: QuoteDetailData;
@@ -58,6 +62,59 @@ export default function QuoteDetail({ detail, onChanged, actionsInHeader }: Prop
   const { quote, blocks, lines } = detail;
   const recipients = detail.recipients ?? [];
   const currency = quote.currencyCode;
+
+  // Draft-only currency restamp (#4416, ports the ContractDetail #3778
+  // pattern). The server (changeQuoteCurrency, quoteService.ts) is the
+  // authority: it re-checks quotes:write, the draft status and the row lock,
+  // so this dialog is a convenience, never a gate.
+  const [currencyOpen, setCurrencyOpen] = useState(false);
+  const [currencyBusy, setCurrencyBusy] = useState(false);
+  const [targetCurrency, setTargetCurrency] = useState(currency);
+  const [currencyMode, setCurrencyMode] = useState<CurrencyChangeMode | null>(null);
+  const [currencyConfirmed, setCurrencyConfirmed] = useState(false);
+  const [currencyError, setCurrencyError] = useState<string | null>(null);
+
+  const openCurrencyDialog = useCallback(() => {
+    setTargetCurrency(currency);
+    setCurrencyMode(null);
+    setCurrencyConfirmed(false);
+    setCurrencyError(null);
+    setCurrencyOpen(true);
+  }, [currency]);
+
+  const submitCurrency = useCallback(async () => {
+    if (currencyBusy || !currencyMode || !currencyConfirmed || targetCurrency === currency) return;
+    setCurrencyBusy(true);
+    // A retry starts from a clean slate — a stale error would read as a fresh
+    // rejection of the SAME attempt.
+    setCurrencyError(null);
+    try {
+      await runAction({
+        request: () => changeQuoteCurrency(quote.id, {
+          currencyCode: targetCurrency,
+          ...(currencyMode === 'clear' ? { clearLines: true } : { reprice: true }),
+        }),
+        errorFallback: t('quotes.currency.errors.change'),
+        successMessage: t('quotes.currency.toast.changed', { currency: targetCurrency }),
+        onUnauthorized: UNAUTHORIZED,
+      });
+      setCurrencyOpen(false);
+      onChanged?.();
+    } catch (err) {
+      // A 409 CURRENCY_LOCKED names why (line count) in its message — keep the
+      // dialog open and show it inline rather than losing it to a toast alone.
+      if (err instanceof ActionError && err.status === 409) {
+        setCurrencyError(err.message);
+      } else {
+        handleActionError(err, t('quotes.currency.errors.change'));
+      }
+    } finally {
+      setCurrencyBusy(false);
+    }
+  }, [currencyBusy, currencyMode, currencyConfirmed, targetCurrency, currency, quote.id, onChanged, t]);
+
+  const canChangeCurrency = can('quotes', 'write') && quote.status === 'draft';
+  const currencySubmittable = !!currencyMode && currencyConfirmed && targetCurrency !== currency;
 
   // Same cents math as the editor rail (computeQuoteProfit), fed the read-model
   // strings, so the Detail margin can never diverge from the editor margin.
@@ -329,11 +386,55 @@ export default function QuoteDetail({ detail, onChanged, actionsInHeader }: Prop
             </div>
           )}
 
+          {/* Change stamped currency (DRAFT only, #4416). The server re-checks
+              permission, the draft status and eligibility under the row lock. */}
+          {canChangeCurrency && (
+            <button
+              type="button"
+              onClick={openCurrencyDialog}
+              disabled={currencyBusy}
+              data-testid="quote-currency-open"
+              className="inline-flex w-full items-center justify-center rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
+            >
+              {t('quotes.currency.actions.change')}
+            </button>
+          )}
+
           {/* Actions — suppressed here when the workspace header owns them, so the
               primary Send action isn't doubled on the Detail tab. */}
           {!actionsInHeader && <QuoteActions detail={detail} onChanged={onChanged} variant="rail" />}
         </div>
       </div>
+
+      <ChangeCurrencyDialog
+        open={currencyOpen}
+        onClose={() => setCurrencyOpen(false)}
+        busy={currencyBusy}
+        currentCurrency={currency}
+        targetCurrency={targetCurrency}
+        onTargetCurrencyChange={setTargetCurrency}
+        mode={currencyMode}
+        onModeChange={setCurrencyMode}
+        confirmed={currencyConfirmed}
+        onConfirmedChange={setCurrencyConfirmed}
+        error={currencyError}
+        onSubmit={() => void submitCurrency()}
+        submittable={currencySubmittable}
+        testIdPrefix="quote-currency"
+        copy={{
+          title: t('quotes.currency.dialog.title'),
+          description: t('quotes.currency.dialog.description', { currency }),
+          currencyLabel: t('quotes.currency.dialog.currencyLabel'),
+          modeLegend: t('quotes.currency.dialog.modeLegend'),
+          modeClearLabel: t('quotes.currency.dialog.modeClear'),
+          modeClearHint: t('quotes.currency.dialog.modeClearHint'),
+          modeRepriceLabel: t('quotes.currency.dialog.modeReprice'),
+          modeRepriceHint: t('quotes.currency.dialog.modeRepriceHint'),
+          confirmLabel: t('quotes.currency.dialog.confirm'),
+          submitLabel: t('quotes.currency.dialog.submit'),
+          cancelLabel: t('common:actions.cancel'),
+        }}
+      />
     </div>
   );
 }
