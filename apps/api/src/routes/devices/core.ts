@@ -764,6 +764,15 @@ coreRoutes.get(
         uptimeSeconds: devices.uptimeSeconds,
         isHeadless: devices.isHeadless,
         pendingReboot: devices.pendingReboot,
+        // Scheduled end-user restart (#3207 W5). Projected into the LIST as
+        // well as the detail response because DeviceDetails is handed the
+        // list-shaped row while its own detail fetch is still in flight — the
+        // badge would otherwise pop in a beat late on every navigation.
+        rebootScheduledAt: devices.rebootScheduledAt,
+        rebootDeadline: devices.rebootDeadline,
+        rebootSource: devices.rebootSource,
+        rebootDeferralsUsed: devices.rebootDeferralsUsed,
+        rebootMaxDeferrals: devices.rebootMaxDeferrals,
         // Collision enrollment (#2764): non-null when this row was created
         // because an agent presented a hostname that already existed in the
         // org. The list renders a "Possible duplicate" badge from it so the
@@ -942,6 +951,13 @@ coreRoutes.get(
         watchdogStatus: d.watchdogStatus,
         mainAgentSilentSince: d.mainAgentSilentSince,
         pendingReboot: d.pendingReboot,
+        // Scheduled end-user restart (#3207 W5). All five are null until an
+        // agent that reports reboot status has actually scheduled one.
+        rebootScheduledAt: d.rebootScheduledAt ?? null,
+        rebootDeadline: d.rebootDeadline ?? null,
+        rebootSource: d.rebootSource ?? null,
+        rebootDeferralsUsed: d.rebootDeferralsUsed ?? null,
+        rebootMaxDeferrals: d.rebootMaxDeferrals ?? null,
         lastSeenAt: d.lastSeenAt,
         // Opt-in WAN/LAN IP columns (#2503). Both null-able: wanIp is null
         // until the device has made one authenticated request, lanIp until an

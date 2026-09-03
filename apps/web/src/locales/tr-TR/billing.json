@@ -43,6 +43,9 @@
       "values": {
         "auto": "otomatik",
         "groupDeleted": "grup silindi"
+      },
+      "lineScope": {
+        "site": "Konum: {{name}}"
       }
     },
     "contractDetail": {
@@ -155,13 +158,22 @@
         "addLine": "Satır eklenemedi.",
         "removeLine": "Satır kaldırılamadı.",
         "activateContract": "Sözleşme etkinleştirilemedi.",
-        "noPriceForCurrency": "Bu öğenin {{currency}} fiyatı yok. Katalogda bir fiyat ekleyin veya katalog bağlantısını temizleyin."
+        "noPriceForCurrency": "Bu öğenin {{currency}} fiyatı yok. Katalogda bir fiyat ekleyin veya katalog bağlantısını temizleyin.",
+        "updateLine": "Satır güncellenemedi.",
+        "lineNotFound": "Bu satır artık mevcut değil. Sözleşmeyi yenileyin.",
+        "contractNotEditable": "Satırlar yalnızca taslak veya etkin sözleşmelerde düzenlenebilir.",
+        "siteNotInOrg": "Bu konum farklı bir kuruluşa ait.",
+        "groupNotInOrg": "Bu cihaz grubu farklı bir kuruluşa ait.",
+        "invalidLinePatch": "Bu değişiklikler bu satır türü için geçerli değil.",
+        "priceNotRepresentable": "Bu fiyatın {{currency}} için çok fazla ondalık basamağı var.",
+        "catalogItemNotFound": "Bu katalog öğesi bu sözleşmede kullanılamıyor."
       },
       "toast": {
         "contractCreated": "Sözleşme oluşturuldu",
         "lineAdded": "Satır eklendi",
         "lineRemoved": "Hat kaldırıldı",
-        "contractActivated": "Sözleşme etkinleştirildi"
+        "contractActivated": "Sözleşme etkinleştirildi",
+        "lineUpdated": "Satır güncellendi"
       },
       "schedule": {
         "title": "Program",
@@ -192,7 +204,8 @@
         "unitPrice": "Birim fiyatı",
         "qty": "Adet",
         "tax": "Vergi",
-        "empty": "Henüz hat yok. Aşağıya yinelenen bir satır ekleyin."
+        "empty": "Henüz hat yok. Aşağıya yinelenen bir satır ekleyin.",
+        "edit": "Düzenle"
       },
       "addLine": {
         "integrationHint": "Entegrasyondan ekleme — bir satırı önceden doldurur.",
@@ -225,6 +238,16 @@
         "priceLookupFailed": "{{currency}} fiyatı alınamadı.",
         "priceNotRepresentable": "Bu ürün için kayıtlı {{currency}} fiyatı {{currency}} para biriminde geçerli değil — katalogda düzeltin ya da katalog bağlantısını kaldırıp elle satır girin.",
         "priceSourceOrgOverride": "{{org}} için kuruluşa özel fiyat"
+      },
+      "editLine": {
+        "save": "Satırı kaydet",
+        "cancel": "İptal",
+        "typeLocked": "Satır türü değiştirilemez. Satırı kaldırıp yenisini ekleyin.",
+        "priceFromCatalog": "Fiyat katalogdan gelir. Elle ayarlamak için katalog bağlantısını kaldırın.",
+        "refreshPrice": "Fiyatı katalogdan yenile",
+        "restoreCatalogLink": "Katalog bağlantısını geri yükle",
+        "unlinkNeedsPrice": "Katalog bağlantısını kaldırmak için birim fiyat ve vergi ayarını girin.",
+        "noChanges": "Henüz kaydedilecek bir şey yok."
       },
       "estimate": {
         "title": "Tahmini bu dönem",

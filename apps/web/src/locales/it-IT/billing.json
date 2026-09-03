@@ -43,6 +43,9 @@
       "values": {
         "auto": "auto",
         "groupDeleted": "gruppo eliminato"
+      },
+      "lineScope": {
+        "site": "Sede: {{name}}"
       }
     },
     "contractDetail": {
@@ -155,13 +158,22 @@
         "addLine": "Impossibile aggiungere la riga.",
         "removeLine": "Impossibile rimuovere la riga.",
         "activateContract": "Impossibile attivare il contratto.",
-        "noPriceForCurrency": "Nessun prezzo in {{currency}} per questo elemento. Aggiungine uno nel catalogo o cancella il collegamento al catalogo."
+        "noPriceForCurrency": "Nessun prezzo in {{currency}} per questo elemento. Aggiungine uno nel catalogo o cancella il collegamento al catalogo.",
+        "updateLine": "Impossibile aggiornare la riga.",
+        "lineNotFound": "Questa riga non esiste più. Aggiorna il contratto.",
+        "contractNotEditable": "Le righe possono essere modificate solo su contratti in bozza o attivi.",
+        "siteNotInOrg": "Questa sede appartiene a un’altra organizzazione.",
+        "groupNotInOrg": "Questo gruppo di dispositivi appartiene a un’altra organizzazione.",
+        "invalidLinePatch": "Queste modifiche non sono valide per questo tipo di riga.",
+        "priceNotRepresentable": "Questo prezzo ha troppi decimali per {{currency}}.",
+        "catalogItemNotFound": "Questo articolo del catalogo non è disponibile su questo contratto."
       },
       "toast": {
         "contractCreated": "Contratto creato",
         "lineAdded": "Riga aggiunta",
         "lineRemoved": "Riga rimossa",
-        "contractActivated": "Contratto attivato"
+        "contractActivated": "Contratto attivato",
+        "lineUpdated": "Riga aggiornata"
       },
       "schedule": {
         "title": "Pianificazione",
@@ -192,7 +204,8 @@
         "unitPrice": "Prezzo unitario",
         "qty": "Qtà",
         "tax": "Imposta",
-        "empty": "Nessuna riga. Aggiungi una riga ricorrente qui sotto."
+        "empty": "Nessuna riga. Aggiungi una riga ricorrente qui sotto.",
+        "edit": "Modifica"
       },
       "addLine": {
         "integrationHint": "Aggiungi da un'integrazione: precompila una riga.",
@@ -225,6 +238,16 @@
         "priceLookupFailed": "Impossibile recuperare il prezzo in {{currency}}.",
         "priceNotRepresentable": "Il prezzo in {{currency}} salvato per questo articolo non è valido in {{currency}}: correggilo nel catalogo oppure rimuovi il collegamento al catalogo e inserisci una riga manuale.",
         "priceSourceOrgOverride": "Prezzo specifico per l’organizzazione {{org}}"
+      },
+      "editLine": {
+        "save": "Salva riga",
+        "cancel": "Annulla",
+        "typeLocked": "Il tipo di riga non può essere modificato. Rimuovi la riga e aggiungine una nuova.",
+        "priceFromCatalog": "Il prezzo proviene dal catalogo. Rimuovi il collegamento al catalogo per impostarlo manualmente.",
+        "refreshPrice": "Aggiorna il prezzo dal catalogo",
+        "restoreCatalogLink": "Ripristina il collegamento al catalogo",
+        "unlinkNeedsPrice": "Inserisci un prezzo unitario e l’impostazione fiscale per rimuovere il collegamento al catalogo.",
+        "noChanges": "Non c’è ancora nulla da salvare."
       },
       "estimate": {
         "title": "Stimato per questo periodo",
