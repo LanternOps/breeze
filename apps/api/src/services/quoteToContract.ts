@@ -3,6 +3,8 @@
 // Grouping is BY CADENCE: a Contract has a single intervalMonths, so monthly
 // and annual lines can never share one — they become separate contracts.
 
+import type { DeviceRole } from '@breeze/shared';
+
 export interface QuoteForContract {
   orgId: string;
   partnerId: string;
@@ -25,13 +27,15 @@ export interface QuoteLineForContract {
 }
 
 export interface NewContractLineSpec {
-  lineType: 'flat' | 'per_device' | 'per_seat' | 'manual';
+  lineType: 'flat' | 'per_device' | 'per_device_role' | 'per_seat' | 'manual';
   description: string;
   unitPrice: string;
   taxable: boolean;
   catalogItemId?: string | null;
   manualQuantity?: string | null;
   siteId?: string | null;
+  /** #3205: required (non-empty) when lineType is per_device_role, otherwise absent. */
+  deviceRoles?: DeviceRole[] | null;
   sortOrder?: number;
   /** In-memory Phase 4 → Phase 5 correlation only; never persisted. */
   sourceQuoteLineId?: string | null;

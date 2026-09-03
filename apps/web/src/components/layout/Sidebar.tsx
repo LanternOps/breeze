@@ -11,6 +11,7 @@ import {
   FileText,
   FileSignature,
   Receipt,
+  CreditCard,
   Tags,
   FileSpreadsheet,
   Building,
@@ -306,6 +307,7 @@ export const navSections: NavSection[] = [
     icon: Building,
     items: [
       { name: 'Partner', labelKey: 'nav.partner', href: '/settings/partner', icon: Building, partnerScopeOnly: true },
+      { name: 'Billing', labelKey: 'nav.billing', href: '/settings/billing', icon: CreditCard, partnerScopeOnly: true, requiredPermission: { resource: 'invoices', action: 'write' } },
       { name: 'Organizations', labelKey: 'nav.organizations', href: '/settings/organizations', icon: Building2, requiredPermission: { resource: 'organizations', action: 'read' } },
       // Users + Roles are both served by the users routes (users:read).
       { name: 'Users', labelKey: 'nav.users', href: '/settings/users', icon: Users, requiredPermission: { resource: 'users', action: 'read' } },

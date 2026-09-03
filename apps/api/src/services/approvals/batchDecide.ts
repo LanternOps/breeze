@@ -13,7 +13,7 @@ import {
   type AssuranceDecision,
 } from '../authenticatorAssurance';
 import { decideApprovalRequest, type DecideApprovalResult } from './decideApprovalRequest';
-import type { ApprovalProof, RiskTier } from '@breeze/shared';
+import { APPROVAL_BATCH_MAX, type ApprovalProof, type RiskTier } from '@breeze/shared';
 
 /**
  * P2-2 (#4189): decide MANY approval cards with ONE assertion ceremony.
@@ -45,8 +45,12 @@ import type { ApprovalProof, RiskTier } from '@breeze/shared';
  */
 
 /** Hard cap on one batch. Matches the inbox page size (`PENDING_PAGE_MAX`),
- *  so "select everything on this page" is always expressible in one call. */
-export const BATCH_MAX = 50;
+ *  so "select everything on this page" is always expressible in one call.
+ *  Re-exported under the historical local name — the value itself lives in
+ *  `@breeze/shared`'s `APPROVAL_BATCH_MAX` so the web inbox's client-side
+ *  guard (#4460) can import the exact same number instead of a copy that
+ *  could drift. */
+export const BATCH_MAX = APPROVAL_BATCH_MAX;
 
 /**
  * The `approvalId` namespace ONE ceremony is minted and verified under, so the

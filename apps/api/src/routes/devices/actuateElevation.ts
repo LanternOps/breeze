@@ -18,6 +18,11 @@ import {
 import { PERMISSIONS } from '../../services/permissions';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { type UserPermissions } from '../../services/permissions';
+import {
+  assertDeviceExecuteAllowed,
+  TrustDeniedError,
+} from '../../services/partnerTrust.commands';
+import { trustDenyBody } from '../../services/partnerTrust';
 import { getDeviceWithOrgCheck, canAccessDeviceSite } from './helpers';
 
 export const actuateElevationRoutes = new Hono();
@@ -117,7 +122,9 @@ actuateElevationRoutes.post(
     // wrong-status — must land in `elevation_audit` with the cause. 404/decommission
     // paths above can't write elevation_audit (no valid FK target), so they get only
     // the route-level audit at the outer scope.
-    const result = await db.transaction(async (tx) => {
+    let result;
+    try {
+      result = await db.transaction(async (tx) => {
       const [elevation] = await tx
         .select({
           id: elevationRequests.id,
@@ -196,6 +203,7 @@ actuateElevationRoutes.post(
       // routes/agents/elevationRequests.ts), not a first-class column;
       // same extraction pattern as routes/pam.ts's `commandLine` field.
       const metadata = (elevation.metadata ?? {}) as Record<string, unknown>;
+      await assertDeviceExecuteAllowed(deviceId, 'actuate_elevation', auth.user.id);
       const [command] = await tx
         .insert(deviceCommands)
         .values({
@@ -239,7 +247,21 @@ actuateElevationRoutes.post(
       });
 
       return { kind: 'success' as const, command };
-    });
+      });
+    } catch (e) {
+      if (e instanceof TrustDeniedError) {
+        return c.json(
+          trustDenyBody({
+            allow: false,
+            code: e.code,
+            capability: 'device_execute',
+            reason: e.reason,
+          }, false),
+          403,
+        );
+      }
+      throw e;
+    }
 
     if (result.kind === 'not_found') {
       // Route-level audit only — no elevation_audit because the FK target

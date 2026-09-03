@@ -50,6 +50,7 @@ import { isAllowedLauncherScheme, isValidIanaTimezone, canonicalizeTimezone, isV
 import type { IpAllowlistStatus, ResolvedEnrollmentDefaults, SupportedLocale } from '@breeze/shared';
 import { getEnrollmentDefaultsForOrg } from '../services/enrollmentDefaults';
 import { isValidIpOrCidr } from '../services/ipMatch';
+import { applyNewPartnerDefaultSettings } from '../services/partnerDefaultSettings';
 import { seedSystemTicketStatuses } from '../services/ticketConfigService';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
 import { canManagePartnerWidePolicies } from '../services/partnerWideAccess';
@@ -484,6 +485,11 @@ orgRoutes.post('/partners', requireScope('system'), requireOrgWrite, requireMfa(
   // without this a create carrying the alias persists a key the resolver ignores
   // (silent no-op the alias-fold set out to kill).
   data.settings = foldAllowedMfaMethodsAlias(data.settings);
+  // #4520: this handler inserts partners directly rather than going through
+  // createPartner(), so it has to apply the shared new-partner defaults itself —
+  // otherwise it mints `{}`-settings partners that the inbound readers' legacy
+  // absent-means-enabled fallback treats as opted IN (the #3608 regression).
+  data.settings = applyNewPartnerDefaultSettings(data.settings);
 
   const clash = await db
     .select({ id: partners.id })

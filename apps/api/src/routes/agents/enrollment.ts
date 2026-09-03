@@ -37,6 +37,9 @@ import {
   raiseDeviceIdentityCollisionAlert,
   type DeviceIdentityCollisionAlertInput,
 } from '../../services/deviceIdentityCollisionAlert';
+import { partnerTrustMode } from '../../config/partnerTrustMode';
+import { evaluateCapability, trustDenyBody, unresolvedPartnerDecision } from '../../services/partnerTrust';
+import { enqueueIpClassify } from '../../services/ipClassify';
 
 export const enrollmentRoutes = new Hono();
 const ENROLLMENT_RATE_LIMIT = 10;
@@ -417,6 +420,7 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
     const enrollmentPartnerId = org?.partnerId ?? null;
 
     if (org) {
+      deviceLimitPartnerId = org.partnerId;
       const [partner] = await db
         .select({ maxDevices: partners.maxDevices })
         .from(partners)
@@ -424,7 +428,6 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
         .limit(1);
 
       if (partner?.maxDevices != null) {
-        deviceLimitPartnerId = org.partnerId;
         maxDevices = partner.maxDevices;
       }
     }
@@ -692,6 +695,59 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
     let device;
     try {
       device = await db.transaction(async (tx) => {
+      if (partnerTrustMode() !== 'off' && deviceLimitPartnerId) {
+        const [trustRow] = await tx
+          .select({
+            trustState: partners.trustState,
+            probationEnrollments: partners.probationEnrollments,
+          })
+          .from(partners)
+          .where(eq(partners.id, deviceLimitPartnerId))
+          .for('update');
+
+        if (!trustRow) {
+          // The device-limit partner id couldn't be resolved to an actual
+          // partner row (e.g. deleted between key resolution and this
+          // locked read) — fail closed under enforce rather than silently
+          // skipping the gate entirely.
+          const decision = await unresolvedPartnerDecision('agent_enroll');
+          if (!decision.allow) {
+            writeAuditEvent(c, {
+              orgId: key.orgId,
+              action: 'agent.enroll',
+              resourceType: 'device',
+              result: 'denied',
+              details: { reason: decision.reason },
+            });
+            throw new HTTPException(403, {
+              message: JSON.stringify(trustDenyBody(decision, false)),
+            });
+          }
+        } else if (trustRow.trustState !== 'trusted') {
+          const decision = await evaluateCapability('agent_enroll', {
+            partnerId: deviceLimitPartnerId,
+            orgId: key.orgId,
+            detail: { probationEnrollments: trustRow.probationEnrollments },
+          });
+          if (!decision.allow) {
+            writeAuditEvent(c, {
+              orgId: key.orgId,
+              action: 'agent.enroll',
+              resourceType: 'device',
+              result: 'denied',
+              details: { reason: decision.reason },
+            });
+            throw new HTTPException(403, {
+              message: JSON.stringify(trustDenyBody(decision, false)),
+            });
+          }
+          await tx
+            .update(partners)
+            .set({ probationEnrollments: sql`${partners.probationEnrollments} + 1` })
+            .where(eq(partners.id, deviceLimitPartnerId));
+        }
+      }
+
       // Device limit check inside transaction to prevent TOCTOU race.
       // Runs when no existing row OR when the decom-bypass-fresh-id path
       // (#914) is going to INSERT a new active row — both grow net active
@@ -985,6 +1041,13 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
           reason: 'enrollment_key_race_lost',
         }, 401);
       }
+      if (err instanceof HTTPException) {
+        try {
+          return c.json(JSON.parse(err.message), err.status);
+        } catch {
+          // Preserve non-JSON HTTPExceptions for the application's normal handler.
+        }
+      }
       throw err;
     }
 
@@ -1131,6 +1194,16 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
   queueWarrantySyncForDevice(enrollmentOutcome.deviceId).catch((err) => {
     console.error('[Enrollment] Failed to queue warranty sync:', err instanceof Error ? err.message : err);
   });
+
+  if (enrollmentIp && partnerTrustMode() !== 'off') {
+    void enqueueIpClassify({
+      kind: 'device',
+      deviceId: enrollmentOutcome.deviceId,
+      ip: enrollmentIp,
+    }).catch((err) => {
+      console.warn('[Enrollment] Failed to queue IP classification:', err instanceof Error ? err.message : err);
+    });
+  }
 
   // #2764 identity-collision alert. Best-effort and strictly fire-and-forget:
   // an alerting failure must never fail an enrollment that already committed.

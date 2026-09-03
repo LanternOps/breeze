@@ -68,6 +68,21 @@ describe('validateConfig', () => {
     });
   });
 
+  it('does not require IP classification provider configuration', () => {
+    const previousProvider = process.env.IP_CLASSIFY_PROVIDER;
+    const previousKey = process.env.IP_CLASSIFY_API_KEY;
+    delete process.env.IP_CLASSIFY_PROVIDER;
+    delete process.env.IP_CLASSIFY_API_KEY;
+    try {
+      withEnv(validEnv, () => expect(() => validateConfig()).not.toThrow());
+    } finally {
+      if (previousProvider === undefined) delete process.env.IP_CLASSIFY_PROVIDER;
+      else process.env.IP_CLASSIFY_PROVIDER = previousProvider;
+      if (previousKey === undefined) delete process.env.IP_CLASSIFY_API_KEY;
+      else process.env.IP_CLASSIFY_API_KEY = previousKey;
+    }
+  });
+
   it('accepts terminal preparation only when browser transitions are enforced', () => {
     withEnv({
       ...validEnv,

@@ -908,7 +908,13 @@ export async function agentAuthMiddleware(c: Context, next: Next) {
       // Agents are org-scoped; they have no access to partner-level tables.
       accessiblePartnerIds: [],
       // Agents don't browse the catalog as org users and partnerId isn't in
-      // scope here; null disables the partner-wide read branch (safe).
+      // scope here; null disables EVERY partner-wide read branch (catalog,
+      // cis_baselines, tenant_variables, and as of #2468 the whole
+      // configuration-policy chain). Fail-closed: `partner_id = NULL` is NULL,
+      // never true. Agent paths that must see partner-wide config therefore
+      // still escalate to a system context — wave 2 of #4673 populates this
+      // field from the device org's partner and removes those escalations.
+      // Do not flip it to a real partner id without that wave's sweep.
       currentPartnerId: null
     },
     async () => {

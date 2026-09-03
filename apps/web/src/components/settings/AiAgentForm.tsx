@@ -673,11 +673,18 @@ export default function AiAgentForm({
         )}
 
         {/* Wave 5 Part B (#3827). Gated the same way as the act-warning block
-            above (draft.mode === 'act' only) — the "act acknowledgement
-            pattern": this is additional unattended authority an operator is
-            opting into only once they are already looking at the act-mode
-            warning, never offered for shadow/off. */}
-        {draft.mode === 'act' && (
+            above (draft.mode === 'act' only) for ORG rows — the "act
+            acknowledgement pattern": this is additional unattended authority
+            an operator is opting into only once they are already looking at
+            the act-mode warning, never offered for shadow/off.
+            PARTNER rows are the exception (#4583): per P2-5 (#4192) a
+            partner row's keys are a CEILING on org grants, not authority the
+            partner row exercises itself — ticking a key here authorizes
+            nothing on its own regardless of the partner row's own mode, so
+            gating the editor (and its ceiling hint) behind the partner row's
+            act mode hid the warning precisely when it mattered: while
+            editing a Shadow-mode baseline. */}
+        {(draft.mode === 'act' || draft.ownerScope === 'partner') && (
           <fieldset className="space-y-2 rounded-md border p-3 md:col-span-2" data-testid="ai-agent-policy-decide">
             <legend className="px-1 text-xs font-medium uppercase text-muted-foreground">
               {t('aiAgentsPage.sections.policyDecide')}

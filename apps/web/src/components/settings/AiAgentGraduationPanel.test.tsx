@@ -5,6 +5,7 @@ import type {
   AiAgentGraduationByOrgDto,
   AiAgentGraduationDto,
   AiAgentGraduationRowDto,
+  AiAgentMode,
 } from '@breeze/shared';
 
 const fetchWithAuth = vi.fn();
@@ -372,12 +373,12 @@ describe('AiAgentGraduationPanel — states with nothing to fetch', () => {
 });
 
 describe('AiAgentForm — partner ceiling hint', () => {
-  const agent = (ownerScope: 'partner' | 'organization'): AiAgentDto => ({
+  const agent = (ownerScope: 'partner' | 'organization', mode: AiAgentMode = 'act'): AiAgentDto => ({
     id: 'agent-1',
     kind: 'patch',
     name: 'Patch agent',
     enabled: true,
-    mode: 'act',
+    mode,
     model: null,
     orgId: ownerScope === 'organization' ? 'org-1' : null,
     partnerId: 'partner-1',
@@ -397,13 +398,13 @@ describe('AiAgentForm — partner ceiling hint', () => {
     updatedAt: '2026-08-01T00:00:00.000Z',
   });
 
-  function renderForm(ownerScope: 'partner' | 'organization') {
+  function renderForm(ownerScope: 'partner' | 'organization', mode: AiAgentMode = 'act') {
     mockGraduation(dto());
     scopeState.orgId = ownerScope === 'organization' ? 'org-1' : null;
     scopeState.isPartnerScope = ownerScope === 'partner';
     render(
       <AiAgentForm
-        agent={agent(ownerScope)}
+        agent={agent(ownerScope, mode)}
         agents={[]}
         showOwnerScope={ownerScope === 'partner'}
         defaultOwnerScope={ownerScope}
@@ -422,5 +423,25 @@ describe('AiAgentForm — partner ceiling hint', () => {
     renderForm('organization');
     await screen.findByTestId('ai-agent-policy-decide');
     expect(screen.queryByTestId('ai-agent-supervised-keys-ceiling-hint')).toBeNull();
+  });
+
+  // #4583: partner-level supervisedActionKeys are a CEILING that bounds org
+  // grants regardless of the partner row's OWN mode (P2-5, #4533) — a partner
+  // admin editing keys on a Shadow-mode baseline still needs the warning that
+  // orgs must be granted individually, so the editor (and its hint) must not
+  // be hidden behind the partner row's own act-mode gate.
+  it('shows the policy-decide editor and ceiling hint on a Shadow-mode partner form', async () => {
+    renderForm('partner', 'shadow');
+    await screen.findByTestId('ai-agent-policy-decide');
+    expect(await screen.findByTestId('ai-agent-supervised-keys-ceiling-hint')).toBeTruthy();
+  });
+
+  // An org row's editor still represents live, self-granted authority (not a
+  // ceiling), so the "only offered once already in act mode" gate remains for
+  // org-owned rows — this stays hidden in Shadow.
+  it('still hides the policy-decide editor on a Shadow-mode org form', async () => {
+    renderForm('organization', 'shadow');
+    await waitFor(() => expect(fetchWithAuth).toHaveBeenCalled());
+    expect(screen.queryByTestId('ai-agent-policy-decide')).toBeNull();
   });
 });

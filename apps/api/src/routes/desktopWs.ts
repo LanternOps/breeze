@@ -58,6 +58,13 @@ import {
   requireRemoteWsUpgrade,
   type RemoteWsUpgradeContext,
 } from '../services/remoteWsUpgrade';
+import { partnerTrustMode } from '../config/partnerTrustMode';
+import {
+  evaluateCapability,
+  partnerIdForDevice,
+  trustDenyBody,
+  unresolvedPartnerDecision,
+} from '../services/partnerTrust';
 
 // Zod validation for desktop user messages.
 // Exported for desktopWs_inputSchema.test.ts, which asserts this enum covers
@@ -1339,6 +1346,26 @@ export function createDesktopWsRoutes(
 
       if (!['pending', 'connecting', 'active'].includes(session.status)) {
         return c.json({ error: 'Session is not available for connection' }, 400);
+      }
+
+      if (partnerTrustMode() !== 'off') {
+        const partnerId = await partnerIdForDevice(session.deviceId);
+        const decision = partnerId
+          ? await evaluateCapability('remote_control', {
+            partnerId,
+            deviceId: session.deviceId,
+            userId: codeRecord.userId,
+            detail: { stage: 'ticket', kind: 'desktop' },
+          })
+          : await unresolvedPartnerDecision('remote_control');
+        if (!decision.allow) {
+          return c.json(trustDenyBody({
+            allow: false,
+            code: decision.code,
+            capability: 'remote_control',
+            reason: decision.reason,
+          }, false), 403);
+        }
       }
 
       const accessToken = await createViewerAccessToken({

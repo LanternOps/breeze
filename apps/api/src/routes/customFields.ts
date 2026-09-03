@@ -31,7 +31,10 @@ const createCustomFieldSchema = z.object({
   options: customFieldOptionsSchema.nullable().optional(),
   required: z.boolean().default(false),
   defaultValue: z.unknown().optional(),
-  deviceTypes: z.array(z.enum(['windows', 'macos', 'linux'])).nullable().optional()
+  deviceTypes: z.array(z.enum(['windows', 'macos', 'linux'])).nullable().optional(),
+  // #2698 — may a script running on a device write this field via the
+  // ::breeze:custom-fields:: marker? Default false: opting in is deliberate.
+  scriptWrite: z.boolean().default(false)
 });
 
 const updateCustomFieldSchema = z.object({
@@ -39,7 +42,8 @@ const updateCustomFieldSchema = z.object({
   options: customFieldOptionsSchema.optional(),
   required: z.boolean().optional(),
   defaultValue: z.unknown().optional(),
-  deviceTypes: z.array(z.enum(['windows', 'macos', 'linux'])).nullable().optional()
+  deviceTypes: z.array(z.enum(['windows', 'macos', 'linux'])).nullable().optional(),
+  scriptWrite: z.boolean().optional() // #2698
 });
 
 const customFieldQuerySchema = z.object({
@@ -74,6 +78,7 @@ type CustomFieldDefinition = {
   required: boolean;
   defaultValue: unknown;
   deviceTypes: string[] | null;
+  scriptWrite: boolean;
   createdAt: string;
   updatedAt: string;
 };
@@ -189,6 +194,7 @@ function mapCustomFieldRow(
     required: field.required,
     defaultValue: field.defaultValue ?? null,
     deviceTypes: field.deviceTypes ?? null,
+    scriptWrite: field.scriptWrite,
     createdAt: field.createdAt.toISOString(),
     updatedAt: field.updatedAt.toISOString()
   };
@@ -335,7 +341,8 @@ customFieldRoutes.post(
         options: payload.options,
         required: payload.required,
         defaultValue: payload.defaultValue,
-        deviceTypes: payload.deviceTypes
+        deviceTypes: payload.deviceTypes,
+        scriptWrite: payload.scriptWrite
       })
       .returning();
 
@@ -384,6 +391,7 @@ customFieldRoutes.patch(
     if (payload.required !== undefined) updates.required = payload.required;
     if (payload.defaultValue !== undefined) updates.defaultValue = payload.defaultValue;
     if (payload.deviceTypes !== undefined) updates.deviceTypes = payload.deviceTypes;
+    if (payload.scriptWrite !== undefined) updates.scriptWrite = payload.scriptWrite;
 
     const [updated] = await db
       .update(customFieldDefinitions)

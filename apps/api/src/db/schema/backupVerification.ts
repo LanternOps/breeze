@@ -32,6 +32,8 @@ export const backupVerifications = pgTable('backup_verifications', {
 }, (table) => ({
   orgDeviceIdx: index('backup_verify_org_device_idx').on(table.orgId, table.deviceId),
   statusIdx: index('backup_verify_status_idx').on(table.status),
+  orgCompletedAtIdx: index('backup_verifications_org_completed_at_idx')
+    .on(table.orgId, table.completedAt),
 }));
 
 export const recoveryReadiness = pgTable('recovery_readiness', {

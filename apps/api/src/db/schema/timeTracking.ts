@@ -52,7 +52,10 @@ export const timeEntries = pgTable('time_entries', {
   uniqueIndex('time_entries_one_running_per_user_uq').on(t.userId).where(sqlIsRunning(t)),
   index('time_entries_partner_started_idx').on(t.partnerId, t.startedAt),
   index('time_entries_ticket_idx').on(t.ticketId),
-  index('time_entries_user_started_idx').on(t.userId, t.startedAt)
+  index('time_entries_user_started_idx').on(t.userId, t.startedAt),
+  index('time_entries_org_started_at_idx')
+    .on(t.orgId, t.startedAt)
+    .where(sql`${t.orgId} IS NOT NULL`)
 ]);
 
 export const ticketParts = pgTable('ticket_parts', {

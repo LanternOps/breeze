@@ -1044,6 +1044,10 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
               }
             }
           },
+          // #4470: a rejected proof (wrong code) is 400 with a stable `code`
+          // (`mfa_code_invalid`); 401 is reserved for a dead credential —
+          // an invalid/expired tempToken or bearer.
+          '400': { $ref: '#/components/responses/BadRequest' },
           '401': { $ref: '#/components/responses/Unauthorized' },
           '429': { $ref: '#/components/responses/TooManyRequests' }
         }
@@ -1356,6 +1360,10 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
               }
             }
           },
+          // #4470: a rejected proof (wrong code) is 400 with a stable `code`
+          // (`mfa_code_invalid`); 401 is reserved for a dead credential —
+          // an invalid/expired tempToken or bearer.
+          '400': { $ref: '#/components/responses/BadRequest' },
           '401': { $ref: '#/components/responses/Unauthorized' },
           '429': { $ref: '#/components/responses/TooManyRequests' }
         }
@@ -1461,6 +1469,10 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
               }
             }
           },
+          // #4470: a rejected proof (wrong code) is 400 with a stable `code`
+          // (`mfa_code_invalid`); 401 is reserved for a dead credential —
+          // an invalid/expired tempToken or bearer.
+          '400': { $ref: '#/components/responses/BadRequest' },
           '401': { $ref: '#/components/responses/Unauthorized' },
           '429': { $ref: '#/components/responses/TooManyRequests' }
         }

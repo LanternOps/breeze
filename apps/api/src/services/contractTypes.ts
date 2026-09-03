@@ -1,5 +1,4 @@
 export type ContractStatus = 'draft' | 'active' | 'paused' | 'cancelled' | 'expired';
-export type ContractLineType = 'flat' | 'per_device' | 'per_seat' | 'manual';
 export type BillingTiming = 'advance' | 'arrears';
 
 export interface ContractActor {
@@ -36,6 +35,8 @@ export type ContractServiceErrorCode =
   // every creation transaction. Distinct from CONTRACT_NOT_FOUND — the contract
   // was never created because its ORG does not exist / is invisible.
   | 'ORG_NOT_FOUND'
+  // #3205: a line's siteId names a site owned by a different organization.
+  | 'SITE_NOT_IN_ORG'
   | 'CONTRACT_NOT_FOUND'
   | 'CONTRACT_CREATE_FAILED'
   | 'CONTRACT_LINE_CREATE_FAILED'

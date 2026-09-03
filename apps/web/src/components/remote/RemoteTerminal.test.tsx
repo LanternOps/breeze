@@ -582,3 +582,22 @@ describe('RemoteTerminal hostname prop lifecycle (#4152)', () => {
     expect(MockWebSocket.instances).toHaveLength(1);
   });
 });
+
+describe('RemoteTerminal layout fills its flex parent (#4510)', () => {
+  it('gives the root wrapper flex-1 min-h-0 so it grows inside a flex column parent', () => {
+    const { container } = renderTerminal();
+
+    const root = container.firstElementChild as HTMLElement;
+    expect(root.className).toMatch(/\bflex-1\b/);
+    expect(root.className).toMatch(/\bmin-h-0\b/);
+    expect(root.className).toMatch(/\bflex-col\b/);
+  });
+
+  it('keeps the xterm container growing to fill the wrapper while retaining the 400px floor', () => {
+    const { container } = renderTerminal();
+
+    const xtermContainer = container.querySelector('.u-min-h-px-400') as HTMLElement | null;
+    expect(xtermContainer).not.toBeNull();
+    expect(xtermContainer!.className).toMatch(/\bflex-1\b/);
+  });
+});

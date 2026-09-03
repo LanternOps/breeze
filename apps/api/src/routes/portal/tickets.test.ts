@@ -143,7 +143,7 @@ function compileWhere(args: unknown[]): { sql: string; params: unknown[] } {
 function buildApp(user: Record<string, unknown> = PORTAL_USER) {
   const app = new Hono();
   app.use('*', async (c, next) => {
-    c.set('portalAuth' as never, { user, token: 'tok-1', authMethod: 'bearer' });
+    c.set('portalAuth' as never, { user, token: 'tok-1', authMethod: 'bearer', timezone: 'UTC' });
     await next();
   });
   app.route('/', ticketRoutes);
@@ -508,7 +508,7 @@ describe('GET /tickets/forms — index.ts mount wiring', () => {
       if (!c.req.header('Authorization')) {
         return c.json({ error: 'Authentication required' }, 401);
       }
-      c.set('portalAuth' as never, { user: PORTAL_USER, token: 'tok-1', authMethod: 'bearer' });
+      c.set('portalAuth' as never, { user: PORTAL_USER, token: 'tok-1', authMethod: 'bearer', timezone: 'UTC' });
       await next();
     });
     app.route('/', ticketRoutes);
@@ -574,7 +574,7 @@ const CREATED_TICKET = {
 function buildPostApp() {
   const app = new Hono();
   app.use('*', async (c, next) => {
-    c.set('portalAuth' as never, { user: PORTAL_USER, token: 'tok-1', authMethod: 'bearer' });
+    c.set('portalAuth' as never, { user: PORTAL_USER, token: 'tok-1', authMethod: 'bearer', timezone: 'UTC' });
     await next();
   });
   app.route('/', ticketRoutes);
@@ -971,7 +971,7 @@ describe('portalTicketsEnabledMiddleware — enable_tickets gate (#2345)', () =>
   function buildGatedApp() {
     const app = new Hono();
     app.use('/tickets/*', async (c, next) => {
-      c.set('portalAuth' as never, { user: PORTAL_USER, token: 'tok-1', authMethod: 'bearer' });
+      c.set('portalAuth' as never, { user: PORTAL_USER, token: 'tok-1', authMethod: 'bearer', timezone: 'UTC' });
       await next();
     });
     app.use('/tickets/*', portalTicketsEnabledMiddleware);

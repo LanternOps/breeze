@@ -816,6 +816,12 @@ export * from './postureReport';
 export * from './executiveSummaryReport';
 
 // ============================================
+// Portal Visibility DTOs (Wave 1 - #4562)
+// ============================================
+
+export * from './portalVisibility';
+
+// ============================================
 // Public login-context wire contract (#2183)
 // ============================================
 

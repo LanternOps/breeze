@@ -2325,14 +2325,18 @@ describe('MFA enrollment API bindings', () => {
     });
   });
 
-  // #4413: /auth/mfa/enable answers 401 for "that TOTP is wrong", which is not
-  // an expired bearer. Letting fetchWithAuth's generic 401 path have it either
-  // replays the code or — on the forced-enrollment page, where the user has
-  // nowhere else to go — signs them out for a typo.
-  it('treats a wrong-code 401 as a rejection, not an expired session', async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValue(makeResponse({ error: 'Invalid MFA code' }, false, 401));
+  // #4470 (was #4413): /auth/mfa/enable now answers 400 + `code:
+  // 'mfa_code_invalid'` for "that TOTP is wrong", so a typo can no longer
+  // reach fetchWithAuth's 401 refresh-and-evict path at all. This replaces the
+  // client-side `skipUnauthorizedRetry` stopgap: the status itself carries the
+  // distinction now, so a NEW caller cannot re-inherit the logout bug by
+  // forgetting a flag.
+  it('treats a wrong-code 400 as a rejection: no refresh, no replay, still signed in', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(makeResponse(
+      { error: 'Invalid MFA code', message: 'Invalid MFA code', code: 'mfa_code_invalid' },
+      false,
+      400,
+    ));
     vi.stubGlobal('fetch', fetchMock);
 
     await expect(apiEnableTotpMfa('123456', 'password')).resolves.toEqual({
@@ -2341,6 +2345,34 @@ describe('MFA enrollment API bindings', () => {
     });
 
     expect(fetchMock).toHaveBeenCalledTimes(1); // no refresh, no replay
+    expect(refreshCallsOf(fetchMock)).toHaveLength(0);
+    expect(useAuthStore.getState().isAuthenticated).toBe(true);
+    expect(useAuthStore.getState().sessionExpiredReason).toBeNull();
+    // The stopgap flag is gone WITH the overloaded status, not instead of it.
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit & { skipUnauthorizedRetry?: boolean }];
+    expect(init.skipUnauthorizedRetry).toBeUndefined();
+  });
+
+  // The other half of #4470: dropping the opt-out flag is only safe because a
+  // 401 from this endpoint now means ONLY "your bearer is dead" — and that
+  // still has to refresh and replay, or the forced-enrollment page (which
+  // always loads with an empty in-memory token) can never complete.
+  it('a genuine bearer 401 from /auth/mfa/enable still refreshes and replays', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(makeResponse({ error: 'Unauthorized' }, false, 401))
+      .mockResolvedValueOnce(makeResponse({ tokens: { accessToken: 'fresh', expiresInSeconds: 900 } }, true, 200))
+      .mockResolvedValueOnce(makeResponse({
+        success: true,
+        recoveryCodes: ['RC-ONE'],
+        tokens: { accessToken: 'replacement', expiresInSeconds: 900 },
+      }, true, 200));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(apiEnableTotpMfa('123456', 'password')).resolves.toMatchObject({ success: true });
+
+    expect(refreshCallsOf(fetchMock)).toHaveLength(1);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
     expect(useAuthStore.getState().isAuthenticated).toBe(true);
   });
 

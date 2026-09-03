@@ -107,15 +107,24 @@ describe('requireFreshMfaStepUp', () => {
     consumeMFAToken.mockResolvedValue(false);
     const c = makeContext();
     const result = await requireFreshMfaStepUp(c, USER_ID, '000000');
-    expect(c.json).toHaveBeenCalledWith({ error: 'Invalid credentials' }, 401);
-    expect(result).toEqual({ __body: { error: 'Invalid credentials' }, __status: 401 });
+    expect(c.json).toHaveBeenCalledWith(
+      { error: 'Invalid credentials', message: 'Invalid credentials', code: 'invalid_credentials' },
+      401,
+    );
+    expect(result).toEqual({
+      __body: { error: 'Invalid credentials', message: 'Invalid credentials', code: 'invalid_credentials' },
+      __status: 401,
+    });
   });
 
   it('returns 401 when MFA is disabled', async () => {
     mockUserRow({ mfaEnabled: false, mfaSecret: 'enc-secret', mfaMethod: 'totp' });
     const c = makeContext();
     await requireFreshMfaStepUp(c, USER_ID, '123456');
-    expect(c.json).toHaveBeenCalledWith({ error: 'Invalid credentials' }, 401);
+    expect(c.json).toHaveBeenCalledWith(
+      { error: 'Invalid credentials', message: 'Invalid credentials', code: 'invalid_credentials' },
+      401,
+    );
     expect(consumeMFAToken).not.toHaveBeenCalled();
   });
 
@@ -123,7 +132,10 @@ describe('requireFreshMfaStepUp', () => {
     mockUserRow({ mfaEnabled: true, mfaSecret: 'enc-secret', mfaMethod: 'sms' });
     const c = makeContext();
     await requireFreshMfaStepUp(c, USER_ID, '123456');
-    expect(c.json).toHaveBeenCalledWith({ error: 'Invalid credentials' }, 401);
+    expect(c.json).toHaveBeenCalledWith(
+      { error: 'Invalid credentials', message: 'Invalid credentials', code: 'invalid_credentials' },
+      401,
+    );
     expect(consumeMFAToken).not.toHaveBeenCalled();
   });
 
@@ -131,7 +143,10 @@ describe('requireFreshMfaStepUp', () => {
     mockUserRow({ mfaEnabled: true, mfaSecret: 'enc-secret', mfaMethod: 'passkey' });
     const c = makeContext();
     await requireFreshMfaStepUp(c, USER_ID, '123456');
-    expect(c.json).toHaveBeenCalledWith({ error: 'Invalid credentials' }, 401);
+    expect(c.json).toHaveBeenCalledWith(
+      { error: 'Invalid credentials', message: 'Invalid credentials', code: 'invalid_credentials' },
+      401,
+    );
     expect(consumeMFAToken).not.toHaveBeenCalled();
   });
 
@@ -139,7 +154,10 @@ describe('requireFreshMfaStepUp', () => {
     mockUserRow({ mfaEnabled: true, mfaSecret: null, mfaMethod: 'totp' });
     const c = makeContext();
     await requireFreshMfaStepUp(c, USER_ID, '123456');
-    expect(c.json).toHaveBeenCalledWith({ error: 'Invalid credentials' }, 401);
+    expect(c.json).toHaveBeenCalledWith(
+      { error: 'Invalid credentials', message: 'Invalid credentials', code: 'invalid_credentials' },
+      401,
+    );
     expect(consumeMFAToken).not.toHaveBeenCalled();
   });
 
@@ -147,7 +165,10 @@ describe('requireFreshMfaStepUp', () => {
     decryptMfaTotpSecret.mockReturnValue(null);
     const c = makeContext();
     await requireFreshMfaStepUp(c, USER_ID, '123456');
-    expect(c.json).toHaveBeenCalledWith({ error: 'Invalid credentials' }, 401);
+    expect(c.json).toHaveBeenCalledWith(
+      { error: 'Invalid credentials', message: 'Invalid credentials', code: 'invalid_credentials' },
+      401,
+    );
     expect(consumeMFAToken).not.toHaveBeenCalled();
   });
 
@@ -155,7 +176,10 @@ describe('requireFreshMfaStepUp', () => {
     mockUserRow(undefined);
     const c = makeContext();
     await requireFreshMfaStepUp(c, USER_ID, '123456');
-    expect(c.json).toHaveBeenCalledWith({ error: 'Invalid credentials' }, 401);
+    expect(c.json).toHaveBeenCalledWith(
+      { error: 'Invalid credentials', message: 'Invalid credentials', code: 'invalid_credentials' },
+      401,
+    );
   });
 
   it('returns 429 when rate-limited', async () => {

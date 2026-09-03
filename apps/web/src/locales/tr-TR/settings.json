@@ -2113,7 +2113,7 @@
     "remove": "Kaldır",
     "httpsExampleComProductPng": "https://example.com/product.png",
     "importFromURL": "URL'den içe aktar",
-    "pNGJPEGOrWebPUpTo5MB": "PNG, JPEG veya WebP 5 MB'a kadar.",
+    "pNGJPEGOrWebPUpTo5MB": "PNG veya JPEG, 5 MB'a kadar.",
     "saveTheItemFirstThenAddAProductImage": "Önce öğeyi kaydedin, ardından bir ürün resmi ekleyin.",
     "thisItemIsABundle": "Bu öğe bir pakettir",
     "groupsOtherCatalogItemsSoldTogether": "Birlikte satılan diğer katalog ürünlerini gruplandırır.",
