@@ -468,12 +468,17 @@ function assertSpecDeviceSetLine(line: {
   lineType: string;
   deviceRoles?: readonly string[] | null;
   deviceGroupId?: string | null;
+  siteId?: string | null;
+  siteName?: string | null;
 }): void {
   if (roleLineIsInvalid(line, BILLABLE_DEVICE_ROLE_SET)) {
     throw new ContractServiceError('per_device_role line requires at least one device role', 400, 'INVALID_STATE');
   }
   if (line.lineType === 'per_device_group' && !line.deviceGroupId) {
     throw new ContractServiceError('per_device_group line requires deviceGroupId', 400, 'INVALID_STATE');
+  }
+  if ((line.lineType === 'per_device' || line.lineType === 'per_device_role') && line.siteName && !line.siteId) {
+    throw new ContractServiceError('site-scoped line requires siteId', 400, 'INVALID_STATE');
   }
 }
 
