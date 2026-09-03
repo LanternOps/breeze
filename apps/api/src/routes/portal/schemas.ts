@@ -1,5 +1,6 @@
 import { PORTAL_TICKET_COMMENT_MAX_CHARS } from '@breeze/shared';
 import { z } from 'zod';
+import { PORTAL_REPORT_TYPES } from '../../services/portal/reportsSelfService';
 
 // ============================================
 // Types
@@ -145,6 +146,22 @@ export const supportUsageQuerySchema = z.object({
     .string()
     .regex(/^\d{4}-(0[1-9]|1[0-2])$/)
     .optional(),
+});
+
+export const portalReportListSchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(20)
+});
+
+// reportsSelfService imports the portal state constants above. Deferring this
+// schema's construction avoids eagerly reading its canonical type list while
+// that module cycle is still being initialized.
+export const portalReportGenerateSchema = z.lazy(() => z.object({
+  type: z.enum(PORTAL_REPORT_TYPES)
+}));
+
+export const portalReportRunParamSchema = z.object({
+  id: z.string().guid()
 });
 
 export const ticketPrioritySchema = z.enum(['low', 'normal', 'high', 'urgent']);
