@@ -17,7 +17,8 @@ import {
 } from '../../services/reportGenerationService';
 import { rowsToCsv, rowsToTsv } from '@breeze/shared';
 import {
-  getPagination, getReportWithOrgCheck, getReportRunWithOrgCheck, isSystemManagedReportDefinition,
+  getPagination, getReportWithOrgCheck, getReportRunWithOrgCheck, isPortalSelfServiceLocked,
+  isSystemManagedReportDefinition, PORTAL_SELF_SERVICE_REPORT,
 } from './helpers';
 import { downloadQuerySchema, listRunsSchema } from './schemas';
 import {
@@ -81,6 +82,15 @@ runsRoutes.post(
     // it is the report that cannot be generated on request.
     if (isSystemManagedReportDefinition(report)) {
       return c.json({ error: 'system_managed_report' }, 409);
+    }
+
+    // #4562 W10 — the canonical customer-portal definition is generated only
+    // by the customer, under a `portal_user` authority that is always
+    // org-unrestricted. A run created HERE would carry this caller's (possibly
+    // site-restricted) scope and still be listed by the portal as the
+    // customer's own report. Refused while the portal exposes reports.
+    if (await isPortalSelfServiceLocked(db, report)) {
+      return c.json(PORTAL_SELF_SERVICE_REPORT, 409);
     }
 
     const liveResult = await resolveRequestReportAuthority(

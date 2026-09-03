@@ -1,5 +1,7 @@
 import { PORTAL_TICKET_COMMENT_MAX_CHARS } from '@breeze/shared';
 import { z } from 'zod';
+import { PORTAL_REPORT_TYPES } from '../../services/portal/reportsSelfService';
+import { PORTAL_RATE_LIMIT_REDIS_KEYS } from '../../services/portal/rateLimit';
 
 // ============================================
 // Types
@@ -62,9 +64,7 @@ export const SESSION_TTL_SECONDS = Math.floor(SESSION_TTL_MS / 1000);
 export const RESET_TTL_MS = 1000 * 60 * 60;
 export const PORTAL_SESSION_CAP = 20000;
 export const PORTAL_RESET_TOKEN_CAP = 20000;
-export const PORTAL_RATE_BUCKET_CAP = 50000;
 export const STATE_SWEEP_INTERVAL_MS = 60 * 1000;
-export const RATE_LIMIT_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
 export const PORTAL_SESSION_COOKIE_NAME = 'breeze_portal_session';
 export const PORTAL_SESSION_COOKIE_PATH = '/';
 export const CSRF_HEADER_NAME = 'x-breeze-csrf';
@@ -75,16 +75,23 @@ export const INVITE_TTL_MS = 1000 * 60 * 60 * 24 * 7; // 7 days
 export const INVITE_TTL_SECONDS = Math.floor(INVITE_TTL_MS / 1000);
 export const PORTAL_INVITE_TOKEN_CAP = 20000;
 
-export const PORTAL_USE_REDIS =
-  process.env.PORTAL_STATE_BACKEND === 'redis' || process.env.NODE_ENV === 'production';
+// The state-backend switch and the rate limiter live in the services layer
+// (services/portal/rateLimit.ts) so services can use them without importing
+// route modules; re-exported here for the routes that always read them from
+// schemas.
+export {
+  PORTAL_RATE_BUCKET_CAP,
+  PORTAL_USE_REDIS,
+  RATE_LIMIT_SWEEP_INTERVAL_MS,
+} from '../../services/portal/rateLimit';
 
 export const PORTAL_REDIS_KEYS = {
   session: (token: string) => `portal:session:${token}`,
   userSessions: (userId: string) => `portal:user-sessions:${userId}`,
   resetToken: (hash: string) => `portal:reset:${hash}`,
   inviteToken: (hash: string) => `portal:invite:${hash}`,
-  rlAttempts: (key: string) => `portal:rl:attempts:${key}`,
-  rlBlock: (key: string) => `portal:rl:block:${key}`,
+  rlAttempts: PORTAL_RATE_LIMIT_REDIS_KEYS.attempts,
+  rlBlock: PORTAL_RATE_LIMIT_REDIS_KEYS.block,
 };
 
 export const LOGIN_RATE_LIMIT = {
@@ -145,6 +152,22 @@ export const supportUsageQuerySchema = z.object({
     .string()
     .regex(/^\d{4}-(0[1-9]|1[0-2])$/)
     .optional(),
+});
+
+export const portalReportListSchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(20)
+});
+
+// reportsSelfService imports the portal state constants above. Deferring this
+// schema's construction avoids eagerly reading its canonical type list while
+// that module cycle is still being initialized.
+export const portalReportGenerateSchema = z.lazy(() => z.object({
+  type: z.enum(PORTAL_REPORT_TYPES)
+}));
+
+export const portalReportRunParamSchema = z.object({
+  id: z.string().guid()
 });
 
 export const ticketPrioritySchema = z.enum(['low', 'normal', 'high', 'urgent']);
