@@ -50,7 +50,7 @@ async function provisionMigratorRole(): Promise<void> {
           -- variable: WITH BYPASSRLS the full set applies; with NOBYPASSRLS it
           -- aborts at 2026-05-22-snmp-multi-vendor-templates.sql, 42501 "new
           -- row violates row-level security policy for table snmp_templates".
-          -- 121 shipped migrations write rows without electing
+          -- 122 shipped migrations write rows without electing
           -- breeze.scope='system' first, so this job cannot drop BYPASSRLS
           -- until that debt is paid. Until then the STATIC guard
           -- src/db/migrationRlsScope.test.ts holds the line for new

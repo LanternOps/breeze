@@ -12,8 +12,8 @@
 
 /** A data-modifying statement found in a migration file. */
 export interface MigrationDmlStatement {
-  /** `UPDATE` | `DELETE` | `INSERT` | `MERGE`. */
-  kind: 'UPDATE' | 'DELETE' | 'INSERT' | 'MERGE';
+  /** The writing verb. `CTAS` is `CREATE TABLE … AS SELECT`. */
+  kind: 'UPDATE' | 'DELETE' | 'INSERT' | 'MERGE' | 'CTAS' | 'COPY';
   /** Target table, schema prefix and quotes stripped, lower-cased. `%i`/`%s` for a `format()` placeholder. */
   table: string;
   /** 1-based line number in the original file, for diagnostics. */
@@ -44,7 +44,28 @@ const DML_PATTERNS: ReadonlyArray<readonly [MigrationDmlStatement['kind'], strin
   ['DELETE', String.raw`\bDELETE\s+FROM\s+(?:ONLY\s+)?${TARGET}`],
   ['INSERT', String.raw`\bINSERT\s+INTO\s+(?:ONLY\s+)?${TARGET}`],
   ['MERGE', String.raw`\bMERGE\s+INTO\s+(?:ONLY\s+)?${TARGET}`],
+  // `CREATE TABLE x AS SELECT … FROM forced_table` materialises rows through a
+  // policy-filtered read, so unscoped it silently creates an EMPTY table.
+  [
+    'CTAS',
+    // `[^;]*?` (not `[\s\S]*?`) confines the gap between the table name and
+    // `AS SELECT` to a SINGLE statement — otherwise a plain
+    // `CREATE TABLE t (…);` matches an unrelated `AS SELECT` later in the file.
+    String.raw`\bCREATE\s+(?:TEMP(?:ORARY)?\s+|UNLOGGED\s+)*TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?${TARGET}[^;]*?\bAS\s+(?:\(\s*)?(?:WITH|SELECT)\b`,
+  ],
+  ['COPY', String.raw`\bCOPY\s+${TARGET}(?:\s*\([^)]*\))?\s+FROM\b`],
 ];
+
+/**
+ * Deliberately NOT detected, so the omissions are a decision rather than an
+ * oversight:
+ *  - `TRUNCATE` — requires table ownership and bypasses row-level security
+ *    outright, so electing scope changes nothing about its behaviour.
+ *  - bare `SELECT … INTO newtable` — syntactically identical to plpgsql's
+ *    variable assignment (`SELECT count(*) INTO n FROM t`), which appears in
+ *    almost every `DO` block here. Matching it would be false positives all the
+ *    way down. Use `CREATE TABLE … AS SELECT` instead, which is detected.
+ */
 
 /**
  * `SELECT set_config('breeze.scope','system', true)` or the `PERFORM` form
@@ -52,8 +73,12 @@ const DML_PATTERNS: ReadonlyArray<readonly [MigrationDmlStatement['kind'], strin
  * transaction; the third argument (`is_local`) is not inspected here because
  * `false` would leak the setting onto the pooled connection, which is a
  * different (and louder) problem than the one this guard is about.
+ *
+ * The leading `SELECT`/`PERFORM` is required, not decoration: without it any
+ * prose that quotes the snippet would count as having run it.
  */
-const SCOPE_ELEVATION = /set_config\s*\(\s*'breeze\.scope'\s*,\s*'system'/i;
+const SCOPE_ELEVATION =
+  /\b(?:SELECT|PERFORM)\s+set_config\s*\(\s*'breeze\.scope'\s*,\s*'system'/i;
 
 /**
  * A statement that DEFINES executable SQL rather than running it now. The body
@@ -69,6 +94,42 @@ const NO_TRANSACTION_DIRECTIVE = /^\s*--\s*@no-transaction\b/m;
 
 function normalizeTable(raw: string): string {
   return raw.replace(/"/g, '').split('.').pop()!.toLowerCase();
+}
+
+/** Offset of the first non-whitespace character at or after `from`, relative to `from`. */
+function leadingWhitespace(sql: string, from: number): number {
+  const rest = /^\s*/.exec(sql.slice(from));
+  return rest ? rest[0].length : 0;
+}
+
+/** Name from a `CREATE [OR REPLACE] FUNCTION|PROCEDURE <name>(` header. */
+function routineName(header: string): string | null {
+  const match = /\bCREATE\s+(?:OR\s+REPLACE\s+)?(?:FUNCTION|PROCEDURE)\s+(?:"?[A-Za-z_][A-Za-z0-9_$]*"?\s*\.\s*)?"?([A-Za-z_][A-Za-z0-9_$]*)"?/i.exec(
+    header,
+  );
+  return match ? match[1]!.toLowerCase() : null;
+}
+
+/**
+ * Routines this file defines AND invokes itself, so their bodies execute at
+ * migration time under the migration's own scope. `code` must come from a pass
+ * with every routine body blanked, so a call written INSIDE another routine
+ * (which runs later, under its caller's scope) does not count as one.
+ */
+function routinesInvokedAtMigrationTime(sql: string, code: string): Set<string> {
+  const live = new Set<string>();
+  for (const definition of sql.matchAll(
+    /\bCREATE\s+(?:OR\s+REPLACE\s+)?(?:FUNCTION|PROCEDURE)\s+(?:"?[A-Za-z_][A-Za-z0-9_$]*"?\s*\.\s*)?"?([A-Za-z_][A-Za-z0-9_$]*)"?/gi,
+  )) {
+    const name = definition[1]!.toLowerCase();
+    const escaped = name.replace(/[$]/g, '\\$&');
+    const called = new RegExp(
+      String.raw`\b(?:SELECT|PERFORM|CALL|FROM|JOIN)\s+(?:"?public"?\s*\.\s*)?"?${escaped}"?\s*\(`,
+      'i',
+    );
+    if (called.test(code)) live.add(name);
+  }
+  return live;
 }
 
 interface ScanResult {
@@ -91,7 +152,7 @@ interface ScanResult {
  * body is migration-time code and its DML must be seen. Only the body of a
  * routine DEFINITION is blanked.
  */
-function scan(sql: string): ScanResult {
+function scan(sql: string, liveRoutines: ReadonlySet<string>): ScanResult {
   const code = sql.split('');
   const codeWithLiterals = sql.split('');
   const literals: Array<{ start: number; text: string }> = [];
@@ -107,6 +168,22 @@ function scan(sql: string): ScanResult {
   // depth 0 — the ones inside a `DO $$ … $$` body belong to the block.
   const dollarTags: string[] = [];
   while (i < sql.length) {
+    // `CREATE RULE … DO ALSO <dml>` is the one routine definition whose body is
+    // plain semicolon-terminated SQL rather than a dollar-quoted block, so the
+    // body-blanking below never sees it. Its DML fires on a future write to the
+    // ruled table, not at migration time, so blank the whole statement.
+    if (dollarTags.length === 0 && i === statementStart + leadingWhitespace(sql, statementStart)) {
+      const rule = /^CREATE\s+(?:OR\s+REPLACE\s+)?RULE\b/i.exec(sql.slice(i));
+      if (rule) {
+        const end = sql.indexOf(';', i);
+        const stop = end === -1 ? sql.length : end;
+        blank(i, stop, code);
+        blank(i, stop, codeWithLiterals);
+        i = stop;
+        continue;
+      }
+    }
+
     const pair = sql.slice(i, i + 2);
 
     if (pair === '--') {
@@ -142,8 +219,20 @@ function scan(sql: string): ScanResult {
     }
 
     if (sql[i] === "'") {
+      // In an E'' string Postgres always honours C-style backslash escapes, so
+      // `E'it\'s'` does NOT end at that inner quote. Missing this desynchronises
+      // the whole scan: the rest of the literal is read as code, the next stray
+      // quote opens a phantom literal, and every statement after it disappears
+      // from the report — a silent false negative, the exact failure this guard
+      // exists to prevent. A plain literal has no such escape under
+      // standard_conforming_strings, where `'it\'` really does end the string.
+      const escapes = /(?:^|[^A-Za-z0-9_])[Ee]$/.test(sql.slice(Math.max(0, i - 2), i));
       let j = i + 1;
       while (j < sql.length) {
+        if (escapes && sql[j] === '\\') {
+          j += 2;
+          continue;
+        }
         if (sql[j] === "'") {
           if (sql[j + 1] === "'") {
             j += 2;
@@ -187,9 +276,31 @@ function scan(sql: string): ScanResult {
           i += tag.length;
           continue;
         }
-        // A routine DEFINITION's body is dead text for this analysis; skip it
-        // whole. A `DO` block's body is live migration code, so walk into it.
-        if (dollarTags.length === 0 && ROUTINE_DEFINITION.test(sql.slice(statementStart, i))) {
+        // Walk INTO a dollar-quoted body only when it is executable migration
+        // code; blank it otherwise. Default-deny matters here: a body treated
+        // as code is scanned for BOTH writes and `set_config` elevation, so a
+        // dollar-quoted STRING that merely quotes the elevation snippet — a
+        // `COMMENT ON … IS $$… set_config('breeze.scope','system',true) …$$`,
+        // or a RAISE payload — would otherwise mark every later write in the
+        // file as scoped and silently switch the guard off. This PR's own docs
+        // make that text likely to appear near a migration.
+        // Read the header from the BLANKED view: a `-- comment` or a string
+        // sitting between the statement start and the `$$` would otherwise
+        // break the `DO` match and get the whole block blanked as data.
+        const header = code.slice(statementStart, i).join('');
+        const executable =
+          dollarTags.length === 0
+            ? // Top level: a DO block runs now. A routine definition does not,
+              // unless this same file goes on to CALL it.
+              /^\s*DO\s*(?:LANGUAGE\s+[A-Za-z_][A-Za-z0-9_]*\s*)?$/i.test(header) ||
+              (ROUTINE_DEFINITION.test(header) &&
+                (() => {
+                  const name = routineName(header);
+                  return name !== null && liveRoutines.has(name);
+                })())
+            : // Nested: only an EXECUTE'd body is SQL about to run.
+              isExecuted(code.join(''), i);
+        if (!executable) {
           const end = sql.indexOf(tag, i + tag.length);
           const bodyEnd = end === -1 ? sql.length : end + tag.length;
           blank(i, bodyEnd, code);
@@ -248,7 +359,13 @@ function lineNumberAt(sql: string, offset: number): number {
  * immediately, and only an elevation inside the SAME statement counts.
  */
 export function analyzeMigrationDml(sql: string): MigrationDmlStatement[] {
-  const { code, codeWithLiterals, literals, statementStarts } = scan(sql);
+  // Pass 1 blanks every routine body, which is exactly the view needed to tell
+  // a migration-time call site from one inside another routine. Pass 2 then
+  // re-scans with the bodies of self-invoked routines left visible.
+  const blanked = scan(sql, new Set<string>());
+  const liveRoutines = routinesInvokedAtMigrationTime(sql, blanked.code);
+  const { code, codeWithLiterals, literals, statementStarts } =
+    liveRoutines.size === 0 ? blanked : scan(sql, liveRoutines);
   const perStatementScope = NO_TRANSACTION_DIRECTIVE.test(sql);
 
   const fileScopeMatch = SCOPE_ELEVATION.exec(codeWithLiterals);

@@ -42,7 +42,7 @@ import { analyzeMigrationDml, findUnscopedMigrationDml } from './migrationRlsSco
  *     `2026-05-22-snmp-multi-vendor-templates.sql` with 42501 "new row violates
  *     row-level security policy for table snmp_templates".
  * So every deployment alive today migrates as superuser or BYPASSRLS — nothing
- * in the field is silently no-op'ing right now. The 121 baseline files below
+ * in the field is silently no-op'ing right now. The 122 baseline files below
  * are the debt that has to be paid before a plain (non-BYPASSRLS) owner role
  * can ever run this migration set, and the guard is what stops it growing.
  *
@@ -110,6 +110,7 @@ const UNSCOPED_DML_BASELINE: Readonly<Record<string, number>> = {
   '2026-06-09-a-native-ticketing-core.sql': 5,
   '2026-06-09-users-disabled-reason.sql': 1,
   '2026-06-10-c-ticket-category-tenant-fks.sql': 2,
+  '2026-06-11-h-audit-chain-seal-and-verify.sql': 1,
   '2026-06-11-j-avatar-bytea-columns.sql': 1,
   '2026-06-12-a-huntress-partner-mapping.sql': 3,
   '2026-06-12-a-ticketing-time-parts.sql': 4,
@@ -130,7 +131,7 @@ const UNSCOPED_DML_BASELINE: Readonly<Record<string, number>> = {
   '2026-06-27-a-sentinelone-partner-mapping.sql': 3,
   '2026-06-27-a-update-rings-partner-scope.sql': 1,
   '2026-06-27-b-patch-approvals-partner-scope.sql': 2,
-  '2026-06-27-c-default-update-ring-dedup.sql': 8,
+  '2026-06-27-c-default-update-ring-dedup.sql': 9,
   '2026-06-29-b-topology-write-permission.sql': 3,
   '2026-06-29-topology-provenance.sql': 3,
   '2026-06-29-vuln-risk-accept-permission.sql': 6,
@@ -157,7 +158,7 @@ const UNSCOPED_DML_BASELINE: Readonly<Record<string, number>> = {
   '2026-08-06-a-report-site-scope.sql': 2,
   '2026-08-06-d-device-mtls-certificate-history.sql': 1,
   '2026-08-08-organization-external-links.sql': 1,
-  '2026-08-08-proxy-session-lifetime.sql': 2,
+  '2026-08-08-proxy-session-lifetime.sql': 3,
   '2026-08-11-variables-permissions.sql': 3,
   '2026-08-12-device-identity-collision-alert-template.sql': 1,
   '2026-08-13-ring-third-party-auto-approve-backfill.sql': 3,
@@ -372,5 +373,108 @@ describe('analyzeMigrationDml', () => {
       ['UPDATE', 'a', 3, true],
       ['DELETE', 'b', 4, true],
     ]);
+  });
+});
+
+/**
+ * Regressions for the review findings on this PR. Each one is a shape that made
+ * the analyzer silently WRONG — either a real unscoped write that vanished from
+ * the report, or a write credited as scoped by text that never ran.
+ */
+describe('analyzeMigrationDml — review regressions', () => {
+  const unscoped = (sql: string) =>
+    findUnscopedMigrationDml(sql).map((d) => `${d.kind} ${d.table}${d.dynamic ? ' *' : ''}`);
+
+  it('does not let an E-string escape swallow the rest of the file', () => {
+    // `E'it\'s'` keeps the backslash escape, so the literal does NOT end at the
+    // inner quote. Mis-parsing it desynchronised the scan and made every later
+    // statement disappear from the report entirely.
+    const sql =
+      "UPDATE organizations SET name = E'it\\'s a note' WHERE id = 1;\n" +
+      'DELETE FROM sensitive_secrets WHERE org_id IS NOT NULL;\n';
+    expect(unscoped(sql)).toEqual(['UPDATE organizations', 'DELETE sensitive_secrets']);
+  });
+
+  it('does not credit an elevation that is only quoted, never executed', () => {
+    // A COMMENT payload is data. Treating it as code marked every later write
+    // in the file as scoped — and this PR's own docs make that text likely to
+    // appear near a migration.
+    const sql =
+      "COMMENT ON TABLE devices IS $$call set_config('breeze.scope', 'system', true) first$$;\n" +
+      "UPDATE devices SET status = 'x';\n";
+    expect(unscoped(sql)).toEqual(['UPDATE devices']);
+  });
+
+  it('scans the body of a function this same file goes on to call', () => {
+    const body =
+      'CREATE OR REPLACE FUNCTION cleanup_orphans() RETURNS void AS $body$\n' +
+      'BEGIN\n  DELETE FROM devices WHERE org_id IS NULL;\nEND;\n$body$ LANGUAGE plpgsql;\n';
+    // Defined and invoked here, so the DELETE really runs at migration time.
+    expect(unscoped(`${body}SELECT cleanup_orphans();\n`)).toEqual(['DELETE devices']);
+    // Defined only — it runs later, under whatever scope its caller has.
+    expect(unscoped(body)).toEqual([]);
+    // A trigger wiring the function up is not a migration-time call.
+    expect(
+      unscoped(`${body}CREATE TRIGGER t AFTER INSERT ON devices EXECUTE FUNCTION cleanup_orphans();\n`),
+    ).toEqual([]);
+  });
+
+  it('ignores a CREATE RULE body, whose DML fires on later writes', () => {
+    expect(
+      unscoped(
+        'CREATE RULE audit_on_update AS ON UPDATE TO devices\n' +
+          '  DO ALSO INSERT INTO audit_log (device_id) VALUES (OLD.id);\n',
+      ),
+    ).toEqual([]);
+  });
+
+  it('flags CREATE TABLE AS SELECT but not a plain CREATE TABLE', () => {
+    expect(unscoped('CREATE TEMP TABLE dedup ON COMMIT DROP AS SELECT id FROM devices;')).toEqual([
+      'CTAS dedup',
+    ]);
+    // Regression: a lazy cross-statement match made this pick up the AS SELECT
+    // from a *later* statement and flag the plain CREATE TABLE too.
+    expect(
+      unscoped(
+        'CREATE TABLE IF NOT EXISTS t (id uuid PRIMARY KEY, n int);\nSELECT 1 AS SELECTED;\n',
+      ),
+    ).toEqual([]);
+    expect(unscoped('CREATE TABLE t (id int GENERATED ALWAYS AS (1) STORED);')).toEqual([]);
+  });
+
+  it('flags COPY … FROM, and deliberately ignores TRUNCATE', () => {
+    expect(unscoped("COPY devices FROM '/tmp/d.csv' WITH (FORMAT csv);")).toEqual(['COPY devices']);
+    // TRUNCATE bypasses RLS outright, so electing scope changes nothing.
+    expect(unscoped('TRUNCATE TABLE devices;')).toEqual([]);
+  });
+
+  it('honours ONLY, and detects dynamic DML for every verb', () => {
+    expect(unscoped("UPDATE ONLY devices SET status = 'x';")).toEqual(['UPDATE devices']);
+    expect(unscoped('DELETE FROM ONLY devices WHERE id IS NULL;')).toEqual(['DELETE devices']);
+    const exec = (stmt: string) => `DO $$\nBEGIN\n  EXECUTE format('${stmt}', tbl);\nEND $$;`;
+    expect(unscoped(exec('DELETE FROM %I WHERE x = 1'))).toEqual(['DELETE %i *']);
+    expect(unscoped(exec('INSERT INTO %I (a) VALUES (1)'))).toEqual(['INSERT %i *']);
+    expect(unscoped(exec('MERGE INTO %I t USING s ON t.id = s.id'))).toEqual(['MERGE %i *']);
+  });
+
+  it('sees CTE-fronted writes for verbs other than UPDATE', () => {
+    expect(
+      unscoped('WITH doomed AS (SELECT id FROM t) DELETE FROM tickets WHERE id IN (SELECT id FROM doomed);'),
+    ).toEqual(['DELETE tickets']);
+    expect(
+      unscoped('WITH moved AS (INSERT INTO archive (id) SELECT id FROM devices RETURNING id) SELECT 1;'),
+    ).toEqual(['INSERT archive']);
+  });
+
+  it('clears every verb once scope is elected, not just UPDATE', () => {
+    const scope = "SELECT set_config('breeze.scope', 'system', true);\n";
+    for (const dml of [
+      'DELETE FROM alerts WHERE id IS NULL;',
+      "INSERT INTO roles (name) VALUES ('x');",
+      'CREATE TEMP TABLE d AS SELECT id FROM devices;',
+    ]) {
+      expect(unscoped(dml).length).toBe(1);
+      expect(unscoped(scope + dml)).toEqual([]);
+    }
   });
 });

@@ -95,7 +95,7 @@ with anything.
   elevation must sit inside the same statement as the write.
 
   Enforced by `apps/api/src/db/migrationRlsScope.test.ts` in the **Test API**
-  job. It carries a frozen baseline of the 121 shipped migrations that predate
+  job. It carries a frozen baseline of the 122 shipped migrations that predate
   the rule; that list is capped at a cutoff filename, so a new migration
   **cannot** be silenced by adding it. See issue #4518.
 
