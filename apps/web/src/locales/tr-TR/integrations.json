@@ -787,6 +787,7 @@
     "syncNow": "Şimdi eşitle",
     "syncNowQueued": "Ödeme eşitlemesi kuyruğa alındı.",
     "syncNowNotQueued": "Ödeme eşitlemesi kuyruğa alınamadı. Kısa süre sonra yeniden deneyin.",
+    "syncNowPullDisabled": "Bu bağlantı için ödeme eşitlemesi kapalı. Şimdi eşitlemek için ödeme eşitlemesini açın.",
     "failedToSyncNow": "Ödeme eşitlemesi başlatılamadı."
   },
   "securityIntegration": {
