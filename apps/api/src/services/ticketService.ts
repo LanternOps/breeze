@@ -1,8 +1,8 @@
-import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, ne, sql } from 'drizzle-orm';
 import { nanoid } from 'nanoid';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { matchContactByEmail } from './contacts/crud';
-import { tickets, ticketComments, ticketAlertLinks, organizations, alerts, devices, users, ticketCategories, portalUsers, contacts, ticketStatusEnum, ticketSourceEnum, ticketOutbox, ticketDrafts, actionIntents, aiAgentRuns, type TicketOutboxEvent } from '../db/schema';
+import { tickets, ticketComments, ticketAlertLinks, organizations, alerts, devices, users, ticketCategories, portalUsers, contacts, ticketStatusEnum, ticketSourceEnum, ticketOutbox, ticketDrafts, actionIntents, aiAgentRuns, deviceVulnerabilities, type TicketOutboxEvent } from '../db/schema';
 import { allocateInternalTicketNumber } from './ticketNumbers';
 import { emitTicketEvent } from './ticketEvents';
 import { createAuditLogAsync } from './auditService';
@@ -2365,6 +2365,31 @@ export async function moveTicketOrg(
       .update(aiAgentRuns)
       .set({ ticketId: null })
       .where(eq(aiAgentRuns.ticketId, ticketId));
+    // device_vulnerabilities.ticket_id (#4645): the finding's remediation
+    // ticket link, the ticket-axis twin of #4642's ai_agent_runs detach just
+    // above and the reverse of moveOrg.ts's own device_vulnerabilities
+    // detach on the device axis (below). `device_vulnerabilities.org_id` is
+    // the DEVICE's org and does NOT move with the ticket — findings are
+    // device-scoped, and a device never moves as a side effect of a ticket
+    // move — so once `tickets.org_id` changes below, any finding still
+    // pointing at this ticket resolves to a now-foreign org under RLS (the
+    // link renders as a dead `/tickets#...` URL client-side; nothing
+    // dereferences it server-side today). Same plain single-column
+    // `ON DELETE SET NULL` FK shape as ai_agent_runs.ticket_id (not composite
+    // tenant-FK'd), so nothing here can 23503 — placed alongside the other
+    // ticket_id detach for readability, not because ordering is
+    // load-bearing.
+    //
+    // `org_id IS DISTINCT FROM targetOrgId` (device_vulnerabilities.org_id is
+    // NOT NULL, so this is equivalent to `<>`, kept for consistency with the
+    // identical guard on tickets.requester_contact_id below and on the
+    // device-axis mirror in moveOrg.ts): a finding whose device's org
+    // ALREADY equals the ticket's destination is not stale after the move
+    // and its link is left intact.
+    await tx
+      .update(deviceVulnerabilities)
+      .set({ ticketId: null })
+      .where(and(eq(deviceVulnerabilities.ticketId, ticketId), ne(deviceVulnerabilities.orgId, targetOrgId)));
     // The UPDATE takes the ticket row lock; the currency guard then locks the
     // unbilled monetary children, and the org_id rewrites follow. A throw here
     // rolls this UPDATE back — nothing moves on a block.

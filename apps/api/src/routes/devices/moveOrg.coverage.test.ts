@@ -773,3 +773,85 @@ describe('action_intents.scope_ticket_id detach coverage (#4792)', () => {
     ).toBeLessThan(loop);
   });
 });
+
+/**
+ * device_vulnerabilities.ticket_id detach coverage (#4645, device axis).
+ *
+ * `device_vulnerabilities` IS returned by breeze_device_child_orgid_tables()
+ * / getDeviceOrgDenormalizedTables(), so the generic re-stamp loop already
+ * moves a finding's org_id to the destination org unconditionally — the
+ * finding always travels with its device. Its remediation ticket does not:
+ * `POST /vulnerabilities/tickets` (routes/vulnerabilities.ts) creates the
+ * ticket org-scoped only and never sets tickets.device_id, so the SAME loop
+ * (which also re-stamps `tickets` for any ticket bound to the moved device)
+ * never reaches it — it stays behind in the source org.
+ *
+ * Unlike scope_ticket_id above, `ticket_id` is a PLAIN single-column FK
+ * (`ON DELETE SET NULL`, not composite tenant-FK'd), so this is a tenancy-
+ * hygiene detach, not a 23503-avoidance one — and the ORDERING requirement is
+ * the OPPOSITE of scope_ticket_id's: this statement must run AFTER the
+ * generic loop, not before, because it compares against the referenced
+ * ticket's ACTUAL (possibly just-restamped) org_id. Checked before the loop,
+ * a ticket bound to the SAME moving device (still holding its stale source
+ * org_id at that point) would be wrongly nulled even though it is about to
+ * become valid once the loop restamps it.
+ *
+ * These are STATIC source assertions only. That the statement actually
+ * matches rows (and correctly SPARES a same-device-bound ticket) against a
+ * real server lives in
+ * `src/__tests__/integration/deviceMoveOrgVulnerabilityTicketDetach.integration.test.ts`.
+ * The ticket-axis twin (moveTicketOrg's own detach, services/ticketService.ts)
+ * has no SQL trigger counterpart and is covered only by
+ * `src/__tests__/integration/ticket-move-org.integration.test.ts`.
+ */
+describe('device_vulnerabilities.ticket_id detach coverage (#4645)', () => {
+  it('moveOrg.ts detaches a stale ticket_id, keyed off the ticket\'s own (post-restamp) org_id', () => {
+    const moveOrgPath = fileURLToPath(new URL('./moveOrg.ts', import.meta.url));
+    const src = readFileSync(moveOrgPath, 'utf8');
+
+    const match = src.match(
+      /UPDATE device_vulnerabilities dv SET ticket_id = NULL\s+FROM tickets t\s+WHERE dv\.device_id = \$\{deviceId\}::uuid\s+AND dv\.ticket_id = t\.id\s+AND t\.org_id IS DISTINCT FROM \$\{targetOrgId\}::uuid/,
+    );
+    expect(
+      match,
+      'moveOrg.ts no longer has the expected device_vulnerabilities.ticket_id detach statement — update this test if the statement shape changed intentionally',
+    ).toBeTruthy();
+  });
+
+  it('breeze_cascade_device_org_id() mirrors the detach', () => {
+    const { name, body } = newestCascadeFunctionBody();
+
+    const match = body.match(
+      /UPDATE public\.device_vulnerabilities dv\s+SET ticket_id = NULL\s+FROM public\.tickets t\s+WHERE dv\.device_id = NEW\.id\s+AND dv\.ticket_id = t\.id\s+AND t\.org_id IS DISTINCT FROM NEW\.org_id/,
+    );
+    expect(
+      match,
+      `${name} is the newest definition of breeze_cascade_device_org_id() and its body has no device_vulnerabilities.ticket_id detach statement — a device org-move that bypasses the moveOrg route (e.g. orgMerge's raw UPDATE devices) would leave a stale cross-org ticket_id on every finding whose device moves (#4645)`,
+    ).toBeTruthy();
+  });
+
+  it('places the detach AFTER the generic device-child org re-stamp loop (load-bearing: reversed from scope_ticket_id)', () => {
+    const { name, body } = newestCascadeFunctionBody();
+    const detach = body.indexOf('UPDATE public.device_vulnerabilities dv');
+    const loop = body.indexOf('breeze_device_child_orgid_tables()');
+    expect(detach, `${name}: no device_vulnerabilities.ticket_id detach found`).toBeGreaterThan(-1);
+    expect(loop, `${name}: no device-child re-stamp loop found`).toBeGreaterThan(-1);
+    expect(
+      detach,
+      `${name}: the device_vulnerabilities.ticket_id detach must run AFTER the generic re-stamp loop — it compares against the referenced ticket's post-restamp org_id, so checking earlier would see a same-device-bound ticket's stale SOURCE org and wrongly null a link that the loop is about to make valid`,
+    ).toBeGreaterThan(loop);
+  });
+
+  it('moveOrg.ts places its own detach AFTER the denormalized-table re-stamp loop', () => {
+    const moveOrgPath = fileURLToPath(new URL('./moveOrg.ts', import.meta.url));
+    const src = readFileSync(moveOrgPath, 'utf8');
+    const detach = src.indexOf('UPDATE device_vulnerabilities dv SET ticket_id = NULL');
+    const loop = src.indexOf('for (const table of getDeviceOrgDenormalizedTables())');
+    expect(detach, 'moveOrg.ts: no device_vulnerabilities.ticket_id detach found').toBeGreaterThan(-1);
+    expect(loop, 'moveOrg.ts: no getDeviceOrgDenormalizedTables() loop found').toBeGreaterThan(-1);
+    expect(
+      detach,
+      'moveOrg.ts: the device_vulnerabilities.ticket_id detach must run AFTER the getDeviceOrgDenormalizedTables() loop — see the trigger-ordering comment above for why this is reversed from scope_ticket_id',
+    ).toBeGreaterThan(loop);
+  });
+});
