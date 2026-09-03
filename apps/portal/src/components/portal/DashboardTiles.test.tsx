@@ -77,4 +77,55 @@ describe('DashboardTiles', () => {
       'Backups are not configured',
     );
   });
+
+  it('formats a completed backup in the organization timezone', () => {
+    render(
+      <DashboardTiles
+        dashboard={{
+          ...dashboard,
+          backup: {
+            ...dashboard.backup,
+            status: 'ok',
+            completedAt: '2026-09-02T11:00:00.000Z',
+            verificationType: 'automated',
+            configured: 10,
+          },
+        }}
+      />,
+    );
+
+    const backupTile = screen.getByTestId('portal-dashboard-tile-backup');
+    expect(backupTile.textContent).toContain('Sep 2, 2026, 05:00 AM (America/Denver)');
+    expect(backupTile.textContent).not.toContain('2026-09-02T11:00:00.000Z');
+  });
+
+  it('renders no-data copy and a stale indication outside security and backup', () => {
+    render(
+      <DashboardTiles
+        dashboard={{
+          ...dashboard,
+          devicesProtected: {
+            ...dashboard.devicesProtected,
+            status: 'no_data',
+            protected: null,
+            unprotected: null,
+            unknown: null,
+            total: null,
+          },
+          patchesApplied: {
+            ...dashboard.patchesApplied,
+            status: 'stale',
+            applied: null,
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByTestId('portal-dashboard-tile-devices').textContent).toContain(
+      'No device protection data is available',
+    );
+    const patchesTile = screen.getByTestId('portal-dashboard-tile-patches');
+    expect(patchesTile.textContent).toContain('No patch data is available');
+    expect(patchesTile.textContent).toContain('Data may be stale.');
+  });
 });

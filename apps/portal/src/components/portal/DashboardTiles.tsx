@@ -1,5 +1,6 @@
 import type { DashboardDto, TileStatus } from '@breeze/shared';
 import type { ReactNode } from 'react';
+import { formatDateTime } from '@/lib/utils';
 import { PageHeader } from './ui';
 import { Sparkline } from './Sparkline';
 
@@ -102,7 +103,7 @@ export function DashboardTiles({ dashboard }: { dashboard: DashboardDto }) {
             ? 'Backups are not configured'
             : dashboard.backup.completedAt == null
               ? 'No verification data is available'
-              : `${dashboard.backup.completedAt} (${dashboard.timezone})`}
+              : `${formatDateTime(dashboard.backup.completedAt, dashboard.timezone)} (${dashboard.timezone})`}
         </Tile>
 
         <Tile
