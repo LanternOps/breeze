@@ -417,7 +417,8 @@ const namespaceDuplicateBaselines = {
     // +1: invoiceDetail.payments.quickbooks (QuickBooks payment pull-back,
     // Phase D) — the badge value IS the proper noun, so it is identical in
     // every catalog. `.viaQuickbooks` IS translated in this locale.
-    'billing.json': 44, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal
+    // +1 W07: invoiceDetail.devices.hostname — "Hostname" is also the German word.
+    'billing.json': 45, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal
     // +1: richTextEditor.link — "Link" is the standard loanword in de-DE.
     // +3: dashboard.vuln.kevCves — "{{count}} CVE(s)" is a locale-invariant
     // acronym (base/_one/_other).

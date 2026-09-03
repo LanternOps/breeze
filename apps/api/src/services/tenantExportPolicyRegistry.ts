@@ -143,6 +143,18 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   // tenant export. Real columns follow the established convention for person
   // data (users.email/name/phone_number, tickets.submitter_email).
   "contacts": tablePolicy("org_id", {"included":["id","org_id","site_id","name","email","phone","mobile","title","roles","is_primary","notes","created_by","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
+  "contract_billing_period_outcomes": tablePolicy("org_id", {
+    included: ["contract_billing_period_id","org_id","contract_id","invoice_id",
+               "snapshot_device_total","uncovered_total","flagged_total",
+               "billed_overage_total","generated_at"],
+    reviewedIncluded: [], excludedSensitive: [],
+    // DELIBERATE non-portability (#3205 W07 decision 3), not an oversight: these
+    // two are jsonb, so the open-container rule excludes them from every tenant
+    // export. The scalar totals above are the exported facts, and the billed
+    // overage is additionally a real priced row in invoice_lines (fully
+    // exported). Do NOT "fix" this by promoting either column to `included`.
+    excludedOpen: ["uncovered_by_role","overages"],
+  }),
   "contract_billing_periods": tablePolicy("org_id", {"included":["id","contract_id","org_id","period_start","period_end","invoice_id","generated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   "contract_documents": tablePolicy("org_id", {"included":["id","org_id","quote_id","quote_acceptance_id","contract_id","template_id","template_version_id","rendered_html","mime","byte_size","sha256","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["pdf_data"]}),
   "contract_lines": tablePolicy("org_id", {"included":["id","contract_id","org_id","line_type","description","catalog_item_id","unit_price","manual_quantity","site_id","site_name","device_roles","device_group_id","device_group_name","included_quantity","overage_mode","overage_unit_price","taxable","sort_order","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
@@ -229,10 +241,18 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   // installer_platform.
   "installer_bootstrap_tokens": tablePolicy("org_id", {"included":["id","org_id","parent_enrollment_key_id","site_id","max_usage","consumed_count","created_by","created_at","expires_at","consumed_at","consumed_from_ip","installer_platform","usage_kind"],"reviewedIncluded":[],"excludedSensitive":["token"],"excludedOpen":[]}),
   "invoice_documents": tablePolicy("org_id", {"included":["id","invoice_id","org_id","sha256","generated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["pdf"]}),
+  // hostname is ordinary customer inventory data — the same value
+  // devices.hostname already exports — and stays `included`. It is also what
+  // keeps a detached row (deleted or moved device) legible on a past invoice.
+  "invoice_line_devices": tablePolicy("org_id", {
+    included: ["id","invoice_line_id","invoice_id","org_id","device_id","hostname",
+               "device_role","site_id","counted_as","created_at"],
+    reviewedIncluded: [], excludedSensitive: [], excludedOpen: [],
+  }),
   "invoice_lines": tablePolicy("org_id", {"included":["id","invoice_id","org_id","source_type","source_id","source_contract_id","catalog_item_id","parent_line_id","ticket_id","name","description","quantity","unit_price","cost_basis","revenue_allocation","taxable","customer_visible","line_total","is_unapproved_time","sort_order","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   "invoice_payments": tablePolicy("org_id", {"included":["id","invoice_id","org_id","amount","method","reference","received_at","recorded_by","note","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   "invoice_stripe_payments": tablePolicy("org_id", {"included":["id","org_id","invoice_id","invoice_payment_id","stripe_account_id","stripe_object_type","stripe_object_id","stripe_payment_intent_id","amount","currency","status","last_event_at","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
-  "invoices": tablePolicy("org_id", {"included":["id","partner_id","org_id","site_id","invoice_number","status","currency_code","document_locale","issue_date","due_date","subtotal","tax_rate","tax_total","total","amount_paid","balance","deposit_due","bill_to_name","bill_to_tax_id","bill_to_tax_exempt","notes","terms","terms_and_conditions","sent_at","first_viewed_at","viewed_at","paid_at","marked_overdue_at","voided_at","void_reason","replaces_invoice_id","replaced_by_invoice_id","pdf_document_ref","pdf_sha256","created_by","created_at","updated_at","public_link_expires_at"],"reviewedIncluded":[],"excludedSensitive":["public_link_token_hash","public_link_token_ct"],"excludedOpen":["bill_to_address","seller_snapshot"]}),
+  "invoices": tablePolicy("org_id", {"included":["id","partner_id","org_id","site_id","invoice_number","status","currency_code","document_locale","device_appendix","evidence_version","issue_date","due_date","subtotal","tax_rate","tax_total","total","amount_paid","balance","deposit_due","bill_to_name","bill_to_tax_id","bill_to_tax_exempt","notes","terms","terms_and_conditions","sent_at","first_viewed_at","viewed_at","paid_at","marked_overdue_at","voided_at","void_reason","replaces_invoice_id","replaced_by_invoice_id","pdf_document_ref","pdf_sha256","created_by","created_at","updated_at","public_link_expires_at"],"reviewedIncluded":[],"excludedSensitive":["public_link_token_hash","public_link_token_ct"],"excludedOpen":["bill_to_address","seller_snapshot"]}),
   "llm_egress_events": tablePolicy("org_id", {"included":["id","org_id","partner_id","catalog_entry_id","revision_id","ai_session_id","surface","host","resolved_ip","blocked","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   "local_vaults": tablePolicy("org_id",{"included":["id","org_id","device_id","vault_path","vault_type","is_active","retention_count","last_sync_at","last_sync_status","last_sync_snapshot_id","sync_size_bytes","last_sync_error","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   "log_correlation_rules": tablePolicy("org_id", {"included":["id","org_id","name","description","pattern","is_regex","min_occurrences","min_devices","time_window","severity","alert_on_match","is_active","last_matched_at","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),

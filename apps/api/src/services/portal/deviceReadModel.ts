@@ -11,6 +11,7 @@ import {
   securityStatus,
 } from '../../db/schema';
 import { classifyDeviceProtection } from './protection';
+import { sqlTimestamp } from './sqlTimestamp';
 
 export async function enrichedDevicesForOrg(
   orgId: string,
@@ -31,7 +32,7 @@ export async function enrichedDevicesForOrg(
         osVersion: devices.osVersion,
         status: devices.status,
         lastSeenAt: devices.lastSeenAt,
-        lastPatchAt: sql<Date | null>`(
+        lastPatchAt: sql<Date | string | null>`(
           select max(${devicePatches.installedAt})
           from ${devicePatches}
           where ${devicePatches.orgId} = ${orgId}
@@ -53,7 +54,7 @@ export async function enrichedDevicesForOrg(
             and ${huntressAgents.deviceId} = ${devices.id}
         )`,
         encryption: securityStatus.encryptionStatus,
-        lastBackupAt: sql<Date | null>`(
+        lastBackupAt: sql<Date | string | null>`(
           select max(${backupJobs.completedAt})
           from ${backupJobs}
           where ${backupJobs.orgId} = ${orgId}
@@ -92,8 +93,10 @@ export async function enrichedDevicesForOrg(
     minute: '2-digit',
     timeZoneName: 'short',
   });
-  const formatTimestamp = (value: Date | null) =>
-    value ? timestampFormatter.format(value) : null;
+  const formatTimestamp = (value: Date | string | null) => {
+    const date = sqlTimestamp(value);
+    return date ? timestampFormatter.format(date) : null;
+  };
 
   const data: EnrichedPortalDevice[] = rows.map((row) => ({
     id: row.id,

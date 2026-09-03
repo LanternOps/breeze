@@ -92,7 +92,7 @@ describe('buildOrgDeviceSnapshot', () => {
   // org it already snapshotted this calculation) must be able to hand it in
   // and skip the redundant full-org device scan.
   it('uses opts.devices and never calls snapshotContractDevices when a device list is supplied', async () => {
-    const cached = [{ id: 'cached-1', role: 'server', siteId: 'site-a' }];
+    const cached = [{ id: 'cached-1', hostname: 'cached-1', role: 'server', siteId: 'site-a' }];
     setGroupRows([{ id: 'g-ok', orgId: 'org-1', name: 'VIP', type: 'static', siteId: null, filterConditions: null }]);
     groupMembersForBilling.mockResolvedValue({ siteId: null, memberIds: new Set(['cached-1']) });
 

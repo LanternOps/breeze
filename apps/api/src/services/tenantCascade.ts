@@ -185,6 +185,12 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // prefix-extension trap noted below for custom_field_definitions).
   'contact_external_links',
   'contacts',
+  // localeCompare puts the '_' in 'contract_billing_period_outcomes' ahead of
+  // the 's' in 'contract_billing_periods' — the same prefix-extension trap
+  // documented above for contact_external_links/contacts. Verify with
+  // `node --eval "console.log('contract_billing_period_outcomes'.localeCompare('contract_billing_periods'))"`
+  // (-1) before moving either line.
+  'contract_billing_period_outcomes',
   'contract_billing_periods',
   'contract_documents',
   'contract_lines',
@@ -274,6 +280,11 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'incidents',
   'installer_bootstrap_tokens',
   'invoice_documents',
+  // Same '_' < 's' prefix-extension trap: invoice_line_devices sorts BEFORE
+  // invoice_lines. It is also the FK child, so children-before-parents and
+  // alphabetical order agree here — but the runtime topological sort
+  // (topologicalCascadeOrder) is what actually orders the DELETEs.
+  'invoice_line_devices',
   'invoice_lines',
   'invoice_payments',
   'invoice_stripe_payments',

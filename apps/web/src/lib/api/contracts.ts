@@ -127,6 +127,22 @@ export interface ContractBillingPeriod {
   periodEnd: string;
   invoiceId: string | null;
   generatedAt: string;
+  snapshotDeviceTotal: number | null;
+  uncoveredTotal: number | null;
+  flaggedTotal: number | null;
+  billedOverageTotal: number | null;
+}
+
+export interface PeriodOutcome {
+  contractBillingPeriodId: string;
+  invoiceId: string | null;
+  snapshotDeviceTotal: number;
+  uncoveredTotal: number;
+  flaggedTotal: number;
+  billedOverageTotal: number;
+  uncoveredByRole: Record<string, number>;
+  overages: OverageSummary[];
+  generatedAt: string;
 }
 
 /** Shape of `GET /contracts/:id` — `{ data: { contract, lines, periods } }`. */
@@ -206,6 +222,16 @@ export function listContractCurrencyMismatches(
 
 export function getContract(id: string): Promise<Response> {
   return fetchWithAuth(`/contracts/${id}`);
+}
+
+export async function fetchPeriodOutcome(
+  contractId: string,
+  periodId: string,
+): Promise<{ recorded: boolean; outcome: PeriodOutcome | null }> {
+  const res = await fetchWithAuth(`/contracts/${contractId}/periods/${periodId}/outcome`);
+  if (!res.ok) throw new Error(`Contract period outcome request failed (${res.status})`);
+  const body = (await res.json()) as { data: { recorded: boolean; outcome: PeriodOutcome | null } };
+  return body.data;
 }
 
 export function getContractEstimate(id: string): Promise<Response> {

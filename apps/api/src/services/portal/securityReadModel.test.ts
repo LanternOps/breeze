@@ -226,7 +226,7 @@ describe('securityReadModel', () => {
       score: 81,
       band: 'strong',
       scoreHistory: [{ capturedAt: '2026-09-01', score: 81 }],
-      threatEvents: { label: 'endpoint threat events' },
+      threatEvents: { label: 'Endpoint threat events' },
       vulnerabilities: {
         openBySeverity: {
           critical: 1,

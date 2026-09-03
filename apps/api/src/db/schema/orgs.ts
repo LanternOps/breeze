@@ -127,6 +127,12 @@ export const partners = pgTable('partners', {
   // added or imported. Partners can opt out if their jurisdiction treats hardware
   // as non-taxable or they prefer to set taxability item-by-item.
   autoTaxHardware: boolean('auto_tax_hardware').notNull().default(true),
+  // #3205 W07: partner default for the "Billed devices" appendix on invoice
+  // PDFs. A dedicated column, for the reason autoEmailInvoiceOnQuoteAccept
+  // states: settings cards replace sub-objects wholesale (#3597), and a column
+  // keeps gate === read-back with no #3608 stored-false ambiguity. Resolved
+  // ONCE at issue onto invoices.device_appendix; never read at render time.
+  invoiceDeviceAppendix: boolean('invoice_device_appendix').notNull().default(false),
   // Partner-authored AI copy style for enrich/polish (NULL = built-in house
   // format: generic customer-friendly name + "• "-bulleted spec description).
   catalogAiStyle: text('catalog_ai_style'),

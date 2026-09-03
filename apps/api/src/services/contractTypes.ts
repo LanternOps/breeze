@@ -50,6 +50,7 @@ export type ContractServiceErrorCode =
   // #4693: a formerly site-scoped device line whose site was deleted.
   | 'SITE_DELETED'
   | 'CONTRACT_NOT_FOUND'
+  | 'PERIOD_NOT_FOUND'
   | 'CONTRACT_CREATE_FAILED'
   | 'CONTRACT_LINE_CREATE_FAILED'
   | 'NOT_A_DRAFT'

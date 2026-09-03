@@ -30,6 +30,7 @@ import InvoiceActions from './InvoiceActions';
 import AccountingSyncCard from './AccountingSyncCard';
 import { MarginPanel, MarginToggle, useShowMargin } from './billingUi';
 import { computeChargeNow } from '@breeze/shared';
+import InvoiceLineDevices from './InvoiceLineDevices';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -374,6 +375,12 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
             </div>
           ) : (
           <div className="rounded-lg border bg-card shadow-xs">
+            {/* #3205 W07: invoice-level provenance, rendered once. */}
+            {invoice.evidenceVersion === null && (
+              <p className="mb-2 px-3 pt-2 text-xs text-muted-foreground" data-testid="invoice-devices-not-recorded">
+                {t('invoiceDetail.devices.notRecorded')}
+              </p>
+            )}
             {/* Labeled, keyboard-reachable scroll region: the internal view runs
                 to 7 columns, well past a phone viewport — scroll inside the card
                 instead of bleeding past its rounded edge (QuoteDetail pattern). */}
@@ -414,6 +421,7 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
                       </span>
                       {internalView && !l.customerVisible ? t('invoiceDetail.lines.hiddenMarker') : ''}
                       {lineBlurb(l) && <div className="text-xs text-muted-foreground">{lineBlurb(l)}</div>}
+                      <InvoiceLineDevices invoiceId={invoice.id} line={l} />
                     </td>
                     <td className="px-3 py-2 text-right">{l.quantity}</td>
                     <td className="px-3 py-2 text-right">{formatMoney(l.unitPrice, currency)}</td>
