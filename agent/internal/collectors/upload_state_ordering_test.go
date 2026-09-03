@@ -392,3 +392,62 @@ func TestChangeTrackerCommitIgnoresStaleBaseline(t *testing.T) {
 		t.Fatalf("stale commit rewound the baseline: next collect re-reported %d records, want 0", len(next.Records))
 	}
 }
+
+// TestChangeTrackerCommitAdvancesBaselineWhenPersistFails pins the documented
+// trade in Commit: the records have already landed server-side, so a failed
+// on-disk write must NOT hold the baseline back — re-reporting delivered
+// records every cycle would duplicate them. The error is still returned so the
+// caller can log the disk problem.
+func TestChangeTrackerCommitAdvancesBaselineWhenPersistFails(t *testing.T) {
+	installed := false
+	// An empty snapshot path makes saveSnapshot fail deterministically.
+	tracker := NewChangeTrackerCollector("")
+	tracker.gatherSnapshot = func() (*Snapshot, error) {
+		snap := emptySnapshot()
+		if installed {
+			snap.Software["acme::1.0"] = SoftwareItem{Name: "acme", Version: "1.0"}
+		}
+		return snap, nil
+	}
+
+	baseline, err := tracker.CollectPendingChanges()
+	if err != nil {
+		t.Fatalf("baseline collect: %v", err)
+	}
+	if err := tracker.Commit(baseline); err == nil {
+		t.Fatal("Commit err = nil, want the persist failure surfaced")
+	}
+
+	installed = true
+	pending, err := tracker.CollectPendingChanges()
+	if err != nil {
+		t.Fatalf("collect: %v", err)
+	}
+	if len(pending.Records) != 1 {
+		t.Fatalf("records = %d, want 1", len(pending.Records))
+	}
+	if err := tracker.Commit(pending); err == nil {
+		t.Fatal("Commit err = nil, want the persist failure surfaced")
+	}
+
+	next, err := tracker.CollectPendingChanges()
+	if err != nil {
+		t.Fatalf("second collect: %v", err)
+	}
+	if len(next.Records) != 0 {
+		t.Fatalf("second collect re-reported %d delivered records; the in-memory baseline must advance even when the disk write fails", len(next.Records))
+	}
+}
+
+func TestChangeTrackerCollectPendingChangesPropagatesGatherError(t *testing.T) {
+	wantErr := errors.New("snapshot gather exploded")
+	tracker := newTestChangeTracker(t, func() (*Snapshot, error) { return nil, wantErr })
+
+	pending, err := tracker.CollectPendingChanges()
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("err = %v, want %v", err, wantErr)
+	}
+	if pending != nil {
+		t.Fatalf("pending = %+v, want nil so the caller cannot commit a baseline it never collected", pending)
+	}
+}

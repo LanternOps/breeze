@@ -2,6 +2,7 @@ package heartbeat
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -349,5 +350,85 @@ func TestSendConfigurationChangesSerializesOverlappingCycles(t *testing.T) {
 	}
 	if requests != 3 {
 		t.Fatalf("uploads = %d, want 3 (each serialized cycle still runs)", requests)
+	}
+}
+
+// TestSendPolicyStateRegistryEndpoint covers the registry instantiation of the
+// shared sendPolicyState helper. The Windows collector cannot run here, so this
+// drives the helper directly: without it, only the config-state wiring is
+// exercised and a swapped endpoint or replace flag on the registry path would
+// go unnoticed.
+func TestSendPolicyStateRegistryEndpoint(t *testing.T) {
+	tests := []struct {
+		name        string
+		entries     []collectors.RegistryStateEntry
+		collectErr  error
+		wantSend    bool
+		wantReplace bool
+	}{
+		{
+			name:        "complete collection replaces server state",
+			entries:     []collectors.RegistryStateEntry{{RegistryPath: `HKLM\Software\Breeze`, ValueName: "Policy", ValueData: "on"}},
+			wantSend:    true,
+			wantReplace: true,
+		},
+		{
+			name:        "partial collection merges instead of replacing",
+			entries:     []collectors.RegistryStateEntry{{RegistryPath: `HKLM\Software\Breeze`, ValueName: "Policy", ValueData: "on"}},
+			collectErr:  errors.New("open HKLM\\Software\\Other: access is denied"),
+			wantSend:    true,
+			wantReplace: false,
+		},
+		{
+			name:       "failed collection with nothing to merge is skipped",
+			entries:    []collectors.RegistryStateEntry{},
+			collectErr: errors.New("open HKLM\\Software\\Breeze: access is denied"),
+			wantSend:   false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			bodies := make(chan map[string]any, 4)
+			paths := make(chan string, 4)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var decoded map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&decoded); err != nil {
+					t.Errorf("decode body: %v", err)
+				}
+				select {
+				case bodies <- decoded:
+					paths <- r.URL.Path
+				default:
+				}
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer server.Close()
+
+			h := NewWithVersion(&config.Config{
+				AgentID:   "agent-1",
+				AuthToken: "token",
+				ServerURL: server.URL,
+			}, "1.0.0", nil, nil)
+
+			sendPolicyState(h, "registry-state", "registry state", tc.entries, tc.collectErr)
+
+			sent := drainBodies(bodies)
+			if !tc.wantSend {
+				if len(sent) != 0 {
+					t.Fatalf("uploaded %v, want no upload", sent)
+				}
+				return
+			}
+			if len(sent) != 1 {
+				t.Fatalf("uploads = %d, want 1", len(sent))
+			}
+			if got := <-paths; got != "/api/v1/agents/agent-1/registry-state" {
+				t.Fatalf("upload path = %q, want the registry-state endpoint", got)
+			}
+			if replace, _ := sent[0]["replace"].(bool); replace != tc.wantReplace {
+				t.Fatalf("replace = %v, want %v", replace, tc.wantReplace)
+			}
+		})
 	}
 }
