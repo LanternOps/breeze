@@ -8,6 +8,7 @@ import { navigateTo } from './navigation';
 // into local scope for the InvoiceSummary/InvoiceDetail types below and re-exported
 // (type-only, erased at build) so '@/lib/api' consumers are unaffected.
 import type { DocumentPageSize, DocumentThemeId, EnrichedPortalDevice, InvoiceStatus, PublicQuoteHeader, QuotePresentation, SecurityDevicesDto, SecurityOverviewDto, TicketFormField } from '@breeze/shared';
+import type { DashboardDto } from '@breeze/shared';
 
 // Client API base. Empty (the default) → same-origin **relative** requests
 // (`/api/v1/...`), which the reverse proxy routes to the API under `/api/*`. This
@@ -1103,6 +1104,12 @@ export const portalApi = {
       { redirectOnUnauthorized: false }
     );
   },
+
+  // W04 — portal dashboard
+  getDashboard: (
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<DashboardDto>> =>
+    apiGet<DashboardDto>('/portal/dashboard', config),
 
   // ---- W05 — security ----
   getSecurityOverview: (
