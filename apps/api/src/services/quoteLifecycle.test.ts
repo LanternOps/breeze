@@ -68,8 +68,16 @@ vi.mock('./email', async (importOriginal) => {
   return { ...actual, getEmailService: vi.fn(() => ({ sendEmail: sendEmailMock, fromWithDisplayName: (name: string) => `"${name}" <no-reply@test.example>` })) };
 });
 
+vi.mock('./quoteDeviceSet', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./quoteDeviceSet')>();
+  return { ...actual, countQuoteDeviceSetLines: vi.fn() };
+});
+
 import { buildPublicQuoteAcceptUrl, portalBase, sendQuote, resendQuote, getQuoteShareLink } from './quoteLifecycle';
 import { renderQuotePdf } from './quotePdf';
+import { countQuoteDeviceSetLines } from './quoteDeviceSet';
+
+const countQuoteDeviceSetLinesMock = vi.mocked(countQuoteDeviceSetLines);
 
 const actor = { userId: 'u1', partnerId: 'p1', accessibleOrgIds: ['org1'] };
 
@@ -235,7 +243,7 @@ describe('sendQuote deposit validation', () => {
       taxRate: null, depositType: 'percent', depositPercent: '100.00',
     }]);
     queueResult([]); // blocks
-    queueResult([{ quantity: '1', unitPrice: '1000.00', taxable: true, customerVisible: true, recurrence: 'one_time', depositEligible: false }]);
+    queueResult([{ line: { quantity: '1', unitPrice: '1000.00', taxable: true, customerVisible: true, recurrence: 'one_time', depositEligible: false }, deviceGroup: null, site: null }]);
     queueResult([]); // no staged Pax8 order
     queueResult([]); // no successor revision
     queueResult([]); // getQuote: listQuoteOrders — order headers
@@ -256,7 +264,7 @@ describe('sendQuote deposit validation', () => {
     }]);
     queueResult([]); // blocks
     // A one-time line exists (so dueOnAcceptance > 0) but NONE are depositEligible.
-    queueResult([{ quantity: '1', unitPrice: '1000.00', taxable: true, customerVisible: true, recurrence: 'one_time', depositEligible: false }]);
+    queueResult([{ line: { quantity: '1', unitPrice: '1000.00', taxable: true, customerVisible: true, recurrence: 'one_time', depositEligible: false }, deviceGroup: null, site: null }]);
     queueResult([]); // no staged Pax8 order
     queueResult([]); // no successor revision
     queueResult([]); // getQuote: listQuoteOrders — order headers
@@ -357,6 +365,83 @@ describe('sendQuote customer-facing PDF', () => {
     // toCustomerLines also strips the cost-basis field, same as the portal route.
     expect(renderedLines[0]).not.toHaveProperty('unitCost');
     expect(sendEmailMock.mock.calls[0]![0].text).toContain('1.200,00 €');
+    expect(result.deviceSetDrift).toEqual([]);
+  });
+});
+
+describe('sendQuote device-set drift report (#3205 W05)', () => {
+  const quoteRow = {
+    id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'draft',
+    taxRate: null, depositType: 'none', depositPercent: null,
+    quoteNumber: 'Q-2026-0001', issueDate: '2026-01-01', expiryDate: null,
+    total: '700.00', currencyCode: 'USD', terms: null, termsAndConditions: null,
+    sellerSnapshot: null, billToName: null, billToTaxId: null,
+  };
+  const descriptorLine = {
+    id: 'line-device-set', quoteId: 'q1', orgId: 'org1', name: 'Managed servers', description: null,
+    quantity: '7.00', unitPrice: '100.00', lineTotal: '700.00', taxable: false,
+    customerVisible: true, recurrence: 'monthly', depositEligible: false,
+    contractLineType: 'per_device_role', deviceRoles: ['server'], deviceGroupId: null,
+    deviceGroupName: null, siteId: null, siteName: null, includedQuantity: null,
+    overageMode: null, overageUnitPrice: null,
+  };
+
+  beforeEach(() => {
+    results.length = 0;
+    setCalls.length = 0;
+    vi.clearAllMocks();
+    countQuoteDeviceSetLinesMock.mockResolvedValue([]);
+  });
+
+  function queueSendWithDescriptor() {
+    queueResult([{ id: 'q1' }]); // child lock
+    queueResult([quoteRow]);
+    queueResult([]); // blocks
+    queueResult([{ line: descriptorLine, deviceGroup: null, site: null }]);
+    queueResult([]); // no staged Pax8 order
+    queueResult([]); // no successor revision
+    queueResult([]); // order headers
+    queueResult([]); // order lines
+    queueResult([{ name: 'Customer Co', taxId: null }]); // getQuote draft bill-to org
+    queueResult([quoteRow]); // quoteDeviceSetEstimate quote
+    queueResult([descriptorLine]); // quoteDeviceSetEstimate lines
+    queueResult([{ id: 'p1', name: 'Acme MSP', billingTermsAndConditions: null, invoiceFooter: null }]);
+    queueResult([{ name: 'Customer Co', taxId: null, billingContact: null }]);
+    queueResult([{ id: 'q1' }]); // draft -> sent claim
+    queueResult([]); // email failure outcome marker
+    queueResult([{ ...quoteRow, status: 'sent' }]);
+  }
+
+  it('reports a changed live quantity and still sends', async () => {
+    queueSendWithDescriptor();
+    countQuoteDeviceSetLinesMock.mockResolvedValueOnce([{
+      lineId: descriptorLine.id, counted: 9, billed: 9, included: null,
+      overage: 0, overageMode: null,
+    }]);
+
+    const result = await sendQuote('q1', actor);
+
+    expect(result.quote.status).toBe('sent');
+    expect(result.deviceSetDrift).toEqual([{
+      lineId: descriptorLine.id, description: 'Managed servers',
+      storedQuantity: '7.00', liveQuantity: 9,
+    }]);
+  });
+
+  it('reports an evaluation error and still sends', async () => {
+    queueSendWithDescriptor();
+    countQuoteDeviceSetLinesMock.mockResolvedValueOnce([{
+      lineId: descriptorLine.id, counted: 0, billed: 0, included: null,
+      overage: 0, overageMode: null, error: 'GROUP_EVALUATION_FAILED',
+    }]);
+
+    const result = await sendQuote('q1', actor);
+
+    expect(result.quote.status).toBe('sent');
+    expect(result.deviceSetDrift).toEqual([{
+      lineId: descriptorLine.id, description: 'Managed servers',
+      storedQuantity: '7.00', liveQuantity: null, error: 'GROUP_EVALUATION_FAILED',
+    }]);
   });
 });
 

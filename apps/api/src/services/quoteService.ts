@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, isNotNull, lt, or, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNotNull, isNull, lt, or, sql } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { quotes, quoteLines, quoteBlocks, quoteImages, quoteRecipients } from '../db/schema/quotes';
@@ -73,6 +73,15 @@ import {
   toQuoteDeviceSetLine,
   type QuoteDeviceSetCount,
 } from './quoteDeviceSet';
+
+export interface QuoteDeviceSetDrift {
+  lineId: string;
+  description: string;
+  storedQuantity: string;
+  liveQuantity: number | null;
+  reason?: 'org_retargeted';
+  error?: 'GROUP_EVALUATION_FAILED' | 'GROUP_DELETED' | 'SITE_DELETED';
+}
 
 // ---------------------------------------------------------------------------
 // Actor guards. The RLS access context (withDbAccessContext) is established by
@@ -599,6 +608,7 @@ async function cloneQuoteCore(
   }
 
   return db.transaction(async (tx) => {
+    let deviceSetDrift: QuoteDeviceSetDrift[] = [];
     if (orgChanged) {
       // #3778: re-verify the same-currency guard under the org SHARE barrier,
       // the FIRST statement of this transaction. The pre-transaction read above
@@ -727,11 +737,47 @@ async function cloneQuoteCore(
         vendorSku: line.vendorSku,
         manufacturer: line.manufacturer,
         imageId: line.imageId ? imageIds.get(line.imageId) ?? null : null,
+        contractLineType: line.contractLineType,
+        deviceRoles: line.deviceRoles,
+        // Stamps are KEPT on a retargeted clone: they are what the amber
+        // "re-select for this organization" chip renders, and what tells the
+        // operator which group the line used to price.
+        deviceGroupId: orgChanged ? null : line.deviceGroupId,
+        deviceGroupName: line.deviceGroupName,
+        siteId: orgChanged ? null : line.siteId,
+        siteName: line.siteName,
+        includedQuantity: line.includedQuantity,
+        overageMode: line.overageMode,
+        overageUnitPrice: line.overageUnitPrice,
         sortOrder: line.sortOrder,
       })));
     }
 
-    return cloned!;
+    if (orgChanged && lines.some((line) => line.contractLineType !== null && line.contractLineType !== undefined)) {
+      deviceSetDrift = lines
+        .filter((line) => line.deviceGroupId !== null || line.siteId !== null)
+        .map((line) => ({
+          lineId: lineIds.get(line.id)!,
+          description: line.name ?? line.description ?? '',
+          storedQuantity: line.quantity,
+          liveQuantity: null,
+          reason: 'org_retargeted' as const,
+        }));
+
+      const unscoped = await tx.select().from(quoteLines).where(and(
+        eq(quoteLines.quoteId, quoteId),
+        isNotNull(quoteLines.contractLineType),
+        isNull(quoteLines.deviceGroupId),
+        isNull(quoteLines.siteId),
+      ));
+      if (unscoped.length > 0) {
+        const counts = await countQuoteDeviceSetLines(targetOrgId, unscoped.map(toQuoteDeviceSetLine));
+        await persistQuoteDeviceSetQuantities(tx, quoteId, source.currencyCode, unscoped, counts);
+      }
+      await recomputeAndPersist(quoteId, tx);
+    }
+
+    return { ...cloned!, deviceSetDrift };
   });
 }
 
@@ -872,7 +918,16 @@ export async function getQuote(id: string, actor: QuoteActor) {
     .leftJoin(deviceGroups, and(eq(quoteLines.deviceGroupId, deviceGroups.id), eq(quoteLines.orgId, deviceGroups.orgId)))
     .leftJoin(sites, and(eq(quoteLines.siteId, sites.id), eq(quoteLines.orgId, sites.orgId)))
     .where(eq(quoteLines.quoteId, id)).orderBy(quoteLines.sortOrder);
-  const lines = joinedLines.map((joined) => ({ ...joined.line, deviceGroup: joined.deviceGroup, site: joined.site }));
+  const lines = joinedLines.map(({ line, deviceGroup, site }) => ({
+    ...line,
+    deviceGroup: deviceGroup?.id ? deviceGroup : null,
+    site: site?.id ? site : null,
+    // A stamped name with a null id: the thing this line prices is gone.
+    descriptorUnresolved: Boolean(
+      (line.deviceGroupId === null && line.deviceGroupName !== null)
+      || (line.siteId === null && line.siteName !== null),
+    ),
+  }));
   // Quote acceptance returns the staged order id once, but the technician may
   // reload or open the converted quote later. Keep discoverability in the quote
   // read model itself. The quote access check runs first, and the lookup repeats
@@ -1058,6 +1113,7 @@ export async function listQuotes(query: ListQuotesQuery, actor: QuoteActor) {
  *  RLS-scoped readers never see a half-moved quote. */
 export async function updateQuote(id: string, input: UpdateQuoteInput, actor: QuoteActor) {
   const q = await loadDraft(id, actor);
+  let deviceSetDrift: QuoteDeviceSetDrift[] = [];
   // A site-restricted caller may not move the quote to a site it can't access
   // (nor clear it to null, which a restricted caller can never see).
   if (input.siteId !== undefined) assertSite(actor, input.siteId);
@@ -1166,9 +1222,15 @@ export async function updateQuote(id: string, input: UpdateQuoteInput, actor: Qu
       .from(quoteBlocks)
       .where(and(eq(quoteBlocks.quoteId, id), eq(quoteBlocks.blockType, 'contract')));
     await db.transaction(async (tx) => {
+      // #3205 W05 decision 7: defer THIS constraint BY NAME, never ALL. The
+      // parent's org_id update and the children's are separate statements, and
+      // quote_lines_quote_org_fk is checked at end-of-statement. Naming the one
+      // constraint keeps every other deferrable FK checking at statement
+      // boundaries, so unrelated tenancy violations fail where they happen.
+      await tx.execute(sql`SET CONSTRAINTS quote_lines_quote_org_fk DEFERRED`);
       // #3778: re-verify the same-currency guard under the org SHARE barrier as
-      // the FIRST statement of this transaction (the pre-transaction check above
-      // is a fast-fail only).
+      // the first data read of this transaction (the pre-transaction check above
+      // is a fast-fail only). SET CONSTRAINTS above takes no row/table lock.
       const lockedTarget = await lockOrgStampingDefaults(tx, targetOrgId);
       if (lockedTarget.currencyCode !== q.currencyCode) {
         throw new QuoteServiceError(
@@ -1180,8 +1242,44 @@ export async function updateQuote(id: string, input: UpdateQuoteInput, actor: Qu
       await tx.update(quotes).set(set).where(eq(quotes.id, id));
       // Move the denormalized org_id on every child row in the same transaction.
       await tx.update(quoteBlocks).set({ orgId: targetOrgId }).where(eq(quoteBlocks.quoteId, id));
+      // Scoped ids belong to the OLD org. Clear them in the SAME statement that
+      // moves org_id so the two immediate descriptor FKs never observe a
+      // cross-org pair; stamps and quantities deliberately survive.
+      const cleared = await tx.update(quoteLines)
+        .set({ orgId: targetOrgId, deviceGroupId: null, siteId: null })
+        .where(and(
+          eq(quoteLines.quoteId, id),
+          or(isNotNull(quoteLines.deviceGroupId), isNotNull(quoteLines.siteId)),
+        ))
+        .returning({
+          id: quoteLines.id,
+          name: quoteLines.name,
+          description: quoteLines.description,
+          quantity: quoteLines.quantity,
+        });
+      deviceSetDrift = cleared.map((line) => ({
+        lineId: line.id,
+        description: line.name ?? line.description ?? '',
+        storedQuantity: line.quantity,
+        liveQuantity: null,
+        reason: 'org_retargeted' as const,
+      }));
+      // The remaining lines carry no org-owned descriptor ids and can now move.
       await tx.update(quoteLines).set({ orgId: targetOrgId }).where(eq(quoteLines.quoteId, id));
       await tx.update(quoteImages).set({ orgId: targetOrgId }).where(eq(quoteImages.quoteId, id));
+
+      // Unscoped descriptors name nothing org-owned, so their count from the
+      // previous organization is meaningless. Re-derive in the target org.
+      const unscoped = await tx.select().from(quoteLines).where(and(
+        eq(quoteLines.quoteId, id),
+        isNotNull(quoteLines.contractLineType),
+        isNull(quoteLines.deviceGroupId),
+        isNull(quoteLines.siteId),
+      ));
+      if (unscoped.length > 0) {
+        const counts = await countQuoteDeviceSetLines(targetOrgId, unscoped.map(toQuoteDeviceSetLine));
+        await persistQuoteDeviceSetQuantities(tx, id, q.currencyCode, unscoped, counts);
+      }
       // Recompute INSIDE the transaction: a failure here must roll back the org
       // move too, never commit the quote onto the new org with totals still
       // computed under the old tax rate.
@@ -1192,7 +1290,7 @@ export async function updateQuote(id: string, input: UpdateQuoteInput, actor: Qu
     await recomputeAndPersist(id);
   }
   const [updated] = await db.select().from(quotes).where(eq(quotes.id, id)).limit(1);
-  return updated!;
+  return { ...updated!, deviceSetDrift };
 }
 
 export async function deleteDraftQuote(id: string, actor: QuoteActor) {
@@ -1229,6 +1327,23 @@ export async function changeQuoteCurrency(
       id: quoteLines.id, sourceType: quoteLines.sourceType, catalogItemId: quoteLines.catalogItemId,
       parentLineId: quoteLines.parentLineId, quantity: quoteLines.quantity,
     }).from(quoteLines).where(eq(quoteLines.quoteId, quoteId)).orderBy(quoteLines.id);
+    // #3205 W05 / W04 decision 15: repriceQuoteCatalogLines writes only
+    // unit_price, line_total and unit_cost — it cannot re-derive a hand-entered
+    // overage rate, which would otherwise survive the restamp in the OLD
+    // currency.
+    // clearLines deletes every line (the stamped one included), so the lock
+    // only matters when lines survive the restamp (reprice / no-op paths).
+    const [stamped] = input.clearLines
+      ? [undefined]
+      : await tx.select({ id: quoteLines.id }).from(quoteLines)
+        .where(and(eq(quoteLines.quoteId, quoteId), isNotNull(quoteLines.overageUnitPrice))).limit(1);
+    if (stamped) {
+      throw new QuoteServiceError(
+        'This quote has a hand-entered overage price; clear it before changing the currency',
+        409,
+        'CURRENCY_LOCKED',
+      );
+    }
     if (lineRows.length > 0) {
       if (input.reprice) {
         await repriceQuoteCatalogLines(tx, q, lineRows, input.currencyCode, actor);
