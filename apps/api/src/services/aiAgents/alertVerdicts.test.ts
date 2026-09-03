@@ -809,6 +809,7 @@ describe('projectAlertAiVerdictSummary', () => {
       rationale: 'Disk usage climbing steadily with no recovery.',
       patternKind: 'daily',
       feedback: 'up',
+      feedbackBy: USER_ID,
       suggestedIntentId: INTENT_ID,
       createdAt: '2026-09-22T10:00:00.000Z',
     });
@@ -837,6 +838,7 @@ describe('projectAlertAiVerdictSummary', () => {
 
     expect(dto.patternKind).toBeNull();
     expect(dto.feedback).toBeNull();
+    expect(dto.feedbackBy).toBeNull();
     expect(dto.suggestedIntentId).toBeNull();
   });
 });

@@ -244,6 +244,38 @@ describe('manage_contracts', () => {
     expect(contractService.addContractLineToContract).not.toHaveBeenCalled();
   });
 
+  it('add_line accepts a per_device_group line and rejects one without deviceGroupId', async () => {
+    const groupId = '33333333-3333-4333-8333-333333333333';
+    await getTool().handler({
+      action: 'add_line',
+      contractId: 'contract-1',
+      line: { lineType: 'per_device_group', description: 'VIP', unitPrice: '5.00', taxable: false, deviceGroupId: groupId },
+    }, auth);
+    expect(contractService.addContractLineToContract).toHaveBeenCalledWith(
+      'contract-1',
+      expect.objectContaining({ deviceGroupId: groupId }),
+      expect.anything(),
+    );
+    const bad = JSON.parse(await getTool().handler({
+      action: 'add_line',
+      contractId: 'contract-1',
+      line: { lineType: 'per_device_group', description: 'VIP', unitPrice: '5.00', taxable: false },
+    }, auth));
+    expect(bad.error).toMatch(/deviceGroupId/);
+  });
+
+  it('the manage_contracts description names per_device_group, deviceGroupId and the groupId-condition caveat', () => {
+    const schema = getTool().definition.input_schema as {
+      properties: { line: { description: string } };
+    };
+    const desc = schema.properties.line.description;
+    expect(desc).toContain('per_device_group');
+    expect(desc).toContain('deviceGroupId');
+    expect(desc).toMatch(/evaluated live/i);
+    // The caveat itself, not just the token: a groupId condition reads the other group's CACHED rows.
+    expect(desc).toMatch(/filter condition on groupId still reads that other group's cached membership/i);
+  });
+
   it('documents per_device_role and deviceRoles in the tool schema so the model can discover them', () => {
     const desc = JSON.stringify(getTool().definition.input_schema);
     expect(desc).toContain('per_device_role');

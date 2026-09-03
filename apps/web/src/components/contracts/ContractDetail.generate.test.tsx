@@ -50,7 +50,8 @@ const detail: ContractDetailData = {
   lines: [
     {
       id: 'cl-1', contractId: 'ct-1', orgId: 'org-1', lineType: 'flat', description: 'Managed endpoint',
-      catalogItemId: 'cat-1', unitPrice: '80.00', manualQuantity: null, siteId: null, deviceRoles: null, taxable: true,
+      catalogItemId: 'cat-1', unitPrice: '80.00', manualQuantity: null, siteId: null, deviceRoles: null,
+      deviceGroupId: null, deviceGroupName: null, deviceGroup: null, taxable: true,
       sortOrder: 0, createdAt: '2026-06-01T00:00:00Z',
     },
   ],

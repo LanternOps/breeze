@@ -434,7 +434,11 @@ export const deviceGroups = pgTable('device_groups', {
   parentId: uuid('parent_id'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
-});
+}, (table) => ({
+  // Composite-FK target for contract_lines(device_group_id, org_id) (#3205 W02).
+  // Created in SQL migration 2026-10-06-100100; declared here for db:check-drift.
+  idOrgUnique: uniqueIndex('device_groups_id_org_id_uniq').on(table.id, table.orgId),
+}));
 
 export const deviceGroupMemberships = pgTable('device_group_memberships', {
   deviceId: uuid('device_id').notNull().references(() => devices.id),

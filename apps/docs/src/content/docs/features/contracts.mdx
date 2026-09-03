@@ -39,10 +39,13 @@ Each line is one charge on the contract. Lines can resolve their quantity in dif
 | Flat | A fixed amount each period, regardless of count |
 | Per device | Counts the customer's devices at billing time × unit price |
 | Per device role | Counts the customer's devices whose role is in the line's set (for example switch + router + firewall, or workstation + server) at billing time × unit price |
+| Per device group | Counts the members of one device group at billing time × unit price. Static groups bill their current members; dynamic groups are evaluated from their filter when the estimate or invoice is computed |
 | Per seat | Counts the customer's seats/users at billing time × unit price |
 | Manual | A fixed quantity you set × unit price |
 
-Per-device and per-device-role lines can be scoped to a specific **site** so you bill only the devices at that location. Per-seat lines always bill the organization's whole active-user count and cannot be site-scoped. A line can link to a [catalog item](/features/product-catalog/), which prefills its description and price.
+Per-device and per-device-role lines can be scoped to a specific **site** so you bill only the devices at that location. A per-device-group line is not site-scoped: make the group itself site-bound instead. Per-seat lines always bill the organization's whole active-user count and cannot be site-scoped. A line can link to a [catalog item](/features/product-catalog/), which prefills its description and price.
+
+Dynamic groups on a contract are evaluated live when the estimate or invoice is computed, not from the member list cached on the Device Groups page, so a device that changed since the group was last refreshed is still billed correctly. The one exception is a filter condition that tests membership in *another* group, which reads that group's cached list. A group billed by a draft, active or paused contract cannot be deleted until the line is removed; a group deleted after a contract ended stays on that contract's lines by name.
 
 Device roles come from the agent's automatic classification, a network discovery scan, or a manual override on the device. A device whose role is still **Unknown** is never billed by a per-device-role line. The contract's estimate and each generated invoice report how many devices on the organization are not billed by any line, broken down by role, so you can classify them or add a line before the next period.
 

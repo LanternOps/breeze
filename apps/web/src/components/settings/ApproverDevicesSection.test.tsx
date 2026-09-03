@@ -127,6 +127,32 @@ describe('ApproverDevicesSection', () => {
     expect((screen.getByTestId('approver-device-label-input') as HTMLInputElement).value).toBe('My workstation');
   });
 
+  // #4470: the TOTP/passkey tiers mint through POST /auth/mfa/step-up, which
+  // now rejects a bad proof with 400 + `code: 'mfa_proof_invalid'` instead of
+  // a 401. Without a branch on the code this would fall through to the raw
+  // server string and lose the tier-specific copy.
+  it.each([
+    ['totp' as const, 'mfa_proof_invalid', 'Incorrect code.'],
+    ['password' as const, 'invalid_credentials', 'Incorrect password.'],
+  ])('maps the #4470 400 proof rejection for the %s tier', async (tier, code, expected) => {
+    const err = Object.assign(new Error('Invalid credentials'), { status: 400, code });
+    registerApproverDeviceMock.mockRejectedValueOnce(err);
+    render(<ApproverDevicesSection passkeyCount={0} mfaMethod={tier === 'totp' ? 'totp' : null} />);
+    await screen.findByTestId('approver-device-dev-1');
+
+    fireEvent.change(
+      screen.getByTestId(tier === 'totp' ? 'approver-stepup-code' : 'approver-stepup-password'),
+      { target: { value: tier === 'totp' ? '123456' : 'wrong' } },
+    );
+    fireEvent.click(screen.getByTestId('approver-device-register'));
+
+    await waitFor(() => expect(showToastMock).toHaveBeenCalledWith({ type: 'error', message: expected }));
+    expect(showToastMock).not.toHaveBeenCalledWith({
+      type: 'error',
+      message: 'Session expired — reload the page and try again.',
+    });
+  });
+
   it('shows a session-expired error (not "Incorrect password") on a 401 whose message is NOT the credential-failure string', async () => {
     // A rejected bearer token (auth middleware) also 401s, but with a message
     // like "Invalid or expired token" rather than the literal "Invalid

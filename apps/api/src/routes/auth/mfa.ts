@@ -64,6 +64,9 @@ import {
   parsePendingMfa,
   evaluatePendingMfa,
   evaluatePendingMfaMethod,
+  rejectProof,
+  MFA_CODE_INVALID,
+  MFA_PROOF_INVALID,
   mintLoginRegisterGrant,
   isAuthTransitionV1Request,
   authClientUpgradeRequiredResponse,
@@ -73,6 +76,27 @@ import { installAuthBindingReplacement, requestAuthBinding } from './binding';
 import { finalizeSsoPendingLink } from './ssoLinkCompletion';
 
 const { db, withSystemDbAccessContext, runOutsideDbContext } = dbModule;
+
+/**
+ * #4470: every rejected proof on these routes answers 400, never 401.
+ *
+ * A wrong TOTP/SMS/recovery code — or a wrong step-up password — is the user
+ * mistyping a field of the request body. The bearer that authenticated the
+ * request is still perfectly valid. Answering 401 made the two
+ * indistinguishable to the clients, and `fetchWithAuth`
+ * (`apps/web/src/stores/auth.ts`) turns a 401 into refresh-and-replay and then
+ * `handleSessionExpired` — so a single typo signed the user out in the middle
+ * of MFA enrollment (#4413/#4414).
+ *
+ * 401 survives on these routes for exactly two things, both of which really
+ * ARE "the credential authenticating this request is dead":
+ *   - the bearer guard (`authMiddleware`), and
+ *   - the login challenge's `tempToken` (`Invalid or expired MFA session`) and
+ *     the SSO-link ceremony (`sso_link_expired`) — the login page keys on
+ *     those to send the user back to the start instead of asking for another
+ *     code.
+ */
+const MFA_PROOF_REJECTION_STATUS = 400;
 
 function authTransitionClientClass(c: Context): 'web' | 'native' {
   return readMobileDeviceId(c) ? 'native' : 'web';
@@ -116,10 +140,13 @@ const passwordOnlySchema = z.object({
 
 // #4018: the FIRST-FACTOR ENROLLMENT endpoints accept either proof. Both are
 // optional HERE and resolveEnrollmentStepUp decides which road this account is
-// allowed to take — "neither supplied" must be its opaque 401, not a 400 from
-// this schema, because the shape of the rejection must not tell an attacker
-// whether the account has a password. `passwordOnlySchema` above stays
-// password-only: /mfa/recovery-codes is not an enrollment.
+// allowed to take — "neither supplied" must be that helper's own opaque
+// rejection, not a zod rejection from this schema, because the shape of the
+// rejection must not tell an attacker whether the account has a password.
+// (#4470 moved that rejection's status from 401 to 400 on these routes; the
+// point stands unchanged — it is the UNIFORMITY that closes the oracle, not
+// the particular status.) `passwordOnlySchema` above stays password-only:
+// /mfa/recovery-codes is not an enrollment.
 const enrollmentStepUpSchema = z.object({
   currentPassword: z.string().min(1).max(256).optional(),
   ssoReauthGrantId: z.string().uuid().optional()
@@ -187,7 +214,7 @@ mfaRoutes.post('/mfa/setup', authMiddleware, zValidator('json', enrollmentStepUp
     c,
     auth,
     { currentPassword, ssoReauthGrantId },
-    { keyPrefix: 'mfa:pwd', consume: false }
+    { keyPrefix: 'mfa:pwd', consume: false, rejectionStatus: MFA_PROOF_REJECTION_STATUS }
   );
   if (stepUpError) return stepUpError;
 
@@ -333,7 +360,7 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
         reason: 'mfa_method_not_allowed',
         details: { method: effectiveMethod, phase: methodVerdict.reason },
       });
-      return c.json({ error: 'Invalid MFA code' }, 401);
+      return rejectProof(c, 'Invalid MFA code', MFA_CODE_INVALID, MFA_PROOF_REJECTION_STATUS);
     }
 
     let capability: AuthIssuanceCapability | null = null;
@@ -418,7 +445,7 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
         reason: 'mfa_invalid_code',
         details: { method: effectiveMethod }
       });
-      return c.json({ error: 'Invalid MFA code' }, 401);
+      return rejectProof(c, 'Invalid MFA code', MFA_CODE_INVALID, MFA_PROOF_REJECTION_STATUS);
     }
 
     // #4067: this MFA step may be the continuation of a link-on-first-SSO-
@@ -442,7 +469,7 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
             userId: user.id, email: user.email, name: user.name,
             reason: 'mfa_recovery_code_invalid', details: { method: 'recovery' },
           });
-          return c.json({ error: 'Invalid MFA code' }, 401);
+          return rejectProof(c, 'Invalid MFA code', MFA_CODE_INVALID, MFA_PROOF_REJECTION_STATUS);
         }
         if (outcome.error === 'identity_in_use') {
           return c.json({ error: 'identity_in_use' }, 409);
@@ -531,7 +558,7 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
             userId: user.id, email: user.email, name: user.name,
             reason: 'mfa_recovery_code_invalid', details: { method: 'recovery' },
           });
-          return c.json({ error: 'Invalid MFA code' }, 401);
+          return rejectProof(c, 'Invalid MFA code', MFA_CODE_INVALID, MFA_PROOF_REJECTION_STATUS);
         }
         const response = authIssuanceAdmissionError(c, error);
         if (!response) throw error;
@@ -554,7 +581,7 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
             userId: user.id, email: user.email, name: user.name,
             reason: 'mfa_recovery_code_invalid', details: { method: 'recovery' },
           });
-          return c.json({ error: 'Invalid MFA code' }, 401);
+          return rejectProof(c, 'Invalid MFA code', MFA_CODE_INVALID, MFA_PROOF_REJECTION_STATUS);
         }
       }
       recordAuthTransitionLegacyIssuer(issuer, authTransitionClientClass(c));
@@ -664,7 +691,7 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
       email: auth.user.email,
       details: { phase: 'setup_confirmation' }
     });
-    return c.json({ error: 'Invalid MFA code' }, 401);
+    return rejectProof(c, 'Invalid MFA code', MFA_CODE_INVALID, MFA_PROOF_REJECTION_STATUS);
   }
 
   // Terminal factor write: NOW consume the grant (single-use). Re-checks the
@@ -685,7 +712,7 @@ mfaRoutes.post('/mfa/verify', zValidator('json', mfaVerifySchema), async (c) => 
     c,
     auth,
     { ssoReauthGrantId: c.req.valid('json').ssoReauthGrantId },
-    { keyPrefix: 'mfa:pwd', consume: true, passwordAlreadyProven: true }
+    { keyPrefix: 'mfa:pwd', consume: true, passwordAlreadyProven: true, rejectionStatus: MFA_PROOF_REJECTION_STATUS }
   );
   if (enrollmentConsumeError) return enrollmentConsumeError;
 
@@ -789,7 +816,9 @@ mfaRoutes.post('/mfa/disable', authMiddleware, zValidator('json', mfaDisableSche
   // possession of the second factor; the password proves the user is at
   // the keyboard right now (vs an attacker on a stolen access token who
   // somehow got an MFA code, e.g. social-engineered SMS).
-  const passwordError = await requireCurrentPasswordStepUp(c, auth.user.id, currentPassword, 'mfa:pwd');
+  const passwordError = await requireCurrentPasswordStepUp(c, auth.user.id, currentPassword, 'mfa:pwd', {
+    rejectionStatus: MFA_PROOF_REJECTION_STATUS,
+  });
   if (passwordError) return passwordError;
 
   // MFA policy blocks self-disable when effective policy (role OR org/partner
@@ -848,7 +877,7 @@ mfaRoutes.post('/mfa/disable', authMiddleware, zValidator('json', mfaDisableSche
         email: auth.user.email,
         details: { method: 'sms' }
       });
-      return c.json({ error: 'Invalid verification code' }, 401);
+      return rejectProof(c, 'Invalid verification code', MFA_CODE_INVALID, MFA_PROOF_REJECTION_STATUS);
     }
   } else {
     // TOTP
@@ -868,7 +897,7 @@ mfaRoutes.post('/mfa/disable', authMiddleware, zValidator('json', mfaDisableSche
         email: auth.user.email,
         details: { method: 'totp' }
       });
-      return c.json({ error: 'Invalid MFA code' }, 401);
+      return rejectProof(c, 'Invalid MFA code', MFA_CODE_INVALID, MFA_PROOF_REJECTION_STATUS);
     }
   }
 
@@ -917,7 +946,7 @@ mfaRoutes.post('/mfa/enable', authMiddleware, zValidator('json', mfaEnableWithSt
     c,
     auth,
     { currentPassword, ssoReauthGrantId },
-    { keyPrefix: 'mfa:pwd', consume: false }
+    { keyPrefix: 'mfa:pwd', consume: false, rejectionStatus: MFA_PROOF_REJECTION_STATUS }
   );
   if (enrollmentError) return enrollmentError;
 
@@ -975,8 +1004,7 @@ mfaRoutes.post('/mfa/enable', authMiddleware, zValidator('json', mfaEnableWithSt
       email: auth.user.email,
       details: { phase: 'setup_confirmation' }
     });
-    const message = 'Invalid MFA code';
-    return c.json({ error: message, message }, 401);
+    return rejectProof(c, 'Invalid MFA code', MFA_CODE_INVALID, MFA_PROOF_REJECTION_STATUS);
   }
 
   // Terminal factor write: NOW consume the grant (single-use). Re-checks the
@@ -1003,7 +1031,7 @@ mfaRoutes.post('/mfa/enable', authMiddleware, zValidator('json', mfaEnableWithSt
     c,
     auth,
     { ssoReauthGrantId },
-    { keyPrefix: 'mfa:pwd', consume: true, passwordAlreadyProven: true }
+    { keyPrefix: 'mfa:pwd', consume: true, passwordAlreadyProven: true, rejectionStatus: MFA_PROOF_REJECTION_STATUS }
   );
   if (enrollmentConsumeError) return enrollmentConsumeError;
 
@@ -1143,7 +1171,9 @@ mfaRoutes.post('/mfa/step-up', authMiddleware, zValidator('json', mfaStepUpSchem
       .where(eq(users.id, auth.user.id))
       .limit(1);
     if (!u?.mfaEnabled || u.mfaMethod !== 'sms' || u.phoneVerified !== true || !u.phoneNumber) {
-      return c.json({ error: 'Invalid credentials' }, 401);
+      // Same response as a wrong code below — a distinguishable rejection here
+      // would tell an attacker which factor the account actually holds.
+      return rejectProof(c, 'Invalid credentials', MFA_PROOF_INVALID, MFA_PROOF_REJECTION_STATUS);
     }
     const twilio = getTwilioService();
     if (!twilio) return c.json({ error: 'SMS not available' }, 400);
@@ -1165,7 +1195,7 @@ mfaRoutes.post('/mfa/step-up', authMiddleware, zValidator('json', mfaStepUpSchem
       email: auth.user.email,
       details: { method: body.method }
     });
-    return c.json({ error: 'Invalid credentials' }, 401);
+    return rejectProof(c, 'Invalid credentials', MFA_PROOF_INVALID, MFA_PROOF_REJECTION_STATUS);
   }
 
   const epochs = await getUserEpochs(auth.user.id);
@@ -1207,7 +1237,9 @@ mfaRoutes.post('/mfa/recovery-codes', authMiddleware, zValidator('json', passwor
   const auth = c.get('auth');
   const { currentPassword } = c.req.valid('json');
 
-  const passwordError = await requireCurrentPasswordStepUp(c, auth.user.id, currentPassword, 'mfa:pwd');
+  const passwordError = await requireCurrentPasswordStepUp(c, auth.user.id, currentPassword, 'mfa:pwd', {
+    rejectionStatus: MFA_PROOF_REJECTION_STATUS,
+  });
   if (passwordError) return passwordError;
 
   const [user] = await db

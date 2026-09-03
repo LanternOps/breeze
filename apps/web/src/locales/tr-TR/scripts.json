@@ -971,6 +971,8 @@
       "variablePlaceholder": "ör. vendor_token",
       "fieldLabel": "Özel alan anahtarı",
       "fieldPlaceholder": "ör. asset_tag",
+      "fieldHelp": "Ayarlar → Özel Alanlar bölümünde gösterilen Alan Anahtarını girin (büyük/küçük harfe duyarlıdır). Okuma: bağlandıktan sonra, çözümlenen değer normal bir parametre gibi betiğe iletilir — herhangi bir istem gösterilmez. Yazma: yeni bir değeri geri kaydetmek için betiğin, bir API anahtarıyla birlikte PATCH isteği kullanarak cihazın özel alan API'sini çağırmasını sağlayın.",
+      "fieldHelpAriaLabel": "Cihaz özel alan bağlaması hakkında",
       "builtinLabel": "Özellik",
       "chooseTitle": "Bir değişken seçin",
       "secretRejected": "\"{{key}}\" bir gizli bilgidir — kaydetme reddedilir. Gizli olmayan bir değişken seçin.",

@@ -122,6 +122,22 @@ describe('runContractBillingSweep price-book gap logging (#3775)', () => {
       warn.mockRestore();
     }
   });
+
+  it('a GROUP_EVALUATION_FAILED contract is logged and reported, and the next contract still generates', async () => {
+    dueRows.push({ id: 'c1' }, { id: 'c2' });
+    generateDueInvoiceMock
+      .mockRejectedValueOnce(Object.assign(new Error('group failed'), { code: 'GROUP_EVALUATION_FAILED' }))
+      .mockResolvedValueOnce({ generated: true, invoiceId: 'inv2', autoIssue: false, priceBookGaps: [], uncoveredDevices: null });
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const summary = await runContractBillingSweep(new Date('2026-07-01T06:00:00Z'));
+      expect(generateDueInvoiceMock).toHaveBeenCalledTimes(2);
+      expect(err).toHaveBeenCalledWith('[ContractWorker] generation failed', 'contractId=c1', 'group failed');
+      expect(summary).toMatchObject({ billed: 1, failed: 1 });
+    } finally {
+      err.mockRestore();
+    }
+  });
 });
 
 // ── billing sweep tenant scope (org-lifecycle Wave 4 review fix C-A.2) ──────

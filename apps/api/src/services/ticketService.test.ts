@@ -211,7 +211,11 @@ vi.mock('../db/schema', () => ({
     requesterContactId: 'requesterContactId',
     deletedAt: 'deletedAt'
   },
-  ticketComments: {},
+  // #4524: moveTicketOrg nulls the reverse pointer ticket_comments.agent_run_id,
+  // so these two columns must exist on the mock or the WHERE builds on undefined.
+  ticketComments: { ticketId: 'ticketId', agentRunId: 'agentRunId' },
+  // #4524: moveTicketOrg severs ai_agent_runs.ticket_id in the same transaction.
+  aiAgentRuns: { id: 'id', orgId: 'orgId', ticketId: 'ticketId' },
   ticketDrafts: {
     id: 'id', ticketId: 'ticketId', orgId: 'orgId', runId: 'runId', intentId: 'intentId',
     kind: 'kind', content: 'content', state: 'state', supersededBy: 'supersededBy',

@@ -163,6 +163,7 @@ describe('evaluateGroupMembership — silent-failure diagnostics', () => {
   it('logs a shortfall with the matched count and the count that actually landed', async () => {
     mockSelect
       .mockReturnValueOnce(limitChain([groupRow()]))       // group lookup
+      .mockReturnValueOnce(whereChain([]))                  // resolver memberships
       .mockReturnValueOnce(whereChain([]))                  // current memberships
       .mockReturnValueOnce(whereChain([{ count: 0 }]));     // post-write verification
     mockEvaluateFilter.mockResolvedValue({
@@ -186,6 +187,7 @@ describe('evaluateGroupMembership — silent-failure diagnostics', () => {
   it('logs nothing and stamps the group org on every row when materialization succeeds', async () => {
     mockSelect
       .mockReturnValueOnce(limitChain([groupRow()]))
+      .mockReturnValueOnce(whereChain([]))
       .mockReturnValueOnce(whereChain([]))
       .mockReturnValueOnce(whereChain([{ count: 2 }]));
     mockEvaluateFilter.mockResolvedValue({
@@ -212,6 +214,7 @@ describe('evaluateGroupMembership — silent-failure diagnostics', () => {
     mockSelect
       .mockReturnValueOnce(limitChain([groupRow()]))
       .mockReturnValueOnce(whereChain([{ deviceId: 'pinned-1', isPinned: true }]))
+      .mockReturnValueOnce(whereChain([{ deviceId: 'pinned-1', isPinned: true }]))
       .mockReturnValueOnce(whereChain([{ count: 2 }])); // pinned-1 + dev-1
     mockEvaluateFilter.mockResolvedValue({
       deviceIds: ['dev-1'],
@@ -228,6 +231,7 @@ describe('evaluateGroupMembership — silent-failure diagnostics', () => {
   it('writes the membership log as one batched insert instead of one per device', async () => {
     mockSelect
       .mockReturnValueOnce(limitChain([groupRow()]))
+      .mockReturnValueOnce(whereChain([]))
       .mockReturnValueOnce(whereChain([]))
       .mockReturnValueOnce(whereChain([{ count: 3 }]));
     mockEvaluateFilter.mockResolvedValue({
