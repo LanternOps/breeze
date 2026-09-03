@@ -28,6 +28,11 @@ vi.mock('../db/schema', () => ({
     lastSeenIp: 'lastSeenIp',
     mtlsCertSerialNumber: 'mtlsCertSerialNumber',
   },
+  // #4673 W02 — the device auth select inner-joins this for the owning MSP.
+  organizations: {
+    id: 'organizations.id',
+    partnerId: 'organizations.partnerId',
+  },
   // Security remediation Wave 5, Task 6 — services/agentCertificateBinding.ts
   // (imported transitively via agentAuthMiddleware) reads this table.
   deviceMtlsCertificates: {
@@ -276,11 +281,19 @@ const VALID_TOKEN = 'brz_test_token';
 const VALID_HASH = sha(VALID_TOKEN);
 
 function buildSelectMock(result: unknown[]) {
+  // #4673 W02 — the device auth select is now
+  // `.from(devices).innerJoin(organizations, ...).where(...).limit(1)`.
+  // `innerJoin` returns the same terminal shape so callers that do NOT join
+  // (the certificate-binding lookups) keep working against this mock.
+  const terminal = {
+    where: vi.fn().mockReturnValue({
+      limit: vi.fn().mockResolvedValue(result),
+    }),
+  };
   vi.mocked(db.select).mockReturnValue({
     from: vi.fn().mockReturnValue({
-      where: vi.fn().mockReturnValue({
-        limit: vi.fn().mockResolvedValue(result),
-      }),
+      innerJoin: vi.fn().mockReturnValue(terminal),
+      ...terminal,
     }),
   } as any);
 }
@@ -291,6 +304,10 @@ function makeDevice(overrides: Record<string, unknown> = {}) {
     agentId: 'agent-1',
     orgId: 'org-1',
     siteId: 'site-1',
+    // #4673 W02 — the device auth select now inner-joins `organizations` to
+    // pull the owning MSP's partner id. `organizations.partner_id` is NOT
+    // NULL, so a real join always yields a value here.
+    partnerId: 'partner-1',
     agentTokenHash: VALID_HASH,
     previousTokenHash: null,
     previousTokenExpiresAt: null,
@@ -436,6 +453,127 @@ describe('agentAuthMiddleware - tenant-status gate', () => {
   });
 });
 
+// #4673 Wave 2 (#4675) — populate `currentPartnerId` on the agent DB context.
+//
+// Wave 1 shipped a SELECT-only RLS branch
+// `(org_id IS NULL AND partner_id = public.breeze_current_partner_id())` across
+// the whole configuration-policy chain. That branch reads the
+// `breeze.current_partner_id` GUC, which `db/index.ts` SET LOCALs from
+// `DbAccessContext.currentPartnerId`. The agent context hard-coded that field
+// to `null`, so for agents the branch could never be true and partner-wide
+// config was invisible — which is exactly why the agent-facing resolvers had to
+// escape to a system context (`withPartnerWideVisibility`).
+//
+// These tests pin BOTH halves of the fix and, just as importantly, the part
+// that must NOT change: the GUC feeds SELECT-only policies, so `partnerId`
+// widens READS to the device's own MSP and nothing else. `accessiblePartnerIds`
+// stays `[]`, which is what gates `breeze_has_partner_access` — the partner-AXIS
+// (write-capable) predicate. If a future edit "helpfully" fills
+// `accessiblePartnerIds` too, agents gain write targeting on partner-axis tables;
+// the assertion below is the tripwire for that.
+describe('agentAuthMiddleware - currentPartnerId population (#4673 W02)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.unstubAllEnvs();
+    vi.mocked(getRedis).mockReturnValue({} as any);
+    vi.mocked(getAgentTenantState).mockResolvedValue('active');
+    vi.mocked(rateLimiter).mockResolvedValue({
+      allowed: true,
+      remaining: 100,
+      resetAt: Date.now() + 60_000,
+    } as any);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('sets currentPartnerId on the request-long org context from the device org partner', async () => {
+    buildSelectMock([makeDevice()]);
+
+    const c = createContext({
+      token: VALID_TOKEN,
+      path: '/api/v1/agents/agent-1/commands/cmd-1/result',
+    });
+    const next = vi.fn().mockResolvedValue(undefined);
+
+    await agentAuthMiddleware(c, next);
+
+    expect(vi.mocked(withDbAccessContext)).toHaveBeenCalledTimes(1);
+    const dbContext = vi.mocked(withDbAccessContext).mock.calls[0]?.[0] as unknown as Record<string, unknown>;
+    expect(dbContext.currentPartnerId).toBe('partner-1');
+    expect(dbContext.scope).toBe('organization');
+    expect(dbContext.orgId).toBe('org-1');
+  });
+
+  it('does NOT widen the partner-AXIS write capability when populating currentPartnerId', async () => {
+    buildSelectMock([makeDevice()]);
+
+    const c = createContext({
+      token: VALID_TOKEN,
+      path: '/api/v1/agents/agent-1/commands/cmd-1/result',
+    });
+
+    await agentAuthMiddleware(c, vi.fn().mockResolvedValue(undefined));
+
+    const dbContext = vi.mocked(withDbAccessContext).mock.calls[0]?.[0] as unknown as Record<string, unknown>;
+    // The read branch is SELECT-only; the write axis must stay empty.
+    expect(dbContext.accessiblePartnerIds).toEqual([]);
+    expect(dbContext.accessibleOrgIds).toEqual(['org-1']);
+  });
+
+  // The three SELF_MANAGED_DB_CONTEXT_ACTIONS routes (heartbeat, reliability,
+  // commands) skip the request-long wrap and hand-build their own org context.
+  // They can only populate `currentPartnerId` if the middleware surfaces the
+  // partner id on the agent context — so it must be there even on the routes
+  // where the middleware itself opens no transaction at all.
+  it('surfaces partnerId on the agent context for the self-managed heartbeat route', async () => {
+    buildSelectMock([makeDevice()]);
+
+    const c = createContext({ token: VALID_TOKEN, path: '/api/v1/agents/agent-1/heartbeat' });
+    const next = vi.fn().mockResolvedValue(undefined);
+
+    await agentAuthMiddleware(c, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+    // Middleware opened no wrap of its own for this route ...
+    expect(vi.mocked(withDbAccessContext)).not.toHaveBeenCalled();
+    // ... so the handler must be able to build one itself.
+    expect((c.get('agent') as unknown as { partnerId: string }).partnerId).toBe('partner-1');
+    expect((c.get('agent') as unknown as { orgId: string }).orgId).toBe('org-1');
+  });
+
+  it('surfaces partnerId on the agent context for the self-managed reliability route', async () => {
+    buildSelectMock([makeDevice()]);
+
+    const c = createContext({ token: VALID_TOKEN, path: '/api/v1/agents/agent-1/reliability' });
+
+    await agentAuthMiddleware(c, vi.fn().mockResolvedValue(undefined));
+
+    expect((c.get('agent') as unknown as { partnerId: string }).partnerId).toBe('partner-1');
+  });
+
+  // Devices in a DIFFERENT org must carry THAT org's partner, never a stale or
+  // hard-coded one. A join that silently resolved to the wrong row would hand an
+  // agent read visibility into a foreign MSP's partner-wide config — the exact
+  // cross-tenant shape this whole chain exists to prevent.
+  it('carries the joined partner id of the device own org, not a fixed value', async () => {
+    buildSelectMock([makeDevice({ orgId: 'org-9', partnerId: 'partner-9' })]);
+
+    const c = createContext({
+      token: VALID_TOKEN,
+      path: '/api/v1/agents/agent-1/commands/cmd-1/result',
+    });
+
+    await agentAuthMiddleware(c, vi.fn().mockResolvedValue(undefined));
+
+    const dbContext = vi.mocked(withDbAccessContext).mock.calls[0]?.[0] as unknown as Record<string, unknown>;
+    expect(dbContext.currentPartnerId).toBe('partner-9');
+    expect(dbContext.orgId).toBe('org-9');
+    expect((c.get('agent') as unknown as { partnerId: string }).partnerId).toBe('partner-9');
+  });
+});
+
 // Security remediation Wave 5, Task 6 — the shared certificate/device
 // binding decision (services/agentCertificateBinding.ts) runs inside
 // agentAuthMiddleware after bearer + tenant-status checks. Sequenced select
@@ -445,12 +583,18 @@ const ACTIVE_SERIAL = 'AABBCCDDEEFF00112233';
 const OTHER_SERIAL = '00112233AABBCCDDEEFF';
 
 function queueSelectOnce(rows: unknown[]) {
+  // See buildSelectMock — `.innerJoin(...)` must be chainable for the device
+  // auth select (#4673 W02) without disturbing the un-joined lookups.
+  const terminal = {
+    where: vi.fn().mockReturnValue({
+      limit: vi.fn().mockResolvedValue(rows),
+      orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) }),
+    }),
+  };
   vi.mocked(db.select).mockReturnValueOnce({
     from: vi.fn().mockReturnValue({
-      where: vi.fn().mockReturnValue({
-        limit: vi.fn().mockResolvedValue(rows),
-        orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) }),
-      }),
+      innerJoin: vi.fn().mockReturnValue(terminal),
+      ...terminal,
     }),
   } as any);
 }

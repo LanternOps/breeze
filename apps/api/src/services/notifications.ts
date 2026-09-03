@@ -1,10 +1,10 @@
 import { createHash } from 'crypto';
-import admin from 'firebase-admin';
 import { db } from '../db';
 import { alerts, mobileDevices, organizationUsers, pushNotifications, users } from '../db/schema';
 import { and, eq } from 'drizzle-orm';
 import { getEventBus } from './eventBus';
 import { isApnsConfigured, sendApnsNotification } from './apns';
+import { isFcmConfigured, sendFcmNotification } from './fcm';
 // Moved to its own module in W07 (#3901) so non-Firebase callers can use it.
 // Re-exported here so every existing importer keeps working.
 import { isInQuietHours, type QuietHoursConfig } from './quietHours';
@@ -25,47 +25,6 @@ type MobileDevice = typeof mobileDevices.$inferSelect;
 interface PushSendResult {
   messageId: string;
   status: 'sent' | 'stubbed';
-}
-
-let firebaseApp: admin.app.App | null = null;
-
-export function initFirebase(): admin.app.App {
-  if (firebaseApp) {
-    return firebaseApp;
-  }
-
-  const rawServiceAccount = process.env.FIREBASE_SERVICE_ACCOUNT;
-  if (!rawServiceAccount) {
-    throw new Error('FIREBASE_SERVICE_ACCOUNT is not set');
-  }
-
-  let serviceAccount: admin.ServiceAccount;
-  try {
-    const parsed = JSON.parse(rawServiceAccount) as { privateKey?: string; private_key?: string };
-    if (parsed.private_key && !parsed.privateKey) {
-      parsed.privateKey = parsed.private_key;
-    }
-    serviceAccount = parsed as admin.ServiceAccount;
-  } catch (err) {
-    const decoded = Buffer.from(rawServiceAccount, 'base64').toString('utf8');
-    const parsed = JSON.parse(decoded) as { privateKey?: string; private_key?: string };
-    if (parsed.private_key && !parsed.privateKey) {
-      parsed.privateKey = parsed.private_key;
-    }
-    serviceAccount = parsed as admin.ServiceAccount;
-  }
-
-  if (typeof serviceAccount.privateKey === 'string') {
-    serviceAccount.privateKey = serviceAccount.privateKey.replace(/\\n/g, '\n');
-  }
-
-  firebaseApp = admin.apps.length
-    ? admin.app()
-    : admin.initializeApp({
-      credential: admin.credential.cert(serviceAccount)
-    });
-
-  return firebaseApp;
 }
 
 export async function sendPushToUser(userId: string, payload: PushPayload): Promise<void> {
@@ -148,29 +107,38 @@ export async function sendPushToDevice(device: MobileDevice, payload: PushPayloa
 }
 
 export async function sendFCM(token: string, payload: PushPayload): Promise<PushSendResult> {
-  initFirebase();
-
-  const data: Record<string, string> = {
-    ...payload.data
-  };
-
-  if (payload.alertId) {
-    data.alertId = payload.alertId;
-  }
-  if (payload.eventType) {
-    data.eventType = payload.eventType;
-  }
-
-  const messageId = await admin.messaging().send({
-    token,
-    notification: {
+  // No credentials configured → keep the historical no-op stub so alert pushes
+  // degrade gracefully in dev/self-hosted deployments without Firebase set up.
+  // Mirrors sendAPNS's isApnsConfigured() check above.
+  if (!isFcmConfigured()) {
+    const tokenFingerprint = createHash('sha256').update(token).digest('hex').slice(0, 12);
+    console.warn('[Notifications] FCM not configured; push stubbed.', {
+      tokenFingerprint,
       title: payload.title,
-      body: payload.body
-    },
-    data
-  });
+    });
+    return { messageId: `fcm-stub-${Date.now()}`, status: 'stubbed' };
+  }
 
-  return { messageId, status: 'sent' };
+  const data: Record<string, unknown> = { ...payload.data };
+  if (payload.alertId) data.alertId = payload.alertId;
+  if (payload.eventType) data.eventType = payload.eventType;
+
+  const res = await sendFcmNotification(token, { title: payload.title, body: payload.body, data });
+  if (res.ok) {
+    return { messageId: res.messageId ?? `fcm-${Date.now()}`, status: 'sent' };
+  }
+
+  // Dead token: purge it so we stop targeting it, then surface the failure —
+  // mirrors sendAPNS's unregistered-token handling below.
+  if (res.unregistered) {
+    try {
+      await db.update(mobileDevices).set({ fcmToken: null }).where(eq(mobileDevices.fcmToken, token));
+    } catch (err) {
+      console.error('[Notifications] failed to purge unregistered FCM token', err);
+    }
+  }
+
+  throw new Error(`FCM delivery failed${res.reason ? ` (${res.reason})` : ''}`);
 }
 
 export async function sendAPNS(token: string, payload: PushPayload): Promise<PushSendResult> {
