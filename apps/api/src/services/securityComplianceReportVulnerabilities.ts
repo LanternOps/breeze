@@ -1,14 +1,13 @@
 import { and, eq, inArray } from 'drizzle-orm';
 
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { deviceVulnerabilities, vulnerabilities } from '../db/schema';
+import { db } from '../db';
+import { deviceVulnerabilities } from '../db/schema';
+import { vulnerabilitySeverityForFindings } from './portal/vulnerabilityCatalog';
 
 export type DeviceVulnerabilityCounts = { critical: number; high: number };
 
 type FindingRow = { deviceId: string; vulnerabilityId: string };
 type CatalogRow = { id: string; severity: string | null };
-
-const VULNERABILITY_CATALOG_BATCH_SIZE = 10_000;
 
 export function aggregateVulnerabilityCounts(
   findings: FindingRow[],
@@ -64,25 +63,15 @@ export async function loadOpenVulnerabilityCounts(
   ];
   if (vulnerabilityIds.length === 0) return new Map();
 
-  const catalogRows = await runOutsideDbContext(() =>
-    withSystemDbAccessContext(async () => {
-      const rows: CatalogRow[] = [];
-      for (
-        let offset = 0;
-        offset < vulnerabilityIds.length;
-        offset += VULNERABILITY_CATALOG_BATCH_SIZE
-      ) {
-        const batch = vulnerabilityIds.slice(
-          offset,
-          offset + VULNERABILITY_CATALOG_BATCH_SIZE,
-        );
-        const batchRows = await db
-          .select({ id: vulnerabilities.id, severity: vulnerabilities.severity })
-          .from(vulnerabilities)
-          .where(inArray(vulnerabilities.id, batch));
-        rows.push(...batchRows);
-      }
-      return rows;
+  const severityByVulnerability =
+    await vulnerabilitySeverityForFindings(vulnerabilityIds);
+
+  // Only pass through rows the catalog actually produced — aggregateVulnerabilityCounts'
+  // missingIds guard must stay reachable, never invent zeros for a missing catalog row.
+  const catalogRows: CatalogRow[] = [...severityByVulnerability].map(
+    ([id, metadata]) => ({
+      id,
+      severity: metadata.severity,
     }),
   );
 

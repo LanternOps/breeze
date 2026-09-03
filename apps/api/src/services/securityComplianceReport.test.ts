@@ -540,4 +540,270 @@ describe('generateSecurityCompliancePostureReport', () => {
     expect(r.rows).toEqual([]);
     expect((r.summary as any).controls.backupRequired).toBe(false);
   });
+
+  // Parity for the `classifyDeviceProtection` extraction (portal/protection.ts):
+  // every protection/freshness fixture group already exercised above is
+  // replayed here, and the full protection-relevant slice of the report
+  // (edrCoveragePct, anyAvCoveragePct, unprotectedCount, and each row's
+  // protectionManaged/protection/realTimeProtection) is asserted against
+  // values independently derived from the pre-extraction rule
+  // (`isManaged || (provider !== 'other' && realTimeProtection === true)`),
+  // not from the new helper itself. The helper has no freshness gate, so a
+  // stale row with RTP on is still protected, and an absent status row is
+  // 'unknown' from the helper but folds into the report's existing
+  // unprotected bucket — the report exposes no third bucket.
+  describe('protection extraction parity (byte-for-byte with the pre-extraction rule)', () => {
+    async function protectionSlice(overrides: Partial<Record<number, any[]>>) {
+      mockGeneratorQueries(overrides);
+      const r = await generateSecurityCompliancePostureReport(ORG, {});
+      const c = (r.summary as any).controls;
+      return {
+        edrCoveragePct: c.edrCoveragePct,
+        anyAvCoveragePct: c.anyAvCoveragePct,
+        unprotectedCount: c.unprotectedCount,
+        rows: (r.rows as any[]).map((row) => ({
+          hostname: row.hostname,
+          protectionManaged: row.protectionManaged,
+          realTimeProtection: row.realTimeProtection,
+        })),
+      };
+    }
+
+    it('base Defender/other rows (lines 71-72): Huntress-managed + other/RTP-off + no-row', async () => {
+      // dev-1 Huntress-managed (protected); dev-2 provider 'other' (unprotected);
+      // dev-3 no status row (unknown → unprotected bucket).
+      expect(await protectionSlice({})).toEqual({
+        edrCoveragePct: 33,
+        anyAvCoveragePct: 33,
+        unprotectedCount: 2,
+        rows: [
+          { hostname: 'pc-1', protectionManaged: true, realTimeProtection: true },
+          { hostname: 'pc-2', protectionManaged: false, realTimeProtection: false },
+          { hostname: 'pc-3', protectionManaged: false, realTimeProtection: null },
+        ],
+      });
+    });
+
+    it('Elastic Defend (line 175): native RTP-on provider counts as protected, not "other"', async () => {
+      expect(await protectionSlice({
+        3: [
+          { deviceId: 'dev-2', provider: 'elastic_defend', realTimeProtection: true, definitionsDate: new Date(), encryptionStatus: 'encrypted', firewallEnabled: true, passwordPolicySummary: { minLength: 12, lockoutThreshold: 5 }, localAdminSummary: { adminCount: 1 } }
+        ]
+      })).toEqual({
+        edrCoveragePct: 33,
+        anyAvCoveragePct: 67,
+        unprotectedCount: 1,
+        rows: [
+          { hostname: 'pc-1', protectionManaged: true, realTimeProtection: null },
+          { hostname: 'pc-2', protectionManaged: false, realTimeProtection: true },
+          { hostname: 'pc-3', protectionManaged: false, realTimeProtection: null },
+        ],
+      });
+    });
+
+    it('fresh/stale rows (lines 205-206): staleness never affects protection, only enc/fw', async () => {
+      const stale = new Date(Date.now() - 60 * 86400000);
+      mockGeneratorQueries({
+        2: [
+          { id: 'fresh', hostname: 'pc-fresh', osType: 'windows', siteName: 'S' },
+          { id: 'stale', hostname: 'pc-stale', osType: 'windows', siteName: 'S' },
+        ],
+        3: [
+          { deviceId: 'fresh', provider: 'windows_defender', realTimeProtection: true, definitionsDate: new Date(), encryptionStatus: 'encrypted', firewallEnabled: true, passwordPolicySummary: { minLength: 12, lockoutThreshold: 5 }, localAdminSummary: { adminCount: 1 }, updatedAt: new Date() },
+          { deviceId: 'stale', provider: 'windows_defender', realTimeProtection: true, definitionsDate: new Date(), encryptionStatus: 'unencrypted', firewallEnabled: false, passwordPolicySummary: { minLength: 4 }, localAdminSummary: { adminCount: 5 }, updatedAt: stale },
+        ],
+        4: [],
+        5: [],
+      });
+      const r = await generateSecurityCompliancePostureReport(ORG, {});
+      const c = (r.summary as any).controls;
+      // Both native Defender rows with RTP on remain protected regardless of
+      // staleness — the rule has no freshness gate.
+      expect(c.edrCoveragePct).toBe(0);
+      expect(c.anyAvCoveragePct).toBe(100);
+      expect(c.unprotectedCount).toBe(0);
+    });
+
+    it('custom-age row (line 232): a 10-day-old Defender row with RTP on remains protected', async () => {
+      const tenDaysAgo = new Date(Date.now() - 10 * 86400000);
+      mockGeneratorQueries({
+        2: [{ id: 'd', hostname: 'h', osType: 'windows', siteName: 'S' }],
+        3: [
+          { deviceId: 'd', provider: 'windows_defender', realTimeProtection: true, definitionsDate: new Date(), encryptionStatus: 'encrypted', firewallEnabled: true, passwordPolicySummary: null, localAdminSummary: null, updatedAt: tenDaysAgo },
+        ],
+        4: [],
+        5: [],
+      });
+      // maxSecurityStatusAgeDays: 7 makes this row "stale" for enc/fw, but
+      // protection ignores freshness entirely.
+      const r = await generateSecurityCompliancePostureReport(ORG, { maxSecurityStatusAgeDays: 7 });
+      const c = (r.summary as any).controls;
+      expect(c.unprotectedCount).toBe(0);
+      expect(c.anyAvCoveragePct).toBe(100);
+    });
+
+    it('assessed/stale rows (lines 254-255): a no-row device is unknown → unprotected bucket', async () => {
+      const stale = new Date(Date.now() - 60 * 86400000);
+      expect(await protectionSlice({
+        2: [
+          { id: 'assessed', hostname: 'pc-a', osType: 'windows', siteName: 'S' },
+          { id: 'stale', hostname: 'pc-s', osType: 'windows', siteName: 'S' },
+          { id: 'norow', hostname: 'pc-n', osType: 'windows', siteName: 'S' },
+        ],
+        3: [
+          { deviceId: 'assessed', provider: 'windows_defender', realTimeProtection: true, definitionsDate: new Date(), encryptionStatus: 'encrypted', firewallEnabled: true, passwordPolicySummary: null, localAdminSummary: null, updatedAt: new Date() },
+          { deviceId: 'stale', provider: 'windows_defender', realTimeProtection: true, definitionsDate: new Date(), encryptionStatus: 'encrypted', firewallEnabled: true, passwordPolicySummary: null, localAdminSummary: null, updatedAt: stale },
+        ],
+        4: [],
+        5: [],
+      })).toEqual({
+        edrCoveragePct: 0,
+        anyAvCoveragePct: 67,
+        unprotectedCount: 1,
+        rows: [
+          { hostname: 'pc-a', protectionManaged: false, realTimeProtection: true },
+          { hostname: 'pc-s', protectionManaged: false, realTimeProtection: true },
+          { hostname: 'pc-n', protectionManaged: false, realTimeProtection: null },
+        ],
+      });
+    });
+
+    it('exact-cutoff/past-cutoff rows (lines 279-280): both remain protected', async () => {
+      expect(await protectionSlice({
+        2: [
+          { id: 'edge', hostname: 'pc-edge', osType: 'windows', siteName: 'S' },
+          { id: 'past', hostname: 'pc-past', osType: 'windows', siteName: 'S' },
+        ],
+        3: [
+          { deviceId: 'edge', provider: 'windows_defender', realTimeProtection: true, definitionsDate: new Date(), encryptionStatus: 'encrypted', firewallEnabled: true, passwordPolicySummary: null, localAdminSummary: null, updatedAt: new Date(Date.now() - 30 * 86400000) },
+          { deviceId: 'past', provider: 'windows_defender', realTimeProtection: true, definitionsDate: new Date(), encryptionStatus: 'encrypted', firewallEnabled: true, passwordPolicySummary: null, localAdminSummary: null, updatedAt: new Date(Date.now() - 31 * 86400000) },
+        ],
+        4: [],
+        5: [],
+      })).toEqual({
+        edrCoveragePct: 0,
+        anyAvCoveragePct: 100,
+        unprotectedCount: 0,
+        rows: [
+          { hostname: 'pc-edge', protectionManaged: false, realTimeProtection: true },
+          { hostname: 'pc-past', protectionManaged: false, realTimeProtection: true },
+        ],
+      });
+    });
+
+    it('missing-updatedAt row (line 299): a legacy row with no updatedAt still classifies on provider/RTP alone', async () => {
+      expect(await protectionSlice({
+        2: [{ id: 'd', hostname: 'h', osType: 'windows', siteName: 'S' }],
+        3: [
+          { deviceId: 'd', provider: 'windows_defender', realTimeProtection: true, definitionsDate: new Date(), encryptionStatus: 'encrypted', firewallEnabled: true, passwordPolicySummary: null, localAdminSummary: null },
+        ],
+        4: [],
+        5: [],
+      })).toEqual({
+        edrCoveragePct: 0,
+        anyAvCoveragePct: 100,
+        unprotectedCount: 0,
+        rows: [
+          { hostname: 'h', protectionManaged: false, realTimeProtection: true },
+        ],
+      });
+    });
+
+    it('"other" provider row (line 392): unprotected regardless of RTP value', async () => {
+      expect(await protectionSlice({
+        2: [{ id: 'd', hostname: 'h', osType: 'windows', siteName: 'S' }],
+        3: [{ deviceId: 'd', provider: 'other', realTimeProtection: false, definitionsDate: null, encryptionStatus: 'unknown', firewallEnabled: null, passwordPolicySummary: null, localAdminSummary: null }],
+        4: [],
+        5: []
+      })).toEqual({
+        edrCoveragePct: 0,
+        anyAvCoveragePct: 0,
+        unprotectedCount: 1,
+        rows: [
+          { hostname: 'h', protectionManaged: false, realTimeProtection: false },
+        ],
+      });
+    });
+
+    it('SentinelOne/native rows (lines 429-430): managed SentinelOne and native Defender both protected', async () => {
+      expect(await protectionSlice({
+        2: [
+          { id: 'a', hostname: 'pc-a', osType: 'windows', siteName: 'S' },
+          { id: 'n', hostname: 'pc-n', osType: 'windows', siteName: 'S' }
+        ],
+        3: [
+          { deviceId: 'a', provider: 'sentinelone', realTimeProtection: true, definitionsDate: new Date(), encryptionStatus: 'encrypted', firewallEnabled: true, passwordPolicySummary: { minLength: 12, lockoutThreshold: 5 }, localAdminSummary: { adminCount: 1 } },
+          { deviceId: 'n', provider: 'windows_defender', realTimeProtection: true, definitionsDate: new Date(), encryptionStatus: 'encrypted', firewallEnabled: true, passwordPolicySummary: { minLength: 12, lockoutThreshold: 5 }, localAdminSummary: { adminCount: 1 } }
+        ],
+        4: [{ deviceId: 'a' }],
+        5: []
+      })).toEqual({
+        edrCoveragePct: 50,
+        anyAvCoveragePct: 100,
+        unprotectedCount: 0,
+        rows: [
+          { hostname: 'pc-a', protectionManaged: true, realTimeProtection: true },
+          { hostname: 'pc-n', protectionManaged: false, realTimeProtection: true },
+        ],
+      });
+    });
+
+    it('"other"/RTP-off rows (lines 455-456): both excluded from protection', async () => {
+      expect(await protectionSlice({
+        2: [
+          { id: 'o', hostname: 'pc-o', osType: 'windows', siteName: 'S' },
+          { id: 'f', hostname: 'pc-f', osType: 'windows', siteName: 'S' }
+        ],
+        3: [
+          { deviceId: 'o', provider: 'other', realTimeProtection: true, definitionsDate: null, encryptionStatus: 'unknown', firewallEnabled: null, passwordPolicySummary: null, localAdminSummary: null },
+          { deviceId: 'f', provider: 'crowdstrike', realTimeProtection: false, definitionsDate: new Date(), encryptionStatus: 'unknown', firewallEnabled: null, passwordPolicySummary: null, localAdminSummary: null }
+        ],
+        4: [],
+        5: []
+      })).toEqual({
+        edrCoveragePct: 0,
+        anyAvCoveragePct: 0,
+        unprotectedCount: 2,
+        rows: [
+          { hostname: 'pc-o', protectionManaged: false, realTimeProtection: true },
+          { hostname: 'pc-f', protectionManaged: false, realTimeProtection: false },
+        ],
+      });
+    });
+
+    it('six coverage rows (lines 504-509): four native Defender + two managed SentinelOne, all protected', async () => {
+      expect(await protectionSlice({
+        2: [
+          { id: 'dev-1', hostname: 'pc-1', osType: 'windows', siteName: 'HQ' },
+          { id: 'dev-2', hostname: 'pc-2', osType: 'windows', siteName: 'HQ' },
+          { id: 'dev-3', hostname: 'pc-3', osType: 'windows', siteName: 'Remote' },
+          { id: 'dev-4', hostname: 'pc-4', osType: 'windows', siteName: 'Remote' },
+          { id: 'dev-5', hostname: 'pc-5', osType: 'windows', siteName: 'HQ' },
+          { id: 'dev-6', hostname: 'pc-6', osType: 'windows', siteName: 'Remote' },
+        ],
+        3: [
+          { deviceId: 'dev-1', provider: 'windows_defender', realTimeProtection: true, definitionsDate: new Date(), encryptionStatus: 'encrypted', firewallEnabled: true, passwordPolicySummary: null, localAdminSummary: null },
+          { deviceId: 'dev-2', provider: 'windows_defender', realTimeProtection: true, definitionsDate: new Date(), encryptionStatus: 'encrypted', firewallEnabled: true, passwordPolicySummary: null, localAdminSummary: null },
+          { deviceId: 'dev-3', provider: 'windows_defender', realTimeProtection: true, definitionsDate: new Date(), encryptionStatus: 'encrypted', firewallEnabled: true, passwordPolicySummary: null, localAdminSummary: null },
+          { deviceId: 'dev-4', provider: 'windows_defender', realTimeProtection: true, definitionsDate: new Date(), encryptionStatus: 'encrypted', firewallEnabled: true, passwordPolicySummary: null, localAdminSummary: null },
+          { deviceId: 'dev-5', provider: 'sentinelone', realTimeProtection: true, definitionsDate: new Date(), encryptionStatus: 'encrypted', firewallEnabled: true, passwordPolicySummary: null, localAdminSummary: null },
+          { deviceId: 'dev-6', provider: 'sentinelone', realTimeProtection: false, definitionsDate: new Date(), encryptionStatus: 'encrypted', firewallEnabled: true, passwordPolicySummary: null, localAdminSummary: null },
+        ],
+        4: [{ deviceId: 'dev-5' }, { deviceId: 'dev-6' }],
+        5: [],
+      })).toEqual({
+        edrCoveragePct: 33,
+        anyAvCoveragePct: 100,
+        unprotectedCount: 0,
+        rows: [
+          { hostname: 'pc-1', protectionManaged: false, realTimeProtection: true },
+          { hostname: 'pc-2', protectionManaged: false, realTimeProtection: true },
+          { hostname: 'pc-3', protectionManaged: false, realTimeProtection: true },
+          { hostname: 'pc-4', protectionManaged: false, realTimeProtection: true },
+          { hostname: 'pc-5', protectionManaged: true, realTimeProtection: true },
+          { hostname: 'pc-6', protectionManaged: true, realTimeProtection: false },
+        ],
+      });
+    });
+  });
 });
