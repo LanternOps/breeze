@@ -39,7 +39,8 @@
     "expired": "Diese Anfrage ist abgelaufen, bevor eine Entscheidung getroffen wurde.",
     "decisionFailed": "Die Entscheidung konnte nicht gesendet werden. Versuchen Sie es erneut.",
     "batchStepUp": "Für diesen Stapel ist eine stärkere Anmeldung erforderlich. Genehmigen Sie die Anfragen einzeln.",
-    "batchNotHomogeneous": "Über diese Anfragen kann nicht mehr gemeinsam entschieden werden."
+    "batchNotHomogeneous": "Über diese Anfragen kann nicht mehr gemeinsam entschieden werden.",
+    "batchTooLarge": "Dieser Stapel enthält zu viele Anfragen, um sie gemeinsam zu entscheiden. Genehmigen Sie sie in kleineren Gruppen."
   },
   "registerDevice": "Gerät registrieren",
   "alwaysAllow": {
