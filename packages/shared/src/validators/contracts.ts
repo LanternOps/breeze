@@ -6,7 +6,7 @@ import { BILLABLE_DEVICE_ROLES } from './deviceRoles';
 const money = z.string().regex(/^\d+(\.\d{1,2})?$/, 'must be a 2-decimal money string');
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'must be YYYY-MM-DD');
 
-export const CONTRACT_LINE_TYPES = ['flat', 'per_device', 'per_device_role', 'per_seat', 'manual'] as const;
+export const CONTRACT_LINE_TYPES = ['flat', 'per_device', 'per_device_role', 'per_device_group', 'per_seat', 'manual'] as const;
 export type ContractLineType = typeof CONTRACT_LINE_TYPES[number];
 
 export const contractLineInputSchema = z.object({
@@ -25,6 +25,10 @@ export const contractLineInputSchema = z.object({
   // rate; the DB CHECK (contract_lines_device_roles_chk) enforces the same list.
   // Write side: omit the key when not a role line; `null` is rejected here (Zod `.optional()`), while every read layer (DB row, API JSON, web) uses `null` for not-applicable.
   deviceRoles: z.array(z.enum(BILLABLE_DEVICE_ROLES)).min(1).optional(),
+  // #3205 W02: the device group a per_device_group line bills. Dynamic groups
+  // are evaluated live at estimate/invoice time. No siteId on this type — the
+  // group's own site narrows it (contract_lines_device_group_chk).
+  deviceGroupId: z.string().guid().optional(),
   sortOrder: z.number().int().min(0).optional()
 }).refine(
   (l) => l.unitPrice !== undefined || l.catalogItemId !== undefined,
@@ -46,6 +50,9 @@ export const contractLineInputSchema = z.object({
 ).refine(
   (l) => l.deviceRoles === undefined || new Set(l.deviceRoles).size === l.deviceRoles.length,
   { message: 'deviceRoles must not contain duplicates', path: ['deviceRoles'] }
+).refine(
+  (l) => (l.lineType === 'per_device_group') === (l.deviceGroupId !== undefined),
+  { message: 'deviceGroupId is required on per_device_group lines and not allowed on other line types', path: ['deviceGroupId'] }
 );
 
 export const createContractSchema = z.object({
