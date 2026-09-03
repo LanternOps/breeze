@@ -390,10 +390,24 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     scope: 'organization' as const,
     orgId: agent.orgId,
     accessibleOrgIds: [agent.orgId],
+    // Partner-AXIS access (breeze_has_partner_access → writes) stays empty.
     accessiblePartnerIds: [],
-    // Agent path; no partner in scope and agents don't browse the catalog
-    // as org users. null disables the partner-wide read branch (safe).
-    currentPartnerId: null,
+    // #4673 W02 — this route opts out of agentAuthMiddleware's request-long
+    // wrap, so the partner id has to be carried over from the agent context
+    // rather than inherited. Without it the `breeze.current_partner_id` GUC is
+    // empty here and Wave 1's SELECT-only partner-wide branches can never match.
+    //
+    // Scope note, so nobody over-reads this: as of W02 the field is INERT on
+    // this route. Every config-delivery read the heartbeat performs
+    // (event-log, monitoring, PAM, patch-source, OneDrive, helper settings,
+    // the update-policy gate) still runs in its own withSystemDbAccessContext,
+    // which bypasses RLS and already saw partner-wide rows. Nothing inside the
+    // org-scoped block below reads a partner-wide-branched table directly.
+    // It becomes load-bearing in Wave 3, when those escapes are removed and
+    // this GUC is the only thing keeping partner-wide config reaching agents.
+    // Set it now so Wave 3 is a deletion, not a deletion plus a scavenger hunt.
+    // Read-only widening to the device's own MSP; see agentAuth.ts.
+    currentPartnerId: agent.partnerId,
   };
 
   // Org > General > Agent update policy — governs whether we may hand the agent
