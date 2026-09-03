@@ -370,10 +370,30 @@ alertsRoutes.get(
     const orgIdsForVerdicts = [...new Set(alertsList.map((alert) => alert.orgId))];
     const verdictMap = await latestVerdictsForAlerts(orgIdsForVerdicts, alertIds);
 
+    // #4445 — resolve each live verdict's feedbackBy to a display name (same
+    // actor-name pattern as acknowledgedBy/resolvedBy above, #3966) so the
+    // badge can show WHO already voted instead of a raw user id. A second,
+    // separate withAlertActorNames call: feedbackBy lives on the verdict row,
+    // not the alert row the call above already enriched.
+    const verdictFeedbackRows = await withAlertActorNames(
+      [...verdictMap.values()].map((verdict) => ({ id: verdict.id, feedbackBy: verdict.feedbackBy }))
+    );
+    const feedbackByNameByVerdictId = new Map(
+      verdictFeedbackRows.map((row) => [row.id, row.feedbackByName ?? null])
+    );
+
     const correlatedAlerts = attachAlertCorrelationSummaries(alertsWithActorNames, correlationRows);
     const data = correlatedAlerts.map((alert) => {
       const verdict = verdictMap.get(alert.id);
-      return { ...alert, aiVerdict: verdict ? projectAlertAiVerdictSummary(verdict) : null };
+      return {
+        ...alert,
+        aiVerdict: verdict
+          ? {
+            ...projectAlertAiVerdictSummary(verdict),
+            feedbackByName: feedbackByNameByVerdictId.get(verdict.id) ?? null,
+          }
+          : null,
+      };
     });
 
     return c.json({
@@ -1287,6 +1307,12 @@ alertsRoutes.get(
     const verdictMap = await latestVerdictsForAlerts(alert.orgId, [alertId]);
     const verdict = verdictMap.get(alertId);
 
+    // #4445 — same feedbackBy -> feedbackByName resolution as the list route
+    // above, scoped to the single verdict (if any) this alert carries.
+    const [feedbackByNameRow] = verdict
+      ? await withAlertActorNames([{ id: verdict.id, feedbackBy: verdict.feedbackBy }])
+      : [];
+
     return c.json(withMlAlertContext({
       ...alertWithActorNames,
       device: device ? {
@@ -1304,7 +1330,12 @@ alertsRoutes.get(
         isActive: rule.isActive
       } : null,
       notifications,
-      aiVerdict: verdict ? projectAlertAiVerdictSummary(verdict) : null,
+      aiVerdict: verdict
+        ? {
+          ...projectAlertAiVerdictSummary(verdict),
+          feedbackByName: feedbackByNameRow?.feedbackByName ?? null,
+        }
+        : null,
     }));
   }
 );

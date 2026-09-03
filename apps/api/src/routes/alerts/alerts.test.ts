@@ -173,9 +173,14 @@ const VERDICT_DTO = {
   rationale: 'Disk usage climbing steadily with no recovery.',
   patternKind: null,
   feedback: null,
+  feedbackBy: null,
   suggestedIntentId: null,
   createdAt: '2026-09-22T10:00:00.000Z',
 };
+// #4445 — the route resolves feedbackByName separately from
+// projectAlertAiVerdictSummary (which VERDICT_DTO mocks wholesale) and
+// spreads it onto the projected DTO, so the expected shape carries it too.
+const VERDICT_DTO_WITH_NAME = { ...VERDICT_DTO, feedbackByName: null };
 
 function baseAlertRow(id: string, overrides: Record<string, unknown> = {}) {
   return {
@@ -241,7 +246,7 @@ describe('GET /alerts — aiVerdict (Task 14)', () => {
     const res = await makeApp().request('/alerts');
     const body = await res.json() as { data: Array<{ id: string; aiVerdict: unknown }> };
 
-    expect(body.data[0]!.aiVerdict).toEqual(VERDICT_DTO);
+    expect(body.data[0]!.aiVerdict).toEqual(VERDICT_DTO_WITH_NAME);
     expect(projectAlertAiVerdictSummaryMock).toHaveBeenCalledWith(verdictRow);
   });
 
@@ -324,7 +329,7 @@ describe('GET /alerts/:id — aiVerdict (Task 14)', () => {
     const res = await makeApp().request(`/alerts/${ALERT_1}`);
     const body = await res.json() as { aiVerdict: unknown };
 
-    expect(body.aiVerdict).toEqual(VERDICT_DTO);
+    expect(body.aiVerdict).toEqual(VERDICT_DTO_WITH_NAME);
     expect(projectAlertAiVerdictSummaryMock).toHaveBeenCalledWith(verdictRow);
   });
 });

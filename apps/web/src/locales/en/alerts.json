@@ -536,6 +536,7 @@
     "feedbackThanks": "Thanks for the feedback",
     "feedbackTaken": "Someone already gave feedback on this verdict",
     "feedbackFailed": "Failed to record feedback",
+    "feedbackBy": "Feedback by {{name}}",
     "hideNoise": "Hide AI-flagged noise",
     "suggestionPending": "AI suggested an action — review in Approvals",
     "none": "No AI verdict yet"
