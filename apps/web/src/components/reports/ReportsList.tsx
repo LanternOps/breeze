@@ -64,6 +64,7 @@ export type Report = {
   schedule: ReportSchedule;
   format: ReportFormat;
   config: Record<string, unknown>;
+  portalSelfService: boolean;
   lastGeneratedAt: string | null;
   createdAt: string;
   updatedAt: string;
@@ -456,6 +457,14 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
                         <div className="flex items-center gap-2">
                           <FileText className="h-4 w-4 text-muted-foreground" />
                           <span className="font-medium">{report.name}</span>
+                          {report.portalSelfService && (
+                            <span
+                              data-testid={`report-portal-badge-${report.id}`}
+                              className="rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary"
+                            >
+                              {t('reports.reportsList.visibleInPortal')}
+                            </span>
+                          )}
                         </div>
                       </td>
                       <td className="px-4 py-3 text-sm">
@@ -528,10 +537,11 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
                               )}
                               {t('reports.reportsList.aiNarrative.openLatest')}
                             </button>
-                          ) : (
+                          ) : !report.portalSelfService ? (
                             <>
                               <button
                                 type="button"
+                                data-testid={`report-generate-${report.id}`}
                                 onClick={() => handleGenerate(report)}
                                 disabled={generatingIds.has(report.id)}
                                 className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted disabled:opacity-50"
@@ -545,6 +555,7 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
                               </button>
                               <button
                                 type="button"
+                                data-testid={`report-edit-${report.id}`}
                                 onClick={() => onEdit?.(report)}
                                 className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted"
                                 title={t('reports.reportsList.actions.edit')}
@@ -553,6 +564,7 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
                               </button>
                               <button
                                 type="button"
+                                data-testid={`report-delete-${report.id}`}
                                 onClick={() => handleDelete(report)}
                                 disabled={deletingId === report.id}
                                 className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted text-destructive disabled:opacity-50"
@@ -565,7 +577,7 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
                                 )}
                               </button>
                             </>
-                          )}
+                          ) : null}
                         </div>
                       </td>
                     </tr>

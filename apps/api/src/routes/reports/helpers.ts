@@ -114,6 +114,7 @@ export const reportDefinitionMetadataProjection = {
   executionScopeFingerprint: reports.executionScopeFingerprint,
   executionScopeCapturedAt: reports.executionScopeCapturedAt,
   executionScopePrincipalKind: reports.executionScopePrincipalKind,
+  portalSelfService: reports.portalSelfService,
 };
 
 /**

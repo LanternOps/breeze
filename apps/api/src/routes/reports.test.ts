@@ -173,7 +173,12 @@ vi.mock('../db/schema', () => ({
     executionScopeUserId: 'reports.executionScopeUserId',
     executionScopeFingerprint: 'reports.executionScopeFingerprint',
     executionScopeCapturedAt: 'reports.executionScopeCapturedAt',
-    executionScopePrincipalKind: 'reports.executionScopePrincipalKind'
+    executionScopePrincipalKind: 'reports.executionScopePrincipalKind',
+    portalSelfService: 'reports.portalSelfService'
+  },
+  portalBranding: {
+    orgId: 'portalBranding.orgId',
+    enableReports: 'portalBranding.enableReports'
   },
   reportRuns: {
     id: 'reportRuns.id',
@@ -1279,7 +1284,8 @@ describe('report definition scope enforcement', () => {
       'executionScopeUserId',
       'executionScopeFingerprint',
       'executionScopeCapturedAt',
-      'executionScopePrincipalKind'
+      'executionScopePrincipalKind',
+      'portalSelfService'
     ]);
     expect(metadataProjection).not.toHaveProperty('config');
     expect(resolveRequestReportAuthority).toHaveBeenCalledWith(
@@ -1457,6 +1463,75 @@ describe('report definition scope enforcement', () => {
     )).toBe(true);
     expect(rolledBack).toBe(true);
     expect(writeRouteAudit).not.toHaveBeenCalled();
+  });
+
+  it('returns portalSelfService and refuses deletion while portal reports are enabled', async () => {
+    const definition = definitionMetadata({ portalSelfService: true });
+    let brandingCondition: unknown;
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectChain([definition]))
+      .mockReturnValueOnce(selectChain([definition]))
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn((condition) => {
+            brandingCondition = condition;
+            return { limit: vi.fn().mockResolvedValue([{ enableReports: true }]) };
+          })
+        })
+      } as any);
+    vi.mocked(db.delete)
+      .mockReturnValueOnce({
+        where: vi.fn().mockResolvedValue(undefined)
+      } as any)
+      .mockReturnValueOnce({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([definition])
+        })
+      } as any);
+
+    const response = await app().request(`/reports/${REPORT_ID}`, {
+      method: 'DELETE'
+    });
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({
+      error: 'portal_self_service_report'
+    });
+    expect(conditionHas(
+      brandingCondition,
+      'eq',
+      'portalBranding.orgId',
+      (value) => value === ORG_ID,
+    )).toBe(true);
+    expect(db.delete).not.toHaveBeenCalled();
+  });
+
+  it('allows deletion of a portal self-service report while portal reports are disabled', async () => {
+    const definition = definitionMetadata({
+      portalSelfService: true,
+      name: 'Portal report',
+    });
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectChain([definition]))
+      .mockReturnValueOnce(selectChain([definition]))
+      .mockReturnValueOnce(selectChain([{ enableReports: false }]));
+    vi.mocked(db.delete)
+      .mockReturnValueOnce({
+        where: vi.fn().mockResolvedValue(undefined)
+      } as any)
+      .mockReturnValueOnce({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([definition])
+        })
+      } as any);
+
+    const response = await app().request(`/reports/${REPORT_ID}`, {
+      method: 'DELETE'
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ success: true });
+    expect(db.delete).toHaveBeenCalledTimes(2);
   });
 
   it('reauthorizes with a fresh complete authority snapshot atomically', async () => {

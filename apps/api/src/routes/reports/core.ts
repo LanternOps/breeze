@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { and, eq, sql, desc, inArray, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
-import { reports, reportRuns } from '../../db/schema';
+import { portalBranding, reports, reportRuns } from '../../db/schema';
 import {
   authMiddleware,
   requirePermission,
@@ -627,6 +627,18 @@ coreRoutes.delete(
       if (locked === SYSTEM_MANAGED) return SYSTEM_MANAGED;
       if (!locked) return null;
 
+      if (locked.locked.portalSelfService) {
+        const [branding] = await tx
+          .select({ enableReports: portalBranding.enableReports })
+          .from(portalBranding)
+          .where(eq(portalBranding.orgId, locked.locked.orgId))
+          .limit(1);
+
+        if (branding?.enableReports === true) {
+          return { kind: 'portal_self_service' as const };
+        }
+      }
+
       await tx
         .delete(reportRuns)
         .where(eq(reportRuns.reportId, reportId));
@@ -644,7 +656,7 @@ coreRoutes.delete(
       if (deletedRows.length !== 1) {
         throw new Error('REPORT_DELETE_SCOPE_CHANGED');
       }
-      return deletedRows[0]!;
+      return { kind: 'deleted' as const, report: deletedRows[0]! };
     }).catch((error) => {
       if (
         error instanceof Error &&
@@ -658,15 +670,18 @@ coreRoutes.delete(
     if (deleted === SYSTEM_MANAGED) {
       return c.json(SYSTEM_MANAGED_REPORT, 409);
     }
+    if (deleted?.kind === 'portal_self_service') {
+      return c.json({ error: 'portal_self_service_report' }, 409);
+    }
     if (!deleted) {
       return c.json(REPORT_NOT_FOUND, 404);
     }
     writeRouteAudit(c, {
-      orgId: deleted.orgId,
+      orgId: deleted.report.orgId,
       action: 'report.delete',
       resourceType: 'report',
-      resourceId: deleted.id,
-      resourceName: deleted.name
+      resourceId: deleted.report.id,
+      resourceName: deleted.report.name
     });
 
     return c.json({ success: true });
