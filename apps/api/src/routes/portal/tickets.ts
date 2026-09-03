@@ -11,6 +11,7 @@ import {
   ticketCommentParamSchema,
   portalAttachmentParamSchema,
   commentSchema,
+  supportUsageQuerySchema,
 } from './schemas';
 import {
   applyPortalCacheHeaders,
@@ -30,8 +31,31 @@ import { openBytes } from '../../services/ticketAttachmentStorage';
 import { captureException } from '../../services/sentry';
 import { contentDispositionFor } from '../tickets/attachments';
 import { Readable } from 'node:stream';
+import { ticketSla } from '../../services/portal/ticketReadModel';
+import { supportUsageForOrg } from '../../services/portal/supportUsage';
 
 export const ticketRoutes = new Hono();
+
+function currentMonthIn(timezone: string, now = new Date()): string {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: timezone,
+    year: 'numeric',
+    month: '2-digit',
+  }).formatToParts(now);
+  const value = (type: string) =>
+    parts.find((part) => part.type === type)!.value;
+  return `${value('year')}-${value('month')}`;
+}
+
+const PORTAL_TICKET_SLA_COLUMNS = {
+  responseSlaMinutes: tickets.responseSlaMinutes,
+  resolutionSlaMinutes: tickets.resolutionSlaMinutes,
+  slaBreachedAt: tickets.slaBreachedAt,
+  slaPausedAt: tickets.slaPausedAt,
+  slaPausedMinutes: tickets.slaPausedMinutes,
+  firstResponseAt: tickets.firstResponseAt,
+  resolvedAt: tickets.resolvedAt,
+};
 
 // #2345 — per-org portal ticketing kill switch. `portal_branding.enable_tickets`
 // (toggled in the web UI's org portal settings) was stored and surfaced but never
@@ -118,6 +142,37 @@ ticketRoutes.get('/tickets/forms', async (c) => {
   return c.json({ data });
 });
 
+ticketRoutes.get(
+  '/tickets/usage',
+  zValidator('query', supportUsageQuerySchema),
+  async (c) => {
+    const auth = c.get('portalAuth');
+    const month = c.req.valid('query').month ?? currentMonthIn(auth.timezone);
+    const payload = await supportUsageForOrg({
+      orgId: auth.user.orgId,
+      month,
+      timezone: auth.timezone,
+      portalUserId: auth.user.id,
+    });
+
+    applyPortalCacheHeaders(c, {
+      scope: 'private',
+      browserMaxAgeSeconds: 30,
+      staleWhileRevalidateSeconds: 0,
+      vary: ['Authorization', 'Cookie'],
+    });
+    const etag = buildWeakEtag(payload);
+    c.header('ETag', etag);
+    if (isEtagFresh(c.req.header('if-none-match'), etag)) {
+      return new Response(null, {
+        status: 304,
+        headers: c.res.headers,
+      });
+    }
+    return c.json(payload);
+  },
+);
+
 ticketRoutes.get('/tickets', zValidator('query', listSchema), async (c) => {
   const auth = c.get('portalAuth');
   const query = c.req.valid('query');
@@ -144,7 +199,8 @@ ticketRoutes.get('/tickets', zValidator('query', listSchema), async (c) => {
       priority: tickets.priority,
       createdAt: tickets.createdAt,
       updatedAt: tickets.updatedAt,
-      statusName: ticketStatuses.name
+      statusName: ticketStatuses.name,
+      ...PORTAL_TICKET_SLA_COLUMNS,
     })
     .from(tickets)
     .leftJoin(ticketStatuses, eq(tickets.statusId, ticketStatuses.id))
@@ -153,8 +209,20 @@ ticketRoutes.get('/tickets', zValidator('query', listSchema), async (c) => {
     .limit(limit)
     .offset(offset);
 
+  const now = new Date();
+  const ticketDtos = data.map((row) => ({
+    id: row.id,
+    ticketNumber: row.ticketNumber,
+    subject: row.subject,
+    status: row.status,
+    priority: row.priority,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+    statusName: row.statusName,
+    sla: ticketSla(row, now),
+  }));
   const payload = {
-    data,
+    data: ticketDtos,
     pagination: { page, limit, total: Number(ticketCount) }
   };
 
@@ -256,7 +324,8 @@ ticketRoutes.get('/tickets/:id', zValidator('param', ticketParamSchema), async (
       priority: tickets.priority,
       createdAt: tickets.createdAt,
       updatedAt: tickets.updatedAt,
-      statusName: ticketStatuses.name
+      statusName: ticketStatuses.name,
+      ...PORTAL_TICKET_SLA_COLUMNS,
     })
     .from(tickets)
     .leftJoin(ticketStatuses, eq(tickets.statusId, ticketStatuses.id))
@@ -317,7 +386,24 @@ ticketRoutes.get('/tickets/:id', zValidator('param', ticketParamSchema), async (
     attachments: attachmentsByComment.get(row.id) ?? [],
   }));
 
-  const payload = { ticket: { ...ticket, comments: commentsWithAttachments } };
+  const ticketDto = {
+    id: ticket.id,
+    ticketNumber: ticket.ticketNumber,
+    subject: ticket.subject,
+    description: ticket.description,
+    status: ticket.status,
+    priority: ticket.priority,
+    createdAt: ticket.createdAt,
+    updatedAt: ticket.updatedAt,
+    statusName: ticket.statusName,
+    sla: ticketSla(ticket, new Date()),
+  };
+  const payload = {
+    ticket: {
+      ...ticketDto,
+      comments: commentsWithAttachments,
+    },
+  };
 
   applyPortalCacheHeaders(c, {
     scope: 'private',

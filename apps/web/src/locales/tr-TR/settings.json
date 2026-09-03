@@ -7,14 +7,51 @@
       "clearFilters": "Filtreleri temizle",
       "emptyDescription": "Uyarılar, zamanlamalar, biletler ve manuel eylemler tarafından tetiklenen çalıştırmalar, bir aracı bunları yürüttüğünde burada görünecektir.",
       "emptyFilteredDescription": "Bu filtrelere uyan çalıştırma yok. Farklı bir aracı veya durum deneyin.",
-      "emptyConfigureLink": "AI aracılarını yapılandır"
+      "emptyConfigureLink": "AI aracılarını yapılandır",
+      "columns": {
+        "started": "Başlatıldı",
+        "duration": "Süre"
+      },
+      "showCost": "Maliyeti göster",
+      "hideCost": "Maliyeti gizle"
     },
     "detail": {
       "notFoundDescription": "Bu çalıştırma silinmiş olabilir veya bağlantı güncel olmayabilir.",
+      "summary": {
+        "title": "Aracının bulduğu sonuçlar"
+      },
+      "findings": {
+        "badge_one": "İncelenecek {{count}} bulgu",
+        "badge_other": "İncelenecek {{count}} bulgu"
+      },
+      "evidence": {
+        "labels": {
+          "mountPoint": "Sürücü",
+          "serviceName": "Hizmet adı",
+          "configName": "Yedekleme işi",
+          "usedPercent": "Kullanılan (%)",
+          "percentUsed": "Kullanılan (%)",
+          "freeGb": "Boş (GB)",
+          "totalGb": "Kapasite (GB)",
+          "lastSeenAt": "Son görülme",
+          "lastSeenDays": "Son görülmeden bu yana geçen gün",
+          "checkedAt": "Kontrol edildi",
+          "cveIds": "CVE kimlikleri",
+          "cveCount": "CVE sayısı",
+          "osType": "İşletim sistemi türü",
+          "openCriticalCount": "Açık kritik CVE'ler"
+        }
+      },
+      "sweep": {
+        "caption": "Bu taramanın bulduğu her sorun için bir satır ve önerilen eylem.",
+        "reviewPermissions": "Aracı izinlerini incele"
+      },
       "trace": {
+        "description": "Aracının önerdiği, yürüttüğü veya reddedilen her araç çağrısı, sırasıyla.",
         "emptyDescription": "Aracının önerdiği veya yürüttüğü araç çağrıları burada listelenecektir."
       },
       "ledger": {
+        "description": "Yalnızca gerçekten çalışan çağrılar; süreleri ve varsa hatalarıyla.",
         "emptyDescription": "Aracının gerçekten çağırdığı araçlar burada listelenecektir.",
         "statuses": {
           "pending": "Beklemede",
@@ -1494,6 +1531,30 @@
     "allOrgsHint": "İş ortağı genelinde: bir kuruluş daraltmadığı sürece her kuruluş için geçerlidir.",
     "stateEnabled": "Etkin",
     "stateDisabled": "Devre dışı",
+    "lastRun": {
+      "never": "Hiç çalıştırılmadı",
+      "at": "Son çalıştırma {{at}}"
+    },
+    "disableDialog": {
+      "title": "{{name}} devre dışı bırakılsın mı?",
+      "message": "Gelecekteki çalıştırmalar durur, bağlı zamanlamalar tetiklenmez ve bu aracının kuruluş geçersiz kılmaları uygulanmaz. Hâlihazırda süren bir çalıştırma, süre sınırına kadar devam eder.",
+      "retained": "Çalıştırma geçmişi ve kanıtlar korunur. Aracıyı daha sonra devre dışı listesinden yeniden etkinleştirebilirsiniz; kapalı olarak geri gelir."
+    },
+    "unsavedSchedule": {
+      "closeBlocked": "Bu düzenleyiciyi kapatmadan önce düzenlediğiniz zamanlamayı kaydedin veya iptal edin.",
+      "discardTitle": "Kaydedilmemiş zamanlama atılsın mı?",
+      "discardMessage": "Düzenlediğiniz zamanlama kaydedilmedi. Düzenleyiciyi kapatmak bu değişiklikleri atar. Aracının kendisi değişmez.",
+      "discardConfirm": "Zamanlamayı at"
+    },
+    "disabledSection": {
+      "title": "Devre dışı bırakılanlar",
+      "hint": "Çalıştırma geçmişleri için saklanır. Birini yeniden etkinleştirdiğinizde kapalı olarak geri gelir; böylece yeniden çalışmadan önce politikasını gözden geçirebilirsiniz.",
+      "disabledAt": "{{at}} tarihinde devre dışı bırakıldı"
+    },
+    "allDisabled": {
+      "title": "Tüm aracılar devre dışı",
+      "description": "Hiçbir şey çalışmıyor. Aşağıdan birini yeniden etkinleştirin veya yeni bir aracı oluşturun."
+    },
     "errors": {
       "load": "Aracılar yüklenemedi.",
       "kindExists": "Bu sahip için bu türde bir aracı zaten var. Var olanı düzenleyin veya önce devre dışı bırakın.",
@@ -1502,7 +1563,8 @@
       "actMissingRecipient": "Uygula modunu etkinleştirmeden önce en az bir bildirim alıcısı ekleyin.",
       "actMissingTool": "Uygula modunu etkinleştirmeden önce en az bir uygulanabilir aracı izin verin veya bir betiği yetkilendirin.",
       "invalidSupervisedActionKeys": "Seçilen işlemlerden biri veya birkaçı politika tarafından yetkilendirilemez.",
-      "supervisedKeyRejected": "{{key}}: {{reason}}"
+      "supervisedKeyRejected": "{{key}}: {{reason}}",
+      "notDisabled": "Bu aracı zaten etkin."
     },
     "actions": {
       "add": "Yeni aracı",
@@ -1510,19 +1572,24 @@
       "save": "Kaydet",
       "cancel": "İptal",
       "disable": "Devre dışı bırak",
-      "confirmDisable": "Devre dışı bırakmayı onayla"
+      "confirmDisable": "Devre dışı bırakmayı onayla",
+      "reenable": "Yeniden etkinleştir",
+      "runs": "Çalıştırmalar"
     },
     "toasts": {
       "saved": "Aracı kaydedildi",
       "saveFailed": "Aracı kaydedilemedi.",
       "disabled": "Aracı devre dışı bırakıldı",
-      "disableFailed": "Aracı devre dışı bırakılamadı."
+      "disableFailed": "Aracı devre dışı bırakılamadı.",
+      "reenabled": "Aracı yeniden etkinleştirildi",
+      "reenableFailed": "Aracı yeniden etkinleştirilemedi."
     },
     "issues": {
       "name": "Aracıya bir ad verin.",
       "severities": "En az bir uyarı önem derecesi seçin.",
       "org": "Kuruluşa ait bir aracı oluşturmadan önce bir kuruluş seçin.",
-      "allKindsTaken": "Bu sahip için her aracı türünün zaten bir aracısı var. Bunun yerine var olan bir aracıyı düzenleyin."
+      "allKindsTaken": "Bu sahip için her aracı türünün zaten bir aracısı var. Bunun yerine var olan bir aracıyı düzenleyin.",
+      "unsavedSchedule": "Kaydedilmemiş bir zamanlamanız var. Aracıyı kaydetmeden önce onu kaydedin veya iptal edin."
     },
     "editor": {
       "newTitle": "Yeni aracı",
@@ -1589,6 +1656,8 @@
       "maxFleetPercentPerDay": "Gün başına en fazla filo payı (%)",
       "cooldownSeconds": "Cihaz başına bekleme (saniye)",
       "recipientRolesHint": "Bu aracı bir öneride bulunduğunda bilgilendirilecek roller.",
+      "recipientRolesPartner": "İş ortağı rolleri",
+      "recipientRolesOrganization": "Kuruluş rolleri",
       "recipientRolesEmpty": "Kullanılabilir rol yok.",
       "instructionsHint": "Yalnızca yönlendirme — üslup, önce neyin denetleneceği, kurum içi teamüller. Asla izin vermez.",
       "charactersLeft": "{{count}} karakter kaldı",
@@ -1599,6 +1668,7 @@
       "ticketAutonomousWrites": "Otonom talep yazmaları",
       "ticketAutonomousWritesHint": "Yalnızca organizasyon geçersiz kılması — otonom talep yazmaları eylem modunu ve bu organizasyon düzeyindeki katılımı gerektirir",
       "enabledHint": "«Etkin» ve mod ayrı anahtarlardır ve bir çalıştırma ikisini de gerektirir: bu kapalıyken mod ne olursa olsun hiçbir şey çalışmaz, Kapalı modda ise bu açık olsa bile hiçbir şey çalışmaz.",
+      "enabledCreateHint": "Yeni aracılar kapalı olarak oluşturulur. Aşağıdaki araç izin listesini ve sınırları gözden geçirin, ardından aracının çalışmaya başlamasını istediğinizde bunu açın.",
       "actKeysCleared": "Eylem modu izinleri saklanır, ancak bu araç yeniden Eylem moduna dönmedikçe kaydedilmez.",
       "toolSuggestLabel": "Bilinen bir araç ekle",
       "toolSuggestHint": "Öneriler, araçların tam listesi olmayan politikayla karara bağlanabilir eylemler kaydından gelir. Bu aracının kullanabileceği diğer araçlar yukarıya yine de yazılabilir.",
@@ -1878,8 +1948,9 @@
         "promoteEligible": "Yükseltmeye uygun işlemler",
         "promoteEligibleCaption": "Ön yetkilendirme için yeterli ve hatasız kanıta sahip işlemler. İncelemek ve yükseltmek için Ayarlar → Yapay Zekâ Ajanları'nı açın.",
         "estTimeSaved": "Tahmini kazanılan zaman",
-        "estTimeSavedValue": "{{hours}} saat",
-        "estTimeSavedCaption": "Sonuç başına sabit bir süre üzerinden tahmin edilir.",
+        "estTimeSavedValue_one": "{{hours}} saat",
+        "estTimeSavedValue_other": "{{hours}} saat",
+        "estTimeSavedCaption": "Sonuç başına sabit sürelere dayanır — ayarlamak için ağırlıkları düzenleyin.",
         "howEstimatedToggle": "Bu nasıl tahmin ediliyor?",
         "llmSpend": "LLM harcaması"
       },
@@ -1914,19 +1985,25 @@
         }
       },
       "freshness": "{{through}} tarihine kadar olan veriler (UTC) · yeniden oluşturuldu: {{rebuiltAt}}",
-      "freshnessNeverRebuilt": "{{through}} tarihine kadar olan veriler (UTC) · hiç yeniden oluşturulmadı",
+      "freshnessNeverRebuilt": "Henüz oluşturulmadı — ilk yeniden oluşturma bu gece çalışacak",
       "positiveFeedbackRate": "Olumlu geri bildirim oranı",
       "positiveFeedbackDetail": "{{up}} yararlı, {{down}} yararsız",
       "editWeights": "Ağırlıkları düzenle",
       "exportPdf": "PDF olarak dışa aktar",
       "weightsDrawer": {
         "title": "Kazanılan zaman ağırlıklarını düzenle",
-        "description": "Her sonuç için kaç saniye insan zamanı kredilendirileceğini belirleyin. Bu ağırlıklar yalnızca tahmini değiştirir — yapay zeka ajanlarınızın yaptıklarını asla değiştirmez.",
+        "description": "Her sonuç için kaç dakika insan zamanı kredilendirileceğini belirleyin. Bu ağırlıklar yalnızca tahmini değiştirir — yapay zeka ajanlarınızın yaptıklarını asla değiştirmez.",
+        "unitSuffix": "dk",
+        "preview": "Bu pencerede tahmini kazanılan süre: {{from}} → {{to}}",
         "save": "Kaydet",
         "saving": "Kaydediliyor…",
         "reset": "Varsayılanlara sıfırla",
         "resetting": "Sıfırlanıyor…",
         "customized": "Özelleştirildi",
+        "resetConfirm": {
+          "title": "Ağırlıklar varsayılanlara sıfırlansın mı?",
+          "message": "Altı ağırlığın tümü varsayılan değerlerine döner ve bu sayfadaki tahmini kazanılan süre buna göre değişir."
+        },
         "errors": {
           "save": "Ağırlıklar kaydedilemedi.",
           "reset": "Ağırlıklar sıfırlanamadı."
@@ -1954,7 +2031,7 @@
           "through": "Veriler (UTC) itibarıyla",
           "rebuiltAt": "Son yeniden oluşturma"
         },
-        "weightRowLabel": "{{label}} (kredilendirilen saniye)",
+        "weightRowLabel": "{{label}} (kredilendirilen dakika)",
         "neverRebuilt": "Hiç yeniden oluşturulmadı"
       }
     },

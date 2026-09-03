@@ -38,7 +38,7 @@
 // Deletes use an INLINE two-step confirm, never `window.confirm`: a native
 // dialog cannot be dismissed by the browser-automation harness, so an E2E run
 // wedges on it.
-import { useCallback, useEffect, useId, useMemo, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import {
@@ -72,6 +72,15 @@ interface Props {
   /** The concrete org selected in the org switcher, or null in the fleet view.
    *  Overrides are per-org, so there is nothing to override without one. */
   orgId: string | null;
+  /**
+   * Fires whenever an unsaved schedule draft opens or closes.
+   *
+   * A schedule saves through its OWN request, not through the agent form's
+   * Save — so the form's Save used to close the drawer and silently discard a
+   * half-written cron. The parent uses this to block its Save/Cancel and say
+   * why, rather than throwing the draft away without mentioning it.
+   */
+  onDirtyChange?: (dirty: boolean) => void;
 }
 
 const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true });
@@ -389,6 +398,7 @@ export default function AiAgentSchedulesSection({
   agentOwnerScope,
   isPartnerScope,
   orgId,
+  onDirtyChange,
 }: Props) {
   const { t } = useTranslation('settings');
   const schedulable = agentOwnerScope === 'partner';
@@ -399,9 +409,33 @@ export default function AiAgentSchedulesSection({
   const [loading, setLoading] = useState(schedulable);
   const [failed, setFailed] = useState(false);
   const [draft, setDraft] = useState<Draft | null>(null);
+  /**
+   * Whether the operator has actually CHANGED a field of the open draft.
+   *
+   * Dirtiness used to be `draft !== null`, so merely opening a schedule to look
+   * at it latched the parent form dirty — wedging the agent's own Save (and,
+   * before the close guard, its Cancel) behind a "you have unsaved work"
+   * warning about work nobody had done. Seeded drafts are pure reads of the
+   * stored row, so nothing is at risk until the first edit.
+   */
+  const [touched, setTouched] = useState(false);
   const [saving, setSaving] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const allOrgsHintId = useId();
+
+  // Read through a ref so an inline `onDirtyChange={...}` at the call site
+  // cannot re-fire the effect on every parent render — the effect must run on
+  // a change of DRAFTEDNESS, never on a change of callback identity.
+  const onDirtyChangeRef = useRef(onDirtyChange);
+  onDirtyChangeRef.current = onDirtyChange;
+  const hasUnsavedEdits = draft !== null && touched;
+  useEffect(() => {
+    onDirtyChangeRef.current?.(hasUnsavedEdits);
+  }, [hasUnsavedEdits]);
+  // Unmount (the agent form closing, the agent switching) is not "the operator
+  // resolved the draft", but the draft is gone with it — leaving the parent
+  // latched dirty would wedge its Save for the next agent.
+  useEffect(() => () => onDirtyChangeRef.current?.(false), []);
 
   const load = useCallback(async () => {
     if (!schedulable) return;
@@ -455,9 +489,25 @@ export default function AiAgentSchedulesSection({
     return draftTimezone && !all.includes(draftTimezone) ? [draftTimezone, ...all] : all;
   }, [draftTimezone]);
 
+  /**
+   * A field CHANGE. The only thing that makes this section dirty — kept
+   * separate from `seedDraft` below so opening, saving, deleting or cancelling
+   * a draft can never be mistaken for unsaved work.
+   */
+  const editDraft = (next: Draft) => {
+    setDraft(next);
+    setTouched(true);
+  };
+
+  /** Open a draft from stored values, or close one. Never an edit. */
+  const seedDraft = (next: Draft | null) => {
+    setDraft(next);
+    setTouched(false);
+  };
+
   const openCreate = () => {
     setConfirmDelete(false);
-    setDraft({
+    seedDraft({
       mode: 'baseline',
       id: null,
       kind: 'sweep',
@@ -479,7 +529,7 @@ export default function AiAgentSchedulesSection({
    * whose Save the server refuses — or, worse, silently valid but wrong.
    */
   const setCreateKind = (drafted: BaselineDraft, kind: AiAgentScheduleKind) => {
-    setDraft({
+    editDraft({
       ...drafted,
       kind,
       cron: CRON_DEFAULTS[kind],
@@ -489,7 +539,7 @@ export default function AiAgentSchedulesSection({
 
   const openBaseline = (schedule: AiAgentEffectiveScheduleDto) => {
     setConfirmDelete(false);
-    setDraft({
+    seedDraft({
       mode: 'baseline',
       id: schedule.id,
       kind: kindOf(schedule),
@@ -502,7 +552,7 @@ export default function AiAgentSchedulesSection({
 
   const openOverride = (schedule: AiAgentEffectiveScheduleDto) => {
     setConfirmDelete(false);
-    setDraft({
+    seedDraft({
       mode: 'override',
       id: schedule.override?.id ?? null,
       baselineId: schedule.id,
@@ -601,7 +651,7 @@ export default function AiAgentSchedulesSection({
       setSaving(false);
     }
     if (saved) {
-      setDraft(null);
+      seedDraft(null);
       await load();
     }
   }, [agentId, cronValid, draft, kindsValid, load, orgId, saving, t]);
@@ -632,7 +682,7 @@ export default function AiAgentSchedulesSection({
       setSaving(false);
     }
     if (deleted) {
-      setDraft(null);
+      seedDraft(null);
       await load();
     }
   }, [confirmDelete, draft, load, saving, t]);
@@ -712,7 +762,7 @@ export default function AiAgentSchedulesSection({
               type="text"
               className={`${inputCls} font-mono`}
               value={drafted.cron}
-              onChange={(e) => setDraft({ ...drafted, cron: e.target.value })}
+              onChange={(e) => editDraft({ ...drafted, cron: e.target.value })}
               data-testid="ai-agent-schedule-cron"
             />
             <span
@@ -739,7 +789,7 @@ export default function AiAgentSchedulesSection({
             <select
               className={inputCls}
               value={drafted.timezone}
-              onChange={(e) => setDraft({ ...drafted, timezone: e.target.value })}
+              onChange={(e) => editDraft({ ...drafted, timezone: e.target.value })}
               data-testid="ai-agent-schedule-timezone"
             >
               {zones.map((zone) => (
@@ -768,7 +818,7 @@ export default function AiAgentSchedulesSection({
                 <input
                   type="checkbox"
                   checked={drafted.sweepKinds.includes(kind)}
-                  onChange={() => setDraft({ ...drafted, sweepKinds: toggleKind(drafted.sweepKinds, kind) })}
+                  onChange={() => editDraft({ ...drafted, sweepKinds: toggleKind(drafted.sweepKinds, kind) })}
                   data-testid={`ai-agent-schedule-kind-${kind}`}
                 />
                 {kindLabel(kind)}
@@ -790,7 +840,7 @@ export default function AiAgentSchedulesSection({
         <input
           type="checkbox"
           checked={drafted.enabled}
-          onChange={() => setDraft({ ...drafted, enabled: !drafted.enabled })}
+          onChange={() => editDraft({ ...drafted, enabled: !drafted.enabled })}
           data-testid="ai-agent-schedule-enabled"
         />
         {t('aiAgentsPage.schedules.enabled')}
@@ -810,7 +860,7 @@ export default function AiAgentSchedulesSection({
           type="button"
           onClick={() => {
             setConfirmDelete(false);
-            setDraft(null);
+            seedDraft(null);
           }}
           className="rounded-md border px-3 py-1.5 text-sm font-medium"
           data-testid="ai-agent-schedule-cancel"

@@ -7,7 +7,7 @@ import { navigateTo } from './navigation';
 // Invoice-domain enum SSOT lives in @breeze/shared (billing-enums.ts). Imported
 // into local scope for the InvoiceSummary/InvoiceDetail types below and re-exported
 // (type-only, erased at build) so '@/lib/api' consumers are unaffected.
-import type { DocumentPageSize, DocumentThemeId, EnrichedPortalDevice, InvoiceStatus, PublicQuoteHeader, QuotePresentation, SecurityDevicesDto, SecurityOverviewDto, TicketFormField } from '@breeze/shared';
+import type { BackupDevicesDto, BackupOverviewDto, DashboardDto, DocumentPageSize, DocumentThemeId, EnrichedPortalDevice, InvoiceStatus, PublicQuoteHeader, QuotePresentation, SecurityDevicesDto, SecurityOverviewDto, SlaDto, SupportUsageDto, TicketFormField } from '@breeze/shared';
 
 // Client API base. Empty (the default) → same-origin **relative** requests
 // (`/api/v1/...`), which the reverse proxy routes to the API under `/api/*`. This
@@ -322,7 +322,12 @@ export interface TicketSummary {
   priority: TicketPriority;
   createdAt: string;
   updatedAt: string;
+  sla: SlaDto;
 }
+
+export type CreatedPortalTicket = Omit<TicketSummary, 'sla'> & {
+  description: string;
+};
 
 /**
  * Attachment metadata on a PUBLIC ticket comment (W08 #3902). Render-only in
@@ -440,6 +445,7 @@ export interface SellerSnapshot {
 }
 
 export interface InvoiceLine {
+  ticketNumber: string | null;
   /** Line title; NULL on legacy lines where `description` holds the title (#3319). */
   name: string | null;
   description: string;
@@ -797,8 +803,8 @@ export const portalApi = {
   createTicket: async (
     data: CreateTicketInput,
     config: ApiRequestConfig = {}
-  ): Promise<ApiResponse<TicketSummary & { description: string }>> => {
-    const response = await apiPost<{ ticket: TicketSummary & { description: string } }>(
+  ): Promise<ApiResponse<CreatedPortalTicket>> => {
+    const response = await apiPost<{ ticket: CreatedPortalTicket }>(
       '/portal/tickets',
       data,
       config
@@ -1104,6 +1110,12 @@ export const portalApi = {
     );
   },
 
+  // W04 — portal dashboard
+  getDashboard: (
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<DashboardDto>> =>
+    apiGet<DashboardDto>('/portal/dashboard', config),
+
   // ---- W05 — security ----
   getSecurityOverview: (
     days = 30,
@@ -1124,6 +1136,35 @@ export const portalApi = {
         limit: params.limit ?? 50
       })}`,
       config
+    ),
+
+  // W06 — backups
+  getBackupOverview: (
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<BackupOverviewDto>> =>
+    apiGet<BackupOverviewDto>('/portal/backups/overview', config),
+
+  getBackupDevices: (
+    params: ListParams = {},
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<BackupDevicesDto>> =>
+    apiGet<BackupDevicesDto>(
+      `/portal/backups/devices${buildQueryString({
+        page: params.page ?? 1,
+        limit: params.limit ?? 50,
+      })}`,
+      config
+    ),
+
+  // ---------------------------------------------------------------------------
+  // W08 — support usage
+  // ---------------------------------------------------------------------------
+  getSupportUsage: (
+    month?: string,
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<SupportUsageDto>> =>
+    apiGet<SupportUsageDto>(
+      `/portal/tickets/usage${buildQueryString({ month })}`,
+      config
     )
-  // W05 — security
 };

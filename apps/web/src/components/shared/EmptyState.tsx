@@ -6,6 +6,9 @@ export interface EmptyStateProps {
   icon?: ReactNode;
   title: string;
   description?: string;
+  /** Optional content rendered between `description` and `action` — e.g. a
+   *  short glossary or context block that must precede the CTA. */
+  intro?: ReactNode;
   /** Primary CTA slot (e.g. a "Create" button). */
   action?: ReactNode;
   /** Secondary link/help slot, rendered below `action`. */
@@ -51,6 +54,7 @@ export function EmptyState({
   icon,
   title,
   description,
+  intro,
   action,
   secondary,
   size = 'md',
@@ -60,7 +64,10 @@ export function EmptyState({
 }: EmptyStateProps): JSX.Element {
   const Heading = (`h${headingLevel}` as const) as 'h2' | 'h3' | 'h4';
   const containerClassName = [
-    'rounded-xl border border-dashed text-center',
+    // No `--border-strong` token exists (globals.css) — the plain `--border`
+    // dark value (18% lightness) is near-invisible for a 1px dashed line, so
+    // dark mode gets an explicit stronger override.
+    'rounded-xl border border-dashed border-border dark:border-zinc-600 text-center',
     SIZE_CONTAINER_CLASSES[size],
     className,
   ]
@@ -74,7 +81,14 @@ export function EmptyState({
       </div>
       <Heading className={SIZE_TITLE_CLASSES[size]}>{title}</Heading>
       {description && <p className={`mx-auto max-w-sm ${SIZE_DESCRIPTION_CLASSES[size]}`}>{description}</p>}
-      {action && <div className="mt-4 flex justify-center">{action}</div>}
+      {intro && <div className="mt-3">{intro}</div>}
+      {action && (
+        // The slot passes through whatever markup the caller renders, so a
+        // caller shipping a padding-less button (e.g. a bare `<button>`
+        // wired only with an onClick) still gets a usable minimum tap target
+        // — this wrapper is the enforcement point, not the caller's choice.
+        <div className="mt-4 flex justify-center [&>a,&>button]:min-h-10 [&>a,&>button]:py-2">{action}</div>
+      )}
       {secondary && <div className="mt-2 flex justify-center text-sm">{secondary}</div>}
     </div>
   );

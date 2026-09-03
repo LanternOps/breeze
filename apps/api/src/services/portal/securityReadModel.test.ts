@@ -10,6 +10,7 @@ const state = vi.hoisted(() => ({
   wheres: [] as unknown[],
   joins: [] as unknown[],
   orderBys: [] as unknown[][],
+  selects: [] as Record<string, unknown>[],
 }));
 
 const posture = vi.hoisted(() => ({ trend: vi.fn() }));
@@ -17,7 +18,8 @@ const catalog = vi.hoisted(() => ({ lookup: vi.fn() }));
 
 vi.mock('../../db', () => ({
   db: {
-    select: vi.fn(() => {
+    select: vi.fn((columns?: Record<string, unknown>) => {
+      state.selects.push(columns ?? {});
       const rows = state.rows.shift() ?? [];
       const chain: Record<string, unknown> = {};
       for (const method of [
@@ -55,8 +57,10 @@ vi.mock('./vulnerabilityCatalog', () => ({
 }));
 
 import {
+  devicesProtectedTile,
   securityDevicesPage,
   securityOverview,
+  securityScoreTile,
 } from './securityReadModel';
 
 const dialect = new PgDialect();
@@ -65,6 +69,123 @@ function compiledWheres() {
   return state.wheres.map((where) => dialect.sqlToQuery(where as SQL));
 }
 
+function compiledSelectColumn(selectIndex: number, column: string) {
+  const columns = state.selects[selectIndex];
+  return dialect.sqlToQuery(columns?.[column] as SQL);
+}
+
+describe('dashboard security tiles', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    state.rows.length = 0;
+    state.wheres.length = 0;
+    state.joins.length = 0;
+    state.orderBys.length = 0;
+    state.selects.length = 0;
+    posture.trend.mockResolvedValue([]);
+    catalog.lookup.mockResolvedValue(new Map());
+  });
+
+  it('returns the latest score, PDF band, 30-day delta, and stale status', async () => {
+    state.rows.push([
+      { overallScore: 82, capturedAt: new Date('2026-09-02T11:00:00Z') },
+    ]);
+    posture.trend.mockResolvedValue([
+      { timestamp: '2026-08-03', overall: 74 },
+      { timestamp: '2026-09-02', overall: 82 },
+    ]);
+
+    await expect(securityScoreTile(ORG_ID, NOW)).resolves.toEqual({
+      status: 'ok',
+      score: 82,
+      band: 'strong',
+      delta30d: 8,
+      capturedAt: '2026-09-02T11:00:00.000Z',
+    });
+
+    expect(
+      compiledWheres().some(({ sql, params }) =>
+        sql.includes('"security_posture_org_snapshots"."org_id" =') &&
+        params.includes(ORG_ID)),
+    ).toBe(true);
+  });
+
+  it('classifies devices by protection evidence regardless of status age', async () => {
+    state.rows.push([
+      {
+        id: 'd-protected',
+        realTimeProtection: true,
+        provider: 'windows_defender',
+        avProducts: [{
+          displayName: 'Defender',
+          provider: 'windows_defender',
+        }],
+        securityUpdatedAt: new Date('2026-09-02T10:00:00Z'),
+        hasS1Agent: false,
+        hasHuntressAgent: false,
+      },
+      {
+        id: 'd-unprotected',
+        realTimeProtection: false,
+        provider: 'windows_defender',
+        avProducts: [],
+        securityUpdatedAt: new Date('2026-07-01T00:00:00Z'),
+        hasS1Agent: false,
+        hasHuntressAgent: false,
+      },
+    ]);
+
+    await expect(devicesProtectedTile(ORG_ID, NOW)).resolves.toEqual({
+      status: 'ok',
+      protected: 1,
+      unprotected: 1,
+      unknown: 0,
+      total: 2,
+      asOf: NOW.toISOString(),
+    });
+
+    const compiled = compiledWheres();
+    expect(compiled.some(({ params }) => params.includes(ORG_ID))).toBe(true);
+    expect(compiled.some(({ sql }) => sql.includes('"devices"."org_id" ='))).toBe(true);
+
+    // The org predicate lives inside the EXISTS subqueries used as SELECT
+    // columns, not just in .where()/.leftJoin() — compile them directly so a
+    // regression that drops `s1.org_id = ...` / `ha.org_id = ...` is caught.
+    const hasS1Agent = compiledSelectColumn(0, 'hasS1Agent');
+    expect(hasS1Agent.sql).toContain('s1.org_id = $');
+    expect(hasS1Agent.params).toContain(ORG_ID);
+
+    const hasHuntressAgent = compiledSelectColumn(0, 'hasHuntressAgent');
+    expect(hasHuntressAgent.sql).toContain('ha.org_id = $');
+    expect(hasHuntressAgent.params).toContain(ORG_ID);
+  });
+
+  it('returns no_data instead of a fabricated score or count', async () => {
+    state.rows.push([]);
+    await expect(securityScoreTile(ORG_ID, NOW)).resolves.toEqual({
+      status: 'no_data',
+      score: null,
+      band: null,
+      delta30d: null,
+      capturedAt: null,
+    });
+  });
+
+  it('returns a null 30-day delta when no sufficiently old point exists', async () => {
+    state.rows.push([
+      { overallScore: 82, capturedAt: new Date('2026-09-02T11:00:00Z') },
+    ]);
+    posture.trend.mockResolvedValue([
+      { timestamp: '2026-09-02T11:00:00.000Z', overall: 82 },
+    ]);
+
+    await expect(securityScoreTile(ORG_ID, NOW)).resolves.toMatchObject({
+      score: 82,
+      delta30d: null,
+    });
+  });
+});
+
 describe('securityReadModel', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -72,6 +193,7 @@ describe('securityReadModel', () => {
     state.wheres.length = 0;
     state.joins.length = 0;
     state.orderBys.length = 0;
+    state.selects.length = 0;
     posture.trend.mockResolvedValue([]);
     catalog.lookup.mockResolvedValue(new Map());
   });
@@ -228,6 +350,23 @@ describe('securityReadModel', () => {
       return query.sql.includes('"devices"."org_id" =') &&
         query.params.includes(ORG_ID);
     })).toBe(true);
+
+    // select(1) is the paginated device list query (select(0) is the plain
+    // count query); its hasS1Agent/hasHuntressAgent EXISTS subqueries and the
+    // pendingCriticalPatches subquery are never touched by .where()/.leftJoin()
+    // assertions above, so compile them directly to prove the org predicate
+    // survives inside each SELECT-column subquery.
+    const hasS1Agent = compiledSelectColumn(1, 'hasS1Agent');
+    expect(hasS1Agent.sql).toContain('s1.org_id = $');
+    expect(hasS1Agent.params).toContain(ORG_ID);
+
+    const hasHuntressAgent = compiledSelectColumn(1, 'hasHuntressAgent');
+    expect(hasHuntressAgent.sql).toContain('ha.org_id = $');
+    expect(hasHuntressAgent.params).toContain(ORG_ID);
+
+    const pendingCriticalPatches = compiledSelectColumn(1, 'pendingCriticalPatches');
+    expect(pendingCriticalPatches.sql).toContain('dp.org_id = $');
+    expect(pendingCriticalPatches.params).toContain(ORG_ID);
   });
 
   it('returns no_data with pagination metadata for an empty device page', async () => {

@@ -61,6 +61,10 @@ vi.mock('../services/portal/timezone', () => ({
 
 vi.mock('../db/schema', () => ({
   assetCheckouts: {},
+  backupConfigs: {},
+  backupJobs: {},
+  backupSlaEvents: {},
+  backupVerifications: {},
   devices: {},
   // networkBaseline.ts (pulled in transitively by the portal route graph) reads
   // discoveredAssetTypeEnum.enumValues at module load — required for the mock.
@@ -81,6 +85,8 @@ vi.mock('../db/schema', () => ({
     lastLoginAt: 'portalUsers.lastLoginAt',
     updatedAt: 'portalUsers.updatedAt'
   },
+  recoveryReadiness: {},
+  RESTORABLE_BACKUP_JOB_STATUSES: ['completed', 'partial'],
   ticketComments: {},
   tickets: {}
 }));

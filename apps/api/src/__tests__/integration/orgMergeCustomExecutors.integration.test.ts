@@ -691,6 +691,9 @@ describe('org merge engine SQL against real Postgres', () => {
       reportL: randomUUID(), reportS: randomUUID(),
       reportPlainL: randomUUID(), reportPlainS: randomUUID(),
       runL: randomUUID(), runS: randomUUID(), agentRunL: randomUUID(),
+      sharedContact: randomUUID(), loserOnlyContact: randomUUID(),
+      sharedRecipientL: randomUUID(), sharedRecipientS: randomUUID(),
+      loserOnlyRecipient: randomUUID(),
     };
     let asserted = 0;
 
@@ -875,6 +878,10 @@ describe('org merge engine SQL against real Postgres', () => {
           INSERT INTO ai_agent_schedules (id, org_id, partner_id, agent_id, kind, cron, sweep_kinds)
           VALUES (${ids.scheduleP}::uuid, NULL, ${P}::uuid, ${ids.agentP}::uuid, 'narrative', '0 6 * * 1', '{}')`);
         await db.execute(sql`
+          INSERT INTO contacts (id, org_id, name, email) VALUES
+            (${ids.sharedContact}::uuid, ${L}::uuid, 'Shared narrative recipient', ${`narr-shared-${suffix}@example.com`}),
+            (${ids.loserOnlyContact}::uuid, ${L}::uuid, 'Loser-only narrative recipient', ${`narr-only-${suffix}@example.com`})`);
+        await db.execute(sql`
           INSERT INTO reports (id, org_id, name, type, source_ai_agent_schedule_id) VALUES
             (${ids.reportL}::uuid, ${L}::uuid, 'Weekly narrative', 'ai_org_narrative', ${ids.scheduleP}::uuid),
             (${ids.reportS}::uuid, ${S}::uuid, 'Weekly narrative', 'ai_org_narrative', ${ids.scheduleP}::uuid),
@@ -890,14 +897,47 @@ describe('org merge engine SQL against real Postgres', () => {
         await db.execute(sql`
           INSERT INTO ai_agent_runs (id, agent_id, org_id, trigger_kind, dedupe_key, mode_at_start, policy_snapshot, profile, report_run_id)
           VALUES (${ids.agentRunL}::uuid, ${ids.agentP}::uuid, ${L}::uuid, 'schedule', ${`narr-${suffix}`}, 'shadow', '{}'::jsonb, 'narrative', ${ids.runL}::uuid)`);
+        await db.execute(sql`
+          INSERT INTO report_schedule_recipients (id, report_id, org_id, contact_id) VALUES
+            (${ids.sharedRecipientL}::uuid, ${ids.reportL}::uuid, ${L}::uuid, ${ids.sharedContact}::uuid),
+            (${ids.sharedRecipientS}::uuid, ${ids.reportS}::uuid, ${S}::uuid, ${ids.sharedContact}::uuid),
+            (${ids.loserOnlyRecipient}::uuid, ${ids.reportL}::uuid, ${L}::uuid, ${ids.loserOnlyContact}::uuid)`);
+        // Model the point in the merge after contacts have moved but before the
+        // recipient registry step repoints org_id. The composite FKs are
+        // deferred for this same intermediate state in the portal collision
+        // fixture below.
+        await db.execute(sql`
+          UPDATE contacts SET org_id = ${S}::uuid
+           WHERE id IN (${ids.sharedContact}::uuid, ${ids.loserOnlyContact}::uuid)`);
 
         const reportsOut = await CUSTOM_EXECUTORS.reports!(L, S);
         // Exactly ONE definition dropped (the narrative duplicate) — never the
         // ordinary report, whose key is NULL.
         expect(reportsOut.dropped).toBe(1);
         expect(reportsOut.moved).toBe(1);
-        expect(reportsOut.notes.join('\n')).toMatch(/re-homed its generated reports/);
+        expect(reportsOut.notes.join('\n')).toMatch(/re-homed its children onto the survivor's definition/);
         expect(reportsOut.notes.join('\n')).toMatch(/report_runs: 1/);
+        expect(reportsOut.notes.join('\n')).toMatch(
+          /report_schedule_recipients: 1 deduplicated, 1 re-homed/,
+        );
+        const narrativeRecipients = (await db.execute(sql`
+          SELECT id, report_id, contact_id
+            FROM report_schedule_recipients
+           WHERE id IN (
+             ${ids.sharedRecipientL}::uuid,
+             ${ids.sharedRecipientS}::uuid,
+             ${ids.loserOnlyRecipient}::uuid
+           )
+           ORDER BY id`)) as unknown as Array<{
+          id: string; report_id: string; contact_id: string;
+        }>;
+        expect(narrativeRecipients).toHaveLength(2);
+        expect(narrativeRecipients.map((row) => row.id).sort()).toEqual(
+          [ids.sharedRecipientS, ids.loserOnlyRecipient].sort(),
+        );
+        expect(narrativeRecipients.every((row) => row.report_id === ids.reportS)).toBe(true);
+        expect(narrativeRecipients.find((row) => row.id === ids.loserOnlyRecipient)?.report_id).toBe(ids.reportS);
+        expect(narrativeRecipients.filter((row) => row.contact_id === ids.sharedContact)).toHaveLength(1);
         // The loser's generated artifact survives, re-homed by id onto the
         // survivor's definition — a count alone would pass on an orphan.
         const runRow = (await db.execute(sql`
@@ -954,6 +994,95 @@ describe('org merge engine SQL against real Postgres', () => {
       if (!(err instanceof Rollback)) throw err;
     }
     expect(asserted).toBe(6);
+  }, 120_000);
+
+  it('merges colliding portal report definitions without duplicating recipients', async () => {
+    const P = randomUUID();
+    const L = randomUUID();
+    const S = randomUUID();
+    const reportL = randomUUID();
+    const reportS = randomUUID();
+    const runL = randomUUID();
+    const runS = randomUUID();
+    const sharedContact = randomUUID();
+    const loserOnlyContact = randomUUID();
+    const sharedRecipientL = randomUUID();
+    const sharedRecipientS = randomUUID();
+    const loserOnlyRecipient = randomUUID();
+
+    try {
+      await withSystemDbAccessContext(async () => {
+        await db.execute(sql`
+          INSERT INTO partners (id, name, slug)
+          VALUES (${P}::uuid, 'Portal reports merge', ${`portal-reports-${P.slice(0, 8)}`})`);
+        await db.execute(sql`
+          INSERT INTO organizations (id, partner_id, name, slug, status, currency_code)
+          VALUES (${L}::uuid, ${P}::uuid, 'Loser', ${`portal-l-${L.slice(0, 8)}`}, 'active', 'USD'),
+                 (${S}::uuid, ${P}::uuid, 'Survivor', ${`portal-s-${S.slice(0, 8)}`}, 'active', 'USD')`);
+        await db.execute(sql`
+          INSERT INTO contacts (id, org_id, name, email) VALUES
+            (${sharedContact}::uuid, ${L}::uuid, 'Shared recipient', ${`shared-${P}@example.com`}),
+            (${loserOnlyContact}::uuid, ${L}::uuid, 'Loser-only recipient', ${`only-${P}@example.com`})`);
+        await db.execute(sql`
+          INSERT INTO reports (id, org_id, name, type, portal_self_service) VALUES
+            (${reportL}::uuid, ${L}::uuid, 'Portal executive summary', 'executive_summary', true),
+            (${reportS}::uuid, ${S}::uuid, 'Portal executive summary', 'executive_summary', true)`);
+        await db.execute(sql`
+          INSERT INTO report_runs (id, report_id, status) VALUES
+            (${runL}::uuid, ${reportL}::uuid, 'completed'),
+            (${runS}::uuid, ${reportS}::uuid, 'completed')`);
+
+        // Model the merge transaction after contacts have been repointed but
+        // before the recipient registry step. The composite contact/report FKs
+        // are deferred so this load-bearing intermediate state is legal.
+        await db.execute(sql`SET CONSTRAINTS ALL DEFERRED`);
+        await db.execute(sql`
+          INSERT INTO report_schedule_recipients (id, report_id, org_id, contact_id) VALUES
+            (${sharedRecipientL}::uuid, ${reportL}::uuid, ${L}::uuid, ${sharedContact}::uuid),
+            (${sharedRecipientS}::uuid, ${reportS}::uuid, ${S}::uuid, ${sharedContact}::uuid),
+            (${loserOnlyRecipient}::uuid, ${reportL}::uuid, ${L}::uuid, ${loserOnlyContact}::uuid)`);
+        await db.execute(sql`
+          UPDATE contacts SET org_id = ${S}::uuid
+           WHERE id IN (${sharedContact}::uuid, ${loserOnlyContact}::uuid)`);
+
+        const out = await CUSTOM_EXECUTORS.reports!(L, S);
+        expect(out.dropped).toBe(1);
+        expect(out.notes.join('\n')).toMatch(/report_schedule_recipients: 1 deduplicated, 1 re-homed/);
+
+        expect(getOrgMergePolicies().get('report_schedule_recipients')).toEqual({ kind: 'repoint' });
+        await db.execute(buildRepoint('report_schedule_recipients', L, S));
+        await db.execute(sql`SET CONSTRAINTS ALL IMMEDIATE`);
+
+        const definitions = (await db.execute(sql`
+          SELECT id FROM reports
+           WHERE org_id = ${S}::uuid
+             AND type = 'executive_summary'
+             AND portal_self_service = true`)) as unknown as Array<{ id: string }>;
+        expect(definitions).toEqual([{ id: reportS }]);
+
+        const recipients = (await db.execute(sql`
+          SELECT id, report_id, contact_id FROM report_schedule_recipients
+           WHERE org_id = ${S}::uuid AND report_id = ${reportS}::uuid
+           ORDER BY id`)) as unknown as Array<{ id: string; report_id: string; contact_id: string }>;
+        expect(recipients).toHaveLength(2);
+        expect(recipients.map((row) => row.contact_id).sort()).toEqual(
+          [sharedContact, loserOnlyContact].sort(),
+        );
+        expect(recipients.find((row) => row.id === loserOnlyRecipient)?.report_id).toBe(reportS);
+        expect(recipients.some((row) => row.id === sharedRecipientL)).toBe(false);
+
+        const runs = (await db.execute(sql`
+          SELECT id, report_id FROM report_runs
+           WHERE id IN (${runL}::uuid, ${runS}::uuid)
+           ORDER BY id`)) as unknown as Array<{ id: string; report_id: string }>;
+        expect(runs).toHaveLength(2);
+        expect(runs.every((row) => row.report_id === reportS)).toBe(true);
+
+        throw new Rollback('done');
+      });
+    } catch (err) {
+      if (!(err instanceof Rollback)) throw err;
+    }
   }, 120_000);
 
   it('moves automation binding ownership and its expected org atomically', async () => {

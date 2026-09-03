@@ -314,6 +314,14 @@ export function InvoiceDetailView({ detail, error, statusCode }: InvoiceDetailVi
                     <td className="px-4 py-3 text-foreground sm:px-5">
                       {title}
                       {blurb && <div className="mt-0.5 text-xs text-muted-foreground">{blurb}</div>}
+                      {l.ticketNumber && (
+                        <div
+                          className="mt-0.5 text-xs text-muted-foreground"
+                          data-testid={`invoice-line-ticket-${index}`}
+                        >
+                          Ticket #{l.ticketNumber}
+                        </div>
+                      )}
                     </td>
                     <td className="whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground">{l.quantity}</td>
                     <td className="whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground">{money(l.unitPrice, currency)}</td>

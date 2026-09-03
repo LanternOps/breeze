@@ -36,7 +36,7 @@ export type SiteScopeV1 =
 export type LiveSiteScopeV1 = Exclude<SiteScopeV1, { kind: 'legacy_unscoped' }>;
 export type ReportAction = 'read' | 'write' | 'export' | 'delete';
 
-export type ReportPrincipalKind = 'user' | 'system';
+export type ReportPrincipalKind = 'user' | 'system' | 'portal_user';
 
 export interface PersistedSiteScopeColumns {
   executionScopeVersion: number | null;
@@ -48,9 +48,9 @@ export interface PersistedSiteScopeColumns {
   /**
    * P2-3 (#4190). NULL on every pre-migration row and on rows written by a
    * projection that predates this column — decoding those keeps the original
-   * user/legacy semantics byte for byte. 'system' is the ONLY value that
-   * licenses a NULL `executionScopeUserId`, and only on an 'unrestricted' row
-   * (mirrors reports_execution_scope_shape_chk).
+   * user/legacy semantics byte for byte. 'system' and 'portal_user' are the
+   * only values that license a NULL `executionScopeUserId`, and only on an
+   * 'unrestricted' row (mirrors reports_execution_scope_shape_chk).
    *
    * Declared required so every hand-written literal must state its principal,
    * but READ defensively: a Drizzle projection that physically omits the column
@@ -61,12 +61,24 @@ export interface PersistedSiteScopeColumns {
   executionScopePrincipalKind: ReportPrincipalKind | null;
 }
 
-export interface ReportExecutionAuthority {
+export interface UserReportExecutionAuthority {
+  principalKind: 'user';
   scope: SiteScopeV1;
   principalUserId: string;
   capturedAt: Date;
   fingerprint: string;
 }
+
+export interface PortalUserReportExecutionAuthority {
+  principalKind: 'portal_user';
+  scope: { version: 1; kind: 'unrestricted'; orgId: string };
+  capturedAt: Date;
+  fingerprint: string;
+}
+
+export type ReportExecutionAuthority =
+  | UserReportExecutionAuthority
+  | PortalUserReportExecutionAuthority;
 
 /**
  * P2-3 (#4190) — provenance for a report the PLATFORM authored (the weekly AI
@@ -84,7 +96,7 @@ export interface SystemReportExecutionAuthority {
 }
 
 export type LiveReportAuthorityResult =
-  | { ok: true; authority: ReportExecutionAuthority }
+  | { ok: true; authority: UserReportExecutionAuthority }
   | {
       ok: false;
       reason:
@@ -310,7 +322,12 @@ function persistedPrincipalKind(
   row: PersistedSiteScopeColumns,
 ): ReportPrincipalKind | null {
   const value = row.executionScopePrincipalKind ?? null;
-  if (value !== null && value !== 'user' && value !== 'system') {
+  if (
+    value !== null
+    && value !== 'user'
+    && value !== 'system'
+    && value !== 'portal_user'
+  ) {
     throw new Error('invalid persisted site scope principal kind');
   }
   return value;
@@ -369,17 +386,17 @@ export function decodeSiteScope(
 
   assertCompletePersistedBase(row);
   const principalKind = persistedPrincipalKind(row);
+  const hasNoStaffPrincipal =
+    principalKind === 'system' || principalKind === 'portal_user';
 
   switch (row.executionScopeKind) {
     case 'unrestricted':
       if (row.executionScopeSiteIds !== null) {
         throw new Error('partial or invalid persisted unrestricted site scope');
       }
-      if (principalKind === 'system') {
-        // A system-authored row has no acting user by construction; one being
-        // present means the row was written by something that forged it.
+      if (hasNoStaffPrincipal) {
         if (row.executionScopeUserId !== null) {
-          throw new Error('invalid persisted system site scope principal');
+          throw new Error('invalid persisted non-user site scope principal');
         }
       } else {
         if (row.executionScopeUserId === null) {
@@ -393,8 +410,8 @@ export function decodeSiteScope(
         orgId,
       });
     case 'restricted':
-      if (principalKind === 'system') {
-        throw new Error('invalid persisted system site scope kind');
+      if (hasNoStaffPrincipal) {
+        throw new Error('invalid persisted non-user site scope kind');
       }
       if (
         row.executionScopeSiteIds === null ||
@@ -410,8 +427,8 @@ export function decodeSiteScope(
         siteIds: normalizeSiteIds(row.executionScopeSiteIds),
       });
     case 'legacy_unscoped':
-      if (principalKind === 'system') {
-        throw new Error('invalid persisted system site scope kind');
+      if (hasNoStaffPrincipal) {
+        throw new Error('invalid persisted non-user site scope kind');
       }
       if (row.executionScopeSiteIds !== null) {
         throw new Error('partial or invalid persisted legacy site scope');
@@ -434,48 +451,64 @@ export function decodeSiteScope(
 export function persistedSiteScopeValues(
   authority: ReportExecutionAuthority,
 ): PersistedSiteScopeColumns {
-  const scope = normalizeScope(authority.scope);
-  assertNonEmptyString(authority.principalUserId, 'principal user ID');
   assertValidDate(authority.capturedAt);
+  const scope = normalizeScope(authority.scope);
 
   if (authority.fingerprint !== siteScopeFingerprint(scope)) {
     throw new Error('invalid execution scope fingerprint');
   }
 
-  switch (scope.kind) {
-    case 'unrestricted':
+  switch (authority.principalKind) {
+    case 'portal_user':
+      if (scope.kind !== 'unrestricted') {
+        throw new Error('invalid portal-user execution scope kind');
+      }
+      if (
+        'principalUserId' in authority
+        && authority.principalUserId !== null
+        && authority.principalUserId !== undefined
+      ) {
+        throw new Error('invalid portal-user execution scope principal');
+      }
       return {
         executionScopeVersion: 1,
-        executionScopeKind: scope.kind,
+        executionScopeKind: 'unrestricted',
         executionScopeSiteIds: null,
-        executionScopeUserId: authority.principalUserId,
+        executionScopeUserId: null,
         executionScopeFingerprint: authority.fingerprint,
         executionScopeCapturedAt: authority.capturedAt,
-        executionScopePrincipalKind: 'user',
+        executionScopePrincipalKind: 'portal_user',
       };
-    case 'restricted':
+    case 'user':
+      assertNonEmptyString(authority.principalUserId, 'principal user ID');
       return {
         executionScopeVersion: 1,
         executionScopeKind: scope.kind,
-        executionScopeSiteIds: scope.siteIds,
-        executionScopeUserId: authority.principalUserId,
-        executionScopeFingerprint: authority.fingerprint,
-        executionScopeCapturedAt: authority.capturedAt,
-        executionScopePrincipalKind: 'user',
-      };
-    case 'legacy_unscoped':
-      return {
-        executionScopeVersion: 1,
-        executionScopeKind: scope.kind,
-        executionScopeSiteIds: null,
+        executionScopeSiteIds:
+          scope.kind === 'restricted' ? scope.siteIds : null,
         executionScopeUserId: authority.principalUserId,
         executionScopeFingerprint: authority.fingerprint,
         executionScopeCapturedAt: authority.capturedAt,
         executionScopePrincipalKind: 'user',
       };
     default:
-      return assertNever(scope);
+      return assertNever(authority);
   }
+}
+
+export function portalUserReportAuthority(
+  orgId: string,
+  capturedAt = new Date(),
+): PortalUserReportExecutionAuthority {
+  assertNonEmptyString(orgId, 'organization ID');
+  assertValidDate(capturedAt);
+  const scope = { version: 1, kind: 'unrestricted', orgId } as const;
+  return {
+    principalKind: 'portal_user',
+    scope,
+    capturedAt,
+    fingerprint: siteScopeFingerprint(scope),
+  };
 }
 
 /**
@@ -553,9 +586,27 @@ function uuidArraySql(siteIds: readonly string[]): SQL<unknown> {
 function completeVersionOneBase(
   columns: ReportScopeColumns,
 ): SQL<unknown> {
+  // Human-authored rows may predate the principal column (NULL) or carry the
+  // explicit discriminator. Non-user principals never enter restricted arms.
   return and(
     eq(columns.executionScopeVersion, 1),
     isNotNull(columns.executionScopeUserId),
+    or(
+      isNull(columns.executionScopePrincipalKind),
+      eq(columns.executionScopePrincipalKind, 'user'),
+    ),
+    isNotNull(columns.executionScopeFingerprint),
+    isNotNull(columns.executionScopeCapturedAt),
+  )!;
+}
+
+function completeVersionOnePortalUserBase(
+  columns: ReportScopeColumns,
+): SQL<unknown> {
+  return and(
+    eq(columns.executionScopeVersion, 1),
+    isNull(columns.executionScopeUserId),
+    eq(columns.executionScopePrincipalKind, 'portal_user'),
     isNotNull(columns.executionScopeFingerprint),
     isNotNull(columns.executionScopeCapturedAt),
   )!;
@@ -596,6 +647,12 @@ function unrestrictedDefinitionPredicate(
       eq(columns.executionScopeKind, 'unrestricted'),
       isNull(columns.executionScopeSiteIds),
     ),
+    // Portal-authored: unrestricted, no MSP acting user.
+    and(
+      completeVersionOnePortalUserBase(columns),
+      eq(columns.executionScopeKind, 'unrestricted'),
+      isNull(columns.executionScopeSiteIds),
+    ),
     and(
       completeBase,
       eq(columns.executionScopeKind, 'restricted'),
@@ -607,6 +664,8 @@ function unrestrictedDefinitionPredicate(
       isNull(columns.executionScopeSiteIds),
       isNotNull(columns.executionScopeFingerprint),
       isNotNull(columns.executionScopeCapturedAt),
+      sql`${columns.executionScopePrincipalKind} IS DISTINCT FROM 'system'`,
+      sql`${columns.executionScopePrincipalKind} IS DISTINCT FROM 'portal_user'`,
     ),
     and(
       isNull(columns.executionScopeVersion),
@@ -749,6 +808,7 @@ function liveAuthority(
   return {
     ok: true,
     authority: {
+      principalKind: 'user',
       scope,
       principalUserId,
       capturedAt,

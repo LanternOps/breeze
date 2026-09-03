@@ -24,6 +24,7 @@ import { loginPathWithNext } from '@/lib/authScope';
 import { navigateTo } from '@/lib/navigation';
 import { useOrgScope } from '@/hooks/useOrgScope';
 import { useDefaultOwnerScope, type OwnerScope } from '@/hooks/useDefaultOwnerScope';
+import { ConfirmDialog } from '../shared/ConfirmDialog';
 import AiAgentSchedulesSection from './AiAgentSchedulesSection';
 import AiAgentGraduationPanel from './AiAgentGraduationPanel';
 
@@ -38,7 +39,19 @@ export type { AiAgentDto };
 interface RoleOption {
   id: string;
   name: string;
+  /** `roles.scope` as GET /roles projects it. Optional on the type because an
+   *  older API build omits it; such a role is grouped with the organization
+   *  roles rather than dropped — a recipient must never disappear because a
+   *  field it never had is missing. */
+  scope?: 'partner' | 'organization';
 }
+
+function roleScope(role: RoleOption): 'partner' | 'organization' {
+  return role.scope === 'partner' ? 'partner' : 'organization';
+}
+
+/** Rendered in this order; a group with no roles is skipped entirely. */
+const ROLE_GROUPS = ['partner', 'organization'] as const;
 
 /** GET /ai/agents/policy-decidable-keys — the read-only POLICY_DECIDABLE_TIER3
  *  registry (wave 5 Part B, #3827). `note` is fetched but not currently
@@ -77,6 +90,17 @@ interface Props {
   defaultOwnerScope: OwnerScope;
   onClose: () => void;
   onSaved: () => void;
+  /**
+   * Fires when this form starts or stops holding unsaved work of its own (an
+   * edited schedule draft, which persists through a separate endpoint).
+   *
+   * Lifted to the parent because the DRAWER owns three of the four ways out —
+   * Escape, the header X and the backdrop — and none of them could see a guard
+   * that lived down here. The form used to defend the only exit it controlled,
+   * its own Cancel button, while the reflexive ones discarded the draft
+   * silently.
+   */
+  onDirtyChange?: (dirty: boolean) => void;
 }
 
 const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true });
@@ -204,8 +228,23 @@ function draftFrom(
     ownerScope: agent?.ownerScope ?? defaults.ownerScope,
     kind: agent?.kind ?? defaults.kind,
     name: agent?.name ?? '',
+    // CREATE defaults (the `??` fallbacks only ever apply when `agent` is
+    // null): shadow, but SWITCHED OFF.
+    //
+    // `mode: 'shadow'` is what the first-run panel tells the operator to start
+    // with, and the form used to contradict it by defaulting to `off`.
+    // `enabled` was flipped to `true` in the same change and that went too far:
+    // `enabled` is the live switch, not a mode preview. `syncManagedAutomation`
+    // mirrors it onto the seeded automation the moment Save lands, and shadow
+    // passes run admission — so creating a partner-wide triage agent started
+    // real LLM runs across every org under the partner before anyone had looked
+    // at the tool allowlist, the severities or the daily budget on the very
+    // form that created it. Off is the only honest default for a switch whose
+    // first flip spends money on machines the operator has not scoped yet; the
+    // create-only hint beside the checkbox says so, so the unticked box reads
+    // as a decision rather than an oversight.
     enabled: agent?.enabled ?? false,
-    mode: agent?.mode ?? 'off',
+    mode: agent?.mode ?? 'shadow',
     severities,
     respectMaintenanceWindows: agent?.triggers?.respectMaintenanceWindows ?? true,
     toolAllowlist: (agent?.toolAllowlist ?? []).join('\n'),
@@ -236,6 +275,7 @@ export default function AiAgentForm({
   defaultOwnerScope,
   onClose,
   onSaved,
+  onDirtyChange,
 }: Props) {
   const { t } = useTranslation('settings');
   const orgScope = useOrgScope();
@@ -278,6 +318,28 @@ export default function AiAgentForm({
   const [issues, setIssues] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
   const [confirmDisable, setConfirmDisable] = useState(false);
+  /** An unsaved schedule draft is open below (AiAgentSchedulesSection reports
+   *  it). Schedules persist through their own endpoint, so the agent's Save
+   *  would close the drawer and discard it silently. */
+  const [scheduleDirty, setScheduleDirty] = useState(false);
+  /** Cancel pressed while a schedule draft is unsaved. Cancel is the
+   *  DELIBERATE exit, so it stays live and asks rather than going inert — the
+   *  inert version taught operators to reach for the X instead, which is
+   *  exactly the exit that used to discard the draft without a word. */
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
+
+  // Same latest-ref idiom AiAgentSchedulesSection uses for its own reporter: an
+  // inline `onDirtyChange={...}` at the call site must not re-fire this on
+  // every parent render, only on a change of DIRTINESS.
+  const onDirtyChangeRef = useRef(onDirtyChange);
+  onDirtyChangeRef.current = onDirtyChange;
+  useEffect(() => {
+    onDirtyChangeRef.current?.(scheduleDirty);
+  }, [scheduleDirty]);
+  // Unmounting is not "the operator resolved the draft" — but the draft goes
+  // with it, and leaving the parent latched dirty would wedge the next agent's
+  // drawer shut.
+  useEffect(() => () => onDirtyChangeRef.current?.(false), []);
   /**
    * Riley bug (#4187 UI critique): leaving act mode used to only HIDE the
    * supervised-keys fieldset, so Save still submitted keys the operator
@@ -301,6 +363,7 @@ export default function AiAgentForm({
   const limitsTimingId = useId();
   const toolSuggestInputId = useId();
   const toolSuggestListId = useId();
+  const rolesGroupBaseId = useId();
   const [toolSuggestion, setToolSuggestion] = useState('');
 
   /**
@@ -348,6 +411,12 @@ export default function AiAgentForm({
     shadow: t('aiAgentsPage.modeChoice.shadow'),
     act: t('aiAgentsPage.modeChoice.act'),
   };
+  // Literal keys, same reason as MODE_LABEL below: the closed two-member set
+  // is spelled out so the keyUsage guard verifies both labels statically.
+  const ROLE_GROUP_LABEL: Record<(typeof ROLE_GROUPS)[number], string> = {
+    partner: t('aiAgentsPage.fields.recipientRolesPartner'),
+    organization: t('aiAgentsPage.fields.recipientRolesOrganization'),
+  };
   const MODE_CONSEQUENCE: Record<AiAgentMode, string> = {
     off: t('aiAgentsPage.modeChoice.offConsequence'),
     shadow: t('aiAgentsPage.modeChoice.shadowConsequence'),
@@ -370,11 +439,23 @@ export default function AiAgentForm({
   };
 
   /** Roving-tabindex arrow navigation, per the radiogroup pattern: the group
-   *  holds one tab stop and the arrows move BOTH focus and selection. */
+   *  holds one tab stop and the arrows move BOTH focus and selection.
+   *
+   *  The starting point is the option that HAS FOCUS (read off the event
+   *  target's `data-mode`), never `draft.mode`. The two are normally the same —
+   *  that is the roving contract — but they can diverge for one keystroke, and
+   *  they did: the drawer's initial focus used to land on a `tabindex="-1"`
+   *  card, so ArrowRight from Off (with Shadow selected) stepped from SHADOW
+   *  and selected `act`, skipping the option the user was actually looking at.
+   *  Deriving from focus makes the two impossible to disagree. */
   const onModeKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     const selectable = MODE_ORDER.filter((mode) => !modeUnavailable(mode));
     if (selectable.length === 0) return;
-    const current = Math.max(0, selectable.indexOf(draft.mode));
+    const focused = (event.target as HTMLElement | null)?.dataset?.mode as AiAgentMode | undefined;
+    // Falls back to the selected option when the key came from the group
+    // itself rather than from one of its cards.
+    const from = focused && selectable.includes(focused) ? focused : draft.mode;
+    const current = Math.max(0, selectable.indexOf(from));
     let target: number;
     switch (event.key) {
       case 'ArrowRight':
@@ -455,6 +536,10 @@ export default function AiAgentForm({
 
   const save = useCallback(async () => {
     if (saving) return;
+    // A schedule saves through its OWN request. Letting the agent Save run
+    // while one is half-written closed the drawer and threw the draft away
+    // without a word; the footer says why the button is inert.
+    if (scheduleDirty) return;
     const problems: string[] = [];
     if (!draft.name.trim()) problems.push(t('aiAgentsPage.issues.name'));
     // `alertSeverities` is `.min(1)` server-side — an empty list is not
@@ -585,18 +670,19 @@ export default function AiAgentForm({
     // Outside the try: a render error thrown by the parent's reload must not
     // be reported to the operator as "could not save the agent".
     if (saved) onSaved();
-  }, [agent, draft, isCreate, orgScope.orgId, saving, onSaved, t]);
+  }, [agent, draft, isCreate, orgScope.orgId, saving, scheduleDirty, onSaved, t]);
 
   const disable = useCallback(async () => {
     // `saving` guards this too: without it a double-click fires two DELETEs and
     // the second answers 404, so the operator sees a success toast AND
     // "Agent not found" for the kill switch they just used successfully.
     if (!agent || saving) return;
-    if (!confirmDisable) {
-      setConfirmDisable(true);
-      return;
-    }
-    setConfirmDisable(false);
+    // The dialog stays MOUNTED for the whole request, driven by `isLoading`,
+    // and is closed in `finally`. Tearing it down here instead meant its
+    // focus-restore fired while `saving` had already disabled the Disable
+    // button it was restoring to — `.focus()` on a disabled element is a
+    // no-op, so a keyboard user was dropped onto <body> in the middle of the
+    // one action on this form that cannot be undone from here.
     setSaving(true);
     let disabled = false;
     try {
@@ -612,9 +698,10 @@ export default function AiAgentForm({
       handleActionError(err, t('aiAgentsPage.toasts.disableFailed'));
     } finally {
       setSaving(false);
+      setConfirmDisable(false);
     }
     if (disabled) onSaved();
-  }, [agent, confirmDisable, onSaved, saving, t]);
+  }, [agent, onSaved, saving, t]);
 
   const numberField = (
     testId: string,
@@ -701,9 +788,20 @@ export default function AiAgentForm({
                 modeRefs.current[mode] = node;
               }}
               onClick={() => selectMode(mode)}
+              // Read by `onModeKeyDown` to find which card the keystroke came
+              // from — the roving group's arrow keys must step from the FOCUSED
+              // option, not from the stored one.
+              data-mode={mode}
+              // Act selected does NOT look like Off/Shadow selected. All three
+              // shared one primary-blue ring, so the one card that authorizes
+              // unattended changes on a customer machine read as no more
+              // consequential than "do nothing" — the warning tone is the same
+              // one the act warning panel and its icon already use.
               className={`rounded-lg border p-3 text-left transition-colors focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60 ${
                 selected
-                  ? 'border-primary bg-primary/10 ring-1 ring-primary'
+                  ? mode === 'act'
+                    ? 'border-warning-strong bg-warning/10 ring-1 ring-warning-strong'
+                    : 'border-primary bg-primary/10 ring-1 ring-primary'
                   : 'bg-background hover:border-primary/50 hover:bg-muted/40'
               }`}
               data-testid={`ai-agent-mode-${mode}`}
@@ -714,10 +812,16 @@ export default function AiAgentForm({
                 <span
                   aria-hidden="true"
                   className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-full border ${
-                    selected ? 'border-primary' : 'border-muted-foreground/50'
+                    selected
+                      ? mode === 'act' ? 'border-warning-strong' : 'border-primary'
+                      : 'border-muted-foreground/50'
                   }`}
                 >
-                  {selected && <span className="h-2 w-2 rounded-full bg-primary" />}
+                  {selected && (
+                    <span
+                      className={`h-2 w-2 rounded-full ${mode === 'act' ? 'bg-warning-strong' : 'bg-primary'}`}
+                    />
+                  )}
                 </span>
                 <span className="text-sm font-medium">{MODE_LABEL[mode]}</span>
                 {mode === 'act' && (
@@ -891,6 +995,14 @@ export default function AiAgentForm({
             <p className="pl-6 text-xs text-muted-foreground" data-testid="ai-agent-enabled-hint">
               {t('aiAgentsPage.fields.enabledHint')}
             </p>
+            {/* Create only: an unticked box on a brand-new form reads as
+                something the operator forgot, not as the product's deliberate
+                choice. Naming it turns the box into the last, explicit step. */}
+            {isCreate && (
+              <p className="pl-6 text-xs text-muted-foreground" data-testid="ai-agent-enabled-create-hint">
+                {t('aiAgentsPage.fields.enabledCreateHint')}
+              </p>
+            )}
           </div>
 
           {/* Wave 5 Part B (#3827). Gated the same way as the act-warning block
@@ -1147,18 +1259,36 @@ export default function AiAgentForm({
                 {t('aiAgentsPage.fields.recipientRolesEmpty')}
               </p>
             ) : (
-              <div className="flex flex-wrap gap-3">
-                {roles.map((role) => (
-                  <label key={role.id} className="flex items-center gap-1 text-sm">
-                    <input
-                      type="checkbox"
-                      checked={draft.roleIds.includes(role.id)}
-                      onChange={() => patch({ roleIds: toggle(draft.roleIds, role.id) })}
-                      data-testid={`ai-agent-role-${role.id}`}
-                    />
-                    {role.name}
-                  </label>
-                ))}
+              // Nine flat checkboxes with partner and organization roles
+              // interleaved read as one undifferentiated list, and the two
+              // answer different questions: who at the MSP hears about this,
+              // and who at the customer does. Grouped, not filtered — every
+              // control the flat list carried is still here.
+              <div className="space-y-3">
+                {ROLE_GROUPS.map((scope) => {
+                  const group = roles.filter((role) => roleScope(role) === scope);
+                  if (group.length === 0) return null;
+                  return (
+                    <div key={scope} role="group" aria-labelledby={`${rolesGroupBaseId}-${scope}`}>
+                      <p id={`${rolesGroupBaseId}-${scope}`} className="text-xs font-medium">
+                        {ROLE_GROUP_LABEL[scope]}
+                      </p>
+                      <div className="mt-1 flex flex-wrap gap-3" data-testid={`ai-agent-roles-${scope}`}>
+                        {group.map((role) => (
+                          <label key={role.id} className="flex items-center gap-1 text-sm">
+                            <input
+                              type="checkbox"
+                              checked={draft.roleIds.includes(role.id)}
+                              onChange={() => patch({ roleIds: toggle(draft.roleIds, role.id) })}
+                              data-testid={`ai-agent-role-${role.id}`}
+                            />
+                            {role.name}
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             )}
           </fieldset>
@@ -1174,6 +1304,7 @@ export default function AiAgentForm({
               agentOwnerScope={agent.ownerScope}
               isPartnerScope={isPartnerScope}
               orgId={orgScope.orgId}
+              onDirtyChange={setScheduleDirty}
             />
           )}
 
@@ -1200,35 +1331,94 @@ export default function AiAgentForm({
       {/* Outside the scroll area: in the drawer the form now opens in, Save
           must stay reachable without scrolling past the schedules section and
           two graduation tables. */}
-      <div className="flex flex-wrap items-center gap-2 border-t bg-card px-5 py-4">
-        <button
-          type="button"
-          onClick={() => void save()}
-          disabled={saving || (isCreate && availableKinds.length === 0) || (enteringActMode && !actAck)}
-          className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground disabled:opacity-60"
-          data-testid="ai-agent-save"
-        >
-          {t('aiAgentsPage.actions.save')}
-        </button>
-        <button
-          type="button"
-          onClick={onClose}
-          className="rounded-md border px-3 py-1.5 text-sm font-medium"
-          data-testid="ai-agent-cancel"
-        >
-          {t('aiAgentsPage.actions.cancel')}
-        </button>
-        {agent && (
+      <div className="border-t bg-card px-5 py-4">
+        {/* Beside the buttons it explains, not buried in the scroll area
+            above: while it is showing, Save and Cancel are inert, and the
+            reason has to be visible at the point the operator reaches for
+            them. */}
+        {scheduleDirty && (
+          <p
+            className="mb-3 rounded-md border border-warning-strong/50 bg-warning/10 px-3 py-2 text-sm"
+            role="status"
+            data-testid="ai-agent-schedule-dirty"
+          >
+            {t('aiAgentsPage.issues.unsavedSchedule')}
+          </p>
+        )}
+        <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
-            onClick={() => void disable()}
-            className="ml-auto rounded-md border border-destructive/40 px-3 py-1.5 text-sm font-medium text-destructive"
-            data-testid="ai-agent-disable"
+            onClick={() => void save()}
+            disabled={
+              saving
+              || scheduleDirty
+              || (isCreate && availableKinds.length === 0)
+              || (enteringActMode && !actAck)
+            }
+            className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground disabled:opacity-60"
+            data-testid="ai-agent-save"
           >
-            {confirmDisable ? t('aiAgentsPage.actions.confirmDisable') : t('aiAgentsPage.actions.disable')}
+            {t('aiAgentsPage.actions.save')}
           </button>
-        )}
+          <button
+            type="button"
+            onClick={() => (scheduleDirty ? setConfirmDiscard(true) : onClose())}
+            className="rounded-md border px-3 py-1.5 text-sm font-medium disabled:opacity-60"
+            data-testid="ai-agent-cancel"
+          >
+            {t('aiAgentsPage.actions.cancel')}
+          </button>
+          {agent && (
+            <button
+              type="button"
+              onClick={() => setConfirmDisable(true)}
+              disabled={saving || scheduleDirty}
+              className="ml-auto rounded-md border border-destructive/40 px-3 py-1.5 text-sm font-medium text-destructive disabled:opacity-60"
+              data-testid="ai-agent-disable"
+            >
+              {t('aiAgentsPage.actions.disable')}
+            </button>
+          )}
+        </div>
       </div>
+
+      {/* The kill switch was a label swap — "Disable" became "Confirm
+          disable", stayed armed indefinitely, and never said what disabling
+          actually does. Same ConfirmDialog ceremony as every other guarded
+          action in the app, and the message names both halves: what stops,
+          and what survives. */}
+      {agent && (
+        <ConfirmDialog
+          open={confirmDisable}
+          onClose={() => setConfirmDisable(false)}
+          onConfirm={() => void disable()}
+          title={t('aiAgentsPage.disableDialog.title', { name: agent.name })}
+          message={t('aiAgentsPage.disableDialog.message')}
+          confirmLabel={t('aiAgentsPage.actions.disable')}
+          isLoading={saving}
+          confirmTestId="ai-agent-disable-confirm"
+        >
+          <p className="text-sm text-muted-foreground" data-testid="ai-agent-disable-retained">
+            {t('aiAgentsPage.disableDialog.retained')}
+          </p>
+        </ConfirmDialog>
+      )}
+
+      {/* Warning, not destructive: nothing persisted is being removed — the
+          operator is throwing away a draft that never left the browser. */}
+      <ConfirmDialog
+        open={confirmDiscard}
+        onClose={() => setConfirmDiscard(false)}
+        onConfirm={() => {
+          setConfirmDiscard(false);
+          onClose();
+        }}
+        variant="warning"
+        title={t('aiAgentsPage.unsavedSchedule.discardTitle')}
+        message={t('aiAgentsPage.unsavedSchedule.discardMessage')}
+        confirmLabel={t('aiAgentsPage.unsavedSchedule.discardConfirm')}
+        confirmTestId="ai-agent-discard-schedule-confirm"
+      />
     </div>
   );
 }
