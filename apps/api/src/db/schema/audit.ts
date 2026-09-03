@@ -70,7 +70,7 @@ export const auditChainAnchors = pgTable('audit_chain_anchors', {
 
 export const auditRetentionPolicies = pgTable('audit_retention_policies', {
   id: uuid('id').primaryKey().defaultRandom(),
-  // Unique per org (migration 2026-10-08-100400) so upsertOrgAuditRetentionPolicy
+  // Unique per org (migration 2026-10-08-100700) so upsertOrgAuditRetentionPolicy
   // can use a real ON CONFLICT — see that service for why the earlier
   // SELECT...FOR UPDATE approach was not actually race-safe.
   orgId: uuid('org_id').notNull().unique().references(() => organizations.id),

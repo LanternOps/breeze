@@ -42,7 +42,7 @@ export async function getOrgAuditRetentionPolicy(orgId: string): Promise<OrgAudi
  * Creates or updates the caller's org policy.
  *
  * Uses a real `INSERT ... ON CONFLICT (org_id) DO UPDATE`, backed by the
- * unique constraint added in migration 2026-10-08-100400. An earlier version
+ * unique constraint added in migration 2026-10-08-100700. An earlier version
  * of this function used `SELECT ... FOR UPDATE` inside a transaction instead,
  * reasoning that the row lock made concurrent saves for the same org safe —
  * that reasoning was wrong for an org with NO row yet (the exact case #4633
