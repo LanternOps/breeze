@@ -820,6 +820,28 @@
       "unavailable": "Keine Richtlinie verfügbar."
     }
   },
+  "orgAuditRetentionSettings": {
+    "title": "Audit-Protokoll-Aufbewahrung",
+    "description": "Legt fest, wie lange der Audit-Verlauf dieser Organisation aufbewahrt wird, bevor ältere Einträge gelöscht werden.",
+    "loading": "Aufbewahrungsrichtlinie wird geladen...",
+    "errors": {
+      "load": "Die Audit-Aufbewahrungsrichtlinie konnte nicht geladen werden.",
+      "save": "Die Audit-Aufbewahrungsrichtlinie konnte nicht gespeichert werden."
+    },
+    "toasts": {
+      "saved": "Audit-Aufbewahrungsrichtlinie gespeichert."
+    },
+    "unconfiguredWarning": "Für diese Organisation ist noch keine Aufbewahrungsrichtlinie konfiguriert — Audit-Protokolle werden erst bereinigt, nachdem Sie eine gespeichert haben.",
+    "retentionDays": "Aufbewahrungsdauer (Tage)",
+    "readOnly": "Sie haben keine Berechtigung, diese Einstellung zu ändern.",
+    "lastCleanup": "Letzte Bereinigung um {{date}}",
+    "actions": {
+      "save": "Speichern"
+    },
+    "issues": {
+      "range": "Geben Sie eine ganze Zahl zwischen 1 und 3650 Tagen ein."
+    }
+  },
   "orgBrandingEditor": {
     "title": "Branding",
     "description": "Passen Sie das Portalerlebnis für {{organization}} an.",
@@ -3375,6 +3397,8 @@
       "remoteAccessDescription": "VNC, Proxy, Tunnel",
       "eventLogs": "Ereignisprotokolle",
       "eventLogsDescription": "Weitergabe und Aufbewahrung",
+      "auditRetention": "Audit-Aufbewahrung",
+      "auditRetentionDescription": "Wie lange Audit-Protokolle aufbewahrt werden",
       "communications": "Kommunikation",
       "notifications": "Benachrichtigungen",
       "notificationsDescription": "E-Mail, Slack, Webhooks",

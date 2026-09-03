@@ -820,6 +820,28 @@
       "unavailable": "Aucune politique disponible."
     }
   },
+  "orgAuditRetentionSettings": {
+    "title": "Conservation des journaux d'audit",
+    "description": "Détermine la durée de conservation du journal d'audit de cette organisation avant la suppression des entrées les plus anciennes.",
+    "loading": "Chargement de la politique de conservation...",
+    "errors": {
+      "load": "Échec du chargement de la politique de conservation des audits.",
+      "save": "Échec de l'enregistrement de la politique de conservation des audits."
+    },
+    "toasts": {
+      "saved": "Politique de conservation des audits enregistrée."
+    },
+    "unconfiguredWarning": "Aucune politique de conservation n'est encore configurée pour cette organisation — les journaux d'audit ne sont jamais purgés tant que vous n'en enregistrez pas une.",
+    "retentionDays": "Durée de conservation (jours)",
+    "readOnly": "Vous n'avez pas la permission de modifier ce paramètre.",
+    "lastCleanup": "Dernier nettoyage exécuté le {{date}}",
+    "actions": {
+      "save": "Enregistrer"
+    },
+    "issues": {
+      "range": "Entrez un nombre entier de jours entre 1 et 3650."
+    }
+  },
   "orgBrandingEditor": {
     "title": "Image de marque",
     "description": "Personnalisez l’expérience du portail pour {{organization}}.",
@@ -3423,6 +3445,8 @@
       "remoteAccessDescription": "VNC, proxy et tunnels",
       "eventLogs": "Journaux d’événements",
       "eventLogsDescription": "Transfert et conservation",
+      "auditRetention": "Conservation des audits",
+      "auditRetentionDescription": "Durée de conservation des journaux d'audit",
       "communications": "Communications",
       "notifications": "Notifications",
       "notificationsDescription": "Courriel, Slack, webhooks",

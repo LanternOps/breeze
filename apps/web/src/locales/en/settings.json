@@ -820,6 +820,28 @@
       "unavailable": "No policy available."
     }
   },
+  "orgAuditRetentionSettings": {
+    "title": "Audit Log Retention",
+    "description": "Controls how long this organization's audit trail is kept before older entries are pruned.",
+    "loading": "Loading retention policy...",
+    "errors": {
+      "load": "Failed to load the audit retention policy.",
+      "save": "Failed to save the audit retention policy."
+    },
+    "toasts": {
+      "saved": "Audit retention policy saved."
+    },
+    "unconfiguredWarning": "No retention policy is configured for this organization yet — audit logs are never pruned until you save one.",
+    "retentionDays": "Retention period (days)",
+    "readOnly": "You do not have permission to change this setting.",
+    "lastCleanup": "Last cleanup ran at {{date}}",
+    "actions": {
+      "save": "Save"
+    },
+    "issues": {
+      "range": "Enter a whole number of days between 1 and 3650."
+    }
+  },
   "orgBrandingEditor": {
     "title": "Branding",
     "description": "Customize the portal experience for {{organization}}.",
@@ -3428,6 +3450,8 @@
       "remoteAccessDescription": "VNC, proxy, tunnels",
       "eventLogs": "Event Logs",
       "eventLogsDescription": "Forwarding and retention",
+      "auditRetention": "Audit Retention",
+      "auditRetentionDescription": "How long audit logs are kept",
       "communications": "Communications",
       "notifications": "Notifications",
       "notificationsDescription": "Email, Slack, webhooks",
