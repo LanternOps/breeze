@@ -96,8 +96,8 @@ describe('overage line lifecycle (real DB) #3205 W04', () => {
 
     expect(clone).toHaveLength(2);
     expect(clone.every((l) => l.parentLineId === null)).toBe(true);   // decision 8
-    expect(clone.map((l) => [l.description, l.quantity, l.unitPrice, l.lineTotal]))
-      .toEqual(original.map((l) => [l.description, l.quantity, l.unitPrice, l.lineTotal]));
+    expect(clone.map((l) => [l.description, l.quantity, l.unitPrice, l.lineTotal, l.taxable, l.costBasis, l.customerVisible]))
+      .toEqual(original.map((l) => [l.description, l.quantity, l.unitPrice, l.lineTotal, l.taxable, l.costBasis, l.customerVisible]));
     expect(clone.map((l) => l.sourceId)).toEqual([f.lineId, f.lineId]);
     expect(clone.map((l) => l.sourceContractId)).toEqual([f.contractId, f.contractId]);
     expect(clone[1]!.sortOrder).toBe(clone[0]!.sortOrder + 1);
