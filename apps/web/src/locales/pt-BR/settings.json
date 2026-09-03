@@ -820,6 +820,28 @@
       "unavailable": "Nenhuma política disponível."
     }
   },
+  "orgAuditRetentionSettings": {
+    "title": "Retenção de Logs de Auditoria",
+    "description": "Controla por quanto tempo o histórico de auditoria desta organização é mantido antes que as entradas mais antigas sejam removidas.",
+    "loading": "Carregando política de retenção...",
+    "errors": {
+      "load": "Falha ao carregar a política de retenção de auditoria.",
+      "save": "Falha ao salvar a política de retenção de auditoria."
+    },
+    "toasts": {
+      "saved": "Política de retenção de auditoria salva."
+    },
+    "unconfiguredWarning": "Ainda não há uma política de retenção configurada para esta organização — os logs de auditoria nunca são removidos até que você salve uma.",
+    "retentionDays": "Período de retenção (dias)",
+    "readOnly": "Você não tem permissão para alterar esta configuração.",
+    "lastCleanup": "Última limpeza executada em {{date}}",
+    "actions": {
+      "save": "Salvar"
+    },
+    "issues": {
+      "range": "Digite um número inteiro de dias entre 1 e 3650."
+    }
+  },
   "orgBrandingEditor": {
     "title": "Identidade visual",
     "description": "Personalize a experiência do portal para {{organization}}.",
@@ -3428,6 +3450,8 @@
       "remoteAccessDescription": "VNC, proxy, túneis",
       "eventLogs": "Registros de eventos",
       "eventLogsDescription": "Encaminhamento e retenção",
+      "auditRetention": "Retenção de Auditoria",
+      "auditRetentionDescription": "Por quanto tempo os logs de auditoria são mantidos",
       "communications": "Comunicações",
       "notifications": "Notificações",
       "notificationsDescription": "E-mail, Slack, webhooks",

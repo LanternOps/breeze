@@ -820,6 +820,28 @@
       "unavailable": "Nessun criterio disponibile."
     }
   },
+  "orgAuditRetentionSettings": {
+    "title": "Conservazione dei log di audit",
+    "description": "Controlla per quanto tempo viene conservato il registro di audit di questa organizzazione prima che le voci più vecchie vengano eliminate.",
+    "loading": "Caricamento della policy di conservazione...",
+    "errors": {
+      "load": "Impossibile caricare la policy di conservazione dell'audit.",
+      "save": "Impossibile salvare la policy di conservazione dell'audit."
+    },
+    "toasts": {
+      "saved": "Policy di conservazione dell'audit salvata."
+    },
+    "unconfiguredWarning": "Per questa organizzazione non è ancora configurata una policy di conservazione — i log di audit non vengono mai eliminati finché non ne salvi una.",
+    "retentionDays": "Periodo di conservazione (giorni)",
+    "readOnly": "Non hai il permesso di modificare questa impostazione.",
+    "lastCleanup": "Ultima pulizia eseguita alle {{date}}",
+    "actions": {
+      "save": "Salva"
+    },
+    "issues": {
+      "range": "Inserisci un numero intero di giorni compreso tra 1 e 3650."
+    }
+  },
   "orgBrandingEditor": {
     "title": "Branding",
     "description": "Personalizza l'esperienza del portale per {{organization}}.",
@@ -3423,6 +3445,8 @@
       "remoteAccessDescription": "VNC, proxy, tunnel",
       "eventLogs": "Log eventi",
       "eventLogsDescription": "Inoltro e conservazione",
+      "auditRetention": "Conservazione audit",
+      "auditRetentionDescription": "Per quanto tempo vengono conservati i log di audit",
       "communications": "Comunicazioni",
       "notifications": "Notifiche",
       "notificationsDescription": "email, Slack, webhook",

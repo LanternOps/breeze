@@ -820,6 +820,28 @@
       "unavailable": "Politika mevcut değil."
     }
   },
+  "orgAuditRetentionSettings": {
+    "title": "Denetim Günlüğü Saklama",
+    "description": "Eski kayıtlar temizlenmeden önce bu kuruluşun denetim geçmişinin ne kadar süreyle saklanacağını denetler.",
+    "loading": "Saklama ilkesi yükleniyor...",
+    "errors": {
+      "load": "Denetim saklama ilkesi yüklenemedi.",
+      "save": "Denetim saklama ilkesi kaydedilemedi."
+    },
+    "toasts": {
+      "saved": "Denetim saklama ilkesi kaydedildi."
+    },
+    "unconfiguredWarning": "Bu kuruluş için henüz bir saklama ilkesi yapılandırılmadı — siz birini kaydedene kadar denetim günlükleri hiçbir zaman temizlenmez.",
+    "retentionDays": "Saklama süresi (gün)",
+    "readOnly": "Bu ayarı değiştirme izniniz yok.",
+    "lastCleanup": "Son temizlik {{date}} tarihinde çalıştı",
+    "actions": {
+      "save": "Kaydet"
+    },
+    "issues": {
+      "range": "1 ile 3650 arasında tam sayı gün girin."
+    }
+  },
   "orgBrandingEditor": {
     "title": "Markalama",
     "description": "{{organization}} için portal deneyimini özelleştirin.",
@@ -3428,6 +3450,8 @@
       "remoteAccessDescription": "VNC, proxy, tüneller",
       "eventLogs": "Olay Günlükleri",
       "eventLogsDescription": "İletme ve saklama",
+      "auditRetention": "Denetim Saklama",
+      "auditRetentionDescription": "Denetim günlüklerinin ne kadar süreyle saklanacağı",
       "communications": "İletişim",
       "notifications": "Bildirimler",
       "notificationsDescription": "E-posta, Slack, web kancaları",

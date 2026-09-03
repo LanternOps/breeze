@@ -197,6 +197,7 @@ export const DEFAULT_PERMISSIONS = [
   // Audit
   { resource: 'audit', action: 'read', description: 'View audit logs' },
   { resource: 'audit', action: 'export', description: 'Export audit logs' },
+  { resource: 'audit', action: 'manage', description: 'Manage the audit log retention policy' },
 
   // Reports
   { resource: 'reports', action: 'read', description: 'View reports and report data' },
@@ -312,6 +313,7 @@ export const SYSTEM_ROLES = [
       'topology:read', 'topology:write',
       'remote:access',
       'audit:read',
+      'audit:manage',
       'vulnerabilities:accept_risk',
       'ai_sessions:read_all',
       // An org admin may tighten their own org's agent policy. Creating a
