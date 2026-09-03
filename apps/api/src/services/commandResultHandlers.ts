@@ -656,6 +656,24 @@ async function handlePamActuationV2Result({
   return { kind: 'pam', classification };
 }
 
+/**
+ * #3525 closer 2 of 5. The agent's `script_cancel` ack is the ONLY evidence
+ * that lets an execution terminalise as `cancelled`, so it must never be
+ * silently dropped on either transport. Imported dynamically for the same
+ * reason the route-level dispatch is: `scriptCancellation` pulls the scripts
+ * schema module into the graph, and several suites here partially mock
+ * `db/schema`.
+ */
+async function handleScriptCancelResult({ commandId, result }: Parameters<CommandResultHandler>[0]): Promise<void> {
+  const { applyScriptCancelAck } = await import('./scriptCancellation');
+  await applyScriptCancelAck({
+    // The transport-authorized id, never one read off the payload — same
+    // invariant as every other handler in this file.
+    cancelCommandId: commandId,
+    result: (result ?? null) as Record<string, unknown> | null,
+  });
+}
+
 export const commandResultHandlers: Record<string, CommandResultHandler> = {
   network_discovery: handleDiscoveryResult,
   backup_verify: handleBackupVerificationResult,
@@ -669,6 +687,7 @@ export const commandResultHandlers: Record<string, CommandResultHandler> = {
   vault_sync: handleVaultSyncResult,
   snmp_poll: handleSnmpPollResult,
   script: handleScriptResult,
+  script_cancel: handleScriptCancelResult,
   sensitive_data_scan: handleSensitiveDataResult,
   encrypt_file: handleSensitiveDataResult,
   secure_delete_file: handleSensitiveDataResult,
