@@ -23,6 +23,7 @@
  */
 import './setup';
 
+import zlib from 'node:zlib';
 import { describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 
@@ -30,9 +31,10 @@ vi.mock('../../services/invoiceEvents', () => ({ emitInvoiceEvent: vi.fn().mockR
 vi.mock('../../jobs/invoiceWorker', () => ({ enqueueInvoicePdfRender: vi.fn().mockResolvedValue(undefined) }));
 
 import { db, withSystemDbAccessContext } from '../../db';
-import { invoiceLines, invoices, organizations, partners } from '../../db/schema';
+import { devices, invoiceDocuments, invoiceLineDevices, invoiceLines, invoices, organizations, partners, sites } from '../../db/schema';
 import { issueInvoice } from '../../services/invoiceService';
 import type { InvoiceActor } from '../../services/invoiceTypes';
+import { renderInvoicePdf } from '../../services/invoicePdf';
 import { acceptQuote } from '../../services/quoteAcceptService';
 import { sendQuote } from '../../services/quoteLifecycle';
 import { addManualLine, createQuote, updateQuote } from '../../services/quoteService';
@@ -42,9 +44,38 @@ import { seedGateOrg } from './multiCurrencyWave6GateFixtures';
 const RUN = !!process.env.DATABASE_URL;
 const runDb = it.runIf(RUN);
 
+// pdfkit Flate-compresses page streams; decode show-text operands before
+// asserting customer-visible content (same helper pattern as the currency PDF
+// integration suite).
+function extractPdfText(pdf: Buffer): string {
+  const raw = pdf.toString('latin1');
+  const headerRe = /\/Length\s+(\d+)[\s\S]{0,120}?\/Filter\s+\/FlateDecode[\s\S]{0,40}?stream\r?\n/g;
+  let out = '';
+  let match: RegExpExecArray | null;
+  while ((match = headerRe.exec(raw))) {
+    const compressed = Buffer.from(raw.slice(headerRe.lastIndex, headerRe.lastIndex + Number(match[1])), 'latin1');
+    let body: string;
+    try { body = zlib.inflateSync(compressed).toString('latin1'); } catch { continue; }
+    const tokenRe = /<([0-9a-fA-F]+)>|\(((?:[^()\\]|\\.)*)\)/g;
+    let token: RegExpExecArray | null;
+    while ((token = tokenRe.exec(body))) {
+      out += token[1] !== undefined
+        ? Buffer.from(token[1].length % 2 ? `${token[1]}0` : token[1], 'hex').toString('latin1')
+        : token[2]!.replace(/\\([()\\])/g, '$1');
+    }
+    out += ' ';
+  }
+  return out;
+}
+
 const ACTOR: InvoiceActor = { userId: null, partnerId: null, accessibleOrgIds: null };
 
 interface DraftFixture { invoiceId: string; partnerId: string; orgId: string; actor: InvoiceActor }
+
+interface EvidenceDevice {
+  hostname: string;
+  countedAs: 'included' | 'overage' | 'flagged';
+}
 
 /** A DRAFT invoice (one customer-visible line, so issueInvoice's
  *  NO_VISIBLE_LINES guard is satisfied) under a partner stamped with the given
@@ -71,6 +102,47 @@ async function seedDraftInvoice(opts: { invoiceDeviceAppendix: boolean }): Promi
     });
     return { invoiceId: inv!.id, partnerId: p!.id, orgId: o!.id, actor: ACTOR };
   });
+}
+
+async function seedDraftInvoiceWithEvidence(opts: {
+  invoiceDeviceAppendix?: boolean;
+  draftOverride?: boolean;
+  devices?: EvidenceDevice[];
+}): Promise<DraftFixture> {
+  const fixture = await seedDraftInvoice({ invoiceDeviceAppendix: opts.invoiceDeviceAppendix ?? false });
+  await withSystemDbAccessContext(async () => {
+    if (opts.draftOverride !== undefined) {
+      await db.update(invoices).set({ deviceAppendix: opts.draftOverride })
+        .where(eq(invoices.id, fixture.invoiceId));
+    }
+    const [line] = await db.select({ id: invoiceLines.id }).from(invoiceLines)
+      .where(eq(invoiceLines.invoiceId, fixture.invoiceId)).limit(1);
+    const evidence = opts.devices ?? [{ hostname: 'billed-01', countedAs: 'included' as const }];
+    if (!evidence.length) return;
+    const [site] = await db.insert(sites).values({ orgId: fixture.orgId, name: 'Appendix Site' })
+      .returning({ id: sites.id });
+    const seededDevices = await db.insert(devices).values(evidence.map((d, i) => ({
+      orgId: fixture.orgId, siteId: site!.id, agentId: `appendix-${fixture.invoiceId}-${i}`,
+      hostname: d.hostname, status: 'online' as const, deviceRole: 'server', osType: 'linux' as const,
+      osVersion: '1', architecture: 'x86_64', agentVersion: '1',
+    }))).returning({ id: devices.id, hostname: devices.hostname, deviceRole: devices.deviceRole });
+    await db.insert(invoiceLineDevices).values(seededDevices.map((d, i) => ({
+      invoiceLineId: line!.id, invoiceId: fixture.invoiceId, orgId: fixture.orgId,
+      deviceId: d.id, hostname: d.hostname, deviceRole: d.deviceRole, siteId: site!.id,
+      countedAs: evidence[i]!.countedAs,
+    })));
+  });
+  return fixture;
+}
+
+async function seedIssuedInvoiceWithEvidence(opts: {
+  invoiceDeviceAppendix: boolean;
+  draftOverride?: boolean;
+  devices?: EvidenceDevice[];
+}): Promise<DraftFixture> {
+  const fixture = await seedDraftInvoiceWithEvidence(opts);
+  await withSystemDbAccessContext(() => issueInvoice(fixture.invoiceId, fixture.actor));
+  return fixture;
 }
 
 /** A quote with a single deposit-eligible one-time line, sent and ready to
@@ -132,5 +204,86 @@ describe.runIf(RUN)('device appendix stamping (real DB) #3205 W07', () => {
     const [inv] = await withSystemDbAccessContext(() => db.select({ a: invoices.deviceAppendix })
       .from(invoices).where(eq(invoices.id, f.invoiceId)));
     expect(inv!.a).toBe(false);
+  });
+});
+
+describe.runIf(RUN)('appendix rendering is gated by the STAMP only (#3205 W07)', () => {
+  runDb('absent when both flags are false', async () => {
+    const f = await seedIssuedInvoiceWithEvidence({ invoiceDeviceAppendix: false });
+    const { pdf } = await withSystemDbAccessContext(() => renderInvoicePdf(f.invoiceId));
+    expect(extractPdfText(pdf)).not.toContain('Billed devices');
+  });
+
+  runDb('present with the partner flag on at issue', async () => {
+    const f = await seedIssuedInvoiceWithEvidence({ invoiceDeviceAppendix: true });
+    const { pdf } = await withSystemDbAccessContext(() => renderInvoicePdf(f.invoiceId));
+    expect(extractPdfText(pdf)).toContain('Billed devices');
+  });
+
+  runDb('present with the partner flag off and the per-invoice override on at issue', async () => {
+    const f = await seedIssuedInvoiceWithEvidence({ invoiceDeviceAppendix: false, draftOverride: true });
+    const { pdf } = await withSystemDbAccessContext(() => renderInvoicePdf(f.invoiceId));
+    expect(extractPdfText(pdf)).toContain('Billed devices');
+  });
+
+  runDb('ABSENT with the partner flag on and the per-invoice override explicitly false', async () => {
+    const f = await seedIssuedInvoiceWithEvidence({ invoiceDeviceAppendix: true, draftOverride: false });
+    const { pdf } = await withSystemDbAccessContext(() => renderInvoicePdf(f.invoiceId));
+    expect(extractPdfText(pdf)).not.toContain('Billed devices');
+  });
+
+  runDb('FREEZE: flipping the partner default after issue does not change a sanctioned re-render', async () => {
+    const f = await seedIssuedInvoiceWithEvidence({ invoiceDeviceAppendix: false });
+    await withSystemDbAccessContext(() => db.update(partners)
+      .set({ invoiceDeviceAppendix: true }).where(eq(partners.id, f.partnerId)));
+    // The reset-link path legitimately re-renders and rewrites the stored bytes.
+    const { pdf } = await withSystemDbAccessContext(() => renderInvoicePdf(f.invoiceId));
+    expect(extractPdfText(pdf)).not.toContain('Billed devices');
+    // ...and the mirror case.
+    const g = await seedIssuedInvoiceWithEvidence({ invoiceDeviceAppendix: true });
+    await withSystemDbAccessContext(() => db.update(partners)
+      .set({ invoiceDeviceAppendix: false }).where(eq(partners.id, g.partnerId)));
+    const out = await withSystemDbAccessContext(() => renderInvoicePdf(g.invoiceId));
+    expect(extractPdfText(out.pdf)).toContain('Billed devices');
+  });
+
+  runDb('flagged rows NEVER appear in the rendered bytes (ruling 4)', async () => {
+    const f = await seedIssuedInvoiceWithEvidence({
+      invoiceDeviceAppendix: true,
+      devices: [{ hostname: 'billed-01', countedAs: 'included' }, { hostname: 'flagged-99', countedAs: 'flagged' }],
+    });
+    const { pdf } = await withSystemDbAccessContext(() => renderInvoicePdf(f.invoiceId));
+    const out = extractPdfText(pdf);
+    expect(out).toContain('billed-01');
+    expect(out).not.toContain('flagged-99');       // not charged -> never on the customer's document
+  });
+
+  runDb('FLAGGED-BEFORE-CAP: 1,900 included + 500 flagged prints 1,900 rows and NO truncation line', async () => {
+    // The filter is in the SQL, applied BEFORE the 2,001-row cap. Applied after,
+    // this line would spend 500 of its cap on rows that are never printed and
+    // then falsely claim truncation.
+    const f = await seedIssuedInvoiceWithEvidence({
+      invoiceDeviceAppendix: true,
+      devices: [
+        ...Array.from({ length: 1900 }, (_, i) => ({ hostname: `inc-${String(i).padStart(4, '0')}`, countedAs: 'included' as const })),
+        ...Array.from({ length: 500 }, (_, i) => ({ hostname: `flg-${String(i).padStart(4, '0')}`, countedAs: 'flagged' as const })),
+      ],
+    });
+    const { pdf } = await withSystemDbAccessContext(() => renderInvoicePdf(f.invoiceId));
+    const out = extractPdfText(pdf);
+    expect(out).toContain('inc-0000');
+    expect(out).toContain('inc-1899');
+    expect(out).not.toContain('flg-');
+    expect(out).not.toMatch(/more devices/);
+  }, 120_000);
+
+  runDb('a DRAFT renders the appendix in preview and still persists nothing', async () => {
+    const f = await seedDraftInvoiceWithEvidence({ draftOverride: true });
+    const out = await withSystemDbAccessContext(() => renderInvoicePdf(f.invoiceId));
+    expect(out.documentId).toBeNull();
+    expect(extractPdfText(out.pdf)).toContain('Billed devices');
+    const docs = await withSystemDbAccessContext(() => db.select().from(invoiceDocuments)
+      .where(eq(invoiceDocuments.invoiceId, f.invoiceId)));
+    expect(docs).toEqual([]);
   });
 });
