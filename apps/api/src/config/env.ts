@@ -478,6 +478,41 @@ export function mfaForcePartnerAdmin(): boolean {
   return envFlag('MFA_FORCE_FOR_PARTNER_ADMIN', true);
 }
 
+/**
+ * #1374 — when true (the DEFAULT), an L4 (critical-tier) approval requires the
+ * approver device's `platform_bound_basis` to be in
+ * `L4_TRUSTED_PLATFORM_BOUND_BASES` (services/authenticatorAssurance.ts), not
+ * merely `is_platform_bound = true`.
+ *
+ * DEFAULT TRUE, deliberately: pre-#1374 mobile registrations forced
+ * is_platform_bound = true with NO attestation of any kind, so leaving this off
+ * leaves a critical-tier bypass open. Set to `false` ONLY as a break-glass
+ * revert — it re-opens that bypass for every legacy mobile key, and the
+ * `breeze_authenticator_l4_basis_total{outcome="would_deny"}` series is what
+ * makes the resulting blast radius visible.
+ *
+ * Read at CALL time (like mfaForcePartnerAdmin / policyDecideEnabled above) so
+ * ops can flip it without a code change and tests need no module reload.
+ *
+ * Unlike a plain `envFlag(name, true)` this distinguishes "explicitly off" from
+ * "unrecognized" — same treatment as abuseSignalsEnabled() — because on a
+ * default-TRUE security gate, `envFlag`'s "anything not in the true-vocabulary
+ * is false" rule would let a typo (`=flase`) silently DISABLE enforcement.
+ * config/validate.ts additionally refuses boot on such a value.
+ */
+export function authenticatorAttestationEnforced(): boolean {
+  const raw = (process.env.BREEZE_AUTHENTICATOR_ATTESTATION_ENFORCED ?? '').trim();
+  if (raw === '') return true;
+  const normalized = raw.toLowerCase();
+  if (RECOGNIZED_TRUE_FLAG_VALUES.has(normalized)) return true;
+  if (RECOGNIZED_FALSE_FLAG_VALUES.has(normalized)) return false;
+  console.warn(
+    `[Authenticator] Ignoring unrecognized BREEZE_AUTHENTICATOR_ATTESTATION_ENFORCED value ${JSON.stringify(raw)} ` +
+      '— expected true/false, 1/0, yes/no or on/off. Keeping L4 attestation enforcement ON.',
+  );
+  return true;
+}
+
 // Delegant service configuration for M365 helpdesk agent capability.
 // Delegant is a sibling service that manages AI-agent identity and governance.
 export const DELEGANT_BASE_URL = process.env.DELEGANT_BASE_URL ?? '';

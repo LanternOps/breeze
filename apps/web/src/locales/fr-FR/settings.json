@@ -1742,6 +1742,29 @@
         "draftKinds": {
           "reply": "Brouillon de réponse",
           "resolutionNote": "Brouillon de note de résolution"
+        },
+        "skippedTitle": "Non appliqué",
+        "skipped": {
+          "item": {
+            "fields": "Mises à jour de champs",
+            "link": "Association d’appareil",
+            "note": "Note privée",
+            "draftReply": "Brouillon de réponse",
+            "draftResolution": "Brouillon de note de résolution"
+          },
+          "reason": {
+            "noFieldsProposed": "Aucun champ n’a été proposé.",
+            "belowConfidenceFloor": "La confiance était inférieure au seuil requis pour une écriture automatique.",
+            "humanSet": "Une personne a déjà défini ce champ.",
+            "noDeviceProposed": "Aucun appareil n’a été proposé.",
+            "deviceAlreadyLinked": "Le ticket a déjà un appareil associé.",
+            "noDraftReply": "Aucune réponse n’a été proposée.",
+            "noDraftResolution": "Aucune note de résolution n’a été proposée.",
+            "resolutionNoteExists": "Le ticket a déjà une note de résolution.",
+            "maxActionsPerRun": "Le plafond d’actions de l’exécution a été atteint en premier.",
+            "intentError": "La création de la modification a échoué.",
+            "ticketNotFound": "Le ticket est introuvable."
+          }
         }
       }
     },

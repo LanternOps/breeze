@@ -40,7 +40,8 @@
     "decisionFailed": "Não foi possível enviar a decisão. Tente novamente.",
     "batchStepUp": "Este lote exige um login mais seguro. Aprove as solicitações uma de cada vez.",
     "batchNotHomogeneous": "Estas solicitações não podem mais ser decididas em conjunto.",
-    "batchTooLarge": "Este lote tem solicitações demais para decidir em conjunto. Aprove-as em grupos menores."
+    "batchTooLarge": "Este lote tem solicitações demais para decidir em conjunto. Aprove-as em grupos menores.",
+    "driftedFromBatch": "Esta solicitação mudou e precisa ser decidida individualmente."
   },
   "registerDevice": "Registrar dispositivo",
   "alwaysAllow": {

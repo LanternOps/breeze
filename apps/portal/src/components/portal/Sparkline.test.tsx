@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { render, screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { expect, it } from 'vitest';
 import { Sparkline } from './Sparkline';
 
 it('renders a labelled inline SVG without a chart dependency', () => {

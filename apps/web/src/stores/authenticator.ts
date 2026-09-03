@@ -201,11 +201,21 @@ export async function renameApproverDevice(id: string, label: string): Promise<R
 export class AssertionChallengeError extends Error {
   status: number;
   token?: string;
-  constructor(message: string, status: number, token?: string) {
+  /** Issue #4459 — the `offending` approval-request ids the server's
+   *  `batch_not_homogeneous` 422 carries (`loadHomogeneousBatch`,
+   *  `services/approvals/batchDecide.ts`). The challenge route re-validates
+   *  the whole set BEFORE minting anything, so on an APPROVE this is where a
+   *  drifted set is usually refused — the later `/batch/decide` 422 is only
+   *  reached on a DENY (which skips the challenge/proof round-trip
+   *  entirely). Without carrying this through, only the deny path could ever
+   *  tell the inbox which cards to deselect. */
+  offending?: string[];
+  constructor(message: string, status: number, token?: string, offending?: string[]) {
     super(message);
     this.name = 'AssertionChallengeError';
     this.status = status;
     this.token = token;
+    this.offending = offending;
   }
 }
 
@@ -229,10 +239,14 @@ async function completeAssertionCeremony(
   // benign "no registered device" fallback. (fetchWithAuth doesn't throw on non-2xx.)
   if (!challengeResponse.ok) {
     const token = typeof challengeData?.error === 'string' ? challengeData.error : undefined;
+    const offending = Array.isArray(challengeData?.offending)
+      ? challengeData.offending.filter((id: unknown): id is string => typeof id === 'string')
+      : undefined;
     throw new AssertionChallengeError(
       token ?? `Could not start verification (${challengeResponse.status}).`,
       challengeResponse.status,
       token,
+      offending,
     );
   }
   // A 2xx whose body isn't a usable challenge (empty body, truncated proxy

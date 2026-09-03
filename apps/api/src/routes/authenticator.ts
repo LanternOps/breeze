@@ -61,9 +61,11 @@ const registerGrantMintSchema = z.object({
 // Mobile hardware-key registration — requires a register_approver_device grant
 // (minted at login, returned as authenticatorRegisterGrantId). The old
 // client-asserted kind/isPlatformBound discriminators are ignored entirely; the
-// server forces kind='mobile_hw_key' and is_platform_bound=true. publicKey +
-// label are re-validated through the shared mobileHwKeyRegisterSchema
-// (`.strict()`) before insert; registerGrantId is stripped prior to that parse.
+// server forces kind='mobile_hw_key' and, since #1374, is_platform_bound=FALSE
+// with platform_bound_basis='unattested' (this route verifies no platform
+// attestation, so it may not claim one). publicKey + label are re-validated
+// through the shared mobileHwKeyRegisterSchema (`.strict()`) before insert;
+// registerGrantId is stripped prior to that parse.
 const mobileRegisterSchema = z
   .object({
     registerGrantId: registerGrantIdSchema,
@@ -258,6 +260,17 @@ authenticatorRoutes.post(
         aaguid: fields.aaguid,
         transports: (fields.transports ?? undefined) as ApproverDeviceRow['transports'],
         isPlatformBound: fields.isPlatformBound,
+        // #1374: record WHY this key counts as platform-bound. The browser
+        // basis is a documented weaker exception — `generateApproverRegistrationOptions`
+        // requests `attestationType: 'none'`, so `fields.isPlatformBound` comes
+        // from `singleDevice && !backedUp` (backup-eligibility flags), NOT a
+        // hardware attestation. It is still L4-trusted (open question Q3), so
+        // this MUST be set at registration: the migration only classified rows
+        // that already existed, and defaulting a new passkey to 'unattested'
+        // would silently strip L4 from every newly enrolled browser key.
+        platformBoundBasis: fields.isPlatformBound
+          ? ('webauthn_backup_flags' as const)
+          : ('unattested' as const),
       })
       .returning();
 
@@ -275,6 +288,7 @@ authenticatorRoutes.post(
         deviceId: inserted.id,
         kind: 'webauthn_platform',
         isPlatformBound: fields.isPlatformBound,
+        platformBoundBasis: inserted.platformBoundBasis,
       },
     });
 
@@ -283,8 +297,8 @@ authenticatorRoutes.post(
 );
 
 // Mobile hardware-key registration — register-grant required (minted at
-// login), then deferred PoP. The phone POSTs its Secure-Enclave / Keystore
-// public key plus the register_approver_device grant, which proves the caller
+// login), then deferred PoP. The phone POSTs its biometric-gated Keychain /
+// Keystore public key plus the register_approver_device grant, which proves the caller
 // completed the login-time step-up and not merely holds a stolen access
 // token. There is NO registration-time proof-of-possession signature — the
 // row is inserted PENDING (`last_used_at` null) and is ACTIVATED on its first
@@ -292,6 +306,11 @@ authenticatorRoutes.post(
 // `authenticatorAssurance.verifyMobileFactor` (which sets `last_used_at`). The
 // deferred-PoP design means a registered-but-never-used key can never satisfy an
 // approval until it has signed at least once.
+//
+// #1374: this route performs NO platform attestation, so the key it registers
+// is NOT platform-bound and cannot reach L4 (critical tier). The attested
+// two-step protocol lands in W02+; until a device re-enrols through it, mobile
+// approvals top out at L3 (high).
 authenticatorRoutes.post(
   '/devices',
   authMiddleware,
@@ -303,7 +322,8 @@ authenticatorRoutes.post(
     // Re-validate the authoritative fields through the shared strict schema
     // BEFORE consuming the single-use grant: the client-asserted
     // kind/isPlatformBound discriminators are ignored (the server forces
-    // kind='mobile_hw_key' + is_platform_bound=true). A bad/missing publicKey
+    // kind='mobile_hw_key' and, since #1374, is_platform_bound=FALSE with
+    // platform_bound_basis='unattested'). A bad/missing publicKey
     // or label is a 400 here, never an insert — and parsing first means a
     // malformed payload never burns a caller's valid grant (unlike the
     // consume-first ordering, which is correct for /devices/webauthn/verify
@@ -369,7 +389,13 @@ authenticatorRoutes.post(
         publicKey,
         credentialId: null,
         signCount: 0,
-        isPlatformBound: true,
+        // #1374: NEVER assert platform-binding for an unattested key. This
+        // legacy endpoint performs no attestation of any kind, so the row
+        // registers at L2/L3 only and can no longer reach L4 (critical tier).
+        // An ATTESTED registration goes through the challenge/verify protocol
+        // (POST /devices/mobile/challenge + /devices/mobile/verify, W02+).
+        isPlatformBound: false,
+        platformBoundBasis: 'unattested' as const,
         mobileDeviceId,
         // last_used_at intentionally left at its null default — the PENDING
         // marker. The first approval signature flips it active server-side.
@@ -389,7 +415,10 @@ authenticatorRoutes.post(
       details: {
         deviceId: inserted.id,
         kind: 'mobile_hw_key',
-        isPlatformBound: true,
+        // The forensic record must report what was STORED (#1374), not the
+        // historical hard-coded `true`.
+        isPlatformBound: false,
+        platformBoundBasis: 'unattested',
         // The RESOLVED mobile_devices.id (uuid PK), or null. The raw header is
         // recorded under a deliberately distinct key so the two can never be
         // conflated again.

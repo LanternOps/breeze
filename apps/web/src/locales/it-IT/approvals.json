@@ -40,7 +40,8 @@
     "decisionFailed": "Impossibile inviare la decisione. Riprova.",
     "batchStepUp": "Questo gruppo richiede un accesso più sicuro. Approva le richieste una alla volta.",
     "batchNotHomogeneous": "Non è più possibile decidere queste richieste insieme.",
-    "batchTooLarge": "Questo gruppo contiene troppe richieste per essere deciso insieme. Approvale in gruppi più piccoli."
+    "batchTooLarge": "Questo gruppo contiene troppe richieste per essere deciso insieme. Approvale in gruppi più piccoli.",
+    "driftedFromBatch": "Questa richiesta è cambiata e deve essere decisa singolarmente."
   },
   "registerDevice": "Registra dispositivo",
   "alwaysAllow": {

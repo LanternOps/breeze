@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import crypto from 'node:crypto';
 import { db } from '../db';
 import { verifyApprovalAssertion } from './approverWebAuthn';
@@ -10,8 +10,11 @@ import {
   resolveElevationAssurance,
   assertApprovalAssurance,
   assertDecisionConsistent,
+  StepUpRequiredError,
 } from './authenticatorAssurance';
 import type { AssuranceDecision } from './authenticatorAssurance';
+import type { PlatformBoundBasis } from '../db/schema/authenticatorDevices';
+import * as anomalyMetrics from './anomalyMetrics';
 
 vi.mock('../db', () => ({
   db: {
@@ -31,6 +34,8 @@ vi.mock('../db/schema', () => ({
     transports: 'transports',
     disabledAt: 'disabledAt',
     lastUsedAt: 'lastUsedAt',
+    platformBoundBasis: 'platformBoundBasis',
+    attestationVerifiedAt: 'attestationVerifiedAt',
   },
 }));
 
@@ -50,6 +55,14 @@ vi.mock('./mobileHwKey', async (importOriginal) => {
   };
 });
 
+// #1374: the L4 rung emits a basis/outcome counter through the anomaly-metrics
+// shim. Mocked (not spied) because authenticatorAssurance takes a NAMED import,
+// which vi.spyOn on the ESM namespace cannot intercept.
+vi.mock('./anomalyMetrics', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./anomalyMetrics')>();
+  return { ...actual, recordAuthenticatorL4Basis: vi.fn() };
+});
+
 // Phase 4: mock loadPartnerPolicy (it shares the db.select mock with the device
 // lookup, so we control it directly); keep isEnforcing REAL (it's pure).
 vi.mock('./authenticatorPolicy', async (importOriginal) => {
@@ -64,6 +77,9 @@ const mockDb = db as unknown as {
 const mockVerify = verifyApprovalAssertion as unknown as ReturnType<typeof vi.fn>;
 const mockConsumeNonce = consumeMobileAssertionNonce as unknown as ReturnType<typeof vi.fn>;
 const mockLoadPolicy = loadPartnerPolicy as unknown as ReturnType<typeof vi.fn>;
+const mockRecordL4Basis = anomalyMetrics.recordAuthenticatorL4Basis as unknown as ReturnType<
+  typeof vi.fn
+>;
 
 const PROOF: AssertionProof = {
   type: 'webauthn_platform',
@@ -402,6 +418,8 @@ describe('assertApprovalAssurance — L3 recency + L4 re-auth (no PIN)', () => {
       publicKey: spkiB64,
       signCount: 0,
       isPlatformBound: opts.isPlatformBound ?? true,
+      platformBoundBasis: 'ios_se_p256_app_attest',
+      attestationVerifiedAt: new Date(),
     });
     // consume returns the issued-at the server stored with the nonce — this is
     // the recency clock, derived server-side, never client/route supplied.
@@ -421,7 +439,15 @@ describe('assertApprovalAssurance — L3 recency + L4 re-auth (no PIN)', () => {
    * fresh re-auth flag on top of the L3 recency requirement. `reauthVerified` is
    * the ONLY route-supplied factor (a fresh re-auth completed at the decide
    * surface); recency is still derived from the consumed nonce's issued-at. */
-  function criticalCtx(opts: { reauth?: boolean; isPlatformBound?: boolean; challengeAgeMs?: number } = {}) {
+  function criticalCtx(opts: {
+    reauth?: boolean;
+    isPlatformBound?: boolean;
+    challengeAgeMs?: number;
+    /** #1374: WHY the key counts as platform-bound. Defaults to a genuinely
+     * attested Secure-Enclave basis so every pre-#1374 case keeps its meaning. */
+    platformBoundBasis?: PlatformBoundBasis;
+    attestationVerifiedAt?: Date | null;
+  } = {}) {
     const { spkiB64, privateKey } = makeDeviceKeypair();
     const nonce = 'server-nonce-L4';
     setupDbMocks({
@@ -432,6 +458,9 @@ describe('assertApprovalAssurance — L3 recency + L4 re-auth (no PIN)', () => {
       publicKey: spkiB64,
       signCount: 0,
       isPlatformBound: opts.isPlatformBound ?? true,
+      platformBoundBasis: opts.platformBoundBasis ?? 'ios_se_p256_app_attest',
+      attestationVerifiedAt:
+        opts.attestationVerifiedAt === undefined ? new Date() : opts.attestationVerifiedAt,
     });
     mockConsumeNonce.mockResolvedValue({
       nonce,
@@ -482,6 +511,205 @@ describe('assertApprovalAssurance — L3 recency + L4 re-auth (no PIN)', () => {
   it('does not require a PIN for high', async () => {
     const r = await assertApprovalAssurance(highApprovalCtx({ challengeAgeMs: 5_000 }));
     expect(r.decidedAssuranceLevel).toBe(3);
+  });
+
+  // #1374 — the reported gap: pre-#1374 mobile registration set
+  // is_platform_bound=true unconditionally with NO attestation of any kind, so a
+  // software RSA key read as an L4-capable hardware factor. L4 now additionally
+  // requires a basis in L4_TRUSTED_PLATFORM_BOUND_BASES.
+  describe('#1374 — L4 requires a trusted platform-bound basis, not just the boolean', () => {
+    afterEach(() => {
+      delete process.env.BREEZE_AUTHENTICATOR_ATTESTATION_ENFORCED;
+    });
+
+    it('denies critical when the basis is legacy_unattested even though isPlatformBound is true', async () => {
+      await expect(
+        assertApprovalAssurance(
+          criticalCtx({
+            reauth: true,
+            isPlatformBound: true,
+            platformBoundBasis: 'legacy_unattested',
+            attestationVerifiedAt: null,
+          }),
+        ),
+      ).rejects.toThrow(StepUpRequiredError);
+    });
+
+    it('denies critical for an unattested (post-#1374) registration', async () => {
+      await expect(
+        assertApprovalAssurance(
+          criticalCtx({
+            reauth: true,
+            isPlatformBound: true,
+            platformBoundBasis: 'unattested',
+            attestationVerifiedAt: null,
+          }),
+        ),
+      ).rejects.toThrow(StepUpRequiredError);
+    });
+
+    it('denies critical for an iOS RSA-keychain App Attest basis (attested app, unattested key)', async () => {
+      // App Attest proves a genuine app instance vouched for the SPKI; it does
+      // NOT prove the RSA private key lives in hardware (the Secure Enclave
+      // holds only P-256 keys). Deliberately outside the trusted set.
+      await expect(
+        assertApprovalAssurance(
+          criticalCtx({
+            reauth: true,
+            isPlatformBound: true,
+            platformBoundBasis: 'ios_keychain_rsa_app_attest',
+            attestationVerifiedAt: new Date(),
+          }),
+        ),
+      ).rejects.toThrow(StepUpRequiredError);
+    });
+
+    it('denies critical when a trusted hardware basis carries no attestation_verified_at', async () => {
+      await expect(
+        assertApprovalAssurance(
+          criticalCtx({
+            reauth: true,
+            isPlatformBound: true,
+            platformBoundBasis: 'ios_se_p256_app_attest',
+            attestationVerifiedAt: null,
+          }),
+        ),
+      ).rejects.toThrow(StepUpRequiredError);
+    });
+
+    it.each([
+      'ios_se_p256_app_attest',
+      'android_tee_key_attestation',
+      'android_strongbox_key_attestation',
+    ] as const)('allows critical for attested basis %s', async (basis) => {
+      const d = await assertApprovalAssurance(
+        criticalCtx({
+          reauth: true,
+          isPlatformBound: true,
+          platformBoundBasis: basis,
+          attestationVerifiedAt: new Date(),
+        }),
+      );
+      expect(d.decidedAssuranceLevel).toBe(4);
+    });
+
+    // Documented weaker exception (#1374 Q3): browser registration requests
+    // attestationType 'none' and derives platform-bound from backup-eligibility
+    // flags, so there is no attestation to time-stamp. Tightening it is a
+    // separate decision — it must NOT need attestation_verified_at here.
+    it('allows critical for webauthn_backup_flags with a null attestation_verified_at', async () => {
+      const d = await assertApprovalAssurance(
+        criticalCtx({
+          reauth: true,
+          isPlatformBound: true,
+          platformBoundBasis: 'webauthn_backup_flags',
+          attestationVerifiedAt: null,
+        }),
+      );
+      expect(d.decidedAssuranceLevel).toBe(4);
+    });
+
+    it('allows a legacy basis at critical when enforcement is switched OFF (break-glass)', async () => {
+      process.env.BREEZE_AUTHENTICATOR_ATTESTATION_ENFORCED = 'false';
+      const d = await assertApprovalAssurance(
+        criticalCtx({
+          reauth: true,
+          isPlatformBound: true,
+          platformBoundBasis: 'legacy_unattested',
+          attestationVerifiedAt: null,
+        }),
+      );
+      expect(d.decidedAssuranceLevel).toBe(4);
+    });
+
+    // The flag is a break-glass revert for a CRITICAL-tier bypass; an
+    // unrecognized value must not silently disable enforcement.
+    it('keeps enforcing when the flag carries an unrecognized value (typo fails CLOSED)', async () => {
+      process.env.BREEZE_AUTHENTICATOR_ATTESTATION_ENFORCED = 'flase';
+      await expect(
+        assertApprovalAssurance(
+          criticalCtx({
+            reauth: true,
+            isPlatformBound: true,
+            platformBoundBasis: 'legacy_unattested',
+            attestationVerifiedAt: null,
+          }),
+        ),
+      ).rejects.toThrow(StepUpRequiredError);
+    });
+
+    it('still denies critical for a non-platform-bound device regardless of basis', async () => {
+      await expect(
+        assertApprovalAssurance(
+          criticalCtx({
+            reauth: true,
+            isPlatformBound: false,
+            platformBoundBasis: 'ios_se_p256_app_attest',
+            attestationVerifiedAt: new Date(),
+          }),
+        ),
+      ).rejects.toThrow(StepUpRequiredError);
+    });
+
+    it('does not affect the high tier — L3 never consults the basis', async () => {
+      const d = await assertApprovalAssurance(highApprovalCtx({ isPlatformBound: false }));
+      expect(d.decidedAssuranceLevel).toBe(3);
+    });
+
+    // The basis check must run BEFORE the re-auth check, so an untrusted basis
+    // is reported as a step-up (the honest achieved level is L3) rather than
+    // masquerading as a missing re-auth the technician could satisfy.
+    it('reports an untrusted basis as StepUpRequired even when re-auth is missing', async () => {
+      await expect(
+        assertApprovalAssurance(
+          criticalCtx({
+            reauth: false,
+            isPlatformBound: true,
+            platformBoundBasis: 'legacy_unattested',
+            attestationVerifiedAt: null,
+          }),
+        ),
+      ).rejects.toThrow(StepUpRequiredError);
+    });
+
+    it('records the basis and outcome on every critical-tier decision', async () => {
+      await expect(
+        assertApprovalAssurance(
+          criticalCtx({
+            reauth: true,
+            isPlatformBound: true,
+            platformBoundBasis: 'legacy_unattested',
+            attestationVerifiedAt: null,
+          }),
+        ),
+      ).rejects.toThrow(StepUpRequiredError);
+      expect(mockRecordL4Basis).toHaveBeenCalledWith('legacy_unattested', 'denied');
+    });
+
+    it('records an allowed outcome for a trusted basis', async () => {
+      await assertApprovalAssurance(
+        criticalCtx({
+          reauth: true,
+          isPlatformBound: true,
+          platformBoundBasis: 'android_strongbox_key_attestation',
+          attestationVerifiedAt: new Date(),
+        }),
+      );
+      expect(mockRecordL4Basis).toHaveBeenCalledWith('android_strongbox_key_attestation', 'allowed');
+    });
+
+    it('records would_deny (not denied) when enforcement is off, so the blast radius is visible either way', async () => {
+      process.env.BREEZE_AUTHENTICATOR_ATTESTATION_ENFORCED = 'false';
+      await assertApprovalAssurance(
+        criticalCtx({
+          reauth: true,
+          isPlatformBound: true,
+          platformBoundBasis: 'legacy_unattested',
+          attestationVerifiedAt: null,
+        }),
+      );
+      expect(mockRecordL4Basis).toHaveBeenCalledWith('legacy_unattested', 'would_deny');
+    });
   });
 });
 
