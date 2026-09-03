@@ -614,6 +614,82 @@ describe('groups routes', () => {
       });
     });
 
+    it('returns quoteCount but omits quotes when the caller lacks quotes:read', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([makeGroup()])
+          })
+        })
+      } as any);
+      const quotes = [{ id: 'q1', quoteNumber: 'Q-42', status: 'sent' }];
+      deleteDeviceGroup.mockRejectedValueOnce(
+        new DeviceGroupDeleteError('QUOTED_BY_QUOTES', 'quoted', undefined, quotes)
+      );
+
+      const res = await app.request(`/groups/${GROUP_ID}`, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({
+        error: 'quoted',
+        code: 'GROUP_IN_USE_BY_QUOTES',
+        quoteCount: 1,
+      });
+    });
+
+    it('includes quotes for a quotes reader and both counts for both refusals', async () => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+          scope: 'organization',
+          orgId: ORG_ID,
+          partnerId: null,
+          accessibleOrgIds: [ORG_ID],
+          canAccessOrg: (orgId: string) => orgId === ORG_ID
+        });
+        c.set('permissions', {
+          permissions: [
+            { resource: 'contracts', action: 'read' },
+            { resource: 'quotes', action: 'read' },
+          ],
+          scope: 'organization',
+          orgId: ORG_ID,
+          partnerId: null,
+        });
+        return next();
+      });
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([makeGroup()])
+          })
+        })
+      } as any);
+      const contracts = [{ id: 'c1', name: 'Acme', status: 'active' }];
+      const quotes = [{ id: 'q1', quoteNumber: 'Q-42', status: 'sent' }];
+      deleteDeviceGroup.mockRejectedValueOnce(
+        new DeviceGroupDeleteError('BILLED_BY_CONTRACTS', 'billed and quoted', contracts, quotes)
+      );
+
+      const res = await app.request(`/groups/${GROUP_ID}`, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({
+        error: 'billed and quoted',
+        code: 'GROUP_IN_USE_BY_CONTRACTS',
+        contractCount: 1,
+        quoteCount: 1,
+        contracts,
+        quotes,
+      });
+    });
+
     it('should reject deleting group from another org (multi-tenant isolation)', async () => {
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({

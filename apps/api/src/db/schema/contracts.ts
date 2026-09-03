@@ -68,6 +68,10 @@ export const contractLines = pgTable('contract_lines', {
   unitPrice: numeric('unit_price', { precision: 12, scale: 2 }).notNull(),
   manualQuantity: numeric('manual_quantity', { precision: 12, scale: 2 }),
   siteId: uuid('site_id'),
+  // #4693: the site's name at write time. Survives the FK's ON DELETE SET NULL
+  // (site_id), which is what makes a deleted site detectable. SQL-only
+  // constraint: contract_lines_site_stamp_chk (2026-10-08-101400).
+  siteName: varchar('site_name', { length: 255 }),
   // #3205: the SET of roles a per_device_role line bills. NULL on every other
   // type — enforced by contract_lines_device_roles_chk (SQL-only, like the
   // catalog_item_id / site_id FKs above). $type narrows the row to DeviceRole[]

@@ -52,7 +52,9 @@
       },
       "values": {
         "auto": "auto",
-        "groupDeleted": "groupe supprimé"
+        "groupDeleted": "groupe supprimé",
+        "siteDeleted": "site supprimé",
+        "siteDeletedNamed": "site supprimé : {{name}}"
       },
       "lineScope": {
         "site": "Site : {{name}}"
@@ -582,7 +584,25 @@
     }
   },
   "quotes": {
+    "deviceSet": {
+      "roleNoun": {
+        "workstation": "postes de travail", "server": "serveurs", "printer": "imprimantes", "router": "routeurs", "switch": "commutateurs", "firewall": "pare-feu",
+        "access_point": "points d’accès", "phone": "téléphones", "iot": "appareils IoT", "camera": "caméras", "nas": "appareils NAS"
+      }
+    },
     "editor": {
+      "deviceSet": {
+        "toggle": "Facturer par ensemble d'appareils", "typeLabel": "Ensemble d'appareils",
+        "types": { "per_device": "Par appareil", "per_device_role": "Par rôle d'appareil", "per_device_group": "Par groupe d'appareils", "per_seat": "Par poste" },
+        "rolesLabel": "Rôles d'appareil", "groupLabel": "Groupe d'appareils", "siteLabel": "Site (facultatif)", "allSites": "Tous les sites",
+        "quantityAuto": "La quantité est comptée automatiquement", "autoSummary": "Quantité auto · {{count}} {{set}} · estimée",
+        "driftChip": "le nombre a changé : {{stored}} → {{live}}", "refresh": "Actualiser les nombres", "estimateError": "Impossible de vérifier le nombre actuel d’appareils.", "pickerError": "Impossible de charger les groupes d’appareils ou les sites. Actualisez la page et réessayez.",
+        "groupDeleted": "Le groupe d'appareils « {{name}} » a été supprimé — choisissez-en un autre", "siteDeleted": "Le site « {{name}} » a été supprimé — choisissez-en un autre",
+        "typeLocked": "Un ensemble d'appareils ne peut pas être modifié après la création de la ligne — supprimez la ligne et ajoutez-la à nouveau.",
+        "includedLabel": "Quantité incluse", "overageModeLabel": "Au-delà du forfait", "overageBill": "Facturer chaque unité supplémentaire", "overageFlag": "Signaler pour révision", "overagePriceLabel": "Prix des unités supplémentaires",
+        "driftToast": "{{count}} ligne(s) ne correspondent plus au nombre d'appareils actuel : {{lines}}",
+        "retargetToast": "{{count}} ligne(s) nécessitent de resélectionner un groupe d'appareils ou un site pour cette organisation"
+      },
       "actions": {
         "addImage": "Ajouter une image",
         "addLine": "Ajouter une ligne",
@@ -1262,6 +1282,12 @@
       "warehouses": "Entrepôts : {{list}}"
     },
     "document": {
+      "deviceSet": {
+        "badge": "Est.", "estimate": "Quantité estimée — facturée selon le nombre réel de {{set}} à chaque période de facturation.",
+        "setDevices": "appareils", "setSeats": "postes", "setGroup": "appareils dans « {{name}} »", "atSite": "{{set}} sur le site {{site}}",
+        "allowanceBill": "Comprend {{included}}; les unités supplémentaires sont facturées {{price}} chacune.",
+        "allowanceFlag": "Comprend {{included}}; les unités supplémentaires sont signalées pour révision, pas facturées automatiquement."
+      },
       "additionalItems": "Articles supplémentaires",
       "contract": {
         "download": "Télécharger le contrat",

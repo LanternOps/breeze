@@ -52,7 +52,9 @@
       },
       "values": {
         "auto": "auto",
-        "groupDeleted": "group deleted"
+        "groupDeleted": "group deleted",
+        "siteDeleted": "site deleted",
+        "siteDeletedNamed": "site deleted: {{name}}"
       },
       "lineScope": {
         "site": "Site: {{name}}"
@@ -582,7 +584,25 @@
     }
   },
   "quotes": {
+    "deviceSet": {
+      "roleNoun": {
+        "workstation": "workstations", "server": "servers", "printer": "printers", "router": "routers", "switch": "switches", "firewall": "firewalls",
+        "access_point": "access points", "phone": "phones", "iot": "IoT devices", "camera": "cameras", "nas": "NAS devices"
+      }
+    },
     "editor": {
+      "deviceSet": {
+        "toggle": "Bill by device set", "typeLabel": "Device set",
+        "types": { "per_device": "Per device", "per_device_role": "Per device role", "per_device_group": "Per device group", "per_seat": "Per seat" },
+        "rolesLabel": "Device roles", "groupLabel": "Device group", "siteLabel": "Site (optional)", "allSites": "All sites",
+        "quantityAuto": "Quantity is counted automatically", "autoSummary": "Auto quantity · {{count}} {{set}} · estimated",
+        "driftChip": "count changed: {{stored}} → {{live}}", "refresh": "Refresh counts", "estimateError": "Couldn’t check the live device count.", "pickerError": "Couldn’t load device groups or sites. Refresh and try again.",
+        "groupDeleted": "Device group “{{name}}” was deleted — pick another", "siteDeleted": "Site “{{name}}” was deleted — pick another",
+        "typeLocked": "A device set cannot be changed after the line is created — remove the line and add it again.",
+        "includedLabel": "Included quantity", "overageModeLabel": "Above the allowance", "overageBill": "Bill each extra unit", "overageFlag": "Report for review", "overagePriceLabel": "Overage price",
+        "driftToast": "{{count}} line(s) no longer match the live device count: {{lines}}",
+        "retargetToast": "{{count}} line(s) need a device group or site re-picked for this organization"
+      },
       "actions": {
         "addImage": "Add image",
         "addLine": "Add line",
@@ -1262,6 +1282,12 @@
       "warehouses": "Warehouses: {{list}}"
     },
     "document": {
+      "deviceSet": {
+        "badge": "Est.", "estimate": "Estimated quantity — billed at the actual number of {{set}} each billing period.",
+        "setDevices": "devices", "setSeats": "seats", "setGroup": "devices in “{{name}}”", "atSite": "{{set}} at {{site}}",
+        "allowanceBill": "Includes {{included}}; additional units billed at {{price}} each.",
+        "allowanceFlag": "Includes {{included}}; additional units are reported for review, not billed automatically."
+      },
       "additionalItems": "Additional items",
       "contract": {
         "download": "Download contract",

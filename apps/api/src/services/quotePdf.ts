@@ -14,7 +14,7 @@
 // route in routes/quotes/quotes.ts supplies the real quote_images loader.
 
 import PDFDocument from 'pdfkit';
-import { toCents, fromCents, formatMoney as sharedFormatMoney, type CoverPage } from '@breeze/shared';
+import { DEVICE_ROLE_NOUNS, toCents, fromCents, formatMoney as sharedFormatMoney, type BillableDeviceRole, type CoverPage } from '@breeze/shared';
 import { formatMoneyForPdf } from './pdfMoney';
 import { fitFontSize } from './pdfFitText';
 import { sellerAddressLines, type SellerSnapshot, type BillToAddress } from './sellerSnapshot';
@@ -52,6 +52,28 @@ function recurrenceSuffix(recurrence: string | null | undefined): string {
   if (recurrence === 'monthly') return '/mo';
   if (recurrence === 'annual') return '/yr';
   return '';
+}
+
+type DeviceSetLine = Pick<QuoteLine, 'contractLineType' | 'deviceRoles' | 'deviceGroupName' | 'siteName' | 'includedQuantity' | 'overageMode' | 'overageUnitPrice'>;
+
+function deviceSetCustomerText(line: DeviceSetLine, currency: string, locale: string): string[] {
+  if (!line.contractLineType || !['per_device', 'per_device_role', 'per_device_group', 'per_seat'].includes(line.contractLineType)) return [];
+  let set = 'devices';
+  if (line.contractLineType === 'per_device_role') {
+    set = (line.deviceRoles ?? []).map((r) => DEVICE_ROLE_NOUNS[r as BillableDeviceRole] ?? r).join(', ') || 'devices';
+  } else if (line.contractLineType === 'per_device_group') {
+    set = `devices in “${line.deviceGroupName ?? ''}”`;
+  } else if (line.contractLineType === 'per_seat') {
+    set = 'seats';
+  }
+  if (line.siteName) set = `${set} at ${line.siteName}`;
+  const result = [`Estimated quantity — billed at the actual number of ${set} each billing period.`];
+  if (line.includedQuantity != null && line.overageMode === 'bill' && line.overageUnitPrice != null) {
+    result.push(`Includes ${Number(line.includedQuantity)}; additional units billed at ${formatMoneyForPdf(line.overageUnitPrice, currency, locale)} each.`);
+  } else if (line.includedQuantity != null && line.overageMode === 'flag') {
+    result.push(`Includes ${Number(line.includedQuantity)}; additional units are reported for review, not billed automatically.`);
+  }
+  return result;
 }
 
 /** Per-line tax amount for the Tax column: taxable lines get lineTotal × rate
@@ -134,7 +156,7 @@ interface QuoteHeader {
   // fall back to depositAmount, preserving the legacy rendering.
   depositDueTotal?: string | number | null;
   // Per-category subtotals (one-time / monthly / annual), derived in getQuote.
-  // Rendered as muted rows only when >1 category is present.
+  // Even a single zero-valued recurring category is meaningful to customers.
   categoryBreakdown?: { category: string; oneTimeTotal: string; monthlyTotal: string; annualTotal: string }[];
   sellerSnapshot?: unknown;
   termsAndConditions?: string | null;
@@ -166,6 +188,17 @@ interface QuoteLine {
   lineTotal?: string | number | null;
   recurrence?: string | null;
   taxable?: boolean | null;
+  customerVisible?: boolean | null;
+  itemType?: string | null;
+  contractLineType?: string | null;
+  deviceRoles?: string[] | null;
+  deviceGroupId?: string | null;
+  deviceGroupName?: string | null;
+  siteId?: string | null;
+  siteName?: string | null;
+  includedQuantity?: string | number | null;
+  overageMode?: 'bill' | 'flag' | null;
+  overageUnitPrice?: string | number | null;
 }
 
 /** Loads a catalog item's product image bytes (or null). Injected so renderQuotePdf
@@ -396,8 +429,12 @@ async function renderLineTable(
     const titleHeight = doc.heightOfString(title, { width: descW });
     doc.font('Helvetica').fontSize(8.5);
     const blurbHeight = blurb ? doc.heightOfString(blurb, { width: descW, lineGap: 1 }) + 2 : 0;
+    const deviceSetText = deviceSetCustomerText(l, currency, locale);
+    const deviceSetHeight = deviceSetText.length
+      ? deviceSetText.reduce((h, text) => h + doc.heightOfString(text, { width: descW, lineGap: 1 }) + 2, 0)
+      : 0;
     const img = imageByLine.get(l.id);
-    return { title, blurb, titleHeight, img, rowHeight: Math.max(titleHeight + blurbHeight, img ? THUMB : 12) };
+    return { title, blurb, titleHeight, blurbHeight, deviceSetText, img, rowHeight: Math.max(titleHeight + blurbHeight + deviceSetHeight, img ? THUMB : 12) };
   };
 
   // Keep the section label, the column header and the FIRST row together as one
@@ -420,7 +457,7 @@ async function renderLineTable(
 
   const descX = c.colDescX;
   for (const l of lines) {
-    const { title, blurb, titleHeight, img, rowHeight } = measureRow(l);
+    const { title, blurb, titleHeight, blurbHeight, deviceSetText, img, rowHeight } = measureRow(l);
     // Keep the whole row together: if it won't fit in the remaining page, break to
     // a fresh page (re-drawing the column header) rather than letting a long
     // description overflow into the footer band. (Old reserve was a flat 30/52pt,
@@ -442,6 +479,14 @@ async function renderLineTable(
     doc.fillColor('#1f2937').font('Helvetica-Bold').fontSize(10).text(title, descX + gutter, y, { width: descW });
     if (blurb) {
       doc.fillColor('#6b7280').fontSize(8.5).font('Helvetica').text(blurb, descX + gutter, y + titleHeight + 2, { width: descW, lineGap: 1 });
+      doc.fillColor('#1f2937').fontSize(10);
+    }
+    if (deviceSetText.length) {
+      let textY = y + titleHeight + blurbHeight + 2;
+      for (const text of deviceSetText) {
+        doc.fillColor('#6b7280').fontSize(8.5).font('Helvetica').text(text, descX + gutter, textY, { width: descW, lineGap: 1 });
+        textY = doc.y + 2;
+      }
       doc.fillColor('#1f2937').fontSize(10);
     }
     // lineBreak: false on every money cell — row height is measured from the
@@ -481,9 +526,9 @@ async function renderLineTable(
       sums[key] += Number(l.lineTotal ?? Number(l.quantity) * Number(l.unitPrice));
     }
     const parts: string[] = [];
-    if (sums.one_time > 0) parts.push(formatMoneyForPdf(sums.one_time, currency, locale));
-    if (sums.monthly > 0) parts.push(`${formatMoneyForPdf(sums.monthly, currency, locale)}/mo`);
-    if (sums.annual > 0) parts.push(`${formatMoneyForPdf(sums.annual, currency, locale)}/yr`);
+    if (lines.some((l) => l.recurrence !== 'monthly' && l.recurrence !== 'annual')) parts.push(formatMoneyForPdf(sums.one_time, currency, locale));
+    if (lines.some((l) => l.recurrence === 'monthly')) parts.push(`${formatMoneyForPdf(sums.monthly, currency, locale)}/mo`);
+    if (lines.some((l) => l.recurrence === 'annual')) parts.push(`${formatMoneyForPdf(sums.annual, currency, locale)}/yr`);
     if (parts.length) {
       const subtotalText = parts.join('  +  ');
       doc.font('Helvetica-Bold').fontSize(9.5);
@@ -531,6 +576,7 @@ function renderRecurringSummary(
   startY: number,
   showTax = false,
   recurringLines: { monthly: boolean; annual: boolean } = { monthly: false, annual: false },
+  lines: QuoteLine[] = [],
 ): number {
   const c = columnsFor(doc, showTax);
   // Hoisted above ensureSpace so the page-break reservation can size itself to
@@ -538,11 +584,10 @@ function renderRecurringSummary(
   const breakdown = quote.categoryBreakdown ?? [];
   const depositDue = quote.depositDueTotal ?? quote.depositAmount;
   const hasDeposit = quote.depositType && quote.depositType !== 'none' && depositDue != null;
-  const showMonthly = Number(quote.monthlyRecurringTotal ?? 0) !== 0 || recurringLines.monthly;
-  const showAnnual = Number(quote.annualRecurringTotal ?? 0) !== 0 || recurringLines.annual;
+  const showMonthly = recurringLines.monthly;
+  const showAnnual = recurringLines.annual;
   const showTaxRow = quote.taxTotal != null && Number(quote.taxTotal) > 0;
-  const hasRecurring =
-    Number(quote.monthlyRecurringTotal ?? 0) > 0 || Number(quote.annualRecurringTotal ?? 0) > 0;
+  const hasRecurring = recurringLines.monthly || recurringLines.annual;
   // 0.33, not 0.40: the label box ends at colSummaryAmtX (0.76 — widened for
   // prefix-code currencies, #3777), and the widest label — "Remaining balance
   // (due per terms)" at bold 12pt, ~200pt — needs the extra room. Rows advance
@@ -557,9 +602,11 @@ function renderRecurringSummary(
   const breakdownRows = breakdown.length > 1 ? breakdown.map((b) => {
     const label = b.category === 'other' ? 'Other' : b.category[0]!.toUpperCase() + b.category.slice(1);
     const parts: string[] = [];
-    if (Number(b.oneTimeTotal) > 0) parts.push(formatMoneyForPdf(b.oneTimeTotal, currency, locale));
-    if (Number(b.monthlyTotal) > 0) parts.push(`${formatMoneyForPdf(b.monthlyTotal, currency, locale)}/mo`);
-    if (Number(b.annualTotal) > 0) parts.push(`${formatMoneyForPdf(b.annualTotal, currency, locale)}/yr`);
+    const categoryLines = lines.filter((l) => (l.itemType ?? 'other') === b.category && l.customerVisible !== false);
+    const cadenceLines = categoryLines;
+    if (cadenceLines.some((l) => l.recurrence !== 'monthly' && l.recurrence !== 'annual')) parts.push(formatMoneyForPdf(b.oneTimeTotal, currency, locale));
+    if (cadenceLines.some((l) => l.recurrence === 'monthly')) parts.push(`${formatMoneyForPdf(b.monthlyTotal, currency, locale)}/mo`);
+    if (cadenceLines.some((l) => l.recurrence === 'annual')) parts.push(`${formatMoneyForPdf(b.annualTotal, currency, locale)}/yr`);
     const amount = parts.join(' + ');
     const stacked = doc.widthOfString(amount) > categoryAmountW;
     const amountHeight = stacked ? doc.heightOfString(amount, { width: c.right - sumX, align: 'right' }) : 0;
@@ -590,8 +637,8 @@ function renderRecurringSummary(
   doc.moveTo(sumX, y).lineTo(c.right, y).lineWidth(1).strokeColor('#e5e7eb').stroke();
   y += TOP_RULE_ADVANCE;
 
-  // Per-category subtotals (muted) — only worth showing when the quote spans more
-  // than one category. Drawn above the One-time/Monthly/Annual roll-up.
+  // Per-category subtotals (muted), including a lone zero-valued recurring
+  // category. Drawn above the One-time/Monthly/Annual roll-up.
   if (breakdownRows.length) {
     for (const row of breakdownRows) {
       doc.font('Helvetica').fontSize(9).fillColor('#9ca3af');
@@ -1035,7 +1082,7 @@ export async function renderQuotePdf(
   y = renderRecurringSummary(doc, quote, currency, locale, primary, y, showTax, {
     monthly: lines.some((line) => line.recurrence === 'monthly'),
     annual: lines.some((line) => line.recurrence === 'annual'),
-  });
+  }, lines);
 
   // ---- Terms & Conditions --------------------------------------------------
   if (quote.termsAndConditions) {

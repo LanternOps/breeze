@@ -66,6 +66,32 @@ function sendable(): QuoteDetailData {
 beforeEach(() => { vi.clearAllMocks(); authState.tokens = null; });
 
 describe('QuoteActions — header variant', () => {
+  it('warns after a direct organization retarget leaves scoped descriptors unresolved', async () => {
+    const before = sendable();
+    before.lines[0] = {
+      ...before.lines[0]!,
+      name: 'Dallas servers',
+      recurrence: 'monthly',
+      contractLineType: 'per_device_role',
+      deviceRoles: ['server'],
+      siteName: 'Dallas',
+      descriptorUnresolved: false,
+    };
+    const after: QuoteDetailData = {
+      ...before,
+      quote: { ...before.quote, orgId: 'org-2' },
+      lines: [{ ...before.lines[0]!, orgId: 'org-2', siteId: null, descriptorUnresolved: true }],
+    };
+    const view = render(<QuoteActions detail={before} onChanged={vi.fn()} variant="header" />);
+
+    view.rerender(<QuoteActions detail={after} onChanged={vi.fn()} variant="header" />);
+
+    await waitFor(() => expect(showToastMock).toHaveBeenCalledWith({
+      type: 'warning',
+      message: '1 line(s) need a device group or site re-picked for this organization',
+    }));
+  });
+
   it('an empty draft disables Send and ties it to a visible, per-variant hint', async () => {
     render(<QuoteActions detail={draft()} onChanged={vi.fn()} variant="header" />);
     await waitFor(() => expect(screen.getByTestId('quote-actions-header')).toBeInTheDocument());

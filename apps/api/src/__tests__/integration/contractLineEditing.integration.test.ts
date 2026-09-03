@@ -149,14 +149,17 @@ describe('contract line editing (real DB) #3205 W03', () => {
     expect(await forge(id, sql`manual_quantity = 5.00`)).toBe('accepted');
   });
 
-  // W02's CHECK forbids a site on per_device_group ONLY — the helper is the
-  // only guard for flat / manual / per_seat.
-  runDb('site_id on a flat line: app 400, DB ACCEPTS', async () => {
+  // W02's CHECK forbade a site on per_device_group only; since #4693 (W05)
+  // contract_lines_site_stamp_chk is TOTAL over line_type, so the DB also
+  // refuses a site on flat / manual / per_seat — the helper is no longer the
+  // only guard.
+  runDb('site_id on a flat line: app 400, DB 23514 on contract_lines_site_stamp_chk (#4693)', async () => {
     const f = await seed();
     const id = await rawLine(f, { lineType: 'flat' });
     await expect(withDbAccessContext(requestCtx(f), () => updateContractLine(f.contractId, id, { siteId: f.siteId } as never, f.actor)))
       .rejects.toMatchObject({ code: 'INVALID_LINE_PATCH', status: 400 });
-    expect(await forge(id, sql`site_id = ${f.siteId}::uuid`)).toBe('accepted');
+    expect(await forge(id, sql`site_id = ${f.siteId}::uuid`))
+      .toEqual({ code: '23514', constraint: 'contract_lines_site_stamp_chk' });
   });
 
   // ---- the orphaned-group repair (decision 7) ------------------------------
