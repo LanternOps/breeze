@@ -134,7 +134,7 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   agent_rollback_events: { kind: 'leave-for-erasure', note: 'append-only rollback evidence; breeze_app has no UPDATE (and breeze_audit_admin has none either) — rows die with the loser shell, same as ml_feedback_events' },
 
   // peripheral_policy_delivery_events (#4806 fixup): breeze_app has UPDATE,
-  // DELETE, TRUNCATE revoked by migrations/2026-10-08-100300-peripheral-
+  // DELETE, TRUNCATE revoked by migrations/2026-10-08-100800-peripheral-
   // policy-delivery-events-revoke-update.sql, and breeze_audit_admin only
   // gets SELECT/DELETE (INSERT/UPDATE/TRUNCATE revoked in the table's own
   // migrations/2026-09-11-peripheral-effective-policy-v2.sql) — the same
