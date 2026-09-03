@@ -379,6 +379,30 @@ moveOrgRoutes.post(
                 AND org_id IS DISTINCT FROM ${targetOrgId}::uuid`,
         );
 
+        // action_intents.scope_ticket_id (#4792): composite FK (scope_ticket_id,
+        // org_id) -> tickets(id, org_id) (action_intents_scope_ticket_org_fk,
+        // migrations/2026-09-25-ai-agents-ticket-triage.sql), DEFERRABLE
+        // INITIALLY IMMEDIATE and deliberately NOT named in the SET CONSTRAINTS
+        // above (by-name, never ALL — see that comment): a newly added
+        // referencing row type must still fail fast, not silently at COMMIT.
+        // `tickets` IS in getDeviceOrgDenormalizedTables(), so the loop below
+        // re-stamps tickets.org_id for every ticket bound to this device — the
+        // instant that statement completes, ANY remaining scope_ticket_id
+        // pointer (regardless of status; unlike scope_device_id above, this FK
+        // does not care about status) names a (ticketId, OLD org_id) pair that
+        // no longer exists in `tickets`, and the tickets UPDATE itself 23503s
+        // and aborts the whole move. Same invariant, same fix, as
+        // moveTicketOrg's identical detach for the ticket-level move
+        // (services/ticketService.ts) — ALL statuses, unconditionally, and run
+        // BEFORE the re-stamp that would otherwise trip the constraint. The
+        // immutability trigger (action_intents_block_content_update()) permits
+        // exactly this non-null -> NULL transition regardless of scope_ticket_id
+        // vs scope_device_id, so this is the tombstone path, not a bypass.
+        await tx.execute(
+          sql`UPDATE action_intents SET scope_ticket_id = NULL
+              WHERE scope_ticket_id IN (SELECT id FROM tickets WHERE device_id = ${deviceId}::uuid)`,
+        );
+
         // Rewrite the denormalized org_id on every device-scoped table.
         // Skipping any of these strands pre-existing rows under RLS.
         for (const table of getDeviceOrgDenormalizedTables()) {
