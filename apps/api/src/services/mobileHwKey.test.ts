@@ -206,6 +206,14 @@ describe('verifyMobileSignature — ES256', () => {
   it('rejects an undersized RSA modulus under RS256', () => {
     // react-native-biometrics mints RSA-2048; anything smaller is forgeable
     // enough that it must not carry an approval, legacy row or not.
+    //
+    // The weak key is the SUBJECT of the test, not a use of one: it is minted
+    // here solely so the assertion below can prove verifyMobileSignature
+    // REJECTS it. It never leaves this function and nothing is protected with
+    // it. The signature has to be genuine — with a garbage signature the call
+    // would return false anyway and the test would be vacuous, proving nothing
+    // about the modulus floor.
+    // codeql[js/insufficient-key-size]
     const { publicKey, privateKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 1024 });
     const spkiB64 = publicKey.export({ type: 'spki', format: 'der' }).toString('base64');
     expect(
