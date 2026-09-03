@@ -747,4 +747,27 @@ describe('action_intents.scope_ticket_id detach coverage (#4792)', () => {
       `${name}: the scope_ticket_id tombstone must run before the generic re-stamp loop — unlike scope_device_id's placement (a convention guard only), THIS ordering is load-bearing: tickets IS in breeze_device_child_orgid_tables(), so the loop's own tickets UPDATE is the statement that trips action_intents_scope_ticket_org_fk if the tombstone hasn't run first`,
     ).toBeLessThan(loop);
   });
+
+  // moveOrg.ts's OWN copy of this statement is just as load-bearing as the
+  // trigger's: `tickets` is in getDeviceOrgDenormalizedTables(), which the
+  // route's "Rewrite the denormalized org_id" loop below iterates too. A
+  // reorder that moved the route's UPDATE below that loop would 23503 in
+  // exactly the same way the trigger would, but nothing short of the (slower,
+  // integration-job-only) real-Postgres test would have caught it without
+  // this check.
+  it('moveOrg.ts places its own tombstone BEFORE the denormalized-table re-stamp loop', () => {
+    const moveOrgPath = fileURLToPath(new URL('./moveOrg.ts', import.meta.url));
+    const src = readFileSync(moveOrgPath, 'utf8');
+    const tombstone = src.indexOf('UPDATE action_intents SET scope_ticket_id = NULL');
+    // NOT a bare `indexOf('getDeviceOrgDenormalizedTables()')` — that also
+    // matches the top-of-file `import { getDeviceOrgDenormalizedTables, ... }`
+    // statement, which always precedes everything. Anchor on the actual loop.
+    const loop = src.indexOf('for (const table of getDeviceOrgDenormalizedTables())');
+    expect(tombstone, 'moveOrg.ts: no scope_ticket_id tombstone found').toBeGreaterThan(-1);
+    expect(loop, 'moveOrg.ts: no getDeviceOrgDenormalizedTables() loop found').toBeGreaterThan(-1);
+    expect(
+      tombstone,
+      'moveOrg.ts: the scope_ticket_id tombstone must run before the getDeviceOrgDenormalizedTables() loop — that loop is what re-stamps tickets.org_id and trips action_intents_scope_ticket_org_fk if the tombstone has not run first',
+    ).toBeLessThan(loop);
+  });
 });

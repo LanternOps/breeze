@@ -103,6 +103,40 @@ async function seed() {
     } as never)
     .returning({ id: tickets.id });
 
+  // Negative control (#4792 review): a SECOND device, staying in the source
+  // org, with its OWN ticket and its OWN ticket-scoped intent. The fix's
+  // precision comes entirely from the subselect
+  // `WHERE scope_ticket_id IN (SELECT id FROM tickets WHERE device_id = ...)`
+  // — this proves that scoping is exact (keyed off the MOVING device) rather
+  // than accidentally broad (e.g. a future edit that widens or drops the
+  // device_id filter). This intent must survive every case below untouched.
+  const [otherDevice] = await adminDb
+    .insert(devices)
+    .values({
+      orgId: sourceOrg.id,
+      siteId: sourceSite.id,
+      agentId: `ticket-scope-other-agent-${sfx}`,
+      hostname: `ticket-scope-other-host-${sfx}`,
+      osType: 'linux',
+      osVersion: '22.04',
+      architecture: 'x86_64',
+      agentVersion: '0.0.0-test',
+      status: 'offline',
+    })
+    .returning({ id: devices.id });
+
+  const [otherTicket] = await adminDb
+    .insert(tickets)
+    .values({
+      orgId: sourceOrg.id,
+      partnerId: partner.id,
+      deviceId: otherDevice!.id,
+      ticketNumber: `TS-OTHER-${sfx}`,
+      subject: `unrelated device's ticket — must not be touched ${sfx}`,
+      source: 'manual',
+    } as never)
+    .returning({ id: tickets.id });
+
   // A human-originated intent satisfies action_intents_one_actor_chk (exactly
   // one of the three actor columns), action_intents_agent_origin_chk and
   // action_intents_agent_source_chk (source and origin_principal_kind move
@@ -151,6 +185,16 @@ async function seed() {
     } as never)
     .returning({ id: actionIntents.id });
 
+  // The negative-control intent, scoped to otherTicket (bound to otherDevice,
+  // which never moves in any test below).
+  const [unrelated] = await adminDb
+    .insert(actionIntents)
+    .values({
+      ...intentValues('pending_approval', 2),
+      scopeTicketId: otherTicket!.id,
+    } as never)
+    .returning({ id: actionIntents.id });
+
   const token = await createAccessToken({
     sub: user.id,
     email: user.email,
@@ -182,6 +226,9 @@ async function seed() {
     targetSiteId: targetSite.id,
     liveIntentId: live!.id,
     terminalIntentId: terminal!.id,
+    otherDeviceId: otherDevice!.id,
+    otherTicketId: otherTicket!.id,
+    unrelatedIntentId: unrelated!.id,
     post,
   };
 }
@@ -231,6 +278,19 @@ describe('POST /devices/:id/move-org — action_intents.scope_ticket_id tombston
       await readScopeTicketIds([f.liveIntentId, f.terminalIntentId]),
       'BOTH a live and a terminal-status intent must be tombstoned — this FK does not gate on status',
     ).toEqual([null, null]);
+
+    // Negative control: an intent scoped to an UNRELATED device's ticket must
+    // survive untouched — proves the fix's subselect is keyed off the moving
+    // device, not accidentally broad.
+    expect(
+      await readScopeTicketIds([f.unrelatedIntentId]),
+      'an intent scoped to a ticket on a DIFFERENT device must not be touched by this move',
+    ).toEqual([f.otherTicketId]);
+    const [otherDeviceAfter] = await getTestDb()
+      .select({ orgId: devices.orgId })
+      .from(devices)
+      .where(eq(devices.id, f.otherDeviceId));
+    expect(otherDeviceAfter?.orgId, 'the unrelated device must not have moved').toBe(f.sourceOrgId);
   });
 });
 
@@ -255,6 +315,10 @@ describe('breeze_cascade_device_org_id(): action_intents.scope_ticket_id tombsto
     expect(afterOrgs.deviceOrgId).toBe(f.targetOrgId);
     expect(afterOrgs.ticketOrgId).toBe(f.targetOrgId);
     expect(await readScopeTicketIds([f.liveIntentId, f.terminalIntentId])).toEqual([null, null]);
+    expect(
+      await readScopeTicketIds([f.unrelatedIntentId]),
+      'an intent scoped to a ticket on a DIFFERENT device must not be touched by this move',
+    ).toEqual([f.otherTicketId]);
   });
 
   it('a raw superuser UPDATE devices SET org_id also tombstones the ticket-scoped intents', async () => {
@@ -269,5 +333,9 @@ describe('breeze_cascade_device_org_id(): action_intents.scope_ticket_id tombsto
     expect(afterOrgs.deviceOrgId).toBe(f.targetOrgId);
     expect(afterOrgs.ticketOrgId).toBe(f.targetOrgId);
     expect(await readScopeTicketIds([f.liveIntentId, f.terminalIntentId])).toEqual([null, null]);
+    expect(
+      await readScopeTicketIds([f.unrelatedIntentId]),
+      'an intent scoped to a ticket on a DIFFERENT device must not be touched by this move',
+    ).toEqual([f.otherTicketId]);
   });
 });

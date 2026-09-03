@@ -106,16 +106,6 @@ BEGIN
     SET scope_device_id = NULL
     WHERE scope_device_id = NEW.id
       AND status IN ('pending_approval', 'approved', 'executing');
-  -- Typed target scope of an intent scoped to a TICKET bound to this device
-  -- (#4792) must not keep naming a (ticket, OLD org_id) pair once the ticket
-  -- is re-stamped to the destination org by the generic loop below — every
-  -- status, not just live ones, since action_intents_scope_ticket_org_fk does
-  -- not gate on status and would 23503 the loop's own tickets UPDATE
-  -- otherwise. See this migration's header for the full mechanism; mirrors
-  -- moveOrg.ts and moveTicketOrg (ticketService.ts).
-  UPDATE public.action_intents
-    SET scope_ticket_id = NULL
-    WHERE scope_ticket_id IN (SELECT id FROM public.tickets WHERE device_id = NEW.id);
   -- The requester CONTACT is org-pinned and does not travel with the device
   -- (#3258 W03). Skipped while the source org is fenced for a merge, where the
   -- contact moves to the survivor alongside the ticket — see the header of
@@ -130,6 +120,20 @@ BEGIN
         AND requester_contact_id IS NOT NULL
         AND org_id IS DISTINCT FROM NEW.org_id;
   END IF;
+  -- Typed target scope of an intent scoped to a TICKET bound to this device
+  -- (#4792) must not keep naming a (ticket, OLD org_id) pair once the ticket
+  -- is re-stamped to the destination org by the generic loop below — every
+  -- status, not just live ones, since action_intents_scope_ticket_org_fk does
+  -- not gate on status and would 23503 the loop's own tickets UPDATE
+  -- otherwise. See this migration's header for the full mechanism; mirrors
+  -- moveOrg.ts and moveTicketOrg (ticketService.ts). Placed after the
+  -- requester-contact detach immediately above (order between the two is not
+  -- itself load-bearing — they touch disjoint tables — but this makes the
+  -- trigger's statement order match moveOrg.ts's exactly, not just
+  -- "before the loop").
+  UPDATE public.action_intents
+    SET scope_ticket_id = NULL
+    WHERE scope_ticket_id IN (SELECT id FROM public.tickets WHERE device_id = NEW.id);
   FOR child_table IN SELECT public.breeze_device_child_orgid_tables() LOOP
     EXECUTE format(
       'UPDATE public.%I SET org_id = $1 WHERE device_id = $2 AND org_id IS DISTINCT FROM $1',
