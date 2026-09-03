@@ -411,6 +411,22 @@ moveOrgRoutes.post(
           sql`UPDATE ${sql.identifier('ticket_attachments')} SET org_id = ${targetOrgId}::uuid WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${deviceId}::uuid)`,
         );
 
+        // ticket_email_links (#4643) denormalizes org_id from its ticket and
+        // has no device_id; tickets bound to this device move org, so their
+        // email-link rows must follow via the same tickets join, or the
+        // source org keeps read access to this device's ticket-thread
+        // metadata after the move (and the target org loses it). Placed
+        // AFTER ticket_attachments to extend — not reorder — the documented
+        // global lock order (tickets -> time_entries -> ticket_parts ->
+        // ticket_attachments -> ticket_email_links); moveTicketOrg's loop
+        // appends it last for the same reason. Inbound-email threading
+        // (threadMatcher.ts) resolves by (partner_id, message_id) under a
+        // system context off the live tickets.org_id, never off this row's
+        // org_id, so re-stamping it here does not touch that contract.
+        await tx.execute(
+          sql`UPDATE ${sql.identifier('ticket_email_links')} SET org_id = ${targetOrgId}::uuid WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${deviceId}::uuid)`,
+        );
+
         // Rewrite denormalized site_id on every device-scoped table that has
         // one (currently elevation_requests — see DEVICE_SITE_DENORMALIZED_TABLES
         // in core.ts). Skipping any of these strands rows under the OLD
