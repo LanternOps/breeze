@@ -1,6 +1,7 @@
 import { and, eq } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { scriptExecutions } from '../db/schema/scripts';
+import { captureException } from './sentry';
 
 /**
  * #3525 — the script cancellation state machine.
@@ -148,9 +149,24 @@ export async function applyScriptCancelAck(input: {
 
       // REVERT. A failed cancel request does not change what happened to the
       // process. `cancel_prev_status` is written alongside the cancel, so a NULL
-      // here is a forged or partially-migrated row; `running` is the safe floor
-      // because it keeps the execution inside the stale-execution reaper's
-      // predicate rather than stranding it in `cancelling` forever.
+      // here is a broken writer, not a race — report it rather than let the
+      // safety net hide a bug that could be misreporting execution history
+      // fleet-wide. `running` is the safe floor because it keeps the execution
+      // inside the stale-execution reaper's predicate rather than stranding it
+      // in `cancelling` forever, so the revert itself still goes ahead.
+      if (execution.cancelPrevStatus === null) {
+        const err = new Error(
+          'script_executions.cancel_prev_status was NULL on a cancelling row; reverting to running',
+        );
+        console.error('[scriptCancellation]', err.message, {
+          executionId: execution.id,
+          cancelCommandId: input.cancelCommandId,
+        });
+        captureException(err, undefined, {
+          executionId: execution.id,
+          cancelCommandId: input.cancelCommandId,
+        });
+      }
       await tx.update(scriptExecutions).set({
         status: execution.cancelPrevStatus ?? 'running',
         cancelState: resolution.cancelState,

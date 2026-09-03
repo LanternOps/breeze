@@ -10,6 +10,9 @@ vi.mock('../db', () => ({
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
 }));
 
+const captureExceptionMock = vi.hoisted(() => vi.fn());
+vi.mock('./sentry', () => ({ captureException: captureExceptionMock }));
+
 const dialect = new PgDialect();
 const renderSql = (clause: unknown) => dialect.sqlToQuery(clause as SQL).sql;
 
@@ -74,7 +77,11 @@ describe('applyScriptCancelAck maps every agent outcome (OD8-C state table)', ()
 
     await applyScriptCancelAck({ cancelCommandId: 'cc-1', result: { outcome: 'terminated' } });
 
-    expect(updatePatch).toMatchObject({ status: 'cancelled', cancelState: 'confirmed' });
+    expect(updatePatch).toMatchObject({
+      status: 'cancelled',
+      cancelState: 'confirmed',
+      errorMessage: 'Stopped on the device',
+    });
     expect(updatePatch!.completedAt).toBeInstanceOf(Date);
   });
 
@@ -138,15 +145,38 @@ describe('applyScriptCancelAck maps every agent outcome (OD8-C state table)', ()
   });
 
   it('a NULL cancel_prev_status still leaves cancelling — never stranded', async () => {
-    // cancel_prev_status is written with the cancel, so NULL means a hand-forged
-    // or partially-migrated row. Falling back to `running` keeps the execution
-    // inside reapStaleScriptExecutions' pending|queued|running predicate, which
-    // is what guarantees something eventually closes it.
+    // cancel_prev_status is written with the cancel, so NULL means a broken
+    // writer. Falling back to `running` keeps the execution inside
+    // reapStaleScriptExecutions' pending|queued|running predicate, which is what
+    // guarantees something eventually closes it.
     withRow({ id: 'exec-1', status: 'cancelling', cancelPrevStatus: null });
 
     await applyScriptCancelAck({ cancelCommandId: 'cc-1', result: { outcome: 'not_found' } });
 
     expect(updatePatch).toMatchObject({ status: 'running', cancelState: 'unconfirmed' });
+  });
+
+  it('reports the NULL cancel_prev_status rather than silently absorbing it', async () => {
+    // The safety net above must not hide the upstream bug that tripped it: a
+    // writer that stops persisting cancel_prev_status would otherwise misreport
+    // execution history fleet-wide with nothing in logs or Sentry to find it.
+    withRow({ id: 'exec-1', status: 'cancelling', cancelPrevStatus: null });
+
+    await applyScriptCancelAck({ cancelCommandId: 'cc-9', result: { outcome: 'not_found' } });
+
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+    expect(captureExceptionMock.mock.calls[0]![2]).toMatchObject({
+      executionId: 'exec-1',
+      cancelCommandId: 'cc-9',
+    });
+  });
+
+  it('does not report when cancel_prev_status is present', async () => {
+    withRow({ id: 'exec-1', status: 'cancelling', cancelPrevStatus: 'running' });
+
+    await applyScriptCancelAck({ cancelCommandId: 'cc-1', result: { outcome: 'not_found' } });
+
+    expect(captureExceptionMock).not.toHaveBeenCalled();
   });
 });
 

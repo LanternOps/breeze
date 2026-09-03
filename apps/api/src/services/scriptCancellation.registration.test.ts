@@ -24,14 +24,14 @@ const read = (p: string) => readFileSync(join(__dirname, p), 'utf8');
 function setLiteralEntries(source: string, name: string): string[] {
   const start = source.indexOf(`const ${name} = new Set([`);
   if (start === -1) throw new Error(`${name} declaration not found — did it move or get renamed?`);
-  const open = source.indexOf('[', start);
-  const close = source.indexOf(']', open);
+  // Comments are stripped BEFORE the closing bracket is located, so neither an
+  // apostrophe in prose ("the agent's ack" — which would open a phantom string
+  // and swallow the entries around it) nor a stray `]` inside a comment can
+  // truncate the parse and silently drop later entries.
+  const stripped = source.slice(source.indexOf('[', start) + 1).replace(/\/\/[^\n]*/g, '');
+  const close = stripped.indexOf(']');
   if (close === -1) throw new Error(`${name} literal is not a single flat array`);
-  // Comments inside the literal are stripped first: an apostrophe in prose
-  // ("the agent's ack") would otherwise open a phantom string and swallow the
-  // real entries around it.
-  const body = source.slice(open + 1, close).replace(/\/\/[^\n]*/g, '');
-  const entries = [...body.matchAll(/'([^']+)'/g)].map(m => m[1]!);
+  const entries = [...stripped.slice(0, close).matchAll(/'([^']+)'/g)].map(m => m[1]!);
   if (entries.length === 0) throw new Error(`${name} parsed to zero entries — the extractor is broken, not the list`);
   return entries;
 }

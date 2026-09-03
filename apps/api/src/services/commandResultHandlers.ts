@@ -664,14 +664,25 @@ async function handlePamActuationV2Result({
  * schema module into the graph, and several suites here partially mock
  * `db/schema`.
  */
-async function handleScriptCancelResult({ commandId, result }: Parameters<CommandResultHandler>[0]): Promise<void> {
-  const { applyScriptCancelAck } = await import('./scriptCancellation');
-  await applyScriptCancelAck({
-    // The transport-authorized id, never one read off the payload — same
-    // invariant as every other handler in this file.
-    cancelCommandId: commandId,
-    result: (result ?? null) as Record<string, unknown> | null,
-  });
+async function handleScriptCancelResult({ agentId, commandId, result }: Parameters<CommandResultHandler>[0]): Promise<void> {
+  try {
+    const { applyScriptCancelAck } = await import('./scriptCancellation');
+    await applyScriptCancelAck({
+      // The transport-authorized id, never one read off the payload — same
+      // invariant as every other handler in this file.
+      cancelCommandId: commandId,
+      result: (result ?? null) as Record<string, unknown> | null,
+    });
+  } catch (err) {
+    // Both transports CAS the device_commands row to a terminal status BEFORE
+    // dispatching here, so the agent will never resend this ack — losing it
+    // leaves the execution in `cancelling` until the sweep (closer 5) gives up
+    // and records `unconfirmed`. Degraded but not stranded, so this is
+    // reported rather than rethrown; the tags are what let an on-call engineer
+    // find the affected row from the alert. Matches handleScriptResult.
+    console.error(`[AgentWs] Failed to apply script cancel ack for ${agentId}:`, err);
+    captureException(err, undefined, { commandId, agentId });
+  }
 }
 
 export const commandResultHandlers: Record<string, CommandResultHandler> = {
