@@ -431,6 +431,109 @@ func TestAtomicWriteFileCleansUpOnOpenFailure(t *testing.T) {
 	}
 }
 
+// TestAtomicWriteFileRetriesTransientRenameFailure pins issue #2772: a
+// rename-over-existing that fails once (Windows Defender or similar briefly
+// holding the destination open) must not permanently fail the write —
+// StagePendingCredentials treats any error here as "abort and discard the
+// staged rotation," which is exactly the stage→expire→re-stage loop the
+// issue reports. atomicWriteFile must retry the rename and succeed once the
+// transient holder releases the file.
+func TestAtomicWriteFileRetriesTransientRenameFailure(t *testing.T) {
+	origRename := renameFile
+	defer func() { renameFile = origRename }()
+
+	attempts := 0
+	transientErr := &os.PathError{Op: "rename", Path: "secrets.yaml", Err: os.ErrPermission}
+	renameFile = func(oldpath, newpath string) error {
+		attempts++
+		if attempts < 3 {
+			return transientErr
+		}
+		return os.Rename(oldpath, newpath)
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secrets.yaml")
+	if err := atomicWriteFile(path, []byte("token: abc\n"), 0o600); err != nil {
+		t.Fatalf("atomicWriteFile: %v", err)
+	}
+	if attempts != 3 {
+		t.Fatalf("attempts = %d, want 3 (2 transient failures + 1 success)", attempts)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(got) != "token: abc\n" {
+		t.Fatalf("content = %q, want %q", got, "token: abc\n")
+	}
+	if _, statErr := os.Stat(path + ".partial"); !os.IsNotExist(statErr) {
+		t.Fatalf(".partial should not exist after eventual success, stat err=%v", statErr)
+	}
+}
+
+// TestAtomicWriteFileExhaustsRenameRetriesAndCleansUp pins the exhausted-retry
+// path: when the destination lock never releases, atomicWriteFile must give
+// up (not hang forever), return an error, and remove the .partial tmp file —
+// this is the path StagePendingCredentials relies on to know the staged
+// credential set was NOT written, so it must not confirm the rotation.
+func TestAtomicWriteFileExhaustsRenameRetriesAndCleansUp(t *testing.T) {
+	origRename := renameFile
+	defer func() { renameFile = origRename }()
+
+	attempts := 0
+	persistentErr := &os.PathError{Op: "rename", Path: "secrets.yaml", Err: os.ErrPermission}
+	renameFile = func(oldpath, newpath string) error {
+		attempts++
+		return persistentErr
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secrets.yaml")
+	err := atomicWriteFile(path, []byte("token: abc\n"), 0o600)
+	if err == nil {
+		t.Fatalf("expected error from atomicWriteFile after exhausted retries, got nil")
+	}
+	if attempts != renameAttempts {
+		t.Fatalf("attempts = %d, want renameAttempts (%d)", attempts, renameAttempts)
+	}
+	if _, statErr := os.Stat(path + ".partial"); !os.IsNotExist(statErr) {
+		t.Fatalf(".partial should have been cleaned up after exhausted retries, stat err=%v", statErr)
+	}
+	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+		t.Fatalf("destination should not exist after exhausted retries, stat err=%v", statErr)
+	}
+}
+
+// TestWriteYAMLFileRetriesTransientRenameFailure covers writeYAMLFile's
+// separate rename call (the legacy config-write path, still used by
+// SetSecretAndPersist's sibling code paths) — it must share the same retry
+// behavior as atomicWriteFile rather than losing the write on the first
+// transient lock.
+func TestWriteYAMLFileRetriesTransientRenameFailure(t *testing.T) {
+	origRename := renameFile
+	defer func() { renameFile = origRename }()
+
+	attempts := 0
+	transientErr := &os.PathError{Op: "rename", Path: "secrets.yaml", Err: os.ErrPermission}
+	renameFile = func(oldpath, newpath string) error {
+		attempts++
+		if attempts < 2 {
+			return transientErr
+		}
+		return os.Rename(oldpath, newpath)
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secrets.yaml")
+	if err := writeYAMLFile(path, map[string]any{"auth_token": "abc"}, 0o600); err != nil {
+		t.Fatalf("writeYAMLFile: %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2 (1 transient failure + 1 success)", attempts)
+	}
+}
+
 func TestMaxHeartbeatStalenessSecAlias(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "agent.yaml")

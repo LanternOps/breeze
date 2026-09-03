@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	mathrand "math/rand"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -893,6 +894,51 @@ func stripSecretsFromAgentConfig(data []byte) ([]byte, error) {
 	return out, nil
 }
 
+// Rename retry bounds for atomicWriteFile / writeYAMLFile. A rename-over-
+// existing destination can fail transiently — observed in production on
+// Windows Server 2022 as Windows Defender real-time protection (zero
+// exclusions configured) briefly holding secrets.yaml open during the write.
+// A single failed attempt used to be treated as a hard failure:
+// StagePendingCredentials aborts the rotation and discards the staged
+// credential set on ANY write error, so one transient lock permanently lost
+// that rotation attempt. Because the server's staged set then expires and
+// token_issued_at never advances, isAgentTokenRotationDue stays true and the
+// next heartbeat stages again — the stage→expire→re-stage loop in issue
+// #2772 (agent.token.rotate.confirmed has never fired in production).
+//
+// Mirrors the retry/backoff shape in agent/internal/state/state.go (Write),
+// but with a longer schedule: state.go's own comment notes its 4 attempts /
+// ~175ms total still lost on the box that reproduced this bug, and the
+// credential file is the one write that must not be silently dropped.
+const (
+	renameAttempts    = 8
+	renameBackoffBase = 25 * time.Millisecond
+)
+
+// renameFile is a seam for tests to inject rename failures. Defaults to
+// os.Rename in production.
+var renameFile = os.Rename
+
+// renameWithRetry retries a failing rename with jittered exponential backoff.
+// Jitter keeps concurrent callers (the cert-renewal goroutine, the command
+// worker pool, and heartbeat's own SetAndPersist/StagePendingCredentials
+// calls can all reach a rename around the same time) from retrying against
+// the same transient holder in lockstep.
+func renameWithRetry(oldpath, newpath string) error {
+	var err error
+	for attempt := 0; attempt < renameAttempts; attempt++ {
+		if attempt > 0 {
+			backoff := renameBackoffBase << (attempt - 1)
+			sleep := backoff + time.Duration(mathrand.Int63n(int64(backoff)+1))
+			time.Sleep(sleep)
+		}
+		if err = renameFile(oldpath, newpath); err == nil {
+			return nil
+		}
+	}
+	return fmt.Errorf("rename %s to %s after %d attempts: %w", oldpath, newpath, renameAttempts, err)
+}
+
 // atomicWriteFile writes data to path durably: it creates path+".partial" in
 // the same directory with perm requested at open time (still subject to umask
 // on POSIX — defense-in-depth Chmod happens at the call site), writes data,
@@ -933,7 +979,7 @@ func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
 		os.Remove(tmpPath)
 		return err
 	}
-	if err := os.Rename(tmpPath, path); err != nil {
+	if err := renameWithRetry(tmpPath, path); err != nil {
 		os.Remove(tmpPath)
 		return err
 	}
@@ -1116,7 +1162,7 @@ func writeYAMLFile(path string, values map[string]any, mode os.FileMode) error {
 		os.Remove(tmpPath)
 		return err
 	}
-	if err := os.Rename(tmpPath, path); err != nil {
+	if err := renameWithRetry(tmpPath, path); err != nil {
 		os.Remove(tmpPath)
 		return err
 	}
