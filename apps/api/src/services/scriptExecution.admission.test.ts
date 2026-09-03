@@ -16,6 +16,7 @@ vi.mock('./featureConfigResolver', () => ({
     suppressPatching: false,
     suppressAutomations: false,
     rebootIfPending: false,
+    windowEndsAt: null,
   }),
 }));
 
@@ -114,6 +115,7 @@ describe('executeScriptOnDevices admission contract', () => {
       suppressPatching: false,
       suppressAutomations: false,
       rebootIfPending: false,
+      windowEndsAt: null,
     });
     vi.mocked(dispatchScriptToDevice).mockImplementation(async ({ device: target }) => dispatched(target.id));
   });
@@ -163,6 +165,7 @@ describe('executeScriptOnDevices admission contract', () => {
       suppressPatching: false,
       suppressAutomations: false,
       rebootIfPending: false,
+      windowEndsAt: null,
     }));
 
     const result = await executeScriptOnDevices({
