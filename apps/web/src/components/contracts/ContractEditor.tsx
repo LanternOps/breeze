@@ -1557,7 +1557,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged }: Props
                     {t('contracts.contractEditor.estimate.includesLiveCounts')}
                   </p>
                 )}
-                <DeviceCoverageNotice uncovered={liveEstimate?.uncoveredDevices} />
+                <DeviceCoverageNotice uncovered={liveEstimate?.uncoveredDevices} orgId={orgId || null} />
                 {!liveEstimate && estimateFailed && (
                   <p className="mt-1 text-xs text-amber-600 dark:text-amber-500" data-testid="contract-estimate-stale">
                     {estimate.hasAuto

@@ -62,6 +62,7 @@ import DeviceBootPerformanceTab from "./DeviceBootPerformanceTab";
 import DevicePlaybookHistory from "./DevicePlaybookHistory";
 import DevicePeripheralsTab from "./DevicePeripheralsTab";
 import DeviceWarrantyCard from "./DeviceWarrantyCard";
+import DeviceBillingCard from "./DeviceBillingCard";
 import DeviceUserIdleStat from "./DeviceUserIdleStat";
 import MacOSPermissionsBanner from "./MacOSPermissionsBanner";
 import PossibleReplacementBanner from "./PossibleReplacementBanner";
@@ -724,6 +725,8 @@ export default function DeviceDetails({
             <DevicePerformanceGraphs deviceId={device.id} compact />
 
             <DeviceWarrantyCard deviceId={device.id} compact />
+
+            <DeviceBillingCard deviceId={device.id} />
           </div>
 
           <div

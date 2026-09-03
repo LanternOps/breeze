@@ -22,10 +22,16 @@
  */
 import './setup';
 import { describe, it, expect } from 'vitest';
+import { and, eq } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
 import { partners, organizations, sites, devices, users, organizationUsers, roles } from '../../db/schema';
 // Note: sites table has no slug column — only orgId, name, address, timezone, contact, settings
-import { countContractDevices, countContractSeats } from '../../services/contractQuantities';
+import {
+  billableDeviceById,
+  countContractDevices,
+  countContractSeats,
+  snapshotContractDevices,
+} from '../../services/contractQuantities';
 
 interface Fixture {
   orgId: string;
@@ -105,5 +111,36 @@ describe('contract quantity resolvers (breeze_app, real DB)', () => {
   runDb('counts active seats (excludes disabled)', async () => {
     const { orgId } = await seedFixture();
     expect(await withSystemDbAccessContext(() => countContractSeats(orgId))).toBe(2);
+  });
+});
+
+describe('billableDeviceById (#3205 W06)', () => {
+  const runDb = it.runIf(!!process.env.DATABASE_URL);
+
+  runDb('returns the snapshot row for a billable device and null for every excluded one', async () => {
+    const f = await seedFixture();
+    const rows = await withSystemDbAccessContext(() => snapshotContractDevices(f.orgId));
+    const billable = rows[0]!;
+    await expect(withSystemDbAccessContext(() => billableDeviceById(billable.id, f.orgId)))
+      .resolves.toEqual({ id: billable.id, role: billable.role, siteId: billable.siteId });
+
+    const [decommissioned] = await withSystemDbAccessContext(() => db
+      .select({ id: devices.id }).from(devices)
+      .where(and(eq(devices.orgId, f.orgId), eq(devices.status, 'decommissioned' as never))).limit(1));
+    await expect(withSystemDbAccessContext(() => billableDeviceById(decommissioned!.id, f.orgId))).resolves.toBeNull();
+
+    // Right device, wrong org — the org predicate, not just the id.
+    await expect(withSystemDbAccessContext(() => billableDeviceById(billable.id, crypto.randomUUID()))).resolves.toBeNull();
+    await expect(withSystemDbAccessContext(() => billableDeviceById(crypto.randomUUID(), f.orgId))).resolves.toBeNull();
+  });
+
+  runDb('excludes an ephemeral device', async () => {
+    const f = await seedFixture();
+    const [eph] = await withSystemDbAccessContext(() => db.insert(devices).values({
+      orgId: f.orgId, siteId: f.siteAId, agentId: `eph-${Math.random().toString(36).slice(2, 8)}`,
+      hostname: 'eph', status: 'online', deviceRole: 'server', osType: 'linux', osVersion: '22.04',
+      architecture: 'x86_64', agentVersion: '1.0.0', isEphemeral: true,
+    }).returning({ id: devices.id }));
+    await expect(withSystemDbAccessContext(() => billableDeviceById(eph!.id, f.orgId))).resolves.toBeNull();
   });
 });

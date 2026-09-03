@@ -4,12 +4,23 @@ import type { FilterConditionGroup } from '@breeze/shared';
 
 const HASH_KEY = 'filtersV2';
 
+// Pure, isomorphic base64url. The old body returned '' when `window` was
+// undefined, so any link built from encodeFilterToHash during SSR was silently
+// `/devices#` (#3205 W06). Byte-identical to the old btoa path for every
+// well-formed input: unescape(encodeURIComponent(s)) IS the UTF-8 byte sequence
+// TextEncoder emits.
+const B64URL_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+
 function toBase64Url(s: string): string {
-  if (typeof window === 'undefined') return '';
-  // btoa requires latin1; JSON we encode is ASCII for typical filter shapes,
-  // but wrap in encodeURIComponent to be safe with non-ASCII tag values etc.
-  const bin = unescape(encodeURIComponent(s));
-  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const bytes = new TextEncoder().encode(s);
+  let out = '';
+  for (let i = 0; i < bytes.length; i += 3) {
+    const a = bytes[i]!, b = bytes[i + 1], c = bytes[i + 2];
+    out += B64URL_ALPHABET[a >> 2]! + B64URL_ALPHABET[((a & 3) << 4) | ((b ?? 0) >> 4)]!;
+    if (b !== undefined) out += B64URL_ALPHABET[((b & 15) << 2) | ((c ?? 0) >> 6)]!;
+    if (c !== undefined) out += B64URL_ALPHABET[c & 63]!;
+  }
+  return out;   // base64url, unpadded — as before
 }
 
 function fromBase64Url(s: string): string {

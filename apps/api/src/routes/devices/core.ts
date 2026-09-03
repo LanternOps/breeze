@@ -299,6 +299,7 @@ export const CUSTOM_ORG_REWRITE_TABLES = [
   'ticket_alert_links',
   'ticket_outbox',
   'ticket_attachments',
+  'ticket_email_links',
 ] as const;
 
 /**

@@ -80,7 +80,7 @@ describe('ticket child-table org-rewrite lock order (#4657)', () => {
     // Keeps the documented order honest: it must describe what the code does,
     // not what someone once intended. Projects rather than compares directly
     // so a list may still hold extra tables the other axis doesn't reach,
-    // even though as of #4743 both axes reach the same five.
+    // even though as of #4643 both axes reach the same six.
     expect(project(ticketAxis, canonicalSet)).toEqual(canonical);
     expect(project(deviceAxis, canonicalSet)).toEqual(canonical);
   });

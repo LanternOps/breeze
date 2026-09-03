@@ -7,7 +7,8 @@ import { navigateTo } from './navigation';
 // Invoice-domain enum SSOT lives in @breeze/shared (billing-enums.ts). Imported
 // into local scope for the InvoiceSummary/InvoiceDetail types below and re-exported
 // (type-only, erased at build) so '@/lib/api' consumers are unaffected.
-import type { DocumentPageSize, DocumentThemeId, EnrichedPortalDevice, InvoiceStatus, PublicQuoteHeader, QuotePresentation, TicketFormField } from '@breeze/shared';
+import type { DocumentPageSize, DocumentThemeId, EnrichedPortalDevice, InvoiceStatus, PublicQuoteHeader, QuotePresentation, SecurityDevicesDto, SecurityOverviewDto, TicketFormField } from '@breeze/shared';
+import type { DashboardDto } from '@breeze/shared';
 
 // Client API base. Empty (the default) → same-origin **relative** requests
 // (`/api/v1/...`), which the reverse proxy routes to the API under `/api/*`. This
@@ -1102,5 +1103,34 @@ export const portalApi = {
       { sessionId },
       { redirectOnUnauthorized: false }
     );
-  }
+  },
+
+  // W04 — portal dashboard
+  getDashboard: (
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<DashboardDto>> =>
+    apiGet<DashboardDto>('/portal/dashboard', config),
+
+  // ---- W05 — security ----
+  getSecurityOverview: (
+    days = 30,
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<SecurityOverviewDto>> =>
+    apiGet<SecurityOverviewDto>(
+      `/portal/security/overview${buildQueryString({ days })}`,
+      config
+    ),
+
+  getSecurityDevices: (
+    params: ListParams = {},
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<SecurityDevicesDto>> =>
+    apiGet<SecurityDevicesDto>(
+      `/portal/security/devices${buildQueryString({
+        page: params.page ?? 1,
+        limit: params.limit ?? 50
+      })}`,
+      config
+    )
+  // W05 — security
 };

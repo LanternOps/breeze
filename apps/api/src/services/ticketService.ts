@@ -2164,12 +2164,21 @@ export async function restoreTicket(ticketId: string, actor: TicketActor): Promi
 
 // Child tables that denormalize org_id and reference a ticket, and the ORDER
 // this transaction must lock them in. Both the list and its order — including
-// which tables are deliberately absent (ticket_comments, invoice_lines,
-// ticket_email_links) and why — live in services/ticketOrgMoveLockOrder.ts,
-// because the order is a contract shared with the device-move path
-// (routes/devices/moveOrg.ts, CUSTOM_ORG_REWRITE_TABLES) rather than a local
-// choice: the two movers reach overlapping rows and deadlock with 40P01 if
-// they disagree (#4657). ticketOrgMoveLockOrder.test.ts fails on drift.
+// which tables are deliberately absent (ticket_comments, invoice_lines) and
+// why — live in services/ticketOrgMoveLockOrder.ts, because the order is a
+// contract shared with the device-move path (routes/devices/moveOrg.ts,
+// CUSTOM_ORG_REWRITE_TABLES) rather than a local choice: the two movers reach
+// overlapping rows and deadlock with 40P01 if they disagree (#4657).
+// ticketOrgMoveLockOrder.test.ts fails on drift.
+//
+// ticket_email_links (#4643) is included: cross-channel email<->ticket
+// link/idempotency rows denormalize org_id from their ticket (shape 1, FORCE
+// RLS) and have no device_id — same shape as ticket_attachments. Appended
+// last, after ticket_attachments, on both axes.
+// findTicketInPartner / findTicketIdsByMessageIds (threadMatcher.ts) resolve
+// inbound-email threading by (partner_id, message_id) under a system context
+// and take tenancy from the live tickets.org_id, never from this row's
+// org_id, so re-stamping it here does not touch the idempotency contract.
 
 /**
  * Reassigns a ticket to another organization of the SAME partner.
@@ -2226,7 +2235,7 @@ export async function moveTicketOrg(
     // UUID so two concurrent moves between the same pair cannot deadlock) →
     // action_intents → ticket_drafts → ai_agent_runs → tickets → ticket_comments
     // → the TICKET_ORG_DENORMALIZED_TABLES loop (time_entries, ticket_parts,
-    // ticket_alert_links, ticket_outbox, ticket_attachments).
+    // ticket_alert_links, ticket_outbox, ticket_attachments, ticket_email_links).
     //
     // ai_agent_runs sits ahead of tickets (#4524) to match
     // breeze_cascade_device_org_id(), which severs runs before re-stamping its

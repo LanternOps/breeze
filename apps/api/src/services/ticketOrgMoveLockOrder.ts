@@ -51,7 +51,7 @@
  * sequence equals `CUSTOM_ORG_REWRITE_TABLES`). The ticket path needs no
  * separate statement check — its loop iterates the array literally.
  *
- * FK note: all five are children of `tickets` and none references another, so
+ * FK note: all six are children of `tickets` and none references another, so
  * children-before-parents does not constrain their relative order. `tickets`
  * itself is locked before all of them on both axes.
  */
@@ -71,6 +71,9 @@ export const TICKET_CHILD_ORG_REWRITE_LOCK_ORDER = [
   // TICKET_ORG_DENORMALIZED_TABLES.
   'ticket_outbox',
   'ticket_attachments',
+  // ticket_email_links (#4643) closes the gap called out below: it now joins
+  // BOTH axes, appended last after ticket_attachments on each.
+  'ticket_email_links',
 ] as const;
 
 /**
@@ -78,8 +81,8 @@ export const TICKET_CHILD_ORG_REWRITE_LOCK_ORDER = [
  *
  * Ordering is NOT free: the entries shared with the device axis must appear in
  * {@link TICKET_CHILD_ORG_REWRITE_LOCK_ORDER}'s relative order (#4657), which
- * as of #4743 is every entry in this list — the device axis now reaches all
- * five.
+ * as of #4643 is every entry in this list — the device axis now reaches all
+ * six.
  *
  * ticket_comments is deliberately absent: it has no `org_id` (child-via-parent
  * tenancy), so a moved ticket carries its comments implicitly.
@@ -102,13 +105,11 @@ export const TICKET_CHILD_ORG_REWRITE_LOCK_ORDER = [
  * no longer owns it. The mover holds access to both orgs (same-partner
  * constraint), so RLS USING/WITH CHECK both pass.
  *
- * ticket_email_links is absent and that is a known gap rather than a ruling: it
- * denormalizes org_id from its ticket (shape 1, FORCE RLS) yet is missing from
- * this list AND from the device path's CUSTOM_ORG_REWRITE_TABLES, so a moved
- * ticket strands its link rows on the source org on BOTH axes. Left out of the
- * #4524 fix deliberately — closing it spans both movers and turns on the
- * inbound-email tenancy model, so it is tracked in #4643 rather than
- * half-fixed on one axis.
+ * ticket_email_links (#4643) closes the gap left by the #4524 fix: it
+ * denormalizes org_id from its ticket (shape 1, FORCE RLS) and has no
+ * `device_id`, same shape as ticket_attachments. It is now rewritten on BOTH
+ * axes, appended last after ticket_attachments so the two movers keep
+ * touching the ticket-linked child tables in the same relative order.
  */
 export const TICKET_ORG_DENORMALIZED_TABLES = [
   'time_entries',
@@ -116,4 +117,5 @@ export const TICKET_ORG_DENORMALIZED_TABLES = [
   'ticket_alert_links',
   'ticket_outbox',
   'ticket_attachments',
+  'ticket_email_links',
 ] as const;

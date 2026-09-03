@@ -240,3 +240,19 @@ export interface AccountingProvider {
   reconcileChanges(conn: AccountingConnection, sinceCursor: Date | null): Promise<ChangeSet>;
   verifyWebhook(signatureHeader: string, rawBody: string, verifierToken: string): boolean;
 }
+
+/**
+ * The exact `accounting_entity_mappings.last_error` sentinel
+ * `markInvoiceDeletedRemotely` (accountingPaymentPull.ts) writes when the
+ * reconcile worker sees QuickBooks deleted/voided an invoice Breeze pushed
+ * (Phase D decision 2: never auto-resurrected). Written UNPREFIXED so it can
+ * never collide with the `PAYMENT_PULL_ERROR_PREFIX` bucket.
+ *
+ * Kept here — a leaf module with no other imports — rather than in
+ * accountingPaymentPull.ts (which imports invoiceService, which would need
+ * this constant too) or invoiceService.ts (imported by accountingPaymentPull.ts),
+ * either of which would create a cycle. Both the writer and every reader
+ * (accountingInvoicePush.ts's push guard, invoiceService.ts's summary) import
+ * this single constant instead of duplicating or string-matching the literal.
+ */
+export const INVOICE_REMOTE_DELETED_ERROR = 'Deleted in QuickBooks';

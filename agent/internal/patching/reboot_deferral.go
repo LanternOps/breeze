@@ -81,8 +81,13 @@ func ComputeDeferral(policy DeferralPolicy, used int, now, scheduledAt, deadline
 		target = deadline
 	}
 	// A deadline at or before the current schedule leaves nothing to postpone
-	// into, and clamping to it would pull the restart forward — refuse instead.
-	if target.Before(base) {
+	// into. Before it would pull the restart FORWARD; equal to it would move
+	// nothing at all — and that second case used to be granted, so the user
+	// pressed Postpone, spent one of a finite number of postponements, and the
+	// countdown re-armed at the very same instant. A postponement that does not
+	// postpone is worse than a refusal: the refusal at least says why, in words
+	// the user sees ("the restart deadline has been reached").
+	if !target.After(base) {
 		return DeferralOutcome{Reason: deferralReasonDeadlineReached}
 	}
 	delay := target.Sub(now)

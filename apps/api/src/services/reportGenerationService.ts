@@ -167,6 +167,31 @@ function assertExecutableAuthority(
   if (authority.scope.kind === 'legacy_unscoped') {
     throw new UnexecutableReportScopeError('Legacy report scope cannot execute');
   }
+  switch (authority.principalKind) {
+    case 'user':
+      if (!authority.principalUserId) {
+        throw new UnexecutableReportScopeError('User report execution authority requires a principal user');
+      }
+      break;
+    case 'portal_user':
+      if (authority.scope.kind !== 'unrestricted') {
+        throw new UnexecutableReportScopeError('Portal-user report execution authority must be unrestricted');
+      }
+      if (
+        'principalUserId' in authority
+        && authority.principalUserId !== null
+        && authority.principalUserId !== undefined
+      ) {
+        throw new UnexecutableReportScopeError('Portal-user report execution authority cannot carry a staff principal');
+      }
+      break;
+    default: {
+      const exhaustive: never = authority;
+      throw new UnexecutableReportScopeError(
+        `Unsupported report execution authority: ${String(exhaustive)}`,
+      );
+    }
+  }
 }
 
 function assertRequestedScopeWithinAuthority(
@@ -195,9 +220,32 @@ export function assertReportExecutionPreflight(
   orgId: string,
   config: Record<string, unknown>,
   authority: ReportExecutionAuthority | null | undefined,
+  reportType?: ReportType,
 ): asserts authority is ReportExecutionAuthority {
   assertExecutableAuthority(orgId, authority);
-  assertRequestedScopeWithinAuthority(config, authority);
+  if (
+    reportType
+    && authority.principalKind === 'portal_user'
+    && reportType !== 'executive_summary'
+    && reportType !== 'security_compliance_posture'
+  ) {
+    throw new UnexecutableReportScopeError(
+      `Portal-user authority cannot generate report type ${reportType}`,
+    );
+  }
+  switch (authority.principalKind) {
+    case 'user':
+      assertRequestedScopeWithinAuthority(config, authority);
+      return;
+    case 'portal_user':
+      return;
+    default: {
+      const exhaustive: never = authority;
+      throw new UnexecutableReportScopeError(
+        `Unsupported report execution authority: ${String(exhaustive)}`,
+      );
+    }
+  }
 }
 
 export async function generateDeviceInventoryReport(
@@ -205,7 +253,7 @@ export async function generateDeviceInventoryReport(
   config: Record<string, unknown>,
   authority: ReportExecutionAuthority,
 ) {
-  assertExecutableAuthority(orgId, authority);
+  assertReportExecutionPreflight(orgId, config, authority, 'device_inventory');
   // `isEphemeral = false` on every device predicate in this file: Quick Support
   // devices live in the partner's hidden 'quick_support' org, which deliberately
   // stays inside accessibleOrgIds so RLS lets a tech reach their own session.
@@ -255,7 +303,7 @@ export async function generateSoftwareInventoryReport(
   config: Record<string, unknown>,
   authority: ReportExecutionAuthority,
 ) {
-  assertExecutableAuthority(orgId, authority);
+  assertReportExecutionPreflight(orgId, config, authority, 'software_inventory');
   const conditions: SQL[] = [eq(devices.orgId, orgId), eq(devices.isEphemeral, false)];
 
   const filters = config.filters as Record<string, unknown> | undefined;
@@ -290,7 +338,7 @@ export async function generateAlertSummaryReport(
   config: Record<string, unknown>,
   authority: ReportExecutionAuthority,
 ) {
-  assertExecutableAuthority(orgId, authority);
+  assertReportExecutionPreflight(orgId, config, authority, 'alert_summary');
   const conditions: SQL[] = [eq(alerts.orgId, orgId)];
 
   const dateRange = config.dateRange as Record<string, string> | undefined;
@@ -355,7 +403,7 @@ export async function generateComplianceReport(
   config: Record<string, unknown>,
   authority: ReportExecutionAuthority,
 ) {
-  assertExecutableAuthority(orgId, authority);
+  assertReportExecutionPreflight(orgId, config, authority, 'compliance');
   const conditions: SQL[] = [eq(devices.orgId, orgId), eq(devices.isEphemeral, false)];
 
   const filters = config.filters as Record<string, unknown> | undefined;
@@ -426,7 +474,7 @@ export async function generatePerformanceReport(
   config: Record<string, unknown>,
   authority: ReportExecutionAuthority,
 ) {
-  assertExecutableAuthority(orgId, authority);
+  assertReportExecutionPreflight(orgId, config, authority, 'performance');
   const deviceConditions: SQL[] = [eq(devices.orgId, orgId), eq(devices.isEphemeral, false)];
   if (addAllowedSiteCondition(deviceConditions, authority)) {
     return emptyRowsReport();
@@ -491,7 +539,7 @@ export async function generateExecutiveSummaryReport(
   config: Record<string, unknown>,
   authority: ReportExecutionAuthority,
 ) {
-  assertExecutableAuthority(orgId, authority);
+  assertReportExecutionPreflight(orgId, config, authority, 'executive_summary');
   if (authority.scope.kind === 'restricted' && authority.scope.siteIds.length === 0) {
     return zeroSafeReport('executive_summary', orgId);
   }
@@ -604,7 +652,16 @@ export async function generateReport(
   config: Record<string, unknown>,
   authority: ReportExecutionAuthority,
 ): Promise<ReportResult> {
-  assertReportExecutionPreflight(orgId, config, authority);
+  assertReportExecutionPreflight(orgId, config, authority, type);
+  if (
+    authority.principalKind === 'portal_user'
+    && type !== 'executive_summary'
+    && type !== 'security_compliance_posture'
+  ) {
+    throw new UnexecutableReportScopeError(
+      `Portal-user authority cannot generate report type ${type}`,
+    );
+  }
   if (authority.scope.kind === 'restricted' && authority.scope.siteIds.length === 0) {
     return zeroSafeReport(type, orgId);
   }
