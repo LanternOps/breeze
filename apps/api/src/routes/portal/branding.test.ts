@@ -84,6 +84,21 @@ describe('GET /branding (authenticated)', () => {
     expect(query.params).toEqual([ORG_ID]);
   });
 
+  it('returns 404 when the authenticated org has no portal_branding row (default state)', async () => {
+    dbState.rows = [];
+
+    const response = await authenticatedApp.request('/branding');
+
+    expect(response.status).toBe(404);
+    const body = await response.json();
+    expect(body).not.toHaveProperty('branding');
+    expect(body).not.toHaveProperty('enableDashboard');
+    expect(body).not.toHaveProperty('enableSecurity');
+    expect(body).not.toHaveProperty('enableBackups');
+    expect(body).not.toHaveProperty('enableReports');
+    expect(body).not.toHaveProperty('enableSupportUsage');
+  });
+
   it('applies private cache headers scoped to the authenticated viewer', async () => {
     dbState.rows = [{
       enableDashboard: false,

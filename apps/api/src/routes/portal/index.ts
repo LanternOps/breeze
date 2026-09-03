@@ -1,4 +1,4 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { brandingRoutes } from './branding';
 import { authRoutes, portalAuthMiddleware } from './auth';
 import { deviceRoutes } from './devices';
@@ -18,6 +18,8 @@ import { portalBackupRoutes } from './backups';
 import { portalReportRoutes } from './reports';
 
 export const portalRoutes = new Hono();
+
+const isTicketsUsagePath = (c: Context) => c.req.path.endsWith('/tickets/usage');
 
 // Public routes (no auth required)
 portalRoutes.route('/', authRoutes);
@@ -58,7 +60,7 @@ portalRoutes.use('/tickets/usage', portalAuthMiddleware);
 portalRoutes.use('/tickets/usage', createPortalFeatureGateStrict('enableSupportUsage'));
 
 portalRoutes.use('/tickets/*', async (c, next) => {
-  if (c.req.path.endsWith('/tickets/usage')) {
+  if (isTicketsUsagePath(c)) {
     return next();
   }
   return portalAuthMiddleware(c, next);
@@ -67,7 +69,7 @@ portalRoutes.use('/tickets/*', async (c, next) => {
 // (needs portalAuth + the org-scoped DB context) and on the same `/tickets/*`
 // prefix so all ticket surfaces — including GET /tickets/forms — are covered.
 portalRoutes.use('/tickets/*', async (c, next) => {
-  if (c.req.path.endsWith('/tickets/usage')) {
+  if (isTicketsUsagePath(c)) {
     return next();
   }
   return portalTicketsEnabledMiddleware(c, next);

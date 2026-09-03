@@ -116,7 +116,15 @@ brandingRoutes.get('/branding', async (c) => {
     .where(eq(portalBranding.orgId, auth.user.orgId))
     .limit(1);
 
-  const payload = { branding: branding ?? null };
+  if (!branding) {
+    // No row means the MSP has never saved portal settings for this org — the
+    // default state, not an error. Match the public /branding/:domain 404
+    // contract so the portal falls into its documented 404 → defaultBranding
+    // path (flags undefined → every gated surface fails closed).
+    return c.json({ error: 'Branding not found' }, 404);
+  }
+
+  const payload = { branding };
   applyPortalCacheHeaders(c, {
     scope: 'private',
     browserMaxAgeSeconds: 30,
