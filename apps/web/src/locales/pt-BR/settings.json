@@ -17,6 +17,12 @@
     },
     "detail": {
       "notFoundDescription": "Esta execução pode ter sido excluída, ou o link pode estar desatualizado.",
+      "pageTitle": "{{agent}} · {{started}} · Execução | Breeze RMM",
+      "header": {
+        "title": "Execução de {{agent}}",
+        "startedLabel": "Iniciado",
+        "machineVerdict": "Veredito da máquina: {{verdict}}"
+      },
       "summary": {
         "title": "O que o agente encontrou"
       },
@@ -38,13 +44,16 @@
           "checkedAt": "Verificado",
           "cveIds": "IDs de CVE",
           "cveCount": "Contagem de CVE",
+          "cveId": "CVE",
+          "cvssScore": "Pontuação CVSS",
           "osType": "Tipo de SO",
           "openCriticalCount": "CVEs críticos em aberto"
         }
       },
       "sweep": {
         "caption": "Uma linha por problema encontrado nesta varredura, com a ação proposta.",
-        "reviewPermissions": "Revisar permissões do agente"
+        "reviewPermissions": "Revisar permissões do agente",
+        "checksLabel": "Verificações:"
       },
       "trace": {
         "description": "Cada chamada de ferramenta que o agente propôs, executou ou teve negada, em ordem.",
@@ -53,6 +62,7 @@
       "ledger": {
         "description": "Somente as chamadas que realmente foram executadas, com a duração e qualquer erro.",
         "emptyDescription": "As ferramentas realmente invocadas pelo agente serão listadas aqui.",
+        "collapsedSummary": "Execuções de ferramentas ({{count}}) — iguais ao trace acima",
         "statuses": {
           "pending": "Pendente",
           "approved": "Aprovado",
@@ -1475,6 +1485,7 @@
       "nextRun": "Próxima execução {{at}} ({{timezone}})",
       "nextRunInvalid": "Agendamento inválido",
       "nextRunNone": "Nenhuma execução no próximo ano.",
+      "useMyTimezone": "Usar meu fuso horário",
       "kindLabels": {
         "disk_pressure": "Pressão de disco",
         "stale_agents": "Agentes desatualizados",
@@ -1531,6 +1542,18 @@
     "allOrgsHint": "Em todo o parceiro: vale para cada organização, a menos que uma organização a restrinja.",
     "stateEnabled": "Ativado",
     "stateDisabled": "Desativado",
+    "runningBadge": {
+      "running": "Em execução",
+      "notRunning": "Não está em execução"
+    },
+    "reenableNote": "Restaurado, mas desligado. Revise a política dele antes de ativá-lo.",
+    "chipLabels": {
+      "kind": "Tipo",
+      "ownership": "Propriedade",
+      "mode": "Modo",
+      "running": "Status",
+      "lastRunStatus": "Resultado da última execução"
+    },
     "lastRun": {
       "never": "Nunca executado",
       "at": "Última execução {{at}}"
@@ -1553,7 +1576,8 @@
     },
     "allDisabled": {
       "title": "Todos os agentes estão desativados",
-      "description": "Nada está em execução. Reative um abaixo ou crie um novo agente."
+      "description": "Nada está em execução no momento.",
+      "reenableCta": "Reativar um agente"
     },
     "errors": {
       "load": "Não foi possível carregar os agentes.",
@@ -1664,6 +1688,8 @@
       "recipientRolesFailed": "Não foi possível carregar as funções, então os destinatários das notificações não podem ser alterados agora.",
       "supervisedActionKeysHint": "Operações que este agente pode executar SEM um humano clicar em aprovar, quando existe uma política correspondente e o limite de exposição da organização tem espaço. Cada uma ainda passa pelas proteções em tempo real, pelo interruptor de interrupção e pelos limites por organização no momento da execução.",
       "supervisedActionKeysEmpty": "Nenhuma ação decidível por política está registrada.",
+      "supervisedActionKeysCeilingSummary_one": "Teto para organizações — {{count}} chave",
+      "supervisedActionKeysCeilingSummary_other": "Teto para organizações — {{count}} chaves",
       "supervisedActionKeysFailed": "Não foi possível carregar a lista de ações decidíveis por política, então a autorização não supervisionada não pode ser alterada agora.",
       "ticketAutonomousWrites": "Gravações autônomas de chamados",
       "ticketAutonomousWritesHint": "Somente substituição da organização — gravações autônomas de chamados exigem o modo de ação e a ativação neste nível de organização",
@@ -1673,6 +1699,35 @@
       "toolSuggestLabel": "Adicionar uma ferramenta conhecida",
       "toolSuggestHint": "As sugestões vêm do registro de ações decidíveis por política, que não é a lista completa de ferramentas. Qualquer outra permitida a este agente ainda pode ser digitada acima.",
       "toolSuggestAdd": "Adicionar"
+    },
+    "policyKeys": {
+      "tools": {
+        "manage_services": "Serviços",
+        "manage_startup_items": "Itens de inicialização",
+        "manage_scheduled_tasks": "Tarefas agendadas",
+        "security_scan": "Verificação de segurança"
+      },
+      "actions": {
+        "manage_services": {
+          "start": "Iniciar um serviço",
+          "stop": "Parar um serviço",
+          "restart": "Reiniciar um serviço"
+        },
+        "manage_startup_items": {
+          "disable": "Desabilitar um item de inicialização",
+          "enable": "Habilitar um item de inicialização"
+        },
+        "manage_scheduled_tasks": {
+          "run": "Executar uma tarefa agendada",
+          "disable": "Desabilitar uma tarefa agendada",
+          "enable": "Habilitar uma tarefa agendada"
+        },
+        "security_scan": {
+          "quarantine": "Colocar uma ameaça em quarentena",
+          "remove": "Remover uma ameaça",
+          "restore": "Restaurar uma ameaça"
+        }
+      }
     },
     "loading": "Carregando agentes…",
     "runs": {
@@ -1689,8 +1744,6 @@
         "status": "Status",
         "trigger": "Gatilho",
         "verdict": "Resultado",
-        "queued": "Na fila",
-        "finished": "Concluída",
         "cost": "Custo"
       },
       "statuses": {
@@ -1984,6 +2037,7 @@
           "llmSpend": "Gasto com LLM"
         }
       },
+      "freshnessLabel": "Atualidade dos dados",
       "freshness": "Dados até {{through}} (UTC) · reconstruído {{rebuiltAt}}",
       "freshnessNeverRebuilt": "Ainda não gerado — a primeira reconstrução roda esta noite",
       "positiveFeedbackRate": "Taxa de retorno positivo",
@@ -1994,7 +2048,10 @@
         "title": "Editar pesos de tempo economizado",
         "description": "Defina quantos minutos de tempo humano cada resultado deve receber de crédito. Esses pesos alteram apenas a estimativa — nunca o que seus agentes de IA fazem.",
         "unitSuffix": "min.",
+        "rangeHint": "Digite um valor entre {{min}} e {{max}} minutos.",
+        "defaultValue": "Padrão: {{minutes}} min.",
         "preview": "Tempo economizado estimado nesta janela: {{from}} → {{to}}",
+        "noOutcomesPreview": "Nenhum resultado nesta janela para pré-visualizar",
         "save": "Salvar",
         "saving": "Salvando…",
         "reset": "Restaurar padrões",

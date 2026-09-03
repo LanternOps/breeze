@@ -14,7 +14,25 @@
   "batch": {
     "approveAll": "Aprobar todo ({{count}})",
     "declineAll": "Rechazar todo ({{count}})",
-    "groupTitle": "{{count}} solicitudes similares · {{tool}}"
+    "groupTitle": "{{count}} solicitudes similares · {{tool}}",
+    "moreHostnames": "+{{count}} más",
+    "denyConfirmSummary": "Esto rechaza {{count}} solicitudes de {{org}}."
+  },
+  "filters": {
+    "orgLabel": "Organización",
+    "allOrganizations": "Todas las organizaciones ({{count}})",
+    "orgOption": "{{name}} ({{count}} pendientes)",
+    "searchLabel": "Buscar",
+    "searchPlaceholder": "Buscar por acción, equipo o agente…",
+    "sortLabel": "Ordenar por",
+    "sortExpiringSoonest": "Vence pronto",
+    "sortNewest": "Más recientes",
+    "showingLoaded": "Mostrando {{shown}} de {{loaded}} cargadas",
+    "clearFilters": "Borrar filtros",
+    "noMatches": {
+      "title": "Ninguna aprobación coincide con tus filtros",
+      "description": "Prueba con otra organización o término de búsqueda, o borra tus filtros."
+    }
   },
   "risk": {
     "low": "Riesgo bajo",

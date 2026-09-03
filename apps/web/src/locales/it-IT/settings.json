@@ -17,6 +17,12 @@
     },
     "detail": {
       "notFoundDescription": "Questa esecuzione potrebbe essere stata eliminata, oppure il link non è più valido.",
+      "pageTitle": "{{agent}} · {{started}} · Esecuzione | Breeze RMM",
+      "header": {
+        "title": "Esecuzione di {{agent}}",
+        "startedLabel": "Avviato",
+        "machineVerdict": "Verdetto della macchina: {{verdict}}"
+      },
       "summary": {
         "title": "Che cosa ha rilevato l'agente"
       },
@@ -38,13 +44,16 @@
           "checkedAt": "Verificato",
           "cveIds": "ID CVE",
           "cveCount": "Numero di CVE",
+          "cveId": "CVE",
+          "cvssScore": "Punteggio CVSS",
           "osType": "Tipo di sistema operativo",
           "openCriticalCount": "CVE critiche aperte"
         }
       },
       "sweep": {
         "caption": "Una riga per ogni problema rilevato da questa scansione, con l'azione proposta.",
-        "reviewPermissions": "Esamina le autorizzazioni dell'agente"
+        "reviewPermissions": "Esamina le autorizzazioni dell'agente",
+        "checksLabel": "Controlli:"
       },
       "trace": {
         "description": "Ogni chiamata a strumento proposta, eseguita o negata all'agente, in ordine.",
@@ -53,6 +62,7 @@
       "ledger": {
         "description": "Solo le chiamate effettivamente eseguite, con la durata ed eventuali errori.",
         "emptyDescription": "Gli strumenti effettivamente invocati dall'agente saranno elencati qui.",
+        "collapsedSummary": "Esecuzioni di strumenti ({{count}}) — uguali alla traccia sopra",
         "statuses": {
           "pending": "In sospeso",
           "approved": "Approvato",
@@ -1475,6 +1485,7 @@
       "nextRun": "Prossima esecuzione {{at}} ({{timezone}})",
       "nextRunInvalid": "Pianificazione non valida",
       "nextRunNone": "Nessuna esecuzione nel prossimo anno.",
+      "useMyTimezone": "Usa il mio fuso orario",
       "kindLabels": {
         "disk_pressure": "Pressione sul disco",
         "stale_agents": "Agenti non aggiornati",
@@ -1531,6 +1542,18 @@
     "allOrgsHint": "A livello di partner: vale per ogni organizzazione, salvo che un’organizzazione la restringa.",
     "stateEnabled": "Attivo",
     "stateDisabled": "Disattivato",
+    "runningBadge": {
+      "running": "In esecuzione",
+      "notRunning": "Non in esecuzione"
+    },
+    "reenableNote": "Ripristinato, ma spento. Rivedi la sua policy prima di attivarlo.",
+    "chipLabels": {
+      "kind": "Tipo",
+      "ownership": "Proprietà",
+      "mode": "Modalità",
+      "running": "Stato",
+      "lastRunStatus": "Esito dell’ultima esecuzione"
+    },
     "lastRun": {
       "never": "Mai eseguito",
       "at": "Ultima esecuzione {{at}}"
@@ -1553,7 +1576,8 @@
     },
     "allDisabled": {
       "title": "Tutti gli agenti sono disattivati",
-      "description": "Non è in esecuzione nulla. Riattivane uno qui sotto o crea un nuovo agente."
+      "description": "Al momento non è in esecuzione nulla.",
+      "reenableCta": "Riattiva un agente"
     },
     "errors": {
       "load": "Impossibile caricare gli agenti.",
@@ -1664,6 +1688,8 @@
       "recipientRolesFailed": "Impossibile caricare i ruoli: al momento i destinatari delle notifiche non possono essere modificati.",
       "supervisedActionKeysHint": "Operazioni che questo agente può eseguire SENZA che un essere umano clicchi su approva, quando esiste una policy corrispondente e il limite di esposizione dell'organizzazione ha margine. Ognuna passa comunque attraverso le protezioni live, l'interruttore di emergenza e i limiti per organizzazione al momento dell'esecuzione.",
       "supervisedActionKeysEmpty": "Nessuna azione decidibile tramite policy è registrata.",
+      "supervisedActionKeysCeilingSummary_one": "Limite per le organizzazioni — {{count}} chiave",
+      "supervisedActionKeysCeilingSummary_other": "Limite per le organizzazioni — {{count}} chiavi",
       "supervisedActionKeysFailed": "Impossibile caricare l'elenco delle azioni decidibili tramite policy, quindi l'autorizzazione non presidiata non può essere modificata al momento.",
       "ticketAutonomousWrites": "Scritture autonome dei ticket",
       "ticketAutonomousWritesHint": "Solo override a livello di organizzazione — le scritture autonome dei ticket richiedono la modalità azione e questa attivazione a livello di organizzazione",
@@ -1673,6 +1699,35 @@
       "toolSuggestLabel": "Aggiungi uno strumento noto",
       "toolSuggestHint": "I suggerimenti provengono dal registro delle azioni decidibili dalla policy, che non è l’elenco completo degli strumenti. Qualsiasi altro strumento consentito a questo agente si può comunque digitare qui sopra.",
       "toolSuggestAdd": "Aggiungi"
+    },
+    "policyKeys": {
+      "tools": {
+        "manage_services": "Servizi",
+        "manage_startup_items": "Elementi di avvio",
+        "manage_scheduled_tasks": "Attività pianificate",
+        "security_scan": "Scansione di sicurezza"
+      },
+      "actions": {
+        "manage_services": {
+          "start": "Avvia un servizio",
+          "stop": "Arresta un servizio",
+          "restart": "Riavvia un servizio"
+        },
+        "manage_startup_items": {
+          "disable": "Disabilita un elemento di avvio",
+          "enable": "Abilita un elemento di avvio"
+        },
+        "manage_scheduled_tasks": {
+          "run": "Esegui un'attività pianificata",
+          "disable": "Disabilita un'attività pianificata",
+          "enable": "Abilita un'attività pianificata"
+        },
+        "security_scan": {
+          "quarantine": "Metti in quarantena una minaccia",
+          "remove": "Rimuovi una minaccia",
+          "restore": "Ripristina una minaccia"
+        }
+      }
     },
     "loading": "Caricamento degli agenti…",
     "runs": {
@@ -1689,8 +1744,6 @@
         "status": "Stato",
         "trigger": "Trigger",
         "verdict": "Esito",
-        "queued": "In coda",
-        "finished": "Terminata",
         "cost": "Costo"
       },
       "statuses": {
@@ -1984,6 +2037,7 @@
           "llmSpend": "Spesa LLM"
         }
       },
+      "freshnessLabel": "Aggiornamento dei dati",
       "freshness": "Dati fino al {{through}} (UTC) · ricostruito {{rebuiltAt}}",
       "freshnessNeverRebuilt": "Non ancora generato — la prima ricostruzione viene eseguita stanotte",
       "positiveFeedbackRate": "Percentuale di riscontri positivi",
@@ -1994,7 +2048,10 @@
         "title": "Modifica i pesi del tempo risparmiato",
         "description": "Imposta quanti minuti di tempo umano vengono accreditati a ciascun risultato. Questi pesi modificano solo la stima — mai ciò che fanno i tuoi agenti IA.",
         "unitSuffix": "min.",
+        "rangeHint": "Inserisci un valore compreso tra {{min}} e {{max}} minuti.",
+        "defaultValue": "Predefinito: {{minutes}} min.",
         "preview": "Tempo stimato risparmiato in questa finestra: {{from}} → {{to}}",
+        "noOutcomesPreview": "Nessun risultato in questa finestra da visualizzare in anteprima",
         "save": "Salva",
         "saving": "Salvataggio…",
         "reset": "Ripristina predefiniti",

@@ -70,6 +70,15 @@ function weightLabel(t: (key: string) => string, key: (typeof IMPACT_WEIGHT_KEYS
   }
 }
 
+/** Default minutes text per field, for the "Default N min" helper caption —
+ *  computed once at module scope since `DEFAULT_IMPACT_WEIGHTS` is a constant. */
+const DEFAULT_MINUTES_TEXT: Record<(typeof IMPACT_WEIGHT_KEYS)[number], string> = Object.fromEntries(
+  IMPACT_WEIGHT_KEYS.map((key) => [
+    key,
+    formatNumber(DEFAULT_IMPACT_WEIGHTS[key] / 60, { maximumFractionDigits: 2 }),
+  ]),
+) as Record<(typeof IMPACT_WEIGHT_KEYS)[number], string>;
+
 /** Wire unit -> editor unit. Rounded to a hundredth of a minute (0.6s) purely
  *  for a readable seed value — `minutesToSeconds` below undoes float noise on
  *  the way back out, so this rounding never changes what gets saved. */
@@ -276,6 +285,15 @@ export default function ImpactWeightsDrawer({
         <p className="text-sm text-muted-foreground">
           {t('aiAgentsPage.impact.weightsDrawer.description')}
         </p>
+        <p
+          className="text-xs text-muted-foreground"
+          data-testid="ai-impact-weights-range-hint"
+        >
+          {t('aiAgentsPage.impact.weightsDrawer.rangeHint', {
+            min: 0,
+            max: IMPACT_WEIGHT_MAX_MINUTES,
+          })}
+        </p>
         {IMPACT_WEIGHT_KEYS.map((key) => (
           <label key={key} className="block">
             <span className="text-sm text-muted-foreground">{weightLabel(t, key)}</span>
@@ -300,7 +318,13 @@ export default function ImpactWeightsDrawer({
                 onChange={(e) => handleChange(key, e.target.value)}
                 onBlur={() => handleBlur(key)}
                 disabled={busy !== null}
-                className="w-full rounded-md border bg-background px-3 py-2 pr-12 text-sm disabled:cursor-not-allowed disabled:opacity-50"
+                // The native number-input spinner (Chrome/Safari's up/down
+                // stepper) sits inside the same right-hand padding as the
+                // "min" suffix and visually collides with it — step buttons
+                // aren't needed here (the 0.5 step is set for keyboard
+                // arrow-key nudging, not for the spinner), so the spinner is
+                // hidden outright rather than repositioning the suffix.
+                className="w-full rounded-md border bg-background px-3 py-2 pr-12 text-sm [appearance:textfield] disabled:cursor-not-allowed disabled:opacity-50 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
               />
               <span
                 id={`ai-impact-weight-${key}-unit`}
@@ -310,6 +334,14 @@ export default function ImpactWeightsDrawer({
                 {t('aiAgentsPage.impact.weightsDrawer.unitSuffix')}
               </span>
             </div>
+            <p
+              className="mt-1 text-xs text-muted-foreground"
+              data-testid={`ai-impact-weight-${key}-default`}
+            >
+              {t('aiAgentsPage.impact.weightsDrawer.defaultValue', {
+                minutes: DEFAULT_MINUTES_TEXT[key],
+              })}
+            </p>
           </label>
         ))}
       </div>
@@ -318,10 +350,16 @@ export default function ImpactWeightsDrawer({
           data-testid="ai-impact-weights-preview"
           className="mb-3 text-sm text-muted-foreground"
         >
-          {t('aiAgentsPage.impact.weightsDrawer.preview', {
-            from: formatHours(currentEstSecondsSaved),
-            to: formatHours(draftEstSecondsSaved),
-          })}
+          {/* Both sides price the SAME counters (see the comment above) — if
+              every priced counter is zero, the estimate is 0 regardless of
+              the weights, and "0 hours -> 0 hours" reads as broken math
+              rather than as "there's nothing to preview yet". */}
+          {currentEstSecondsSaved === 0 && draftEstSecondsSaved === 0
+            ? t('aiAgentsPage.impact.weightsDrawer.noOutcomesPreview')
+            : t('aiAgentsPage.impact.weightsDrawer.preview', {
+                from: formatHours(currentEstSecondsSaved),
+                to: formatHours(draftEstSecondsSaved),
+              })}
         </p>
         <div className="flex items-center justify-end gap-2">
           <button

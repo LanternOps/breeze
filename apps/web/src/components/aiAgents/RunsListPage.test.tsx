@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
@@ -36,6 +36,8 @@ const RUN_1 = {
   queuedAt: '2026-08-20T10:00:00.000Z',
   finishedAt: '2026-08-20T10:05:00.000Z',
   costCents: 42,
+  findingsToReview: 0,
+  summaryExcerpt: null as string | null,
 };
 
 const RUN_2 = {
@@ -53,6 +55,8 @@ const RUN_2 = {
   queuedAt: '2026-08-19T10:00:00.000Z',
   finishedAt: null,
   costCents: 0,
+  findingsToReview: 0,
+  summaryExcerpt: null as string | null,
 };
 
 function mockEndpoints(opts: {
@@ -123,14 +127,27 @@ describe('RunsListPage', () => {
   });
 
   it('shows a Clear filters action in the filtered-empty state instead of the settings link', async () => {
-    mockEndpoints({ runs: [] });
+    // Filter chrome is only visible once there is something to filter (see
+    // "RunsListPage filter chrome" below) or a filter is already active, so
+    // this starts from a non-empty list and filters it down to zero.
+    mockEndpoints();
     render(<RunsListPage />);
-    await waitFor(() => expect(screen.getByTestId('runs-list-empty')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId('runs-list-row-run-1')).toBeInTheDocument());
 
+    fetchMock.mockImplementation((url: string) => {
+      if (url.startsWith('/ai/agents/runs')) {
+        expect(url).toContain('status=failed');
+        return Promise.resolve(json({ data: [], nextCursor: null }));
+      }
+      return Promise.resolve(json({ data: [] }));
+    });
     fireEvent.change(screen.getByTestId('runs-list-filter-status'), { target: { value: 'failed' } });
     await waitFor(() => expect(screen.getByText('No runs match these filters.')).toBeInTheDocument());
     expect(screen.queryByText('Configure AI agents')).not.toBeInTheDocument();
     expect(screen.getAllByText('Clear filters').length).toBeGreaterThan(0);
+    // The filter select itself must stay visible so the user can change it
+    // back — only a truly empty, unfiltered list hides the filter chrome.
+    expect(screen.getByTestId('runs-list-filter-status')).toBeInTheDocument();
   });
 
   it('shows a Load more button when a nextCursor is returned, and appends on click', async () => {
@@ -198,7 +215,11 @@ describe('RunsListPage', () => {
 
     await waitFor(() => expect(screen.getByTestId('runs-list-row-run-1')).toBeInTheDocument());
     expect(screen.getByRole('columnheader', { name: 'Organization' })).toBeInTheDocument();
-    expect(screen.getAllByText('Acme Corp')).toHaveLength(2);
+    // Scoped to the table: the mobile card view (jsdom renders both markup
+    // blocks regardless of the `hidden`/`md:hidden` CSS that shows only one
+    // per viewport — see "RunsListPage mobile cards") also shows the org
+    // name once per row, so an unscoped count would double.
+    expect(within(screen.getByTestId('runs-list-table-wrapper')).getAllByText('Acme Corp')).toHaveLength(2);
   });
 
   // Phase 2 wave P2-2 (#4189, Task 14) — a sweep-profile run is a fleet-wide
@@ -759,5 +780,227 @@ describe('RunsListPage polling', () => {
     });
 
     expect(fetchMock.mock.calls.length).toBe(callsAfterLoad);
+  });
+});
+
+// UI critique finding #1 — the Verdict cell must not say "No action needed"
+// while findings are still waiting on a human, mirroring RunDetailPage's
+// `verdictUnderstatesFindings` override.
+describe('RunsListPage findings-to-review override', () => {
+  it('shows a warning "findings to review" badge instead of a no_action verdict, with the real verdict demoted to secondary text', async () => {
+    mockEndpoints({
+      runs: [{ ...RUN_1, runVerdict: 'no_action' as const, findingsToReview: 3 }],
+    });
+    render(<RunsListPage />);
+
+    await waitFor(() => expect(screen.getByTestId('runs-list-findings-badge-run-1')).toBeInTheDocument());
+    expect(screen.getByTestId('runs-list-findings-badge-run-1')).toHaveTextContent('3 findings to review');
+    expect(screen.getByTestId('runs-list-verdict-secondary-run-1')).toHaveTextContent('No action needed');
+  });
+
+  it('overrides any non-failure verdict (not just no_action) when findings are outstanding', async () => {
+    mockEndpoints({
+      runs: [{ ...RUN_1, runVerdict: 'remediated' as const, findingsToReview: 1 }],
+    });
+    render(<RunsListPage />);
+
+    await waitFor(() => expect(screen.getByTestId('runs-list-findings-badge-run-1')).toBeInTheDocument());
+    expect(screen.getByTestId('runs-list-findings-badge-run-1')).toHaveTextContent('1 finding to review');
+    expect(screen.getByTestId('runs-list-verdict-secondary-run-1')).toBeInTheDocument();
+  });
+
+  it('does not override a needs_attention (failure) verdict, which already signals review is needed', async () => {
+    mockEndpoints({
+      runs: [{ ...RUN_1, runVerdict: 'needs_attention' as const, findingsToReview: 2 }],
+    });
+    render(<RunsListPage />);
+
+    await waitFor(() => expect(screen.getByTestId('runs-list-row-run-1')).toBeInTheDocument());
+    expect(screen.queryByTestId('runs-list-findings-badge-run-1')).not.toBeInTheDocument();
+    expect(within(screen.getByTestId('runs-list-row-run-1')).getByText('Needs attention')).toBeInTheDocument();
+  });
+
+  it('renders the plain verdict badge with no override when there are no findings to review', async () => {
+    mockEndpoints({
+      runs: [{ ...RUN_1, runVerdict: 'no_action' as const, findingsToReview: 0 }],
+    });
+    render(<RunsListPage />);
+
+    await waitFor(() => expect(screen.getByTestId('runs-list-row-run-1')).toBeInTheDocument());
+    expect(screen.queryByTestId('runs-list-findings-badge-run-1')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('runs-list-verdict-secondary-run-1')).not.toBeInTheDocument();
+    expect(within(screen.getByTestId('runs-list-row-run-1')).getByText('No action needed')).toBeInTheDocument();
+  });
+});
+
+// UI critique finding #2 — a one-line muted excerpt of the agent's own
+// summary, so triage can end at the list without opening every run.
+describe('RunsListPage summary excerpt', () => {
+  it('renders the summary excerpt under the agent name, truncated with line-clamp', async () => {
+    mockEndpoints({
+      runs: [{ ...RUN_1, summaryExcerpt: 'Disk usage on WEB-01 crossed 90% and was cleared.' }],
+    });
+    render(<RunsListPage />);
+
+    await waitFor(() => expect(screen.getByTestId('runs-list-summary-run-1')).toBeInTheDocument());
+    expect(screen.getByTestId('runs-list-summary-run-1')).toHaveTextContent(
+      'Disk usage on WEB-01 crossed 90% and was cleared.',
+    );
+    expect(screen.getByTestId('runs-list-summary-run-1').className).toContain('line-clamp-1');
+  });
+
+  it('renders no excerpt line when summaryExcerpt is null', async () => {
+    mockEndpoints({ runs: [{ ...RUN_1, summaryExcerpt: null }] });
+    render(<RunsListPage />);
+
+    await waitFor(() => expect(screen.getByTestId('runs-list-row-run-1')).toBeInTheDocument());
+    expect(screen.queryByTestId('runs-list-summary-run-1')).not.toBeInTheDocument();
+  });
+});
+
+// UI critique finding #3 — below `md`, the table degrades into stacked
+// cards (mirroring RunDetailPage's SweepFindingCard pattern) rather than a
+// horizontally-scrolling table. Exactly one of the two markup blocks is
+// displayed — and therefore in the a11y tree — at any given viewport.
+describe('RunsListPage mobile cards', () => {
+  it('renders a stacked card per run with agent, org, status, excerpt, and a meta line', async () => {
+    mockEndpoints({
+      runs: [
+        {
+          ...RUN_1,
+          summaryExcerpt: 'Disk usage on WEB-01 crossed 90% and was cleared.',
+        },
+      ],
+    });
+    render(<RunsListPage />);
+
+    await waitFor(() => expect(screen.getByTestId('runs-list-card-run-1')).toBeInTheDocument());
+    const card = screen.getByTestId('runs-list-card-run-1');
+    expect(card).toHaveTextContent('Triage');
+    expect(card).toHaveTextContent('Acme Corp');
+    expect(card).toHaveTextContent('Completed');
+    expect(card).toHaveTextContent('Disk usage on WEB-01 crossed 90% and was cleared.');
+  });
+
+  it('keeps the table markup hidden below md and the card markup hidden from md up', async () => {
+    mockEndpoints({ runs: [RUN_1] });
+    render(<RunsListPage />);
+
+    await waitFor(() => expect(screen.getByTestId('runs-list-table')).toBeInTheDocument());
+    const tableWrapper = screen.getByTestId('runs-list-table').closest('[data-testid="runs-list-table-wrapper"]');
+    expect(tableWrapper).not.toBeNull();
+    expect(tableWrapper!.className).toContain('hidden');
+    expect(tableWrapper!.className).toContain('md:block');
+
+    const cardsWrapper = screen.getByTestId('runs-list-cards');
+    expect(cardsWrapper.className).toContain('md:hidden');
+  });
+
+  it('badges a sweep-profile run on its mobile card too', async () => {
+    mockEndpoints({ runs: [{ ...RUN_1, profile: 'sweep' as const }] });
+    render(<RunsListPage />);
+
+    await waitFor(() => expect(screen.getByTestId('runs-list-card-run-1')).toBeInTheDocument());
+    expect(screen.getByTestId('runs-list-card-profile-sweep-run-1')).toHaveTextContent('Sweep');
+  });
+
+  it('navigates to the run detail page when a card is clicked', async () => {
+    mockEndpoints({ runs: [RUN_1] });
+    const realLocation = window.location;
+    const assign = vi.fn();
+    Object.defineProperty(window, 'location', { configurable: true, value: { ...realLocation, assign } });
+    try {
+      render(<RunsListPage />);
+      await waitFor(() => expect(screen.getByTestId('runs-list-card-run-1')).toBeInTheDocument());
+      fireEvent.click(screen.getByTestId('runs-list-card-run-1'));
+      expect(assign).toHaveBeenCalledWith('/ai-agents/runs/run-1');
+    } finally {
+      Object.defineProperty(window, 'location', { configurable: true, value: realLocation });
+    }
+  });
+});
+
+// UI critique finding #4 — nothing to filter yet, so hide the filter chrome
+// above a truly empty, unfiltered list.
+describe('RunsListPage filter chrome visibility', () => {
+  it('hides the agent/status filters and the cost toggle when there are zero runs and no filter is active', async () => {
+    mockEndpoints({ runs: [] });
+    render(<RunsListPage />);
+
+    await waitFor(() => expect(screen.getByTestId('runs-list-empty')).toBeInTheDocument());
+    expect(screen.queryByTestId('runs-list-filter-agent')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('runs-list-filter-status')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('runs-list-toggle-cost')).not.toBeInTheDocument();
+  });
+
+  it('keeps the filter chrome visible once any run exists', async () => {
+    mockEndpoints();
+    render(<RunsListPage />);
+
+    await waitFor(() => expect(screen.getByTestId('runs-list-row-run-1')).toBeInTheDocument());
+    expect(screen.getByTestId('runs-list-filter-agent')).toBeInTheDocument();
+    expect(screen.getByTestId('runs-list-toggle-cost')).toBeInTheDocument();
+  });
+
+  it('keeps the filter chrome visible with zero runs when a deep-linked filter is already active', async () => {
+    window.history.pushState({}, '', '/ai-agents/runs#agent=a1');
+    mockEndpoints({ runs: [] });
+    try {
+      render(<RunsListPage />);
+      await waitFor(() => expect(screen.getByTestId('runs-list-filter-agent')).toHaveValue('a1'));
+    } finally {
+      window.history.pushState({}, '', '/');
+    }
+  });
+});
+
+// UI critique finding #5 — "Show cost" must read as clearly ON, not merely
+// muted/disabled-looking, once pressed, in both themes.
+describe('RunsListPage cost toggle styling', () => {
+  it('applies a distinct pressed style once Show cost is toggled on', async () => {
+    mockEndpoints({ runs: [RUN_1] });
+    render(<RunsListPage />);
+
+    await waitFor(() => expect(screen.getByTestId('runs-list-toggle-cost')).toBeInTheDocument());
+    const toggle = screen.getByTestId('runs-list-toggle-cost');
+    const idleClassName = toggle.className;
+    expect(idleClassName).not.toContain('text-primary');
+
+    fireEvent.click(toggle);
+    await waitFor(() => expect(toggle).toHaveAttribute('aria-pressed', 'true'));
+    expect(toggle.className).not.toBe(idleClassName);
+    expect(toggle.className).toContain('text-primary');
+  });
+});
+
+// UI critique finding #7 — "Running" (status) and "Sweep" (profile) both
+// used the `info` blue tone, so colour no longer singled out status. Profile
+// chips move to `muted` so status alone carries colour.
+describe('RunsListPage profile chip colour semantics', () => {
+  it('does not give the sweep profile chip the info/blue tone used by a running status', async () => {
+    mockEndpoints({ runs: [{ ...RUN_1, profile: 'sweep' as const }] });
+    render(<RunsListPage />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-profile-sweep-run-1')).toBeInTheDocument());
+    expect(screen.getByTestId('ai-agent-run-profile-sweep-run-1').className).not.toContain('blue');
+  });
+});
+
+// UI critique finding #6 — a load-more failure must use its own dedicated
+// copy, not the page-1 load error string.
+describe('RunsListPage load-more error copy', () => {
+  it('shows the load-more-specific error message when appending a page fails', async () => {
+    mockEndpoints({ runs: [RUN_1], nextCursor: 'cursor-a' });
+    render(<RunsListPage />);
+    await waitFor(() => expect(screen.getByTestId('runs-list-load-more')).toBeInTheDocument());
+
+    fetchMock.mockImplementation((url: string) => {
+      if (url.startsWith('/ai/agents/runs')) return Promise.resolve(json({}, false, 500));
+      return Promise.resolve(json({ data: [] }));
+    });
+    fireEvent.click(screen.getByTestId('runs-list-load-more'));
+
+    await waitFor(() => expect(screen.getByTestId('runs-list-load-more-error')).toBeInTheDocument());
+    expect(screen.getByTestId('runs-list-load-more-error')).toHaveTextContent('Could not load more runs.');
   });
 });
