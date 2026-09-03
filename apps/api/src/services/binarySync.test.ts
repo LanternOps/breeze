@@ -788,6 +788,124 @@ describe("binarySync", () => {
     });
   });
 
+  // #4682: local mode must register the Windows interactive-session helper
+  // just as the GitHub release path does. Without this row, the helper binary
+  // can exist on disk and be served by the download route while the verified
+  // updater still has no component version to resolve.
+  describe("local-binary user-helper registration (#4682)", () => {
+    function setLocalEnv() {
+      process.env.BINARY_SOURCE = "local";
+      process.env.AGENT_BINARY_DIR = "/fake/agent/bin";
+      process.env.BINARY_VERSION_FILE = "/fake/version";
+      delete process.env.BREEZE_VERSION;
+      fsMocks.stat.mockResolvedValue({ isFile: () => true, size: 4096 } as any);
+      mockReadFileVersionOnly("0.65.9");
+    }
+
+    it("registers a component=user-helper row alongside the agent when the binary is present", async () => {
+      setLocalEnv();
+      fsMocks.readdir.mockResolvedValue([
+        "breeze-agent-windows-amd64.exe",
+        "breeze-user-helper-windows-amd64.exe",
+      ] as any);
+
+      await syncBinaries();
+
+      const insertCalls = dbMocks.insertValues.mock.calls.map(
+        (call: any[]) => call[0] as Record<string, unknown>,
+      );
+      expect(insertCalls.some((v) => v.component === "agent")).toBe(true);
+
+      const userHelperInsert = insertCalls.find(
+        (v) => v.component === "user-helper",
+      );
+      expect(userHelperInsert).toMatchObject({
+        version: "0.65.9",
+        platform: "windows",
+        architecture: "amd64",
+        component: "user-helper",
+        isLatest: true,
+        downloadUrl:
+          "http://localhost:3001/api/v1/agents/download/user-helper/windows/amd64",
+      });
+      expect(JSON.parse(userHelperInsert!.releaseManifest as string)).toMatchObject({
+        version: "0.65.9",
+        component: "user-helper",
+        platform: "windows",
+        arch: "amd64",
+      });
+    });
+
+    it("succeeds without user-helper row when the binary is missing (pre-#816 release backward-compat)", async () => {
+      setLocalEnv();
+      fsMocks.readdir.mockResolvedValue([
+        "breeze-agent-windows-amd64.exe",
+      ] as any);
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      await syncBinaries();
+
+      const insertCalls = dbMocks.insertValues.mock.calls.map(
+        (call: any[]) => call[0] as Record<string, unknown>,
+      );
+      // The agent still registers, while an older volume without the helper
+      // remains a silent no-op just like the GitHub release path.
+      expect(insertCalls.some((v) => v.component === "agent")).toBe(true);
+      expect(insertCalls.some((v) => v.component === "user-helper")).toBe(false);
+      expect(
+        warnSpy.mock.calls.some((args) =>
+          String(args[0] ?? "").includes("user-helper"),
+        ),
+      ).toBe(false);
+      warnSpy.mockRestore();
+    });
+
+    it("isolates user-helper registration failures after the agent succeeds", async () => {
+      setLocalEnv();
+      fsMocks.readdir.mockResolvedValue([
+        "breeze-agent-windows-amd64.exe",
+        "breeze-user-helper-windows-amd64.exe",
+      ] as any);
+      const defaultTxImpl = async (fn: (tx: any) => Promise<void>) =>
+        fn(dbMocks.tx);
+      dbMocks.transaction.mockImplementation(
+        async (fn: (tx: any) => Promise<void>) => {
+          const insertWrap = vi.fn((row: Record<string, unknown>) => {
+            if (row.component === "user-helper") {
+              throw new Error("simulated local user-helper upsert failure");
+            }
+            return (dbMocks.insertValues as any)(row);
+          });
+          return fn({
+            update: dbMocks.tx.update,
+            insert: vi.fn(() => ({ values: insertWrap })),
+          });
+        },
+      );
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      try {
+        await expect(syncBinaries()).resolves.toBeUndefined();
+
+        const insertCalls = dbMocks.insertValues.mock.calls.map(
+          (call: any[]) => call[0] as Record<string, unknown>,
+        );
+        expect(insertCalls.some((v) => v.component === "agent")).toBe(true);
+        expect(insertCalls.some((v) => v.component === "user-helper")).toBe(false);
+        expect(
+          errorSpy.mock.calls.some((args) =>
+            String(args[0] ?? "").includes(
+              "Failed to register local user-helper binaries",
+            ),
+          ),
+        ).toBe(true);
+      } finally {
+        errorSpy.mockRestore();
+        dbMocks.transaction.mockImplementation(defaultTxImpl);
+      }
+    });
+  });
+
   // #1802: the local-binary path historically registered ONLY the agent
   // component, so self-hosters on BINARY_SOURCE=local never got watchdog
   // auto-update. It now also scans + registers breeze-watchdog-* siblings.
