@@ -76,6 +76,7 @@ delete once done:
 - New contract line type **Per device role** bills a set of device roles (e.g.
   switch + router + firewall). `unknown` is never billable. Contract estimates and
   generated invoices now report how many devices no line bills, by role.
+- New contract line type **Per device group** bills the members of a device group. Dynamic groups are evaluated live at estimate and invoice time; a group billed by a draft, active or paused contract cannot be deleted until the line is removed; a group deleted after a contract ended stays on that contract's lines by name.
 ## Partner trust probation (hosted abuse control) — breeze #4567 → #4588 → #4599 → #4603 → #4602 → #4604, breeze-billing #16 + #17
 
 Only fold this in once the whole chain above is merged. It is one feature in
