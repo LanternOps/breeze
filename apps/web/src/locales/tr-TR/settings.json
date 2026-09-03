@@ -1715,6 +1715,29 @@
         "draftKinds": {
           "reply": "Yanıt taslağı",
           "resolutionNote": "Çözüm notu taslağı"
+        },
+        "skippedTitle": "Uygulanmadı",
+        "skipped": {
+          "item": {
+            "fields": "Alan güncellemeleri",
+            "link": "Cihaz bağlantısı",
+            "note": "Özel not",
+            "draftReply": "Yanıt taslağı",
+            "draftResolution": "Çözüm notu taslağı"
+          },
+          "reason": {
+            "noFieldsProposed": "Hiçbir alan önerilmedi.",
+            "belowConfidenceFloor": "Güven düzeyi otomatik yazma için gereken eşiğin altındaydı.",
+            "humanSet": "Bu alanı zaten bir kişi ayarladı.",
+            "noDeviceProposed": "Hiçbir cihaz önerilmedi.",
+            "deviceAlreadyLinked": "Talebe zaten bir cihaz bağlı.",
+            "noDraftReply": "Hiçbir yanıt önerilmedi.",
+            "noDraftResolution": "Hiçbir çözüm notu önerilmedi.",
+            "resolutionNoteExists": "Talebin zaten bir çözüm notu var.",
+            "maxActionsPerRun": "Çalıştırmanın eylem sınırına önce ulaşıldı.",
+            "intentError": "Değişiklik oluşturulamadı.",
+            "ticketNotFound": "Talep bulunamadı."
+          }
         }
       }
     },

@@ -263,6 +263,54 @@ export interface AiAgentRunTicketProposalDto extends TicketTriageProposal {
    *  `draftResolutionNote` — never the draft's own content, which lives on
    *  the ticket UI's "AI draft" surface, not this run-trace DTO. */
   draftsWritten?: Array<{ kind: 'reply' | 'resolution_note'; draftId: string }>;
+  /** Follow-up to #4191/#4301 (issue #4462) — why a slot this proposal named
+   *  did NOT become a write, e.g. a field proposed below
+   *  `TICKET_TRIAGE_CONFIDENCE_FLOOR` or a device already linked. Previously
+   *  computed by `persistTicketTriage`
+   *  (services/aiAgents/ticketTriageFindings.ts) and only `console.info`'d —
+   *  never reached this DTO. `undefined` (not `[]`) when nothing was skipped,
+   *  matching `intentIds`/`draftsWritten`'s undefined-when-empty convention. */
+  skipped?: TicketTriageSkip[];
+}
+
+/**
+ * Phase 2 wave P2-4 (#4191) follow-up (#4462) — the five deterministic
+ * proposal->intent slots `persistTicketTriage` considers, and why one did not
+ * become a write. Shared between the API's internal
+ * `AgentRunOutcome.ticketTriageSkipped` (services/aiAgents/ticketTriageFindings.ts
+ * / runLoop.ts) and this DTO so the two can never drift apart — same pattern
+ * as `AlertVerdictSuggestionReason` above.
+ */
+export type TicketTriageSlot = 'fields' | 'link' | 'note' | 'draft-reply' | 'draft-resolution';
+
+/**
+ * Display strings only — never a raw `Error.message` (same posture as
+ * `SweepProposalReason`/`AlertVerdictSuggestionReason`).
+ *
+ * `no_fields_proposed` / `below_confidence_floor` / `human_set` are the three
+ * (mutually exclusive) reasons the `fields` slot can end up empty: nothing
+ * was proposed at all, something was proposed but none of it met
+ * `TICKET_TRIAGE_CONFIDENCE_FLOOR`, or everything proposed was already
+ * human-provenanced. A run mixing a floor-drop with a human-set drop is
+ * reported as `below_confidence_floor` — the coarser of the two, since either
+ * alone would already have emptied the slot.
+ */
+export type TicketTriageSkipReason =
+  | 'no_fields_proposed'
+  | 'below_confidence_floor'
+  | 'human_set'
+  | 'no_device_proposed'
+  | 'device_already_linked'
+  | 'no_draft_reply'
+  | 'no_draft_resolution'
+  | 'resolution_note_exists'
+  | 'max_actions_per_run'
+  | 'intent_error'
+  | 'ticket_not_found';
+
+export interface TicketTriageSkip {
+  item: TicketTriageSlot;
+  reason: TicketTriageSkipReason;
 }
 
 /**

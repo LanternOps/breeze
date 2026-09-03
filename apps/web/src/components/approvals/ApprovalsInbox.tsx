@@ -46,7 +46,12 @@ type DecisionErrorKind =
   | 'verificationFailed'
   | 'alreadyDecided'
   | 'expired'
-  | 'decisionFailed';
+  | 'decisionFailed'
+  /** Issue #4459 — this row was one of the server's `offending` ids on a
+   *  `batch_not_homogeneous` 422: it drifted out of the batchable set (someone
+   *  else decided it, its intent settled, …). Per-row, not a group banner, so
+   *  the rest of the group stays batchable — see `decideGroup`. */
+  | 'driftedFromBatch';
 /** Group headers add the two WHOLE-batch refusals, which are never per-row:
  *  nothing was decided, so they belong above the cards, not on one of them. */
 type GroupErrorKind = DecisionErrorKind | 'batchStepUp' | 'batchNotHomogeneous';
@@ -161,11 +166,19 @@ function groupTestKey(approval: PendingApproval): string {
  * together under one header and everything else left as a standalone row.
  * A group of one is deliberately NOT a group: a header offering "Approve all
  * (1)" is noise, and the single-card path already covers it.
+ *
+ * `driftedIds` (issue #4459): a card the server just reported as `offending`
+ * on a `batch_not_homogeneous` 422 is excluded from grouping here — same
+ * treatment as `!isGroupable`. This is what "deselects" it: it renders as a
+ * standalone row (single-card decide) on the very next render, while its
+ * former groupmates re-group (possibly as a smaller batch) and are
+ * immediately re-batchable without the approver redoing the selection.
  */
-function buildSections(rows: PendingApproval[]): Section[] {
+function buildSections(rows: PendingApproval[], driftedIds: ReadonlySet<string>): Section[] {
+  const groupable = (row: PendingApproval) => isGroupable(row) && !driftedIds.has(row.id);
   const membersByIdentity = new Map<string, PendingApproval[]>();
   for (const row of rows) {
-    if (!isGroupable(row)) continue;
+    if (!groupable(row)) continue;
     const identity = groupIdentity(row);
     const bucket = membersByIdentity.get(identity);
     if (bucket) bucket.push(row);
@@ -175,7 +188,7 @@ function buildSections(rows: PendingApproval[]): Section[] {
   const emitted = new Set<string>();
   const sections: Section[] = [];
   for (const row of rows) {
-    if (!isGroupable(row)) {
+    if (!groupable(row)) {
       sections.push({ kind: 'row', approval: row });
       continue;
     }
@@ -703,7 +716,23 @@ export default function ApprovalsInbox() {
         return;
       }
       if (outcome.outcome === 'batch_not_homogeneous') {
-        setGroupError(group.identity, 'batchNotHomogeneous');
+        // Issue #4459: use the server's `offending` ids to deselect just
+        // those cards — mark each with a per-row error (excludes it from
+        // grouping on the next render, via `buildSections`'s `driftedIds`)
+        // instead of banner-ing and freezing the WHOLE group, including the
+        // members that are still perfectly batchable. Only fall back to the
+        // old whole-group banner when the server didn't name any offending
+        // ids (defensive — should not happen after the `offending` plumbing
+        // fix in `authenticator.ts`/`intentApprovals.ts`).
+        if (outcome.offending.length > 0) {
+          setRowErrors((current) => {
+            const next = { ...current };
+            for (const id of outcome.offending) next[id] = 'driftedFromBatch';
+            return next;
+          });
+        } else {
+          setGroupError(group.identity, 'batchNotHomogeneous');
+        }
         return;
       }
 
@@ -966,7 +995,19 @@ export default function ApprovalsInbox() {
         </div>
       ) : (
         <div className="overflow-hidden rounded-xl border bg-card">
-          {buildSections(approvals).map((section) =>
+          {buildSections(
+            approvals,
+            // Issue #4459 — recomputed each render from `rowErrors`, not a
+            // separate state slice: a card decided individually afterward
+            // clears its row error the normal way (`clearRowErrors` in
+            // `decide`), which regroups it right back in if it's still
+            // eligible and shares an identity with another pending card.
+            new Set(
+              Object.entries(rowErrors)
+                .filter(([, kind]) => kind === 'driftedFromBatch')
+                .map(([id]) => id),
+            ),
+          ).map((section) =>
             section.kind === 'row' ? (
               renderRow(section.approval)
             ) : (

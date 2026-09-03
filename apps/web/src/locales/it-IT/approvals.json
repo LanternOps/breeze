@@ -39,7 +39,8 @@
     "expired": "Questa richiesta è scaduta prima che si potesse decidere.",
     "decisionFailed": "Impossibile inviare la decisione. Riprova.",
     "batchStepUp": "Questo gruppo richiede un accesso più sicuro. Approva le richieste una alla volta.",
-    "batchNotHomogeneous": "Non è più possibile decidere queste richieste insieme."
+    "batchNotHomogeneous": "Non è più possibile decidere queste richieste insieme.",
+    "driftedFromBatch": "Questa richiesta è cambiata e deve essere decisa singolarmente."
   },
   "registerDevice": "Registra dispositivo",
   "alwaysAllow": {

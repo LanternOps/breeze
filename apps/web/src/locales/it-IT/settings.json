@@ -1715,6 +1715,29 @@
         "draftKinds": {
           "reply": "Bozza di risposta",
           "resolutionNote": "Bozza della nota di risoluzione"
+        },
+        "skippedTitle": "Non applicato",
+        "skipped": {
+          "item": {
+            "fields": "Aggiornamenti dei campi",
+            "link": "Collegamento dispositivo",
+            "note": "Nota privata",
+            "draftReply": "Bozza di risposta",
+            "draftResolution": "Bozza della nota di risoluzione"
+          },
+          "reason": {
+            "noFieldsProposed": "Non è stato proposto alcun campo.",
+            "belowConfidenceFloor": "La confidenza era inferiore alla soglia per una scrittura automatica.",
+            "humanSet": "Questo campo è già stato impostato da una persona.",
+            "noDeviceProposed": "Non è stato proposto alcun dispositivo.",
+            "deviceAlreadyLinked": "Il ticket ha già un dispositivo collegato.",
+            "noDraftReply": "Non è stata proposta alcuna risposta.",
+            "noDraftResolution": "Non è stata proposta alcuna nota di risoluzione.",
+            "resolutionNoteExists": "Il ticket ha già una nota di risoluzione.",
+            "maxActionsPerRun": "Il limite di azioni dell’esecuzione è stato raggiunto per primo.",
+            "intentError": "Impossibile creare la modifica.",
+            "ticketNotFound": "Il ticket non è stato trovato."
+          }
         }
       }
     },

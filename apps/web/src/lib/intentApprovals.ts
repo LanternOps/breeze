@@ -284,7 +284,11 @@ export async function decideIntentApprovalBatch(
       // scan failed when in fact the cards moved.
       if (err instanceof AssertionChallengeError) {
         if (err.token === 'batch_not_homogeneous') {
-          return { outcome: 'batch_not_homogeneous', offending: [] };
+          // Issue #4459: the challenge route re-validates BEFORE minting, so
+          // an approve's drift is usually caught here rather than at decide —
+          // `err.offending` is the same server-computed id list, now carried
+          // through `AssertionChallengeError` instead of being discarded.
+          return { outcome: 'batch_not_homogeneous', offending: err.offending ?? [] };
         }
         if (err.token === 'step_up_required') return { outcome: 'batch_step_up' };
       }

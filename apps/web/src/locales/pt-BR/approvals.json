@@ -39,7 +39,8 @@
     "expired": "Esta solicitação expirou antes que fosse possível decidir.",
     "decisionFailed": "Não foi possível enviar a decisão. Tente novamente.",
     "batchStepUp": "Este lote exige um login mais seguro. Aprove as solicitações uma de cada vez.",
-    "batchNotHomogeneous": "Estas solicitações não podem mais ser decididas em conjunto."
+    "batchNotHomogeneous": "Estas solicitações não podem mais ser decididas em conjunto.",
+    "driftedFromBatch": "Esta solicitação mudou e precisa ser decidida individualmente."
   },
   "registerDevice": "Registrar dispositivo",
   "alwaysAllow": {

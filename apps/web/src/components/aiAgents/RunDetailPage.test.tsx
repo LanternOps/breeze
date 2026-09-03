@@ -709,4 +709,37 @@ describe('RunDetailPage ticket triage proposal', () => {
       expect(html).not.toContain(forbidden);
     }
   });
+
+  // Issue #4462 — the per-field skip reasons `persistTicketTriage` computes
+  // (ticketTriageFindings.ts) were previously console-only; this asserts
+  // they now render on the run detail once the DTO carries them.
+  it('renders per-field skip reasons when the proposal carries them', async () => {
+    mockEndpoints({
+      detail: {
+        ...RUN_DETAIL,
+        ticketProposal: {
+          ...TICKET_PROPOSAL,
+          skipped: [
+            { item: 'fields', reason: 'below_confidence_floor' },
+            { item: 'link', reason: 'device_already_linked' },
+          ],
+        },
+        intents: [TICKET_INTENT],
+      },
+    });
+    render(<RunDetailPage runId="run-1" />);
+
+    const skippedSection = await screen.findByTestId('ai-agent-run-triage-skipped');
+    expect(skippedSection).toHaveTextContent(/confidence/i);
+    expect(screen.getByTestId('ai-agent-run-triage-skipped-fields')).toBeInTheDocument();
+    expect(screen.getByTestId('ai-agent-run-triage-skipped-link')).toBeInTheDocument();
+  });
+
+  it('omits the skipped section when the proposal carries no skips', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, ticketProposal: TICKET_PROPOSAL, intents: [TICKET_INTENT] } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => screen.getByTestId('ai-agent-run-triage'));
+    expect(screen.queryByTestId('ai-agent-run-triage-skipped')).not.toBeInTheDocument();
+  });
 });

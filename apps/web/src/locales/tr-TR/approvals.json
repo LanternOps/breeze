@@ -39,7 +39,8 @@
     "expired": "Bu istek, karar verilmeden önce sona erdi.",
     "decisionFailed": "Karar gönderilemedi. Yeniden deneyin.",
     "batchStepUp": "Bu toplu işlem için daha güçlü bir oturum açma gerekiyor. İstekleri tek tek onaylayın.",
-    "batchNotHomogeneous": "Bu isteklere artık birlikte karar verilemez."
+    "batchNotHomogeneous": "Bu isteklere artık birlikte karar verilemez.",
+    "driftedFromBatch": "Bu istek değişti ve tek başına karara bağlanmalıdır."
   },
   "registerDevice": "Cihazı kaydet",
   "alwaysAllow": {
