@@ -59,6 +59,33 @@ describe('portalApi.getTicketForms request path', () => {
   });
 });
 
+it('GETs support usage with an optional month', async () => {
+  const dto = {
+    asOf: '2026-09-02T12:00:00.000Z',
+    month: '2026-09',
+    timezone: 'America/Denver',
+    dataStatus: 'no_data',
+    totals: {
+      billed: { minutes: 0, hours: 0 },
+      toBeBilled: { minutes: 0, hours: 0 },
+      coveredByContract: { minutes: 0, hours: 0 },
+      pendingReview: { minutes: 0, hours: 0 },
+    },
+    tickets: [],
+  };
+  const fetchMock = vi.fn().mockResolvedValue(
+    new Response(JSON.stringify(dto), { status: 200 }),
+  );
+  vi.stubGlobal('fetch', fetchMock);
+
+  await expect(
+    portalApi.getSupportUsage('2026-09'),
+  ).resolves.toMatchObject({ data: dto });
+  expect(String(fetchMock.mock.calls[0][0])).toContain(
+    '/portal/tickets/usage?month=2026-09',
+  );
+});
+
 
 describe('publicApiPath (rendered into HTML)', () => {
   it('is same-origin relative on the server even with INTERNAL_API_URL set', async () => {

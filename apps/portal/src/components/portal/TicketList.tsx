@@ -12,6 +12,14 @@ interface TicketListProps {
   error?: string | null;
 }
 
+const SLA_LABELS = {
+  breached: 'SLA breached',
+  at_risk: 'SLA at risk',
+  paused: 'SLA paused',
+  on_track: 'SLA on track',
+  met: 'SLA met',
+  not_configured: 'No SLA configured',
+} as const;
 
 export function TicketList({ tickets, error }: TicketListProps) {
   if (error) {
@@ -76,6 +84,9 @@ export function TicketList({ tickets, error }: TicketListProps) {
                       <StatusMark tone={tone}>
                         {ticketStatusLabel(ticket.status)}
                       </StatusMark>
+                      <span data-testid={`portal-ticket-sla-${ticket.id}`}>
+                        {SLA_LABELS[ticket.sla.status]}
+                      </span>
                     </td>
                     <td className={cn(CELL, 'order-3')}>
                       {/* Priority is context, not state: plain text so the row

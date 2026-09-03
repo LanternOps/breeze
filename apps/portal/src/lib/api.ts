@@ -7,7 +7,7 @@ import { navigateTo } from './navigation';
 // Invoice-domain enum SSOT lives in @breeze/shared (billing-enums.ts). Imported
 // into local scope for the InvoiceSummary/InvoiceDetail types below and re-exported
 // (type-only, erased at build) so '@/lib/api' consumers are unaffected.
-import type { DocumentPageSize, DocumentThemeId, InvoiceStatus, PublicQuoteHeader, QuotePresentation, TicketFormField } from '@breeze/shared';
+import type { DocumentPageSize, DocumentThemeId, InvoiceStatus, PublicQuoteHeader, QuotePresentation, SlaDto, SupportUsageDto, TicketFormField } from '@breeze/shared';
 
 // Client API base. Empty (the default) → same-origin **relative** requests
 // (`/api/v1/...`), which the reverse proxy routes to the API under `/api/*`. This
@@ -330,7 +330,12 @@ export interface TicketSummary {
   priority: TicketPriority;
   createdAt: string;
   updatedAt: string;
+  sla: SlaDto;
 }
+
+export type CreatedPortalTicket = Omit<TicketSummary, 'sla'> & {
+  description: string;
+};
 
 /**
  * Attachment metadata on a PUBLIC ticket comment (W08 #3902). Render-only in
@@ -757,6 +762,15 @@ export const portalApi = {
     return mapPaginatedData(response);
   },
 
+  getSupportUsage: (
+    month?: string,
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<SupportUsageDto>> =>
+    apiGet<SupportUsageDto>(
+      `/portal/tickets/usage${buildQueryString({ month })}`,
+      config
+    ),
+
   getTicket: async (
     id: string,
     config: ApiRequestConfig = {}
@@ -804,8 +818,8 @@ export const portalApi = {
   createTicket: async (
     data: CreateTicketInput,
     config: ApiRequestConfig = {}
-  ): Promise<ApiResponse<TicketSummary & { description: string }>> => {
-    const response = await apiPost<{ ticket: TicketSummary & { description: string } }>(
+  ): Promise<ApiResponse<CreatedPortalTicket>> => {
+    const response = await apiPost<{ ticket: CreatedPortalTicket }>(
       '/portal/tickets',
       data,
       config

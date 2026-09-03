@@ -3,15 +3,17 @@ import PortalLayout from '../../layouts/PortalLayout.astro';
 import { withBase } from '../../lib/basePath';
 import { redirectToLoginAfter401 } from '../../lib/session';
 import TicketList from '../../components/portal/TicketList';
+import { SupportUsagePanel } from '../../components/portal/SupportUsagePanel';
 import { portalApi } from '../../lib/api';
 import { buildServerApiConfig } from '../../lib/server';
 
-const response = await portalApi.getTickets(
-  { page: 1, limit: 100 },
-  buildServerApiConfig(Astro.request)
-);
+const config = buildServerApiConfig(Astro.request);
+const [response, usageResponse] = await Promise.all([
+  portalApi.getTickets({ page: 1, limit: 100 }, config),
+  portalApi.getSupportUsage(undefined, config),
+]);
 
-if (response.statusCode === 401) {
+if (response.statusCode === 401 || usageResponse.statusCode === 401) {
   // Dead session: clear the stale cookie and come back here after sign-in.
   return redirectToLoginAfter401(Astro);
 }
@@ -23,8 +25,16 @@ if (response.statusCode === 401) {
 if (response.statusCode === 403 && response.code === 'PORTAL_TICKETS_DISABLED') {
   return Astro.redirect(withBase('/devices'));
 }
+const usageStrictlyDisabled = usageResponse.statusCode === 403;
 ---
 
 <PortalLayout title="Support">
   <TicketList tickets={response.data ?? []} error={response.error} />
+  {
+    !usageStrictlyDisabled &&
+      <SupportUsagePanel
+        usage={usageResponse.data ?? null}
+        error={usageResponse.error}
+      />
+  }
 </PortalLayout>

@@ -24,6 +24,13 @@ const ticket = (over: Partial<TicketDetailsType> = {}): TicketDetailsType => ({
   description: 'Drops every afternoon.',
   createdAt: '2026-08-01T00:00:00Z',
   updatedAt: '2026-08-02T00:00:00Z',
+  sla: {
+    firstResponseMinutes: null,
+    resolutionMinutes: null,
+    responseTargetMinutes: null,
+    resolutionTargetMinutes: null,
+    status: 'not_configured',
+  },
   comments: [
     { id: 'c2', authorName: 'Tech', authorType: 'user', content: 'second', createdAt: '2026-08-02T00:00:00Z' },
     { id: 'c1', authorName: 'Maya', authorType: 'portal', content: 'first', createdAt: '2026-08-01T00:00:00Z' },

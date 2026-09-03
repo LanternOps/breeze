@@ -17,6 +17,13 @@ const ticket = (over: Partial<TicketSummary> = {}): TicketSummary => ({
   priority: 'normal',
   createdAt: '2026-08-01T00:00:00Z',
   updatedAt: '2026-08-02T00:00:00Z',
+  sla: {
+    firstResponseMinutes: null,
+    resolutionMinutes: null,
+    responseTargetMinutes: null,
+    resolutionTargetMinutes: null,
+    status: 'not_configured',
+  },
   ...over,
 });
 
@@ -62,4 +69,25 @@ describe('TicketList — every API status renders (SSR must never throw)', () =>
     render(<TicketList tickets={[ticket({ priority: 'high' })]} />);
     expect(screen.getByText('High priority')).toBeTruthy();
   });
+});
+
+it.each([
+  ['breached', 'SLA breached'],
+  ['at_risk', 'SLA at risk'],
+  ['paused', 'SLA paused'],
+  ['on_track', 'SLA on track'],
+  ['met', 'SLA met'],
+  ['not_configured', 'No SLA configured'],
+] as const)('renders %s SLA status', (status, copy) => {
+  render(<TicketList tickets={[ticket({
+    id: status,
+    sla: {
+      firstResponseMinutes: null,
+      resolutionMinutes: null,
+      responseTargetMinutes: null,
+      resolutionTargetMinutes: null,
+      status,
+    },
+  })]} />);
+  expect(screen.getByTestId(`portal-ticket-sla-${status}`).textContent).toContain(copy);
 });
