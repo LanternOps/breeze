@@ -26,8 +26,18 @@ const ensureAppRolePath = path.resolve(__dirname, './ensureAppRole.ts');
 // Table-level REVOKE ... FROM breeze_app in a migration. Deliberately
 // excludes REVOKE ... ON FUNCTION / SEQUENCE / DATABASE / SCHEMA / ALL —
 // those aren't the blanket-GRANT-on-ALL-TABLES hazard this test guards.
+//
+// Two deliberate tolerances (both exercised by regression cases below):
+// - `[A-Z,\s]+?` (not `[A-Z, ]+?`) so a privilege list wrapped across lines
+//   still matches.
+// - `['"]?` before the terminating `;` so a REVOKE embedded verbatim inside
+//   a `DO $$ ... EXECUTE 'REVOKE ... FROM breeze_app;' ... END $$` dynamic-SQL
+//   string (whose closing quote sits between `breeze_app` and `;`) still
+//   matches. This does NOT resolve a *templated* table name built via
+//   `format('... %I ...', tbl)` — that requires reading the migration by
+//   eye; there is no such case in the migrations directory today.
 const MIGRATION_REVOKE_RE =
-  /REVOKE\s+([A-Z, ]+?)\s+ON\s+(?:TABLE\s+)?(?!FUNCTION\b|SEQUENCE\b|DATABASE\b|SCHEMA\b|ALL\b)(?:public\.)?([a-z][a-z0-9_]*)\s+FROM\s+breeze_app\s*;/gi;
+  /REVOKE\s+([A-Z,\s]+?)\s+ON\s+(?:TABLE\s+)?(?!FUNCTION\b|SEQUENCE\b|DATABASE\b|SCHEMA\b|ALL\b)(?:public\.)?([a-z][a-z0-9_]*)\s+FROM\s+breeze_app\s*['"]?\s*;/gi;
 
 function parsePrivs(rawPrivList: string): Set<string> {
   return new Set(
@@ -80,7 +90,7 @@ function collectEnsureAppRoleRevokes(): Map<string, Set<string>> {
     const block = src.slice(blockStart, blockEnd);
 
     const revokeRe = new RegExp(
-      `REVOKE\\s+([A-Z, ]+?)\\s+ON\\s+TABLE\\s+${table}\\s+FROM\\s+breeze_app`,
+      `REVOKE\\s+([A-Z,\\s]+?)\\s+ON\\s+TABLE\\s+${table}\\s+FROM\\s+breeze_app`,
       'gi',
     );
     const privs = revokes.get(table) ?? new Set<string>();
