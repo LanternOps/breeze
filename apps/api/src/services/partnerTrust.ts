@@ -249,6 +249,7 @@ export async function evaluateCapability(cap: GatedCapability, ctx: GateContext)
         : null,
       stage: typeof ctx.detail?.stage === 'string' ? ctx.detail.stage : null,
       via: typeof ctx.detail?.via === 'string' ? ctx.detail.via : null,
+      route: typeof ctx.detail?.route === 'string' ? ctx.detail.route : null,
     },
   });
   if (mode === 'shadow') return { allow: true, shadowDenied: denial };

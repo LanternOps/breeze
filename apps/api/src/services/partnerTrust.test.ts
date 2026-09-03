@@ -236,6 +236,7 @@ describe('evaluateCapability', () => {
         probationEnrollments: 5,
         stage: 'dispatch',
         via: 'api',
+        route: 'GET /enrollment-keys/:id/installer/:platform',
         untrustedExtra: 'must-not-leak',
       },
     });
@@ -251,6 +252,7 @@ describe('evaluateCapability', () => {
         probationEnrollments: 5,
         stage: 'dispatch',
         via: 'api',
+        route: 'GET /enrollment-keys/:id/installer/:platform',
       },
     }));
   });

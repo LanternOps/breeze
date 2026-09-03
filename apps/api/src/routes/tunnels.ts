@@ -25,6 +25,9 @@ import { rateLimiter } from '../services/rate-limit';
 import { isViewerJtiRevoked, isViewerSessionRevoked, revokeViewerSession } from '../services/viewerTokenRevocation';
 import type { AuthContext } from '../middleware/auth';
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../services/permissions';
+import { createRemoteSession, RemoteSessionDeniedError } from '../services/remoteSessionCreate';
+import { evaluateCapability, partnerIdForDevice, trustDenyBody } from '../services/partnerTrust';
+import { partnerTrustMode } from '../config/partnerTrustMode';
 
 export const tunnelRoutes = new Hono();
 
@@ -52,6 +55,28 @@ const PROXY_IDLE_EXPIRY_MS = 10 * 60 * 1000;
 // enforces it at ticket-mint time so a caller can't refresh past a dead
 // session with a fresh ticket.
 const HTTP_TUNNEL_MAX_SESSION_MS = HTTP_TUNNEL_MAX_SESSION_HOURS * 60 * 60 * 1000;
+
+async function tunnelTicketTrustDenyBody(deviceId: string, userId: string) {
+  if (partnerTrustMode() === 'off') return null;
+
+  const partnerId = await partnerIdForDevice(deviceId);
+  if (!partnerId) return null;
+
+  const decision = await evaluateCapability('remote_control', {
+    partnerId,
+    deviceId,
+    userId,
+    detail: { stage: 'ticket', kind: 'tunnel' },
+  });
+  if (decision.allow) return null;
+
+  return trustDenyBody({
+    allow: false,
+    code: decision.code,
+    capability: 'remote_control',
+    reason: decision.reason,
+  }, false);
+}
 
 const createTunnelSchema = z.discriminatedUnion('type', [
   z.object({ deviceId: z.string().guid(), type: z.literal('vnc') }),
@@ -387,9 +412,9 @@ tunnelRoutes.post(
     }
 
     // Create session record
-    const [session] = await db
-      .insert(tunnelSessions)
-      .values({
+    let session: typeof tunnelSessions.$inferSelect;
+    try {
+      session = await createRemoteSession('tunnel', {
         deviceId: device.id,
         userId: auth.user.id,
         orgId: device.orgId,
@@ -400,8 +425,13 @@ tunnelRoutes.post(
         scheme,
         skipTlsVerify,
         sourceIp: sourceIp,
-      })
-      .returning();
+      });
+    } catch (e) {
+      if (e instanceof RemoteSessionDeniedError) {
+        return c.json(trustDenyBody({ allow: false, code: e.code, capability: 'remote_control', reason: e.reason }, false), 403);
+      }
+      throw e;
+    }
 
     // Send tunnel_open command to agent — skipped for proxy tunnels. The raw
     // TCP socket it opens is unused on the HTTP-proxy path (tunnelHttp.ts
@@ -585,9 +615,9 @@ tunnelRoutes.post(
     // Create session record — same row shape as the proxy branch of
     // POST /tunnels. tunnel_open is never sent for type:'proxy' (see above):
     // the raw TCP socket it opens is unused on the HTTP-proxy path.
-    const [session] = await db
-      .insert(tunnelSessions)
-      .values({
+    let session: typeof tunnelSessions.$inferSelect;
+    try {
+      session = await createRemoteSession('tunnel', {
         deviceId: device.id,
         userId: auth.user.id,
         orgId: device.orgId,
@@ -598,8 +628,13 @@ tunnelRoutes.post(
         scheme: body.scheme,
         skipTlsVerify,
         sourceIp,
-      })
-      .returning();
+      });
+    } catch (e) {
+      if (e instanceof RemoteSessionDeniedError) {
+        return c.json(trustDenyBody({ allow: false, code: e.code, capability: 'remote_control', reason: e.reason }, false), 403);
+      }
+      throw e;
+    }
 
     await logTunnelAudit(
       'tunnel.open',
@@ -1093,6 +1128,9 @@ tunnelRoutes.post(
       }, 400);
     }
 
+    const trustDenial = await tunnelTicketTrustDenyBody(session.deviceId, auth.user.id);
+    if (trustDenial) return c.json(trustDenial, 403);
+
     const ticket = await createWsTicket({
       sessionId: id,
       sessionType: 'tunnel',
@@ -1161,6 +1199,9 @@ tunnelRoutes.post(
       }, 400);
     }
 
+    const trustDenial = await tunnelTicketTrustDenyBody(session.deviceId, auth.user.id);
+    if (trustDenial) return c.json(trustDenial, 403);
+
     const ticket = await createWsTicket({
       sessionId: id,
       sessionType: 'tunnel-http',
@@ -1227,6 +1268,9 @@ tunnelRoutes.post(
         status: session.status,
       }, 400);
     }
+
+    const trustDenial = await tunnelTicketTrustDenyBody(session.deviceId, auth.user.id);
+    if (trustDenial) return c.json(trustDenial, 403);
 
     try {
       const result = await createVncConnectCode({
@@ -1508,32 +1552,34 @@ vncViewerRoutes.post('/upgrade-to-webrtc', async (c) => {
   }
 
   // Reuse the same pattern as /sessions: terminate stragglers first, insert
-  // new pending row, return its id.
-  const session = await withSystemDbAccessContext(async () => {
-    await db
-      .update(remoteSessions)
-      .set({ status: 'disconnected', endedAt: new Date() })
-      .where(
-        and(
-          eq(remoteSessions.deviceId, bound.deviceId),
-          eq(remoteSessions.type, 'desktop'),
-          inArray(remoteSessions.status, ['pending', 'connecting', 'active'])
-        )
-      );
-    const [row] = await db
-      .insert(remoteSessions)
-      .values({
+  // new pending row via the partner-trust-gated service, return its id.
+  let session: typeof remoteSessions.$inferSelect;
+  try {
+    session = await withSystemDbAccessContext(async () => {
+      await db
+        .update(remoteSessions)
+        .set({ status: 'disconnected', endedAt: new Date() })
+        .where(
+          and(
+            eq(remoteSessions.deviceId, bound.deviceId),
+            eq(remoteSessions.type, 'desktop'),
+            inArray(remoteSessions.status, ['pending', 'connecting', 'active'])
+          )
+        );
+      return createRemoteSession('remote', {
         id: transitionSessionId,
         deviceId: bound.deviceId,
         orgId: bound.tunnelOrgId,
         userId: bound.tunnelUserId,
         type: 'desktop',
-        status: 'pending',
-        iceCandidates: [],
-      })
-      .returning();
-    return row;
-  });
+      });
+    }) as typeof remoteSessions.$inferSelect;
+  } catch (e) {
+    if (e instanceof RemoteSessionDeniedError) {
+      return c.json(trustDenyBody({ allow: false, code: e.code, capability: 'remote_control', reason: e.reason }, false), 403);
+    }
+    throw e;
+  }
 
   if (!session) {
     return c.json({ error: 'Failed to create desktop session' }, 500);
@@ -1611,23 +1657,24 @@ vncViewerRoutes.post('/downgrade-to-vnc', async (c) => {
   }
 
   // Insert the tunnel session row, then kick the agent off.
-  const tunnel = await withSystemDbAccessContext(async () => {
-    const [row] = await db
-      .insert(tunnelSessions)
-      .values({
-        id: transitionTunnelId,
-        deviceId: bound.deviceId,
-        userId: bound.userId,
-        orgId: bound.orgId,
-        type: 'vnc',
-        status: 'pending',
-        targetHost: '127.0.0.1',
-        targetPort: 5900,
-        sourceIp: getClientIp(c),
-      })
-      .returning();
-    return row;
+  const tunnel = await withSystemDbAccessContext(() => createRemoteSession('tunnel', {
+    id: transitionTunnelId,
+    deviceId: bound.deviceId,
+    userId: bound.userId,
+    orgId: bound.orgId,
+    type: 'vnc',
+    status: 'pending',
+    targetHost: '127.0.0.1',
+    targetPort: 5900,
+    sourceIp: getClientIp(c),
+  })).catch((e: unknown) => {
+    if (e instanceof RemoteSessionDeniedError) return e;
+    throw e;
   });
+
+  if (tunnel instanceof RemoteSessionDeniedError) {
+    return c.json(trustDenyBody({ allow: false, code: tunnel.code, capability: 'remote_control', reason: tunnel.reason }, false), 403);
+  }
 
   if (!tunnel) {
     return c.json({ error: 'Failed to create tunnel' }, 500);

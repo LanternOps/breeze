@@ -26,6 +26,8 @@ import {
   recordSupportCodeMiss,
 } from '../services/supportCodeMissBudget';
 import { logSessionAudit } from './remote/helpers';
+import { evaluateCapability } from '../services/partnerTrust';
+import { partnerTrustMode } from '../config/partnerTrustMode';
 
 /**
  * Public Quick Support endpoints — the one-time code IS the authentication.
@@ -84,6 +86,27 @@ const CHILD_KEY_TTL_MS = 15 * 60_000;
  * The column is partner-writable; anything else is dropped rather than trusted.
  */
 const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
+
+async function anonymousInstallerDistributionAllowed(
+  orgId: string,
+  route: 'public-download' | 'code-redemption',
+): Promise<boolean> {
+  if (partnerTrustMode() === 'off') return true;
+
+  const [org] = await withSystemDbAccessContext(() => db
+    .select({ partnerId: organizations.partnerId })
+    .from(organizations)
+    .where(eq(organizations.id, orgId))
+    .limit(1));
+  if (!org?.partnerId) return false;
+
+  const decision = await evaluateCapability('installer_distribute', {
+    partnerId: org.partnerId,
+    orgId,
+    detail: { route },
+  });
+  return decision.allow;
+}
 
 /** Display-only branding for the end-user page — never IDs, never tenant keys. */
 type CheckBranding = {
@@ -348,13 +371,18 @@ supportPublicRoutes.get('/download/:platform', async (c) => {
     .select({
       status: supportSessions.status,
       codeExpiresAt: supportSessions.codeExpiresAt,
+      orgId: supportSessions.orgId,
     })
     .from(supportSessions)
     .where(eq(supportSessions.codeHash, hashSupportCode(code)))
-    .limit(1)) as Array<{ status: string; codeExpiresAt: Date }>;
+    .limit(1)) as Array<{ status: string; codeExpiresAt: Date; orgId: string }>;
 
   if (!row || row.status !== 'pending' || row.codeExpiresAt <= new Date()) {
     await recordSupportCodeMiss(redis, ip);
+    return c.json({ error: 'invalid or expired code' }, 404, DOWNLOAD_CACHE_HEADERS);
+  }
+
+  if (!await anonymousInstallerDistributionAllowed(row.orgId, 'public-download')) {
     return c.json({ error: 'invalid or expired code' }, 404, DOWNLOAD_CACHE_HEADERS);
   }
 
@@ -477,6 +505,10 @@ supportPublicRoutes.post('/redeem', zValidator('json', redeemSupportSessionSchem
       || row.codeExpiresAt < now
       || row.hardExpiresAt < now) {
       lookupMissed = true;
+      return null;
+    }
+
+    if (!await anonymousInstallerDistributionAllowed(row.orgId, 'code-redemption')) {
       return null;
     }
 

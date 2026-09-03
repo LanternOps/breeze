@@ -17,6 +17,12 @@ const { rateLimiterMock } = vi.hoisted(() => ({
   })),
 }));
 
+const { evaluateCapability, partnerIdForDevice, partnerTrustMode } = vi.hoisted(() => ({
+  evaluateCapability: vi.fn(async (): Promise<any> => ({ allow: true })),
+  partnerIdForDevice: vi.fn(() => Promise.resolve('pppppppp-pppp-4ppp-8ppp-pppppppppppp')),
+  partnerTrustMode: vi.fn(() => 'off'),
+}));
+
 // --- DB mock ---
 vi.mock('../db', () => ({
   db: {
@@ -152,6 +158,19 @@ vi.mock('../services/redis', () => ({
 
 vi.mock('../services/rate-limit', () => ({
   rateLimiter: rateLimiterMock,
+}));
+
+vi.mock('../config/partnerTrustMode', () => ({ partnerTrustMode }));
+vi.mock('../services/partnerTrust', () => ({
+  evaluateCapability,
+  partnerIdForDevice,
+  trustDenyBody: (d: Record<string, unknown>, reviewRequested: boolean) => ({
+    error: d.code,
+    capability: d.capability,
+    reason: d.reason,
+    reviewRequested,
+    meetingUrl: null,
+  }),
 }));
 
 // Partial mock: only the IP SOURCE is stubbed. rateLimitIpKey (the IPv6 /64
@@ -331,6 +350,26 @@ describe('POST /tunnels (VNC)', () => {
     expect(body).toHaveProperty('id', SESSION_ID);
     expect(body).toHaveProperty('type', 'vnc');
     expect(body).toHaveProperty('status', 'pending');
+  });
+
+  it('maps partner-trust denial to a 403 without inserting a tunnel session', async () => {
+    partnerTrustMode.mockReturnValueOnce('enforce');
+    evaluateCapability.mockResolvedValueOnce({
+      allow: false,
+      code: 'TRUST_RESTRICTED',
+      capability: 'remote_control',
+      reason: 'restricted',
+    });
+
+    const res = await app.request('/tunnels', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deviceId: DEVICE_ID, type: 'vnc' }),
+    });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual(expect.objectContaining({ error: 'TRUST_RESTRICTED' }));
+    expect(db.insert).not.toHaveBeenCalled();
   });
 });
 
@@ -574,6 +613,36 @@ describe('POST /tunnels/proxy-connect', () => {
     expect(body).toHaveProperty('tunnel');
     expect(body.tunnel).toMatchObject({ type: 'proxy', targetHost: '10.0.5.20', targetPort: 8080 });
     expect(body).not.toHaveProperty('ticket');
+  });
+
+  it('maps partner-trust denial to a 403 without creating a tunnel session (allowlist rule still created)', async () => {
+    partnerTrustMode.mockReturnValueOnce('enforce');
+    evaluateCapability.mockResolvedValueOnce({
+      allow: false,
+      code: 'TRUST_RESTRICTED',
+      capability: 'remote_control',
+      reason: 'restricted',
+    });
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce(makeSelectChain([onlineDevice]) as any)
+      .mockReturnValueOnce(makeSelectChain([assetRow]) as any)
+      .mockReturnValueOnce(makeSelectChain([]) as any);
+
+    vi.mocked(db.insert)
+      .mockReturnValueOnce(makeInsertChain([newRule]) as any)
+      .mockReturnValueOnce(makeAuditAwareInsertChain([]) as any);
+
+    const res = await app.request('/tunnels/proxy-connect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(requestBody),
+    });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual(expect.objectContaining({ error: 'TRUST_RESTRICTED' }));
+    // Only the allowlist-create insert + its audit row happened — no session insert.
+    expect(db.insert).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -1157,6 +1226,89 @@ describe('POST /tunnels/:id/connect-code', () => {
   });
 });
 
+describe.each([
+  {
+    routeName: 'ws-ticket',
+    path: `/tunnels/${SESSION_ID}/ws-ticket`,
+    minted: () => vi.mocked(createWsTicket),
+  },
+  {
+    routeName: 'http-ticket',
+    path: `/tunnels/${SESSION_ID}/http-ticket`,
+    minted: () => vi.mocked(createWsTicket),
+  },
+  {
+    routeName: 'connect-code',
+    path: `/tunnels/${SESSION_ID}/connect-code`,
+    minted: () => vi.mocked(createVncConnectCode),
+  },
+])('ticket-time partner trust re-check: $routeName', ({ path, minted }) => {
+  let app: Hono;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    app = new Hono();
+    app.route('/tunnels', tunnelRoutes);
+    vi.mocked(db.select).mockReturnValueOnce(makeSelectChain([sessionRecord]) as any);
+    vi.mocked(db.insert).mockReturnValue(makeAuditAwareInsertChain([]) as any);
+  });
+
+  it('returns TRUST_PROBATION under enforce without minting a ticket or code', async () => {
+    partnerTrustMode.mockReturnValueOnce('enforce');
+    evaluateCapability.mockResolvedValueOnce({
+      allow: false,
+      code: 'TRUST_PROBATION',
+      capability: 'remote_control',
+      reason: 'probation_default_deny',
+    });
+
+    const res = await app.request(path, { method: 'POST' });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual(expect.objectContaining({
+      error: 'TRUST_PROBATION',
+      capability: 'remote_control',
+      reason: 'probation_default_deny',
+      reviewRequested: false,
+    }));
+    expect(partnerIdForDevice).toHaveBeenCalledWith(DEVICE_ID);
+    expect(evaluateCapability).toHaveBeenCalledWith('remote_control', {
+      partnerId: PARTNER_ID,
+      deviceId: DEVICE_ID,
+      userId: USER_ID,
+      detail: { stage: 'ticket', kind: 'tunnel' },
+    });
+    expect(minted()).not.toHaveBeenCalled();
+  });
+
+  it('keeps ticket or code issuance unchanged for a trusted partner', async () => {
+    partnerTrustMode.mockReturnValueOnce('enforce');
+    evaluateCapability.mockResolvedValueOnce({ allow: true });
+
+    const res = await app.request(path, { method: 'POST' });
+
+    expect(res.status).toBe(200);
+    expect(partnerIdForDevice).toHaveBeenCalledWith(DEVICE_ID);
+    expect(evaluateCapability).toHaveBeenCalledWith('remote_control', expect.objectContaining({
+      partnerId: PARTNER_ID,
+      deviceId: DEVICE_ID,
+      userId: USER_ID,
+    }));
+    expect(minted()).toHaveBeenCalledOnce();
+  });
+
+  it('does not resolve the partner or evaluate trust when mode is off', async () => {
+    partnerTrustMode.mockReturnValueOnce('off');
+
+    const res = await app.request(path, { method: 'POST' });
+
+    expect(res.status).toBe(200);
+    expect(partnerIdForDevice).not.toHaveBeenCalled();
+    expect(evaluateCapability).not.toHaveBeenCalled();
+    expect(minted()).toHaveBeenCalledOnce();
+  });
+});
+
 // ─── POST /vnc-exchange/:code ─────────────────────────────────────────────────
 
 describe('POST /vnc-exchange/:code', () => {
@@ -1358,6 +1510,54 @@ describe('POST /vnc-viewer/upgrade-to-webrtc', () => {
     expect(sendCommandToAgent).not.toHaveBeenCalled();
     expect(createWsTicket).not.toHaveBeenCalled();
   });
+
+  it('maps partner-trust denial to a 403 without creating a desktop session', async () => {
+    partnerTrustMode.mockReturnValueOnce('enforce');
+    evaluateCapability.mockResolvedValueOnce({
+      allow: false,
+      code: 'TRUST_RESTRICTED',
+      capability: 'remote_control',
+      reason: 'restricted',
+    });
+    vi.mocked(verifyViewerAccessToken).mockResolvedValueOnce({
+      sub: USER_ID,
+      email: 'test@example.com',
+      sessionId: SESSION_ID,
+      purpose: 'viewer',
+      jti: 'viewer-jti-deny',
+      iat: 1_000,
+      exp: 2_000,
+      mfaSatisfied: true,
+      assuranceAbsoluteExpiresAt: 2_000,
+    });
+    vi.mocked(db.select).mockReturnValueOnce(makeJoinedSelectChain([{
+      tunnelUserId: USER_ID,
+      tunnelOrgId: ORG_ID,
+      deviceId: DEVICE_ID,
+      tunnelType: 'vnc',
+      tunnelStatus: 'pending',
+      deviceStatus: 'online',
+      agentId: 'agent-abc',
+      userEmail: 'test@example.com',
+    }]) as any);
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
+    } as any);
+
+    const res = await app.request('/vnc-viewer/upgrade-to-webrtc', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer viewer-token' },
+    });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual(expect.objectContaining({ error: 'TRUST_RESTRICTED' }));
+    // The descendant token is minted up front (bound to the pre-generated
+    // transitionSessionId, before any DB write) and the straggler-disconnect
+    // update (which precedes the gated service call) has already run — only
+    // the session insert is blocked by the gate inside createRemoteSession.
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(sendCommandToAgent).not.toHaveBeenCalled();
+  });
 });
 
 describe('POST /vnc-viewer/downgrade-to-vnc assurance', () => {
@@ -1420,6 +1620,48 @@ describe('POST /vnc-viewer/downgrade-to-vnc assurance', () => {
     expect(db.insert).not.toHaveBeenCalled();
     expect(sendCommandToAgent).not.toHaveBeenCalled();
     expect(createWsTicket).not.toHaveBeenCalled();
+  });
+
+  it('maps partner-trust denial to a 403 without creating a tunnel or sending an agent command', async () => {
+    vi.clearAllMocks();
+    const app = new Hono();
+    app.route('/vnc-viewer', vncViewerRoutes);
+    partnerTrustMode.mockReturnValueOnce('enforce');
+    evaluateCapability.mockResolvedValueOnce({
+      allow: false,
+      code: 'TRUST_RESTRICTED',
+      capability: 'remote_control',
+      reason: 'restricted',
+    });
+    vi.mocked(verifyViewerAccessToken).mockResolvedValueOnce({
+      sub: USER_ID,
+      email: 'test@example.com',
+      sessionId: SESSION_ID,
+      purpose: 'viewer',
+      jti: 'viewer-jti-deny',
+      iat: 1_000,
+      exp: 2_000,
+      mfaSatisfied: true,
+      assuranceAbsoluteExpiresAt: 2_000,
+    });
+    vi.mocked(db.select).mockReturnValueOnce(makeJoinedSelectChain([{
+      userId: USER_ID,
+      orgId: ORG_ID,
+      deviceId: DEVICE_ID,
+      deviceStatus: 'online',
+      agentId: 'agent-abc',
+      userEmail: 'test@example.com',
+    }]) as any);
+
+    const res = await app.request('/vnc-viewer/downgrade-to-vnc', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer viewer-token' },
+    });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual(expect.objectContaining({ error: 'TRUST_RESTRICTED' }));
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(sendCommandToAgent).not.toHaveBeenCalled();
   });
 });
 
