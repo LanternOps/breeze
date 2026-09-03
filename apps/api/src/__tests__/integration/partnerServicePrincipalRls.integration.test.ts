@@ -26,7 +26,7 @@ const MIGRATION_FILE = join(
 );
 const SCOPE_MIGRATION_FILE = join(
   __dirname,
-  '../../../migrations/2026-08-09-enrollment-keys-scope.sql',
+  '../../../migrations/2026-10-06-100100-enrollment-keys-scope.sql',
 );
 const READ_SCOPES = [
   'organizations:read',
